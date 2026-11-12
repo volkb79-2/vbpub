@@ -162,6 +162,7 @@ either record from a hook, and nothing is exported to the compose env.
 | `standalone_root` | absent | S1.2 | `true` to lock REPO_ROOT to this dir — recommended for any independent repo; omit only for a nested-composition sub-tree |
 | `auto_connect_network` | `true` | S2.8 | `false` in demo/CI to skip devcontainer attach |
 | `exit_on` | `"ERROR"` | S10.6 | Closed vocabulary: `"WARN"` \| `"ERROR"` \| `"NEVER"` |
+| `selection_record.profiles` | absent | S3.12 cl. 5 | `["internal", "public"]` (see below) |
 
 **`ciu.exit_on` semantics (S10.6).** Controls the minimum severity at which
 CIU aborts the run. Default `"ERROR"` means errors abort but warnings are
@@ -176,13 +177,41 @@ Other `[ciu]` keys that may appear in consumer configs (`repo_root`,
 Jinja2 context. CIU does not enforce or act on them directly.
 
 Consumer-defined sub-tables under `[ciu.*]` (e.g. `[ciu.ports]`) are passed
-through to templates as ordinary Jinja2 context. They are NOT reserved by CIU
+through to templates as ordinary Jinja2 context (CIU itself reads
+`[ciu.instance]`, `[ciu.worktree]` and `[ciu.selection_record]`). They are NOT reserved by CIU
 and are not validated. This allows projects to namespace their own global
 metadata without colliding with future CIU-reserved keys at the top level,
 though top-level reserved namespaces (S3.7) still apply.
 
 Test-repo: `test-repo/ciu.global.defaults.toml.j2` — sets `require_certs = false`
 and `auto_connect_network = false` for demo portability.
+
+### `[ciu.selection_record]` — pin the deployment choice per checkout [S3.12 clause 5, CIU-205]
+
+**Opt-in; absent = no behaviour change.** Names the GUARDED profiles whose
+choice must stay stable for one checkout's lifetime (a deployment type):
+
+```toml
+[ciu.selection_record]
+profiles = ["internal", "public"]   # each a declared [deploy.profiles.<name>]
+```
+
+The first deploying `ciu up` records which of them its resolved selection
+contains in `<ciu-root>/.ciu/selection-record.json` when its first stack's
+pipeline (render, hooks, Compose start) begins: in profile mode after that
+stack's live preflights, shipped stacks included; under `--dir` after the
+global render (`--dir --shipped` has no selection facts and is not guarded).
+A run refused before that point (a conflict, profile mode's preflights)
+records nothing; one that fails inside a stack's pipeline (template error,
+validation, hook, Compose) keeps the record;
+a later `ciu up` whose selection contains a different subset refuses (exit 2)
+naming both, before any Docker mutation. Unguarded profiles (tools, mocks)
+never conflict. `--dry-run` checks but never records; `--render-toml` and
+`--print-context` neither check nor record. An unrestricted, successful
+`ciu clean` removes the record; `ciu clean --profile/--phases` keeps it. The
+table is committed (a project-wide policy); the per-checkout choice itself is
+`[ciu.instance] service_profiles` in `ciu.global.instance.toml.j2` or
+`--profile`.
 
 ### `[ciu].user_tables` — declared consumer-owned global tables [S3.13]
 
@@ -294,7 +323,7 @@ Subsections:
 
 | Section | Purpose | Spec |
 |---|---|---|
-| `[deploy.labels]` | Container label prefix for orphan cleanup | S6.4 |
+| `[deploy.labels]` | Container label prefix for orphan cleanup; optional, defaults to `deploy.project_name` (CIU-200) | S6.4 |
 | `[deploy.health]` | Docker `HEALTHCHECK` timings (`interval`, `timeout`, `retries`, `start_period`) — `timeout` is ONE probe attempt's duration — plus `gate_timeout`, the S7.7 gate's OVERALL wait budget for a container to reach `healthy` (CIU-67). Two different questions, two keys; `gate_timeout` is overridable per phase-service via `health_timeout` (see below) | S7.7 |
 | `[deploy.env.defaults]` | Env injected into every service (TZ, PYTHONUNBUFFERED…) | S5.5 |
 | `[deploy.env.shared]` | Machine facts exposed to templates (CONTAINER_UID, DOCKER_GID, repo roots) | S2.6, S2.7 |
@@ -968,7 +997,7 @@ See the directive table in [CIU.md — Secret directives](CIU.md#secret-directiv
 Test-repo examples:
 - `test-repo/infra/redis-core/ciu.defaults.toml.j2` — `GEN_TO_VAULT`
 - `test-repo/infra/vault/ciu.defaults.toml.j2` — `GEN_LOCAL`
-- `test-repo/applications/app-config/ciu.defaults.toml.j2` — all four non-Vault directives
+- `test-repo/applications/app-config/ciu.defaults.toml.j2` — `GEN_LOCAL`, `ASK_EXTERNAL`, `ASK_FILE`, `GEN_EPHEMERAL` (`ASK_HOST`: see below)
 
 ### `[<root>.<service>.hostdir]` — bind-mount paths [S6.1–S6.7]
 
@@ -1119,7 +1148,7 @@ strings are unaffected.
 
 ---
 
-## Six Secret Directives [S4.2–S4.7]
+## Seven Secret Directives [S4.2–S4.7]
 
 | Directive | Verb | Source | Idempotent |
 |---|---|---|---|
@@ -1129,6 +1158,35 @@ strings are unaffected.
 | `ASK_EXTERNAL:<key>` | ASK — fail if not supplied | Env / prompt, then cached | Yes (after first run) |
 | `ASK_FILE:<path>` | ASK — fail if absent | Pre-provisioned file in place | Yes (file must exist) |
 | `GEN_EPHEMERAL` | GEN — always fresh | Run-scoped, no store | No |
+| `ASK_HOST:<entry>` | ASK — fail if absent (prompt once on a TTY) | Per-user host store `$CIU_HOST_SECRETS_DIR` or `~/.ciu/secrets`, copied into the stack store every run | Yes |
+
+**`ASK_HOST` — one operator credential for every checkout (S4.14a, CIU-206).**
+The file lives outside every checkout and is shared by all of them; CIU never
+reads it from the environment and copies it into each stack's store on every
+run, so the Docker daemon gets an in-checkout path (S1.4) even under DooD:
+
+```toml
+[app.secrets]
+smtp_password   = "ASK_HOST:mail/smtp_password"     # ~/.ciu/secrets/mail/smtp_password
+netcup_api_pass = "ASK_HOST:netcup/api_password"
+```
+
+Create it once (or answer the one prompt of the first interactive `ciu up`):
+
+```console
+$ install -d -m 700 ~/.ciu/secrets/mail
+$ (umask 077; read -rs v && printf %s "$v" > ~/.ciu/secrets/mail/smtp_password)
+```
+
+`CIU_HOST_SECRETS_DIR` relocates the store (absolute path only); it locates
+the store, the value itself is never read from the environment. CIU refuses a
+host file readable by group or others, a store directory writable by group or
+others, and any symlink BELOW the store root (the root itself may be a link).
+Concurrent first runs prompt once: the second waits on the store lock and
+then reads the first one's file. Prompting attempts to set the store root to
+`0700` (also through a symlinked root, i.e. the mounted target directory); if
+that chmod fails and the root stays writable by group or others, the
+directory check refuses it.
 
 Withdrawn from v1: `ASK_VAULT_ONCE` (→ `GEN_TO_VAULT`), `DERIVE` (→ `secret()`
 in configfile template or a hook) [S4.3].
@@ -1521,7 +1579,7 @@ meaningless before a host is adopted.
 
 **Known limitation: `CIU_SECRET_<NAME>` is a process-env override, NOT
 host-scoped.** `ASK_EXTERNAL` resolves `CIU_SECRET_<NAME>` before prompting
-(same as stack-level secrets — see "Six Secret Directives" above), but that
+(same as stack-level secrets — see "Seven Secret Directives" above), but that
 env var is a single global name in the ciu process's environment; it is not
 namespaced per host. If two hosts both declare an entry named `tailscale_authkey`
 and the operator exports `CIU_SECRET_TAILSCALE_AUTHKEY=...` once, **both**

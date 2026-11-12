@@ -70,7 +70,7 @@ selected by the active/explicit profile; it deliberately has no `--dir` flag.
 | `ciu env generate` · `ciu env print` | `--root-folder PATH` |
 | `ciu render` | `--profile NAME`, `--root-folder PATH` |
 | `ciu up` | `--profile NAME` \| `--dir PATH` \| `--layout NAME`; `--phases N,M`, `--dry-run`, `--yes`, `--ignore-errors`, `--no-preflight`; remote: `--host NAME`, `--thin`, `--bootstrap`, `--rollback` |
-| `ciu clean` | `--profile NAME`, `--yes`, `--ignore-errors`, `--vanilla` (also reset `ciu.global.toml` / `ciu.env` / `ciu.global.instance.toml.j2` / `ciu.instance.generated.toml`) |
+| `ciu clean` | `--profile NAME`, `--yes`, `--ignore-errors`, `--dry-run` (print the removal plan, change nothing), `--vanilla` (also reset `ciu.global.toml` / `ciu.env` / `ciu.global.instance.toml.j2` / `ciu.instance.generated.toml`) |
 | `ciu secrets list\|reset\|host` | `--dir PATH`; `reset` also accepts `--name N`, `--yes`; `host HOST (--materialize \| --list \| --path NAME)` |
 | `ciu check` | `--profile NAME`, `--phases N,M`, `--live` (also probe live state) |
 | `ciu graph` | `--format mermaid\|dot` or `--json`, `--profile NAME`, `--phases N,M` |
@@ -362,7 +362,7 @@ log level, TZ. Everything else lives in the mounted file.
 ### Secret directives [S4.2]
 
 Directives are recognized **only** inside tables named `secrets` under the root
-key [S4.1]. The six directives:
+key [S4.1]. The seven directives:
 
 | Directive | Behavior | Persistence |
 |---|---|---|
@@ -372,8 +372,9 @@ key [S4.1]. The six directives:
 | `ASK_EXTERNAL:<key>` | Env `<key>` / `CIU_SECRET_<NAME>` / interactive prompt, then cached | Stack store |
 | `ASK_FILE:<path>` | Pre-provisioned file; referenced in place (no copy) | External file |
 | `GEN_EPHEMERAL` | New value every run | None |
+| `ASK_HOST:<entry>` | Per-user host file (`~/.ciu/secrets/<entry>`), prompted once; the value is never read from env (S4.14a) | Copied into the stack store each run |
 
-All four non-`ASK_FILE` directives may be written as a plain string or as an
+Every non-`ASK_FILE` directive may be written as a plain string or as an
 inline table with optional fields [S4.4]:
 
 ```toml

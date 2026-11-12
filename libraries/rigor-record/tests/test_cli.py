@@ -36,17 +36,17 @@ def git(repo, *args):
 def inputs(tmp_path):
     """A real repository holding the project and the golden assemble inputs rewritten to its commit and tree."""
     repo = tmp_path / "repo"
-    (repo / "cgroup-profiler").mkdir(parents=True)
+    (repo / "cgprofile").mkdir(parents=True)
     git(repo, "init", "-q", "-b", "main")
-    (repo / "cgroup-profiler" / "x.txt").write_text("x")
+    (repo / "cgprofile" / "x.txt").write_text("x")
     # node_modules is a second declared input of the golden assay fragment and, as in production (an assay
     # link_path), it is NOT tracked by git: it must be recorded as unresolved, never silently dropped.
     (repo / "node_modules").mkdir()
     (repo / "node_modules" / "y.txt").write_text("y")
-    git(repo, "add", "cgroup-profiler")
+    git(repo, "add", "cgprofile")
     git(repo, "-c", "commit.gpgsign=false", "commit", "-q", "-m", "one")
     git(repo, "-c", "tag.gpgsign=false", "tag", "-a", "-m", "release", "cgprofile-v2.0.0")
-    commit, tree = git(repo, "rev-parse", "HEAD"), git(repo, "rev-parse", "HEAD:cgroup-profiler")
+    commit, tree = git(repo, "rev-parse", "HEAD"), git(repo, "rev-parse", "HEAD:cgprofile")
     work = tmp_path / "work"
     shutil.copytree(ASSEMBLE, work)
     for path in work.rglob("*"):
@@ -59,8 +59,8 @@ def inputs(tmp_path):
 def assemble_args(ctx, **replace):
     work = ctx["work"]
     args = {
-        "--project": "cgroup-profiler", "--tag": "cgprofile-v2.0.0", "--commit": ctx["commit"],
-        "--project-dir": "cgroup-profiler", "--repo": str(ctx["repo"]), "--fragments": str(work / "fragments"),
+        "--project": "cgprofile", "--tag": "cgprofile-v2.0.0", "--commit": ctx["commit"],
+        "--project-dir": "cgprofile", "--repo": str(ctx["repo"]), "--fragments": str(work / "fragments"),
         "--review": str(work / "review.md"), "--artifacts": str(work / "build.json"),
         "--waivers": str(work / "waivers.toml"), "--published-at": "2026-11-04T18:02:11Z", "--out": str(work / "out"),
     }
@@ -74,7 +74,7 @@ def test_assemble_end_to_end_against_a_real_repository(inputs):
     assert code == 0, err
     assert out.startswith("assembled cgprofile-v2.0.0: record.json (")
     record = json.loads((inputs["work"] / "out" / "record.json").read_text())
-    assert record["commit"] == inputs["commit"] and record["results"][0]["targets"] == {"cgroup-profiler": inputs["tree"]}
+    assert record["commit"] == inputs["commit"] and record["results"][0]["targets"] == {"cgprofile": inputs["tree"]}
     body = (inputs["work"] / "out" / "release-body.md").read_text()
     assert body.startswith("| Level | Result |")
 
@@ -122,7 +122,7 @@ def test_assemble_refusal_names_the_causes(inputs):
 
 
 def test_assemble_refuses_a_tree_mismatch_with_a_real_repository(inputs):
-    (inputs["repo"] / "cgroup-profiler" / "x.txt").write_text("changed")
+    (inputs["repo"] / "cgprofile" / "x.txt").write_text("changed")
     git(inputs["repo"], "add", "-A")
     git(inputs["repo"], "-c", "commit.gpgsign=false", "commit", "-q", "-m", "two")
     git(inputs["repo"], "-c", "tag.gpgsign=false", "tag", "-a", "-m", "release", "cgprofile-v2.1.0")
@@ -179,7 +179,7 @@ def test_assemble_write_failure(inputs, monkeypatch):
 # -- privacy config ---------------------------------------------------------------------------------------------
 def test_privacy_config_option_and_environment(inputs, tmp_path, monkeypatch):
     config = tmp_path / "privacy.toml"
-    config.write_text('hosts = ["cgroup"]\n')
+    config.write_text('hosts = ["cgprofile"]\n')
     code, _out, err = run("assemble", *assemble_args(inputs, **{"--privacy-config": str(config)}))
     assert code == 1 and "privacy rule host" in err
     monkeypatch.setenv("RIGOR_RECORD_PRIVACY_CONFIG", str(config))
@@ -196,8 +196,8 @@ def test_render_record_and_body_to_stdout_and_file(tmp_path):
     code, out, _err = run("render", "--kind", "record", "--record", record)
     assert code == 0 and out == (GOLDEN / "records" / "r2-pass.json").read_text()
     target = tmp_path / "body.md"
-    assert run("render", "--kind", "body", "--record", record, "--project-dir", "cgroup-profiler", "--out", str(target))[0] == 0
-    assert target.read_text().endswith("Record: cgroup-profiler/RIGOR.md on main\n")
+    assert run("render", "--kind", "body", "--record", record, "--project-dir", "cgprofile", "--out", str(target))[0] == 0
+    assert target.read_text().endswith("Record: cgprofile/RIGOR.md on main\n")
 
 
 def test_render_usage_errors(tmp_path):

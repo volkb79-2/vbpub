@@ -43,14 +43,14 @@ def write_config(tmp_path, **overrides):
 def test_cli_top_level_version_is_clean(capsys):
     assert main(["--version"]) == 0
     captured = capsys.readouterr()
-    assert captured.out == "debian-install-v2 2.0.0\n"
+    assert captured.out == "debian-install-v2 2.0.1\n"
     assert captured.err == ""
 
 def test_documented_wrapper_top_level_version_is_clean(tmp_path):
     wrapper = Path(__file__).resolve().parents[2] / "debian-install-v2.py"
     proc = invoke_script(wrapper, ["--version"], home=tmp_path / "home", cwd=tmp_path)
     assert proc.returncode == 0
-    assert proc.stdout == "debian-install-v2 2.0.0\n"
+    assert proc.stdout == "debian-install-v2 2.0.1\n"
     assert proc.stderr == ""
 
 
@@ -60,7 +60,7 @@ def test_cli_parser_diagnostics_are_separated_from_help(capsys):
     assert captured.out == ""
     assert captured.err.startswith(
         "[ERROR] debian-install-v2.py: the following arguments are required: VERB"
-        "\n\nDEBIAN-INSTALL-V2 2.0.0 — Debian host installer\n\nUsage:"
+        "\n\nDEBIAN-INSTALL-V2 2.0.1 — Debian host installer\n\nUsage:"
     )
 
 
@@ -193,6 +193,13 @@ def test_cli_disable_and_show_plan(tmp_path, monkeypatch):
         "swap_retained_before_root_gb": None,
         "swap_after_root_gb": None,
         "swap_partitions": [],
+        "partitioning": {"root": "*"},
+        "root_policy": "resize",
+        "data_partitions": [],
+        "iobench_partition": None,
+        "plan_table": [{"entry": "root", "device": "/dev/vda3", "number": 3,
+                        "identifier": "PARTLABEL=root", "start": 2048, "start_gib": 0.0,
+                        "sectors": 1024, "gib": 0.0}],
         "sfdisk_plan": "label: gpt\n",
     }
 

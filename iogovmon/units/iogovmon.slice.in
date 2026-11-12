@@ -1,0 +1,14 @@
+# TEMPLATE, NOT INSTALLED. Render the @IOGOVMON_*@ tokens by hand (see ../README.md "Install steps") or with `install.sh`.
+# The own cgroup of every iogovmon unit (tick, bench, watch): `iogovmon.slice`. Deliberately LOW weight: a probe that waits behind the
+# protected tier is merely slow (its samples are tagged `contended` and excluded from the recognizer); a probe that competes at the
+# protected workload's weight would be a competitor.
+# IOWeight is ADVISORY: it only takes effect with io.cost or the bfq scheduler, and neither is on by default. The real budget control is
+# the PSI gating of the bench (it starts only below the io-pressure limits and aborts when they are exceeded) plus the byte budgets.
+# This is an assumption to verify on the host (design note, "Assumptions").
+[Unit]
+Description=iogovmon (recommend-only disk capability recorder)
+
+[Slice]
+IOWeight=@IOGOVMON_IO_WEIGHT@
+CPUWeight=20
+MemoryMax=256M

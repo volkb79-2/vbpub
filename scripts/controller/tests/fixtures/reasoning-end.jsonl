@@ -1,0 +1,2 @@
+{"type":"item.completed","item":{"id":"item_42","type":"reasoning","text":"CHANGES passes.\n\nNeed baseline test."}}
+{"type":"turn.completed","usage":{"input_tokens":755645,"output_tokens":15732}}

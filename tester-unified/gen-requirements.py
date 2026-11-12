@@ -42,9 +42,10 @@ ESTATE_INTERNAL = frozenset(
         "cmru",
         "assay",
         "ciu",
+        "augeaswrap",
         "nyxloom",
         "topos",
-        "cgroup-profiler",
+        "cgprofile",
         "run-gate",
         "pwmcp",
         "pwmcp-client",
@@ -69,7 +70,7 @@ PROJECTS = (
     ("assay/pyproject.toml", ("test",)),
     ("topos/pyproject.toml", ("dev",)),
     ("nyxloom/pyproject.toml", ("test",)),
-    ("cgroup-profiler/pyproject.toml", ("test",)),
+    ("cgprofile/pyproject.toml", ("test",)),
     ("libraries/patchseries/pyproject.toml", ("test",)),
     ("pwmcp/client/pyproject.toml", ("test",)),
 )
@@ -79,6 +80,15 @@ PROJECTS = (
 #: ~150 MB with its bundled driver) is for driving a real browser; its tests stub the browser, so the
 #: image must not carry it. ``cli-extended`` is installed by the Dockerfile in every case.
 TEST_EXTRAS_ONLY = frozenset({"pwmcp-client"})
+
+# cgprofile's and topos' fake-root gates import the same-repository endpoint helper
+# from their bind-mounted checkouts. Never hand this first-party requirement to pip
+# (augeaswrap is on no index); cgprofile/tools/gate.sh and topos/run-gate.toml's
+# topos-suite lane supply augeaswrap/src on that gate's PYTHONPATH.
+SOURCE_BACKED_RUNTIME = {
+    "cgprofile": frozenset({"augeaswrap"}),
+    "topos": frozenset({"augeaswrap"}),
+}
 
 #: Source-backed Assay lanes install the selected assay tree into the tester
 #: venv; the Run-Gate wheel is built offline from the copied source tree. Their
@@ -157,7 +167,7 @@ def admit(
 def own_extra_requirements(project: dict, extras) -> Iterator[str]:
     """Expand only this project's composite extras.
 
-    ``topos[dev]`` and ``cgroup-profiler[test]`` deliberately reuse their own
+    ``topos[dev]`` and ``cgprofile[test]`` deliberately reuse their own
     ``zstandard``/``report`` extras.  Handing those self-references to pip would
     make it look for an unrelated package index project instead of reading the
     copied pyproject that is the closure's source of truth.
@@ -191,6 +201,10 @@ def requirements(root: Path) -> Iterator[str]:
             else project.get("dependencies", ())
         )
         for requirement in runtime:
+            if requirement_name(requirement) in SOURCE_BACKED_RUNTIME.get(
+                normalized(project["name"]), frozenset()
+            ):
+                continue
             admitted = admit(requirement, source, internal)
             if admitted is not None:
                 yield admitted

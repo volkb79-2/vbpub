@@ -6,6 +6,67 @@
 > `FROZEN-WAVE-CONTROLLER-PROMPT.md`. The P00-P19 narrative below is retained as
 > historical evidence, not current controller authority.
 
+## Pre-merge gate set for tooling, lane tables and waiver documents
+
+The merge checklist must run `run-gate tooling-tests` when the branch diff
+touches any of `assay/tools/**`, `assay/gate/**`, `assay/assay.toml`, or the
+public documents carrying the R2 waiver window (`assay/README.md`,
+`assay/docs/DESIGN-GUIDE.md`, `assay/docs/CONSUMERS.md`). The lane covers the
+three failure groups surfaced only by the 12.1.0 release attempt: the B105
+checker tests, the release-gate script tests, and the docs window test, together
+with the other tooling modules used by those launchers. This is a path-triggered
+review gate, not an Assay qualification or release receipt.
+
+Before merge, from the project root, apply this trigger against the current
+integration base:
+
+```sh
+base=origin/main
+git diff --name-only "$base"...HEAD |
+  rg -q '^(assay/(tools|gate)/|assay/assay\.toml$|assay/(README\.md|docs/(DESIGN-GUIDE|CONSUMERS)\.md)$)' &&
+  run-gate tooling-tests
+```
+
+Run-Gate execution remains serialized by the operator's shared gate lock. A
+docs-only change touching the waiver window and a one-file tooling change use
+the same trigger.
+
+## Pre-merge coverage gate for judge and analysis sources (B534)
+
+Neither `tooling-tests` nor the tester-unified lane's main suite measures
+coverage of `src/assay`: tester-unified runs that tree as R0, and the 100 %
+whole-target line and branch floor over `src/assay` (plus the R3 canary, whose
+control half inherits that R1 result) is judged only by the R1 qualification
+lanes. The 12.2.0 release attempt 2 found 15 uncovered lines there, from two
+branches that had each passed their own pre-merge gates. So the merge checklist
+must also run, against the branch head:
+
+- when the diff touches `assay/src/**`: the R1 lane
+  `self-qualification-provisional` (or the full `self-qualification`), on a
+  host through the release wrapper, about 26 minutes on v1001;
+- when the diff touches `assay/analysis/src/**`: the `tester-unified` lane,
+  which contains the analysis package's own R1 lane.
+
+```sh
+base=origin/main
+changed="$(git diff --name-only "$base"...HEAD)"
+head="$(git rev-parse HEAD)"
+cd assay
+if printf '%s\n' "$changed" | rg -q '^assay/src/'; then
+  ASSAY_RELEASE_GATE_HOST=v1001 CMRU_RELEASE_GATE_COMMIT="$head" \
+    bash tools/release-gate.sh self-qualification-provisional
+fi
+if printf '%s\n' "$changed" | rg -q '^assay/analysis/src/'; then
+  ASSAY_RELEASE_GATE_HOST=v1001 CMRU_RELEASE_GATE_COMMIT="$head" \
+    bash tools/release-gate.sh tester-unified
+fi
+```
+
+The verdict must be PASS at the branch head, with no `missing_lines` and no
+`missing_branch_lines`. Cover a new line with a behavioural test, remove an
+unreachable one, or declare an exclusion only with its reason, as the
+TYPE_CHECKING blocks are.
+
 The current split has four roles:
 
 1. an evolving Sol xhigh carver thread owns design continuity and JIT-freezes

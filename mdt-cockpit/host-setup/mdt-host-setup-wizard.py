@@ -41,7 +41,9 @@ from __future__ import annotations
 
 import argparse
 from mdt_cli import MdtArgumentParser
+import mdt_admission
 import mdt_capacity
+import mdt_tree_cache
 from decimal import Decimal
 import importlib.util
 import json
@@ -846,6 +848,18 @@ def _config_value_validators() -> dict[str, Validator]:
         "HOST_ROLE": validate_host_role,
         "DEV_HOST_MEMORY_KEEP": mdt_capacity.validate_host_memory_keep,
         "DEV_HOST_PROTECTED_UNITS": mdt_capacity.validate_host_protected_units,
+        "DEV_CACHE_MEMORY_LOW": mdt_capacity.validate_optional_size,
+        "DEV_CACHE_ZSWAP_WRITEBACK": validate_yes_no,
+        "MDT_TREE_CACHE_ROOT": mdt_tree_cache.validate_tree_path,
+        "MDT_TREE_UPPER_ROOT": mdt_tree_cache.validate_tree_path,
+        "MDT_TREE_CACHE_SIZE": mdt_tree_cache.validate_area_size,
+        "MDT_TREE_UPPER_SIZE": mdt_tree_cache.validate_area_size,
+        "MDT_TREE_CACHE_INODES": mdt_tree_cache.validate_inodes,
+        "MDT_TREE_UPPER_INODES": mdt_tree_cache.validate_inodes,
+        "MDT_TREE_CACHE_GROUP": mdt_tree_cache.validate_group,
+        "MDT_TREE_CACHE_GC_IDLE": mdt_tree_cache.validate_timespan,
+        "MDT_TREE_UPPER_GC_IDLE": mdt_tree_cache.validate_timespan,
+        "MDT_TREE_CACHE_GC_INTERVAL": mdt_tree_cache.validate_timespan,
         "IO_DEV_PATH": validate_io_dev_path,
         "DEV_STATIC_RIOPS": validate_positive_int,
         "DEV_STATIC_WIOPS": validate_positive_int,
@@ -899,15 +913,9 @@ def _config_value_validators() -> dict[str, Validator]:
         "WATCHER_INTERVAL": validate_systemd_timespan,
         "IO_BASELINE_ENV": validate_absolute_path,
         "IO_BASELINE_TESTFILE": validate_absolute_path,
-        "CGPROFILE_ENABLE": validate_cgprofile_enable,
-        "CGPROFILE_WHEEL": validate_cgprofile_pin,
-        "CGPROFILE_CLI_EXTENDED_WHEEL": validate_cgprofile_pin,
-        "CGPROFILE_WHEEL_SOURCE": validate_cgprofile_wheel_source,
-        "CGPROFILE_DRAIN_TIMEOUT": validate_cgprofile_drain_timeout,
-        "CGPROFILE_GATES_SLICE": validate_cgprofile_slice,
-        "CGPROFILE_OBSERVE_SLICES": validate_cgprofile_slices,
-        "CGPROFILE_ALLOW_UIDS": validate_cgprofile_uids,
     }
+    # run-gate gates admission cap (MDT-077): the grammar lives with the code that reads the keys.
+    validators.update(mdt_admission.VALIDATORS)
 
     for tier in ("INTERACTIVE", "BACKGROUND", "GATES", "BUILDKITD"):
         for field in ("RBPS", "WBPS", "RIOPS", "WIOPS"):
@@ -1035,10 +1043,6 @@ def validate_host_setup_values(
             field_errors.append(f"{key}: {error}")
     if field_errors:
         raise TemplateError("invalid host-setup.env values: " + "; ".join(field_errors))
-    cgprofile_errors = cgprofile_relation_errors(values)
-    if cgprofile_errors:
-        raise TemplateError("invalid cgprofile service settings: " + "; ".join(cgprofile_errors))
-
     total_kib = meminfo.get("MemTotal", 0)
     if total_kib <= 0:
         raise TemplateError(
@@ -1390,94 +1394,6 @@ def validate_psi_guard_mode(value: str) -> str | None:
     if value in ("off", "report", "enforce"):
         return None
     return f"{value!r} is not valid: use off, report or enforce"
-
-
-_CGPROFILE_PIN_RE = re.compile(r"(?P<version>[0-9]+\.[0-9]+\.[0-9]+[A-Za-z0-9.+_-]*)@sha256:(?P<digest>[0-9a-f]{64})")
-_CGPROFILE_SLICE_RE = re.compile(r"[A-Za-z0-9_.@:-]+\.slice")
-
-
-def validate_cgprofile_enable(value: str) -> str | None:
-    """CGPROFILE_ENABLE: ``0`` leaves an existing install alone, ``1`` installs and pins it."""
-    if value in ("0", "1"):
-        return None
-    return f"{value!r} is not valid: use 0 or 1"
-
-
-def validate_cgprofile_pin(value: str) -> str | None:
-    """CGPROFILE_WHEEL / CGPROFILE_CLI_EXTENDED_WHEEL: empty or ``<version>@sha256:<64 hex>``.
-
-    An empty pin is allowed here; ``cgprofile_relation_errors`` refuses it while the
-    service is enabled, so a half-configured host is named before any host change."""
-    if value == "":
-        return None
-    if not _CGPROFILE_PIN_RE.fullmatch(value):
-        return (
-            f"{value!r} is not a pin: use <version>@sha256:<64 lowercase hex> "
-            "(the sha256 of the released wheel file)"
-        )
-    return None
-
-
-def validate_cgprofile_wheel_source(value: str) -> str | None:
-    """CGPROFILE_WHEEL_SOURCE: empty (the GitHub release), an https:// base URL or an absolute directory."""
-    if value == "":
-        return None
-    if value.startswith("https://"):
-        if re.fullmatch(r"https://[A-Za-z0-9._~:/@%+-]+", value):
-            return None
-        return f"{value!r} is not a plain https:// base URL"
-    if value.startswith("/") and re.fullmatch(r"/[A-Za-z0-9._@%+/-]*", value) and ".." not in value.split("/"):
-        return None
-    return f"{value!r} is not valid: use empty, an https:// base URL or an absolute directory path"
-
-
-def validate_cgprofile_drain_timeout(value: str) -> str | None:
-    """CGPROFILE_DRAIN_TIMEOUT: a positive whole number with s, m or h."""
-    match = re.fullmatch(r"([0-9]+)([smh])", value)
-    if not match or int(match.group(1)) <= 0:
-        return f"{value!r} is not valid: use a positive whole number with s, m or h (e.g. 10m)"
-    return None
-
-
-def validate_cgprofile_slice(value: str) -> str | None:
-    """CGPROFILE_GATES_SLICE: empty or one slice name that expands to a cgroup path."""
-    if value == "":
-        return None
-    if not _CGPROFILE_SLICE_RE.fullmatch(value) or "--" in value or value.startswith("-"):
-        return f"{value!r} is not a slice name (letters, digits and . _ @ : -, ending in .slice, no '--')"
-    return None
-
-
-def validate_cgprofile_slices(value: str) -> str | None:
-    """CGPROFILE_OBSERVE_SLICES: empty or space-separated slice names."""
-    for name in value.split():
-        error = validate_cgprofile_slice(name)
-        if error:
-            return error
-    return None
-
-
-def validate_cgprofile_uids(value: str) -> str | None:
-    """CGPROFILE_ALLOW_UIDS: empty or whole numbers separated by spaces or commas."""
-    if value == "":
-        return None
-    if not re.fullmatch(r"[0-9]+([ ,]+[0-9]+)*", value):
-        return f"{value!r} is not valid: use whole numbers separated by spaces or commas"
-    return None
-
-
-def cgprofile_relation_errors(values: dict[str, str]) -> list[str]:
-    """The pin rules that need more than one key: enabled means both wheels are pinned and cgprofile is 2.x+."""
-    if values.get("CGPROFILE_ENABLE", "0") != "1":
-        return []
-    errors = []
-    for key in ("CGPROFILE_WHEEL", "CGPROFILE_CLI_EXTENDED_WHEEL"):
-        if not values.get(key, ""):
-            errors.append(f"{key} is empty while CGPROFILE_ENABLE=1; pin <version>@sha256:<hex> of the released wheel")
-    match = _CGPROFILE_PIN_RE.fullmatch(values.get("CGPROFILE_WHEEL", ""))
-    if match and int(match.group("version").split(".")[0]) < 2:
-        errors.append("CGPROFILE_WHEEL must be a 2.x or newer cgprofile release (1.x is the ciu container deployment)")
-    return errors
 
 
 def validate_positive_int(value: str) -> str | None:
@@ -2066,9 +1982,26 @@ def step_host_role(cfg_current: dict[str, str], example_defaults: dict[str, str]
             example_defaults,
             validate=mdt_capacity.validate_host_protected_units,
         )
+        out("Shared tree cache (AD2-2): dev-cache.slice plus a tree-cache tmpfs and an overlay-upper tmpfs; run-gate and assay use them to share one read-only tree between lanes. The mount roots, group, inode bounds and GC timing keep their host-setup.env.example defaults (edit the file to change them).")
+        cache_low = walk_key(
+            "Memory protected for the tree cache slice (DEV_CACHE_MEMORY_LOW: empty or `-` = none, or a size such as 512M)",
+            "DEV_CACHE_MEMORY_LOW",
+            cfg_current,
+            example_defaults,
+            validate=mdt_capacity.validate_optional_size,
+        )
+        cache_size = walk_key(
+            "Tree cache tmpfs size (MDT_TREE_CACHE_SIZE: empty = 25% of RAM, a size of at least 64M, or `-` = no tree cache at all)",
+            "MDT_TREE_CACHE_SIZE",
+            cfg_current,
+            example_defaults,
+            validate=mdt_tree_cache.validate_area_size,
+        )
         if walked is not None:
             walked["DEV_HOST_MEMORY_KEEP"] = keep
             walked["DEV_HOST_PROTECTED_UNITS"] = units
+            walked["DEV_CACHE_MEMORY_LOW"] = cache_low
+            walked["MDT_TREE_CACHE_SIZE"] = cache_size
     return role
 
 

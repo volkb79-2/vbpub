@@ -642,6 +642,8 @@ class TestSamplerFinalGaps:
         (tmp / "stat").write_text("btime 0\ncpu 1\ncpu0 1\n")
         sampler = ProcessSampler(proc_root=tmp)
         tick1 = sampler.sample()
+        # Idle processes are not "hot" (A-14): give the process CPU time between ticks.
+        (pid_dir / "stat").write_text("1 (t) S 0 0 0 0 0 0 0 5 0 10 0 20000 0 30 0 0 0 0 0 0 0 100 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 42 0\n")
         tick2 = sampler.sample()
         assert tick2.coverage.sampled_count >= 1
         import shutil; shutil.rmtree(tmp)
@@ -684,6 +686,10 @@ class TestSamplerRealOmissions:
         cfg = ProcessConfig(top_cpu=2, top_io=2, pinned_cap=1, hard_cap=1)
         sampler = ProcessSampler(proc_root=tmp, config=cfg)
         sampler.sample()
+        for i in range(1, 11):  # idle processes are not hot (A-14): advance every counter
+            utime = i * 100 + 5000
+            (tmp / str(i) / "stat").write_text(f"{i} (p{i}) S 0 0 0 0 0 0 0 0 0 {utime} 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0\n")
+            (tmp / str(i) / "io").write_text(f"read_bytes: {i*100 + 9000}\nwrite_bytes: {i*50 + 9000}\n")
         tick = sampler.sample()
         assert tick.coverage.omitted_count > 0, (
             f"expected >0 omitted, got {tick.coverage.omitted_count}"

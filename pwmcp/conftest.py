@@ -18,10 +18,14 @@ Repository-cleanliness guard contract (PWMCP-12..16):
 
 from __future__ import annotations
 
+import contextlib
+import ctypes
 import os
 import shutil
+import signal
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -30,6 +34,9 @@ _REPOSITORY = Path(__file__).resolve().parent
 _GIT_EXECUTABLE_ENV = "PWMCP_TEST_GIT_EXECUTABLE"
 _ALLOW_NO_GUARD_ENV = "PWMCP_ALLOW_NO_GIT_GUARD"
 _GIT_TIMEOUT_SECONDS = 60
+_REAP_TIMEOUT_SECONDS = 2
+_PR_SET_CHILD_SUBREAPER = 36
+_PR_GET_CHILD_SUBREAPER = 37
 _REPORT_LIMIT = 20
 _SNAPSHOT_KEY = pytest.StashKey[tuple[str, ...]]()
 
@@ -69,22 +76,90 @@ def snapshot(
             f"git is not on PATH. Install it, set {_GIT_EXECUTABLE_ENV}, or set "
             f"{_ALLOW_NO_GUARD_ENV}=1 to run without the repository-cleanliness guard."
         )
+    # Own session/process group: on a timeout the whole group is killed. subprocess.run() would kill only
+    # the direct child and orphan its descendants (git helpers, a wrapper script's children), which then
+    # outlive the test session and are reported by assay as a leaked process tree (PWMCP-33).
+    # Child subreaper for the whole query: a killed wrapper's children are re-parented to this process
+    # (not to the gate's process-tree window, which counts every adopted zombie as a leak: PWMCP-40), so
+    # they can be reaped here.
+    with _child_subreaper():
+        try:
+            process = subprocess.Popen(
+                [git, "--no-optional-locks", "status", "--porcelain", "--untracked-files=all", "--", "."],
+                cwd=repository,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                start_new_session=True,
+            )
+        except FileNotFoundError as exc:
+            raise GitGuardUnavailable(f"git executable {git!r} cannot be run: {exc}") from exc
+        try:
+            try:
+                stdout, stderr = process.communicate(timeout=timeout)
+            except subprocess.TimeoutExpired as exc:
+                _kill_group(process)
+                raise GitGuardUnavailable(
+                    f"git status did not finish within {timeout:g}s in {repository}"
+                ) from exc
+            except BaseException:
+                _kill_group(process)
+                raise
+        finally:
+            reap_process_group(process.pid)
+    if process.returncode != 0:
+        raise GitGuardUnavailable(classify_git_failure(stderr))
+    return tuple(sorted(stdout.splitlines()))
+
+
+@contextlib.contextmanager
+def _child_subreaper():
+    """Make this process a child subreaper for the block (Linux; a no-op elsewhere or when already one)."""
+
     try:
-        result = subprocess.run(
-            [git, "--no-optional-locks", "status", "--porcelain", "--untracked-files=all", "--", "."],
-            cwd=repository,
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-            check=False,
-        )
-    except FileNotFoundError as exc:
-        raise GitGuardUnavailable(f"git executable {git!r} cannot be run: {exc}") from exc
-    except subprocess.TimeoutExpired as exc:
-        raise GitGuardUnavailable(f"git status did not finish within {timeout:g}s in {repository}") from exc
-    if result.returncode != 0:
-        raise GitGuardUnavailable(classify_git_failure(result.stderr))
-    return tuple(sorted(result.stdout.splitlines()))
+        libc = ctypes.CDLL(None, use_errno=True)
+        prior = ctypes.c_int(0)
+        usable = libc.prctl(_PR_GET_CHILD_SUBREAPER, ctypes.byref(prior), 0, 0, 0) == 0 and not prior.value
+        usable = usable and libc.prctl(_PR_SET_CHILD_SUBREAPER, 1, 0, 0, 0) == 0
+    except (OSError, AttributeError):
+        usable = False
+    try:
+        yield
+    finally:
+        if usable:
+            libc.prctl(_PR_SET_CHILD_SUBREAPER, 0, 0, 0, 0)
+
+
+def reap_process_group(pgid: int, timeout: float = _REAP_TIMEOUT_SECONDS) -> None:
+    """Reap every child of this process in process group ``pgid`` (dead ones; bounded wait for dying ones)."""
+
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            pid, _status = os.waitpid(-pgid, os.WNOHANG)
+        except ChildProcessError:
+            return
+        if pid == 0:
+            if time.monotonic() >= deadline:
+                return  # a live member that ignores the kill: not ours to wait for
+            time.sleep(0.005)
+
+
+def _kill_group(process: subprocess.Popen[str]) -> None:
+    """SIGKILL the child's whole process group and reap it (idempotent)."""
+
+    try:
+        os.killpg(process.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    try:
+        process.communicate(timeout=_REAP_TIMEOUT_SECONDS)
+    except subprocess.TimeoutExpired:
+        # A descendant that left the group (setsid) may still hold the pipes open: stop reading them.
+        for stream in (process.stdout, process.stderr):
+            if stream is not None:
+                stream.close()
+        process.wait()
 
 
 def describe_change(before: tuple[str, ...], after: tuple[str, ...], limit: int = _REPORT_LIMIT) -> str:

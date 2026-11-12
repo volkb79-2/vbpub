@@ -1,6 +1,6 @@
 # ==========================================================================
 # topos — CIU ROOT global (multi-stack). topos's PRODUCTION daemon runs NATIVE
-# (a systemd unit, `topos daemon serve` on a Unix socket /run/topos/topos.sock —
+# (a systemd unit using `toposd run` on /run/topos/observe/topos.sock —
 # no Docker network, no HTTP port; the optional `topos gateway` is loopback-only),
 # so the daemon is deliberately NOT a ciu stack: it is host-forensics (reads the
 # host /sys/fs/cgroup + /proc + DAMON) and belongs on the host, not in a container.

@@ -4,7 +4,44 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 ## [Unreleased]
 
+### Changed
+- The IO governor recorder `mdt-cockpit/iogov` moved out into its own independent project `iogovmon/` (host-tuning WP-IGM-a, pure move and rename: package/distribution `iogovmon`, console scripts `iogovmond` and `iogovmonctl`, units `iogovmond-*` and `iogovmond.service` in `iogovmon.slice`, own cmru release config). mdt-cockpit imports nothing from it; its tests left the `smoke` lane (they run in `iogovmon`'s own `r0-r1` lane), the design note `docs/IO-GOVERNOR-V1-DESIGN.md` is now `iogovmon/docs/DESIGN-GUIDE.md`, backlog items MDT-028..MDT-031 are IGM-04..IGM-07 in `iogovmon/BACKLOG.md`, and `iogov/README.md` is a pointer. Nothing in the repository installed it on a host; only hosts where an operator ran the old installer by hand need the migration steps in `iogovmon/README.md`.
+
+### Removed
+- Retired the `modern-debian-tools-python-debug` predecessor project from the repository and CMRU orchestration. `mdt-cockpit` is its successor; GHCR images under the old project name are no longer built.
+- Removed `units/mdt-cgprofile.conf`, `units/mdt-cgprofile-observer.conf`, `units/mdt-cgprofile.sysusers`, `units/mdt-topos.conf`, `units/mdt-topos-service.conf`, the cgprofile/topos tmpfiles and service drop-in installs, `mdt-cgprofile-install.sh`, `--observer-only`, `--cgprofile-only`, and the `CGPROFILE_*`/`TOPOS_*` config keys. cgprofile and topos now own installation and health checks through `cgprofiled install` and `toposd install`; both publish their endpoint records through augeaswrap.
+- Host-setup refuses before host changes while any retired cgprofile/topos file, `/etc/profile.d/mdt-buildkit.sh`, or the old `# BEGIN mdt-buildkit` block remains. Remove those named artifacts manually before upgrading. Its documented manual uninstall withdraws the `mdt-host-setup` endpoint first.
+- Upgrade note (cutover): after removing the retired files and running `install.sh`, log in again and restart long-lived sessions (the VS Code Remote-SSH server, systemd units and services, which never read `/etc/environment`): builds from processes that started earlier still carry the old `BUILDX_BUILDER`/`BUILDKIT_HOST` without `MDT_BUILDKIT_SOCKET` and exit 2 with "MDT_BUILDKIT_SOCKET is unset". The refusal message gives the safe removal order, `systemctl daemon-reload`, and the caveat that removing the tmpfiles rules stops `/run/cgprofile` and `/run/topos` being recreated at boot until `cgprofiled install` / `toposd install` run, so do not reboot in between.
+
 ### Fixed
+- Codex installs are now verified in place instead of trusted to have worked. `scripts/install_ai_cli_tools.py`
+  gains `verify_codex_install()`: after `npm install -g @openai/codex@<staged>`, it derives the platform package
+  from the `os`/`cpu` values the packages themselves declare (`@openai/codex/node_modules/@openai/codex-<os>-<cpu>`),
+  finds its single vendor directory, and requires the package and vendor-manifest versions to equal the pinned
+  `CODEX_VER`, the manifest's `target` to match the directory, and `bin/codex` plus the code-mode companion
+  `bin/codex-code-mode-host` to be executable regular files; it then runs the installed
+  `$NPM_CONFIG_PREFIX/bin/codex --version` and requires exit 0 and the pinned version in the output (which also
+  proves the launcher selects a vendor target for the host). A partial tree (for example `npm install
+  --omit=optional`, which omits the platform package) now fails the installer instead of shipping a Codex that
+  errors "Missing optional dependency" at run time. Nothing is copied out of the npm tree: `codex update`
+  rewrites it, so a copy would silently drift. The dead archive-installer path (`install_binaries_from_archive`
+  and its tests) is deleted; `find_binary`/`install_binary_from_archive` stay for Antigravity.
+- The Dockerfile manifest step no longer records whatever a broken CLI printed: `claude --version` and
+  `codex --version` must exit zero and print something, or the build aborts (the old
+  `$(... | head -1)` succeeded whatever happened, so an image with a broken Codex shipped an error string as
+  its version). `scripts/test_install_ai_cli_tools.py` pins both probes.
+- host-setup smoke tests `test_hs02.py` and `test_excluded_capacity.py` now anchor on the main flow's
+  `--validate-config "$CANDIDATE_PATH"` call instead of the first occurrence of the bare string. The first
+  occurrence is the `admission_only()` helper, which precedes everything, so the two order assertions passed
+  whatever the main flow did (removing the main-flow call kept them green; they now fail).
+- Devcontainer templates and vbpub's `.devcontainer/devcontainer.json`: `files.watcherExclude`, `search.exclude` and `git.repositoryScanIgnoredFolders`
+  also cover `.assay` (assay's ignored isolation and scratch trees, which hold throwaway repositories), and `search.followSymlinks` is `false`. Python
+  Environments 1.42.0 re-runs `rg --files --follow --no-ignore` (one result wanted, up to a whole-workspace walk) on every marker-file create/delete it sees; under gate churn the walks
+  piled up faster than they finished (192 concurrent rg processes, measured 2026-11-05). The watcher excludes keep generated trees from triggering it;
+  `followSymlinks` stops each walk from following links into other trees (pytest's `*current` links, links out of a home folder). The template comments
+  and `templates/vscode/README.md` now say that a rebuild does not rewrite an existing machine settings file (MDT-076) and how to keep a home folder in a
+  multi-root workspace without watching its tool state.
+- host-setup `tests/test-render.sh` stopped on unresolved `@DEV_CACHE_MEMORY_LOW@` / `@DEV_CACHE_ZSWAP_WRITEBACK@` (MDT-075): the tree-cache templates belong to `mdt_tree_cache.py`, not install.sh's `render()`. The test now renders them through `mdt_tree_cache.py render` (the installer's own path, one `OWNED_TEMPLATES` list), `_render()` raises on any token it was not given, and `TemplateWiringTests` fails if a template key is wired into neither renderer.
 - Release builds failed at `Dockerfile` "Manifest not found in build context ... curl: (22) 404": a vestigial step pre-fetched the build's own
   versioned manifest (`PACKAGE_MANIFEST_SOURCE`) from the `OCI_DOCUMENTATION` blob URL. That file is generated by the manifest RUN and extracted
   post-build, so for a new BUILD_DATE it never exists in the context or on main. The step is removed (nothing read its result); `scripts/test_dockerfile_manifest_prefetch.py` guards it.
@@ -13,6 +50,34 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
   `~/.nanorc` still overrides per setting. Runtime test `test_system_defaults.py` updated.
 
 ### Added
+- Codex's npm layout is documented where an adopter looks: `README.md` (the `codex` bullet), `docs/CONSUMERS.md`
+  ("The Codex layout inside `/opt/mdt/npm`: launcher, platform package, vendor `bin`, do not copy the binary or
+  the companion out), and `docs/DESIGN-GUIDE.md` (why the tree is verified in place, and why a custom-provider
+  model catalog must set `tool_mode` to null when the provider cannot serve code mode - measured with Codex
+  0.167.0 against the Open Design gateway, where `code_mode_only` fails with "incompatible payload").
+  `handoff/MDT-P01-REPORT.md` is replaced by a superseded note: Codex has been an npm install since this tree's
+  first commit, and the archive flow it described no longer exists.
+- Host-setup publishes `/etc/host-endpoints.d/mdt-host-setup.env` through `augeaswrap endpoints publish` after the managed BuildKit socket is ready. The fragment carries the managed builder, Docker group GID, BuildKit socket/path/GID, and Docker API socket/path; augeaswrap renders the shared aggregate, `/etc/environment` block and profile loader. The `docker-buildx` shim no longer carries a socket default: it needs the published `MDT_BUILDKIT_SOCKET` and exits 2 without it. Moving the consumers (devcontainer templates and `.devcontainer`, `cmru.orchestration.toml`, the release builder script and finalizer, run-gate lane `required_env`) onto the published facts is a separate phase-2 cutover and is NOT part of this change. Missing augeaswrap is a preflight refusal. `install.sh --dry-run-endpoints` prints the derived fragment, `check.sh` reports one endpoint-record line and runs its fresh-user builder probe with the facts read from that record (as `install.sh` does with the facts it derived), and manual uninstall withdraws the fragment before removing host-setup files.
+- host-setup publishes the run-gate gates admission cap (MDT-077). A reinstalled host has a new Docker daemon and so no `ciu-admission-<g>` object, and every lane of a project with `[admission] enabled` ended `NOT_RUN no-headroom` while the host idled. `mdt_admission.py` derives the cap from the effective minimum of the parent `DEV_CPU_QUOTA` and gates-tier `DEV_GATES_CPU_QUOTA` limits (auto shares come from `mdt_capacity`) and the gates `MemoryHigh`, then publishes idempotently through run-gate on the host or in the cockpit container. A full install with default `ADMISSION_PUBLISH=auto` creates a cap only when no readable cap exists and preserves a differing readable cap; explicit `install.sh --admission-only` reconciles it. `missing` never replaces, `replace` lets full installs reconcile too, and `off` disables management. `ADMISSION_MAX_CONCURRENT` always pins the desired value. The checker warns on a difference unless pinned, fails on a pinned mismatch or a missing cap, and distinguishes an unreachable Docker daemon from an absent ticket image. `--admission-only` can repair an unparseable published limit using the unchanged run-gate `set --replace` path. Nine optional `ADMISSION_*` keys are validated by the wizard's strict validator. After reinstall, operators must run `sudo ./host-setup/install.sh --admission-only` once run-gate and the ticket image exist. The focused `host-setup-admission` Run-Gate lane covers the unit, wizard, installer, and capacity subset; `host-setup/tests/test_admission.py` includes a fake-run-gate installer behavior test.
+- Devcontainers bind the host topos socket directory read-only via `runArgs -v`; `toposd install` owns that directory and publishes the endpoint. Host-setup no longer ships a topos tmpfiles rule or drop-in.
+- host-setup `HOST_ROLE=dedicated-dev` load-tier ceilings made reachable (AD2-0; shared-prod byte-identical): `dev-gates.slice` / `dev-background.slice` MemoryMax = dev.slice
+  MemoryHigh (dev's own RAM+swap Max is never reachable), MemorySwapMax = dev.slice swap max minus the protected tiers' MemoryLow sum (floor 256M); that sum now also counts the
+  new optional `DEV_CACHE_MEMORY_LOW` (the `dev-cache.slice` Low, default empty = 0). Pins still win (`DEV_{GATES,BACKGROUND}_MEMORY_{HIGH,MAX,SWAP_MAX}`). A lane with no swap left is
+  OOM-killed inside gates instead of thrashing (intended). `mdt-host-check.sh` verifies memory.max and memory.swap.max against the derivation. README "Load tiers yield first" and env example 4.0b updated;
+  supersedes the MemoryMax/MemorySwapMax statements of the entry below.
+- host-setup `HOST_ROLE=dedicated-dev` shared tree cache (AD2-2, MDT-074; shared-prod byte-identical, owned units removed when the role is left): persistent
+  `dev-cache.slice` under dev.slice (`DEV_CACHE_MEMORY_LOW`, counted in dev.slice's MemoryLow and in the protected-Low sum that the gates/background MemoryHigh and MemorySwapMax subtract; MemoryMax is dev High and does not),
+  tmpfs mount units for `MDT_TREE_CACHE_ROOT` (`/srv/tree-cache`) and `MDT_TREE_UPPER_ROOT` (`/srv/tree-upper`) (`mode=2770 root:runner`, `nosuid,nodev,huge=never`,
+  sizes default 25 % / 10 % of RAM, inode bounds), a `tree_cache` block merged into `/etc/mdt/host-capacity.json`, and `mdt-tree-cache-gc.timer`
+  (idle, unleased, unmounted keys, stale builds, orphan uppers; documented directory/lease format in `mdt_tree_cache.py` and the README). Keys `MDT_TREE_*`,
+  `DEV_CACHE_*`; wizard, env example, README, `mdt-host-check.sh` and hermetic tests included. Optional convenience: the neutral host contract any host can meet
+  without mdt-cockpit is `libraries/cowtree/HOST-CONTRACT.md`. Hardened after review: the cache plan is validated before the installer's commit point, the GC
+  tolerates vanished/zombie processes and hostile `.lease` entries (symlink, FIFO) per entry, `render` refuses to overwrite a unit it does not own, and tree roots
+  may not overlap system directories.
+- host-setup `HOST_ROLE=dedicated-dev` load tiers yield first (MDT-TESTHOST-MEM-2; shared-prod byte-identical): `dev-gates.slice` and `dev-background.slice` MemoryHigh =
+  dev.slice MemoryHigh minus (`DEV_INTERACTIVE_MEMORY_LOW` + `DEV_BUILDKITD_MEMORY_LOW`), MemoryMax derived the same way from dev.slice MemoryMax (floor 1G, never above
+  dev.slice's, MemoryMax >= MemoryHigh); MemorySwapMax and CPU weights unchanged. `DEV_{GATES,BACKGROUND}_MEMORY_{HIGH,MAX}` are now pins on this role (`-`/`0` omit).
+  `mdt-host-check.sh` verifies the values and that each is below dev.slice's. Documented in README "Memory of the dedicated-dev role" and the env example 4.0b.
 - host-setup `HOST_ROLE=dedicated-dev` memory (MDT-TESTHOST-MEM; the memory half of MDT-TESTHOST-IO; shared-prod and an empty role are unchanged): the
   whole of RAM plus disk swap belongs to the dev tier minus `DEV_HOST_MEMORY_KEEP` (new key, default 1G, minimum 256M, validated; not named `*_RESERVE_*`, which the
   2026-11 rename guard refuses). `dev.slice` MemoryMax = `MemTotal + SwapTotal - MDT_EXCLUDED_RAM - MDT_EXCLUDED_SWAP - keep`, MemoryHigh = `MemTotal - MDT_EXCLUDED_RAM - keep`
@@ -38,15 +103,6 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
   keeps the current cap and fails, printing the remedy. An unset role stays conservative (shared-prod) with a NOTICE. Fixes the 500-IOPS static default
   that throttled all gate lanes on r1002/v1001 (disk 1-2% busy). Hermetic tests in `tests/test_testhost_io.py`. Deferred: running iobench inside
   debian-install-v2 (MDT-063), io.cost QoS latency targets (MDT-064); the btrfs/page-cache read-volume observation is recorded without a cause (MDT-065).
-- host-setup installs and pins the cgprofile host service from the released wheel (MDT-055): `scripts/mdt-cgprofile-install.sh`
-  builds `/opt/cgprofile/<version>/venv` from the sha256-pinned `cgprofile` and `cli-extended` wheels (`pip --no-index`),
-  renders `/etc/cgprofile/cgpd.toml` and the two units through `cgpd config check` / `cgpd unit print`, restarts only on drift and
-  only after the live sessions drained (`CGPROFILE_DRAIN_TIMEOUT`, default 10 minutes; refusal exits 3 with the sessions named;
-  `--force-cgprofile-restart` overrides), reloads for config-only changes, keeps the two newest versions. New optional
-  `host-setup.env` keys `CGPROFILE_ENABLE`, `CGPROFILE_WHEEL`, `CGPROFILE_CLI_EXTENDED_WHEEL`, `CGPROFILE_WHEEL_SOURCE`,
-  `CGPROFILE_DRAIN_TIMEOUT`, `CGPROFILE_GATES_SLICE`, `CGPROFILE_OBSERVE_SLICES`, `CGPROFILE_ALLOW_UIDS` with strict validators;
-  `install.sh --cgprofile-only`; `mdt-host-check.sh` asserts the pin, MANIFEST, config and unit drift, `systemd-analyze verify`,
-  sockets and groups, `cgpctl doctor` and the daemon version. Fake-root tests never touch a live daemon.
 - The cockpit image carries the `cgpctl` client: `cgprofile` joins `pip/wheels.list` and every first-party wheel table, the
   `report` extra stays out of the closure, `SKILLS_CLIS` gains `cgpctl` and the estate dependency graph declares the edge
   (MDT-048).
@@ -137,9 +193,9 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 - The image manifest records bare versions (grype, lazydocker, glances, copilot, claude, codex and every
   other banner are normalised; aider no longer records its usage banner), lists every first-party wheel
   and derives the system-package inventory from `apt/packages.list`.
-- host-setup: `install.sh` validates the `/etc/environment` block before the commit point, never aborts
-  silently when dockerd is not running, and `mdt-host-check.sh` checks the inotify setting against the
-  policy minimum instead of the installed file's own value.
+- host-setup: `install.sh` now refuses the retired `/etc/environment` block before host changes and
+  publishes the replacement endpoint record through augeaswrap; it never aborts silently when dockerd
+  is not running, and `mdt-host-check.sh` checks the inotify setting against the policy minimum.
 - Build inputs (apt/pip lists, wheel set, requirements, customization, installer scripts, staged tool versions) are
   no longer COPYed into the image's `/tmp`: a throwaway `mdt-build-inputs` stage is bind-mounted at `/tmp/mdt-inputs`
   by each RUN that reads it, and the timestamped `metadata.json` has its own stage so it never invalidates the
@@ -151,12 +207,36 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
   documents the push-before-build ordering (MDT-040).
 - host-setup (bugfix program `fix-mdt-3`): `mdt-host-check.sh` verifies the dedicated Docker API socket (drop-in, listener
   `root:docker` 0660) and warns on a pending daemon restart (MDT-037); `install.sh` writes `max(live, shipped)` into
-  `99-mdt-inotify.conf` so a boot never lowers a higher host value (MDT-038); the synopsis and the `--observer-only` option
-  matrix are complete, and observer group/directory drift refuses before the commit point (MDT-039); the cgroup lister
+  `99-mdt-inotify.conf` so a boot never lowers a higher host value (MDT-038); the earlier observer-only mode and group checks
+  were retired in H1g'; the cgroup lister
   bounds each control-file read (`MDT_CG_READ_TIMEOUT`, default 5 s) and its tests kill the process group on timeout
   (MDT-022); a transient missing IO device with a valid baseline keeps the per-container IO caps for that sweep (MDT-019).
 
 <!-- cmru: release history -->
+
+## [source-b1659836e323] - 2026-11-05
+<!-- cmru: generated -->
+<!-- cmru: source-end=b1659836e323cd3995105d94455c897968fd5ff9 -->
+
+### Added
+- feat(mdt-cockpit): bind host /run/topos read-only into devcontainers (6589c010b)
+- feat(mdt-cockpit/host-setup): dedicated-dev shared tree cache host plumbing (AD2-2, MDT-074) (202435a20)
+- feat(mdt-cockpit/host-setup): AD2-0 load-tier MemoryMax = dev High, MemorySwapMax = dev swap - protected Lows (267e70c8e)
+- feat(mdt-cockpit/host-setup): dedicated-dev load tiers (gates, background) MemoryHigh/Max below dev.slice by the protected tiers' MemoryLow (286002597)
+- feat(mdt-cockpit): HOST_ROLE=dedicated-dev memory (MDT-TESTHOST-MEM): RAM+swap minus DEV_HOST_MEMORY_KEEP, no tier ceilings, host protected (de9507821)
+
+### Fixed
+- fix(mdt-cockpit): test-render renders tree-cache units via mdt_tree_cache.py; unresolved token guard (MDT-075) (49f8b8889)
+- fix(mdt-cockpit/host-setup): tree areas use whole-page sizes; GC tolerates processes that exit mid-scan (8cc7d89d0)
+- fix(mdt-cockpit/host-setup): host-check treats DEV_{GATES,BACKGROUND}_MEMORY_SWAP_MAX=auto as derived (54b44ca44)
+- fix(mdt-cockpit): dedicated-dev memory review fixes F1-F6 (no ssh OOM drop-in + stale removal, 1G keep with floors, honest bounds docs, 0 pins omit, stale drop-in cleanup, stronger tests) (4e663da8c)
+
+### Changed
+- mdt-cockpit: topos.service drop-in keeps /run/topos reachable by the docker group (8dba9c9a7)
+- merge(mdt-cockpit/host-setup): AD2-0 load-tier ceilings + AD2-2 tree cache, with review fixes (f1daf2f4d)
+
+### Documentation
+- docs(cowtree,mdt-cockpit): neutral shared-tree-cache host contract; host-setup is one optional implementation (6750b9cd2)
 
 ## [source-626f9034d12e] - 2026-11-04
 <!-- cmru: generated -->

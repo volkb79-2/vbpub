@@ -631,3 +631,5 @@ run-gate gate
 CMRU, the Debian installer, and the Netcup entrypoints are current first-party
 adopters. The consumer guide explains how to inventory shipped entrypoints and
 review each product's command semantics before registering its grammar.
+
+Host endpoint records are managed by [Augeaswrap](../../augeaswrap/README.md).

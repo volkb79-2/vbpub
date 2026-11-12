@@ -118,11 +118,12 @@ def test_the_template_comment_states_which_tiers_must_match_runargs() -> None:
 
 
 def test_every_host_bind_source_and_socket_comes_from_a_host_setup_unit() -> None:
-    """Sources: docker-api-socket.conf (ListenStream), mdt-cgprofile.conf (d line),
-    mdt-buildkitd.service.in (RuntimeDirectory + --addr) and the builder script (MANAGED_BUILDER)."""
+    """Sources: docker-api-socket.conf (ListenStream), mdt-buildkitd.service.in (RuntimeDirectory +
+    --addr) and the builder script (MANAGED_BUILDER). /run/cgprofile is no longer a host-setup
+    unit: cgprofiled install owns it, and the template keeps the literal until the phase-2 cutover."""
     mounts = _mounts()
     listen = re.search(r"(?m)^ListenStream=(/\S+)$", (HS / "units" / "docker-api-socket.conf").read_text()).group(1)
-    cgprofile = re.search(r"(?m)^d (/\S+) ", (HS / "units" / "mdt-cgprofile.conf").read_text()).group(1)
+    cgprofile = "/run/cgprofile"
     unit = (HS / "units" / "mdt-buildkitd.service.in").read_text()
     runtime_dir = "/run/" + re.search(r"(?m)^RuntimeDirectory=(\S+)$", unit).group(1)
     socket_name = Path(re.search(r"--addr unix://(/\S+)", unit).group(1)).name
@@ -169,3 +170,42 @@ def test_the_template_readme_points_at_the_docker_hub_login_and_the_host_inspect
     assert "mdt-cgroup-io-limits.sh" in readme
     consumers = " ".join((ROOT / "docs" / "CONSUMERS.md").read_text().split())
     assert "host-escape -- /usr/local/sbin/mdt-cgroup-io-limits.sh" in consumers
+
+
+def _run_args_of(path: Path) -> list:
+    return bootstrap._parse_jsonc_object(path.read_text(encoding="utf-8"))["runArgs"]
+
+
+def test_topos_socket_directory_is_a_runargs_bind_never_a_mount() -> None:
+    """`mounts` is Docker --mount (refuses a missing source); `-v` auto-creates it, so a host
+    without the toposd-installed directory still starts. The initializer's BIND_RE parses only
+    `source=...,target=...,type=bind`, so it must not see /run/topos either. host-setup no longer
+    provisions /run/topos (toposd install does); the literal stays until the phase-2 cutover."""
+    directory = "/run/topos"
+    assert "/run/topos" not in _mounts()
+    assert f"{directory}:{directory}:ro" in TEMPLATE["runArgs"]
+    assert TEMPLATE["runArgs"][TEMPLATE["runArgs"].index(f"{directory}:{directory}:ro") - 1] == "-v"
+    assert "--group-add" in TEMPLATE["runArgs"]
+    assert "REFUSES" in TEMPLATE_TEXT and "auto-creates a missing source" in " ".join(TEMPLATE_TEXT.split())
+
+
+def test_topos_runarg_is_identical_in_all_three_devcontainer_files() -> None:
+    files = [
+        ROOT / "templates" / "devcontainer.json",
+        ROOT / "templates" / "host-folder" / "devcontainer.json",
+        ROOT.parent / ".devcontainer" / "devcontainer.json",
+    ]
+    for path in files:
+        args = _run_args_of(path)
+        assert args[args.index("/run/topos:/run/topos:ro") - 1] == "-v", path
+        assert "source=/run/topos" not in path.read_text(encoding="utf-8"), path
+
+
+def test_host_setup_no_longer_owns_topos_host_files() -> None:
+    install = (HS / "install.sh").read_text(encoding="utf-8")
+    check = (HS / "scripts" / "check.sh").read_text(encoding="utf-8")
+    # the only remaining mention in install.sh is the refusal list of retired files
+    assert 'install -m 0644 "$HERE/units/mdt-topos' not in install
+    assert "systemd-tmpfiles --create /etc/tmpfiles.d/mdt-topos.conf" not in install
+    assert "TOPOS_DIR=/run/topos" not in check
+    assert "toposd install" in (HS / "README.md").read_text(encoding="utf-8")

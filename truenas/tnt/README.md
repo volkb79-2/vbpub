@@ -336,10 +336,14 @@ See the [navigation and small-terminal design](docs/DESIGN.md#tui-navigation-and
 ## Tests
 
 The default suite uses the in-memory `tnt.testing.FakeServer` over loopback with the real `truenas_api_client`; it does
-not contact a TrueNAS host. The optional Textual, websockets, and test dependencies are required by the suite; missing
-dependencies fail the suite. Run `run-gate r0-r1` for the full suite and its 97% branch coverage floor; use
-`run-gate ux-focused` for Pilot screen, host-picker, and small-terminal checks plus real-terminal tmux checks when the
-tester image includes tmux. See [UX testing](docs/UX-TESTING.md) for coverage and limits. Both use `tester-unified`. The
+not contact a TrueNAS host. Textual, websockets, and test dependencies are required and missing dependencies fail the
+suite. The real-terminal checks also require tmux: `tester-unified` installs it, and the `r0-r1`, `ux-focused`, and R2
+lanes fail if it is absent. A local workstation without tmux can skip those cases with
+`TNT_TEST_ALLOW_MISSING_TMUX_FOR_LOCAL_DEV=1`; never set that opt-out for a registered gate. Run `run-gate r0-r1` for
+the full suite and its 97% coverage floor, and `run-gate ux-focused` for Pilot screen, host-picker, small-terminal,
+and real-terminal tmux checks. See [UX testing](docs/UX-TESTING.md) for coverage and limits, the
+[test strategy](docs/DESIGN.md#9-test-strategy), and the [copyable test-gate commands](docs/CONSUMERS.md#run-the-test-gates).
+Both use `tester-unified`. The
 separate `run-gate live-v27` lane is an explicit host integration run: it selects only
 tests marked `live`, requires `TNT_LIVE=1`, and creates and cleans up resources under a `tnt-live-` prefix. It runs in
 `tester-unified`; keep `tnt.toml` and `tnt.secrets.toml` in a private scratch directory outside the repository and pass

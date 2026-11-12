@@ -33,8 +33,8 @@ agent_logs            = "nyxloom-trove/agent-logs"          # per-attempt transc
 # --- [refs]: docs nyxloom READS but does not manage (live in the project's
 #     own tree). Declaring them makes the document surface explicit;
 #     `nyxloom lint` flags a [refs] path that doesn't resolve. Paths verified
-#     to exist as of the 2026-07-16 migration. `docs/DECISIONS-INBOX.md` is
-#     intentionally absent — it moved to the managed `decisions_inbox` above.
+#     to exist as of the 2026-07-16 migration. Product decisions live in the
+#     managed `decisions_inbox` above (`nyxloom-trove/decisions.md`).
 [refs]
 contracts        = "CONTRACTS.md"
 measurements      = "MEASUREMENTS.md"

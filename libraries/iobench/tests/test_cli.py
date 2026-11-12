@@ -34,8 +34,9 @@ def test_cli_01_commands_and_exit_codes():
     assert code == 0 and "caps" in json.loads(out)["object"]
     code, out, _ = run(host, "ceilings", "summary", "--json")
     assert code == 0 and "read" in json.loads(out)
-    code, out, _ = run(host, "ceilings", "add", "--dir", "write", "--workload", "seq1m", "--bps", "1e9", "--duration-s", "600", "--source", "governor", "--json")
-    assert code == 0 and json.loads(out)["appended"] is True
+    code, out, _ = run(host, "ceilings", "add", "--dir", "write", "--workload", "seq1m", "--bps", "1e9", "--duration-s", "600", "--source", "governor",
+                       "--kind", "file", "--json")
+    assert code == 0 and json.loads(out)["appended"] is True and json.loads(out)["observation"]["kind"] == "file"
     code, out, _ = run(host, "restore", "--json")
     assert code == 0
     code, out, _ = run(host, "restore", "--dry-run", "--json")
@@ -57,14 +58,53 @@ def test_cli_02_messages_name_condition_and_remedy():
     assert code != 0 and "absent" in err
 
 
+def test_cli_02_missing_workdir_is_a_refusal_with_exit_two():
+    host = make_host(cache=INVERSION)
+    assert calibrate(host).status == "complete"
+    writes_before = list(host.write_log)
+    code, out, err = run(host, "matrix", "--target", "/dev/vda7", "--work-dir", "/bench/missing",
+                         "--confirm-quiet-window", "--protect-cgroup", "game-server.slice", "--abort-psi", "40")
+    assert code == 2 and "/bench/missing does not exist" in (out + err)
+    assert "create it as an empty directory on the intended filesystem" in (out + err)
+    assert host.write_log == writes_before and host.devices["/dev/vda7"].marker is not None
+
+
 def test_cli_10_surface_matches_registry():
     registry = cli.build_cli(IDENT)
     verbs = set(registry.handlers) | set(registry.delegates)
-    assert {"target", "calibrate", "matrix", "run", "check", "show", "ceilings", "restore"} <= verbs
+    assert {"target", "calibrate", "matrix", "run", "check", "show", "ceilings", "capability", "restore"} <= verbs
     for name in ("calibrate", "matrix", "run", "restore"):
         assert registry.command_parsers[name].parse_args  # registered with its own parser
     out, err = io.StringIO(), io.StringIO()
     assert registry.run(argv=["--version"], stdout=out, stderr=err) == 0 and "0.1.0" in out.getvalue()
+
+
+def test_cli_11_capability_and_cache_delay_are_registered():
+    registry = cli.build_cli(IDENT)
+    assert "capability" in registry.handlers
+    parsed = registry.command_parsers["calibrate"].parse_args(["--target", "/dev/vda7", "--cache-idle-delay-s", "15"])
+    assert parsed.cache_idle_delay_s == 15
+    host = make_host(cache=INVERSION)
+    before = (dict(host.files), list(host.write_log), list(host.argv_log), host.clock)
+    code, out, err = run(host, "capability", "--json")
+    assert code == 0 and not err
+    report = json.loads(out)
+    assert report["count"] == 0 and report["latest"] == {"raw": None, "file": None, "probe": None}
+    assert report["by_kind"]["raw"] == {"count": 0, "latest": None}
+    assert report["skipped_rows"] == 0 and "calibration_identity_unavailable" in report["warnings"]
+    parsed = registry.command_parsers["capability"].parse_args(["--kind", "probe"])
+    assert parsed.kind == "probe"
+    assert (dict(host.files), list(host.write_log), list(host.argv_log), host.clock) == before
+
+    args = ("calibrate", "--target", "/dev/vda7", "--work-dir", "/bench/w", "--dry-run", "--assume-r-est", "1.36e9", "--json")
+    code, out, err = run(host, *args, "--cache-idle-delay-s", "15")
+    assert code == 0, err
+    plan = json.loads(out)
+    cache_stage = next(stage for stage in plan["stages"] if stage["name"] == "cache-evidence")
+    assert cache_stage["allotted_s"] == 45 and len(cache_stage["jobs"]) == 2
+    code, out, err = run(host, *args, "--cache-idle-delay-s", "0")
+    assert code == 0, err
+    assert all(stage["name"] != "cache-evidence" for stage in json.loads(out)["stages"])
 
 
 # ---------------------------------------------------------------------------------------------------------
@@ -85,19 +125,52 @@ def fresh_host():
 def test_cli_target_init_device_and_file():
     host = fresh_host()
     code, out, err = run(host, "target", "init", "/dev/vda7", "--i-own-this-device", "--expect-size", str(R1002_SIZE), "--expect-partuuid", R1002_PARTUUID, "--json")
-    assert code == 0 and json.loads(out)["marker_written"] is True
+    init = json.loads(out)
+    assert code == 0 and init["marker_written"] is True
+    assert init["written_bytes"] is None and init["unwritten_bytes"] is None
+    assert "raw device has no filesystem extent map" in init["written_bytes_status"]
     code, out, _ = run(host, "target", "show", "/dev/vda7", "--json")
-    assert code == 0 and json.loads(out)["usable_bytes"] > 0
+    shown = json.loads(out)
+    assert code == 0 and shown["usable_bytes"] > 0
+    assert shown["written_bytes"] is None and shown["unwritten_bytes"] is None
+    assert "raw device has no filesystem extent map" in shown["written_bytes_status"]
     code, out, _ = run(host, "target", "init", "/dev/vda7", "--i-own-this-device", "--expect-size", str(R1002_SIZE), "--expect-partuuid", R1002_PARTUUID, "--dry-run", "--json")
-    assert code == 0 and json.loads(out)["marker_written"] is False
+    dry_device = json.loads(out)
+    assert code == 0 and dry_device["marker_written"] is False
     code, _, err = run(host, "target", "init")
     assert code == 2 and "pass DEVICE" in err
     fhost = testing.standard_host()
     args = ["target", "init", "--file", "/bench/t.img", "--size", str(2 << 30), "--i-own-this-file", "--expect-fs-uuid", "22222222-2222-2222-2222-222222222222", "--json"]
     code, out, err = run(fhost, *args, "--dry-run")
-    assert code == 0 and json.loads(out)["kind"] == "file" and not fhost.exists("/bench/t.img")
+    dry = json.loads(out)
+    assert code == 0 and dry["kind"] == "file" and not fhost.exists("/bench/t.img")
+    assert dry["written_bytes"] is None and dry["unwritten_bytes"] is None
+    assert "dry run creates no file extent map" in dry["written_bytes_status"]
     code, out, err = run(fhost, *args)
+    created = json.loads(out)
     assert code == 0 and fhost.exists("/bench/t.img")
+    assert created["written_bytes"] == 0
+    assert created["unwritten_bytes"] == created["usable_bytes"]
+    assert "logical SEEK_DATA/SEEK_HOLE" in created["written_bytes_status"]
+    fhost.devices["/bench/t.img"].written.add(0, 1 << 30)
+    code, out, err = run(fhost, "target", "show", "/bench/t.img", "--json")
+    shown = json.loads(out)
+    assert code == 0
+    assert shown["written_bytes"] == 1 << 30
+    assert shown["unwritten_bytes"] == shown["usable_bytes"] - (1 << 30)
+    assert "logical SEEK_DATA/SEEK_HOLE" in shown["written_bytes_status"]
+
+
+def test_iob_bl_31_target_show_never_defaults_a_failed_extent_query_to_zero():
+    from iobench.host import HostError
+    host = testing.standard_host()
+    args = ("target", "init", "--file", "/bench/t.img", "--size", str(2 << 30), "--i-own-this-file",
+            "--expect-fs-uuid", "22222222-2222-2222-2222-222222222222", "--json")
+    code, out, err = run(host, *args)
+    assert code == 0
+    host.written_bytes = lambda target, start, end: (_ for _ in ()).throw(HostError("SEEK_DATA failed: unsupported"))
+    code, out, err = run(host, "target", "show", "/bench/t.img", "--json")
+    assert code == 1 and not out.strip() and "SEEK_DATA failed" in err
 
 
 def test_cli_calibrate_matrix_run_and_reads():
@@ -160,9 +233,10 @@ def test_cli_restore_and_ceilings_refusals():
     code, out, _ = run(host, "ceilings", "summary", "--json")
     assert code == 0 and json.loads(out)["history"] == "single-run"
     assert calibrate(host).status == "complete"
-    code, _, err = run(host, "ceilings", "add", "--dir", "write", "--workload", "seq1m", "--bps", "1e9", "--duration-s", "10", "--source", "governor")
-    assert code == 2
-    code, out, _ = run(host, "ceilings", "add", "--dir", "write", "--workload", "seq1m", "--bps", "1e9", "--duration-s", "600", "--source", "governor", "--dry-run", "--json")
+    code, _, err = run(host, "ceilings", "add", "--dir", "write", "--workload", "seq1m", "--bps", "1e9", "--duration-s", "10", "--source", "governor", "--kind", "file")
+    assert code == 2 and "duration_s" in err
+    code, out, _ = run(host, "ceilings", "add", "--dir", "write", "--workload", "seq1m", "--bps", "1e9", "--duration-s", "600", "--source", "governor",
+                       "--kind", "file", "--dry-run", "--json")
     assert code == 0 and json.loads(out)["appended"] is False
 
 
@@ -179,9 +253,15 @@ def test_cli_show_when_nothing_exists_and_when_corrupt():
 
 
 def test_cli_identity_comes_from_the_installed_distribution_only(monkeypatch):
+    from importlib.metadata import PackageNotFoundError
     from cli_extended import identity as ident_mod
+
+    def missing(name):
+        raise PackageNotFoundError(name)
+
+    monkeypatch.setattr(ident_mod, "installed_version", missing)
     with pytest.raises(ident_mod.VersionLookupError):
-        cli.identity()                                   # not installed in the test environment: no literal fallback
+        cli.identity()  # no literal fallback when the authoritative distribution metadata is absent
     monkeypatch.setattr(ident_mod, "installed_version", lambda name: "0.1.0")
     assert cli.identity().version == "0.1.0"
     monkeypatch.setattr(cli, "identity", lambda: IDENT)
@@ -227,3 +307,34 @@ def test_cli_10_audit_and_surface_pass(monkeypatch):
     items = run_audit(entry, project)
     assert [i.checklist_id for i in items if i.status == "fail"] == []
     assert {i.status for i in items} <= {"pass", "manual", "warn"}
+
+
+def test_tgt_10_cli_rejects_unaligned_file_size_during_argument_parsing():
+    made_host = []
+
+    def factory():
+        made_host.append(True)
+        return make_host()
+
+    out, err = io.StringIO(), io.StringIO()
+    size = 6 * (1 << 30) + 1
+    code = cli.build_cli(IDENT, host_factory=factory).run(
+        argv=["target", "init", "--file", "/bench/target.img", "--size", str(size),
+              "--i-own-this-file", "--expect-fs-uuid", "22222222-2222-2222-2222-222222222222"],
+        stdout=out, stderr=err)
+    corrected = size // (1 << 20) * (1 << 20)
+    assert code == 2 and not made_host
+    assert "multiple of 1 MiB" in err.getvalue() and str(corrected) in err.getvalue()
+    out, err = io.StringIO(), io.StringIO()
+    code = cli.build_cli(IDENT, host_factory=factory).run(
+        argv=["target", "init", "--file", "/bench/small.img", "--size", str(1 << 30),
+              "--i-own-this-file", "--expect-fs-uuid", "22222222-2222-2222-2222-222222222222"],
+        stdout=out, stderr=err)
+    assert code == 2 and not made_host
+    assert "at least" in err.getvalue() and "1 GiB usable plus the reserved 1 MiB tail" in err.getvalue()
+    out, err = io.StringIO(), io.StringIO()
+    code = cli.build_cli(IDENT, host_factory=factory).run(
+        argv=["target", "init", "--file", "/bench/target.img", "--size", "not-bytes",
+              "--i-own-this-file", "--expect-fs-uuid", "22222222-2222-2222-2222-222222222222"],
+        stdout=out, stderr=err)
+    assert code == 2 and not made_host and "integer number of bytes" in err.getvalue()

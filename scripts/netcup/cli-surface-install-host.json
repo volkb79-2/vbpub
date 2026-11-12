@@ -327,6 +327,19 @@
       "signature": "sha256:d9025267191a3e985fd5d5dcb7832c666945372c7cd8345083f2de91332df42d"
     },
     {
+      "id": "case:route:entrypoint:install-host/configure/option-spelling/option:route:entrypoint:install-host/configure/--image/--image",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:install-host/configure/--image"
+      ],
+      "route_id": "route:entrypoint:install-host/configure",
+      "shape": {
+        "option_id": "option:route:entrypoint:install-host/configure/--image",
+        "spelling": "--image"
+      },
+      "signature": "sha256:519d56efa427bea5869fe6c38361bcb34bbebe7862388401a9299b951343233b"
+    },
+    {
       "id": "case:route:entrypoint:install-host/configure/option-spelling/option:route:entrypoint:install-host/configure/--local-controller-key/--local-controller-key",
       "kind": "option-spelling",
       "members": [
@@ -377,6 +390,19 @@
         "spelling": "--no-monitor"
       },
       "signature": "sha256:4b0e7f4fb45bb7599fba3ee04df93a2413fc2893ca176615680fff6116240d91"
+    },
+    {
+      "id": "case:route:entrypoint:install-host/configure/option-spelling/option:route:entrypoint:install-host/configure/--out-dir/--out-dir",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:install-host/configure/--out-dir"
+      ],
+      "route_id": "route:entrypoint:install-host/configure",
+      "shape": {
+        "option_id": "option:route:entrypoint:install-host/configure/--out-dir",
+        "spelling": "--out-dir"
+      },
+      "signature": "sha256:b50c3e94d401f892f7bb7c555e6fc11b00fe0823d5782d2610a10425ab1c0397"
     },
     {
       "id": "case:route:entrypoint:install-host/configure/option-spelling/option:route:entrypoint:install-host/configure/--poll-interval/--poll-interval",
@@ -904,6 +930,19 @@
       "signature": "sha256:78187da8e0a2ba3a4f66ff90f0e09c6099837e969cbf29afcd216763697b8340"
     },
     {
+      "id": "case:route:entrypoint:install-host/wizard/option-spelling/option:route:entrypoint:install-host/wizard/--image/--image",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:install-host/wizard/--image"
+      ],
+      "route_id": "route:entrypoint:install-host/wizard",
+      "shape": {
+        "option_id": "option:route:entrypoint:install-host/wizard/--image",
+        "spelling": "--image"
+      },
+      "signature": "sha256:cbbd5cc1c8f1a25403fc02ba8cf7415264abe0ed90ea25599b61d78a2e55eea6"
+    },
+    {
       "id": "case:route:entrypoint:install-host/wizard/option-spelling/option:route:entrypoint:install-host/wizard/--local-controller-key/--local-controller-key",
       "kind": "option-spelling",
       "members": [
@@ -954,6 +993,19 @@
         "spelling": "--no-monitor"
       },
       "signature": "sha256:fcba6c5302dd34f104a2ac158031cd143384ed8bd298faf1405fad9c170555bb"
+    },
+    {
+      "id": "case:route:entrypoint:install-host/wizard/option-spelling/option:route:entrypoint:install-host/wizard/--out-dir/--out-dir",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:install-host/wizard/--out-dir"
+      ],
+      "route_id": "route:entrypoint:install-host/wizard",
+      "shape": {
+        "option_id": "option:route:entrypoint:install-host/wizard/--out-dir",
+        "spelling": "--out-dir"
+      },
+      "signature": "sha256:1c28e14c76ae5416d0fda22a927eada7850003629c40e086f72c7fbeb281c380"
     },
     {
       "id": "case:route:entrypoint:install-host/wizard/option-spelling/option:route:entrypoint:install-host/wizard/--poll-interval/--poll-interval",
@@ -1479,7 +1531,7 @@
           "const": null,
           "default": null,
           "default_present": true,
-          "description": "config to install or output file to write; --payload is a deprecated alias",
+          "description": "install: config file to read; wizard: file the reviewed plan is written to; --payload is a deprecated alias",
           "dest": "config_path",
           "effective_default": null,
           "exclusive_group": null,
@@ -1938,6 +1990,87 @@
         {
           "action": "argparse._StoreAction",
           "before_nested_subcommand": false,
+          "canonical": "--image",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "Debian UEFI image flavour ID, or `newest`; required with --yes",
+          "dest": "image",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--image"
+          ],
+          "help_group": "TARGET SELECTION",
+          "hidden": false,
+          "id": "option:route:entrypoint:install-host/configure/--image",
+          "kind": "option",
+          "metavar": "ID|newest",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": null,
+            "type": {
+              "callable": "_cli_extended_surface_install_host._image_selector"
+            }
+          },
+          "parser_path": [
+            "configure"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": {
+            "callable": "_cli_extended_surface_install_host._image_selector"
+          }
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--out-dir",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "directory for per-host target-host.<hostname>.jsonc output (default: repo-ignored scripts/netcup/artifacts/install-host)",
+          "dest": "out_dir",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--out-dir"
+          ],
+          "help_group": "INPUT AND OUTPUT",
+          "hidden": false,
+          "id": "option:route:entrypoint:install-host/configure/--out-dir",
+          "kind": "option",
+          "metavar": "DIR",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": null
+          },
+          "parser_path": [
+            "configure"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
           "canonical": "--custom-script-file",
           "choices": null,
           "const": null,
@@ -2113,6 +2246,7 @@
       "no_args_action": false,
       "opaque_fields": [
         "option:route:entrypoint:install-host/configure/--completion-wait-seconds.type",
+        "option:route:entrypoint:install-host/configure/--image.type",
         "option:route:entrypoint:install-host/configure/--poll-interval.type",
         "option:route:entrypoint:install-host/configure/--server-id.type",
         "option:route:entrypoint:install-host/configure/--ssh-key-id.type"
@@ -2168,7 +2302,7 @@
           "const": null,
           "default": null,
           "default_present": true,
-          "description": "config to install or output file to write; --payload is a deprecated alias",
+          "description": "install: config file to read; wizard: file the reviewed plan is written to; --payload is a deprecated alias",
           "dest": "config_path",
           "effective_default": null,
           "exclusive_group": null,
@@ -2703,7 +2837,7 @@
           "const": null,
           "default": null,
           "default_present": true,
-          "description": "config to install or output file to write; --payload is a deprecated alias",
+          "description": "install: config file to read; wizard: file the reviewed plan is written to; --payload is a deprecated alias",
           "dest": "config_path",
           "effective_default": null,
           "exclusive_group": null,
@@ -3162,6 +3296,87 @@
         {
           "action": "argparse._StoreAction",
           "before_nested_subcommand": false,
+          "canonical": "--image",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "Debian UEFI image flavour ID, or `newest`; required with --yes",
+          "dest": "image",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--image"
+          ],
+          "help_group": "TARGET SELECTION",
+          "hidden": false,
+          "id": "option:route:entrypoint:install-host/wizard/--image",
+          "kind": "option",
+          "metavar": "ID|newest",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": null,
+            "type": {
+              "callable": "_cli_extended_surface_install_host._image_selector"
+            }
+          },
+          "parser_path": [
+            "wizard"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": {
+            "callable": "_cli_extended_surface_install_host._image_selector"
+          }
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--out-dir",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "directory for per-host target-host.<hostname>.jsonc output (default: repo-ignored scripts/netcup/artifacts/install-host)",
+          "dest": "out_dir",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--out-dir"
+          ],
+          "help_group": "INPUT AND OUTPUT",
+          "hidden": false,
+          "id": "option:route:entrypoint:install-host/wizard/--out-dir",
+          "kind": "option",
+          "metavar": "DIR",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": null
+          },
+          "parser_path": [
+            "wizard"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
           "canonical": "--custom-script-file",
           "choices": null,
           "const": null,
@@ -3337,6 +3552,7 @@
       "no_args_action": false,
       "opaque_fields": [
         "option:route:entrypoint:install-host/wizard/--completion-wait-seconds.type",
+        "option:route:entrypoint:install-host/wizard/--image.type",
         "option:route:entrypoint:install-host/wizard/--poll-interval.type",
         "option:route:entrypoint:install-host/wizard/--server-id.type",
         "option:route:entrypoint:install-host/wizard/--ssh-key-id.type"

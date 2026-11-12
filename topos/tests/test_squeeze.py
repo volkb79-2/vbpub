@@ -793,7 +793,7 @@ class TestCliSqueezeArgs:
         assert args.delay == 15.0
         assert args.floor == "1G"
         assert args.start is None
-        assert args.relax_to == "max"
+        assert args.relax_to is None  # not explicit: the pre-squeeze value is restored (G-05)
         assert args.psi_some_limit == 10.0
         assert args.psi_full_limit == 5.0
         assert args.rf_limit == 200
@@ -831,8 +831,11 @@ class TestCliSqueezeArgs:
     def test_target_required(self) -> None:
         from topos.cli import parse_squeeze_args
 
-        with pytest.raises(SystemExit):
-            parse_squeeze_args(["--admin", "--confirm", "SQUEEZE"])
+        # --target is only optional for --recover; the runner refuses without it.
+        from topos.cli import _main_squeeze
+
+        assert parse_squeeze_args(["--recover"]).target is None
+        assert _main_squeeze(["--admin", "--confirm", "SQUEEZE"]) == 2
 
     def test_admin_required_by_gate(self, tmp_path: Path) -> None:
         """CLI dispatch returns error when --admin is missing."""

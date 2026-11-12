@@ -1,4 +1,4 @@
-"""Reference cells and the runtime plausibility checks (IOB-REF-01/02, IOB-PLA-01..18).
+"""Reference cells and the runtime plausibility checks (IOB-REF-01/02, IOB-PLA-01..19).
 
 A check's ``fail`` degrades only the proposal groups it lists, through proposal statuses.  Data-integrity
 checks (PLA-14, -15, -16) fail the whole run instead: they are raised as exceptions by the stages and surface
@@ -6,6 +6,7 @@ as ``run.status: failed`` plus ``*.last-failed.json``, never as a stored ``fail`
 """
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from typing import Any, Mapping, Sequence
 
@@ -39,8 +40,8 @@ def compare_group(values: Mapping[str, float], ref_before: float, ref_after: flo
             "reasons": ["ceiling_moved"] if moved else [], "finding": "reference_shift" if moved else None}
 
 
-def shift_observation(ts: str, direction: str, ref_after_iops: float) -> dict[str, Any]:
-    return ceilings.reference_shift(ts, direction, ref_after_iops * 4096)
+def shift_observation(ts: str, direction: str, ref_after_iops: float, kind: str) -> dict[str, Any]:
+    return ceilings.reference_shift(ts, direction, ref_after_iops * 4096, kind)
 
 
 @dataclass(frozen=True)
@@ -90,12 +91,34 @@ def pla_05(flat_cells: Sequence[str]) -> Check:
     return Check("IOB-PLA-05", "info", "rate_limited (flat-line) series: " + (", ".join(flat_cells) or "none"), value=list(flat_cells))
 
 
-def pla_06(iops: float, mean_clat_us: float, qd: int) -> Check:
-    ratio = iops * mean_clat_us / 1e6 / qd
+def pla_06(iops: float, mean_latency_us: float | None, qd: int, *, job_name: str | None = None,
+           degrade_caps: bool = True, clat_mean_us: float | None = None, slat_mean_us: float | None = None,
+           fio_version: str | None = None, latency_expected: bool = False) -> Check:
+    def show(value: float | None) -> str:
+        return "unreported" if value is None else f"{value:.3f} us"
+
+    observed = (f"iops={iops:.3f}, mean clat={show(clat_mean_us)}, mean slat={show(slat_mean_us)}, "
+                f"mean lat={show(mean_latency_us)}, QD{qd}")
+    subject = f"job {job_name} QD{qd}" if job_name else f"QD{qd} job"
+    if mean_latency_us is None or not math.isfinite(mean_latency_us):
+        reason = "fio did not report lat/slat" if mean_latency_us is None else "fio reported a non-finite lat/slat mean"
+        missing = f"not_applicable: {reason} for {subject}"
+        if latency_expected:
+            degrades = ("caps",) if degrade_caps else ()
+            effects = (("caps", "absent", "stage_failed"),) if degrade_caps else ()
+            version = fio_version or "fio >= 3.30"
+            return Check("IOB-PLA-06", "fail", f"{missing}; measurement defect: {version} is expected to report a latency mean ({observed})",
+                         degrades, effects)
+        return Check("IOB-PLA-06", "not_applicable", f"{missing}; Little's law was not assessed ({observed})")
+    ratio = iops * mean_latency_us / 1e6 / qd
+    detail_subject = f"job {job_name} QD{qd}: " if job_name else ""
     if LITTLE[0] <= ratio <= LITTLE[1]:
-        return Check("IOB-PLA-06", "pass", f"Little's law holds ({ratio:.2f})", value=round(ratio, 3))
-    return Check("IOB-PLA-06", "fail", f"iops x mean clat / QD = {ratio:.2f} is outside [0.7, 1.3]: broken or faked fio; the rung is unusable",
-                 ("caps",), (("caps", "absent", "stage_failed"),), value=round(ratio, 3))
+        return Check("IOB-PLA-06", "pass", f"{detail_subject}Little's law using mean total latency (slat + clat) holds ({ratio:.2f}; {observed})",
+                     value=round(ratio, 3))
+    degrades = ("caps",) if degrade_caps else ()
+    effects = (("caps", "absent", "stage_failed"),) if degrade_caps else ()
+    return Check("IOB-PLA-06", "fail", f"{detail_subject}iops x mean total latency / QD = {ratio:.3f} is outside [0.7, 1.3] ({observed}): broken or faked fio; the rung is unusable",
+                 degrades, effects, value=round(ratio, 3))
 
 
 def pla_07(rand_bps: float, seq_bps: float, moved: bool) -> Check:
@@ -126,6 +149,58 @@ def pla_09(fill_bps: float, seq_rewrite_bps: float, moved: bool) -> Check:
 
 def pla_10(cache_state: str, reasons: Sequence[str]) -> Check:
     return Check("IOB-PLA-10", "info", f"cache state {cache_state}" + (f" ({', '.join(reasons)})" if reasons else ""), value=cache_state)
+
+
+VERDICTS = {"cold_measured": "pass", "rate_cap": "pass", "cold_hit_like": "fail", "no_cache_observed": "inconclusive", "undetermined": "inconclusive"}
+READ_OVER_WRITE_WARN = 20.0  # [I] inferred: above this, flag the ratio for review
+READ_OVER_WRITE_FAIL = 100.0  # [I] inferred: a gross mismatch fails without corroboration
+
+
+def pla_19(read_bps: float | None, write_bps: float | None, *, cache_state: str | None = None, veryquick: bool = False,
+           read_state: str | None = None, read_cv: float | None = None,
+           write_state: str | None = None, write_cv: float | None = None) -> Check:
+    """An inferred gross cache-inflation check for every profile with sequential read and write cells.
+
+    The thresholds are provisional [I] values; IOB-ACC-01 must calibrate them on the VM and a known cached device."""
+    unsteady = [("read", read_state, read_cv), ("write", write_state, write_cv)]
+    reasons = [f"{direction} cell unsteady (cv={'unknown' if cv is None else f'{cv:.3f}'})"
+               for direction, state, cv in unsteady if state == "unsteady"]
+    if reasons:
+        return Check("IOB-PLA-19", "not_applicable", "; ".join(reasons))
+    if (not isinstance(read_bps, (int, float)) or isinstance(read_bps, bool) or not math.isfinite(read_bps) or read_bps <= 0
+            or not isinstance(write_bps, (int, float)) or isinstance(write_bps, bool) or not math.isfinite(write_bps) or write_bps <= 0):
+        return Check("IOB-PLA-19", "not_applicable", "sequential read and write rates must both be finite and positive")
+    ratio = read_bps / write_bps
+    if ratio > READ_OVER_WRITE_FAIL:
+        return Check("IOB-PLA-19", "fail", f"sequential read is {ratio:.0f}x the sequential write (> {READ_OVER_WRITE_FAIL:.0f}x): a cache is serving the reads; inferred threshold, calibrate with IOB-ACC-01",
+                     value=round(ratio, 1))
+    if ratio > READ_OVER_WRITE_WARN:
+        if cache_state == "cold_hit_like" and not veryquick:
+            return Check("IOB-PLA-19", "fail", f"sequential read is {ratio:.1f}x the sequential write (> {READ_OVER_WRITE_WARN:.0f}x) and the cold probe is hit-like: cache inflation is corroborated; inferred threshold, calibrate with IOB-ACC-01",
+                         value=round(ratio, 1))
+        if veryquick:
+            return Check("IOB-PLA-19", "info", f"sequential read is {ratio:.1f}x the sequential write (> {READ_OVER_WRITE_WARN:.0f}x): inconclusive; veryquick cold class is not assessed and cannot corroborate a hit-like cache; inferred threshold, calibrate with IOB-ACC-01",
+                         value=round(ratio, 1))
+        return Check("IOB-PLA-19", "info", f"sequential read is {ratio:.1f}x the sequential write (> {READ_OVER_WRITE_WARN:.0f}x): inconclusive without a hit-like cold probe; inferred threshold, calibrate with IOB-ACC-01",
+                     value=round(ratio, 1))
+    return Check("IOB-PLA-19", "pass", f"sequential read is {ratio:.1f}x the sequential write (within the inferred {READ_OVER_WRITE_WARN:.0f}x band)", value=round(ratio, 1))
+
+
+def verdict(cache_state: str, *, vq: bool = False, rate_status: str = "pass") -> dict[str, str]:
+    """The plausibility verdict of a calibration (``quality.plausibility``).
+
+    In every profile, a ratio above 100x fails; above 20x is inconclusive unless a hit-like cold probe corroborates cache service.
+    Veryquick's cold class is not assessed, so a 20x-100x ratio remains inconclusive and cannot be corroborated by that probe."""
+    found = VERDICTS[cache_state]
+    # The ratio check is part of the verdict in every profile. Veryquick keeps
+    # its one profile-specific rule: a hit-like cold probe alone is not proof.
+    if vq and found == "fail":
+        found = "inconclusive"
+    if rate_status == "fail":
+        found = "fail"
+    elif rate_status == "info":
+        found = "fail" if cache_state == "cold_hit_like" else "inconclusive"
+    return {"verdict": found, "cache_state": cache_state}
 
 
 def pla_11(fit_by_dir: Mapping[str, str]) -> Check:

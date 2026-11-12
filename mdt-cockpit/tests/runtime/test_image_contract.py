@@ -24,8 +24,8 @@ EXTRA_COMMANDS = {"antigravity": ("agy",)}
 PROBE_ARGS = {"claudelink": "help"}
 # First-party wheels that are libraries, not CLIs: checked by import instead.
 LIBRARY_ONLY = {"cli-extended": "cli_extended"}
-# First-party wheels whose commands are not named after the wheel (cgprofile 2.0 ships cgpctl and cgpd).
-WHEEL_COMMANDS = {"cgprofile": ("cgpctl", "cgpd")}
+# First-party wheels whose commands are not named after the wheel (cgprofile 3.0 ships cgprofile, cgprofilectl and cgprofiled).
+WHEEL_COMMANDS = {"cgprofile": ("cgprofile", "cgprofilectl", "cgprofiled")}
 
 
 def _declared_ai_tools() -> dict[str, str]:

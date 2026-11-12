@@ -44,7 +44,6 @@ the shipped loader; omitted fields receive that loader’s current defaults:
 {
   "schema_version": 1,
   "fresh_install": true,
-  "root_resize_policy": "resize",
   "swap_policy": "on",
   "swap_disk_total_gb": 32,
   "swap_partition_count": 8,
@@ -65,84 +64,177 @@ arguments. For example:
 ```bash
 ./debian-install-v2.py plan --config target-host.json
 ./debian-install-v2.py plan --config-json \
-  '{"schema_version":1,"fresh_install":true,"root_resize_policy":"resize","swap_policy":"on","swap_disk_total_gb":32,"swap_partition_count":8,"credential_mode":"systemd","cloud_init_cleanup_mode":"userdata-only"}'
+  '{"schema_version":1,"fresh_install":true,"swap_policy":"on","swap_disk_total_gb":32,"swap_partition_count":8,"credential_mode":"systemd","cloud_init_cleanup_mode":"userdata-only"}'
 ```
 
 The parser rejects both a missing source and supplying both forms before any
 installation logic runs.
 
-## Root and swap policy
+## Disk plan and offline preview
 
-The shared config keys `root_resize_policy` and `swap_policy` independently
-control root sizing and swap:
+The one `partitioning` plan describes root, optional data, reserve, and the
+raw benchmark partition. Its defaults are root `"*"`, no data, no reserve,
+and an 8 GiB `iobench-raw` partition. The raw partition can be resized with
+`partitioning.iobench_raw_gb` (2–10240 GiB) or disabled with `false` when the
+benchmark is off. Root sizing no longer has a plan-less policy; the removed
+`root_resize_policy`, `disk_layout`, `root_max_size_gb`, and `data_area*`
+keys are refused.
+
+This example is for a 512 GiB host with a 160 GiB root, a CoW partition taking
+the remaining allocation, four 4 GiB swaps, and the default 8 GiB raw
+partition:
 
 ```json
 {
   "schema_version": 1,
-  "root_resize_policy": "resize",
-  "root_max_size_gb": 40,
+  "partitioning": {
+    "root": 160,
+    "data": {"kind": "partitions", "volumes": [
+      {"fs": "btrfs", "mount": "/srv/cow", "label": "MDT_COW"}
+    ]}
+  },
   "swap_policy": "on",
-  "swap_disk_total_gb": 8,
-  "swap_partition_count": 4,
-  "preserve_root_size_gb": 10
+  "swap_disk_total_gb": 16,
+  "swap_partition_count": 4
 }
 ```
 
-Choose one root policy: `resize` (default) uses the largest safe root extent
-after managed swap and can grow or shrink; `grow-only` expands when possible
-but never shrinks; `untouched` forbids root partition changes. Optional
-`root_max_size_gb` caps the root partition at that many GiB and leaves disk
-space after root and swap unallocated for a later data partition. It does not
-format or mount the remaining space. A cap requires `swap_policy: "on"` and at
-least one managed tail swap partition directly after root; swap off, untouched
-swap, or a layout where retained pre-root swap needs no tail partition is
-refused. The cap must be at least `preserve_root_size_gb`; `grow-only` and
-`untouched` refuse if the current root is larger than the cap. The cap is
-measured from the root partition's existing start, so an unaligned start does
-not lower the configured limit. When set, stage one installs and stage two
-repeats guards against automatic root growth by writing
-`/etc/cloud/cloud.cfg.d/99-debian-install-v2-root-cap.cfg` with
-`growpart: {mode: off}` and `resize_rootfs: false`, and creating
-`/etc/growroot-disabled` for initramfs growroot. Choose one swap
-policy: `on` (default) replaces the guest's configured swap setup with native
-partitions: it disables all active swap, removes configured swapfiles and swap
-logical volumes, and replaces fstab swap entries with the managed partitions.
-A pre-root swap partition (physically before root) is retained and counts
-toward both the requested total size and the default total count of four, so
-less swap is placed after root. If that retained partition already meets or
-exceeds the requested total, no new tail swap partition is needed. `off` also
-disables all active swap and removes fstab swap entries and root-disk swap
-partitions; it does not delete swapfiles or logical volumes. `untouched`
-preserves swap state and geometry. With `swap_policy: "untouched"`, root
-growth can still use contiguous free space before the next existing partition.
+Every managed partition is numbered by physical order: root, `MDT_COW`,
+`iobench-raw`, then the tail swap partitions. The exact numbers depend on the
+root number and preserved partitions before root. `provision-runner.sh` finds the CoW
+partition by PARTLABEL `MDT_COW`; it does not infer `/dev/vda8` or carve a
+partition.
+Swap partitions have no PARTLABEL. Their filesystem labels are
+`vbpub-swap1..N` in activation order (`vbpub-swap-pre1..N` for retained
+pre-root swaps), while fstab identifies each partition by PARTUUID. The
+preview's `Identifier` column shows `LABEL=vbpub-swapN` for swap and
+`PARTLABEL=...` for GPT-named data/raw partitions.
 
-`swap_disk_total_gb: null` derives the target from actual disk capacity and
-guest RAM using `min(RAM × 2, round(20% of disk capacity))`, expressed in GiB.
-Twice the RAM rounds up to a whole GiB; 20% of actual disk bytes rounds to the
-nearest GiB, with half-GiB ties upward. The retained pre-root swap partition,
-when present, is included in that target. The example table covers nominal
-20–512 GB disks and 4–128 GB RAM; see the
-[default sizing table](../README.md#disk--swap).
-The default count is four total managed partitions, including retained
-pre-root swap; set `swap_partition_count` to change it. The nominal-capacity
-examples and the reasons for this sizing rule are in the
-[feature overview](../README.md#disk--swap) and
-[design rationale](DESIGN-GUIDE.md#root-and-swap-policies).
+Resolve the table for a real target size before ordering a reinstall:
 
-Partition order is read from sector extents, not partition numbers. The
-Debian genericcloud GPT layout with BIOS/EFI partitions 14 and 15 before root
-partition 1 is supported; those pre-root partitions are retained unchanged.
-Managed swap refuses partitions that overlap root, incomplete geometry, or an
-unknown non-swap partition physically after root. Review `plan` before
-confirming if the image has a custom partition layout.
+```bash
+./debian-install-v2.py plan --config target-host.json --disk-size 512GiB --ram-gib 8 \
+  --root-start-sector 2500608 --root-number 3
+```
 
-If `swap=on` needs more tail space than exists and root policy is `untouched`
-or `grow-only`, planning refuses with the available/requested sizes. A
-`resize` shrink is refused if root data usage or the ext filesystem's minimum
-plus 256 MiB would exceed the planned target. Managed swap refuses layouts
-with an unknown non-swap partition after root rather than moving it.
-Root-shrink safety is checked before swapfile cleanup, so existing swapfile
-and ordinary-file usage are both included in that check.
+`--ram-gib` is needed when swap size is automatic. Set
+`--root-current-size-gib` when `partitioning.root` is `"keep"`. The offline
+resolver defaults to root 1 at sector 2048; pass `--root-start-sector` and
+`--root-number` to match a target. For the saved netcup host geometry, pass
+sector 2500608 and root number 3. The offline table omits preserved pre-root
+geometry; the live plan reads it from the actual disk. Both forms show
+the resolved table in GiB, and a refusal includes the resolved table when
+the provided disk facts are enough to calculate it.
+
+At config load and `build-customscript`, the installer refuses fixed root/data
+sizes without a growable remainder, percentages that do not total 100% without
+a star, and percent/fixed mixtures. A numeric fixed reserve can be combined
+with percentage sizes; `reserve_gb: "*"` cannot. Disk fit, filesystem
+minimums, and GPT's 128-partition limit are checked against the target disk.
+`swap_policy` must be `on` or `off`.
+`on` replaces the guest's configured swap setup with planned GPT partitions: it
+disables all currently active swap, removes configured swapfiles and swap
+logical volumes, and replaces `/etc/fstab` swap entries. An eligible pre-root swap partition is retained.
+Its capacity counts toward both the requested total size and the total
+partition count. The default total count of four includes
+retained pre-root partitions.
+`off` disables active swap, removes `/etc/fstab` swap entries and
+root-disk swap partitions, but does not delete swapfiles or logical volumes.
+`untouched` swap is refused because it cannot define the plan boundary. A root
+shrink needs enough space for current usage and the ext filesystem minimum plus
+a 256 MiB margin. Root-shrink safety is checked before swapfile cleanup.
+Automatic swap sizing uses
+`min(ceil(RAM × 2), round-half-up(20% of disk capacity))`, in GiB.
+
+Exact mounts on `/`, `/var`, `/var/lib`, `/srv`, and `/home` are refused. A
+mount equal to, inside, or above protected OS-state trees `/usr`, `/etc`,
+`/boot`, `/root`, `/tmp`, `/proc`, `/sys`, `/dev`, `/run`, `/bin`, `/sbin`,
+`/lib`, `/lib64`, `/lib32`, `/libx32`, `/var/lib/dpkg`, `/var/lib/apt`,
+`/var/lib/systemd`, `/var/lib/cloud`, `/var/cache/apt`, `/var/log`,
+`/srv/tree-cache`, and `/srv/tree-upper` is also refused. The refusal names the
+requested mount and protected path. `/usr/local` remains protected because the
+installer writes executables there in stage one. Mounts intersecting
+`/var/lib/docker` or `/var/lib/containerd` are refused because the installer
+mounts data in stage two, after Docker may be running, and it does not stop or
+seed that state.
+
+`/var/log/journal` and its descendants are supported for persistent journal
+data; `/var/log` itself and other log paths remain protected. For example, a
+formatted ext4 volume can use this mount in `partitioning.data.volumes`:
+
+The install-time journal stays on the root filesystem and is hidden when the
+data filesystem is mounted there; it is not copied into the new filesystem.
+The mounted directory will not show those earlier files. Source inspection
+verifies this mount and visibility behavior. Whether `journalctl --flush`,
+restarting `systemd-journald`, or rebooting resumes persistent writes on the
+mounted filesystem is **not verified** by the current tests. Verify that behavior
+in the `r1-vm-real-commit` lane before claiming recovery.
+
+```json
+{
+  "schema_version": 1,
+  "partitioning": {
+    "root": 40,
+    "data": {
+      "kind": "partitions",
+      "volumes": [
+        {"size": "*", "fs": "ext4", "mount": "/var/log/journal", "label": "JOURNAL"}
+      ]
+    }
+  }
+}
+```
+
+Other supported data mounts include `/srv/cow`, `/srv/data`, and
+`/home/runner`. See [README](../README.md#disk-layout) for filesystem and
+ordering details and [DESIGN-GUIDE](DESIGN-GUIDE.md#data-mount-safety) for why
+these paths differ.
+
+## Run a swap-benchmark window
+
+Use one managed swap partition for a raw benchmark only through the committed
+wrapper. Take its PARTUUID, size, and filesystem label from the live host:
+
+```bash
+lsblk -b -o NAME,SIZE,PARTUUID,LABEL,FSTYPE /dev/vda
+grep ' none swap ' /etc/fstab
+```
+
+Run the dry-run first, then the same command inside `tmux`, `screen`, or under
+`nohup` before confirming `--commit`. The terminal session must survive an SSH
+disconnect:
+
+```bash
+target=/dev/vda9
+partuuid=<lower-case PARTUUID from lsblk>
+bytes=<SIZE from lsblk>
+
+tmux new-session -s swap-bench
+sudo tools/swap-bench-window.sh begin "$target" \
+  --expect-partuuid "$partuuid" --expect-size "$bytes"
+sudo tools/swap-bench-window.sh begin "$target" \
+  --expect-partuuid "$partuuid" --expect-size "$bytes" --commit
+```
+
+Run the benchmark while the fixed `iobench-raw` partition is untouched. Always
+close the window, including after a failed benchmark:
+
+```bash
+sudo tools/swap-bench-window.sh end "$target" \
+  --expect-partuuid "$partuuid" --expect-size "$bytes"
+sudo tools/swap-bench-window.sh end "$target" \
+  --expect-partuuid "$partuuid" --expect-size "$bytes" --commit
+sudo swapon --show=NAME,SIZE,USED,PRIO
+```
+
+`end` refuses while any live `swapoff` exists or while the recorded PARTUUID,
+size, PARTLABEL snapshot, swap UUID, or label changed. Do not delete a state
+file by hand. It reads the unique `/etc/fstab` row for the saved PARTUUID and
+restores only the selected device with that row's options; a different
+configured swap that was inactive stays inactive. It verifies the selected
+device's identity, active state, and configured priority before archiving the
+state. Do not use `swapon -a` for manual recovery. See the
+[design rationale](DESIGN-GUIDE.md#swap-window-is-a-recorded-transaction).
 
 ## Cloud-init cache policy
 

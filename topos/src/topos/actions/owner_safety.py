@@ -64,6 +64,11 @@ DOCKER_OWNER_GUARDED_KINDS = frozenset(
     {"docker-start", "docker-stop", "docker-restart", "docker-kill", "docker-update"}
 )
 
+_INSPECT_TIMEOUT_S = 10.0
+INSPECT_ENV = {
+    "PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+    "LANG": "C.UTF-8",
+}
 _FULL_ID_RE = re.compile(r"^[0-9a-f]{64}$")
 _MAX_DETAIL = 128
 # A safe, bounded identifier fragment (compose project / ciu stack) that may
@@ -350,9 +355,33 @@ def default_owner_inspect(target: str) -> Any:
     inspect implementation. Returns the raw payload or ``None`` on failure;
     :func:`evaluate` maps ``None`` to a fail-closed refusal.
     """
-    from topos.collect.dockerjoin import default_docker_inspect
+    import json
+    import subprocess
 
-    return default_docker_inspect(target)
+    from topos.actions.catalog import DOCKER_EXECUTABLE
+
+    # C-09: same absolute docker binary and scrubbed env as the mutation, so the
+    # gate cannot authorise against a different daemon (DOCKER_HOST/CONTEXT) than
+    # the verb will hit; container type only; bounded; a timeout fails closed.
+    try:
+        proc = subprocess.run(
+            [DOCKER_EXECUTABLE, "inspect", "--type", "container", "--", target],
+            check=False,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            shell=False,
+            timeout=_INSPECT_TIMEOUT_S,
+            env=dict(INSPECT_ENV),
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if proc.returncode != 0:
+        return None
+    try:
+        return json.loads(proc.stdout)
+    except ValueError:
+        return None
 
 
 def default_protected_services() -> tuple[str, ...]:

@@ -341,7 +341,7 @@ def test_tui_refuses_ssh_without_selected_host(tmp_path, monkeypatch):
     asyncio.run(run())
     assert not capture.exists()
     assert notices == [("Choose a host before opening SSH.", {"title": "No host selected"})]
-    app.session_controller.close()
+    app.session_controller.close(timeout=90)
 
 
 def test_profile_loader_rejects_ssh_users_that_could_become_options(tmp_path):

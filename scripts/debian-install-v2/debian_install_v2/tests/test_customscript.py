@@ -51,6 +51,41 @@ def test_bundle_uses_valid_config_and_resolves_the_configured_bootstrap_source()
     assert "exec(compile(source" in launcher
 
 
+COMMIT = "0123456789abcdef0123456789abcdef01234567"
+
+
+def test_repo_commit_pins_the_bootstrap_url_and_exports_repo_commit():
+    bundle = build_customscript_bundle(Config(), repo_branch="main", repo_commit=COMMIT.upper())
+    env, launcher = _launcher_from_command(bundle["customScript"])
+    assert env["REPO_BRANCH"] == "main"
+    assert env["REPO_COMMIT"] == COMMIT  # normalised to lower case
+    assert f"/vbpub/{COMMIT}/scripts/debian-install-v2/bootstrap-remote.py" in launcher
+    assert "/vbpub/main/scripts" not in launcher
+
+
+def test_unpinned_bundle_has_no_repo_commit():
+    env, _launcher = _launcher_from_command(build_customscript_bundle(Config())["customScript"])
+    assert "REPO_COMMIT" not in env
+
+
+@pytest.mark.parametrize("bad", ["", "main", "abc123", COMMIT[:-1], COMMIT + "0", "g" * 40, COMMIT + " ; curl x"])
+def test_repo_commit_must_be_a_full_hex_sha(bad):
+    with pytest.raises(ValueError, match="repo_commit"):
+        build_customscript_bundle(Config(), repo_commit=bad)
+    with pytest.raises(ValueError, match="repo_commit"):
+        resolve_bootstrap_url(repo_commit=bad)
+
+
+def test_explicit_bootstrap_url_still_wins_but_commit_is_exported():
+    url = "https://git.example.test/ops/vbpub/raw/main/bootstrap-remote.py"
+    bundle = build_customscript_bundle(
+        Config(), repo_url="https://git.example.test/ops/vbpub", bootstrap_url=url, repo_commit=COMMIT
+    )
+    env, launcher = _launcher_from_command(bundle["customScript"])
+    assert env["REPO_COMMIT"] == COMMIT
+    assert url in launcher
+
+
 def test_python_launcher_reports_download_failure_and_returns_nonzero(monkeypatch):
     bundle = build_customscript_bundle(Config())
     _environment, launcher = _launcher_from_command(bundle["customScript"])

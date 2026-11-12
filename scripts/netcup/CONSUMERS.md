@@ -26,6 +26,23 @@ Read-only inspection works without choosing a target:
 ./scp-api.py server-details 804027
 ```
 
+### Keep wizard payloads out of the source tree
+
+Wizard-generated `target-host.<hostname>.jsonc` files contain account and
+target-specific facts. The default is the ignored `artifacts/install-host/`
+directory. An explicit wizard `--config PATH` is an output path and is refused
+if it resolves anywhere inside the source worktree. Use `--out-dir` to select
+an external runtime directory, for example:
+
+```bash
+R=/home/vscode/vbpub-release-program-20261027
+./install-host.py wizard --image 128 --out-dir "$R/v1001/install-review-20261107"
+```
+
+Review the generated file before passing its printed path to
+`install --config FILE`. `target-host.*.jsonc` is ignored as an additional
+guard against staging a per-host payload.
+
 ### Refresh the SCP API reference
 
 Netcup's human documentation is the
@@ -254,6 +271,169 @@ See [README](README.md#unattended-restore-iso-workflow) for the feature
 overview and [DESIGN-GUIDE](DESIGN-GUIDE.md#restore-iso-lifecycle) for the
 two-stage lifecycle rationale.
 
+## Install-time disk plan (debian-install-v2 `partitioning`)
+
+The producer's `partitioning` config rides in the customScript config that
+`debian-install-v2.py build-customscript` embeds
+(`VBPUB_CONFIG_EXTRA_JSON`); `install-host.py` passes that customScript
+through untouched. Config loading and bundle construction refuse impossible fixed/percentage
+size shapes and plans that exceed GPT's 128-entry limit. Before ordering a
+reinstall, resolve disk fit and provide the target root geometry to the offline
+resolver. Saved r1002 and v1001 evidence records a 512 GiB disk and vda3/root
+starting at sector `2500608` (root number 3):
+
+```bash
+./debian-install-v2.py plan --config install.json --disk-size 512GiB \
+  --root-start-sector 2500608 --root-number 3
+```
+
+Percentage sizes may share the pool with a numeric fixed reserve; the percent
+pool is calculated after that reserve, raw iobench, and swap are removed.
+
+The raw benchmark partition defaults to 8 GiB, has PARTLABEL `iobench-raw`,
+and remains unformatted and unmounted. Set
+`partitioning.iobench_raw_gb` to 2–10240 GiB, or `false` only when
+`run_io_benchmark` is off. The runner finds the CoW volume by GPT PARTLABEL
+`MDT_COW`; it does not use a fixed partition number or create a partition.
+A missing/duplicate label, incompatible filesystem, or mount that disagrees
+with `COW_MOUNT` is refused. The install plan must mount the CoW filesystem at
+the configured `COW_MOUNT` (default `/srv/cow`).
+
+Example portion of a 512 GiB host config with 160 GiB root, a CoW partition,
+four 4 GiB swaps, and the default raw benchmark partition:
+
+```json
+{
+  "partitioning": {"root": 160, "data": {"kind": "partitions", "volumes": [
+    {"fs": "btrfs", "mount": "/srv/cow", "label": "MDT_COW"}
+  ]}},
+  "swap_policy": "on", "swap_disk_total_gb": 16, "swap_partition_count": 4
+}
+```
+
+For the saved 512 GiB layout, the physical order is vda3 root at sector
+`2500608`, vda4 `MDT_COW`, vda5 `iobench-raw`, then swaps vda6-vda9.
+Partition numbers follow their disk position; the runner uses PARTLABEL so a
+changed plan does not require an environment-file device-number edit.
+
+## Guarded data-area-v2 reinstall
+
+For the v1001/r1002 reinstall flow, stop the R2 campaign on v1001 through its
+owning host-agent workflow before the reinstall sequence. Export its campaign
+resume state, artifacts, and logs with a `SHA256SUMS` manifest; transfer the
+export to r1002, verify it there, resume the campaign on r1002, and record the
+handover on the campaign board. This is a separate host-agent action and must
+be complete before the destructive sequence starts.
+
+The read-only evidence exporter verifies API identity first, uses the pinned
+SSH helper, checks the host name and server-ID file remotely, and writes an
+allowlisted snapshot under each host's `pre-reinstall-<date>/` directory. It
+redacts token, password, passphrase, pass/passwd/PWD suffixes, `adminpwd`,
+`passkey`, `pin`, PresharedKey, API key, PAT, webhook URL fields and related
+secret values. Covered examples include quoted JSON/YAML/INI pairs,
+same-indent YAML secret sequences, multi-word plain values, JSONC comments,
+`.netrc` passwords, `curl -u` and `--user` credentials, `redis-cli -a`,
+`ldapsearch -w`, URL userinfo and `/hooks/<token>` paths, command-line options,
+bearer headers, and private-key blocks.
+
+The fixed input and redacted-output file budget is 1 MiB. The input line budget
+is 4 KiB: allowlisted config and evidence lines are much shorter, and a longer
+minified or encoded line is skipped and listed before scanning. Both redaction
+passes scan tokens in linear time; the cap is defense in depth. Redaction
+markers can expand a file, so the collector also skips and lists any output
+that grows past 1 MiB. The `--max-file-bytes` option can lower the file budget.
+Remote SSH collection has a 300-second wall-clock timeout and kills its whole
+process group, including child `ssh` processes; a failure removes partial local
+output. Ctrl-C on the controller during collection can leave the remote
+`ssh`/collector running after the controller exits; it is read-only, but the
+300 s limit is controller-side and no longer applies after interruption. The
+iogovmon `scratch/` tree and Docker volume contents are excluded.
+
+Known gaps include Slack/Discord webhook secrets in URL paths outside
+`/hooks/<token>`, Kubernetes or Compose `name:`/`value:` secret pairs, prose
+such as `the password is X`, secret-like INI section names, bare `key`/
+`encryption_key`/`signing_key`/`tls_key`, bare `auth` or `cookie` fields, raw
+JWTs, PGP private-key blocks, and multiline or encoded secret forms outside
+the listed shapes. Round 8 added coverage for earlier misses `redis-cli -a`,
+`ldapsearch -w`, `pin`, and `passkey`; `adminpwd` is now masked by the first
+pass. `-p` followed by a path or a 1–5 digit number is kept for path/port uses.
+The broad key matcher may hide harmless values such as `lock_passwd: true` and
+`password_max_days`; that evidence loss is accepted. Review the exported file
+names and contents, then verify every exported file against `SHA256SUMS` before
+continuing. Run v1001 first, then r1002 only after v1001 passes post-install
+checks.
+
+From `scripts/netcup`, use the exact saved root geometry for the host and
+reviewed config/bundle. The following uses the recorded 512 GiB disk, root
+partition 3, and root start sector `2500608`:
+
+```bash
+R=/home/vscode/vbpub-release-program-20261027
+./pre-reinstall-export.py v1001 --date 20261107
+(cd "$R/v1001/pre-reinstall-20261107" && sha256sum -c SHA256SUMS)
+
+./pre-reinstall.py v1001 \
+  --config "$R/v1001/debian-install-v2-20261107.json" \
+  --bundle "$R/v1001/debian-install-v2-customscript-20261107.json" \
+  --disk-size 512GiB --root-start-sector 2500608 --root-number 3 \
+  --repo-branch main --expect-commit "$REVIEWED_MAIN_COMMIT" \
+  --ssh-key-id "$ACCOUNT_SSH_KEY_ID" \
+  --run-dir "$R/v1001/reinstall-20261107" --dry-run
+```
+
+Use the exact full commit printed by `build-customscript` and approved by the
+operator for `REVIEWED_MAIN_COMMIT`; the wrapper compares it with the current
+remote commit for `main`. `ACCOUNT_SSH_KEY_ID` is the explicitly selected key
+ID from the authenticated Netcup account. The dry-run prints `REMOTE_COMMIT=`
+and `BUNDLE_SHA256=`. Inspect `reinstall.log`, confirm the API/SSH identity and
+image ID `128`, and review the parsed wizard payload. Record the exact
+`BUNDLE_SHA256` as `V1001_REVIEWED_BUNDLE_SHA256`; the dry-run records `EXIT=0` and
+does not submit the install.
+
+After the maintenance window is approved, repeat the same preflight with
+`--yes`, the recorded hash, commit, and SSH-key ID. The wrapper repeats all
+checks, including the wizard dry-run payload validation, before the submit
+request. It writes the bundle checksum and a `reinstall.log.EXIT` record, and
+streams wizard output to the terminal and log. If interrupted after submission,
+use the task ID and `monitor-task.py watch <task-id>` printed by the wrapper or
+stored in the run directory. Wizard output also goes to
+`target-host.<hostname>.jsonc` under the requested run directory.
+
+```bash
+./pre-reinstall.py v1001 \
+  --config "$R/v1001/debian-install-v2-20261107.json" \
+  --bundle "$R/v1001/debian-install-v2-customscript-20261107.json" \
+  --disk-size 512GiB --root-start-sector 2500608 --root-number 3 \
+  --repo-branch main --expect-commit "$REVIEWED_MAIN_COMMIT" \
+  --expect-bundle-sha256 "$V1001_REVIEWED_BUNDLE_SHA256" \
+  --ssh-key-id "$ACCOUNT_SSH_KEY_ID" \
+  --run-dir "$R/v1001/reinstall-20261107" --yes
+```
+
+Use the matching r1002 paths and image ID only after v1001 passes verification.
+Before generating or selecting a bundle, move the exact stale payloads listed
+in the operator runbook to that host's `stale-<date>/` directory. Keep those
+files; never delete them or attach them. The preflight rejects removed Debian
+v2 config keys before it can start the wizard.
+
+After reinstall, obtain the new ED25519 host-key fingerprint through the
+authenticated provider console or another verified provider channel. Do not
+accept an unverified first-seen key. The updater verifies that fingerprint
+with `ssh-keygen`, removes only the exact host records, and atomically installs
+the candidate pin:
+
+```bash
+R=/home/vscode/vbpub-release-program-20261027
+./update-host-pin.sh v1001 \
+  --pin-file "$R/v1001/ssh_known_hosts-v1001-20261105" \
+  --fingerprint "$V1001_PROVIDER_HOSTKEY_SHA256"
+```
+
+For r1002, use `r1002` and
+`$R/r1002/ssh_known_hosts-after-reinstall-20261104` with the fingerprint
+verified for that host. The updater refuses a fingerprint mismatch and leaves
+the existing pin untouched.
+
 ## Remote gate (run a lane on a test host)
 
 `runner/remote-gate.py` runs one registered Run-Gate lane on a dedicated test host instead of the shared controller
@@ -266,15 +446,27 @@ remote-gate run <v1001|r1002|auto> <worktree-path-of-any-git-repo> <lane> [--pro
 remote-gate status|logs [-f] [--lane-log]|collect|cancel <id>
 ```
 
+### Assay self-qualification workspace
+
+The cockpit launcher binds the runner's vbpub checkout at `/workspaces/vbpub`
+in addition to the `/workspaces` parent bind. Assay's `self-qualification*`
+lanes require that exact target when they inspect the selected worktree, so
+use the checked-in `runner/start-cockpit-runner.sh` when recreating the
+cockpit. The argv regression is in `tests/test_runner_scripts.py`.
+
 - **Host table.** `--hosts-file` / `$REMOTE_GATE_HOSTS` / `~/.config/remote-gate/hosts.json` (gitignored; template
   `runner/remote-gate-hosts.example.json`): per host the pinned-known-hosts ssh argv (runner user, `StrictHostKeyChecking=yes`), the
   provider identity check command and the on-host guard. Only `r1002` and `v1001` are accepted anywhere (hard allowlist in code).
-- **Host choice.** `auto` reads CPU and memory PSI `some avg10` over ssh on both hosts and takes the one with the lower max;
-  if both exceed 25 it refuses (exit 75) and prints both readings. The Netcup identity check runs before any ssh/scp write and the
+- **Host choice.** `auto` reads memory PSI `some avg10`, io PSI `full avg10` and CPU PSI `some avg10` over ssh on both hosts. Only memory some
+  or io full above 25 refuses a host (CPU PSI is a stall measure, not utilisation, and is not a stop signal: hosts are meant to run at 350-400% CPU);
+  among acceptable hosts the one with the lower CPU PSI is preferred. If both hosts exceed 25 on memory or io it refuses (exit 75) and prints both readings. The Netcup identity check runs before any ssh/scp write and the
   on-host guard (hostname, server id) prefixes every remote command.
 - **Source.** The worktree must have a clean tracked tree (untracked files are ignored); commit first with
-  `git commit --only -- <paths>` (agents do anyway). HEAD is shipped as a thin git bundle against the closest commit the host already
-  has under `~/checkouts` (no bundle if the host already has HEAD), checksum-verified, then checked out detached as a throwaway
+  `git commit --only -- <paths>` (agents do anyway). HEAD and, with `--base REF`, the base commit (named by a temporary local ref
+  `refs/remote-gate/base` while the bundle is built, so a base that is not an ancestor of HEAD, e.g. `--base main` after main moved on,
+  still reaches the host instead of ending the job with exit 72) are shipped as a thin git bundle against the closest commit the host
+  already has under `~/checkouts` (closest by commits still missing for HEAD plus the base; no bundle if the host already has both),
+  checksum-verified, then checked out detached as a throwaway
   checkout `~/checkouts/<repo>/.worktrees/rg-<id>-<sha12>` (visible as `/workspaces/<repo>/.worktrees/rg-<id>-<sha12>` in the cockpit,
   because the cockpit bind-mounts `~runner/checkouts` as `/workspaces`; lane scripts that require the worktree under
   `/workspaces/<repo>/.worktrees/` accept it; existing host checkouts are never touched, only the empty `<repo>/.worktrees` parents remain
@@ -283,7 +475,7 @@ remote-gate status|logs [-f] [--lane-log]|collect|cancel <id>
   A dirty tree is refused rather than patched in: one commit id is what the verdict is about.
   Seeds for the thin bundle are any `~/checkouts/<sha>` that already holds a commit of this repository (other repositories' checkouts are
   skipped by `git cat-file`); release tags of the repository (`*-v<digits>`, e.g. `dstdns-v0.1.0`, `run-gate-v25.0.2`) ride along as before.
-- **Run.** A detached host job (`run-job rg-<id>`, `~/rg/<id>/` and `~/jobs/rg-<id>/{job.log,EXIT}`) waits until PSI is <= 25
+- **Run.** A detached host job (`run-job rg-<id>`, `~/rg/<id>/` and `~/jobs/rg-<id>/{job.log,EXIT}`) waits until memory PSI some and io PSI full are <= 25 (CPU PSI is ignored)
   (`--wait-psi`, default 900 s, else exit 75, verdict `PSI_REFUSED`), then runs `nice -n 19 <run-gate> <lane> [--base SHA] [extra]` in the
   `mdt-cockpit-runner` container from the project dir (default: the worktree path's own subdirectory; pass `--project-dir .` for a repo
   whose `run-gate.toml` is at its root) with `RUN_GATE_ALLOW_MAIN_CHECKOUT=1` and `ASSAY_GATE_HOST_REPO_ROOT=~/checkouts/<repo>` (the host
@@ -297,9 +489,28 @@ remote-gate status|logs [-f] [--lane-log]|collect|cancel <id>
   while an R2 campaign there may resume (r1002's default cockpit run-gate is 24.3.0, see the host board).
 - **Results**, copied to `<out-dir>/<id>/` (default `/home/vscode/vbpub-release-program-20261027/remote-gates`): `job.log`, `lane.log`,
   `lane-detail.log` (the lane's own log), `artifacts/` (`.assay/verdict*.json`, `progress*.jsonl`, `coverage*.json`, `.run-gate/**/*.log`),
-  `meta.json`, `result.json`, `job.sh`. The last line printed is exactly `lane <lane> verdict <VERDICT>; exit_code <N>` (read it as a separate
-  step); the command exits with the lane's exit code.
-- **Cleanup.** On exit (pass, fail, cancel) the job removes, by exact name, only `run-gate-*` containers whose `docker inspect` references
+  `meta.json`, `result.json`, `job.sh`. The last line printed is exactly `lane <lane> verdict <VERDICT>; exit_code <N>` for PASS and FAIL; any
+  other verdict appends `; reason <text>` (and possibly ` [hint: ...]`). Parse it with `verdict (\w+); exit_code (\d+)`, never anchored at the end of the
+  line (read it as a separate step); the command exits with the lane's exit code.
+- **Lane declaration checks (before anything is shipped).** The committed `run-gate.toml` / `assay.toml` are read locally and a run that is
+  certain to fail is refused with exit 2 and the reason: `--base` for an assay lane that declares its comparison base (`judge.base_source =
+  "declared"`, or a `judge.base` without `base_source = "request"`; assay refuses `--request-base`, so drop `--base`); a lane in an exec-mode
+  environment with no `container_name` (run-gate needs the worktree's own `ciu up` test-runner stack, which a throwaway host checkout never has
+  and this helper does not start; `--allow-exec-env` overrides); a lane name that is declared nowhere only warns. The effective environment follows run-gate: the lane's own `environment`, else
+  the `[assay] environment` default for assay lanes, `[assay.import].environment` for imported lanes (an `[assay.import]` lane is declared, never
+  warned about; its `--base` check reads `assay.toml` under the same name), and every member of a `kind = "sequence"` lane. Only a provably exec-mode
+  environment without `container_name` is refused. `--min-run-gate VER` raises or lowers the
+  profile's run-gate floor for one run. The vbpub profile floors the host run-gate at 25.0.1 and falls back to the `gate-tools2502` venv, so r1002's
+  default 24.3.0 is not used for estate lanes (add a newer venv with `runner/setup-cockpit-run-gate.sh`; a miss prints that command).
+- **Local `main`.** The throwaway checkout is detached and has no branches, but lanes declare `base = "main"` (assay.toml of nyxloom,
+  cowtree, worktree, ...). The controller's local `main` rides the same thin bundle (head `refs/heads/main`, its commits count towards the
+  "closest host checkout" choice) and the job creates `refs/heads/main` in the checkout without checking it out, so `--base main` and
+  `base = "main"` resolve like on the controller. Only a local branch `main` is shipped (no `origin/main`; no local `main` means none on the host).
+- **Why a run failed.** When the verdict is neither PASS nor FAIL the last line carries the cause: `lane <lane> verdict ERROR; exit_code 2; reason
+  <text>` (the verdict line's `reason`, the lane script's last own diagnostic line, else the job log's refusal line; `result.json` has the same `reason`).
+  Known causes append a `[hint: ...]`. Known silent-looking causes: an exec-mode lane without a stack (above), a declared base given `--base`,
+  a lane whose script requires `/workspaces/<repo>` to be a bind mount of its own (assay `self-qualification*`, backlog NC-14), a run-gate below the floor.
+- **Cleanup.** On exit (pass, fail, cancel) the job removes, by exact name, only lane containers (label `run-gate.lane`, or a pre-RG-242 `run-gate-*` name) whose `docker inspect` references
   this run's unique checkout directory `rg-<id>-<sha12>` (and only once the lane started, so a PSI refusal removes nothing), then the
   throwaway checkout and its pid file; logs stay. Another run's containers are never matched. `cancel <id>` sends SIGTERM to the job
   only while the recorded pid's cmdline is this run's `job.sh`; the job then stops the lane via its in-cockpit pid.
@@ -309,13 +520,51 @@ remote-gate status|logs [-f] [--lane-log]|collect|cancel <id>
 - **Limits.** R2 campaigns keep using `run-r2-campaign.sh`. dstdns lanes that need the whole release gate (bake/up/clean of the dstdns
   stack, `release-gate`) are out of scope here: this helper runs one registered lane in the cockpit, exactly like vbpub lanes.
 
+## Schedule and pause light host lanes
+
+The controller-side queue runs the configured `queue_lanes` serially for each
+host row. Copy the local configuration template and add lanes to a host alias
+accepted by `remote-gate.py`:
+
+```bash
+export CONTROLLER_HOME="$HOME/controller"
+mkdir -p "$CONTROLLER_HOME"
+cp scripts/controller/controller.local.env.example "$CONTROLLER_HOME/controller.local.env"
+cp scripts/controller/hosts.local.json.example "$CONTROLLER_HOME/hosts.local.json"
+# Set CONTROLLER_REPO in the local env file. Edit the ignored host table with
+# local ssh/api_check/guard values and, for the selected host, e.g.
+# "queue_lanes": ["scripts/netcup|suite"].
+queue=scripts/netcup/runner/host-sat-queue.sh
+bash "$queue" start
+bash "$queue" status
+```
+
+Before a host-exclusive operation, pause that host and wait until its current
+lane drains. The flag prevents the next launch while the active remote-gate
+job completes:
+
+```bash
+host=accepted-host-alias
+bash "$queue" pause "$host"
+bash "$queue" status
+# Continue when $CONTROLLER_HOME/logs/host-sat-queue/$host.current is absent.
+# After the host operation:
+bash "$queue" resume "$host"
+```
+
+For a queue code update, stop the loop only after the current marker is gone,
+wait for its PID file to disappear, and use the atomic installation steps in
+[`scripts/controller/README.md`](../controller/README.md#installing-a-queue-update).
+The [runner queue guide](runner/README.md#host-sat-queue-pause-flags) documents
+state files, automatic pauses, and result logs.
+
 ### Per-repo prerequisites (remote-gate, any repository)
 
 Every repository has a profile (built-in `REPO_DEFAULTS` in `remote-gate.py`, overridden key by key by the host's `repos.<name>` in the hosts
 file; unknown keys are refused at load time). A repository without a profile needs only the cockpit and its run-gate. The prerequisites are
 checked in two places. Before anything is uploaded, over read-only ssh (a miss ends the command with exit 4, nothing created on the host): cockpit
 up, required images, a run-gate meeting the floor (a proper PEP 440 comparison: release candidates and dev builds are below the floor, the version is the last
-version-looking word of the first `--version` line), and the `uid_check` (a throwaway `docker run`, so only when the host's PSI is at most 25, otherwise
+version-looking word of the first `--version` line), and the `uid_check` (a throwaway `docker run`, so only when the host's memory PSI some and io PSI full are at most 25, otherwise
 deferred to the job). In the host job (a miss there ends with exit 76, verdict `PREREQ_MISSING`, `PREREQ MISSING: ...` lines and a pointer to this section in
 `job.log`): all of those again, the `uid_check` after the job's own PSI wait, and the `admission_check`, which needs the repo's `run-gate.toml` and so can only
 run once the checkout exists (it is therefore the one prerequisite that fails after the upload). The `admission_check` is fail-closed: an erroring
@@ -325,15 +574,16 @@ run once the checkout exists (it is therefore the one prerequisite that fails af
 | --- | --- | --- |
 | `run_gate_min`, `run_gate_bins` | first in-cockpit run-gate path whose `--version` is >= the floor | `25.0.1` (RG-154: `--jobs` on a pyz-pinned consumer); `/home/vscode/.local/bin/run-gate`, then `/home/vscode/.venvs/gate-tools2502/bin/run-gate` |
 | `required_images` | docker images that must exist on the host | `dstdns/test-runner:local` |
-| `uid_check` | `getent passwd <uid>` inside the image (a throwaway `docker run --rm --network none`, only on a host at PSI <= 25: before the upload when quiet, always in the job after its PSI wait) | image `dstdns/test-runner:local`, uid `1003` (run-gate >= 25 refuses `user = "invoker"` without a passwd entry, DST-27) |
+| `uid_check` | `getent passwd <uid>` inside the image (a throwaway `docker run --rm --network none`, only on a host at memory/io PSI <= 25: before the upload when quiet, always in the job after its PSI wait) | image `dstdns/test-runner:local`, uid `1003` (run-gate >= 25 refuses `user = "invoker"` without a passwd entry, DST-27) |
 | `admission_check` | if `run-gate admission show` in the checkout says `enabled=true`, a `max_concurrent=N` cap must be published | on (dstdns `[admission] enabled = true`; without a cap every lane ends `NOT_RUN no-headroom`, DST-28) |
 | `tester_image` | `RUN_GATE_TESTER_UNIFIED_IMAGE` for this repo on this host | host `image` |
 | `env` | extra `NAME=value` environment for the lane's `docker exec`; the job's own safety variables (`RUN_GATE_ALLOW_*`, `ASSAY_GATE_HOST(S)_REPO_ROOT`, `RUN_GATE_PROFILE`, `RUN_GATE_TESTER_UNIFIED_IMAGE`, `PATH`, `HOME`, `DOCKER_HOST`, `DOCKER_CONFIG`, `LD_PRELOAD`, `LD_LIBRARY_PATH`) are reserved and refused at load time | none |
 
 Bring-up steps for a (re)installed r1002/v1001 (none depends on earlier one-off host state; identity check before every write, one gate at a
-time, CPU and memory PSI `some avg10` <= 25, never nano1):
+time, memory PSI `some avg10` and io PSI `full avg10` <= 25 (CPU PSI is not a stop signal), never nano1):
 
-1. Runner, cockpit and `tester-unified:local`: the generic order in `runner/README.md` (steps 1-5). The cockpit must be running.
+1. Runner, cockpit and `tester-unified:local`: the generic order in `runner/README.md`. Host-setup is mandatory
+   before the cockpit; there is no raw-socket degraded mode. The cockpit must be running before cockpit-only steps.
 2. **A run-gate >= 25.0.1 for dstdns**: as the runner user, `run-job setup-rg-25.0.2 -- bash ~/runner-scripts/setup-cockpit-run-gate.sh 25.0.2 <wheel-sha256>`.
    `~/runner-scripts` is created by `provision-runner.sh` (it installs the runner scripts and `runner.env` there, from the directory the controller uploaded in
    step 1, so a reinstalled host has it after provisioning); the script also needs the synced vbpub checkout (`~/src/vbpub-current`, `sync-from-devcontainer`,
@@ -365,3 +615,208 @@ a changed Dockerfile judges the new code with the host's existing image):
 remote-gate run r1002 /workspaces/dstdns/.worktrees/<name> run-gate-docs --project-dir .
 remote-gate run auto  /workspaces/dstdns/.worktrees/<name> release-r1 --project-dir . --detach
 ```
+
+### Persistent T3 R2 campaigns
+
+Use a persistent runner checkout for a T3 R2 campaign so Run-Gate can resume
+Assay state under the same commit after an exit-4 budget boundary. Keep that
+checkout clean. A lane budget comes from its committed Run-Gate configuration;
+there is no command-line budget override, so a shorter rehearsal budget needs
+a committed config change in the bundle.
+
+On the controller, build the bundle from a branch at the peeled release-tag
+commit and name it after the T3 entry:
+
+~~~bash
+git bundle create t3-<tool>-<tag>-<lane>.bundle \
+  refs/heads/t3/<tool>-<tag> --tags
+~~~
+
+After placing the bundle under the runner's incoming directory, run these
+commands as the runner account. The no-current-link flag keeps an imported
+release checkout from becoming the source for later image builds and setup:
+
+~~~bash
+sync-from-devcontainer --no-current-link \
+  ~/incoming/t3-<tool>-<tag>-<lane>.bundle t3/<tool>-<tag>
+
+run-job t3-<tool>-<tag>-<lane>-s1 -- \
+  bash ~/runner-scripts/run-r2-campaign.sh \
+  t3-<tool>-<tag>-<lane>-s1 <peeled-commit> <project-dir> <run-gate-lane>
+~~~
+
+The job and campaign directory share the same -s<N> suffix. On re-supervision,
+increment N and keep the unsuffixed campaign base unchanged; each start has its
+own logs and final-exit, while the base lock prevents concurrent supervisors.
+An exit-4 terminal summary records NOT_PASS and whether the supervisor stopped
+for max-attempts or stalled. Stall detection counts completed candidate events,
+not baseline or other progress lines.
+
+Stop the current campaign by its base name:
+
+~~~bash
+bash ~/runner-scripts/run-r2-campaign.sh stop t3-<tool>-<tag>-<lane>
+~~~
+
+The command terminates the supervisor, docker exec client and sampler, removes
+lane containers by their exact Run-Gate job and campaign labels, and uses each
+attempt's recorded exact container name when labels are unavailable. It waits
+for the campaign lock to clear. Run-Gate 25.2.0 or newer is required for
+label-based stop. Run-Gate 25.0.2 names a plain-clone container
+`run-gate-<checkout-basename>-<lane>-<pid>-<epoch>`; here the checkout
+basename is the full commit ID. The newer name schema starts
+`<repo>-run-gate-<project>-<lane>-` and uses the remote-derived repository
+name. If neither labels nor a recorded exact name identifies a container,
+stop fails with a manual exact-name instruction.
+The runner's established Run-Gate path remains the default; set RUN_GATE_BIN
+in its private runner.env to select a different absolute cockpit path. Hosts
+with cgprofile 3.0.0 should point RUN_GATE_BIN to Run-Gate 25.4.x.
+
+For initial capacity planning, one rehearsal measured about 10–15 seconds per
+completed candidate, including slow candidates, with a 45-second baseline per
+attempt. A campaign of 1,459 candidates took an estimated 4–6 hours at a
+three-CPU lane allocation; gate memory peaked around 3.1 GB. Treat these as
+single-rehearsal observations, not lane limits or release guarantees; use the
+current lane's measured resource summary when planning a release campaign.
+
+#### Shard instances of one campaign (NC-42)
+
+Floor: a cockpit Run-Gate with RG-265/RG-266 (its `--help` lists `--shard
+K/N`, the STRICT `--merge-shards N` and `--carry-over DIR`) and Assay 12.2.0
+in the lane. The supervisor probes the help before any campaign state and
+refuses `--instances`, `--merge-only` and `--carry-over-main` by name on an
+older Run-Gate (25.0.2, 25.4.0); Run-Gate itself refuses an older Assay. The
+plain single campaign needs neither and keeps working.
+
+~~~bash
+run-job t3-<tool>-<tag>-<lane>-s1 -- bash ~/runner-scripts/run-r2-campaign.sh \
+  t3-<tool>-<tag>-<lane>-s1 <commit> <project-dir> <lane> --instances 2 --jobs 2
+bash ~/runner-scripts/run-r2-campaign.sh status t3-<tool>-<tag>-<lane>
+bash ~/runner-scripts/run-r2-campaign.sh stop t3-<tool>-<tag>-<lane>
+~~~
+
+- `--instances K` starts one child campaign per shard (`<base>.i<K>of<N>-s<M>`,
+  own lock, container, attempts, log `campaigns/<base>-s<M>/<child>.log`),
+  then the strict merge `<base>.merge-s<M>`, whose exit is the fleet's
+  `final-exit`; `campaign-summary.json` (`mode=fleet`) lists every child.
+- Cross-host: `--instances K --shard-total T --shard-offset O` per host; a
+  partial host ends 75 `merge-pending`. Copying the other hosts' shard stores
+  (`<checkout>/.run-gate/assay-shards/<project>/<lane>/<assay_lane>/<K>of<T>`)
+  is manual; then `--merge-only T`. A missing or incomplete store refuses.
+- `--carry-over-main "<reason>"` resumes across a judge change, importing
+  `killed`/`survived` records of the checkout's own store with provenance.
+- Values are checked by presence: a zero, empty, malformed or repeated value
+  is refused by name.
+- Memory guard: `instances x (R2_INSTANCE_MEM_MIB or the lane's
+  resources.memory) + R2_HOST_RESERVE_MIB (1024)` must fit `MemAvailable`
+  (else exit 75). A lane without `resources.memory` has no container cap, so
+  it needs `R2_INSTANCE_MEM_MIB` or is refused by name.
+- Known limits: the guard admits at start and is not a runtime limit; the
+  lane's own shared fixtures (golden DB, fixed ports, browser sessions) must
+  be per-container or the lane must not be sharded.
+
+See the [shard-instance design rationale](DESIGN-GUIDE.md#shard-instances-of-one-campaign-nc-42)
+for why a fleet is a supervisor of ordinary child campaigns and why the
+guards have no defaults.
+
+When running a copied supervisor script, keep both lib.sh and run-lane.sh
+beside it. Set RUNNER_ENV to the installed runner.env path if that copy does
+not have the environment file beside lib.sh.
+
+See the [runner guide](runner/README.md#persistent-t3-r2-campaigns) for the
+files and stop behavior, and the
+[design rationale](DESIGN-GUIDE.md#persistent-t3-r2-campaign-supervision) for the stable
+lock and per-start directory choice; shard instances (NC-42) have their own
+[design rationale](DESIGN-GUIDE.md#shard-instances-of-one-campaign-nc-42).
+
+### Runner cockpit endpoints
+
+After host-setup, cgprofile and topos have installed their services, check the
+host-published endpoint record before starting the cockpit. Its values supply
+the cockpit's socket paths and numeric GIDs; they do not belong in
+`runner/runner.env`.
+
+```bash
+set -e
+cat /etc/host-endpoints.env
+cd "$HOME/src/vbpub-current/mdt-cockpit/host-setup"
+sudo ./check.sh
+cd "$HOME/runner-scripts"
+./start-cockpit-runner.sh
+```
+
+The runner requires the Docker API and BuildKit facts from host-setup, the
+cgprofile control socket, directory and GID, the cgprofile observer socket
+and directory, and the topos observe socket, directory and GID. The loader
+requires `/etc/host-endpoints.env` to be a root-owned regular file with no
+group or other write permission; it rejects symlinks, duplicate keys and
+values outside the published alphabet before any Docker call. If startup names
+a missing variable, repair it through the publisher that owns it: host-setup,
+`cgprofiled install`, or `toposd install`. Run that publisher's checker and inspect
+the aggregate record again, then retry startup. Do not copy a value from
+another host or add a local fallback. The cockpit binds each published socket
+directory read-only at the same path and receives the socket values in its
+environment. It gets numeric group access for Docker, cgprofile control,
+topos observe and BuildKit. It does not receive the observer GID; Run-Gate
+grants that to an observer lane when it starts the lane container.
+
+`provision-runner.sh` runs before endpoint publication in the normal setup
+order. During that bootstrap only, it adds the runner to the host group named
+`docker`; host-setup later publishes the GID of that same group. A provisioning
+rerun validates an existing record, and cockpit startup checks that the
+published GID still matches the local group. See the [design rationale](DESIGN-GUIDE.md#runner-cockpit-uses-the-host-endpoint-record)
+and [`runner/README.md`](runner/README.md).
+
+### Install augeaswrap for host-setup
+
+Copy the release wheels and their trusted SHA-256 sidecars into a host-local
+directory before installation. The install command performs no downloads; it
+checks both hashes, creates the versioned venv and publishes the command on
+root's `PATH`.
+
+```bash
+wheel_dir=/var/cache/host-wheels
+augeaswrap_sha256=$(awk 'NR == 1 { print $1 }' "$wheel_dir/augeaswrap-0.2.0-py3-none-any.whl.sha256")
+cli_extended_sha256=$(awk 'NR == 1 { print $1 }' "$wheel_dir/cli_extended-0.6.0-py3-none-any.whl.sha256")
+sudo bash "$HOME/runner-scripts/install-augeaswrap.sh" \
+  --wheel-dir "$wheel_dir" \
+  --augeaswrap-version 0.2.0 --augeaswrap-sha256 "$augeaswrap_sha256" \
+  --cli-extended-version 0.6.0 --cli-extended-sha256 "$cli_extended_sha256" \
+  --dry-run
+sudo bash "$HOME/runner-scripts/install-augeaswrap.sh" \
+  --wheel-dir "$wheel_dir" \
+  --augeaswrap-version 0.2.0 --augeaswrap-sha256 "$augeaswrap_sha256" \
+  --cli-extended-version 0.6.0 --cli-extended-sha256 "$cli_extended_sha256"
+command -v augeaswrap
+```
+
+Use SHA-256 values checked against the release record; the adjacent sidecars
+are input files, not an independent trust source. The installer uses
+`pip install --no-index --no-deps`, so both required wheels must be present.
+See the [design rationale](DESIGN-GUIDE.md#host-augeaswrap-is-installed-from-verified-offline-wheels)
+and the full [runner host sequence](runner/README.md#install-augeaswrap-for-host-setup).
+
+### Runner rollback commands
+
+Remove the additive Run-Gate venv only after the host profile no longer names
+it and the cockpit is running. Remove the pinned PostgreSQL image only after
+all lanes that need it have finished:
+
+```bash
+docker exec -u vscode "$COCKPIT_NAME" bash -lc 'rm -rf -- "$HOME/.venvs/gate-tools2540"'
+docker rmi 'postgres:18-alpine@sha256:d3e1620b530c944afa6e887d22eb899824da68e19c52024bf98f5220c88a65b2'
+docker image inspect 'postgres:18-alpine@sha256:d3e1620b530c944afa6e887d22eb899824da68e19c52024bf98f5220c88a65b2'
+```
+
+The final inspect must return nonzero. Do not remove the shared endpoint
+aggregate or profile loader on a host with multiple publishers. The sole-cgprofile
+cleanup applies only to the observed host; see [NC-35](KNOWN_ISSUES_TODO_BACKLOG.md#nc-35--mixed-endpoint-publisher-rollback-can-delete-a-shared-aggregate)
+and the [runner rollback sequence](runner/README.md#rollback).
+
+### Run-Gate host profile default
+
+Use Run-Gate 25.4.1 as the default for both test hosts only after collecting
+the old campaign and resume state. Until then, preserve the current pins and
+venvs; keep prior venvs available for rollback after the switch. HP-D10 is the
+accepted target, not evidence of a completed host change. This repository
+change does not update a host hosts-file.

@@ -45,7 +45,6 @@ def test_manual_bootstrap_recipe_uses_native_python_fetch_without_pipeline(mod):
 def test_build_config_maps_named_env_vars(mod, monkeypatch):
     monkeypatch.setenv("SWAP_DISK_TOTAL_GB", "64")
     monkeypatch.setenv("SWAP_PARTITION_COUNT", "4")
-    monkeypatch.setenv("ROOT_RESIZE_POLICY", "grow-only")
     monkeypatch.setenv("SWAP_POLICY", "on")
     monkeypatch.setenv("ZSWAP_COMPRESSOR", "zstd")
     monkeypatch.setenv("VM_SWAPPINESS", "50")
@@ -57,7 +56,6 @@ def test_build_config_maps_named_env_vars(mod, monkeypatch):
     assert config == {
         "swap_disk_total_gb": 64,
         "swap_partition_count": 4,
-        "root_resize_policy": "grow-only",
         "swap_policy": "on",
         "zswap_compressor": "zstd",
         "vm_swappiness": 50,
@@ -66,6 +64,12 @@ def test_build_config_maps_named_env_vars(mod, monkeypatch):
         "telegram_bot_token": "123:token",
         "telegram_chat_id": "456",
     }
+
+
+def test_build_config_refuses_removed_root_resize_environment_key(mod, monkeypatch):
+    monkeypatch.setenv("ROOT_RESIZE_POLICY", "grow-only")
+    with pytest.raises(mod.BootstrapError, match="ROOT_RESIZE_POLICY was removed"):
+        mod.build_config()
 
 
 def test_build_config_maps_controller_ssh_pubkey(mod, monkeypatch):
@@ -194,7 +198,9 @@ def test_fetch_subtree_uses_provider_neutral_blobless_sparse_git(mod, monkeypatc
         "scripts/debian-install-v2/debian-install-v2.py": b"#!/usr/bin/env python3\n",
         "scripts/debian-install-v2/debian_install_v2/installer.py": b"# installer\n",
         "scripts/debian-install-v2/profiles/default.jsonc": b'{"schema_version":1}\n',
-        "scripts/debian-install-v2/tools/iocost_coef_gen.py": b"# tool\n",
+        "scripts/debian-install-v2/tools/iobench-install-runner": b"#!/usr/bin/python3\n",
+        "libraries/iobench/src/iobench/calibrate.py": b"# calibrate\n",
+        "libraries/iobench/src/iobench/guard.py": b"# guard\n",
         "README.md": b"unrelated repository file\n",
         "libraries/cli-extended/README.md": b"separate released wheel\n",
     }
@@ -213,10 +219,112 @@ def test_fetch_subtree_uses_provider_neutral_blobless_sparse_git(mod, monkeypatc
         "scripts/debian-install-v2/debian-install-v2.py"
     ]
     assert (install_dir / "profiles" / "default.jsonc").is_file()
-    assert (install_dir / "tools" / "iocost_coef_gen.py").is_file()
+    assert (install_dir / "tools" / "iobench-install-runner").is_file()
+    assert (install_dir / "iobench" / "src" / "iobench" / "calibrate.py").is_file()
     assert not (install_dir / "README.md").exists()
     assert not (install_dir / "libraries").exists()
     assert (install_dir / "debian-install-v2.py").stat().st_mode & 0o111
+
+
+PIN = "0123456789abcdef0123456789abcdef01234567"
+_PIN_FILES = {
+    "scripts/debian-install-v2/debian-install-v2.py": b"#!/usr/bin/env python3\n",
+    "libraries/iobench/src/iobench/calibrate.py": b"# calibrate\n",
+}
+
+
+def _pinned_git(monkeypatch, mod, *, head=PIN):
+    calls, patterns = _fake_git(monkeypatch, mod, _PIN_FILES)
+    inner = mod.subprocess.run
+
+    def run(argv, **kwargs):
+        if "rev-parse" in argv:
+            calls.append(argv)
+            return SimpleNamespace(returncode=0, stdout=head + "\n", stderr="")
+        return inner(argv, **kwargs)
+
+    monkeypatch.setattr(mod.subprocess, "run", run)
+    return calls
+
+
+def test_fetch_subtree_with_a_pinned_commit_fetches_checks_out_and_verifies_that_commit(mod, monkeypatch, tmp_path):
+    calls = _pinned_git(monkeypatch, mod)
+    mod.fetch_subtree("https://git.example.test/team/vbpub.git", "main", tmp_path / "install", debug=False, commit=PIN)
+    fetch = next(call for call in calls if "fetch" in call)
+    assert fetch[-5:] == ["--depth=1", "--filter=blob:none", "origin", PIN] or fetch[-1] == PIN
+    checkout = next(call for call in calls if "checkout" in call)
+    assert checkout[-3:] == ["checkout", "--detach", PIN]
+    assert not any("refs/remotes/origin/main" in call for call in calls if "checkout" in call)
+    assert calls.index(fetch) < calls.index(checkout) < next(
+        index for index, call in enumerate(calls) if "rev-parse" in call
+    )
+    assert (tmp_path / "install" / "debian-install-v2.py").is_file()
+
+
+def test_fetch_subtree_refuses_when_the_checked_out_commit_is_not_the_pinned_one(mod, monkeypatch, tmp_path):
+    _pinned_git(monkeypatch, mod, head="f" * 40)
+    with pytest.raises(mod.BootstrapError, match="pinned commit"):
+        mod.fetch_subtree("https://git.example.test/team/vbpub.git", "main", tmp_path / "install", debug=False, commit=PIN)
+    assert not (tmp_path / "install").exists()
+
+
+@pytest.mark.parametrize("bad", ["main", "abc123", PIN[:-1], "--upload-pack=x", PIN.upper() + "0"])
+def test_fetch_subtree_rejects_a_malformed_pinned_commit_before_cloning(mod, monkeypatch, tmp_path, bad):
+    monkeypatch.setattr(mod.subprocess, "run", lambda *a, **k: pytest.fail("git must not run"))
+    monkeypatch.setattr(mod, "_ensure_git", lambda *, debug: "/usr/bin/git")
+    with pytest.raises(mod.BootstrapError, match="REPO_COMMIT"):
+        mod.fetch_subtree("https://git.example.test/repo", "main", tmp_path / "install", debug=False, commit=bad)
+
+
+def test_repo_commit_environment_is_blank_safe(mod, monkeypatch):
+    monkeypatch.setenv("REPO_COMMIT", PIN)
+    assert mod.repo_commit_from_environment() == PIN
+    monkeypatch.setenv("REPO_COMMIT", "  ")
+    assert mod.repo_commit_from_environment() is None
+    monkeypatch.delenv("REPO_COMMIT")
+    assert mod.repo_commit_from_environment() is None
+
+
+def _main_with_fake_fetch(mod, monkeypatch, net, tmp_path):
+    data = _wheel_bytes()
+    fake = net({mod.LATEST_URL_DEFAULT: _manifest(sha256=_sha(data)), WHEEL_URL: data})
+    monkeypatch.setenv("INSTALL_DIR", str(tmp_path / "install"))
+    for name in ("DRY_RUN", "DEBUG_MODE", "REPO_URL", "REPO_BRANCH"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setattr(mod.os, "geteuid", lambda: 0)
+    monkeypatch.setattr(mod.subprocess, "run", lambda argv, *, check: SimpleNamespace(returncode=0))
+    monkeypatch.setattr(mod, "preflight_git", lambda repo_url, branch, *, debug: "/usr/bin/git")
+    seen = {}
+
+    def fake_fetch(repo_url, branch, target, *, debug, git_path, commit=None):
+        seen["commit"] = commit
+        target.mkdir(parents=True)
+        (target / "debian-install-v2.py").write_text("# entrypoint\n", encoding="utf-8")
+
+    monkeypatch.setattr(mod, "fetch_subtree", fake_fetch)
+    return fake, seen
+
+
+def test_main_passes_repo_commit_from_the_environment_to_the_fetch(mod, monkeypatch, net, tmp_path):
+    fake, seen = _main_with_fake_fetch(mod, monkeypatch, net, tmp_path)
+    monkeypatch.setenv("REPO_COMMIT", PIN)
+    assert mod.main() == 0
+    assert seen["commit"] == PIN
+
+
+def test_main_without_repo_commit_follows_the_branch(mod, monkeypatch, net, tmp_path):
+    fake, seen = _main_with_fake_fetch(mod, monkeypatch, net, tmp_path)
+    monkeypatch.delenv("REPO_COMMIT", raising=False)
+    assert mod.main() == 0
+    assert seen["commit"] is None
+
+
+def test_main_refuses_a_malformed_repo_commit_before_any_network_call(mod, monkeypatch, net, tmp_path):
+    fake, seen = _main_with_fake_fetch(mod, monkeypatch, net, tmp_path)
+    monkeypatch.setenv("REPO_COMMIT", "main")
+    with pytest.raises(mod.BootstrapError, match="REPO_COMMIT"):
+        mod.main()
+    assert fake.calls == [] and seen == {}
 
 
 def test_fetch_subtree_refuses_remote_without_partial_clone_support(mod, monkeypatch, tmp_path):
@@ -300,7 +408,7 @@ def test_remote_invocation_dispatches_install_verb_with_explicit_acceptance(
     monkeypatch.delenv("DEBUG_MODE", raising=False)
     monkeypatch.setattr(mod.os, "geteuid", lambda: 0)
 
-    def fake_fetch(repo_url, branch, target, *, debug, git_path):
+    def fake_fetch(repo_url, branch, target, *, debug, git_path, commit=None):
         events.append("fetch")
         target.mkdir(parents=True)
         (target / "debian-install-v2.py").write_text("# entrypoint\n", encoding="utf-8")
@@ -361,7 +469,7 @@ def test_remote_invocation_imports_config_validator_from_fetched_source(
     monkeypatch.delenv("VBPUB_CONFIG_EXTRA_JSON", raising=False)
     monkeypatch.setattr(mod.os, "geteuid", lambda: 0)
 
-    def fake_fetch(repo_url, branch, target, *, debug, git_path):
+    def fake_fetch(repo_url, branch, target, *, debug, git_path, commit=None):
         package = target / "debian_install_v2"
         package.mkdir(parents=True)
         (package / "__init__.py").write_text("", encoding="utf-8")
@@ -677,7 +785,7 @@ def test_main_fetches_tree_and_released_wheel_end_to_end_with_faked_urllib(
     monkeypatch.setattr(mod.subprocess, "run", lambda argv, *, check: SimpleNamespace(returncode=7))
     monkeypatch.setattr(mod, "preflight_git", lambda repo_url, branch, *, debug: "/usr/bin/git")
 
-    def fake_fetch(repo_url, branch, target, *, debug, git_path):
+    def fake_fetch(repo_url, branch, target, *, debug, git_path, commit=None):
         target.mkdir(parents=True)
         (target / "debian-install-v2.py").write_text("# entrypoint\n", encoding="utf-8")
 
@@ -905,7 +1013,7 @@ def _run_main_with_webhook(mod, monkeypatch, tmp_path, *, debug, observed):
         monkeypatch.delenv("DEBUG_MODE", raising=False)
     monkeypatch.setattr(mod.os, "geteuid", lambda: 0)
 
-    def fake_fetch(repo_url, branch, target, *, debug, git_path):
+    def fake_fetch(repo_url, branch, target, *, debug, git_path, commit=None):
         target.mkdir(parents=True, exist_ok=True)
         (target / "debian-install-v2.py").write_text("# entrypoint\n", encoding="utf-8")
 

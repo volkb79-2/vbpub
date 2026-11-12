@@ -181,6 +181,12 @@ items:
   - {id: B199, title: "Cleanup-only failures after a finished measurement are ERROR, not an advisory", type: improvement, component: runner, context_estimate: small}
   - {id: B200, title: "CoW parity test lacks git status/index and has never run on a real btrfs area in CI", type: improvement, component: tests, context_estimate: small}
   - {id: B201, title: "Optional packed-object reflink path on XFS", type: improvement, component: workspace, context_estimate: small}
+  - {id: B522, title: "Use environment-only cgprofile endpoints and delegate Assay release gates", type: feature, component: gate, context_estimate: small}
+  - {id: B523, title: "Normalize marker-only cargo-llvm-cov branch totals so stable Rust reports branch coverage as unavailable rather than available-but-empty", type: bugfix, component: adapters, context_estimate: small}
+  - {id: B525, title: "R2 lane explicit test-file selections silently omit newly added tests that cover the mutated target", type: bugfix, component: mutation, context_estimate: small}
+  - {id: B526, title: "Over-cap mutation runs report candidate_total as max_mutants + 1 instead of the real selected inventory", type: bugfix, component: mutation, context_estimate: small}
+  - {id: B527, title: "A changed judge identity reuses the same candidate-id state filename and overwrites the prior generation's records", type: bugfix, component: mutation, context_estimate: small}
+  - {id: B528, title: "Native R2 kill-and-survive buckets have not been proven equivalent between one worker and three workers on the same complete candidate set", type: investigation, component: mutation, context_estimate: small}
 ---
 
 # assay — backlog
@@ -13157,28 +13163,39 @@ R2 pass is claimed. The CHANGES release notes say so.
 The provisional-release exception is bounded by the first dated release
 heading after `Unreleased`, which must match CMRU's protected transaction
 version, not only by tags that exist before the gate: B169 is valid for release
-versions `>=10.0.0,<12.1.0`; the operator extended the original waiver on
-2026-10-31 (10.2.0 extension: CW8/CW9/IO2 ship under it; 11.0.0 extension: verdict v17 and --jobs ship under it). The gate also requires at least one listable stable
-`assay-vX.Y.Z` tag and refuses if the latest visible tag is 12.1.0 or newer.
-Thus a prepared 12.1.0 release is refused before its tag is created, and
+versions `>=10.0.0,<12.2.0`; the operator extended the original waiver on
+2026-10-31 (10.2.0 extension: CW8/CW9/IO2 ship under it; 11.0.0 extension:
+verdict v17 and --jobs ship under it), 2026-11-04, and 2026-11-08. The latest
+decision covers the release carrying the E4 env-only launchers and delegated
+release-gate changes; R2 is to run later on the latest release. The gate also
+requires at least one listable stable `assay-vX.Y.Z` tag and refuses if the
+latest visible tag is 12.2.0 or newer. Thus a prepared 12.2.0 release is refused
+before its tag is created, and
 missing or unreadable tag state cannot authorize the waiver.
 
-**Decision record D1 (operator, 2026-11-04):** the window is extended to
-versions below 12.1.0 so assay 12.0.0 can pass `self-qualification-provisional`.
+**Decision record D1 (operator, 2026-11-04):** the window was extended to
+versions below 12.1.0 so assay 12.0.0 could pass `self-qualification-provisional`.
 Reason: the R2 campaign is to run later with `--jobs` on the scratch host
 (r1002) rather than serially on the shared host; same standing policy as for
 10.x and 11.0. The window is a single constant (`WINDOW` in
 `tools/self-qualification-gate.sh`); the marker text and refusal messages derive
-from it. Anything at or above 12.1.0 (prepared heading or an existing tag)
-stays refused and needs the full `self-qualification` lane. It closes with the
-R2 obligation below, or by the next window decision; it does not close by
-passing the provisional lane.
+from it. At that decision, anything at or above 12.1.0 (prepared heading or an
+existing tag) stayed refused and needed the full `self-qualification` lane.
+Passing the provisional lane does not close the R2 obligation below.
+
+**Operator decision (2026-11-08):** the provisional window is extended to
+versions below 12.2.0 for the release carrying the E4 env-only launchers and
+delegated release-gate changes. Assay 12.1.0 is inside the window; 12.2.0 and
+later require a new operator waiver decision or the full `self-qualification`
+lane. R2 is to run later on the latest release.
 
 **Close when:** one full `self-qualification` run and one `analysis-r2` run are
-completed against the exact `assay-v10.0.0` tag through the registered
+completed against the latest released Assay version through the registered
 Run-Gate lanes, survivors are triaged and fixed or backported, and the report
-is retained. Deadline: before the next assay release judged worth R2 (the
-same obligation as cmru KI-99 and the other wave members).
+is retained. Start the asynchronous campaign when an R2 host slot frees and
+target the newest release then available; older waived releases are never
+retro-run, consistent with the current release policy and the same obligation
+as cmru KI-99 and the other wave members.
 
 **B108 note (2026-10-27 integration):** phase 1 (`assay analyze campaign`)
 is shipped in this release under integration hashes; the leftover truncated-list
@@ -13198,8 +13215,9 @@ qualification rigor runs. `self-qualification-provisional` (`assay.toml`,
 R0, R1 (whole-target 100% line and branch over `src/assay`) and the R3 canary.
 After the lane is verified it records `.assay/mutation-postponed-assay.json`
 (`result: provisional`, tracking id B169, valid only for a prepared release
-version `>= 10.0.0` and `< 12.1.0`; extended by operator on 2026-10-31 and
-2026-11-04; a newer `assay-v12.1.0` or later tag also refuses it). The full lane is unchanged
+version `>= 10.0.0` and `< 12.2.0`; extended by operator on 2026-10-31,
+2026-11-04, and 2026-11-08; a newer `assay-v12.2.0` or later tag also refuses
+it). The full lane is unchanged
 and deletes the marker; the marker
 cannot satisfy an R2 request.
 
@@ -14080,37 +14098,15 @@ TB-13 phase 2, this entry and cmru KI-114 phase 3, run-gate RG-153 the default f
 
 **Dependencies and order.** After RG-151 and TB-13; in parallel with KI-114. Then RG-153.
 
-## B212 — assay observer launchers: drop `ASSAY_GATE_HOST_DOCKER_GID`, derive gids by `stat`, assert against both docker-class gids
+## B212 — Assay observer host Docker GID source and level-group separation
 
-**Status: OPEN (filed 2026-11-04).** Operator decision 2026-11-04: new fixed estate group `mdt-docker` (gid 2751) on the host relay socket and on
-`/run/cgprofile` (mdt-cockpit MDT-053, cgprofile CP-43); every consumer derives the gid by `stat` of the socket it mounts.
+**Status: IMPLEMENTED on branch `sockets-assay-20261105`, pending controller gate evidence and independent review; amended 2026-11-07.** The original proposal to derive the host Docker GID from the Docker API socket is dropped. That socket's GID describes access to the socket and can belong to a proxy or relay; it is not an authoritative host Docker-group fact. The `/run/cgprofile` directory-GID fallback is also dropped because the new level directories are `root:root 0755`. Current source order is the strict `ASSAY_GATE_HOST_DOCKER_GID` override, then numeric `MDT_HOST_DOCKER_GID`; a malformed selected value refuses and absence names both. The observer GID must be nonzero and differ from Docker. The helper no longer uses a directory GID as a group-separation rule. The launcher tests use a private `unshare -rm` mount fixture at the canonical observer path.
 
-**Problem.** `tools/resource-observer-gid.sh:56-75` (`assay_host_docker_gid`) accepts an environment override `ASSAY_GATE_HOST_DOCKER_GID`
-(passed in "from the host launcher", which is the stale host-number pattern) and otherwise reads `/run/cgprofile` and requires mode 770.
-The observer gid must differ from the docker gid. On an mdt host there are now two docker-class gids (`mdt-docker` on the cgprofile
-directory and the relay socket, and the host `docker` group); on a non-mdt host there is one and possibly no cgprofile at all.
+The initial 2026-11-04 proposal to reject `ASSAY_GATE_HOST_DOCKER_GID` and infer Docker GIDs from socket and `/run/cgprofile` metadata is superseded by the amended source contract above. Keep `ASSAY_GATE_HOST_DOCKER_GID` because the controller supplies an explicit host fact for non-mdt callers; do not stat the Docker API socket or infer a GID from `/run/cgprofile`. Require the observer directory to be `root:root`, with safe mode, but do not require its GID to equal or differ from the socket GID.
 
-**Design.**
+**Controller acceptance still required.** Run the registered Assay gate with the new launcher mount fixture, verify fail-before/pass-after and 100% line plus branch coverage for changed source, and complete mutation proof. Run one pytest at a time under `nice`; do not use the cockpit pytest environment. Keep the non-mdt, no-cgprofile behavior in the supported gate's host acceptance coverage.
 
-- Remove the `ASSAY_GATE_HOST_DOCKER_GID` input entirely (no alias; a set variable is an error naming the replacement, so no stale launcher
-  silently relies on it).
-- Derive the docker-class gid by `stat` of the docker socket the launcher mounts (`DOCKER_HOST` when `unix://`, else the default) and, when
-  present, of `/run/cgprofile`.
-- Assert the observer socket gid differs from every derived docker-class gid (socket gid, `/run/cgprofile` directory gid); keep the
-  existing mode and ownership checks of the observer directory.
-- Messages name the paths read, never a group name.
-
-**Acceptance criteria.**
-
-- The helper's tests cover: observer gid equal to the socket gid refused; equal to the `/run/cgprofile` gid refused; distinct accepted; the old
-  variable set gives a clear error.
-- No `ASSAY_GATE_HOST_DOCKER_GID` remains in `assay/`, docs or tests except the refusal test.
-- **Non-mdt path.** With no `/run/cgprofile` and an arbitrary-gid docker socket the launchers work without the observer (or refuse the observer
-  feature with one clear infrastructure message when it is required) and require no mdt group.
-
-**Test plan.** `bash` helper tests with injected `stat` results, plus the existing launcher tests updated.
-
-**Dependencies and order.** After CP-43 and with MDT-053; pairs with run-gate RG-152.
+**Dependencies and order.** Shares the observer cutover with B522 and Run-Gate RG-152.
 
 <!-- Id note (2026-11-04, ops-dstdns-r2 session): the ids below start at B213, one past the highest id on main (B212); B210 exists only on
      branch finish-assay-1-20261104. The controller resolves ordering on merge. -->
@@ -14208,26 +14204,6 @@ phase is fsync (compare `io_sync = relaxed` with an eatmydata image, and `durabl
 
 **Id note.** B227 and B228 were renumbered from B219 and B224, which collided with `backlog-materialize-20261105` and `fix-assay-mat-20261105` (they use B219..B223 for different items).
 
-## B225 — OpenZFS as a candidate-tree backend (clone per candidate or rollback per worker): evaluated on v1001, not worth building; criteria to reopen
-
-**Status: DECIDED, NOT BUILT (filed 2026-11-05; ids B219-B224 are used on other branches).** Report `zfs-eval-REPORT.md` (vbpub-release-program reports), data in `materialize-experiment-data/results-zfs-*.jsonl`; OpenZFS 2.4.4 (trixie-backports, DKMS, kernel 7.2.11) on pool `zp` (two ex-swap partitions, lz4, ashift 12) on v1001; same harness and tree as B219-B223 (whole vbpub repository, primed index).
-
-**Findings (steady state per candidate, 3 s of tests).** btrfs snapshot primed (a2): 37.2 MB read, materialize 0.31 s, total 3.67 s. ZFS clone per candidate (z1): 0.02 MB with the ARC minimum pinned to the cap or a 1 GiB cap, **36.1 MB with only a 300 MiB cap** (the ARC lost the pack although it held 85 of 300 MiB), materialize 0.44-0.50 s, total 3.9-4.1 s. ZFS rollback per worker (z2): 0.01-0.52 MB, materialize 0.30-0.35 s, rollback 0.11-0.14 s, total 3.76-4.00 s. `cp --reflink` on ZFS: 111 MB read and 8.2 s (worse than today's baseline 6.0 s). Clone plus mount 33 ms and destroy 41 ms per dataset (btrfs snapshot 14 ms, delete 2 ms); 200 mounted clones cost 153 MiB of ARC metadata. Unprivileged `runner` with `zfs allow` can snapshot, rollback a mounted dataset and destroy, but **cannot mount a clone** (Linux needs CAP_SYS_ADMIN).
-
-**Decision.** No ZFS adapter: the one thing it removes over a2 (the 36 MB pack read) is removed on btrfs by B220, and ZFS is not faster per candidate. The B221 overlay and B223 in-place backends already cover the zero-read cases; per-worker rollback (z2) is the ZFS form equal to B223 without tmpfs memory.
-
-**Reopen when.** (a) a workload reads large file bodies per candidate that a primed index cannot avoid (trees of tens of MB of source read by the tests, not only by `git status`), or (b) B223's tmpfs memory (175 MB per worker) is the limiting resource and a per-worker dataset is wanted, or (c) a host already runs ZFS. Then implement cowtree COW-BL-07 and use the z2 form (pre-mounted worker dataset, `zfs rollback -r`), with `zfs_arc_min` pinned to `zfs_arc_max`.
-
-**Acceptance (documentation only).** B219-B223 notes cite this entry as the ZFS comparison; no code change.
-## B226 — `tests/core/test_isolation.py::test_further_external_or_incomplete_topologies_are_refused` hung ~18 minutes on a blocked `git rev-parse --absolute-git-dir` child outside the lane container
-
-**Status: OPEN (investigation, filed 2026-11-05).** Reported by the fix-assay-mat package: a local pytest of `assay/tests/core/test_isolation.py` on the bare devcontainer (not the lane container) stalled at about 43% of the file in this test (parametrized over `alternates-symlink`, `alternates-fifo`, `grafts`, `sha256`, `promisor`, test at line ~1320) with a blocked `git rev-parse --absolute-git-dir` child for about 18 minutes. The registered gate (lane container) was not affected in that run.
-
-**Hypotheses (unmeasured).** (1) The `alternates-fifo` case makes `objects/info/alternates` a FIFO with no writer; any git read of it (the `rev-parse` here, or the test's own setup) blocks on `open()` until a writer appears, so the hang is the hazard itself and the test needs a bounded subprocess timeout or a writer-less open guard. (2) The devcontainer's git environment (safe.directory, a hook, or an inherited `GIT_*` variable) differs from the lane's. Not established which case hung.
-
-**Question to answer first.** Run each parametrized case alone on the bare devcontainer under `timeout 60` and note which one blocks and what the child's `/proc/<pid>/stack`/`wchan` shows (`fifo_open`/`pipe_wait` points to hypothesis 1).
-
-**Acceptance.** The hanging case named; either the test (and the production code path that inspects `alternates`, if it can also block) opens the file non-blocking or with a timeout and refuses `fifo` alternates cleanly, or the lane-only requirement is documented; a regression test that completes in seconds with a bounded timeout.
 ## B219 — the sealed snapshot template's git index has no stat data, so every `git status` in every candidate hashes the whole worktree (173 MB of disk reads per candidate on a 7.6k-file repository)
 
 **Status: FIXED on branch `fix-assay-mat-20261105` (2026-11-05, pending merge/release): `SnapshotRepository._prime_index` runs `update-index --refresh` on the template before `seal`; tests `test_sealed_template_index_carries_stat_data_for_every_entry`, `test_primed_template_status_trusts_stat_data_and_still_reports_changes`, `test_cheap_clone_dirt_is_reported_after_priming`. Live `rbytes` check still to do on a real campaign.** Measured on v1001 (experiment report `materialize-experiment-REPORT.md`, variant a vs a2); explains the 132 GB read by the cli-extended r2 container (740 candidates, 178 MB each).
@@ -14293,10 +14269,489 @@ phase is fsync (compare `io_sync = relaxed` with an eatmydata image, and `durabl
 **Acceptance (documentation only).** B219-B223 notes cite this entry as the ZFS comparison; no code change.
 ## B226 — `tests/core/test_isolation.py::test_further_external_or_incomplete_topologies_are_refused` hung ~18 minutes on a blocked `git rev-parse --absolute-git-dir` child outside the lane container
 
-**Status: OPEN (investigation, filed 2026-11-05).** Reported by the fix-assay-mat package: a local pytest of `assay/tests/core/test_isolation.py` on the bare devcontainer (not the lane container) stalled at about 43% of the file in this test (parametrized over `alternates-symlink`, `alternates-fifo`, `grafts`, `sha256`, `promisor`, test at line ~1320) with a blocked `git rev-parse --absolute-git-dir` child for about 18 minutes. The registered gate (lane container) was not affected in that run.
+**Status: OPEN, root cause identified (filed 2026-11-05, measured the same day).** Reported by the fix-assay-mat package: a local pytest of `assay/tests/core/test_isolation.py` on the bare devcontainer (not the lane container) stalled at about 43% of the file in this test (parametrized over `alternates-symlink`, `alternates-fifo`, `grafts`, `sha256`, `promisor`, test at line ~1320) with a blocked `git rev-parse --absolute-git-dir` child for about 18 minutes. The registered gate (lane container) was not affected in that run.
 
-**Hypotheses (unmeasured).** (1) The `alternates-fifo` case makes `objects/info/alternates` a FIFO with no writer; any git read of it (the `rev-parse` here, or the test's own setup) blocks on `open()` until a writer appears, so the hang is the hazard itself and the test needs a bounded subprocess timeout or a writer-less open guard. (2) The devcontainer's git environment (safe.directory, a hook, or an inherited `GIT_*` variable) differs from the lane's. Not established which case hung.
+**Measured (devcontainer `mdt-cockpit-vb-vbpub`, 2026-11-05).** Nine `git --no-pager --no-optional-locks … -C <tmp>/pytest-of-vscode/pytest-N/[popen-gwK/]test_further_external_or_incom1/consumer rev-parse --absolute-git-dir` processes, every one in an `alternates-fifo` run (`.git/objects/info/alternates` is a FIFO), every one in `wchan=wait_for_partner` (FIFO `open()` with no writer), every one its own process group (`pgid == pid`). Seven are orphans (`ppid 1`), 15 to 28 hours old; two still block their pytest: `python3 -m pytest tests/core/test_isolation_tmpfs_worker.py tests/core/test_isolation.py tests/core/test_config_snapshot_selection.py …` (27.8 h) and a full `python -m pytest tests … --cov=src/assay` run in the assay-canary worktree (8.7 h). Hypothesis 1 holds: the hang is the hazard itself. Hypothesis 2 (devcontainer git environment) is not needed; the child runs with `_REPLACEMENT_ENV`.
 
-**Question to answer first.** Run each parametrized case alone on the bare devcontainer under `timeout 60` and note which one blocks and what the child's `/proc/<pid>/stack`/`wchan` shows (`fifo_open`/`pipe_wait` points to hypothesis 1).
+**Root cause (production code, not only the test).** `_p22_open_source` (`src/assay/git.py:1755`) receives the P22 deadline but calls `_resolve_repo(Path(repo_top), git_executable)` without `remaining=` (line 1758). `_run_bounded` then has no deadline, so its selector waits forever, and `prepare_snapshot(..., timeout=TIMEOUT)` never bounds the bootstrap `rev-parse`. Any consumer repository whose `objects/info/alternates` is a writer-less FIFO therefore hangs assay indefinitely; that `rev-parse --absolute-git-dir` opens the alternates file is observed (all nine children in `wait_for_partner` on that repository), not derived from git's source. `_run_bounded` starts the child with `start_new_session=True` and kills the group on a deadline or on any exception (its `finally`), so an orphan arises only when the runner cannot run that `finally` (SIGKILL of pytest, or a signal-free timeout plugin). In the lane the container teardown removes it, which is why the gate did not show the leak.
 
-**Acceptance.** The hanging case named; either the test (and the production code path that inspects `alternates`, if it can also block) opens the file non-blocking or with a timeout and refuses `fifo` alternates cleanly, or the lane-only requirement is documented; a regression test that completes in seconds with a bounded timeout.
+**Fix direction (both parts are required).** (1) Hand the P22 deadline to `_resolve_repo` (adapt `_P22Deadline.remaining` to the `Remaining` callable `_run_bounded` samples), so the bootstrap call is bounded like every other P22 git call. This alone does not make the case prompt: the test's `TIMEOUT` is 600 s, so (1) turns the hang into a 600 s timeout, and an unbounded lane (`math.inf`, where `remaining()` returns `None`) still blocks forever. (2) Refuse the topology before any git child can read it. `_p22_reject_external_topology` (`git.py:1682`) already `lstat`s `<common>/objects/info/alternates` and refuses a non-regular file with `GIT_FAILED`, the outcome the test asserts, but it runs at `:1780`, after the bootstrap `rev-parse` and the `--git-common-dir` call. For a plain repository (`<repo_top>/.git` is a directory) hoist that check before the bootstrap, using `<repo_top>/.git` as the common dir. For a gitfile, linked worktree or `core.worktree` layout the common dir is only known from git, so those keep the bounded path of (1) and the existing post-resolution check. The other two `_resolve_repo` callers (lines 712, 803) already pass `remaining=`.
+
+**Acceptance.** The `alternates-fifo` case (a plain repository) completes in seconds on the bare devcontainer with `GIT_FAILED` and leaves no git process behind (the test asserts the spawned process group is gone); a unit test proves `_p22_open_source` passes its deadline to the bootstrap call (an expired deadline raises before or during `rev-parse`); a linked-worktree variant with a FIFO alternates ends within the deadline as an error, not a hang; the remaining parametrized cases are unchanged.
+
+## B229 — assay 12.0.0 does not import on Python 3.11 (`ValueError: mutable default <class 'mappingproxy'> for field unclassified_lines`), although `requires-python = ">=3.11"`
+
+**Status:** FIXED on branch `assay-b229-20261105` (pending merge/release). Decision: assay keeps the `>=3.11` floor (the consumer's shipped runtime is 3.11; no other construct newer than 3.11 was found: all 67 `assay` modules import on `python:3.11-slim`). Fix: the three `Coverage` line-map defaults use `field(default_factory=...)`. Guard: `tests/core/test_b229_python311_floor.py` (3.11 grammar parse of all shipped sources + unhashable-default check). Open follow-up: a real 3.11 lane in assay's own gate (the in-suite test is a static guard; the authoritative import smoke was run once by hand in a container). Original report: severity major (a declared-supported interpreter cannot run the judge). Found adopting assay in netcup-api-filter (`netcup-api-filter@cf6de42`): `python3 tools/assay/assay-12.0.0.pyz --version` (and any verb) on `python:3.11-slim-trixie` (3.11.18) dies at `import assay` → `verdict.py:1148` → `records.py:26 record()` → `dataclasses._get_field`: Python 3.11 rejects a dataclass field default whose class has `__hash__ = None` (`mappingproxy`); 3.12+ only rejects `list`/`dict`/`set`, so 3.12+ passes. The same zipapp runs on 3.14.
+
+**Why it matters.** `requires-python` and `CONSUMERS.md` ("the `requires-python = '>=3.11'` floor is sufficient") promise 3.11; a consumer whose shipped runtime is 3.11 (Passenger webhosting) cannot judge its own interpreter's lane without a second Python. The workaround costs coverage fidelity: naf judges on 3.14 and runs 3.11 as a plain pytest command lane.
+
+**Wanted.** Replace the `MappingProxyType(...)` field default with `default_factory` (or an empty frozen default that is hashable), then add a 3.11 import smoke to assay's own gate (`python:3.11` lane: `assay --version`, `assay lanes` on the consumer template), so the declared floor is tested rather than asserted. Alternatively raise `requires-python` to 3.12 and say so in `CONSUMERS.md`.
+
+## B233 — `leaked-process-tree` verdicts carried no process identity, so a baseline leak could not be diagnosed
+
+**Status: FIXED on branch `pwmcp-leak2-20261105` (pending merge/release).** The R0 claim detail was the bare string `leaked-process-tree`; the `descendants` evidence existed only on mutation-candidate entries and never reached a baseline verdict or the progress stream. pwmcp R2 baseline at `pwmcp-v1.64.1-r3` failed with the bare string twice and the cause needed a local reproduction to find.
+
+**Fix.** The claim detail, the `command_finished` progress event (`leaked_descendants`) and stderr now list each leaked process as `pid`, `ppid`, `comm` and a bounded, redacted argv (new optional `cmdline` on the descendant wire record). Tests: `tests/core/test_leak_diagnostics.py`.
+
+## B234 — a zombie leaked descendant is indistinguishable from a live process with an unreadable cmdline in the `leaked-process-tree` diagnostic
+
+**Status:** OPEN (follow-up of B233 review F4).
+
+**Why it matters.** A zombie prints `pid=N ppid=M comm=C` with no argv, the same as a live process whose `/proc/<pid>/cmdline` could not be read. The fix action differs (a zombie needs its parent to reap it; a live process needs a kill).
+
+**Wanted.** Add an optional `state` field (the `/proc/<pid>/stat` state letter, already parsed in `_process_identity`) to the descendant wire record, render ` state=Z` in `ProcessTreeDescendant.describe()`, accept it in `verify.py` as an optional key (a verdict carrying it fails the key-set check of an older verifier, as with B233 `cmdline`), and test the zombie and live cases.
+
+## B235 — a whole-target `judge.targets` entry with zero executable lines (docstring-only `__init__.py`) fails the whole lane at R1 with `TARGET_NOT_MEASURED`, after the baseline has already run
+
+**Status:** OPEN (proposal; found by the tnt and cmru R2 pilots, 2026-11-05).
+
+**Observed.** tnt (`src/tnt/__init__.py`, `src/tnt/tui/__init__.py`) and cmru (`src/cmru/__init__.py`) each declared a docstring-only package `__init__.py` in `judge.targets`. coverage.py reports such a file with zero statements, `evaluate.py` (whole-target branch, "target_executable" empty) raises `NO_MEASUREMENT/TARGET_NOT_MEASURED`, and the whole lane verdict is refused, only after a full baseline (about 7 minutes for tnt) has run. iobench and test-policy hit and worked around the same thing by omitting the file with a comment. Three projects in one release program is a pattern, not a one-off.
+
+**Why the refusal itself is right.** "Named but never measured" must not pass silently (the anti-vacuity guard); a target that has no entry at all in the coverage artifact is a genuine failure and must stay one.
+
+**Proposal.** Distinguish the two causes. (a) Keep refusing a target with NO coverage entry. (b) For a target that HAS an entry with zero statements (executed and missing both empty, nothing excluded), either tolerate it as "no executable lines, contributes nothing to the floor" and record it in the verdict (`unmeasurable_targets`, so it is visible and counted neither as covered nor as missed), or, if strictness is wanted, fail at lane-load/plan time (`assay lanes`/`assay plan`, which already parse the target list and can `ast`-check a python target) with a message that names the file and the remedy ("remove it from judge.targets: it has no executable lines") instead of after the baseline. Preferred: tolerate plus record for python whole-target mode, because the estate convention is "list every shipped module" and the inventory tests in tnt/iobench/test-policy would otherwise each have to encode the exclusion rule. Needs the verdict-schema decision and a `verify.py` key-set change if the new field is recorded.
+
+**Interim in the projects.** tnt omits both files (TNT-63, with `tests/test_assay_lane_inventory.py`); the cmru lane (`src/cmru/__init__.py`, `assay.toml` lines 114 and 195) needs the same omission or this fix.
+
+## B522 — Assay environment-only observer endpoints and delegated release gates
+
+**Status: IMPLEMENTED on `x02-e4-20261107`; focused controller evidence and independent review pending.** The registered tester and self-qualification launchers require `CGPROFILE_OBSERVER_SOCKET`; unset or empty fails with the variable name and the host endpoint remedy. Each mounts the endpoint's parent directory read-only at the identical path and passes that socket path as `ASSAY_RESOURCE_OBSERVER_SOCKET`. There is no default, translation, path allowlist, or `ASSAY_GATE_RESOURCE_OBSERVER_SOURCE` override. The existing shared guard remains responsible for the `root:root` directory, root-owned socket, non-root observer GID, and observer-vs-Docker GID separation; Docker GID source order remains `ASSAY_GATE_HOST_DOCKER_GID` then `MDT_HOST_DOCKER_GID`.
+
+All six observer-enabled lanes declare `ASSAY_RESOURCE_OBSERVER_SOCKET = "required-env:ASSAY_RESOURCE_OBSERVER_SOCKET"` under `[lanes.<lane>.infrastructure]`; `src/assay` already consumes the endpoint through the environment and contains no socket-path default. `tools/release-gate.sh` requires `ASSAY_RELEASE_GATE_HOST` (`local`, `v1001`, or `r1002`). Local mode runs the previous lane command; remote mode uses attached `remote-gate.py` with the candidate worktree and accepts only a matching `meta.json` SHA plus a `PASS` in `result.json`, returning a failed lane's exit code. CMRU's release transaction, build, tag, publish and credentials stay on the controller.
+
+The provisional waiver is extended to `assay >=10.0.0, <12.2.0` by the
+2026-11-08 operator decision for the release carrying the E4 env-only launchers
+and delegated release-gate changes; R2 will run later on the latest release.
+Its code bound remains decision-controlled; refusal names the new operator
+R2-waiver decision required for any further extension and directs the caller to
+full self-qualification. `README.md`, `docs/DESIGN-GUIDE.md`,
+`docs/CONSUMERS.md`, and `CHANGES.md` describe the endpoint contract, host
+selection, and current waiver window.
+
+## B236 — `_check_v15_r2` lane environment policy has no refusal-direction tests
+
+**Status:** CLOSED 2026-11-09 (04622d0de); severity: test strength. Found at the 12.1.0 release attempt of 2026-11-08 (`reports/assay-release-attempt-b-lane.log`, `reports/assay-release-attempt-b-failures.txt` under `/home/vscode/vbpub-release-program-20261027/`). Nine refusal cases in `gate/tests/test_b105_report_check.py` cover an extra passthrough variable, missing and empty infrastructure, wrong and literal infrastructure values, an extra infrastructure key, non-empty `env`, and reordered and empty `env_passthrough`, each asserting the exact refusal. Hand mutations that removed each of the three comparisons were killed; the focused file passed 143 tests before and after the lane-install repair.
+
+**Finding.** `tools/b105_report_check.py` `_check_v15_r2` (line 652) enforces the E4 lane environment policy in one condition (about lines 713-719): the committed lane must have `env == {}`, `env_passthrough == ["PATH"]` and `infrastructure == {"ASSAY_RESOURCE_OBSERVER_SOCKET": "required-env:ASSAY_RESOURCE_OBSERVER_SOCKET"}`, else `ValueError("committed qualification lane environment policy differs")`. `gate/tests/test_b105_report_check.py` builds the accepted shape (the fixtures set `env_passthrough` at lines 136, 852, 878) but no test drives a deviation, so each of the three disjuncts could be dropped or weakened without a failing test.
+
+**Fix.** Add refusal tests in `gate/tests/test_b105_report_check.py`, each asserting the exact message: (1) an extra `env_passthrough` variable (`["PATH", "HOME"]`); (2) `infrastructure` missing and `infrastructure = {}`; (3) the right key with a wrong value (for example `"required-env:OTHER"` and a literal path); (4) an extra `infrastructure` key; (5) a non-empty `env`; (6) `env_passthrough` reordered or empty.
+
+**Close when.** Each deviation above has a test that fails against the unguarded checker, and a hand mutation of each of the three comparisons (`!=` to `==`, dropping a disjunct) is killed.
+
+**Source.** `reports/assay-release-attempt-b-lane.log`.
+
+## B237 — `tools/release-gate.sh` uses a bare `$HOME` under `set -u`, so the HOME-less delegated lane dies with an unbound-variable error
+
+**Status:** CLOSED 2026-11-09 (04622d0de); severity: minor (misleading failure, not a wrong verdict). The delegated release lane scrubs the environment (`env_passthrough = ["PATH"]`), so `HOME` was unset there. The remote-only guard now refuses unset or empty `HOME` before any remote call and names the remote-gate configuration files; local delegation remains available without `HOME`. `gate/tests/test_release_gate.py` passed 22 tests with `env -u HOME`, including both refusal cases and the local control, and the guard mutation was killed.
+
+**Finding.** `tools/release-gate.sh:63` builds the remote-gate base environment with `"HOME=$HOME"` under `set -u`. With `HOME` unset the script aborts with bash's `HOME: unbound variable`, which names neither the cause nor the remedy; the remote-gate client genuinely needs `~/.config/remote-gate/hosts.json` and `~/.ssh`. The merged test fix (`gate/tests/test_release_gate.py:165-170`) only supplies a HOME to the test; the script itself is unchanged.
+
+**Fix.** Before the array at line 56, add an explicit guard: `[[ -n ${HOME:-} ]] || die 'HOME is unset; remote-gate needs ~/.config/remote-gate/hosts.json and ~/.ssh'` (the `die` helper already exists in the script and is used for `REMOTE_GATE_OUT`). Add a test in `gate/tests/test_release_gate.py` that runs the script with `HOME` unset and with `HOME=""` in remote mode and asserts the refusal text and a non-zero exit before any remote call; local mode (`ASSAY_RELEASE_GATE_HOST=local`) must stay unaffected, so decide whether the guard sits in the remote branch only.
+
+**Close when.** The test passes with the guard and fails without it.
+
+**Source.** `reports/assay-release-attempt-b-lane.log`.
+
+## B238 — the docs test binds the R2 waiver window only in `docs/CONSUMERS.md`; `README.md` and `docs/DESIGN-GUIDE.md` carry it unbound
+
+**Status:** CLOSED 2026-11-09 (04622d0de); severity: minor (docs drift guard). The public-docs test derives all three spellings from `WINDOW`, whitespace-normalizes each document, and binds README, CONSUMERS and DESIGN-GUIDE. The focused docs file passed 66 tests with `env -u HOME`; changing only the derived upper bound was killed by the docs test.
+
+**Finding.** `tests/core/test_docs_examples_and_vocabulary.py::test_provisional_self_qualification_is_documented_across_the_public_docs` (line 1020) derives the window from `WINDOW` in `tools/self-qualification-gate.sh:823` but asserts it only against `consumer_text`. The same window is stated in `README.md:1606` (`assay >=10.0.0, <12.2.0`) and `docs/DESIGN-GUIDE.md:3020` and `:3025` (`10.0.0 <= version < 12.2.0`, `must be below 12.2.0`), in different spellings. The next window extension can update `WINDOW` and CONSUMERS and leave the other two stale without a failing test.
+
+**Fix.** Derive both spellings from `WINDOW` (the script already has `WINDOW_TEXT`, line 824-825, in the `assay >= X, < Y` form; the docs also use `X <= version < Y` and a bare upper bound) and assert the matching spelling in README and DESIGN-GUIDE as well. Prefer one canonical spelling per document family so the test does not carry three regexes.
+
+**Close when.** Changing `WINDOW` alone fails the docs test in all three documents.
+
+**Source.** Merge `2f7f386cc` (the docs test already derives the window for CONSUMERS only); `reports/assay-release-attempt-b-lane.log`.
+
+## B239 — the 12.1.0 release attempt surfaced three groups of failures (22 b105 checker, 11 release-gate HOME, 1 docs window); add them to the pre-merge gate set
+
+**Status:** CLOSED 2026-11-09 (04622d0de); severity: process gap. On 2026-11-08 the first registered release-gate run after the E4 env-only commits (B522, `531c57e9e`, `7ad24b884`) surfaced 34 failures in three groups (`reports/assay-release-attempt-b-failures.txt`):
+
+1. 22 in `gate/tests/test_b105_report_check.py`, from the lane environment policy expectation changed by the E4 env-only commits `531c57e9e` and `7ad24b884`;
+2. 11 in `gate/tests/test_release_gate.py`, because `c3488d82a` made `release-gate.sh` require `HOME`;
+3. 1 in `tests/core/test_docs_examples_and_vocabulary.py`, the docs window test.
+
+They were fixed by `8e4b5acc7`.
+
+**Finding.** The pre-merge set evidently did not run these groups (to be confirmed against the wave's gate list), so the E4 commits merged with stale expectations that the registered release gate caught only at the 12.1.0 attempt.
+
+**Fix.** Add the full release lane, or at least the failing groups (`gate/tests/` for the b105 checker and release-gate script, the docs test for the waiver window), to the pre-merge gate set whenever a change touches `assay/tools/**`, `assay/gate/**`, `assay/assay.toml` lane tables or the docs that carry the waiver window. Record the rule where the merge checklist lives (WORKFLOW.md or the merge skill) with the path trigger. Cheapest first step: a path-triggered run of `gate/tests/` and `tests/core/test_docs_examples_and_vocabulary.py`.
+
+**Close when.** A change touching only `assay/tools/b105_report_check.py` is blocked in the pre-merge gate by a deliberately broken expectation.
+
+**Close evidence.** `run-gate tooling-tests` now includes the B105 checker, release-gate, distribution, self-qualification launcher and public-docs test files. `nyxloom-trove/WORKFLOW.md` records the path trigger. The lane passed 362 tests with 104 skips, and a hand mutation removing the B105 checker path from the lane argv was killed by `test_pre_merge_tooling_lane_binds_the_release_attempt_failure_groups`.
+
+**Source.** `reports/assay-release-attempt-b-failures.txt`.
+
+## B240 — phases after R0 of the registered release gate were never exercised at the E4 commits; four container-side `git config --global` call sites rely on container-user HOME writability (two observed passing)
+
+**Status:** OPEN (static work implemented 2026-11-09 at 04622d0de); severity: risk record. The 2026-11-08 release attempt reached R0 only. The phases behind it were not exercised against the E4 env-only commits: the independent self-hosting witness, the analysis lane, the SQL qualification Docker-socket probe and the registered-gate receipt. All four container-side `git config --global` calls are now statically removed: self-qualification and the B145 low-pids probe use `GIT_CONFIG_*`; the SQL runner passes `safe.directory=*` through `git -c`; the B145 bounded-wait probe has no Git operation and needs no config. The focused launcher and SQL test files passed, and a hand mutation restoring each call was killed. Closing still requires one full delegated release gate with every phase and a written receipt at a post-E4 commit; that live phase was not run under this brief.
+
+**Finding.** Four container-side launcher call sites run `git config --global ... safe.directory "*"`, which writes `$HOME/.gitconfig` and therefore relies on the container user's HOME being writable: `tools/self-qualification-container.sh:560` and `tools/tester-unified-gate.sh:1358` are unproven, while `tools/tester-unified-gate.sh:1096` and `:1179` passed in the same HOME-less lane under `ASSAY_GATE_PHASE=b145-bounded-wait-accepted` and `b145-low-pids-accepted`. `docker run` takes the container HOME from the image, not from the client environment. If that container-user HOME is not writable, the step fails for a reason unrelated to the product; the two unproven sites remain because the later phases did not run after E4.
+
+**Fix.** Run the full lane once on the delegated host and record the result; if either unproven call fails when the container user has no writable HOME, set that container HOME to a tmpfs path (`-e HOME=/tmp/home`, `--tmpfs`) or use `git -c safe.directory='*'` per invocation instead of `config --global`. Add a launcher test that starts the same argv with an unwritable container HOME.
+
+**Close when.** A full delegated release gate (all phases, receipt written) passes at a post-E4 commit, and the HOME assumption is either removed or documented with a test.
+
+**Source.** `reports/assay-release-attempt-b-lane.log`.
+
+## B241 — R-0: Rust adapter spike run
+
+**Status:** CLOSED — the R-0 close condition is evidenced at exact HEAD `e218187294e62f2495da3a166374922c516e7eaf` by the `rust-r0-20261110` job.
+
+The spike run closes the no-toolchain-in-the-cockpit unknowns needed by R-1: S2 llvm-cov facts (unused function zero counts, derive instrumentation, macro bodies, absolute `SF:` paths, inline test modules, wrapped lines) and S5 image size plus Python availability. S1's vendor-size and tampered-vendor checks are historical because A-500 supersedes in-Git vendoring; the replacement image-cache/lock precheck is part of R-1. Record commands and measured results rather than predicted numbers.
+
+**Close note.** Commands and measured results are recorded for S1′, S2, S5, and S6, including the cache size, missing and altered archive refusals from the manifest precheck, and Cargo's `--locked` checksum-mismatch refusal. Evidence: `assay/docs/RUST-R0-SPIKES.md`; `assay/docs/rust-r0/evidence/s1-raw-probes.md`; `assay/docs/rust-r0/evidence/precheck-manual-check.md`; `assay/docs/rust-r0/evidence/s2-command-output.md`; `assay/docs/rust-r0/evidence/s2-sampler-lcov.info`; `assay/docs/rust-r0/evidence/s2-parser.json`; `assay/docs/rust-r0/evidence/s5-image-inspect.txt`; `assay/docs/rust-r0/evidence/s5-base-image-inspect.txt`; `assay/docs/rust-r0/evidence/s5-component-measurements.txt`; `assay/docs/rust-r0/evidence/s5-layer-history.txt`; `assay/docs/rust-r0/evidence/s5-versions.txt`; `assay/docs/rust-r0/evidence/s5-original-build-time.txt`; `assay/docs/rust-r0/evidence/s5-hardened-overlay-time.txt`; `assay/docs/rust-r0/evidence/s5-rebuild-time.txt`; and `assay/docs/rust-r0/evidence/s6-inspected-config-spec.txt`.
+
+**Source.** `assay/docs/DESIGN-RUST-ADAPTER.md` §G and "Spikes referenced"; `assay/docs/RUST-METHODOLOGY.md`; `assay/docs/RUST-R0-SPIKES.md` and the committed evidence paths above.
+
+## B242 — R-1: `tester-unified-rust` and the hostobs Rust baseline
+
+**Status:** OPEN — planned; depends on B241. **Design:** `assay/docs/DESIGN-RUST-ADAPTER.md` §E/§G R-1 and `assay/docs/RUST-METHODOLOGY.md`.
+
+Build the sibling `tester-unified-rust` image from a digest-pinned stable Rust slim image. It carries Clippy, rustfmt, llvm tools, a musl target, nextest, llvm-cov, cargo-mutants, and cargo-deny; cmru supplies their versions and builds the image with `cargo fetch --locked`. Include an image-cache/lock precheck that fails by naming the missing crate; gates use `--offline --locked`.
+
+Import the sampler work into the hostobs workspace skeleton with the planned crate split, `.cargo/config.toml`, `.config/nextest.toml`, `deny.toml`, `coverage-floors.toml`, the per-crate line/region floor tool, and the lint helper. Add the `lint` and `selftest` lanes: fmt, Clippy with `-D warnings`, rustdoc warnings denied, deny licenses/bans/sources, nextest with zero retries, doctests, and crate floors. Milestone 1 is hostobs M0/M1 green on the real gate before Assay judges it. Acceptance is both lanes green in the real gate and an offline locked run passing; no committed `vendor/` tree exists.
+
+The T2 `gate` is sequence [`lint`, `assay-r3`, `conformance`]; `assay-r1` is T1 only and is not a T2 member. The T2 Assay lane carries the release-time whole-project R1 floor.
+
+**Close when.** The sibling image, workspace, lock/cache precheck, and both lanes pass the real gate, including an offline locked run and no committed `vendor/` tree.
+
+**Source.** `assay/docs/DESIGN-RUST-ADAPTER.md` §E/§G R-1; `assay/docs/RUST-METHODOLOGY.md`; and R-0 cache behavior in `assay/docs/RUST-R0-SPIKES.md` plus `assay/docs/rust-r0/evidence/s1-raw-probes.md`.
+
+## B243 — R-2: Rust R1 adapter
+
+**Status:** OPEN — planned; depends on B242. **Design:** `assay/docs/DESIGN-RUST-ADAPTER.md` §A-B, §G R-2, and `assay/docs/RUST-METHODOLOGY.md`.
+
+Register a pure-Python `RustAdapter` at R1 with `*.rs` source globs and cargo-llvm-cov's documented `vendor`/`target` and test-path exclusions. Use `requires_span_attribution = false`, no external tools in the adapter, a conservative mask-and-lex executable-code check, and identity coverage-key normalization. R1 declares LCOV, changed-line mode at 100%, and a line-granularity known issue; every crate has 90% line / 85% region floors as lane steps. Add nextest/libtest first-failure recognizers and real-toolchain fixtures generated in the Rust image. Replace hostobs `selftest` with `assay-r1` and document the still-unregistered R2/R3 path. Milestone 2 is 100% changed-line coverage judged by Assay.
+
+The `assay-r1` lane is T1 only. T2 `gate` is sequence [`lint`, `assay-r3`, `conformance`], without `assay-r1`; the `assay-r3` lane carries the release-time whole-project R1 floor.
+
+**Close when.** Real-toolchain fixtures, failure recognizers, adapter checks, T1 `assay-r1`, and the T2 sequence pass their registered lanes on the supported Rust image.
+
+**Source.** `assay/docs/DESIGN-RUST-ADAPTER.md` §A-B/§G R-2 and `assay/docs/RUST-METHODOLOGY.md`.
+
+## B244 — R-3a: Rust mutation, report, and reservation spikes
+
+**Status:** OPEN — planned; depends on B242. **Design:** `assay/docs/DESIGN-RUST-ADAPTER.md` §D/§G R-3a and spikes S3/S4/S7.
+
+Measure and record cargo-mutants span-column units, `FnValue` span starts, zero-mutant `--in-diff` output, `--test-workspace=false`, directory-artifact reservation and dirty-tree checks, and report completeness after a baseline failure. Determine the assay schema impact of the `cargo-mutants:<Genre>` operator namespace and the `ASSAY_CHANGED_DIFF` environment handoff. The output is measured evidence and a bounded implementation decision, not an assumed upstream JSON shape.
+
+**Close when.** Each spike has a reproducible command and measured result, with schema and reservation decisions recorded from real cargo-mutants output.
+
+**Source.** `assay/docs/DESIGN-RUST-ADAPTER.md` §D/§G R-3a and `assay/docs/RUST-METHODOLOGY.md`.
+
+## B245 — R-3b: cargo-mutants R2 ingestion
+
+**Status:** OPEN — planned; depends on B243 and B244. **Design:** `assay/docs/DESIGN-RUST-ADAPTER.md` §D and §G R-3b; `assay/docs/RUST-METHODOLOGY.md`.
+
+Add a strict `cargo-mutants-outcomes` format parser and result-report reader beside the existing mutation-report formats. Map only the reviewed completion states to `killed`, `crashed`, `survived`, `budget_exceeded`, or `discarded`; an incomplete or contradictory report is `UNREADABLE_ARTIFACT`. Bind each mutant to committed source bytes and require the lane's nextest kill witness. Export the assay-resolved diff to the lane through `ASSAY_CHANGED_DIFF` for `cargo mutants --in-diff`. Register the ingested Rust R2 lane at a 100% diff-scoped kill floor. It runs asynchronously at T3 against the latest release, using `--base <previous release tag>`; it never gates a merge or release, and survivors become backlog items. Rust R2 not yet adopted (R-3b pending) is recorded once as a known issue, not as a per-release waiver (A-501). Fixtures must include real caught, missed, unviable, timeout, and baseline-failure reports.
+
+**Close when.** The parser, report reader, provenance binding, diff export, and real cargo-mutants fixtures pass their registered tests, and the lane runs at T3 with the previous release tag as its base without entering a merge or release gate.
+
+**Source.** `assay/docs/DESIGN-RUST-ADAPTER.md` §D/§G R-3b and `assay/docs/RUST-METHODOLOGY.md`.
+
+## B246 — R-4: Rust canaries
+
+**Status:** OPEN — planned; depends on B243. **Design:** `assay/docs/DESIGN-RUST-ADAPTER.md` §A/§E/§G R-4 and `assay/docs/RUST-METHODOLOGY.md`.
+
+Implement the Rust uncovered-line injector and the import-break equivalent as a panicking `#[cfg(test)]` test that writes the per-attempt receipt before failing. Rust has no executable module-level statement, so calling this "test-break" in diagnostics is intentional. T2 declares one canary mechanism per lane and uses the test-break/import-break canary; the uncovered-line probe is a separate T3 lane. Qualify the real oracle outcomes (`UNCOVERED_LINES` for the coverage canary and `COMMAND_FAILED` with the matching receipt for import-break) in `tester-unified-rust`, then register the owned R3 canary targets.
+
+**Close when.** The test-break/import-break T2 lane and separate uncovered-line T3 lane qualify their real oracle outcomes in `tester-unified-rust` and pass their registered gates.
+
+**Source.** `assay/docs/DESIGN-RUST-ADAPTER.md` §A/§E/§G R-4; `assay/docs/RUST-METHODOLOGY.md`; and the R-0 branch-marker decision in `assay/docs/RUST-R0-SPIKES.md` plus `assay/docs/rust-r0/evidence/s2-command-output.md`.
+
+## B247 — R-5: cmru Rust dependency lifecycle (CMRU-NATIVE)
+
+**Status:** OPEN — planned; can run in parallel with B243-B246 after B242. **Design:** `assay/docs/DESIGN-RUST-ADAPTER.md` §F/§G R-5 and `assay/docs/RUST-METHODOLOGY.md`; tracked in `cmru/KNOWN_ISSUES_TODO_BACKLOG.md` as KI-145.
+
+Add the `.crates` source, a cargo lock writer, stable-toolchain and cargo-tool freshness under the 14-day rule, image rebuild inputs, and advisories in `cmru versions check`. The amended model has no cargo-vendor writer or vendor-size tripwire: its tripwire is image-cache/`Cargo.lock` agreement, followed by an offline locked metadata/build smoke. A dry resolve against the hostobs workspace is the acceptance artifact.
+
+**Close when.** The dry resolve, freshness checks, image rebuild trigger, cache/lock refusal by crate name, and offline locked metadata/build smoke pass in the registered CMRU lanes.
+
+**Source.** `assay/docs/DESIGN-RUST-ADAPTER.md` §F/§G R-5; `assay/docs/RUST-R0-SPIKES.md` §S1′ and §S6; `assay/docs/rust-r0/evidence/s1-raw-probes.md`; `cmru/KNOWN_ISSUES_TODO_BACKLOG.md` KI-145.
+
+## B248 — R-6: advisory whole-crate mutation campaigns
+
+**Status:** OPEN — planned T3 work; depends on B245. **Design:** `assay/docs/DESIGN-RUST-ADAPTER.md` §D-E and §G R-6.
+
+Add whole-crate cargo-mutants campaigns as advisory T3 lanes on the test hosts, sharded by round-robin scheduling. Capture the complete per-crate campaign, shard coverage, timings, and missed mutants; no shard or advisory campaign may be reported as a release R2 pass. Whole-crate evidence never retro-runs an older release, matching the estate's latest-release-only asynchronous R2 policy.
+
+**Close when.** The T3 sharding schedule records complete per-crate campaign and shard evidence, and the reporting path labels every result advisory rather than a release R2 pass.
+
+**Source.** `assay/docs/DESIGN-RUST-ADAPTER.md` §D-E/§G R-6 and `assay/docs/RUST-METHODOLOGY.md`.
+
+## B249 — Rust post-first-release extras
+
+**Status:** OPEN — deferred until after the first Rust releases.
+
+File the separately planned extras: `cargo-semver-checks` after `proto`/`client` have external consumers; Miri plus ASan/TSan in a nightly VM lane for the allowed `kernel`/`act` unsafe code; a load-independent benchmark regression gate using instruction counts rather than wall time; and fuzzing as its own assay/run-gate topic. Fuzzing belongs to the estate's asynchronous R2-class T3 tier, with findings becoming tracked backlog work and an R4 red-first regression where claimed; it does not block a release.
+
+**Close when.** Each extra has a separate evidence-backed scope and acceptance contract; implementation remains deferred until its stated prerequisite exists.
+
+**Source.** `assay/docs/DESIGN-RUST-ADAPTER.md` §H and `assay/docs/RUST-METHODOLOGY.md`.
+
+## B250 — Rust known-issue closure and future engine
+
+**Status:** OPEN — deferred; not a current gate.
+
+Close the region-strict line-truth gap with a future `llvm-cov-json` format that requires every region starting on a line to execute; judge stable branch output if a producer eventually emits it; and build an assay-native Rust mutator only if measured cargo-mutants format churn costs more than owning an engine. Do not add a speculative parser or native mutator before those prerequisites exist.
+
+**Close when.** A future implementation has producer evidence, a bounded design decision, real fixtures, and a registered lane that proves the selected behavior; otherwise the item stays deferred.
+
+**Source.** `assay/docs/DESIGN-RUST-ADAPTER.md` §A/§H and `assay/docs/RUST-METHODOLOGY.md`.
+
+## B251 — Native R2 aborts while projecting a completed process-tree leak
+
+**Status: IMPLEMENTED on branch `assay-ptleak-20261110`; exact-head gate receipts are recorded in the external campaign report.**
+
+The window-host protocol dropped `CommandResult.underlying_outcome` after the
+runner had captured it for a normally exited leader with surviving descendants.
+`_outcome_of()` then built a `MutantOutcome` with a completed leak proof and no
+underlying outcome, raising `ValueError` and aborting the lane. Keep the value
+through the worker protocol. If validation still fails for one candidate,
+record that candidate in `crashed` with bounded `candidate_error` evidence and
+continue the sweep. A timeout or hung leader remains `budget_exceeded` or
+`hung` after cleanup; only an exited leader with live descendants is a
+completed leak.
+
+**Close when.** A real fake-mutant process that spawns an outliving descendant
+proves the completed outcome survives the worker boundary for PASS and FAIL;
+the budget-killed descendant case remains `budget_exceeded` with no underlying
+outcome; the exact pre-fix `/14` completed-leak record is rejected as a cache
+miss and its candidate is re-judged; a forced projection `ValueError` produces
+one durable, counted crashed candidate with `EXEC_FAILED` and exception text,
+identical after resume, with the validated final outcome and candidate error
+published in one state-record write; an interruption injected at the former
+second write cannot leave a resumable pre-projection bucket; and repeated
+construction failure still records every candidate in `crashed`. The
+registered behavioral tests and tooling lane pass on the clean final head.
+The v19 schema, README, design guide, consumer migration, and CHANGES entry
+describe the same contract.
+
+**Source.** R2 run-gate 25.4.1 report; `assay/src/assay/runner.py`,
+`assay/src/assay/_window_host.py`, `assay/src/assay/mutation.py`, and
+`assay/src/assay/verdict.py`.
+## B524 — the mutation `end` event conflates genuinely budget-exceeded candidates with pending candidates that never started
+
+**Status:** OPEN (filed 2026-11-10); priority minor reporting/diagnosis defect. Source: the 2026-11-10 session audit's omitted s4 anomalies and `reports/shard-s4-FINAL-REPORT.md`.
+
+**Problem.** In attempt A of the CMRu s4 campaign, the terminal progress record reported `buckets.budget_exceeded = 23`. Only one candidate genuinely exceeded its budget; the other 22 were pending candidates that had not started before the campaign deadline. The current terminal event gives a consumer only one ambiguous bucket, so an operator reading progress cannot distinguish candidate-level time exhaustion from an unattempted remainder. The verdict and resume machinery correctly later resolved the pending work, but the progress stream itself overstates actual budget failures.
+
+**Evidence.** The final s4 progress stream contains the attempt-A terminal record with `budget_exceeded: 23`, `candidate_total: 305`, one retained real budget-exceeded candidate, and 22 pending candidates at the stop. `reports/shard-s4-FINAL-REPORT.md` names the discrepancy directly. In `assay/src/assay/mutation.py`, the budget-exceeded mask represents both timed-out candidates and positions left after the campaign deadline; both are emitted into the same `MUTATION_BUCKETS["budget_exceeded"]` for the end count.
+
+**Minimal solution.** Keep `budget_exceeded` as the verdict-level closed vocabulary, but make the progress `end` event diagnostic: include separate counts for `budget_exceeded` candidates that started and timed out and `unstarted`/`pending` candidates, or equivalently report both an attempt-scoped total and a started-candidate count. Preserve the terminal event for direct library callers and document that the extra fields are additive. Do not change the verdict schema or assign semantic outcomes to unstarted candidates beyond what the existing verdict contract requires.
+
+**Where.**
+
+- `assay/src/assay/mutation.py`: `_end`, the budget-exceeded mask, and the bucket assembly.
+- `assay/src/assay/schemas/verdict.schema.json` only if an existing consuming field must describe the distinction.
+- Progress-event tests under `assay/tests/core/`.
+
+**Acceptance idea.** A fixture with one started timed-out candidate and 22 unstarted candidates emits an `end` event that reports one started budget failure and 22 pending/unstarted; the corresponding verdict remains valid and resumable. A fixture with 23 genuine timed-out candidates reports 23 and zero pending. Hand-collapsing the two counters into one must fail the first test.
+
+**Priority.** Minor. The verdict is not wrong, but the progress record's only bucket count misleads triage and campaign reporting.
+
+**Close when.** The terminal progress event distinguishes started budget failures from unattempted candidates, both fixture shapes pass, and the consumer documentation explains the additive fields.
+
+## B523 — marker-only cargo-llvm-cov output is read as available-but-empty branch coverage on stable Rust
+
+**Status:** OPEN (filed 2026-11-10); severity: high (anti-vacuity/correctness gap in the planned Rust R1 path); no implementation in this documentation-only filing.
+
+**Problem.** Stable `cargo llvm-cov` emits no `BRDA:` records because stable Rust has no usable branch instrumentation, but it still emits the total markers `BRF:0` and `BRH:0`. Assay's LCOV parser defines branch capability as artifact-level "any `BRDA`/`BRF`/`BRH` line exists". Those zero-valued markers therefore make every file carry an empty real `BranchCoverage`, derive branch capability as `reported`, and leave a lane with `require_branch` able to pass vacuously over zero branches. "No branch producer" and "branch producer found zero branches" must not be the same state.
+
+**Evidence.** `assay/docs/RUST-R0-SPIKES.md` on branch `rust-r0-20261110` (the file is absent from `main`), Rust R-0 spike S2, measured a stable `cargo llvm-cov` artifact with 9,347 regions, 4,535 lines, and 13 absolute `SF:` records. It contained no `BRDA:` record but did contain `BRF:0` and `BRH:0`; Assay interpreted those markers as branch coverage being available with an empty mapping. The controller session record 2026-11-10 carried that S2 finding into this filing.
+
+This is the measured implementation gap beneath B241's spike and B243's planned Rust R1 adapter. It is not a duplicate of B250's deferred "judge stable branch output if a producer emits it": this artifact is not branch output, and must be classified as unavailable before any future producer decision.
+
+**Proposed minimal solution.** Normalize in the Rust adapter boundary, where the producer is known, rather than weakening the generic LCOV parser's evidence rule:
+
+- after `cargo llvm-cov` emits LCOV, accept a marker-only artifact as the stable-Rust no-branch form only when there is no `BRDA:` record anywhere and every `BRF:/BRH:` pair is exactly zero;
+- remove/suppress those marker records before constructing the profile, so the parser returns `branches=None` for every file and `derive_branch_capability(profile) == "unavailable"`;
+- any `BRF`/`BRH` whose value is non-zero without matching `BRDA` records remains malformed, as it is today;
+- real future `BRDA:` output remains on the normal reported-branch path, regardless of producer version;
+- record the normalized producer fact in the lane/run disclosure so the known issue is visible, not silent.
+
+If B243 chooses an adapter-specific LCOV entry point instead of text preprocessing, pass a closed, adapter-owned `branch_capability="unavailable"` hint only under the same two measured predicates. Do not add a generic "ignore all zero metadata" rule for arbitrary LCOV producers.
+
+**Where.**
+
+- The Rust R1 adapter planned under B243 (`assay/src/assay/adapters/`) and its coverage normalization path.
+- `assay/src/assay/coverage_parsers/lcov.py`: keep the strict `BRF`/`BRH` versus `BRDA` consistency and artifact-level capability rule; this item supplies a producer-specific normalized input.
+- `assay/src/assay/coverage.py`: `derive_branch_capability`.
+- `assay/tests/parsers/coverage/test_coverage_branch_real_fixtures.py`, `test_coverage_parsers_lcov_branches.py`, and the Rust adapter fixture tests added by B243.
+
+**Acceptance test idea.** Commit the real stable-Rust fixture summarized in S2 (or a bounded slice retaining its 13 `SF:` records). Assert it parses successfully, every file has `branches is None`, `derive_branch_capability` is `unavailable`, and an `require_branch` judge refuses `NO_MEASUREMENT` rather than passing zero-of-zero. A control fixture with one real `BRDA:` record remains `reported`; a marker-only fixture with `BRF:1` remains `UNREADABLE_ARTIFACT`. Re-applying the current marker scan makes the first oracle fail.
+
+**Close when.** The real stable-Rust marker-only fixture, real-`BRDA` control, malformed non-zero-marker case, and `require_branch` refusal cases pass in the registered Rust adapter/lane on a clean final commit; the lane/run disclosure names the normalized no-branch producer fact; and the adapter/consumer documentation states the distinction between unavailable and an available-but-empty branch map. A recorded decision to defer Rust R1 adoption also closes this item when the measured artifact and the anti-vacuity refusal are documented as known constraints of the deferred path.
+
+**Priority.** High for Rust R1 adoption. The current behavior makes a branch requirement look satisfied while measuring nothing.
+
+**Source.** `assay/docs/RUST-R0-SPIKES.md` on branch `rust-r0-20261110` (S2); B241, B243, and B250.
+
+## B525 — R2 lane explicit test-file selections silently omit newly added tests that cover the mutated target
+
+**Status:** OPEN (filed 2026-11-11); severity: high (false survivor classification and multi-hour reruns); reporter: the netcup-api-filter (naf) controller session; no implementation in this documentation-only filing.
+
+**Problem.** An R2 lane may select tests with an explicit file list in `assay.toml` `[lanes.<x>_r2] argv`. A test file added later to kill surviving mutants can pass in the unit lane but remain outside that list, so its mutants are reported as `survived` and the lane ends `FAIL/MUTANTS_SURVIVED`. Lane validation gives no warning that a test importing a mutated target is outside the declared selection. B144 changes per-candidate test order while preserving full suite membership; this item is the distinct selection-completeness problem.
+
+**Evidence.** At naf commit `e2c34cf`, both `token_auth_r2` and `account_auth_r2` omitted their survivor test files from the explicit R2 argv lists; the two test files had been added earlier in naf commits `eede2e1` and `1c4fe17`. naf backlog B041 (`nyxloom-trove/4-backlog.md`, section B-DEPLOY) records `token_auth_r2` with 9 survivors on `e2c34cf`. naf commit `d077df0` changed `assay.toml` only, adding both test files to the lane lists.
+
+**Proposed minimal solution.** Validate an R2 lane whose argv names explicit test files against the lane's test root. Discover test files that import the lane's mutated target module(s) but are not named: warn by default, and refuse behind an opt-in lane key `strict_test_selection = true`. Alternatively, let the lane declare a glob and validate the expanded membership. The current lane schema has no explicit test-root key, so define one or derive it deterministically from declared paths and lane `cwd`; do not silently assume `tests/`.
+
+**Where.**
+
+- `assay/src/assay/config.py`: `_load_lane()` lane-key and `argv` validation, the `Lane` declaration, and the `_load_judge()`/`_load_mutation()` target linkage; add the test-root derivation or declaration.
+- `assay/tests/core/test_config_mutation.py` and `test_lane_schema_v2_locked_successors.py`, plus a focused config test for warning, strict refusal, and glob equivalence.
+- `assay/README.md`, `assay/docs/CONSUMERS.md`, and `assay/docs/DESIGN-GUIDE.md`: the warning default, opt-in refusal, and selection-scope contract.
+
+**Acceptance test idea.** A fixture lane names one test file while a second test under its test root imports the target module. Default loading emits the warning; `strict_test_selection = true` refuses and names the omitted file; naming the file or using a covering glob satisfies the check. An unrelated test file does not warn, and lanes whose argv is not an explicit file list are unchanged. Hand-removing the discovery or treating every implicit file as covered fails the first oracle.
+
+**Priority.** High because a passing kill test outside the lane changes a mutant from killed to survived and can invalidate a multi-hour campaign.
+
+**Close when.** Explicit-list and glob R2 lanes have focused warning/refusal oracles, the test-root rule has no hidden default, and the user documentation passes with the implementation on a clean final commit.
+
+## B526 — over-cap mutation runs report `candidate_total` as `max_mutants + 1` instead of the real selected inventory
+
+**Status:** OPEN (filed 2026-11-11); priority major (campaign planning and capacity decisions are made from an understated candidate count); no implementation in this documentation-only filing.
+
+**Problem.** Bounded mutation discovery stops after retaining `max_mutants + 1` candidate descriptors and writes that sentinel count as the progress `candidate_total`. When a lane has 1165 candidates but `max_mutants = 1000`, the over-cap run reports 1001 rather than 1165. A consumer therefore cannot tell whether the cap missed by one candidate or by hundreds, and cannot use the progress/end event to choose a correct cap or estimate campaign time. The exact `max_mutants + 1` sentinel is a deliberate pre-submission refusal, but that verdict requirement has accidentally become the reported inventory fact.
+
+**Evidence.** The host-campaign controller session record 2026-11-11 ran the exact `pwmcp-v1.64.1-r7` tag with `max_mutants = 1000`; Assay reported `over_candidate_cap`, `BUDGET_EXCEEDED/MUTANT_LIMIT_EXCEEDED`, exit 4, and `candidate_total` values 1001 and 1101 after two cap-only host edits even though the measured selected set was 1165. In `assay/src/assay/mutation.py`, candidate collection calls the adapter with `limit=max_mutants + 1`, and the early `_end(..., reason="over_candidate_cap", total=candidate_count)` path reports that bounded sentinel as the total.
+
+**Proposed minimal solution.** Keep descriptor retention bounded, but count the complete generated inventory rather than stopping the counting iterator at the sentinel. Consume all candidate descriptors while retaining at most `max_mutants + 1`; carry the real count separately into the `over_candidate_cap` progress/end event. Preserve the verdict contract's exact `candidate_count == max_mutants + 1` sentinel unchanged, or introduce an explicitly documented additive actual-count field if the verdict must expose it; do not weaken the verifier's exact sentinel rule and do not begin mutation submission. If a future adapter cannot count without materializing all descriptors, it must expose a bounded inventory-count operation rather than substitute a fabricated count.
+
+**Where.** `assay/src/assay/mutation.py`: the candidate collection `limit=max_mutants + 1`, `_end` on `over_candidate_cap`, and progress-event assembly; `assay/tests/core/` progress/over-cap tests; the progress-event consumer documentation if an additive field is chosen.
+
+**Acceptance test idea.** A fixture with 1165 candidates and `max_mutants = 1000` emits an over-cap result whose retained descriptors remain bounded, progress reports `candidate_total = 1165`, verdict remains the exact `max_mutants + 1` sentinel, and no mutant command runs. A 1001-candidate control reports 1001, and a hand change back to copying `candidate_count` into progress reports the wrong total and fails the oracle.
+
+**Priority.** Major. Existing campaign records and operator capacity estimates can understate work by orders of magnitude when the cap is far below the selected inventory.
+
+**Close when.** Over-cap progress reports the real discovered candidate total while descriptor memory and verdict sentinel bounds remain intact, both 1001 and 1165 fixture shapes pass on a clean final commit, and the documentation states which field is the refusal sentinel and which is the measured inventory.
+
+## B527 — a changed judge identity reuses the same candidate-id state filename and overwrites the prior generation's records
+
+**Status:** FIXED on branch `assay-r2-flex-20261111` (2026-11-11, merge pending review; see B529 "Fix"): before a write replaces `<id>.json` of another judge, the file is hard-linked to `judges/<judge>/<id>.json`, and a returning judge resumes and promotes it (`resume.promoted_total`). This preserves both generations instead of the proposed namespace-or-refuse; nothing is deleted. Originally: OPEN (filed 2026-11-11); priority major (destructive loss of resumable campaign evidence); source: host-parallel R2 controller record 2026-11-11; no implementation in this documentation-only filing. Related to B088/B092, which define why a changed judged-tree identity is a cache miss, but do not define what happens to the old records that share a candidate filename.
+
+**Problem.** A mutation state filename is keyed only by the candidate id, while the record payload carries `judge_sha256`. On a normal judge-identity change, the reader correctly rejects every old record because their judge differs, but a later write for the same candidate atomically replaces the old file at the same name. The old judge generation is therefore not merely missed: it is destroyed record by record as the new campaign runs. This makes any mid-campaign edit to a judged-tree input, including `assay.toml` worker or memory configuration, both a full cache miss and an irreversible loss of the evidence needed to resume the prior tree.
+
+**Evidence.** The host-parallel R2 controller record measured 355 finished CIU candidate records under one judge. After a lane configuration change, the next run reported all 627 candidates pending and a different `judge_sha256`; within 16 minutes it had replaced 21 of the old same-id state files. Assay's `judge_sha256` intentionally folds the whole judged tree plus resolved argv/environment, and `_load_validated_state_record` intentionally treats a changed judge as a cache miss (B088/B092). The separate defect is `_write_mutation_state_record` in `assay/src/assay/mutation.py`: its candidate-id-only destination is backed up and replaced without checking whether the previous record belongs to another judge generation.
+
+**Proposed minimal solution.** Version the state store by judge identity. Write records beneath a judge-hash namespace and never replace a record carrying another judge hash. The reader should check the current judge namespace first and may read a legacy flat candidate record only when that record's own judge matches; otherwise it leaves it untouched. Resume therefore re-executes a changed tree as B088 requires while retaining every prior generation. If a distributed layout is rejected, the simpler refusal is also acceptable: before starting, detect same-id records with another judge and refuse the invocation with both identities named, preserving all files and directing the operator to a fresh state root. Do not silently delete, move, truncate, or overwrite cross-generation records.
+
+**Where.** `assay/src/assay/mutation.py`: `mutation_state_record_name`, `mutation_state_record_path`, `_load_validated_state_record`, `_write_mutation_state_record`, and state-root locking; state/resume tests under `assay/tests/core/`; README, DESIGN-GUIDE, and CONSUMERS resume/state-dir sections. Run-Gate's consumer documentation should point to Assay's generation rule because Run-Gate owns the durable `--state-dir` choice.
+
+**Acceptance test idea.** Run the same small candidate set under judge A, change a judged-tree input, and run under judge B with the same `--state-dir`. The second run reports judge-A records as rejected, creates separate judge-B records, and leaves every judge-A file byte-identical. Resuming with judge A again reuses its complete generation. A legacy flat record is read only under its recorded judge. A fixture that writes judge B over judge A's same-id path fails the byte-preservation oracle.
+
+**Priority.** Major. A routine campaign restart can destroy hours of resumable evidence while the operator is trying to preserve progress.
+
+**Close when.** Cross-judge collision and legacy-record tests prove that no generation can overwrite another, each judge resumes only its own matching records, all prior files remain byte-identical, and the state/resume documentation describes the generation boundary on a clean final commit.
+
+## B528 — native R2 kill-and-survive buckets have not been proven equivalent between one worker and three workers on the same complete candidate set
+
+**Status:** OPEN; partial evidence 2026-11-11 (`reports/flex-r2-REPORT.md` section 8, v1001): 40 candidates of the cli-extended-v0.6.0 lane, serial vs `--jobs 3` vs two `--shard` containers vs their merge, all 40 identical per id (bucket, first failing test, judge). Not a close: the sample is a selection, not the complete inventory, all 40 were `killed` (no survivor), and there was no serial-versus-serial control. Filed 2026-11-11; priority high before parallel evidence is treated as interchangeable with serial evidence; source: host-parallel R2 controller record 2026-11-11; no implementation or experiment in this documentation-only filing. Related to B204 (flake-confounded disagreements in an earlier serial/parallel pilot) and B207 (order-independence assertions and a live policy A/B).
+
+**Problem.** Parallel native R2 demonstrably runs faster and produced plausible bucket outcomes in a short host sample, but no paired experiment over the same complete candidate inventory has shown that `--jobs 3` yields the same per-candidate kill, survive, crash, equivalent, timeout and liveness outcomes as `--jobs 1`. A throughput measurement from one arm and a serial rate from a different time is not outcome-equivalence evidence. Until a clean paired run exists, reports must not claim that worker count changes only duration and never classification.
+
+**Evidence.** The host-parallel R2 controller record measured about 3.1x throughput for CIU at three workers and observed normal kill reasons for 21 candidates, but did not replay those candidates serially. B204 records an earlier 56-candidate comparison at one and three workers with 53 agreements and three disagreements; the disagreements were killed serially and survived in parallel and in fresh serial replays, pointing to flaky test failures rather than a proven scheduling effect. B207 requires identical fixture judgments for two scheduling orders and an open live policy A/B, but does not close the serial-versus-parallel outcome question.
+
+**Proposed minimal solution.** Run one fixed, small native R2 lane over a stable candidate set with enough per-candidate budget to avoid load-dependent timeouts. Use fresh state and identical tree, judge identity, image, base, lane argv, and environment for two runs: serial and three workers. Preserve ordered verdict/state evidence and compare every candidate id's terminal bucket, with the worker count and any nondeterministic bucket identified separately. Do not use wall time as an outcome signal. Any difference receives root-cause analysis rather than a rerun until green; flaky tests are repaired or excluded through an explicit, documented contract, not hidden by aggregation. Publish the comparison as an experiment record and state plainly whether equivalence is proven, limited to the fixture, or still unproven.
+
+**Where.** A small existing native R2 fixture or purpose-built lane; `run-jobs-compare.sh` or an equivalent fresh-state runner; `assay/src/assay/mutation.py` execution and state outputs only if the evidence exposes a product defect; Assay README/DESIGN-GUIDE/CONSUMERS parallel-R2 claims; a report under Assay's evidence or reports area. Cross-reference B204 for flake control and B207 for scheduling order.
+
+**Acceptance test idea.** A fixed candidate inventory produces per-id bucket tables for serial and three-worker runs. The experiment table lists every candidate once per arm and marks agreement or the exact differing buckets. The controlled-wrong report omits a candidate, compares aggregate PASS/FAIL instead of per-id buckets, or treats a difference as noise fails review. A repeated serial-versus-serial control establishes the fixture's own stability before any disagreement is attributed to worker count.
+
+**Priority.** High once a release relies on parallel R2 evidence; it protects the meaning of a kill or survivor verdict, not merely campaign throughput.
+
+**Close when.** A recorded paired experiment covers the same complete candidate set at one and three workers, a serial-versus-serial control establishes stability, every per-candidate bucket difference is root-caused and owned, and the user documentation states the exact scope of proven equivalence on a clean final commit; otherwise the unproven limitation remains documented and parallel results are not presented as equivalent to serial evidence.
+## B529 — lane resource settings were part of the native-R2 judge identity, so raising `jobs_max` or container memory discarded a running campaign
+
+**Status:** CLOSED on branch `assay-r2-flex-20261111` (2026-11-11; merge pending review). Also closes B527 (filed by `backlog-filing5-20261111`: a changed judge overwrote the other generation's records) and the host-parallel finding P1/P2 (`reports/host-parallel-r2-REPORT.md`).
+
+**Problem.** `judge_sha256` folds the content digest of the whole judged tree, so `assay.toml` and `run-gate.toml` were judge identity. The 2026-11-11 ciu campaign raised `jobs_max` (and the lane memory): resume re-planned 627 of 627 candidates, ignored 355 finished records and overwrote 21 of them in place.
+
+**Fix.** `assay/_judge_projection.py` parses the loaded lane file and the `run-gate.toml` beside it, removes the execution-resource keys (listed in the module and in CONSUMERS "Resource settings are not judge identity") and substitutes the digest of the canonical remainder for each file's Git object id (`isolation._projected_manifest_sha256`, label `assay-snapshot-tree/4-config-projected`). The removed values and the run's worker settings form `resource_sha256`, stored on every new record; a resumed `crashed`/`hung`/`budget_exceeded` record re-executes when it changed. The judge label is not bumped: the projected digest already differs from every earlier one, and an assay upgrade re-executes anyway (tool version), which is what `--carry-over` (B530) is for. B527: `_archive_foreign_generation` hard-links a record of another judge to `judges/<judge>/<id>.json` before any write replaces it, and every newly created `judges/` or `judges/<judge>/` entry is synced through its parent directory (store root, `judges/`) before the flat record is replaced (independent review F1, `test_new_generation_directories_are_durable_before_the_flat_record_is_replaced`); resume reads `judges/<own judge>/` when the flat name holds another judge and promotes it back.
+
+**Named limits.** A test that reads a projected key (a documentation-contract test pinning `jobs_max`) is judged by a value outside the identity; the baseline still runs every attempt, so a test that fails on the new value stops the lane before any candidate. Only the loaded lane file and its sibling `run-gate.toml` are projected. A store is meant for one judge at a time; two concurrent judges on one store are refused by the store lock anyway.
+
+**Tests.** `tests/core/test_flex_r2_campaigns.py` (`test_a_resource_change_keeps_finished_records`, `test_a_judging_change_still_invalidates`, `test_resource_sensitive_records_re_execute_when_resources_change`, `test_a_changed_judge_archives_the_old_record_and_resumes_it_on_return`, projection unit tests).
+
+## B530 — no supported way to reuse finished candidates across a judge change or to merge shard stores
+
+**Status:** CLOSED on branch `assay-r2-flex-20261111` (2026-11-11; merge pending review).
+
+**Problem.** Any judge change (an assay upgrade, a host-local config commit) made every finished record a cache miss. Shards could only be merged as manifests (`merge_mutation_shards`), never as resumable state, and two shards could not share one store (the store lock).
+
+**Fix.** `assay run --resume --carry-over DIR --carry-over-reason TEXT` imports `killed`/`survived` records of another judge (flat and generation files) after full structural validation against the current candidate identity; `judge_sha256` keeps the executing judge, `carry_over` records `from_judge_sha256`, `into_judge_sha256`, `source`, `reason`, `imported_at`, `importer_version`, and `record_effective_judge` resumes it under the importing judge. `--merge-state DIR` copies records of the same judge (no reason needed; permissive). Independent run-gate review B1: a shard merge must be fail-loud, so `--shard K/N` writes `shard.manifest` (index, count, judge, plan digest) into its store and `--merge-shard-store DIR` (one per shard) validates exactly one complete store per shard of the current judge and plan, with no foreign records, refusing `BAD_LANE_CONFIG` by name otherwise (`mutation._validate_shard_stores`, `tests/core/test_flex_r2_shard_merge.py`). Progress `carry_over` event; `assay analyze campaign` counts `state.imported` and prints a `carry-over:` line.
+
+**Named limit.** The verdict document (v19 since B251 landed) does not mark imported outcomes (no verdict-schema change in this item); the progress stream, the state records and the campaign analysis/closeout carry the distinction. Follow-up B532.
+
+## B531 — targeted candidate sets were pilot-only, and there was no list of what is still pending
+
+**Status:** CLOSED on branch `assay-r2-flex-20261111` (2026-11-11; merge pending review).
+
+**Fix.** `--only-candidates FILE` / `--exclude-candidates FILE` (first token per line, `#` comments) restrict execution in every run mode, combine with `--shard`, and never hide work: a left-out candidate that no resumed or carried-over record covers is reported never started (`budget_exceeded` with not-started evidence, like a campaign-deadline remainder), so the claim is not a PASS and its detail starts `PARTIAL:`. Unknown ids refuse `BAD_LANE_CONFIG`. `assay plan --list-pending --state-dir DIR [--judge SHA]` prints the ids still to do.
+
+## B532 — the verdict does not mark candidates imported by `--carry-over`
+
+**Status:** OPEN (filed 2026-11-11 with B530); priority minor.
+
+**Problem.** A verdict built from carried-over records lists those outcomes like any other; only the progress stream, the state records (`carry_over`) and `assay analyze campaign` say they were imported.
+
+Related: a `--only-candidates`/`--exclude-candidates` remainder is reported like a campaign-deadline remainder (not-started `budget_exceeded`), so the verdict's reason code reads `BUDGET_EXCEEDED/LANE_TIMEOUT` although nothing timed out; only the claim detail (`PARTIAL: ...`) and the `unselected_total` telemetry name the selection. The reason is re-derived from the buckets by `assay verify`, so it cannot change without a schema version (observed on v1001, 2026-11-11, one selected candidate of 1459).
+
+**Proposed solution.** At the next verdict schema version after v19 (v19 landed with B251 / `assay-ptleak-20261110`; this item targets v20), add `judgment.r2.carry_over` (`imported_total`, per-source judge counts, reasons) and `judgment.r2.unselected_total` with a `SELECTION_PARTIAL` reason, and have verify re-derive both from the payload.
+
+**Close when.** A carry-over verdict states its imported count, a partial selection names itself in its reason code, and verify refuses a document whose counts disagree.
+
+## B533 — the pre-merge tooling-tests lane missed cross-cutting contract tests; the 12.2.0 release attempt found them red
+
+**Status:** FIXED on branch `assay-release-fix-20261111` (2026-11-11; merge pending review).
+
+**Problem.** The 12.2.0 release gate (tester-unified, full R0/R1 suite, v1001, candidate `cd77603bb` = main `fbf57a414` + changelog prep) failed 4 of 11 234 tests. Three were the `leak-beats-timeout` row of the shared termination table (`tests/core/termination_table.py`) in its three consumers (`test_termination.py`, `test_termination_alignment.py`, `test_canary_receipt.py`): the row still expected a timeout-killed leader with a reaped descendant to classify `LEAKED` (R2 `crashed`, R0 `ERROR/EXEC_FAILED`). B251/A-506 deliberately reordered `termination.classify` so that a timeout or hang keeps its incomplete outcome after cleanup ("only an exited leader with live descendants is a completed leak"). The fourth was `test_trust_boundary.py`: `assay.verify` now imports `assay.verdict.CandidateOutcomeError` to rebuild the v19 `candidate_error` field. All four fail identically on `66a0bc499` (ptleak alone), so they are ptleak's, not an interaction with B529-B531. Neither ptleak's nor the flex branch's gate ran these files; only the full release-gate suite does.
+
+**Decision.** The new behaviour is the intended semantics (A-506, B251 close-when "the budget-killed descendant case remains `budget_exceeded`", CONSUMERS "cleanup keeps its `budget_exceeded` or `hung` bucket"); the table row was stale. It becomes `timeout-beats-cleanup-leak` (`TIMED_OUT`, `BUDGET_EXCEEDED/LANE_TIMEOUT`, `budget_exceeded`) plus `hang-beats-cleanup-leak` (`HUNG`, `BUDGET_EXCEEDED/CANDIDATE_HUNG`, `hung`). The import is legitimate (a verdict record type, the same pattern as `UnderlyingOutcome`), so the committed base gains it.
+
+**Fix.** The table rows, `VERIFY_IMPORT_BASE`, and the `tooling-tests` fixed file list (plus its pin in `gate/tests/test_release_gate.py`) now include `test_termination.py`, `test_termination_alignment.py`, `test_canary_receipt.py`, `test_trust_boundary.py`, `test_dataclass_contract.py` and `test_b105_source_coverage_controls.py`. Together these take about 8 s.
+
+**Second finding (fix head `5954666db`, full tester-unified on v1001).** The main suite then PASSED, and the next stage, the `analysis` package's own R0/R1 lane, failed with `R1 FAIL/UNCOVERED_LINES` (lines 2466/2468, branches 1168/1170). The flex branch's B530 code in `analysis/src/assay_analysis/campaign.py` (the malformed-`carry_over` refusal and the text closeout's `carry-over:` line) was covered only by `tests/core` runs, never by `analysis/tests`, which is all that lane measures. Fixed with `test_analysis_campaign_state_refusals.py` (`carry-over-malformed` row) and `test_analysis_campaign_state.py::test_b530_the_text_closeout_names_imported_results`; analysis coverage is back to 2468/2468 lines and 1170/1170 branches.
+
+**Named limit.** `tooling-tests` remains a subset. The `analysis` package's 100% R1 coverage is judged only inside the tester-unified gate (there is no separate run-gate lane), so a change to `analysis/src` must pass `run-gate tester-unified` (or `tools/release-gate.sh tester-unified` on a host) before merge. Duplicating that coverage judge in `tooling-tests` was rejected: two coverage judges for one package would drift. Only the release-gate tester-unified lane runs the full R0/R1 suite (about 20 minutes on v1001).
+
+**Close when.** The full tester-unified lane passes on the fix head on v1001.
+
+## B534 — 12.2.0 release attempt 2: R1 found 15 uncovered judge lines that no pre-merge gate measures
+
+**Status:** FIXED on branch `assay-release-fix2-20261111` (2026-11-11; merge pending review).
+
+**Problem.** Release attempt 2 (main `41ae1af3e`; candidate `8af5a6c61`) passed tester-unified, then `self-qualification-provisional` failed with `FAIL/UNCOVERED_LINES`. That lane runs `python -m pytest tests -q --cov=src/assay --cov-branch` in the built wheel against a 100 % whole-target floor, and it reported 24121/24136 lines and 11057/11068 branches. The uncovered lines were:
+- `_window_host.py:237`: the refusal of a non-object `underlying_outcome` on the window-host wire;
+- `mutation.py:3110,3115,3116`: the `candidate_error` refusals of a state record;
+- `mutation.py:6952`: the "projection did not retain resource evidence" branch;
+- `mutation.py:7458`: the "no validated outcome projection" invariant;
+- `verdict.py:2142-2160,2446,2484,2529`: the `CandidateOutcomeError` constructor and `from_dict`, and the `candidate_error` type, ledger and ingested refusals of `MutantOutcome`.
+
+All of these are B251 (`assay-ptleak`) code. The R3 canary was `CANARY_INCONCLUSIVE` only because its control half is judged R0-then-R1 (`canary._judge_unit`), and the R1 failure made the control FAIL.
+
+**Why no earlier gate caught it.** The 100 % floor over `src/assay` is judged only by the R1 qualification lanes (`self-qualification`, `self-qualification-provisional`). `tooling-tests` is a subset without coverage. tester-unified runs the whole `tests` tree as R0 (no coverage) and judges coverage only for the analysis package. The ptleak and flex branches each passed their own gates; neither ran an R1 lane.
+
+**Fix.** Behavioural tests cover every listed line except 6952:
+- `test_window_host.py::test_a_non_object_underlying_outcome_is_refused_on_the_host_wire`;
+- `test_verdict_b105_constructors.py::test_candidate_outcome_error_refuses_every_malformed_value` and `::test_candidate_error_is_only_legal_on_a_native_executed_outcome`;
+- two `candidate_error` rows in `test_mutation_coverage_closure.py::test_load_record_refuses_invalid_retained_underlying_outcomes`;
+- `::test_a_worker_that_yields_no_run_cannot_shrink_the_verdict`, which uses a fake executor whose worker yields nothing.
+
+Line 6952 was unreachable and is removed. The worker refuses any resource evidence that is not a `ResourceLimitEvidence` (`contention.py`), and both B251 recovery paths keep a real instance, so a projected outcome never loses evidence its run had. A missing value is now always the run's own unobserved window and keeps its named "lacks a reason" refusal. `nyxloom-trove/WORKFLOW.md` gains a path-triggered pre-merge coverage gate, pinned by `gate/tests/test_release_gate.py`: `assay/src/**` needs `self-qualification-provisional` on a host, and `assay/analysis/src/**` needs tester-unified.
+
+**Named limit.** The guard is a merge-checklist rule (about 26 minutes per lane on v1001), not an automatic CI job.
+
+## B535 — assay 12.2.0 is released with its own R2 postponed (B169 window extended to < 12.3.0, A-507)
+
+**Status:** OPEN (known issue by decision, 2026-11-12); severity: owed verification.
+
+**Problem.** Following operator decision A-507, assay 12.2.0 is released through `self-qualification-provisional` (R0, R1, R3 canary) with R2 mutation of its own source postponed: the B169 window in `tools/self-qualification-gate.sh` is now `assay >= 10.0.0, < 12.3.0`. Until assay's own R2 runs on the released code, 12.2.0 carries no R2 evidence for itself.
+
+**Owed work.** Run the full `self-qualification` lane (R2 included) on the `assay-v12.2.0` release as a T3 post-release check (host, `--jobs`, flexible R2 campaigns allowed), and record its verdict. A survivor or crash found there is filed and fixed in a later release; it does not retract 12.2.0.
+
+**Close when.** T3 R2 PASS recorded for assay-v12.2.0.

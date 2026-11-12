@@ -110,7 +110,7 @@ def dump(document):
 
 def assemble_kwargs(**overrides):
     kwargs = dict(
-        project="cgroup-profiler", tag="cgprofile-v2.0.0", commit=COMMIT, project_dir="cgroup-profiler",
+        project="cgprofile", tag="cgprofile-v2.0.0", commit=COMMIT, project_dir="cgprofile",
         fragments=[(p.name, p.read_bytes()) for p in sorted((ASSEMBLE / "fragments").iterdir())],
         review=(ASSEMBLE / "review.md").read_bytes(),
         artifacts=json.loads((ASSEMBLE / "build.json").read_text()),

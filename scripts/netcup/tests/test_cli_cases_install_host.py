@@ -86,9 +86,11 @@ def _wizard_cases(route: str):
         ("--config", None, s, {"config_path": "reviewed-target.jsonc"}),
         ("--config", "--payload", s, {"config_path": "reviewed-target.jsonc"}),
         ("--custom-script-file", None, s, {"custom_script_file": "custom-script.sh"}),
+        ("--image", None, s, {"image": "2"}),
         ("--local-controller-key", None, s, {"local_controller_key": "retain"}),
         ("--monitor", None, s, {"monitor": True, "no_monitor": False}),
         ("--no-monitor", None, s, {"no_monitor": True, "monitor": False}),
+        ("--out-dir", None, s, {"out_dir": "wizard-output"}),
         ("--poll-interval", None, s, {"poll_interval": 2.5}),
         ("--server-id", None, "gather-id", {"server_id": 42}),
         ("--ssh-host", None, s, {"ssh_host": "192.0.2.10"}),
@@ -373,7 +375,10 @@ def test_yes_is_the_only_consent_in_a_non_interactive_run(
     _assert_catalog_outcome(row, accepted)
     assert accepted.methods.count("post") == 1
     # wizard and configure save the reviewed config before the single POST.
-    assert (accepted_dir / "target-host.jsonc").exists() is (route != "install" or scenario == "file")
+    if route == "install":
+        assert (accepted_dir / "target-host.jsonc").exists() is (scenario == "file")
+    else:
+        assert (accepted_dir / "runtime" / "target-host.target.example.jsonc").exists()
     # Contrast: without --yes and without a terminal the run refuses and never POSTs.
     bare = [token for token in row["invocation"] if token != "--yes"]
     _, refused = _replay(
@@ -480,6 +485,7 @@ def test_monitoring_receives_every_resolved_value(
         "--completion-wait-seconds", "45", "--no-attach-custom-script",
     ]
     if route == "wizard":
+        argv += ["--image", "2"]
         # install takes the marker from its config file, not from an option.
         argv += ["--completion-marker", "/var/tmp/netcup-install-done"]
     run = _live(argv, "file" if route == "install" else "gather", install_host_mod, tmp_path,
@@ -519,7 +525,7 @@ def test_local_controller_key_flag_decides_whether_the_key_is_removed(
         route, "--yes", "--local-controller-key", choice, "--ssh-identity-file", "controller-key",
     ]
     if route != "install":
-        argv += ["--completion-marker", "/var/tmp/netcup-install-done"]
+        argv += ["--image", "2", "--completion-marker", "/var/tmp/netcup-install-done"]
     run = _live(argv, "file" if route == "install" else "gather", install_host_mod, tmp_path,
                 monkeypatch, capsys, fake_client, calls)
     assert run.status == 0
@@ -536,7 +542,7 @@ def test_relative_completion_marker_is_refused(
     route, install_host_mod, tmp_path, monkeypatch, capsys, fake_client
 ):
     run = run_install_host(
-        install_host_mod, [route, "--dry-run", "--yes", "--completion-marker", "relative/marker"],
+        install_host_mod, [route, "--dry-run", "--yes", "--image", "2", "--completion-marker", "relative/marker"],
         tmp_path=tmp_path, monkeypatch=monkeypatch, capsys=capsys, fake_client=fake_client,
         scenario="none",
     )
@@ -549,7 +555,7 @@ def test_duplicate_account_key_ids_are_refused(
     install_host_mod, tmp_path, monkeypatch, capsys, fake_client
 ):
     run = run_install_host(
-        install_host_mod, ["wizard", "--dry-run", "--yes", "--ssh-key-id", "7", "--ssh-key-id", "7"],
+        install_host_mod, ["wizard", "--dry-run", "--yes", "--image", "2", "--ssh-key-id", "7", "--ssh-key-id", "7"],
         tmp_path=tmp_path, monkeypatch=monkeypatch, capsys=capsys, fake_client=fake_client,
         scenario="none",
     )
@@ -577,8 +583,9 @@ def test_dry_run_plan_shows_the_ssh_target_a_live_run_would_use(
 ):
     monkeypatch.setattr(install_host_mod, "_extract_primary_ipv4", lambda _details: "203.0.113.5")
     scenario = "file" if route == "install" else "gather"
+    selection = ["--image", "2"] if route == "wizard" else []
     default = run_install_host(
-        install_host_mod, [route, "--dry-run", "--yes"], tmp_path=tmp_path,
+        install_host_mod, [route, "--dry-run", "--yes", *selection], tmp_path=tmp_path,
         monkeypatch=monkeypatch, capsys=capsys, fake_client=fake_client, scenario=scenario,
     )
     assert default.status == 0
@@ -587,7 +594,7 @@ def test_dry_run_plan_shows_the_ssh_target_a_live_run_would_use(
     assert "[dry-run] SSH identity: none configured" in default.out
     named = run_install_host(
         install_host_mod,
-        [route, "--dry-run", "--yes", "--ssh-host", "192.0.2.10", "--ssh-user", "ops"],
+        [route, "--dry-run", "--yes", *selection, "--ssh-host", "192.0.2.10", "--ssh-user", "ops"],
         tmp_path=tmp_path, monkeypatch=monkeypatch, capsys=capsys, fake_client=fake_client,
         scenario=scenario,
     )
@@ -606,6 +613,8 @@ def test_missing_identity_file_is_refused_not_generated(
         argv += ["--ssh-host", "192.0.2.10"]
     else:
         argv += ["--dry-run", "--yes"]
+        if route == "wizard":
+            argv += ["--image", "2"]
     run = run_install_host(
         install_host_mod, argv, tmp_path=tmp_path, monkeypatch=monkeypatch, capsys=capsys,
         fake_client=fake_client, scenario=scenario, create_inputs=False,
@@ -672,7 +681,7 @@ def test_dry_run_plan_leaks_no_token_key_or_script_text(
 ):
     argv = [route, "--dry-run", "--yes", "--ssh-identity-file", "controller-key"]
     if route == "wizard":
-        argv += ["--custom-script-file", "custom-script.sh"]
+        argv += ["--image", "2", "--custom-script-file", "custom-script.sh"]
     run = run_install_host(
         install_host_mod, argv, tmp_path=tmp_path, monkeypatch=monkeypatch, capsys=capsys,
         fake_client=fake_client, scenario=scenario,
@@ -696,7 +705,7 @@ def test_wizard_still_takes_its_server_id_from_the_environment(
 ):
     # The deliberate contrast with install, which ignores NETCUP_SCP_API_SERVER_ID.
     run = run_install_host(
-        install_host_mod, [route, "--dry-run", "--yes", "--no-monitor"], tmp_path=tmp_path,
+        install_host_mod, [route, "--dry-run", "--yes", "--no-monitor", "--image", "2"], tmp_path=tmp_path,
         monkeypatch=monkeypatch, capsys=capsys, fake_client=fake_client, scenario="gather-id",
         env={"NETCUP_SCP_API_SERVER_ID": "42"},
     )

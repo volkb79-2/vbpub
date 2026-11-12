@@ -174,22 +174,15 @@ and the [consumer example](docs/CONSUMERS.md#cloud-init-cache-policy).
 
 ### Disk / swap
 
-Root and swap are separate policy choices in the shared config/profile. The
-keys `root_resize_policy` and `swap_policy` control them independently. By
-default, `root_resize_policy: "resize"` sizes the ext root partition to the
-largest safe extent after the configured swap area; it may grow online or
-shrink offline in an initramfs pre-mount hook. `grow-only` can use available
-space but never shrinks root. `untouched` forbids root geometry changes.
-Set `root_max_size_gb` to cap the root partition while keeping space after
-root and configured swap unallocated for a later data partition. A cap requires
-`swap_policy: "on"` and at least one managed tail swap partition directly after
-root; layouts without that boundary are refused. This limit is not a request to
-format or mount that space. See the
-[root sizing design](docs/DESIGN-GUIDE.md#root-and-swap-policies) and the
-[consumer example](docs/CONSUMERS.md#root-and-swap-policy).
+One `partitioning` plan owns root, data, the raw benchmark allocation,
+unallocated reserve, and managed tail swap. An absent plan means the default
+`root: "*"`, `reserve_gb: 0`, and `iobench_raw_gb: 8`; there is no separate
+root-resize policy or plan-less layout. See [Disk layout](#disk-layout), the
+[design rationale](docs/DESIGN-GUIDE.md#root-and-swap-policies), and the
+[consumer example](docs/CONSUMERS.md#disk-plan-and-offline-preview).
 
 `swap_policy: "on"` (default) replaces the guest's configured swap setup with
-native GPT swap partitions. It disables all active swap, removes configured
+native GPT swap partitions. It disables all currently active swap, removes configured
 swapfiles and swap logical volumes, and replaces `/etc/fstab` swap entries
 with the managed partitions. A pre-root swap partition (physically before the
 root partition) is retained; its capacity counts toward the target, so less
@@ -197,9 +190,10 @@ swap is placed after root. The default `swap_partition_count: 4` is the total
 including any retained pre-root swap partition. `off` disables active swap,
 removes swap entries from `/etc/fstab`, and removes swap-type partition entries
 from the root disk; it does not delete swapfiles or logical volumes.
-`untouched` leaves swap activation, fstab entries, and partition geometry
-alone. When swap is managed, the installer deactivates active swap before its
-partition-table transaction.
+`untouched` is not supported: select `on` or `off` so the plan has one known
+pool boundary. When swap is managed, the installer deactivates active swap
+before its partition-table transaction.
+Root-shrink safety is checked before swapfile cleanup.
 
 `swap_disk_total_gb: null` (default) derives the total from actual disk
 capacity and guest RAM: `min(ceil(2 × RAM in GiB), round-half-up(20% of disk
@@ -220,12 +214,11 @@ provider capacities (decimal GB; actual sizing uses bytes):
 | 256 GB | 8 | 16 | 32 | 48 | 48 | 48 |
 | 512 GB | 8 | 16 | 32 | 64 | 95 | 95 |
 
-The default root and swap layout settings are:
+The default swap settings are:
 
 ```json
 {
   "schema_version": 1,
-  "root_resize_policy": "resize",
   "swap_policy": "on",
   "swap_disk_total_gb": null,
   "swap_partition_count": 4,
@@ -233,45 +226,22 @@ The default root and swap layout settings are:
 }
 ```
 
-To cap root and choose a fixed managed swap size, use:
+The defaults are listed from the loader, not copied into an alternate layout
+policy. To pin root at 40 GiB and keep all remaining pool space unallocated,
+set `"partitioning": {"root": 40, "reserve_gb": "*"}`. Root behaviour comes
+from that entry: `"keep"` preserves its current geometry; a size, percentage,
+or `"*"` sets the target. Shrinks use the offline ext4 hook and are refused
+when current use or the filesystem minimum plus a 256 MiB safety margin does
+not fit. Growth uses `sfdisk -N` to update only the root partition, then
+refreshes and verifies it. `swap_policy` must be `on` or `off`; `untouched` is
+refused because the disk plan must own its boundary.
 
-```json
-{
-  "schema_version": 1,
-  "root_resize_policy": "resize",
-  "root_max_size_gb": 40,
-  "swap_policy": "on",
-  "swap_disk_total_gb": 8,
-  "swap_partition_count": 4,
-  "preserve_root_size_gb": 10
-}
-```
-
-`root_max_size_gb` is an optional upper bound in GiB. With `resize`, a larger
-current root is shrunk safely and a smaller root can grow up to the cap. The
-cap must be at least `preserve_root_size_gb`. `grow-only` and `untouched`
-refuse a current root larger than the cap because honoring it would require a
-shrink. A cap requires `swap_policy: "on"` and at least one managed tail swap
-partition directly after root. Swap off, untouched swap, or a plan where
-retained pre-root swap needs no tail partition is refused because cloud-init or
-stage-two growth could otherwise consume the cap. The cap measures root
-partition length from its existing start, so a non-MiB-aligned start does not
-reduce the configured limit. When a cap is set, stage one installs and stage
-two repeats guards against automatic root growth by writing
-`/etc/cloud/cloud.cfg.d/99-debian-install-v2-root-cap.cfg` with
-`growpart: {mode: off}` and `resize_rootfs: false`, and creating
-`/etc/growroot-disabled` for initramfs growroot. The remaining space after
-root and managed swap stays unallocated across later boots.
-
-When `swap=on` cannot fit without shrinking, `root=untouched` and
-`root=grow-only` fail with the requested and available space rather than
-silently changing root. A shrink is also refused if current root data or the
-ext filesystem's estimated minimum plus a 256 MiB safety margin exceeds the
-planned root target. The offline hook repeats the filesystem-minimum check
-after stage-one package changes. Unknown non-swap partitions after root are
-not moved or overwritten; that layout is refused when swap is managed.
-Root-shrink safety is checked before swapfile cleanup, so the original file
-usage and filesystem minimum remain part of the safety check.
+Unknown non-swap partitions after root, overlaps, and incomplete geometry are
+refused. Debian genericcloud's BIOS/EFI partitions 14 and 15 before root
+partition 1 are retained with their original numbers. Every managed table
+write is planned, backed up, applied, read back, and rolled back on mismatch.
+See the [design rationale](docs/DESIGN-GUIDE.md#root-and-swap-policies) and
+[adoption examples](docs/CONSUMERS.md#disk-plan-and-offline-preview).
 
 Partition order is determined from on-disk sector extents, never partition
 numbers. This supports Debian genericcloud's GPT layout, where BIOS/EFI
@@ -284,7 +254,154 @@ Every managed partition-table write is planned, backed up, applied, read back,
 and rolled back on a mismatch. Kernel partition refreshes target only the exact
 added/removed/changed partition-number ranges. See the
 [root/swap design rationale](docs/DESIGN-GUIDE.md#root-and-swap-policies) and
-[adoption examples](docs/CONSUMERS.md#root-and-swap-policy).
+[adoption examples](docs/CONSUMERS.md#disk-plan-and-offline-preview).
+
+### Disk layout
+
+```
+[pre-root partitions] | root | data partition(s) or one LVM PV | [reserve] | iobench-raw | swap (end)
+```
+
+The layout depends only on the validated `partitioning` object and `swap_*`
+keys. There is no second root-sizing path. Design, sizing rules and refusal
+messages: [docs/DESIGN-data-area-v2.md](docs/DESIGN-data-area-v2.md).
+
+```
+{"partitioning": {
+  "root": "*" | "keep" | 160 | "40%",
+  "reserve_gb": 0 | 25 | "*",
+  "iobench_raw_gb": 8 | 16 | false,
+  "data": {"kind": "partitions" | "lvm", "vg": "vg_data", "pv_size": "*" | 200 | "60%",
+           "vg_free_gib": 0,
+           "volumes": [{"name": "cow", "size": "*", "fs": "btrfs", "mount": "/srv/cow", "label": "MDT_COW"}]}}}
+```
+
+- **Sizes** are integer GiB, percentages from 0.01% through 100.00% (up to two
+  decimals), or `"*"` for the remainder. Omitted size is `"*"`. At config load,
+  impossible fixed/percentage combinations are refused: fixed root/data sizes
+  need a growable `"*"` or `reserve_gb: "*"`; percentages without a star must
+  sum to 100%. A numeric fixed `reserve_gb` may accompany percentages;
+  percentages are shares of the pool after swap, raw iobench, and that fixed
+  reserve are removed. Percentages cannot use `reserve_gb: "*"`. The single
+  star absorbs the remainder and alignment rounding. The pool ends at the first tail swap
+  start, or at the aligned final usable GPT sector when swap is off or no tail
+  swap is needed. A refusal includes the resolved table when the disk facts
+  allow one.
+- **`root`**: `"keep"` preserves the current root size; a size, percentage, or
+  `"*"` gives the planned size. Shrinking uses the offline ext4 hook after
+  usage/minimum checks. Growing updates the root entry with `sfdisk -N`, then
+  refreshes and verifies it. The minimum is `preserve_root_size_gb`.
+- **`reserve_gb`**: default 0. A number or `"*"` leaves that much unallocated
+  after the planned data area. It sits before `iobench-raw` and swap and can be
+  used for a later partition; root does not grow through a reserved gap.
+- **`iobench_raw_gb`**: default 8 GiB; set an integer from 2 to 10240 GiB to
+  choose another size, or `false` to disable it. This is an always-planned
+  Linux partition with reserved PARTLABEL `iobench-raw`, numbered by physical
+  position immediately before tail swap. It is never formatted, mounted, or
+  activated as swap. If `run_io_benchmark` is enabled, the installer checks
+  it is unused, wipes signatures, and runs `iobench` directly on it. The raw
+  partition remains in place after benchmarking. The old temporary-tail
+  benchmark partition path has been removed.
+- **`data.kind = "partitions"`**: one GPT partition per volume `{size, fs, mount, label}`,
+  `fs` is `btrfs`, `ext4`, `xfs` or `none` (a raw partition; `type: "zfs"` sets the ZFS
+  GPT type for a hand-made pool). `label` is required and unique (it is the GPT partition
+  name used to recognise the partition on a rerun, and the filesystem label). `mount` is the
+  filesystem top level. Minimums: btrfs/xfs 512 MiB, ext4 64 MiB.
+- **`data.kind = "lvm"`**: one PV partition (`pv_size`, default `"*"`, at least 2 GiB, GPT
+  name `MDT_LVM_PV`), one VG `vg`, and LVs `{name, size, fs, mount, label}` (`fs` default
+  `none`). LV sizes: `N` GiB (`-L`), `"P%"` of the whole VG (`-l` extents) or `"*"`
+  (`-l 100%FREE`, created last whatever the config order). `vg_free_gib` (default 0) is kept
+  free in the VG for `lvextend`; without a `"*"` LV the rest of the VG stays free.
+- **Numbering follows disk position**: partitions after root ascend with their start sector,
+  root, then the data partitions in config order, then the swaps. Pre-root partitions keep
+  the numbers they have (a cloud image has root = 1 and 14/15 before it). Find volumes by
+  label, never by number.
+- **Swap identifiers**: managed swap partitions have no GPT PARTLABEL. `mkswap -L`
+  writes `vbpub-swap<N>` (or `vbpub-swap-pre<N>` for retained swaps), and
+  `/etc/fstab` binds each partition by `PARTUUID`. The plan preview's
+  `Identifier` column and `tools/swap-bench-window.sh` use those same two facts.
+- **Mount policy**: exact mounts on `/`, `/var`, `/var/lib`, `/srv`, or `/home`
+  are refused. A mount equal to, inside, or above a protected OS-state tree is
+  also refused: `/usr`, `/etc`, `/boot`, `/root`, `/tmp`, `/proc`, `/sys`,
+  `/dev`, `/run`, `/bin`, `/sbin`, `/lib`, `/lib64`, `/lib32`, `/libx32`,
+  `/var/lib/dpkg`, `/var/lib/apt`, `/var/lib/systemd`, `/var/lib/cloud`,
+  `/var/cache/apt`, `/var/log`, `/srv/tree-cache`, and `/srv/tree-upper`.
+  `/usr/local` stays protected because stage one writes installer executables
+  there before the data filesystem is mounted. Docker and containerd state
+  paths are refused because stage two mounts data after those services are
+  installed or started, without a stop or seed step. The supported journal
+  exception is `/var/log/journal` and its descendants; `/var/log` and other log
+  paths stay protected. The refusal names the requested mount and reason. Data
+  mounts such as `/srv/cow`, `/srv/data`, `/home/runner`, and
+  `/var/log/journal` are allowed when they do not cover protected state. Equal
+  and nested planned mounts are refused. See
+  [Data mount safety](docs/DESIGN-GUIDE.md#data-mount-safety) for the rationale.
+
+  With `/var/log/journal` selected, the install-time journal remains on the
+  root filesystem and is hidden when stage two mounts the new filesystem over
+  that path. The mounted directory will not show those earlier files.
+  Source inspection confirms the install-time files remain on the root
+  filesystem and are hidden by the later mount; they are not copied. Whether
+  `journalctl --flush`, restarting `systemd-journald`, or rebooting resumes
+  persistent writes on the mounted filesystem is **not verified** by the current
+  tests. Verify that behavior in the `r1-vm-real-commit` lane before claiming
+  recovery.
+- **Not supported**: `fs: zfs` as a managed filesystem (refused with a clear message; deferred),
+  btrfs `subvol`.
+- **Safety**: `mkfs`/`pvcreate` only touch a BLANK device (the same filesystem again is kept, any
+  other signature is refused); fstab uses `UUID=` and `nofail` (btrfs `noatime,user_subvol_rm_allowed`); another
+  device with the same label is refused; a `blkid` failure other than "no signature" is never
+  treated as blank; a rerun that would delete or move a data partition holding a signature is
+  refused with no wipe override; preserve the signature and resolve data
+  ownership before changing the plan. The table is written in ONE crash-safe
+  transaction after any root shrink and before root growth; the plan is a pure
+  function of (config, disk size, root start), so a resume recomputes it.
+- Runner integration: `provision-runner.sh` finds the planned CoW partition by
+  GPT PARTLABEL `MDT_COW` and does not infer its number or carve another one.
+  It refuses a missing or duplicate label, a non-btrfs filesystem, or a mount
+  that disagrees with `COW_MOUNT`.
+- Removed keys have no migration path: `root_resize_policy`,
+  `root_max_size_gb`, `disk_layout`, `data_area`, `data_partition`, and
+  `data_lvm` are refused with a pointer to `partitioning`.
+
+To preview the resolved GiB plan without opening a device, run:
+
+```bash
+./debian-install-v2.py plan --config install.json --disk-size 512GiB --ram-gib 8
+```
+
+`--ram-gib` is required when `swap_disk_total_gb` is automatic. `root: "keep"`
+also needs `--root-current-size-gib`. The offline resolver omits preserved
+pre-root geometry and assumes root number 1 at sector 2048; use
+`--root-start-sector` and `--root-number` to supply the target root geometry.
+The saved netcup hosts use `--root-start-sector 2500608 --root-number 3`. The
+wizard summary shows the reserved raw partition
+size and directs users to this command for the resolved table.
+
+Example plan for a 512 GiB host, root 160 GiB, four 4 GiB swaps, and the
+default 8 GiB raw benchmark partition:
+
+```json
+{"schema_version": 1, "swap_disk_total_gb": 16, "swap_partition_count": 4,
+ "partitioning": {"root": 160, "data": {"kind": "partitions", "volumes": [
+   {"fs": "btrfs", "mount": "/srv/cow", "label": "MDT_COW"}]}}}
+```
+
+The resolved middle partition is about 328 GiB after reserving the 8 GiB raw
+partition and 16 GiB of swap. In physical order the plan is root, `MDT_COW`,
+`iobench-raw`, then the four swaps; partition numbers follow that order.
+
+```json
+{"schema_version": 1, "swap_disk_total_gb": 16, "swap_partition_count": 4,
+ "partitioning": {"root": 100, "data": {"kind": "lvm", "vg": "vg_data", "volumes": [
+   {"name": "cow", "size": "60%", "fs": "btrfs", "mount": "/srv/cow", "label": "MDT_COW"},
+   {"name": "scratch", "fs": "xfs", "mount": "/srv/scratch", "label": "SCRATCH"}]}}}
+```
+
+Swap is the last allocation on disk. The planner leaves backup-GPT metadata
+room and aligns boundaries to 1 MiB. Number 128 is the GPT partition-number
+limit; config load refuses a statically oversized plan, and offline/live
+planning also checks the actual root number before any table write.
 
 ### zswap
 
@@ -400,6 +517,11 @@ Own `debian.sources` (main/contrib/non-free/non-free-firmware across
 release + `-updates` + `-security` + `-backports`), `apt_auto_upgrade_mode`
 (`full` / `security-only` / `notify-only`) driving an unattended-upgrades
 style timer.
+
+The base package stage installs `augeas-tools` on every host and checks that
+both `augtool` and `augparse` are available. This lets `augeaswrap` apply lens
+edits without a later network step. The earlier stdlib-only remote bootstrap
+does not need Augeas; see the [design guide](docs/DESIGN-GUIDE.md#augeas-tool-availability-and-the-bootstrap-boundary).
 
 **Backports pin is 600, deliberately.** `/etc/apt/preferences.d/debian-priorities`
 pins `stable-backports` at 600, above stable (500), so apt prefers the backports
@@ -548,28 +670,38 @@ replacement `run_cpu_benchmark` (`RENAMED_V1_SETTINGS`), described under
 The v1 Geekbench scores were never sizing inputs; v2 does not use them to size
 anything either.
 
-The optional io.cost benchmark (`run_io_benchmark`, off by default;
-`io_benchmark_duration_s`, `io_benchmark_max_size_gb`) runs in stage 2 before
-the swap shape is written: it carves ONE throwaway partition from the tail of
-the free space (sized `min(io_benchmark_max_size_gb, free - swap requirement -
-1 GiB margin)`, skipped under 2 GiB), formats and mounts it, runs the shared
-generated `tools/iocost_coef_gen.py` in `--testfile` mode, then unmounts and
-deletes the partition and reads the table back before swap placement. Results
-(`rbps`/`rseqiops`/`rrandiops`/`wbps`/`wseqiops`/`wrandiops`) go to
-`state_dir/io-benchmark.json` (0600), the `io_benchmark` step and one
-milestone notification. A benchmark failure is advisory (step `warned`, the
-install continues); a cleanup that cannot be verified stops the install.
-**Caveat (2026-10-19):** the generator measures with `fio --direct=1`, which does not defeat a
-hypervisor write-back cache, so on a virtual disk the numbers can be cache readings (one host: 4.3 GB/s
-from a disk that saturated at ~20 MB/s). `tools/iocost-calibrate.sh` now refuses to write an io.cost model
-from a rotational-flagged device measuring above 1 GiB/s sequential or 20,000 random 4 KiB IOPS (shared `tools/iocost_plausibility.py`; `IO_BASELINE_ROTATIONAL_FLAG=ignore` overrides it for a fast virtio disk); the installer step still records
-the numbers unchecked and they are advisory only. The generator redesign is in `TODO.md`.
-It needs `fio` and `pv` (installed only when the benchmark runs) and, while
-it runs, the tool sets the disk's scheduler to `none` and disables merging
-(the installer restores both itself, success or failure). Every long command has
-a hard timeout (the whole process group is killed; an unreapable child stops the
-install), and the artifact's body must match `tools/iocost_coef_gen.py.sha256`.
-See `IO-BENCHMARK-DESIGN.md` for the full flow.
+The optional io.cost benchmark (`run_io_benchmark`, off by default) runs
+`iobench veryquick` directly on the planned, unformatted `iobench-raw`
+partition. That Linux partition defaults to 8 GiB and is always part of the
+layout; choose another `partitioning.iobench_raw_gb` size or set it to
+`false` when the benchmark is off. Stage two verifies the PARTLABEL and
+geometry, confirms the partition is neither mounted nor active swap, and
+wipes its signatures before the run. It never formats or mounts this
+partition, and it remains reserved afterward. Stage two runs this benchmark
+before configuring io.cost, so a successful result supplies the model
+coefficients on a fresh install. The old temporary-tail allocation and
+cleanup table write have been removed.
+
+Results (`rbps`/`rseqiops`/`rrandiops`/`wbps`/`wseqiops`/`wrandiops`) go to
+`state_dir/io-benchmark.json` with mode `0600`, the `io_benchmark` step and
+one milestone notification. A benchmark failure is advisory (`warned`, the
+install continues), except a child that cannot be reaped, which stops the
+install. Failed advisory CPU and I/O benchmark commands also write their full,
+already-redacted output to `<state_dir>/cpu-benchmark.log` or
+`<state_dir>/io-benchmark.log`; the step detail and notification name that path.
+The benchmark output is advisory and is not used to write an io.cost model.
+`fio --direct=1` can measure a hypervisor write-back cache rather than durable
+device speed, so interpret virtual-disk numbers accordingly. See
+[`IO-BENCHMARK-DESIGN.md`](IO-BENCHMARK-DESIGN.md) for the execution contract.
+
+For a later raw iobench window, `tools/swap-bench-window.sh` frees exactly one
+managed swap partition, records its PARTUUID/filesystem label identity, refuses
+while any live `swapoff` exists or any identity changed, and restores the swap
+after the benchmark using only that device and its fstab row's options. Other
+configured swaps that were inactive remain inactive. It edits no fstab entry
+and supports `begin`/`end` dry-runs before `--commit`. See the
+[copyable procedure](docs/CONSUMERS.md#run-a-swap-benchmark-window) and
+[safety rationale](docs/DESIGN-GUIDE.md#swap-window-is-a-recorded-transaction).
 
 ### Host CPU benchmark tool (`tools/cpu_benchmark.py`, HB-1)
 

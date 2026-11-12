@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import pwd
 import time
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -128,6 +128,8 @@ class ProcessSampler:
         self.proc_root = proc_root
         self.now = now or time.time
         self.pinned_pids = pinned_pids or frozenset()
+        # pid -> the incarnation the pin was bound to when first seen (A-14).
+        self._pin_bindings: dict[int, ProcessKey] = {}
         self._default_interval_s = default_interval_s
         self._boot_id = read_boot_id(proc_root)
         self._prev: dict[ProcessKey, _Baseline] = {}
@@ -140,8 +142,16 @@ class ProcessSampler:
         self._seq = 0
         self._evicted = False
 
+    def _bind_pins(self, present: Iterable[ProcessKey]) -> set[ProcessKey]:
+        """Bind each pinned pid to the incarnation first seen; a reused pid is a new process."""
+        for key in present:
+            if key.pid in self.pinned_pids and key.pid not in self._pin_bindings:
+                self._pin_bindings[key.pid] = key
+        return set(self._pin_bindings.values())
+
     def set_pinned(self, pinned_pids: frozenset[int]) -> None:
         self.pinned_pids = pinned_pids
+        self._pin_bindings = {pid: key for pid, key in self._pin_bindings.items() if pid in pinned_pids}
 
     def frame_source(self) -> ProcessFrameSource:
         source = ProcessFrameSource(list(self._history))
@@ -198,7 +208,7 @@ class ProcessSampler:
             keys=all_keys,
             cpu_rate=cpu_rate,
             io_rate=io_rate,
-            pinned_pids=self.pinned_pids,
+            pinned_pids=frozenset(self._bind_pins(baselines)),
             hot_since=self._hot_since,
             now=ts,
             config=self.config,

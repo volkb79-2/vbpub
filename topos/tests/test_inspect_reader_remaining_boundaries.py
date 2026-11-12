@@ -63,20 +63,32 @@ def test_default_journald_runner_returns_decoded_successful_process_output(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The fixed runner returns bounded decoded output from its fixed argv."""
-    run = Mock(
-        return_value=types.SimpleNamespace(
-            stdout=b"entry\xff\n", stderr=b"warning\n", returncode=0
-        )
-    )
-    monkeypatch.setattr(reader.subprocess, "run", run)
+    import sys
 
-    result = _default_journald_runner(("/usr/bin/journalctl", "--no-pager"), timeout=2)
+    child = (
+        "import sys;"
+        "sys.stdout.buffer.write(b'entry\\xff\\n');"
+        "sys.stderr.buffer.write(b'warning\\n')"
+    )
+
+    result = _default_journald_runner((sys.executable, "-c", child), timeout=30)
 
     assert result == _JournaldRunResult(
         stdout="entry\ufffd\n", stderr="warning\n", returncode=0, timed_out=False
     )
-    assert run.call_args.args[0] == ["/usr/bin/journalctl", "--no-pager"]
-    assert run.call_args.kwargs["shell"] is False
+
+
+def test_default_journald_runner_stops_reading_at_the_byte_cap() -> None:
+    """C-14: an endless writer is killed at the caller's cap, not buffered."""
+    import sys
+
+    child = "import sys\nwhile True:\n    sys.stdout.buffer.write(b'x' * 4096)\n    sys.stdout.flush()"
+
+    result = _default_journald_runner((sys.executable, "-c", child), timeout=30, max_bytes=100)
+
+    assert result.timed_out is False
+    assert result.returncode == 0
+    assert len(result.stdout) == 101  # cap + 1 so the renderer can flag truncation
 
 
 def test_invalid_kind_stays_typed_for_early_limit_and_gate_refusals(tmp_path: Path) -> None:
@@ -159,3 +171,49 @@ def test_cgroup_renderer_adds_a_separator_after_a_file_without_newline(
     assert isinstance(result, InspectFilesReadResult)
     assert "memory.current\n\n#" in result.content
     assert "pids.max" in result.content
+
+
+def test_tail_window_keeps_an_unterminated_last_line() -> None:
+    stream, skipped_bytes, skipped_lines = reader._tail_window(
+        io.BytesIO(b"first\nsecond\npartial-tail"), budget=1024, max_lines=10
+    )
+    assert stream.read() == b"first\nsecond\npartial-tail"
+    assert skipped_bytes is False and skipped_lines is False
+
+
+def test_journald_runner_kills_a_child_that_ignores_the_first_wait(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import os
+    import subprocess
+
+    r_out, w_out = os.pipe()
+    r_err, w_err = os.pipe()
+    os.close(w_out)
+    os.close(w_err)  # both streams hit EOF at once
+
+    class Child:
+        returncode = -9
+
+        def __init__(self) -> None:
+            self.stdout = os.fdopen(r_out, "rb")
+            self.stderr = os.fdopen(r_err, "rb")
+            self.kills = 0
+            self.waits: list[object] = []
+
+        def kill(self) -> None:
+            self.kills += 1
+
+        def wait(self, timeout=None):
+            self.waits.append(timeout)
+            if timeout is not None:
+                raise subprocess.TimeoutExpired("journalctl", timeout)
+            return self.returncode
+
+    child = Child()
+    monkeypatch.setattr(reader.subprocess, "Popen", lambda *a, **k: child)
+    result = _default_journald_runner(("journalctl",), timeout=30)
+    assert child.kills == 1  # escalated to kill after the bounded wait expired
+    assert child.waits[-1] is None  # and then reaped without a bound
+    assert result.timed_out is False and result.returncode == -9
+    assert child.stdout.closed and child.stderr.closed

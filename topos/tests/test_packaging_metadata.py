@@ -12,20 +12,18 @@ from packaging.version import Version
 PYPROJECT = Path(__file__).resolve().parents[1] / "pyproject.toml"
 
 
-def _textual_requirement() -> Requirement:
+def _requirement(name: str) -> Requirement:
     metadata = tomllib.loads(PYPROJECT.read_text(encoding="utf-8"))
     requirements = [Requirement(value) for value in metadata["project"]["dependencies"]]
     textual = [
-        requirement for requirement in requirements if requirement.name == "textual"
+        requirement for requirement in requirements if requirement.name == name
     ]
-    assert len(textual) == 1, (
-        "project.dependencies must contain exactly one Textual requirement"
-    )
+    assert len(textual) == 1, f"project.dependencies must contain exactly one {name} requirement"
     return textual[0]
 
 
 def test_textual_lower_bound_is_current() -> None:
-    requirement = _textual_requirement()
+    requirement = _requirement("textual")
     lower_bounds = [
         Version(specifier.version)
         for specifier in requirement.specifier
@@ -36,7 +34,34 @@ def test_textual_lower_bound_is_current() -> None:
 
 
 def test_textual_has_no_upper_ceiling() -> None:
-    requirement = _textual_requirement()
+    requirement = _requirement("textual")
     assert all(
         specifier.operator not in {"<", "<="} for specifier in requirement.specifier
     )
+
+
+def test_cli_extended_lower_bound_is_current() -> None:
+    requirement = _requirement("cli-extended")
+    lower_bounds = [
+        Version(specifier.version)
+        for specifier in requirement.specifier
+        if specifier.operator in {">=", ">"}
+    ]
+    assert lower_bounds
+    assert max(lower_bounds) >= Version("0.5.3")
+
+
+def test_augeaswrap_lower_bound_is_current() -> None:
+    requirement = _requirement("augeaswrap")
+    lower_bounds = [
+        Version(specifier.version)
+        for specifier in requirement.specifier
+        if specifier.operator in {">=", ">"}
+    ]
+    assert lower_bounds
+    assert max(lower_bounds) >= Version("0.1.0")
+
+
+def test_toposd_console_script_is_registered() -> None:
+    metadata = tomllib.loads(PYPROJECT.read_text(encoding="utf-8"))
+    assert metadata["project"]["scripts"]["toposd"] == "topos.service.cli:main"

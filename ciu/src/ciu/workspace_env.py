@@ -948,6 +948,36 @@ def _docker_available() -> bool:
     return result.returncode == 0
 
 
+_NETWORK_POOL_EXHAUSTED_MARKERS = (
+    "all predefined address pools have been fully subnetted",
+    "could not find an available, non-overlapping ipv4 address pool",
+)
+
+
+def _network_pool_remedy(detail: str) -> str:
+    """CIU-199: the actionable remedy for a daemon address-pool exhaustion.
+
+    The daemon error alone ("all predefined address pools have been fully
+    subnetted") does not say that the cause is the NUMBER of user-defined
+    networks on the host, not this checkout. CIU never removes networks it
+    does not own to make room, so the remedy is operator-directed.
+    """
+    lowered = detail.lower()
+    if not any(marker in lowered for marker in _NETWORK_POOL_EXHAUSTED_MARKERS):
+        return ""
+    return (
+        "\n[CIU-199] the Docker daemon has no free subnet left for a new "
+        "network: too many user-defined networks exist on this host. No "
+        "network was created and none was removed. Free subnets by removing "
+        "networks nobody uses (`docker network ls`, then `docker network rm "
+        "<exact name>` for an EMPTY one that belongs to a finished run; "
+        "`ciu worktree reap` surveys leftovers of removed worktrees), or ask "
+        "the host operator to widen `default-address-pools` in the daemon "
+        "configuration. Until the network exists `ciu up` cannot start this "
+        "checkout's stack."
+    )
+
+
 def _ensure_network_exists(
     network_name: str,
     *,
@@ -985,9 +1015,70 @@ def _ensure_network_exists(
         check=False,
     )
     if create.returncode != 0:
+        detail = (create.stderr or "").strip()
         raise WorkspaceEnvError(
-            f"Failed to create docker network {network_name}: {create.stderr.strip()}"
+            f"Failed to create docker network {network_name}: {detail}"
+            + _network_pool_remedy(detail)
         )
+
+
+_OWN_CONTAINER_ID_PATTERN = re.compile(r"/docker/containers/([0-9a-f]{64})/")
+
+
+def _own_container_id() -> str:
+    """CIU-176: the id of the container THIS process runs in, or ``""``.
+
+    Read from ``/proc/self/mountinfo`` (Docker bind-mounts ``resolv.conf`` and
+    ``hostname`` from ``/var/lib/docker/containers/<id>/``). It is a fact of
+    the running process, unlike ``DEVCONTAINER_NAME``, which may be a stale
+    machine fact copied from a checkout generated in a different cockpit.
+    """
+    try:
+        text = Path("/proc/self/mountinfo").read_text(encoding="utf-8")
+    except OSError:
+        return ""
+    match = _OWN_CONTAINER_ID_PATTERN.search(text)
+    return match.group(1) if match else ""
+
+
+def _resolve_own_container_name(configured: str) -> str:
+    """CIU-176: the real name of this process's container, else *configured*.
+
+    ``configured`` comes from ``DEVCONTAINER_NAME``/``HOSTNAME`` and can name
+    a container that is not this one (a stale generated machine fact). When
+    the own container id is known and Docker names it differently, the real
+    name wins; an unreadable id keeps *configured*, a failed inspect keeps it
+    with a warning. A *configured* value that is a prefix of the own id (the
+    ``HOSTNAME`` fallback is the 12-hex short id) is the same container, not a
+    mismatch: it resolves to the real name without a warning.
+    """
+    own_id = _own_container_id()
+    if not own_id:
+        return configured
+    result = subprocess.run(
+        ["docker", "inspect", own_id, "--format", "{{.Name}}"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    actual = result.stdout.strip().lstrip("/") if result.returncode == 0 else ""
+    if not actual:
+        detail = (result.stderr or "").strip() or "no container name returned"
+        _log_warn(
+            f"could not inspect this process's own container {own_id[:12]} ({detail}); "
+            f"attaching {configured!r} unverified, which may be a stale "
+            "DEVCONTAINER_NAME."
+        )
+        return configured
+    if actual == configured:
+        return configured
+    if configured and own_id.startswith(configured):
+        return actual
+    _log_warn(
+        f"DEVCONTAINER_NAME/HOSTNAME names {configured!r} but this process runs in "
+        f"container {actual!r}; attaching {actual!r}."
+    )
+    return actual
 
 
 def _connect_devcontainer_to_network(network_name: str) -> None:
@@ -1014,6 +1105,7 @@ def _connect_devcontainer_to_network(network_name: str) -> None:
         _log_warn("Docker not available; skipping devcontainer network attach.")
         return
 
+    container_name = _resolve_own_container_name(container_name)
     inspect = subprocess.run(
         ["docker", "network", "inspect", network_name, "--format", "{{range .Containers}}{{.Name}} {{end}}"],
         capture_output=True,
@@ -2033,24 +2125,32 @@ def generate_ciu_env(
         physical_git_root = _detect_physical_repo_root(git_root)
         workspace_id = shared.workspace_id_for_path(physical_git_root)
         root_instance_id = shared.workspace_id_for_path(physical_root)
-    except Exception:
+    except Exception as exc:
         # A CIU env can be generated before a Git repository exists in a
         # scaffold. The path-only derivation above is still deterministic; the
         # next Git-backed generation supplies the full workspace/root pair.
         if git_context_expected:
-            raise
+            raise WorkspaceEnvError(
+                f"[S2.8] cannot derive the workspace identity from the git checkout "
+                f"at {repo_root}: {exc}. A git checkout needs at least one commit "
+                "(`git commit --allow-empty -m init`) before `ciu env generate`."
+            ) from exc
     network_values = _compute_network_name(
         physical_root, workspace_id=workspace_id, root_instance_id=root_instance_id,
     )
     public_values = _detect_public_fqdn(repo_root, require_fqdn=False)
 
     user_name = os.environ.get("USER_NAME", os.environ.get("USER", ""))
-    user_uid = os.environ.get("USER_UID", str(os.getuid()))
-    user_gid = os.environ.get("USER_GID", str(os.getgid()))
-    docker_uid = os.environ.get("DOCKER_UID", user_uid)
+    # CIU-192: an exported-but-EMPTY id (`USER_UID=`) is "not set", never a
+    # value: `.get(key, default)` returned "" and persisted it as
+    # `container_uid = ""`, which every later bootstrap rejects as "Missing
+    # required workspace environment variables: CONTAINER_UID". "0" stays valid.
+    user_uid = os.environ.get("USER_UID") or str(os.getuid())
+    user_gid = os.environ.get("USER_GID") or str(os.getgid())
+    docker_uid = os.environ.get("DOCKER_UID") or user_uid
 
-    container_uid = os.environ.get("CONTAINER_UID", user_uid)
-    container_gid = os.environ.get("CONTAINER_GID", docker_gid)
+    container_uid = os.environ.get("CONTAINER_UID") or user_uid
+    container_gid = os.environ.get("CONTAINER_GID") or docker_gid
 
     python_exec = os.environ.get("PYTHON_EXECUTABLE", sys.executable)
     pip_exec = os.environ.get("PIP_EXECUTABLE") or shutil.which("pip") or ""

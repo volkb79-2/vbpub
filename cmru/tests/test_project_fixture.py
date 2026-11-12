@@ -1,9 +1,7 @@
-import json
 import re
 from pathlib import Path
 import subprocess
 import sys
-import textwrap
 
 import pytest
 
@@ -12,32 +10,9 @@ from tests._cx_paths import CX_LIBRARY
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
 
-import coverage_canary  # noqa: E402
 import mutation_campaign  # noqa: E402
 import project_fixture  # noqa: E402
 from project_fixture import copy_project_fixture  # noqa: E402
-
-# A stand-in for the real coverage command: like pytest collecting the real
-# suite, it fails with exit 2 when a repository-root file it reads is absent,
-# and it refuses the canary's appended function as pytest-cov's fail-under does.
-FAKE_COVERAGE_COMMAND = textwrap.dedent('''\
-    import pathlib
-    import sys
-
-    project = pathlib.Path.cwd()
-    for needed in sys.argv[2:]:
-        if not (project.parent / needed).is_file():
-            print(f"ERROR collecting: No such file or directory: {project.parent / needed}")
-            sys.exit(2)
-    if "_cmru_coverage_canary_unreached" in (project / "src/cmru/config.py").read_text():
-        if sys.argv[1] == "coverage":
-            print("FAIL Required test coverage of 100% not reached. Total coverage: 99.98%")
-        else:
-            print("1 failed")
-        sys.exit(1)
-    print("1 passed")
-''')
-
 
 #: Tracked files of each SUITE_COLLECTION_INPUTS pathspec in the estate below.
 SUPPORT_FILES = (
@@ -99,7 +74,6 @@ def _estate(repo_root: Path) -> Path:
     _write(project_root / "pyproject.toml", "[tool.pytest.ini_options]\n")
     _write(project_root / "src/cmru/__init__.py", "")
     _write(project_root / "src/cmru/config.py", "VALUE = 1\n")
-    _write(project_root / "check_coverage.py", FAKE_COVERAGE_COMMAND)
     (project_root / "config-link.py").symlink_to("src/cmru/config.py")
     for library, package in (
         ("cli-extended", "cli_extended"),  # present in the repo, must NOT be copied
@@ -194,58 +168,6 @@ def test_mutation_manifest_pins_the_suite_collection_inputs_it_copies(tmp_path):
     )
 
 
-def _canary(project_root: Path, evidence: Path, mode: str, *needed: str) -> int:
-    return coverage_canary.run([
-        "--repo-root", str(project_root.parent),
-        "--project-root", str(project_root),
-        "--target", "src/cmru/config.py",
-        "--evidence", str(evidence),
-        "--", sys.executable, "check_coverage.py", mode, *needed,
-    ])
-
-
-def test_canary_control_passes_and_the_uncovered_candidate_fails_for_the_coverage_reason(tmp_path):
-    project_root = _estate(tmp_path / "repo")
-    evidence = tmp_path / "canary.json"
-    needed = [
-        "tester-unified/Dockerfile", "nyxloom/pyproject.toml", "nyxloom/src/nyxloom/__init__.py",
-    ]
-
-    assert _canary(project_root, evidence, "coverage", *needed) == 0
-
-    document = json.loads(evidence.read_text(encoding="utf-8"))
-    assert document["control_exit_code"] == 0
-    assert document["transformed_exit_code"] == 1
-    assert document["expected_reason"] == "Required test coverage of 100% not reached"
-    assert document["observed_expected_reason"] is True
-    assert "_cmru_coverage_canary_unreached" not in (project_root / "src/cmru/config.py").read_text()
-
-
-def test_canary_reports_a_missing_support_input_as_a_control_failure_never_a_coverage_refusal(tmp_path):
-    project_root = _estate(tmp_path / "repo")
-    evidence = tmp_path / "canary.json"
-
-    # Tracked in the repository but not a fixture input: the suite cannot collect.
-    with pytest.raises(RuntimeError, match="known-good canary control failed with exit 2") as raised:
-        _canary(project_root, evidence, "coverage", "tester-unified/gen-requirements.py")
-
-    assert "No such file or directory" in str(raised.value)
-    assert not evidence.exists()
-
-
-def test_canary_refuses_an_uncovered_candidate_that_fails_for_another_reason(tmp_path):
-    project_root = _estate(tmp_path / "repo")
-    evidence = tmp_path / "canary.json"
-
-    with pytest.raises(RuntimeError, match="did not fail for the expected coverage reason"):
-        _canary(project_root, evidence, "other")
-
-    document = json.loads(evidence.read_text(encoding="utf-8"))
-    assert document["control_exit_code"] == 0
-    assert document["transformed_exit_code"] == 1
-    assert document["observed_expected_reason"] is False
-
-
 # KI-88: the closure scan resolves every repository-root spelling with an AST walk
 # (tests/_repo_root_scan.py) over each test module, per function, not per module.
 # A read is exempt from "the fixture must carry it" in exactly three ways, all
@@ -261,8 +183,8 @@ def test_canary_refuses_an_uncovered_candidate_that_fails_for_another_reason(tmp
 #    (``pytest.skip`` or an ``is_file()`` branch). The guard text must still occur
 #    in the module, and an entry that no longer matches any read fails as stale.
 MODULE_SKIP_MARKERS = {
-    "test_tester_image_cli_extended_identity.py": "tester-unified absent (isolated canary tree)",
-    "test_tester_unified_image.py": "tester-unified generator absent (isolated canary tree)",
+    "test_tester_image_cli_extended_identity.py": "tester-unified absent (isolated mutation fixture)",
+    "test_tester_unified_image.py": "tester-unified generator absent (isolated mutation fixture)",
 }
 # (module, path prefix) -> (guard that must still be in the module source, why).
 RUNTIME_GUARDED = {
@@ -287,7 +209,7 @@ RUNTIME_GUARDED = {
         r'root / "libraries" / "cli-extended" / "src"',
         "a sys.path string for a subprocess; nothing is read from it",
     ),
-    ("test_w2_integ.py", "modern-debian-tools-python-debug"): (
+    ("test_w2_integ.py", "mdt-cockpit"): (
         r"if mdt\.is_file\(\):", "the sparse fixture lacks it; the read is branch-guarded",
     ),
 }
@@ -381,7 +303,7 @@ def test_fixture_carries_every_repo_root_file_the_suite_reads():
         if not _carried(read.path, pathspecs, tracked) or not (repo_root / read.path).exists():
             missing.append(f"{name}:{read.line}: {read.path}")
     assert not missing, (
-        "the canary/mutation fixture does not carry these repository-root files (or a "
+        "the mutation fixture does not carry these repository-root files (or a "
         f"non-literal read is undeclared), so the known-good control fails: {missing}"
     )
     assert used_guards == set(RUNTIME_GUARDED), set(RUNTIME_GUARDED) - used_guards
@@ -459,53 +381,6 @@ def test_scan_places_a_nested_tools_module_below_the_project():
     assert [read.path for read in reads] == ["assay/src"]
 
 
-def test_canary_control_failure_streams_full_output_without_a_temporary_log(
-    tmp_path, monkeypatch, capsys
-):
-    project_root = _estate(tmp_path / "repo")
-    summary = "".join(f"FAILED tests/test_x.py::test_case_number_{n:03d}\n" for n in range(80))
-    assert len(summary) > 2000  # the old stdout[-2000:] kept only this
-    full_output = (
-        "....F.....\n"
-        "=================================== FAILURES ===================================\n"
-        "____ test_real_cause ____\n"
-        "E   FileNotFoundError: /scratch/tester-base/Dockerfile\n"
-        "=========================== short test summary info ============================\n"
-        + summary
-        + "== 80 failed in 1.00s ==\n"
-    )
-    (project_root / "noisy_control.py").write_text(textwrap.dedent(f'''\
-        import sys
-        print("....F.....")
-        print("=================================== FAILURES ===================================")
-        print("____ test_real_cause ____")
-        print("E   FileNotFoundError: /scratch/tester-base/Dockerfile")
-        print("=========================== short test summary info ============================")
-        sys.stdout.write({summary!r})
-        print("== 80 failed in 1.00s ==")
-        sys.exit(1)
-    '''), encoding="utf-8")
-    subprocess.run(["git", "-C", str(project_root.parent), "add", "-A"], check=True)  # the fixture copies tracked files
-    evidence = tmp_path / "canary.json"
-    monkeypatch.setattr(coverage_canary.tempfile, "tempdir", str(tmp_path))
-
-    with pytest.raises(RuntimeError, match="known-good canary control failed with exit 1") as raised:
-        coverage_canary.run([
-            "--repo-root", str(project_root.parent), "--project-root", str(project_root),
-            "--target", "src/cmru/config.py", "--evidence", str(evidence),
-            "--", sys.executable, "noisy_control.py",
-        ])
-
-    error = str(raised.value)
-    assert "FileNotFoundError: /scratch/tester-base/Dockerfile" in error
-    assert "full output is above in the lane log" in error
-    assert "full output:" not in error
-    assert capsys.readouterr().err == "known-good canary control output follows:\n" + full_output + "\n"
-    assert not list(tmp_path.glob("cmru-coverage-canary-*.control.log"))
-    assert not evidence.exists()
-    assert not evidence.with_suffix(".control.log").exists()
-
-
 def _real_pytest_output(tmp_path: Path, source: str) -> str:
     """The output of a real ``pytest -q`` run over ``source`` (never a hand-made imitation)."""
     (tmp_path / "test_sample.py").write_text(source, encoding="utf-8")
@@ -578,40 +453,3 @@ def test_failure_excerpt_labels_the_tail_fallback_and_empty_output():
     labelled = project_fixture.failure_excerpt("0123456789", 4)
     assert labelled.startswith("[no FAILURES/ERRORS section; last 4 characters of output]")
     assert labelled.endswith("6789")
-
-
-def _noisy_control(project_root: Path) -> None:
-    (project_root / "noisy_control.py").write_text(
-        "import sys\nprint('=' * 35 + ' FAILURES ' + '=' * 35)\nprint('____ test_cause ____')\n"
-        "print('E   boom')\nsys.exit(1)\n", encoding="utf-8",
-    )
-    subprocess.run(["git", "-C", str(project_root.parent), "add", "-A"], check=True)
-
-
-def _run_noisy_canary(project_root: Path, evidence: Path) -> None:
-    coverage_canary.run([
-        "--repo-root", str(project_root.parent), "--project-root", str(project_root),
-        "--target", "src/cmru/config.py", "--evidence", str(evidence),
-        "--", sys.executable, "noisy_control.py",
-    ])
-
-
-def test_a_green_canary_control_removes_a_stale_control_log(tmp_path):
-    project_root = _estate(tmp_path / "repo")
-    evidence = tmp_path / "canary.json"
-    stale = tmp_path / "canary.control.log"
-    stale.write_text("an earlier red run\n", encoding="utf-8")
-
-    assert _canary(project_root, evidence, "coverage", "tester-unified/Dockerfile") == 0
-
-    assert not stale.exists()
-
-
-def test_an_unremovable_stale_control_log_is_reported_not_ignored(tmp_path):
-    project_root = _estate(tmp_path / "repo")
-    stale = tmp_path / "canary.control.log"
-    stale.mkdir()
-    (stale / "occupied").write_text("x", encoding="utf-8")  # unlink() of a non-empty directory fails
-
-    with pytest.raises(RuntimeError, match="could not remove the stale control log"):
-        _canary(project_root, tmp_path / "canary.json", "coverage", "tester-unified/Dockerfile")

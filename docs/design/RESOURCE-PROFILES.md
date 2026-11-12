@@ -1,7 +1,7 @@
 # Resource profiles, worker sizing and the MDT capacity boundary — cross-tool design (2026-11-03)
 
 Status: design, ready to carve. Binding inputs: the operator's final interview (2026-11-03), decisions D1–D4 below.
-Tools affected: cgprofile (cgroup-profiler), assay, run-gate, mdt-cockpit host-setup, iobench (first consumer).
+Tools affected: cgprofile, assay, run-gate, mdt-cockpit host-setup, iobench (first consumer).
 Per-tool backlog entries that implement this design are staged next to this file.
 
 ## 0. Decisions this design implements (verbatim intent)
@@ -152,7 +152,7 @@ Units are part of the field names: `_bytes`, `_seconds`, `_ops`.
 
 ### 3.1 Wire
 
-These additions go on the existing observer socket, `/run/cgprofile/observer/resource-observer.sock`.
+These additions go on the existing observer socket, `/run/cgprofile/observer/cgprofile.sock` (the per-level layout; the earlier name was `resource-observer.sock`).
 `resource-limits` keeps contract 2 unchanged, and the control socket stays at contract 1.
 
 ```json
@@ -731,7 +731,7 @@ There is no mapping layer and no fallback read. The migration is a one-time docu
 
 A repository test asserts that no host-setup key name, prompt or help text matches `\breserve` (word boundary, so
 "preserve" is unaffected), apart from the refusal
-message and the README rename table. The deprecated `modern-debian-tools-python-debug/` tree is not touched. The live
+message and the README rename table. The active host-setup source lives in `mdt-cockpit/host-setup/`. The live
 `/etc/mdt/host-setup.env` on each host is renamed by the operator with the README table, before the next install.
 
 ### 7.2 Derived sizing

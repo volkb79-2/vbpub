@@ -149,7 +149,7 @@ CMRU_WHEEL_INSTALL_RUN_BODY = (
     "paramiko, coverage, structlog, markdown_it, linkify_it; "
     "print('tester-unified closure OK')\""
     + ' && /opt/tester-venv/bin/python -c "import pandas, plotly, matplotlib, '
-    "scipy, numpy, ruptures; print('cgroup-profiler report tier OK')\""
+    "scipy, numpy, ruptures; print('cgprofile report tier OK')\""
 )
 CMRU_POST_INSTALL_VERSION_ASSERTION_RUN = r'''RUN /opt/tester-venv/bin/python - <<'PY'
 import importlib.metadata as metadata
@@ -238,9 +238,9 @@ NYXLOOM_FINAL_WHEEL_INSTALL_RUN_BODY = (
     "cli_extended, nyxloom; print('nyxloom', nyxloom.__version__, "
     "'self-contained OK')\" && rm -rf /tmp/wheels"
 )
-# Userland the suites and gate scripts execute (MDTC-02 / INT-01): zsh, the real systemctl client and
-# the npm/npx links beside the node binary copied from the digest-pinned node stage. None of them
-# touches a CMRU wheel input, and they run before any of those inputs are copied.
+# Userland the suites and gate scripts execute (MDTC-02 / INT-01 / TU-AUG): zsh, the real systemctl
+# client, Augeas tools and the npm/npx links beside the node binary copied from the digest-pinned node
+# stage. None touches a CMRU wheel input, and they run before any of those inputs are copied.
 TESTER_ZSH_RUN = (
     "apt-get update && apt-get install -y --no-install-recommends zsh "
     "&& rm -rf /var/lib/apt/lists/*"
@@ -250,6 +250,14 @@ TESTER_SYSTEMCTL_RUN = (
     "&& rm -rf /var/lib/apt/lists/* "
     '&& test "$(dpkg -S /usr/bin/systemctl | cut -d: -f1)" = systemd '
     "&& /bin/systemctl --version"
+)
+TESTER_AUGEAS_TOOLS_RUN = (
+    "apt-get update && apt-get install -y --no-install-recommends augeas-tools "
+    "&& test -x /usr/bin/augtool "
+    '&& test "$(dpkg -S /usr/bin/augtool | cut -d: -f1)" = augeas-tools '
+    "&& test -x /usr/bin/augparse "
+    '&& test "$(dpkg -S /usr/bin/augparse | cut -d: -f1)" = augeas-tools '
+    "&& rm -rf /var/lib/apt/lists/*"
 )
 TESTER_NODE_LINKS_RUN = (
     "ln -s ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm "
@@ -261,6 +269,7 @@ CMRU_PRE_SENSITIVE_RUN_BODIES = (
     TESTER_COMPOSE_RUN,
     TESTER_ZSH_RUN,
     TESTER_SYSTEMCTL_RUN,
+    TESTER_AUGEAS_TOOLS_RUN,
     TESTER_NODE_LINKS_RUN,
     CMRU_SOURCE_TREE_CLEAN_RUN,
     CMRU_VENV_CLEAN_RUN,
@@ -284,11 +293,11 @@ def _load():
     return module
 
 
-# The assay canary runs the suite from an isolated copy of ``cmru/`` alone, with
-# no repository-root files; these tests judge those files, so they only run
-# where the repository tree is present (the coverage lane and the cockpit).
+# The mutation fixture copies ``cmru/`` without repository-root files; these
+# tests judge those files, so they only run where the repository tree is
+# present (the Assay lane and the cockpit).
 pytestmark = pytest.mark.skipif(
-    not GENERATOR.exists(), reason="repository-root tester-unified files absent (isolated canary tree)",
+    not GENERATOR.exists(), reason="repository-root tester-unified files absent (isolated mutation fixture)",
 )
 gen = _load() if GENERATOR.exists() else None
 
@@ -317,8 +326,8 @@ def _all_projects(root: Path, **overrides: str) -> Path:
                  'dev = ["pytest>=8", "topos[zstandard]"]\n',
         "nyxloom": '[project]\nname = "nyxloom"\ndependencies = ["PyYAML>=6"]\n'
                    '[project.optional-dependencies]\ntest = ["coverage>=7"]\n',
-        "cgroup-profiler": '[project]\nname = "cgroup-profiler"\ndependencies = []\n'
-                           '[project.optional-dependencies]\ntest = ["numpy>=2"]\n',
+        "cgprofile": '[project]\nname = "cgprofile"\ndependencies = []\n'
+                     '[project.optional-dependencies]\ntest = ["numpy>=2"]\n',
         "libraries__patchseries": '[project]\nname = "patchseries"\ndependencies = []\n'
                                   '[project.optional-dependencies]\ntest = ["pytest>=8", "pytest-cov>=6"]\n',
         "pwmcp__client": '[project]\nname = "pwmcp-client"\ndependencies = ["playwright==1"]\n'
@@ -344,7 +353,7 @@ def test_generator_emits_the_third_party_closure_and_expands_self_extras(tmp_pat
 @pytest.mark.parametrize(
     "bad",
     ["Worktree", "cmru==1", "assay", "ciu>=1",
-     "nyxloom", "topos[dev]>=1", "CGroup.Profiler", "run_gate", "iobench", "vmscreen>=0",
+     "nyxloom", "topos[dev]>=1", "CGProfile", "run_gate", "iobench", "vmscreen>=0",
      "patchseries"],
 )
 def test_generator_refuses_estate_internal_names_in_dependencies(tmp_path, bad):
@@ -443,7 +452,8 @@ def _real_estate_layout(tmp_path):
     """The REAL pyprojects laid out as the Dockerfile COPYs them."""
     for name in ("ciu", "cmru", "assay", "topos", "nyxloom"):
         (tmp_path / name).symlink_to(REPO_ROOT / name)
-    (tmp_path / "cgroup-profiler").symlink_to(REPO_ROOT / "scripts" / "cgroup-profiler")
+    (tmp_path / "cgprofile").symlink_to(REPO_ROOT / "cgprofile")
+    (tmp_path / "augeaswrap").symlink_to(REPO_ROOT / "augeaswrap")
     (tmp_path / "pwmcp").mkdir()
     (tmp_path / "pwmcp" / "client").symlink_to(REPO_ROOT / "pwmcp" / "client")
     (tmp_path / "libraries").mkdir()
@@ -1652,10 +1662,10 @@ def test_dockerignore_admits_the_local_wheel_input_and_gitignore_keeps_wheels_ou
 @pytest.mark.parametrize(("trove", "wheel_inputs"), [
     ("cmru/nyxloom-trove", ("cmru/pyproject.toml", "cmru/src/cmru/cli.py")),
     (
-        "scripts/cgroup-profiler/nyxloom-trove",
-        ("scripts/cgroup-profiler/pyproject.toml", "scripts/cgroup-profiler/cgprofile.py"),
+        "cgprofile/nyxloom-trove",
+        ("cgprofile/pyproject.toml", "cgprofile/cgprofile.py"),
     ),
-], ids=["cmru", "cgroup-profiler"])
+], ids=["cmru", "cgprofile"])
 def test_dockerignore_keeps_repository_only_trove_reports_out_of_the_wheel_source_tree(
     trove, wheel_inputs,
 ):
@@ -1690,7 +1700,7 @@ _GENERATED_BUILD_OUTPUT_RULES = ("**/build", "**/dist", "**/*.egg-info", "**/art
     "cmru/src/cmru.egg-info/SOURCES.txt",
     "ciu/build/lib/ciu/stale.py",
     "assay/dist/assay-0.0.0-py3-none-any.whl",
-    "scripts/cgroup-profiler/build/lib/cgprofile.py",
+    "cgprofile/build/lib/cgprofile.py",
 ])
 def test_dockerignore_keeps_local_build_output_out_of_the_wheel_source_trees(generated):
     """Local wheel-build output must never reach a COPYed /src/<project> tree.
@@ -2665,7 +2675,7 @@ def test_dockerignore_excludes_test_suites_without_dropping_package_data_named_t
         "assay/gate/python/fixtures/sql/tests/expected.sql",
         "topos/tests/test_cli.py",
         "nyxloom/tests/test_cli.py",
-        "scripts/cgroup-profiler/tests/test_profile.py",
+        "cgprofile/tests/test_profile.py",
     ):
         assert not _dockerignore_included(suite), suite
     assert _dockerignore_included(
@@ -2677,10 +2687,7 @@ def _dockerfile_required_context_files() -> list[str]:
     """Files consumed by dependency discovery or the offline CMRU wheel build."""
     if gen is None:
         return []  # isolated cmru canary tree; module-level skip handles the tests
-    required = {
-        "scripts/" + project_file if project_file.startswith("cgroup-profiler/") else project_file
-        for project_file, _extras in gen.PROJECTS
-    }
+    required = {project_file for project_file, _extras in gen.PROJECTS}
     required.update({
         "tester-unified/gen-requirements.py",
         "tester-unified/fetch-cli-extended.py",
@@ -3650,7 +3657,7 @@ def test_tester_unified_build_instructions_use_the_exact_wheel_builder():
     remote_lanes = (REPO_ROOT / "run-gate-project" / "REMOTE-LANES-BUILDKITE.md").read_text(
         encoding="utf-8",
     )
-    profiler_gate = (REPO_ROOT / "scripts" / "cgroup-profiler" / "tools" / "gate.sh").read_text(
+    profiler_gate = (REPO_ROOT / "cgprofile" / "tools" / "gate.sh").read_text(
         encoding="utf-8",
     )
     audit_launcher = (REPO_ROOT / "nyxloom" / "tools" / "remote-mutation-audit-host.sh").read_text(
@@ -3681,9 +3688,12 @@ def test_zero_release_image_base_and_cli_extended_source_are_explicit():
     # MDTC-02: the default base is tester-base (the floating MDT cockpit image is no longer the
     # gate environment); the zero-release path stays an explicit --base-image.
     assert re.search(r"^ARG TESTER_UNIFIED_BASE_IMAGE=tester-base:local$", dockerfile, re.MULTILINE)
-    assert "modern-debian-tools-python-debug" not in "\n".join(
+    code_lines = "\n".join(
         line for line in dockerfile.splitlines() if not line.lstrip().startswith("#")
     )
+    # Neither the retired MDT image nor its mdt-cockpit successor is a gate input.
+    assert "modern-debian-tools-python-debug" not in code_lines
+    assert "mdt-cockpit" not in code_lines
     assert "FROM ${TESTER_UNIFIED_BASE_IMAGE}" in dockerfile
     assert "docker compose version" in dockerfile
     assert 'packages="$packages docker-cli"' in dockerfile
@@ -3716,6 +3726,32 @@ def test_zero_release_image_base_and_cli_extended_source_are_explicit():
         value = declared_env[key]
         assert f"{key}={value}" in bootstrap or f"{key}='{value}'" in bootstrap, key
     assert f"docker pull {declared_env['CMRU_TESTER_CGROUP_PROBE_IMAGE']}" in bootstrap
+
+
+def test_the_orchestration_tester_image_is_overridable_per_release(monkeypatch):
+    """One release can use a side-tagged tester image (environment wins).
+
+    A phase of work whose run-gate must not be promoted to ``:local`` yet (for
+    example the host-service-sockets phase 1 image) is used for a single release
+    by exporting ``CMRU_TESTER_UNIFIED_IMAGE``; unset, the promoted ``:local``
+    image is the default. The REAL estate orchestration file is loaded through
+    the strict config reader, so a loader change that stopped expanding the
+    reference would fail here, not only a text edit.
+    """
+    from cmru import config
+
+    orchestration = tomllib.loads(
+        (REPO_ROOT / "cmru.orchestration.toml").read_text("utf-8"),
+    )
+    declared = orchestration["orchestration"]["defaults"]["env"]["CMRU_TESTER_UNIFIED_IMAGE"]
+    assert declared == "${CMRU_TESTER_UNIFIED_IMAGE:-tester-unified:local}"
+
+    path = REPO_ROOT / "cmru.orchestration.toml"
+    monkeypatch.delenv("CMRU_TESTER_UNIFIED_IMAGE", raising=False)
+    assert config.load_forge_config(path).env["CMRU_TESTER_UNIFIED_IMAGE"] == "tester-unified:local"
+    monkeypatch.setenv("CMRU_TESTER_UNIFIED_IMAGE", "tester-unified:phase1-20261107")
+    assert (config.load_forge_config(path).env["CMRU_TESTER_UNIFIED_IMAGE"]
+            == "tester-unified:phase1-20261107")
 
 
 def test_the_final_stage_labels_the_base_it_was_built_from():
@@ -3876,6 +3912,7 @@ def test_wheel_builder_does_not_depend_on_a_published_vbpub_image():
     assert_tester_base_has_no_published_vbpub_input(REPO_ROOT)
     assert "apt-get install -y --no-install-recommends ca-certificates git passwd" in dockerfile
     assert "ghcr.io/volkb79-2/modern-debian-tools-python-debug" not in dockerfile
+    assert "ghcr.io/volkb79-2/mdt-cockpit-devcontainer" not in dockerfile
     for document in (readme, design, consumers):
         assert "CMRU_BOOTSTRAP_CLI_EXTENDED=source" in document
         assert "BOOTSTRAP-FROM-ZERO.md" in document
@@ -3907,15 +3944,10 @@ def test_dockerfile_copies_every_generator_project_to_its_expected_src_path():
         text, TESTER_STAGE, r"gen-requirements.py --root /src",
     )
     for project_file, _extras in gen.PROJECTS:
-        project = PurePosixPath(project_file).parts[0]
-        if project == "cgroup-profiler":
-            source = "scripts/cgroup-profiler/pyproject.toml"
-            relative = "scripts/cgroup-profiler/pyproject.toml"
-        else:
-            source = project_file
-            relative = project_file
+        source = project_file
+        relative = project_file
         # Nested sources (pwmcp/client/pyproject.toml) keep their full relative path under /src.
-        destination = f"/src/{project_file}" if project != "cgroup-profiler" else "/src/cgroup-profiler/pyproject.toml"
+        destination = f"/src/{project_file}"
         _assert_copy_spec_covers_path_at_destination(
             specs, relative, source, destination,
         )
@@ -4418,6 +4450,82 @@ def test_every_dockerfile_copy_source_is_admitted_by_the_dockerignore():
         assert not _copy_source_overlaps_cli_extended(source), source
 
 
+def _copy_sources_hidden_by_dockerignore(
+    dockerfile: Path, rules: list[str] | None = None
+) -> list[str]:
+    """COPY sources of a root-context Dockerfile that the .dockerignore hides from the build."""
+    text = dockerfile.read_text(encoding="utf-8")
+    if rules is None:
+        rules = _dockerignore_rules(dockerfile)
+    return [
+        str(spec[0])
+        for spec in _dockerfile_copy_specs(text)
+        if not _copy_source_context_entries(spec, rules=rules)
+    ]
+
+
+def test_no_root_context_copy_source_is_hidden_by_the_dockerignore():
+    """General guard (the 2026-11-08 `augeaswrap/pyproject.toml: not found` build failure): every
+    COPY source must be visible under the repo-root .dockerignore whitelist."""
+    assert _copy_sources_hidden_by_dockerignore(DOCKERFILE) == []
+
+
+def test_wheel_builder_copies_nothing_from_the_root_context_today():
+    """wheel-builder is stateless: no COPY from the context (a future one is guarded above)."""
+    assert _dockerfile_copy_specs(WHEEL_BUILDER.read_text(encoding="utf-8")) == []
+
+
+def test_copy_source_guard_fails_when_the_augeaswrap_whitelist_is_removed():
+    """Mutation proof: the pre-fix .dockerignore (no `!augeaswrap` block) is caught by the guard."""
+    rules = _dockerignore_rules(DOCKERFILE)
+    mutated = [rule for rule in rules
+               if rule not in ("!augeaswrap", "augeaswrap/*", "!augeaswrap/pyproject.toml")]
+    assert len(mutated) == len(rules) - 3
+    assert _copy_sources_hidden_by_dockerignore(DOCKERFILE, mutated) == ["augeaswrap/pyproject.toml"]
+
+
+def test_dockerignore_admits_only_the_augeaswrap_pyproject_for_the_closure_generator():
+    assert _dockerignore_included("augeaswrap/pyproject.toml")
+    for hidden in ("augeaswrap/src/augeaswrap/endpoints.py", "augeaswrap/README.md",
+                   "augeaswrap/tests/test_x.py", "augeaswrap/CHANGES.md"):
+        assert not _dockerignore_included(hidden), hidden
+
+
+def test_cgprofile_augeaswrap_dependency_is_never_forwarded_to_pip(tmp_path):
+    """augeaswrap is estate-internal (GitHub Releases only, never PyPI): dependency-confusion hole if
+    it reached the PyPI-bound closure. cgprofile's own requirement is skipped (source-backed) and any
+    other project requiring it is refused."""
+    _real_estate_layout(tmp_path)
+    declared = tomllib.loads((REPO_ROOT / "cgprofile" / "pyproject.toml").read_text("utf-8"))
+    assert any(gen.requirement_name(item) == "augeaswrap" for item in declared["project"]["dependencies"])
+    closure = list(gen.requirements(tmp_path))
+    assert "augeaswrap" in gen.ESTATE_INTERNAL
+    assert "augeaswrap" not in {gen.requirement_name(item) for item in closure}
+    assert not any("augeaswrap" in item.lower() for item in closure)
+    assert "augeaswrap" in gen.derive_internal(tmp_path)
+    with pytest.raises(SystemExit):
+        gen.refuse_internal("augeaswrap>=0.1.0", "ciu/pyproject.toml [project]", gen.derive_internal(tmp_path))
+
+
+def test_topos_augeaswrap_dependency_is_never_forwarded_to_pip(tmp_path):
+    """topos 0.8.0 publishes the host endpoint through augeaswrap (GitHub Releases only, never
+    PyPI). Its own requirement is source-backed exactly like cgprofile's; nothing else is exempt."""
+    _real_estate_layout(tmp_path)
+    declared = tomllib.loads((REPO_ROOT / "topos" / "pyproject.toml").read_text("utf-8"))
+    assert any(gen.requirement_name(item) == "augeaswrap" for item in declared["project"]["dependencies"])
+    assert gen.SOURCE_BACKED_RUNTIME["topos"] == frozenset({"augeaswrap"})
+    closure = list(gen.requirements(tmp_path))
+    assert "augeaswrap" not in {gen.requirement_name(item) for item in closure}
+    assert not any("augeaswrap" in item.lower() for item in closure)
+
+
+def test_augeaswrap_requirement_from_a_non_cgprofile_project_is_refused(tmp_path):
+    _all_projects(tmp_path, ciu='[project]\nname = "ciu"\ndependencies = ["augeaswrap>=0.1.0"]\n'
+                               '[project.optional-dependencies]\nssh = []\ntest = []\n')
+    with pytest.raises(SystemExit):
+        list(gen.requirements(tmp_path))
+
+
 # --- MDTC-02: the image is built FROM tester-base, not the MDT cockpit image ------------------
 
 WHEEL_BUILDER = REPO_ROOT / "wheel-builder" / "Dockerfile"
@@ -4521,6 +4629,23 @@ def test_tester_unified_has_no_systemctl_stub_and_installs_what_its_suites_run()
     for tool in ("npm", "npx"):
         assert f"/usr/local/bin/{tool}" in code
     assert re.search(r"^FROM docker\.io/library/node:26\.\d+\.\d+-trixie@sha256:[0-9a-f]{64} AS node-source$", code, re.MULTILINE)
+
+
+def test_tester_unified_installs_real_augeas_tools_before_source_copy_layers():
+    """TU-AUG: lens checks and real augtool tests need Debian's augparse and augtool."""
+    dockerfile = DOCKERFILE.read_text(encoding="utf-8")
+    instructions = _dockerfile_logical_instructions(dockerfile)
+    augeas_runs = [line for line in instructions if line.startswith("RUN ") and "augeas-tools" in line]
+    assert augeas_runs == [f"RUN {TESTER_AUGEAS_TOOLS_RUN}"], augeas_runs
+
+    # Keep the apt layer above the established project/dependency input
+    # boundary, preserving the source COPY and source-built wheel ordering.
+    augeas_index = instructions.index(augeas_runs[0])
+    source_copy_index = next(
+        index for index, line in enumerate(instructions)
+        if line.startswith("COPY tester-unified/gen-requirements.py ")
+    )
+    assert augeas_index < source_copy_index
 
 
 def test_go_toolchain_is_selected_by_wings_configuration_and_recorded():
@@ -4908,14 +5033,14 @@ def _pip_targets(tokens: list[str]) -> list[str]:
 
 def test_the_age_window_never_applies_to_a_first_party_package(tmp_path):
     """Operator decision 2026-10-27: first-party packages (cmru, assay, run-gate, ciu, cli-extended, topos,
-    nyxloom, pwmcp, cgroup-profiler, iobench, vmscreen, worktree, patchseries) are always the latest published release and
+    nyxloom, pwmcp, cgprofile, iobench, vmscreen, worktree, patchseries) are always the latest published release and
     never pass through ``--uploaded-prior-to``. In the two images that means: every aged pip command is
     index-bound and installs only pip, build or a generator-produced requirements file; every command that
     installs a first-party input is ``--no-index`` and carries no age; and the generated closures name no
     first-party distribution. tester-base runs no pip at all."""
     for name in (
         "iobench", "vmscreen", "worktree", "cli-extended", "run-gate",
-        "cgroup-profiler", "pwmcp-client", "patchseries",
+        "cgprofile", "pwmcp-client", "patchseries",
     ):
         assert name in gen.ESTATE_INTERNAL, name
     tester_base = REPO_ROOT / "tester-base" / "Dockerfile"
@@ -5161,9 +5286,23 @@ def test_the_shared_transport_caps_a_response_body(monkeypatch):
         net._urlopen_bytes("https://github.com/x", max_bytes=10)
 
 
-def _published_build(tmp_path, sidecar_text):
+def _published_build(tmp_path, sidecar_text, *, delayed_identity_parser=False):
     """build-image.sh --run-gate-published against a stub fetcher that stages a wheel and, optionally, a sidecar."""
     script, env, log, _wheel_dir = _stub_docker_tree(tmp_path)
+    if delayed_identity_parser:
+        python = script.parent.parent.parent / "bin" / "python3"
+        python.write_text(
+            "#!/bin/bash\n"
+            f"{shlex.quote(sys.executable)} \"$@\"\n"
+            "status=$?\n"
+            "if [[ ${1:-} == -c ]]; then\n"
+            "  exec 1>&-\n"
+            "  sleep 0.5\n"
+            "fi\n"
+            "exit \"$status\"\n",
+            encoding="utf-8",
+        )
+        python.chmod(0o755)
     fetcher = script.with_name("fetch-run-gate-wheel.py")
     sidecar = "" if sidecar_text is None else (
         f"(dest / 'run_gate-1.0.0-py3-none-any.whl.sha256').write_text({sidecar_text!r})\n")
@@ -5187,6 +5326,16 @@ def test_build_image_requires_the_fetchers_digest_to_equal_its_own_hash(tmp_path
     assert result.returncode == 2 and "does not match the digest the fetcher verified" in result.stderr
     result = _published_build(tmp_path / "none", None)
     assert result.returncode == 2 and "left no run_gate-1.0.0-py3-none-any.whl.sha256" in result.stderr
+
+
+def test_build_image_waits_for_identity_parser_before_refusing_bad_digest(tmp_path):
+    result = _published_build(
+        tmp_path,
+        "0" * 64 + "  run_gate-1.0.0-py3-none-any.whl\n",
+        delayed_identity_parser=True,
+    )
+    assert result.returncode == 2
+    assert "does not match the digest the fetcher verified" in result.stderr
 
 
 def _promote(tmp_path, *args, present=None, tag_log=None):

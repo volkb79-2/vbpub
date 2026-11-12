@@ -10,11 +10,13 @@ import base64
 import json
 import os
 import re
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
+from itertools import groupby
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 from typing import Mapping
@@ -32,6 +34,52 @@ class RegistryError(RuntimeError):
 
 class RegistryNotFoundError(RegistryError):
     """A registry explicitly returned HTTP 404 for a requested resource."""
+
+
+class RegistryRateLimitedError(RegistryError):
+    """A registry answered HTTP 429 and bounded retries did not clear it.
+
+    ``retry_after`` is the registry's own ``Retry-After`` seconds when it sent
+    one; ``window`` is the seconds of the ``ratelimit-*`` window (Docker Hub
+    sends ``100;w=3600`` and no ``Retry-After``), so callers can tell the
+    operator how long a rerun has to wait.
+    """
+
+    def __init__(self, message: str, *, retry_after: int | None = None, window: int | None = None):
+        super().__init__(message)
+        self.retry_after = retry_after
+        self.window = window
+
+
+# A 429 that carries a short Retry-After is retried; anything longer (or no
+# Retry-After at all, as Docker Hub) is surfaced at once, because sleeping for
+# a pull-rate window inside one command would only look like a hang.
+MAX_RATE_LIMIT_RETRIES = 3
+MAX_RETRY_AFTER_SECONDS = 60
+_sleep = time.sleep
+
+
+def _rate_limited(url: str, headers: Mapping[str, str]) -> RegistryRateLimitedError:
+    lowered = {key.lower(): value for key, value in headers.items()}
+    retry_after: int | None = None
+    raw_retry = lowered.get("retry-after", "").strip()
+    if raw_retry.isdigit():
+        retry_after = int(raw_retry)
+    window: int | None = None
+    window_match = re.search(r"w=(\d+)", lowered.get("ratelimit-limit", "") + ";" + lowered.get("ratelimit-remaining", ""))
+    if window_match:
+        window = int(window_match.group(1))
+    parts = []
+    if "ratelimit-limit" in lowered:
+        parts.append(f"ratelimit-limit {lowered['ratelimit-limit']}")
+    if "ratelimit-remaining" in lowered:
+        parts.append(f"ratelimit-remaining {lowered['ratelimit-remaining']}")
+    if retry_after is not None:
+        parts.append(f"Retry-After {retry_after}s")
+    detail = f" ({', '.join(parts)})" if parts else ""
+    return RegistryRateLimitedError(
+        f"registry rate limit (HTTP 429) for {url}{detail}", retry_after=retry_after, window=window,
+    )
 
 
 @dataclass(frozen=True)
@@ -135,6 +183,8 @@ def _request(url: str, headers: Mapping[str, str] | None = None) -> tuple[bytes,
                 raise RegistryError(f"registry response exceeds {MAX_METADATA_BYTES} bytes: {url}")
             return body, {key.lower(): value for key, value in response.headers.items()}
     except urllib.error.HTTPError as exc:
+        if exc.code == 429:
+            raise _rate_limited(url, exc.headers) from exc
         body = exc.read(MAX_METADATA_BYTES + 1) if exc.fp else b""
         excerpt = body[:500].decode("utf-8", errors="replace").replace("\n", " ")
         detail = f": {excerpt}" if excerpt else ""
@@ -484,6 +534,18 @@ class _OCIClient:
         self.token: str | None = None
 
     def _authorized_request(self, url: str, headers: Mapping[str, str] | None = None) -> tuple[bytes, dict[str, str]]:
+        """One registry request; a 429 with a short Retry-After is retried (bounded)."""
+        attempt = 0
+        while True:
+            try:
+                return self._authorized_request_once(url, headers)
+            except RegistryRateLimitedError as exc:
+                if exc.retry_after is None or exc.retry_after > MAX_RETRY_AFTER_SECONDS or attempt >= MAX_RATE_LIMIT_RETRIES:
+                    raise
+                attempt += 1
+                _sleep(max(exc.retry_after, 1))
+
+    def _authorized_request_once(self, url: str, headers: Mapping[str, str] | None = None) -> tuple[bytes, dict[str, str]]:
         request_headers = {"User-Agent": USER_AGENT, **dict(headers or {})}
         if self.token:
             request_headers["Authorization"] = f"Bearer {self.token}"
@@ -497,6 +559,8 @@ class _OCIClient:
                     raise RegistryError(f"registry response exceeds {MAX_METADATA_BYTES} bytes: {url}")
                 return body, {key.lower(): value for key, value in response.headers.items()}
         except urllib.error.HTTPError as exc:
+            if exc.code == 429:
+                raise _rate_limited(url, exc.headers) from exc
             challenge = _parse_bearer_challenge(exc.headers.get("WWW-Authenticate", ""))
             if exc.code != 401 or challenge is None or self.source.get("token_env"):
                 body = exc.read(MAX_METADATA_BYTES + 1) if exc.fp else b""
@@ -720,7 +784,34 @@ def _oci_identity(image: str) -> tuple[str, str]:
     return f"https://{registry}", repository
 
 
-def oci_candidates(source: Mapping[str, str], constraint: str) -> dict[str, Candidate]:
+def _merge_oci_candidate(result: dict[str, Candidate], candidate: Candidate) -> None:
+    key = normalized_version(candidate.version)
+    previous = result.get(key)
+    if previous is None:
+        result[key] = candidate
+    else:
+        result[key] = max(
+            (previous, candidate),
+            key=lambda item: (
+                item.released_at,
+                item.tag if item.tag is not None else "",
+                item.age_source,
+            ),
+        )
+
+
+def oci_candidates(
+    source: Mapping[str, str], constraint: str, cutoff: datetime | None = None,
+) -> dict[str, Candidate]:
+    """Candidate tags with age evidence.
+
+    Without ``cutoff`` every matching tag is examined (needed when several
+    sources must agree on a version). With ``cutoff`` the matching tags are
+    sorted newest-first by version and examined one version at a time, stopping
+    at the first that is old enough: the caller wants the newest eligible
+    version, so older tags are never fetched (each costs a pull-metered
+    manifest GET plus one per platform on Docker Hub).
+    """
     registry, repository = _oci_identity(source["image"])
     client = _OCIClient(registry, repository, source)
     template = source["tag"]
@@ -741,25 +832,26 @@ def oci_candidates(source: Mapping[str, str], constraint: str) -> dict[str, Cand
         raise RegistryError(f"OCI image {source['image']} has no tags matching its template and constraint")
     if len(matched) > MAX_REGISTRY_ITEMS:
         raise RegistryError(f"OCI image {source['image']} has too many matching tags")
+    if cutoff is not None:
+        ordered = sorted(matched, key=lambda item: _semver_key(item[1]), reverse=True)
+        for _key, group in groupby(ordered, key=lambda item: _semver_key(item[1])):
+            keys: set[str] = set()
+            for tag, version in group:
+                stamp, age_source = client.tag_timestamp(tag)
+                _merge_oci_candidate(result, Candidate(version=version, released_at=stamp, age_source=age_source, tag=tag))
+                keys.add(normalized_version(version))
+            # Stop only when the MERGED candidate (newest stamp per normalised
+            # key) is eligible; one old spelling of a version whose other
+            # spelling is too new must fall back to an older version.
+            if any(result[key].released_at <= cutoff for key in keys):
+                break
+        return result
     with ThreadPoolExecutor(max_workers=8) as pool:
         futures = {pool.submit(client.tag_timestamp, tag): (tag, version) for tag, version in matched}
         for future in as_completed(futures):
             tag, version = futures[future]
             stamp, age_source = future.result()
-            key = normalized_version(version)
-            previous = result.get(key)
-            candidate = Candidate(version=version, released_at=stamp, age_source=age_source, tag=tag)
-            if previous is None:
-                result[key] = candidate
-            else:
-                result[key] = max(
-                    (previous, candidate),
-                    key=lambda item: (
-                        item.released_at,
-                        item.tag if item.tag is not None else "",
-                        item.age_source,
-                    ),
-                )
+            _merge_oci_candidate(result, Candidate(version=version, released_at=stamp, age_source=age_source, tag=tag))
     return result
 
 
@@ -776,7 +868,10 @@ def oci_rolling_candidate(source: Mapping[str, str]) -> Candidate:
     return Candidate(version=tag, released_at=stamp, age_source=age_source, tag=tag, digest=digest)
 
 
-def candidates(source_type: str, source: Mapping[str, str], constraint: str) -> dict[str, Candidate]:
+def candidates(
+    source_type: str, source: Mapping[str, str], constraint: str, cutoff: datetime | None = None,
+) -> dict[str, Candidate]:
+    """``cutoff`` lets an OCI scan stop at the newest age-eligible version; other sources ignore it."""
     if source_type == "pypi":
         return pypi_candidates(source, constraint)
     if source_type == "npm":
@@ -784,7 +879,7 @@ def candidates(source_type: str, source: Mapping[str, str], constraint: str) -> 
     if source_type == "go":
         return go_candidates(source, constraint)
     if source_type == "oci":
-        return oci_candidates(source, constraint)
+        return oci_candidates(source, constraint, cutoff)
     raise RegistryError(f"unsupported version source type {source_type!r}")
 
 

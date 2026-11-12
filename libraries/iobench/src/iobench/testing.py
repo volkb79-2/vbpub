@@ -24,7 +24,7 @@ from typing import Any, Callable, Sequence
 from . import devio
 from .devio import HIST_BINS, PERCENTILES, FioJob, bin_value_ns, parse_job
 from .extents import Extents
-from .host import (TAIL_BYTES, HostError, RunResult, StatInfo, TargetRef, check_argv, check_preallocate,
+from .host import (TAIL_BYTES, HostError, RunResult, SEEK_EXTENT_FILESYSTEMS, StatInfo, TargetRef, check_argv, check_preallocate,
                    check_sysfs_path)
 
 GIB = 1 << 30
@@ -165,6 +165,7 @@ class DirScenario:
     qd_iops: dict[int, float] | None = None
     qd_half: float = 2.0
     c_byte_ns: float = 0.25
+    slat_us: float = 0.0
     seq_io_ratio: float = 0.2
     iops_cap: float | None = None
     bps_cap_rand: float | None = None
@@ -316,7 +317,9 @@ class FakeFio:
 
     def _rate(self, d: DirScenario, job: FioJob, h1: float, h2: float, cache: CacheModel | None) -> float:
         if job.iodepth == 1:
-            return 1e6 / self._service_us(d, job, h1, h2)
+            if d.qd_iops and 1 in d.qd_iops:
+                return d.qd_iops[1]
+            return 1e6 / (self._service_us(d, job, h1, h2) + d.slat_us)
         sat = self._sat(d, job)
         if cache is not None and not job.writes:
             scale = sat / self._sat(d, job.with_(rw="randread", bs=PAGE))
@@ -332,7 +335,10 @@ class FakeFio:
         return min(caps)
 
     # simulation ----------------------------------------------------------------
-    def simulate(self, job: FioJob, t0: float, dev: FakeDevice) -> Sim:
+    def simulate(
+        self, job: FioJob, t0: float, dev: FakeDevice, *, time_based: bool = False,
+        max_bytes: int | None = None,
+    ) -> Sim:
         d = self.s.write if job.writes else self.s.read
         dt = job.log_avg_ms / 1000.0
         n = math.ceil(job.runtime_s / dt)
@@ -346,9 +352,14 @@ class FakeFio:
         io_bytes = 0.0
         pos = job.offset
         weighted_mean = 0.0
+        bounded = job.io_size is not None and not time_based
+        byte_limit = job.io_size if bounded else None
+        # A fake interrupted process is a separate stop cause from fio's io_size.
+        if max_bytes is not None:
+            byte_limit = max_bytes if byte_limit is None else min(byte_limit, max_bytes)
         for k in range(n):
-            if samples and job.io_size is not None and io_bytes >= job.io_size - 1e-6:
-                break  # fio stopped at its byte cap on the previous boundary
+            if samples and byte_limit is not None and io_bytes >= byte_limit - 1e-6:
+                break  # fio or the injected interruption stopped at its byte cap
             lo, hi = k * dt, min((k + 1) * dt, job.runtime_s)
             span = hi - lo
             h1 = h2 = 0.0
@@ -370,8 +381,8 @@ class FakeFio:
                 iops = d.bucket.step(iops * job.bs, span) / job.bs
             bps = iops * job.bs
             end_t = hi
-            if job.io_size is not None and io_bytes + bps * span >= job.io_size:
-                span = (job.io_size - io_bytes) / bps
+            if byte_limit is not None and io_bytes + bps * span >= byte_limit:
+                span = (byte_limit - io_bytes) / bps
                 end_t = lo + span
             ios = iops * span
             samples.append((end_t, iops, bps))
@@ -387,8 +398,8 @@ class FakeFio:
                     hist.append((lo + (j + 1) * (end_t - lo) / parts, {i: w * ios / parts for i, w in mix.items()}))
             self._touch_cache(job, cache, ios, bps * span, pos)
             if job.rw == "write":
-                pos += bps * span
-            if end_t < hi:
+                pos = job.offset + (pos - job.offset + bps * span) % job.size
+            if byte_limit is not None and end_t < hi:
                 break
         runtime = samples[-1][0]
         total_ios = sum(w for w in total_w.values())
@@ -407,7 +418,8 @@ class FakeFio:
         elif job.iodepth == 1:
             factor = 1.0 / mult  # a slower disk takes proportionally longer per IO
         else:
-            factor = job.iodepth / iops * 1e6 * self.s.little_factor / mean_raw
+            total_latency_us = job.iodepth / iops * 1e6 * self.s.little_factor
+            factor = max(0.01, (total_latency_us - d.slat_us) / mean_raw)
         return [(w, lat * factor) for w, lat in comps]
 
     @staticmethod
@@ -418,7 +430,13 @@ class FakeFio:
             if job.random:
                 cache.write_random(job.offset, job.end, ios)
             else:
-                cache.write_seq(int(pos), int(min(pos + nbytes, job.end)))
+                cursor = job.offset + (pos - job.offset) % job.size
+                remaining = nbytes
+                while remaining > 0:
+                    chunk = min(remaining, job.end - cursor)
+                    cache.write_seq(int(cursor), int(cursor + chunk))
+                    remaining -= chunk
+                    cursor = job.offset if cursor + chunk >= job.end else cursor + chunk
         else:
             cache.read(job.offset, job.end, ios)
 
@@ -428,10 +446,13 @@ class FakeFio:
         runtime = max(sim.runtime, 1e-9)
         iops = sim.io_bytes / job.bs / runtime
         pct = {f"{q:.6f}": percentile_us(sim.weights, q) * 1000.0 for q in PERCENTILES}
+        d = self.s.write if job.writes else self.s.read
         body = {"io_bytes": int(sim.io_bytes), "bw_bytes": int(sim.io_bytes / runtime), "bw": int(sim.io_bytes / runtime / 1024),
                 "iops": iops, "runtime": int(round(sim.runtime * 1000)),
+                "slat_ns": {"mean": d.slat_us * 1000.0}, "lat_ns": {"mean": (sim.mean_us + d.slat_us) * 1000.0},
                 "clat_ns": {"mean": sim.mean_us * 1000.0, "N": int(sim.io_bytes / job.bs), "percentile": pct}}
         empty = {"io_bytes": 0, "bw_bytes": 0, "bw": 0, "iops": 0.0, "runtime": 0,
+                 "slat_ns": {"mean": 0.0}, "lat_ns": {"mean": 0.0},
                  "clat_ns": {"mean": 0.0, "N": 0, "percentile": {f"{q:.6f}": 0 for q in PERCENTILES}}}
         doc = {"fio version": "fio-3.36", "jobs": [{"jobname": job.name, "read": empty if job.writes else body,
                                                     "write": body if job.writes else empty}]}
@@ -511,6 +532,7 @@ class FakeHost:
         self.symlinks: dict[str, str] = {}
         self.nlinks: dict[str, int] = {}
         self.devices: dict[str, FakeDevice] = {}
+        self.exclusive_device_conflicts: set[str] = set()  # injected O_EXCL busy result; does not model ordinary open descriptors
         self.dynamic: dict[str, Callable[[], str]] = {}
         self.mounts: list[tuple[str, str, str, str, str, str]] = []  # (ns, devno, mountpoint, source, fstype, opts)
         self.fs_space: dict[str, list[int]] = {}
@@ -532,7 +554,7 @@ class FakeHost:
         self.cancelled_outputs: set[str] = set()
         self.unit_stop_sticks = True  # False models a unit that stays active after `systemctl stop` (a stuck unit)
         self.probe_start_delay_s = 2.0  # the transient unit starts a little after the fio jobs it observes
-        self.fio_options: set[str] = {"exclusive_open"}  # the options the installed (fake) fio documents
+        self.fio_options: set[str] = {"allow_mounted_write"}  # the options the installed (fake) fio documents
         self.scratch_roots: list[str] = []  # authorised by the Runner (and by standard_host for the test estate), like RealHost
         init_pid, init_mnt = "pid:[4026531836]", "mnt:[4026531841]"
         self.ns_links: dict[str, str] = {"/proc/self/ns/pid": init_pid, "/proc/1/ns/pid": init_pid,
@@ -611,7 +633,7 @@ class FakeHost:
     def listdir(self, path: str) -> list[str]:
         real = self._resolve(path).rstrip("/")
         names = set()
-        for p in list(self.files) + list(self.dirs) + list(self.devices):
+        for p in list(self.files) + list(self.dirs) + list(self.devices) + list(self.symlinks):
             if p.startswith(real + "/") and p != real:
                 names.add(p[len(real) + 1:].split("/", 1)[0])
         if real not in self.dirs and not names:
@@ -698,6 +720,7 @@ class FakeHost:
                  wwn: str | None = None, rotational: str = "1", scheduler: str = "none") -> None:
         base = f"/sys/devices/pci0/block/{name}"
         self.symlinks[f"/sys/class/block/{name}"] = base
+        self.symlinks[f"/sys/block/{name}"] = base  # /sys/block lists whole disks only (a partition has no entry there)
         self.symlinks[f"/sys/dev/block/{major}:0"] = base
         self.put(f"{base}/dev", f"{major}:0\n")
         self.put(f"{base}/size", f"{size // 512}\n")
@@ -706,7 +729,7 @@ class FakeHost:
             self.put(f"{base}/queue/{knob}", value + "\n")
         self.put(f"{base}/inflight", "0 0\n")
         if serial is not None:
-            self.put(f"{base}/device/serial", serial + "\n")
+            self.put(f"{base}/serial", serial + "\n")
         if model is not None:
             self.put(f"{base}/device/model", model + "\n")
         if wwn is not None:
@@ -805,7 +828,9 @@ class FakeHost:
             return RunResult(0, "fio-3.36\n", "")
         if name == "fio" and len(argv) == 2 and argv[1].startswith("--cmdhelp="):
             opt = argv[1].split("=", 1)[1]
-            return RunResult(0, f"{opt:<20}: help text\n" if opt in self.fio_options else f"Bad option <{opt}>\n", "")
+            if opt in self.fio_options:
+                return RunResult(0, f"{opt:<20}: help text\n", "")
+            return RunResult(1, "", f"No such command: {opt}\n")
         if name == "blkid":
             return self._blkid(argv[-1])
         if name == "wipefs":
@@ -881,11 +906,13 @@ class FakeHost:
         if self.crash_after is not None and self.fio_spawns > self.crash_after:
             raise FakeCrash(f"scenario crash at fio job {self.fio_spawns}")
 
-    def _launch(self, job: FioJob, dev: FakeDevice) -> FakeHandle:
+    def _launch(self, job: FioJob, dev: FakeDevice, *, time_based: bool = False) -> FakeHandle:
+        max_bytes = None
         for needle, budget in self.scenario.cut_after_bytes.items():
             if needle in job.name:  # an interrupted writer: fio exits early once the cumulative budget is spent
-                job = job.with_(io_size=min(job.io_size if job.io_size is not None else job.size, max(0, budget - self.cut_done.get(needle, 0))))
-        sim = self.fio.simulate(job, self.clock, dev)
+                remaining = max(0, budget - self.cut_done.get(needle, 0))
+                max_bytes = remaining if max_bytes is None else min(max_bytes, remaining)
+        sim = self.fio.simulate(job, self.clock, dev, time_based=time_based, max_bytes=max_bytes)
         for needle in self.scenario.cut_after_bytes:
             if needle in job.name:
                 self.cut_done[needle] = self.cut_done.get(needle, 0) + int(sim.io_bytes)
@@ -910,16 +937,18 @@ class FakeHost:
         dev.check_range(job.offset, job.size, "read")
         if dev.written.overlap(job.offset, job.end) < job.size:
             dev.unwritten_reads.append((job.offset, job.size))
-        return self._launch(job, dev)
+        return self._launch(job, dev, time_based="--time_based" in argv)
 
     def write_range(self, argv: Sequence[str], target: TargetRef, offset: int, length: int) -> FakeHandle:
+        if target.kind == "device" and target.path in self.exclusive_device_conflicts:
+            raise HostError(f"{target.path} has an injected exclusive block-device conflict")
         self._log(argv, bound=True)
         dev = self._verify(target)
         dev.check_range(offset, length, "fio")
         job = devio.assert_writer_bound(argv, target, offset, length)  # the same binding RealHost enforces (parity)
         self._crash_check()
 
-        handle = self._launch(job, dev)
+        handle = self._launch(job, dev, time_based="--time_based" in argv)
         assert handle.sim is not None
 
         def finish(fraction: float) -> None:
@@ -931,6 +960,8 @@ class FakeHost:
         return handle
 
     def discard_range(self, argv: Sequence[str], target: TargetRef, offset: int, length: int) -> RunResult:
+        if target.kind == "device" and target.path in self.exclusive_device_conflicts:
+            raise HostError(f"{target.path} has an injected exclusive block-device conflict")
         self._log(argv, bound=True)
         dev = self._verify(target)
         devio.assert_discard_bound(argv, target, offset, length)
@@ -947,6 +978,15 @@ class FakeHost:
 
     def read_marker(self, target: TargetRef) -> str:
         return self.devices[target.path].marker or ""
+
+    def written_bytes(self, target: TargetRef, start: int, end: int) -> int | None:
+        if target.kind != "file":
+            return None
+        if target.fs_type not in SEEK_EXTENT_FILESYSTEMS:
+            return None
+        if start < 0 or end < start or end > target.size_bytes - TAIL_BYTES:
+            raise HostError(f"extent query [{start}, {end}) is outside the usable extent of {target.path}")
+        return self._verify(target).written.overlap(start, end)
 
     def _spawn_workdir(self, job: FioJob) -> FakeHandle:
         sc = self.scenario
@@ -1043,9 +1083,11 @@ def standard_host(scenario: Scenario | None = None, *, target_size: int = R1002_
                         ("dirty_background_bytes", "0")):
         host.put(f"/proc/sys/vm/{name}", value + "\n")
     host.makedirs("/bench")
+    host.makedirs("/bench/w")
     host.makedirs("/run")
     host.makedirs("/sys/fs/cgroup")
     host.allow_scratch("/run/iobench")  # the test estate's scratch places (a Runner authorises its own run dir and work dir on S0)
     host.allow_scratch("/bench")
     host.put("/proc/sys/kernel/osrelease", "7.2.9\n")
+    host.put("/etc/machine-id", "0123456789abcdef0123456789abcdef\n")  # a weak (serial-less) disk scope binds to this host
     return host

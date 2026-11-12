@@ -158,7 +158,7 @@ def test_document_envelope(project: Project):
         "r2-memory-budget",
         "r2-schedule-tem",
         "r2-resource-profile",
-        "verdict-v18",
+        "verdict-v19",
     ]
 
 

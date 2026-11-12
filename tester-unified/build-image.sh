@@ -155,13 +155,16 @@ fi
 cmru tester-gate "${tester_gate_args[@]}" /bin/true
 
 identity_json="$(python3 "$repo_root/tester-unified/run-gate-wheel-version.py" "$wheel_dir" --json)"
-mapfile -t identity < <(python3 -c '
+# Keep the parser synchronous: process substitution can close its output before
+# the helper exits, letting an early refusal leave the helper below the caller.
+identity_lines="$(python3 -c '
 import json,sys
 value=json.load(sys.stdin)
 print(value["version"])
 print(value["sha256"])
 print(value["filename"])
-' <<< "$identity_json")
+' <<< "$identity_json")"
+mapfile -t identity <<< "$identity_lines"
 [[ "${#identity[@]}" -eq 3 ]] || { echo "could not read Run-Gate wheel identity" >&2; exit 2; }
 run_gate_version=${identity[0]}
 run_gate_sha256=${identity[1]}

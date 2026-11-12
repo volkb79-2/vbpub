@@ -605,7 +605,7 @@ def _prepare_identity_resolver(monkeypatch, repo, *, profile_config=None, entrie
     monkeypatch.setattr(deploy, "resolve_profiles", lambda *_a, **_kw: profile)
     monkeypatch.setattr(deploy, "build_selection", lambda _profile: selection)
     monkeypatch.setattr(deploy, "_resolve_identity_stack_paths", lambda *_a, **_kw: list(entries))
-    monkeypatch.setattr(deploy.profiles_pkg, "render_ciu_context", lambda *_a: {})
+    monkeypatch.setattr(deploy.profiles_pkg, "render_ciu_context", lambda *_a: {"selected_profiles": [], "deployed_stacks": []})
     monkeypatch.setattr(deploy, "profile_env", lambda *_a, **_kw: {})
     monkeypatch.setattr(deploy.engine, "scope_worktree_compose_images", lambda _root, source: source)
     monkeypatch.setattr(deploy.engine, "compose_project_name", lambda *_a: "project")
@@ -892,7 +892,10 @@ def test_resolve_identities_revalidates_scoped_compose(
         {"resolved": {"identities": {"stack": {"app": {"image": " "}}}}},
     ],
 )
-def test_primary_image_map_rejects_malformed_identity_shapes(monkeypatch, tmp_path, document):
+def test_primary_image_map_rejects_malformed_identity_shapes(
+    monkeypatch, tmp_path, document, write_instance_facts,
+):
+    write_instance_facts(tmp_path, instance_id="main-id", network="n")  # CIU-176: facts exist
     monkeypatch.setattr(deploy.worktree_pkg, "primary_ciu_root", lambda _root: tmp_path)
     monkeypatch.setattr(deploy, "_render_environment_for_checkout", lambda _root: {})
     monkeypatch.setattr(deploy, "resolve_identities", lambda *_a, **_kw: document)
@@ -900,7 +903,10 @@ def test_primary_image_map_rejects_malformed_identity_shapes(monkeypatch, tmp_pa
         deploy.resolve_primary_image_references(tmp_path)
 
 
-def test_primary_image_map_skips_services_without_images(monkeypatch, tmp_path):
+def test_primary_image_map_skips_services_without_images(
+    monkeypatch, tmp_path, write_instance_facts,
+):
+    write_instance_facts(tmp_path, instance_id="main-id", network="n")  # CIU-176: facts exist
     monkeypatch.setattr(deploy.worktree_pkg, "primary_ciu_root", lambda _root: tmp_path)
     monkeypatch.setattr(deploy, "_render_environment_for_checkout", lambda _root: {})
     monkeypatch.setattr(
@@ -923,7 +929,7 @@ def test_action_deploy_caches_primary_image_map_for_the_compose_pipeline(
     calls = []
     monkeypatch.setattr(deploy, "profile_env", lambda _profile: {})
     monkeypatch.setattr(deploy, "group_by_phase", lambda _selection: [("1", [entry])])
-    monkeypatch.setattr(deploy.profiles_pkg, "render_ciu_context", lambda *_a: {})
+    monkeypatch.setattr(deploy.profiles_pkg, "render_ciu_context", lambda *_a: {"selected_profiles": [], "deployed_stacks": []})
     monkeypatch.setattr(deploy, "resolve_primary_image_references", lambda root: calls.append(root) or {"app:main"})
     monkeypatch.setattr(deploy.phases_pkg, "service_shipped", lambda _service: False)
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import FrozenInstanceError
 import json
 import os
 from pathlib import Path
@@ -52,9 +53,28 @@ def test_a_parent_domain_cookie_does_not_leak_to_a_lookalike_host(tmp_path: Path
 
 def test_default_ports_are_normalised_and_explicit_ports_must_match(tmp_path: Path) -> None:
     path = _write(tmp_path, STATE)
-    assert ss.load_scoped(path, "https://browser.geekbench.com:443/").origins == 1
+    default_port = ss.load_scoped(path, "https://browser.geekbench.com:443/")
+    assert default_port.origins == 1
+    assert [entry["origin"] for entry in default_port.state["origins"]] == ["https://browser.geekbench.com"]
     assert ss.load_scoped(path, "https://browser.geekbench.com:8443/").origins == 1
     assert ss.load_scoped(path, "http://browser.geekbench.com/").origins == 1
+
+
+def test_hostless_origin_with_out_of_range_port_is_ignored(tmp_path: Path) -> None:
+    data = {
+        "cookies": [{"name": "sid", "value": SECRET, "domain": "browser.geekbench.com"}],
+        "origins": [{"origin": "https://:99999"}],
+    }
+    scoped = ss.load_scoped(_write(tmp_path, data), "https://browser.geekbench.com/")
+    assert scoped.cookies == 1
+    assert scoped.origins == 0
+    assert scoped.state["origins"] == []
+
+
+def test_scoped_state_cannot_be_reassigned() -> None:
+    scoped = ss.ScopedState({}, 0, 0)
+    with pytest.raises(FrozenInstanceError):
+        scoped.cookies = 1  # type: ignore[misc]
 
 
 def test_a_file_with_nothing_for_the_host_is_refused(tmp_path: Path) -> None:
@@ -123,6 +143,19 @@ def test_tilde_is_expanded(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> N
     monkeypatch.setenv("HOME", str(tmp_path))
     _write(tmp_path, STATE)
     assert ss.load_scoped("~/state.json", "https://browser.geekbench.com/").cookies == 2
+
+
+def test_open_error_without_a_strerror_uses_the_readable_fallback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "missing.json"
+
+    def fail_open(*_args: object, **_kwargs: object) -> int:
+        raise OSError(13, None, str(path))
+
+    monkeypatch.setattr(ss.os, "open", fail_open)
+    with pytest.raises(ss.StorageStateError, match="unreadable$"):
+        ss.load_scoped(path, "https://browser.geekbench.com/")
 
 
 def test_a_public_suffix_cookie_domain_does_not_match_every_host(tmp_path: Path) -> None:

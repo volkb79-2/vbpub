@@ -21,6 +21,10 @@ linking against assay itself.
   the standard vbpub `tester-unified` image supplies Go, while custom judging
   images must provide it. See the [Go lane consumer guide](docs/CONSUMERS.md#go-lanes-what-exists-today-and-what-a-go-lane-will-require)
   and [DESIGN-GUIDE §10](docs/DESIGN-GUIDE.md#10-fixture-projects-and-the-go-toolchain-constraint).
+  Rust is **planned, not implemented**: there is no registered Rust adapter
+  today. The binding dependency, coverage, mutation, release-policy, baseline,
+  and deferred-work decisions are in [Rust methodology](docs/RUST-METHODOLOGY.md)
+  and [the tier design](docs/DESIGN-GUIDE.md#rust-adapter-status-and-tier-design).
   **Full matrix, and what R0–R3 each actually mean:
   [Rigor levels, and what's registered where](#rigor-levels-and-whats-registered-where).**
 
@@ -147,7 +151,7 @@ remains FAIL or ERROR. Receipts do not decide ACCEPT or REJECT. See the
 Machine consumers can validate manifests and receipts against the packaged
 `schemas/analysis-archive.schema.json`, `schemas/analysis-receipt.schema.json`,
 and `schemas/analysis-report.schema.json`.
-Receipt verdicts are checked against the current v18 verdict schema; a receipt
+Receipt verdicts are checked against the current v19 verdict schema; a receipt
 with an `--allow-dirty` override is refused by default.
 
 ## Why use it
@@ -264,12 +268,12 @@ assay exists to close that gap mechanically, not by policy:
   `assay run --reuse-from` always re-runs R0 first, then replays eligible prior
   kill witnesses against the current sequential pytest suite. Any uncertainty
   runs the candidate's full suite; a nonempty `PYTEST_ADDOPTS` disables witness
-  replay because it can override configured addopts. A v12 through v17 verdict
-  is a cold start under v18, and `assay verify` rejects all six. Assay 12.0.0
-  carries this v18 hard cut (11.0.0 carried v17). See the
+  replay because it can override configured addopts. A v12 through v18 verdict
+  is a cold start under v19, and `assay verify` rejects old versions. Assay
+  12.0.0 carries the v18 hard cut (11.0.0 carried v17). See the
   [B106 design](docs/DESIGN-GUIDE.md#selective-reuse-replays-a-current-failure-witness-b106)
   and [worked consumer example](docs/CONSUMERS.md#reusing-killed-native-mutants-after-the-baseline-b106),
-  plus the [v17-to-v18 migration notes](docs/CONSUMERS.md#migration-notes-v17-to-v18).
+  plus the [v18-to-v19 migration notes](docs/CONSUMERS.md#migration-notes-v18-to-v19).
 - **Refusals name the usable cause and keep unrelated failures distinct.** A
   Git dubious-ownership refusal explains why `safe.directory` cannot be set in
   assay's replacement environment and points to the ownership fix. Unknown or
@@ -277,6 +281,15 @@ assay exists to close that gap mechanically, not by policy:
   state remains `ERROR`/`UNREADABLE_ARTIFACT`. See the
   [refusal design](docs/DESIGN-GUIDE.md#git-dubious-ownership-and-safe-directory-b081)
   and [consumer pitfall](docs/CONSUMERS.md#b081-ownership-remedy).
+- **Native R2 records a candidate-local outcome validation error and continues.**
+  The candidate is included in the final `crashed` bucket with
+  `candidate_error.reason_code = "EXEC_FAILED"` and a bounded diagnostic
+  message. This evidence survives `--resume`; judge identity `/15` re-executes
+  pre-fix `/14` state. A normally exited leader with surviving descendants
+  also stays `crashed`, with the completed command result retained as
+  `underlying_outcome`. See the
+  [process-tree and candidate-error design](docs/DESIGN-GUIDE.md#candidate-outcome-errors-and-process-tree-leaks-b251)
+  and [v18-to-v19 consumer migration](docs/CONSUMERS.md#migration-notes-v18-to-v19).
 - **Passthrough environment values stay out of verdict JSON (B142).** A
   resolved verdict retains each present variable's name and a fixed marker,
   with a SHA-256 fingerprint for comparing runs. Exact echoes are masked
@@ -327,10 +340,24 @@ assay exists to close that gap mechanically, not by policy:
   Assay may use the explicitly configured
   `ASSAY_RESOURCE_OBSERVER_SOCKET` endpoint, but only for that hidden-
   ancestor condition; all identity, ancestry, and attribution checks remain
-  fail-closed. Run-Gate's `resource_observer = "cgprofile"` mounts a
-  separate observer-only socket, never the daemon control socket. See the
-  [design rationale](docs/DESIGN-GUIDE.md#native-r2-cgroup-resource-limit-events-b145)
+  fail-closed. Assay's host launchers read the observer endpoint from
+  `CGPROFILE_OBSERVER_SOCKET`, mount its directory read-only at the same path,
+  and pass that identity path as `ASSAY_RESOURCE_OBSERVER_SOCKET`. Assay's six
+  observer-enabled lanes declare it as required infrastructure, so an unset
+  value is a named error. Run-Gate's environment reader and lane passthrough
+  are WP-E3; the Netcup runner's export is WP-R1. Those caller integrations are
+  separate work and are not added here. Launchers do not carry a socket path
+  default. They never mount or stat the separate
+  control endpoint; Run-Gate carries the control-GID preflight because it opens
+  that endpoint for control requests. The observer directory must be `root:root`,
+  and launchers read the observer GID from the socket inode. Use the installed
+  host endpoint environment before running these gates. See the
+  [endpoint rationale](docs/DESIGN-GUIDE.md#host-cgprofile-socket-endpoints)
   and [consumer setup](docs/CONSUMERS.md#native-r2-resource-limit-observation-b145).
+  Assay's tester launchers require the host Docker GID as a numeric value:
+  `ASSAY_GATE_HOST_DOCKER_GID` takes precedence over `MDT_HOST_DOCKER_GID`.
+  Missing or malformed selected values refuse launch. They do not infer it
+  from the Docker API socket, whose GID may belong to a proxy or relay.
   This does not observe per-process limits such as `RLIMIT_NPROC` or
   `RLIMIT_AS`. See the
   [design rationale](docs/DESIGN-GUIDE.md#native-r2-cgroup-resource-limit-events-b145)
@@ -353,7 +380,7 @@ assay exists to close that gap mechanically, not by policy:
   must implement resource-observer contract 2, which reports the regular
   counters' scope and supplies effective local counters. Contract 1 is refused
   because it cannot distinguish sibling events from events enforced at a shared ancestor;
-  use cgroup-profiler 1.0.0 or later. See B155 in the
+  use cgprofile 1.0.0 or later. See B155 in the
   [Assay backlog](nyxloom-trove/4-backlog.md), the
   [design rationale](docs/DESIGN-GUIDE.md#native-r2-cgroup-resource-limit-events-b145),
   and [consumer setup](docs/CONSUMERS.md#native-r2-resource-limit-observation-b145).
@@ -378,14 +405,14 @@ assay exists to close that gap mechanically, not by policy:
   refused with `--candidates-file`. The run progress
   header records `jobs` and `attribution` (`serial` or
   `overlap-conservative`), and each candidate event records `worker_index`.
-  Verdict schema v18 records the campaign's maximum worker count as
+  Verdict schema v19 records the campaign's maximum worker count as
   `judgment.r2.jobs` (and its `serial` or `overlap-conservative`
   attribution), with `judgment.r2.worker_counts` giving the candidates per
   worker count across resumed and executed records (B203). Each candidate also
   carries its cgprofile resource profile; see
   the [parallel-window rationale](docs/DESIGN-GUIDE.md#native-r2-parallel-candidate-windows)
   and [consumer setup](docs/CONSUMERS.md#native-r2-parallel-candidate-windows-pr1b),
-  plus the [v17-to-v18 migration notes](docs/CONSUMERS.md#migration-notes-v17-to-v18).
+  plus the [v18-to-v19 migration notes](docs/CONSUMERS.md#migration-notes-v18-to-v19).
   After R0/R1, Assay checks the complete hierarchy before any native R2
   candidate starts. If its private cgroup view hides ancestors, it may use
   the explicitly configured observer-only socket; without a usable local view
@@ -445,7 +472,8 @@ assay cannot parse a v2 file's `[isolation]` table at all. Repin the release
 and bump `schema_version` **in the same commit** — see
 [the consumer guide's ordered adoption step](docs/CONSUMERS.md#adopting-a-v2-capable-release)
 for why the order matters and what breaks if you split it across two commits.
-For the v18 verdict fields and the effect on old verdicts and resume, see
+For the v19 verdict fields and the effect on old verdicts and resume, see
+the [v18-to-v19 migration notes](docs/CONSUMERS.md#migration-notes-v18-to-v19),
 the [v17-to-v18 migration notes](docs/CONSUMERS.md#migration-notes-v17-to-v18),
 the [v16-to-v17 migration notes](docs/CONSUMERS.md#migration-notes-v16-to-v17),
 the [v15-to-v16 migration notes](docs/CONSUMERS.md#migration-notes-v15-to-v16)
@@ -534,6 +562,7 @@ on this module" is `mode = "whole_target"` + `require_branch = true` +
 | **JavaScript/TypeScript** | ✅ | ✅ registered, both scope modes | ✅ **available** — real Istanbul/nyc branch arcs (declare `producer = "istanbul"`; `@vitest/coverage-v8`/`c8` report ranges, not per-arm arcs, and stay `"unavailable"` without it) | ✅ registered, **ingested path only** — an external producer such as Stryker owns candidate execution/retry; Assay scores the completed report, with no Assay candidate-state resume/rejudge or per-candidate resource-event checks | ✅ **registered and locally exercised** — R3 runs import-break and uncovered-line canaries (B087); import-break requires a matching execution receipt, so lanes that lint or type-check before tests should use uncovered-line; a pre-test static failure is inconclusive. See the [receipt rationale](docs/DESIGN-GUIDE.md#r3-import-break-receipt-attribution) and [host-load verdict rules](docs/DESIGN-GUIDE.md#host-load-and-verdicts). Both dstdns canaries were qualified under Assay 9.0.0/schema v15, with retained verdicts and verifier transcripts for that release |
 | **Go** | ✅ | ✅ registered, both scope modes — needs a real `go` toolchain on the judge (`external_tools = ("go",)`); statement positions are re-derived from source, never trusted from the profile alone (A-217) | ❌ **structurally impossible** — `go-cover`'s own format has no branch concept; no engineering investment inside assay changes this without Go's own coverage instrumentation gaining one | ❌ **not implemented** — `generate_mutation_sites` is unconditionally `UNSUPPORTED`; other Go-ecosystem tools (e.g. `go-mutesting`) prove this is possible in principle, assay just hasn't built it | ❌ not registered |
 | **SQL/DDL** | ✅ | ❌ **not registered** — SQL's only rigor entry is R2 | — (moot) | ✅ registered, native; uses the same Assay candidate state, resume/rejudge, one serial tail retry for current-run `crashed`, per-candidate `budget_exceeded` and `hung` results, progress and resource-event path as Python | ❌ not registered |
+| **Rust (planned)** | ✅ language-agnostic only — no Rust adapter is registered | ❌ **not implemented** — planned `cargo llvm-cov` LCOV at 100% changed-line coverage, plus per-crate 90% line / 85% region floors for every crate | ❌ **unavailable on stable Rust** — no LCOV branch records; documented known issue, not an Assay implementation gap | ❌ **not implemented** — planned ingestion of `cargo-mutants` `outcomes.json`; Rust R2 is not yet adopted (known issue); target is the full R1-R3 contract, with diff-scoped R2 at T3 | ❌ **not implemented** — T2 uses one test-break/import-break canary per lane; the uncovered-line probe is a separate T3 lane |
 
 #### Cross-cutting capabilities beyond language adapters
 
@@ -966,8 +995,8 @@ The two adapter transforms are judged by the existing isolated canary runner;
   were qualified under Assay 9.0.0/schema v15; their retained verdicts and
   verifier transcripts document that release. Those canaries are distinct from
   the integrated Assay release gate. B087 did not add verdict fields; the
-  current verdict schema is v18, with the migration described in the
-  [v17-to-v18 consumer notes](docs/CONSUMERS.md#migration-notes-v17-to-v18).
+  current verdict schema is v19, with the migration described in the
+  [v18-to-v19 consumer notes](docs/CONSUMERS.md#migration-notes-v18-to-v19).
 
 **Branch coverage depends on the declared producer.** istanbul's `branchMap`
 means different things under different producers (real per-arm arcs under the
@@ -1579,11 +1608,22 @@ you're changing assay itself:
   [design guide](docs/DESIGN-GUIDE.md#unprivileged-host-slice-preflight-for-tester-unified),
   with the operator-facing gate sequence in the
   [consumer guide](docs/CONSUMERS.md#assays-own-full-source-self-qualification-b105).
+  For pre-merge tooling-test review, `run-gate tooling-tests` runs the B105
+  checker, distribution, release-gate and self-qualification launcher tests plus
+  the public-docs waiver-window test in tester-unified, and accepts additional
+  pytest selectors after `--`. It is diagnostic only; see the
+  [design rationale](docs/DESIGN-GUIDE.md#scoped-tooling-test-lanes) and
+  [consumer instructions](docs/CONSUMERS.md#scoped-tooling-test-review).
+  `run-gate hang-test-contention` repeats the hung-Docker fixture test 20 times
+  alongside a CPU burner in the same tester-unified container.
   The separately invoked `run-gate self-qualification` requires that receipt for
   its own commit and tree (run `run-gate tester-unified` first, in the same worktree and with no commit in between: any later commit, a docs-only or merge commit included, needs a fresh `tester-unified` run; exit 3 means incomplete or infrastructure evidence and must be retried), then runs full-source
-  R0-R3 qualification in `tester-unified`. During the explicitly waived 10.0.x
-  release window, CMRU's Assay `run-tests` step also invokes
-  `run-gate self-qualification-provisional`, which runs R0, R1 and R3 and records
+  R0-R3 qualification in `tester-unified`. During the currently authorized
+  `assay >=10.0.0, <12.3.0` waiver window, extended on 2026-11-12 (A-507) for
+  the flexible-R2 release 12.2.0, whose own R2 then runs as the T3 check on that
+  release (B535),
+  CMRU's Assay `run-tests` step also invokes
+  `self-qualification-provisional`, which runs R0, R1 and R3 and records
   the R2 postponement in `.assay/mutation-postponed-assay.json`; its
   `cmru_release_gate_version_bound` field records whether the protected CMRU
   transaction version was received and matched. It never claims an R2 pass.
@@ -1593,6 +1633,14 @@ you're changing assay itself:
   CMRU's protected transaction version. A marker is current evidence only with
   a successful Run-Gate result for the same source tree; a Run-Gate admission
   refusal before the wrapper starts can leave a previous marker in place.
+  CMRU delegates only its two Assay gate commands according to the required
+  `ASSAY_RELEASE_GATE_HOST` setting (`local`, `v1001`, or `r1002`). The CMRU
+  release transaction, build, tag, and publish remain on the controller. A
+  delegated result is accepted only when the remote run metadata matches
+  `CMRU_RELEASE_GATE_COMMIT` and its verdict is `PASS`; extending the provisional
+  R2 window requires a new operator waiver decision. See the
+  [release host instructions](docs/CONSUMERS.md#assay-release-gate-host) and
+  [design rationale](docs/DESIGN-GUIDE.md#assay-release-gate-delegation).
   The B105 run-gate lanes use the
   bare-host `tools/self-qualification-container.sh` wrapper because the
   generic run-gate tester container has a private cgroup namespace. The

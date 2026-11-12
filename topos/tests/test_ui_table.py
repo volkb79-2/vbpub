@@ -260,3 +260,55 @@ def test_container_table_renders_no_container_rows_placeholder_after_filter() ->
 
     assert rendered.row_keys == () and snapshot.row_keys == () and snapshot.cells == ()
     assert "no container rows" in _rendered_text(rendered.table)
+
+
+# --- D-03: missing / non-numeric metric sorts last in both directions --------
+
+def _sortable(name: str, value) -> EntityFrame:
+    metrics = {} if value is None else {"ram": MetricValue(value, "exact")}
+    if value == "unset":
+        metrics = {"ram": MetricValue(None, "unavail_kernel")}
+    return EntityFrame(entity=Entity(key=f"{name}.scope", kind="scope", parent=""), metrics=metrics)
+
+
+def _names(rows) -> list[str]:
+    return [row.entity.key.removesuffix(".scope") for row in rows]
+
+
+def test_missing_metric_sorts_last_in_both_directions() -> None:
+    from topos.ui.table import _sort_rows
+    from topos.ui.tree import _sort_branch
+
+    rows = [_sortable("none", None), _sortable("small", 1), _sortable("unset", "unset"), _sortable("big", 9)]
+    for sorter in (_sort_rows, _sort_branch):
+        assert _names(sorter(rows, "ram", reverse=True)) == ["big", "small", "none", "unset"]
+        assert _names(sorter(rows, "ram", reverse=False)) == ["small", "big", "none", "unset"]
+
+
+def test_non_numeric_value_in_numeric_column_does_not_raise() -> None:
+    from topos.ui.table import _sort_rows
+
+    rows = [_sortable("text", "oops"), _sortable("num", 3), _sortable("nan", float("nan"))]
+    assert _names(_sort_rows(rows, "ram", reverse=True)) == ["num", "nan", "text"]
+    assert _names(_sort_rows(rows, "ram", reverse=False)) == ["num", "nan", "text"]
+
+
+# --- name column cap ---------------------------------------------------------
+
+def test_long_names_truncate_in_the_middle_keeping_both_ends() -> None:
+    name = "prefix-" + "x" * 48 + "-suffix-12345"  # 68 chars
+    entity_frame = EntityFrame(
+        entity=Entity(key="a.scope", kind="scope", parent="", docker=DockerMeta(cid="c" * 12, full_id="c" * 64, name=name, image="i")),
+        metrics={},
+    )
+    shown = format_metric_value("name", entity_frame).plain
+    assert len(shown) == 40
+    assert shown.startswith("prefix-") and shown.endswith("12345")
+    assert "…" in shown
+
+
+def test_short_names_are_untouched() -> None:
+    from topos.ui.table import truncate_middle
+
+    assert truncate_middle("short", 40) == "short"
+    assert truncate_middle("x" * 40, 40) == "x" * 40

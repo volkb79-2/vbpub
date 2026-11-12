@@ -8,7 +8,7 @@
     "assay-r3"
   ],
   "outcome": "PASS",
-  "project": "cgroup-profiler",
+  "project": "cgprofile",
   "run_gate": {
     "version": "25.0.1",
     "wheel_sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"

@@ -212,6 +212,16 @@ def test_validating_task_completes_as_noop_when_no_gate_declared(
     n = d.run_pass("demo")
     assert n == 1
 
+    # The no-gate probe is background work like every post-merge result. The
+    # dispatch pass drains after executing the action, so scheduling can let
+    # the probe queue its result after that one drain. Wait for the concrete
+    # probe and, when it was not observed in the first pass, drain it now.
+    handle = d._gates.post_merge_running.get(f"post-merge-gate:{task_id}")
+    if handle is not None:
+        handle.join(timeout=10)
+        assert not handle.is_alive()
+        d.run_pass("demo")
+
     tsf = storage.load_state("demo", task_id)
     assert tsf.state is TaskState.COMPLETED
     assert tsf.gate_results == []

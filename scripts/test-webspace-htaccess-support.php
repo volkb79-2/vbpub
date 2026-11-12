@@ -2,42 +2,152 @@
 declare(strict_types=1);
 
 /**
- * .htaccess capability probe for shared webhosting.
+ * .htaccess capability probe for shared webhosting - CLI and browser in one file.
  *
- * Run from the domain directory, e.g. /mydomain.vi:
- *   php test-htaccess.php mydomain.vi
- *   php test-htaccess.php https://mydomain.vi --keep
- *   php test-htaccess.php https://mydomain.vi --test-root-htaccess
+ * Writes disposable .htaccess files into a random probe folder below the web root, requests them
+ * over HTTP and reports which directives the host honours (rewrite, headers, access control,
+ * Basic Auth, REMOTE_USER, .user.ini, ...). By default it ALSO tests the web root .htaccess and the
+ * file one level above it, one short-lived block at a time (backed up first, removed right after).
+ * Needs PHP 8.1+ (the test machine, not the hosting PHP version, is what matters for CLI use).
  *
- * By default the script ONLY writes below ./httpdocs/__hta_probe_<random>/.
- * Root-level .htaccess tests are explicit opt-in and use transactional append/restore.
+ * CLI (run from the DOMAIN folder, the one that contains httpdocs/, not from inside httpdocs):
+ *   php test-webspace-htaccess-support.php mydomain.tld
+ *   php test-webspace-htaccess-support.php mydomain.tld --verbose --keep --docroot=public_html
+ *   php test-webspace-htaccess-support.php mydomain.tld --no-domain --json=report.json
+ *
+ * Browser (hosts without shell access or without a folder above the web root):
+ *   1. set HTA_WEB_TOKEN below to a long random string (openssl rand -hex 16)
+ *   2. upload this file into the web root (or any folder below it)
+ *   3. open https://mydomain.tld/test-webspace-htaccess-support.php?token=THE-TOKEN
+ *      optional: &verbose=1  &format=json  &root=0 (no root tests)  &domain=0  &docroot=0  &keep=1
+ *                &timeout=N (2..120)  &insecure=1
+ *      If the site is behind Basic Auth, open the page logged in: the credentials are forwarded.
+ *   4. DELETE THE FILE AGAIN. In this mode the folder above the web root is only tested when
+ *      PHP may write there (open_basedir); otherwise that placement is reported as skipped.
+ * Root tests briefly append one block to the live .htaccess file(s); a broken block could cause
+ * 500 errors for a few seconds, so do not run it during important traffic.
  */
 
-const SCRIPT_VERSION = '1.3.0';
+// Browser mode only: shared secret for ?token= (leave empty to disable browser mode).
+const HTA_WEB_TOKEN = '';
 
-function out(string $s = ''): void { echo $s, PHP_EOL; }
-function err(string $s): void { fwrite(STDERR, $s . PHP_EOL); }
+const SCRIPT_VERSION = '1.4.0';
+
+$GLOBALS['HTA_VERBOSE'] = false;   // long per-test blocks and the long analysis
+$GLOBALS['HTA_QUIET'] = false;     // JSON on stdout: no text at all
+$GLOBALS['HTA_COLOR'] = false;
+
+function out(string $s = ''): void
+{
+    if ($GLOBALS['HTA_QUIET']) return;
+    echo $s, PHP_EOL;
+    if (PHP_SAPI !== 'cli') @flush();
+}
+/** Output that only appears with --verbose / &verbose=1. */
+function vout(string $s = ''): void { if ($GLOBALS['HTA_VERBOSE']) out($s); }
+function err(string $s): void
+{
+    if (PHP_SAPI === 'cli') fwrite(STDERR, $s . PHP_EOL); else out('! ' . $s);
+}
+
+function paint(string $label): string
+{
+    if (!$GLOBALS['HTA_COLOR']) return $label;
+    $code = ['OK' => '32', 'FAIL' => '31', 'WARN' => '33', '??' => '35'][trim($label)] ?? '0';
+    return "\033[{$code}m{$label}\033[0m";
+}
+
+/** OK = works (SUPPORTED/ACTIVE/OK), FAIL = rejected, WARN = accepted without effect, ?? = undecided. */
+function shortState(array $result): string
+{
+    return match (resultState($result)) {
+        'REJECTED' => 'FAIL',
+        'ACCEPTED/NO-EFFECT' => 'WARN',
+        'INCONCLUSIVE' => ' ?? ',
+        default => ' OK ',
+    };
+}
+
+function reportLine(array $result): void
+{
+    if ($GLOBALS['HTA_VERBOSE']) return;
+    $label = shortState($result);
+    $line = '[' . paint($label) . '] ' . $result['name'];
+    if (trim($label) !== 'OK') $line .= ' - ' . $result['why'];
+    out($line);
+}
+
+function flagParam(string $name, bool $default): bool
+{
+    if (!isset($_GET[$name])) return $default;
+    return !in_array(strtolower((string)$_GET[$name]), ['0', 'no', 'false', 'off'], true);
+}
+
+/** open_basedir-aware reachability test for a directory (silent). */
+function pathReachable(string $path): bool
+{
+    $ob = (string)ini_get('open_basedir');
+    if ($ob === '') return true;
+    $real = @realpath($path);
+    if ($real === false) $real = rtrim($path, '/');
+    foreach (explode(PATH_SEPARATOR, $ob) as $allowed) {
+        $a = rtrim(trim($allowed), '/');
+        if ($a === '') continue;
+        $ar = @realpath($a);
+        if ($ar !== false) $a = rtrim($ar, '/');
+        if ($real === $a || str_starts_with($real, $a . '/')) return true;
+    }
+    return false;
+}
 
 function usage(int $exit = 0): never
 {
     $name = basename(__FILE__);
-    out("Usage: php {$name} <fqdn-or-base-url> [options]");
-    out();
-    out("Examples:");
-    out("  php {$name} mydomain.vi");
-    out("  php {$name} https://mydomain.vi --keep");
-    out();
-    out("Options:");
-    out("  --keep                    Keep the generated probe directory after the run.");
-    out("  --timeout=N               curl max-time for normal probes (default: 15).");
-    out("  --root-timeout=N          curl max-time while a root .htaccess is modified (default: 5; 2..15).");
-    out("  --test-docroot-htaccess   Also test ./httpdocs/.htaccess transactionally.");
-    out("  --test-domain-htaccess    Also test ./.htaccess (parent of httpdocs) transactionally.");
-    out("  --test-root-htaccess      Shorthand for both root-level tests above.");
-    out("  --insecure                Pass -k to curl (ignore TLS certificate errors).");
-    out("  --verbose-body            Show up to 2000 bytes of response body instead of 500.");
-    out("  --help                    Show this help.");
+    $text = <<<TXT
+Usage: php {$name} <domain-or-base-url> [options]
+Place this file in the folder that CONTAINS the web root (httpdocs/), not inside it;
+the web root is located relative to this file, not to the current directory.
+
+Examples:
+  php {$name} mydomain.tld
+  php {$name} https://mydomain.tld --verbose --keep --docroot=public_html
+  php {$name} mydomain.tld --no-domain --json=report.json
+
+Options:
+  --docroot=DIR     web root folder, relative to this file or absolute (default: httpdocs).
+  --no-root         do NOT touch .htaccess files outside the probe folder (= both below).
+  --no-docroot      skip the test of <web root>/.htaccess.
+  --no-domain       skip the test of the .htaccess above the web root.
+  --auth=USER:PASS  send Basic Auth credentials (site already behind a login;
+                    visible in the process list).
+  --verbose, -v     long output per test and the long diagnostic analysis.
+  --json=FILE       also write a machine-readable report ('-' = JSON only, on stdout).
+  --no-color        no ANSI colours (default: colours only on a terminal; NO_COLOR is honoured).
+  --color           force colours.
+  --keep            keep the probe folder after the run.
+  --timeout=N       HTTP timeout per probe in seconds (default 15; 2..120).
+  --root-timeout=N  HTTP timeout while a root .htaccess is modified (default 5; 2..15).
+  --insecure        ignore TLS certificate errors.
+  --help, -h        this text.
+
+By default the web root .htaccess and the one above it are each modified for one request at a
+time (appended block, backed up first, removed right after). Browser mode: see the comment at
+the top of this file (HTA_WEB_TOKEN).
+
+Result labels: OK = works, FAIL = rejected by the server, WARN = accepted but without effect,
+?? = could not be decided (use --verbose).
+Exit codes: 0 = probe finished (see results), 1 = fatal error, 2 = usage error,
+3 = a root .htaccess could not be restored automatically (backup path is printed).
+TXT;
+    if ($exit === 0) echo $text, PHP_EOL; else fwrite(STDERR, $text . PHP_EOL);
     exit($exit);
+}
+
+/** CLI usage error: one clean line on stderr, exit 2. */
+function usageError(string $msg): never
+{
+    fwrite(STDERR, basename(__FILE__) . ': ' . $msg . PHP_EOL . 'Try --help.' . PHP_EOL);
+    exit(2);
 }
 
 function disabledFunction(string $name): bool
@@ -75,6 +185,9 @@ function normalizeBaseUrl(string $input): string
     $input = trim($input);
     if ($input === '') {
         throw new RuntimeException('Empty FQDN/base URL.');
+    }
+    if (preg_match('~^[a-z][a-z0-9+.-]*://~i', $input) && !preg_match('~^https?://~i', $input)) {
+        throw new RuntimeException('Only http:// and https:// URLs are supported.');
     }
     if (!preg_match('~^https?://~i', $input)) {
         $input = 'https://' . $input;
@@ -167,6 +280,20 @@ function parseHeaderBlocks(string $raw): array
     return $parsed;
 }
 
+/**
+ * Add $defaults unless the request already names the same header; then drop headers with an
+ * empty value (so 'Authorization:' in a request means "send no Authorization at all").
+ */
+function mergeHeaders(array $headers, array $defaults): array
+{
+    $names = [];
+    foreach ($headers as $h) $names[strtolower(trim(explode(':', $h, 2)[0]))] = true;
+    foreach ($defaults as $h) {
+        if (!isset($names[strtolower(trim(explode(':', $h, 2)[0]))])) $headers[] = $h;
+    }
+    return array_values(array_filter($headers, static fn($h) => trim(explode(':', $h, 2)[1] ?? '') !== ''));
+}
+
 function headerValue(array $response, string $name): ?string
 {
     $blocks = $response['header_blocks'] ?? [];
@@ -254,8 +381,9 @@ function resultState(array $result): string
 
     if ($c === 'baseline-ok' || $c === 'web-runtime-detected' || $c === 'files-container-public-ok') return 'OK';
     if ($c === 'htaccess-parsed' || $c === 'scope-parent-supported' || $c === 'nested-htaccess-supported' || $c === 'root-placement-active') return 'ACTIVE';
-    if ($c === 'php_value-accepted-not-effective') return 'ACCEPTED/NO-EFFECT';
-    if (str_contains($c, 'rejected') || str_contains($c, 'not-supported')) return 'REJECTED';
+    // Accepted (HTTP 200) but without the requested effect: Basic Auth not enforced, user not passed to PHP, .user.ini ignored.
+    if (in_array($c, ['php_value-accepted-not-effective', 'basicauth-not-effective', 'remote-user-not-effective', 'user_ini-not-effective'], true)) return 'ACCEPTED/NO-EFFECT';
+    if (str_contains($c, 'rejected') || str_contains($c, 'not-supported') || str_ends_with($c, '-exposed')) return 'REJECTED';
     if (str_contains($c, 'inconclusive') || str_contains($c, 'not-effective') || str_contains($c, 'possibly-ignored') || str_contains($c, 'unexpected') || str_ends_with($c, '-failed')) return 'INCONCLUSIVE';
     if ($ok) return 'SUPPORTED';
     return 'INCONCLUSIVE';
@@ -266,6 +394,8 @@ function resultFamily(array $result): string
     $name = strtolower((string)($result['name'] ?? ''));
     $c = strtolower((string)($result['classification'] ?? ''));
     if (str_contains($name, 'baseline') || str_contains($name, 'web php runtime')) return 'Environment / control';
+    if (str_contains($name, 'basic auth') || str_contains($name, 'dotfile') || str_contains($name, '.htaccess file')) return 'AuthConfig / access control';
+    if (str_contains($name, '.user.ini')) return 'PHP handler integration';
     if (str_contains($c, 'placement') || str_contains($c, 'scope-parent') || str_contains($c, 'nested-htaccess') || $c === 'htaccess-parsed') return 'Placement / parsing';
     if (str_contains($name, 'php_value') || str_contains($c, 'php_value')) return 'PHP handler integration';
     if (str_contains($name, 'require') || str_contains($name, '<files>') || str_contains($c, 'require') || str_contains($c, 'files-container')) return 'AuthConfig / access control';
@@ -316,15 +446,15 @@ function extractRuntimeValue(array $results, string $key): ?string
 
 function printAtAGlance(array $results, bool $testDocroot, bool $testDomain): void
 {
-    out('AT A GLANCE');
-    out(str_repeat('-', 78));
+    vout('AT A GLANCE');
+    vout(str_repeat('-', 78));
     $nested=findResultByClassification($results,'htaccess-parsed');
-    out('  Nested disposable .htaccess : ' . ($nested !== null && resultState($nested)==='ACTIVE' ? 'ACTIVE' : 'NOT PROVEN'));
+    vout('  Nested disposable .htaccess : ' . ($nested !== null && resultState($nested)==='ACTIVE' ? 'ACTIVE' : 'NOT PROVEN'));
     foreach ([['DocumentRoot',$testDocroot],['DomainParent',$testDomain]] as [$placement,$enabled]) {
-        if (!$enabled) { out(sprintf('  %-28s: NOT TESTED', $placement . ' .htaccess')); continue; }
+        if (!$enabled) { vout(sprintf('  %-28s: NOT TESTED', $placement . ' .htaccess')); continue; }
         $active=false;
         foreach($results as $r) if(($r['placement']??'')===$placement && ($r['classification']??'')==='root-placement-active') {$active=true;break;}
-        out(sprintf('  %-28s: %s', $placement . ' .htaccess', $active ? 'ACTIVE' : 'NOT PROVEN'));
+        vout(sprintf('  %-28s: %s', $placement . ' .htaccess', $active ? 'ACTIVE' : 'NOT PROVEN'));
     }
 
     $byState=['REJECTED'=>[],'ACCEPTED/NO-EFFECT'=>[],'INCONCLUSIVE'=>[]];
@@ -333,33 +463,33 @@ function printAtAGlance(array $results, bool $testDocroot, bool $testDomain): vo
         if(isset($byState[$st])) $byState[$st][]=$r;
     }
     foreach($byState as $state=>$items) {
-        out(); out('  ' . $state . ':');
-        if(!$items) { out('    (none)'); continue; }
+        vout(); vout('  ' . $state . ':');
+        if(!$items) { vout('    (none)'); continue; }
         foreach($items as $r) {
             $where=(string)($r['htaccess_path'] ?? $r['placement'] ?? '');
-            out('    - ' . $r['name'] . ($where !== '' ? ' @ ' . $where : ''));
-            out('      ' . $r['why']);
+            vout('    - ' . $r['name'] . ($where !== '' ? ' @ ' . $where : ''));
+            vout('      ' . $r['why']);
         }
     }
-    out();
+    vout();
 }
 
 function printPlacementAnalysis(array $results, string $domainDir, string $docroot, string $probeRoot, bool $testDocroot, bool $testDomain): void
 {
-    out('PLACEMENT ANALYSIS');
-    out(str_repeat('-', 78));
+    vout('PLACEMENT ANALYSIS');
+    vout(str_repeat('-', 78));
 
     $parsed = findResultByClassification($results, 'htaccess-parsed');
     $scope = findResultByClassification($results, 'scope-parent-supported');
     $nested = findResultByClassification($results, 'nested-htaccess-supported');
-    out('1) Disposable nested .htaccess files');
-    out('   Area       : ' . $probeRoot . '/<test>/.htaccess');
-    out('   Evaluated  : per-directory parsing, same-directory effect, parent -> child inheritance, child override.');
-    if ($parsed !== null && resultState($parsed) === 'ACTIVE') out('   Result     : ACTIVE -- Apache parses .htaccess below the DocumentRoot.');
-    else out('   Result     : NOT PROVEN -- inspect the parse probe before trusting capability tests.');
-    if ($scope !== null) out('   Same dir   : ' . resultState($scope) . ' -- ' . $scope['why']);
-    if ($nested !== null) out('   Descendant : ' . resultState($nested) . ' -- ' . $nested['why']);
-    out();
+    vout('1) Disposable nested .htaccess files');
+    vout('   Area       : ' . $probeRoot . '/<test>/.htaccess');
+    vout('   Evaluated  : per-directory parsing, same-directory effect, parent -> child inheritance, child override.');
+    if ($parsed !== null && resultState($parsed) === 'ACTIVE') vout('   Result     : ACTIVE -- Apache parses .htaccess below the DocumentRoot.');
+    else vout('   Result     : NOT PROVEN -- inspect the parse probe before trusting capability tests.');
+    if ($scope !== null) vout('   Same dir   : ' . resultState($scope) . ' -- ' . $scope['why']);
+    if ($nested !== null) vout('   Descendant : ' . resultState($nested) . ' -- ' . $nested['why']);
+    vout();
 
     $placements = [
         ['enabled'=>$testDocroot, 'label'=>'DocumentRoot', 'file'=>$docroot . '/.htaccess'],
@@ -367,37 +497,37 @@ function printPlacementAnalysis(array $results, string $domainDir, string $docro
     ];
     $n = 2;
     foreach ($placements as $p) {
-        out($n . ') ' . $p['label'] . ' placement');
-        out('   File       : ' . $p['file']);
+        vout($n . ') ' . $p['label'] . ' placement');
+        vout('   File       : ' . $p['file']);
         if (!$p['enabled']) {
-            out('   Result     : NOT TESTED (enable the corresponding --test-*-htaccess option).');
-            out(); $n++; continue;
+            vout('   Result     : NOT TESTED (disabled by --no-root/--no-docroot/--no-domain or root=0/docroot=0/domain=0, or not writable).');
+            vout(); $n++; continue;
         }
         $placementResult = null;
         foreach ($results as $r) {
             if (($r['placement'] ?? '') === $p['label'] && ($r['classification'] ?? '') === 'root-placement-active') { $placementResult = $r; break; }
         }
         if ($placementResult !== null) {
-            out('   Result     : ACTIVE -- a temporary Header directive in this exact file changed the probe response.');
+            vout('   Result     : ACTIVE -- a temporary Header directive in this exact file changed the probe response.');
             if ($p['label'] === 'DomainParent') {
-                out('   Scope      : IMPORTANT: this file is above httpdocs yet still participates in request traversal for the tested domain.');
-                out('                Settings placed here can therefore affect descendants under httpdocs, subject to directive merge rules.');
+                vout('   Scope      : IMPORTANT: this file is above httpdocs yet still participates in request traversal for the tested domain.');
+                vout('                Settings placed here can therefore affect descendants under httpdocs, subject to directive merge rules.');
             } else {
-                out('   Scope      : Applies at the web DocumentRoot and normally to descendants unless a deeper configuration changes behavior.');
+                vout('   Scope      : Applies at the web DocumentRoot and normally to descendants unless a deeper configuration changes behavior.');
             }
         } else {
-            out('   Result     : NOT PROVEN/INCONCLUSIVE -- no unique placement marker was observed.');
+            vout('   Result     : NOT PROVEN/INCONCLUSIVE -- no unique placement marker was observed.');
         }
         $tested=[];
         foreach ($results as $r) if (($r['placement'] ?? '') === $p['label'] && ($r['classification'] ?? '') !== 'root-placement-active') $tested[] = $r;
         if ($tested) {
-            out('   Settings evaluated at this placement:');
+            vout('   Settings evaluated at this placement:');
             foreach ($tested as $r) {
                 $shortName=preg_replace('/^\[ROOT [^\]]+\]\s*/', '', (string)$r['name']) ?? (string)$r['name'];
-                out(sprintf('     %-18s %-34s %s', resultState($r), substr($shortName, 0, 34), compactSetting((string)($r['directives'] ?? ''))));
+                vout(sprintf('     %-18s %-34s %s', resultState($r), substr($shortName, 0, 34), compactSetting((string)($r['directives'] ?? ''))));
             }
         }
-        out(); $n++;
+        vout(); $n++;
     }
 
     if ($testDocroot && $testDomain) {
@@ -416,83 +546,83 @@ function printPlacementAnalysis(array $results, string $domainDir, string $docro
             $domActive=isset($dom['Header placement marker']) && $dom['Header placement marker']==='ACTIVE';
             $diff=[];
             foreach($common as $name) if($doc[$name] !== $dom[$name]) $diff[]=$name . ': DocumentRoot=' . $doc[$name] . ', DomainParent=' . $dom[$name];
-            out('Root placement comparison:');
+            vout('Root placement comparison:');
             if (!$docActive || !$domActive) {
-                out('   A meaningful divergence comparison requires BOTH placements to be proven ACTIVE.');
-                out('   Current states are shown above, but matching inconclusive states are not evidence of equivalent behavior.');
+                vout('   A meaningful divergence comparison requires BOTH placements to be proven ACTIVE.');
+                vout('   Current states are shown above, but matching inconclusive states are not evidence of equivalent behavior.');
             } elseif (!$diff) {
-                out('   No divergence was observed for the settings tested at BOTH active root placements.');
-                out('   This does not imply every Apache directive will merge identically; it only covers the probes listed above.');
+                vout('   No divergence was observed for the settings tested at BOTH active root placements.');
+                vout('   This does not imply every Apache directive will merge identically; it only covers the probes listed above.');
             } else {
-                out('   DIVERGENCE DETECTED between active DocumentRoot and DomainParent placements:');
-                foreach($diff as $d) out('     - ' . $d);
+                vout('   DIVERGENCE DETECTED between active DocumentRoot and DomainParent placements:');
+                foreach($diff as $d) vout('     - ' . $d);
             }
-            out();
+            vout();
         }
     }
 }
 
 function printCapabilityAnalysis(array $results): void
 {
-    out('CAPABILITY ANALYSIS');
-    out(str_repeat('-', 78));
-    out('The entries below describe the exact test placement and directive, not merely the module name.');
-    out('REJECTED means the server rejected that valid .htaccess setting at the tested placement;');
-    out('it does not by itself distinguish "module absent" from "AllowOverride/Options policy forbids it".');
-    out();
+    vout('CAPABILITY ANALYSIS');
+    vout(str_repeat('-', 78));
+    vout('The entries below describe the exact test placement and directive, not merely the module name.');
+    vout('REJECTED means the server rejected that valid .htaccess setting at the tested placement;');
+    vout('it does not by itself distinguish "module absent" from "AllowOverride/Options policy forbids it".');
+    vout();
 
     $families = ['FileInfo / modules','Indexes','Options','AuthConfig / access control','PHP handler integration','Placement / parsing'];
     foreach ($families as $family) {
         $items = array_values(array_filter($results, static fn($r) => resultFamily($r) === $family && !str_starts_with((string)($r['name'] ?? ''), '[ROOT ')));
         if (!$items) continue;
-        out($family . ':');
+        vout($family . ':');
         foreach ($items as $r) {
             $state=resultState($r);
             $file=(string)($r['htaccess_path'] ?? '(generated/manual setup)');
             $setting=compactSetting((string)($r['directives'] ?? ($r['setting'] ?? '')));
-            out(sprintf('  %-18s %s', $state, $r['name']));
-            out('    file    : ' . $file);
-            out('    setting : ' . $setting);
-            out('    evidence: ' . $r['why']);
+            vout(sprintf('  %-18s %s', $state, $r['name']));
+            vout('    file    : ' . $file);
+            vout('    setting : ' . $setting);
+            vout('    evidence: ' . $r['why']);
         }
-        out();
+        vout();
     }
 }
 
 function printConfigurationHints(array $results, bool $testDocroot, bool $testDomain): void
 {
-    out('LIKELY CONFIGURATION PATTERN / PRACTICAL HINTS');
-    out(str_repeat('-', 78));
-    out('These are deductions from behavior. They are NOT a claim about the literal Apache/Plesk config,');
-    out('because shared hosting does not expose the provider\'s <Directory>/AllowOverride directives.');
-    out();
+    vout('LIKELY CONFIGURATION PATTERN / PRACTICAL HINTS');
+    vout(str_repeat('-', 78));
+    vout('These are deductions from behavior. They are NOT a claim about the literal Apache/Plesk config,');
+    vout('because shared hosting does not expose the provider\'s <Directory>/AllowOverride directives.');
+    vout();
 
     $fileInfo = ['mod_headers-supported','mod_rewrite-supported','mod_alias-redirect-supported','errordocument-supported','addtype-supported','fallbackresource-supported'];
     if (allClassificationsPresent($results, $fileInfo)) {
-        out('  * FileInfo-style overrides are broadly usable in nested .htaccess files: headers, rewrites,');
-        out('    redirects, custom errors, MIME mappings and FallbackResource all demonstrated behavior.');
-        out('    This is compatible with a broad FileInfo allowance (or AllowOverride All), but does not prove the exact directive.');
+        vout('  * FileInfo-style overrides are broadly usable in nested .htaccess files: headers, rewrites,');
+        vout('    redirects, custom errors, MIME mappings and FallbackResource all demonstrated behavior.');
+        vout('    This is compatible with a broad FileInfo allowance (or AllowOverride All), but does not prove the exact directive.');
     }
     if (findResultByClassification($results, 'directoryindex-supported') !== null) {
-        out('  * DirectoryIndex works, so the Indexes override family is usable at the nested test placement.');
+        vout('  * DirectoryIndex works, so the Indexes override family is usable at the nested test placement.');
     }
     if (findResultByClassification($results, 'require-supported') !== null && findResultByClassification($results, 'files-container-supported') !== null) {
-        out('  * Apache 2.4 Require and <Files> access control work, consistent with AuthConfig/access-control overrides being permitted.');
+        vout('  * Apache 2.4 Require and <Files> access control work, consistent with AuthConfig/access-control overrides being permitted.');
     }
     $follow=findResultByClassification($results,'followsymlinks-rejected');
     $owner=findResultByClassification($results,'symlinksifownermatch-supported');
     if ($follow !== null && $owner !== null) {
-        out('  * Options is NOT unrestricted: +FollowSymLinks was rejected while +SymLinksIfOwnerMatch worked.');
-        out('    This is a common managed-hosting pattern: safer same-owner symlinks are allowed while unrestricted symlink following is blocked.');
-        out('    Effective behavior resembles token-restricted Options permissions rather than a blanket "AllowOverride Options".');
+        vout('  * Options is NOT unrestricted: +FollowSymLinks was rejected while +SymLinksIfOwnerMatch worked.');
+        vout('    This is a common managed-hosting pattern: safer same-owner symlinks are allowed while unrestricted symlink following is blocked.');
+        vout('    Effective behavior resembles token-restricted Options permissions rather than a blanket "AllowOverride Options".');
     } elseif (findResultByClassification($results,'followsymlinks-supported') !== null) {
-        out('  * +FollowSymLinks worked in the disposable nested directory, so unrestricted symlink following is available there.');
+        vout('  * +FollowSymLinks worked in the disposable nested directory, so unrestricted symlink following is available there.');
     }
     if (findResultByClassification($results,'options-indexes-enable-supported') !== null && findResultByClassification($results,'options-indexes-disable-supported') !== null) {
-        out('  * Both +Indexes and -Indexes worked in the disposable directory. Directory listing can therefore be explicitly enabled/disabled there.');
+        vout('  * Both +Indexes and -Indexes worked in the disposable directory. Directory listing can therefore be explicitly enabled/disabled there.');
     }
     if (findResultByClassification($results,'options-multiviews-supported') !== null) {
-        out('  * -MultiViews is accepted. This is useful for rewrite-heavy applications because MultiViews can otherwise pre-empt URL rewriting.');
+        vout('  * -MultiViews is accepted. This is useful for rewrite-heavy applications because MultiViews can otherwise pre-empt URL rewriting.');
     }
 
     $phpSapi=extractRuntimeValue($results,'WEB_PHP_SAPI');
@@ -501,54 +631,227 @@ function printConfigurationHints(array $results, bool $testDocroot, bool $testDo
     $runtimeResult=findResultByClassification($results,'web-runtime-detected');
     $httpServer=$runtimeResult !== null ? headerValue($runtimeResult['response'],'server') : null;
     if ($phpSapi !== null || $phpVersion !== null) {
-        out('  * Web PHP observed: ' . ($phpVersion ?? '?') . ' via SAPI ' . ($phpSapi ?? '?') . '.');
+        vout('  * Web PHP observed: ' . ($phpVersion ?? '?') . ' via SAPI ' . ($phpSapi ?? '?') . '.');
     }
     if ($httpServer !== null || $backendSoftware !== null) {
-        out('    HTTP Server header=' . ($httpServer ?? '?') . '; PHP SERVER_SOFTWARE=' . ($backendSoftware ?? '?') . '.');
+        vout('    HTTP Server header=' . ($httpServer ?? '?') . '; PHP SERVER_SOFTWARE=' . ($backendSoftware ?? '?') . '.');
         if ($httpServer !== null && $backendSoftware !== null && stripos($httpServer,'nginx') !== false && stripos($backendSoftware,'apache') !== false) {
-            out('    This strongly suggests the common Plesk/shared-hosting layout nginx -> Apache: nginx fronts the request,');
-            out('    while Apache behind it evaluates .htaccess. nginx itself does not read .htaccess files.');
+            vout('    This strongly suggests the common Plesk/shared-hosting layout nginx -> Apache: nginx fronts the request,');
+            vout('    while Apache behind it evaluates .htaccess. nginx itself does not read .htaccess files.');
         }
     }
     if (findResultByClassification($results,'php_value-effective') !== null) {
-        out('    php_value was behaviorally verified: the requested PHP ini value was visible inside a PHP request.');
+        vout('    php_value was behaviorally verified: the requested PHP ini value was visible inside a PHP request.');
     } elseif (findResultByClassification($results,'php_value-accepted-not-effective') !== null) {
-        out('    php_value was accepted by Apache but the requested value was NOT visible in PHP. Treat it as ineffective for PHP configuration.');
-        out('    This pattern is possible when Apache parses legacy directives but PHP is handled by a separate FastCGI/FPM layer.');
+        vout('    php_value was accepted by Apache but the requested value was NOT visible in PHP. Treat it as ineffective for PHP configuration.');
+        vout('    This pattern is possible when Apache parses legacy directives but PHP is handled by a separate FastCGI/FPM layer.');
     } elseif (findResultByClassification($results,'php_value-not-supported') !== null) {
-        out('    php_value is rejected here. Configure PHP through the hosting PHP/FPM settings or other handler-specific mechanisms instead.');
+        vout('    php_value is rejected here. Configure PHP through the hosting PHP/FPM settings or other handler-specific mechanisms instead.');
     }
 
     if ($testDocroot) {
         $r=null; foreach($results as $x) if(($x['placement']??'')==='DocumentRoot' && ($x['classification']??'')==='root-placement-active') {$r=$x;break;}
-        if($r!==null) out('  * /httpdocs/.htaccess is confirmed active, so DocumentRoot-level rules can govern the whole public tree.');
+        if($r!==null) vout('  * /httpdocs/.htaccess is confirmed active, so DocumentRoot-level rules can govern the whole public tree.');
     }
     if ($testDomain) {
         $r=null; foreach($results as $x) if(($x['placement']??'')==='DomainParent' && ($x['classification']??'')==='root-placement-active') {$r=$x;break;}
         if($r!==null) {
-            out('  * The domain-parent .htaccess ABOVE httpdocs is confirmed active. This is easy to overlook:');
-            out('    a rule there can influence the public tree even though the file itself is not inside the webroot.');
+            vout('  * The domain-parent .htaccess ABOVE httpdocs is confirmed active. This is easy to overlook:');
+            vout('    a rule there can influence the public tree even though the file itself is not inside the webroot.');
         }
     }
-    out();
+    vout();
 }
 
 function printDetailedResultLedger(array $results): void
 {
-    out('DETAILED RESULT LEDGER');
-    out(str_repeat('-', 78));
+    vout('DETAILED RESULT LEDGER');
+    vout(str_repeat('-', 78));
     foreach ($results as $r) {
         $state=resultState($r);
-        out(sprintf('%-18s %s', $state, $r['name']));
-        if (!empty($r['placement'])) out('  placement: ' . $r['placement']);
-        if (!empty($r['htaccess_path'])) out('  file     : ' . $r['htaccess_path']);
-        if (!empty($r['directives'])) out('  setting  : ' . compactSetting((string)$r['directives'], 220));
-        if (!empty($r['url'])) out('  URL      : ' . $r['url']);
-        out('  result   : ' . $r['why'] . ' [' . $r['classification'] . ']');
+        vout(sprintf('%-18s %s', $state, $r['name']));
+        if (!empty($r['placement'])) vout('  placement: ' . $r['placement']);
+        if (!empty($r['htaccess_path'])) vout('  file     : ' . $r['htaccess_path']);
+        if (!empty($r['directives'])) vout('  setting  : ' . compactSetting((string)$r['directives'], 220));
+        if (!empty($r['url'])) vout('  URL      : ' . $r['url']);
+        vout('  result   : ' . $r['why'] . ' [' . $r['classification'] . ']');
     }
 }
 
-final class CurlClient
+interface HttpClient
+{
+    /** @return array{url:string,exit_code:int,stderr:string,status:int,effective_url:string,redirect_url:string,raw_headers:string,header_blocks:array,body:string} */
+    public function request(string $url, array $headers = [], bool $follow = false): array;
+}
+
+/** HTTP client without the curl binary: ext-curl, else PHP streams. Used in the browser mode. */
+final class NativeClient implements HttpClient
+{
+    /** @param string[] $defaultHeaders sent unless a request sets the same header (empty value = send none) */
+    public function __construct(private int $timeout, private bool $insecure, private array $defaultHeaders = []) {}
+
+    /** ext-curl usable? (hosts often disable curl_exec while curl_init still exists) */
+    public static function hasExtCurl(): bool
+    {
+        return function_exists('curl_init') && function_exists('curl_exec');
+    }
+
+    public static function available(): bool
+    {
+        return self::hasExtCurl() || (bool)ini_get('allow_url_fopen');
+    }
+
+    public function request(string $url, array $headers = [], bool $follow = false): array
+    {
+        $headers[] = 'Cache-Control: no-cache';
+        $headers[] = 'Pragma: no-cache';
+        $headers = mergeHeaders($headers, $this->defaultHeaders);
+
+        if (self::hasExtCurl()) {
+            $ch = curl_init($url);
+            curl_setopt_array($ch, [
+                CURLOPT_RETURNTRANSFER => true, CURLOPT_HEADER => true,
+                CURLOPT_FOLLOWLOCATION => $follow, CURLOPT_MAXREDIRS => $follow ? 5 : 0,
+                CURLOPT_CONNECTTIMEOUT => 8, CURLOPT_TIMEOUT => $this->timeout,
+                CURLOPT_HTTPHEADER => $headers,
+                CURLOPT_SSL_VERIFYPEER => !$this->insecure, CURLOPT_SSL_VERIFYHOST => $this->insecure ? 0 : 2,
+            ]);
+            $raw = curl_exec($ch);
+            $errno = curl_errno($ch);
+            $error = curl_error($ch);
+            $info = curl_getinfo($ch);
+            $rawHeaders = '';
+            $body = '';
+            if (is_string($raw)) {
+                $hs = (int)($info['header_size'] ?? 0);
+                $rawHeaders = substr($raw, 0, $hs);
+                $body = substr($raw, $hs);
+            }
+            return [
+                'url' => $url, 'exit_code' => $errno, 'stderr' => $error, 'status' => (int)($info['http_code'] ?? 0),
+                'effective_url' => (string)($info['url'] ?? $url), 'redirect_url' => (string)($info['redirect_url'] ?? ''),
+                'raw_headers' => $rawHeaders, 'header_blocks' => parseHeaderBlocks($rawHeaders), 'body' => $body,
+            ];
+        }
+
+        $ctx = stream_context_create([
+            'http' => ['method' => 'GET', 'header' => implode("\r\n", $headers), 'ignore_errors' => true,
+                       'follow_location' => $follow ? 1 : 0, 'max_redirects' => 5, 'timeout' => $this->timeout],
+            'ssl' => ['verify_peer' => !$this->insecure, 'verify_peer_name' => !$this->insecure],
+        ]);
+        $body = @file_get_contents($url, false, $ctx);
+        // PHP 8.4+: http_get_last_response_headers(); $http_response_header is deprecated in 8.5.
+        $lines = function_exists('http_get_last_response_headers') ? (http_get_last_response_headers() ?? []) : ($http_response_header ?? []);
+        $status = 0;
+        $rawHeaders = '';
+        foreach ($lines as $line) {   // one block per response (redirects): blank line before each status line
+            if (preg_match('~^HTTP/\S+\s+(\d{3})~', $line, $m)) { $status = (int)$m[1]; $rawHeaders .= "\r\n"; }
+            $rawHeaders .= $line . "\r\n";
+        }
+        return [
+            'url' => $url, 'exit_code' => $body === false && !$lines ? 1 : 0, 'stderr' => $body === false && !$lines ? 'request failed' : '',
+            'status' => $status, 'effective_url' => $url, 'redirect_url' => '',
+            'raw_headers' => $rawHeaders, 'header_blocks' => parseHeaderBlocks($rawHeaders), 'body' => (string)$body,
+        ];
+    }
+}
+
+function writeJsonReport(string $target, array $results, array $meta): void
+{
+    $rows = [];
+    $counts = ['OK' => 0, 'FAIL' => 0, 'WARN' => 0, '??' => 0];
+    foreach ($results as $r) {
+        $label = trim(shortState($r));
+        $counts[$label]++;
+        $rows[] = [
+            'name' => $r['name'], 'state' => $label, 'detail_state' => resultState($r), 'classification' => $r['classification'],
+            'reason' => $r['why'], 'placement' => $r['placement'] ?? '', 'http_status' => $r['response']['status'] ?? null,
+        ];
+    }
+    $json = json_encode($meta + ['counts' => $counts, 'results' => $rows], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE) . "\n";
+    if ($target === '-') { echo $json; $GLOBALS['HTA_JSON_DONE'] = true; return; }
+    if (@file_put_contents($target, $json) === false) err('Could not write JSON report: ' . $target);
+    else out('JSON report written: ' . $target);
+}
+
+/** Last result whose name contains $needle (last = a retry such as the {SHA} Basic Auth login wins). */
+function findByName(array $results, string $needle): ?array
+{
+    $found = null;
+    foreach ($results as $r) if (stripos((string)$r['name'], $needle) !== false) $found = $r;
+    return $found;
+}
+
+function printCompactSummary(array $results, bool $docrootTested, bool $domainTested): void
+{
+    $counts = ['OK' => 0, 'FAIL' => 0, 'WARN' => 0, '??' => 0];
+    foreach ($results as $r) $counts[trim(shortState($r))]++;
+    out();
+    out(str_repeat('=', 78));
+    out('SUMMARY');
+    out(str_repeat('=', 78));
+    out(sprintf('%d tests: %d OK, %d FAIL, %d WARN, %d undecided', count($results), $counts['OK'], $counts['FAIL'], $counts['WARN'], $counts['??']));
+    out();
+
+    $active = static function(string $placement) use ($results): bool {
+        foreach ($results as $r) if (($r['placement'] ?? '') === $placement && ($r['classification'] ?? '') === 'root-placement-active') return true;
+        return false;
+    };
+    $nested = findResultByClassification($results, 'htaccess-parsed');
+    out('.htaccess files are read in:');
+    out('  probe folder      : ' . (($nested['ok'] ?? false) ? 'yes' : 'NOT PROVEN'));
+    out('  web root          : ' . ($docrootTested ? ($active('DocumentRoot') ? 'yes' : 'NOT PROVEN') : 'not tested'));
+    out('  above the web root: ' . ($domainTested ? ($active('DomainParent') ? 'yes' : 'NOT PROVEN') : 'not tested'));
+    out();
+
+    $bad = array_filter($results, static fn($r) => trim(shortState($r)) !== 'OK');
+    if ($bad) {
+        out('Needs attention:');
+        foreach ($bad as $r) out('  [' . paint(shortState($r)) . '] ' . $r['name'] . ' - ' . $r['why']);
+        out();
+    }
+
+    $row = static function(string $label, array $needles) use ($results): void {
+        $labels = [];
+        foreach ($needles as $n) {
+            $r = findByName($results, $n);
+            $labels[] = $r === null ? 'not run' : trim(shortState($r));
+        }
+        $uniq = array_values(array_unique($labels));
+        $box = static fn(string $l): string => $l === 'not run' ? $l : '[' . paint(str_pad($l, 4, ' ', STR_PAD_BOTH)) . ']';
+        $shown = count($uniq) === 1 ? $box($uniq[0]) : implode(' / ', array_map($box, $labels));
+        out(sprintf('  %-34s %s', $label, $shown));
+    };
+    out('For a PHP web application:');
+    $row('Deny rules (Require, <Files>)', ['Authorization: Require all denied', '<Files> container: protected file']);
+    $row('Rewrite / front controller', ['mod_rewrite: RewriteCond']);
+    $row('Response headers', ['mod_headers']);
+    $row('Directory listing off', ['Options -Indexes']);
+    $row('Hidden .htaccess and dotfiles', ['.htaccess file not downloadable', 'Dotfile not downloadable']);
+    $row('Basic Auth (challenge / login)', ['Basic Auth: login required', 'Basic Auth: valid login']);
+    $row('REMOTE_USER visible to PHP', ['Basic Auth: REMOTE_USER']);
+    $row('PHP settings: php_value', ['Legacy PHP directive: php_value']);
+    $row('PHP settings: .user.ini', ['PHP settings via .user.ini']);
+    $pv = findByName($results, 'php_value');
+    $ui = findByName($results, '.user.ini');
+    if ($pv !== null && !$pv['ok'] && $ui !== null) {
+        out('  -> php_value does not work here; ' . ($ui['ok'] ? 'use .user.ini instead.' : 'change PHP settings in the hosting panel.'));
+    } elseif ($pv !== null && $pv['ok'] && $ui !== null && !$ui['ok']) {
+        out('  -> .user.ini is not read here (normal for mod_php / apache2handler); use php_value instead.');
+    }
+    $df = findByName($results, 'Dotfile not downloadable');
+    if ($df !== null && ($df['classification'] ?? '') === 'dotfile-exposed') {
+        out('  -> keep .env, .git, *.sqlite and similar files OUTSIDE the web root, or deny them in .htaccess.');
+    }
+    $ver = extractRuntimeValue($results, 'WEB_PHP_VERSION');
+    if ($ver !== null) out(sprintf('  Web PHP: %s via %s, server software: %s', $ver, extractRuntimeValue($results, 'WEB_PHP_SAPI') ?? '?', extractRuntimeValue($results, 'SERVER_SOFTWARE') ?? '?'));
+    $pdo = extractRuntimeValue($results, 'PDO_DRIVERS');
+    if ($pdo !== null) out('  Web PHP database drivers (PDO): ' . ($pdo !== '' ? $pdo : '(none)') . (str_contains(',' . $pdo . ',', ',sqlite,') ? '' : '  -> NO pdo_sqlite'));
+    out();
+    out('OK = works, FAIL = rejected by the server, WARN = accepted without effect, ?? = undecided (try --verbose).');
+}
+
+final class CurlClient implements HttpClient
 {
     public function __construct(
         private string $curl,
@@ -556,12 +859,13 @@ final class CurlClient
         private bool $insecure,
         private string $scratchDir,
         private string $token,
+        private array $defaultHeaders = [],
     ) {}
 
     public function request(string $url, array $headers = [], bool $follow = false): array
     {
-        $hdrFile = tempnam($this->scratchDir, 'hdr_');
-        $bodyFile = tempnam($this->scratchDir, 'body_');
+        $hdrFile = @tempnam($this->scratchDir, 'hdr_');
+        $bodyFile = @tempnam($this->scratchDir, 'body_');
         if ($hdrFile === false || $bodyFile === false) {
             throw new RuntimeException('Could not create curl scratch files.');
         }
@@ -569,6 +873,7 @@ final class CurlClient
         $headers[] = 'Cache-Control: no-cache';
         $headers[] = 'Pragma: no-cache';
         $headers[] = 'X-HTA-Probe-Client: ' . $this->token;
+        $headers = mergeHeaders($headers, $this->defaultHeaders);
 
         $parts = [
             escapeshellarg($this->curl),
@@ -686,6 +991,7 @@ final class RootHtaccessTransaction
             throw new RuntimeException("Cannot acquire exclusive lock on: {$path}");
         }
         $activated = false;
+        $this->maskSignals(true);   // no Ctrl-C/SIGTERM between "block written" and "block registered for restore"
 
         try {
             rewind($fh);
@@ -727,6 +1033,7 @@ final class RootHtaccessTransaction
             $activated = true;
 
             try {
+                $this->maskSignals(false);   // a signal from here on is handled by emergencyRestore()
                 return $callback($backup, $meta);
             } finally {
                 $this->restoreActive(false);
@@ -742,6 +1049,7 @@ final class RootHtaccessTransaction
                 }
                 @flock($fh, LOCK_UN); @fclose($fh);
                 if (!$originallyExisted && is_file($path) && @filesize($path) === 0) @unlink($path);
+                $this->maskSignals(false);
             }
             throw $e;
         }
@@ -749,9 +1057,23 @@ final class RootHtaccessTransaction
 
     public function emergencyRestore(): void { if ($this->active !== null) $this->restoreActive(true); }
 
+    /** CLI with pcntl: defer SIGINT/SIGTERM/SIGHUP while the live file is half-way through a change. */
+    private function maskSignals(bool $block): void
+    {
+        if (PHP_SAPI === 'cli' && function_exists('pcntl_sigprocmask') && defined('SIGTERM')) {
+            @pcntl_sigprocmask($block ? SIG_BLOCK : SIG_UNBLOCK, [SIGINT, SIGTERM, SIGHUP]);
+        }
+    }
+
     private function restoreActive(bool $emergency): void
     {
         if ($this->active === null) return;
+        $this->maskSignals(true);
+        try { $this->restoreActiveMasked($emergency); } finally { $this->maskSignals(false); }
+    }
+
+    private function restoreActiveMasked(bool $emergency): void
+    {
         $a = $this->active;
         $this->active = null;
         $fh = $a['fh']; $path = $a['path']; $insert = $a['insert']; $restored = false;
@@ -811,7 +1133,7 @@ final class ProbeRunner
         private string $docroot,
         private string $probeName,
         private string $baseUrl,
-        private CurlClient $http,
+        private HttpClient $http,
         private LogWatcher $logs,
         private string $token,
         private int $bodyPreviewBytes,
@@ -852,14 +1174,14 @@ final class ProbeRunner
         bool $showBodyAlways = false,
     ): array {
         $this->counter++;
-        out();
-        out(str_repeat('=', 78));
-        out(sprintf('[%02d] %s', $this->counter, $name));
-        out($description);
-        out('Directory : ' . $this->dir($dir));
-        out('URL       : ' . $this->url($requestSuffix));
-        out('.htaccess :');
-        foreach (explode("\n", rtrim($htaccess)) as $line) out('    ' . $line);
+        vout();
+        vout(str_repeat('=', 78));
+        vout(sprintf('[%02d] %s', $this->counter, $name));
+        vout($description);
+        vout('Directory : ' . $this->dir($dir));
+        vout('URL       : ' . $this->url($requestSuffix));
+        vout('.htaccess :');
+        foreach (explode("\n", rtrim($htaccess)) as $line) vout('    ' . $line);
 
         $this->htaccess($dir, $htaccess);
         $this->logs->mark();
@@ -886,43 +1208,44 @@ final class ProbeRunner
             'scope' => $this->dir($dir) . ' and descendants',
         ];
         $this->results[] = $result;
+        reportLine($result);
 
-        out('Result    : ' . resultState($result) . ($classification !== '' ? " [{$classification}]" : ''));
-        out('Reason    : ' . $why);
-        out('HTTP      : ' . $response['status'] . ' (curl exit ' . $response['exit_code'] . ')');
+        vout('Result    : ' . resultState($result) . ($classification !== '' ? " [{$classification}]" : ''));
+        vout('Reason    : ' . $why);
+        vout('HTTP      : ' . $response['status'] . ' (curl exit ' . $response['exit_code'] . ')');
         $server = headerValue($response, 'server');
         $ctype = headerValue($response, 'content-type');
         $location = headerValue($response, 'location');
         $encoding = headerValue($response, 'content-encoding');
-        if ($server !== null) out('Server    : ' . $server);
-        if ($ctype !== null) out('Type      : ' . $ctype);
-        if ($encoding !== null) out('Encoding  : ' . $encoding);
-        if ($location !== null) out('Location  : ' . $location);
-        if ($response['redirect_url'] !== '') out('curl redir: ' . $response['redirect_url']);
-        if ($response['stderr'] !== '') out('curl err  : ' . $response['stderr']);
+        if ($server !== null) vout('Server    : ' . $server);
+        if ($ctype !== null) vout('Type      : ' . $ctype);
+        if ($encoding !== null) vout('Encoding  : ' . $encoding);
+        if ($location !== null) vout('Location  : ' . $location);
+        if ($response['redirect_url'] !== '') vout('curl redir: ' . $response['redirect_url']);
+        if ($response['stderr'] !== '') vout('curl err  : ' . $response['stderr']);
 
         $interesting = ['x-hta-probe', 'x-hta-parent', 'x-hta-child', 'x-hta-scope', 'expires', 'cache-control', 'allow'];
         foreach ($interesting as $h) {
             $v = headerValue($response, $h);
-            if ($v !== null) out('Header    : ' . $h . ': ' . $v);
+            if ($v !== null) vout('Header    : ' . $h . ': ' . $v);
         }
 
         if ($showBodyAlways || !$ok || $response['status'] >= 400) {
             $preview = printableBody($response['body'], $this->bodyPreviewBytes);
             if ($preview !== '') {
-                out('Body      :');
-                foreach (explode("\n", $preview) as $line) out('    ' . $line);
+                vout('Body      :');
+                foreach (explode("\n", $preview) as $line) vout('    ' . $line);
             }
         }
 
         if ($logDelta) {
-            out('New log lines:');
+            vout('New log lines:');
             foreach ($logDelta as $file => $data) {
-                out('  --- ' . $file . ' ---');
-                foreach (explode("\n", rtrim($data)) as $line) out('    ' . $line);
+                vout('  --- ' . $file . ' ---');
+                foreach (explode("\n", rtrim($data)) as $line) vout('    ' . $line);
             }
         } elseif (!$ok || $response['status'] >= 500) {
-            out('New log lines: none captured from readable known log files.');
+            vout('New log lines: none captured from readable known log files.');
         }
 
         return $result;
@@ -937,11 +1260,11 @@ final class ProbeRunner
         bool $follow = false,
     ): array {
         $this->counter++;
-        out();
-        out(str_repeat('=', 78));
-        out(sprintf('[%02d] %s', $this->counter, $name));
-        out($description);
-        out('URL       : ' . $this->url($requestSuffix));
+        vout();
+        vout(str_repeat('=', 78));
+        vout(sprintf('[%02d] %s', $this->counter, $name));
+        vout($description);
+        vout('URL       : ' . $this->url($requestSuffix));
 
         $this->logs->mark();
         $url = $this->url($requestSuffix);
@@ -953,30 +1276,31 @@ final class ProbeRunner
         [$ok, $why, $classification] = $assert($response);
         $result = ['name'=>$name, 'ok'=>(bool)$ok, 'why'=>(string)$why, 'classification'=>(string)$classification, 'response'=>$response, 'description'=>$description, 'placement'=>'Control/fixture', 'htaccess_path'=>null, 'directives'=>'', 'url'=>$url];
         $this->results[] = $result;
+        reportLine($result);
 
-        out('Result    : ' . resultState($result) . ($classification !== '' ? " [{$classification}]" : ''));
-        out('Reason    : ' . $why);
-        out('HTTP      : ' . $response['status'] . ' (curl exit ' . $response['exit_code'] . ')');
+        vout('Result    : ' . resultState($result) . ($classification !== '' ? " [{$classification}]" : ''));
+        vout('Reason    : ' . $why);
+        vout('HTTP      : ' . $response['status'] . ' (curl exit ' . $response['exit_code'] . ')');
         $server = headerValue($response, 'server');
         $ctype = headerValue($response, 'content-type');
-        if ($server !== null) out('Server    : ' . $server);
-        if ($ctype !== null) out('Type      : ' . $ctype);
+        if ($server !== null) vout('Server    : ' . $server);
+        if ($ctype !== null) vout('Type      : ' . $ctype);
         foreach (['x-hta-probe', 'x-hta-parent', 'x-hta-child', 'x-hta-scope', 'expires', 'cache-control', 'location', 'content-encoding'] as $h) {
             $v = headerValue($response, $h);
-            if ($v !== null) out('Header    : ' . $h . ': ' . $v);
+            if ($v !== null) vout('Header    : ' . $h . ': ' . $v);
         }
         if (!$ok || $response['status'] >= 400 || $name === 'Web PHP runtime') {
             $preview = printableBody($response['body'], $this->bodyPreviewBytes);
             if ($preview !== '') {
-                out('Body      :');
-                foreach (explode("\n", $preview) as $line) out('    ' . $line);
+                vout('Body      :');
+                foreach (explode("\n", $preview) as $line) vout('    ' . $line);
             }
         }
         if ($logDelta) {
-            out('New log lines:');
+            vout('New log lines:');
             foreach ($logDelta as $file => $data) {
-                out('  --- ' . $file . ' ---');
-                foreach (explode("\n", rtrim($data)) as $line) out('    ' . $line);
+                vout('  --- ' . $file . ' ---');
+                foreach (explode("\n", rtrim($data)) as $line) vout('    ' . $line);
             }
         }
         return $result;
@@ -987,13 +1311,13 @@ final class ProbeRunner
 
 function runRootProbe(
     string $name, string $description, string $placementLabel, string $htaccessPath,
-    string $directives, string $url, CurlClient $http, LogWatcher $logs,
+    string $directives, string $url, HttpClient $http, LogWatcher $logs,
     RootHtaccessTransaction $tx, callable $assert, int $bodyPreviewBytes,
     array $requestHeaders = [],
 ): array {
-    out(); out(str_repeat('=', 78)); out('[ROOT] ' . $name); out($description);
-    out('Placement : ' . $placementLabel); out('File      : ' . $htaccessPath); out('URL       : ' . $url);
-    out('Temporary block:'); foreach (explode("\n", rtrim($directives)) as $line) out('    ' . $line);
+    vout(); vout(str_repeat('=', 78)); vout('[ROOT] ' . $name); vout($description);
+    vout('Placement : ' . $placementLabel); vout('File      : ' . $htaccessPath); vout('URL       : ' . $url);
+    vout('Temporary block:'); foreach (explode("\n", rtrim($directives)) as $line) vout('    ' . $line);
     $response = null; $logs->mark();
     $tx->withBlock($htaccessPath, $placementLabel . '_' . $name, $directives, static function() use (&$response, $http, $url, $requestHeaders): void {
         $response = $http->request($url, $requestHeaders, false);
@@ -1002,19 +1326,20 @@ function runRootProbe(
     if (!is_array($response)) throw new RuntimeException('Internal error: root probe produced no HTTP response.');
     [$ok, $why, $classification] = $assert($response);
     $result = ['name'=>'[ROOT ' . $placementLabel . '] ' . $name, 'ok'=>(bool)$ok, 'why'=>(string)$why, 'classification'=>(string)$classification, 'response'=>$response, 'description'=>$description, 'placement'=>$placementLabel, 'htaccess_path'=>$htaccessPath, 'directives'=>$directives, 'url'=>$url];
-    out('Result    : ' . resultState($result) . ($classification !== '' ? " [{$classification}]" : ''));
-    out('Reason    : ' . $why); out('HTTP      : ' . $response['status'] . ' (curl exit ' . $response['exit_code'] . ')');
+    reportLine($result);
+    vout('Result    : ' . resultState($result) . ($classification !== '' ? " [{$classification}]" : ''));
+    vout('Reason    : ' . $why); vout('HTTP      : ' . $response['status'] . ' (curl exit ' . $response['exit_code'] . ')');
     foreach (['server','content-type','location','x-hta-root','x-hta-root-option','content-encoding'] as $h) {
-        $v = headerValue($response, $h); if ($v !== null) out('Header    : ' . $h . ': ' . $v);
+        $v = headerValue($response, $h); if ($v !== null) vout('Header    : ' . $h . ': ' . $v);
     }
-    if ($response['stderr'] !== '') out('curl err  : ' . $response['stderr']);
+    if ($response['stderr'] !== '') vout('curl err  : ' . $response['stderr']);
     if (!$ok || $response['status'] >= 400) {
         $preview = printableBody($response['body'], $bodyPreviewBytes);
-        if ($preview !== '') { out('Body      :'); foreach (explode("\n", $preview) as $line) out('    ' . $line); }
+        if ($preview !== '') { vout('Body      :'); foreach (explode("\n", $preview) as $line) vout('    ' . $line); }
     }
     if ($logDelta) {
-        out('New log lines:'); foreach ($logDelta as $file => $data) { out('  --- ' . $file . ' ---'); foreach (explode("\n", rtrim($data)) as $line) out('    ' . $line); }
-    } elseif (!$ok || $response['status'] >= 500) out('New log lines: none captured from readable known log files.');
+        vout('New log lines:'); foreach ($logDelta as $file => $data) { vout('  --- ' . $file . ' ---'); foreach (explode("\n", rtrim($data)) as $line) vout('    ' . $line); }
+    } elseif (!$ok || $response['status'] >= 500) vout('New log lines: none captured from readable known log files.');
     return $result;
 }
 
@@ -1025,43 +1350,151 @@ function rootUrl(string $baseUrl, string $probeName, string $relative, string $t
     return $url . $sep . '_hta_root_probe=' . rawurlencode($token);
 }
 
-// ---------- CLI parsing ----------
-try {
-    $args = $argv; array_shift($args);
-    if (!$args || in_array('--help', $args, true) || in_array('-h', $args, true)) usage($args ? 0 : 2);
-    $target=null; $keep=false; $insecure=false; $timeout=15; $rootTimeout=5; $bodyPreviewBytes=500;
-    $testDocrootHtaccess=false; $testDomainHtaccess=false;
-    foreach ($args as $arg) {
-        if ($arg === '--keep') $keep=true;
-        elseif ($arg === '--insecure') $insecure=true;
-        elseif ($arg === '--verbose-body') $bodyPreviewBytes=2000;
-        elseif ($arg === '--test-docroot-htaccess') $testDocrootHtaccess=true;
-        elseif ($arg === '--test-domain-htaccess') $testDomainHtaccess=true;
-        elseif ($arg === '--test-root-htaccess') { $testDocrootHtaccess=true; $testDomainHtaccess=true; }
-        elseif (str_starts_with($arg, '--timeout=')) {
-            $timeout=(int)substr($arg, strlen('--timeout='));
-            if ($timeout < 2 || $timeout > 120) throw new RuntimeException('--timeout must be between 2 and 120 seconds.');
-        } elseif (str_starts_with($arg, '--root-timeout=')) {
-            $rootTimeout=(int)substr($arg, strlen('--root-timeout='));
-            if ($rootTimeout < 2 || $rootTimeout > 15) throw new RuntimeException('--root-timeout must be between 2 and 15 seconds.');
-        } elseif (str_starts_with($arg, '--')) throw new RuntimeException("Unknown option: {$arg}");
-        elseif ($target === null) $target=$arg;
-        else throw new RuntimeException("Unexpected argument: {$arg}");
+// ---------- options: CLI arguments or browser query ----------
+$isWeb = PHP_SAPI !== 'cli';
+$jsonTarget = null;
+$GLOBALS['HTA_JSON_DONE'] = false;
+if ($isWeb) {
+    // Nothing is output and nothing is touched before the token check. Tokens shorter than 16
+    // characters are refused so a placeholder like "1" cannot open the page.
+    $given = isset($_GET['token']) && is_string($_GET['token']) ? $_GET['token'] : '';
+    if (strlen(HTA_WEB_TOKEN) < 16 || !hash_equals(HTA_WEB_TOKEN, $given)) {
+        http_response_code(403);
+        header('Content-Type: text/plain; charset=utf-8');
+        header('Cache-Control: no-store');
+        echo "Forbidden. Set HTA_WEB_TOKEN in this file (at least 16 characters, openssl rand -hex 16) and call ?token=...\n";
+        exit;
     }
-    if ($target === null) usage(2);
+    // Disabled functions are undefined since PHP 8 (calling them throws), hence function_exists().
+    if (function_exists('ini_set')) { @ini_set('display_errors', '0'); @ini_set('zlib.output_compression', '0'); }
+    if (function_exists('set_time_limit')) @set_time_limit(600);
+    if (function_exists('ignore_user_abort')) @ignore_user_abort(true);   // client abort must not interrupt a root .htaccess transaction
+    set_error_handler(static fn(int $no, string $msg): bool => true);   // open_basedir warnings etc.
+    if (($_GET['format'] ?? '') === 'json') $jsonTarget = '-';
+    header('Content-Type: ' . ($jsonTarget === '-' ? 'application/json' : 'text/plain') . '; charset=utf-8');
+    header('Cache-Control: no-store');
+    header('X-Accel-Buffering: no');
+    header('X-Robots-Tag: noindex');
+    while (ob_get_level() > 0 && @ob_end_flush());   // stops at a buffer that cannot be removed
+    ob_implicit_flush(true);
+}
+// JSON on stdout must stay valid even after a PHP fatal error (e.g. max_execution_time).
+register_shutdown_function(static function() use (&$jsonTarget): void {
+    if ($jsonTarget !== '-' || $GLOBALS['HTA_JSON_DONE']) return;
+    $e = error_get_last();
+    $msg = $GLOBALS['HTA_FATAL'] ?? (($e !== null && in_array($e['type'], [E_ERROR, E_PARSE, E_CORE_ERROR, E_COMPILE_ERROR], true)) ? $e['message'] : 'aborted before the report was complete');
+    echo json_encode(['version' => SCRIPT_VERSION, 'error' => $msg], JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE), "\n";
+});
 
-    $baseUrl = normalizeBaseUrl($target);
-    $domainDir = __DIR__;
-    $docroot = $domainDir . '/httpdocs';
-    if (!is_dir($docroot)) throw new RuntimeException("Expected webroot not found: {$docroot}");
-    if (!is_writable($docroot)) throw new RuntimeException("Webroot is not writable: {$docroot}");
+try {
+    $target = null; $keep = false; $insecure = false; $timeout = 15; $rootTimeout = 5; $bodyPreviewBytes = 500;
+    $wantDocroot = true; $wantDomain = true; $colorMode = 'auto'; $docrootArg = null; $verbose = false; $authArg = null;
+    if ($isWeb) {
+        $verbose = flagParam('verbose', false);
+        $keep = flagParam('keep', false);
+        $insecure = flagParam('insecure', false);
+        $wantDocroot = flagParam('root', true) && flagParam('docroot', true);
+        $wantDomain = flagParam('root', true) && flagParam('domain', true);
+        if (isset($_GET['timeout']) && is_string($_GET['timeout'])) $timeout = max(2, min(120, (int)$_GET['timeout']));
+    } else {
+        $args = $argv; array_shift($args);
+        if (!$args || in_array('--help', $args, true) || in_array('-h', $args, true)) usage($args ? 0 : 2);
+        foreach ($args as $arg) {
+            if ($arg === '--keep') $keep = true;
+            elseif ($arg === '--insecure') $insecure = true;
+            elseif ($arg === '--verbose' || $arg === '-v') $verbose = true;
+            elseif ($arg === '--no-root') { $wantDocroot = false; $wantDomain = false; }
+            elseif ($arg === '--no-docroot') $wantDocroot = false;
+            elseif ($arg === '--no-domain') $wantDomain = false;
+            elseif ($arg === '--no-color') $colorMode = 'never';
+            elseif ($arg === '--color') $colorMode = 'always';
+            elseif (str_starts_with($arg, '--json=')) {
+                $jsonTarget = substr($arg, 7);
+                if ($jsonTarget === '') usageError('--json needs a file name or - (stdout).');
+            } elseif (str_starts_with($arg, '--docroot=')) {
+                $docrootArg = substr($arg, 10);
+                if (trim($docrootArg, '/ ') === '') usageError('--docroot needs a folder name.');
+            } elseif (str_starts_with($arg, '--auth=')) {
+                $authArg = substr($arg, 7);
+                if (!str_contains($authArg, ':')) usageError('--auth must be USER:PASS.');
+            } elseif (str_starts_with($arg, '--timeout=')) {
+                $timeout = ctype_digit(substr($arg, 10)) ? (int)substr($arg, 10) : 0;
+                if ($timeout < 2 || $timeout > 120) usageError('--timeout must be between 2 and 120 seconds.');
+            } elseif (str_starts_with($arg, '--root-timeout=')) {
+                $rootTimeout = ctype_digit(substr($arg, 15)) ? (int)substr($arg, 15) : 0;
+                if ($rootTimeout < 2 || $rootTimeout > 15) usageError('--root-timeout must be between 2 and 15 seconds.');
+            } elseif (str_starts_with($arg, '-')) usageError("unknown option: {$arg}");
+            elseif ($target === null) $target = $arg;
+            else usageError("unexpected argument: {$arg} (only one domain/base URL)");
+        }
+        if ($target === null) usageError('missing <domain-or-base-url>.');
+        try { $baseUrl = normalizeBaseUrl($target); } catch (RuntimeException $e) { usageError($e->getMessage()); }
+    }
+    if ($verbose) $bodyPreviewBytes = 2000;
+    $GLOBALS['HTA_VERBOSE'] = $verbose;
+    $GLOBALS['HTA_QUIET'] = ($jsonTarget === '-');
+    $GLOBALS['HTA_COLOR'] = !$isWeb && $jsonTarget !== '-' && ($colorMode === 'always' || ($colorMode === 'auto' && (string)getenv('NO_COLOR') === ''
+        && (function_exists('stream_isatty') ? @stream_isatty(STDOUT) : (function_exists('posix_isatty') && @posix_isatty(STDOUT)))));
 
-    $curl = commandExists('curl');
-    if ($curl === null) throw new RuntimeException('curl executable not found (or PHP exec() unavailable for discovery).');
+    // Where are we? $probeBase = folder that receives the probe folder (and is reachable at $baseUrl),
+    // $docroot = real document root (root .htaccess test), $domainDir = folder above it.
+    if ($isWeb) {
+        $probeBase = rtrim(str_replace('\\', '/', __DIR__), '/');
+        $docroot = rtrim(str_replace('\\', '/', (string)(@realpath((string)($_SERVER['DOCUMENT_ROOT'] ?? '')) ?: $probeBase)), '/');
+        $https = (!empty($_SERVER['HTTPS']) && strtolower((string)$_SERVER['HTTPS']) !== 'off')
+            || strtolower((string)($_SERVER['HTTP_X_FORWARDED_PROTO'] ?? '')) === 'https'
+            || (string)($_SERVER['SERVER_PORT'] ?? '') === '443';
+        $host = (string)($_SERVER['HTTP_HOST'] ?? $_SERVER['SERVER_NAME'] ?? 'localhost');
+        $urlDir = rtrim(str_replace('\\', '/', dirname((string)($_SERVER['SCRIPT_NAME'] ?? '/'))), '/');
+        $baseUrl = ($https ? 'https' : 'http') . '://' . $host . $urlDir;
+        $domainDir = dirname($docroot);
+    } else {
+        $domainDir = rtrim(str_replace('\\', '/', __DIR__), '/');
+        $docroot = $docrootArg === null ? $domainDir . '/httpdocs'
+            : rtrim(str_starts_with($docrootArg, '/') ? $docrootArg : $domainDir . '/' . $docrootArg, '/');
+        $probeBase = $docroot;
+    }
+    if (!is_dir($probeBase)) throw new RuntimeException("Expected web folder not found: {$probeBase}" . ($isWeb ? '' : ' (use --docroot=NAME; place this script in the folder that contains the web root)'));
+    if (!is_writable($probeBase)) throw new RuntimeException("Web folder is not writable: {$probeBase}");
+
+    // Root placement usable = folder writable AND (no .htaccess yet, or the existing one writable).
+    $rootWritable = static fn(string $dir): bool => pathReachable($dir) && is_dir($dir) && is_writable($dir)
+        && (!is_file($dir . '/.htaccess') || is_writable($dir . '/.htaccess'));
+    $testDocrootHtaccess = $wantDocroot && $rootWritable($docroot);
+    $testDomainHtaccess = $wantDomain && $domainDir !== $docroot && $rootWritable($domainDir);
+    $rootNotes = []; $notes = [];
+    if ($wantDocroot && !$testDocrootHtaccess) $rootNotes[] = "web root .htaccess not tested: {$docroot} or its .htaccess is not writable or blocked by open_basedir";
+    if ($wantDomain && !$testDomainHtaccess) $rootNotes[] = "above-web-root .htaccess not tested: {$domainDir} or its .htaccess is not writable or blocked by open_basedir" . ($isWeb ? ' (run the CLI version one level above the web root for this)' : '');
+    // Backups of the live root .htaccess must not land in the public tree; first usable folder wins.
+    $backupBase = null;
+    if ($testDocrootHtaccess || $testDomainHtaccess) {
+        $candidates = [$testDomainHtaccess ? $domainDir : null, sys_get_temp_dir(), (string)ini_get('upload_tmp_dir'), $docroot !== $domainDir ? $domainDir : null];
+        foreach ($candidates as $c) {
+            if ($c !== null && $c !== '' && pathReachable($c) && @is_dir($c) && @is_writable($c)) { $backupBase = rtrim($c, '/'); break; }
+        }
+        if ($backupBase === null) {
+            $rootNotes[] = 'root .htaccess tests skipped: no writable folder outside the web root for the backup (temp dir blocked by open_basedir?)';
+            $testDocrootHtaccess = $testDomainHtaccess = false;
+        }
+    }
+
+    $curl = $isWeb ? null : commandExists('curl');
+    if ($curl === null && !NativeClient::available()) throw new RuntimeException('Neither the curl binary, ext-curl nor allow_url_fopen is available; no way to send HTTP requests.');
+    $forward = [];
+    if ($isWeb) {   // a site that is already behind Basic Auth would otherwise answer our self-requests with 401
+        $auth = $_SERVER['HTTP_AUTHORIZATION'] ?? $_SERVER['REDIRECT_HTTP_AUTHORIZATION'] ?? null;
+        if ($auth === null && isset($_SERVER['PHP_AUTH_USER'])) $auth = 'Basic ' . base64_encode($_SERVER['PHP_AUTH_USER'] . ':' . ($_SERVER['PHP_AUTH_PW'] ?? ''));
+        if ($auth !== null) $forward[] = 'Authorization: ' . $auth;
+        elseif (($_SERVER['REMOTE_USER'] ?? $_SERVER['REDIRECT_REMOTE_USER'] ?? '') !== '') {
+            $notes[] = 'this page is behind a login, but PHP cannot see the password (Authorization header not passed to PHP; "CGIPassAuth On" in .htaccess helps), so the probe requests will get HTTP 401';
+        }
+    } elseif ($authArg !== null) {
+        $forward[] = 'Authorization: Basic ' . base64_encode($authArg);
+    }
 
     $token = bin2hex(random_bytes(6));
     $probeName = '__hta_probe_' . date('Ymd_His') . '_' . $token;
-    $probeRoot = $docroot . '/' . $probeName;
+    $probeRoot = $probeBase . '/' . $probeName;
     mkdirp($probeRoot);
 
     $cleaned = false;
@@ -1072,57 +1505,57 @@ try {
     };
     register_shutdown_function($cleanup);
 
+    $makeClient = static function(int $t) use ($curl, $insecure, $probeRoot, $token, $forward): HttpClient {
+        return $curl !== null ? new CurlClient($curl, $t, $insecure, $probeRoot, $token, $forward) : new NativeClient($t, $insecure, $forward);
+    };
     $logs = new LogWatcher($domainDir);
-    $http = new CurlClient($curl, $timeout, $insecure, $probeRoot, $token);
-    $rootHttp = new CurlClient($curl, $rootTimeout, $insecure, $probeRoot, $token);
-    $runner = new ProbeRunner($docroot, $probeName, $baseUrl, $http, $logs, $token, $bodyPreviewBytes);
+    $http = $makeClient($timeout);
+    $rootHttp = $makeClient($rootTimeout);
+    $runner = new ProbeRunner($probeBase, $probeName, $baseUrl, $http, $logs, $token, $bodyPreviewBytes);
     $rootTx = null;
     if ($testDocrootHtaccess || $testDomainHtaccess) {
-        $rootTx = new RootHtaccessTransaction($domainDir . '/.hta_probe_backups_' . $token, $token);
-        register_shutdown_function(static function() use ($rootTx): void { $rootTx->emergencyRestore(); });
-        if (function_exists('pcntl_async_signals') && function_exists('pcntl_signal')) {
-            @pcntl_async_signals(true);
-            foreach (['SIGINT'=>130, 'SIGTERM'=>143, 'SIGHUP'=>129] as $sigName=>$exitCode) {
-                if (defined($sigName)) @pcntl_signal(constant($sigName), static function() use ($rootTx,$exitCode,$sigName): void {
-                    err("Received {$sigName}; restoring active root .htaccess transaction before exit.");
-                    $rootTx->emergencyRestore(); exit($exitCode);
-                });
-            }
+        $rootTx = new RootHtaccessTransaction($backupBase . '/.hta_probe_backups_' . $token, $token);
+        register_shutdown_function(static function() use ($rootTx): void { $rootTx->emergencyRestore(); $rootTx->cleanupBackupsIfSafe(); });
+    }
+    // CLI: Ctrl-C/SIGTERM/SIGHUP -> exit() -> shutdown functions restore the root .htaccess and remove the probe folder.
+    $signalsHandled = false;
+    if (!$isWeb && function_exists('pcntl_async_signals') && function_exists('pcntl_signal')) {
+        pcntl_async_signals(true);
+        foreach (['SIGINT'=>130, 'SIGTERM'=>143, 'SIGHUP'=>129] as $sigName=>$exitCode) {
+            if (defined($sigName)) $signalsHandled = @pcntl_signal(constant($sigName), static function() use ($exitCode,$sigName): void {
+                err("Received {$sigName}; restoring any active root .htaccess block and cleaning up before exit.");
+                exit($exitCode);
+            }) || $signalsHandled;
         }
     }
+    if ($rootTx !== null && !$isWeb && !$signalsHandled) {
+        $notes[] = 'PHP has no pcntl here: if this run is killed (Ctrl-C) during a root test, the probe block stays in the .htaccess; the original is backed up in ' . $rootTx->backupDir();
+    }
 
-    out('HTACCESS CAPABILITY PROBE v' . SCRIPT_VERSION);
-    out(str_repeat('-', 78));
-    out('PHP CLI       : ' . PHP_VERSION . ' (' . PHP_SAPI . ')');
-    out('Script dir    : ' . $domainDir);
-    out('Document root : ' . $docroot);
-    out('Base URL      : ' . $baseUrl);
-    out('Probe dir     : ' . $probeRoot);
-    out('Probe URL     : ' . rtrim($baseUrl, '/') . '/' . $probeName . '/');
-    out('curl          : ' . $curl);
-    out('TLS verify    : ' . ($insecure ? 'DISABLED (--insecure)' : 'enabled'));
-    out('Keep files    : ' . ($keep ? 'YES' : 'no'));
-    out('Root timeout  : ' . $rootTimeout . ' s');
-    out('Root tests    : docroot=' . ($testDocrootHtaccess ? 'YES' : 'no') . ', domain-parent=' . ($testDomainHtaccess ? 'YES' : 'no'));
-    out('Readable logs : ' . ($logs->files ? implode(', ', $logs->files) : '(none detected)'));
+    out('.htaccess capability probe v' . SCRIPT_VERSION . ' (' . ($isWeb ? 'browser' : 'cli') . ', PHP ' . PHP_VERSION . ' ' . PHP_SAPI . ')');
+    out('Probe URL : ' . rtrim($baseUrl, '/') . '/' . $probeName . '/');
+    out('Root tests: web root ' . ($testDocrootHtaccess ? 'yes' : 'no') . ', above web root ' . ($testDomainHtaccess ? 'yes' : 'no')
+        . ($rootTx !== null ? ' (one temporary block at a time, backed up first, removed right after)' : ''));
+    foreach ($rootNotes as $note) out('[SKIP] ' . $note);
+    foreach ($notes as $note) out('[NOTE] ' . $note);
+    vout('Script dir    : ' . $domainDir);
+    vout('Web root      : ' . $docroot);
+    vout('Probe dir     : ' . $probeRoot);
+    vout('HTTP client   : ' . ($curl !== null ? $curl : (NativeClient::hasExtCurl() ? 'ext-curl' : 'PHP streams')));
+    vout('TLS verify    : ' . ($insecure ? 'DISABLED' : 'enabled'));
+    vout('Readable logs : ' . ($logs->files ? implode(', ', $logs->files) : '(none detected)'));
     foreach ([$docroot . '/.htaccess', $domainDir . '/.htaccess'] as $existingHta) {
-        if (is_file($existingHta)) {
+        if (@is_file($existingHta)) {
+            if (str_contains((string)@file_get_contents($existingHta), '# BEGIN HTA_PROBE ')) {
+                out('[WARN] ' . $existingHta . ' still contains a "# BEGIN HTA_PROBE" block from an interrupted run; remove it (up to "# END HTA_PROBE").');
+            }
             $sz = @filesize($existingHta);
-            $sha = @hash_file('sha256', $existingHta);
-            out('Existing hta  : ' . $existingHta . ' (' . ($sz === false ? '?' : $sz) . ' bytes, sha256 ' . ($sha ?: '?') . ')');
+            vout('Existing hta  : ' . $existingHta . ' (' . ($sz === false ? '?' : $sz) . ' bytes, sha256 ' . (@hash_file('sha256', $existingHta) ?: '?') . ')');
         } else {
-            out('Existing hta  : ' . $existingHta . ' (none)');
+            vout('Existing hta  : ' . $existingHta . ' (none)');
         }
     }
     out();
-    if ($testDocrootHtaccess || $testDomainHtaccess) {
-        out('Safety: root-level testing is ENABLED by explicit CLI option.');
-        out('Each live .htaccess change is appended transactionally for one request, backed up first, then removed immediately.');
-        if ($rootTx !== null) out('Root backups  : ' . $rootTx->backupDir());
-    } else {
-        out('Safety: root-level testing is disabled (default). httpdocs/.htaccess and ./.htaccess are not modified.');
-        out('All changes are confined to the random probe directory shown above.');
-    }
 
     // Shared fixtures.
     $runner->write('baseline.txt', "BASELINE_OK {$token}\n");
@@ -1134,7 +1567,7 @@ try {
         'baseline.txt',
         static function(array $r) use ($token): array {
             $ok = $r['status'] === 200 && str_contains($r['body'], "BASELINE_OK {$token}");
-            return [$ok, $ok ? 'Static file reached with expected unique body.' : 'The URL-to-docroot mapping or HTTP access failed; later tests may be meaningless.', $ok ? 'baseline-ok' : 'baseline-failed'];
+            return [$ok, $ok ? 'Static file reached with expected unique body.' : ('The URL-to-docroot mapping or HTTP access failed (HTTP ' . $r['status'] . ($r['status'] === 401 ? ', the site is behind a login: CLI --auth=USER:PASS, browser: open this page logged in' : '') . '); later tests may be meaningless.'), $ok ? 'baseline-ok' : 'baseline-failed'];
         }
     );
 
@@ -1150,6 +1583,7 @@ echo 'SCRIPT_FILENAME=' . ($_SERVER['SCRIPT_FILENAME'] ?? '') . "\n";
 if (function_exists('apache_get_modules')) {
     echo 'APACHE_MODULES=' . implode(',', apache_get_modules()) . "\n";
 }
+echo 'PDO_DRIVERS=' . (class_exists('PDO') ? implode(',', PDO::getAvailableDrivers()) : '') . "\n";
 PHPFILE
     );
     $runner->manualProbe(
@@ -1536,20 +1970,117 @@ PHPVALUECHECK
             }
         );
     } else {
-        out();
-        out(str_repeat('=', 78));
-        out('[SKIP] Symlink option probes');
-        out('PHP could not create a local symbolic link in the probe directory.');
+        out('[SKIP] Symlink option probes: PHP could not create a local symbolic link.');
     }
 
-    // Optional root-level placement tests. One short-lived block is appended at a time.
+
+    // 23. Files that must never be downloadable.
+    $runner->write('dotfiles/.env', "DOTFILE_SECRET {$token}\n");
+    $runner->manualProbe(
+        'Dotfile not downloadable (.env)',
+        'Requests a file whose name starts with a dot in a folder without any .htaccess. Some hosts serve these unless a rule blocks them.',
+        'dotfiles/.env',
+        static function(array $r) use ($token): array {
+            if (in_array($r['status'], [403, 404], true)) return [true, 'Dot files are blocked by default (HTTP ' . $r['status'] . ').', 'dotfile-hidden'];
+            if ($r['status'] === 200 && str_contains($r['body'], "DOTFILE_SECRET {$token}")) return [false, 'Dot files are served. Add <FilesMatch "^\.">Require all denied</FilesMatch> to your .htaccess.', 'dotfile-exposed'];
+            return [false, 'Unexpected HTTP status ' . $r['status'] . '.', 'dotfile-inconclusive'];
+        }
+    );
+    $runner->manualProbe(
+        '.htaccess file not downloadable',
+        'Requests one of the probe .htaccess files directly. It must not be served as text.',
+        'headers/.htaccess',
+        static function(array $r): array {
+            if (in_array($r['status'], [403, 404], true)) return [true, '.htaccess is not served (HTTP ' . $r['status'] . ').', 'htaccess-file-hidden'];
+            if ($r['status'] === 200 && str_contains($r['body'], 'Header set')) return [false, '.htaccess content is downloadable.', 'htaccess-file-exposed'];
+            return [false, 'Unexpected HTTP status ' . $r['status'] . '.', 'htaccess-file-inconclusive'];
+        }
+    );
+
+    // 24. Basic Auth with AuthUserFile, and what PHP sees of the user.
+    $baDir = $runner->dir('basic-auth');
+    $baPass = 'probe-' . $token;
+    $runner->write('basic-auth/secret.txt', "BASIC_AUTH_SECRET {$token}\n");
+    $runner->write('basic-auth/.htpasswd', 'probe:' . password_hash($baPass, PASSWORD_BCRYPT) . "\n");
+    $runner->write('basic-auth/whoami.php', <<<'PHPWHO'
+<?php
+header('Content-Type: text/plain; charset=utf-8');
+foreach (['REMOTE_USER', 'REDIRECT_REMOTE_USER', 'PHP_AUTH_USER'] as $k) echo $k . '=' . ($_SERVER[$k] ?? '(unset)') . "\n";
+echo 'AUTH_HEADER=' . ((isset($_SERVER['HTTP_AUTHORIZATION']) || isset($_SERVER['REDIRECT_HTTP_AUTHORIZATION'])) ? 'present' : '(unset)') . "\n";
+PHPWHO
+    );
+    $baHta = "AuthType Basic\nAuthName \"HTA probe\"\nAuthUserFile \"{$baDir}/.htpasswd\"\nRequire valid-user";
+    $baAuth = ['Authorization: Basic ' . base64_encode('probe:' . $baPass)];
+    $runner->probe(
+        'Basic Auth: login required',
+        'AuthType Basic with an AuthUserFile inside the probe folder. A request without credentials must get 401.',
+        'basic-auth', $baHta, 'basic-auth/secret.txt',
+        static function(array $r): array {
+            if ($r['status'] === 401) return [true, 'Request without credentials was challenged with 401.', 'basicauth-challenge-supported'];
+            if ($r['status'] === 500) return [false, 'AuthType/AuthUserFile caused HTTP 500 (directive not allowed or mod_auth_basic missing).', 'basicauth-rejected'];
+            return [false, 'Request without credentials was not challenged (HTTP ' . $r['status'] . ').', 'basicauth-not-effective'];
+        },
+        ['Authorization:']
+    );
+    $baRes = $runner->results();
+    $baChallengeOk = (bool)end($baRes)['ok'];   // without a 401 challenge a 200 proves nothing about the login
+    $loginAssert = static function(array $r) use ($token, $baChallengeOk): array {
+        if ($r['status'] === 200 && str_contains($r['body'], "BASIC_AUTH_SECRET {$token}")) {
+            return $baChallengeOk ? [true, 'Valid user and password were accepted.', 'basicauth-login-supported']
+                : [false, 'File was served, but Basic Auth was not enforced at all (see previous test).', 'basicauth-login-inconclusive'];
+        }
+        if ($r['status'] === 401) return [false, 'Valid credentials were refused (the hash type may not be supported).', 'basicauth-login-rejected'];
+        return [false, 'Unexpected HTTP status ' . $r['status'] . '.', 'basicauth-login-inconclusive'];
+    };
+    $runner->probe('Basic Auth: valid login accepted (bcrypt)', 'Same rules; the request carries the right user and password, stored as bcrypt hash.', 'basic-auth', $baHta, 'basic-auth/secret.txt', $loginAssert, $baAuth);
+    $baRes = $runner->results();
+    if ($baChallengeOk && !end($baRes)['ok']) {
+        $runner->write('basic-auth/.htpasswd', 'probe:{SHA}' . base64_encode(sha1($baPass, true)) . "\n");
+        $runner->probe('Basic Auth: valid login accepted ({SHA})', 'Retry with the older {SHA} hash type.', 'basic-auth', $baHta, 'basic-auth/secret.txt', $loginAssert, $baAuth);
+    }
+    $runner->probe(
+        'Basic Auth: REMOTE_USER visible to PHP',
+        'After a valid login a PHP script reads the user name. Applications that trust REMOTE_USER need this.',
+        'basic-auth', $baHta, 'basic-auth/whoami.php',
+        static function(array $r): array {
+            $v = [];
+            foreach (['REMOTE_USER', 'REDIRECT_REMOTE_USER', 'PHP_AUTH_USER'] as $k) if (preg_match('/^' . $k . '=(.*)$/m', $r['body'], $m)) $v[$k] = trim($m[1]);
+            if ($r['status'] === 200 && (($v['REMOTE_USER'] ?? '') === 'probe' || ($v['REDIRECT_REMOTE_USER'] ?? '') === 'probe')) return [true, 'PHP sees REMOTE_USER=probe.', 'remote-user-supported'];
+            if ($r['status'] === 200 && ($v['PHP_AUTH_USER'] ?? '') === 'probe') return [false, 'REMOTE_USER is not set, only PHP_AUTH_USER; apps must read that instead.', 'remote-user-not-effective'];
+            if ($r['status'] === 200) return [false, 'PHP does not see the logged-in user (REMOTE_USER unset); the Authorization header may be dropped before PHP.', 'remote-user-not-effective'];
+            return [false, 'Unexpected HTTP status ' . $r['status'] . '.', 'remote-user-inconclusive'];
+        },
+        $baAuth, false, true
+    );
+
+    // 25. .user.ini (the usual replacement for php_value on FastCGI hosts).
+    $runner->write('user-ini/.user.ini', "memory_limit=171M\n");
+    $runner->write('user-ini/check.php', <<<'PHPUSERINI'
+<?php
+header('Content-Type: text/plain; charset=utf-8');
+echo 'USER_INI_MEMORY_LIMIT=' . ini_get('memory_limit') . "\n";
+PHPUSERINI
+    );
+    $runner->manualProbe(
+        'PHP settings via .user.ini',
+        'A .user.ini asks for memory_limit=171M and PHP echoes the effective value. This is the usual way to change PHP settings per folder on FastCGI hosts.',
+        'user-ini/check.php',
+        static function(array $r): array {
+            if ($r['status'] === 200 && preg_match('/^USER_INI_MEMORY_LIMIT=171M$/m', $r['body'])) return [true, '.user.ini is applied.', 'user_ini-effective'];
+            if ($r['status'] === 200 && preg_match('/^USER_INI_MEMORY_LIMIT=(.*)$/m', $r['body'], $m)) return [false, '.user.ini was ignored (memory_limit=' . trim($m[1]) . '); it may be disabled or cached (user_ini.cache_ttl, default 300 s).', 'user_ini-not-effective'];
+            return [false, 'Unexpected HTTP status ' . $r['status'] . '.', 'user_ini-inconclusive'];
+        }
+    );
+
+    // Root-level placement tests. One short-lived block is appended at a time.
     $rootResults = [];
     if (($testDocrootHtaccess || $testDomainHtaccess) && $rootTx !== null) {
         $placements=[];
         if ($testDocrootHtaccess) $placements[]=['DocumentRoot',$docroot . '/.htaccess','docroot'];
         if ($testDomainHtaccess) $placements[]=['DomainParent',$domainDir . '/.htaccess','domain'];
         foreach ($placements as [$placementLabel,$htaPath,$slug]) {
-            out(); out(str_repeat('#',78)); out('OPTIONAL ROOT-LEVEL TESTS: ' . $placementLabel . ' => ' . $htaPath); out(str_repeat('#',78));
+            vout(); vout(str_repeat('#',78)); vout('ROOT-LEVEL TESTS: ' . $placementLabel . ' => ' . $htaPath); vout(str_repeat('#',78));
+          try {
 
             $headerFile="root-tests/root_header_{$slug}_{$token}.txt"; $runner->write($headerFile,"ROOT_HEADER_BODY {$placementLabel} {$token}\n");
             $headerValueExpected="{$slug}-{$token}";
@@ -1632,8 +2163,13 @@ PHPVALUECHECK
                         return [false,'Could not prove root-level DirectoryIndex behavior at this placement.','root-directoryindex-inconclusive'];
                     },$bodyPreviewBytes);
             } else {
-                out(); out('[SKIP] Options and DirectoryIndex probes at ' . $placementLabel . ': placement marker was not proven active, so their results could not be interpreted reliably.');
+                out('[SKIP] Options and DirectoryIndex probes at ' . $placementLabel . ': placement marker not proven active.');
             }
+          } catch (RuntimeException $e) {
+            // A failed transaction restores itself before throwing; only a restore problem is fatal.
+            if ($rootTx->hadRestoreProblem()) throw $e;
+            out('[SKIP] remaining root tests at ' . $placementLabel . ': ' . $e->getMessage());
+          }
         }
     }
 
@@ -1658,15 +2194,15 @@ PHPVALUECHECK
     $counts=['SUPPORTED'=>0,'ACTIVE'=>0,'OK'=>0,'REJECTED'=>0,'ACCEPTED/NO-EFFECT'=>0,'INCONCLUSIVE'=>0];
     foreach($results as $r) { $st=resultState($r); if(!isset($counts[$st])) $counts[$st]=0; $counts[$st]++; }
 
-    out();
-    out(str_repeat('=', 78));
-    out('DIAGNOSTIC SUMMARY');
-    out(str_repeat('=', 78));
-    out('This summary answers three separate questions:');
-    out('  1. Which .htaccess placements are actually read?');
-    out('  2. Which directive families/settings work or are rejected at the tested placement?');
-    out('  3. What common Apache/shared-hosting configuration pattern best fits the observations?');
-    out();
+    vout();
+    vout(str_repeat('=', 78));
+    vout('DIAGNOSTIC SUMMARY');
+    vout(str_repeat('=', 78));
+    vout('This summary answers three separate questions:');
+    vout('  1. Which .htaccess placements are actually read?');
+    vout('  2. Which directive families/settings work or are rejected at the tested placement?');
+    vout('  3. What common Apache/shared-hosting configuration pattern best fits the observations?');
+    vout();
 
     printAtAGlance($results, $testDocrootHtaccess, $testDomainHtaccess);
     printPlacementAnalysis($results, $domainDir, $docroot, $probeRoot, $testDocrootHtaccess, $testDomainHtaccess);
@@ -1674,49 +2210,62 @@ PHPVALUECHECK
     printConfigurationHints($results, $testDocrootHtaccess, $testDomainHtaccess);
     printDetailedResultLedger($results);
 
-    out(str_repeat('-', 78));
-    out('State counts: ' . implode('; ', array_map(static fn($k,$v)=>$k . '=' . $v, array_keys($counts), array_values($counts))) . '; total=' . count($results));
-    out();
-    out('State meanings:');
-    out('  SUPPORTED          requested behavior was directly demonstrated.');
-    out('  ACTIVE             placement/parsing behavior was directly demonstrated.');
-    out('  OK                 control/environment probe succeeded.');
-    out('  REJECTED           valid setting produced a server/configuration rejection at that placement.');
-    out('  ACCEPTED/NO-EFFECT Apache accepted the setting, but the downstream behavior did not change.');
-    out('  INCONCLUSIVE       result does not cleanly distinguish support from another cause.');
-    out();
-    out('Important interpretation rule: an HTTP 500 from a valid directive proves rejection at that');
-    out('placement, but the error log is needed to distinguish e.g. "directive not allowed here" from');
-    out('"unknown directive/module not loaded". The report therefore says REJECTED, not simply unsupported.');
+    vout(str_repeat('-', 78));
+    vout('State counts: ' . implode('; ', array_map(static fn($k,$v)=>$k . '=' . $v, array_keys($counts), array_values($counts))) . '; total=' . count($results));
+    vout();
+    vout('State meanings:');
+    vout('  SUPPORTED          requested behavior was directly demonstrated.');
+    vout('  ACTIVE             placement/parsing behavior was directly demonstrated.');
+    vout('  OK                 control/environment probe succeeded.');
+    vout('  REJECTED           valid setting produced a server/configuration rejection at that placement.');
+    vout('  ACCEPTED/NO-EFFECT Apache accepted the setting, but the downstream behavior did not change.');
+    vout('  INCONCLUSIVE       result does not cleanly distinguish support from another cause.');
+    vout();
+    vout('Important interpretation rule: an HTTP 500 from a valid directive proves rejection at that');
+    vout('placement, but the error log is needed to distinguish e.g. "directive not allowed here" from');
+    vout('"unknown directive/module not loaded". The report therefore says REJECTED, not simply unsupported.');
     if ($testDocrootHtaccess || $testDomainHtaccess) {
-        out('Root tests were explicitly enabled. Each live root block was backed up, appended for one request,');
-        out('then removed. A SIGKILL/power loss cannot execute PHP cleanup; retain any printed backup path if interrupted.');
+        vout('Root tests ran (default; --no-root / root=0 disables them). Each live root block was backed up, appended');
+        vout('for one request, then removed. A SIGKILL/power loss cannot execute PHP cleanup; retain any printed backup path if interrupted.');
     } else {
-        out('Root tests were not enabled. Use --test-root-htaccess (or per-placement flags) to compare root behavior.');
+        vout('Root tests were not enabled. They were disabled or not possible here (see the SKIP lines).');
     }
-    out();
+    vout();
+    printCompactSummary($results, $testDocrootHtaccess, $testDomainHtaccess);
     if ($rootTx !== null) {
         if ($rootTx->hadRestoreProblem()) {
             out(); out('IMPORTANT: at least one root restoration reported a problem. Backups were intentionally kept at:');
             out('  ' . $rootTx->backupDir());
         } else {
             $rootTx->cleanupBackupsIfSafe();
-            out(); out('Root .htaccess transactions restored successfully; temporary root backups were removed.');
+            vout(); vout('Root .htaccess transactions restored successfully; temporary root backups were removed.');
         }
     }
     if ($keep) {
         out('Probe files were kept for debugging:');
         out('  FS : ' . $probeRoot);
         out('  URL: ' . rtrim($baseUrl, '/') . '/' . $probeName . '/');
-        out('Delete them when finished: rm -rf ' . escapeshellarg($probeRoot));
+        out("Delete them when finished: rm -rf '" . str_replace("'", "'\\''", $probeRoot) . "'");
     } else {
         $cleanup();
-        out('Probe directory cleaned up. Re-run with --keep if you want to inspect generated files.');
+        vout('Probe directory cleaned up.');
     }
-    exit(0);
+    if ($jsonTarget !== null) writeJsonReport($jsonTarget, $results, [
+        'version' => SCRIPT_VERSION, 'mode' => $isWeb ? 'web' : 'cli', 'php' => PHP_VERSION, 'sapi' => PHP_SAPI,
+        'base_url' => $baseUrl, 'root_tests' => ['docroot' => $testDocrootHtaccess, 'above_docroot' => $testDomainHtaccess],
+        'root_restore_problem' => $rootTx !== null && $rootTx->hadRestoreProblem(), 'notes' => array_merge($rootNotes, $notes),
+        'web_runtime' => ['php' => extractRuntimeValue($results, 'WEB_PHP_VERSION'), 'sapi' => extractRuntimeValue($results, 'WEB_PHP_SAPI'), 'server' => extractRuntimeValue($results, 'SERVER_SOFTWARE')],
+    ]);
+    if ($isWeb && $jsonTarget === null) out("\nDELETE THIS FILE from the server now (it can modify .htaccess files).");
+    exit($rootTx !== null && $rootTx->hadRestoreProblem() ? 3 : 0);
 } catch (Throwable $e) {
+    $GLOBALS['HTA_FATAL'] = $e->getMessage();
     err('FATAL: ' . $e->getMessage());
-    err('At ' . $e->getFile() . ':' . $e->getLine());
+    if ($GLOBALS['HTA_VERBOSE'] || !($e instanceof RuntimeException)) err('At ' . $e->getFile() . ':' . $e->getLine());
+    if (isset($rootTx) && $rootTx instanceof RootHtaccessTransaction && $rootTx->hadRestoreProblem()) {
+        err('IMPORTANT: a root .htaccess restoration reported a problem; backups kept at ' . $rootTx->backupDir());
+        exit(3);
+    }
     exit(1);
 }
 

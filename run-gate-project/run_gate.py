@@ -94,18 +94,18 @@ __revision__ = 68  # rev 68: pin worktree Git pointers and harden host Git reade
 # (mandatory for every R2 lane from now on -- a hung mutation candidate
 # blocks the whole run otherwise, nothing else bounds ONE candidate).
 # rev 41: RG-55 wave, package P2 (the run-gate client side
-# of the cgroup-profiler integration; contract-first against
+# of the cgprofile integration; contract-first against
 # RG55-INTERFACE-CONTRACT.md, alongside P1's daemon in a separate worktree)
 # -- per-lane resource profiling: peak memory (+baseline, p90, DAMON
 # hot-set), CPU cores and memory-full stall now ride alongside duration in
 # history schema 2 (`resources`/`profile_error`/`profile_ref` per entry,
 # five new `series_stats` series -- median, never mean, same RG-27 reasoning
-# `duration_stats` already used). Precisely from the daemon
-# (`cgprofile-host-daemon`, `docker exec ... cgprofile ctl ...`,
-# `ProfilerClient`; since RG-156 the control socket only) when reachable, or a coarser in-lane `docker exec`
-# cgroup sample (`method: "basic"`, `BasicSampler`/`ResourceAccumulator`,
+# `duration_stats` already used). Precisely from native `cgprofiled` over the
+# control socket (`ProfilerClient`) when reachable, or a coarser in-lane
+# `docker exec` cgroup sample (`method: "basic"`,
+# `BasicSampler`/`ResourceAccumulator`,
 # the three cgroupfs parsers ported verbatim from
-# scripts/cgroup-profiler/lib/util.py) when it is not -- never nothing,
+# cgprofile/src/cgprofile/util.py) when it is not -- never nothing,
 # short of `RUN_GATE_PROFILE=off`/`[profile] enabled = false`/a lane's own
 # `profile = false`. Live acceptance, real docker: an ephemeral lane
 # allocating >= 100 MiB measured a peak of 115523584 bytes (110.17 MiB, no
@@ -144,13 +144,13 @@ import contextlib
 from collections.abc import Callable
 from dataclasses import dataclass, field
 import fcntl
-import grp
 import hashlib
 import importlib.metadata as importlib_metadata
 import io
 import json
 import math
 import os
+import posixpath
 import queue
 import re
 import secrets
@@ -183,6 +183,7 @@ PROG = "run-gate"
 CONFIG_NAME = "run-gate.toml"
 ROOT_CONFIG_NAME = "run-gate.root.toml"
 SCHEMA_VERSION = 1
+NETWORK_VALUES = frozenset({"none", "default"})
 
 VERDICT_EXIT_CODES = {
     "PASS": 0,
@@ -216,6 +217,10 @@ DEFAULT_LOCK_WAIT = "10m"
 DEFAULT_ADMISSION_WAIT = "10m"
 LOCK_POLL_SECONDS = 0.1
 LANE_KILL_GRACE_SECONDS = 5
+# Evidence capture is best-effort and must never keep a stalled or failed
+# container alive. Docker logs normally replay quickly; 60 s leaves ample room
+# for a large log while still reaching `rm -f` when the daemon is wedged.
+CONTAINER_LOG_CAPTURE_TIMEOUT_SECONDS = 60
 FAILED_EVIDENCE_KEEP = 10
 FAILED_NODE_LIMIT = 5
 
@@ -440,6 +445,10 @@ def finish(result: LaneResult) -> int:
             details.append(f"exit_code {result.exit_code}")
         if result.reason:
             details.append(f"reason {result.reason}")
+            if result.reason == "command-exit-map":
+                last = last_log_line(log_path)
+                if last:
+                    details.append(f"last_output {json.dumps(last)}")
         if log_path:
             details.append(f"log {log_path}")
         print(f"run-gate: lane {result._lane_name!r} " + "; ".join(details),
@@ -498,15 +507,14 @@ class RunGateArgumentParser(argparse.ArgumentParser):
 
 
 CGROUP_ENV_VAR = "CGROUP_PARENT_DEV_GATES"
-CGPROFILE_RESOURCE_OBSERVER_DIRECTORY = "/run/cgprofile/observer"
-CGPROFILE_RESOURCE_OBSERVER_SOURCE = (
-    f"{CGPROFILE_RESOURCE_OBSERVER_DIRECTORY}/resource-observer.sock"
-)
-CGPROFILE_RESOURCE_OBSERVER_TARGET_DIRECTORY = "/run/cgprofile-observer"
-CGPROFILE_RESOURCE_OBSERVER_TARGET = (
-    f"{CGPROFILE_RESOURCE_OBSERVER_TARGET_DIRECTORY}/resource-observer.sock"
-)
+CGPROFILE_CONTROL_SOCKET_ENV_VAR = "CGPROFILE_CONTROL_SOCKET"
+CGPROFILE_OBSERVER_SOCKET_ENV_VAR = "CGPROFILE_OBSERVER_SOCKET"
 ASSAY_RESOURCE_OBSERVER_ENV = "ASSAY_RESOURCE_OBSERVER_SOCKET"
+SOCKET_ENDPOINT_PATTERN = re.compile(r"[A-Za-z0-9_./:@+-]{1,4096}")
+# Observer directory mode bits the preflight enforces (root:root directory):
+# the group-search bit must be set, group/other write must be clear.
+CGPROFILE_OBSERVER_DIRECTORY_SEARCH = 0o010
+CGPROFILE_OBSERVER_DIRECTORY_WRITE_MASK = 0o022
 # `host` (default) and `bare-host` (opt-out) swapped roles in the
 # host/bare-host flip (RG-43) — `host`
 # now routes through the same container machinery every named environment
@@ -523,8 +531,10 @@ HOST_IMAGE_ENV_VAR = "RUN_GATE_HOST_IMAGE"
 # bind-mounted worktree are owned by the worktree's owner (never a hard-coded
 # uid).
 ENV_USER_INVOKER = "invoker"
-DEFAULT_HOST_IMAGE = "ghcr.io/volkb79-2/modern-debian-tools-python-debug-vsc-devcontainer:trixie-py3.14-php8.5-latest"
+DEFAULT_HOST_IMAGE = "ghcr.io/volkb79-2/mdt-cockpit-devcontainer:trixie-py3.14-php8.5-latest"
 EXTRA_MOUNT_ENV_VAR = "RUN_GATE_EXTRA_MOUNTS"
+HOST_DOCKER_GID_ENV_VAR = "RUN_GATE_HOST_DOCKER_GID"
+MDT_HOST_DOCKER_GID_ENV_VAR = "MDT_HOST_DOCKER_GID"
 MOUNT_ALIAS_ENV_VAR = "RUN_GATE_MOUNT_ALIAS"
 # RG-NARROW: a container lane sees only the judged worktree + the git metadata
 # it needs. The plain (main) checkout has no narrower view, so it is refused
@@ -565,8 +575,8 @@ PROC_ROOT_ENV_VAR = "RUN_GATE_PROC_ROOT"  # tests / hidden /proc mounts (RG-55 h
 # the CONTRACT default, so every one of this file's ~800 pre-existing
 # lane-execution tests -- none of which declare `[profile]` at all, and
 # every one of which pins an EXACT docker call log, argv list, or
-# stdout/stderr -- would silently pick up a new `docker exec <daemon>
-# cgprofile ctl version` probe, very likely a further basic-path fallback
+# stdout/stderr -- would silently pick up a new profiler control-socket
+# version probe, very likely a further basic-path fallback
 # `docker exec` (no real daemon is ever running in these fixtures), a new
 # `-e RUN_GATE_PROFILE_SESSION=` argv flag, and new disclosure lines, on
 # every run. Retrofitting every one of those tests with an explicit
@@ -684,7 +694,7 @@ ASSAY_STALL_FLOOR_SECONDS = 2 * ASSAY_PROGRESS_HEARTBEAT_SECONDS
 # (evaluate_r1 runs there, unheartbeated; 253 s measured, so 600 s is >2x).
 POST_COMMAND_BOUND_SECONDS = 600.0
 
-# RG-55 / SPEC R-43: cgroup-profiler daemon client
+# RG-55 / SPEC R-43: cgprofile daemon client
 # (RG55-INTERFACE-CONTRACT.md, contract 1). run-gate never depends on the
 # daemon being present -- every daemon-shaped constant here governs the
 # OPTIONAL `cgprofile ctl` path; a lane still gets a "basic" (in-lane
@@ -715,11 +725,13 @@ PROFILE_STOP_RETRY_SECONDS = 2.0
 PROFILE_REMOVED_ENV_VAR = "RUN_GATE_PROFILE_TRANSPORT"
 PROFILE_REMOVED_KEYS = {
     "transport": "the control socket is the only carrier; delete the key "
-                 "(set 'socket_path' to use a non-default socket)",
+                 f"(the endpoint comes from ${CGPROFILE_CONTROL_SOCKET_ENV_VAR})",
     "daemon": "run-gate no longer execs into a daemon container; delete the "
-              "key (the daemon is reached through 'socket_path')",
+              f"key (the endpoint comes from ${CGPROFILE_CONTROL_SOCKET_ENV_VAR})",
+    "socket_path": f"use the host-provided ${CGPROFILE_CONTROL_SOCKET_ENV_VAR} "
+                   "environment variable; run 'cgprofiled doctor' and refresh the "
+                   "host endpoints record",
 }
-PROFILE_SOCKET_PATH_DEFAULT = "/run/cgprofile/ctl.sock"
 PROFILE_ADMISSION_WAIT_DEFAULT = "10m"
 # Self-target discovery is optional profiling preflight, so neither Docker
 # identity probe may hold a lane longer than the ctl status/version probes.
@@ -943,6 +955,98 @@ def fail_infra(msg: str) -> None:
     raise GateInfraError(msg)
 
 
+def _socket_endpoint_from_env(variable: str) -> str:
+    """Read one host-published endpoint from this process environment.
+
+    Endpoint paths have one authority: the host endpoint record delivered to
+    the process environment. Run-Gate neither reads that record nor guesses a
+    path when a variable is absent.
+    """
+    value = os.environ.get(variable)
+    if not value:
+        fail_infra(f"{variable} is unset or empty: run 'cgprofiled doctor', repair "
+                   "the host endpoints record, then start a session that has "
+                   "received the updated environment")
+    problem = _socket_endpoint_shape_problem(value)
+    if problem is not None:
+        # The value is deliberately not echoed: it may carry newlines or
+        # mount-option text, and it flows into docker argv.
+        fail_infra(f"{variable} is not a valid socket endpoint: {problem}; "
+                   "run 'cgprofiled doctor' and repair the host endpoints record")
+    return value
+
+
+def _socket_endpoint_shape_problem(value: str) -> str | None:
+    """Name the first rule an endpoint value breaks, or None when it is sound.
+
+    The alphabet is the host endpoint record's (design 2.1). It admits ':'
+    that Docker's mount grammars cannot carry; a colon never reaches the
+    mounted directory because `validate_docker_mount_path` still screens the
+    derived directory before any mount argv is built.
+    """
+    if not SOCKET_ENDPOINT_PATTERN.fullmatch(value):
+        return ("only [A-Za-z0-9_./:@+-] are allowed (no whitespace, comma, "
+                "newline or other characters) and the length is at most 4096")
+    if not value.startswith("/"):
+        return "the path must be absolute"
+    if value.endswith("/"):
+        return "the path must end in a socket file name, not a directory"
+    components = value.split("/")[1:]
+    if any(part in ("", ".", "..") for part in components):
+        return "empty, '.' and '..' path components are not allowed"
+    return None
+
+
+def control_socket_from_env() -> str:
+    """Return the required cgprofile control endpoint from the environment."""
+    return _socket_endpoint_from_env(CGPROFILE_CONTROL_SOCKET_ENV_VAR)
+
+
+def observer_socket_from_env() -> str:
+    """Return the required cgprofile observer endpoint from the environment.
+
+    The observer's directory is bind-mounted into the lane, so it must be a
+    real directory below the filesystem root, never `/` itself.
+    """
+    value = _socket_endpoint_from_env(CGPROFILE_OBSERVER_SOCKET_ENV_VAR)
+    directory = posixpath.dirname(value)
+    if directory == "/":
+        fail_infra(f"{CGPROFILE_OBSERVER_SOCKET_ENV_VAR} is not a valid "
+                   "socket endpoint: its directory would be the filesystem "
+                   "root, which must never be mounted into a lane; run "
+                   "'cgprofiled doctor' and repair the host endpoints record")
+    return value
+
+
+def recorded_profile_endpoint(pending: dict) -> tuple[str | None, str | None]:
+    """The control endpoint a run's profiler session was started against.
+
+    Recovery (a re-attach, a promoted follower) must stop the session on the
+    daemon that owns it, so it uses the endpoint recorded with the run, never
+    the current environment: that may be unset or point elsewhere by now. A
+    record without a usable endpoint is reported, not guessed at.
+    """
+    recorded = pending.get("profile_control_socket")
+    if not isinstance(recorded, str) or not recorded:
+        return None, ("the run record carries no recorded profiler control "
+                      "endpoint (profile_control_socket), so this client "
+                      "cannot stop its profiler session")
+    if _socket_endpoint_shape_problem(recorded) is not None:
+        return None, ("the recorded profiler control endpoint "
+                      "(profile_control_socket) is not a valid socket path, "
+                      "so the profiler session cannot be stopped")
+    return recorded, None
+
+
+def preflight_profile_endpoints(lane: dict, profiling_enabled: bool) -> None:
+    """Require only the host endpoints this lane's selected behavior needs."""
+    observer_lane = lane.get("resource_observer") is not None
+    if profiling_enabled or observer_lane:
+        control_socket_from_env()
+    if observer_lane:
+        observer_socket_from_env()
+
+
 # ---------------------------------------------------------------------------
 # config loading + validation (loud, names key + file, no silent defaults)
 # ---------------------------------------------------------------------------
@@ -978,7 +1082,20 @@ RESOURCE_CONSUMER_KEYS = {
     "vm": {"disk_cache": {"unsafe", "writeback"}},
 }
 RESOURCE_SETTING_KEYS = {"io_sync", "ram_target", "candidate_ram",
-                        "worker_ram", *RESOURCE_CONSUMER_KEYS}
+                        "worker_ram", "r2_oversubscribe",
+                        *RESOURCE_CONSUMER_KEYS}
+# RG-266: `jobs = "auto"` places this many R2 workers per enforced CPU
+# (before the memory, jobs_max and remaining-candidate caps). Native R2
+# candidates spend part of their wall time in IO (snapshot clone, git, pytest
+# collection), so one worker per core leaves cores idle: pwmcp measured
+# 12-122 % container CPU with three workers on three cores, and a 2-CPU
+# cap ran 3 workers at 168 % (6.2 -> 10.5 candidates/min, 2026-11-11).
+# The default stays 1.0 (one worker per CPU) until a two-slot controller
+# campaign measures contention (independent review); "1.5" is the
+# recommended opt-in, any scope may declare "1.0" to "4.0".
+R2_OVERSUBSCRIBE_DEFAULT = "1.0"
+R2_OVERSUBSCRIBE_MAX = 4.0
+_OVERSUBSCRIBE_RE = re.compile(r"[0-9]+(\.[0-9]+)?")
 MDT_COW_ROOT_ENV_VAR = "MDT_COW_ROOT"
 EATMYDATA_LABEL = "org.vbpub.tester.eatmydata-lib"
 
@@ -1034,6 +1151,12 @@ def _validate_resource_table(table: object, where: str, scope: str,
                 or int(re.match(r"[0-9]+", value).group()) == 0:
             fail(f"{where}: 'worker_ram' must be a positive size like "
                  "'512m' or '2g'")
+    if "r2_oversubscribe" in table:
+        value = table["r2_oversubscribe"]
+        if (not isinstance(value, str) or not _OVERSUBSCRIBE_RE.fullmatch(value)
+                or not 1.0 <= float(value) <= R2_OVERSUBSCRIBE_MAX):
+            fail(f"{where}: 'r2_oversubscribe' must be a decimal string from "
+                 f"'1.0' through '{R2_OVERSUBSCRIBE_MAX:g}' (got {value!r})")
     if "ram_target" in table:
         value = table["ram_target"]
         if isinstance(value, str) and re.fullmatch(r"[1-9][0-9]?%|100%", value):
@@ -1048,7 +1171,8 @@ def _validate_resource_table(table: object, where: str, scope: str,
 
 def _validate_environment(name: str, table: dict, where: str) -> None:
     _check_keys(table, {"image", "image_env", "cgroup_slice", "cgroup_slice_env", "mode", "container_name",
-                        "forward_env", "resources", "state_root", "user"},
+                        "forward_env", "resources", "state_root", "user",
+                        "network"},
                 f"{where} [environments.{name}]")
     image = table.get("image")
     mode = table.get("mode")
@@ -1058,6 +1182,12 @@ def _validate_environment(name: str, table: dict, where: str) -> None:
                  "declare 'ephemeral', 'exec', or 'host'")
         fail(f"{where} [environments.{name}]: 'mode' must be "
              f"\"ephemeral\", \"exec\" or \"host\" (got {mode!r})")
+    if "network" in table:
+        _validate_network(table["network"],
+                          f"{where} [environments.{name}]")
+        if mode != "ephemeral":
+            fail(f"{where} [environments.{name}]: 'network' is supported "
+                 "only with mode = 'ephemeral'")
     if mode == "host":
         if image is not None:
             fail(f"{where} [environments.{name}]: mode = \"host\" runs a bare "
@@ -1158,7 +1288,7 @@ LANE_KEYS = {"kind", "environment", "argv", "assay_lane", "assay_command",
              "pins", "clean_tree", "budget", "stall_timeout", "memory",
              "description", "required_env", "artifacts", "resources",
              "profile", "exit_map", "accepts_args", "lanes", "stop_on",
-             "resource_observer", "jobs", "workers", "workers_max",
+             "resource_observer", "network", "jobs", "workers", "workers_max",
              "xdist_safe"}
 PIN_KEYS = {"sha256", "version"}
 # RG-146: the declared argv token a lane with `workers` must carry.
@@ -1170,6 +1300,12 @@ R2_CONSERVATIVE_CANDIDATE_RAM_BYTES = 1024 * 1024 * 1024
 def _validate_budget(value: object, where: str, key: str = "budget") -> None:
     if not isinstance(value, str) or not re.fullmatch(r"\d+[smh]", value):
         fail(f"{where}: '{key}' must look like '30s', '20m' or '2h' (got {value!r})")
+
+
+def _validate_network(value: object, where: str) -> None:
+    if not isinstance(value, str) or value not in NETWORK_VALUES:
+        fail(f"{where}: 'network' must be \"none\" or \"default\" "
+             f"(got {value!r})")
 
 
 def budget_seconds(value: str) -> int:
@@ -1273,6 +1409,8 @@ def _validate_lane(name: str, table: dict, where: str) -> None:
         # refuse the shadowing name at load instead.
         fail(f"{where} [lanes.{name}]: lane name {name!r} is reserved — it is "
              f"a run-gate CLI verb; rename the lane")
+    if "network" in table:
+        _validate_network(table["network"], f"{where} [lanes.{name}]")
     if kind == "command" and (not isinstance(table.get("environment"), str)
                                or not table["environment"].strip()):
         fail(f"{where} [lanes.{name}]: 'environment' must be a non-empty string")
@@ -1577,10 +1715,11 @@ def _validate_profile_policy(table: object, where: str) -> None:
         fail(f"{where}: 'profile' must be a table")
     for removed, remedy in PROFILE_REMOVED_KEYS.items():
         if removed in table:
-            fail(f"{where} [profile]: '{removed}' was removed (RG-156): "
+            decision = "WP-E3 / RG-244" if removed == "socket_path" \
+                else "RG-156"
+            fail(f"{where} [profile]: '{removed}' was removed ({decision}): "
                  f"{remedy}")
-    _check_keys(table, {"enabled", "interval", "damon", "socket_path",
-                        "admission_wait"},
+    _check_keys(table, {"enabled", "interval", "damon", "admission_wait"},
                 f"{where} [profile]")
     if "enabled" in table and not isinstance(table["enabled"], bool):
         fail(f"{where} [profile]: 'enabled' must be a boolean")
@@ -1588,10 +1727,6 @@ def _validate_profile_policy(table: object, where: str) -> None:
         _validate_budget(table["interval"], f"{where} [profile]", "interval")
     if "damon" in table and not isinstance(table["damon"], bool):
         fail(f"{where} [profile]: 'damon' must be a boolean")
-    if "socket_path" in table and (not isinstance(table["socket_path"], str)
-                                    or not table["socket_path"].strip()
-                                    or not table["socket_path"].startswith("/")):
-        fail(f"{where} [profile]: 'socket_path' must be a non-empty absolute path")
     if "admission_wait" in table:
         _validate_budget(table["admission_wait"], f"{where} [profile]",
                          "admission_wait")
@@ -1676,8 +1811,7 @@ def _validate_assay_policy(table: object, where: str) -> None:
 def resolve_profile_settings(lane: dict, cfg: dict, cfg_path: Path,
                              central: dict, central_path: Path | None) -> dict:
     """Always-fully-populated `[profile]` settings for ONE lane:
-    `{'enabled', 'interval', 'damon', 'socket_path',
-    'admission_wait', 'source'}`. Project
+    `{'enabled', 'interval', 'damon', 'admission_wait', 'source'}`. Project
     `[profile]` shadows the central one WHOLE-TABLE (R-09,
     `resolve_history_keep`'s pattern — never a per-key merge), then the
     documented defaults, then the lane's own `profile` key on top (a bool
@@ -1698,8 +1832,8 @@ def resolve_profile_settings(lane: dict, cfg: dict, cfg_path: Path,
     the exact hazard a named refusal exists to catch)."""
     if os.environ.get(PROFILE_REMOVED_ENV_VAR, "") != "":
         fail(f"{PROFILE_REMOVED_ENV_VAR} was removed (RG-156): the control "
-             "socket is the only carrier; unset it (a non-default socket is "
-             "'socket_path' in [profile])")
+             "socket is the only carrier; unset it (the endpoint comes from "
+             f"${CGPROFILE_CONTROL_SOCKET_ENV_VAR})")
     ambient = os.environ.get(PROFILE_AMBIENT_ENV_VAR)
     if ambient == "":
         # RW-23c (round-1 review S3): an exported-but-empty value counts as
@@ -1716,7 +1850,6 @@ def resolve_profile_settings(lane: dict, cfg: dict, cfg_path: Path,
         return {"enabled": False,
                "interval": PROFILE_INTERVAL_DEFAULT,
                "damon": PROFILE_DAMON_DEFAULT,
-               "socket_path": PROFILE_SOCKET_PATH_DEFAULT,
                "admission_wait": PROFILE_ADMISSION_WAIT_DEFAULT,
                "source": f"${PROFILE_AMBIENT_ENV_VAR}=off",
                "disabled_reason": f"disabled ({PROFILE_AMBIENT_ENV_VAR}=off)"}
@@ -1730,7 +1863,6 @@ def resolve_profile_settings(lane: dict, cfg: dict, cfg_path: Path,
         "enabled": table.get("enabled", PROFILE_ENABLED_DEFAULT),
         "interval": table.get("interval", PROFILE_INTERVAL_DEFAULT),
         "damon": table.get("damon", PROFILE_DAMON_DEFAULT),
-        "socket_path": table.get("socket_path", PROFILE_SOCKET_PATH_DEFAULT),
         "admission_wait": table.get("admission_wait",
                                       PROFILE_ADMISSION_WAIT_DEFAULT),
         "source": source,
@@ -1847,14 +1979,17 @@ def resolve_resource_settings(lane: dict, project: dict, central: dict,
         fail(f"invalid CoW override {cow_override!r}: expected one of "
              f"{', '.join(sorted(COW_OVERRIDE_VALUES))}")
     effective = {"io_sync": "strict", "ram_target": "75%",
+                 "r2_oversubscribe": R2_OVERSUBSCRIBE_DEFAULT,
                  "cowtree": {"mode": "auto"}}
     sources = {"io_sync": "default", "ram_target": "default",
+               "r2_oversubscribe": "default",
                "cowtree.mode": "default"}
     scopes = (("central", central), ("environment", environment),
               ("project", project), ("lane", lane))
     for source, scope in scopes:
         table = _resource_table(scope)
-        for key in ("io_sync", "ram_target", "candidate_ram"):
+        for key in ("io_sync", "ram_target", "candidate_ram",
+                    "r2_oversubscribe"):
             if key in table:
                 effective[key] = table[key]
                 sources[key] = source
@@ -1945,21 +2080,73 @@ def cowtree_mount_flags(settings: dict, mode: str) -> list[str]:
     return ["--mount", f"type=bind,source={root},target={root}"]
 
 
+def container_mount_destinations(docker: str, container: str) -> list[str]:
+    """In-container mount destinations of a running container (RG-168)."""
+    result = subprocess.run(
+        [docker, "inspect", "--type", "container", "--format",
+         "{{range .Mounts}}{{println .Destination}}{{end}}", container],
+        capture_output=True, text=True)
+    if result.returncode != 0:
+        detail = result.stderr.strip().splitlines()[-1:] or \
+            [f"exit {result.returncode}"]
+        fail_infra(f"cannot inspect mounts of container {container!r} to "
+                   f"decide whether MDT_COW_ROOT is reachable: {detail[0]}")
+    return [line for line in result.stdout.splitlines() if line]
+
+
+def path_is_mounted(path: str, destinations: list[str]) -> bool:
+    """True when `path` is a mount destination or lies beneath one.
+
+    A root-filesystem destination ("/") is not evidence of a dedicated mount.
+    """
+    if not path.startswith("/") or ".." in path.split("/"):
+        return False
+    path = posixpath.normpath(path)
+    for dest in destinations:
+        if not dest.startswith("/") or ".." in dest.split("/"):
+            continue
+        dest = posixpath.normpath(dest)
+        if dest == "/":
+            continue
+        if path == dest or path.startswith(dest + "/"):
+            return True
+    return False
+
+
 def resource_forwarded_env(settings: dict, mode: str,
-                           consumer: str | None = None) -> dict[str, str]:
-    """Translate effective settings to run-gate facts and consumer-owned env keys."""
+                           consumer: str | None = None,
+                           exec_mounts: "list[str] | Callable[[], list[str]] | None" = None,
+                           not_forwarded: list[str] | None = None
+                           ) -> dict[str, str]:
+    """Translate effective settings to run-gate facts and consumer-owned env keys.
+
+    RG-168: in exec mode the host's MDT_COW_ROOT is only meaningful when the
+    runner container mounts that same path.  With `exec_mounts` (the target
+    container's mount destinations) given, an unmounted root is NOT forwarded
+    together with `COWTREE_MODE=auto` (the pair would make assay demand a
+    path that does not exist in the container); the dropped names are
+    appended to `not_forwarded`.  `COWTREE_MODE=off` is always forwarded.
+    """
     forwarded = {}
     if "io_sync" in settings:
         forwarded["RUN_GATE_IO_SYNC"] = settings["io_sync"]
     if consumer is None or consumer == "cowtree":
         cowtree = settings.get("cowtree", {})
         if isinstance(cowtree, dict) and "mode" in cowtree:
-            forwarded["COWTREE_MODE"] = cowtree["mode"]
             root = os.environ.get(MDT_COW_ROOT_ENV_VAR)
-            if cowtree["mode"] == "auto" and root is not None:
-                if mode == "ephemeral":
-                    _validate_cow_root(root)
-                forwarded[MDT_COW_ROOT_ENV_VAR] = root
+            if (mode == "exec" and exec_mounts is not None
+                    and cowtree["mode"] == "auto" and root is not None
+                    and not path_is_mounted(
+                        root, exec_mounts() if callable(exec_mounts)
+                        else exec_mounts)):
+                if not_forwarded is not None:
+                    not_forwarded.extend(["COWTREE_MODE", MDT_COW_ROOT_ENV_VAR])
+            else:
+                forwarded["COWTREE_MODE"] = cowtree["mode"]
+                if cowtree["mode"] == "auto" and root is not None:
+                    if mode == "ephemeral":
+                        _validate_cow_root(root)
+                    forwarded[MDT_COW_ROOT_ENV_VAR] = root
     if consumer is None or consumer == "vm":
         vm = settings.get("vm", {})
         if isinstance(vm, dict) and "disk_cache" in vm:
@@ -1967,11 +2154,17 @@ def resource_forwarded_env(settings: dict, mode: str,
     return forwarded
 
 
-def log_resource_forwarded_env(forwarded: dict[str, str]) -> None:
+def log_resource_forwarded_env(forwarded: dict[str, str],
+                               not_forwarded: list[str] | None = None) -> None:
     """Disclose resource env names only; values can contain operator data."""
-    if forwarded:
-        print(f"run-gate: resource env (forwarded: "
-              f"{', '.join(sorted(forwarded))})", flush=True)
+    if forwarded or not_forwarded:
+        parts = []
+        if forwarded:
+            parts.append(f"forwarded: {', '.join(sorted(forwarded))}")
+        if not_forwarded:
+            parts.append(f"not forwarded (no mount): "
+                         f"{', '.join(sorted(not_forwarded))}")
+        print(f"run-gate: resource env ({', '.join(parts)})", flush=True)
 
 
 def inspect_eatmydata_library(docker: str, image: str) -> str:
@@ -2234,6 +2427,7 @@ def load_config_snapshot(project_dir: Path
         if git_root is not None and parent == git_root:
             break
     _validate_effective_resource_observers(project, central, project_path)
+    _validate_effective_network_settings(project, central, project_path)
     _validate_effective_assay_pins(project, central, project_path,
                                    central_path)
     return (project, project_path, central, central_path,
@@ -2323,6 +2517,31 @@ def _validate_effective_resource_observers(project: dict, central: dict,
             fail(f"{project_path} [lanes.{name}]: resource_observer='cgprofile' "
                  "requires explicit resources.memory and resources.pids so "
                  "candidate-local memory and PID limit events are attributable")
+
+
+def _validate_effective_network_settings(project: dict, central: dict,
+                                         project_path: Path) -> None:
+    """A lane network key is meaningful only on its resolved ephemeral env."""
+    lanes = dict(central.get("lanes", {}))
+    lanes.update(project.get("lanes", {}))
+    environments = dict(central.get("environments", {}))
+    environments.update(project.get("environments", {}))
+    defaults = project.get("assay", central.get("assay", {}))
+    for name, lane in lanes.items():
+        if "network" not in lane:
+            continue
+        environment_name = lane.get("environment")
+        if environment_name is None and lane.get("kind") == "assay":
+            environment_name = defaults.get("environment")
+        if not isinstance(environment_name, str) or not environment_name.strip():
+            continue
+        environment = environments.get(environment_name)
+        if not isinstance(environment, dict):
+            continue
+        if environment.get("mode") != "ephemeral":
+            fail(f"{project_path} [lanes.{name}]: 'network' cannot be honored "
+                 f"by resolved environment mode = "
+                 f"{environment.get('mode')!r}; it requires mode = 'ephemeral'")
 
 
 def merge_lanes(project_lanes: dict, central: dict, project_dir: Path,
@@ -2416,6 +2635,11 @@ def resolve_environment(lane: dict, lane_name: str, project: dict, central: dict
         resolved = dict(central["environments"][name])
         source = f"[environments.{name}] in central {central_path}"
     if resolved is not None:
+        _network, network_source = resolve_network_setting(lane, resolved)
+        if network_source != "unset" and resolved["mode"] != "ephemeral":
+            fail(f"{source} [lanes.{lane_name}]: 'network' cannot be honored "
+                 f"by resolved mode = {resolved['mode']!r}; it requires "
+                 "mode = 'ephemeral'")
         if resolved["mode"] == "host":
             return {}, source
         if resolved.get("user") == ENV_USER_INVOKER:
@@ -2545,12 +2769,59 @@ def disclose_image_selection(selection: dict | None) -> None:
     )
 
 
+def refuse_serialized_shard(lane: dict, lane_name: str, env: dict,
+                            env_name: str) -> None:
+    """Review B1a: a shard of an exec-mode or `resources.shared` lane waits
+    for the other shards' lock, so N shards would run one after another
+    while looking parallel. `--shard` refuses such a lane by name."""
+    if "shard" not in (lane.get("_r2_flex") or {}):
+        return
+    if (env or {}).get("mode") == "exec":
+        fail(f"--shard: lane {lane_name!r} runs in exec environment "
+             f"{env_name!r}, which serializes every run on its container; "
+             "shard an ephemeral-environment lane instead (one container "
+             "per shard)")
+    shared = (lane.get("resources") or {}).get("shared")
+    if shared:
+        fail(f"--shard: lane {lane_name!r} declares resources.shared "
+             f"{sorted(shared)!r}, which serializes every run on a "
+             "shared-infra lock; give each shard its own service instance "
+             "or run the lane unsharded")
+
+
+def refuse_unpulled_shard_image(docker: str, image: str) -> None:
+    """Review nit: N concurrent shards of an image absent from the host
+    would each start a pull (Docker Hub allows 200 pulls/hour). A shard
+    starts only from an image already present; pull it once beforehand."""
+    try:
+        result = subprocess.run(
+            [docker, "image", "inspect", "--format", "{{.Id}}", image],
+            capture_output=True, text=True, check=False, timeout=30,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        fail_infra(f"--shard: cannot inspect image {image!r}: {exc}")
+    if result.returncode != 0:
+        fail(f"--shard: image {image!r} is not present on this host; pull it "
+             f"once (`docker pull {image}`) before starting shards, so every "
+             "shard starts from the same local image instead of each pulling")
+
+
 def lane_environment_name(lane: dict) -> str:
     return str(lane["environment"])
 
 
+def resolve_network_setting(lane: dict, environment: dict
+                            ) -> tuple[str, str]:
+    """Resolve network policy with lane > environment > Docker default."""
+    if "network" in lane:
+        return lane["network"], "lane"
+    if "network" in environment:
+        return environment["network"], "environment"
+    return "default", "unset"
+
+
 # ---------------------------------------------------------------------------
-# RG-55 / SPEC R-43: cgroup-profiler daemon client + basic-path fallback
+# RG-55 / SPEC R-43: cgprofile daemon client + basic-path fallback
 # (RG55-INTERFACE-CONTRACT.md). This section is the self-contained,
 # docker-agnostic-where-possible core: the ported cgroupfs parsers,
 # ProfilerClient (talks to the optional daemon), ResourceAccumulator (pure
@@ -2571,7 +2842,7 @@ def generate_profile_token() -> str:
 
 
 def _profile_parse_int(text: str | None) -> int | None:
-    """Ported from scripts/cgroup-profiler/lib/util.py:read_int (STRING
+    """Ported from cgprofile/src/cgprofile/util.py:read_int (STRING
     variant — run-gate reads via `docker exec ... cat`, never a path
     directly). 'max' and empty read back as None (absent is never zero,
     contract Sec 1.7)."""
@@ -2734,20 +3005,25 @@ def socket_unreachable_cause(socket_path: str, exc: BaseException) -> str:
     (the same rule `cgprofile ctl` applied; the socket itself carries no tag
     because there is nobody to answer). Empty for any other failure."""
     if isinstance(exc, FileNotFoundError):
-        if not os.path.isdir(os.path.dirname(socket_path) or "."):
-            return ("socket-not-mounted: the socket directory does not exist "
-                    "here (bind-mount /run/cgprofile into the lane, or the "
-                    "host has no cgprofile daemon runtime directory)")
+        control_directory = os.path.dirname(socket_path) or "."
+        if not os.path.isdir(control_directory):
+            return ("socket-not-mounted: the control socket directory does not "
+                    f"exist here (bind-mount {control_directory}, or the host "
+                    "has no cgprofile daemon runtime directory); "
+                    f"check ${CGPROFILE_CONTROL_SOCKET_ENV_VAR}, run "
+                    "'cgprofiled doctor', and repair the host endpoints record")
         return ("socket-missing: the directory exists but the socket node is "
                 "gone (the cgprofile daemon is not running, or the node was "
-                "removed)")
+                f"removed); check ${CGPROFILE_CONTROL_SOCKET_ENV_VAR}, run "
+                "'cgprofiled doctor', and repair the host endpoints record")
     if isinstance(exc, ConnectionRefusedError):
         return ("daemon-refusing: a socket node exists but nothing is "
                 "listening (the daemon exited, is restarting, or refuses to "
                 "start)")
     if isinstance(exc, PermissionError):
         return ("socket-permission: the socket exists but this user may not "
-                "connect (join the socket's group)")
+                "connect (join cgprofile-control and recreate the devcontainer "
+                "with its cgprofile-control --group-add)")
     return ""
 
 
@@ -2865,6 +3141,7 @@ class ProfilerClient:
         return result
 
     def _socket_request(self, verb: str, args: tuple[str, ...]) -> str:
+        preflight_control_socket_access(self.socket_path, missing_ok=True)
         payload = {"verb": verb, "args": self._wire_args(verb, args),
                    "contract": PROFILE_CONTRACT}
         request = json.dumps(
@@ -2898,6 +3175,8 @@ class ProfilerClient:
         except OSError as exc:
             return None, (f"cgprofile socket carrier failed for ctl {verb}: "
                           f"{exc}")
+        except GateInfraError as exc:
+            return None, str(exc)
         except Exception as exc:
             return None, (f"cgprofile socket ctl {verb} failed unexpectedly: "
                           f"{exc}")
@@ -2993,6 +3272,8 @@ class ProfilerWatch:
 
     def _read(self) -> None:
         try:
+            preflight_control_socket_access(
+                self.client.socket_path, missing_ok=True)
             sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
             self._socket = sock
             sock.connect(self.client.socket_path)
@@ -3040,7 +3321,7 @@ class ProfilerWatch:
             if (not isinstance(decision, dict)
                     or decision.get("state") not in (
                         "stalled", "runaway", "over_ceiling", "hung",
-                        "throttled", "ok")
+                        "throttled", "unknown", "ok")
                     or decision.get("verdict") not in (
                         "killed", "reported", "none")
                     or not isinstance(decision.get("reason"), str)
@@ -3693,7 +3974,7 @@ def profile_start_policy(lane: dict, project_dir: Path, scope: str,
     stall = lane.get("stall_timeout")
     return {
         "progress_stream": (str(project_dir / assay_progress_rel(
-            lane["assay_lane"])) if lane["kind"] == "assay" else None),
+            assay_artifact_lane(lane))) if lane["kind"] == "assay" else None),
         "idle_bound": budget_seconds(stall) if stall else "auto",
         "ceiling": "auto",
         # A shared cgroup contains other work. Its daemon may kill only an
@@ -3711,10 +3992,12 @@ def start_lane_profiling(lane: dict, lane_name: str, project_dir: Path,
                          preflight: dict | None = None) -> dict:
     """Contract Sec 4 obligations 1-3, called once per lane invocation AFTER
     the container/runner id is resolved (`docker inspect`) and BEFORE the
-    caller's wait loop. Tries the daemon exactly once (`version` then
-    `start`); ANY failure at either step degrades to `BasicSampler`, which
-    takes its first sample (the baseline, contract Sec 7's `s_0`)
-    immediately — never raises, never itself decides a verdict (R-04/R-36h).
+    caller's wait loop. The required endpoint is read from the environment;
+    if absent, the infrastructure error is raised before any daemon request.
+    Then it tries the daemon exactly once (`version` then `start`); ANY
+    failure at either step degrades to `BasicSampler`, which takes its first
+    sample (the baseline, contract Sec 7's `s_0`) immediately — it never
+    decides a verdict (R-04/R-36h).
 
     Returns a profiler STATE dict:
       mode              "disabled" | "daemon" | "basic"
@@ -3730,7 +4013,7 @@ def start_lane_profiling(lane: dict, lane_name: str, project_dir: Path,
                         (RW-17: names `RUN_GATE_PROFILE` when that is why)
     """
     state = {"mode": "disabled", "client": None,
-             "socket_path": plan.get("socket_path"),
+             "socket_path": None,
              "session": None, "session_line": None, "warning": None,
              "sampler": None, "profiler_status": None,
              "placement": None, "admission": None,
@@ -3738,9 +4021,10 @@ def start_lane_profiling(lane: dict, lane_name: str, project_dir: Path,
              "disabled_reason": plan.get("disabled_reason", "disabled")}
     if not plan["enabled"]:
         return state
+    socket_path = control_socket_from_env()
+    state["socket_path"] = socket_path
     client = (preflight["client"] if preflight is not None else
-              ProfilerClient(plan.get("socket_path",
-                                      PROFILE_SOCKET_PATH_DEFAULT)))
+              ProfilerClient(socket_path))
     state["client"] = client
     version_doc = (preflight.get("version") if preflight is not None
                    else None)
@@ -3917,7 +4201,8 @@ def start_bare_host_profiling(lane: dict, lane_name: str, project_dir: Path,
     `container-shared` (RG55-INTERFACE-CONTRACT.md Sec 3 — a bare-host
     invocation shares its devcontainer's cgroup with everything else
     running in it, the same relationship an exec lane's persistent runner
-    has). On ANY failure — docker missing, not running in a container,
+    has). An unset required endpoint raises an infrastructure error. On
+    daemon/start failures — docker missing, not running in a container,
     `ctl version` failing, `ctl start` failing — this NEVER falls back to a
     `BasicSampler` (RW-27b: explicit and deliberate — there is no cgroup
     here safely attributable to just this lane's own child the way a fresh
@@ -3934,11 +4219,16 @@ def start_bare_host_profiling(lane: dict, lane_name: str, project_dir: Path,
     VERBATIM for the daemon sub-case — only how the target id and the scope
     were decided differs, not what happens afterward."""
     state = {"mode": "rusage", "client": None,
-             "socket_path": plan.get("socket_path"),
+             "socket_path": None,
              "session": None, "session_line": None, "warning": None,
              "sampler": None, "profiler_status": None,
              "placement": None, "admission": None,
              "disabled_reason": plan.get("disabled_reason", "disabled")}
+    if not plan.get("enabled"):
+        state["mode"] = "disabled"
+        return state
+    socket_path = control_socket_from_env()
+    state["socket_path"] = socket_path
     if not docker:
         state["warning"] = "docker not found on PATH"
         return state
@@ -3947,8 +4237,7 @@ def start_bare_host_profiling(lane: dict, lane_name: str, project_dir: Path,
         state["warning"] = skip_reason
         return state
     client = (preflight.get("client") if preflight is not None else
-              ProfilerClient(plan.get("socket_path",
-                                      PROFILE_SOCKET_PATH_DEFAULT)))
+              ProfilerClient(socket_path))
     state["client"] = client
     if preflight is not None:
         version_doc = preflight.get("version")
@@ -4233,7 +4522,7 @@ def print_profile_plan_dry_run(plan: dict, scope: str,
         return
     print(f"run-gate: DRY RUN — profile plan: "
          f"scope {scope!r}, damon {'on' if plan['damon'] else 'off'}, "
-         f"socket {plan.get('socket_path', PROFILE_SOCKET_PATH_DEFAULT)!r}, "
+         f"socket from ${CGPROFILE_CONTROL_SOCKET_ENV_VAR}, "
          f"admission_wait {plan.get('admission_wait', PROFILE_ADMISSION_WAIT_DEFAULT)}, "
          f"token env {PROFILE_TOKEN_ENV}", flush=True)
     if placement is not None and scope != "container":
@@ -4606,8 +4895,13 @@ def select_r2_jobs(request: int | str | None, *, jobs_max: int,
                    cheap_clone: bool | None = None,
                    cheap_clone_backend: str | None = None,
                    source: str | None = None,
-                   cheap_clone_reason: str | None = None) -> dict:
+                   cheap_clone_reason: str | None = None,
+                   oversubscribe: float = 1.0) -> dict:
     """Select and validate the worker count for one native R2 lane.
+
+    RG-266: `auto` places `floor(cpu_cap * oversubscribe)` workers per
+    enforced CPU cap before the memory, `jobs_max` and remaining-candidate
+    caps; the memory cap is never oversubscribed.
 
     The `auto` formula is intentionally owned by Run-Gate: Assay does not
     derive a worker count. Missing or unusable caps are represented by the
@@ -4633,9 +4927,15 @@ def select_r2_jobs(request: int | str | None, *, jobs_max: int,
                 or candidate_ram_bytes < 1 or candidates_remaining < 0:
             fail("automatic R2 jobs selection requires integer CPU, memory, "
                  "candidate RAM and remaining-candidate inputs")
+        if (isinstance(oversubscribe, bool)
+                or not isinstance(oversubscribe, (int, float))
+                or not 1.0 <= oversubscribe <= R2_OVERSUBSCRIBE_MAX):
+            fail(f"R2 oversubscription factor must be 1.0..{R2_OVERSUBSCRIBE_MAX:g}"
+                 f" (got {oversubscribe!r})")
+        cpu_workers = max(1, int(cpu_cap * oversubscribe + 1e-9))
         memory_workers = max(1, memory_budget_bytes // candidate_ram_bytes)
         remaining_workers = max(1, candidates_remaining)
-        jobs = min(jobs_max, cpu_cap, memory_workers, remaining_workers)
+        jobs = min(jobs_max, cpu_workers, memory_workers, remaining_workers)
         if cheap_clone is not True:
             jobs = 1
     elif type(request) is int and request > 0:
@@ -4666,6 +4966,7 @@ def select_r2_jobs(request: int | str | None, *, jobs_max: int,
         "requested": request,
         "jobs_max": jobs_max,
         "cpu_cap": cpu_cap,
+        "oversubscribe": oversubscribe if request == "auto" else None,
         "memory_budget_bytes": memory_budget_bytes,
         "candidate_ram_bytes": candidate_ram_bytes,
         "candidate_ram_samples": candidate_ram_samples,
@@ -6001,8 +6302,7 @@ def prepare_profile_start(lane: dict, lane_name: str, project_dir: Path,
     """
     if not plan.get("enabled"):
         return None
-    client = ProfilerClient(plan.get(
-        "socket_path", PROFILE_SOCKET_PATH_DEFAULT))
+    client = ProfilerClient(control_socket_from_env())
     try:
         version_doc, reason = client.version()
     except Exception as exc:
@@ -7611,7 +7911,7 @@ def print_lane_artifacts(lane: dict, lane_name: str, project_dir: Path,
         print(f"run-gate: verdict artifact: {verdict_path}", flush=True)
     elif lane["kind"] == "assay":
         verdict_path = Path(os.path.normpath(
-            project_dir / (".assay/verdict-" + lane["assay_lane"] + ".json")))
+            project_dir / assay_verdict_rel(assay_artifact_lane(lane))))
         print(f"run-gate: verdict artifact: {verdict_path}", flush=True)
     if lane["kind"] == "assay":
         # RG-38/RG-10: the mutation-resume-state directory this lane's own
@@ -7624,7 +7924,7 @@ def print_lane_artifacts(lane: dict, lane_name: str, project_dir: Path,
                           if recorded is not None else None)
         state_dir = (Path(recorded_state) if isinstance(recorded_state, str)
                      and recorded_state else
-                     assay_state_dir(repo, project_dir, state_root))
+                     lane_assay_state_dir(lane, repo, project_dir, state_root))
         print(f"run-gate: state directory: {state_dir}", flush=True)
     for entry in lane.get("artifacts", []):
         substituted = substitute_worktree([entry], worktree)[0]
@@ -7653,6 +7953,53 @@ def lane_evidence_directory(lane_name: str) -> Path:
     (B108 phase 2) share it so one run id names all of a run's evidence."""
     safe_lane = re.sub(r"[^A-Za-z0-9_.-]+", "_", lane_name).strip("._") or "lane"
     return evidence_dir() / "lanes" / safe_lane
+
+
+_SECRET_ASSIGNMENT_RE = re.compile(
+    r"(?i)\b([\w.-]*(?:pass(?:word|wd)?|token|secret|api[_-]?key|credential|"
+    r"auth)[\w.-]*)(\s*[=:]\s*)\S+")
+_LONG_TOKEN_RE = re.compile(r"[A-Za-z0-9_+/=.-]{24,}")
+_ANSI_RE = re.compile(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\)?|[@-Z\\-_])")
+
+
+def sanitize_untrusted_text(text: str, limit: int = 160) -> str:
+    """Make lane/runner-printed text safe to quote on a verdict or error line.
+
+    Printable ASCII only (ANSI sequences removed, every other control or
+    non-ASCII byte becomes a space), `;` becomes `,` so the text can never
+    form a `verdict X; exit_code N` field sequence, assignments to
+    secret-looking names and long token-like strings are replaced, and the
+    result is capped at `limit`.  Best effort: the full log may still hold
+    secrets and stays the only complete record."""
+    text = _ANSI_RE.sub("", text)
+    text = "".join(ch if " " <= ch <= "~" else " " for ch in text)
+    text = text.replace(";", ",")
+    text = _SECRET_ASSIGNMENT_RE.sub(r"\1\2<redacted>", text)
+    text = _LONG_TOKEN_RE.sub("<redacted>", text)
+    return " ".join(text.split())[:limit]
+
+
+def last_log_line(path: object, limit: int = 4096) -> str | None:
+    """Last non-empty line of a lane's combined-output log (RG-165b), or None.
+
+    Reads only the final `limit` bytes. Used to say WHY a command lane mapped
+    to ERROR on the verdict line itself.  The line is sanitised
+    (`sanitize_untrusted_text`) and the caller must print it as a quoted
+    field."""
+    if not path:
+        return None
+    try:
+        with open(path, "rb") as fh:
+            fh.seek(0, os.SEEK_END)
+            fh.seek(max(0, fh.tell() - limit))
+            tail = fh.read().decode("utf-8", "replace")
+    except OSError:
+        return None
+    for line in reversed(tail.splitlines()):
+        line = sanitize_untrusted_text(line)
+        if line:
+            return line
+    return None
 
 
 def allocate_lane_log(lane_name: str, run_id: str) -> Path | None:
@@ -7755,6 +8102,8 @@ class StdinForwarder:
 
 
 PLACEMENT_BARRIER_TIMEOUT_SECONDS = 300.0
+# RG-167: unrelated lines tolerated before the readiness marker.
+PLACEMENT_BARRIER_MAX_PREAMBLE_BYTES = 64 * 1024
 
 
 def placement_barrier_shell_argv(command: list[str], nonce: str) -> list[str]:
@@ -7810,11 +8159,23 @@ def wait_for_placement_barrier(proc: subprocess.Popen, nonce: str,
     stream = getattr(proc, "stdout", None)
     if stream is None:
         raise GateInfraError("placement wrapper has no readiness stream")
-    expected = b"\x1eRUN_GATE_PLACEMENT_READY:" + nonce.encode() + b"\n"
+    token = b"\x1eRUN_GATE_PLACEMENT_READY:"
+    expected = token + nonce.encode() + b"\n"
     deadline = time.monotonic() + timeout
     line = bytearray()
     fd = stream.fileno()
-    while len(line) <= 256:
+    # RG-167: the wrapper shares stdout with anything the target environment
+    # prints before it (an LD_PRELOAD shim, a profile script).  Only a line
+    # that is exactly the marker (RS control byte + per-placement nonce)
+    # counts; other complete lines are ignored, bounded so a chatty or hostile
+    # stream still fails.  A marker-shaped line with a different nonce is a
+    # protocol error, never ignored.
+    ignored = 0
+    ignored_tail: list[str] = []
+    while True:
+        if len(line) > 256:
+            raise GateInfraError(
+                "placement wrapper readiness marker exceeded 256 bytes")
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             raise GateInfraError(
@@ -7825,19 +8186,31 @@ def wait_for_placement_barrier(proc: subprocess.Popen, nonce: str,
                 f"placement wrapper did not become ready within {timeout:g}s")
         chunk = os.read(fd, 1)
         if not chunk:
-            detail = line.decode("utf-8", errors="replace").strip()
+            tail = ignored_tail + [line.decode("utf-8", errors="replace")]
+            detail = " | ".join(
+                s for s in (sanitize_untrusted_text(t, 60) for t in tail) if s)
             raise GateInfraError(
                 "placement wrapper exited before readiness" +
                 (f": {detail[:200]}" if detail else ""))
         line.extend(chunk)
         if chunk == b"\n":
-            if bytes(line) != expected:
-                detail = line.decode("utf-8", errors="replace").strip()
+            if bytes(line) == expected:
+                return
+            if line.startswith(token):
+                detail = sanitize_untrusted_text(
+                    line.decode("utf-8", errors="replace"), 200)
                 raise GateInfraError(
                     "placement wrapper emitted an invalid readiness marker" +
-                    (f": {detail[:200]}" if detail else ""))
-            return
-    raise GateInfraError("placement wrapper readiness marker exceeded 256 bytes")
+                    (f": {detail}" if detail else ""))
+            ignored += len(line)
+            if ignored > PLACEMENT_BARRIER_MAX_PREAMBLE_BYTES:
+                raise GateInfraError(
+                    "placement wrapper printed more than "
+                    f"{PLACEMENT_BARRIER_MAX_PREAMBLE_BYTES} bytes of "
+                    "non-marker output before its readiness marker")
+            ignored_tail = (ignored_tail + [
+                line.decode("utf-8", errors="replace")])[-3:]
+            line = bytearray()
 
 
 def spawn_placement_barrier(argv: list[str], nonce: str, **popen_kwargs
@@ -8029,10 +8402,12 @@ def save_container_logs(docker: str, name: str,
                         target: Path | None = None) -> Path | None:
     """RG-12: copy the container's full logs somewhere readable BEFORE the
     `rm -f` destroys them. Returns the written path, or None when capture
-    fails (never raises — evidence is best-effort, the lane result stands)."""
+    fails, including a named `subprocess.TimeoutExpired` (never raises —
+    evidence is best-effort, the lane result stands)."""
     try:
         grabbed = subprocess.run([docker, "logs", name], capture_output=True,
-                                 text=True)
+                                 text=True,
+                                 timeout=CONTAINER_LOG_CAPTURE_TIMEOUT_SECONDS)
         combined = grabbed.stdout + grabbed.stderr
         if grabbed.returncode != 0 and not combined.strip():
             return None
@@ -8061,6 +8436,8 @@ def save_container_logs(docker: str, name: str,
         finally:
             os.close(fd)
         return target
+    except subprocess.TimeoutExpired:
+        return None
     except OSError:
         return None
 
@@ -8594,7 +8971,78 @@ def extra_mount_flags() -> list[str]:
     return flags
 
 
-def resource_observer_docker_flags(lane: dict, environment: dict) -> list[str]:
+def host_docker_gid() -> tuple[int, str]:
+    """The host's numeric Docker GID and where it came from.
+
+    Run-gate runs in a container whose group database may map `docker` to a
+    different GID or omit it, so the group database is never consulted.
+    Order: (1) the explicit `RUN_GATE_HOST_DOCKER_GID` override, then
+    (2) `MDT_HOST_DOCKER_GID`, the numeric value supplied by the host launcher.
+    Both must be non-root decimal GIDs; a set but empty or malformed value is
+    an error. A Docker API socket's owning GID is not a source for the host
+    Docker group: a proxy or relay can give that socket a different access
+    group. Returns (gid, source), where source is the variable name.
+    """
+    for variable in (HOST_DOCKER_GID_ENV_VAR,
+                     MDT_HOST_DOCKER_GID_ENV_VAR):
+        if variable not in os.environ:
+            continue
+        value = os.environ[variable]
+        if not re.fullmatch(r"[1-9][0-9]*", value, re.ASCII):
+            fail_infra(f"${variable} must be a verified non-root numeric GID, "
+                       f"got {value!r}")
+        return int(value), variable
+    fail_infra("host Docker GID is unavailable; set "
+               f"${HOST_DOCKER_GID_ENV_VAR} or "
+               f"${MDT_HOST_DOCKER_GID_ENV_VAR} to the host Docker group's "
+               "numeric GID")
+
+
+def preflight_control_socket_access(
+        socket_path: str, control: os.stat_result | None = None, *,
+        missing_ok: bool = False) -> tuple[int, str] | None:
+    """Check the control socket's level identity before any connection.
+
+    UID 0 can connect without supplementary group membership (the tester
+    runner uses `--user 0:0`). Other callers need the control socket GID as
+    their effective GID or in their supplementary groups. Missing paths may be passed through to the
+    transport so its existing unavailable-socket diagnosis remains intact.
+    """
+    if not socket_path:
+        fail_infra("cgprofile control socket path is empty")
+    if control is None:
+        try:
+            control = os.lstat(socket_path)
+        except FileNotFoundError as exc:
+            if missing_ok:
+                return None
+            fail_infra(f"cannot inspect cgprofile control socket {socket_path}: "
+                       f"{exc}; check ${CGPROFILE_CONTROL_SOCKET_ENV_VAR}, "
+                       "run 'cgprofiled doctor', and repair the host endpoints record")
+        except OSError as exc:
+            fail_infra(f"cannot inspect cgprofile control socket {socket_path}: "
+                       f"{exc}")
+    if not stat.S_ISSOCK(control.st_mode):
+        fail_infra(f"cgprofile control path is not a Unix socket: {socket_path}")
+    if control.st_gid == 0:
+        fail_infra("cgprofile control socket must use a non-root group")
+    docker_gid, docker_gid_source = host_docker_gid()
+    if control.st_gid == docker_gid:
+        fail_infra(f"cgprofile control socket gid {control.st_gid} equals the "
+                   f"host docker gid {docker_gid} (from {docker_gid_source}); "
+                   "cgprofile-control must use its dedicated group, not the "
+                   "host docker group")
+    if (os.getuid() != 0
+            and control.st_gid != os.getegid()
+            and control.st_gid not in os.getgroups()):
+        fail_infra(f"this process cannot access the cgprofile control socket "
+                   f"group cgprofile-control (gid {control.st_gid}); recreate "
+                   "the devcontainer with its cgprofile-control --group-add")
+    return docker_gid, docker_gid_source
+
+
+def resource_observer_docker_flags(
+        lane: dict, environment: dict) -> list[str]:
     """Mount only cgprofile's read-only resource-observer socket.
 
     The observer protocol is a separate daemon listener; never mount the
@@ -8614,63 +9062,70 @@ def resource_observer_docker_flags(lane: dict, environment: dict) -> list[str]:
     if os.environ.get(EXTRA_MOUNT_ENV_VAR):
         fail_infra(f"${EXTRA_MOUNT_ENV_VAR} is incompatible with an observer lane; "
                    "extra mounts could expose host control interfaces")
-    socket_path = Path(CGPROFILE_RESOURCE_OBSERVER_SOURCE)
+    control_socket_path = control_socket_from_env()
+    observer_socket_path = observer_socket_from_env()
+    socket_path = Path(observer_socket_path)
     directory_path = socket_path.parent
-    docker_group_directory = directory_path.parent
+    try:
+        validate_docker_mount_path(
+            directory_path, f"${CGPROFILE_OBSERVER_SOCKET_ENV_VAR} directory")
+    except GateError as exc:
+        fail_infra(str(exc))
     try:
         parent = os.lstat(directory_path)
         observed = os.lstat(socket_path)
     except OSError as exc:
         fail_infra(f"cgprofile resource observer directory or socket is unavailable: "
-                   f"{directory_path}, {socket_path}: {exc}")
+                   f"{directory_path}, {socket_path}: {exc}; check "
+                   f"${CGPROFILE_OBSERVER_SOCKET_ENV_VAR}, run 'cgprofiled doctor', "
+                   "and repair the host endpoints record")
     try:
-        docker_group_source = os.lstat(docker_group_directory)
+        control = os.lstat(control_socket_path)
     except OSError as exc:
-        fail_infra("cannot inspect the host Docker group source "
-                   f"{docker_group_directory}: {exc}")
+        fail_infra("cannot inspect cgprofile control socket "
+                   f"{control_socket_path}: {exc}; check "
+                   f"${CGPROFILE_CONTROL_SOCKET_ENV_VAR}, run 'cgprofiled doctor', "
+                   "and repair the host endpoints record")
     if (
         not stat.S_ISDIR(parent.st_mode)
         or parent.st_uid != 0
-        or parent.st_mode & 0o022
-        or not parent.st_mode & 0o010
+        or parent.st_gid != 0
+        or parent.st_mode & CGPROFILE_OBSERVER_DIRECTORY_WRITE_MASK
+        or not parent.st_mode & CGPROFILE_OBSERVER_DIRECTORY_SEARCH
     ):
         fail_infra(f"cgprofile resource observer directory is not a safe "
-                   f"root-owned, group-searchable directory: {directory_path}")
+                   f"root-owned (root:root), group-searchable directory: "
+                   f"{directory_path}")
     if not stat.S_ISSOCK(observed.st_mode):
         fail_infra(f"cgprofile resource observer path is not a Unix socket: "
                    f"{socket_path}")
-    if observed.st_uid != 0 or observed.st_gid != parent.st_gid:
-        fail_infra("cgprofile resource observer socket ownership does not "
-                   "match its root-owned socket directory")
-    if (
-        not stat.S_ISDIR(docker_group_source.st_mode)
-        or docker_group_source.st_uid != 0
-    ):
-        fail_infra("cannot determine the host Docker group from the root-owned "
-                   f"cgprofile control directory: {docker_group_directory}")
-    if (
-        docker_group_source.st_gid == 0
-        or stat.S_IMODE(docker_group_source.st_mode) != 0o770
-    ):
-        fail_infra("host Docker group source must be root-owned, have a "
-                   "non-root group, and mode 0770: "
-                   f"{docker_group_directory}")
+    if observed.st_uid != 0:
+        fail_infra("cgprofile resource observer socket must be root-owned")
+    if not stat.S_ISSOCK(control.st_mode):
+        fail_infra(f"cgprofile control path is not a Unix socket: "
+                   f"{control_socket_path}")
+    docker_gid, docker_gid_source = preflight_control_socket_access(
+        control_socket_path, control)
     if observed.st_mode & 0o007 or not observed.st_mode & 0o020:
         fail_infra("cgprofile resource observer socket must be group-connectable "
                    "and not accessible to other users")
-    # `/run/cgprofile` is provisioned root:docker by the host setup unit, so
-    # its numeric GID is the host fact. `grp.getgrnam()` reads this container's
-    # group table, which can map the name to another numeric GID or omit it.
-    if observed.st_gid == docker_group_source.st_gid:
-        fail_infra("cgprofile observer must use its dedicated group, not the "
-                   "host docker group")
+    if observed.st_gid == 0:
+        fail_infra("cgprofile resource observer socket must use a non-root group")
+    if observed.st_gid == docker_gid:
+        fail_infra(f"cgprofile observer socket gid {observed.st_gid} equals "
+                   f"the host docker gid {docker_gid} (from "
+                   f"{docker_gid_source}); the observer must use its "
+                   "dedicated group, not the host docker group")
+    if observed.st_gid == control.st_gid:
+        fail_infra(f"cgprofile observer socket gid {observed.st_gid} equals "
+                   f"the control socket gid {control.st_gid} "
+                   f"({control_socket_path}); the observer must use a group "
+                   "distinct from the control socket group")
     return [
         "--mount",
-        f"type=bind,source={directory_path},target="
-        f"{CGPROFILE_RESOURCE_OBSERVER_TARGET_DIRECTORY},readonly",
+        f"type=bind,source={directory_path},target={directory_path},readonly",
         "--group-add", str(observed.st_gid),
-        "-e", f"{ASSAY_RESOURCE_OBSERVER_ENV}="
-        f"{CGPROFILE_RESOURCE_OBSERVER_TARGET}",
+        "-e", f"{ASSAY_RESOURCE_OBSERVER_ENV}={observer_socket_path}",
     ]
 
 
@@ -8683,6 +9138,7 @@ def resource_observer_version_preflight(socket_path: str) -> None:
     that cannot establish the exact read-only observer capability Run-Gate
     will mount.
     """
+    observer_endpoint = observer_socket_from_env()
     version, reason = ProfilerClient(socket_path).version()
     if version is None:
         fail_infra(f"cgprofile resource-observer preflight failed: {reason}")
@@ -8693,9 +9149,10 @@ def resource_observer_version_preflight(socket_path: str) -> None:
     if type(contract) is not int or contract != 2:
         fail_infra("cgprofile resource observer contract must be 2 "
                    f"(got {contract!r})")
-    if observer.get("path") != CGPROFILE_RESOURCE_OBSERVER_SOURCE:
+    if observer.get("path") != observer_endpoint:
         fail_infra("cgprofile resource observer advertises an unexpected "
-                   f"socket path: {observer.get('path')!r}")
+                   f"socket path for ${CGPROFILE_OBSERVER_SOCKET_ENV_VAR}: "
+                   f"{observer.get('path')!r}")
     if observer.get("listening") is not True:
         fail_infra("cgprofile resource observer is not listening")
 
@@ -8704,7 +9161,8 @@ def build_env_probe_argv(docker: str, env: dict, env_name: str, repo: Path,
                          worktree: Path, env_source: str, slice_name: str,
                          script: str,
                          resolved_container_name: str | None = None,
-                         resource_settings: dict | None = None
+                         resource_settings: dict | None = None,
+                         inspect_mounts: bool = True
                          ) -> list[str]:
     """The ONE way run-gate runs a short, synchronous probe command INSIDE
     a lane's environment (RG-25's `assay lanes --json` inventory and its
@@ -8740,7 +9198,10 @@ def build_env_probe_argv(docker: str, env: dict, env_name: str, repo: Path,
         if name is None:
             name, _src, _remedy = resolve_container_name(env_name, env, repo,
                                                          worktree, env_source)
-        forwarded = resource_forwarded_env(resource_settings or {}, "exec")
+        forwarded = resource_forwarded_env(
+            resource_settings or {}, "exec",
+            exec_mounts=((lambda: container_mount_destinations(docker, name))
+                         if inspect_mounts else None))
         env_flags = [arg for key, value in forwarded.items()
                      for arg in ("-e", f"{key}={value}")]
         return [docker, "exec", *env_flags, "--workdir", str(repo), name,
@@ -9940,7 +10401,7 @@ def plan_comparison_base(lane: dict, lane_name: str, base_flag: str | None,
     if entry is None:
         lane["_assay_inventory_error"] = why or "Assay lane inventory is unavailable"
         lane.pop("_assay_inventory", None)
-        if lane.get("_selective_assay"):
+        if lane.get("_selective_assay") or lane.get("_r2_flex"):
             fail(f"selective assay flags for lane {lane_name!r} require an "
                  f"inventory proving that it declares R2: {why}")
         if base_flag:
@@ -9955,6 +10416,27 @@ def plan_comparison_base(lane: dict, lane_name: str, base_flag: str | None,
     lane.pop("_assay_inventory_error", None)
     lane["_assay_inventory"] = {"entry": entry,
                                 "assay_version": assay_version}
+    if lane.get("_r2_flex"):
+        rigor = entry.get("rigor")
+        mutation = entry.get("mutation")
+        if (not isinstance(rigor, list) or "R2" not in rigor
+                or not isinstance(mutation, dict)
+                or mutation.get("format") is not None):
+            fail(f"--shard/--merge-shards/--carry-over/--merge-state/"
+                 f"--only-candidates/--exclude-candidates require a native "
+                 f"R2 assay lane; assay lane {lane['assay_lane']!r} declares "
+                 f"rigor {rigor!r}")
+        # Review B2: the judge must BE 12.2.0+, proven by the inventory
+        # version, not only by a help-text token (kept as defence in depth).
+        if (not isinstance(assay_version, str)
+                or not assay_inventory_version_meets_floor(
+                    assay_version, R2_FLEX_ASSAY_FLOOR)):
+            fail(f"--shard/--merge-shards/--carry-over/--merge-state/"
+                 f"--only-candidates/--exclude-candidates need assay >= "
+                 f"{'.'.join(str(part) for part in R2_FLEX_ASSAY_FLOOR)} "
+                 f"(B529-B531); lane {lane_name!r} reports assay "
+                 f"{assay_version!r} (judge floor)")
+        refuse_serialized_shard(lane, lane_name, env, env_name)
     if lane.get("_selective_assay"):
         selective = lane["_selective_assay"]
         rigor = entry.get("rigor")
@@ -10718,18 +11200,32 @@ def cmd_doctor(lanes: dict, project_dir: Path, cfg: dict, central: dict,
                     f"override active" if ambient_profile else "")
     record("OK" if profile_settings["enabled"] else "WARN", "profile config",
            f"enabled={profile_settings['enabled']} "
-           f"socket={profile_settings['socket_path']!r} "
+           f"endpoint=${CGPROFILE_CONTROL_SOCKET_ENV_VAR} "
            f"interval={profile_settings['interval']} "
            f"damon={profile_settings['damon']} "
            f"(source: {profile_settings['source']}){ambient_note}")
+    control_endpoint = None
+    control_endpoint_error = None
+    if profile_settings["enabled"]:
+        # An unset or malformed endpoint is exactly what doctor exists to
+        # report: a WARN naming the variable, never an abort of the run.
+        try:
+            control_endpoint = control_socket_from_env()
+        except GateInfraError as exc:
+            control_endpoint_error = str(exc)
     if not profile_settings["enabled"]:
         record("WARN", "profiler daemon",
                "profiling disabled — no lane will be profiled; see "
                "'profile config' above for why")
+    elif control_endpoint_error is not None:
+        record("WARN", "profiler endpoint",
+               f"{control_endpoint_error} — container/exec lanes fall back "
+               f"to basic (in-lane) sampling, bare-host lanes to coarse "
+               f"rusage accounting (R-43i)")
     else:
         # RG-156: the control socket is the only carrier, so doctor needs
         # no docker. An unreachable socket carries its CP-31 cause tag.
-        client = ProfilerClient(profile_settings["socket_path"])
+        client = ProfilerClient(control_endpoint)
         version_doc, reason = client.version()
         if version_doc is None:
             record("WARN", "profiler daemon",
@@ -10940,6 +11436,15 @@ def assay_inventory_version_meets_floor(
 
 def assay_verdict_rel(assay_lane: str) -> str:
     return f".assay/verdict-{assay_lane}.json"
+
+
+def assay_artifact_lane(lane: dict) -> str:
+    """RG-265: the name a lane's `.assay/` artifacts are keyed by.
+
+    The Assay lane name, except for a shard instance, whose verdict,
+    progress and closeout files carry `.shard<K>of<N>` so N concurrent
+    instances of one lane never write the same file."""
+    return lane.get("_artifact_lane") or lane["assay_lane"]
 
 
 def _read_sha256_manifest(path: Path) -> list[tuple[str, str]]:
@@ -11414,7 +11919,7 @@ def configure_r2_jobs(lane: dict, lane_name: str,
         fail(f"jobs value {request} exceeds Assay lane mutation.jobs_max "
              f"({jobs_max})")
 
-    progress_path = project_dir / assay_progress_rel(lane["assay_lane"])
+    progress_path = project_dir / assay_progress_rel(assay_artifact_lane(lane))
     lane_resources = lane.get("resources")
     declared_candidate_ram = (lane_resources.get("candidate_ram")
                               if isinstance(lane_resources, dict) else None)
@@ -11468,6 +11973,8 @@ def configure_r2_jobs(lane: dict, lane_name: str,
         candidates_remaining=candidates_remaining,
         cheap_clone=cheap_clone, cheap_clone_backend=backend,
         source=request_source,
+        oversubscribe=float(resource_settings.get(
+            "r2_oversubscribe", R2_OVERSUBSCRIBE_DEFAULT)),
         cheap_clone_reason=(
             capacity.get("cheap_clone_reason")
             if isinstance(capacity, dict)
@@ -11513,6 +12020,7 @@ def disclose_r2_jobs(lane_name: str, selection: dict | None) -> None:
         inputs = (
             f"jobs_max={selection['jobs_max']}, cpu_cap={selection['cpu_cap']} "
             f"({selection['cpu_cap_source']}), "
+            f"oversubscribe={selection.get('oversubscribe')!r}, "
             f"memory_budget_bytes={selection['memory_budget_bytes']} "
             f"({selection['ram_target']} of {selection['memory_cap_bytes']} "
             f"from {selection['memory_cap_source']}), "
@@ -11539,7 +12047,7 @@ def record_r2_jobs_selection(record: dict, lane: dict,
         return
     record["r2_jobs"] = selection
     record["_r2_progress_path"] = str(
-        project_dir / assay_progress_rel(lane["assay_lane"]))
+        project_dir / assay_progress_rel(assay_artifact_lane(lane)))
 
 
 # ---------------------------------------------------------------------------
@@ -12343,10 +12851,10 @@ def archive_failed_assay(lane_name: str, record: dict | None,
     """
     verdict_source = (Path(record["_verdict_path"])
                       if record and isinstance(record.get("_verdict_path"), str)
-                      else project_dir / assay_verdict_rel(lane["assay_lane"]))
+                      else project_dir / assay_verdict_rel(assay_artifact_lane(lane)))
     progress_source = (Path(record["_progress_path"])
                        if record and isinstance(record.get("_progress_path"), str)
-                       else project_dir / assay_progress_rel(lane["assay_lane"]))
+                       else project_dir / assay_progress_rel(assay_artifact_lane(lane)))
     run_id = record.get("run_id") if record else None
     if not isinstance(run_id, str) or not run_id:
         return None
@@ -12396,7 +12904,7 @@ def _report_failed_assay(lane_name: str, record: dict | None,
     recorded_progress = record.get("_progress_path") if record else None
     progress_path = (Path(recorded_progress)
                      if isinstance(recorded_progress, str)
-                     else project_dir / assay_progress_rel(lane["assay_lane"]))
+                     else project_dir / assay_progress_rel(assay_artifact_lane(lane)))
     print_assay_failure_digest(
         verdict, record.get("log_path") if record else None, progress_path)
     archive_failed_assay(lane_name, record, project_dir, repo, lane, verdict)
@@ -12597,7 +13105,7 @@ def collect_assay_closeout(lane: dict, lane_name: str, run_id: str,
             "unavailable", "the judged commit could not be resolved, so no "
             "analysis was requested")
     directory = verdict_path.parent
-    files = {suffix: directory / f"campaign-{assay_lane}.{suffix}"
+    files = {suffix: directory / f"campaign-{assay_artifact_lane(lane)}.{suffix}"
              for suffix in ASSAY_CLOSEOUT_SUFFIXES}
     data: dict[str, bytes | None] = {}
     for suffix, path in files.items():
@@ -13001,7 +13509,7 @@ def assure_assay_state_root(docker: str | None, lane: dict, env: dict,
     if lane.get("kind") != "assay":
         return
     state_root = assay_state_root(repo, env)
-    state_dir = assay_state_dir(repo, project_dir, env.get("state_root"))
+    state_dir = lane_assay_state_dir(lane, repo, project_dir, env.get("state_root"))
     if not env or env.get("mode") == "host":
         if dry_run:
             action = "would check"
@@ -13024,13 +13532,21 @@ def assure_assay_state_root(docker: str | None, lane: dict, env: dict,
             docker or "docker", env, env_name, repo, worktree, env_source,
             slice_name, assay_state_probe_script(state_root, state_dir),
             resolved_container_name=resolved_container_name,
-            resource_settings=resource_settings)
+            resource_settings=resource_settings,
+            inspect_mounts=not dry_run)
         if dry_run:
             probe_resource_env = resource_forwarded_env(
                 resource_settings or {}, env.get("mode", "host"))
             print(f"run-gate: assay state root preflight: "
                   f"{shlex.join(redact_forwarded_values(
                       probe_argv, probe_resource_env))}", flush=True)
+            if env.get("mode") == "exec" and \
+                    (resource_settings or {}).get("cowtree", {}).get(
+                        "mode") == "auto":
+                print("run-gate: note: COWTREE_MODE/MDT_COW_ROOT in this "
+                      "probe are decided at run time after `docker inspect` "
+                      "of the runner (dropped when it does not mount the "
+                      "root, RG-168)", flush=True)
             return
     ready, why = probe_assay_state_root(
         docker, env, env_name, repo, worktree, env_source, slice_name,
@@ -13074,9 +13590,9 @@ def assay_artifact_paths(lane: dict, project_dir: Path, repo: Path,
     never construct a competing answer for one this function already owns."""
     if lane["kind"] != "assay":
         return None, None, None
-    return (str(project_dir / assay_verdict_rel(lane["assay_lane"])),
-            str(project_dir / assay_progress_rel(lane["assay_lane"])),
-            str(assay_state_dir(repo, project_dir, state_root)))
+    return (str(project_dir / assay_verdict_rel(assay_artifact_lane(lane))),
+            str(project_dir / assay_progress_rel(assay_artifact_lane(lane))),
+            str(lane_assay_state_dir(lane, repo, project_dir, state_root)))
 
 
 def inflight_recovery_action(pending: dict, lane_name: str,
@@ -13147,8 +13663,8 @@ def validate_inflight_assay_contract(pending: dict, lane_name: str,
         fail(f"the current Assay lane {lane_name!r} has no safe assay_lane "
              f"identity for its inflight artifacts")
     expected_paths = {
-        "verdict": str(project_dir / assay_verdict_rel(assay_lane)),
-        "progress": str(project_dir / assay_progress_rel(assay_lane)),
+        "verdict": str(project_dir / assay_verdict_rel(assay_artifact_lane(lane))),
+        "progress": str(project_dir / assay_progress_rel(assay_artifact_lane(lane))),
     }
     for artifact in ("verdict", "progress"):
         value = pending.get(artifact)
@@ -13383,6 +13899,210 @@ def git_safe_directory_setup() -> list[str]:
     ]
 
 
+# RG-265: flexible native-R2 campaigns. Assay owns the semantics (B529-B531:
+# resource settings are not judge identity, judge generations, carry-over,
+# same-judge store merge, targeted candidate sets); Run-Gate passes the flags
+# through and gives each shard its own lane instance.
+R2_SHARD_MAX = 64
+R2_FLEX_ASSAY_FLAG = "--merge-shard-store"
+#: Review B2: the flexible-campaign flags need this judge (B529-B531).
+R2_FLEX_ASSAY_FLOOR = (12, 2, 0)  # the help token proving judge support
+
+
+def r2_flex_flags_given(args: argparse.Namespace) -> bool:
+    return bool(args.shard is not None or args.merge_shards is not None
+                or args.carry_over or args.carry_over_reason is not None
+                or args.merge_state or args.only_candidates is not None
+                or args.exclude_candidates is not None)
+
+
+def _parse_shard_spec(text: str) -> tuple[int, int]:
+    match = re.fullmatch(r"([0-9]+)/([0-9]+)", text or "")
+    if match is None:
+        fail(f"--shard {text!r} must look like K/N (for example 0/3)")
+    index, count = int(match.group(1)), int(match.group(2))
+    if not 1 <= count <= R2_SHARD_MAX or not 0 <= index < count:
+        fail(f"--shard {text!r}: need 0 <= K < N <= {R2_SHARD_MAX}")
+    return index, count
+
+
+def attach_r2_flex(lane: dict, lane_name: str,
+                   args: argparse.Namespace) -> tuple[dict, str]:
+    """Validate the RG-265 flags and attach them to a private lane copy.
+
+    Returns the lane and the name it runs under: `<lane>.shard<K>of<N>` for a
+    shard, so its in-flight record, container name/labels, history and log
+    are its own and N instances of one lane can run at once."""
+    if lane.get("kind") != "assay":
+        fail(f"--shard, --merge-shards, --carry-over, --merge-state, "
+             f"--only-candidates and --exclude-candidates are assay-only; "
+             f"lane {lane_name!r} has kind {lane.get('kind')!r}")
+    flex: dict = {}
+    if args.shard is not None:
+        flex["shard"] = list(_parse_shard_spec(args.shard))
+    if args.merge_shards is not None:
+        if args.shard is not None:
+            fail("--merge-shards is the whole-lane run after the shards; it "
+                 "cannot be combined with --shard")
+        if not re.fullmatch(r"[1-9][0-9]*", args.merge_shards) \
+                or int(args.merge_shards) > R2_SHARD_MAX:
+            fail(f"--merge-shards must be 1..{R2_SHARD_MAX} "
+                 f"(got {args.merge_shards!r})")
+        flex["merge_shards"] = int(args.merge_shards)
+    if bool(args.carry_over) != (args.carry_over_reason is not None):
+        fail("--carry-over and --carry-over-reason are required together")
+    if args.carry_over_reason is not None:
+        if not args.carry_over_reason.strip() or "\0" in args.carry_over_reason:
+            fail("--carry-over-reason must be non-empty text")
+        flex["carry_over_reason"] = args.carry_over_reason
+    for key, values in (("carry_over", args.carry_over),
+                        ("merge_state", args.merge_state)):
+        if values:
+            flex[key] = [os.path.abspath(os.path.expanduser(v)) for v in values]
+    for key, value in (("only_candidates", args.only_candidates),
+                       ("exclude_candidates", args.exclude_candidates)):
+        if value is not None:
+            path = os.path.abspath(os.path.expanduser(value))
+            if not os.path.isfile(path):
+                fail(f"--{key.replace('_', '-')} {value!r} is not a file")
+            flex[key] = path
+    lane = copy.deepcopy(lane)
+    # Review B3: every shard artifact is keyed by the Run-Gate lane too, so
+    # two Run-Gate lanes sharing one Assay lane never share a shard's store,
+    # verdict, progress or closeout.
+    flex["lane"] = lane_name
+    lane["_r2_flex"] = flex
+    run_name = lane_name
+    if "shard" in flex:
+        index, count = flex["shard"]
+        suffix = f".shard{index}of{count}"
+        run_name = f"{lane_name}{suffix}"
+        lane["_artifact_lane"] = f"{lane['assay_lane']}.{lane_name}{suffix}"
+        flex["base_lane"] = lane_name
+    return lane, run_name
+
+
+def validate_r2_flex_paths(flex: dict, repo: Path, worktree: Path) -> None:
+    """Every path handed to the judge must be visible in the lane
+    environment: run-gate mounts the checkout (and its `.run-gate` state
+    root), so a source outside `repo`/`worktree` is refused here rather than
+    as a confusing in-container `not an existing directory`."""
+    roots = [repo.resolve(), worktree.resolve()]
+    for key in ("carry_over", "merge_state", "only_candidates",
+                "exclude_candidates"):
+        values = flex.get(key)
+        if values is None:
+            continue
+        for value in values if isinstance(values, list) else [values]:
+            resolved = Path(value).resolve()
+            if not any(resolved == root or resolved.is_relative_to(root)
+                       for root in roots):
+                fail(f"--{key.replace('_', '-')} {value!r} is outside the "
+                     f"checkout {repo} and the judged worktree {worktree}; "
+                     "the lane environment cannot see it -- copy it under "
+                     "<checkout>/.run-gate/ (git-ignored) first")
+
+
+def r2_flex_record(flex: dict) -> dict:
+    """The history/inflight view of the RG-265 request (paths as given)."""
+    return {key: value for key, value in flex.items()
+            if key != "base_lane"} | (
+        {"base_lane": flex["base_lane"]} if "base_lane" in flex else {})
+
+
+def assay_shard_state_dir(state_root: Path, main_state_dir: Path,
+                          run_gate_lane: str, assay_lane: str,
+                          index: int, count: int) -> Path:
+    """RG-265: a shard's own Assay store (Assay locks a store per run, so N
+    concurrent shards need N stores). Sibling namespace of the main store,
+    keyed by the Run-Gate lane AND the Assay lane (review B3):
+    `<root>/assay-shards[-external]/<project>/<lane>/<assay_lane>/<K>of<N>`."""
+    parts = main_state_dir.relative_to(state_root).parts
+    namespace = "assay-shards" + parts[0][len("assay-state"):]
+    return state_root.joinpath(namespace, *parts[1:], run_gate_lane,
+                               assay_lane, f"{index}of{count}")
+
+
+def merge_shard_store_dirs(lane: dict, repo: Path, project_dir: Path,
+                           state_root: str | Path | None = None) -> list[Path]:
+    """Review B1: the N shard stores a `--merge-shards N` run merges."""
+    flex = lane.get("_r2_flex") or {}
+    count = flex.get("merge_shards")
+    if not count:
+        return []
+    main = assay_state_dir(repo, project_dir, state_root)
+    root = Path(state_root) if state_root is not None else repo / ".run-gate"
+    return [assay_shard_state_dir(root, main, flex["lane"], lane["assay_lane"],
+                                  index, count) for index in range(count)]
+
+
+def refuse_missing_merge_shard_stores(lane: dict, repo: Path,
+                                      project_dir: Path, env: dict) -> None:
+    """Review B1: `--merge-shards N` refuses, before admission or any lane
+    start, when a shard store is absent -- a lost, mistyped or not yet
+    copied shard is never fabricated as an empty store and executed. Only a
+    host-visible default state root can be checked here; a container
+    `state_root` is checked by the lane script before Assay runs, and Assay
+    itself validates every store strictly (`--merge-shard-store`)."""
+    if (env or {}).get("state_root") is not None:
+        return
+    missing = [path for path in merge_shard_store_dirs(lane, repo, project_dir)
+               if not path.is_dir()]
+    if missing:
+        count = lane["_r2_flex"]["merge_shards"]
+        fail(f"--merge-shards {count}: shard store(s) missing: "
+             + ", ".join(str(path) for path in missing)
+             + f"; run `run-gate {lane['_r2_flex']['lane']} --shard K/{count}` "
+             "for each (or copy the remote host's store there) first")
+
+
+def lane_assay_state_dir(lane: dict, repo: Path, project_dir: Path,
+                         state_root: str | Path | None = None) -> Path:
+    """The Assay store THIS lane instance runs with: the project's main
+    store, or a shard's own store (RG-265)."""
+    main = assay_state_dir(repo, project_dir, state_root)
+    shard = (lane.get("_r2_flex") or {}).get("shard")
+    if not shard:
+        return main
+    root = Path(state_root) if state_root is not None else repo / ".run-gate"
+    return assay_shard_state_dir(root, main, lane["_r2_flex"]["lane"],
+                                 lane["assay_lane"], *shard)
+
+
+def r2_flex_argv(lane: dict, state_root: Path, main_state_dir: Path
+                 ) -> tuple[list[str], list[Path]]:
+    """The Assay flags for RG-265 and the shard stores that must already
+    exist (review B1: a merge never creates a missing shard store)."""
+    flex = lane.get("_r2_flex") or {}
+    argv: list[str] = []
+    required: list[Path] = []
+    if "shard" in flex:
+        index, count = flex["shard"]
+        argv += ["--shard", f"{index}/{count}",
+                 # finished records of the main store (same judge) are reused
+                 "--merge-state", str(main_state_dir)]
+    if "merge_shards" in flex:
+        count = flex["merge_shards"]
+        for index in range(count):
+            shard_dir = assay_shard_state_dir(
+                state_root, main_state_dir, flex["lane"], lane["assay_lane"],
+                index, count)
+            required.append(shard_dir)
+            # The STRICT merge: Assay proves each store is exactly shard
+            # K of N of this judge and plan, complete, before anything runs.
+            argv += ["--merge-shard-store", str(shard_dir)]
+    for value in flex.get("merge_state", []):
+        argv += ["--merge-state", value]
+    for value in flex.get("carry_over", []):
+        argv += ["--carry-over", value]
+    if flex.get("carry_over_reason") is not None:
+        argv += ["--carry-over-reason", flex["carry_over_reason"]]
+    for key in ("only_candidates", "exclude_candidates"):
+        if flex.get(key) is not None:
+            argv += [f"--{key.replace('_', '-')}", flex[key]]
+    return argv, required
+
+
 def build_assay_inner(lane: dict, project_dir: Path, repo: Path,
                       request_base: str | None = None,
                       worktree: Path | None = None,
@@ -13396,7 +14116,7 @@ def build_assay_inner(lane: dict, project_dir: Path, repo: Path,
     (never a guessed one) and the script exits with the lane's status, so
     the closeout can add evidence but never change the result. `None`
     builds the script without it (direct callers, dry-run probes)."""
-    verdict = assay_verdict_rel(lane["assay_lane"])
+    verdict = assay_verdict_rel(assay_artifact_lane(lane))
     selected_worktree = worktree or repo
     command = assay_command_text(lane)
     for pin_name, pin in lane.get("pins", {}).items():
@@ -13423,7 +14143,7 @@ def build_assay_inner(lane: dict, project_dir: Path, repo: Path,
              f"rm -f -- {shlex.quote(verdict)}",
              # A closeout is only ever THIS run's: a stale one from an earlier
              # invocation must never be retained as evidence for this one.
-             *([f"rm -f -- {' '.join(shlex.quote(assay_closeout_rel(lane['assay_lane'], s)) for s in ASSAY_CLOSEOUT_SUFFIXES)}"]
+             *([f"rm -f -- {' '.join(shlex.quote(assay_closeout_rel(assay_artifact_lane(lane), s)) for s in ASSAY_CLOSEOUT_SUFFIXES)}"]
                if closeout_commit else []),
              *git_safe_directory_setup(),
              *assay_source_setup(lane, selected_worktree, project_dir)]
@@ -13493,9 +14213,12 @@ def build_assay_inner(lane: dict, project_dir: Path, repo: Path,
     # ignored, never masking a source edit. assay_state_dir() is the single
     # construction (RG-10's own rule, extended) -- print_lane_artifacts()
     # discloses the SAME path this inner script actually creates and uses.
-    state_dir = assay_state_dir(repo, project_dir, state_root)
+    main_state_dir = assay_state_dir(repo, project_dir, state_root)
+    state_dir = lane_assay_state_dir(lane, repo, project_dir, state_root)
     state_root_path = (Path(state_root) if state_root is not None
                        else repo / ".run-gate")
+    flex_argv, flex_dirs = r2_flex_argv(lane, state_root_path, main_state_dir)
+    flex = lane.get("_r2_flex") or {}
     state_descendants = state_dir.relative_to(state_root_path).parts
     quoted_root = shlex.quote(str(state_root_path))
     unavailable = shlex.quote(
@@ -13507,13 +14230,37 @@ def build_assay_inner(lane: dict, project_dir: Path, repo: Path,
     # Create each descendant directly beneath its already-mounted parent.
     # `mkdir -p <state_dir>` would recreate a missing `<state_root>` in the
     # runner's writable layer if the mount disappeared after preflight.
-    current = state_root_path
-    for component in state_descendants:
-        current = current / component
-        quoted = shlex.quote(str(current))
+    created: set[Path] = set()
+    for target in (state_dir, *((main_state_dir,) if flex else ())):
+        current = state_root_path
+        for component in target.relative_to(state_root_path).parts:
+            current = current / component
+            if current in created:
+                continue
+            created.add(current)
+            quoted = shlex.quote(str(current))
+            parts.append(f"if [ ! -d {quoted} ]; then "
+                         f"mkdir {quoted} 2>/dev/null || [ -d {quoted} ]; fi")
+    for shard_dir in flex_dirs:
+        # Review B1: a merge input must already exist; it is never created.
+        quoted = shlex.quote(str(shard_dir))
+        absent = shlex.quote(
+            f"run-gate: --merge-shards: shard store {shard_dir} is missing; "
+            "run each --shard K/N (or copy the remote store) first")
         parts.append(f"if [ ! -d {quoted} ]; then "
-                     f"mkdir {quoted} 2>/dev/null || [ -d {quoted} ]; fi")
-    progress = assay_progress_rel(lane["assay_lane"])
+                     f"printf '%s\\n' {absent} >&2; exit 2; fi")
+    if flex:
+        # RG-265: a judge without the flags refuses by name, before the lane.
+        missing = shlex.quote(
+            f"run-gate: lane '{lane['assay_lane']}': this judge does not "
+            f"support {R2_FLEX_ASSAY_FLAG} (assay >= 12.2.0, B529-B531); "
+            "drop --shard/--merge-shards/--carry-over/--merge-state/"
+            "--only-candidates/--exclude-candidates or upgrade the judge")
+        parts.append(
+            f"{{ __rg_flex_h=$({command} run --help 2>&1) || true; "
+            f'case "$__rg_flex_h" in *{R2_FLEX_ASSAY_FLAG}*) : ;; '
+            f"*) printf '%s\\n' {missing} >&2; exit 2 ;; esac; }}")
+    progress = assay_progress_rel(assay_artifact_lane(lane))
     run_argv = ["run", lane["assay_lane"], "--file", "assay.toml",
                 "--verdict-json", verdict, "--resume", "--progress",
                 progress, "--progress-heartbeat",
@@ -13534,6 +14281,7 @@ def build_assay_inner(lane: dict, project_dir: Path, repo: Path,
         run_argv += ["--rejudge", ",".join(rejudge)]
     if selective.get("rejudge_outcome"):
         run_argv += ["--rejudge-outcome", selective["rejudge_outcome"]]
+    run_argv += flex_argv
     # RG-85: the test command needs a real, writable path inside the selected
     # checkout mount. A literal such as `/worktree/.run-gate` is not a
     # namespace fact: tester-unified runs at the mounted checkout's actual
@@ -13614,7 +14362,7 @@ def assay_closeout_group(lane: dict, run_text: str, command: str,
     * analysis stderr goes to the `.err` file, never the lane log, so a judge
       without `analyze campaign` cannot dirty every R0 lane's output."""
     lane_name = lane["assay_lane"]
-    rel = {s: shlex.quote(assay_closeout_rel(lane_name, s))
+    rel = {s: shlex.quote(assay_closeout_rel(assay_artifact_lane(lane), s))
            for s in ASSAY_CLOSEOUT_SUFFIXES}
     q = shlex.quote
     # RG-139: forward the lane's declared coverage artifact so the analyzer can
@@ -14796,7 +15544,7 @@ def make_progress_watch(lane: dict, lane_name: str, project_dir: Path,
         # Only progress is needed here -- no `repo` to construct verdict/
         # state_dir through assay_artifact_paths for a value this function
         # would discard anyway.
-        progress = str(project_dir / assay_progress_rel(lane["assay_lane"]))
+        progress = str(project_dir / assay_progress_rel(assay_artifact_lane(lane)))
     else:
         progress = None
     if progress is None:
@@ -14857,7 +15605,11 @@ def consume_profiler_watch(stream: ProfilerWatch, profiler: dict,
         reason = decision.get("reason") or "daemon watch verdict"
         if verdict == "killed":
             stalled = reason
-        elif verdict == "reported" and not profiler.get("_watch_reported"):
+        elif (
+            verdict == "reported"
+            and decision.get("state") != "unknown"
+            and not profiler.get("_watch_reported")
+        ):
             profiler["_watch_reported"] = True
             print(f"run-gate: WARNING profiling: daemon watch reported "
                   f"lane {lane_name!r} stalled: {reason}",
@@ -15273,9 +16025,14 @@ def promote_follower(docker: str, name: str, lane_name: str,
     # here either (its samples died with the owner's process).
     if run_record is not None:
         session = pending.get("profile_session")
-        socket_path = (pending.get("profile_socket_path")
-                       or PROFILE_SOCKET_PATH_DEFAULT)
-        if session:
+        socket_path, endpoint_problem = recorded_profile_endpoint(pending)
+        if session and socket_path is None:
+            run_record["resources"] = None
+            run_record["profile_error"] = f"promoted: {endpoint_problem}"
+            run_record["profile_ref"] = None
+            print(f"run-gate: WARNING profiling: {endpoint_problem} — no "
+                  f"profile recorded", file=sys.stderr, flush=True)
+        elif session:
             stop_doc, reason = ProfilerClient(socket_path).stop(session)
             if stop_doc is not None:
                 run_record["resources"] = stop_doc["summary"]
@@ -15628,9 +16385,13 @@ def resolve_inflight(docker: str, lane: dict, lane_name: str,
         # or the original run degraded to basic) gets a named `profile_error`
         # instead of a fabricated resume.
         session = pending.get("profile_session")
-        if session:
-            socket_path = (pending.get("profile_socket_path")
-                           or PROFILE_SOCKET_PATH_DEFAULT)
+        socket_path, endpoint_problem = recorded_profile_endpoint(pending)
+        if session and socket_path is None:
+            profiler_state = {"mode": None, "client": None, "socket_path": None,
+                              "session": None, "session_line": None,
+                              "warning": f"re-attach: {endpoint_problem}",
+                              "sampler": None, "profiler_status": None}
+        elif session:
             profiler_state = {"mode": "daemon",
                               "client": ProfilerClient(socket_path),
                               "socket_path": socket_path, "session": session,
@@ -15685,6 +16446,110 @@ def resolve_inflight(docker: str, lane: dict, lane_name: str,
                                                      recorded=pending))
 
 
+# RG-242: lane container identity. The name is self-explaining
+# (`<repo>-run-gate-<project>-<lane>-<sha8>-<yymmdd-HHMM>-<ns9>`) and every
+# fact in it is ALSO a docker label with the full, unsanitised value, so tools
+# filter by label (`docker ps --filter label=run-gate.lane=<lane>`) rather than
+# parse the name. Pre-RG-242 containers were named
+# `run-gate-<repo>-<lane>-<pid>-<epoch>` and carry no `run-gate.*` labels;
+# LANE_CONTAINER_NAME_RE matches both generations for the transition.
+LANE_LABEL_PREFIX = "run-gate."
+LANE_NAME_SCHEMA = "2"
+LANE_NAME_REPO_MAX, LANE_NAME_PROJECT_MAX, LANE_NAME_LANE_MAX = 24, 24, 32
+# repo + "-run-gate-" + project + "-" + lane + "-" + sha8 + "-" + yymmdd-HHMM
+# + "-" + ns9: the worst case, by construction (not by a post-hoc cut).
+LANE_NAME_MAX_LEN = (LANE_NAME_REPO_MAX + 10 + LANE_NAME_PROJECT_MAX + 1
+                     + LANE_NAME_LANE_MAX + 1 + 8 + 1 + 11 + 1 + 9)
+_LANE_NAME_ALLOWED = re.compile(r"[^A-Za-z0-9_.-]+")
+_LANE_NAME_LEGACY_RE = r"run-gate-[A-Za-z0-9][A-Za-z0-9_.-]*"
+_LANE_NAME_NEW_RE = (r"[A-Za-z0-9][A-Za-z0-9_.-]*-run-gate-[A-Za-z0-9_.-]+-"
+                     r"[0-9a-f]{8}-[0-9]{6}-[0-9]{4}-[0-9]{9}")
+LANE_CONTAINER_NAME_RE = re.compile(
+    rf"(?:{_LANE_NAME_NEW_RE}|{_LANE_NAME_LEGACY_RE})")
+_lane_names_issued: set[str] = set()
+
+
+def sanitize_name_part(text: str, limit: int, fallback: str = "x") -> str:
+    """Docker names are `[a-zA-Z0-9][a-zA-Z0-9_.-]*`: collapse every other run
+    of characters to one '-', strip a non-alphanumeric head/tail, truncate."""
+    cleaned = _LANE_NAME_ALLOWED.sub("-", text or "")
+    cleaned = cleaned.lstrip("-_.")[:limit].rstrip("-_.")
+    return cleaned or fallback
+
+
+def lane_repo_name(repo: Path) -> str:
+    """The repository's name. A release/throwaway checkout is often a directory
+    named by commit (`<40-hex>`), which says nothing: then the `origin` URL's
+    last path component names it, else the directory name stands."""
+    name = repo.name
+    if re.fullmatch(r"[0-9a-f]{12,64}", name):
+        try:
+            proc = subprocess.run(
+                ["git", "-C", str(repo), "config", "--get",
+                 "remote.origin.url"], capture_output=True, text=True,
+                env=host_git_environment(), timeout=10)
+            tail = proc.stdout.strip().rstrip("/").rsplit("/", 1)[-1]
+            tail = tail.rsplit(":", 1)[-1].removesuffix(".git")
+            if proc.returncode == 0 and tail:
+                return tail
+        except (OSError, subprocess.SubprocessError):
+            pass
+    return name
+
+
+def lane_container_identity(repo: Path, project_dir: Path, lane_name: str,
+                            commit: str | None, *, now_ns: int | None = None
+                            ) -> dict:
+    """The container name and its label set for one detached lane run.
+
+    Name: `<repo>-run-gate-<project>-<lane>-<sha8>-<yymmdd-HHMM>-<ns9>` (UTC;
+    `<ns9>` is the nanosecond-of-second, `date +%N`). Uniqueness: the stamp
+    carries nanoseconds; within one process a used name is never issued twice
+    (the nanosecond field is advanced past it); across processes a collision
+    needs the same repo, project, lane, commit AND nanosecond, and docker
+    itself refuses a duplicate `--name`, so the loser fails loudly instead of
+    adopting a stranger's container. The stored in-flight record, not the
+    name, is what re-attach trusts. Length is bounded by LANE_NAME_MAX_LEN
+    (each part is truncated; labels keep the full values).
+    """
+    ns_total = time.time_ns() if now_ns is None else now_ns
+    repo_part = lane_repo_name(repo)
+    project_part = project_dir.name if project_dir.name else repo_part
+    sha8 = commit[:8] if commit and re.fullmatch(r"[0-9a-f]{8,}", commit) \
+        else "00000000"  # no resolvable HEAD (an all-zero id is never real)
+    repo_s = sanitize_name_part(repo_part, LANE_NAME_REPO_MAX)
+    project_s = sanitize_name_part(project_part, LANE_NAME_PROJECT_MAX)
+    lane_s = sanitize_name_part(lane_name, LANE_NAME_LANE_MAX)
+    while True:
+        seconds, ns = divmod(ns_total, 1_000_000_000)
+        stamp = time.strftime("%y%m%d-%H%M", time.gmtime(seconds))
+        name = (f"{repo_s}-run-gate-{project_s}-{lane_s}-{sha8}-{stamp}-"
+                f"{ns:09d}")
+        if name not in _lane_names_issued:
+            break
+        ns_total += 1
+    _lane_names_issued.add(name)
+    labels = {
+        "repo": repo_part, "project": project_part, "lane": lane_name,
+        "commit": commit or "", "name-schema": LANE_NAME_SCHEMA,
+        "started": time.strftime("%Y-%m-%dT%H:%M:%SZ",
+                                 time.gmtime(ns_total // 1_000_000_000)),
+    }
+    for env_name, key in (("RUN_GATE_JOB", "job"),
+                          ("RUN_GATE_CAMPAIGN", "campaign")):
+        value = os.environ.get(env_name, "").strip()
+        if value:
+            labels[key] = value
+    return {"name": name,
+            "labels": {f"{LANE_LABEL_PREFIX}{k}": v
+                       for k, v in labels.items()}}
+
+
+def is_lane_container_name(name: str) -> bool:
+    """True for a lane container name of either generation."""
+    return LANE_CONTAINER_NAME_RE.fullmatch(name) is not None
+
+
 def run_container_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path,
                        worktree: Path, env: dict, env_source: str,
                        slice_name: str, slice_src: str,
@@ -15732,10 +16597,7 @@ def run_container_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
         preload_flags, preload_file = relaxed_io_sync_mount_flags(
             docker, env["image"], repo)
     if not dry_run and lane.get("resource_observer") is not None:
-        resource_observer_version_preflight(
-            (profile_plan or {}).get("socket_path",
-                                     PROFILE_SOCKET_PATH_DEFAULT),
-        )
+        resource_observer_version_preflight(control_socket_from_env())
     # RG-NARROW: only the judged worktree + the git metadata it needs (dual,
     # RG-3), never the whole repo; the same set also reaches doctor and
     # Assay-state probes through build_env_probe_argv().
@@ -15756,13 +16618,20 @@ def run_container_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
         else build_command_inner(lane, worktree, request_base)
     if env.get("user"):
         inner = passwd_entry_guard() + " && " + inner
-    name = f"run-gate-{repo.name}-{lane_name}-{os.getpid()}-{int(time.time())}"
+    identity = lane_container_identity(repo, project_dir, lane_name,
+                                       head_commit(worktree))
+    name = identity["name"]
     argv = [docker, "run", "-d", "--name", name, "--init",
             "--cgroup-parent", slice_name,
-            "-e", f"{CGROUP_ENV_VAR}={slice_name}",
-            *mounts]
+            "-e", f"{CGROUP_ENV_VAR}={slice_name}"]
+    network, network_source = resolve_network_setting(lane, env)
+    if network == "none":
+        argv += ["--network", "none"]
+    argv += mounts
     if admission_group:
         argv += ["--label", f"ciu.reservation.group={admission_group}"]
+    for label_key, label_value in identity["labels"].items():
+        argv += ["--label", f"{label_key}={label_value}"]
     if env.get("user"):
         # Additive, optional (default unset — every OTHER environment,
         # tester-unified included, is unaffected): the 'host' default's own
@@ -15812,9 +16681,13 @@ def run_container_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
     argv += [env["image"], "bash", "-c", inner]
     print(f"run-gate: {installed_version()} | lane {lane_name} | env {env_source} | "
           f"slice {slice_name} ({slice_src})", flush=True)
+    print(f"run-gate: effective network: {network} (source: {network_source})",
+          flush=True)
     selection = (run_record.get("image_selection") if run_record is not None
                  else image_selection_record(env, lane_environment_name(lane), env_source))
     disclose_image_selection(selection)
+    if "shard" in (lane.get("_r2_flex") or {}) and not dry_run:
+        refuse_unpulled_shard_image(docker, env["image"])
     log_forwarded_env(env, "ephemeral")  # names only, never values (RG-19)
     log_resource_forwarded_env(resource_env)
     print_lane_bounds(lane)
@@ -15935,8 +16808,6 @@ def run_container_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
                       if run_record is not None else None),
         "admission_deadline": (run_record.get("admission_deadline")
                                 if run_record is not None else None),
-        "profile_socket_path": (profile_plan.get("socket_path")
-                                if profiling else None),
         "watch": None,
         "placement": None,
     }
@@ -16004,6 +16875,8 @@ def run_container_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
             # adds the session id now that `start` succeeded (contract Sec
             # 4.1's "and, after start, profile_session").
             inflight_payload["profile_session"] = profiler_state["session"]
+            inflight_payload["profile_control_socket"] = (
+                profiler_state.get("socket_path"))
             if profiler_state.get("placement") is not None:
                 inflight_payload["placement"] = profiler_state["placement"]
                 if run_record is not None:
@@ -16019,8 +16892,32 @@ def run_container_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
                                                      project_dir))
 
 
+def container_mode_alternatives(*tables: dict, exclude: str = "") -> list[str]:
+    """Names of declared `mode = "ephemeral"` environments (RG-165a).
+
+    An exec lane that cannot find its persistent runner can often be pointed
+    at one of these instead (a throwaway container needs no ciu stack)."""
+    names: set[str] = set()
+    for table in tables:
+        for name, decl in (table or {}).get("environments", {}).items():
+            if (isinstance(decl, dict) and decl.get("mode") == "ephemeral"
+                    and name != exclude):
+                names.add(name)
+    return sorted(names)
+
+
+def container_mode_hint(alternatives: list[str] | None) -> str:
+    if not alternatives:
+        return ""
+    return (" — or run the lane in a container-mode environment that needs "
+            "no ciu stack: declared mode = \"ephemeral\" environment(s) "
+            + ", ".join(repr(name) for name in alternatives))
+
+
 def resolve_container_name(env_name: str, env: dict, repo: Path,
-                           worktree: Path, env_source: str) -> tuple[str, str, str]:
+                           worktree: Path, env_source: str,
+                           alternatives: list[str] | None = None
+                           ) -> tuple[str, str, str]:
     """Resolve the persistent container name for an exec-mode environment.
 
     Returns (name, human-readable source, START REMEDY). The remedy names the
@@ -16044,9 +16941,13 @@ def resolve_container_name(env_name: str, env: dict, repo: Path,
     if not worktree_toml.is_file():
         fail(f"exec-mode environment '{env_name}' needs a declared "
              f"container_name or this worktree's rendered {worktree_toml} "
-             f"with [deploy]; start this worktree's own test-runner — run "
+             f"with [deploy]. That file exists only in a ciu-managed "
+             f"worktree (create it with 'ciu worktree create' or "
+             f"'ciu worktree adopt') or in the main checkout; a plain "
+             f"'git worktree add' checkout cannot run exec lanes. In a "
+             f"ciu-managed worktree start this worktree's own test-runner — run "
              f"'ciu up --dir <test-runner stack> --deploy --healthcheck' "
-             f"from {worktree}")
+             f"from {worktree}" + container_mode_hint(alternatives))
     global_toml = worktree_toml
     try:
         with open(global_toml, "rb") as fh:
@@ -16072,7 +16973,8 @@ def resolve_container_name(env_name: str, env: dict, repo: Path,
             ciu_remedy
     fail(f"cannot derive container name from {global_toml}: need "
          f"[deploy] project_name+environment_tag OR network_name ending '-network'; "
-         f"or declare container_name on the environment")
+         f"or declare container_name on the environment"
+         + container_mode_hint(alternatives))
 
 
 def run_exec_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path,
@@ -16136,7 +17038,12 @@ def run_exec_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path,
     argv += env_flags_by_name(
         {key: os.environ[key] for key in env.get("forward_env", [])
          if os.environ.get(key)}, docker_env_values)
-    resource_env = {**resource_forwarded_env(resource_settings or {}, "exec"),
+    skipped_resource_env: list[str] = []
+    resource_env = {**resource_forwarded_env(
+                        resource_settings or {}, "exec",
+                        exec_mounts=lambda: container_mount_destinations(
+                            docker, name),
+                        not_forwarded=skipped_resource_env),
                     **lane_workers_env(lane)}
     argv += env_flags_by_name(resource_env, docker_env_values)
     # RG-55/contract Sec 4.1: same position, same rule as the ephemeral path.
@@ -16159,7 +17066,7 @@ def run_exec_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path,
           f"slice {slice_name or '(none)'} ({slice_src})",
           flush=True)
     log_forwarded_env(env, "exec")  # names only, never values (RG-19)
-    log_resource_forwarded_env(resource_env)
+    log_resource_forwarded_env(resource_env, skipped_resource_env)
     if lane.get("budget"):
         print(f"run-gate: budget {lane['budget']} (hard limit; clock starts "
               f"after admission and lock waits)", flush=True)
@@ -16206,6 +17113,8 @@ def run_exec_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path,
             profile_preflight = prepare_profile_start(
                 lane, lane_name, project_dir, worktree, docker, profile_plan,
                 "container-shared")
+        except GateInfraError:
+            raise
         except Exception as exc:
             # R-36h: an unexpected optional preflight failure is disclosed by
             # the normal fallback and never prevents the lane from running.
@@ -16326,10 +17235,6 @@ def run_exec_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path,
                     if run_record is not None else None),
         "revision": __revision__,
         "profile_token": profile_plan["token"] if profiling else None,
-        "profile_socket_path": (profiler_state["client"].socket_path
-                                if profiler_state.get("mode") == "daemon"
-                                and profiler_state.get("client") is not None
-                                else None),
         "watch": None,
         "placement": profiler_state.get("placement"),
         # RW-14/RG-35's own pattern, one field over (matches
@@ -16338,6 +17243,9 @@ def run_exec_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path,
         # `start` already answered, so there is no "second write" step).
         "profile_session": (profiler_state["session"]
                            if profiler_state["mode"] == "daemon" else None),
+        "profile_control_socket": (profiler_state.get("socket_path")
+                                   if profiler_state["mode"] == "daemon"
+                                   else None),
     }
     if run_record is not None:
         run_record["_inflight"] = inflight_payload
@@ -16679,6 +17587,8 @@ def run_bare_host_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
             profile_preflight = prepare_profile_start(
                 lane, lane_name, project_dir, worktree, docker, profile_plan,
                 "container-shared")
+        except GateInfraError:
+            raise
         except Exception as exc:
             profile_preflight = {
                 "client": None, "version": None, "host": None,
@@ -16724,6 +17634,11 @@ def run_bare_host_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
             profiler_state = start_bare_host_profiling(
                 lane, lane_name, project_dir, worktree, docker, profile_plan,
                 preflight=profile_preflight)
+        except GateInfraError:
+            # The placement barrier child may already be running: abandon it
+            # before the infrastructure error leaves this frame.
+            abandon_placement_launch(proc, barrier_nonce)
+            raise
         except Exception as exc:
             # B1d (round-1 review precedent, same call-site defense in
             # depth as run_container_lane/run_exec_lane): the whole point
@@ -16731,7 +17646,7 @@ def run_bare_host_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
             # against anything unanticipated reaching the lane's own run.
             msg = f"profiling crashed unexpectedly: {exc}"
             profiler_state = {"mode": "rusage", "client": None,
-                              "socket_path": profile_plan.get("socket_path"),
+                              "socket_path": None,
                               "session": None, "session_line": None,
                               "warning": msg, "sampler": None,
                               "profiler_status": None,
@@ -17354,6 +18269,16 @@ def usage(lanes: dict, inherited: set[str] | None = None) -> str:
         "  --rejudge-outcome B assay R2 only: outcome buckets for --rejudge",
         "  --rejudge-contaminated  assay R2 only: serially rejudge the latest run's",
         "                      contaminated budget_exceeded candidates (RG-144)",
+        "  --shard K/N       assay R2 only (assay >= 12.2.0, RG-265): run shard K",
+        "                    of N as instance <lane>.shardKofN with its own",
+        "                    container, store and verdict",
+        "  --merge-shards N  assay R2 only: STRICT whole-lane merge of the N",
+        "                    shard stores (all must exist and be complete)",
+        "  --carry-over DIR --carry-over-reason TEXT  assay R2 only: reuse",
+        "                    killed/survived records across a judge change",
+        "  --merge-state DIR assay R2 only: copy same-judge records of a store",
+        "  --only-candidates FILE / --exclude-candidates FILE  assay R2 only:",
+        "                    run a candidate subset (claim PARTIAL)",
         "  --dry-run         print the full execution plan (docker argv, mounts,",
         "                    slice, inner command) and exit 0 — every preflight",
         "                    is rehearsed and NO JUDGED lane is started. An",
@@ -17413,10 +18338,16 @@ def usage(lanes: dict, inherited: set[str] | None = None) -> str:
         "              the command's own bound is all there is",
         "",
         "profiling (RG-55/P5) — optional resource telemetry, never judgment:",
-        "  [profile]   enabled, interval, damon, socket_path (default",
-        "              /run/cgprofile/ctl.sock; the only carrier), and bounded",
-        "              admission_wait (default 10m); 'daemon' and 'transport' were",
-        "              removed (RG-156)",
+        "  [profile]   enabled, interval, damon, admission_wait (default 10m);",
+        f"              ${CGPROFILE_CONTROL_SOCKET_ENV_VAR} is required when",
+        "              profiling is enabled or for observer lanes;",
+        f"              ${CGPROFILE_OBSERVER_SOCKET_ENV_VAR} is required only",
+        "              for observer lanes. RUN_GATE_PROFILE=off opts out of",
+        "              profiling but does not remove observer preflight needs.",
+        "              Endpoints come from the host process environment;",
+        "              no path config or fallback is used.",
+        "              'daemon' and 'transport' were removed (RG-156);",
+        "              'socket_path' is removed (WP-E3).",
         "  watch       one daemon reader per session records readings/verdicts;",
         "              killed follows the declared stall path, reported warns once;",
         "              an ended/failed watch retries once, then falls back to the",
@@ -17983,6 +18914,36 @@ def _dispatch(argv: list[str] | None = None, *,
                              "contaminated")
     parser.add_argument("--rejudge-outcome", metavar="BUCKET",
                         help="RG-66: assay R2 only — constrain rejudge outcomes")
+    # RG-265: flexible native-R2 campaigns (assay >= 12.2.0, B529-B531).
+    parser.add_argument("--shard", metavar="K/N", default=None,
+                        help="RG-265: assay R2 only — run shard K of N as its "
+                             "own lane instance (lane name <lane>.shardKofN: "
+                             "own container, in-flight record, verdict, "
+                             "progress and state store); finished records of "
+                             "the lane's main store are merged in, not re-run")
+    parser.add_argument("--merge-shards", metavar="N", default=None,
+                        help="RG-265: assay R2 only — the STRICT whole-lane "
+                             "run over the N shard stores of this lane: each "
+                             "must exist and be complete for this judge and "
+                             "plan (Assay --merge-shard-store)")
+    parser.add_argument("--carry-over", action="append", default=[],
+                        metavar="DIR",
+                        help="RG-265: assay R2 only — reuse killed/survived "
+                             "records of another judge identity from DIR "
+                             "(e.g. the lane's own state store); requires "
+                             "--carry-over-reason; repeatable")
+    parser.add_argument("--carry-over-reason", metavar="TEXT", default=None,
+                        help="RG-265: why the carried-over records are valid")
+    parser.add_argument("--merge-state", action="append", default=[],
+                        metavar="DIR",
+                        help="RG-265: assay R2 only — copy records of this "
+                             "judge from another state store; repeatable")
+    parser.add_argument("--only-candidates", metavar="FILE", default=None,
+                        help="RG-265: assay R2 only — execute only these "
+                             "candidate ids (assay plan --list-pending format)")
+    parser.add_argument("--exclude-candidates", metavar="FILE", default=None,
+                        help="RG-265: assay R2 only — execute all pending "
+                             "candidates except these ids")
     parser.add_argument("--allow-dirty", action="store_true")
     parser.add_argument("--allow-main-checkout", action="store_true",
                         help="RG-NARROW: permit container lanes on the plain "
@@ -18127,6 +19088,13 @@ def _dispatch(argv: list[str] | None = None, *,
                 "status")):
             fail("arguments after -- are supported only by an opted-in "
                  "command lane")
+        r2_flex_requested = r2_flex_flags_given(args)
+        if r2_flex_requested and (args.lane is None or args.lane in (
+                "doctor", "history", "footprint", "validate-pointers",
+                "status")):
+            fail("--shard, --merge-shards, --carry-over, --merge-state, "
+                 "--only-candidates and --exclude-candidates apply only to "
+                 "an assay lane")
         assay_selective = (args.reuse_from is not None or bool(args.rejudge)
                            or args.rejudge_outcome is not None)
         if assay_selective and (args.lane is None or args.lane in (
@@ -18373,6 +19341,13 @@ def _dispatch(argv: list[str] | None = None, *,
                  f"{', '.join(sorted(lanes)) or '(none)'} (config: {cfg_path}"
                  f"{f'; shared: {central_path}' if central_path else ''})")
         lane = lanes[args.lane]
+        if r2_flex_requested:
+            # RG-265: validated and attached BEFORE anything is keyed by the
+            # lane name -- a shard becomes its own lane instance from here on.
+            lane, shard_lane_name = attach_r2_flex(lane, args.lane, args)
+            if shard_lane_name != args.lane:
+                lanes[shard_lane_name] = lane
+                args.lane = shard_lane_name
         if args.rejudge_contaminated:
             if lane.get("kind") != "assay":
                 fail(f"--rejudge-contaminated applies only to an assay R2 "
@@ -18499,6 +19474,9 @@ def _dispatch(argv: list[str] | None = None, *,
                 fail("--rejudge requires a non-empty candidate ID")
             if selected.get("rejudge_outcome") == "":
                 fail("--rejudge-outcome requires a non-empty bucket")
+        if lane.get("_r2_flex"):
+            validate_r2_flex_paths(lane["_r2_flex"], repo, worktree)
+            refuse_missing_merge_shard_stores(lane, repo, eff_proj, env)
         if request_base:
             # R-05: mechanics are visible before execution, live AND dry.
             target = ("--request-base" if lane["kind"] == "assay"
@@ -18541,6 +19519,12 @@ def _dispatch(argv: list[str] | None = None, *,
             if lane_args:
                 record["selective"] = True
                 record["requested_args"] = list(lane_args)
+            if lane.get("_r2_flex"):
+                # RG-265: a shard, a targeted set, a carry-over or a merge does
+                # not certify the whole lane's duration (history), whatever
+                # its verdict says.
+                record["selective"] = True
+                record["r2_flex"] = r2_flex_record(lane["_r2_flex"])
             if assay_selective:
                 record["selective"] = True
                 selected = lane.get("_selective_assay", {})
@@ -18629,6 +19613,7 @@ def _dispatch(argv: list[str] | None = None, *,
         # sub-path that starts no session for the token to identify.
         profile_plan = resolve_profile_settings(lane, cfg, cfg_path, central,
                                                 central_path)
+        preflight_profile_endpoints(lane, profile_plan["enabled"])
         profile_plan["token"] = (generate_profile_token()
                                  if profile_plan["enabled"] else None)
         lock_deadline = (None if args.dry_run else
@@ -18708,8 +19693,12 @@ def _dispatch(argv: list[str] | None = None, *,
                 # after the shared-infra locks above) before the exec ever
                 # starts.
                 container_name, container_name_src, container_start_remedy = \
-                    resolve_container_name(lane_environment_name(lane), env,
-                                           repo, worktree, env_source)
+                    resolve_container_name(
+                        lane_environment_name(lane), env, repo, worktree,
+                        env_source,
+                        alternatives=container_mode_alternatives(
+                            cfg, central,
+                            exclude=lane_environment_name(lane)))
                 exec_lock_fd = acquire_exec_lock(container_name, args.lane,
                                                  args.dry_run, lock_deadline)
                 budget_started_epoch, budget_started_monotonic = admit_now()
@@ -18795,7 +19784,7 @@ def _dispatch(argv: list[str] | None = None, *,
             verdict_path = (Path(recorded_verdict)
                             if isinstance(recorded_verdict, str)
                             else project_dir / assay_verdict_rel(
-                                lane["assay_lane"]))
+                                assay_artifact_lane(lane)))
             try:
                 verdict_doc = json.loads(verdict_path.read_text(encoding="utf-8"))
             except (OSError, UnicodeError, json.JSONDecodeError) as exc:

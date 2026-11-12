@@ -194,11 +194,12 @@ published.
 **Bugs are folded in, not parked.** Bugs found while developing are fixed in the same wave and released
 with it; release only versions without known open defects in the touched code.
 
-**Compute use.** The only reasons to stop adding work are pressure (`some avg10` above 25 for CPU or
-memory) and heavy swapping. Keep every host busy with useful work: the planned ceiling is about one
-single-threaded job more than the core count, because lane work also waits on IO. Never run more parallel
-jobs than the host can serve, and never exceed the per-lane limits in `dev-gates.slice`. Test hosts
-(`r1002`, `v1001`) take the long campaigns; protected hosts are never used.
+**Compute use.** The only reasons to stop adding work are pressure (`some avg10` above 25 for
+memory or IO) and heavy swapping. CPU overcommit is by design, not a refusal signal. Keep every host
+busy with useful work: the planned ceiling is about one single-threaded job more than the core count,
+because lane work also waits on IO. Never run more parallel jobs than the host can serve, and never
+exceed the per-lane limits in `dev-gates.slice`. Test hosts (`r1002`, `v1001`) take the long campaigns;
+protected hosts are never used.
 
 **Rigor evidence.** What a release guarantees is recorded in the repository per release (levels completed,
 tool and config versions, candidate counts, killed and surviving mutants with their waivers) together with a
@@ -344,7 +345,7 @@ slice name:
 - `$CGROUP_PARENT_DEV_GATES` (RG-55 D-19/D-24, 2026-09-12) — the admission
   capacity object for gate/lane containers and placed lane leaves
   `rg-<token>` specifically, a SIBLING of `$CGROUP_PARENT_DEV_BACKGROUND`'s
-  tier rather than a child of it; see `modern-debian-tools-python-debug/
+  tier rather than a child of it; see `mdt-cockpit/
   host-setup/README.md` "dev-gates: why". Gate spawners resolve this
   variable: `run-gate`, cmru's `tester-gate`, assay's gate driver,
   tester-unified, srdm's gate scripts, and the debian-install-v2 VM runner.
@@ -373,7 +374,7 @@ narrowly-scoped live acceptance probe that the registered lane cannot express;
 it is not a substitute for registered gate evidence. Adopted estate-wide
 2026-08-22 (ciu, cmru, assay, nyxloom, topos, pwmcp,
 shared-ramdisk-depot-manager, plesk-mailbox-create,
-modern-debian-tools-python-debug); projects without an executable test
+mdt-cockpit); projects without an executable test
 surface declare no lane by decision, recorded in the adoption commit.
 
 Gates are normally launched by nyxloomd or `cmru tester-gate`, which handle all
@@ -600,3 +601,9 @@ real exit status (2) was read as 0 through a `| head`, which put a wrong
 conclusion into a design document; and two cmru mutation-campaign runs that
 executed **zero mutants** were both announced as "exit code 0" while their logs
 said `MUTATION_EXIT=1`.
+
+## Persist reusable work in the repository
+
+Outside the repo is scratch: anything reusable, cited, or decided lives in the
+repo. See [`scripts/controller/README.md`](scripts/controller/README.md) for
+the controller operating procedure and local configuration boundary.

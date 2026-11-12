@@ -9,14 +9,14 @@ from iobench.testing import GIB, CacheModel, DirScenario, FakeHost, Scenario
 def target_ref(host: FakeHost, path: str = "/dev/vda7") -> TargetRef:
     dev = host.devices[path]
     return TargetRef(dev.kind, path, dev.size, devno=dev.devno, partuuid=dev.partuuid,
-                     fs_uuid=dev.fs_uuid, inode=dev.inode)
+                     fs_uuid=dev.fs_uuid, inode=dev.inode, fs_type="ext4" if dev.kind == "file" else None)
 
 
 def job(rw="randread", *, off=0, size=GIB, bs=4096, qd=32, rt=30, io=None, metric="iops", hist=False,
         name="j", path="/dev/vda7", rate=None, avg=2000):
     return devio.FioJob(name, path, rw, bs, qd, rt, off, size, io, log_avg_ms=avg, metric=metric, hist=hist,
                         rate_iops=rate, prefix=f"/run/iobench/{name}",
-                        exclusive=rw in ("write", "randwrite") and path.startswith("/dev/"))  # a device writer is always exclusive (IOB-BL-06 N-r3-3)
+                        device_guard=rw in ("write", "randwrite") and path.startswith("/dev/"))  # every device writer carries the mounted-write guard
 
 
 def run_job(host: FakeHost, j: devio.FioJob, path: str = "/dev/vda7") -> devio.FioResult:

@@ -16,6 +16,7 @@ from .proposals import DEFAULT_TARGETS
 from .restore import Safety
 
 FIO_FLOOR = (3, 30)
+FIO_DEVICE_WRITE_GUARD = "allow_mounted_write"
 SCRATCH = "/run/iobench"
 FIO_LOG = re.compile(r"[A-Za-z0-9_.-]+_(bw|iops|clat_hist)\.[0-9]+\.log")  # the files fio creates from the prefixes iobench passes (`.N.log` per job, N >= 1)
 TICK_S = 1.0
@@ -44,6 +45,7 @@ class Config:
     work_dir: str | None = None
     profile: str = "standard"
     budget_minutes: float | None = None
+    cache_idle_delay_s: float | None = None
     state_dir: str | None = None
     confirm_quiet_window: bool = False
     protect_cgroup: str | None = None
@@ -68,7 +70,7 @@ class Config:
 def parse_fio_version(text: str) -> tuple[int, int]:
     m = re.search(r"fio-(\d+)\.(\d+)", text)
     if m is None:
-        raise Refusal("fio_version", f"cannot read the fio version from {text.strip()!r}", "install fio >= 3.30")
+        raise Refusal("fio_version", f"cannot read the fio version from {text.strip()!r}", "install fio >= 3.30 for clat_ns percentiles and a build that documents --allow_mounted_write")
     return int(m.group(1)), int(m.group(2))
 
 
@@ -121,7 +123,8 @@ class Runner:
             direct: bool = True, fsync: int | None = None) -> FioJob:
         return FioJob(f"{self.run_id}-{name}", filename or self.target.path, rw, bs, qd, runtime_s, offset, size, io_size,
                       direct=direct, log_avg_ms=log_avg_ms, metric=metric, hist=hist, rate_iops=rate_iops, fsync=fsync,
-                      prefix=f"{self.scratch}/{name}", exclusive=self.target.kind == "device" and (filename is None or filename == self.target.path))
+                      prefix=f"{self.scratch}/{name}",
+                      device_guard=self.target.kind == "device" and (filename is None or filename == self.target.path))
 
     def _tick(self) -> None:
         sig = self.host.signal_pending()
@@ -177,7 +180,7 @@ class Runner:
             raise IntegrityViolation(f"IOB-PLA-08: read {job.name} [{job.offset}, {job.end}) is outside the written extent")
 
     def spawn_all(self, jobs: Sequence[Any]) -> list[Any]:
-        """Start several jobs together; if a later one cannot start, the earlier ones are killed (never an unsupervised fio)."""
+        """Start jobs asynchronously; if a later one cannot start, kill all earlier handles."""
         handles: list[Any] = []
         try:
             for start in jobs:
@@ -210,13 +213,13 @@ class Runner:
         return self.finish(job, handle, started)
 
     def file_target_disk(self, target: str) -> str:
-        """The disk behind a file target's filesystem; a filesystem with no single block device (overlay, multi-device, network)
-        is refused cleanly (IOB-BL-11) instead of failing on a missing ``/sys/dev/block`` entry."""
-        fs = guard.fs_info(self.host, posixpath.dirname(target))
-        if not self.host.exists(f"/sys/dev/block/{fs.devno}"):
+        """Resolve the same single-disk identity that target init checked, including anonymous filesystem device numbers."""
+        disk = guard.backing_disk(self.host, target)
+        if disk is None:
+            fs = guard.fs_info(self.host, posixpath.dirname(target))
             raise Refusal("target_fs_disk_unknown", f"{target} is on a filesystem with no single block device behind it ({fs.fstype} on {fs.source})",
-                          "use a file on a filesystem mounted from one block device (ext4 or xfs on a partition)")
-        return guard.device_chain(self.host, fs.devno).disk_name
+                          "use a file on a filesystem mounted from one visible block device")
+        return disk
 
     # -- S0 -----------------------------------------------------------------------------------------
     def s0(self, *, need_workdir: bool) -> None:
@@ -225,7 +228,8 @@ class Runner:
         guard.require_host_namespaces(self.host)
         version = parse_fio_version(devio.probe(self.host, "fio --version", devio.fio_version_argv()).stdout)
         if version < FIO_FLOOR:
-            raise Refusal("fio_version", f"fio {version[0]}.{version[1]} is older than 3.30 (clat_ns percentiles)", "install fio >= 3.30")
+            raise Refusal("fio_version", f"fio {version[0]}.{version[1]} is older than 3.30 (clat_ns percentiles)",
+                          "install fio >= 3.30 for clat_ns percentiles and a build that documents --allow_mounted_write")
         self.safety.acquire()
         orphans = restore.orphan_fio(self.host)
         if orphans:
@@ -238,7 +242,7 @@ class Runner:
                                                 protect_cgroup=cfg.protect_cgroup, abort_psi=cfg.abort_psi)
         self.target = guard.load_target(self.host, cfg.target)
         if self.target.kind == "device":
-            devio.require_fio_option(self.host, "exclusive_open")
+            devio.require_fio_option(self.host, FIO_DEVICE_WRITE_GUARD, version)
         self.disk_name = self.target.disk_name or self.file_target_disk(cfg.target)
         workdir = None
         if need_workdir:
@@ -247,7 +251,6 @@ class Runner:
             workdir = guard.check_workdir(self.host, cfg.work_dir, planned_volume=GIB, installer=cfg.installer,
                                           confirm_quiet_window=cfg.confirm_quiet_window, target_disk=self.disk_name)
             self.workdir = workdir
-            self.host.makedirs(cfg.work_dir)  # "new or empty": a new one is created here, before the first load job needs it
             self.host.allow_scratch(cfg.work_dir)  # the verified work dir: the only place an unbound fio writer may create a load file
         self.identity = res.s0_identity(self.host, self.target, cfg.work_dir)
         self.safety.begin()
@@ -265,23 +268,33 @@ class Runner:
             return False
         try:
             fn()
-        except S.IntegrityError:
+        except Aborted as exc:
+            self.mark(name, str(exc))
+            raise
+        except S.IntegrityError as exc:
+            self.mark(name, f"failed: {exc}")
             raise
         except StageSkipped as exc:
             if required:
+                self.mark(name, f"failed: required stage skipped: {exc.why}")
                 raise
             self.skip(name, exc.why)
             return False
         except S.TooFewPoints:
             if required:
+                self.mark(name, "failed: insufficient_points")
                 raise
             self.mark(name, "failed: insufficient_points")
             return False
         except S.SeriesError:
             if required:
+                self.mark(name, "failed: unusable_series")
                 raise
             self.mark(name, "failed: unusable_series")
             return False
+        except (IobenchError, HostError) as exc:
+            self.mark(name, f"failed: {exc}")
+            raise
         self.mark(name, "ok")
         return True
 

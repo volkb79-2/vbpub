@@ -4,21 +4,9 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 ## [Unreleased]
 
-- `[project.version].exclude_paths` (KI-118, rigor C-3): project-relative subtrees or git globs that never count as project changes
-  or generated-note entries; the project's own `rigor/` directory and `RIGOR.md` are always ignored, so record commits never
-  schedule a release. New config error for an exclude that covers an explicit `paths` entry.
-- `[project.release].record_step` (rigor C-1, optional, inert when absent): a declared step that runs after the build and before
-  `push` with protected `CMRU_BUILD_INVENTORY`, `CMRU_GATE_EVIDENCE_DIR`, `CMRU_RECORD_OUT`; it may write only `record.json`
-  (64 KiB) and `release-body.md` (8 KiB); the push step receives `CMRU_RECORD_JSON` / `CMRU_RECORD_BODY`. Failure is a
-  pre-publication failure (tag rolled back, resumable). KI-120 (`cmru rigor`) is superseded by this design.
-- Rigor C-2 (inert without a record step): `wheel-publish`, `tarball-publish` and `oci-image-release` append the record step's
-  `release-body.md` under `## Rigor at publication` and upload `record.json` as `<prefix>-v<V>-rigor.json` plus `.sha256`
-  (read back from the release asset list). `oci-image-release` gains exactly this one asset-and-sidecar exception to "uploads no
-  asset". `release --dry-run` prints the appendix placeholder. New module `cmru/rigor_publish.py`.
-  The body-only path fails closed on GitHub immutable releases (assets cannot change after publication): it refuses before
-  any write when the repository setting is enabled, and before any asset delete when the release reports `immutable`.
-  Draft-first publication (attach, then publish) is not implemented; the remaining delete-then-upload window on a
-  non-immutable repository is documented, not closed.
+### Changed
+
+- Filed KI-145, the CMRU-NATIVE Rust dependency lifecycle for assay Rust work package R-5: crates.io freshness source, cargo lock writer, stable-toolchain/cargo-tool co-update, image-cache/lock tripwire, and advisories. The binding model uses the sibling `tester-unified-rust` image with `cargo fetch --locked`; dependencies are not vendored in Git.
 
 <!-- KI-30 originally refused a tagged release while this body was non-empty. KI-78 now
      folds pending notes into the version section in the disposable release candidate.
@@ -52,6 +40,191 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 <!-- cmru: pending release notes end -->
 
 <!-- cmru: release history -->
+
+## [7.2.5] - 2026-11-09
+<!-- cmru: generated -->
+<!-- cmru: source-end=8cd845b57c29cf85b1e9b69406853f7e7ff0ddb3 -->
+
+### Fixed
+- fix(cmru): close full assay coverage gaps (4a103229d)
+- fix(cmru): resolve checksum opener at call time (KI-144) (b855c61af)
+- fix(cmru): guard pre-scope cleanup and retry sidecars (6a27f3e02)
+- fix(cmru): prepare external versions before tag preflight (d4654148c)
+
+### Documentation
+- docs(cmru): record KI-144 gate regression (c7194061c)
+- docs(cmru): record KI-143 and KI-144 closeout (1c20df608)
+- docs(cmru): close KI-142 and document KI-143 recovery (e976a6545)
+- docs(cmru): bind self-release oracle and refresh backlog refs (e0638a53f)
+- docs(cmru): record KI-138 through KI-140 dispositions (843a4fde5)
+- docs(cmru): correct R2 evidence and forward the release guidance (298e281e9)
+- docs(cmru): file KI-138..KI-141 (s13 survivors, closeout wording, self-release recipe, R2 tracking) (6d102c66d)
+
+### Testing
+- test(cmru): restore origin query refusal regression (da6c3a06b)
+- test(cmru): close cleanup docs gate edge cases (e349d1bf3)
+- test(cmru): close R2 shard s13 survivors (KI-138) (c29fd5cfb)
+
+<!-- cmru: pending release notes begin -->
+### Testing
+- `tests/test_r2_survivors_s13.py` kills the three surviving `python:compare-swap` mutants from R2 shard s13: workspace-record identity comparison, the five-versus-six touched-file summary boundary, and absent-versus-successful abort-result classification (KI-138).
+- Real bare-origin release regressions cover external-version prepare ordering, already-tagged target refusal before build/publish, and the failed-before-scope abandon refusal; reordering prepare after the external tag check makes the release regression fail (KI-142, KI-143).
+- The docs-sync oracle executes the pre-scope cleanup recipe against temporary bare origins, covering a safe candidate, an outside path, a branch mismatch, dirty worktree state, an origin candidate branch or release tag, and an origin query error. The checksum-sidecar tests cover transient retry, backoff, immediate permanent failures, digest validation, and final error preservation (KI-143, KI-144).
+- The 7.2.5 release-gate regression preserves existing `urllib.request.urlopen` monkeypatches by resolving the module attribute when each checksum read runs, and checks that plain `OSError` failures do not retry or sleep (KI-144).
+
+### Documentation
+- `docs/RELEASE-TRANSACTIONS.md`, "Releasing cmru itself", now gives the fresh-wheel recipe for a bootstrap-check self-release: exact merge-head build, non-editable `#sha256=` direct-URL install, explicit 7.2.x `--set-version`, `RUN_GATE_PROFILE=off`, separate `EXIT=` evidence, and supported candidate abandonment after a failure (KI-140).
+- README, SPEC, DESIGN-GUIDE, CONSUMERS, and release-transaction recovery docs explain external-version prepare ordering. CONSUMERS gives a fail-closed local cleanup recipe for a pre-scope candidate that `cmru abandon` cannot classify; when scope exists, the supported `cmru abandon` flow removes the recorded origin candidate branch after rechecking it (KI-142, KI-143).
+- README, SPEC, DESIGN-GUIDE, and CONSUMERS describe the bounded retry policy for GitHub checksum-sidecar reads and the immediate refusal for permanent HTTP and digest errors (KI-144).
+
+### Fixed
+- A real release now runs the external version's prepare step in the candidate before reading `cmru.vars`; the already-tagged target is still refused before build, push, gates, or publish (KI-142).
+- GitHub checksum-sidecar reads now retry transient URL errors, timeouts, HTTP 429, and HTTP 5xx up to three attempts with 2-second and 5-second delays; other 4xx responses and invalid digests fail immediately (KI-144).
+<!-- cmru: pending release notes end -->
+
+## [7.2.4] - 2026-11-08
+<!-- cmru: generated -->
+<!-- cmru: source-end=73218241f0bd64cf4e39d2605589f999f5ecb8e2 -->
+
+### Added
+- feat(topos): publish observe endpoint record (c6b715a28)
+- feat(cgprofile): publish and consume host endpoints (3fafa98a0)
+- feat(augeaswrap): add standalone endpoint publisher (8754cacb0)
+- feat(tester-unified): install Augeas tools for augeaswrap (5e186258b)
+
+### Fixed
+- fix(cmru): classify changelog merges by parent count (45464e1e1)
+- fix(cmru): derive bootstrap Run-Gate version once (62b34d8f5)
+- fix(topos): review fixes for E2 (B1 generator exemption, B2 hash-pinned augeaswrap wheel kept out of the lock, N1-N6) (c255891ac)
+- fix(cmru): omit merge commits from changelog history (0bc1215f0)
+- fix(cmru): bootstrap first-release changelog structure (2fb055abe)
+- fix(cmru): compare tagged changelog sections from their prior tag (KI-131) (8ee8776b6)
+- fix(cmru): refuse already-tagged release targets (KI-130) (84a837fc0)
+- fix(tester-unified): whitelist augeaswrap/pyproject.toml in the root .dockerignore (4fbcf6be0)
+
+### Changed
+- refactor: point the estate at cgprofile (cmru, tester-unified, run-gate, mdt-cockpit, rigor-record, assay, ciu, root files) (246b30136)
+- cmru: align the bootstrap doc levels and the estate-levels test with topos depending on cli-extended (2ce453d39)
+- cmru orchestration image override: behavioural test through load_forge_config, docs/sample/template follow (review findings) (087d6899f)
+- cmru orchestration: tester image selectable per release via CMRU_TESTER_UNIFIED_IMAGE (default tester-unified:local) (417abd3a7)
+
+### Documentation
+- docs(cmru): file KI-133..KI-137 (s4 survivors, s4 budget_exceeded candidate, s12 result, portable shard export/import, SIGPIPE race in the source-binding refusal) (24cff6068)
+- docs(cmru): document release history friction fixes (62cd4f0db)
+- docs(cmru): defer changelog structural lint as KI-132 (8e9c5ab9d)
+
+### Testing
+- test(cmru): cover non-release section headings (cc15b8f0a)
+- test(cmru): close KI-130 and first-release coverage gaps (db916eed8)
+
+<!-- cmru: pending release notes begin -->
+### Fixed
+- `cmru release` refuses an already-tagged target version before prepare, gate planning, or changelog generation, names the existing tag, and directs the operator to advance the project's release coordinate (KI-130).
+- A generated section whose version is already tagged is compared from the nearest preceding project tag, so CMRU's own lines are no longer reported as hand edits (KI-131).
+- Generated history omits merge commits (commits with more than one parent), regardless of subject; the hand-edit comparison identifies historical merge lines by parent count without rewriting old sections.
+
+### Changed
+- A project's first release now receives the canonical `## [Unreleased]` heading and `<!-- cmru: release history -->` marker with its first generated section; duplicate or ambiguous structure still refuses.
+- `docs/BOOTSTRAP-FROM-ZERO.md` derives `RUN_GATE_VERSION` once from a `run-gate-v*` tag with an explicit stable `CHANGES.md` fallback, and every release use names that variable.
+
+### Documentation
+- README, SPEC, DESIGN-GUIDE, CONSUMERS, and the bootstrap procedure now document the release-history structure, merge omission, tagged-target refusal, and tagged-section comparison.
+- The optional read-only structural lint is deferred as KI-132.
+<!-- cmru: pending release notes end -->
+
+## [7.2.3] - 2026-11-07
+<!-- cmru: generated -->
+<!-- cmru: source-end=63d38845b3205141aa619556a94621579b492944 -->
+
+### Fixed
+- fix(tester-unified): wait for wheel identity parser (b3ace5dc1)
+- fix(cmru): close first-release gate findings (0e2b0ad23)
+- fix(cmru): close 7.2.2 R2 shard s1 survivors (ef293876b)
+- fix: retirement review round 1 (run-gate CHANGES names the new default host image; gate-image tests guard both the retired and the successor MDT image) (675449f58)
+- fix(run-gate): exec-mode docs and refusals (RG-165, RG-166); cmru KI-126 triage plan (d2a7ff436)
+
+### Changed
+- chore: retire modern-debian-tools-python-debug; mdt-cockpit is its successor (2015c4e00)
+- Merge branch 'rg-167-168-20261105' (1f9b9f829)
+- Merge main into rg-167-168-20261105 (dfdc75226)
+- Merge main into rg-167-168-20261105 (3399c6dcc)
+
+### Documentation
+- docs: sync bootstrap procedure with Run-Gate 25.2.1 (e82c13aa0)
+
+### Testing
+- test(cmru): close shard s1 review findings (3bd4a0fcd)
+
+## [7.2.2] - 2026-11-05
+<!-- cmru: generated -->
+<!-- cmru: source-end=fc596963b611bad5dc6b7c428fbb00b8a401e7f0 -->
+
+### Added
+- feat(assay): R2 lanes declare jobs_max and run-gate jobs=auto (assay-jobs audit) (fe53428a8)
+- feat(cmru): body handlers publish the rigor record (appendix + <prefix>-v<V>-rigor.json), rigor C-2 (25ec3b93c)
+- feat(cmru): version.exclude_paths + always-ignored rigor/ paths (KI-118, rigor C-3) and optional release.record_step (rigor C-1); KI-120 superseded (5b12d429e)
+- feat(cmru): Docker Hub request economy for versions resolve (KI-121) (5291c7c2e)
+
+### Fixed
+- fix(pwmcp): review fixes: instance deploy/rollback via get.py update --scope user, skew FAIL on major.minor only, platform limit, refuse reinstall of current, unreachable reason; cmru KI-127, PWMCP-36 (17a631297)
+- fix(cmru): hub-economy review fixes (KI-121): merged-candidate early stop, resume reuse limits, dry-run no resume, retry-bound docs (9f4ca48b7)
+- fix(cmru): bootstrap doc level table lists rigor-record at L1; first-release R2 test expects jobs_max=2 (732265ed7)
+- fix(cmru): rigor C-2 fails closed on GitHub immutable releases before any write or asset delete (3aca74e64)
+- fix(cmru): rigor kwargs only passed when a record exists (unchanged call shape) (5107a578e)
+- fix(cmru): rigor C-1/C-3 review of the first gate run (VersionSpec field order, assay targets, test expectation) (cb7769436)
+
+### Changed
+- backlog: renumber cmru KI-127 -> KI-128 (id collision with get-py entry) (725a78596)
+- backlog: cmru KI-127 docker credential store for versions resolve (found in netcup-api-filter@68ea380) (9d3443d4b)
+- merge main; renumber client-version backlog to PWMCP-37/38/39; fold in operator PWMCP-34 (wire protocol docs, gateway rejection bodies, network reach) (570db5368)
+- backlog: cmru KI-126 per-interpreter bundle builder; run-gate RG-165/RG-166 exec-mode docs (c70641b6f)
+- Merge branch 'cmru-hub-economy-20261105' (a985f22b9)
+- Merge branch 'rigor-c2-20261105' (b9a8773e2)
+
+### Documentation
+- docs(cmru): list test-policy in the bootstrap project-order block; name the doc in the failure message (75ba154c0)
+
+### Testing
+- test(cmru): exit-code inventory includes RATE_LIMITED (KI-121) (7a525c61c)
+
+<!-- cmru: pending release notes begin -->
+- `docs/BOOTSTRAP-FROM-ZERO.md`'s `project-order` block lists `test-policy` (L0), registered in `cmru.orchestration.toml`
+  by the flakehunt merge; its absence failed `test_the_bootstrap_doc_order_agrees_with_the_graph` in the 7.2.2 release gate.
+  The test's failure message now names the doc and the `cmru dependencies` LEVELS section to copy, and the guide says
+  that source-only registered projects still belong in the table.
+
+- `docs/BOOTSTRAP-FROM-ZERO.md` names the current Run-Gate release (25.1.1) in its build, retained-wheel and release
+  commands; the 25.0.2 pin had gone stale after the Run-Gate 25.1.1 release and failed
+  `test_the_release_commands_follow_the_declared_graph_and_one_set_of_versions` in the release gate.
+
+- `[project.version].exclude_paths` (KI-118, rigor C-3): project-relative subtrees or git globs that never count as project changes
+  or generated-note entries; the project's own `rigor/` directory and `RIGOR.md` are always ignored, so record commits never
+  schedule a release. New config error for an exclude that covers an explicit `paths` entry.
+- `[project.release].record_step` (rigor C-1, optional, inert when absent): a declared step that runs after the build and before
+  `push` with protected `CMRU_BUILD_INVENTORY`, `CMRU_GATE_EVIDENCE_DIR`, `CMRU_RECORD_OUT`; it may write only `record.json`
+  (64 KiB) and `release-body.md` (8 KiB); the push step receives `CMRU_RECORD_JSON` / `CMRU_RECORD_BODY`. Failure is a
+  pre-publication failure (tag rolled back, resumable). KI-120 (`cmru rigor`) is superseded by this design.
+- Rigor C-2 (inert without a record step): `wheel-publish`, `tarball-publish` and `oci-image-release` append the record step's
+  `release-body.md` under `## Rigor at publication` and upload `record.json` as `<prefix>-v<V>-rigor.json` plus `.sha256`
+  (read back from the release asset list). `oci-image-release` gains exactly this one asset-and-sidecar exception to "uploads no
+  asset". `release --dry-run` prints the appendix placeholder. New module `cmru/rigor_publish.py`.
+  The body-only path fails closed on GitHub immutable releases (assets cannot change after publication): it refuses before
+  any write when the repository setting is enabled, and before any asset delete when the release reports `immutable`.
+  Draft-first publication (attach, then publish) is not implemented; the remaining delete-then-upload window on a
+  non-immutable repository is documented, not closed.
+- `cmru versions resolve|check` (KI-121): a single-source OCI target examines tags newest-first and stops at the first
+  age-eligible one instead of fetching every matching tag's manifests; a registry HTTP 429 is retried when `Retry-After` is
+  short, otherwise exits with the new code 5 (rate limited) naming the `ratelimit-*` headers; `resolve` saves finished targets
+  to a user-cache resume file and a rerun continues from them (not rolling-tag targets or soon-expiring overrides; never from
+  `--dry-run`). The 429 retry bound is per request, not per run, and Docker Hub sends no `Retry-After`. The newest-first stop
+  needs the merged candidate of a version group to be age-eligible. Details in `docs/CONSUMERS.md`.
+
+- `tools/local_baseline_facts.py` + `docs/CONSUMERS.md`: how to start the `mutation` lane outside a release (builds `CMRU_ASSAY_BASELINE_FACTS`
+  from local `cmru-v*` tags; the R1 pin must equal the selected tag).
+- fix(cmru): close the 56 surviving R2 s1 mutants (KI-129), require complete Run-Gate identity evidence, add hand-discriminating regression oracles, and omit the unmeasurable package initializer from first-release Assay targets.
+- test(cmru): read the estate import oracle's sibling consumer from the judged Git commit so shared COW overlays cannot supply stale source bytes.
+- fix(cmru): keep the strict first-release whole-target coverage lane measurable by importing the tool dependency type at runtime.
+<!-- cmru: pending release notes end -->
 
 ## [7.2.1] - 2026-11-04
 <!-- cmru: generated -->
@@ -203,8 +376,6 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 - fix(cmru): stop writing an unnamed temporary copy of failed coverage-canary control output; the complete output remains in stderr and the lane log (KI-110).
 - fix(cmru): `cmru handler wheel-build` honours the wheel-builder's baked build-backend age window and accepts a per-build `CMRU_WHEEL_BUILD_AGE_OVERRIDE_REASON` override that is logged (tester-base TB-08); the bootstrap refuses a tester-unified image tagged `tester-base:local` (TB-11).
 <!-- cmru: pending release notes end -->
-
-<!-- cmru: release history -->
 
 ## [7.1.3] - 2026-11-03
 <!-- cmru: generated -->

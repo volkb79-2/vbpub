@@ -53,7 +53,7 @@ def join_owner(cgroup_key: str | None, entities: dict[EntityKey, Entity]) -> Own
     unit = _leaf_unit(cgroup_key)
     slice_name = _nearest_slice(cgroup_key)
     match = DOCKER_SCOPE_RE.search(cgroup_key)
-    docker_cid = match.group(1) if match else None
+    docker_cid = (match.group(1) or match.group(2)) if match else None
     entity = entities.get(cgroup_key)
     docker_name = entity.docker.name if entity and entity.docker else None
     docker_image = entity.docker.image if entity and entity.docker else None

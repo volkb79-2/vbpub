@@ -796,7 +796,7 @@ check_campaign_wheel_digest \
 
 # The R2 waiver is keyed to an explicit operator decision and the prepared
 # release heading, never the pre-tag wheel version: the provisional lane is
-# valid only for assay 10.0.x, and refuses if release tags cannot be inspected
+# valid only for assay >=10.0.0 and <12.3.0, and refuses if release tags cannot be inspected
 # or an assay release at or above the window's upper bound exists. The full
 # `self-qualification` lane deletes any marker so a postponement can never
 # stand in for an R2 result.
@@ -815,10 +815,16 @@ TRACKING_ID = "B169"
 DECISION = (
     "operator decision 2026-10-27; extended by operator on 2026-10-31 and "
     "2026-11-04 (D1, 12.x; R2 to run later with --jobs on the scratch host): "
-    "R2 mutation waived for the release wave"
+    "R2 mutation waived for the release wave; operator decision 2026-11-08: "
+    "waiver extended for the release carrying the E4 env-only launchers and "
+    "delegated release-gate changes; R2 to run later on the latest release; "
+    "operator decision 2026-11-12: R2 waiver extended to < 12.3.0 for the "
+    "flexible-R2 release 12.2.0, gated by R0, R1 and the R3 canary; assay's own "
+    "R2 moves to the T3 post-release check on that release per the approved "
+    "tier methodology and stays a named known issue until a PASS is recorded"
 )
 # The single source of the window: every message and the marker text derive from it.
-WINDOW = ((10, 0, 0), (12, 1, 0))  # `>= 10.0.0`, `< 12.1.0`
+WINDOW = ((10, 0, 0), (12, 3, 0))  # `>= 10.0.0`, `< 12.3.0`
 WINDOW_TEXT = (
     f"assay >= {'.'.join(map(str, WINDOW[0]))}, < {'.'.join(map(str, WINDOW[1]))}"
 )
@@ -894,7 +900,8 @@ if not WINDOW[0] <= release_version_tuple < WINDOW[1]:
     raise SystemExit(
         f"the R2 postponement B169 is authorized only for {WINDOW_TEXT}; "
         f"prepared changelog release is {prepared_release_version}. "
-        "Run the full self-qualification lane."
+        "Extending this window requires a new operator R2-waiver decision; "
+        "run the full self-qualification lane for R2."
     )
 
 try:
@@ -923,9 +930,10 @@ if newest is None:
 newest_version, newest_tag = newest
 if newest_version >= WINDOW[1]:
     raise SystemExit(
-        f"the R2 postponement {TRACKING_ID} is valid only below assay "
-        f"{'.'.join(map(str, WINDOW[1]))}; tag {newest_tag} exists. "
-        "Run the full self-qualification lane."
+        f"the R2 postponement {TRACKING_ID} is authorized only for {WINDOW_TEXT}; "
+        f"tag {newest_tag} exists. "
+        "Extending this window requires a new operator R2-waiver decision; "
+        "run the full self-qualification lane for R2."
     )
 document = {
     "schema_version": 1,

@@ -27,7 +27,8 @@ def test_daemon_serve_reports_started_paddr_before_clean_shutdown(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     """A lifecycle that starts a session is reported healthy before serving."""
-    import topos.cli as cli
+    import topos.daemon.run as cli
+    from conftest import run_toposd_self_bind
     import topos.daemon.paddr_lifecycle as lifecycle_module
 
     config = ToposConfig(cgroup_root=tmp_path / "cgroup", damon=DamonConfig(paddr_enabled=True))
@@ -78,7 +79,7 @@ def test_daemon_serve_reports_started_paddr_before_clean_shutdown(
     monkeypatch.setattr(cli, "serve_versioned_unix_socket", lambda *_args, **_kwargs: Server())
     monkeypatch.setattr(lifecycle_module, "DaemonPaddrLifecycle", Lifecycle)
 
-    assert cli._main_daemon(["serve", "--socket", str(tmp_path / "topos.sock")]) == 0
+    assert run_toposd_self_bind(tmp_path / "topos.sock") == 0
     assert "Daemon-owned paddr session started" in capsys.readouterr().out
 
 

@@ -70,7 +70,7 @@ import shutil
 import subprocess
 import tempfile
 from pathlib import Path
-from typing import Any, Callable, Iterator, Optional
+from typing import Any, Callable, Iterator, Mapping, Optional
 
 import pytest
 
@@ -88,6 +88,32 @@ _REAL_SUBPROCESS_RUN = subprocess.run
 pytest_plugins = ["cli_extended.pytest_plugin"]
 
 CIU_TEST_SUITE_ENV = "CIU_TEST_SUITE"
+_CIU_PROJECT_ROOT = Path(__file__).resolve().parents[1]
+
+
+def python_child_env(environ: Mapping[str, str] | None = None) -> dict[str, str]:
+    """Build a source-mode child env whose import paths survive a foreign cwd.
+
+    Run-Gate's lane paths are relative to ``ciu/`` for the test runner. A child
+    may run with a temporary checkout as cwd, so resolve inherited relative
+    entries against this test file's project root before passing them on.
+    """
+    env = dict(os.environ if environ is None else environ)
+    source_paths = (
+        _CIU_PROJECT_ROOT / "src",
+        _CIU_PROJECT_ROOT.parent / "cmru" / "src",
+        _CIU_PROJECT_ROOT.parent / "libraries" / "worktree" / "src",
+    )
+    python_paths = [str(path.resolve()) for path in source_paths]
+    for entry in env.get("PYTHONPATH", "").split(os.pathsep):
+        if not entry:
+            continue
+        path = Path(entry)
+        if not path.is_absolute():
+            path = _CIU_PROJECT_ROOT / path
+        python_paths.append(str(path.resolve()))
+    env["PYTHONPATH"] = os.pathsep.join(dict.fromkeys(python_paths))
+    return env
 
 # Mechanism 1, at import time: collection-time module bodies and any `ciu`
 # subprocess a test spawns both read os.environ, and neither sees a fixture.
@@ -121,8 +147,8 @@ def _ensure_ciu_distribution_metadata() -> None:
         "Metadata-Version: 2.1\nName: ciu\nVersion: 0.0.0+tests\n", encoding="utf-8"
     )
     sys.path.insert(0, str(root))
-    existing = os.environ.get("PYTHONPATH")
-    os.environ["PYTHONPATH"] = str(root) + (os.pathsep + existing if existing else "")
+    pythonpath = python_child_env()["PYTHONPATH"]
+    os.environ["PYTHONPATH"] = os.pathsep.join((str(root), pythonpath))
     atexit.register(shutil.rmtree, root, True)
 
 
@@ -295,6 +321,28 @@ def pytest_configure(config: pytest.Config) -> None:
         f"{_NO_AUTO_CIU_ROOT_MARK}: this test intentionally exercises a "
         "temporary tree without the default CIU root marker.",
     )
+    config.addinivalue_line(
+        "markers",
+        "os_integration: requires the registered tester-unified lane and its isolated Docker daemon.",
+    )
+    config.addinivalue_line(
+        "markers",
+        "real_clean_guard: keep the real engine.guard_clean_stack (CIU-141); every other "
+        "test gets a no-op so `ciu clean` unit tests never query a real Docker daemon.",
+    )
+
+
+@pytest.fixture(autouse=True)
+def _no_real_docker_in_clean_one_shot_guard(
+    request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`action_clean` evaluates the one-shot guard before removing anything; its
+    `docker ps` query must not reach a real daemon from unit tests."""
+    if request.node.get_closest_marker("real_clean_guard") is not None:
+        return
+    from ciu import engine
+
+    monkeypatch.setattr(engine, "guard_clean_stack", lambda *_a, **_k: None)
 
 
 @pytest.fixture(autouse=True)
@@ -339,11 +387,42 @@ def shared_test_repo_read_lock() -> Iterator[None]:
     yield from _hold_test_repo_lock(fcntl.LOCK_SH)
 
 
+@pytest.hookimpl(hookwrapper=True)
+def pytest_runtest_protocol(item: pytest.Item, nextitem: pytest.Item | None):
+    """CIU-192: no test may leak a process-environment change to the next one.
+
+    ``bootstrap_workspace_env`` (and a few tests that assign ``os.environ[...]``
+    directly) write identity/machine facts into the process environment on
+    purpose, so any test that drives a verb used to leave them behind for
+    whichever test the xdist worker ran next. ``--dist loadfile`` hands files to
+    workers nondeterministically, so a later test saw an environment that
+    depended on scheduling (a leaked empty ``USER_UID`` made a real
+    ``ciu env generate`` write an empty ``container_uid``, which then failed the
+    release gate with "Missing required workspace environment variables:
+    CONTAINER_UID" in only some runs). Wrapping the WHOLE protocol (fixture
+    setup and teardown included) snapshots before the first fixture and restores
+    after the last, so it composes with every ``monkeypatch`` undo.
+    """
+    before = dict(os.environ)
+    try:
+        yield
+    finally:
+        if dict(os.environ) != before:
+            os.environ.clear()
+            os.environ.update(before)
+
+
 @pytest.fixture(autouse=True)
 def _scrub_ambient_identity_env(monkeypatch: pytest.MonkeyPatch) -> None:
     """Clear ambient identity/policy env vars before each test body runs."""
     for name in _AMBIENT_ENV_VARS:
         monkeypatch.delenv(name, raising=False)
+
+
+@pytest.fixture(autouse=True)
+def _absolute_pythonpath_for_child_processes(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep CIU source imports stable when a product child changes its cwd."""
+    monkeypatch.setenv("PYTHONPATH", python_child_env()["PYTHONPATH"])
 
 
 @pytest.fixture(autouse=True)
@@ -354,6 +433,27 @@ def _default_docker_gid(monkeypatch: pytest.MonkeyPatch) -> None:
     continue to exercise each fallback explicitly.
     """
     monkeypatch.setenv("DOCKER_GID", "999")
+
+
+@pytest.fixture(autouse=True)
+def _default_cgroup_parent(monkeypatch: pytest.MonkeyPatch) -> None:
+    """CIU-194: governance's cgroup parent is pinned, never read from the runner.
+
+    ``resolve_cgroup_parent`` falls back to ``$CGROUP_PARENT_DEV_BACKGROUND``,
+    which a devcontainer injects but a gate container only has when the launcher
+    forwards it. Tests that reach governance without configuring a parent used to
+    pass only through an ``os.environ`` leak from an earlier test (removed by
+    CIU-192). Tests of the missing-parent refusal ``delenv`` it explicitly.
+    """
+    monkeypatch.setenv("CGROUP_PARENT_DEV_BACKGROUND", "dev-background.slice")
+
+
+@pytest.fixture(autouse=True)
+def _no_ambient_own_container(monkeypatch: pytest.MonkeyPatch) -> None:
+    """CIU-176: tests never read the real cockpit's own container id."""
+    from ciu import workspace_env
+
+    monkeypatch.setattr(workspace_env, "_own_container_id", lambda: "")
 
 
 @pytest.fixture(autouse=True)

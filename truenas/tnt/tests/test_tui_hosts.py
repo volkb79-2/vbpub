@@ -7,6 +7,7 @@ import pytest
 from textual.screen import ModalScreen
 from textual.widgets import Button, Checkbox, DataTable, Input, Select, Static, Tree
 
+from helpers import UI_WAIT_DEADLINE, wait_until
 from tnt.errors import ProfileError
 from tnt.host_store import HostStore, load_host_store
 from tnt.menu import MENU, MenuItem
@@ -16,12 +17,9 @@ from tnt.tui.app import TntApp, WorkerDrainDecision
 from tnt.tui.hosts import HostForm, HostPicker, HostRemoveConfirm
 
 
-async def _wait_for(pilot, predicate, *, count=160):
-    for _ in range(count):
-        await pilot.pause(0.05)
-        if predicate():
-            return
-    assert predicate(), "condition did not become true before the bounded UI wait ended"
+async def _wait_for(pilot, predicate, *, count=None):
+    # ``count`` is accepted for old call sites and ignored: waits are deadline-based (helpers.wait_until).
+    await wait_until(pilot, predicate)
 
 
 def _select_host(table: DataTable, name: str) -> None:
@@ -66,7 +64,7 @@ def test_picker_switches_hosts_tests_without_replacing_session_and_tracks_write_
                 picker.query_one("#hosts-note", Static).render()))
             assert app.session.profile.name == "lab" and not app.session.rpc.read_only
             assert app.session is write_session
-            app.session_controller.close()
+            app.session_controller.close(timeout=UI_WAIT_DEADLINE)
 
     asyncio.run(go())
 
@@ -144,7 +142,7 @@ def test_tui_host_form_adds_securely_renames_sets_default_and_removes(config, op
             saved_hosts, saved_default, saved_entries = load_host_store(paths)
             assert "renamed-ui" not in saved_hosts and saved_default is None
             assert "renamed-ui" not in saved_entries
-            app.session_controller.close()
+            app.session_controller.close(timeout=UI_WAIT_DEADLINE)
 
     asyncio.run(go())
 
@@ -173,7 +171,7 @@ def test_tui_host_forms_report_invalid_values_and_cancel_without_writing(config,
             confirmation.on_button_pressed(SimpleNamespace(button=SimpleNamespace(id="host-remove-cancel")))
             await pilot.pause(0.05)
             assert paths.config.read_bytes() == before
-            app.session_controller.close()
+            app.session_controller.close(timeout=UI_WAIT_DEADLINE)
 
     asyncio.run(go())
 
@@ -209,7 +207,7 @@ def test_callback_guard_rejects_stale_or_detached_work_and_commands_show_host_pi
             assert any("Select or switch TrueNAS host" in command.title for command in commands)
             app.action_toggle_write_mode()
             await pilot.pause(0.05)
-            app.session_controller.close()
+            app.session_controller.close(timeout=UI_WAIT_DEADLINE)
 
     asyncio.run(go())
 
@@ -227,7 +225,9 @@ def test_worker_drain_cancel_restores_the_current_host_after_a_switch_timeout(co
             lease = app.begin_session_work(session)
             assert lease is not None
             app.switch_host(target)
-            await _wait_for(pilot, lambda: isinstance(app.screen, WorkerDrainDecision))
+            # The screen is pushed before its buttons are composed: wait for the widget the test uses.
+            await _wait_for(pilot, lambda: isinstance(app.screen, WorkerDrainDecision)
+                            and len(app.screen.query("#worker-drain-cancel")) == 1)
             decision = app.screen
             assert decision.pending == 1 and decision.transition_kind == "switch"
             decision.on_button_pressed(Button.Pressed(decision.query_one("#worker-drain-cancel", Button)))
@@ -267,7 +267,7 @@ def test_empty_host_picker_has_no_selection(config):
             app.action_quit = lambda: setattr(app, "test_quit_requested", True)
             picker.on_button_pressed(SimpleNamespace(button=SimpleNamespace(id="hosts-cancel")))
             assert app.test_quit_requested
-            app.session_controller.close()
+            app.session_controller.close(timeout=UI_WAIT_DEADLINE)
 
     asyncio.run(go())
 
@@ -303,7 +303,7 @@ def test_picker_test_failure_and_host_form_validation_errors_are_shown(config, o
             form.on_button_pressed(SimpleNamespace(button=SimpleNamespace(id="host-save")))
             assert "Host was not saved" in str(form.query_one("#host-form-note", Static).render())
             await pilot.pause(0.05)
-            app.session_controller.close()
+            app.session_controller.close(timeout=UI_WAIT_DEADLINE)
 
     asyncio.run(go())
 
@@ -326,7 +326,7 @@ def test_remove_confirmation_keeps_modal_when_store_rejects(config, opener, monk
                 ProfileError("synthetic store refusal")))
             modal.on_button_pressed(SimpleNamespace(button=SimpleNamespace(id="host-remove-apply")))
             assert app.screen is modal
-            app.session_controller.close()
+            app.session_controller.close(timeout=UI_WAIT_DEADLINE)
 
     asyncio.run(go())
 
@@ -360,7 +360,7 @@ def test_switch_failure_recovers_to_picker_and_disconnect_closes_session(config,
             await _wait_for(pilot, lambda: app.session is None and app.session_controller.active_host is None)
             assert closed == [True]
             assert "No host selected" in str(app.query_one("#banner", Static).render())
-            app.session_controller.close()
+            app.session_controller.close(timeout=UI_WAIT_DEADLINE)
 
     asyncio.run(go())
 
@@ -382,7 +382,7 @@ def test_active_host_rename_reopens_that_host_and_removal_disconnects(config, op
             app.host_configuration_changed("renamed-lab", None, removed=True)
             await _wait_for(pilot, lambda: app.session is None and app.session_controller.active_host is None)
             assert isinstance(app.query_one(HostPicker), HostPicker)
-            app.session_controller.close()
+            app.session_controller.close(timeout=UI_WAIT_DEADLINE)
 
     asyncio.run(go())
 
@@ -456,7 +456,7 @@ def test_app_restores_navigation_updates_tls_banner_and_opens_palette_action(con
             app._dismiss_top_modal()
             await pilot.pause(0.05)
             assert app.screen is not ordinary
-            app.session_controller.close()
+            app.session_controller.close(timeout=UI_WAIT_DEADLINE)
 
     asyncio.run(go())
 
@@ -494,7 +494,7 @@ def test_app_host_status_callbacks_default_errors_and_reload_failure(config, ope
             app.disconnect_to_picker()
             await _wait_for(pilot, lambda: not app.session_controller._switching)
             assert app.session is None
-            app.session_controller.close()
+            app.session_controller.close(timeout=UI_WAIT_DEADLINE)
 
     asyncio.run(go())
 
@@ -547,7 +547,7 @@ def test_host_picker_selection_errors_and_api_key_file_form_path(config, opener,
             saved_hosts, _, saved_entries = load_host_store(paths)
             assert saved_hosts["lab"].description == "edited without replacing secret"
             assert saved_entries["lab"].api_key.reveal() == entries["lab"].api_key.reveal()
-            app.session_controller.close()
+            app.session_controller.close(timeout=UI_WAIT_DEADLINE)
 
     asyncio.run(go())
 
@@ -585,6 +585,6 @@ def test_app_accepts_injected_controller_and_refuses_invalid_host_state_changes(
             assert controller._switching
             controller.finish_switch(transition)
             await pilot.pause(0.05)
-            app.session_controller.close()
+            app.session_controller.close(timeout=UI_WAIT_DEADLINE)
 
     asyncio.run(go())

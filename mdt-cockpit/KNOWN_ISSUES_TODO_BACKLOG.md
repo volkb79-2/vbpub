@@ -580,7 +580,7 @@ file, so a host that set 1048576 elsewhere is lowered at the next boot (the READ
 
 ## MDT-039 - install.sh usage drift and a post-commit-point refusal (2026-10-27)
 
-**Status:** FIXED 2026-11-04 (fix-mdt-3): synopsis and `--observer-only` matrix complete; observer drift runs as `provision_cgprofile_observer / preflight` before the commit point (the control-directory check stays after it, since tmpfiles creates that directory).
+**Status:** SUPERSEDED 2026-11-08 (H1g'): the `--observer-only` mode and `provision_cgprofile_observer` were removed with host-setup's cgprofile ownership. The details below are historical; keep the remaining `install.sh` usage and option matrix current.
 
 The header's one-line synopsis omits `--restart-buildkitd` and `--require-damon-disable` (which `usage()`
 lists); `--observer-only` rejects `--wizard`/`--reset`/`--with-baseline`/`--restart-docker` but silently accepts
@@ -641,79 +641,30 @@ first through `/srv/pwmcp-instance/bin`), so `pwmcp` resolves and the runtime la
 2026-10-27 review: do NOT add it to the venv. A second copy would have to match the bundle's version exactly (the
 bundle is pinned by `pwmcp.contract.json`, the wheel would follow `pwmcp-client-latest`), both would be on `PATH`,
 and nothing in the cockpit imports it as a library. Revisit only if a cockpit tool needs `import pwmcp_client`;
-then install the wheel that the SAME bundle release carries, never a separately resolved one. The iogov/iomon
-tooling (IO governor, iomon scripts) stays host-side for the same reason the `topos` daemon does: it needs cgroup
+then install the wheel that the SAME bundle release carries, never a separately resolved one. The iogovmon/iomon
+tooling (IO governor, now the independent project `iogovmon/`; iomon scripts) stays host-side for the same reason the `topos` daemon does: it needs cgroup
 and block-device access the devcontainer does not have; the image may carry read-only clients once they exist.
 
 ## MDT-028 - iogov `watch`: per-cgroup swap, refault and memory.events counters in episodes and ticks (2026-10-27)
 
-**Status:** OPEN. From the second (Fable) review of iogov v1 (7f38a7743). Live monitoring (`docs/IO-MONITORING-SETUP.md`, iomon branch) found the
-protected workload's stalls are driven by memory/swap reclaim (zswap writeback, swap-in, major-fault bursts of thousands per second) while the
-disk is healthy. The review added `memory.pressure` to `watch` episodes and host-wide `/proc/vmstat` swap rates to the passive record, which
-names the stall's resource but not its *per-cgroup* mechanism.
-
-**Add (read-only files, no probe IO):** per protected cgroup, at every `watch` sample inside an episode and in every tick's passive snapshot:
-`memory.stat` (`pgmajfault`, `workingset_refault_anon`, `zswpin`, `zswpout`, `pswpin`/`pswpout` where present), `memory.swap.current`,
-`memory.current`, `memory.events` (`high`, `max`, `oom`, `oom_kill`) and `memory.events.local`; as rates/deltas, not cumulative values.
-Episode evidence gets `peak_majfault_per_s`, `swap_in_bytes` (pages x page size) and the `memory.events` deltas; `analyze`'s harm section
-prints them next to `driver`.
-
-**Acceptance:** a fake-cgroup test in which `memory.pressure` is flat but `pgmajfault`/`zswpin` jump during an episode records the rates and
-labels the episode `driver: memory`; a tick's passive record carries the per-cgroup deltas for the configured `protected_cgroups` and
-`containers`; missing files yield null, never an exception; the journal record stays under `MAX_LINE_BYTES`; design note section 8 updated.
+**MOVED 2026-11-05 to `iogovmon/BACKLOG.md` IGM-04** (the IO governor is now the independent project `iogovmon/`; full text there). Status OPEN.
 
 ## MDT-029 - iogov: a protected-process-side canary ("what does the game wait on?") (2026-10-27)
 
-**Status:** OPEN. iogov v1 measures the disk from the outside (raw reads, scratch bench) and the protected workload from PSI. Neither says
-*what* the protected process waits on during a stall. The iomon eBPF collector (`stall.bt`: D-state kernel stacks over 100 ms by comm)
-answers it but needs a root container with BPF capabilities and runs for hours at a time.
-
-**Options, cheapest first:** (a) in `watch`, when an episode opens, sample `/proc/<tid>/wchan` (and `/proc/<tid>/syscall`, if readable) of the
-protected cgroups' D-state threads once per second and histogram the wait symbols into the episode evidence (`swap_readpage`,
-`folio_wait_bit`, `jbd2_log_wait_commit`, `blk_mq_get_tag`, ...; readability of `wchan` for another user's tasks depends on `hidepid` and
-the ptrace scope, so this may need the `watch` unit to run with a read-only `CAP_SYS_PTRACE` or be documented as root-only);
-(b) an operator-run attach of the existing iomon eBPF collector for N minutes when `status` shows episodes (documented procedure, no code);
-(c) a tiny in-container canary (one 4 KiB `O_DSYNC` write + one `O_DIRECT` read every 10 s on a pre-allocated file inside the protected
-volume, as iomon's sampler does) so that the *application's* latency path is measured, not the host's.
-
-**Acceptance:** (a) a test with a fake `/proc/<tid>/wchan` tree shows the symbol histogram in an episode; the sampler never reads `/proc/<pid>/maps`
-or `environ`; (c) is only acceptable if the file lives in a dedicated directory the operator names, is created `O_EXCL`, and the IO is
-charged to iogov's daily budget. No automatic cap or setting change (unchanged v1 rule).
+**MOVED 2026-11-05 to `iogovmon/BACKLOG.md` IGM-05** (full text there). Status OPEN.
 
 ## MDT-030 - iogov: gate reachability on a never-calm host, and a bench gate on memory pressure (2026-10-27)
 
-**Status:** OPEN. The write bench runs only when system io PSI `some` <= 1 %, `full` <= 0.1 %, protected pressure <= 1 %, governed writes <= 2 MB/s
-and nothing is in flight. On a host that swaps continuously (the review's devcontainer host showed memory PSI `some` 37 % / `full` 17 % at the time)
-the bench may rarely pass, so the write lanes stay STALE while the read lanes and passive records accumulate. That is the designed failure
-mode (design note section 11.8), but it is invisible in `status` today, and a host in heavy reclaim is not "calm" even when its io PSI is low:
-the bench's writes would compete with zswap writeback and the measurement would be contended without being labelled so.
-
-**Do:** (1) `status` prints, per run kind, the gate pass/skip counts of the last 7 days by reason class (from the journal's `skip`, `passive`
-(`gated`) and `run_start` records) and the age of the last valid window per write lane; (2) add `bench_memory_pressure_some_max` (default 5 %,
-hard max 25 %) to the bench gate (memory PSI in the gate `ctx` is already recorded by the review); (3) document in the design note that a bench
-gated for more than N days means "no write-capability evidence on this host", with the operator's options (a bench window at night, lower
-thresholds justified by a measured `watch` comparison, or accept read-only evidence).
-
-**Acceptance:** tests for the `status` lines and the new gate reason (`memory_pressure_high`); the design note's gate table and section 6 agree with
-`config.py`; `plan` prints the new threshold.
+**MOVED 2026-11-05 to `iogovmon/BACKLOG.md` IGM-06** (full text there). Status OPEN.
 
 ## MDT-031 - iogov -> iobench ceilings bridge (`ceilings.jsonl`, `source: governor`) (2026-10-27)
 
-**Status:** OPEN. MDT-023's P0 was "an observe-only service feeding `libraries/iobench` `ceilings.jsonl` (`source: governor`, IOB-CEI-01)".
-iogov v1 is that service but writes only its own journal; its `w_fresh_qd1`/`w_fresh_qd4` durable rates and confirmed `shift_detected`
-recommendations never reach iobench, so `recalibrate_recommended` in `mdt doctor` (the next MDT-023 step) has nothing to read.
-
-**Do:** an `iogov export-ceilings [--since]` command that prints (never writes outside its state dir, never runs a subprocess: the static
-no-write test must stay green) one `iobench ceilings add --dir write --workload <w> --bps <rate> --duration-s <s> --source governor` line per
-qualifying closed window, or the JSON observation lines themselves for the operator to append. The mapping of iogov's 64 KiB sequential lanes
-to iobench's `seq1m|rand4k` workload names needs an explicit decision (a new workload name, or a documented approximation carrying the
-`file`-kind label of IOB-TGT-09, since iogov measures a file, not the device).
-
-**Acceptance:** a test that a journal with a confirmed downward shift yields export lines whose `plateau_bps` equals the window's median
-durable rate and whose `note` carries the recommendation key; `iobench ceilings add` accepts the printed line in a dry run; the design note's
-"v1 does NOT" list and MDT-023's "Next" paragraph point at each other.
+**MOVED 2026-11-05 to `iogovmon/BACKLOG.md` IGM-07** (full text there; the interface is now fixed by the host-tuning design as
+`iogovmonctl export ceilings`). Status OPEN. MDT-023's "Next" paragraph reads the export through host-tuning's adapter, not an mdt import.
 
 ## MDT-032 - iogov: `test_prevention_checker_is_quiet_when_healthy_and_says_unknown_when_blind` reads the real filesystem fill (2026-11-02)
+
+*(The iogov code and tests moved to `iogovmon/` on 2026-11-05; this entry is kept as the record of the closed fix.)*
 
 The test builds its collectors from the live host (`covs(world)`) and asserts that no `fill` finding is raised. On a host whose
 root filesystem is above the fill threshold (observed at 74% used) the finding appears and the `smoke` lane fails although
@@ -1165,7 +1116,9 @@ fallback): the devcontainer, both templates, the r1002 runner start script and i
 
 ## MDT-055 - host-setup installs and pins the cgprofile host service from the released wheel (2026-11-04)
 
-**Status:** IMPLEMENTED 2026-11-04 on branch `mdt-cgp-native-20261104` (fake-root tests in `host-setup/tests/test_cgprofile_install.py`;
+**Status:** SUPERSEDED 2026-11-08 (H1g'): cgprofile lifecycle moved to `cgprofiled install`; host-setup's installer, config keys, and check sections were removed. The implementation record below is historical. Use cgprofile's native deployment guide for current install behavior.
+
+Historical implementation, completed 2026-11-04 on branch `mdt-cgp-native-20261104` (fake-root tests in `host-setup/tests/test_cgprofile_install.py`;
 smoke and release lanes in the package report); the live installs are the ops package (NC-05, r1002 first, then the shared host).
 Built against cgprofile 2.0.0 (`cgpd unit print|check`, `cgpd config check`, `cgpctl sessions|status|doctor --json`), not the
 `cgprofile host-unit --print` command named in the design below, which became `cgpd unit print`. Deviations from the design text
@@ -1175,6 +1128,10 @@ a second daemon on the socket, so `ciu down` first, as the migration section of 
 Original text follows. Depends on CP-41/CP-42 (wheel release and `host-unit`) and the MDT-048 distribution decision (now made). Interim
 (RG-55 C option): until the wheel exists the ciu deployment of `cgprofile-host-daemon` stays, with the gates slice rendered from
 host config instead of hand edits (NC-06).
+
+**SUPERSEDED 2026-11-08 (H1g'): the Problem, Decision record and Design text below is the retired design.** `CGPROFILE_WHEEL`,
+`CGPROFILE_ENABLE`, `--cgprofile-only` and `--force-cgprofile-restart` no longer exist in host-setup; `cgprofiled install` owns the
+service. Kept as history only, not as current design text.
 
 **Problem.** The daemon runs as a ciu-managed privileged container (`scripts/cgroup-profiler/ciu.compose.yml.j2`) and depends on a
 repo checkout, ciu, and on r1002 two uncommitted hand edits (`RUNBOOK.md:52-90`). It restarts with dockerd, which is exactly the
@@ -1285,7 +1242,7 @@ the provisioning script no longer hardcodes 1003.
 
 ## MDT-062 - cgprofile cutover from the 1.x container: the installer cannot drain it and does not stop it (2026-11-05)
 
-**Status:** OPEN. Found by the first live rollout (v1001, r1002; `reports/cgpd-rollout-REPORT.md`).
+**Status:** SUPERSEDED 2026-11-08 (H1g'). `mdt-cockpit/host-setup` no longer owns or ships the cgprofile installer or `--cgprofile-only`; service migration and any remaining old-daemon cutover belong to cgprofile's installer. The observed rollout details below are historical context, not a current host-setup work item.
 
 **Observed.** (1) On a host whose 1.x `cgprofile-host-daemon` container still serves `/run/cgprofile/ctl.sock`, `cgpd` 2.0.0 refuses to start
 ("another daemon already serves"), so `install.sh --cgprofile-only` only works after the container was stopped by hand; the stop, `docker update
@@ -1403,3 +1360,221 @@ with no score, not a parse of the challenge HTML.
 
 **Status:** OPEN. `scripts/debian-install-v2/tools/cpu_benchmark.pins.json` holds only x86_64 (Geekbench 7.1.0, sha256 read from the real download in HB-1). An architecture without a pin is `warned` by the installer and refused by `install.sh cpu-benchmark`, never run unverified.
 **Acceptance.** Download the `LinuxARMPreview` 7.1.0 archive on an aarch64-capable path, record its sha256 in the pins file, add a test, and bump the pins together with the tool's `.sha256` where needed.
+
+## MDT-073 - VM-only leak test for the load-tier ceilings (AD2-0 gate) (2026-11-05)
+
+**Status:** OPEN. AD2-0 (gates/background MemoryMax = dev.slice MemoryHigh, MemorySwapMax = dev swap minus the protected Lows) is covered by hermetic host-setup tests and verified live by `mdt-host-check.sh`; the behavioural gate of the addendum needs a real VM.
+
+**Next steps.** In `testing/vm` (next to `vm-governance-acceptance.sh`): install host-setup on `HOST_ROLE=dedicated-dev` with swap, start a leaking process in a `dev-gates.slice` leaf, hold an interactive scope with a working set above its Low.
+**Acceptance.** The leaf ends with `oom_kill` in `dev-gates.slice` `memory.events` once its swap is spent, while the interactive scope's memory PSI stays below 5 % and its allocations are not throttled. Never run on a live host.
+## MDT-074 - dedicated-dev shared tree cache host plumbing (AD2-2) (2026-11-05)
+
+**Status:** DONE on branch `mdt-cache-slice-20261105` (host half). `dev-cache.slice`, `/srv/tree-cache` and `/srv/tree-upper` tmpfs mount units, `tree_cache` block of `/etc/mdt/host-capacity.json`, `mdt-tree-cache-gc.timer`, env keys, host-check, tests (host-setup/README.md "Shared tree cache of the dedicated-dev role"). Applied live on v1001 then r1002.
+**Open (other packages / follow-ups).**
+1. AD2-3: cowtree `cache` (ensure, lease, last-used, gc) must publish exactly the directory/lease format of `mdt_tree_cache.py`; once it does, the timer may call `cowtree cache gc` instead of the built-in GC (the hosts have no cowtree wheel in `/opt/mdt`).
+2. AD2-5: run-gate checks `CGROUP_PARENT_DEV_CACHE` (LoadState) and `MDT_TREE_CACHE_ROOT`/`MDT_TREE_UPPER_ROOT`; the host does not export these env keys itself (they travel the `containerEnv` path like `CGROUP_PARENT_DEV_GATES`): the devcontainer template and the runner env still need them, the values are in `host-capacity.json`.
+3. The GC cannot see a lane that holds a key only through a bind in a mount namespace it cannot read; it relies on the lease (flock) plus every /proc/*/mountinfo, and keeps everything when one mountinfo is unreadable. Verify with a real lane in AD2-5.
+4. `shared-prod` opt-in is not offered (design: opt-in on shared-prod); add a key only when a consumer needs it.
+5. `DEV_CACHE_MEMORY_LOW` default is empty: size it from the first measured populate (M-6 / AD2-6).
+6. The upper area (`/srv/tree-upper`, 10 % of RAM) is one shared tmpfs with no per-lane limit: one lane filling it gives ENOSPC to the others. run-gate (AD2-5) must classify ENOSPC in an upper as infrastructure/inconclusive, never a product failure.
+7. On a host without swap the two tmpfs areas (up to 35 % of RAM by default, at most 50 %) are unevictable.
+
+## MDT-075 - test-render.sh stopped on unresolved `@DEV_CACHE_*@` in dev-cache.slice.in (2026-11-05)
+
+**Status:** DONE on branch `mdt-render-dev-cache-20261105`. Root cause: the AD2-2 templates (`dev-cache.slice.in`, tree mounts, GC units) are rendered live by `mdt_tree_cache.py`, but `tests/test-render.sh` pushed every `units/*.in` through install.sh's bash `render()`, whose `RENDER_VARS` does not (and must not) carry their keys. Fix: `mdt_tree_cache.OWNED_TEMPLATES` is the single list; `test-render.sh` skips those in the bash loop and renders them with `mdt_tree_cache.py render` (the installer's own code path) from the shipped example, failing on any `@X@`; `_render()` now raises on a token it was not given, so the live install also refuses to ship one. `tests/test_tree_cache.py::TemplateWiringTests` asserts every template is wired to exactly one renderer. No behaviour change on a host (empty `DEV_CACHE_MEMORY_LOW` still drops the `MemoryLow=` line, `DEV_CACHE_ZSWAP_WRITEBACK` defaults to yes).
+**Open.** None. Hosts need no re-run for this fix (test-only plus an install-time guard).
+
+## MDT-076 - template VS Code settings never reach a persisted home's machine settings (2026-11-05)
+
+**Status:** OPEN; documented on branch `mdt-vscode-excludes-20261105` (template comments, `templates/vscode/README.md` "Template settings and the persisted home", host-setup README "inotify watch budget"); the same branch adds `.assay` to the excludes and `search.followSymlinks: false`.
+**Observed.** Container `mdt-cockpit-vb-vbpub`, created 2026-11-03, carried `files.watcherExclude`, `search.exclude` and `git.repositoryScanIgnoredFolders` (added by `68a4cb487`, 2026-10-26) in its `devcontainer.metadata` label. `~/.vscode-server/data/Machine/settings.json`, last written 2026-10-23, held only `python.defaultInterpreterPath`, so none of the MDT-003 excludes were active: the VS Code file watcher used 920 MiB RSS, and Python Environments 1.42.0's per-event whole-workspace rescans piled up to 192 concurrent `rg` processes.
+**Cause.** Since MDT-004 the home (with `~/.vscode-server`) persists across rebuilds, and a rebuild does not rewrite an existing machine settings file.
+**Open.**
+1. A supported refresh: for example a finalize step that merges the template's `customizations.vscode.settings` into the machine settings file (template keys win, user-only keys kept), or a `mdt` verb that does the same. It needs a source for the effective settings inside the container (the workspace `devcontainer.json` as JSONC, or the metadata label).
+2. A check that warns when a template key is missing from the machine settings file.
+## MDT-077 - nothing in host provisioning publishes the run-gate gates cap; a reinstalled runner host refuses every dstdns lane (2026-11-05)
+
+**Status:** DONE on branch `mdt-admission-20261105` (found on v1001 after the 2026-11-05 reinstall; review findings addressed in the fix round). The finding text was first filed on `mdt-admission-cap-gap-20261105` (`5e37e9cf8`); this entry supersedes it.
+**Symptom.** dstdns sets `[admission] enabled = true`, `unreadable_policy = "refuse"`. On a fresh Docker daemon no `ciu-admission-<g>` object exists, so every lane ends `NOT_RUN no-headroom` ("no gates limit is published and unreadable_policy=refuse"); the v1001 dstdns chain retried 11+ times at 3-minute intervals while the host sat ~65% idle.
+**Root cause.** The cap is a Docker-daemon object (a never-started `ciu-admission-<g>` container carrying `ciu.admission.tiers.gates.max_concurrent`), published only by the operator verb `run-gate admission set --max-concurrent N --unreadable-policy refuse`. It was not part of `host-setup/install.sh`, `debian-install-v2` or the runner provisioning scripts (`provision-runner.sh`, `setup-cockpit-run-gate.sh`); `scripts/netcup/runner/remote-gate.py` only DETECTS the gap (`admission_check`, fail-closed) when a dstdns gate is submitted, and the value was never derived from host policy. A reinstall (new Docker daemon) loses the object. AGENTS.md says limits are host-owned and "a tool asks the host policy", but no host policy provided this number. The numbers actually published were hand-picked: v1001 2, r1002 first 1 then 4 (both 4 vCPU / 8 GB), so "about one gate per 2 vCPU on both hosts" in the first filing was only true of v1001.
+**Interim (done on v1001, 2026-11-05).** `run-gate admission set --max-concurrent 2 --unreadable-policy refuse` run in the cockpit from a dstdns checkout.
+**Fix.** `host-setup/mdt_admission.py` derives the cap from the effective minimum of `dev.slice`'s `DEV_CPU_QUOTA` and `dev-gates.slice`'s `DEV_GATES_CPU_QUOTA`; auto shares come from the same `mdt_capacity` derivation used by install.sh. The formula remains `max(1, min(floor(gates CPU cores / ADMISSION_CPUS_PER_GATE), floor(gates MemoryHigh / ADMISSION_MEMORY_PER_GATE)))`, defaulting to 2 CPUs and 2G per gate (4 vCPU / 8 GB dedicated-dev gives 2). Publishing uses `show`, `set` or the safety-verified `set --replace` path, then reads the cap back. The full install's default `ADMISSION_PUBLISH=auto` publishes when no readable cap exists and preserves a differing readable cap; explicit `install.sh --admission-only` reconciles differences. `missing` never replaces, `replace` lets full installs reconcile, and `off` disables management. `ADMISSION_MAX_CONCURRENT` always supplies the desired value when pinned. An explicit reconcile can repair an unparseable published limit with `--replace`. The verb runs with a minimal private `run-gate.toml` and `CGROUP_PARENT_DEV_GATES=dev-gates.slice`, on the host or inside the cockpit. Missing run-gate/cockpit/ticket image and an unreachable Docker daemon produce distinct NOTE reasons; attempted publish failures remain non-zero. `ADMISSION_RUN_GATE` rejects a leading dash. `mdt-host-check.sh` fails on a missing cap and pinned mismatch, warns on an unpinned difference, and warns when a prerequisite makes the cap unreadable. Tests cover the installer function with fake docker and run-gate commands in a temporary PATH. The registered `host-setup-admission` Run-Gate lane runs the requested subset in tester-unified. User-facing guidance is in the host-setup README, MDT DESIGN-GUIDE, and CONSUMERS.md.
+**Open.** Live verification on a host is not done (no host access in this fix round). After a reinstall, operators must run `sudo ./host-setup/install.sh --admission-only` once run-gate and the ticket image exist; set `ADMISSION_COCKPIT` first when run-gate lives in a cockpit. r1002 should pin `ADMISSION_MAX_CONCURRENT=4` before an explicit reconciliation if the hand-raised limit is still required. The reinstall runbook is not tracked; the host README and consumer guide carry the adoption instruction.
+## MDT-078 - retire modern-debian-tools-python-debug (2026-11-05)
+
+**Status:** DONE on this branch. Removed the predecessor directory and its CMRU project registration; repointed live image, install, code, and documentation references to `mdt-cockpit`. Kept runtime state paths and historical records intact.
+
+**Open items:**
+1. Build-check nyxloomd against the new `mdt-cockpit` base image.
+2. Existing GHCR packages under the retired name remain in place by operator decision.
+
+## MDT-079 - OpenCode staging checks the launcher package only; the installer needs the platform package, and nothing verifies the installed result (2026-11-08)
+
+**Status:** OPEN; priority should-fix. Source: `reports/opencode2-REVIEW.md` N1 (review of `53e191341`, merged in `1b5a212f5`).
+**Finding.** `stage_tool_artifacts.py:_resolve_opencode_version` (line 623) checks that `@opencode/cli@X` exists on the registry, but `install_ai_cli_tools.py:461-487` installs `@opencode/cli-linux-<x64-baseline|arm64>[-musl]@X`. Registry timestamps show the platform packages land 1-5 minutes after the launcher (2.2.4: launcher 16:53:18, baseline 16:55:37; 2.2.6: launcher 23:33:40, baseline 23:35:14), and the launcher's own postinstall documents the race. A staging run in that window records X and the image build fails with ETARGET (loud, retry works, a flaky red build). After the install nothing checks that the installed package is X, and `require_file` (line 346) does not check the exec bit.
+**Fix.** In `_resolve_opencode_version` also require `@opencode/cli-linux-x64-baseline@X` and `@opencode/cli-linux-arm64@X` (via `_fetch_json(registry/<pkg>/<ver>)`, as `_resolve_pinned_npm_version` does) and raise a StageError saying "platform package not published yet". Add `verify_opencode_install(prefix, version)` beside `verify_codex_install`: read `<prefix>/lib/node_modules/<pkg>/package.json`, require `version == OPENCODE_VER`, and use `require_executable_binary` instead of `require_file`.
+**Close when.** A test with the launcher published and a platform package missing fails staging with the new message, and a fake tree with a wrong installed version or a non-executable binary fails the verifier.
+
+## MDT-080 - the Dockerfile's opencode manifest probe never fails, and the staging fixture still reports 1.19.4 (2026-11-08)
+
+**Status:** OPEN; priority should-fix. Source: `reports/opencode2-REVIEW.md` N2.
+**Finding.** `Dockerfile:1066` records `opencode=$(opencode --version 2>&1 | head -1 || true)`: the never-fails pattern the codex-image work replaced for `claude` and `codex` with a guarded probe (`v="$(tool --version 2>&1)" || fail; test -n; echo ${v%%$'\n'*}`). A broken opencode (for example a wrong-libc ELF, "No such file or directory" from a missing `/lib/ld-musl-*`) is recorded as an error string and the build passes. `test_oci_tool_staging.py:1041` keeps `VERSION_BANNERS["opencode"] = ("1.19.4", "1.19.4")`, a 1.x banner for a 2.x tool.
+**Fix.** Use the guarded probe for opencode (`v="$(opencode --version 2>&1)" || { ...; exit 1; }; test -n "${v}" || ...; echo "opencode=${v%%$'\n'*}"`), add `"opencode"` to the `@pytest.mark.parametrize("tool", ["claude", "codex"])` list of `test_a_broken_agent_cli_fails_the_manifest_step`, and set the fixture to `("opencode v2.2.6", "2.2.6")`; `normalise_version('opencode','opencode v2.2.6') == '2.2.6'` was verified.
+**Close when.** A broken opencode shim fails the manifest step in the parametrized test.
+
+## MDT-081 - musl detection uses `platform.libc_ver()`, which is likely empty on musl hosts (2026-11-08)
+
+**Status:** OPEN; priority nit (the image is Debian trixie, so latent). Source: `reports/opencode2-REVIEW.md` N3.
+**Finding.** `install_ai_cli_tools.py:470-472` selects the musl platform package from `platform.libc_ver()[0]`; on Alpine CPython's `libc_ver()` most likely returns `('', '')`, so the glibc package would be selected and install "successfully". The musl packages carry no `libc` field, so npm cannot catch it. Mutation M5 (musl suffix dropped, line 334) survived: no musl test exists.
+**Fix.** Detect musl with `Path("/etc/alpine-release").exists()` or the `ldd --version` text (as OpenCode's own postinstall does) and add a musl case to `TestInstallOpencode`.
+**Close when.** The musl test passes and M5 re-applied fails it.
+
+## MDT-082 - docs for OpenCode 2: stale 1.x claims in DESIGN-GUIDE and no CHANGES entry for the 1.x to 2.x jump (2026-11-08)
+
+**Status:** OPEN; priority nit. Source: `reports/opencode2-REVIEW.md` N4 and N6.
+**Finding.** `docs/DESIGN-GUIDE.md:590` keeps "yes (1.19.3 to 1.19.2 and back, measured)", a measurement of the retired 1.x package, for a row that now describes 2.x, and cites `opencode upgrade --major`, which is not in the 2.2.6 `upgrade --help` (only `--method/-m`). The docstring "measured on 1.19.5 and 2.2.6 alike" in `tests/runtime/test_ai_cli_update.py` was not reproducible without running `upgrade`. `CHANGES.md` has no entry for the user-visible 1.x to 2.x jump (v2 reads `opencode.jsonc` with a `providers` schema and keeps sessions in `opencode.db`; persisted 1.x config and data may need migration).
+**Fix.** Re-measure the update on the 2.x image with the runtime test and update the sentence, or mark the cell "1.x measurement; 2.x covered by tests/runtime/test_ai_cli_update.py". Add the CHANGES entry naming the config schema and data-file change.
+**Close when.** The DESIGN-GUIDE row names no flag absent from `opencode upgrade --help`, and CHANGES carries the entry.
+
+## MDT-083 - OpenCode staging and installer tests: surviving hand mutants (2026-11-08)
+
+**Status:** OPEN; priority nit. Source: `reports/opencode2-REVIEW.md` N5 (11 hand mutants: 7 killed, 4 survived; M5 is MDT-081).
+**Finding.** M4 (drop the explicit-pin early return, `stage_tool_artifacts.py:625-626`) survived: no test sends a pin through `_resolve_opencode_version`. M9 (size-report glob reverted to `opencode-linux-*`) survived: nothing tests the `LEAVES` globs. M10 (README update command reverted) survived: `test_docs_in_sync` pins only DESIGN-GUIDE for that string. M3 (tripwire `theirs > ours` to `>=`) is killed only incidentally by an unrelated test; no test names the equal-major case.
+**Fix.** One test that an explicit pin (`"2.0.0"`) skips the tripwire even when the legacy fake says 3.0.0; a `LEAVES` glob check (or drop the globs); the README string in the `test_docs_in_sync` list; an explicit "same major does not raise" assertion.
+**Close when.** M3, M4, M9 and M10 re-applied one at a time each fail a named test.
+
+## MDT-084 - Codex launcher check: a timeout leaves a grandchild process (2026-11-08)
+
+**Status:** OPEN; priority nit. Source: `reports/codex-image-REVIEW2.md` (B1 section).
+**Finding.** `verify_codex_launcher` runs `subprocess.run([launcher, "--version"], timeout=CODEX_LAUNCHER_TIMEOUT_SECONDS)` (`install_ai_cli_tools.py`, around line 304). On timeout `subprocess.run` kills only the launcher process; the reviewer's `sleep 300 &` grandchild survived. The real native `--version` exits at once, so the effect is cosmetic.
+**Fix.** Start the launcher in its own process group (`start_new_session=True`) and kill the group on timeout, with a test using a launcher that backgrounds a child.
+**Close when.** The test shows no surviving child after the timeout.
+
+## MDT-085 - phase-2 cutover: apply `h1g-cutover-pieces.patch` once the cgprofile, topos and BuildKit endpoints are delivered (2026-11-08)
+
+**Status:** OPEN; priority to-do, blocked on the endpoint delivery in MDT-086. Source: `reports/h1g-REPORT.md` (B2 split), `reports/h1g-REVIEW.md` B2 and `reports/h1g-REVIEW2.md` section 3.
+**Finding.** The H1g' branch was split so that only `mdt-cockpit/host-setup` merges now; the consumer side was saved as `/home/vscode/vbpub-release-program-20261027/reports/h1g-cutover-pieces.patch` (26 files): `.devcontainer/devcontainer.json` and both cockpit templates (`${localEnv:...}` mounts, `--group-add`, `containerEnv` including `CGPROFILE_*`/`TOPOS_*`), `cmru.orchestration.toml` (`${BUILDX_BUILDER}` and `${BUILDKIT_HOST}` without defaults, so an unset variable is a cmru load error), 15 `required_env` names on the `image-runtime-built` and `image-runtime` lanes of `mdt-cockpit/run-gate.toml`, `ensure-release-builder.sh`, `finalize_container_environment.py`, `mdt_buildkit_builder.py`, the consumer tests and docs. Applied on the controller before the endpoints exist, the next devcontainer rebuild cannot start (a Docker `--mount` with an empty source fails) and every cmru invocation without those variables fails to load.
+**Check done (h1g-REVIEW2).** `git apply --check` passes on the branch head (26/26); on origin/main 23 apply, and `docs/DESIGN-GUIDE.md`, `host-setup/tests/test_buildkit_governance.py` and `scripts/test_devcontainer_audit.py` need the host-setup branch first. Applying it on the head reproduces the pre-split state byte for byte for 24 of 26 files; the two differing mixed docs carry intended later edits.
+**Fix.** After the host-setup branch is merged and the endpoint record is published on the host (MDT-086), apply the patch, resolve the three mixed files by hand, run the consumer lanes (not run yet), and rebuild the controller devcontainer on a host that has published the facts.
+**Close when.** The patch (or its reviewed successor) is merged, a devcontainer rebuild with the published record starts, and `cmru` loads in a context that has only the host environment.
+
+## MDT-086 - design: who delivers `CGPROFILE_*` and `TOPOS_*` to the devcontainer and the cockpit (2026-11-08)
+
+**Status:** OPEN; priority design decision (blocks MDT-085). Source: `reports/h1g-REVIEW.md` B2, `reports/host-endpoints-and-phase2-fastpath-DESIGN.md` (consumer table, section 5.4).
+**Finding.** host-setup now publishes only the BuildKit and Docker-API facts (`BUILDX_BUILDER`, `BUILDKIT_HOST`, `MDT_HOST_DOCKER_GID`, `MDT_BUILDKIT_SOCKET`, `MDT_BUILDKIT_SOCKET_DIR`, `MDT_BUILDKIT_GID`, `MDT_DOCKER_API_SOCKET`, `MDT_DOCKER_API_SOCKET_DIR`) into `/etc/host-endpoints.d/mdt-host-setup.env`. The cutover pieces expect `CGPROFILE_CONTROL_SOCKET_DIR`, `CGPROFILE_OBSERVER_*`, `TOPOS_OBSERVE_*`, `CGPROFILE_CONTROL_GID` and `TOPOS_OBSERVE_GID` to exist in the host environment, but nothing writes them yet: `cgprofiled install` and `toposd install` are the natural publishers and are not installed on the live host. The design defers the devcontainer level (`${localEnv:VAR}` from a pam_env block, with an optional default) and delivers cockpit values by container `-e` from the record; neither path has an owner for the CGPROFILE/TOPOS keys.
+**Decide.** Which installers publish which keys (each daemon's installer writes its own fragment, or host-setup reads the daemon sockets), how a VS Code Remote-SSH server or devcontainer CLI picks them up (pam_env block versus an `initializeCommand` that reads the record), and what a cockpit start does when a fragment is missing (refuse versus omit the mount).
+**Close when.** The decision is recorded in `docs/DESIGN-GUIDE.md` and the fragments exist on a host, so MDT-085 can be applied.
+
+## MDT-087 - the new `install.sh` refuses on the live controller host until the operator removes the retired provisioning by hand (2026-11-08)
+
+**Status:** OPEN; priority operator action, part of the cutover. Source: `reports/h1g-REVIEW.md` section (1) and `reports/h1g-REVIEW2.md` section (4).
+**Finding.** The live controller was provisioned by the retired host-setup paths, so `install.sh` refuses (before every mode: `--admission-only`, `cpu-benchmark`, `--apply-protection`) until these are removed: `/etc/tmpfiles.d/mdt-cgprofile.conf`, `/etc/tmpfiles.d/mdt-cgprofile-observer.conf`, `/etc/tmpfiles.d/mdt-topos.conf`, `/etc/sysusers.d/mdt-cgprofile.conf`, `/etc/systemd/system/topos.service.d/50-mdt-socket-group.conf`, `/usr/local/sbin/mdt-cgprofile-install.sh`, `/etc/profile.d/mdt-buildkit.sh` and the `# BEGIN mdt-buildkit ... # END mdt-buildkit` block in `/etc/environment`. Removal is non-destructive but the tmpfiles and drop-in files recreate `/run/cgprofile`, `/run/cgprofile/observer`, `/run/topos` and the topos socket group at boot: a reboot between removal and `cgprofiled install` / `toposd install` leaves the running old daemons without runtime dirs. Sessions started before the cutover keep the old environment (no `MDT_BUILDKIT_SOCKET`), so their `docker build` exits 2 with a clear message until they log in again.
+**Operator order (the refusal prints it).** One sitting, no reboot in between: `sudo rm -f --` the six file paths, `sudo systemctl daemon-reload`, then `sudo rm -f -- /etc/profile.d/mdt-buildkit.sh` and `sudoedit /etc/environment` (the marker lines only), then `install.sh`, then the daemon installers (`cgprofile/docs/NATIVE-DEPLOYMENT.md` section 3, plan 5.3), then log in again and restart the VS Code server and long-lived units.
+**Close when.** The operator has run the sequence on the controller, `mdt-host-check.sh` passes, and builds work from a fresh login.
+
+## MDT-088 - H1g' review nits left open (2026-11-08)
+
+**Status:** OPEN; priority nit. Source: `reports/h1g-REVIEW2.md` (carried-over nits), `reports/h1g-REPORT.md` (not done).
+1. The `host-setup-admission` lane in `mdt-cockpit/run-gate.toml` runs `test_cgprofile_install.py`, whose content is now retirement and endpoint tests; rename the file (and the lane entry).
+2. `docs/CONSUMERS.md` lost the sentence "The cockpit image carries the cgprofile wheel's clients (`cgprofile`, `cgprofilectl`; MDT-048)"; restore it.
+3. The endpoint writer string is `mdt host-setup install` with no version; augeaswrap documents "verb and version" and accepts it. Add the version.
+4. Optional: the Buildx shim has no fallback deriving `MDT_BUILDKIT_SOCKET` from `BUILDKIT_HOST` when only that is set, so long-lived pre-cutover sessions fail with exit 2. A design choice; the "log in again" documentation is the minimum and is in place.
+5. `--dry-run-endpoints` needs root, systemd and a live BuildKit socket, so it cannot preview on a fresh host (documented in the usage line).
+**Close when.** Items 1-3 are done and 4-5 are accepted or struck out with a reason.
+
+## MDT-089 - devcontainer VS Code memory: Pylance and the file watcher dominate the cap; the templates ship no `python.analysis` limits and the multi-root workspace excludes nothing (2026-11-09)
+
+**Status:** OPEN (filed 2026-11-09); priority should-fix. Source: `HANDOFF-STATE-20261107.md` (22:05Z memory entry and the 03:41Z root-cause entry, `dev-interactive.slice` OOM), memory note `feedback-devcontainer-8g-cap-oom-concurrency`; related MDT-003 (closed), MDT-076 (open).
+**Measured after the 12 GiB relaxation requested at 22:05Z (the limits then were max 12 GiB / high max / swap.max 16 GiB).** cgroup anon 4.4 GB plus 5 GB swap (2.5 GB swapcached). Largest: Pylance 1.1 GB plus 1.0 GB swapped, the VS Code file watcher 0.73 GB, the extension host 0.85 GB plus 0.3 GB, Claude sessions 0.46 GB, opencode 0.27 GB, 13 Codex processes 0.23 GB each. Cause named in the log: the multi-root workspace (`/workspaces/vbpub/multi-root-volkb79-2.code-workspace`, untracked, `"settings": {}`) includes `/home/vscode` and, through `/workspaces/vbpub`, `.worktrees/` (41 worktrees, 8.4 GB, about 95k Python files). The earlier OOM kill at 03:41:16Z occurred while the previous `dev-interactive.slice` memory.max of 8 GiB was in effect; it was the event that motivated the relaxation request.
+**What already exists (do not redo).** `.devcontainer/devcontainer.json:310-334` and `mdt-cockpit/templates/devcontainer.json:302` ship `files.watcherExclude` (`.worktrees`, `.run-gate`, `.assay`, `.venv`, `artifacts`, `downloads`, ...), `search.exclude`, `git.repositoryScanIgnoredFolders` and `search.followSymlinks: false`. MDT-076 records that a persisted home keeps its old `~/.vscode-server/data/Machine/settings.json`, so a long-lived container may run none of them.
+**Gaps.**
+1. No `python.analysis.exclude`, `python.analysis.diagnosticMode` or `python.analysis.indexing` setting in either file (`git grep python.analysis` finds nothing), so Pylance indexes `.worktrees/**`, venvs and `scripts/cgroup-profiler` leftovers.
+2. `**/.venv/**` does not match `~/.venvs/` (the estate keeps gate and tool venvs there) or `.cache`; the `/home/vscode` workspace folder is therefore watched and indexed for them.
+3. The multi-root workspace file is not a template: nothing says how its folders should be limited, and an `/home/vscode` root is the heaviest folder in it.
+4. The untracked `scripts/cgroup-profiler/` directory in the shared vbpub checkout (it holds only ciu runtime files such as `ciu.env`, `ciu.compose.yml` and `artifacts/`; the project itself moved to `cgprofile/` in `e0655e35b`) is inside every watcher and index.
+**Fix.** Ship in both templates and `.devcontainer/devcontainer.json`: `"python.analysis.exclude": ["**/.worktrees/**", "**/.venv*/**", "**/.venvs/**", "**/node_modules/**", "**/.run-gate/**", "**/.assay/**", "**/artifacts/**", "scripts/cgroup-profiler/**"]`, `"python.analysis.diagnosticMode": "openFilesOnly"`, and add `**/.venvs/**` and `**/.cache/**` to `files.watcherExclude` and `search.exclude`. Document in `templates/vscode/README.md` how to apply them to a multi-root workspace file (folder-level `settings`, drop the `~` folder or exclude it) and pair with the MDT-076 refresh so existing containers pick them up. Extend the template-settings test to assert the new keys.
+
+**Inventory prerequisite (T-063 audit, 2026-11-10).** The untracked `scripts/cgroup-profiler/` tree is reported as about 528 MB, but its exact current size, contents, source owner and protected state were not classified. The stale path is not safe to remove by inference. Inventory it read-only in one durable record: current apparent size and file inventory, whether it holds active CIU runtime files, generated artifacts, secrets/state requiring preservation, and an explicit owner/source if evidenced. Then record one disposition: preserve, archive, ignore, or remove by exact path. Do not clean it as a side effect of the editor-exclusion work.
+
+**Acceptance idea.** A read-only inventory command records the measured size, owner evidence, and classification for that exact tree; a fake-root test covers the four dispositions and refuses removal until the tree is classified as regenerable and not protected. The editor-exclusion test remains independent of the disposition.
+
+**Close when.** A rebuilt devcontainer reports the new settings in its effective Machine settings, a before/after RSS sample of Pylance and the watcher on the same checkout shows the reduction (record it), the template test covers the keys, and the `scripts/cgroup-profiler/` inventory has a recorded disposition.
+
+## MDT-090 - the cockpit image carries only `cgpctl` 2.1.0; rebuild it with the cgprofile 3.0.0 CLI (`cgprofilectl`) (2026-11-09)
+
+**Status:** OPEN (filed 2026-11-09); priority should-fix. Source: `HANDOFF-STATE-20261107.md` (22:25Z "Backlog to file"), `reports/v1001-cockpit-EXEC-LOG.md` (21:46Z); runner-side counterpart NC-22 in `scripts/netcup/KNOWN_ISSUES_TODO_BACKLOG.md`.
+**Finding.** `pip/wheels.list` (line 20) lists `cgprofile` and documents the clients `cgprofile` and `cgprofilectl` (MDT-048), but the image running on v1001 on 2026-11-08 held only the 2.1.0 client `cgpctl` (the cut-over agent installed 3.0.0 on the host and recreated the cockpit container from that old image, `v1001-cockpit-EXEC-LOG.md`). `SKILLS_CLIS` was extended with `cgpctl` (CHANGES.md line 107); check it against the client names the 3.0.0 wheel installs (`cgprofile/CHANGES.md`).
+**Fix.** Rebuild the image with the 3.0.0 wheel (hash-pinned from the release), update `SKILLS_CLIS`, the docs tables and `scripts/test_release_flow.py` (line 101) to the names the wheel installs, and add an image check that `cgprofilectl --version` reports 3.0.x and `cgpctl` is absent or an explicit shim.
+**Close when.** The rebuilt image reports `cgprofilectl` 3.0.x in a container, the image check is in the registered gate, and NC-22 is closed from it.
+
+## MDT-091 - git worktree sprawl: no pruning policy or tool; 44 directories (~8.6 GB; 37 registered plus 7 unregistered, audit of 2026-11-09 01:02Z) sit under `/workspaces/vbpub/.worktrees` (2026-11-09)
+
+**Status:** OPEN (filed 2026-11-09); priority should-fix (feeds MDT-089: every worktree is watched, indexed and searched). Source: `HANDOFF-STATE-20261107.md` (22:05Z memory entry: "prune merged worktrees"), `worktree-inventory-20261027.md` and `worktree-audit/` in the release-program directory; operator standing rule "we can't have hundreds of worktrees/feature branches" (memory `worktree-sprawl-cleanup`).
+**Finding.** Audit of 2026-11-09 01:02Z (`ls /workspaces/vbpub/.worktrees | wc -l`, `git worktree list | grep -c /.worktrees/`, `du -sh /workspaces/vbpub/.worktrees`): 44 directories totalling about 8.6 GB, of which 37 are registered worktrees, so 7 are unregistered directories (earlier snapshots of the same count: 41 directories and 8.4 GB at 2026-11-08 22:05Z, recorded in `HANDOFF-STATE-20261107.md`; the figures grow while agents add worktrees). They include merged branches (for example `rg-selftest-fix-20261108`, merged at `c6eb38a04`) and release scratch (`cmru-release-*-ciu-*`, `rel-assay`). `ciu worktree` creates them; nothing removes them after the merge, and the safe-cleanup recipe (archive ignored evidence, skip active, secret-bearing or younger than 24 h, `cmru abandon` from source) lives in an agent memory, not in the repo.
+**Fix.** Add the recipe as a documented, dry-run-first command (a `ciu worktree prune --merged --older-than 24h` verb, or a script under `mdt-cockpit/` if ciu owns no such verb): list merged-into-`origin/main` branches whose worktree is clean, archive ignored evidence, remove the worktree and delete the local branch, never touch a worktree with a running container or a lock, and print what it skipped and why. State a cap in AGENTS.md (for example 20 live worktrees, merged ones removed within a day). File the ciu half in `ciu/KNOWN_ISSUES_TODO_BACKLOG.md` (CIU-NN) if the verb belongs there.
+**Close when.** The verb or script exists with a test on a synthetic repository (merged, dirty, young and locked cases), the cap is in AGENTS.md, and the worktree count is back under it.
+
+## MDT-092 - record the explicit deferral of a generic host-setup profile applier and wizard (2026-11-10)
+
+**Status:** OPEN (filed 2026-11-10); priority design-record / low. Source: the 2026-11-10 session audit, `reports/host-pipeline-PLAN.md` G17, and `reports/host-setup-DESIGN-rev3.md` G4.
+
+**Problem.** Earlier host-setup designs asked for a generic profile applier and multi-service profile runner (H-4/HP-1), while the supported path is still the shell `install.sh` plus each standalone service's own install verb. The later decision explicitly deferred the generic runner, but that decision exists only in release-program design reports and is not durable in the owning project's user documentation. A future agent can therefore mistake the older H-4 design for current work and reopen a settled capability gap.
+
+**Evidence.** `reports/host-pipeline-PLAN.md` G17 records host-setup as a standalone profile applier as decided-not-built and says today's `install.sh` plus idempotent service verbs are sufficient. `reports/host-setup-DESIGN-rev3.md` G4 says to defer the multi-service host profile runner; if ever built, it is a separate `host-setup profile run` verb that knows only argv and sha256. `mdt-cockpit/host-setup/install.sh`, `mdt-host-setup-wizard.py`, and the per-service installers are the implemented surface.
+
+**Minimal solution.** Record the decision in `mdt-cockpit/docs/DESIGN-GUIDE.md` and a short pointer in `mdt-cockpit/host-setup/README.md`: the generic profile wizard/applier remains deferred until repeated real host profiles justify a separate argv+sha256-only runner. Current operators use `install.sh` and the standalone service install verbs. Add no new code and no speculative profile schema.
+
+**Where.**
+
+- `mdt-cockpit/docs/DESIGN-GUIDE.md` and `mdt-cockpit/host-setup/README.md`.
+- Existing `install.sh`, `mdt-host-setup-wizard.py`, and standalone service installers remain the implemented boundary.
+
+**Acceptance idea.** A docs test asserts the deferral, the reopen condition (multiple real profiles), and the argv+sha256-only boundary are stated in both places and point to the same decision. It refuses a generic profile implementation unless that decision is superseded.
+
+**Priority.** Low. The implementation is already coherent; the gap is decision durability.
+
+**Close when.** Both docs state the deferred decision and boundary, and a docs test prevents the older H-4 design from being presented as an active requirement.
+
+## MDT-093 - the built images never assert that Codex's native package and code-mode companion are present and executable (2026-11-10)
+
+**Status:** OPEN (filed 2026-11-10); priority should-fix. Source: `reports/codex-image-ANALYSIS.md`, ordered action 4; the 2026-11-10 session audit's omitted broad-sweep items.
+
+**Problem.** The image contract tests installed tools but do not assert Codex's npm package layout inside a built image. A future package-layout change, an incomplete platform package, or an `--omit=optional` build could leave `bin/codex` or `bin/codex-code-mode-host` absent or non-executable while build-time version output and the current tests remain green. Codex code mode then fails only at runtime after the image is published.
+
+**Evidence.** `reports/codex-image-ANALYSIS.md` finds that the companion ships inside the Codex npm platform package, that the current image is not immediately broken, and that action 4 is missing: an image-level runtime assertion that `codex-package.json` resolves and both executables are present. `mdt-cockpit/tests/runtime/test_image_contract.py` currently carries the runtime image-contract surface.
+
+**Minimal solution.** Add one image-level check to `tests/runtime/test_image_contract.py`. Inside each built image variant carrying Codex, locate the installed `@openai/codex` platform package and `codex-package.json`, validate its expected layout/version, and require both `bin/codex` and `bin/codex-code-mode-host` to be present, regular and executable. Also run the image's `codex --version` and require it to contain the expected version. Do not copy either binary out of the package and do not add a Dockerfile layer for this check.
+
+**Where.**
+
+- `mdt-cockpit/tests/runtime/test_image_contract.py`.
+- `mdt-cockpit/scripts/install_ai_cli_tools.py` remains the installer-side verifier and source of the expected package shape.
+- The registered `image-runtime-built` / `image-runtime` lanes execute the runtime tests against built images.
+
+**Acceptance idea.** A built image with the healthy package passes; a fixture or mutated image with a missing `codex-package.json`, missing code-mode companion, non-executable binary, or wrong package version fails that test by name. Hand-removing either executable assertion must make the focused runtime test fail.
+
+**Priority.** Should-fix. The check is small and prevents a silent code-mode regression in published images.
+
+**Close when.** The image runtime lane executes the package/executable assertion on every shipped variant carrying Codex, and the missing-companion or non-executable mutant is shown red.
+
+## MDT-094 - no single replayable host-profile manifest is written after an accepted install (2026-11-10)
+
+**Status:** OPEN (filed 2026-11-10); priority should-fix. Source: `reports/host-pipeline-PLAN.md` section 8.4; the 2026-11-10 session audit.
+
+**Problem.** Accepted host installs are evidenced across several reports and logs, but no single versioned file describes the ordered installed components, exact versions, hashes, image/tool digests, doctor results, reboot proof, and deliberate host-specific deviations. The next reinstall cannot replay the accepted state and a rollback install cannot compare against it without reconstructing facts by hand.
+
+**Evidence.** `reports/host-pipeline-PLAN.md` section 8.4 proposes `reports/hosts/<host>/profile-<date>.json` written after an accepted install and diffed against the reference profile. The plan records that the v1001 result and execution logs already contain every value but nothing collects them. The 2026-11-10 audit records the same gap as T-058.
+
+**Minimal solution.** Add one read-only collector that writes a deterministic host-profile manifest at the end of an accepted authorized install and again after verification/reboot. The manifest records the ordered `install` nodes with component, version, source artifact path or URL, sha256/digest, install result, doctor commands and captured results, reboot proof, and explicit deviations. It must derive values from the installed artifacts and recorded command output; a missing authoritative value is a named refusal or an explicit `unverified` field, never an invented default. The file is versioned per host and per install, and a dry-run diff against the prior/reference profile is reviewable before another apply.
+
+**Where.**
+
+- `mdt-cockpit/host-setup/`: a small stdlib manifest collector with fixture tests.
+- The accepted-install runbook and `mdt-cockpit/docs/CONSUMERS.md`.
+- The release-program host records path described by the plan (`reports/hosts/<host>/profile-<date>.json`).
+
+**Acceptance idea.** Fixtures prove deterministic output for the same facts, refusal or `unverified` for absent versions/hashes/doctor results, and a meaningful diff when one component version changes. Live acceptance writes and validates profiles for r1002 and v1001; a replay dry-run names every difference from the reference profile.
+
+**Priority.** Should-fix. This is the durable input to reinstall, rollback, and drift review.
+
+**Close when.** Every accepted install on both designated hosts produces a validated profile manifest, a replay dry-run consumes them, and the fields explicitly distinguish proved, unverified, and host-specific deviation.

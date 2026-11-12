@@ -1,0 +1,48 @@
+# test-policy's test lane is consumed through run-gate.toml in tester-unified (lanes r0-r1 and r2).
+schema_version = 2
+
+[lanes.test-policy]
+scope = "S1"
+rigor = ["R0", "R1", "R2"]
+enforcement = "gate"
+argv = [
+  "/opt/tester-venv/bin/python3", "-m", "pytest", "tests", "-q",
+  "--cov", "--cov-branch", "--cov-report=json:coverage.json",
+]
+env = { PYTHONPATH = "src", PYTHONDONTWRITEBYTECODE = "1" }
+env_passthrough = ["PATH"]
+budget = "120m"
+allow_argv_append = false
+
+[lanes.test-policy.isolation]
+snapshot_selection = "repository-minus-unsafe-symlinks"
+unsafe_symlink_omissions = [
+  "topos/tests/fixtures/inspect_files/_danger/passwd_link",
+  "topos/tests/fixtures/inspect_files/cgroup_escape/system.slice/ssh.service/dangerous_link/passwd_escape",
+  "topos/tests/fixtures/inspect_files/cgroup_nonreg/system.slice/ssh.service/memory.current",
+]
+
+[lanes.test-policy.judge]
+language = "python"
+source_roots = ["src/estate_test_policy", "src/flakehunt"]
+mode = "whole_target"
+# Every executable shipped module; the two docstring-only __init__.py files have no executable lines.
+targets = [
+  "src/estate_test_policy/plugin.py",
+  "src/estate_test_policy/policy.py",
+  "src/flakehunt/hunt.py",
+]
+fail_under = 100.0
+allow_excluded = false
+require_branch = true
+
+[lanes.test-policy.judge.coverage]
+format = "coverage-py-json"
+artifact = "coverage.json"
+
+[lanes.test-policy.judge.mutation]
+jobs_max = 4
+max_mutants = 10000
+operators = ["python:compare-swap", "python:boolop-swap", "python:bool-const-flip", "python:falsy-swap"]
+budget_per_candidate = "auto"
+liveness = true

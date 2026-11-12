@@ -152,6 +152,13 @@ SPEC §9.
 | RG-132 | per-candidate resource metrics are not yet carried into Run-Gate history and footprint data | Enhancement | OPEN 2026-10-30; PR3 adds candidate RSS p95/sample count to history for worker selection; footprint and other metrics remain |
 | RG-133 | the translated generated preload source path was not checked against Docker mount delimiters | Minor | FIXED IN THIS BRANCH (RG-241); `test_relaxed_preload_rejects_translated_source_delimiters` |
 | RG-143 | native R2 worker selection does not derive a matching container CPU cap or report repeated RAM-target overshoot | Enhancement | OPEN; split from RG-131's deferred PR0 follow-up |
+| RG-255 | `TestRg109InterruptedClient` couples client completion to stdout-pipe EOF and a fixed 60 s deadline; the immediate process-lifecycle neighbours repeat the pattern | Minor | FIXED 2026-11-10; file-backed capture, process-event waits, ready/release stdout-holder and controlled-clock regressions; next ID after main RG-254 |
+| RG-261 | lanes cannot require a healthy ciu stack or receive instance-derived endpoints, so operators hand-source env and suites fail late | Medium | OPEN 2026-11-11 |
+| RG-262 | no per-lane secret-file mounts; one lane's credentials are forwarded to its lane process through `docker exec` on a persistent runner | Medium | OPEN 2026-11-11 |
+| RG-263 | delegated mutation lanes run an expensive baseline without first proving the requested comparison base changes the lane's declared source scope | Medium | OPEN 2026-11-11 |
+| RG-264 | native R2 worker/resource identity semantics vary by Assay generation and the user docs need an explicit version boundary | Major | RESOLVED 2026-11-11 (Assay B529; versioned docs) |
+| RG-265 | native R2 cannot be sharded across containers, merged, carried over a judge change or restricted to a candidate list from Run-Gate | Enhancement | FIXED IN THIS BRANCH (run-gate-r2-flex-20261111) |
+| RG-266 | `jobs = "auto"` places one R2 worker per CPU, so I/O phases leave CPUs idle | Enhancement | FIXED IN THIS BRANCH (run-gate-r2-flex-20261111) |
 ---
 
 ## RG-1 — conjunction lanes silently drop `--worktree` and `--allow-dirty`
@@ -6135,11 +6142,12 @@ If every other claim and evidence entry passed, map it to infrastructure
 `ERROR`. Preserve `BUDGET_EXCEEDED` when another result has that status, and
 preserve product `FAIL` when another result is `FAIL`, `INCONCLUSIVE`, or a
 different `NO_MEASUREMENT`. Malformed arrays or records map to `ERROR`; the raw
-Assay outcome and reason remain in the result. The observer launch guard
-derives the host Docker GID from the root-owned `/run/cgprofile` control
-directory's numeric group instead of the devcontainer's possibly unrelated
-`docker` group-name entry, and refuses if the source is not root-owned, has a
-non-root group, and mode `0770`.
+Assay outcome and reason remain in the result. **Historical rule, superseded
+by RG-243 (2026-11-07):** the observer launch guard derived the host Docker GID
+from the root-owned `/run/cgprofile` control directory's numeric group instead
+of the devcontainer's possibly unrelated `docker` group-name entry, and
+refused if that source was not root-owned with a non-root group and mode
+`0770`.
 
 **Oracle:** reason-specific tests prove an isolated R2 observer refusal maps
 to ERROR, independent R1/R3 failures and evidence failures remain FAIL, a
@@ -7445,33 +7453,28 @@ one tester-lane smoke on the real image; regression tests for RG-106's `invoker`
 **Dependencies and order.** First package of the lane-uid rollout (RG-151, then TB-13, then B211 and KI-114 in parallel, then RG-153).
 Independent of RG-152. After branch fix-r1002-gate-ownership merges (RG-150).
 
-## RG-152 — docker and observer gids are derived by `stat` of the sockets actually used; the negative assertion covers both docker-class gids
+## RG-152 — observer and Docker GID sources follow the host launcher contract; level groups stay distinct
 
-**Status:** OPEN. Filed 2026-11-04.
+**Status:** PARTLY SUPERSEDED by RG-243 (2026-11-06), amended 2026-11-07. The current source order is the explicit `RUN_GATE_HOST_DOCKER_GID` override, then `MDT_HOST_DOCKER_GID` from the host launcher. RG-243's Docker API socket-owner fallback is dropped: the API socket's GID describes access to that socket and can differ from the host Docker group when a proxy or relay owns it. If neither variable is set, Run-Gate refuses and names both; it does not inspect the Docker socket node. Therefore the old Docker-socket-node checks are moot and removed. The new preflight still rejects control and observer socket GIDs equal to Docker, rejects a control socket in group 0, and requires the observer GID to differ from both Docker and control. Obsolete here: the `/run/cgprofile` directory-GID clauses (level directories are root-owned in the new layout) and the `docker exec` carrier fallback (removed by RG-156). Remaining open scope: non-mdt, no-cgprofile acceptance and broader table coverage beyond RG-243.
 
-**Problem.** `run_gate.py:8700-8712` asserts the observer gid differs from the docker gid, derived by `stat` (correct), and `ctl.sock` is reached
-through the cockpit's inherited `docker` gid. With the fixed `mdt-docker` group (mdt-cockpit MDT-053, gid 2751) there are two docker-class gids on
-an mdt host (`mdt-docker` and the host `docker` group), and on a non-mdt host there is only one, possibly under a different name.
+**Original status:** OPEN. Filed 2026-11-04.
 
-**Decision record (operator, 2026-11-04).** Every consumer derives gids by `stat` on the socket it mounts or connects to; nothing reads a
-configured docker gid and nothing requires the mdt group. Requirement: repo tools must keep working when the user does NOT use the mdt cockpit.
+**Problem (original filing).** `run_gate.py` asserted observer separation using socket and directory GIDs, while `ctl.sock` access depended on the cockpit's inherited `docker` GID. The original proposal addressed proxy sockets by statting the socket node; the 2026-11-07 amendment instead uses the launcher's host Docker GID as the authority.
+
+**Decision record (operator, 2026-11-04; amended 2026-11-07).** Original decision: derive GIDs from socket nodes, never group names. Current decision: consumers receive the host Docker GID as numeric `MDT_HOST_DOCKER_GID`; Run-Gate retains `RUN_GATE_HOST_DOCKER_GID` as an explicit override. Neither group databases nor the Docker API socket owner are authoritative. This keeps non-mdt use while avoiding a proxy socket's unrelated GID.
 
 **Design.**
 
-- Replace any docker-gid lookup (including the fallbacks that read `DOCKER_GID` or `getgrnam("docker")`) with `os.stat()` on the
-  resolved docker socket (`DOCKER_HOST` when `unix://`, else the default) and on the `/run/cgprofile` and `/run/cgprofile/observer` directories.
-- The observer assertion becomes: observer gid differs from the docker-socket gid AND from the `/run/cgprofile` directory gid
-  (which is `mdt-docker` on an mdt host, per CP-43). On a host without cgprofile the existing infrastructure refusal stays.
-- ctl access: try `ctl.sock`; on `EACCES` fall back to the existing `docker exec` carrier (`run_gate.py:688,711`) while the container deployment
-  exists, then report a clear "add yourself to the directory's group or CGPROFILE_ALLOW_UIDS" message naming the gid read by `stat`.
+- Current source order: `RUN_GATE_HOST_DOCKER_GID`, then `MDT_HOST_DOCKER_GID`; both are positive decimal values. If neither exists or the selected value is malformed, refuse by name. Do not stat or otherwise inspect the Docker API socket: its GID may be assigned by a proxy and is not the host Docker group fact.
+- The observer assertion is: observer gid differs from the launcher-provided Docker GID AND from the control socket GID. Level-directory GIDs are irrelevant to socket access. On a host without cgprofile the existing infrastructure refusal stays.
+- Control access: require a non-root control-socket GID distinct from Docker, then require the caller's supplementary groups to include the control GID unless its UID is 0. On `EACCES` or missing membership, name `cgprofile-control` and the devcontainer `--group-add` remedy. The `docker exec` carrier remains removed by RG-156.
 - Forwarding to lanes: only the observer gid is added as a supplementary group, never the socket group (unchanged).
 
 **Acceptance criteria.**
 
-- Table tests over (docker gid, mdt-docker dir gid, observer gid) cases: equal observer gid is refused; distinct passes.
+- Table tests over Docker, control, observer, process UID and supplementary-group cases: Docker collisions and repeated level GIDs refuse; UID 0 and a caller with the control GID pass.
 - No reference to `DOCKER_GID`, `getgrnam("docker")` or the name `mdt-docker` in `run_gate.py` outside docs/tests.
-- **Non-mdt path.** A test with a fake docker socket of an arbitrary gid and no `/run/cgprofile` shows: docker use works, the cgprofile
-  features report "observer unavailable" cleanly (no mdt hint required), and no code path needs the mdt group.
+- **Non-mdt path.** A test with the host launcher-provided numeric GID and no `/run/cgprofile` shows Docker use works and cgprofile features report "observer unavailable" cleanly; no mdt group name or Docker API socket stat is required.
 
 **Test plan.** Unit tests with temp sockets and directories chowned to test gids where permitted, otherwise injected `stat` results.
 
@@ -7554,8 +7557,11 @@ so the exec carrier has no target.
 `daemon` and `transport` keys, `PROFILE_DAEMON_DEFAULT`, `PROFILE_TRANSPORTS`, `RUN_GATE_PROFILE_TRANSPORT`, the
 `daemon_not_running_reason`/`daemon_broken_reason` docker-stderr classifiers, the `docker ps` doctor check, the `report`
 wire verb, and the `profile_daemon`/`profile_transport` inflight fields (`profile_ref` carries `socket_path`). Each removed
-key or variable is refused by name at exit 2. The socket path is `[profile] socket_path` (default `/run/cgprofile/ctl.sock`);
-`resource_observer_version_preflight` now uses it as well (it used the default regardless of config). When the socket is
+key or variable is refused by name at exit 2. **Historical socket default,
+superseded by RG-243 (2026-11-07):** `[profile] socket_path` formerly defaulted
+to `/run/cgprofile/ctl.sock`; the current default is
+`/run/cgprofile/control/cgprofile.sock`. `resource_observer_version_preflight`
+now uses the configured path rather than a second default. When the socket is
 unreachable run-gate degrades as for an absent profiler and the one warning names the CP-31 cause tag
 (`socket-not-mounted`, `socket-missing`, `daemon-refusing`, `socket-permission`), classified client-side from errno and the
 socket directory because the socket carries no tag when nobody answers.
@@ -7651,3 +7657,510 @@ warning (RG-160 diagnostic) before changing code. Until then a differing single-
 race or plan-file gap in `_FakeCgprofileDaemon`, not load. Run 2 (r1002) did not hit it but failed a doctor test (`'[OK] profiler daemon'` missing from the doctor output), another intermittent failure of the same family.
 Both runs also failed `TestHistoryStoreReadableByTheReleasedReader` deterministically: the remote-gate checkout is built from a thin git bundle and carries only a few `run-gate-v25.*` tags, so RG-159's
 "tags present but no `run-gate-v24.>=3` tag" assertion fires. Remote `selftest` can therefore never be clean until remote-gate syncs all `run-gate-v*` tags (or the test skips on a tag-incomplete checkout).
+
+## RG-164 — `run_gate_profile` pytest plugin raised INTERNALERROR (unknown hook `pytest_xdist_node_collection_finished`) in any pytest without xdist (tnt 0.3.0 release gate)
+
+**Status:** FIXED 2026-11-05 (fix-tnt-gate-20261105).
+
+**Cause.** RG-146 (7273126b6) added the `pytest11` entry-point plugin `run_gate_profile`, loaded into every pytest in the tester venv. Its `pytest_xdist_node_collection_finished` hook has its hookspec only from pytest-xdist; tnt's lanes run `-p no:xdist`, so pluggy's `check_pending` raised `PluginValidationError` during collection (deterministic, not load-related).
+
+**Fix.** `@pytest.hookimpl(optionalhook=True)` on the hook; regression test registers the module in a real pytest config with `-p no:xdist` and runs `check_pending`. Any lane using `-p no:xdist` or a venv without xdist was affected (every consumer on the venv with the RG-146 wheel).
+
+## RG-165 — docs: the exec-mode container-name derivation rule is only in the source
+
+**Status:** FIXED on branch `rg-docs-20261105` (CONSUMERS.md "Container-name derivation rule (RG-165)" incl. environment name = ciu service name and a multi-runner recipe; DESIGN-GUIDE cross-reference; the missing-config refusal now also names declared `mode = "ephemeral"` environments, seam proposal (a); a `command-exit-map` ERROR verdict line echoes `last_output`, seam proposal (b); tests in `tests/test_run_gate.py::TestExecMode`); severity: docs (found adopting run-gate in netcup-api-filter, `netcup-api-filter@38f8731`). `CONSUMERS.md` shows only a declared `container_name` (and prose about a "ciu-derived" name). The rule, `<deploy.project_name>-<deploy.environment_tag>-<environment name>` read from the judged worktree's rendered `ciu.global.toml` (fallback: `network_name` minus `-network`, then `<prefix>-<env>`), lives only in `run_gate.py`. Wanted: state the rule in the exec-mode section, including that the ENVIRONMENT NAME is the service name, so a project with several runners (one per Python version) names its ciu services and environments consistently; add it to the per-project-type recipe for "app estate with its own runner".
+
+## RG-166 — docs: a plain `git worktree add` checkout cannot run exec lanes; the refusal's remedy does not say so
+
+**Status:** FIXED on branch `rg-docs-20261105` (the refusal now says the file exists only in a ciu-managed worktree, `ciu worktree create|adopt`, or the main checkout, and that a plain `git worktree add` checkout cannot run exec lanes; same in CONSUMERS.md and DESIGN-GUIDE; test asserts it); severity: docs. In a worktree made with plain `git worktree add`, `run-gate <lane> --dry-run` refuses: "needs a declared container_name or this worktree's rendered .../ciu.global.toml ... run 'ciu up --dir <test-runner stack> --deploy --healthcheck'". Neither the refusal nor `CONSUMERS.md` says that the file only exists for a ciu-managed worktree (`ciu worktree create` or `adopt`) or the main checkout, so the remedy cannot succeed on a plain worktree. Wanted: name `ciu worktree create|adopt` as the prerequisite in the refusal and in the "Worktree config and runner follow the JUDGED TREE" section.
+
+## RG-167 — an exec lane that declares `resources.memory` dies in the placement handshake when the runner prints to stdout from `LD_PRELOAD` (`[ksm-optin] KSM enabled ...`)
+
+**Status:** FIXED on branch `rg-167-168-20261105`: `wait_for_placement_barrier` ignores complete non-marker lines (bounded 64 KiB), accepts only the exact marker with the placement nonce, still refuses a wrong-nonce marker and a missing marker (EOF error quotes the last ignored lines). Root cause detail: the ciu shim already writes to stderr (`ciu/src/ciu/data/ksm-optin.c`, fd 2), but the barrier's `docker exec` is spawned with `stderr=STDOUT`, so the shim's line merged into the handshake stream; no shim change or image rebuild is needed. Tests: `test_unrelated_stdout_before_marker_is_ignored`, `test_marker_for_a_different_nonce_is_never_ignored`, `test_missing_marker_after_noise_is_still_an_error`, `test_endless_noise_before_marker_is_bounded`, `test_invalid_ready_marker_aborts_exec_wrapper`. Original report: severity: major (any ciu-governed runner with `ksm_optin` cannot use placed lanes). Found in netcup-api-filter (`netcup-api-filter@3786024`, run-gate 25.1.1): lane verdict `ERROR; reason placement wrapper emitted an invalid readiness marker: [ksm-optin] KSM enabled (PR_SET_MEMORY_MERGE=1)`. ciu's governance overlay preloads `tooling/ksm-optin/ksm-optin.so` into every process of the runner; each process, including the placement wrapper's helper, prints that line on stdout before the wrapper prints its marker. Workaround used: do not declare `resources.memory` (lane runs unplaced). Wanted: the handshake reads the marker as a line it recognises (prefix/regex on its own token) and ignores unrelated stdout lines, or documents that stdout must be clean; ksm-optin should write to stderr or be silent unless asked.
+
+## RG-168 — the cockpit's `MDT_COW_ROOT` is forwarded into an exec container that does not mount it, and assay then refuses the lane (`EXEC_FAILED: copy-on-write workspace failed: MDT_COW_ROOT does not exist`)
+
+**Status:** FIXED on branch `rg-167-168-20261105`: exec lanes (lane run and assay probes) forward `COWTREE_MODE=auto` + `MDT_COW_ROOT` only when `docker inspect` of the runner lists a mount destination equal to or above the path (lazy lookup, only when a root is set); otherwise both are dropped and the plan line reads `resource env (forwarded: ..., not forwarded (no mount): COWTREE_MODE, MDT_COW_ROOT)`; an inspect failure is an infra error. CONSUMERS.md "Copy-on-write root in an exec runner (RG-168)". Tests: `test_exec_cow_root_forwarded_only_when_container_mounts_it`, `test_exec_mount_lookup_is_lazy_and_callable`, `test_resource_env_log_names_the_unmounted_cow_root`, `test_container_mount_destinations_reads_docker_inspect`, `test_container_mount_destinations_inspect_failure_is_infra`. Original report: severity: minor/major (first R1 lane of a new consumer fails with a misleading cause). Found in netcup-api-filter (`netcup-api-filter@3786024`). run-gate prints `resource env (forwarded: COWTREE_MODE, MDT_COW_ROOT, RUN_GATE_IO_SYNC)` and passes the host path into the runner; assay validates it inside the container, where it does not exist, and refuses ("assay does not silently change to a weaker storage path"). Workaround: per-lane `resources = { cowtree = { mode = "off" } }`. Wanted: forward `MDT_COW_ROOT` only when the same path is a mount of the target container (or say in the plan line that it is not), and document in CONSUMERS that a runner without the CoW mount needs `cowtree.mode = "off"` per lane (an environment accepts only `resources.cpus`).
+
+## RG-169 — R2 mutation survivors in `lane_rigor_facts` / `cmd_list_json` (run-gate 25.1.1, checkout `b0a3a0aab`): `if env and not docker` And->Or, and `sort_keys=True` / `flush=True` True->False
+
+**Status:** FIXED on branch `rg-survivors-20261105` (test-only; no product defect): the `--list --json` path had no test that a host-mode environment is probed without docker, that a container environment is probed when docker is present, nor that the listing is key-sorted and flushed. Tests: `TestListJsonDerivedRigor::test_a_host_environment_is_asked_even_without_docker`, `::test_a_container_environment_is_asked_when_docker_is_present`, `::test_list_json_is_key_sorted_and_flushed`; each verified to fail with its mutation applied by hand.
+
+## RG-242 — lane container names do not say which repo/project is under test (`run-gate-<40-hex>-assay-r2-s4-<pid>-<epoch>`), and nothing machine-readable identifies a lane container
+
+**Status:** FIXED on branch `rg-container-names-20261105` (operator directive 2026-11-05; needs independent review before merge); severity: operability. A release/throwaway checkout is a directory named by commit, so `run-gate-<repo.name>-<lane>-<pid>-<epoch>` read as `run-gate-<sha>-...`; a person looking at `docker ps` could not tell the project, and tools (cancel recipes, remote-gate cleanup, campaign scripts) had to parse the name by prefix. Now `<repo>-run-gate-<project>-<lane>-<sha8>-<yymmdd-HHMM>-<ns9>` plus labels `run-gate.{repo,project,lane,commit,started,name-schema}` (+ `run-gate.job`/`run-gate.campaign` from `RUN_GATE_JOB`/`RUN_GATE_CAMPAIGN` when set). Consumers filter by label and keep the legacy `^run-gate-` match for containers started before the change. Tests: `tests/test_container_names.py`, `tests/test_run_gate.py::...test_command_lane_full_docker_argv`, `scripts/netcup/tests/test_remote_gate.py::test_job_cleanup_finds_label_and_legacy_names_once`.
+
+## RG-243 — Run-Gate's cgprofile preflight and defaults need the per-level host socket layout
+
+**Status:** FIXED on branch `sockets-rg-20261105`, amended 2026-11-07 for the no-docker-groups ruling; its default endpoint and in-lane target behavior were superseded by WP-E3 / RG-244 on 2026-11-07. Severity: major (phase-1 clients require the host socket cutover).
+
+At the time of this entry, Run-Gate used the per-level control and observer layout described above. WP-E3 / RG-244 records the current endpoint contract: the host process environment supplies both paths, and Run-Gate has no endpoint default or in-lane path translation. The remaining GID checks and strict `RUN_GATE_HOST_DOCKER_GID` then `MDT_HOST_DOCKER_GID` source order from this entry remain in force.
+
+Regression tests cover both GID sources and strict malformed-value refusals, the lack-of-source refusal, control and observer metadata and group collisions, UID 0 and supplementary membership, the mounted-directory lstat contract, missing-path cutover hints, and the daemon-advertised observer path.
+
+## RG-244 — Run-Gate cgprofile endpoints must come only from the host environment
+
+**Status:** IMPLEMENTED on branch `x02-e3-20261107` (WP-E3); requested gates and commit are recorded in the WP-E3 report. Severity: major (a consumer endpoint default can silently diverge from the host endpoints record).
+
+Run-Gate must not open `/etc/host-endpoints.env`, import `cli-extended`, or substitute a built-in socket path. It reads `CGPROFILE_CONTROL_SOCKET` when profiling is enabled or a lane needs the observer preflight, and reads `CGPROFILE_OBSERVER_SOCKET` only for observer lanes. Missing or empty required values fail through the infrastructure channel, name the variable, and direct the operator to `cgprofiled doctor` and the host endpoints record. `RUN_GATE_PROFILE=off` explicitly disables profiling; observer lanes still need the control endpoint for version preflight and the observer endpoint for the mount. `[profile].socket_path` is a named removed key with no compatibility behavior.
+
+Observer lanes retain the root-owned directory/socket checks, Docker/control/observer GID separation, and control-socket access preflight. The bind source and target are both `dirname(CGPROFILE_OBSERVER_SOCKET)` with read-only access; Run-Gate passes the unchanged endpoint as `ASSAY_RESOURCE_OBSERVER_SOCKET`. Assay lanes needing this host fact declare `ASSAY_RESOURCE_OBSERVER_SOCKET = "required-env:ASSAY_RESOURCE_OBSERVER_SOCKET"` in their existing infrastructure map. User docs and both RG55 contract mirrors describe the same behavior. Both endpoint values are shape-validated at resolution (absolute, `[A-Za-z0-9_./:@+-]`, no `..`/empty/`.` component, no trailing `/`, observer directory never `/`; the derived directory also passes `validate_docker_mount_path`, which additionally refuses a colon) and are never echoed in the refusal. `run-gate doctor` reports an unusable control endpoint as a WARN and continues. Recovery paths use the `profile_control_socket` recorded in the run record and report, rather than guess, when it is absent. The regression suite checks unset/set endpoint resolution, removed-key refusal, identity mount flags, required-env forwarding, and source absence of literal endpoint paths.
+
+## RG-245 — Run-Gate stops consuming a cgprofile watch when it receives additive state `unknown`
+
+**Status:** FIXED on branch `cgp-fs-20261107`; `run-gate selftest` passed with 3,074 passed, 1 skipped, and 100% diff line/branch coverage. Severity: minor (the parser reports a malformed verdict and stops draining a valid stream, so a later terminal `killed` line can be lost).
+
+The cgprofile watch contract includes `unknown` when the monitor cannot support a liveness conclusion. Run-Gate's parser accepted only the earlier state list, so `unknown` became a transport warning and ended stream consumption. Run-Gate now accepts `unknown`, records the event normally, emits no “lane stalled” warning for that informational state, and continues to receive a later `killed` verdict. The behavioral test sends `unknown` followed by `killed` through `ProfilerWatch._accept` and verifies the consumer returns the kill reason without a stalled warning. The same change is recorded in both byte-identical RG55 contract copies and Run-Gate CHANGES.md.
+
+## RG-246 — the selftest fake docker treats any `docker logs` of a container whose name contains `-f` as the streaming form
+
+**Status:** FIXED in 25.4.1 at `081b2e9f6` (re-review hardening `b86efa8c3`; merge `c6eb38a04`). Severity when filed: major for selftest reliability (a harness bug, about 1 in 16 selftest runs on one host class hung until the lane budget).
+
+**Finding.** The `fake_docker_stateful` shim (`tests/test_run_gate.py:18090`, the `case "$*" in *-f*)` at line 18187) decides "streaming `logs -f`" by a substring match over the whole argument string. Container names contain an 8-hex-digit hash (`...-mutation-<hash>-...`); a hash starting with `f` (1 in 16, derived from the per-run random tmp dir) makes the non-streaming evidence call `docker logs <name>` match, so it blocks in the shim's `while [ -f .hang ]` loop. `TestStallEndToEnd.test_a_silent_lane_is_stopped_with_evidence_and_error_status` (line 21262) then deadlocks inside `save_container_logs()` and every `.hang` test can do the same. Observed on r1002 and v1001: 3 of 20 selftest runs on 2026-11-08 hung at 56% and ended `INFRA:BUDGET_EXCEEDED` (about 20 minutes against a typical 255 s); the diagnosed run's cgroup showed 556 MiB of 2 GiB, no memory events, no pressure, so it is not a resource problem. The call log of the test shows five docker calls and no `rm`: run-gate detected the stall and reached the evidence capture.
+
+**Fix.** Match the flag on an argument boundary: loop over `"$@"` and test `[ "$a" = "-f" ] || [ "$a" = "--follow" ]`. Add a test that a container named `...-f0000000-...` captures evidence without hanging.
+
+**Close when.** The new test passes and the old substring match, re-applied, fails it. This acceptance is met by `tests/test_run_gate.py::TestStallEndToEnd::test_f_prefixed_container_name_captures_evidence_without_hanging` and `::test_follow_flag_is_still_matched_as_a_whole_argument`; the fake shim's `-f|--follow` whole-argument match is the shipped fix.
+
+**Source.** `reports/r1002-selftest-stall-REPORT.md` (recommended fix 1; evidence under `logs/r1002-selftest-stall-20261108/`).
+
+## RG-247 — `save_container_logs` has no timeout, so evidence capture can block the removal of a stalled lane
+
+**Status:** FIXED in 25.4.1 at `081b2e9f6` (merge `c6eb38a04`). Severity when filed: minor product hardening.
+
+**Finding.** `save_container_logs` (`run_gate.py:8269`) runs `docker logs <name>` with `subprocess.run(..., capture_output=True, text=True)` and no timeout, although its docstring says evidence is best-effort and "the lane result stands". A wedged docker daemon (or the RG-246 shim) blocks it, and the following `docker rm -f` of the stalled lane never runs.
+
+**Fix.** Pass a bounded timeout (for example 60 s), treat `TimeoutExpired` as "capture failed" (return None, disclose it by name), and continue to the removal.
+
+**Close when.** A test with a `docker logs` that never returns shows the capture abandoned within the bound and `rm -f` still issued. This acceptance is met: `CONTAINER_LOG_CAPTURE_TIMEOUT_SECONDS` is 60 seconds, and `TestStallEndToEnd::test_evidence_capture_timeout_still_removes_the_stalled_container` pins the timeout and the following removal.
+
+**Source.** `reports/r1002-selftest-stall-REPORT.md` (recommended fix 2).
+
+## RG-248 — the end-to-end stall tests have no per-test timeout, and selftest has no shorter lane budget
+
+**Status:** FIXED for the stated acceptance in 25.4.1 at `081b2e9f6` (merge `c6eb38a04`). Severity when filed: minor. The optional shorter selftest budget and queue retry recommendation was not adopted and is not part of this closure.
+
+**Finding.** A hang in an end-to-end stall test (`TestStallEndToEnd`) burns the whole 20 minute selftest lane budget before run-gate cancels it as `INFRA:BUDGET_EXCEEDED`, against a typical run of 252-256 s. The host queue's own cancel is 60 minutes.
+
+**Fix.** Give the stall tests a per-test timeout (for example 120 s) so a hang fails that one test with a traceback. Optionally set a shorter budget for the selftest lane (about 900 s) and, in the host queue, treat `INFRA:BUDGET_EXCEEDED` on selftest as "re-run once" before escalating.
+
+**Close when.** A hanging stall test fails by itself within the per-test bound. This acceptance is met by `TestStallEndToEnd`'s autouse 120-second `alarm_guard`, which converts a hang into a normal test failure before the lane budget. The shorter selftest budget / one-retry recommendations remain future tuning, not a shipped claim.
+
+**Source.** `reports/r1002-selftest-stall-REPORT.md` (recommended fixes 3 and 4).
+
+## RG-249 — an inflight record whose owner lives in another PID namespace cannot be cleared by run-gate
+
+**Status:** OPEN (filed 2026-11-08). Severity: minor (blocks the lane until an operator edits state by hand).
+
+**Finding.** `.run-gate/inflight/<lane>.json` records the owning client pid. When the owner died in a different PID namespace (a devcontainer or Codex client killed or OOM-restarted), `resolve_inflight` (`run_gate.py:15734`) still treats the record as live: both a plain run and `--fresh` refused, even with the container exited hours earlier. Seen twice: after the devcontainer OOM kill at 03:41Z on 2026-11-08 (two `resume` tries only "followed" the dead run until the record was moved aside by hand, `shard-move-s4`), and `pwmcp/.run-gate/inflight/r1.json` left by a dead Codex client (pid 238439) before the pwmcp 4344 fix round. Both were solved by moving the record aside, with no supported command.
+
+**Fix.** Give run-gate a supported way to clear it: when the recorded pid cannot be checked (not visible in this PID namespace) and the named container is exited or gone, treat the record as stale and say so by name; or add `run-gate inflight clear <lane>` that refuses while the named container is running. Either way disclose what was cleared.
+
+**Close when.** A test with a record owned by an invisible pid and an exited container runs fresh with the disclosure, and the same record with a running container still refuses.
+
+**Source.** `reports/shard-s4-FINAL-REPORT.md` (timeline 11:02Z), `reports/pwmcp-4344-fix2-REPORT.md` (tool finding).
+
+## RG-250 — a lane with `resource_observer` needs the observer socket even with `RUN_GATE_PROFILE=off` (25.0.2 wrapper contract)
+
+**Status:** OPEN (filed 2026-11-08). Severity: minor, documentation or contract.
+
+**Finding.** `preflight_profile_endpoints` (`run_gate.py:1036-1042`) requires the control socket when profiling is enabled or the lane declares `resource_observer`, and the observer socket for every observer lane. `RUN_GATE_PROFILE=off` therefore waives profiling but not the observer preflight. On 2026-11-08 the reinstalled v1001 refused `assay-r2-s13` ("cgprofile control socket /run/cgprofile/ctl.sock unreachable ... socket-not-mounted") although the campaign wrapper sets `RUN_GATE_PROFILE=off`; the same lane ran on the controller only because the controller has the socket. The log line "in-process watch - profiling disabled" appears for either host and does not tell the two cases apart.
+
+**Fix.** State the rule in SPEC and in the refusal text ("this lane declares resource_observer; `RUN_GATE_PROFILE=off` does not waive it"), and decide whether an explicit flag may waive the observer for a lane whose R2 judgement does not need it (never a silent default; it changes resume identity if done through the lane declaration).
+
+**Close when.** The refusal text names the cause and SPEC states the rule; if a waiver is added, a test covers both the flag and the refusal.
+
+**Source.** `reports/shard-s13-REPORT.md` (why v1001 refused), `reports/v1001-reinstall-EXEC-LOG.md` (s13 resume refusal).
+
+## RG-251 — three in-repo r2 lanes run `assay.cli` from source without `libraries/cowtree/src` on PYTHONPATH and die with `ModuleNotFoundError: cowtree` in 4 seconds
+
+**Status:** OPEN (filed 2026-11-09). Severity: should-fix (the lanes cannot run on a host or image whose tester venv has no cowtree wheel; they only worked while it was installed). Found by the v1001 cockpit agent after the cut-over (2026-11-08): `scripts/gstammtisch-guide` r2, `scripts/damon-analysis` r2 and `scripts/debian-install-v2` r2 each failed in about 4 s.
+
+**Finding.** The three lanes run the in-repo assay straight from source and set only `PYTHONPATH={worktree}/assay/src` (debian-install-v2 adds `libraries/cli-extended/src`), but assay loads `cowtree` (`assay/src/assay/_cow_workspace.py:22`, lazily, when copy-on-write candidate trees are requested) and the lanes do request them. The lines: `scripts/gstammtisch-guide/run-gate.toml:50`, `scripts/damon-analysis/run-gate.toml:50`, `scripts/debian-install-v2/run-gate.toml:78`. `assay/run-gate.toml:59` and `:84` already carry `{worktree}/libraries/cowtree/src`; these three were not updated when cowtree became an assay import. No other `run-gate.toml` in the tree uses the source-PYTHONPATH form without it (checked with `git grep` on origin/main at `2f7f386cc`).
+
+**Fix.** Add `:{worktree}/libraries/cowtree/src` to the `export PYTHONPATH=...` of the three r2 lanes (the lane env, not a venv install, so a clean tester image works), and add a guard so it cannot recur: a docs/lane test that every lane argv containing `{worktree}/assay/src` also contains `{worktree}/libraries/cowtree/src` (or a smoke lane `python -c "import assay.cli"` with that PYTHONPATH). Decide whether assay should instead vendor the path itself (a `sys.path` entry resolved relative to the assay source tree) so source-run consumers need no PYTHONPATH knowledge; the lane-level fix is the minimum.
+
+**Close when.** Each of the three r2 lanes starts its assay run on a host without a cowtree wheel in the tester venv (at least `python -c "import assay.cli"` under the lane env passes), and the guard test fails if the path is removed again.
+
+**Source.** `HANDOFF-STATE-20261107.md` (22:25Z entry, "Backlog to file"); `reports/v1001-cockpit-EXEC-LOG.md`.
+
+## RG-252 — run-gate 25.4.0 `host_docker_gid()` requires `RUN_GATE_HOST_DOCKER_GID` or `MDT_HOST_DOCKER_GID`, and no publisher provides either on a host without mdt host-setup
+
+**Status:** OPEN (filed 2026-11-09). Severity: should-fix (decision plus small change; the v1001 cockpit works only because the value was set by hand).
+
+**Finding.** `run_gate.py:8846-8877` takes the host Docker GID only from `RUN_GATE_HOST_DOCKER_GID` or `MDT_HOST_DOCKER_GID` and refuses otherwise ("host Docker GID is unavailable; set ..."); the docstring rules out the Docker socket's owning GID on purpose (a proxy or relay can give the socket another access group). The value is meant to come from "the host launcher", which today means mdt host-setup. On a host with mdt host-setup the record carries `MDT_HOST_DOCKER_GID` (see MDT-086 in `mdt-cockpit/KNOWN_ISSUES_TODO_BACKLOG.md`); on a host reinstalled without host-setup (v1001, 2026-11-08) nothing publishes it: the endpoint record `/etc/host-endpoints.env` carries the CGPROFILE_* values but not the Docker GID. The cockpit agent had to set `MDT_HOST_DOCKER_GID=990` as a container-only env var by hand in `start-cockpit-runner-cgprofile.sh` (evidence `v1001/cockpit-20261108/`). Related: GID 986 is `CGPROFILE_CONTROL_GID`, which the cockpit receives; the observer lane gets `--group-add 985` from `CGPROFILE_OBSERVER_GID` in the record (`reports/v1001-cockpit-EXEC-LOG.md`). The Docker GID has no equivalent record key. The other host-without-host-setup gap seen the same day, the slice check of `assay/tools/cgroup-parent.sh` ("Docker-host unit dev-interactive.slice is not a loaded installed slice"), is filed as NC-25 in `scripts/netcup/KNOWN_ISSUES_TODO_BACKLOG.md`.
+
+**Decide.** Who publishes the Docker GID. Options: (a) the owning installer adds an endpoint-record fragment (for example `DOCKER_HOST_GID=` in `/etc/host-endpoints.d/docker.env`, published through `augeaswrap endpoints` with the numeric group resolved at install time, never from the socket at run time by a consumer) and the cockpit launcher maps it to `MDT_HOST_DOCKER_GID`; (b) the cockpit launcher stats the real host socket before the container starts (host side, where the group is meaningful) and passes the value, documented as the supported path; (c) keep manual. Prefer (a) with run-gate unchanged (the strict-source rule stays), and have the cockpit start script (NC entry, see NC-21) read the record.
+
+**Fix.** Implement the chosen publisher, document it in `run-gate-project/CONSUMERS.md` next to the other host endpoints and in the runner README, and add a launcher test that the variable is present and matches `^[1-9][0-9]*$` before run-gate starts.
+
+**Close when.** A freshly reinstalled host without host-setup starts the cockpit with the Docker GID provided by the documented publisher, with no hand-set variable, and a run-gate lane that needs it passes.
+
+**Source.** `HANDOFF-STATE-20261107.md` (22:25Z entries); `reports/v1001-cockpit-EXEC-LOG.md`.
+
+## RG-253 — design: exact per-lane PASS verdict reuse
+
+**Status: DESIGN** (2026-11-09). Design: [`docs/DESIGN-verdict-reuse.md`](docs/DESIGN-verdict-reuse.md).
+
+**Finding.** Run-Gate history is best-effort telemetry keyed by commit and selected resource modes; it is not a reusable verdict authority. Release qualification can repeat the same deterministic R1 and coverage work, while some lanes prove live facts and must always execute.
+
+**Design contract.** Use a closed, recomputable `identity_components/1` object covering the lane/kind, selected-tree manifest, snapshot manifest, complete visible-ref digest, configuration, Assay and Run-Gate payloads, SCM context, arguments/environment/resources, immutable tester image, runtime/plugins, vendor/wheel dependencies, build context, and resolved R1 base. Only Run-Gate writes PASS records: after a live PASS it stages a non-reusable candidate, then promotes it only after Run-Gate independently revalidates the candidate identity, immutable snapshot, visible refs, clean tree, and lane outputs using the same read-only validator as CMRU. CMRU may request promotion using the public candidate nonce only; there is no JSON receipt or caller-written success assertion. V1 lookup and candidate creation require an immutable CMRU gate-snapshot view; mutable direct invocations remain live-only. Every `exec`, `host`, and `bare-host` environment is `never` in v1 because image identity alone cannot validate a persistent runtime. CMRU requests reuse only for a deterministic leaf lane with a proven empty prep read set and discloses every hit. The current full-suite `assay` and `coverage` lanes remain live because both include `cmru/tests/test_w3_prep_changelog_preflight.py`, which reads `cmru/CHANGES.md`; so do `ref-probe`, `installed-wheel-live`, R2, the independent coverage canary, and all network/time/host-dependent lanes. Release-prep-only paths are project-declared and omitted from the digest only for lanes with a proven empty read set; every lane with non-empty or unknown `release_prep_reads` is `never`, even when its prep paths are unchanged.
+
+**Measured opportunity.** Investigation measured the Assay lane at ~1,249 s (41.8%) and coverage at ~751 s, but these are gross upper bounds, not current v1 savings: both current full-suite selections read `cmru/CHANGES.md` and therefore stay live. Verdict reuse saves 0 s in the current CMRU layout until a later design establishes a complete read-free selection. The old 4a103 PASS is not reusable because it has a resource warning and no verified Run-Gate payload identity. No legacy backfill.
+
+**Implementation closeout.** Implement only after the protected persistent evidence-root trust boundary and an immutable eligible lane view are available. The CMRU promotion request follows its post-lane Run-Gate identity recheck and successful `finish_lane`, but Run-Gate rechecks the same snapshot/ref/output contract itself; a forged success receipt, skipped finalization, or rejected output must leave only a staged candidate and a lookup miss. Add deterministic identity/schema, snapshot race/ref verification, promotion ordering, persistent-runtime veto, record-ordering, cache miss/refusal, coverage-completeness, forged/replayed/other-invocation receipt, and always-live prep-reader tests. Hand-mutate every new guard once and add a test for every survivor. Keep the README, DESIGN-GUIDE, and CONSUMERS docs in sync in the implementation change.
+
+## RG-255 — the RG-109 client test waits for stdout-pipe EOF under a fixed 60 s deadline
+
+**Status:** FIXED IN THIS BRANCH (2026-11-10). Severity: Minor; a test-harness
+host-speed dependency made the registered `selftest` lane fail under load.
+RG-254 landed on `origin/main` in `6355cd907`; RG-255 is the next free ID on
+this branch.
+
+**Finding.** The test methodology report's `Gate` item 10 recorded
+`TestRg109InterruptedClient::test_a_sigterm_during_the_wait_removes_the_container_and_clears_the_record`
+failing once at `0a606b192` (1 failed, 3,079 passed) during a run flagged
+memory-stall contaminated, then passing unchanged on retry (3,080 passed).
+The failure was `client.communicate(timeout=60)` at
+`tests/test_run_gate.py:19151`. The `Popen` in the traceback already had
+`returncode: 2` and the expected interrupted output; its inherited stdout pipe
+never reached EOF because a descendant still held it. `communicate()` therefore
+treated the descendant's lifetime as part of client completion. This is a
+test synchronization defect, not a product cleanup or race defect.
+
+**Fix.** `_start_captured_process()` redirects stdout and stderr to a
+test-owned file. `_wait_for_captured_process()` waits on the client process
+event, closes the file, and reads the output. Completion no longer depends on
+every descendant closing the same pipe. The mechanical sweep covers the same
+class and immediate neighbours:
+
+- `TestRg109InterruptedClient::test_a_sigterm_during_the_wait_removes_the_container_and_clears_the_record`
+- `TestReattachAcrossADeadClient::test_a_killed_client_leaves_a_container_the_next_run_re_attaches_to`
+- `TestTwoClientsOneLane::test_the_second_client_follows_and_the_owner_reports_its_own_result`
+
+Those paths' 30 s, 3 s and 60 s synchronization deadlines are replaced by
+polling the actual record/container/log events. `_wait_for()` has no elapsed
+time oracle; the gate lane's own budget remains the hang failsafe.
+
+**Evidence.**
+`test_client_completion_does_not_wait_for_a_descendant_holding_stdout` starts
+a child that inherits its parent's stdout. A ready pipe makes the parent wait
+until the child is blocked on a test-owned release pipe; the test then proves
+the adopted child is live after the parent exits and releases/reaps it in
+`finally`. The earlier fixed-sleep version survived the exact
+`communicate(timeout=60)` mutation and was replaced by this handshake.
+`test_wait_for_does_not_treat_elapsed_time_as_an_event`
+uses a controlled clock that advances 60 s per poll; restoring the old 30 s
+deadline made it red, while unbounded event polling passed.
+
+**Source.** Controller session record dated 2026-11-10; registered selftest
+failure log for head `0a606b192bb044eb83a249081a5b0eea65273208` (methodology
+report, Gate item 10).
+## RG-254 — the fake log-stream shim can orphan its polling sleep during stall cleanup
+
+**Status:** FIXED 2026-11-10. Severity: test harness defect; host load widened a short process-registration race and made the selftest intermittently red.
+
+**Finding.** `TestStallEndToEndCommandLane.test_a_silent_command_lane_is_stopped_with_evidence_and_error_status` asserts that no direct child remains after `run_gate.main()` returns. The v1001 selftest at candidate `78908e3357e630ce883f3c5c7bc992ada8b6928c` failed that assertion with PID 16703 (`/home/vscode/vbpub-release-program-20261027/remote-gates/sat-selftest-20261109T122735-v1001/lane.log`; 1 failed, 3,079 passed, 1 skipped). `/home/vscode/vbpub-release-program-20261027/reports/test-policy-doc-REPORT.md` also records this test failing with PID 16708 at candidate `b8c00b6226a7cd20f790f8dedba52427a4104608` (1 failed, 3,079 passed, 1 skipped).
+
+**Cause.** `fake_docker_logstream()` started `sleep 0.05` in the background and assigned `$!` on the next shell command. If Run-Gate's stall cleanup sent TERM in that interval, the trap saw an empty `__sleep_pid` and exited without killing or waiting for the helper. The test's child-subreaper then adopted that still-running child. This is not an early `/proc` snapshot or a Run-Gate cleanup defect: `await_container()` terminates and waits for its `docker logs -f` process, then joins the pump thread before returning. A controlled reproduction at base `28a321f50aa52125dcd38ab2f6e0bf997982d360` held a `sleep 30` child before PID registration; the assertion failed and identified `(PID 35, sleep)`.
+
+**Fix.** Normal polling uses foreground `sleep 0.05`, keeping the shell responsible for its child until it exits. A deterministic parameter of the end-to-end regression starts a 30-second child then holds the parent before `$!` registration until Run-Gate's stall cleanup sends TERM; the test trap defers exit until the parent captures, kills, and reaps that PID. The immediate `_direct_child_pids() == []` oracle remains in place, so a child that survives shim cleanup fails the test without host timing.
+
+**Close when.** Both natural and forced-window command-lane stall cases pass in tester-unified, and hand-mutating the TERM trap back to the pre-registration-unsafe PID check fails the forced case at the direct-child assertion. The required full clean-head `selftest` result is reported separately.
+
+**Evidence.** Failing run commit `78908e3357e630ce883f3c5c7bc992ada8b6928c`; report's separate failure commit `b8c00b6226a7cd20f790f8dedba52427a4104608`; deterministic red at base `28a321f50aa52125dcd38ab2f6e0bf997982d360`. On the clean focused head `93fb98fb9dc2ac78c67d58ca5ad5ad19c41a5184`, both regression parameters passed (2 passed, 2,557 deselected). The hand mutant reintroducing background polling with the original PID-only TERM trap failed both parameters at the direct-child assertion (adopted child PIDs 82 and 108; 2 failed, 2,557 deselected). Logs: `/home/vscode/vbpub-release-program-20261027/logs/rg-254-fix1-focused-green-20261110-deepseek.log` and `/home/vscode/vbpub-release-program-20261027/logs/rg-254-fix1-focused-mutant-async-forced-20261110-deepseek.log`.
+
+## RG-260 — Run-Gate 25.0.2 lane-label lookup did not work during the s4 campaign, forcing name-based guarding and hand-applied limits
+
+**Status:** OPEN (filed 2026-11-10); severity: minor operability and compatibility investigation.
+
+**Problem.** During the CMRU s4 campaign, Run-Gate 25.0.2's lane-label lookup did not work. The guard fell back to container names, and CPU/memory limits had to be applied by hand with `docker update`. Current source adds explicit `run-gate.*` identity labels and label-based discovery, but no backlog item records the old-version failure or the supported-version boundary, so a host still using 25.0.2 can repeat the manual and error-prone path without a named remedy.
+
+**Evidence.** `reports/shard-s4-FINAL-REPORT.md` anomaly 2 records the 25.0.2 failure and the name-based fallback. Current Run-Gate records lane labels and a name that carries repo/project/lane identity in the RG-242 implementation and regression tests. The first condition has an execution environment and version that differ from the current source.
+
+**Minimal solution.** Verify the supported label contract on the exact versions used by r1002 and v1001. Add a focused acceptance check that starts a command lane and proves `docker ps --filter label=run-gate.lane=<lane>` finds exactly that container while the name fallback is not needed. If 25.0.2 cannot provide the contract, document it as unsupported for label-driven guarding and name the upgrade floor or a version-specific fallback. Do not add a silent fallback to names for current versions; absence of the expected lane is a refusal.
+
+**Where.**
+
+- `run-gate-project/run_gate.py`: lane identity labels and container discovery.
+- `run-gate-project/scripts/netcup/tests/test_remote_gate.py` if present, `run-gate-project/tests/test_container_names.py`, and the full-argv tests in `tests/test_run_gate.py`.
+- `scripts/netcup/runner/README.md`: supported version pair and guard procedure.
+
+**Acceptance idea.** On the installed host version, a fake or live Docker acceptance finds the running lane by label and refuses when no labelled lane exists. A 25.0.2 fixture either proves the label contract or refuses with an explicit unsupported-version message; name matching is never presented as equivalent to missing-label success.
+
+**Priority.** Minor. The current code has label support; the missing half is evidence and a named compatibility boundary for the hosts.
+
+**Close when.** The host-version acceptance is recorded, any unsupported version refuses by name, and the queue/guard runbook no longer instructs hand-applied `docker update` on a version that claims label-based guarding.
+
+## RG-256 — lanes cannot declare `network = "none"`, and the ephemeral lane container argv never adds `--network none`
+
+**Status:** CLOSED (2026-11-11); severity: should-fix (test isolation and reproducibility gap). Implementation, focused contract tests, hand-mutation results, and the clean-final-head selftest evidence are recorded in the WP-RG task report.
+
+**Problem.** `LANE_KEYS` has no network setting and the ephemeral lane argv never contains `--network`. A command or Assay lane that has no legitimate network dependency therefore silently inherits Docker's default bridge network. That makes host/network state part of a supposedly hermetic lane and gives a mutated command avoidable egress exposure.
+
+**Evidence.** `assay/docs/RUST-R0-SPIKES.md` on branch `rust-r0-20261110` (the design file is absent from `main`), Rust R-0 spike S6, found no per-lane network field and no `--network none` in the constructed ephemeral argv. The controller session record 2026-11-10 carried that S6 finding into this filing.
+
+**Resolution.** Add the closed `network = "none" | "default"` key to environments and lanes. Lane scope wins; an explicit key is valid only when the resolved mode is `ephemeral`. The effective `"none"` inserts exactly `--network none` into the disposable lane container argv. `"default"` emits no network option, including as a lane override of an environment's `"none"`. Absence at both scopes keeps the existing argv. Dry-run names the effective value and source. Admission and observer probes keep their own network behavior; bind-mounted cgprofile Unix sockets remain available in an isolated lane.
+
+**Where.**
+
+- `run-gate-project/run_gate.py`: `LANE_KEYS`, lane config validation, `run_container_lane`'s Docker argv construction, and dry-run rendering.
+- `run-gate-project/SPEC.md`, `README.md`, `CONSUMERS.md`, `LANE-AUTHORING.md`, and `docs/DESIGN-GUIDE.md`.
+- `run-gate-project/tests/test_network_policy.py`: config validation, precedence, full lane-container argv, dry-run disclosure, socket mount, and documentation-sync tests.
+
+**Acceptance test idea.** Environment and lane declarations accept only `"none"` or `"default"`; the lane wins, and the effective `"none"` produces exactly one `--network none` before the image in both dry-run and executed fake-Docker argv. Effective `"default"` and no declaration preserve the current argv. A lane declaring either value in host/exec mode refuses by name. Hand-removing the argv insertion, the vocabulary check, or the resolved-mode restriction makes its focused oracle fail; docs-sync covers SPEC, README, CONSUMERS, LANE-AUTHORING, DESIGN-GUIDE, and CHANGES.
+
+**Close when.** CLOSED 2026-11-11: lane/environment vocabulary and precedence, `--network none` argv, mode refusal, explicit-default and absent-key compatibility, dry-run disclosure, and cgprofile socket mounting are covered by focused tests. The probe-argv oracle verifies that `network = "none"` does not add a network option to an ephemeral environment probe; admission and observer probes retain their independently defined argv. Docs-sync locks the exact `--network none` mapping in both CONSUMERS and LANE-AUTHORING, along with the normative spec, README, design guide, and changelog. Hand mutations that inject the lane policy into the probe builder and replace the consumer mapping with “changes the disposable” are killed, as are the vocabulary, mode, and lane-argv guard mutations. The task report records the PASS selftest on the clean final head and exact commit-bound gate evidence. A recorded decision to reject lane-level network declaration remains the alternative close path, not the selected resolution.
+
+**Priority.** Should-fix. The implementation is small and makes network isolation a declared, testable lane property.
+
+## RG-257 — `io_sync = "relaxed"` exists but no checked-in gate environment uses it; enable it per environment and measure the A/B
+
+**Status:** OPEN (filed 2026-11-10); severity: performance enhancement with a host-safety qualification; no implementation in this documentation-only filing.
+
+**Problem.** Run-Gate supports `resources.io_sync = "relaxed"` and the eatmydata preload mount, but no lane/environment in the checked-in configs selects it. The obvious alternative, one central default, is wrong: a non-container host lane cannot receive the container-side `/etc/ld.so.preload` mount and would refuse or misreport. The performance benefit therefore remains unmeasured and unusable in the intended tester environments.
+
+**Evidence.** The controller session record 2026-11-10 records that `io_sync = "relaxed"` has existed since Run-Gate 24.2.0 and no lane uses it. Current validation accepts environment-level `resources.io_sync`; `run-gate.root.toml`'s `tester-unified` resources declare only `cpus`, and `cmru/run-gate.toml`'s `cmru-mutation` environment likewise selects the default strict mode.
+
+**Proposed minimal solution.** Keep strict as the host default. Select `io_sync = "relaxed"` explicitly on the ephemeral `tester-unified` environment in the central root config and on CMRU's `cmru-mutation` environment in its owning project config, after the A/B proves the required durability boundary. The setting remains environment-level, never project-wide or global, so bare-host and other non-container environments stay strict. `durable` remains a lane-only override where a particular test must survive host failure; the precedence and preload mount already exist.
+
+Run an A/B on representative heavy lanes (the CMRU mutation lane plus the run-gate full selftest or another documented I/O-heavy lane) with identical commit/image/resources, strict versus relaxed, recording wall time, lane verdict, and any filesystem semantic failures. A relaxed result with a different verdict is a failed measurement, not a speedup. Record the numbers in CONSUMERS/DESIGN-GUIDE and the footprint history by `io_sync`.
+
+**Where.**
+
+- `run-gate.root.toml`: `[environments.tester-unified.resources]`.
+- `cmru/run-gate.toml`: `[environments.cmru-mutation.resources]`.
+- `run-gate-project/run_gate.py`: environment resource resolution and `relaxed_io_sync_mount_flags`.
+- `run-gate-project/CONSUMERS.md`, `docs/DESIGN-GUIDE.md`, and `SPEC.md`.
+- `run-gate-project/tests/test_run_gate.py` and the CMRU config-resolution lane tests.
+
+**Acceptance test idea.** Config tests assert relaxed resolves only for the two named ephemeral environments and that a bare-host lane remains strict. A dry run shows the preload mount and `RUN_GATE_IO_SYNC=relaxed`. The A/B report records comparable PASS verdicts and times, and a deliberately mismatched verdict blocks adoption. Hand-removing the environment-level setting makes the focused config test fail; moving it to a global default makes the non-container-control test fail.
+
+**Close when.** The A/B records comparable PASS verdicts and resource/time evidence for the named heavy lanes, the per-environment selection is implemented only where the durability boundary is proven, a mismatched verdict blocks adoption, and config/dry-run tests plus the user documentation pass on a clean final commit. A recorded decision to retain strict mode also closes the item when it records the measured comparison or why measurement was deferred and leaves all environments explicitly strict.
+
+**Priority.** Medium. This is a measured performance opportunity with no unmeasured global change to host lanes.
+
+## RG-258 — test scratch and Assay temp state do not default to the CoW area, and command lanes do not receive the verified temp root
+
+**Status:** OPEN (filed 2026-11-10); severity: should-fix (root-disk pressure and unnecessary copies during large R2/R0 lanes); no implementation in this documentation-only filing.
+
+**Problem.** Assay's external state root is supported, but the checked-in central environment does not select a CoW-backed root. Command lanes (`kind = "command"`) do not perform the Assay state-root preflight or mount at all, so their `TMPDIR` and test scratch remain on the container/root filesystem. Large R2 mutation shards copy the judged tree and per-candidate scratch repeatedly; the controller session measurement attributes roughly 2.5 GB per shard to the root disk. CMRU also needs a declared infrastructure fact to map the Run-Gate-provided temp location onto its lane command's `TMPDIR`.
+
+**Evidence.** The controller session record 2026-11-10 records that CoW placement moves ~2.5 GB per R2 shard off the root disk while requiring no host-specific hardcoding in consumers. The current source confirms `state_root` is validated and resolved per environment, `assure_assay_state_root` returns immediately for non-Assay lanes, `with_state` is enabled only for Assay lanes, and `build_command_inner` has no verified temp-root prefix. Existing RG-38/RG-98 established durable Assay state and the safe `RUN_GATE_TMPDIR` versus `TMPDIR` split; this item extends that work to the CoW root and command lanes.
+
+**Proposed minimal solution.** Declare one explicit CoW-backed `state_root` on the central ephemeral `tester-unified` environment, with the corresponding host mount owned by the runner setup and verified by a live probe. Do not silently fall back to `<checkout>/.run-gate` when the configured CoW root is unavailable.
+
+Extend state-root preflight and mount coverage to command lanes, not only Assay. For every container lane with a verified root: export `RUN_GATE_TMPDIR`; export `TMPDIR` when the root is outside the judged worktree; and include the state mount in the docker argv. Refuse before the lane when the root or nearest existing ancestor is absent, non-directory, or unwritable. The root remains a container path and is never stat'ed through a host namespace translation.
+
+Add a CMRU infrastructure fact (`TMPDIR = "required-env:RUN_GATE_TMPDIR"` where appropriate) to command lanes that need the path, preserving RG-98's rule that an in-worktree root never becomes the Assay judge's `TMPDIR`. `--dry-run` prints the selected CoW root, the mount, and the command environment. Record an A/B of root-disk bytes/high-water mark, runtime, and PASS verdict for one representative R0 and R2 shard.
+
+**Where.**
+
+- `run-gate.root.toml`: `[environments.tester-unified]` `state_root`.
+- `run-gate-project/run_gate.py`: `_validate_environment`, `assay_state_root`, `assure_assay_state_root`, `container_mount_flags`, `build_command_inner`, and `run_ephemeral_lane`.
+- `cmru/run-gate.toml` and `cmru/assay.toml`: CMRU temp-path infrastructure.
+- `run-gate-project/CONSUMERS.md`, `docs/DESIGN-GUIDE.md`, `SPEC.md`, and `scripts/netcup/runner/README.md`.
+- `run-gate-project/tests/test_run_gate.py` and CMRU config-resolution tests.
+
+**Acceptance test idea.** A fake Docker fixture asserts both command and Assay lanes receive the configured state mount and verified temp variables; a missing/unwritable root refuses before command execution; an in-worktree root still withholds `TMPDIR` from the Assay judge. A command-lane fixture writes a scratch file and asserts it appears under the CoW root and not under the judged checkout or default root. The A/B records the root-disk reduction and equal verdicts. Hand-removing the command-lane mount or the preflight refusal must fail those tests.
+
+**Close when.** Command and Assay fake-Docker fixtures prove the configured CoW mount/temp contract and fail-closed preflight; the representative R0 and R2 A/B records equal verdicts with the root-disk evidence; and specification, consumer, design, and runner documentation pass with the focused tests on a clean final commit. A recorded decision that central CoW placement is unavailable also closes the item when it records the deployment blocker and keeps every environment's non-CoW behavior explicit rather than silently falling back.
+
+**Priority.** Should-fix. Large shards are already capacity-sensitive, and central CoW placement removes repeated root-disk pressure without changing test semantics.
+
+## RG-259 — the remote T3 host queue fixes a 60-minute cancel against 4-24-hour R2 budgets and lacks host pinning, resumable attempts, footprint return, and a supersede ledger
+
+**Status:** OPEN (filed 2026-11-10); severity: high; no implementation in this documentation-only filing.
+
+**Problem.** The T3 remote host queue currently cancels each remote run after a fixed 60 minutes, while registered R2 lane budgets range from 4 to 24 hours. A legitimate campaign is therefore killed long before Run-Gate's declared budget, and the next scheduling attempt has no complete contract for resuming it. The queue also lacks all facts needed to make placement and deduplication safe: a campaign is not pinned to the host that owns its state/image, per-candidate footprint history stays remote instead of reaching the placement controller, and multiple loops can operate on one host. There is no durable authoritative result ledger or latest-release-only supersede rule.
+
+**Evidence.** The controller session record 2026-11-10 records the queue's 60-minute cancel and R2 lane budgets of 4-24 hours, together with the absence of the host-pinning/resume/footprint/ledger controls. Related records are RG-38 (durable Assay state), RG-132 (candidate footprint data still incomplete), RG-248 (host-queue 60-minute cancellation), and `scripts/netcup/runner/remote-gate.py`'s per-run lifecycle.
+
+**Proposed minimal solution.**
+
+1. Run-Gate exposes the accepted lane `budget` in machine-readable `--list --json` form. The queue sets its per-attempt watchdog from that value plus one declared startup/cancel grace; the fixed 60-minute value is only a fallback for a lane whose budget cannot be read, and such a fallback must be disclosed in the ledger.
+2. A budget exit is classified separately from product FAIL and infrastructure ERROR. The queue requeues the same campaign with Assay's existing `--resume` state until the campaign completes or its declared total attempt budget is exhausted.
+3. Campaign start records an exact host pin, campaign id, release tag, repository, lane, image digest, judge identity, and state location. Resume refuses a different host/image/version rather than silently starting a fresh campaign.
+4. After each attempt the queue copies the bounded Run-Gate history/footprint record and candidate resource summary back to the controller. Placement reads only these copied facts; it never reaches into a test host.
+5. One host loop owns a host-scoped lock/lease. Duplicate loops either wait or refuse by name.
+6. `t3-results.tsv` is the append-only authoritative ledger: timestamp, release tag/version, campaign id, host, lane, attempt, exit class, Run-Gate budget, cancellation source, state/record reference, and superseded status. A newer release mark supersedes older unfinished work at scheduling time; never retro-run an older release after a newer release has started T3.
+
+Keep the queue control plane outside the judged tree and make every transition atomic. Do not infer a host from a path or choose one by load default.
+
+**Where.**
+
+- `run-gate-project/run_gate.py`: machine-readable lane inventory, budget/exit classification, history/footprint export.
+- `run-gate-project/SPEC.md`, `CONSUMERS.md`, and `docs/DESIGN-GUIDE.md`: T3 queue contract and ledger schema.
+- `scripts/netcup/runner/remote-gate.py`: per-run timeout, host pin, state collection, and resume evidence.
+- The host-sat queue implementation/documentation in `scripts/netcup/runner/` (its eventual supported location is also NC-24).
+- Tests in `run-gate-project/tests/test_run_gate.py` and `scripts/netcup/tests/test_remote_gate*.py`.
+
+**Acceptance test idea.** An offline queue simulator presents a 24-hour R2 lane and asserts the watchdog exceeds the lane budget; it does not cancel at 60 minutes. A simulated budget exit resumes the same campaign/host and increments the ledger attempt rather than restarting. A moved host/image or second live loop refuses. Footprint facts arrive locally. A newer release marks the older queued item superseded, while an already-running latest-release campaign continues. All scheduling decisions are deterministic under an injected clock. Removing each of timeout derivation, host pin, resume identity, host-loop lock, footprint copy, and supersede checks must fail its focused oracle.
+
+**Close when.** The offline queue simulator proves budget-derived watchdogs, resumable same-host attempts, single-loop admission, local footprint return, and latest-release supersede behavior in the acceptance contract; the ledger schema and operator controls are documented; and the focused Run-Gate and runner tests pass on a clean final commit. A recorded decision that the external queue is retired or cannot support T3 also closes the item when it disables that scheduling path explicitly and preserves the evidence for any in-flight campaign.
+
+**Priority.** High. A fixed one-hour watchdog makes the current T3 queue incapable of completing the campaigns it is meant to schedule.
+
+## RG-261 — a lane cannot require a healthy ciu stack or receive instance-specific endpoints
+
+**Status:** OPEN (filed 2026-11-11); severity: medium (late, confusing lane failures and operator-sourced state); reporter: the netcup-api-filter (naf) controller session; no implementation in this documentation-only filing.
+
+**Problem.** `forward_env` and `required_env` are static name lists. A lane that needs "this ciu stack is up and healthy" plus per-instance endpoints cannot declare either fact. Container names derive from the instance id and differ per worktree, so the operator must source environment files by hand and the suite otherwise fails late with an endpoint or connection error. RG-17, RG-19, and RG-23 establish the existing static allowlist/preflight behavior; none can resolve a running instance.
+
+**Evidence.** naf's `run-gate e2e` requires `set -a; . ./.env.services; set +a` and a manually exported `PLAYWRIGHT_SERVER_WS` before invocation; the recipe is only a comment block above `[lanes.local-build]` in naf's `run-gate.toml`. A planned on-demand `e2e-public` lane needs the public deployment stack up and healthy, credentials present, and endpoints belonging to this instance (PowerDNS, frontend behind the host edge, and real mail/netcup credentials).
+
+**Proposed minimal solution.** Add an optional lane table, `requires_ciu`, naming the required stacks and a closed set of environment values resolved from the instance. Preflight `ciu status --json` once before any lane starts, with three distinct refusal classes:
+
+1. `compose_project: null` means the path does not exist or is not a ciu stack. Refuse by naming the path and prescribe scaffolding or fixing the stack configuration, never `ciu up --dir`.
+2. A registered stack with `containers: []` is not started. Refuse with the matching `ciu up --dir <stack>` remedy.
+3. A required container that is present but unhealthy or not running refuses with its observed status and prescribes inspecting logs and restarting the service or stack as appropriate.
+
+A non-zero `ciu status` is "no determination" and an infrastructure refusal. Resolve values only from named status fields or explicit composition of a named container/service and lane-declared port, never from ambient env or a hardcoded instance name. `ciu/docs/CONSUMERS.md` section 13 is the source contract; if an endpoint needs facts it does not expose, extend that contract rather than parsing rendered TOML or Docker output opportunistically. Disclose resolved environment names, never credential values.
+
+**Where.**
+
+- `run-gate-project/run_gate.py`: `LANE_KEYS` and `_validate_lane()` validation, `resolve_environment()`, `preflight_required_env()`/`check_required_reaches_container()`, and the main preflight sequence before lane execution.
+- `run-gate-project/SPEC.md`, `CONSUMERS.md`, and `docs/DESIGN-GUIDE.md`: `requires_ciu`, its closed derivation grammar, refusal classes, and the `ciu status --json` dependency.
+- `ciu/docs/CONSUMERS.md` section 13 and the CIU status JSON producer for any missing machine-readable endpoint fact.
+- `run-gate-project/tests/test_run_gate.py`: config validation, preflight ordering, fake `ciu status` responses, and exact forwarding.
+
+**Acceptance test idea.** A fake healthy status for two different instance-derived compose projects produces two distinct endpoint values and passes them to the lane without ambient sourcing. An unscaffolded/missing stack (`compose_project: null`) refuses with the scaffold/fix-configuration remedy and never mentions `ciu up`; a registered stack with `containers: []` refuses with `ciu up --dir <stack>`; a listed required container that is unhealthy or not running refuses with its status and an inspect/restart remedy. A non-zero status is an infrastructure refusal. An unknown derivation, an ambient-name fallback, or a hardcoded container name is refused. Hand-removing the preflight or the per-instance derivation makes the corresponding oracle fail.
+
+**Priority.** Medium. The current workaround is possible but brittle, and the failure arrives only after a lane has started.
+
+**Close when.** The missing/unscaffolded, registered-but-not-started, and unhealthy/not-running cases each pass their distinct remedy oracle, including the rule that `ciu up` is never prescribed for `compose_project: null`; `ciu status` preflight, instance-derived forwarding, refusal ordering, and two-worktree distinctness also pass on a clean final commit; the schema and user documentation describe the same closed grammar; and no lane must source an environment file by hand to obtain its declared stack facts.
+
+## RG-262 — no per-lane secret-file mounts: one lane's credentials are forwarded to its lane process through `docker exec` on a persistent runner
+
+**Status:** OPEN (filed 2026-11-11); severity: medium (operator credentials must currently be present in the forwarding process's environment and are made available to lane processes on a persistent runner also used by unrelated lanes); reporter: the netcup-api-filter (naf) controller session; no implementation in this documentation-only filing.
+
+**Problem.** An environment's `forward_env` is a name list applied to every
+lane using that environment, including lanes that run through one persistent
+runner. In exec mode, Run-Gate constructs a `docker exec` invocation and
+forwards the named values from the invoking process into that lane process's
+environment; it does not add them to the persistent runner container's ambient
+environment. A credential needed by one lane therefore still has to be present
+in the forwarding process's environment and is exposed to every lane using
+that environment on the shared runner. The run-gate environment schema has no
+lane- or environment-scoped declaration of secret files to mount for one
+lane's execution scope only.
+
+**Evidence.** naf's `run-gate.toml` environments `test-runner-py311` and
+`test-runner-py314` use `forward_env`; its plan WP6/WP7 adds an on-demand live
+lane, and the independent Opus review's "Secrets" finding directs that live
+credentials never be exported in the cockpit and instead be mounted only into
+the application and a dedicated live runner. That naf evidence is external
+context reported by the filing session and was not independently re-read for
+this entry. In `run-gate-project/run_gate.py:1152-1155`,
+`_validate_environment()` accepts `forward_env` but no `secret_files` or
+mount key; `:1217-1225` validates `forward_env` as an environment-name
+list. `run_exec_lane()` uses a persistent runner
+(`:16592-16597`) and builds `docker exec` with the forwarded values
+(`:16631-16640`). RG-17/RG-19/RG-23 define the existing environment-name
+forwarding and preflight contract; RG-86 narrows ordinary container mounts;
+RG-102 proposes CIU-backed one-shot runners. RG-117a
+(`run-gate-project/KNOWN_ISSUES_TODO_BACKLOG.md:6553-6559`) keeps
+forwarded environment values off argv, but does not establish a rule for
+secret-file contents in logs. None provides a read-only file mount scoped to
+one lane's execution scope on the existing exec path. RG-261's stack
+prerequisites are a different preflight: they do not deliver credentials.
+
+**Proposed minimal solution.** Add a lane/environment key that maps named
+secret files to read-only in-container paths. Configuration names host paths
+from operator config, never values. For an exec environment, the selected
+source must either already be mounted on the dedicated runner or the runner
+must be recreated or delegated to a per-lane one-shot container with the mount
+present; the implementation must state which lifecycle it uses and must not
+silently widen the shared runner for other lanes. A `secret_files` preflight
+checks every source and destination before any container work, emits one
+refusal per missing or unsafe source without printing contents, and exposes
+the mounted file read-only only in the selected lane's execution scope.
+RG-117a separately keeps forwarded environment values off argv; this item
+adds an independent requirement that secret-file contents never appear in
+logs or dry-run output.
+
+**Where.**
+
+- `run-gate-project/run_gate.py`: `_validate_environment()`'s accepted-key set,
+  `preflight_required_env()`, and both `run_container_lane()` and
+  `run_exec_lane()` mount planning.
+- `run-gate-project/SPEC.md`, `CONSUMERS.md`, and `docs/DESIGN-GUIDE.md`:
+  `secret_files`, source/destination validation, exec-runner lifecycle, and
+  disclosure rules.
+- `run-gate-project/tests/test_run_gate.py`: schema, preflight ordering,
+  read-only mount argv, exec-runner selection, missing files, and log/content
+  non-disclosure.
+
+**Acceptance test idea.** A lane declaring one secret file sees it at its
+declared in-container path; another lane using the same runner does not. A
+missing source refuses before any `docker run`/`docker exec`, naming the lane
+and file and printing no content. Logs and dry-run output expose only names
+and paths. A controlled implementation that adds the source to the runner's
+ambient environment or to all lanes fails the isolation oracle.
+
+**Priority.** Medium. The current route disperses a live credential across
+agent-visible environment state and unrelated lane execution.
+
+**Close when.** The supported schema and lifecycle provide read-only file
+isolation for one lane, a second lane on the same runner cannot see that
+content, every missing or unsafe source refuses before container work with
+content-free diagnostics, RG-117a's no-values-on-argv constraint remains
+true together with this item's independent no-content-in-logs rule, and the
+schema and user documentation describe the same mechanism on a clean final
+commit.
+
+## RG-263 — delegated mutation lanes run an expensive baseline without first proving the requested comparison base changes the lane's source scope
+
+**Status:** OPEN (filed 2026-11-11); severity: medium (wasted multi-minute baselines and ambiguous `NO_MUTANTS` results); source: host-campaign controller session record 2026-11-11; no implementation in this documentation-only filing.
+
+**Problem.** RG-26 passes a request-sourced comparison base into Assay, correctly. It does not verify that the base changes the lane's judged source scope before Run-Gate materializes the tree and executes the R1/R2 baseline. When the target release changed only tests, a correct base can therefore produce zero source candidates and end `NO_MUTANTS` only after the baseline. Conversely, an ad hoc base can change the candidate population without being visible in the lane/gate identity. Consumers need one generic, read-only preflight that distinguishes "valid source mutation campaign" from "base selected, but this lane has no source work."
+
+**Evidence.** The host-campaign controller session record 2026-11-11 ran the CIU lane for `ciu-v7.24.1` with the previous release `ciu-v7.24.0` as base. That release changed no file under the lane's source scope, so the run spent about four minutes on a baseline before ending `NO_MUTANTS`/exit 5. A broader base produced 9-10 source files and 627 candidates. CIU's lane declares `base_source = "request"`, so RG-26's `--base` passthrough was followed exactly; the missing capability is the source-diff preflight, not base propagation. The netcup campaign contract that records and freezes the base is NC-37.
+
+**Proposed minimal solution.** Before any baseline for a delegating lane whose rigor/judged mode can discover mutation candidates, resolve `<base>` and `<target>` to immutable commits and run a read-only `git diff --stat <base> <target> -- <source paths>`. The source paths must come from the lane's declared/derived Assay comparison scope; if no trustworthy scope is exposed by the lane inventory or declaration, refuse without defaulting to the repository root. With no changed files, stop early with a named `NO_SOURCE_CHANGES` planning result that is not a mutation PASS and does not claim `NO_MUTANTS`; with changes, disclose the resolved commits and changed-file count in the run plan/disclosure. Do not pass a base into an R2 lane without this check once the preflight ships. Cache nothing across invocations and do not treat the check as evidence that the baseline/tests pass.
+
+**Where.** `run-gate-project/run_gate.py`: the RG-26 `plan_comparison_base`/disclosure path and the pre-baseline sequence; Assay lane inventory or an explicit comparison-scope field needed to derive source paths; `run-gate-project/SPEC.md`, `CONSUMERS.md`, and `docs/DESIGN-GUIDE.md`; `run-gate-project/tests/test_run_gate.py` with fake Git repositories and a fake Assay inventory.
+
+**Acceptance test idea.** A delegating R2 lane with a base whose diff touches the declared source path proceeds and discloses both commits plus the changed-file count. The same lane with a tests-only diff stops before materialization or baseline with `NO_SOURCE_CHANGES`. An unresolved ref refuses with both refs named; an unavailable comparison scope refuses and never assumes `.`. A non-delegating lane and an R0/R1 lane retain current behavior. Hand-removing the diff call, defaulting the scope to the repository root, or mapping an empty diff into ordinary `NO_MUTANTS` fails its focused oracle.
+
+**Priority.** Medium. The cost is already measured and grows with full-suite per-candidate campaigns, while the generic preflight prevents both wasted work and hidden base drift.
+
+**Close when.** Delegating mutation lanes disclose the resolved commits, source scope, and changed-file count before baseline; an empty source diff stops early with a distinct planning refusal; unavailable scope and unresolved refs fail closed; and the non-delegating/control lanes plus documentation pass on a clean final commit.
+
+## RG-264 — native R2 worker/resource identity semantics vary by Assay generation
+
+**Status:** RESOLVED 2026-11-11 by Assay B529 and the version-scoped docs. Severity at filing: major. Source: host-parallel R2 controller record 2026-11-11. Related to Assay B088/B527 and supervisor preflight contract NC-41.
+
+**Problem (historical).** Under Assay <= 12.1.1, changing `judge.mutation.jobs_max` or Run-Gate resource configuration changed the whole judged-tree identity, so a resume replanned finished candidates. Starting with Assay >= 12.2.0, B529 projects those execution-resource settings out of judge identity and records their digest separately. An unconditional warning is therefore false for new campaigns; docs must name both boundaries and preserve the rule that changes to tests, sources, `argv`, `env`, or Assay version still invalidate.
+
+**Evidence.** The host-parallel R2 controller record changed the CIU lane configuration and observed all 627 candidates become pending after 355 candidates had finished under the tag-time identity. B529 reuses `killed` and `survived` records across resource changes and re-executes resource-sensitive `crashed`, `hung`, or `budget_exceeded` records when their resource digest changes.
+
+**Resolution.** README, CONSUMERS, LANE-AUTHORING, DESIGN-GUIDE, the T3 design, the CIU lane comment and both affected Unreleased entries state the Assay <= 12.1.1 and Assay >= 12.2.0 boundary. CONSUMERS owns the detailed projection and resume behavior; the other docs link to it. The Run-Gate docs-sync guard requires both version tokens, the invalidation behavior and the consumer link, and rejects the former unconditional sentence.
+
+**Where.** `ciu/assay.toml`, `ciu/CHANGES.md`, `run-gate-project/README.md`, `CONSUMERS.md`, `LANE-AUTHORING.md`, `docs/DESIGN-GUIDE.md`, `docs/DESIGN-lane-rework-2026-11.md`, and `tests/test_test_tier_docs.py`. Assay B529's authoritative projection details are in `assay/docs/CONSUMERS.md#resource-settings-are-not-judge-identity-b529`.
+
+## RG-265 — native R2 cannot be sharded across containers, merged, carried over a judge change or restricted to a candidate list from Run-Gate
+
+**Status:** FIXED IN THIS BRANCH (`run-gate-r2-flex-20261111`, 2026-11-11; merge pending review). Requires Assay 12.2.0 (B529-B531).
+
+**Problem.** The 2026-11-11 host campaigns could only use more of a host by raising `--jobs` inside one container (whose CPU/memory caps bound it) and lost 355 finished candidates on a config change. Assay's `--shard` existed, but one Run-Gate lane could not run twice at once (one in-flight record, one store with Assay's per-store lock, one verdict path), and nothing merged shard state.
+
+**Fix.** `--shard K/N` runs the lane as instance `<lane>.shard<K>of<N>` (in-flight record, container name and labels, history key, `.assay/{verdict,progress}-<assay_lane>.<lane>.shard<K>of<N>.*` artifacts and the matching closeout family, store `.run-gate/assay-shards/<project>/<lane>/<assay_lane>/<K>of<N>` -- all its own, keyed by the Run-Gate lane as well as the Assay lane) and reads the main store via Assay `--merge-state`. `--merge-shards N` STRICTLY merges all N stores (each must exist and pass Assay's `--merge-shard-store`) into the main store and writes the whole-lane verdict. `--carry-over`/`--carry-over-reason`, `--merge-state`, `--only-candidates`, `--exclude-candidates` pass through; paths must be under the checkout or worktree; the judge's support is checked in-container from `assay run --help` (dev builds fail the version floor). Runs are recorded `selective` with an `r2_flex` block. Non-flex lanes generate a byte-identical inner script.
+
+**Independent review (deepseek, FIX-FIRST on `d664a1428`), fixed:** B1 `--merge-shards` never creates a missing store, refuses absent stores before admission (default state root) or in the lane script (container `state_root`), and uses Assay's STRICT `--merge-shard-store`; B1a `--shard` refuses exec-mode and `resources.shared` lanes by name; B2 the Assay 12.2.0 floor is checked from the inventory version before admission; B3 shard artifacts and stores are keyed by the Run-Gate lane as well as the Assay lane; B4 README/SPEC (R-53, R-53a)/LANE-AUTHORING/CONSUMERS synchronized and pinned by doc tests; a shard of an ephemeral lane refuses an image absent from the host.
+
+**Named limits.** Test-level shared fixtures (a golden DB file, fixed ports, browser session names) are the lane's concern. A cross-host merge needs the remote shard stores copied to the merging checkout. Two concurrent flex runs of one Run-Gate lane with the same `K/N` are prevented by the in-flight record, not by the store path.
+
+**Tests.** `tests/test_run_gate_r2_flex.py`.
+
+## RG-266 — `jobs = "auto"` places one R2 worker per CPU, so I/O phases leave CPUs idle
+
+**Status:** FIXED IN THIS BRANCH (`run-gate-r2-flex-20261111`, 2026-11-11; merge pending review).
+
+**Problem.** Operator 2026-11-11: "io phases should not block cpu." A candidate's clone materialization, imports and result writes are I/O-bound, so `min(jobs_max, cpu_cap, ...)` left CPUs idle during those phases.
+
+**Fix.** `[resources] r2_oversubscribe` (decimal `"1.0"`..`"4.0"`, every resources scope) multiplies the CPU term: `floor(cpu_cap * factor)`. Default `"1.0"` after the independent review (no two-slot controller measurement yet); `"1.5"` is the recommended opt-in. Memory, `jobs_max` and remaining candidates still bound the count; the container CPU quota still caps CPU use. The factor is disclosed in the INFO line and history.
+
+**Named limit.** Opting into `"1.5"` raises the auto count (3 CPUs -> 4 workers) when memory and `jobs_max` allow; its contention with a second concurrent gate slot is not yet measured.
+
+**Tests.** `tests/test_run_gate_r2_flex.py` (oversubscription section).

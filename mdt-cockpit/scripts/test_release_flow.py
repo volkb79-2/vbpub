@@ -98,7 +98,7 @@ class ReleaseFlowTests(unittest.TestCase):
         self.assertRegex(wheels, r"(?m)^nyxloom\s+#")
         # run-gate is stdlib-only (no dependency floor needed); its wheel is run_gate-*.whl.
         self.assertRegex(wheels, r"(?m)^run-gate\s+#")
-        # cgprofile (MDT-048): the wheel carries the cgpctl client; its only dependency is cli-extended
+        # cgprofile (MDT-048): the wheel carries the cgprofile and cgprofilectl clients; its only dependency is cli-extended
         # (already listed) and the `report` extra stays out of the image closure (no pandas/plotly/... here).
         self.assertRegex(wheels, r"(?m)^cgprofile\s+#")
         for heavy in ("pandas", "plotly", "matplotlib", "scipy", "ruptures"):

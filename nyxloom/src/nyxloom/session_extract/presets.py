@@ -1,4 +1,4 @@
-"""The four `nyxloom-harness extract --preset` bundles (operator decision 2026-10-06).
+"""The five `nyxloom-harness extract --preset` bundles.
 
 A preset is a named, documented bundle of OPTIONS from the five option groups
 (see cli_registry.EXTRACT_GROUPS). It adds nothing a user cannot spell by hand:
@@ -13,18 +13,21 @@ A preset is a named, documented bundle of OPTIONS from the five option groups
   pins each expansion and that every member is a real, grouped option.
 * `--successor-brief` implies `--preset successor`.
 
-The four presets:
+The five presets:
 
 watch      follow a LIVE session for an operator: operator messages and
            assistant prose only, timestamped, coloured (--color/--no-color),
            or `--jsonl` for an editor extension.
 successor  prime a fresh agent: compressed tool-call rendering, whole-session
-           ledger, stop state (add --successor-brief for the one document).
+           ledger, stop state, and full agent communication (add
+           --successor-brief for the one document).
 review     audit what an agent actually did at full fidelity: every call, the
            call itself for outside effects, errors with their calls, every
            timestamp, no collapsing, the ledger.
 ledger     only the external effects, touched files and stop state, no prose,
            for incident triage or cleanup.
+readback   bounded controller context: operator/interview first, then prose,
+           agent communication and intent lines, using --budget-tokens.
 """
 
 from __future__ import annotations
@@ -36,7 +39,7 @@ from dataclasses import dataclass
 class Preset:
     name: str
     summary: str
-    values: tuple[tuple[str, str], ...]  # (argparse attr, value), shown in this order
+    values: tuple[tuple[str, object], ...]  # (argparse attr, value), shown in this order
     flags: tuple[str, ...]  # boolean attrs the preset turns on
     claude_only: bool  # needs Claude Code transcripts (tool calls / ledger)
     fixed_span: bool  # emits one finished document: no --follow, no --json
@@ -69,6 +72,7 @@ PRESETS: dict[str, Preset] = {
             ("effect_calls", "always"),
             ("timestamps", "gaps"),
             ("path_aliases", "auto"),
+            ("agent_comms", "full"),
         ),
         flags=("strip_cd_prefix", "ledger", "stop_state"),
         claude_only=True,
@@ -95,6 +99,21 @@ PRESETS: dict[str, Preset] = {
         "only external effects, touched files and stop state, no prose (incident triage)",
         values=(),
         flags=("no_prose", "ledger", "stop_state"),
+        claude_only=True,
+        fixed_span=True,
+    ),
+    "readback": Preset(
+        "readback",
+        "bounded controller context: operator turns, prose, agent communication, intent",
+        values=(
+            ("profile", "all"),
+            ("tool_calls", "intent"),
+            ("agent_comms", "full"),
+            ("timestamps", "gaps"),
+            ("gap_marker", "none"),
+            ("budget_tokens", 50_000),
+        ),
+        flags=(),
         claude_only=True,
         fixed_span=True,
     ),
@@ -174,6 +193,7 @@ def example_lines() -> tuple[str, ...]:
         "successor": "--successor-brief --order @ORDER.md",
         "review": "",
         "ledger": "",
+        "readback": "--budget-tokens 50000",
     }
     return tuple(
         " ".join(
@@ -189,4 +209,4 @@ def option_help() -> str:
     """The `--preset` option's own help text."""
     return "Named bundle of options (explicit options override): " + "; ".join(
         f"`{p.name}` = {p.expansion}" for p in PRESETS.values()
-    ) + " (successor/review/ledger: Claude Code)"
+    ) + " (successor/review/ledger/readback: Claude Code)"

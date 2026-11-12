@@ -59,6 +59,15 @@ result (non-zero exit, `is_error`, denial) truncated, whatever the call mode.
 `--show-tool-calls` / `--show-tool-call-intent` are deprecated aliases (identical output,
 stderr note). `--show-compaction-content` separately opts into compaction internals.
 `--include-thinking` controls recovered reasoning content.
+`--agent-comms off|summary|full` controls communication with other agents.
+`off` preserves prior output; `summary` emits bounded `AGENT-OUT:` / `AGENT-IN:`
+records; `full` retains prompt/message and task summary/result text within a
+per-item cap. Task-notification envelope boilerplate and pure `Monitor expired`
+noise are removed. Recognized Bash launchers (default `codex-impl.sh` and
+`opencode-impl.sh`, extendable with `--agent-launch-pattern`) contribute the
+brief path plus the referenced run's `<run>.last.txt` or last JSONL
+`agent_message`. `successor` and `readback` select `full`; `--prose-only` still
+excludes agent events.
 
 Profiles are operator use cases, not names for opaque compression strengths.
 `operator-review` is a concise review of recent work. `all` is a broad,
@@ -91,8 +100,12 @@ and inserts no blank padding around separators. `--show-timestamps` and
 source name/path/size/creation time and cursor before, after, or at both ends.
 Creation time is reported as unavailable if the filesystem supplies no birth
 time. `--since-file` reads the cursor from saved text or JSON output; it emits
-only the new delta. Raw `--since` and inclusive `--until` accept the marker
-value shown in the `nyxloom-extract` comment.
+only the new delta. Raw `--since` accepts the marker value shown in the
+`nyxloom-extract` comment, an ISO-8601 timestamp with a timezone (strictly
+after), or a relative duration such as `5h` / `90m` (inclusive at invocation
+time minus the duration). Inclusive `--until` remains marker-only. A
+time-based bound is disclosed in text output and the JSON `resolved_since`
+field.
 
 Rendering and color are separate controls. `--render-markdown` consumes
 Markdown markers for reading. `--highlight` colors Markdown source while
@@ -108,6 +121,52 @@ accepts `claude`, `codex`, or `opencode` to infer environment-aware roots, or
 a path. Directory discovery recurses by default; for example,
 `CODEX_HOME="$HOME/.codex2" nyxloom-harness extract-sessions codex` scans
 `~/.codex2/sessions` and its dated subdirectories.
+
+## Mechanical stall detection (Codex)
+
+`nyxloom-harness extract --stop-state` reads both durable Codex rollout
+files (`$CODEX_HOME/sessions/YYYY/MM/DD/rollout-*.jsonl`) and controller
+`codex exec --json` streams. The latter has its own `codex-exec` adapter and
+is auto-detected from `thread.started` / `item.*` records. Stop state reports
+one of four causes: a completed assistant message, a terminal interruption,
+an unresolved in-flight call (`killed mid-call`), or an empty run. The last
+assistant text is bounded, and call IDs are followed through completion even
+when the item is a file change rather than a command.
+
+`--stall-check` is the controller-facing verdict path. It is read-only,
+Codex-only, and accepts either rollout input or a `codex exec --json` stream.
+Text output starts with `[stall check]`; `--json` emits versioned structured
+output (`v: 1`). The run verdict is one of:
+
+| Verdict | Mechanical meaning |
+|---|---|
+| `ok` | The run ends with a completed assistant message. |
+| `intent-only-ending` | The bounded final prose announces a next action or ongoing present-continuous work ending in "now" without an outcome after it. |
+| `tool-call-as-text` | The final prose contains a serialized tool call, patch block, or shell command rather than actually executing it. |
+| `empty-run` | No assistant prose and no completed or in-flight call was recorded. |
+| `ended-mid-wait` | A terminal error/abort (including one with no assistant message), non-negated explicit wait prose, or an unresolved in-flight call ends the run. |
+
+Negation is scoped to the wait predicate itself, so “No, the gate is still
+running” remains an active wait even though it begins with the discourse
+opener “No,”.
+
+`--expect-file PATH` adds a delivery-report check. A missing path produces
+`report-missing`; a non-file or a file below the size floor or above the
+pending-marker ceiling produces `report-skeleton`. The defaults are 1,500
+bytes and three pending markers, exposed as `--report-min-bytes` and
+`--report-max-pending-markers`. The report verdict is primary in JSON and
+text, while `run_verdict` remains separately visible.
+
+Exit 0 means `ok`; any red run or report verdict exits 1. Invalid option
+combinations exit 2 through the normal CLI parser. Heuristics are lexical and
+record-based, with no wall-clock timeout or model call. They inspect bounded
+tails, so an old announced intention followed by a later report is correctly
+`ok`, while prose that narrates work without a concrete outcome can still be
+classified as intent-only. See
+[`docs/CONSUMERS.md`](../../../docs/CONSUMERS.md#check-a-codex-run-for-a-mechanical-stall)
+for pasteable examples and
+[`docs/DESIGN-GUIDE.md`](../../../docs/DESIGN-GUIDE.md#mechanical-codex-stall-detection)
+for the heuristic boundary.
 
 ## Why this exists (design history)
 
@@ -747,7 +806,7 @@ Follow-ups: NL-31 (other adapters), NL-33 (wrapper, JSON form).
 
 ## Presets, watch and `--jsonl` (SUCCESSOR-2)
 
-`--preset watch|successor|review|ledger` bundle options from the five `--help` groups
+`--preset watch|successor|review|ledger|readback` bundle options from the five `--help` groups
 (`presets.py`; the exact expansions are printed by `--help`, listed in `docs/CLI-REFERENCE.md`
 and pinned by `tests/test_session_extract_presets.py`). An explicit option always wins.
 `successor` includes `--stop-state`; `--successor-brief` implies it.
@@ -757,6 +816,18 @@ assistant prose only. An AskUserQuestion interview is operator content and stays
 question is one assistant line, the selected answer plus free-text notes an OPERATOR line
 (`watch.items`). `--jsonl` emits `{"v": 1, "ts", "role", "text", "agent"?}`, a stable versioned
 contract for the VS Code extension: keys are pinned by tests, and a change needs a new `v`.
+
+`readback` is the bounded controller handoff. It groups operator turns and
+answered interviews first, then assistant prose, agent communication, intent
+lines, and external run results. `--budget-tokens N` (default 50,000) estimates
+rendered characters divided by four and reserves footer space. Operator turns
+and answered interviews are protected: they are never dropped, lower-priority
+classes yield first, and an overrun is reported plainly when the protected
+class alone exceeds the requested budget. Records are complete and newest-first
+within each class; the footer reports kept/dropped counts and estimated dropped
+cost and timestamp span per class. It emits one fixed-span document, so it is
+incompatible with `--json` and `--follow`; it is Claude Code-only because the
+intent and communication surface is currently Claude-specific.
 
 Modules added: `shellcmd` (Bash segmenting, effect patterns), `compress` (collapsing repeated
 Edit/Read calls), `harness` (verified Claude Code versions), `presets`, `watch`. Residuals:
@@ -773,6 +844,11 @@ session:
   a Claude Code `uuid`, a Codex ordinal or `response_item-<position>` fallback,
   a Reasonix `line<N>` marker, or an opencode message id) from a prior run.
   Only events strictly after it are considered.
+- `--since <timestamp-or-duration>` — an ISO-8601 timestamp with an explicit
+  offset is strictly after that instant; a positive compact duration such as
+  `5h`, `90m`, or `2d` includes records at or after the invocation-time
+  subtraction. The resolved UTC cutoff appears in text output and in JSON
+  `resolved_since`. Undated records do not enter a time-bounded window.
 - `--since-file <path>` — point at a **prior run's saved output** (text
   or JSON) instead of hunting down or hand-copying a raw marker. Every
   render embeds the true end-of-session marker from the *full* parse

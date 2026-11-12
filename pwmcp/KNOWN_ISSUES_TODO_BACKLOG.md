@@ -3,7 +3,7 @@
 This file records consumer-facing product gaps for later triage. Normative
 behavior remains in the product specification and consumer documentation.
 
-Last updated: 2026-11-03 (VM layout / PWMCP-21; local console-corpus verification; R2 follow-up; GlyphGrid tooling integration; PWMCP-18 transparency gap identified during R2 survivor triage).
+Last updated: 2026-11-11 (PWMCP-59: the configured R2 mutation cap is below the current pwmcp candidate inventory and blocked the exact release tag).
 
 ## PWMCP-01 — Provide a rendered-page inspection command
 
@@ -632,7 +632,7 @@ fail-closed shim (mdt-cockpit MDT-056); on the host the shim may even remap `BUI
 
 ## PWMCP-27 — `inspect --format html|embedded-json` and chunked output for results over 1 MiB (PW-B, F3/F4)
 
-**Status:** OPEN. Severity: P2 (feature). Raw rendered `outerHTML` and the embedded `application/json`/`ld+json`/`__NEXT_DATA__`-style script blobs are the robust fallback when a page's UI is a shell (the whole ChatGPT share conversation was in a 506 KB `__WEB_MOBILE_DATA__` script). MCP `browser_evaluate` fails above 1 MiB per SSE event, so provide file output or chunked fetch and document the limit. Acceptance: both formats with `--output`, tests with a fixture page, CLI review cases.
+**Status: PARTIALLY IMPLEMENTED 2026-11-07 (PWMCP-42).** `inspect --format html` now returns bounded document/selector `outerHTML` or `innerHTML`, supports `--output`, and reports truncation. `pwmcp eval --selector ... --property textContent` reads embedded JSON script data without installing the Python MCP SDK. Residual: HTML is capped at 512 KiB; output above that is identified as truncated, not chunked. There is no separate embedded-JSON format, because the evaluator already reads a selected script's `textContent`.
 
 ## PWMCP-28 — `inspect --scroll-to-bottom` auto-scroll for genuinely lazy lists (PW-D, F10)
 
@@ -640,7 +640,7 @@ fail-closed shim (mdt-cockpit MDT-056); on the host the shim may even remap `BUI
 
 ## PWMCP-29 — update the `pwmcp-fetch` skill for the completeness probe, reload loop, embedded-JSON recipe and the 1 MiB event limit (PW-F, F8)
 
-**Status:** OPEN. Severity: P3 (docs). Advise a content-based `--wait-for`, `--retries`, treating `innerText < ~5 KB` or zero turns as not rendered, the embedded-JSON recipe once PWMCP-27 lands, and the stderr diagnostics of PWMCP-25/26. Left open here because `pwmcp-2` edits the same skill file (PWMCP-05/10).
+**Status: FIXED 2026-11-07 (PWMCP-42).** The packaged skill now gives a content-based wait, explains the current `<1 KiB` shell warning and page-diagnostic stderr, reads `__NEXT_DATA__` with `pwmcp eval`, documents the bounded HTML/truncation and crash retry, and records `mcp` SDK 2.3.0's unchanged two-tuple API plus the required `browser_click.target`. `client/tests/test_skill_contract.py` checks every `browser_*` name against the version-pinned Playwright MCP tool contract and every CLI flag named in the skill against the registered parser. The previous ~5 KiB heuristic is intentionally not copied: the maintained CLI warning threshold is 1 KiB and a short page alone is not proof of missing content.
 
 ## PWMCP-30 — `inspect --main-only` readability extraction and `--user-agent` documentation stance (PW-G/PW-E, F7/F9)
 
@@ -663,3 +663,232 @@ fail-closed shim (mdt-cockpit MDT-056); on the host the shim may even remap `BUI
 **Fix.** `client/src/pwmcp_client/blocked.py` signature tables (definitive vs hint signals, see README "Bot protection"); `inspect` exits 4 with an honest message, `--json` carries `blocked`/`provider`/`signals`/`status`/`final_url`/`waited_ms`, never writes `--output`, never retries, and a wait that ends on a challenge is reported blocked (with the time waited) instead of a generic timeout. `--storage-state FILE` (`storage_state.py`) reuses a human-exported Playwright session: mode 0600, scoped to the URL's host, counts only in output. pwmcp-fetch skill updated: report BLOCKED, offer the human-in-the-loop route. Non-goals held: no solver, no stealth, no fingerprint spoofing.
 
 **Open follow-ups (P3).** (a) `pwmcp ocr URL --selector` does not check for bot protection. (b) The signature table is heuristic and unverified against live providers other than the Cloudflare page in the geekbench report; extend it with a row and a fixture when a new interstitial is seen. (c) Optional: a short grace period that lets a self-resolving interstitial clear before reporting blocked when no `--wait-for` is given.
+
+## PWMCP-33 — the repository-cleanliness guard leaked a process tree on `git status` timeout (R2 baseline `ERROR/EXEC_FAILED leaked-process-tree`)
+
+**Status:** FIXED 2026-11-05 on branch `pwmcp-leak-20261105` (not released). Severity: P1 (blocked every R2 campaign for 1.64.1-r2 at its R0 baseline although the suite passed: 1204 passed, 4 skipped).
+
+**Root cause.** `pwmcp/conftest.py` `snapshot()` ran `git status` through `subprocess.run(..., timeout=)`. On a timeout `subprocess.run` kills only the direct child, so descendants (git helpers, or the `sleep` child of the wrapper script in `test_snapshot_timeout_is_reported`) were orphaned, reparented to assay's subreaper and counted as `outliving_descendants` by the process-tree check. Reproduced locally in `tester-unified:r25-e92d43b28b00` under assay's `ProcessTreeWindow` with the lane argv: `outliving_descendants=1`, comm `sleep`, ppid 7 (the wrapper `sh`). A plain `docker run` is blind to it because `--init` reaps the orphan silently.
+
+**Fix.** `snapshot()` starts git in its own session and kills the whole process group on timeout or interrupt (`_kill_group`). Regression tests: `test_snapshot_timeout_kills_the_descendants_of_git` (fails on the old code), `test_snapshot_interrupt_kills_the_process_group`. Assay's detector is correct and unchanged.
+
+## PWMCP-37 — the client version was a static `0.1.0` unrelated to the server release (two different wheels, one version)
+
+**Status:** FIXED 2026-11-05 on branch `pwmcp-client-version-20261105` (not released). Severity: P2.
+
+**Defect.** `client/src/pwmcp_client/VERSION` was a hand-set `0.1.0` that never changed, so `pwmcp --version` said `PWMCP 0.1.0` while the server release was `1.64.1-r2`, and wheels with different content (the exact `playwright==` pin changes per release) shared one version: pip could neither tell them apart nor upgrade. Nothing compared client and server.
+
+**Fix.** Operator decision 2026-11-05: the client is versioned 1:1 with the server release and rolled out together. `VERSION` is generated by `scripts/resolve-playwright-version.py` from the release (`1.64.1-r2` -> `1.64.1.post2`, PEP 440 equal to `-r2`) via the single helper `pwmcp_client/release.py` (both directions, tested), checked by `--check` against `pwmcp.contract.json` and listed in `[project.release] commit_generated`. `pwmcp versions` prints client and server (`(server unreachable)` when not reachable); `pwmcp doctor` gained the `skew` check (different Playwright = FAIL, only `-rN` differs = WARN). Compatibility policy documented in README "Client install and upgrade" and `docs/CLI-SPEC.md`.
+
+**Deviation / follow-up.** `pwmcp --version` and `pwmcp version` remain the shared cli-extended CLI's exact, network-free `pwmcp <version>` line (its contract test `assert_cli_contract` requires exactly that, and a network probe in `--version` would break it), so the server release is shown by the new `pwmcp versions` verb. A cli-extended hook to append a caller-provided suffix to the version line would let `--version` carry the server too: file in the cli-extended backlog if wanted.
+
+## PWMCP-38 — a consumer that only needs the client had no supported install path (the full stack installer or a bundle by hand)
+
+**Status:** FIXED 2026-11-05 on branch `pwmcp-client-version-20261105` (not released; the new assets appear with the next release). Severity: P2.
+
+**Defect.** `get.py` installs the whole stack release (tree, CIU root links, wheels); a consumer that talks to a server running elsewhere had to unpack the bundle by hand. The client wheel was not a release asset, and a bare `pip install` of it fails because `cli-extended` is GitHub-Releases-only. The `/srv/pwmcp-instance` upgrade path and the follow-up `pwmcp skills install` ("N skill(s) not current") were undocumented.
+
+**Fix.** New stdlib-only `pwmcp-client-install.py` (SHA-256 of the bundle, manifest check of every wheel, `pip install --no-index --require-hashes` into a private venv, atomic `current` and launcher links, no docker/ciu/compose), published with the client wheel (+ `.sha256` sidecars) by `scripts/publish-bundle.py`; README "Client install and upgrade" documents the asset names, the consumer path and the instance upgrade. `get.py --client-only` was NOT added: `get.py` is generated by `cmru get-py`, so a flag belongs in the cmru generator (vbpub cmru backlog), not in a hand edit of the generated file.
+
+## PWMCP-39 — the release wheels (and so the client-only install) work on CPython 3.14 / Linux x86_64 only
+
+**Status:** OPEN 2026-11-05. Severity: P3. The bundle's wheels are staged for one interpreter (`greenlet` cp314, `playwright` manylinux x86_64), so `pwmcp-client-install.py` and the `pwmcp-client-requirements.txt` path fail on any other Python or architecture, although the client wheel itself is pure Python (`requires-python >=3.11`). The installer now refuses early with a clear message. Fix: per-interpreter client wheels / variants (relates to cmru KI-126, variant-aware bundle build).
+## PWMCP-34 - a consumer that cannot install `pwmcp_client` has no documented wire protocol; the gateway answers 403 then 428 with no hint
+
+**Status:** FIXED 2026-11-05 on branch `pwmcp-client-version-20261105` (not released): `docs/CONSUMERS.md` "Wire protocol for a consumer without `pwmcp_client`" (headers, ceilings, 403/503/400, version rule, raw `connect()` example, reaching the instance from another ciu network); the gateway's 403/400/503 bodies and log lines name the fix (test `test_rejections_say_what_to_fix_in_the_body_and_the_log`). Finding: this gateway never answers 428 (lease headers are optional there), so the 428 in the report came from an older release or the Playwright server behind it; documented as such, no 428 added. Original report: Found migrating netcup-api-filter's e2e suite to the provided instance (`netcup-api-filter@3786024`, pwmcp 1.64.0-r4). The client is "intentionally not on PyPI", and a test runner image should not need it. The raw `chromium.connect("ws://pwmcp:3000/")` that older consumers use now fails in two steps: HTTP 403 when the connecting `Host` is not in `PWMCP_RUN_SERVER_ALLOWED_HOSTS` (an older consumer-owned template never set it), then HTTP 428 Precondition Required when the lease headers are absent. The 428 body names neither header, and `docs/CONSUMERS.md` shows only the `BrowserLease` path. The working call is `connect(ws, headers={"X-PWMCP-Lease-Seconds": "<s>", "X-PWMCP-Session-Label": "<label>"})` with a client whose major.minor equals `/contract` `playwright.python`.
+
+**Wanted.** (1) Put the wire protocol (the two headers, their ceilings, 403/428 meanings, the Playwright version rule) in `docs/CONSUMERS.md` next to the `BrowserLease` example. (2) Make the 428 body (and a 403 log line) say what is missing. (3) Say how a consumer on another ciu network reaches the instance (join `network_name`, since the browser must also reach the consumer's app): naf joins its runners and app to `vbpub-cmqemn-network` via a required `PWMCP_NETWORK`, which works but is undocumented.
+
+## PWMCP-40 — PWMCP-33 was incomplete: the killed `git status` wrapper's children were still adopted (as zombies) by the gate's subreaper (R2 baseline `leaked-process-tree`, round 2)
+
+**Status:** FIXED 2026-11-05 on branch `pwmcp-leak2-20261105` (not released). Severity: P1 (same R0 baseline failure as PWMCP-33, reproduced at `pwmcp-v1.64.1-r3` on r1002 twice: 1258 passed, 4 skipped, then `ERROR/EXEC_FAILED`).
+
+**Root cause.** PWMCP-33 killed the whole process group, but a SIGKILLed wrapper and its `sleep` die together, so the `sleep` is re-parented to the nearest child subreaper: assay's process-tree window, one level above pytest. Nobody reaps it before the window closes, and assay counts every adopted process, dead or alive, in `outliving_descendants`. Evidence (assay B233 diagnostics, lane `r2` in `tester-unified:r25-d38b3324fba5` on r1002): `command_finished.leaked_descendants` = four `comm=sleep`, `ppid` = assay, empty cmdline (zombies), one per sleeping wrapper in `tests/test_git_guard.py`. The same four appear when only that file runs under a `ProcessTreeProcessRunner` (`sleep`, `sleep`, `slow-git`, `sleep`). A plain `docker run --init` hides it because init reaps silently.
+
+**Fix.** `snapshot()` makes the pytest process a child subreaper for the duration of the query (restored afterwards; no-op off Linux), so orphans are adopted here, and reaps the adopted members of the git process group (`reap_process_group`). The setsid escapee test now reaps its escapee. The check in assay is unchanged. Regression: `test_snapshot_timeout_leaves_no_orphan_for_the_gates_subreaper` (fails on the PWMCP-33 conftest with a zombie `sleep`, passes now), which plays the gate's subreaper itself.
+
+## PWMCP-41 — close the R2 survivor and OOM-crash findings from pwmcp-v1.64.1-r4
+
+**Status: FIXED 2026-11-07 on branch `pwmcp-surv3-20261106` (not released).** R2 reported 29 survivors and three OOM crashes across 493 candidates. The closeout adds mutation-sensitive boundary and logging tests, and corrects the rejected-body reader fake so it honors `read1(size)` including `read1(0)`; an eight-read cap makes a non-progressing drain fail clearly. The OOM was caused by that fake returning a byte for a zero-byte read while the `or`→`and` mutant repeatedly retried it; it was not evidence that the service's configured memory envelope was too small. No lane or host memory limit changed. The hostless invalid-port origin `https://:99999` is now covered: it must be ignored without raising. Four survivors are equivalent under supported inputs and remain explicitly waived; 25 now have test evidence, including the `cli.py:369` mutant killed by the exact-`None` assertions. The three formerly crashed candidates are covered by clean test failures. The first final R1 run also exposed a load-sensitive timeout test that gave both the forced timeout and the follow-up success the same 0.4-second subprocess deadline; it now injects timeout then success deterministically, with no wall-clock dependency. A full R2 rerun was not performed; expected closeout classification is 489 killed, 4 equivalent, and 0 crashed. Per-candidate decisions and hand-mutant results: `/home/vscode/vbpub-release-program-20261027/reports/pwmcp-surv3-REPORT.md`.
+
+## PWMCP-42 — browser crashes were misclassified and the CLI lacked page evaluation and HTML output
+
+**Status: IMPLEMENTED; R1 PASS 2026-11-07 on `55747e192db772cd7535691c7f4c74dc8bd86210`; independent review pending; not released.** The client distinguishes browser/page lifecycle failures from endpoint connectivity, retries one recognized first-navigation crash with a stderr note, and provides `pwmcp eval` plus capped `inspect --format html` through the already exposed Playwright MCP tools using only the Python standard library. The `pwmcp-fetch` skill documents the new CLI path, MCP SDK 2.3.0 / `browser_click.target`, and has an inventory/parser drift test. Stack review found `shm_size = "2gb"`, no `--disable-dev-shm-usage`, and no PWMCP-owned memory cap on the unified browser container; the r4 R2 OOM was caused by a test fake (PWMCP-41), not the service envelope. No stack limit changed. R1 verified 2,507/2,507 lines and 802/802 branches; exact test and gate details are in `pwmcp-fold-REPORT.md`.
+
+## PWMCP-43 — preserve main-document HTTP exit status for file and truncated output
+
+**Status: FIXED in this branch.** Inspect and eval return the requested body or preview while reporting exit 5 for an unallowed main-document 4xx/5xx, including when inspect writes a file or eval truncates its value. Failed subresources do not become the main-document status. Regression tests cover each output path.
+
+## PWMCP-44 — separate rendered content blocks and judge the extraction module
+
+**Status: FIXED in this branch.** Compact list items, table cells and rows, and select options now have deterministic separators; Markdown renders table rows; text collapses paragraph source whitespace and preserves `<pre>` indentation and newlines. Markdown also separates adjacent blocks nested inside list items, table cells and links with a single space, and `<details>`/`<summary>` are blocks in both formats. `page_content.py` is included in R1/R2 line and branch coverage targets, with tests for the reviewed renderer and CLI guards.
+
+## PWMCP-45 — link resolution ignores HTML `<base href>`
+
+**Status: KNOWN LIMIT.** Relative links resolve against the page URL, not the document base URL. Revisit if a consumer needs page-base resolution.
+
+## PWMCP-46 — the links format includes `javascript:` hrefs
+
+**Status: KNOWN LIMIT.** Link extraction lists anchor hrefs without filtering schemes. Revisit if a consumer needs executable schemes excluded.
+
+## PWMCP-47 — very deep DOMs can exceed Python recursion depth
+
+**Status: KNOWN LIMIT.** Content extraction can raise `RecursionError` around 600 or more nested levels. No iterative traversal change is planned without a concrete consumer case.
+
+## PWMCP-48 — `--selector` returns only the first matching element
+
+**Status: BY DESIGN.** `--selector` selects one element; use `pwmcp eval --all` when a multi-match value is needed.
+
+## PWMCP-49 — the `--main` fallback removes nested page-chrome tags
+
+**Status: KNOWN LIMIT.** If no semantic main candidate exists, the fallback removes every nested `header`, `nav`, and `footer`, including tags inside article content. Revisit if a consumer needs more selective chrome removal.
+
+<!-- PWMCP-50..53 were filed 2026-11-08 from the Scrapling comparison (docs/DESIGN-GUIDE.md "Competitors and alternatives"). They borrow ideas only; no Scrapling dependency is proposed. -->
+
+## PWMCP-50 — agent-facing extraction keeps hidden page content (prompt-injection surface)
+
+**Status:** IMPLEMENTED 2026-11-08 (review blockers closed; computed-style hiding remains a known limit). Severity: P2. Default `inspect --format text` reads `innerText`, which leaves out browser-hidden elements. `--format markdown|links`, and `text` with `--selector` or `--main`, parse serialized markup in `page_content.py`, which previously skipped only `script`, `style`, `noscript` and `template`. Hidden content and invisible Unicode characters could therefore reach the agent that reads the output. Scrapling's `--ai-targeted` removes these.
+
+**What was done (2026-11-08, branch `pwmcp-50-20261108`, review-fix round).**
+`page_content.extract_page` prunes before `--main` selection every element
+with `hidden` (including `hidden="until-found"`), `aria-hidden="true"`, inline
+`display:none`/`visibility:hidden`, or `<input type="hidden">`. Inline CSS is
+parsed declaration by declaration: comments are removed, property names are
+case-insensitive, `!important` takes priority, and the last declaration at
+the winning priority applies. Malformed inline styles fail open as visible.
+Closed `<details>` retains its first `<summary>` and prunes its body (counted as
+one removed body region); `<details open>` retains its body. For a selected node,
+the CLI serializes its `outerHTML` and checks its ancestor chain for those static
+hidden markers before extraction, so a hidden selected node or hidden ancestor
+cannot bypass filtering. The filter strips U+200B..U+200D, U+202A..U+202E,
+U+2060, U+2066..U+2069, U+FEFF, and U+E0000..U+E007F. Counts remain in
+`hidden_removed` and `zero_width_stripped`; the latter includes bidi controls
+and tag characters for compatibility. JSON keys are additive, and stderr
+prints a `content filtering:` note. Plain `text` keeps `innerText`.
+
+Fixture `client/tests/fixtures/pages/hidden-content.html` covers the static
+hidden forms, CSS declarations and false positives, closed/open details,
+hidden inputs, nested hidden-in-visible and visible-in-hidden, encoded and
+case/space variants, and zero-width characters. Tests are in
+`client/tests/test_page_content.py` and the CLI path in
+`client/tests/test_inspect.py`. The new tests also cover bidi controls and tag
+characters. No opt-out flag: the content is exactly what a reader cannot see,
+so exposing it by flag would reopen the prompt-injection surface.
+
+Decisions from the review: `hidden="until-found"` counts as hidden at
+extraction time because the content stays concealed until find-in-page reveals
+it. U+200D remains stripped even within emoji sequences, so `👩‍💻` can display
+as separate glyphs; resistance to invisible prompt injection takes priority
+over preserving that joiner. Bidi controls U+202A..U+202E/U+2066..U+2069 and
+tag characters U+E0000..U+E007F are stripped as additional invisible-injection
+channels. These behaviors and the U+200D display effect are documented in
+README, DESIGN-GUIDE, and CONSUMERS.
+
+**What is left (known limits).** Computed-style hiding — a CSS class or
+stylesheet rule that renders to `display:none`/`visibility:hidden` — cannot be
+seen in serialized HTML. Marking such nodes needs a live-page evaluation
+(`getComputedStyle` over the subtree, then a data attribute) before
+serialization, which would add a browser-dependent step to a
+fixture-testable renderer. This remains open in README/DESIGN-GUIDE/CONSUMERS
+until there is a consumer case. Malformed inline style is also treated as
+visible by design.
+
+Original report: the affected formats omitted nothing the browser hid, so a
+prompt-injection payload rendered invisible to a human still reached the agent
+that read the output. Acceptance: a fixture page with each hidden form; the
+affected formats omit them, visible content is unchanged, and the result is
+covered by a CLI review case.
+
+## PWMCP-51 — `inspect` cannot return the JSON responses behind a page
+
+**Status:** OPEN. Severity: P3 (feature). A page's data often arrives by XHR or `fetch`; today a caller needs `eval` or the embedded-JSON route (PWMCP-27). Scrapling 0.5 records completed responses per browser session, with text bodies capped at 1 MiB each and 20 MiB in total. Proposal: `inspect --format network` that lists the main page's completed XHR/fetch responses (method, URL, status, content type, size) and, with a filter, returns bounded text bodies in the JSON envelope. First check whether the pinned `@playwright/mcp` network-request tool already covers this. Acceptance: fixture page that loads JSON by `fetch`; body caps and truncation reported as for `--format html`.
+
+## PWMCP-52 — bounded crawl mode (deferred until a consumer needs it)
+
+**Status:** OPEN, deferred. Severity: P3 (feature). Scrapling has a full spider framework; PWMCP reads one page per call. If a consumer needs a site section as Markdown, the acceptable shape is: same-origin only, a required `--max-pages`, serial within one lease and within the lease ceilings, robots.txt always obeyed (not optional), a per-host delay, and a stop at the first recognized bot protection (exit 4) with no retry, proxy rotation, or session switching. Without a concrete consumer case, document "one page per call" as by design.
+
+## PWMCP-53 — opt-in selector relocation for `--selector` (deferred)
+
+**Status:** OPEN, deferred. Severity: P3. Scrapling's adaptive tracking stores an element fingerprint (tag, text, attributes, sibling and path tags, parent) per domain and relocates the most similar element when a saved selector stops matching. PWMCP's client is stateless and its agent consumers can re-derive a selector from `--format snapshot`, so the benefit is limited to scripted consumers. If one needs it: an explicit `--selector-memory FILE` (never a hidden store), with any relocation reported on stderr and in `diagnostics` and never applied silently. Revisit only with a consumer case.
+
+<!-- PWMCP-54..58 were filed 2026-11-10 from the Obscura comparison (checked 2026-11-09; reject adoption, borrow ideas only). No Obscura dependency or backend is proposed. -->
+
+## PWMCP-54 — the managed browser has no destination-egress policy beyond the Docker network boundary
+
+**Status:** OPEN. Severity: P2 (security hardening). Filed from the Obscura comparison idea "egress default-deny / SSRF guard ... checked at DNS-resolution time".
+
+**Problem.** The browser must reach public pages and can also reach anything on the project Docker network, but PWMCP applies no destination policy. A page can attempt requests to loopback services, sibling application containers, RFC1918 addresses, link-local/metadata-style endpoints, or a hostname whose DNS answer resolves to one of those. TLS and same-origin/CORS do not prevent server-side request forgery: an attacker may infer reachability or send state-changing requests even when it cannot read the response. `docs/SECURITY.md` currently states that the Docker network is the access-control boundary; that controls who may call PWMCP, not where Chromium may connect. The compose template joins the normal project network and does not set Docker `internal: true`, because the browser needs internet egress. The comparison correctly found no egress filtering in the documented posture.
+
+**Proposed minimal solution.** Record the threat-model decision first. The minimal accepted shape is an opt-in per-instance policy such as `egress_policy = "network-boundary" | "public-only"`; `public-only` refuses loopback, link-local, RFC1918/private, and metadata destinations at DNS-resolution/connection time, with explicit exact-host exceptions for a consumer that intentionally reads its own internal app. Do not treat the existing gateway `Host` allowlist or a URL-string denylist as a destination guard; both miss DNS rebinding and redirects. Prefer one small enforcement path at the browser launch/proxy boundary over a general policy engine. If the operator decides the project network is the intended trust zone for every deployment, close this as BY DESIGN instead of adding partial filtering.
+
+**Where.** `ciu.compose.yml.j2` and `ciu.defaults.toml.j2` (`[pwmcp.network]`, `[pwmcp.unified]`, `[pwmcp.hardening]`), the browser launch in `containers/pwmcp/supervisord.conf` or `supervisord.shared.conf`, and `docs/SECURITY.md`/`docs/DEPLOYMENT.md` for the enforcement point and exceptions. A helper under `containers/pwmcp/` is only justified if the browser cannot enforce the policy directly.
+
+**Acceptance test idea.** With `public-only` enabled, a fixture page that fetches a public local fixture succeeds; requests to loopback, a sibling private-network fixture, link-local, and a hostname whose DNS answer is private are refused before connection, including after a redirect; the refusal is observable in a page diagnostic and never reads as a successful HTTP response. With `network-boundary`, current behavior remains unchanged. Use local fixture DNS and fake private addresses so the test does not depend on host routing.
+
+## PWMCP-55 — the managed browser recycles after idle/crashes, but not by memory use or age
+
+**Status:** OPEN, deferred until a consumer or incident demonstrates a need. Severity: P3 (operations).
+
+**Problem.** Existing recycling is intentionally idle-only: `run-server-gateway/index.js` restarts `run-server` after `idle_recycle_s` with zero leases, and shared-mode `admin-server/index.js` restarts `chromium` after `browser_max_idle_s` with zero consumer pages. Supervisord restarts crashed programs. There is no RSS/age policy for a process that remains below the crash threshold but grows across long-lived use; the container does not set a PWMCP-owned browser memory cap (PWMCP-42). The Obscura comparison's "worker/browser recycle by RSS and age" is therefore genuinely absent. Killing active clients is not an acceptable default, and the opaque Playwright gateway has no drain protocol.
+
+**Proposed minimal solution.** Keep the single-worker design. If a concrete leak is observed, add two optional zero-disabled shared-mode settings, `browser_max_rss_mb` and `browser_max_age_s`, checked by the existing `admin-server` loop; restart only when no consumer page is open, log the measured reason, and keep the existing idle semantics once a page closes. Apply the same idle-only check at `run-server-gateway` before admitting a new lease rather than interrupting an active lease. No worker pool, connection-count recycling, or new drain machinery unless a real multi-worker requirement appears.
+
+**Where.** `containers/pwmcp/admin-server/index.js` (shared-mode process/RSS check and existing restart path), `containers/pwmcp/run-server-gateway/index.js` (idle admission check), `supervisord.shared.conf`/`supervisord.conf` for the process name, `ciu.defaults.toml.j2`, `pwmcp.contract.json` `/contract` projections, and deployment/security docs.
+
+**Acceptance test idea.** With fake process metrics and a fake supervisord restart callback, assert no restart below either threshold, no restart while a consumer page/lease is active, one restart when either "over RSS/age" is true and there are zero consumers, a logged threshold/reason, and unchanged behavior when either setting is `0`. Tests must inject readings, not sleep or depend on host RSS/load.
+
+## PWMCP-56 — per-operation deadlines are client flags, not explicit contract/server limits
+
+**Status:** BY DESIGN (closed 2026-11-10). Severity: P3 (documentation/compatibility).
+
+**Problem.** `/contract` publishes the absolute lease ceiling but not per-operation deadlines. `inspect --timeout-ms`, `eval --timeout`, and `ocr --timeout-ms` expose operation-scoped client deadlines, while raw `connect()` callers rely on Playwright's own per-call timeouts. An `eval` HTTP timeout also does not cancel JavaScript already running in the page. The comparison lists Obscura's explicit navigation/script/CDP-command knobs as a borrowable idea, but duplicating them as claimed server limits would be misleading because the WS gateway relays opaque frames.
+
+**Decision and minimal solution.** Do not add a policy engine or an unenforced contract limit. `max_lease_seconds` is the server-owned outer deadline for every session; navigation/selector waits and MCP requests are bounded by the existing CLI options; raw Playwright clients own their per-call timeouts and must use Playwright's APIs. `docs/SECURITY.md`, `docs/CLI-SPEC.md`, and `docs/CONSUMERS.md` already expose these controls and the non-cancelling `eval` limitation. If a future consumer has a runaway-expression case, file a focused cancellation proposal with evidence; do not infer it from the generic comparison.
+
+**Where.** Existing behavior is in `client/src/pwmcp_client/session.py` (`timeout_ms` for contract/preflight/connect and lease headers), `client/src/pwmcp_client/cli.py` (`inspect`/`eval`/`ocr` timeouts), and `containers/pwmcp/run-server-gateway/index.js` (`lease` timer). The authoritative consumer wording is `docs/SECURITY.md`, `docs/CLI-SPEC.md`, and `docs/CONSUMERS.md`.
+
+**Acceptance test idea.** Docs-sync should keep `default_lease_seconds`/`max_lease_seconds`, the CLI timeout flags, and the warning that an MCP HTTP timeout does not cancel in-browser JavaScript consistent with the parser and contract. No new runtime test is needed for a closed by-design item.
+
+## PWMCP-57 — `/contract` has no machine-readable capability table
+
+**Status:** OPEN. Severity: P3 (consumer discoverability).
+
+**Problem.** `/contract` reports release, Playwright protocol, endpoints, lease limits, the active UA, and optionally OCR engines, but a consumer cannot discover from that endpoint which high-level capabilities and output formats this instance exposes. Today the README/CLI-SPEC/DESIGN-GUIDE tables are prose, and MCP tool discovery can describe the MCP surface only after connecting. A backend/profile or opt-in feature change therefore requires out-of-band knowledge. The Obscura comparison's "what the engine can and cannot do" table is useful independently of adopting that engine.
+
+**Proposed minimal solution.** Add a small, additive, closed `capabilities` object to `/contract` (and the committed contract) with stable boolean/enum values for native Playwright `connect()`, the Playwright/DevTools/Lighthouse MCP endpoints, `inspect` formats, `eval`, bot-protection detection, and enabled OCR engines. It is an inventory, not a second tool schema and not a promise of behavior outside the documented contract. Keep old clients working by ignoring unknown keys, and derive dynamic values (OCR/UA/mode) from the same gateway fields already used in `/contract`; do not hand-copy them into multiple consumers.
+
+**Where.** `pwmcp.contract.json`, `containers/pwmcp/run-server-gateway/index.js` `/contract` merge, `client/src/pwmcp_client/contract.py` optional parsing, and README/DESIGN-GUIDE/CONSUMERS plus contract-generation tests.
+
+**Acceptance test idea.** A `/contract` fixture with OCR disabled and one with OCR enabled parses in old and current clients, advertises the actual reachable endpoints/formats, changes only the dynamic OCR fields between the fixtures, and has no capability value that cannot be exercised by an existing test or documented command. A docs-sync test compares the closed vocabulary with the CLI/MCP surface.
+
+## PWMCP-58 — record Obscura re-evaluation triggers and the anti-detection non-goal
+
+**Status:** OPEN, watch item only; do not adopt or spike without evidence. Severity: P3.
+
+**Problem.** The 2026-11-09 comparison recommends rejecting Obscura as a backend now and borrowing a few operational ideas. Without an explicit watch entry, a later "lightweight browser" request could reopen adoption without rechecking protocol fit, maintenance, supply-chain, crash, and policy risks.
+
+**Re-evaluate only if all of these hold.** (1) a consumer need for a very cheap extraction engine is documented, for example many parallel reads on a constrained host; (2) Obscura reaches a stable API or 1.0 with checksums/signatures or attestations; (3) it has at least two active maintainers or an organisation owner; (4) the SIGSEGV and Playwright-compatibility issues in our evaluation corpus are closed; and (5) the operator is comfortable with the project's stealth-feature direction. Even then, evaluate only the non-stealth build as an isolated optional profile with its own contract name; never replace the official Playwright image.
+
+**Explicit non-goal.** Do not add stealth or anti-detection features: no fingerprint randomisation, TLS impersonation/passive-fingerprint evasion, `navigator.webdriver` or `isTrusted` masking, profile/proxy rotation for evasion, or a challenge solver. The existing overridable UA remains the limited opt-in identity-string design documented in README "Overridable user agent"; it does not solve interactive challenges, and recognised bot protection remains exit 4.
+
+**Why.** This carries the recommendation and all five triggers from the comparison's "Re-evaluate only if all hold" paragraph, and keeps the stealth boundary aligned with `docs/SECURITY.md`, README "Bot protection", and PWMCP-32.
+
+**Where.** This backlog entry and the existing "Competitors and alternatives" section in `docs/DESIGN-GUIDE.md`; a future evaluation report must cite each trigger rather than treating popularity or lighter claimed memory as sufficient.
+
+**Acceptance test idea.** A docs-sync check can assert the comparison trigger list and the stealth non-goal are present as a closed set; a future adoption proposal is incomplete unless it cites evidence for every trigger and names an isolated, non-stealth evaluation path.
+
+## PWMCP-59 — `r2` has `max_mutants = 1000` while the current selected candidate inventory is 1165
+
+**Status:** OPEN (filed 2026-11-11); priority major (the exact release tag cannot complete an unmodified R2 campaign); source: host-campaign controller session record 2026-11-11.
+
+**Problem.** `pwmcp/assay.toml` declares `max_mutants = 1000`, but the selected mutation inventory for `pwmcp-v1.64.1-r7` is 1165. Assay correctly refuses over-cap discovery before executing a partial sample, so every unmodified R2 campaign ends `BUDGET_EXCEEDED/MUTANT_LIMIT_EXCEEDED` with exit 4 after paying for the baseline. The cap therefore makes the release lane unusable rather than bounding an unexpectedly large run, and there is no documented rule for choosing the next cap from candidate inventory and expected runtime.
+
+**Evidence.** The host-campaign controller session record 2026-11-11 tested tag commit `520e9ae660dbd0462959fa5151a55d30af078339`; the exact tag reported `max_mutants = 1000`, real selected candidates 1165, `over_candidate_cap`, and verdict `BUDGET_EXCEEDED/MUTANT_LIMIT_EXCEEDED`, exit 4 after the 400 s baseline. The two temporary host-checkout commits `3d1249019` and `1a11be5bde6d2110c1336ad31e9cf4ed77346b87` changed only this cap. Repository `main` still has `pwmcp/assay.toml:106 max_mutants = 1000`. This is distinct from PWMCP-20, which tracks completion of the waived campaign; this item is the configuration defect that prevents it from starting.
+
+**Proposed minimal solution.** Raise `pwmcp/assay.toml`'s `max_mutants` above the measured inventory with explicit headroom: at least 1200, and choose the concrete value as `ceil(expected_selected_candidates * headroom_factor)` with a documented minimum 10% headroom and a declared upper bound checked against expected lane runtime. For the current 1165 candidate set, that rule requires a final value above 1281; do not lower the cap back to the former value unless a new measured inventory and budget justify it. Document the rule beside the lane: refresh the expected inventory from a bounded plan/selection result before raising or lowering the cap, preserve a full inventory rather than truncate, and review the cap alongside `budget`, `jobs`, and per-candidate cost. No host-local edit of the judged checkout is a supported remedy.
+
+**Where.** `pwmcp/assay.toml` (`[lanes.r2]` / `judge.mutation.max_mutants`), with the cap-choice rule in PWMCP's lane-authoring or consumer documentation and a focused config/docs contract test.
+
+**Acceptance test idea.** A recorded 1165-candidate inventory and the chosen cap satisfy the headroom formula without an over-cap refusal; a test consumes a candidate inventory fixture and fails if the cap is at or below the inventory or below the declared 10% headroom. A control fixture with fewer candidates still passes, and a hand mutation restoring `1000` trips the oracle.
+
+**Close when.** The repository cap is raised to at least 1200 with at least 10% measured headroom, the cap-choice rule and inventory-refresh obligation are documented, and an R2 plan/selection preflight (not a host-local `assay.toml` commit) proves the current campaign fits the cap on a clean final commit.

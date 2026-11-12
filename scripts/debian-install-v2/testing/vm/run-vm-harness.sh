@@ -25,6 +25,11 @@ set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 TESTING_DIR="$(cd "$HERE/.." && pwd -P)"
+# Another project of this checkout (<repo>/scripts/<name>) may reuse this
+# harness: MDT_VM_PROJECT_DIR selects whose artifacts/vm-lab holds the VM
+# state and, unless MDT_VM_SOURCE_DIR says otherwise, what is mounted at
+# /source. Unset = debian-install-v2 itself (unchanged behaviour and names).
+STATE_PROJECT_NAMESPACE_DIR="${MDT_VM_PROJECT_DIR:-}"
 SOURCE_NAMESPACE_DIR="${MDT_VM_SOURCE_DIR:-}"
 # In-runner mount points. The host side is derived below, by fixed depth from
 # this script: <project>/artifacts/vm-lab and <repo root>/downloads of the
@@ -55,8 +60,9 @@ die() {
 # Bind-mount the PARENT testing/ directory read-only, not just vm/: vmctl's
 # prepare-base reaches one level up for ../download-base-image.sh, which
 # only exists at that path relative to vm/. VM state and downloads are
-# separate read-write binds of the gitignored artifacts/vm-lab and downloads/
-# folders; the (read-only) project and testing mounts are never written.
+# separate read-write binds of the selected project's artifacts/vm-lab
+# (tracked placeholder or setup-created CoW symlink) and the repo downloads/
+# placeholder; the (read-only) project and testing mounts are never written.
 # Also mount the project directory read-only at /source. This gives vmctl a
 # stable namespace path for copying debian_install_v2 into the guest; path
 # traversal through /work/.. cannot escape a Docker bind mount.
@@ -65,11 +71,24 @@ HOST_PROJECT_DIR="${HOST_TESTING_DIR%/testing}"
 HOST_SOURCE_DIR="$HOST_PROJECT_DIR"
 # Namespace-local project and repo root, derived from this script's location by
 # fixed depth (<repo>/scripts/debian-install-v2/testing/vm), physical paths.
-# vm-lab and downloads are created here so Docker never creates them root-owned.
+# The selected project's vm-lab and the repo downloads placeholder must be
+# prepared by their owning workflows; Docker must never create either bind source.
 PROJECT_DIR="$(cd "$TESTING_DIR/.." && pwd -P)"
 REPO_ROOT="$(cd "$TESTING_DIR/../../.." && pwd -P)"
 [ "$PROJECT_DIR" = "$REPO_ROOT/scripts/debian-install-v2" ] || die \
     "unexpected layout: $TESTING_DIR is not <repo>/scripts/debian-install-v2/testing"
+STATE_PROJECT_DIR="$PROJECT_DIR"
+if [ -n "$STATE_PROJECT_NAMESPACE_DIR" ]; then
+    STATE_PROJECT_DIR="$(cd "$STATE_PROJECT_NAMESPACE_DIR" 2>/dev/null && pwd -P)" || die \
+        "MDT_VM_PROJECT_DIR '$STATE_PROJECT_NAMESPACE_DIR' does not exist"
+    case "${STATE_PROJECT_DIR#"$REPO_ROOT"/scripts/}" in
+        "$STATE_PROJECT_DIR"|*/*|'') die \
+            "MDT_VM_PROJECT_DIR must be a project of this checkout (<repo>/scripts/<name>), got $STATE_PROJECT_DIR" ;;
+    esac
+    # Default /source = that project, as its resolved physical path (a relative
+    # or symlinked spelling must neither reach Docker nor change the names).
+    [ -n "$SOURCE_NAMESPACE_DIR" ] || SOURCE_NAMESPACE_DIR="$STATE_PROJECT_DIR"
+fi
 MOUNT_TABLE=""
 # Translate a cockpit-namespace path to the Docker daemon's host path through
 # the cockpit's mount table (longest prefix). From a real host shell the path
@@ -174,9 +193,24 @@ if [ "$inside_container" = "0" ] && [ -n "$SOURCE_NAMESPACE_DIR" ]; then
 fi
 
 # --- state / downloads: fixed-depth paths of THIS checkout, then host paths.
-# Both top folders are tracked placeholders, so they exist in every checkout.
-VM_LAB_NS="$PROJECT_DIR/artifacts/vm-lab"
+# downloads is a tracked placeholder; the selected project's vm-lab is either
+# its tracked placeholder or its setup-created CoW symlink. Prepare both
+# through their owning workflows; this harness never creates bind sources.
+VM_LAB_NS="$STATE_PROJECT_DIR/artifacts/vm-lab"
 HOST_VM_LAB_DIR="$HOST_PROJECT_DIR/artifacts/vm-lab"
+# Another project's vm-lab, or an ignored symlink into the CoW area
+# (mdt-cockpit BTRFS-COW.md 6.2; this also applies to debian-install-v2's own
+# vm-lab once it is a symlink, where binding the link path through the mount
+# table translation would be wrong): bind its physical target, translated like
+# every other path. The device:inode reuse check then compares the target too.
+# Resolved lazily in ensure_runner, so --stop-daemon works without a vm-lab.
+resolve_vm_lab() {
+    if [ "$STATE_PROJECT_DIR" != "$PROJECT_DIR" ] || [ -L "$VM_LAB_NS" ]; then
+        [ -d "$VM_LAB_NS" ] || die "$VM_LAB_NS is missing or a dangling symlink (run the project's vm-lab setup)"
+        VM_LAB_NS="$(cd "$VM_LAB_NS" && pwd -P)"
+        HOST_VM_LAB_DIR="$(host_path_for "$VM_LAB_NS" "vm-lab")" || exit 1
+    fi
+}
 DOWNLOADS_NS="$REPO_ROOT/downloads"
 HOST_DOWNLOADS_DIR="$HOST_REPO_ROOT/downloads"
 
@@ -185,7 +219,11 @@ HOST_DOWNLOADS_DIR="$HOST_REPO_ROOT/downloads"
 # names from this worktree's path (plus the source: two projects may reuse
 # this harness from one worktree, and their inputs must never be silently
 # exchanged).
-RUNNER_FINGERPRINT="$(printf '%s\0%s' "$TESTING_DIR" "$SOURCE_NAMESPACE_DIR" | sha256sum | cut -c1-12)"
+if [ -n "$STATE_PROJECT_NAMESPACE_DIR" ]; then
+    RUNNER_FINGERPRINT="$(printf '%s\0%s\0%s' "$TESTING_DIR" "$SOURCE_NAMESPACE_DIR" "$STATE_PROJECT_DIR" | sha256sum | cut -c1-12)"
+else
+    RUNNER_FINGERPRINT="$(printf '%s\0%s' "$TESTING_DIR" "$SOURCE_NAMESPACE_DIR" | sha256sum | cut -c1-12)"
+fi
 IMAGE="debian-install-vm:$RUNNER_FINGERPRINT"
 NAME="debian-install-vm-harness-$RUNNER_FINGERPRINT"
 
@@ -313,13 +351,19 @@ ensure_runner() {
     # governance for this otherwise unprivileged VM harness.
     verify_build_environment
     verify_cgroup_parent
+    resolve_vm_lab
 
-    # The bind sources are tracked placeholder folders (artifacts/vm-lab and
-    # downloads); never create them here (Docker would make a missing source
-    # root-owned). A deleted-and-recreated folder is caught by the inode compare.
+    # downloads is a tracked placeholder; the selected project's vm-lab is a
+    # tracked placeholder or a project-created CoW symlink. Never create bind
+    # sources here (Docker would make a missing source root-owned). A deleted-
+    # and-recreated folder is caught by the inode compare.
     for folder in "$VM_LAB_NS" "$DOWNLOADS_NS"; do
-        [ -d "$folder" ] || die \
-            "$folder is missing; a checkout contains it as a tracked placeholder (restore it with git checkout)"
+        if [ ! -d "$folder" ]; then
+            if [ "$folder" = "$VM_LAB_NS" ]; then
+                die "$folder is missing; restore its tracked placeholder or run the owning project's vm-lab setup to create its CoW symlink"
+            fi
+            die "$folder is missing; restore the repo's tracked placeholder with git checkout"
+        fi
     done
     RUNNER_OWNER="$(stat -c '%u:%g' "$VM_LAB_NS")"
     downloads_owner="$(stat -c '%u:%g' "$DOWNLOADS_NS")"

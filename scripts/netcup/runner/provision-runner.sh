@@ -21,7 +21,7 @@ export DEBIAN_FRONTEND=noninteractive
 identity_check
 apt-get update
 identity_check
-apt-get install -y btrfs-progs parted python3.13 python3.13-venv git rsync tmux jq curl ca-certificates
+apt-get install -y btrfs-progs python3.13 python3.13-venv git rsync tmux jq curl ca-certificates
 
 # The runner uid must equal the tester-unified lane uid (1003): checkouts, the CoW root and the lane user then share
 # one owner (Run-Gate RG-150, netcup NC-04). Refuse to silently keep or change a different existing uid.
@@ -45,38 +45,66 @@ else
   fi
   useradd --create-home --uid "$RUNNER_UID" --user-group --shell /bin/bash "$RUNNER_USER"
 fi
-getent group docker >/dev/null || groupadd docker
+docker_group_entry=$(getent group docker) || {
+  groupadd docker
+  docker_group_entry=$(getent group docker) || {
+    echo 'local docker group is unavailable after group creation' >&2
+    exit 2
+  }
+}
+docker_group_gid=${docker_group_entry#*:*:}
+docker_group_gid=${docker_group_gid%%:*}
+[[ $docker_group_gid =~ ^[1-9][0-9]*$ ]] || {
+  echo "local docker group has an invalid GID: ${docker_group_gid:-missing}" >&2
+  exit 2
+}
+if [[ -e /etc/host-endpoints.env || -L /etc/host-endpoints.env ]]; then
+  load_host_endpoints /etc/host-endpoints.env || exit $?
+  require_host_docker_group_match
+fi
 usermod -aG docker "$RUNNER_USER"
 
 identity_check
-if test -b "$COW_DEVICE"; then
-  test "$(lsblk -dn -o PKNAME "$COW_DEVICE")" = "$(basename "$COW_PARENT_DISK")"
+# shellcheck source=cow-select.sh
+source "$here/cow-select.sh"
+# The CoW volume is a planned partition with PARTLABEL=MDT_COW. Resolve it by
+# that label because its partition number follows its physical position.
+cow_rc=0
+cow_found="$(lsblk -P -o PATH,PARTLABEL "$COW_PARENT_DISK" | cow_select_device)" || cow_rc=$?
+if test "$cow_rc" = 3; then
+  echo "more than one PARTLABEL=MDT_COW partition on $COW_PARENT_DISK; resolve by hand" >&2
+  exit 6
+elif test "$cow_rc" = 0; then
+  cow_mounted_at="$(findmnt -rn -o TARGET --source "$cow_found" | head -n1 || true)"
+  if test -n "$cow_mounted_at" && test "$cow_mounted_at" != "$COW_MOUNT"; then
+    echo "$cow_found is mounted at $cow_mounted_at, but COW_MOUNT is $COW_MOUNT; make partitioning.data mount and COW_MOUNT agree" >&2
+    exit 8
+  fi
 else
-  free_row="$(parted -m -s "$COW_PARENT_DISK" unit MiB print free | awk -F: 'tolower($5) ~ /^free/ {start=$2; end=$3} END {if (start != "") print start ":" end}')"
-  test -n "$free_row"
-  free_start=${free_row%%:*}
-  parted -s "$COW_PARENT_DISK" mkpart primary "$free_start" 100%
-  partprobe "$COW_PARENT_DISK"
-  udevadm settle
+  echo "the install plan has no PARTLABEL=MDT_COW partition on $COW_PARENT_DISK" >&2
+  exit 4
 fi
-test -b "$COW_DEVICE"
-fs_type="$(blkid -s TYPE -o value "$COW_DEVICE" 2>/dev/null || true)"
+test -b "$cow_found"
+fs_type="$(blkid -s TYPE -o value "$cow_found" 2>/dev/null || true)"
 if test -z "$fs_type"; then
-  mkfs.btrfs -L MDT_COW "$COW_DEVICE"
-elif test "$fs_type" = btrfs && test "$(blkid -s LABEL -o value "$COW_DEVICE")" = MDT_COW; then
+  mkfs.btrfs -L MDT_COW "$cow_found"
+  cow_selection_message "$cow_found" none formatted
+elif test "$fs_type" = btrfs && test "$(blkid -s PARTLABEL -o value "$cow_found")" = MDT_COW; then
+  cow_selection_message "$cow_found" "$fs_type" reused
   :
 else
-  echo "refusing to overwrite $COW_DEVICE with existing filesystem type '${fs_type:-unknown}'" >&2
+  echo "refusing to overwrite $cow_found with existing filesystem type '${fs_type:-unknown}'" >&2
   exit 4
 fi
 
 identity_check
 install -d -m 0755 "$COW_MOUNT"
-uuid="$(blkid -s UUID -o value "$COW_DEVICE")"
+uuid="$(blkid -s UUID -o value "$cow_found")"
 expected="UUID=$uuid $COW_MOUNT btrfs noatime,user_subvol_rm_allowed 0 0"
 existing="$(awk -v mp="$COW_MOUNT" '$2 == mp && $1 !~ /^#/ {print}' /etc/fstab)"
 if test -n "$existing"; then
-  test "$existing" = "$expected"
+  # debian-install-v2 may already have written the same planned partition to fstab.
+  cow_fstab_entry_ok "$existing" "$expected" "$uuid" "$cow_found"
 else
   printf '%s\n' "$expected" >> /etc/fstab
 fi
@@ -133,5 +161,5 @@ runuser -u "$RUNNER_USER" -- env UV_PYTHON_INSTALL_DIR="$RUNNER_HOME/.local/shar
 
 identity_check
 printf 'PROVISIONING_OK_UTC=%s\n' "$(date -u +%FT%TZ)"
-printf 'COW_DEVICE=%s COW_UUID=%s COW_BYTES=%s\n' "$COW_DEVICE" "$uuid" "$(blockdev --getsize64 "$COW_DEVICE")"
+printf 'COW_PARTITION=%s COW_UUID=%s COW_BYTES=%s\n' "$cow_found" "$uuid" "$(blockdev --getsize64 "$cow_found")"
 printf 'RUNNER_UID=%s DOCKER_GROUP=%s PYTHON_TOOL=%s\n' "$(id -u "$RUNNER_USER")" "$(id -nG "$RUNNER_USER" | tr ' ' ',')" "$("$RUNNER_HOME/venvs/tools/bin/uv" --version)"

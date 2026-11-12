@@ -1,9 +1,13 @@
 # Backlog — identified, not yet carved
 
-Distinct from two other trackers:
-- `DECISIONS-INBOX.md` — **product** decisions needing the user's judgment
+> This is the older narrative ledger (B-001 to about B-046). The live backlog is
+> `nyxloom-trove/4-backlog.md`; check it before acting on an entry here.
+
+Distinct from other trackers:
+- `nyxloom-trove/decisions.md` — **product** decisions needing the user's judgment
   (auth posture, framework picks). Not engineering work items.
-- `ROADMAP.md` — large, already-scoped feature areas and package history.
+- `nyxloom-trove/3-roadmap.md` and `docs/ROADMAP.md` — roadmap; the July package
+  history is `nyxloom-trove/archive/ROADMAP-2026-07.md`.
 
 This file is for concrete engineering work that someone identified — a
 follow-up, a deferred fix, a named-but-unfixed flake, a "worth a package"
@@ -22,7 +26,7 @@ it just fixed should log it here rather than only mentioning it in prose.
 
 ## Who reads here
 
-**The carver, every cycle.** Per `docs/controller-workflow-v2.md` §8, the
+**The carver, every cycle.** Per nyxloom doctrine (`nyxloom/reference/`), the
 carver picks its next handoffs by priority across ALL sources — this
 backlog, `ROADMAP.md`'s open items, and standing product goals — not by a
 fixed quota per source. An item picked up gets its entry marked `Carved` with

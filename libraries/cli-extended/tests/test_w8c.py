@@ -96,8 +96,8 @@ MUTABLE = {("cli_extended.parser", "CliRuntime"), ("cli_extended.parser", "Regis
 
 def _all_dataclasses():
     found = set()
-    for info in pkgutil.iter_modules(cli_extended.__path__):
-        module = importlib.import_module(f"cli_extended.{info.name}")
+    for info in pkgutil.walk_packages(cli_extended.__path__, "cli_extended."):
+        module = importlib.import_module(info.name)
         for name, value in vars(module).items():
             if (
                 isinstance(value, type)

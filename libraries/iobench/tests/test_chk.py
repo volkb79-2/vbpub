@@ -9,8 +9,10 @@ from iobench import ceilings, guard, proposals, result as res
 from iobench.errors import Refusal
 from iobench.host import RealHost
 from iobench.result import LoadError
+from iobench.testing import GIB
 
 from helpers import INVERSION, calibrate, make_host, matrix, read_json
+from test_tgt import btrfs_file_host
 
 STATE = "/var/lib/iobench"
 
@@ -66,6 +68,7 @@ def test_res_01_files_are_written_through_the_host_atomically(world):
 def test_res_02_versioning(world):
     host, _ = world
     doc = read_json(host, f"{STATE}/result.json")
+    assert res.SCHEMA_MINOR == doc["schema_minor"] == 5
     h = fresh_copy(host)
     # an unknown major is refused with exit 5 / schema_unsupported
     h.put(f"{STATE}/result.json", json.dumps({**doc, "schema": 2}))
@@ -90,27 +93,57 @@ def test_res_03_identity_validity(world):
     host, _ = world
     base = do_check(host)
     assert base.state in ("current", "current_unproven")
-    cases = {
+    # IOB-CEI-06: the partition that was measured is no part of the identity, the disk it was on is
+    partition = {
         "partuuid": lambda h: setattr(h.devices["/dev/vda7"], "partuuid", "00000000-0000-0000-0000-0000deadbeef"),
         "size": lambda h: (setattr(h.devices["/dev/vda7"], "size", h.devices["/dev/vda7"].size + 1048576),
                            h.put("/sys/dev/block/254:7/size", f"{h.devices['/dev/vda7'].size // 512}\n")),
     }
-    for name, flip in cases.items():
+    for name, flip in partition.items():
         h = fresh_copy(host)
         flip(h)
         c = do_check(h)
-        assert c.state == "stale" and c.exit_code == 3, name
-    # a vanished device is a changed identity, not an unreadable result
+        assert c.state in ("current", "current_unproven") and "target_changed" in c.warnings, name
+    # a deleted (or formatted, marker-less) partition is still current: the disk is found by its size and model alone
     gone = fresh_copy(host)
     del gone.devices["/dev/vda7"]
     gone.symlinks.pop("/sys/dev/block/254:7", None)
-    assert do_check(gone).state == "stale"
+    c = do_check(gone)
+    assert c.state in ("current", "current_unproven") and "target_changed" in c.warnings and c.exit_code in (0, 7)
+    # a changed or a vanished DISK is stale (3)
+    disk = {
+        "resized disk": lambda h: h.put("/sys/devices/pci0/block/vda/size", f"{(500 << 30) // 512 + 2048}\n"),
+        "disk of another host": lambda h: h.put("/etc/machine-id", "ffffffffffffffffffffffffffffffff\n"),
+    }
+    for name, flip in disk.items():
+        for partition_gone in (False, True):  # with the target still there, and found by the disk alone
+            h = fresh_copy(host)
+            flip(h)
+            if partition_gone:
+                del h.devices["/dev/vda7"]
+            c = do_check(h)
+            assert (c.state, c.exit_code) == ("stale", 3), (name, partition_gone)
+    # a weak scope cannot prove that a disk which reports a new serial is still the same disk
+    gained = fresh_copy(host)
+    gained.put("/sys/block/vda/serial", "SER-B\n")
+    assert (do_check(gained).state, do_check(gained).exit_code) == ("stale", 3)
+    # ... and the disk is gone when nothing on the host has its size and model
+    vanished = fresh_copy(host)
+    del vanished.devices["/dev/vda7"]
+    vanished.symlinks.pop("/sys/block/vda")
+    assert (do_check(vanished).state, do_check(vanished).exit_code) == ("stale", 3)
     # the strict model/serial/wwn fields count only when non-null in the stored record
     strict = fresh_copy(host)
     doc = read_json(strict, f"{STATE}/result.json")
-    doc["identity"]["disk"]["serial"] = "SER-A"
+    doc["identity"]["disk_scope"]["serial"] = "SER-A"
     strict.put(f"{STATE}/result.json", json.dumps(doc))
     assert do_check(strict).state == "stale"  # the live disk reports no serial
+    # a record from before the disk scope cannot be shown to describe this disk
+    legacy = fresh_copy(host)
+    doc = read_json(legacy, f"{STATE}/result.json")
+    del doc["identity"]["disk_scope"]
+    legacy.put(f"{STATE}/result.json", json.dumps(doc))
+    assert do_check(legacy).state == "stale"
     # advisory fields only warn
     adv = fresh_copy(host)
     adv.put("/proc/sys/kernel/osrelease", "7.3.1\n")
@@ -167,7 +200,7 @@ def test_chk_01_exit_codes(world):
     assert do_check(h, sections=("caps",)).state == "current" and do_check(h, sections=("iocost_model",)).exit_code == 7
     # stale (3)
     s = fresh_copy(host)
-    s.devices["/dev/vda7"].partuuid = "x"
+    s.put("/sys/devices/pci0/block/vda/size", f"{(500 << 30) // 512 + 2048}\n")  # the disk was resized: a changed partuuid alone is not stale
     assert do_check(s).exit_code == 3
     # exit 5: corrupt, schema_unsupported, unreadable, calibration_missing
     k = fresh_copy(host)
@@ -205,8 +238,73 @@ def test_chk_01_exit_codes(world):
     assert weak.sections["iocost_qos"]["proven"] == 0
     # the JSON shape
     d = c.as_dict()
-    assert set(d) == {"state", "reasons", "warnings", "limits", "identity_strength", "sections", "result", "calibration_id", "history"}
+    assert set(d) == {"state", "reasons", "warnings", "limits", "identity_strength", "sections", "result", "calibration_id", "history", "capability"}
     assert d["history"] == "recorded" and d["calibration_id"].startswith("cal-")  # the benchmark appended its own plateaus (CEI-05)
+
+
+@pytest.mark.parametrize("change", ("member_added", "member_list_unreadable"))
+def test_chk_01_btrfs_identity_change_is_stale_with_a_reason(change, monkeypatch):
+    host, uuid = btrfs_file_host()
+    host.dynamic["/sys/fs/cgroup/game-server.slice/io.pressure"] = lambda: "some avg10=0.00 avg60=0.00 avg300=0.00 total=0\n"
+    target = guard.init_file(host, "/bench/target.img", size=6 * GIB, own=True, expect_fs_uuid=uuid,
+                             confirm_quiet_window=False, allow_large_root_target=False, created="2026-10-21T03:00:00Z")
+    out = calibrate(host, target=target.path, work_dir="/bench/w", profile="veryquick")
+    assert out.status == "complete"
+
+    changed = fresh_copy(host)
+    devices = f"/sys/fs/btrfs/{uuid}/devices"
+    if change == "member_added":
+        changed.symlinks[f"{devices}/2"] = changed.realpath("/sys/dev/block/254:7")
+    else:
+        member_dev = changed.realpath(f"{devices}/1") + "/dev"
+        read_text = changed.read_text
+
+        def unreadable(path):
+            if path == member_dev:
+                raise PermissionError("member list is unreadable")
+            return read_text(path)
+
+        monkeypatch.setattr(changed, "read_text", unreadable)
+
+    stored_identity = out.result["identity"]
+    live = res.live_identity(changed, stored_identity)
+    assert live is not None and "_identity_unavailable" in live
+    assert res.identity_differs(stored_identity, live) is True
+    check = res.check(changed, STATE, now=changed.now())
+    expected = "target_fs_multi_device" if change == "member_added" else "target_fs_disk_unknown"
+    assert (check.state, check.exit_code, check.reasons) == ("stale", 3, [f"identity_unavailable:{expected}"])
+
+    from cli_extended import CliIdentity
+    from iobench import cli
+    stdout, stderr = __import__("io").StringIO(), __import__("io").StringIO()
+    code = cli.build_cli(CliIdentity("iobench", "0.1.0", "x", "iobench"), host_factory=lambda: changed).run(
+        argv=["check", "--json"], stdout=stdout, stderr=stderr)
+    assert code == 3 and '"state": "stale"' in stdout.getvalue() and expected in stdout.getvalue()
+
+
+def test_res_03_live_identity_falls_back_to_disk_when_target_load_fails(world, monkeypatch):
+    host, out = world
+    stored = out.result["identity"]
+
+    def unavailable(_host, _path):
+        raise FileNotFoundError("target is not mounted")
+
+    monkeypatch.setattr(guard, "load_target", unavailable)
+    live = res.live_identity(host, stored)
+    assert live is not None and live["target"] is None
+
+
+def test_res_03_live_identity_reports_refusal_while_rebuilding_identity(world, monkeypatch):
+    host, out = world
+    stored = out.result["identity"]
+
+    def unavailable(*_args):
+        raise Refusal("target_fs_disk_unknown", "filesystem backing disk disappeared")
+
+    monkeypatch.setattr(res, "s0_identity", unavailable)
+    live = res.live_identity(host, stored)
+    assert live is not None
+    assert live["_identity_unavailable"]["condition"] == "target_fs_disk_unknown"
 
 
 def test_chk_01_calibration_check_uses_the_calibration_file(world):
@@ -245,7 +343,7 @@ def test_chk_02_show_is_read_only_and_exact(world):
             res.show(empty, STATE, what, now=empty.now())
         assert err.value.reason == "absent"
     stale = fresh_copy(host)
-    stale.devices["/dev/vda7"].partuuid = "x"
+    stale.put("/sys/devices/pci0/block/vda/size", f"{(500 << 30) // 512 + 2048}\n")
     assert res.show(stale, STATE, "proposals", now=stale.now())["stale"] is True
     bad = fresh_copy(host)
     bad.put(f"{STATE}/result.json", "{ nope")

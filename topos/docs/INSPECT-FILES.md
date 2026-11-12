@@ -178,7 +178,7 @@ parameter (testing only — not exposed on the CLI).
 #### Root Requirement
 
 Production reads (no `fixture_root`, no `is_root`) require **root privileges**
-(EUID 0), per TUI-SPEC §4.8 ("available only in root/admin or daemon-approved
+(EUID 0), per the 2026-07 spec §4.8 (`nyxloom-trove/archive/TUI-SPEC-2026-07.md`; "available only in root/admin or daemon-approved
 modes").
 
 When `fixture_root` is provided for testing, the root-PATH is redirected but

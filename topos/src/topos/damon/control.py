@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import os
-import shutil
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -135,8 +134,6 @@ def start_planned_session(
     marker = _marker_path(plan.state_dir, plan.kdamond_idx)
     if marker.exists():
         raise OwnershipError(f"kdamond {plan.kdamond_idx} already has a topos marker")
-    for write in plan.writes:
-        _write_sysfs(plan.damon_root / write.rel_path, write.value)
     marker_payload = {
         "owner": "topos",
         "entity_key": plan.entity_key,
@@ -148,7 +145,11 @@ def start_planned_session(
         "aggr_us": plan.config.vaddr_aggr_us,
         "update_us": plan.config.vaddr_update_us,
     }
+    # C-11: the marker goes down BEFORE the sysfs writes, so a kdamond that got
+    # started can always be found and stopped by ``stop --all-mine``.
     _write_json(marker, marker_payload)
+    for write in plan.writes:
+        _write_sysfs(plan.damon_root / write.rel_path, write.value)
     _audit(plan.state_dir, "damon-start", marker_payload, now=now, user=user)
     return DamonSession(plan.entity_key, plan.pids, plan.kdamond_idx, marker)
 
@@ -195,7 +196,13 @@ def stop_owned_sessions(
     user: str | None = None,
     require_root: bool = True,
     is_root: Callable[[], bool] | None = None,
+    stopped_report: list[int] | None = None,
 ) -> int:
+    """Stop topos-owned sessions; returns the number stopped.
+
+    *stopped_report*, when given, receives each kdamond index as soon as it is
+    stopped, so a caller can say which sessions went down if a later one fails.
+    """
     _check_root(require_root=require_root, is_root=is_root)
     if not all_mine and kdamond_idx is None:
         raise DamonControlError("choose --all-mine or a kdamond index")
@@ -216,6 +223,8 @@ def stop_owned_sessions(
         marker.unlink(missing_ok=True)
         _audit(root, "damon-stop", payload, now=now, user=user)
         stopped += 1
+        if stopped_report is not None:
+            stopped_report.append(idx)
     return stopped
 
 
@@ -278,11 +287,10 @@ def _start_writes(idx: int, pids: tuple[int, ...], config: DamonConfig) -> tuple
 
 
 def _teardown_kdamond(damon_root: Path, idx: int) -> None:
+    # C-10: DAMON sysfs attribute files cannot be unlinked; writing
+    # nr_contexts=0 is the way to drop the contexts, no rmtree.
     _write_sysfs(damon_root / str(idx) / "state", "off")
-    contexts = damon_root / str(idx) / "contexts"
-    if contexts.exists():
-        shutil.rmtree(contexts)
-    _write_sysfs(contexts / "nr_contexts", "0")
+    _write_sysfs(damon_root / str(idx) / "contexts" / "nr_contexts", "0")
 
 
 def _write_sysfs(path: Path, value: str) -> None:
@@ -298,16 +306,43 @@ def _marker_path(state_dir: Path, idx: int) -> Path:
     return _marker_dir(state_dir) / f"kdamond-{idx}.json"
 
 
+def _current_boot_id() -> str | None:
+    """The kernel boot ID, or None when it cannot be read (test seam)."""
+    from topos.procs.identity import read_boot_id
+
+    value = read_boot_id(Path("/proc"))
+    return None if value == "unknown-boot" else value
+
+
 def owned_markers(state_dir: Path) -> list[Path]:
     """Return sorted topos-owned marker paths under *state_dir*.
 
     Public API for ownership inspection. Returns an empty list when the
-    marker directory does not exist.
+    marker directory does not exist.  A marker written on another boot
+    (different ``boot_id``) describes a kdamond that no longer exists, so it is
+    ignored and removed; legacy markers without a ``boot_id`` are kept.
     """
     directory = _marker_dir(state_dir)
     if not directory.exists():
         return []
-    return sorted(directory.glob("kdamond-*.json"))
+    markers = sorted(directory.glob("kdamond-*.json"))
+    boot_id = _current_boot_id()
+    if boot_id is None:
+        return markers
+    kept: list[Path] = []
+    for marker in markers:
+        try:
+            recorded = json.loads(marker.read_text(encoding="utf-8")).get("boot_id")
+        except (OSError, ValueError, AttributeError):
+            recorded = None
+        if isinstance(recorded, str) and recorded != boot_id:
+            try:
+                marker.unlink(missing_ok=True)
+            except OSError:
+                pass  # read-only listing (non-root / read-only state dir): just skip it
+            continue
+        kept.append(marker)
+    return kept
 
 
 def _owned_markers(state_dir: Path) -> list[Path]:
@@ -323,6 +358,10 @@ def _marker_idx(marker: Path) -> int | None:
 
 def _write_json(path: Path, payload: dict[str, object]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
+    if payload.get("owner") == "topos" and "boot_id" not in payload:
+        boot_id = _current_boot_id()
+        if boot_id is not None:
+            payload["boot_id"] = boot_id
     path.write_text(json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n", encoding="utf-8")
 
 

@@ -1,10 +1,11 @@
-"""IOB-BL-06 (review r3 SHOULDs, safety): abort stops the probe unit, bounded reaping, exclusive device writers, tighter fio allowlist."""
+"""IOB-BL-06 (review r3 SHOULDs, safety): abort stops the probe unit, bounded reaping, guarded device writers, tighter fio allowlist."""
 import ctypes
 import os
+import queue
 import shlex
 import signal
 import subprocess
-import time
+import threading
 
 import pytest
 
@@ -29,11 +30,12 @@ def _set_child_subreaper(enabled):
     return bool(previous.value)
 
 
-def _detached_sleep_script(pidfile, seconds):
+def _detached_pipe_holder_script(pidfile, ready_fifo, release_fifo):
     # Record the PID from inside the process that entered the new session.
     # `$!` names the outer `setsid` command, which may fork before exec when
     # its caller is already a process-group leader.
-    child = f"echo $$ > {shlex.quote(str(pidfile))}; exec sleep {seconds}"
+    child = (f"echo $$ > {shlex.quote(str(pidfile))}; printf 'ready\\n' > {shlex.quote(str(ready_fifo))}; "
+             f"read release < {shlex.quote(str(release_fifo))}; exit 0")
     # Replace the outer shell with its foreground sleeper. If SIGKILL hits a
     # shell and its child together, the shell cannot reap that child; pytest's
     # subreaper then inherits a zombie that outlives the session.
@@ -103,63 +105,120 @@ def test_bl06_stop_is_allowlisted_only_for_probe_units():
 def test_bl06_n_r3_2_a_survivor_holding_the_pipe_cannot_hang_the_run(tmp_path, monkeypatch):
     from iobench.errors import Aborted
     monkeypatch.setattr(host_mod, "REAP_TIMEOUT_S", 0.5)
-    pidfiles = (tmp_path / "abort.pid", tmp_path / "timeout.pid")
-    # the grandchild leaves the process group (setsid), so killpg misses it and it keeps the stdout pipe open
-    real = RealHost()
-    real._escalated = True
-    started = time.time()
+    events = queue.Queue()
+    state = {"events": events}
+    in_reap = threading.local()
+    real_popen = subprocess.Popen
+    real_reap = host_mod._reap
+
+    def recording_popen(*args, **kwargs):
+        # The command signals readiness through a FIFO before _run_polled starts
+        # its timeout accounting, so scheduler delay cannot make setup flaky.
+        proc = real_popen(*args, **kwargs)
+        with open(state["ready_fifo"], encoding="utf-8") as ready:
+            assert ready.readline() == "ready\n"
+        communicate = proc.communicate
+
+        def recorded_communicate(*, timeout=None):
+            if getattr(in_reap, "active", False):
+                state["events"].put(("communicate", timeout))
+            return communicate(timeout=timeout)
+
+        proc.communicate = recorded_communicate
+        state["events"].put(("child_ready", proc))
+        return proc
+
+    def observed_reap(proc):
+        state["events"].put(("reap", proc))
+        in_reap.active = True
+        try:
+            real_reap(proc)
+        finally:
+            in_reap.active = False
+            state["events"].put(("reaped", (proc.stdout.closed, proc.stderr.closed)))
+
+    monkeypatch.setattr(host_mod.subprocess, "Popen", recording_popen)
+    monkeypatch.setattr(host_mod, "_reap", observed_reap)
     previous_subreaper = _set_child_subreaper(True)
     try:
-        script = _detached_sleep_script(pidfiles[0], 29)
-        with pytest.raises(Aborted, match="second signal"):
-            real._run_polled(["sh", "-c", script], None)
-        assert time.time() - started < 10
-        assert pidfiles[0].exists()
-        pid = int(pidfiles[0].read_text().strip())
-        assert os.getsid(pid) == pid
+        for label, escalated in (("abort", True), ("timeout", False)):
+            pidfile = tmp_path / f"{label}.pid"
+            ready_fifo = tmp_path / f"{label}.ready"
+            release_fifo = tmp_path / f"{label}.release"
+            os.mkfifo(ready_fifo)
+            os.mkfifo(release_fifo)
+            state.update(events=queue.Queue(), ready_fifo=ready_fifo)
+            real = RealHost()
+            real._escalated = False
+            result = {}
 
-        real._escalated = False
-        started = time.time()
-        script = _detached_sleep_script(pidfiles[1], 29)
-        with pytest.raises(subprocess.TimeoutExpired):
-            real._run_polled(["sh", "-c", script], 1.0)
-        assert time.time() - started < 10
-        assert pidfiles[1].exists()
-        pid = int(pidfiles[1].read_text().strip())
-        assert os.getsid(pid) == pid
+            def invoke():
+                try:
+                    result["value"] = real._run_polled(
+                        ["sh", "-c", _detached_pipe_holder_script(pidfile, ready_fifo, release_fifo)],
+                        None if escalated else 1.0,
+                    )
+                except BaseException as exc:
+                    result["error"] = exc
+                finally:
+                    state["events"].put(("done", None))
+
+            worker = threading.Thread(target=invoke)
+            worker.start()
+            proc = None
+            pid = None
+            try:
+                event, proc = state["events"].get()
+                assert event == "child_ready"
+                assert pidfile.exists()
+                pid = int(pidfile.read_text().strip())
+                assert os.getsid(pid) == pid  # the pipe holder escaped the process group
+                if escalated:
+                    real._escalated = True
+
+                event, reap_proc = state["events"].get()
+                assert event == "reap" and reap_proc is proc
+                event, timeout = state["events"].get()
+                assert event == "communicate" and timeout == host_mod.REAP_TIMEOUT_S
+                event, closed = state["events"].get()
+                assert event == "reaped" and closed == (True, True)
+                event, _ = state["events"].get()
+                assert event == "done"
+                if escalated:
+                    assert isinstance(result.get("error"), Aborted)
+                else:
+                    assert isinstance(result.get("error"), subprocess.TimeoutExpired)
+            finally:
+                with open(release_fifo, "w", encoding="utf-8") as release:
+                    release.write("release\n")
+                worker.join()
+                if proc is not None:
+                    proc.wait()  # reap the killed command after _reap closes its inherited-pipe descriptors
+                if pid is not None:
+                    try:
+                        os.kill(pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+                    try:
+                        os.waitpid(pid, 0)
+                    except ChildProcessError as exc:
+                        raise AssertionError(f"detached test child {pid} was not adopted for cleanup") from exc
     finally:
-        try:
-            for pidfile in pidfiles:
-                raw_pid = pidfile.read_text().strip() if pidfile.exists() else ""
-                if not raw_pid:
-                    continue
-                pid = int(raw_pid)
-                try:
-                    os.kill(pid, signal.SIGKILL)
-                except ProcessLookupError:
-                    pass
-                try:
-                    os.waitpid(pid, 0)
-                except ChildProcessError as exc:
-                    raise AssertionError(
-                        f"detached test child {pid} was not adopted for cleanup"
-                    ) from exc
-        finally:
-            _set_child_subreaper(previous_subreaper)
+        _set_child_subreaper(previous_subreaper)
 
 
-# -- N-r3-3: a device writer must be exclusive -----------------------------------------------------------------------------------
+# -- N-r3-3: a device writer must carry the mounted-write guard -----------------------------------------------------------------
 def _ref(kind):
     return TargetRef(path=DEV, kind=kind, size_bytes=R1002_SIZE, devno="254:7", partuuid=R1002_PARTUUID)
 
 
-def test_bl06_n_r3_3_device_writers_without_exclusive_open_are_refused():
-    job = devio.FioJob("w", DEV, "write", 1 << 20, 1, 5, 0, 1 << 30, exclusive=False, prefix="/tmp/w")
-    with pytest.raises(HostError, match="exclusive_open"):
+def test_bl06_n_r3_3_device_writers_without_the_mounted_write_guard_are_refused():
+    job = devio.FioJob("w", DEV, "write", 1 << 20, 1, 5, 0, 1 << 30, device_guard=False, prefix="/tmp/w")
+    with pytest.raises(HostError, match="allow_mounted_write"):
         devio.assert_writer_bound(job.argv(), _ref("device"), 0, 1 << 30)
-    devio.assert_writer_bound(job.argv(), _ref("file"), 0, 1 << 30)  # a file target has no O_EXCL to arm
+    devio.assert_writer_bound(job.argv(), _ref("file"), 0, 1 << 30)
     from dataclasses import replace
-    devio.assert_writer_bound(replace(job, exclusive=True).argv(), _ref("device"), 0, 1 << 30)
+    devio.assert_writer_bound(replace(job, device_guard=True).argv(), _ref("device"), 0, 1 << 30)
 
 
 # -- N-r3-4: allowlist matches what it documents -------------------------------------------------------------------------------
@@ -168,8 +227,9 @@ BASE = ["fio", "--ioengine=libaio", "--iodepth=32", "--filename=/dev/vda7"]
 
 @pytest.mark.parametrize("extra", [["--output=/etc/cron.d/x"], ["--out=/etc/cron.d/x"], ["--ioengine=exec"], ["--filename=/dev/vdb"],
                                    ["--ioengine=psync"], ["--lockfile=x"], ["--status-interval=1"],
-                                   ["--ioeng=exec:/bin/sh"], ["--trigger-cmd=sh"], ["--write_lat_log=/etc/x"], ["--exclusive_open=1", "--exclusive_open=0"],
-                                   ["--exclusive_ope=0"], ["--iodepth=1"], ["-o", "x"]])
+                                   ["--ioeng=exec:/bin/sh"], ["--trigger-cmd=sh"], ["--write_lat_log=/etc/x"],
+                                   ["--allow_mounted_write=0", "--allow_mounted_write=0"], ["--allow_mounted_writ=0"],
+                                   ["--iodepth=1"], ["-o", "x"]])
 def test_bl06_n_r3_4_fio_options_outside_what_iobench_builds_are_refused(extra):
     assert not is_allowed_argv(BASE + extra)
 
@@ -184,7 +244,7 @@ def test_bl06_n_r3_4_what_iobench_builds_still_passes():
 
 def test_bl06_n_r3_4_the_key_allowlist_is_exactly_what_the_builder_emits():
     emitted = set()
-    for rw, kwargs in (("randread", {}), ("write", dict(exclusive=True, hist=True, rate_iops=5, fsync=1, io_size=4096, metric="bw")),
+    for rw, kwargs in (("randread", {}), ("write", dict(device_guard=True, hist=True, rate_iops=5, fsync=1, io_size=4096, metric="bw")),
                        ("randwrite", dict(metric="iops"))):
         argv = devio.FioJob("n", DEV, rw, 4096, 1, 5, 0, 4096, prefix="/run/iobench/n", **kwargs).argv()
         assert is_allowed_argv(argv)

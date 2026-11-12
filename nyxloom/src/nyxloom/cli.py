@@ -522,7 +522,10 @@ def _source_metadata(path: Path, fmt: str | None = None) -> dict[str, str]:
     }
 
 
-def _extract_config_from_args(args, *, since_marker=None, json_output: bool | None = None):
+def _extract_config_from_args(
+    args, *, since_marker=None, since_time=None, since_time_inclusive=False,
+    json_output: bool | None = None,
+):
     from .session_extract import ExtractConfig
     from .session_extract.config import DEFAULT_PROFILE, PROFILES
 
@@ -548,6 +551,8 @@ def _extract_config_from_args(args, *, since_marker=None, json_output: bool | No
         max_words=get("max_words") if get("max_words") is not None else base.max_words,
         include_thinking=get("include_thinking", False),
         since_marker=since_marker,
+        since_time=since_time,
+        since_time_inclusive=since_time_inclusive,
         until_marker=get("until"),
         max_compactions=max_compactions if max_compactions is not None else base.max_compactions,
         max_time_minutes=(
@@ -569,6 +574,11 @@ def _extract_config_from_args(args, *, since_marker=None, json_output: bool | No
         show_tool_call_intent=get("show_tool_call_intent", False),
         tool_calls=get("tool_calls") or "none",
         tool_errors=get("tool_errors") or "show",
+        agent_comms=get("agent_comms") or "off",
+        agent_launch_patterns=tuple(get("agent_launch_pattern") or (
+            "codex-impl.sh", "opencode-impl.sh",
+        )),
+        budget_tokens=get("budget_tokens"),
         strip_cd_prefix=bool(get("strip_cd_prefix", False)),
         edit_calls=get("edit_calls") or "show",
         read_calls=get("read_calls") or "show",
@@ -779,7 +789,7 @@ def _run_follow(args, path: Path, fmt: str, config, session_id: str | None, anch
     return follower.run_forever()
 
 
-# The four `--preset` bundles (watch, successor, review, ledger) live in
+# The five `--preset` bundles (watch, successor, review, ledger, readback) live in
 # session_extract/presets.py; `--successor-brief` implies `successor`.
 
 
@@ -790,7 +800,7 @@ def cmd_extract(args) -> int:
     [--since MARKER | --since-file PATH] [--until MARKER] [--ledger]
     [--tool-calls none|intent|intent-or-call|call] [--tool-errors show|hide]
     [--stop-state | --no-stop-state] [--no-ledger] [--prose-only | --no-prose] [--jsonl]
-    [--preset watch|successor|review|ledger]
+    [--preset watch|successor|review|ledger|readback]
     [--successor-brief [--order TEXT|@FILE] [--brief-max-chars N]]
     [--strip-cd-prefix | --no-strip-cd-prefix] [--path-aliases SPEC]
     [--edit-calls show|collapse|omit] [--read-calls show|collapse]
@@ -871,11 +881,14 @@ def cmd_extract(args) -> int:
     synthetic stop/denial records render as `[STOP: ...]`, never as OPERATOR.
 
     --stop-state appends the cause (the sibling .meta.json `stoppedByUser`
-    plus the transcript tail), the last assistant text and the in-flight call.
+    plus the transcript tail for Claude Code; terminal state and call lifecycle
+    for Codex), the last assistant text and the in-flight call. --stall-check
+    emits only a mechanical Codex stall verdict and optional --expect-file
+    report check, with --json for a controller.
     Every option belongs to one help group: Source & range, Content
     selection, Rendering & compression, Derived sections, Output.
-    --preset NAME is one of four named bundles of options (watch, successor,
-    review, ledger; session_extract/presets.py, every expansion shown in
+    --preset NAME is one of five named bundles of options (watch, successor,
+    review, ledger, readback; session_extract/presets.py, every expansion shown in
     --help); explicit options override it (--no-ledger, --no-stop-state,
     --no-strip-cd-prefix and --prose-only/--no-prose cancel boolean
     members). --prose-only keeps only operator messages and assistant prose
@@ -932,11 +945,65 @@ def cmd_extract(args) -> int:
         return 1
     path, session_id = resolved
 
+    if getattr(args, "stall_check", False):
+        from .session_extract.adapters import detect
+        from .session_extract.stall import (
+            DEFAULT_REPORT_MAX_PENDING_MARKERS,
+            DEFAULT_REPORT_MIN_BYTES,
+            check_stall,
+            render_json,
+        )
+
+        stall_format = args.format or detect(path).name
+        if stall_format not in ("codex", "codex-exec"):
+            print(
+                f"error: --stall-check reads Codex runs only; {path} is {stall_format!r}",
+                file=sys.stderr,
+            )
+            return 1
+        check = check_stall(
+            path,
+            stall_format,
+            expect_file=Path(args.expect_file) if args.expect_file else None,
+            report_min_bytes=(
+                args.report_min_bytes
+                if getattr(args, "report_min_bytes", None) is not None
+                else DEFAULT_REPORT_MIN_BYTES
+            ),
+            report_max_pending_markers=(
+                args.report_max_pending_markers
+                if getattr(args, "report_max_pending_markers", None) is not None
+                else DEFAULT_REPORT_MAX_PENDING_MARKERS
+            ),
+        )
+        if args.json:
+            print(render_json(check), end="")
+        else:
+            print(check.render())
+        return 0 if check.verdict == "ok" else 1
+
+    from .session_extract.timewindow import parse_since
+
+    since_time = None
+    since_inclusive = False
+    since_note = None
+    if getattr(args, "since", None):
+        try:
+            spec = parse_since(args.since)
+        except ValueError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 2
+        if spec is not None:
+            since_time = spec.cutoff
+            since_inclusive = spec.inclusive
+            since_note = spec.description
+            args.since = None
+
     from .session_extract import presets as presets_mod
 
     successor = bool(getattr(args, "successor_brief", False))
     preset = presets_mod.preset_name(args)
-    # A preset (watch/successor/review/ledger; --successor-brief implies
+    # A preset (watch/successor/review/ledger/readback; --successor-brief implies
     # successor) only turns options on; an explicit option always wins
     # (presets.resolve). The expansions are shown in --help and the docs.
     for attr, value in presets_mod.resolve(args).items():
@@ -971,7 +1038,10 @@ def cmd_extract(args) -> int:
                 print(f"error: --redact-pattern {pattern!r}: invalid regex: {e}", file=sys.stderr)
                 return 1
 
-    config = _extract_config_from_args(args, since_marker=since_marker)
+    config = _extract_config_from_args(
+        args, since_marker=since_marker, since_time=since_time,
+        since_time_inclusive=since_inclusive,
+    )
     resolved = _resolve_effect_patterns(args)
     if resolved is None:
         return 1
@@ -1003,22 +1073,38 @@ def cmd_extract(args) -> int:
         anchor = _follow_anchor(path, follow_fmt, follow_session)
 
     result = extract(path, config, fmt=args.format, session_id=session_id)
-    if config.show_tool_calls and result.format not in ("claude-code", "codex"):
-        print(f"error: --show-tool-calls is not supported for {result.format!r}; supported formats: claude-code, codex",
+    result._since_note = since_note
+    if config.show_tool_calls and result.format not in ("claude-code", "codex", "codex-exec"):
+        print(f"error: --show-tool-calls is not supported for {result.format!r}; supported formats: claude-code, codex, codex-exec",
               file=sys.stderr)
         return 1
 
     for flag, wanted in ((f"--preset {preset}", preset is not None
                           and presets_mod.PRESETS[preset].claude_only and not successor),
-                         ("--successor-brief", successor),
-                         ("--stop-state", getattr(args, "stop_state", False))):
+                         ("--successor-brief", successor)):
         if wanted and result.format != "claude-code":
             print(f"error: {flag} does not support {result.format!r} yet -- Claude Code "
                   f"transcripts only (see session_extract/stopstate.py)", file=sys.stderr)
             return 1
+    if getattr(args, "stop_state", False) and result.format not in (
+        "claude-code", "codex", "codex-exec",
+    ):
+        print(
+            f"error: --stop-state does not support {result.format!r} yet; supported "
+            "formats: claude-code, codex, codex-exec",
+            file=sys.stderr,
+        )
+        return 1
     if config.tool_calls != "none" and result.format != "claude-code":
         print(f"error: --tool-calls is not supported for {result.format!r} yet; supported "
               f"format: claude-code", file=sys.stderr)
+        return 1
+    if config.agent_comms != "off" and result.format != "claude-code":
+        print(
+            f"error: --agent-comms does not support {result.format!r} yet; "
+            "supported format: claude-code",
+            file=sys.stderr,
+        )
         return 1
     if result.format != "claude-code":
         for attr, flag in (("tool_errors", "--tool-errors"), ("path_aliases", "--path-aliases"),
@@ -1061,7 +1147,7 @@ def cmd_extract(args) -> int:
     if getattr(args, "stop_state", False) or successor:
         from .session_extract.stopstate import build_stop_state
 
-        stop_state = build_stop_state(path)
+        stop_state = build_stop_state(path, fmt=result.format)
         if not successor:
             trailer_blocks.append(stop_state.render())
 

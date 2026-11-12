@@ -397,6 +397,10 @@ def _committed_r2_plan_sha256(
         )
     plan_environment = os.environ.copy()
     plan_environment.pop("PYTHONPATH", None)
+    plan_environment["PYTHONSAFEPATH"] = "1"
+    # The repository root contains a directory named `assay`; without safe-path
+    # isolation `python -m` treats it as the package namespace and shadows the
+    # installed wheel this checker deliberately requires.
     # `assay plan --allow-dirty` still derives candidates from the committed
     # snapshot. It records unrelated worktree changes and refuses a changed
     # loaded lane file; the byte comparison above also binds that file to the
@@ -707,10 +711,14 @@ def _check_v15_r2(
             if not isinstance(value, str) or _CANDIDATE_ID.fullmatch(value) is None:
                 raise ValueError(f"{name} {field} must be a SHA-256 digest")
 
-    if source_lane.get("env") != {} or source_lane.get("env_passthrough") != [
-        "PATH",
-        "ASSAY_RESOURCE_OBSERVER_SOCKET",
-    ]:
+    # Env-only observer endpoint (E4): the socket is no longer passed through by
+    # name; the lane declares it as a required infrastructure variable instead.
+    if (
+        source_lane.get("env") != {}
+        or source_lane.get("env_passthrough") != ["PATH"]
+        or source_lane.get("infrastructure")
+        != {"ASSAY_RESOURCE_OBSERVER_SOCKET": "required-env:ASSAY_RESOURCE_OBSERVER_SOCKET"}
+    ):
         raise ValueError("committed qualification lane environment policy differs")
     effective_env = document.get("env_effective")
     if not isinstance(effective_env, dict) or _B105_ARCHIVE_ENV & set(effective_env):

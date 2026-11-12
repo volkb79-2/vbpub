@@ -8,6 +8,7 @@ from typing import Any
 from topos.collect.cgroup import read_text
 from topos.model import Entity, EntityKey
 from topos.providers.base import NetSample, unavailable_sample
+from topos.collect.netfilter import is_virtual_interface
 from topos.providers.net_host import parse_net_dev
 
 
@@ -173,11 +174,11 @@ class NetnsProvider:
         result = read_text(self.proc_root / str(pid) / "net" / "dev")
         if result.value is None:
             return None
-        interfaces = parse_net_dev(str(result.value))
+        interfaces = [v for name, v in parse_net_dev(str(result.value)).items() if not is_virtual_interface(name)]
         return _Candidate(
             ns_id=ns_id,
-            rx_bytes=sum(values["rx_bytes"] for values in interfaces.values()),
-            tx_bytes=sum(values["tx_bytes"] for values in interfaces.values()),
-            rx_pkts=sum(values["rx_pkts"] for values in interfaces.values()),
-            tx_pkts=sum(values["tx_pkts"] for values in interfaces.values()),
+            rx_bytes=sum(values["rx_bytes"] for values in interfaces),
+            tx_bytes=sum(values["tx_bytes"] for values in interfaces),
+            rx_pkts=sum(values["rx_pkts"] for values in interfaces),
+            tx_pkts=sum(values["tx_pkts"] for values in interfaces),
         )

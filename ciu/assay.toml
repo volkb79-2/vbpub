@@ -17,6 +17,9 @@
 # owner declares it here or untracks it — fail-closed, by design.
 schema_version = 2
 
+# Lane `ciu` = the async R2 mutation lane (needs run-gate.toml's
+# resource_observer = "cgprofile" + resources.pids because liveness = true below).
+# Lane `ciu-gate` (further down) = the release gate R0/R1/R3 without mutation.
 [lanes.ciu]
 scope = "S1"
 rigor = ["R0", "R1", "R2", "R3"]
@@ -89,9 +92,15 @@ format = "coverage-py-json"
 artifact = "coverage.json"
 
 [lanes.ciu.judge.mutation]
-# Keep mutation candidates serial: the baseline already fans out through the
-# project's normal xdist runner, and the host shares capacity with production.
-jobs = 1
+# 2026-11-11 host pilot on a four-core runner: three workers raised throughput
+# from 0.41 to 1.27 candidates/min, with a 0.83 GiB lane-container peak and no
+# OOM. Run-Gate requests auto workers and caps the lane at three, leaving one
+# core for the host and sampler. Assay <= 12.1.1 includes this setting in judge
+# identity, so changing it invalidates finished-candidate state. Assay >=
+# 12.2.0 keeps reusable finished records when only resource settings change;
+# changed tests, sources, argv, env, or Assay version still invalidate. See
+# ../run-gate-project/CONSUMERS.md#native-r2-worker-selection.
+jobs_max = 3
 max_mutants = 10000
 operators = [
   "python:compare-swap",
@@ -105,6 +114,53 @@ liveness = true
 [lanes.ciu.judge.canary]
 # Import-break proves that the complete declared CIU gate rejects a known-bad
 # source snapshot independently of individual test mutations.
+mechanism = "import-break"
+target = "src/ciu/worktree.py"
+budget_per_attempt = "20m"
+
+# Release gate (operator 2026-11-05: R0+R1+R3 gate a release; R2 mutation is async on the latest
+# release only). Same argv, environment, isolation and judge as [lanes.ciu] minus the R2 mutation
+# sweep, which stays on lane `ciu` (needs the cgroup observer). Run it as
+# `run-gate --base <previous release tag or main> ciu-gate`.
+[lanes.ciu-gate]
+# No --maxfail: this lane has no R2 mutants to cut short, and fail-fast can leave coverage.json
+# incomplete (assay warning), hiding the full set of failures and uncovered lines.
+scope = "S1"
+rigor = ["R0", "R1", "R3"]
+enforcement = "gate"
+argv = [
+  "/opt/tester-venv/bin/python", "-m", "pytest", "tests",
+  "--cov=ciu", "-n", "0", "--dist", "loadfile", "--cov-branch",
+  "--cov-report=term-missing", "--cov-report=json:coverage.json",
+  "--cov-fail-under=100", "-rs",
+]
+env = { PYTHONPATH = "src:../cmru/src:../libraries/worktree/src", PYTHONDONTWRITEBYTECODE = "1" }
+env_passthrough = ["CGROUP_PARENT_DEV_BACKGROUND", "HOME", "PATH", "TERM", "LANG"]
+# Baseline plus one import-break canary attempt (control run of the full suite + the fast-fail run).
+budget = "90m"
+allow_argv_append = false
+
+[lanes.ciu-gate.isolation]
+snapshot_selection = "repository-minus-unsafe-symlinks"
+unsafe_symlink_omissions = [
+  "topos/tests/fixtures/inspect_files/_danger/passwd_link",
+  "topos/tests/fixtures/inspect_files/cgroup_escape/system.slice/ssh.service/dangerous_link/passwd_escape",
+  "topos/tests/fixtures/inspect_files/cgroup_nonreg/system.slice/ssh.service/memory.current",
+]
+
+[lanes.ciu-gate.judge]
+language = "python"
+source_roots = ["src"]
+fail_under = 100.0
+allow_excluded = false
+require_branch = true
+base_source = "request"
+
+[lanes.ciu-gate.judge.coverage]
+format = "coverage-py-json"
+artifact = "coverage.json"
+
+[lanes.ciu-gate.judge.canary]
 mechanism = "import-break"
 target = "src/ciu/worktree.py"
 budget_per_attempt = "20m"

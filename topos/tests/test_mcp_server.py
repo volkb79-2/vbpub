@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import builtins
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -35,6 +36,18 @@ from topos.daemon.component_health import ComponentSnapshot, ComponentState, Hea
 from topos.mcp.server import MAX_HISTORY_LIMIT, MAX_OVERVIEW_LIMIT, McpServer
 from topos.model import DockerMeta, Entity, EntityFrame, EntityKey, Frame, MetricValue
 from topos.registry import REGISTRY
+
+
+def _source_env() -> dict[str, str]:
+    project = Path(__file__).resolve().parents[1]
+    return {
+        "PYTHONPATH": os.pathsep.join(
+            (
+                str(project / "src"),
+                str(project.parent / "libraries" / "cli-extended" / "src"),
+            )
+        )
+    }
 
 
 DOCKER_KEY = "system.slice/docker-" + ("a" * 64) + ".scope"
@@ -408,7 +421,7 @@ def test_run_probes_at_startup_and_signal_seam_is_used(monkeypatch) -> None:
     assert McpServer(Down()).run() == 1
 
 
-def test_missing_optional_sdk_exits_two_with_install_hint(monkeypatch, capsys) -> None:
+def test_missing_optional_sdk_exits_two_with_install_hint(monkeypatch, capsys, tmp_path: Path) -> None:
     real_import = builtins.__import__
 
     def missing_mcp(name: str, *args: object, **kwargs: object) -> object:
@@ -422,8 +435,17 @@ def test_missing_optional_sdk_exits_two_with_install_hint(monkeypatch, capsys) -
 
     # ``-S`` proves the actual CLI path when the optional site package is absent.
     proc = subprocess.run(
-        [sys.executable, "-S", "-m", "topos.cli", "mcp", "serve"],
-        env={"PYTHONPATH": str(Path(__file__).parents[1] / "src")},
+        [
+            sys.executable,
+            "-S",
+            "-m",
+            "topos.cli",
+            "mcp",
+            "serve",
+            "--socket",
+            str(tmp_path / "unused.sock"),
+        ],
+        env=_source_env(),
         capture_output=True,
         text=True,
     )
@@ -437,7 +459,7 @@ def test_non_mcp_import_path_does_not_import_the_optional_sdk() -> None:
         "-c",
         "import sys; import topos.cli; assert not any(n == 'mcp' or n.startswith('mcp.') for n in sys.modules)",
     ]
-    proc = subprocess.run(command, env={"PYTHONPATH": str(Path(__file__).parents[1] / "src")}, capture_output=True, text=True)
+    proc = subprocess.run(command, env=_source_env(), capture_output=True, text=True)
     assert proc.returncode == 0, proc.stderr
 
 

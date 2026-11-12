@@ -66,6 +66,12 @@ def _pytest_disables_detached_git_maintenance():
 
 
 @pytest.fixture(autouse=True)
+def _versions_resume_cache_in_tmp(tmp_path_factory, monkeypatch):
+    """`cmru versions resolve` keeps its interrupted-run resume file under XDG_CACHE_HOME."""
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path_factory.mktemp("xdg-cache")))
+
+
+@pytest.fixture(autouse=True)
 def _each_test_reaps_its_process_descendants(request):
     """Fail a test if new process descendants outlive its boundary.
 
@@ -130,6 +136,11 @@ def pytest_configure(config):
         "markers",
         "real_release_version_plan: run the real D-001 release version-plan step "
         "instead of the neutral stub unrelated release-child tests get",
+    )
+    config.addinivalue_line(
+        "markers",
+        "real_release_target_tag_guard: run the real KI-130 already-tagged target "
+        "guard instead of the neutral stub unrelated release-child tests get",
     )
     config.addinivalue_line(
         "markers",
@@ -232,6 +243,28 @@ def _neutral_release_version_plan(request):
         yield
     finally:
         cli._release_version_plan = saved
+
+
+@pytest.fixture(autouse=True)
+def _neutral_release_target_tag_guard(request):
+    """Release-child tests of OTHER behaviour fake their repository and tags.
+
+    The KI-130 preflight asks local Git and origin which release tags exist.
+    Mocked, non-repository release-child fixtures have neither. They get a
+    neutral step; the KI-130 tests carry the
+    ``real_release_target_tag_guard`` marker and exercise the real guard.
+    """
+    if request.node.get_closest_marker("real_release_target_tag_guard"):
+        yield
+        return
+    from cmru import cli
+
+    saved = cli._refuse_existing_release_targets
+    cli._refuse_existing_release_targets = lambda *_args, **_kwargs: None
+    try:
+        yield
+    finally:
+        cli._refuse_existing_release_targets = saved
 
 
 @pytest.fixture(autouse=True)

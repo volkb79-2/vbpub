@@ -9,14 +9,17 @@ from pathlib import Path
 from typing import Any
 
 from topos.collect.cgroup import read_text
+from topos.collect.netfilter import is_virtual_interface
 from topos.model import Entity, EntityKey
 from topos.providers.base import NetSample, unavailable_sample
 
 CommandRunner = Callable[[list[str]], str]
 
+TC_TIMEOUT_S = 5.0
+
 
 def _run_command(argv: list[str]) -> str:
-    proc = subprocess.run(argv, check=True, capture_output=True, text=True)
+    proc = subprocess.run(argv, check=True, capture_output=True, text=True, timeout=TC_TIMEOUT_S)
     return proc.stdout
 
 
@@ -151,11 +154,12 @@ class NetHostProvider:
         snmp = self._read_snmp()
         netstat = self._read_netstat()
         qdisc = self._read_qdisc()
+        real = [values for name, values in interfaces.items() if not is_virtual_interface(name)]
         total = {
-            "rx_bytes": sum(values["rx_bytes"] for values in interfaces.values()),
-            "tx_bytes": sum(values["tx_bytes"] for values in interfaces.values()),
-            "rx_pkts": sum(values["rx_pkts"] for values in interfaces.values()),
-            "tx_pkts": sum(values["tx_pkts"] for values in interfaces.values()),
+            "rx_bytes": sum(values["rx_bytes"] for values in real),
+            "tx_bytes": sum(values["tx_bytes"] for values in real),
+            "rx_pkts": sum(values["rx_pkts"] for values in real),
+            "tx_pkts": sum(values["tx_pkts"] for values in real),
         }
         proto = {
             "tcp": {
@@ -220,7 +224,7 @@ class NetHostProvider:
             return None
         try:
             output = self.command_runner(["tc", "-s", "qdisc", "show"])
-        except (FileNotFoundError, subprocess.CalledProcessError) as exc:
+        except (FileNotFoundError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
             self._status["errors"].append(f"tc:{exc.__class__.__name__}")
             return None
         return parse_qdisc_stats(output)

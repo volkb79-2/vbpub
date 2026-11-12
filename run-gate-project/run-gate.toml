@@ -64,7 +64,11 @@ budget = "20m"
 artifacts = ["coverage.json"]       # disclosed after every run (RG-10)
 
 [lanes.selftest.resources]
-memory = "1g"
+# 2g: the 25.2.0 release candidates recorded a footprint peak of 1021-1024 MiB, i.e.
+# clamped at the former 1g cap (true demand unknown; the October manifest median
+# peak was ~595 MiB), which produced oom_kill events (lane verdict forced to
+# ERROR) with all 2960 tests green. Re-read the footprint line after the first run.
+memory = "2g"
 memory_swap = "16g"
 cpus = "3"
 
@@ -72,7 +76,7 @@ cpus = "3"
 # RG-55 wave, package P2, C2: assay lanes (D-11). `selftest` above stays the
 # direct pytest and diff-coverage gate, without depending on Assay; these
 # lanes are the SECOND,
-# stricter judge, same reasoning cmru/scripts-cgroup-profiler already apply
+# stricter judge, same reasoning cmru/cgprofile already apply
 # in this repo. Judged scope is DELIBERATELY WIDER than selftest's:
 # `assay.toml`'s `source_roots = ["."]` (RW-8, run-gate-WAVE-RG55-
 # CONTROLLER-LOG.md) judges `tools/coverage_gate.py` too, not just

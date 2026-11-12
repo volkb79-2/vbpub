@@ -19,30 +19,32 @@ registry = ["ghcr.io"]
 # CMRU PROJECT DEPENDENCY GRAPH
 #
 #   cli-extended <- none  (declared release order)
+#   augeaswrap <- cli-extended  (declared release order)
 #   tnt <- cli-extended  (declared release order)
-#   cgroup-profiler <- cli-extended  (declared release order)
-#   run-gate-project <- cgroup-profiler  (declared release order)
+#   cgprofile <- cli-extended, augeaswrap  (declared release order)
+#   run-gate-project <- cgprofile  (declared release order)
 #   cmru <- cli-extended, run-gate-project  (declared release order)
 #   ciu <- cli-extended  (declared release order)
 #   assay <- none  (declared release order)
-#   topos <- none  (declared release order)
+#   topos <- cli-extended, augeaswrap  (declared release order)
 #   nyxloom <- cli-extended  (declared release order)
 #   pwmcp <- cli-extended  (declared release order)
 #   iobench <- cli-extended  (declared release order)
 #   rigor-record <- cli-extended  (declared release order)
+#   test-policy <- none  (declared release order)
 #   tls-edge <- none  (declared release order)
-#   modern-debian-tools-python-debug <- cli-extended, ciu, cmru, pwmcp, topos, nyxloom  (declared release order)
-#     consumes first-party wheels: cli-extended, ciu, cmru, topos, nyxloom
-#   mdt-cockpit <- cli-extended, ciu, cmru, pwmcp, topos, nyxloom, run-gate-project, cgroup-profiler  (declared release order)
-#     consumes first-party wheels: cli-extended, ciu, cmru, topos, run-gate-project, cgroup-profiler, nyxloom
+#   iogovmon <- none  (declared release order)
+#   mdt-cockpit <- cli-extended, ciu, cmru, pwmcp, topos, nyxloom, run-gate-project, cgprofile  (declared release order)
+#     consumes first-party wheels: cli-extended, ciu, cmru, topos, run-gate-project, cgprofile, nyxloom
 #   tester-base <- none  (declared release order)
 #
 # LEVELS (a project releases after every project on a lower level; longest declared chain)
-#   L0: cli-extended, assay, topos, tls-edge, tester-base
-#   L1: tnt, cgroup-profiler, ciu, nyxloom, pwmcp, iobench, rigor-record
-#   L2: run-gate-project
-#   L3: cmru
-#   L4: modern-debian-tools-python-debug, mdt-cockpit
+#   L0: cli-extended, assay, test-policy, tls-edge, iogovmon, tester-base
+#   L1: augeaswrap, tnt, ciu, nyxloom, pwmcp, iobench, rigor-record
+#   L2: cgprofile, topos
+#   L3: run-gate-project
+#   L4: cmru
+#   L5: mdt-cockpit
 #
 # PREFLIGHT: PASS
 # END CMRU GENERATED DEPENDENCY GRAPH
@@ -52,7 +54,7 @@ registry = ["ghcr.io"]
 # CMRU requires cli-extended at runtime and a published Run-Gate release for its gate.
 # Run-Gate's full R2 qualification requires the released CGProfile observer.
 # project_order must be a topological order of every level; the preflight enforces it.
-project_order = ["cli-extended", "tnt", "cgroup-profiler", "run-gate-project", "cmru", "ciu", "assay", "topos", "nyxloom", "pwmcp", "iobench", "rigor-record", "tls-edge", "modern-debian-tools-python-debug", "mdt-cockpit", "tester-base"]
+project_order = ["cli-extended", "augeaswrap", "tnt", "cgprofile", "run-gate-project", "cmru", "ciu", "assay", "topos", "nyxloom", "pwmcp", "iobench", "rigor-record", "test-policy", "tls-edge", "iogovmon", "mdt-cockpit", "tester-base"]
 default_steps = ["run-tests", "build", "push"]
 execution_mode = "project-first"
 # Repository credentials live in gitignored root cmru.secret.toml. A project may
@@ -60,7 +62,7 @@ execution_mode = "project-first"
 
 # Estate policy for common gate/build inputs. Project [env] may override a
 # value only where it has a genuinely different requirement (for example,
-# modern-debian-tools-python-debug's Docker-in-Docker image).
+# mdt-cockpit's Docker-in-Docker image).
 [orchestration.defaults.env]
 # ---------------------------------------------------------------------------
 # Values here are inherited by EVERY project's steps; a project's own
@@ -76,7 +78,10 @@ execution_mode = "project-first"
 
 # Images (built in this repo; see each project's build step).
 CMRU_WHEEL_BUILDER_IMAGE = "wheel-builder:local"
-CMRU_TESTER_UNIFIED_IMAGE = "tester-unified:local"
+# The environment wins, so one release can use a side-tagged image (for example a phase-1
+# image whose run-gate must not be promoted to `:local` yet) without touching what the
+# controller consumes. Unset: the promoted `:local` image.
+CMRU_TESTER_UNIFIED_IMAGE = "${CMRU_TESTER_UNIFIED_IMAGE:-tester-unified:local}"
 
 # The BuildKit endpoint every image build goes through. The host governs builds (a worker a
 # build starts itself may be terminated), so the Buildx builder is a `remote` node on a
@@ -164,6 +169,11 @@ CMRU_TESTER_CGROUP_FORWARD_GATES_VAR = "${CGROUP_PARENT_DEV_GATES}"
 config = "libraries/cli-extended/cmru.toml"
 depends_on = []
 
+# Augeaswrap's CLI grammar and error contract come from the cli-extended wheel.
+[orchestration.project.augeaswrap]
+config = "augeaswrap/cmru.toml"
+depends_on = ["cli-extended"]
+
 # tnt's wheel depends on cli-extended>=0.4.0; its independently pinned
 # truenas_api_client runtime dependency is declared in truenas/tnt/pyproject.toml.
 [orchestration.project.tnt]
@@ -197,24 +207,18 @@ depends_on = []
 
 [orchestration.project.topos]
 config = "topos/cmru.toml"
-depends_on = []
+# toposd publishes host endpoint facts with augeaswrap; topos/pyproject.toml also requires cli-extended.
+depends_on = ["cli-extended", "augeaswrap"]
 
 [orchestration.project.nyxloom]
 config = "nyxloom/cmru.toml"
 # cli-extended: nyxloom's wheel requires it (NYX-CLIX, CX-D1), so the release preflight demands the declaration.
 depends_on = ["cli-extended"]
 
-[orchestration.project.modern-debian-tools-python-debug]
-config = "modern-debian-tools-python-debug/cmru.toml"
-# cli-extended: cmru's wheel requires it and the image install is `pip --no-index`
-# (pip/wheels.list stages it). PWMCP is also released first so the image can install
-# its exact CIU root and client CLI through the generated CMRU get.py.
-depends_on = ["cli-extended", "ciu", "cmru", "pwmcp", "topos", "nyxloom"]
-
 [orchestration.project.mdt-cockpit]
 config = "mdt-cockpit/cmru.toml"
 # The fork uses the same first-party CIU and CLI tooling in its image.
-depends_on = ["cli-extended", "ciu", "cmru", "pwmcp", "topos", "nyxloom", "run-gate-project", "cgroup-profiler"]
+depends_on = ["cli-extended", "ciu", "cmru", "pwmcp", "topos", "nyxloom", "run-gate-project", "cgprofile"]
 
 # Leaf image project (python:3.14-trixie digest + docker client + minisign + shellcheck): no
 # first-party dependency. cmru is its release tooling, an installed tool and not a build edge
@@ -242,6 +246,20 @@ depends_on = []
 config = "libraries/iobench/cmru.toml"
 depends_on = ["cli-extended"]
 
+# test-policy (libraries/test-policy, TP-01): the estate_test_policy pytest plugin and flakehunt. Standard
+# library plus pytest only (the CLI is plain argparse, TP-08), so no first-party dependency: level L0.
+[orchestration.project.test-policy]
+config = "libraries/test-policy/cmru.toml"
+depends_on = []
+
+# iogovmon (iogovmon/, host-tuning WP-IGM-a): the background IO recorder extracted from mdt-cockpit/iogov. Its scripts are `iogovmond` and
+# `iogovmonctl`; package and distribution remain `iogovmon`. Standard library only and
+# independent of every other estate project (no cli-extended, no iobench, no mdt-cockpit), so level L0. Its FIRST release is gated on the
+# live acceptance WP-IGM-ACC (iogovmon/BACKLOG.md IGM-01); registering it here does not authorise a release.
+[orchestration.project.iogovmon]
+config = "iogovmon/cmru.toml"
+depends_on = []
+
 # rigor-record (libraries/rigor-record, RR-1/RR-2): the interchange layer of the rigor-evidence record
 # (schemas, validator, privacy lint, assemble, render, check). Its library modules are stdlib-only and
 # producers vendor its schemas and golden fixtures instead of importing the wheel; only the
@@ -258,16 +276,16 @@ config = "run-gate-project/cmru.toml"
 # Run-Gate's R2 qualification consumes contract-2 resource observations from
 # the deployed CGProfile host daemon. A local source-built Run-Gate candidate
 # is used to qualify CGProfile first; publishing Run-Gate follows CGProfile.
-depends_on = ["cgroup-profiler"]
+depends_on = ["cgprofile"]
 
 # RG-55 daemon image release. Its lifecycle is CIU-owned; CMRU builds and
 # publishes the tagged image, while the controller deploys it via `ciu up`.
 # The release uses the source-built CMRU controller and has no CMRU wheel edge.
-[orchestration.project.cgroup-profiler]
-config = "scripts/cgroup-profiler/cmru.toml"
-# cli-extended: the cgprofile wheel requires it (pyproject [project.dependencies]),
-# so the release preflight demands the declaration.
-depends_on = ["cli-extended"]
+[orchestration.project.cgprofile]
+config = "cgprofile/cmru.toml"
+# Both are wheel dependencies: cli-extended provides the shared CLI contract;
+# augeaswrap provides cgprofiled's host endpoint publish/withdraw/verify API.
+depends_on = ["cli-extended", "augeaswrap"]
 
 [cleanup]
 release_tag_prefixes = ["*"]

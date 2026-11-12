@@ -7,7 +7,7 @@ from typing import Any
 
 from . import guard, ladder, plan, shape, sweep
 from . import result as res
-from .calibrate import HIST_S, MIN_FILL_CHUNK, OBS_QD, REF_S, RUNG_S, Calibrator
+from .calibrate import COLD_MAX, COLD_SHARE, HIST_S, MIN_FILL_CHUNK, OBS_QD, REF_S, RUNG_S, Calibrator
 from .devio import FioJob
 from .errors import Refusal
 from .matrix import LOAD_S, RDC_QD, Matrixer
@@ -61,11 +61,20 @@ def calibrate_plan(host: Any, cfg: Config) -> dict[str, Any]:
     chunk = max(MIN_FILL_CHUNK, ladder.align(run.r_est * 10))
     fills = [run.job(f"fill-{k}", "write", MIB, 16, math.ceil(3 * min(chunk, ws - k * chunk) / run.r_est) + 10, k * chunk,
                      min(chunk, ws - k * chunk), io_size=min(chunk, ws - k * chunk), metric="bw") for k in range(math.ceil(ws / chunk))]
+    if run.vq:
+        per_stage = vq_stages(run, ws)
+        per_stage.update({"S1": [first], "fill": fills})
+        return plan_document(run, cfg, alloc, per_stage)
     rungs = []
     for r in run.rung_sizes:
         rungs += [run.job(f"rung-r32-{r // MIB}", "randread", 4096, 32, RUNG_S, 0, r),
                   run.job(f"rung-w32-{r // MIB}", "randwrite", 4096, 32, RUNG_S, 0, r, io_size=run.bound(RUNG_S))]
-    per_stage: dict[str, list[FioJob]] = {"S1": [first], "fill": fills, "ladder": rungs}
+    per_stage = {"S1": [first], "fill": fills, "ladder": rungs}
+    if any(stage.name == "cache-evidence" and stage.status == "planned" for stage in alloc.stages):
+        region = min(GIB, ws)
+        offset = ws - region
+        per_stage["cache-evidence"] = [run.job("cache-readback", "randread", 4096, 1, plan.CACHE_READ_S, offset, region, log_avg_ms=1000),
+                                       run.job("cache-repeat", "randread", 4096, 1, plan.CACHE_READ_S, offset, region, log_avg_ms=1000)]
     if not run.quick:
         half = ladder.align(min(32 * GIB, 0.1 * ws) / 2)
         per_stage["E-cold"] = [run.job("ecold", "randread", 4096, 32, COLD_QD32_S, 0, half),
@@ -88,10 +97,28 @@ def calibrate_plan(host: Any, cfg: Config) -> dict[str, Any]:
                               for d, rw in (("read", "randread"), ("write", "randwrite"))]
     per_stage["S6"] = [run.job(f"s6-{n}", c.rw, c.bs, c.qd, c.seconds, 0, ws, io_size=run.bound(c.seconds) if c.dir == "write" else None)
                        for n, c in enumerate(shape.grid_plan(quick=run.quick)) if c.block_state == "rewrite"]
+    return plan_document(run, cfg, alloc, per_stage)
+
+
+def vq_stages(run: Any, ws: int) -> dict[str, list[FioJob]]:
+    """The veryquick jobs (IOB-PRF-03), built with the run's own names, sizes and sampling."""
+    cold_len = ladder.align(min(COLD_MAX, COLD_SHARE * ws))
+    half = ladder.align(cold_len / 2)
+    ms = plan.VQ_LOG_AVG_MS
+    return {"E-cold": [run.job("ecold", "randread", 4096, 32, plan.VQ_ECOLD_QD32_S, 0, half, log_avg_ms=ms),
+                       run.job("ecold-qd1", "randread", 4096, 1, plan.VQ_ECOLD_QD1_S, half, cold_len - half, hist=True, log_avg_ms=ms),
+                       run.job("hitref", "randread", 4096, 1, plan.VQ_HITREF_S, ws - min(GIB, ws), min(GIB, ws), hist=True, log_avg_ms=ms)],
+            "series": [run.job(f"rung-w32-{ws // MIB}-vq", "randwrite", 4096, 32, plan.VQ_SERIES_S, 0, ws, io_size=run.bound(plan.VQ_SERIES_S), log_avg_ms=ms)],
+            "S6": [run.job(f"s6-{n}", c.rw, c.bs, c.qd, c.seconds, 0, ws, io_size=run.bound(c.seconds) if c.dir == "write" else None, log_avg_ms=ms)
+                   for n, c in enumerate(shape.vq_grid(plan.VQ_CELL_S, plan.VQ_SEQ_BS, sequential_write_seconds=plan.VQ_SEQ_WRITE_S))]}
+
+
+def plan_document(run: Any, cfg: Config, alloc: plan.Allotment, per_stage: dict[str, list[FioJob]]) -> dict[str, Any]:
     stages = []
     for st in alloc.stages:
         jobs = per_stage.get(st.name, [])
-        stages.append({"name": st.name, "allotted_s": st.allotted_s, "required": st.required, "jobs": [entry(run, j) for j in jobs],
+        stages.append({"name": st.name, "allotted_s": st.allotted_s, "required": st.required, "status": st.status,
+                       "jobs": [entry(run, j) for j in jobs],
                        "note": st.note or ("offered rates are percentages of the measured cap basis" if st.name == "S7" else "")})
     return {"command": "calibrate", "profile": cfg.profile, "budget_s": alloc.budget_s, "total_s": alloc.total, "r_est_bps": run.r_est,
             "ws_max_bytes": alloc.ws_max, "target": run.target.path, "stages": stages, **NOT_RUN}

@@ -47,7 +47,7 @@ resource_observer = "cgprofile"
 environment = "tester-unified"
 argv = [
     "bash", "-c",
-    "export PYTHONPATH={worktree}/assay/src && cd {worktree}/scripts/damon-analysis && mkdir -p .assay && exec $TESTER_VENV/bin/python3 -m assay.cli run r2 --resume --progress .assay/r2-progress.jsonl --verdict-json .assay/verdict-r2.json",
+    "export PYTHONPATH={worktree}/assay/src:{worktree}/libraries/cowtree/src && cd {worktree}/scripts/damon-analysis && mkdir -p .assay && exec $TESTER_VENV/bin/python3 -m assay.cli run r2 --resume --progress .assay/r2-progress.jsonl --verdict-json .assay/verdict-r2.json",
 ]
 clean_tree = false
 budget = "30m"

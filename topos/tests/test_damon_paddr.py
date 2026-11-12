@@ -111,10 +111,11 @@ def test_paddr_control_starts_owned_host_session_and_passive_reads_it(tmp_path: 
 
     _add_paddr_regions(damon_root, session.kdamond_idx)
     frame = _collector(damon_root=damon_root, state_dir=state_dir).collect_once()
-    assert frame.host["host_damon_hot_bytes"] == MetricValue(4096, "exact")
-    assert frame.host["host_damon_warm_bytes"] == MetricValue(4096, "exact")
-    assert frame.host["host_damon_cold_bytes"] == MetricValue(4096, "exact")
-    assert frame.host["host_damon_idle_bytes"] == MetricValue(8192, "exact")
+    # DAMON region classification is sampled, so the registry source is "derived".
+    assert frame.host["host_damon_hot_bytes"] == MetricValue(4096, "derived")
+    assert frame.host["host_damon_warm_bytes"] == MetricValue(4096, "derived")
+    assert frame.host["host_damon_cold_bytes"] == MetricValue(4096, "derived")
+    assert frame.host["host_damon_idle_bytes"] == MetricValue(8192, "derived")
     assert frame.entities[""].damon["host_sessions"][0]["owner"] == "topos"
 
     stopped = stop_owned_sessions(damon_root=damon_root, state_dir=state_dir, all_mine=True, require_root=False)

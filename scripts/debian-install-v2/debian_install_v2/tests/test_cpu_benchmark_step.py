@@ -41,6 +41,11 @@ class FakeTool(HostActions):
         return self.output
 
 
+class UnwritableTool(FakeTool):
+    def write_file(self, path, content, mode=0o644):
+        raise OSError("simulated read-only state")
+
+
 def build(tmp_path: Path, actions: HostActions | None = None, **overrides) -> tuple[Installer, FakeTool]:
     actions = actions or FakeTool()
     config = Config(state_dir=str(tmp_path / "state"), log_dir=str(tmp_path / "logs"),
@@ -122,6 +127,40 @@ def test_nonzero_exit_warns_and_continues(tmp_path, code, needle):
     assert installer._cpu_benchmark_note == record["detail"]
 
 
+def test_failed_cpu_benchmark_keeps_full_stderr_and_names_the_log(tmp_path):
+    err = ActionError(
+        "action failed (3): measure the host CPU\n"
+        "cpu-benchmark: first diagnostic\n"
+        "cpu-benchmark: actual failure"
+    )
+    installer, _ = build(tmp_path, FakeTool(error=err))
+
+    installer._run_cpu_benchmark()
+
+    log = Path(installer.config.state_dir) / "cpu-benchmark.log"
+    assert log.read_text(encoding="utf-8") == (
+        "action failed (3): measure the host CPU\n"
+        "cpu-benchmark: first diagnostic\n"
+        "cpu-benchmark: actual failure\n"
+    )
+    detail = step(installer)["detail"]
+    assert str(log) in detail
+    assert installer._cpu_benchmark_note == detail
+
+
+def test_unwritable_advisory_log_does_not_stop_the_install(tmp_path):
+    err = ActionError("action failed (3): measure the host CPU\ncpu-benchmark: diagnostic")
+    installer, _ = build(tmp_path, UnwritableTool(error=err), run_cpu_benchmark=True)
+
+    installer._run_cpu_benchmark()
+
+    detail = step(installer)["detail"]
+    assert step(installer)["status"] == "warned"
+    assert "output log unavailable:" in detail
+    assert str(Path(installer.config.state_dir) / "cpu-benchmark.log") in detail
+    assert installer._cpu_benchmark_note == detail
+
+
 def test_timeout_warns(tmp_path):
     installer, _ = build(tmp_path, FakeTool(error=ActionTimeout("action timed out after 2700s and was killed")))
     installer._run_cpu_benchmark()
@@ -181,10 +220,12 @@ def test_stage2_runs_it_after_swap_health_before_apt_timers_and_completion_note(
     installer, disk = make_stage2(tmp_path)
     installer.config = replace(installer.config, run_io_benchmark=False, run_cpu_benchmark=True)
     order: list[str] = []
-    for name in ("_health_gate_swap_devices", "_release_apt_timers", "_run_cpu_benchmark"):
+    for name in ("_grow_root_to_plan", "_health_gate_swap_devices", "_release_apt_timers", "_run_cpu_benchmark"):
         setattr(installer, name, (lambda n: lambda *a, **k: order.append(n))(name))
     installer._stage2()
-    assert order == ["_health_gate_swap_devices", "_run_cpu_benchmark", "_release_apt_timers"]
+    assert order == [
+        "_grow_root_to_plan", "_health_gate_swap_devices", "_run_cpu_benchmark", "_release_apt_timers"
+    ]
 
 
 def test_a_summary_line_that_somehow_carries_a_claim_link_is_withheld_whole(tmp_path):

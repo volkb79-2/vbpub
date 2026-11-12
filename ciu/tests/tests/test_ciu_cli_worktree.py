@@ -351,6 +351,7 @@ class TestWorktreeRmDispatch:
             ("deleted", "deleted branch: feature (tip tip-123)"),
             ("kept-unmerged", "kept branch: feature at tip-123 (not merged)"),
             ("kept-by-option", "kept branch: feature at tip-123 (--keep-branch)"),
+            ("kept-leftover", "kept branch: feature at tip-123 (not merged)"),
             ("skipped-detached", "branch removal: skipped-detached"),
         ],
     )
@@ -382,6 +383,28 @@ class TestWorktreeRmDispatch:
         assert "discarded uncommitted change: tracked.txt" in output
         assert "discarded uncommitted change: untracked.txt" in output
         assert "phase resource_cleanup: complete" in output
+
+    @pytest.mark.parametrize("adopt", [False, True])
+    def test_dry_run_prints_the_plan_and_forwards_the_flag(self, monkeypatch, capsys, adopt):
+        seen = {}
+
+        def fake_remove(repo_root, name, **kwargs):
+            seen.update(kwargs)
+            return {
+                "status": "dry-run", "removed_path": "/tmp/wt", "adopt_leftover": adopt,
+                "branch": {"name": "feature", "outcome": "kept-unmerged"},
+                "blockers": ["uncommitted changes (a.txt); pass --discard-changes feature"],
+                "leaks": [{"path": "/tmp/wt/vol-x", "reason": "foreign"}],
+            }
+
+        monkeypatch.setattr(wt_mod, "remove_document", fake_remove)
+        assert cli._worktree(["rm", "feature", "--dry-run"]) == 0
+        out = capsys.readouterr().out
+        assert seen["dry_run"] is True
+        assert ("adopt and finish leftover" if adopt else "would remove") in out or "remove /tmp/wt" in out
+        assert "would be refused: uncommitted changes" in out
+        assert "would leave behind: /tmp/wt/vol-x (foreign)" in out
+        assert "nothing was changed" in out
 
 
 class TestWorktreeListDispatch:

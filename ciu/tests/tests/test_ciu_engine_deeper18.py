@@ -35,7 +35,7 @@ def test_vault_secret_without_token_fails_before_materialization_or_rendering(
     monkeypatch.setattr(engine, "check_runtime_dependencies", lambda: None)
     monkeypatch.setattr(engine, "bootstrap_workspace_env", lambda **_kwargs: None)
     monkeypatch.setattr(engine, "enforce_standalone_root", lambda _path: None)
-    monkeypatch.setattr(engine.config_model, "render_global_chain", lambda *_args: {})
+    monkeypatch.setattr(engine.config_model, "render_global_chain", lambda *_args, **_kw: {})
     monkeypatch.setattr(engine, "configure_logging", lambda *_args: None)
     monkeypatch.setattr(engine.config_model, "render_stack", lambda *_args, **_kwargs: {"demo": {}})
     monkeypatch.setattr(engine, "ensure_workspace_network", lambda **_kwargs: None)

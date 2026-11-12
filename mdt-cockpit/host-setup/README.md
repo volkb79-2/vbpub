@@ -294,7 +294,7 @@ Why each row exists:
 
 The installer owns one rootless `mdt-buildkitd.service` in
 `dev-buildkitd.slice` and registers one durable Buildx remote builder named
-`mdt-managed` at `unix:///run/mdt-buildkitd/buildkitd.sock`. This is the only
+`mdt-managed` at the endpoint published in the host endpoint record. This is the only
 normal backend for MDT builds, including release builds. The service is a
 plain `docker run --cgroup-parent=dev-buildkitd.slice`; it does not rely on a
 Buildx container-driver cgroup option.
@@ -319,15 +319,18 @@ the service socket, verifies the service container's image/cgroup/labels, then
 creates or verifies the remote builder (the root-owned reference in `/etc/mdt/buildx`). Users
 do not build with that directory: Buildx writes build state into its config directory on every
 build, so each user gets the same `remote` node in their own `~/.docker/buildx`, registered by the
-`docker-buildx` shim on first use. The installer installs that shim to
-`/usr/local/lib/docker/cli-plugins/docker-buildx`, a marked `BUILDX_BUILDER`/`BUILDKIT_HOST`
-block in `/etc/environment`, and `/etc/profile.d/mdt-buildkit.sh`, then proves a fresh user with an
-empty environment resolves `mdt-managed` (exit 2 otherwise); the reasoning is in
-[docs/BUILD-ARCHITECTURE.md](../docs/BUILD-ARCHITECTURE.md#making-every-build-use-mdt-managed).
-The devcontainer template repeats the builder and endpoint,
-sets its own persistent `BUILDX_CONFIG` below the already-mounted
-`/home/vscode/.config`, and bind-mounts `/run/mdt-buildkitd`; the mount is
-mandatory, so a missing host prerequisite fails container start.
+`docker-buildx` shim on first use from the published BuildKit endpoint facts. The installer installs that shim to
+`/usr/local/lib/docker/cli-plugins/docker-buildx`, then checks a fresh user with no Buildx or Docker overrides
+against the derived endpoint facts (exit 2 otherwise). After the BuildKit
+socket is ready, it publishes its host facts in
+`/etc/host-endpoints.d/mdt-host-setup.env` with `augeaswrap endpoints publish`;
+augeaswrap maintains the aggregate environment files and login-shell loader.
+The reasoning is in [docs/BUILD-ARCHITECTURE.md](../docs/BUILD-ARCHITECTURE.md#making-every-build-use-mdt-managed).
+The devcontainer template reads `BUILDX_BUILDER`, `BUILDKIT_HOST`,
+`MDT_BUILDKIT_SOCKET`, and its directory from that endpoint record, sets its
+own persistent `BUILDX_CONFIG` below the already-mounted `/home/vscode/.config`,
+and bind-mounts the published directory. The mount is mandatory, so missing
+endpoint facts fail container start.
 
 The accidental-worker guard is an event-driven systemd service. It inspects
 reserved `buildx_buildkit_*` and `buildkit_buildkit_*` candidates, approves only
@@ -410,26 +413,84 @@ zswap choices. See [`../docs/BUILD-ARCHITECTURE.md`](../docs/BUILD-ARCHITECTURE.
 for the design decisions and [`../docs/CONSUMERS.md`](../docs/CONSUMERS.md) for
 pasteable consumer configuration.
 
-### Recovering a damaged `/etc/environment` block
+### Host endpoint facts and upgrade refusal
 
-install.sh keeps `BUILDX_BUILDER`/`BUILDKIT_HOST` for PAM sessions in a marked block of
-`/etc/environment` (`# BEGIN mdt-buildkit ...` to `# END mdt-buildkit`, from
-`etc/environment.mdt-buildkit`), replaced in place on every run. Before anything is installed (the
-pre-flight, ahead of the commit point) it checks that the file has either no marker or exactly one
-BEGIN followed by one END; an orphan BEGIN, an END before its BEGIN or duplicate markers refuse the
-whole run with `ERROR: /etc/environment: <defect> in the '# BEGIN mdt-buildkit' block`, because the
-replace would otherwise drop every line after the orphan marker (`PATH` included). Recovery: open
-`/etc/environment` as root, delete every line from the first `# BEGIN mdt-buildkit` to the last
-`# END mdt-buildkit` (and any stray marker), keep the rest, then re-run install.sh, which appends a
-fresh block. A trailing-whitespace END line is accepted as is. `mdt-host-check.sh` does not inspect
-this file; the oracle is `host-setup/tests/test_install_runtime_blocks.py`.
+The `mdt-host-setup` endpoint fragment carries the Docker group GID, the live
+BuildKit socket path and GID, the Docker API socket path, and the
+`BUILDX_BUILDER`/`BUILDKIT_HOST` defaults. Install requires the released
+`augeaswrap` 0.1.0 command on `PATH`; `--dry-run-endpoints` prints the exact
+fragment derived from the host facts without publishing it. Set
+`AUGEASWRAP_BIN` to a command name or path when the CLI is not named
+`augeaswrap`. Check the endpoint records with
+`sudo augeaswrap endpoints check --json`.
+
+`sudo` resets the environment, so pass the override through it:
+`sudo env AUGEASWRAP_BIN=/path/to/augeaswrap ./install.sh` (root's `PATH` is
+the `secure_path` of sudoers). Only the command's presence is checked; the
+documented `augeaswrap` 0.1.0 is not version-enforced. `--dry-run-endpoints`
+needs root, systemd and a live BuildKit socket, so it cannot preview on a host
+that has not yet installed the managed BuildKit.
+
+Before changing host state, install refuses if files from the retired
+cgprofile/topos provisioning remain, if `/etc/profile.d/mdt-buildkit.sh`
+remains, or if `/etc/environment` still has the old `# BEGIN mdt-buildkit`
+block. The refusal precedes every mode (including `--admission-only`,
+`cpu-benchmark` and `--apply-protection`); `--help` and `--dry-run-endpoints`
+run before it. Remove the legacy artifacts only as part of the service cutover
+(cgprofile `docs/NATIVE-DEPLOYMENT.md` section 3, sockets plan 5.3), in one
+sitting and in this order. The tmpfiles/sysusers rules and the topos drop-in
+are what recreate `/run/cgprofile`, `/run/cgprofile/observer`, `/run/topos`
+and the topos socket group at boot: after removing them the running old
+daemons keep working, but a reboot before `cgprofiled install` and
+`toposd install` leaves them without runtime directories, so do not reboot in
+between. None of the commands touches `/run/*`, `/opt/cgprofile`,
+`/var/lib/*`, groups, containers or game-server state.
+
+```bash
+# 1. service files, then reload (required after removing the topos drop-in)
+sudo rm -f -- \
+  /etc/tmpfiles.d/mdt-cgprofile.conf \
+  /etc/tmpfiles.d/mdt-cgprofile-observer.conf \
+  /etc/tmpfiles.d/mdt-topos.conf \
+  /etc/sysusers.d/mdt-cgprofile.conf \
+  /etc/systemd/system/topos.service.d/50-mdt-socket-group.conf \
+  /usr/local/sbin/mdt-cgprofile-install.sh
+sudo systemctl daemon-reload
+# 2. last, immediately before install (new login sessions lose BUILDX_BUILDER/BUILDKIT_HOST until it publishes)
+sudo rm -f -- /etc/profile.d/mdt-buildkit.sh
+sudoedit /etc/environment  # remove only the old mdt-buildkit block (# BEGIN mdt-buildkit ... # END mdt-buildkit)
+# 3. publish (same BuildKit values, now through the fragment), then the service installers
+sudo ./install.sh
+```
+
+If publication fails after BuildKit was configured (`install.sh` exits with
+augeaswrap's code), BuildKit is running with the new shim but the endpoint
+record is missing or stale: builds fail with the shim's message until
+`install.sh` is re-run (it is idempotent).
+
+#### After the cutover, log in again
+
+The shim no longer carries a socket default: it needs `MDT_BUILDKIT_SOCKET`
+(published with `BUILDX_BUILDER` and `BUILDKIT_HOST`) and exits 2 with
+"MDT_BUILDKIT_SOCKET is unset" without it. Processes that started before the
+upgrade keep the old environment and so fail their builds: log in again and
+restart long-lived sessions (the VS Code Remote-SSH server, tmux/screen
+sessions) and systemd units or services, which never read `/etc/environment`
+and must be given the variables. The devcontainer templates, `.devcontainer`,
+`cmru.orchestration.toml` and the run-gate lanes keep their literal defaults
+until the phase-2 cutover moves them onto the published facts.
+
+The aggregate `/etc/environment` block and `/etc/profile.d/host-endpoints.sh`
+are owned by augeaswrap. To remove host-setup, withdraw its fragment before
+disabling services or removing their files; the complete manual sequence is in
+[Uninstall](#uninstall).
 
 ## dev-gates: why
 
 `dev-gates.slice` is a SIBLING of `dev-interactive.slice`/`dev-background.slice`
 under `dev.slice`, not a child of either — every gate/lane container AND
 every placed lane leaf (`rg-<token>`, created by a future host-level daemon
-under `scripts/cgroup-profiler/`, out of this project's own scope) lives
+under `cgprofile/`, out of this project's own scope) lives
 under it instead of sharing `dev-background.slice` with long-running dev
 stacks. It is the **admission capacity object**: its `memory.max` is what
 `run-gate` (RG-56) and ciu v8 (S16.6.1) key admission decisions on, and its
@@ -549,69 +610,20 @@ then remains in its background tier. Missing gate placement is a hard error,
 so no consumer silently returns to `dev-background.slice` or Docker's
 unbounded default.
 
-**The socket carrier's mount (RW-31/A2, D-30, M5).** `templates/
-devcontainer.json` bind-mounts `/run/cgprofile` (the profiler daemon's
-control-socket directory, `ctl.sock`) into the devcontainer; run-gate's
-`transport = auto` prefers it when present and answering, else falls back
-to `docker exec` — nothing breaks on a devcontainer that predates the
-mount, `auto` simply resolves to exec forever for it. Group access needs no
-new plumbing: the existing `--group-add ${localEnv:DOCKER_GID}` runArg is
-exactly the socket's own group (`root:docker`, mode `0660`). Host
-prerequisite: `mounts` entries are Docker `--mount`, which refuses a
-missing bind source, so host-setup ships and applies a `tmpfiles.d` entry
-that creates `/run/cgprofile` (mode `0770`, owner `root:docker`) — see
-"Quick start"/"Upgrading a host that already runs mdt host-setup" below;
-`mdt-host-check.sh` reports the
-directory's own mode/owner and separately whether the daemon's socket is
-present (`INFO daemon socket available`) or not yet (`INFO daemon socket
-absent` — no daemon installed or started yet is fine; the control socket is
-the only carrier). The daemon re-asserts the directory's own
-owner/mode at its own start as belt-and-braces; this package only creates
-it and gets out of the way. Opt out by deleting the `mounts` line.
-
-The observer uses a separate host-owned directory at
-`/run/cgprofile/observer`, created as `0751 root:cgprofile-observer`. Other
-users can traverse the known socket path for preflight, but cannot list or
-write in the directory; only the dedicated group can connect to the `0660`
-socket. The
-install script creates the `cgprofile-observer` group with
-`systemd-sysusers` before applying the tmpfiles entry. Tester containers that
-need R2 counters receive only this dedicated GID; they do not inherit Docker
-group access through the observer. The daemon binds only
-`resource-observer.sock` inside this stable directory, so a daemon restart
-does not strand a gate container on a socket-file bind mount.
-Host setup fails if `systemd-tmpfiles` cannot apply the entry or if the
-resulting directory is not exactly root-owned, assigned to the resolved
-`cgprofile-observer` GID, and mode `0751`.
+The devcontainer template consumes host service endpoints published through
+augeaswrap. `mdt-cockpit/host-setup` no longer creates cgprofile or topos
+directories, groups, tmpfiles entries, or service drop-ins. Install those
+services through `cgprofiled install` and `toposd install`; each service owns
+its socket contract, endpoint fragment, and doctor. See [Host service
+installation and endpoint publication](#host-service-installation-and-endpoint-publication)
+and the [pasteable service commands](../docs/CONSUMERS.md#host-service-endpoints).
 
 ## Changes
 
-**2026-09-12 (RG-55 P8, round-1 repairs + M5):** `dev-gates.slice` shipped
-(this section); round-1 review B1-B6 fixed (cap-watcher coverage,
-renderer-test host-mutation guard, unbounded-upgrade detection in
-`install.sh`/`check.sh`, corrected upgrade sequence below, a withdrawn-
-design residue, renderer-test coverage of `install.sh`'s own wiring);
-`ManagedOOMSwap=kill` dropped from `dev-gates.slice.in` (D2); M5 lands the
-`/run/cgprofile` devcontainer mount + host-setup's `tmpfiles.d` entry
-(D-30/A2). `TODO.md` is NOT edited by this package (dirty in the shared
-checkout, see round-1 review S13/RW-32 D5) — the operator paste-in line is
-in this package's own REPORT
-(`run-gate-project/nyxloom-trove/reports/run-gate-WAVE-RG55-P8-REPORT.md`,
-"Operator: add to TODO.md"). Round-2 review B7/B8 fixed: `check.sh`'s
-byte-size parser now handles half-GiB and percentage values without a
-bash syntax error or a false FAIL; the D-24 fallback note's substitute
-claim about `docker run` was corrected to the verified fail-open
-behavior. The tmpfiles entry is now `/etc/tmpfiles.d/mdt-cgprofile.conf`
-(mdt-prefixed, matching every other drop-in this host ships).
-
-**Ordering constraint (round-2 review S19, made explicit):** install this
-version of host-setup on the host **BEFORE** anyone rebuilds a
-devcontainer from `templates/devcontainer.json` — the new `/run/cgprofile`
-mount is Docker `--mount`, which refuses to start a container at all when
-the bind source directory does not exist, and that directory only exists
-once this package's `install.sh` has run. Rebuilding a devcontainer from
-an updated template against a host that has not yet been upgraded will
-fail to start, not merely run with a missing feature.
+**Historical change:** the 2026-09-12 RG-55 rollout added cgprofile socket
+mounting and host-setup-owned tmpfiles/group provisioning. H1g' removes that
+duplicate ownership. Current service requirements and installation order are
+documented in [Host service installation and endpoint publication](#host-service-installation-and-endpoint-publication).
 
 **Fresh host, never ran mdt host-setup before:** run `install.sh --wizard`.
 The wizard writes a host-sized candidate in temporary storage, validates it,
@@ -643,7 +655,7 @@ sudo ./install.sh                  # ONE render/install/activate pass --
 sudo mdt-host-check.sh             # verify: dev-gates.slice's effective
                                     # memory.max/high now FAIL loudly (not
                                     # print unbounded silently) if a key is
-                                    # still missing; /run/cgprofile exists
+                                    # still missing; endpoint facts are checked
 ```
 Then rebuild/recreate your devcontainer (above).
 
@@ -677,114 +689,91 @@ sudo ./install.sh --with-baseline  # re-render + measure disk ceilings (~12 min 
 sudo mdt-host-check.sh             # verify
 ```
 
-### Provision the cgprofile observer directory
+### Host service installation and endpoint publication
 
-An existing MDT host can prepare cgroup-profiler's read-only observer socket
-directory without rerunning the host policy workflow:
+`mdt-cockpit/host-setup` no longer provisions cgprofile or topos runtime files,
+service settings, or doctor checks. Those services own their lifecycle and
+endpoint facts: install them through `cgprofiled install` and `toposd install`;
+each service publishes its own fragment through `augeaswrap`. The host-setup
+installer publishes only the `mdt-host-setup` fragment after its BuildKit and
+Docker API facts are ready. See the
+[service endpoint design](../docs/DESIGN-GUIDE.md#host-service-endpoint-ownership)
+and [pasteable host service commands](../docs/CONSUMERS.md#host-service-endpoints).
 
-```bash
-sudo ./install.sh --observer-only
-stat -c '%u:%g %a %n' /run/cgprofile/observer
-getent group cgprofile-observer
-sudo mdt-host-check.sh
+The old `CGPROFILE_*` host-setup keys and the `--observer-only` and
+`--cgprofile-only` options have been removed. Old managed files are refused
+before host changes; follow the cleanup commands in
+[Host endpoint facts and upgrade refusal](#host-endpoint-facts-and-upgrade-refusal).
+
+### run-gate gates admission cap (MDT-077)
+
+run-gate's count admission is a project switch (`[admission] enabled = true` in the consumer's `run-gate.toml`,
+dstdns sets it). The cap it enforces is not in any file: it is a Docker-daemon object, a never-started
+`ciu-admission-<generation>` container whose label `ciu.admission.tiers.gates.max_concurrent` is the number, and
+only `run-gate admission set --max-concurrent N` creates it. A reinstalled host has a new daemon and so no cap,
+and every lane of an admission-enabled project then ends `NOT_RUN no-headroom` ("no gates limit is published")
+while the host idles. The limit is the host's to state (AGENTS.md, "limits are host-owned"), so host-setup derives
+it from the capacity it already enforces on `dev-gates.slice` and publishes it. Section 9 of
+`host-setup.env.example` holds the keys; all are optional in an older `/etc/mdt/host-setup.env`.
+
+**Formula**
+
+```
+cap = max(1, min(cpu_cap, memory_cap))
+cpu_cap    = floor(gates CPU cores / ADMISSION_CPUS_PER_GATE)          # default 2 CPUs per concurrent gate
+memory_cap = floor(gates MemoryHigh / ADMISSION_MEMORY_PER_GATE)       # default 2G per gate; no term when the tier has no MemoryHigh
 ```
 
-The focused mode requires `/run/cgprofile` to exist as a real `root:docker`
-directory with mode `0770`. It first refuses an existing
-`cgprofile-observer` group that shares Docker's GID, before writing units or
-creating the observer directory. It then creates the dedicated system group,
-installs and applies only the observer tmpfiles rule, and verifies the
-directory is `root:<observer-gid>` with mode `0751`. Full host installs use the
-same helper. The mode refuses if the control directory's identity or mode is
-unexpected, or if a pre-existing observer path is not a real directory with
-the expected root, group, and mode; it never asks tmpfiles to silently repair
-that drift. `mdt-host-check.sh` verifies the observer group, live directory,
-and the complete active sysusers/tmpfiles rule sets after setup; it ignores
-comments and blank lines but rejects additional active directives. The
-[design rationale](../docs/DESIGN-GUIDE.md#narrow-cgprofile-observer-provisioning)
-and [consumer procedure](../docs/CONSUMERS.md#cgprofile-resource-observer-host-setup)
-cover the daemon deployment that follows.
+`gates CPU cores` is the effective minimum of the parent `dev.slice` and `dev-gates.slice` CPUQuota. `mdt_capacity`
+supplies the auto-derived shares, while explicit `DEV_CPU_QUOTA` and `DEV_GATES_CPU_QUOTA` percentages cap those
+shares; `-` omits that level's quota. For example, `DEV_CPU_QUOTA=200%` on an 8-core host limits the gate tier to
+2 cores even when its own quota is larger. `gates MemoryHigh` is what the tier is rendered with: on `HOST_ROLE=dedicated-dev`
+the derivation of "Memory of the dedicated-dev role" (`mdt_capacity.dedicated_memory`: dev.slice's High minus the
+protected tiers' MemoryLow, so a leak ends in the tier first), otherwise `DEV_GATES_MEMORY_HIGH`. The defaults are
+planning figures, not limits (the tier is overcommitted by design and PSI is what bounds real load): one gate per
+2 vCPU is the conservative figure the operator published by hand on v1001, 2G is the memory budget of a typical
+lane. Examples: a 4 vCPU / 8 GB dedicated-dev host (v1001, r1002) gives 2, an 8 vCPU / 16 GB one gives 4, a
+shared-prod host with the example's `DEV_GATES_MEMORY_HIGH=800M` gives the minimum 1. A host that should run more
+(r1002 was hand-raised to 4 for a dstdns campaign) says so in `host-setup.env`: `ADMISSION_MAX_CONCURRENT=4`, or
+`ADMISSION_CPUS_PER_GATE=1` and `ADMISSION_MEMORY_PER_GATE=1G` to keep the formula. See the [publication policy rationale](../docs/DESIGN-GUIDE.md#mdt-077-admission-cap-publication-policy)
+and [pasteable operator steps](../docs/CONSUMERS.md#run-gate-admission-cap).
+`python3 mdt_admission.py derive /etc/mdt/host-setup.env` prints the number and the arithmetic behind it without
+touching anything.
 
-### Install, pin and upgrade the cgprofile service
+**Keys**
 
-host-setup installs and pins the cgprofile daemon `cgpd` from the RELEASED wheel as a native systemd service
-(`cgpd.service` in `cgprofile.slice`); the ciu container deployment is retired after one release (MDT-055,
-design: `scripts/cgroup-profiler/docs/NATIVE-DEPLOYMENT.md`). Nothing runs from a checkout and nothing is
-installed into a system interpreter. The keys are section 8 of `host-setup.env.example` and are optional
-in an older `/etc/mdt/host-setup.env` (absent means "not managed"):
+| Key | Default | Meaning |
+|---|---|---|
+| `ADMISSION_PUBLISH` | `auto` | `auto`: a full install publishes only when no readable cap exists and keeps a differing readable cap; `sudo ./host-setup/install.sh --admission-only` reconciles differences. `missing`: publish only when no readable cap exists and never replace. `replace`: full install and `--admission-only` replace differences. `off`: leave the cap alone. |
+| `ADMISSION_MAX_CONCURRENT` | `auto` | `auto` = the formula; a whole number of at least 1 pins the desired cap and always takes precedence over the computed value |
+| `ADMISSION_UNREADABLE_POLICY` | `refuse` | published with the cap: what a client does when it cannot read one (`refuse` = `NOT_RUN`, `unbudgeted` = run without a ticket) |
+| `ADMISSION_CPUS_PER_GATE` / `ADMISSION_MEMORY_PER_GATE` | `2` / `2G` | the formula's two budgets |
+| `ADMISSION_COCKPIT` | empty | empty = run-gate on the host; a container name = that running cockpit, as `ADMISSION_COCKPIT_USER` (default `vscode`) |
+| `ADMISSION_RUN_GATE` | empty | the run-gate to call (a path on the host, or inside the cockpit); empty = `run-gate` on `PATH` |
+| `ADMISSION_TICKET_IMAGE` | empty | a LOCAL image that provides `/bin/true` (run-gate never pulls it); empty = the cockpit's own image. There is no default on a host without a cockpit |
 
-| Key | Meaning |
-|---|---|
-| `CGPROFILE_ENABLE` | `1` installs and updates the service; `0` leaves an existing install alone (`mdt-host-check.sh` reports it) |
-| `CGPROFILE_WHEEL` | `<version>@sha256:<hex>` of `cgprofile-<version>-py3-none-any.whl`; refused when empty while enabled |
-| `CGPROFILE_CLI_EXTENDED_WHEEL` | the same pin for the only dependency, `cli_extended-<version>-py3-none-any.whl` (the venv is built with `pip --no-index`) |
-| `CGPROFILE_WHEEL_SOURCE` | empty = the vbpub GitHub release downloads, an `https://` base laid out like them, or an absolute directory holding both files (air-gapped) |
-| `CGPROFILE_DRAIN_TIMEOUT` | upgrade drain deadline, default `10m` |
-| `CGPROFILE_GATES_SLICE`, `CGPROFILE_OBSERVE_SLICES`, `CGPROFILE_ALLOW_UIDS` | rendered into `/etc/cgprofile/cgpd.toml` as `gates_slice`, `observe_slices`, `allow_uids` |
+**What runs, when.** The full install runs the step after the tiers and services are up, and
+`sudo ./host-setup/install.sh --admission-only` runs only it (strictly validating the installed config first, no wizard, no
+other change). It writes a minimal `run-gate.toml` (`[admission]` with the ticket image and policy; no lanes) into
+a private temporary directory or, for a cockpit, over stdin into one inside the container, exports
+`CGROUP_PARENT_DEV_GATES=dev-gates.slice`, and runs `run-gate admission show` first. A cap equal in value and
+policy is left alone (no new generation). A missing cap is published with `run-gate admission set`. Under the
+default `auto`, the full install keeps a differing readable cap; the explicit `--admission-only` command reconciles
+it with `--replace`. `replace` opts the full install into the same reconciliation, while `missing` never replaces.
+The explicit `--admission-only` action also uses `--replace` to repair a published object whose limit cannot be
+parsed. The cap is read back after every write. Prerequisites a fresh host does not have yet (Docker CLI missing,
+Docker daemon unavailable, run-gate missing on the host or in the cockpit, cockpit stopped, ticket image absent)
+are distinct printed `NOTE`s and exit 0. After reinstall, operators must run
+`sudo ./host-setup/install.sh --admission-only` once run-gate and the ticket image exist. A publish that was
+attempted and failed (run-gate refuses or read-back differs) is printed with run-gate's reason; the rest of the
+install completes and the run exits non-zero.
 
-```bash
-sudo ./install.sh --cgprofile-only                 # just this step (needs an installed, valid host-setup.env)
-sudo ./install.sh --cgprofile-only --force-cgprofile-restart
-sudo mdt-host-check.sh
-```
-
-What a run does, in order:
-
-1. Verifies the pins' sha256 of both wheels BEFORE anything is unpacked, builds
-   `/opt/cgprofile/<version>/venv` (`pip --no-index`), checks `cgpd --version` against the pin and writes `MANIFEST`
-   (wheel names, sha256, time). A version directory is immutable: the same version with another digest is refused.
-2. Renders `/etc/cgprofile/cgpd.toml` from the keys above (only keys the pinned version supports; the
-   version-to-keys table is in the installer) and validates it with the new venv's `cgpd config check`; renders
-   `cgprofile.slice` and `cgpd.service` with `cgpd unit print`. A refusal here changes nothing live.
-3. Computes drift (version, config, units). No drift: nothing is restarted. A config-only change is
-   `systemctl reload cgpd` and keeps `/var/lib/cgprofile/overrides.toml` (host-setup never writes it).
-4. Version or service-unit drift on a RUNNING daemon: waits up to `CGPROFILE_DRAIN_TIMEOUT` for
-   `cgpctl sessions --state live` to be empty (read-only; no session is stopped). Still busy at the deadline:
-   the old daemon and `current` stay, the live sessions are printed, `/opt/cgprofile/PENDING` records the
-   version, and the run exits non-zero (the rest of a full install still completes). `--force-cgprofile-restart`
-   proceeds and names the sessions it aborts.
-5. Flips `/opt/cgprofile/current` atomically, installs the units, `daemon-reload`, enables and
-   starts/restarts, then waits (30 s) until `cgpctl status --json` reports the pinned version and a null
-   `config.last_reload_error`. `/usr/local/bin/cgpctl` links to the current venv's client. The two newest
-   version directories and `current` are kept.
-
-Rollback is an upgrade to the previous pin: the old directory is still there, so no download happens and the same
-drain and restart path runs. `mdt-host-check.sh` asserts, when `CGPROFILE_ENABLE=1`: `current` and `MANIFEST` equal
-the pin, `cgpd --version`, no config drift (re-rendered from `host-setup.env`), `cgpd config check`, no unit
-drift (`cgpd unit check`), `systemd-analyze verify`, both units active, `ctl.sock` in the control directory's
-group, the observer socket, `cgpctl doctor --json` without a `fail` (an `overrides` warning is shown, not
-asserted against) and the daemon's reported version. The group of the control directory is still `docker` until
-the `mdt-docker` regroup (MDT-053) lands; the check follows whatever group the directory has.
-
-Or, instead of the hand-edit step: `sudo ./install.sh --wizard` walks nine numbered steps, each printed as
-`-- [n/9] title --` (the same grouping as the sections of `host-setup.env.example`, with the IO caps last because
-they wait for the optional benchmark):
-
-| Step | Asks about |
-|---|---|
-| 1 Host facts | the Docker data device (`IO_DEV_PATH`) and the DAMON_STAT policy |
-| 2 IO benchmark | the results file and target paths; optionally starts the benchmark in the background |
-| 3 Governed slices | `dev.slice`, the guaranteed memory floor and the four tiers: memory controls, CPU, swap, zswap, weights, OOM, BuildKit image and parallelism |
-| 4 Buildx and devcontainer policies | the accidental-Buildx policy and its out-of-tree name pattern; the devcontainer bind-source policy |
-| 5 Reconcile sweep and watchers | the sweep interval, the cgroup2 mount policy and the opt-in per-container memory watcher |
-| 6 Docker defaults and backstop | the `daemon.json` cgroup-parent and the docker-scope backstop |
-| 7 IO caps | static fallbacks, operator pins, the cap percentages and the gates/BuildKit IOPS sub-ceiling (after the benchmark) |
-| 8 Writeback and root queue | the four host-global writeback and queue keys |
-| 9 IO scheduler and io.cost | the scheduler, the io.cost model and QoS |
-
-Before writing, the wizard prints a summary of every value that differs from the starting values (the existing
-file, else the example). It proposes starting numbers scaled off THIS host's own live `/proc/meminfo`
-instead of the shipped example's fixed figures — Enter accepts the shown
-default at every step, and it falls through into the same render/apply logic
-after candidate validation. Existing values are shown as `existing:` defaults,
-host-derived values as `derived:`, and template values as `example:`. Type
-`-` to clear any optional memory directive;
-type `-` for derived CPUQuota or MemorySwapMax. Enter always accepts the shown
-value, including an existing explicit CPU/swap value, so it does not silently
-change an upgrade. An empty resulting CPUQuota/MemorySwapMax is auto-detected
-at install time. All four memory controls may be omitted. The manual path requires a
-complete valid config; the wizard writes its candidate only after the prompts
-complete and the installer backs up any existing config only after validation.
+**Verification.** `mdt-host-check.sh` reads the cap through the same code: FAIL when no cap is published, OK when it
+equals the host policy, WARN when it differs, FAIL when it differs while `ADMISSION_MAX_CONCURRENT` is pinned, and
+WARN when a prerequisite prevents reading it (naming which). A difference remains a warning under `missing`;
+`off` reports INFO. Admission is local to one
+Docker daemon: nothing here applies to a remote daemon, and projects that leave `[admission]` off are unaffected
+whatever is published.
 
 ### Writeback and root-queue settings (MDT-HS-05)
 
@@ -841,7 +830,9 @@ value in an earlier-sorting `sysctl.d` file is lowered to 524288 at the next boo
 A raised limit is only half the fix: generated trees (git worktrees, run-gate and pytest output) can still consume most
 of it. The devcontainer template therefore sets `files.watcherExclude` and `search.exclude` under
 `customizations.vscode.settings`; trim those patterns to the consumer repo. The cost: the Source Control view does not
-live-refresh inside a worktree under `.worktrees/`.
+live-refresh inside a worktree under `.worktrees/`. These settings land in the persisted home's
+`~/.vscode-server/data/Machine/settings.json`, which a rebuild does not rewrite: after the template block changes, apply
+it as `templates/vscode/README.md` ("Template settings and the persisted home") describes.
 
 ### IO scheduler and io.cost (MDT-HS-07)
 
@@ -956,9 +947,8 @@ the test stacks.
 | `buildkitd.toml.in` | `/etc/mdt/buildkitd.toml` | managed BuildKit daemon configuration, including `DEV_BUILDKITD_MAX_PARALLELISM` |
 | `units/mdt-buildkit-guard.service`, `scripts/mdt-buildkit-guard.py` | systemd (enabled) + `/usr/local/sbin/` | Docker-events guard for unapproved Buildx/BuildKit workers |
 | `scripts/mdt_buildkit_builder.py` | `/usr/local/sbin/mdt-buildkit-builder.py` | idempotent `mdt-managed` remote registration/verification; never creates a container-driver worker |
-| `etc/profile.d/mdt-buildkit.sh` | `/etc/profile.d/` | host-shell `BUILDX_BUILDER` and `BUILDKIT_HOST` exports |
 | `scripts/docker-buildx-shim.sh` | `/usr/local/lib/docker/cli-plugins/docker-buildx` | Docker CLI plugin shim: `mdt-managed` is the default builder for every caller, registered per user on first use |
-| `etc/environment.mdt-buildkit` | marked block in `/etc/environment` | `BUILDX_BUILDER`/`BUILDKIT_HOST` for PAM sessions (ssh, sudo, su, login, cron) |
+| `scripts/mdt-host-endpoints.sh` | `/etc/host-endpoints.d/mdt-host-setup.env`, through `augeaswrap endpoints publish` | Docker, BuildKit, Docker API, and managed-builder endpoint facts |
 | `units/docker-scope-default-limits.conf.in` | `/etc/systemd/system/docker-.scope.d/50-default-limits.conf` | D-G8 backstop — a generous "never truly unbounded" floor for EVERY container's transient scope, regardless of which slice (or none) it named |
 | `units/mdt-dev-governance-reconcile.service` | systemd (enabled) | boot-time reconciliation of measured IO, zswap, transient IO caps, mount flags, and the memory min/low audit |
 | `units/mdt-dev-governance-reconcile.timer.in` | systemd (enabled) | periodic reconciliation (default 5min) — the event watchers are immediate paths; this is the backstop |
@@ -973,6 +963,7 @@ the test stacks.
 | `scripts/mdt-slice-memory-min-low-audit.py` | `/usr/local/sbin/` | read-only audit of only `memory.min`/`memory.low` — logs a `[WARN]` when an ancestor makes a value ineffective |
 | `scripts/mdt-io-baseline.py` | `/usr/local/sbin/` | shared Linux-derived `io.cost` coefficient matrix against a persistent file → `/var/lib/mdt/io-baseline.env` (identity-bound benchmark results) |
 | `mdt-host-setup-wizard.py` (a sibling of `install.sh`, not under `scripts/`, because it is never installed onto the host) | not installed — run from this directory via `install.sh --wizard`, or directly as `sudo ./mdt-host-setup-wizard.py` to reconfigure an already-installed host | interactive `/etc/mdt/host-setup.env` builder (see Quick start); template surgery on `host-setup.env.example`, never generated from scratch |
+| `mdt_admission.py` | `/usr/local/sbin/mdt_admission.py` | derives the run-gate gates admission cap from host capacity and publishes it (`install.sh`, `install.sh --admission-only`); read by `mdt-host-check.sh` (MDT-077) |
 | `scripts/check.sh` | `/usr/local/sbin/mdt-host-check.sh` | health check, non-zero exit on failure |
 | `etc/modules-load.d/bfq.conf`, `etc/udev/rules.d/60-bfq-scheduler.rules` | `/etc/…` (`mdt-` prefixed) | the LEGACY BFQ path, kept only while `IO_ROOT_SCHEDULER` is not set; with it set, `60-mdt-io-scheduler.rules` replaces it and the module file is installed only for `bfq` |
 | (merged, not copied) | `/etc/docker/daemon.json` | `cgroup-parent` (D-G7 default) + `live-restore`/log rotation — this is the file's ONE owner now; every key is merged in, nothing else in the file is touched |
@@ -1088,11 +1079,11 @@ systemd cgroup driver. Those paths are not the normal MDT backend anymore.
 
 **Use `mdt-buildkitd` for MDT builds.** It is a rootless host-managed
 `buildkitd` service created with `--cgroup-parent=dev-buildkitd.slice`, and the
-`mdt-managed` Buildx remote points at its Unix socket. `templates/devcontainer.json`
-ships the socket bind mount plus the explicit `BUILDX_CONFIG`,
-`BUILDX_BUILDER=mdt-managed`, and
-`BUILDKIT_HOST=unix:///run/mdt-buildkitd/buildkitd.sock` settings. The
-in-container finalizer validates and reuses that remote on every start. A missing or
+`mdt-managed` Buildx remote points at the endpoint published by host-setup.
+`templates/devcontainer.json` consumes `BUILDX_BUILDER`, `BUILDKIT_HOST`,
+`MDT_BUILDKIT_SOCKET`, and its directory from that record; it keeps only the
+container-specific `BUILDX_CONFIG` setting. The in-container finalizer validates
+and reuses that remote on every start. A missing or
 inconsistent variable, endpoint, builder, or host service is an error; MDT does
 not fall through to embedded BuildKit or create a per-container worker.
 
@@ -1143,12 +1134,30 @@ tier, minus what the host keeps (`DEV_HOST_MEMORY_KEEP`, default 1G, minimum 256
 | `dev.slice` MemoryMax | `DEV_MEMORY_MAX` (empty = none) | pin, else `MemTotal + SwapTotal - MDT_EXCLUDED_RAM - MDT_EXCLUDED_SWAP - DEV_HOST_MEMORY_KEEP` |
 | `dev.slice` MemoryHigh | `DEV_MEMORY_HIGH` | pin, else `MemTotal - MDT_EXCLUDED_RAM - DEV_HOST_MEMORY_KEEP` |
 | `dev.slice` MemoryLow | `DEV_MEMORY_LOW` | pin, else the sum of the tiers' MemoryLow (a tier's Low protects only when its ancestors carry it) |
-| tier MemoryHigh / MemoryMax | `DEV_<TIER>_MEMORY_{HIGH,MAX}` | ignored: no directive rendered (install.sh names the values it ignored) |
+| `dev-interactive` / `dev-buildkitd` MemoryHigh / MemoryMax | `DEV_<TIER>_MEMORY_{HIGH,MAX}` | ignored: no directive rendered (install.sh names the values it ignored) |
+| `dev-gates` / `dev-background` MemoryHigh | `DEV_{GATES,BACKGROUND}_MEMORY_HIGH` | pin, else `dev.slice` MemoryHigh minus P = (`DEV_INTERACTIVE_MEMORY_LOW` + `DEV_BUILDKITD_MEMORY_LOW` + `DEV_CACHE_MEMORY_LOW`), never below 1G and never above dev.slice's (see "Load tiers yield first"); `-`/`0` omits |
+| `dev-gates` / `dev-background` MemoryMax | `DEV_{GATES,BACKGROUND}_MEMORY_MAX` | pin, else `dev.slice` MemoryHigh (a reachable RAM ceiling; AD2-0) |
+| `dev-gates` / `dev-background` MemorySwapMax | `DEV_{GATES,BACKGROUND}_MEMORY_SWAP_MAX` | pin, else `dev.slice` swap max minus P (floor 256M, never above dev.slice's) |
 | tier MemoryLow / MemoryMin | as configured | as configured: this is the protection between tiers (e.g. the IDE, BuildKit) |
-| tier MemorySwapMax | `DEV_SWAP_CASCADE_PCT`% of dev.slice's | equal to dev.slice's |
+| interactive / buildkitd MemorySwapMax | `DEV_SWAP_CASCADE_PCT`% of dev.slice's | equal to dev.slice's |
 | `system.slice` | untouched | MemoryLow = `DEV_HOST_MEMORY_KEEP` |
 | host services (`DEV_HOST_PROTECTED_UNITS`: docker, containerd, cgpd, mdt-psi-guard, journald, oomd; never ssh) | untouched | OOMScoreAdjust=-900 drop-in (never weakening a unit that already has a lower value, e.g. containerd -999); a unit that leaves the list loses its drop-in on the next install |
 | mdt-psi-guard signals | `MDT_PROTECTED_UNITS` + host memory `full` | the same plus the host services above |
+
+Load tiers yield first (MDT-TESTHOST-MEM-2). A running cockpit (`dev-interactive`, MemoryLow 512M) and BuildKit (`dev-buildkitd`, 256M) only keep their Low while the
+siblings that carry the load stay below dev.slice by at least that sum, P = `DEV_INTERACTIVE_MEMORY_LOW` + `DEV_BUILDKITD_MEMORY_LOW` + `DEV_CACHE_MEMORY_LOW`
+(the last is the `dev-cache.slice`'s Low, default empty = 0). So `dev-gates.slice` and `dev-background.slice` get (AD2-0):
+- MemoryHigh = dev.slice MemoryHigh minus P, floored at 1G and capped at dev.slice's value. It is the value that acts: the kernel throttles and reclaims the load tier first.
+- MemoryMax = dev.slice MemoryHigh (never below the tier's MemoryHigh). dev.slice's own Max is a RAM+swap figure that `memory.max` (RAM only) can never reach; a RAM-sized
+  Max is a reachable backstop.
+- MemorySwapMax = dev.slice swap max minus P, floored at 256M and capped at dev.slice's. If gates could take all of dev's swap, dev-level reclaim could not move the
+  cockpit's above-Low pages out and would only throttle it; the subtraction keeps that room.
+- Consequence (intended): a lane that needs more than MemoryHigh..MemoryMax resident with no swap left is OOM-killed inside gates (`oom_kill` in the tier's `memory.events`)
+  instead of thrashing the host. An infrastructure event, never a product verdict. oomd, zswap writeback and dev.slice's values are unchanged.
+
+A `DEV_{GATES,BACKGROUND}_MEMORY_{HIGH,MAX,SWAP_MAX}` pin wins (HIGH/MAX floor 256M, HIGH <= MAX); `-`/`0` omit. If dev.slice itself has no MemoryHigh (pin `-`), the tier's
+High and Max are omitted too. CPU weights are unchanged. Example (8 GB RAM, 16 GB swap, keep 1G, Low 512M+256M, no cache): dev.slice high 7246938112, gates/background high 6441631744
+(= minus 805306368), gates/background max 7246938112, swap max = dev swap minus 805306368.
 
 Sizing the keep: `DEV_HOST_MEMORY_KEEP` must cover the host's own working set (dockerd, containerd, journald, cgpd, page cache). Measured on both test hosts:
 `system.slice` memory.current 1.0-1.1 GB, hence the 1G default; `mdt-host-check.sh` warns when the measured `system.slice` memory.current exceeds the keep.
@@ -1186,6 +1195,45 @@ Apply and verify: `install.sh` (or `install.sh --wizard`), then `systemctl show 
 `/sys/fs/cgroup/dev.slice/memory.{high,max,low}`, `/sys/fs/cgroup/system.slice/memory.low` and `mdt-host-check.sh`. Existing tier values in the env file may stay
 (they are ignored and named at every install) or be cleared. Back to the old behaviour: set `HOST_ROLE=shared-prod` (the installer removes its drop-ins) and restore the
 tier values.
+
+### Shared tree cache of the dedicated-dev role (AD2-2, MDT-074)
+
+Many lanes read the same checkout and assay template. Copying it per lane costs RAM once per lane; the design
+(`PARALLELISATION-DESIGN-MEMO-ADDENDUM-2`, sections 2-3) keeps one read-only tree in a host tmpfs and gives each worker an overlay on top of it. This
+section is the **host half**: where and under which policy. run-gate decides when and where a lane or helper is placed, assay owns the content and key, cowtree
+owns the publish/lease mechanism. `HOST_ROLE=dedicated-dev` only; any other role renders and mounts none of it, and a host that leaves the role gets the owned
+units removed by the next `install.sh` (a tmpfs that is still mounted stays until reboot or an operator `umount`).
+
+| Piece | What | Keys |
+|---|---|---|
+| `dev-cache.slice` | persistent, under dev.slice, started by `install.sh`; `MemoryLow` only (no High/Max/SwapMax: it is bounded by the tmpfs size) | `DEV_CACHE_MEMORY_LOW` (empty or `-` = none), `DEV_CACHE_ZSWAP_WRITEBACK` |
+| tree cache tmpfs | `MDT_TREE_CACHE_ROOT`, unit `srv-tree\x2dcache.mount`: `size`, `nr_inodes`, `mode=2770`, `gid` of the runner group, `nosuid,nodev,huge=never`, not `noexec`, never `noswap` | `MDT_TREE_CACHE_ROOT` (`/srv/tree-cache`), `MDT_TREE_CACHE_SIZE` (empty = 25 % of RAM, `-` = whole feature off), `MDT_TREE_CACHE_INODES`, `MDT_TREE_CACHE_GROUP` (`runner`) |
+| upper tmpfs | `MDT_TREE_UPPER_ROOT`, per-worker overlay `upperdir`/`workdir` (`<token>/w<k>/{u,w}`), same flags; pages charged to the writing lane | `MDT_TREE_UPPER_ROOT` (`/srv/tree-upper`), `MDT_TREE_UPPER_SIZE` (empty = 10 %, `-` = none), `MDT_TREE_UPPER_INODES` |
+| GC | `mdt-tree-cache-gc.timer` runs `mdt_tree_cache.py gc` | `MDT_TREE_CACHE_GC_IDLE` (6h), `MDT_TREE_UPPER_GC_IDLE` (1d), `MDT_TREE_CACHE_GC_INTERVAL` (15min) |
+| capacity document | `tree_cache` block merged into `/etc/mdt/host-capacity.json` (root, slice, `size_bytes`, `upper_root`, `upper_size_bytes`, `overlay_opts`, `group`, `mode`, `gc_idle_seconds`); other keys untouched, file created if absent | derived |
+
+Why the slice is persistent: when a cgroup that wrote or swapped pages dies, the charge moves to its parent (measured, `ad2-measurements-REPORT` M-4/M-5).
+A populate helper started with `--cgroup-parent dev-cache.slice` therefore leaves the tree's tmpfs pages and swap entries charged to this slice, not to a
+lane. The slice must exist before run-gate uses it (`systemctl show dev-cache.slice -p LoadState`); `mdt-host-check.sh` FAILs when it does not.
+`DEV_CACHE_MEMORY_LOW` is part of the protected-Low sum: dev.slice's MemoryLow includes it, and the load tiers' MemoryHigh and MemorySwapMax (gates, background) subtract it
+(`mdt_capacity.py`, `_PROTECTED_LOW_KEYS`; their MemoryMax is dev High and does not), so protecting the cache never lets dev exceed its High. Sizes are bounded: cache + upper at most half of RAM.
+The overlay volumes are created by dockerd as `local` volumes (`redirect_dir=on,xino=auto`), which works with no new privilege; the options are published
+in the capacity block so consumers do not hard-code them.
+
+**This is optional and vbpub-specific.** The neutral contract any host can meet without mdt-cockpit (tmpfs path, mode/owner, lease layout, GC rules,
+charging slice, a ten-line systemd example) is `libraries/cowtree/HOST-CONTRACT.md`; the keys and units here are one implementation of it, and consumers
+fall back to private copies when it is absent. cowtree and assay never name host-setup keys.
+
+**Directory and lease format** (the contract between cowtree's `cache` module, which publishes, and the host GC, which removes; the module docstring of
+`mdt_tree_cache.py` is the normative text): `<root>/<key>/{COMPLETE,tree/,.lease,.last-used}`; a build happens in `<key>.tmp-<id>` under an exclusive flock on
+`<root>/.locks/<key>` and is `rename`d to `<key>` after `COMPLETE` is written; every lane holds `LOCK_SH` on `<key>/.lease` for its lifetime and touches
+`.last-used`. GC removes a key only if idle longer than the idle time, `LOCK_EX|LOCK_NB` on `.lease` succeeds, and no process's mountinfo holds it (a bind of
+`<key>/...` of the cache tmpfs, or an overlay `lowerdir=`/`upperdir=`/`workdir=` naming it); stale `<key>.tmp-*` builds when `.locks/<key>` is free; orphan
+upper `<token>` directories when idle and no overlay names them. Any doubt keeps the entry; GC refuses a root that is not a tmpfs mount point.
+
+Apply and verify: `install.sh`, then `systemctl show dev-cache.slice -p LoadState -p MemoryLow`, `findmnt /srv/tree-cache /srv/tree-upper`,
+`systemctl list-timers mdt-tree-cache-gc.timer`, `cat /etc/mdt/host-capacity.json` and `mdt-host-check.sh`. Remove again: `HOST_ROLE=shared-prod` or
+`MDT_TREE_CACHE_SIZE=-`, then `install.sh`. A host rebuilt from the repo plus `/etc/mdt/host-setup.env` gets all of it back; nothing here is host state.
 
 ### Observation: read volume under a low IOPS cap
 
@@ -1346,7 +1394,8 @@ effective cgroupfs values (including `io.bfq.weight` next to `io.weight` —
 under BFQ only the former is what schedules), zswap-writeback policy,
 `dev.slice`'s `io.max` + baseline device/target identity, the `docker-.scope.d` backstop's
 presence, BFQ scheduler, timer enablement, and lists every running
-container's cgroup parent. Exit 0 = no failures (warnings possible).
+container's cgroup parent, and the published run-gate gates admission cap against the host policy (MDT-077,
+above). Exit 0 = no failures (warnings possible).
 
 The one failure it reports as FAIL rather than WARN is a missing
 `memory_recursiveprot`: with that flag absent every `MemoryLow`/`MemoryMin` in
@@ -1355,7 +1404,12 @@ set. See [CGROUP-NOTES.md §5](CGROUP-NOTES.md#5-cgroup2-mount-options--not-a-un
 
 ## Uninstall
 
+Withdraw the endpoint fragment first so augeaswrap removes only the facts owned by
+mdt-host-setup and re-renders the shared environment files. Then remove host-setup's
+units and files:
+
 ```bash
+sudo augeaswrap endpoints withdraw --owner mdt-host-setup
 sudo systemctl disable --now mdt-dev-governance-reconcile.timer mdt-dev-governance-reconcile.service mdt-buildkitd.service \
         mdt-container-io-events-watcher.service mdt-container-memory-inotify-watcher.service
 sudo docker volume rm mdt-buildkitd-cache 2>/dev/null || true

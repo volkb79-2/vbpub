@@ -1,0 +1,926 @@
+# Augeaswrap specification
+
+This document defines the endpoint record API and on-disk format shipped by Augeaswrap.
+
+## Endpoint records
+
+`augeaswrap.endpoints` is the shared publisher, with `cli-extended` as its only
+runtime dependency, for host endpoint facts. It does not choose socket paths, group IDs, or consumer
+fallbacks. Each service installer resolves its own configured values and
+publishes only the fragment for that service; consumers read the resulting
+process environment.
+
+The module lives in the `augeaswrap` package, which carries what
+every host-configuration resource shares: the structured `Problem` record
+and `augeaswrap/_fs.py` (symlink-safe paths, atomic writes, directory
+`fsync`, and a lock whose path is a parameter). Endpoint fragment names are
+validated by `augeaswrap.endpoints.validate_owner` with the alphabet
+`^[a-z][a-z0-9-]{0,62}$`.
+
+### API
+
+The module provides these functions:
+
+```python
+publish(owner, entries, *, writer, root="/")
+withdraw(owner, *, root="/") -> bool
+plan(owner, entries, *, root="/") -> list[Problem]
+verify(owner, expected, *, root="/") -> list[Problem]
+check(*, root="/", ownership=None) -> CheckResult
+require_env(name, *, remedy, environ=os.environ) -> str
+render(owner, entries, *, writer, current_environment, existing_fragments, root="/")
+    -> {path: (bytes, mode)}
+render_withdraw(owner, *, current_environment, existing_fragments, root="/")
+    -> {path: (bytes, mode) | None}
+render_block(current, payload, keys, *, marker_name="host-endpoints", begin_line=None)
+    -> bytes
+```
+
+`entries` and `expected` are mappings or iterables of key/value pairs.
+`publish` replaces one owner's fragment and re-renders the shared files;
+`withdraw` removes that fragment and re-renders, returning `False` and
+changing nothing when the owner has no fragment. `plan` is read-only and
+reports invalid input, key collisions, damaged environment markers, duplicate
+unmanaged assignments, and unsafe targets. `verify` compares one fragment to
+the expected mapping (a fragment is replaced atomically, so reading one file
+needs no lock). `check` checks the whole record set, aggregate, generated
+environment block, profile source, symlinks, modes, ownership, and stale
+temporary files. `require_env` returns a non-empty environment value or
+raises `CliFailure` naming the variable and the caller's remedy.
+
+`render`, `render_withdraw` and `render_block` are pure: bytes in, a
+`{path: (content, mode)}` plan out, nothing written. `publish` and `withdraw`
+build that plan under the lock and apply it, so Augeaswrap's planned transaction runner
+can reuse the same rendering. `render_block` takes the managed-block marker
+name and BEGIN line as parameters; the endpoint block is the default.
+
+Problems are `Problem` records with `code`, `message`, `path`, `owner` and
+`key`; `str(problem)` is the message and a problem compares equal to its
+message string. `check` returns a `CheckResult`: a list of problems with
+`status` (`clean` or `problems`) and `message`. A host where nothing was ever
+published (no `host-endpoints.d`, aggregate, profile script or block) is clean
+with the message `no endpoints published`.
+
+`check` holds the shared side of the writer lock, so it never reports false
+drift while a publish is in flight. A caller that cannot open the root-owned
+lock (non-root) gets an advisory check that re-runs up to three times before
+it reports drift. The root:root ownership check applies to the real `/` by
+default; a fake root skips it unless the caller passes `ownership`, a
+`stat_result -> bool` callable.
+
+### On-disk contract
+
+| Path | Mode | Purpose |
+|---|---:|---|
+| `/etc/host-endpoints.d/` | `0755` | owner fragment directory |
+| `/etc/host-endpoints.d/<owner>.env` | `0644` | one service's endpoint entries |
+| `/etc/host-endpoints.d/.lock` | `0600` | `flock`: exclusive for publish and withdraw, shared for `check` |
+| `/etc/host-endpoints.env` | `0644` | deterministic aggregate generated from fragments |
+| `/etc/environment` | `0644` | unmanaged content plus the generated block |
+| `/etc/profile.d/host-endpoints.sh` | `0644` | exports the aggregate for login shells |
+
+Each fragment starts with `# host-endpoints v1`, `# owner=<owner>`, and
+`# writer=<verb> <version>` header comments, followed by `KEY=VALUE` lines.
+Keys match `[A-Z][A-Z0-9_]{0,63}`; values match
+`[A-Za-z0-9_./:@+-]{1,4096}`. A key may appear in only one fragment. The
+aggregate is sorted by owner and then key, with owner and writer comments for
+each owner. Owner names match `^[a-z][a-z0-9-]{0,62}$`.
+
+The 4096-byte value limit is this module's own bound. Whether the host's
+`pam_env` accepts a line that long has not been verified; it is on the VM
+verification list, so treat values above a few hundred bytes as untested.
+
+These keys are reserved and refused at `plan`, `publish` and `check`, because
+they change how every login shell, ssh, sudo, su or cron session behaves
+(`pam_env` applies `/etc/environment` to all of them) or are read-only in a
+POSIX shell. The rule is: a key is reserved when it is one of `PATH`, `ENV`,
+`IFS`, `UID`, `EUID`, `PPID`, `SHELLOPTS`, `BASHOPTS`, `HOME`, `USER`,
+`LOGNAME`, `SHELL`, `PWD`, `OLDPWD`, `PROMPT_COMMAND` (bash executes its value),
+`SHLVL`, `GROUPS`, `RANDOM`, `SECONDS`, `LINENO`, `TMPDIR`, `CDPATH`,
+`GLOBIGNORE`, `NODE_OPTIONS`, `SSH_AUTH_SOCK`, or starts with a reserved
+family prefix: `LD_` (dynamic loader: `LD_PRELOAD`, `LD_LIBRARY_PATH`,
+`LD_AUDIT`, ...), `PYTHON` (interpreter: `PYTHONPATH`, `PYTHONSTARTUP`, ...),
+`BASH_` (`BASH_ENV`, `BASH_XTRACEFD`, ...) or `LC_` (locale). Use a
+service-specific prefix such as `CGPROFILE_`.
+
+The `/etc/environment` block uses these exact marker lines:
+
+```text
+# BEGIN host-endpoints (generated by cli_extended.hostcfg.endpoints; do not edit)
+# END host-endpoints
+```
+
+The `BEGIN` text still names `cli_extended.hostcfg.endpoints` on purpose: the marker is part of the frozen on-disk format and existing hosts carry it, so the move to `augeaswrap` leaves it unchanged.
+
+Publishing replaces a stale well-formed block while retaining unmanaged lines
+and their order; the block is always rewritten at the end of the file, so an
+existing block in the middle moves to the end. An unmanaged assignment of a
+published key is a refusal, including `export KEY=...` and lines with
+leading whitespace, which `pam_env` also accepts. Orphaned, duplicated,
+malformed (for example trailing text after a marker), or reversed markers are
+refused; the refusal can list several defects for one damaged block.
+Withdrawing the final fragment removes the block; the aggregate then contains
+only its version header.
+
+Unmanaged bytes are preserved exactly, including CRLF, NUL and non-UTF-8
+bytes and the file's trailing-newline state. Every line of the block, END
+included, ends with a newline, so a later `echo X >> /etc/environment` (or a
+`printf` without newline) never glues onto a marker. When the file had no
+final newline, the END line is written as
+`# END host-endpoints (no final newline)`; removing a block that is still the
+last thing in the file then returns the original bytes exactly. If other text
+was appended after the block, the newline is kept (`A=1` + block + `NEW=1\n`
+withdraws to `A=1\nNEW=1\n`). If an editor strips the END line's newline and
+text is glued after the marker, publish, withdraw and `check` refuse with
+`BEGIN marker without END (line N starts with the END marker but has text
+glued after it; put the marker alone on its line)`; restoring the newline
+heals it.
+
+The profile script is:
+
+```sh
+[ -r /etc/host-endpoints.env ] && { set -a; . /etc/host-endpoints.env; set +a; } || :
+```
+
+The trailing `|| :` keeps the script's status `0` when the file is unreadable,
+so a `set -e` consumer is not aborted.
+
+The helper refuses symlinked managed paths. Every generated replacement is
+written to a temporary file in the destination directory, flushed with
+`fsync`, renamed atomically, and the directory is `fsync`ed (also after a
+withdraw unlinks a fragment). Directories the module creates are mode `0755`
+regardless of umask. One exclusive lock covers each publisher's read,
+validation, fragment update, and render, so concurrent owners cannot lose one
+another's records. The multi-file write is per-file atomic, not transactional:
+a crash between files leaves the fragment ahead of the aggregate until the
+next publish or withdraw heals it, and `check` reports it. `publish` and
+`withdraw` remove their own stale temporary files
+(`.host-endpoints-tmp-*` in `/etc`, `host-endpoints.d` and `profile.d`) under
+the lock and `check` reports them.
+
+Damage is isolated per owner: one damaged fragment does not block another
+owner's publish or withdraw (it stays in place and `check` reports it). The
+damaged owner itself is healed by re-running its install verb: `publish`
+replaces and `withdraw` removes a hand-edited or corrupt own fragment without
+parsing it (only an unsafe target, such as a symlink, is refused).
+
+On the real `/`, a root `publish` or `withdraw` also repairs wrong ownership:
+a managed file whose uid/gid is not root:root is rewritten even when its bytes
+and mode already match (fake roots keep the caller's ownership).
+
+### Sharing `/etc/environment` with other managed blocks
+
+`/etc/environment` may also carry an `mdt-buildkit` block. Every block
+has its own `# BEGIN <id>` / `# END <id>` pair and a writer only rewrites the
+lines between its own markers, so two blocks coexist (the tests render an
+`mdt-buildkit` block and the endpoint block into one file and withdraw either
+without touching the other). The lock is what prevents a lost update: a
+writer of another block must hold `/etc/host-endpoints.d/.lock` while it
+rewrites `/etc/environment` (a future Augeaswrap block resource must), because
+a rewrite is a read-modify-replace of the whole file. Any writer of a second
+block must take this lock; run writers serially until all of them do.
+
+### Module CLI
+
+Host-side shell callers can run:
+
+```text
+python3 -m augeaswrap endpoints publish --owner O --writer W --entry K=V [--entry K=V ...]
+python3 -m augeaswrap endpoints withdraw --owner O
+python3 -m augeaswrap endpoints check [--json]
+python3 -m augeaswrap endpoints show
+```
+
+The CLI uses the shared CLI error and exit-status contract. `check` exits `0`
+when the records are consistent and also when nothing was ever published (it
+then prints `no endpoints published`), and `1` when drift is found.
+`check --json` prints
+`{"status": "clean"|"problems", "message": ..., "problems": [...], "records": [...]}`
+where `problems` are the message strings and `records` the structured
+`Problem` dictionaries. `withdraw` of an owner without a fragment exits `0`
+and says so. Publishing refusals and invalid arguments exit `2`.
+
+## Guarded applier protocol (HC-1a')
+
+The core applier accepts strict TOML requests and Python `Request` values. Its
+state is limited to transaction journals and exact pre-images. A request has a
+non-empty, single-line, NUL-free `writer` and an ordered tuple of resources;
+it has no owner or prune field. Callers remove resources with explicit
+`state = "absent"` requests.
+There is no ownership registry, takeover, tool-level uninstall, or automatic
+rollback. `revert` is an explicit operation and refuses when a later
+transaction changed an address in the transaction being reverted.
+
+Every registered resource kind implements this frozen protocol, including the
+layered kinds and endpoint adapter:
+
+```python
+class Resource(Protocol):
+    kind: str
+    def addresses(self) -> tuple[str, ...]: ...
+    def observe(self, ctx) -> Mapping[str, object]: ...
+    def diff(self, ctx, observed) -> list[Change]: ...
+    def stage(self, ctx, change: Change) -> object: ...
+    def commit(self, ctx, staged: object) -> object: ...
+    def post_actions(self, changes: list[Change]) -> list[PostAction]: ...
+    def verify(self, ctx) -> list[Problem]: ...
+```
+
+`observe` is read-only and returns one JSON-safe value per address. Each value
+must represent every file, path, and external fact the resource read; the
+engine fingerprints the complete observation and rechecks it under the
+exclusive lock before apply. `diff` returns one `Change` or `noop` per
+address. `stage` prepares and validates without changing the managed root; it
+may write only below the private `ctx.stage_dir`. `commit` applies one staged
+change and returns its post-image for the journal. `post_actions` returns
+argv-only `PostAction` values. `verify` reads committed state and compares it
+with the staged images in `ctx.expected`.
+
+`PostAction(name, argv, timeout, pending=False, phase=None)` carries a command
+as argv, a bounded timeout, the journal-only pending flag, and an optional
+shared action phase. Known command forms are phase-derived; custom commands
+state their phase explicitly.
+
+The stable context fields are `root`, `writer`, `txn_id`, `txn_dir`,
+`stage_dir`, `pre_dir`, `expected`, and the plan-scoped `planned_gids` map.
+`root` is the selected real or fake
+root. During planning, transaction fields may be `None` and `stage_dir` is a
+private temporary directory; during apply it is transaction-local. There is
+no state-file or ownership field. The protocol docstring in
+[`src/augeaswrap/__init__.py`](src/augeaswrap/__init__.py) is the source
+contract for parallel resource work.
+
+The request schema starts with `augeaswrap = 1` and requires `writer`. Unknown
+keys and missing required fields refuse during load. The registered kinds are:
+
+| Kind | Changes host state | Revertible | Purpose |
+|---|---:|---:|---|
+| `file` | yes | yes | one whole file in the configuration allowlist |
+| `unit` | yes | yes | one systemd unit file or drop-in below `/etc/systemd/system` |
+| `check` | no | no | read-only argv or path metadata assertion |
+| `sysctl` | yes | yes | one whole sysctl.d fragment and optional live apply |
+| `sysusers` | yes | yes | one whole sysusers.d fragment and membership actions |
+| `tmpfiles` | yes | yes | one whole tmpfiles.d fragment and path actions |
+| `endpoint` | yes | yes | one service-owned endpoint record |
+| `group` | yes | no | explicit non-revertible group removal |
+
+File requests write or delete a whole allowed file. Unit requests manage a
+systemd unit or drop-in. The layered kinds and endpoint records are described
+in [Layered resources and shadow intent](#layered-resources-and-shadow-intent).
+Check requests run a read-only argv or assert path metadata. See the
+[consumer examples](docs/CONSUMERS.md#guarded-applier) and the
+[design rationale](docs/DESIGN-GUIDE.md#guarded-applier).
+
+### File and check behavior
+
+`File(path, state, text=None, mode=None, owner=None, group=None,
+create_only=False, validate=None)` addresses one whole file. `state` is always
+`present` or `absent`. A present file requires `text` and an explicit octal
+`mode`; an absent file takes no content or metadata fields. Optional owner and
+group are names or numeric ids. When omitted, an existing file keeps its
+current uid/gid and a new file uses the process uid/gid. `create_only=true`
+leaves an existing file and its metadata untouched; when the file is absent,
+it stages the requested content. Paths must be normalized absolute paths
+below `/etc`, `/root`, `/home`, `/usr/local/etc`, or
+`/usr/local/lib/systemd`. Every component from the selected root to the target
+must be free of symlinks, and the target must be a regular file or absent.
+
+The optional `validate` field accepts `json`, `toml`, `udev`, `sudoers`,
+`sshd`, or `cmd` followed by argv values. JSON validation rejects duplicate
+keys. Command validators run against the staged copy with a 30-second
+timeout; one `%s` placeholder is replaced with its staged path, or the path
+is appended when no placeholder is present. Validators receive argv directly,
+never a shell command string. A validation failure refuses the plan before
+the managed root is changed.
+
+`Check` has `state = "present" | "absent"` and exactly one predicate. An exec
+predicate supplies `exec` as an argv array plus explicit `expect_exit` and
+positive finite `timeout`. A path-mode predicate supplies `path`, `owner`,
+`group`, `mode`, and `if_exists = "must-match" | "absent"`. Checks are
+read-only. An absent check is skipped; a present check is observed during plan
+and rechecked before commit and during verification.
+
+### JSON key behavior
+
+`JsonKey(file, key, state, value=None, validate=None, on_change=...)` addresses
+one whole JSON file. `file` follows the `file` kind's normalized allowlist,
+symlink, regular-file, owner, and mode rules. Existing ownership and mode are
+preserved on rewrite; a new file uses mode 0644 and the process uid/gid. A
+request has one `json_key` resource per file because each resource stages and
+commits the complete document.
+
+`key` is a non-empty list of string object-key segments. `state` is `present`
+or `absent`; `present` requires `value`, while `absent` deletes the final key.
+Missing intermediate objects are created for `present`; an existing
+non-object intermediate or a non-object root refuses the plan with the path
+segment identified. A missing key during `absent` is a no-op with the plan
+detail `key already absent`; it preserves the original source bytes, including
+noncanonical formatting. The strict JSON decoder rejects duplicate keys at
+every object depth. The request `value` uses TOML-compatible JSON types:
+strings, booleans, signed 64-bit integers, finite floats, arrays, and
+string-keyed objects. TOML has no null value, so null is not accepted. The
+numeric-domain check applies to the request `value` only; other values already
+in an existing document pass through unchanged when that document is rewritten.
+
+Changed documents are emitted as UTF-8 JSON with two-space indentation, a final
+newline, and the input object's key order retained. Newly created keys are
+appended. The first write of a noncanonical document shows the complete
+whole-file reformat diff; a request is idempotent when its canonical bytes,
+mode, and owner already match. `validate = "dockerd"` runs
+`dockerd --validate --config-file <staged-file>` through the command-runner
+seam before any managed write. A non-zero result, timeout, or missing `dockerd`
+refuses the plan. This validates only the staged JSON with the installed
+Docker daemon binary; it does not start or reload Docker or prove runtime
+behavior. This check is intentionally shallow: Docker CE 29.9.3 and Debian
+`docker.io` 26.1.5 accepted empty files, duplicate keys in raw input, an invalid
+`bip` CIDR, an unknown `log-opts` key, and a `hosts` setting that can conflict
+with packaged service flags. Passing `--validate` is not a complete semantic
+or runtime check. AW-BL-22 records those versions and outcomes; no second
+validator is part of this contract.
+
+Every resource requires an `on_change` table with a valid unit name and an
+action of `restart`, `pending`, or `none`, for example
+`on_change = { unit = "docker.service", action = "pending" }`. `restart`
+requests a runtime restart after a changed file; `pending` records that restart
+without running it; `none` requests no action. The action is unchanged for
+no-op plans. The `json_key` revert hook snapshots
+exact file bytes and metadata, including an absent pre-image, and restores that
+image under the normal transaction revert contract.
+
+### Unit and drop-in behavior
+
+`Unit(name, state, text=None, mode=None, owner=None, group=None, dropin=None,
+intent=None, enable=None, on_change=None, preflight=None)` addresses one of:
+
+- `/etc/systemd/system/<name>` when `dropin` is omitted;
+- `/etc/systemd/system/<name>.d/<dropin>` when `dropin` is present.
+
+The unit name uses `[A-Za-z0-9:_.\\@-]+`, must not start with `-`, and must end in `.service`, `.socket`,
+`.device`, `.mount`, `.automount`, `.swap`, `.target`, `.path`, `.timer`,
+`.slice`, or `.scope`. A drop-in is a `*.conf` basename; path separators are
+refused in both names. The selected path and every component below `--root`
+must be free of symlinks.
+
+A present whole unit requires `text`, `mode`, `intent`, `enable`, and
+`on_change`. A present drop-in requires `text`, `mode`, `intent`, and
+`on_change`; `enable` is invalid. `intent` is exactly `authoritative` or
+`fallback`; it records the caller's layer intent for the shared shadow check.
+An absent whole unit takes only `name` and `state`. An absent drop-in requires
+`on_change`. Owner and group use name-or-numeric-id syntax. On the live root,
+omitted owner and group default to uid 0 and gid 0, and an explicit non-root
+owner is refused. Existing unit files and every existing directory component
+must be owned by uid 0, be the expected file/directory type, and not be
+group/other-writable or carry special mode bits. Requested modes allow only
+`0777` permission bits and may not be group/other-writable. Under a fake root,
+the current uid/gid are the expected ownership identity and defaults so
+unprivileged image builders can create their temporary tree. `preflight` is an
+optional argv array for a present unit or drop-in; it receives no shell and has
+a 30-second timeout. The timeout bounds the direct child process; a preflight
+command that spawns descendants is responsible for managing their lifetime.
+
+Unit text must be a Unicode string encodable as UTF-8, contain no NUL, and be
+at most 1,048,576 UTF-8 bytes. The bound applies to whole units and drop-ins,
+including host-only drop-ins for which staged syntax verification is skipped.
+
+Planning and staging do not write the managed root. A present unit or
+verifiable drop-in is staged in a private tree with the systemd unit search
+directories `/etc/systemd/system`, `/run/systemd/system`,
+`/usr/local/lib/systemd/system`, and `/usr/lib/systemd/system`. The tree
+contains existing valid unit files and resolvable aliases from the static
+`/usr/local/lib` and `/usr/lib` trees, plus the requested file, same-unit
+drop-ins, and referenced dependency units from every selected search
+directory. Source fingerprints are part of the observation and are rechecked
+while staging. The per-unit drop-in layer snapshot is also part of the plan
+fingerprint, so edits and directory membership changes make a saved plan stale.
+Both the source inventory and layer snapshot are validation-only and are
+excluded from post-commit verification. Every executable path named by the
+requested unit and every parseable Exec path in staged non-link source files
+is represented in the staged root by an empty mode-0755 stub. Source-file
+scanning is best-effort: malformed vendor Exec lines are left for
+`systemd-analyze verify` and do not abort planning. Verification checks unit
+syntax without requiring host executables to exist inside the selected root.
+The resource runs `systemd-analyze --root=<staged-root> verify
+/etc/systemd/system/<name>` before any managed write.
+
+If `systemd-analyze` is unavailable in `PATH`, the plan says
+`verify: skipped (systemd-analyze is not available in PATH; ExecStart and
+preflight checks still run)` and runs the remaining checks. A drop-in whose
+base unit is not present in any selected-root search directory states that its
+verify step is skipped for that reason; its Exec and preflight checks still
+run. A present base unit is staged with its discovered dependencies and
+verified. A verify refusal aborts the plan before a managed write.
+Fake-analyzer tests assert staged tree construction. The real-analyzer acceptance
+smoke is deferred to the R2/VM lane note (AW-BL-11) in `BACKLOG.md` and uses only
+a disposable scratch root.
+
+Every path named by a physical `Exec*=` line is checked against the selected
+root: optional leading `-@:+!` prefixes are stripped, the executable token
+must be absolute, and `%` specifiers or `$` environment references are
+refused rather than expanded. The normalized path is resolved inside the
+selected root before checking the forbidden `/tmp`, `/var/tmp`, and `/home`
+prefixes; normalization gives it one leading slash, and raw `..` components
+and symlink components are refused. Use `/usr` paths on merged-usr systems:
+`/bin`, `/sbin`, and `/lib` may be symlinks and are rejected by the component
+check. The final path and every parent component must be owned by uid 0,
+including under a fake root, and free of group/other-write permission. The optional
+preflight argv runs last and must exit zero within 30 seconds. Exec or
+preflight refusal aborts the plan before a managed write. The scanner checks
+physical lines and does not join backslash continuations; systemd's complete
+parser is `systemd-analyze verify` when verification runs.
+
+Changed units declare argv-only post-actions. The engine deduplicates
+`systemctl daemon-reload` across changed addresses. A whole unit's `enable`
+field is declared state: on the live root Augeaswrap observes
+`systemctl is-enabled -- <name>` and declares `enable` or `disable` whenever
+the observed state differs, even if the unit file is unchanged. It declares
+no enablement action when state already matches. Fake roots have no live
+manager state; they report enablement as unknown and cannot reconcile an
+unchanged file's manager state. A non-zero `is-enabled` result with no output
+means a not-yet-created unit is disabled; empty output with a successful exit
+is refused as unrecognized. Do not request `enable = true` for static,
+indirect, generated, or transient units: systemd cannot enable those states,
+so the request will not converge. Every systemctl unit operand is preceded by
+`--`. `on_change` is required:
+
+| Value | Action after a change |
+|---|---|
+| `restart` | `systemctl restart -- <name>` |
+| `reload` | `systemctl reload -- <name>` |
+| `none` | no runtime action |
+| `pending` | record the restart in the journal without executing it |
+
+A changed socket restarts only when its own unit text changed. A no-op socket
+declares no action. A drop-in never enables its unit, but it does reload and
+apply its `on_change` rule.
+
+An absent whole unit runs separately journaled stop and disable actions before
+its file is deleted, then requests `daemon-reload` and `reset-failed`. The plan
+and journal expose each pre-action and its argv/status; a failure stops before
+the delete, preserving earlier successful actions in the journal. On a fake
+root the pre-removal commands are skipped. An absent drop-in deletes only its
+file, then requests `daemon-reload` and its `on_change` action.
+
+The unit revert hook snapshots exact bytes, mode, uid, gid, and observed live
+enablement. Reverting a newly created whole unit has an absent pre-image, so it
+derives stop/disable plus `daemon-reload` and does not replay enable/runtime
+actions against the now-absent unit. Reverting a previously present unit
+restores its exact file pre-image, reconciles saved enablement, and then
+replays only applicable recorded runtime actions.
+
+**Shadow observation.** `KindSpec.shadow_check` registers the unit hook with
+the engine. Planning calls `shadow_check(resource: Unit, root: Path) ->
+list[Problem]` after the resource diff and refuses any returned problems. The
+unit builds a separate layer class for each unit's `<unit>.d` directories and
+captures the result in `Unit.observe`; layer bytes and directory membership
+therefore make a saved plan stale when they change. The shared generic merge
+rule does not infer directive intent because systemd directives have different
+reset and accumulation behavior. `systemd-analyze verify` checks unit syntax.
+
+
+### Augeas-backed edit behavior
+
+`Edit(file, lens, state, ops, create, on_change, validate=None,
+accept_duplicates=())` edits one existing file in place through an Augeas lens.
+The TOML loader is strict: `file`, `lens`, `state`, `ops`, `create`, and
+`on_change` are required; `validate` and `accept_duplicates` are optional.
+`lens` is a lens module name, with an optional `.lns` suffix. One runner
+constant controls whether `-t` receives the module spelling or the `.lns`
+spelling. `augeas-tools` 1.14.1 accepts both spellings; the runner pins the
+verified module spelling (`Fstab`).
+
+The file path follows the `file` kind allowlist and safety checks: normalized
+absolute paths below `/etc`, `/root`, `/home`, `/usr/local/etc`, or
+`/usr/local/lib/systemd`; no symlink component; and a regular-file or absent
+target. A missing `present` file requires `create=true` and begins as an empty
+file; otherwise planning refuses with `edit.create.missing`. Existing mode,
+uid, and gid are preserved. A newly created file uses mode `0644` and the
+applier process uid and gid. `state="absent"` deletes the whole target and
+requires `create=false`, no ops, and no validator.
+
+For a present file, observation and staging each copy its bytes under a private
+temporary root and copy the packaged overlay lens directory into a private
+`0700` directory. The runner invokes `augtool` with `--root`, `--noautoload`,
+`--nostdinc`, the overlay and distribution lens directories, an explicit
+`-t` transform, and a script file passed with `-f`. It prints the parsed tree,
+each touched selector, and `/augeas//error`. A lens parse error refuses the
+plan with Augeas' diagnostic. Missing `augtool` or `augparse` refuses with
+`edit.augtool.missing` and the remedy `install augeas-tools`; there is no
+fallback editor. Script strings are double-quoted with backslashes and quotes
+escaped. Newline, carriage return, and NUL in values or selectors are refused.
+
+`ops` is an ordered array. Each operation runs against the bytes staged by all
+earlier operations; `records` items also reobserve the staged tree after an
+insertion, replacement, or removal before selecting their next sequence node.
+Real Augeas `print` output labels parsed sequence nodes with their numeric
+index (`1`, `2`) and quotes leaf values; observation decodes those values and
+recognizes the numeric labels before generating the next staged mutation.
+Paths are relative to the edited file:
+
+- `{ set = "PATH", value = "VALUE" }` sets a node.
+- `{ rm = "PATH" }` removes a node.
+- `{ clear = "PATH" }` clears a node's value while retaining its children.
+- `{ records = "SELECTOR", key = "FIELD", items = [...], exclusive = BOOL }`
+  reconciles sequence records. Each item is an ordered field map; a list value
+  is a repeated label such as Fstab's `opt`. A record with no matching key is
+  appended; one matching record with equal fields is left alone; one changed
+  record is replaced at its position. More than one matching key refuses with
+  `edit.duplicate`. With `exclusive=true`, selected records whose key is not
+  in `items` are removed. Field order follows the supplied item map and must
+  follow the selected lens' record order. Reconciliation uses the labels from
+  each freshly loaded tree and refuses with `edit.augtool.failed` if bounded
+  reconciliation does not converge. Fstab's loaded records use numeric labels
+  (`1`, `2`, ...); the lens uses `01[1]` only for a newly inserted node before
+  it is saved.
+
+For the Python fstab helpers, each `opt` list element is one comma-free option.
+An option may use `name=value`; the Fstab lens stores its name in the `opt`
+node and its value in the `opt/value` child. Option order and repeated options
+are preserved.
+
+The packaged `Pam_env` overlay lens maps `/etc/security/pam_env.conf` and
+`/etc/environment` records into one sequence shape:
+
+```
+/files/etc/environment/1/kind = environment
+/files/etc/environment/1/name = SITE_MODE
+/files/etc/environment/1/value = production
+
+/files/etc/security/pam_env.conf/1/kind = conf
+/files/etc/security/pam_env.conf/1/name = REMOTEHOST
+/files/etc/security/pam_env.conf/1/default = localhost
+/files/etc/security/pam_env.conf/1/override = @{PAM_RHOST}
+```
+
+The `kind` field keeps the two grammar branches distinct. Optional `default`
+and `override` fields retain their source order. Every stored value keeps any
+outer quote delimiter as part of the field text, so an unchanged record
+round-trips its spelling. Commas are ordinary value characters in both
+formats. Equals signs are ordinary characters in unquoted values, and an empty
+unquoted value after `NAME=`, `DEFAULT=`, or `OVERRIDE=` is accepted. Names use
+letters, digits, and underscores.
+
+`augeaswrap.formats.pam_env` supplies semantic helpers:
+`environment_item(name, value)`, `environment_op(items)`,
+`pam_env_item(name, default=..., override=...)`, and
+`pam_env_op(items)`. The `*_op` functions encode whitespace, empty values, and
+equals-bearing values with quote delimiters. An environment value containing
+either one quote character uses the other delimiter; a value containing both
+quote characters is refused. A `pam_env.conf` value containing a double quote
+is refused because this format has no escaped-double-quote form. NUL, newline,
+carriage return, unsupported whitespace, invalid names, duplicate names,
+unexpected fields, and hand-built mappings in the wrong field order are
+refused. An environment value containing `#` is also refused because
+`pam_env` truncates the value there regardless of quoting.
+
+`environment_item` values are literal `/etc/environment` bytes; Linux-PAM does
+not run its `${...}`/`@{...}` expansion pass on that file, so backslashes are
+ordinary characters there. `pam_env_item` values are raw `pam_env.conf`
+expressions, not literal values. The helpers preserve unescaped `${NAME}` and
+`@{PAM_ITEM}` expressions, preserve the Linux-PAM escapes `\$`, `\@`, and `\\`,
+and refuse every other backslash sequence (including a trailing backslash)
+rather than allowing Linux-PAM to silently drop the character.
+
+The initial lens deliberately supports simple `/etc/environment` records and
+`DEFAULT`/`OVERRIDE` records; it does not yet parse the accepted
+`export NAME=VALUE` prefix or a backslash-joined `pam_env.conf` value. Those
+compatibility gaps and the live libpam acceptance smoke are tracked as
+AW-BL-25 and AW-BL-26.
+
+Any `set`, `clear`, or `rm` path matching more than once, or a `records` key
+matching more than once, refuses with `edit.duplicate`. A caller can accept a
+specific repeated selector by listing its exact relative expression in
+`accept_duplicates`. This exception applies to the named selector only.
+
+Planning runs each generated edit step with `--new` against the staged result
+of prior steps. A missing `.augnew` or
+byte-identical output is a no-op; otherwise the plan carries a unified diff of
+the staged result. Validation runs against that staged file before commit:
+
+| `validate` | argv |
+|---|---|
+| `findmnt` | `findmnt --verify --tab-file <staged>` |
+| `sshd` | `sshd -t -f <staged>` |
+| `sudoers` | `visudo -cf <staged>` |
+| `systemd` | `systemd-analyze verify <staged>` |
+| `cmd` | `validate = ["cmd", ..., "%s"]`; exactly one `%s` is replaced with the staged path |
+
+Validators use argv directly and have a 30-second timeout. `findmnt` reads
+live device and mount state, so it is reported as `skipped(root)` under a fake
+`--root`; all other validators still run against the staged bytes. On
+util-linux 2.41.5, `findmnt --verify` refused absent `UUID=`/`LABEL=` sources
+and missing target directories with exit 1, including `nofail` entries. An
+absent plain `/dev/...` source and warning-only findings exited 0. Parse errors
+were refused even though `findmnt` terminated by signal (observed as exit 139,
+Python return code -11); refusal diagnostics include both stdout findings and
+stderr summaries. The live run simulated present devices with a stat-only block
+node and udev-style symlinks, not a real filesystem. Commit uses the applier's
+atomic writer, never Augeas saving onto the managed path.
+`on_change="daemon-reload"` declares the shared daemon-reload post-action,
+`"none"` declares no action, and `"pending"` journals it without running it.
+The edit kind snapshots exact bytes and metadata for the registry revert
+contract.
+
+
+### Layered resources and shadow intent
+
+The `sysctl`, `sysusers` and `tmpfiles` tables each require a per-resource
+`intent = "authoritative" | "fallback"`. A request does not inherit an intent
+from another table. An optional `accept_shadow = [{ file, key }]` names one
+exact absolute file and key for each accepted overlap. A `key` of `$file`
+accepts a same-basename file mask. Accepted findings remain visible as plan
+notes. Paths in `accept_shadow` must be normalized absolute paths; they are not
+globs.
+
+| Kind | Present | Absent | Effective order and external effects |
+|---|---|---|---|
+| `sysctl` | Whole `/etc/sysctl.d/<file>` with comments and sorted `key = value` rows. Keys are unique within the request and cannot begin with systemd's `-` ignore marker. | Delete that fragment; current kernel values do not change. | Last matching assignment wins across `/etc/sysctl.d`, `/run/sysctl.d`, `/usr/local/lib/sysctl.d`, `/usr/lib/sysctl.d`, and `/etc/sysctl.conf`; same basename in a higher directory masks the lower copy. Glob keys overlap using `fnmatch`. On live `/`, keys must exist under `/proc/sys`. `systemd-sysctl --cat-config` must agree with Python's effective order; `/usr/lib/systemd/systemd-sysctl` is preferred and PATH lookup is the fallback. A missing or failed native check is `sysctl.native.failed`. `apply_now = true` runs `sysctl -p <file>` followed by a read-back. `apply_now` is an explicit action and creates a transaction even when the fragment bytes already match. |
+| `sysusers` | Whole `/etc/sysusers.d/<file>` with sorted `g <name> <gid-or-dash> -` rows; `groups`, `members_add`, and `members_absent` are explicit arrays. Group names use `[A-Za-z_][A-Za-z0-9_-]{0,30}`. Membership account names use `[A-Za-z_][A-Za-z0-9_.-]{0,254}\$?` (up to 256 characters); group names in membership pairs use the group-name rule. Numeric GIDs are 32-bit values except 65535 and 4294967295, which systemd reserves. | Delete the fragment; created accounts and groups remain. | First definition of a group name wins across `/etc/sysusers.d`, `/run/sysusers.d`, `/usr/local/lib/sysusers.d`, and `/usr/lib/sysusers.d`; same basename in a higher directory masks the lower copy. Shadow analysis includes implicit groups from `u`/`u!` user lines and `m` membership lines. Staged `systemd-sysusers --root <stage> --dry-run` name, fixed-GID, and `conflict with earlier configuration` diagnostics refuse the plan even when its exit status is zero. A fixed GID held or planned for another group refuses before endpoint resolution. Membership operations use argv `gpasswd -a <user> -- <group>` or `gpasswd -d <user> -- <group>`; a membership change to a group removed by the same request is refused during planning. A present request with `groups = []` only performs membership actions; it leaves any existing fragment and its rows unchanged, including stale rows. `[[group]]` has `name` and `state = "absent"`; it runs `groupdel -- <name>` only when no user's primary GID refers to that group, and refuses GID 0. Group deletion is not revertible. |
+| `tmpfiles` | Whole `/etc/tmpfiles.d/<file>` with caller-supplied lines; the syntax guard accepts systemd entry types and modifiers, including `h`, `H`, `e`, `=`, `~`, and `^`. | Delete the fragment; created paths remain. | First definition of a path wins across `/etc/tmpfiles.d`, `/run/tmpfiles.d`, `/usr/local/lib/tmpfiles.d`, and `/usr/lib/tmpfiles.d`; same basename in a higher directory masks the lower copy. A syntax guard and staged `systemd-tmpfiles --root <stage> --dry-run --create <absolute-staged-file>` run before commit, with the selected root's passwd and group records available for name resolution. A changed present fragment runs `systemd-tmpfiles --create <file>`. The caller owns the effects of destructive entry types such as `R` and `Z`. |
+| `endpoint` | `endpoints.publish(name, entries)` through the existing endpoint API; an entry value `@gid:<group>` resolves from an earlier effective `sysusers` resource's valid fixed GID or a unique, valid existing `/etc/group` entry. On `/`, publishing is an argv post-action after earlier sysusers actions have completed. With a fake `--root`, commit writes the fragment and generated files under that root; `skipped(root)` marks only the live CLI post-action. | `endpoints.withdraw(name)`. Put it before any unit removal in the request; reversed order is refused. | Existing `endpoints.plan` findings refuse the request. The frozen fragment format, paths, marker bytes and publisher stay unchanged. Endpoint fragments and generated files use the endpoint address's revert hook; restore reinstates prior fragment bytes and regenerates shared files without replaying the publish action. |
+| `group` | Not supported. | `[[group]] name = "<name>" state = "absent"` runs `groupdel` when no user has it as a primary group. | This action is declared non-revertible. A transaction with a changed group removal is non-revertible in full, including sibling file changes. Memberships and account state are not ownership-tracked. |
+
+For sysusers, a constraint (`not_gid_of`, `not_gid`, or `distinct_from`)
+requires a resolved numeric GID. Existing groups and explicit `gid` values are
+known during plan; fixed IDs must be unused by other groups, and an automatically
+allocated GID is not guessed. An endpoint `@gid:` reference to a new group also
+requires its fixed declaration to be the effective group definition under the
+selected sysusers order.
+
+Shadow errors are `shadow.later` (a later assignment overrides an
+authoritative value), `shadow.earlier` (the caller's assignment overrides an
+earlier value when that violates the declared intent), and `shadow.mask` (a
+same-basename file hides or is hidden by another file). Sysctl settings use
+`fnmatch` overlap. Equal values are a note except when `authoritative` is not
+the last assignment for a last-definition format, or not the first assignment
+for a first-definition format. A caller may accept an exact finding with
+`accept_shadow`; any other overlap remains an error.
+
+Every layer observation records all candidate `.conf` file bytes and each
+drop-in directory's `.conf` membership. These observations are ordinary plan
+preconditions, so an edit or newly added drop-in between plan and apply raises
+`StalePlan`.
+
+The intent check runs during planning and again during verification after
+post-actions. A vendor `.conf` symlink to `/dev/null` is recorded as a basename
+mask; other symlink targets and non-regular drop-ins are refused. This keeps
+systemd's native mask behavior in the same precondition and effective-order
+model as ordinary drop-ins.
+
+#### Shared shadow API for layered kinds
+
+`augeaswrap.shadow` provides `TargetClass(name, directories, merge,
+extra_files=())`, `observe_layers(root, target_class)`,
+`effective_files(observation, target_class, overrides=...)`,
+`settings(files, parser)`, and `analyze(...)`. `Assignment(file, key, value,
+order)` is a normalized setting; `Finding(code, file, key, message, severity)`
+is a structured error or note. `effective_files` applies basename sorting and
+same-basename masking (including recorded `/dev/null` masks), `settings` attaches stable file/line order, and
+`analyze` applies the first/last merge rule, intent, glob overlap and exact
+acceptances. Unit layer capture uses `TargetClass`, but systemd directives
+need a systemd-specific parser before their reset/accumulation semantics can
+use the generic findings model.
+
+`ctx.planned_gids` is a plan-scoped map populated by earlier sysusers resources
+with known GIDs. Endpoint resources read it in request order. The field is
+additive to the otherwise stable context so other kinds can use a resource fact
+only when the caller placed its declaration first.
+One group name may be declared by only one sysusers resource in a request;
+this avoids request-order ambiguity between two staged first-definition files.
+A group cannot be both removed and defined in the same request, regardless of
+resource order. A sysusers membership change for a group removed in the same
+request is refused with `sysusers.member.group.removed`, regardless of resource
+order. An endpoint `@gid:` reference to a group scheduled for removal is
+refused. TOML array tables are grouped by kind, so a kind's tables must be
+contiguous; the strict loader and serializer refuse interleaved kinds rather
+than silently changing resource order. Python `Request.resources` retains its
+explicit tuple order. An endpoint withdrawal must precede every unit removal
+in the request.
+
+### Transaction lifecycle
+
+The state directory is `/var/lib/augeaswrap/txn`; the exclusive host lock is
+`/run/lock/augeaswrap.lock`. A plan takes a shared lock and records a
+fingerprint for each resource observation. Apply takes the exclusive lock,
+re-observes every address, and raises `StalePlan` if any observation differs.
+It creates `txn/<id>/stage` and stages and validates every changed resource
+before writing `txn/<id>/pre` or changing the host. After commit, post-action,
+and verification steps finish or fail, the temporary stage tree is deleted;
+retained transactions keep journals and pre-images, not duplicate vendor unit
+trees. A file pre-image contains
+its exact bytes and prior mode, uid, and gid, or an explicit absent record.
+
+Each committed file, post-action, and verification step updates
+`journal.json`. Journals include `created_monotonic_usec`, the transaction's
+monotonic start time in microseconds. After each post-action, restore-shaped images for its bound
+addresses refresh their post-image fingerprints. This keeps endpoint fragment
+publication covered by the revert guard without replacing the kind's original
+planning observation shape. The journal records the writer, request digest, changes,
+pre-image metadata, post-image fingerprints, completed/failed/not-run steps,
+and action results associated with the addresses that requested them. After
+the final post-action and verification, successful transactions refresh their
+post-image fingerprints so manager state such as unit enablement is captured
+after reconciliation. On failure, already committed addresses are reobserved
+before the final journal write. After the first commit, an error stops the transaction;
+the partial result and journal remain, and no rollback is attempted. Fake-root
+post-actions report `skipped(root)`. If a failed commit's
+post-image cannot be observed, the journal records that address as unknown
+and revert refuses it.
+The `irreversible_effects` list records effects outside managed file bytes,
+including live `sysctl` application, `systemd-sysusers` group creation,
+`gpasswd`, `groupdel`, and tmpfiles path changes. A revert restores file
+fragments only; it does not undo those effects. Sysusers revert never replays
+`gpasswd`, and sysctl/tmpfiles revert does not run a post-action for a fragment
+whose pre-image was absent.
+The last 50 transaction journals and pre-images are retained. Transaction IDs
+increase in allocation order, including when timestamps match or the wall clock
+moves backwards, so a same-second transaction is still recognized as later.
+
+`revert <txn>` is explicit. It compares each current file with the recorded
+post-image and scans later journals for a transaction that touched the same
+address. A mismatch refuses the revert and names the later transaction or
+reports that the file changed outside Augeaswrap. A successful revert restores
+the pre-images, reruns recorded post-actions for those addresses, and creates a
+new transaction with its own pre-images and journal. A journal whose root
+differs from the selected `--root` is refused. No-op plans and applies
+create no transaction; repeating a successful request therefore writes
+nothing.
+
+### Adding a resource kind: registry and revert contract
+
+This section is an additive addendum to the frozen seven-method `Resource`
+protocol; none of its signatures change. A kind is added by writing one module
+that registers a `KindSpec` when it is imported, and by importing that module
+once in `augeaswrap/__init__.py`. The engine (`load_request`,
+`Request.to_toml()`, plan rendering, journals, revert) contains no per-kind code:
+
+```python
+from augeaswrap.kinds import KindSpec, RevertHooks, register_kind
+
+register_kind(KindSpec(
+    kind="unit",                 # also the TOML array-of-tables name: [[unit]]
+    parse=parse_unit,            # (table: Mapping) -> Resource; raise ValueError when invalid
+    to_toml=unit_values,         # (resource) -> Mapping of table key -> value
+    render=unit_lines,           # optional (change, plan) -> Sequence[str], extra plan lines
+    revert=RevertHooks(snapshot=unit_snapshot, restore=unit_restore),   # or revert=None
+    shadow_check=unit_shadow_check, # optional (resource, root: Path) -> list[Problem]
+))
+```
+
+Kind names must match `[a-z][a-z0-9_]{0,31}` and may not be the reserved
+request keys `augeaswrap` or `writer`. They are emitted as TOML table names,
+so registration refuses anything outside this grammar.
+
+`parse` and `to_toml` must round-trip: `load_request(request.to_toml())`
+equals the request. `kinds.require_keys` and `kinds.resource_tables` give
+parsers the same strict unknown/missing-key errors the core kinds use.
+`revert` has no default: a kind states either hooks or `revert=None`
+(declared unsupported). A kind that is not registered at all, such as a
+library-only resource, is also unsupported for revert.
+
+`shadow_check` is optional. When present, the engine calls it during planning
+after `diff`; it must return `list[Problem]`, and any problems refuse the
+plan. The unit kind exposes `shadow_check(resource: Unit, root: Path)` and
+captures one `TargetClass` per unit over its four `<unit>.d` directories.
+Systemd directives have different reset and accumulation rules, so the hook
+records layers for stale-plan detection without applying the generic first/last
+assignment analyzer. Keep such hooks resource-specific and small.
+
+`PostAction` has `pending` and `phase` fields. A pending action is recorded in
+the journal without running; its name is returned in `Result.pending`. Known
+argv forms receive a shared phase from the engine; a custom argv form must
+declare `phase`. Except for `before_commit`, actions run in the shared phase
+order and keep request order within each phase. `before_commit` actions run
+immediately before their bound resource commit. See
+[post-action phases](#post-action-phases) for the phase vocabulary and failure
+behavior.
+
+**Revert contract.** Revert restores a transaction's pre-images, so every kind
+that writes host state should provide both hooks:
+
+- `snapshot(change, observed) -> Mapping` runs before any commit with the
+  planned change and the observation the plan took. It returns a JSON-safe
+  record of what the commit overwrites. The engine stores it as
+  `txn/<id>/pre/<sha256 of address>.json` (mode 0600). A record may carry
+  `data_b64` (base64 bytes) together with `sha256` (digest of those bytes); the
+  engine stores the bytes in a sibling `.data` file (mode 0600), checks the
+  digest when saving and again when reading, and hands them back inline. The
+  keys `schema`, `kind`, `address` and `data_file` are reserved.
+- `restore(address, record, actions) -> Resource` runs at revert time with the
+  stored record and actions that ran for the address in the original
+  transaction. It validates the record (raising `ValueError`, which refuses
+  the revert) and returns an ordinary resource that, when planned, staged,
+  committed and verified, puts the recorded state back. The restore resource's
+  `observe` must return the same observation shape as the original kind, so the
+  engine can compare the current state with the journal's post-image; its
+  `commit` returns that observation. Its `post_actions` selects or derives the
+  actions appropriate to the restored pre-image; it must not replay an action
+  that targets a resource absent in the restored state.
+- `post_image(resource, ctx, address)` is optional. When a post-action changes
+  the full planning observation, it returns the restore resource's observation
+  shape for that address. Without it, the engine re-observes the resource and
+  expects the returned address value to have that same shape. `pre_image(change)`
+  is also optional; it projects a planning observation into the restore shape
+  when the engine records the partial result of a failed commit.
+
+The engine adds the rest: later-transaction and drift refusals, a new
+journaled transaction with its own pre-images, post-action replay, and
+verification. `file`, `json_key`, `edit`, `unit`, `sysctl`, `sysusers`, `tmpfiles`, and `endpoint`
+implement kind-specific restore behavior. `check` is read-only and never
+creates a change, so it has nothing to revert. Resource hooks may filter an
+action that cannot safely be replayed against a restored file: sysusers skips
+the original `gpasswd` operations because those memberships are recorded as
+irreversible, and sysctl/tmpfiles skip file-specific actions when the restored
+pre-image is absent.
+
+A plan states revert support before anything is applied: each changed address
+of a kind without hooks prints `revert: unsupported`, and `plan --json` carries
+`"revertible": false` for it. Applying such a plan is still allowed; a later
+`revert` refuses with `revert.unsupported`. Kinds currently revertible: `file`,
+`json_key`, `edit`, `sysctl`, `sysusers`, `tmpfiles`, and `endpoint`. `group` declares
+`revert=None` because `groupdel` has no safe automatic inverse. A kind's
+pre-image is the file or endpoint fragment it writes; effects outside those
+bytes (live sysctl values, group membership, created accounts/groups, tmpfiles
+paths, and group deletion) are listed in the journal's `irreversible_effects`
+instead.
+
+`PostAction.pending=true` is the generic journal-only action form. Apply records
+the action and its argv with status `pending` instead of executing it; the
+result exposes the action names in `Result.pending`. Revert replays those
+actions as pending declarations as well. `augeaswrap journal --pending` derives
+pending unit restarts from retained journals and queries each unit with
+`systemctl show -p ActiveEnterTimestampMonotonic,ActiveState,LoadState -- <unit>`.
+On systemd 257.13, an absent unit succeeds with `LoadState=not-found`,
+`ActiveState=inactive`, and `ActiveEnterTimestampMonotonic=0`; the query treats
+that state as missing. The older exact non-zero `Unit <unit> could not be
+found.` diagnostic is also treated as missing. Other non-zero query results,
+missing properties, and inconsistent property combinations refuse the query.
+All three requested properties must be present and consistent. It lists the
+action only when the unit has no active-enter timestamp later than the
+transaction's monotonic time. `LoadState = "not-found"` identifies a missing
+unit, which remains listed with `unit_state = "missing"`. If systemctl exits
+non-zero with the exact diagnostic `Unit <unit> could not be found.`, the
+missing unit is also listed and its unavailable active-enter timestamp is
+null. Other command failures, missing properties, or inconsistent properties
+refuse the query instead of returning an empty list. Journals written before
+`created_monotonic_usec` was added are conservatively listed with a null
+transaction time. The query never changes journal state. Monotonic timestamps
+can conservatively over-report an older pending action after a reboot when the
+current unit has not entered active since boot.
+
+**Post-action phases.** Each `PostAction` has an optional `phase`; known argv
+forms receive a phase from the engine, while unknown third-party forms must
+specify one. This is a breaking validation requirement for callers that create
+custom post-actions without a recognized argv form.
+Except for `before_commit` actions, the engine orders work in rev3 phases:
+`sysusers`, `tmpfiles`, `daemon_reload`, `sysctl`, `runtime`, `gpasswd`, then
+`endpoint`. Runtime actions retain declaration order; actions within other
+phases do too. Duplicate name/argv actions run once. Conflicting timeout,
+pending, or phase declarations refuse planning. A `before_commit` action is
+address-bound and separately journaled immediately before its address commit;
+it supports the unit stop/disable/delete sequence.
+
+**Limits that are by design.**
+
+- `plan` is read-only for the managed root but it does run `validate`
+  commands and exec `check` commands (with stdin closed) and prints text
+  diffs of changed files, so file content can reach the terminal or logs.
+- Journals and pre-images keep the exact bytes of every changed file for the
+  last 50 transactions, privately (directories 0700, files 0600).
+- Directories created for a new file are not journaled and revert leaves them.
+- After a revert, earlier transactions that touched the same address cannot be
+  reverted, because the revert counts as a later transaction.
+- An apply stopped by `KeyboardInterrupt`, `SystemExit` or `SIGTERM` is
+  journaled with status `interrupted`; it is revertible like a failed one.
+  A hard kill leaves status `applying`, which cannot itself be reverted. Its
+  journal still lists every requested address, so it blocks reverts of earlier
+  transactions that touched those same addresses until the applying journal is
+  pruned.
+- A transaction directory without `journal.json` (a crash before its first
+  journal write) changed nothing: `journal list` skips it with a warning and it
+  never blocks the revert of earlier transactions.
+- The `file` resource permits special mode bits and does not cap request or
+  observed file sizes; those remain the caller's responsibility. The `unit`
+  resource has stricter path/mode checks and the 1 MiB request-text bound above.
+
+### Core commands and exit codes
+
+| Command | Exit | Behavior |
+|---|---:|---|
+| `augeaswrap plan REQ.toml [--root DIR] [--json]` | 0 / 10 / 2 | 0 means no changes, 10 means changes are pending, 2 means refused |
+| `augeaswrap apply REQ.toml [--root DIR] [--yes] [--dry-run] [--json]` | 0 / 2 / 4 | 0 means applied or no changes, 2 means refused or stale before commit, 4 means a partial apply with journal retained |
+| `augeaswrap revert TXN [--root DIR] [--yes] [--dry-run] [--json]` | 0 / 2 / 4 | Explicitly restores pre-images as a new transaction; exit 4 means revert itself partially applied |
+| `augeaswrap journal [list\|show TXN\|--pending] [--root DIR] [--json]` | 0 / 2 | Lists retained transactions, displays one journal, or lists unresolved pending unit restarts; invalid journal data or a failed systemctl query is refused |
+
+With `--json`, each command writes exactly one JSON document. `plan` writes its
+plan object; `journal` writes a journal, journal array, or pending-action array; `apply` and `revert`
+write a result object containing `status`, `plan`, and `result`. A refused or
+partial apply/revert uses one object with its status and the available
+problems, transaction id, and failed step.
+
+Mutating CLI verbs print their plan and use cli-extended confirmation. A
+terminal can confirm interactively; non-interactive callers pass `--yes`.
+`--dry-run` prints the plan and does not write. The library never prompts:
+calling `apply(plan)` accepts that plan. `apply` also takes a `Request`, a
+mapping, or a TOML path (`str` or `PathLike`); those are planned first, against
+`root` or, when no root is passed, against `/`. A `Plan` carries its own root,
+and passing a different `root` with it raises `StalePlan`.

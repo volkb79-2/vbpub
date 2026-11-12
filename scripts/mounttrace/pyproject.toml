@@ -1,0 +1,44 @@
+[build-system]
+requires = ["setuptools==82.0.1", "wheel==0.47.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mounttrace"
+version = "3.2.0"
+description = "Read-only mount namespace analysis"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "MIT"
+dependencies = [
+    "cli-extended>=0.6.0", # 0.6.0 is the released baseline used for the registry and reviewed surface.
+]
+
+[project.scripts]
+mounttrace = "mounttrace_cli.cli:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+py-modules = ["mounttrace_core"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["mounttrace_cli*"]
+
+[tool.setuptools.package-data]
+mounttrace_cli = ["VERSION"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+markers = ["cli_case(case_id): links a behavior test to a reviewed CLI case"]
+
+[tool.cli-extended]
+schema_version = 1
+
+[[tool.cli-extended.clis]]
+id = "mounttrace"
+factory = "mounttrace_cli.cli:build_cli"
+review = "docs/cli-review.toml"
+manifest = "docs/cli-surface.json"
+spec = "docs/CLI-SPEC.md"
+findings = "docs/cli-review-findings.toml"

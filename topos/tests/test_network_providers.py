@@ -29,8 +29,8 @@ def test_host_provider_parses_proc_snapshot_and_tc_status() -> None:
     provider = NetHostProvider(proc_root=proc_fixture(), command_runner=lambda _argv: QDISC_OUTPUT)
     sample = provider.collect({"": walk_entities(fixture_root() / "cgroupfs" / "gstammtisch")[""]})[""]
     assert sample.source_label == "net:HOST"
-    assert sample.rx_bytes == 15100
-    assert sample.tx_bytes == 27100
+    assert sample.rx_bytes == 10000
+    assert sample.tx_bytes == 20000
     assert sample.proto == {
         "tcp": {"retrans_segs": 6, "out_rsts": 4, "timeouts": 8, "syn_retrans": 7},
         "udp": {"in_errors": 2, "rcvbuf_errors": 3, "sndbuf_errors": 4},
@@ -48,8 +48,8 @@ def test_netns_provider_dedupes_same_namespace_within_one_entity() -> None:
     samples = provider.collect(entities)
     game = samples["system.slice/docker-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.scope"]
     assert game.source_label == "net:NS"
-    assert game.rx_bytes == 1250
-    assert game.tx_bytes == 2250
+    assert game.rx_bytes == 1200
+    assert game.tx_bytes == 2200
 
 
 def test_netns_provider_labels_host_network_entities_as_na() -> None:
@@ -75,8 +75,8 @@ def test_netns_provider_aggregates_only_when_children_are_distinct_private_names
     sample = provider.collect(entities)["apps.slice"]
     assert sample.source_label == "net:NS"
     assert sample.aggregation == "private_ns_only"
-    assert sample.rx_bytes == 12030
-    assert sample.tx_bytes == 15030
+    assert sample.rx_bytes == 12000
+    assert sample.tx_bytes == 15000
 
 
 def test_netns_provider_refuses_branch_aggregation_when_a_child_is_host_networked(tmp_path: Path) -> None:

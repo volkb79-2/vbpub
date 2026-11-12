@@ -224,6 +224,22 @@ def test_new_v7_workflows_are_explained_in_all_three_user_documents():
     assert "CIU-117" in design and "CIU-104" in design
 
 
+def test_global_only_roots_and_worktree_clean_preflight_are_documented():
+    readme, design, consumers = (
+        doc.read_text(encoding="utf-8") for doc in DOCS
+    )
+    for content in (readme, design, consumers):
+        assert "ciu.global.defaults.toml.j2" in content
+        assert "ciu.defaults.toml.j2" in content
+        assert "global-only root: nothing to clean" in content
+        assert "ciu clean --dry-run" in content
+
+    assert (
+        "docs/DESIGN-GUIDE.md#global-only-roots-and-stack-cleanup" in readme
+    )
+    assert "DESIGN-GUIDE.md#global-only-roots-and-stack-cleanup" in consumers
+
+
 def test_worktree_image_optout_example_matches_the_shipped_loader():
     consumers = (REPO_ROOT / "docs" / "CONSUMERS.md").read_text(encoding="utf-8")
     blocks = [
@@ -319,11 +335,14 @@ def test_release_gate_child_env_uses_repo_sources_and_matches_the_assay_lane(
 
 
 def test_assay_lane_declares_the_complete_rigor_ladder():
+    """The 2026-11-11 pilot supports a three-worker R2 ceiling on the 4-core host."""
     lane = tomllib.loads((REPO_ROOT / "assay.toml").read_text(encoding="utf-8"))["lanes"]["ciu"]
     assert lane["rigor"] == ["R0", "R1", "R2", "R3"]
     assert lane["isolation"]["snapshot_selection"] == "repository-minus-unsafe-symlinks"
     assert lane["judge"]["coverage"]["artifact"] == "coverage.json"
-    assert lane["judge"]["mutation"]["jobs"] == 1
+    mutation = lane["judge"]["mutation"]
+    assert mutation["jobs_max"] == 3
+    assert "jobs" not in mutation
     assert lane["judge"]["mutation"]["liveness"] is True
     helper = runpy.run_path(str(REPO_ROOT / "run-ciu-tests.py"))
     assert lane["argv"][1:] == helper["pytest_args"]("0")
@@ -333,3 +352,25 @@ def test_assay_lane_declares_the_complete_rigor_ladder():
     readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
     assert "--maxfail=1" in spec and "liveness monitoring" in spec
     assert "active liveness" in readme
+
+
+def test_ciu_r2_worker_budget_matches_the_three_worker_pilot():
+    """Run-Gate must request workers within the measured CPU and memory envelope."""
+    lanes = tomllib.loads((REPO_ROOT / "run-gate.toml").read_text(encoding="utf-8"))["lanes"]
+    lane = lanes["ciu"]
+    assert lane["jobs"] == "auto"
+    assert lane["resources"]["cpus"] == "3"
+    assert lane["resources"]["memory"] == "3g"
+    assert lane["resources"]["candidate_ram"] == "400m"
+
+
+def test_run_gate_ciu_lane_declares_cgroup_observer_for_r2():
+    """CIU-190: the async R2 lane `ciu` needs the cgroup observer (assay liveness);
+    the release gate `ciu-gate` runs no mutation and must not declare one."""
+    lanes = tomllib.loads((REPO_ROOT / "run-gate.toml").read_text(encoding="utf-8"))["lanes"]
+    assert lanes["ciu"]["resource_observer"] == "cgprofile"
+    assert lanes["ciu"]["resources"]["pids"] == 8192
+    assert "resource_observer" not in lanes["ciu-gate"]
+    assay = tomllib.loads((REPO_ROOT / "assay.toml").read_text(encoding="utf-8"))["lanes"]
+    assert assay["ciu"]["judge"]["mutation"]["liveness"] is True
+    assert "R2" not in assay["ciu-gate"]["rigor"]

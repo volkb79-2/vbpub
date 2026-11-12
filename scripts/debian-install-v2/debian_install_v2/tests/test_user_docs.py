@@ -52,33 +52,43 @@ def test_all_documented_config_examples_use_the_current_loader_and_schema():
     assert count >= 2
 
 
-def test_root_size_cap_is_adoptable_from_user_documents():
-    for path in DOCS:
+def test_partitioning_is_adoptable_from_user_documents():
+    for path in (PROJECT / "README.md", PROJECT / "docs" / "CONSUMERS.md", PROJECT / "docs" / "DESIGN-GUIDE.md"):
         text = path.read_text(encoding="utf-8")
-        assert "`root_max_size_gb`" in text
+        assert "partitioning" in text, path
+        for removed in ("root_max_size_gb", "disk_layout", "data_area"):
+            for example in _markdown_config_examples(path):
+                assert removed not in example, (path, removed)
     assert any(
-        example.get("root_max_size_gb") is not None
-        for path in DOCS
-        for example in _markdown_config_examples(path)
+        example.get("partitioning") for path in DOCS for example in _markdown_config_examples(path)
     )
 
 
-def test_each_user_doc_explains_the_root_cap_requires_adjacent_managed_tail_swap():
+def test_each_user_doc_explains_one_plan_and_the_raw_benchmark_partition():
     for path in DOCS:
         text = re.sub(r"\s+", " ", path.read_text(encoding="utf-8").lower())
-        assert "managed tail swap partition directly after root" in text, path
-        assert "pre-root swap" in text and "needs no tail partition" in text, path
-        assert "swap_policy" in text and "root_max_size_gb" in text, path
+        assert "swap_policy" in text and "partitioning" in text, path
+        assert "iobench-raw" in text, path
+        assert "swap_policy" in text and "off" in text and "on" in text, path
 
 
-def test_readme_keeps_the_uncapped_defaults_next_to_the_capped_layout():
+def test_each_user_doc_explains_journal_visibility_during_data_mount():
+    for path in DOCS:
+        text = path.read_text(encoding="utf-8").lower()
+        assert "install-time journal" in text, path
+        assert "hidden" in text and "/var/log/journal" in text, path
+        assert "journalctl --flush" in text, path
+        assert "not verified" in text or "unverified" in text, path
+        assert "systemd-journald" in text, path
+
+
+def test_readme_keeps_the_plain_defaults_next_to_the_partitioning_layout():
     examples = list(_markdown_config_examples(PROJECT / "README.md"))
     assert any(
-        example.get("swap_disk_total_gb", "missing") is None
-        and example.get("root_max_size_gb") is None
+        example.get("swap_disk_total_gb", "missing") is None and not example.get("partitioning")
         for example in examples
     )
-    assert any(example.get("root_max_size_gb") is not None for example in examples)
+    assert any(example.get("partitioning") for example in examples)
 
 
 def test_every_cloud_init_cleanup_mode_is_named_in_user_docs():
@@ -87,11 +97,11 @@ def test_every_cloud_init_cleanup_mode_is_named_in_user_docs():
         assert f"`{mode}`" in text
 
 
-def test_every_root_and_swap_policy_value_is_named_in_user_docs():
+def test_every_user_doc_states_that_root_and_swap_are_one_plan():
     text = "\n".join(path.read_text(encoding="utf-8") for path in DOCS)
-    assert "`root_resize_policy`" in text
     assert "`swap_policy`" in text
-    for value in ("resize", "untouched", "grow-only", "on", "off"):
+    assert "root" in text and "partitioning" in text
+    for value in ('"keep"', '"*"', "on", "off"):
         assert f"`{value}`" in text
 
 

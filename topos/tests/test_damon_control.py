@@ -400,3 +400,19 @@ def test_nonpositive_pids_fail_closed(tmp_path: Path) -> None:
             config=DamonConfig(),
             require_root=False,
         )
+
+
+def test_owned_markers_keeps_every_marker_when_the_boot_id_is_unknown(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from topos.damon import control
+
+    marker_dir = tmp_path / "damon"
+    marker_dir.mkdir()
+    for idx, boot in ((0, "other-boot"), (1, "this-boot")):
+        (marker_dir / f"kdamond-{idx}.json").write_text(json.dumps({"boot_id": boot}))
+    monkeypatch.setattr(control, "_current_boot_id", lambda: None)
+    kept = control.owned_markers(tmp_path)
+    # without a boot ID nothing can be proven stale, so nothing is deleted
+    assert [p.name for p in kept] == ["kdamond-0.json", "kdamond-1.json"]
+    assert all(p.exists() for p in kept)

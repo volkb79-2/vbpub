@@ -42,13 +42,13 @@ def test_plan_forwards_resolved_target_and_flags_and_renders_text_once(
 ) -> None:
     calls: list[tuple[object, ...]] = []
     plan = _plan()
-    monkeypatch.setattr("topos.cli._resolve_mutual_exclusive_target", lambda target, container, command: calls.append(("resolve", target, container, command)) or "resolved-target")
+    monkeypatch.setattr("topos.cli._resolve_mutual_exclusive_target", lambda target, container, command, kind=None: calls.append(("resolve", target, container, command, kind)) or "resolved-target")
     monkeypatch.setattr("topos.inspect_files.plan.build_gated_inspect_plan", lambda *args, **kwargs: calls.append(("plan", *args, kwargs)) or plan)
     monkeypatch.setattr(InspectFilesPlan, "to_text", lambda self: calls.append(("text",)) or "PLAN TEXT")
 
     assert _main_inspect_files(["plan", "--kind", "cgroup-files", "--container", "prefix", "--inspect-files", "--admin"]) == 0
     assert calls == [
-        ("resolve", None, "prefix", "inspect-files"),
+        ("resolve", None, "prefix", "inspect-files", "cgroup-files"),
         ("plan", "cgroup-files", "resolved-target", {"inspect_files": True, "admin": True}),
         ("text",),
     ]

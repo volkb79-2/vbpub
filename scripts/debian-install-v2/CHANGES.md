@@ -4,15 +4,99 @@ All notable changes to debian-install-v2 are recorded here.
 
 ## [Unreleased]
 
-### Changed
-- A configured `root_max_size_gb` now installs cloud-init and initramfs root
-  growth guards after stage one validates the capped tail-swap plan and before
-  it installs the initramfs shrink hook and rebuilds images, then sets up stage
-  two and reboots; stage two repeats them.
-- Root caps are measured as partition lengths from the current root start, so
-  absolute 1 MiB alignment no longer lowers the configured limit.
-- Rename the optional wizard dependency manifest to `requirements-wizard.txt`
-  and update its installer hint, CLI surface, and adoption documentation.
+### Fixed (netcup NC-17..NC-20 and DIV2-BL-01/02/04)
+- Host-pin scans count and store only key records, ignoring the newer `ssh-keyscan` banner comment,
+  while still refusing multiple keys.
+- Runner provisioning reports the selected `MDT_COW` device and whether it reused or formatted it;
+  the runner README puts host-setup before its dependent steps and states that host-setup is mandatory.
+- Swap rows now identify partitions by the `mkswap` filesystem label plus fstab PARTUUID rather than
+  a nonexistent PARTLABEL. The preview column is `Identifier`.
+- Failed advisory CPU and I/O benchmark steps retain their complete already-redacted output in
+  `<state_dir>/cpu-benchmark.log` and `<state_dir>/io-benchmark.log`, named in the step detail.
+- Adopt `tools/swap-bench-window.sh` with the review-3 hardening: any live `swapoff` blocks a restore,
+  required tools fail closed, PARTLABEL/PARTUUID/UUID identity is re-checked before wipe, and the
+  runbook requires a persistent terminal session. `end` restores only the selected device with its
+  fstab row's options and verifies its identity, active state, and configured priority.
+
+### Added (DIV2-AUG)
+- Install `augeas-tools` with the base packages on every host, then verify
+  `augtool` and `augparse` are available. This supports `augeaswrap` without a
+  later network step; the stdlib-only remote bootstrap remains independent of
+  Augeas.
+
+### Added (div2 fix 6): pin the reviewed commit in the customScript
+- `build-customscript --repo-commit SHA` (API: `build_customscript_bundle(repo_commit=...)`) exports `REPO_COMMIT` and names that
+  commit in the default bootstrap URL; `bootstrap-remote.py` fetches the commit by SHA, checks it out detached and refuses unless
+  `HEAD` equals it. Without the option behaviour is unchanged (branch head). A malformed `REPO_COMMIT` is refused before any download.
+
+### Fixed (third review of div2-data-area-v2)
+- Refuse every `/usr/local` data mount because stage one writes installer executables there and the stage-two data mount does not seed them.
+- Refuse mounts intersecting `/var/lib/docker` or `/var/lib/containerd`; stage two runs after those services may have live state, with no stop or seed step.
+- Protect `/lib64`, `/lib32`, `/libx32`, `/var/lib/systemd`, and `/var/lib/cloud`. Allow `/var/log/journal` as the documented persistent-journal exception while keeping other `/var/log` mounts protected.
+- Add regression coverage for mount boundaries, raw-partition type/name/size checks, offline root-number reporting, GPT slot arithmetic, fixed reserves, and benchmark-before-data formatting order.
+
+### Changed (BREAKING, div2-data-area-v2): one explicit `partitioning` plan, partition numbers follow disk position
+- Live finding 2026-11-05 (v1001): data partition numbered 8 although it sat before swaps 4-7, and a 166.8 GiB hole between root
+  and data (rule-sized `dev-host`: root 5/16, data 1/3, rest "reserve").
+- NEW `partitioning` config object: `root` (`"*"`/`"keep"`/GiB/`"N%"`), `reserve_gb` (0 default, number or `"*"`), optional `data`
+  (`kind: partitions|lvm`, volumes with `size`/`fs`/`mount`/`label`, LVM `vg`/`pv_size`/`vg_free_gib`). `iobench_raw_gb` defaults to
+  an always-planned 8 GiB raw partition and accepts 2..10240 or `false`. Exactly one `"*"` takes the remainder; the plan must account for
+  the whole disk or it is refused with the resolved table/fix. Design, algorithm and exact messages:
+  `docs/DESIGN-data-area-v2.md`; README "Disk layout".
+- Numbering follows physical order: after root, data partitions first (config order), then `iobench-raw`, then swaps; ascending
+  partition numbers match ascending start sectors. The raw partition is never formatted or mounted and is the only install benchmark target.
+- Root behaviour derives from `partitioning.root`; `root_resize_policy` is removed with no plan-less path. A plan accepts `swap_policy`
+  `on`/`off` (not `untouched`).
+- LVM: LV sizes GiB / percent of the VG (`-l` extents) / `"*"` (`-l 100%FREE`, created last); `vg_free_gib` keeps VG space.
+  Raw partitions (`fs: none`, optional `type: zfs`) are planned but never formatted. Docker and containerd state paths are not valid
+  data mount targets because the data filesystem is configured after those services may have started. Allowlist: `lvcreate -l`.
+- REMOVED, no migration: `disk_layout`, `root_max_size_gb`, `data_area`, `data_partition`, `data_lvm` (a config with one is
+  refused with a pointer to `partitioning`), and the rule sizing (`recommended_root_gib`, 1/3 data, `min_root_gib` floor).
+  Migration by hand: the old `dev-host` + runner-created CoW layout is
+  `{"partitioning": {"root": 160, "data": {"kind": "partitions", "volumes": [{"fs": "btrfs", "mount": "/srv/cow", "label": "MDT_COW"}]}}}`
+  (data takes the remainder before the raw partition and swap); old capped-root-only settings must be rewritten as an explicit plan.
+- Deferred: `fs: zfs` as a managed filesystem, btrfs `subvol` (both refused with a clear message).
+- Fixed root/data sizes cannot mix with percentage sizes; a numeric fixed reserve can accompany a percentage pool. The offline resolver
+  accepts `--root-start-sector` and `--root-number` (netcup: `2500608`, `3`). Config load and both planners enforce GPT's 128-entry limit.
+- Mount refusals name the protected OS-state path. Exact `/`, `/var`, `/var/lib`, `/srv`, and `/home` mounts are refused, as are mounts
+  covering `/usr`, `/etc`, `/boot`, `/root`, `/tmp`, `/proc`, `/sys`, `/dev`, `/run`, `/bin`, `/sbin`, `/lib`, `/lib64`, `/lib32`,
+  `/libx32`, `/var/lib/dpkg`, `/var/lib/apt`, `/var/lib/systemd`, `/var/lib/cloud`, `/var/cache/apt`, `/var/log`, `/srv/tree-cache`,
+  or `/srv/tree-upper`. `/var/log/journal` and its descendants are allowed for persistent journal data; Docker/containerd state mounts
+  and all `/usr/local` mounts are refused.
+- Tests cover boundary behavior with swap on/off, raw partition geometry and wipe ordering, PARTLABEL-only recognition, static invalid
+  plans, protected and allowed mounts, offline root geometry, and the GPT partition-number limit. `test_data_area_vm.py` remains in `r1-vm-real-commit`.
+
+### Fixed (div2-data-area-v2 review): one GPT-safe pool boundary and raw benchmark allocation
+- The swap planner and data planner now share the same exclusive pool end. Swap-off plans reserve backup-GPT metadata and remain
+  contiguous, aligned, and within the last usable sector.
+- `run_io_benchmark` no longer creates a temporary tail partition, formats/mounts it, or writes a temporary table. The installer wipes
+  and runs iobench against the planned `iobench-raw` partition, which stays in the final table.
+- `show_plan`, the install summary, wizard summary, and refusal output describe the raw reservation; the resolved plan table is shown
+  in GiB when disk facts suffice.
+- Stage two runs `iobench` on the planned raw partition before configuring io.cost, so its benchmark result is available to the model.
+- All root growth now updates only the root partition with `sfdisk -N <root-number>`, refreshes it with `partx -u`, and verifies the
+  exact planned size. This applies to every current plan; the plan-less `root_resize_policy` path has been removed.
+
+### Tests / hardening (div2-layout-tests)
+- Every fake or mocked run path in the installer tests now validates its argv through the production
+  `HostActions._validate` (`tests/argv_guard.py`), so allowlist drift fails unit tests. This is the
+  class of bug behind the 2026-11-05 v1001 stage-two failure (`sfdisk -N` / `--no-tell-kernel`).
+- `tests/test_layout_argv_coverage.py`: an AST scan validates every literal installer argv (executed
+  or not), and a stateful walk of the 512 GiB plan (root growth, four tail swaps, MDT_COW, raw
+  iobench partition) runs through the validator.
+- `tests/test_data_area_vm.py::test_real_dev_host_layout_stage_two_with_root_growth_swap_and_cow` (existing lane `r1-vm-real-commit`): real stage-two steps on a loop disk with the
+  production allowlist: sfdisk -N + partx + resize2fs exact growth, mkswap/swapon at the disk end,
+  mkfs.btrfs MDT_COW + fstab + mount.
+- Allowlist: `mkswap` (-L), `resize2fs` (-P), `blkid` (-s -o -t -U -L -p) now have flag allowlists;
+  `dd` operands are limited to if/of/bs/count/conv.
+
+### Superseded predecessor waves
+
+The earlier NC-12/NC-13 interim disk layouts and runner-side partition creation
+were superseded by the single `partitioning` plan described above. Their
+removed config fields, rule-based sizing and partition-carve instructions are
+not part of the current installer contract. The optional wizard manifest is
+`requirements-wizard.txt`.
 
 ### Added
 - Installer step `run_cpu_benchmark` (HB-2, default on, `vanilla` profile off): at the end of stage two, after io.cost and the swap
@@ -31,13 +115,6 @@ All notable changes to debian-install-v2 are recorded here.
   (ported from the v1 runner); `--resolve` re-reads the page without running; refuses to re-measure without `--force`
   and under CPU pressure; hermetic tests in mdt-cockpit `host-setup/tests/test_cpu_benchmark.py`. The installer step
   and `mdt host-setup cpu-benchmark` follow (HB-2, HB-3).
-- `root_max_size_gb` caps the ext root partition and leaves space after root
-  and managed swap unallocated (wizard field, plan line, and user docs). A cap
-  requires managed tail-swap partitions directly after root so boot-time and
-  stage-two growth cannot consume it.
-
 ### Fixed
 - Remote bootstrap imports the config validator from freshly fetched source
   even when no profile is selected.
-- Root caps that `untouched` or `grow-only` cannot satisfy are refused before
-  the swap-fit check, with the cap named in the error.

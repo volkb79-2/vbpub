@@ -79,6 +79,83 @@ by the image-ID recheck rather than prevented. Never run the
 bootstrap through an editable checkout: uncommitted files and whichever source
 tree happens to be mounted are not release evidence.
 
+### Releasing cmru itself
+
+A CMRU release that follows a change to CMRU's own bootstrap check must use
+the new engine. The previously installed engine can reject the merged
+`docs/BOOTSTRAP-FROM-ZERO.md` because its embedded
+`_BOOTSTRAP_RUN_GATE_VERSION_SEQUENCE` is older than the merge head's. A
+`Bootstrap Run-Gate version` FAIL that says the documented derivation or literal
+version does not match is therefore an engine-too-old signal: rebuild the
+controller below from the merge head. Treat that differently from a real
+failure such as an unreadable bootstrap document or an unrelated release
+precondition.
+
+For a self-release, this recipe replaces the estate-venv destination in the
+paragraph above with a fresh venv. Start from the exact reviewed merge head
+(the commit at `origin/main`), and build the wheel there with the governed
+background slice:
+
+```bash
+git fetch origin main
+test "$(git rev-parse HEAD)" = "$(git rev-parse origin/main)"
+: "${CGROUP_PARENT_DEV_BACKGROUND:?set the governed background build slice}"
+export CGROUP_PARENT_DEV_BACKGROUND
+(cd cmru && ./build-initial-standalone.sh)
+. cmru/dist/bootstrap-artifacts.env
+```
+
+Install both exact artifacts into a fresh venv. The `#sha256=` fragments make
+pip record the wheel digests in `direct_url.json`; the CMRU URL is deliberately
+non-editable, which every `cmru release` controller now requires:
+
+```bash
+cmru_self_release_venv="$(mktemp -d)/venv"
+python3 -m venv "$cmru_self_release_venv"
+release_python="$cmru_self_release_venv/bin/python"
+"$release_python" -m pip install --no-index --no-deps --force-reinstall \
+  "cli-extended @ file://${BOOTSTRAP_CLI_EXTENDED_WHEEL}#sha256=${BOOTSTRAP_CLI_EXTENDED_WHEEL_SHA256}" \
+  "cmru @ file://${BOOTSTRAP_CMRU_WHEEL}#sha256=${BOOTSTRAP_CMRU_WHEEL_SHA256}"
+export PATH="$(dirname "$release_python"):$PATH"
+```
+
+Verify the launcher, version, installed module path, and recorded digests before
+running the release. `installed_release_controller_identity()` also re-hashes
+the installed files:
+
+```bash
+command -v cmru
+cmru --version
+"$release_python" -c \
+  'from cmru.release_controller import installed_release_controller_identity as i; import json; print(json.dumps(dict(i()), sort_keys=True))'
+printf 'controller_commit=%s cmru_sha256=%s cli_extended_sha256=%s\n' \
+  "$(git rev-parse HEAD)" "$BOOTSTRAP_CMRU_WHEEL_SHA256" \
+  "$BOOTSTRAP_CLI_EXTENDED_WHEEL_SHA256"
+```
+
+Record the verified commit and digest facts in the release record. The release
+command independently writes the controller identity to its launcher and
+transaction logs. While KI-79 holds, the release must stay on the 7.2 patch
+line, so pass an explicit next patch with `--set-version` rather than accepting
+an automatic plan outside that window. Run from the foreground; never start
+this release from a background Bash task. Disable resource profiling and trust
+only the separately printed exit status, never output piped through a
+formatter:
+
+```bash
+set +e
+RUN_GATE_PROFILE=off cmru release cmru --set-version 7.2.5
+release_rc=$?
+set -e
+printf 'EXIT=%s\n' "$release_rc"
+```
+
+If the release fails before publication, inspect the retained candidate named
+by the failure and discard it through the supported lifecycle command
+(`cmru abandon <candidate> --yes`) before starting a fresh attempt. Do not
+reuse a source-tree controller or an editable install, and do not infer success
+from log prose such as `PASS`; the separate `EXIT=` line is the outer status.
+
 ### Run-Gate compatibility bootstrap before CGProfile
 
 The Run-Gate wave's root `run-gate.root.toml` declares `image_env` on
@@ -115,7 +192,7 @@ Install the one wheel identified by that output into the estate venv, verify
 image ID for the CGProfile release. Record the source commit, wheel SHA-256,
 and image ID in the release log. The image ID makes Run-Gate's lane selection
 independent of later movement of the temporary tag. Release CGProfile with
-`cmru release cgroup-profiler --set-version 1.0.0`, then release Run-Gate as its
+`cmru release cgprofile --set-version 1.0.0`, then release Run-Gate as its
 own project. Run-Gate's own CMRU release gate prepares and tests the exact wheel
 it will publish; after publication, use that public wheel and a newly built
 tester image for the CMRU release described above.
@@ -293,7 +370,7 @@ Every changed project releases **one after another** — its own prepare, gate,
 tag, build, publish, and promote all finish before the next project's cycle
 begins. This is what lets a later project resolve an earlier project's
 brand-new release within the *same* `cmru release` run (an OCI image project
-like `modern-debian-tools-python-debug` picking up a wheel project's
+like `mdt-cockpit` picking up a wheel project's
 just-published version, for example) instead of always trailing one run behind.
 
 ```text
@@ -507,6 +584,18 @@ in flight on the estate. `cleanup` takes no release lock (KI-101), and a release
 its tag before the publish step creates the Release, so `--policy` would select that
 brand-new tag as a tag without a Release.
 
+An early failure can happen before the release scope sidecar is written. In that
+state `cmru abandon` must refuse because it cannot classify the candidate's tag
+namespace or publisher policy; `--yes` does not supply that missing evidence.
+When scope is recorded, use `cmru abandon --dry-run` and its reviewed plan; it
+removes the origin candidate branch when the transaction records that it pushed
+one. For the narrowly scoped pre-scope case, use the [manual cleanup checks and
+recipe](CONSUMERS.md#recovering-candidates-without-scope-metadata) only when the
+release log confirms no tag, build, or publisher started, the registered
+candidate path is under the owning checkout's `.worktrees/cmru-release-*`, its
+checked-out branch matches the supplied branch, the tree is clean, and the exact
+origin candidate branch and attempt tag queries both succeed with no output.
+
 ### Retiring an origin-only candidate (KI-35)
 
 A candidate branch can outlive its worktree: the transaction succeeded (or was removed with
@@ -554,16 +643,18 @@ A failed feature-source (`--from-worktree`) candidate is abandonable again (KI-8
 source record is compared with the transaction's recorded base commit, not with the
 worktree's current HEAD, which moves with the first prepare commit.
 
-### Worked example: releasing ciu, nyxloom, and modern-debian-tools-python-debug together
+### Worked example: releasing ciu, nyxloom, and mdt-cockpit together
+
+The former image project retired on 2026-11-05; this example uses its successor.
 
 Suppose only these three have real changes this run (`project_order` puts
 `ciu` and `nyxloom` — both wheel projects — ahead of the OCI image project
-`modern-debian-tools-python-debug`, which resolves their wheels at build time).
+`mdt-cockpit`, which resolves their wheels at build time).
 
 **Happy path**
 
 ```
-[INFO] Release plan: 3/7 project(s) changed — releasing in order: ciu, nyxloom, modern-debian-tools-python-debug
+[INFO] Release plan: 3/7 project(s) changed — releasing in order: ciu, nyxloom, mdt-cockpit
 [INFO] Unchanged, skipping: cmru (no commits under cmru/ since cmru-v2.0.0 @ 1a2b3c4d)
 [INFO] Unchanged, skipping: pwmcp (no commits under pwmcp/ since pwmcp-v1.4.2 @ 2b3c4d5e)
 [INFO] Unchanged, skipping: tls-edge (no commits under tls-edge/ since tls-edge-v0.3.1 @ 3c4d5e6f)
@@ -584,20 +675,20 @@ Suppose only these three have real changes this run (`project_order` puts
 [INFO] Building + publishing nyxloom (nyxloom-v0.2.0)   # wheel + 2 OCI images published
 [INFO] nyxloom: promoted release candidate to origin/main  # exact <sha B>
 
-=== modern-debian-tools-python-debug: releasing ===
-[INFO] modern-debian-tools-python-debug: preparing release inputs   # build-push.py --build:
+=== mdt-cockpit: releasing ===
+[INFO] mdt-cockpit: preparing release inputs   # build-push.py --build:
                                                                      #   resolves ciu-v4.9.0 / nyxloom-v0.2.0
                                                                      #   LIVE — they're already published
-[INFO] modern-debian-tools-python-debug: committed prepared release inputs   # package-manifests-versioned/ diff
-[INFO] modern-debian-tools-python-debug: running required release gate
-[INFO] Building + pushing modern-debian-tools-python-debug (oci-image — registry, no tag)   # image pushed to ghcr
-[INFO] modern-debian-tools-python-debug: promoted release candidate to origin/main  # exact <sha C>
+[INFO] mdt-cockpit: committed prepared release inputs   # package-manifests-versioned/ diff
+[INFO] mdt-cockpit: running required release gate
+[INFO] Building + pushing mdt-cockpit (oci-image — registry, no tag)   # image pushed to ghcr
+[INFO] mdt-cockpit: promoted release candidate to origin/main  # exact <sha C>
 
-[INFO] Released: ciu (ciu-v4.9.0), nyxloom (nyxloom-v0.2.0), modern-debian-tools-python-debug (image)
+[INFO] Released: ciu (ciu-v4.9.0), nyxloom (nyxloom-v0.2.0), mdt-cockpit (image)
 ```
 
 End state: `origin/main` is at `<sha C>`; `ciu-v4.9.0` and `nyxloom-v0.2.0` are
-real GitHub Releases with wheels attached; the mdt image on ghcr was built
+real GitHub Releases with wheels attached; the mdt-cockpit image on GHCR was built
 against those exact wheel versions. The `cmru-release-<YYYYMMDD_HHMMSS>-<scope>-<workspace-id>`
 branch/worktree and its origin candidate branch are removed; your local `main` is synced to `<sha C>`.
 That removal is real here because this run actually pushed the backup once at least one
@@ -629,13 +720,13 @@ nyxloom and mdt are attempted again.
 If `origin/main` merely advanced during the gate without touching the project's paths,
 promotion merges it into the candidate and succeeds (REL-04). The case below is the one that
 stops: the concurrent update touched the project's own paths (or conflicted, or kept moving).
-mdt's `prepare` succeeds, its image is built and pushed, but the final candidate
+mdt-cockpit's `prepare` succeeds, its image is built and pushed, but the final candidate
 promotion stops:
 
 ```
-=== modern-debian-tools-python-debug: releasing ===
-[INFO] modern-debian-tools-python-debug: committed prepared release inputs
-[INFO] Building + pushing modern-debian-tools-python-debug (oci-image — registry, no tag)
+=== mdt-cockpit: releasing ===
+[INFO] mdt-cockpit: committed prepared release inputs
+[INFO] Building + pushing mdt-cockpit (oci-image — registry, no tag)
 [INFO] ... ghcr push succeeded ...
 [ERROR] release candidate was not promoted to origin/main; the candidate branch was retained
 [ERROR] Release transaction failed; retained .../cmru-release-20260818_195012-all-abc123 on branch

@@ -20,7 +20,7 @@ def test_clean_warns_on_failed_container_remove_skips_missing_stack_and_degrades
 
     discovery_calls = 0
 
-    def matching(_config, *, all_states=False):
+    def matching(_config, *, all_states=False, **_ownership):
         nonlocal discovery_calls
         assert all_states is True
         discovery_calls += 1
@@ -33,7 +33,14 @@ def test_clean_warns_on_failed_container_remove_skips_missing_stack_and_degrades
     monkeypatch.setattr(
         deploy.procutil,
         "docker",
-        lambda cmd, **_kwargs: (docker_calls.append(cmd) or SimpleNamespace(returncode=1, stderr="busy")),
+        lambda cmd, **_kwargs: (
+            docker_calls.append(cmd)
+            or (
+                SimpleNamespace(returncode=0, stdout="", stderr="")
+                if cmd[:2] == ["network", "ls"]  # CIU-171 tagged-network sweep
+                else SimpleNamespace(returncode=1, stderr="busy")
+            )
+        ),
     )
     monkeypatch.setattr(deploy, "render_selected_stacks", lambda *_args, **_kw: {})
     monkeypatch.setattr(deploy, "_remove_project_volumes", lambda _config=None, **_kw: [])
@@ -47,7 +54,8 @@ def test_clean_warns_on_failed_container_remove_skips_missing_stack_and_degrades
         tmp_path, _profile(), [{"path": "apps/missing", "service": {}}], ignore_errors=False
     ) == 0
 
-    assert docker_calls == [["rm", "-f", "project-prod-api"]]
+    assert docker_calls[0] == ["rm", "-f", "project-prod-api"]
+    assert all(call[:2] == ["network", "ls"] for call in docker_calls[1:])
     output = capsys.readouterr().out
     assert "Removing 1 container(s): project-prod-api" in output
     assert "docker rm failed: busy" in output

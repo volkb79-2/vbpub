@@ -338,6 +338,67 @@ def _extract_guard(args: Any) -> None:
     message = cli._validate_render_and_follow_flags(args)
     if message is not None:
         raise CliFailure(message, exit_code=2, show_help=True)
+    if getattr(args, "stall_check", False):
+        if getattr(args, "format", None) not in (None, "codex", "codex-exec"):
+            raise CliFailure(
+                "--stall-check reads Codex runs only; use --format codex or codex-exec",
+                exit_code=2,
+                show_help=True,
+            )
+        ignored = (
+            "opencode_session", "epochs", "since", "since_file", "until",
+            "max_compactions", "max_lifecycle_markers", "max_time_minutes",
+            "follow", "interval", "bell", "on_attention", "notify_project",
+            "attention_min_chars", "profile", "answer_length", "max_checkpoints",
+            "checkpoints", "max_words", "budget_tokens", "include_thinking", "show_api_errors",
+            "show_compaction_content", "tool_calls", "tool_errors",
+            "agent_comms", "agent_launch_pattern",
+            "show_tool_calls", "show_tool_call_intent", "prose_only", "no_prose",
+            "strip_stale_wakeups", "redact_pattern", "strip_cd_prefix",
+            "no_strip_cd_prefix", "path_aliases", "edit_calls", "read_calls",
+            "effect_calls", "timestamps", "timestamp_gap_minutes", "blank_lines",
+            "insert_blank_lines", "gap_marker", "min_gap_records",
+            "show_gap_source", "show_timestamps", "timestamp_format",
+            "extract_metadata", "ledger", "effect_pattern",
+            "no_default_effect_patterns", "stop_state", "no_ledger",
+            "no_stop_state", "preset", "successor_brief", "order",
+            "brief_max_chars", "task", "task_file", "jsonl",
+            "render_markdown", "highlight", "color",
+        )
+        for attr in ignored:
+            value = getattr(args, attr, None)
+            if value not in (None, False):
+                flag = "--" + attr.replace("_", "-")
+                raise CliFailure(
+                    f"--stall-check is a read-only report check and cannot be combined with {flag}",
+                    exit_code=2,
+                    show_help=True,
+                )
+        if getattr(args, "expect_file", None) is None and (
+            getattr(args, "report_min_bytes", None) is not None
+            or getattr(args, "report_max_pending_markers", None) is not None
+        ):
+            raise CliFailure(
+                "--report-min-bytes/--report-max-pending-markers need --expect-file",
+                exit_code=2,
+                show_help=True,
+            )
+        if (getattr(args, "report_min_bytes", None) or 0) < 0:
+            raise CliFailure("--report-min-bytes must be non-negative",
+                             exit_code=2, show_help=True)
+        if (getattr(args, "report_max_pending_markers", None) or 0) < 0:
+            raise CliFailure("--report-max-pending-markers must be non-negative",
+                             exit_code=2, show_help=True)
+    if not getattr(args, "stall_check", False) and (
+        getattr(args, "expect_file", None) is not None
+        or getattr(args, "report_min_bytes", None) is not None
+        or getattr(args, "report_max_pending_markers", None) is not None
+    ):
+        raise CliFailure(
+            "--expect-file/--report-min-bytes/--report-max-pending-markers need --stall-check",
+            exit_code=2,
+            show_help=True,
+        )
     if getattr(args, "since", None) and getattr(args, "since_file", None):
         raise CliFailure(
             "--since and --since-file are mutually exclusive",
@@ -367,6 +428,28 @@ def _extract_guard(args: Any) -> None:
                          f"with --preset {args.preset}", exit_code=2, show_help=True)
     pname = presets_mod.preset_name(args)
     eff = lambda attr, default=None: presets_mod.effective(args, attr, default)  # noqa: E731
+    budget_tokens = eff("budget_tokens")
+    if getattr(args, "budget_tokens", None) is not None and pname != "readback":
+        raise CliFailure(
+            "--budget-tokens is the primary control of --preset readback",
+            exit_code=2,
+            show_help=True,
+        )
+    if budget_tokens is not None and budget_tokens < 1:
+        raise CliFailure("--budget-tokens must be positive", exit_code=2, show_help=True)
+    if pname == "readback" and getattr(args, "max_words", None) is not None:
+        raise CliFailure(
+            "--preset readback uses --budget-tokens as its primary control; "
+            "--max-words belongs to the other profiles",
+            exit_code=2,
+            show_help=True,
+        )
+    if getattr(args, "agent_launch_pattern", None) and eff("agent_comms", "off") == "off":
+        raise CliFailure(
+            "--agent-launch-pattern needs --agent-comms summary or full",
+            exit_code=2,
+            show_help=True,
+        )
     # `successor` here means "one finished document with the whole-session
     # ledger"; the fixed-span presets (successor, review, ledger) all are.
     successor = brief or pname == "successor"
@@ -807,13 +890,19 @@ With --follow, Nyxloom prints a one-shot prefix and then reads only appended pay
             ),
             _opt(
                 "--format", "Session source format", group=_G_SOURCE,
-                choices=("claude-code", "codex", "opencode", "reasonix"), default=None,
+                choices=("claude-code", "codex", "codex-exec", "opencode", "reasonix"),
+                default=None,
             ),
             _opt(
                 "--epochs", "Select epochs: N, A:B, or all",
                 group=_G_SOURCE, default=None,
             ),
-            _opt("--since", "Start after this source marker", group=_G_SOURCE, default=None),
+            _opt(
+                "--since",
+                "Start after this source marker, strictly after an ISO-8601 timestamp "
+                "with offset, or at a relative duration such as 5h or 90m",
+                group=_G_SOURCE, default=None,
+            ),
             _opt(
                 "--since-file", "Read the last marker from a prior extract",
                 group=_G_SOURCE, default=None,
@@ -844,6 +933,24 @@ With --follow, Nyxloom prints a one-shot prefix and then reads only appended pay
             _opt(
                 "--max-words", "Maximum output words",
                 group=_G_CONTENT, type=int, default=None,
+            ),
+            _opt(
+                "--budget-tokens",
+                "Readback's primary limit: estimated rendered characters divided by four; "
+                "requires --preset readback (whose default is 50000)",
+                group=_G_CONTENT, type=int, default=None,
+            ),
+            _opt(
+                "--agent-comms",
+                "Include agent communication in extract events: off (default), summary, "
+                "or full (Claude Code Agent/Task/SendMessage and task notifications)",
+                group=_G_CONTENT, choices=("off", "summary", "full"), default=None,
+            ),
+            _opt(
+                "--agent-launch-pattern",
+                "Bash launcher whose run output is associated as agent communication; "
+                "repeatable; defaults to codex-impl.sh and opencode-impl.sh",
+                group=_G_CONTENT, action="append", default=None,
             ),
             _opt("--include-thinking", "Include model thinking", group=_G_CONTENT, action="store_true"),
             _opt("--show-api-errors", "Show API error records", group=_G_CONTENT, action="store_true"),
@@ -985,8 +1092,29 @@ With --follow, Nyxloom prints a one-shot prefix and then reads only appended pay
             _opt(
                 "--stop-state",
                 "Append a Stop state section: cause, last assistant text, in-flight call "
-                "(Claude Code)",
+                "(Claude Code, Codex rollouts, and codex-exec streams)",
                 group=_G_DERIVED, action="store_true",
+            ),
+            _opt(
+                "--stall-check",
+                "Emit only a mechanical Codex stall verdict: ok, intent-only-ending, "
+                "tool-call-as-text, empty-run, or ended-mid-wait",
+                group=_G_DERIVED, action="store_true",
+            ),
+            _opt(
+                "--expect-file",
+                "With --stall-check: also require this delivery report to exist and not be a skeleton",
+                group=_G_DERIVED, metavar="PATH", default=None,
+            ),
+            _opt(
+                "--report-min-bytes",
+                "With --expect-file: minimum report size (default 1500 bytes)",
+                group=_G_DERIVED, type=int, default=None,
+            ),
+            _opt(
+                "--report-max-pending-markers",
+                "With --expect-file: maximum pending/skeleton markers (default 3)",
+                group=_G_DERIVED, type=int, default=None,
             ),
             _opt(
                 "--no-ledger", "Turn off the ledger a preset enables",

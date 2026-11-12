@@ -59,6 +59,8 @@ changelog = "CHANGES.md"
 commit_generated = ["CHANGES.md"]
 artifact_dirs = ["dist"]
 
+@PREPARE@
+
 [steps.run-tests]
 quiet = true
 commands = [ { label = "gate", argv = ["sh", "-c", '[ -z "$GATE_HOOK" ] || sh "$GATE_HOOK"'], cwd = "." } ]
@@ -85,7 +87,9 @@ def _run(*args, cwd, env=None, check=True):
 class _Env:
     """A seeded bare origin, a caller clone and the fake-publisher knobs."""
 
-    def __init__(self, root: Path, strategy: str = "scm") -> None:
+    def __init__(
+        self, root: Path, strategy: str = "scm", *, prepare_version: bool = True,
+    ) -> None:
         self.root = root
         self.origin = root / "origin.git"
         self.repo = root / "repo"
@@ -131,6 +135,8 @@ class _Env:
             "PUBLISHED_COMMIT": str(self.published_commit),
             "FAIL_BUILD": str(self.fail_build),
             "FAIL_PUSH": str(self.fail_push),
+            "EXTERNAL_VERSION": "0.1.0",
+            "PREPARE_MARK": str(root / "prepare-mark"),
             "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
             "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t",
             "GIT_CONFIG_GLOBAL": os.devnull,
@@ -140,8 +146,20 @@ class _Env:
         seed.mkdir()
         self.git("init", "-q", "-b", "main", cwd=seed)
         (seed / "demo").mkdir()
+        prepare_step = ""
+        if strategy.startswith("external:"):
+            write_version = (
+                'echo "VERSION=$EXTERNAL_VERSION" > cmru.vars; '
+                if prepare_version else ""
+            )
+            command = write_version + 'echo prepared >> "$PREPARE_MARK"'
+            prepare_step = (
+                "[steps.prepare]\n"
+                "quiet = true\n"
+                f"commands = [ {{ label = \"prepare external version\", argv = [\"sh\", \"-c\", '{command}'], cwd = \".\" }} ]\n"
+            )
         (seed / "demo" / "cmru.toml").write_text(
-            _CMRU_TOML.replace("@STRATEGY@", strategy)
+            _CMRU_TOML.replace("@STRATEGY@", strategy).replace("@PREPARE@", prepare_step)
         )
         (seed / "demo" / "CHANGES.md").write_text(
             "# Changes\n\n## [Unreleased]\n\n- Preserve this migration note.\n\n"
@@ -150,7 +168,7 @@ class _Env:
         (seed / "demo" / "a.txt").write_text("hi\n")
         (seed / "README.md").write_text("root readme\n")
         (seed / ".gitignore").write_text(
-            "cmru.release.log\ndist/\n.worktrees/\nlogs/\nevidence/\nartifacts/\n"
+            "cmru.release.log\ndist/\n.worktrees/\nlogs/\nevidence/\nartifacts/\ncmru.vars\n"
         )
         self.git("add", "-A", cwd=seed)
         self.git("commit", "-q", "-m", "feat: init", cwd=seed)
@@ -185,8 +203,11 @@ git push -q origin HEAD:refs/heads/main
 """)
 
     def release(self, *args: str, cwd: Path | None = None) -> subprocess.CompletedProcess:
+        return self.command("release", *args, cwd=cwd)
+
+    def command(self, *args: str, cwd: Path | None = None) -> subprocess.CompletedProcess:
         result = subprocess.run(
-            ["cmru", "release", *args],
+            ["cmru", *args],
             cwd=cwd or self.project, env=self.env, capture_output=True, text=True,
             timeout=300,
         )
@@ -283,6 +304,75 @@ def test_rel15_fresh_release_end_to_end(e2e):
     assert "## [0.1.0]" in tagged_changelog
     assert "Preserve this migration note." in tagged_changelog
     assert "## [Unreleased]\n\n<!-- cmru: release history -->" in tagged_changelog
+
+
+def _external_env(root: Path, monkeypatch, *, prepare_version: bool = True) -> _Env:
+    e2e = _Env(root, strategy="external:VERSION", prepare_version=prepare_version)
+    for key in (
+        "GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL", "GIT_COMMITTER_NAME",
+        "GIT_COMMITTER_EMAIL", "GIT_CONFIG_GLOBAL",
+    ):
+        monkeypatch.setenv(key, e2e.env[key])
+    return e2e
+
+
+def test_ki142_real_external_release_prepares_before_tag_preflight_and_completes(
+    tmp_path, monkeypatch,
+):
+    """A real isolated release reads only the external version its prepare emitted."""
+    e2e = _external_env(tmp_path, monkeypatch)
+
+    result = e2e.release()
+
+    assert result.returncode == 0, result.log
+    assert e2e.env["PREPARE_MARK"]
+    assert Path(e2e.env["PREPARE_MARK"]).read_text().splitlines() == ["prepared"]
+    assert f"refs/tags/{_TAG}" in e2e.origin_tags()
+    assert e2e.published() == ["pub"]
+    assert e2e.origin_heads() == ["refs/heads/main"]
+
+
+def test_ki142_external_release_still_refuses_an_existing_target_before_build_or_publish(
+    tmp_path, monkeypatch,
+):
+    e2e = _external_env(tmp_path, monkeypatch)
+    gate_ran = tmp_path / "gate-ran"
+    e2e.hook("gate-marker", f'echo gated >> "{gate_ran}"')
+    e2e.git("tag", _TAG)
+    e2e.git("push", "-q", "origin", f"refs/tags/{_TAG}")
+    (e2e.project / "a.txt").write_text("new project change\n")
+    e2e.git("commit", "-q", "-am", "feat: new release input")
+    e2e.git("push", "-q", "origin", "HEAD:refs/heads/main")
+
+    result = e2e.release()
+
+    assert result.returncode == exit_codes.REFUSED, result.log
+    assert "demo-v0.1.0 already exists" in result.log
+    assert Path(e2e.env["PREPARE_MARK"]).read_text().splitlines() == ["prepared"]
+    assert not gate_ran.exists()
+    assert e2e.published() == []
+    assert e2e.origin_heads() == ["refs/heads/main"]
+    assert not (e2e.project / "dist").exists()
+
+
+def test_ki143_pre_scope_external_failure_remains_refused_by_abandon(
+    tmp_path, monkeypatch,
+):
+    """Missing scope cannot prove publication state, even for a clean local candidate."""
+    e2e = _external_env(tmp_path, monkeypatch, prepare_version=False)
+
+    result = e2e.release()
+
+    assert result.returncode != 0
+    assert "external version 'VERSION' requires" in result.log
+    assert Path(e2e.env["PREPARE_MARK"]).read_text().splitlines() == ["prepared"]
+    candidate = e2e.retained_workspace()
+    assert e2e.out("status", "--porcelain=v1", cwd=candidate) == ""
+    assert e2e.origin_heads() == ["refs/heads/main"]
+    abandon = e2e.command("abandon", str(candidate), "--yes")
+    assert abandon.returncode == exit_codes.REFUSED, abandon.log
+    assert "release scope metadata is missing, malformed, or ambiguous" in abandon.log
+    assert candidate.is_dir()
 
 
 def test_feature_worktree_release_keeps_both_main_tips_unchanged_and_retains_a_pr_candidate(e2e):

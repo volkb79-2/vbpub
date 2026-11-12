@@ -29,8 +29,10 @@ this project's most expensive recurring defect (A-124, A-131).
 from __future__ import annotations
 
 import re
+import sys
 import tomllib
 from pathlib import Path
+from types import SimpleNamespace
 
 from conftest import PROJECT_ROOT
 from typing import NamedTuple
@@ -67,6 +69,9 @@ README = REPO_ROOT / "README.md"
 CONSUMERS = REPO_ROOT / "docs" / "CONSUMERS.md"
 DESIGN_GUIDE = REPO_ROOT / "docs" / "DESIGN-GUIDE.md"
 DOCS = (README, CONSUMERS, DESIGN_GUIDE)
+RUST_METHODOLOGY = REPO_ROOT / "docs" / "RUST-METHODOLOGY.md"
+RUST_DESIGN = REPO_ROOT / "docs" / "DESIGN-RUST-ADAPTER.md"
+RUST_SPIKES = REPO_ROOT / "docs" / "RUST-R0-SPIKES.md"
 ASSAY_CLI_SKILL = REPO_ROOT / ".claude" / "skills" / "assay-cli" / "SKILL.md"
 
 _LANGUAGE_DISPLAY_NAMES = {
@@ -152,9 +157,18 @@ def _assert_current_verdict_schema_is_documented(changes: str, version: int) -> 
     unreleased = next((body for name, body in sections if name == "Unreleased"), "")
     latest_release = next((body for name, body in sections if name != "Unreleased"), "")
     note = f"verdict schema v{version}"
-    assert note in unreleased or note in latest_release, (
-        f"{note} is missing from [Unreleased] and the latest versioned section"
+    current_sections = unreleased + latest_release
+    if note in current_sections:
+        return
+    # A release that does not change the verdict schema carries no schema note of its own: the
+    # note then lives in the (older) section that introduced the schema. What must never pass is
+    # a current section that talks about a DIFFERENT schema version (a stale entry masking a
+    # real schema change), or no section at all that records the current schema.
+    mentioned = {int(n) for n in re.findall(r"verdict schema v(\d+)", current_sections)}
+    assert mentioned <= {version}, (
+        f"[Unreleased]/latest section mention verdict schema {sorted(mentioned)} but the current schema is v{version}"
     )
+    assert note in changes, f"{note} is not recorded in any CHANGES section"
 
 
 def test_consumers_covers_the_latest_two_verdict_schema_cuts():
@@ -174,6 +188,19 @@ def test_consumers_covers_the_latest_two_verdict_schema_cuts():
     )
 
 
+def test_unreleased_history_structure_passes_cmru_checker():
+    cmru_source = REPO_ROOT.parent / "cmru" / "src"
+    sys.path.insert(0, str(cmru_source))
+    from cmru.changelog import _validate_history_structure
+
+    path = REPO_ROOT / "CHANGES.md"
+    markers, span = _validate_history_structure(
+        SimpleNamespace(name="assay"), path, path.read_text(encoding="utf-8")
+    )
+    assert len(markers) == 1
+    assert span is not None
+
+
 def test_readme_documents_current_native_r2_parallel_worker_contract():
     text = re.sub(r"\s+", " ", README.read_text(encoding="utf-8"))
 
@@ -184,13 +211,30 @@ def test_readme_documents_current_native_r2_parallel_worker_contract():
     assert "Existing v2 lane files still load" not in text
 
 
-def test_current_verdict_schema_check_ignores_historical_release_notes():
+def test_current_verdict_schema_check_rejects_a_stale_note_in_the_latest_section():
     changes = (
         "## [Unreleased]\n\n"
-        "## [9.0.0] - 2026-10-10\nNo current schema note.\n\n"
+        "## [9.0.0] - 2026-10-10\nverdict schema v16\n\n"
         "## [8.0.0] - 2026-10-07\nverdict schema v15\n"
     )
-    with pytest.raises(AssertionError, match="latest versioned section"):
+    with pytest.raises(AssertionError, match="mention verdict schema"):
+        _assert_current_verdict_schema_is_documented(changes, 15)
+
+
+def test_current_verdict_schema_check_accepts_a_release_that_does_not_change_the_schema():
+    # A later release without a schema change carries no schema note: the note lives in the section
+    # that introduced the schema (this failed every release after the cut before).
+    changes = (
+        "## [Unreleased]\n\n"
+        "## [9.1.0] - 2026-10-20\nNo schema change here.\n\n"
+        "## [9.0.0] - 2026-10-10\nverdict schema v15\n"
+    )
+    _assert_current_verdict_schema_is_documented(changes, 15)
+
+
+def test_current_verdict_schema_check_requires_the_current_schema_to_be_recorded_somewhere():
+    changes = "## [Unreleased]\n\n## [9.0.0] - 2026-10-10\nNo schema note at all.\n"
+    with pytest.raises(AssertionError, match="not recorded in any CHANGES section"):
         _assert_current_verdict_schema_is_documented(changes, 15)
 
 
@@ -275,6 +319,77 @@ def test_sql_operator_effects_are_explained_in_all_three_user_documents():
         assert "needs an ad-hoc-construct mode" not in text, (
             f"{path.relative_to(REPO_ROOT)} still describes the old B132 harness gap"
         )
+
+
+def test_rust_plan_and_spike_docs_match_the_methodology_contract():
+    methodology = re.sub(
+        r"\s+", " ", RUST_METHODOLOGY.read_text(encoding="utf-8")
+    ).casefold()
+    design = re.sub(r"\s+", " ", RUST_DESIGN.read_text(encoding="utf-8")).casefold()
+    spikes = re.sub(r"\s+", " ", RUST_SPIKES.read_text(encoding="utf-8")).casefold()
+
+    assert (
+        "the t1 gate is sequence [`lint`, `assay-r1`]. at t2, `gate` is sequence "
+        "[`lint`, `assay-r3`, `conformance`], without `assay-r1`; assay's release-time "
+        "whole-project r1 floor is enforced by `assay-r3` (d1). `assay-r1` remains a t1 lane only."
+    ) in methodology
+    assert (
+        "assay declares one `mechanism` per lane. t2 `assay-r3` uses the test-break "
+        "(import-break) canary; the uncovered-line probe is a separate t3 lane (d2)."
+    ) in methodology
+    assert (
+        "t1 is the sequence [`lint`, `assay-r1`]. t2 `gate` is the sequence "
+        "[`lint`, `assay-r3`, `conformance`], without `assay-r1`; the release-time "
+        "whole-project r1 floor is enforced by `assay-r3`, and `assay-r1` remains t1 only."
+    ) in design
+    assert (
+        "t2 `assay-r3` uses the test-break (import-break) canary; the uncovered-line "
+        "probe is a separate t3 lane."
+    ) in design
+    assert "`gate-full` is that t2 sequence and excludes `assay-r1`." in design
+    assert (
+        "t1 [`lint`, `assay-r1`], t2 [`lint`, `assay-r3`, `conformance`] without `assay-r1`"
+        in spikes
+    )
+    assert "a separate t3 lane for the uncovered-line probe" in spikes
+    assert (
+        "t2 `assay-r3` uses one test-break/import-break receipt-writing canary mechanism"
+        in spikes
+    )
+
+    assert (
+        "the image must bake a manifest of every fetched `.crate` archive and run its "
+        "precheck before every cargo lane command."
+    ) in design
+    assert (
+        "the baked precheck must refuse an altered archive with both hashes and name "
+        "a missing archive"
+    ) in design
+    assert "invoke the precheck before every cargo lane command:" in spikes
+    assert "every rust cargo lane must run the manifest precheck before cargo" in spikes
+
+    branch_decision = (
+        "if the artifact has no `brda:` records and contains only zero-valued "
+        "`brf:`/`brh:` markers, report branch capability as unavailable "
+        "(`branches = none`), not as measured empty branch coverage."
+    )
+    assert branch_decision in design
+    assert branch_decision in spikes
+
+    assert (
+        "run-gate currently has no network key. r-1 adds the lane key `network = \"none\"`"
+        in design
+    )
+    assert (
+        "environment selection is explicit, but current run-gate cannot enforce offline "
+        "container networking."
+    ) in spikes
+    assert "r-1 adds this **lane-level** setting to every rust cargo lane:" in spikes
+    assert (
+        '[lanes.assay-r1] environment = "tester-unified-rust" network = "none"'
+        in spikes
+    )
+    assert "for ephemeral lanes, run-gate must translate it to `--network=none`" in spikes
 
 
 def test_assay_cli_skill_capabilities_match_the_current_registry():
@@ -996,16 +1111,47 @@ def test_provisional_self_qualification_is_documented_across_the_public_docs():
         assert "self-qualification-provisional" in text, (
             f"{document.name} does not name the provisional qualification lane"
         )
-    consumer_text = CONSUMERS.read_text(encoding="utf-8")
+    # The waiver window has one source (WINDOW in the gate script); derive the
+    # documented spellings from it so the next extension cannot leave any public
+    # document stale.
+    window = re.search(
+        r"^WINDOW = \(\((\d+), (\d+), (\d+)\), \((\d+), (\d+), (\d+)\)\)",
+        (REPO_ROOT / "tools" / "self-qualification-gate.sh").read_text(encoding="utf-8"),
+        re.MULTILINE,
+    )
+    assert window is not None, "WINDOW definition not found in self-qualification-gate.sh"
+    low = ".".join(window.group(1, 2, 3))
+    high = ".".join(window.group(4, 5, 6))
+    normalized = {
+        document: " ".join(document.read_text(encoding="utf-8").split())
+        for document in DOCS
+    }
+    window_texts = {
+        README: f"assay >={low}, <{high}",
+        CONSUMERS: f"{low} <= version < {high}",
+        DESIGN_GUIDE: f"{low} <= version < {high}",
+    }
+    missing = [
+        f"{document.name}: {window_text}"
+        for document, window_text in window_texts.items()
+        if window_text not in normalized[document]
+    ]
+    for document in (CONSUMERS, DESIGN_GUIDE):
+        upper_bound = f"below {high}"
+        if upper_bound not in normalized[document]:
+            missing.append(f"{document.name}: {upper_bound}")
+    assert missing == [], f"public docs omit the derived R2 waiver window: {missing}"
+
     for required in (
         "R0, R1 over all of `src/assay`",
         "the R3 canary",
         ".assay/mutation-postponed-assay.json",
         '"result": "provisional"',
-        "10.0.0 <= version < 10.2.0",
         "CMRU's isolated `run-tests` step",
     ):
-        assert required in consumer_text, f"CONSUMERS.md omits provisional lane fact {required!r}"
+        assert required in normalized[CONSUMERS], (
+            f"CONSUMERS.md omits provisional lane fact {required!r}"
+        )
     expected_anchor = "provisional-release-qualification-b169-b170"
     assert expected_anchor in _design_guide_anchors()
     assert expected_anchor in _document_anchors(CONSUMERS)

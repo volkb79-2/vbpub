@@ -129,7 +129,7 @@ def test_r1_pass_exports_a_valid_fragment_with_the_documented_fields(world):
     assert fragment["verdict_sha256"] == hashlib.sha256(verdict.read_bytes()).hexdigest()
     assert fragment["judge"] == {"version": "12.0.0", "artifact_sha256": "c" * 64,
                                  "judge_identity": rigor_export.JUDGE_IDENTITY_LABEL,
-                                 "verdict_schema": "urn:assay:schema:verdict:18"}
+                                 "verdict_schema": "urn:assay:schema:verdict:19"}
     # branches unavailable in this fixture: pct 0, floor 0 -- the fragment cannot express "unknown"
     assert fragment["coverage"] == {"line_pct": 100.0, "branch_pct": 0.0,
                                     "floor": {"line": 100.0, "branch": 0}, "excluded_lines": 0}
@@ -424,7 +424,8 @@ def test_an_archived_schema_is_reported_by_name(world):
 
 def test_a_newer_unknown_schema_is_an_ordinary_verification_failure(world):
     def future(document):
-        document["schema_version"] = 19
+        # One past the current verdict schema (v19 since B251).
+        document["schema_version"] = 20
 
     with pytest.raises(ValueError, match="invalid Assay verdict"):
         world.export(world.verdict("r1_pass", future))

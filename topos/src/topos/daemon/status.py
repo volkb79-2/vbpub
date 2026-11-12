@@ -1,12 +1,11 @@
-"""Daemon status report combining deployment preflight with protocol checks.
-
-This module provides a read-only DaemonStatusReport that operators can use
-to answer "is the daemon deployment usable from this account, and is it
-speaking the expected topos frame protocol?"
-"""
+"""Client-side socket and protocol status checks for ``topos daemon status``."""
 
 from __future__ import annotations
 
+import grp
+import stat
+import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -17,18 +16,28 @@ from topos.daemon.client import (
     DaemonProtocolError,
     DaemonResponseError,
 )
-from topos.daemon.deploy import (
-    DEFAULT_DAEMON_GROUP,
-    DEFAULT_DAEMON_SOCKET,
-    DaemonPreflightReport,
-    preflight_daemon_deployment,
-    preflight_report_to_jsonable,
-)
+from topos.service.config import DEFAULTS
+from topos.daemon.socket_path import resolve_observe_socket
+
+
+DEFAULT_DAEMON_GROUP = DEFAULTS.sockets.observe.group
+DEFAULT_SOCKET_MODE = DEFAULTS.sockets.observe.mode
+
+
+@dataclass(frozen=True)
+class SocketNodeStatus:
+    """Whether the mounted observe socket has the metadata doctor expects."""
+
+    ok: bool
+    message: str
+
+    def to_jsonable(self) -> dict[str, object]:
+        return {"ok": self.ok, "message": self.message}
 
 
 @dataclass(frozen=True)
 class ProtocolStatus:
-    """Result of the protocol current-frame check."""
+    """Result of the observe hello and current-frame protocol checks."""
 
     ok: bool
     message: str
@@ -36,107 +45,133 @@ class ProtocolStatus:
     frame_ts: float | None = None
     entity_count: int | None = None
 
-    def to_jsonable(self) -> dict:
-        d: dict = {
-            "ok": self.ok,
-            "message": self.message,
-        }
+    def to_jsonable(self) -> dict[str, object]:
+        result: dict[str, object] = {"ok": self.ok, "message": self.message}
         if self.schema_version is not None:
-            d["schema_version"] = self.schema_version
+            result["schema_version"] = self.schema_version
         if self.frame_ts is not None:
-            d["frame_ts"] = self.frame_ts
+            result["frame_ts"] = self.frame_ts
         if self.entity_count is not None:
-            d["entity_count"] = self.entity_count
-        return d
+            result["entity_count"] = self.entity_count
+        return result
 
 
 @dataclass(frozen=True)
 class DaemonStatusReport:
-    """Combined daemon deployment and protocol status."""
+    """Combined socket-node and protocol status for a client account."""
 
     socket_path: Path
-    group_name: str
-    preflight: DaemonPreflightReport | None
+    group_name: str | None  # required group, or None when any group is accepted
+    socket_node: SocketNodeStatus
     protocol: ProtocolStatus
 
     @property
     def ok(self) -> bool:
-        preflight_ok = self.preflight is not None and self.preflight.usable
-        return preflight_ok and self.protocol.ok
+        return self.socket_node.ok and self.protocol.ok
 
-    def to_jsonable(self) -> dict:
-        d: dict = {
+    def to_jsonable(self) -> dict[str, object]:
+        return {
             "ok": self.ok,
             "socket": str(self.socket_path),
             "group": self.group_name,
+            "socket_node": self.socket_node.to_jsonable(),
             "protocol": self.protocol.to_jsonable(),
         }
-        if self.preflight is not None:
-            d["preflight"] = preflight_report_to_jsonable(self.preflight)
-        return d
 
     def to_text(self) -> str:
         lines = [
             f"topos daemon status: {self.socket_path}",
-            f"Group: {self.group_name}",
+            f"Required group: {self.group_name or 'any'}",
             "",
-            "--- Preflight ---",
+            "--- Socket node ---",
+            f"  {'OK' if self.socket_node.ok else 'FAIL'}: {self.socket_node.message}",
+            "",
+            "--- Protocol ---",
+            f"  {'OK' if self.protocol.ok else 'FAIL'}: {self.protocol.message}",
         ]
-        if self.preflight is not None:
-            from topos.daemon.deploy import render_preflight_text
-
-            lines.append(render_preflight_text(self.preflight))
-        else:
-            lines.append("(preflight not run)")
-            lines.append("")
-
-        lines.append("")
-        lines.append("--- Protocol ---")
-        lines.append(f"  {self.protocol.message}")
         if self.protocol.schema_version is not None:
             lines.append(f"  schema version: {self.protocol.schema_version}")
         if self.protocol.frame_ts is not None:
             lines.append(f"  frame timestamp: {self.protocol.frame_ts}")
         if self.protocol.entity_count is not None:
             lines.append(f"  entities: {self.protocol.entity_count}")
-        lines.append("")
-        lines.append(f"Overall: {'OK' if self.ok else 'DEGRADED'}")
+        lines.extend(("", f"Overall: {'OK' if self.ok else 'DEGRADED'}"))
         return "\n".join(lines)
 
 
-def _check_protocol(socket_path: Path) -> ProtocolStatus:
-    """Run a read-only current-frame protocol check against the daemon socket.
+STALE_FRAME_INTERVALS = 3
 
-    Returns a ProtocolStatus — never raises. On failure the message includes
-    P31-style actionable guidance.
+
+def _group_label(gid: int) -> str:
+    try:
+        return grp.getgrgid(gid).gr_name
+    except KeyError:
+        return str(gid)
+
+
+def _check_socket_node(socket_path: Path, group_name: str | None) -> SocketNodeStatus:
+    """Check type, owner and mode; the group only when one is required.
+
+    A container usually cannot resolve the host's group names, and mdt hosts map
+    observe access to docker, so the group name is checked only on request.
     """
     try:
+        info = socket_path.lstat()
+    except OSError as exc:
+        return SocketNodeStatus(False, f"{socket_path}: {exc.strerror or type(exc).__name__}")
+    if not stat.S_ISSOCK(info.st_mode):
+        return SocketNodeStatus(False, f"{socket_path}: not a Unix socket")
+    mode = stat.S_IMODE(info.st_mode)
+    expected_mode = int(DEFAULT_SOCKET_MODE, 8)
+    group = _group_label(info.st_gid)
+    if info.st_uid != 0 or mode != expected_mode:
+        return SocketNodeStatus(
+            False,
+            f"{socket_path}: owner {info.st_uid} group {group} mode {mode:04o}, expected "
+            f"owner root mode {expected_mode:04o}",
+        )
+    if group_name is not None:
+        try:
+            expected_gid = grp.getgrnam(group_name).gr_gid
+        except KeyError:
+            return SocketNodeStatus(False, f"required group {group_name!r} does not exist here")
+        if info.st_gid != expected_gid:
+            return SocketNodeStatus(False, f"{socket_path}: group {group}, expected {group_name}")
+    return SocketNodeStatus(True, f"{socket_path} is a socket owned by root, group {group}, mode {mode:04o}")
+
+
+def _check_protocol(socket_path: Path, *, now: Callable[[], float] = time.time) -> ProtocolStatus:
+    """Run the same hello access probe as doctor, then fetch a current frame."""
+    try:
         client = DaemonClient(socket_path)
+        hello = client.request_hello()
         frame = client.current_frame()
     except DaemonConnectError as exc:
-        guidance = ""
-        if socket_path == DEFAULT_DAEMON_SOCKET:
-            guidance = " Try: topos daemon preflight. If not installed: topos daemon install-plan."
-        else:
-            guidance = f" Try: topos daemon preflight --socket {socket_path}."
-        return ProtocolStatus(
-            ok=False,
-            message=f"Cannot connect: {exc}{guidance}",
-        )
+        guidance = f" Check the mounted socket path {socket_path} and its observe-group access."
+        return ProtocolStatus(False, f"Cannot connect: {exc}{guidance}")
     except (DaemonProtocolError, DaemonResponseError) as exc:
         return ProtocolStatus(
-            ok=False,
-            message=f"Protocol error: {exc}. Check that the process at the socket is a compatible topos daemon and review daemon logs.",
+            False,
+            f"Protocol error: {exc}. Check that the process at the socket is a compatible topos daemon and review daemon logs.",
         )
     except DaemonClientError as exc:
-        return ProtocolStatus(
-            ok=False,
-            message=f"Daemon error: {exc}",
-        )
+        return ProtocolStatus(False, f"Daemon error: {exc}")
 
+    version = hello.identity.get("version", "unknown")
+    age_s = now() - frame.ts
+    if frame.interval_s > 0 and age_s > STALE_FRAME_INTERVALS * frame.interval_s:
+        return ProtocolStatus(
+            False,
+            f"Stale frame: newest frame is {age_s:.0f}s old "
+            f"(more than {STALE_FRAME_INTERVALS} sampling intervals of {frame.interval_s:g}s); "
+            "the collector may have stopped. Check the daemon logs.",
+            schema_version=frame.schema_version,
+            frame_ts=frame.ts,
+            entity_count=len(frame.entities),
+        )
     return ProtocolStatus(
-        ok=True,
-        message="Current frame retrieved successfully.",
+        True,
+        f"Hello from topos {version}; current frame retrieved successfully.",
         schema_version=frame.schema_version,
         frame_ts=frame.ts,
         entity_count=len(frame.entities),
@@ -144,34 +179,21 @@ def _check_protocol(socket_path: Path) -> ProtocolStatus:
 
 
 def build_daemon_status(
-    socket_path: Path = DEFAULT_DAEMON_SOCKET,
+    socket_path: Path | str | None = None,
     *,
-    group_name: str = DEFAULT_DAEMON_GROUP,
+    group_name: str | None = None,
 ) -> DaemonStatusReport:
-    """Build a combined daemon deployment and protocol status report.
-
-    The preflight check inspects filesystem metadata and group membership.
-    The protocol check attempts one current-frame request through the
-    existing P16 client protocol.
-
-    Both checks are read-only. No host state is modified.
-    """
-    preflight: DaemonPreflightReport | None = None
-    try:
-        preflight = preflight_daemon_deployment(
-            socket_path,
-            group_name=group_name,
-            connect_timeout_s=1.0,
-        )
-    except (OSError, RuntimeError, ValueError):
-        # Preflight may fail on stat or group lookups; report as None
-        pass
-
-    protocol = _check_protocol(socket_path)
-
+    """Read socket metadata and exercise the same hello used by service doctor."""
+    path = resolve_observe_socket(socket_path)
     return DaemonStatusReport(
-        socket_path=Path(socket_path),
+        socket_path=path,
         group_name=group_name,
-        preflight=preflight,
-        protocol=protocol,
+        socket_node=_check_socket_node(path, group_name),
+        protocol=_check_protocol(path),
     )
+
+
+__all__ = [
+    "DEFAULT_DAEMON_GROUP", "DaemonStatusReport", "ProtocolStatus",
+    "SocketNodeStatus", "build_daemon_status",
+]

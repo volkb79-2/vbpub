@@ -49,6 +49,8 @@ def _protected_disk_refault(entity_frame: EntityFrame, config: ToposConfig) -> R
     if rf_d is None or rf_d <= 0:
         return None
     band = config.threshold_band("rf_d_per_s", tier=entity_frame.entity.tier, warn=1.0, crit=20.0)
+    if rf_d < band.warn:
+        return None
     severity = "red" if rf_d >= band.crit else "warn"
     return RuleMatch(
         severity=severity,
@@ -99,7 +101,7 @@ def _memory_high_user_visible(entity_frame: EntityFrame, config: ToposConfig) ->
     if ram <= mem_high or psi_full <= 0:
         return None
     band = config.threshold_band("psi_full_avg10", tier=entity_frame.entity.tier, warn=1.0, crit=2.0)
-    severity = "red" if psi_full >= band.warn else "warn"
+    severity = "red" if psi_full >= band.crit else "warn"
     return RuleMatch(
         severity=severity,
         message=(

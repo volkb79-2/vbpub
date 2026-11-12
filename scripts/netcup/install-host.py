@@ -26,6 +26,7 @@ script handles getting/refreshing short-lived access tokens itself for every
 other mode - no further manual steps needed.
 """
 
+import hashlib
 import os
 import sys
 import json
@@ -446,6 +447,9 @@ INSTALLATION_CONFIG = {
 }
 
 DEFAULT_TARGET_CONFIG_NAME = "target-host.jsonc"
+NETCUP_DIR = Path(__file__).resolve().parent
+WORKTREE_ROOT = NETCUP_DIR.parents[1]
+DEFAULT_RUNTIME_DIR = NETCUP_DIR / "artifacts" / "install-host"
 
 def _load_runtime_settings() -> Dict[str, Any]:
     try:
@@ -463,6 +467,44 @@ def _positive_integer(value: str) -> int:
     if parsed <= 0:
         raise argparse.ArgumentTypeError("must be a positive integer")
     return parsed
+
+
+def _image_selector(value: str) -> str:
+    if value == "newest":
+        return value
+    try:
+        parsed = int(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("must be a positive image flavour ID or `newest`") from exc
+    if parsed <= 0:
+        raise argparse.ArgumentTypeError("must be a positive image flavour ID or `newest`")
+    return str(parsed)
+
+
+def _wizard_output_path(out_dir: Optional[str | Path], hostname: str) -> Path:
+    """Choose a per-host output below an explicit or repo-ignored directory."""
+    safe_host = re.sub(r"[^A-Za-z0-9.-]+", "-", hostname.strip().lower()).strip(".-")
+    if not safe_host:
+        safe_host = "unknown-host"
+    directory = Path(out_dir) if out_dir is not None else DEFAULT_RUNTIME_DIR
+    destination = directory / f"target-host.{safe_host}.jsonc"
+    if destination.parent.resolve() == WORKTREE_ROOT.resolve():
+        raise CliFailure("wizard output directory must not be the worktree root", exit_code=2)
+    return destination
+
+
+def _validate_wizard_config_output_path(output_path: str | Path) -> Path:
+    """Refuse explicit wizard payloads inside the source worktree."""
+    destination = Path(output_path).expanduser()
+    resolved = destination.resolve()
+    try:
+        resolved.relative_to(WORKTREE_ROOT.resolve())
+    except ValueError:
+        return destination
+    raise CliFailure(
+        "wizard --config output must be outside the worktree; use --out-dir for a per-host runtime payload",
+        exit_code=2,
+    )
 
 
 def _positive_finite(value: str) -> float:
@@ -500,7 +542,7 @@ def _option(
 
 def _workflow_options(*, target_picker: bool, monitor: bool):
     options = [
-        _option(("--config", "--payload"), "config to install or output file to write; --payload is a deprecated alias", group="INPUT AND OUTPUT", metavar="FILE", dest="config_path"),
+        _option(("--config", "--payload"), "install: config file to read; wizard: file the reviewed plan is written to; --payload is a deprecated alias", group="INPUT AND OUTPUT", metavar="FILE", dest="config_path"),
         _option(("--ssh-key-id",), "reuse an existing Netcup account key ID; repeat to select multiple keys", group="SSH ACCESS", metavar="ID", dest="ssh_key_ids", action="append", type=_positive_integer, default=None),
         _option(("--local-controller-key",), "retain or remove the local controller key after the declared completion marker", group="SSH ACCESS", choices=("remove", "retain"), default=None),
         _option(("--poll-interval",), "task-monitor polling interval in seconds (default: install-host.toml)", group="MONITORING", type=_positive_finite, default=None),
@@ -515,6 +557,8 @@ def _workflow_options(*, target_picker: bool, monitor: bool):
         options.extend(
             (
                 _option(("--server-id",), "explicit wizard target; otherwise use configured name or interactive server picker", group="TARGET SELECTION", metavar="ID", type=_positive_integer, default=None),
+                _option(("--image",), "Debian UEFI image flavour ID, or `newest`; required with --yes", group="TARGET SELECTION", metavar="ID|newest", type=_image_selector, default=None),
+                _option(("--out-dir",), "directory for per-host target-host.<hostname>.jsonc output (default: repo-ignored scripts/netcup/artifacts/install-host)", group="INPUT AND OUTPUT", metavar="DIR", default=None),
                 _option(("--custom-script-file",), "consume an opaque customScript command or producer JSON bundle", group="CUSTOMSCRIPT INPUT", metavar="FILE"),
                 _option(("--completion-marker",), "absolute remote completion path declared by the consumed customScript", group="CUSTOMSCRIPT INPUT", metavar="PATH"),
             )
@@ -682,6 +726,32 @@ def _confirm_install(prompt: str, args: argparse.Namespace) -> bool:
 
 def _display_redaction(value: Any) -> Any:
     return value if netcup_scp_client.DEBUG_RAW else _redact_for_log(value)
+
+
+def _print_custom_script_digests(
+    displayed: Dict[str, Any], to_send: Optional[Dict[str, Any]] = None
+) -> None:
+    """Print verifiable SHA-256 digests for the redacted customScript.
+
+    The summary replaces the script text with a length-only marker, so an
+    automated reviewer (scripts/netcup/pre-reinstall.py) cannot otherwise
+    prove that the payload about to be sent carries the reviewed script.  The
+    digest of the script is not secret.  The first line is the loaded script
+    (placeholders unexpanded); the second is the exact text the POST sends.
+    """
+    shown = displayed.get("customScript")
+    if not isinstance(shown, str):
+        return
+    print(
+        "[payload] customScript sha256="
+        f"{hashlib.sha256(shown.encode('utf-8')).hexdigest()} len={len(shown)}"
+    )
+    sent = (to_send or {}).get("customScript")
+    if isinstance(sent, str):
+        print(
+            "[payload] sent customScript (placeholders expanded) sha256="
+            f"{hashlib.sha256(sent.encode('utf-8')).hexdigest()} len={len(sent)}"
+        )
 
 
 def _http_failure_message(exc: HTTPStatusError) -> str:
@@ -1445,6 +1515,7 @@ def _load_custom_script_file(path: str) -> tuple[str, Optional[str]]:
     try:
         parsed = json.loads(raw)
     except json.JSONDecodeError:
+        _customscript_v2_config(raw, source=path)
         return raw, None
     if not isinstance(parsed, dict) or not isinstance(parsed.get("customScript"), str):
         raise CliFailure(
@@ -1458,7 +1529,110 @@ def _load_custom_script_file(path: str) -> tuple[str, Optional[str]]:
         completion_marker = _validate_completion_marker(parsed.get("completionMarker"))
     except (AttributeError, TypeError, ValueError) as exc:
         raise CliFailure(f"invalid completionMarker in {path}: {exc}", exit_code=2) from exc
+    declared_config = parsed.get("config")
+    embedded_config = _customscript_v2_config(custom_script, source=path)
+    v2_config_markers = {
+        "partitioning",
+        "root_max_size_gb",
+        "root_resize_policy",
+        "disk_layout",
+        "data_area",
+        "data_partition",
+        "data_lvm",
+        "state_dir",
+        "controller_ssh_pubkey",
+        "run_io_benchmark",
+    }
+    is_v2_bundle = (
+        "VBPUB_CONFIG_EXTRA_JSON=" in custom_script
+        or (
+            isinstance(declared_config, dict)
+            and bool(v2_config_markers.intersection(declared_config))
+        )
+    )
+    if is_v2_bundle:
+        if declared_config is None:
+            if embedded_config is None:
+                raise CliFailure(
+                    f"customScript bundle {path} has no strict v2 config to validate",
+                    exit_code=2,
+                )
+        else:
+            validated_declared = _load_v2_config(declared_config, source=path)
+            if embedded_config is None:
+                raise CliFailure(
+                    f"customScript bundle {path} has no embedded VBPUB_CONFIG_EXTRA_JSON",
+                    exit_code=2,
+                )
+            if validated_declared != embedded_config:
+                raise CliFailure(
+                    f"customScript bundle {path} config does not match its embedded v2 config",
+                    exit_code=2,
+                )
     return custom_script, completion_marker
+
+
+def _load_v2_config(data: Any, *, source: str):
+    """Use Debian v2's actual strict loader at the Netcup consumer boundary."""
+    if not isinstance(data, dict):
+        raise CliFailure(
+            f"customScript {source} strict v2 config validation requires a JSON object",
+            exit_code=2,
+        )
+    package_root = NETCUP_DIR.parent / "debian-install-v2"
+    if not (package_root / "debian_install_v2" / "config.py").is_file():
+        raise CliFailure(
+            f"customScript {source} strict v2 config validation is unavailable: producer source is missing",
+            exit_code=2,
+        )
+    added = str(package_root) not in sys.path
+    if added:
+        sys.path.insert(0, str(package_root))
+    try:
+        from debian_install_v2.config import ConfigError, load_config
+
+        return load_config(raw_json=json.dumps(data))
+    except (ConfigError, TypeError, ValueError) as exc:
+        raise CliFailure(
+            f"customScript {source} failed strict v2 config validation: {exc}",
+            exit_code=2,
+        ) from exc
+    finally:
+        if added:
+            try:
+                sys.path.remove(str(package_root))
+            except ValueError:
+                pass
+
+
+def _customscript_v2_config(custom_script: str, *, source: str):
+    if "VBPUB_CONFIG_EXTRA_JSON=" not in custom_script:
+        return None
+    try:
+        tokens = shlex.split(custom_script)
+    except ValueError as exc:
+        raise CliFailure(
+            f"customScript {source} failed strict v2 config validation: malformed shell quoting",
+            exit_code=2,
+        ) from exc
+    values = [
+        token.partition("=")[2]
+        for token in tokens
+        if token.partition("=")[0] == "VBPUB_CONFIG_EXTRA_JSON"
+    ]
+    if len(values) != 1:
+        raise CliFailure(
+            f"customScript {source} failed strict v2 config validation: expected one embedded config",
+            exit_code=2,
+        )
+    try:
+        parsed = json.loads(values[0])
+    except json.JSONDecodeError as exc:
+        raise CliFailure(
+            f"customScript {source} failed strict v2 config validation: embedded config is invalid JSON",
+            exit_code=2,
+        ) from exc
+    return _load_v2_config(parsed, source=source)
 
 
 def _prompt_choice(items_desc: List[str], default_index: int, prompt_label: str) -> int:
@@ -1506,13 +1680,15 @@ def _resolve_image_flavour(
     preselected: Optional[Dict[str, Any]],
     *,
     interactive: bool,
+    selection: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Resolve the image flavour to install: use `preselected` as-is if given
     (payload already had `imageFlavourId`), else query and pick.
 
-    Filters to Debian+UEFI images (this tool's whole purpose). Interactive
-    runs get a numbered prompt (default: newest); non-interactive runs keep
-    auto-selecting newest, matching this tool's prior behavior.
+    Filters to Debian+UEFI images (this tool's whole purpose). An explicit
+    selection is either a flavour ID or the literal ``newest``. Interactive
+    callers without one get a numbered prompt; non-interactive callers must
+    state their choice.
 
     Returns {"id": int, "name": str}.
     """
@@ -1538,13 +1714,27 @@ def _resolve_image_flavour(
         reverse=True,
     )
 
-    if interactive:
+    if selection == "newest":
+        chosen = debian_images_sorted[0]
+        print(f"   ✓ Explicitly selected newest: {chosen['image']['name']}")
+    elif selection is not None:
+        chosen = next(
+            (img for img in debian_images_sorted if str(img.get("id")) == selection),
+            None,
+        )
+        if chosen is None:
+            raise CliFailure(
+                f"image flavour {selection} is not an available Debian UEFI image"
+            )
+    elif interactive:
         descs = [f"ID {img['id']:3d} | {img['image']['name']}" for img in debian_images_sorted]
         idx = _prompt_choice(descs, default_index=0, prompt_label="   Select image")
         chosen = debian_images_sorted[idx]
     else:
-        chosen = debian_images_sorted[0]
-        print(f"   ✓ Auto-selected newest (non-interactive): {chosen['image']['name']}")
+        raise CliFailure(
+            "non-interactive wizard must specify --image ID or --image newest",
+            exit_code=2,
+        )
 
     print(f"   ✓ Using imageFlavourId {chosen['id']} ({chosen['image']['name']})")
     return {"id": chosen["id"], "name": chosen["image"]["name"]}
@@ -1822,6 +2012,7 @@ def install_from_payload(
     print("PAYLOAD SUMMARY")
     print("=" * 70)
     print(json.dumps(_display_redaction(installation_payload), indent=2))
+    _print_custom_script_digests(installation_payload, installation_payload_to_send)
     print()
 
     if args.dry_run:
@@ -2110,6 +2301,9 @@ def _load_payload_for_target(
             exit_code=2,
             show_help=True,
         )
+    custom_script = payload.get("customScript")
+    if isinstance(custom_script, str):
+        _customscript_v2_config(custom_script, source=payload_path)
     return payload
 
 
@@ -2298,6 +2492,11 @@ def _run_install_workflow(cli_args, runtime):
 def _run_install_workflow_body(args, runtime):
     global SERVER_NAME, CONTROLLER_SSH_PUBLIC_KEY
     command = args.command
+    if command in (None, "configure", "wizard") and args.yes and not getattr(args, "image", None):
+        raise CliFailure(
+            "wizard --yes requires an explicit --image ID or --image newest",
+            exit_code=2,
+        )
     config_path = getattr(args, "config_path", None) or getattr(args, "payload", None)
     if command == "install" and not config_path:
         config_path = DEFAULT_TARGET_CONFIG_NAME
@@ -2601,7 +2800,13 @@ def _run_install_workflow_body(args, runtime):
         # 3. Resolve image flavour (interactive: numbered prompt; else: newest)
         print("3. Resolving Debian UEFI image flavour...")
         interactive = not is_noninteractive(args)
-        flavour = _resolve_image_flavour(client, int(server_id), None, interactive=interactive)
+        flavour = _resolve_image_flavour(
+            client,
+            int(server_id),
+            None,
+            interactive=interactive,
+            selection=getattr(args, "image", None),
+        )
         image_flavour_id = flavour["id"]
         image_flavour_name = flavour["name"]
         print()
@@ -2640,6 +2845,16 @@ def _run_install_workflow_body(args, runtime):
         if ssh_key_ids is None:
             installation_payload.pop("sshKeyIds")
 
+        payload_errors = _validate_installation_payload(
+            installation_payload,
+            require_complete=True,
+        )
+        if payload_errors:
+            raise CliFailure(
+                "generated wizard payload failed preflight validation: " + "; ".join(payload_errors),
+                exit_code=2,
+            )
+
         # Expand placeholders only for the API request, while keeping the
         # payload safe-to-print/save.
         try:
@@ -2655,12 +2870,19 @@ def _run_install_workflow_body(args, runtime):
         print("INSTALLATION PARAMETERS SUMMARY")
         print("=" * 70)
         print(json.dumps(_display_redaction(installation_payload), indent=2))
+        _print_custom_script_digests(installation_payload, installation_payload_to_send)
         print()
 
+        explicit_output_path = getattr(args, "config_path", None)
+        output_config_path = (
+            _validate_wizard_config_output_path(explicit_output_path)
+            if explicit_output_path
+            else _wizard_output_path(getattr(args, "out_dir", None), hostname)
+        )
         if args.dry_run:
             print("=" * 70)
             print(
-                f"[dry-run] NOT saving to {getattr(args, 'config_path', None) or DEFAULT_TARGET_CONFIG_NAME} "
+                f"[dry-run] NOT saving to {output_config_path} "
                 "(would overwrite any existing "
                 "file, and any not-yet-created SSH key above is only a placeholder id)."
             )
@@ -2670,17 +2892,18 @@ def _run_install_workflow_body(args, runtime):
             return
 
         # 8. Save payload to file with comments
-        output_config_path = getattr(args, "config_path", None) or DEFAULT_TARGET_CONFIG_NAME
+        output_path = Path(output_config_path)
+        output_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
         save_payload_with_comments(
             installation_payload,
-            output_config_path,
+            str(output_path),
             SERVER_NAME,
             image_flavour_name,
             user_id,
             ssh_key_names=None,
             hostname_method=hostname_method
         )
-        print(f"✓ Installation payload saved to:  {output_config_path}")
+        print(f"✓ Installation payload saved to:  {output_path}")
         print()
 
         # Consent is required even when stdin is redirected; --yes is the

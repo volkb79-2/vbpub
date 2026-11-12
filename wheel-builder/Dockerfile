@@ -13,7 +13,7 @@
 # frontend itself. The wheel bytes depend on each project's `[build-system].requires`,
 # which `python -m build`'s isolation installs fresh per invocation AT RUN TIME, from the
 # index: exact pins (cmru, ciu, run-gate-project, assay, cli-extended, topos, nyxloom) make that
-# resolution reproducible; floors (pwmcp-client `setuptools>=77`, cgroup-profiler
+# resolution reproducible; floors (pwmcp-client `setuptools>=77`, cgprofile
 # `setuptools>=68`) do not. The age window below covers the run-time installs too, through the
 # PIP_UPLOADED_PRIOR_TO environment variable (TB-08).
 #

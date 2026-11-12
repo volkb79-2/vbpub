@@ -1,14 +1,19 @@
 # debian-install-v2 — TODO / backlog
 
-## DONE (root-cap follow-ups, 2026-11-02)
+## DONE in code, OPEN live (div2-data-area-v2, 2026-11-05): explicit `partitioning` plan
 
-`root_max_size_gb` requires `swap_policy=on` and managed tail-swap partitions
-directly after root, so neither the first reboot nor stage-two `growpart` can
-consume the cap. Stage one installs cloud-init and initramfs growth guards
-after the capped tail-swap plan validates and before any initramfs shrink hook
-is installed; stage two repeats them. The cap is measured from the root
-partition start without rounding its configured length down to an absolute
-1 MiB boundary. User-facing examples retain uncapped and capped layouts.
+Replaces the predecessor rule-sized layout and separate root-cap setting with
+one whole-disk `partitioning` plan. It reserves an 8 GiB raw `iobench-raw`
+partition by default, numbers partitions by physical order, and refuses
+unaccounted plans. See README "Disk layout" and
+`docs/DESIGN-data-area-v2.md`. Unit tests cover the current planner; the
+`r1-vm-real-commit` lane remains the real-disk-image validation and was not run
+in this fix round. Deferred: `fs: zfs` as a managed filesystem, btrfs `subvol`.
+
+## DONE (root-cap follow-ups, 2026-11-02; superseded by `partitioning`)
+
+Stage one installs cloud-init and initramfs growth guards after the plan validates and before any initramfs
+shrink hook is installed; stage two repeats them. They are installed whenever the plan fixes root (anything but `"*"`).
 
 ## DONE (requirements naming, 2026-11-02): name the optional wizard dependency by use case
 
@@ -17,42 +22,46 @@ the installer, tests, generated CLI surface, and adoption/design docs. Future
 tool manifests are inventoried in the release-program requirements naming
 report and will migrate in separate tool-scoped changes.
 
-## OPEN (MDT-016 / D-HS-01-2, 2026-10-19): the io.cost generator measures through the hypervisor cache
+## OPEN (MDT-016 / D-HS-01-2, 2026-10-19): standalone io.cost calibration can measure through the hypervisor cache
 
 `tools/iocost_coef_gen.py` (patched copy of the Linux generator, built by `tools/build-iocost-generator.py`)
 runs `fio --direct=1 ... --time_based` and reports the mean. O_DIRECT does not defeat a hypervisor
 write-back cache: one virtio host measured 4.3 GB/s read / 2 GB/s write / 94k IOPS from a disk that
 saturated at ~20 MB/s with 35-60 ms write latency, so the numbers (and any io.cost model or io.max cap
-derived from them) are cache readings. Shipped now (both consumers, mdt-cockpit `mdt-io-baseline.py` and
+derived from them) are cache readings. Shipped now for the standalone calibration consumers,
+mdt-cockpit `mdt-io-baseline.py` and
 `tools/iocost-calibrate.sh`): a plausibility REFUSAL for a rotational-flagged device above 1 GiB/s sequential or
 20,000 random 4-KiB IOPS (one shared definition, `tools/iocost_plausibility.py`; override
 `IO_BASELINE_ROTATIONAL_FLAG=ignore` for a fast virtio disk). NOT done (too large, touches the vendored patch series and the sha256): redesign the
 generator to use `--fsync`/`--end_fsync` for writes, a working set larger than the cache the host can
 see, and a steady-state tail measurement (ramp then measure only the last N seconds), recorded in the
-output. Also open: `Installer._run_io_benchmark()` persists the generator's numbers without the
-plausibility check (advisory data, never applied as caps); add it with the redesign. Tracked in
-mdt-cockpit as MDT-017.
+output. Installer benchmarking now uses iobench `veryquick` against the planned raw partition and
+does not use this generator; its measurements are also advisory and may reflect the guest-visible
+virtual-disk cache. Tracked in mdt-cockpit as MDT-017.
 
-## OPEN (operator note, 2026-10-06): test Augeas as an alternative for in-place config edits
+## OPEN (operator note, 2026-10-06): evaluate Augeas for installer-managed config edits
 
-Test Augeas as an alternative for in-place config edits (see
-[`docs/AUGEAS-EVALUATION.md`](docs/AUGEAS-EVALUATION.md)); current approach is
-drop-ins plus whole-file templates. Evaluated 2026-10-06 and NOT adopted: the
-only true in-place edit in v2 is the fstab swap filter, and the lens catalog has
-no deb822 lens. The evaluation's code sketches were never executed; proving
-them in a throwaway container with the packages is the first step of any trial.
+Test Augeas as an alternative for installer-managed in-place config edits
+(see [`docs/AUGEAS-EVALUATION.md`](docs/AUGEAS-EVALUATION.md)); the installer
+still uses drop-ins plus whole-file templates. `augeas-tools` is now installed
+with the base packages on every host for `augeaswrap`; this does not adopt
+Augeas for edits performed by the installer. The only true in-place edit in v2
+is the fstab swap filter, and the lens catalog has no deb822 lens. The
+evaluation's code sketches were never executed; proving them in a throwaway
+container remains the first step of any installer-side trial.
 
-## IMPLEMENTED (LT-IOB, 2026-10-06; live validation pending): io.cost benchmark step
+## IMPLEMENTED (LT-IOB, updated by div2-data-area-v2): io.cost benchmark step
 
-`Installer._run_io_benchmark()` — see `IO-BENCHMARK-DESIGN.md` and
-`LT-IOB-REPORT.md`. Unit-tested against a simulated disk only; the first
-real run (netcup test host, controller-driven) is still to happen. Open:
-(a) writing `io.cost.model`/`io.cost.qos` and enabling io.cost from the
-result (deliberately separate, "Not yet"); (b) Case B (hook already wrote
-swap) only benchmarks if tail free space remains, which is rarely the case;
-(c) was "`HostActions.run` has no timeout": closed, `HostActions.run(timeout=)`
-exists (`actions.py:174-180`) and `_run_io_benchmark` passes timeouts for sync,
-umount, mkfs, dd and the tool (`installer.py:3138-3310`).
+`Installer._run_io_benchmark()` runs iobench `veryquick` on the planned
+`iobench-raw` partition. It checks the PARTLABEL and geometry, refuses a
+mounted or active-swap device, wipes signatures before the run, and leaves the
+partition in place and raw. The default reservation is 8 GiB; config can set
+2–10240 GiB or `false` when the benchmark is disabled. The temporary-tail
+partition path, scratch filesystem, and delete-table transaction are removed.
+See `IO-BENCHMARK-DESIGN.md`; unit coverage is in
+`debian_install_v2/tests/test_io_benchmark.py`. The VM lane remains the real
+partition-table validation and was not run in this fix round. Writing
+`io.cost.model`/`io.cost.qos` remains a separate feature.
 
 ## Feature request: a zswap fill-watermark governor
 
@@ -100,9 +109,8 @@ Not designed or scoped beyond the above; no code exists yet.
 _Captured 2026-09-08 from the live gstammtisch soulmask-stall investigation;
 filed by Claude per operator request. debian-install-v2 has no CHANGES.md or
 managed nyxloom backlog yet (checked `nyxloom.toml` for `[backlog_entries]`
-— absent), so this file is the tracker, mirroring the same convention used
-in `modern-debian-tools-python-debug/TODO.md` for the host-escape-helper
-request filed earlier the same session._
+— absent), so this file is the tracker. The host-escape helper request filed
+earlier that session has since been implemented in `mdt-cockpit`.
 
 _2026-09-08: feasibility report + implementation plan now exist —
 [`zswap-shrinker-threshold-feasibility.md`](zswap-shrinker-threshold-feasibility.md)._
@@ -199,3 +207,89 @@ into a zvol, TNT-60 manages the devices), as:
 The Proxmox and Hyper-V mentions stay as they are. Acceptance: the section links tnt's CONSUMERS and names no TrueNAS API method; a
 docs test (if the file has one) still passes; the existing recipe is kept as the manual fallback until tnt TNT-61 ships. Depends on tnt
 TNT-60 and TNT-61 (`truenas/tnt/BACKLOG.md`).
+
+## FIXED d951f417d (DIV2-BL-01, 2026-11-08): swap partitions carry no PARTLABEL; `vbpub-swapN` is the filesystem label
+
+**Status:** FIXED 2026-11-09. The v1001 reinstall runbook now distinguishes GPT PARTLABEL from filesystem LABEL, states that managed swap PARTLABELs are empty, and records `LABEL=vbpub-swapN` with fstab `PARTUUID`; the stale external runbook patch is retired. The preview, consumer guide, README, and wrapper use the same identifiers.
+
+**Priority:** minor. Source: `/home/vscode/vbpub-release-program-20261027/reports/div2-reinstall-v1001-RESULT.md` (layout section).
+
+**Finding.** On the reinstalled v1001 the swap partitions have an empty PARTLABEL; the names `vbpub-swap1..4` are swap filesystem labels set by `mkswap -L` (`debian_install_v2/installer.py:3405`, vda6..vda9). The plan preview prints the name under a `PARTLABEL` column (`plan_preview.py:204`, `installer.py:752`), and `reports/div2-reinstall-RUNBOOK.md` lists "swap `vbpub-swap6..9`" as PARTLABELs. The swap-benchmark wrapper (see DIV2-BL-04) checks `PARTLABEL ^vbpub-swap[0-9]+$` and would refuse on this host. Only the raw iobench window depends on it, but the preview and runbook mislead.
+
+**Fix.** Either write the PARTLABELs when partitioning (and keep the filesystem label), or key the wrapper and runbook on the fstab PARTUUID plus the filesystem label and rename the preview column. Decide one rule and state it in README "Disk layout".
+
+**Close when.** The preview, runbook and wrapper name the same identifier and a test pins it against a planned layout.
+
+## FIXED d951f417d (DIV2-BL-02, 2026-11-08): a failed advisory step keeps only the first line of the error
+
+**Status:** FIXED 2026-11-09 in `d951f417d`. Failed advisory CPU and I/O steps write their complete already-redacted output under `<state_dir>` and name the log in the warned detail. Focused tests cover full text, notification, and an unwritable-log fallback.
+
+**Priority:** minor. Source: `reports/div2-reinstall-v1001-RESULT.md` (post-install check 5.2), `reports/v1001-reinstall-EXEC-LOG.md` (17:25Z).
+
+**Finding.** An advisory step that fails is recorded as `warned` with a one-line detail: for iobench `str(exc).splitlines()[0][:400]` (`installer.py:3290`), for the CPU benchmark `_cpu_benchmark_failure_text` (`installer.py:3105`). On v1001 the recorded state was only `iobench failed (advisory): action failed (1): run iobench veryquick on /dev/vda5`; the actual cause (`fio_option_unsupported`, DIV2-BL-03) was found only by re-running the runner by hand. The tool's stderr is not kept anywhere on the host.
+
+**Fix.** Write the full (already redacted) stderr of a failed advisory action to a per-step log under `/var/lib/vbpub/bootstrap/` and put its path in the step detail and the notification.
+
+**Close when.** A test with a failing advisory command shows the log file with the stderr and the path in the `warned` detail.
+
+## OPEN — KNOWN ISSUE (DIV2-BL-03, 2026-11-08; operator decision 2026-11-10): io.cost remains unconfigured until a safe benchmark target exists, and the installer must record a named refusal
+
+**Priority:** major for the installer's measured io.cost path. Source: `reports/div2-reinstall-v1001-RESULT.md` (benchmark step), `reports/v1001-reinstall-EXEC-LOG.md` (17:25Z diagnostic; logs `v1001/iobench-diag-20261108/`).
+
+**Finding.** `tools/iobench-install-runner --target /dev/vda5 ...` on the reinstalled v1001 exited 1 in under a second with `Refusal: fio_option_unsupported: the installed fio does not document the option 'exclusive_open'`. Debian 13 ships fio 3.39-1: `fio --cmdhelp=exclusive_open` answers "No such command" and a `--exclusive_open=1` job is "unrecognized option". iobench hard-requires it (`devio.require_fio_option` from `stages.s0`) and its docs claim fio >= 3.30, so the installer's veryquick step can never pass on this OS image: `steps.io_benchmark = warned` and `steps.iocost = skipped: "io.cost not configured: no valid io benchmark result"` on every Debian 13 install. The root cause is an iobench item (`libraries/iobench/BACKLOG.md` IOB-BL-28); this entry tracks the installer's side.
+
+**Fix.** After iobench fixes the exclusive-open mechanism, add a Debian 13 VM acceptance case (the `r1-vm-real-commit` style lane) where the step must reach `success` or fail with a named, recorded cause. Until then document that io.cost stays unconfigured on Debian 13 installs and must be measured later.
+
+**Operator decision 2026-11-10.** io.cost stays unconfigured on both r1002 and v1001 as an explicit KNOWN ISSUE until a safe benchmark target exists. The installer benchmark must record a named refusal; it must not substitute generic earlier output, cache-inflated values, or a guessed model.
+
+**Minimal solution.** Keep the raw-write refusal as the default. In the persisted install result and step detail, record a stable named reason such as `io.cost_unconfigured_no_safe_benchmark_target`, together with the exact runner refusal or missing prerequisite that produced it. Do not emit a vague "no valid result" or silently mark io.cost configured. Once WP-10 provides the held-claim writer for the `iobench-raw` target and DIV2-BL-05 supplies the revised `veryquick`/`quick`/`standard` ladder, revisit the decision in a separate reviewed change; until then the hosts are explicitly known-unconfigured.
+
+**Close when.** An install on a Debian 13 image completes the `io_benchmark` step or records a documented, named refusal in the README and persisted result, and both designated hosts show that named known-unconfigured state rather than an inferred io.cost setup.
+
+## FIXED d951f417d and follow-up (DIV2-BL-04, 2026-11-08): swap-benchmark window wrapper hardening (review 3 nits N1-N5)
+
+**Status:** FIXED 2026-11-09. The original N1-N5 hardening remains in place. Review blocker B2 is fixed: `end` reads the selected device's fstab options, restores only that device, and verifies its identity and active state. A fake-root test proves a second configured but inactive swap remains inactive.
+
+**Priority:** recommended (N1), nit (N2-N5). Source: `reports/swap-bench-window-REVIEW3.md` (verdict READY-FOR-V1001, no blocker). The wrapper is maintained in `tools/`; its former unmerged external runbook patch is retired because it described an older draft and unsafe restore scope.
+
+**Finding and fix.**
+1. N1 (script lines 78-85): the match `swapoff $dev ` misses a foreign swapoff given as `swapoff -v DEV`, `swapoff -a`, `swapoff A DEV`, or a by-partuuid/by-uuid/by-label name (systemd's own swapoff uses a by-partuuid path). `end` can then say "nothing to restore" and archive the state while that swapoff still runs (no wipe or mkswap risk; they need `active` false). Treat any live non-zombie `swapoff` process as relevant (scan `/proc/[0-9]*`, `comm = swapoff`, non-empty cmdline) and reword the "nothing to restore" text (line 196) so it does not claim as fact that no swapoff is running.
+2. N2 (line 68): add `cat tr ls basename id date mv rm` to the required-tool loop (a missing `cat`/`tr`/`ls` makes `swapoff_running` and the holders check fail open); optionally pin `PATH=/usr/sbin:/usr/bin:/sbin:/bin` after line 24.
+3. N3 (lines 170-173): add `lsblk -dno PARTLABEL` to the F5 identity re-check and use the low-level probe `blkid -p -s PART_ENTRY_UUID` instead of the cache-capable `blkid -s PARTUUID`.
+4. N4 (runbook): run `begin --commit` inside `tmux`/`screen` (or `nohup`) so an SSH drop cannot SIGHUP the script between swapoff and wipe; a kill leaves a safe state but needs a manual `end`.
+5. N5: the STILL RUNNING message says "the orphan holds the lock", true only for begin's own swapoff; a foreign swapoff does not hold `.lock`.
+
+**Close when.** Each item is applied to the adopted wrapper or runbook, or struck out with a reason; the wrapper is in the repo with its rehearsal evidence referenced.
+
+## OPEN (DIV2-BL-05, 2026-11-10): the install benchmark needs the rev 4.1 profile ladder and a safe target/fallback boundary
+
+**Priority:** major; blocks the default install benchmark and the live raw-target acceptance tracked by IOB-BL-39. Source: operator decisions 2026-11-10 and `reports/iobench-iogovmon-DESIGN-2026-11.md` rev 4.1, sections 3, 5, 6, 8 and 9.
+
+**Problem.** The installer benchmark is currently advisory and does not implement one selectable rung family. The current raw writer correctly refuses unless it can retain its exclusive claim through I/O (`Host.write_range`), so raw-target runs cannot begin safely until WP-10 closes that gap. The earlier target proposal is superseded by design rev 4.1: install-time measurement must use a selectable profile ladder and provision the model conservatively, while iogovmon handles the moving target after install.
+
+**Operator decision 2026-11-10 (design rev 4.1, binding).**
+
+1. `run_io_benchmark` defaults to true. Every install selects one profile from `veryquick` (about 3 min), `quick` (about 7.5 min, the DEFAULT), or `standard` (about 30-35 min), with outer timeouts of 5, 12 and 45 min. All rungs use the same nested cell family and measure the same quantities at increasing length.
+2. After WP-10, the benchmark target is the reserved `iobench-raw` partition, with the writer holding the `O_EXCL` claim for the complete raw stages. r1002 sets `iobench_raw_gb: 32`.
+3. Before WP-10, an ext4-root file may supply only the derived numbers whose ext4 verdict in the bounded study table is `✓` live-with or `⚠` iogovmon-must-correct. A btrfs file is never used for the model. If no permitted target exists for a number, keep the stable named `io.cost_unconfigured_no_safe_benchmark_target` refusal; never substitute cache-inflated output, generic earlier output, or a guessed model.
+4. During every run, `io.cost` is unconfigured and every cgroup IO control is off, with the state asserted by WP-3. The interim io.cost model is coarse and QoS stays off.
+5. The bounded host study determines the verdict table and each rung's measured error by number and target type. It runs on r1002 after the planned D2 install with host safety and identity checks; it is capped at 500 GB written, about 3 h active IO and 12 h elapsed, and uses adaptive repeats. No install or host change proceeds without the required operator GO.
+6. iogovmon supplies continuous adjustment after install: it re-benches the configured rung on `iobench-raw` (default `quick`) weekly and on events, at most once per 24 h and only in a quiet window. Adoption is bounded to ±25 % per step unless two confirming runs agree; `capability_shift` freezes, re-benches, re-baselines, and only unfreezes after `stable_days`. Distress-gated adjustments retain their bounds, cooldown and rollback.
+
+**Minimal solution.** Implement the installer side in coordination with its owning dependencies:
+
+1. Add `io_benchmark_profile = "quick"` with the allowed `veryquick` and `standard` values and the design's timeout table. Preserve explicit operator selection; no install silently changes rungs.
+2. Route `quick`, or the selected rung, through the iobench runner on `iobench-raw` once WP-10 exists. Until then choose the ext4 fallback per derived number from the study verdict table, or record the named refusal when the number has no permitted target.
+3. Assert `io.cost` and every cgroup IO control are off before measurement, keep QoS off for the interim model, and retain the complete redacted result and refusal in the persisted install result.
+4. Expose the rung summary line from the study table in the wizard. Add the final `fstrim -av` and keep `autodefrag` off.
+5. Depend on the bounded study and WP-20's implementation of the nested cell family; do not infer rung accuracy or fallback eligibility from old file-target results. IOB-BL-39 owns the live rung and raw-target evidence; WP-21 owns the iogovmon scheduler and bounded adoption implementation.
+
+**Where.**
+
+- `scripts/debian-install-v2/debian_install_v2/config.py`, `installer.py`, `wizard.py`, and `tools/iobench-install-runner`: profile selection, target/fallback choice, guards, and persisted result.
+- `scripts/debian-install-v2/debian_install_v2/tests/`: default/selection, timeout, target, refusal, IO-control-off, fallback-verdict and no-I/O-mutation tests.
+- `scripts/debian-install-v2/README.md`, `docs/CONSUMERS.md`, `docs/DESIGN-GUIDE.md` and `CHANGES.md`: rung meanings, default, safe-target boundary, allowed fallback numbers and operator sequence.
+
+**Acceptance idea.** Fake-root tests prove `quick` is the default, each named rung is selectable with its timeout, `iobench-raw` is preferred through WP-10, the ext4 fallback is offered only for numbers whose study verdict permits it, and every other number records the named refusal. They assert `io.cost` and all cgroup IO controls are off for the full measurement and that the step changes no host IO policy. Removing the default, bypassing WP-10 when available, allowing an unlisted fallback, or skipping an IO-control assertion must fail a focused test. After WP-10, a live r1002 install completes the selected rung on `iobench-raw`; before then, v1001 records either the allowed fallback for its exact permitted results or the named refusal.
+
+**Close when.** The default and selectable ladder, WP-10 target, study-gated ext4 fallback, IO-control-off assertions, named refusal, final fstrim and iogovmon handoff are covered by focused tests; live evidence on both designated hosts completes the selected rung or records the named refusal; and the operator decision is reflected in README, CONSUMERS, DESIGN-GUIDE and CHANGES `## [Unreleased]`.

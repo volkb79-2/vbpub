@@ -47,6 +47,81 @@ clean_tree = false
 # further 20m for clone/startup/cleanup; test_self_lane.py derives these bounds.
 budget = "5h"
 
+# Pre-merge verification for tooling, lane-table and waiver-document changes.
+# It includes the three groups that escaped the 12.1.0 pre-merge set (the B105
+# checker, release-gate HOME handling, and the docs R2-window binding). This is
+# a tester-unified command lane, not an Assay qualification or release receipt.
+# The fixed files are the release-attempt failure groups plus the cross-cutting
+# contract tests a behaviour change in one module can break in another: the
+# shared termination table and its three consumers, the verify import trust
+# boundary, the reviewed dataclass contract and the B105 exclusion fixture
+# (assay 12.2.0 release attempt cd77603bb, B533). They run in seconds.
+[lanes.tooling-tests]
+kind = "command"
+environment = "tester-unified"
+argv = [
+  "bash", "-c",
+  '''set -eu
+cd {worktree}/assay
+export PYTHONDONTWRITEBYTECODE=1
+tooling_tmp="$(mktemp -d /tmp/assay-tooling-tests.XXXXXXXX)"
+trap 'rm -rf "$tooling_tmp"' EXIT
+/opt/tester-venv/bin/python3 -m venv "$tooling_tmp/venv"
+tester_site="$(/opt/tester-venv/bin/python3 -c 'import site; print(site.getsitepackages()[0])')"
+venv_site="$("$tooling_tmp/venv/bin/python" -c 'import site; print(site.getsitepackages()[0])')"
+printf '%s\n' "$tester_site" >"$venv_site/tester-site.pth"
+PYTHONPATH="$tester_site" \
+  "$tooling_tmp/venv/bin/python" -m pip install \
+  --quiet --no-build-isolation --no-deps -e {worktree}/assay
+export PYTHONPATH="analysis/src:{worktree}/libraries/cowtree/src"
+"$tooling_tmp/venv/bin/python" -m pytest -q -p no:cacheprovider \
+  gate/tests/test_b105_report_check.py \
+  gate/tests/test_distribution_gate.py \
+  gate/tests/test_release_gate.py \
+  gate/tests/test_self_qualification_container.py \
+  tests/core/test_docs_examples_and_vocabulary.py \
+  tests/core/test_termination.py \
+  tests/core/test_termination_alignment.py \
+  tests/core/test_canary_receipt.py \
+  tests/core/test_trust_boundary.py \
+  tests/core/test_dataclass_contract.py \
+  tests/core/test_b105_source_coverage_controls.py "$@"''',
+  "tooling-tests",
+]
+accepts_args = true
+clean_tree = false
+budget = "30m"
+
+[lanes.tooling-tests.resources]
+memory = "1g"
+
+# Re-run only the contention-sensitive hung Docker client test while a sibling
+# CPU burner runs in the same tester-unified container. This measures the test
+# fixture's handshake, not Assay qualification.
+[lanes.hang-test-contention]
+kind = "command"
+environment = "tester-unified"
+argv = [
+  "bash", "-c",
+  '''set -eu
+cd {worktree}/assay
+export PYTHONPATH="src:analysis/src:{worktree}/libraries/cowtree/src"
+export PYTHONDONTWRITEBYTECODE=1
+/usr/bin/yes >/dev/null &
+burner=$!
+trap 'kill "$burner" 2>/dev/null || true; wait "$burner" 2>/dev/null || true' EXIT
+for iteration in {1..20}; do
+  printf '%s\n' "hung Docker fixture run $iteration/20"
+  nice -n 10 /opt/tester-venv/bin/python3 -m pytest -q -p no:cacheprovider \
+    gate/tests/test_self_qualification_container.py::test_hung_docker_client_is_bounded_and_cleanup_is_conservative
+done''',
+]
+clean_tree = false
+budget = "10m"
+
+[lanes.hang-test-contention.resources]
+memory = "1g"
+
 [lanes.self-qualification]
 kind = "command"
 environment = "bare-host"
@@ -89,9 +164,11 @@ artifacts = [
 # R0, R1 (whole-target line and branch over src/assay) and the R3 canary run;
 # R2 mutation is explicitly postponed and the run records
 # .assay/mutation-postponed-assay.json (deferral evidence, never an R2 pass).
-# Valid only below assay 12.1.0 (extended 2026-11-04, D1; R2 runs later with
-# `--jobs` on the scratch host); the full `self-qualification` lane is unchanged
-# and clears the marker. The campaign deadline is its own b105-prov-* file.
+# Valid only below assay 12.3.0 (extended 2026-11-12 for the flexible-R2
+# release 12.2.0: R2 is a T3 post-release check per the tier methodology;
+# operator decision 2026-11-12, A-507/B535; earlier extended 2026-11-08 for the
+# E4 env-only launchers and delegated release-gate changes); the full
+# `self-qualification` lane is unchanged and clears the marker. The campaign deadline is its own b105-prov-* file.
 [lanes.self-qualification-provisional]
 kind = "command"
 environment = "bare-host"

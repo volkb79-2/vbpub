@@ -71,6 +71,7 @@ class DaemonFrameBatch:
     latest_seq: int | None
     next_cursor: int | None
     gap: bool
+    epoch: str | None = None
 
     @property
     def frames(self) -> tuple[Frame, ...]:
@@ -96,6 +97,7 @@ class DaemonHistoryResult:
     next_cursor: int | None
     gap: bool
     metrics_meta: dict[str, dict[str, object]]
+    epoch: str | None = None
 
     @property
     def frames(self) -> tuple[Frame, ...]:
@@ -468,7 +470,10 @@ class DaemonClient:
                 raise DaemonProtocolError(
                     f"daemon at {self.socket_path} returned an invalid next cursor"
                 )
-            return DaemonFrameBatch(tuple(entries), oldest, latest, next_cursor, gap)
+            epoch = payload.get("epoch")
+            return DaemonFrameBatch(
+                tuple(entries), oldest, latest, next_cursor, gap, epoch if isinstance(epoch, str) else None
+            )
         raise DaemonProtocolError(
             f"daemon at {self.socket_path} closed the connection without an end response"
         )
@@ -701,6 +706,7 @@ class DaemonClient:
             next_cursor=next_cursor,
             gap=gap,
             metrics_meta=metrics_meta,
+            epoch=result["epoch"] if isinstance(result.get("epoch"), str) else None,
         )
 
     def request_entity(self, key: str) -> DaemonEntityResult:
@@ -796,8 +802,15 @@ def stream_frames(socket_path: Path, *, limit: int = 1, poll_interval_s: float =
     bounded_interval = max(0.1, poll_interval_s)
     bounded_limit = int(limit)
     cursor: int | None = None
+    epoch: str | None = None
     while True:
         batch = client.stream_batch(limit=bounded_limit, cursor=cursor)
+        if epoch is not None and batch.epoch is not None and batch.epoch != epoch:
+            raise DaemonHistoryGapError(
+                f"daemon restarted (epoch {epoch} -> {batch.epoch}); cursor {cursor} no longer applies"
+            )
+        if batch.epoch is not None:
+            epoch = batch.epoch
         if batch.gap:
             raise DaemonHistoryGapError(
                 f"daemon history evicted frames after cursor {cursor}; oldest available is {batch.oldest_seq}"

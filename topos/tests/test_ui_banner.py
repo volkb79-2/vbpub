@@ -12,7 +12,42 @@ def test_banner_snapshot_renders_golden_fixture_summary() -> None:
     assert snapshot.lines[0] == "HOST OK"
     assert snapshot.lines[1].startswith("LOAD 0.10/0.20/0.30 | MEM 7.8KiB avail / 15.6KiB total")
     top_index = snapshot.lines.index("TOP PRESSURE")
-    assert snapshot.lines[top_index + 1].startswith("1 /")
+    first = snapshot.lines[top_index + 1]
+    assert first.startswith("1 ")
+    assert not first.startswith("1 /")  # root is never listed when other entities exist
+
+
+def _chain_frame() -> Frame:
+    def ent(key: str, parent: str | None, pressure: float) -> EntityFrame:
+        return EntityFrame(
+            entity=Entity(key=key, kind="slice", parent=parent),
+            metrics={"pressure": MetricValue(pressure, "exact")},
+        )
+
+    entities = {
+        "": ent("", None, 9.0),
+        "dev.slice": ent("dev.slice", "", 8.0),
+        "dev.slice/gates.slice": ent("dev.slice/gates.slice", "dev.slice", 7.0),
+        "dev.slice/gates.slice/culprit.service": ent("dev.slice/gates.slice/culprit.service", "dev.slice/gates.slice", 6.0),
+        "other.service": ent("other.service", "", 1.0),
+    }
+    return Frame(1, 1.0, 5.0, {}, entities)
+
+
+def test_top_pressure_drops_ancestors_of_listed_culprit() -> None:
+    from topos.ui.banner import _top_pressure_lines
+
+    lines = _top_pressure_lines(_chain_frame())
+    names = [line.split()[1] for line in lines]
+    assert names == ["culprit.service", "other.service"]
+
+
+def test_top_pressure_lists_root_when_it_is_the_only_entity() -> None:
+    from topos.ui.banner import _top_pressure_lines
+
+    frame = _chain_frame()
+    only_root = Frame(1, 1.0, 5.0, {}, {"": frame.entities[""]})
+    assert [line.split()[1] for line in _top_pressure_lines(only_root)] == ["/"]
 
 
 def test_banner_counts_unavailable_permissions_and_shows_notice() -> None:

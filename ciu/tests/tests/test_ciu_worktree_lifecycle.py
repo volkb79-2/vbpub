@@ -31,15 +31,15 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+from typing import ClassVar
 from unittest.mock import MagicMock
 
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
-from ciu import deploy, engine, worktree  # noqa: E402
-from ciu.config_constants import MACHINE_DIR, SHIPPED_COMPOSE  # noqa: E402
-
+from ciu import deploy, engine, worktree
+from ciu.config_constants import MACHINE_DIR, SHIPPED_COMPOSE
 
 GLOBAL_DEFAULTS = """\
 [ciu]
@@ -252,8 +252,14 @@ class TestOwnershipLabelResolution:
 
 
 class TestOwnershipFragment:
-    LABELS = {"ciu.instance": "abc123", "ciu.repo-root": "/host/repo"}
-    ENTRIES = ["ciu.instance=abc123", "ciu.repo-root=/host/repo"]
+    LABELS: ClassVar[dict[str, str]] = {
+        "ciu.instance": "abc123",
+        "ciu.repo-root": "/host/repo",
+    }
+    ENTRIES: ClassVar[list[str]] = [
+        "ciu.instance=abc123",
+        "ciu.repo-root=/host/repo",
+    ]
 
     def test_every_service_volume_and_network_up_creates_is_labeled(self, tmp_path):
         import yaml
@@ -365,9 +371,13 @@ class TestUpStampsOwnershipLabels:
         fragment.write_text("services: {}\n", encoding="utf-8")
         (stack / "ciu.compose.yml").write_text("services: {}\n", encoding="utf-8")
         seen: list[list[str]] = []
+
+        def run_cmd(cmd, **_kwargs):
+            seen.append(cmd)
+            return subprocess.CompletedProcess(cmd, 0, "", "")
+
         monkeypatch.setattr(
-            engine.procutil, "run_cmd",
-            lambda cmd, **kw: (seen.append(cmd), MagicMock(returncode=0))[1],
+            engine.procutil, "run_cmd", run_cmd,
         )
         monkeypatch.setattr(engine.procutil, "docker", lambda *a, **kw: MagicMock(
             returncode=0, stdout="", stderr=""
@@ -381,7 +391,8 @@ class TestUpStampsOwnershipLabels:
             stack, assume_yes=True, repo_root=tmp_path,
         )
 
-        assert f"{MACHINE_DIR}/{engine.OWNERSHIP_OVERLAY_NAME}" in seen[0]
+        down = next(command for command in seen if "down" in command)
+        assert str(fragment) in down
         assert not fragment.exists()
 
 
@@ -561,12 +572,16 @@ class TestCleanClearsTheLease:
     def _hermetic(self, monkeypatch, *, survivors: list[str]):
         monkeypatch.setattr(deploy, "render_selected_stacks", lambda *a, **k: {})
         monkeypatch.setattr(deploy, "_matching_containers", lambda *a, **k: [])
+        monkeypatch.setattr(deploy, "_tagged_project_networks", lambda *a, **k: ([], []))
         monkeypatch.setattr(
             deploy, "_remove_project_volumes", lambda cfg=None, **_kw: survivors
         )
 
     def _leased(self, root: Path) -> Path:
         _git_family(root)
+        # These lease assertions exercise the teardown path for a stack root;
+        # CIU-202 gives global-only roots an intentional no-op path.
+        (root / "ciu.defaults.toml.j2").write_text("[demo]\n", encoding="utf-8")
         path = root / worktree.WORKTREE_INSTANCE_RECORD
         path.write_text(_record_body(root), encoding="utf-8")
         worktree.acquire_own_lease(root, ttl_hours=24)
@@ -605,6 +620,7 @@ class TestCleanClearsTheLease:
         A record too malformed to parse is a pre-existing S16 defect this
         teardown neither caused nor can repair — and leaving the claim in
         place is the SAFE direction: a future reap reads it as still owned."""
+        (tmp_path / "ciu.defaults.toml.j2").write_text("[demo]\n", encoding="utf-8")
         path = tmp_path / worktree.WORKTREE_INSTANCE_RECORD
         path.write_text('{"schema_version": 1}\n', encoding="utf-8")
         self._hermetic(monkeypatch, survivors=[])

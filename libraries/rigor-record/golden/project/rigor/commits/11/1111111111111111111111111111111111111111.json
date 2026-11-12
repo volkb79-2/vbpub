@@ -132,7 +132,7 @@
       "window": "this-run"
     }
   ],
-  "project": "cgroup-profiler",
+  "project": "cgprofile",
   "qualifications": {},
   "results": [
     {
@@ -145,7 +145,7 @@
       },
       "note": "declared, not judged",
       "targets": {
-        "cgroup-profiler": "1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f"
+        "cgprofile": "1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f"
       },
       "toolset": "t1",
       "verdict_sha256": null
@@ -169,7 +169,7 @@
         "R1": "pass"
       },
       "targets": {
-        "cgroup-profiler": "1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f",
+        "cgprofile": "1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f",
         "node_modules": "1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f"
       },
       "toolset": "t2",
@@ -192,7 +192,7 @@
         "R3": "pass"
       },
       "targets": {
-        "cgroup-profiler": "1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f"
+        "cgprofile": "1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f"
       },
       "toolset": "t2",
       "verdict_sha256": "8888888888888888888888888888888888888888888888888888888888888888"

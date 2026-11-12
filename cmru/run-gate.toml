@@ -2,8 +2,8 @@
 # cmru project gate lanes — parsed ONLY by the installed run-gate CLI (one parser, D-110).
 # Environment facts come from the CENTRAL vbpub-root run-gate.root.toml; judgment
 # Assay owns R0/R1/R3 in assay.toml [lanes.cmru]; the release-specific
-# mutation lane owns R2 using the highest-version published cmru-v* tag in
-# the candidate's full ancestry as its base.
+# mutation lane owns R2 using a published cmru-v* tag in the candidate's
+# full ancestry as its base.
 # If no stable CMRU tag exists, the protected provisional release gate instead
 # selects `assay-first-release` and records `assay-first-release-r2` as its
 # whole-source post-release follow-up; an unavailable origin query is an error.
@@ -35,6 +35,18 @@ budget = "60m"
 # verdict records the exact runtime assay version and source commit.
 
 [lanes.assay.resources]
+pids = 8192
+memory = "2g"
+memory_swap = "16g"
+
+# T1's R0/R1 member; the public composite below runs release-preconditions first.
+[lanes.assay-r0-r1]
+kind = "assay"
+assay_lane = "cmru-r0-r1"
+environment = "tester-unified"
+budget = "60m"
+
+[lanes.assay-r0-r1.resources]
 pids = 8192
 memory = "2g"
 memory_swap = "16g"
@@ -139,31 +151,8 @@ pids = 8192
 memory = "2g"
 memory_swap = "16g"
 
-[lanes.coverage]
-kind = "command"
-environment = "tester-unified"
-argv = [
-  "bash",
-  "-c",
-  '''
-set -euo pipefail
-cd {worktree}/cmru
-rm -f coverage.json junit-coverage.xml
-/opt/tester-venv/bin/python tools/check_assay_source.py --assay-source ../assay
-/opt/tester-venv/bin/python -m pip install --quiet --disable-pip-version-check --no-input --no-deps --no-build-isolation --editable ../assay
-exec env PYTHONPATH=src:../libraries/worktree/src /opt/tester-venv/bin/python -m pytest tests -q --cov=src/cmru --cov-branch --cov-fail-under=100 --cov-report=json:coverage.json --junitxml=junit-coverage.xml
-''',
-]
-budget = "30m"   # one full-suite run (~842 s measured on the shared host)
-artifacts = ["coverage.json", "junit-coverage.xml"]     # disclosed after every run (RG-10)
-
-[lanes.coverage.resources]
-pids = 8192
-memory = "2g"
-memory_swap = "16g"
-
 # Fast regression slice for CMRU's release gate policy and its precondition
-# report. The full coverage lane below still judges every production branch.
+# report.
 [lanes.release-preconditions]
 kind = "command"
 environment = "tester-unified"
@@ -174,6 +163,8 @@ argv = [
 set -euo pipefail
 cd {worktree}/cmru
 exec /opt/tester-venv/bin/python -m pytest \
+  tests/test_w3_prep_changelog_preflight.py \
+  tests/test_release_gate.py \
   tests/test_release_gate_preconditions.py \
   tests/test_release_gate_provisional.py \
   tests/test_project_fixture.py -q --cli-case-partial
@@ -186,9 +177,40 @@ pids = 8192
 memory = "2g"
 memory_swap = "16g"
 
-# Dedicated ephemeral environment for CMRU's mutation lane. Inheriting the
-# central tester-unified definition preserves its shared image/cgroup policy;
-# this name adds only CMRU-specific release-baseline facts.
+# CMRU's T1 mapping keeps the moved release-start guards first.
+[lanes.r0-r1]
+kind = "sequence"
+lanes = ["release-preconditions", "assay-r0-r1"]
+
+# Focused tester-unified lane for R2 survivor regressions and Assay target
+# inventory. Optional selectors after `--` let closeout probes run one oracle.
+[lanes.survivor-regressions]
+kind = "command"
+environment = "tester-unified"
+description = "Run focused CMRU survivor regression oracles."
+accepts_args = true
+argv = [
+  "bash",
+  "-c",
+  '''
+set -euo pipefail
+cd {worktree}/cmru
+/opt/tester-venv/bin/python -m pip install --quiet --disable-pip-version-check --no-input --no-deps --no-build-isolation --editable ../assay
+export PYTHONPATH="src:../libraries/worktree/src"
+export PYTHONDONTWRITEBYTECODE=1
+if [ "$#" -eq 0 ]; then
+    set -- tests/test_assay_lane_inventory.py tests/test_assay_baseline_gate.py \
+        tests/test_docs_config_examples.py tests/test_r2_survivors_s*.py
+fi
+exec nice -n 10 /opt/tester-venv/bin/python -m pytest -q --cli-case-partial "$@"
+''',
+  "--",
+]
+budget = "10m"
+
+# Dedicated ephemeral environment for CMRU's mutation lane. Project environment
+# tables replace central ones as a whole, so this repeats the tester image and
+# cgroup facts and owns its own io_sync policy.
 [environments.cmru-mutation]
 mode = "ephemeral"
 image = "tester-unified:local"
@@ -198,23 +220,19 @@ forward_env = ["CGROUP_PARENT_DEV_BACKGROUND", "CMRU_ASSAY_BASELINE_FACTS"]
 
 [environments.cmru-mutation.resources]
 cpus = "3"
+io_sync = "relaxed"
 
 # The mutation lane receives token-free remote facts generated immediately
 # before it starts. CMRU's host-side gate uses its configured secret through
 # CMRU's scoped Git transport; the tester container receives tag names and
 # commit IDs only, never publisher credentials.
-# Mutation and Assay R1 must use the same PREVIOUS cmru release tag, never
-# origin/main (KI-18): at release time the tree IS origin/main, so that base
-# leaves zero candidates and the campaign fails --require-candidates. The
-# checker resolves the highest-version published cmru-v* tag in the candidate's
-# full ancestry and requires it to match assay.toml's pinned R1 base. Host facts
-# include every published CMRU tag and its commit so the tester can verify the
-# selection through Assay's sanitized ancestry API. A rerun on a
-# release-tagged HEAD excludes every tag at HEAD and selects the highest-version
-# published release in the remaining ancestry. If Assay resolves a merge's first
-# parent after that tag, configured CMRU source roots must be unchanged across
-# the gap. Changed-source checks use Assay's sanitized Git boundary. Run the
-# registered `gate` lane to prepare the one-shot remote facts before mutation.
+# The aggregate mutation path defaults to the highest-version published
+# previous cmru release tag in the candidate's full ancestry. Whole-target R1
+# does not need a diff base. The standalone T3 `r2` lane receives an explicit
+# controller-selected R2-covered tag, which may be older. Host facts include
+# every published CMRU tag and its commit so the tester can verify the selected
+# base through Assay's sanitized ancestry API. Run the registered `gate` lane
+# to prepare one-shot origin facts before its aggregate mutation campaign.
 # An empty source diff writes skip evidence bound to candidate HEAD and emits
 # no tag; otherwise only an older skip record is removed before emitting it.
 [lanes.mutation]
@@ -255,26 +273,42 @@ pids = 8192
 memory = "2g"
 memory_swap = "16g"
 
-[lanes.canary]
+# T3 R2 entrypoint for the host controller's persistent per-commit checkout.
+# The bundle contains local CMRU release tags already verified as published by
+# that controller; this lane receives the chosen base explicitly and derives
+# the token-free fact document from the bundled refs. Keep the aggregate
+# `mutation` lane above until the controller's resume rehearsal is recorded.
+[lanes.r2]
 kind = "command"
-environment = "tester-unified"
+environment = "cmru-mutation"
+resource_observer = "cgprofile"
+clean_tree = true
 argv = [
   "bash",
   "-c",
   '''
 set -euo pipefail
 cd {worktree}/cmru
-rm -f coverage.json junit-coverage.xml
+BASE="{base}"
 /opt/tester-venv/bin/python tools/check_assay_source.py --assay-source ../assay
 /opt/tester-venv/bin/python -m pip install --quiet --disable-pip-version-check --no-input --no-deps --no-build-isolation --editable ../assay
+/opt/tester-venv/bin/python -m pytest tools/test_mutation_campaign.py -q
+CMRU_ASSAY_BASELINE_FACTS=$(/opt/tester-venv/bin/python tools/local_baseline_facts.py --base "$BASE")
+export CMRU_ASSAY_BASELINE_FACTS
+BASE=$(/opt/tester-venv/bin/python tools/check_assay_baseline.py --base "$BASE" --skip-evidence)
+if [ -z "$BASE" ]; then
+    echo "r2: no changed source — explicit skip evidence recorded"
+    exit 0
+fi
 mkdir -p .assay
-exec /opt/tester-venv/bin/python tools/coverage_canary.py --repo-root {worktree} --project-root . --target src/cmru/config.py --evidence .assay/coverage-canary-cmru.json -- env PYTHONPATH=src:../libraries/worktree/src /opt/tester-venv/bin/python -m pytest tests -q --cov=src/cmru --cov-branch --cov-fail-under=100 --cov-report=json:coverage.json
+exec /opt/tester-venv/bin/python tools/mutation_campaign.py --assay-source {worktree}/assay --repo-root {worktree} --project-root . --base "$BASE" --max-mutants 10000 --timeout-seconds 600 --evidence .assay/mutation-cmru.json --progress .assay/progress-mutation-cmru.jsonl --require-candidates --resume -- env PYTHONPATH=src:../libraries/worktree/src PYTHONDONTWRITEBYTECODE=1 /opt/tester-venv/bin/python -m pytest tests -q --maxfail=1
 ''',
+  "--",
 ]
-budget = "45m"   # control AND transformed run of the full suite (~2x the ~842 s suite)
-artifacts = [".assay/coverage-canary-cmru.json"]
+budget = "7h"
+artifacts = [".assay/mutation-cmru.json"]
 
-[lanes.canary.resources]
+[lanes.r2.resources]
 pids = 8192
 memory = "2g"
 memory_swap = "16g"
@@ -286,7 +320,7 @@ memory_swap = "16g"
 # The full implementation gate includes R2. The release step may select the
 # explicit provisional sibling below when the operator postpones that long
 # campaign; the marker is retained with release evidence. Both lanes run the
-# same ref-probe, installed-wheel, assay R0/R1/R3, coverage, and canary checks.
+# same ref-probe, installed-wheel, and Assay R0/R1/R3 checks.
 # Bare-host,
 # not "host" (run-gate RG-43 estate-wide sweep, 2026-09-03): as of rev 36,
 # plain "host" is a CONTAINER default with no docker-socket mount (verified
@@ -307,8 +341,8 @@ kind = "command"
 environment = "bare-host"
 argv = ["python3", "-I", "-B", "{worktree}/cmru/tools/run_release_gate.py", "--worktree", "{worktree}"]
 clean_tree = false   # sub-lanes each enforce their own clean-tree check
-# The conjunction includes the Assay R0/R1/R3 lane (budget: [lanes.assay]) plus total coverage,
-# the 7h tag-based R2 mutation, and the cause-sensitive canary.
+# The conjunction includes the Assay R0/R1/R3 lane (budget: [lanes.assay])
+# plus the 7h tag-based R2 mutation.
 budget = "14h"
 
 # Operator-approved provisional release gate (KI-79): skips ONLY the long R2

@@ -51,6 +51,10 @@ def make_case_b_installer(tmp_path: Path, **config_overrides) -> tuple[Installer
         "auto_reboot_after_stage1": False,
         "swap_disk_total_gb": 32,
         "swap_partition_count": 8,
+        # This fixture exercises a 50 GiB shrink plan with 32 GiB swap; the
+        # benchmark partition is explicitly disabled to leave that test shape
+        # physically feasible.
+        "partitioning": {"iobench_raw_gb": False},
     }
     defaults.update(config_overrides)
     config = Config(
@@ -193,7 +197,9 @@ def test_plan_root_shrink_refuses_when_preserve_is_smaller_than_filesystem_minim
     installer, actions = make_case_b_installer(
         tmp_path, preserve_root_size_gb=1, swap_disk_total_gb=45
     )
-    with pytest.raises(RuntimeError, match="root filesystem minimum plus 256 MiB"):
+    # Since the layout policy (NC-12) the generic root minimum (20% of the disk) refuses this shrink first; the
+    # filesystem-minimum refusal stays behind it as the second guard. Either way: refuse, write nothing.
+    with pytest.raises(RuntimeError, match="root filesystem minimum plus 256 MiB|below the minimum of 10 GiB"):
         installer._plan_root_shrink()
     assert "/etc/vbpub/root-shrink-plan.env" not in actions.files
 
@@ -208,7 +214,7 @@ def test_plan_root_shrink_refuses_a_noop_or_growing_target(tmp_path):
     # preserve_root_size_gb larger than the CURRENT root -- the computed
     # target would not actually shrink anything.
     installer, _ = make_case_b_installer(tmp_path, preserve_root_size_gb=1000)
-    with pytest.raises(RuntimeError, match="below preserve_root_size_gb"):
+    with pytest.raises(RuntimeError, match="below the minimum"):
         installer._plan_root_shrink()
 
 

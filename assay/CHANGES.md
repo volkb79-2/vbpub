@@ -5,18 +5,121 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 ## [Unreleased]
 
 ### Added
+
+- B529: execution-resource settings are no longer part of the native-R2 judge identity. The loaded lane file and the `run-gate.toml` beside it are projected before the judged-tree digest: `budget`, `judge.mutation.jobs`/`jobs_max`/`max_mutants`/`shard_*`/scheduling hints, isolation materialization knobs, `[isolation.limits]`, canary `budget_per_attempt`, and Run-Gate's lane `budget`/`stall_timeout`/`memory`/`resources`/`jobs`/`workers*`/`profile`/`description` plus top-level `profile`/`footprint`/`resources`. Comment-only edits of those two files no longer invalidate either. Tests, fixtures, sources, argv, env, `budget_per_candidate`, liveness and every other file still invalidate (B088). Every new state record stores `resource_sha256`; a resumed `crashed`/`hung`/`budget_exceeded` record re-executes when it changed (`resume.resource_rejudged_total`).
+- B527: a changed judge never overwrites another judge's record. Before a write replaces `<store>/<id>.json` of a different judge, that file is hard-linked to `<store>/judges/<judge>/<id>.json` (bytes untouched), and the new `judges/` and `judges/<judge>/` entries and the link are synced to disk before the flat record is replaced; a returning judge resumes its generation and promotes it back (`resume.promoted_total`).
+- B530: `assay run --resume --carry-over STATE_DIR --carry-over-reason TEXT` reuses `killed`/`survived` records of another judge identity (flat and `judges/*` generations) with provenance: `judge_sha256` stays the executing judge and a `carry_over` block names the judge it was imported into, the source, the reason, the time and the importer version. Records filed under the wrong identity, of a refused shape or another bucket are not taken. `--merge-state STATE_DIR` copies records of the same judge from another store (permissive). `--shard K/N` runs leave a `shard.manifest` (index, count, judge, plan digest) in their store, and `--merge-shard-store STATE_DIR` (one per shard) is the STRICT whole-lane merge: an absent, empty, duplicated, foreign-judge, changed-plan, incomplete or polluted store refuses `BAD_LANE_CONFIG` before anything runs. Progress events `carry_over`, `candidates.imported_total`; `assay analyze campaign` reports `state.imported` and a `carry-over:` text line.
+- B531: `--only-candidates FILE` / `--exclude-candidates FILE` restrict execution in every mode (with `--shard` too); left-out candidates without a resumed or carried-over record are reported never started, the R2 claim is not a PASS and its detail starts `PARTIAL:`. `assay plan <lane> --list-pending --state-dir DIR [--judge SHA]` prints the ids still to do, one per line, in plan order.
+
+### Fixed
+
+- B251: keep the completed command outcome through the window-host process-tree protocol, so an exited leader with surviving descendants is recorded as `crashed` instead of aborting candidate projection. Validate the final outcome before the candidate's first mutation-state write, so a validation error and its `crashed/EXEC_FAILED` disposition are committed together and resume cannot retain a pre-projection bucket. The campaign continues; judge identity `/15` rejects pre-fix `/14` completed-leak records for re-execution, while malformed records with the current identity still fail validation. Budget and hung cleanup keep their own buckets.
+- B533: the 12.2.0 release attempt (`cd77603bb`, full tester-unified suite) failed four tests that the pre-merge `tooling-tests` lane never ran. The shared termination table still expected a timeout whose cleanup reaped a descendant to classify `LEAKED`/`crashed`; B251/A-506 made a timeout or hang keep `budget_exceeded`/`hung` after cleanup, so the row is now `timeout-beats-cleanup-leak` with a `hang-beats-cleanup-leak` sibling. The verify trust boundary now lists the v19 `CandidateOutcomeError` record type that `assay verify` rebuilds. `tooling-tests` now also runs the termination table and its consumers, the trust boundary, the dataclass contract and the B105 exclusion controls. The `analysis` lane's R1 coverage of the B530 carry-over refusal and text closeout line now comes from `analysis/tests`.
+- B534: the 12.2.0 release attempt 2's R1 lane (`self-qualification-provisional`) found 15 uncovered `src/assay` lines from B251. They are now covered by behavioural tests: the `CandidateOutcomeError` refusals, `MutantOutcome`'s `candidate_error` type/ledger/ingested refusals, the state-record `candidate_error` refusals, the window-host `underlying_outcome` wire refusal, and the missing-projection invariant. One unreachable branch was removed. The merge checklist now requires the R1 lane for changes to `assay/src/**`, and tester-unified for changes to `assay/analysis/src/**`.
+- A-507 / B535: the R2 postponement window of `self-qualification-provisional` (B169) is extended to `< 12.3.0` by operator decision 2026-11-12, so 12.2.0 is released gated by R0, R1 and the R3 canary; assay's own R2 runs afterwards as the T3 check on the 12.2.0 release and stays a named known issue until a PASS is recorded.
+
+### Changed
+
+- Verdict schema v19 is a hard cut from v18. Native crashed candidates may carry bounded `candidate_error` evidence; completed process-tree leaks require the completed `underlying_outcome` unless that candidate is explicitly recorded with a projection error. See the v18-to-v19 consumer migration.
+
+### Documentation
+
+- Added and aligned the planned Rust methodology, README matrix, design rationale, consumer guidance, decisions A-498-A-505, and backlog entries B241-B250 with operator decisions D1-D8. Rust remains unimplemented; the docs define the T2 sequence and single canary, asynchronous diff-scoped T3 R2 policy, and `tester-unified-rust` image cache with `cargo fetch --locked` and offline locked lanes.
+- B251 / A-506: document the R2 leak root cause, per-candidate crash recovery, v19 consumer migration, and acceptance conditions.
+
+<!-- cmru: release history -->
+
+## [12.1.1] - 2026-11-09
+<!-- cmru: generated -->
+<!-- cmru: source-end=520e9ae660dbd0462959fa5151a55d30af078339 -->
+
+### Fixed
+- fix(assay): harden release-gate checks after 12.1.0 (B236-B240) (04622d0de)
+
+### Documentation
+- docs(assay): correct B236-B240 commit records (3985d0329)
+- docs(assay): record B236-B240 verification and status (1439d3350)
+- docs(assay): correct B239 failure groups and B240 HOME evidence (40e66a2dc)
+- docs(assay): file B236..B240 (b105 lane policy tests, release-gate HOME guard, waiver-window docs binding, pre-merge gate set, post-R0 phase risk) (d0cbd6571)
+
+<!-- cmru: pending release notes begin -->
+### Fixed
+- B236: the B105 report checker's full-qualification lane environment policy now has refusal-direction tests for extra, missing, emptied, reordered and wrongly shaped environment and infrastructure declarations. B237: remote release-gate delegation refuses unset or empty `HOME` with the remote-gate configuration remedy while local delegation remains available. B238: the public-docs test derives the R2 waiver interval from `WINDOW` and binds the README, consumer and design-guide spellings after whitespace normalization. B239: the pre-merge `tooling-tests` lane now includes the B105 checker and public-docs window tests, with the path trigger recorded in `nyxloom-trove/WORKFLOW.md`. B240: all four container-side launchers no longer write `safe.directory` to a container-user global Git config; per-invocation config or `GIT_CONFIG_*` environment replaces that HOME dependency. The full delegated release gate needed to close B240's live phase evidence remains pending. (04622d0de)
+<!-- cmru: pending release notes end -->
+
+## [12.1.0] - 2026-11-09
+<!-- cmru: generated -->
+<!-- cmru: source-end=2f7f386cccc3f73f84dd5519289130507df7df25 -->
+
+### Added
+- feat(assay): use env-only observer endpoints and delegate release gates (531c57e9e)
+- feat(assay): observer launchers use the per-level cgprofile socket path; host Docker GID from override or docker.sock (B522) (c7b439ccb)
+- feat(assay): leaked-process-tree names the leaked processes (pid/ppid/comm/argv) in claim detail, progress and stderr (B233) (cdc14e42e)
+- feat(assay): judge.mutation.candidate_fail_fast, candidate-only -x and no coverage for native pytest R2 (WP1) (882c7aaa1)
+- feat(assay): isolation.materialize = tmpfs-worker, one restored-in-place tmpfs tree per mutation worker (B223) (14930488a)
+- feat(assay): B224 export carries the verified claim set and declared paths (rigor-evidence A-1a) (063519163)
+- feat(assay): B219 assay analyze export, the rigor-fragment judgment facts (rigor-evidence A-1) (df7300385)
+
+### Fixed
+- fix(assay): registered release gate green in the delegated HOME-less lane (b105 checker env-only policy, release-gate test HOME, docs window derived) (8e4b5acc7)
+- fix(assay): close x02-e4 review gaps (c3488d82a)
+- fix(assay): close host socket review findings (a4ff1f445)
+- fix(assay): strict Docker GID source (non-unix DOCKER_HOST and root-group socket refused), GID-bearing collision message, deterministic default-socket tests, B212/B522 reconciliation, RESOURCE-PROFILES observer name (24c9f53be)
+- fix(tnt): R2 lane qualifies from a tag (TNT-63): drop docstring-only init targets, private-socket tmux teardown, deadline-based TUI waits (f3aac7c4d)
+- fix(assay): B233 review: zombie describe test, stronger cmdline redaction, capped progress list, docs (30371d34b)
+- fix(assay): B229 import on Python 3.11 (Coverage line-map defaults via default_factory) + 3.11 floor guard test (db44d9d0e)
+- fix(assay): candidate_fail_fast preflight runs the exact candidate command to a full PASS, bounded timeout, -x guidance, tests (WP1 review M1/L1-L5) (38d8413e4)
+- fix(assay): list _tmpfs_worker.py in the self-qualification whole-source target lists (B223) (4611221b3)
+- fix(assay): B105 launcher env/mount checks no longer race SIGPIPE under pipefail (grep -q on a here-string, not a printf pipe) (a3505563a)
+- fix(assay): prime the template index, bound the child closure to new objects, tiered clone verification (B219 B220 B222) (fb2cf5e27)
+
+### Changed
+- docs/test(lows-1): review fixes (ciu CIU-114 catalog wording, assay unattended-cancel credential scrub assertion) (4b238d15f)
+- assay: extend provisional R2 postponement window (7ad24b884)
+- assay: harden gate observer and signal checks (16a9e318b)
+- refactor: point the estate at cgprofile (cmru, tester-unified, run-gate, mdt-cockpit, rigor-record, assay, ciu, root files) (246b30136)
+- assay: apply host service socket amendment (511456d68)
+- backlog: assay B229 does not import on Python 3.11 (found in netcup-api-filter@cf6de42) (2f41dcb45)
+- assay: B217 per-step materialize timings, B218 raw fsync vs eatmydata preload (found writing dstdns PARALLELISM-AND-PERFORMANCE) (93db7f90f)
+
+### Documentation
+- docs: say cgprofiled in the text merged from the endpoint work (cli-extended example, assay tool messages, netcup docs) (7a4159ffc)
+- docs(assay): B226 fix needs both the deadline and a hoisted topology check; orphan cause and observation hedged (review round 1) (712630ff7)
+- docs(assay): B226 root cause measured (P22 bootstrap rev-parse runs without the deadline); drop duplicated B225/B226 blocks (db084ba5e)
+- docs(assay): file B234 (zombie vs live leaked descendant state) from B233 review F4 (179139734)
+- docs(assay): B233 backlog and CHANGES (7a2797c26)
+- docs(assay): remove stray merge markers from the backlog (4678caf80)
+- docs(assay): B223 status carries the measured cow vs tmpfs-worker comparison (no wall gain on btrfs CoW; needs cheap_clone) (4ce7280cc)
+- docs(assay): drop stray merge marker line (a0190a17b)
+- docs(assay): renumber the isolation-hang backlog item to B226 (B225 is the ZFS evaluation) (e7327da2f)
+- docs(assay,cowtree): backlog B225, COW-BL-07/08 from the OpenZFS evaluation (v1001) (38e1eba72)
+- docs(assay): file B225 (test_isolation topology test hang, investigation) (8725b877d)
+- docs(assay): backlog B219-B223 from the materialization-backend experiment (v1001) (5678f4f6c)
+
+### Testing
+- test(assay): cover the materialize/tmpfs lane-file loader and the tiered max_total_object_bytes refusal (12.1.0 self-qualification-provisional UNCOVERED_LINES) (0c12456d0)
+- test(assay): a release without a verdict-schema change must not fail the CHANGES schema-note check (12.1.0 release gate failure) (01c11a32e)
+- test(assay): fix three B219/B220 test-side defects (stripped porcelain column, no-op child commit, reason-code name) (659e8305f)
+
+<!-- cmru: pending release notes begin -->
+### Added
+- B233: a `leaked-process-tree` refusal now names the leaked processes. The R0 claim detail reads `leaked-process-tree: pid=N ppid=M comm=C argv=...` (bounded by the claim detail limit), the `command_finished` progress event gains `leaked_descendants` (first 20 of `pid`, `ppid`, `comm`, optional `cmdline`) and `leaked_descendants_total`, and the run prints `assay: leaked process outlived the command: ...` on stderr. The optional `cmdline` of a process-tree descendant is at most 16 arguments of 200 characters, best-effort redacted (secret-named `NAME=value`/`NAME: value`, `Bearer`/`Basic` tokens, URL userinfo, `-pSECRET`, the argument after `-H`/`--header`/`-u`/`--user`/`-p`/`--env` or a secret-named flag, all but a 24-character prefix of a `-c`/`-e`/`-E` string); treat it as possibly containing secrets. The verdict schema accepts `cmdline` as an optional key and is unchanged, but a verdict containing it fails the key-set check of an assay older than this change. Documented in `docs/CONSUMERS.md`.
 - `assay analyze export` (B227, rigor-evidence package A-1): verifies a verdict and writes its judgment-fact fragment (`urn:vbpub:rigor-fragment:1`, kind `assay-lane`: outcome, R1 coverage, R3 canary, R2 counts, score and survivors, no resource numbers). Verdict schema 18 only (older verdicts fail with `VERDICT_SCHEMA_ARCHIVED`); more than 500 survivors go to a `<out>.survivors.json` sidecar. Verdict schema unchanged. See `docs/CONSUMERS.md`.
 - `assay analyze export` fragment gains `claims` (the verified claim set `[{rigor, outcome}]`, R0..R3, the only source of R1/R2/R3 for a consumer), `inputs` (`isolation.link_paths`) and `judged_paths` (`judge.source_roots`) (B228, rigor-evidence A-1a). Additive: optional keys of `rigor-fragment/1`, no major bump, verdict schema unchanged. `docs/CONSUMERS.md` is now the normative text and the canonical schema copy of the assay-lane fragment.
-- `assay.mutation.JUDGE_IDENTITY_LABEL`: public name of the judge identity label (`assay-judge-identity/14`), used by the export. The identity digest itself is unchanged.
+- `assay.mutation.JUDGE_IDENTITY_LABEL`: public name of the judge identity label (`assay-judge-identity/15`), used by the export. The new identity re-executes `/14` records so completed-leak corruption and durable candidate-error state are evaluated under the current contract.
 - WP1: new lane key `judge.mutation.candidate_fail_fast` (opt-in, native pytest lanes): candidate commands, never the baseline, drop their pytest-cov options and gain `-x -p no:pytest_cov`, so a killed mutant stops at its first failing test and pays no coverage cost. A preflight runs the exact candidate command (witness plugin included) to a full PASS on the unmutated snapshot and refuses the lane with `BAD_LANE_CONFIG`, naming the exit and the first failing test, otherwise (every nonzero exit would otherwise be a false kill, including a test that fails only at setup once pytest-cov is off); it has its own timeout, twice the baseline's wall time. The transform is folded into `judge_sha256` only when on (turning it on or off invalidates resume records; all existing identities are unchanged), is ignored under `--cold-witness`, and leaves the failed-call witness active only when the lane's declared argv has no `-x`/`--maxfail` (a user `-x` disables the failed-call witness: adopting the key means removing `-x` from the lane argv).
 
 ### Changed
+- B522 / WP-E4: the tester and self-qualification launchers require `CGPROFILE_OBSERVER_SOCKET` from the host environment and mount its directory read-only at the same path inside the container. All six observer lanes declare `ASSAY_RESOURCE_OBSERVER_SOCKET` as `required-env`; a missing endpoint now names its variable and remedy. The 2026-11-08 operator decision extends the B169 R2 waiver to `assay >=10.0.0, <12.2.0` for the release carrying this E4 env-only launcher and delegated release-gate work; R2 will run later on the latest release. Version 12.1.0 is inside the window; 12.2.0 and later require a new operator waiver decision. `tools/release-gate.sh` accepts the required `ASSAY_RELEASE_GATE_HOST` selector (`local`, `v1001`, or `r1002`); remote runs transfer the candidate Git bundle and are accepted only when `meta.json` matches `CMRU_RELEASE_GATE_COMMIT` and `result.json` is `PASS`. The CMRU transaction and credentials remain on the controller. See `docs/CONSUMERS.md` and `docs/DESIGN-GUIDE.md`.
 - B219: the sealed snapshot template's Git index is refreshed once before sealing (`update-index --refresh`), so `git status` in a copy-on-write clone validates by `lstat` instead of hashing the whole worktree for every candidate (measured on a 7.6k-file repository: 173.6 MB to 37.2 MB read and 2.31 s to 0.33 s materialize per candidate). A clone that does not preserve inode numbers or timestamps still hashes and stays correct.
 - B220: under `verify_clone = "tiered"` the child closure limits are computed from totals recorded when the seed was prepared plus the objects the replacement adds (commit, trees on the path, new blob) with one `cat-file --batch-check`, instead of two `rev-list --objects` walks over the whole pack per candidate. The limits fire at the same thresholds; a path containing a newline, a repository prepared without base facts, and `verify_clone = "full"` keep the full walk.
 - B222: new lane key `isolation.verify_clone = "tiered" | "full"` (default `tiered`). Tiered proves the sealed template completely once (at build), repeats the complete clone proof for the first and every 25th clone, and otherwise checks the replacement's identity (HEAD, index tree, the blob at the replaced path, the replaced file's bytes and mode). The post-command dirt check is unchanged and still runs for every candidate. `full` keeps the pre-B222 per-clone proof.
 - B223: new lane keys `isolation.materialize = "cow" | "tmpfs-worker"` (default `cow`), `isolation.tmpfs_root` (default `/dev/shm`) and `isolation.tmpfs_max_mib` (default 1024). With `tmpfs-worker` each mutation worker thread owns one tree on the declared memory-backed directory, copied once from the sealed template (index refreshed inside the final location) and fully proved on its first candidate; per candidate only the replaced file is written, and afterwards the file, index, `HEAD`, planted `link_paths` and added loose objects are restored and the whole tree is scanned against its pristine stat map (entries a candidate added are removed; a changed or missing entry drops the tree, which the next candidate rebuilds). A directory that is not a tmpfs, a tree above `tmpfs_max_mib`, too little free space or a write error falls back to the copy-on-write clone path with one stderr advisory. Baseline materializations, nested materializations and non-copy-on-write workspaces always use the old path. Verdict inputs and the post-command dirt check are unchanged; see docs/CONSUMERS.md for the run-gate side (a sized `/dev/shm` or `--tmpfs`).
 
-<!-- cmru: release history -->
+### Fixed
+- The registered release gate runs green in a delegated, HOME-less lane again: `tools/b105_report_check.py` accepts the env-only observer lane policy (`env_passthrough = ["PATH"]` plus the `required-env` infrastructure entry; it rejected every valid full R2 report), the `release-gate.sh` tests no longer depend on the caller having `HOME`, and the provisional-lane docs test derives the waiver window from the gate script's single `WINDOW` and ignores line wrapping.
+- B229: assay imports on Python 3.11 again (12.0.0 died at `import assay` with `ValueError: mutable default <class 'mappingproxy'> for field unclassified_lines`). The three `Coverage` line-map fields (`unclassified_lines`, `excluded_lines`, `missing_branch_lines`) now use `field(default_factory=...)` instead of a shared `MappingProxyType({})` default, which 3.11 rejects (3.12+ only rejects list/dict/set). Values and verdict output are unchanged. New `tests/core/test_b229_python311_floor.py` parses every shipped source file with the 3.11 grammar and rejects any unhashable dataclass field default, so the declared `requires-python = ">=3.11"` floor is tested.
+<!-- cmru: pending release notes end -->
 
 ## [12.0.0] - 2026-11-04
 <!-- cmru: generated -->

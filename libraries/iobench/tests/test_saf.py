@@ -4,6 +4,7 @@ import json
 import pytest
 
 from iobench import restore
+from iobench.calibrate import Calibrator
 from iobench.errors import Aborted, Refusal, VerificationFailure
 from iobench.host import HostError
 from iobench.restore import Safety
@@ -318,6 +319,7 @@ def test_saf_02_restore_on_signal_in_a_run():
     assert not host.exists(restore.JOURNAL)
     failed = read_json(host, f"{STATE}/result.last-failed.json")
     assert failed["run"]["status"] == "aborted" and failed["restore"]["verified"] is True
+    assert failed["schema_minor"] == 5 and failed["partial"]["status"] == "incomplete"
 
 
 def test_saf_02_restore_at_the_start_of_the_next_run():
@@ -367,6 +369,21 @@ def test_saf_05_live_host_refuses_in_a_run():
 
 def test_saf_06_abort_in_a_run_kills_fio_and_restores():
     host = calibrated_host()
+    handles = []
+    spawn, write_range = host.spawn, host.write_range
+
+    def tracked_spawn(argv):
+        handle = spawn(argv)
+        handles.append(handle)
+        return handle
+
+    def tracked_write_range(argv, target, offset, length):
+        handle = write_range(argv, target, offset, length)
+        handles.append(handle)
+        return handle
+
+    host.spawn = tracked_spawn
+    host.write_range = tracked_write_range
     pressure = {"v": 0.0}
     host.dynamic["/sys/fs/cgroup/game-server.slice/io.pressure"] = lambda: f"some avg10={pressure['v']} avg60=0.0 avg300=0.0 total=1\n"
     host.at(host.now() + 200, lambda: pressure.update(v=95.0))
@@ -375,6 +392,11 @@ def test_saf_06_abort_in_a_run_kills_fio_and_restores():
     assert out.status == "aborted" and out.exit_code == 8 and "io.pressure" in out.message
     assert host.now() - t0 < 215  # 3 consecutive samples after the pressure rose, not the end of the run
     assert host.read_text("/sys/class/block/vda/queue/nr_requests") == "64\n" and not host.exists(restore.JOURNAL)
+    assert handles and any(handle.killed for handle in handles)
+    assert all(handle.killed or handle.finished for handle in handles)
+    written = host.devices["/dev/vda7"].write_bytes
+    host.advance_to(host.now() + 1000)
+    assert host.devices["/dev/vda7"].write_bytes == written
     # the abort file
     h2 = calibrated_host()
     h2.at(h2.now() + 100, lambda: h2.put(restore.ABORT_FILE, ""))
@@ -385,6 +407,20 @@ def test_saf_06_abort_in_a_run_kills_fio_and_restores():
     h3.at(h3.now() + 100, lambda: h3.put(restore.ABORT_FILE, ""))
     c = calibrate(h3)
     assert c.exit_code == 8 and h3.read_text(f"{STATE}/calibration.json") == good
+
+
+def test_saf_02_stage_records_the_aborted_mark_before_propagating():
+    from helpers import config, make_host
+
+    run = Calibrator(make_host(cache=None), config())
+    run.fits = lambda _seconds: True
+
+    def abort():
+        raise Aborted("signal SIGTERM")
+
+    with pytest.raises(Aborted, match="signal SIGTERM"):
+        run.stage("S6", abort, required=True)
+    assert run.stages["S6"] == "aborted: signal SIGTERM"
 
 
 def test_saf_07_aborted_run_keeps_good_result_in_a_run():

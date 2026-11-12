@@ -44,13 +44,15 @@ def test_rm_cleans_every_committed_root_before_deleting(
     tmp_repo, fake_generate_env, monkeypatch
 ):
     record, nested = _setup(tmp_repo, "nested-a", "nested-b")
-    calls: list[Path] = []
+    calls: list[tuple[Path, bool]] = []
     monkeypatch.setattr(
-        worktree, "_clean_in", lambda root, *, yes: calls.append(root.resolve()) or 0
+        worktree, "_clean_in",
+        lambda root, *, yes, plan_only=False, **_kw:
+            calls.append((root.resolve(), plan_only)) or 0,
     )
     removed = worktree.remove(tmp_repo, "one")
-    assert set(calls) == {record.ciu_root.resolve(), *nested}
-    assert len(calls) == 3
+    roots = [nested[0], nested[1], record.ciu_root.resolve()]
+    assert calls == [*((root, True) for root in roots), *((root, False) for root in roots)]
     assert not removed.exists()
 
 
@@ -59,22 +61,20 @@ def test_a_sibling_root_failure_preserves_checkout_and_records(
 ):
     record, nested = _setup(tmp_repo, "nested-a", "nested-b")
     before = record.record_path.read_text(encoding="utf-8")
-    calls: list[Path] = []
+    calls: list[tuple[Path, bool]] = []
 
-    def clean(root, *, yes):
-        calls.append(root.resolve())
-        return 1 if root.name == "nested-b" else 0
+    def clean(root, *, yes, plan_only=False, **_kw):
+        calls.append((root.resolve(), plan_only))
+        return 1 if plan_only and root.name == "nested-b" else 0
 
     monkeypatch.setattr(worktree, "_clean_in", clean)
-    with pytest.raises(worktree.WorktreeError) as exc:
+    with pytest.raises(worktree.WorktreeRemovalError) as exc:
         worktree.remove(tmp_repo, "one")
     message = str(exc.value)
-    assert "nested-b" in message
-    assert str(nested[0]) in message.split("Roots already cleaned:")[1]
+    assert "preflight" in message and "nested-b" in message
     assert record.git_worktree_path.exists()
     assert record.record_path.read_text(encoding="utf-8") == before
-    # The selected root is cleaned only after every sibling succeeded.
-    assert record.ciu_root.resolve() not in calls
+    assert calls == [(nested[0], True), (nested[1], True), (record.ciu_root.resolve(), True)]
 
 
 def test_an_unreadable_sibling_root_refuses_before_any_deletion(
@@ -84,10 +84,11 @@ def test_an_unreadable_sibling_root_refuses_before_any_deletion(
     real_clean = worktree._clean_in
     cleaned: list[Path] = []
 
-    def clean(root, *, yes):
+    def clean(root, *, yes, plan_only=False, **_kw):
         if root.name == "nested-a":
-            return real_clean(root, yes=yes)  # no generated identity there
-        cleaned.append(root)
+            return real_clean(root, yes=yes, plan_only=plan_only)  # no generated identity there
+        if not plan_only:
+            cleaned.append(root)
         return 0
 
     monkeypatch.setattr(worktree, "_clean_in", clean)
@@ -119,7 +120,8 @@ def test_a_single_root_checkout_cleans_only_its_own_root(
     record = worktree.create(tmp_repo, "one", base="main")
     calls: list[Path] = []
     monkeypatch.setattr(
-        worktree, "_clean_in", lambda root, *, yes: calls.append(root.resolve()) or 0
+        worktree, "_clean_in",
+        lambda root, *, yes, plan_only=False, **_kw: calls.append(root.resolve()) or 0,
     )
     worktree.remove(tmp_repo, "one")
     assert calls == [record.ciu_root.resolve()]
@@ -131,7 +133,8 @@ def test_force_continues_past_a_failed_sibling_clean(
     record, _nested = _setup(tmp_repo, "nested-a")
     monkeypatch.setattr(
         worktree, "_clean_in",
-        lambda root, *, yes: 1 if root.name == "nested-a" else 0,
+        lambda root, *, yes, plan_only=False, **_kw:
+            1 if root.name == "nested-a" else 0,
     )
     removed = worktree.remove(tmp_repo, "one", force=True)
     assert not removed.exists()
@@ -144,7 +147,9 @@ def test_force_continues_past_an_unreadable_sibling_root(
     real_clean = worktree._clean_in
     monkeypatch.setattr(
         worktree, "_clean_in",
-        lambda root, *, yes: real_clean(root, yes=yes) if root.name == "nested-a" else 0,
+        lambda root, *, yes, plan_only=False, **kw:
+            real_clean(root, yes=yes, plan_only=plan_only, **kw)
+            if root.name == "nested-a" else 0,
     )
     removed = worktree.remove(tmp_repo, "one", force=True)
     assert not removed.exists()
@@ -189,7 +194,8 @@ def test_a_checkout_that_turns_dirty_is_refused_before_any_sibling_clean(
     record, _nested = _setup(tmp_repo, "nested-a", "nested-b")
     calls: list[Path] = []
     monkeypatch.setattr(
-        worktree, "_clean_in", lambda root, *, yes: calls.append(root.resolve()) or 0
+        worktree, "_clean_in",
+        lambda root, *, yes, plan_only=False, **_kw: calls.append(root.resolve()) or 0,
     )
     original_plan = worktree._branch_removal_plan
 
@@ -216,3 +222,202 @@ def test_a_sibling_root_resolving_outside_the_checkout_is_refused(
     swapped.symlink_to(outside)
     with pytest.raises(worktree.WorktreeError, match="resolves outside the checkout"):
         worktree._sibling_committed_roots(record.git_worktree_path, record.ciu_root)
+
+
+def test_every_root_clean_plan_runs_before_the_first_real_clean(
+    tmp_repo, fake_generate_env, monkeypatch,
+):
+    record, nested = _setup(tmp_repo, "nested-a", "nested-b")
+    calls: list[tuple[Path, bool]] = []
+
+    def clean(root, *, yes, plan_only=False, **_kwargs):
+        calls.append((root.resolve(), plan_only))
+        return 0
+
+    monkeypatch.setattr(worktree, "_clean_in", clean)
+    worktree.remove(tmp_repo, "one")
+
+    roots = [nested[0], nested[1], record.ciu_root.resolve()]
+    assert calls == [*((root, True) for root in roots), *((root, False) for root in roots)]
+
+
+def test_failed_root_plan_refuses_before_any_root_is_cleaned(
+    tmp_repo, fake_generate_env, monkeypatch,
+):
+    record, nested = _setup(tmp_repo, "nested-a", "nested-b")
+    calls: list[tuple[Path, bool]] = []
+
+    def clean(root, *, yes, plan_only=False, **_kwargs):
+        resolved = root.resolve()
+        calls.append((resolved, plan_only))
+        return 1 if plan_only and resolved == nested[1] else 0
+
+    monkeypatch.setattr(worktree, "_clean_in", clean)
+    with pytest.raises(worktree.WorktreeRemovalError, match="preflight.*nested-b"):
+        worktree.remove(tmp_repo, "one")
+
+    assert calls == [
+        (nested[0], True), (nested[1], True), (record.ciu_root.resolve(), True),
+    ]
+    assert record.git_worktree_path.exists()
+
+
+def test_rm_dry_run_reports_every_root_clean_preflight(
+    tmp_repo, fake_generate_env, monkeypatch,
+):
+    record, nested = _setup(tmp_repo, "nested-a", "nested-b")
+    calls: list[tuple[Path, bool]] = []
+
+    def clean(root, *, yes, plan_only=False, **_kwargs):
+        resolved = root.resolve()
+        calls.append((resolved, plan_only))
+        return 1 if resolved == nested[1] else 0
+
+    monkeypatch.setattr(worktree, "_clean_in", clean)
+    document = worktree.remove_document(tmp_repo, "one", dry_run=True)
+
+    assert calls == [
+        (nested[0], True), (nested[1], True), (record.ciu_root.resolve(), True),
+    ]
+    assert any("nested-b" in blocker and "clean preflight" in blocker
+               for blocker in document["blockers"])
+    assert record.git_worktree_path.exists()
+
+
+# --- coverage-gap closure (release gate, 2026-11-06) -----------------------------
+# Each test below drives one previously unexecuted refusal/continue branch of
+# `worktree rm`; every one asserts the user-visible message or the preserved
+# state, so removing or inverting the branch fails it.
+
+
+def test_rm_dry_run_reports_a_failing_selected_root_clean_plan(
+    tmp_repo, fake_generate_env, monkeypatch,
+):
+    record = worktree.create(tmp_repo, "one", base="main")
+    selected = record.ciu_root.resolve()
+    monkeypatch.setattr(
+        worktree, "_clean_in",
+        lambda root, *, yes, plan_only=False, **_kw:
+            3 if root.resolve() == selected else 0,
+    )
+    document = worktree.remove_document(tmp_repo, "one", dry_run=True)
+
+    assert any(
+        blocker.startswith("selected CIU root ")
+        and "`ciu clean --dry-run`) failed (exit 3)" in blocker
+        for blocker in document["blockers"]
+    )
+    assert record.git_worktree_path.exists()
+
+
+def test_rm_dry_run_reports_unavailable_root_discovery_as_a_blocker(
+    tmp_repo, fake_generate_env, monkeypatch,
+):
+    record = worktree.create(tmp_repo, "one", base="main")
+    from ciu import workspace
+
+    def boom(*_args, **_kwargs):
+        raise workspace.CiuWorkspaceError("ls-tree broke")
+
+    monkeypatch.setattr(workspace, "discover_committed_roots", boom)
+    monkeypatch.setattr(worktree, "_clean_in", lambda *_a, **_k: 0)
+    document = worktree.remove_document(tmp_repo, "one", dry_run=True)
+
+    assert any(
+        blocker.startswith("clean preflight unavailable:")
+        and "CIU-138" in blocker and "ls-tree broke" in blocker
+        for blocker in document["blockers"]
+    )
+    assert record.git_worktree_path.exists()
+
+
+def test_an_unavailable_selected_root_plan_refuses_before_any_clean(
+    tmp_repo, fake_generate_env, monkeypatch,
+):
+    record, nested = _setup(tmp_repo, "nested-a")
+    selected = record.ciu_root.resolve()
+    real_cleans: list[Path] = []
+
+    def clean(root, *, yes, plan_only=False, **_kw):
+        if plan_only and root.resolve() == selected:
+            raise worktree.WorktreeError("selected plan broke")
+        if not plan_only:
+            real_cleans.append(root.resolve())
+        return 0
+
+    monkeypatch.setattr(worktree, "_clean_in", clean)
+    with pytest.raises(
+        worktree.WorktreeRemovalError,
+        match="selected-root clean preflight was unavailable.*selected plan broke",
+    ):
+        worktree.remove(tmp_repo, "one")
+
+    assert real_cleans == []
+    assert record.git_worktree_path.exists()
+
+
+def test_force_skips_a_sibling_whose_marker_vanished_after_the_plan(
+    tmp_repo, fake_generate_env, monkeypatch,
+):
+    _setup(tmp_repo, "nested-a")
+    real_marker = worktree._ciu_root_marker_present
+    cleaned: list[str] = []
+    monkeypatch.setattr(
+        worktree, "_ciu_root_marker_present",
+        lambda root: False if Path(root).name == "nested-a" else real_marker(root),
+    )
+    monkeypatch.setattr(
+        worktree, "_clean_in",
+        lambda root, *, yes, plan_only=False, **_kw:
+            (cleaned.append(Path(root).name) if not plan_only else None) or 0,
+    )
+    removed = worktree.remove(tmp_repo, "one", force=True)
+
+    assert "nested-a" not in cleaned  # never guessed an identity for it
+    assert not removed.exists()
+
+
+def test_a_sibling_clean_that_raises_after_a_good_plan_refuses_and_names_cleaned_roots(
+    tmp_repo, fake_generate_env, monkeypatch,
+):
+    record, nested = _setup(tmp_repo, "nested-a", "nested-b")
+    calls: list[tuple[str, bool]] = []
+
+    def clean(root, *, yes, plan_only=False, **_kw):
+        calls.append((Path(root).name, plan_only))
+        if not plan_only and Path(root).name == "nested-b":
+            raise worktree.WorktreeError("identity vanished mid-clean")
+        return 0
+
+    monkeypatch.setattr(worktree, "_clean_in", clean)
+    with pytest.raises(worktree.WorktreeRemovalError) as exc:
+        worktree.remove(tmp_repo, "one")
+
+    message = str(exc.value)
+    assert "identity vanished mid-clean; NOT removing the checkout" in message
+    assert "Roots already cleaned: " in message and "nested-a" in message.split(
+        "Roots already cleaned: ")[1]
+    assert ("nested-a", False) in calls and ("nested-b", False) in calls
+    assert record.git_worktree_path.exists()
+
+
+def test_a_sibling_clean_that_fails_after_a_good_plan_refuses_and_names_cleaned_roots(
+    tmp_repo, fake_generate_env, monkeypatch,
+):
+    record, _nested = _setup(tmp_repo, "nested-a", "nested-b")
+    calls: list[tuple[str, bool]] = []
+
+    def clean(root, *, yes, plan_only=False, **_kw):
+        calls.append((Path(root).name, plan_only))
+        return 1 if not plan_only and Path(root).name == "nested-a" else 0
+
+    monkeypatch.setattr(worktree, "_clean_in", clean)
+    with pytest.raises(worktree.WorktreeRemovalError) as exc:
+        worktree.remove(tmp_repo, "one")
+
+    message = str(exc.value)
+    assert "`ciu clean` failed (exit 1) in sibling CIU root" in message
+    assert "nested-a; NOT removing the checkout" in message
+    assert "Roots already cleaned: none" in message
+    assert ("nested-b", False) not in calls  # stopped at the first failure
+    assert record.git_worktree_path.exists()

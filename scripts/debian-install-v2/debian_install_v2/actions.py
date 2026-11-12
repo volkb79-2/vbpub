@@ -36,6 +36,7 @@ KILL_REAP_SECONDS = 10.0
 # Anything else (e.g. -o APT::Update::Pre-Invoke::=...) is arbitrary command
 # execution via apt config and is refused.
 _APT_LOCK_TIMEOUT_RE = re.compile(r"DPkg::Lock::Timeout=[0-9]{1,5}")
+_DD_OPERAND_RE = re.compile(r"(if|of|bs|count|conv)=[^\s=]+")
 _CLOUD_INIT_CLEAN_ARGV = {
     ("clean",),
     ("clean", "--logs", "--seed"),
@@ -47,11 +48,13 @@ _SAFE_COMMANDS = {
     # full-upgrade/-s: the notify-only install-time pending count (simulation).
     "apt-get": {"update", "install", "upgrade", "full-upgrade"},
     "bash": {"-c"},
-    "blkid": set(),
+    # flag-checked since 2026-11-05 (div2-layout-tests): -s/-o value selectors, -t/-U/-L lookups, -p low-level probe
+    "blkid": {"-s", "-o", "-t", "-U", "-L", "-p"},
     "blockdev": {"--getsize64", "--rereadpt"},
     "btrfs": {"filesystem"},
     "curl": set(),
     "cloud-init": set(),
+    # dd has no dash options here; its key=value operands are checked against _DD_OPERAND_RE
     "dd": set(),
     "df": {"-B1", "-h", "--output=used"},
     "dumpe2fs": {"-h"},
@@ -61,16 +64,11 @@ _SAFE_COMMANDS = {
     "sha256sum": set(),
     "free": {"-g"},
     "git": {"clone", "fetch", "reset"},
-    # Cloud-guest-utils expands an existing partition without changing its
-    # start; installer.py validates the resulting table before resize2fs.
-    "growpart": {"--fudge"},
     "hostname": {"-f", "-I"},
     "ip": {"-j"},
-    # io.cost benchmark's throwaway partition (installer._run_io_benchmark).
     # Per-host CPU benchmark (installer._run_cpu_benchmark). No --force/--binary/--state-dir:
     # the installer never re-measures and never redirects the facts directory.
     "cpu_benchmark.py": {"--major", "--geekbench-version", "--sha256", "--produced-by", "--timeout"},
-    "iocost_coef_gen.py": {"--testfile", "--testfile-size-gb", "--duration", "--quiet"},
     "lsblk": {"-no", "-o"},
     "lvremove": {"-y"},
     # LT-UPG: list an initrd's contents to verify the root-shrink hook is in it.
@@ -78,13 +76,28 @@ _SAFE_COMMANDS = {
     "lspci": set(),
     "mkdir": {"-p"},
     "mkfs.ext4": {"-F", "-q", "-O", "-L"},
-    "mkswap": set(),
+    # Data area (installer._configure_data_area): filesystems on a BLANK new
+    # partition/LV only; lvm2 for the optional PV/VG/LV layout.
+    "mkfs.btrfs": {"-L"},
+    "mkfs.xfs": {"-L"},
+    "pvcreate": {"-y"},
+    "vgcreate": {"-s"},  # non-empty so unknown options are refused
+    "vgchange": {"-ay"},
+    # The only wipe path is the explicitly planned, unformatted iobench raw
+    # partition, immediately before the guarded installer benchmark runner.
+    "wipefs": {"-a"},
+    "iobench-install-runner": set(),
+    "lvcreate": {"-y", "-n", "-L", "-l"},  # -L NG fixed, -l N extents, -l 100%FREE for the "*" LV
+    "lvs": {"--noheadings", "-o"},
+    "vgs": {"--noheadings", "-o"},
+    "pvs": {"--noheadings", "-o"},
+    "mkswap": {"-L"},
     "modprobe": {"zstd"},
     "mount": {"-t", "-o"},
     "partx": {"-a", "-d", "-u", "--nr"},
     "pip3": {"install"},
-    "resize2fs": set(),
-    "sfdisk": {"--dump", "--force", "--no-reread"},
+    "resize2fs": {"-P"},
+    "sfdisk": {"--dump", "--force", "--no-reread", "--no-tell-kernel", "-N"},
     "sh": {"-c"},
     "sshd": {"-T"},
     "swapon": {"-p", "--show=NAME,TYPE,SIZE,PRIO", "--noheadings"},
@@ -154,6 +167,18 @@ class HostActions:
                     "cloud-init invocation is not allowlisted: "
                     f"{argv[1:]!r}"
                 )
+        elif command == "iobench-install-runner":
+            expected = str(Path(__file__).resolve().parents[1] / "tools" / "iobench-install-runner")
+            if argv[0] != expected or len(argv) != 9:
+                raise ActionError("iobench installer invocation is not the fixed planned-partition command")
+            if argv[1] != "--target" or not re.fullmatch(r"/dev/[A-Za-z0-9._/-]+", argv[2]):
+                raise ActionError("iobench installer target is not a block-device path")
+            if argv[3] != "--expect-size" or not re.fullmatch(r"[1-9][0-9]*", argv[4]):
+                raise ActionError("iobench installer size is invalid")
+            if argv[5] != "--expect-partuuid" or not re.fullmatch(r"[0-9A-Fa-f-]{36}", argv[6]):
+                raise ActionError("iobench installer PARTUUID is invalid")
+            if argv[7] != "--state-dir" or not Path(argv[8]).is_absolute() or ".." in Path(argv[8]).parts:
+                raise ActionError("iobench installer state directory is invalid")
         elif allowed:
             if command == "apt-get":
                 args = argv[1:]
@@ -167,10 +192,14 @@ class HostActions:
             if command in {"apt-get", "git", "systemctl"}:
                 if not any(arg in allowed for arg in argv[1:]):
                     raise ActionError(f"{command} operation is not allowlisted")
-            elif command != "blkid" and not all(arg in allowed for arg in argv[1:] if arg.startswith("-")):
+            elif not all(arg in allowed for arg in argv[1:] if arg.startswith("-")):
                 unexpected = [arg for arg in argv[1:] if arg.startswith("-") and arg not in allowed]
                 if unexpected:
                     raise ActionError(f"{command} option(s) are not allowlisted: {unexpected}")
+        if command == "dd":
+            bad = [arg for arg in argv[1:] if not _DD_OPERAND_RE.fullmatch(arg)]
+            if bad:
+                raise ActionError(f"dd operand(s) are not allowlisted: {bad}")
         if not allow_shell and command in {"bash", "sh"}:
             raise ActionError("shell commands are only accepted through write_file templates")
 

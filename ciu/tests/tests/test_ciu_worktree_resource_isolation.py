@@ -107,9 +107,13 @@ def test_primary_image_collision_check_normalizes_implicit_latest():
         )
 
 
-def test_primary_image_map_uses_primary_checkout_resolved_identities(monkeypatch, tmp_path):
+def test_primary_image_map_uses_primary_checkout_resolved_identities(
+    monkeypatch, tmp_path, write_instance_facts,
+):
     primary = tmp_path / "primary" / "ciu"
     linked = tmp_path / "linked" / "ciu"
+    primary.mkdir(parents=True)
+    write_instance_facts(primary, instance_id="main-id", network="n")  # CIU-176: facts exist
     seen = {}
     monkeypatch.setattr(worktree, "primary_ciu_root", lambda _root: primary)
     monkeypatch.setattr(
@@ -145,8 +149,12 @@ def test_primary_image_map_uses_primary_checkout_resolved_identities(monkeypatch
     }
 
 
-def test_primary_image_map_refuses_unresolved_compose_interpolation(monkeypatch, tmp_path):
+def test_primary_image_map_refuses_unresolved_compose_interpolation(
+    monkeypatch, tmp_path, write_instance_facts,
+):
     primary = tmp_path / "primary"
+    primary.mkdir()
+    write_instance_facts(primary, instance_id="main-id", network="n")  # CIU-176: facts exist
     monkeypatch.setattr(worktree, "primary_ciu_root", lambda _root: primary)
     monkeypatch.setattr(deploy, "_render_environment_for_checkout", lambda _root: {})
     monkeypatch.setattr(

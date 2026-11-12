@@ -7,6 +7,50 @@ know when upgrading; it is not generated.
 
 ## Contract and upgrade notes
 
+### 0.6.0 — endpoint publisher ownership and damaged-fragment warnings
+
+Library contract version remains 1 and the surface manifest schema remains 7.
+The shared CLI controls and consumer route signatures are unchanged, so no
+`surface sync` is required solely for this release.
+
+- **Endpoint publisher removed from cli-extended.** `cli_extended.hostcfg`,
+  `cli_extended.hostcfg.endpoints`, and the
+  `python -m cli_extended.hostcfg.endpoints` command are gone. The API appeared
+  during 0.6.0 development after 0.5.3 and was not in the 0.5.3 wheel, but any
+  service installer or endpoint consumer that adopted it from `main` must
+  migrate to Augeaswrap. Installers that publish endpoint fragments and
+  consumers that require endpoint variables must add the `augeaswrap`
+  dependency and change their imports:
+
+  ```python
+  from augeaswrap import Problem
+  from augeaswrap.endpoints import (
+      publish,
+      require_env,
+      validate_owner,
+      withdraw,
+  )
+  ```
+
+  Replace the CLI likewise:
+
+  ```bash
+  python3 -m augeaswrap endpoints publish ...
+  python3 -m augeaswrap endpoints withdraw --owner ...
+  python3 -m augeaswrap endpoints check --json
+  python3 -m augeaswrap endpoints show
+  ```
+
+  The `/etc/host-endpoints.d` paths, fragment v1 format, shared generated
+  files, and frozen `BEGIN` marker text are unchanged. Existing endpoint data
+  needs no migration; after switching the code and dependency, rerun the
+  owning installer to republish its fragment through Augeaswrap.
+- **Skipped damaged fragments are reported.** If `publish` preserves valid
+  owners but skips another owner's damaged fragment, it now warns for each
+  skipped owner that those variables are omitted until that owner republishes.
+  Use `python3 -m augeaswrap endpoints check --json` to inspect the damage,
+  then rerun the damaged owner's install verb.
+
 ### 0.4.0 — fallback verb and doctor exit code/detail lines (LCR-1, LCR-2)
 
 Library contract version is unchanged (1) and the surface manifest schema is
@@ -172,7 +216,60 @@ Behaviour changes a consumer can see:
   flags, and first writes `[WARN] ... is deprecated` to stderr. Use
   `cli-extended surface ...`; the shim is removed in a later release.
 
+## [Unreleased]
+
 <!-- cmru: release history -->
+
+## [0.6.0] - 2026-11-09
+<!-- cmru: generated -->
+<!-- cmru: source-end=fb370fc26736d7901c7e1dc0712e9b6152d00682 -->
+
+### Added
+- feat(augeaswrap): add standalone endpoint publisher (8754cacb0)
+- feat(cli-extended): publish host endpoint records (b7cee28a2)
+
+### Fixed
+- fix(cli-extended): endpoint review round 2 (N1-N5) (d121458fb)
+- fix(cli-extended): endpoint review fixes F1-F12 and move into the hostcfg package (64637ab29)
+
+### Changed
+- chore(cli-extended): remove moved hostcfg endpoints (2b1d11e10)
+- cli-extended: report skipped endpoint fragments (bfd72364a)
+- refactor: point the estate at cgprofile (cmru, tester-unified, run-gate, mdt-cockpit, rigor-record, assay, ciu, root files) (246b30136)
+
+### Documentation
+- docs: say cgprofiled in the text merged from the endpoint work (cli-extended example, assay tool messages, netcup docs) (7a4159ffc)
+
+### Testing
+- test(cli-extended): isolate writer length validation (2dfe27d44)
+
+
+## [0.5.3] - 2026-11-07
+<!-- cmru: generated -->
+<!-- cmru: source-end=2ce453d39913f5bc3f9f47aac010aaef63cc1c4b -->
+
+### Testing
+- test(cli-extended): kill the four 0.5.2 R2 survivors; drop equivalent exit-code bound and dead isolated defaults (CLI-EXT-33) (7de8fcf48)
+
+<!-- cmru: pending release notes begin -->
+- test(cli-extended): kill the four 0.5.2 R2 survivors; drop the unobservable `1 <=` exit-code bound and the dead private `isolated` defaults in `testing.py` (CLI-EXT-33)
+<!-- cmru: pending release notes end -->
+
+## [0.5.2] - 2026-11-04
+<!-- cmru: generated -->
+<!-- cmru: source-end=ce8bc97e94725293351b3966c347852b2f1a0336 -->
+
+### Added
+- feat(assay): R2 lanes declare jobs_max and run-gate jobs=auto (assay-jobs audit) (fe53428a8)
+
+### Changed
+- cli-extended, ciu: r2 lane cowtree path; ciu request base (601904faa)
+
+<!-- cmru: pending release notes begin -->
+### Fixed
+- `run-gate.toml` lane `r2` puts `libraries/cowtree/src` on `PYTHONPATH` next to `assay/src`, so `assay.cli run` no longer crashes with
+  `No module named 'cowtree'` when CoW isolation is on (no host-local patch needed).
+<!-- cmru: pending release notes end -->
 
 ## [0.5.1] - 2026-11-03
 <!-- cmru: generated -->
@@ -199,12 +296,6 @@ Behaviour changes a consumer can see:
 - fix(audit): AC-25 `no-path-hacks` flags a `sys.path` mutation that builds the library path from pieces such as `"libraries" / "cli-extended"` (CLI-EXT-32)
 - docs: the adoption checklist (AC-22) and README audit section name `--cli-case-partial` for focused pytest runs (CLI-EXT-31)
 <!-- cmru: pending release notes end -->
-
-## [Unreleased]
-
-### Fixed
-- `run-gate.toml` lane `r2` puts `libraries/cowtree/src` on `PYTHONPATH` next to `assay/src`, so `assay.cli run` no longer crashes with
-  `No module named 'cowtree'` when CoW isolation is on (no host-local patch needed).
 
 ## [0.5.0] - 2026-10-21
 <!-- cmru: generated -->

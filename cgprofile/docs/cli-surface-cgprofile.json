@@ -1,0 +1,2760 @@
+{
+  "candidates": [
+    {
+      "id": "case:route:entrypoint:cgprofile/analyze/argument-shape/argument:route:entrypoint:cgprofile/analyze/run_dir",
+      "kind": "argument-shape",
+      "members": [
+        "argument:route:entrypoint:cgprofile/analyze/run_dir"
+      ],
+      "route_id": "route:entrypoint:cgprofile/analyze",
+      "shape": {
+        "argument_id": "argument:route:entrypoint:cgprofile/analyze/run_dir"
+      },
+      "signature": "sha256:b8971a71058102e6680f5cf2e9cfaaafac33612d6586f37ee719e9b1ffec04be"
+    },
+    {
+      "id": "case:route:entrypoint:cgprofile/analyze/minimum",
+      "kind": "minimum",
+      "members": [
+        "argument:route:entrypoint:cgprofile/analyze/run_dir"
+      ],
+      "route_id": "route:entrypoint:cgprofile/analyze",
+      "shape": {
+        "defaulted_options": [],
+        "required_argument_values": {
+          "argument:route:entrypoint:cgprofile/analyze/run_dir": 1
+        },
+        "required_arguments": [
+          "argument:route:entrypoint:cgprofile/analyze/run_dir"
+        ],
+        "required_exclusive_groups": {},
+        "required_options": []
+      },
+      "signature": "sha256:66dfc98854400a68d0c0a167366e62e7abe1b1fd3fc0c6cbabb827107fc4b73e"
+    },
+    {
+      "id": "case:route:entrypoint:cgprofile/analyze/option-spelling/option:route:entrypoint:cgprofile/analyze/--debug-raw/--debug-raw",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:cgprofile/analyze/--debug-raw"
+      ],
+      "route_id": "route:entrypoint:cgprofile/analyze",
+      "shape": {
+        "option_id": "option:route:entrypoint:cgprofile/analyze/--debug-raw",
+        "spelling": "--debug-raw"
+      },
+      "signature": "sha256:a05f76e5660d5ef7ce848b90488cbaa6636fdae46030a5dc92206d171130ffbf"
+    },
+    {
+      "id": "case:route:entrypoint:cgprofile/analyze/option-spelling/option:route:entrypoint:cgprofile/analyze/--json/--json",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:cgprofile/analyze/--json"
+      ],
+      "route_id": "route:entrypoint:cgprofile/analyze",
+      "shape": {
+        "option_id": "option:route:entrypoint:cgprofile/analyze/--json",
+        "spelling": "--json"
+      },
+      "signature": "sha256:c1b178805307c177d63476c7827d932e27fa04bb44dd6bc51c53ed41d9a34d7d"
+    },
+    {
+      "id": "case:route:entrypoint:cgprofile/mark/argument-shape/argument:route:entrypoint:cgprofile/mark/name",
+      "kind": "argument-shape",
+      "members": [
+        "argument:route:entrypoint:cgprofile/mark/name"
+      ],
+      "route_id": "route:entrypoint:cgprofile/mark",
+      "shape": {
+        "argument_id": "argument:route:entrypoint:cgprofile/mark/name"
+      },
+      "signature": "sha256:1908d6c3c2d920251ebf2b853747b29929aa36b52f360f57f65133b30aef3fdc"
+    },
+    {
+      "id": "case:route:entrypoint:cgprofile/mark/minimum",
+      "kind": "minimum",
+      "members": [
+        "argument:route:entrypoint:cgprofile/mark/name",
+        "option:route:entrypoint:cgprofile/mark/--kind"
+      ],
+      "route_id": "route:entrypoint:cgprofile/mark",
+      "shape": {
+        "defaulted_options": [
+          "option:route:entrypoint:cgprofile/mark/--kind"
+        ],
+        "required_argument_values": {
+          "argument:route:entrypoint:cgprofile/mark/name": 1
+        },
+        "required_arguments": [
+          "argument:route:entrypoint:cgprofile/mark/name"
+        ],
+        "required_exclusive_groups": {},
+        "required_options": []
+      },
+      "signature": "sha256:a3ddb5b43fe3ff1ed09f91f8b33a03ddbc51a5e00762f7746e9f6273e9f6ba84"
+    },
+    {
+      "id": "case:route:entrypoint:cgprofile/mark/option-choice/option:route:entrypoint:cgprofile/mark/--kind/8f6e29cfb2",
+      "kind": "option-choice",
+      "members": [
+        "option:route:entrypoint:cgprofile/mark/--kind"
+      ],
+      "route_id": "route:entrypoint:cgprofile/mark",
+      "shape": {
+        "choice": "event",
+        "option_id": "option:route:entrypoint:cgprofile/mark/--kind"
+      },
+      "signature": "sha256:09d0fbf54a5e554768e33037f94fb2a1472d0a8d754c98590e3d0d75d31c3a42"
+    },
+    {
+      "id": "case:route:entrypoint:cgprofile/mark/option-choice/option:route:entrypoint:cgprofile/mark/--kind/a283707905",
+      "kind": "option-choice",
+      "members": [
+        "option:route:entrypoint:cgprofile/mark/--kind"
+      ],
+      "route_id": "route:entrypoint:cgprofile/mark",
+      "shape": {
+        "choice": "phase",
+        "option_id": "option:route:entrypoint:cgprofile/mark/--kind"
+      },
+      "signature": "sha256:80ec91e9860e9aaffecb357e90813331185c5c2c2717c06a486a3364778de51c"
+    },
+    {
+      "id": "case:route:entrypoint:cgprofile/mark/option-spelling/option:route:entrypoint:cgprofile/mark/--debug-raw/--debug-raw",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:cgprofile/mark/--debug-raw"
+      ],
+      "route_id": "route:entrypoint:cgprofile/mark",
+      "shape": {
+        "option_id": "option:route:entrypoint:cgprofile/mark/--debug-raw",
+        "spelling": "--debug-raw"
+      },
+      "signature": "sha256:e5981c3b45b513767bde8704eb1811124fef355a2a3422f486f3ecc0f0c2621d"
+    },
+    {
+      "id": "case:route:entrypoint:cgprofile/mark/option-spelling/option:route:entrypoint:cgprofile/mark/--json/--json",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:cgprofile/mark/--json"
+      ],
+      "route_id": "route:entrypoint:cgprofile/mark",
+      "shape": {
+        "option_id": "option:route:entrypoint:cgprofile/mark/--json",
+        "spelling": "--json"
+      },
+      "signature": "sha256:c8df298d99d0112e5f08da010ab09a27a90371ef925430949bf40ec1aed7851e"
+    },
+    {
+      "id": "case:route:entrypoint:cgprofile/mark/option-spelling/option:route:entrypoint:cgprofile/mark/--kind/--kind",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:cgprofile/mark/--kind"
+      ],
+      "route_id": "route:entrypoint:cgprofile/mark",
+      "shape": {
+        "option_id": "option:route:entrypoint:cgprofile/mark/--kind",
+        "spelling": "--kind"
+      },
+      "signature": "sha256:272c8fe3c9c404c2be7aa8e113cbd69dc5dc393cabbdcfd767c044da0c983f79"
+    },
+    {
+      "id": "case:route:entrypoint:cgprofile/mark/option-spelling/option:route:entrypoint:cgprofile/mark/--meta/--meta",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:cgprofile/mark/--meta"
+      ],
+      "route_id": "route:entrypoint:cgprofile/mark",
+      "shape": {
+        "option_id": "option:route:entrypoint:cgprofile/mark/--meta",
+        "spelling": "--meta"
+      },
+      "signature": "sha256:0d10b52d9c7d4dd516bc668aff5c144be9481b7f1e28058220b3ebd90d1d5783"
+    },
+    {
+      "id": "case:route:entrypoint:cgprofile/report/argument-shape/argument:route:entrypoint:cgprofile/report/session",
+      "kind": "argument-shape",
+      "members": [
+        "argument:route:entrypoint:cgprofile/report/session"
+      ],
+      "route_id": "route:entrypoint:cgprofile/report",
+      "shape": {
+        "argument_id": "argument:route:entrypoint:cgprofile/report/session"
+      },
+      "signature": "sha256:e9d37e909b0957ff36bad9cb99a0fa5fa00d907c08556701f08b1a6333a51e05"
+    },
+    {
+      "id": "case:route:entrypoint:cgprofile/report/exclusive-conflict/format/option:route:entrypoint:cgprofile/report/--html-only/option:route:entrypoint:cgprofile/report/--md-only",
+      "kind": "exclusive-conflict",
+      "members": [
+        "option:route:entrypoint:cgprofile/report/--html-only",
+        "option:route:entrypoint:cgprofile/report/--md-only"
+      ],
+      "route_id": "route:entrypoint:cgprofile/report",
+      "shape": {
+        "group_id": "format",
+        "options": [
+          "option:route:entrypoint:cgprofile/report/--html-only",
+          "option:route:entrypoint:cgprofile/report/--md-only"
+        ]
+      },
+      "signature": "sha256:9e653e99eba50cf47ad5181dc5e139b8c08944206bf5a61f44e5647a0b8b9d9e"
+    },
+    {
+      "id": "case:route:entrypoint:cgprofile/report/exclusive-member/format/option:route:entrypoint:cgprofile/report/--html-only",
+      "kind": "exclusive-member",
+      "members": [
+        "option:route:entrypoint:cgprofile/report/--html-only"
+      ],
+      "route_id": "route:entrypoint:cgprofile/report",
+      "shape": {
+        "group_id": "format",
+        "required": false,
+        "selected_option": "option:route:entrypoint:cgprofile/report/--html-only"
+      },
+      "signature": "sha256:ac186d52f19fe76661bd45fbab446253367b2ee9d89db798650631764b6f2a6c"
+    },
+    {
+      "id": "case:route:entrypoint:cgprofile/report/exclusive-member/format/option:route:entrypoint:cgprofile/report/--md-only",
+      "kind": "exclusive-member",
+      "members": [
+        "option:route:entrypoint:cgprofile/report/--md-only"
+      ],
+      "route_id": "route:entrypoint:cgprofile/report",
+      "shape": {
+        "group_id": "format",
+        "required": false,
+        "selected_option": "option:route:entrypoint:cgprofile/report/--md-only"
+      },
+      "signature": "sha256:de2e4ea09279e1e424a3e9d6ea47094ffa945b35a4149a76a0637286c09bc5eb"
+    },
+    {
+      "id": "case:route:entrypoint:cgprofile/report/minimum",
+      "kind": "minimum",
+      "members": [
+        "option:route:entrypoint:cgprofile/report/--html-only",
+        "option:route:entrypoint:cgprofile/report/--md-only"
+      ],
+      "route_id": "route:entrypoint:cgprofile/report",
+      "shape": {
+        "defaulted_options": [
+          "option:route:entrypoint:cgprofile/report/--html-only",
+          "option:route:entrypoint:cgprofile/report/--md-only"
+        ],
+        "required_argument_values": {},
+        "required_arguments": [],
+        "required_exclusive_groups": {},
+        "required_options": []
+      },
+      "signature": "sha256:fc5055a12ce5462961d813af1d363a27e8b1b7694f8655c3408cf42e81895286"
+    },
+    {
+      "id": "case:route:entrypoint:cgprofile/report/option-spelling/option:route:entrypoint:cgprofile/report/--debug-raw/--debug-raw",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:cgprofile/report/--debug-raw"
+      ],
+      "route_id": "route:entrypoint:cgprofile/report",
+      "shape": {
+        "option_id": "option:route:entrypoint:cgprofile/report/--debug-raw",
+        "spelling": "--debug-raw"
+      },
+      "signature": "sha256:c1cde76e448c50ed0c1d3b717e87b69718870205b4226d560f1ce8e6fbc9d7fa"
+    },
+    {
+      "id": "case:route:entrypoint:cgprofile/report/option-spelling/option:route:entrypoint:cgprofile/report/--export-only/--export-only",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:cgprofile/report/--export-only"
+      ],
+      "route_id": "route:entrypoint:cgprofile/report",
+      "shape": {
+        "option_id": "option:route:entrypoint:cgprofile/report/--export-only",
+        "spelling": "--export-only"
+      },
+      "signature": "sha256:dd2e4e631d81af942791827e50dc425f2bee290f3e24faaa6ee7416f75c8daf6"
+    },
+    {
+      "id": "case:route:entrypoint:cgprofile/report/option-spelling/option:route:entrypoint:cgprofile/report/--html-only/--html-only",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:cgprofile/report/--html-only"
+      ],
+      "route_id": "route:entrypoint:cgprofile/report",
+      "shape": {
+        "option_id": "option:route:entrypoint:cgprofile/report/--html-only",
+        "spelling": "--html-only"
+      },
+      "signature": "sha256:2b956f4600efd2fb0cac4ab0a5985d7c2d96e3450c45f946d4b889abfab36e3a"
+    },
+    {
+      "id": "case:route:entrypoint:cgprofile/report/option-spelling/option:route:entrypoint:cgprofile/report/--json/--json",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:cgprofile/report/--json"
+      ],
+      "route_id": "route:entrypoint:cgprofile/report",
+      "shape": {
+        "option_id": "option:route:entrypoint:cgprofile/report/--json",
+        "spelling": "--json"
+      },
+      "signature": "sha256:c9504fd5166c93d41d769e02b5e641eb19afc9b9bc049c3f3fba12c731c35ead"
+    },
+    {
+      "id": "case:route:entrypoint:cgprofile/report/option-spelling/option:route:entrypoint:cgprofile/report/--md-only/--md-only",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:cgprofile/report/--md-only"
+      ],
+      "route_id": "route:entrypoint:cgprofile/report",
+      "shape": {
+        "option_id": "option:route:entrypoint:cgprofile/report/--md-only",
+        "spelling": "--md-only"
+      },
+      "signature": "sha256:5d28f2c2e561138ef24df923fcc0a144b63687eea9d7026f4fd63ca2cc969d34"
+    },
+    {
+      "id": "case:route:entrypoint:cgprofile/report/option-spelling/option:route:entrypoint:cgprofile/report/--out/--out",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:cgprofile/report/--out"
+      ],
+      "route_id": "route:entrypoint:cgprofile/report",
+      "shape": {
+        "option_id": "option:route:entrypoint:cgprofile/report/--out",
+        "spelling": "--out"
+      },
+      "signature": "sha256:a62514a08b292391ab6b69f65741a9b9bb1a12d783cda7512cc8bc67af9f0b4e"
+    },
+    {
+      "id": "case:route:entrypoint:cgprofile/report/option-spelling/option:route:entrypoint:cgprofile/report/--run-dir/--run-dir",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:cgprofile/report/--run-dir"
+      ],
+      "route_id": "route:entrypoint:cgprofile/report",
+      "shape": {
+        "option_id": "option:route:entrypoint:cgprofile/report/--run-dir",
+        "spelling": "--run-dir"
+      },
+      "signature": "sha256:ed0383f2f431012c4620f8dfafa831f42c9ec496da4e4acd44cbdc7e87d48dc8"
+    },
+    {
+      "id": "case:route:entrypoint:cgprofile/report/option-spelling/option:route:entrypoint:cgprofile/report/--socket/--socket",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:cgprofile/report/--socket"
+      ],
+      "route_id": "route:entrypoint:cgprofile/report",
+      "shape": {
+        "option_id": "option:route:entrypoint:cgprofile/report/--socket",
+        "spelling": "--socket"
+      },
+      "signature": "sha256:38bda8c1f9b0cef3c158bb6b607c33bd1e83c7bb4adc114fe3ef91503bfb7e82"
+    },
+    {
+      "id": "case:route:entrypoint:cgprofile/run/argument-shape/argument:route:entrypoint:cgprofile/run/command",
+      "kind": "argument-shape",
+      "members": [
+        "argument:route:entrypoint:cgprofile/run/command"
+      ],
+      "route_id": "route:entrypoint:cgprofile/run",
+      "shape": {
+        "argument_id": "argument:route:entrypoint:cgprofile/run/command"
+      },
+      "signature": "sha256:e681e9f9d6ff5b1b56cf9e9190fa05336599c549a89cd386dd6dd1afeb2c2e05"
+    },
+    {
+      "id": "case:route:entrypoint:cgprofile/run/minimum",
+      "kind": "minimum",
+      "members": [
+        "option:route:entrypoint:cgprofile/run/--out-dir",
+        "option:route:entrypoint:cgprofile/run/--propagate-exit"
+      ],
+      "route_id": "route:entrypoint:cgprofile/run",
+      "shape": {
+        "defaulted_options": [
+          "option:route:entrypoint:cgprofile/run/--out-dir",
+          "option:route:entrypoint:cgprofile/run/--propagate-exit"
+        ],
+        "required_argument_values": {},
+        "required_arguments": [],
+        "required_exclusive_groups": {},
+        "required_options": []
+      },
+      "signature": "sha256:26934812fac2a453f77c01806eac18f3c114c9ff66a61ed01c98547cdfc7a1da"
+    },
+    {
+      "id": "case:route:entrypoint:cgprofile/run/option-spelling/option:route:entrypoint:cgprofile/run/--debug-raw/--debug-raw",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:cgprofile/run/--debug-raw"
+      ],
+      "route_id": "route:entrypoint:cgprofile/run",
+      "shape": {
+        "option_id": "option:route:entrypoint:cgprofile/run/--debug-raw",
+        "spelling": "--debug-raw"
+      },
+      "signature": "sha256:e2902685bbb3ec800f093a636176709b64bb25ea4f3d138f076e54c14bdf6c79"
+    },
+    {
+      "id": "case:route:entrypoint:cgprofile/run/option-spelling/option:route:entrypoint:cgprofile/run/--json/--json",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:cgprofile/run/--json"
+      ],
+      "route_id": "route:entrypoint:cgprofile/run",
+      "shape": {
+        "option_id": "option:route:entrypoint:cgprofile/run/--json",
+        "spelling": "--json"
+      },
+      "signature": "sha256:65a00ce1bdf54911b366f6ccc0b69bad92e8e0c3cec88fd98fd42b6ad91b89a6"
+    },
+    {
+      "id": "case:route:entrypoint:cgprofile/run/option-spelling/option:route:entrypoint:cgprofile/run/--out-dir/--out-dir",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:cgprofile/run/--out-dir"
+      ],
+      "route_id": "route:entrypoint:cgprofile/run",
+      "shape": {
+        "option_id": "option:route:entrypoint:cgprofile/run/--out-dir",
+        "spelling": "--out-dir"
+      },
+      "signature": "sha256:2d3c4f445b4536c475a9f8f1505bd830981a94c2d01256520a80468af706d1d3"
+    },
+    {
+      "id": "case:route:entrypoint:cgprofile/run/option-spelling/option:route:entrypoint:cgprofile/run/--phase/--phase",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:cgprofile/run/--phase"
+      ],
+      "route_id": "route:entrypoint:cgprofile/run",
+      "shape": {
+        "option_id": "option:route:entrypoint:cgprofile/run/--phase",
+        "spelling": "--phase"
+      },
+      "signature": "sha256:b4d0994940171aab212f0d67dc4115a647eba485f2ae21acd6bc1575449d0ad1"
+    },
+    {
+      "id": "case:route:entrypoint:cgprofile/run/option-spelling/option:route:entrypoint:cgprofile/run/--propagate-exit/--propagate-exit",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:cgprofile/run/--propagate-exit"
+      ],
+      "route_id": "route:entrypoint:cgprofile/run",
+      "shape": {
+        "option_id": "option:route:entrypoint:cgprofile/run/--propagate-exit",
+        "spelling": "--propagate-exit"
+      },
+      "signature": "sha256:69f0b9e43de2f5317cfc68b4228a36e5156c4b61ec082f9d0c3ecfe45e0da119"
+    },
+    {
+      "id": "case:route:entrypoint:cgprofile/skills/check/exclusive-conflict/target/option:route:entrypoint:cgprofile/skills/check/--dest/option:route:entrypoint:cgprofile/skills/check/--harness",
+      "kind": "exclusive-conflict",
+      "members": [
+        "option:route:entrypoint:cgprofile/skills/check/--dest",
+        "option:route:entrypoint:cgprofile/skills/check/--harness"
+      ],
+      "route_id": "route:entrypoint:cgprofile/skills/check",
+      "shape": {
+        "group_id": "target",
+        "options": [
+          "option:route:entrypoint:cgprofile/skills/check/--dest",
+          "option:route:entrypoint:cgprofile/skills/check/--harness"
+        ]
+      },
+      "signature": "sha256:89fdbe0e299f350ff0b8db65a11a1a61e662f3d595e8244c181dfc0c7f0aeee0"
+    },
+    {
+      "id": "case:route:entrypoint:cgprofile/skills/check/exclusive-member/target/option:route:entrypoint:cgprofile/skills/check/--dest",
+      "kind": "exclusive-member",
+      "members": [
+        "option:route:entrypoint:cgprofile/skills/check/--dest"
+      ],
+      "route_id": "route:entrypoint:cgprofile/skills/check",
+      "shape": {
+        "group_id": "target",
+        "required": false,
+        "selected_option": "option:route:entrypoint:cgprofile/skills/check/--dest"
+      },
+      "signature": "sha256:69267ad07cfd7106b4bee958881b6e98016f1a0c7e82a9468071d1c0573cb6ba"
+    },
+    {
+      "id": "case:route:entrypoint:cgprofile/skills/check/exclusive-member/target/option:route:entrypoint:cgprofile/skills/check/--harness",
+      "kind": "exclusive-member",
+      "members": [
+        "option:route:entrypoint:cgprofile/skills/check/--harness"
+      ],
+      "route_id": "route:entrypoint:cgprofile/skills/check",
+      "shape": {
+        "group_id": "target",
+        "required": false,
+        "selected_option": "option:route:entrypoint:cgprofile/skills/check/--harness"
+      },
+      "signature": "sha256:71dd22c1081c2b8e9908ee278bd43508bb1d9977b9f5f70304bb6460df3d7da9"
+    },
+    {
+      "id": "case:route:entrypoint:cgprofile/skills/check/minimum",
+      "kind": "minimum",
+      "members": [],
+      "route_id": "route:entrypoint:cgprofile/skills/check",
+      "shape": {
+        "defaulted_options": [],
+        "required_argument_values": {},
+        "required_arguments": [],
+        "required_exclusive_groups": {},
+        "required_options": []
+      },
+      "signature": "sha256:baf7439733e525e08cf5574ff159c214f40aa2a4141eac5a4b83f9649ca79adb"
+    },
+    {
+      "id": "case:route:entrypoint:cgprofile/skills/check/option-choice/option:route:entrypoint:cgprofile/skills/check/--harness/389432cbf8",
+      "kind": "option-choice",
+      "members": [
+        "option:route:entrypoint:cgprofile/skills/check/--harness"
+      ],
+      "route_id": "route:entrypoint:cgprofile/skills/check",
+      "shape": {
+        "choice": "claude",
+        "option_id": "option:route:entrypoint:cgprofile/skills/check/--harness"
+      },
+      "signature": "sha256:1a3cf99e7507065ebb6b92383f9cd478d661425be51448b2ef4b3620abd26317"
+    },
+    {
+      "id": "case:route:entrypoint:cgprofile/skills/check/option-choice/option:route:entrypoint:cgprofile/skills/check/--harness/5cf7504d97",
+      "kind": "option-choice",
+      "members": [
+        "option:route:entrypoint:cgprofile/skills/check/--harness"
+      ],
+      "route_id": "route:entrypoint:cgprofile/skills/check",
+      "shape": {
+        "choice": "all",
+        "option_id": "option:route:entrypoint:cgprofile/skills/check/--harness"
+      },
+      "signature": "sha256:dc01b5c5bef64985d1d94a67bfdfbb1ba3ad36ca62fe01b49f2dc2f42693520e"
+    },
+    {
+      "id": "case:route:entrypoint:cgprofile/skills/check/option-choice/option:route:entrypoint:cgprofile/skills/check/--harness/bc42532430",
+      "kind": "option-choice",
+      "members": [
+        "option:route:entrypoint:cgprofile/skills/check/--harness"
+      ],
+      "route_id": "route:entrypoint:cgprofile/skills/check",
+      "shape": {
+        "choice": "agents",
+        "option_id": "option:route:entrypoint:cgprofile/skills/check/--harness"
+      },
+      "signature": "sha256:6ffb570e129e2d80ce68a2e0be8f0a255cd1000a9677f13387663778c312964a"
+    },
+    {
+      "id": "case:route:entrypoint:cgprofile/skills/check/option-spelling/option:route:entrypoint:cgprofile/skills/check/--debug-raw/--debug-raw",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:cgprofile/skills/check/--debug-raw"
+      ],
+      "route_id": "route:entrypoint:cgprofile/skills/check",
+      "shape": {
+        "option_id": "option:route:entrypoint:cgprofile/skills/check/--debug-raw",
+        "spelling": "--debug-raw"
+      },
+      "signature": "sha256:90a8487a1353031d3f39ac3b6a10cb156d8ec7efcd1b64dff67d4cd4f64f754b"
+    },
+    {
+      "id": "case:route:entrypoint:cgprofile/skills/check/option-spelling/option:route:entrypoint:cgprofile/skills/check/--dest/--dest",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:cgprofile/skills/check/--dest"
+      ],
+      "route_id": "route:entrypoint:cgprofile/skills/check",
+      "shape": {
+        "option_id": "option:route:entrypoint:cgprofile/skills/check/--dest",
+        "spelling": "--dest"
+      },
+      "signature": "sha256:4d6d7683058b44873bd559b1b24ebbd86012c2bc5b132edd5c3669fe4aa7931e"
+    },
+    {
+      "id": "case:route:entrypoint:cgprofile/skills/check/option-spelling/option:route:entrypoint:cgprofile/skills/check/--harness/--harness",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:cgprofile/skills/check/--harness"
+      ],
+      "route_id": "route:entrypoint:cgprofile/skills/check",
+      "shape": {
+        "option_id": "option:route:entrypoint:cgprofile/skills/check/--harness",
+        "spelling": "--harness"
+      },
+      "signature": "sha256:957df001cfe40aaa827536341428a38ebe0b7862e7c9eedc25eae4b95f0dac3d"
+    },
+    {
+      "id": "case:route:entrypoint:cgprofile/skills/check/option-spelling/option:route:entrypoint:cgprofile/skills/check/--json/--json",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:cgprofile/skills/check/--json"
+      ],
+      "route_id": "route:entrypoint:cgprofile/skills/check",
+      "shape": {
+        "option_id": "option:route:entrypoint:cgprofile/skills/check/--json",
+        "spelling": "--json"
+      },
+      "signature": "sha256:aad86210e3bba36a093e4f83729a82163bdf71405159982032ccd05fb82e7589"
+    },
+    {
+      "id": "case:route:entrypoint:cgprofile/skills/install/exclusive-conflict/target/option:route:entrypoint:cgprofile/skills/install/--dest/option:route:entrypoint:cgprofile/skills/install/--harness",
+      "kind": "exclusive-conflict",
+      "members": [
+        "option:route:entrypoint:cgprofile/skills/install/--dest",
+        "option:route:entrypoint:cgprofile/skills/install/--harness"
+      ],
+      "route_id": "route:entrypoint:cgprofile/skills/install",
+      "shape": {
+        "group_id": "target",
+        "options": [
+          "option:route:entrypoint:cgprofile/skills/install/--dest",
+          "option:route:entrypoint:cgprofile/skills/install/--harness"
+        ]
+      },
+      "signature": "sha256:6f0463d41c0ed7ce98935cc450863a14e61dd6845d8e566c2115915c2dee1777"
+    },
+    {
+      "id": "case:route:entrypoint:cgprofile/skills/install/exclusive-member/target/option:route:entrypoint:cgprofile/skills/install/--dest",
+      "kind": "exclusive-member",
+      "members": [
+        "option:route:entrypoint:cgprofile/skills/install/--dest"
+      ],
+      "route_id": "route:entrypoint:cgprofile/skills/install",
+      "shape": {
+        "group_id": "target",
+        "required": false,
+        "selected_option": "option:route:entrypoint:cgprofile/skills/install/--dest"
+      },
+      "signature": "sha256:5a614b9e9dcc7967859b661d80282c859c76ba1318be25558e177db1765f2955"
+    },
+    {
+      "id": "case:route:entrypoint:cgprofile/skills/install/exclusive-member/target/option:route:entrypoint:cgprofile/skills/install/--harness",
+      "kind": "exclusive-member",
+      "members": [
+        "option:route:entrypoint:cgprofile/skills/install/--harness"
+      ],
+      "route_id": "route:entrypoint:cgprofile/skills/install",
+      "shape": {
+        "group_id": "target",
+        "required": false,
+        "selected_option": "option:route:entrypoint:cgprofile/skills/install/--harness"
+      },
+      "signature": "sha256:671016f92878861b041c8004760836f8951bea8c577fd7228c105434612c8645"
+    },
+    {
+      "id": "case:route:entrypoint:cgprofile/skills/install/minimum",
+      "kind": "minimum",
+      "members": [
+        "option:route:entrypoint:cgprofile/skills/install/--overwrite-modified"
+      ],
+      "route_id": "route:entrypoint:cgprofile/skills/install",
+      "shape": {
+        "defaulted_options": [
+          "option:route:entrypoint:cgprofile/skills/install/--overwrite-modified"
+        ],
+        "required_argument_values": {},
+        "required_arguments": [],
+        "required_exclusive_groups": {},
+        "required_options": []
+      },
+      "signature": "sha256:3dce462e8eab5bcd2c81126a8652f7057d6fd9faa83df0b7cf25ab6f371f0e90"
+    },
+    {
+      "id": "case:route:entrypoint:cgprofile/skills/install/option-choice/option:route:entrypoint:cgprofile/skills/install/--harness/389432cbf8",
+      "kind": "option-choice",
+      "members": [
+        "option:route:entrypoint:cgprofile/skills/install/--harness"
+      ],
+      "route_id": "route:entrypoint:cgprofile/skills/install",
+      "shape": {
+        "choice": "claude",
+        "option_id": "option:route:entrypoint:cgprofile/skills/install/--harness"
+      },
+      "signature": "sha256:9dc81441c1a15841e7b4a1da983aeca30221f2224f2bceb5476656c18ecfb6d7"
+    },
+    {
+      "id": "case:route:entrypoint:cgprofile/skills/install/option-choice/option:route:entrypoint:cgprofile/skills/install/--harness/5cf7504d97",
+      "kind": "option-choice",
+      "members": [
+        "option:route:entrypoint:cgprofile/skills/install/--harness"
+      ],
+      "route_id": "route:entrypoint:cgprofile/skills/install",
+      "shape": {
+        "choice": "all",
+        "option_id": "option:route:entrypoint:cgprofile/skills/install/--harness"
+      },
+      "signature": "sha256:3fbd5c8d17a14cebb796584a986ea48cb7bbd3a5c63cc983ee1fae7753fb0482"
+    },
+    {
+      "id": "case:route:entrypoint:cgprofile/skills/install/option-choice/option:route:entrypoint:cgprofile/skills/install/--harness/bc42532430",
+      "kind": "option-choice",
+      "members": [
+        "option:route:entrypoint:cgprofile/skills/install/--harness"
+      ],
+      "route_id": "route:entrypoint:cgprofile/skills/install",
+      "shape": {
+        "choice": "agents",
+        "option_id": "option:route:entrypoint:cgprofile/skills/install/--harness"
+      },
+      "signature": "sha256:3ffe344cd8b18172f8036c187647e924feeb46790eb662102d2e2c29e94feb3f"
+    },
+    {
+      "id": "case:route:entrypoint:cgprofile/skills/install/option-spelling/option:route:entrypoint:cgprofile/skills/install/--debug-raw/--debug-raw",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:cgprofile/skills/install/--debug-raw"
+      ],
+      "route_id": "route:entrypoint:cgprofile/skills/install",
+      "shape": {
+        "option_id": "option:route:entrypoint:cgprofile/skills/install/--debug-raw",
+        "spelling": "--debug-raw"
+      },
+      "signature": "sha256:c3a35b7f615fa21f1ac9104bcf900d186dce1d0169824e5c7d82a959c571a433"
+    },
+    {
+      "id": "case:route:entrypoint:cgprofile/skills/install/option-spelling/option:route:entrypoint:cgprofile/skills/install/--dest/--dest",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:cgprofile/skills/install/--dest"
+      ],
+      "route_id": "route:entrypoint:cgprofile/skills/install",
+      "shape": {
+        "option_id": "option:route:entrypoint:cgprofile/skills/install/--dest",
+        "spelling": "--dest"
+      },
+      "signature": "sha256:e2109650969b314fec3d0ef99d7ab5a4a8e9387a08db84264eea985b3c1331e1"
+    },
+    {
+      "id": "case:route:entrypoint:cgprofile/skills/install/option-spelling/option:route:entrypoint:cgprofile/skills/install/--dry-run/--dry-run",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:cgprofile/skills/install/--dry-run"
+      ],
+      "route_id": "route:entrypoint:cgprofile/skills/install",
+      "shape": {
+        "option_id": "option:route:entrypoint:cgprofile/skills/install/--dry-run",
+        "spelling": "--dry-run"
+      },
+      "signature": "sha256:af1981ea9fbf7435aed12b2be1ef5a979cec7af62c04dfd19c14d04e4d7bb062"
+    },
+    {
+      "id": "case:route:entrypoint:cgprofile/skills/install/option-spelling/option:route:entrypoint:cgprofile/skills/install/--harness/--harness",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:cgprofile/skills/install/--harness"
+      ],
+      "route_id": "route:entrypoint:cgprofile/skills/install",
+      "shape": {
+        "option_id": "option:route:entrypoint:cgprofile/skills/install/--harness",
+        "spelling": "--harness"
+      },
+      "signature": "sha256:55fc46f1fce2341e5e3006c9b4d7a248168246ae7c88e879e2f504704b5740c6"
+    },
+    {
+      "id": "case:route:entrypoint:cgprofile/skills/install/option-spelling/option:route:entrypoint:cgprofile/skills/install/--overwrite-modified/--overwrite-modified",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:cgprofile/skills/install/--overwrite-modified"
+      ],
+      "route_id": "route:entrypoint:cgprofile/skills/install",
+      "shape": {
+        "option_id": "option:route:entrypoint:cgprofile/skills/install/--overwrite-modified",
+        "spelling": "--overwrite-modified"
+      },
+      "signature": "sha256:bb57f8bbb71ba839dee2dc3197fd5678a3a08f657c68cf6276914e90b9efce68"
+    },
+    {
+      "id": "case:route:entrypoint:cgprofile/skills/list/exclusive-conflict/target/option:route:entrypoint:cgprofile/skills/list/--dest/option:route:entrypoint:cgprofile/skills/list/--harness",
+      "kind": "exclusive-conflict",
+      "members": [
+        "option:route:entrypoint:cgprofile/skills/list/--dest",
+        "option:route:entrypoint:cgprofile/skills/list/--harness"
+      ],
+      "route_id": "route:entrypoint:cgprofile/skills/list",
+      "shape": {
+        "group_id": "target",
+        "options": [
+          "option:route:entrypoint:cgprofile/skills/list/--dest",
+          "option:route:entrypoint:cgprofile/skills/list/--harness"
+        ]
+      },
+      "signature": "sha256:1b201fd13f07b51a7c661b37f89ab4a8a8172a38408a913d8089c31b13499d7b"
+    },
+    {
+      "id": "case:route:entrypoint:cgprofile/skills/list/exclusive-member/target/option:route:entrypoint:cgprofile/skills/list/--dest",
+      "kind": "exclusive-member",
+      "members": [
+        "option:route:entrypoint:cgprofile/skills/list/--dest"
+      ],
+      "route_id": "route:entrypoint:cgprofile/skills/list",
+      "shape": {
+        "group_id": "target",
+        "required": false,
+        "selected_option": "option:route:entrypoint:cgprofile/skills/list/--dest"
+      },
+      "signature": "sha256:d9b7e34e3adefe53ea7185819aa1b80e75b58d9ac1ceee745e15eb5365002bc0"
+    },
+    {
+      "id": "case:route:entrypoint:cgprofile/skills/list/exclusive-member/target/option:route:entrypoint:cgprofile/skills/list/--harness",
+      "kind": "exclusive-member",
+      "members": [
+        "option:route:entrypoint:cgprofile/skills/list/--harness"
+      ],
+      "route_id": "route:entrypoint:cgprofile/skills/list",
+      "shape": {
+        "group_id": "target",
+        "required": false,
+        "selected_option": "option:route:entrypoint:cgprofile/skills/list/--harness"
+      },
+      "signature": "sha256:42b8f95a9c20304b179729dd6e5039e81ac85c108d1e69030392d78c6f55a362"
+    },
+    {
+      "id": "case:route:entrypoint:cgprofile/skills/list/minimum",
+      "kind": "minimum",
+      "members": [],
+      "route_id": "route:entrypoint:cgprofile/skills/list",
+      "shape": {
+        "defaulted_options": [],
+        "required_argument_values": {},
+        "required_arguments": [],
+        "required_exclusive_groups": {},
+        "required_options": []
+      },
+      "signature": "sha256:c89037eec5b9bd0eb60397ffbf33a4fe978df1b807de0376a6b8e138bc36cdc9"
+    },
+    {
+      "id": "case:route:entrypoint:cgprofile/skills/list/option-choice/option:route:entrypoint:cgprofile/skills/list/--harness/389432cbf8",
+      "kind": "option-choice",
+      "members": [
+        "option:route:entrypoint:cgprofile/skills/list/--harness"
+      ],
+      "route_id": "route:entrypoint:cgprofile/skills/list",
+      "shape": {
+        "choice": "claude",
+        "option_id": "option:route:entrypoint:cgprofile/skills/list/--harness"
+      },
+      "signature": "sha256:1410231edb2bd2e564e037cd766349653bcf0875c035547c407395f0e6896647"
+    },
+    {
+      "id": "case:route:entrypoint:cgprofile/skills/list/option-choice/option:route:entrypoint:cgprofile/skills/list/--harness/5cf7504d97",
+      "kind": "option-choice",
+      "members": [
+        "option:route:entrypoint:cgprofile/skills/list/--harness"
+      ],
+      "route_id": "route:entrypoint:cgprofile/skills/list",
+      "shape": {
+        "choice": "all",
+        "option_id": "option:route:entrypoint:cgprofile/skills/list/--harness"
+      },
+      "signature": "sha256:3824c28ea4eb57db9faa4991a054ed84818dda4de80b6b59cd6e5e336c4ca0df"
+    },
+    {
+      "id": "case:route:entrypoint:cgprofile/skills/list/option-choice/option:route:entrypoint:cgprofile/skills/list/--harness/bc42532430",
+      "kind": "option-choice",
+      "members": [
+        "option:route:entrypoint:cgprofile/skills/list/--harness"
+      ],
+      "route_id": "route:entrypoint:cgprofile/skills/list",
+      "shape": {
+        "choice": "agents",
+        "option_id": "option:route:entrypoint:cgprofile/skills/list/--harness"
+      },
+      "signature": "sha256:0d511ed869edd12baf6c188e5ee1a403adad9ff9f0a47fd3a77462496f157d25"
+    },
+    {
+      "id": "case:route:entrypoint:cgprofile/skills/list/option-spelling/option:route:entrypoint:cgprofile/skills/list/--debug-raw/--debug-raw",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:cgprofile/skills/list/--debug-raw"
+      ],
+      "route_id": "route:entrypoint:cgprofile/skills/list",
+      "shape": {
+        "option_id": "option:route:entrypoint:cgprofile/skills/list/--debug-raw",
+        "spelling": "--debug-raw"
+      },
+      "signature": "sha256:258a7ec4fc5cd5e6d62531723c4bf1e7112129dd28605fca3087173e9bdbb6da"
+    },
+    {
+      "id": "case:route:entrypoint:cgprofile/skills/list/option-spelling/option:route:entrypoint:cgprofile/skills/list/--dest/--dest",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:cgprofile/skills/list/--dest"
+      ],
+      "route_id": "route:entrypoint:cgprofile/skills/list",
+      "shape": {
+        "option_id": "option:route:entrypoint:cgprofile/skills/list/--dest",
+        "spelling": "--dest"
+      },
+      "signature": "sha256:f9adc0569c1b983b815c3ad07795630f0ae3faff2f7e59c106fd44421ac9262f"
+    },
+    {
+      "id": "case:route:entrypoint:cgprofile/skills/list/option-spelling/option:route:entrypoint:cgprofile/skills/list/--harness/--harness",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:cgprofile/skills/list/--harness"
+      ],
+      "route_id": "route:entrypoint:cgprofile/skills/list",
+      "shape": {
+        "option_id": "option:route:entrypoint:cgprofile/skills/list/--harness",
+        "spelling": "--harness"
+      },
+      "signature": "sha256:1e0d5351b723e88ddd1803c4c2ac73c59a05bae388860f9e33000116e0efc7de"
+    },
+    {
+      "id": "case:route:entrypoint:cgprofile/skills/list/option-spelling/option:route:entrypoint:cgprofile/skills/list/--json/--json",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:cgprofile/skills/list/--json"
+      ],
+      "route_id": "route:entrypoint:cgprofile/skills/list",
+      "shape": {
+        "option_id": "option:route:entrypoint:cgprofile/skills/list/--json",
+        "spelling": "--json"
+      },
+      "signature": "sha256:0be8fd70ededacd13f98efda3619feb4fc8e9661e48d37a7e275cee0d5a4f58e"
+    },
+    {
+      "id": "case:route:entrypoint:cgprofile/skills/uninstall/exclusive-conflict/target/option:route:entrypoint:cgprofile/skills/uninstall/--dest/option:route:entrypoint:cgprofile/skills/uninstall/--harness",
+      "kind": "exclusive-conflict",
+      "members": [
+        "option:route:entrypoint:cgprofile/skills/uninstall/--dest",
+        "option:route:entrypoint:cgprofile/skills/uninstall/--harness"
+      ],
+      "route_id": "route:entrypoint:cgprofile/skills/uninstall",
+      "shape": {
+        "group_id": "target",
+        "options": [
+          "option:route:entrypoint:cgprofile/skills/uninstall/--dest",
+          "option:route:entrypoint:cgprofile/skills/uninstall/--harness"
+        ]
+      },
+      "signature": "sha256:36b3c09c941f0dbd7e980787a4e0ec14c7caabf3cd83e0f245b22b0dda2da033"
+    },
+    {
+      "id": "case:route:entrypoint:cgprofile/skills/uninstall/exclusive-member/target/option:route:entrypoint:cgprofile/skills/uninstall/--dest",
+      "kind": "exclusive-member",
+      "members": [
+        "option:route:entrypoint:cgprofile/skills/uninstall/--dest"
+      ],
+      "route_id": "route:entrypoint:cgprofile/skills/uninstall",
+      "shape": {
+        "group_id": "target",
+        "required": false,
+        "selected_option": "option:route:entrypoint:cgprofile/skills/uninstall/--dest"
+      },
+      "signature": "sha256:2ede8ef4ba6b86095711b9a563c2b22e653fe6089f365dcc1eb11d65908996c8"
+    },
+    {
+      "id": "case:route:entrypoint:cgprofile/skills/uninstall/exclusive-member/target/option:route:entrypoint:cgprofile/skills/uninstall/--harness",
+      "kind": "exclusive-member",
+      "members": [
+        "option:route:entrypoint:cgprofile/skills/uninstall/--harness"
+      ],
+      "route_id": "route:entrypoint:cgprofile/skills/uninstall",
+      "shape": {
+        "group_id": "target",
+        "required": false,
+        "selected_option": "option:route:entrypoint:cgprofile/skills/uninstall/--harness"
+      },
+      "signature": "sha256:ae53cd98eaaba508b4f4f351aaebc39878055cef8fcbfc8e5ff5e52064537590"
+    },
+    {
+      "id": "case:route:entrypoint:cgprofile/skills/uninstall/minimum",
+      "kind": "minimum",
+      "members": [
+        "option:route:entrypoint:cgprofile/skills/uninstall/--overwrite-modified"
+      ],
+      "route_id": "route:entrypoint:cgprofile/skills/uninstall",
+      "shape": {
+        "defaulted_options": [
+          "option:route:entrypoint:cgprofile/skills/uninstall/--overwrite-modified"
+        ],
+        "required_argument_values": {},
+        "required_arguments": [],
+        "required_exclusive_groups": {},
+        "required_options": []
+      },
+      "signature": "sha256:55872f0a4aa946ae8d4fbecdb15513c8aaf900743f8d70c1312e4814d5d8e921"
+    },
+    {
+      "id": "case:route:entrypoint:cgprofile/skills/uninstall/option-choice/option:route:entrypoint:cgprofile/skills/uninstall/--harness/389432cbf8",
+      "kind": "option-choice",
+      "members": [
+        "option:route:entrypoint:cgprofile/skills/uninstall/--harness"
+      ],
+      "route_id": "route:entrypoint:cgprofile/skills/uninstall",
+      "shape": {
+        "choice": "claude",
+        "option_id": "option:route:entrypoint:cgprofile/skills/uninstall/--harness"
+      },
+      "signature": "sha256:8a33f6ec3004a04281245edb151e5adc4407c9f87d61b7fbf940c6f73c9d47ed"
+    },
+    {
+      "id": "case:route:entrypoint:cgprofile/skills/uninstall/option-choice/option:route:entrypoint:cgprofile/skills/uninstall/--harness/5cf7504d97",
+      "kind": "option-choice",
+      "members": [
+        "option:route:entrypoint:cgprofile/skills/uninstall/--harness"
+      ],
+      "route_id": "route:entrypoint:cgprofile/skills/uninstall",
+      "shape": {
+        "choice": "all",
+        "option_id": "option:route:entrypoint:cgprofile/skills/uninstall/--harness"
+      },
+      "signature": "sha256:8296eefd815e54d67dc1fd78505880b33dd92d2fb3e8f7ad05ca6b3609ed769e"
+    },
+    {
+      "id": "case:route:entrypoint:cgprofile/skills/uninstall/option-choice/option:route:entrypoint:cgprofile/skills/uninstall/--harness/bc42532430",
+      "kind": "option-choice",
+      "members": [
+        "option:route:entrypoint:cgprofile/skills/uninstall/--harness"
+      ],
+      "route_id": "route:entrypoint:cgprofile/skills/uninstall",
+      "shape": {
+        "choice": "agents",
+        "option_id": "option:route:entrypoint:cgprofile/skills/uninstall/--harness"
+      },
+      "signature": "sha256:718ad79c019f72484c7e76d8ac7804bac14b15dbc0c08eba3a41f066f60dc1b7"
+    },
+    {
+      "id": "case:route:entrypoint:cgprofile/skills/uninstall/option-spelling/option:route:entrypoint:cgprofile/skills/uninstall/--debug-raw/--debug-raw",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:cgprofile/skills/uninstall/--debug-raw"
+      ],
+      "route_id": "route:entrypoint:cgprofile/skills/uninstall",
+      "shape": {
+        "option_id": "option:route:entrypoint:cgprofile/skills/uninstall/--debug-raw",
+        "spelling": "--debug-raw"
+      },
+      "signature": "sha256:01b9c1f5688ab04f6bb87b594a657a85903a46ccdfee2ebc4b60574c55bd552e"
+    },
+    {
+      "id": "case:route:entrypoint:cgprofile/skills/uninstall/option-spelling/option:route:entrypoint:cgprofile/skills/uninstall/--dest/--dest",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:cgprofile/skills/uninstall/--dest"
+      ],
+      "route_id": "route:entrypoint:cgprofile/skills/uninstall",
+      "shape": {
+        "option_id": "option:route:entrypoint:cgprofile/skills/uninstall/--dest",
+        "spelling": "--dest"
+      },
+      "signature": "sha256:54b1097f658d5d684a7815c1eaaac911867831686b6b86ce0e0f6b8d65d98321"
+    },
+    {
+      "id": "case:route:entrypoint:cgprofile/skills/uninstall/option-spelling/option:route:entrypoint:cgprofile/skills/uninstall/--dry-run/--dry-run",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:cgprofile/skills/uninstall/--dry-run"
+      ],
+      "route_id": "route:entrypoint:cgprofile/skills/uninstall",
+      "shape": {
+        "option_id": "option:route:entrypoint:cgprofile/skills/uninstall/--dry-run",
+        "spelling": "--dry-run"
+      },
+      "signature": "sha256:eb6c981ac9bbe9ff3c32527813d7d6653023067c0af984235c737ebd87821647"
+    },
+    {
+      "id": "case:route:entrypoint:cgprofile/skills/uninstall/option-spelling/option:route:entrypoint:cgprofile/skills/uninstall/--harness/--harness",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:cgprofile/skills/uninstall/--harness"
+      ],
+      "route_id": "route:entrypoint:cgprofile/skills/uninstall",
+      "shape": {
+        "option_id": "option:route:entrypoint:cgprofile/skills/uninstall/--harness",
+        "spelling": "--harness"
+      },
+      "signature": "sha256:48c21cfbae841118c855f7790eb388c390ab48ab09312aeadc222981fdae2d50"
+    },
+    {
+      "id": "case:route:entrypoint:cgprofile/skills/uninstall/option-spelling/option:route:entrypoint:cgprofile/skills/uninstall/--overwrite-modified/--overwrite-modified",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:cgprofile/skills/uninstall/--overwrite-modified"
+      ],
+      "route_id": "route:entrypoint:cgprofile/skills/uninstall",
+      "shape": {
+        "option_id": "option:route:entrypoint:cgprofile/skills/uninstall/--overwrite-modified",
+        "spelling": "--overwrite-modified"
+      },
+      "signature": "sha256:4673fd17a916f26dc5e2ddf1ccd9fce1907ee5420639e2d8efee06b461813b8b"
+    }
+  ],
+  "entrypoint": {
+    "allow_abbrev": false,
+    "builtins": [
+      "help",
+      "help <verb>",
+      "version",
+      "--help",
+      "--version"
+    ],
+    "command": "cgprofile",
+    "display_name": "CGPROFILE",
+    "fromfile_prefix_chars": null,
+    "id": "entrypoint:cgprofile",
+    "long_name": "cgroup resource profiler",
+    "no_args_action": false,
+    "prefix_chars": "-",
+    "prog": "cgprofile",
+    "single_command": false
+  },
+  "incomplete": [],
+  "interaction_issues": [],
+  "library_contract": {
+    "name": "cli-extended",
+    "version": 1
+  },
+  "routes": [
+    {
+      "actions": [
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "choices": null,
+          "const": null,
+          "default": null,
+          "description": "the run directory",
+          "help_group": "positional arguments",
+          "hidden": false,
+          "id": "argument:route:entrypoint:cgprofile/analyze/run_dir",
+          "kind": "argument",
+          "metavar": "DIR",
+          "minimum_values": 1,
+          "name": "run_dir",
+          "nargs": null,
+          "parser_kwargs": {},
+          "parser_path": [
+            "analyze"
+          ],
+          "required": true,
+          "scope": "positional",
+          "type": null
+        }
+      ],
+      "aliases": [],
+      "behavior": [
+        "potentially expensive"
+      ],
+      "common_controls": [
+        "--color",
+        "--debug",
+        "--debug-raw",
+        "--help",
+        "--json",
+        "--log-level",
+        "--no-color",
+        "--quiet",
+        "--traceback",
+        "--version"
+      ],
+      "confirmation": false,
+      "constraints": [],
+      "delegated_metadata": [],
+      "description": "analyse a run directory and print the proposals",
+      "group": "EXPLORATION",
+      "id": "route:entrypoint:cgprofile/analyze",
+      "kind": "invocation",
+      "no_args_action": false,
+      "opaque_fields": [],
+      "parser_configured_by_callback": false,
+      "parser_settings": [
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [],
+          "prefix_chars": "-"
+        },
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [
+            "analyze"
+          ],
+          "prefix_chars": "-"
+        }
+      ],
+      "path": [
+        "analyze"
+      ],
+      "single_command": false,
+      "subcommand_groups": [],
+      "subcommands": [],
+      "subcommands_required": false,
+      "summary": "analyse a run directory and print the proposals [potentially expensive]",
+      "synopsis_override": null,
+      "syntax_complete": true,
+      "usage_override": null
+    },
+    {
+      "actions": [
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "choices": null,
+          "const": null,
+          "default": null,
+          "description": "the mark name",
+          "help_group": "positional arguments",
+          "hidden": false,
+          "id": "argument:route:entrypoint:cgprofile/mark/name",
+          "kind": "argument",
+          "metavar": "NAME",
+          "minimum_values": 1,
+          "name": "name",
+          "nargs": null,
+          "parser_kwargs": {},
+          "parser_path": [
+            "mark"
+          ],
+          "required": true,
+          "scope": "positional",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--kind",
+          "choices": [
+            "phase",
+            "event"
+          ],
+          "const": null,
+          "default": "phase",
+          "default_present": true,
+          "description": "phase or event",
+          "dest": "kind",
+          "effective_default": "phase",
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--kind"
+          ],
+          "help_group": "MARK",
+          "hidden": false,
+          "id": "option:route:entrypoint:cgprofile/mark/--kind",
+          "kind": "option",
+          "metavar": "KIND",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "choices": [
+              "phase",
+              "event"
+            ],
+            "default": "phase"
+          },
+          "parser_path": [
+            "mark"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--meta",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "JSON object of extra fields",
+          "dest": "meta",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--meta"
+          ],
+          "help_group": "MARK",
+          "hidden": false,
+          "id": "option:route:entrypoint:cgprofile/mark/--meta",
+          "kind": "option",
+          "metavar": "JSON",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {},
+          "parser_path": [
+            "mark"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        }
+      ],
+      "aliases": [],
+      "behavior": [
+        "mutating"
+      ],
+      "common_controls": [
+        "--color",
+        "--debug",
+        "--debug-raw",
+        "--help",
+        "--json",
+        "--log-level",
+        "--no-color",
+        "--quiet",
+        "--traceback",
+        "--version"
+      ],
+      "confirmation": false,
+      "constraints": [],
+      "delegated_metadata": [],
+      "description": "append a phase mark to the current run ($CGPROFILE_RUN_DIR)",
+      "group": "MODIFICATION",
+      "id": "route:entrypoint:cgprofile/mark",
+      "kind": "invocation",
+      "no_args_action": false,
+      "opaque_fields": [],
+      "parser_configured_by_callback": false,
+      "parser_settings": [
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [],
+          "prefix_chars": "-"
+        },
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [
+            "mark"
+          ],
+          "prefix_chars": "-"
+        }
+      ],
+      "path": [
+        "mark"
+      ],
+      "single_command": false,
+      "subcommand_groups": [],
+      "subcommands": [],
+      "subcommands_required": false,
+      "summary": "append a phase mark to the current run ($CGPROFILE_RUN_DIR) [mutating]",
+      "synopsis_override": null,
+      "syntax_complete": true,
+      "usage_override": null
+    },
+    {
+      "actions": [
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "choices": null,
+          "const": null,
+          "default": null,
+          "description": "the session id (omit with --run-dir)",
+          "help_group": "positional arguments",
+          "hidden": false,
+          "id": "argument:route:entrypoint:cgprofile/report/session",
+          "kind": "argument",
+          "metavar": "ID",
+          "minimum_values": 0,
+          "name": "session",
+          "nargs": "?",
+          "parser_kwargs": {
+            "nargs": "?"
+          },
+          "parser_path": [
+            "report"
+          ],
+          "required": false,
+          "scope": "positional",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--out",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "output directory (default ./cgprofile-report-<session>/)",
+          "dest": "out",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--out"
+          ],
+          "help_group": "OUTPUT",
+          "hidden": false,
+          "id": "option:route:entrypoint:cgprofile/report/--out",
+          "kind": "option",
+          "metavar": "DIR",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {},
+          "parser_path": [
+            "report"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--run-dir",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "render a standalone run result; needs no daemon",
+          "dest": "run_dir",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--run-dir"
+          ],
+          "help_group": "SOURCE",
+          "hidden": false,
+          "id": "option:route:entrypoint:cgprofile/report/--run-dir",
+          "kind": "option",
+          "metavar": "DIR",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {},
+          "parser_path": [
+            "report"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--export-only",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "write the raw exported parts here and render nothing",
+          "dest": "export_only",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--export-only"
+          ],
+          "help_group": "SOURCE",
+          "hidden": false,
+          "id": "option:route:entrypoint:cgprofile/report/--export-only",
+          "kind": "option",
+          "metavar": "DIR",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {},
+          "parser_path": [
+            "report"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--socket",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "control socket path override (when omitted, uses CGPROFILE_CONTROL_SOCKET)",
+          "dest": "socket",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--socket"
+          ],
+          "help_group": "CONNECTION",
+          "hidden": false,
+          "id": "option:route:entrypoint:cgprofile/report/--socket",
+          "kind": "option",
+          "metavar": "PATH",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {},
+          "parser_path": [
+            "report"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreTrueAction",
+          "before_nested_subcommand": false,
+          "canonical": "--html-only",
+          "choices": null,
+          "const": true,
+          "default": false,
+          "default_present": true,
+          "description": "write only report.html",
+          "dest": "html_only",
+          "effective_default": false,
+          "exclusive_group": "format",
+          "exclusive_required": false,
+          "flags": [
+            "--html-only"
+          ],
+          "help_group": "OUTPUT",
+          "hidden": false,
+          "id": "option:route:entrypoint:cgprofile/report/--html-only",
+          "kind": "option",
+          "metavar": null,
+          "minimum_values": 0,
+          "nargs": 0,
+          "parser_kwargs": {
+            "action": "store_true"
+          },
+          "parser_path": [
+            "report"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreTrueAction",
+          "before_nested_subcommand": false,
+          "canonical": "--md-only",
+          "choices": null,
+          "const": true,
+          "default": false,
+          "default_present": true,
+          "description": "write only report.md",
+          "dest": "md_only",
+          "effective_default": false,
+          "exclusive_group": "format",
+          "exclusive_required": false,
+          "flags": [
+            "--md-only"
+          ],
+          "help_group": "OUTPUT",
+          "hidden": false,
+          "id": "option:route:entrypoint:cgprofile/report/--md-only",
+          "kind": "option",
+          "metavar": null,
+          "minimum_values": 0,
+          "nargs": 0,
+          "parser_kwargs": {
+            "action": "store_true"
+          },
+          "parser_path": [
+            "report"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        }
+      ],
+      "aliases": [],
+      "behavior": [
+        "potentially expensive"
+      ],
+      "common_controls": [
+        "--color",
+        "--debug",
+        "--debug-raw",
+        "--help",
+        "--json",
+        "--log-level",
+        "--no-color",
+        "--quiet",
+        "--traceback",
+        "--version"
+      ],
+      "confirmation": false,
+      "constraints": [],
+      "delegated_metadata": [],
+      "description": "render a run directory, or export a stored session and render it",
+      "group": "EXPLORATION",
+      "id": "route:entrypoint:cgprofile/report",
+      "kind": "invocation",
+      "no_args_action": false,
+      "opaque_fields": [],
+      "parser_configured_by_callback": false,
+      "parser_settings": [
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [],
+          "prefix_chars": "-"
+        },
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [
+            "report"
+          ],
+          "prefix_chars": "-"
+        }
+      ],
+      "path": [
+        "report"
+      ],
+      "single_command": false,
+      "subcommand_groups": [],
+      "subcommands": [],
+      "subcommands_required": false,
+      "summary": "render a run directory, or export a stored session and render it [potentially expensive]",
+      "synopsis_override": null,
+      "syntax_complete": true,
+      "usage_override": null
+    },
+    {
+      "actions": [
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "choices": null,
+          "const": null,
+          "default": null,
+          "description": "the command to profile, after --",
+          "help_group": "positional arguments",
+          "hidden": false,
+          "id": "argument:route:entrypoint:cgprofile/run/command",
+          "kind": "argument",
+          "metavar": "CMD",
+          "minimum_values": 0,
+          "name": "command",
+          "nargs": "...",
+          "parser_kwargs": {
+            "nargs": "..."
+          },
+          "parser_path": [
+            "run"
+          ],
+          "required": false,
+          "scope": "positional",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--phase",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "phase name of the whole command (default: its basename)",
+          "dest": "phase",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--phase"
+          ],
+          "help_group": "RUN",
+          "hidden": false,
+          "id": "option:route:entrypoint:cgprofile/run/--phase",
+          "kind": "option",
+          "metavar": "NAME",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {},
+          "parser_path": [
+            "run"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--out-dir",
+          "choices": null,
+          "const": null,
+          "default": "./cgprofile-runs",
+          "default_present": true,
+          "description": "directory receiving the run directory",
+          "dest": "out_dir",
+          "effective_default": "./cgprofile-runs",
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--out-dir"
+          ],
+          "help_group": "RUN",
+          "hidden": false,
+          "id": "option:route:entrypoint:cgprofile/run/--out-dir",
+          "kind": "option",
+          "metavar": "DIR",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": "./cgprofile-runs"
+          },
+          "parser_path": [
+            "run"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreTrueAction",
+          "before_nested_subcommand": false,
+          "canonical": "--propagate-exit",
+          "choices": null,
+          "const": true,
+          "default": false,
+          "default_present": true,
+          "description": "exit with the command's own status",
+          "dest": "propagate_exit",
+          "effective_default": false,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--propagate-exit"
+          ],
+          "help_group": "RUN",
+          "hidden": false,
+          "id": "option:route:entrypoint:cgprofile/run/--propagate-exit",
+          "kind": "option",
+          "metavar": null,
+          "minimum_values": 0,
+          "nargs": 0,
+          "parser_kwargs": {
+            "action": "store_true"
+          },
+          "parser_path": [
+            "run"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        }
+      ],
+      "aliases": [],
+      "behavior": [
+        "mutating",
+        "potentially expensive"
+      ],
+      "common_controls": [
+        "--color",
+        "--debug",
+        "--debug-raw",
+        "--help",
+        "--json",
+        "--log-level",
+        "--no-color",
+        "--quiet",
+        "--traceback",
+        "--version"
+      ],
+      "confirmation": false,
+      "constraints": [],
+      "delegated_metadata": [],
+      "description": "profile one command locally (direct mode, needs cgroupfs)",
+      "group": "MODIFICATION",
+      "id": "route:entrypoint:cgprofile/run",
+      "kind": "invocation",
+      "no_args_action": false,
+      "opaque_fields": [],
+      "parser_configured_by_callback": false,
+      "parser_settings": [
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [],
+          "prefix_chars": "-"
+        },
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [
+            "run"
+          ],
+          "prefix_chars": "-"
+        }
+      ],
+      "path": [
+        "run"
+      ],
+      "single_command": false,
+      "subcommand_groups": [],
+      "subcommands": [],
+      "subcommands_required": false,
+      "summary": "profile one command locally (direct mode, needs cgroupfs) [mutating; potentially expensive]",
+      "synopsis_override": null,
+      "syntax_complete": true,
+      "usage_override": null
+    },
+    {
+      "actions": [],
+      "aliases": [],
+      "behavior": [],
+      "common_controls": [],
+      "confirmation": false,
+      "constraints": [],
+      "delegated_metadata": [],
+      "description": "install, check, or remove this tool's packaged agent skills",
+      "group": "MAINTENANCE",
+      "id": "route:entrypoint:cgprofile/skills",
+      "kind": "delegate-group",
+      "no_args_action": false,
+      "opaque_fields": [],
+      "parser_configured_by_callback": false,
+      "parser_settings": [
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [],
+          "prefix_chars": "-"
+        }
+      ],
+      "path": [
+        "skills"
+      ],
+      "single_command": false,
+      "subcommands": [
+        "route:entrypoint:cgprofile/skills/install",
+        "route:entrypoint:cgprofile/skills/uninstall",
+        "route:entrypoint:cgprofile/skills/check",
+        "route:entrypoint:cgprofile/skills/list"
+      ],
+      "summary": "install, check, or remove this tool's packaged agent skills",
+      "synopsis_override": null,
+      "syntax_complete": true,
+      "usage_override": null
+    },
+    {
+      "actions": [
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--harness",
+          "choices": [
+            "claude",
+            "agents",
+            "all"
+          ],
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "target harness: claude, agents or all (default: all)",
+          "dest": "harness",
+          "effective_default": null,
+          "exclusive_group": "target",
+          "exclusive_required": false,
+          "flags": [
+            "--harness"
+          ],
+          "help_group": "TARGET",
+          "hidden": false,
+          "id": "option:route:entrypoint:cgprofile/skills/check/--harness",
+          "kind": "option",
+          "metavar": "HARNESS",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "choices": [
+              "claude",
+              "agents",
+              "all"
+            ],
+            "default": null
+          },
+          "parser_path": [
+            "skills",
+            "check"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--dest",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "use exactly this directory instead of a harness directory",
+          "dest": "dest",
+          "effective_default": null,
+          "exclusive_group": "target",
+          "exclusive_required": false,
+          "flags": [
+            "--dest"
+          ],
+          "help_group": "TARGET",
+          "hidden": false,
+          "id": "option:route:entrypoint:cgprofile/skills/check/--dest",
+          "kind": "option",
+          "metavar": "DIR",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": null
+          },
+          "parser_path": [
+            "skills",
+            "check"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        }
+      ],
+      "aliases": [],
+      "behavior": [],
+      "common_controls": [
+        "--color",
+        "--debug",
+        "--debug-raw",
+        "--help",
+        "--json",
+        "--log-level",
+        "--no-color",
+        "--progress",
+        "--quiet",
+        "--traceback",
+        "--version"
+      ],
+      "confirmation": false,
+      "constraints": [],
+      "delegated_metadata": [
+        {
+          "behavior": [],
+          "confirmation": false,
+          "description": "install, check, or remove this tool's packaged agent skills",
+          "group": "MAINTENANCE",
+          "id": null,
+          "name": "skills",
+          "summary": "install, check, or remove this tool's packaged agent skills",
+          "synopsis": null
+        }
+      ],
+      "description": "exit 1 unless every packaged skill is current",
+      "group": "EXPLORATION",
+      "id": "route:entrypoint:cgprofile/skills/check",
+      "kind": "invocation",
+      "no_args_action": false,
+      "opaque_fields": [],
+      "parser_configured_by_callback": false,
+      "parser_settings": [
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [],
+          "prefix_chars": "-"
+        },
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [
+            "skills"
+          ],
+          "prefix_chars": "-"
+        },
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [
+            "skills",
+            "check"
+          ],
+          "prefix_chars": "-"
+        }
+      ],
+      "path": [
+        "skills",
+        "check"
+      ],
+      "single_command": false,
+      "subcommand_groups": [],
+      "subcommands": [],
+      "subcommands_required": false,
+      "summary": "exit 1 unless every packaged skill is current",
+      "synopsis_override": null,
+      "syntax_complete": true,
+      "usage_override": null
+    },
+    {
+      "actions": [
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--harness",
+          "choices": [
+            "claude",
+            "agents",
+            "all"
+          ],
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "target harness: claude, agents or all (default: all)",
+          "dest": "harness",
+          "effective_default": null,
+          "exclusive_group": "target",
+          "exclusive_required": false,
+          "flags": [
+            "--harness"
+          ],
+          "help_group": "TARGET",
+          "hidden": false,
+          "id": "option:route:entrypoint:cgprofile/skills/install/--harness",
+          "kind": "option",
+          "metavar": "HARNESS",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "choices": [
+              "claude",
+              "agents",
+              "all"
+            ],
+            "default": null
+          },
+          "parser_path": [
+            "skills",
+            "install"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--dest",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "use exactly this directory instead of a harness directory",
+          "dest": "dest",
+          "effective_default": null,
+          "exclusive_group": "target",
+          "exclusive_required": false,
+          "flags": [
+            "--dest"
+          ],
+          "help_group": "TARGET",
+          "hidden": false,
+          "id": "option:route:entrypoint:cgprofile/skills/install/--dest",
+          "kind": "option",
+          "metavar": "DIR",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": null
+          },
+          "parser_path": [
+            "skills",
+            "install"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreTrueAction",
+          "before_nested_subcommand": false,
+          "canonical": "--overwrite-modified",
+          "choices": null,
+          "const": true,
+          "default": false,
+          "default_present": true,
+          "description": "replace skills you modified locally",
+          "dest": "overwrite_modified",
+          "effective_default": false,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--overwrite-modified"
+          ],
+          "help_group": "TARGET",
+          "hidden": false,
+          "id": "option:route:entrypoint:cgprofile/skills/install/--overwrite-modified",
+          "kind": "option",
+          "metavar": null,
+          "minimum_values": 0,
+          "nargs": 0,
+          "parser_kwargs": {
+            "action": "store_true",
+            "default": false
+          },
+          "parser_path": [
+            "skills",
+            "install"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        }
+      ],
+      "aliases": [],
+      "behavior": [
+        "mutating",
+        "dry-run"
+      ],
+      "common_controls": [
+        "--color",
+        "--debug",
+        "--debug-raw",
+        "--dry-run",
+        "--help",
+        "--log-level",
+        "--no-color",
+        "--progress",
+        "--quiet",
+        "--traceback",
+        "--version"
+      ],
+      "confirmation": false,
+      "constraints": [],
+      "delegated_metadata": [
+        {
+          "behavior": [],
+          "confirmation": false,
+          "description": "install, check, or remove this tool's packaged agent skills",
+          "group": "MAINTENANCE",
+          "id": null,
+          "name": "skills",
+          "summary": "install, check, or remove this tool's packaged agent skills",
+          "synopsis": null
+        }
+      ],
+      "description": "install or update the packaged skills, removing orphans",
+      "group": "MODIFICATION",
+      "id": "route:entrypoint:cgprofile/skills/install",
+      "kind": "invocation",
+      "no_args_action": false,
+      "opaque_fields": [],
+      "parser_configured_by_callback": false,
+      "parser_settings": [
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [],
+          "prefix_chars": "-"
+        },
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [
+            "skills"
+          ],
+          "prefix_chars": "-"
+        },
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [
+            "skills",
+            "install"
+          ],
+          "prefix_chars": "-"
+        }
+      ],
+      "path": [
+        "skills",
+        "install"
+      ],
+      "single_command": false,
+      "subcommand_groups": [],
+      "subcommands": [],
+      "subcommands_required": false,
+      "summary": "install or update the packaged skills, removing orphans [mutating; dry-run]",
+      "synopsis_override": null,
+      "syntax_complete": true,
+      "usage_override": null
+    },
+    {
+      "actions": [
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--harness",
+          "choices": [
+            "claude",
+            "agents",
+            "all"
+          ],
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "target harness: claude, agents or all (default: all)",
+          "dest": "harness",
+          "effective_default": null,
+          "exclusive_group": "target",
+          "exclusive_required": false,
+          "flags": [
+            "--harness"
+          ],
+          "help_group": "TARGET",
+          "hidden": false,
+          "id": "option:route:entrypoint:cgprofile/skills/list/--harness",
+          "kind": "option",
+          "metavar": "HARNESS",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "choices": [
+              "claude",
+              "agents",
+              "all"
+            ],
+            "default": null
+          },
+          "parser_path": [
+            "skills",
+            "list"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--dest",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "use exactly this directory instead of a harness directory",
+          "dest": "dest",
+          "effective_default": null,
+          "exclusive_group": "target",
+          "exclusive_required": false,
+          "flags": [
+            "--dest"
+          ],
+          "help_group": "TARGET",
+          "hidden": false,
+          "id": "option:route:entrypoint:cgprofile/skills/list/--dest",
+          "kind": "option",
+          "metavar": "DIR",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": null
+          },
+          "parser_path": [
+            "skills",
+            "list"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        }
+      ],
+      "aliases": [],
+      "behavior": [],
+      "common_controls": [
+        "--color",
+        "--debug",
+        "--debug-raw",
+        "--help",
+        "--json",
+        "--log-level",
+        "--no-color",
+        "--progress",
+        "--quiet",
+        "--traceback",
+        "--version"
+      ],
+      "confirmation": false,
+      "constraints": [],
+      "delegated_metadata": [
+        {
+          "behavior": [],
+          "confirmation": false,
+          "description": "install, check, or remove this tool's packaged agent skills",
+          "group": "MAINTENANCE",
+          "id": null,
+          "name": "skills",
+          "summary": "install, check, or remove this tool's packaged agent skills",
+          "synopsis": null
+        }
+      ],
+      "description": "list packaged skills and their installed state",
+      "group": "EXPLORATION",
+      "id": "route:entrypoint:cgprofile/skills/list",
+      "kind": "invocation",
+      "no_args_action": false,
+      "opaque_fields": [],
+      "parser_configured_by_callback": false,
+      "parser_settings": [
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [],
+          "prefix_chars": "-"
+        },
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [
+            "skills"
+          ],
+          "prefix_chars": "-"
+        },
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [
+            "skills",
+            "list"
+          ],
+          "prefix_chars": "-"
+        }
+      ],
+      "path": [
+        "skills",
+        "list"
+      ],
+      "single_command": false,
+      "subcommand_groups": [],
+      "subcommands": [],
+      "subcommands_required": false,
+      "summary": "list packaged skills and their installed state",
+      "synopsis_override": null,
+      "syntax_complete": true,
+      "usage_override": null
+    },
+    {
+      "actions": [
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--harness",
+          "choices": [
+            "claude",
+            "agents",
+            "all"
+          ],
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "target harness: claude, agents or all (default: all)",
+          "dest": "harness",
+          "effective_default": null,
+          "exclusive_group": "target",
+          "exclusive_required": false,
+          "flags": [
+            "--harness"
+          ],
+          "help_group": "TARGET",
+          "hidden": false,
+          "id": "option:route:entrypoint:cgprofile/skills/uninstall/--harness",
+          "kind": "option",
+          "metavar": "HARNESS",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "choices": [
+              "claude",
+              "agents",
+              "all"
+            ],
+            "default": null
+          },
+          "parser_path": [
+            "skills",
+            "uninstall"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--dest",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "use exactly this directory instead of a harness directory",
+          "dest": "dest",
+          "effective_default": null,
+          "exclusive_group": "target",
+          "exclusive_required": false,
+          "flags": [
+            "--dest"
+          ],
+          "help_group": "TARGET",
+          "hidden": false,
+          "id": "option:route:entrypoint:cgprofile/skills/uninstall/--dest",
+          "kind": "option",
+          "metavar": "DIR",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": null
+          },
+          "parser_path": [
+            "skills",
+            "uninstall"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreTrueAction",
+          "before_nested_subcommand": false,
+          "canonical": "--overwrite-modified",
+          "choices": null,
+          "const": true,
+          "default": false,
+          "default_present": true,
+          "description": "replace skills you modified locally",
+          "dest": "overwrite_modified",
+          "effective_default": false,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--overwrite-modified"
+          ],
+          "help_group": "TARGET",
+          "hidden": false,
+          "id": "option:route:entrypoint:cgprofile/skills/uninstall/--overwrite-modified",
+          "kind": "option",
+          "metavar": null,
+          "minimum_values": 0,
+          "nargs": 0,
+          "parser_kwargs": {
+            "action": "store_true",
+            "default": false
+          },
+          "parser_path": [
+            "skills",
+            "uninstall"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        }
+      ],
+      "aliases": [],
+      "behavior": [
+        "mutating",
+        "dry-run"
+      ],
+      "common_controls": [
+        "--color",
+        "--debug",
+        "--debug-raw",
+        "--dry-run",
+        "--help",
+        "--log-level",
+        "--no-color",
+        "--progress",
+        "--quiet",
+        "--traceback",
+        "--version"
+      ],
+      "confirmation": false,
+      "constraints": [],
+      "delegated_metadata": [
+        {
+          "behavior": [],
+          "confirmation": false,
+          "description": "install, check, or remove this tool's packaged agent skills",
+          "group": "MAINTENANCE",
+          "id": null,
+          "name": "skills",
+          "summary": "install, check, or remove this tool's packaged agent skills",
+          "synopsis": null
+        }
+      ],
+      "description": "remove the skills this tool installed",
+      "group": "MODIFICATION",
+      "id": "route:entrypoint:cgprofile/skills/uninstall",
+      "kind": "invocation",
+      "no_args_action": false,
+      "opaque_fields": [],
+      "parser_configured_by_callback": false,
+      "parser_settings": [
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [],
+          "prefix_chars": "-"
+        },
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [
+            "skills"
+          ],
+          "prefix_chars": "-"
+        },
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [
+            "skills",
+            "uninstall"
+          ],
+          "prefix_chars": "-"
+        }
+      ],
+      "path": [
+        "skills",
+        "uninstall"
+      ],
+      "single_command": false,
+      "subcommand_groups": [],
+      "subcommands": [],
+      "subcommands_required": false,
+      "summary": "remove the skills this tool installed [mutating; dry-run]",
+      "synopsis_override": null,
+      "syntax_complete": true,
+      "usage_override": null
+    }
+  ],
+  "schema_version": 7,
+  "syntax_complete": true
+}

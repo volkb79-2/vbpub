@@ -69,12 +69,49 @@ browser binaries:
 ```bash
 pwmcp inspect https://example.com
 pwmcp inspect https://example.com --format snapshot --output page.yml
+pwmcp inspect https://example.com --format html --selector main --html-mode outer --output page.html
+pwmcp inspect https://example.com --format markdown --main
+pwmcp inspect https://example.com --format links --selector article
+pwmcp inspect https://example.com --format text --selector '#article-summary'
 pwmcp inspect https://example.com --format screenshot --output page.png --full-page
 pwmcp inspect https://example.com --wait-for '#content' --wait-until domcontentloaded
 pwmcp inspect https://nas.example --ignore-https-errors
+pwmcp inspect https://example.com --retries 2
+pwmcp eval https://example.com 'document.title'
+pwmcp eval https://example.com --selector 'script#__NEXT_DATA__' --property textContent
 ```
 
-`--format` accepts `text`, `snapshot`, or `screenshot`. `--wait-until` accepts
+`--format` accepts `text`, `snapshot`, `html`, `markdown`, `links`, or
+`screenshot`. For text, Markdown, and links, `--selector CSS` extracts the first
+matching element. `--main` selects the first semantic `main`, `[role=main]`, or
+`article`; if none exists, it reads the body after removing `header`, `nav`, and
+`footer` elements. It cannot be combined with `--selector`.
+Markdown keeps headings, lists, inline and fenced code, and links. Links output
+uses absolute resolved hrefs. HTML returns document or selected-element markup,
+capped at 512 KiB by default, with an explicit truncation notice. `pwmcp eval`
+returns a JSON value through the existing `browser_evaluate` MCP tool and needs
+no third-party Python `mcp` package. Its caller-supplied JavaScript runs with
+the page origin's permissions; use it only on pages the user is authorized to
+inspect. See the [evaluation
+design](DESIGN-GUIDE.md#mcp-backed-evaluation-and-bounded-html) and
+[security policy](SECURITY.md#mcp-page-evaluation).
+
+`eval` checks the compact JSON result size in the page before it crosses MCP.
+`--max-bytes` defaults to 1 MiB and accepts 1 through 4194304 bytes. A
+truncated text result keeps the preview on stdout and writes
+`[truncated after N bytes]` to stderr. In `--json` mode the common object has
+the preview as `content` and `preview`, plus `http_status`, `http_error`, and
+`diagnostics`, with `truncated: true` and `max_bytes`. If the separate transport limit
+is reached, PWMCP reports a size error with a hint to return a smaller or
+aggregated value.
+
+Expressions may begin with comments. PWMCP strips final semicolons and trailing
+comments outside strings and template literals; a comment alone is an error.
+Semicolons and `//` inside literals are preserved. If slash syntax is
+ambiguous, the expression is left unchanged for JavaScript to parse. Supply a
+function with `return` when an expression needs multiple statements.
+
+`--wait-until` accepts
 `commit`, `domcontentloaded`, `load`, or `networkidle`. Text and snapshots go to
 stdout unless `--output PATH` is given; screenshots require `--output` and a
 `.png`, `.jpg`, or `.jpeg` suffix. `--wait-for SELECTOR` waits for a visible
@@ -85,13 +122,36 @@ resources. Use it only for a trusted target with a known certificate problem;
 it does not change PWMCP service defaults. See the
 [design rationale](DESIGN-GUIDE.md#certificate-errors-during-inspection).
 
+A recognized page/browser crash during the first navigation is retried once by
+default and noted on stderr. `--retries N` requests up to N additional attempts;
+`--retries 0` disables the automatic crash retry. When the hint says the page or
+browser crashed, the MCP endpoint has replied: reduce page load and check memory
+and `/dev/shm`. An endpoint-connection hint asks you to check PWMCP reachability.
+
 Bot protection (PWMCP-32): when the page is a challenge or block page (Cloudflare "Just a
 moment...", a CAPTCHA wall, ...), `inspect` exits **4**, says `blocked by bot protection (...)`,
 and with `--json` returns `blocked: true`, `provider`, `signals`, `status`, `final_url`,
-`waited_ms`; it never writes `--output` and never retries. `--storage-state FILE` reuses a
+`waited_ms`; it never writes `--output` and never retries. A main-document HTTP 4xx/5xx
+returns the body with exit **5**; `--allow-http-error` opts into exit 0 for expected error
+pages. With `--json`, inspect always returns `content`, `diagnostics`, `format`, `http_status`,
+and `http_error`; eval uses the same envelope with `format: "eval"`. `--storage-state FILE` reuses a
 session a human exported from their own browser (mode 0600, scoped to the URL's host, values
 never printed). See README "Bot protection" for the signatures, the limits, and the
-human-in-the-loop steps. Exit codes of `inspect`: 0 success, 1 failure, 2 usage, 4 blocked.
+human-in-the-loop steps.
+
+The closed exit-code table for `inspect` and `eval` is:
+
+| Code | Meaning |
+|---:|---|
+| 0 | Inspection or evaluation completed; includes an expected HTTP error when `--allow-http-error` is set. |
+| 1 | Runtime failure, such as an unreachable service, browser error, or output failure. |
+| 2 | Invalid command usage. |
+| 3 | PWMCP client command is not installed. |
+| 4 | `inspect` recognized bot protection; the page is treated as a challenge, not the requested target. |
+| 5 | The main document returned HTTP 4xx or 5xx. |
+
+`inspect` returns exit 4 for recognized bot protection, taking precedence over
+exit 5. `eval` does not classify bot-protection pages; it uses the HTTP status.
 
 Partial renders (staged hydration, assets answered 403) are the usual failure on
 heavy pages, so `inspect` says when it suspects one. All of these go to stderr
@@ -104,15 +164,17 @@ and never change stdout:
   output under 1 KiB without `--wait-for` (a legitimately tiny page also triggers
   it; the line is advice, not an error), and `result is N bytes, much smaller
   than an earlier attempt` after a retry.
-- `--retries N` (0 to 10, default 0) allows N more attempts, each a fresh context
+- `--retries N` (0 to 10) requests N additional attempts, each a fresh context
   and navigation, after a failed attempt or when the text/snapshot still changes
-  over a 0.5 s settle window. The last attempt is returned as it is. Pair it with a
-  content-based `--wait-for` and a `--timeout-ms` of 30000 or more.
+  over a 0.5 s settle window. When omitted, only a recognised page/browser crash
+  is retried once; `--retries 0` disables that retry. The last attempt is returned
+  as it is. Pair retries with a content-based `--wait-for` and a `--timeout-ms`
+  of 30000 or more.
 
 When an override is active (server-level or `--user-agent`), the result reports the
 user agent it presented and its source (`user_agent`, `user_agent_source`:
-`preset:<name>` or `custom`) as JSON fields with `--json`, or one `[INFO] user agent:`
-line on stderr otherwise. With no override nothing is added: no field, no line.
+`preset:<name>` or `custom`) in the stable JSON object, or one `[INFO] user agent:`
+line on stderr otherwise. With no override those identity fields and line are absent.
 `--user-agent PRESET_OR_STRING` presents another identity for that one call
 (`edge-windows`, `chrome-windows`, `firefox-windows`, `default`, or a custom
 string); the server-level default is the `user_agent` config key. See

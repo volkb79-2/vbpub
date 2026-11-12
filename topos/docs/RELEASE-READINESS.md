@@ -1,8 +1,13 @@
 # topos Release Readiness
 
-This is the canonical checklist for a v1/v1.5 release claim. `TUI-SPEC.md`
-defines acceptance; this document maps those criteria to runnable checks and
-remaining gates. `MEASUREMENTS.md` is the evidence ledger: paste dated command
+Last reviewed 2026-11-05 against the code and `docs/STATUS.md` (latest release
+`topos-v0.5.0`).
+
+This is the canonical checklist for a v1/v1.5 release claim. The 2026-07 spec
+(`nyxloom-trove/archive/TUI-SPEC-2026-07.md`) defined its acceptance items; the
+current target design `TUI-SPEC.md` section 8 has new acceptance that this document
+does not yet map. This document maps the criteria to runnable checks and remaining
+gates. `MEASUREMENTS.md` is the evidence ledger: paste dated command
 output there rather than copying historical measurements into this file.
 
 Current conclusion: the v1/v1.5 core is a feature-complete prototype with
@@ -29,21 +34,35 @@ its claim instead of running that capability's live gate.
 
 - Exact per-cgroup network loss without a live BPF provider.
 - Live BPF attach, pin, snapshot-writer, and detach lifecycle.
-- Executable Docker/systemd admin actions beyond the validated P46
-  start/stop/restart kernel and P49 memory.high set-property (update, kill,
-  raw subprocess).
+- Admin actions beyond the CLI verbs that exist today: Docker and systemd
+  start/stop/restart, kill and update, and the systemd memory.high
+  set-property, all behind root, typed confirmation and the audit log.
+  Compose, CIU and Wings owner adapters refuse. No TUI action keys (D-030);
+  actions stay in the CLI until the safety items (D-033) are decided.
 - Guided `memory.high` squeeze beyond the P56 single-target CLI (no TUI
   integration, no daemon-side/remote squeeze, no automatic two-run stratification
   mode — the two-run pattern is documented as operator guidance only).
-- Automated production daemon installation or service mutation.
+- Automated production daemon installation or service mutation. Templates and a
+  non-mutating install plan exist; an install wizard is planned (D-024, D-029).
+- Persistent history. `daemon/persist.py` writes a capped store, off by default;
+  nothing reads it, and `topos query` cannot query daemon history. Replay of
+  history across a daemon restart is not claimed.
+- Always-on collection with automatic source selection: zero-argument `topos`
+  collects locally; `--attach` is explicit.
+- Process-level views (blocked processes, per-process I/O): `procs/` has no caller.
 - Persistent daemon-owned paddr DAMON — enabled by explicit `[damon] paddr_enabled = true`; disabled by default (P44 adds the lifecycle, but the default is unchanged).
 - Inspect-files subprocess execution is limited to the bounded journald
   snapshot (fixed absolute ``/usr/bin/journalctl`` argv). No follow/stream
   mode, no arbitrary subprocess.
-- Web UI.
-- GPU and ZFS plugins.
+- Web UI. No code exists; it is parked (D-023).
+- Live-kernel evidence for ZFS ARC and GPU DRM providers; they are
+  fixture-tested only.
 
 ## Spec Section 9 Evidence Map
+
+This map is against the 2026-07 spec
+(`nyxloom-trove/archive/TUI-SPEC-2026-07.md`); the current target design is
+`TUI-SPEC.md`.
 
 `Pass` means the current evidence satisfies the criterion. `Partial` means the
 implementation exists but the exact spec acceptance has not been recorded.

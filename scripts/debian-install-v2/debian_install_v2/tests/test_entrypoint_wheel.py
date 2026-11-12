@@ -22,6 +22,7 @@ from cli_extended import invoke_script
 
 PROJECT = Path(__file__).resolve().parents[2]
 REAL_ENTRYPOINT = PROJECT / "debian-install-v2.py"
+VERSION = (PROJECT / "VERSION").read_text(encoding="utf-8").strip()
 LIBRARY_PACKAGE = Path(cli_extended.__file__).resolve().parent
 WHEEL_NAME = "cli_extended-0.0.0-py3-none-any.whl"
 NOT_INSTALLED = (
@@ -98,7 +99,7 @@ def test_one_wheel_beside_the_entrypoint_is_imported_from_the_wheel(install_dir,
     result = probe(install_dir, tmp_path, no_site_python)
     assert result.returncode == 0, result.stderr
     assert result.stdout == (
-        "debian-install-v2 2.0.0\n"
+        f"debian-install-v2 {VERSION}\n"
         f"CLI_EXTENDED_FILE={wheel}/cli_extended/__init__.py\n"
         "EXIT=0\n"
     )
@@ -161,7 +162,7 @@ def test_no_wheel_uses_an_installed_library(install_dir, tmp_path):
         cwd=tmp_path,
     )
     assert result.returncode == 0, result.stderr
-    assert result.stdout == "debian-install-v2 2.0.0\n"
+    assert result.stdout == f"debian-install-v2 {VERSION}\n"
     assert result.stderr == ""
 
 
@@ -179,7 +180,7 @@ def test_one_real_wheel_plus_a_stray_other_wheel_runs_normally(install_dir, tmp_
     result = run_isolated(install_dir / "debian-install-v2.py", ["--version"], tmp_path, no_site_python)
     assert result.returncode == 0, result.stderr
     assert "more than one" not in result.stderr
-    assert result.stdout == "debian-install-v2 2.0.0\n"
+    assert result.stdout == f"debian-install-v2 {VERSION}\n"
     assert result.stderr == ""
 
 

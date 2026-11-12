@@ -121,6 +121,7 @@ class _RecordingActions(HostActions):
         self.fail_enable = fail_enable
 
     def run(self, argv, description="", dangerous=False, **kw):
+        self._validate(list(argv))
         self.calls.append(tuple(argv))
         if self.fail_enable and argv[1:2] == ["enable"]:
             raise ActionError("systemctl exploded")
@@ -236,6 +237,7 @@ class _LockActions(HostActions):
         self.calls = []
 
     def run(self, argv, description="", dangerous=False, **kw):
+        self._validate(list(argv))
         self.calls.append(tuple(argv))
         outcome = self.outcomes.pop(0)
         if outcome:
@@ -283,7 +285,7 @@ def test_io_benchmark_result_is_posted_exactly_once(tmp_path):
         installer, _ = make(tmp_path / str(verbose), telegram_verbose_progress=verbose)
         sent: list[str] = []
         installer._notify = lambda message, **kw: sent.append(kw.get("event", message))  # type: ignore[method-assign]
-        installer._run_io_benchmark(swap_written=False)
+        installer._run_io_benchmark()
         posts = [s for s in sent if "io benchmark" in s.lower() or "io_benchmark:" in s]
         posts = [s for s in posts if "rbps" in s]
         assert len(posts) == 1, (verbose, sent)
@@ -292,12 +294,12 @@ def test_io_benchmark_result_is_posted_exactly_once(tmp_path):
 @pytest.mark.parametrize("verbose", [True, False])
 def test_io_benchmark_advisory_failure_is_posted_exactly_once(tmp_path, verbose):
     installer, disk = make(tmp_path / str(verbose), telegram_verbose_progress=verbose)
-    disk.partial_write_fails = True
+    disk.fail["iobench-install-runner"] = "simulated iobench refusal"
     sent: list[str] = []
     installer._notify = lambda message, **kw: sent.append(kw.get("event", message))  # type: ignore[method-assign]
-    installer._run_io_benchmark(swap_written=False)
+    installer._run_io_benchmark()
     assert installer.state.load()["steps"]["io_benchmark"]["status"] == "warned"
-    posts = [s for s in sent if "benchmark failed" in s]
+    posts = [s for s in sent if "iobench failed (advisory)" in s]
     assert len(posts) == 1, (verbose, sent)
 
 

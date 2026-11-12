@@ -5,18 +5,20 @@ from collections.abc import Callable
 from pathlib import Path
 
 from topos.collect.cgroup import (
+    BlockStackClassifier,
     CgroupSample,
     add_entity_ancestors,
     build_entity_predicate,
     collect_cgroup,
     walk_entities,
 )
-from topos.collect.dockerjoin import DockerInspect, ContainerResolveError, enrich_entities, resolve_container_key
+from topos.collect.dockerjoin import DockerInspect, DockerInspectCache, ContainerResolveError, enrich_entities, resolve_container_key
 from topos.collect.host import collect_host, collect_host_meta
+from topos.collect.iocost import collect_io_cost
 from topos.config import ToposConfig, load
 from topos.damon import DEFAULT_DAMON_ROOT, annotate_frame_damon
 from topos.diag import annotate as annotate_frame_diagnostics
-from topos.drift.origin import SystemctlShowRunner, annotate_frame_governance
+from topos.drift.origin import SystemctlShowRunner, UnitViewCache, annotate_frame_governance
 from topos.model import Entity, EntityFrame, EntityKey, Frame, MetricSource, MetricValue
 from topos.providers.base import NetSample, Provider, sample_rank
 from topos.providers.net_host import NetHostProvider
@@ -46,11 +48,20 @@ class Collector:
         slice_names: tuple[str, ...] | None = None,
         container_selectors: tuple[str, ...] | None = None,
         metrics_mode: str = "full",
+        monotonic: Callable[[], float] | None = None,
     ) -> None:
         self.config = config or load()
         self.cgroup_root = cgroup_root or self.config.cgroup_root
         self.docker_inspect = docker_inspect
         self.now = now or time.time
+        # Intervals come from a monotonic clock (an NTP step or VM resume must not
+        # corrupt rates); ``now`` only stamps the frame. An injected ``now`` (tests,
+        # replays) drives both so a fake clock stays authoritative.
+        self._mono: Callable[[], float] | None = monotonic or (time.monotonic if now is None else None)
+        self._tick_mono = 0.0
+        self._block_stack = BlockStackClassifier(sys_root)
+        self._docker_cache = DockerInspectCache()
+        self._unit_cache = UnitViewCache(clock=lambda: self._tick_mono)
         self.proc_root = proc_root
         self.sys_root = sys_root
         self.host_collector = host_collector or (
@@ -64,6 +75,7 @@ class Collector:
             NetHostProvider(proc_root=self.proc_root),
         )
         self._prev_ts: float | None = None
+        self._prev_mono: float | None = None
         self._prev_counters: dict[tuple[EntityKey, str], int] = {}
         self.io_saturation_device: dict[EntityKey, str] = {}
         """Per entity: ``"<maj:min> <io.max field>"`` that set io_cap_saturation_pct (B-012)."""
@@ -90,13 +102,16 @@ class Collector:
 
     def collect_once(self) -> Frame:
         ts = self.now()
-        interval_s = self.config.interval if self._prev_ts is None else max(0.0, ts - self._prev_ts)
+        mono = self._mono() if self._mono is not None else ts
+        self._tick_mono = mono
+        interval_s = self.config.interval if self._prev_mono is None else max(0.0, mono - self._prev_mono)
         entities = walk_entities(self.cgroup_root)
         self._apply_config(entities)
         entities = enrich_entities(
             entities,
             self.docker_inspect,
             known_stack_roots=set(self.config.ciu.known_stacks) if self.config.ciu.known_stacks else None,
+            cache=self._docker_cache,
         )
         # Apply entity filtering: determine which entity keys to collect.
         # Non-matching entities are skipped (no sysfs reads for their cgroup).
@@ -121,15 +136,21 @@ class Collector:
         for key, entity in entities.items():
             if key not in collect_keys:
                 continue
-            sample = collect_cgroup(self.cgroup_root, key, entity)
+            sample = collect_cgroup(self.cgroup_root, key, entity, self._block_stack)
             metrics = dict(sample.metrics)
             metrics.update(self._derived_rates(key, sample, interval_s))
             frames[key] = EntityFrame(entity=sample.entity, metrics=metrics)
         self._apply_network_metrics(frames, entities, interval_s)
+        self._prune_baselines(set(frames))
         self._prev_ts = ts
+        self._prev_mono = mono
         host_meta = collect_host_meta(proc_root=self.proc_root, sys_root=self.sys_root)
         self._apply_host_device_rates(host_meta, interval_s)
         host = self.host_collector()
+        io_cost_metrics, io_cost_details = collect_io_cost(self.cgroup_root)
+        host.update(io_cost_metrics)
+        if io_cost_details:
+            host_meta["io_cost"] = io_cost_details
         self._apply_zfs_arc_rate(host, host_meta)
         frame = Frame(
             schema_version=1,
@@ -148,7 +169,7 @@ class Collector:
             now=ts,
             state_dir=self.damon_state_dir,
         )
-        annotate_frame_governance(frame, self.systemctl_show_runner)
+        annotate_frame_governance(frame, self.systemctl_show_runner, self._unit_cache)
         frame = annotate_frame_diagnostics(frame, self.config)
         # Apply metric filtering last, after all annotations have populated
         # entity metrics. This ensures ALL non-kept metrics (including
@@ -178,6 +199,12 @@ class Collector:
                     break
             name = Path(entity.key).name
             entity.is_protected = entity.key in self.config.protected_services or name in self.config.protected_services
+
+    def _prune_baselines(self, live_keys: set[EntityKey]) -> None:
+        """Drop counter baselines of entities that left the tree (A-07)."""
+        keep = live_keys | {_HOST_RATE_KEY}
+        for prev_key in [k for k in self._prev_counters if k[0] not in keep]:
+            del self._prev_counters[prev_key]
 
     def _delta(self, key: EntityKey, raw_name: str, raw_now: int | None) -> tuple[int | None, int | None]:
         if raw_now is None:
@@ -242,7 +269,17 @@ class Collector:
         out: dict[str, MetricValue] = {}
         wra_delta, wra_raw = self._delta(key, "memory.stat:workingset_refault_anon", raw.get("memory.stat:workingset_refault_anon"))
         zswpin_delta, zswpin_raw = self._delta(key, "memory.stat:zswpin", raw.get("memory.stat:zswpin"))
-        if wra_delta is None or zswpin_delta is None or interval_s <= 0:
+        if raw.get("memory.stat:zswpin") is None:
+            # No zswpin counter (zswap not enabled for this cgroup): every anon refault is
+            # a device refault. rf_z is structurally unavailable, not "warming" (A-06/A-15).
+            out["rf_z_per_s"] = MetricValue(None, "unavail_kernel")
+            if raw.get("memory.stat:workingset_refault_anon") is None:
+                out["rf_d_per_s"] = MetricValue(None, "unavail_kernel")
+            elif wra_delta is None or interval_s <= 0:
+                out["rf_d_per_s"] = MetricValue(None, "derived", wra_raw)
+            else:
+                out["rf_d_per_s"] = MetricValue(wra_delta / interval_s, "derived", wra_raw)
+        elif wra_delta is None or zswpin_delta is None or interval_s <= 0:
             out["rf_z_per_s"] = MetricValue(None, "derived", zswpin_raw)
             out["rf_d_per_s"] = MetricValue(None, "derived", wra_raw)
         else:
@@ -253,6 +290,8 @@ class Collector:
         out["cpu_pct"] = usage if usage.v is None else MetricValue((usage.v / 1_000_000.0) * 100.0, "derived", usage.raw)
         throttled = self._rate_metric(key, "cpu.stat:throttled_usec", raw.get("cpu.stat:throttled_usec"), interval_s)
         out["cpu_throttled_pct"] = throttled if throttled.v is None else MetricValue((throttled.v / 1_000_000.0) * 100.0, "derived", throttled.raw)
+        io_total_src: MetricSource = "derived" if raw.get("io.stat:_unclassified") or "io.stat:rbytes" not in raw else "exact"
+        io_totals = ("io_r_bps", "io_w_bps", "io_r_iops", "io_w_iops", "io_discard_bps")
         for metric, raw_name in (
             ("io_r_bps", "io.stat:rbytes"),
             ("io_w_bps", "io.stat:wbytes"),
@@ -269,7 +308,11 @@ class Collector:
             ("mem_events_oom_kill_per_s", "memory.events:oom_kill"),
             ("pids_events_max_per_s", "pids.events:max"),
         ):
-            out[metric] = self._rate_metric(key, raw_name, raw.get(raw_name), interval_s)
+            out[metric] = self._rate_metric(key, raw_name, raw.get(raw_name), interval_s, src=io_total_src if metric in io_totals else "derived")
+        if raw.get("io.stat:cost_usage") is None:
+            out["io_cost_usage_per_s"] = MetricValue(None, "unavail_kernel")
+        else:
+            out["io_cost_usage_per_s"] = self._rate_metric(key, "io.stat:cost_usage", raw["io.stat:cost_usage"], interval_s)
 
         # io_cap_saturation_pct: compare each I/O rate to its finite io.max cap
         # and take the highest ratio; clamp at 0, allow overshoot above 100.
@@ -279,6 +322,14 @@ class Collector:
         # device's own rate with its own cap (summing both sides hid a saturated
         # capped device behind idle or uncapped ones) and keep the attribution.
         stat_field = {"rbps": "rbytes", "wbps": "wbytes", "riops": "rios", "wiops": "wios"}
+        # Take every per-device delta exactly once each tick so the baselines stay fresh
+        # even while a device is uncapped (A-07): a cap re-added after an hour would
+        # otherwise divide an hour-old delta by one interval.
+        dev_rates = {
+            name: self._rate_metric(key, name, value, interval_s)
+            for name, value in raw.items()
+            if name.startswith("io.stat@")
+        }
         per_device_caps = [
             name for name in raw if name.startswith("io.max@") and isinstance(raw[name], int)
         ]
@@ -286,7 +337,7 @@ class Collector:
             device, _, cap_field = cap_name[len("io.max@"):].rpartition(":")
             counter = f"io.stat@{device}:{stat_field.get(cap_field, '')}"
             cap = raw[cap_name]
-            dev_rate = self._rate_metric(key, counter, raw.get(counter), interval_s)
+            dev_rate = dev_rates.get(counter, MetricValue(None, "derived"))
             if dev_rate.v is not None and cap > 0:
                 ratio = float(dev_rate.v) / float(cap)
                 if io_sat is None or ratio > io_sat:

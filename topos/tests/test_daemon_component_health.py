@@ -326,23 +326,37 @@ def test_concurrent_reads_and_writes() -> None:
             reg.record_success("bpf_snapshot_bridge", detail="ok")
             reg.record_degraded("paddr_lifecycle", detail="partial")
 
-    def _reader() -> None:
-        while not stop_event.is_set():
-            snap = reg.snapshot()
-            assert len(snap.snapshots) == 4
-            for cs in snap.snapshots:
-                assert cs.name in COMPONENT_NAMES
+    errors: list[BaseException] = []
 
-    writer = threading.Thread(target=_writer)
+    def _reader() -> None:
+        # A fixed amount of work instead of a sleep: the reader finishes after
+        # 200 snapshots taken while the writer is running.
+        try:
+            for _ in range(200):
+                snap = reg.snapshot()
+                assert len(snap.snapshots) == 4
+                for cs in snap.snapshots:
+                    assert cs.name in COMPONENT_NAMES
+        except BaseException as exc:  # noqa: BLE001 - surfaced by the assertion below
+            errors.append(exc)
+
+    def _guarded_writer() -> None:
+        try:
+            _writer()
+        except BaseException as exc:  # noqa: BLE001
+            errors.append(exc)
+
+    writer = threading.Thread(target=_guarded_writer)
     reader = threading.Thread(target=_reader)
     writer.start()
     reader.start()
 
-    import time
-    time.sleep(0.2)
+    reader.join(timeout=30)
     stop_event.set()
-    writer.join(timeout=2)
-    reader.join(timeout=2)
+    writer.join(timeout=30)
+    assert not reader.is_alive()
+    assert not writer.is_alive()
+    assert errors == []
 
 
 def test_build_health_response_shape() -> None:
@@ -613,7 +627,8 @@ def test_daemon_serve_health_tracks_collector_lifecycle(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Exercise the actual serve wiring through one success and one failure."""
-    import topos.cli as cli
+    import topos.daemon.run as cli
+    from conftest import run_toposd_self_bind
     from topos.config import ToposConfig
 
     config = ToposConfig(interval=0.0, cgroup_root=tmp_path / "cgroup")
@@ -661,9 +676,10 @@ def test_daemon_serve_health_tracks_collector_lifecycle(
     monkeypatch.setattr(cli, "load", lambda _path: config)
     monkeypatch.setattr(cli, "Collector", FakeCollector)
     monkeypatch.setattr(
-        cli, "serve_versioned_unix_socket", lambda _path, _broker, api=None: FakeServer(_broker)
+        cli, "serve_versioned_unix_socket", lambda _path, _broker, api=None, **_kwargs: FakeServer(_broker)
     )
-    assert cli._main_daemon(["serve", "--socket", str(tmp_path / "topos.sock")]) == 0
+    # The collector really failed, so the interrupt must not turn this into a clean exit.
+    assert run_toposd_self_bind(tmp_path / "topos.sock") == 1
 
     states = [entry["components"][0]["state"] for entry in observed]
     assert states == ["starting", "healthy", "failed"]
@@ -679,7 +695,8 @@ def test_daemon_serve_initial_bpf_failure_reflects_last_valid_snapshot(
     has_last_valid: bool,
     expected_state: str,
 ) -> None:
-    import topos.cli as cli
+    import topos.daemon.run as cli
+    from conftest import run_toposd_self_bind
     from topos.config import BpfSnapshotConfig, ToposConfig
 
     bpf_root = tmp_path / "pins"
@@ -697,6 +714,9 @@ def test_daemon_serve_initial_bpf_failure_reflects_last_valid_snapshot(
             self.cgroup_root = cgroup_root or config.cgroup_root
             self.config = config
             self.network_providers = ()
+
+        def collect_once(self):
+            return fixture_frame()
 
     class FakeBridge:
         def __init__(self, *args, **kwargs) -> None:
@@ -726,9 +746,9 @@ def test_daemon_serve_initial_bpf_failure_reflects_last_valid_snapshot(
     monkeypatch.setattr(cli, "Collector", FakeCollector)
     monkeypatch.setattr(cli, "BpfSnapshotBridge", FakeBridge)
     monkeypatch.setattr(
-        cli, "serve_versioned_unix_socket", lambda _path, _broker, api=None: FakeServer(_broker)
+        cli, "serve_versioned_unix_socket", lambda _path, _broker, api=None, **_kwargs: FakeServer(_broker)
     )
-    assert cli._main_daemon(["serve", "--socket", str(tmp_path / "topos.sock")]) == 0
+    assert run_toposd_self_bind(tmp_path / "topos.sock") == 0
     bpf = next(
         component
         for component in observed["components"]
@@ -742,7 +762,8 @@ def test_daemon_serve_initial_bpf_failure_reflects_last_valid_snapshot(
 def test_daemon_serve_does_not_claim_bpf_stopped_when_worker_is_alive(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    import topos.cli as cli
+    import topos.daemon.run as cli
+    from conftest import run_toposd_self_bind
     from topos.config import BpfSnapshotConfig, ToposConfig
 
     bpf_root = tmp_path / "pins"
@@ -801,9 +822,9 @@ def test_daemon_serve_does_not_claim_bpf_stopped_when_worker_is_alive(
     monkeypatch.setattr(cli, "BpfSnapshotBridge", FakeBridge)
     monkeypatch.setattr(cli.threading, "Thread", FakeThread)
     monkeypatch.setattr(
-        cli, "serve_versioned_unix_socket", lambda _path, _broker, api=None: FakeServer(_broker)
+        cli, "serve_versioned_unix_socket", lambda _path, _broker, api=None, **_kwargs: FakeServer(_broker)
     )
-    assert cli._main_daemon(["serve", "--socket", str(tmp_path / "topos.sock")]) == 0
+    assert run_toposd_self_bind(tmp_path / "topos.sock") == 0
     bpf = next(
         component
         for component in observed["components"]
@@ -828,10 +849,10 @@ def test_cli_parse_health_args() -> None:
     """CLI argument parsing for health command."""
     from topos.cli import parse_daemon_args
 
-    # Default socket
+    # Socket resolution is deferred until the command is run.
     args = parse_daemon_args(["health"])
     assert args.command == "health"
-    assert args.socket is not None
+    assert args.socket is None
 
     # Custom socket + pretty-json
     args = parse_daemon_args(["health", "--socket", "/tmp/custom.sock", "--pretty-json"])

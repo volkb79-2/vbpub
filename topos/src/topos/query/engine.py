@@ -35,6 +35,7 @@ from .errors import (
     UnknownFieldError,
 )
 from .semantics import (
+    GAP_FACTOR,
     ValueSemantic,
     collect_points,
     current_value,
@@ -51,7 +52,7 @@ _ORDERS = ("asc", "desc")
 # A temporal gap is flagged when the inter-frame delta exceeds the nominal
 # interval by this factor.  1.5 tolerates ordinary jitter but catches a dropped
 # sample.
-_GAP_FACTOR = 1.5
+_GAP_FACTOR = GAP_FACTOR
 
 # Default caps.  4 MiB matches the daemon/MCP aggregate response ceiling.
 DEFAULT_MAX_ROWS = 10000
@@ -509,8 +510,19 @@ def _compute_meta(query: Query, windowed: _Windowed, *, reset_count: int, trunca
     evicted = bool(windowed.evicted or (sframes and sframes[0].gap_before))
     complete = (not evicted) and (not gaps)
     requested = None
+    requested_span_s: float | None = None
     if windowed.requested is not None:
-        requested = {"start_ts": windowed.requested.start_ts, "end_ts": windowed.requested.end_ts}
+        req = windowed.requested
+        requested = {"start_ts": req.start_ts, "end_ts": req.end_ts}
+        requested_span_s = req.end_ts - req.start_ts
+        # Observed data must actually cover the requested window (to within
+        # one sampling interval); asking for an hour and holding 45 s is not
+        # complete coverage.
+        slack = max((f.interval_s for f in frames if f.interval_s and f.interval_s > 0), default=0.0)
+        if observed_start is None or observed_end is None:
+            complete = False
+        elif observed_start > req.start_ts + slack or observed_end < req.end_ts - slack:
+            complete = False
 
     return {
         "shape": query.shape,
@@ -523,6 +535,7 @@ def _compute_meta(query: Query, windowed: _Windowed, *, reset_count: int, trunca
         "coverage": {
             "frames": len(frames),
             "span_s": (observed_end - observed_start) if frames else 0.0,
+            "requested_span_s": requested_span_s,
             "gap_count": len(gaps),
             "complete": complete,
         },

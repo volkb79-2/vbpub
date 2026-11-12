@@ -219,6 +219,11 @@ cmru installer check ciu --config cmru.orchestration.toml --installer ciu-get.py
 cmru --help                       # generated verb catalog; use `cmru help <verb>` for options
 ```
 
+The GitHub resolver reads the selected release's `.sha256` sidecar with bounded retries for
+transient network errors, timeouts, HTTP 429, and HTTP 5xx responses. It stops immediately on
+other HTTP 4xx responses or invalid digest content; see the
+[checksum-sidecar retry design](docs/DESIGN-GUIDE.md#github-checksum-sidecar-reads-use-bounded-retries).
+
 ### Conventional Commit scopes in multi-project commits
 
 With `version.strategy = "conventional"`, a scope matching a configured project name or
@@ -295,6 +300,11 @@ reachable from it cannot be classified as pre-existing. See the [cleanup and aba
 If the release used an external orchestration file to define a multi-project scope,
 pass that same file with `cmru abandon --config PATH` so CMRU can inspect the complete
 release policy before deciding whether abandonment is safe.
+
+When the transaction scope is recorded, use `cmru abandon`: it rechecks and removes the origin
+candidate branch when the transaction recorded that push. For a failure before scope metadata
+exists, `cmru abandon` refuses and the only supported manual cleanup is the guarded
+[pre-scope recovery procedure](docs/CONSUMERS.md#recovering-candidates-without-scope-metadata).
 
 `cmru worktrees` includes retained paths recorded by Git even when they are not
 reachable through the current bind mount. Its `prunable` field reports Git's
@@ -453,7 +463,7 @@ source-commit/hash manifest. Pass `release --discard logs`, `--discard artifacts
 `--discard evidence` (repeatable) to opt out of each half.
 
 ```bash
-cmru release modern-debian-tools-python-debug --show-run-details
+cmru release mdt-cockpit --show-run-details
 cmru release assay --log-append
 cmru release assay --log-prefix-time-short
 ```
@@ -542,6 +552,24 @@ history and other declared mechanical outputs are excluded from the next source 
 If an image's private `prepare` step changed declared provenance but has no new source
 commit, CMRU records a metadata-only history entry for that real new image; a clean
 retained resume adds nothing.
+
+For a project that has never had a release section, CMRU also creates the canonical
+`## [Unreleased]` heading and `<!-- cmru: release history -->` marker with the first
+generated entry. Write pending notes only under that exact `[Unreleased]` heading and
+above the marker; never edit a dated generated section or add a draft dated heading.
+CMRU still refuses duplicate or ambiguous structure and a document that already has
+release history but no marker.
+
+Generated history omits commits with more than one parent, regardless of subject; a
+one-parent commit titled `Merge ...` remains included. Existing dated sections are not
+mass-rewritten. The hand-edit guard identifies historical merge lines by commit parent
+count. For an already-tagged section it compares against the nearest preceding release
+tag so CMRU's own generated lines are not misreported as hand edits. `cmru release` also
+refuses an already-tagged target before changelog work, names the existing tag, and tells
+the operator to advance the project's release coordinate. CMRU-derived versions are
+checked before prepare; an `external:VAR` version is checked after its prepare step creates
+`cmru.vars`, before candidate push, gate, build, or publication. See
+[why the history rules are deterministic and fail-closed](docs/DESIGN-GUIDE.md#release-history-is-deterministic-conservative-and-never-a-place-to-hide-notes).
 
 Use `[project.release] changelog = "docs/CHANGES.md"` only to choose another
 project-relative filename. `changelog = false` is the deliberate, reviewable opt-out.
@@ -734,9 +762,12 @@ coordinate is never overwritten; remove it explicitly with
 version. It may change only paths declared in `release.commit_generated`; cmru commits those
 mechanical outputs before the gate. Use `version.strategy = "external:VAR"` when prepare
 writes a derived version into `<project>/cmru.vars`: cmru reads it and owns the annotated tag.
-During `release --dry-run`, CMRU runs only this declared external-version preparation inside
-the disposable release candidate first, so the preview includes the version the real run would
-use. It performs no gate, tag, build, push, or promotion, and never writes the caller checkout.
+A real release runs this selected preparation inside the disposable candidate before checking
+the exact target tag; if the target is available, the normal preparation phase commits declared
+outputs before the gate. During `release --dry-run`, CMRU runs only this declared external-version
+preparation inside the disposable candidate first, so the preview includes the version the real
+run would use. It performs no gate, tag, build, push, or promotion, and never writes the caller
+checkout. See the [release-order rationale](docs/DESIGN-GUIDE.md#external-version-preparation-and-tag-preflight).
 Never use a build or publish step to make an unreviewed source commit.
 See [the release-transaction guide](docs/RELEASE-TRANSACTIONS.md) for recovery,
 project-author requirements, and the current gate-adoption audit.
@@ -945,8 +976,12 @@ before your first release — is covered step by step in **[`docs/CONSUMERS.md`]
 The installed `run-gate` wheel is the canonical test entrypoint. From the
 `cmru/` directory, `run-gate --list` discovers the declared lanes and
 `run-gate gate` runs the aggregate; definitions live in `run-gate.toml`. The
-focused `run-gate release-preconditions` lane covers the dry-run's waiver,
-image-identity, and bootstrap-version checks. The
+focused `run-gate release-preconditions` lane covers the changelog preflight,
+the dry-run's waiver, image-identity, and bootstrap-version checks. The focused
+`run-gate survivor-regressions` lane covers the s1 survivor oracles and keeps
+the whole-target Assay inventories for `cmru`, `cmru-r0-r1`, and both
+first-release lanes aligned with executable source modules; see the
+[inventory design](docs/DESIGN-GUIDE.md#whole-target-assay-inventories-list-executable-modules). The
 aggregate requires a stable Run-Gate wheel at SemVer `24.0.0` or later;
 development and local build suffixes are rejected. Its preflight
 checks that `run-gate --version` agrees with the installed wheel's SemVer,
@@ -958,25 +993,42 @@ around each lane, then pins each lane to
 that inspected image ID. The manifest records those identities. See the
 [gate design](docs/DESIGN-GUIDE.md#aggregate-gate-binds-its-source-and-judge).
 The
-`assay` lane declares R0/R1/R3: the full suite, 100% line+branch coverage,
-and an import-break canary. The release `gate` adds R2 through a separate
-changed-source mutation campaign based on the highest-version published
+`assay` lane declares R0/R1/R3: the full suite, 100% line+branch coverage
+over every executable CMRU production module, and an import-break canary. Its
+whole-target R1 does not depend on an R1 base tag. The release `gate` adds R2
+through a separate changed-source mutation campaign based on a published
 `cmru-v*` tag in the candidate's full ancestry.
-The cause-sensitive canary's known-good control uses a tracked fixture that
+When Assay fails, the controller names failing tests from fresh Assay verdict
+tails; it does not depend on the retired JUnit coverage artifact.
+The standalone T3 `r2` lane takes its base explicitly and builds baseline facts
+from release tags bundled in the persistent controller checkout. The
+controller verifies those tags against origin before the lane runs; see the
+[T3 base design](docs/DESIGN-GUIDE.md#whole-target-assay-and-explicit-r2-bases)
+and [KI-151](KNOWN_ISSUES_TODO_BACKLOG.md#ki-151---the-t3-r2-lane-treats-bundled-local-cmru-tags-as-published).
+It accepts the tag or the exact commit ID that `remote-gate` resolves from that
+tag. For example, use `run-gate --base cmru-v6.1.0 r2` when that is the
+controller-selected R2 floor tag.
+The `r0-r1` lane is CMRU's T1 mapping: it runs `release-preconditions` first,
+then Assay R0/R1 with the same whole-target source inventory and 100% line and
+branch floor. See the [T1 lane design](docs/DESIGN-GUIDE.md#cmru-t1-r0-r1-lane).
+The R2 campaign's known-good control and mutant runs use a tracked fixture that
 includes test inputs read during module import, even when the test module will
-later be skipped. See the [fixture design](docs/DESIGN-GUIDE.md#canary-control-fixture-includes-import-time-inputs).
+later be skipped. See the [fixture design](docs/DESIGN-GUIDE.md#mutation-fixture-includes-import-time-inputs).
 For a CMRU release, `cmru release --dry-run` checks the planned version against
 the KI-79 postponement window, checks the selected tester image's Run-Gate
 version and wheel digest, and compares the zero-release guide with the latest
 Run-Gate release before creating a candidate worktree. A failure exits 4 with
 the remedy; if Docker is unavailable, image identity is reported as `SKIPPED`.
+The image identity check requires a non-empty Run-Gate version and a valid
+wheel SHA-256 from the preflight; an incomplete identity response fails closed
+instead of inventing an `unknown` value.
 See the [dry-run precondition design](docs/DESIGN-GUIDE.md#release-dry-run-checks-gate-preconditions).
 The native-R2 `mutation` lane requests contract-2 `cgprofile` resource-event
 observation. Other tester lanes declare memory and PID ceilings but do not yet
 collect event evidence; [KI-77](KNOWN_ISSUES_TODO_BACKLOG.md#ki-77--the-release-gate-lacks-container-resource-event-evidence-on-non-mutation-lanes-and-cannot-confine-every-shared-git-ref)
 tracks that gap. The CMRU release step currently selects
-`gate-provisional`: it runs the ref, installed-wheel, Assay R0/R1/R3, coverage,
-and canary checks, then records the operator-approved R2 deferral under KI-79.
+`gate-provisional`: it runs the ref, installed-wheel, and Assay R0/R1/R3 checks,
+then records the operator-approved R2 deferral under KI-79.
 That deferral is bound to four windows, the 6.2 patch line (`>= 6.2.0`, `< 6.3.0`), the 7.0 patch line
 (`>= 7.0.0`, `< 7.1.0`) and the 7.1 patch line (`>= 7.1.0`, `< 7.2.0`) and the 7.2 patch line (`>= 7.2.0`, `< 7.3.0`; operator decisions 2026-10-14, 2026-10-21, 2026-10-23, 2026-10-27 and 2026-11-04, the last one waiving R2 for cmru 7.2.x with the debt closed by one full R2 run, `--jobs auto` on r1002, over the 7.2 content): the gate refuses any other
 prepared version (6.3.x through 6.9.x, 7.3.0 and later) when the gate runs. The dry-run checks this same version rule before it allocates a candidate worktree. A provisional release records no mutation event evidence. Every release deferred this way is without an R2 pass; one full R2 run is owed before 6.3.0 or 7.3.0, whichever is first (KI-79). The full `gate` lane remains
@@ -999,11 +1051,11 @@ The test lanes themselves still run only in `tester-unified`. See
 [why](docs/DESIGN-GUIDE.md#the-bare-host-gate-controller-runs-in-the-installed-cmru-environment-ki-81)
 and the [operating steps](docs/CONSUMERS.md#running-the-release-gate-from-a-host-whose-python3-is-not-the-estate-environment).
 A provisional gate still exits 0, but it is reported and recorded as **provisional**, never
-as a full pass: after every required non-mutation lane and the final canary succeeded, the
+as a full pass: after every required non-mutation lane and source-snapshot check succeeded, the
 retained snapshot manifest (`cmru/.assay/release-gate-snapshot.json`, schema 4) has
 `state: "provisional"` and a `deferred_lanes` entry naming the `mutation` lane, its reason,
 tracking id, follow-up lane and prerequisites, and the marker
-`.assay/mutation-postponed-cmru.json` says `result: "provisional"`. A failed lane or canary
+`.assay/mutation-postponed-cmru.json` says `result: "provisional"`. A failed lane or snapshot check
 leaves neither record, and a full `gate` records `state: "passed"` with an empty
 `deferred_lanes` and removes any stale marker. The recorded follow-up lane is `gate`
 (the standalone `mutation` lane cannot run without the aggregate gate's baseline facts).
@@ -1022,17 +1074,14 @@ and [release steps](docs/CONSUMERS.md#the-cmru-r0-r3-gate).
 The registered `gate` lane queries every CMRU release tag on origin through
 CMRU's credential-scoped Git transport, then forwards only token-free tag and
 commit facts to the `cmru-mutation` tester environment as
-`CMRU_ASSAY_BASELINE_FACTS`. The mutation lane checks those facts against its
-HEAD and requires the selected tag to match the configured Assay R1 base. On
-an untagged candidate, that ancestor must also be the latest published CMRU
-release. On a tagged-HEAD rerun, every release tag at HEAD is excluded and the
-selected ancestor is the highest-version published release in the remaining
-ancestry; the latest published tag may be one of the verified tags at HEAD. It
-also checks Assay's effective
-comparison commit: if Assay resolves a merge's first parent after the tag, the
-configured CMRU source roots must be unchanged across the gap. A missing tag or
-mismatch fails the gate. Run the registered `gate` lane so it prepares fresh
-origin facts immediately before mutation.
+`CMRU_ASSAY_BASELINE_FACTS`. Its aggregate mutation path defaults to the
+highest-version published ancestor. The standalone T3 `r2` lane instead takes
+the controller-selected explicit base and verifies that it is a published
+release tag in HEAD's full ancestry with the same local and published commit.
+On a tagged-HEAD aggregate rerun, every release tag at HEAD is excluded from
+the ancestry check. A missing tag or mismatch fails the gate. Run the
+registered `gate` lane so it prepares fresh origin facts immediately before
+mutation.
 Each mutation test command runs in a fresh process group while CMRU's host
 process acts as a Linux child subreaper. If a candidate times out, CMRU kills
 and reaps its process tree before sampling resource counters or starting
@@ -1057,6 +1106,9 @@ Python bytecode is directed to private temporary caches so stale `.pyc` files
 cannot change which source the controller or a candidate executes.
 The checker verifies every local CMRU release tag at HEAD against its exact
 origin commit, including older tag names that point to the same commit.
+If HEAD is a merge whose first parent comes after the base tag, the CMRU source
+roots must be unchanged across that gap, or the checker refuses: Assay would
+otherwise mutate only the merge's own changes.
 Host enrollment (`get.py enroll`) and its real-system container lane belong to ciu now;
 cmru's gate has no enrollment lane (see "Installer extensions" under `cmru installer render`).
 Before tester-unified starts, the aggregate gate creates a dedicated attached
@@ -1088,14 +1140,12 @@ the snapshot). See the
 An individual tester component lane bypasses this boundary and should use a
 secret-free checkout; `installed-wheel` stays runnable that way, while
 `installed-wheel-live` is the aggregate gate's own variant.
-When rerunning on a release-tagged HEAD, the checker excludes every local CMRU
-release tag at HEAD and selects the highest-version published tag in its full
-ancestry. An empty source diff records a skip bound to the candidate HEAD. The
+For the aggregate mutation path on a release-tagged HEAD, the checker excludes
+every local CMRU release tag at HEAD and selects the highest-version published
+tag in its full ancestry. An empty source diff records a skip bound to the
+candidate HEAD. The
 selected worktree's Assay source is installed at lane time.
-Keep each candidate's R1 base on the latest release published before that
-candidate; advance the pin to a newly tagged release on the next release
-candidate.
-See the [Assay baseline design](docs/DESIGN-GUIDE.md#why-cmru-pins-assay-r1-to-a-release-tag-and-splits-r2-out).
+See the [Assay baseline design](docs/DESIGN-GUIDE.md#whole-target-assay-and-explicit-r2-bases).
 Mutation runs stop each
 failing candidate at its first failed test (`--maxfail=1`), cap the known-good
 control and each candidate at 600 seconds, and resume killed outcomes from

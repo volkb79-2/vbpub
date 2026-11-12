@@ -1,5 +1,8 @@
 """Fable pre-release review (2026-10-27): host-level bindings that the Runner used to be the only guard of, work-dir footprint,
 abort-guard failure, preflight input validation.  Each test was red before its fix."""
+import errno
+import os
+
 import pytest
 
 from helpers import matrix
@@ -17,8 +20,9 @@ def unit_argv(unit="iobench-probe-run-1-s4-0", slice_name="iobench-probe.slice",
     return devio.probe_unit_argv(unit, slice_name, seconds, script, args)
 
 
-def writer(filename, rw="write", exclusive=False):
-    return devio.FioJob("w", filename, rw, 1 << 20, 4, 5, 0, 1 << 30, prefix="/run/iobench/w", exclusive=exclusive).argv()
+def writer(filename, rw="write", device_guard=False):
+    return devio.FioJob("w", filename, rw, 1 << 20, 4, 5, 0, 1 << 30, prefix="/run/iobench/w",
+                        device_guard=device_guard).argv()
 
 
 # -- the systemd-run argv shape is pinned (IOB-BL-06 "still open") -----------------------------------------------------------------
@@ -101,10 +105,10 @@ def test_rev_e_fio_rw_outside_the_planned_workloads_is_refused(rw):
 def test_rev_e_fio_without_rw_is_a_read_and_passes():
     check_argv(["fio", "--ioengine=libaio", "--iodepth=32", "--filename=/dev/vda7"])
     check_argv(["fio", "--version"])
-    check_argv(["fio", "--cmdhelp=exclusive_open"])
+    check_argv(["fio", "--cmdhelp=allow_mounted_write"])
 
 
-@pytest.mark.parametrize("token", ["--offset=-5", "--size=1k", "--bs=", "--iodepth=0x10", "--runtime=3.5", "--direct=2", "--exclusive_open=yes",
+@pytest.mark.parametrize("token", ["--offset=-5", "--size=1k", "--bs=", "--iodepth=0x10", "--runtime=3.5", "--direct=2", "--allow_mounted_write=1",
                                    "--numjobs=+1", "--io_size=1G", "--rate_iops=-1", "--fsync=1e3", "--log_avg_msec= 1", "--ioengine=sync",
                                    "--output-format=terse", "--filename=rel/x", "--filename=/a:/b", "--filename=/a,b", "--filename=/a b",
                                    "--filename=/a/../b", "--filename=/a//b", "--filename=/a/", "--write_bw_log=rel", "--write_hist_log=/x\n"])
@@ -131,7 +135,7 @@ def test_rev_e_unbound_fio_writer_on_anything_but_a_load_file_is_refused():
                  "/bench/w/iobench-link",  # a symlink in place of the load file
                  "/bench/w/iobench-node",  # a device node in place of the load file
                  "/bench/missing/iobench-x"):  # not inside a root that exists? (the parent resolves under /bench: allowed by root, so the file rule decides)
-        argv = writer(name, exclusive=name == DEV)
+        argv = writer(name, device_guard=name == DEV)
         if name == "/bench/missing/iobench-x":
             check_argv(argv, host=host)  # a new file under an authorised root: that is what a load file is
             continue
@@ -143,7 +147,7 @@ def test_rev_e_unbound_fio_writer_on_anything_but_a_load_file_is_refused():
     for name in ("/dev/sda:/bench/w/iobench-x", "/bench/w/iobench-x,/dev/sda", "/bench/w/iobench-x\n", "/bench/w/iobench-x\x7f", "/bench/w/../iobench-x"):
         argv = writer(name)
         assert not is_allowed_argv(argv), name  # fio splits a file list on ':' (and the rest is never a clean path): refused by shape
-    check_argv(writer(DEV, exclusive=True), bound=True, host=host)  # write_range has verified the target and the extent
+    check_argv(writer(DEV, device_guard=True), bound=True, host=host)  # write_range has verified the target and the extent
     check_argv(writer("/bench/w/iobench-run-20261027T120000Z-a1b2-s3-w"), host=host)  # the matrix load files
     check_argv(writer("/bench/w/iobench-run-x-s3-f", "randwrite"), host=host)
     check_argv(writer("/bench/w/.iobench-x"), host=host)
@@ -184,7 +188,7 @@ def test_rev_e_scratch_name_is_anchored_on_the_whole_basename():
 def test_rev_e_fakehost_refuses_unbound_writers_like_realhost():
     host = scratch_host()
     with pytest.raises(HostError, match="write_range"):
-        host.spawn(writer(DEV, exclusive=True))
+        host.spawn(writer(DEV, device_guard=True))
     host.devices["/bench/iobench-t.img"] = FakeDevice("/bench/iobench-t.img", GIB, kind="file", inode=7, fs_uuid="u")
     with pytest.raises(HostError, match="write_range"):
         host.spawn(writer("/bench/iobench-t.img"))  # a load-file name on a target: the device model still insists on the binding
@@ -231,6 +235,7 @@ def test_rev_e_matrix_refuses_a_work_dir_without_a_block_device_behind_it():
     host.add_mount("0:51", "/ov", "/dev/vda5", "overlay", "rw")
     host.set_fs("/ov", 100 * GIB, 100 * GIB)
     host.makedirs("/ov")
+    host.makedirs("/ov/w")
     before = len(host.argv_log)
     with pytest.raises(Refusal) as err:
         matrix(host, work_dir="/ov/w", installer=True)
@@ -322,7 +327,7 @@ def _file_target(tmp_path):
     path.touch()
     size = 3 * (1 << 20)
     os.truncate(path, size)
-    return str(path), TargetRef("file", str(path), size, inode=os.stat(path).st_ino), TAIL_BYTES
+    return str(path), TargetRef("file", str(path), size, inode=os.stat(path).st_ino, fs_type="ext4"), TAIL_BYTES
 
 
 def test_rev_e_realhost_write_range_and_discard_range_bind_before_any_process_starts(tmp_path, monkeypatch):
@@ -349,7 +354,9 @@ def test_rev_e_realhost_write_range_and_discard_range_bind_before_any_process_st
     # the bound calls reach the fake process layer, and each went through check_argv(bound=True, host=self)
     host.write_range(good.argv(), ref, 0, mib)
     out = host.discard_range(devio.punch_hole_argv(path, 0, mib), ref, 0, mib)
-    assert out.returncode == 0 and _FakePopen.calls == [good.argv(), devio.punch_hole_argv(path, 0, mib)]
+    spawned_argv = [argv[3:] if len(argv) >= 3 and argv[1] == "-c" and argv[2] == host_mod._PROCESS_GROUP_SUPERVISOR else argv
+                    for argv in _FakePopen.calls]
+    assert out.returncode == 0 and spawned_argv == [good.argv(), devio.punch_hole_argv(path, 0, mib)]
     assert calls[-2:] == [{"bound": True, "host": host}, {"bound": True, "host": host}]
     # the unbound entry points refuse the same writer and discard (never a process)
     for fn in (host.run, host.spawn):
@@ -358,6 +365,48 @@ def test_rev_e_realhost_write_range_and_discard_range_bind_before_any_process_st
     with pytest.raises(HostError):
         host.run(devio.punch_hole_argv(path, 0, mib))
     assert len(_FakePopen.calls) == 2
+
+
+def test_iob_bl_31_realhost_written_bytes_measures_data_extents_and_fails_without_the_seek_contract(tmp_path, monkeypatch):
+    from iobench.host import RealHost, TargetRef
+    path, ref, tail = _file_target(tmp_path)
+    with open(path, "r+b") as fh:
+        fh.write(b"x" * (2 << 20))
+        fh.flush()
+        os.fsync(fh.fileno())
+    assert RealHost().written_bytes(ref, 0, ref.size_bytes - tail) == 2 << 20
+    with open(path, "r+b") as fh:
+        fh.write(b"x" * ref.size_bytes)
+        fh.flush()
+        os.fsync(fh.fileno())
+    assert RealHost().written_bytes(ref, 0, ref.size_bytes - tail) == ref.size_bytes - tail
+    assert RealHost().written_bytes(ref, 1 << 20, ref.size_bytes - tail) == ref.size_bytes - tail - (1 << 20)
+
+    real_lseek = os.lseek
+    def unsupported(fd, offset, whence):
+        if whence == os.SEEK_DATA:
+            raise OSError(errno.EINVAL, "SEEK_DATA unsupported")
+        return real_lseek(fd, offset, whence)
+    monkeypatch.setattr(os, "lseek", unsupported)
+    with pytest.raises(HostError, match="SEEK_DATA failed"):
+        RealHost().written_bytes(ref, 0, ref.size_bytes - tail)
+    with pytest.raises(HostError, match="outside the usable extent"):
+        RealHost().written_bytes(ref, 0, ref.size_bytes)
+    assert RealHost().written_bytes(TargetRef("device", "/dev/null", 4 << 20), 0, 3 << 20) is None
+
+
+def test_iob_bl_31_fakehost_written_bytes_clips_to_the_usable_extent():
+    from iobench.host import TargetRef
+    host = standard_host()
+    host.makedirs("/bench")
+    dev = FakeDevice("/bench/t.img", 4 << 20, kind="file", inode=77, fs_uuid="fs")
+    host.devices[dev.path] = dev
+    ref = TargetRef("file", dev.path, dev.size, fs_uuid="fs", inode=77, fs_type="ext4")
+    assert host.written_bytes(TargetRef("device", DEV, dev.size, devno="254:7"), 0, dev.size - (1 << 20)) is None
+    with pytest.raises(HostError, match="outside the usable extent"):
+        host.written_bytes(ref, 0, dev.size)
+    dev.written.add(0, dev.size)
+    assert host.written_bytes(ref, 0, dev.size - (1 << 20)) == dev.size - (1 << 20)
 
 
 def test_rev_e_every_subprocess_call_site_sits_behind_a_checked_entry_point():
@@ -533,23 +582,23 @@ def test_rev_e_preallocate_is_contained_and_never_a_device_node():
     from iobench import guard
     fresh = standard_host()
     with pytest.raises(Refusal) as err:
-        guard.init_file(fresh, "/bench/t img", size=1 << 30, own=True, expect_fs_uuid="22222222-2222-2222-2222-222222222222",
+        guard.init_file(fresh, "/bench/t img", size=guard.MIN_TARGET_SIZE_BYTES, own=True, expect_fs_uuid="22222222-2222-2222-2222-222222222222",
                         confirm_quiet_window=False, allow_large_root_target=False, created="2026-10-28T00:00:00Z")
     assert err.value.condition == "path_unclean" and "/bench" in fresh.scratch_roots  # /bench was authorised BEFORE (the estate's): not this init's to revoke
     fresh.preallocate = lambda path, size: devio.RunResult(1, "", "boom")
     with pytest.raises(Refusal) as err:
-        guard.init_file(fresh, "/bench/t.img", size=1 << 30, own=True, expect_fs_uuid="22222222-2222-2222-2222-222222222222",
+        guard.init_file(fresh, "/bench/t.img", size=guard.MIN_TARGET_SIZE_BYTES, own=True, expect_fs_uuid="22222222-2222-2222-2222-222222222222",
                         confirm_quiet_window=False, allow_large_root_target=False, created="2026-10-28T00:00:00Z")
     assert err.value.condition == "fallocate_failed" and "/bench" in fresh.scratch_roots
     del fresh.preallocate
-    assert guard.init_file(fresh, "/bench/t.img", size=1 << 30, own=True, expect_fs_uuid="22222222-2222-2222-2222-222222222222",
+    assert guard.init_file(fresh, "/bench/t.img", size=guard.MIN_TARGET_SIZE_BYTES, own=True, expect_fs_uuid="22222222-2222-2222-2222-222222222222",
                            confirm_quiet_window=False, allow_large_root_target=False, created="2026-10-28T00:00:00Z").kind == "file"
     assert fresh.scratch_roots.count("/bench") == 1
 
 
 def _init(host, path, **kw):
     from iobench import guard
-    args = dict(size=1 << 30, own=True, expect_fs_uuid="22222222-2222-2222-2222-222222222222", confirm_quiet_window=False,
+    args = dict(size=guard.MIN_TARGET_SIZE_BYTES, own=True, expect_fs_uuid="22222222-2222-2222-2222-222222222222", confirm_quiet_window=False,
                 allow_large_root_target=False, created="2026-10-28T00:00:00Z")
     args.update(kw)
     return guard.init_file(host, path, **args)
@@ -610,8 +659,9 @@ def test_rev_e_init_file_revokes_only_the_root_it_added():
         pseudo = standard_host()
         pseudo.add_mount("0:60", "/pseudo", fstype, fstype)
         pseudo.set_fs("/pseudo", 100 * GIB, 100 * GIB)
+        pseudo.makedirs("/pseudo/w")
         with pytest.raises(Refusal) as err:
-            guard.init_file(pseudo, "/pseudo/t.img", size=1 << 20, own=True, expect_fs_uuid=None, confirm_quiet_window=False,
+            guard.init_file(pseudo, "/pseudo/t.img", size=guard.MIN_TARGET_SIZE_BYTES, own=True, expect_fs_uuid=None, confirm_quiet_window=False,
                             allow_large_root_target=False, created="2026-10-28T00:00:00Z")
         assert err.value.condition == "fs_type" and not pseudo.scratch_roots[2:] and not any(a[0] == "fallocate" for a in pseudo.argv_log)
         with pytest.raises(Refusal) as err:

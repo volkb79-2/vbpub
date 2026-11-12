@@ -31,7 +31,7 @@ def test_thin_health_maps_activation_value_error_to_error_exit(monkeypatch, tmp_
     monkeypatch.setitem(
         sys.modules,
         "ciu.deploy",
-        SimpleNamespace(load_global_config=lambda root: {},
+        SimpleNamespace(load_global_config=lambda root, **_kw: {},
                         resolve_repo_root=REAL_DEPLOY.resolve_repo_root),
     )
     monkeypatch.setattr(

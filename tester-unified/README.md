@@ -7,6 +7,13 @@ by Wings' `PTERODACTYL_GO_IMAGE`; Go tests run inside the same registered gate
 container, with Run-Gate setting its cgroup placement. See the [design guide](docs/DESIGN-GUIDE.md#userland-added-on-top-of-the-base)
 and [consumer examples](docs/CONSUMERS.md#running-a-go-project-gate).
 
+The image also includes Debian trixie's `augeas-tools` package (`augtool`,
+`augparse`, `augmatch`, and `augprint`) for `augeaswrap`'s lens checks and real
+Augeas tests. See the [design guide](docs/DESIGN-GUIDE.md#userland-added-on-top-of-the-base)
+for why these tools live in the shared gate image and the
+[consumer guide](docs/CONSUMERS.md#running-an-augeas-consumer-gate) for the
+registered lane invocation.
+
 The image is built FROM `tester-base` (the minimal gate base: `python:3.14-trixie` +
 docker client + minisign + shellcheck; see `tester-base/README.md`), through
 `ARG TESTER_UNIFIED_BASE_IMAGE` (default `tester-base:local` until tester-base has a CMRU
@@ -24,7 +31,7 @@ zsh cases, when `MDT_REQUIRE_SHELLS=1` and it is absent), Node.js with npm and n
 from the digest-pinned official `node:26.x-trixie` image; pwmcp's runtime-gateway tests run `node`), Go
 (copied from the image selected by `wings-patchstack/stack.conf`; Wings' registered gate runs Go directly
 inside tester-unified instead of launching a nested toolchain container), and
-the uid-1003 identity, and the real `systemctl` client (Debian's `systemd` package: the cgroup-profiler
+the uid-1003 identity, and the real `systemctl` client (Debian's `systemd` package: the cgprofile
 placement probe `tools/gate.sh` / `lib/access.py` runs `systemctl show <slice>` inside this image against
 the host system bus, which it can reach only when the bus socket and `/run/systemd/system` are mounted;
 in a plain container it exits 1, and no systemd runs here). There is deliberately no *fake* `systemctl`:
@@ -177,7 +184,7 @@ Image contents worth knowing (KI-52 / BG-05, 2026-10):
   (`worktree`, `cmru`, `assay`, `ciu`, ...) or direct-URL
   requirement, because the closure goes to a PyPI-default `pip` and an
   unclaimed or look-alike name would be installed into an image that is handed
-  the host Docker socket. The one exception is `cli-extended` (cmru declares
+  the host Docker socket. The packaged-wheel exception is `cli-extended` (cmru declares
   `cli-extended>=0.3.0`): the generator SKIPS that line, so no cli-extended
   requirement ever reaches pip, and the image installs the RELEASED wheel by
   default: `fetch-cli-extended.py` downloads the asset PINNED in the Dockerfile
@@ -191,6 +198,11 @@ Image contents worth knowing (KI-52 / BG-05, 2026-10):
   Every image carries `org.vbpub.cli-extended.wheel-sha256`, the digest of the wheel it
   installed (the Dockerfile pin, the `local` digest, or the `latest` digest), verified
   against the installed file during the build and re-read by `build-image.sh` afterwards.
+  A separate source-backed test exception covers cgprofile's `augeaswrap>=0.1.0` edge:
+  the generator excludes it from the PyPI closure, and `cgprofile/tools/gate.sh`
+  places the bound checkout's `augeaswrap/src` on `PYTHONPATH`. The endpoint
+  helper is therefore imported from the same reviewed tree as cgprofile, not
+  from an index or a stale wheel.
   It also carries `org.vbpub.tester-unified.base-image`, the base reference its stage was
   built FROM (`--base-image`, or the Dockerfile default); `build-image.sh` fails if that
   differs from the requested base.

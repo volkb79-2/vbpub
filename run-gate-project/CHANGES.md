@@ -10,9 +10,266 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
 ## [Unreleased]
 
 ### Added
-- `run-gate --list --json` (RG-161, SPEC R-55, rigor-evidence package RG-d): the lane inventory as one JSON document (`run-gate-list/1`) with `kind`, `environments`, `assay_lane`, a sequence's `members` and each lane's derived `rigor` (assay lanes from `assay lanes --json`; command lanes `["R0"]`, `declared-not-judged`; sequences `["R0"]`). A judge that cannot answer gives `rigor: null` and a reason. Plain `--list` is unchanged (three columns); `--json` with any other verb is still refused.
+- RG-265: flexible native-R2 campaigns. `--shard K/N` runs one shard of an
+  Assay lane as its own instance (`<lane>.shard<K>of<N>`: own in-flight
+  record, container name/labels, history key, `.assay/` verdict/progress
+  files `<assay_lane>.<lane>.shard<K>of<N>` and Assay store under
+  `.run-gate/assay-shards/<project>/<lane>/<assay_lane>/`), so N shards of
+  one lane run concurrently; each reuses the main store's finished records.
+  `--merge-shards N` is a STRICT merge: every shard store must exist (it is
+  never created) and Assay's `--merge-shard-store` refuses absent,
+  duplicate, foreign-judge, changed-plan, incomplete or polluted stores.
+  `--carry-over DIR --carry-over-reason TEXT`, `--merge-state DIR`,
+  `--only-candidates FILE` and `--exclude-candidates FILE` pass through.
+  The judge floor is Assay 12.2.0, checked from the inventory version
+  before admission (plus an in-container help check). `--shard` refuses
+  exec-mode and `resources.shared` lanes (they would serialize) and an
+  ephemeral image absent from the host. Every path must lie under the
+  checkout or the judged worktree. Such runs are recorded `selective` with
+  an `r2_flex` block and never count as a plain lane result.
+- RG-266: `[resources] r2_oversubscribe` (`"1.0"`..`"4.0"`, any resources
+  scope) lets `jobs = "auto"` place more workers than enforced CPUs, so a
+  candidate's I/O phases need not leave a CPU idle; memory, `jobs_max` and
+  remaining candidates still bound the count. The default stays `"1.0"`;
+  `"1.5"` is the recommended opt-in.
+
+### Documentation
+- Explain the Assay-versioned T3 native R2 identity rule: Assay 12.1.1 includes
+  `jobs_max` in judge identity, while the B529 flexible-R2 generation projects
+  execution-resource settings out; size the ceiling from reserved host CPU plus
+  measured per-candidate memory.
+- Document the normative T0-T3 tier contract, lane presets, release-prep-only
+  paths, accepted deviations, canary obligations and the T3 queue/ledger
+  interface; surface it in the README with adoption and design links, qualify
+  the T3 R2 base by lane, align the Buildkite scale-out note and apply the
+  review-4 corrections.
+- File the T3 re-supervision, host symlink and command-evidence defects as
+  netcup NC-32 through NC-34.
+
+### Changed
+- Add the closed `network = "none" | "default"` policy at environment and
+  lane scope, with lane precedence. `network = "none"` adds `--network none`
+  to disposable lane containers; `network = "default"` retains Docker's
+  default network. Explicit network settings now refuse non-ephemeral modes.
+- Set `io_sync = "relaxed"` on the shared `tester-unified` environment and
+  CMRU's separate `cmru-mutation` environment after the W0 host A/B. Durable
+  lanes keep their lane-level policy; the built-in default remains `strict`.
+
+### Testing
+- Cover RG-256 network policy validation, precedence, ephemeral argv, dry-run
+  disclosure, cgprofile socket mounts, and synchronized user documentation.
+- Keep the fake Docker log-stream shim's polling child in its wait scope during stall cleanup (RG-254).
+- Hold the parent in the `$!` registration window until stall cleanup sends TERM (RG-254).
+- Replace the RG-109 interruption test's stdout-pipe completion oracle and
+  fixed deadline with file-backed output plus process-event waits. The
+  stdout-holder regression uses ready/release pipes and verifies the child is
+  live after its parent exits; apply the same synchronization to the immediate
+  re-attach/follower tests (RG-255).
 
 <!-- cmru: release history -->
+
+## [25.4.1] - 2026-11-09
+<!-- cmru: generated -->
+<!-- cmru: source-end=25f571124237a82de3dff3029d9c4be65e474f77 -->
+
+### Fixed
+- fix(run-gate): scope Cowtree probe route to lane (RG-251) (26a203e2b)
+- fix(run-gate): guard Cowtree importer routes (RG-251) (fb221e05a)
+- fix(run-gate): put cowtree source on source-run Assay lanes (RG-251) (2e443acf9)
+- fix(run-gate): harden selftest stall evidence path (RG-246/247/248) (081b2e9f6)
+
+### Documentation
+- docs(run-gate): correct the CGProfile observer and control GIDs (fa323e685)
+- docs(run-gate): file RG-251, RG-252 (cowtree PYTHONPATH in three r2 lanes, host Docker GID publisher) (2c2ea7099)
+- docs(run-gate): file RG-246..RG-250 (selftest fake-docker -f match, evidence-capture timeout, stall-test timeout, stale cross-namespace inflight record, observer preflight vs RUN_GATE_PROFILE=off) (f15e5647a)
+
+### Testing
+- test(run-gate): widen the RG-246 evidence-capture failsafe alarm to 60 s (host-load independence, re-review nit) (b86efa8c3)
+- test: harden run-gate selftest oracles (8f60932ae)
+
+<!-- cmru: pending release notes begin -->
+### Fixed
+- Harden the selftest stall path and evidence cleanup: match fake-docker
+  streaming flags on argv boundaries (RG-246), bound `docker logs` evidence
+  capture so `rm -f` still runs (RG-247), and bound the end-to-end stall tests
+  with the existing alarm guard (RG-248).
+
+### Testing
+- Disable Git auto-maintenance in test repositories so its detached helper is
+  not mistaken for a leaked lane child by `TestStallEndToEnd`.
+<!-- cmru: pending release notes end -->
+
+## [25.4.0] - 2026-11-08
+<!-- cmru: generated -->
+<!-- cmru: source-end=d6b9b182e7400150f79675533829723016dc584a -->
+
+### Fixed
+- fix(run-gate,cgprofile): estate pairing sweep excludes helper-gate troves with a guard; cgpd doctor -> cgprofiled doctor in run-gate E3 text (1d6c89c86)
+- fix(cgprofile): harden liveness kill confirmation (d4507aba8)
+- fix(cgprofile): fail safe across liveness monitor gaps (877f80438)
+- fix(run-gate): validate cgprofile endpoint values, recorded recovery endpoint, doctor WARN (WP-E3 fix round) (6ba7e05d4)
+
+### Changed
+- Merge origin/main into cgprofile-3-20261107 (cgp-fs fix rounds land on the renamed tree) (95439b3d6)
+- Merge remote-tracking branch 'origin/main' into cgp-fs-20261107 (2e372a220)
+- refactor: point the estate at cgprofile (cmru, tester-unified, run-gate, mdt-cockpit, rigor-record, assay, ciu, root files) (246b30136)
+- run-gate: resolve cgprofile endpoints from environment (7447b997e)
+
+### Testing
+- test(run-gate): pin container-lane recorded endpoint, root observer rule, alphabet rules, source literals (WP-E3 round 2) (9bf396704)
+- test(run-gate): cover observer directory colon refusal (diff coverage) (e1fb0ffc1)
+
+<!-- cmru: pending release notes begin -->
+### Fixed
+- Accept cgprofile's additive `unknown` watch state and continue consuming later verdicts without reporting an unknown lane as stalled (RG-245).
+
+### Changed
+- Run-Gate now resolves cgprofile control and observer endpoints only from
+  `CGPROFILE_CONTROL_SOCKET` and `CGPROFILE_OBSERVER_SOCKET` in its process
+  environment. `[profile].socket_path` is refused; observer mounts use an
+  identity read-only bind and pass the same path through
+  `ASSAY_RESOURCE_OBSERVER_SOCKET`. Missing required variables name
+  `cgprofiled doctor` and the host endpoints record as the remedy. `RUN_GATE_PROFILE=off`
+  explicitly opts out of profiling; observer lanes still require both endpoints.
+  Endpoint values are shape-validated (absolute path over `[A-Za-z0-9_./:@+-]`,
+  no `..`/empty/`.` components, no trailing `/`, observer directory never `/`)
+  before they reach any Docker argument. `run-gate doctor` reports an unusable
+  control endpoint as a WARN and continues. Recovery (re-attach, promoted
+  follower) stops a profiler session on the control endpoint recorded in the
+  run record (`profile_control_socket`) and reports a record without one.
+<!-- cmru: pending release notes end -->
+
+## [25.3.0] - 2026-11-07
+<!-- cmru: generated -->
+<!-- cmru: source-end=a620a668945454a24cef2343bf3e3fd7c4957951 -->
+
+### Added
+- feat(run-gate): per-level cgprofile socket layout, new-only preflight, host Docker GID from override or docker.sock (RG-243) (4f049b8df)
+
+### Fixed
+- fix(run-gate): close host socket review findings (0f84d4243)
+- fix(run-gate): strict Docker GID source (override rules shared with Assay, non-unix DOCKER_HOST and root-group socket refused), GID-bearing collision messages, cockpit-mapping test, cutover wording, RG-152/RG-243 reconciliation (b6a21beb3)
+
+### Changed
+- run-gate: drop the out-of-scope docker-logs process-group change (broke 10 fake-Process tests); effective GID wording in preflight docstring (a6e513f2e)
+- run-gate: apply host service socket amendment (f9d34a449)
+- Merge origin/main into sockets-rg-20261105 (CHANGES.md: keep both Changed bullets) (0807db258)
+
+### Documentation
+- docs: reconcile RG55 socket contract text (98c0a860c)
+- docs: reconcile RG55 socket contract mirrors (651d0c39f)
+
+## [25.2.1] - 2026-11-06
+<!-- cmru: generated -->
+<!-- cmru: source-end=9e802ce2b0bebd09ee88805e49b7ddb51bab269c -->
+
+### Changed
+- chore: retire modern-debian-tools-python-debug; mdt-cockpit is its successor (2015c4e00)
+
+<!-- cmru: pending release notes begin -->
+### Changed
+- The per-level cgprofile socket layout and its observer GID preflights were
+  introduced under RG-243. WP-E3 / RG-244 supersedes that interim endpoint
+  selection: Run-Gate reads the host-published values from its process
+  environment, and the observer lane mounts the observer directory at the
+  same host and lane path. The strict Docker GID source order and socket GID
+  checks remain as described in the RG-243 release entry.
+- `DEFAULT_HOST_IMAGE` (the host image when `RUN_GATE_HOST_IMAGE` is unset) is now
+  `ghcr.io/volkb79-2/mdt-cockpit-devcontainer:trixie-py3.14-php8.5-latest`. The previous
+  default, `modern-debian-tools-python-debug-vsc-devcontainer`, belongs to the retired
+  predecessor project and is no longer built; `mdt-cockpit` is its successor.
+<!-- cmru: pending release notes end -->
+
+## [25.2.0] - 2026-11-05
+<!-- cmru: generated -->
+<!-- cmru: source-end=ba215f35b624e16a35d2ca1ea0c7d80e4bad03c1 -->
+
+### Added
+- feat(run-gate): self-explaining lane container names + run-gate.* labels (RG-242) (5da36a9c2)
+
+### Fixed
+- fix(run-gate): selftest lane memory 1g -> 2g (measured peak 1021 MiB; oom_kill forced ERROR in the 25.2.0 release gate) (c1b8a0190)
+
+### Testing
+- test(run-gate): pin selftest memory 2g; clarify the capped footprint comment (23ab7c6ac)
+- test(run-gate): dry-run/live argv equality ignores the volatile run-gate.started label (RG-242) (fb6e84e8c)
+- test(run-gate): adapt fake-docker helpers and label assertions to RG-242 names (10ade8025)
+- test(run-gate): kill R2 survivors in --list --json (RG-169) (327d84744)
+
+<!-- cmru: pending release notes begin -->
+### Changed
+- feat(run-gate): lane containers are named `<repo>-run-gate-<project>-<lane>-<sha8>-<yymmdd-HHMM>-<ns9>` (was `run-gate-<repo>-<lane>-<pid>-<epoch>`, which read as `run-gate-<40-hex>-...` for release checkouts) and carry labels `run-gate.repo/project/lane/commit/started/name-schema` (+ `job`/`campaign` from `RUN_GATE_JOB`/`RUN_GATE_CAMPAIGN`). Tools should filter by label; the old `^run-gate-` name match stays valid for containers started before this change. remote-gate cleanup and run-jobs-window match both generations (RG-242)
+
+### Testing
+- test(run-gate): kill the three R2 survivors in `--list --json` (host env without docker, container env with docker, key-sorted flushed output) (RG-169)
+<!-- cmru: pending release notes end -->
+
+## [25.1.2] - 2026-11-05
+<!-- cmru: generated -->
+<!-- cmru: source-end=f4039e883df073d66ea87014112bb13d3c44d209 -->
+
+### Fixed
+- fix(run-gate): sanitise quoted untrusted text, normalise CoW mount check, e2e wiring test (review of RG-167/168) (5de1ced80)
+- fix(run-gate): placement handshake ignores runner preamble (RG-167); exec CoW root forwarded only when mounted (RG-168) (955c3dcee)
+- fix(run-gate): exec-mode docs and refusals (RG-165, RG-166); cmru KI-126 triage plan (d2a7ff436)
+
+### Changed
+- Merge main into rg-167-168-20261105 (3399c6dcc)
+- backlog: ciu CIU-191 worktree rm hit main stacks; run-gate RG-167/168; pwmcp PWMCP-34 (found in netcup-api-filter@3786024) (452149954)
+- backlog: cmru KI-126 per-interpreter bundle builder; run-gate RG-165/RG-166 exec-mode docs (c70641b6f)
+
+### Testing
+- test(run-gate): in-process cover for last_output, dry-run CoW note, container_mode_hint (diff-coverage floor) (f4039e883)
+
+<!-- cmru: pending release notes begin -->
+### Fixed
+- fix(run-gate): the placement handshake ignores unrelated lines the runner prints before its readiness marker (e.g. the `[ksm-optin]` LD_PRELOAD line), bounded to 64 KiB; only the exact marker with the placement nonce is accepted, a wrong-nonce marker or a missing marker is still an error (RG-167)
+- fix(run-gate): an exec lane forwards `COWTREE_MODE=auto`/`MDT_COW_ROOT` only when the runner container mounts that path; otherwise they are dropped and the plan line reads `not forwarded (no mount): ...`, so assay no longer refuses with `MDT_COW_ROOT does not exist` (RG-168)
+- fix(run-gate): untrusted text quoted on verdict/error lines (`last_output`, placement-handshake preamble) is sanitised (printable ASCII, `;` replaced, secret-looking values redacted, capped at 160) and `last_output` is a JSON-quoted field; the exec CoW mount check uses `docker inspect --type container` and a normalised path comparison (rejects `..`)
+- fix(run-gate): the exec-mode "no ciu.global.toml" refusal states that the file exists only in a ciu-managed worktree (`ciu worktree create|adopt`) or the main checkout, and names the project's declared `mode = "ephemeral"` environments as alternatives (RG-166, RG-165a)
+- fix(run-gate): a `command-exit-map` ERROR verdict line echoes the last non-empty line of the lane's combined output as `last_output` (RG-165b)
+
+### Documentation
+- docs(run-gate): CONSUMERS.md states the exec-mode container-name derivation rule (`<project_name>-<environment_tag>-<environment name>`, environment name = ciu service name, several runners) and the plain-`git worktree add` limitation; DESIGN-GUIDE cross-reference (RG-165, RG-166)
+<!-- cmru: pending release notes end -->
+
+## [25.1.1] - 2026-11-04
+<!-- cmru: generated -->
+<!-- cmru: source-end=35fab5ce40b5e7860fab4deebc0d6adc0030f777 -->
+
+### Fixed
+- fix(run-gate): run_gate_profile xdist hook optional; no INTERNALERROR without xdist (RG-164) (35fab5ce4)
+
+## [25.1.0] - 2026-11-04
+<!-- cmru: generated -->
+<!-- cmru: source-end=436c6b69f5aa030dc9d1173edfc741903002715f -->
+
+### Added
+- feat(assay): isolation.materialize = tmpfs-worker, one restored-in-place tmpfs tree per mutation worker (B223) (14930488a)
+- feat(assay): R2 lanes declare jobs_max and run-gate jobs=auto (assay-jobs audit) (fe53428a8)
+- feat(run-gate): RG-161 --list --json, the lane inventory with derived rigor (rigor-evidence RG-d) (1d9739420)
+- feat(cgprofile): machine/1 facts, persisted host CPU benchmark reader, score table fallback, steal time (rigor CP-1, CP-58) (8fb865420)
+
+### Fixed
+- fix(run-gate): RG-161 tolerate arg namespaces without json; list --json tests (385d14eab)
+
+### Changed
+- Merge branch 'assay-jobs-audit-20261105' (5cda69dc0)
+- Merge branch 'fix-assay-mat-20261105' into assay-tmpfs-20261105 (5a9bb98e3)
+- Merge branch 'rigor-cp1-20261105' (40941fb2f)
+
+### Documentation
+- docs: replace stale one-candidate-at-a-time comments (review LOW-1) (a44e2da85)
+- docs(run-gate): RG-162 update with remote-run findings (582522c68)
+- docs(run-gate): RG-162 backlog entry for load-sensitive flaky selftest tests (24958e04a)
+
+### Testing
+- test(run-gate): fix fake cgprofile daemon accept-thread fd-reuse race and lock-wait budget jitter (RG-162) (8bbc11d4d)
+
+<!-- cmru: pending release notes begin -->
+### Added
+- `run-gate --list --json` (RG-161, SPEC R-55, rigor-evidence package RG-d): the lane inventory as one JSON document (`run-gate-list/1`) with `kind`, `environments`, `assay_lane`, a sequence's `members` and each lane's derived `rigor` (assay lanes from `assay lanes --json`; command lanes `["R0"]`, `declared-not-judged`; sequences `["R0"]`). A judge that cannot answer gives `rigor: null` and a reason. Plain `--list` is unchanged (three columns); `--json` with any other verb is still refused.
+<!-- cmru: pending release notes end -->
 
 ## [25.0.2] - 2026-11-04
 <!-- cmru: generated -->
@@ -74,8 +331,10 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
 - **BREAKING (RG-156): run-gate reaches the cgprofile daemon over its control socket only.** The
   `docker exec cgprofile-host-daemon cgprofile ctl ...` fallback is removed with its settings: the `[profile] transport`
   and `[profile] daemon` keys, the `RUN_GATE_PROFILE_TRANSPORT` variable and the `docker ps` check in `doctor`. Each is
-  refused by name (exit 2), with no alias; delete the key or unset the variable. The socket is
-  `[profile] socket_path` (default `/run/cgprofile/ctl.sock`) and works against the current 1.x daemon (the operations
+  refused by name (exit 2), with no alias; delete the key or unset the variable. At that interim
+  revision, `[profile] socket_path` (default `/run/cgprofile/ctl.sock`) supplied the endpoint;
+  WP-E3 / RG-244 removes that key and reads `CGPROFILE_CONTROL_SOCKET` from the process
+  environment only. The control protocol works against the current 1.x daemon (the operations
   run-gate uses, `version`, `host`, `status`, `start`, `stop` and `watch`, are unchanged; run-gate never sends `report` or
   `gc`). An unreachable socket degrades exactly as an absent profiler did (basic or rusage profile, one warning) and the
   warning now carries the CP-31 cause tag (`socket-not-mounted`, `socket-missing`, `daemon-refusing`,

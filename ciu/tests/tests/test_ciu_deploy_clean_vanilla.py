@@ -53,6 +53,9 @@ def _workspace(tmp_path: Path, *, present=RESET_FILES) -> Path:
     # exactly the named files and nothing adjacent.
     (tmp_path / "ciu.global.toml.j2").write_text("[ciu]\n", encoding="utf-8")
     (tmp_path / "ciu.global.defaults.toml.j2").write_text("[ciu]\n", encoding="utf-8")
+    (tmp_path / "applications" / "api" / "ciu.defaults.toml.j2").write_text(
+        "[api]\n", encoding="utf-8",
+    )
     return tmp_path
 
 
@@ -63,6 +66,7 @@ def _run_clean(monkeypatch, repo_root: Path, *, vanilla=False, fail=False):
         deploy, "render_selected_stacks", lambda *a, **k: {"applications/api": {}}
     )
     monkeypatch.setattr(deploy, "_remove_project_volumes", lambda *a, **k: [])
+    monkeypatch.setattr(deploy, "_tagged_project_networks", lambda *a, **k: ([], []))
     monkeypatch.setattr(deploy, "_workspace_identity_network", lambda *a, **k: None)
     monkeypatch.setattr(deploy, "_list_stack_project_networks", lambda *a, **k: [])
     monkeypatch.setattr(deploy, "_remove_identity_networks", lambda nets: ([], []))

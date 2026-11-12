@@ -23,7 +23,7 @@
           "option:route:entrypoint:iobench/calibrate/--target"
         ]
       },
-      "signature": "sha256:e9472f15680f10599711d4553330b1bdb07e2cbf52385708fa918e7a3a0af58a"
+      "signature": "sha256:325360a03eb27ee84dd218c76680e9651dccd843d2e5b589b7d5445517c09e02"
     },
     {
       "id": "case:route:entrypoint:iobench/calibrate/option-choice/option:route:entrypoint:iobench/calibrate/--metering/0aa52ffaa6",
@@ -65,6 +65,19 @@
       "signature": "sha256:9efc5780ebbec81b79528b1ca8e786b9e5d1853d526dcd6a65ff5e128e3305af"
     },
     {
+      "id": "case:route:entrypoint:iobench/calibrate/option-choice/option:route:entrypoint:iobench/calibrate/--profile/780be2ca4d",
+      "kind": "option-choice",
+      "members": [
+        "option:route:entrypoint:iobench/calibrate/--profile"
+      ],
+      "route_id": "route:entrypoint:iobench/calibrate",
+      "shape": {
+        "choice": "veryquick",
+        "option_id": "option:route:entrypoint:iobench/calibrate/--profile"
+      },
+      "signature": "sha256:07991d694e5198af51f047a8e9bcaee18a949231ed309c97427b3eb356ee0898"
+    },
+    {
       "id": "case:route:entrypoint:iobench/calibrate/option-choice/option:route:entrypoint:iobench/calibrate/--profile/acdbec3949",
       "kind": "option-choice",
       "members": [
@@ -75,7 +88,7 @@
         "choice": "quick",
         "option_id": "option:route:entrypoint:iobench/calibrate/--profile"
       },
-      "signature": "sha256:6e6d917f251259b334057f3542460cf6f0bbb2c4a0071ecaa4bccc29227c4afd"
+      "signature": "sha256:563e8e104acc542bc1ebd6bf57f7748938811888dd2e8212ec8aab3f6caaa509"
     },
     {
       "id": "case:route:entrypoint:iobench/calibrate/option-choice/option:route:entrypoint:iobench/calibrate/--profile/cb2842d668",
@@ -88,7 +101,7 @@
         "choice": "standard",
         "option_id": "option:route:entrypoint:iobench/calibrate/--profile"
       },
-      "signature": "sha256:b6d097002038e428ff7eed51e46e04fc667bc31e28e384fdd0573d78079d02f9"
+      "signature": "sha256:e168392da1bea394047b76ed6eb84f89e7fbb4d8e3a1653dbce09e1300baf5e0"
     },
     {
       "id": "case:route:entrypoint:iobench/calibrate/option-choice/option:route:entrypoint:iobench/calibrate/--profile/e0b457a3fb",
@@ -101,7 +114,7 @@
         "choice": "thorough",
         "option_id": "option:route:entrypoint:iobench/calibrate/--profile"
       },
-      "signature": "sha256:100017811d828f6edcf6aa8521241e8e8399fa16bb37b8f421143b8ba0e29ccb"
+      "signature": "sha256:e74b057687bc22cb71836fc9365859585979a8dfd493ef8e4ba93fa4d0a33e19"
     },
     {
       "id": "case:route:entrypoint:iobench/calibrate/option-spelling/option:route:entrypoint:iobench/calibrate/--abort-psi/--abort-psi",
@@ -141,6 +154,19 @@
         "spelling": "--budget-minutes"
       },
       "signature": "sha256:5b11aea2d84aae4653a5e3f97942a41f5fb2f8df908bf573cd93ec0561fa4d17"
+    },
+    {
+      "id": "case:route:entrypoint:iobench/calibrate/option-spelling/option:route:entrypoint:iobench/calibrate/--cache-idle-delay-s/--cache-idle-delay-s",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:iobench/calibrate/--cache-idle-delay-s"
+      ],
+      "route_id": "route:entrypoint:iobench/calibrate",
+      "shape": {
+        "option_id": "option:route:entrypoint:iobench/calibrate/--cache-idle-delay-s",
+        "spelling": "--cache-idle-delay-s"
+      },
+      "signature": "sha256:bea1065879211927e2acfdc298bb00460aa9a71ecd0d3b958715e63f14f1e174"
     },
     {
       "id": "case:route:entrypoint:iobench/calibrate/option-spelling/option:route:entrypoint:iobench/calibrate/--confirm-quiet-window/--confirm-quiet-window",
@@ -296,7 +322,7 @@
         "option_id": "option:route:entrypoint:iobench/calibrate/--profile",
         "spelling": "--profile"
       },
-      "signature": "sha256:25f6b084c8eb213ef2ee558164a982050a655ea392504f34df024e1dde679136"
+      "signature": "sha256:ba8e30ac526a42843c68c799b892b2ce025afe1c115e5cbf4d749ff39b239b07"
     },
     {
       "id": "case:route:entrypoint:iobench/calibrate/option-spelling/option:route:entrypoint:iobench/calibrate/--protect-cgroup/--protect-cgroup",
@@ -377,6 +403,124 @@
       "signature": "sha256:b21c34e04c4ffb4a6f8acfdcdd52dc474bb10debfc647f156e79c182fab5ea3b"
     },
     {
+      "id": "case:route:entrypoint:iobench/capability/minimum",
+      "kind": "minimum",
+      "members": [],
+      "route_id": "route:entrypoint:iobench/capability",
+      "shape": {
+        "defaulted_options": [],
+        "required_argument_values": {},
+        "required_arguments": [],
+        "required_exclusive_groups": {},
+        "required_options": []
+      },
+      "signature": "sha256:da817ed8c4daec179e209e4049ddb6bcf702188b919bde1541dd204e59a5958e"
+    },
+    {
+      "id": "case:route:entrypoint:iobench/capability/option-choice/option:route:entrypoint:iobench/capability/--kind/59a56e97bc",
+      "kind": "option-choice",
+      "members": [
+        "option:route:entrypoint:iobench/capability/--kind"
+      ],
+      "route_id": "route:entrypoint:iobench/capability",
+      "shape": {
+        "choice": "probe",
+        "option_id": "option:route:entrypoint:iobench/capability/--kind"
+      },
+      "signature": "sha256:b52e7e997775b96753dfc09c0497169028b990746431987ff3b018eb03925298"
+    },
+    {
+      "id": "case:route:entrypoint:iobench/capability/option-choice/option:route:entrypoint:iobench/capability/--kind/9d8744a686",
+      "kind": "option-choice",
+      "members": [
+        "option:route:entrypoint:iobench/capability/--kind"
+      ],
+      "route_id": "route:entrypoint:iobench/capability",
+      "shape": {
+        "choice": "raw",
+        "option_id": "option:route:entrypoint:iobench/capability/--kind"
+      },
+      "signature": "sha256:31ca65f45852e89f5c134559322a68aff239c08178bbdb803275ef05a49add94"
+    },
+    {
+      "id": "case:route:entrypoint:iobench/capability/option-choice/option:route:entrypoint:iobench/capability/--kind/bfdde6f565",
+      "kind": "option-choice",
+      "members": [
+        "option:route:entrypoint:iobench/capability/--kind"
+      ],
+      "route_id": "route:entrypoint:iobench/capability",
+      "shape": {
+        "choice": "file",
+        "option_id": "option:route:entrypoint:iobench/capability/--kind"
+      },
+      "signature": "sha256:7bfcdff1dd1d7c95404960ce0d2e635800369e2722a5c87526223bbde22e22e7"
+    },
+    {
+      "id": "case:route:entrypoint:iobench/capability/option-spelling/option:route:entrypoint:iobench/capability/--debug-raw/--debug-raw",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:iobench/capability/--debug-raw"
+      ],
+      "route_id": "route:entrypoint:iobench/capability",
+      "shape": {
+        "option_id": "option:route:entrypoint:iobench/capability/--debug-raw",
+        "spelling": "--debug-raw"
+      },
+      "signature": "sha256:c2603fd9c727ac67423b18ae2e2af17b680bc11085889934c18200fd78762b27"
+    },
+    {
+      "id": "case:route:entrypoint:iobench/capability/option-spelling/option:route:entrypoint:iobench/capability/--json/--json",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:iobench/capability/--json"
+      ],
+      "route_id": "route:entrypoint:iobench/capability",
+      "shape": {
+        "option_id": "option:route:entrypoint:iobench/capability/--json",
+        "spelling": "--json"
+      },
+      "signature": "sha256:1824175e236bec3828e623102950980bef4149759d190509a62348daefc8f2f3"
+    },
+    {
+      "id": "case:route:entrypoint:iobench/capability/option-spelling/option:route:entrypoint:iobench/capability/--kind/--kind",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:iobench/capability/--kind"
+      ],
+      "route_id": "route:entrypoint:iobench/capability",
+      "shape": {
+        "option_id": "option:route:entrypoint:iobench/capability/--kind",
+        "spelling": "--kind"
+      },
+      "signature": "sha256:ba26c52022b2669647812a6f992c2c79a1764d7d296f801e6622ebb3a375e0e9"
+    },
+    {
+      "id": "case:route:entrypoint:iobench/capability/option-spelling/option:route:entrypoint:iobench/capability/--since/--since",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:iobench/capability/--since"
+      ],
+      "route_id": "route:entrypoint:iobench/capability",
+      "shape": {
+        "option_id": "option:route:entrypoint:iobench/capability/--since",
+        "spelling": "--since"
+      },
+      "signature": "sha256:5b4ed8e9abd4ef2e71ada35913fff66f111665a0d74936f31d335e5cb009636a"
+    },
+    {
+      "id": "case:route:entrypoint:iobench/capability/option-spelling/option:route:entrypoint:iobench/capability/--state-dir/--state-dir",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:iobench/capability/--state-dir"
+      ],
+      "route_id": "route:entrypoint:iobench/capability",
+      "shape": {
+        "option_id": "option:route:entrypoint:iobench/capability/--state-dir",
+        "spelling": "--state-dir"
+      },
+      "signature": "sha256:cec6ab4dc75b5277282aa34e80b6c88ac58a03e1d7d25c82dc29bef9835b01b3"
+    },
+    {
       "id": "case:route:entrypoint:iobench/ceilings/add/minimum",
       "kind": "minimum",
       "members": [
@@ -427,6 +571,45 @@
         "option_id": "option:route:entrypoint:iobench/ceilings/add/--dir"
       },
       "signature": "sha256:25d17e6631c67a191666d213c83d7f4123040dd4fc08ea538549b80e04ff11d7"
+    },
+    {
+      "id": "case:route:entrypoint:iobench/ceilings/add/option-choice/option:route:entrypoint:iobench/ceilings/add/--kind/59a56e97bc",
+      "kind": "option-choice",
+      "members": [
+        "option:route:entrypoint:iobench/ceilings/add/--kind"
+      ],
+      "route_id": "route:entrypoint:iobench/ceilings/add",
+      "shape": {
+        "choice": "probe",
+        "option_id": "option:route:entrypoint:iobench/ceilings/add/--kind"
+      },
+      "signature": "sha256:001d73b2707e8f96a00c3358266510fccb3817d55f001bfcdefe310d9e33ae81"
+    },
+    {
+      "id": "case:route:entrypoint:iobench/ceilings/add/option-choice/option:route:entrypoint:iobench/ceilings/add/--kind/9d8744a686",
+      "kind": "option-choice",
+      "members": [
+        "option:route:entrypoint:iobench/ceilings/add/--kind"
+      ],
+      "route_id": "route:entrypoint:iobench/ceilings/add",
+      "shape": {
+        "choice": "raw",
+        "option_id": "option:route:entrypoint:iobench/ceilings/add/--kind"
+      },
+      "signature": "sha256:5d27127ef9399bbfeb533451b51a1950baba57617075340f58949003c990a015"
+    },
+    {
+      "id": "case:route:entrypoint:iobench/ceilings/add/option-choice/option:route:entrypoint:iobench/ceilings/add/--kind/bfdde6f565",
+      "kind": "option-choice",
+      "members": [
+        "option:route:entrypoint:iobench/ceilings/add/--kind"
+      ],
+      "route_id": "route:entrypoint:iobench/ceilings/add",
+      "shape": {
+        "choice": "file",
+        "option_id": "option:route:entrypoint:iobench/ceilings/add/--kind"
+      },
+      "signature": "sha256:361c9d63b30552df32e8159859d0288269aba9cc5de12fe6248be3d97750b67b"
     },
     {
       "id": "case:route:entrypoint:iobench/ceilings/add/option-choice/option:route:entrypoint:iobench/ceilings/add/--source/4b322f8948",
@@ -572,6 +755,19 @@
       "signature": "sha256:9a71bc8ee691d51451e3c64a8885e568976fae642fedfeca2e4ebae31b8fc44c"
     },
     {
+      "id": "case:route:entrypoint:iobench/ceilings/add/option-spelling/option:route:entrypoint:iobench/ceilings/add/--kind/--kind",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:iobench/ceilings/add/--kind"
+      ],
+      "route_id": "route:entrypoint:iobench/ceilings/add",
+      "shape": {
+        "option_id": "option:route:entrypoint:iobench/ceilings/add/--kind",
+        "spelling": "--kind"
+      },
+      "signature": "sha256:9f8d4e014f9e205bcb1a34cd41cd5627a52531e0e538994cf1bae7d3e983ef7d"
+    },
+    {
       "id": "case:route:entrypoint:iobench/ceilings/add/option-spelling/option:route:entrypoint:iobench/ceilings/add/--source/--source",
       "kind": "option-spelling",
       "members": [
@@ -629,6 +825,45 @@
       "signature": "sha256:f3ecff330c53c45812f482a5933224bd1d85d8dcf8205f9b4d6049052f786003"
     },
     {
+      "id": "case:route:entrypoint:iobench/ceilings/summary/option-choice/option:route:entrypoint:iobench/ceilings/summary/--kind/59a56e97bc",
+      "kind": "option-choice",
+      "members": [
+        "option:route:entrypoint:iobench/ceilings/summary/--kind"
+      ],
+      "route_id": "route:entrypoint:iobench/ceilings/summary",
+      "shape": {
+        "choice": "probe",
+        "option_id": "option:route:entrypoint:iobench/ceilings/summary/--kind"
+      },
+      "signature": "sha256:aaf93d10a7658ad40845736cc1372b0b628fbba8f270ac1d607fb270f3a79206"
+    },
+    {
+      "id": "case:route:entrypoint:iobench/ceilings/summary/option-choice/option:route:entrypoint:iobench/ceilings/summary/--kind/9d8744a686",
+      "kind": "option-choice",
+      "members": [
+        "option:route:entrypoint:iobench/ceilings/summary/--kind"
+      ],
+      "route_id": "route:entrypoint:iobench/ceilings/summary",
+      "shape": {
+        "choice": "raw",
+        "option_id": "option:route:entrypoint:iobench/ceilings/summary/--kind"
+      },
+      "signature": "sha256:390b74d59f5b079b9f68ef57790afae6991935cf78e7cc2afe6eff7fd5601e34"
+    },
+    {
+      "id": "case:route:entrypoint:iobench/ceilings/summary/option-choice/option:route:entrypoint:iobench/ceilings/summary/--kind/bfdde6f565",
+      "kind": "option-choice",
+      "members": [
+        "option:route:entrypoint:iobench/ceilings/summary/--kind"
+      ],
+      "route_id": "route:entrypoint:iobench/ceilings/summary",
+      "shape": {
+        "choice": "file",
+        "option_id": "option:route:entrypoint:iobench/ceilings/summary/--kind"
+      },
+      "signature": "sha256:4b526d2014ccfbef11cc5d0dde20ad21e44073cff49bd404ff0f9916b9c2f024"
+    },
+    {
       "id": "case:route:entrypoint:iobench/ceilings/summary/option-spelling/option:route:entrypoint:iobench/ceilings/summary/--debug-raw/--debug-raw",
       "kind": "option-spelling",
       "members": [
@@ -653,6 +888,19 @@
         "spelling": "--json"
       },
       "signature": "sha256:8522cd01218f521d1a7087e077adc328f8521e35758e9432cade5821ee7029c3"
+    },
+    {
+      "id": "case:route:entrypoint:iobench/ceilings/summary/option-spelling/option:route:entrypoint:iobench/ceilings/summary/--kind/--kind",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:iobench/ceilings/summary/--kind"
+      ],
+      "route_id": "route:entrypoint:iobench/ceilings/summary",
+      "shape": {
+        "option_id": "option:route:entrypoint:iobench/ceilings/summary/--kind",
+        "spelling": "--kind"
+      },
+      "signature": "sha256:7b8672c6918fad6943575f97f574df19027164a3da352ffc5eb249e237233b7b"
     },
     {
       "id": "case:route:entrypoint:iobench/ceilings/summary/option-spelling/option:route:entrypoint:iobench/ceilings/summary/--state-dir/--state-dir",
@@ -1340,7 +1588,7 @@
           "option:route:entrypoint:iobench/run/--target"
         ]
       },
-      "signature": "sha256:48b6367595d438497215b8486832f9cb5d92352696c74eda386b5d3c891cdc26"
+      "signature": "sha256:a655d9812b69f1b3683770e5d874ce2a33797b8313d2639d674236a7fbfd37bf"
     },
     {
       "id": "case:route:entrypoint:iobench/run/option-choice/option:route:entrypoint:iobench/run/--metering/0aa52ffaa6",
@@ -1382,6 +1630,19 @@
       "signature": "sha256:cf289f4e7ef43db859aac82a047c9a0bdd374bae0c1faf175adf0c4d006cc1a0"
     },
     {
+      "id": "case:route:entrypoint:iobench/run/option-choice/option:route:entrypoint:iobench/run/--profile/780be2ca4d",
+      "kind": "option-choice",
+      "members": [
+        "option:route:entrypoint:iobench/run/--profile"
+      ],
+      "route_id": "route:entrypoint:iobench/run",
+      "shape": {
+        "choice": "veryquick",
+        "option_id": "option:route:entrypoint:iobench/run/--profile"
+      },
+      "signature": "sha256:ef52eb0000399df3d134330f4a20e52fa03809a04885f1296fe731e8f3f479bc"
+    },
+    {
       "id": "case:route:entrypoint:iobench/run/option-choice/option:route:entrypoint:iobench/run/--profile/acdbec3949",
       "kind": "option-choice",
       "members": [
@@ -1392,7 +1653,7 @@
         "choice": "quick",
         "option_id": "option:route:entrypoint:iobench/run/--profile"
       },
-      "signature": "sha256:e8e50962de267d46ccfc90cee9952602a5c8662c6d7c5bf0ff1ad1fad4aa555e"
+      "signature": "sha256:b320754d4e493d0e2ed534cdfd32147e8b0d8c90509540faee18ecb9de1e6516"
     },
     {
       "id": "case:route:entrypoint:iobench/run/option-choice/option:route:entrypoint:iobench/run/--profile/cb2842d668",
@@ -1405,7 +1666,7 @@
         "choice": "standard",
         "option_id": "option:route:entrypoint:iobench/run/--profile"
       },
-      "signature": "sha256:e25faa062b0edff98dad62e858e3ebcdaa035f1cbf58ba8f72b97513b0cd13ab"
+      "signature": "sha256:ec797f5c3fb72a2af1be08adba2450559864d9200e2579ae89bb165b5520630f"
     },
     {
       "id": "case:route:entrypoint:iobench/run/option-choice/option:route:entrypoint:iobench/run/--profile/e0b457a3fb",
@@ -1418,7 +1679,7 @@
         "choice": "thorough",
         "option_id": "option:route:entrypoint:iobench/run/--profile"
       },
-      "signature": "sha256:916ff168b60104783b95fff1c204d766b9e3edb7652f3a8e7363a390a2448b27"
+      "signature": "sha256:aa949ca7297bf2f6234f089e08a35b35c556c494f91ea71f45d1147e43292dcb"
     },
     {
       "id": "case:route:entrypoint:iobench/run/option-spelling/option:route:entrypoint:iobench/run/--abort-psi/--abort-psi",
@@ -1458,6 +1719,19 @@
         "spelling": "--budget-minutes"
       },
       "signature": "sha256:ac0f597c825dc7038e6b1bffd94d1214a9eb62dc27c53b7113acdfc8a11af853"
+    },
+    {
+      "id": "case:route:entrypoint:iobench/run/option-spelling/option:route:entrypoint:iobench/run/--cache-idle-delay-s/--cache-idle-delay-s",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:iobench/run/--cache-idle-delay-s"
+      ],
+      "route_id": "route:entrypoint:iobench/run",
+      "shape": {
+        "option_id": "option:route:entrypoint:iobench/run/--cache-idle-delay-s",
+        "spelling": "--cache-idle-delay-s"
+      },
+      "signature": "sha256:939dbdbf538bee345575c402a61cda2b1009c7d28f0988175556501b1233ab49"
     },
     {
       "id": "case:route:entrypoint:iobench/run/option-spelling/option:route:entrypoint:iobench/run/--confirm-quiet-window/--confirm-quiet-window",
@@ -1626,7 +1900,7 @@
         "option_id": "option:route:entrypoint:iobench/run/--profile",
         "spelling": "--profile"
       },
-      "signature": "sha256:32e3a29ecc30945b1ec2e4c98239eea16ac29ef7b1a809f11f414ffcc934704e"
+      "signature": "sha256:42ebdade58b9b49e0103c27773836c7929d97dc7a34d2024b3374e6e92bf407f"
     },
     {
       "id": "case:route:entrypoint:iobench/run/option-spelling/option:route:entrypoint:iobench/run/--protect-cgroup/--protect-cgroup",
@@ -2357,7 +2631,7 @@
         "option_id": "option:route:entrypoint:iobench/target/init/--size",
         "spelling": "--size"
       },
-      "signature": "sha256:77b724749f630c75724c55c324aca6e4015c10e0dd187a3a3320c012ffaecba8"
+      "signature": "sha256:5dde2a868005ed5bfadc3a1b3a580cbe0a5120333529ef3c2a330fce8b0fea5d"
     },
     {
       "id": "case:route:entrypoint:iobench/target/show/argument-shape/argument:route:entrypoint:iobench/target/show/path",
@@ -2492,7 +2766,7 @@
           "const": null,
           "default": null,
           "default_present": true,
-          "description": "A directory on an EXISTING filesystem for the writeback stages (new or empty).",
+          "description": "An existing, empty directory on an existing filesystem; leave max(4 GiB, 3x planned cell volume) free.",
           "dest": "work_dir",
           "effective_default": null,
           "exclusive_group": null,
@@ -2530,7 +2804,7 @@
           "const": null,
           "default": null,
           "default_present": true,
-          "description": "Directory of result.json, calibration.json and ceilings.jsonl (default: $IOBENCH_DIR, else /var/lib/iobench).",
+          "description": "Directory of result.json, calibration.json, ceilings.jsonl and capability.jsonl (default: $IOBENCH_DIR, else /var/lib/iobench).",
           "dest": "state_dir",
           "effective_default": null,
           "exclusive_group": null,
@@ -3009,6 +3283,7 @@
           "before_nested_subcommand": false,
           "canonical": "--profile",
           "choices": [
+            "veryquick",
             "quick",
             "standard",
             "thorough"
@@ -3016,7 +3291,7 @@
           "const": null,
           "default": "standard",
           "default_present": true,
-          "description": "Calibration profile (quick 12, standard 60, thorough 75 minutes).",
+          "description": "Calibration profile (veryquick 3, quick 12, standard 60, thorough 75 minutes).",
           "dest": "profile",
           "effective_default": "standard",
           "exclusive_group": null,
@@ -3033,6 +3308,7 @@
           "nargs": null,
           "parser_kwargs": {
             "choices": [
+              "veryquick",
               "quick",
               "standard",
               "thorough"
@@ -3072,6 +3348,49 @@
           "id": "option:route:entrypoint:iobench/calibrate/--budget-minutes",
           "kind": "option",
           "metavar": "MINUTES",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": null,
+            "type": {
+              "callable": "builtins.float"
+            }
+          },
+          "parser_path": [
+            "calibrate"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": {
+            "callable": "builtins.float"
+          }
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--cache-idle-delay-s",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "Idle delay before optional direct read-back evidence (defaults: 30 s standard, 60 s thorough; 0 disables; maximum: 230 s standard, 290 s thorough).",
+          "dest": "cache_idle_delay_s",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--cache-idle-delay-s"
+          ],
+          "help_group": "RUN",
+          "hidden": false,
+          "id": "option:route:entrypoint:iobench/calibrate/--cache-idle-delay-s",
+          "kind": "option",
+          "metavar": "SECONDS",
           "minimum_values": 1,
           "nargs": null,
           "parser_kwargs": {
@@ -3251,6 +3570,197 @@
       "subcommands": [],
       "subcommands_required": false,
       "summary": "Measure a host or storage class once: cold-region probe, ladder, time-axis write proof, fresh vs rewrite, cost shape, latency curve. [mutating; dry-run; potentially expensive]",
+      "synopsis_override": null,
+      "syntax_complete": true,
+      "usage_override": null
+    },
+    {
+      "actions": [
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--since",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "Include observations at or after this UTC timestamp (YYYY-MM-DDTHH:MM:SSZ).",
+          "dest": "since",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--since"
+          ],
+          "help_group": "OPTIONS",
+          "hidden": false,
+          "id": "option:route:entrypoint:iobench/capability/--since",
+          "kind": "option",
+          "metavar": "TIMESTAMP",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": null
+          },
+          "parser_path": [
+            "capability"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--kind",
+          "choices": [
+            "raw",
+            "file",
+            "probe"
+          ],
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "Show only this evidence kind; by default all kinds are summarised separately.",
+          "dest": "kind",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--kind"
+          ],
+          "help_group": "OPTIONS",
+          "hidden": false,
+          "id": "option:route:entrypoint:iobench/capability/--kind",
+          "kind": "option",
+          "metavar": "KIND",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "choices": [
+              "raw",
+              "file",
+              "probe"
+            ],
+            "default": null
+          },
+          "parser_path": [
+            "capability"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--state-dir",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "Directory of result.json, calibration.json, ceilings.jsonl and capability.jsonl (default: $IOBENCH_DIR, else /var/lib/iobench).",
+          "dest": "state_dir",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--state-dir"
+          ],
+          "help_group": "STATE",
+          "hidden": false,
+          "id": "option:route:entrypoint:iobench/capability/--state-dir",
+          "kind": "option",
+          "metavar": "DIR",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": null
+          },
+          "parser_path": [
+            "capability"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        }
+      ],
+      "aliases": [],
+      "behavior": [],
+      "common_controls": [
+        "--color",
+        "--debug",
+        "--debug-raw",
+        "--help",
+        "--json",
+        "--log-level",
+        "--no-color",
+        "--progress",
+        "--quiet",
+        "--traceback",
+        "--version"
+      ],
+      "confirmation": false,
+      "constraints": [],
+      "delegated_metadata": [],
+      "description": "Read the append-only cache and burst observations for the calibrated disk.",
+      "group": "EXPLORATION",
+      "id": "route:entrypoint:iobench/capability",
+      "kind": "invocation",
+      "no_args_action": false,
+      "opaque_fields": [],
+      "parser_configured_by_callback": false,
+      "parser_settings": [
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [],
+          "prefix_chars": "-"
+        },
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [
+            "capability"
+          ],
+          "prefix_chars": "-"
+        }
+      ],
+      "path": [
+        "capability"
+      ],
+      "single_command": false,
+      "subcommand_groups": [],
+      "subcommands": [],
+      "subcommands_required": false,
+      "summary": "Read the append-only cache and burst observations for the calibrated disk.",
       "synopsis_override": null,
       "syntax_complete": true,
       "usage_override": null
@@ -3530,12 +4040,60 @@
         {
           "action": "argparse._StoreAction",
           "before_nested_subcommand": false,
+          "canonical": "--kind",
+          "choices": [
+            "raw",
+            "file",
+            "probe"
+          ],
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "What it was measured on: raw (device), file or probe (default: the calibrated target's kind for a benchmark, probe for a probe; a governor must say).",
+          "dest": "kind",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--kind"
+          ],
+          "help_group": "OBSERVATION",
+          "hidden": false,
+          "id": "option:route:entrypoint:iobench/ceilings/add/--kind",
+          "kind": "option",
+          "metavar": "KIND",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "choices": [
+              "raw",
+              "file",
+              "probe"
+            ],
+            "default": null
+          },
+          "parser_path": [
+            "ceilings",
+            "add"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
           "canonical": "--state-dir",
           "choices": null,
           "const": null,
           "default": null,
           "default_present": true,
-          "description": "Directory of result.json, calibration.json and ceilings.jsonl (default: $IOBENCH_DIR, else /var/lib/iobench).",
+          "description": "Directory of result.json, calibration.json, ceilings.jsonl and capability.jsonl (default: $IOBENCH_DIR, else /var/lib/iobench).",
           "dest": "state_dir",
           "effective_default": null,
           "exclusive_group": null,
@@ -3712,12 +4270,60 @@
         {
           "action": "argparse._StoreAction",
           "before_nested_subcommand": false,
+          "canonical": "--kind",
+          "choices": [
+            "raw",
+            "file",
+            "probe"
+          ],
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "Summarise only the observations of this class (raw, file, probe), whatever they count for.",
+          "dest": "kind",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--kind"
+          ],
+          "help_group": "OPTIONS",
+          "hidden": false,
+          "id": "option:route:entrypoint:iobench/ceilings/summary/--kind",
+          "kind": "option",
+          "metavar": "KIND",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "choices": [
+              "raw",
+              "file",
+              "probe"
+            ],
+            "default": null
+          },
+          "parser_path": [
+            "ceilings",
+            "summary"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
           "canonical": "--state-dir",
           "choices": null,
           "const": null,
           "default": null,
           "default_present": true,
-          "description": "Directory of result.json, calibration.json and ceilings.jsonl (default: $IOBENCH_DIR, else /var/lib/iobench).",
+          "description": "Directory of result.json, calibration.json, ceilings.jsonl and capability.jsonl (default: $IOBENCH_DIR, else /var/lib/iobench).",
           "dest": "state_dir",
           "effective_default": null,
           "exclusive_group": null,
@@ -3778,7 +4384,7 @@
           "synopsis": null
         }
       ],
-      "description": "Worst, median, best and n per direction and workload over a window.",
+      "description": "Worst, median, best and n per direction and workload over a window (and per evidence class).",
       "group": "EXPLORATION",
       "id": "route:entrypoint:iobench/ceilings/summary",
       "kind": "invocation",
@@ -3836,7 +4442,7 @@
       "subcommand_groups": [],
       "subcommands": [],
       "subcommands_required": false,
-      "summary": "Worst, median, best and n per direction and workload over a window.",
+      "summary": "Worst, median, best and n per direction and workload over a window (and per evidence class).",
       "synopsis_override": null,
       "syntax_complete": true,
       "usage_override": null
@@ -4015,7 +4621,7 @@
           "const": null,
           "default": null,
           "default_present": true,
-          "description": "Directory of result.json, calibration.json and ceilings.jsonl (default: $IOBENCH_DIR, else /var/lib/iobench).",
+          "description": "Directory of result.json, calibration.json, ceilings.jsonl and capability.jsonl (default: $IOBENCH_DIR, else /var/lib/iobench).",
           "dest": "state_dir",
           "effective_default": null,
           "exclusive_group": null,
@@ -4159,7 +4765,7 @@
           "const": null,
           "default": null,
           "default_present": true,
-          "description": "A directory on an EXISTING filesystem for the writeback stages (new or empty).",
+          "description": "An existing, empty directory on an existing filesystem; leave max(4 GiB, 3x planned cell volume) free.",
           "dest": "work_dir",
           "effective_default": null,
           "exclusive_group": null,
@@ -4197,7 +4803,7 @@
           "const": null,
           "default": null,
           "default_present": true,
-          "description": "Directory of result.json, calibration.json and ceilings.jsonl (default: $IOBENCH_DIR, else /var/lib/iobench).",
+          "description": "Directory of result.json, calibration.json, ceilings.jsonl and capability.jsonl (default: $IOBENCH_DIR, else /var/lib/iobench).",
           "dest": "state_dir",
           "effective_default": null,
           "exclusive_group": null,
@@ -4981,7 +5587,7 @@
           "const": null,
           "default": null,
           "default_present": true,
-          "description": "Directory of result.json, calibration.json and ceilings.jsonl (default: $IOBENCH_DIR, else /var/lib/iobench).",
+          "description": "Directory of result.json, calibration.json, ceilings.jsonl and capability.jsonl (default: $IOBENCH_DIR, else /var/lib/iobench).",
           "dest": "state_dir",
           "effective_default": null,
           "exclusive_group": null,
@@ -5129,7 +5735,7 @@
           "const": null,
           "default": null,
           "default_present": true,
-          "description": "A directory on an EXISTING filesystem for the writeback stages (new or empty).",
+          "description": "An existing, empty directory on an existing filesystem; leave max(4 GiB, 3x planned cell volume) free.",
           "dest": "work_dir",
           "effective_default": null,
           "exclusive_group": null,
@@ -5167,7 +5773,7 @@
           "const": null,
           "default": null,
           "default_present": true,
-          "description": "Directory of result.json, calibration.json and ceilings.jsonl (default: $IOBENCH_DIR, else /var/lib/iobench).",
+          "description": "Directory of result.json, calibration.json, ceilings.jsonl and capability.jsonl (default: $IOBENCH_DIR, else /var/lib/iobench).",
           "dest": "state_dir",
           "effective_default": null,
           "exclusive_group": null,
@@ -5646,6 +6252,7 @@
           "before_nested_subcommand": false,
           "canonical": "--profile",
           "choices": [
+            "veryquick",
             "quick",
             "standard",
             "thorough"
@@ -5653,7 +6260,7 @@
           "const": null,
           "default": "standard",
           "default_present": true,
-          "description": "Calibration profile (quick 12, standard 60, thorough 75 minutes).",
+          "description": "Calibration profile (veryquick 3, quick 12, standard 60, thorough 75 minutes).",
           "dest": "profile",
           "effective_default": "standard",
           "exclusive_group": null,
@@ -5670,6 +6277,7 @@
           "nargs": null,
           "parser_kwargs": {
             "choices": [
+              "veryquick",
               "quick",
               "standard",
               "thorough"
@@ -5709,6 +6317,49 @@
           "id": "option:route:entrypoint:iobench/run/--budget-minutes",
           "kind": "option",
           "metavar": "MINUTES",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": null,
+            "type": {
+              "callable": "builtins.float"
+            }
+          },
+          "parser_path": [
+            "run"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": {
+            "callable": "builtins.float"
+          }
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--cache-idle-delay-s",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "Idle delay before optional direct read-back evidence (defaults: 30 s standard, 60 s thorough; 0 disables; maximum: 230 s standard, 290 s thorough).",
+          "dest": "cache_idle_delay_s",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--cache-idle-delay-s"
+          ],
+          "help_group": "RUN",
+          "hidden": false,
+          "id": "option:route:entrypoint:iobench/run/--cache-idle-delay-s",
+          "kind": "option",
+          "metavar": "SECONDS",
           "minimum_values": 1,
           "nargs": null,
           "parser_kwargs": {
@@ -6179,7 +6830,7 @@
           "const": null,
           "default": null,
           "default_present": true,
-          "description": "Directory of result.json, calibration.json and ceilings.jsonl (default: $IOBENCH_DIR, else /var/lib/iobench).",
+          "description": "Directory of result.json, calibration.json, ceilings.jsonl and capability.jsonl (default: $IOBENCH_DIR, else /var/lib/iobench).",
           "dest": "state_dir",
           "effective_default": null,
           "exclusive_group": null,
@@ -6353,7 +7004,7 @@
           "const": true,
           "default": false,
           "default_present": true,
-          "description": "You own this device and accept that iobench overwrites its last MiB (and writes to the rest under the guards).",
+          "description": "You own this device and accept that iobench overwrites its last MiB marker. Raw-device write/discard stages are currently refused because fio cannot use the same held O_EXCL descriptor.",
           "dest": "i_own_this_device",
           "effective_default": false,
           "exclusive_group": null,
@@ -6392,7 +7043,7 @@
           "const": null,
           "default": null,
           "default_present": true,
-          "description": "The device size in bytes; must equal the actual size.",
+          "description": "The exact device size in bytes; targets need at least 1074790400 bytes.",
           "dest": "expect_size",
           "effective_default": null,
           "exclusive_group": null,
@@ -6553,7 +7204,7 @@
           "const": null,
           "default": null,
           "default_present": true,
-          "description": "File target size in bytes (required; the upper bound of everything iobench writes there).",
+          "description": "File target size in bytes (required; upper bound of writes; at least 1074790400 bytes and a 1 MiB multiple).",
           "dest": "size",
           "effective_default": null,
           "exclusive_group": null,
@@ -6571,7 +7222,7 @@
           "parser_kwargs": {
             "default": null,
             "type": {
-              "callable": "builtins.int"
+              "callable": "iobench.cli._file_size_arg"
             }
           },
           "parser_path": [
@@ -6586,7 +7237,7 @@
           "required": false,
           "scope": "verb-local",
           "type": {
-            "callable": "builtins.int"
+            "callable": "iobench.cli._file_size_arg"
           }
         },
         {
@@ -6714,7 +7365,7 @@
           "const": true,
           "default": false,
           "default_present": true,
-          "description": "Allow --size above 10 % of the free space of the root filesystem.",
+          "description": "Allow --size above one tenth of the free space of the root filesystem.",
           "dest": "allow_large_root_target",
           "effective_default": false,
           "exclusive_group": null,
@@ -6779,12 +7430,14 @@
           "synopsis": null
         }
       ],
-      "description": "Write the iobench marker to a dedicated device (or create a file target); refuses mounted, swap, root and signature-bearing devices.",
+      "description": "Write the iobench marker to a dedicated device (or create a file target); raw-device mutation stages are currently refused.",
       "group": "MODIFICATION",
       "id": "route:entrypoint:iobench/target/init",
       "kind": "invocation",
       "no_args_action": false,
-      "opaque_fields": [],
+      "opaque_fields": [
+        "option:route:entrypoint:iobench/target/init/--size.type"
+      ],
       "parser_configured_by_callback": false,
       "parser_settings": [
         {
@@ -6837,7 +7490,7 @@
       "subcommand_groups": [],
       "subcommands": [],
       "subcommands_required": false,
-      "summary": "Write the iobench marker to a dedicated device (or create a file target); refuses mounted, swap, root and signature-bearing devices. [mutating; dry-run]",
+      "summary": "Write the iobench marker to a dedicated device (or create a file target); raw-device mutation stages are currently refused. [mutating; dry-run]",
       "synopsis_override": null,
       "syntax_complete": true,
       "usage_override": null

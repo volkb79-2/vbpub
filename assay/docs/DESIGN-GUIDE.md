@@ -717,7 +717,7 @@ state on the coordinator in candidate-index order, and keeps resume identity
 independent of N. WP7's end-of-sweep retry remains serial. Native pilots still
 require `--pilot-jobs 1`; `--jobs` is refused with `--candidates-file`.
 
-Verdict schema v18 records the campaign's maximum worker count as
+Verdict schema v19 records the campaign's maximum worker count as
 `judgment.r2.jobs` with the matching attribution (`serial` for one worker,
 `overlap-conservative` for more) and the candidates per worker count as
 `judgment.r2.worker_counts`. Resume identity deliberately does not include the
@@ -726,7 +726,7 @@ state record therefore stores the `worker_count` that produced it, and the
 verdict derives the maximum and the per-count totals over resumed and executed
 records (B203, closed by v18). Progress retains its run and worker events for
 resume revalidation. See the
-[v17-to-v18 consumer migration](CONSUMERS.md#migration-notes-v17-to-v18).
+[v18-to-v19 consumer migration](CONSUMERS.md#migration-notes-v18-to-v19).
 
 WP8 also removes the host-varying `cleanup_seconds` from process-tree evidence,
 records the leader signal and identities of outliving descendants, and carries
@@ -734,6 +734,31 @@ the completed suite's underlying outcome when cleanup discovers a leak. The
 candidate remains `crashed`: retaining the diagnostic outcome must not turn an
 unclean process tree into mutation credit. `canary_attempt.cause` records
 `receipt`, `absent`, or null, so verification can re-derive the R3 attempt.
+
+### Candidate outcome errors and process-tree leaks (B251)
+
+The command result and the process-tree result answer different questions. If
+the leader exits normally, Assay has a completed command outcome even when
+descendants remain alive; the final mutation bucket is still `crashed` because
+the process tree was not clean. The window-host protocol preserves that
+underlying command outcome across its worker boundary. A timeout or liveness
+stop is incomplete execution, so it keeps `budget_exceeded` or `hung` after
+cleanup and has no completed `underlying_outcome`.
+
+Final candidate projection is isolated per candidate. If validation of one
+native candidate's `MutantOutcome` raises `ValueError`, Assay records that
+candidate in `crashed`, with `candidate_error.reason_code = EXEC_FAILED` and
+the bounded exception text, then continues the ordered sweep. The candidate
+counts in `total` and remains in the final verdict. A projection failure earns
+no kill credit because the outcome could not be validated. The optional
+`candidate_error` field is native-only and legal only in `crashed`; its message
+is capped at 2048 UTF-8 bytes. This is the narrow diagnostic needed to preserve
+the failure without turning one candidate's validation defect into a lane-wide
+abort. Validate the final candidate outcome before its first mutation-state
+write, so the crashed bucket and error evidence are committed together; resume
+never trusts a pre-projection bucket. Judge identity `/15` makes the known
+pre-fix `/14` completed-leak record a cache miss; current malformed records
+still fail structural checks.
 
 Assay samples `pids.events` and `memory.events` at the candidate cgroup, and
 samples `pids.events.local` and `memory.events.local` at every visible active
@@ -777,7 +802,7 @@ becomes local when `pids_localevents` or `memory_localevents` is enabled. For
 each active controller in that mode, Assay requires the candidate cgroup to
 have no child cgroups, so the local file still covers its execution; an
 inactive controller's mount option alone does not block a candidate. The
-cgroup-profiler observer uses contract 2 to provide both scopes to a private
+cgprofile observer uses contract 2 to provide both scopes to a private
 cgroup namespace. Assay refuses contract 1 because that response cannot
 distinguish a sibling's subtree event from a shared ancestor's own limit event.
 Contract 2 is the only supported resource-observer contract; the daemon's
@@ -831,7 +856,7 @@ happen.
 After the required pre-candidate capability probe succeeds, a missing endpoint
 or an uncomparable window is telemetry with status `unobserved`. Assay records
 the reason in the private mutation state and candidate progress stream, emits
-one advisory line, omits `resource_limit_evidence` from that candidate's v18
+one advisory line, omits `resource_limit_evidence` from that candidate's v19
 verdict entry, and continues the campaign. An identity change reports the
 specific cgroup index, path or mount, controller file, or observation-mode
 field that changed. A configured limit-value change leaves the window
@@ -881,6 +906,50 @@ does not change: this is a change in what the judge identity covers, not the
 record's outer shape. The v15 verdict shape adds B145's execution evidence
 only to native outcomes; ingested mutation reports do not claim local
 execution counters.
+
+#### Host cgprofile socket endpoints
+
+The host endpoint record owns the socket location. Assay's registered
+launchers read `CGPROFILE_OBSERVER_SOCKET` from their process environment; a
+launcher that duplicates the socket path or translates it for a container
+creates a second fact that can silently drift from the service owner. Assay
+therefore binds the endpoint's parent directory read-only at the identical
+path and passes the same socket path as `ASSAY_RESOURCE_OBSERVER_SOCKET`. The
+observer-enabled Assay lanes declare that value as `required-env`, so a missing
+endpoint refuses before the lane command starts. No fixed path or allowlist is
+needed. Run-Gate's environment reader and lane passthrough are WP-E3; the
+Netcup runner's export is WP-R1. Those caller integrations are separate work
+and are not added here.
+
+The separate control endpoint is never mounted for observation. Assay's host
+launchers do not mount or stat it; Run-Gate carries the control-GID preflight
+because Run-Gate opens that endpoint for control requests.
+
+Systemd owns the per-level directories as `root:root`; the socket file's GID
+grants access. Assay's observer launch guard verifies uid 0, gid 0, and a safe
+mode on the observer directory, then reads the observer GID from the socket
+inode. The launch guard reads the host Docker GID from the strict
+`ASSAY_GATE_HOST_DOCKER_GID` override first, then `MDT_HOST_DOCKER_GID` from
+host-setup. Each selected value must be a positive decimal GID, and a malformed
+override refuses instead of falling through. The Docker API socket's GID is
+not an authority for the host Docker group: a proxy or relay may use a separate
+access group. The endpoint directory is not a GID source; the level
+directories are `root:root 0755`. The observer socket GID
+must be nonzero and different from Docker. Run-Gate also requires the observer
+and control socket GIDs to differ. Updated clients have no fallback for an
+earlier socket layout.
+
+#### Assay release gate delegation
+
+CMRU keeps its release transaction on the controller so signing, tagging,
+building, publishing and credentials remain there. Only the two Assay gate
+commands move to the selected cut-over test host, which is the fastest path to
+reuse the host's registered Run-Gate lane and tester environment without
+moving the release workflow. `tools/release-gate.sh` uses the existing
+`remote-gate.py` bundle path, runs attached, and accepts the result only when
+the runner's `meta.json` SHA matches `CMRU_RELEASE_GATE_COMMIT` and
+`result.json` says `PASS`. A failed lane keeps its own exit code; a mismatched
+commit is an infrastructure refusal.
 
 #### Native R2 cgroup observation (B148/A-494)
 
@@ -1045,7 +1114,7 @@ that root hook. It must preserve pytest's session exit status; if it changes
 the status, Assay refuses to use the receipt to prove a kill or survivor.
 Every other unreviewed hook keeps the proof unavailable.
 
-These proofs were introduced in v15 and remain in the current v18 verdict,
+These proofs were introduced in v15 and remain in the current v19 verdict,
 where they are checked independently by `assay verify`. B105 adds a separate
 source-bound check: it reads the lane
 argv and pytest configuration from the judged Git commit, independently
@@ -1774,7 +1843,7 @@ costly case where source and tests changed: it uses a prior result only to
 choose a test node worth replaying, never to carry an old kill into the new
 verdict.
 
-The prior artifact must be a current-verifier-accepted v18, complete,
+The prior artifact must be a current-verifier-accepted v19, complete,
 unsharded native campaign. Each candidate ID commits to the canonical path,
 operator, source-file digest, byte span, and full mutated-file digest. On the
 new run Assay passes the current R0 baseline first, rediscovers the complete
@@ -2749,6 +2818,21 @@ the module name `assay_judge_conftest`), so its `from conftest import` never
 competes with the judge's; a judge test may not import from it, and a layout
 test enforces that.
 
+### Scoped tooling-test lanes
+
+The `tooling-tests` Run-Gate lane runs the B105 checker, release-gate,
+distribution and self-qualification launcher tests plus the public-docs
+waiver-window test in the declared `tester-unified` image, and accepts pytest
+selectors for faster diagnosis. These are the three failure groups that
+escaped the 12.1.0 pre-merge set and were caught only by the registered release
+gate. The lane emits ordinary pytest output only: it does not create an Assay
+verdict, coverage claim, or registered-gate receipt. This provides a supported
+way to exercise a narrow harness change without opening a cockpit pytest path
+and presenting a partial suite as qualification. The
+`hang-test-contention` lane repeats the hung-Docker fixture case 20 times with
+a sibling CPU burner in the same container; the readiness handshake makes the
+fixture independent of elapsed host time.
+
 ### Unprivileged host-slice preflight for tester-unified
 
 The registered outer driver verifies that `CGROUP_PARENT_DEV_GATES` names a
@@ -2948,7 +3032,7 @@ The R2 waiver is a version-bounded release decision, not a substitute for an
 R2 result. CMRU runs Assay's `run-tests` step in its isolated release
 transaction after preparing the dated `CHANGES.md` heading and before creating
 the release tag. The step runs the ordinary self-hosted release gate, then
-`run-gate self-qualification-provisional`: full-source R0 and R1 (100% whole-
+the `self-qualification-provisional` Run-Gate lane: full-source R0 and R1 (100% whole-
 target line and branch coverage) plus the R3 canary, with R2 omitted. A
 successful run records `.assay/mutation-postponed-assay.json` as `provisional`;
 it never asserts an R2 pass, and the full `self-qualification` lane remains the
@@ -2961,11 +3045,17 @@ The gate checks the first H2 release heading after `## [Unreleased]` because
 the release tag does not exist when CMRU runs `run-tests`. It refuses a
 malformed or unsupported first heading without searching historical sections,
 and requires the heading to match CMRU's protected planned transaction version.
-The only permitted interval is `10.0.0 <= version < 10.2.0`; the operator
-extended the original 2026-10-27 waiver on 2026-10-31 to include the 10.1.0
-release. A visible stable `assay-vX.Y.Z` tag is also required, and the latest
-visible tag must be below 10.2.0. Missing, unreadable, or unparseable tag state
-refuses the waiver.
+The currently permitted interval is `10.0.0 <= version < 12.3.0`; the
+operator extended the original 2026-10-27 waiver on 2026-10-31, 2026-11-04,
+2026-11-08 and 2026-11-12. The latest decision (A-507) covers the flexible-R2
+release 12.2.0: under the approved tier methodology R2 is a T3 post-release
+check on the latest release, not a release gate, and assay's own R2 on 12.2.0
+stays a named known issue (B535) until a PASS is recorded. A visible stable
+`assay-vX.Y.Z` tag is also required, and the latest visible tag must be below
+12.3.0. Missing, unreadable, or
+unparseable tag state refuses the waiver. Any later extension requires a new
+operator R2-waiver decision; the gate names this decision in its refusal and
+directs the caller to the full self-qualification lane.
 
 The bare-host wrapper removes an old postponement marker before its own
 dirty-tree and host-admission checks. Run-Gate can refuse admission before the
@@ -4417,6 +4507,34 @@ tooling tests moved to `gate/tests/` (B123), and the same test file forbids a
 judge test from importing `gate` or requesting the wheel-building `standalone`
 fixture. The layout is organization only: it claims nothing about which tests
 kill which mutants.
+
+### Rust adapter status and tier design
+
+Rust support remains a plan; the shared LCOV parser does not imply a registered
+Rust adapter. The planned adapter can reuse Assay's format parser while
+`cargo-llvm-cov` supplies the language's line and region data. This keeps
+format parsing shared instead of binding an LCOV implementation to every
+language that emits LCOV.
+
+The lane tiers separate the expensive evidence by event. T1 uses sequence
+[`lint`, `assay-r1`]. T2 `gate` uses [`lint`, `assay-r3`, `conformance`] and
+omits `assay-r1`; Assay's release-time whole-project R1 floor is part of
+`assay-r3`. A lane declares one canary `mechanism`, so T2 runs the test-break
+(import-break) canary and the uncovered-line probe remains a separate T3 lane.
+This avoids running two probes of one instrument at every release.
+
+Rust R2 uses ingested `cargo-mutants` outcomes rather than a new Assay-owned
+mutator. D8 places its diff-scoped campaign at asynchronous T3 against the
+latest release, with the previous release tag as its base. It never gates a
+merge or release; survivors become backlog items. Rust R2 not yet adopted
+(R-3b pending) is recorded once as a known issue, with no per-release waiver.
+
+Dependencies stay out of Git because a repository vendor tree would duplicate
+the crate cache: `tester-unified-rust` carries the cache built from
+`Cargo.lock` by `cargo fetch --locked`, and lanes run `--offline --locked` with
+a precheck that names any missing crate. The detailed adoption contract is in
+[`Rust methodology`](RUST-METHODOLOGY.md); the consumer steps are in
+[`CONSUMERS.md`](CONSUMERS.md#rust-lanes-planned-not-implemented).
 
 ## 12. Lane file structure = D7's three questions, literally
 

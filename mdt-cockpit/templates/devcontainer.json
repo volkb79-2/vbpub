@@ -179,7 +179,7 @@
     // the host has not been upgraded through host-setup/install.sh; they do
     // not fall back to CGROUP_PARENT_DEV_BACKGROUND. Long-running application
     // stacks receive the background value separately. Note
-    // the host-level profiler daemon (cgpd.service) is NOT a consumer of this
+    // the host-level profiler daemon (cgprofiled.service) is NOT a consumer of this
     // block — per design amendment A1/D-29 it is a host service in its own
     // top-level `cgprofile.slice`, not one of mdt's dev-tier slices.
     "CGROUP_PARENT_DEV_GATES": "dev-gates.slice",
@@ -221,6 +221,26 @@
     // (docs/CONSUMERS.md "Host cgroup preflight" and host-setup/README.md explain why).
     "--group-add", "${localEnv:DOCKER_GID}",
 
+    // topos daemon socket (host service; zero-argument `topos` attaches to it).
+    // PURPOSE: a devcontainer's own cgroup namespace shows only itself, so
+    // `topos` here needs the HOST daemon's `/run/topos/topos.sock`. The whole
+    // directory is bound read-only (not the socket file) so a daemon restart,
+    // which re-creates the socket, never leaves a stale inode behind.
+    // WHY runArgs AND NOT `mounts`: `mounts` entries are Docker `--mount`,
+    // which REFUSES to start the container when the source is missing, and a
+    // host whose host-setup predates mdt-topos.conf has no /run/topos. `-v`
+    // instead auto-creates a missing source as a directory (Docker bind-mount
+    // docs), so such a host still starts its devcontainer. Until
+    // host-setup/units/mdt-topos.conf is applied (install.sh) that
+    // auto-created directory is root:root 0755 and empty: the container
+    // simply sees no socket and `topos` reports the daemon as unreachable;
+    // tmpfiles later corrects it to root:docker 0750 in place. Nothing is
+    // lost, and nothing here needs a rebuild once the host is current.
+    // GROUP ACCESS: as for /run/cgprofile, the socket must be group docker
+    // (the `--group-add` above puts this container in that group). On mdt
+    // hosts the daemon's Group= has to be docker.
+    "-v", "/run/topos:/run/topos:ro",
+
     // sshfs / mount(2) inside container
     "--cap-add", "SYS_ADMIN",
     "--device", "/dev/fuse",
@@ -261,8 +281,9 @@
         // The VS Code server keeps terminal processes alive across a window reload or a dropped SSH
         // connection (not across a server restart: container restart/rebuild, OOM kill, server update).
         "terminal.integrated.enablePersistentSessions": true,
-        // Do not scan these generated trees for nested Git repositories (hundreds of worktrees).
-        "git.repositoryScanIgnoredFolders": ["node_modules", ".worktrees", ".run-gate"],
+        // Do not scan these generated trees for nested Git repositories (hundreds of worktrees; gate
+        // and assay scratch trees hold throwaway repositories).
+        "git.repositoryScanIgnoredFolders": ["node_modules", ".worktrees", ".run-gate", ".assay"],
         // Opt-in terminal key and tmux settings, and the client-side font/keybindings, are shipped as
         // copy-in files: templates/vscode/README.md.
         // Keep VS Code's inotify watcher off generated trees. Each watched directory costs one
@@ -270,6 +291,14 @@
         // and run/test output dwarf the real source tree. Without these, the watcher exhausts the
         // limit ("unable to watch for file changes ... ENOSPC"). Trade-off: the Source Control view
         // does not live-refresh inside a worktree under .worktrees/. Trim to your repo's layout.
+        // The same events drive extension rescans: an extension watcher on a plain glob (such as the
+        // Python Environments extension's marker-file watcher on "**/{*.py,*.pyi,pyproject.toml,...}",
+        // which re-runs a file search, up to a whole-workspace walk, on every create/delete) receives
+        // them from this watcher, so an excluded tree no longer triggers it. Patterns match relative
+        // to each workspace folder.
+        // These settings reach ~/.vscode-server/data/Machine/settings.json, which lives in the
+        // persisted home; a rebuild does not rewrite an existing file. After changing this block,
+        // merge it into that file, or move the file away before the rebuild (templates/vscode/README.md).
         "files.watcherExclude": {
           "**/.git/objects/**": true,
           "**/.git/subtree-cache/**": true,
@@ -280,6 +309,7 @@
           "**/.venv/**": true,
           "**/__pycache__/**": true,
           "**/.hypothesis/**": true,
+          "**/.assay/**": true,
           "**/artifacts/**": true,
           "**/downloads/**": true,
           // evidence/ and logs/ may hold tracked files: the explorer will not live-refresh there (git is unaffected).
@@ -289,8 +319,14 @@
         "search.exclude": {
           "**/.worktrees": true,
           "**/.run-gate": true,
+          "**/.assay": true,
           "**/pytest-of-*": true
-        }
+        },
+        // Extension file searches (workspace.findFiles, run as `rg --files`) follow symlinks by
+        // default, so a link into another tree walks that tree again. An extension that passes its
+        // own exclude pattern gets neither files.exclude nor search.exclude, which leaves this as the
+        // setting that shrinks those walks. Trade-off: Find in Files does not enter symlinked folders.
+        "search.followSymlinks": false
       },
       "extensions": [
         // Python & linting

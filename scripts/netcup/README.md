@@ -7,6 +7,64 @@ Control Panel API. They can optionally pass an operator-supplied cloud-init
 
 Known issues and open test gaps: [`KNOWN_ISSUES_TODO_BACKLOG.md`](KNOWN_ISSUES_TODO_BACKLOG.md).
 
+The runner scripts also support persistent, resumable T3 R2 campaigns, with
+per-start evidence directories and a clean stop command. See the
+[runner guide](runner/README.md#persistent-t3-r2-campaigns), the
+[consumer steps](CONSUMERS.md#persistent-t3-r2-campaigns), and the
+[design rationale](DESIGN-GUIDE.md#persistent-t3-r2-campaign-supervision).
+Stop uses Run-Gate labels when available and a captured exact container name
+for the established older cockpit default; see the consumer guide for version
+requirements. With a Run-Gate that has RG-265/RG-266 and Assay 12.2.0, a
+campaign can also run several shard instances of one lane at once
+(`--instances K`, cross-host `--shard-total T --shard-offset O`, a strict
+`--merge-only T` merge), resume across a judge change (`--carry-over-main
+TEXT`), and be inspected with `status <base>`; a memory guard refuses a fleet
+that does not fit `MemAvailable`, and an older host Run-Gate is refused for
+these options while the plain single campaign keeps working. See
+[shard instances](CONSUMERS.md#shard-instances-of-one-campaign-nc-42) and the
+[shard-instance design rationale](DESIGN-GUIDE.md#shard-instances-of-one-campaign-nc-42).
+
+For the Debian-install-v2 data-area plan, offline preview, and saved r1002/v1001
+root geometry, see the [Netcup consumer guide](CONSUMERS.md#install-time-disk-plan-debian-install-v2-partitioning).
+
+For the guarded v1001/r1002 reinstall path, `pre-reinstall-export.py` collects
+allowlisted, redacted host evidence with a 1 MiB input/output file budget, a
+4 KiB per-line scan limit, and a 300-second SSH process-group timeout. Longer
+lines and files whose redacted output exceeds the budget are skipped and listed.
+Ctrl-C on the controller during collection can leave the remote `ssh`/collector
+running after the controller exits; it is read-only, but the 300 s limit is
+controller-side and no longer applies after interruption.
+See the
+[design rationale](DESIGN-GUIDE.md#guarded-destructive-reinstall). The
+`pre-reinstall.py` wrapper validates the source config, generated bundle, live
+identity, disk facts, and wizard payload before submit. Submit requires the
+reviewed bundle hash, expected remote commit, and explicit account SSH-key ID. After reinstall,
+`update-host-pin.sh` checks a host key against a fingerprint obtained through
+the authenticated provider path. See the [consumer steps](CONSUMERS.md#guarded-data-area-v2-reinstall)
+for the export and install sequence.
+
+The runner cockpit launcher also binds the vbpub checkout directly at
+`/workspaces/vbpub`, which Assay self-qualification requires. See the
+[design rationale](DESIGN-GUIDE.md#cockpit-mounts-vbpub-at-assays-declared-workspace)
+and [runner consumer steps](CONSUMERS.md#assay-self-qualification-workspace).
+
+Runner host-setup has an offline, hash-verified installer for its required
+Augeaswrap command. It installs the release wheels into a versioned root venv
+and publishes `/usr/local/bin/augeaswrap`; see the
+[design rationale](DESIGN-GUIDE.md#host-augeaswrap-is-installed-from-verified-offline-wheels)
+and [consumer steps](CONSUMERS.md#install-augeaswrap-for-host-setup).
+
+Runner rollback notes give copyable removal commands for the additive cockpit
+Run-Gate venv and pinned PostgreSQL image. Cleanup of the shared endpoint
+aggregate depends on the live publisher set; see the
+[design rationale](DESIGN-GUIDE.md#runner-rollback-respects-endpoint-publisher-ownership)
+and [consumer steps](CONSUMERS.md#runner-rollback-commands).
+
+The accepted host-profile target is Run-Gate 25.4.1 on both test hosts after
+old campaign state is collected. The target and rollout gate are recorded in
+the [design guide](DESIGN-GUIDE.md#run-gate-default-waits-for-campaign-state)
+and [consumer steps](CONSUMERS.md#run-gate-host-profile-default).
+
 ## First-time setup
 
 From the repository root, make an isolated environment for these scripts. The
@@ -179,14 +237,15 @@ recipe command.
 # Equivalent compatibility spelling:
 ./install-host.py configure
 
-# Review the generated file, then install exactly that file and monitor it.
-./install-host.py install
+# The wizard prints the generated per-host file path. Review that file, then
+# pass the same path to install to submit exactly that request.
+./install-host.py install --config ./artifacts/install-host/target-host.v1001.vxxu.de.jsonc
 
 # Preview the gathered payload and account-key decision. Authentication,
 # target lookup, and the protected-server check happen before the local
 # controller key is reused/generated. No mutating API call is made and no
-# target-host.jsonc is saved.
-./install-host.py wizard --dry-run
+# no wizard output file is saved.
+./install-host.py wizard --dry-run --image 128
 
 # Build a Debian-v2 hook in its own project, then let the Netcup wizard consume
 # the resulting JSON bundle (the wizard remains provider-agnostic):
@@ -198,8 +257,20 @@ recipe command.
 ./install-host.py install --config target-host-r1002.jsonc
 ```
 
-The installer writes `target-host.jsonc` before its final install confirmation
-so the exact request can be reviewed or reused. It is local and gitignored.
+The wizard writes `target-host.<hostname>.jsonc` before its final install
+confirmation so the exact request can be reviewed or reused. By default it
+stores the file under the ignored
+`scripts/netcup/artifacts/install-host/` directory; use `--out-dir DIR` to
+choose another directory. The host-specific filename keeps separate targets
+from overwriting one another. Non-interactive wizard runs require an explicit
+`--image ID` or `--image newest`; `--yes` never chooses newest silently.
+Interactive runs without `--yes` still offer the image picker. To install a
+saved wizard request, pass its printed path to
+`install --config FILE`; the `install` verb's `target-host.jsonc` default is
+separate and is not inferred from the wizard output directory.
+Wizard `--config PATH` is an output file path and is refused if it resolves
+inside the source worktree. Use `--out-dir DIR` for a per-host output directory;
+the default artifacts directory and `target-host.*.jsonc` names are ignored.
 Existing Netcup account keys are persistent operator keys: choose `all`,
 `none`, or a comma-separated selection, or repeat `--ssh-key-id`. The
 installer never creates an account key. The separate local controller
@@ -234,6 +305,14 @@ non-interactive:
 
 `--yes` skips confirmation, so use it only after reviewing the dry-run and
 the selected customScript source.
+
+For the guarded data-area-v2 reinstall of v1001 and r1002, use
+`pre-reinstall-export.py` for the allowlisted read-only evidence snapshot and
+`pre-reinstall.py` for bundle/offline-plan validation, API and SSH identity
+checks, an explicit image pin, and a logged dry-run or consented submit. The
+operator commands and exact stale-payload quarantine list are in the
+[consumer guide](CONSUMERS.md#guarded-data-area-v2-reinstall) and its
+preflight rationale is in the [design guide](DESIGN-GUIDE.md#guarded-destructive-reinstall).
 
 The wizard does not invent a customScript. Use `--custom-script-file` to
 consume a plain command or a JSON bundle with `customScript` (and optionally
@@ -639,9 +718,23 @@ NIC, so the guest firewall must enforce the actual `wg0`-only service rule.
 
 ## Runner hosts
 
-[`runner/`](runner/README.md) holds the generic, reviewed scripts that turn an installed host into a parallel test runner (account, Btrfs CoW
-area, checkout sync, detached jobs, gate tools and images, cockpit, R2 campaign supervisor). Host-specific values come from a gitignored
-`runner/runner.env`. The runner account must be uid 1003 (backlog NC-04).
+[`runner/`](runner/README.md) holds the generic, reviewed scripts that turn an installed host into a parallel test runner
+(account, Btrfs CoW area, checkout sync, detached jobs, gate tools and images, cockpit, R2 campaign supervisor).
+Runner settings come from a gitignored `runner/runner.env`; cockpit socket paths and endpoint GIDs come from the
+host-published endpoint record and fail by variable name when missing. The record is parsed as data and must be a
+root-owned regular file without group or other write permission. The cockpit receives both cgprofile socket paths,
+including `CGPROFILE_OBSERVER_SOCKET`, so observer lanes and inherited remote-gate jobs can resolve their endpoints;
+the observer GID remains lane-scoped. The runner account must be uid 1003 (backlog NC-04). See the [runner endpoint
+design](DESIGN-GUIDE.md#runner-cockpit-uses-the-host-endpoint-record) and [host setup
+steps](CONSUMERS.md#runner-cockpit-endpoints). For the observed cut-over path on a reinstalled host without mdt
+host-setup, including its prerequisites and rollback, see
+[the runner host-without-host-setup recipe](runner/README.md#host-without-mdt-host-setup).
+
+The repository also includes a controller-side host-satellite queue for
+serial light lanes. Its host identities, SSH argv, provider checks, and lane
+assignments come from a local ignored host table. See the [queue design
+rationale](DESIGN-GUIDE.md#controller-side-host-satellite-queue) and the
+[queue operating steps](runner/README.md#host-sat-queue-pause-flags).
 
 ## CustomScript source
 

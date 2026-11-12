@@ -1021,6 +1021,59 @@ def test_schema_creation_is_idempotent_across_many_connections(sqlite_backend):
     assert len(list(storage.iter_events(project))) == 1
 
 
+def test_connection_initialization_is_serialized_before_sqlite_opens(
+        sqlite_backend, monkeypatch):
+    """First-open initialization takes the companion flock before SQLite.
+
+    The schema guard alone still let every connection attempt the WAL
+    journal-mode transition concurrently. SQLite may answer that transition
+    with SQLITE_BUSY despite the busy timeout, so the mode assignment and
+    schema check must both sit inside a process-shared lock. Recording the
+    operations proves the lock encloses BOTH; a mutation that removes it
+    opens SQLite before the lock.
+    """
+    project = "cr04c-serialized-init"
+    operations: list[str] = []
+    real_connect = storage_sqlite.sqlite3.connect
+    real_flock = storage_sqlite.fcntl.flock
+
+    def recording_connect(*args, **kwargs):
+        operations.append("sqlite-connect")
+        return real_connect(*args, **kwargs)
+
+    def recording_flock(fd, operation):
+        operations.append("lock-enter" if operation == storage_sqlite.fcntl.LOCK_EX
+                          else "lock-exit")
+        return real_flock(fd, operation)
+
+    monkeypatch.setattr(storage_sqlite.sqlite3, "connect", recording_connect)
+    monkeypatch.setattr(storage_sqlite.fcntl, "flock", recording_flock)
+    storage_sqlite._connect(project).close()
+
+    assert operations[0] == "lock-enter"
+    assert operations[1] == "sqlite-connect"
+    assert operations[-1] == "lock-exit"
+
+
+def test_open_failure_releases_initialization_for_a_later_connection(
+        sqlite_backend, monkeypatch):
+    """A failure before `sqlite3.connect` returns has no connection to close,
+    but it must still release the process-shared initialization lock. A
+    second attempt proves the failure path left the store usable."""
+    project = "cr04c-open-failure"
+    real_connect = storage_sqlite.sqlite3.connect
+
+    def fail_connect(*_args, **_kwargs):
+        raise RuntimeError("simulated open failure")
+
+    monkeypatch.setattr(storage_sqlite.sqlite3, "connect", fail_connect)
+    with pytest.raises(RuntimeError, match="simulated open failure"):
+        storage_sqlite._connect(project)
+
+    monkeypatch.setattr(storage_sqlite.sqlite3, "connect", real_connect)
+    storage_sqlite._connect(project).close()
+
+
 def test_the_ddl_is_skipped_once_the_schema_exists(sqlite_backend, monkeypatch):
     """The original intent is preserved: steady-state connects issue no DDL.
 
