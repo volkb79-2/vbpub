@@ -4401,36 +4401,48 @@ def test_cancellation_cleanup_signals_every_client_before_it_waits_for_any(
     lines: list[str] = []
     buffered = b""
 
-    def next_trace_line() -> str:
+    def drain_trace() -> bool:
         nonlocal buffered
-        while b"\n" not in buffered:
+        chunk = os.read(proc.stderr.fileno(), 8192)
+        if not chunk:
+            return False
+        buffered += chunk
+        while b"\n" in buffered:
+            raw, buffered = buffered.split(b"\n", 1)
+            line = raw.decode("utf-8", errors="replace")
+            if line.startswith("+TRACE "):
+                lines.append(line[len("+TRACE "):])
+        return True
+
+    try:
+        while True:
+            readable, _, _ = select.select([ready_fd, proc.stderr], [], [], 120)
+            if not readable:
+                pytest.fail("launcher did not reach docker wait")
+            if proc.stderr in readable and not drain_trace():
+                pytest.fail("launcher exited before docker wait")
+            if ready_fd in readable:
+                assert os.read(ready_fd, 64) == b"ready\n"
+                break
+        proc.send_signal(signal.SIGTERM)
+        cleanup_started = False
+        first_wait = None
+        checked = 0
+        while first_wait is None:
+            while checked < len(lines):
+                line = lines[checked]
+                cleanup_started = cleanup_started or line == "cleanup"
+                if cleanup_started and re.fullmatch(r"wait \d+", line):
+                    first_wait = checked
+                    break
+                checked += 1
+            if first_wait is not None:
+                break
             readable, _, _ = select.select([proc.stderr], [], [], 120)
             if not readable:
                 pytest.fail("launcher trace did not reach the first cleanup wait")
-            chunk = os.read(proc.stderr.fileno(), 8192)
-            if not chunk:
+            if not drain_trace():
                 pytest.fail("launcher exited before the first cleanup wait")
-            buffered += chunk
-        raw, buffered = buffered.split(b"\n", 1)
-        return raw.decode("utf-8", errors="replace")
-
-    try:
-        readable, _, _ = select.select([ready_fd], [], [], 120)
-        if not readable:
-            pytest.fail("launcher did not reach docker wait")
-        assert os.read(ready_fd, 64) == b"ready\n"
-        proc.send_signal(signal.SIGTERM)
-        cleanup_started = False
-        while True:
-            raw = next_trace_line()
-            if not raw.startswith("+TRACE "):
-                continue
-            line = raw[len("+TRACE "):]
-            lines.append(line)
-            cleanup_started = cleanup_started or line == "cleanup"
-            if cleanup_started and re.fullmatch(r"wait \d+", line):
-                first_wait = len(lines) - 1
-                break
 
         wait_client = re.search(r"^wait_pid=(\d+)$", "\n".join(lines), re.MULTILINE).group(1)
         log_client = re.search(r"^log_pid=(\d+)$", "\n".join(lines), re.MULTILINE).group(1)
