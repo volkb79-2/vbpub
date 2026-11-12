@@ -5568,6 +5568,7 @@ def test_changelog_uses_wheel_semver_and_preserves_removed_release_notes():
     assert "SemVer from the installed wheel is the public tool identity" in changes
     assert "persisted `revision` fields are provenance only" in changes
     assert "## [23.10.0]" in changes
+    # CMRU's release fold clears the working section but preserves its heading.
     assert "## [Unreleased]" in changes
     # CMRU requires the working section to stay empty until release; these
     # removed notes remain preserved verbatim for the upcoming versioned
@@ -37807,6 +37808,14 @@ class TestRunGateReleaseCoverageEdges:
 
 
 class TestCowtreeAndIoSyncResources:
+    @staticmethod
+    def _changelog_section_with_io_sync_relaxed(changes):
+        # Release preparation moves the working notes into the newest dated
+        # section while preserving the same changelog entry.
+        return next((section for section in changes.split("\n## [")
+                     if 'io_sync = "relaxed"' in section
+                     and "cmru-mutation" in section), "")
+
     def test_resource_table_and_consumer_subtables_require_tables(self):
         with pytest.raises(run_gate.GateError, match="resources.*must be a table"):
             run_gate._validate_resource_table(
@@ -38290,8 +38299,8 @@ class TestCowtreeAndIoSyncResources:
                            encoding="utf-8")
         changes = (RUN_GATE_DIR / "CHANGES.md").read_text(encoding="utf-8")
         assert "## [Unreleased]" in changes
-        unreleased = changes.split("## [Unreleased]", 1)[1].split(
-            "\n## [", 1)[0]
+        io_sync_changelog_section = self._changelog_section_with_io_sync_relaxed(
+            changes)
         assert 'io_sync = "relaxed"' in readme
         assert "docs/DESIGN-GUIDE.md#combined-resource-settings" in readme
         assert "97%" in design_guide and "74%" in design_guide
@@ -38301,8 +38310,26 @@ class TestCowtreeAndIoSyncResources:
         assert "_durable.py" in consumers
         assert "Known issue LR-KI-9" in lane_rework
         assert "stay durable by design" in lane_rework
-        assert 'io_sync = "relaxed"' in unreleased
-        assert "cmru-mutation" in unreleased
+        assert 'io_sync = "relaxed"' in io_sync_changelog_section
+        assert "cmru-mutation" in io_sync_changelog_section
+
+    def test_io_sync_changelog_oracle_accepts_release_fold(self):
+        folded_changes = (
+            "# Changelog\n\n"
+            "## [Unreleased]\n\n"
+            "<!-- cmru: release history -->\n\n"
+            "## [25.5.0] - 2026-11-12\n\n"
+            "### Changed\n"
+            '- Set `io_sync = "relaxed"` on the shared tester-unified '
+            "environment and CMRU's separate `cmru-mutation` environment.\n"
+        )
+        unreleased = folded_changes.split("## [Unreleased]", 1)[1].split(
+            "\n<!-- cmru: release history -->", 1)[0]
+        assert not unreleased.strip()
+
+        section = self._changelog_section_with_io_sync_relaxed(folded_changes)
+        assert 'io_sync = "relaxed"' in section
+        assert "cmru-mutation" in section
 
     def test_relaxed_refused_for_exec_mode(self):
         with pytest.raises(run_gate.GateError, match="ephemeral"):

@@ -239,7 +239,13 @@ class TestSaveContainerLogsCreation:
 
         class _Foreign:
             def __init__(self, inner):
+                self._inner = inner
                 self.st_uid = inner.st_uid + 1
+
+            def __getattr__(self, name):
+                # Mirror the complete os.stat_result shape while changing only
+                # ownership, as a real fstat result does on Python 3.14 too.
+                return getattr(self._inner, name)
 
         monkeypatch.setattr(run_gate.os, "fstat",
                             lambda fd: _Foreign(real_stat(fd)))
