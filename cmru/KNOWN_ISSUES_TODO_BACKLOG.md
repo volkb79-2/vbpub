@@ -3196,6 +3196,8 @@ not implementable as the brief's "small" follow-on.
 
 **State of the owed R2.** The whole-source campaign is sharded; recorded so far: s4 (KI-133: 21 survivors, KI-134: 1 `budget_exceeded`), s12 (KI-135: 136 survivors, 1 crashed, `EXEC_FAILED`), s13 (KI-138: 3 survivors) and the earlier s1 (KI-129). Shards not named here, and one aggregate judgment over the current whole-source tree, have no recorded result in this file.
 
+The 2026-11-12 T3 rehearsal of `r2` remained PARTIAL: its preflight had six failing process-tree fixture tests, Assay's declared `../libraries/cowtree/src` package root was rejected, and the campaign crashed when `ResourceLimitEvidence.between` returned its current tuple contract. KI-153 through KI-155 fix these lane blockers in source and tests; the rehearsal is not an R2 campaign result and this entry remains open. The measured controls took 368, 752, and 825 seconds with other lanes running. The registered control ceiling is now 1800 seconds (2.18 times the longest measurement), and candidate timeouts retain the existing twice-control scaling.
+
 **Constraint.** A minor bump (`7.3.0`) computes a version outside the KI-79 window; the release gate refuses it AFTER the candidate is prepared and backed up (see the KI-79 "Release command" paragraph), so the 7.3.0 release needs either a recorded full R2 run of the 7.2 content first, or a new explicit operator decision extending the window (and `POSTPONEMENT_RELEASE_VERSIONS` in `tools/run_release_gate.py`, plus the `tests/test_release_gate_provisional.py` oracles).
 
 **Fix.** finish the owed R2 as the T3 lane `r2` on a host, base `cmru-v6.1.0` (the last R2-covered tag); kill the survivors of KI-129/133/134/135/138; an unkillable (equivalent) survivor leaves only the operator-decision branch of Close when.
@@ -3203,6 +3205,8 @@ not implementable as the brief's "small" follow-on.
 **Close when.** a T3 ledger PASS row for cmru `r2` at a 7.2.x tag whose base is ≤ the last R2-covered tag (`cmru-v6.1.0`), every candidate killed with no survivors, and the reviewed change that opens the window cites that row; or the operator extends the window and this entry records that decision.
 
 **After KI-141 closes.** The closing change must replace the bounded KI-79 version window with one open-ended from `7.3.0`, so later minors are not refused by a new upper bound; any later boundary needs its own declared precondition.
+
+**Remaining WP-CMRU parts 6, 7, and 9.** Part 6 follows a successful part-5 T3 rehearsal: make CMRU's `gate` a mutation-free release orchestrator and always write the R2-owed marker with `follow_up_lane = "r2"`. Part 7 follows parts 6 and 1 (`whole_target`): retire `cmru-first-release`, `assay-first-release`, and the `_plan_gate` first-release branch. Part 9 still needs the `TMPDIR`/`PYTHONPYCACHEPREFIX` A/B and a duration survey on a quiet host, including an explanation of the control variance in an isolated run; the current `io_sync = "relaxed"` setting remains in place.
 
 **Source.** `reports/shard-s13-REPORT.md`; KI-79 above; cmru-v7.2.4 release (2026-11-08).
 
@@ -3399,3 +3403,33 @@ Only 10 of the 40 slowest tests use repositories (`test_release_end_to_end_real_
 **Priority.** Should-fix. Repeating many expensive survivors can prevent an otherwise resumable full R2 campaign from reaching later candidates.
 
 **Close when.** Resume reuses only fingerprint-matched survivors with complete clean evidence, reruns every timeout and incomplete or eventful outcome, and a focused bounded campaign proves progress beyond more than 40 earlier survivors without changing mutation verdict semantics.
+
+## KI-153 - R2 preflight fixture uses the retired Assay process-tree evidence shape
+
+**Status:** FIXED 2026-11-12 in this work item; implementation commit is recorded in the latest closeout table. Severity: major (the R2 lane fails before campaign startup).
+
+**Finding.** `tools/test_mutation_campaign.py` supplied process-tree evidence from the old wire format. Assay's current `ProcessTreeEvidence` requires `assay-process-tree/2`, including `signal` and `descendants`; the obsolete fixture caused six resume tests to fail on the lane's first preflight step.
+
+**Fix and oracle.** The shared fixture now matches Assay's current wire schema and a regression parses it through Assay's `ProcessTreeEvidence.from_dict`. The legacy resume cases include schema 5 and continue to refuse old campaign evidence. The original six failures were reproduced by the registered `r2` lane on origin/main at `140d3f3e93f5c1c0e6905114afa3341f1a63e1a1`.
+
+**Close when.** The `release-preconditions`, `r0-r1`, `survivor-regressions`, and `r2` preflight pass on a clean final head; the T3 campaign result remains tracked by KI-141.
+
+## KI-154 - R2 cannot bind Assay's declared sibling package roots
+
+**Status:** FIXED 2026-11-12 in this work item; implementation commit is recorded in the latest closeout table. Severity: major (the current Assay source layout is refused before campaign startup).
+
+**Finding.** Assay declares `../libraries/cowtree/src` and a named `package-dir` root in its `pyproject.toml`. CMRU rejected every parent-relative root, and its pre-install dirty-source check covered only the `assay/` subtree. That prevented the R2 campaign from starting with the current in-repo Assay layout and could omit edits to a declared sibling package from source identity checks.
+
+**Fix and oracle.** CMRU now accepts declared roots only when their resolved paths remain within Assay's Git worktree, supports valid named `package-dir` keys, and refuses symlink components, symlink entries, and roots outside that worktree. Git cleanliness, install-preflight, and resume history comparisons use worktree-relative pathspecs for every declared root. Regressions exercise the current sibling layout, modified sibling source before editable install, outside-worktree refusal, and symlink-component refusal. The host rehearsal's origin/main run reproduced the original parser refusal; its exact rejection and patch are retained with the rehearsal evidence.
+
+**Close when.** The focused CMRU tests pass and hand mutations that omit sibling roots from the install/status and resume-history checks fail their respective oracles.
+
+## KI-155 - R2 crashes on Assay's tuple resource-limit evidence contract
+
+**Status:** FIXED 2026-11-12 in this work item; implementation commit is recorded in the latest closeout table. Severity: major (the campaign crashes after the baseline control).
+
+**Finding.** CMRU treated `ResourceLimitEvidence.between(before, after)` as one evidence object and accessed `.limit_hit`. Current Assay returns `(ResourceLimitEvidence, advisory_details)`, so the control run raised `AttributeError: 'tuple' object has no attribute 'limit_hit'`.
+
+**Fix and oracle.** The campaign now unpacks the evidence and advisories, uses the evidence object for the event verdict, and retains advisory details for baseline and candidate results in resume-compatible evidence schema 6. A regression changes configured cgroup limits without an event and checks that the `limit_hit` verdict stays false while advisory details are serialized. The host rehearsal reproduced the tuple-return crash after its control run.
+
+**Close when.** The resource-advisory regression and registered R2 preflight pass; hand mutations that treat the tuple as an evidence object or drop recorded advisories fail the oracle. KI-141 remains open until the actual T3 campaign is recorded.

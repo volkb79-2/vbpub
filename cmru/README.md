@@ -1093,7 +1093,7 @@ mutants. Resume accepts a killed result only when its process-tree proof says
 the leader exited and no descendants outlived it. See the
 [mutation-isolation design](docs/DESIGN-GUIDE.md#mutation-process-tree-isolation)
 and [consumer evidence contract](docs/CONSUMERS.md#the-cmru-r0-r3-gate).
-Evidence schema 5 records `assay_distribution_version` as package metadata and
+Evidence schema 6 records `assay_distribution_version` as package metadata and
 `assay_source_commit` as the exact implementation identity. CMRU verifies Assay
 source cleanliness with an independent Git process before importing it, and
 refuses package layouts it cannot bind safely. Before an editable Assay install,
@@ -1146,15 +1146,24 @@ tag in its full ancestry. An empty source diff records a skip bound to the
 candidate HEAD. The
 selected worktree's Assay source is installed at lane time.
 See the [Assay baseline design](docs/DESIGN-GUIDE.md#whole-target-assay-and-explicit-r2-bases).
-Mutation runs stop each
-failing candidate at its first failed test (`--maxfail=1`), cap the known-good
-control and each candidate at 600 seconds, and resume killed outcomes from
+Mutation runs stop each failing candidate at its first failed test
+(`--maxfail=1`). Both mutation lanes give the known-good full-suite control a
+1800-second ceiling (30 minutes). The 2026-11-12 rehearsal measured controls
+at 368, 752, and 825 seconds while other lanes ran; 1800 seconds is 2.18 times
+the longest measurement. Each candidate has a timeout of at least 1800 seconds
+and scales to twice the measured control when that is higher. This is a hang
+bound, not a speed target. Resume reuses killed outcomes from
 `.assay/mutation-cmru.json` only
 while the test suite, copied fixture closure, and timeout are unchanged. Changing
 the timeout starts a fresh campaign because it changes whether a candidate could
 have completed. Resume also requires the selected Assay source tree to be clean
-and unchanged across every packaged source root declared in its `pyproject.toml`;
-changing any shipped Assay package requires a fresh campaign. The append-only
+and unchanged across every packaged source root declared in its `pyproject.toml`.
+A package root may be a sibling library directory inside the same Git worktree,
+including a named `package-dir` mapping; roots outside that worktree or any
+symlinked component are refused. CMRU checks these roots before editable
+installation, campaign import, and resume. See the
+[mutation source binding design](docs/DESIGN-GUIDE.md#mutation-process-tree-isolation).
+Changing any shipped Assay package requires a fresh campaign. The append-only
 `.assay/progress-mutation-cmru.jsonl` stream reports progress; it is not the
 resumable result record. CMRU compares source history from Assay's own Git
 worktree, including when the selected Assay source is in a linked worktree. It

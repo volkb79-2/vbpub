@@ -7,6 +7,7 @@ import shlex
 import subprocess
 import tomllib
 from pathlib import Path
+from types import SimpleNamespace
 
 from cmru import config
 from cmru.config import load_forge_config
@@ -426,7 +427,7 @@ def test_assay_and_release_gate_split_rigor_without_empty_release_mutation():
         text = document.read_text(encoding="utf-8")
         normalized = " ".join(text.split())
         assert "--maxfail=1" in text
-        assert "600 seconds" in text or "600-second" in text
+        assert "1800 seconds" in text or "1800-second" in text
         assert "progress" in text.lower()
         assert "whole-target" in text or "whole_target" in text
         assert "cmru-v*" in text
@@ -444,6 +445,34 @@ def test_assay_and_release_gate_split_rigor_without_empty_release_mutation():
     assert "CMRU T1 `r0-r1` lane" in design
     assert "S16.3a — T1 R0/R1 mapping" in spec
     assert "S16.3b — T3 explicit R2 base" in spec
+
+
+def test_r2_timeout_and_assay_source_contract_are_synchronized_across_user_docs():
+    readme, design, consumers = [
+        path.read_text(encoding="utf-8") for path in DOCS
+    ]
+    for text in (readme, design, consumers):
+        normalized = " ".join(text.split())
+        assert "1800 seconds" in normalized
+        assert "368" in normalized and "752" in normalized and "825" in normalized
+        assert "named `package-dir`" in normalized
+        assert "Git worktree" in normalized
+    assert "mutation source binding design" in readme
+    assert "mutation-process-tree-isolation" in design
+    assert "schema 6" in consumers
+
+
+def test_cmru_changelog_uses_the_real_canonical_history_validator():
+    from cmru.changelog import _validate_history_structure
+
+    path = ROOT / "CHANGES.md"
+    markdown = path.read_text(encoding="utf-8")
+    markers, unreleased = _validate_history_structure(
+        SimpleNamespace(name="cmru"), path, markdown,
+    )
+
+    assert len(markers) == 1
+    assert unreleased is not None
 
 
 def test_release_gate_credential_boundary_is_documented_in_all_user_guides():
