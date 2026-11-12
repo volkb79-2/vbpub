@@ -115,6 +115,17 @@ refused rather than overwritten, and the file is removed after every read and
 in the recorder's final cleanup, including error exits. Pillow is imported
 only by `console record`; the other console verbs do not need it.
 
+Transient console failures are tolerated by skipping and counting. A QMP
+screendump error or an unreadable/truncated PNG skips one poll and sleeps for
+the normal interval; any successful poll resets the counter, while ten
+consecutive failures end the recording with an explicit reason. This matches
+the old recorder's behavior during mode changes and boot transitions without
+letting a dead screen path spin forever. A queued command failure is recorded
+in `keys.jsonl` and does not stop the recording. Stop-on-exit is armed only
+when the validated recorder loop is ready to run: refusing a conflicting
+temporary file or failing to import Pillow must not power down a guest that
+this invocation never recorded.
+
 ## No process killing
 
 The former standalone launcher owned its QEMU process and kept a pidfile so it

@@ -408,6 +408,27 @@ def positive_finite_float(value: str) -> float:
     return number
 
 
+def positive_integer(value: str) -> int:
+    try:
+        number = int(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError("must be an integer greater than zero") from None
+    if number <= 0:
+        raise argparse.ArgumentTypeError("must be an integer greater than zero")
+    return number
+
+
+def console_ctl_keys(value: str) -> str:
+    """Validate queued send-key names before the parser can enqueue anything."""
+    try:
+        for sequence in value.split(","):
+            for key in sequence.split("+"):
+                vm_lab_console.validate_key_name(key)
+    except ConsoleError as exc:
+        raise argparse.ArgumentTypeError(str(exc)) from None
+    return value
+
+
 def validate_slice_name(value: str) -> None:
     if not re.fullmatch(r"[A-Za-z0-9_.@:-]+\.slice", value):
         raise RunnerError(f"invalid cgroup slice name {value!r}; expected a systemd .slice unit")
@@ -906,8 +927,10 @@ def cmd_console_screendump(profile: VmProfile, args: argparse.Namespace) -> int:
 
 def cmd_console_sendkey(profile: VmProfile, args: argparse.Namespace) -> int:
     state_dir = validate_console_guest(profile, args.name, Path(args.state_dir))
-    if len(args.key) > 96 or not re.fullmatch(r"[A-Za-z0-9_]+(?:-[A-Za-z0-9_]+)*", args.key):
-        raise RunnerError("key must be a QEMU sendkey name or hyphen-separated key combination")
+    try:
+        vm_lab_console.validate_key_name(args.key)
+    except ConsoleError as exc:
+        raise RunnerError(str(exc)) from exc
     result = qmp_human_monitor_command(state_dir / "qmp.sock", f"sendkey {args.key}")
     print(f"[sendkey] key={args.key} response={result.strip() or 'ok'}", flush=True)
     return 0
@@ -928,7 +951,7 @@ def cmd_console_type(profile: VmProfile, args: argparse.Namespace) -> int:
         text = args.text
     else:
         try:
-            text = Path(args.text_file).read_text()
+            text = vm_lab_console.strip_one_trailing_newline(Path(args.text_file).read_text())
         except OSError as exc:
             raise RunnerError(f"cannot read --text-file {args.text_file}: {exc}") from exc
     try:
@@ -966,6 +989,12 @@ def cmd_console_ctl(profile: VmProfile, args: argparse.Namespace) -> int:
     except ConsoleError as exc:
         raise RunnerError(str(exc)) from exc
     print(f"[ctl] queued {target}", flush=True)
+    if (Path(args.out) / "DONE").exists():
+        print(
+            "vm-lab: DONE exists in --out; no recorder appears to be running; "
+            "the command stays queued",
+            file=sys.stderr,
+        )
     return 0
 
 
@@ -2055,7 +2084,10 @@ def build_parser(
     add_state_dir(type_console)
     type_group = type_console.add_mutually_exclusive_group(required=True)
     type_group.add_argument("--text")
-    type_group.add_argument("--text-file")
+    type_group.add_argument(
+        "--text-file",
+        help="read text from FILE; exactly one trailing newline is stripped",
+    )
     type_console.set_defaults(func=cmd_console_type)
     record = console_commands.add_parser(
         "record", help="record changed frames and execute queued console commands in the foreground"
@@ -2065,9 +2097,9 @@ def build_parser(
     record.add_argument("--out", required=True, help="recording output directory")
     record.add_argument("--interval", type=positive_finite_float, default=3.0)
     record.add_argument("--diff-threshold", type=positive_finite_float, default=0.00002)
-    record.add_argument("--cursor-w", type=int, default=24)
-    record.add_argument("--cursor-h", type=int, default=40)
-    record.add_argument("--cap", type=int, default=2000)
+    record.add_argument("--cursor-w", type=positive_integer, default=24, help="cursor width in pixels")
+    record.add_argument("--cursor-h", type=positive_integer, default=40, help="cursor height in pixels")
+    record.add_argument("--cap", type=positive_integer, default=2000, help="maximum kept frames")
     record.add_argument("--max-runtime", type=positive_finite_float, default=14400)
     record.add_argument("--qmp-timeout", type=positive_finite_float, default=30)
     record.add_argument(
@@ -2079,11 +2111,18 @@ def build_parser(
     ctl = console_commands.add_parser("ctl", help="queue one command for a running recorder")
     ctl.add_argument("--out", required=True, help="recording output directory")
     ctl_group = ctl.add_mutually_exclusive_group(required=True)
-    ctl_group.add_argument("--keys", help="comma-separated sends; '+' joins one chord")
+    ctl_group.add_argument(
+        "--keys",
+        type=console_ctl_keys,
+        help="comma-separated sends; '+' joins one chord (QEMU sendkey names)",
+    )
     ctl_group.add_argument("--type", help="US-layout ASCII text to type")
     ctl_group.add_argument(
         "--type-file",
-        help="read text from FILE when the recorder executes it; always redacted",
+        help=(
+            "read text from FILE when the recorder executes it; exactly one trailing "
+            "newline is stripped; always redacted"
+        ),
     )
     ctl_group.add_argument("--qmp-json", help="JSON object passed to QMP, e.g. {\"execute\":\"reset\"}")
     ctl_group.add_argument("--quit", action="store_true")

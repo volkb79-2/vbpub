@@ -77,14 +77,27 @@ python3 scripts/vm-lab/vm_lab.py stop --name truenas-console --state-dir "$VM"
 Starting and stopping the recorder does not hold the QMP socket between
 polls, so `console sendkey`, `console reset`, `console screendump` and `stop`
 remain available while it runs. `--type-file` keeps the secret text out of
-the recorder inbox and redacts its length in `keys.jsonl`; the file itself
-must be protected by the caller.
+the recorder inbox and redacts the text in `keys.jsonl`; the recorded label
+still shows its length as `TYPE:<N chars redacted>`. The file itself must be
+protected by the caller.
 
 ### Differences from the former console-capture launcher
 
+- Boot order changed. The former launcher gave the attached ISO
+  `bootindex=1` and the installed disk `bootindex=2`. The VM tool boots the
+  installed disk before the attached ISO, so an existing installed image
+  wins. To reach an installer ISO, use the firmware boot menu via
+  `console sendkey esc`, or start with a fresh empty base disk.
 - There is no `--own-qemu` recorder mode and no pidfile or signal fallback.
   `--stop-guest-on-exit` uses the VM tool's graceful `stop` path on every
   recorder exit except an explicit `console ctl --quit`.
+- The launcher's `-accel tcg,thread=multi` setting is not used; the VM tool's
+  QEMU script uses `-machine q35,accel=tcg`. Its `-cpu max,-vmx,-svm` also
+  differs from the former launcher's plain `-cpu max`.
+- The former `nice -n 19` and `ionice -c3` wrappers are not used. Host
+  admission and the background cgroup placement constrain the guest instead.
+- The primary disk's `cache=writeback` is now `cache=unsafe`, as in the VM
+  tool's generated QEMU script.
 - `--base-disk` must name an existing QEMU image. The VM tool mounts it
   read-only and writes `disk-overlay.qcow2` in `--state-dir`; it does not
   create a blank base disk.
@@ -109,6 +122,3 @@ TrueNAS test infrastructure helpers, explicitly and documented):
   certificate or CA (preferred when you can export it).
 - Never set the insecure variable for a host that holds real data or real
   credentials.
-
-The web-console helper requires Pillow. QEMU's PNG screendump support is
-also required by the VM tool recorder.

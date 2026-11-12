@@ -12,9 +12,13 @@ from __future__ import annotations
 import hashlib
 import importlib
 import json
+import os
+import re
+import signal
+import sys
 import time
 from pathlib import Path
-from typing import Any, Callable, Mapping, Sequence
+from typing import Any, Callable, Mapping
 
 
 class ConsoleError(RuntimeError):
@@ -54,7 +58,62 @@ SHIFTP = {
 
 RECORDER_TEMP_FILENAME = ".vm-lab-console-record.png"
 LUMA_DIFF_THRESHOLD = 48
-QUIT_SENTINEL = object()
+MAX_CONSECUTIVE_SCREEN_CAPTURE_FAILURES = 10
+
+
+class RecorderSignal(Exception):
+    """A SIGTERM/SIGHUP clean-stop request with its DONE reason."""
+
+
+def strip_one_trailing_newline(text: str) -> str:
+    """Strip exactly one trailing line feed, preserving any earlier ones."""
+    return text[:-1] if text.endswith("\n") else text
+
+
+def validate_key_name(key: str) -> None:
+    """Require the same QEMU sendkey name syntax as ``console sendkey``."""
+    if len(key) > 96 or not re.fullmatch(
+        r"[A-Za-z0-9_]+(?:-[A-Za-z0-9_]+)*", key
+    ):
+        raise ConsoleError(
+            f"invalid key name {key!r}: key must be a QEMU sendkey name "
+            "or hyphen-separated key combination"
+        )
+
+
+def _command_error_types() -> tuple[type[BaseException], ...]:
+    """Return the per-command failures that the recorder can tolerate."""
+    # vm_lab owns RunnerError and imports this module. Import it only when the
+    # recorder executes, after that module has finished initializing.
+    from vm_lab import RunnerError
+
+    return RunnerError, OSError, ValueError
+
+
+def _recorder_signal_handler(signum: int, _frame) -> None:
+    name = signal.Signals(signum).name
+    raise RecorderSignal(f"signal: {name}")
+
+
+def _send_sequences(
+    socket_path: Path,
+    sequences: list[list[str]],
+    *,
+    qmp_call: Callable[..., Any],
+    timeout: float,
+    sleep: Callable[[float], None],
+) -> None:
+    for combo in sequences:
+        qmp_call(
+            socket_path,
+            "send-key",
+            {
+                "keys": [{"type": "qcode", "data": key} for key in combo],
+                "hold-time": 80,
+            },
+            timeout,
+        )
+        sleep(0.15)
 
 
 def text_to_keys(text: str) -> list[list[str]]:
@@ -116,12 +175,12 @@ def _one_control_value(args) -> str:
 def queue_control(args) -> Path:
     """Validate and queue one recorder command without contacting the guest."""
     selected = _one_control_value(args)
-    inbox = Path(args.out) / "inbox"
-    inbox.mkdir(parents=True, exist_ok=True)
     if selected == "--keys":
-        command: dict[str, Any] = {
-            "keys": [key.split("+") for key in args.keys.split(",")]
-        }
+        sequences = [key.split("+") for key in args.keys.split(",")]
+        for sequence in sequences:
+            for key in sequence:
+                validate_key_name(key)
+        command: dict[str, Any] = {"keys": sequences}
     elif selected == "--type":
         try:
             text_to_keys(args.type)
@@ -130,7 +189,7 @@ def queue_control(args) -> Path:
         command = {"type": args.type, "secret": bool(args.secret)}
     elif selected == "--type-file":
         try:
-            text = Path(args.type_file).read_text().rstrip("\n")
+            text = strip_one_trailing_newline(Path(args.type_file).read_text())
             text_to_keys(text)
         except (OSError, ConsoleError) as exc:
             raise ConsoleError(f"ctl: --type-file rejected, nothing queued: {exc}") from exc
@@ -149,10 +208,14 @@ def queue_control(args) -> Path:
     else:
         command = {"quit": True}
 
+    inbox = Path(args.out) / "inbox"
+    inbox.mkdir(parents=True, exist_ok=True)
     target = inbox / f"{time.time_ns()}.json"
     while target.exists() or target.is_symlink():
         target = inbox / f"{time.time_ns()}.json"
-    target.write_text(json.dumps(command))
+    temporary = inbox / f".{target.name}.tmp"
+    temporary.write_text(json.dumps(command))
+    os.replace(temporary, target)
     return target
 
 
@@ -166,17 +229,13 @@ def send_text(
 ) -> int:
     """Validate and send all text before returning; one unmappable character sends nothing."""
     sequences = text_to_keys(text)
-    for combo in sequences:
-        qmp_call(
-            socket_path,
-            "send-key",
-            {
-                "keys": [{"type": "qcode", "data": key} for key in combo],
-                "hold-time": 80,
-            },
-            timeout,
-        )
-        sleep(0.15)
+    _send_sequences(
+        socket_path,
+        sequences,
+        qmp_call=qmp_call,
+        timeout=timeout,
+        sleep=sleep,
+    )
     return len(sequences)
 
 
@@ -188,48 +247,52 @@ def command_executor(
     sleep: Callable[[float], None],
 ):
     """Build the queued-command executor used by a foreground recorder."""
+    execute_errors = _command_error_types() + (ConsoleError,)
 
     def execute(command: Mapping[str, Any], elapsed: float) -> Any:
-        if command.get("quit"):
-            return QUIT_SENTINEL
-        if "keys" in command or "type" in command or "type_file" in command:
-            if "keys" in command:
-                sequences = command["keys"]
-            else:
+        qmp = command.get("qmp")
+        try:
+            if "keys" in command or "type" in command or "type_file" in command:
+                if "keys" in command:
+                    sequences = command["keys"]
+                    _send_sequences(
+                        socket_path,
+                        sequences,
+                        qmp_call=qmp_call,
+                        timeout=timeout,
+                        sleep=sleep,
+                    )
+                    return ["+".join(combo) for combo in sequences]
+
                 secret = bool(command.get("secret", False))
                 if "type_file" in command:
-                    text = Path(command["type_file"]).read_text().rstrip("\n")
+                    text = strip_one_trailing_newline(Path(command["type_file"]).read_text())
                     secret = True
                 else:
                     text = str(command["type"])
-                sequences = text_to_keys(text)
-            for combo in sequences:
-                qmp_call(
+                send_text(
                     socket_path,
-                    "send-key",
-                    {
-                        "keys": [{"type": "qcode", "data": key} for key in combo],
-                        "hold-time": 80,
-                    },
-                    timeout,
+                    text,
+                    qmp_call=qmp_call,
+                    timeout=timeout,
+                    sleep=sleep,
                 )
-                sleep(0.15)
-            if "keys" in command:
-                label = ["+".join(combo) for combo in sequences]
-            elif secret:
-                label = f"TYPE:<{len(text)} chars redacted>"
-            else:
-                label = "TYPE:" + text
-            return label
+                if secret:
+                    return f"TYPE:<{len(text)} chars redacted>"
+                return "TYPE:" + text
 
-        qmp = command["qmp"]
-        result = qmp_call(
-            socket_path,
-            qmp["execute"],
-            qmp.get("arguments", {}),
-            timeout,
-        )
-        return {"qmp": qmp, "result": result}
+            result = qmp_call(
+                socket_path,
+                qmp["execute"],
+                qmp.get("arguments", {}),
+                timeout,
+            )
+            return {"qmp": qmp, "result": {"return": result}}
+        except execute_errors as exc:
+            error = {"error": str(exc)}
+            if qmp is not None:
+                return {"qmp": qmp, "result": error}
+            return error
 
     return execute
 
@@ -244,6 +307,7 @@ def record_loop(
     sleep: Callable[[float], None],
     image_module,
     image_chops,
+    on_loop_started: Callable[[], None] | None = None,
 ) -> str:
     """Run the recorder loop until quit, cap, or max-runtime and return the reason."""
     inbox = out / "inbox"
@@ -276,6 +340,8 @@ def record_loop(
     recent_keys: list[dict[str, Any]] = []
     cursor_box = (args.cursor_w, args.cursor_h)
     threshold = args.diff_threshold
+    screen_errors = _command_error_types()
+    consecutive_screen_failures = 0
     print(
         f"threshold fraction>={threshold} (px luma diff>48), "
         f"cursor_box={args.cursor_w}x{args.cursor_h}, interval={args.interval}s, "
@@ -284,6 +350,8 @@ def record_loop(
     )
 
     with manifest_path.open("a") as manifest, (out / "keys.jsonl").open("a") as keylog:
+        if on_loop_started is not None:
+            on_loop_started()
 
         def keep(image, fraction: float, keys_before: list[dict[str, Any]], small_vs_old: bool) -> bool:
             nonlocal sequence, base
@@ -326,7 +394,17 @@ def record_loop(
             if clock() - t0 > args.max_runtime:
                 return "max-runtime"
             for path in sorted(inbox.glob("*.json")):
-                command = json.loads(path.read_text())
+                try:
+                    command = json.loads(path.read_text())
+                except ValueError as exc:
+                    bad = path.with_suffix(".bad")
+                    os.replace(path, bad)
+                    print(
+                        f"vm-lab: unreadable recorder inbox command {path.name}: {exc}; "
+                        f"renamed to {bad.name}",
+                        file=sys.stderr,
+                    )
+                    continue
                 path.unlink()
                 if command.get("quit"):
                     return "quit-command"
@@ -336,7 +414,19 @@ def record_loop(
                 keylog.flush()
                 recent_keys.append({"t": elapsed, "sent": sent})
 
-            image = next_screen()
+            try:
+                image = next_screen()
+            except screen_errors as exc:
+                consecutive_screen_failures += 1
+                if consecutive_screen_failures >= MAX_CONSECUTIVE_SCREEN_CAPTURE_FAILURES:
+                    return (
+                        "error: "
+                        f"{MAX_CONSECUTIVE_SCREEN_CAPTURE_FAILURES} consecutive "
+                        f"screen captures failed: {exc}"
+                    )
+                sleep(args.interval)
+                continue
+            consecutive_screen_failures = 0
             stop = False
             if base is None:
                 stop = keep(image, 1.0, recent_keys[:], False)
@@ -389,11 +479,25 @@ def cmd_console_record(
     temporary = state_dir / RECORDER_TEMP_FILENAME
     reason = "unknown"
     claimed_temporary = False
+    stop_armed = False
     failed = False
+    error_message: str | None = None
+    previous_handlers: dict[int, Any] = {}
+
+    def arm_stop_on_exit() -> None:
+        nonlocal stop_armed
+        stop_armed = True
+        (out / "DONE").unlink(missing_ok=True)
+
     try:
+        for signum in (signal.SIGTERM, signal.SIGHUP):
+            previous_handlers[signum] = signal.getsignal(signum)
+            signal.signal(signum, _recorder_signal_handler)
         if temporary.exists() or temporary.is_symlink():
             raise ConsoleError(
-                f"refusing to overwrite existing recorder screendump {temporary}"
+                f"refusing to overwrite existing recorder screendump {temporary}; "
+                "another recorder may be running on this guest, and if none is running "
+                f"the file is stale and may be deleted: {temporary}"
             )
         claimed_temporary = True
         if image_module is None or image_chops is None:
@@ -411,15 +515,17 @@ def cmd_console_record(
             def default_next_screen() -> Any:
                 if temporary.exists() or temporary.is_symlink():
                     raise ConsoleError(
-                        f"refusing to overwrite existing recorder screendump {temporary}"
+                        f"refusing to overwrite existing recorder screendump {temporary}; "
+                        "another recorder may be running on this guest, and if none is running "
+                        f"the file is stale and may be deleted: {temporary}"
                     )
-                qmp_call(
-                    socket_path,
-                    "screendump",
-                    {"filename": f"/state/{RECORDER_TEMP_FILENAME}", "format": "png"},
-                    args.qmp_timeout,
-                )
                 try:
+                    qmp_call(
+                        socket_path,
+                        "screendump",
+                        {"filename": f"/state/{RECORDER_TEMP_FILENAME}", "format": "png"},
+                        args.qmp_timeout,
+                    )
                     image = image_module.open(temporary).convert("RGB")
                     image.load()
                     return image
@@ -443,26 +549,41 @@ def cmd_console_record(
             sleep=sleep,
             image_module=image_module,
             image_chops=image_chops,
+            on_loop_started=arm_stop_on_exit,
         )
+        failed = reason.startswith("error:")
+    except RecorderSignal as exc:
+        reason = str(exc)
     except BaseException as exc:  # noqa: BLE001 - DONE must always record why the recorder stopped
-        reason = f"error: {exc!r}"
+        error_message = str(exc) or type(exc).__name__
+        reason = f"error: {error_message}"
         failed = True
-        print(reason, flush=True)
     finally:
+        for signum, previous in previous_handlers.items():
+            signal.signal(signum, previous)
         if claimed_temporary:
             try:
                 temporary.unlink(missing_ok=True)
             except OSError as exc:
                 print(
-                    f"[record] could not remove temporary screendump {temporary}: {exc}",
+                    f"vm-lab: could not remove temporary screendump {temporary}: {exc}",
+                    file=sys.stderr,
                     flush=True,
                 )
-        (out / "DONE").write_text(reason + "\n")
-        if args.stop_guest_on_exit and reason != "quit-command":
+        if stop_armed and args.stop_guest_on_exit and reason != "quit-command":
             try:
                 stop_guest()
             except BaseException as exc:  # noqa: BLE001 - the original DONE reason must survive
-                print(f"[record] stop-guest-on-exit failed: {exc}", flush=True)
+                print(
+                    f"vm-lab: stop-guest-on-exit failed: {exc}",
+                    file=sys.stderr,
+                    flush=True,
+                )
+        (out / "DONE").write_text(reason + "\n")
+        if error_message is not None:
+            print(f"vm-lab: {error_message}", file=sys.stderr, flush=True)
+        elif reason.startswith("error:"):
+            print(f"vm-lab:{reason[6:]}", file=sys.stderr, flush=True)
     return 1 if failed else 0
 
 

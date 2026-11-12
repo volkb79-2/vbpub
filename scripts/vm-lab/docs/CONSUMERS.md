@@ -103,6 +103,85 @@ poll with the last kept frame. It leaves the guest running on exit unless
 `--stop-guest-on-exit` is given. An explicit `ctl --quit` never stops the
 guest.
 
+### Recorder output contract
+
+Each kept frame is `DIR/frames/NNNN_<elapsed>s.png`. Each line of
+`DIR/manifest.jsonl` has the old recorder's fields and types: `sequence`
+(integer), `elapsed_s` (integer seconds from the original start), `file`
+(string), `sha256` (string digest of the saved PNG), `width` and `height`
+(integers), `fraction_of_pixels_changed` (rounded float), and `keys_before`
+(list of the `keys.jsonl` entries recorded since the previous kept frame).
+
+`DIR/state.json` holds the real `t0_epoch`. `DIR/inbox/*.json` holds queued
+commands. Inbox writes are atomic: `ctl` writes a hidden temporary file and
+renames it into place. If the recorder finds a `*.json` file that does not
+parse, it renames it to the corresponding `*.bad` file, prints one
+`vm-lab:` line on stderr, and continues recording.
+
+`DIR/DONE` always contains the final reason. Normal reasons are
+`quit-command`, `max-runtime`, and `cap`. An error is `error: <message>`; ten
+consecutive screendump or image-read failures end with
+`error: 10 consecutive screen captures failed: <last message>`. SIGTERM and
+SIGHUP produce `signal: SIGTERM` and `signal: SIGHUP`. A new recorder removes
+an old `DONE` after validation and before its loop starts, and writes the new
+one only after an requested guest stop has finished. A recorder error exits 1.
+
+### Keep rule, cursor blink, and bounds
+
+A frame is compared with the last kept frame. A pixel counts as changed when
+its luma differs by more than 48. The frame is kept when the fraction of
+changed pixels is at least `--diff-threshold` (default `0.00002`, about 20
+pixels at 1280x800; `0.0002` missed a ticked checkbox in the old corpus).
+Differences of exactly 48 luma units do not count; 49 does.
+
+Cursor blink is suppressed using known phases, not timing. A change confined
+to a `--cursor-w` x `--cursor-h` box (default 24x40) is held for one poll. If
+the next poll is back on the current screen's last kept frame or another
+learned phase, the held frame is dropped and remembered as the other phase.
+Otherwise the change is real and kept, and the previous frame becomes the
+second known phase. Once both phases are known, suppression is deterministic.
+While learning them, a blink that remains on across two polls is kept once.
+A persistent real change confined to one cursor-sized box is therefore kept
+once, then becomes a known phase. A real change identical to an already
+learned blink phase cannot be distinguished from a blink and is suppressed.
+
+`--interval` and `--max-runtime` are positive seconds; `--max-runtime` defaults
+to 14400 (4 hours). `--qmp-timeout` defaults to 30 seconds for every connect
+and read. `--cap` defaults to 2000 and, together with `--cursor-w` and
+`--cursor-h`, must be at least 1. Hitting the cap prints `FRAME CAP HIT`.
+
+### Resume
+
+Running `console record` again in the same `DIR` continues frame numbering,
+uses the original real clock from `state.json`, reloads the last kept frame,
+and compares the first new poll with it. Downtime therefore counts in
+`elapsed_s`. Directories written by the first recorder version may have no
+`state.json`; those use the old arithmetic, `now - elapsed_s - interval`, so
+the restart gap is lost.
+
+### Queued-command syntax and logs
+
+`ctl --keys down,down,ret` sends three commands in order. A comma separates
+sends and `+` joins a chord, as in `shift+a`; each name must satisfy the same
+QEMU send-key syntax as `console sendkey`. An invalid name exits 2 and queues
+nothing.
+
+`--type` is validated before queueing. Text outside US-layout ASCII is
+refused and nothing is queued. `--secret` redacts the text only in
+`keys.jsonl`: the text is still visible in process arguments and briefly in
+`DIR/inbox/<n>.json`. Use throwaway values. `--type-file` keeps the text out
+of both argv and the inbox, reads the file when the recorder executes the
+command, strips exactly one trailing newline, and records
+`TYPE:<N chars redacted>`. Any value beginning with `-` needs the equals form,
+for example `--type=-x`.
+
+For successful key and type commands, the `sent` field in `keys.jsonl` is the
+key list or `TYPE:<text>`/`TYPE:<N chars redacted>` label. A failed key or
+type command records `{"error": "<text>"}`. A `--qmp-json` command records the
+whole request plus `{"return": <value>}` on success or
+`{"error": <QMP error object or message>}` on failure. Command failures are
+logged and the recorder continues; they do not end the recording.
+
 ### Choosing sizes
 
 - `--memory-mib` is guest RAM. The container limit is this plus 512 MiB.
