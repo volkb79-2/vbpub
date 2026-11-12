@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from .config import (
     DEFAULT_KSM_ADVISOR_MAX_CPU_PERCENT,
+    DEFAULT_KSM_SLEEP_MILLISECS,
     DEFAULT_KSM_TARGET_SCAN_TIME_SECONDS,
 )
 
@@ -180,6 +181,9 @@ w! /sys/kernel/mm/ksm/run                      - - - - 1
 w! /sys/kernel/mm/ksm/advisor_mode             - - - - scan-time
 # ksmd should use about 5-10% of one core.
 w! /sys/kernel/mm/ksm/advisor_max_cpu          - - - - {advisor_max_cpu_percent}
+# Measurement: advisor_max_cpu alone left ksmd near 15% of one core under load;
+# sleep_millisecs=100 brought it to about 4% under load.
+w! /sys/kernel/mm/ksm/sleep_millisecs          - - - - {sleep_millisecs}
 # Scans are slow on purpose: only opted-in processes (ciu/run-gate shim) merge; measured pytest-worker gain is small.
 w! /sys/kernel/mm/ksm/advisor_target_scan_time - - - - {target_scan_time_seconds}
 # All-zero anonymous pages map straight to the shared zero page instead of the
@@ -191,11 +195,13 @@ w! /sys/kernel/mm/ksm/use_zero_pages           - - - - 1
 def render_ksm_tmpfiles(
     advisor_max_cpu_percent: int = DEFAULT_KSM_ADVISOR_MAX_CPU_PERCENT,
     target_scan_time_seconds: int = DEFAULT_KSM_TARGET_SCAN_TIME_SECONDS,
+    sleep_millisecs: int = DEFAULT_KSM_SLEEP_MILLISECS,
 ) -> str:
     """Render the deterministic KSM tmpfiles drop-in from validated config."""
     return KSM_TMPFILES_TEMPLATE.format(
         advisor_max_cpu_percent=advisor_max_cpu_percent,
         target_scan_time_seconds=target_scan_time_seconds,
+        sleep_millisecs=sleep_millisecs,
     )
 
 

@@ -57,11 +57,16 @@ The installer enables ksmd, but KSM only merges anonymous pages in processes
 that opt in. The ciu/run-gate shim supplies that opt-in for its workers, and
 the measured gain for pytest workers is small, so the scan-time advisor uses a
 deliberately low ceiling: `advisor_max_cpu=10` (percent of one CPU) and a
-300-second target scan. These controls are installer-configurable through
-`ksm_advisor_max_cpu_percent` (1–100) and
-`ksm_target_scan_time_seconds` (a positive number of seconds). The first is
-the advisor's CPU cap; the second controls how aggressively it scans the
-eligible pages.
+300-second target scan. Measurements showed the advisor CPU cap alone did not
+bind on a small opted-in set: ksmd stayed near 15% of one core under load.
+The kernel's default `sleep_millisecs=20` let a ~4 ms scan repeat about 40
+times per second; increasing the sleep to 100 ms lowered ksmd to roughly 4%
+under load and 0.05–0.08% idle. The defaults are installer-configurable
+through `ksm_advisor_max_cpu_percent` (1–100),
+`ksm_target_scan_time_seconds` (positive seconds), and
+`ksm_sleep_millisecs` (positive milliseconds). The advisor CPU cap and target
+scan time govern the eligible-page scan budget; the sleep interval limits
+repeated wakeups when those advisor controls do not bind.
 
 The advisor knobs are kernel-version dependent. A missing sysfs file produces
 a warning for that tmpfiles entry; the installer keeps going and applies the

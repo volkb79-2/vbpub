@@ -1531,6 +1531,7 @@ MaxFileSec=1month
             render_ksm_tmpfiles(
                 self.config.ksm_advisor_max_cpu_percent,
                 self.config.ksm_target_scan_time_seconds,
+                self.config.ksm_sleep_millisecs,
             ),
         )
         error = self._apply_tmpfiles(path)
