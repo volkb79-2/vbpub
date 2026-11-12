@@ -164,7 +164,7 @@ artifacts = [
 # R0, R1 (whole-target line and branch over src/assay) and the R3 canary run;
 # R2 mutation is explicitly postponed and the run records
 # .assay/mutation-postponed-assay.json (deferral evidence, never an R2 pass).
-# Valid only below assay 12.3.0 (extended 2026-11-11 for the flexible-R2
+# Valid only below assay 12.3.0 (extended 2026-11-12 for the flexible-R2
 # release 12.2.0: R2 is a T3 post-release check per the tier methodology;
 # operator decision 2026-11-12, A-507/B535; earlier extended 2026-11-08 for the
 # E4 env-only launchers and delegated release-gate changes); the full
