@@ -151,17 +151,43 @@ Options are validated by presence: `--instances` 1..16, `--merge-only` and
 `--carry-over-main` a non-empty one-line reason; a zero, empty, malformed or
 repeated value is refused by name (exit 2), never read as absent.
 
-Memory guard: before anything starts, the fleet refuses with exit 75 unless
-`instances x per-instance MiB + R2_HOST_RESERVE_MIB (default 1024)` fits
-`MemAvailable`. The per-instance figure is `R2_INSTANCE_MEM_MIB`, else the
-lane's declared `resources.memory`. Run-Gate applies no container memory cap
-without `resources.memory`, so a lane without it and without
-`R2_INSTANCE_MEM_MIB` is refused by name (exit 2) -- there is no default
-figure. Both values are decimal MiB below 10^7. Set `R2_INSTANCE_MEM_MIB` to
-the measured container peak when the declared cap is generous.
+Memory admission estimates expected peaks; the lane's `resources.memory`
+remains the full Run-Gate ceiling on each container because Run-Gate has no
+per-invocation memory override. For a capped lane, the default per-worker
+estimate is `ceil(lane memory / jobs_max)`. Each instance's scaled lane
+ceiling is `max(128 MiB, ceil(lane memory x workers per instance / jobs_max))`;
+the minimum is an accounting floor, not a Run-Gate cap. `--jobs N` selects the
+workers per instance. With `jobs = "auto"`, the guard uses `jobs_max` as its
+conservative estimate; with no jobs setting, Run-Gate leaves Assay serial.
+`R2_WORKER_MEM_MIB` overrides the per-worker estimate with a measured peak.
+`R2_INSTANCE_MEM_MIB` keeps its existing meaning as a measured expected peak
+per container and overrides the worker estimate. Values are positive decimal
+MiB below 10^7.
+
+The guard compares the sum of expected instance peaks with
+`MemAvailable - R2_HOST_RESERVE_MIB` plus a bounded swap allowance. The reserve
+defaults to 1024 MiB. `R2_OVERCOMMIT` accepts 1.0 through 4.0; when unset, it
+defaults to 2.0 only if swap exists and KSM reports `run=1`, otherwise 1.0.
+The allowance is the smaller of free swap and `(overcommit - 1) x available
+RAM after reserve`. The guard prints all inputs and the arithmetic, and exits
+75 only when the expected peaks exceed that budget. An uncapped lane still
+needs `R2_INSTANCE_MEM_MIB` or is refused by name (exit 2); a worker estimate
+alone does not imply a Run-Gate cap.
+
+Every campaign start prints KSM `run`, `pages_sharing`, `pages_shared` and
+lane eligibility. The runner cannot infer process opt-in, so eligibility is
+reported as unverified; workloads merge only when they use `MADV_MERGEABLE` or
+`PR_SET_MEMORY_MERGE`. The values are also saved for `status <base>`. Override
+the sysfs root with `R2_KSM_SYSFS` for tests. KSM is observed only; the runner
+does not enable it.
+
+For a native Assay R2 lane that has fewer workers than CPUs, the runner prints
+an advisory `--instances K` hint, where `K = floor(nproc / workers per
+instance)`, if each worker is single-threaded. It does not change the run.
 
 `status <base>` prints one line per start, child and merge run (running or
-`final_exit`, the last attempts line, completed candidates).
+`final_exit`, the last attempts line, completed candidates), followed by the
+saved KSM observation when available.
 `stop <base>` on a fleet stops every child that is still active and its exact
 containers, then the fleet itself (exit 143 everywhere).
 

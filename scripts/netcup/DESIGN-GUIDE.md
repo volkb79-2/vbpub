@@ -310,12 +310,44 @@ supervision loop, so every existing rule -- relaunch after exit 4, stall
 detection, exact-name stop, per-start evidence -- applies to each shard
 unchanged. Three guards keep it from lying or harming the host: options are
 validated by presence (a zero must never silently turn a fleet into a single
-campaign); the memory guard has no default figure, because Run-Gate leaves an
-undeclared lane uncapped and any guessed figure would admit an unbounded
-fleet; and the functional floor probes the host Run-Gate once before any
-state, because an old Run-Gate would reject `--shard` only after the fleet
-had created its children. The legacy single campaign never probes, so the
-older cockpit default keeps working for it.
+campaign); the memory guard has no invented default for an uncapped lane,
+because Run-Gate leaves it unbounded; and the functional floor probes the host
+Run-Gate once before any state, because an old Run-Gate would reject `--shard`
+only after the fleet had created its children. The legacy single campaign
+never probes, so the older cockpit default keeps working for it.
+
+### Memory admission, CPU guidance and KSM visibility (NC-48)
+
+The declared `resources.memory` is a per-container enforcement ceiling. It is
+not a useful estimate of resident demand when the lane uses only part of its
+worker budget: Run-Gate has no per-invocation memory override, so every shard
+still gets the full ceiling. The supervisor therefore scales the lane ceiling
+by `workers per instance / jobs_max` for disclosure and derives its default
+per-worker expected peak as `ceil(lane ceiling / jobs_max)`. Admission sums
+expected peaks, with a 128 MiB minimum per instance, instead of multiplying
+the full ceiling by the shard count. A measured `R2_WORKER_MEM_MIB` can replace
+the derived worker estimate; the existing `R2_INSTANCE_MEM_MIB` remains an
+explicit measured per-container estimate.
+
+The admission budget is `MemAvailable - reserve` plus a swap allowance bounded
+by both free swap and `(R2_OVERCOMMIT - 1) x (MemAvailable - reserve)`. The
+reserve defaults to 1024 MiB. If the operator has not set `R2_OVERCOMMIT`, the
+policy is 2.0 only when swap is present and sysfs reports KSM running; otherwise
+it is 1.0. This turns planned overcommit into a bounded admission allowance
+without treating a generous container ceiling as expected usage. The line on
+stderr records expected total, reserve, free swap, allowance and final budget.
+An uncapped lane still refuses unless `R2_INSTANCE_MEM_MIB` supplies an
+explicit per-container estimate, because no Run-Gate ceiling exists from which
+to derive a safe worker estimate.
+
+KSM is observational here. The runner reports the kernel's `run`,
+`pages_sharing` and `pages_shared` values and saves that snapshot for
+`status <base>`. It reports lane eligibility as unverified because it cannot
+infer whether the lane's processes opt in with `MADV_MERGEABLE` or
+`PR_SET_MEMORY_MERGE`; KSM does not merge arbitrary process pages. The runner
+does not enable KSM. For native Assay R2 lanes, an advisory names
+`floor(nproc / workers per instance)` when that count is greater than one and
+each worker is single-threaded; the advisory never changes the selected jobs.
 
 ## Cockpit mounts vbpub at Assay's declared workspace
 

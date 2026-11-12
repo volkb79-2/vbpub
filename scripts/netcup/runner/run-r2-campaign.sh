@@ -348,6 +348,9 @@ status_campaign() {
       line+=" completed_candidates=$(count_candidate_events "$(cat "$dir/progress-file")")"
     fi
     printf '%s\n' "$line"
+    if [[ -f $dir/ksm-status ]]; then
+      printf '  %s\n' "$(<"$dir/ksm-status")"
+    fi
   done
 }
 
@@ -436,7 +439,7 @@ PY
 clamp_jobs() {  # DST-37: never pass --jobs above the lane's judge.mutation.jobs_max
   local toml=$checkout/$rel/assay.toml i max
   [[ -f $toml ]] || return 0
-  max=$(python3 - "$toml" "$lane" <<'PY'
+  max=$(python3 - "$toml" "$(lane_assay_name)" <<'PY'
 import sys, tomllib
 cfg = tomllib.load(open(sys.argv[1], "rb"))
 mut = cfg.get("lanes", {}).get(sys.argv[2], {}).get("judge", {}).get("mutation", {})
@@ -547,7 +550,7 @@ else:
 PY
 }
 
-lane_memory_mib() {  # the lane's declared container memory cap, in MiB, or empty
+lane_memory_mib() {  # declared lane memory ceiling, rounded up to MiB, or empty
   python3 - "$checkout" "$rel" "$lane" <<'PY' 2>/dev/null || true
 import re, sys, tomllib
 root, rel, lane = sys.argv[1:4]
@@ -560,41 +563,224 @@ value = res.get("memory", decl.get("memory"))
 match = re.fullmatch(r"([0-9]+)([bkmg]?)", str(value or "").lower())
 if match:
     n = int(match.group(1))
-    scale = {"": 1 / 1048576, "b": 1 / 1048576, "k": 1 / 1024, "m": 1, "g": 1024}[match.group(2)]
-    print(max(1, int(n * scale)))
+    unit = match.group(2)
+    divisor = {"": 1048576, "b": 1048576, "k": 1024}.get(unit)
+    if divisor:
+        print(max(1, (n + divisor - 1) // divisor))
+    else:
+        print(max(1, n if unit == "m" else n * 1024))
 PY
 }
 
-fleet_memory_guard() {
-  # K concurrent lane containers must fit the host: refuse up front instead of
-  # letting the gates slice OOM-kill a lane mid-campaign.
-  # Run-Gate applies NO container memory cap without the lane's
-  # `resources.memory`, so there is no safe per-instance default: an uncapped
-  # lane needs R2_INSTANCE_MEM_MIB (the measured per-container peak) or is
-  # refused by name. Values are bounded to 7 digits so the sum cannot overflow.
-  local per reserve avail need count=$1 source=R2_INSTANCE_MEM_MIB
-  per=${R2_INSTANCE_MEM_MIB:-}
-  if [[ -z $per ]]; then
-    per=$(lane_memory_mib); source="lane $lane resources.memory"
-  fi
-  [[ -n $per ]] || {
-    echo "memory guard: lane $lane declares no resources.memory, so Run-Gate applies no container memory cap and $count instance(s) are unbounded; set R2_INSTANCE_MEM_MIB to the measured per-container peak or declare resources.memory" >&2
-    exit 2; }
-  reserve=${R2_HOST_RESERVE_MIB:-1024}
-  [[ $per =~ ^[1-9][0-9]{0,6}$ && $reserve =~ ^(0|[1-9][0-9]{0,6})$ ]] || {
-    echo "memory guard: $source / R2_HOST_RESERVE_MIB must be decimal MiB below 10^7 (got '$per' / '$reserve')" >&2; exit 2; }
-  avail=$(awk '/^MemAvailable:/ {print int($2 / 1024)}' "${R2_MEMINFO:-/proc/meminfo}" 2>/dev/null || true)
-  [[ $avail =~ ^[0-9]{1,12}$ ]] || { echo 'memory guard: cannot read MemAvailable' >&2; exit 75; }
-  need=$((count * per + reserve))
-  if (( need > avail )); then
-    echo "memory guard: $count instance(s) x ${per} MiB + ${reserve} MiB reserve = ${need} MiB > MemAvailable ${avail} MiB; start fewer instances or set R2_INSTANCE_MEM_MIB to the measured per-container peak" >&2
-    exit 75
-  fi
-  echo "memory guard: $count instance(s) x ${per} MiB + ${reserve} MiB reserve <= MemAvailable ${avail} MiB" >&2
+lane_jobs_max() {  # Assay's hard worker maximum, defaulting to its serial behavior
+  python3 - "$checkout/$rel/assay.toml" "$(lane_assay_name)" <<'PY' 2>/dev/null || echo 1
+import sys, tomllib
+try:
+    cfg = tomllib.load(open(sys.argv[1], "rb"))
+except (OSError, tomllib.TOMLDecodeError):
+    print(1)
+    raise SystemExit
+mut = cfg.get("lanes", {}).get(sys.argv[2], {}).get("judge", {}).get("mutation", {})
+value = mut.get("jobs_max", mut.get("jobs", 1))
+print(value if type(value) is int and 0 < value < 10000000 else 1)
+PY
 }
 
+lane_jobs_setting() {  # Run-Gate lane-level fixed count or auto selection
+  python3 - "$checkout/$rel/run-gate.toml" "$lane" <<'PY' 2>/dev/null || true
+import sys, tomllib
+try:
+    decl = tomllib.load(open(sys.argv[1], "rb")).get("lanes", {}).get(sys.argv[2]) or {}
+except (OSError, tomllib.TOMLDecodeError):
+    raise SystemExit
+value = decl.get("jobs")
+if type(value) is int and value > 0:
+    print(value)
+elif value == "auto":
+    print("auto")
+PY
+}
+
+lane_is_native_assay() {
+  python3 - "$checkout/$rel/run-gate.toml" "$lane" <<'PY' 2>/dev/null
+import sys, tomllib
+try:
+    decl = tomllib.load(open(sys.argv[1], "rb")).get("lanes", {}).get(sys.argv[2]) or {}
+except (OSError, tomllib.TOMLDecodeError):
+    raise SystemExit(1)
+raise SystemExit(0 if decl.get("kind") == "assay" else 1)
+PY
+}
+
+workers_per_instance() {  # exact --jobs, configured count, or conservative auto ceiling
+  local selected='' configured max
+  local i
+  for ((i = 0; i < ${#args[@]}; i++)); do
+    if [[ ${args[i]} == --jobs ]]; then
+      selected=${args[i+1]:-}
+      break
+    elif [[ ${args[i]} =~ ^--jobs=(.+)$ ]]; then
+      selected=${BASH_REMATCH[1]}
+      break
+    fi
+  done
+  max=$(lane_jobs_max)
+  if [[ $selected =~ ^[1-9][0-9]*$ ]]; then
+    (( selected > max )) && selected=$max
+    printf '%s\n' "$selected"
+    return
+  fi
+  if [[ $selected == auto ]]; then
+    printf '%s\n' "$max"
+    return
+  fi
+  configured=$(lane_jobs_setting)
+  if [[ $configured =~ ^[1-9][0-9]*$ ]]; then
+    (( configured > max )) && configured=$max
+    printf '%s\n' "$configured"
+  elif [[ $configured == auto ]]; then
+    printf '%s\n' "$max"
+  else
+    # Run-Gate leaves Assay's serial default alone when jobs is omitted.
+    printf '1\n'
+  fi
+}
+
+read_meminfo_mib() {  # <field>: return a field from R2_MEMINFO in whole MiB, or empty
+  local field=$1
+  awk -v key="$field:" '$1 == key {print int($2 / 1024); found=1; exit} END {if (!found) exit 1}' \
+    "${R2_MEMINFO:-/proc/meminfo}" 2>/dev/null || true
+}
+
+read_ksm_value() {  # <file>: decimal sysfs value or unavailable
+  local value
+  if [[ -r $1 ]] && IFS= read -r value < "$1" && [[ $value =~ ^[0-9]+$ ]]; then
+    printf '%s\n' "$value"
+  else
+    printf 'unavailable\n'
+  fi
+}
+
+ksm_preflight() {
+  local root=${R2_KSM_SYSFS:-/sys/kernel/mm/ksm}
+  KSM_RUN=$(read_ksm_value "$root/run")
+  local sharing shared eligibility
+  sharing=$(read_ksm_value "$root/pages_sharing")
+  shared=$(read_ksm_value "$root/pages_shared")
+  # The runner cannot infer a process's MADV_MERGEABLE / PR_SET_MEMORY_MERGE
+  # opt-in from its lane declaration. Report this as unverified, not enabled.
+  eligibility=unverified
+  KSM_INFO="KSM: run=$KSM_RUN pages_sharing=$sharing pages_shared=$shared lane_eligibility=$eligibility (workloads must opt in with MADV_MERGEABLE or PR_SET_MEMORY_MERGE)"
+  echo "INFO: $KSM_INFO" >&2
+}
+
+cpu_saturation_hint() {
+  (( ! instances && ! merge_only )) || return 0
+  local arg
+  for arg in "${args[@]}"; do
+    [[ $arg != --shard && $arg != --shard=* && $arg != --merge-shards && $arg != --merge-shards=* ]] || return 0
+  done
+  lane_is_native_assay || return 0
+  local workers cpus advised
+  workers=$(workers_per_instance)
+  [[ $workers =~ ^[1-9][0-9]*$ ]] || return 0
+  cpus=$(nproc 2>/dev/null || true)
+  [[ $cpus =~ ^[1-9][0-9]*$ ]] || return 0
+  (( workers < cpus )) || return 0
+  advised=$((cpus / workers))
+  (( advised > 1 )) || return 0
+  echo "CPU hint: $workers worker(s) per native R2 instance on $cpus CPUs; if each worker is single-threaded, --instances $advised would use the available CPU slots. This is advice only; it does not change the run." >&2
+}
+
+fleet_memory_guard() {
+  # Run-Gate's resources.memory remains the hard ceiling on every container.
+  # This admission estimate scales that ceiling by workers, then admits only
+  # expected peaks against RAM plus a bounded, host-visible swap allowance.
+  local count=$1 lane_cap instance_override worker_peak jobs_max workers
+  local reserve avail swap_total swap_free overcommit factor100 whole frac
+  local scaled_cap expected_instance expected_total base extra swap_allowance budget
+  instance_override=${R2_INSTANCE_MEM_MIB:-}
+  lane_cap=$(lane_memory_mib)
+  [[ -n $lane_cap || -n $instance_override ]] || {
+    echo "memory guard: lane $lane declares no resources.memory, so Run-Gate applies no container memory cap and $count instance(s) are unbounded; set R2_INSTANCE_MEM_MIB to the measured per-container peak or declare resources.memory" >&2
+    exit 2; }
+  if [[ -n $lane_cap ]]; then
+    [[ $lane_cap =~ ^[1-9][0-9]{0,6}$ ]] || {
+      echo "memory guard: lane $lane resources.memory must be below 10^7 MiB (got '$lane_cap')" >&2; exit 2; }
+  fi
+  reserve=${R2_HOST_RESERVE_MIB:-1024}
+  [[ $reserve =~ ^(0|[1-9][0-9]{0,6})$ ]] || {
+    echo "memory guard: R2_HOST_RESERVE_MIB must be decimal MiB below 10^7 (got '$reserve')" >&2; exit 2; }
+  if [[ -n $instance_override ]]; then
+    [[ $instance_override =~ ^[1-9][0-9]{0,6}$ ]] || {
+      echo "memory guard: R2_INSTANCE_MEM_MIB must be decimal MiB below 10^7 (got '$instance_override')" >&2; exit 2; }
+  fi
+  if [[ -n ${R2_WORKER_MEM_MIB:-} ]]; then
+    [[ $R2_WORKER_MEM_MIB =~ ^[1-9][0-9]{0,6}$ ]] || {
+      echo "memory guard: R2_WORKER_MEM_MIB must be decimal MiB below 10^7 (got '$R2_WORKER_MEM_MIB')" >&2; exit 2; }
+  fi
+  avail=$(read_meminfo_mib MemAvailable)
+  [[ $avail =~ ^[0-9]{1,12}$ ]] || { echo 'memory guard: cannot read MemAvailable' >&2; exit 75; }
+  swap_total=$(read_meminfo_mib SwapTotal)
+  swap_free=$(read_meminfo_mib SwapFree)
+  [[ $swap_total =~ ^[0-9]{1,12}$ && $swap_free =~ ^[0-9]{1,12}$ ]] || {
+    echo 'memory guard: cannot read SwapTotal / SwapFree' >&2; exit 75; }
+  workers=$(workers_per_instance)
+  jobs_max=$(lane_jobs_max)
+  [[ $workers =~ ^[1-9][0-9]*$ && $jobs_max =~ ^[1-9][0-9]*$ ]] || {
+    echo 'memory guard: cannot determine the lane worker count' >&2; exit 75; }
+  (( workers <= jobs_max )) || workers=$jobs_max
+
+  if [[ -n $lane_cap ]]; then
+    scaled_cap=$(((lane_cap * workers + jobs_max - 1) / jobs_max))
+    (( scaled_cap >= 128 )) || scaled_cap=128
+  else
+    scaled_cap=not-applicable
+  fi
+  if [[ -n $instance_override ]]; then
+    expected_instance=$instance_override
+    worker_peak=not-applicable
+  else
+    if [[ -n ${R2_WORKER_MEM_MIB:-} ]]; then
+      worker_peak=$R2_WORKER_MEM_MIB
+    else
+      worker_peak=$(((lane_cap + jobs_max - 1) / jobs_max))
+    fi
+    expected_instance=$((worker_peak * workers))
+    (( expected_instance >= 128 )) || expected_instance=128
+  fi
+  expected_total=$((count * expected_instance))
+
+  if [[ -n ${R2_OVERCOMMIT:-} ]]; then
+    overcommit=$R2_OVERCOMMIT
+  elif (( swap_total > 0 )) && [[ $KSM_RUN == 1 ]]; then
+    overcommit=2.0
+  else
+    overcommit=1.0
+  fi
+  [[ $overcommit =~ ^([1-4])([.][0-9]{1,2})?$ ]] || {
+    echo "memory guard: R2_OVERCOMMIT must be a decimal factor from 1.0 to 4.0 (got '$overcommit')" >&2; exit 2; }
+  whole=${BASH_REMATCH[1]}; frac=${BASH_REMATCH[2]#\.}; frac=${frac:-0}
+  ((${#frac} == 1)) && frac="${frac}0"
+  factor100=$((whole * 100 + 10#$frac))
+  (( factor100 >= 100 && factor100 <= 400 )) || {
+    echo "memory guard: R2_OVERCOMMIT must be a decimal factor from 1.0 to 4.0 (got '$overcommit')" >&2; exit 2; }
+  base=$((avail - reserve)); (( base > 0 )) || base=0
+  extra=$((base * (factor100 - 100) / 100))
+  swap_allowance=$swap_free
+  (( swap_allowance <= extra )) || swap_allowance=$extra
+  budget=$((base + swap_allowance))
+  if (( expected_total > budget )); then
+    echo "memory guard: expected $count instance(s) x $expected_instance MiB = $expected_total MiB; lane_cap=${lane_cap:-uncapped} MiB, workers_per_instance=$workers/$jobs_max, scaled_lane_ceiling=$scaled_cap MiB, worker_peak=$worker_peak MiB; MemAvailable=$avail MiB - reserve=$reserve MiB = $base MiB; overcommit=$overcommit, SwapFree=$swap_free MiB, swap_allowance=$swap_allowance MiB, budget=$budget MiB; expected peak exceeds budget (R2_INSTANCE_MEM_MIB overrides the per-instance estimate; R2_WORKER_MEM_MIB overrides the per-worker estimate)" >&2
+    exit 75
+  fi
+  echo "memory guard: expected $count instance(s) x $expected_instance MiB = $expected_total MiB; lane_cap=${lane_cap:-uncapped} MiB, workers_per_instance=$workers/$jobs_max, scaled_lane_ceiling=$scaled_cap MiB, worker_peak=$worker_peak MiB; MemAvailable=$avail MiB - reserve=$reserve MiB = $base MiB; overcommit=$overcommit, SwapFree=$swap_free MiB, swap_allowance=$swap_allowance MiB, budget=$budget MiB; expected peak fits" >&2
+}
+
+if (( ! merge_only )); then clamp_jobs; fi
+ksm_preflight
 if (( instances )); then fleet_memory_guard "$instances"; fi
-if (( ! instances && ! merge_only )); then clamp_jobs; fi
+cpu_saturation_hint
 dir="$RUNNER_HOME/campaigns/$start"
 control_file="$RUNNER_HOME/locks/$campaign_base.active"
 install -d -m 0700 "$RUNNER_HOME/campaigns" "$RUNNER_HOME/locks"
@@ -606,6 +792,7 @@ progress_dir="$checkout/$rel/.assay"
 mkdir -p -- "$progress_dir"
 rm -f -- "$dir/final-exit" "$dir/campaign-summary.json" "$dir/verdict.json"
 printf '%s\n' "$(date -u +%FT%TZ)" > "$dir/.supervision-start"
+printf '%s\n' "$KSM_INFO" > "$dir/ksm-status"
 printf 'started_utc=%s\nstart=%s\ncommit=%s\nproject=%s\nlane=%s\nargs=%s\n' \
   "$(date -u +%FT%TZ)" "$start" "$commit" "$rel" "$lane" "${args[*]}" > "$dir/metadata.txt"
 

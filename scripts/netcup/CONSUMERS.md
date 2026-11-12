@@ -709,17 +709,47 @@ bash ~/runner-scripts/run-r2-campaign.sh stop t3-<tool>-<tag>-<lane>
   `killed`/`survived` records of the checkout's own store with provenance.
 - Values are checked by presence: a zero, empty, malformed or repeated value
   is refused by name.
-- Memory guard: `instances x (R2_INSTANCE_MEM_MIB or the lane's
-  resources.memory) + R2_HOST_RESERVE_MIB (1024)` must fit `MemAvailable`
-  (else exit 75). A lane without `resources.memory` has no container cap, so
-  it needs `R2_INSTANCE_MEM_MIB` or is refused by name.
+- Memory admission estimates expected peaks, not the sum of each container's
+  full `resources.memory` ceiling. Run-Gate applies that ceiling to every
+  container and offers no per-invocation memory override. For a 3 GiB lane
+  with `jobs_max = 3`, start three one-worker shards like this:
+
+  ~~~bash
+  run-job t3-<tool>-<tag>-<lane>-s1 -- bash ~/runner-scripts/run-r2-campaign.sh \
+    t3-<tool>-<tag>-<lane>-s1 <commit> <project-dir> <run-gate-lane> --instances 3 --jobs 1
+  ~~~
+
+  The default estimate is 1024 MiB per worker, so admission counts 3 x 1024
+  MiB, while each Run-Gate container retains its configured 3 GiB ceiling.
+  `--jobs N` selects workers per instance; with lane `jobs = "auto"`, the
+  estimate uses the `jobs_max` ceiling, and without a jobs setting Run-Gate
+  leaves Assay serial. Set `R2_WORKER_MEM_MIB` to a measured peak per worker,
+  or use the existing `R2_INSTANCE_MEM_MIB` for a measured expected peak per
+  container. Both accept positive decimal MiB below 10^7.
+- The budget is `MemAvailable - R2_HOST_RESERVE_MIB` (default 1024 MiB) plus
+  the smaller of `SwapFree` and `(R2_OVERCOMMIT - 1) x available RAM after
+  reserve`. `R2_OVERCOMMIT` accepts 1.0..4.0; when unset it is 2.0 only when
+  swap exists and KSM reports `run=1`, otherwise 1.0. The runner prints the
+  estimate and every term in the budget. A lane without `resources.memory`
+  still needs `R2_INSTANCE_MEM_MIB`; it refuses by name without it, even if
+  `R2_WORKER_MEM_MIB` is set.
+- Every campaign start prints and saves KSM `run`, `pages_sharing`,
+  `pages_shared` and lane eligibility for `status <base>`. Eligibility is
+  unverified because the runner cannot infer process opt-in; only processes
+  using `MADV_MERGEABLE` or `PR_SET_MEMORY_MERGE` are eligible. `R2_KSM_SYSFS`
+  points at a fake sysfs root in tests. The runner observes KSM and does not
+  enable it.
+- A native Assay R2 lane with fewer workers than CPUs prints an advisory
+  `--instances K` where `K = floor(nproc / workers per instance)`, if each
+  worker is single-threaded. The advice does not change the run.
 - Known limits: the guard admits at start and is not a runtime limit; the
   lane's own shared fixtures (golden DB, fixed ports, browser sessions) must
   be per-container or the lane must not be sharded.
 
 See the [shard-instance design rationale](DESIGN-GUIDE.md#shard-instances-of-one-campaign-nc-42)
-for why a fleet is a supervisor of ordinary child campaigns and why the
-guards have no defaults.
+for why a fleet is a supervisor of ordinary child campaigns, and the
+[memory-admission rationale](DESIGN-GUIDE.md#memory-admission-cpu-guidance-and-ksm-visibility-nc-48)
+for the estimate, overcommit and KSM observations.
 
 When running a copied supervisor script, keep both lib.sh and run-lane.sh
 beside it. Set RUNNER_ENV to the installed runner.env path if that copy does
