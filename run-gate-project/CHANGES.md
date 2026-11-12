@@ -9,6 +9,77 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
 
 ## [Unreleased]
 
+<!-- cmru: release history -->
+
+## [25.5.0] - 2026-11-12
+<!-- cmru: generated -->
+<!-- cmru: source-end=3c9e9840fd25bbe8c719d5305af4526908881528 -->
+
+### Added
+- feat(run-gate): add per-lane network policy (24ed15cb2)
+- feat(netcup): make persistent R2 supervision usable (10c215e0e)
+- feat(run-gate): enable relaxed io_sync on measured environments (aed77bf92)
+
+### Fixed
+- fix(run-gate): document monorepo config test exception (5f4f4a9cb)
+- fix(run-gate): align io_sync regression expectations (703c8d510)
+- fix(run-gate): qualify T3 R2 base and surface tier contract (4110e93de)
+- fix(run-gate): keep log-stream shim polling child owned (RG-254) (b455c4a0c)
+
+### Changed
+- backlog(RG-268): describe the real mechanism (incomplete os.fstat fake hit in contextlib teardown), production guard unchanged (5c1ade4d8)
+- backlog: file r1002 reinstall and CIU R2 follow-ups (24669fd94)
+- run-gate docs: DESIGN-GUIDE publishes the RG-266 auto formula, RG-265 backlog entry uses the per-lane shard paths, no blank line at EOF; doc-contract tests pin both (re-review R2R-1/R2R-2) (d398ebc53)
+- run-gate tests: resolve CMRU's whole_target R1 lane assay-r0-r1 instead of the coverage lane wp-cmru removed (origin/main 4ddeb43f6 selftest regression) (6db8e12ad)
+- run-gate tests: resolve CMRU's whole_target R1 lane assay-r0-r1 instead of the coverage lane wp-cmru removed (origin/main 4ddeb43f6 selftest regression) (e359211eb)
+- run-gate: list the RG-265 flags in --help (strict --merge-shards wording), pinned by a test (1ee03b8d3)
+- run-gate: strict --merge-shards (missing stores refused, Assay --merge-shard-store), Assay 12.2.0 floor from the inventory version, --shard refuses exec/resources.shared lanes and an absent image, shard artifacts keyed by the run-gate lane, r2_oversubscribe default 1.0, docs synchronized with doc-contract tests (independent review B1-B4) (51c350db8)
+- run-gate: shard/merge/carry-over/targeted native R2 instances (RG-265), auto oversubscription (RG-266) (0a679658b)
+- run-gate: document the T3 R2 worker ceiling contract (c0738a1fe)
+- File host-parallel R2 findings (67cb01f00)
+- Restore Assay effective-base documentation and guards (04ce3b6d5)
+- backlog: file naf-reported gaps (ciu selection under --dir, host-wide secrets, run-gate per-lane secret mounts) (b6debd54e)
+- backlog: file host-campaign findings H1-H7 and cross-host campaign constraints (0c6ea9de4)
+- backlog: file naf-reported gaps (assay R2 test selection, run-gate stack prerequisites, cmru floating image tags) (1300ae206)
+
+### Documentation
+- docs: scope R2 identity by Assay version (33842800f)
+- docs(r2): version identity rules for Assay B529 (969705099)
+- docs(run-gate): preserve T3 state guard wording (a9353867d)
+- docs(run-gate): retain judged-state guard phrase (55be02bab)
+- docs(r2): scope judge identity to Assay 12.1.1 (d6664f53d)
+- docs(run-gate): clarify judged-tree identity wording (f0df717f4)
+- docs(run-gate): mark network config example schema (40ef77c5d)
+- docs(backlog): fix review findings for backlog filing (54fead686)
+- docs(run-gate): make T0-T3 tiers normative (b15962086)
+- docs(run-gate): remove controller-local RG-255 evidence paths (fef35154d)
+- docs(backlog): file backlog-filing2 items (f59972d13)
+- docs(test-tiers): rev 4 after re-review 3 (N7, N8, S11-S15, nits) (ae5c6691a)
+- docs(backlog): file NL-57..59, KI-146..147, RG-256..259, NC-29..30, B523 (ea774a73d)
+- docs(test-tiers): rev 3 after re-review 2 (N1-N6, S1-S10, nits) and operator round 3 (99cfc29e2)
+- docs(testing): add eatmydata and page-cache sharing to the cheap wins (866b6f376)
+- docs(testing): revise tier methodology and lane rework after review (1db3b353b)
+- docs(testing): add T0-T3 test tiers and the lane rework design (0a606b192)
+- docs(run-gate): close verdict reuse design review (6bba32b59)
+- docs(run-gate): close verdict reuse review findings (355203bba)
+- docs(run-gate): design exact verdict reuse (77318d8f2)
+
+### Testing
+- test(run-gate): assert complete foreign stat shape (70d99e1e4)
+- test(run-gate): fix release gate selftest regressions (06e3689e7)
+- test: normalize commented identity passages (1921dcfab)
+- test(run-gate): follow CMRU T1 lane identity (e10fb3948)
+- test(run-gate): protect probe and docs network contracts (ed1aca61d)
+- test(run-gate): remove wall-clock oracle from isolated-container test (b9af36dc0)
+- test(run-gate): keep tier docs sync within skip policy (18f88c9ba)
+- test(run-gate): make stdout-holder regression deterministic (RG-255) (943fc94c8)
+- test(run-gate): decouple RG-109 client completion from stdout EOF (RG-255) (1e3fbcba7)
+- test(run-gate): close RG-254 deterministic review gate (ec75e082e)
+- test(run-gate): add temporary RG-254 focused gate lane (93fb98fb9)
+- test(run-gate): defer forced-window cleanup until PID registration (acfe8bb39)
+- test(run-gate): force RG-254 child registration window (46f7b4a0e)
+
+<!-- cmru: pending release notes begin -->
 ### Added
 - RG-265: flexible native-R2 campaigns. `--shard K/N` runs one shard of an
   Assay lane as its own instance (`<lane>.shard<K>of<N>`: own in-flight
@@ -65,8 +136,7 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
   stdout-holder regression uses ready/release pipes and verifies the child is
   live after its parent exits; apply the same synchronization to the immediate
   re-attach/follower tests (RG-255).
-
-<!-- cmru: release history -->
+<!-- cmru: pending release notes end -->
 
 ## [25.4.1] - 2026-11-09
 <!-- cmru: generated -->
