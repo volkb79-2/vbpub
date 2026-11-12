@@ -1465,7 +1465,30 @@ with no score, not a parse of the challenge HTML.
 **Status:** OPEN; priority design decision (blocks MDT-085). Source: [h1g-REVIEW.md](docs/evidence/h1g-REVIEW.md) B2, [host-endpoints-and-phase2-fastpath-DESIGN.md](../docs/design/host-endpoints/DESIGN-phase2-fastpath-2026-11-07.md) (consumer table, section 5.4).
 **Finding.** host-setup now publishes only the BuildKit and Docker-API facts (`BUILDX_BUILDER`, `BUILDKIT_HOST`, `MDT_HOST_DOCKER_GID`, `MDT_BUILDKIT_SOCKET`, `MDT_BUILDKIT_SOCKET_DIR`, `MDT_BUILDKIT_GID`, `MDT_DOCKER_API_SOCKET`, `MDT_DOCKER_API_SOCKET_DIR`) into `/etc/host-endpoints.d/mdt-host-setup.env`. The cutover pieces expect `CGPROFILE_CONTROL_SOCKET_DIR`, `CGPROFILE_OBSERVER_*`, `TOPOS_OBSERVE_*`, `CGPROFILE_CONTROL_GID` and `TOPOS_OBSERVE_GID` to exist in the host environment, but nothing writes them yet: `cgprofiled install` and `toposd install` are the natural publishers and are not installed on the live host. The design defers the devcontainer level (`${localEnv:VAR}` from a pam_env block, with an optional default) and delivers cockpit values by container `-e` from the record; neither path has an owner for the CGPROFILE/TOPOS keys.
 **Decide.** Which installers publish which keys (each daemon's installer writes its own fragment, or host-setup reads the daemon sockets), how a VS Code Remote-SSH server or devcontainer CLI picks them up (pam_env block versus an `initializeCommand` that reads the record), and what a cockpit start does when a fragment is missing (refuse versus omit the mount).
-**Close when.** The decision is recorded in `docs/DESIGN-GUIDE.md` and the fragments exist on a host, so MDT-085 can be applied.
+
+**Update 2026-11-12: the design gap is now an observed session defect.** The
+daemon publishers now exist and the checked-in runner cockpit launcher forwards
+their values (`scripts/netcup/runner/start-cockpit-runner.sh:34-45`), but the
+devcontainer templates still declare no cgprofile endpoint or mount
+(`.devcontainer/devcontainer.json:161-214`,
+`mdt-cockpit/templates/devcontainer.json:153-206`). Run-Gate 25.5.0 correctly
+requires these variables directly in its process environment and has no record
+fallback (`run-gate-project/run_gate.py:1041-1047`,
+`run-gate-project/README.md:89-96`; Run-Gate RG-244 owns that contract). In the
+observed cockpit session it refused every lane with
+`CGPROFILE_CONTROL_SOCKET is unset or empty` and directed the operator to
+`cgprofiled doctor` and the endpoints record, but the session had not received
+the record. The session therefore stayed on Run-Gate 25.2.1. This evidence
+confirms the delivery decision MDT-086 owns; it is not a request for Run-Gate
+to invent a fallback.
+
+**Close when.** The delivery decision is recorded in `docs/DESIGN-GUIDE.md`;
+the daemon fragments exist; a devcontainer built from a complete record receives
+the required `CGPROFILE_*` values and read-only socket mounts; and a registered
+Run-Gate 25.5.0 lane starts from that session without a manual export or
+Run-Gate default. Missing or contradictory record values refuse before
+container creation, and observer/placed lanes remain fail-closed. This also
+unblocks MDT-085.
 
 ## MDT-087 - the new `install.sh` refuses on the live controller host until the operator removes the retired provisioning by hand (2026-11-08)
 
