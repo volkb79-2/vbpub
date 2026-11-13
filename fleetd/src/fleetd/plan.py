@@ -11,11 +11,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
 
-from .contracts import ContractError, validate_host_facts, validate_lane_demand
+from .contracts import ContractError, is_candidate_id, validate_host_facts, validate_lane_demand
 
 
 _HOST_ID = re.compile(r"(?:\.{1,2}|[A-Za-z0-9][A-Za-z0-9_.-]{0,63})\Z")
-_CANDIDATE_ID = re.compile(r"[0-9a-f]{64}\Z")
 
 
 @dataclass(frozen=True)
@@ -106,7 +105,7 @@ def parse_candidate_table(value: object) -> tuple[CandidateInput, ...]:
             {"measured_memory_bytes", "estimated_memory_class", "elapsed_seconds", "measured_on_host", "memory_crash_evidence", "memory_crash_retries"},
         )
         candidate_id = row["id"]
-        if not isinstance(candidate_id, str) or _CANDIDATE_ID.fullmatch(candidate_id) is None:
+        if not is_candidate_id(candidate_id):
             raise ContractError(
                 f"{where}.id: expected a 64-character lowercase SHA-256 candidate id"
             )
@@ -898,7 +897,7 @@ def render_commands(plan: Mapping[str, Any]) -> str:
             lines.append(f"mkdir -p {directory}")
             lines.append(f"printf '%s\\n' {values} > {file_arg}")
             lines.append(
-                "# Exit 4 is the expected PARTIAL result when this batch leaves candidates unselected."
+                "# Exit 4 is BUDGET_EXCEEDED; selected candidates may still be pending."
             )
             lines.append(f"if run-gate {lane} --jobs {jobs} --only-candidates {file_arg}; then")
             lines.append("  status=0")
@@ -906,7 +905,7 @@ def render_commands(plan: Mapping[str, Any]) -> str:
             lines.append("  status=$?")
             lines.append("fi")
             lines.append('if [ "$status" -eq 4 ]; then')
-            lines.append('  echo "expected PARTIAL result for selected batch" >&2')
+            lines.append('  echo "run-gate reported BUDGET_EXCEEDED (exit 4); check closeout for pending candidates" >&2')
             lines.append('elif [ "$status" -ne 0 ]; then')
             lines.append('  echo "run-gate failed with exit code $status" >&2')
             lines.append('  exit "$status"')

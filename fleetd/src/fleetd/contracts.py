@@ -17,6 +17,11 @@ class ContractError(ValueError):
 _CANDIDATE_ID = re.compile(r"[0-9a-f]{64}\Z")
 
 
+def is_candidate_id(value: object) -> bool:
+    """Return whether value is a native Assay lowercase SHA-256 id."""
+    return isinstance(value, str) and _CANDIDATE_ID.fullmatch(value) is not None
+
+
 @dataclass(frozen=True)
 class HostFacts:
     """Validated ``host-facts/1`` document."""
@@ -175,7 +180,7 @@ def _strings(value: object, where: str, *, unique: bool = True) -> tuple[str, ..
 
 def _candidate_id(value: object, where: str) -> str:
     candidate_id = _string(value, where)
-    if _CANDIDATE_ID.fullmatch(candidate_id) is None:
+    if not is_candidate_id(candidate_id):
         raise ContractError(
             f"{where}: expected a 64-character lowercase SHA-256 candidate id"
         )

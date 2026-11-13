@@ -14,7 +14,10 @@ per host inform ETA only. See the [design guide](docs/DESIGN-GUIDE.md) for the
 reasons and the [consumer guide](docs/CONSUMERS.md) for runnable examples.
 `fleet plan` writes no files. `--commands` prints a self-contained host section
 with one serial Run-Gate invocation per batch. It accepts exit 4 as the
-expected `PARTIAL` result from candidate selection and stops on other failures.
+`BUDGET_EXCEEDED` result from Run-Gate; candidate selection normally leaves
+other campaign candidates unselected, and a batch that actually exhausts its
+budget has the same exit code. It stops on other failures. The final whole-lane
+closeout runs any candidates that remain pending before producing the verdict.
 Copy only the matching host section to that host and run it from the lane's
 project checkout there. After collecting the host stores, use Run-Gate's
 `--merge-state` whole-lane run to produce the complete verdict. Fleetd has no

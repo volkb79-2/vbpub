@@ -6,6 +6,7 @@ import copy
 import hashlib
 import json
 import random
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -156,8 +157,76 @@ def test_plan_preserves_special_alone_and_retry_work_on_one_host_and_renders_com
     commands = render_commands(plan)
     assert "if run-gate r2 --jobs 1 --only-candidates" in commands
     assert _cid("big") in commands and _cid("retry") in commands
-    assert "expected PARTIAL result" in commands
+    assert "BUDGET_EXCEEDED (exit 4)" in commands
     assert "docker" not in commands and "ssh " not in commands
+
+
+@pytest.mark.parametrize(
+    ("first_exit", "second_exit", "expected_exit", "expected_calls"),
+    [(0, 0, 0, 2), (4, 4, 0, 2), (2, 4, 2, 1), (1, 4, 1, 1)],
+)
+def test_rendered_script_runs_batches_serially_and_handles_exit_codes(
+    tmp_path, first_exit, second_exit, expected_exit, expected_calls
+):
+    candidate_ids = [_cid("first batch"), _cid("second batch")]
+    plan = {
+        "lane": "r2",
+        "hosts": [{
+            "id": "host-a",
+            "status": "available",
+            "worker_slots": 2,
+            "batches": [
+                {"batch": 1, "candidate_ids": [candidate_ids[0]]},
+                {"batch": 2, "candidate_ids": [candidate_ids[1]]},
+            ],
+        }],
+    }
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    fake_run_gate = fake_bin / "run-gate"
+    fake_run_gate.write_text(
+        "#!/bin/sh\n"
+        "set -eu\n"
+        "calls=0\n"
+        "[ ! -f \"$FLEETD_CALL_COUNT\" ] || calls=$(cat \"$FLEETD_CALL_COUNT\")\n"
+        "calls=$((calls + 1))\n"
+        "printf '%s\\n' \"$calls\" > \"$FLEETD_CALL_COUNT\"\n"
+        "printf '%s\\n' \"$*\" >> \"$FLEETD_CALLS\"\n"
+        "case \"$calls\" in\n"
+        "  1) exit \"$FLEETD_FIRST_EXIT\" ;;\n"
+        "  2) exit \"$FLEETD_SECOND_EXIT\" ;;\n"
+        "  *) exit 99 ;;\n"
+        "esac\n",
+        encoding="utf-8",
+    )
+    fake_run_gate.chmod(0o755)
+    call_count = tmp_path / "call-count"
+    calls = tmp_path / "calls"
+    environment = {
+        "PATH": f"{fake_bin}:/usr/bin:/bin",
+        "FLEETD_CALL_COUNT": str(call_count),
+        "FLEETD_CALLS": str(calls),
+        "FLEETD_FIRST_EXIT": str(first_exit),
+        "FLEETD_SECOND_EXIT": str(second_exit),
+    }
+    result = subprocess.run(
+        ["/bin/bash", "-c", render_commands(plan)],
+        cwd=tmp_path,
+        env=environment,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == expected_exit
+    assert int(call_count.read_text(encoding="utf-8")) == expected_calls
+    assert len(calls.read_text(encoding="utf-8").splitlines()) == expected_calls
+    first_ids = tmp_path / ".assay/fleetd-plan/host-a/batch-001.ids"
+    assert first_ids.read_text(encoding="utf-8").strip() == candidate_ids[0]
+    second_ids = tmp_path / ".assay/fleetd-plan/host-a/batch-002.ids"
+    assert second_ids.exists() is (expected_calls == 2)
+    if expected_calls == 2:
+        assert second_ids.read_text(encoding="utf-8").strip() == candidate_ids[1]
 
 
 def test_physical_cap_routes_a_large_candidate_to_the_bigger_host():
@@ -494,6 +563,8 @@ def test_parse_candidate_contract_errors_are_precise():
         parse_candidate_table(_candidate_table([{"id": "x\ny", "file": "a"}]))
     with pytest.raises(ContractError, match="64-character lowercase SHA-256 candidate id"):
         parse_candidate_table(_candidate_table([{"id": "A" * 64, "file": "a"}]))
+    with pytest.raises(ContractError, match="64-character lowercase SHA-256 candidate id"):
+        parse_candidate_table(_candidate_table([{"id": None, "file": "a"}]))
     with pytest.raises(ContractError, match="expected integer"):
         parse_candidate_table(_candidate_table([{"id": valid_id, "file": "a", "measured_memory_bytes": True}]))
     with pytest.raises(ContractError, match="expected low or high"):

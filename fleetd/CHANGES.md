@@ -21,7 +21,7 @@
   fleetd has no transport.
 - Record the omitted Run-Gate campaign-plan client under RG-276.
 - Emit one serial `--only-candidates` Run-Gate call per host batch, with
-  explicit jobs and expected `PARTIAL` exit handling; reserve campaign-slot
+  explicit jobs and `BUDGET_EXCEEDED` exit handling; reserve campaign-slot
   concurrency for the future supervisor.
 - Balance placements by normalized reference work per worker when Geekbench
   scores cannot be compared, and retain a reason when a candidate's source
@@ -30,3 +30,5 @@
 - Document that the manual command path cannot pass fleetd's per-host RAM
   budget into Assay, and track the enforcement contract for the Run-Gate
   campaign client.
+- Execute generated batch scripts against a fake Run-Gate to pin status-4
+  continuation, failure stopping, and candidate-file creation.

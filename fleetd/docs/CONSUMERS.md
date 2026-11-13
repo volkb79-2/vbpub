@@ -109,9 +109,14 @@ transport and running every section in one shell sends them all to that one
 machine. `fleet plan` itself writes no files; the copied section creates the
 candidate files beneath `.assay/fleetd-plan/`.
 
-Run-Gate marks an incomplete `--only-candidates` selection `PARTIAL` and exits
-4. The generated script accepts exit 0 or 4 so the next batch runs, and stops
-on any other result. An unplaceable candidate or a host refused by the PSI
+Assay reports candidates left out of an `--only-candidates` selection as never
+started, so the claim is `PARTIAL` and Run-Gate exits 4 (`BUDGET_EXCEEDED`).
+The generated script accepts exit 0 or 4 so the next batch runs, and stops on
+any other result. Exit 4 cannot tell a normal partial selection from a batch
+that really exhausted the lane budget, so the script does not prove the
+selected candidates finished; the whole-lane closeout below executes any that
+did not. Exit 2 (for example a crashed candidate) and exit 1 stop the section.
+An unplaceable candidate or a host refused by the PSI
 admission threshold is reported in the plan with a reason, never silently
 dropped. Each batch keeps the design's wave accounting in JSON, while one
 selected-only invocation pays the baseline once for that batch.
@@ -127,10 +132,14 @@ equivalent enforced bound before treating the planner's wave proof as an
 execution guarantee.
 
 After all host sections finish, copy each host's whole same-judge Assay state
-store beneath the final checkout's ignored `.run-gate/` directory. Then run a
-whole-lane closeout without `--only-candidates`; Run-Gate merges the copied
-records and executes any remaining candidates before writing the complete
-verdict:
+store to its own directory beneath the final checkout's ignored
+`.run-gate/collected/`. For this project the normal Run-Gate state directory is
+`<repo>/.run-gate/assay-state/fleetd/`, where `<repo>` is the checkout that owns
+the shared `.git` (the main checkout, even when you run from a linked
+worktree); copy that directory as a whole, for
+example to `<repo>/.run-gate/collected/host-small/`. Then run a whole-lane
+closeout without `--only-candidates`; Run-Gate merges the copied records and
+executes any remaining candidates before writing the complete verdict:
 
 ```sh
 run-gate r2 \

@@ -78,11 +78,14 @@ Candidate, host, batch, and command ordering use explicit stable keys. JSON
 contains no generated timestamp. `--commands` prints self-contained sections;
 each writes one batch ID file in the checkout and invokes Run-Gate once with
 `--only-candidates` and the planned `--jobs` value. Batches run serially in
-the section. Candidate selection normally returns exit 4 (`PARTIAL`) because
-other campaign candidates were not selected; generated scripts accept 0 or 4
-and stop on any other result. Run only the matching host section from that
-host's lane checkout. After copying each host's Assay state under the final
-checkout's ignored `.run-gate/` directory, run the lane without
+the section. Candidate selection normally returns exit 4 because other campaign
+candidates were not selected (the claim is `PARTIAL`; the code is Run-Gate's
+`BUDGET_EXCEEDED`, so a genuinely exhausted batch budget looks the same).
+Generated scripts accept 0 or 4 and stop on any other result; the whole-lane
+closeout finishes any selected candidate that did not complete. Run only the
+matching host section from that host's lane checkout. Copy each host's whole
+Assay store from `<repo>/.run-gate/assay-state/fleetd/` beneath the final
+checkout's ignored `.run-gate/collected/` directory, then run the lane without
 `--only-candidates`, using repeatable `--merge-state` paths, to write the
 whole-lane verdict. The planner does not copy stores or provide transport.
 The unimplemented Run-Gate client verb is tracked as

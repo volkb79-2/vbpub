@@ -121,8 +121,11 @@ ignored for timing and recorded with a fallback reason.
 The batch target defaults to four times W and is configurable with
 --batch-multiplier. The command renderer emits one invocation per host batch,
 with `--jobs` no greater than W, and runs batches serially within each copied
-host section. Selected-only runs normally return Run-Gate exit 4 (`PARTIAL`);
-the generated script accepts 0 or 4 and stops on other codes. `efficient_upper_bound`
+host section. Selected-only runs normally return Run-Gate exit 4
+(`BUDGET_EXCEEDED`) because unselected candidates remain pending. A batch that
+actually exhausts its budget uses the same exit code; the generated script
+accepts 0 or 4 and stops on other codes, and the whole-lane closeout runs any
+candidates still pending. `efficient_upper_bound`
 must not exceed the lane's Assay `jobs_max`; the standalone planner cannot
 derive that value until the Run-Gate campaign client is implemented.
 
