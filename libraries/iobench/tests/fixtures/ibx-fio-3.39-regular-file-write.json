@@ -1,0 +1,34 @@
+{
+  "fio version": "fio-3.39",
+  "jobs": [
+    {
+      "error": 0,
+      "job options": {
+        "bs": "1048576",
+        "direct": "1",
+        "io_size": "4194304",
+        "iodepth": "32",
+        "ioengine": "posixaio",
+        "name": "seq1m-write",
+        "rw": "write"
+      },
+      "jobname": "seq1m-write",
+      "write": {
+        "bw_bytes": 279620266,
+        "clat_ns": {
+          "percentile": {
+            "50.000000": 13828096,
+            "90.000000": 13828096,
+            "95.000000": 13828096,
+            "99.000000": 13828096,
+            "99.900000": 13828096
+          }
+        },
+        "io_bytes": 4194304,
+        "iops": 266.666667,
+        "runtime": 15,
+        "total_ios": 4
+      }
+    }
+  ]
+}

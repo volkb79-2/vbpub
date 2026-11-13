@@ -96,6 +96,32 @@ scope, loaded background slice, wrapper, and collector image before it can
 pass. Run that mode from the required Docker scope, or omit the optional fsync
 collector.
 
+## 0. Real fio block-cap verification
+
+Run this from the checkout or from a flat copy containing `driver.py` and
+`job-template.fio`, with upstream fio 3.39 available. It creates one temporary
+regular file under `/tmp`, renders every writing job from the standard, quick,
+veryquick, and part (c) profiles, then runs one small representative for each
+of the 23 distinct `(bs, requested io_size remainder)` classes. The real JSON
+is passed through the same study parser used for live cells. The command never
+opens a block device:
+
+```bash
+python3 "$STUDY" verify-fio-rounding --fio /path/to/fio-3.39
+```
+
+Record the printed JSON summary as evidence. The optional real-fio test skips
+only when no fio executable is installed and prints this manual command in its
+skip reason; a present but incompatible fio version is a test failure.
+
+The two free-space floors have separate meanings. `--min-output-free` measures
+the filesystem holding `--out`; `--min-target-free` measures the filesystem
+holding a file target and is ignored for raw partition runs. Both values are
+required and saved as one resume policy. For the study's 32 GiB partition with
+a preallocated 24 GiB target file, an approved 20 GiB output floor and 1 GiB
+target floor are distinct inputs; use values from the host policy and preserve
+them unchanged on resume.
+
 ## 1. Target-read-only inventory and raw dry-run
 
 ```bash
@@ -136,7 +162,8 @@ raw_dry_run() {
     --max-memory-psi "$IBX_MAX_MEMORY_PSI" \
     --max-probe-latency-seconds "$IBX_MAX_PROBE_LATENCY" \
     --probe-consecutive-samples "$IBX_PROBE_CONSECUTIVE_SAMPLES" \
-    --min-memavailable "$IBX_MIN_MEMAVAILABLE" --min-free "$IBX_MIN_FREE" \
+    --min-memavailable "$IBX_MIN_MEMAVAILABLE" \
+    --min-output-free "$IBX_MIN_OUTPUT_FREE" --min-target-free "$IBX_MIN_TARGET_FREE" \
     --dry-run
 }
 current_system_disk_ack() {
@@ -341,7 +368,8 @@ host-escape -- python3 "$STUDY" run file-btrfs --target "$FILE" --device vda5 \
   --out "$OUT" --max-memory-psi "$IBX_MAX_MEMORY_PSI" \
   --max-probe-latency-seconds "$IBX_MAX_PROBE_LATENCY" \
   --probe-consecutive-samples "$IBX_PROBE_CONSECUTIVE_SAMPLES" \
-  --min-memavailable "$IBX_MIN_MEMAVAILABLE" --min-free "$IBX_MIN_FREE" --dry-run
+  --min-memavailable "$IBX_MIN_MEMAVAILABLE" \
+  --min-output-free "$IBX_MIN_OUTPUT_FREE" --min-target-free "$IBX_MIN_TARGET_FREE" --dry-run
 
 # Only after dry-run returns {"dry_run":true,"jobs_rendered":33,...}, run fio.
 host-escape -- python3 "$STUDY" run file-btrfs --target "$FILE" --device vda5 \
@@ -349,7 +377,8 @@ host-escape -- python3 "$STUDY" run file-btrfs --target "$FILE" --device vda5 \
   --out "$OUT" --max-memory-psi "$IBX_MAX_MEMORY_PSI" \
   --max-probe-latency-seconds "$IBX_MAX_PROBE_LATENCY" \
   --probe-consecutive-samples "$IBX_PROBE_CONSECUTIVE_SAMPLES" \
-  --min-memavailable "$IBX_MIN_MEMAVAILABLE" --min-free "$IBX_MIN_FREE"
+  --min-memavailable "$IBX_MIN_MEMAVAILABLE" \
+  --min-output-free "$IBX_MIN_OUTPUT_FREE" --min-target-free "$IBX_MIN_TARGET_FREE"
 
 # Require both file rungs (33 fio cells) and one non-empty bandwidth and IOPS
 # log per cell. This verifier only reads host output and prints a summary.
