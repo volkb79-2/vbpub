@@ -575,8 +575,7 @@ def test_fio_reported_write_overall_cap_is_rejected_after_actual_settlement(
         tmp_path, monkeypatch, failure_path):
     job = driver.Job("seq1m-write", "write", 1024**2, 1, 1, "wbps", 4 * 1024**2)
     monkeypatch.setattr(driver, "rung_jobs", lambda rung, part_c=False: [job])
-    monkeypatch.setattr(driver, "part_c_assessment",
-                        lambda _root: {"status": "complete", "confirmed": True})
+    monkeypatch.setattr(driver, "BASE_SCHEDULE_CELL_SETS", ())
     out = tmp_path / failure_path
     out.mkdir()
     state = driver.empty_state(driver.dt.datetime.now(driver.dt.UTC).isoformat(),
@@ -597,7 +596,7 @@ def test_fio_reported_write_overall_cap_is_rejected_after_actual_settlement(
         host.execute_fio = execute_then_fail
 
     with pytest.raises(driver.StudyError, match="fio-reported writes exceed the hard 500 GB cap"):
-        run_set(out, "part-c-repeat", host=host, offset=24 * GIB, size=8 * GIB)
+        run_set(out, "raw-t0", host=host)
 
     state = json.loads((out / driver.STATE_NAME).read_text(encoding="utf-8"))
     assert state["write_bytes"] == driver.WRITE_CAP + job.bs
