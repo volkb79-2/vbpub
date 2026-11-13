@@ -2511,8 +2511,10 @@ def test_run_dry_run_validates_and_renders_without_writing(tmp_path):
     assert host.discards == [] and host.fio.calls == []
 
 
-def test_stop_policy_documentation_maps_manifest_fields_to_run_options():
+def test_stop_policy_documentation_maps_manifest_fields_to_run_options(tmp_path):
     readme = " ".join((driver.HERE / "README.md").read_text(encoding="utf-8").split())
+    manifest = run_set(tmp_path / "dry-run", "raw-t0", host=FakeHost(), dry_run=True)["run_manifest"]
+    policy = manifest["stop_policy"]
     mapping = {
         "memory_psi_full_avg10_max_percent": "--max-memory-psi",
         "min_memavailable_bytes": "--min-memavailable",
@@ -2521,6 +2523,7 @@ def test_stop_policy_documentation_maps_manifest_fields_to_run_options():
         "probe_consecutive_samples": "--probe-consecutive-samples",
         "probe_interval_seconds": "--probe-interval-seconds",
     }
+    assert set(mapping) == set(policy) - {"io_psi"}
     parser = driver.build_parser()
     run_parser = next(action.choices["run"] for action in parser._actions
                       if "run" in (getattr(action, "choices", None) or {}))
@@ -2528,6 +2531,44 @@ def test_stop_policy_documentation_maps_manifest_fields_to_run_options():
     for policy_key, option in mapping.items():
         assert f"`{policy_key}` to `{option}`" in readme
         assert option in option_strings
+
+
+def test_acceptance_runbook_pins_the_expected_host_before_proceeding(tmp_path):
+    acceptance = (driver.HERE / "ACCEPTANCE.md").read_text(encoding="utf-8")
+    match = re.search(r"(?ms)^assert_expected_host\(\) \{\n.*?^\}", acceptance)
+    assert match is not None
+
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    host_escape = fake_bin / "host-escape"
+    host_escape.write_text(
+        "#!/bin/sh\n"
+        "[ \"$1\" = -- ] || exit 96\n"
+        "shift\n"
+        "[ \"$1\" = hostname ] && [ \"$2\" = -s ] || exit 97\n"
+        "printf '%s\\n' \"$FAKE_ACTUAL_HOST\"\n",
+        encoding="utf-8",
+    )
+    host_escape.chmod(0o755)
+    helper_and_call = f"{match.group(0)}\nassert_expected_host"
+
+    def invoke(*, actual_host, expected_host=None):
+        env = {"PATH": f"{fake_bin}:{os.defpath}", "FAKE_ACTUAL_HOST": actual_host}
+        if expected_host is not None:
+            env["IBX_EXPECTED_HOST"] = expected_host
+        return subprocess.run(
+            ["bash", "-euo", "pipefail", "-c", helper_and_call],
+            env=env,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+
+    assert invoke(actual_host="compute-a", expected_host="compute-a").returncode == 0
+    mismatch = invoke(actual_host="compute-b", expected_host="compute-a")
+    assert mismatch.returncode != 0 and "expected host compute-a" in mismatch.stderr
+    missing = invoke(actual_host="compute-a")
+    assert missing.returncode != 0 and "set the exact short hostname" in missing.stderr
 
 
 def test_dry_run_skips_active_timer_guard_while_live_run_still_requires_quiet_window(tmp_path):
