@@ -260,6 +260,7 @@ class CampaignManager:
             raise ContractError("plan.hosts: expected an array")
         seen_hosts: set[str] = set()
         seen_ids: set[str] = set()
+        all_assigned: set[str] = set()
         for host_index, host in enumerate(hosts):
             where = f"plan.hosts[{host_index}]"
             if not isinstance(host, dict) or not isinstance(host.get("id"), str):
@@ -270,6 +271,18 @@ class CampaignManager:
             if host_id in seen_hosts:
                 raise ContractError("plan.hosts: duplicate host id")
             seen_hosts.add(host_id)
+            assigned = host.get("assigned", [])
+            if not isinstance(assigned, list):
+                raise ContractError(f"{where}.assigned: expected an array")
+            assigned_ids: set[str] = set()
+            for candidate_index, candidate in enumerate(assigned):
+                if not isinstance(candidate, dict) or not is_candidate_id(candidate.get("id")):
+                    raise ContractError(f"{where}.assigned[{candidate_index}]: invalid candidate id")
+                candidate_id = candidate["id"]
+                if candidate_id in assigned_ids or candidate_id in all_assigned:
+                    raise ContractError(f"plan: candidate {candidate_id!r} is assigned more than once")
+                assigned_ids.add(candidate_id)
+                all_assigned.add(candidate_id)
             batches = host.get("batches", [])
             if not isinstance(batches, list):
                 raise ContractError(f"{where}.batches: expected an array")
@@ -281,14 +294,22 @@ class CampaignManager:
                 for candidate_id in batch["candidate_ids"]:
                     if not is_candidate_id(candidate_id):
                         raise ContractError(f"{where}.batches[{batch_index}]: invalid candidate id")
+                    if candidate_id not in assigned_ids:
+                        raise ContractError(f"{where}.batches[{batch_index}]: candidate is absent from assigned")
                     if candidate_id in seen_ids:
                         raise ContractError(f"plan: candidate {candidate_id!r} is assigned more than once")
                     seen_ids.add(candidate_id)
+            if not assigned_ids <= seen_ids:
+                raise ContractError(f"{where}.batches: assigned candidates are missing from batches")
             if host.get("status") == "available":
                 workers = host.get("worker_slots")
                 if isinstance(workers, bool) or not isinstance(workers, int) or workers < 1:
                     raise ContractError(f"{where}.worker_slots: expected a positive integer")
-        for row in plan.get("unplaced", []) + plan.get("terminal", []):
+        unplaced = plan.get("unplaced", [])
+        terminal = plan.get("terminal", [])
+        if not isinstance(unplaced, list) or not isinstance(terminal, list):
+            raise ContractError("plan unplaced/terminal: expected arrays")
+        for row in unplaced + terminal:
             if not isinstance(row, dict) or not is_candidate_id(row.get("id")):
                 raise ContractError("plan unplaced/terminal: invalid candidate id")
             if row["id"] in seen_ids:
@@ -388,7 +409,7 @@ class CampaignManager:
                         job["paused_seconds"] += pause
                 host_state["unreachable_since_mono"] = None
             host_state["last_contact_mono"] = now
-            host_state["status"] = "LOST" if returned_lost else "ONLINE"
+            host_state["status"] = "ONLINE"
             if returned_lost:
                 host_state["loss_requeued"] = False
                 host_state["returned_after_loss"] = True
@@ -490,8 +511,6 @@ class CampaignManager:
                         job["stop_pending"] = False
                     else:
                         job["status"] = "SUPERSEDED_PENDING"
-                if job["status"] == "LOST" and state_name == "RUNNING":
-                    job["status"] = "RUNNING"
             if prior_status == "LOST":
                 self._stop_returned_duplicates(state, host_id)
             self._stop_superseded_host(state, host_id)
@@ -699,8 +718,6 @@ class CampaignManager:
         host_row = next(row for row in state["plan"]["hosts"] if row["id"] == target_host)
         for batch in batches:
             ids = tuple(batch["candidate_ids"])
-            if not ids:
-                continue
             workers = 1 if batch.get("kind") == "retry" else min(host_row["worker_slots"], len(ids))
             spec = JobSpec(
                 campaign=state["campaign"],
@@ -714,8 +731,6 @@ class CampaignManager:
                 jobs=max(1, workers),
             )
             next_batch += 1
-            if spec.name in state["jobs"]:
-                continue
             state["jobs"][spec.name] = self._job_record(spec, self.clock(), batch.get("kind", "regular"), reason=reason)
 
     def _start_available(self, state: dict[str, Any]) -> None:
@@ -758,8 +773,6 @@ class CampaignManager:
                 job["adopted"] = not started
                 host_state["status"] = "ONLINE"
                 host_state["last_contact_mono"] = self.clock()
-                if host_state["last_progress_mono"] is None:
-                    host_state["last_progress_mono"] = now
                 active.append(job)
                 free -= 1
                 self._write_state(state)
@@ -829,9 +842,37 @@ class CampaignManager:
     def _collect_result(self, state: dict[str, Any]) -> dict[str, Any]:
         expected_ids = set(state["planned_ids"])
         events: list[dict[str, Any]] = []
+        seen_progress: set[tuple[str, str, str, str | None, float | None]] = set()
         missing_artifacts: list[dict[str, str]] = []
         progress_paths: dict[tuple[str, str], set[str]] = {}
         for job in state["jobs"].values():
+            allowed = set(job["candidate_ids"])
+            for record in job.get("records", []):
+                if not isinstance(record, dict):
+                    continue
+                candidate_id = record.get("candidate_id")
+                outcome = record.get("outcome_bucket")
+                if (
+                    not isinstance(candidate_id, str)
+                    or candidate_id not in expected_ids
+                    or candidate_id not in allowed
+                    or not isinstance(outcome, str)
+                    or outcome not in {
+                    "killed", "survived", "budget_exceeded", "hung", "crashed", "equivalent"
+                    }
+                ):
+                    continue
+                emitted_at = record.get("emitted_at") if isinstance(record.get("emitted_at"), str) else None
+                elapsed = record.get("elapsed_seconds")
+                elapsed_seconds = (
+                    float(elapsed)
+                    if isinstance(elapsed, (int, float)) and not isinstance(elapsed, bool) and math.isfinite(float(elapsed))
+                    else None
+                )
+                key = (job["host"], candidate_id, outcome, emitted_at, elapsed_seconds)
+                if key not in seen_progress:
+                    events.append({**record, "host": job["host"], "job": job["name"]})
+                    seen_progress.add(key)
             if job["status"] in {"QUEUED", "STARTING"}:
                 continue
             path = job.get("progress_path")
@@ -844,7 +885,17 @@ class CampaignManager:
                 missing_artifacts.append({"host": host, "artifact": "progress", "path": path})
                 continue
             for record in parse_progress(content, expected_ids & ids):
-                events.append({**record, "host": host, "job": self._job_for_record(state, host, record["candidate_id"])})
+                emitted_at = record.get("emitted_at") if isinstance(record.get("emitted_at"), str) else None
+                elapsed = record.get("elapsed_seconds")
+                elapsed_seconds = (
+                    float(elapsed)
+                    if isinstance(elapsed, (int, float)) and not isinstance(elapsed, bool) and math.isfinite(float(elapsed))
+                    else None
+                )
+                key = (host, record["candidate_id"], record["outcome_bucket"], emitted_at, elapsed_seconds)
+                if key not in seen_progress:
+                    events.append({**record, "host": host, "job": self._job_for_record(state, host, record["candidate_id"])})
+                    seen_progress.add(key)
         for job in sorted(state["jobs"].values(), key=lambda row: row["name"]):
             if job["status"] in {"QUEUED", "STARTING"}:
                 continue

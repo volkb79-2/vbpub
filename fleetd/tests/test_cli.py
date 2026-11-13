@@ -2,12 +2,14 @@ import runpy
 import json
 import subprocess
 import sys
+from argparse import Namespace
 from pathlib import Path
 
 import pytest
 
 from fleetd.cli import main
 from fleetd import cli
+from fleetd.contracts import ContractError
 from fleetd.transport import FakeTransport
 from test_campaign import _plan
 
@@ -106,6 +108,34 @@ def test_plan_execution_context_requires_a_clean_run_gate_project(monkeypatch, t
 
     monkeypatch.setattr(cli.subprocess, "run", git_error)
     assert cli._execution_context() is None
+
+
+def test_plan_cli_pins_clean_execution_context_and_rejects_unknown_transport(monkeypatch, tmp_path, capsys):
+    candidates = tmp_path / "candidates.json"
+    candidates.write_text(json.dumps({
+        "schema": "candidate-table/1",
+        "candidates": [{"id": "a" * 64, "file": "src/a.py", "measured_memory_bytes": 100_000_000}],
+    }), encoding="utf-8")
+    demand = tmp_path / "demand.toml"
+    demand.write_text(
+        "[lanes.r2.demand]\nunit='candidate'\ninstance_memory='250m'\nunit_memory='120m'\n"
+        "unit_seconds_ref=95\nefficient_upper_bound=2\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(cli, "_execution_context", lambda: {
+        "schema": "fleet-plan-execution/1", "commit": "a" * 40, "project": "."
+    })
+    args = [
+        "plan", "r2", "--candidates", str(candidates), "--hosts",
+        str(FIXTURES / "fleet-host-set.valid.json"), "--demand", str(demand),
+    ]
+    assert main(args) == 0
+    plan = json.loads(capsys.readouterr().out)
+    assert plan["execution"]["commit"] == "a" * 40
+    assert main([*args, "--commands"]) == 0
+    assert "--only-candidates" in capsys.readouterr().out
+    with pytest.raises(ContractError, match="only the identity-checked hx"):
+        cli._manager(Namespace(transport="ssh"))
 
 
 def test_fleet_campaign_cli_run_status_tick_collect_with_fake_transport(monkeypatch, tmp_path, capsys):
