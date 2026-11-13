@@ -236,8 +236,9 @@ across 38 remaining source files still need a separate scrub, copy, citation
 rewrite, project index update and registered docs-sync gate. The copied
 reports add four pairs to four of those files and three pairs to three
 additional report files, leaving 58 pairs across 41 pending files. The
-remaining matrix and secondary-source table below record the exact final-head
-citers. Three tracked citations to `nyx-extract-readback-REPORT.md` were
+remaining matrix and secondary-source table below record the final-head
+citers of the baseline set; the further-names section below lists cited names
+outside that set. Three tracked citations to `nyx-extract-readback-REPORT.md` were
 outside the original table and now point to its repository copy.
 Across the baseline, Nyxloom and secondary report sources, the final tracked
 set has 80 citer-file/source pairs: 22 now point to repository sources or
@@ -329,6 +330,59 @@ rewritten to the repository copy.
 | `assay-RUST-ADAPTER-DESIGN.md` | 35,204 B | `docs/reports/test-methodology-REPORT.md` |
 | `hostobs-DECISIONS-20261107.md` | 7,224 B | `docs/reports/test-methodology-REPORT.md` |
 
+### Further cited program-dir report names found in the wave 3 review
+
+The pending matrix above is a lower bound, not the full set. A final-head scan
+of every basename in the program directory's `reports/` against all tracked
+files (inventory excluded) found these further names that tracked files still
+cite or mention and that neither the matrix nor a repository copy covers. Each
+needs an owner decision (persist a scrubbed copy, or reword the sentence as
+history) before `reports/` can be marked purgeable. Several are prose
+cross-references to predecessor documents rather than evidence dependencies.
+
+| Source basename | Tracked citer file(s) |
+|---|---|
+| `host-tuning-DESIGN.md` | `docs/design/hostcfg/DESIGN-rev2-2026-11-08.md`, `docs/design/iogovmon/DESIGN-rev9-2026-11-06.md`, `iogovmon/BACKLOG.md`, `libraries/iobench/BACKLOG.md` |
+| `hostobs-PLAN-v3.md` | `docs/design/hostcfg/DESIGN-rev2-2026-11-08.md`, `docs/design/hostobs/ASTRA-OPINION-2026-11-07.md`, `docs/design/hostobs/DECISIONS-2026-11-07.md`, `docs/design/hostobs/PLAN-v4-2026-11-08.md` |
+| `test-methodology-REVIEW4.md` | `scripts/netcup/KNOWN_ISSUES_TODO_BACKLOG.md` |
+| `DSTDNS-FINISH-p245-auth-token-path.md` | `docs/design/dstdns/DEVELOPMENT-PLAN-2026-11-04.md` |
+| `BUGFIX-PROGRAM-2026-11-04.md` | `docs/design/parallelisation/DESIGN-MEMO-ADDENDUM-2026-11-04.md` |
+| `dstdns-r2-phase1-RESULTS.md` | `docs/design/dstdns/DEVELOPMENT-PLAN-2026-11-04.md` |
+| `dst185-lanes-REPORT.md` | `run-gate-project/docs/PLAN-RG-102-CIU-141.md` |
+| `ciu-4-REPORT.md` | `docs/design/parallelisation/DESIGN-MEMO-ADDENDUM-2026-11-04.md` |
+| `cgp2-pkg3-REPORT.md` | `docs/design/parallelisation/DESIGN-MEMO-ADDENDUM-2026-11-04.md` |
+| `WORKTREE-OPERATOR-INTERVIEW-2026-11-01.md` | `libraries/worktree/docs/INTEGRATION-PLAN-2026-11-01.md` |
+| `v1001-supervisor-rehearsal-REPORT.md` | `scripts/netcup/KNOWN_ISSUES_TODO_BACKLOG.md` |
+| `telemetry-platform-DESIGN.md` | `docs/design/telemetry-platform/DESIGN-v2-2026-11-07.md` |
+| `SELF-HOSTED-COMMS-OPTIONS-2026-11-04.md` | `voice-screen-share/README.md` |
+| `RIGOR-BOUNDARIES-REVIEW-2026-11-05.md` | `libraries/rigor-record/docs/DESIGN-MEMO-2026-11-05.md` |
+| `remote-gate-REPORT.md` | `docs/design/parallelisation/DESIGN-MEMO-2026-11-05.md` |
+| `r2-guard-REPORT.md` | `scripts/netcup/KNOWN_ISSUES_TODO_BACKLOG.md` |
+| `R1002-MDT-COCKPIT-2026-11-02.md` | `docs/design/RESOURCE-PROFILES.md` |
+| `mdt-testhost-io-REPORT.md` | `docs/design/iogovmon/DESIGN-rev9-2026-11-06.md` |
+| `MATTERMORE-CAPABILITIES-2026-11-04.md` | `voice-screen-share/mattermore/docs/VOICE-ANALYSIS-2026-11-04.md` |
+| `JITSI-THEME-REPORT.md` | `voice-screen-share/jitsi-server/README.md` |
+| `iob-1-REPORT.md` | `docs/design/iogovmon/DESIGN-rev9-2026-11-06.md` |
+| `dstdns-tools-adoption-REPORT.md` | `docs/design/dstdns/CMRU-ADOPTION-MEMO-2026-11-05.md` |
+| `dstdns-cmru-p9e-p10-REPORT.md` | `docs/design/dstdns/DEVELOPMENT-PLAN-2026-11-04.md` |
+| `div2-data-area-REVIEW.md` | `docs/reports/reinstall-READINESS-20261105.md` |
+| `compute-design-REVIEW4.md` | `run-gate-project/docs/DESIGN-compute-hosts-and-campaigns-2026-11.md` |
+| `ciu-remote-deploy-REVIEW.md` | `docs/design/dstdns/DEVELOPMENT-PLAN-2026-11-04.md` |
+| `ciu-remote-deploy-REPORT.md` | `docs/design/dstdns/DEVELOPMENT-PLAN-2026-11-04.md` |
+| `CHATGPT-SHARE-SECOND-ANSWER-2026-11-04.md` | `pwmcp/docs/evidence/PWMCP-LAZY-PAGE-FINDINGS-2026-11-04.md` |
+| `cgp-vm-acceptance-REPORT.md` | `docs/design/telemetry-platform/DESIGN-v2-2026-11-07.md` |
+
+Separately, 42 more `reports/` basenames are still cited by their old program
+directory name although a reconciled repository copy exists under another name
+(the copy's `source:` header names the old basename), for example
+`PARALLELISATION-DESIGN-MEMO-2026-11-05.md`, `iogovmon-DESIGN.md`,
+`hostcfg-DESIGN-rev2.md`, `ctlstat-REQUIREMENTS.md` and
+`telemetry-platform-DESIGN-v2.md`. Those citations should be rewritten to the
+repository copies in a later wave; the content itself is already in the
+repository. The full list is reproducible by scanning the program directory's
+`reports/` basenames against tracked files and matching each hit against the
+`source:` headers.
+
 ### Other wave 3 cited items
 
 | Program-dir item | Disposition and tracked citer |
@@ -384,7 +438,7 @@ task deleted nothing and does not authorize deleting program-directory data.
 | `r2-session/` | KEEP-OUTSIDE-WITH-SUMMARY — two tracked citing reports still need summaries and rewrites. | Keep — raw session evidence remains cited. |
 | `releases-archive/` | KEEP — nine branch bundles have heads not in origin/main; they are not persisted as Git history. | Keep — unique Git bundle history remains. |
 | `remote-gates/` | RUNTIME-DEPENDENCY/output archive — remote-gate can override its default output root, but several raw logs are still cited and unsummarized. | Keep — raw remote-gate evidence and outputs remain. |
-| `reports/` | PERSIST-PARTIAL — 16 source reports persisted in this slice; 41 small cited files and 58 citer-file/source pairs remain. Previously copied KSM, IOBench and Assay tmpfs reports remain linked. | Keep — remaining source files are cited. |
+| `reports/` | PERSIST-PARTIAL — 16 source reports persisted in this slice; 41 small cited files and 58 citer-file/source pairs remain (a lower bound: the review found 29 further cited names and 42 old-name citations of reconciled design copies, listed in the wave 3 section). Previously copied KSM, IOBench and Assay tmpfs reports remain linked. | Keep — remaining source files are cited. |
 | `reviews/` | `pwmcp2.out` is PERSISTED; the rest of the 147-entry tree was not reviewed. | Keep — other review artifacts remain unclassified. |
 | `v1001.lock` | RUNTIME-DEPENDENCY — fixed path with no override; TN-17 records the limitation. | Keep — acceptance script still requires this lock location. |
 | `vm-cgp-accept-20261107/` | UNCITED unique acceptance material. | Keep — operator review required. |
