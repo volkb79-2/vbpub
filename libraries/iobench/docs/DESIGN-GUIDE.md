@@ -376,15 +376,38 @@ job files through the approved host wrapper. It records no SSH or host
 orchestration code.
 
 The driver fails closed on target geometry, io.cost and cgroup IO-control
-state, monitor thresholds, write/time budgets, and timer state. It does not
-change IO controls. A raw run requires an operator acknowledgement containing
-the exact partition path, byte size, and PARTUUID; resume compares those facts
-with state and refuses a replacement. Sysfs partition, exclusive-claim, holder,
-mount, swap, and root/system checks run before any discard. Btrfs file targets
-resolve the filesystem UUID through `/sys/fs/btrfs/<uuid>/devices`, because the
-mounted filesystem's `MAJ:MIN` may be anonymous and unrelated to its backing member's
-number. The `run --dry-run` path exercises target and policy validation plus
-all fio rendering without creating output or changing the target.
+state, monitor thresholds, write/time budgets, and timer state during live runs.
+It does not change IO controls. A raw run requires an operator acknowledgement
+containing the exact partition path, byte size, and PARTUUID; resume compares
+those facts with state and refuses a replacement. Sysfs partition,
+exclusive-claim, holder, mount, and swap checks run before any discard. The
+running-system-disk refusal remains the default. **Study decision D-IBX-002**
+allows a controller-policy exception only when the operator supplies both
+`--allow-system-disk-partition` and an acknowledgement derived at run time from
+hostname, target disk, root filesystem device(s), and target PARTUUID. This
+relaxes only the disk-sharing refusal: the target partition itself must still
+be unmounted and not swap-active, and every identity, holder, geometry,
+exclusive-claim, and IO-control guard remains. Run state, cell records, plan,
+and analysis preserve the acknowledgement and observed system mounts and
+sibling swap devices, so the result is marked as including system and
+sibling-swap activity. This controller policy was requested on 2026-11-13
+because approved disposable compute hosts have one virtual disk. Btrfs file
+targets resolve the filesystem UUID through
+`/sys/fs/btrfs/<uuid>/devices`, because the mounted filesystem's `MAJ:MIN` may
+be anonymous and unrelated to its backing member's number.
+
+The `run --dry-run` path exercises target identity, schedule, IO-control,
+memory PSI, `MemAvailable`, free-space checks, and fio rendering without
+creating output or changing the target. It does not require fstrim, apt-daily,
+or governance timers to be stopped and does not execute the host-liveness
+probe. Live runs require those timers inactive. I/O PSI remains recorded as
+advisory because the saturating fio workload can cause high I/O pressure by
+itself. Host-protection stops use memory PSI `full avg10`, `MemAvailable`, and
+free-space floors plus a separate bounded `system.slice` liveness service that
+fsyncs a temporary file on the root filesystem, checks the SSH banner, and
+verifies the cockpit runner with systemd and container exec. A configured
+number of consecutive slow or failed liveness
+samples stops the run; wall-time and byte caps remain hard stops.
 
 The writer meter has a 500 GB decimal cap (500,000,000,000 bytes). The actual
 fio job caps for the full base schedule total 495.123688448 GB, including the

@@ -1,28 +1,29 @@
-# IBX live host acceptance (IOB-BL-41 / IOB-BL-42)
+# IBX live host acceptance (IOB-BL-41 / IOB-BL-42 / IOB-BL-44 / IOB-BL-45)
 
-Run only on the freshly reinstalled r1002 configured with
-`partitioning.iobench_raw_gb: 32`. This runbook has **not** been run here.
-Before the study README's setup block (which requires the acknowledgment), run
-this read-only preflight in the same shell. Then use its host-root wrapper and
-threshold/timer setup, keep that shell open so its EXIT trap restores timers,
-and set `OUT` to the approved host-visible evidence directory. Do not run the
-README's study-day sequence.
+Run only on the approved freshly reinstalled disposable compute host with its
+dedicated `iobench-raw` partition. This runbook has **not** been run here.
+Initialize `STUDY`, `OUT`, and the stop-policy variables as documented in the
+study README, but do not execute its timer-control block or live study sequence.
+Run this read-only preflight in the same shell. The dry-run does not require
+timers to be stopped; keep the setup shell open for the later live-run EXIT trap
+that restores timers.
 
 ```bash
 RAW=/dev/vda5
 [[ $(host-escape -- lsblk -dn -o TYPE "$RAW") == part ]]
-[[ $(host-escape -- hostname) == r1002 ]]
 [[ $(host-escape -- lsblk -dn -o PARTLABEL "$RAW") == iobench-raw ]]
 [[ $(host-escape -- blockdev --getsize64 "$RAW") == 34359738368 ]]
 export IBX_TARGET_CONFIRMATION="$RAW:34359738368:$(host-escape -- blkid -s PARTUUID -o value "$RAW")"
 ```
 
-The saved reinstall layout places `/dev/vda5` (PARTLABEL `iobench-raw`) on
-`/dev/vda`, the disk that also contains the running system and swap. The raw
-probe below must therefore refuse before any write or discard. That is the
-expected fail-closed result for this layout; do not override it. It means the
-positive raw-target acceptance in BL-41 remains open until the reserved
-partition is on a disk separate from system and swap.
+On the known single-disk layout, `/dev/vda5` is a dedicated partition on the
+same virtual disk as the running system and swap. The default raw dry-run must
+still refuse this target with the existing byte-identical root/system-disk
+message. A second dry-run with the opt-in and freshly derived acknowledgement
+must pass, because all other target guards remain active. The output and later
+analysis explicitly record that system and sibling-swap activity are part of
+the measurement context. This remains a read-only acceptance: do not run a
+live raw write, discard, or format in this procedure.
 
 ## 1. Read-only inventory and raw dry-run
 
@@ -32,7 +33,6 @@ RAW=/dev/vda5
 MOUNT=/mnt/ibx-study
 FILE=$MOUNT/target.dat
 
-[[ $(host-escape -- hostname) == r1002 ]]
 [[ $(host-escape -- lsblk -dn -o PARTLABEL "$RAW") == iobench-raw ]]
 RAW_BYTES=$(host-escape -- blockdev --getsize64 "$RAW")
 RAW_PARTUUID=$(host-escape -- blkid -s PARTUUID -o value "$RAW")
@@ -46,12 +46,20 @@ FIO_HELP=$(host-escape -- fio --cmdhelp=allow_mounted_write)
 printf 'fio=%s; allow_mounted_write option present\n' "$FIO_VERSION"
 
 raw_dry_run() {
-  host-escape -- python3 "$STUDY" run raw-t0 --target "$1" --device "$2" \
-    --target-type raw --confirm-target "$3" --confirm-quiet-window \
+  local raw=$1 disk=$2 confirmation=$3
+  shift 3
+  host-escape -- python3 "$STUDY" run raw-t0 --target "$raw" --device "$disk" \
+    --target-type raw --confirm-target "$confirmation" "$@" --confirm-quiet-window \
     --offset 0B --size 24GiB --out "$OUT" \
-    --max-io-psi "$IBX_MAX_IO_PSI" --max-memory-psi "$IBX_MAX_MEMORY_PSI" \
+    --max-memory-psi "$IBX_MAX_MEMORY_PSI" \
+    --max-probe-latency-seconds "$IBX_MAX_PROBE_LATENCY" \
+    --probe-consecutive-samples "$IBX_PROBE_CONSECUTIVE_SAMPLES" \
     --min-memavailable "$IBX_MIN_MEMAVAILABLE" --min-free "$IBX_MIN_FREE" \
     --dry-run
+}
+current_system_disk_ack() {
+  host-escape -- python3 "$STUDY" system-disk-ack --target "$RAW" --device vda5 \
+    --confirm-target "$IBX_TARGET_CONFIRMATION"
 }
 expect_refusal() {
   local expected=$1 status output
@@ -68,9 +76,21 @@ expect_refusal() {
   printf 'PASS refusal: %s\n' "$expected"
 }
 
-# Current r1002 layout: this real-device dry-run refuses before any effect.
+# Without opt-in, the system-disk refusal text must remain unchanged.
 expect_refusal "raw target is on the root disk or contains a running system filesystem" \
   raw_dry_run "$RAW" vda5 "$IBX_TARGET_CONFIRMATION"
+
+# Derive the acknowledgement immediately before use so it reflects this host,
+# disk, root filesystem device and target PARTUUID. The acknowledged dry-run
+# must pass; it does not create output files or check timer state.
+SYSTEM_DISK_ACK=$(current_system_disk_ack)
+DRY_RUN_RESULT=$(raw_dry_run "$RAW" vda5 "$IBX_TARGET_CONFIRMATION" \
+  --allow-system-disk-partition --system-disk-ack "$SYSTEM_DISK_ACK")
+[[ $DRY_RUN_RESULT == *'"dry_run": true'* ]]
+printf 'PASS acknowledged system-disk dry-run: %s\n' "$DRY_RUN_RESULT"
+expect_refusal "system-disk acknowledgement does not match current host facts" \
+  raw_dry_run "$RAW" vda5 "$IBX_TARGET_CONFIRMATION" \
+    --allow-system-disk-partition --system-disk-ack "wrong:disk:root:partuuid"
 
 # Confirm identity mismatches and a whole-disk target also refuse before effects.
 expect_refusal "raw target size does not match --confirm-target" \
@@ -82,10 +102,10 @@ expect_refusal "raw target must be a dedicated partition; whole disks are refuse
   raw_dry_run /dev/vda vda "/dev/vda:$DISK_BYTES:00000000-0000-0000-0000-000000000000"
 ```
 
-Expected: the four refusals above print `PASS refusal`; the first names the
-system-disk guard. A successful raw dry-run on this recorded layout is a
-stop-and-review condition. No raw live run, discard, or raw write is part of
-this acceptance. Do not manufacture swap or holder state to probe those
+Expected: the default system-disk attempt and the SIZE/PARTUUID/whole-disk
+cases refuse; the exact derived acknowledgement permits only the dry-run; a
+wrong acknowledgement refuses. No raw live run, discard, or raw write is part
+of this acceptance. Do not manufacture swap or holder state to probe those
 branches; fake-sysfs tests cover them.
 
 ## 2. Btrfs file and real fio-log acceptance
@@ -96,8 +116,7 @@ If any check differs, stop before `mkfs`.
 
 ```bash
 assert_raw_idle() {
-  [[ $(host-escape -- hostname) == r1002 ]]
-  [[ $(host-escape -- lsblk -dn -o TYPE "$RAW") == part ]]
+    [[ $(host-escape -- lsblk -dn -o TYPE "$RAW") == part ]]
   [[ $(host-escape -- lsblk -dn -o PARTLABEL "$RAW") == iobench-raw ]]
   [[ $(host-escape -- blockdev --getsize64 "$RAW") == 34359738368 ]]
   [[ $(host-escape -- blkid -s PARTUUID -o value "$RAW") == "$RAW_PARTUUID" ]]
@@ -176,15 +195,17 @@ host-escape -- fallocate -l 24GiB "$FILE"
 # Dry-run checks the mounted Btrfs UUID/member and renders all 33 fio jobs.
 host-escape -- python3 "$STUDY" run file-btrfs --target "$FILE" --device vda5 \
   --target-type btrfs-file --confirm-quiet-window --offset 0B --size 24GiB \
-  --out "$OUT" --max-io-psi "$IBX_MAX_IO_PSI" \
-  --max-memory-psi "$IBX_MAX_MEMORY_PSI" \
+  --out "$OUT" --max-memory-psi "$IBX_MAX_MEMORY_PSI" \
+  --max-probe-latency-seconds "$IBX_MAX_PROBE_LATENCY" \
+  --probe-consecutive-samples "$IBX_PROBE_CONSECUTIVE_SAMPLES" \
   --min-memavailable "$IBX_MIN_MEMAVAILABLE" --min-free "$IBX_MIN_FREE" --dry-run
 
 # Only after dry-run returns {"dry_run":true,"jobs_rendered":33,...}, run fio.
 host-escape -- python3 "$STUDY" run file-btrfs --target "$FILE" --device vda5 \
   --target-type btrfs-file --confirm-quiet-window --offset 0B --size 24GiB \
-  --out "$OUT" --max-io-psi "$IBX_MAX_IO_PSI" \
-  --max-memory-psi "$IBX_MAX_MEMORY_PSI" \
+  --out "$OUT" --max-memory-psi "$IBX_MAX_MEMORY_PSI" \
+  --max-probe-latency-seconds "$IBX_MAX_PROBE_LATENCY" \
+  --probe-consecutive-samples "$IBX_PROBE_CONSECUTIVE_SAMPLES" \
   --min-memavailable "$IBX_MIN_MEMAVAILABLE" --min-free "$IBX_MIN_FREE"
 
 # Require both file rungs (33 fio cells) and one non-empty bandwidth and IOPS
