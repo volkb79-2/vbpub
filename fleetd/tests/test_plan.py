@@ -229,6 +229,25 @@ def test_rendered_script_runs_batches_serially_and_handles_exit_codes(
         assert second_ids.read_text(encoding="utf-8").strip() == candidate_ids[1]
 
 
+def test_render_commands_skips_batches_without_candidates():
+    candidate_id = _cid("non-empty batch")
+    plan = {
+        "lane": "r2",
+        "hosts": [{
+            "id": "host-a",
+            "status": "available",
+            "worker_slots": 1,
+            "batches": [
+                {"batch": 0, "candidate_ids": []},
+                {"batch": 1, "candidate_ids": [candidate_id]},
+            ],
+        }],
+    }
+    commands = render_commands(plan)
+    assert "batch-000.ids" not in commands
+    assert "batch-001.ids" in commands and candidate_id in commands
+
+
 def test_physical_cap_routes_a_large_candidate_to_the_bigger_host():
     host_set = _hosts()
     _host(host_set, "host-small")["f_h"] = 0.5
@@ -565,6 +584,8 @@ def test_parse_candidate_contract_errors_are_precise():
         parse_candidate_table(_candidate_table([{"id": "A" * 64, "file": "a"}]))
     with pytest.raises(ContractError, match="64-character lowercase SHA-256 candidate id"):
         parse_candidate_table(_candidate_table([{"id": None, "file": "a"}]))
+    with pytest.raises(ContractError, match="without control characters"):
+        parse_candidate_table(_candidate_table([{"id": valid_id, "file": "src/\x7f.py"}]))
     with pytest.raises(ContractError, match="expected integer"):
         parse_candidate_table(_candidate_table([{"id": valid_id, "file": "a", "measured_memory_bytes": True}]))
     with pytest.raises(ContractError, match="expected low or high"):
@@ -814,6 +835,20 @@ def test_host_refusal_arithmetic_helpers_and_wave_invariant_error():
     high_host.update({"worker_slots": 1, "budget_bytes": 0, "average_worker_budget_bytes": 0, "slot_worker_capacities": [1]})
     with pytest.raises(ContractError, match="cannot fit a worker wave"):
         _waves([{"input": type("Input", (), {"candidate_id": "x"})(), "memory_bytes": 1}], high_host)
+
+    sparse_host = {
+        "worker_slots": 1,
+        "budget_bytes": 10,
+        "average_worker_budget_bytes": 10,
+        "slot_worker_capacities": [0, 1],
+    }
+    sparse_wave = _waves(
+        [{"input": type("Input", (), {"candidate_id": "x"})(), "memory_bytes": 1}],
+        sparse_host,
+    )[0]
+    assert sparse_wave["slot_batches"] == [
+        {"slot": 1, "worker_capacity": 1, "candidate_ids": ["x"]}
+    ]
 
     mixes = [
         {"ram_class": "high", "memory_bytes": 10, "time_ref_seconds": 50, "input": type("Input", (), {"candidate_id": "h"})()},

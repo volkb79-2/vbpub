@@ -70,6 +70,7 @@ def test_host_facts_fixture_is_typed_and_preserved():
         (lambda data: data["psi"].update(extra={}), "psi: unknown field.*extra"),
         (lambda data: data["psi"]["io"].update(full_avg10_pct_reason="stale"), "only allowed when full_avg10_pct is null"),
         (lambda data: data["cgroup_v2"].update(mounted=1), "mounted: expected boolean"),
+        (lambda data: data["cgroup_v2"].update(controllers="memory"), "controllers: expected array"),
         (lambda data: data["cgroup_v2"].update(controllers=None), "null requires controllers_reason"),
         (lambda data: data["cgroup_v2"].update(controllers=["memory", "memory"]), "controllers: duplicate value"),
         (lambda data: data["kernel_interfaces"].update(cgroup_freeze=None), "null requires cgroup_freeze_reason"),
