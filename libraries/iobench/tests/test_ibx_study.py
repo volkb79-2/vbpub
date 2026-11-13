@@ -2568,10 +2568,6 @@ def test_acceptance_runbook_pins_the_expected_host_before_proceeding(tmp_path):
     assert preflight_call is not None
     assert preflight_call.start() < preflight_script.group(1).index("host-escape -- lsblk")
     assert 'host-escape -- systemctl is-active "$UNKNOWN_UNIT"' in preflight_script.group(1)
-    assert 'case "$UNKNOWN_STATUS:$UNKNOWN_STATE" in' in preflight_script.group(1)
-    assert "4:unknown) ;;" in preflight_script.group(1)
-    assert "*:inactive|*:failed)" in preflight_script.group(1)
-    assert "((UNKNOWN_STATUS != 0))" in preflight_script.group(1)
     assert preflight_script.group(1).index('systemctl is-active "$UNKNOWN_UNIT"') < \
         preflight_script.group(1).index("host-escape -- lsblk")
     probe_start_marker = 'UNKNOWN_UNIT="ibx-acceptance-unknown-${BASHPID}.service"'
@@ -2633,6 +2629,10 @@ def test_acceptance_runbook_pins_the_expected_host_before_proceeding(tmp_path):
         refused = invoke_probe(status, state)
         assert refused.returncode != 0, (status, state, refused.stdout)
         assert "unexpected" in refused.stderr
+    assert 'case "$UNKNOWN_STATUS:$UNKNOWN_STATE" in' in missing_unit_probe
+    assert "4:unknown) ;;" in missing_unit_probe
+    assert "*:inactive|*:failed)" in missing_unit_probe
+    assert "((UNKNOWN_STATUS != 0))" in missing_unit_probe
 
     helper_and_call = f"{match.group(0)}\nassert_expected_host"
 
