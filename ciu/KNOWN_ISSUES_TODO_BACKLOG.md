@@ -6910,3 +6910,33 @@ patches follow the same rule.
 the registered CIU unit lane passes on a clean final commit, and a deliberate
 removal of an unrelated-call fallback is shown to fail the owning focused
 test.
+
+## CIU-214 — `ciu down --dir PATH --yes` rejects `--yes` although `ciu down --help` lists it
+
+**Status:** OPEN (filed 2026-11-13); severity: minor, automation friction. Found migrating netcup-api-filter onto CIU 7.25 (reproduced on 7.25.1).
+
+**Observed.** `ciu down --help` lists `--yes` ("accept confirmation prompts") and states that mutating actions need confirmation unless `--yes` is supplied. The `--dir` form is parsed by a separate sub-parser: `ciu down --dir <path> --yes` exits with `ciu down --dir: error: unrecognized arguments: --yes`, and that sub-parser's usage shows only `[--dir PATH] [--profile NAME]`. A non-interactive controller therefore cannot confirm the `--dir` form, and the help text does not say so.
+
+**Wanted.** Accept `--yes` (and the other global confirmation flag) on the `--dir` form, or state in `--help` which form is non-interactive.
+
+**Close when.** `ciu down --dir <stack> --yes` succeeds non-interactively on a stack with a confirmation prompt, covered by a CLI parse test for each documented form.
+
+## CIU-215 — linked-worktree exec runners rendered by CIU 7 lack the git common-dir mount, so every assay lane fails with GIT_FAILED
+
+**Status:** OPEN (filed 2026-11-13); severity: major for projects that gate from linked worktrees. Found in netcup-api-filter (per-checkout test runners, CIU 7.25.0). Related: the v8 S17.6.1 common-dir mount injection, which CIU 7 does not have.
+
+**Observed.** A per-checkout exec runner mounts only the worktree. A linked worktree's `.git` is a file that points at the main repository's git directory outside the mount, so inside the runner `git` fails and every assay lane (which needs a git context) ends with `GIT_FAILED`. Shared runners that mount the whole repository never showed it. netcup-api-filter works around it by adding the linked worktree's `.git` common-dir mount to its own `tooling/test-runner/ciu.compose.yml.j2`.
+
+**Wanted.** Backport the v8 common-dir mount injection to CIU 7 for exec runners created for a linked worktree, so the project template does not need to know about it.
+
+**Close when.** A runner created for a linked worktree runs `git rev-parse HEAD` and an assay lane to a verdict without any project-side mount.
+
+## CIU-216 — `ciu worktree create` renders no `ciu.global.toml` when `DOCKER_HOST` is unset and the Docker socket is at a non-default path
+
+**Status:** OPEN (filed 2026-11-13); severity: minor, silent failure. Found in netcup-api-filter on CIU 7.25.0 (a clean environment with `env -i`, socket at `/run/docker-api/docker.sock`). Not re-reproduced on 7.25.1.
+
+**Observed.** `ciu worktree create` finished and created the checkout and its identity file, but the worktree had no `ciu.global.toml`, so run-gate lanes for it failed on infrastructure instead of on the code. Setting `DOCKER_HOST` to the socket, or copying a sibling's rendered file, restored it. The command printed no error.
+
+**Wanted.** Fail with a clear message (or resolve the socket the way `ciu up` does) instead of returning success without the rendered file.
+
+**Close when.** `ciu worktree create` under a clean environment either produces `ciu.global.toml` or exits non-zero naming the missing Docker endpoint.
