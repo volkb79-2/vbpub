@@ -1,38 +1,83 @@
 # fleetd
 
-`fleetd` is the small, central scheduling service proposed for distributing
-long Assay campaigns across enrolled compute hosts. This first package ships
-the data contracts, a read-only host-facts collector, and a deterministic
-RAM-first planner. It has no daemon, sockets, transport, or remote execution.
+`fleetd` plans and runs RAM-first Assay campaigns across configured compute
+hosts. MVP-B-lite adds a one-shot campaign controller to MVP-A's strict data
+contracts, read-only host-facts collector, and deterministic planner. It is a
+one-shot loop with no daemon, socket, lease, or background service.
 
-The planner produces per-host candidate lists and shell commands that use
-Run-Gate's existing `--only-candidates FILE` option. Candidate RAM is resolved
-from its own measurement, the same-file median, the lane median, then the
-declared lane demand. Overcommit applies to expected sums; a single candidate
-must still fit physical lane RAM. Geekbench single-core scores and one factor
-per host inform ETA only. See the [design guide](docs/DESIGN-GUIDE.md) for the
-reasons and the [consumer guide](docs/CONSUMERS.md) for runnable examples.
-`fleet plan` writes no files. `--commands` prints a self-contained host section
-with one serial Run-Gate invocation per batch. It accepts exit 4 as the
-`BUDGET_EXCEEDED` result from Run-Gate; candidate selection normally leaves
-other campaign candidates unselected, and a batch that actually exhausts its
-budget has the same exit code. It stops on other failures. The final whole-lane
-closeout runs any candidates that remain pending before producing the verdict.
-Copy only the matching host section to that host and run it from the lane's
-project checkout there. After collecting the host stores, use Run-Gate's
-`--merge-state` whole-lane run to produce the complete verdict. Fleetd has no
-transport.
-Serialized campaign inputs use the versioned `host-facts/1`, `work-request/1`,
-and `assay-merge-manifest/1` contracts.
+The planner produces per-host candidate batches and uses Run-Gate's existing
+`--only-candidates FILE` option. `fleet run`, `status`, `tick`, and `collect`
+close the basic dispatch and reporting loop through the controller kit's
+identity-checked `hx.sh` wrapper and the existing runner's named jobs. The host
+IDs in the plan must be aliases in the operator's local hx configuration; the
+repository contains no host table, address, key, or provider credential.
 
-`fleet facts collect` reads only host-owned inputs and the read-only `/proc`
-and `/sys` interfaces. Its required policy and source paths come from
-`/etc/fleetd/facts.toml`; `--root DIR` maps that config and every absolute
-source path beneath a fixture root for reproducible collection. The host role
-comes from the configured `/etc/mdt/host-setup.env` source so it cannot drift
-from `HOST_ROLE`.
+`fleet plan` writes deterministic plan JSON. From a clean Git project it also
+pins the full commit and project path in `execution`, which lets `fleet run`
+reject a plan that cannot identify the runner checkout. `--commands` remains a
+manual handoff. The planner resolves candidate RAM from its own measurement,
+same-file median, lane median, then declared lane demand. Overcommit applies
+to expected sums; each candidate must still fit physical lane RAM. Geekbench
+single-core scores inform ETA only. See [the design guide](docs/DESIGN-GUIDE.md)
+for the invariants and [the consumer guide](docs/CONSUMERS.md) for examples.
 
-Runtime imports use only the Python standard library. The registered
-`r0-r1` lane runs tests in `tester-unified` with full line and branch coverage.
-The package does not include or start a daemon, socket, SSH client, Docker
-client, or Geekbench process.
+## Run a planned campaign
+
+The remote runner must already have the plan's commit under its persistent
+checkout root, with the selected project and lane available there. `fleet run`
+uploads only the small candidate-ID files and starts the first available batch
+on each host. Re-running it adopts jobs by their deterministic names; it does
+not start a second job with the same candidate-list digest.
+
+```sh
+fleet plan r2 --candidates candidates.json --hosts hosts.json \
+  --demand lane-demand.toml > plan.json
+fleet run plan.json --transport hx --campaign r2-week46
+fleet status r2-week46
+fleet tick r2-week46
+fleet collect r2-week46
+```
+
+The default state directory is `$XDG_STATE_HOME/fleetd/campaigns`, or
+`~/.local/state/fleetd/campaigns` when `XDG_STATE_HOME` is unset. State is local,
+versioned JSON written atomically and must stay outside Git. If `--state-dir`
+is supplied to `run`, pass the same value to `status`, `tick`, and `collect`.
+`status` probes progress and ETA; `tick` performs one scheduling step and
+returns. There is no polling loop. Use repeated `tick` calls from the
+controller that owns the campaign.
+
+`tick` re-queues unfinished work when a host has been unreachable for more than
+30 minutes. A batch with no finished candidate becomes `STALLED` after
+`max(15 minutes, 3 × observed p95 candidate time)`; the timer pauses while its
+host is unreachable. A re-plan with a different sorted candidate list gets a
+different job name and stops the old job when it is no longer wanted. No lease
+or wall-clock budget is maintained.
+
+`fleet collect` fetches available progress and verdict files and writes one
+combined `fleet-campaign-result/1` JSON file plus a Markdown report in the
+state directory. Each candidate has one owner: the earliest finished record
+wins, and later copies are counted as ignored duplicates. Missing artifacts or
+candidates are reported. This lightweight result does not merge host Assay
+stores with `--merge-manifest`; strict store ownership, the baseline cache,
+forced-command host entry, always-on daemon, and active guard remain follow-up
+work (see the [backlog](KNOWN_ISSUES_TODO_BACKLOG.md)).
+
+## Existing planning and facts commands
+
+`fleet plan` writes no files except for stdout. `--commands` prints one serial
+host section with one Run-Gate invocation per batch. It accepts Run-Gate exit 4
+(`BUDGET_EXCEEDED`) so later batches can run and stops on other failures. The
+whole-lane closeout still has to execute any selected candidates that remain
+pending.
+
+`fleet facts collect` reads only host-owned inputs and read-only `/proc` and
+`/sys` interfaces. Its required policy and source paths come from
+`/etc/fleetd/facts.toml`; `--root DIR` maps those absolute paths beneath a
+fixture root for reproducible collection. The host role comes from the
+configured `HOST_ROLE` source. Fleetd never invokes Geekbench.
+
+Serialized campaign inputs use `host-facts/1`, `work-request/1`,
+`candidate-table/1`, `fleet-host-set/1`, and `assay-merge-manifest/1`. Runtime
+imports use only the Python standard library. The registered `r0-r1` lane runs
+in `tester-unified` with full line and branch coverage. The package does not
+start a daemon, socket, Docker client, or Geekbench process.

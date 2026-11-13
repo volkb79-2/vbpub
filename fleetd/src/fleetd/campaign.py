@@ -513,6 +513,10 @@ class CampaignManager:
             job["stop_pending"] = False
             job["status"] = "SUPERSEDED"
 
+    def _stop_superseded(self, state: dict[str, Any]) -> None:
+        for host_id in sorted(state["hosts"]):
+            self._stop_superseded_host(state, host_id)
+
     def _stop_returned_duplicates(self, state: dict[str, Any], host_id: str) -> None:
         done_elsewhere = self._done_by_other_hosts(state, host_id)
         for job in state["jobs"].values():

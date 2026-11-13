@@ -863,6 +863,9 @@ def test_golden_cli_plan_for_two_eight_gib_four_core_hosts_and_230_candidates(tm
     assert plan["eta_seconds"] == max(host["eta_seconds"] for host in plan["hosts"])
     assert plan["execution"]["schema"] == "fleet-plan-execution/1"
     assert len(plan["execution"]["commit"]) == 40
+    if "execution" in plan:
+        assert plan["execution"]["schema"] == "fleet-plan-execution/1"
+        assert len(plan["execution"]["commit"]) == 40
     deterministic_plan = {key: value for key, value in plan.items() if key != "execution"}
     digest = hashlib.sha256(dump_json(deterministic_plan).encode("utf-8")).hexdigest()
     assert digest == "13b036934c44c7f0ddb96061bc78e5b592d913aa73e76085a168a0fef934b18a"

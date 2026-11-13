@@ -255,12 +255,13 @@ def test_stall_floor_and_unreachable_pause_are_progress_based(tmp_path):
     manager = CampaignManager(tmp_path, transport, clock=clock)
     manager.run("campaign", plan)
     state = _state(tmp_path)
-    job = _first_running(state, "host-a")
-    transport.set_unreachable("host-a")
+    job = next(job for job in state["jobs"].values() if job["status"] == "RUNNING")
+    host_id = job["host"]
+    transport.set_unreachable(host_id)
     clock.advance(1200)
     manager.tick("campaign")
-    assert any(host["state"] == "UNREACHABLE" for host in manager.status("campaign")["hosts"] if host["host"] == "host-a")
-    transport.set_unreachable("host-a", False)
+    assert any(host["state"] == "UNREACHABLE" for host in manager.status("campaign")["hosts"] if host["host"] == host_id)
+    transport.set_unreachable(host_id, False)
     manager.tick("campaign")
     state = _state(tmp_path)
     observed = state["jobs"][job["name"]]
