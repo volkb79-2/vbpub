@@ -631,7 +631,7 @@ def test_time_reference_and_host_eta_refuse_incomparable_scores():
     small_facts["speed"]["basis"] = "geekbench7-measured"
     eligible_reference = _plan([_candidate("x", 100_000_000)], hosts=refused_mismatch)
     assert eligible_reference["time_reference"]["geekbench_major"] == 6
-    assert eligible_reference["time_reference"]["reason"] is None
+    assert "reason" not in eligible_reference["time_reference"]
     assert _host_plan(eligible_reference, "host-small")["status"] == "refused"
     assert eligible_reference["eta_seconds"] is not None
 
