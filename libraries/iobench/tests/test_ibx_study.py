@@ -2717,6 +2717,21 @@ def test_io_control_snapshot_refuses_unreadable_latency_peer_entry(tmp_path, mon
         driver.io_control_snapshot(cgroup_root=root, cgroup_text=fixture["cgroup_text"])
 
 
+def test_io_control_snapshot_ignores_peer_removed_after_parent_listing(tmp_path, monkeypatch):
+    root, fixture = materialize_real_cgroup_layout(tmp_path)
+    removed_peer = root / "cgprofile.slice"
+    original_stat = Path.stat
+
+    def removed(candidate, *args, **kwargs):
+        if candidate == removed_peer:
+            raise FileNotFoundError("fixture removed peer after readdir")
+        return original_stat(candidate, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "stat", removed)
+    snapshot = driver.io_control_snapshot(cgroup_root=root, cgroup_text=fixture["cgroup_text"])
+    assert [row["path"] for row in snapshot["cgroups"]] == [str(root), str(root / "system.slice")]
+
+
 def test_io_control_snapshot_refuses_latency_peer_missing_from_parent_listing(tmp_path, monkeypatch):
     root, fixture = materialize_real_cgroup_layout(tmp_path)
     original_iterdir = Path.iterdir

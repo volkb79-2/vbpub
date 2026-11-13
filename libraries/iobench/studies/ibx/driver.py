@@ -645,6 +645,10 @@ def _io_latency_peer_paths(directories: list[Path]) -> list[Path]:
         for entry in entries:
             try:
                 info = entry.stat()
+            except FileNotFoundError:
+                # A sibling can exit after readdir; it no longer has a live
+                # control to judge. The benchmark branch is checked below.
+                continue
             except OSError as exc:
                 raise StudyError(f"cannot enumerate benchmark cgroup peers in {parent}: {exc}") from exc
             if stat.S_ISDIR(info.st_mode):
