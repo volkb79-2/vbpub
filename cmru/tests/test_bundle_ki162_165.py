@@ -148,6 +148,17 @@ def test_copy_without_keep_warns_and_omits_excluded_source_files(tmp_path, capsy
     assert "src/cacert.pem" not in manifest["files"]
 
 
+def test_copy_still_rejects_missing_configured_excluded_file(tmp_path):
+    config = _write_bundle(tmp_path)
+    config.write_text(
+        config.read_text(encoding="utf-8").replace("files = []", 'files = ["missing.env"]'),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(FileNotFoundError, match="missing.env"):
+        bundle.run_bundle(config, manifest_project="demo", manifest_tag="demo-v1.2.3")
+
+
 def test_stage_keep_allows_public_suffix_files_and_vendor_wheels_remain_included(tmp_path):
     (tmp_path / "src").mkdir()
     (tmp_path / "src/app.py").write_text("print('ok')\n", encoding="utf-8")

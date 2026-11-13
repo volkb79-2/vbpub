@@ -655,12 +655,12 @@ def _reject_copy_symlinks(config: BundleConfig, source_root: Path, bundle_prefix
 def copy_sources(config: BundleConfig) -> None:
     for file_path in config.copy_files:
         source = _copy_path(config.project_root, file_path)
+        if not source.exists() and not source.is_symlink():
+            raise FileNotFoundError(f"Bundle source file not found: {source}")
         rel = PurePosixPath(source.name).as_posix()
         if _is_excluded(rel, config.archive_keep):
             _warn_excluded_copy(rel)
             continue
-        if not source.exists():
-            raise FileNotFoundError(f"Bundle source file not found: {source}")
         if _has_symlink_component(source) or not source.is_file():
             raise ValueError(f"bundle source path {rel!r} is not a regular file")
         shutil.copy2(source, config.bundle_dir / source.name)
