@@ -1132,6 +1132,14 @@ def test_recovery_finds_hidden_marker_before_a_later_unclosed_function() -> None
     assert result.hidden_removed == 1
 
 
+def test_unmatched_close_cannot_swallow_a_later_hidden_declaration() -> None:
+    style = "color:red);display:none;fallback:("
+    result = _extraction(f'<p style="{escape(style, quote=True)}">content</p>', fmt="text")
+
+    assert result.content == ""
+    assert result.hidden_removed == 1
+
+
 def test_recovery_does_not_lose_a_hidden_declaration_after_an_escaped_character() -> None:
     style = r'content:"a\b";display:none;broken'
     result = _extraction(f"<p style='{style}'>content</p>", fmt="text")
@@ -1152,6 +1160,14 @@ def test_invalid_priority_suffix_cannot_override_important_hidden_declaration() 
 
 def test_br_is_a_normal_flow_boundary_around_collapsible_whitespace() -> None:
     assert _extract("<p>a <br> b</p>", fmt="text") == "a\nb"
+
+
+def test_preformatted_spaces_survive_plain_extraction() -> None:
+    assert _extract("<pre>  first\n    second</pre>", fmt="text") == "  first\n    second"
+
+
+def test_normal_plain_text_collapses_whitespace_during_extraction() -> None:
+    assert _extract("<p>wrapped\n    line</p>", fmt="text") == "wrapped line"
 
 
 def test_table_cell_separator_collapses_whitespace_around_cell_text() -> None:
