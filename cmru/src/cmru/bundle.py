@@ -662,7 +662,9 @@ def copy_sources(config: BundleConfig) -> None:
         if _is_excluded(rel, config.archive_keep):
             _warn_excluded_copy(rel)
             continue
-        if _has_symlink_component(source) or not source.is_file():
+        if _has_symlink_component(source):
+            raise ValueError(f"bundle source path {rel!r} is a symlink; refusing to copy its target")
+        if not source.is_file():
             raise ValueError(f"bundle source path {rel!r} is not a regular file")
         shutil.copy2(source, config.bundle_dir / source.name)
 
