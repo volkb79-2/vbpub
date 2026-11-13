@@ -1174,3 +1174,31 @@ def test_extract_content_default_does_not_drop_page_chrome() -> None:
     source = "<nav>Navigation</nav><p>Page body</p>"
 
     assert extract_content(source, fmt="text", base_url=URL) == "Navigation\nPage body"
+
+
+def test_self_closing_anchor_keeps_its_link_target() -> None:
+    assert _extract('<a href="/target"/>', fmt="links") == (
+        "- https://example.test/target (https://example.test/target)"
+    )
+
+
+def test_css_decoder_keeps_non_lf_after_a_lone_carriage_return_escape() -> None:
+    from pwmcp_client.page_content import _decode_css_escapes
+
+    assert _decode_css_escapes(r"\41" + "\rB") == "AB"
+
+
+def test_recovery_keeps_a_hidden_declaration_after_escaped_carriage_return() -> None:
+    style = 'content:"x' + "\\" + "\r" + '";display:none;broken'
+    result = _extraction(f'<p style="{escape(style, quote=True)}">content</p>', fmt="text")
+
+    assert result.content == ""
+    assert result.hidden_removed == 1
+
+
+def test_recovery_finds_hidden_declaration_after_escaped_character_then_bad_lf() -> None:
+    style = 'content:"x' + "\\q\n" + ";display:none"
+    result = _extraction(f'<p style="{escape(style, quote=True)}">content</p>', fmt="text")
+
+    assert result.content == ""
+    assert result.hidden_removed == 1
