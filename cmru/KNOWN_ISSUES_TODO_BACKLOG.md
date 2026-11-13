@@ -14,6 +14,7 @@
 
 | ID | Status | Fix commit |
 | --- | --- | --- |
+| KI-161 | OPEN (`cmru versions resolve` rewrites `cmru.toml` and drops comments inside the `[versions]` region) | — |
 | KI-160 | OPEN (post-promotion evidence retention can exit 1 after a successful release) | — |
 | KI-158 | OPEN (retained release outputs can disappear with an outer release worktree) | — |
 | KI-157 | OPEN (local-main sync failure message names the wrong condition) | — |
@@ -3515,3 +3516,17 @@ Only 10 of the 40 slowest tests use repositories (`test_release_end_to_end_real_
 **Trade-off.** Warning and retaining available artifacts would avoid reporting a promoted release as failed, but could present incomplete audit evidence as a successful retention result and weaken the all-or-nothing contract. Keeping exit 1 is honest about the retention failure but obscures that publication and promotion already succeeded. Design a distinct post-promotion degraded outcome before changing this behavior; a warning must not imply rollback or complete evidence.
 
 **Close when.** A regression reproduces a missing evidence path after successful publication and promotion, and a separately reviewed outcome reports publication state accurately while retaining valid artifacts and clearly identifying incomplete evidence.
+
+## KI-161 - `cmru versions resolve` drops every comment inside the `[versions]` region of `cmru.toml`
+
+**Status:** OPEN (filed 2026-11-13); severity: minor (silent loss of hand-written documentation; no functional effect). Found in netcup-api-filter with cmru 7.3.0. CHANGES checked: nothing in `[Unreleased]` covers it.
+
+**Evidence.** In netcup-api-filter, branch `pdns51`, the commit that ran one `cmru versions resolve` (`netcup-api-filter@9847b7b`, "chore(versions): record the PowerDNS 5.1.5 resolution") removed two hand-written comments from `cmru.toml`: a comment on the python314 target and a multi-line "partial migration" marker the previous commit had put directly above the `[versions.targets."oci.powerdns-auth"]` table. The resolved values were rewritten correctly; only the comments disappeared, so the marker that made a half-migrated state detectable was erased by the very command meant to complete it.
+
+**Cause (read from source).** `cmru/src/cmru/versions.py` `_update_versions_file` parses the document, mutates a copy of the `[versions]` table and calls `_replace_versions_region`. That function deletes the line range of EVERY `[versions...]` block (each block runs from its header to the next `[` header, so comments between two versions tables belong to the preceding block and are removed too) and inserts a fresh rendering from `_render_versions_toml`, which writes only key/value pairs. Blank-line runs are also collapsed. Comments outside the versions region (before the first versions table or after the last block) survive.
+
+**Other commands.** The tool-dependency pin rewrite (`cmru/src/cmru/tool_deps.py` `_rewrite_tool_dependency_toml`) and `standards._update_project_revision` document and implement surgical text edits of one marked region (rest of the file byte-for-byte unchanged), so they do not show this defect. I did not find release version bumps writing `cmru.toml` (the version strategies edit other files) and did not test `cmru versions init` or the other mutating verbs of `cmru versions`: the reporter reproduced only `resolve`; the fix owner should check every writer of `cmru.toml`.
+
+**Expected.** Either (a) a round-trip edit that preserves comments and ordering of the region (surgical per-key text edits in the style of `_rewrite_tool_dependency_toml`, or a comment-preserving TOML library), or (b) an explicit documented contract that the `[versions]` region is machine-owned, with a supported place for hand-written notes (for example a reserved comment block that is never rewritten) and a `--dry-run` diff that shows what would be lost.
+
+**Close when.** A regression test runs `cmru versions resolve` on a `cmru.toml` with per-target comments and a hand-written marker comment above a target (between two versions tables) and asserts every comment is byte-identical afterwards (option a), or the documented contract plus a test that the tool refuses or warns before discarding comments (option b); and the other writers of `cmru.toml` are listed with the same guarantee.
