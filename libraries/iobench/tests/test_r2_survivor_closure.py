@@ -3,6 +3,66 @@
 The tests exercise public results and refusal behaviour with FakeHost or
 scoped OS adapters. They do not require a device, a real fio run, or a wall
 clock deadline.
+
+Mutant trace (iobench-v0.2.0 R2 survivors; file:line operator -> test).  Entries marked
+"equivalent" are proven unobservable: their test passes under the mutant on purpose.
+
+  cache.py:333 Gt->GtE        test_cache_delayed_read_hint_is_miss_like_at_the_exact_threshold
+  cache.py:339 Gt->GtE        test_cache_repeat_hint_is_miss_like_at_the_exact_threshold
+  cache.py:349 Or->And        test_cache_state_remains_measured_when_only_one_probe_measured
+  calibrate.py:198 Lt->LtE    test_cache_evidence_accepts_an_exact_one_mib_region
+  calibrate.py:202 Gt->GtE    test_zero_idle_delay_does_not_enter_the_idle_wait_loop (R2 TIMEOUT;
+                              the suite-wide guard in conftest.py keeps every other test from spinning)
+  calibrate.py:215 Gt->GtE    test_zero_first_read_rate_has_no_speedup_ratio
+  calibrate.py:234 Eq->NotEq  test_cache_evidence_stage_preserves_the_budget_skip_reason
+  calibrate.py:240 None->[]   test_absent_write_time_proof_serializes_as_null
+  calibrate.py:273 Gt->GtE    test_zero_progress_fill_does_not_claim_a_fio_short_limit
+  calibrate.py:284 Or->And    test_fill_replanning_carries_a_preexisting_budget_limit
+  calibrate.py:284 Lt->LtE    test_fill_replan_at_the_full_planned_size_is_not_a_time_truncation
+  calibrate.py:287 Lt->LtE    test_a_full_fill_finishing_at_its_deadline_is_not_truncated
+  calibrate.py:287 GtE->Gt    test_a_partial_fill_at_its_deadline_is_budget_truncated
+  calibrate.py:542 Or->And    test_veryquick_coarse_model_requires_both_measured_cell_shapes
+  calibrate.py:779 And->Or    test_missing_cold_raw_data_does_not_get_merged_into_the_cold_document
+  calibrate.py:788 IsNot->Is  test_unallocated_plan_is_serialized_as_null
+  calibrate.py:827 And->Or    test_veryquick_burst_requires_a_steady_write_series
+  calibrate.py:827 Gt->GtE    test_veryquick_burst_requires_a_positive_burst_measurement
+  calibrate.py:973 False->True  test_veryquick_s0_does_not_require_a_work_directory
+  calibrate.py:976 True->False  test_veryquick_fill_failure_is_required_and_stops_later_stages
+  calibrate.py:979 True->False  test_veryquick_series_failure_is_required_and_stops_sixth_stage
+  capability.py:42 Or->And (x3), IsNot->Is  test_capability_row_rejects_* (three tests)
+  capability.py:74 True->False   equivalent (sort_keys): test_capability_history_header_round_trips_its_values
+  capability.py:111 True->False  equivalent (sort_keys): test_capability_history_rows_are_json_objects_independent_of_key_order
+  capability.py:210-217       test_capability_plateau_*, _burst_*, _precliff_*, _does_not_publish_a_zero_cold_region_rate
+  ceilings.py:48 Or->And      test_disk_scope_with_one_stable_identifier_does_not_bind_to_machine_id
+  cli.py:50 LtE->Lt           test_zero_file_size_reports_the_positive_multiple_requirement
+  cli.py:53 Lt->LtE           test_file_size_accepts_the_exact_minimum_target_size
+  cli.py:355 0->None          test_capability_cli_handler_returns_success_after_emitting_output
+  devio.py:148 Or->And        test_fio_option_probe_error_includes_the_empty_stderr_fallback
+  guard.py:135 GtE->Gt        test_four_character_repeated_disk_identifier_is_a_placeholder
+  guard.py:143 True->False    test_disk_facts_are_immutable
+  guard.py:167 False->True    test_weak_disk_lookup_defaults_to_an_unconfirmed_machine_id (added in review)
+  guard.py:190 Or->And (x2)   test_weak_disk_lookup_does_not_accept_a_strong_candidate / _a_wwn_only_candidate
+  guard.py:211 Or->And        test_empty_btrfs_member_list_is_reported_as_unknown_disk_scope
+  guard.py:226 None->[]       equivalent: test_btrfs_member_lookup_without_a_filesystem_uuid_is_refused_as_unknown_scope
+  guard.py:229 None->[]       equivalent: test_btrfs_member_absence_and_an_empty_member_list_have_the_same_refusal
+  guard.py:289 Or->And        test_mount_touching_by_raw_mount_devno_alone_is_retained
+  guard.py:708 Or->And        test_workdir_on_the_target_btrfs_disk_is_not_marked_cross_disk
+  host.py:194 LtE->Lt         test_fio_allowlist_accepts_an_argv_with_every_allowed_key
+  host.py:406 True->False x2  test_proc_handle_runs_the_supervisor_in_a_new_session_and_returns_text
+                              (start_new_session killed; text=True equivalent)
+  host.py:633 Or->And         test_marker_open_error_uses_the_os_error_when_strerror_is_empty
+  host.py:654 Or->And, Lt->LtE  test_real_extent_query_refuses_a_negative_start_before_seeking / _allows_a_zero_start_*
+  host.py:664 Or->And (x2)    test_real_extent_query_rejects_a_nonregular_file_identity / _an_inode_change_*
+  host.py:667 Or->And         test_real_extent_query_refuses_when_only_one_seek_constant_is_missing
+  host.py:670 Lt->LtE         test_real_extent_query_stops_before_seeking_data_at_the_end
+  host.py:677 GtE->Gt         test_real_extent_query_stops_before_seeking_a_hole_at_the_end
+  host.py:685 LtE->Lt         test_real_extent_query_refuses_a_nonadvancing_seek_hole_without_spinning
+  host.py:733 Or->And         test_marker_device_in_use_message_uses_the_os_error_when_strerror_is_empty
+  host.py:735 Or->And         test_marker_probe_error_uses_the_os_error_when_strerror_is_empty
+  plan.py:187 False->True     test_budget_skipped_cache_evidence_keeps_its_distinct_status
+  plausibility.py:170 LtE->Lt test_zero_read_rate_is_not_used_as_a_plausibility_ratio
+  result.py:225 Or->And       equivalent: test_disk_scope_strength_transitions_are_refused_by_the_stored_identifiers
+  testing.py:971 Or->And, Lt->LtE  test_fakehost_extent_query_refuses_a_negative_start_* / _allows_zero_start_*
 """
 from __future__ import annotations
 
@@ -613,8 +673,8 @@ def test_disk_scope_strength_transitions_are_refused_by_the_stored_identifiers()
 
 
 def test_strong_disk_lookup_default_is_not_used_by_its_production_caller(monkeypatch):
-    # The production call passes the host binding explicitly; changing the helper
-    # default cannot change this live identity lookup.
+    # The production call passes the machine-id confirmation explicitly rather than relying on
+    # the helper default (which is pinned fail-closed by the next test).
     from iobench import result
 
     host = standard_host()
@@ -632,6 +692,15 @@ def test_strong_disk_lookup_default_is_not_used_by_its_production_caller(monkeyp
                        "machine_id_hash": None, "name": "vda"},
     })
     assert calls and calls[0]["machine_id_matches"] is True
+
+
+def test_weak_disk_lookup_defaults_to_an_unconfirmed_machine_id():
+    # guard.py:167 (False->True): find_disk is public API; a weak scope whose remembered
+    # name matches must still not resolve unless the caller confirms the machine id.
+    host = make_host(cache=None)
+    args = {"model": None, "serial": None, "wwn": None, "size_bytes": 500 * GIB, "hint": "vda"}
+    assert guard.find_disk(host, **args) is None
+    assert guard.find_disk(host, **args, machine_id_matches=True).name == "vda"
 
 
 def test_fio_allowlist_accepts_an_argv_with_every_allowed_key():
@@ -809,5 +878,3 @@ def test_fakehost_extent_query_allows_zero_start_and_empty_range():
 def test_zero_read_rate_is_not_used_as_a_plausibility_ratio():
     check = plausibility.pla_19(0.0, 1.0)
     assert check.status == "not_applicable"
-
-

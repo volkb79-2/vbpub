@@ -201,17 +201,20 @@ captured 13-cgroup BFQ-file absence; no new host was accessed by this fix.
 The diff-scoped R2 campaign against 0.2.0 reported 456 candidates: 388 killed,
 67 survived, and one timeout. The closure package adds behavioral tests for
 all 68 non-killed candidates. In a scratch worktree at the test baseline,
-61 mutations individually failed their mapped test and seven passed with
-equivalence proofs. The bounded fake-clock/iteration tests cover the idle-loop
-timeout; no wall-clock sleep or host/device run is part of this closure. No
-source defect reproduced, so this package changes no production source.
+62 mutations individually failed their mapped test and six passed with
+equivalence proofs. The idle-loop timeout (`calibrate.py:202`) is killed by a
+bounded fake-sleep test, and the shared test configuration refuses a
+non-advancing `FakeHost.sleep`, so the same mutant now fails the whole suite
+in about a minute instead of running into the lane budget (it burned the
+budget because nearly every calibration run reaches `remaining == 0.0`, also in
+module-scoped fixtures that the per-test CPU limit does not cover). No
+wall-clock sleep or host/device run is part of this closure. No source defect
+reproduced, so this package changes no production source.
 
-The seven equivalent mutations are:
+The six equivalent mutations are:
 
 - `capability.py:74` and `capability.py:111`, `True->False`: only JSON key
   ordering changes; tests parse and compare the complete header or row.
-- `guard.py:167`, `False->True`: the live-identity caller explicitly passes
-  `machine_id_matches`, so the helper default is not consulted.
 - `guard.py:226` and `guard.py:229`, `None->[]`: the public backing-disk
   caller refuses both missing and empty Btrfs member sets with the same
   unknown-scope result.
@@ -222,10 +225,11 @@ The seven equivalent mutations are:
   generated strong scope has no machine-id hash, so the changed hash fallback
   is unreachable for valid scope records.
 
-Five candidates initially marked equivalent were instead killed by behavior
-tests: `cli.py:50` (zero-size diagnostic), and `host.py:667`, `:670`, `:677`,
-and `:685` (a missing extent-seek constant, end-boundary seeks, and a
-non-advancing hole). `capability.py:74` was reclassified from TEST GAP because
+Six candidates initially marked equivalent were instead killed by behavior
+tests: `cli.py:50` (zero-size diagnostic), `guard.py:167` (the public
+`find_disk` default must not confirm the machine id), and `host.py:667`,
+`:670`, `:677`, and `:685` (a missing extent-seek constant, end-boundary
+seeks, and a non-advancing hole). `capability.py:74` was reclassified from TEST GAP because
 the mutation changes `sort_keys`, not the header marker. The campaign report
 and the complete candidate/test/disposition table are recorded as the
 “iobench R2 0.2.0 report” and the iobench R2 tests report.
