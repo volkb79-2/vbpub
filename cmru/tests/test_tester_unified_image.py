@@ -3848,9 +3848,10 @@ def _canonical_image(name: str) -> str:
 
 def assert_tester_base_has_no_published_vbpub_input(root: Path) -> None:
     """tester-base builds from public upstream inputs alone. The allowed upstream images are DERIVED from
-    the version targets tester-base/cmru.toml declares (the images `cmru versions` vets); every FROM must
-    be a literal, digest-pinned reference to one of them, with no ARG substitution, and no non-comment
-    line (FROM, COPY --from, curl) may name the vbpub namespace."""
+    the version targets tester-base/cmru.toml declares (the images `cmru versions` vets). External FROMs
+    must be literal, digest-pinned references to those images. Later FROMs may use an earlier local stage;
+    the only variable stage selector allowed is the tester-base architecture selector. No non-comment line
+    (FROM, COPY --from, curl) may name the vbpub namespace."""
     declared = tomllib.loads((root / "tester-base" / "cmru.toml").read_text("utf-8"))
     allowed = {
         _canonical_image(target["oci"]["image"])
@@ -3863,18 +3864,38 @@ def assert_tester_base_has_no_published_vbpub_input(root: Path) -> None:
         if not line.lstrip().startswith("#")
     ]
     froms = [line for line in code if re.match(r"(?i)^FROM\s", line)]
-    assert len(froms) == 1, froms
-    match = re.fullmatch(r"FROM (?P<image>[^\s:@$]+):[^\s@$]+@sha256:[0-9a-f]{64}", froms[0])
-    assert match, f"tester-base FROM must be a literal digest-pinned reference: {froms[0]!r}"
-    assert _canonical_image(match.group("image")) in allowed, (match.group("image"), allowed)
+    assert froms, "tester-base Dockerfile has no FROM instruction"
+    stages: set[str] = set()
+    for instruction in froms:
+        parsed = re.fullmatch(
+            r"(?i)FROM\s+(?:--platform=\S+\s+)?(?P<image>\S+)(?:\s+AS\s+(?P<stage>[A-Za-z0-9_.-]+))?",
+            instruction,
+        )
+        assert parsed, f"tester-base FROM has an unsupported shape: {instruction!r}"
+        image = parsed.group("image")
+        if "$" in image:
+            assert image == "tester-base-${TARGETARCH}", (
+                f"tester-base FROM uses an unsupported variable image: {image!r}"
+            )
+            assert {"tester-base-amd64", "tester-base-arm64"} <= stages, (
+                "architecture selector must refer to both declared tester-base stages"
+            )
+        elif image.lower() not in stages:
+            match = re.fullmatch(r"(?P<name>[^\s:@$]+):[^\s@$]+@sha256:[0-9a-f]{64}", image)
+            assert match, f"tester-base FROM must use a local stage or literal digest-pinned reference: {instruction!r}"
+            assert _canonical_image(match.group("name")) in allowed, (match.group("name"), allowed)
+        stage = parsed.group("stage")
+        if stage is not None:
+            stage_key = stage.lower()
+            assert stage_key not in stages, f"tester-base Dockerfile repeats stage name {stage!r}"
+            stages.add(stage_key)
     logical = re.sub(r"\\\n", " ", "\n".join(code)).splitlines()
     # a LABEL may point at the source repository (metadata); nothing else may name the vbpub namespace
     assert [line for line in logical if "volkb79" in line.lower() and not line.lstrip().upper().startswith("LABEL")] == []
 
 
 def test_the_no_published_vbpub_image_check_can_fail(tmp_path):
-    """The invariant above goes RED for a vbpub FROM, an ARG-substituted FROM, a second FROM, an
-    undeclared upstream image, and a vbpub namespace in a download line."""
+    """The invariant rejects untrusted bases while permitting architecture-specific internal stages."""
     (tmp_path / "tester-base").mkdir()
     (tmp_path / "tester-base" / "cmru.toml").write_text(
         '[versions.targets."oci.python"]\n[versions.targets."oci.python".oci]\nimage = "docker.io/library/python"\n',
@@ -3885,11 +3906,20 @@ def test_the_no_published_vbpub_image_check_can_fail(tmp_path):
     dockerfile = tmp_path / "tester-base" / "Dockerfile"
     dockerfile.write_text(good, encoding="utf-8")
     assert_tester_base_has_no_published_vbpub_input(tmp_path)
+    multi_stage = (
+        f"FROM python:3.14@{digest} AS tester-base-common\n"
+        "FROM tester-base-common AS tester-base-amd64\n"
+        "FROM tester-base-common AS tester-base-arm64\n"
+        "FROM tester-base-${TARGETARCH} AS final\n"
+    )
+    dockerfile.write_text(multi_stage, encoding="utf-8")
+    assert_tester_base_has_no_published_vbpub_input(tmp_path)
     for bad in (
         f"FROM ghcr.io/volkb79-2/tester-base@{digest}\n",
         f"FROM docker.io/other/python:3.14@{digest}\n",
         f"ARG B=python:3.14@{digest}\nFROM ${{B}}\n",
-        good + f"FROM python:3.14@{digest}\n",
+        good + "FROM missing-stage AS final\n",
+        good + "FROM tester-base-${TARGETOS} AS final\n",
         good + "RUN curl -fsSL https://github.com/volkb79-2/vbpub/releases/download/x/y\n",
         "FROM python:3.14\n",
     ):
