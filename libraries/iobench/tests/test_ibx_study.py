@@ -1378,16 +1378,16 @@ def test_local_liveness_probe_reports_fake_child_latency_and_failures(monkeypatc
 
     for returncode, state in ((3, "deactivating"), (3, ""), (0, "inactive"),
                               (3, "unknown")):
-        clock[:] = [0.0, 2.0]
         host = driver.LocalHost()
+        host._liveness_probe_stalled = True
+        host._liveness_probe_stalled_unit = "ibx-liveness-prior.service"
 
         def not_confirmed_stopped(*args, _returncode=returncode, _state=state, **kwargs):
             if args[0][0] == "systemd-run":
-                raise driver.subprocess.TimeoutExpired(args[0], kwargs["timeout"])
+                pytest.fail("an unconfirmed prior probe allowed another liveness probe")
             return SimpleNamespace(returncode=_returncode, stdout=_state, stderr="")
 
         monkeypatch.setattr(driver.subprocess, "run", not_confirmed_stopped)
-        host.liveness_probe(1)
         unresolved = host.liveness_probe(1)
         assert unresolved["responsive"] is False
         assert "not been confirmed stopped" in unresolved["error"]
