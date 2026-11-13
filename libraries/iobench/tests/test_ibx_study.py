@@ -2517,10 +2517,11 @@ def test_io_control_snapshot_accepts_the_recorded_host_layout(tmp_path, monkeypa
     with pytest.raises(driver.StudyError, match="cannot resolve"):
         driver.cgroup_path("0::/../escape\n")
     appearing_control = root / "system.slice/io.max"
+    original_max = appearing_control.read_text(encoding="utf-8")
     appearing_control.write_text("254:0 rbps=max\n", encoding="utf-8")
     changed_snapshot = driver.io_control_snapshot(cgroup_root=root, cgroup_text=fixture["cgroup_text"])
     assert snapshot != changed_snapshot
-    appearing_control.unlink()
+    appearing_control.write_text(original_max, encoding="utf-8")
     transient_peer = root / "cgprofile.slice"
     (transient_peer / "io.weight").unlink()
     transient_peer.rmdir()
