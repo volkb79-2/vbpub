@@ -12,6 +12,8 @@ declared lane demand. Overcommit applies to expected sums; a single candidate
 must still fit physical lane RAM. Geekbench single-core scores and one factor
 per host inform ETA only. See the [design guide](docs/DESIGN-GUIDE.md) for the
 reasons and the [consumer guide](docs/CONSUMERS.md) for runnable examples.
+Serialized campaign inputs use the versioned `host-facts/1`, `work-request/1`,
+and `assay-merge-manifest/1` contracts.
 
 Runtime imports use only the Python standard library. The registered
 `r0-r1` lane runs tests in `tester-unified` with full line and branch coverage.
