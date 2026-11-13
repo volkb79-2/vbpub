@@ -732,6 +732,73 @@ def test_invalid_or_unresolved_later_hiding_values_fail_closed(style: str) -> No
 @pytest.mark.parametrize(
     "style",
     [
+        pytest.param("display:none;display:block\u00a0", id="display-nbsp-suffix"),
+        pytest.param("display:none;display:block\u2028", id="display-line-separator-suffix"),
+        pytest.param("display:none;display:block\u0085", id="display-next-line-suffix"),
+        pytest.param("display:none;display:block\u00a0flow", id="display-nbsp-does-not-split-keywords"),
+        pytest.param("display:none;display\u00a0:block", id="display-name-nbsp"),
+        pytest.param("visibility:hidden;visibility:visible\u00a0", id="visibility-nbsp-suffix"),
+        pytest.param("visibility:hidden;visibility:visible\u2028", id="visibility-line-separator-suffix"),
+        pytest.param("visibility:hidden;visibility:visible\u0085", id="visibility-next-line-suffix"),
+        pytest.param("visibility:hidden;visibility\u00a0:visible", id="visibility-name-nbsp"),
+    ],
+)
+def test_non_css_unicode_whitespace_cannot_override_a_hidden_winner(style: str) -> None:
+    result = _extraction(f"<p style='{style}'>hidden content</p>", fmt="text")
+
+    assert result.content == ""
+    assert result.hidden_removed == 1
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        pytest.param("run-in", id="run-in"),
+        pytest.param("ruby-base", id="ruby-base"),
+        pytest.param("ruby-text", id="ruby-text"),
+        pytest.param("ruby-base-container", id="ruby-base-container"),
+        pytest.param("ruby-text-container", id="ruby-text-container"),
+    ],
+)
+def test_non_interoperable_display_value_cannot_override_a_hidden_winner(value: str) -> None:
+    result = _extraction(
+        f"<p style='display:none;display:{value}'>hidden content</p>",
+        fmt="text",
+    )
+
+    assert result.content == ""
+    assert result.hidden_removed == 1
+
+
+@pytest.mark.parametrize(
+    "style",
+    [
+        pytest.param("visibility:collapse", id="collapse-alone"),
+        pytest.param("visibility:visible;visibility:collapse", id="collapse-over-visible"),
+    ],
+)
+def test_visibility_collapse_is_hidden_without_a_prior_hidden_value(style: str) -> None:
+    result = _extraction(f"<p style='{style}'>collapsed content</p>", fmt="text")
+
+    assert result.content == ""
+    assert result.hidden_removed == 1
+
+
+def test_visibility_collapse_prunes_a_table_row_and_its_cells() -> None:
+    source = (
+        "<table><tr style='visibility:collapse'><td>collapsed cell</td></tr>"
+        "<tr><td>visible cell</td></tr></table>"
+    )
+
+    result = _extraction(source, fmt="text")
+
+    assert result.content == "visible cell"
+    assert result.hidden_removed == 1
+
+
+@pytest.mark.parametrize(
+    "style",
+    [
         pytest.param("display:none;display:block flow", id="outside-inside-pair"),
         pytest.param("display:none;display:flow list-item", id="inside-list-item-pair"),
         pytest.param("display:none;display:block flow list-item", id="outside-inside-list-item"),
@@ -1140,6 +1207,16 @@ def test_recovery_finds_hidden_marker_before_a_later_unclosed_function() -> None
     assert result.hidden_removed == 1
 
 
+def test_recovery_keeps_hidden_marker_after_nested_close_before_unclosed_function() -> None:
+    result = _extraction(
+        "<p style='display:none(a(b) c'>content</p>",
+        fmt="text",
+    )
+
+    assert result.content == ""
+    assert result.hidden_removed == 1
+
+
 def test_unmatched_close_cannot_swallow_a_later_hidden_declaration() -> None:
     style = "color:red);display:none;fallback:("
     result = _extraction(f'<p style="{escape(style, quote=True)}">content</p>', fmt="text")
@@ -1198,6 +1275,19 @@ def test_extract_content_default_does_not_drop_page_chrome() -> None:
     source = "<nav>Navigation</nav><p>Page body</p>"
 
     assert extract_content(source, fmt="text", base_url=URL) == "Navigation\nPage body"
+
+
+def test_extract_page_default_does_not_drop_page_chrome() -> None:
+    from pwmcp_client.page_content import extract_page
+
+    source = "<header>Site header</header><nav>Navigation</nav><p>Page body</p><footer>Site footer</footer>"
+
+    result = extract_page(source, fmt="text", base_url=URL)
+
+    assert "Site header" in result.content
+    assert "Navigation" in result.content
+    assert "Page body" in result.content
+    assert "Site footer" in result.content
 
 
 def test_self_closing_anchor_keeps_its_link_target() -> None:
