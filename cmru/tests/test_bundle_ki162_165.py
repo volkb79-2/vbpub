@@ -2,9 +2,11 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import tarfile
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -27,6 +29,7 @@ def _write_bundle(
     fmt: str = "xztar",
     keep_tree: bool | None = None,
 ) -> Path:
+    root.mkdir(parents=True, exist_ok=True)
     archive_rows = [
         'name_template = "demo-v{version}.tar.xz"',
         'version_env = "DEMO_VERSION"',
@@ -384,6 +387,215 @@ def test_manifest_tag_matches_release_tag_for_both_prefix_forms(tmp_path, monkey
     archive = next((tmp_path / "dist").glob("*.tar.xz"))
     manifest, _names = _archive_contents(archive)
     assert manifest["tag"] == "demo-v1.2.3"
+
+
+def test_keep_config_rejects_duplicate_paths_and_non_boolean_keep_tree(tmp_path):
+    duplicate = _write_bundle(tmp_path / "duplicate", keep=("src/app.env", "src/app.env"))
+    with pytest.raises(ValueError, match="duplicate path"):
+        bundle.parse_config(duplicate)
+
+    bad_tree = _write_bundle(tmp_path / "bad-tree")
+    bad_tree.write_text(
+        bad_tree.read_text(encoding="utf-8").replace(
+            'format = "xztar"', 'format = "xztar"\nkeep_tree = "false"',
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="keep_tree must be true or false"):
+        bundle.parse_config(bad_tree)
+
+
+def test_copy_sources_rejects_bad_file_and_directory_inputs(tmp_path):
+    (tmp_path / "target.txt").write_text("target\n", encoding="utf-8")
+    (tmp_path / "alias.txt").symlink_to(tmp_path / "target.txt")
+    config_path = _write_bundle(tmp_path, copy_dirs=())
+    config_path.write_text(
+        config_path.read_text(encoding="utf-8").replace(
+            "files = []", 'files = ["alias.txt"]',
+        ),
+        encoding="utf-8",
+    )
+    config = bundle.parse_config(config_path)
+    config.bundle_dir.mkdir(parents=True)
+    with pytest.raises(ValueError, match="symlink"):
+        bundle.copy_sources(config)
+
+    file_path = _write_bundle(tmp_path / "copy-directory", copy_dirs=("not-a-dir",))
+    (tmp_path / "copy-directory/not-a-dir").write_text("file\n", encoding="utf-8")
+    config = bundle.parse_config(file_path)
+    config.bundle_dir.mkdir(parents=True)
+    with pytest.raises(ValueError, match="not a directory"):
+        bundle.copy_sources(config)
+
+    (tmp_path / "copy-file-directory/folder").mkdir(parents=True)
+    file_path = _write_bundle(tmp_path / "copy-file-directory", copy_dirs=())
+    file_path.write_text(
+        file_path.read_text(encoding="utf-8").replace(
+            "files = []", 'files = ["folder"]',
+        ),
+        encoding="utf-8",
+    )
+    config = bundle.parse_config(file_path)
+    config.bundle_dir.mkdir(parents=True)
+    with pytest.raises(ValueError, match="not a regular file"):
+        bundle.copy_sources(config)
+
+
+def test_copy_sources_warns_and_skips_a_hard_excluded_directory(tmp_path, capsys):
+    (tmp_path / ".git").mkdir()
+    config_path = _write_bundle(tmp_path, copy_dirs=())
+    config = bundle.parse_config(config_path)
+    config.copy_dirs.append(".git")
+    config.bundle_dir.mkdir(parents=True)
+
+    bundle.copy_sources(config)
+
+    assert "[WARN]" in capsys.readouterr().err
+    assert not (config.bundle_dir / ".git").exists()
+
+
+def test_copy_sources_rejects_non_regular_entries(tmp_path):
+    source = tmp_path / "src"
+    source.mkdir()
+    os.mkfifo(source / "pipe")
+    config_path = _write_bundle(tmp_path)
+    config = bundle.parse_config(config_path)
+    config.bundle_dir.mkdir(parents=True)
+
+    with pytest.raises(ValueError, match="not a regular file or directory"):
+        bundle.copy_sources(config)
+
+
+@pytest.mark.parametrize("kind", ["symlink", "fifo"])
+def test_stage_output_rejects_symlinks_and_non_regular_entries(tmp_path, kind):
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src/app.py").write_text("print('ok')\n", encoding="utf-8")
+    config = _write_bundle(tmp_path, stage=True)
+    bundle_root = tmp_path / "dist/app"
+
+    def runner(_argv, _cwd):
+        target = bundle_root / "generated.bin"
+        if kind == "symlink":
+            external = tmp_path / "outside.bin"
+            external.write_bytes(b"outside\n")
+            target.symlink_to(external)
+        else:
+            os.mkfifo(target)
+
+    message = "symlink" if kind == "symlink" else "not a regular file or directory"
+    with pytest.raises(ValueError, match=message):
+        bundle.run_bundle(
+            config, runner=runner, manifest_project="demo", manifest_tag="demo-v1.2.3",
+        )
+
+
+def test_stage_pyc_is_filtered_from_archive_and_manifest(tmp_path):
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src/app.py").write_text("print('ok')\n", encoding="utf-8")
+    config = _write_bundle(tmp_path, stage=True)
+
+    def runner(_argv, _cwd):
+        (tmp_path / "dist/app/generated.pyc").write_bytes(b"cache\n")
+
+    archive = bundle.run_bundle(
+        config, runner=runner, manifest_project="demo", manifest_tag="demo-v1.2.3",
+    )
+
+    manifest, names = _archive_contents(archive)
+    assert "app/generated.pyc" not in names
+    assert "generated.pyc" not in manifest["files"]
+
+
+def _dev_version_inputs(tmp_path, *, prefix="demo-v"):
+    project = SimpleNamespace(version=SimpleNamespace(strategy="semver"), prefix=prefix)
+    forge = SimpleNamespace(repo_root=tmp_path, projects={"demo": project})
+    return forge, project
+
+
+def test_bundle_dev_version_uses_next_release_and_git_identity(tmp_path, monkeypatch):
+    from cmru import version
+
+    forge, project = _dev_version_inputs(tmp_path)
+    monkeypatch.setattr(version, "status_records", lambda *_: [{
+        "project": "demo", "next_version": "demo-v1.2.4", "last_tag": "demo-v1.2.3",
+    }])
+    git_results = iter(["4", "ABCDEF123456"])
+    calls = []
+
+    def fake_git(root, *args):
+        calls.append(args)
+        return next(git_results)
+
+    monkeypatch.setattr(version, "_git", fake_git)
+
+    assert handlers._bundle_dev_version(forge, "demo", project) == "1.2.4.dev4+gabcdef123456"
+    assert calls[0] == ("rev-list", "--count", "demo-v1.2.3..HEAD")
+
+
+def test_bundle_dev_version_can_fall_back_to_last_tag_and_default_prefix(tmp_path, monkeypatch):
+    from cmru import version
+
+    forge, project = _dev_version_inputs(tmp_path, prefix=None)
+    monkeypatch.setattr(version, "status_records", lambda *_: [{
+        "project": "demo", "last_tag": "demo-v1.2.3",
+    }])
+    git_results = iter(["0", "abcdef123456"])
+    monkeypatch.setattr(version, "_git", lambda *_: next(git_results))
+
+    assert handlers._bundle_dev_version(forge, "demo", project) == "1.2.3.dev0+gabcdef123456"
+
+
+def test_bundle_dev_version_refuses_missing_or_mismatched_version_sources(tmp_path, monkeypatch):
+    from cmru import version
+
+    forge, project = _dev_version_inputs(tmp_path)
+    with pytest.raises(RuntimeError, match="set the configured archive version"):
+        handlers._bundle_dev_version(
+            forge, "demo", SimpleNamespace(version=None, prefix="demo-v"),
+        )
+    with pytest.raises(RuntimeError, match="set the configured archive version"):
+        handlers._bundle_dev_version(
+            forge, "demo", SimpleNamespace(
+                version=SimpleNamespace(strategy="external:tool"), prefix="demo-v",
+            ),
+        )
+
+    with pytest.raises(RuntimeError, match="no repository root"):
+        handlers._bundle_dev_version(
+            SimpleNamespace(repo_root=None, projects={"demo": project}), "demo", project,
+        )
+
+    records = []
+    monkeypatch.setattr(version, "status_records", lambda *_: records)
+    with pytest.raises(RuntimeError, match="no record"):
+        handlers._bundle_dev_version(forge, "demo", project)
+
+    records.append({"project": "demo", "next_version": "other-v1.2.3"})
+    with pytest.raises(RuntimeError, match="does not start with"):
+        handlers._bundle_dev_version(forge, "demo", project)
+
+    records[:] = [{"project": "demo", "last_tag": "other-v1.2.3"}]
+    with pytest.raises(RuntimeError, match="unexpected release tag"):
+        handlers._bundle_dev_version(forge, "demo", project)
+
+    records[:] = [{"project": "demo"}]
+    with pytest.raises(RuntimeError, match="no version"):
+        handlers._bundle_dev_version(forge, "demo", project)
+
+
+@pytest.mark.parametrize("git_results", [("count", "abcdef123456"), ("3", "not-a-hash")])
+def test_bundle_dev_version_rejects_invalid_git_identity(tmp_path, monkeypatch, git_results):
+    from cmru import version
+
+    forge, project = _dev_version_inputs(tmp_path)
+    monkeypatch.setattr(version, "status_records", lambda *_: [{
+        "project": "demo", "next_version": "demo-v1.2.4",
+    }])
+    results = iter(git_results)
+    monkeypatch.setattr(version, "_git", lambda *_: next(results))
+
+    with pytest.raises(RuntimeError, match="invalid commit count or short hash"):
+        handlers._bundle_dev_version(forge, "demo", project)
 
 
 def _write_cmru_project(root: Path, *, prefix: str = "demo-v") -> tuple[Path, Path]:
