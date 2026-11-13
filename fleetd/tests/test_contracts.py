@@ -75,6 +75,7 @@ def test_host_facts_fixture_is_typed_and_preserved():
         (lambda data: data["guard"].update(enabled=None), "null requires enabled_reason"),
         (lambda data: data["policy"].update(psi_refuse_some_avg10=101), "psi_refuse_some_avg10: must be at most 100"),
         (lambda data: data["policy"].update(max_lane_containers=0), "max_lane_containers: must be at least 1"),
+        (lambda data: data["policy"].update(host_role="other"), "host_role: expected 'dedicated-dev' or 'shared-prod'"),
     ],
 )
 def test_host_facts_rejects_invalid_shapes_and_values(edit, message):

@@ -24,8 +24,10 @@ factor per lane or hardware flavor. ETA is informational and cannot reject or
 time out work.
 
 Time samples are comparable only when the hosts share a Geekbench major,
-exact version, and baseline score. A missing or mismatched benchmark keeps RAM
-placement available but makes ETA unavailable with a reason.
+exact version, and baseline score. Refused hosts do not set the ETA reference,
+so an ineligible machine cannot make ETA unavailable for eligible hosts. A
+missing or mismatched benchmark among eligible hosts keeps RAM placement
+available but makes ETA unavailable with a reason.
 
 The planner calculates P = memory.for_lanes_bytes -
 control_plane.memory_min_bytes, O = other running expected charges +
@@ -50,20 +52,30 @@ does not run the benchmark. A missing fact stays `null` with a reason, and a
 planner that needs that fact refuses rather than inventing it.
 
 Collection requires versioned `/etc/fleetd/facts.toml` policy and source-path
-configuration. The CPU lane count comes from the online CPU list, and
-`memory.for_lanes_bytes` is raw `MemTotal`; the planner subtracts the configured
-control-plane slice's `memory.min` once. The design text also describes
+configuration. `HOST_ROLE` is read from the configured host-setup environment
+file, not duplicated in fleetd policy; unknown or invalid roles remain null
+with a reason and cannot receive work. The CPU lane count comes from the
+online CPU list, and `memory.for_lanes_bytes` is raw `MemTotal`; the planner
+subtracts the configured control-plane slice's `memory.min` once. The design text also describes
 subtracting that reserve while constructing facts (§3.6); this package uses
 the explicit §4.3 formula and keeps the raw counter in facts to avoid a double
 subtraction.
+
+The demand schema validates `candidate`, `worker`, and `run` as its closed
+vocabulary. This R2 candidate planner only accepts `unit = "candidate"`;
+other units fail with a clear input error until their placement meaning is
+specified.
 
 ## Determinism and manual command delivery
 
 Candidate, host, batch, and command ordering use explicit stable keys. JSON
 contains no generated timestamp. `--commands` emits IDs into checkout-local
 candidate files before invoking Run-Gate's existing `--only-candidates FILE`
-interface. That lets the current runner execute the plan without adding a
-fleet-specific Run-Gate command.
+interface. To execute a host section, copy that section and its generated ID
+files to the matching host checkout, preserving the `.assay/fleetd-plan/`
+paths. The tool provides no transport; running all sections in one shell would
+run them on that one machine. This lets the current runner execute staged plans
+without adding a fleet-specific Run-Gate command.
 The unimplemented Run-Gate client verb is tracked as
 [RG-276](../../run-gate-project/KNOWN_ISSUES_TODO_BACKLOG.md#rg-276-the-run-gate-campaign-plan-client-is-not-implemented).
 
@@ -73,5 +85,7 @@ The guard rules are parsed only; no process or cgroup is changed. There is no
 daemon, socket, SSH, Docker, transport, remote collection, retry supervision,
 or strict merge implementation. Guard configuration accepts the design's
 `report` and `enforce` modes and the `least-progress-per-ram` victim policy, but
-this package does not act on them. See
+this package does not act on them. Released Run-Gate does not yet accept the
+`demand` lane key, so the lane demand lives in a separate TOML input until
+RG-275 lands; the missing client verb is tracked as RG-276. See
 [FD-001](../KNOWN_ISSUES_TODO_BACKLOG.md#fd-001-fleet-level-campaign-lifecycle-is-not-implemented).

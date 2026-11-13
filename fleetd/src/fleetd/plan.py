@@ -701,6 +701,8 @@ def plan_campaign(
     candidates = parse_candidate_table(candidate_table)
     hosts = parse_host_set(host_set)
     demand = validate_lane_demand(demand_table)
+    if demand["unit"] != "candidate":
+        raise ContractError("demand.unit: fleet plan currently requires 'candidate'")
     hosts_by_id = {host.host_id: host for host in hosts}
     for candidate in candidates:
         if candidate.measured_on_host is not None and candidate.measured_on_host not in hosts_by_id:
@@ -708,7 +710,10 @@ def plan_campaign(
                 f"candidate {candidate.candidate_id!r}: measured_on_host {candidate.measured_on_host!r} is absent from fleet-host-set/1"
             )
 
-    reference_major, reference_version, reference_baseline, eta_basis_reason = _time_reference(hosts)
+    capacity_rows = [_capacity(host, demand) for host in hosts]
+    available_ids = {row["id"] for row in capacity_rows if row["status"] == "available"}
+    eligible_hosts = tuple(host for host in hosts if host.host_id in available_ids)
+    reference_major, reference_version, reference_baseline, eta_basis_reason = _time_reference(eligible_hosts)
     memory = _resolve_memory(candidates, demand)
     time = _resolve_time(candidates, hosts, demand, reference_major, reference_version, reference_baseline)
     time_by_id = {item["input"].candidate_id: item for item in time}
@@ -720,7 +725,6 @@ def plan_campaign(
             "time_source": time_by_id[candidate_id]["time_source"],
         })
 
-    capacity_rows = [_capacity(host, demand) for host in hosts]
     available = [row for row in capacity_rows if row["status"] == "available"]
     if available:
         min_average = min(row["average_worker_budget_bytes"] for row in available)

@@ -127,13 +127,12 @@ def test_facts_config_is_required_closed_and_versioned(tmp_path):
     [
         ('geekbench_record = "/var/lib/mdt/host-facts/cpu-benchmark.json"', 'geekbench_record = "relative.json"', "absolute path"),
         ('geekbench_record = "/var/lib/mdt/host-facts/cpu-benchmark.json"', 'geekbench_record = "/var/../escape"', "without '..'"),
+        ('host_setup_env = "/etc/mdt/host-setup.env"', 'host_setup_env = "relative.env"', "absolute path"),
         ('slice = "ctl.slice"', 'slice = "../ctl.slice"', "systemd .slice"),
         ('overcommit = 1.5', 'overcommit = 0', "greater than zero"),
         ('oversubscribe_max = 1.25', 'oversubscribe_max = 11', "at most 10"),
         ('psi_refuse_some_avg10 = 25', 'psi_refuse_some_avg10 = 101', "from 0 through 100"),
         ('max_lane_containers = 8', 'max_lane_containers = true', "positive integer"),
-        ('host_role = "dedicated-dev"', 'host_role = "  "', "host_role: expected non-empty string"),
-        ('host_role = "dedicated-dev"', 'host_role = 7', "host_role: expected non-empty string"),
     ],
 )
 def test_facts_config_rejects_invalid_values(tmp_path, old, new, message):
@@ -150,9 +149,9 @@ def test_facts_config_optional_paths_and_policy_are_explicitly_absent(tmp_path):
     text = config_path.read_text(encoding="utf-8")
     text = text.replace('guard_state = "/run/cgprofile/guard-state"\n', "")
     text = text.replace('ksm_optin_shim = "/usr/lib/fleetd/ksm-optin.so"\n', "")
-    text = text.replace('host_role = "dedicated-dev"\n', "")
     text = text.replace("max_lane_containers = 8\n", "")
     config_path.write_text(text, encoding="utf-8")
+    (root / "etc/mdt/host-setup.env").unlink()
     facts = collect_host_facts(root)
     assert facts["guard"]["state"] is None
     assert facts["guard"]["state_reason"]
@@ -162,6 +161,40 @@ def test_facts_config_optional_paths_and_policy_are_explicitly_absent(tmp_path):
     assert facts["policy"]["host_role_reason"]
     assert facts["policy"]["max_lane_containers"] is None
     assert facts["policy"]["max_lane_containers_reason"]
+
+
+def test_host_role_comes_from_host_setup_env_and_invalid_source_is_unknown(tmp_path):
+    root = _root(tmp_path)
+    role_path = root / "etc/mdt/host-setup.env"
+    assert collect_host_facts(root)["policy"]["host_role"] == "dedicated-dev"
+
+    role_path.write_text('HOST_ROLE="shared-prod" # production host\n', encoding="utf-8")
+    facts = collect_host_facts(root)
+    assert facts["policy"]["host_role"] == "shared-prod"
+    assert "host_role_reason" not in facts["policy"]
+
+    for content, reason in (
+        ("HOST_ROLE=dedicated-dev\nHOST_ROLE=shared-prod\n", "appears more than once"),
+        ("HOST_ROLE=dedicated\n", "missing or invalid"),
+        ("HOST_ROLE=\n", "missing or invalid"),
+        ("HOST_ROLE='unterminated\n", "quoting is invalid"),
+        ("HOST_ROLE=dedicated dev\n", "unquoted whitespace"),
+        ("", "is absent"),
+    ):
+        role_path.write_text(content, encoding="utf-8")
+        facts = collect_host_facts(root)
+        assert facts["policy"]["host_role"] is None
+        assert reason in facts["policy"]["host_role_reason"]
+
+    role_path.unlink()
+    facts = collect_host_facts(root)
+    assert facts["policy"]["host_role"] is None
+    assert "unavailable" in facts["policy"]["host_role_reason"]
+
+    role_path.write_bytes(bytes([255]))
+    facts = collect_host_facts(root)
+    assert facts["policy"]["host_role"] is None
+    assert "not UTF-8" in facts["policy"]["host_role_reason"]
 
 
 def test_private_facts_helpers_reject_invalid_contract_edges(tmp_path):

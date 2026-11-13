@@ -592,6 +592,9 @@ def test_lane_demand_file_and_number_validation(tmp_path):
         extract_demand(demand_file, "r2")
     with pytest.raises(ContractError, match="unknown field.*extra"):
         _plan([], demand=DEMAND | {"extra": True})
+    for unit in ("worker", "run"):
+        with pytest.raises(ContractError, match="demand.unit: fleet plan currently requires 'candidate'"):
+            _plan([], demand=DEMAND | {"unit": unit})
     with pytest.raises(ContractError, match="expected finite number"):
         _number(10**400, "number")
     with pytest.raises(ContractError, match="expected number"):
@@ -619,6 +622,18 @@ def test_time_reference_and_host_eta_refuse_incomparable_scores():
     assert _host_time({"speed": None}, 76, 6, "6.4.0", 2500) is None
     assert _host_eta(row, [], 6, "6.4.0", 2500) == (0.0, None)
     assert _host_eta(row, [{"time_ref_seconds": 1}], None, None, None)[1] == "common Geekbench reference is unavailable"
+
+    refused_mismatch = _hosts()
+    small_facts = _facts(refused_mismatch, "host-small")
+    small_facts["policy"]["host_role"] = "shared-prod"
+    small_facts["speed"]["geekbench_major"] = 7
+    small_facts["speed"]["geekbench_version"] = "7.0.0"
+    small_facts["speed"]["basis"] = "geekbench7-measured"
+    eligible_reference = _plan([_candidate("x", 100_000_000)], hosts=refused_mismatch)
+    assert eligible_reference["time_reference"]["geekbench_major"] == 6
+    assert eligible_reference["time_reference"]["reason"] is None
+    assert _host_plan(eligible_reference, "host-small")["status"] == "refused"
+    assert eligible_reference["eta_seconds"] is not None
 
     no_scores = _hosts()
     for host in no_scores["hosts"]:

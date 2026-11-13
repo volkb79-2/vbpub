@@ -6,6 +6,7 @@ import hashlib
 import json
 import math
 import re
+import shlex
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
@@ -24,6 +25,7 @@ _BENCHMARK_BASELINE = {6: 2500, 7: 2500}
 @dataclass(frozen=True)
 class FactsConfig:
     geekbench_record: str
+    host_setup_env: str
     guard_config: str
     guard_state: str | None
     ksm_optin_shim: str | None
@@ -31,7 +33,6 @@ class FactsConfig:
     overcommit: float
     oversubscribe_max: float
     psi_refuse_some_avg10: float
-    host_role: str | None
     max_lane_containers: int | None
 
 
@@ -96,8 +97,13 @@ def load_facts_config(root: Path = DEFAULT_ROOT) -> FactsConfig:
     if type(top["schema_version"]) is not int or top["schema_version"] != 1:
         raise ContractError("facts.toml.schema_version: expected integer 1")
 
-    paths = _object(top["paths"], "facts.toml.paths", {"geekbench_record", "guard_config"}, {"guard_state", "ksm_optin_shim"})
+    paths = _object(
+        top["paths"], "facts.toml.paths",
+        {"geekbench_record", "guard_config", "host_setup_env"},
+        {"guard_state", "ksm_optin_shim"},
+    )
     geekbench_record = _config_path(paths["geekbench_record"], "facts.toml.paths.geekbench_record")
+    host_setup_env = _config_path(paths["host_setup_env"], "facts.toml.paths.host_setup_env")
     guard_config = _config_path(paths["guard_config"], "facts.toml.paths.guard_config")
     guard_state = None if "guard_state" not in paths else _config_path(paths["guard_state"], "facts.toml.paths.guard_state")
     ksm_optin_shim = None if "ksm_optin_shim" not in paths else _config_path(paths["ksm_optin_shim"], "facts.toml.paths.ksm_optin_shim")
@@ -108,7 +114,7 @@ def load_facts_config(root: Path = DEFAULT_ROOT) -> FactsConfig:
     policy = _object(
         top["policy"], "facts.toml.policy",
         {"overcommit", "oversubscribe_max", "psi_refuse_some_avg10"},
-        {"host_role", "max_lane_containers"},
+        {"max_lane_containers"},
     )
     overcommit = _positive_number(policy["overcommit"], "facts.toml.policy.overcommit", maximum=10)
     oversubscribe_max = _positive_number(policy["oversubscribe_max"], "facts.toml.policy.oversubscribe_max", maximum=10)
@@ -119,16 +125,13 @@ def load_facts_config(root: Path = DEFAULT_ROOT) -> FactsConfig:
         psi_refuse_number = math.nan
     if not isinstance(psi_refuse, (int, float)) or not math.isfinite(psi_refuse_number) or not 0 <= psi_refuse_number <= 100:
         raise ContractError("facts.toml.policy.psi_refuse_some_avg10: expected finite number from 0 through 100")
-    host_role = policy.get("host_role")
-    if host_role is not None and (not isinstance(host_role, str) or not host_role.strip()):
-        raise ContractError("facts.toml.policy.host_role: expected non-empty string when configured")
     max_lane = policy.get("max_lane_containers")
     if max_lane is not None and (type(max_lane) is not int or max_lane < 1):
         raise ContractError("facts.toml.policy.max_lane_containers: expected positive integer")
 
     return FactsConfig(
-        geekbench_record, guard_config, guard_state, ksm_optin_shim, control_slice,
-        overcommit, oversubscribe_max, psi_refuse_number, host_role, max_lane,
+        geekbench_record, host_setup_env, guard_config, guard_state, ksm_optin_shim,
+        control_slice, overcommit, oversubscribe_max, psi_refuse_number, max_lane,
     )
 
 
@@ -147,6 +150,35 @@ def _read_text(path: Path, description: str) -> tuple[str, str | None]:
         return "", f"{description} unavailable ({exc.strerror or 'I/O error'})"
     except UnicodeError:
         return "", f"{description} is not UTF-8 text"
+
+
+def _host_role(root: Path, absolute_path: str) -> tuple[str | None, str | None]:
+    """Read the authoritative HOST_ROLE without evaluating the shell file."""
+    text, read_reason = _read_text(_rooted(root, absolute_path), "host-setup.env")
+    if read_reason is not None:
+        return None, read_reason
+    roles: list[str] = []
+    for line_number, raw_line in enumerate(text.splitlines(), 1):
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        match = re.fullmatch(r"HOST_ROLE=(.*)", line)
+        if match is None:
+            continue
+        try:
+            values = shlex.split(match.group(1), comments=True, posix=True)
+        except ValueError as exc:
+            return None, f"HOST_ROLE quoting is invalid on line {line_number}: {exc}"
+        if len(values) > 1:
+            return None, f"HOST_ROLE has unquoted whitespace on line {line_number}"
+        roles.append(values[0] if values else "")
+    if not roles:
+        return None, "HOST_ROLE is absent from host-setup.env"
+    if len(roles) != 1:
+        return None, "HOST_ROLE appears more than once in host-setup.env"
+    if roles[0] not in {"dedicated-dev", "shared-prod"}:
+        return None, f"HOST_ROLE is missing or invalid in host-setup.env ({roles[0]!r})"
+    return roles[0], None
 
 
 def _read_bytes(path: Path, description: str) -> tuple[bytes | None, str | None]:
@@ -543,14 +575,14 @@ def collect_host_facts(root: Path = DEFAULT_ROOT) -> dict[str, Any]:
         shim_path = _rooted(root, config.ksm_optin_shim)
         ksm["lane_optin_shim"] = shim_path.is_file()
 
-    host_role = config.host_role
+    host_role, host_role_reason = _host_role(root, config.host_setup_env)
     policy: dict[str, Any] = {
         "host_role": host_role,
         "psi_refuse_some_avg10": config.psi_refuse_some_avg10,
         "max_lane_containers": config.max_lane_containers,
     }
     if host_role is None:
-        policy["host_role_reason"] = "host role is not configured"
+        policy["host_role_reason"] = host_role_reason or "host role is unavailable"
     if config.max_lane_containers is None:
         policy["max_lane_containers_reason"] = "maximum lane container count is not configured"
 

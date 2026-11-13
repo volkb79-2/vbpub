@@ -32,8 +32,10 @@ Run-Gate does not yet accept that key in its own file; see RG-276) with these
 required keys: `unit`, `instance_memory`, `unit_memory`, `unit_seconds_ref`,
 and `efficient_upper_bound`. `unit_memory_high` is optional. Units are the
 closed set `candidate`, `worker`, and `run`; the CLI converts memory strings
-using binary k/m/g suffixes. The high estimate cannot be lower than the median
-estimate. Unknown keys are refused.
+using binary k/m/g suffixes. This R2 candidate planner requires
+`unit = "candidate"` and refuses the other valid schema units because their
+placement meaning is not defined yet. The high estimate cannot be lower than
+the median estimate. Unknown keys are refused.
 
 ### Merge ownership
 
@@ -50,9 +52,11 @@ selected root, reads required versioned configuration at
 `/etc/fleetd/facts.toml`, reads the Geekbench record from its configured
 host-owned path, and emits `host-facts/1` JSON. The config declares
 `overcommit`, `oversubscribe_max`, PSI refusal threshold, control-plane slice,
-and host source paths; missing required policy fails. Optional facts whose
-source is absent are represented as `null` with a reason. Collection is
-read-only: it never invokes Geekbench or writes sysfs/cgroup files.
+and host source paths; missing required policy fails. `HOST_ROLE` is read from
+the configured host-setup environment file, an existing host-owned source, and
+is not shadowed in fleetd policy. Optional facts whose source is absent are
+represented as `null` with a reason. Collection is read-only: it never invokes
+Geekbench or writes sysfs/cgroup files.
 
 The collector exports only the benchmark's matching model and online-CPU
 count. It accepts measured Geekbench 6/7 records with their matching reference
@@ -73,8 +77,9 @@ control-plane reserve. Lists prefer a low/high mix and batch around four times
 the host worker capacity. Retry candidates with recorded memory evidence are
 assigned alone to the host with the largest physical alone-capacity.
 
-The planner uses Geekbench single-core scores for normalized time and ETA,
-never multi-core scores. One bounded correction factor is read per host, with
+The planner uses eligible hosts' Geekbench single-core scores for normalized
+time and ETA, never multi-core scores. A refused host does not change the ETA
+reference. One bounded correction factor is read per host, with
 the design default `1.0`; factors are not learned or pooled by lane in this
 package. Identical inputs produce byte-identical JSON and stable command
 ordering.

@@ -24,6 +24,7 @@ schema_version = 1
 
 [paths]
 geekbench_record = "/var/lib/mdt/host-facts/cpu-benchmark.json"
+host_setup_env = "/etc/mdt/host-setup.env"
 guard_config = "/etc/cgprofile/guard.toml"
 
 [control_plane]
@@ -38,7 +39,8 @@ max_lane_containers = 8
 
 `overcommit`, `oversubscribe_max`, and the PSI refusal threshold are explicit
 host policy inputs, so an incomplete file fails with a field-specific error.
-`host_role`, `max_lane_containers`, `guard_state`, and
+The host role is read from `host_setup_env`, which points to the existing
+host-owned `HOST_ROLE` setting. `max_lane_containers`, `guard_state`, and
 `ksm_optin_shim` may be omitted; their facts stay `null` with a reason. The
 collector reads guard config plus lexically ordered `.toml` drop-ins for its
 digest and effective `enabled` value. It reports but does not apply guard
@@ -50,9 +52,11 @@ unknown because the collector makes no write probe.
 
 ## Plan a candidate set
 
-The collector permits omitted optional host_role and max_lane_containers facts
-and records a reason. Planning requires both values, so collection can succeed
-while the planner refuses an incomplete host configuration.
+The collector records a reason when the host role source or
+`max_lane_containers` is unavailable. Planning requires both values, so
+collection can succeed while the planner refuses an incomplete host
+configuration. Unknown role strings are also rejected; only `dedicated-dev`
+and `shared-prod` are accepted.
 
 The candidate table identifies candidates and their source files. Each
 candidate may carry its own measured RAM, elapsed seconds, measurement host,
@@ -103,8 +107,9 @@ probed live); complete that wave before starting the next one, in batch order.
 The output has one `# host <id>` section per available host and no transport:
 every line executes wherever you run the script, so copy only the section
 that belongs to the host you are on. Run as emitted, the lines run one after
-another. A retry command
-includes --jobs 1. The command output contains no remote transport.
+another. Copy the generated ID files to the matching host checkout first,
+preserving their `.assay/fleetd-plan/` paths. A retry command includes
+`--jobs 1`.
 --batch-multiplier N changes the batch target from its default of
 4 × worker_slots.
 
@@ -151,8 +156,10 @@ unit_seconds_ref = 95
 efficient_upper_bound = 3
 ```
 
-The accepted units are `candidate`, `worker`, and `run`. Memory accepts
-positive integer bytes with `B`, `k`, `m`, `g`, `kib`, `mib`, or `gib` suffixes.
+The schema accepts `candidate`, `worker`, and `run`, but this R2 candidate
+planner currently requires `unit = "candidate"`; it refuses the other valid
+schema units until their placement meaning is defined. Memory accepts positive
+integer bytes with `B`, `k`, `m`, `g`, `kib`, `mib`, or `gib` suffixes.
 See the [specification](SPEC.md) and [design choices](DESIGN-GUIDE.md).
 
 ## Validate guard rules

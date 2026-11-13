@@ -377,7 +377,11 @@ def validate_host_facts(value: object) -> HostFacts:
         {"host_role", "psi_refuse_some_avg10", "max_lane_containers"},
         {"host_role_reason", "max_lane_containers_reason"},
     )
-    _nullable_str(policy, "host_role", "host-facts/1.policy")
+    host_role = _nullable_str(policy, "host_role", "host-facts/1.policy")
+    if host_role is not None and host_role not in {"dedicated-dev", "shared-prod"}:
+        raise ContractError(
+            "host-facts/1.policy.host_role: expected 'dedicated-dev' or 'shared-prod'"
+        )
     _number(policy["psi_refuse_some_avg10"], "host-facts/1.policy.psi_refuse_some_avg10", minimum=0, maximum=100)
     _nullable_int(policy, "max_lane_containers", "host-facts/1.policy", minimum=1)
     jobs, _jobs_reason = _nullable(root, "jobs", "jobs_reason", "host-facts/1", _validate_jobs)
