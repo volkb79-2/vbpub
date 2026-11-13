@@ -14,6 +14,9 @@
 - Read the host role from the existing host-setup source, ignore refused hosts
   when choosing the ETA reference, and reject demand units the R2 planner does
   not support.
-- Make the manual command handoff explicit: generated candidate files must be
-  staged with the matching host section because fleetd has no transport.
+- Report when no eligible host can provide an ETA reference, and document the
+  host-role values in the `host-facts/1` specification.
+- Make the manual command handoff explicit: copy only the matching host section
+  to that host and run it there; the section creates its own ID files and
+  fleetd has no transport.
 - Record the omitted Run-Gate campaign-plan client under RG-276.

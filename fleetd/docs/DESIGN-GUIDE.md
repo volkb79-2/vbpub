@@ -69,13 +69,13 @@ specified.
 ## Determinism and manual command delivery
 
 Candidate, host, batch, and command ordering use explicit stable keys. JSON
-contains no generated timestamp. `--commands` emits IDs into checkout-local
-candidate files before invoking Run-Gate's existing `--only-candidates FILE`
-interface. To execute a host section, copy that section and its generated ID
-files to the matching host checkout, preserving the `.assay/fleetd-plan/`
-paths. The tool provides no transport; running all sections in one shell would
-run them on that one machine. This lets the current runner execute staged plans
-without adding a fleet-specific Run-Gate command.
+contains no generated timestamp. `--commands` prints lines that write the IDs
+into checkout-local candidate files and then invoke Run-Gate's existing
+`--only-candidates FILE` interface; `fleet plan` itself writes nothing. To
+execute a host section, copy that section to the matching host and run it from
+the lane's project checkout there. The tool provides no transport; running all
+sections in one shell would run them on that one machine. This lets the current
+runner execute staged plans without adding a fleet-specific Run-Gate command.
 The unimplemented Run-Gate client verb is tracked as
 [RG-276](../../run-gate-project/KNOWN_ISSUES_TODO_BACKLOG.md#rg-276-the-run-gate-campaign-plan-client-is-not-implemented).
 

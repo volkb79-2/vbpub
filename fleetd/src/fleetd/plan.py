@@ -250,6 +250,8 @@ def _speed(host: HostInput) -> dict[str, Any] | None:
 
 
 def _time_reference(hosts: tuple[HostInput, ...]) -> tuple[int | None, str | None, int | None, str | None]:
+    if not hosts:
+        return None, None, None, "no eligible host is available for a Geekbench reference"
     speeds = [_speed(host) for host in hosts]
     known = [speed for speed in speeds if speed is not None]
     if not known:

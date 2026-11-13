@@ -54,9 +54,11 @@ host-owned path, and emits `host-facts/1` JSON. The config declares
 `overcommit`, `oversubscribe_max`, PSI refusal threshold, control-plane slice,
 and host source paths; missing required policy fails. `HOST_ROLE` is read from
 the configured host-setup environment file, an existing host-owned source, and
-is not shadowed in fleetd policy. Optional facts whose source is absent are
-represented as `null` with a reason. Collection is read-only: it never invokes
-Geekbench or writes sysfs/cgroup files.
+is not shadowed in fleetd policy. `host-facts/1` accepts `dedicated-dev` and
+`shared-prod` as host roles; missing, duplicate, empty, or unknown values are
+represented as `null` with a reason. Optional facts whose source is absent are
+also represented as `null` with a reason. Collection is read-only: it never
+invokes Geekbench or writes sysfs/cgroup files.
 
 The collector exports only the benchmark's matching model and online-CPU
 count. It accepts measured Geekbench 6/7 records with their matching reference
@@ -83,6 +85,8 @@ reference. One bounded correction factor is read per host, with
 the design default `1.0`; factors are not learned or pooled by lane in this
 package. Identical inputs produce byte-identical JSON and stable command
 ordering.
+When no host is eligible, `time_reference.reason` says so separately from the
+case where eligible hosts have no Geekbench records.
 
 The planner's host-set input requires explicit other-running rows and rejects
 hosts with unknown role, shared-prod role, PSI above its configured threshold,

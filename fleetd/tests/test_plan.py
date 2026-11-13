@@ -612,6 +612,9 @@ def test_lane_demand_file_and_number_validation(tmp_path):
 def test_time_reference_and_host_eta_refuse_incomparable_scores():
     hosts = parse_host_set(_hosts())
     assert _time_reference(hosts) == (6, "6.4.0", 2500, None)
+    assert _time_reference(()) == (
+        None, None, None, "no eligible host is available for a Geekbench reference"
+    )
     row = _host_plan(_plan([_candidate("x", 100_000_000)]), "host-large")
     assert _host_time(row, 76, 6, "6.4.0", 2500) == pytest.approx(76 * 2500 / 3000 * 0.7)
     assert _host_time(row, 76, None, "6.4.0", 2500) is None
@@ -660,6 +663,17 @@ def test_time_reference_and_host_eta_refuse_incomparable_scores():
         host["facts"]["speed"] = None
         host["facts"]["speed_reason"] = "no score"
     assert _time_reference(parse_host_set(no_scores)) == (None, None, None, "no host has a Geekbench record")
+
+    no_eligible_hosts = _hosts()
+    for host in no_eligible_hosts["hosts"]:
+        host["facts"]["policy"]["host_role"] = "shared-prod"
+    no_eligible_plan = _plan([_candidate("x", 100_000_000)], hosts=no_eligible_hosts)
+    assert no_eligible_plan["time_reference"]["reason"] == (
+        "no eligible host is available for a Geekbench reference"
+    )
+    assert no_eligible_plan["unplaced"] == [
+        {"id": "x", "reason": "no host is available for placement"}
+    ]
 
     for field, expected in (
         ("geekbench_major", "host Geekbench majors differ; scores are never mixed"),

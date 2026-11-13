@@ -107,9 +107,10 @@ probed live); complete that wave before starting the next one, in batch order.
 The output has one `# host <id>` section per available host and no transport:
 every line executes wherever you run the script, so copy only the section
 that belongs to the host you are on. Run as emitted, the lines run one after
-another. Copy the generated ID files to the matching host checkout first,
-preserving their `.assay/fleetd-plan/` paths. A retry command includes
-`--jobs 1`.
+another. `fleet plan` itself writes no files: each section's own `mkdir` and
+`printf` lines create the ID files under `.assay/fleetd-plan/` in the directory
+where the section runs, so run the copied section from the lane's project
+checkout on that host. A retry command includes `--jobs 1`.
 --batch-multiplier N changes the batch target from its default of
 4 × worker_slots.
 
