@@ -14,6 +14,9 @@ class ContractError(ValueError):
     """Input does not match a versioned fleetd contract."""
 
 
+_CANDIDATE_ID = re.compile(r"[0-9a-f]{64}\Z")
+
+
 @dataclass(frozen=True)
 class HostFacts:
     """Validated ``host-facts/1`` document."""
@@ -166,6 +169,27 @@ def _strings(value: object, where: str, *, unique: bool = True) -> tuple[str, ..
         raise ContractError(f"{where}: expected array")
     result = tuple(_string(item, f"{where}[{index}]") for index, item in enumerate(value))
     if unique and len(set(result)) != len(result):
+        raise ContractError(f"{where}: duplicate value")
+    return result
+
+
+def _candidate_id(value: object, where: str) -> str:
+    candidate_id = _string(value, where)
+    if _CANDIDATE_ID.fullmatch(candidate_id) is None:
+        raise ContractError(
+            f"{where}: expected a 64-character lowercase SHA-256 candidate id"
+        )
+    return candidate_id
+
+
+def _candidate_ids(value: object, where: str) -> tuple[str, ...]:
+    if not isinstance(value, list):
+        raise ContractError(f"{where}: expected array")
+    result = tuple(
+        _candidate_id(item, f"{where}[{index}]")
+        for index, item in enumerate(value)
+    )
+    if len(set(result)) != len(result):
         raise ContractError(f"{where}: duplicate value")
     return result
 
@@ -412,8 +436,8 @@ def validate_work_request(value: object) -> WorkRequest:
         _string(key, "work-request/1.floors key")
         _string(item, f"work-request/1.floors.{key}")
     validate_lane_demand(root["demand"], "work-request/1.demand")
-    planned = _strings(root["planned_ids"], "work-request/1.planned_ids")
-    pending = _strings(root["pending_ids"], "work-request/1.pending_ids")
+    planned = _candidate_ids(root["planned_ids"], "work-request/1.planned_ids")
+    pending = _candidate_ids(root["pending_ids"], "work-request/1.pending_ids")
     if not set(pending).issubset(planned):
         raise ContractError("work-request/1.pending_ids: every pending ID must appear in planned_ids")
     carry = root["carry_over"]
@@ -432,12 +456,12 @@ def validate_assay_merge_manifest(value: object) -> AssayMergeManifest:
     root = _object(value, "assay-merge-manifest/1", {"schema", "planned_ids", "owners"})
     if root["schema"] != "assay-merge-manifest/1":
         raise ContractError("assay-merge-manifest/1.schema: expected 'assay-merge-manifest/1'")
-    planned = _strings(root["planned_ids"], "assay-merge-manifest/1.planned_ids")
+    planned = _candidate_ids(root["planned_ids"], "assay-merge-manifest/1.planned_ids")
     owners = root["owners"]
     if not isinstance(owners, dict):
         raise ContractError("assay-merge-manifest/1.owners: expected object")
     for candidate_id, store in owners.items():
-        _string(candidate_id, "assay-merge-manifest/1.owners candidate ID")
+        _candidate_id(candidate_id, "assay-merge-manifest/1.owners candidate ID")
         _string(store, f"assay-merge-manifest/1.owners.{candidate_id}")
     if set(owners) != set(planned):
         missing = sorted(set(planned) - set(owners))

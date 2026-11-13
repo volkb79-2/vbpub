@@ -15,6 +15,7 @@ from .contracts import ContractError, validate_host_facts, validate_lane_demand
 
 
 _HOST_ID = re.compile(r"(?:\.{1,2}|[A-Za-z0-9][A-Za-z0-9_.-]{0,63})\Z")
+_CANDIDATE_ID = re.compile(r"[0-9a-f]{64}\Z")
 
 
 @dataclass(frozen=True)
@@ -104,9 +105,11 @@ def parse_candidate_table(value: object) -> tuple[CandidateInput, ...]:
             value, where, {"id", "file"},
             {"measured_memory_bytes", "estimated_memory_class", "elapsed_seconds", "measured_on_host", "memory_crash_evidence", "memory_crash_retries"},
         )
-        if isinstance(row["id"], str) and ("\n" in row["id"] or "\r" in row["id"]):
-            raise ContractError(f"{where}.id: candidate ids cannot contain line breaks")
-        candidate_id = _name(row["id"], f"{where}.id")
+        candidate_id = row["id"]
+        if not isinstance(candidate_id, str) or _CANDIDATE_ID.fullmatch(candidate_id) is None:
+            raise ContractError(
+                f"{where}.id: expected a 64-character lowercase SHA-256 candidate id"
+            )
         if candidate_id in seen:
             raise ContractError(f"candidate-table/1.candidates: duplicate id {candidate_id!r}")
         seen.add(candidate_id)
@@ -278,16 +281,29 @@ def _resolve_time(
 ) -> list[dict[str, Any]]:
     hosts_by_id = {host.host_id: host for host in hosts}
     samples: list[tuple[CandidateInput, float]] = []
+    ignored_sample_reasons: dict[str, str] = {}
     for candidate in candidates:
-        if candidate.elapsed_seconds is None or reference_major is None or reference_version is None or reference_baseline is None:
+        if candidate.elapsed_seconds is None:
             continue
-        source_speed = _speed(hosts_by_id[candidate.measured_on_host])
+        if reference_major is None or reference_version is None or reference_baseline is None:
+            ignored_sample_reasons[candidate.candidate_id] = "common Geekbench reference is unavailable"
+            continue
+        source_host = hosts_by_id.get(candidate.measured_on_host or "")
+        if source_host is None:
+            ignored_sample_reasons[candidate.candidate_id] = (
+                f"measurement host {candidate.measured_on_host!r} is absent from the current host set"
+            )
+            continue
+        source_speed = _speed(source_host)
         if (
             source_speed is None
             or source_speed["geekbench_major"] != reference_major
             or source_speed["geekbench_version"] != reference_version
             or source_speed["baseline_score"] != reference_baseline
         ):
+            ignored_sample_reasons[candidate.candidate_id] = (
+                f"measurement host {candidate.measured_on_host!r} has no matching Geekbench reference"
+            )
             continue
         normalized = candidate.elapsed_seconds * source_speed["single_core"] / source_speed["baseline_score"]
         samples.append((candidate, normalized))
@@ -307,7 +323,15 @@ def _resolve_time(
             seconds, source = lane_median, "lane_median"
         else:
             seconds, source = float(demand["unit_seconds_ref"]), "declared_reference"
-        resolved.append({"input": candidate, "time_ref_seconds": seconds, "time_source": source})
+        time_reason = ignored_sample_reasons.get(candidate.candidate_id)
+        if time_reason is not None:
+            time_reason = f"candidate timing sample ignored: {time_reason}; used {source}"
+        resolved.append({
+            "input": candidate,
+            "time_ref_seconds": seconds,
+            "time_source": source,
+            "time_reason": time_reason,
+        })
     return resolved
 
 
@@ -376,14 +400,15 @@ def _capacity(host: HostInput, demand: dict[str, Any]) -> dict[str, Any]:
         result["reason"] = refusal
         return result
     cpu_slots = math.floor(facts["cpu"]["for_lanes"] * facts["cpu"]["oversubscribe_max"]) - other_workers
-    max_slots = facts["policy"]["max_lane_containers"] - other_containers
-    max_workers = demand["efficient_upper_bound"] * max_slots
-    workers = min(cpu_slots, max_workers)
+    # Manual WP2 commands run one selected batch at a time per host. Parallel
+    # campaign slots would overlap the same Run-Gate lane instance and Assay
+    # store; WP5's scheduler owns that lifecycle.
+    workers = min(cpu_slots, demand["efficient_upper_bound"])
     if workers <= 0:
         result["status"] = "refused"
         result["reason"] = "no usable worker slots remain after host policy limits"
         return result
-    slots = math.ceil(workers / demand["efficient_upper_bound"])
+    slots = 1
     physical = facts["memory"]["for_lanes_bytes"] - facts["control_plane"]["memory_min_bytes"]
     overhead = other_memory + slots * demand["instance_memory_bytes"]
     budget = physical * facts["memory"]["overcommit"] - overhead
@@ -501,8 +526,22 @@ def _assign_candidates(
             if all(value is not None for value in finishes.values()):
                 selected = min(choices, key=lambda host: (finishes[host["id"]], host["id"]))
             else:
-                selected = max(choices, key=lambda host: (host["average_worker_budget_bytes"], _reverse_id(host["id"])))
-                assignment_reason = "ETA unavailable; stable RAM-capacity tie-break used"
+                # With no comparable Geekbench scores, distribute reference
+                # work by worker capacity. This is only a placement tie-break;
+                # it is not reported as an ETA or a host speed comparison.
+                selected = min(
+                    choices,
+                    key=lambda host: (
+                        (
+                            sum(item["time_ref_seconds"] for item in assignments[host["id"]])
+                            + candidate["time_ref_seconds"]
+                        ) / host["worker_slots"],
+                        host["id"],
+                    ),
+                )
+                assignment_reason = (
+                    "ETA unavailable; balanced normalized reference work per worker"
+                )
             candidate["assignment_kind"] = "shared"
             candidate["mix_flag_reason"] = mix_flag_reason
             candidate["assignment_reason"] = assignment_reason
@@ -705,13 +744,6 @@ def plan_campaign(
     demand = validate_lane_demand(demand_table)
     if demand["unit"] != "candidate":
         raise ContractError("demand.unit: fleet plan currently requires 'candidate'")
-    hosts_by_id = {host.host_id: host for host in hosts}
-    for candidate in candidates:
-        if candidate.measured_on_host is not None and candidate.measured_on_host not in hosts_by_id:
-            raise ContractError(
-                f"candidate {candidate.candidate_id!r}: measured_on_host {candidate.measured_on_host!r} is absent from fleet-host-set/1"
-            )
-
     capacity_rows = [_capacity(host, demand) for host in hosts]
     available_ids = {row["id"] for row in capacity_rows if row["status"] == "available"}
     eligible_hosts = tuple(host for host in hosts if host.host_id in available_ids)
@@ -725,6 +757,7 @@ def plan_campaign(
         resolved.append(item | {
             "time_ref_seconds": time_by_id[candidate_id]["time_ref_seconds"],
             "time_source": time_by_id[candidate_id]["time_source"],
+            "time_reason": time_by_id[candidate_id]["time_reason"],
         })
 
     available = [row for row in capacity_rows if row["status"] == "available"]
@@ -782,7 +815,7 @@ def plan_campaign(
                 "ram_class": item["ram_class"],
                 "assignment": item.get("assignment_kind", "retry" if source.memory_crash_evidence else "alone"),
             }
-            for optional_reason in ("mix_flag_reason", "assignment_reason"):
+            for optional_reason in ("time_reason", "mix_flag_reason", "assignment_reason"):
                 if item.get(optional_reason) is not None:
                     assigned_item[optional_reason] = item[optional_reason]
             assigned_output.append(assigned_item)
@@ -844,24 +877,39 @@ def extract_demand(path: str | Path, lane: str) -> dict[str, Any]:
 
 
 def render_commands(plan: Mapping[str, Any]) -> str:
-    """Render stable, safely quoted command blocks for the existing runner."""
+    """Render serial per-host batch commands for the existing runner."""
     lane = shlex.quote(str(plan["lane"]))
-    lines = ["set -euo pipefail", "mkdir -p .assay/fleetd-plan"]
+    lines: list[str] = ["set -euo pipefail"]
     for host in plan["hosts"]:
         if host["status"] != "available":
             continue
         lines.append(f"# host {host['id']}")
+        lines.append("(")
+        lines.append("set -euo pipefail")
         for batch in host["batches"]:
-            for wave_index, wave in enumerate(batch["waves"]):
-                for slot in wave["slot_batches"]:
-                    relative = f".assay/fleetd-plan/{host['id']}/batch-{batch['batch']:03d}/wave-{wave_index:03d}/slot-{slot['slot']:02d}.ids"
-                    file_arg = shlex.quote(relative)
-                    directory = shlex.quote(str(Path(relative).parent))
-                    values = " ".join(shlex.quote(candidate_id) for candidate_id in slot["candidate_ids"])
-                    retry = bool(wave.get("retry"))
-                    suffix = " --jobs 1" if retry else ""
-                    lines.append(f"mkdir -p {directory}")
-                    lines.append(f"printf '%s\\n' {values} > {file_arg}")
-                    lines.append(f"run-gate {lane}{suffix} --only-candidates {file_arg}")
-                lines.append("# Run slot commands in this wave together; finish the wave before the next one.")
+            ids = batch["candidate_ids"]
+            if not ids:
+                continue
+            relative = f".assay/fleetd-plan/{host['id']}/batch-{batch['batch']:03d}.ids"
+            file_arg = shlex.quote(relative)
+            directory = shlex.quote(str(Path(relative).parent))
+            values = " ".join(shlex.quote(candidate_id) for candidate_id in ids)
+            jobs = 1 if batch.get("kind") == "retry" else min(host["worker_slots"], len(ids))
+            lines.append(f"mkdir -p {directory}")
+            lines.append(f"printf '%s\\n' {values} > {file_arg}")
+            lines.append(
+                "# Exit 4 is the expected PARTIAL result when this batch leaves candidates unselected."
+            )
+            lines.append(f"if run-gate {lane} --jobs {jobs} --only-candidates {file_arg}; then")
+            lines.append("  status=0")
+            lines.append("else")
+            lines.append("  status=$?")
+            lines.append("fi")
+            lines.append('if [ "$status" -eq 4 ]; then')
+            lines.append('  echo "expected PARTIAL result for selected batch" >&2')
+            lines.append('elif [ "$status" -ne 0 ]; then')
+            lines.append('  echo "run-gate failed with exit code $status" >&2')
+            lines.append('  exit "$status"')
+            lines.append("fi")
+        lines.append(")")
     return "\n".join(lines) + "\n"

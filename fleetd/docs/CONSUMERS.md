@@ -58,10 +58,12 @@ collection can succeed while the planner refuses an incomplete host
 configuration. Unknown role strings are also rejected; only `dedicated-dev`
 and `shared-prod` are accepted.
 
-The candidate table identifies candidates and their source files. Each
-candidate may carry its own measured RAM, elapsed seconds, measurement host,
-and retry evidence. Measurements are optional; absent values fall through to
-same-file and lane medians, then the lane demand declaration.
+The candidate table identifies candidates and their source files. Candidate
+IDs must be the lowercase 64-character SHA-256 digests emitted by native
+Assay R2. Each candidate may carry its own measured RAM, elapsed seconds,
+measurement host, and retry evidence. Measurements are optional; absent
+values fall through to same-file and lane medians, then the lane demand
+declaration.
 
 The input envelopes are closed and versioned. Candidate files use
 candidate-table/1; host files use fleet-host-set/1. The host envelope
@@ -88,9 +90,9 @@ fleet plan r2 \
 ```
 
 Normal output is stable JSON with host capacities, assigned candidates,
-batches, and ETA. Add `--commands` to print shell-ready blocks. Each block
-writes a batch's candidate IDs beneath `.assay/fleetd-plan/` and then invokes
-the existing Run-Gate selector:
+batches, and ETA. Add `--commands` to print self-contained host sections. Each
+section writes one batch's candidate IDs beneath `.assay/fleetd-plan/` and
+then invokes the existing Run-Gate selector:
 
 ```sh
 fleet plan r2 --candidates candidates.json --hosts hosts.json \
@@ -98,27 +100,54 @@ fleet plan r2 --candidates candidates.json --hosts hosts.json \
 ```
 
 The selected candidate files are consumed by Run-Gate as
-`--only-candidates FILE`. Run each host's listed slots within the lane's
-declared efficient job bound. An unplaceable candidate or a host refused by
-the PSI admission threshold is reported with a reason, never silently dropped.
-Commands are grouped by wave and slot. Slot commands in a wave may run
-together (concurrent same-lane invocations in one checkout have not been
-probed live); complete that wave before starting the next one, in batch order.
-The output has one `# host <id>` section per available host and no transport:
-every line executes wherever you run the script, so copy only the section
-that belongs to the host you are on. Run as emitted, the lines run one after
-another. `fleet plan` itself writes no files: each section's own `mkdir` and
-`printf` lines create the ID files under `.assay/fleetd-plan/` in the directory
-where the section runs, so run the copied section from the lane's project
-checkout on that host. A retry command includes `--jobs 1`.
---batch-multiplier N changes the batch target from its default of
-4 × worker_slots.
+`--only-candidates FILE`. A section has one command per batch, with
+`--jobs` no greater than the planned worker slots. Batches run serially because
+selected-only invocations in one checkout share the lane's in-flight record
+and Assay state store. A retry command uses `--jobs 1`. Run only the matching
+`# host <id>` section from that host's lane checkout; the output has no
+transport and running every section in one shell sends them all to that one
+machine. `fleet plan` itself writes no files; the copied section creates the
+candidate files beneath `.assay/fleetd-plan/`.
+
+Run-Gate marks an incomplete `--only-candidates` selection `PARTIAL` and exits
+4. The generated script accepts exit 0 or 4 so the next batch runs, and stops
+on any other result. An unplaceable candidate or a host refused by the PSI
+admission threshold is reported in the plan with a reason, never silently
+dropped. Each batch keeps the design's wave accounting in JSON, while one
+selected-only invocation pays the baseline once for that batch.
+
+The planned `--jobs` value is bounded by the lane's efficient upper bound.
+Run-Gate can refuse `--jobs > 1` when the lane does not use a supported cheap
+clone workspace. Fleetd's host-specific `B_h` is not passed through the
+current selected-candidate interface; the command does not enforce that
+per-host budget. Runtime admission is still provided by the host and lane's
+existing Run-Gate, Assay, and cgroup limits (FD-003). The future Run-Gate
+campaign client must pass the host budget into Assay admission or establish an
+equivalent enforced bound before treating the planner's wave proof as an
+execution guarantee.
+
+After all host sections finish, copy each host's whole same-judge Assay state
+store beneath the final checkout's ignored `.run-gate/` directory. Then run a
+whole-lane closeout without `--only-candidates`; Run-Gate merges the copied
+records and executes any remaining candidates before writing the complete
+verdict:
+
+```sh
+run-gate r2 \
+  --merge-state .run-gate/collected/host-small \
+  --merge-state .run-gate/collected/host-large
+```
+
+Replace the example host names with the hosts in the plan. The source paths
+must be directories beneath the checkout or judged worktree. `--batch-multiplier N`
+changes the batch target from its default of 4 × worker slots.
 
 The host arithmetic uses P = memory.for_lanes_bytes -
-control_plane.memory_min_bytes, O = other running charges + campaign_slots ×
-instance_memory, and B = P × overcommit - O. Worker slots are the CPU-based
-count after other workers, bounded by the host's configured container limit
-and the lane's efficient upper bound. Shared placement also applies the
+control_plane.memory_min_bytes, O = other running charges + one campaign
+instance's `instance_memory`, and B = P × overcommit - O. Worker slots are the
+CPU-based count after other workers, bounded by the lane's
+`efficient_upper_bound`. The manual planner reserves one campaign slot per
+host; parallel slots need the future supervisor. Shared placement also applies the
 physical candidate cap: a candidate never exceeds P - O. Expected sums in
 each wave, including an alone or retry wave, must fit B. Overcommit increases
 only that sum budget; it never increases a candidate's physical cap.
@@ -156,6 +185,11 @@ unit_memory_high = "600m"
 unit_seconds_ref = 95
 efficient_upper_bound = 3
 ```
+
+Keep `efficient_upper_bound` at or below the native R2 lane's
+`judge.mutation.jobs_max`. The standalone planner validates and uses its demand
+file but cannot derive that authoritative lane value yet; the follow-on Run-Gate
+client will derive or refuse a mismatch (see [FD-002](../KNOWN_ISSUES_TODO_BACKLOG.md#fd-002-demand-upper-bound-is-not-joined-to-assay-inventory)).
 
 The schema accepts `candidate`, `worker`, and `run`, but this R2 candidate
 planner currently requires `unit = "candidate"`; it refuses the other valid

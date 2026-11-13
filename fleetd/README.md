@@ -12,10 +12,13 @@ declared lane demand. Overcommit applies to expected sums; a single candidate
 must still fit physical lane RAM. Geekbench single-core scores and one factor
 per host inform ETA only. See the [design guide](docs/DESIGN-GUIDE.md) for the
 reasons and the [consumer guide](docs/CONSUMERS.md) for runnable examples.
-`fleet plan` writes no files. `--commands` prints a script whose lines create
-each candidate ID file under `.assay/fleetd-plan/` (relative to the working
-directory) and then call Run-Gate; copy only the matching host section to that
-host and run it from the lane's project checkout there. Fleetd has no transport.
+`fleet plan` writes no files. `--commands` prints a self-contained host section
+with one serial Run-Gate invocation per batch. It accepts exit 4 as the
+expected `PARTIAL` result from candidate selection and stops on other failures.
+Copy only the matching host section to that host and run it from the lane's
+project checkout there. After collecting the host stores, use Run-Gate's
+`--merge-state` whole-lane run to produce the complete verdict. Fleetd has no
+transport.
 Serialized campaign inputs use the versioned `host-facts/1`, `work-request/1`,
 and `assay-merge-manifest/1` contracts.
 

@@ -1,3 +1,4 @@
+import hashlib
 import json
 from pathlib import Path
 
@@ -30,6 +31,10 @@ def _fixture(name):
 def _fails(call, fragment):
     with pytest.raises(ContractError, match=fragment):
         call()
+
+
+def _cid(label):
+    return hashlib.sha256(label.encode("utf-8")).hexdigest()
 
 
 def test_host_facts_fixture_is_typed_and_preserved():
@@ -230,6 +235,15 @@ def test_work_request_requires_array_candidate_lists():
     _fails(lambda: validate_work_request(data), "planned_ids: expected array")
 
 
+def test_work_request_rejects_non_digest_candidate_ids():
+    data = _fixture("work-request.valid.json")
+    data["planned_ids"][0] = "candidate-a"
+    _fails(
+        lambda: validate_work_request(data),
+        r"work-request/1\.planned_ids\[0\]: expected a 64-character lowercase SHA-256 candidate id",
+    )
+
+
 @pytest.mark.parametrize(
     ("change", "message"),
     [
@@ -240,8 +254,8 @@ def test_work_request_requires_array_candidate_lists():
         (lambda data: data.update(image_digest="sha256:bad"), "64 lowercase hex digits"),
         (lambda data: data.update(floors=[]), "floors: expected object"),
         (lambda data: data.update(floors={"assay": 12}), "floors.assay: expected string"),
-        (lambda data: data.update(planned_ids=["same", "same"]), "duplicate value"),
-        (lambda data: data.update(pending_ids=["not-planned"]), "every pending ID"),
+        (lambda data: data.update(planned_ids=[_cid("same"), _cid("same")]), "duplicate value"),
+        (lambda data: data.update(pending_ids=[_cid("not-planned")]), "every pending ID"),
         (lambda data: (data.update(carry_over=None), data.pop("carry_over_reason")), "null requires carry_over_reason"),
         (lambda data: (data.update(carry_over=None), data.update(carry_over_reason="absent"), data.update(campaign_id="")), "campaign_id: expected non-empty string"),
         (lambda data: (data.update(carry_over={"source": "x", "reason": "prior"}), data.update(carry_over_reason="stale")), "only allowed when carry_over is null"),
@@ -259,11 +273,11 @@ def test_manifest_has_exact_one_owner_per_planned_candidate_and_ignores_duplicat
     assert isinstance(manifest, AssayMergeManifest)
     assert manifest.to_dict() == _fixture("assay-merge-manifest.valid.json")
     records = {
-        "store-alpha": {"candidate-a": {"verdict": "owner"}},
-        "store-beta": {"candidate-b": {"verdict": "owner-b"}, "candidate-a": {"verdict": "duplicate"}},
+        "store-alpha": {_cid("candidate-a"): {"verdict": "owner"}},
+        "store-beta": {_cid("candidate-b"): {"verdict": "owner-b"}, _cid("candidate-a"): {"verdict": "duplicate"}},
     }
     assert select_owner_records(manifest, records) == {
-        "candidate-a": {"verdict": "owner"}, "candidate-b": {"verdict": "owner-b"},
+        _cid("candidate-a"): {"verdict": "owner"}, _cid("candidate-b"): {"verdict": "owner-b"},
     }
 
 
@@ -272,11 +286,12 @@ def test_manifest_has_exact_one_owner_per_planned_candidate_and_ignores_duplicat
     [
         (lambda data: data.update(schema="assay-merge-manifest/2"), "expected 'assay-merge-manifest/1'"),
         (lambda data: data.update(extra=True), "unknown field.*extra"),
-        (lambda data: data.update(planned_ids=["a", "a"]), "duplicate value"),
+        (lambda data: data.update(planned_ids=[_cid("a"), _cid("a")]), "duplicate value"),
         (lambda data: data.update(owners=[]), "owners: expected object"),
-        (lambda data: data["owners"].update(candidate_a=None), "assay-merge-manifest/1.owners.candidate_a: expected string"),
-        (lambda data: data["owners"].pop("candidate-a"), "missing owners: candidate-a"),
-        (lambda data: data["owners"].update(extra="store-x"), "owners outside planned_ids: extra"),
+        (lambda data: data["owners"].update({_cid("candidate-a"): None}), r"assay-merge-manifest/1\.owners\..*: expected string"),
+        (lambda data: data["owners"].pop(_cid("candidate-a")), "missing owners: " + _cid("candidate-a")),
+        (lambda data: data["owners"].update({_cid("extra"): "store-x"}), "owners outside planned_ids: " + _cid("extra")),
+        (lambda data: data["owners"].update({"candidate-a": "store-x"}), "owners candidate ID: expected a 64-character lowercase SHA-256 candidate id"),
     ],
 )
 def test_merge_manifest_rejects_ambiguous_ownership(change, message):
@@ -288,7 +303,7 @@ def test_merge_manifest_rejects_ambiguous_ownership(change, message):
 def test_merge_owner_missing_store_or_record_refuses():
     manifest = validate_assay_merge_manifest(_fixture("assay-merge-manifest.valid.json"))
     _fails(lambda: select_owner_records(manifest, {"store-alpha": {}}), "owner store 'store-alpha' has no record")
-    _fails(lambda: select_owner_records(manifest, {"store-alpha": {"candidate-a": 1}}), "owner store 'store-beta' has no record")
+    _fails(lambda: select_owner_records(manifest, {"store-alpha": {_cid("candidate-a"): 1}}), "owner store 'store-beta' has no record")
 
 
 def test_json_loader_rejects_duplicate_keys_and_reports_syntax_location(tmp_path):

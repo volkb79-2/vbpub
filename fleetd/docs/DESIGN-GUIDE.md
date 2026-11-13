@@ -27,13 +27,19 @@ Time samples are comparable only when the hosts share a Geekbench major,
 exact version, and baseline score. Refused hosts do not set the ETA reference,
 so an ineligible machine cannot make ETA unavailable for eligible hosts. A
 missing or mismatched benchmark among eligible hosts keeps RAM placement
-available but makes ETA unavailable with a reason.
+available but makes ETA unavailable with a reason. Placement then balances
+normalized reference work per worker as a deterministic tie-break. This is not
+a speed comparison or ETA. A candidate time record from a host absent in the
+current host set falls back to the next timing source and carries a reason.
 
 The planner calculates P = memory.for_lanes_bytes -
 control_plane.memory_min_bytes, O = other running expected charges +
 campaign_slots × instance_memory, and B = P × overcommit - O. It derives
 worker slots from CPU capacity after other running workers and bounds them by
-max_lane_containers × efficient_upper_bound. For a host with W slots, b = B /
+`efficient_upper_bound`. This manual plan uses one campaign slot per host;
+parallel campaign slots require the future supervisor because same-lane
+selected Run-Gate calls share an in-flight record and Assay store. For a host
+with W slots, b = B /
 W; a candidate's shared cap is the smaller of B - (W - 1) × ram_low and
 P - O - (W - 1) × ram_low. A candidate that runs alone or as a retry must
 also fit the host's sum budget B and physical alone cap P - O. Thus
@@ -69,13 +75,16 @@ specified.
 ## Determinism and manual command delivery
 
 Candidate, host, batch, and command ordering use explicit stable keys. JSON
-contains no generated timestamp. `--commands` prints lines that write the IDs
-into checkout-local candidate files and then invoke Run-Gate's existing
-`--only-candidates FILE` interface; `fleet plan` itself writes nothing. To
-execute a host section, copy that section to the matching host and run it from
-the lane's project checkout there. The tool provides no transport; running all
-sections in one shell would run them on that one machine. This lets the current
-runner execute staged plans without adding a fleet-specific Run-Gate command.
+contains no generated timestamp. `--commands` prints self-contained sections;
+each writes one batch ID file in the checkout and invokes Run-Gate once with
+`--only-candidates` and the planned `--jobs` value. Batches run serially in
+the section. Candidate selection normally returns exit 4 (`PARTIAL`) because
+other campaign candidates were not selected; generated scripts accept 0 or 4
+and stop on any other result. Run only the matching host section from that
+host's lane checkout. After copying each host's Assay state under the final
+checkout's ignored `.run-gate/` directory, run the lane without
+`--only-candidates`, using repeatable `--merge-state` paths, to write the
+whole-lane verdict. The planner does not copy stores or provide transport.
 The unimplemented Run-Gate client verb is tracked as
 [RG-276](../../run-gate-project/KNOWN_ISSUES_TODO_BACKLOG.md#rg-276-the-run-gate-campaign-plan-client-is-not-implemented).
 
@@ -85,7 +94,14 @@ The guard rules are parsed only; no process or cgroup is changed. There is no
 daemon, socket, SSH, Docker, transport, remote collection, retry supervision,
 or strict merge implementation. Guard configuration accepts the design's
 `report` and `enforce` modes and the `least-progress-per-ram` victim policy, but
-this package does not act on them. Released Run-Gate does not yet accept the
+this package does not act on them. The current Run-Gate selected-candidate
+interface also does not accept fleetd's host-specific RAM budget; the printed
+commands use the planned worker count while runtime limits remain host and lane
+policy. Track this integration under
+[FD-003](../KNOWN_ISSUES_TODO_BACKLOG.md#fd-003-fleet-ram-budget-is-not-sent-to-the-current-runner).
+Released Run-Gate does not yet accept the
 `demand` lane key, so the lane demand lives in a separate TOML input until
-RG-275 lands; the missing client verb is tracked as RG-276. See
+RG-275 lands; the missing client verb is tracked as RG-276. `efficient_upper_bound`
+must match Assay's authoritative `judge.mutation.jobs_max`, tracked as
+[FD-002](../KNOWN_ISSUES_TODO_BACKLOG.md#fd-002-demand-upper-bound-is-not-joined-to-assay-inventory). See
 [FD-001](../KNOWN_ISSUES_TODO_BACKLOG.md#fd-001-fleet-level-campaign-lifecycle-is-not-implemented).

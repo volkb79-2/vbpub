@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 import random
 from pathlib import Path
@@ -63,8 +64,14 @@ def _candidate_table(rows):
     return {"schema": "candidate-table/1", "candidates": rows}
 
 
+def _cid(label):
+    if isinstance(label, str) and len(label) == 64 and all(char in "0123456789abcdef" for char in label):
+        return label
+    return hashlib.sha256(str(label).encode("utf-8")).hexdigest()
+
+
 def _candidate(candidate_id, memory, *, source="src/candidate.py", **extra):
-    return {"id": candidate_id, "file": source, "measured_memory_bytes": memory, **extra}
+    return {"id": _cid(candidate_id), "file": source, "measured_memory_bytes": memory, **extra}
 
 
 def _plan(rows, hosts=None, demand=None, **kwargs):
@@ -76,6 +83,7 @@ def _host_plan(plan, host_id):
 
 
 def _assigned_host(plan, candidate_id):
+    candidate_id = _cid(candidate_id)
     return next(host for host in plan["hosts"] if any(item["id"] == candidate_id for item in host["assigned"]))
 
 
@@ -95,15 +103,15 @@ def test_plan_resolves_memory_time_and_routes_with_single_core_eta():
         for host in plan["hosts"]
         for candidate in host["assigned"]
     }
-    assert assigned["candidate-low"]["memory_source"] == "candidate_record"
-    assert assigned["candidate-file-median"]["memory_source"] == "file_median"
-    assert assigned["candidate-lane-median"]["memory_source"] == "lane_median"
-    assert assigned["candidate-file-median"]["memory_bytes"] == 125829120
-    assert assigned["candidate-lane-median"]["memory_bytes"] == 268435456
-    assert assigned["candidate-low"]["time_source"] == "candidate_record"
-    assert assigned["candidate-file-median"]["time_source"] == "file_median"
-    assert assigned["candidate-lane-median"]["time_source"] == "lane_median"
-    assert assigned["candidate-low"]["time_ref_seconds"] == 76.0
+    assert assigned[_cid("candidate-low")]["memory_source"] == "candidate_record"
+    assert assigned[_cid("candidate-file-median")]["memory_source"] == "file_median"
+    assert assigned[_cid("candidate-lane-median")]["memory_source"] == "lane_median"
+    assert assigned[_cid("candidate-file-median")]["memory_bytes"] == 125829120
+    assert assigned[_cid("candidate-lane-median")]["memory_bytes"] == 268435456
+    assert assigned[_cid("candidate-low")]["time_source"] == "candidate_record"
+    assert assigned[_cid("candidate-file-median")]["time_source"] == "file_median"
+    assert assigned[_cid("candidate-lane-median")]["time_source"] == "lane_median"
+    assert assigned[_cid("candidate-low")]["time_ref_seconds"] == 76.0
     assert plan["time_reference"] == {
         "normalization": "elapsed_seconds * source.single_core / source.baseline_score",
         "host_eta": "time_ref_seconds * baseline_score / host.single_core * f_h",
@@ -144,10 +152,11 @@ def test_plan_preserves_special_alone_and_retry_work_on_one_host_and_renders_com
     ])
     host = _host_plan(plan, "host-large")
     assert {batch["kind"] for batch in host["batches"] if "kind" in batch} == {"alone", "retry"}
-    assert {item["id"] for item in host["assigned"]} == {"big", "retry"}
+    assert {item["id"] for item in host["assigned"]} == {_cid("big"), _cid("retry")}
     commands = render_commands(plan)
-    assert "run-gate r2 --jobs 1 --only-candidates" in commands
-    assert "big" in commands and "retry" in commands
+    assert "if run-gate r2 --jobs 1 --only-candidates" in commands
+    assert _cid("big") in commands and _cid("retry") in commands
+    assert "expected PARTIAL result" in commands
     assert "docker" not in commands and "ssh " not in commands
 
 
@@ -172,9 +181,11 @@ def test_deterministic_outputs_ignore_input_order_and_use_safe_shell_quoting():
     reversed_hosts["hosts"].reverse()
     second = _plan(list(reversed(rows)), reversed_hosts)
     assert dump_json(first) == dump_json(second)
+    first["lane"] = "r2 with space"
+    second["lane"] = "r2 with space"
     command = render_commands(first)
-    assert "'a'\"'\"'quoted'" in command
-    assert "'z id'" in command
+    assert "'r2 with space'" in command
+    assert _cid("z id") in command and _cid("a'quoted") in command
     assert command == render_commands(second)
 
 
@@ -194,7 +205,7 @@ def test_seeded_property_sweep_enforces_physical_caps_sum_budget_mixes_and_retry
         available = [host for host in plan["hosts"] if host["status"] == "available"]
         assert available
         largest_alone = max(available, key=lambda host: (host["cap_alone_bytes"], tuple(-ord(c) for c in host["id"])))
-        retry_host = next(host for host in available if any(item["id"] == retry_id for item in host["assigned"]))
+        retry_host = next(host for host in available if any(item["id"] == _cid(retry_id) for item in host["assigned"]))
         assert retry_host["id"] == largest_alone["id"]
         for host in available:
             for item in host["assigned"]:
@@ -266,19 +277,19 @@ def test_mix_violation_is_flagged_without_turning_missing_eta_into_a_mix_flag():
 
 def test_ram_resolution_declared_low_and_high_and_time_declared_fallback(tmp_path):
     declared = _plan([
-        {"id": "low", "file": "a.py"},
-        {"id": "high", "file": "b.py", "estimated_memory_class": "high"},
+        {"id": _cid("low"), "file": "a.py"},
+        {"id": _cid("high"), "file": "b.py", "estimated_memory_class": "high"},
     ])
     resolved = {item["id"]: item for host in declared["hosts"] for item in host["assigned"]}
-    assert resolved["low"]["memory_bytes"] == 120 * 1024**2
-    assert resolved["low"]["memory_source"] == "declared_median"
-    assert resolved["high"]["memory_bytes"] == 600 * 1024**2
-    assert resolved["high"]["memory_source"] == "declared_high"
-    assert resolved["low"]["time_source"] == "declared_reference"
-    assert resolved["low"]["time_ref_seconds"] == 95
+    assert resolved[_cid("low")]["memory_bytes"] == 120 * 1024**2
+    assert resolved[_cid("low")]["memory_source"] == "declared_median"
+    assert resolved[_cid("high")]["memory_bytes"] == 600 * 1024**2
+    assert resolved[_cid("high")]["memory_source"] == "declared_high"
+    assert resolved[_cid("low")]["time_source"] == "declared_reference"
+    assert resolved[_cid("low")]["time_ref_seconds"] == 95
 
     with pytest.raises(ContractError, match="high memory class requires demand.unit_memory_high"):
-        _plan([{"id": "high", "file": "b.py", "estimated_memory_class": "high"}], demand={
+        _plan([{"id": _cid("high"), "file": "b.py", "estimated_memory_class": "high"}], demand={
             "unit": "candidate", "instance_memory": "250m", "unit_memory": "120m",
             "unit_seconds_ref": 95, "efficient_upper_bound": 2,
         })
@@ -286,16 +297,16 @@ def test_ram_resolution_declared_low_and_high_and_time_declared_fallback(tmp_pat
 
 def test_own_file_and_lane_time_fallbacks_use_exact_geekbench_version(tmp_path):
     rows = [
-        {"id": "own", "file": "same.py", "elapsed_seconds": 100, "measured_on_host": "host-small"},
-        {"id": "file", "file": "same.py"},
-        {"id": "lane", "file": "other.py"},
+        {"id": _cid("own"), "file": "same.py", "elapsed_seconds": 100, "measured_on_host": "host-small"},
+        {"id": _cid("file"), "file": "same.py"},
+        {"id": _cid("lane"), "file": "other.py"},
     ]
     plan = _plan(rows)
     assigned = {item["id"]: item for host in plan["hosts"] for item in host["assigned"]}
-    assert assigned["own"]["time_source"] == "candidate_record"
-    assert assigned["file"]["time_source"] == "file_median"
-    assert assigned["lane"]["time_source"] == "lane_median"
-    assert assigned["file"]["time_ref_seconds"] == 80
+    assert assigned[_cid("own")]["time_source"] == "candidate_record"
+    assert assigned[_cid("file")]["time_source"] == "file_median"
+    assert assigned[_cid("lane")]["time_source"] == "lane_median"
+    assert assigned[_cid("file")]["time_ref_seconds"] == 80
 
     changed = _hosts()
     _facts(changed, "host-large")["speed"]["geekbench_version"] = "6.5.0"
@@ -427,7 +438,7 @@ def test_other_work_and_memory_reserves_bound_worker_and_physical_budgets():
 
 def test_retry_terminal_unplaceable_and_no_available_host_paths():
     terminal = _plan([_candidate("done", 100_000_000, memory_crash_evidence=True, memory_crash_retries=1)])
-    assert terminal["terminal"] == [{"id": "done", "reason": "memory-crash retry was already used; candidate is final"}]
+    assert terminal["terminal"] == [{"id": _cid("done"), "reason": "memory-crash retry was already used; candidate is final"}]
 
     too_large_retry = _plan([_candidate("retry", 20 * 1024**3, memory_crash_evidence=True)])
     assert too_large_retry["unplaced"] and "largest alone cap" in too_large_retry["unplaced"][0]["reason"]
@@ -443,7 +454,7 @@ def test_retry_terminal_unplaceable_and_no_available_host_paths():
         _candidate("retry", 100_000_000, memory_crash_evidence=True),
     ], hosts=no_hosts)
     assert all(host["status"] == "refused" for host in none_available["hosts"])
-    assert {item["id"] for item in none_available["unplaced"]} == {"normal", "retry"}
+    assert {item["id"] for item in none_available["unplaced"]} == {_cid("normal"), _cid("retry")}
     assert none_available["eta_seconds"] == 0.0
     assert "run-gate " not in render_commands(none_available)
 
@@ -456,7 +467,7 @@ def test_overcommit_changes_sum_budget_but_never_physical_alone_cap():
         _candidate("alone-over-budget", 8 * 1024**3),
         _candidate("retry-over-budget", 8 * 1024**3, memory_crash_evidence=True),
     ], hosts=host_set)
-    assert {item["id"] for item in plan["unplaced"]} == {"alone-over-budget", "retry-over-budget"}
+    assert {item["id"] for item in plan["unplaced"]} == {_cid("alone-over-budget"), _cid("retry-over-budget")}
     for host in plan["hosts"]:
         if host["status"] == "available":
             assert host["cap_alone_bytes"] > host["budget_bytes"]
@@ -464,6 +475,7 @@ def test_overcommit_changes_sum_budget_but_never_physical_alone_cap():
 
 
 def test_parse_candidate_contract_errors_are_precise():
+    valid_id = _cid("valid")
     with pytest.raises(ContractError, match="expected object"):
         parse_candidate_table(None)
     with pytest.raises(ContractError, match="unknown field.*extra"):
@@ -473,33 +485,35 @@ def test_parse_candidate_contract_errors_are_precise():
     with pytest.raises(ContractError, match="expected array"):
         parse_candidate_table({"schema": "candidate-table/1", "candidates": {}})
     with pytest.raises(ContractError, match="missing field.*file"):
-        parse_candidate_table(_candidate_table([{"id": "x"}]))
+        parse_candidate_table(_candidate_table([{"id": valid_id}]))
     with pytest.raises(ContractError, match="duplicate id"):
-        parse_candidate_table(_candidate_table([{"id": "x", "file": "a"}, {"id": "x", "file": "b"}]))
-    with pytest.raises(ContractError, match="without control characters"):
+        parse_candidate_table(_candidate_table([{"id": valid_id, "file": "a"}, {"id": valid_id, "file": "b"}]))
+    with pytest.raises(ContractError, match="64-character lowercase SHA-256 candidate id"):
         parse_candidate_table(_candidate_table([{"id": "\x00", "file": "a"}]))
-    with pytest.raises(ContractError, match="cannot contain line breaks"):
+    with pytest.raises(ContractError, match="64-character lowercase SHA-256 candidate id"):
         parse_candidate_table(_candidate_table([{"id": "x\ny", "file": "a"}]))
+    with pytest.raises(ContractError, match="64-character lowercase SHA-256 candidate id"):
+        parse_candidate_table(_candidate_table([{"id": "A" * 64, "file": "a"}]))
     with pytest.raises(ContractError, match="expected integer"):
-        parse_candidate_table(_candidate_table([{"id": "x", "file": "a", "measured_memory_bytes": True}]))
+        parse_candidate_table(_candidate_table([{"id": valid_id, "file": "a", "measured_memory_bytes": True}]))
     with pytest.raises(ContractError, match="expected low or high"):
-        parse_candidate_table(_candidate_table([{"id": "x", "file": "a", "estimated_memory_class": []}]))
+        parse_candidate_table(_candidate_table([{"id": valid_id, "file": "a", "estimated_memory_class": []}]))
     with pytest.raises(ContractError, match="requires measured_on_host"):
-        parse_candidate_table(_candidate_table([{"id": "x", "file": "a", "elapsed_seconds": 2}]))
+        parse_candidate_table(_candidate_table([{"id": valid_id, "file": "a", "elapsed_seconds": 2}]))
     with pytest.raises(ContractError, match="must be at least 1"):
-        parse_candidate_table(_candidate_table([{"id": "x", "file": "a", "measured_memory_bytes": 0}]))
+        parse_candidate_table(_candidate_table([{"id": valid_id, "file": "a", "measured_memory_bytes": 0}]))
     with pytest.raises(ContractError, match="expected finite number"):
-        parse_candidate_table(_candidate_table([{"id": "x", "file": "a", "elapsed_seconds": float("inf"), "measured_on_host": "host"}]))
+        parse_candidate_table(_candidate_table([{"id": valid_id, "file": "a", "elapsed_seconds": float("inf"), "measured_on_host": "host"}]))
     with pytest.raises(ContractError, match="requires elapsed_seconds"):
-        parse_candidate_table(_candidate_table([{"id": "x", "file": "a", "measured_on_host": "host"}]))
+        parse_candidate_table(_candidate_table([{"id": valid_id, "file": "a", "measured_on_host": "host"}]))
     with pytest.raises(ContractError, match="retry count cannot exceed 1"):
-        parse_candidate_table(_candidate_table([{"id": "x", "file": "a", "memory_crash_retries": 2}]))
+        parse_candidate_table(_candidate_table([{"id": valid_id, "file": "a", "memory_crash_retries": 2}]))
     with pytest.raises(ContractError, match="must be at least 0"):
-        parse_candidate_table(_candidate_table([{"id": "x", "file": "a", "memory_crash_retries": -1}]))
+        parse_candidate_table(_candidate_table([{"id": valid_id, "file": "a", "memory_crash_retries": -1}]))
     with pytest.raises(ContractError, match="requires memory_crash_evidence"):
-        parse_candidate_table(_candidate_table([{"id": "x", "file": "a", "memory_crash_retries": 1}]))
+        parse_candidate_table(_candidate_table([{"id": valid_id, "file": "a", "memory_crash_retries": 1}]))
     with pytest.raises(ContractError, match="expected boolean"):
-        parse_candidate_table(_candidate_table([{"id": "x", "file": "a", "memory_crash_evidence": 1}]))
+        parse_candidate_table(_candidate_table([{"id": valid_id, "file": "a", "memory_crash_evidence": 1}]))
 
 
 def test_parse_host_contract_edges_and_other_job_ownership():
@@ -652,7 +666,7 @@ def test_time_reference_and_host_eta_refuse_incomparable_scores():
         hosts=incomparable_source,
     )
     ignored_candidate = next(
-        item for host in ignored_timing["hosts"] for item in host["assigned"] if item["id"] == "x"
+        item for host in ignored_timing["hosts"] for item in host["assigned"] if item["id"] == _cid("x")
     )
     assert ignored_timing["time_reference"]["geekbench_major"] == 6
     assert ignored_candidate["time_source"] == "declared_reference"
@@ -663,6 +677,13 @@ def test_time_reference_and_host_eta_refuse_incomparable_scores():
         host["facts"]["speed"] = None
         host["facts"]["speed_reason"] = "no score"
     assert _time_reference(parse_host_set(no_scores)) == (None, None, None, "no host has a Geekbench record")
+    balanced = _plan([_candidate(f"balanced-{index}", 100_000_000) for index in range(12)], hosts=no_scores)
+    assert all(_host_plan(balanced, host_id)["assigned"] for host_id in ("host-small", "host-large"))
+    assert all(
+        "balanced normalized reference work per worker" in item["assignment_reason"]
+        for host in balanced["hosts"]
+        for item in host["assigned"]
+    )
 
     no_eligible_hosts = _hosts()
     for host in no_eligible_hosts["hosts"]:
@@ -672,7 +693,7 @@ def test_time_reference_and_host_eta_refuse_incomparable_scores():
         "no eligible host is available for a Geekbench reference"
     )
     assert no_eligible_plan["unplaced"] == [
-        {"id": "x", "reason": "no host is available for placement"}
+        {"id": _cid("x"), "reason": "no host is available for placement"}
     ]
 
     for field, expected in (
@@ -703,8 +724,9 @@ def test_host_refusal_arithmetic_helpers_and_wave_invariant_error():
     assert _refusal(host, 0, 0, 0) is None
     capacity = _capacity(host, {"efficient_upper_bound": 2, "instance_memory_bytes": 250 * 1024**2})
     assert capacity["status"] == "available"
-    assert capacity["worker_slots"] == 5
-    assert capacity["campaign_slots"] == 3
+    assert capacity["worker_slots"] == 2
+    assert capacity["campaign_slots"] == 1
+    assert capacity["slot_worker_capacities"] == [2]
     assert "reason" not in capacity
     no_workers = _capacity(host, {"efficient_upper_bound": 0, "instance_memory_bytes": 250 * 1024**2})
     assert no_workers["reason"] == "no usable worker slots remain after host policy limits"
@@ -731,18 +753,31 @@ def test_host_refusal_arithmetic_helpers_and_wave_invariant_error():
     assert [item["input"].candidate_id for item in _ordered_mix(mixes)] == ["h", "f", "l"]
 
 
-def test_invalid_measured_host_and_unavailable_source_time_are_reported():
-    with pytest.raises(ContractError, match="measured_on_host 'absent'.*absent"):
-        _plan([_candidate("x", 100_000_000, elapsed_seconds=1, measured_on_host="absent")])
+def test_missing_measurement_host_is_ignored_for_time_and_reported():
+    absent_source = _plan([_candidate("x", 100_000_000, elapsed_seconds=1, measured_on_host="absent")])
+    ignored = next(item for host in absent_source["hosts"] for item in host["assigned"])
+    assert ignored["time_source"] == "declared_reference"
+    assert "measurement host 'absent' is absent" in ignored["time_reason"]
 
     host_set = _hosts()
     _facts(host_set, "host-small")["speed"] = None
     _facts(host_set, "host-small")["speed_reason"] = "missing record"
     _facts(host_set, "host-large")["psi"]["memory"]["some_avg10_pct"] = 99
     result = _plan([_candidate("x", 100_000_000, elapsed_seconds=2, measured_on_host="host-small")], hosts=host_set)
-    assigned = {item["id"]: item for host in result["hosts"] for item in host["assigned"]}["x"]
+    assigned = {item["id"]: item for host in result["hosts"] for item in host["assigned"]}[_cid("x")]
     assert assigned["time_source"] == "declared_reference"
     assert result["eta_reason"]
+
+    host_set = _hosts()
+    _facts(host_set, "host-small")["speed"] = None
+    _facts(host_set, "host-small")["speed_reason"] = "missing record"
+    result = _plan(
+        [_candidate("x", 100_000_000, elapsed_seconds=2, measured_on_host="host-small")],
+        hosts=host_set,
+    )
+    assigned = {item["id"]: item for host in result["hosts"] for item in host["assigned"]}[_cid("x")]
+    assert assigned["time_source"] == "declared_reference"
+    assert "measurement host 'host-small' has no matching Geekbench reference" in assigned["time_reason"]
 
 
 def test_plan_cli_json_commands_and_errors(tmp_path, capsys):
@@ -763,7 +798,11 @@ def test_plan_cli_json_commands_and_errors(tmp_path, capsys):
     assert result["schema"] == "fleet-plan/1"
     assert main(args + ["--commands"]) == 0
     commands = capsys.readouterr().out
-    assert commands.startswith("set -euo pipefail\n")
-    assert "run-gate r2 --only-candidates" in commands
+    assert commands.startswith("set -euo pipefail\n# host ")
+    assert "if run-gate r2 --jobs " in commands and "--only-candidates" in commands
+    assert "wave-" not in commands and "slot-" not in commands
+    assert commands.count("if run-gate r2 --jobs ") == sum(
+        len(host["batches"]) for host in result["hosts"] if host["status"] == "available"
+    )
     assert main(args + ["--batch-multiplier", "0"]) == 2
     assert "batch_multiplier: must be at least 0.1" in capsys.readouterr().err

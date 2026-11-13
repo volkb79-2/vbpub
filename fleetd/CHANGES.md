@@ -20,3 +20,13 @@
   to that host and run it there; the section creates its own ID files and
   fleetd has no transport.
 - Record the omitted Run-Gate campaign-plan client under RG-276.
+- Emit one serial `--only-candidates` Run-Gate call per host batch, with
+  explicit jobs and expected `PARTIAL` exit handling; reserve campaign-slot
+  concurrency for the future supervisor.
+- Balance placements by normalized reference work per worker when Geekbench
+  scores cannot be compared, and retain a reason when a candidate's source
+  host is absent from the current host set.
+- Validate every candidate ID as Assay's lowercase 64-digit SHA-256 digest.
+- Document that the manual command path cannot pass fleetd's per-host RAM
+  budget into Assay, and track the enforcement contract for the Run-Gate
+  campaign client.

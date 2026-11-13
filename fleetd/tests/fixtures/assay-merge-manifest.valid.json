@@ -1,5 +1,5 @@
 {
   "schema": "assay-merge-manifest/1",
-  "planned_ids": ["candidate-a", "candidate-b"],
-  "owners": {"candidate-a": "store-alpha", "candidate-b": "store-beta"}
+  "planned_ids": ["c24e6a4636f633942a26972a7d0b87c5e0bae3b60bbc9a4cdecff618f80ce3eb", "95408549bee13df0da9c425107b824718b805a324a4e1b22d9b5fc4224e6c3d8"],
+  "owners": {"c24e6a4636f633942a26972a7d0b87c5e0bae3b60bbc9a4cdecff618f80ce3eb": "store-alpha", "95408549bee13df0da9c425107b824718b805a324a4e1b22d9b5fc4224e6c3d8": "store-beta"}
 }

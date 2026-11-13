@@ -24,6 +24,8 @@ planner. It does not run campaigns or communicate with hosts.
 Unknown fields are rejected at every object boundary. Validators identify the
 field path and the missing, extra, or invalid value. See the [consumer guide](CONSUMERS.md)
 for examples and the [design guide](DESIGN-GUIDE.md) for invariants.
+Every candidate ID in candidate tables, work requests, and merge manifests is
+the lowercase 64-character SHA-256 digest emitted by native Assay R2.
 
 ### Lane demand
 
@@ -91,8 +93,9 @@ case where eligible hosts have no Geekbench records.
 The planner's host-set input requires explicit other-running rows and rejects
 hosts with unknown role, shared-prod role, PSI above its configured threshold,
 or unknown capacity facts. Worker capacity is the CPU-derived worker count
-after other work, bounded by the host's maximum lane containers times the
-lane's efficient upper bound. It computes:
+after other work, bounded by the lane's efficient upper bound. This manual MVP
+uses one campaign slot per host because concurrent selected runs would share a
+Run-Gate lane instance and Assay store. It computes:
 
 - P = memory.for_lanes_bytes - control_plane.memory_min_bytes;
 - O = other running expected charges + campaign_slots × instance_memory;
@@ -111,9 +114,17 @@ measurements resolve by own id, same-file median, lane median, then declared
 demand. Candidate timing follows the same precedence after normalization to
 the common Geekbench major, exact version, and baseline. If timing is
 incomparable, placement still uses RAM and the output includes an ETA reason.
+When no comparable ETA exists, assignment balances normalized reference work
+per worker as a placement tie-break; it does not claim that the hosts have
+comparable speeds. An old measurement whose host is absent from the host set is
+ignored for timing and recorded with a fallback reason.
 The batch target defaults to four times W and is configurable with
---batch-multiplier. Slot command blocks are emitted in stable host, batch,
-wave, and slot order.
+--batch-multiplier. The command renderer emits one invocation per host batch,
+with `--jobs` no greater than W, and runs batches serially within each copied
+host section. Selected-only runs normally return Run-Gate exit 4 (`PARTIAL`);
+the generated script accepts 0 or 4 and stops on other codes. `efficient_upper_bound`
+must not exceed the lane's Assay `jobs_max`; the standalone planner cannot
+derive that value until the Run-Gate campaign client is implemented.
 
 This package deliberately omits the Run-Gate campaign-plan client command;
 the integration contract is tracked under
