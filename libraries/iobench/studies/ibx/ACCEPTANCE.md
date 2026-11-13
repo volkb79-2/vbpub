@@ -1,4 +1,4 @@
-# IBX live host acceptance (IOB-BL-41 / IOB-BL-42 / IOB-BL-44 / IOB-BL-45 / IOB-BL-46)
+# IBX live host acceptance (IOB-BL-41 / IOB-BL-42 / IOB-BL-44 / IOB-BL-45 / IOB-BL-46 / IOB-BL-50)
 
 Run only on the approved freshly reinstalled disposable compute host with its
 dedicated `iobench-raw` partition. This runbook has **not** been run here.
@@ -121,6 +121,55 @@ required and saved as one resume policy. For the study's 32 GiB partition with
 a preallocated 24 GiB target file, an approved 20 GiB output floor and 1 GiB
 target floor are distinct inputs; use values from the host policy and preserve
 them unchanged on resume.
+
+## 0b: rehearsal
+
+Real-fio end-to-end rehearsal required before the first live cell.
+
+Run this from the study checkout before starting any live cell. It requires
+upstream fio 3.39 and creates a fresh, planner-scaled rehearsal directory under
+`/tmp`; its target is a regular file inside that directory. Do not point this
+command at a device or reuse the study's live output directory.
+
+```bash
+set -euo pipefail
+STUDY=/path/to/libraries/iobench/studies/ibx/driver.py
+FIO=$(command -v fio)
+OUT=$(mktemp -d /tmp/ibx-fio-rehearsal.XXXXXX)
+python3 "$STUDY" plan --test-scale --json
+python3 "$STUDY" rehearse --fio "$FIO" --out "$OUT"
+test -s "$OUT/rung-choice.md"
+cat "$OUT/rehearsal-transcript.txt"
+```
+
+`rehearse` invokes the real `plan`, every listed `run` cell-set, and `analyze`
+commands in sequence. Its 8 MiB file retains the three rung block-size mixes,
+raw-style and ext4/Btrfs-file cell kinds, latency cells, anchors, observation,
+part (c) rewrite and recovery, and every time-based fio job. Writers use 4 MiB
+caps; time-based cells use 2 seconds; idle waits use one second. Raw-style
+discard steps use `fallocate` hole punching. The final partition-wipe step is
+replaced by a whole-file hole punch followed by a zero-content check. Keep the
+full transcript in the acceptance report and require `FIO-REHEARSAL-PASS`
+before the first live cell. The rehearsal selects the first advertised engine
+from `libaio`, `posixaio`, `io_uring`, and `psync`; the selected name is
+recorded in the manifest and transcript. A `psync` fallback runs synchronously,
+so its queue depth is not representative. The per-run `--test-scale-engine`
+override is refused unless `--test-scale` is also set; the live job template
+continues to use `libaio`.
+
+The rehearsal cannot accept actual block-device discard, partition wipe,
+`mkfs.ext4`, `mkfs.btrfs -K`, mount, `fallocate` preallocation, or hard-kill
+resume. Those degradations and their read-only checks are explicit:
+
+| Uncovered path | Rehearsal substitute | Read-only/dry-run check before live use |
+|---|---|---|
+| `blkdiscard` against a raw partition | Punch a hole in the regular file; no loop device | Section 1 `run --dry-run` checks the raw target identity, discard capability, and `blkdiscard` availability; it issues no discard. |
+| Final partition wipe/discard | Punch the entire rehearsal file and verify zeros | Section 2 `assert_raw_idle`, `wipefs -n`, and the section 1 raw dry-run verify identity and unused state; no partition wipe is issued here. |
+| ext4/Btrfs creation, mount, and preallocation | Treat the regular file as both file-target kinds | After authorized filesystem setup, section 2 checks `findmnt`, Btrfs UUID/member mapping, and `run --dry-run` on the mounted file; rehearsal does not format or mount anything. |
+| Hard-kill resume | No process kill or resume simulation | Before a resumed run, `plan --out "$OUT"` reads the saved meter and the normal `run --dry-run` rechecks target and policy identity; this does not simulate a process death. |
+
+The `real_fio` pytest marker skips with a manual command when no fio binary is
+available. A found binary that is not upstream fio 3.39 is a failure.
 
 ## 1. Target-read-only inventory and raw dry-run
 
