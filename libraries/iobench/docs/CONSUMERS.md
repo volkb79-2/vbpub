@@ -367,10 +367,18 @@ size, and PARTUUID from the approved inventory; resume refuses a changed size
 or PARTUUID. A raw partition sharing the running system disk refuses by default.
 The operator can opt in only with both `--allow-system-disk-partition` and a
 fresh `system-disk-ack` value derived from hostname, disk, root filesystem
-device(s), and the target PARTUUID. This exception does not relax any other
-guard. Its acknowledgement, system mounts, and sibling swap devices are stored
-in run state and included in the analysis; those results include system and
-sibling-swap activity. Keep the complete timer stop/restore and slot schedule
+device(s), and the target PARTUUID. The flag is the operator's consent; the
+per-run value is a drift check that binds it to current host and target facts.
+This exception does not relax any other guard. Its acknowledgement, stable
+system-disk identity, and per-attempt system mounts and sibling swap devices
+are stored in run state and included in the analysis; those results include
+system and sibling-swap activity. Resume refuses changed stable identity but
+accepts changed mount/swap observations and records them per attempt. A changed
+stop policy refuses resume. Preserve the state and resume only with the policy
+recorded in its run manifest; if that policy cannot be used, obtain an operator
+decision. A new `--out` directory resets the byte and elapsed-time meters and
+requires explicit approval as a new budget. Keep the complete timer
+stop/restore and slot schedule
 from the [study-day procedure](../studies/ibx/README.md). Before raw writes or
 discard, the driver refuses whole disks, a mounted or swap-active target
 partition, active exclusive claims, and holders.
@@ -398,7 +406,7 @@ current_system_disk_ack() {
 }
 python3 "$STUDY" plan --out "$OUT"
 
-# The no-write rehearsal validates the raw target and renders every t0 fio job.
+# The target-read-only rehearsal validates the raw target and renders every t0 fio job.
 host-escape -- python3 "$STUDY" run raw-t0 --target /dev/vda5 --device vda5 \
   --target-type raw --confirm-target "$IBX_TARGET_CONFIRMATION" \
   --allow-system-disk-partition --system-disk-ack "$(current_system_disk_ack)" \
@@ -441,6 +449,11 @@ fsyncs a temporary file on the root filesystem, checks the SSH banner, and
 verifies the cockpit runner with systemd and container exec. A configured
 number of consecutive slow or failed probes stops
 the run; the existing byte and elapsed-time caps also apply. The dry-run checks
-target and policy facts without requiring the fstrim, apt-daily, or governance
-timers to be stopped and does not run the liveness probe. Live runs require
-those timers inactive.
+target and policy facts plus a successful initial liveness probe, without
+requiring the fstrim, apt-daily, or governance timers to be stopped. The probe
+uses a bounded root-filesystem fsync, SSH banner and cockpit runner check. Live
+runs require those timers inactive and perform later probes at the recorded
+10-second default cadence (`--probe-interval-seconds` changes the interval).
+The first successful probe is required before any target discard or fio write.
+One timed-out probe remains failed until its transient unit is confirmed
+stopped; later failures count toward the configured consecutive-sample limit.

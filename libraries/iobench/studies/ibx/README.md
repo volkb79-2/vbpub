@@ -99,7 +99,13 @@ also refuses by default; the only exception requires both
 `--allow-system-disk-partition` and a current acknowledgement derived by
 `system-disk-ack` from hostname, disk, root filesystem device(s), and target
 PARTUUID. The acknowledgement and observed system mounts and sibling swap
-devices are recorded in state, each cell, the plan, and the analysis report.
+devices are recorded in state, each attempt and cell, JSON/text plan output,
+and the analysis report. Resume compares stable host/root/disk/PARTUUID identity;
+it records changing mount and sibling-swap observations per attempt. Changing
+the stop policy refuses resume. Keep the existing state and resume only with
+the policy recorded in its run manifest; if that policy cannot be used, obtain
+an operator decision. Starting with a new `--out` directory resets the byte
+and elapsed-time meters and requires explicit approval as a new budget.
 The study result is therefore explicitly marked as including system and
 sibling-swap activity. A swap-active target partition, mounted partition,
 changed SIZE/PARTUUID, or any other safety failure still refuses. Resume state
@@ -114,17 +120,21 @@ under the 500 GB cap because their full job caps do not fit after the base
 schedule.
 
 `run --dry-run` performs target, identity, schedule, IO-control, memory and
-free-space checks and renders every fio job, then exits without creating output
-files, starting fio, discarding, or changing the target. It does not check or
-require the fstrim, apt-daily, apt-daily-upgrade, or governance timers to be
-stopped, and it does not run the host-liveness probe. A live run requires those
-timers inactive and records I/O PSI as advisory; it stops on three consecutive
-memory PSI `full avg10` samples above policy, low `MemAvailable`, low free
-space, or the configured number of consecutive slow/failed host-liveness
-samples. Liveness is measured in a bounded `system.slice` service with a root
-filesystem fsync, SSH banner check, and bounded systemd/container-exec checks
-for the cockpit runner, independent of the fio cgroup. Wall-time and write-byte
-caps remain hard stops.
+free-space checks and a successful first host-liveness probe, and renders every
+fio job, then exits without creating output files, starting fio, discarding, or
+changing the target. It does not check or require the fstrim, apt-daily,
+apt-daily-upgrade, or governance timers to be stopped. Live runs require those timers inactive and record I/O PSI
+as advisory; they stop on three consecutive memory PSI `full avg10` samples
+above policy, low `MemAvailable`, low free space, or the configured number of
+consecutive slow/failed host-liveness probes. The initial liveness probe must
+succeed before any target discard or fio write. Subsequent probes run at the
+recorded 10-second default cadence (`--probe-interval-seconds` can set a
+different interval). Each bounded `system.slice` probe writes and fsyncs a
+temporary file on `/`, checks the local SSH banner on port 22, and verifies the
+`mdt-cockpit-runner.service` and `mdt-cockpit-runner` container, independently
+of the fio cgroup. One timed-out probe remains failed until its transient unit
+is confirmed stopped; its later samples still count toward the configured
+consecutive-failure limit. Wall-time and write-byte caps remain hard stops.
 The separately scoped live probes for the real raw target and Btrfs fio logs
 are in [ACCEPTANCE.md](ACCEPTANCE.md); they start with raw dry-run validation
 and never issue a raw write.
@@ -134,6 +144,11 @@ requested by the operator on 2026-11-13 because the approved disposable compute
 hosts have only one virtual disk. It relaxes only the refusal for a dedicated
 target partition sharing that disk; the driver retains every other target
 guard and records the acknowledgement and system-disk context in the result.
+Supplying `--allow-system-disk-partition` is the operator's consent to run on
+the shared system disk. The per-run `--system-disk-ack` value is a drift check
+that binds that consent to the current hostname, target disk, root filesystem
+device(s), and target PARTUUID; deriving the value in a wrapper does not by
+itself grant permission to write.
 The study remains a root-disk study with system and sibling-swap activity, not
 a quiet-disk measurement.
 
@@ -147,7 +162,9 @@ job files, and one-second monitor JSONL under the ignored
 `libraries/iobench/artifacts/ibx-study/` directory.
 
 Set the stop thresholds from the study host policy before starting; the
-commands refuse if any are absent. No values are guessed by this controller.
+commands refuse if any are absent. The probe cadence is a separately recorded
+controller default of 10 seconds and can be changed with
+`--probe-interval-seconds`.
 I/O PSI is recorded but is advisory because the saturating fio cell itself can
 drive it to 100%. The independent host-liveness threshold and consecutive
 sample count are configurable policy inputs alongside the existing memory and
@@ -205,7 +222,7 @@ current_system_disk_ack() {
     --confirm-target "$IBX_TARGET_CONFIRMATION"
 }
 
-# Read-only plan and rehearsal can run before checking or stopping timers.
+# Plan and target-read-only dry-run can run before checking or stopping timers.
 confirm_study_target
 host-escape -- python3 "$STUDY" plan --out "$OUT"
 host-escape -- python3 "$STUDY" run raw-t0 --target /dev/vda5 --device vda5 \

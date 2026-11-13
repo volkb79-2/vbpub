@@ -2,13 +2,21 @@
 
 Run only on the approved freshly reinstalled disposable compute host with its
 dedicated `iobench-raw` partition. This runbook has **not** been run here.
-Initialize `STUDY`, `OUT`, and the stop-policy variables as documented in the
-study README, but do not execute its timer-control block or live study sequence.
-Run this read-only preflight in the same shell. The dry-run does not require
-timers to be stopped; keep the setup shell open for the later live-run EXIT trap
-that restores timers.
+Set `IBX_EXPECTED_HOST` from the approved run authorization before connecting;
+do not derive the expected value from the live host. Initialize `STUDY`, `OUT`,
+and the stop-policy variables as documented in the study README, but do not
+execute its timer-control block or live study sequence. Run this target-read-only
+preflight in the same shell. The dry-run does not require timers to be stopped;
+keep the setup shell open for the later live-run EXIT trap that restores timers.
 
 ```bash
+set -euo pipefail
+: "${IBX_EXPECTED_HOST:?set the exact short hostname from approved run authorization}"
+ACTUAL_HOST=$(host-escape -- hostname -s)
+[[ $ACTUAL_HOST == "$IBX_EXPECTED_HOST" ]] || {
+  printf 'refusing: expected host %s, connected to %s\n' "$IBX_EXPECTED_HOST" "$ACTUAL_HOST" >&2
+  exit 2
+}
 RAW=/dev/vda5
 [[ $(host-escape -- lsblk -dn -o TYPE "$RAW") == part ]]
 [[ $(host-escape -- lsblk -dn -o PARTLABEL "$RAW") == iobench-raw ]]
@@ -19,13 +27,16 @@ export IBX_TARGET_CONFIRMATION="$RAW:34359738368:$(host-escape -- blkid -s PARTU
 On the known single-disk layout, `/dev/vda5` is a dedicated partition on the
 same virtual disk as the running system and swap. The default raw dry-run must
 still refuse this target with the existing byte-identical root/system-disk
-message. A second dry-run with the opt-in and freshly derived acknowledgement
-must pass, because all other target guards remain active. The output and later
-analysis explicitly record that system and sibling-swap activity are part of
-the measurement context. This remains a read-only acceptance: do not run a
-live raw write, discard, or format in this procedure.
+message. A second dry-run with the explicit operator consent flag and a freshly
+derived per-run drift-check token must pass, because all other target guards
+remain active. The flag is consent; deriving the token only binds it to current
+host and target facts. The output and later analysis explicitly record that
+system and sibling-swap activity are part of the measurement context. This
+remains target-read-only: do not run a live raw write, discard, or format in
+this procedure. The initial liveness probe writes and fsyncs a temporary file
+on the host root filesystem as its responsiveness check.
 
-## 1. Read-only inventory and raw dry-run
+## 1. Target-read-only inventory and raw dry-run
 
 ```bash
 set -euo pipefail
@@ -80,9 +91,10 @@ expect_refusal() {
 expect_refusal "raw target is on the root disk or contains a running system filesystem" \
   raw_dry_run "$RAW" vda5 "$IBX_TARGET_CONFIRMATION"
 
-# Derive the acknowledgement immediately before use so it reflects this host,
-# disk, root filesystem device and target PARTUUID. The acknowledged dry-run
-# must pass; it does not create output files or check timer state.
+# The explicit flag records the operator's consent. The token derived here is
+# a drift check for this host, disk, root device and target PARTUUID. The
+# acknowledged dry-run must pass, does not create output files, and does not
+# require timer state changes; it does require the first liveness probe to pass.
 SYSTEM_DISK_ACK=$(current_system_disk_ack)
 DRY_RUN_RESULT=$(raw_dry_run "$RAW" vda5 "$IBX_TARGET_CONFIRMATION" \
   --allow-system-disk-partition --system-disk-ack "$SYSTEM_DISK_ACK")
@@ -103,10 +115,10 @@ expect_refusal "raw target must be a dedicated partition; whole disks are refuse
 ```
 
 Expected: the default system-disk attempt and the SIZE/PARTUUID/whole-disk
-cases refuse; the exact derived acknowledgement permits only the dry-run; a
-wrong acknowledgement refuses. No raw live run, discard, or raw write is part
-of this acceptance. Do not manufacture swap or holder state to probe those
-branches; fake-sysfs tests cover them.
+cases refuse; the explicit consent flag with the exact derived drift-check
+token permits only the dry-run; a wrong token refuses. No raw live run,
+discard, or raw write is part of this acceptance. Do not manufacture swap or
+holder state to probe those branches; fake-sysfs tests cover them.
 
 ## 2. Btrfs file and real fio-log acceptance
 

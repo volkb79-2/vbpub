@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import errno
+import builtins
 import json
 import os
 import re
@@ -86,6 +87,7 @@ class FakeHost:
         self.liveness_responsive = True
         self.liveness_samples = []
         self.liveness_calls = 0
+        self.events = []
         self.system_disk = {"hostname": "fixture-host", "target_disk": "vda",
                             "root_fs_devices": ["vda3"], "system_mounts_on_disk": [],
                             "sibling_swap_devices": [], "target_partuuid": FAKE_IDENTITY.partuuid,
@@ -127,6 +129,7 @@ class FakeHost:
         return {"supported": True, "discard_max_bytes": 1024**3}
 
     def discard(self, target, kind, offset, size, timeout=None, sample=None):
+        self.events.append("discard")
         self.discards.append((target, kind, offset, size, timeout))
         if sample is not None:
             sample()
@@ -139,6 +142,7 @@ class FakeHost:
         self.clock += seconds
 
     def sample(self, device, out, target=None):
+        self.events.append("sample")
         return {**HEALTHY, "device": device,
                 "psi": {"io": {"some": {"avg10": self.psi_io}},
                         "memory": {"some": {"avg10": self.psi_mem},
@@ -146,6 +150,7 @@ class FakeHost:
                 "meminfo": {"MemAvailable": self.available}, "free_bytes": self.free}
 
     def liveness_probe(self, max_latency_s):
+        self.events.append("liveness")
         self.liveness_calls += 1
         sample = self.liveness_samples.pop(0) if self.liveness_samples else {
             "responsive": self.liveness_responsive, "latency_seconds": self.liveness_latency,
@@ -161,6 +166,7 @@ class FakeHost:
             self.clock += 1
 
     def execute_fio(self, job_path, runtime_s, sample):
+        self.events.append("fio")
         payload, duration = self.fio.run(job_path, max_runtime=runtime_s)
         elapsed = 0.0
         while elapsed < duration:
@@ -200,18 +206,73 @@ class InterruptOnceHost(FakeHost):
 def run_set(tmp_path, name, *, host=None, target_type=None, target="/dev/fake", offset=0,
             size=24 * GIB, fsync_cell=None, dry_run=False,
             allow_system_disk_partition=False, system_disk_ack=None,
-            probe_consecutive_samples=3, max_probe_latency_s=1.0):
+            probe_consecutive_samples=3, max_probe_latency_s=1.0,
+            probe_interval_s=driver.DEFAULT_LIVENESS_PROBE_INTERVAL_S):
     return driver.run_study(name, target=target, device="vda5", out=tmp_path,
                             target_kind=target_type, offset=offset, size=size,
                             mem_psi_max=20, min_memavailable=2 * GIB,
                             min_free=4 * GIB, max_probe_latency_s=max_probe_latency_s,
                             probe_consecutive_samples=probe_consecutive_samples,
+                            probe_interval_s=probe_interval_s,
                             host=host or FakeHost(), fsync_cell=fsync_cell,
                             quiet_window_confirmed=True,
                             confirm_target=f"{target}:{FAKE_IDENTITY.size_bytes}:{FAKE_IDENTITY.partuuid}"
                             if target_type in (None, "raw") else None,
                             allow_system_disk_partition=allow_system_disk_partition,
                             system_disk_ack=system_disk_ack, dry_run=dry_run)
+
+
+def execute_liveness_script(*, banner=b"SSH-2.0-fixture\r\n", systemctl_state="active",
+                            systemctl_status=0, docker_status=0, fsync_error=False):
+    printed = []
+    calls = []
+    addresses = []
+    clock = iter((0.0, 0.1, 0.2, 0.3, 0.4, 0.5))
+
+    class Connection:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def settimeout(self, _timeout):
+            return None
+
+        def recv(self, _count):
+            return banner
+
+    def command(args, **_kwargs):
+        calls.append(args)
+        if args[:2] == ["systemctl", "show"]:
+            return SimpleNamespace(returncode=systemctl_status, stdout=systemctl_state, stderr="")
+        return SimpleNamespace(returncode=docker_status, stdout="", stderr="")
+
+    fake_modules = {
+        "json": json,
+        "os": SimpleNamespace(write=lambda _fd, _value: None,
+                               fsync=lambda _fd: (_ for _ in ()).throw(OSError("fsync failed"))
+                               if fsync_error else None,
+                               close=lambda _fd: None, unlink=lambda _path: None),
+        "socket": SimpleNamespace(create_connection=lambda address, timeout:
+                                   (addresses.append((address, timeout)) or Connection())),
+        "subprocess": SimpleNamespace(run=command),
+        "sys": SimpleNamespace(argv=["probe", "1", driver.LIVENESS_ROOT_DIRECTORY,
+                                     driver.LIVENESS_SSH_HOST, str(driver.LIVENESS_SSH_PORT),
+                                     driver.LIVENESS_COCKPIT_UNIT,
+                                     driver.LIVENESS_COCKPIT_CONTAINER]),
+        "tempfile": SimpleNamespace(mkstemp=lambda **_kwargs: (7, "/root/.ibx-liveness-test")),
+        "time": SimpleNamespace(monotonic=lambda: next(clock)),
+    }
+    builtins_map = vars(builtins).copy()
+    builtins_map["__import__"] = lambda name, *_args, **_kwargs: fake_modules[name]
+    builtins_map["print"] = printed.append
+    status = 0
+    try:
+        exec(driver.LIVENESS_PROBE_SCRIPT, {"__builtins__": builtins_map})
+    except SystemExit as exc:
+        status = exc.code
+    return status, json.loads(printed[0]), calls, addresses
 
 
 def seed_raw_t6h_evidence(out, *, quick=(100.0, 100.0), veryquick=(100.0, 100.0)):
@@ -351,7 +412,7 @@ def test_run_resume_monitors_and_records_one_json_per_fio_cell(tmp_path):
     assert report["run_manifest"] == state["run_manifest"]
     rendered_report = driver.render_analysis(report)
     assert "Raw target risk: **acknowledged system-disk run**" in rendered_report
-    assert f"Acknowledgement: `{ack}`" in rendered_report
+    assert f"System-disk drift-check token: `{ack}`" in rendered_report
     assert "sibling swap device(s): `vda6`" in rendered_report
     assert "D-IBX-002" in rendered_report
     assert "I/O PSI is recorded as advisory" in rendered_report
@@ -1092,6 +1153,50 @@ def test_raw_target_system_disk_opt_in_does_not_allow_target_partition_swap(tmp_
                              allow_system_disk_partition=True, system_disk_ack=expected)
 
 
+def test_raw_target_system_disk_opt_in_does_not_allow_whole_disk_swap_or_holder(
+        tmp_path, monkeypatch):
+    host, target, _, _ = _raw_target_fixture(tmp_path, monkeypatch, root_devno="8:1")
+    swapfile = tmp_path / "swapfile"
+    swapfile.touch()
+    (host.proc / "swaps").write_text(
+        f"Filename Type Size Used Priority\n{swapfile} partition 1 0 -2\n", encoding="utf-8")
+    original_stat = Path.stat
+
+    def stat_with_whole_disk_swap(path, *args, **kwargs):
+        if path == swapfile:
+            return SimpleNamespace(st_mode=driver.stat.S_IFBLK, st_rdev=os.makedev(8, 0),
+                                   st_dev=os.makedev(8, 0))
+        return original_stat(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "stat", stat_with_whole_disk_swap)
+    expected = driver.system_disk_acknowledgement(
+        driver.socket.gethostname(), "vda", ["vda1"], FAKE_IDENTITY.partuuid)
+    with pytest.raises(driver.StudyError, match="swap-active"):
+        host.validate_target(str(target), "raw", 0, 4096, "vda5", confirmation=FAKE_IDENTITY,
+                             allow_system_disk_partition=True, system_disk_ack=expected)
+
+    monkeypatch.setattr(Path, "stat", original_stat)
+    (host.proc / "swaps").write_text("Filename Type Size Used Priority\n", encoding="utf-8")
+    holder_host, holder_target, _, _ = _raw_target_fixture(
+        tmp_path / "holder", monkeypatch, root_devno="8:99")
+    (holder_host.sys / "devices/block/vda/holders/root-disk").symlink_to(
+        holder_host.sys / "devices/block/root-disk")
+    holder_ack = driver.system_disk_acknowledgement(
+        driver.socket.gethostname(), "vda", ["root-disk"], FAKE_IDENTITY.partuuid)
+    with pytest.raises(driver.StudyError) as raised:
+        holder_host.validate_target(str(holder_target), "raw", 0, 4096, "vda5",
+                                    confirmation=FAKE_IDENTITY, allow_system_disk_partition=True,
+                                    system_disk_ack=holder_ack)
+    assert str(raised.value) == "raw target is on the root disk or contains a running system filesystem"
+
+
+def test_raw_target_refuses_opt_in_for_a_target_on_a_separate_disk(tmp_path, monkeypatch):
+    host, target, _, _ = _raw_target_fixture(tmp_path, monkeypatch)
+    with pytest.raises(driver.StudyError, match="applies only to a target on the running system disk"):
+        host.validate_target(str(target), "raw", 0, 4096, "vda5", confirmation=FAKE_IDENTITY,
+                             allow_system_disk_partition=True, system_disk_ack="any")
+
+
 def test_raw_target_refuses_root_disk_reached_through_whole_disk_holder(tmp_path, monkeypatch):
     host, target, _, _ = _raw_target_fixture(tmp_path, monkeypatch, root_devno="8:99")
     disk = host.sys / "devices/block/vda"
@@ -1190,26 +1295,70 @@ def test_local_liveness_probe_reports_fake_child_latency_and_failures(monkeypatc
     assert calls[0][0] == "systemd-run"
     assert "--slice=system.slice" in calls[0] and "--wait" in calls[0] and "--pipe" in calls[0]
     assert "--collect" in calls[0] and "--property=RuntimeMaxSec=1" in calls[0]
-    assert "dir=\"/\"" in driver.LIVENESS_PROBE_SCRIPT
-    assert "os.fsync(fd)" in driver.LIVENESS_PROBE_SCRIPT
-    assert '("127.0.0.1", 22)' in driver.LIVENESS_PROBE_SCRIPT
-    assert "mdt-cockpit-runner.service" in driver.LIVENESS_PROBE_SCRIPT
-    assert '["docker", "exec", "mdt-cockpit-runner", "true"]' in driver.LIVENESS_PROBE_SCRIPT
+    assert calls[0][-6:] == ["1", driver.LIVENESS_ROOT_DIRECTORY, driver.LIVENESS_SSH_HOST,
+                             str(driver.LIVENESS_SSH_PORT), driver.LIVENESS_COCKPIT_UNIT,
+                             driver.LIVENESS_COCKPIT_CONTAINER]
 
-    clock[:] = [0.0, 2.0]
+    clock[:] = [0.0, 2.0, 2.0, 2.2]
     host = driver.LocalHost()
+    timeout_calls = []
     def timed_out(*args, **kwargs):
-        assert args[0][0] == "systemd-run"
-        assert kwargs["timeout"] == 2
-        raise driver.subprocess.TimeoutExpired(args[0], kwargs["timeout"])
+        timeout_calls.append(args[0])
+        if args[0][0] == "systemd-run":
+            assert kwargs["timeout"] == 2
+            raise driver.subprocess.TimeoutExpired(args[0], kwargs["timeout"])
+        return SimpleNamespace(returncode=0, stdout="active", stderr="")
     monkeypatch.setattr(driver.subprocess, "run", timed_out)
     timeout = host.liveness_probe(1)
     assert timeout["responsive"] is False and timeout["latency_seconds"] == 2.0
     assert "timed out" in timeout["error"]
-    assert "previous probe timed out" in host.liveness_probe(1)["error"]
+    still_active = host.liveness_probe(1)
+    assert "not been confirmed stopped" in still_active["error"]
+    assert timeout_calls[-1][:2] == ["systemctl", "is-active"]
+
+    def completed_after_timeout(*args, **kwargs):
+        if args[0][:2] == ["systemctl", "is-active"]:
+            return SimpleNamespace(returncode=3, stdout="inactive", stderr="")
+        return SimpleNamespace(returncode=0, stdout=json.dumps({
+            "responsive": True, "components": components}), stderr="")
+    monkeypatch.setattr(driver.subprocess, "run", completed_after_timeout)
+    recovered = host.liveness_probe(1)
+    assert recovered["responsive"] is True
+    assert host._liveness_probe_stalled is False
+
+    for status_error in (OSError("systemctl unavailable"),
+                         driver.subprocess.TimeoutExpired(["systemctl", "is-active"], 1)):
+        clock[:] = [0.0, 2.0]
+        host = driver.LocalHost()
+
+        def status_unavailable(*args, _error=status_error, **kwargs):
+            if args[0][0] == "systemd-run":
+                raise driver.subprocess.TimeoutExpired(args[0], kwargs["timeout"])
+            raise _error
+
+        monkeypatch.setattr(driver.subprocess, "run", status_unavailable)
+        host.liveness_probe(1)
+        unresolved = host.liveness_probe(1)
+        assert unresolved["responsive"] is False
+        assert "not been confirmed stopped" in unresolved["error"]
+
+    clock[:] = [0.0, 2.0]
+    host = driver.LocalHost()
+    def unrecognized_status(*args, **kwargs):
+        if args[0][0] == "systemd-run":
+            raise driver.subprocess.TimeoutExpired(args[0], kwargs["timeout"])
+        return SimpleNamespace(returncode=0, stdout="unexpected-state", stderr="")
+    monkeypatch.setattr(driver.subprocess, "run", unrecognized_status)
+    host.liveness_probe(1)
+    unresolved = host.liveness_probe(1)
+    assert unresolved["responsive"] is False
+    assert "not been confirmed stopped" in unresolved["error"]
 
     clock[:] = [0.0, 0.5]
     host = driver.LocalHost()
+    def timed_out_before_limit(*args, **kwargs):
+        raise driver.subprocess.TimeoutExpired(args[0], kwargs["timeout"])
+    monkeypatch.setattr(driver.subprocess, "run", timed_out_before_limit)
     timeout_before_limit = host.liveness_probe(1)
     assert timeout_before_limit["latency_seconds"] == 1
 
@@ -1245,6 +1394,25 @@ def test_local_liveness_probe_reports_fake_child_latency_and_failures(monkeypatc
                             "responsive": False, "components": {}, "error": "sshd down"}), stderr=""))
     refused = host.liveness_probe(1)
     assert refused["responsive"] is False and refused["error"] == "sshd down"
+
+
+def test_liveness_script_executes_fake_fsync_banner_and_cockpit_checks():
+    status, payload, calls, addresses = execute_liveness_script()
+    assert status == 0 and payload["responsive"] is True
+    assert set(payload["components"]) == {"root_fsync_seconds", "sshd_seconds", "cockpit_seconds"}
+    assert addresses == [((driver.LIVENESS_SSH_HOST, driver.LIVENESS_SSH_PORT), 1.0)]
+    assert calls == [["systemctl", "show", driver.LIVENESS_COCKPIT_UNIT,
+                      "--property=ActiveState", "--value"],
+                     ["docker", "exec", driver.LIVENESS_COCKPIT_CONTAINER, "true"]]
+
+    for kwargs, error_fragment in (
+            ({"banner": b"not-ssh"}, "SSH protocol banner"),
+            ({"systemctl_status": 1, "systemctl_state": "inactive"}, "not active"),
+            ({"docker_status": 1}, "did not respond to exec"),
+            ({"fsync_error": True}, "fsync failed")):
+        status, payload, _calls, _addresses = execute_liveness_script(**kwargs)
+        assert status == 1 and payload["responsive"] is False
+        assert error_fragment in payload["error"]
 
 
 def test_local_fsync_refuses_unloaded_slice_and_cleans_timed_out_collector(tmp_path, monkeypatch):
@@ -1483,7 +1651,8 @@ def test_run_guards_and_stop_thresholds_are_fail_closed(tmp_path):
                                 "memory": {"some": {"avg10": 99},
                                            "full": {"avg10": 0.1}}}}
     assert driver.stop_reason(high_memory_some, min_memavailable=1, min_free=1) is None
-    assert driver.stop_reason({**HEALTHY, "psi": {"io": {"some": {"avg10": 100}}}},
+    assert driver.stop_reason({**HEALTHY, "psi": {
+        "io": {"some": {"avg10": 100}}, "memory": HEALTHY["psi"]["memory"]}},
                               min_memavailable=1, min_free=1) is None
 
 
@@ -1505,6 +1674,7 @@ def test_preflight_and_memory_or_free_space_stops_happen_before_fio_or_discard(t
 def test_liveness_stop_uses_fake_latency_source_and_clock_for_n_consecutive_samples(tmp_path):
     host = FakeHost(psi_io=99)
     host.liveness_samples = [
+        {"responsive": True, "latency_seconds": 0.1, "components": {"root_fsync_seconds": 0.1}},
         {"responsive": True, "latency_seconds": 2.0, "components": {"root_fsync_seconds": 2.0}},
         {"responsive": True, "latency_seconds": 2.1, "components": {"root_fsync_seconds": 2.1}},
         {"responsive": True, "latency_seconds": 2.2, "components": {"root_fsync_seconds": 2.2}},
@@ -1514,28 +1684,29 @@ def test_liveness_stop_uses_fake_latency_source_and_clock_for_n_consecutive_samp
 
     def samples_until_stop(job_path, runtime_s, sample):
         with pytest.raises(driver.StudyError, match="3 consecutive samples"):
-            sample()
-            sample()
-            sample()
+            for _ in range(4):
+                host.clock += 1
+                sample()
         raise driver.StudyError("fake fio stopped by monitor")
 
     host.execute_fio = samples_until_stop
     try:
         with pytest.raises(driver.StudyError, match="fake fio stopped"):
-            run_set(tmp_path, "file-ext4", host=host, target_type="ext4-file", target="/tmp/target")
+            run_set(tmp_path, "file-ext4", host=host, target_type="ext4-file", target="/tmp/target",
+                    probe_interval_s=1)
     finally:
         driver.CELL_SETS["file-ext4"] = original
     rows = [json.loads(line) for line in (tmp_path / "monitor.jsonl").read_text().splitlines()]
-    assert len(rows) == 3
-    assert [row["host_liveness"]["latency_seconds"] for row in rows] == [2.0, 2.1, 2.2]
-    assert host.clock == pytest.approx(6.3)
+    assert len(rows) == 4
+    assert [row["host_liveness"]["latency_seconds"] for row in rows] == [0.1, 2.0, 2.1, 2.2]
+    assert host.clock == pytest.approx(9.4)
     assert all(row["psi"]["io"]["some"]["avg10"] == 99 for row in rows)
 
 
 def test_liveness_probe_failure_stops_at_configured_sample_count(tmp_path):
     host = FakeHost()
     host.liveness_responsive = False
-    with pytest.raises(driver.StudyError, match="1 consecutive samples"):
+    with pytest.raises(driver.StudyError, match="initial host-liveness probe"):
         run_set(tmp_path, "file-ext4", host=host, target_type="ext4-file", target="/tmp/target",
                 probe_consecutive_samples=1)
     assert host.fio.calls == [] and host.discards == []
@@ -1546,31 +1717,32 @@ def test_liveness_probe_failure_stops_at_configured_sample_count(tmp_path):
 def test_liveness_stop_counts_only_consecutive_slow_samples(tmp_path):
     host = FakeHost()
     host.liveness_samples = [
-        {"responsive": True, "latency_seconds": 2.0, "components": {}},
         {"responsive": True, "latency_seconds": 0.1, "components": {}},
         {"responsive": True, "latency_seconds": 2.0, "components": {}},
+        {"responsive": True, "latency_seconds": 0.1, "components": {}},
         {"responsive": True, "latency_seconds": 2.1, "components": {}},
         {"responsive": True, "latency_seconds": 2.2, "components": {}},
+        {"responsive": True, "latency_seconds": 2.3, "components": {}},
     ]
     original = driver.CELL_SETS["file-ext4"]
     driver.CELL_SETS["file-ext4"] = ("ext4-file", ("veryquick",), "t9h")
 
     def samples_until_stop(job_path, runtime_s, sample):
-        sample()
-        sample()
-        sample()
         with pytest.raises(driver.StudyError, match="3 consecutive samples"):
-            sample()
+            for _ in range(6):
+                host.clock += 1
+                sample()
         raise driver.StudyError("fake fio stopped by monitor")
 
     host.execute_fio = samples_until_stop
     try:
         with pytest.raises(driver.StudyError, match="fake fio stopped"):
-            run_set(tmp_path, "file-ext4", host=host, target_type="ext4-file", target="/tmp/target")
+            run_set(tmp_path, "file-ext4", host=host, target_type="ext4-file", target="/tmp/target",
+                    probe_interval_s=1)
     finally:
         driver.CELL_SETS["file-ext4"] = original
     rows = [json.loads(line) for line in (tmp_path / "monitor.jsonl").read_text().splitlines()]
-    assert [row["host_liveness"]["latency_seconds"] for row in rows] == [2.0, 0.1, 2.0, 2.1, 2.2]
+    assert [row["host_liveness"]["latency_seconds"] for row in rows] == [0.1, 2.0, 0.1, 2.1, 2.2, 2.3]
 
 
 def test_elapsed_active_and_write_meters_refuse_before_starting_more_work(tmp_path):
@@ -1635,6 +1807,8 @@ def test_schedule_adaptive_rules_and_plan_rendering(capsys, monkeypatch):
     output = capsys.readouterr().out
     assert f"{driver.WRITE_CAP / driver.GB:.2f} GB writes" in output and "t0+6h" in output
     assert "adaptive reserve 0.00 GB" in output
+    assert "operator's explicit --allow-system-disk-partition consent" in output
+    assert plan["limits"]["liveness_probe_interval_seconds"] == driver.DEFAULT_LIVENESS_PROBE_INTERVAL_S
     assert driver.adaptive_repeat_action(0.12, 0.05, 1) == "proven"
     assert driver.adaptive_repeat_action(0.02, 0.05, 1) == "repeat-once"
     assert driver.adaptive_repeat_action(0.02, 0.05, 2) == "no-effect"
@@ -1827,16 +2001,30 @@ def test_optional_file_standard_reserves_only_unpaid_required_remainder(tmp_path
     assert json.loads((out / driver.STATE_NAME).read_text())["write_bytes"] <= driver.WRITE_CAP
 
 
-def test_plan_reads_existing_meter_and_refuses_malformed_state(tmp_path):
+def test_plan_reads_existing_meter_and_refuses_malformed_state(tmp_path, capsys):
     state_path = tmp_path / driver.STATE_NAME
     state = driver.empty_state(driver.dt.datetime.now(driver.dt.timezone.utc).isoformat(),
                                "raw", "/dev/vda5", "vda5", FAKE_IDENTITY)
     state["write_bytes"] = 123
     state["active_seconds"] = 12.5
     driver.write_json(state_path, state)
+    driver.print_plan(state_path=state_path)
+    assert "system-disk facts: not recorded yet" in capsys.readouterr().out
+    state["run_manifest"]["target_safety"]["raw"] = {
+        "hostname": "fixture-host", "target_disk": "vda", "root_fs_devices": ["vda3"],
+        "system_mounts_on_disk": ["/", "/boot"], "sibling_swap_devices": ["vda6"],
+        "target_partuuid": FAKE_IDENTITY.partuuid,
+        "system_disk_acknowledgement": "fixture-host:vda:vda3:f00d-1234",
+    }
+    driver.write_json(state_path, state)
     plan = driver.plan_document(state_path)
     assert plan["meter"]["used_bytes"] == 123
     assert plan["time"]["active_seconds_used"] == 12.5
+    driver.print_plan(state_path=state_path)
+    plan_output = capsys.readouterr().out
+    assert "Recorded raw target facts: host=fixture-host; disk=vda" in plan_output
+    assert "system mount(s)=/,/boot; sibling swap device(s)=vda6" in plan_output
+    assert "system-disk drift-check token=fixture-host:vda:vda3:f00d-1234" in plan_output
     driver.write_json(state_path, {"schema": 9})
     with pytest.raises(driver.StudyError, match="cannot be used"):
         driver.plan_document(state_path)
@@ -1947,6 +2135,45 @@ def test_load_results_skips_ratio_without_both_values_or_nonzero_denominator(tmp
         cells.joinpath(f"{index}.json").write_text(json.dumps({
             **row, "target_type": "raw", "rung": "quick"}), encoding="utf-8")
     assert not any(row["number"] == "read_write_bps_ratio" for row in driver.load_results(tmp_path))
+
+
+def test_render_analysis_reports_separate_disk_context_and_non_mapping_policy():
+    result = {"tables": {}, "part_c": {}, "study_decisions": {},
+              "run_manifest": {"stop_policy": [], "target_safety": {"raw": {
+                  "hostname": "fixture-host", "target_disk": "vdb",
+                  "root_fs_devices": ["vda3"], "target_partuuid": "f00d-1234",
+                  "root_disk_shared": False, "system_mounts_on_disk": [],
+                  "sibling_swap_devices": [], "system_disk_acknowledgement": None}}}}
+    rendered = driver.render_analysis(result)
+    assert "Raw target risk: target disk was separate from the running system disk" in rendered
+    assert "Host: `fixture-host`; target disk: `vdb`" in rendered
+    assert "System-disk drift-check token: `not required`" in rendered
+    assert "Stop policy:" not in rendered
+
+
+def test_render_analysis_reports_missing_system_disk_facts():
+    rendered = driver.render_analysis({"tables": {}, "part_c": {}, "study_decisions": {},
+                                       "run_manifest": {"stop_policy": {}, "target_safety": {}}})
+    assert "Raw target system-disk facts were not recorded in this manifest." in rendered
+
+
+def test_liveness_probe_validation_refuses_incomplete_and_malformed_data():
+    valid = {"responsive": True, "latency_seconds": 0.1, "components": {}}
+    assert driver.validate_liveness_probe(valid)["responsive"] is True
+    invalid = (None, {}, {**valid, "responsive": "yes"}, {**valid, "latency_seconds": True},
+               {**valid, "latency_seconds": "0.1"}, {**valid, "latency_seconds": float("nan")},
+               {**valid, "latency_seconds": -0.1}, {**valid, "components": []})
+    for probe in invalid:
+        with pytest.raises(driver.StudyError, match="probe data is incomplete or malformed"):
+            driver.validate_liveness_probe(probe)
+
+
+def test_run_refuses_malformed_liveness_sample_before_target_io(tmp_path):
+    host = FakeHost()
+    host.liveness_samples = [{"responsive": "yes", "latency_seconds": 0.1, "components": {}}]
+    with pytest.raises(driver.StudyError, match="probe data is incomplete or malformed"):
+        run_set(tmp_path, "raw-t0", host=host)
+    assert host.discards == [] and host.fio.calls == []
 
 
 def test_analysis_refuses_missing_and_corrupt_recordings(tmp_path):
@@ -2101,6 +2328,10 @@ def test_state_schema_resume_identity_and_timestamp_guards(tmp_path):
     initial = driver.load_state(path, "raw", "/dev/vda5", "vda5", FAKE_IDENTITY)
     assert initial["write_bytes"] == 0 and initial["cells"] == {}
     driver.write_json(path, initial)
+    path.write_text("{", encoding="utf-8")
+    with pytest.raises(driver.StudyError, match="study state is unreadable"):
+        driver.load_state(path, "raw", "/dev/vda5", "vda5", FAKE_IDENTITY)
+    driver.write_json(path, initial)
     resumed = driver.load_state(path, "raw", "/dev/vda5", "vda5", FAKE_IDENTITY)
     assert resumed["targets"]["raw"] == {"target": "/dev/vda5", "device": "vda5",
                                           **FAKE_IDENTITY.as_json()}
@@ -2121,6 +2352,8 @@ def test_state_schema_resume_identity_and_timestamp_guards(tmp_path):
         driver.load_state(path, "raw", "/dev/vda5", "vda5",
                           driver.TargetIdentity(FAKE_IDENTITY.size_bytes + 1,
                                                 FAKE_IDENTITY.partuuid))
+    with pytest.raises(driver.StudyError, match="do not share the requested backing device"):
+        driver.load_state(path, "raw", "/dev/vda5", "vdb5", FAKE_IDENTITY)
     with pytest.raises(driver.StudyError, match="unsupported"):
         driver.write_json(path, {"schema": 9})
         driver.load_state(path, "raw", "/dev/vda5", "vda5", FAKE_IDENTITY)
@@ -2143,7 +2376,8 @@ def test_state_schema_resume_identity_and_timestamp_guards(tmp_path):
     malformed = {"schema": driver.STATE_SCHEMA, "started_utc": "bad", "write_bytes": 0,
                  "active_seconds": 0, "targets": {}, "cells": {},
                  "run_manifest": {"schema": driver.RUN_MANIFEST_SCHEMA,
-                                  "stop_policy": None, "target_safety": {}}}
+                                  "stop_policy": None, "target_safety": {},
+                                  "target_safety_attempts": {}}}
     driver.write_json(path, malformed)
     with pytest.raises(driver.StudyError, match="timestamp is malformed"):
         driver.state_elapsed(driver.load_state(path, "raw", "/dev/vda5", "vda5", FAKE_IDENTITY))
@@ -2215,8 +2449,9 @@ def test_run_dry_run_validates_and_renders_without_writing(tmp_path):
     out = tmp_path / "not-created"
     result = run_set(out, "raw-t0", host=host, dry_run=True)
     assert result["dry_run"] is True and result["jobs_rendered"] > 0
+    assert result["host_liveness_preflight"]["responsive"] is True
     assert not out.exists()
-    assert host.quiet_checked == 0 and host.liveness_calls == 0
+    assert host.quiet_checked == 0 and host.liveness_calls == 1
     assert host.discards == [] and host.fio.calls == []
 
 
@@ -2229,12 +2464,36 @@ def test_dry_run_skips_active_timer_guard_while_live_run_still_requires_quiet_wi
     dry_host = ActiveTimerHost()
     result = run_set(tmp_path / "dry", "raw-t0", host=dry_host, dry_run=True)
     assert result["dry_run"] is True
-    assert dry_host.quiet_checked == 0 and dry_host.liveness_calls == 0
+    assert dry_host.quiet_checked == 0 and dry_host.liveness_calls == 1
 
     live_host = ActiveTimerHost()
     with pytest.raises(driver.StudyError, match="timer fstrim.timer is active"):
         run_set(tmp_path / "live", "raw-t0", host=live_host)
     assert live_host.quiet_checked == 1 and live_host.discards == [] and live_host.fio.calls == []
+
+
+def test_first_liveness_probe_is_required_before_live_io_and_dry_run_acceptance(tmp_path):
+    failed = {"responsive": False, "latency_seconds": 0.1, "components": {}, "error": "sshd down"}
+    live_host = FakeHost()
+    live_host.liveness_samples = [failed]
+    with pytest.raises(driver.StudyError, match="initial host-liveness probe"):
+        run_set(tmp_path / "live", "raw-t0", host=live_host)
+    assert live_host.discards == [] and live_host.fio.calls == []
+    assert live_host.events.index("liveness") < next(
+        (index for index, event in enumerate(live_host.events) if event == "discard"), len(live_host.events))
+
+    dry_host = FakeHost()
+    dry_host.liveness_samples = [failed]
+    with pytest.raises(driver.StudyError, match="initial host-liveness probe"):
+        run_set(tmp_path / "dry", "raw-t0", host=dry_host, dry_run=True)
+    assert not (tmp_path / "dry").exists()
+    assert dry_host.discards == [] and dry_host.fio.calls == [] and dry_host.quiet_checked == 0
+
+
+@pytest.mark.parametrize("interval", (True, "10", 0, -1, 61, float("nan")))
+def test_liveness_probe_interval_must_be_a_finite_bounded_number(tmp_path, interval):
+    with pytest.raises(driver.StudyError, match="probe interval must be finite"):
+        run_set(tmp_path, "raw-t0", dry_run=True, probe_interval_s=interval)
 
 
 def test_run_dry_run_refuses_bad_output_and_monitor_samples(tmp_path, monkeypatch):
@@ -2321,26 +2580,62 @@ def test_resumed_cell_target_identity_is_rechecked(tmp_path):
         run_set(tmp_path, "raw-t0", host=host)
 
 
-def test_resume_refuses_changed_system_disk_facts_and_stop_policy(tmp_path):
+def test_resume_refuses_changed_stable_identity_and_stop_policy(tmp_path):
     host = FakeHost()
     run_set(tmp_path / "system-facts", "raw-t0", host=host)
     host.system_disk["root_fs_devices"] = ["vda4"]
-    with pytest.raises(driver.StudyError, match="system-disk target facts changed"):
+    with pytest.raises(driver.StudyError, match="stable system-disk target identity changed"):
         run_set(tmp_path / "system-facts", "raw-t0", host=host)
 
     host = FakeHost()
     root = tmp_path / "policy"
     run_set(root, "raw-t0", host=host)
-    with pytest.raises(driver.StudyError, match="stop policy changed"):
+    with pytest.raises(driver.StudyError, match="stop policy changed.*preserve.*meters.*new --out directory resets"):
         run_set(root, "raw-t0", host=host, max_probe_latency_s=2.0)
+
+
+def test_resume_records_changed_mount_and_swap_context_per_attempt(tmp_path):
+    host = FakeHost()
+    host.system_disk.update({"root_disk_shared": True,
+                             "system_mounts_on_disk": ["/", "/boot"],
+                             "sibling_swap_devices": ["vda6"],
+                             "system_disk_acknowledgement": "fixture-host:vda:vda3:f00d-1234"})
+    root = tmp_path / "attempt-history"
+    run_set(root, "raw-t0", host=host, allow_system_disk_partition=True,
+            system_disk_ack=host.system_disk["system_disk_acknowledgement"])
+    host.system_disk["system_mounts_on_disk"] = ["/", "/boot", "/srv/cow"]
+    host.system_disk["sibling_swap_devices"] = ["vda6", "vda7"]
+    resumed = run_set(root, "raw-t0", host=host, allow_system_disk_partition=True,
+                      system_disk_ack=host.system_disk["system_disk_acknowledgement"])
+    attempts = resumed["run_manifest"]["target_safety_attempts"]["raw"]
+    assert len(attempts) == 2
+    assert attempts[0]["facts"]["system_mounts_on_disk"] == ["/", "/boot"]
+    assert attempts[1]["facts"]["system_mounts_on_disk"] == ["/", "/boot", "/srv/cow"]
+    assert attempts[1]["facts"]["sibling_swap_devices"] == ["vda6", "vda7"]
+
+
+@pytest.mark.parametrize("bad_history", ([], {"raw": "bad"}))
+def test_run_refuses_malformed_system_disk_attempt_history(tmp_path, monkeypatch, bad_history):
+    state = driver.empty_state(driver.dt.datetime.now(driver.dt.UTC).isoformat(),
+                               "raw", "/dev/fake", "vda5", FAKE_IDENTITY)
+    state["run_manifest"]["target_safety_attempts"] = bad_history
+    monkeypatch.setattr(driver, "load_state", lambda *_args, **_kwargs: state)
+    with pytest.raises(driver.StudyError, match="system-disk target-safety history is malformed"):
+        run_set(tmp_path, "raw-t0")
 
 
 def test_load_run_manifest_requires_complete_safety_and_stop_context(tmp_path):
     root = tmp_path / "manifest"
     root.mkdir()
+    assert driver.load_run_manifest(root) is None
+    state_path = root / driver.STATE_NAME
+    state_path.write_text("{", encoding="utf-8")
+    with pytest.raises(driver.StudyError, match="unreadable"):
+        driver.load_run_manifest(root)
     state = driver.empty_state(driver.dt.datetime.now(driver.dt.UTC).isoformat(),
                                "raw", "/dev/fake", "vda5", FAKE_IDENTITY)
-    driver.write_json(root / driver.STATE_NAME, state)
+    state["run_manifest"]["stop_policy"] = {}
+    driver.write_json(state_path, state)
     assert driver.load_run_manifest(root) == state["run_manifest"]
     malformed_states = [
         {**state, "schema": True},
@@ -2350,10 +2645,13 @@ def test_load_run_manifest_requires_complete_safety_and_stop_context(tmp_path):
         {**state, "run_manifest": {"schema": driver.RUN_MANIFEST_SCHEMA,
                                     "stop_policy": {}, "target_safety": []}},
         {**state, "run_manifest": {"schema": driver.RUN_MANIFEST_SCHEMA,
+                                    "stop_policy": {}, "target_safety": {},
+                                    "target_safety_attempts": []}},
+        {**state, "run_manifest": {"schema": driver.RUN_MANIFEST_SCHEMA,
                                     "stop_policy": None, "target_safety": {}}},
     ]
     for malformed in malformed_states:
-        driver.write_json(root / driver.STATE_NAME, malformed)
+        driver.write_json(state_path, malformed)
         with pytest.raises(driver.StudyError, match="run manifest is missing or malformed"):
             driver.load_run_manifest(root)
 
@@ -2532,7 +2830,8 @@ def test_parse_and_reduction_helpers_cover_kernel_counters_and_bad_inputs(tmp_pa
     parsed = driver.parse_diskstats("short\n8 0 bad x 0 0 0 0 0 0 0 0 0 0\n" + row)
     assert parsed["vda"]["discards_completed"] == 12
     assert parsed["vda"]["flushes_completed"] == 16
-    assert driver.parse_psi("\ninvalid nope\nfull avg10=3 avg60=4\nsome avg10=1.25 avg60=2 total=4\n") == {
+    assert driver.parse_psi("\ninvalid nope\nfull avg10=3 avg60=4\n"
+                            "some avg10=1.25 avg60=2 total=4\nbad avg10=nan\n") == {
         "full": {"avg10": 3.0, "avg60": 4.0},
         "some": {"avg10": 1.25, "avg60": 2.0, "total": 4.0}}
     with pytest.raises(driver.StudyError, match="MemAvailable"):

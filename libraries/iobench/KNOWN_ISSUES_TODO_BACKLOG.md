@@ -76,8 +76,9 @@ registered R0/R1 lane passes on a clean final commit.
 **Status:** FIXED in this package. `run --dry-run` used to assert the fstrim,
 apt-daily, and governance timer quiet window before it knew that the invocation
 was read-only. The timer check now runs only for live executions; dry-run still
-performs target, identity, monitor-threshold, free-space, schedule, and fio
-rendering checks without creating output or invoking the host-liveness probe.
+performs target, identity, monitor-threshold, free-space, schedule, fio
+rendering, and the initial host-liveness probe without creating output or
+changing the target.
 
 **Close when.** Fake-host coverage proves an active timer does not block dry-run
 and live run still checks it; the registered R0–R1 lane passes on the final
@@ -89,9 +90,10 @@ head.
 100% from the saturating benchmark cell itself. IBX now records I/O PSI as
 advisory and protects host responsiveness with memory PSI `full avg10`,
 `MemAvailable`, free-space floors, hard byte/time caps, and a configurable
-consecutive-sample host-liveness stop. The liveness probe performs a bounded
-root-filesystem fsync and SSH/cockpit checks from a transient `system.slice`
-service outside the benchmark cgroup.
+consecutive-sample host-liveness stop. A successful initial probe is required
+before target I/O; later probes use a recorded configurable interval (10 s by
+default). Each bounded root-filesystem fsync and SSH/cockpit check runs in a
+transient `system.slice` service outside the benchmark cgroup.
 
 **Close when.** Fake proc/clock/latency coverage proves each stop and advisory
 path; the registered R0–R1 lane passes on the final head.
