@@ -1332,8 +1332,10 @@ def test_local_liveness_probe_reports_fake_child_latency_and_failures(monkeypatc
     assert timeout_calls[-1][:2] == ["systemctl", "is-active"]
 
     for stopped_state, returncode in (("inactive", 3), ("failed", 3), ("inactive", 1)):
-        clock[:] = [0.0, 2.0, 2.0, 2.2]
+        clock[:] = [2.0, 2.2]
         host = driver.LocalHost()
+        host._liveness_probe_stalled = True
+        host._liveness_probe_stalled_unit = "ibx-liveness-prior.service"
 
         def completed_after_timeout(*args, _state=stopped_state, _returncode=returncode, **kwargs):
             if args[0][:2] == ["systemctl", "is-active"]:
@@ -1342,7 +1344,6 @@ def test_local_liveness_probe_reports_fake_child_latency_and_failures(monkeypatc
                 "responsive": True, "components": components}), stderr="")
 
         monkeypatch.setattr(driver.subprocess, "run", completed_after_timeout)
-        host.liveness_probe(1)
         recovered = host.liveness_probe(1)
         assert recovered["responsive"] is True
         assert host._liveness_probe_stalled is False
@@ -2537,13 +2538,16 @@ def test_acceptance_runbook_pins_the_expected_host_before_proceeding(tmp_path):
     acceptance = (driver.HERE / "ACCEPTANCE.md").read_text(encoding="utf-8")
     match = re.search(r"(?ms)^assert_expected_host\(\) \{\n.*?^\}", acceptance)
     assert match is not None
-    call_sites = re.findall(r"(?m)^[ \t]*assert_expected_host(?:\(\))?[ \t]*$", acceptance)
+    bash_scripts = re.findall(r"(?ms)^```bash\n(.*?)^```", acceptance)
+    call_sites = [line.strip() for script in bash_scripts for line in script.splitlines()
+                  if line.strip() == "assert_expected_host"]
     assert len(call_sites) == 3
     preflight = acceptance.split("## 1. Target-read-only inventory", 1)[0]
     preflight_script = re.search(r"(?ms)^```bash\n(.*?)^```", preflight)
     assert preflight_script is not None
-    assert preflight_script.group(1).index("assert_expected_host") < preflight_script.group(1).index(
-        "host-escape -- lsblk")
+    preflight_call = re.search(r"(?m)^assert_expected_host$", preflight_script.group(1))
+    assert preflight_call is not None
+    assert preflight_call.start() < preflight_script.group(1).index("host-escape -- lsblk")
     raw_idle = re.search(r"(?ms)^assert_raw_idle\(\) \{\n(.*?)^\}", acceptance)
     assert raw_idle is not None
     assert raw_idle.group(1).lstrip().startswith("assert_expected_host")
