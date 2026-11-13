@@ -6,7 +6,8 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 <!-- cmru: pending release notes begin -->
 
-- fix(pwmcp): ignore invalid inline display values and fail closed on unresolved or collapsed visibility (PWMCP-65, PWMCP-66)
+- fix(pwmcp): ignore invalid display and visibility declarations, fail closed on unresolved cascade values, and filter collapsed visibility (PWMCP-65, PWMCP-66)
+- fix(pwmcp): parse only CSS whitespace and prevent non-interoperable display values from overriding hidden content (PWMCP-67, PWMCP-68)
 - test(pwmcp): close r8 page-content mutation survivors with behavioral boundary coverage
 
 <!-- cmru: pending release notes end -->

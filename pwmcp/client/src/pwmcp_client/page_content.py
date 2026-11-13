@@ -38,13 +38,14 @@ _IGNORED_TAGS = frozenset({"script", "style", "noscript", "template"})
 _PAGE_CHROME_TAGS = frozenset({"header", "nav", "footer"})
 _ZERO_WIDTH = re.compile("[\u200b-\u200d\u202a-\u202e\u2060\u2066-\u2069\ufeff\U000e0000-\U000e007f]")
 _UNRESOLVED_CSS_VALUE = "<pwmcp-unresolved-css-value>"
-_DISPLAY_OUTSIDE = frozenset({"block", "inline", "run-in"})
+_CSS_WHITESPACE = " \t\n\r\f"
+_CSS_WHITESPACE_RUN = re.compile(r"[ \t\n\r\f]+")
+_DISPLAY_OUTSIDE = frozenset({"block", "inline"})
 _DISPLAY_INSIDE = frozenset({"flow", "flow-root", "table", "flex", "grid", "ruby"})
 _DISPLAY_LIST_ITEM_INSIDE = frozenset({"flow", "flow-root"})
 _DISPLAY_INTERNAL = frozenset({
     "table-row-group", "table-header-group", "table-footer-group", "table-row", "table-cell",
-    "table-column-group", "table-column", "table-caption", "ruby-base", "ruby-text",
-    "ruby-base-container", "ruby-text-container",
+    "table-column-group", "table-column", "table-caption",
 })
 _DISPLAY_SINGLE = frozenset({
     "none", "contents", "list-item", "inline-block", "inline-table", "inline-flex", "inline-grid",
@@ -228,6 +229,19 @@ def _decode_css_escapes(value: str) -> str | None:
     return "".join(result)
 
 
+def _strip_css_whitespace(value: str) -> str:
+    """Trim CSS Syntax whitespace without treating Unicode separators as whitespace."""
+
+    return value.strip(_CSS_WHITESPACE)
+
+
+def _split_css_whitespace(value: str) -> list[str]:
+    """Split CSS keywords on CSS Syntax whitespace only."""
+
+    stripped = _strip_css_whitespace(value)
+    return _CSS_WHITESPACE_RUN.split(stripped) if stripped else []
+
+
 def _priority_value(value: str) -> tuple[str, bool]:
     """Remove a trailing top-level ``!important`` from an already validated value."""
 
@@ -252,17 +266,17 @@ def _priority_value(value: str) -> tuple[str, bool]:
         elif depth == 0 and char == "!":
             bang = index
     if bang < 0:
-        return value.strip(), False
-    priority = _decode_css_escapes(value[bang + 1 :].strip())
+        return _strip_css_whitespace(value), False
+    priority = _decode_css_escapes(_strip_css_whitespace(value[bang + 1 :]))
     if priority is None or priority.lower() != "important":
-        return value.strip(), False
-    return value[:bang].strip(), True
+        return _strip_css_whitespace(value), False
+    return _strip_css_whitespace(value[:bang]), True
 
 
 def _display_value_is_valid(value: str) -> bool:
     """Accept the static single and multi-keyword values in CSS Display 3."""
 
-    words = value.split()
+    words = _split_css_whitespace(value)
     if len(words) == 1:
         return words[0] in _DISPLAY_SINGLE
     if len(set(words)) != len(words):
@@ -329,12 +343,12 @@ def _style_declarations(style: str) -> dict[str, str] | None:
         return None
     winners: dict[str, tuple[bool, str]] = {}
     for declaration in declarations:
-        if not declaration.strip():
+        if not _strip_css_whitespace(declaration):
             continue
         property_name, separator, value = declaration.partition(":")
         if not separator:
             return None
-        property_name = _decode_css_escapes(property_name.strip())
+        property_name = _decode_css_escapes(_strip_css_whitespace(property_name))
         if property_name is None:
             return None
         property_name = property_name.lower()
@@ -376,7 +390,7 @@ def _contains_hiding_declaration(fragment: str) -> bool:
     if declarations is None:
         return False
     for declaration in declarations:
-        if not declaration.strip():
+        if not _strip_css_whitespace(declaration):
             continue
         parsed = _style_declarations(declaration)
         if parsed is not None and _declarations_hide(parsed):
@@ -387,7 +401,7 @@ def _contains_hiding_declaration(fragment: str) -> bool:
 def _append_recovered_declaration(segment: str, recovered: list[str]) -> bool:
     """Keep one complete valid declaration, reporting a hiding signal if malformed."""
 
-    if not segment.strip():
+    if not _strip_css_whitespace(segment):
         return False
     if _style_declarations(segment) is None:
         return _contains_hiding_declaration(segment)

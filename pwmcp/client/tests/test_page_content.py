@@ -274,7 +274,11 @@ def test_malformed_inline_css_policy_is_synchronized_across_user_docs() -> None:
         "unclosed comment's remainder is checked as a malformed fragment",
         "An unescaped LF, CR, or FF inside a CSS string ends that malformed string",
         "Invalid `display` or `visibility` values are ignored, so they cannot override an earlier valid declaration.",
-        "An unresolved winning `var()` or cascade-dependent value for either property fails closed, as does `visibility:collapse`",
+        "This filter recognizes only CSS Syntax whitespace: ASCII space, tab, LF, CR, and FF; other Unicode space-like characters remain inside property and value tokens.",
+        "The filter does not admit `run-in`, `ruby-base`, `ruby-text`, `ruby-base-container`, or `ruby-text-container` to its visible-value allowlist.",
+        "For `display`, a winning unresolved `var()`, `inherit`, `revert`, or `revert-layer` fails closed; `initial` and `unset` map to visible `inline`.",
+        "For `visibility`, a winning unresolved `var()`, `inherit`, `unset`, `revert`, or `revert-layer` fails closed; `initial` maps to `visible`, and `collapse` is filtered as hidden.",
+        "These fail-closed choices may omit text a browser ultimately shows because serialized HTML cannot resolve custom properties or the external cascade.",
         "CSS escapes in property names and hiding keyword values are decoded",
         "Outside strings, a backslash escape consumes the next code point",
     )

@@ -201,9 +201,19 @@ recovered declaration or a best-effort tokenized malformed fragment contains
 `<p style='display:block;color:red;broken'>visible text</p>` remains visible.
 A malformed style with neither marker remains visible.
 Invalid `display` or `visibility` values are ignored, so they cannot override
-an earlier valid declaration. An unresolved winning `var()` or
-cascade-dependent value for either property fails closed, as does
-`visibility:collapse`; this can omit content the browser ultimately shows.
+an earlier valid declaration. This filter recognizes only CSS Syntax
+whitespace: ASCII space, tab, LF, CR, and FF; other Unicode space-like
+characters remain inside property and value tokens. The filter does not admit
+`run-in`, `ruby-base`, `ruby-text`, `ruby-base-container`, or
+`ruby-text-container` to its visible-value allowlist.
+If one follows a valid hiding declaration, the earlier hide remains, which can
+omit text a browser shows. For `display`, a winning unresolved `var()`,
+`inherit`, `revert`, or `revert-layer` fails closed; `initial` and `unset` map
+to visible `inline`. For `visibility`, a winning unresolved `var()`, `inherit`,
+`unset`, `revert`, or `revert-layer` fails closed; `initial` maps to `visible`,
+and `collapse` is filtered as hidden. These fail-closed choices may omit text a
+browser ultimately shows because serialized HTML cannot resolve custom
+properties or the external cascade.
 Tokenization ignores string and nested
 function contents; an unclosed comment's remainder is checked
 as a malformed fragment. An unescaped LF, CR, or FF inside a CSS string ends
