@@ -4,25 +4,31 @@
 
 | ID | Item | Priority | State | Filed |
 |---|---|---|---|---|
-| FD-001 | Fleet-level campaign submission, supervision, collection, and strict Assay merge are not implemented | P1 | OPEN | 2026-11-13 |
+| FD-001 | Lite campaign dispatch, restart recovery, progress supervision, and candidate-result collection | P1 | DONE | 2026-11-13 |
 | FD-002 | Standalone lane demand does not derive Assay mutation.jobs_max | P1 | OPEN | 2026-11-13 |
 | FD-003 | Manual Run-Gate commands cannot pass fleetd's per-host RAM budget to Assay | P1 | OPEN | 2026-11-13 |
 | FD-004 | Host facts and planning do not account for the dev-gates slice memory ceiling | P1 | OPEN | 2026-11-13 |
 | FD-005 | Learn one bounded f_h per host from independent timing samples | P2 | OPEN | 2026-11-13 |
 | FD-006 | Lift the one-slot-per-host and J worker cap in the campaign supervisor | P2 | OPEN | 2026-11-13 |
 | FD-007 | Replace the control-plane design default with configurable measured-p95 reserve | P2 | OPEN | 2026-11-13 |
+| FD-008 | Strict whole-lane result merge from an explicit candidate-owner manifest | P1 | OPEN | 2026-11-13 |
+| FD-009 | Restricted host enrollment for the existing hx transport | P1 | OPEN | 2026-11-13 |
+| FD-010 | Consume Assay's exact-key baseline reuse in campaign execution | P2 | OPEN | 2026-11-13 |
+| FD-011 | Optional persistent campaign scheduler after the one-shot loop is proven | P2 | OPEN | 2026-11-13 |
+| FD-012 | Export campaign progress for cgprofile guard policy and evidence | P2 | OPEN | 2026-11-13 |
 
-## FD-001 Fleet-level campaign lifecycle is not implemented
+## FD-001 Lite campaign lifecycle
 
-**State:** OPEN. **Priority:** P1. **Filed:** 2026-11-13.
+**State:** DONE in MVP-B-lite. **Priority:** P1. **Filed:** 2026-11-13.
 
-This MVP validates inputs, collects local host facts, and prints plans and
-candidate-selection commands. It does not submit campaigns, supervise named
-jobs, collect remote stores, re-plan from progress, merge results, or maintain
-the campaign ledger. Implement the design's daemon and transport work packages
-only after the required host-entry, Run-Gate, Assay, and enrollment interfaces
-are accepted. No daemon, socket, SSH, or Docker behavior is implied by the
-current CLI.
+MVP-B-lite adds one-shot dispatch through the existing identity-checked hx
+transport, deterministic named runner jobs, local restartable state, progress
+and ETA reporting, stall/loss detection, planner-based re-queues, and a
+one-owner combined candidate result. `fleet run` starts work and returns;
+`status`, `tick`, and `collect` are explicit calls. The operator can repeat
+`run` after restart to re-adopt jobs by name. There is no daemon, socket,
+lease, or wall-clock campaign budget. Strict whole-lane Assay store merging
+remains FD-008; this item does not claim it.
 
 ## FD-002 Demand upper bound is not joined to Assay inventory
 
@@ -98,3 +104,66 @@ default with `1.25 × measured p95`, still clamped. A later host-policy change
 should make that measured value an explicit, host-owned configuration source
 after a reviewed measurement period; fleetd must not infer it from live host
 usage in this MVP.
+
+## FD-008 Strict whole-lane result merge
+
+**State:** OPEN. **Priority:** P1. **Filed:** 2026-11-13.
+
+MVP-B-lite collects candidate verdict and progress files into one
+`fleet-campaign-result/1`; it does not merge the same-judge Assay state stores
+or produce a Run-Gate whole-lane verdict. The collector currently elects one
+candidate owner by earliest finished record and counts later duplicates.
+
+The follow-up must create an explicit `assay-merge-manifest/1` that binds each
+planned candidate to exactly one owner store. Assay validates judge identity,
+refuses missing or conflicting owner records, ignores and counts non-owner
+duplicates, and merges only same-judge final records. Run-Gate forwards the
+manifest without interpreting it. Dependencies: Assay B544 and Run-Gate
+RG-277.
+
+## FD-009 Restricted host enrollment
+
+**State:** OPEN. **Priority:** P1. **Filed:** 2026-11-13.
+
+MVP-B-lite uses the existing identity-checked hx wrapper and its local host
+aliases. It does not create a fleet-specific restricted account or
+forced-command entry. CIU should add an opt-in enrollment mode that installs a
+forced command for the existing runner protocol, restricts the accepted
+operations, and refuses general shell access. Fleetd must use that enrollment
+contract without storing keys, addresses, or aliases in the repository.
+Owner: CIU-218.
+
+## FD-010 Exact-key baseline reuse
+
+**State:** OPEN. **Priority:** P2. **Filed:** 2026-11-13.
+
+Campaign start currently invokes the existing runner for each named batch and
+does not reuse host-local baseline facts itself. Integrate Assay's exact-key
+baseline cache when it is available, preserving the cheap environment smoke
+and refusing reuse when judge identity, commit, image, resources, or collection
+changes. Assay's existing B542 is the source contract; do not create a second
+cache or weaken the baseline PASS requirement.
+
+## FD-011 Optional persistent campaign scheduler
+
+**State:** OPEN. **Priority:** P2. **Filed:** 2026-11-13.
+
+The supported controller interface is deliberately one-shot: `run` starts
+available jobs and returns, while callers invoke `status` and `tick` as needed.
+Only consider a persistent scheduler after the named-job and restart-recovery
+contracts have operational evidence. Preserve idempotent names, no leases,
+progress-based stall detection, pause on unreachable hosts, and requeue after
+30 minutes; do not introduce a campaign wall budget. Any daemon/socket process
+model needs a separately reviewed lifecycle and local-state contract.
+
+## FD-012 Campaign progress for guard policy
+
+**State:** OPEN. **Priority:** P2. **Filed:** 2026-11-13.
+
+MVP-B-lite reports progress but does not connect campaign ownership or
+progress to cgprofile's report/enforce guard. Define a host-local, read-only
+progress input that lets the guard rank useful lane work by progress per RAM,
+then specify evidence and refusal behavior before enabling enforcement.
+Fleetd owns stable campaign progress and ownership facts; cgprofile owns the
+guard decision and any cgroup action. Track the cgprofile side in CP-64. The
+lite controller itself must remain report-only with respect to guard rules.

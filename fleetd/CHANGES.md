@@ -15,6 +15,14 @@ All notable changes to this project are recorded here.
 - Add a deterministic RAM-first plan library and CLI with physical candidate
   caps, explicit worker-wave budgets, per-host Geekbench ETA, memory-crash
   retries, and stable Run-Gate candidate-list commands.
+- Add a transport protocol, in-memory fake hosts, and an hx-backed transport
+  that delegates remote commands to the controller kit's identity-checked
+  wrapper.
+- Add runner command builders for digest-named idempotent jobs, progress
+  probes, candidate-list transfer, and stop handling.
+- Add `fleet run`, `status`, `tick`, and `collect` with atomic versioned local
+  state, restart recovery, stall/loss handling, planner-based re-queues, and
+  one-owner combined JSON and Markdown results.
 
 ### Changed
 
@@ -50,3 +58,7 @@ All notable changes to this project are recorded here.
 - Record follow-up items FD-005 through FD-007 for host-factor learning,
   selected-run capacity, and the future measured-p95 reserve.
 - Correct Assay's tracked fixture-symlink omissions for the fleetd judge lane.
+- Record MVP-C follow-ups for strict Assay merge, Run-Gate option forwarding,
+  restricted host enrollment, baseline reuse, the always-on daemon, and
+  campaign-aware guard enforcement in fleetd and their owning project
+  backlogs.

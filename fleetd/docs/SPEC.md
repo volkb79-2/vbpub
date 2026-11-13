@@ -2,9 +2,10 @@
 
 ## Scope
 
-The first-week package contains four strict versioned contracts, a facts
-collector with an injectable filesystem root, and a pure deterministic campaign
-planner. It does not run campaigns or communicate with hosts.
+The package contains strict versioned contracts, an injectable read-only facts
+collector, a deterministic RAM-first planner, and a one-shot lite campaign
+controller. The controller uses the existing identity-checked hx wrapper and
+runner jobs; it is not a daemon and has no socket or lease protocol.
 
 ## Contracts
 
@@ -110,8 +111,8 @@ hosts with unknown role, shared-prod role, PSI above its configured threshold,
 or unknown MemTotal, physical lane memory, CPU, or PSI facts. A missing
 control-plane slice or unreadable `memory.min` uses the design default reserve
 instead of refusing the host. Worker capacity is the CPU-derived worker count
-after other work, bounded by the lane's efficient upper bound. This manual MVP
-uses one campaign slot per host because concurrent selected runs would share a
+after other work, bounded by the lane's efficient upper bound. MVP-B-lite uses
+one campaign slot per host because concurrent selected runs would share a
 Run-Gate lane instance and Assay store; lifting this accepted capacity limit is
 tracked under
 [FD-006](../KNOWN_ISSUES_TODO_BACKLOG.md#fd-006-lift-the-manual-one-slot-per-host-and-j-cap).
@@ -154,3 +155,82 @@ derive that value until the Run-Gate campaign client is implemented.
 This package deliberately omits the Run-Gate campaign-plan client command;
 the integration contract is tracked under
 [RG-276](../../run-gate-project/KNOWN_ISSUES_TODO_BACKLOG.md#rg-276-the-run-gate-campaign-plan-client-is-not-implemented).
+
+## Campaign execution
+
+`fleet plan` adds an optional `execution` object only when it is run from a
+clean Git project that has a Run-Gate configuration:
+
+```json
+{
+  "schema": "fleet-plan-execution/1",
+  "commit": "<full lowercase Git commit>",
+  "project": "<relative project path or .>"
+}
+```
+
+`fleet run PLAN.json --transport hx --campaign ID --state-dir DIR` requires
+this object. It validates the plan, creates a `fleet-campaign-state/1` file,
+probes the planned hosts, and starts available batches up to the plan's
+per-host campaign slot limit. A subsequent `fleet run` with the same campaign
+and plan re-adopts existing jobs by name. The same campaign ID is bound to the
+original commit, project, and lane. A changed plan stops jobs whose names are
+no longer wanted and creates names from the replacement candidate lists.
+
+Transport is limited to `hx` in this MVP. `Transport.run(host, argv_or_script,
+timeout)` returns `(rc, stdout, stderr)`; `put` and `get` handle small
+home-relative files. `HxTransport` invokes the existing
+`scripts/controller/hx.sh` wrapper, which resolves host aliases from local
+configuration. `FakeTransport` supplies in-memory job tables, files, a fake
+clock, unreachable/slow states, starts, stops, and host restart behavior for
+tests. No SSH keys, addresses, provider credentials, or host aliases are
+stored in fleetd source or tests.
+
+The runner job name is
+`<campaign>.<host>.s<slot>.b<n>.<list8>`. `list8` is the first eight hex
+characters of SHA-256 over the batch's sorted candidate IDs with one newline
+per ID. Start probes the job table and full list digest before writing the ID
+file or starting a new runner job. An existing matching name is a no-op; an
+existing name with a mismatched or unreadable digest refuses. The command
+builders invoke the existing `run-job` and `run-r2-campaign.sh` tools. Probe
+returns running/EXIT/missing state, list digest, candidate progress count,
+progress file modification time, and progress and verdict paths.
+
+`fleet status ID` refreshes state and reports per-host and per-batch state,
+done/total counts, candidates per second, blended ETA, and `STALLED`/`LOST`
+markers. ETA blends the planner's Geekbench estimate with the observed rate
+when both exist. `fleet tick ID` performs one scheduling step: adopt current
+jobs, detect exits and stalls, handle host loss, and start the next available
+batch. Neither command runs a polling loop.
+
+The stall threshold is `max(900 seconds, 3 × p95)` of observed per-candidate
+elapsed time. It measures silence since the last candidate finished; it never
+acts as a campaign wall budget. The stall clock pauses while the host is
+unreachable. More than 1800 seconds without host contact marks the host lost.
+Only unfinished candidate IDs are re-planned on the reachable planned host
+with the largest `cap_alone_bytes`, using the existing planner placement
+functions. If no target is available the work is deferred. A returning host
+may finish a duplicate; no lease or renewal is used.
+
+The only persistent controller state is plain JSON under `--state-dir`,
+written to a temporary file, fsynced, and atomically renamed. The state is
+schema-versioned and is not part of the plan or Git. A restarted controller
+reconstructs remote state by probing deterministic job names.
+
+## Collection
+
+`fleet collect ID` fetches known host progress streams and per-batch verdicts,
+then writes `fleet-campaign-result/1` JSON plus a Markdown report. Candidate
+ownership is selected by earliest valid finished-record timestamp; stable
+host/job order breaks ties or missing timestamps. Other finished copies are
+ignored and counted. The result includes one candidate row each, killed,
+survived, timeout, crashed, equivalent, and missing totals, duplicate count,
+per-host wall time/rate, and missing artifact details. Assay `budget_exceeded`
+and `hung` outcomes map to `timeout`.
+
+MVP-B-lite reports candidate outcomes but does not merge Assay state stores or
+create a strict whole-lane verdict. Assay's `--merge-manifest` is tracked as
+B544, Run-Gate's pass-through as RG-277, and the baseline cache is already
+tracked by Assay B542. The restricted forced-command host entry is CIU-218;
+the fleetd daemon is FD-011; campaign-aware guard enforcement is cgprofile
+CP-64. Those are explicit later work, not implicit behavior of these commands.

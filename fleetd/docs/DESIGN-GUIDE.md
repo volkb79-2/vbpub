@@ -1,11 +1,20 @@
 # fleetd design guide
 
-## Why this package starts with facts and a planner
+## Why MVP-B-lite uses one-shot control
 
-The compute-host design's first week is WP0, WP1(a), and WP2. That gives
-operators useful per-host lists before a daemon exists. Fleetd owns no host
-keys, transport, campaign execution, or verdicts. The next lifecycle package
-must supply those through the accepted CIU, Run-Gate, and Assay contracts.
+MVP-A supplied facts, contracts, and a deterministic planner. MVP-B-lite adds
+the smallest campaign loop on top of the existing transport and runner: a
+`Transport` boundary, named remote jobs, local JSON state, one-step scheduling,
+and combined reporting. The controller calls the identity-checked `hx.sh`
+wrapper; the configured host aliases stay in local operator configuration.
+Fleetd contains no SSH client, host address, key, provider token, daemon,
+socket, or lease protocol.
+
+This package deliberately keeps host placement in the planner. It starts at
+most the planned number of campaign slots per host (currently one), then
+returns. A controller can call `status` to inspect progress and ETA and `tick`
+to schedule one next step. The persistent runner checkout and scripts must
+already exist on each selected host.
 
 ## RAM is the placement constraint
 
@@ -106,23 +115,70 @@ Every host must use the same lane commit and tester image; `--merge-state`
 ignores records from a different judge identity, so compare the closeout's
 candidate counts with the planned list before trusting its ETA. See the
 [consumer guide](CONSUMERS.md) for the exact store-path rules.
-The unimplemented Run-Gate client verb is tracked as
+The unimplemented Run-Gate plan client is tracked as
 [RG-276](../../run-gate-project/KNOWN_ISSUES_TODO_BACKLOG.md#rg-276-the-run-gate-campaign-plan-client-is-not-implemented).
+
+## Named jobs and restart recovery
+
+Each planned batch name is
+`<campaign>.<host>.s<slot>.b<n>.<list8>`. `list8` is the first eight hex
+characters of SHA-256 over the sorted candidate IDs, each followed by a
+newline. Before starting, fleetd probes the runner's job table and compares
+the full list digest. An existing matching name is adopted; the same name with
+a different or unverifiable list refuses. A changed candidate list therefore
+has a new name, and the old job is stopped before replacement work starts.
+
+Fleetd delegates start and stop to the runner's `run-job` and
+`run-r2-campaign.sh` commands. The real transport shells out to the local
+identity-checked `scripts/controller/hx.sh` wrapper. Tests use an in-memory
+fake with a controllable clock, job table, progress files, and unreachable or
+slow hosts; tests do not start a host, SSH client, or Docker container.
+
+The controller keeps `fleet-campaign-state/1` JSON outside Git and updates it
+with a temporary file plus rename. A restarted controller probes by job name
+and re-adopts existing work. There are no leases. On a failed probe, stall
+time pauses for that host. More than 30 minutes without contact marks the host
+lost; `tick` re-plans only unfinished candidate IDs on the reachable planned
+host with the largest `cap_alone_bytes`. If the original host later returns,
+the duplicate run may finish too; collection chooses one owner per candidate.
+
+The fleetd stall threshold is `max(900 seconds, 3 × p95)` from that host's
+observed per-candidate elapsed times. It measures time since that batch last
+finished a candidate and never imposes a campaign wall budget. The existing
+runner also has its own no-progress attempt stop; an exited job is handled by
+the next `tick` as an unfinished batch. The runner policy is not changed here.
+
+## Collection and ownership
+
+`collect` fetches each known progress stream and batch verdict. Per candidate,
+the earliest valid finished event owns the result; later events are ignored
+and counted. If timestamps tie or are absent, stable host and job ordering
+keeps the report deterministic. The collector counts `killed`, `survived`,
+`timeout` (`budget_exceeded` and `hung`), `crashed`, `equivalent`, and
+`missing`, and reports artifact gaps. Per-host wall time and observed candidate
+rate accompany the one-owner table.
+
+The lightweight collector does not merge Assay state stores. Assay's strict
+`--merge-manifest` and Run-Gate forwarding are tracked under Assay B544 and
+Run-Gate RG-277; the exact-key Assay baseline cache is already tracked as
+[B542](../../assay/nyxloom-trove/4-backlog.md#b542-r2-restarts-repeat-a-passing-single-core-baseline-and-leave-a-serial-retry-tail).
 
 ## Deliberate limits
 
 The guard rules are parsed only; no process or cgroup is changed. There is no
-daemon, socket, SSH, Docker, transport, remote collection, retry supervision,
-or strict merge implementation. Guard configuration accepts the design's
+daemon, socket, Docker, retry service, or strict Assay store merge. Guard configuration accepts the design's
 `report` and `enforce` modes and the `least-progress-per-ram` victim policy, but
-this package does not act on them. The current Run-Gate selected-candidate
+this package does not act on them. The future daemon is fleetd FD-011; the
+campaign-aware cgprofile guard is CP-64 in cgprofile's backlog. The current Run-Gate selected-candidate
 interface also does not accept fleetd's host-specific RAM budget; the printed
 commands use the planned worker count while runtime limits remain host and lane
 policy. Track this integration under
 [FD-003](../KNOWN_ISSUES_TODO_BACKLOG.md#fd-003-fleet-ram-budget-is-not-sent-to-the-current-runner).
+The restricted forced-command entry for campaign hosts remains CIU-218. The
+strict result merge remains fleetd FD-008, Assay B544, and Run-Gate RG-277.
 Released Run-Gate does not yet accept the
 `demand` lane key, so the lane demand lives in a separate TOML input until
 RG-275 lands; the missing client verb is tracked as RG-276. `efficient_upper_bound`
 must match Assay's authoritative `judge.mutation.jobs_max`, tracked as
 [FD-002](../KNOWN_ISSUES_TODO_BACKLOG.md#fd-002-demand-upper-bound-is-not-joined-to-assay-inventory). See
-[FD-001](../KNOWN_ISSUES_TODO_BACKLOG.md#fd-001-fleet-level-campaign-lifecycle-is-not-implemented).
+[FD-001](../KNOWN_ISSUES_TODO_BACKLOG.md#fd-001-lite-campaign-lifecycle).
