@@ -6,7 +6,20 @@ import pytest
 
 from fleetd.contracts import ContractError, dump_json
 from fleetd.cli import main
-from fleetd.facts import collect_host_facts, load_facts_config
+from fleetd.facts import (
+    _config_path as _validate_config_path,
+    _cpu_list_count,
+    _cpu_model,
+    _meminfo_values,
+    _object,
+    _online_cpu_count,
+    _psi_value,
+    _read_integer,
+    _rooted,
+    _slice_path,
+    collect_host_facts,
+    load_facts_config,
+)
 
 
 FIXTURE_ROOT = Path(__file__).parent / "fixtures" / "facts-root"
@@ -85,13 +98,20 @@ def test_facts_collect_cli_emits_valid_json_and_config_errors_are_user_facing(ca
 def test_facts_config_is_required_closed_and_versioned(tmp_path):
     root = _root(tmp_path)
     config_path = _config_path(root)
+    valid_config = config_path.read_text(encoding="utf-8")
     config_path.unlink()
     with pytest.raises(ContractError, match="required config"):
         load_facts_config(root)
     config_path.write_text("schema_version = [", encoding="utf-8")
     with pytest.raises(ContractError, match="invalid TOML"):
         load_facts_config(root)
-    config_path.write_text("schema_version = 2", encoding="utf-8")
+    config_path.write_bytes(bytes([255]))
+    with pytest.raises(ContractError, match="not UTF-8"):
+        load_facts_config(root)
+    config_path.write_text(valid_config.replace("schema_version = 1", "schema_version = true"), encoding="utf-8")
+    with pytest.raises(ContractError, match="schema_version: expected integer 1"):
+        load_facts_config(root)
+    config_path.write_text(valid_config.replace("schema_version = 1", "schema_version = 2"), encoding="utf-8")
     with pytest.raises(ContractError, match="schema_version: expected integer 1"):
         load_facts_config(root)
     config_path.write_text("schema_version = 1\nunknown = true", encoding="utf-8")
@@ -113,6 +133,7 @@ def test_facts_config_is_required_closed_and_versioned(tmp_path):
         ('psi_refuse_some_avg10 = 25', 'psi_refuse_some_avg10 = 101', "from 0 through 100"),
         ('max_lane_containers = 8', 'max_lane_containers = true', "positive integer"),
         ('host_role = "dedicated-dev"', 'host_role = "  "', "host_role: expected non-empty string"),
+        ('host_role = "dedicated-dev"', 'host_role = 7', "host_role: expected non-empty string"),
     ],
 )
 def test_facts_config_rejects_invalid_values(tmp_path, old, new, message):
@@ -143,15 +164,120 @@ def test_facts_config_optional_paths_and_policy_are_explicitly_absent(tmp_path):
     assert facts["policy"]["max_lane_containers_reason"]
 
 
+def test_private_facts_helpers_reject_invalid_contract_edges(tmp_path):
+    from fleetd import facts as facts_module
+
+    with pytest.raises(ContractError, match="expected table"):
+        _object(None, "example", {"key"})
+    with pytest.raises(ContractError, match="unknown key"):
+        _object({"extra": 1}, "example", set())
+    with pytest.raises(ContractError, match="expected finite number"):
+        facts_module._positive_number(True, "number")
+    with pytest.raises(ContractError, match="expected finite number"):
+        facts_module._positive_number(float("inf"), "number")
+    with pytest.raises(ContractError, match="expected finite number"):
+        facts_module._positive_number(10**400, "number")
+    with pytest.raises(ContractError, match="greater than zero"):
+        facts_module._positive_number(0, "number")
+    with pytest.raises(ContractError, match="at most"):
+        facts_module._positive_number(2, "number", maximum=1)
+    with pytest.raises(ContractError, match="expected non-empty absolute path"):
+        _validate_config_path("", "path")
+    with pytest.raises(ContractError, match="expected non-empty absolute path"):
+        _validate_config_path(None, "path")
+    with pytest.raises(ContractError, match="absolute path"):
+        _validate_config_path("/", "path")
+    with pytest.raises(ContractError, match="expected non-empty absolute path"):
+        _validate_config_path("/bad\x00path", "path")
+    with pytest.raises(ContractError, match="without '..'"):
+        _validate_config_path("/a/../b", "path")
+    with pytest.raises(ContractError, match="configured path"):
+        _rooted(tmp_path, "relative")
+    with pytest.raises(ContractError, match="configured path"):
+        _rooted(tmp_path, "/a/../b")
+    with pytest.raises(ContractError, match="systemd .slice"):
+        facts_module._slice_name("../bad.slice", "slice")
+    assert _slice_path("-.slice") == Path()
+
+    cpuinfo = tmp_path / "cpuinfo"
+    assert _cpu_model(tmp_path)[0] is None
+    cpuinfo.write_text("", encoding="utf-8")
+    assert "absent" in _cpu_model(tmp_path)[1]
+    cpuinfo.write_text("model name :   \n", encoding="utf-8")
+    assert "absent" in _cpu_model(tmp_path)[1]
+    cpuinfo.write_text("Hardware :  Fixture   ARM  \n", encoding="utf-8")
+    assert _cpu_model(tmp_path) == ("Fixture ARM", None)
+    assert _cpu_list_count("4") == 1
+    cpuinfo.write_bytes(bytes([255]))
+    assert "UTF-8" in _cpu_model(tmp_path)[1]
+    assert _cpu_list_count("") is None
+    assert _cpu_list_count("3-1") is None
+    assert _cpu_list_count("0-x") is None
+    assert _cpu_list_count("0-1,1-2") is None
+    assert _cpu_list_count("0-1,4-5") == 4
+    assert _online_cpu_count(tmp_path)[0] is None
+    assert _meminfo_values(tmp_path)["MemTotal"][0] is None
+    meminfo = tmp_path / "meminfo"
+    meminfo.write_text("", encoding="utf-8")
+    assert _meminfo_values(tmp_path)["MemTotal"][0] is None
+    meminfo.write_text("unrelated line\nMemTotal\nMemTotal: 1 kB\nMemAvailable: 2 kB\nSwapTotal: 3 kB\nSwapFree: 4 kB\n", encoding="utf-8")
+    assert _meminfo_values(tmp_path)["SwapFree"][0] == 4096
+    integer_file = tmp_path / "integer"
+    assert _read_integer(integer_file, "integer")[0] is None
+    integer_file.write_text("", encoding="utf-8")
+    assert "empty" in _read_integer(integer_file, "integer")[1]
+    integer_file.write_text("zero", encoding="utf-8")
+    assert "integer" in _read_integer(integer_file, "integer")[1]
+    integer_file.write_text("0", encoding="utf-8")
+    assert "below" in _read_integer(integer_file, "integer", minimum=1)[1]
+    assert _psi_value(None, "some", "fixture")[0] is None
+    assert _psi_value("some avg10=bad", "some", "fixture")[0] is None
+    assert _psi_value("some avg10=101", "some", "fixture")[0] is None
+    assert _psi_value("some avg60=0", "some", "fixture")[0] is None
+    assert _psi_value("some avg60=0 avg10=0.5", "some", "fixture") == (0.5, None)
+
+
+def test_facts_config_rejects_policy_types_and_nonfinite_or_overflow_values(tmp_path):
+    root = _root(tmp_path)
+    config_path = _config_path(root)
+    original = config_path.read_text(encoding="utf-8")
+    for old, new, message in (
+        ("overcommit = 1.5", "overcommit = true", "expected finite number"),
+        ("overcommit = 1.5", "overcommit = inf", "expected finite number"),
+        ("oversubscribe_max = 1.25", "oversubscribe_max = " + "9" * 400, "expected finite number"),
+        ("psi_refuse_some_avg10 = 25", "psi_refuse_some_avg10 = true", "from 0 through 100"),
+        ("psi_refuse_some_avg10 = 25", 'psi_refuse_some_avg10 = "25"', "from 0 through 100"),
+        ("psi_refuse_some_avg10 = 25", "psi_refuse_some_avg10 = inf", "from 0 through 100"),
+        ("max_lane_containers = 8", "max_lane_containers = 0", "positive integer"),
+    ):
+        config_path.write_text(original.replace(old, new), encoding="utf-8")
+        with pytest.raises(ContractError, match=message):
+            load_facts_config(root)
+    invalid_paths = original.replace(
+        '[paths]\ngeekbench_record = "/var/lib/mdt/host-facts/cpu-benchmark.json"\nguard_config = "/etc/cgprofile/guard.toml"\nguard_state = "/run/cgprofile/guard-state"\nksm_optin_shim = "/usr/lib/fleetd/ksm-optin.so"\n\n[control_plane]',
+        'paths = "invalid"\n\n[control_plane]',
+    )
+    config_path.write_text(invalid_paths, encoding="utf-8")
+    with pytest.raises(ContractError, match="paths: expected table"):
+        load_facts_config(root)
+
+
 @pytest.mark.parametrize(
     ("mutation", "reason"),
     [
         ("missing", "host Geekbench record unavailable"),
         ("invalid-json", "invalid JSON"),
+        ("empty", "invalid JSON"),
         ("wrong-schema", "unsupported schema or tool"),
+        ("wrong-shape", "unsupported schema or tool"),
+        ("wrong-tool", "unsupported schema or tool"),
         ("wrong-major", "unsupported major"),
         ("stale-model", "does not match"),
+        ("stale-count", "does not match"),
         ("incomplete", "incomplete"),
+        ("incomplete-version", "incomplete"),
+        ("incomplete-multicore", "incomplete"),
+        ("incomplete-baseline", "incomplete"),
     ],
 )
 def test_geekbench_record_is_read_only_private_and_reasoned(tmp_path, mutation, reason):
@@ -161,16 +287,30 @@ def test_geekbench_record_is_read_only_private_and_reasoned(tmp_path, mutation, 
         path.unlink()
     elif mutation == "invalid-json":
         path.write_text("{", encoding="utf-8")
+    elif mutation == "empty":
+        path.write_text("", encoding="utf-8")
     else:
         record = _json(path)
         if mutation == "wrong-schema":
             record["schema"] = "machine/1"
+        elif mutation == "wrong-shape":
+            record = []
+        elif mutation == "wrong-tool":
+            record["tool"] = "other"
         elif mutation == "wrong-major":
             record["tool_major"] = 5
         elif mutation == "stale-model":
             record["cpu_model"] = "Other CPU"
+        elif mutation == "stale-count":
+            record["cpus_online"] = 3
         elif mutation == "incomplete":
             record["single_core"] = 0
+        elif mutation == "incomplete-version":
+            record["tool_version"] = " "
+        elif mutation == "incomplete-multicore":
+            record["multi_core"] = 0
+        elif mutation == "incomplete-baseline":
+            record["baseline_score"] = 2300
         _write_json(path, record)
     facts = collect_host_facts(root)
     assert facts["speed"] is None
@@ -184,6 +324,7 @@ def test_facts_collector_keeps_unknowns_reasoned_and_does_not_guess(tmp_path):
     (root / "proc/cpuinfo").write_text("processor : 0\n", encoding="utf-8")
     (root / "sys/devices/system/cpu/online").write_text("0-x", encoding="utf-8")
     (root / "proc/pressure/cpu").unlink()
+    (root / "proc/pressure/io").write_text("", encoding="utf-8")
     (root / "proc/pressure/memory").write_text("some avg10=NaN avg60=0 avg300=0 total=0\n", encoding="utf-8")
     (root / "proc/meminfo").write_text("MemTotal: nope\nMemAvailable: 0 kB\nSwapTotal: 0 kB\n", encoding="utf-8")
     (root / "sys/fs/cgroup/cgroup.controllers").unlink()
@@ -199,12 +340,26 @@ def test_facts_collector_keeps_unknowns_reasoned_and_does_not_guess(tmp_path):
     assert facts["memory"]["swap_free_bytes"] is None and facts["memory"]["swap_free_bytes_reason"]
     assert facts["psi"]["cpu"]["some_avg10_pct"] is None
     assert facts["psi"]["memory"]["some_avg10_pct"] is None
+    assert facts["psi"]["io"]["some_avg10_pct"] is None
     assert facts["cgroup_v2"]["mounted"] is False
     assert facts["cgroup_v2"]["controllers"] is None
     assert facts["control_plane"]["present"] is False
     assert facts["control_plane"]["memory_min_bytes"] is None
     assert facts["kernel_interfaces"]["memory_reclaim"] is None
     assert facts["ksm"]["run"] is None and facts["ksm"]["run_reason"]
+
+
+@pytest.mark.parametrize("uptime", [None, "", "-1.0 0", "nan 0"])
+def test_boottime_is_null_with_a_reason_when_source_is_unreadable_or_invalid(tmp_path, uptime):
+    root = _root(tmp_path)
+    source = root / "proc/uptime"
+    if uptime is None:
+        source.unlink()
+    else:
+        source.write_text(uptime, encoding="utf-8")
+    facts = collect_host_facts(root)
+    assert facts["host_now_boottime_s"] is None
+    assert facts["host_now_boottime_s_reason"]
 
 
 def test_meminfo_missing_duplicate_and_malformed_fields_keep_reasons(tmp_path):
@@ -218,6 +373,35 @@ def test_meminfo_missing_duplicate_and_malformed_fields_keep_reasons(tmp_path):
     assert "duplicated" in facts["memory"]["total_bytes_reason"]
     assert facts["memory"]["available_bytes"] is None
     assert "malformed" in facts["memory"]["available_bytes_reason"]
+
+
+def test_cgroup_interfaces_and_ksm_missing_values_are_not_reported_as_present(tmp_path):
+    root = _root(tmp_path)
+    control = root / "sys/fs/cgroup/ctl.slice"
+    (control / "cgroup.freeze").unlink()
+    (control / "memory.reclaim").unlink()
+    (root / "sys/kernel/mm/ksm/advisor_mode").unlink()
+    (root / "sys/kernel/mm/ksm/advisor_max_cpu").unlink()
+    (root / "usr/lib/fleetd/ksm-optin.so").unlink()
+    facts = collect_host_facts(root)
+    assert facts["kernel_interfaces"]["cgroup_freeze"] is False
+    assert facts["kernel_interfaces"]["memory_reclaim"] is False
+    assert facts["ksm"]["advisor_mode"] is None
+    assert facts["ksm"]["advisor_mode_reason"]
+    assert facts["ksm"]["advisor_max_cpu"] is None
+    assert facts["ksm"]["lane_optin_shim"] is False
+
+
+def test_missing_control_plane_slice_does_not_claim_kernel_interfaces(tmp_path):
+    root = _root(tmp_path)
+    control = root / "sys/fs/cgroup/ctl.slice"
+    control.rename(root / "sys/fs/cgroup/moved.slice")
+    facts = collect_host_facts(root)
+    assert facts["cgroup_v2"]["mounted"] is True
+    assert facts["control_plane"]["present"] is False
+    assert facts["kernel_interfaces"]["cgroup_freeze"] is None
+    assert facts["kernel_interfaces"]["memory_reclaim"] is None
+    assert facts["kernel_interfaces"]["cgroup_freeze_reason"]
 
 
 def test_control_plane_slice_path_supports_nested_systemd_slices(tmp_path):
@@ -246,6 +430,48 @@ def test_guard_dropins_override_rules_and_change_digest(tmp_path):
     assert after["config_digest"] != before
 
 
+def test_guard_without_dropin_directory_uses_main_config_only(tmp_path):
+    root = _root(tmp_path)
+    shutil.rmtree(root / "etc/cgprofile/guard.toml.d")
+    guard = collect_host_facts(root)["guard"]
+    assert guard["enabled"] is True
+    assert guard["config_digest"].startswith("sha256:")
+
+
+def test_guard_invalid_dropin_toml_or_rule_is_reasoned(tmp_path):
+    root = _root(tmp_path)
+    bad = root / "etc/cgprofile/guard.toml.d/99-bad.toml"
+    bad.write_text("enabled = [", encoding="utf-8")
+    parse_error = collect_host_facts(root)["guard"]
+    assert parse_error["enabled"] is None
+    assert "invalid" in parse_error["enabled_reason"]
+    bad.write_text("unknown = true\n", encoding="utf-8")
+    rule_error = collect_host_facts(root)["guard"]
+    assert rule_error["enabled"] is None
+    assert "unknown" in rule_error["enabled_reason"]
+    assert rule_error["config_digest"].startswith("sha256:")
+
+
+def test_guard_dropin_read_error_refuses_a_partial_digest(tmp_path, monkeypatch):
+    from fleetd import facts as facts_module
+
+    root = _root(tmp_path)
+    dropin = root / "etc/cgprofile/guard.toml.d/01-unreadable.toml"
+    dropin.write_text("enabled = false\n", encoding="utf-8")
+    real_read_bytes = facts_module._read_bytes
+
+    def unreadable(path, description):
+        if path == dropin:
+            return None, "simulated unreadable drop-in"
+        return real_read_bytes(path, description)
+
+    monkeypatch.setattr(facts_module, "_read_bytes", unreadable)
+    guard = collect_host_facts(root)["guard"]
+    assert guard["enabled"] is None
+    assert guard["config_digest"] is None
+    assert "simulated unreadable" in guard["config_digest_reason"]
+
+
 def test_guard_invalid_config_or_missing_main_retains_independent_state(tmp_path):
     root = _root(tmp_path)
     main = root / "etc/cgprofile/guard.toml"
@@ -272,3 +498,15 @@ def test_guard_dropin_directory_and_state_source_fail_closed(tmp_path):
     assert facts["guard"]["config_digest"] is None
     assert facts["guard"]["state"] is None
     assert facts["guard"]["state_reason"]
+
+
+def test_missing_guard_main_and_unconfigured_state_are_reasoned(tmp_path):
+    root = _root(tmp_path)
+    config = _config_path(root)
+    config.write_text(config.read_text(encoding="utf-8").replace('guard_state = "/run/cgprofile/guard-state"\n', ""), encoding="utf-8")
+    (root / "etc/cgprofile/guard.toml").unlink()
+    guard = collect_host_facts(root)["guard"]
+    assert guard["enabled"] is None and guard["enabled_reason"]
+    assert guard["config_digest"] is None and guard["config_digest_reason"]
+    assert guard["state"] is None
+    assert guard["state_reason"] == "guard runtime state source is not configured"

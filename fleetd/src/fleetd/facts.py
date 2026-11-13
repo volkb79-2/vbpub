@@ -19,7 +19,6 @@ DEFAULT_ROOT = Path("/")
 DEFAULT_CONFIG_PATH = "/etc/fleetd/facts.toml"
 _BENCHMARK_SCHEMA = "mdt-host-cpu-benchmark/1"
 _BENCHMARK_BASELINE = {6: 2500, 7: 2500}
-_MAX_CPU_ID = 1_000_000
 
 
 @dataclass(frozen=True)
@@ -87,6 +86,8 @@ def load_facts_config(root: Path = DEFAULT_ROOT) -> FactsConfig:
         raw = config_path.read_text(encoding="utf-8")
     except OSError as exc:
         raise ContractError(f"facts config {DEFAULT_CONFIG_PATH}: cannot read required config ({exc.strerror or 'I/O error'})") from exc
+    except UnicodeError as exc:
+        raise ContractError(f"facts config {DEFAULT_CONFIG_PATH}: config is not UTF-8 text") from exc
     try:
         parsed = tomllib.loads(raw)
     except tomllib.TOMLDecodeError as exc:
@@ -139,13 +140,13 @@ def _rooted(root: Path, absolute_path: str) -> Path:
     return root / Path(*path.parts[1:])
 
 
-def _read_text(path: Path, description: str) -> tuple[str | None, str | None]:
+def _read_text(path: Path, description: str) -> tuple[str, str | None]:
     try:
         return path.read_text(encoding="utf-8"), None
     except OSError as exc:
-        return None, f"{description} unavailable ({exc.strerror or 'I/O error'})"
+        return "", f"{description} unavailable ({exc.strerror or 'I/O error'})"
     except UnicodeError:
-        return None, f"{description} is not UTF-8 text"
+        return "", f"{description} is not UTF-8 text"
 
 
 def _read_bytes(path: Path, description: str) -> tuple[bytes | None, str | None]:
@@ -159,7 +160,7 @@ def _nonempty_text(path: Path, description: str) -> tuple[str | None, str | None
     text, reason = _read_text(path, description)
     if reason is not None:
         return None, reason
-    value = text.strip() if text is not None else ""
+    value = text.strip()
     return (value, None) if value else (None, f"{description} is empty")
 
 
@@ -180,19 +181,25 @@ def _cpu_list_count(text: str) -> int | None:
     value = text.strip()
     if not value:
         return None
-    cpus: set[int] = set()
+    ranges: list[tuple[int, int]] = []
     for part in value.split(","):
         low_text, dash, high_text = part.partition("-")
         if not low_text.isdecimal() or (dash and not high_text.isdecimal()):
             return None
         low = int(low_text)
         high = int(high_text) if dash else low
-        if high < low or high > _MAX_CPU_ID or high - low > _MAX_CPU_ID:
+        if high < low:
             return None
-        cpus.update(range(low, high + 1))
-        if len(cpus) > _MAX_CPU_ID:
+        ranges.append((low, high))
+    ranges.sort()
+    count = 0
+    previous_high = -1
+    for low, high in ranges:
+        if low <= previous_high:
             return None
-    return len(cpus) if cpus else None
+        count += high - low + 1
+        previous_high = high
+    return count if count else None
 
 
 def _online_cpu_count(sys_root: Path) -> tuple[int | None, str | None]:
@@ -274,13 +281,6 @@ def _read_integer(path: Path, description: str, *, minimum: int = 0) -> tuple[in
     if number < minimum:
         return None, f"{description} is below {minimum}"
     return number, None
-
-
-def _nullable_leaf(value: object, reason: str | None, reason_key: str) -> dict[str, Any]:
-    result = {reason_key.removesuffix("_reason"): value}
-    if value is None:
-        result[reason_key] = reason or "source is unavailable"
-    return result
 
 
 def _slice_path(name: str) -> Path:
@@ -514,9 +514,14 @@ def collect_host_facts(root: Path = DEFAULT_ROOT) -> dict[str, Any]:
         ("cgroup_freeze", control_path / "cgroup.freeze"),
         ("memory_reclaim", control_path / "memory.reclaim"),
     ):
-        kernel_interfaces[key] = path.exists() if cgroup_mounted else None
         if not cgroup_mounted:
+            kernel_interfaces[key] = None
             kernel_interfaces[f"{key}_reason"] = mounted_reason
+        elif not control_present:
+            kernel_interfaces[key] = None
+            kernel_interfaces[f"{key}_reason"] = "control-plane slice is absent; kernel interface was not checked"
+        else:
+            kernel_interfaces[key] = path.is_file()
     kernel_interfaces["memory_reclaim_swappiness_arg"] = None
     kernel_interfaces["memory_reclaim_swappiness_arg_reason"] = "read-only collection does not probe write-command support"
 
