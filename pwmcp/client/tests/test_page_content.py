@@ -829,6 +829,8 @@ def test_invalid_or_unresolved_later_hiding_values_fail_closed(style: str) -> No
         pytest.param(r"display:none;display:block\0009 ", True, id="escaped-padded-tab-with-terminator"),
         pytest.param(r"display:none;display:block\20", True, id="escaped-space-at-end"),
         pytest.param(r"display:none;display:block\ ", True, id="simple-escaped-space"),
+        pytest.param(r"display:none;display:block\ flow", True, id="simple-escaped-space-inside-ident"),
+        pytest.param("display:none;display:block\\\tflow", True, id="simple-escaped-tab-inside-ident"),
         pytest.param(r"display:none;display:list-item\9", True, id="escaped-tab-after-list-item"),
         pytest.param(r"DISPLAY:NONE;DISPLAY:BLOCK\9", True, id="uppercase-escaped-tab"),
         pytest.param(r"display:none;display:b\6c ock", False, id="escaped-real-letter-control"),
