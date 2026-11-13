@@ -386,7 +386,9 @@ The [study README](../studies/ibx/README.md) maps saved stop-policy fields to
 their run options.
 
 From the repository root, set the stop-policy variables to values supplied by
-the study host's approved policy, then plan the run and start the t0 set:
+the study host's approved policy. Set `IBX_EXPECTED_HOST` from the approved run
+authorization; do not derive it from the connected host. The example checks
+that host before planning or starting a driver run:
 
 ```bash
 set -euo pipefail
@@ -398,27 +400,46 @@ OUT="$PWD/libraries/iobench/artifacts/ibx-study"
 : "${IBX_PROBE_CONSECUTIVE_SAMPLES:?set consecutive slow-probe sample count}"
 : "${IBX_MIN_MEMAVAILABLE:?set from study-host policy}"
 : "${IBX_MIN_FREE:?set from study-host policy}"
+: "${IBX_EXPECTED_HOST:?set the exact short hostname from approved run authorization}"
 # Read and check the exact path, byte size, and PARTUUID against the approved
 # inventory before setting this acknowledgement.
 : "${IBX_TARGET_CONFIRMATION:?set /dev/vda5:SIZE_BYTES:PARTUUID after checking the approved target inventory}"
 
+assert_expected_host() {
+  : "${IBX_EXPECTED_HOST:?set the exact short hostname from approved run authorization}"
+  local actual_host
+  actual_host=$(host-escape -- hostname -s)
+  [[ $actual_host == "$IBX_EXPECTED_HOST" ]] || {
+    printf 'refusing: expected host %s, connected to %s\n' "$IBX_EXPECTED_HOST" "$actual_host" >&2
+    return 1
+  }
+}
+
 current_system_disk_ack() {
+  assert_expected_host || return 1
   host-escape -- python3 "$STUDY" system-disk-ack --target /dev/vda5 --device vda5 \
     --confirm-target "$IBX_TARGET_CONFIRMATION"
 }
-python3 "$STUDY" plan --out "$OUT"
+
+run_study() {
+  assert_expected_host || return 1
+  host-escape -- python3 "$STUDY" run "$@"
+}
+
+assert_expected_host || exit 1
+python3 "$STUDY" plan --out "$OUT" || exit 1
 
 # The target-read-only rehearsal validates the raw target and renders every t0 fio job.
-host-escape -- python3 "$STUDY" run raw-t0 --target /dev/vda5 --device vda5 \
+run_study raw-t0 --target /dev/vda5 --device vda5 \
   --target-type raw --confirm-target "$IBX_TARGET_CONFIRMATION" \
   --allow-system-disk-partition --system-disk-ack "$(current_system_disk_ack)" \
   --confirm-quiet-window --offset 0B --size 24GiB --out "$OUT" --dry-run \
   --max-memory-psi "$IBX_MAX_MEMORY_PSI" \
   --max-probe-latency-seconds "$IBX_MAX_PROBE_LATENCY" \
   --probe-consecutive-samples "$IBX_PROBE_CONSECUTIVE_SAMPLES" \
-  --min-memavailable "$IBX_MIN_MEMAVAILABLE" --min-free "$IBX_MIN_FREE"
+  --min-memavailable "$IBX_MIN_MEMAVAILABLE" --min-free "$IBX_MIN_FREE" || exit 1
 
-host-escape -- python3 "$STUDY" run raw-t0 --target /dev/vda5 --device vda5 \
+run_study raw-t0 --target /dev/vda5 --device vda5 \
   --target-type raw --confirm-target "$IBX_TARGET_CONFIRMATION" \
   --allow-system-disk-partition --system-disk-ack "$(current_system_disk_ack)" \
   --confirm-quiet-window --offset 0B --size 24GiB --out "$OUT" \
@@ -426,7 +447,7 @@ host-escape -- python3 "$STUDY" run raw-t0 --target /dev/vda5 --device vda5 \
   --max-probe-latency-seconds "$IBX_MAX_PROBE_LATENCY" \
   --probe-consecutive-samples "$IBX_PROBE_CONSECUTIVE_SAMPLES" \
   --min-memavailable "$IBX_MIN_MEMAVAILABLE" --min-free "$IBX_MIN_FREE" \
-  --fsync-cell standard:seq1m-write
+  --fsync-cell standard:seq1m-write || exit 1
 python3 "$STUDY" analyze "$OUT" --output "$OUT/rung-choice.md"
 ```
 

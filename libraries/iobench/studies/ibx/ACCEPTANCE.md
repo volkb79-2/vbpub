@@ -21,6 +21,31 @@ assert_expected_host() {
   }
 }
 assert_expected_host
+# Accept either inactive/failed from a retained collected unit or unknown
+# after systemd removes it. This read-only check starts no unit and writes
+# nothing.
+UNKNOWN_UNIT="ibx-acceptance-unknown-${BASHPID}.service"
+if UNKNOWN_STATE=$(host-escape -- systemctl is-active "$UNKNOWN_UNIT"); then
+  UNKNOWN_STATUS=0
+else
+  UNKNOWN_STATUS=$?
+fi
+case "$UNKNOWN_STATUS:$UNKNOWN_STATE" in
+  4:unknown) ;;
+  *:inactive|*:failed)
+    ((UNKNOWN_STATUS != 0)) || {
+      printf 'unexpected active systemctl result for missing unit %s: status=%s state=%s\n' \
+        "$UNKNOWN_UNIT" "$UNKNOWN_STATUS" "$UNKNOWN_STATE" >&2
+      exit 1
+    }
+    ;;
+  *)
+    printf 'unexpected systemctl is-active result for missing unit %s: status=%s state=%s\n' \
+      "$UNKNOWN_UNIT" "$UNKNOWN_STATUS" "$UNKNOWN_STATE" >&2
+    exit 1
+    ;;
+esac
+printf 'missing-unit systemd status: %s (%s)\n' "$UNKNOWN_STATE" "$UNKNOWN_STATUS"
 RAW=/dev/vda5
 [[ $(host-escape -- lsblk -dn -o TYPE "$RAW") == part ]]
 [[ $(host-escape -- lsblk -dn -o PARTLABEL "$RAW") == iobench-raw ]]

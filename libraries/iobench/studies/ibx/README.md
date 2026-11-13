@@ -175,7 +175,10 @@ controller default of 10 seconds and can be changed with
 I/O PSI is recorded but is advisory because the saturating fio cell itself can
 drive it to 100%. The independent host-liveness threshold and consecutive
 sample count are configurable policy inputs alongside the existing memory and
-free-space floors.
+free-space floors. Set `IBX_EXPECTED_HOST` from the approved run authorization;
+the sequence checks it before every driver run and checks both host and target
+identity immediately before each direct filesystem operation. Do not derive
+the expected hostname from the connected host.
 
 ```bash
 set -euo pipefail
@@ -208,9 +211,20 @@ OUT="$HOST_REPO/libraries/iobench/artifacts/ibx-study"
 : "${IBX_PROBE_CONSECUTIVE_SAMPLES:?set the approved consecutive slow-probe sample count}"
 : "${IBX_MIN_MEMAVAILABLE:?set the approved MemAvailable floor, for example 8GiB}"
 : "${IBX_MIN_FREE:?set the approved output-filesystem free-space floor}"
+: "${IBX_EXPECTED_HOST:?set the exact short hostname from approved run authorization}"
 # Read the partition size and PARTUUID and compare them with the approved
 # study-target inventory. Set this exact literal only after that check.
 : "${IBX_TARGET_CONFIRMATION:?after checking the dedicated partition, set /dev/vda5:SIZE_BYTES:PARTUUID}"
+
+assert_expected_host() {
+  : "${IBX_EXPECTED_HOST:?set the exact short hostname from approved run authorization}"
+  local actual_host
+  actual_host=$(host-escape -- hostname -s)
+  [[ $actual_host == "$IBX_EXPECTED_HOST" ]] || {
+    printf 'refusing: expected host %s, connected to %s\n' "$IBX_EXPECTED_HOST" "$actual_host" >&2
+    return 1
+  }
+}
 
 confirm_study_target() {
   local actual_size actual_partuuid actual_identity
@@ -224,15 +238,31 @@ confirm_study_target() {
   fi
 }
 
+assert_study_host_and_target() {
+  assert_expected_host || return 1
+  confirm_study_target || return 1
+}
+
+study_transition() {
+  assert_study_host_and_target || return 1
+  host-escape -- "$@"
+}
+
 current_system_disk_ack() {
+  assert_study_host_and_target || return 1
   host-escape -- python3 "$STUDY" system-disk-ack --target /dev/vda5 --device vda5 \
     --confirm-target "$IBX_TARGET_CONFIRMATION"
 }
 
+run_study() {
+  assert_expected_host || return 1
+  host-escape -- python3 "$STUDY" run "$@"
+}
+
 # Plan and target-read-only dry-run can run before checking or stopping timers.
-confirm_study_target
-host-escape -- python3 "$STUDY" plan --out "$OUT"
-host-escape -- python3 "$STUDY" run raw-t0 --target /dev/vda5 --device vda5 \
+assert_study_host_and_target || exit 1
+host-escape -- python3 "$STUDY" plan --out "$OUT" || exit 1
+run_study raw-t0 --target /dev/vda5 --device vda5 \
   --target-type raw --confirm-target "$IBX_TARGET_CONFIRMATION" \
   --allow-system-disk-partition --system-disk-ack "$(current_system_disk_ack)" \
   --confirm-quiet-window --offset 0B --size 24GiB --out "$OUT" --dry-run \
@@ -240,7 +270,7 @@ host-escape -- python3 "$STUDY" run raw-t0 --target /dev/vda5 --device vda5 \
   --max-probe-latency-seconds "$IBX_MAX_PROBE_LATENCY" \
   --probe-consecutive-samples "$IBX_PROBE_CONSECUTIVE_SAMPLES" \
   --min-memavailable "$IBX_MIN_MEMAVAILABLE" --min-free "$IBX_MIN_FREE" \
-  --fsync-cell standard:seq1m-write
+  --fsync-cell standard:seq1m-write || exit 1
 
 # Stop only timers that were active beforehand. Keep this shell open so the
 # restoration block below can restart exactly those timers after live runs.
@@ -280,7 +310,7 @@ fi
 
 # t0: run the raw ladder. The optional fsync collection wraps only the named
 # standard rung cell and reuses mdt-cockpit/scripts/iomon-bpf/run.sh.
-host-escape -- python3 "$STUDY" run raw-t0 --target /dev/vda5 --device vda5 \
+run_study raw-t0 --target /dev/vda5 --device vda5 \
   --target-type raw --confirm-target "$IBX_TARGET_CONFIRMATION" \
   --allow-system-disk-partition --system-disk-ack "$(current_system_disk_ack)" \
   --confirm-quiet-window --offset 0B --size 24GiB --out "$OUT" \
@@ -288,124 +318,119 @@ host-escape -- python3 "$STUDY" run raw-t0 --target /dev/vda5 --device vda5 \
   --max-probe-latency-seconds "$IBX_MAX_PROBE_LATENCY" \
   --probe-consecutive-samples "$IBX_PROBE_CONSECUTIVE_SAMPLES" \
   --min-memavailable "$IBX_MIN_MEMAVAILABLE" --min-free "$IBX_MIN_FREE" \
-  --fsync-cell standard:seq1m-write
+  --fsync-cell standard:seq1m-write || exit 1
 
 # t0+1h: the bounded rewrite/fstrim cell set on region C.
-host-escape -- python3 "$STUDY" run part-c --target /dev/vda5 --device vda5 \
+run_study part-c --target /dev/vda5 --device vda5 \
   --target-type raw --confirm-target "$IBX_TARGET_CONFIRMATION" \
   --allow-system-disk-partition --system-disk-ack "$(current_system_disk_ack)" \
   --confirm-quiet-window --offset 24GiB --size 8GiB --out "$OUT" \
   --max-memory-psi "$IBX_MAX_MEMORY_PSI" \
   --max-probe-latency-seconds "$IBX_MAX_PROBE_LATENCY" \
   --probe-consecutive-samples "$IBX_PROBE_CONSECUTIVE_SAMPLES" \
-  --min-memavailable "$IBX_MIN_MEMAVAILABLE" --min-free "$IBX_MIN_FREE"
+  --min-memavailable "$IBX_MIN_MEMAVAILABLE" --min-free "$IBX_MIN_FREE" || exit 1
 
 # t0+3h, then quick/veryquick at t0+6h; raw-t6h adds standard only if its 6.2 rule fires.
-host-escape -- python3 "$STUDY" run raw-t3h --target /dev/vda5 --device vda5 \
+run_study raw-t3h --target /dev/vda5 --device vda5 \
   --target-type raw --confirm-target "$IBX_TARGET_CONFIRMATION" \
   --allow-system-disk-partition --system-disk-ack "$(current_system_disk_ack)" \
   --confirm-quiet-window --offset 0B --size 24GiB --out "$OUT" \
   --max-memory-psi "$IBX_MAX_MEMORY_PSI" \
   --max-probe-latency-seconds "$IBX_MAX_PROBE_LATENCY" \
   --probe-consecutive-samples "$IBX_PROBE_CONSECUTIVE_SAMPLES" \
-  --min-memavailable "$IBX_MIN_MEMAVAILABLE" --min-free "$IBX_MIN_FREE"
+  --min-memavailable "$IBX_MIN_MEMAVAILABLE" --min-free "$IBX_MIN_FREE" || exit 1
 
 # t0+4h: the driver reports this optional repeat as skipped under the 500 GB
 # cap, even if the first analysis reports degradation.
-host-escape -- python3 "$STUDY" run part-c-repeat --target /dev/vda5 --device vda5 \
+run_study part-c-repeat --target /dev/vda5 --device vda5 \
   --target-type raw --confirm-target "$IBX_TARGET_CONFIRMATION" \
   --allow-system-disk-partition --system-disk-ack "$(current_system_disk_ack)" \
   --confirm-quiet-window --offset 24GiB --size 8GiB --out "$OUT" \
   --max-memory-psi "$IBX_MAX_MEMORY_PSI" \
   --max-probe-latency-seconds "$IBX_MAX_PROBE_LATENCY" \
   --probe-consecutive-samples "$IBX_PROBE_CONSECUTIVE_SAMPLES" \
-  --min-memavailable "$IBX_MIN_MEMAVAILABLE" --min-free "$IBX_MIN_FREE"
+  --min-memavailable "$IBX_MIN_MEMAVAILABLE" --min-free "$IBX_MIN_FREE" || exit 1
 
-host-escape -- python3 "$STUDY" run raw-t6h --target /dev/vda5 --device vda5 \
+run_study raw-t6h --target /dev/vda5 --device vda5 \
   --target-type raw --confirm-target "$IBX_TARGET_CONFIRMATION" \
   --allow-system-disk-partition --system-disk-ack "$(current_system_disk_ack)" \
   --confirm-quiet-window --offset 0B --size 24GiB --out "$OUT" \
   --max-memory-psi "$IBX_MAX_MEMORY_PSI" \
   --max-probe-latency-seconds "$IBX_MAX_PROBE_LATENCY" \
   --probe-consecutive-samples "$IBX_PROBE_CONSECUTIVE_SAMPLES" \
-  --min-memavailable "$IBX_MIN_MEMAVAILABLE" --min-free "$IBX_MIN_FREE"
+  --min-memavailable "$IBX_MIN_MEMAVAILABLE" --min-free "$IBX_MIN_FREE" || exit 1
 
 # t0+9h raw measurements, then format the study partition for each file target.
-host-escape -- python3 "$STUDY" run raw-t9h --target /dev/vda5 --device vda5 \
+run_study raw-t9h --target /dev/vda5 --device vda5 \
   --target-type raw --confirm-target "$IBX_TARGET_CONFIRMATION" \
   --allow-system-disk-partition --system-disk-ack "$(current_system_disk_ack)" \
   --confirm-quiet-window --offset 0B --size 24GiB --out "$OUT" \
   --max-memory-psi "$IBX_MAX_MEMORY_PSI" \
   --max-probe-latency-seconds "$IBX_MAX_PROBE_LATENCY" \
   --probe-consecutive-samples "$IBX_PROBE_CONSECUTIVE_SAMPLES" \
-  --min-memavailable "$IBX_MIN_MEMAVAILABLE" --min-free "$IBX_MIN_FREE" && \
-confirm_study_target && \
-host-escape -- mkfs.ext4 -E nodiscard,lazy_itable_init=0,lazy_journal_init=0 /dev/vda5 && \
-host-escape -- mkdir -p /mnt/ibx-study && \
-host-escape -- mount -o noatime /dev/vda5 /mnt/ibx-study && \
-host-escape -- fallocate -l 24GiB /mnt/ibx-study/target.dat
+  --min-memavailable "$IBX_MIN_MEMAVAILABLE" --min-free "$IBX_MIN_FREE" || exit 1
+study_transition mkfs.ext4 -E nodiscard,lazy_itable_init=0,lazy_journal_init=0 /dev/vda5 || exit 1
+study_transition mkdir -p /mnt/ibx-study || exit 1
+study_transition mount -o noatime /dev/vda5 /mnt/ibx-study || exit 1
+study_transition fallocate -l 24GiB /mnt/ibx-study/target.dat || exit 1
 
 # These are deliberate study-day filesystem transitions on the dedicated target.
 # Run each through the same host-root wrapper and only after raw-t9h has finished.
-host-escape -- python3 "$STUDY" run file-ext4 --target /mnt/ibx-study/target.dat --device vda5 \
+run_study file-ext4 --target /mnt/ibx-study/target.dat --device vda5 \
   --target-type ext4-file --confirm-quiet-window --offset 0B --size 24GiB --out "$OUT" \
   --max-memory-psi "$IBX_MAX_MEMORY_PSI" \
   --max-probe-latency-seconds "$IBX_MAX_PROBE_LATENCY" \
   --probe-consecutive-samples "$IBX_PROBE_CONSECUTIVE_SAMPLES" \
-  --min-memavailable "$IBX_MIN_MEMAVAILABLE" --min-free "$IBX_MIN_FREE"
+  --min-memavailable "$IBX_MIN_MEMAVAILABLE" --min-free "$IBX_MIN_FREE" || exit 1
 python3 "$LOCAL_STUDY" analyze "$LOCAL_OUT" --output "$LOCAL_OUT/rung-choice.md"
 # Optional: runs only if the ext4 quick result is borderline; otherwise reports skipped.
-host-escape -- python3 "$STUDY" run file-ext4-standard --target /mnt/ibx-study/target.dat --device vda5 \
+run_study file-ext4-standard --target /mnt/ibx-study/target.dat --device vda5 \
   --target-type ext4-file --confirm-quiet-window --offset 0B --size 24GiB --out "$OUT" \
   --max-memory-psi "$IBX_MAX_MEMORY_PSI" \
   --max-probe-latency-seconds "$IBX_MAX_PROBE_LATENCY" \
   --probe-consecutive-samples "$IBX_PROBE_CONSECUTIVE_SAMPLES" \
-  --min-memavailable "$IBX_MIN_MEMAVAILABLE" --min-free "$IBX_MIN_FREE"
-host-escape -- umount /mnt/ibx-study && \
-confirm_study_target && \
-host-escape -- wipefs -a /dev/vda5 && \
-confirm_study_target && \
-host-escape -- mkfs.btrfs -K /dev/vda5 && \
-host-escape -- mount -o noatime /dev/vda5 /mnt/ibx-study && \
-host-escape -- fallocate -l 24GiB /mnt/ibx-study/target.dat
-host-escape -- python3 "$STUDY" run file-btrfs --target /mnt/ibx-study/target.dat --device vda5 \
+  --min-memavailable "$IBX_MIN_MEMAVAILABLE" --min-free "$IBX_MIN_FREE" || exit 1
+study_transition umount /mnt/ibx-study || exit 1
+study_transition wipefs -a /dev/vda5 || exit 1
+study_transition mkfs.btrfs -K /dev/vda5 || exit 1
+study_transition mount -o noatime /dev/vda5 /mnt/ibx-study || exit 1
+study_transition fallocate -l 24GiB /mnt/ibx-study/target.dat || exit 1
+run_study file-btrfs --target /mnt/ibx-study/target.dat --device vda5 \
   --target-type btrfs-file --confirm-quiet-window --offset 0B --size 24GiB --out "$OUT" \
   --max-memory-psi "$IBX_MAX_MEMORY_PSI" \
   --max-probe-latency-seconds "$IBX_MAX_PROBE_LATENCY" \
   --probe-consecutive-samples "$IBX_PROBE_CONSECUTIVE_SAMPLES" \
-  --min-memavailable "$IBX_MIN_MEMAVAILABLE" --min-free "$IBX_MIN_FREE"
+  --min-memavailable "$IBX_MIN_MEMAVAILABLE" --min-free "$IBX_MIN_FREE" || exit 1
 python3 "$LOCAL_STUDY" analyze "$LOCAL_OUT" --output "$LOCAL_OUT/rung-choice.md"
 # Optional: runs only if the btrfs quick result is borderline; otherwise reports skipped.
-host-escape -- python3 "$STUDY" run file-btrfs-standard --target /mnt/ibx-study/target.dat --device vda5 \
+run_study file-btrfs-standard --target /mnt/ibx-study/target.dat --device vda5 \
   --target-type btrfs-file --confirm-quiet-window --offset 0B --size 24GiB --out "$OUT" \
   --max-memory-psi "$IBX_MAX_MEMORY_PSI" \
   --max-probe-latency-seconds "$IBX_MAX_PROBE_LATENCY" \
   --probe-consecutive-samples "$IBX_PROBE_CONSECUTIVE_SAMPLES" \
-  --min-memavailable "$IBX_MIN_MEMAVAILABLE" --min-free "$IBX_MIN_FREE"
-host-escape -- umount /mnt/ibx-study && \
-confirm_study_target && \
-host-escape -- wipefs -a /dev/vda5 && \
-confirm_study_target && \
-host-escape -- blkdiscard /dev/vda5
+  --min-memavailable "$IBX_MIN_MEMAVAILABLE" --min-free "$IBX_MIN_FREE" || exit 1
+study_transition umount /mnt/ibx-study || exit 1
+study_transition wipefs -a /dev/vda5 || exit 1
+study_transition blkdiscard /dev/vda5 || exit 1
 
 # The optional raw repeats are listed for traceability, but report skipped under
 # the 500 GB cap because their complete job caps do not fit after the base set.
-host-escape -- python3 "$STUDY" run raw-t12h --target /dev/vda5 --device vda5 \
+run_study raw-t12h --target /dev/vda5 --device vda5 \
   --target-type raw --confirm-target "$IBX_TARGET_CONFIRMATION" \
   --allow-system-disk-partition --system-disk-ack "$(current_system_disk_ack)" \
   --confirm-quiet-window --offset 0B --size 24GiB --out "$OUT" \
   --max-memory-psi "$IBX_MAX_MEMORY_PSI" \
   --max-probe-latency-seconds "$IBX_MAX_PROBE_LATENCY" \
   --probe-consecutive-samples "$IBX_PROBE_CONSECUTIVE_SAMPLES" \
-  --min-memavailable "$IBX_MIN_MEMAVAILABLE" --min-free "$IBX_MIN_FREE"
-host-escape -- python3 "$STUDY" run raw-t12h2 --target /dev/vda5 --device vda5 \
+  --min-memavailable "$IBX_MIN_MEMAVAILABLE" --min-free "$IBX_MIN_FREE" || exit 1
+run_study raw-t12h2 --target /dev/vda5 --device vda5 \
   --target-type raw --confirm-target "$IBX_TARGET_CONFIRMATION" \
   --allow-system-disk-partition --system-disk-ack "$(current_system_disk_ack)" \
   --confirm-quiet-window --offset 0B --size 24GiB --out "$OUT" \
   --max-memory-psi "$IBX_MAX_MEMORY_PSI" \
   --max-probe-latency-seconds "$IBX_MAX_PROBE_LATENCY" \
   --probe-consecutive-samples "$IBX_PROBE_CONSECUTIVE_SAMPLES" \
-  --min-memavailable "$IBX_MIN_MEMAVAILABLE" --min-free "$IBX_MIN_FREE"
+  --min-memavailable "$IBX_MIN_MEMAVAILABLE" --min-free "$IBX_MIN_FREE" || exit 1
 
 python3 "$LOCAL_STUDY" analyze "$LOCAL_OUT" --output "$LOCAL_OUT/rung-choice.md"
 ```

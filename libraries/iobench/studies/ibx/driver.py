@@ -1465,7 +1465,8 @@ class LocalHost:
             except (OSError, subprocess.TimeoutExpired):
                 status = None
             state = status.stdout.strip() if status is not None else ""
-            # is-active returns 4 for a missing unit, which --collect removes after exit.
+            # --collect can leave a retained inactive/failed result or remove the
+            # timed-out unit before this check observes it.
             confirmed_stopped = (status is not None and
                                  ((status.returncode != 0 and state in {"inactive", "failed"}) or
                                   (status.returncode == 4 and state == "unknown")))

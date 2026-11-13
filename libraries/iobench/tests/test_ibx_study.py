@@ -2567,6 +2567,23 @@ def test_acceptance_runbook_pins_the_expected_host_before_proceeding(tmp_path):
     preflight_call = re.search(r"(?m)^assert_expected_host$", preflight_script.group(1))
     assert preflight_call is not None
     assert preflight_call.start() < preflight_script.group(1).index("host-escape -- lsblk")
+    assert 'host-escape -- systemctl is-active "$UNKNOWN_UNIT"' in preflight_script.group(1)
+    assert 'case "$UNKNOWN_STATUS:$UNKNOWN_STATE" in' in preflight_script.group(1)
+    assert "4:unknown) ;;" in preflight_script.group(1)
+    assert "*:inactive|*:failed)" in preflight_script.group(1)
+    assert "((UNKNOWN_STATUS != 0))" in preflight_script.group(1)
+    assert preflight_script.group(1).index('systemctl is-active "$UNKNOWN_UNIT"') < \
+        preflight_script.group(1).index("host-escape -- lsblk")
+    probe_start_marker = 'UNKNOWN_UNIT="ibx-acceptance-unknown-${BASHPID}.service"'
+    probe_end_marker = (
+        "printf 'missing-unit systemd status: %s (%s)\\n' "
+        '"$UNKNOWN_STATE" "$UNKNOWN_STATUS"'
+    )
+    probe_start = preflight_script.group(1).index(probe_start_marker)
+    probe_end = preflight_script.group(1).index(probe_end_marker, probe_start) + len(probe_end_marker)
+    missing_unit_probe = preflight_script.group(1)[probe_start:probe_end]
+    assert missing_unit_probe.startswith(probe_start_marker)
+    assert missing_unit_probe.endswith(probe_end_marker)
     raw_idle = re.search(r"(?ms)^assert_raw_idle\(\) \{\n(.*?)^\}", acceptance)
     assert raw_idle is not None
     assert raw_idle.group(1).lstrip().startswith("assert_expected_host")
@@ -2584,7 +2601,6 @@ def test_acceptance_runbook_pins_the_expected_host_before_proceeding(tmp_path):
     assert rollback.index("assert_expected_host") < rollback.index('host-escape -- umount "$MOUNT"')
     assert rollback.index('host-escape -- umount "$MOUNT"') < rollback.index("assert_raw_idle")
     assert rollback.index("assert_raw_idle") < rollback.index('host-escape -- wipefs')
-
     fake_bin = tmp_path / "bin"
     fake_bin.mkdir()
     host_escape = fake_bin / "host-escape"
@@ -2592,11 +2608,32 @@ def test_acceptance_runbook_pins_the_expected_host_before_proceeding(tmp_path):
         "#!/bin/sh\n"
         "[ \"$1\" = -- ] || exit 96\n"
         "shift\n"
+        "if [ \"$1\" = systemctl ] && [ \"$2\" = is-active ]; then\n"
+        "  printf '%s\\n' \"$FAKE_UNIT_STATE\"\n"
+        "  exit \"$FAKE_UNIT_STATUS\"\n"
+        "fi\n"
         "[ \"$1\" = hostname ] && [ \"$2\" = -s ] || exit 97\n"
         "printf '%s\\n' \"$FAKE_ACTUAL_HOST\"\n",
         encoding="utf-8",
     )
     host_escape.chmod(0o755)
+    probe_script = missing_unit_probe
+
+    def invoke_probe(status, state):
+        env = {"PATH": f"{fake_bin}:{os.defpath}", "FAKE_UNIT_STATUS": str(status),
+               "FAKE_UNIT_STATE": state}
+        return subprocess.run(["bash", "-euo", "pipefail", "-c", probe_script], env=env,
+                              check=False, capture_output=True, text=True)
+
+    for status, state in ((4, "unknown"), (3, "inactive"), (1, "failed")):
+        accepted = invoke_probe(status, state)
+        assert accepted.returncode == 0, (status, state, accepted.stderr)
+        assert f"missing-unit systemd status: {state} ({status})" in accepted.stdout
+    for status, state in ((0, "inactive"), (0, "active"), (4, ""), (3, "weird")):
+        refused = invoke_probe(status, state)
+        assert refused.returncode != 0, (status, state, refused.stdout)
+        assert "unexpected" in refused.stderr
+
     helper_and_call = f"{match.group(0)}\nassert_expected_host"
 
     def invoke(*, actual_host, expected_host=None):
@@ -2616,6 +2653,84 @@ def test_acceptance_runbook_pins_the_expected_host_before_proceeding(tmp_path):
     assert mismatch.returncode != 0 and "expected host compute-a" in mismatch.stderr
     missing = invoke(actual_host="compute-a")
     assert missing.returncode != 0 and "set the exact short hostname" in missing.stderr
+
+
+def test_ibx_runbooks_pin_host_before_driver_runs_and_raw_transitions():
+    readme = (driver.HERE / "README.md").read_text(encoding="utf-8")
+    bash_scripts = re.findall(r"(?ms)^```bash\n(.*?)^```", readme)
+    script = next(script for script in bash_scripts if "current_system_disk_ack() {" in script)
+    assert ': "${IBX_EXPECTED_HOST:?set the exact short hostname from approved run authorization}"' in script
+    expected_host = re.search(r"(?ms)^assert_expected_host\(\) \{\n(.*?)^\}", script)
+    assert expected_host is not None
+    assert "host-escape -- hostname -s" in expected_host.group(1)
+    assert '[[ $actual_host == "$IBX_EXPECTED_HOST" ]]' in expected_host.group(1)
+    target_helper = re.search(r"(?ms)^assert_study_host_and_target\(\) \{\n(.*?)^\}", script)
+    assert target_helper is not None
+    assert target_helper.group(1).lstrip().startswith(
+        "assert_expected_host || return 1\n  confirm_study_target || return 1")
+    acceptance = (driver.HERE / "ACCEPTANCE.md").read_text(encoding="utf-8")
+    acceptance_host = re.search(r"(?ms)^assert_expected_host\(\) \{\n(.*?)^\}", acceptance)
+    assert acceptance_host is not None and expected_host.group(0) == acceptance_host.group(0)
+
+    consumers = (driver.REPO / "libraries/iobench/docs/CONSUMERS.md").read_text(encoding="utf-8")
+    consumer_scripts = re.findall(r"(?ms)^```bash\n(.*?)^```", consumers)
+    consumer_script = next(script for script in consumer_scripts
+                           if "current_system_disk_ack() {" in script)
+    consumer_host = re.search(r"(?ms)^assert_expected_host\(\) \{\n(.*?)^\}", consumer_script)
+    assert consumer_host is not None and consumer_host.group(0) == acceptance_host.group(0)
+    consumer_ack = re.search(r"(?ms)^current_system_disk_ack\(\) \{\n(.*?)^\}", consumer_script)
+    assert consumer_ack is not None
+    assert consumer_ack.group(1).lstrip().startswith("assert_expected_host || return 1\n")
+    consumer_run = re.search(r"(?ms)^run_study\(\) \{\n(.*?)^\}", consumer_script)
+    assert consumer_run is not None
+    assert consumer_run.group(1).lstrip().startswith("assert_expected_host || return 1\n")
+    consumer_without_helper = consumer_script.replace(consumer_run.group(0), "", 1)
+    assert 'host-escape -- python3 "$STUDY" run ' not in consumer_without_helper
+    assert len(re.findall(r"(?m)^run_study ", consumer_without_helper)) == 2
+    assert re.search(r'(?m)^assert_expected_host \|\| exit 1\npython3 "\$STUDY" plan.*\|\| exit 1$',
+                     consumer_without_helper)
+
+    ack_helper = re.search(r"(?ms)^current_system_disk_ack\(\) \{\n(.*?)^\}", script)
+    assert ack_helper is not None
+    assert ack_helper.group(1).lstrip().startswith("assert_study_host_and_target || return 1\n")
+    run_helper = re.search(r"(?ms)^run_study\(\) \{\n(.*?)^\}", script)
+    assert run_helper is not None
+    assert run_helper.group(1).lstrip().startswith("assert_expected_host || return 1\n")
+    without_helper = script.replace(run_helper.group(0), "", 1)
+    assert 'host-escape -- python3 "$STUDY" run ' not in without_helper
+    assert len(re.findall(r"(?m)^run_study ", without_helper)) >= 10
+    assert re.search(r'(?m)^assert_study_host_and_target \|\| exit 1\nhost-escape -- python3 "\$STUDY" plan.*\|\| exit 1$',
+                     without_helper)
+
+    def assert_run_commands_fail_fast(source, minimum):
+        source_lines = source.splitlines()
+        count = 0
+        for start, line in enumerate(source_lines):
+            if not line.startswith("run_study "):
+                continue
+            end = start
+            while source_lines[end].endswith(chr(92)):
+                end += 1
+            assert source_lines[end].endswith("|| exit 1")
+            count += 1
+        assert count >= minimum
+
+    assert_run_commands_fail_fast(consumer_without_helper, 2)
+    assert_run_commands_fail_fast(without_helper, 10)
+
+    transition = re.search(r"(?ms)^study_transition\(\) \{\n(.*?)^\}", script)
+    assert transition is not None
+    assert transition.group(1).lstrip().startswith(
+        "assert_study_host_and_target || return 1\n  host-escape -- \"$@\"")
+    # Invocation grammar requires a command token after whitespace; the function
+    # definition ends with "() {" and cannot be mistaken for a call.
+    transitions = re.findall(r"(?m)^study_transition ([A-Za-z0-9_.-]+(?: .*)?)$", script)
+    assert [line.split(maxsplit=1)[0] for line in transitions] == [
+        "mkfs.ext4", "mkdir", "mount", "fallocate", "umount", "wipefs",
+        "mkfs.btrfs", "mount", "fallocate", "umount", "wipefs", "blkdiscard",
+    ]
+    assert all(line.endswith("|| exit 1") for line in transitions)
+    assert not re.search(r"(?m)^host-escape -- (mkfs|mkdir|mount|fallocate|umount|wipefs|blkdiscard)", script)
 
 
 def test_dry_run_skips_active_timer_guard_while_live_run_still_requires_quiet_window(tmp_path):
