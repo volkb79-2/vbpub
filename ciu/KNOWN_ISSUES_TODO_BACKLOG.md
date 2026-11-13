@@ -668,6 +668,7 @@ entries.
 | CIU-214 | `ciu down --dir PATH` rejects flags that `ciu down --help` lists (`--yes`, `--phases`, `--i-understand-this-is-protected`) | Minor | OPEN 2026-11-13 |
 | CIU-215 | Linked-worktree exec runners rendered by CIU 7 lack the git common-dir mount, so every assay lane fails with GIT_FAILED | Major | OPEN 2026-11-13 |
 | CIU-216 | `ciu worktree create` renders no `ciu.global.toml` when `DOCKER_HOST` is unset and the socket is at a non-default path | Minor | OPEN 2026-11-13 |
+| CIU-217 | The KSM ELF verifier accepts a program-header table whose declared entry size is zero (`e_phentsize = 0`) | Minor | OPEN 2026-11-13 (strict xfail `test_zero_program_header_entry_size_is_refused` records it) |
 
 
 The approved milestone decisions and serial package order are in
