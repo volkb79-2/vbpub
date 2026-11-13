@@ -151,6 +151,16 @@ def test_plan_preserves_special_alone_and_retry_work_on_one_host_and_renders_com
     assert "docker" not in commands and "ssh " not in commands
 
 
+def test_physical_cap_routes_a_large_candidate_to_the_bigger_host():
+    host_set = _hosts()
+    _host(host_set, "host-small")["f_h"] = 0.5
+    _host(host_set, "host-large")["f_h"] = 2.0
+    plan = _plan([_candidate("large", 8 * 1024**3)], hosts=host_set)
+    small = _host_plan(plan, "host-small")
+    assert small["cap_bytes"] < 8 * 1024**3
+    assert _assigned_host(plan, "large")["id"] == "host-large"
+
+
 def test_deterministic_outputs_ignore_input_order_and_use_safe_shell_quoting():
     rows = [
         _candidate("z id", 800_000_000, source="src/z.py"),
