@@ -505,6 +505,8 @@ class CampaignManager:
                         job["started_mono"] = now
                     if job["last_progress_mono"] is None:
                         job["last_progress_mono"] = now
+                else:
+                    raise TransportError(f"probe row for {name} has unsupported job state {state_name!r}")
                 if superseded_pending:
                     if state_name in {"EXIT", "MISSING"}:
                         job["status"] = "SUPERSEDED"

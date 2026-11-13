@@ -15,7 +15,16 @@ import pytest
 from fleetd.campaign import CampaignManager, LOST_AFTER_SECONDS, STALL_FLOOR_SECONDS, _atomic_write, _event_key
 from fleetd.contracts import ContractError
 from fleetd.plan import plan_campaign
-from fleetd.runner import JobSpec, RunnerJobs, parse_progress, probe_script, start_script, stop_script, validate_job_spec
+from fleetd.runner import (
+    JobSpec,
+    RunnerJobs,
+    canonical_probe_json,
+    parse_progress,
+    probe_script,
+    start_script,
+    stop_script,
+    validate_job_spec,
+)
 from fleetd.transport import (
     FakeTransport,
     HostUnavailable,
@@ -226,6 +235,7 @@ def test_job_names_digest_and_command_builders_are_stable_and_scoped():
     assert "sha256sum" in start and "EXISTING" in start
     assert 'run-r2-campaign.sh\" stop' in stop
     assert "ssh " not in start and "docker " not in start
+    assert canonical_probe_json({"jobs": []}) == '{"jobs":[]}'
     with pytest.raises(ContractError, match="safe name"):
         validate_job_spec(JobSpec("../bad", "host-a", 0, 0, values, "c" * 40, ".", "r2", 1))
     with pytest.raises(ContractError, match="full lowercase Git commit"):
@@ -361,8 +371,9 @@ def test_runner_probe_start_and_stop_translate_malformed_responses_and_failures(
     assert RunnerJobs(started).start(spec) is True
     assert started.put_calls[0][2] == ("a" * 64 + "\n").encode()
 
+    full_digest = _probe_json(name, "RUNNING", spec.list_digest)
     recovered = ScriptedTransport([
-        (0, missing, ""), (1, "", "raced"), (0, existing, ""),
+        (0, missing, ""), (1, "", "raced"), (0, full_digest, ""),
     ])
     assert RunnerJobs(recovered).start(spec) is False
     failed = ScriptedTransport([(0, missing, ""), (1, "", "start failed"), (0, missing, "")])
@@ -1115,6 +1126,14 @@ def test_refresh_unknown_initializes_progress_and_rejects_corrupt_candidate_ids(
     assert refreshed["status"] == "UNKNOWN"
     assert refreshed["started_mono"] == refreshed["last_progress_mono"]
 
+    manager.runner.probe = lambda _host, _wanted: {
+        job["name"]: {
+            "name": job["name"], "state": "PAUSED", "list_digest": job["list_digest"], "records": [],
+        }
+    }
+    with pytest.raises(TransportError, match="unsupported job state"):
+        manager.status("campaign")
+
     corrupted = _state(tmp_path)
     corrupted["jobs"][job["name"]]["candidate_ids"] = ["invalid"]
     (tmp_path / "campaign.json").write_text(json.dumps(corrupted), encoding="utf-8")
@@ -1142,6 +1161,26 @@ def test_campaign_superseded_stop_loss_and_deferred_retry_edges(tmp_path):
     manager._stop_superseded_host(state, "host-a")
     assert state["hosts"]["host-a"]["status"] == "UNREACHABLE"
     assert state["hosts"]["host-a"]["unreachable_since_mono"] == state["hosts"]["host-a"]["last_contact_mono"]
+
+    state["jobs"][pending["name"]]["status"] = "SUPERSEDED_PENDING"
+    state["jobs"][pending["name"]]["stop_pending"] = True
+    manager.runner.stop = RunnerJobs(transport).stop
+    def probe_superseded(_host, wanted):
+        return {
+            name: {
+                "name": name,
+                "state": "EXIT" if name == pending["name"] else "RUNNING",
+                "exit_code": 143 if name == pending["name"] else None,
+                "list_digest": state["jobs"][name]["list_digest"],
+                "records": [],
+            }
+            for name in wanted
+        }
+
+    manager.runner.probe = probe_superseded
+    manager._refresh(state)
+    assert state["jobs"][pending["name"]]["status"] == "SUPERSEDED"
+    assert state["jobs"][pending["name"]]["stop_pending"] is False
 
     lost = _first_running(state, "host-b")
     state["hosts"]["host-b"]["status"] = "LOST"
@@ -1206,6 +1245,8 @@ def test_collection_uses_remote_progress_deduplicates_events_and_skips_owned_ver
     transport.add_progress("host-a", job["name"], first_id, "killed", emitted_at="2030-01-01T00:00:01+00:00")
     manager.status("campaign")
     state = _state(tmp_path)
+    first_record = state["jobs"][job["name"]]["records"][0]
+    state["jobs"][job["name"]]["records"].append(dict(first_record))
     remote_event = {
         "event": "candidate", "candidate_id": second_id, "outcome_bucket": "survived",
         "elapsed_seconds": 2.5, "emitted_at": "2030-01-01T00:00:02+00:00",
@@ -1217,7 +1258,7 @@ def test_collection_uses_remote_progress_deduplicates_events_and_skips_owned_ver
         "claims": [{"rigor": "R2", "mutation": {"survived": [{"candidate_id": second_id}]}}]
     }).encode()
     transport.finish("host-a", job["name"], verdict=verdict)
-    result, _, _, _ = manager.collect("campaign")
+    result = manager._collect_result(state)
     rows = {row["candidate_id"]: row for row in result["candidates"]}
     assert rows[first_id]["outcome"] == "killed"
     assert rows[second_id]["outcome"] == "survived"
@@ -1242,7 +1283,8 @@ def test_collection_uses_remote_progress_deduplicates_events_and_skips_owned_ver
 def test_collection_output_is_independent_of_job_and_record_insertion_order(tmp_path):
     plan = _plan(12)
     transport = FakeTransport()
-    manager = CampaignManager(tmp_path, transport)
+    clock = FakeClock()
+    manager = CampaignManager(tmp_path, transport, clock=clock)
     manager.run("campaign", plan)
     state = _state(tmp_path)
     for host_id in ("host-a", "host-b"):
