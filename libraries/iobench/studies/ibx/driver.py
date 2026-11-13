@@ -2257,15 +2257,40 @@ def run_study(cell_set: str, *, target: str, device: str, out: Path, target_kind
     }
     manifest = state["run_manifest"]
     existing_policy = manifest.get("stop_policy")
+    migrated_policy = False
     if existing_policy is not None and existing_policy != stop_policy:
-        recorded_policy = json.dumps(existing_policy, sort_keys=True, separators=(",", ":"))
-        raise StudyError("study stop policy changed since the previous attempt; resume is refused to preserve "
-                         f"the existing byte and time meters. Recorded stop policy: {recorded_policy}. "
-                         "Resume only with those values; if they are no longer acceptable, keep this state "
-                         "and obtain an operator decision. A new --out directory resets those meters")
+        legacy_free = existing_policy.get("min_free_bytes")
+        has_split_floors = ("min_output_free_bytes" in existing_policy or
+                            "min_target_free_bytes" in existing_policy)
+        equivalent_policy = None
+        if (not has_split_floors and isinstance(legacy_free, int) and
+                not isinstance(legacy_free, bool) and legacy_free > 0):
+            candidate = dict(existing_policy)
+            del candidate["min_free_bytes"]
+            candidate["min_output_free_bytes"] = legacy_free
+            candidate["min_target_free_bytes"] = legacy_free
+            if candidate == stop_policy:
+                migrations = manifest.setdefault("stop_policy_migrations", [])
+                if not isinstance(migrations, list):
+                    raise StudyError("study stop-policy migration history is malformed")
+                migrations.append({
+                    "recorded_utc": dt.datetime.now(dt.UTC).isoformat(),
+                    "legacy_min_free_bytes": legacy_free,
+                    "min_output_free_bytes": legacy_free,
+                    "min_target_free_bytes": legacy_free,
+                    "equivalence": "both split floors preserve the previous minimum-free comparison",
+                })
+                equivalent_policy = candidate
+                migrated_policy = True
+        if equivalent_policy is None:
+            recorded_policy = json.dumps(existing_policy, sort_keys=True, separators=(",", ":"))
+            raise StudyError("study stop policy changed since the previous attempt; resume is refused to preserve "
+                             f"the existing byte and time meters. Recorded stop policy: {recorded_policy}. "
+                             "Resume only with those values; if they are no longer acceptable, keep this state "
+                             "and obtain an operator decision. A new --out directory resets those meters")
     manifest["stop_policy"] = stop_policy
     recovered_attempts = finalize_interrupted_reservations(state)
-    if recovered_attempts:
+    if recovered_attempts or migrated_policy:
         write_json(state_path, state)
     target_safety = validation.system_disk
     scheduler_history = manifest.setdefault("io_schedulers", {})

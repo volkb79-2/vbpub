@@ -147,7 +147,10 @@ PARTUUID. The acknowledgement and observed system mounts and sibling swap
 devices are recorded in state, each attempt and cell, JSON/text plan output,
 and the analysis report. Resume compares stable host/root/disk/PARTUUID identity;
 it records changing mount and sibling-swap observations per attempt. Changing
-the stop policy refuses resume. Keep the existing state and resume only with
+the stop policy refuses resume. A state with the former `min_free_bytes` field
+is migrated only when both supplied split floors equal its saved value; that
+preserves the previous minimum-free comparison and is recorded in the manifest.
+Other policy changes still refuse. Keep the existing state and resume only with
 the policy reported by the refusal and recorded in its run manifest; if that
 policy cannot be used, keep the state and obtain an operator decision. Starting
 with a new `--out` directory resets the byte and elapsed-time meters and

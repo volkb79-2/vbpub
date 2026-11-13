@@ -260,6 +260,7 @@ class InterruptOnceHost(FakeHost):
 def run_set(tmp_path, name, *, host=None, target_type=None, target="/dev/fake", offset=0,
             size=24 * GIB, fsync_cell=None, dry_run=False,
             allow_system_disk_partition=False, system_disk_ack=None,
+            min_output_free=4 * GIB, min_target_free=1 * GIB,
             probe_consecutive_samples=3, max_probe_latency_s=1.0,
             probe_interval_s=driver.DEFAULT_LIVENESS_PROBE_INTERVAL_S,
             liveness_ssh_host=driver.LIVENESS_SSH_HOST,
@@ -268,7 +269,7 @@ def run_set(tmp_path, name, *, host=None, target_type=None, target="/dev/fake", 
     return driver.run_study(name, target=target, device="vda5", out=tmp_path,
                             target_kind=target_type, offset=offset, size=size,
                             mem_psi_max=20, min_memavailable=2 * GIB,
-                            min_output_free=4 * GIB, min_target_free=1 * GIB,
+                            min_output_free=min_output_free, min_target_free=min_target_free,
                             max_probe_latency_s=max_probe_latency_s,
                             probe_consecutive_samples=probe_consecutive_samples,
                             probe_interval_s=probe_interval_s,
@@ -4327,6 +4328,54 @@ def test_resume_refuses_changed_stable_identity_and_stop_policy(tmp_path):
     run_set(root, "raw-t0", host=host)
     with pytest.raises(driver.StudyError, match="stop policy changed.*preserve.*meters.*Recorded stop policy.*new --out directory resets"):
         run_set(root, "raw-t0", host=host, max_probe_latency_s=2.0)
+
+
+def test_legacy_min_free_policy_migrates_exactly_and_recovers_reservations(tmp_path):
+    out = tmp_path / "legacy-policy"
+    out.mkdir()
+    state = driver.empty_state(driver.dt.datetime.now(driver.dt.UTC).isoformat(),
+                               "raw", "/dev/fake", "vda5", FAKE_IDENTITY)
+    write_key = "raw|t0|standard|seq1m-write"
+    active_key = "raw|t0|standard|seq1m-write|active"
+    legacy_floor = GIB
+    state["write_bytes"] = 64_000_000_000
+    state["active_seconds"] = 125.0
+    state["write_reservations"] = {write_key: [state["write_bytes"]]}
+    state["active_reservations"] = {active_key: [state["active_seconds"]]}
+    state["run_manifest"]["stop_policy"] = {
+        "io_psi": "advisory; recorded, no stop threshold",
+        "memory_psi_full_avg10_max_percent": 20,
+        "min_memavailable_bytes": 2 * GIB,
+        "min_free_bytes": legacy_floor,
+        "max_probe_latency_seconds": 1.0,
+        "probe_consecutive_samples": 3,
+        "probe_interval_seconds": driver.DEFAULT_LIVENESS_PROBE_INTERVAL_S,
+        "liveness_ssh_host": driver.LIVENESS_SSH_HOST,
+        "liveness_ssh_port": driver.LIVENESS_SSH_PORT,
+        "liveness_cockpit_container": driver.LIVENESS_COCKPIT_CONTAINER,
+    }
+    state_path = out / driver.STATE_NAME
+    driver.write_json(state_path, state)
+
+    with pytest.raises(driver.StudyError, match="remaining write budget cannot complete the base schedule"):
+        run_set(out, "raw-t0", min_output_free=legacy_floor,
+                min_target_free=legacy_floor)
+
+    resumed_state = json.loads(state_path.read_text(encoding="utf-8"))
+    manifest = resumed_state["run_manifest"]
+    assert manifest["stop_policy"]["min_output_free_bytes"] == legacy_floor
+    assert manifest["stop_policy"]["min_target_free_bytes"] == legacy_floor
+    assert "min_free_bytes" not in manifest["stop_policy"]
+    assert manifest["stop_policy_migrations"][0]["legacy_min_free_bytes"] == legacy_floor
+    assert manifest["stop_policy_migrations"][0]["equivalence"].startswith("both split floors")
+    assert resumed_state["interrupted_attempts"][0]["write_reservations"] == {
+        write_key: [64_000_000_000]}
+    assert resumed_state["interrupted_attempts"][0]["active_reservations"] == {
+        active_key: [125.0]}
+    assert resumed_state["write_bytes"] == 64_000_000_000
+    assert resumed_state["active_seconds"] == 125.0
+    assert resumed_state["write_reservations"] == {}
+    assert resumed_state["active_reservations"] == {}
 
 
 def test_resume_records_changed_mount_and_swap_context_per_attempt(tmp_path):
