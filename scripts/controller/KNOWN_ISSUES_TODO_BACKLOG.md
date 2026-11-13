@@ -13,6 +13,7 @@ together.
 | ID | Summary | Severity | Status |
 |---|---|---|---|
 | CTL-01 | OpenCode and incomplete Codex run-name guards can reuse stale completion or mixed run records | Major | OPEN 2026-11-12 |
+| CTL-02 | Host queue status is read from the configured controller home; retained queue state must move with that home before purge | Minor | OPEN 2026-11-13 |
 
 ---
 
@@ -31,3 +32,25 @@ together.
 **Priority.** Major. The failure mode can falsely report success and undermine the controller's central completion-evidence guarantee.
 
 **Close when.** Every launcher refuses the full pre-existing run-name record set by default, the explicit force path is atomic and name-scoped with prior identity disclosed, brief/report/worktree identity is bound for the run, and fake-root collision, force, resume, and concurrent job-check tests pass on a clean final commit with the user docs synchronized.
+
+## CTL-02 — host queue status depends on state under CONTROLLER_HOME
+
+**Status:** OPEN (filed 2026-11-13); documentation of the current state-location
+contract and the remaining migration step.
+
+**Dependency.** `scripts/controller/ctl-status.sh` reads per-host queue
+markers from `$CONTROLLER_HOME/logs/host-sat-queue/`, the results ledger from
+`$CONTROLLER_HOME/logs/host-sat-results.tsv`, and per-host pause flags from
+`$CONTROLLER_HOME/host-sat-queue.disabled.*`. The shared configuration in
+`scripts/controller/lib.sh` supports selecting another controller home, so
+the status command works without the old program directory when those state
+files are available under the configured home.
+
+**Limitation.** Changing `CONTROLLER_HOME` does not migrate the queue logs,
+markers or pause flags. If they are absent from the selected home,
+`ctl-status.sh` cannot report the previous queue state. Preserve or recreate
+the required state before retiring the current controller home.
+
+**Close when.** The controller-home migration procedure names these files,
+retains the needed status history and pause state, and a fake-root check
+confirms `ctl-status.sh` reads them from an alternate configured home.

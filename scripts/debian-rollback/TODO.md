@@ -33,7 +33,7 @@ OP3, then VML-04; DR-01 needs no guest and can start at once.
    Each package runs in its own `ciu worktree` and is merged to `main` with
    `--no-ff`. Serial, because they touch the same files. Gate lanes are queued
    through the controller's two gate slots
-   (`/home/vscode/vbpub-release-program-20261027/codex/gate-run.sh`; the
+   (`$CONTROLLER_HOME/codex/gate-run.sh`; the
    in-repo `scripts/controller/gate-run.sh` needs lock paths that are not
    configured in this environment). Briefs, review reports and gate logs are
    under `artifacts/debian-rollback/` (ignored, local).

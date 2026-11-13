@@ -59,6 +59,7 @@ docs landed together.
 | NC-51 | Fleet merge launch lacks an incomplete-shard gate and status does not distinguish merging | Should-fix | OPEN 2026-11-12 |
 | NC-52 | Campaign supervision logic (attempts, fleet, memory guard, merge) lives in the netcup runner scripts although it is provider-neutral; it should move out of the netcup script | Should-fix | OPEN 2026-11-12 (design) |
 | NC-53 | the Run-Gate 25.6.0 image rollout did not synchronize runner scripts or verify the selected private Run-Gate profile | Should-fix | OPEN 2026-11-12 |
+| NC-54 | Pre-reinstall helpers use a fixed release-program root; remote-gate's output root is configurable | Minor | OPEN 2026-11-13 |
 
 ---
 
@@ -1287,3 +1288,24 @@ campaign; the registered suite detects stale scripts and a 25.4.0 profile and
 accepts scripts plus a profile verified for 25.6.0; and the rollout check
 records successful verification of the deployed scripts and selected
 `run_gate_bins` on each compute host.
+
+## NC-54 — release-program paths in reinstall and remote-gate helpers
+
+**Status:** OPEN (filed 2026-11-13); documents the exact purge dependency.
+
+**Limitation.** `pre-reinstall.py` and `pre-reinstall-export.py` set a fixed
+release-program root and read `dstdns-r2/env.sh` beneath it. They cannot use a
+different program root today. `runner/remote-gate.py` has a default output
+directory under the release-program root, but supports `REMOTE_GATE_OUT` and
+`--out-dir`; callers can use it without that default path by setting an
+override. The fixed reinstall helpers must be made configuration-driven or
+retained with their required helper before the old program directory can be
+purged.
+
+**Where.** `scripts/netcup/pre-reinstall.py`,
+`scripts/netcup/pre-reinstall-export.py`, and
+`scripts/netcup/runner/remote-gate.py`.
+
+**Close when.** Both reinstall helpers accept a controller-home setting and a
+fake-root check proves that they work from an alternate home; the remote-gate
+override remains documented and its default is no longer required.

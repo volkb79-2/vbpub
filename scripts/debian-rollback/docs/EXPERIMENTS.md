@@ -117,7 +117,7 @@ which coordinates r1002 and v1001.
 | Length | Up to 48 hours |
 | During the lease | Wipe and reinstall freely; nothing on r1002 is needed by the controller; the `host-sat-queue` pause flag stays set |
 | Never | Touch v1001, nano1 or the controller. Pass `--cgroupns=host`, `--pid=host` or `--net=host` to a container. Do a real swap operation without cleanup |
-| Hand-back | Reinstall with `debian-install-v2` using the controller's config `r1002/debian-install-v2-20261112.json` (in the program directory `/home/vscode/vbpub-release-program-20261027/`: `iobench_raw_gb` 32, swap 64, pools /14). Bring up the runner per `scripts/netcup/runner/README.md`. Verify with the runner smoke: identity, docker, tester-unified image, run-gate at least 25.4, cgprofile observer socket owned by root:root, one trivial remote-gate round trip |
+| Hand-back | Reinstall with `debian-install-v2` using the controller's private config `$CONTROLLER_HOME/r1002/debian-install-v2-20261112.json` (`iobench_raw_gb` 32, swap 64, pools /14). Bring up the runner per `scripts/netcup/runner/README.md`. Verify with the runner smoke: identity, docker, tester-unified image, run-gate at least 25.4, cgprofile observer socket owned by root:root, one trivial remote-gate round trip |
 | If restore fails | Leave the host in the rescue system and tell the controller exactly what state it is in |
 | Records | A log of everything done goes to the program directory. The results go into the repository as a report, so the host plan (btrfs `/srv/cow`, root filesystem) can use them |
 | Earlier slot | The controller offered to re-plan if the operator wants r1002 before the study day |

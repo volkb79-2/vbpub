@@ -437,7 +437,7 @@ image rebuild and the `test` extra in `client/pyproject.toml` (not touched on th
 
 ## PWMCP-12 — the session cleanliness guard makes Git a prerequisite for the whole test suite
 
-**Status: FIXED 2026-11-04 (48838ede3).** Guard in `pwmcp/conftest.py`: missing git / non-worktree / `safe.directory` each give one `UsageError` before the suite, `--no-optional-locks`, 60 s timeout, explicit warned opt-out `PWMCP_ALLOW_NO_GIT_GUARD=1`; oracle `tests/test_git_guard.py`. (Original: Severity P2.) Filed 2026-10-30 from `reviews/pwmcp2.out`.
+**Status: FIXED 2026-11-04 (48838ede3).** Guard in `pwmcp/conftest.py`: missing git / non-worktree / `safe.directory` each give one `UsageError` before the suite, `--no-optional-locks`, 60 s timeout, explicit warned opt-out `PWMCP_ALLOW_NO_GIT_GUARD=1`; oracle `tests/test_git_guard.py`. (Original: Severity P2.) Filed 2026-10-30 from `pwmcp/docs/reports/pwmcp2-review-2026-10-30.md`.
 
 **Observed.** The autouse session fixture in `pwmcp/conftest.py:17-30,33-38`
 invokes `git status` before and after every test session. If Git is absent, the
@@ -455,7 +455,7 @@ identity setup in sync.
 
 ## PWMCP-13 — the Git-visible cleanliness guard misses ignored and exit-time writes
 
-**Status: FIXED 2026-11-04 (48838ede3), narrower contract chosen.** The module docstring of `pwmcp/conftest.py` now states that ignored paths and exit-time writers (coverage) are out of scope; the guard certifies no new Git-visible entries under `pwmcp/`. (Original: Severity P2.) Filed 2026-10-30 from `reviews/pwmcp2.out`.
+**Status: FIXED 2026-11-04 (48838ede3), narrower contract chosen.** The module docstring of `pwmcp/conftest.py` now states that ignored paths and exit-time writers (coverage) are out of scope; the guard certifies no new Git-visible entries under `pwmcp/`. (Original: Severity P2.) Filed 2026-10-30 from `pwmcp/docs/reports/pwmcp2-review-2026-10-30.md`.
 
 **Observed.** `pwmcp/conftest.py:23-29,35-42` compares `git status
 --untracked-files=all`, which omits ignored paths such as `.pytest_cache/`,
@@ -471,7 +471,7 @@ runs after coverage and other interpreter-exit writers complete.
 
 ## PWMCP-14 — repository-wide status can blame PWMCP for another subtree's writes
 
-**Status: FIXED 2026-11-04 (48838ede3).** `git status ... -- .` from `pwmcp/`; oracle `test_write_outside_pwmcp_is_not_blamed`. (Original: Severity P2.) Filed 2026-10-30 from `reviews/pwmcp2.out`.
+**Status: FIXED 2026-11-04 (48838ede3).** `git status ... -- .` from `pwmcp/`; oracle `test_write_outside_pwmcp_is_not_blamed`. (Original: Severity P2.) Filed 2026-10-30 from `pwmcp/docs/reports/pwmcp2-review-2026-10-30.md`.
 
 **Observed.** `pwmcp/conftest.py:23-29` runs `git status` from the PWMCP
 directory but supplies no pathspec, so Git reports changes anywhere in the
@@ -483,7 +483,7 @@ the assertion's scope and wording aligned.
 
 ## PWMCP-15 — the session guard can report xdist workers' temporary writes as failures
 
-**Status: FIXED 2026-11-04 (48838ede3).** The comparison runs in `pytest_sessionstart`/`pytest_sessionfinish` of the xdist controller only (workers return early); oracle `test_xdist_workers_do_not_trip_the_guard` runs `-n 2` with transient writes. (Original: Severity P3.) Filed 2026-10-30 from `reviews/pwmcp2.out`.
+**Status: FIXED 2026-11-04 (48838ede3).** The comparison runs in `pytest_sessionstart`/`pytest_sessionfinish` of the xdist controller only (workers return early); oracle `test_xdist_workers_do_not_trip_the_guard` runs `-n 2` with transient writes. (Original: Severity P3.) Filed 2026-10-30 from `pwmcp/docs/reports/pwmcp2-review-2026-10-30.md`.
 
 **Observed.** The current suite does not enable pytest-xdist, but the session
 fixture in `pwmcp/conftest.py:33-43` takes independent before/after snapshots
@@ -497,7 +497,7 @@ overlap and misattribute a write.
 
 ## PWMCP-16 — the session guard walks and prints more repository state than needed
 
-**Status: FIXED 2026-11-04 (48838ede3).** Pathspec-limited status with `--no-optional-locks`; failure report lists at most 20 added and 20 removed entries plus "... and N more" (oracle `test_new_file_under_pwmcp_fails_with_bounded_report`). (Original: Severity P3.) Filed 2026-10-30 from `reviews/pwmcp2.out`.
+**Status: FIXED 2026-11-04 (48838ede3).** Pathspec-limited status with `--no-optional-locks`; failure report lists at most 20 added and 20 removed entries plus "... and N more" (oracle `test_new_file_under_pwmcp_fails_with_bounded_report`). (Original: Severity P3.) Filed 2026-10-30 from `pwmcp/docs/reports/pwmcp2-review-2026-10-30.md`.
 
 **Observed.** `pwmcp/conftest.py:23-29,39-43` walks the whole monorepo twice
 per session, including nested pytest sessions, and prints complete before and
@@ -510,7 +510,7 @@ omitted paths.
 
 ## PWMCP-17 — the new top-level test is separated from the next statement by one blank line
 
-**Status: STALE 2026-11-04 (48838ede3).** `flake8` 7.3.0 no longer reports E305 for `tests/test_ocr_service.py` (two blank lines precede the `try:` block); it did report an unused `import shutil` (F401), removed in that commit. (Original: Severity P3.) Filed 2026-10-30 from `reviews/pwmcp2.out`.
+**Status: STALE 2026-11-04 (48838ede3).** `flake8` 7.3.0 no longer reports E305 for `tests/test_ocr_service.py` (two blank lines precede the `try:` block); it did report an unused `import shutil` (F401), removed in that commit. (Original: Severity P3.) Filed 2026-10-30 from `pwmcp/docs/reports/pwmcp2-review-2026-10-30.md`.
 
 **Observed.** `pwmcp/tests/test_ocr_service.py:51-58` has one blank line
 between the top-level test function and the following top-level `try:` block,

@@ -10,7 +10,7 @@ component: "session-extract"
 provenance: "controller session record 2026-11-10; backlog filing for the operator"
 filed_date: "2026-11-10"
 closed_date: "2026-11-11"
-closed_reason: "Updated and closed by nyx-readback-20261111, not duplicated: commits 7f8dfcd01, dc65ad159, and bbc5888b5 implement Agent/Task/SendMessage and nested notification extraction, expiry-noise suppression, full-payload dedupe, configurable launcher/run association, bounded summary/full records, adapter refusal, prose-only exclusion, docs, and focused tests; final-head authoritative gate receipts are in /home/vscode/vbpub-release-program-20261027/reports/nyx-extract-readback-REPORT.md. NL-62 retains the separate search-wide application."
+closed_reason: "Updated and closed by nyx-readback-20261111, not duplicated: commits 7f8dfcd01, dc65ad159, and bbc5888b5 implement Agent/Task/SendMessage and nested notification extraction, expiry-noise suppression, full-payload dedupe, configurable launcher/run association, bounded summary/full records, adapter refusal, prose-only exclusion, docs, and focused tests; final-head authoritative gate receipts are in nyxloom/nyxloom-trove/reports/nyx-extract-readback-REPORT.md. NL-62 retains the separate search-wide application."
 ---
 
 ## Problem

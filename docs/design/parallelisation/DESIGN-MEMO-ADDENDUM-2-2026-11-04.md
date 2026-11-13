@@ -11,7 +11,7 @@ Status: DESIGN, no implementation. It amends `RP/reports/PARALLELISATION-DESIGN-
 disagree, this addendum wins.
 
 Inputs:
-- the two memos, `RP/reports/assay-tmpfs-REPORT.md`, `RP/reports/mdt-dedicated-mem-REPORT.md`, `RP/reports/AGENT-RULES.md`;
+- the two memos, `assay/docs/evidence/assay-tmpfs-REPORT.md`, `docs/reports/mdt-dedicated-mem-REPORT.md`, `docs/reports/AGENT-RULES.md`;
 - `AGENTS.md:209-225` (limits are host-owned) and `:329-361` (host cgroup placement);
 - code: `mdt-cockpit/host-setup/mdt_capacity.py`, `run-gate-project/run_gate.py`, `assay/src/assay/{isolation.py,_tmpfs_worker.py}`,
   `libraries/cowtree`, `scripts/<private-host>-guide` (soulmask_tmpfs), `shared-ramdisk-depot-manager` (srdm);
@@ -83,7 +83,7 @@ owns *what*, and cowtree owns *the generic publish/lease/GC mechanism*.**
   - So the template's B219 primed index is valid in every worker **without the per-worker re-prime** that copies need.
 - **Per-worker cost:**
   - one mutate-and-restore cycle left 260 KB in the upper [M];
-  - against 177 MiB and 1.0-2.9 s per worker for a copy (`assay-tmpfs-REPORT.md:53-54`).
+  - against 177 MiB and 1.0-2.9 s per worker for a copy (`assay/docs/evidence/assay-tmpfs-REPORT.md:59-60`).
   - At 5 instances × 3 workers that is about **2.6 GiB of RAM not spent** [I].
 - **Hazards:**
   - a directory rename gives EXDEV without `redirect_dir` [M];
@@ -157,7 +157,7 @@ Section 7 has owners, sizes, gates and risks.
 | B appends 8 MiB | B, for the new pages only (C1) | B +8 MiB |
 | B rewrites with `O_TRUNC` | truncate frees everything, then B owns the new pages | B +24 MiB net (+32, − its own 8 freed) |
 | B unlinks and recreates the file (git, assay `isolation.py:1343-1344`, editors) | B | not run; same path as `O_TRUNC` [I] |
-| Pages swapped while A is alive, faulted in by B | A if online (C4); if A is gone, mostly **B** (56-69 %), the rest the parent | measured, `reports/ad2-measurements-REPORT.md` M-4: A alive, B +0 and A back to 32 MiB; A stopped, B +14.6-17.1 of 23.5-26.2 MiB |
+| Pages swapped while A is alive, faulted in by B | A if online (C4); if A is gone, mostly **B** (56-69 %), the rest the parent | measured, `docs/reports/ad2-measurements-REPORT.md` M-4: A alive, B +0 and A back to 32 MiB; A stopped, B +14.6-17.1 of 23.5-26.2 MiB |
 | B maps and touches a file | `file_mapped` goes to the **owner** (C7) | measured, same report M-5: A +32.09 MiB, B 0 |
 
 What `memory.stat` shows:
@@ -305,13 +305,13 @@ lane container (dev-gates leaf)
    if a stat mismatches: slower, never wrong.
 
 **Assay guards.** `_acquire_worker`'s `cheap_clone` guard (`isolation.py:961-967`) and the "jobs > 1 needs
-cheap_clone" refusal (`assay-tmpfs-REPORT.md:57`) accept either worker source.
+cheap_clone" refusal (`assay/docs/evidence/assay-tmpfs-REPORT.md:63`) accept either worker source.
 
 ### 3.4 Costs: overlay slot vs per-worker copy (vbpub template: 177 MiB, 7 796 tracked files, 1.0 MB index)
 
 | Item | Per-worker copy (O9) | Overlay slot (O1) |
 |---|---|---|
-| RAM per worker, charged to the lane | 177 MiB (`assay-tmpfs-REPORT.md:53`) | upper: about 1 MB for the index plus a few KB of mutated files [M 260 KB at 95 MiB]; `ovl_inode` and dentry slab for looked-up paths, about 1 KB × 7.8 k ≈ 8 MB worst case [I; M-3] |
+| RAM per worker, charged to the lane | 177 MiB (`assay/docs/evidence/assay-tmpfs-REPORT.md:59`) | upper: about 1 MB for the index plus a few KB of mutated files [M 260 KB at 95 MiB]; `ovl_inode` and dentry slab for looked-up paths, about 1 KB × 7.8 k ≈ 8 MB worst case [I; M-3] |
 | Worker start | 1.0 s (j1), 2.6-2.9 s (j3, concurrent) (`:54`) | volume mounted by dockerd at create (ms [M] for the mount itself); no copy |
 | Per-worker index prime | `update-index --refresh` over 177 MiB ≈ 0.4 s [I: 0.20 s / 95 MiB measured] | none [M] |
 | Page cache across workers, instances, resumes and shards | one copy each | **one per host per key** |
@@ -565,7 +565,7 @@ Addendum 1 AWP-1 to AWP-4 and AWP-7 to AWP-12 are unaffected. AWP-5/6 are refine
     etc/<private-host>/soulmask_tmpfs-paths.conf, usr/local/sbin/soulmask_tmpfs-setup.sh}`;
   - `shared-ramdisk-depot-manager/nyxloom-trove/{PLAN.md:59-197,344-358, decisions.md:987-1093}`.
 - **Reports (RP/reports):** `PARALLELISATION-DESIGN-MEMO-2026-11-05.md`, `PARALLELISATION-DESIGN-MEMO-ADDENDUM-2026-11-04.md`,
-  `assay-tmpfs-REPORT.md`, `mdt-dedicated-mem-REPORT.md`, `AGENT-RULES.md`.
+  `assay/docs/evidence/assay-tmpfs-REPORT.md`, `docs/reports/mdt-dedicated-mem-REPORT.md`, `docs/reports/AGENT-RULES.md`.
 - **Probes and experiment (SP):**
   - `probe2.sh` with output `probe2-<host>.txt` and `probe2-<host>.txt`: kernel config, overlay module parameters, tier
     weights and limits, the env;

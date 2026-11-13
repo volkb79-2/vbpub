@@ -20,7 +20,7 @@ The manifest records class C as 30 top-level entries, 8.4 GiB and 71,570 regular
 | CONTROLLER-CONTINUITY | KEEP | Handoffs, queues, session state, and controller notes stay outside the repo. |
 | ARCHIVE-OUTSIDE | KEEP | Large or host-specific evidence remains in the program directory; no bulk archive copy. |
 | OPERATOR-DECISION / KEEP-OUTSIDE | KEEP | Requires an owner decision or separate persistence review. |
-| Class B: 29 entries / 4.9 GiB | HOLD; NOT PURGE-SAFE | See the Class B citation ledger below. It records tracked citations, live workflow dependencies, missing report sources, and uncited candidates for operator review. |
+| Class B: 29 entries / 4.9 GiB | HOLD; NOT PURGE-SAFE | See the Class B citation ledger, the wave 3 status table, and final purge-readiness table below. |
 | DELETED-BY-OPERATOR-DECISION | ALREADY DELETED | Five named directories are absent from the current filesystem listing. |
 
 ## Current source metadata and operator deletions
@@ -94,15 +94,15 @@ A metadata-only recheck at 2026-11-12 found `r1002/` at 103 MiB / 2,159 files an
 
 ## Class B citation ledger
 
-Class B is 29 top-level entries, 4.9 GiB and 27,815 regular files in the manifest. For every item below, the scan used `git grep` over tracked repository files for the program-directory path, a source basename, or the listed root-relative subpath; generic project-name matches are excluded. The citer counts exclude this inventory itself; source-header matches are copy proofs, not citations. The `reports/` path scan also excludes repository-relative `docs/reports/` links. After this round's two persistence actions and citation rewrites, 53 cited report-directory files (60 tracked file/source pairs) still lack a repository copy proof; their names, sizes and tracked citers are listed below. The remaining report set needs a separate persistence pass and is not purge-safe. Class B remains on hold; this is not purge authorization.
+Class B is 29 top-level entries, 4.9 GiB and 27,815 regular files in the manifest. The table below is the wave 2 ledger. Wave 3 re-scanned tracked files for cited program-directory paths and source basenames, excluding this inventory and provenance headers. The wave 2 `reports/` table listed 53 small cited files; its original scan found 70 tracked citer-file/source pairs (19 now point to repository copies and 51 still cite outside sources). Three additional citations to the Nyxloom report were found outside that table and are persisted. The copied reports exposed four more pairs to four of the 38 remaining baseline files, plus three pairs to three additional report files. The wave 3 first slice therefore leaves 41 small cited files and 58 source/citer pairs pending, documented below. It persisted 16 reports and added two raw-evidence summaries. Class B remains on hold; this is not purge authorization.
 
 | B top-level entry | Manifest size / files | Result | Cited source path(s), tracked citers, or reason |
 |---|---:|---|---|
 | `ciu/` | 24 KiB / 4 | UNCITED (0) | No exact controller path or source sub-item citation found; generic project-name matches excluded. Candidate for operator review. |
 | `codex/` | 859 MiB / 3,458 | KEEP-CITED (8 tracked files) | `codex/runs/` citers: `docs/design/ctlstat/REQUIREMENTS.md`, `nyxloom/nyxloom-trove/backlog/INDEX.md`, `nyxloom/nyxloom-trove/backlog/NL-56-mechanical-codex-stop-state-and-stall-detection-replace-control.md`, `nyxloom/nyxloom-trove/backlog/NL-62-record-level-search-across-session-evidence.md`, `nyxloom/nyxloom-trove/backlog/NL-63-resolve-project-and-parent-session-side-files.md`, `scripts/controller/tests/test-job-check.sh`. Controller-path citers: `scripts/debian-rollback/TODO.md`, `scripts/debian-rollback/docs/WORK-PACKAGES.md`. Keep live `.wt` markers and unmerged worktree state. |
 | `controller/` | 11 MiB / 525 | KEEP-CITED (1) | `controller/ib-vq-rerun/` is cited by `libraries/iobench/BACKLOG.md`. |
-| `dstdns-r2/` | 1.3 GiB / 4,194 | KEEP-CITED (6) | `dstdns-r2/work/r2lanes.txt`: `cmru/docs/evidence/r2-board-20261105b-REPORT.md`. Other path citers: `docs/design/dstdns/R2-PILOT-2026-11-04.md`, `docs/design/host-service-sockets/RELEASE-PLAN-phase1-2026-11-07.md`, `docs/design/parallelisation/DESIGN-MEMO-ADDENDUM-2-2026-11-04.md`, `scripts/debian-install-v2/docs/evidence/div2-reinstall-RUNBOOK.md`, `scripts/debian-install-v2/docs/evidence/host-reinstall-PREP-REPORT.md`. |
-| `evidence/` | 405 MiB / 5,367 | KEEP-CITED (31 source/citer pairs) | `evidence/iobench-r2-r1002/`: `libraries/iobench/BACKLOG.md`; `evidence/jobs-pilot3/`: `assay/docs/evidence/ASSAY-JOBS-PILOT-ANALYSIS-2026-11-02.md`. The 22 `evidence/truenas-live-20261029/` citers are `scripts/truenas/boot-pool-patch/TODO.md`, `scripts/truenas/boot-pool-patch/docs/DESIGN-GUIDE.md`, `scripts/truenas/boot-pool-patch/v28-nightly-20261027/README.md`, `scripts/truenas/docs/evidence/truenas-live-20261029.md`, and `scripts/truenas/docs/evidence/truenas-live-20261029/{unit-green-v28-external-lane.log,unit-red-v28-external-lane.log,v27-after-ui-inspect.log,v27-patch-apply.log,v27-path-a-api-rerun.log,v27-path-a-api.log,v27-path-a-ui.log,v27-path-b-api-rerun.log,v27-path-b-api.log,v27-path-b-partition.log,v27-path-b-provision-idempotence.log,v27-path-b-ui-dom-capture.log,v27-path-b-ui-fixed.log,v27-path-b-ui-nav-fixed.log,v27-path-b-ui.log,v27-stock-inspect-final.log,v27-stock-inspect-r3.log,v28-target-source-archive.sha256}`. `evidence/truenas-live-20261030/`: `scripts/truenas/docs/UPDATE-AND-DRIFT.md` and `scripts/truenas/docs/evidence/truenas-live-20261030.md`. `evidence/truenas-live-20261031/`: `scripts/truenas/docs/evidence/truenas-live-20261031.md`, `scripts/truenas/docs/evidence/truenas-live-20261031/{blocked-local-tcg-20261030.md,blocked-step2-chroot-dns-20261031.md,step1-20g.log}`, and `scripts/truenas/golden-iso/docs/CONSUMERS.md`. |
+| `dstdns-r2/` | 1.3 GiB / 4,194 | KEEP-OUTSIDE-WITH-SUMMARY (partial) | `dstdns-r2/work/r2lanes.txt`: `cmru/docs/evidence/r2-board-20261105b-REPORT.md`. Other path citers: `docs/design/dstdns/R2-PILOT-2026-11-04.md`, `docs/design/host-service-sockets/RELEASE-PLAN-phase1-2026-11-07.md`, `docs/design/parallelisation/DESIGN-MEMO-ADDENDUM-2-2026-11-04.md`, `scripts/debian-install-v2/docs/evidence/div2-reinstall-RUNBOOK.md`, `scripts/debian-install-v2/docs/evidence/host-reinstall-PREP-REPORT.md`. A one-page summary and rewrites remain for these six citer files. |
+| `evidence/` | 405 MiB / 5,367 | KEEP-OUTSIDE-WITH-SUMMARY (partial) | IOBench raw evidence is summarized at `libraries/iobench/docs/reports/IOBENCH-R2-R1002-EVIDENCE-SUMMARY-2026-11-13.md`; Assay jobs-pilot raw evidence is summarized at `assay/docs/evidence/JOBS-PILOT3-EVIDENCE-SUMMARY-2026-11-13.md`, and both tracked citations now point to those summaries. TrueNAS live evidence remains outside; its existing index records the retained/omitted files, but a wave 3 one-page summary and citation rewrite are still needed. The 22 `evidence/truenas-live-20261029/` citers are `scripts/truenas/boot-pool-patch/TODO.md`, `scripts/truenas/boot-pool-patch/docs/DESIGN-GUIDE.md`, `scripts/truenas/boot-pool-patch/v28-nightly-20261027/README.md`, `scripts/truenas/docs/evidence/truenas-live-20261029.md`, and `scripts/truenas/docs/evidence/truenas-live-20261029/{unit-green-v28-external-lane.log,unit-red-v28-external-lane.log,v27-after-ui-inspect.log,v27-patch-apply.log,v27-path-a-api-rerun.log,v27-path-a-api.log,v27-path-a-ui.log,v27-path-b-api-rerun.log,v27-path-b-api.log,v27-path-b-partition.log,v27-path-b-provision-idempotence.log,v27-path-b-ui-dom-capture.log,v27-path-b-ui-fixed.log,v27-path-b-ui-nav-fixed.log,v27-path-b-ui.log,v27-stock-inspect-final.log,v27-stock-inspect-r3.log,v28-target-source-archive.sha256}`. `evidence/truenas-live-20261030/`: `scripts/truenas/docs/UPDATE-AND-DRIFT.md` and `scripts/truenas/docs/evidence/truenas-live-20261030.md`. `evidence/truenas-live-20261031/`: `scripts/truenas/docs/evidence/truenas-live-20261031.md`, `scripts/truenas/docs/evidence/truenas-live-20261031/{blocked-local-tcg-20261030.md,blocked-step2-chroot-dns-20261031.md,step1-20g.log}`, and `scripts/truenas/golden-iso/docs/CONSUMERS.md`. |
 | `gate2.lock` | 0 bytes / 1 | KEEP-CITED (4) | Four users: `scripts/controller/controller.local.env.example`, `scripts/controller/gate-run.sh`, `scripts/controller/tests/mutate-sources.py`, `scripts/controller/tests/test-hardening-tools.sh`. |
 | `gate.lock` | 0 bytes / 1 | KEEP-CITED (30) | Thirty users: `ciu/docs/plan-release-2026-11-02.md`, `cmru/tools/run_release_gate.py`, `cmru/nyxloom-trove/reports/PROGRAM-2026-10-W2-INTEG-REPORT.md`, `cmru/nyxloom-trove/reports/PROGRAM-2026-10-W2-PKG4-REPORT.md`, `cmru/nyxloom-trove/reports/PROGRAM-2026-10-W3-PREP-REPORT.md`, `cmru/nyxloom-trove/reports/PROGRAM-2026-10-W3-ZERO-REPORT.md`, `cmru/nyxloom-trove/reports/cmru-CREDPASS-2026-10-REPORT.md`, `cmru/nyxloom-trove/reports/cmru-release-readiness-claude-opus-5-high-2026-10-13.md`, `libraries/cli-extended/docs/CX-BACKLOG-2026-10-REPORT.md`, `libraries/cli-extended/docs/program-reports/CLIX-04-REPORT.md`, `libraries/cli-extended/docs/program-reports/W10-REPORT.md`, `libraries/cli-extended/docs/program-reports/W9a-REPORT.md`, `libraries/worktree/docs/INTEGRATION-PLAN-2026-11-01.md`, `mdt-cockpit/docs/RELEASE-PLAN-2026-11-03.md`, `nyxloom/nyxloom-trove/reports/MM-MOVE-REPORT.md`, `nyxloom/nyxloom-trove/reports/nyxloom-SUCCESSOR-2026-10-REPORT.md`, `nyxloom/nyxloom-trove/reports/nyxloom-usage-iteration-4-REPORT.md`, `pwmcp/docs/PWMCP-02-REPORT.md`, `pwmcp/docs/RELEASE-PLAN-R4-2026-11-02.md`, `run-gate-project/KNOWN_ISSUES_TODO_BACKLOG.md`, `run-gate-project/nyxloom-trove/reports/RG-SMALL-REPORT.md`, `run-gate-project/nyxloom-trove/reports/run-gate-RG-NARROW-2026-10-REPORT.md`, `run-gate-project/nyxloom-trove/reports/run-gate-WAVE-RG55-CONTROLLER-LOG.md`, `scripts/controller/controller.local.env.example`, `scripts/controller/gate-run.sh`, `scripts/controller/rules.md`, `scripts/controller/tests/test-hardening-tools.sh`, `scripts/debian-install-v2/LT-MEM-REPORT.md`, `scripts/mounttrace/docs/evidence/mt-clix-REPORT.md`, `voice-screen-share/mattermost-server/docs/MM-RENAME-REPORT.md`. |
 | `HANDOFF-STATE-20261105.md` | 16 KiB / 1 | KEEP-CITED (1) | `docs/design/dstdns/DEVELOPMENT-PLAN-2026-11-04.md` cites it; continuity stays outside. |
@@ -110,36 +110,36 @@ Class B is 29 top-level entries, 4.9 GiB and 27,815 regular files in the manifes
 | `HANDOFF-STATE.md` | 68 KiB / 1 | KEEP-CITED (1) | `assay/docs/ASSAY-OPUS-REVIEW-AND-PLAN-2026-10-31.md` cites it; continuity stays outside. |
 | `host-sat-queue.disabled.r1002` | 0 bytes / 1 | KEEP-CITED (18) | Eighteen tracked citers: `augeaswrap/docs/evidence/aw-bl-22-24-LIVE-REPORT.md`, `cmru/docs/evidence/shard-move-s4-REPORT.md`, `docs/design/ctlstat/REQUIREMENTS.md`, `scripts/controller/ctl-status.sh`, `scripts/controller/tests/mutate-sources.py`, `scripts/controller/tests/test-ctl-status.sh`, `scripts/debian-install-v2/docs/evidence/div2-reinstall-host-RESULT.md`, `scripts/debian-install-v2/docs/evidence/host-reinstall-EXEC-LOG.md`, `scripts/debian-install-v2/docs/evidence/host-reinstall-PREP-REPORT.md`, `scripts/mounttrace/docs/evidence/mt-close-vm-LIVE-REPORT.md`, `scripts/mounttrace/docs/evidence/mt11-rerun-LIVE-REPORT.md`, `scripts/netcup/KNOWN_ISSUES_TODO_BACKLOG.md`, `scripts/netcup/docs/HOST-SAT-QUEUE.md`, `scripts/netcup/docs/evidence/host-cockpit-EXEC-LOG.md`, `scripts/netcup/docs/evidence/host-queue-REPORT.md`, `scripts/netcup/runner/README.md`, `scripts/netcup/runner/host-sat-queue.sh`, `scripts/netcup/runner/tests/test-queue.sh`. |
 | `host-sat-queue.disabled.v1001` | 0 bytes / 1 | KEEP-CITED (18) | The same eighteen tracked files listed for the r1002 flag cite the paired per-host pause-flag pattern. The flag files themselves are runtime controller state. |
-| `host-sat-queue.README.md` | 4 KiB / 1 | KEEP-CITED (1) | Persisted as `scripts/netcup/docs/HOST-SAT-QUEUE.md`; its source header is the sole citer. |
+| `host-sat-queue.README.md` | 4 KiB / 1 | PERSISTED-CITATION (1) | Persisted as `scripts/netcup/docs/HOST-SAT-QUEUE.md`; its source header is the sole citer. This individual source is purgeable. |
 | `host-sat-queue.README.md.nc28-backup-20261109T190502Z` | 4 KiB / 1 | UNCITED (0) | No exact backup-name citation found. Candidate for operator review. |
 | `host-sat-queue.sh` | 16 KiB / 1 | KEEP-CITED (21) | Twenty-one users: `scripts/netcup/runner/README.md`, `scripts/netcup/docs/HOST-SAT-QUEUE.md`, `scripts/netcup/CONSUMERS.md`, `scripts/netcup/DESIGN-GUIDE.md`, `scripts/netcup/KNOWN_ISSUES_TODO_BACKLOG.md`, `scripts/controller/README.md`, `scripts/controller/controller.local.env.example`, `scripts/controller/docs/CONFIGURATION.md`, `scripts/controller/docs/CONSUMERS.md`, `scripts/controller/tests/mutate-sources.py`, `scripts/controller/tests/run-suite.sh`, `scripts/controller/tests/test-mutations.sh`, `scripts/netcup/runner/remote-gate.py`, `scripts/netcup/runner/tests/test-queue.sh`, `scripts/netcup/tests/test_runner_scripts.py`, `docs/design/ctlstat/REQUIREMENTS.md`, `run-gate-project/docs/DESIGN-compute-hosts-and-campaigns-2026-11.md`, `run-gate-project/docs/DESIGN-lane-rework-2026-11.md`, `run-gate-project/docs/evidence/host-selftest-stall-REPORT.md`, `scripts/debian-install-v2/docs/evidence/host-reinstall-EXEC-LOG.md`, `scripts/netcup/docs/evidence/host-cockpit-EXEC-LOG.md`. A tracked equivalent exists; this program-directory source remains a separate item. |
 | `host-sat-queue.sh.nc28-backup-20261109T190502Z` | 12 KiB / 1 | UNCITED (0) | No exact backup-name citation found. Candidate for operator review. |
 | `ib-vq-scripts/` | 88 KiB / 16 | UNCITED (0) | No exact source path citation found; the separate `controller/ib-vq-rerun/` item is cited under `controller/`. Content looks unique (benchmark driver scripts): operator review before any purge. |
 | `iobench` | 8 KiB / 1 | UNCITED (0) | No exact controller path citation found; generic project-name matches excluded. Candidate for operator review. |
-| `logs/` | 31 MiB / 3,589 | KEEP-CITED (22 matches across 13 files) | Nine users cite `logs/host-sat-results.tsv`: `run-gate-project/docs/DESIGN-lane-rework-2026-11.md`, `scripts/controller/ctl-status.sh`, `scripts/controller/tests/mutate-sources.py`, `scripts/controller/tests/test-ctl-status.sh`, `scripts/netcup/KNOWN_ISSUES_TODO_BACKLOG.md`, `scripts/netcup/docs/HOST-SAT-QUEUE.md`, `scripts/netcup/runner/README.md`, `scripts/netcup/runner/host-sat-queue.sh`, `scripts/netcup/runner/tests/test-queue.sh`. Thirteen cite `logs/host-sat-*`: `run-gate-project/docs/DESIGN-lane-rework-2026-11.md`, `scripts/controller/README.md`, `scripts/controller/ctl-status.sh`, `scripts/controller/tests/mutate-sources.py`, `scripts/controller/tests/test-ctl-status.sh`, `scripts/netcup/CONSUMERS.md`, `scripts/netcup/KNOWN_ISSUES_TODO_BACKLOG.md`, `scripts/netcup/docs/HOST-SAT-QUEUE.md`, `scripts/netcup/docs/evidence/host-cockpit-EXEC-LOG.md`, `scripts/netcup/docs/evidence/host-cutover-EXEC-LOG.md`, `scripts/netcup/runner/README.md`, `scripts/netcup/runner/host-sat-queue.sh`, `scripts/netcup/runner/tests/test-queue.sh`. `scripts/controller/ctl-status.sh` reads the queue/results files at runtime. |
+| `logs/` | 31 MiB / 3,589 | RUNTIME-DEPENDENCY (CTL-02; configuration-driven) | `ctl-status.sh` reads `$CONTROLLER_HOME/logs/host-sat-queue/` and `$CONTROLLER_HOME/logs/host-sat-results.tsv`; queue pause flags also live under the configured home. It works with another controller home when the needed state is moved there. The old queue history is not migrated by changing the variable; retain or copy the needed state before retiring the current home. The tracked citations are the same 9 results-ledger users and 13 host-saturation users listed in the wave 2 row above. Sockets and Nyxloom gate-log citations in the persisted reports were rewritten to those reports' evidence summaries. |
 | `pilot/` | 620 KiB / 24 | UNCITED (0) | No exact controller path or source sub-item citation found. Content looks unique (pilot run material): operator review before any purge. |
-| `R2-PORTFOLIO-PLAN.md` | 16 KiB / 1 | KEEP-CITED (2) | Two users: `docs/design/r2-portfolio/R2-PORTFOLIO-PLAN-2026-10-29.md` and `libraries/rigor-record/docs/DESIGN-MEMO-2026-11-05.md`; plan copy already tracked. |
+| `R2-PORTFOLIO-PLAN.md` | 16 KiB / 1 | PERSISTED-CITATION (2) | Persisted as `docs/design/r2-portfolio/R2-PORTFOLIO-PLAN-2026-10-29.md`; both tracked citations point to the repository copy. This individual source is purgeable. |
 | `r2-session/` | 2.2 GiB / 9 | KEEP-CITED (2) | Two users: `run-gate-project/docs/evidence/fix-r2-lanes-REPORT.md` and `scripts/debian-install-v2/docs/evidence/host-reinstall-PREP-REPORT.md`. |
 | `releases-archive/` | 14 MiB / 97 | KEEP-CITED (1) | `scripts/controller/README.md` cites the archive. `branch-bundles/` contains nine bundles whose heads are not in `origin/main` per the operator-supplied state; contents were not opened. |
-| `remote-gates/` | 119 MiB / 9,176 | KEEP-CITED (5) | Five users: `run-gate-project/docs/DESIGN-lane-rework-2026-11.md`, `scripts/debian-install-v2/docs/evidence/host-reinstall-EXEC-LOG.md`, `scripts/netcup/docs/HOST-SAT-QUEUE.md`, `scripts/netcup/runner/README.md`, `scripts/netcup/runner/host-sat-queue.sh`. |
-| `reports/` | 20 MiB / 1,177 | PERSIST-NEEDED (60 source/citer pairs; 53 sources) | Two high-value small text reports are persisted below and their citations point into the repo. Fifty-three other cited report-directory files lack a repository copy proof; see the exact source/citer list below. All are under 65 KiB; the remaining set spans multiple owning projects and requires a separate scrub and docs-index/gate pass. |
-| `reviews/` | 2.6 MiB / 147 | KEEP-CITED (1) | `reviews/pwmcp2.out` is cited by `pwmcp/KNOWN_ISSUES_TODO_BACKLOG.md`; keep the tree until that evidence is persisted or the citation is rewritten. |
-| `v1001.lock` | 0 bytes / 1 | KEEP-CITED (1) | `scripts/truenas/boot-pool-patch/acceptance/accept.py` resolves this lock path at runtime. |
+| `remote-gates/` | 119 MiB / 9,176 | KEEP-CITED (6) | Six users: `run-gate-project/docs/DESIGN-lane-rework-2026-11.md`, `scripts/debian-install-v2/docs/evidence/host-reinstall-EXEC-LOG.md`, `scripts/netcup/docs/HOST-SAT-QUEUE.md`, `scripts/netcup/runner/README.md`, `scripts/netcup/runner/host-sat-queue.sh`, and `docs/reports/assay-tmpfs-CONTINUATION.md` (unfinished run output; final verdict pending). |
+| `reports/` | 20 MiB / 1,177 | PERSIST-PARTIAL (41 cited files / 58 outstanding citer-file/source pairs) | Wave 3 persisted 15 of the 53 files listed below and the additional `nyx-extract-readback-REPORT.md`; secondary citations in copied reports add three pending report files. See the wave 3 matrix and secondary-source table for exact remaining sources/citers. Earlier KSM, IOBench and Assay tmpfs report copies remain persisted. |
+| `reviews/` | 2.6 MiB / 147 | PERSISTED-CITATION (1); top-level KEEP | `reviews/pwmcp2.out` is now copied to `pwmcp/docs/reports/pwmcp2-review-2026-10-30.md` and the six PWMCP backlog references point there. The other 146 entries have not been reviewed for purge. |
+| `v1001.lock` | 0 bytes / 1 | RUNTIME-DEPENDENCY (TN-17; fixed path) | `scripts/truenas/boot-pool-patch/acceptance/accept.py` uses the fixed `v1001.lock` location under the release-program root and has no alternate-home override. Keep the lock location until the code is made configurable or the exact limitation is accepted. |
 | `vm-cgp-accept-20261107/` | 192 KiB / 17 | UNCITED (0) | No exact controller path or source sub-item citation found. Candidate for operator review. |
 | `WAVE-BRIEF.md` | 8 KiB / 1 | UNCITED (0) | No exact tracked citation found. It is controller continuity and should remain outside pending operator review. |
 
 `releases-archive/branch-bundles/` currently lists these nine names: `cowtree-gate-scratch-20261105.bundle`, `test-policy-doc-20261109.bundle`, `mdt-admission-cap-gap-20261105.bundle`, `tnt-r2-pilot-20261105.bundle`, `rigor-rr3-20261105.bundle`, `rigor-rr2-20261105.bundle`, `cmru-r2-shards-20261105.bundle`, `tnt-r2-20261105.bundle`, and `ref-hc-1a-wip-20261108.bundle`. The additional `r1002/runner-20261112/vbpub-r1002-src-20261112.bundle` also appears in `ls`. No bundle contents were read. The seven bundle pathnames in the operator deletion decision were not available for matching; the runner bundle remains ARCHIVE-OUTSIDE because it still exists.
 
-### Reports: cited source files still outside Git
+### Reports: wave 2 source inventory
 
 The bounded fix-2 slice persisted the small KSM report to
 `mdt-cockpit/docs/evidence/hosts-ksm-instances-REPORT-2026-11-12.md` and the
 IOBench R2 report to `libraries/iobench/docs/reports/IOBENCH-R2-R1002-2026-11-02.md`.
 The five KSM backlog citers and the IOBench backlog now point to those repo
 copies; their external source paths are no longer needed. The 53 rows below
-are the remaining cited report-directory files without a same-basename tracked
-copy or `source: reports/<name>` provenance proof. Sizes are metadata only;
-none of these sources was copied in this slice.
+record the wave 2 source/citer baseline. Wave 3 copied 15 rows from this list;
+the exact destination and remaining source matrix follows the table. The
+original sizes are metadata only.
 
 | Source basename | Source size | Tracked citer file(s) |
 |---|---:|---|
@@ -218,3 +218,174 @@ The 60 MiB Augeas spike has versioned source/build/install trees and generated b
 ## Cross-wave references
 
 The destination paths, source hash prefixes, tracked backlog identifiers, and linked evidence indexes above provide the repository-side proof needed for each disposition. The reconciled Assay, Cowtree and lane-audit documents already appear in their project docs indexes; this inventory is linked from the root README.
+
+## Wave 3 citation disposition — 2026-11-13
+
+This is a documentation-only first slice. The 15 report sources listed below
+were copied, scrubbed, indexed under the root cross-project reports directory,
+and their citations now point to repository paths. The separately cited
+Nyxloom readback report was copied to its project trove. PWMCP's cited review
+output was copied to its project docs/reports directory. The large IOBench and
+Assay jobs-pilot evidence sets now have one-page summaries; their citing
+sentences point to those summaries. No source was deleted.
+
+The wave 2 table has 53 source rows. Its original scan found 70 tracked
+citer-file/source pairs, excluding this inventory and source provenance
+headers. Nineteen pairs now point to repository copies; 51 baseline pairs
+across 38 remaining source files still need a separate scrub, copy, citation
+rewrite, project index update and registered docs-sync gate. The copied
+reports add four pairs to four of those files and three pairs to three
+additional report files, leaving 58 pairs across 41 pending files. The
+remaining matrix and secondary-source table below record the exact final-head
+citers. Three tracked citations to `nyx-extract-readback-REPORT.md` were
+outside the original table and now point to its repository copy.
+Across the baseline, Nyxloom and secondary report sources, the final tracked
+set has 80 citer-file/source pairs: 22 now point to repository sources or
+summaries and 58 remain pending.
+
+### Report sources persisted in wave 3
+
+| Source | Repository copy | Rewritten citer file(s) |
+|---|---|---|
+| `AGENT-RULES.md` | `docs/reports/AGENT-RULES.md` | `docs/design/parallelisation/DESIGN-MEMO-2026-11-05.md`, `docs/design/parallelisation/DESIGN-MEMO-ADDENDUM-2-2026-11-04.md`, `docs/design/parallelisation/DESIGN-MEMO-ADDENDUM-2026-11-04.md` |
+| `DSTDNS-R2-PILOT-CONTINUATION-BRIEF-2026-11-04.md` | `docs/reports/DSTDNS-R2-PILOT-CONTINUATION-BRIEF-2026-11-04.md` | `docs/design/dstdns/R2-PILOT-2026-11-04.md` |
+| `ad2-measurements-REPORT.md` | `docs/reports/ad2-measurements-REPORT.md` | `docs/design/parallelisation/DESIGN-MEMO-ADDENDUM-2-2026-11-04.md`, `docs/design/telemetry-platform/DESIGN-v2-2026-11-07.md` |
+| `assay-jobs-audit-REVIEW.md` | `docs/reports/assay-jobs-audit-REVIEW.md` | `docs/design/parallelisation/DESIGN-MEMO-2026-11-05.md` |
+| `assay-tmpfs-CONTINUATION.md` | `docs/reports/assay-tmpfs-CONTINUATION.md` | `docs/design/parallelisation/DESIGN-MEMO-2026-11-05.md` |
+| `augeas-extension-FEASIBILITY.md` | `docs/reports/augeas-extension-FEASIBILITY.md` | `docs/design/host-setup/DESIGN-rev3-2026-11-08.md`, `docs/design/hostcfg/DESIGN-AUGEAS-AND-BOUNDARIES-2026-11-07.md` |
+| `dstdns-p4-REVIEW.md` | `docs/reports/dstdns-p4-REVIEW.md` | `docs/design/parallelisation/DESIGN-MEMO-2026-11-05.md`, `docs/design/parallelisation/DESIGN-MEMO-ADDENDUM-2026-11-04.md` |
+| `mdt-dedicated-mem-REPORT.md` | `docs/reports/mdt-dedicated-mem-REPORT.md` | `docs/design/parallelisation/DESIGN-MEMO-ADDENDUM-2-2026-11-04.md` |
+| `nyx-3-REPORT.md` | `docs/reports/nyx-3-REPORT.md` | `docs/design/parallelisation/DESIGN-MEMO-ADDENDUM-2026-11-04.md` |
+| `reinstall-READINESS-20261105.md` | `docs/reports/reinstall-READINESS-20261105.md` | `docs/design/mdtd/DESIGN-rev4-2026-11-07.md` |
+| `rg-154-REPORT.md` | `docs/reports/rg-154-REPORT.md` | `docs/design/parallelisation/DESIGN-MEMO-ADDENDUM-2026-11-04.md` |
+| `rigor-chain-REVIEW.md` | `docs/reports/rigor-chain-REVIEW.md` | `docs/design/parallelisation/DESIGN-MEMO-ADDENDUM-2026-11-04.md` |
+| `rigor-merge-prep-REPORT.md` | `docs/reports/rigor-merge-prep-REPORT.md` | `docs/design/parallelisation/DESIGN-MEMO-ADDENDUM-2026-11-04.md` |
+| `sockets-phase1-GATES-REPORT.md` | `docs/reports/sockets-phase1-GATES-REPORT.md` | `docs/design/host-service-sockets/RELEASE-PLAN-phase1-2026-11-07.md` |
+| `test-methodology-REPORT.md` | `docs/reports/test-methodology-REPORT.md` | `docs/design/test-policy/REQUIREMENTS-2026-11-09.md` |
+| `nyx-extract-readback-REPORT.md` (additional source) | `nyxloom/nyxloom-trove/reports/nyx-extract-readback-REPORT.md` | `nyxloom/nyxloom-trove/backlog/NL-57-session-extract-since-iso-time-and-relative-duration.md`, `nyxloom/nyxloom-trove/backlog/NL-58-session-extract-include-agent-communications-optionally.md`, `nyxloom/nyxloom-trove/backlog/NL-59-session-extract-readback-preset-with-token-budget.md` |
+
+The previously persisted `assay-tmpfs-REPORT.md` citations now point to
+`assay/docs/evidence/assay-tmpfs-REPORT.md`; line references account for that
+copy's existing provenance header. The prior KSM and IOBench report copies
+remain indexed in their owning projects.
+
+### Remaining report sources — PERSIST pending scrub and project gates
+
+These 38 source files are all under 65 KiB in the wave 2 metadata. They remain
+outside Git until copied and scrubbed. Their current tracked citer files are
+listed to make the remaining work exact.
+
+| Source basename | Current citer-file count | Tracked citer file(s) |
+|---|---:|---|
+| `FLUXER-VERIFICATION-2026-11-04.md` | 1 | `voice-screen-share/fluxer-server/README.md` |
+| `R1002-REINSTALL-2026-11-04.md` | 1 | `run-gate-project/docs/DESIGN-lane-rework-2026-11.md` |
+| `assay-jobs-audit-REPORT.md` | 4 | `docs/design/parallelisation/DESIGN-MEMO-2026-11-05.md`, `docs/design/parallelisation/DESIGN-MEMO-ADDENDUM-2026-11-04.md`, `libraries/cli-extended/assay.toml`, `pwmcp/assay.toml` |
+| `assay-rust-docs-REPORT.md` | 2 | `run-gate-project/docs/DESIGN-lane-rework-2026-11.md`, `docs/reports/test-methodology-REPORT.md` |
+| `cgpd-rollout-REPORT.md` | 2 | `cgprofile/nyxloom-trove/backlog/CP-57-cgpctl-doctor-caller-group-fails-for-root-so-check-sh-and-the-root-install-run-always-report-a-failure.md`, `cgprofile/nyxloom-trove/backlog/INDEX.md` |
+| `ciu-survivors2-REPORT.md` | 1 | `ciu/KNOWN_ISSUES_TODO_BACKLOG.md` |
+| `di2-ksm-sleep-REVIEW.md` | 1 | `scripts/debian-install-v2/TODO.md` |
+| `div2-operator-scripts-v2.patch` | 3 | `scripts/debian-install-v2/docs/evidence/div2-reinstall-RUNBOOK.md`, `scripts/debian-install-v2/docs/evidence/host-reinstall-EXEC-LOG.md`, `scripts/debian-install-v2/docs/evidence/host-reinstall-PREP-REPORT.md` |
+| `div2-reinstall-v1001-RESULT.md` | 1 | `libraries/iobench/BACKLOG.md` |
+| `dstdns-cp0-CONTINUATION.md` | 1 | `ciu/KNOWN_ISSUES_TODO_BACKLOG.md` |
+| `dstdns-cp0-REPORT.md` | 1 | `ciu/KNOWN_ISSUES_TODO_BACKLOG.md` |
+| `dstdns-e2e-REPORT.md` | 1 | `ciu/KNOWN_ISSUES_TODO_BACKLOG.md` |
+| `dstdns-parallelism-REPORT.md` | 3 | `docs/design/dstdns/DEVELOPMENT-PLAN-2026-11-04.md`, `docs/design/parallelisation/DESIGN-MEMO-2026-11-05.md`, `libraries/rigor-record/docs/DESIGN-MEMO-2026-11-05.md` |
+| `fix-r2-lanes-CONTINUATION.md` | 1 | `run-gate-project/docs/evidence/fix-r2-lanes-REPORT.md` |
+| `flex-r2-REPORT.md` | 1 | `assay/nyxloom-trove/4-backlog.md` |
+| `gate-reuse-INVESTIGATION.md` | 2 | `docs/design/test-policy/REQUIREMENTS-2026-11-09.md`, `run-gate-project/docs/DESIGN-lane-rework-2026-11.md` |
+| `gate-reuse-REVIEW.md` | 1 | `run-gate-project/docs/DESIGN-lane-rework-2026-11.md` |
+| `hc4-REPORT.md` | 1 | `nyxloom/tests/fixtures/stall/clean.exec.jsonl` |
+| `host-compute-REPORT.md` | 1 | `libraries/rigor-record/docs/DESIGN-MEMO-2026-11-05.md` |
+| `host-parallel-r2-REPORT.md` | 1 | `assay/nyxloom-trove/4-backlog.md` |
+| `host-pipeline-PLAN.md` | 1 | `mdt-cockpit/KNOWN_ISSUES_TODO_BACKLOG.md` |
+| `hosts-cow-ksmd-REPORT.md` | 1 | `assay/nyxloom-trove/4-backlog.md` |
+| `ib-vq-REPORT.md` | 2 | `libraries/iobench/BACKLOG.md`, `libraries/iobench/KNOWN_ISSUES_TODO_BACKLOG.md` |
+| `ib-vq-controller-REPORT.md` | 2 | `libraries/iobench/BACKLOG.md`, `libraries/iobench/KNOWN_ISSUES_TODO_BACKLOG.md` |
+| `ib-vq-rerun-REPORT.md` | 2 | `libraries/iobench/BACKLOG.md`, `libraries/iobench/KNOWN_ISSUES_TODO_BACKLOG.md` |
+| `iobench-iogovmon-DESIGN-2026-11.md` | 1 | `scripts/debian-install-v2/TODO.md` |
+| `mt11-iobench-LIVE-REPORT.md` | 1 | `libraries/iobench/docs/SPEC.md` |
+| `pytest92-audit-REVIEW2.md` | 1 | `topos/nyxloom-trove/4-backlog.md` |
+| `rg-102-C0-SPIKE.md` | 1 | `ciu/KNOWN_ISSUES_TODO_BACKLOG.md` |
+| `rg-flake-REVIEW.md` | 1 | `nyxloom/tests/fixtures/stall/review-rg-flake.rollout.jsonl` |
+| `rigor-rr2a-CONTINUATION.md` | 2 | `libraries/rigor-record/CHANGES.md`, `docs/reports/rigor-merge-prep-REPORT.md` |
+| `rust-r0-REPORT.md` | 1 | `run-gate-project/docs/DESIGN-lane-rework-2026-11.md` |
+| `session-audit-3.md` | 1 | `run-gate-project/docs/DESIGN-lane-rework-2026-11.md` |
+| `swap-bench-window.draft.sh` | 2 | `scripts/debian-install-v2/docs/evidence/host-reinstall-PREP-REPORT.md`, `scripts/debian-install-v2/docs/evidence/swap-bench-window-REVIEW3.md` |
+| `test-methodology-REVIEW.md` | 1 | `run-gate-project/docs/DESIGN-lane-rework-2026-11.md` |
+| `test-methodology-REVIEW2.md` | 2 | `run-gate-project/docs/DESIGN-lane-rework-2026-11.md`, `docs/reports/test-methodology-REPORT.md` |
+| `test-methodology-REVIEW3.md` | 2 | `run-gate-project/docs/DESIGN-lane-rework-2026-11.md`, `docs/reports/test-methodology-REPORT.md` |
+| `v1001-reinstall-EXEC-LOG.md` | 1 | `libraries/iobench/BACKLOG.md` |
+
+### Additional small report sources discovered in copied reports
+
+These three report basenames were not in the wave 2 source table. They are
+small text reports and remain PERSIST-pending; their sources must stay outside
+until copied with the same scrub/header/index process and each citation is
+rewritten to the repository copy.
+
+| Source basename | Source size | Tracked citer file(s) |
+|---|---:|---|
+| `ASSAY-JOBS-PILOT-2026-11-02.md` | 8,071 B | `assay/docs/evidence/ASSAY-JOBS-PILOT-ANALYSIS-2026-11-02.md` |
+| `assay-RUST-ADAPTER-DESIGN.md` | 35,204 B | `docs/reports/test-methodology-REPORT.md` |
+| `hostobs-DECISIONS-20261107.md` | 7,224 B | `docs/reports/test-methodology-REPORT.md` |
+
+### Other wave 3 cited items
+
+| Program-dir item | Disposition and tracked citer |
+|---|---|
+| `reviews/pwmcp2.out` (27,593 B) | PERSISTED as `pwmcp/docs/reports/pwmcp2-review-2026-10-30.md`; all six citations in `pwmcp/KNOWN_ISSUES_TODO_BACKLOG.md` now point there. |
+| `evidence/iobench-r2-r1002/` (133 files / 31,058,728 B) | KEEP-OUTSIDE-WITH-SUMMARY at `libraries/iobench/docs/reports/IOBENCH-R2-R1002-EVIDENCE-SUMMARY-2026-11-13.md`; `libraries/iobench/BACKLOG.md` cites the summary, not the raw tree. |
+| `evidence/jobs-pilot3/` (1,179 files / 23,655,197 B) | KEEP-OUTSIDE-WITH-SUMMARY at `assay/docs/evidence/JOBS-PILOT3-EVIDENCE-SUMMARY-2026-11-13.md`; the Assay analysis cites the summary, not the raw tree. |
+| `evidence/truenas-live-20261029/`, `evidence/truenas-live-20261030/`, `evidence/truenas-live-20261031/` | KEEP-OUTSIDE-WITH-SUMMARY pending a one-page summary and rewrite of the exact external-path citations. The 2026-10-29 index already records 300 source files, 257 retained raw files and 43 deliberate omissions; no wave 3 summary was added. |
+| `controller/ib-vq-rerun/` | KEEP-OUTSIDE-WITH-SUMMARY pending an owning-project summary and rewrite of `libraries/iobench/BACKLOG.md`. |
+| `r2-session/` | KEEP-OUTSIDE-WITH-SUMMARY pending summaries for its two tracked citing reports and a citation rewrite; raw campaign/session state remains outside. |
+| `dstdns-r2/` | KEEP-OUTSIDE-WITH-SUMMARY pending a one-page summary and path rewrite for the six tracked citation files in the wave 2 row above. |
+| `logs/host-sat-*` and queue state | RUNTIME-DEPENDENCY under `CONTROLLER_HOME`; CTL-02 records that the code works with another home when required state is migrated. |
+| pre-reinstall and remote-gate paths | RUNTIME-DEPENDENCY limitations are recorded in NC-54: pre-reinstall helpers use a fixed root; remote-gate output has an environment/argument override. |
+| TrueNAS acceptance lock | RUNTIME-DEPENDENCY limitation is recorded in TN-17: `accept.py` uses a fixed `v1001.lock` location with no alternate-home setting. |
+
+The new raw-evidence summaries state what was captured, when, the source
+revision and tool configuration, key results and a regeneration path. The
+IOBench summary records the historical lane/tool versions and cap; the
+Assay summary records the arms, candidate comparison, raw file count and the
+limitation that the original pilot launcher/config is still in the external
+evidence set.
+
+## Purge readiness
+
+This table supersedes the wave 2 Result column for the wave 3 final head. A
+top-level entry marked KEEP can contain individual files whose citations are
+now fully persisted. “Purgeable now” is a source classification only; this
+task deleted nothing and does not authorize deleting program-directory data.
+
+| Class B top-level entry | Wave 3 citation/persistence disposition | Purge readiness |
+|---|---|---|
+| `ciu/` | UNCITED unique content; operator review remains. | Keep — not classified for purge. |
+| `codex/` | KEEP — controller run state, live worktree markers and unmerged state are still cited. | Keep — continuity/runtime state. |
+| `controller/` | KEEP-OUTSIDE-WITH-SUMMARY — the cited `ib-vq-rerun/` raw evidence has no summary yet. | Keep — summary and citation rewrite remain. |
+| `dstdns-r2/` | KEEP-OUTSIDE-WITH-SUMMARY — large raw evidence has no wave 3 summary. | Keep — cited source files remain. |
+| `evidence/` | IOBench and Assay jobs-pilot have summaries and rewritten citations; three TrueNAS evidence sets remain pending summary/path rewrites. | Keep — TrueNAS source evidence remains. |
+| `gate2.lock` | RUNTIME-DEPENDENCY — controller gate serialization state under the configured controller home. | Keep — needed while controller gates use this home. |
+| `gate.lock` | RUNTIME-DEPENDENCY — controller gate serialization state under the configured controller home. | Keep — needed while controller gates use this home. |
+| `HANDOFF-STATE-20261105.md` | KEEP — cited controller continuity. | Keep — continuity source remains outside. |
+| `HANDOFF-STATE-20261107.md` | KEEP — cited controller continuity. | Keep — continuity source remains outside. |
+| `HANDOFF-STATE.md` | KEEP — cited controller continuity. | Keep — continuity source remains outside. |
+| `host-sat-queue.disabled.r1002` | RUNTIME-DEPENDENCY — per-host pause state is read under `CONTROLLER_HOME`; CTL-02 records migration limits. | Keep — preserve current queue state. |
+| `host-sat-queue.disabled.v1001` | RUNTIME-DEPENDENCY — per-host pause state is read under `CONTROLLER_HOME`; CTL-02 records migration limits. | Keep — preserve current queue state. |
+| `host-sat-queue.README.md` | PERSISTED to `scripts/netcup/docs/HOST-SAT-QUEUE.md`; source header was its only citer. | Purgeable now — source copy is in the owning project. |
+| `host-sat-queue.README.md.nc28-backup-20261109T190502Z` | UNCITED backup; no source copy or owner review. | Keep — operator classification required. |
+| `host-sat-queue.sh` | KEEP — SHA-256 differs from the tracked runner script; NC-53 still tracks deployed-script synchronization and profile verification. | Keep — distinct source/runtime version has not been reconciled. |
+| `host-sat-queue.sh.nc28-backup-20261109T190502Z` | UNCITED backup; no source copy or owner review. | Keep — operator classification required. |
+| `ib-vq-scripts/` | UNCITED unique benchmark-driver scripts. | Keep — operator review required. |
+| `iobench` | UNCITED unique source item. | Keep — operator review required. |
+| `logs/` | RUNTIME-DEPENDENCY under `CONTROLLER_HOME`; status works from another home if queue logs/markers/flags are migrated. | Keep — current status history/state is not migrated automatically. |
+| `pilot/` | UNCITED unique pilot material. | Keep — operator review required. |
+| `R2-PORTFOLIO-PLAN.md` | PERSISTED as `docs/design/r2-portfolio/R2-PORTFOLIO-PLAN-2026-10-29.md`; the citing design now points there. | Purgeable now — repo copy and citations are in place. |
+| `r2-session/` | KEEP-OUTSIDE-WITH-SUMMARY — two tracked citing reports still need summaries and rewrites. | Keep — raw session evidence remains cited. |
+| `releases-archive/` | KEEP — nine branch bundles have heads not in origin/main; they are not persisted as Git history. | Keep — unique Git bundle history remains. |
+| `remote-gates/` | RUNTIME-DEPENDENCY/output archive — remote-gate can override its default output root, but several raw logs are still cited and unsummarized. | Keep — raw remote-gate evidence and outputs remain. |
+| `reports/` | PERSIST-PARTIAL — 16 source reports persisted in this slice; 41 small cited files and 58 citer-file/source pairs remain. Previously copied KSM, IOBench and Assay tmpfs reports remain linked. | Keep — remaining source files are cited. |
+| `reviews/` | `pwmcp2.out` is PERSISTED; the rest of the 147-entry tree was not reviewed. | Keep — other review artifacts remain unclassified. |
+| `v1001.lock` | RUNTIME-DEPENDENCY — fixed path with no override; TN-17 records the limitation. | Keep — acceptance script still requires this lock location. |
+| `vm-cgp-accept-20261107/` | UNCITED unique acceptance material. | Keep — operator review required. |
+| `WAVE-BRIEF.md` | UNCITED controller continuity brief. | Keep — controller continuity remains outside. |
