@@ -16,7 +16,11 @@ allow_argv_append = false
 
 [lanes.fleetd.isolation]
 snapshot_selection = "repository-minus-unsafe-symlinks"
-unsafe_symlink_omissions = []
+unsafe_symlink_omissions = [
+  "topos/tests/fixtures/inspect_files/_danger/passwd_link",
+  "topos/tests/fixtures/inspect_files/cgroup_escape/system.slice/ssh.service/dangerous_link/passwd_escape",
+  "topos/tests/fixtures/inspect_files/cgroup_nonreg/system.slice/ssh.service/memory.current",
+]
 
 [lanes.fleetd.judge]
 language = "python"
