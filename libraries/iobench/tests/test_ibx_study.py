@@ -1314,14 +1314,21 @@ def test_local_liveness_probe_reports_fake_child_latency_and_failures(monkeypatc
                              str(driver.LIVENESS_SSH_PORT), driver.LIVENESS_COCKPIT_UNIT,
                              driver.LIVENESS_COCKPIT_CONTAINER]
 
+    def launched_unit(argv):
+        option = next(arg for arg in argv if arg.startswith("--unit="))
+        return option.removeprefix("--unit=")
+
     clock[:] = [0.0, 2.0, 2.0, 2.2]
     host = driver.LocalHost()
     timeout_calls = []
+    launched = []
     def timed_out(*args, **kwargs):
         timeout_calls.append(args[0])
         if args[0][0] == "systemd-run":
             assert kwargs["timeout"] == 2
+            launched.append(launched_unit(args[0]))
             raise driver.subprocess.TimeoutExpired(args[0], kwargs["timeout"])
+        assert args[0] == ["systemctl", "is-active", launched[-1]]
         return SimpleNamespace(returncode=0, stdout="active", stderr="")
     monkeypatch.setattr(driver.subprocess, "run", timed_out)
     timeout = host.liveness_probe(1)
@@ -1353,10 +1360,13 @@ def test_local_liveness_probe_reports_fake_child_latency_and_failures(monkeypatc
                          driver.subprocess.TimeoutExpired(["systemctl", "is-active"], 1)):
         clock[:] = [0.0, 2.0]
         host = driver.LocalHost()
+        launched = []
 
-        def status_unavailable(*args, _error=status_error, **kwargs):
+        def status_unavailable(*args, _error=status_error, _launched=launched, **kwargs):
             if args[0][0] == "systemd-run":
+                _launched.append(launched_unit(args[0]))
                 raise driver.subprocess.TimeoutExpired(args[0], kwargs["timeout"])
+            assert args[0] == ["systemctl", "is-active", _launched[-1]]
             raise _error
 
         monkeypatch.setattr(driver.subprocess, "run", status_unavailable)
@@ -1367,9 +1377,12 @@ def test_local_liveness_probe_reports_fake_child_latency_and_failures(monkeypatc
 
     clock[:] = [0.0, 2.0]
     host = driver.LocalHost()
+    launched = []
     def unrecognized_status(*args, **kwargs):
         if args[0][0] == "systemd-run":
+            launched.append(launched_unit(args[0]))
             raise driver.subprocess.TimeoutExpired(args[0], kwargs["timeout"])
+        assert args[0] == ["systemctl", "is-active", launched[-1]]
         return SimpleNamespace(returncode=0, stdout="unexpected-state", stderr="")
     monkeypatch.setattr(driver.subprocess, "run", unrecognized_status)
     host.liveness_probe(1)
@@ -1398,10 +1411,13 @@ def test_local_liveness_probe_reports_fake_child_latency_and_failures(monkeypatc
     clock[:] = [0.0, 2.0, 2.0, 2.2]
     host = driver.LocalHost()
     probe_runs = [0]
+    launched = []
 
     def unit_collected(*args, **kwargs):
         if args[0][:2] == ["systemctl", "is-active"]:
+            assert args[0] == ["systemctl", "is-active", launched[-1]]
             return SimpleNamespace(returncode=4, stdout="unknown", stderr="")
+        launched.append(launched_unit(args[0]))
         probe_runs[0] += 1
         if probe_runs[0] == 1:
             raise driver.subprocess.TimeoutExpired(args[0], kwargs["timeout"])
