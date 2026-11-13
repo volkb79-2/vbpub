@@ -46,6 +46,42 @@ def _elf64(dt_needed: int = 0) -> bytes:
     return bytes(hdr) + bytes(ph) + entries
 
 
+def _elf64_header(*, phoff: int = 0, phentsize: int = 0, phnum: int = 0) -> bytes:
+    """An ELF64 header without any trailing data, for parser boundaries."""
+    hdr = bytearray(64)
+    hdr[0:4] = b"\x7fELF"
+    hdr[4] = 2
+    hdr[5] = 1
+    hdr[32:40] = phoff.to_bytes(8, "little")
+    hdr[54:56] = phentsize.to_bytes(2, "little")
+    hdr[56:58] = phnum.to_bytes(2, "little")
+    return bytes(hdr)
+
+
+def _builder_fixture(monkeypatch, tmp_path, kind: str):
+    """Set up a fake Docker build whose cache starts without parent dirs."""
+    repo_root = tmp_path / "checkout"
+    repo_root.mkdir()
+    source = tmp_path / f"{kind}.c"
+    source.write_text("int main(void) { return 0; }", encoding="utf-8")
+
+    if kind == "shim":
+        monkeypatch.setattr(ksm, "shim_source_path", lambda: source)
+        builder = ksm.build
+        target = ksm.cache_path(repo_root, source)
+        copied_source = target.parent / ksm.SHIM_SOURCE_NAME
+        artifact = _elf64()
+    else:
+        monkeypatch.setattr(ksm, "wrapper_source_path", lambda: source)
+        builder = ksm.build_wrapper
+        target = ksm.wrapper_cache_path(repo_root, source)
+        copied_source = target.parent / ksm.WRAPPER_SOURCE_NAME
+        artifact = b"\x7fELF"
+
+    monkeypatch.setattr(ksm.shutil, "which", lambda _name: "/usr/bin/docker")
+    return builder, repo_root, target, copied_source, artifact
+
+
 class TestCacheKey:
     def test_cache_path_is_keyed_by_machine_and_source_digest(self, tmp_path):
         """Arch keying stops an x86-64 object being reused on aarch64; the source
@@ -110,6 +146,61 @@ class TestVerification:
         with pytest.raises(ksm.KsmBuildError, match=r"cannot verify"):
             ksm._verify(so)
 
+    @pytest.mark.parametrize("size", [64, 200])
+    def test_wrong_magic_in_header_sized_object_is_refused(self, tmp_path, size):
+        """Enough bytes to resemble an ELF header do not excuse bad magic."""
+        blob = bytearray(_elf64_header())
+        blob[:4] = b"NOPE"
+        blob.extend(b"\0" * (size - len(blob)))
+        so = tmp_path / f"wrong-magic-{size}.so"
+        so.write_bytes(blob)
+
+        with pytest.raises(ksm.KsmBuildError, match=r"cannot verify") as exc:
+            ksm._verify(so)
+        assert "Refusing to cache an unverifiable shim" in str(exc.value)
+
+    def test_64_byte_elf_header_threshold_distinguishes_short_and_exact(self, tmp_path):
+        """A full ELF header is parseable at 64 bytes; one byte less is not."""
+        exact = tmp_path / "exact-header.so"
+        exact.write_bytes(_elf64_header())
+        assert exact.stat().st_size == 64
+        ksm._verify(exact)
+
+        truncated = tmp_path / "short-header.so"
+        truncated.write_bytes(_elf64_header()[:63])
+        with pytest.raises(ksm.KsmBuildError, match=r"cannot verify") as exc:
+            ksm._verify(truncated)
+        assert "Refusing to cache an unverifiable shim" in str(exc.value)
+
+    def test_program_header_ending_at_eof_is_accepted_but_truncation_is_refused(self, tmp_path):
+        """A complete final program-header byte at EOF is inside the file."""
+        complete = bytearray(_elf64())
+        complete[64:68] = (1).to_bytes(4, "little")  # PT_LOAD; no dynamic table
+        complete = complete[:64 + 56]
+        exact = tmp_path / "program-header-at-eof.so"
+        exact.write_bytes(complete)
+        ksm._verify(exact)
+
+        truncated = tmp_path / "program-header-before-eof.so"
+        truncated.write_bytes(complete[:-1])
+        with pytest.raises(ksm.KsmBuildError, match=r"cannot verify") as exc:
+            ksm._verify(truncated)
+        assert "Refusing to cache an unverifiable shim" in str(exc.value)
+
+    @pytest.mark.xfail(
+        strict=True,
+        reason="CIU-217: ksm parser currently accepts an ELF64 program header with e_phentsize=0",
+    )
+    def test_zero_program_header_entry_size_is_refused(self, tmp_path):
+        """A declared zero-sized program-header entry is not verifiable ELF."""
+        malformed = bytearray(_elf64())
+        malformed[54:56] = (0).to_bytes(2, "little")
+        path = tmp_path / "zero-phentsize.so"
+        path.write_bytes(malformed)
+
+        with pytest.raises(ksm.KsmBuildError, match=r"cannot verify"):
+            ksm._verify(path)
+
     def test_dt_needed_parser_refuses_unreadable_and_32_bit_inputs(self, tmp_path):
         assert ksm._dt_needed_count(tmp_path / "absent.so") is None
         object_32 = bytearray(_elf64())
@@ -124,6 +215,9 @@ class TestVerification:
         header_path = tmp_path / "bad-header.so"
         header_path.write_bytes(bad_header)
         assert ksm._dt_needed_count(header_path) is None
+        with pytest.raises(ksm.KsmBuildError, match=r"cannot verify") as exc:
+            ksm._verify(header_path)
+        assert "Refusing to cache an unverifiable shim" in str(exc.value)
 
         bad_dynamic = bytearray(_elf64(dt_needed=1))
         dynamic_offset = 64 + 56
@@ -132,6 +226,21 @@ class TestVerification:
         dynamic_path = tmp_path / "bad-dynamic.so"
         dynamic_path.write_bytes(bad_dynamic)
         assert ksm._dt_needed_count(dynamic_path) is None
+        with pytest.raises(ksm.KsmBuildError, match=r"cannot verify") as exc:
+            ksm._verify(dynamic_path)
+        assert "Refusing to cache an unverifiable shim" in str(exc.value)
+
+    @pytest.mark.parametrize(
+        ("needed", "message"),
+        [(1, "1 DT_NEEDED entry;"), (2, "2 DT_NEEDED entries;")],
+    )
+    def test_dependency_error_uses_the_matching_singular_or_plural(self, tmp_path, needed, message):
+        so = tmp_path / f"linked-{needed}.so"
+        so.write_bytes(_elf64(dt_needed=needed))
+
+        with pytest.raises(ksm.KsmBuildError) as exc:
+            ksm._verify(so)
+        assert message in str(exc.value)
 
     def test_dt_needed_parser_counts_a_segment_without_a_null_terminator(self, tmp_path):
         unterminated = bytearray(_elf64(dt_needed=1))
@@ -173,6 +282,96 @@ class TestWrapperVerification:
 
 
 class TestBuild:
+    @pytest.mark.parametrize("kind", ["shim", "wrapper"])
+    def test_build_creates_all_cache_parent_directories(self, monkeypatch, tmp_path, kind):
+        builder, repo_root, target, _copied_source, artifact = _builder_fixture(
+            monkeypatch, tmp_path, kind
+        )
+        assert not (repo_root / ".ciu").exists()
+
+        def fake_run(cmd, **_kwargs):
+            target.write_bytes(artifact)
+            if kind == "wrapper":
+                target.chmod(0o755)
+            return subprocess.CompletedProcess(cmd, 0, "", "")
+
+        monkeypatch.setattr(ksm.subprocess, "run", fake_run)
+
+        assert builder(repo_root, "/host/repo") == target
+        assert target.is_file()
+
+    @pytest.mark.parametrize("kind", ["shim", "wrapper"])
+    @pytest.mark.parametrize(
+        ("stderr", "stdout", "expected", "unexpected"),
+        [
+            ("compiler rejected input", "secondary output", "compiler rejected input", "secondary output"),
+            ("", "fallback compiler output", "fallback compiler output", "not present"),
+        ],
+    )
+    def test_failed_build_reports_captured_text_with_stderr_precedence(
+        self, monkeypatch, tmp_path, kind, stderr, stdout, expected, unexpected
+    ):
+        """Build diagnostics retain text when Docker returns a failed result."""
+        builder, repo_root, _target, _copied_source, _artifact = _builder_fixture(
+            monkeypatch, tmp_path, kind
+        )
+
+        def fake_run(cmd, **kwargs):
+            captured_stdout = stdout if kwargs.get("capture_output") else None
+            captured_stderr = stderr if kwargs.get("capture_output") else None
+            if kwargs.get("capture_output") and not kwargs.get("text"):
+                captured_stdout = captured_stdout.encode() if captured_stdout is not None else None
+                captured_stderr = captured_stderr.encode() if captured_stderr is not None else None
+            return subprocess.CompletedProcess(cmd, 1, captured_stdout, captured_stderr)
+
+        monkeypatch.setattr(ksm.subprocess, "run", fake_run)
+
+        with pytest.raises(ksm.KsmBuildError) as exc:
+            builder(repo_root, "/host/repo")
+        assert f"Output:\n{expected}" in str(exc.value)
+        assert f"Output:\n{unexpected}" not in str(exc.value)
+
+    @pytest.mark.parametrize("kind", ["shim", "wrapper"])
+    def test_missing_bad_build_artifact_does_not_mask_verification_error(
+        self, monkeypatch, tmp_path, kind
+    ):
+        """Cleanup tolerates a target already absent when verification refuses."""
+        builder, repo_root, _target, _copied_source, _artifact = _builder_fixture(
+            monkeypatch, tmp_path, kind
+        )
+
+        def fake_run(cmd, **_kwargs):
+            # Docker reported success, but the expected output disappeared before
+            # verification could inspect it.
+            return subprocess.CompletedProcess(cmd, 0, "", "")
+
+        monkeypatch.setattr(ksm.subprocess, "run", fake_run)
+
+        with pytest.raises(ksm.KsmBuildError, match="no file"):
+            builder(repo_root, "/host/repo")
+
+    @pytest.mark.parametrize("kind", ["shim", "wrapper"])
+    def test_source_cleanup_is_safe_when_the_copy_is_already_gone(
+        self, monkeypatch, tmp_path, kind
+    ):
+        """Successful artifact verification survives idempotent source cleanup."""
+        builder, repo_root, target, copied_source, artifact = _builder_fixture(
+            monkeypatch, tmp_path, kind
+        )
+
+        def fake_run(cmd, **_kwargs):
+            target.write_bytes(artifact)
+            if kind == "wrapper":
+                target.chmod(0o755)
+            copied_source.unlink()
+            return subprocess.CompletedProcess(cmd, 0, "", "")
+
+        monkeypatch.setattr(ksm.subprocess, "run", fake_run)
+
+        assert builder(repo_root, "/host/repo") == target
+        assert target.is_file()
+        assert not copied_source.exists()
+
     def test_shim_source_missing_refuses_before_docker(self, tmp_path, monkeypatch):
         monkeypatch.setattr(ksm, "shim_source_path", lambda: tmp_path / "absent.c")
 
@@ -339,6 +538,38 @@ class TestWrapperBuild:
 
 
 class TestImageEntrypointFailures:
+    def test_image_entrypoint_returns_the_captured_declared_array(self, monkeypatch):
+        def fake_run(cmd, **kwargs):
+            stdout = '["/usr/local/bin/start"]' if kwargs.get("capture_output") else None
+            if stdout is not None and not kwargs.get("text"):
+                stdout = stdout.encode()
+            return subprocess.CompletedProcess(cmd, 0, stdout, "")
+
+        monkeypatch.setattr(ksm.subprocess, "run", fake_run)
+
+        assert ksm.image_entrypoint("example:array") == ["/usr/local/bin/start"]
+
+    def test_image_entrypoint_treats_json_null_as_no_entrypoint(self, monkeypatch):
+        def fake_run(cmd, **kwargs):
+            stdout = "null" if kwargs.get("capture_output") else None
+            if stdout is not None and not kwargs.get("text"):
+                stdout = stdout.encode()
+            return subprocess.CompletedProcess(cmd, 0, stdout, "")
+
+        monkeypatch.setattr(ksm.subprocess, "run", fake_run)
+
+        assert ksm.image_entrypoint("example:no-entrypoint") == []
+
+    def test_image_entrypoint_returns_none_for_nonzero_inspect_without_raising(self, monkeypatch):
+        def fake_run(cmd, **kwargs):
+            if kwargs.get("check"):
+                raise subprocess.CalledProcessError(1, cmd, output="", stderr="missing image")
+            return subprocess.CompletedProcess(cmd, 1, "", "missing image")
+
+        monkeypatch.setattr(ksm.subprocess, "run", fake_run)
+
+        assert ksm.image_entrypoint("example:missing") is None
+
     @pytest.mark.parametrize("failure", [OSError("docker absent"), subprocess.TimeoutExpired(["docker"], 30)])
     def test_image_entrypoint_returns_none_when_inspect_cannot_run(self, monkeypatch, failure):
         monkeypatch.setattr(

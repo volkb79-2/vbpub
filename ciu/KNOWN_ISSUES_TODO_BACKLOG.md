@@ -19,6 +19,8 @@ cost preflight). CIU-210 FILED and PENDING on branch `r2-jobs-20261111`
 (the CIU R2 lane is pinned to one worker by both its tag-time configuration
 and its documentation-contract test).**
 
+Later update, 2026-11-13 — **CIU-217 FILED** for the KSM ELF verifier accepting a zero-sized program-header entry declaration. The KSM R2 test-gap closure for CIU 7.25.1 is recorded below under CIU-211.
+
 Previously, 2026-09-02 — **V8-2 BACKPORTED (ciu-P47): the identity-file
 split and the overlay rename.** `[ciu.instance.generated]` moved out of the
 shared per-checkout overlay into its own CIU-owned
@@ -666,6 +668,7 @@ entries.
 | CIU-214 | `ciu down --dir PATH` rejects flags that `ciu down --help` lists (`--yes`, `--phases`, `--i-understand-this-is-protected`) | Minor | OPEN 2026-11-13 |
 | CIU-215 | Linked-worktree exec runners rendered by CIU 7 lack the git common-dir mount, so every assay lane fails with GIT_FAILED | Major | OPEN 2026-11-13 |
 | CIU-216 | `ciu worktree create` renders no `ciu.global.toml` when `DOCKER_HOST` is unset and the socket is at a non-default path | Minor | OPEN 2026-11-13 |
+| CIU-217 | The KSM ELF verifier accepts a program-header table whose declared entry size is zero (`e_phentsize = 0`) | Minor | OPEN 2026-11-13 (strict xfail `test_zero_program_header_entry_size_is_refused` records it) |
 
 
 The approved milestone decisions and serial package order are in
@@ -6808,6 +6811,33 @@ hashes for these rows.
 | `deploy.py:5808` | `followlinks=False` → `True` in the cleanability walk | The loop removes symlink directories from `directories` before descent, so the walker never follows those links. This is the 7.25.0 location for the existing symlink-pruning equivalence above. |
 | `deploy.py:4886` | `return ""` → `None` on a failed Git metadata query | Both values are falsey, and the caller short-circuits on truthiness before `realpath`; this is the 7.25.0 location for the existing Git-metadata equivalence above. |
 
+**CIU 7.25.1 KSM survivor closure.** The 20 survivors from the CIU R2 7.25.1 report were individually replayed against the new KSM tests in an isolated scratch checkout. Nineteen are test gaps and are killed by the behavioral tests listed in the package report; one is equivalent.
+
+| Source location | Mutation | Disposition |
+|---|---|---|
+| `ksm.py:135` | `or` → `and` | Killed by `test_wrong_magic_in_header_sized_object_is_refused` using a 200-byte ELF-shaped blob with wrong magic. |
+| `ksm.py:135` | `<` → `<=` | Killed by `test_64_byte_elf_header_threshold_distinguishes_short_and_exact`; a complete 64-byte header remains accepted. |
+| `ksm.py:150` | `>` → `>=` | Killed by `test_program_header_ending_at_eof_is_accepted_but_truncation_is_refused`. |
+| `ksm.py:187` | `==` → `!=` | Killed by `test_dependency_error_uses_the_matching_singular_or_plural`. |
+| `ksm.py:233` | `parents=True` → `False` | Killed by `test_build_creates_all_cache_parent_directories[shim]`. |
+| `ksm.py:254` | `capture_output=True` → `False` | Killed by `test_failed_build_reports_captured_text_with_stderr_precedence[shim]`. |
+| `ksm.py:254` | `text=True` → `False` | Killed by `test_failed_build_reports_captured_text_with_stderr_precedence[shim]`. |
+| `ksm.py:264` | `or` → `and` | Killed by `test_failed_build_reports_captured_text_with_stderr_precedence[shim]`. |
+| `ksm.py:277` | `missing_ok=True` → `False` | Killed by `test_missing_bad_build_artifact_does_not_mask_verification_error[shim]`. |
+| `ksm.py:280` | `missing_ok=True` → `False` | Killed by `test_source_cleanup_is_safe_when_the_copy_is_already_gone[shim]`. |
+| `ksm.py:347` | `parents=True` → `False` | Killed by `test_build_creates_all_cache_parent_directories[wrapper]`. |
+| `ksm.py:362` | `capture_output=True` → `False` | Killed by `test_failed_build_reports_captured_text_with_stderr_precedence[wrapper]`. |
+| `ksm.py:362` | `text=True` → `False` | Killed by `test_failed_build_reports_captured_text_with_stderr_precedence[wrapper]`. |
+| `ksm.py:372` | `or` → `and` | Killed by `test_failed_build_reports_captured_text_with_stderr_precedence[wrapper]`. |
+| `ksm.py:381` | `missing_ok=True` → `False` | Killed by `test_missing_bad_build_artifact_does_not_mask_verification_error[wrapper]`. |
+| `ksm.py:384` | `missing_ok=True` → `False` | Killed by `test_source_cleanup_is_safe_when_the_copy_is_already_gone[wrapper]`. |
+| `ksm.py:403` | `capture_output=True` → `False` | Killed by `test_image_entrypoint_returns_the_captured_declared_array`. |
+| `ksm.py:403` | `text=True` → `False` | Killed by `test_image_entrypoint_treats_json_null_as_no_entrypoint`. |
+| `ksm.py:403` | `check=False` → `True` | Killed by `test_image_entrypoint_returns_none_for_nonzero_inspect_without_raising`. |
+| `ksm.py:465` | `""` → `None` | EQUIVALENT: the sole consumer, `check_entrypoint_drift`, tests `not current` before comparing it; both values are falsey and produce the same refusal for an uninspectable image. |
+
+The malformed-header probes also found a separate accepted-invalid-input defect: `e_phentsize = 0` is used as an empty bounds length while the parser still reads fixed-width fields. CIU-217 tracks that defect; the strict xfail documents current behavior and is not counted as a survivor closure.
+
 **Review scope.** These equivalences are tied to campaign 7241 and the stated
 control-flow invariants. If any invariant changes, re-triage the corresponding
 candidate before relying on this record; do not silently convert the original
@@ -6944,3 +6974,13 @@ test.
 **Wanted.** Fail with a clear message naming the missing Docker endpoint instead of returning success without the rendered file.
 
 **Close when.** `ciu worktree create` under a clean environment either produces `ciu.global.toml` or exits non-zero naming the missing Docker endpoint.
+
+## CIU-217 — KSM ELF verifier accepts a zero-sized program-header entry declaration
+
+**Status:** OPEN (filed 2026-11-13); severity: minor, fail-open artifact verification.
+
+**Observed.** A dependency-free ELF64-shaped object with one program header and `e_phentsize = 0` passes `_verify`. `_dt_needed_count` uses the zero entry size for its bounds check, then reads program-header fields at their fixed offsets anyway. The verifier therefore accepts an artifact whose declared program-header table cannot be interpreted as specified. The strict xfail `test_zero_program_header_entry_size_is_refused` records this behavior without weakening the verifier or hiding the issue.
+
+**Wanted.** Refuse an ELF program-header table whose declared entry size is smaller than the ELF64 program-header structure that the parser reads, with the normal `cannot verify` refusal.
+
+**Close when.** A production fix makes the xfail pass, and a malformed-header oracle demonstrates that an undersized `e_phentsize` cannot be accepted as a dependency-free object.
