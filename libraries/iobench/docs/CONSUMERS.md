@@ -387,13 +387,20 @@ the benchmark cgroup and its ancestors. A kernel or cgroup that omits an optiona
 file has no setting there, so the dry-run can pass that layout; an existing
 unreadable or malformed control, an active `io.max`, a non-default
 `io.weight`, non-default `io.bfq.weight`, enabled io.cost QoS, or a user/custom
-io.cost model still refuses. Because `io.latency` can throttle peer groups, the driver also enumerates the benchmark's direct peers at each level
-of its cgroup path and refuses active latency targets on every check; peer
-weights are not judged. Peer membership is excluded from
-before/after equality because systemd services and containers can come and go.
-Missing optional files mean no setting, and benchmark-chain values are
-compared before and after a cell-set. The
-kernel-managed `ctrl=auto model=linear` cost model is not considered custom.
+io.cost model still refuses. Because `io.latency` can throttle peer groups, the
+driver also enumerates the benchmark's direct peers at each level of its
+cgroup path and refuses active latency targets on every check. Peer
+`io.weight` is not judged. The target disk scheduler is read from
+`/sys/block/<disk>/queue/scheduler` and recorded in the run manifest and IO
+snapshot. Peer `io.bfq.weight` is judged when the selected target scheduler is
+`bfq`; a known `none` or `mq-deadline` scheduler makes those peer weights inert.
+A missing, unreadable, or malformed scheduler is recorded as unknown and
+causes a conservative peer BFQ check, with a clear dry-run manifest message.
+Peer membership is excluded from before/after equality because systemd
+services and containers can come and go. Missing optional files mean no
+setting, and benchmark-chain values plus scheduler state are compared before
+and after a cell-set. The kernel-managed `ctrl=auto model=linear` cost model
+is not considered custom.
 The [study README](../studies/ibx/README.md) maps saved stop-policy fields to
 their run options.
 

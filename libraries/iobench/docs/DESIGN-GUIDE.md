@@ -387,10 +387,16 @@ refuses. `io.max` entries are inactive only when every per-device value is
 device override. Because `io.latency` can throttle peers, the snapshot also enumerates
 sibling cgroups at each level of the benchmark path and refuses active latency
 targets there; those peer controls are checked on every snapshot call. Peer
-weights (`io.weight`, `io.bfq.weight`) are not judged, because systemd assigns
-them to peer slices and they are not limits on the benchmark path. Peer membership is not part
-of before/after equality because systemd services and containers can come and
-go during a study. Missing optional files mean no setting. Root `io.cost.qos`
+`io.weight` is not judged. The target disk scheduler is read from
+`/sys/block/<disk>/queue/scheduler`, stored in the manifest and compared in
+the IO snapshot. Peer `io.bfq.weight` is judged when the selected target
+scheduler is `bfq`, because sibling group weights then affect proportional
+bandwidth. With known `none` or `mq-deadline`, peer BFQ weights are inert. A
+missing, unreadable, or malformed scheduler is recorded as unknown and peer
+BFQ weights are checked conservatively; active values refuse with a message
+that names the cgroup control. Peer membership is not part of before/after
+equality because systemd services and containers can come and go during a
+study. Missing optional files mean no setting. Root `io.cost.qos`
 must be disabled, and the built-in
 `ctrl=auto model=linear` model is accepted while user/custom models refuse.
 Other siblings' `io.max` caps are not inherited by the benchmark cgroup, so

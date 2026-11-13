@@ -123,15 +123,21 @@ separate synthetic leaf test for the deeper ancestry case.
 The snapshot treats missing controls as no setting, refuses existing but
 unreadable or malformed controls and active limits that can affect the study,
 and compares the same observed values before and after a cell-set. It checks
-`io.max`, `io.weight`, and `io.bfq.weight` along the benchmark path. Since
-`io.latency` and BFQ sibling weights can affect the benchmark's share, it
-enumerates direct peers at each path level and refuses active values there at
-each check. Peer membership is excluded from before/after equality because
-systemd units and containers change during a long study. The host's active
+`io.max`, `io.weight`, and `io.bfq.weight` along the benchmark path. The
+selected scheduler is read from the study disk's `/sys/block/<disk>/queue/scheduler`
+and recorded in the manifest and IO snapshot. `io.latency` can throttle peers,
+so direct peers at each path level are checked for active targets on every
+snapshot. Peer `io.bfq.weight` is checked only when the target scheduler is
+`bfq`; known `none` or `mq-deadline` values are inert. If the scheduler cannot
+be read or parsed, the manifest reports it as unknown and peer BFQ weights are
+checked conservatively. Peer `io.weight` is not judged. Peer membership is
+excluded from before/after equality because systemd units and containers
+change during a long study. The host's active
 `dev.slice/io.max` is a sibling ceiling and is not inherited by the study
-process. Root `io.bfq.weight` absence is captured from the round-two host
-check; child BFQ control states were not captured, so the fixture does not
-claim those files are absent.
+process. The saved host snapshot records `[none] mq-deadline` for the study
+disk and absent BFQ controller files in all 13 captured cgroups at depth two.
+Those observations make peer BFQ weights inert on that layout; the fixture
+does not claim that a BFQ kernel or peer BFQ files are absent on other hosts.
 
 The captured layout is checked in at
 [`tests/fixtures/ibx-real-cgroup-layout.json`](tests/fixtures/ibx-real-cgroup-layout.json)
@@ -176,3 +182,12 @@ diskstats values, the trim sysfs read, file-target backing-device checks, or
 the live systemd timer guard. The package report records every driver host
 assumption as VERIFIED-ON-HOST or UNVERIFIED, with dry-run behavior for the
 latter.
+
+Round three corrected peer BFQ judging to use the target disk scheduler:
+`bfq` and unknown scheduler state check active peer weights; known `none` and
+`mq-deadline` treat them as inert. The scheduler and its availability are
+included in the run manifest and before/after snapshot. The new scheduler
+fixture uses the recorded `none` layout and evidence digest, with synthetic
+`bfq`, `mq-deadline`, missing, malformed, and no-BFQ-controller cases on the
+same sysfs tree shape. The new read-only evidence digest also confirms the
+captured 13-cgroup BFQ-file absence; no new host was accessed by this fix.

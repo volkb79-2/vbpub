@@ -74,6 +74,19 @@ study host uses another SSH endpoint, pass `--liveness-ssh-host` and
 `--liveness-ssh-port`; the runner name can be changed with
 `--liveness-cockpit-container`.
 
+The saved read-only IO snapshot records the study disk scheduler as
+`[none] mq-deadline`; all 13 captured cgroups at depth two had no
+`io.bfq.weight` file. With a selected `none` or `mq-deadline` scheduler, peer
+BFQ weights are inert and do not block the study. If the target disk uses
+`bfq`, active peer BFQ weights refuse with the cgroup filename. A missing,
+unreadable, or malformed scheduler file is reported as unknown in the dry-run
+manifest and causes peer BFQ weights to be checked conservatively. The target
+and root disk scheduler facts are included in the before/after IO snapshot.
+For a passing acknowledged dry-run, retain the printed
+`run_manifest.io_schedulers.raw` fields with the acceptance result; an unknown
+target scheduler includes a message that peer BFQ weights were checked
+conservatively.
+
 The acknowledged dry-run below intentionally omits `--fsync-cell`. That option
 requires the driver process to have exactly one `docker-<64-hex-id>.scope`
 identity in `/proc/self/cgroup`; a root SSH session does not meet this

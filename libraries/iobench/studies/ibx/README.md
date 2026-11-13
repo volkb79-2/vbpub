@@ -88,19 +88,27 @@ least 90%. This comparison is recorded in the analysis output.
 
 The controller snapshots root `io.cost.qos` and `io.cost.model`, plus
 `io.max`, `io.weight`, and `io.bfq.weight` for the benchmark cgroup and every
-ancestor before and after each cell-set. A missing control file means there is no setting on
-that kernel or cgroup; the snapshot records that absence so a control appearing
-or changing before/after a run is still detected. Existing unreadable or
-malformed files refuse. The guard refuses numeric `io.max` limits,
-non-default `io.weight` or `io.bfq.weight`, enabled `io.cost.qos`, and a user/custom
-`io.cost.model`; the kernel-managed `ctrl=auto model=linear` model is allowed.
-`io.latency` can throttle peers, so the driver enumerates direct peers at each
-level of its cgroup path and refuses an active latency target on every check
-(peer `io.weight` and `io.bfq.weight` are not judged). Peer membership is not included in before/after equality because
-services and containers can come and go during a study. Other siblings'
-`io.max` caps are not inherited by the benchmark cgroup. This lets the study run on
-kernels that omit optional controls while retaining refusals for active limits
-that can affect the study process. It also refuses targets that are not the expected block device or
+ancestor before and after each cell-set. A missing control file means there is
+no setting on that kernel or cgroup; the snapshot records that absence so a
+control appearing or changing before/after a run is still detected. Existing
+unreadable or malformed files refuse. The guard refuses numeric `io.max`
+limits, non-default `io.weight` or `io.bfq.weight`, enabled `io.cost.qos`, and
+a user/custom `io.cost.model`; the kernel-managed `ctrl=auto model=linear`
+model is allowed. `io.latency` can throttle peers, so the driver enumerates
+direct peers at each level of its cgroup path and refuses an active latency
+target on every check. Peer `io.weight` is not judged. Peer `io.bfq.weight` is
+judged when the target disk's selected scheduler is `bfq`, because sibling
+weights then affect its proportional bandwidth. The scheduler is read from
+`/sys/block/<disk>/queue/scheduler`, recorded in the manifest and compared with
+the IO-control snapshots. With a known `none` or `mq-deadline` scheduler, peer
+BFQ weights are inert. If the scheduler file is missing, unreadable, or
+malformed, the manifest reports that state and peer BFQ weights are checked
+conservatively; any non-default value refuses with the cgroup control path.
+Peer membership is not included in before/after equality because services and
+containers can come and go during a study. Other siblings' `io.max` caps are
+not inherited by the benchmark cgroup. This lets the study run on kernels that
+omit optional controls while retaining refusals for active limits that can
+affect the study process. It also refuses targets that are not the expected block device or
 file type/extent and verifies that the target's backing device is the same
 device monitored by diskstats. A raw target must be a partition whose
 size and PARTUUID exactly match the operator's `--confirm-target` acknowledgement.

@@ -669,6 +669,30 @@ def _validate_io_bfq_weight_inactive(text: str, path: Path) -> None:
         raise StudyError(f"io.bfq.weight has no explicit default 100 at {path}")
 
 
+def _parse_block_scheduler(text: str) -> tuple[str | None, list[str]]:
+    """Return the selected scheduler and available schedulers from sysfs text."""
+    available: list[str] = []
+    selected: list[str] = []
+    for token in text.split():
+        if token.startswith("[") or token.endswith("]"):
+            if not (token.startswith("[") and token.endswith("]")):
+                return None, available
+            name = token[1:-1]
+            if not name or not re.fullmatch(r"[A-Za-z0-9_.+-]+", name):
+                return None, available
+            selected.append(name)
+        else:
+            name = token
+            if not re.fullmatch(r"[A-Za-z0-9_.+-]+", name):
+                return None, available
+        if name in available:
+            return None, available
+        available.append(name)
+    if len(selected) != 1 or selected[0] not in available:
+        return None, available
+    return selected[0], available
+
+
 def _io_latency_peer_paths(directories: list[Path]) -> list[Path]:
     """Return direct peers whose io.latency targets can affect the benchmark."""
     peers: set[Path] = set()
@@ -746,7 +770,8 @@ def _iocost_values(text: str, path: Path, *, model: bool) -> None:
 
 
 def io_control_snapshot(*, cgroup_root: Path = Path("/sys/fs/cgroup"),
-                        cgroup_text: str | None = None) -> dict[str, Any]:
+                        cgroup_text: str | None = None,
+                        scheduler_snapshot: Mapping[str, Any] | None = None) -> dict[str, Any]:
     """Snapshot applicable IO controls, refusing active or unreadable settings.
 
     Control files absent from a kernel or cgroup have no setting. Existing files
@@ -755,7 +780,9 @@ def io_control_snapshot(*, cgroup_root: Path = Path("/sys/fs/cgroup"),
     io.latency can throttle sibling groups, so direct peer groups at each level
     of the benchmark path are checked for it on every call. Their membership is
     not included in the compared snapshot because services can come and go.
-    io.bfq.weight is judged like io.weight: on the root and benchmark path only.
+    io.bfq.weight is always judged on the root and benchmark path. Peer BFQ
+    weights are judged only when the target scheduler is BFQ or is unknown;
+    unknown state is conservative and appears in the returned snapshot.
     """
     if cgroup_text is None:
         membership = Path("/proc/self/cgroup")
@@ -779,8 +806,6 @@ def io_control_snapshot(*, cgroup_root: Path = Path("/sys/fs/cgroup"),
     latency_peers = _io_latency_peer_paths(dirs)
     latency_values: dict[Path, str | None] = {}
     benchmark_chain = set(dirs)
-    # Weights only shape shares; like io.weight, only the benchmark path is judged. A
-    # peer's systemd-assigned weight is normal and must not refuse the study.
     bfq_checked_dirs = {cgroup_root, *dirs}
     bfq_values: dict[Path, str | None] = {}
     for directory in bfq_checked_dirs:
@@ -789,6 +814,27 @@ def io_control_snapshot(*, cgroup_root: Path = Path("/sys/fs/cgroup"),
         if text is not None:
             _validate_io_bfq_weight_inactive(text, path)
         bfq_values[directory] = text
+    target_scheduler = (scheduler_snapshot.get("target")
+                        if isinstance(scheduler_snapshot, Mapping) else None)
+    target_scheduler_known = (isinstance(target_scheduler, Mapping) and
+                              target_scheduler.get("status") == "known" and
+                              isinstance(target_scheduler.get("selected"), str))
+    judge_peer_bfq = not target_scheduler_known or target_scheduler.get("selected") == "bfq"
+    peer_bfq_dirs = sorted(set(latency_peers) - benchmark_chain - {cgroup_root},
+                           key=lambda path: str(path))
+    if judge_peer_bfq:
+        for directory in peer_bfq_dirs:
+            path = directory / "io.bfq.weight"
+            text = _read_optional_control(path, allow_vanished_parent=True)
+            if text is None:
+                continue
+            try:
+                _validate_io_bfq_weight_inactive(text, path)
+            except StudyError as exc:
+                if target_scheduler_known:
+                    raise
+                raise StudyError("target block scheduler is unknown; conservatively judging peer "
+                                 f"BFQ weights: {exc}") from exc
     for directory in [cgroup_root, *latency_peers]:
         path = directory / "io.latency"
         text = _read_optional_control(path, allow_vanished_parent=directory not in benchmark_chain)
@@ -802,6 +848,8 @@ def io_control_snapshot(*, cgroup_root: Path = Path("/sys/fs/cgroup"),
         "cgroups": [],
         "io_cost": {},
     }
+    if scheduler_snapshot is not None:
+        snapshot["block_schedulers"] = dict(scheduler_snapshot)
     for directory in dirs:
         files: dict[str, str | None] = {}
         for name in ("io.max", "io.weight", "io.bfq.weight", "io.latency"):
@@ -1257,8 +1305,78 @@ class LocalHost:
     def is_root(self) -> bool:
         return os.geteuid() == 0
 
-    def io_control_snapshot(self) -> dict[str, Any]:
-        return io_control_snapshot()
+    def _whole_disk_name(self, device: str) -> str:
+        try:
+            block = (self.sys / "class/block" / device).resolve(strict=True)
+        except OSError as exc:
+            raise StudyError(f"cannot resolve sysfs block device {device}: {exc}") from exc
+        marker = block / "partition"
+        try:
+            marker_info = marker.stat()
+        except FileNotFoundError:
+            return block.name
+        except OSError as exc:
+            raise StudyError(f"cannot inspect sysfs partition identity for {device}: {exc}") from exc
+        if not stat.S_ISREG(marker_info.st_mode):
+            raise StudyError(f"sysfs partition identity for {device} is malformed")
+        return block.parent.name
+
+    def _block_scheduler(self, disk: str) -> dict[str, Any]:
+        path = self.sys / "block" / disk / "queue/scheduler"
+        try:
+            text = path.read_text(encoding="utf-8")
+        except FileNotFoundError:
+            return {"disk": disk, "status": "unknown", "selected": None,
+                    "available": [], "message": f"scheduler file is missing for {disk}"}
+        except (OSError, UnicodeError) as exc:
+            return {"disk": disk, "status": "unknown", "selected": None,
+                    "available": [], "message": f"cannot read scheduler file for {disk}: {exc}"}
+        selected, available = _parse_block_scheduler(text)
+        if selected is None:
+            return {"disk": disk, "status": "unknown", "selected": None,
+                    "available": available,
+                    "message": f"scheduler file for {disk} does not identify one selected scheduler"}
+        return {"disk": disk, "status": "known", "selected": selected,
+                "available": available, "message": None}
+
+    def io_scheduler_snapshot(self, device: str,
+                              system_disk: Mapping[str, Any] | None = None) -> dict[str, Any]:
+        """Record target/root scheduler state; unknown target state checks peers conservatively."""
+        try:
+            target_disk = (system_disk.get("target_disk")
+                           if isinstance(system_disk, Mapping) else None)
+            if not isinstance(target_disk, str) or not target_disk:
+                target_disk = self._whole_disk_name(device)
+            target = self._block_scheduler(target_disk)
+        except StudyError as exc:
+            target = {"disk": device, "status": "unknown", "selected": None,
+                      "available": [], "message": f"cannot identify target-disk scheduler: {exc}"}
+        root: dict[str, dict[str, Any]] = {}
+        root_devices = (system_disk.get("root_fs_devices", [])
+                        if isinstance(system_disk, Mapping) else [])
+        if isinstance(root_devices, list):
+            for device_name in root_devices:
+                if not isinstance(device_name, str) or not device_name:
+                    continue
+                try:
+                    disk = self._whole_disk_name(device_name)
+                except StudyError as exc:
+                    disk = device_name
+                    root[disk] = {"disk": disk, "status": "unknown", "selected": None,
+                                  "available": [],
+                                  "message": f"cannot identify root-disk scheduler: {exc}"}
+                    continue
+                root[disk] = self._block_scheduler(disk)
+        target_unknown = target["status"] != "known"
+        peer_policy = "conservative-check" if target_unknown else (
+            "check" if target["selected"] == "bfq" else "inert")
+        message = (f"target scheduler for {target['disk']} is unknown; peer io.bfq.weight "
+                   "values are checked conservatively" if target_unknown else None)
+        return {"target": target, "root": root, "peer_bfq_policy": peer_policy,
+                "message": message}
+
+    def io_control_snapshot(self, *, scheduler_snapshot: Mapping[str, Any] | None = None) -> dict[str, Any]:
+        return io_control_snapshot(scheduler_snapshot=scheduler_snapshot)
 
     def assert_study_tools(self, kind: str) -> None:
         """Exercise tools each pending study can need before dry-run passes."""
@@ -1944,7 +2062,8 @@ def run_study(cell_set: str, *, target: str, device: str, out: Path, target_kind
     target_identity = validation.identity
     if kind == "raw" and target_identity != confirmation:
         raise StudyError("validated raw target identity does not match --confirm-target")
-    before = host.io_control_snapshot()
+    scheduler_before = host.io_scheduler_snapshot(device, validation.system_disk)
+    before = host.io_control_snapshot(scheduler_snapshot=scheduler_before)
     state_path = out / STATE_NAME
     state = load_state(state_path, kind, target, device, target_identity)
     stop_policy = {
@@ -1969,6 +2088,13 @@ def run_study(cell_set: str, *, target: str, device: str, out: Path, target_kind
                          "and obtain an operator decision. A new --out directory resets those meters")
     manifest["stop_policy"] = stop_policy
     target_safety = validation.system_disk
+    scheduler_history = manifest.setdefault("io_schedulers", {})
+    if not isinstance(scheduler_history, dict):
+        raise StudyError("study IO-scheduler history is malformed")
+    previous_schedulers = scheduler_history.get(kind)
+    if previous_schedulers is not None and previous_schedulers != scheduler_before:
+        raise StudyError("target or root block scheduler changed since the previous attempt")
+    scheduler_history[kind] = scheduler_before
     safety_history = manifest["target_safety"]
     previous_safety = safety_history.get(kind)
     if previous_safety is not None:
@@ -2388,7 +2514,8 @@ def run_study(cell_set: str, *, target: str, device: str, out: Path, target_kind
                 remember(job, record)
                 results.append(record)
     finally:
-        after = host.io_control_snapshot()
+        scheduler_after = host.io_scheduler_snapshot(device, target_safety)
+        after = host.io_control_snapshot(scheduler_snapshot=scheduler_after)
         snapshots[cell_set]["after"] = after
         write_json(state_path, state)
         if before != after:

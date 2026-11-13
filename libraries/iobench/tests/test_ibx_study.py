@@ -73,6 +73,11 @@ class FakeHost:
                  available=16 * GIB, free=16 * GIB):
         self.fio = FakeFio()
         self.snapshot = {"io_cost": {"enable": 0}, "cgroups": []}
+        self.scheduler_snapshot = {
+            "target": {"disk": "vda", "status": "known", "selected": "none",
+                       "available": ["none", "mq-deadline"], "message": None},
+            "root": {}, "peer_bfq_policy": "inert", "message": None,
+        }
         self.psi_io = psi_io
         self.psi_mem = psi_mem
         self.psi_mem_full = psi_mem if psi_mem_full is None else psi_mem_full
@@ -126,8 +131,13 @@ class FakeHost:
             return driver.TargetValidation(FAKE_IDENTITY, dict(self.system_disk))
         return driver.TargetValidation(None)
 
-    def io_control_snapshot(self):
-        return self.snapshot
+    def io_scheduler_snapshot(self, device, system_disk=None):
+        return self.scheduler_snapshot
+
+    def io_control_snapshot(self, *, scheduler_snapshot=None):
+        if scheduler_snapshot is None:
+            return self.snapshot
+        return {**self.snapshot, "block_schedulers": dict(scheduler_snapshot)}
 
     def assert_study_tools(self, kind):
         self.study_tool_preflights.append(kind)
@@ -411,7 +421,9 @@ def test_run_resume_monitors_and_records_one_json_per_fio_cell(tmp_path):
     assert "--system-disk-ack" in planned["risk_note"]
     assert state["run_manifest"]["target_safety"]["raw"]["root_disk_shared"] is True
     assert state["run_manifest"]["stop_policy"]["io_psi"].startswith("advisory")
-    assert state["io_control_runs"]["raw-t0"]["before"] == state["io_control_runs"]["raw-t0"]["after"] == host.snapshot
+    expected_snapshot = {**host.snapshot, "block_schedulers": host.scheduler_snapshot}
+    assert state["io_control_runs"]["raw-t0"]["before"] == state["io_control_runs"]["raw-t0"]["after"] == expected_snapshot
+    assert state["run_manifest"]["io_schedulers"]["raw"] == host.scheduler_snapshot
     fio_record = next(json.loads(path.read_text(encoding="utf-8")) for path in files
                       if '"fio"' in path.read_text(encoding="utf-8"))
     assert set(fio_record) >= {
@@ -2796,6 +2808,7 @@ def test_adaptive_repeat_requires_complete_slots_and_repeats_moving_error(tmp_pa
 
 
 def materialize_real_cgroup_layout(tmp_path):
+    tmp_path.mkdir(parents=True, exist_ok=True)
     fixture_path = Path(__file__).parent / "fixtures/ibx-real-cgroup-layout.json"
     fixture = json.loads(fixture_path.read_text(encoding="utf-8"))
     root = tmp_path / "cg"
@@ -2812,12 +2825,78 @@ def materialize_real_cgroup_layout(tmp_path):
     return root, fixture
 
 
+def materialize_scheduler_fixture(tmp_path, case_name):
+    fixture_path = Path(__file__).parent / "fixtures/ibx-block-scheduler-layout.json"
+    fixture = json.loads(fixture_path.read_text(encoding="utf-8"))
+    case = fixture["cases"][case_name]
+    sys_root = tmp_path / "sys"
+    disk = "study-disk"
+    partition = "study-partition"
+    disk_path = sys_root / "block" / disk
+    partition_path = disk_path / partition
+    queue = disk_path / "queue"
+    queue.mkdir(parents=True)
+    partition_path.mkdir()
+    (partition_path / "partition").write_text("1\n", encoding="utf-8")
+    class_block = sys_root / "class/block"
+    class_block.mkdir(parents=True)
+    (class_block / disk).symlink_to(disk_path)
+    (class_block / partition).symlink_to(partition_path)
+    if case["scheduler"] is not None:
+        (queue / "scheduler").write_text(case["scheduler"], encoding="utf-8")
+    validation = {"target_disk": disk, "root_fs_devices": [partition]}
+    scheduler = driver.LocalHost(sys=sys_root).io_scheduler_snapshot(partition, validation)
+    return fixture, case, sys_root, scheduler
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("[bfq] none mq-deadline\n", ("bfq", ["bfq", "none", "mq-deadline"])),
+        ("none [mq-deadline]\n", ("mq-deadline", ["none", "mq-deadline"])),
+        ("none mq-deadline\n", (None, ["none", "mq-deadline"])),
+        ("[none] [bfq]\n", (None, ["none", "bfq"])),
+        ("[none] none\n", (None, ["none"])),
+        ("[none\n", (None, [])),
+        ("[]\n", (None, [])),
+        ("[bad/name]\n", (None, [])),
+    ],
+)
+def test_block_scheduler_parser_requires_one_well_formed_selection(text, expected):
+    assert driver._parse_block_scheduler(text) == expected
+
+
+def test_scheduler_discovery_resolves_whole_disks_and_records_root_scheduler(tmp_path):
+    _fixture, _case, sys_root, target_scheduler = materialize_scheduler_fixture(tmp_path, "real-none")
+    host = driver.LocalHost(sys=sys_root)
+    assert host._whole_disk_name("study-disk") == "study-disk"
+    direct_target = host.io_scheduler_snapshot("study-partition")
+    assert direct_target["target"] == target_scheduler["target"]
+    assert direct_target["root"] == {}
+    root_disk = sys_root / "block/root-disk"
+    (root_disk / "queue").mkdir(parents=True)
+    (root_disk / "queue/scheduler").write_text("none [bfq]\n", encoding="utf-8")
+    root_partition = root_disk / "root-partition"
+    root_partition.mkdir()
+    (root_partition / "partition").write_text("2\n", encoding="utf-8")
+    (sys_root / "class/block/root-disk").symlink_to(root_disk)
+    (sys_root / "class/block/root-partition").symlink_to(root_partition)
+    scheduler = host.io_scheduler_snapshot("study-partition", {
+        "target_disk": "study-disk", "root_fs_devices": ["root-partition"]})
+    assert scheduler["target"] == target_scheduler["target"]
+    assert scheduler["root"]["root-disk"]["selected"] == "bfq"
+    unknown = host.io_scheduler_snapshot("missing")
+    assert unknown["target"]["status"] == "unknown"
+    assert "cannot resolve sysfs block device missing" in unknown["target"]["message"]
+
+
 def test_io_control_snapshot_accepts_the_recorded_host_layout(tmp_path, monkeypatch):
     root, fixture = materialize_real_cgroup_layout(tmp_path)
     assert fixture["provenance"]["kernel"] == "7.2.12"
     assert {source["sha256"] for source in fixture["provenance"]["sources"]} == {
         "b0ff2a77f3b056d8a6da3aff5a2976d126eb2dc18668aa0fe09ab47aaedce9ad",
         "cd4519778ee1a7baf0276b6caef0847550fb904df19d138a68637e9022b42a43",
+        "51861c8b2dd439195740ad1b3f014f86e3a75d8e31e028c64437cc322a5d4045",
     }
     snapshot = driver.io_control_snapshot(cgroup_root=root, cgroup_text=fixture["cgroup_text"])
     assert [row["path"] for row in snapshot["cgroups"]] == [str(root), str(root / "system.slice")]
@@ -2908,15 +2987,101 @@ def test_io_control_snapshot_accepts_present_but_inactive_controls(tmp_path):
     }
 
 
-def test_io_control_snapshot_ignores_a_peer_bfq_weight_like_a_peer_io_weight(tmp_path):
-    # systemd gives peer slices their own weights (io.weight default 50 on the real host);
-    # a peer's BFQ weight is equally normal and is not an IO limit on the benchmark path.
-    root, fixture = materialize_real_cgroup_layout(tmp_path)
-    before = driver.io_control_snapshot(cgroup_root=root, cgroup_text=fixture["cgroup_text"])
+def test_recorded_real_scheduler_layout_has_no_active_io_limits(tmp_path):
+    _fixture, case, _sys_root, scheduler = materialize_scheduler_fixture(tmp_path, "real-none")
+    root, cgroup = materialize_real_cgroup_layout(tmp_path / "cgroup")
+    snapshot = driver.io_control_snapshot(
+        cgroup_root=root, cgroup_text=cgroup["cgroup_text"], scheduler_snapshot=scheduler)
+    assert case["scheduler"] == "[none] mq-deadline"
+    assert case["bfq_controller_file"] == "absent"
+    assert scheduler["target"]["selected"] == "none"
+    assert scheduler["root"]["study-disk"]["selected"] == "none"
+    assert scheduler["peer_bfq_policy"] == "inert"
+    assert snapshot["block_schedulers"] == scheduler
+    assert snapshot["cgroups"][0]["files"]["io.bfq.weight"] is None
+    for row in snapshot["cgroups"]:
+        files = row["files"]
+        if files["io.max"] is not None:
+            assert driver._io_max_active(files["io.max"], Path(row["path"])) is False
+        if files["io.weight"] is not None:
+            assert driver._validate_io_weight_inactive(files["io.weight"], Path(row["path"])) is None
+        if files["io.bfq.weight"] is not None:
+            assert driver._validate_io_bfq_weight_inactive(
+                files["io.bfq.weight"], Path(row["path"])) is None
+        assert files["io.latency"] in (None, "")
+    assert "enable=0" in snapshot["io_cost"]["io.cost.qos"]
+    assert "ctrl=auto model=linear" in snapshot["io_cost"]["io.cost.model"]
+
+
+@pytest.mark.parametrize("case_name", ("real-none", "mq-deadline"))
+def test_peer_bfq_weight_is_inert_when_target_scheduler_is_not_bfq(tmp_path, case_name):
+    _fixture, case, _sys_root, scheduler = materialize_scheduler_fixture(tmp_path, case_name)
+    root, cgroup = materialize_real_cgroup_layout(tmp_path / "cgroup")
     (root / "cgprofile.slice/io.bfq.weight").write_text(
         "default 50\n254:0 200\n", encoding="utf-8")
-    assert driver.io_control_snapshot(
-        cgroup_root=root, cgroup_text=fixture["cgroup_text"]) == before
+    snapshot = driver.io_control_snapshot(
+        cgroup_root=root, cgroup_text=cgroup["cgroup_text"], scheduler_snapshot=scheduler)
+    assert case["scheduler"] is not None
+    assert scheduler["peer_bfq_policy"] == "inert"
+    assert snapshot["block_schedulers"]["target"]["selected"] != "bfq"
+
+
+def test_peer_bfq_weight_refuses_when_target_scheduler_is_bfq(tmp_path):
+    _fixture, _case, _sys_root, scheduler = materialize_scheduler_fixture(tmp_path, "bfq")
+    root, cgroup = materialize_real_cgroup_layout(tmp_path / "cgroup")
+    path = root / "cgprofile.slice/io.bfq.weight"
+    path.write_text("default 50\n254:0 200\n", encoding="utf-8")
+    with pytest.raises(driver.StudyError, match="non-default io.bfq.weight") as caught:
+        driver.io_control_snapshot(
+            cgroup_root=root, cgroup_text=cgroup["cgroup_text"], scheduler_snapshot=scheduler)
+    assert "cgprofile.slice/io.bfq.weight" in str(caught.value)
+
+
+@pytest.mark.parametrize("case_name", ("missing-scheduler", "malformed-scheduler"))
+def test_unknown_target_scheduler_conservatively_checks_peer_bfq_weight(tmp_path, case_name):
+    _fixture, _case, _sys_root, scheduler = materialize_scheduler_fixture(tmp_path, case_name)
+    root, cgroup = materialize_real_cgroup_layout(tmp_path / "cgroup")
+    path = root / "cgprofile.slice/io.bfq.weight"
+    path.write_text("default 50\n254:0 200\n", encoding="utf-8")
+    assert scheduler["target"]["status"] == "unknown"
+    assert scheduler["peer_bfq_policy"] == "conservative-check"
+    with pytest.raises(driver.StudyError, match="scheduler is unknown.*cgprofile.slice/io.bfq.weight"):
+        driver.io_control_snapshot(
+            cgroup_root=root, cgroup_text=cgroup["cgroup_text"], scheduler_snapshot=scheduler)
+
+
+def test_unreadable_scheduler_is_unknown_and_checks_peer_bfq_weight(tmp_path, monkeypatch):
+    _fixture, _case, sys_root, _scheduler = materialize_scheduler_fixture(tmp_path, "bfq")
+    scheduler_path = sys_root / "block/study-disk/queue/scheduler"
+    original_read_text = Path.read_text
+
+    def unreadable(path, *args, **kwargs):
+        if path == scheduler_path:
+            raise PermissionError("fixture denies scheduler read")
+        return original_read_text(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", unreadable)
+    host = driver.LocalHost(sys=sys_root)
+    scheduler = host.io_scheduler_snapshot("study-partition", {
+        "target_disk": "study-disk", "root_fs_devices": ["study-partition"]})
+    root, cgroup = materialize_real_cgroup_layout(tmp_path / "cgroup")
+    path = root / "cgprofile.slice/io.bfq.weight"
+    path.write_text("default 50\n254:0 200\n", encoding="utf-8")
+    assert scheduler["target"]["message"].startswith("cannot read scheduler file")
+    with pytest.raises(driver.StudyError, match="scheduler is unknown.*cgprofile.slice/io.bfq.weight"):
+        driver.io_control_snapshot(
+            cgroup_root=root, cgroup_text=cgroup["cgroup_text"], scheduler_snapshot=scheduler)
+
+
+def test_missing_bfq_controller_file_is_no_setting_with_unknown_scheduler(tmp_path):
+    _fixture, case, _sys_root, scheduler = materialize_scheduler_fixture(tmp_path, "no-bfq-controller")
+    root, cgroup = materialize_real_cgroup_layout(tmp_path / "cgroup")
+    snapshot = driver.io_control_snapshot(
+        cgroup_root=root, cgroup_text=cgroup["cgroup_text"], scheduler_snapshot=scheduler)
+    assert case["bfq_controller_file"] == "absent"
+    assert scheduler["target"]["status"] == "unknown"
+    assert scheduler["message"]
+    assert snapshot["cgroups"][0]["files"]["io.bfq.weight"] is None
 
 
 @pytest.mark.parametrize(
@@ -3388,6 +3553,20 @@ def test_run_dry_run_validates_and_renders_without_writing(tmp_path):
     assert host.quiet_checked == 0 and host.liveness_calls == 1
     assert host.study_tool_preflights == ["raw"] and host.trim_calls == ["vda5"]
     assert host.discards == [] and host.fio.calls == []
+
+
+def test_run_dry_run_reports_unknown_scheduler_and_conservative_peer_policy(tmp_path):
+    host = FakeHost()
+    host.scheduler_snapshot = {
+        "target": {"disk": "vda", "status": "unknown", "selected": None,
+                   "available": [], "message": "scheduler file is missing for vda"},
+        "root": {}, "peer_bfq_policy": "conservative-check",
+        "message": "target scheduler for vda is unknown; peer io.bfq.weight values are checked conservatively",
+    }
+    result = run_set(tmp_path / "dry-unknown-scheduler", "raw-t0", host=host, dry_run=True)
+    assert result["dry_run"] is True
+    assert result["run_manifest"]["io_schedulers"]["raw"] == host.scheduler_snapshot
+    assert "checked conservatively" in result["run_manifest"]["io_schedulers"]["raw"]["message"]
 
 
 def test_stop_policy_documentation_maps_manifest_fields_to_run_options(tmp_path):
@@ -4194,7 +4373,8 @@ def test_state_reservation_and_meter_guards(tmp_path):
 
 def test_host_target_and_fsync_failure_edges(tmp_path, monkeypatch):
     host_api = driver.LocalHost()
-    monkeypatch.setattr(driver, "io_control_snapshot", lambda: {"guarded": True})
+    monkeypatch.setattr(driver, "io_control_snapshot",
+                        lambda *, scheduler_snapshot=None: {"guarded": True})
     assert host_api.io_control_snapshot() == {"guarded": True}
     monkeypatch.setattr(driver.time, "monotonic", lambda: 12.5)
     sleeps = []
@@ -4489,9 +4669,10 @@ def test_run_study_remaining_active_and_elapsed_limits_stop_before_fio(tmp_path,
             super().__init__()
             self.snapshot_number = 0
 
-        def io_control_snapshot(self):
+        def io_control_snapshot(self, *, scheduler_snapshot=None):
             self.snapshot_number += 1
-            return {"number": self.snapshot_number}
+            return {"number": self.snapshot_number,
+                    "block_schedulers": scheduler_snapshot}
 
     with pytest.raises(driver.StudyError, match="changed during the study"):
         run_set(tmp_path / "changed-snapshot", "file-ext4", host=ChangedSnapshot(),
