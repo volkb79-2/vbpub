@@ -622,6 +622,9 @@ def test_time_reference_and_host_eta_refuse_incomparable_scores():
     assert _host_time({"speed": None}, 76, 6, "6.4.0", 2500) is None
     assert _host_eta(row, [], 6, "6.4.0", 2500) == (0.0, None)
     assert _host_eta(row, [{"time_ref_seconds": 1}], None, None, None)[1] == "common Geekbench reference is unavailable"
+    assert _host_eta({"speed": None}, [{"time_ref_seconds": 1}], 6, "6.4.0", 2500)[1] == (
+        "host Geekbench score is unavailable or uses a different major/version"
+    )
 
     refused_mismatch = _hosts()
     small_facts = _facts(refused_mismatch, "host-small")
@@ -634,6 +637,23 @@ def test_time_reference_and_host_eta_refuse_incomparable_scores():
     assert "reason" not in eligible_reference["time_reference"]
     assert _host_plan(eligible_reference, "host-small")["status"] == "refused"
     assert eligible_reference["eta_seconds"] is not None
+
+    incomparable_source = _hosts()
+    source_facts = _facts(incomparable_source, "host-small")
+    source_facts["policy"]["host_role"] = "shared-prod"
+    source_facts["speed"]["geekbench_major"] = 7
+    source_facts["speed"]["geekbench_version"] = "7.0.0"
+    source_facts["speed"]["basis"] = "geekbench7-measured"
+    ignored_timing = _plan(
+        [_candidate("x", 100_000_000, elapsed_seconds=12, measured_on_host="host-small")],
+        hosts=incomparable_source,
+    )
+    ignored_candidate = next(
+        item for host in ignored_timing["hosts"] for item in host["assigned"] if item["id"] == "x"
+    )
+    assert ignored_timing["time_reference"]["geekbench_major"] == 6
+    assert ignored_candidate["time_source"] == "declared_reference"
+    assert ignored_candidate["time_ref_seconds"] == 95
 
     no_scores = _hosts()
     for host in no_scores["hosts"]:
