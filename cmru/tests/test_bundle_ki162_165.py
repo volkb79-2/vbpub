@@ -168,6 +168,13 @@ def test_stage_keep_allows_public_suffix_files_and_vendor_wheels_remain_included
         stage=True,
         vendor=True,
     )
+    config.write_text(
+        config.read_text(encoding="utf-8").replace(
+            'name_template = "demo-v{version}.tar.xz"',
+            'name_template = "demo-v{version}-{variant}.tar.xz"',
+        ),
+        encoding="utf-8",
+    )
     bundle_root = tmp_path / "dist/app"
 
     def runner(argv, cwd):

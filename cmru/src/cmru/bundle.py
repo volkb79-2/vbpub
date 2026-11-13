@@ -24,6 +24,7 @@ import re
 import shutil
 import stat
 import subprocess
+import sys
 import tarfile
 import tempfile
 from dataclasses import dataclass, field
@@ -883,6 +884,7 @@ def _validate_final_bundle_tree(config: BundleConfig) -> None:
             )
 
     blocked: list[str] = []
+    unkeepable: list[str] = []
     for path in config.bundle_dir.rglob("*"):
         rel = path.relative_to(config.bundle_dir).as_posix()
         if _is_excluded(rel, config.archive_keep):
@@ -891,10 +893,11 @@ def _validate_final_bundle_tree(config: BundleConfig) -> None:
             if (
                 not path.is_dir()
                 and any(path.name.endswith(suffix) for suffix in _KEEPABLE_EXCLUDE_SUFFIXES)
-                and not _has_hard_excluded_name(rel)
                 and path.name != "pyproject.toml"
             ):
                 blocked.append(rel)
+                if _has_hard_excluded_name(rel):
+                    unkeepable.append(rel)
             continue
         if path.is_symlink():
             raise ValueError(f"bundle path {rel!r} is a symlink; refusing to archive its target")
@@ -903,6 +906,12 @@ def _validate_final_bundle_tree(config: BundleConfig) -> None:
 
     if blocked:
         paths = ", ".join(sorted(blocked))
+        if unkeepable:
+            hard_paths = ", ".join(sorted(unkeepable))
+            raise ValueError(
+                "the archive hard-excludes unkeepable bundle files that cannot be "
+                f"listed in [archive].keep: {hard_paths}"
+            )
         raise ValueError(
             "the archive hard-excludes unkept bundle files; add exact "
             f"paths to [archive].keep or remove them: {paths}"
@@ -1001,7 +1010,6 @@ def run_bundle(
         config,
         variant.name if variant is not None else None,
         version_fallback=version_fallback,
-        environ=environment,
     )
     _preflight_bundle_steps(
         config, variant, manifest_project=manifest_project, manifest_tag=manifest_tag,
@@ -1030,7 +1038,6 @@ def run_bundle(
         config,
         variant.name if variant is not None else None,
         version_fallback=version_fallback,
-        environ=environment,
     )
     if not config.keep_tree:
         shutil.rmtree(config.bundle_dir)
