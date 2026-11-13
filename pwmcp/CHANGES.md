@@ -6,15 +6,47 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 <!-- cmru: pending release notes begin -->
 
+<!-- cmru: pending release notes end -->
+
+<!-- cmru: release history -->
+
+## [1.64.1-r9] - 2026-11-13
+<!-- cmru: generated -->
+<!-- cmru: source-end=fc1f30cf8163097da02d56789420fdf22558c382 -->
+
+### Fixed
+- fix(pwmcp): reject escaped whitespace and comment-glued hiding overrides (23ce6320a)
+- fix(pwmcp): use ASCII CSS case folding (0dc945020)
+- fix(pwmcp): align hidden-style parsing with CSS tokens (5c8faf1ee)
+- fix(pwmcp): validate hidden-style declaration values (4b789134d)
+
+### Changed
+- Persist cited controller evidence slice (e89045795)
+- Complete persistence fix round 2 (b217175db)
+- backlog: fix filing9 review and file follow-ups (cd933d7ba)
+- backlog: file KSM and R2 runner follow-ups (bbdb2f9ad)
+
+### Documentation
+- docs(pwmcp): clarify CSS policy evidence (77ef828ae)
+
+### Testing
+- test(pwmcp): pin simple escaped whitespace inside a display identifier (review finding F1a) (245a99878)
+- test(pwmcp): reproduce escaped whitespace and comment token bypasses (f6bceec53)
+- test(pwmcp): pin every valid static display keyword and visible cascade outcome; backlog status wording (ebaf2224f)
+- test(pwmcp): reproduce Unicode case-folding bypass (d8ab1454c)
+- test(pwmcp): cover survivor review edge cases (240facfde)
+- test(pwmcp): reproduce custom-property hidden values (7746eacee)
+- test(pwmcp): pin balanced stray-close and whitespace boundaries (c8c826423)
+- test(pwmcp): cover self-closing links and CSS recovery boundaries (40d16e8cf)
+- test(pwmcp): reproduce invalid inline style cascade bypass (e89bb96e6)
+
+<!-- cmru: pending release notes begin -->
 - fix(pwmcp): ignore invalid display and visibility declarations, fail closed on unresolved cascade values, and filter collapsed visibility (PWMCP-65, PWMCP-66)
 - fix(pwmcp): keep escaped whitespace inside CSS identifiers and comments from gluing inline-style tokens (PWMCP-65)
 - fix(pwmcp): parse only CSS whitespace and prevent non-interoperable display values from overriding hidden content (PWMCP-67, PWMCP-68)
 - fix(pwmcp): fold only ASCII case in inline-style property names and values so U+212A cannot spell `block` (PWMCP-69)
 - test(pwmcp): close r8 page-content mutation survivors with behavioral boundary coverage
-
 <!-- cmru: pending release notes end -->
-
-<!-- cmru: release history -->
 
 ## [1.64.1-r8] - 2026-11-12
 <!-- cmru: generated -->
