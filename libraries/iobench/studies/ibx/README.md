@@ -95,9 +95,10 @@ malformed files refuse. The guard refuses numeric `io.max` limits,
 non-default `io.weight`, enabled `io.cost.qos`, and a user/custom
 `io.cost.model`; the kernel-managed `ctrl=auto model=linear` model is allowed.
 `io.latency` can throttle peer groups, so the driver enumerates the benchmark's
-direct peers at each level of its cgroup path, refuses any active target, and
-records those peer values for before/after comparison. Other siblings' `io.max`
-caps are not inherited by the benchmark cgroup. This lets the study run on
+direct peers at each level of its cgroup path and refuses any active target on
+every check. Peer membership is not included in before/after equality because
+services and containers can come and go during a study. Other siblings'
+`io.max` caps are not inherited by the benchmark cgroup. This lets the study run on
 kernels that omit optional controls while retaining refusals for active limits
 that can affect the study process. It also refuses targets that are not the expected block device or
 file type/extent and verifies that the target's backing device is the same

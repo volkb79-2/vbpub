@@ -389,8 +389,10 @@ unreadable or malformed control, an active `io.max`, a non-default
 `io.weight`, enabled io.cost QoS, or a user/custom io.cost model still refuses.
 Because `io.latency` can throttle peer groups, the driver also enumerates the
 benchmark's direct peers at each level of its cgroup path and refuses any
-active latency target there. Missing optional files mean no setting, and the
-same observed values are compared before and after a cell-set. The
+active latency target on every check. Peer membership is excluded from
+before/after equality because systemd services and containers can come and go.
+Missing optional files mean no setting, and benchmark-chain values are
+compared before and after a cell-set. The
 kernel-managed `ctrl=auto model=linear` cost model is not considered custom.
 The [study README](../studies/ibx/README.md) maps saved stop-policy fields to
 their run options.

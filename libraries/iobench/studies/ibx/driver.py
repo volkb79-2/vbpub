@@ -570,11 +570,9 @@ def _read_optional_control(path: Path) -> str | None:
         path.lstat()
     except FileNotFoundError:
         try:
-            parent_info = path.parent.stat()
+            path.parent.stat()
         except OSError as exc:
             raise StudyError(f"cannot enumerate cgroup IO control parent {path.parent}: {exc}") from exc
-        if not stat.S_ISDIR(parent_info.st_mode):
-            raise StudyError(f"cannot enumerate cgroup IO control parent {path.parent}: not a directory")
         return None
     except OSError as exc:
         raise StudyError(f"cannot inspect existing cgroup IO control {path}: {exc}") from exc
@@ -714,7 +712,8 @@ def io_control_snapshot(*, cgroup_root: Path = Path("/sys/fs/cgroup"),
     are read and recorded so the before/after comparison detects changes. The
     benchmark cgroup and every ancestor must still be present and enumerable.
     io.latency is peer-relative, so direct sibling groups at each level of the
-    benchmark path are also enumerated and included in the snapshot.
+    benchmark path are enumerated and checked on every call. Their membership
+    is not included in the compared snapshot because services can come and go.
     """
     if cgroup_text is None:
         membership = Path("/proc/self/cgroup")
@@ -743,10 +742,11 @@ def io_control_snapshot(*, cgroup_root: Path = Path("/sys/fs/cgroup"),
         if text:
             raise StudyError(f"active io.latency setting at {path}")
         latency_values[directory] = text
+    # Peer membership changes as services and containers come and go. Judge
+    # each current peer on every call, but compare only the stable benchmark
+    # chain and root cost controls across a cell-set.
     snapshot: dict[str, Any] = {
         "cgroups": [],
-        "io_latency_peers": [{"path": str(path), "io.latency": latency_values[path]}
-                              for path in latency_peers],
         "io_cost": {},
     }
     for directory in dirs:
@@ -1513,8 +1513,8 @@ class LocalHost:
         path = disk_sys / "queue/discard_max_bytes"
         try:
             raw = path.read_text(encoding="utf-8").strip()
-        except OSError as exc:
-        raise StudyError(f"cannot read discard support for {device} at {path}: {exc}") from exc
+        except (OSError, UnicodeError) as exc:
+            raise StudyError(f"cannot read discard support for {device} at {path}: {exc}") from exc
         if not raw.isdigit():
             raise StudyError(f"discard support for {device} is malformed")
         maximum = int(raw)

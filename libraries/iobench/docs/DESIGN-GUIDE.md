@@ -386,8 +386,10 @@ refuses. `io.max` entries are inactive only when every per-device value is
 `max`; `io.weight` must report the default 100. Because `io.latency` can
 throttle peer groups, the snapshot also enumerates sibling cgroups at each
 level of the benchmark path and refuses any active latency target there; those
-peer values are recorded for the before/after comparison. Missing optional
-files mean no setting. Root `io.cost.qos` must be disabled, and the built-in
+peer targets are checked on every snapshot call. Peer membership is not part
+of before/after equality because systemd services and containers can come and
+go during a study. Missing optional files mean no setting. Root `io.cost.qos`
+must be disabled, and the built-in
 `ctrl=auto model=linear` model is accepted while user/custom models refuse.
 Other siblings' `io.max` caps are not inherited by the benchmark cgroup, so
 they do not prevent this study from running. A raw run requires an operator acknowledgement

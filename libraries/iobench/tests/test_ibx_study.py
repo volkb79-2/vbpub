@@ -581,7 +581,7 @@ def test_optional_file_standard_requires_borderline_quick_replay(tmp_path):
     assert driver.file_standard_needed(tmp_path, "ext4-file")
 
 
-def test_local_trim_state_reads_explicit_sysfs_capability(tmp_path):
+def _trim_state_fixture(tmp_path):
     disk = tmp_path / "devices/block/vda"
     partition = disk / "vda5"
     (disk / "queue").mkdir(parents=True)
@@ -591,9 +591,13 @@ def test_local_trim_state_reads_explicit_sysfs_capability(tmp_path):
     class_block.mkdir(parents=True)
     (class_block / "vda").symlink_to(disk)
     (class_block / "vda5").symlink_to(partition)
+    (disk / "queue/discard_max_bytes").write_text("4096\n", encoding="utf-8")
+    return driver.LocalHost(sys=tmp_path), disk, partition
+
+
+def test_local_trim_state_reads_explicit_sysfs_capability(tmp_path):
+    host, disk, _partition = _trim_state_fixture(tmp_path)
     path = disk / "queue/discard_max_bytes"
-    path.write_text("4096\n", encoding="utf-8")
-    host = driver.LocalHost(sys=tmp_path)
     assert host.trim_state("vda5") == {"supported": True, "discard_max_bytes": 4096}
     assert host.trim_state("vda") == {"supported": True, "discard_max_bytes": 4096}
     path.write_text("0\n", encoding="utf-8")
@@ -601,8 +605,50 @@ def test_local_trim_state_reads_explicit_sysfs_capability(tmp_path):
     path.write_text("bad\n", encoding="utf-8")
     with pytest.raises(driver.StudyError, match="malformed"):
         host.trim_state("vda5")
+    path.write_bytes(b"\xff")
+    with pytest.raises(driver.StudyError, match="cannot read discard support for vda5"):
+        host.trim_state("vda5")
     with pytest.raises(driver.StudyError, match="cannot resolve sysfs block device"):
         host.trim_state("missing")
+    path.unlink()
+    with pytest.raises(driver.StudyError, match="cannot read discard support for vda5"):
+        host.trim_state("vda5")
+
+
+def test_local_trim_state_refuses_non_directory_sysfs_target(tmp_path):
+    target = tmp_path / "devices/block/not-a-directory"
+    target.parent.mkdir(parents=True)
+    target.write_text("not a block device", encoding="utf-8")
+    class_block = tmp_path / "class/block"
+    class_block.mkdir(parents=True)
+    (class_block / "not-a-directory").symlink_to(target)
+    host = driver.LocalHost(sys=tmp_path)
+    with pytest.raises(driver.StudyError, match="sysfs block device not-a-directory is not a directory"):
+        host.trim_state("not-a-directory")
+
+
+def test_local_trim_state_refuses_unreadable_partition_identity(tmp_path, monkeypatch):
+    host, _disk, partition = _trim_state_fixture(tmp_path)
+    marker = partition / "partition"
+    original_stat = Path.stat
+
+    def unreadable(candidate, *args, **kwargs):
+        if candidate == marker:
+            raise PermissionError("fixture denies partition stat")
+        return original_stat(candidate, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "stat", unreadable)
+    with pytest.raises(driver.StudyError, match="cannot inspect partition identity for vda5"):
+        host.trim_state("vda5")
+
+
+def test_local_trim_state_refuses_non_regular_partition_identity(tmp_path):
+    host, _disk, partition = _trim_state_fixture(tmp_path)
+    marker = partition / "partition"
+    marker.unlink()
+    marker.mkdir()
+    with pytest.raises(driver.StudyError, match="partition identity for vda5 is malformed"):
+        host.trim_state("vda5")
 
 
 def _raw_target_fixture(tmp_path, monkeypatch, *, root_devno="8:99"):
@@ -2447,10 +2493,9 @@ def test_io_control_snapshot_accepts_the_recorded_host_layout(tmp_path, monkeypa
         "io.max": None, "io.weight": None, "io.latency": None}
     assert snapshot["cgroups"][1]["files"] == {
         "io.max": "", "io.weight": "default 100", "io.latency": None}
+    assert "io_latency_peers" not in snapshot
     assert snapshot["io_cost"]["io.cost.qos"].startswith("254:0 enable=0 ctrl=auto")
     assert snapshot["io_cost"]["io.cost.model"].startswith("254:0 ctrl=auto model=linear")
-    assert snapshot["io_latency_peers"]
-    assert all(peer["io.latency"] in (None, "") for peer in snapshot["io_latency_peers"])
     for row in snapshot["cgroups"]:
         io_max = row["files"]["io.max"]
         if io_max is not None:
@@ -2476,6 +2521,13 @@ def test_io_control_snapshot_accepts_the_recorded_host_layout(tmp_path, monkeypa
     changed_snapshot = driver.io_control_snapshot(cgroup_root=root, cgroup_text=fixture["cgroup_text"])
     assert snapshot != changed_snapshot
     appearing_control.unlink()
+    transient_peer = root / "cgprofile.slice"
+    (transient_peer / "io.weight").unlink()
+    transient_peer.rmdir()
+    assert driver.io_control_snapshot(cgroup_root=root, cgroup_text=fixture["cgroup_text"]) == snapshot
+    transient_peer.mkdir()
+    (transient_peer / "io.latency").write_text("\n", encoding="utf-8")
+    assert driver.io_control_snapshot(cgroup_root=root, cgroup_text=fixture["cgroup_text"]) == snapshot
 
     original_read_text = Path.read_text
 
@@ -2486,6 +2538,14 @@ def test_io_control_snapshot_accepts_the_recorded_host_layout(tmp_path, monkeypa
 
     monkeypatch.setattr(Path, "read_text", proc_cgroup)
     assert driver.io_control_snapshot(cgroup_root=root)["io_cost"] == snapshot["io_cost"]
+
+
+def test_io_control_snapshot_accepts_root_cgroup_membership(tmp_path):
+    root, _fixture = materialize_real_cgroup_layout(tmp_path)
+    snapshot = driver.io_control_snapshot(cgroup_root=root, cgroup_text="0::/\n")
+    assert [row["path"] for row in snapshot["cgroups"]] == [str(root)]
+    assert snapshot["cgroups"][0]["files"] == {
+        "io.max": None, "io.weight": None, "io.latency": None}
 
 
 def test_io_control_snapshot_accepts_present_but_inactive_controls(tmp_path):
@@ -2639,6 +2699,36 @@ def test_io_control_snapshot_refuses_unenumerable_latency_peers(tmp_path, monkey
 
     monkeypatch.setattr(Path, "iterdir", unavailable_peers)
     with pytest.raises(driver.StudyError, match="cannot enumerate benchmark cgroup peers"):
+        driver.io_control_snapshot(cgroup_root=root, cgroup_text=fixture["cgroup_text"])
+
+
+def test_io_control_snapshot_refuses_unreadable_latency_peer_entry(tmp_path, monkeypatch):
+    root, fixture = materialize_real_cgroup_layout(tmp_path)
+    peer = root / "cgprofile.slice"
+    original_stat = Path.stat
+
+    def inaccessible(candidate, *args, **kwargs):
+        if candidate == peer:
+            raise PermissionError("fixture denies peer stat")
+        return original_stat(candidate, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "stat", inaccessible)
+    with pytest.raises(driver.StudyError, match="cannot enumerate benchmark cgroup peers"):
+        driver.io_control_snapshot(cgroup_root=root, cgroup_text=fixture["cgroup_text"])
+
+
+def test_io_control_snapshot_refuses_latency_peer_missing_from_parent_listing(tmp_path, monkeypatch):
+    root, fixture = materialize_real_cgroup_layout(tmp_path)
+    original_iterdir = Path.iterdir
+
+    def omit_benchmark_peer(path):
+        entries = list(original_iterdir(path))
+        if path == root:
+            entries = [entry for entry in entries if entry != root / "system.slice"]
+        return iter(entries)
+
+    monkeypatch.setattr(Path, "iterdir", omit_benchmark_peer)
+    with pytest.raises(driver.StudyError, match="system.slice is not a child cgroup"):
         driver.io_control_snapshot(cgroup_root=root, cgroup_text=fixture["cgroup_text"])
 
 
@@ -2942,7 +3032,7 @@ def test_acceptance_refusal_helper_continues_and_reports_a_failing_summary():
     whole_disk_refusal = re.search(
         r"(?ms)^check_whole_disk_refusal\(\) \{\n.*?^\}", script_match.group(1))
     summary_tail = re.search(
-        r"(?ms)^printf 'SECTION 1 summary:.*?^printf 'SECTION1-PASS'\n", script_match.group(1))
+        r"(?ms)^printf 'SECTION 1 summary:.*?^printf 'SECTION1-PASS\\n'\n", script_match.group(1))
     assert (expect_refusal is not None and record_check is not None and
             acknowledged_dry_run is not None and whole_disk_refusal is not None)
     assert summary_tail is not None

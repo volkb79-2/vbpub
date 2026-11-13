@@ -122,8 +122,10 @@ unreadable or malformed controls and active limits that can affect the study,
 and compares the same observed values before and after a cell-set. It checks
 `io.max` and `io.weight` along the benchmark path. Since `io.latency` may
 throttle peers, it enumerates direct peers at each path level and refuses an
-active target there. The host's active `dev.slice/io.max` is a sibling ceiling
-and is not inherited by the study process.
+active target there at each check. Peer membership is excluded from
+before/after equality because systemd units and containers change during a
+long study. The host's active `dev.slice/io.max` is a sibling ceiling and is
+not inherited by the study process.
 
 The captured layout is checked in at
 [`tests/fixtures/ibx-real-cgroup-layout.json`](tests/fixtures/ibx-real-cgroup-layout.json)
