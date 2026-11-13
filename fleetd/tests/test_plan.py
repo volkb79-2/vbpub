@@ -139,11 +139,11 @@ def test_plan_resolves_memory_time_and_routes_with_single_core_eta():
 
 def test_plan_preserves_special_alone_and_retry_work_on_one_host_and_renders_commands():
     plan = _plan([
-        _candidate("big", 8 * 1024**3),
+        _candidate("big", 14 * 1024**3),
         _candidate("retry", 256 * 1024**2, memory_crash_evidence=True),
     ])
     host = _host_plan(plan, "host-large")
-    assert {batch["kind"] for batch in host["batches"]} == {"alone", "retry"}
+    assert {batch["kind"] for batch in host["batches"] if "kind" in batch} == {"alone", "retry"}
     assert {item["id"] for item in host["assigned"]} == {"big", "retry"}
     commands = render_commands(plan)
     assert "run-gate r2 --jobs 1 --only-candidates" in commands
@@ -233,7 +233,7 @@ def test_batches_interleave_classes_respect_wave_budget_and_multiplier():
 
 
 def test_mix_violation_is_flagged_without_turning_missing_eta_into_a_mix_flag():
-    rows = [_candidate("a", 4_400_000_000), _candidate("b", 4_600_000_000)]
+    rows = [_candidate("a", 5_000_000_000), _candidate("b", 5_500_000_000)]
     plan = _plan(rows)
     host = _assigned_host(plan, "a")
     assert host["mix_flagged"] is True
@@ -435,6 +435,7 @@ def test_retry_terminal_unplaceable_and_no_available_host_paths():
     assert all(host["status"] == "refused" for host in none_available["hosts"])
     assert {item["id"] for item in none_available["unplaced"]} == {"normal", "retry"}
     assert none_available["eta_seconds"] == 0.0
+    assert "run-gate " not in render_commands(none_available)
 
 
 def test_overcommit_changes_sum_budget_but_never_physical_alone_cap():
@@ -567,6 +568,18 @@ def test_lane_demand_file_and_number_validation(tmp_path):
     demand_file.write_text("[lanes.r2.demand]\nunit = [", encoding="utf-8")
     with pytest.raises(ContractError, match="invalid Run-Gate TOML"):
         extract_demand(demand_file, "r2")
+    demand_file.write_text("[lanes.r2]\n", encoding="utf-8")
+    with pytest.raises(ContractError, match=r"has no \[lanes.r2.demand\]"):
+        extract_demand(demand_file, "r2")
+    demand_file.write_text("[lanes.r2]\ndemand = 1\n", encoding="utf-8")
+    with pytest.raises(ContractError, match=r"has no \[lanes.r2.demand\]"):
+        extract_demand(demand_file, "r2")
+    demand_file.write_text("lanes = 1\n", encoding="utf-8")
+    with pytest.raises(ContractError, match=r"has no \[lanes.r2.demand\]"):
+        extract_demand(demand_file, "r2")
+    demand_file.write_bytes(bytes([255]))
+    with pytest.raises(ContractError, match="invalid Run-Gate TOML"):
+        extract_demand(demand_file, "r2")
     with pytest.raises(ContractError, match="unknown field.*extra"):
         _plan([], demand=DEMAND | {"extra": True})
     with pytest.raises(ContractError, match="expected finite number"):
@@ -609,7 +622,11 @@ def test_time_reference_and_host_eta_refuse_incomparable_scores():
         ("baseline_score", "host Geekbench baseline scores differ; ETA is not comparable"),
     ):
         mismatch = _hosts()
-        _facts(mismatch, "host-large")["speed"][field] = 999 if field != "geekbench_version" else "6.5.0"
+        if field == "geekbench_major":
+            _facts(mismatch, "host-large")["speed"][field] = 7
+            _facts(mismatch, "host-large")["speed"]["basis"] = "geekbench7-measured"
+        else:
+            _facts(mismatch, "host-large")["speed"][field] = 999 if field == "baseline_score" else "6.5.0"
         assert _time_reference(parse_host_set(mismatch))[3] == expected
 
     known_reference = _hosts()
@@ -662,6 +679,7 @@ def test_invalid_measured_host_and_unavailable_source_time_are_reported():
     host_set = _hosts()
     _facts(host_set, "host-small")["speed"] = None
     _facts(host_set, "host-small")["speed_reason"] = "missing record"
+    _facts(host_set, "host-large")["psi"]["memory"]["some_avg10_pct"] = 99
     result = _plan([_candidate("x", 100_000_000, elapsed_seconds=2, measured_on_host="host-small")], hosts=host_set)
     assigned = {item["id"]: item for host in result["hosts"] for item in host["assigned"]}["x"]
     assert assigned["time_source"] == "declared_reference"

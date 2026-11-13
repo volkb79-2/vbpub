@@ -187,8 +187,8 @@ def parse_host_set(value: object) -> tuple[HostInput, ...]:
     return tuple(sorted(hosts, key=lambda host: host.host_id))
 
 
-def load_lane_demand(path: str | Path, lane: str) -> dict[str, Any]:
-    """Read a lane's closed demand table from the project's Run-Gate TOML."""
+def read_lane_demand_table(path: str | Path, lane: str) -> dict[str, Any]:
+    """Read the raw lane demand table from the project's Run-Gate TOML."""
     try:
         document = tomllib.loads(Path(path).read_text(encoding="utf-8"))
     except OSError:
@@ -200,7 +200,15 @@ def load_lane_demand(path: str | Path, lane: str) -> dict[str, Any]:
         raise ContractError(f"{path}: lane {lane!r} has no [lanes.{lane}.demand] table")
     if "demand" not in lanes[lane]:
         raise ContractError(f"{path}: lane {lane!r} has no [lanes.{lane}.demand] table")
-    return validate_lane_demand(lanes[lane]["demand"], f"lanes.{lane}.demand")
+    demand = lanes[lane]["demand"]
+    if not isinstance(demand, dict):
+        raise ContractError(f"{path}: lane {lane!r} has no [lanes.{lane}.demand] table")
+    return demand
+
+
+def load_lane_demand(path: str | Path, lane: str) -> dict[str, Any]:
+    """Read and validate a lane's demand table from Run-Gate TOML."""
+    return validate_lane_demand(read_lane_demand_table(path, lane), f"lanes.{lane}.demand")
 
 
 def _median(values: list[float | int]) -> float:
@@ -672,8 +680,6 @@ def _host_eta(
     isolated_times: list[float] = []
     for candidate, value in zip(candidates, candidate_times, strict=True):
         actual_time = value
-        if actual_time is None:
-            continue
         isolated = candidate["input"].memory_crash_evidence or candidate.get("assignment_kind") == "alone"
         (isolated_times if isolated else parallel_times).append(actual_time)
     eta = sum(parallel_times) / host["worker_slots"] + max(parallel_times, default=0.0) + sum(isolated_times)

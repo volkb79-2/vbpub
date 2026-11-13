@@ -11,7 +11,7 @@ from . import __version__
 from .contracts import ContractError, dump_json, load_json, validate_host_facts
 from .facts import DEFAULT_ROOT, collect_host_facts
 from .guard import parse_guard_toml
-from .plan import extract_demand, plan_campaign, render_commands
+from .plan import plan_campaign, read_lane_demand_table, render_commands
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -67,7 +67,7 @@ def _plan_campaign(args: argparse.Namespace) -> int:
         args.lane,
         load_json(args.candidates),
         load_json(args.hosts),
-        extract_demand(args.demand, args.lane),
+        read_lane_demand_table(args.demand, args.lane),
         batch_multiplier=args.batch_multiplier,
     )
     if args.commands:
