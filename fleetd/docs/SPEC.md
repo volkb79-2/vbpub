@@ -67,8 +67,17 @@ count. It accepts measured Geekbench 6/7 records with their matching reference
 score, and never uses a table fallback. Guard config is validated after
 lexically merging TOML drop-ins; its digest covers the main file and drop-ins.
 The guard runtime state and KSM opt-in shim are nullable unless their paths are
-configured. `memory.for_lanes_bytes` is raw `MemTotal`; the planner applies the
-control-plane `memory.min` reserve once per §4.3. `fleet facts validate FILE`
+configured. `memory.for_lanes_bytes` is raw `MemTotal`; the planner applies a
+control-plane reserve once per §4.3:
+`reserve_h = max(reported memory_min_bytes, clamp(256 MiB + ceil(6% × MemTotal), 768 MiB, 2 GiB))`.
+If the slice or `memory.min` is absent, the clamped design default is used.
+The 2 GiB cap applies to that default, not to a larger reported value. Host
+plans expose `reserve_bytes` and `reserve_source` (`reported` or
+`design-default`). A missing MemTotal still refuses planning because the
+default cannot be derived. The later measured-p95 replacement is not part of
+this package and is tracked under
+[FD-007](../KNOWN_ISSUES_TODO_BACKLOG.md#fd-007-calibrate-the-control-plane-reserve-from-measured-p95).
+`fleet facts validate FILE`
 validates a serialized record without contacting the host.
 The collector and planner do not read `dev-gates.slice/memory.max`; the
 planner uses the design's physical-RAM budget and leaves slice `MemoryMax` as a
@@ -89,19 +98,28 @@ The planner uses eligible hosts' Geekbench single-core scores for normalized
 time and ETA, never multi-core scores. A refused host does not change the ETA
 reference. One bounded correction factor is read per host, with
 the design default `1.0`; factors are not learned or pooled by lane in this
-package. Identical inputs produce byte-identical JSON and stable command
+package. The host-level EWMA and self-predicted-sample rule are tracked under
+[FD-005](../KNOWN_ISSUES_TODO_BACKLOG.md#fd-005-learn-the-per-host-correction-factor).
+Identical inputs produce byte-identical JSON and stable command
 ordering.
 When no host is eligible, `time_reference.reason` says so separately from the
 case where eligible hosts have no Geekbench records.
 
 The planner's host-set input requires explicit other-running rows and rejects
 hosts with unknown role, shared-prod role, PSI above its configured threshold,
-or unknown capacity facts. Worker capacity is the CPU-derived worker count
+or unknown MemTotal, physical lane memory, CPU, or PSI facts. A missing
+control-plane slice or unreadable `memory.min` uses the design default reserve
+instead of refusing the host. Worker capacity is the CPU-derived worker count
 after other work, bounded by the lane's efficient upper bound. This manual MVP
 uses one campaign slot per host because concurrent selected runs would share a
-Run-Gate lane instance and Assay store. It computes:
+Run-Gate lane instance and Assay store; lifting this accepted capacity limit is
+tracked under
+[FD-006](../KNOWN_ISSUES_TODO_BACKLOG.md#fd-006-lift-the-manual-one-slot-per-host-and-j-cap).
+It computes:
 
-- P = memory.for_lanes_bytes - control_plane.memory_min_bytes;
+- reserve_h = max(reported control_plane.memory_min_bytes, design default);
+- design default = clamp(256 MiB + ceil(6% × MemTotal), 768 MiB, 2 GiB);
+- P = memory.for_lanes_bytes - reserve_h;
 - O = other running expected charges + campaign_slots × instance_memory;
 - B = P × overcommit - O;
 - b = B / W for W worker slots;

@@ -45,10 +45,12 @@ host-owned `HOST_ROLE` setting. `max_lane_containers`, `guard_state`, and
 collector reads guard config plus lexically ordered `.toml` drop-ins for its
 digest and effective `enabled` value. It reports but does not apply guard
 rules. It reads cgroup v2 controllers, the configured slice's `memory.min` and
-`cpu.weight`, PSI avg10, swap counters, and KSM sysfs values. `memory.for_lanes`
-is the raw `MemTotal` value; WP2 subtracts `control_plane.memory_min_bytes`
-once when it calculates physical lane RAM. KSM swappiness-argument support is
-unknown because the collector makes no write probe.
+`cpu.weight`, PSI avg10, swap counters, and KSM sysfs values.
+`memory.for_lanes` is raw `MemTotal`. Planning computes the control-plane
+reserve as the larger of the reported `memory.min` and the design default
+`clamp(256 MiB + ceil(6% × MemTotal), 768 MiB, 2 GiB)`; if the slice or
+`memory.min` is absent, the default is used. KSM swappiness-argument support
+is unknown because the collector makes no write probe.
 
 ## Plan a candidate set
 
@@ -78,9 +80,14 @@ and [fleet-host-set.valid.json](../tests/fixtures/fleet-host-set.valid.json)
 show the exact input shapes.
 
 The planner refuses a host whose role is shared-prod or unknown, as well as
-hosts with unknown control-plane, memory, CPU, or PSI admission facts. The
-collector can still report nullable optional facts with reasons; placement
-fails closed when it needs one of them.
+hosts with unknown MemTotal/physical lane memory, CPU, or PSI admission facts.
+A missing control-plane slice or unreadable `memory.min` does not refuse the
+host: the design default reserve is applied and the plan reports
+`reserve_source = "design-default"`. A reported value at or above the default
+is used with `reserve_source = "reported"`; a smaller value is raised to the
+default. A reported value above 2 GiB remains honored; the cap applies to the
+computed default. The later 1.25 × measured-p95 policy is not implemented or
+inferred by this planner.
 
 ```sh
 fleet plan r2 \
@@ -163,14 +170,20 @@ from a different commit or image are ignored and those candidates run again at
 closeout. Compare the closeout's candidate counts with the planned list before
 using its elapsed time as the campaign ETA.
 
-The host arithmetic uses P = memory.for_lanes_bytes -
-control_plane.memory_min_bytes, O = other running charges + one campaign
-instance's `instance_memory`, and B = P × overcommit - O. Worker slots are the
+The host arithmetic uses
+`reserve_h = max(reported control_plane.memory_min_bytes, design default)` for
+a present control-plane slice; if it is absent or has no readable report, the
+default alone applies. The
+`P = memory.for_lanes_bytes - reserve_h`, O = other running charges + one
+campaign instance's `instance_memory`, and B = P × overcommit - O. The
+default is `clamp(256 MiB + ceil(6% × MemTotal), 768 MiB, 2 GiB)`, from design
+§3.6; a missing report uses the default. Each host plan records `reserve_bytes`
+and `reserve_source` so the input to P is visible. Worker slots are the
 CPU-based count after other workers, bounded by the lane's
 `efficient_upper_bound`. The manual planner reserves one campaign slot per
-host; parallel slots need the future supervisor. Shared placement also applies the
-physical candidate cap: a candidate never exceeds P - O. Expected sums in
-each wave, including an alone or retry wave, must fit B. Overcommit increases
+host; parallel slots need the future supervisor (FD-006). Shared placement
+also applies the physical candidate cap: a candidate never exceeds P - O.
+Expected sums in each wave, including an alone or retry wave, must fit B. Overcommit increases
 only that sum budget; it never increases a candidate's physical cap.
 
 RAM class is low when a candidate's expected charge is no greater than the

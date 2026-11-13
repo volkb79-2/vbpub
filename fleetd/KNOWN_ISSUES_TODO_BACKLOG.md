@@ -8,6 +8,9 @@
 | FD-002 | Standalone lane demand does not derive Assay mutation.jobs_max | P1 | OPEN | 2026-11-13 |
 | FD-003 | Manual Run-Gate commands cannot pass fleetd's per-host RAM budget to Assay | P1 | OPEN | 2026-11-13 |
 | FD-004 | Host facts and planning do not account for the dev-gates slice memory ceiling | P1 | OPEN | 2026-11-13 |
+| FD-005 | Learn one bounded f_h per host from independent timing samples | P2 | OPEN | 2026-11-13 |
+| FD-006 | Lift the one-slot-per-host and J worker cap in the campaign supervisor | P2 | OPEN | 2026-11-13 |
+| FD-007 | Replace the control-plane design default with configurable measured-p95 reserve | P2 | OPEN | 2026-11-13 |
 
 ## FD-001 Fleet-level campaign lifecycle is not implemented
 
@@ -60,3 +63,38 @@ keeps the specified physical-RAM budget and does not reinterpret the cgroup
 ceiling as available RAM. A follow-up should collect the ceiling with a reason
 when unavailable and derive an effective limit that also accounts for current
 slice use and other running jobs before treating planned capacity as enforceable.
+
+## FD-005 Learn the per-host correction factor
+
+**State:** OPEN. **Priority:** P2. **Filed:** 2026-11-13.
+
+WP2 accepts one stored `f_h` per host, defaults it to 1.0, and validates it in
+`[0.5, 2.0]`; this package deliberately does not learn it. WP5 should implement
+the design's EWMA of actual/predicted time from finished candidates only when
+their normalized reference came from another host or from the declared value.
+Skip a sample normalized from that host's own prior measurement, reset on CPU
+model change or re-enrollment, and never fit by lane or hardware flavor.
+
+## FD-006 Lift the manual one-slot-per-host and J cap
+
+**State:** OPEN. **Priority:** P2. **Filed:** 2026-11-13.
+
+The current manual planner uses one campaign slot per host because concurrent
+same-lane selected runs share Run-Gate's in-flight identity and Assay store,
+and it caps `W_h` at the lane's `efficient_upper_bound` J. On a four-core host
+with oversubscribe 1.25 and J = 3, that leaves two of five CPU-derived worker
+slots unused. This is an accepted safety deviation for the no-supervisor MVP.
+WP4/WP5 should give selected runs distinct identities and schedule enough
+independent instances to use the remaining safe capacity without sharing state.
+
+## FD-007 Calibrate the control-plane reserve from measured p95
+
+**State:** OPEN. **Priority:** P2. **Filed:** 2026-11-13.
+
+WP2 currently uses the design default
+`clamp(256 MiB + 6% × MemTotal, 768 MiB, 2 GiB)` and takes the larger of that
+default or the reported `ctl.slice/memory.min`. The design later replaces the
+default with `1.25 × measured p95`, still clamped. A later host-policy change
+should make that measured value an explicit, host-owned configuration source
+after a reviewed measurement period; fleetd must not infer it from live host
+usage in this MVP.

@@ -15,6 +15,7 @@ import pytest
 from fleetd.contracts import ContractError, dump_json
 from fleetd.cli import main
 from fleetd.plan import (
+    _assign_candidates,
     _capacity,
     _host_eta,
     _host_time,
@@ -76,6 +77,15 @@ def _candidate(candidate_id, memory, *, source="src/candidate.py", **extra):
     return {"id": _cid(candidate_id), "file": source, "measured_memory_bytes": memory, **extra}
 
 
+def _resolved_candidate(candidate_id, memory, time_ref_seconds):
+    candidate = parse_candidate_table(_candidate_table([_candidate(candidate_id, memory)]))[0]
+    return {
+        "input": candidate,
+        "memory_bytes": memory,
+        "time_ref_seconds": time_ref_seconds,
+    }
+
+
 def _plan(rows, hosts=None, demand=None, **kwargs):
     return plan_campaign("r2", _candidate_table(rows), hosts or _hosts(), demand or DEMAND, **kwargs)
 
@@ -84,9 +94,60 @@ def _host_plan(plan, host_id):
     return next(host for host in plan["hosts"] if host["id"] == host_id)
 
 
+def _assignment_host(host_id, *, cap, budget, average, workers, speed=None, f_h=1.0):
+    return {
+        "id": host_id,
+        "status": "available",
+        "cap_bytes": cap,
+        "budget_bytes": budget,
+        "average_worker_budget_bytes": average,
+        "cap_alone_bytes": cap,
+        "worker_slots": workers,
+        "speed": speed,
+        "f_h": f_h,
+    }
+
+
 def _assigned_host(plan, candidate_id):
     candidate_id = _cid(candidate_id)
     return next(host for host in plan["hosts"] if any(item["id"] == candidate_id for item in host["assigned"]))
+
+
+def _golden_8g_host_set():
+    profile = _read_fixture("fleet-plan-8g-hosts.valid.json")
+    host_set = _hosts()
+    source_hosts = {host["id"]: host for host in host_set["hosts"]}
+    hosts = []
+    for host_profile in profile["hosts"]:
+        source = source_hosts[host_profile["source_fixture_host"]]
+        host = copy.deepcopy(source)
+        host["id"] = host_profile["id"]
+        host["f_h"] = host_profile["f_h"]
+        facts = host["facts"]
+        facts["cpu"].update(
+            online=profile["cpu"]["online"],
+            for_lanes=profile["cpu"]["for_lanes"],
+            oversubscribe_max=profile["cpu"]["oversubscribe_max"],
+            model=host_profile["cpu_model"],
+        )
+        facts["memory"].update(
+            total_bytes=profile["memory"]["total_bytes"],
+            available_bytes=profile["memory"]["available_bytes"],
+            for_lanes_bytes=profile["memory"]["for_lanes_bytes"],
+            overcommit=profile["memory"]["overcommit"],
+        )
+        facts["control_plane"].update(
+            slice="ctl.slice",
+            present=False,
+            memory_min_bytes=None,
+            memory_min_bytes_reason="ctl.slice has not been installed on this host",
+            cpu_weight=None,
+            cpu_weight_reason="ctl.slice has not been installed on this host",
+        )
+        facts["speed"] = dict(host_profile["speed"])
+        host["other_running"] = []
+        hosts.append(host)
+    return {"schema": "fleet-host-set/1", "hosts": hosts}
 
 
 def test_candidate_and_host_fixtures_are_valid_and_sorted():
@@ -95,6 +156,7 @@ def test_candidate_and_host_fixtures_are_valid_and_sorted():
     assert len(candidates) == 5
     assert [host.host_id for host in hosts] == ["host-large", "host-small"]
     assert _reverse_id("a") > _reverse_id("b")
+    assert _reverse_id("aa") > _reverse_id("a")
 
 
 def test_plan_resolves_memory_time_and_routes_with_single_core_eta():
@@ -149,7 +211,7 @@ def test_plan_resolves_memory_time_and_routes_with_single_core_eta():
 
 def test_plan_preserves_special_alone_and_retry_work_on_one_host_and_renders_commands():
     plan = _plan([
-        _candidate("big", 15 * 1024**3 - 128 * 1024**2),
+        _candidate("big", 14 * 1024**3 + 512 * 1024**2),
         _candidate("retry", 256 * 1024**2, memory_crash_evidence=True),
     ])
     host = _host_plan(plan, "host-large")
@@ -355,7 +417,15 @@ def test_input_derived_budgets_hold_for_varied_hosts_and_output_ignores_input_or
                     "workers": generator.choice([0, 1, 2]), "containers": 1,
                 }]
             other = host["other_running"]
-            physical = total - facts["control_plane"]["memory_min_bytes"]
+            reserve_default = min(
+                2 * 1024**3,
+                max(
+                    768 * 1024**2,
+                    256 * 1024**2 + (total * 6 + 99) // 100,
+                ),
+            )
+            reserve = max(facts["control_plane"]["memory_min_bytes"], reserve_default)
+            physical = total - reserve
             overhead = sum(job["expected_memory_bytes"] for job in other) + instance
             slots = min(
                 int(facts["cpu"]["for_lanes"] * facts["cpu"]["oversubscribe_max"]) - sum(job["workers"] for job in other),
@@ -404,6 +474,105 @@ def test_input_derived_budgets_hold_for_varied_hosts_and_output_ignores_input_or
         generator.shuffle(shuffled_rows)
         assert dump_json(_plan(shuffled_rows, hosts=shuffled_hosts, demand=demand)) == dump_json(plan)
     assert saw_alone and saw_refused
+
+
+def test_low_ram_class_threshold_uses_the_smallest_host_average_budget():
+    plan = _plan([_candidate("above-small-budget", 7 * 1024**3)])
+    assigned = next(
+        item
+        for host in plan["hosts"]
+        for item in host["assigned"]
+        if item["id"] == _cid("above-small-budget")
+    )
+    assert assigned["ram_class"] == "high"
+
+
+def test_mix_fallback_chooses_the_eligible_host_with_largest_average_budget():
+    hosts = [
+        _assignment_host("a-small-budget", cap=300, budget=400, average=150, workers=1),
+        _assignment_host("z-large-budget", cap=300, budget=600, average=200, workers=2),
+    ]
+    assignments, _, unplaced, terminal = _assign_candidates(
+        [_resolved_candidate("fallback", 250, 1.0)],
+        hosts,
+        None,
+        None,
+        None,
+    )
+    assert not unplaced and not terminal
+    assert assignments["a-small-budget"] == []
+    assert [item["input"].candidate_id for item in assignments["z-large-budget"]] == [_cid("fallback")]
+    assert assignments["z-large-budget"][0]["mix_flag_reason"]
+
+
+def test_most_constrained_candidate_is_assigned_before_the_longer_flexible_candidate():
+    hosts = [
+        _assignment_host("a-wide", cap=200, budget=1000, average=500, workers=10),
+        _assignment_host("b-narrow", cap=100, budget=100, average=100, workers=1),
+    ]
+    assignments, _, unplaced, terminal = _assign_candidates(
+        [
+            _resolved_candidate("flexible-long", 80, 20.0),
+            _resolved_candidate("constrained-short", 120, 10.0),
+        ],
+        hosts,
+        None,
+        None,
+        None,
+    )
+    assert not unplaced and not terminal
+    assert [
+        item["input"].candidate_id for item in assignments["a-wide"]
+    ] == [_cid("constrained-short"), _cid("flexible-long")]
+
+
+def test_longest_candidate_is_assigned_first_when_constraints_are_equal():
+    hosts = [_assignment_host("only-host", cap=100, budget=100, average=100, workers=1)]
+    assignments, _, unplaced, terminal = _assign_candidates(
+        [
+            _resolved_candidate("short", 10, 5.0),
+            _resolved_candidate("long", 20, 50.0),
+        ],
+        hosts,
+        None,
+        None,
+        None,
+    )
+    assert not unplaced and not terminal
+    assert [item["input"].candidate_id for item in assignments["only-host"]] == [
+        _cid("long"), _cid("short")
+    ]
+
+
+def test_projected_finish_divides_by_each_hosts_worker_slots():
+    reference = {
+        "geekbench_major": 6,
+        "geekbench_version": "6.4.0",
+        "baseline_score": 2500,
+        "multi_core": 9000,
+        "basis": "geekbench6-measured",
+    }
+    hosts = [
+        _assignment_host(
+            "a-four-workers", cap=100, budget=500, average=100, workers=4,
+            speed={**reference, "single_core": 1000},
+        ),
+        _assignment_host(
+            "b-one-worker", cap=100, budget=100, average=100, workers=1,
+            speed={**reference, "single_core": 2500},
+        ),
+    ]
+    assignments, _, unplaced, terminal = _assign_candidates(
+        [_resolved_candidate("throughput", 10, 100.0)],
+        hosts,
+        6,
+        "6.4.0",
+        2500,
+    )
+    assert not unplaced and not terminal
+    assert [item["input"].candidate_id for item in assignments["a-four-workers"]] == [
+        _cid("throughput")
+    ]
 
 
 def test_batches_interleave_classes_respect_wave_budget_and_multiplier():
@@ -551,20 +720,16 @@ def test_host_refusals_have_explicit_reasons_and_null_eta_reasons():
     variants.append((host_set, "controller list is unknown"))
 
     host_set = _hosts()
-    _facts(host_set, "host-small")["control_plane"]["present"] = False
-    variants.append((host_set, "configured control-plane slice is absent"))
-
-    host_set = _hosts()
-    control = _facts(host_set, "host-small")["control_plane"]
-    control["memory_min_bytes"] = None
-    control["memory_min_bytes_reason"] = "not readable"
-    variants.append((host_set, "control-plane memory.min is unknown"))
-
-    host_set = _hosts()
     memory = _facts(host_set, "host-small")["memory"]
     memory["for_lanes_bytes"] = None
     memory["for_lanes_bytes_reason"] = "not readable"
     variants.append((host_set, "physical lane memory is unknown"))
+
+    host_set = _hosts()
+    memory = _facts(host_set, "host-small")["memory"]
+    memory["total_bytes"] = None
+    memory["total_bytes_reason"] = "not readable"
+    variants.append((host_set, "MemTotal is unknown for the control-plane memory reserve"))
 
     host_set = _hosts()
     cpu = _facts(host_set, "host-small")["cpu"]
@@ -585,6 +750,119 @@ def test_host_refusals_have_explicit_reasons_and_null_eta_reasons():
         assert reason in refused["reason"]
         assert refused["eta_seconds"] is None
         assert refused["eta_reason"] == refused["reason"]
+
+
+@pytest.mark.parametrize(
+    ("total_gib", "reported_mib", "slice_present", "expected_mib", "source"),
+    [
+        (8, None, False, 768, "design-default"),
+        (8, None, True, 768, "design-default"),
+        (8, 0, True, 768, "design-default"),
+        (16, 1536, True, 1536, "reported"),
+        (64, None, False, 2048, "design-default"),
+        (64, 3072, True, 3072, "reported"),
+        (64, 3072, False, 2048, "design-default"),
+    ],
+)
+def test_control_plane_reserve_uses_the_design_clamp_and_honors_larger_reports(
+    total_gib, reported_mib, slice_present, expected_mib, source
+):
+    host_set = _hosts()
+    facts = _facts(host_set, "host-small")
+    total_bytes = total_gib * 1024**3
+    facts["memory"].update(total_bytes=total_bytes, for_lanes_bytes=total_bytes)
+    control = facts["control_plane"]
+    control["present"] = slice_present
+    control["memory_min_bytes"] = None if reported_mib is None else reported_mib * 1024**2
+    if reported_mib is None:
+        control["memory_min_bytes_reason"] = "ctl.slice is absent"
+    else:
+        control.pop("memory_min_bytes_reason", None)
+    if slice_present:
+        control["cpu_weight"] = 10000
+        control.pop("cpu_weight_reason", None)
+    else:
+        control["cpu_weight"] = None
+        control["cpu_weight_reason"] = "ctl.slice is absent"
+
+    plan = _plan([_candidate("reserve", 120_000_000)], hosts=host_set)
+    host = _host_plan(plan, "host-small")
+    assert host["status"] == "available"
+    assert host["reserve_bytes"] == expected_mib * 1024**2
+    assert host["reserve_source"] == source
+    assert host["physical_bytes"] == total_bytes - expected_mib * 1024**2
+
+
+def test_golden_cli_plan_for_two_eight_gib_four_core_hosts_and_230_candidates(tmp_path, capsys):
+    hosts = _golden_8g_host_set()
+    sizes = [
+        80 * 1024**2 + (index % 4) * 40 * 1024**2
+        for index in range(180)
+    ]
+    sizes.extend(
+        (700 + (index % 5) * 150) * 1024**2
+        for index in range(25)
+    )
+    sizes.extend([5500 * 1024**2] * 24)
+    sizes.append(8 * 1024**3)
+    candidates = _candidate_table([
+        _candidate(f"golden-{index:03d}", memory, source=f"src/module-{index % 8}.py")
+        for index, memory in enumerate(sizes)
+    ])
+    candidate_path = tmp_path / "candidates.json"
+    host_path = tmp_path / "hosts.json"
+    demand_path = tmp_path / "demand.toml"
+    candidate_path.write_text(json.dumps(candidates), encoding="utf-8")
+    host_path.write_text(json.dumps(hosts), encoding="utf-8")
+    demand_path.write_text(
+        "schema_version = 1\n\n[lanes.r2.demand]\nunit = 'candidate'\n"
+        "instance_memory = '250m'\nunit_memory = '120m'\n"
+        "unit_memory_high = '600m'\nunit_seconds_ref = 95\n"
+        "efficient_upper_bound = 3\n",
+        encoding="utf-8",
+    )
+
+    assert main([
+        "plan", "r2", "--candidates", str(candidate_path),
+        "--hosts", str(host_path), "--demand", str(demand_path),
+    ]) == 0
+    plan = json.loads(capsys.readouterr().out)
+    assert len(sizes) == 230
+    assert [host["id"] for host in plan["hosts"]] == ["r1002", "v1001"]
+    assert all(host["status"] == "available" for host in plan["hosts"])
+    assert all(host["worker_slots"] == 3 for host in plan["hosts"])
+    assert all(host["reserve_bytes"] == 768 * 1024**2 for host in plan["hosts"])
+    assert all(host["reserve_source"] == "design-default" for host in plan["hosts"])
+    assert plan["hosts"][0]["speed"]["single_core"] != plan["hosts"][1]["speed"]["single_core"]
+
+    assigned = [item["id"] for host in plan["hosts"] for item in host["assigned"]]
+    unplaced = [item["id"] for item in plan["unplaced"]]
+    terminal = [item["id"] for item in plan["terminal"]]
+    expected_ids = {row["id"] for row in candidates["candidates"]}
+    assert len(assigned) == len(set(assigned))
+    assert set(assigned) | set(unplaced) | set(terminal) == expected_ids
+    assert len(assigned) + len(unplaced) + len(terminal) == len(expected_ids)
+    assert len(unplaced) == 1
+    assert unplaced[0] == candidates["candidates"][-1]["id"]
+    assert all(host["assigned"] for host in plan["hosts"])
+
+    for host in plan["hosts"]:
+        batch_ids = []
+        for item in host["assigned"]:
+            assert item["memory_bytes"] <= host["cap_alone_bytes"]
+        for batch in host["batches"]:
+            assert batch["target_candidate_count"] == 12
+            assert len(batch["candidate_ids"]) <= 12
+            batch_ids.extend(batch["candidate_ids"])
+            assert all(wave["expected_charge_bytes"] <= host["budget_bytes"] for wave in batch["waves"])
+        assert len(batch_ids) == len(set(batch_ids))
+        assert set(batch_ids) == {item["id"] for item in host["assigned"]}
+        assert host["mix_holds"] or host["mix_flagged"]
+
+    assert 3000 < plan["eta_seconds"] < 10000
+    assert plan["eta_seconds"] == max(host["eta_seconds"] for host in plan["hosts"])
+    digest = hashlib.sha256(dump_json(plan).encode("utf-8")).hexdigest()
+    assert digest == "13b036934c44c7f0ddb96061bc78e5b592d913aa73e76085a168a0fef934b18a"
 
 
 def test_other_work_and_memory_reserves_bound_worker_and_physical_budgets():

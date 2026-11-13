@@ -1,6 +1,10 @@
-# fleetd changes
+# Changelog
+
+All notable changes to this project are recorded here.
 
 ## [Unreleased]
+
+### Added
 
 - Scaffold the standalone `fleetd` project and its R0/R1 gate.
 - Add versioned host facts, work request, Assay merge manifest, and guard TOML
@@ -11,6 +15,9 @@
 - Add a deterministic RAM-first plan library and CLI with physical candidate
   caps, explicit worker-wave budgets, per-host Geekbench ETA, memory-crash
   retries, and stable Run-Gate candidate-list commands.
+
+### Changed
+
 - Read the host role from the existing host-setup source, ignore refused hosts
   when choosing the ETA reference, and reject demand units the R2 planner does
   not support.
@@ -35,3 +42,11 @@
 - Clarify that selected-run closeout copies the state path printed by Run-Gate
   and requires the same lane commit and tester image on every host.
 - File FD-004 for the missing host-owned `dev-gates.slice` memory ceiling fact.
+- Apply the design's clamped control-plane reserve when `ctl.slice` or its
+  `memory.min` is absent or below the default, and report reserve bytes/source.
+- Add tests for the five assignment heuristics, reserve clamp boundaries, and a
+  deterministic CLI golden plan for two 4-core, 8-GiB host profiles and 230
+  mixed-RAM candidates.
+- Record follow-up items FD-005 through FD-007 for host-factor learning,
+  selected-run capacity, and the future measured-p95 reserve.
+- Correct Assay's tracked fixture-symlink omissions for the fleetd judge lane.

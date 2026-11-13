@@ -20,8 +20,10 @@ RAM work is mixed to keep the average expected charge near each host's budget.
 The planner normalizes serial candidate time with the Geekbench single-core
 score and the declared reference score. It multiplies by one stored factor per
 host, defaulting to `1.0`. It never divides by multi-core score and never fits a
-factor per lane or hardware flavor. ETA is informational and cannot reject or
-time out work.
+factor per lane or hardware flavor. Learning the host EWMA and skipping
+self-predicted samples are tracked under
+[FD-005](../KNOWN_ISSUES_TODO_BACKLOG.md#fd-005-learn-the-per-host-correction-factor).
+ETA is informational and cannot reject or time out work.
 
 Time samples are comparable only when the hosts share a Geekbench major,
 exact version, and baseline score. Refused hosts do not set the ETA reference,
@@ -32,14 +34,21 @@ normalized reference work per worker as a deterministic tie-break. This is not
 a speed comparison or ETA. A candidate time record from a host absent in the
 current host set falls back to the next timing source and carries a reason.
 
-The planner calculates P = memory.for_lanes_bytes -
-control_plane.memory_min_bytes, O = other running expected charges +
-campaign_slots × instance_memory, and B = P × overcommit - O. It derives
-worker slots from CPU capacity after other running workers and bounds them by
+The planner computes `reserve_h = max(reported ctl.slice memory.min, design
+default)`, `P = memory.for_lanes_bytes - reserve_h`, O = other running expected
+charges + campaign_slots × instance_memory, and B = P × overcommit - O. It
+derives worker slots from CPU capacity after other running workers and bounds them by
 `efficient_upper_bound`. This manual plan uses one campaign slot per host;
 parallel campaign slots require the future supervisor because same-lane
-selected Run-Gate calls share an in-flight record and Assay store. For a host
-with W slots, b = B /
+selected Run-Gate calls share an in-flight record and Assay store; this
+accepted capacity limit is tracked under
+[FD-006](../KNOWN_ISSUES_TODO_BACKLOG.md#fd-006-lift-the-manual-one-slot-per-host-and-j-cap).
+The design default is `clamp(256 MiB + ceil(6% × MemTotal), 768 MiB, 2 GiB)`;
+an absent slice or a report below that default uses `design-default`, while a
+present report at or above it uses `reported`. Each host plan records
+`reserve_bytes` and `reserve_source`; an unknown MemTotal still refuses the
+host. The measured-p95 rule remains follow-up work (FD-007). For a host with W
+slots, b = B /
 W; a candidate's shared cap is the smaller of B - (W - 1) × ram_low and
 P - O - (W - 1) × ram_low. A candidate that runs alone or as a retry must
 also fit the host's sum budget B and physical alone cap P - O. Thus
@@ -54,18 +63,23 @@ RAM/CPU budget. A missing max_lane_containers is not guessed.
 
 The collector accepts a root directory so tests use synthetic `/proc` and
 `/sys` trees. Production collection reads the host-owned Geekbench record; it
-does not run the benchmark. A missing fact stays `null` with a reason, and a
-planner that needs that fact refuses rather than inventing it.
+does not run the benchmark. Missing facts stay `null` with reasons. Planning
+uses the design's control-plane reserve default when the slice or its
+`memory.min` is not yet installed; other required capacity facts still fail
+closed.
 
 Collection requires versioned `/etc/fleetd/facts.toml` policy and source-path
 configuration. `HOST_ROLE` is read from the configured host-setup environment
 file, not duplicated in fleetd policy; unknown or invalid roles remain null
 with a reason and cannot receive work. The CPU lane count comes from the
-online CPU list, and `memory.for_lanes_bytes` is raw `MemTotal`; the planner
-subtracts the configured control-plane slice's `memory.min` once. The design text also describes
-subtracting that reserve while constructing facts (§3.6); this package uses
-the explicit §4.3 formula and keeps the raw counter in facts to avoid a double
-subtraction.
+online CPU list, and `memory.for_lanes_bytes` is raw `MemTotal`. WP2 computes
+`reserve_h = max(reported memory.min, clamp(256 MiB + ceil(6% × MemTotal),
+768 MiB, 2 GiB))` and subtracts that reserve once from raw lane memory. For a
+present slice, a report at or above the default is used; an absent slice,
+missing value, or smaller report uses the clamped default. Host plans show
+`reserve_bytes` and `reserve_source`; reported values above 2 GiB remain
+honored because that cap is for the default. The design's later
+`1.25 × measured p95` replacement is left for follow-up work (FD-007).
 
 The demand schema validates `candidate`, `worker`, and `run` as its closed
 vocabulary. This R2 candidate planner only accepts `unit = "candidate"`;
