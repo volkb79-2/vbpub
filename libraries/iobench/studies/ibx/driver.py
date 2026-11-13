@@ -560,32 +560,137 @@ def cgroup_path(text: str) -> str:
     raise StudyError("cannot resolve the unified cgroup of the benchmark process")
 
 
-def _io_max_active(text: str) -> bool:
+def _io_control_error(message: str, path: Path | None) -> StudyError:
+    return StudyError(f"{message} at {path}" if path is not None else message)
+
+
+def _read_optional_control(path: Path) -> str | None:
+    """Return a control's text, treating only an absent path as no setting."""
+    try:
+        path.lstat()
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        raise StudyError(f"cannot inspect existing cgroup IO control {path}: {exc}") from exc
+    try:
+        return path.read_text(encoding="utf-8").strip()
+    except (OSError, UnicodeError) as exc:
+        raise StudyError(f"cannot read existing cgroup IO control {path}: {exc}") from exc
+
+
+def _io_max_active(text: str, path: Path | None = None) -> bool:
     controls = {"rbps", "wbps", "riops", "wiops"}
     for line in text.splitlines():
         fields = line.split()
         if not fields:
             continue
         if not re.fullmatch(r"\d+:\d+", fields[0]):
-            raise StudyError("malformed io.max line")
+            raise _io_control_error("malformed io.max line", path)
         if len(fields) < 2:
-            raise StudyError("malformed io.max line")
+            raise _io_control_error("malformed io.max line", path)
+        seen_controls: set[str] = set()
         for value in fields[1:]:
             if "=" not in value:
-                raise StudyError("malformed io.max setting")
+                raise _io_control_error("malformed io.max setting", path)
             name, amount = value.split("=", 1)
-            if name not in controls or not (amount == "max" or amount.isdigit()):
-                raise StudyError("unknown or malformed io.max control")
+            if (name not in controls or name in seen_controls or
+                    not (amount == "max" or re.fullmatch(r"\d+", amount))):
+                raise _io_control_error("unknown or malformed io.max control", path)
+            seen_controls.add(name)
             if amount != "max":
                 return True
     return False
 
 
+def _io_weight_active(text: str, path: Path) -> bool:
+    saw_default = False
+    seen_devices: set[str] = set()
+    for line in text.splitlines():
+        fields = line.split()
+        if not fields:
+            continue
+        if fields[0] == "default" and len(fields) == 2:
+            if saw_default:
+                raise StudyError(f"malformed io.weight at {path}: duplicate default row")
+            saw_default = True
+        elif re.fullmatch(r"\d+:\d+", fields[0]) and len(fields) == 2:
+            if fields[0] in seen_devices:
+                raise StudyError(f"malformed io.weight at {path}: duplicate device row")
+            seen_devices.add(fields[0])
+        else:
+            raise StudyError(f"malformed io.weight at {path}")
+        value = fields[1]
+        if not re.fullmatch(r"\d+", value):
+            raise StudyError(f"malformed io.weight at {path}")
+        if int(value) != 100:
+            raise StudyError(f"non-default io.weight at {path}")
+    if not saw_default:
+        raise StudyError(f"io.weight has no explicit default 100 at {path}")
+    return False
+
+
+def _iocost_values(text: str, path: Path, *, model: bool) -> None:
+    """Validate root io.cost rows and refuse enabled QoS or user models."""
+    known = ({"ctrl", "model", "rbps", "rseqiops", "rrandiops", "wbps", "wseqiops",
+              "wrandiops", "flushiops"} if model else
+             {"enable", "ctrl", "rpct", "rlat", "wpct", "wlat", "min", "max"})
+    seen_devices: set[str] = set()
+    for line in text.splitlines():
+        fields = line.split()
+        if not fields:
+            continue
+        device = fields[0]
+        if not re.fullmatch(r"\d+:\d+", device) or device in seen_devices:
+            raise StudyError(f"malformed {'io.cost.model' if model else 'io.cost.qos'} at {path}")
+        seen_devices.add(device)
+        values: dict[str, str] = {}
+        for field in fields[1:]:
+            if field.count("=") != 1:
+                raise StudyError(f"malformed {'io.cost.model' if model else 'io.cost.qos'} at {path}")
+            name, value = field.split("=", 1)
+            if name not in known or name in values or not value:
+                raise StudyError(f"unknown or malformed {'io.cost.model' if model else 'io.cost.qos'} at {path}")
+            values[name] = value
+        if model:
+            if values.get("ctrl") != "auto" or values.get("model") != "linear":
+                raise StudyError(f"custom io.cost.model at {path}")
+            numeric = known - {"ctrl", "model"}
+            if any(name in values and not re.fullmatch(r"\d+", values[name]) for name in numeric):
+                raise StudyError(f"malformed io.cost.model value at {path}")
+        else:
+            enable = values.get("enable")
+            if enable not in {"0", "1"}:
+                raise StudyError(f"io.cost.qos has no valid enable value at {path}")
+            if values.get("ctrl", "auto") not in {"auto", "user"}:
+                raise StudyError(f"malformed io.cost.qos controller at {path}")
+            numeric = {"rpct", "rlat", "wpct", "wlat", "min", "max"}
+            for name in numeric & values.keys():
+                if not re.fullmatch(r"\d+(?:\.\d+)?", values[name]):
+                    raise StudyError(f"malformed io.cost.qos value at {path}")
+            for name in ("rpct", "wpct"):
+                if name in values and float(values[name]) > 100:
+                    raise StudyError(f"malformed io.cost.qos value at {path}")
+            for name in ("min", "max"):
+                if name in values and not 1 <= float(values[name]) <= 10000:
+                    raise StudyError(f"malformed io.cost.qos value at {path}")
+            if enable == "1":
+                raise StudyError(f"active io.cost.qos limit at {path}")
+
+
 def io_control_snapshot(*, cgroup_root: Path = Path("/sys/fs/cgroup"),
                         cgroup_text: str | None = None) -> dict[str, Any]:
-    """Read the full benchmark cgroup chain and root io.cost state before and after a run."""
+    """Snapshot applicable IO controls, refusing active or unreadable settings.
+
+    Control files absent from a kernel or cgroup have no setting. Existing files
+    are read and recorded so the before/after comparison detects changes. The
+    benchmark cgroup and every ancestor must still be present and enumerable.
+    """
     if cgroup_text is None:
-        cgroup_text = Path("/proc/self/cgroup").read_text(encoding="utf-8")
+        membership = Path("/proc/self/cgroup")
+        try:
+            cgroup_text = membership.read_text(encoding="utf-8")
+        except (OSError, UnicodeError) as exc:
+            raise StudyError(f"cannot read unified cgroup membership {membership}: {exc}") from exc
     rel = cgroup_path(cgroup_text).lstrip("/")
     dirs = [cgroup_root]
     current = cgroup_root
@@ -594,46 +699,33 @@ def io_control_snapshot(*, cgroup_root: Path = Path("/sys/fs/cgroup"),
         dirs.append(current)
     snapshot: dict[str, Any] = {"cgroups": [], "io_cost": {}}
     for directory in dirs:
-        files: dict[str, str] = {}
+        try:
+            info = directory.stat()
+        except OSError as exc:
+            raise StudyError(f"cannot enumerate benchmark cgroup {directory}: {exc}") from exc
+        if not stat.S_ISDIR(info.st_mode):
+            raise StudyError(f"cannot enumerate benchmark cgroup {directory}: not a directory")
+        files: dict[str, str | None] = {}
         for name in ("io.max", "io.weight", "io.latency"):
             path = directory / name
-            if not path.is_file():
-                raise StudyError(f"cannot read required cgroup IO control {path}")
-            files[name] = path.read_text(encoding="utf-8").strip()
-        if _io_max_active(files["io.max"]):
-            raise StudyError(f"active io.max limit at {directory}")
-        saw_default_weight = False
-        for line in files["io.weight"].splitlines():
-            fields = line.split()
-            if not fields:
+            text = _read_optional_control(path)
+            files[name] = text
+            if text is None:
                 continue
-            if fields[0] == "default" and len(fields) == 2:
-                weights = fields[1:]
-                saw_default_weight = True
-            elif re.fullmatch(r"\d+:\d+", fields[0]) and len(fields) == 2:
-                weights = fields[1:]
-            else:
-                raise StudyError(f"malformed io.weight at {directory}")
-            if any(not value.isdigit() or int(value) != 100 for value in weights):
-                raise StudyError(f"non-default io.weight at {directory}")
-        if not saw_default_weight:
-            raise StudyError(f"io.weight has no explicit default 100 at {directory}")
-        if files["io.latency"]:
-            raise StudyError(f"active io.latency setting at {directory}")
+            if name == "io.max":
+                if _io_max_active(text, path):
+                    raise StudyError(f"active io.max limit at {path}")
+            elif name == "io.weight":
+                _io_weight_active(text, path)
+            elif text:
+                raise StudyError(f"active io.latency setting at {path}")
         snapshot["cgroups"].append({"path": str(directory), "files": files})
     for name in ("io.cost.qos", "io.cost.model"):
         path = cgroup_root / name
-        if not path.is_file():
-            raise StudyError(f"cannot assert io.cost state: {path} is missing")
-        snapshot["io_cost"][name] = path.read_text(encoding="utf-8").strip()
-    qos = snapshot["io_cost"]["io.cost.qos"]
-    enables = re.findall(r"(?:^|\s)enable=([^\s]+)", qos)
-    if "1" in enables:
-        raise StudyError("io.cost qos is enabled")
-    if enables != ["0"]:
-        raise StudyError("io.cost qos must explicitly report enable=0")
-    if snapshot["io_cost"]["io.cost.model"]:
-        raise StudyError("io.cost model is configured")
+        text = _read_optional_control(path)
+        snapshot["io_cost"][name] = text
+        if text is not None:
+            _iocost_values(text, path, model=name == "io.cost.model")
     return snapshot
 
 

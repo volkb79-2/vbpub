@@ -1,4 +1,4 @@
-# IBX live host acceptance (IOB-BL-41 / IOB-BL-42 / IOB-BL-44 / IOB-BL-45)
+# IBX live host acceptance (IOB-BL-41 / IOB-BL-42 / IOB-BL-44 / IOB-BL-45 / IOB-BL-46)
 
 Run only on the approved freshly reinstalled disposable compute host with its
 dedicated `iobench-raw` partition. This runbook has **not** been run here.
@@ -115,10 +115,11 @@ current_system_disk_ack() {
 expect_refusal() {
   local expected=$1 status output
   shift
-  set +e
-  output=$("$@" 2>&1)
-  status=$?
-  set -e
+  if output=$("$@" 2>&1); then
+    status=0
+  else
+    status=$?
+  fi
   if ((status != 2)) || [[ $output != *"$expected"* ]]; then
     printf 'FAIL: wanted exit 2 and %s; got exit %s:\n%s\n' \
       "$expected" "$status" "$output" >&2
@@ -126,39 +127,97 @@ expect_refusal() {
   fi
   printf 'PASS refusal: %s\n' "$expected"
 }
+CHECK_COUNT=0
+FAIL_COUNT=0
+record_check() {
+  local label=$1 status
+  shift
+  CHECK_COUNT=$((CHECK_COUNT + 1))
+  if "$@"; then
+    printf 'PASS check: %s\n' "$label"
+  else
+    status=$?
+    FAIL_COUNT=$((FAIL_COUNT + 1))
+    printf 'FAIL check: %s (status %s)\n' "$label" "$status" >&2
+  fi
+}
+check_acknowledged_dry_run() {
+  local acknowledgement result status
+  if acknowledgement=$(current_system_disk_ack 2>&1); then
+    :
+  else
+    status=$?
+    printf 'could not derive system-disk acknowledgement (exit %s):\n%s\n' \
+      "$status" "$acknowledgement" >&2
+    return 1
+  fi
+  if result=$(raw_dry_run "$RAW" vda5 "$IBX_TARGET_CONFIRMATION" \
+      --allow-system-disk-partition --system-disk-ack "$acknowledgement" 2>&1); then
+    :
+  else
+    status=$?
+    printf 'acknowledged dry-run failed (exit %s):\n%s\n' "$status" "$result" >&2
+    return 1
+  fi
+  if [[ $result != *'"dry_run": true'* ]]; then
+    printf 'acknowledged dry-run did not report dry_run=true:\n%s\n' "$result" >&2
+    return 1
+  fi
+  printf 'PASS acknowledged system-disk dry-run and IO-control smoke: %s\n' "$result"
+}
+check_whole_disk_refusal() {
+  local disk_bytes status
+  if disk_bytes=$(host-escape -- blockdev --getsize64 /dev/vda); then
+    :
+  else
+    status=$?
+    printf 'could not read whole-disk size (exit %s): %s\n' "$status" "$disk_bytes" >&2
+    return 1
+  fi
+  expect_refusal "raw target must be a dedicated partition; whole disks are refused" \
+    raw_dry_run /dev/vda vda "/dev/vda:$disk_bytes:00000000-0000-0000-0000-000000000000"
+}
 
 # Without opt-in, the system-disk refusal text must remain unchanged.
-expect_refusal "raw target is on the root disk or contains a running system filesystem" \
+record_check "default system-disk refusal" expect_refusal \
+  "raw target is on the root disk or contains a running system filesystem" \
   raw_dry_run "$RAW" vda5 "$IBX_TARGET_CONFIRMATION"
 
 # The explicit flag records the operator's consent. The token derived here is
 # a drift check for this host, disk, root device and target PARTUUID. The
 # acknowledged dry-run must pass, does not create output files, and does not
 # require timer state changes; it does require the first liveness probe to pass.
-SYSTEM_DISK_ACK=$(current_system_disk_ack)
-DRY_RUN_RESULT=$(raw_dry_run "$RAW" vda5 "$IBX_TARGET_CONFIRMATION" \
-  --allow-system-disk-partition --system-disk-ack "$SYSTEM_DISK_ACK")
-[[ $DRY_RUN_RESULT == *'"dry_run": true'* ]]
-printf 'PASS acknowledged system-disk dry-run: %s\n' "$DRY_RUN_RESULT"
-expect_refusal "system-disk acknowledgement does not match current host facts" \
+record_check "acknowledged system-disk dry-run and IO-control smoke" check_acknowledged_dry_run
+record_check "wrong system-disk acknowledgement refusal" expect_refusal \
+  "system-disk acknowledgement does not match current host facts" \
   raw_dry_run "$RAW" vda5 "$IBX_TARGET_CONFIRMATION" \
     --allow-system-disk-partition --system-disk-ack "wrong:disk:root:partuuid"
 
 # Confirm identity mismatches and a whole-disk target also refuse before effects.
-expect_refusal "raw target size does not match --confirm-target" \
+record_check "size mismatch refusal" expect_refusal \
+  "raw target size does not match --confirm-target" \
   raw_dry_run "$RAW" vda5 "$RAW:$((RAW_BYTES - 512)):$RAW_PARTUUID"
-expect_refusal "raw target PARTUUID does not match --confirm-target" \
+record_check "PARTUUID mismatch refusal" expect_refusal \
+  "raw target PARTUUID does not match --confirm-target" \
   raw_dry_run "$RAW" vda5 "$RAW:$RAW_BYTES:00000000-0000-0000-0000-000000000000"
 DISK_BYTES=$(host-escape -- blockdev --getsize64 /dev/vda)
-expect_refusal "raw target must be a dedicated partition; whole disks are refused" \
-  raw_dry_run /dev/vda vda "/dev/vda:$DISK_BYTES:00000000-0000-0000-0000-000000000000"
+record_check "whole-disk refusal" check_whole_disk_refusal
+printf 'SECTION 1 summary: %s checks, %s failures\n' "$CHECK_COUNT" "$FAIL_COUNT"
+if ((FAIL_COUNT != 0)); then
+  printf 'SECTION1-FAIL\n'
+  exit 1
+fi
+printf 'SECTION1-PASS\n'
 ```
 
 Expected: the default system-disk attempt and the SIZE/PARTUUID/whole-disk
 cases refuse; the explicit consent flag with the exact derived drift-check
-token permits only the dry-run; a wrong token refuses. No raw live run,
-discard, or raw write is part of this acceptance. Do not manufacture swap or
-holder state to probe those branches; fake-sysfs tests cover them.
+token permits only the dry-run and provides the IO-control snapshot smoke; a
+wrong token refuses. Each check records its own result, later checks still run
+after a failure, and the final summary exits non-zero if any check failed. No
+raw live run, discard, or raw write is part of this acceptance. Do not
+manufacture swap or holder state to probe those branches; fake-sysfs tests
+cover them.
 
 ## 2. Btrfs file and real fio-log acceptance
 

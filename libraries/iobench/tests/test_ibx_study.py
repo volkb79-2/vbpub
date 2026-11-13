@@ -2408,29 +2408,35 @@ def test_adaptive_repeat_requires_complete_slots_and_repeats_moving_error(tmp_pa
     run_set(tmp_path, "raw-t12h2", host=host)
 
 
-def write_cgroup(root: Path, *, io_max="", io_weight="default 100\n8:0 100\n", io_latency="",
-                 qos="enable=0\n", model=""):
-    for directory in (root, root / "bench"):
-        directory.mkdir(parents=True, exist_ok=True)
-        (directory / "io.max").write_text(io_max, encoding="utf-8")
-        (directory / "io.weight").write_text(io_weight, encoding="utf-8")
-        (directory / "io.latency").write_text(io_latency, encoding="utf-8")
-    (root / "io.cost.qos").write_text(qos, encoding="utf-8")
-    (root / "io.cost.model").write_text(model, encoding="utf-8")
-
-
-def test_io_control_snapshot_checks_full_cgroup_chain_and_iocost(tmp_path, monkeypatch):
+def materialize_real_cgroup_layout(tmp_path):
+    fixture_path = Path(__file__).parent / "fixtures/ibx-real-cgroup-layout.json"
+    fixture = json.loads(fixture_path.read_text(encoding="utf-8"))
     root = tmp_path / "cg"
-    write_cgroup(root, io_max="\n8:0 rbps=max wbps=max\n",
-                 io_weight="default 100\n  \n8:0 100\n")
-    snapshot = driver.io_control_snapshot(cgroup_root=root, cgroup_text="0::/bench\n")
-    assert [row["path"] for row in snapshot["cgroups"]] == [str(root), str(root / "bench")]
-    assert snapshot["io_cost"]["io.cost.qos"] == "enable=0"
-    assert driver.cgroup_path("0::/bench\n") == "/bench"
+    root.mkdir()
+    for relative, contents in fixture["files"].items():
+        path = root / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(contents, encoding="utf-8")
+    return root, fixture
+
+
+def test_io_control_snapshot_accepts_the_recorded_host_layout(tmp_path, monkeypatch):
+    root, fixture = materialize_real_cgroup_layout(tmp_path)
+    assert fixture["provenance"].startswith("Live cgroup-v2 acceptance evidence")
+    assert all(not (root / name).exists() for name in fixture["absent"][:3])
+    snapshot = driver.io_control_snapshot(cgroup_root=root, cgroup_text=fixture["cgroup_text"])
+    assert [row["path"] for row in snapshot["cgroups"]] == [str(root), str(root / "system.slice")]
+    assert snapshot["cgroups"][0]["files"] == {
+        "io.max": None, "io.weight": None, "io.latency": None}
+    assert snapshot["cgroups"][1]["files"] == {
+        "io.max": None, "io.weight": "default 100", "io.latency": None}
+    assert snapshot["io_cost"]["io.cost.qos"].startswith("254:0 enable=0 ctrl=auto")
+    assert snapshot["io_cost"]["io.cost.model"].startswith("254:0 ctrl=auto model=linear")
     assert driver._io_max_active("8:0 rbps=max wbps=max\n") is False
     assert driver._io_max_active("") is False
     assert driver._io_max_active("\n") is False
     assert driver._io_max_active("8:0 rbps=100\n") is True
+    assert driver.cgroup_path("0::/bench\n") == "/bench"
     with pytest.raises(driver.StudyError, match="malformed io.max"):
         driver._io_max_active("badline\n")
     with pytest.raises(driver.StudyError, match="malformed io.max setting"):
@@ -2439,57 +2445,180 @@ def test_io_control_snapshot_checks_full_cgroup_chain_and_iocost(tmp_path, monke
         driver.cgroup_path("1:name=systemd:/foo\n")
     with pytest.raises(driver.StudyError, match="cannot resolve"):
         driver.cgroup_path("0::/../escape\n")
+    appearing_control = root / "system.slice/io.max"
+    appearing_control.write_text("254:0 rbps=max\n", encoding="utf-8")
+    changed_snapshot = driver.io_control_snapshot(cgroup_root=root, cgroup_text=fixture["cgroup_text"])
+    assert snapshot != changed_snapshot
+    appearing_control.unlink()
 
     original_read_text = Path.read_text
 
     def proc_cgroup(path, *args, **kwargs):
         if path == Path("/proc/self/cgroup"):
-            return "0::/bench\n"
+            return fixture["cgroup_text"]
         return original_read_text(path, *args, **kwargs)
 
     monkeypatch.setattr(Path, "read_text", proc_cgroup)
-    assert driver.io_control_snapshot(cgroup_root=root)["io_cost"]["io.cost.qos"] == "enable=0"
+    assert driver.io_control_snapshot(cgroup_root=root)["io_cost"] == snapshot["io_cost"]
+
+
+def test_io_control_snapshot_accepts_present_but_inactive_controls(tmp_path):
+    root, fixture = materialize_real_cgroup_layout(tmp_path)
+    benchmark = root / "system.slice/study.service"
+    benchmark.mkdir()
+    (benchmark / "io.max").write_text(
+        "254:0 rbps=max wbps=max riops=max wiops=max\n", encoding="utf-8")
+    (benchmark / "io.weight").write_text("default 100\n\n254:0 100\n", encoding="utf-8")
+    (benchmark / "io.latency").write_text("\n", encoding="utf-8")
+    snapshot = driver.io_control_snapshot(
+        cgroup_root=root, cgroup_text="0::/system.slice/study.service\n")
+    assert snapshot["cgroups"][-1]["files"] == {
+        "io.max": "254:0 rbps=max wbps=max riops=max wiops=max",
+        "io.weight": "default 100\n\n254:0 100",
+        "io.latency": "",
+    }
+    assert snapshot["io_cost"] == {
+        name: fixture["files"][name].strip()
+        for name in ("io.cost.qos", "io.cost.model")
+    }
 
 
 @pytest.mark.parametrize(
-    ("kwargs", "message"),
+    ("relative", "filename", "contents", "message"),
     [
-        ({"io_max": "8:0 rbps=100\n"}, "active io.max"),
-        ({"io_max": "8:0\n"}, "malformed io.max line"),
-        ({"io_max": "8:0 foo=max\n"}, "unknown or malformed io.max"),
-        ({"io_weight": "default 200\n"}, "non-default io.weight"),
-        ({"io_weight": "bad\n"}, "malformed io.weight"),
-        ({"io_latency": "8:0 target=1000\n"}, "active io.latency"),
-        ({"qos": "enable=1\n"}, "qos is enabled"),
-        ({"qos": "enable=0 enable=0\n"}, "must explicitly report enable=0"),
-        ({"model": "8:0 ctrl=user\n"}, "model is configured"),
+        ("system.slice", "io.max", "254:0 rbps=100\n", "active io.max limit"),
+        ("system.slice", "io.weight", "default 50\n", "non-default io.weight"),
+        ("system.slice", "io.latency", "254:0 target=1000\n", "active io.latency"),
+        (".", "io.cost.qos", "254:0 enable=1 ctrl=auto\n", "active io.cost.qos limit"),
+        (".", "io.cost.model", "254:0 ctrl=user model=linear rbps=1\n", "custom io.cost.model"),
     ],
 )
-def test_io_control_snapshot_refuses_active_or_unknown_controls(tmp_path, kwargs, message):
-    root = tmp_path / "cg"
-    write_cgroup(root, **kwargs)
-    with pytest.raises(driver.StudyError, match=message):
-        driver.io_control_snapshot(cgroup_root=root, cgroup_text="0::/bench\n")
+def test_io_control_snapshot_refuses_each_active_limit_by_filename(
+        tmp_path, relative, filename, contents, message):
+    root, fixture = materialize_real_cgroup_layout(tmp_path)
+    directory = root if relative == "." else root / relative
+    (directory / filename).write_text(contents, encoding="utf-8")
+    with pytest.raises(driver.StudyError, match=message) as caught:
+        driver.io_control_snapshot(cgroup_root=root, cgroup_text=fixture["cgroup_text"])
+    assert filename in str(caught.value)
 
 
-def test_io_control_snapshot_refuses_missing_files_and_nonzero_qos_with_disabled_flag(tmp_path):
-    root = tmp_path / "cg"
-    write_cgroup(root, qos="")
-    with pytest.raises(driver.StudyError, match="must explicitly report enable=0"):
-        driver.io_control_snapshot(cgroup_root=root, cgroup_text="0::/bench\n")
-    (root / "bench/io.latency").unlink()
-    with pytest.raises(driver.StudyError, match="cannot read required"):
-        driver.io_control_snapshot(cgroup_root=root, cgroup_text="0::/bench\n")
-    write_cgroup(root, qos="enable=0 enable=1\n")
-    with pytest.raises(driver.StudyError, match="qos is enabled"):
-        driver.io_control_snapshot(cgroup_root=root, cgroup_text="0::/bench\n")
-    write_cgroup(root, io_weight="8:0 100\n")
-    with pytest.raises(driver.StudyError, match="no explicit default"):
-        driver.io_control_snapshot(cgroup_root=root, cgroup_text="0::/bench\n")
-    write_cgroup(root)
+@pytest.mark.parametrize(
+    ("relative", "filename", "contents", "message"),
+    [
+        ("system.slice", "io.max", "8:0\n", "malformed io.max line"),
+        ("system.slice", "io.max", "8:0 foo=max\n", "unknown or malformed io.max control"),
+        ("system.slice", "io.max", "8:0 rbps=fast\n", "unknown or malformed io.max control"),
+        ("system.slice", "io.max", "8:0 rbps=max rbps=max\n", "unknown or malformed io.max control"),
+        ("system.slice", "io.weight", "bad\n", "malformed io.weight"),
+        ("system.slice", "io.weight", "8:0 100\n", "no explicit default 100"),
+        ("system.slice", "io.weight", "default 100\ndefault 100\n", "duplicate default"),
+        ("system.slice", "io.weight", "default many\n", "malformed io.weight"),
+        ("system.slice", "io.weight", "default 100\n8:0 100\n8:0 100\n", "duplicate device row"),
+        ("system.slice", "io.weight", "default 100\n8:0 many\n", "malformed io.weight"),
+        (".", "io.cost.qos", "254:0 enable=maybe\n", "no valid enable value"),
+        (".", "io.cost.qos", "bad\n", "malformed io.cost.qos"),
+        (".", "io.cost.qos", "254:0 mystery=1\n", "unknown or malformed io.cost.qos"),
+        (".", "io.cost.qos", "254:0 enable\n", "malformed io.cost.qos"),
+        (".", "io.cost.qos", "254:0 enable=0 enable=0\n", "unknown or malformed io.cost.qos"),
+        (".", "io.cost.qos", "254:0 enable=0\n254:0 enable=0\n", "malformed io.cost.qos"),
+        (".", "io.cost.qos", "254:0 enable=0 ctrl=broken\n", "malformed io.cost.qos controller"),
+        (".", "io.cost.qos", "254:0 enable=0 rlat=fast\n", "malformed io.cost.qos value"),
+        (".", "io.cost.qos", "254:0 enable=0 rpct=101\n", "malformed io.cost.qos value"),
+        (".", "io.cost.qos", "254:0 enable=0 min=0\n", "malformed io.cost.qos value"),
+        (".", "io.cost.qos", "254:0 enable=0 max=10001\n", "malformed io.cost.qos value"),
+        (".", "io.cost.model", "254:0 ctrl=auto model=linear mystery=1\n", "unknown or malformed io.cost.model"),
+        (".", "io.cost.model", "254:0 ctrl=auto model=linear rbps=fast\n", "malformed io.cost.model value"),
+    ],
+)
+def test_io_control_snapshot_refuses_weird_control_values(
+        tmp_path, relative, filename, contents, message):
+    root, fixture = materialize_real_cgroup_layout(tmp_path)
+    directory = root if relative == "." else root / relative
+    (directory / filename).write_text(contents, encoding="utf-8")
+    with pytest.raises(driver.StudyError, match=message) as caught:
+        driver.io_control_snapshot(cgroup_root=root, cgroup_text=fixture["cgroup_text"])
+    assert filename in str(caught.value)
+
+
+def test_io_control_snapshot_refuses_existing_unreadable_io_max(tmp_path, monkeypatch):
+    root, fixture = materialize_real_cgroup_layout(tmp_path)
+    path = root / "system.slice/io.max"
+    path.write_text("", encoding="utf-8")
+    original_read_text = Path.read_text
+
+    def unreadable(candidate, *args, **kwargs):
+        if candidate == path:
+            raise PermissionError("fixture denies read")
+        return original_read_text(candidate, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", unreadable)
+    with pytest.raises(driver.StudyError, match="cannot read existing cgroup IO control.*io.max"):
+        driver.io_control_snapshot(cgroup_root=root, cgroup_text=fixture["cgroup_text"])
+
+
+def test_io_control_snapshot_refuses_control_path_that_cannot_be_inspected(tmp_path, monkeypatch):
+    root, fixture = materialize_real_cgroup_layout(tmp_path)
+    path = root / "system.slice/io.max"
+    path.write_text("", encoding="utf-8")
+    original_lstat = Path.lstat
+
+    def inaccessible(candidate):
+        if candidate == path:
+            raise PermissionError("fixture denies stat")
+        return original_lstat(candidate)
+
+    monkeypatch.setattr(Path, "lstat", inaccessible)
+    with pytest.raises(driver.StudyError, match="cannot inspect existing cgroup IO control.*io.max"):
+        driver.io_control_snapshot(cgroup_root=root, cgroup_text=fixture["cgroup_text"])
+
+
+def test_io_control_snapshot_refuses_unreadable_cgroup_membership(tmp_path, monkeypatch):
+    root, _fixture = materialize_real_cgroup_layout(tmp_path)
+    original_read_text = Path.read_text
+
+    def unreadable(candidate, *args, **kwargs):
+        if candidate == Path("/proc/self/cgroup"):
+            raise PermissionError("fixture denies membership read")
+        return original_read_text(candidate, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", unreadable)
+    with pytest.raises(driver.StudyError, match="cannot read unified cgroup membership.*proc/self/cgroup"):
+        driver.io_control_snapshot(cgroup_root=root)
+
+
+def test_io_control_snapshot_refuses_cgroup_that_cannot_be_enumerated(tmp_path):
+    root, fixture = materialize_real_cgroup_layout(tmp_path)
+    (root / "system.slice").rmdir()
+    with pytest.raises(driver.StudyError, match="cannot enumerate benchmark cgroup.*system.slice"):
+        driver.io_control_snapshot(cgroup_root=root, cgroup_text=fixture["cgroup_text"])
+
+
+def test_io_control_snapshot_refuses_non_directory_cgroup_path(tmp_path):
+    root, fixture = materialize_real_cgroup_layout(tmp_path)
+    (root / "system.slice/io.weight").unlink()
+    (root / "system.slice").rmdir()
+    (root / "system.slice").write_text("not a cgroup", encoding="utf-8")
+    with pytest.raises(driver.StudyError, match="cannot enumerate benchmark cgroup.*not a directory"):
+        driver.io_control_snapshot(cgroup_root=root, cgroup_text=fixture["cgroup_text"])
+
+
+def test_io_control_snapshot_treats_absent_cost_controls_as_no_setting(tmp_path):
+    root, fixture = materialize_real_cgroup_layout(tmp_path)
+    (root / "io.cost.qos").unlink()
     (root / "io.cost.model").unlink()
-    with pytest.raises(driver.StudyError, match="io.cost state.*missing"):
-        driver.io_control_snapshot(cgroup_root=root, cgroup_text="0::/bench\n")
+    snapshot = driver.io_control_snapshot(cgroup_root=root, cgroup_text=fixture["cgroup_text"])
+    assert snapshot["io_cost"] == {"io.cost.qos": None, "io.cost.model": None}
+
+
+def test_io_control_snapshot_treats_empty_cost_files_as_no_setting(tmp_path):
+    root, fixture = materialize_real_cgroup_layout(tmp_path)
+    (root / "io.cost.qos").write_text(
+        "254:0 enable=0\n\n254:1 enable=0\n", encoding="utf-8")
+    (root / "io.cost.model").write_text("\n", encoding="utf-8")
+    snapshot = driver.io_control_snapshot(cgroup_root=root, cgroup_text=fixture["cgroup_text"])
+    assert snapshot["io_cost"] == {
+        "io.cost.qos": "254:0 enable=0\n\n254:1 enable=0", "io.cost.model": ""}
 
 
 def test_state_schema_resume_identity_and_timestamp_guards(tmp_path):
@@ -2749,6 +2878,41 @@ def test_acceptance_runbook_pins_the_expected_host_before_proceeding(tmp_path):
     assert mismatch.returncode != 0 and "expected host compute-a" in mismatch.stderr
     missing = invoke(actual_host="compute-a")
     assert missing.returncode != 0 and "set the exact short hostname" in missing.stderr
+
+
+def test_acceptance_refusal_helper_continues_and_reports_a_failing_summary():
+    acceptance = (driver.HERE / "ACCEPTANCE.md").read_text(encoding="utf-8")
+    section = acceptance.split("## 1. Target-read-only inventory", 1)[1].split(
+        "## 2. Btrfs file and real fio-log acceptance", 1)[0]
+    script_match = re.search(r"(?ms)^```bash\n(.*?)^```", section)
+    assert script_match is not None
+    expect_refusal = re.search(r"(?ms)^expect_refusal\(\) \{\n.*?^\}", script_match.group(1))
+    record_check = re.search(r"(?ms)^record_check\(\) \{\n.*?^\}", script_match.group(1))
+    assert expect_refusal is not None and record_check is not None
+    assert "set +e" not in expect_refusal.group(0) and "set -e" not in expect_refusal.group(0)
+    assert "SECTION 1 summary:" in script_match.group(1)
+    shell = f"""set -euo pipefail
+CHECK_COUNT=0
+FAIL_COUNT=0
+{expect_refusal.group(0)}
+{record_check.group(0)}
+fail_command() {{ printf 'unexpected command failure\\n'; return 1; }}
+pass_command() {{ return 0; }}
+record_check 'unexpected refusal' expect_refusal 'expected refusal text' fail_command
+record_check 'following check' pass_command
+printf 'SECTION 1 summary: %s checks, %s failures\\n' "$CHECK_COUNT" "$FAIL_COUNT"
+if ((FAIL_COUNT != 0)); then
+  printf 'SECTION1-FAIL\\n'
+  exit 1
+fi
+printf 'SECTION1-PASS\\n'
+"""
+    result = subprocess.run(["bash", "-c", shell], check=False, capture_output=True, text=True)
+    assert result.returncode == 1
+    assert "FAIL check: unexpected refusal" in result.stderr
+    assert "PASS check: following check" in result.stdout
+    assert "SECTION 1 summary: 2 checks, 1 failures" in result.stdout
+    assert "SECTION1-FAIL" in result.stdout and "SECTION1-PASS" not in result.stdout
 
 
 def test_ibx_runbooks_pin_host_before_driver_runs_and_raw_transitions():

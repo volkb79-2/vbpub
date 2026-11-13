@@ -382,6 +382,12 @@ stop/restore and slot schedule
 from the [study-day procedure](../studies/ibx/README.md). Before raw writes or
 discard, the driver refuses whole disks, a mounted or swap-active target
 partition, active exclusive claims, and holders.
+The IO-control preflight checks the benchmark cgroup and its ancestors. A
+kernel or cgroup that omits an optional control file has no setting there, so
+the dry-run can pass that layout; an existing unreadable or malformed control,
+an active `io.max`/`io.latency`, a non-default `io.weight`, enabled io.cost
+QoS, or a user/custom io.cost model still refuses. The kernel-managed
+`ctrl=auto model=linear` cost model is not considered a custom setting.
 The [study README](../studies/ibx/README.md) maps saved stop-policy fields to
 their run options.
 

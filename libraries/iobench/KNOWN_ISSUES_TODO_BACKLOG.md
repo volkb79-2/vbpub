@@ -102,3 +102,31 @@ transient `system.slice` service outside the benchmark cgroup.
 
 **Close when.** Fake proc/clock/latency coverage proves each stop and advisory
 path; the registered R0–R1 lane passes on the final head.
+
+## IOB-BL-46 — live acceptance catches host-layout assumptions fixtures missed
+
+**Status: OPEN; guard and regression tests added in `ibx-io-snapshot-fix`.**
+The 2026-11-13 read-only acceptance reached the IO-control snapshot and showed
+that its fixture had hidden two real-kernel details: the cgroup root and
+`system.slice` do not expose every `io.*` control, and this kernel has no
+`io.latency` file. The old snapshot required all three controls at every path
+and treated the kernel-managed `ctrl=auto model=linear` io.cost model as a
+custom setting. The new snapshot records absent optional controls as no
+setting, refuses an existing unreadable/malformed control or active limit,
+and compares the same present/absent values before and after a cell-set.
+
+The captured layout is checked in at
+[`tests/fixtures/ibx-real-cgroup-layout.json`](tests/fixtures/ibx-real-cgroup-layout.json)
+with evidence provenance; tests materialize it under `tmp_path`. Keep that
+fixture tied to a reviewed live evidence record when extending the driver, so
+synthetic trees do not reintroduce files the host kernel omits. The acceptance
+runbook also had `expect_refusal` restore `set -e`, aborting at its first
+unexpected result. It now records each check and prints one final summary
+before returning non-zero when any check fails.
+
+**Close when.** The registered R0–R1 lane passes on the final reviewed head,
+and the next approved read-only acceptance confirms the acknowledged dry-run
+passes on the real cgroup layout while every active-limit and target-safety
+refusal still fires. Other `/proc`, sysfs, systemd and host-liveness probes
+remain subject to the verification inventory in the package report; they were
+not reached by this acceptance run.

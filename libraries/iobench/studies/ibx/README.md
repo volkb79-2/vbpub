@@ -86,12 +86,19 @@ uses the documented recovery threshold as its explicit comparison: both idle
 probes must stay below 90% of pass 1, and both +10 min probes must recover to at
 least 90%. This comparison is recorded in the analysis output.
 
-The controller snapshots `io.cost.qos`, `io.cost.model`, `io.max`, `io.weight`,
-and `io.latency` for the benchmark cgroup and every ancestor before and after
-each cell-set. It refuses if io.cost is enabled/configured or any ancestor has
-an active IO control. It also refuses targets that are not the expected block
-device or file type/extent and verifies that the target's backing device is the
-same device monitored by diskstats. A raw target must be a partition whose
+The controller snapshots root `io.cost.qos` and `io.cost.model`, plus
+`io.max`, `io.weight`, and `io.latency` for the benchmark cgroup and every
+ancestor before and after each cell-set. A missing control file means there is
+no setting on that kernel or cgroup; the snapshot records that absence so a
+control appearing or changing before/after a run is still detected. Existing
+unreadable or malformed files refuse. The guard refuses numeric `io.max`
+limits, non-default `io.weight`, any `io.latency` target, enabled
+`io.cost.qos`, and a user/custom `io.cost.model`; the kernel-managed
+`ctrl=auto model=linear` model is allowed. This checks the benchmark cgroup
+chain, whose limits apply to the study process, rather than unrelated sibling
+cgroups. It also refuses targets that are not the expected block device or
+file type/extent and verifies that the target's backing device is the same
+device monitored by diskstats. A raw target must be a partition whose
 size and PARTUUID exactly match the operator's `--confirm-target` acknowledgement.
 The driver refuses whole disks, mounted or swap-active target partitions, active
 exclusive claims, and holders. A raw partition sharing the running system disk
