@@ -1,0 +1,7 @@
+# The repository root ignores every `lib/` and `var/` directory and every
+# `*.so`. These paths hold synthetic host files that the collector tests read
+# (the Geekbench record and the KSM opt-in shim marker), so they must be tracked
+# or a clean checkout collects different facts than a developer tree.
+!lib/
+!var/
+!usr/lib/fleetd/ksm-optin.so

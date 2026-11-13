@@ -38,7 +38,7 @@ def build_parser() -> argparse.ArgumentParser:
     plan.add_argument("lane", help="Run-Gate lane name")
     plan.add_argument("--candidates", required=True, type=Path, help="candidate-table/1 JSON file")
     plan.add_argument("--hosts", required=True, type=Path, help="fleet-host-set/1 JSON file")
-    plan.add_argument("--demand", required=True, type=Path, help="Run-Gate TOML file containing [lanes.<lane>.demand]")
+    plan.add_argument("--demand", required=True, type=Path, help="TOML file containing [lanes.<lane>.demand] (not yet accepted inside run-gate.toml; see RG-276)")
     plan.add_argument("--commands", action="store_true", help="print Run-Gate --only-candidates commands instead of plan JSON")
     plan.add_argument("--batch-multiplier", type=float, default=4.0, help="candidate count per batch as a multiple of host worker slots (default: 4)")
     plan.set_defaults(handler=_plan_campaign)
@@ -82,6 +82,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(argv)
     try:
         return args.handler(args)
-    except (ContractError, OSError) as exc:
+    except (ContractError, OSError, UnicodeError, OverflowError) as exc:
+        # UnicodeError: a non-UTF-8 guard file. OverflowError: an integer too large
+        # to convert for planner arithmetic. Both are bad input, not a crash.
         print(f"fleet: ERROR {exc}", file=sys.stderr)
         return 2

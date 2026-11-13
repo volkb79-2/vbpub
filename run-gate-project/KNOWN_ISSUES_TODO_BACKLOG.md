@@ -8558,6 +8558,11 @@ daemon exists, and invokes fleetd's planner library or CLI. It prints the
 per-host candidate lists and existing --only-candidates FILE commands. It
 must not start campaigns, probe hosts, add transport, or invent facts.
 
+**Prerequisite.** Released Run-Gate refuses `demand` as an unknown lane key
+(`LANE_KEYS`, `_check_keys` in `run_gate.py`), so a project cannot yet keep the
+table in its own `run-gate.toml`; fleetd's CLI reads it from a separate TOML
+file until the loader accepts and validates `[lanes.<lane>.demand]` (RG-275).
+
 **Close when.** Candidate/facts/demand assembly is covered by deterministic
 contract tests, output matches fleetd's fleet-plan/1 behavior, and the
 Run-Gate registered lane plus docs gates pass.

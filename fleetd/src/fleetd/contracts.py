@@ -108,13 +108,17 @@ def _number(
 ) -> float:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise ContractError(f"{where}: expected number")
-    if not math.isfinite(value):
+    try:
+        number = float(value)
+    except OverflowError:
+        raise ContractError(f"{where}: expected finite number") from None
+    if not math.isfinite(number):
         raise ContractError(f"{where}: expected finite number")
-    if minimum is not None and value < minimum:
+    if minimum is not None and number < minimum:
         raise ContractError(f"{where}: must be at least {minimum}")
-    if maximum is not None and value > maximum:
+    if maximum is not None and number > maximum:
         raise ContractError(f"{where}: must be at most {maximum}")
-    return float(value)
+    return number
 
 
 def _nullable(

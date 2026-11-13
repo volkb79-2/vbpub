@@ -192,6 +192,8 @@ def test_demand_parser_accepts_design_units_and_rejects_shadowing_values():
         ({**demand, "unit_memory_high": "1m"}, "must be at least unit_memory"),
         ({**demand, "unit_seconds_ref": True}, "expected number"),
         ({**demand, "unit_seconds_ref": 0}, "must be at least"),
+        # An integer beyond float range is a contract error, not an OverflowError.
+        ({**demand, "unit_seconds_ref": 10**400}, "expected finite number"),
         ({**demand, "efficient_upper_bound": False}, "expected integer"),
         ({**demand, "efficient_upper_bound": 0}, "must be at least 1"),
     ):

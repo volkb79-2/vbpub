@@ -27,7 +27,8 @@ for examples and the [design guide](DESIGN-GUIDE.md) for invariants.
 
 ### Lane demand
 
-The existing Run-Gate file carries a `[lanes.<lane>.demand]` table with these
+A TOML file passed to `--demand` carries a `[lanes.<lane>.demand]` table (released
+Run-Gate does not yet accept that key in its own file; see RG-276) with these
 required keys: `unit`, `instance_memory`, `unit_memory`, `unit_seconds_ref`,
 and `efficient_upper_bound`. `unit_memory_high` is optional. Units are the
 closed set `candidate`, `worker`, and `run`; the CLI converts memory strings

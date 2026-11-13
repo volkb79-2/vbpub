@@ -80,7 +80,7 @@ fails closed when it needs one of them.
 fleet plan r2 \
   --candidates candidates.json \
   --hosts hosts.json \
-  --demand run-gate.toml
+  --demand lane-demand.toml
 ```
 
 Normal output is stable JSON with host capacities, assigned candidates,
@@ -90,7 +90,7 @@ the existing Run-Gate selector:
 
 ```sh
 fleet plan r2 --candidates candidates.json --hosts hosts.json \
-  --demand run-gate.toml --commands
+  --demand lane-demand.toml --commands
 ```
 
 The selected candidate files are consumed by Run-Gate as
@@ -98,7 +98,12 @@ The selected candidate files are consumed by Run-Gate as
 declared efficient job bound. An unplaceable candidate or a host refused by
 the PSI admission threshold is reported with a reason, never silently dropped.
 Commands are grouped by wave and slot. Slot commands in a wave may run
-together; complete that wave before starting the next one. A retry command
+together (concurrent same-lane invocations in one checkout have not been
+probed live); complete that wave before starting the next one, in batch order.
+The output has one `# host <id>` section per available host and no transport:
+every line executes wherever you run the script, so copy only the section
+that belongs to the host you are on. Run as emitted, the lines run one after
+another. A retry command
 includes --jobs 1. The command output contains no remote transport.
 --batch-multiplier N changes the batch target from its default of
 4 × worker_slots.
@@ -127,7 +132,12 @@ baseline score agree. Host ETA applies baseline / single_core × f_h; multi-core
 scores are not used. Missing or incomparable timing leaves placement intact
 and reports ETA as unavailable with a reason.
 
-The lane demand is a table in the existing Run-Gate TOML file:
+The lane demand is a `[lanes.<lane>.demand]` table. Released Run-Gate (25.6.0)
+refuses `demand` as an unknown lane key, so do not add it to a project's
+`run-gate.toml` yet; keep it in a separate TOML file that you pass to
+`--demand`. Run-Gate will accept the table in its own file when RG-275 lands
+(see [RG-276](../../run-gate-project/KNOWN_ISSUES_TODO_BACKLOG.md#rg-276-the-run-gate-campaign-plan-client-is-not-implemented)).
+The example below is such a standalone file:
 
 ```toml
 schema_version = 1
