@@ -203,11 +203,13 @@ A malformed style with neither marker remains visible.
 Invalid `display` or `visibility` values are ignored, so they cannot override
 an earlier valid declaration. This filter recognizes only CSS Syntax
 whitespace: ASCII space, tab, LF, CR, and FF; other Unicode space-like
-characters remain inside property and value tokens. The filter does not admit
+characters remain inside property and value tokens. Property names and
+keywords fold ASCII case only. The filter does not admit
 `run-in`, `ruby-base`, `ruby-text`, `ruby-base-container`, or
 `ruby-text-container` to its visible-value allowlist.
-If one follows a valid hiding declaration, the earlier hide remains, which can
-omit text a browser shows. For `display`, a winning unresolved `var()`,
+If one of those values follows a valid hiding declaration, the earlier hide
+remains, which can omit text a browser shows. For `display`, a winning
+unresolved `var()`,
 `inherit`, `revert`, or `revert-layer` fails closed; `initial` and `unset` map
 to visible `inline`. For `visibility`, a winning unresolved `var()`, `inherit`,
 `unset`, `revert`, or `revert-layer` fails closed; `initial` maps to `visible`,

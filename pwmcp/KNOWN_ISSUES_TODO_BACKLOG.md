@@ -5,7 +5,7 @@
 This file records consumer-facing product gaps for later triage. Normative
 behavior remains in the product specification and consumer documentation.
 
-Last updated: 2026-11-13 (PWMCP-63..68 implemented in their respective branches, unreleased; PWMCP-62's separate R2 follow-up remains open).
+Last updated: 2026-11-13 (PWMCP-63..69 implemented in their respective branches, unreleased; PWMCP-62's separate R2 follow-up remains open).
 
 ## PWMCP-01 — Provide a rendered-page inspection command
 
@@ -1028,6 +1028,14 @@ the operator limit.
 **Fix and policy.** The visible-value allowlist no longer admits `run-in` or ruby internal `display` values. The general `ruby` display-inside value remains supported. Preserving an earlier hide for these values can omit content shown by a browser that implements them; this is the documented fail-closed trade-off.
 
 **Test-first evidence.** Five extraction cases (`run-in` and the four ruby internal values) failed on the test-only commit in the registered tester-unified R1 lane before the allowlist change.
+
+## PWMCP-69 — Unicode case folding can turn an invalid keyword into a visible one
+
+**Status: FIXED IN THIS BRANCH.** Severity: P2 security. Python's `str.lower()` maps U+212A KELVIN SIGN to ASCII `k`, so `display:bloc\212a` (or the literal character) compared equal to `block`. A browser folds keyword case for ASCII only, treats the declaration as invalid, and keeps an earlier `display:none`; the filter instead admitted the text. Only `block` and `inline-block` contain a letter affected by this mapping.
+
+**Fix.** Property names and values fold ASCII `A-Z` only. README, DESIGN-GUIDE, and CONSUMERS state the rule beside the CSS-whitespace rule. Tests cover the literal and escaped forms and that ASCII upper case (`BLOCK`) still overrides.
+
+**Test-first evidence.** The test-only commit `d8ab1454c341a92a35f196060362fcadc1fedb23` failed in the registered tester-unified R1 lane before the production change. Three Kelvin cases failed (literal `block`, literal `inline-block`, and escaped `block`); the ASCII-uppercase `BLOCK` control passed. The result is recorded in `pwmcp-r8-survivors-pwmcp-r1-kelvin-reproduction.log`.
 
 ## R8 mutation survivor closure
 

@@ -40,6 +40,9 @@ _ZERO_WIDTH = re.compile("[\u200b-\u200d\u202a-\u202e\u2060\u2066-\u2069\ufeff\U
 _UNRESOLVED_CSS_VALUE = "<pwmcp-unresolved-css-value>"
 _CSS_WHITESPACE = " \t\n\r\f"
 _CSS_WHITESPACE_RUN = re.compile(r"[ \t\n\r\f]+")
+# CSS keywords and property names fold ASCII case only. Unicode lowercasing
+# maps U+212A KELVIN SIGN to ASCII "k".
+_ASCII_LOWER = str.maketrans("ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz")
 _DISPLAY_OUTSIDE = frozenset({"block", "inline"})
 _DISPLAY_INSIDE = frozenset({"flow", "flow-root", "table", "flex", "grid", "ruby"})
 _DISPLAY_LIST_ITEM_INSIDE = frozenset({"flow", "flow-root"})
@@ -268,7 +271,7 @@ def _priority_value(value: str) -> tuple[str, bool]:
     if bang < 0:
         return _strip_css_whitespace(value), False
     priority = _decode_css_escapes(_strip_css_whitespace(value[bang + 1 :]))
-    if priority is None or priority.lower() != "important":
+    if priority is None or priority.translate(_ASCII_LOWER) != "important":
         return _strip_css_whitespace(value), False
     return _strip_css_whitespace(value[:bang]), True
 
@@ -351,14 +354,14 @@ def _style_declarations(style: str) -> dict[str, str] | None:
         property_name = _decode_css_escapes(_strip_css_whitespace(property_name))
         if property_name is None:
             return None
-        property_name = property_name.lower()
+        property_name = property_name.translate(_ASCII_LOWER)
         if not property_name:
             return None
         value, important = _priority_value(value)
         value = _decode_css_escapes(value)
         if value is None:
             return None
-        value = value.lower()
+        value = value.translate(_ASCII_LOWER)
         if property_name == "display":
             value = _display_property_value(value)
             if value is None:

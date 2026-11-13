@@ -275,6 +275,7 @@ def test_malformed_inline_css_policy_is_synchronized_across_user_docs() -> None:
         "An unescaped LF, CR, or FF inside a CSS string ends that malformed string",
         "Invalid `display` or `visibility` values are ignored, so they cannot override an earlier valid declaration.",
         "This filter recognizes only CSS Syntax whitespace: ASCII space, tab, LF, CR, and FF; other Unicode space-like characters remain inside property and value tokens.",
+        "Property names and keywords fold ASCII case only.",
         "The filter does not admit `run-in`, `ruby-base`, `ruby-text`, `ruby-base-container`, or `ruby-text-container` to its visible-value allowlist.",
         "For `display`, a winning unresolved `var()`, `inherit`, `revert`, or `revert-layer` fails closed; `initial` and `unset` map to visible `inline`.",
         "For `visibility`, a winning unresolved `var()`, `inherit`, `unset`, `revert`, or `revert-layer` fails closed; `initial` maps to `visible`, and `collapse` is filtered as hidden.",
