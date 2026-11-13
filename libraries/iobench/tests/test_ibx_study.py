@@ -2551,6 +2551,13 @@ def test_acceptance_runbook_pins_the_expected_host_before_proceeding(tmp_path):
     raw_idle = re.search(r"(?ms)^assert_raw_idle\(\) \{\n(.*?)^\}", acceptance)
     assert raw_idle is not None
     assert raw_idle.group(1).lstrip().startswith("assert_expected_host")
+    btrfs_section = acceptance.split("## 2. Btrfs file and real fio-log acceptance", 1)[1].split(
+        "## Rollback", 1)[0]
+    btrfs_script = re.search(r"(?ms)^```bash\n(.*?)^```", btrfs_section)
+    assert btrfs_script is not None
+    btrfs_call = re.search(r"(?m)^assert_raw_idle$", btrfs_script.group(1))
+    assert btrfs_call is not None
+    assert btrfs_call.start() < btrfs_script.group(1).index('host-escape -- mkfs.btrfs -K "$RAW"')
     rollback_section = acceptance.split("## Rollback", 1)[1]
     rollback_script = re.search(r"(?ms)^```bash\n(.*?)^```", rollback_section)
     assert rollback_script is not None
