@@ -458,6 +458,13 @@ def test_capability_precliff_rate_is_absent_without_a_burst():
         _observation(rung)
 
 
+def test_capability_precliff_rate_is_absent_without_a_knee():
+    rung = {"dir": "write", "state": "steady", "ws_bytes": 100, "bs": 4096, "steady_iops": 2.0,
+            "burst_units": 2.0, "knee_s": None}
+    row = _observation(rung)
+    assert row["pre_cliff_bps"] is None
+
+
 def test_capability_precliff_rate_is_absent_when_the_knee_is_zero():
     rung = {"dir": "write", "state": "steady", "ws_bytes": 100, "bs": 4096, "steady_iops": 2.0,
             "burst_units": 2.0, "knee_s": 0.0}
