@@ -453,7 +453,7 @@ class CampaignManager:
                     if candidate_id not in allowed:
                         continue
                     outcome = event.get("outcome_bucket")
-                    if not isinstance(candidate_id, str) or not is_candidate_id(candidate_id):
+                    if not is_candidate_id(candidate_id):
                         raise TransportError(f"probe row for {name} has an invalid candidate id")
                     if not isinstance(outcome, str) or outcome not in {
                         "killed", "survived", "budget_exceeded", "hung", "crashed", "equivalent"
@@ -659,8 +659,7 @@ class CampaignManager:
             job["stall_after_seconds"] = threshold
             done = self._done_ids(state)
             pending = [candidate_id for candidate_id in job["candidate_ids"] if candidate_id not in done]
-            if pending:
-                self._enqueue_replanned(state, job, pending, job["host"], "stalled")
+            self._enqueue_replanned(state, job, pending, job["host"], "stalled")
 
     @staticmethod
     def _stall_threshold(state: Mapping[str, Any], host_id: str) -> float:
@@ -923,8 +922,7 @@ class CampaignManager:
         by_candidate: dict[str, list[dict[str, Any]]] = {}
         for event in events:
             candidate_id = event.get("candidate_id")
-            if candidate_id in expected_ids:
-                by_candidate.setdefault(candidate_id, []).append(event)
+            by_candidate.setdefault(candidate_id, []).append(event)
         candidate_rows = []
         totals = {name: 0 for name in ("killed", "survived", "timeout", "crashed", "equivalent")}
         duplicates = 0

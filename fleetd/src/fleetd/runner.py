@@ -145,7 +145,7 @@ for name, planned in sorted(expected.items()):
     try:
         list_digest = digest_file.read_text(encoding="ascii").strip()
     except OSError:
-        list_digest = name.rsplit(".", 1)[-1]
+        list_digest = None
     progress_path = None
     records = []
     mtime = None
@@ -326,9 +326,7 @@ class RunnerJobs:
 
     @staticmethod
     def _digest_matches(actual: object, spec: JobSpec) -> bool:
-        if not isinstance(actual, str):
-            return False
-        return actual == spec.list_digest or (len(actual) == 8 and actual == spec.list8)
+        return isinstance(actual, str) and actual == spec.list_digest
 
 
 def parse_progress(content: bytes, expected_ids: set[str]) -> list[dict[str, object]]:

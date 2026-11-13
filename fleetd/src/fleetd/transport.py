@@ -332,13 +332,15 @@ class FakeTransport:
                 return 73, "", "named job exists with another candidate-list digest"
             return 0, "EXISTING\n", ""
         suffix = f"campaigns/{name}-s1"
+        project = str(metadata.get("project"))
+        project_prefix = "" if project in {"", "."} else f"{project}/"
         job = FakeJob(
             name=name,
             candidate_ids=candidate_ids,
             list_digest=digest,
             started_at=self.clock(),
             progress_mtime=None,
-            progress_path=f"checkouts/{metadata.get('commit')}/{metadata.get('project')}/.assay/progress-{metadata.get('lane')}.jsonl",
+            progress_path=f"checkouts/{metadata.get('commit')}/{project_prefix}.assay/progress-{metadata.get('lane')}.jsonl",
             verdict_path=f"{suffix}/verdict.json",
         )
         host.jobs[name] = job

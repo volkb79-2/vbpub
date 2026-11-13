@@ -135,6 +135,12 @@ def test_hx_transport_timeout_and_launch_errors_are_reported(monkeypatch, tmp_pa
     monkeypatch.setattr("fleetd.transport.subprocess.run", timeout)
     assert HxTransport(tmp_path / "hx.sh").run("worker-a", "true", 1) == (124, "part", "late")
 
+    def empty_timeout(*_args, **_kwargs):
+        raise subprocess.TimeoutExpired("hx.sh", 1)
+
+    monkeypatch.setattr("fleetd.transport.subprocess.run", empty_timeout)
+    assert HxTransport(tmp_path / "hx.sh").run("worker-a", "true", 1) == (124, "", "transport timed out")
+
     def missing(*_args, **_kwargs):
         raise OSError("missing wrapper")
 
@@ -187,6 +193,10 @@ def test_fake_transport_models_unreachable_slow_restart_and_duplicate_starts():
     assert runner.start(spec) is True
     assert runner.start(spec) is False
     assert transport.host("host-a").starts == 1
+    transport.add_progress("host-a", spec.name, "a" * 64, "killed")
+    transport.add_progress("host-a", spec.name, "a" * 64, "killed")
+    row = runner.probe("host-a", {spec.name: spec.candidate_ids})[spec.name]
+    assert row["progress_count"] == 1 and len(row["records"]) == 2
     clock.advance(3)
     transport.set_slow("host-a")
     with pytest.raises(HostUnavailable):
@@ -211,6 +221,7 @@ def test_job_names_digest_and_command_builders_are_stable_and_scoped():
     start = start_script(spec)
     stop = stop_script(spec.name)
     assert "fleetd-campaign-command/1" in probe and "list.sha256" in probe
+    assert "list_digest = None" in probe
     assert "run-job" in start and "--only-candidates" in start and "R2_MAX_ATTEMPTS" in start
     assert "sha256sum" in start and "EXISTING" in start
     assert 'run-r2-campaign.sh\" stop' in stop
@@ -246,9 +257,10 @@ def test_runner_probe_start_stop_and_progress_errors_are_closed():
 
 
 def test_transport_paths_fake_metadata_and_fake_file_failures():
-    with pytest.raises(TransportError, match="NUL byte"):
+    with pytest.raises(TransportError, match="NUL-free"):
         shell_command(["echo", "bad\x00arg"])
     transport = FakeTransport()
+    assert transport.run("host-a", "true") == (0, "", "")
     with pytest.raises(TransportError, match="NUL byte"):
         transport.put("host-a", "nested/bad\x00path", b"x")
     with pytest.raises(TransportError, match="non-empty path"):
@@ -259,7 +271,10 @@ def test_transport_paths_fake_metadata_and_fake_file_failures():
     rc, out, err = transport.run("host-a", command_metadata("probe", {"jobs": "not-an-array"}))
     assert (rc, json.loads(out), err) == (0, {"jobs": []}, "")
 
+    transport.put("host-a", "nested/file", b"saved")
+    assert transport.get("host-a", "nested/file") == b"saved"
     transport.set_slow("host-a")
+    assert transport.run("host-a", "true") == (124, "", "transport timed out")
     with pytest.raises(HostUnavailable, match="timed out"):
         transport.put("host-a", "a", b"x")
     with pytest.raises(HostUnavailable, match="timed out"):
@@ -336,7 +351,10 @@ def test_runner_probe_start_and_stop_translate_malformed_responses_and_failures(
     with pytest.raises(TransportError, match="different candidate-list digest"):
         RunnerJobs(ScriptedTransport([(0, mismatch, "")])).start(spec)
     existing = _probe_json(name, "RUNNING", spec.list8)
-    assert RunnerJobs(ScriptedTransport([(0, existing, "")])).start(spec) is False
+    with pytest.raises(TransportError, match="different candidate-list digest"):
+        RunnerJobs(ScriptedTransport([(0, existing, "")])).start(spec)
+    assert RunnerJobs._digest_matches(None, spec) is False
+    assert RunnerJobs._digest_matches(spec.list8, spec) is False
 
     missing = _probe_json(name)
     started = ScriptedTransport([(0, missing, ""), (0, "STARTED\n", "")])
@@ -367,9 +385,10 @@ def test_progress_parser_filters_noise_and_normalizes_optional_fields():
         None,
         {"event": "heartbeat"},
         {"event": "candidate", "candidate_id": "b" * 64, "outcome_bucket": "killed"},
-        {"event": "candidate", "candidate_id": expected, "outcome_bucket": 7},
         {"event": "candidate", "candidate_id": expected, "outcome_bucket": "killed", "elapsed_seconds": True, "emitted_at": 7},
     ]
+    with pytest.raises(ContractError, match="unsupported candidate outcome"):
+        parse_progress((json.dumps({"event": "candidate", "candidate_id": expected, "outcome_bucket": 7}) + "\n").encode(), {expected})
     content = "not json\n" + "\n".join(json.dumps(event) for event in events) + "\n"
     records = parse_progress(content.encode(), {expected})
     assert records == [{
@@ -1047,6 +1066,201 @@ def test_refresh_digest_mismatch_and_missing_running_jobs_are_detected(tmp_path)
     assert any(item["requeue_reason"] == "job-exit" for item in state["jobs"].values())
 
 
+def test_campaign_accepts_blocked_plan_without_worker_facts_and_keeps_completed_jobs(tmp_path):
+    blocked = _plan(1)
+    moved = [candidate for host in blocked["hosts"] for candidate in host["assigned"]]
+    blocked["unplaced"] = [*blocked.get("unplaced", []), *(
+        {"id": candidate["id"], "reason": "all planned hosts blocked"} for candidate in moved
+    )]
+    for host in blocked["hosts"]:
+        host["status"] = "blocked"
+        host["assigned"] = []
+        host["batches"] = []
+        host.pop("worker_slots", None)
+    manager = CampaignManager(tmp_path / "blocked", FakeTransport())
+    status = manager.run("blocked", blocked)
+    assert all(host["batches"] == [] for host in status["hosts"])
+    result, _, _, _ = manager.collect("blocked")
+    assert result["totals"]["missing"] == 1
+
+    complete_plan = _plan(2)
+    complete_manager = CampaignManager(tmp_path / "complete", FakeTransport())
+    complete_manager.run("complete", complete_plan)
+    state = _state(tmp_path / "complete", "complete")
+    old_names = set(state["jobs"])
+    for job in state["jobs"].values():
+        job["status"] = "COMPLETE"
+    expanded = _plan(3)
+    complete_manager._reconcile(state, expanded)
+    assert all(state["jobs"][name]["status"] == "COMPLETE" for name in old_names)
+
+
+def test_refresh_unknown_initializes_progress_and_rejects_corrupt_candidate_ids(tmp_path):
+    plan = _plan(1)
+    manager = CampaignManager(tmp_path, FakeTransport())
+    manager.run("campaign", plan)
+    state = _state(tmp_path)
+    job = next(iter(state["jobs"].values()))
+    state["jobs"][job["name"]]["started_mono"] = None
+    state["jobs"][job["name"]]["last_progress_mono"] = None
+    (tmp_path / "campaign.json").write_text(json.dumps(state), encoding="utf-8")
+    manager.runner.probe = lambda _host, _wanted: {
+        job["name"]: {
+            "name": job["name"], "state": "UNKNOWN", "list_digest": job["list_digest"],
+            "progress_path": job["progress_path"], "verdict_path": job["verdict_path"], "records": [],
+        }
+    }
+    manager.status("campaign")
+    refreshed = _state(tmp_path)["jobs"][job["name"]]
+    assert refreshed["status"] == "UNKNOWN"
+    assert refreshed["started_mono"] == refreshed["last_progress_mono"]
+
+    corrupted = _state(tmp_path)
+    corrupted["jobs"][job["name"]]["candidate_ids"] = ["invalid"]
+    (tmp_path / "campaign.json").write_text(json.dumps(corrupted), encoding="utf-8")
+    manager.runner.probe = lambda _host, _wanted: {
+        job["name"]: {
+            "name": job["name"], "state": "RUNNING", "list_digest": job["list_digest"],
+            "records": [{"candidate_id": "invalid", "outcome_bucket": "killed"}],
+        }
+    }
+    with pytest.raises(TransportError, match="invalid candidate id"):
+        manager.status("campaign")
+
+
+def test_campaign_superseded_stop_loss_and_deferred_retry_edges(tmp_path):
+    plan, _first_id, _second_id = _two_host_one_candidate_plan()
+    clock = FakeClock()
+    transport = FakeTransport(clock=clock)
+    manager = CampaignManager(tmp_path / "stop", transport, clock=clock)
+    manager.run("campaign", plan)
+    state = _state(tmp_path / "stop")
+    pending = _first_running(state, "host-a")
+    state["jobs"][pending["name"]]["status"] = "SUPERSEDED_PENDING"
+    state["jobs"][pending["name"]]["stop_pending"] = True
+    manager.runner.stop = lambda *_args: (_ for _ in ()).throw(HostUnavailable("stop timed out"))
+    manager._stop_superseded_host(state, "host-a")
+    assert state["hosts"]["host-a"]["status"] == "UNREACHABLE"
+    assert state["hosts"]["host-a"]["unreachable_since_mono"] == state["hosts"]["host-a"]["last_contact_mono"]
+
+    lost = _first_running(state, "host-b")
+    state["hosts"]["host-b"]["status"] = "LOST"
+    state["hosts"]["host-b"]["unreachable_since_mono"] = None
+    state["hosts"]["host-b"]["loss_requeued"] = False
+    manager.runner.stop = RunnerJobs(transport).stop
+    manager._handle_lost_hosts(state)
+    assert state["hosts"]["host-b"]["status"] == "ONLINE"
+    assert state["jobs"][lost["name"]]["status"] == "LOST"
+
+    deferred_plan = _plan(2)
+    deferred_transport = FakeTransport(clock=clock)
+    deferred_manager = CampaignManager(tmp_path / "deferred", deferred_transport, clock=clock)
+    deferred_manager.run("deferred", deferred_plan)
+    deferred_state = _state(tmp_path / "deferred", "deferred")
+    source = _first_running(deferred_state, "host-b")
+    deferred_state["hosts"]["host-a"]["status"] = "UNREACHABLE"
+    deferred_state["hosts"]["host-b"]["status"] = "LOST"
+    deferred_state["hosts"]["host-b"]["unreachable_since_mono"] = clock() - LOST_AFTER_SECONDS - 1
+    deferred_state["hosts"]["host-b"]["loss_requeued"] = False
+    deferred_manager._handle_lost_hosts(deferred_state)
+    assert deferred_state["deferred_requeues"]
+    deferred_state["hosts"]["host-a"]["status"] = "ONLINE"
+    deferred_manager._retry_deferred(deferred_state)
+    assert not deferred_state["deferred_requeues"]
+    assert any(job.get("requeue_reason") == "host-lost" for job in deferred_state["jobs"].values())
+
+
+def test_deferred_requeue_is_dropped_when_candidate_finishes_before_target_returns(tmp_path):
+    plan = _plan(2)
+    clock = FakeClock()
+    transport = FakeTransport(clock=clock)
+    manager = CampaignManager(tmp_path, transport, clock=clock)
+    manager.run("campaign", plan)
+    state = _state(tmp_path)
+    source = _first_running(state, "host-b")
+    candidate_id = source["candidate_ids"][0]
+    state["hosts"]["host-a"]["status"] = "UNREACHABLE"
+    state["hosts"]["host-b"]["status"] = "LOST"
+    state["hosts"]["host-b"]["unreachable_since_mono"] = clock() - LOST_AFTER_SECONDS - 1
+    state["hosts"]["host-b"]["loss_requeued"] = False
+    manager._handle_lost_hosts(state)
+    assert state["deferred_requeues"]
+    source["records"].append({
+        "candidate_id": candidate_id, "outcome_bucket": "survived", "elapsed_seconds": 1,
+        "emitted_at": "2030-01-01T00:00:00+00:00",
+    })
+    state["hosts"]["host-a"]["status"] = "ONLINE"
+    manager._retry_deferred(state)
+    assert state["deferred_requeues"] == []
+    assert not any(job.get("requeue_reason") == "host-lost" for job in state["jobs"].values())
+
+
+def test_collection_uses_remote_progress_deduplicates_events_and_skips_owned_verdict(tmp_path):
+    plan = _plan(30)
+    transport = FakeTransport()
+    manager = CampaignManager(tmp_path, transport)
+    manager.run("campaign", plan)
+    state = _state(tmp_path)
+    job = _first_running(state, "host-a")
+    first_id, second_id = job["candidate_ids"][:2]
+    transport.add_progress("host-a", job["name"], first_id, "killed", emitted_at="2030-01-01T00:00:01+00:00")
+    manager.status("campaign")
+    state = _state(tmp_path)
+    remote_event = {
+        "event": "candidate", "candidate_id": second_id, "outcome_bucket": "survived",
+        "elapsed_seconds": 2.5, "emitted_at": "2030-01-01T00:00:02+00:00",
+    }
+    host = transport.host("host-a")
+    progress_path = state["jobs"][job["name"]]["progress_path"]
+    host.files[progress_path] += (json.dumps(remote_event, sort_keys=True, separators=(",", ":")) + "\n").encode()
+    verdict = json.dumps({
+        "claims": [{"rigor": "R2", "mutation": {"survived": [{"candidate_id": second_id}]}}]
+    }).encode()
+    transport.finish("host-a", job["name"], verdict=verdict)
+    result, _, _, _ = manager.collect("campaign")
+    rows = {row["candidate_id"]: row for row in result["candidates"]}
+    assert rows[first_id]["outcome"] == "killed"
+    assert rows[second_id]["outcome"] == "survived"
+    assert rows[second_id]["owner_host"] == "host-a"
+
+    state = _state(tmp_path)
+    state["jobs"][job["name"]]["records"].extend([
+        None,
+        {"candidate_id": "f" * 64, "outcome_bucket": "killed"},
+        {"candidate_id": first_id, "outcome_bucket": "unknown"},
+    ])
+    state["jobs"][job["name"]]["progress_path"] = None
+    result = manager._collect_result(state)
+    assert any(item["artifact"] == "progress" and item["path"] == "" for item in result["missing_artifacts"])
+    assert "None." in manager._render_report({
+        "campaign": "empty", "lane": "r2", "plan_sha256": "0" * 64,
+        "totals": {name: 0 for name in ("killed", "survived", "timeout", "crashed", "equivalent", "missing", "duplicates_ignored")},
+        "candidates": [], "per_host": [], "missing_artifacts": [],
+    })
+
+
+def test_collection_output_is_independent_of_job_and_record_insertion_order(tmp_path):
+    plan = _plan(12)
+    transport = FakeTransport()
+    manager = CampaignManager(tmp_path, transport)
+    manager.run("campaign", plan)
+    state = _state(tmp_path)
+    for host_id in ("host-a", "host-b"):
+        job = _first_running(state, host_id)
+        candidate_id = job["candidate_ids"][0]
+        transport.add_progress(host_id, job["name"], candidate_id, "survived")
+    manager.status("campaign")
+    state = _state(tmp_path)
+    expected = manager._collect_result(state)
+    reversed_jobs = dict(reversed(list(state["jobs"].items())))
+    for job in reversed_jobs.values():
+        job["records"] = list(reversed(job["records"]))
+    state["jobs"] = reversed_jobs
+    actual = manager._collect_result(state)
+    assert actual == expected
+    assert [row["candidate_id"] for row in actual["candidates"]] == sorted(state["planned_ids"])
+
+
 def test_campaign_state_loading_and_atomic_write_reject_corruption(tmp_path):
     manager = CampaignManager(tmp_path, FakeTransport())
     with pytest.raises(ContractError, match="does not exist"):
@@ -1073,7 +1287,7 @@ def test_campaign_state_loading_and_atomic_write_reject_corruption(tmp_path):
         manager.status("wrong-identity")
 
 
-def test_lost_host_without_alternate_host_defers_and_retries_when_available(tmp_path):
+def test_lost_host_without_alternate_host_defers_and_resumes_if_it_returns(tmp_path):
     plan = _plan(1)
     # Keep a one-host campaign so the first loss cannot choose a replacement.
     chosen_host = next(host for host in plan["hosts"] if host["assigned"])
@@ -1092,7 +1306,8 @@ def test_lost_host_without_alternate_host_defers_and_retries_when_available(tmp_
     transport.set_unreachable(host_id, False)
     manager.tick("campaign")
     assert _state(tmp_path)["hosts"][host_id]["status"] == "ONLINE"
-    assert _state(tmp_path)["jobs"][job["name"]]["status"] == "LOST"
+    assert _state(tmp_path)["jobs"][job["name"]]["status"] == "RUNNING"
+    assert _state(tmp_path)["deferred_requeues"]
 
 
 def test_large_golden_plan_runs_stall_and_loss_requeue_scenario(tmp_path):
