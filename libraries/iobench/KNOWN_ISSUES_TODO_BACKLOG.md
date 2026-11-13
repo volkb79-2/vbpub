@@ -128,7 +128,8 @@ selected scheduler is read from the study disk's `/sys/block/<disk>/queue/schedu
 and recorded in the manifest and IO snapshot. `io.latency` can throttle peers,
 so direct peers at each path level are checked for active targets on every
 snapshot. Peer `io.bfq.weight` is checked only when the target scheduler is
-`bfq`; known `none` or `mq-deadline` values are inert. If the scheduler cannot
+`bfq`; any known non-BFQ scheduler, including `none` and `mq-deadline`, is
+inert. If the scheduler cannot
 be read or parsed, the manifest reports it as unknown and peer BFQ weights are
 checked conservatively. Peer `io.weight` is not judged. Peer membership is
 excluded from before/after equality because systemd units and containers
@@ -184,8 +185,9 @@ assumption as VERIFIED-ON-HOST or UNVERIFIED, with dry-run behavior for the
 latter.
 
 Round three corrected peer BFQ judging to use the target disk scheduler:
-`bfq` and unknown scheduler state check active peer weights; known `none` and
-`mq-deadline` treat them as inert. The scheduler and its availability are
+`bfq` and unknown scheduler state check active peer weights; any known
+non-BFQ scheduler, including `none` and `mq-deadline`, treats them as inert.
+The scheduler and its availability are
 included in the run manifest and before/after snapshot. The new scheduler
 fixture uses the recorded `none` layout and evidence digest, with synthetic
 `bfq`, `mq-deadline`, missing, malformed, and no-BFQ-controller cases on the

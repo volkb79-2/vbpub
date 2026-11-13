@@ -391,7 +391,8 @@ targets there; those peer controls are checked on every snapshot call. Peer
 `/sys/block/<disk>/queue/scheduler`, stored in the manifest and compared in
 the IO snapshot. Peer `io.bfq.weight` is judged when the selected target
 scheduler is `bfq`, because sibling group weights then affect proportional
-bandwidth. With known `none` or `mq-deadline`, peer BFQ weights are inert. A
+bandwidth. With any known non-BFQ scheduler, peer BFQ weights are inert,
+including `none` and `mq-deadline`. A
 missing, unreadable, or malformed scheduler is recorded as unknown and peer
 BFQ weights are checked conservatively; active values refuse with a message
 that names the cgroup control. Peer membership is not part of before/after

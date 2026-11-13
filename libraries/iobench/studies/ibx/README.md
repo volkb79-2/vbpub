@@ -100,10 +100,11 @@ target on every check. Peer `io.weight` is not judged. Peer `io.bfq.weight` is
 judged when the target disk's selected scheduler is `bfq`, because sibling
 weights then affect its proportional bandwidth. The scheduler is read from
 `/sys/block/<disk>/queue/scheduler`, recorded in the manifest and compared with
-the IO-control snapshots. With a known `none` or `mq-deadline` scheduler, peer
-BFQ weights are inert. If the scheduler file is missing, unreadable, or
-malformed, the manifest reports that state and peer BFQ weights are checked
-conservatively; any non-default value refuses with the cgroup control path.
+the IO-control snapshots. With any known non-BFQ scheduler, peer BFQ weights
+are inert, including `none` and `mq-deadline`. If the scheduler file is
+missing, unreadable, or malformed, the manifest reports that state and peer
+BFQ weights are checked conservatively; any non-default value refuses with
+the cgroup control path.
 Peer membership is not included in before/after equality because services and
 containers can come and go during a study. Other siblings' `io.max` caps are
 not inherited by the benchmark cgroup. This lets the study run on kernels that

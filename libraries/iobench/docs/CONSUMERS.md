@@ -393,7 +393,8 @@ cgroup path and refuses active latency targets on every check. Peer
 `io.weight` is not judged. The target disk scheduler is read from
 `/sys/block/<disk>/queue/scheduler` and recorded in the run manifest and IO
 snapshot. Peer `io.bfq.weight` is judged when the selected target scheduler is
-`bfq`; a known `none` or `mq-deadline` scheduler makes those peer weights inert.
+`bfq`; any known non-BFQ scheduler makes those peer weights inert, including
+`none` and `mq-deadline`.
 A missing, unreadable, or malformed scheduler is recorded as unknown and
 causes a conservative peer BFQ check, with a clear dry-run manifest message.
 Peer membership is excluded from before/after equality because systemd

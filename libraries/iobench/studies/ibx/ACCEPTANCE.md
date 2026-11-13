@@ -76,10 +76,11 @@ study host uses another SSH endpoint, pass `--liveness-ssh-host` and
 
 The saved read-only IO snapshot records the study disk scheduler as
 `[none] mq-deadline`; all 13 captured cgroups at depth two had no
-`io.bfq.weight` file. With a selected `none` or `mq-deadline` scheduler, peer
-BFQ weights are inert and do not block the study. If the target disk uses
-`bfq`, active peer BFQ weights refuse with the cgroup filename. A missing,
-unreadable, or malformed scheduler file is reported as unknown in the dry-run
+`io.bfq.weight` file. With any known non-BFQ scheduler, including `none` or
+`mq-deadline`, peer BFQ weights are inert and do not block the study. If the
+target disk uses `bfq`, active peer BFQ weights refuse with the cgroup
+filename. A missing, unreadable, or malformed scheduler file is reported as
+unknown in the dry-run
 manifest and causes peer BFQ weights to be checked conservatively. The target
 and root disk scheduler facts are included in the before/after IO snapshot.
 For a passing acknowledged dry-run, retain the printed
