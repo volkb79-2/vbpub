@@ -18,6 +18,7 @@ All notable changes to iobench are recorded here. Entries marked `cmru: generate
 ### Fixed
 - Make fio stop `io_size`-bounded jobs at their byte goal while retaining `--runtime` as a ceiling; invalidate the 2026-11-08 fill-rate figures.
 - Make the IBX study-day runbook stop on errors, restore previously active timers from an EXIT trap, and recheck the acknowledged target identity before formatting or wiping it.
+- **IBX IO-control snapshot on a real cgroup-v2 host (IOB-BL-46):** a control file the kernel does not provide (the root cgroup has no `io.max`/`io.weight`/`io.latency`; this kernel has no `io.latency` at all) now means "no setting" instead of refusing the run. Active `io.max`, non-default `io.weight`, any `io.latency` target (also on peers of the benchmark path), enabled `io.cost.qos` and a user `io.cost.model` still refuse, as do existing but unreadable or malformed files and a benchmark cgroup that cannot be enumerated. The kernel-managed `ctrl=auto model=linear` io.cost model is accepted. The partition discard probe reads `queue/discard_max_bytes` from the parent disk. The ACCEPTANCE section 1 script now records every check, continues after a failure and exits non-zero with a final summary.
 
 <!-- cmru: release history -->
 

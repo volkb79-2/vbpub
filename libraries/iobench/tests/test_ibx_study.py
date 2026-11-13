@@ -2690,6 +2690,11 @@ def test_io_control_snapshot_refuses_cgroup_that_cannot_be_enumerated(tmp_path):
         driver.io_control_snapshot(cgroup_root=root, cgroup_text=fixture["cgroup_text"])
 
 
+def test_io_control_snapshot_refuses_a_missing_cgroup_root_for_a_root_membership(tmp_path):
+    with pytest.raises(driver.StudyError, match="cannot enumerate benchmark cgroup .*absent"):
+        driver.io_control_snapshot(cgroup_root=tmp_path / "absent", cgroup_text="0::/\n")
+
+
 def test_io_control_snapshot_refuses_unenumerable_latency_peers(tmp_path, monkeypatch):
     root, fixture = materialize_real_cgroup_layout(tmp_path)
     original_iterdir = Path.iterdir
