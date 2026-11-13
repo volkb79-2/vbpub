@@ -2512,7 +2512,7 @@ def test_run_dry_run_validates_and_renders_without_writing(tmp_path):
 
 
 def test_stop_policy_documentation_maps_manifest_fields_to_run_options():
-    readme = (driver.HERE / "README.md").read_text(encoding="utf-8")
+    readme = " ".join((driver.HERE / "README.md").read_text(encoding="utf-8").split())
     mapping = {
         "memory_psi_full_avg10_max_percent": "--max-memory-psi",
         "min_memavailable_bytes": "--min-memavailable",
@@ -2523,7 +2523,7 @@ def test_stop_policy_documentation_maps_manifest_fields_to_run_options():
     }
     parser = driver.build_parser()
     run_parser = next(action.choices["run"] for action in parser._actions
-                      if "run" in getattr(action, "choices", {}))
+                      if "run" in (getattr(action, "choices", None) or {}))
     option_strings = run_parser._option_string_actions
     for policy_key, option in mapping.items():
         assert f"`{policy_key}` to `{option}`" in readme
