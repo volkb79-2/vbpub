@@ -626,7 +626,7 @@ def _copy_ignore(
         base = Path(directory)
         relative_dir = base.relative_to(source_root)
         for name in names:
-            output_parts = [bundle_prefix]
+            output_parts = [bundle_prefix] if bundle_prefix else []
             if relative_dir != Path("."):
                 output_parts.extend(relative_dir.parts)
             output_parts.append(name)
@@ -750,7 +750,9 @@ def create_archive(
         shutil.copytree(
             config.bundle_dir,
             temp_root / config.bundle_dir.name,
-            ignore=_copy_ignore(config, config.bundle_dir, config.bundle_dir.name),
+            # Keep entries are relative to the bundle root, without the archive
+            # member prefix used only when writing the final archive.
+            ignore=_copy_ignore(config, config.bundle_dir, ""),
         )
         shutil.make_archive(
             tarball_path.with_suffix("").with_suffix(""),
