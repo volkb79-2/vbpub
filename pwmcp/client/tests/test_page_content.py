@@ -273,6 +273,15 @@ def test_malformed_inline_css_policy_is_synchronized_across_user_docs() -> None:
         "Tokenization ignores string and nested function contents",
         "unclosed comment's remainder is checked as a malformed fragment",
         "An unescaped LF, CR, or FF inside a CSS string ends that malformed string",
+        "Invalid `display` or `visibility` values are ignored, so they cannot override an earlier valid declaration.",
+        "This filter recognizes only CSS Syntax whitespace: ASCII space, tab, LF, CR, and FF; other Unicode space-like characters remain inside property and value tokens.",
+        "Property names and keywords fold ASCII case only.",
+        "The filter does not admit `run-in`, `ruby-base`, `ruby-text`, `ruby-base-container`, or `ruby-text-container` to its visible-value allowlist.",
+        "For `display`, a winning unresolved `var()`, `inherit`, `revert`, or `revert-layer` fails closed; `initial` and `unset` map to visible `inline`.",
+        "For `visibility`, a winning unresolved `var()`, `inherit`, `unset`, `revert`, or `revert-layer` fails closed; `initial` maps to `visible`, and `collapse` is filtered as hidden.",
+        "These fail-closed choices may omit text a browser ultimately shows because serialized HTML cannot resolve custom properties or the external cascade.",
+        "CSS comments form token boundaries. If either comment removal or whitespace separation leaves a hiding value in force, PWMCP omits the element.",
+        "For example, `--d:none;display:var(--d)` remains hidden because this filter cannot resolve the custom property.",
         "CSS escapes in property names and hiding keyword values are decoded",
         "Outside strings, a backslash escape consumes the next code point",
     )
@@ -445,6 +454,113 @@ def test_inline_style_parsing_uses_declarations_comments_and_priority() -> None:
 
 
 @pytest.mark.parametrize(
+    "style",
+    [
+        "color:red",
+        "color: red; background: url(a.png) no-repeat",
+        'font-family: "Helvetica Neue", Arial, sans-serif',
+        'background-image:url("data:image/svg+xml;utf8,<svg xmlns=\'http://www.w3.org/2000/svg\'/>")',
+        "width:calc(100% - (2px + 3px));margin:0 auto",
+        'content:"\\201C";color:#333',
+        "font-family:\\5FAE \\8F6F\\96C5\\9ED1, sans-serif",
+        "background:url(a\\)b.png)",
+        "display:block",
+        "display:inline-block!important",
+        "visibility:visible",
+        "display:flex;display:none;display:block",
+        "--x:{a:b};color:red",
+        'grid-template-areas:"a b" "c d"',
+        "transition: opacity .3s ease-in-out, transform .3s",
+        "filter:progid:DXImageTransform.Microsoft.gradient(startColorstr='#80000000',endColorstr='#80000000')",
+        "color:red;",
+        "  ;;  color:blue ;;",
+        "COLOR:RED",
+        "margin:-1px 0 0 -1px;",
+        'content:"a\\\nb"',
+        'content:"\\"display:none\\""',
+        "content:'display:none'",
+        'font:12px/1.5 "A;B", serif',
+        "color:red;)",
+        'color:red;"x',
+        "color:rgb(1,2",
+        "color:red;/*",
+        "width:calc((1px + 2px)",
+        'content:"a\nb"',
+        'background:url("a\nb")',
+        'a:\\"x;color:red',
+        "a:\\(;color:red",
+        "color:red\\",
+        "\\",
+    ],
+)
+def test_ordinary_visible_inline_style_battery_stays_visible(style: str) -> None:
+    escaped_style = style.replace("'", "&#39;")
+    source = f"<p style='{escaped_style}'>S</p>"
+    result = _extraction(source, fmt="text")
+
+    assert result.content == "S", style
+    assert result.hidden_removed == 0, style
+
+
+@pytest.mark.parametrize(
+    "style",
+    [
+        "display:block", "display:inline", "display:flex", "display:grid", "display:table-cell",
+        "display:contents", "display:list-item", "display:inline-block", "display:inline-flex",
+        "display:inline-grid", "display:table", "display:inline-table", "display:table-row",
+        "display:table-caption", "display:flow-root", "display:ruby", "display:block flow",
+        "display:inline flow-root", "display:block flex", "display:inline grid", "display:list-item block",
+        "display:block flow-root list-item", "visibility:visible", "visibility:initial", "opacity:1",
+        "opacity:.5", "opacity:0.99", "font-size:12px", "font-size:0.9em", "color:red", "color:#fff",
+        "background:#000", "margin:0", "padding:0 auto", "width:100%", "height:0", "position:absolute",
+        "position:relative", "overflow:hidden", "text-indent:-9999px", "line-height:1.4", "text-align:center",
+        "float:left", "z-index:10", "transform:translateX(10px)", "DISPLAY:BLOCK", "Display: Inline-Block",
+        "display:block !important", "display : block", "display:  flex ;", "color:red;display:block;",
+        "display:flex;visibility:visible", "display:none;display:block", "display:none;display:flex",
+        "display:none;display:inline-block !important", "display:none;display:grid",
+        "visibility:hidden;visibility:visible", "  ", "", 'font-family:"A",serif', "background:url(x.png)",
+        r"d\69splay:block", r"display:\62lock", r"display:bl\6fck", "color:red;/*c*/background:blue",
+        "display:/*c*/block", "display:block/*c*/", "display:initial", "display:unset",
+        "visibility:inherit-not-real-but-ignored",
+    ],
+)
+def test_review_70_ordinary_inline_styles_stay_visible(style: str) -> None:
+    result = _extraction(f'<p style="{escape(style, quote=True)}">content</p>', fmt="text")
+
+    assert result.content == "content", style
+    assert result.hidden_removed == 0, style
+
+
+@pytest.mark.parametrize(
+    "style",
+    [
+        "display:none", "display:none !important", "DISPLAY:NONE", "display : none", "display:none;",
+        "display:none;color:red", "color:red;display:none", "visibility:hidden", "VISIBILITY:HIDDEN",
+        "visibility:collapse", "visibility:hidden !important", r"d\69splay:none", r"display:\6e one",
+        r"display:n\6fne", "dis/**/play:n/**/o/**/ne", "display:block;display:none",
+        "visibility:visible;visibility:hidden", "display:none !important;display:block",
+        "visibility:hidden!important;visibility:visible", "display:none;display:block invalid",
+        "display:none;display:run-in", "display:none;display:ruby-base", "display:none;display:block\u00a0",
+        "display:none;display:bloc\u212a", "display:none;display:inline-bloc\u212a",
+        r"display:none;display:bloc\212a", "visibility:hidden;visibility:collapse",
+        "display:none;display:var(--x)", "display:none;display:inherit", "visibility:hidden;visibility:unset",
+        "display:none;display:", "display:none;display:bogus", "display:none;display:block !bogus",
+        "display:none !important;display:block !bogus", 'display:none;color:red;broken',
+        'display:none;content:"unfinished', "a:b);display:none", "display:none;content:'x",
+        "display:none(a(b) c", "visibility:hidden;visibility:visible invalid", "display:none;display:inline inline",
+        "display:none;display:block block", "display:none;display:list-item list-item",
+        "visibility:hidden;visibility:visible visible", "display:none;display:block\\",
+        'display:none;display:"block"', "display:none;display:block;;display:none",
+    ],
+)
+def test_review_47_hidden_inline_styles_stay_hidden(style: str) -> None:
+    result = _extraction(f'<p style="{escape(style, quote=True)}">hidden content</p>', fmt="text")
+
+    assert result.content == ""
+    assert result.hidden_removed == 1
+
+
+@pytest.mark.parametrize(
     ("style", "expected_parts", "expected_declarations"),
     [
         pytest.param(
@@ -552,7 +668,7 @@ def test_bad_string_fragment_checks_have_linear_work(monkeypatch) -> None:
     style = ('content:"x\n' * 512) + ";display:none"
     fragment_characters = 0
 
-    def count_fragment(fragment: str) -> bool:
+    def count_fragment(fragment: str, _comment_separator: str = "") -> bool:
         nonlocal fragment_characters
         fragment_characters += len(fragment)
         return False
@@ -563,6 +679,28 @@ def test_bad_string_fragment_checks_have_linear_work(monkeypatch) -> None:
     assert page_content._declarations_hide(recovered)
     assert not malformed_hiding_signal
     assert fragment_characters <= 3 * len(style)
+
+
+def test_one_megabyte_hostile_style_attribute_is_measured_without_a_timing_limit(capsys) -> None:
+    import time
+
+    target_bytes = 1_048_576
+    tail = ";display:none"
+    pattern = 'content:"x\n'
+    prefix_size = target_bytes - len(tail)
+    style = pattern * (prefix_size // len(pattern))
+    style += "x" * (prefix_size - len(style))
+    style += tail
+    assert len(style.encode("utf-8")) == target_bytes
+
+    started = time.perf_counter()
+    result = _extraction(f"<p style='{style}'>hostile content</p>", fmt="text")
+    elapsed = time.perf_counter() - started
+
+    with capsys.disabled():
+        print(f"PWMCP hostile style measurement: bytes={target_bytes} seconds={elapsed:.6f}")
+    assert result.content == ""
+    assert result.hidden_removed == 1
 
 
 def test_malformed_hidden_style_on_parent_removes_its_child_subtree() -> None:
@@ -642,6 +780,226 @@ def test_inline_style_important_case_and_placement_follow_css_priority(
 
     assert result.content == ("" if hidden else "content"), style
     assert result.hidden_removed == (1 if hidden else 0), style
+
+
+@pytest.mark.parametrize(
+    "style",
+    [
+        pytest.param("display:none;display:block invalid", id="invalid-display-value"),
+        pytest.param("display:none;display:", id="empty-display-value"),
+        pytest.param("display:none;display:unknown", id="unknown-display-value"),
+        pytest.param("display:none;display:block inline", id="invalid-display-keyword-pair"),
+        pytest.param("display:none;display:grid list-item", id="invalid-list-item-pair"),
+        pytest.param("display:none;display:block flow flow", id="duplicate-display-keyword"),
+        pytest.param("display:none;display:block flow ruby", id="invalid-display-keyword-triple"),
+        pytest.param("visibility:hidden;visibility:visible invalid", id="invalid-visibility-value"),
+        pytest.param("display:var(--computed-display)", id="unresolved-display-variable"),
+        pytest.param("visibility:var(--computed-visibility)", id="unresolved-visibility-variable"),
+        pytest.param(
+            "display:var(--computed-display);--computed-display:none",
+            id="custom-property-computes-display-none",
+        ),
+        pytest.param(
+            "visibility:var(--computed-visibility);--computed-visibility:hidden",
+            id="custom-property-computes-visibility-hidden",
+        ),
+        pytest.param("--d:none;display:var(--d)", id="custom-property-hide-injection-pattern"),
+        pytest.param("display:none;display:inherit", id="unresolved-display-inheritance"),
+        pytest.param("display:none;display:revert-layer", id="unresolved-display-revert-layer"),
+        pytest.param("visibility:hidden;visibility:unset", id="unresolved-visibility-unset"),
+        pytest.param("visibility:hidden;visibility:collapse", id="visibility-collapse"),
+    ],
+)
+def test_invalid_or_unresolved_later_hiding_values_fail_closed(style: str) -> None:
+    result = _extraction(f"<p style='{style}'>hidden content</p>", fmt="text")
+
+    assert result.content == ""
+    assert result.hidden_removed == 1
+
+
+@pytest.mark.parametrize(
+    ("style", "hidden"),
+    [
+        pytest.param(r"display:none;display:block\9", True, id="escaped-tab-suffix"),
+        pytest.param(r"display:none;display:block\20 flow", True, id="escaped-space-inside-ident"),
+        pytest.param(r"display:none;display:block\a flow", True, id="escaped-lf-inside-ident"),
+        pytest.param(r"display:none;display:\9 block", True, id="escaped-tab-prefix"),
+        pytest.param(r"display:none;display:inline\9 flex", True, id="escaped-tab-in-pair"),
+        pytest.param(r"display:none;display:block\A ", True, id="escaped-uppercase-lf-with-terminator"),
+        pytest.param(r"display:none;display:block\0009 ", True, id="escaped-padded-tab-with-terminator"),
+        pytest.param(r"display:none;display:block\20", True, id="escaped-space-at-end"),
+        pytest.param(r"display:none;display:block\ ", True, id="simple-escaped-space"),
+        pytest.param(r"display:none;display:block\ flow", True, id="simple-escaped-space-inside-ident"),
+        pytest.param("display:none;display:block\\\tflow", True, id="simple-escaped-tab-inside-ident"),
+        pytest.param(r"display:none;display:list-item\9", True, id="escaped-tab-after-list-item"),
+        pytest.param(r"DISPLAY:NONE;DISPLAY:BLOCK\9", True, id="uppercase-escaped-tab"),
+        pytest.param(r"display:none;display:b\6c ock", False, id="escaped-real-letter-control"),
+        pytest.param(r"visibility:hidden;visibility:vis\9ible", True, id="visibility-escaped-tab"),
+        pytest.param("display:none;display:bl/**/ock", True, id="comment-splits-display-keyword"),
+        pytest.param("display:none;display:b/**/l/**/ock", True, id="multiple-comments-split-value"),
+        pytest.param("visibility:hidden;visibility:vis/**/ible", True, id="comment-splits-visibility-keyword"),
+        pytest.param("display:none;di/**/splay:block", True, id="comment-splits-property-name"),
+        pytest.param("display:none;di/**/splay:bl/**/ock", True, id="comments-split-property-and-value"),
+        pytest.param("DISPLAY:NONE;DISPLAY:BL/**/OCK", True, id="uppercase-comment-split-value"),
+        pytest.param(
+            'display:none;display:bl/**/ock;content:"x',
+            True,
+            id="comment-split-in-recovery-path",
+        ),
+        pytest.param(
+            "display:none;display:block/**/!important",
+            False,
+            id="comment-before-important-keeps-visible-override",
+        ),
+        pytest.param("display:block/**/flow", False, id="comment-boundary-visible-pair-without-prior-hide"),
+    ],
+)
+def test_escaped_whitespace_and_comment_splits_do_not_expose_hidden_text(
+    style: str,
+    hidden: bool,
+) -> None:
+    result = _extraction(f'<p style="{escape(style, quote=True)}">content</p>', fmt="text")
+
+    assert result.content == ("" if hidden else "content"), style
+    assert result.hidden_removed == (1 if hidden else 0), style
+
+
+@pytest.mark.parametrize(
+    "style",
+    [
+        pytest.param("display:none;display:block\u00a0", id="display-nbsp-suffix"),
+        pytest.param("display:none;display:block\u2028", id="display-line-separator-suffix"),
+        pytest.param("display:none;display:block\u0085", id="display-next-line-suffix"),
+        pytest.param("display:none;display:block\u00a0flow", id="display-nbsp-does-not-split-keywords"),
+        pytest.param("display:none;display\u00a0:block", id="display-name-nbsp"),
+        pytest.param("visibility:hidden;visibility:visible\u00a0", id="visibility-nbsp-suffix"),
+        pytest.param("visibility:hidden;visibility:visible\u2028", id="visibility-line-separator-suffix"),
+        pytest.param("visibility:hidden;visibility:visible\u0085", id="visibility-next-line-suffix"),
+        pytest.param("visibility:hidden;visibility\u00a0:visible", id="visibility-name-nbsp"),
+    ],
+)
+def test_non_css_unicode_whitespace_cannot_override_a_hidden_winner(style: str) -> None:
+    result = _extraction(f"<p style='{style}'>hidden content</p>", fmt="text")
+
+    assert result.content == ""
+    assert result.hidden_removed == 1
+
+
+@pytest.mark.parametrize(
+    "value,hidden",
+    [
+        pytest.param("blocK", True, id="kelvin-sign-block"),
+        pytest.param("inline-blocK", True, id="kelvin-sign-inline-block"),
+        pytest.param("bloc\\212a", True, id="escaped-kelvin-sign-block"),
+        pytest.param("BLOCK", False, id="ascii-uppercase-block-still-overrides"),
+    ],
+)
+def test_css_keywords_fold_ascii_case_only(value: str, hidden: bool) -> None:
+    result = _extraction(f"<p style='display:none;display:{value}'>content</p>", fmt="text")
+
+    assert result.content == ("" if hidden else "content")
+    assert result.hidden_removed == (1 if hidden else 0)
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        pytest.param("run-in", id="run-in"),
+        pytest.param("ruby-base", id="ruby-base"),
+        pytest.param("ruby-text", id="ruby-text"),
+        pytest.param("ruby-base-container", id="ruby-base-container"),
+        pytest.param("ruby-text-container", id="ruby-text-container"),
+    ],
+)
+def test_non_interoperable_display_value_cannot_override_a_hidden_winner(value: str) -> None:
+    result = _extraction(
+        f"<p style='display:none;display:{value}'>hidden content</p>",
+        fmt="text",
+    )
+
+    assert result.content == ""
+    assert result.hidden_removed == 1
+
+
+@pytest.mark.parametrize(
+    "style",
+    [
+        pytest.param("visibility:collapse", id="collapse-alone"),
+        pytest.param("visibility:visible;visibility:collapse", id="collapse-over-visible"),
+    ],
+)
+def test_visibility_collapse_is_hidden_without_a_prior_hidden_value(style: str) -> None:
+    result = _extraction(f"<p style='{style}'>collapsed content</p>", fmt="text")
+
+    assert result.content == ""
+    assert result.hidden_removed == 1
+
+
+def test_visibility_collapse_prunes_a_table_row_and_its_cells() -> None:
+    source = (
+        "<table><tr style='visibility:collapse'><td>collapsed cell</td></tr>"
+        "<tr><td>visible cell</td></tr></table>"
+    )
+
+    result = _extraction(source, fmt="text")
+
+    assert result.content == "visible cell"
+    assert result.hidden_removed == 1
+
+
+@pytest.mark.parametrize(
+    "style",
+    [
+        pytest.param("display:none;display:block flow", id="outside-inside-pair"),
+        pytest.param("display:none;display:flow list-item", id="inside-list-item-pair"),
+        pytest.param("display:none;display:block flow list-item", id="outside-inside-list-item"),
+        pytest.param("display:none;display:inline-block", id="legacy-inline-block"),
+        pytest.param("display:none;display:initial", id="display-initial"),
+        pytest.param("display:none;display:unset", id="display-unset"),
+        pytest.param("visibility:hidden;visibility:initial", id="visibility-initial"),
+    ],
+)
+def test_valid_visible_hiding_property_values_still_override(style: str) -> None:
+    result = _extraction(f"<p style='{style}'>visible content</p>", fmt="text")
+
+    assert result.content == "visible content"
+    assert result.hidden_removed == 0
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "block", "inline", "flow", "flow-root", "table", "flex", "grid", "ruby", "contents",
+        "list-item", "inline-block", "inline-table", "inline-flex", "inline-grid",
+        "table-row-group", "table-header-group", "table-footer-group", "table-row",
+        "table-cell", "table-caption",
+        "block flex", "inline flex", "block grid", "inline grid", "block table", "inline table",
+        "inline flow", "block flow-root", "inline flow-root", "block ruby", "inline ruby",
+        "block list-item", "inline list-item", "list-item flow-root",
+        "inline flow list-item", "inline flow-root list-item",
+    ],
+)
+def test_every_valid_static_display_value_overrides_an_earlier_hide(value: str) -> None:
+    result = _extraction(f"<p style='display:none;display:{value}'>visible content</p>", fmt="text")
+
+    assert result.content == "visible content"
+    assert result.hidden_removed == 0
+
+
+@pytest.mark.parametrize(
+    "style",
+    [
+        pytest.param("visibility:hidden;visibility:visible", id="visibility-visible-after-hidden"),
+        pytest.param("visibility:collapse;visibility:visible", id="visibility-visible-after-collapse"),
+        pytest.param("display:block;display:foo(x)", id="invalid-display-function-is-ignored"),
+        pytest.param("visibility:visible;visibility:foo(x)", id="invalid-visibility-function-is-ignored"),
+    ],
+)
+def test_visible_cascade_outcomes_are_not_hidden_by_invalid_or_visible_overrides(style: str) -> None:
+    result = _extraction(f"<p style='{style}'>visible content</p>", fmt="text")
+
+    assert result.content == "visible content"
+    assert result.hidden_removed == 0
 
 
 def test_inline_style_priority_marker_at_value_start_is_parsed_as_empty_important_value() -> None:
@@ -862,4 +1220,286 @@ def test_hidden_pruning_counts_one_per_hidden_element_not_per_descendant() -> No
     result = _extraction(source, fmt="text")
 
     assert result.content == "kept"
+    assert result.hidden_removed == 1
+
+
+def test_extraction_record_is_immutable() -> None:
+    from dataclasses import FrozenInstanceError
+
+    from pwmcp_client.page_content import Extraction
+
+    extraction = Extraction("content")
+    with pytest.raises(FrozenInstanceError):
+        extraction.content = "changed"
+
+
+def test_parser_decodes_character_references_in_visible_text() -> None:
+    assert _extract("<p>R&amp;D &copy; &#x1f642;</p>", fmt="text") == "R&D © 🙂"
+
+
+def test_boolean_aria_hidden_attribute_without_value_remains_readable() -> None:
+    assert _extract("<p aria-hidden>visible</p>", fmt="text") == "visible"
+
+
+def test_css_comment_stripper_preserves_escaped_quote_before_closing_quote() -> None:
+    from pwmcp_client.page_content import _strip_css_comments
+
+    style = r'content:"a\"";display:none'
+
+    assert _strip_css_comments(style) == style
+
+
+def test_css_comment_stripper_preserves_ordinary_escaped_character_in_string() -> None:
+    from pwmcp_client.page_content import _strip_css_comments
+
+    style = r'content:"x\y";color:red'
+
+    assert _strip_css_comments(style) == style
+
+
+def test_css_comment_stripper_does_not_close_on_an_escaped_quote() -> None:
+    from pwmcp_client.page_content import _strip_css_comments
+
+    style = r'content:"a\"b";display:none'
+
+    assert _strip_css_comments(style) == style
+
+
+def test_css_comment_stripper_preserves_escaped_crlf_inside_string() -> None:
+    from pwmcp_client.page_content import _strip_css_comments
+
+    style = 'content:"a' + "\\" + "\r\n" + 'b";display:none'
+
+    assert _strip_css_comments(style) == style
+
+
+def test_css_comment_stripper_rejects_newline_after_escaped_character() -> None:
+    from pwmcp_client.page_content import _strip_css_comments
+
+    style = 'content:"a' + "\\x" + "\n" + 'b";display:none'
+
+    assert _strip_css_comments(style) is None
+
+
+def test_css_comment_stripper_preserves_escaped_cr_without_lf() -> None:
+    from pwmcp_client.page_content import _strip_css_comments
+
+    style = 'content:"a' + "\\" + "\r" + '";display:none'
+
+    assert _strip_css_comments(style) == style
+
+
+def test_css_comment_stripper_rejects_trailing_escaped_cr() -> None:
+    from pwmcp_client.page_content import _strip_css_comments
+
+    style = 'content:"a' + "\\" + "\r"
+
+    assert _strip_css_comments(style) is None
+
+
+def test_css_comment_stripper_rejects_unclosed_quote() -> None:
+    from pwmcp_client.page_content import _strip_css_comments
+
+    assert _strip_css_comments('content:"unfinished') is None
+
+
+def test_css_split_keeps_balanced_function_declaration_boundary() -> None:
+    from pwmcp_client.page_content import _split_css
+
+    assert _split_css("background:var(--note);display:none", ";") == [
+        "background:var(--note)",
+        "display:none",
+    ]
+
+
+def test_css_split_preserves_escaped_cr_without_lf() -> None:
+    from pwmcp_client.page_content import _split_css
+
+    first = 'content:"a' + "\\" + "\r" + '"'
+
+    assert _split_css(first + ";display:none", ";") == [first, "display:none"]
+
+
+def test_css_split_rejects_newline_after_escaped_character() -> None:
+    from pwmcp_client.page_content import _split_css
+
+    style = 'content:"a' + "\\x" + "\n" + 'b";display:none'
+
+    assert _split_css(style, ";") is None
+
+
+def test_css_split_rejects_trailing_escaped_cr() -> None:
+    from pwmcp_client.page_content import _split_css
+
+    style = 'content:"a' + "\\" + "\r"
+
+    assert _split_css(style, ";") is None
+
+
+def test_css_decoder_replaces_last_surrogate_and_accepts_maximum_codepoint() -> None:
+    from pwmcp_client.page_content import _decode_css_escapes
+
+    assert _decode_css_escapes(r"\10ffff") == chr(0x10FFFF)
+    assert _decode_css_escapes(r"\dfff") == "\ufffd"
+
+
+def test_css_decoder_consumes_a_trailing_carriage_return_escape_whitespace() -> None:
+    from pwmcp_client.page_content import _decode_css_escapes
+
+    assert _decode_css_escapes(r"\41" + "\r") == "A"
+
+
+def test_recovery_handles_trailing_escaped_cr_without_index_error() -> None:
+    from pwmcp_client.page_content import _recover_malformed_style
+
+    style = 'content:"x' + "\\" + "\r"
+
+    assert _recover_malformed_style(style) == ({}, False)
+
+
+def test_recovery_keeps_unclosed_string_across_escaped_crlf() -> None:
+    from pwmcp_client.page_content import _style_is_hidden
+
+    style = 'content:"x' + "\\" + "\r\n;display:none"
+
+    assert not _style_is_hidden(style)
+
+
+def test_recovery_finds_hiding_declaration_after_bad_string_lone_cr() -> None:
+    from pwmcp_client.page_content import _style_is_hidden
+
+    assert _style_is_hidden('content:"x\r;display:none')
+
+
+def test_recovery_handles_bad_string_trailing_cr_without_index_error() -> None:
+    from pwmcp_client.page_content import _style_is_hidden
+
+    assert not _style_is_hidden('content:"x\r')
+
+
+def test_unmatched_close_does_not_hide_a_later_css_declaration() -> None:
+    result = _extraction('<p style="a:b);display:none">content</p>', fmt="text")
+
+    assert result.content == ""
+    assert result.hidden_removed == 1
+
+
+def test_recovery_finds_hidden_marker_before_a_later_unclosed_function() -> None:
+    result = _extraction(
+        '<p style="background:rgb(1,2,3);display:none(foo">content</p>',
+        fmt="text",
+    )
+
+    assert result.content == ""
+    assert result.hidden_removed == 1
+
+
+def test_recovery_keeps_hidden_marker_after_nested_close_before_unclosed_function() -> None:
+    result = _extraction(
+        "<p style='display:none(a(b) c'>content</p>",
+        fmt="text",
+    )
+
+    assert result.content == ""
+    assert result.hidden_removed == 1
+
+
+def test_unmatched_close_cannot_swallow_a_later_hidden_declaration() -> None:
+    style = "color:red);display:none;fallback:("
+    result = _extraction(f'<p style="{escape(style, quote=True)}">content</p>', fmt="text")
+
+    assert result.content == ""
+    assert result.hidden_removed == 1
+
+
+def test_recovery_does_not_lose_a_hidden_declaration_after_an_escaped_character() -> None:
+    style = r'content:"a\b";display:none;broken'
+    result = _extraction(f"<p style='{style}'>content</p>", fmt="text")
+
+    assert result.content == ""
+    assert result.hidden_removed == 1
+
+
+def test_invalid_priority_suffix_cannot_override_important_hidden_declaration() -> None:
+    result = _extraction(
+        "<p style='display:none !important;display:block !bogus'>content</p>",
+        fmt="text",
+    )
+
+    assert result.content == ""
+    assert result.hidden_removed == 1
+
+
+def test_br_is_a_normal_flow_boundary_around_collapsible_whitespace() -> None:
+    assert _extract("<p>a <br> b</p>", fmt="text") == "a\nb"
+
+
+def test_preformatted_spaces_survive_plain_extraction() -> None:
+    assert _extract("<pre>  first\n    second</pre>", fmt="text") == "  first\n    second"
+
+
+def test_normal_plain_text_collapses_whitespace_during_extraction() -> None:
+    assert _extract("<p>wrapped\n    line</p>", fmt="text") == "wrapped line"
+
+
+def test_table_cell_separator_collapses_whitespace_around_cell_text() -> None:
+    source = "<table><tr><td>a </td><td> b</td></tr></table>"
+
+    assert _extract(source, fmt="text") == "a b"
+
+
+def test_text_normalizes_whitespace_between_adjacent_inline_nodes() -> None:
+    assert _extract("<p><span>a </span><span> b</span></p>", fmt="text") == "a b"
+
+
+def test_table_renderer_ignores_text_children_between_cells() -> None:
+    assert _extract("<table><tr>stray<td>cell</td></tr></table>", fmt="markdown") == "cell"
+
+
+def test_extract_content_default_does_not_drop_page_chrome() -> None:
+    from pwmcp_client.page_content import extract_content
+
+    source = "<nav>Navigation</nav><p>Page body</p>"
+
+    assert extract_content(source, fmt="text", base_url=URL) == "Navigation\nPage body"
+
+
+def test_extract_page_default_does_not_drop_page_chrome() -> None:
+    from pwmcp_client.page_content import extract_page
+
+    source = "<header>Site header</header><nav>Navigation</nav><p>Page body</p><footer>Site footer</footer>"
+
+    result = extract_page(source, fmt="text", base_url=URL)
+
+    assert "Site header" in result.content
+    assert "Navigation" in result.content
+    assert "Page body" in result.content
+    assert "Site footer" in result.content
+
+
+def test_self_closing_anchor_keeps_its_link_target() -> None:
+    assert _extract('<a href="/target"/>', fmt="links") == (
+        "- https://example.test/target (https://example.test/target)"
+    )
+
+
+def test_css_decoder_keeps_non_lf_after_a_lone_carriage_return_escape() -> None:
+    from pwmcp_client.page_content import _decode_css_escapes
+
+    assert _decode_css_escapes(r"\41" + "\rB") == "AB"
+
+
+def test_recovery_keeps_a_hidden_declaration_after_escaped_carriage_return() -> None:
+    style = 'content:"x' + "\\" + "\r" + '";display:none;broken'
+    result = _extraction(f'<p style="{escape(style, quote=True)}">content</p>', fmt="text")
+
+    assert result.content == ""
+    assert result.hidden_removed == 1
+
+
+def test_recovery_finds_hidden_declaration_after_escaped_character_then_bad_lf() -> None:
+    style = 'content:"x' + "\\q\n" + ";display:none"
+    result = _extraction(f'<p style="{escape(style, quote=True)}">content</p>', fmt="text")
+
+    assert result.content == ""
     assert result.hidden_removed == 1
