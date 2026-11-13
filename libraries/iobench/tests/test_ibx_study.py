@@ -2542,7 +2542,10 @@ def test_acceptance_runbook_pins_the_expected_host_before_proceeding(tmp_path):
     raw_idle = re.search(r"(?ms)^assert_raw_idle\(\) \{\n(.*?)^\}", acceptance)
     assert raw_idle is not None
     assert raw_idle.group(1).lstrip().startswith("assert_expected_host")
-    rollback = acceptance.split("## Rollback", 1)[1]
+    rollback_section = acceptance.split("## Rollback", 1)[1]
+    rollback_script = re.search(r"(?ms)^```bash\n(.*?)^```", rollback_section)
+    assert rollback_script is not None
+    rollback = rollback_script.group(1)
     assert rollback.index("assert_expected_host") < rollback.index('host-escape -- umount "$MOUNT"')
     assert rollback.index('host-escape -- umount "$MOUNT"') < rollback.index("assert_raw_idle")
     assert rollback.index("assert_raw_idle") < rollback.index('host-escape -- wipefs')
