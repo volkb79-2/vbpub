@@ -7,7 +7,12 @@ from fleetd.facts import load_facts_config
 
 
 PROJECT = Path(__file__).parents[1]
-PUBLIC_DOCS = [PROJECT / "README.md", PROJECT / "docs" / "DESIGN-GUIDE.md", PROJECT / "docs" / "CONSUMERS.md"]
+PUBLIC_DOCS = [
+    PROJECT / "README.md",
+    PROJECT / "docs" / "SPEC.md",
+    PROJECT / "docs" / "DESIGN-GUIDE.md",
+    PROJECT / "docs" / "CONSUMERS.md",
+]
 
 
 def _slug(heading):
