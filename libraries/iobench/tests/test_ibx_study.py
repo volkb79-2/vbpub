@@ -1468,6 +1468,10 @@ def test_local_quiet_window_and_fsync_wrapper_are_mocked(tmp_path, monkeypatch):
     proc.write_text("0::/system.slice/other.scope\n", encoding="utf-8")
     with pytest.raises(driver.StudyError, match="requires execution inside one Docker cgroup scope"):
         host.current_container_id()
+    proc.write_text("0::/system.slice/docker-" + "a" * 64 + ".scope/docker-" + "b" * 64 + ".scope\n",
+                    encoding="utf-8")
+    with pytest.raises(driver.StudyError, match="requires execution inside one Docker cgroup scope"):
+        host.current_container_id()
     proc.write_text("0::/system.slice/docker-" + "a" * 64 + ".scope\n", encoding="utf-8")
     monkeypatch.delenv("CGROUP_PARENT_DEV_BACKGROUND", raising=False)
     with pytest.raises(driver.StudyError, match="requires CGROUP_PARENT"):
@@ -2066,6 +2070,28 @@ class FakeProcess:
 
     def communicate(self):
         return self.output, "fake stderr"
+
+
+def test_fio_json_output_is_a_command_line_option_not_a_job_file_option(tmp_path, monkeypatch):
+    # fio 3.39 rejects `output-format` in a job file ("Bad option <output-format=json>",
+    # exit 1); it is accepted only on the command line. Verified by running the rendered
+    # jobs through `fio --parse-only`.
+    template = driver.JOB_TEMPLATE.read_text(encoding="utf-8")
+    assert "output-format" not in template
+    for rung in ("veryquick", "quick", "standard"):
+        for job in driver.rung_jobs(rung):
+            rendered = driver.render_job(job, target="/dev/fake", offset=0, size=driver.GIB,
+                                         log_prefix="/out/log")
+            assert "output-format" not in rendered
+    argvs = []
+
+    def popen(argv, **kwargs):
+        argvs.append(argv)
+        return FakeProcess()
+
+    monkeypatch.setattr(driver.subprocess, "Popen", popen)
+    driver.LocalHost().execute_fio(tmp_path / "job.fio", 5, lambda: None)
+    assert argvs == [["fio", "--output-format=json", str(tmp_path / "job.fio")]]
 
 
 def test_local_execute_fio_completion_timeout_errors_and_cleanup(tmp_path, monkeypatch):
@@ -2882,13 +2908,23 @@ def test_io_control_snapshot_accepts_present_but_inactive_controls(tmp_path):
     }
 
 
+def test_io_control_snapshot_ignores_a_peer_bfq_weight_like_a_peer_io_weight(tmp_path):
+    # systemd gives peer slices their own weights (io.weight default 50 on the real host);
+    # a peer's BFQ weight is equally normal and is not an IO limit on the benchmark path.
+    root, fixture = materialize_real_cgroup_layout(tmp_path)
+    before = driver.io_control_snapshot(cgroup_root=root, cgroup_text=fixture["cgroup_text"])
+    (root / "cgprofile.slice/io.bfq.weight").write_text(
+        "default 50\n254:0 200\n", encoding="utf-8")
+    assert driver.io_control_snapshot(
+        cgroup_root=root, cgroup_text=fixture["cgroup_text"]) == before
+
+
 @pytest.mark.parametrize(
     ("relative", "filename", "contents", "message"),
     [
         ("system.slice", "io.max", "254:0 rbps=100\n", "active io.max limit"),
         ("system.slice", "io.weight", "default 50\n", "non-default io.weight"),
         ("system.slice", "io.bfq.weight", "default 100\n254:0 200\n", "non-default io.bfq.weight"),
-        ("cgprofile.slice", "io.bfq.weight", "default 100\n254:0 200\n", "non-default io.bfq.weight"),
         ("system.slice", "io.latency", "254:0 target=1000\n", "active io.latency"),
         ("cgprofile.slice", "io.latency", "254:0 target=1000\n", "active io.latency"),
         (".", "io.cost.qos", "254:0 enable=1 ctrl=auto\n", "active io.cost.qos limit"),

@@ -387,10 +387,9 @@ the benchmark cgroup and its ancestors. A kernel or cgroup that omits an optiona
 file has no setting there, so the dry-run can pass that layout; an existing
 unreadable or malformed control, an active `io.max`, a non-default
 `io.weight`, non-default `io.bfq.weight`, enabled io.cost QoS, or a user/custom
-io.cost model still refuses. Because `io.latency` can throttle peer groups and
-BFQ weights affect sibling shares, the driver also enumerates the benchmark's
-direct peers at each level of its cgroup path and refuses active latency
-targets or non-default BFQ weights on every check. Peer membership is excluded from
+io.cost model still refuses. Because `io.latency` can throttle peer groups, the driver also enumerates the benchmark's direct peers at each level
+of its cgroup path and refuses active latency targets on every check; peer
+weights are not judged. Peer membership is excluded from
 before/after equality because systemd services and containers can come and go.
 Missing optional files mean no setting, and benchmark-chain values are
 compared before and after a cell-set. The

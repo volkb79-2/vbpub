@@ -670,7 +670,7 @@ def _validate_io_bfq_weight_inactive(text: str, path: Path) -> None:
 
 
 def _io_latency_peer_paths(directories: list[Path]) -> list[Path]:
-    """Return direct peers whose latency targets or BFQ weights can affect the benchmark."""
+    """Return direct peers whose io.latency targets can affect the benchmark."""
     peers: set[Path] = set()
     for directory in directories[1:]:
         parent = directory.parent
@@ -752,10 +752,10 @@ def io_control_snapshot(*, cgroup_root: Path = Path("/sys/fs/cgroup"),
     Control files absent from a kernel or cgroup have no setting. Existing files
     are read and recorded so the before/after comparison detects changes. The
     benchmark cgroup and every ancestor must still be present and enumerable.
-    io.latency and io.bfq.weight can affect sibling shares, so direct peer
-    groups at each level of the benchmark path are checked on every call. Their
-    membership is not included in the compared snapshot because services can
-    come and go.
+    io.latency can throttle sibling groups, so direct peer groups at each level
+    of the benchmark path are checked for it on every call. Their membership is
+    not included in the compared snapshot because services can come and go.
+    io.bfq.weight is judged like io.weight: on the root and benchmark path only.
     """
     if cgroup_text is None:
         membership = Path("/proc/self/cgroup")
@@ -779,7 +779,9 @@ def io_control_snapshot(*, cgroup_root: Path = Path("/sys/fs/cgroup"),
     latency_peers = _io_latency_peer_paths(dirs)
     latency_values: dict[Path, str | None] = {}
     benchmark_chain = set(dirs)
-    bfq_checked_dirs = {cgroup_root, *dirs, *latency_peers}
+    # Weights only shape shares; like io.weight, only the benchmark path is judged. A
+    # peer's systemd-assigned weight is normal and must not refuse the study.
+    bfq_checked_dirs = {cgroup_root, *dirs}
     bfq_values: dict[Path, str | None] = {}
     for directory in bfq_checked_dirs:
         path = directory / "io.bfq.weight"
@@ -1815,7 +1817,8 @@ class LocalHost:
     def execute_fio(self, job_path: Path, runtime_s: int,
                     sample: Callable[[], None]) -> tuple[dict[str, Any], float]:
         try:
-            proc = subprocess.Popen(["fio", str(job_path)], stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            proc = subprocess.Popen(["fio", "--output-format=json", str(job_path)],
+                                    stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                     text=True, close_fds=True)
         except OSError as exc:
             raise StudyError(f"cannot start fio: {exc}") from exc

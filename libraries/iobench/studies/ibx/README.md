@@ -94,9 +94,9 @@ or changing before/after a run is still detected. Existing unreadable or
 malformed files refuse. The guard refuses numeric `io.max` limits,
 non-default `io.weight` or `io.bfq.weight`, enabled `io.cost.qos`, and a user/custom
 `io.cost.model`; the kernel-managed `ctrl=auto model=linear` model is allowed.
-`io.latency` can throttle peers and BFQ weights affect sibling shares, so the
-driver enumerates direct peers at each level of its cgroup path and refuses
-active values on every check. Peer membership is not included in before/after equality because
+`io.latency` can throttle peers, so the driver enumerates direct peers at each
+level of its cgroup path and refuses an active latency target on every check
+(peer `io.weight` and `io.bfq.weight` are not judged). Peer membership is not included in before/after equality because
 services and containers can come and go during a study. Other siblings'
 `io.max` caps are not inherited by the benchmark cgroup. This lets the study run on
 kernels that omit optional controls while retaining refusals for active limits

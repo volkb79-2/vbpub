@@ -384,10 +384,11 @@ is recorded alongside present values so the before/after check detects a
 control appearing or changing. An existing but unreadable or malformed file
 refuses. `io.max` entries are inactive only when every per-device value is
 `max`; `io.weight` and `io.bfq.weight` must report default 100 with no active
-device override. Because `io.latency` can throttle peers and BFQ weights affect
-sibling shares, the snapshot also enumerates sibling cgroups at each level of
-the benchmark path and refuses active latency targets or non-default BFQ
-weights there; those peer controls are checked on every snapshot call. Peer membership is not part
+device override. Because `io.latency` can throttle peers, the snapshot also enumerates
+sibling cgroups at each level of the benchmark path and refuses active latency
+targets there; those peer controls are checked on every snapshot call. Peer
+weights (`io.weight`, `io.bfq.weight`) are not judged, because systemd assigns
+them to peer slices and they are not limits on the benchmark path. Peer membership is not part
 of before/after equality because systemd services and containers can come and
 go during a study. Missing optional files mean no setting. Root `io.cost.qos`
 must be disabled, and the built-in

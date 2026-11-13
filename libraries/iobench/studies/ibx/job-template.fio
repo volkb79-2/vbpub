@@ -15,7 +15,6 @@ write_bw_log={{LOG_PREFIX}}
 write_iops_log={{LOG_PREFIX}}
 log_avg_msec=1000
 group_reporting=1
-output-format=json
 percentile_list=50:90:95:99:99.9
 
 [{{NAME}}]
