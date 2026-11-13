@@ -256,8 +256,9 @@ hostnames and addresses.
 ## Rollback
 
 Copy and verify the evidence first. Then unmount only the exact Btrfs target;
-repeat the identity, mount, swap, and holder guards before erasing its
-filesystem signature to restore the fresh-install raw partition.
+rerun `assert_raw_idle` (including its authorized-host pin, identity, mount,
+swap, and holder guards) before erasing the filesystem signature to restore the
+fresh-install raw partition.
 
 ```bash
 assert_btrfs_mount

@@ -1369,7 +1369,8 @@ def test_local_liveness_probe_reports_fake_child_latency_and_failures(monkeypatc
     assert unresolved["responsive"] is False
     assert "not been confirmed stopped" in unresolved["error"]
 
-    for returncode, state in ((3, "deactivating"), (3, ""), (0, "inactive")):
+    for returncode, state in ((3, "deactivating"), (3, ""), (0, "inactive"),
+                              (3, "unknown")):
         clock[:] = [0.0, 2.0]
         host = driver.LocalHost()
 

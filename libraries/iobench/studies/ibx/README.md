@@ -107,6 +107,12 @@ the policy reported by the refusal and recorded in its run manifest; if that
 policy cannot be used, keep the state and obtain an operator decision. Starting
 with a new `--out` directory resets the byte and elapsed-time meters and
 requires explicit approval as a new budget.
+The refusal prints the saved policy as JSON. Map its fields back to the run
+options: `memory_psi_full_avg10_max_percent` to `--max-memory-psi`,
+`min_memavailable_bytes` to `--min-memavailable`, `min_free_bytes` to
+`--min-free`, `max_probe_latency_seconds` to `--max-probe-latency-seconds`,
+`probe_consecutive_samples` to `--probe-consecutive-samples`, and
+`probe_interval_seconds` to `--probe-interval-seconds`.
 The study result is therefore explicitly marked as including system and
 sibling-swap activity. A swap-active target partition, mounted partition,
 changed SIZE/PARTUUID, or any other safety failure still refuses. Resume state

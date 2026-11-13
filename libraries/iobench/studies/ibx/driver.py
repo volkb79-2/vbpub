@@ -1465,9 +1465,10 @@ class LocalHost:
             except (OSError, subprocess.TimeoutExpired):
                 status = None
             state = status.stdout.strip() if status is not None else ""
-            # With --collect, "unknown" means systemd has removed the transient unit.
-            confirmed_stopped = (status is not None and status.returncode != 0 and
-                                 state in {"inactive", "failed", "unknown"})
+            # is-active returns 4 for a missing unit, which --collect removes after exit.
+            confirmed_stopped = (status is not None and
+                                 ((status.returncode != 0 and state in {"inactive", "failed"}) or
+                                  (status.returncode == 4 and state == "unknown")))
             if not confirmed_stopped:
                 return {"responsive": False, "latency_seconds": max_latency_s, "components": {},
                         "error": "previous probe has not been confirmed stopped; no overlapping host probe was launched"}
