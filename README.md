@@ -19,6 +19,7 @@ one config and one installed CLI.
 | **iogovmon** (background IO recorder, own `iogovmon.slice`) | [`iogovmon/`](iogovmon/) | Python wheel (stdlib only) | cmru — `iogovmon-v*`; **not yet released** (gated on live acceptance, see [`iogovmon/BACKLOG.md`](iogovmon/BACKLOG.md) IGM-01) |
 | **run-gate** | [`run-gate-project/`](run-gate-project/) | Python wheel | cmru — `run-gate-v*` |
 | **cli-extended** | [`libraries/cli-extended/`](libraries/cli-extended/) | Shared Python CLI library (wheel) | cmru — `cli-extended-v*`; the root of the dependency graph (zero-release order: [`docs/BOOTSTRAP-FROM-ZERO.md`](docs/BOOTSTRAP-FROM-ZERO.md)) |
+| **fleetd** | [`fleetd/`](fleetd/) | Host facts and deterministic RAM-first campaign planning (Python wheel) | cmru — `fleetd-v*`; MVP contains no daemon or remote execution |
 | **empyrion-translation** | [`game_stuff/empyrion/`](game_stuff/empyrion/) | tarball | *(delegated, on-demand)* — date-tagged |
 | plesk-mailbox-create | [`plesk-mailbox-create/`](plesk-mailbox-create/) | script tool | n/a |
 | devcontainer templates | [`mdt-cockpit/templates/`](mdt-cockpit/templates/) | devcontainer template | n/a |

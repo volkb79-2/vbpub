@@ -235,6 +235,8 @@ class TestRealEstate:
         report = self._report()
         assert report.ok, report.errors
         assert report.levels["cli-extended"] == 0
+        # Fleetd is a stdlib-only root project with no first-party wheel edges.
+        assert report.levels["fleetd"] == 0
         # Augeaswrap's endpoint CLI consumes the shared cli-extended contract, so it is L1.
         assert report.levels["augeaswrap"] == 1
         # cgprofile's wheel requires cli-extended and augeaswrap, so it follows both at L2.
@@ -244,7 +246,7 @@ class TestRealEstate:
         assert report.levels["nyxloom"] == 1
         assert report.levels["mdt-cockpit"] == max(report.levels.values()) == 5
         assert all(report.levels[name] == 0 for name in (
-            "assay", "tls-edge", "tester-base",
+            "assay", "fleetd", "tls-edge", "tester-base",
         ))
         # topos requires both shared CLI and endpoint wheels, so it follows the L1 providers at L2.
         assert report.levels["topos"] == 2
