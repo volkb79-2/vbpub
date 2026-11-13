@@ -93,6 +93,7 @@ def test_host_facts_rejects_missing_reason_for_null_speed_and_unrecognized_speed
     _fails(lambda: validate_host_facts(data), "null requires speed_reason")
     data["speed_reason"] = "not recorded"
     assert validate_host_facts(data).to_dict()["speed"] is None
+    data["speed"] = {"geekbench_major": 6}
     data["speed_reason"] = "stale reason"
     _fails(lambda: validate_host_facts(data), "only allowed when speed is null")
     data.pop("speed_reason")
@@ -128,6 +129,12 @@ def test_host_facts_accepts_null_cgroup_controllers_with_reason():
     data["cgroup_v2"]["controllers"] = None
     data["cgroup_v2"]["controllers_reason"] = "mount is absent"
     assert validate_host_facts(data).to_dict()["cgroup_v2"]["controllers"] is None
+
+
+def test_host_facts_rejects_controller_reason_when_controllers_are_present():
+    data = _fixture("host-facts.valid.json")
+    data["cgroup_v2"]["controllers_reason"] = "stale"
+    _fails(lambda: validate_host_facts(data), "controllers_reason: only allowed when controllers is null")
 
 
 def test_host_facts_accepts_job_and_tool_inventory_and_rejects_bad_records():
@@ -172,6 +179,9 @@ def test_demand_parser_accepts_design_units_and_rejects_shadowing_values():
     parsed = validate_lane_demand(demand)
     assert parsed["unit_memory_bytes"] == 120 * 1024**2
     assert parsed["unit_memory_high_bytes"] == 600 * 1024**2
+    without_high = dict(demand)
+    without_high.pop("unit_memory_high")
+    assert "unit_memory_high_bytes" not in validate_lane_demand(without_high)
     _fails(lambda: validate_lane_demand({**demand, "unknown": 1}), "unknown field.*unknown")
     missing = dict(demand)
     del missing["unit"]
@@ -211,6 +221,12 @@ def test_work_request_validates_identity_demand_and_candidate_sets():
     assert validate_work_request(data).to_dict()["carry_over"]["source"] == "prior-store"
 
 
+def test_work_request_requires_array_candidate_lists():
+    data = _fixture("work-request.valid.json")
+    data["planned_ids"] = "candidate-a"
+    _fails(lambda: validate_work_request(data), "planned_ids: expected array")
+
+
 @pytest.mark.parametrize(
     ("change", "message"),
     [
@@ -223,10 +239,10 @@ def test_work_request_validates_identity_demand_and_candidate_sets():
         (lambda data: data.update(floors={"assay": 12}), "floors.assay: expected string"),
         (lambda data: data.update(planned_ids=["same", "same"]), "duplicate value"),
         (lambda data: data.update(pending_ids=["not-planned"]), "every pending ID"),
-        (lambda data: data.update(carry_over=None), "null requires carry_over_reason"),
+        (lambda data: (data.update(carry_over=None), data.pop("carry_over_reason")), "null requires carry_over_reason"),
         (lambda data: (data.update(carry_over=None), data.update(carry_over_reason="absent"), data.update(campaign_id="")), "campaign_id: expected non-empty string"),
-        (lambda data: data.update(carry_over_reason="stale"), "only allowed when carry_over is null"),
-        (lambda data: data.update(carry_over={"source": "x"}), "carry_over: missing field.*reason"),
+        (lambda data: (data.update(carry_over={"source": "x", "reason": "prior"}), data.update(carry_over_reason="stale")), "only allowed when carry_over is null"),
+        (lambda data: (data.update(carry_over={"source": "x"}), data.pop("carry_over_reason")), "work-request/1.carry_over: missing field.*reason"),
     ],
 )
 def test_work_request_rejects_invalid_contract(change, message):
@@ -238,6 +254,7 @@ def test_work_request_rejects_invalid_contract(change, message):
 def test_manifest_has_exact_one_owner_per_planned_candidate_and_ignores_duplicates():
     manifest = validate_assay_merge_manifest(_fixture("assay-merge-manifest.valid.json"))
     assert isinstance(manifest, AssayMergeManifest)
+    assert manifest.to_dict() == _fixture("assay-merge-manifest.valid.json")
     records = {
         "store-alpha": {"candidate-a": {"verdict": "owner"}},
         "store-beta": {"candidate-b": {"verdict": "owner-b"}, "candidate-a": {"verdict": "duplicate"}},
@@ -254,7 +271,7 @@ def test_manifest_has_exact_one_owner_per_planned_candidate_and_ignores_duplicat
         (lambda data: data.update(extra=True), "unknown field.*extra"),
         (lambda data: data.update(planned_ids=["a", "a"]), "duplicate value"),
         (lambda data: data.update(owners=[]), "owners: expected object"),
-        (lambda data: data["owners"].update(candidate_a=None), "owners.candidate_a: expected non-empty string"),
+        (lambda data: data["owners"].update(candidate_a=None), "assay-merge-manifest/1.owners.candidate_a: expected string"),
         (lambda data: data["owners"].pop("candidate-a"), "missing owners: candidate-a"),
         (lambda data: data["owners"].update(extra="store-x"), "owners outside planned_ids: extra"),
     ],

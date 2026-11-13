@@ -43,5 +43,6 @@ fleet-specific Run-Gate command.
 The guard rules are parsed only; no process or cgroup is changed. There is no
 daemon, socket, SSH, Docker, transport, remote collection, retry supervision,
 or strict merge implementation. Guard configuration accepts the design's
-`report` and `enforce` modes, but this package does not act on either mode. See
+`report` and `enforce` modes and the `least-progress-per-ram` victim policy, but
+this package does not act on them. See
 [FD-001](../KNOWN_ISSUES_TODO_BACKLOG.md#fd-001-fleet-level-campaign-lifecycle-is-not-implemented).
