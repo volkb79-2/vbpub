@@ -644,6 +644,22 @@ def test_inline_style_important_case_and_placement_follow_css_priority(
     assert result.hidden_removed == (1 if hidden else 0), style
 
 
+@pytest.mark.parametrize(
+    "style",
+    [
+        pytest.param("display:none;display:block invalid", id="invalid-display-value"),
+        pytest.param("visibility:hidden;visibility:visible invalid", id="invalid-visibility-value"),
+        pytest.param("display:var(--computed-display)", id="unresolved-display-variable"),
+        pytest.param("visibility:var(--computed-visibility)", id="unresolved-visibility-variable"),
+    ],
+)
+def test_invalid_or_unresolved_later_hiding_values_fail_closed(style: str) -> None:
+    result = _extraction(f"<p style='{style}'>hidden content</p>", fmt="text")
+
+    assert result.content == ""
+    assert result.hidden_removed == 1
+
+
 def test_inline_style_priority_marker_at_value_start_is_parsed_as_empty_important_value() -> None:
     from pwmcp_client.page_content import _priority_value
 
