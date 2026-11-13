@@ -8341,7 +8341,7 @@ byte-identical.
 ## RG-272 — a valid request base on a non-tag checkout produces zero mutation candidates despite changed source
 
 **Status:** OPEN (filed 2026-11-12); priority should-fix for an R2 lane that
-delegates its comparison base. Source: `reports/hosts-ksm-instances-REPORT.md`
+delegates its comparison base. Source: [KSM evidence report](../mdt-cockpit/docs/evidence/hosts-ksm-instances-REPORT-2026-11-12.md)
 sections 0.8 and 10.1. Related: RG-26 and RG-263; this is distinct from RG-263's
 empty source-diff case.
 
@@ -8356,7 +8356,7 @@ delegates that fact to the request.
 
 **Evidence.** The report records the two target shapes, the shared base,
 candidate counts, and the 4,292 source insertions
-(`reports/hosts-ksm-instances-REPORT.md:13, 166`). Assay's
+([KSM evidence report](../mdt-cockpit/docs/evidence/hosts-ksm-instances-REPORT-2026-11-12.md):17, 170). Assay's
 `resolve_base_declaration()` returns the supplied request base unchanged for
 a delegated lane and refuses when it is missing
 (`assay/src/assay/runner.py:4295-4305`). RG-263 covers a base whose diff

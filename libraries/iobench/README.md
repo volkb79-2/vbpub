@@ -75,7 +75,8 @@ iobench capability --json
 
 ```
 libraries/iobench/
-  README.md  docs/{DESIGN-GUIDE,CONSUMERS,SPEC,CLI-SPEC}.md  docs/{cli-surface.json,cli-review.toml,cli-review-findings.toml}
+  README.md  docs/{DESIGN-GUIDE,CONSUMERS,SPEC,CLI-SPEC}.md  docs/reports/IOBENCH-R2-R1002-2026-11-02.md
+  docs/{cli-surface.json,cli-review.toml,cli-review-findings.toml}
   pyproject.toml  cmru.toml  run-gate.toml  assay.toml  .coveragerc
   src/iobench/   pure core (planning, reduction, derivation, schema) behind an injected Host; cli.py is the thin shell
   tests/         fake-fio and fake-sysfs scenarios, recorded-evidence replays, controlled-wrong plausibility cases
@@ -86,6 +87,9 @@ libraries/iobench/
 Implemented (IOB-03 P3, reviewed through wave 2026-10-27) and partially accepted live on 2026-11-09: the r1002 Debian 13 QEMU/TCG guest verified target refusals, fio 3.39 compatibility, file extents on ext4/XFS/btrfs, and veryquick run/restore mechanics. TCG performance numbers and cache conclusions are not evidence about disk performance. IOB-ACC-01 still owes the mounted-filesystem raw-boundary case, `systemd-run --wait`, a second SIGTERM during file `fallocate -p`, a real 150 s fresh observation, cross-direction/plausibility checks, and a disk with a known cache. The parent-death cleanup guarantee covers asynchronously spawned benchmark commands through `_ProcHandle` (`Host.spawn`/`Host.write_range`), and has a no-device forked-process regression; a live re-probe is still owed. Synchronous `Host.run` clients are outside that guarantee: killing a `systemd-run --wait` client leaves its unit running until explicit stop or `RuntimeMaxSec`. See the [design rationale](docs/DESIGN-GUIDE.md#9-safety-design) and [adoption notes](docs/CONSUMERS.md#2-calibrate-once-per-host-or-storage-class). The first cmru release remains open (IOB-REL-01; wheel plus sha256). The CLI review cases in `docs/cli-review.toml` record real invocations and
 the outcomes observed on the fake host; an independent semantic review still has to confirm their rationales. The decisions behind it are IOB-D-001..014 and the rulings
 R-1..R-10 in the DESIGN-GUIDE. Nothing here is wired into `mdt-cockpit` or `debian-install-v2` yet (migration phases M1-M4 in the DESIGN-GUIDE).
+
+The historical R2 mutation campaign cited in IOB-R2-01 is retained in the
+[2026-11-02 campaign report](docs/reports/IOBENCH-R2-R1002-2026-11-02.md).
 
 The registered repository gate runs R0–R1 and native Assay R2 through
 Run-Gate. Its R2 lane opts into `jobs = "auto"` with an Assay ceiling of

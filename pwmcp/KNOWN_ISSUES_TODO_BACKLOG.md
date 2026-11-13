@@ -939,7 +939,7 @@ candidates ended with 2 crashed (853, 871), 2 killed (855, 876) and 1
 `budget_exceeded` (855). The supervisor stops on exit 2 without retry, so
 this campaign has no R2 PASS/FAIL claim. The error is execution evidence, not
 proof of a PWMCP product defect. Source:
-`reports/hosts-ksm-instances-REPORT.md` sections 0.1 and 10.7.
+[`KSM evidence report`](../mdt-cockpit/docs/evidence/hosts-ksm-instances-REPORT-2026-11-12.md) sections 0.1 and 10.7.
 
 **Remaining disposition.** Decide whether the terminal crashed and
 `budget_exceeded` records need a deliberate bounded follow-up under the

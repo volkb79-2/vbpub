@@ -1043,7 +1043,7 @@ gate and mutation evidence.
 ## NC-49 — runner guidance does not explain when `--instances` helps or its single-host cost
 
 **Status:** OPEN (filed 2026-11-12); priority enhancement. Source:
-`reports/hosts-ksm-instances-REPORT.md` sections 0.5–0.7 and 10.2–10.3.
+[`KSM evidence report`](../../mdt-cockpit/docs/evidence/hosts-ksm-instances-REPORT-2026-11-12.md) sections 0.5–0.7 and 10.2–10.3.
 Related: NC-48, implemented unreleased in `r2-guard-20261112`; it owns
 per-instance memory admission and the CPU hint. This item adds measured
 operator guidance and cross-references NC-48 without restating either behavior.
@@ -1060,7 +1060,7 @@ whose worker limit prevents sharing one container.
 
 **Evidence.** The report records 1 x 3 at 1.3–2.4 candidates/min, 3 x 1 at
 1.7/min and 4 x 1 at 1.75/min, with 29–40% CPU PSI in the four-instance pilot
-(`reports/hosts-ksm-instances-REPORT.md:10-15, 141-150`). The runner README
+([`KSM evidence report`](../../mdt-cockpit/docs/evidence/hosts-ksm-instances-REPORT-2026-11-12.md):14-19, 145-154). The runner README
 documents the shard mechanics and guard but not this trade-off
 (`scripts/netcup/runner/README.md:134-164`). NC-48 owns the admission estimate
 and CPU hint; this item adds measured operator guidance only.
@@ -1091,7 +1091,7 @@ and NC-48 remains the sole owner of the memory-admission and CPU-hint behavior.
 ## NC-50 — `run-job` is installed under `~/bin` but bare-name examples fail in non-login runner shells
 
 **Status:** OPEN (filed 2026-11-12); priority should-fix for reproducible
-runner commands. Source: `reports/hosts-ksm-instances-REPORT.md` sections
+runner commands. Source: [`KSM evidence report`](../../mdt-cockpit/docs/evidence/hosts-ksm-instances-REPORT-2026-11-12.md) sections
 6.1 and 10.8.
 
 **Problem.** Runner provisioning installs `run-job` at `~/bin/run-job` and
@@ -1107,7 +1107,7 @@ starts. This makes a documented command depend on an interactive login PATH.
 and the runner README uses the unqualified name in its command examples
 (`scripts/netcup/runner/README.md:105, 129, 216, 582`). The report
 records that the non-login wrapper succeeds with `~/bin/run-job`
-(`reports/hosts-ksm-instances-REPORT.md:83-88, 173`).
+([`KSM evidence report`](../../mdt-cockpit/docs/evidence/hosts-ksm-instances-REPORT-2026-11-12.md):87-92, 177).
 
 **Minimal solution.** Use `~/bin/run-job` in runner instructions that may run
 under a non-login shell, including the command snippets in README and
@@ -1132,7 +1132,7 @@ registered suite pass.
 ## NC-51 — a fleet launches a merge without a visible incomplete-shard gate, and status says generic `running`
 
 **Status:** OPEN (filed 2026-11-12); priority should-fix for fleet-result
-integrity. Source: `reports/hosts-ksm-instances-REPORT.md` section 10.9.
+integrity. Source: [`KSM evidence report`](../../mdt-cockpit/docs/evidence/hosts-ksm-instances-REPORT-2026-11-12.md) section 10.9.
 Related: NC-42, which introduced fleet starts, child status and strict merges.
 
 **Problem.** When all three child campaigns ended with `final_exit=1`, the
@@ -1144,7 +1144,7 @@ combine complete non-passing shards; it must not run when a child left an
 incomplete shard, and the status must name that state.
 
 **Evidence.** The campaign report records three children at `final_exit=1`
-followed by a running `merge-s1` (`reports/hosts-ksm-instances-REPORT.md:174`).
+followed by a running `merge-s1` ([`KSM evidence report`](../../mdt-cockpit/docs/evidence/hosts-ksm-instances-REPORT-2026-11-12.md):178).
 `run_fleet()` collects every child exit before its merge branch, selected by
 `shard_offset == 0 && instances == shard_total`
 (`scripts/netcup/runner/run-r2-campaign.sh`, `run_fleet()`); NC-51 needs to

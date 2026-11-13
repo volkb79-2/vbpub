@@ -96,7 +96,7 @@ Entries IOB-BL-01..38 remain here. New entries continue in [`KNOWN_ISSUES_TODO_B
 - **Evidence:**
   - `evidence/iobench-r2-r1002/` of the release-program directory: `survivors-from-verdict.csv`,
     `budget-exceeded-from-verdict.csv`, `progress-iobench.jsonl`, the replay results;
-  - the report `reports/IOBENCH-R2-R1002-2026-11-02.md`.
+  - the [R2 campaign report](docs/reports/IOBENCH-R2-R1002-2026-11-02.md).
 - **Candidate profile** (the scheduling data):
   - every candidate runs essentially the whole suite: elapsed p50 97 s, CPU p50 89 s, CPU-bound;
   - peak RSS p50 372 MiB, 84% within 350–400 MiB;

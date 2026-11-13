@@ -1700,7 +1700,7 @@ process-level opt-in boundary (RG-273/TB-17). tester-base/tester-unified were
 rebuilt and deployed on 2026-11-12 with the KSM label, and controller smoke
 confirmed preload; host lane-level KSM smoke remains unrecorded. The
 documentation regression check remains. Source:
-`reports/hosts-ksm-instances-REPORT.md` sections 0.2–0.4, 2 and 3.
+[`KSM evidence report`](docs/evidence/hosts-ksm-instances-REPORT-2026-11-12.md) sections 0.2–0.4, 2 and 3.
 
 **Problem.** KSM only merges memory from processes opting in through
 `PR_SET_MEMORY_MERGE` or `MADV_MERGEABLE`; host KSM configuration alone does
@@ -1721,7 +1721,7 @@ default and opt-outs are documented in `run-gate-project/README.md:188-200`
 and implemented by RG-273; TB-17 records the image build contract. The
 measurement report records zero pre-opt-in lane contribution and the small,
 negative-profit opted-in Python result
-(`reports/hosts-ksm-instances-REPORT.md:7-10, 52-59, 152`).
+([`KSM evidence report`](docs/evidence/hosts-ksm-instances-REPORT-2026-11-12.md):11-14, 56-63, 156).
 
 **Minimal solution.** Keep the correction in repository `AGENTS.md`: state
 the process opt-in mechanisms, the CIU shim, Run-Gate's default and opt-outs,
@@ -1755,7 +1755,7 @@ that the preload does not reach. Run-Gate 25.6.0 already opts ephemeral lanes
 in through the image-advertised CIU shim by default (RG-273/TB-17); its tester
 images were rebuilt and deployed on 2026-11-12, with controller preload smoke
 confirmed. Host lane-level KSM smoke remains unrecorded. Source:
-`reports/hosts-ksm-instances-REPORT.md` sections 3 and 5.1.
+[`KSM evidence report`](docs/evidence/hosts-ksm-instances-REPORT-2026-11-12.md) sections 3 and 5.1.
 
 **Problem.** Run-Gate's preload gives its ephemeral lanes a supported
 process-level opt-in, but containerd's service-level `MemoryKSM=yes` route is
@@ -1769,7 +1769,7 @@ sharing with process opt-in, while the representative Python workload gained
 about 1 MiB with negative net profit. It proposes a containerd
 `MemoryKSM=yes` drop-in, a drained-host restart, and checks of both the unit
 property and a lane process's `ksm_merge_any`
-(`reports/hosts-ksm-instances-REPORT.md:34-38, 41-59, 72-77`). Existing host KSM
+([`KSM evidence report`](docs/evidence/hosts-ksm-instances-REPORT-2026-11-12.md):38-42, 45-63, 76-81). Existing host KSM
 settings are documented as tmpfiles policy
 (`scripts/debian-install-v2/README.md:445-455`). Run-Gate's separate preload
 route and opt-outs are documented in `run-gate-project/README.md:188-200`.
