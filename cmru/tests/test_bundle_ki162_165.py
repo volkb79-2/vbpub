@@ -506,6 +506,15 @@ def test_stage_pyc_is_filtered_from_archive_and_manifest(tmp_path):
     assert "generated.pyc" not in manifest["files"]
 
 
+def test_allowlist_rechecks_excludes_after_resolving_a_direct_file(tmp_path):
+    (tmp_path / "private.env").write_text("TOKEN=secret\n", encoding="utf-8")
+    (tmp_path / "catalog.py").symlink_to(tmp_path / "private.env")
+
+    assert bundle.collect_allowlist_members(
+        tmp_path, ["catalog.py"], archive_prefix="",
+    ) == []
+
+
 def _dev_version_inputs(tmp_path, *, prefix="demo-v"):
     project = SimpleNamespace(version=SimpleNamespace(strategy="semver"), prefix=prefix)
     forge = SimpleNamespace(repo_root=tmp_path, projects={"demo": project})
