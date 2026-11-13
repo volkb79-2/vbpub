@@ -148,7 +148,7 @@ def test_plan_resolves_memory_time_and_routes_with_single_core_eta():
 
 def test_plan_preserves_special_alone_and_retry_work_on_one_host_and_renders_commands():
     plan = _plan([
-        _candidate("big", 14.5 * 1024**3),
+        _candidate("big", 14 * 1024**3 + 512 * 1024**2),
         _candidate("retry", 256 * 1024**2, memory_crash_evidence=True),
     ])
     host = _host_plan(plan, "host-large")
@@ -323,7 +323,7 @@ def test_batches_interleave_classes_respect_wave_budget_and_multiplier():
 
 
 def test_mix_violation_is_flagged_without_turning_missing_eta_into_a_mix_flag():
-    rows = [_candidate("a", 6_000_000_000), _candidate("b", 7_000_000_000)]
+    rows = [_candidate("a", 11_500_000_000), _candidate("b", 13_500_000_000)]
     plan = _plan(rows)
     host = _assigned_host(plan, "a")
     assert host["mix_flagged"] is True
