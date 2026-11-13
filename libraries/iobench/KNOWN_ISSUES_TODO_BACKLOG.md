@@ -193,3 +193,44 @@ fixture uses the recorded `none` layout and evidence digest, with synthetic
 `bfq`, `mq-deadline`, missing, malformed, and no-BFQ-controller cases on the
 same sysfs tree shape. The new read-only evidence digest also confirms the
 captured 13-cgroup BFQ-file absence; no new host was accessed by this fix.
+
+The 2026-11-13 run3 acceptance then passed 6/6 checks, including the
+acknowledged dry-run, successful initial liveness probe, and IO-control
+snapshot. It also verified the raw partition's discard and diskstats path,
+fio 3.39's command-line JSON option and rendered 1 MiB writer, live quiet-window
+timer checks, and persistent-unit timer restoration. These facts are marked
+`VERIFIED-ON-HOST` in the run3 and follow-up reports. The complete post-t0 study
+is not included in this verification; see IOB-BL-47.
+
+## IOB-BL-47 — Complete IBX study live acceptance after the fio cap repair
+
+**Status: OPEN.** Run3 stopped after `raw-t0 standard seq1m-write` because the
+driver rejected fio's whole-block write count. The cap repair, accounting
+retry, analysis, discard, probe, sampler, and file-target paths have fixture
+and fake-host coverage in the registered iobench lane, and the rendered cap
+classes have separate real fio 3.39 regular-file evidence. No full study was
+run during this code fix.
+
+Run3's raw fio JSON was not retained. The report records 64,000,884,736 bytes
+written against the old 64,000,000,000-byte reservation. The repaired driver
+cannot treat that rejected cell as a valid measurement, and the complete
+remaining base schedule plus its already charged attempt does not fit under
+the same 500 GB meter. A full rerun therefore needs a new authorized output
+budget; the driver accounts a parseable failed attempt at its observed bytes
+and refuses before a later cell if the complete remaining schedule no longer
+fits.
+
+The unexecuted live schedule includes the remaining raw-t0 cells, part (c)'s
+interleaved rewrite/idle/discard/recovery probes and analysis, later raw slots
+and conditional t+6h rung choice, ext4 and Btrfs format/mount/preallocate and
+file legs, Btrfs output verifier, final target wipe, and the final rung-choice
+analysis over the complete dataset. Their failure modes are guarded by the
+driver, but fixture success does not prove host-specific commands, timings,
+filesystem transitions, or output shape on the approved study host.
+
+**Close when.** A new approved study lease has enough time for the full schedule
+from t0 and an authorized fresh output budget. The run finishes the base
+schedule without a driver stop, verifies the Btrfs file leg and monitor logs,
+produces rung-choice analysis, and restores timers and the target to the
+authorized final state. Preserve the full evidence and update the host-
+assumption table; do not rerun a destructive step outside that lease.

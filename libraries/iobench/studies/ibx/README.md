@@ -6,6 +6,12 @@ and the bounded schedule and analysis in sections 6.2–6.7. The controller uses
 fio is the only benchmark executable. It does not contain SSH code and this
 change has not run against a host.
 
+The driver also works from a flat handoff copy when `driver.py` and
+`job-template.fio` stay together. Repository discovery is optional for the
+normal study and analysis paths. `--fsync-cell` needs the driver under
+`libraries/iobench/studies/ibx/` because its collector wrapper belongs to that
+checkout; a flat copy refuses that option with a layout-specific error.
+
 `veryquick` leaves 4 KiB sequential cells unmeasured; the table marks those
 numbers unavailable and explains that the profile only has a coarse random
 IOPS proxy. `quick` and `standard` run the 4 KiB sequential read and write cells.
@@ -44,25 +50,38 @@ repeat and both optional raw repeats because none fits after the maximum base
 schedule; incomplete first-run evidence is still an error when deciding whether
 the part (c) result is complete.
 
-The meter derives the base schedule's maximum from the fio job caps:
-495.123688448 GB. Its hard write cap is 500 GB decimal (500,000,000,000 bytes),
-leaving 4.876311552 GB after the maximum base schedule. The optional part (c)
-repeat costs 49.123688448 GB, and each optional raw repeat costs 41 GB, so none
-is reserved or run under this cap. The driver derives these amounts from the
-real cell and rung job caps; it does not shrink any base rung. Each optional
-file-standard set costs 100 GB and runs only when its remaining cap and every
-required cell-set still ahead fit; the ext4 standard therefore reserves the
-required Btrfs quick/veryquick set. Otherwise it exits successfully with
+The meter derives the base schedule's maximum from the block-aligned fio job
+caps: 495.122866176 GB. Its hard write cap is 500 GB decimal (500,000,000,000
+bytes), leaving 4.877133824 GB after the maximum base schedule. The optional
+part (c) repeat costs 49.123688448 GB, and each optional raw repeat costs
+40.999899136 GB, so none is reserved or run under this cap. These are the
+effective sums after every writer cap is rounded down to a whole block. The
+nominal rung budgets remain 15/26/100 GB; their aligned writer sums are
+14.999912448/25.999986688/99.999891456 GB. Each optional file-standard set has
+a nominal 100 GB budget and an effective 99.999891456 GB cap; it runs only
+when its remaining cap and every required cell-set still ahead fit; the ext4
+standard therefore reserves the required Btrfs quick/veryquick set. Otherwise
+it exits successfully with
 `skipped` before creating jobs or starting fio. The t0+6h raw standard cap is
 included in the base schedule even
 though that rung runs only when its design condition selects it. Every writing
-job uses `io_size` and omits `time_based`;
+job uses `io_size` aligned down to its `bs`, and omits `time_based`;
 fio's `time_based` mode ignores `io_size`. Reads are time-based. Each rung also
-has its own write allotment (15/26/100 GB), and the study state meters actual
-fio write bytes separately from read `io_bytes`. Before an attempt starts, the
-state reserves that cell's full write cap and active-time allowance. A completed
-result replaces those reservations with measured bytes and duration; an
-interrupted attempt keeps its full reservation so resume cannot undercount it.
+has its nominal write allotment (15/26/100 GB), and the study state meters
+actual fio write bytes separately from read `io_bytes`. Before an attempt
+starts, the state reserves that cell's aligned write cap and active-time
+allowance. A completed result replaces those reservations with measured bytes
+and duration. Rejected or failed attempts save their fio JSON and replace the
+write reservation with reported bytes when available; a failure before fio
+starts releases it. If fio started but its output cannot establish actual
+bytes, the full cap stays charged. On resume, any such outstanding reservation
+is recorded as an interrupted attempt and retained as conservative spent bytes,
+then a retry gets a fresh reservation. Every retry remains inside the same
+500 GB meter. Before starting any base cell-set, the driver also checks that
+bytes already charged plus all still-pending base caps fit the hard budget,
+including the conditional t+6h standard rung. A failed earlier attempt can
+make the complete remaining schedule unaffordable; the driver refuses before
+the next cell instead of silently shrinking later caps.
 The controller stops before a cell that could exceed the
 500 GB, 3-hour active-I/O, or 12-hour elapsed limits. It also stops on three
 consecutive memory PSI `full avg10` samples over the supplied threshold, low
@@ -70,7 +89,13 @@ consecutive memory PSI `full avg10` samples over the supplied threshold, low
 configured number of consecutive slow or failed host-liveness probes. I/O PSI
 is recorded as advisory. The memory, liveness, and free-space thresholds are
 required run options because the design does not set numeric values; select
-them from the study host's approved policy.
+them from the study host's approved policy. `--min-output-free` compares free
+space on the filesystem containing `--out`. `--min-target-free` compares free
+space on the filesystem containing a file target and is not sampled for raw
+partition runs. With approved policy values, a 20 GiB output floor and a 1 GiB
+target floor leave headroom on the repository filesystem while allowing the
+32 GiB study partition to hold its preallocated 24 GiB file. Both values are
+saved as one resume policy and must be reused unchanged.
 
 Raw ladder sets must use exactly `[0, 24 GiB)`; part (c) must use exactly
 `[24, 32 GiB)`. File sets must cover exactly `[0, 24 GiB)` of their preallocated
@@ -129,8 +154,10 @@ with a new `--out` directory resets the byte and elapsed-time meters and
 requires explicit approval as a new budget.
 The refusal prints the saved policy as JSON. Map its fields back to the run
 options: `memory_psi_full_avg10_max_percent` to `--max-memory-psi`,
-`min_memavailable_bytes` to `--min-memavailable`, `min_free_bytes` to
-`--min-free`, `max_probe_latency_seconds` to `--max-probe-latency-seconds`,
+`min_memavailable_bytes` to `--min-memavailable`,
+`min_output_free_bytes` to `--min-output-free`,
+`min_target_free_bytes` to `--min-target-free`,
+`max_probe_latency_seconds` to `--max-probe-latency-seconds`,
 `probe_consecutive_samples` to `--probe-consecutive-samples`, and
 `probe_interval_seconds` to `--probe-interval-seconds`,
 `liveness_ssh_host` to `--liveness-ssh-host`,
@@ -202,8 +229,8 @@ controller default of 10 seconds and can be changed with
 `--probe-interval-seconds`.
 I/O PSI is recorded but is advisory because the saturating fio cell itself can
 drive it to 100%. The independent host-liveness threshold and consecutive
-sample count are configurable policy inputs alongside the existing memory and
-free-space floors. Set `IBX_EXPECTED_HOST` from the approved run authorization;
+sample count are configurable policy inputs alongside the memory, output-space,
+and target-space floors. Set `IBX_EXPECTED_HOST` from the approved run authorization;
 the sequence checks it before every driver run and checks both host and target
 identity immediately before each direct filesystem operation. Do not derive
 the expected hostname from the connected host.
@@ -238,7 +265,8 @@ OUT="$HOST_REPO/libraries/iobench/artifacts/ibx-study"
 : "${IBX_MAX_PROBE_LATENCY:?set the approved independent host-probe latency limit in seconds}"
 : "${IBX_PROBE_CONSECUTIVE_SAMPLES:?set the approved consecutive slow-probe sample count}"
 : "${IBX_MIN_MEMAVAILABLE:?set the approved MemAvailable floor, for example 8GiB}"
-: "${IBX_MIN_FREE:?set the approved output-filesystem free-space floor}"
+: "${IBX_MIN_OUTPUT_FREE:?set the approved free-space floor for the output filesystem}"
+: "${IBX_MIN_TARGET_FREE:?set the approved free-space floor for the study target filesystem}"
 : "${IBX_EXPECTED_HOST:?set the exact short hostname from approved run authorization}"
 # Read the partition size and PARTUUID and compare them with the approved
 # study-target inventory. Set this exact literal only after that check.
@@ -297,7 +325,8 @@ run_study raw-t0 --target /dev/vda5 --device vda5 \
   --max-memory-psi "$IBX_MAX_MEMORY_PSI" \
   --max-probe-latency-seconds "$IBX_MAX_PROBE_LATENCY" \
   --probe-consecutive-samples "$IBX_PROBE_CONSECUTIVE_SAMPLES" \
-  --min-memavailable "$IBX_MIN_MEMAVAILABLE" --min-free "$IBX_MIN_FREE" || exit 1
+  --min-memavailable "$IBX_MIN_MEMAVAILABLE" \
+  --min-output-free "$IBX_MIN_OUTPUT_FREE" --min-target-free "$IBX_MIN_TARGET_FREE" || exit 1
 
 # Stop only timers that were active beforehand. Keep this shell open so the
 # restoration block below can restart exactly those timers after live runs.
@@ -344,7 +373,8 @@ run_study raw-t0 --target /dev/vda5 --device vda5 \
   --max-memory-psi "$IBX_MAX_MEMORY_PSI" \
   --max-probe-latency-seconds "$IBX_MAX_PROBE_LATENCY" \
   --probe-consecutive-samples "$IBX_PROBE_CONSECUTIVE_SAMPLES" \
-  --min-memavailable "$IBX_MIN_MEMAVAILABLE" --min-free "$IBX_MIN_FREE" || exit 1
+  --min-memavailable "$IBX_MIN_MEMAVAILABLE" \
+  --min-output-free "$IBX_MIN_OUTPUT_FREE" --min-target-free "$IBX_MIN_TARGET_FREE" || exit 1
 
 # t0+1h: the bounded rewrite/fstrim cell set on region C.
 run_study part-c --target /dev/vda5 --device vda5 \
@@ -354,7 +384,8 @@ run_study part-c --target /dev/vda5 --device vda5 \
   --max-memory-psi "$IBX_MAX_MEMORY_PSI" \
   --max-probe-latency-seconds "$IBX_MAX_PROBE_LATENCY" \
   --probe-consecutive-samples "$IBX_PROBE_CONSECUTIVE_SAMPLES" \
-  --min-memavailable "$IBX_MIN_MEMAVAILABLE" --min-free "$IBX_MIN_FREE" || exit 1
+  --min-memavailable "$IBX_MIN_MEMAVAILABLE" \
+  --min-output-free "$IBX_MIN_OUTPUT_FREE" --min-target-free "$IBX_MIN_TARGET_FREE" || exit 1
 
 # t0+3h, then quick/veryquick at t0+6h; raw-t6h adds standard only if its 6.2 rule fires.
 run_study raw-t3h --target /dev/vda5 --device vda5 \
@@ -364,7 +395,8 @@ run_study raw-t3h --target /dev/vda5 --device vda5 \
   --max-memory-psi "$IBX_MAX_MEMORY_PSI" \
   --max-probe-latency-seconds "$IBX_MAX_PROBE_LATENCY" \
   --probe-consecutive-samples "$IBX_PROBE_CONSECUTIVE_SAMPLES" \
-  --min-memavailable "$IBX_MIN_MEMAVAILABLE" --min-free "$IBX_MIN_FREE" || exit 1
+  --min-memavailable "$IBX_MIN_MEMAVAILABLE" \
+  --min-output-free "$IBX_MIN_OUTPUT_FREE" --min-target-free "$IBX_MIN_TARGET_FREE" || exit 1
 
 # t0+4h: the driver reports this optional repeat as skipped under the 500 GB
 # cap, even if the first analysis reports degradation.
@@ -375,7 +407,8 @@ run_study part-c-repeat --target /dev/vda5 --device vda5 \
   --max-memory-psi "$IBX_MAX_MEMORY_PSI" \
   --max-probe-latency-seconds "$IBX_MAX_PROBE_LATENCY" \
   --probe-consecutive-samples "$IBX_PROBE_CONSECUTIVE_SAMPLES" \
-  --min-memavailable "$IBX_MIN_MEMAVAILABLE" --min-free "$IBX_MIN_FREE" || exit 1
+  --min-memavailable "$IBX_MIN_MEMAVAILABLE" \
+  --min-output-free "$IBX_MIN_OUTPUT_FREE" --min-target-free "$IBX_MIN_TARGET_FREE" || exit 1
 
 run_study raw-t6h --target /dev/vda5 --device vda5 \
   --target-type raw --confirm-target "$IBX_TARGET_CONFIRMATION" \
@@ -384,7 +417,8 @@ run_study raw-t6h --target /dev/vda5 --device vda5 \
   --max-memory-psi "$IBX_MAX_MEMORY_PSI" \
   --max-probe-latency-seconds "$IBX_MAX_PROBE_LATENCY" \
   --probe-consecutive-samples "$IBX_PROBE_CONSECUTIVE_SAMPLES" \
-  --min-memavailable "$IBX_MIN_MEMAVAILABLE" --min-free "$IBX_MIN_FREE" || exit 1
+  --min-memavailable "$IBX_MIN_MEMAVAILABLE" \
+  --min-output-free "$IBX_MIN_OUTPUT_FREE" --min-target-free "$IBX_MIN_TARGET_FREE" || exit 1
 
 # t0+9h raw measurements, then format the study partition for each file target.
 run_study raw-t9h --target /dev/vda5 --device vda5 \
@@ -394,7 +428,8 @@ run_study raw-t9h --target /dev/vda5 --device vda5 \
   --max-memory-psi "$IBX_MAX_MEMORY_PSI" \
   --max-probe-latency-seconds "$IBX_MAX_PROBE_LATENCY" \
   --probe-consecutive-samples "$IBX_PROBE_CONSECUTIVE_SAMPLES" \
-  --min-memavailable "$IBX_MIN_MEMAVAILABLE" --min-free "$IBX_MIN_FREE" || exit 1
+  --min-memavailable "$IBX_MIN_MEMAVAILABLE" \
+  --min-output-free "$IBX_MIN_OUTPUT_FREE" --min-target-free "$IBX_MIN_TARGET_FREE" || exit 1
 study_transition mkfs.ext4 -E nodiscard,lazy_itable_init=0,lazy_journal_init=0 /dev/vda5 || exit 1
 study_transition mkdir -p /mnt/ibx-study || exit 1
 study_transition mount -o noatime /dev/vda5 /mnt/ibx-study || exit 1
@@ -407,7 +442,8 @@ run_study file-ext4 --target /mnt/ibx-study/target.dat --device vda5 \
   --max-memory-psi "$IBX_MAX_MEMORY_PSI" \
   --max-probe-latency-seconds "$IBX_MAX_PROBE_LATENCY" \
   --probe-consecutive-samples "$IBX_PROBE_CONSECUTIVE_SAMPLES" \
-  --min-memavailable "$IBX_MIN_MEMAVAILABLE" --min-free "$IBX_MIN_FREE" || exit 1
+  --min-memavailable "$IBX_MIN_MEMAVAILABLE" \
+  --min-output-free "$IBX_MIN_OUTPUT_FREE" --min-target-free "$IBX_MIN_TARGET_FREE" || exit 1
 python3 "$LOCAL_STUDY" analyze "$LOCAL_OUT" --output "$LOCAL_OUT/rung-choice.md"
 # Optional: runs only if the ext4 quick result is borderline; otherwise reports skipped.
 run_study file-ext4-standard --target /mnt/ibx-study/target.dat --device vda5 \
@@ -415,7 +451,8 @@ run_study file-ext4-standard --target /mnt/ibx-study/target.dat --device vda5 \
   --max-memory-psi "$IBX_MAX_MEMORY_PSI" \
   --max-probe-latency-seconds "$IBX_MAX_PROBE_LATENCY" \
   --probe-consecutive-samples "$IBX_PROBE_CONSECUTIVE_SAMPLES" \
-  --min-memavailable "$IBX_MIN_MEMAVAILABLE" --min-free "$IBX_MIN_FREE" || exit 1
+  --min-memavailable "$IBX_MIN_MEMAVAILABLE" \
+  --min-output-free "$IBX_MIN_OUTPUT_FREE" --min-target-free "$IBX_MIN_TARGET_FREE" || exit 1
 study_transition umount /mnt/ibx-study || exit 1
 study_transition wipefs -a /dev/vda5 || exit 1
 study_transition mkfs.btrfs -K /dev/vda5 || exit 1
@@ -426,7 +463,8 @@ run_study file-btrfs --target /mnt/ibx-study/target.dat --device vda5 \
   --max-memory-psi "$IBX_MAX_MEMORY_PSI" \
   --max-probe-latency-seconds "$IBX_MAX_PROBE_LATENCY" \
   --probe-consecutive-samples "$IBX_PROBE_CONSECUTIVE_SAMPLES" \
-  --min-memavailable "$IBX_MIN_MEMAVAILABLE" --min-free "$IBX_MIN_FREE" || exit 1
+  --min-memavailable "$IBX_MIN_MEMAVAILABLE" \
+  --min-output-free "$IBX_MIN_OUTPUT_FREE" --min-target-free "$IBX_MIN_TARGET_FREE" || exit 1
 python3 "$LOCAL_STUDY" analyze "$LOCAL_OUT" --output "$LOCAL_OUT/rung-choice.md"
 # Optional: runs only if the btrfs quick result is borderline; otherwise reports skipped.
 run_study file-btrfs-standard --target /mnt/ibx-study/target.dat --device vda5 \
@@ -434,7 +472,8 @@ run_study file-btrfs-standard --target /mnt/ibx-study/target.dat --device vda5 \
   --max-memory-psi "$IBX_MAX_MEMORY_PSI" \
   --max-probe-latency-seconds "$IBX_MAX_PROBE_LATENCY" \
   --probe-consecutive-samples "$IBX_PROBE_CONSECUTIVE_SAMPLES" \
-  --min-memavailable "$IBX_MIN_MEMAVAILABLE" --min-free "$IBX_MIN_FREE" || exit 1
+  --min-memavailable "$IBX_MIN_MEMAVAILABLE" \
+  --min-output-free "$IBX_MIN_OUTPUT_FREE" --min-target-free "$IBX_MIN_TARGET_FREE" || exit 1
 study_transition umount /mnt/ibx-study || exit 1
 study_transition wipefs -a /dev/vda5 || exit 1
 study_transition blkdiscard /dev/vda5 || exit 1
@@ -448,7 +487,8 @@ run_study raw-t12h --target /dev/vda5 --device vda5 \
   --max-memory-psi "$IBX_MAX_MEMORY_PSI" \
   --max-probe-latency-seconds "$IBX_MAX_PROBE_LATENCY" \
   --probe-consecutive-samples "$IBX_PROBE_CONSECUTIVE_SAMPLES" \
-  --min-memavailable "$IBX_MIN_MEMAVAILABLE" --min-free "$IBX_MIN_FREE" || exit 1
+  --min-memavailable "$IBX_MIN_MEMAVAILABLE" \
+  --min-output-free "$IBX_MIN_OUTPUT_FREE" --min-target-free "$IBX_MIN_TARGET_FREE" || exit 1
 run_study raw-t12h2 --target /dev/vda5 --device vda5 \
   --target-type raw --confirm-target "$IBX_TARGET_CONFIRMATION" \
   --allow-system-disk-partition --system-disk-ack "$(current_system_disk_ack)" \
@@ -456,7 +496,8 @@ run_study raw-t12h2 --target /dev/vda5 --device vda5 \
   --max-memory-psi "$IBX_MAX_MEMORY_PSI" \
   --max-probe-latency-seconds "$IBX_MAX_PROBE_LATENCY" \
   --probe-consecutive-samples "$IBX_PROBE_CONSECUTIVE_SAMPLES" \
-  --min-memavailable "$IBX_MIN_MEMAVAILABLE" --min-free "$IBX_MIN_FREE" || exit 1
+  --min-memavailable "$IBX_MIN_MEMAVAILABLE" \
+  --min-output-free "$IBX_MIN_OUTPUT_FREE" --min-target-free "$IBX_MIN_TARGET_FREE" || exit 1
 
 python3 "$LOCAL_STUDY" analyze "$LOCAL_OUT" --output "$LOCAL_OUT/rung-choice.md"
 ```
