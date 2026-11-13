@@ -194,7 +194,7 @@ fixture uses the recorded `none` layout and evidence digest, with synthetic
 same sysfs tree shape. The new read-only evidence digest also confirms the
 captured 13-cgroup BFQ-file absence; no new host was accessed by this fix.
 
-## IOB-BL-48 — close the iobench 0.2.0 R2 survivors; repair lane base handoff
+## IOB-BL-49 — close the iobench 0.2.0 R2 survivors; repair lane base handoff
 
 **Status:** survivor closure completed 2026-11-13; lane-base follow-up OPEN.
 
