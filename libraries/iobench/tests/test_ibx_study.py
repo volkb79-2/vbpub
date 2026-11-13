@@ -1378,6 +1378,7 @@ def test_local_liveness_probe_reports_fake_child_latency_and_failures(monkeypatc
 
     for returncode, state in ((3, "deactivating"), (3, ""), (0, "inactive"),
                               (3, "unknown")):
+        clock[:] = [0.0]
         host = driver.LocalHost()
         host._liveness_probe_stalled = True
         host._liveness_probe_stalled_unit = "ibx-liveness-prior.service"
