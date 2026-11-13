@@ -2732,6 +2732,49 @@ def test_io_control_snapshot_ignores_peer_removed_after_parent_listing(tmp_path,
     assert [row["path"] for row in snapshot["cgroups"]] == [str(root), str(root / "system.slice")]
 
 
+def test_io_control_snapshot_ignores_peer_removed_before_latency_read(tmp_path, monkeypatch):
+    root, fixture = materialize_real_cgroup_layout(tmp_path)
+    peer = root / "cgprofile.slice"
+    latency = peer / "io.latency"
+    original_stat = Path.stat
+    original_lstat = Path.lstat
+    peer_stat_count = 0
+
+    def disappearing_stat(candidate, *args, **kwargs):
+        nonlocal peer_stat_count
+        if candidate == peer:
+            peer_stat_count += 1
+            if peer_stat_count > 1:
+                raise FileNotFoundError("fixture removed peer after readdir")
+        return original_stat(candidate, *args, **kwargs)
+
+    def disappearing_lstat(candidate, *args, **kwargs):
+        if candidate == latency:
+            raise FileNotFoundError("fixture removed peer control after stat")
+        return original_lstat(candidate, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "stat", disappearing_stat)
+    monkeypatch.setattr(Path, "lstat", disappearing_lstat)
+    snapshot = driver.io_control_snapshot(cgroup_root=root, cgroup_text=fixture["cgroup_text"])
+    assert [row["path"] for row in snapshot["cgroups"]] == [str(root), str(root / "system.slice")]
+
+
+def test_io_control_snapshot_ignores_peer_control_removed_during_read(tmp_path, monkeypatch):
+    root, fixture = materialize_real_cgroup_layout(tmp_path)
+    latency = root / "cgprofile.slice/io.latency"
+    latency.write_text("\n", encoding="utf-8")
+    original_read_text = Path.read_text
+
+    def removed_read(candidate, *args, **kwargs):
+        if candidate == latency:
+            raise FileNotFoundError("fixture removed peer control during read")
+        return original_read_text(candidate, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", removed_read)
+    snapshot = driver.io_control_snapshot(cgroup_root=root, cgroup_text=fixture["cgroup_text"])
+    assert [row["path"] for row in snapshot["cgroups"]] == [str(root), str(root / "system.slice")]
+
+
 def test_io_control_snapshot_refuses_latency_peer_missing_from_parent_listing(tmp_path, monkeypatch):
     root, fixture = materialize_real_cgroup_layout(tmp_path)
     original_iterdir = Path.iterdir

@@ -564,13 +564,17 @@ def _io_control_error(message: str, path: Path | None) -> StudyError:
     return StudyError(f"{message} at {path}" if path is not None else message)
 
 
-def _read_optional_control(path: Path) -> str | None:
-    """Return a control's text, treating only an absent path as no setting."""
+def _read_optional_control(path: Path, *, allow_vanished_parent: bool = False) -> str | None:
+    """Read a control; tolerate a vanished parent only for dynamic peer groups."""
     try:
         path.lstat()
     except FileNotFoundError:
         try:
             path.parent.stat()
+        except FileNotFoundError as exc:
+            if allow_vanished_parent:
+                return None
+            raise StudyError(f"cannot enumerate cgroup IO control parent {path.parent}: {exc}") from exc
         except OSError as exc:
             raise StudyError(f"cannot enumerate cgroup IO control parent {path.parent}: {exc}") from exc
         return None
@@ -579,6 +583,8 @@ def _read_optional_control(path: Path) -> str | None:
     try:
         return path.read_text(encoding="utf-8").strip()
     except (OSError, UnicodeError) as exc:
+        if allow_vanished_parent and isinstance(exc, FileNotFoundError):
+            return None
         raise StudyError(f"cannot read existing cgroup IO control {path}: {exc}") from exc
 
 
@@ -740,9 +746,10 @@ def io_control_snapshot(*, cgroup_root: Path = Path("/sys/fs/cgroup"),
             raise StudyError(f"cannot enumerate benchmark cgroup {directory}: not a directory")
     latency_peers = _io_latency_peer_paths(dirs)
     latency_values: dict[Path, str | None] = {}
+    benchmark_chain = set(dirs)
     for directory in [cgroup_root, *latency_peers]:
         path = directory / "io.latency"
-        text = _read_optional_control(path)
+        text = _read_optional_control(path, allow_vanished_parent=directory not in benchmark_chain)
         if text:
             raise StudyError(f"active io.latency setting at {path}")
         latency_values[directory] = text
