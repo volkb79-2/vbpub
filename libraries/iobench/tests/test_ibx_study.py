@@ -2537,8 +2537,13 @@ def test_acceptance_runbook_pins_the_expected_host_before_proceeding(tmp_path):
     acceptance = (driver.HERE / "ACCEPTANCE.md").read_text(encoding="utf-8")
     match = re.search(r"(?ms)^assert_expected_host\(\) \{\n.*?^\}", acceptance)
     assert match is not None
-    assert acceptance.count("assert_expected_host") == 4
-    assert acceptance.index("\nassert_expected_host\n") < acceptance.index("host-escape -- lsblk")
+    call_sites = re.findall(r"(?m)^[ \t]*assert_expected_host(?:\(\))?[ \t]*$", acceptance)
+    assert len(call_sites) == 3
+    preflight = acceptance.split("## 1. Target-read-only inventory", 1)[0]
+    preflight_script = re.search(r"(?ms)^```bash\n(.*?)^```", preflight)
+    assert preflight_script is not None
+    assert preflight_script.group(1).index("assert_expected_host") < preflight_script.group(1).index(
+        "host-escape -- lsblk")
     raw_idle = re.search(r"(?ms)^assert_raw_idle\(\) \{\n(.*?)^\}", acceptance)
     assert raw_idle is not None
     assert raw_idle.group(1).lstrip().startswith("assert_expected_host")
