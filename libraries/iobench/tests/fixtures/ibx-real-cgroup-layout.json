@@ -1,0 +1,48 @@
+{
+  "provenance": {
+    "date": "2026-11-13",
+    "kernel": "7.2.12",
+    "sources": [
+      {
+        "file": "driver-io-control-refusal.txt",
+        "sha256": "b0ff2a77f3b056d8a6da3aff5a2976d126eb2dc18668aa0fe09ab47aaedce9ad"
+      },
+      {
+        "file": "logs/prior-state.txt",
+        "sha256": "cd4519778ee1a7baf0276b6caef0847550fb904df19d138a68637e9022b42a43"
+      },
+      {
+        "file": "ioctl-before.json",
+        "sha256": "51861c8b2dd439195740ad1b3f014f86e3a75d8e31e028c64437cc322a5d4045"
+      }
+    ],
+    "notes": "Relative cgroup paths only. Root and system.slice control states come from the refusal capture. A saved scheduler snapshot records [none] mq-deadline and no io.bfq.weight file in any of the 13 captured cgroups at depth two. The prior-state capture lists non-default controls; omitted controls outside the benchmark ancestry are not asserted absent. CONFIG_BLK_CGROUP_IOLATENCY is not set, so io.latency is absent from every cgroup. The exact process leaf membership was not recorded; cgroup_text follows the observed system.slice transient unit's slice."
+  },
+  "cgroup_text": "0::/system.slice\n",
+  "groups": {
+    ".": {
+      "io.max": null,
+      "io.weight": null,
+      "io.latency": null,
+      "io.bfq.weight": null,
+      "io.cost.qos": "254:0 enable=0 ctrl=auto rpct=0.00 rlat=250000 wpct=0.00 wlat=250000 min=1.00 max=10000.00\n",
+      "io.cost.model": "254:0 ctrl=auto model=linear rbps=174019176 rseqiops=41708 rrandiops=370 wbps=178075866 wseqiops=42705 wrandiops=378\n"
+    },
+    "system.slice": {
+      "io.max": "",
+      "io.weight": "default 100\n",
+      "io.latency": null,
+      "io.bfq.weight": null
+    },
+    "cgprofile.slice": {
+      "io.weight": "default 50\n",
+      "io.latency": null,
+      "io.bfq.weight": null
+    },
+    "dev.slice": {
+      "io.max": "254:0 rbps=2147483648 wbps=1073741824 riops=60000 wiops=40000\n",
+      "io.latency": null,
+      "io.bfq.weight": null
+    }
+  }
+}

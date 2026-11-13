@@ -382,6 +382,26 @@ stop/restore and slot schedule
 from the [study-day procedure](../studies/ibx/README.md). Before raw writes or
 discard, the driver refuses whole disks, a mounted or swap-active target
 partition, active exclusive claims, and holders.
+The IO-control preflight checks `io.max`, `io.weight`, and `io.bfq.weight` on
+the benchmark cgroup and its ancestors. A kernel or cgroup that omits an optional control
+file has no setting there, so the dry-run can pass that layout; an existing
+unreadable or malformed control, an active `io.max`, a non-default
+`io.weight`, non-default `io.bfq.weight`, enabled io.cost QoS, or a user/custom
+io.cost model still refuses. Because `io.latency` can throttle peer groups, the
+driver also enumerates the benchmark's direct peers at each level of its
+cgroup path and refuses active latency targets on every check. Peer
+`io.weight` is not judged. The target disk scheduler is read from
+`/sys/block/<disk>/queue/scheduler` and recorded in the run manifest and IO
+snapshot. Peer `io.bfq.weight` is judged when the selected target scheduler is
+`bfq`; any known non-BFQ scheduler makes those peer weights inert, including
+`none` and `mq-deadline`.
+A missing, unreadable, or malformed scheduler is recorded as unknown and
+causes a conservative peer BFQ check, with a clear dry-run manifest message.
+Peer membership is excluded from before/after equality because systemd
+services and containers can come and go. Missing optional files mean no
+setting, and benchmark-chain values plus scheduler state are compared before
+and after a cell-set. The kernel-managed `ctrl=auto model=linear` cost model
+is not considered custom.
 The [study README](../studies/ibx/README.md) maps saved stop-policy fields to
 their run options.
 
@@ -446,8 +466,7 @@ run_study raw-t0 --target /dev/vda5 --device vda5 \
   --max-memory-psi "$IBX_MAX_MEMORY_PSI" \
   --max-probe-latency-seconds "$IBX_MAX_PROBE_LATENCY" \
   --probe-consecutive-samples "$IBX_PROBE_CONSECUTIVE_SAMPLES" \
-  --min-memavailable "$IBX_MIN_MEMAVAILABLE" --min-free "$IBX_MIN_FREE" \
-  --fsync-cell standard:seq1m-write || exit 1
+  --min-memavailable "$IBX_MIN_MEMAVAILABLE" --min-free "$IBX_MIN_FREE" || exit 1
 python3 "$STUDY" analyze "$OUT" --output "$OUT/rung-choice.md"
 ```
 
@@ -469,7 +488,11 @@ I/O PSI is recorded as advisory because the fio workload can itself drive it
 to 100%. The live stop rules use memory PSI `full avg10`, `MemAvailable`, and
 free-space floors, plus a bounded host-liveness service in `system.slice` that
 fsyncs a temporary file on the root filesystem, checks the SSH banner, and
-verifies the cockpit runner with systemd and container exec. A configured
+verifies the configured cockpit Docker container with `docker exec`. It does
+not require a systemd unit for the runner. SSH host and port default to
+`127.0.0.1:22` and can be set with `--liveness-ssh-host` and
+`--liveness-ssh-port`; the container defaults to `mdt-cockpit-runner` and can
+be set with `--liveness-cockpit-container`. A configured
 number of consecutive slow or failed probes stops
 the run; the existing byte and elapsed-time caps also apply. The dry-run checks
 target and policy facts plus a successful initial liveness probe, without
@@ -477,6 +500,14 @@ requiring the fstrim, apt-daily, or governance timers to be stopped. The probe
 uses a bounded root-filesystem fsync, SSH banner and cockpit runner check. Live
 runs require those timers inactive and perform later probes at the recorded
 10-second default cadence (`--probe-interval-seconds` changes the interval).
+The dry-run reads diskstats, `/proc/pressure/io`, `/proc/pressure/memory`, and
+`/proc/meminfo`; a missing required file is reported as a path-specific
+`StudyError`. It also checks target discard support and required fio and
+target-operation tools before a pending study can pass.
 The first successful probe is required before any target discard or fio write.
 One timed-out probe remains failed until its transient unit is confirmed
 stopped; later failures count toward the configured consecutive-sample limit.
+`--fsync-cell` requires the driver to run inside a Docker cgroup scope with
+exactly one `docker-<64-hex-id>.scope` identity. Its dry-run verifies that
+scope, the configured background systemd slice, the wrapper, and the collector
+image; a root SSH session without that Docker scope gets a clear `StudyError`.

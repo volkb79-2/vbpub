@@ -73,6 +73,11 @@ class FakeHost:
                  available=16 * GIB, free=16 * GIB):
         self.fio = FakeFio()
         self.snapshot = {"io_cost": {"enable": 0}, "cgroups": []}
+        self.scheduler_snapshot = {
+            "target": {"disk": "vda", "status": "known", "selected": "none",
+                       "available": ["none", "mq-deadline"], "message": None},
+            "root": {}, "peer_bfq_policy": "inert", "message": None,
+        }
         self.psi_io = psi_io
         self.psi_mem = psi_mem
         self.psi_mem_full = psi_mem if psi_mem_full is None else psi_mem_full
@@ -81,6 +86,10 @@ class FakeHost:
         self.discards = []
         self.fsync_starts = []
         self.fsync_stops = []
+        self.fsync_preflights = 0
+        self.fsync_preflight_error = None
+        self.study_tool_preflights = []
+        self.trim_calls = []
         self.quiet_checked = 0
         self.clock = 0.0
         self.liveness_latency = 0.01
@@ -122,10 +131,19 @@ class FakeHost:
             return driver.TargetValidation(FAKE_IDENTITY, dict(self.system_disk))
         return driver.TargetValidation(None)
 
-    def io_control_snapshot(self):
-        return self.snapshot
+    def io_scheduler_snapshot(self, device, system_disk=None):
+        return self.scheduler_snapshot
+
+    def io_control_snapshot(self, *, scheduler_snapshot=None):
+        if scheduler_snapshot is None:
+            return self.snapshot
+        return {**self.snapshot, "block_schedulers": dict(scheduler_snapshot)}
+
+    def assert_study_tools(self, kind):
+        self.study_tool_preflights.append(kind)
 
     def trim_state(self, device):
+        self.trim_calls.append(device)
         return {"supported": True, "discard_max_bytes": 1024**3}
 
     def discard(self, target, kind, offset, size, timeout=None, sample=None):
@@ -149,9 +167,12 @@ class FakeHost:
                                    "full": {"avg10": self.psi_mem_full}}},
                 "meminfo": {"MemAvailable": self.available}, "free_bytes": self.free}
 
-    def liveness_probe(self, max_latency_s):
+    def liveness_probe(self, max_latency_s, *, ssh_host=driver.LIVENESS_SSH_HOST,
+                       ssh_port=driver.LIVENESS_SSH_PORT,
+                       cockpit_container=driver.LIVENESS_COCKPIT_CONTAINER):
         self.events.append("liveness")
         self.liveness_calls += 1
+        self.last_liveness_config = (ssh_host, ssh_port, cockpit_container)
         sample = self.liveness_samples.pop(0) if self.liveness_samples else {
             "responsive": self.liveness_responsive, "latency_seconds": self.liveness_latency,
             "components": {"root_fsync_seconds": self.liveness_latency / 3,
@@ -185,6 +206,11 @@ class FakeHost:
         self.fsync_starts.append(record)
         return record
 
+    def assert_fsync_preflight(self):
+        self.fsync_preflights += 1
+        if self.fsync_preflight_error:
+            raise driver.StudyError(self.fsync_preflight_error)
+
     def stop_fsync(self, collector):
         self.fsync_stops.append(collector)
 
@@ -207,13 +233,19 @@ def run_set(tmp_path, name, *, host=None, target_type=None, target="/dev/fake", 
             size=24 * GIB, fsync_cell=None, dry_run=False,
             allow_system_disk_partition=False, system_disk_ack=None,
             probe_consecutive_samples=3, max_probe_latency_s=1.0,
-            probe_interval_s=driver.DEFAULT_LIVENESS_PROBE_INTERVAL_S):
+            probe_interval_s=driver.DEFAULT_LIVENESS_PROBE_INTERVAL_S,
+            liveness_ssh_host=driver.LIVENESS_SSH_HOST,
+            liveness_ssh_port=driver.LIVENESS_SSH_PORT,
+            liveness_cockpit_container=driver.LIVENESS_COCKPIT_CONTAINER):
     return driver.run_study(name, target=target, device="vda5", out=tmp_path,
                             target_kind=target_type, offset=offset, size=size,
                             mem_psi_max=20, min_memavailable=2 * GIB,
                             min_free=4 * GIB, max_probe_latency_s=max_probe_latency_s,
                             probe_consecutive_samples=probe_consecutive_samples,
                             probe_interval_s=probe_interval_s,
+                            liveness_ssh_host=liveness_ssh_host,
+                            liveness_ssh_port=liveness_ssh_port,
+                            liveness_cockpit_container=liveness_cockpit_container,
                             host=host or FakeHost(), fsync_cell=fsync_cell,
                             quiet_window_confirmed=True,
                             confirm_target=f"{target}:{FAKE_IDENTITY.size_bytes}:{FAKE_IDENTITY.partuuid}"
@@ -222,8 +254,9 @@ def run_set(tmp_path, name, *, host=None, target_type=None, target="/dev/fake", 
                             system_disk_ack=system_disk_ack, dry_run=dry_run)
 
 
-def execute_liveness_script(*, banner=b"SSH-2.0-fixture\r\n", systemctl_state="active",
-                            systemctl_status=0, docker_status=0, fsync_error=False):
+def execute_liveness_script(*, banner=b"SSH-2.0-fixture\r\n", docker_status=0,
+                            fsync_error=False, ssh_host=None, ssh_port=None,
+                            cockpit_container=None):
     printed = []
     calls = []
     addresses = []
@@ -244,9 +277,12 @@ def execute_liveness_script(*, banner=b"SSH-2.0-fixture\r\n", systemctl_state="a
 
     def command(args, **_kwargs):
         calls.append(args)
-        if args[:2] == ["systemctl", "show"]:
-            return SimpleNamespace(returncode=systemctl_status, stdout=systemctl_state, stderr="")
         return SimpleNamespace(returncode=docker_status, stdout="", stderr="")
+
+    ssh_host = driver.LIVENESS_SSH_HOST if ssh_host is None else ssh_host
+    ssh_port = driver.LIVENESS_SSH_PORT if ssh_port is None else ssh_port
+    cockpit_container = (driver.LIVENESS_COCKPIT_CONTAINER if cockpit_container is None
+                         else cockpit_container)
 
     fake_modules = {
         "json": json,
@@ -258,9 +294,7 @@ def execute_liveness_script(*, banner=b"SSH-2.0-fixture\r\n", systemctl_state="a
                                    (addresses.append((address, timeout)) or Connection())),
         "subprocess": SimpleNamespace(run=command),
         "sys": SimpleNamespace(argv=["probe", "1", driver.LIVENESS_ROOT_DIRECTORY,
-                                     driver.LIVENESS_SSH_HOST, str(driver.LIVENESS_SSH_PORT),
-                                     driver.LIVENESS_COCKPIT_UNIT,
-                                     driver.LIVENESS_COCKPIT_CONTAINER]),
+                                     ssh_host, str(ssh_port), cockpit_container]),
         "tempfile": SimpleNamespace(mkstemp=lambda **_kwargs: (7, "/root/.ibx-liveness-test")),
         "time": SimpleNamespace(monotonic=lambda: next(clock)),
     }
@@ -387,7 +421,9 @@ def test_run_resume_monitors_and_records_one_json_per_fio_cell(tmp_path):
     assert "--system-disk-ack" in planned["risk_note"]
     assert state["run_manifest"]["target_safety"]["raw"]["root_disk_shared"] is True
     assert state["run_manifest"]["stop_policy"]["io_psi"].startswith("advisory")
-    assert state["io_control_runs"]["raw-t0"]["before"] == state["io_control_runs"]["raw-t0"]["after"] == host.snapshot
+    expected_snapshot = {**host.snapshot, "block_schedulers": host.scheduler_snapshot}
+    assert state["io_control_runs"]["raw-t0"]["before"] == state["io_control_runs"]["raw-t0"]["after"] == expected_snapshot
+    assert state["run_manifest"]["io_schedulers"]["raw"] == host.scheduler_snapshot
     fio_record = next(json.loads(path.read_text(encoding="utf-8")) for path in files
                       if '"fio"' in path.read_text(encoding="utf-8"))
     assert set(fio_record) >= {
@@ -581,19 +617,74 @@ def test_optional_file_standard_requires_borderline_quick_replay(tmp_path):
     assert driver.file_standard_needed(tmp_path, "ext4-file")
 
 
+def _trim_state_fixture(tmp_path):
+    disk = tmp_path / "devices/block/vda"
+    partition = disk / "vda5"
+    (disk / "queue").mkdir(parents=True)
+    partition.mkdir()
+    (partition / "partition").write_text("5\n", encoding="utf-8")
+    class_block = tmp_path / "class/block"
+    class_block.mkdir(parents=True)
+    (class_block / "vda").symlink_to(disk)
+    (class_block / "vda5").symlink_to(partition)
+    (disk / "queue/discard_max_bytes").write_text("4096\n", encoding="utf-8")
+    return driver.LocalHost(sys=tmp_path), disk, partition
+
+
 def test_local_trim_state_reads_explicit_sysfs_capability(tmp_path):
-    path = tmp_path / "class/block/vda5/queue/discard_max_bytes"
-    path.parent.mkdir(parents=True)
-    path.write_text("4096\n", encoding="utf-8")
-    host = driver.LocalHost(sys=tmp_path)
+    host, disk, _partition = _trim_state_fixture(tmp_path)
+    path = disk / "queue/discard_max_bytes"
     assert host.trim_state("vda5") == {"supported": True, "discard_max_bytes": 4096}
+    assert host.trim_state("vda") == {"supported": True, "discard_max_bytes": 4096}
     path.write_text("0\n", encoding="utf-8")
     assert host.trim_state("vda5")["supported"] is False
     path.write_text("bad\n", encoding="utf-8")
     with pytest.raises(driver.StudyError, match="malformed"):
         host.trim_state("vda5")
-    with pytest.raises(driver.StudyError, match="cannot read"):
+    path.write_bytes(b"\xff")
+    with pytest.raises(driver.StudyError, match="cannot read discard support for vda5"):
+        host.trim_state("vda5")
+    with pytest.raises(driver.StudyError, match="cannot resolve sysfs block device"):
         host.trim_state("missing")
+    path.unlink()
+    with pytest.raises(driver.StudyError, match="cannot read discard support for vda5"):
+        host.trim_state("vda5")
+
+
+def test_local_trim_state_refuses_non_directory_sysfs_target(tmp_path):
+    target = tmp_path / "devices/block/not-a-directory"
+    target.parent.mkdir(parents=True)
+    target.write_text("not a block device", encoding="utf-8")
+    class_block = tmp_path / "class/block"
+    class_block.mkdir(parents=True)
+    (class_block / "not-a-directory").symlink_to(target)
+    host = driver.LocalHost(sys=tmp_path)
+    with pytest.raises(driver.StudyError, match="sysfs block device not-a-directory is not a directory"):
+        host.trim_state("not-a-directory")
+
+
+def test_local_trim_state_refuses_unreadable_partition_identity(tmp_path, monkeypatch):
+    host, _disk, partition = _trim_state_fixture(tmp_path)
+    marker = partition / "partition"
+    original_stat = Path.stat
+
+    def unreadable(candidate, *args, **kwargs):
+        if candidate == marker:
+            raise PermissionError("fixture denies partition stat")
+        return original_stat(candidate, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "stat", unreadable)
+    with pytest.raises(driver.StudyError, match="cannot inspect partition identity for vda5"):
+        host.trim_state("vda5")
+
+
+def test_local_trim_state_refuses_non_regular_partition_identity(tmp_path):
+    host, _disk, partition = _trim_state_fixture(tmp_path)
+    marker = partition / "partition"
+    marker.unlink()
+    marker.mkdir()
+    with pytest.raises(driver.StudyError, match="partition identity for vda5 is malformed"):
+        host.trim_state("vda5")
 
 
 def _raw_target_fixture(tmp_path, monkeypatch, *, root_devno="8:99"):
@@ -655,6 +746,28 @@ def _raw_target_fixture(tmp_path, monkeypatch, *, root_devno="8:99"):
     monkeypatch.setattr(driver.os, "close", raw_close)
     monkeypatch.setattr(driver.subprocess, "run", command)
     return driver.LocalHost(proc=proc, sys=sysroot), target, part, sibling
+
+
+def test_new_host_subprocess_failures_are_study_errors(tmp_path, monkeypatch):
+    host = driver.LocalHost()
+
+    def unavailable(*args, **kwargs):
+        raise OSError("command is unavailable")
+
+    monkeypatch.setattr(driver.subprocess, "run", unavailable)
+    with pytest.raises(driver.StudyError, match="cannot establish filesystem identity"):
+        host._findmnt_facts("/mnt/data")
+
+    raw_host, target, _, _ = _raw_target_fixture(tmp_path / "raw", monkeypatch)
+    monkeypatch.setattr(driver.subprocess, "run", unavailable)
+    with pytest.raises(driver.StudyError, match="cannot establish raw target size"):
+        raw_host.validate_target(str(target), "raw", 0, 4096, "vda5", confirmation=FAKE_IDENTITY)
+
+    monkeypatch.setattr(driver.subprocess, "Popen", unavailable)
+    with pytest.raises(driver.StudyError, match="cannot start bounded target operation blkdiscard"):
+        host.discard("/dev/vda5", "raw", 0, 4096)
+    with pytest.raises(driver.StudyError, match="cannot start fio"):
+        host.execute_fio(tmp_path / "job.fio", 1, lambda: None)
 
 
 def test_localhost_sysfs_mount_btrfs_and_swap_refusal_edges(tmp_path, monkeypatch):
@@ -1355,13 +1468,21 @@ def test_local_quiet_window_and_fsync_wrapper_are_mocked(tmp_path, monkeypatch):
     with pytest.raises(driver.StudyError, match="cannot verify"):
         host.assert_quiet_window()
 
+    missing_proc_host = driver.LocalHost(proc=tmp_path / "missing-proc")
+    with pytest.raises(driver.StudyError, match="fsync mode requires a Docker cgroup scope; cannot read"):
+        missing_proc_host.current_container_id()
+
     proc = tmp_path / "proc/self/cgroup"
     proc.parent.mkdir(parents=True)
     proc.write_text("0::/system.slice/docker-" + "a" * 64 + ".scope\n", encoding="utf-8")
     host = driver.LocalHost(proc=tmp_path / "proc")
     assert host.current_container_id() == "a" * 64
     proc.write_text("0::/system.slice/other.scope\n", encoding="utf-8")
-    with pytest.raises(driver.StudyError, match="Docker cgroup identity"):
+    with pytest.raises(driver.StudyError, match="requires execution inside one Docker cgroup scope"):
+        host.current_container_id()
+    proc.write_text("0::/system.slice/docker-" + "a" * 64 + ".scope/docker-" + "b" * 64 + ".scope\n",
+                    encoding="utf-8")
+    with pytest.raises(driver.StudyError, match="requires execution inside one Docker cgroup scope"):
         host.current_container_id()
     proc.write_text("0::/system.slice/docker-" + "a" * 64 + ".scope\n", encoding="utf-8")
     monkeypatch.delenv("CGROUP_PARENT_DEV_BACKGROUND", raising=False)
@@ -1377,6 +1498,8 @@ def test_local_quiet_window_and_fsync_wrapper_are_mocked(tmp_path, monkeypatch):
             return SimpleNamespace(returncode=0, stdout="", stderr="")
         if argv[0] == "systemctl":
             return SimpleNamespace(returncode=0, stdout="loaded\n", stderr="")
+        if argv[:3] == ["docker", "image", "inspect"]:
+            return SimpleNamespace(returncode=0, stdout="sha256:" + "a" * 64 + "\n", stderr="")
         if argv[0] == "docker" and argv[1] == "inspect":
             return SimpleNamespace(returncode=0, stdout="true\n", stderr="")
         return SimpleNamespace(returncode=0, stdout="", stderr="")
@@ -1400,15 +1523,15 @@ def test_local_liveness_probe_reports_fake_child_latency_and_failures(monkeypatc
         return SimpleNamespace(returncode=0, stdout=json.dumps({
             "responsive": True, "components": components}), stderr="")
     monkeypatch.setattr(driver.subprocess, "run", successful_probe)
-    passed = host.liveness_probe(1)
+    passed = host.liveness_probe(1, ssh_host="127.0.0.2", ssh_port=2222,
+                                 cockpit_container="runner-test")
     assert passed == {"responsive": True, "latency_seconds": 0.35,
                       "components": components, "error": None}
     assert calls[0][0] == "systemd-run"
     assert "--slice=system.slice" in calls[0] and "--wait" in calls[0] and "--pipe" in calls[0]
     assert "--collect" in calls[0] and "--property=RuntimeMaxSec=1" in calls[0]
-    assert calls[0][-6:] == ["1", driver.LIVENESS_ROOT_DIRECTORY, driver.LIVENESS_SSH_HOST,
-                             str(driver.LIVENESS_SSH_PORT), driver.LIVENESS_COCKPIT_UNIT,
-                             driver.LIVENESS_COCKPIT_CONTAINER]
+    assert calls[0][-5:] == ["1", driver.LIVENESS_ROOT_DIRECTORY, "127.0.0.2", "2222",
+                             "runner-test"]
 
     def launched_unit(argv):
         option = next(arg for arg in argv if arg.startswith("--unit="))
@@ -1573,18 +1696,190 @@ def test_liveness_script_executes_fake_fsync_banner_and_cockpit_checks():
     assert status == 0 and payload["responsive"] is True
     assert set(payload["components"]) == {"root_fsync_seconds", "sshd_seconds", "cockpit_seconds"}
     assert addresses == [((driver.LIVENESS_SSH_HOST, driver.LIVENESS_SSH_PORT), 1.0)]
-    assert calls == [["systemctl", "show", driver.LIVENESS_COCKPIT_UNIT,
-                      "--property=ActiveState", "--value"],
-                     ["docker", "exec", driver.LIVENESS_COCKPIT_CONTAINER, "true"]]
+    assert calls == [["docker", "exec", driver.LIVENESS_COCKPIT_CONTAINER, "true"]]
+    status, payload, calls, addresses = execute_liveness_script(
+        ssh_host="127.0.0.2", ssh_port=2222, cockpit_container="runner-test")
+    assert status == 0 and payload["responsive"] is True
+    assert addresses == [(("127.0.0.2", 2222), 1.0)]
+    assert calls == [["docker", "exec", "runner-test", "true"]]
 
     for kwargs, error_fragment in (
             ({"banner": b"not-ssh"}, "SSH protocol banner"),
-            ({"systemctl_status": 1, "systemctl_state": "inactive"}, "not active"),
             ({"docker_status": 1}, "did not respond to exec"),
             ({"fsync_error": True}, "fsync failed")):
         status, payload, _calls, _addresses = execute_liveness_script(**kwargs)
         assert status == 1 and payload["responsive"] is False
         assert error_fragment in payload["error"]
+
+
+def test_fsync_preflight_requires_a_docker_cgroup_before_any_collector_command(tmp_path, monkeypatch):
+    proc = tmp_path / "proc/self/cgroup"
+    proc.parent.mkdir(parents=True)
+    proc.write_text("0::/user.slice/session-1.scope\n", encoding="utf-8")
+    host = driver.LocalHost(proc=tmp_path / "proc")
+    calls = []
+    monkeypatch.setattr(driver.subprocess, "run", lambda *args, **kwargs: calls.append(args[0]))
+    with pytest.raises(driver.StudyError, match="requires execution inside one Docker cgroup scope"):
+        host.assert_fsync_preflight()
+    assert calls == []
+
+
+def test_fsync_preflight_checks_parent_and_image_without_starting_collector(tmp_path, monkeypatch):
+    proc = tmp_path / "proc/self/cgroup"
+    proc.parent.mkdir(parents=True)
+    proc.write_text("0::/system.slice/docker-" + "a" * 64 + ".scope\n", encoding="utf-8")
+    host = driver.LocalHost(proc=tmp_path / "proc")
+    monkeypatch.setenv("CGROUP_PARENT_DEV_BACKGROUND", "dev-background.slice")
+    calls = []
+
+    def run(argv, **kwargs):
+        calls.append(argv)
+        if argv[0] == "systemctl":
+            return SimpleNamespace(returncode=0, stdout="loaded\n", stderr="")
+        if argv[:3] == ["docker", "image", "inspect"]:
+            return SimpleNamespace(returncode=0, stdout="sha256:" + "a" * 64 + "\n", stderr="")
+        raise AssertionError(f"unexpected command: {argv}")
+
+    monkeypatch.setattr(driver.subprocess, "run", run)
+    host.assert_fsync_preflight()
+    assert calls == [
+        ["systemctl", "show", "dev-background.slice", "--property=LoadState", "--value"],
+        ["docker", "image", "inspect", "--format", "{{.Id}}", driver.IOMON_BPF_IMAGE_DEFAULT],
+    ]
+
+    def image_missing(argv, **kwargs):
+        return (SimpleNamespace(returncode=0, stdout="loaded\n", stderr="")
+                if argv[0] == "systemctl" else
+                SimpleNamespace(returncode=1, stdout="", stderr="missing image"))
+
+    monkeypatch.setattr(driver.subprocess, "run", image_missing)
+    with pytest.raises(driver.StudyError, match="fsync collector image .* is unavailable"):
+        host.assert_fsync_preflight()
+
+
+def test_fsync_preflight_wraps_systemctl_docker_and_empty_image_errors(tmp_path, monkeypatch):
+    proc = tmp_path / "proc/self/cgroup"
+    proc.parent.mkdir(parents=True)
+    proc.write_text("0::/system.slice/docker-" + "a" * 64 + ".scope\n", encoding="utf-8")
+    host = driver.LocalHost(proc=tmp_path / "proc")
+    monkeypatch.setenv("CGROUP_PARENT_DEV_BACKGROUND", "dev-background.slice")
+
+    def systemctl_unavailable(*args, **kwargs):
+        raise OSError("systemctl is unavailable")
+
+    monkeypatch.setattr(driver.subprocess, "run", systemctl_unavailable)
+    with pytest.raises(driver.StudyError, match="cannot check fsync collector cgroup parent"):
+        host.assert_fsync_preflight()
+
+    def docker_unavailable(argv, **kwargs):
+        if argv[0] == "systemctl":
+            return SimpleNamespace(returncode=0, stdout="loaded\n", stderr="")
+        raise OSError("docker is unavailable")
+
+    monkeypatch.setattr(driver.subprocess, "run", docker_unavailable)
+    with pytest.raises(driver.StudyError, match="cannot inspect fsync collector image"):
+        host.assert_fsync_preflight()
+
+    monkeypatch.setenv("IOMON_BPF_IMAGE", "")
+    monkeypatch.setattr(driver.subprocess, "run", lambda *args, **kwargs:
+                        SimpleNamespace(returncode=0, stdout="loaded\n", stderr=""))
+    with pytest.raises(driver.StudyError, match="requires a non-empty IOMON_BPF_IMAGE"):
+        host.assert_fsync_preflight()
+
+
+@pytest.mark.parametrize(("kind", "missing"), (("raw", "blkdiscard"), ("ext4-file", "fallocate")))
+def test_study_tool_preflight_names_a_missing_target_operation(tmp_path, monkeypatch, kind, missing):
+    host = driver.LocalHost()
+    monkeypatch.setattr(driver.shutil, "which", lambda executable: None if executable == missing else f"/usr/bin/{executable}")
+    with pytest.raises(driver.StudyError, match=f"required study executable {missing} is unavailable"):
+        host.assert_study_tools(kind)
+
+
+def test_raw_study_tool_preflight_checks_fio_version_and_mounted_write_option(monkeypatch):
+    host = driver.LocalHost()
+    monkeypatch.setattr(driver.shutil, "which", lambda executable: f"/usr/bin/{executable}")
+    calls = []
+
+    def run(argv, **kwargs):
+        calls.append(argv)
+        if argv == ["fio", "--version"]:
+            return SimpleNamespace(returncode=0, stdout="fio-3.39\n", stderr="")
+        return SimpleNamespace(returncode=0, stdout="allow_mounted_write: enabled\n", stderr="")
+
+    monkeypatch.setattr(driver.subprocess, "run", run)
+    host.assert_study_tools("raw")
+    assert calls == [["fio", "--version"], ["fio", "--cmdhelp=allow_mounted_write"]]
+
+    def option_missing(argv, **kwargs):
+        return (SimpleNamespace(returncode=0, stdout="fio-3.39\n", stderr="")
+                if argv == ["fio", "--version"] else
+                SimpleNamespace(returncode=1, stdout="unknown option\n", stderr=""))
+
+    monkeypatch.setattr(driver.subprocess, "run", option_missing)
+    with pytest.raises(driver.StudyError, match="must support the allow_mounted_write option"):
+        host.assert_study_tools("raw")
+
+
+def test_study_tool_preflight_wraps_fio_launch_and_invalid_version(monkeypatch):
+    host = driver.LocalHost()
+    monkeypatch.setattr(driver.shutil, "which", lambda executable: f"/usr/bin/{executable}")
+
+    def unavailable(*args, **kwargs):
+        raise OSError("fio is unavailable")
+
+    monkeypatch.setattr(driver.subprocess, "run", unavailable)
+    with pytest.raises(driver.StudyError, match="cannot run fio preflight: fio is unavailable"):
+        host.assert_study_tools("raw")
+
+    monkeypatch.setattr(driver.subprocess, "run", lambda *args, **kwargs:
+                        SimpleNamespace(returncode=0, stdout="not-fio\n", stderr=""))
+    with pytest.raises(driver.StudyError, match="did not report a fio version"):
+        host.assert_study_tools("ext4-file")
+
+    monkeypatch.setattr(driver.subprocess, "run", lambda argv, **kwargs:
+                        SimpleNamespace(returncode=0, stdout="fio-3.39\n", stderr="")
+                        if argv == ["fio", "--version"] else
+                        (_ for _ in ()).throw(OSError("fio help is unavailable")))
+    with pytest.raises(driver.StudyError, match="cannot check fio allow_mounted_write support"):
+        host.assert_study_tools("raw")
+
+
+def test_file_study_tool_preflight_checks_fallocate_without_raw_option(monkeypatch):
+    host = driver.LocalHost()
+    monkeypatch.setattr(driver.shutil, "which", lambda executable: f"/usr/bin/{executable}")
+    calls = []
+
+    def run(argv, **kwargs):
+        calls.append(argv)
+        return SimpleNamespace(returncode=0, stdout="fio-3.39\n", stderr="")
+
+    monkeypatch.setattr(driver.subprocess, "run", run)
+    host.assert_study_tools("ext4-file")
+    assert calls == [["fio", "--version"]]
+
+
+def test_quiet_window_wraps_a_missing_systemctl(monkeypatch):
+    host = driver.LocalHost()
+
+    def unavailable(*args, **kwargs):
+        raise OSError("systemctl is unavailable")
+
+    monkeypatch.setattr(driver.subprocess, "run", unavailable)
+    with pytest.raises(driver.StudyError, match="cannot verify quiet-window timer state for fstrim.timer"):
+        host.assert_quiet_window()
+
+
+def test_fsync_cell_dry_run_reports_preflight_requirement_before_liveness(tmp_path):
+    host = FakeHost()
+    host.fsync_preflight_error = (
+        "fsync mode requires execution inside one Docker cgroup scope "
+        "(docker-<64-hex-id>.scope); an SSH root session does not provide this")
+    with pytest.raises(driver.StudyError, match="requires execution inside one Docker cgroup scope"):
+        run_set(tmp_path / "dry", "raw-t0", host=host, fsync_cell="standard:seq1m-write",
+                dry_run=True)
+    assert host.fsync_preflights == 1 and host.liveness_calls == 0
+    assert host.discards == [] and host.fio.calls == []
+    assert not (tmp_path / "dry").exists()
 
 
 def test_local_fsync_refuses_unloaded_slice_and_cleans_timed_out_collector(tmp_path, monkeypatch):
@@ -1598,14 +1893,96 @@ def test_local_fsync_refuses_unloaded_slice_and_cleans_timed_out_collector(tmp_p
     with pytest.raises(driver.StudyError, match="not a loaded"):
         host.start_fsync(tmp_path)
 
-    monkeypatch.setattr(driver.subprocess, "run", lambda *args, **kwargs:
-        SimpleNamespace(returncode=0, stdout="loaded\n", stderr="") if args[0][0] == "systemctl" else
-        SimpleNamespace(returncode=0, stdout="false\n", stderr=""))
+    def collector_not_started(*args, **kwargs):
+        argv = args[0]
+        if argv[0] == "systemctl":
+            return SimpleNamespace(returncode=0, stdout="loaded\n", stderr="")
+        if argv[:3] == ["docker", "image", "inspect"]:
+            return SimpleNamespace(returncode=0, stdout="sha256:" + "a" * 64 + "\n", stderr="")
+        return SimpleNamespace(returncode=0, stdout="false\n", stderr="")
+
+    monkeypatch.setattr(driver.subprocess, "run", collector_not_started)
     clock = [0.0]
     host.now = lambda: clock[0]
     host.sleep = lambda seconds: clock.__setitem__(0, clock[0] + seconds)
     with pytest.raises(driver.StudyError, match="did not start"):
         host.start_fsync(tmp_path)
+
+
+def _fsync_scope_fixture(tmp_path, monkeypatch):
+    proc = tmp_path / "proc/self/cgroup"
+    proc.parent.mkdir(parents=True)
+    proc.write_text("0::/system.slice/docker-" + "a" * 64 + ".scope\n", encoding="utf-8")
+    repo = tmp_path / "repo"
+    script = repo / "mdt-cockpit/scripts/iomon-bpf/run.sh"
+    script.parent.mkdir(parents=True)
+    script.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    script.chmod(0o755)
+    monkeypatch.setattr(driver, "REPO", repo)
+    monkeypatch.setenv("CGROUP_PARENT_DEV_BACKGROUND", "dev-background.slice")
+    return driver.LocalHost(proc=tmp_path / "proc"), script
+
+
+def _fsync_preflight_command(argv):
+    if argv[0] == "systemctl":
+        return SimpleNamespace(returncode=0, stdout="loaded\n", stderr="")
+    if argv[:3] == ["docker", "image", "inspect"]:
+        return SimpleNamespace(returncode=0, stdout="sha256:" + "a" * 64 + "\n", stderr="")
+    return None
+
+
+def test_fsync_collector_start_and_inspect_errors_are_study_errors(tmp_path, monkeypatch):
+    host, script = _fsync_scope_fixture(tmp_path, monkeypatch)
+
+    def wrapper_error(argv, **kwargs):
+        if argv[0] == str(script):
+            raise OSError("wrapper cannot start")
+        return _fsync_preflight_command(argv)
+
+    monkeypatch.setattr(driver.subprocess, "run", wrapper_error)
+    with pytest.raises(driver.StudyError, match="cannot start iomon-bpf collector"):
+        host.start_fsync(tmp_path)
+
+    def inspect_error(argv, **kwargs):
+        if argv[0] == str(script):
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+        if argv[:2] == ["docker", "inspect"]:
+            raise OSError("docker inspect is unavailable")
+        return _fsync_preflight_command(argv)
+
+    monkeypatch.setattr(driver.subprocess, "run", inspect_error)
+    with pytest.raises(driver.StudyError, match="cannot inspect iomon-bpf collector"):
+        host.start_fsync(tmp_path)
+
+
+def test_fsync_collector_stop_errors_are_study_errors(tmp_path, monkeypatch):
+    host, script = _fsync_scope_fixture(tmp_path, monkeypatch)
+    clock = [0.0]
+    host.now = lambda: clock[0]
+    host.sleep = lambda seconds: clock.__setitem__(0, clock[0] + seconds)
+
+    def stop_error(argv, **kwargs):
+        if argv[0] == str(script):
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+        if argv[:2] == ["docker", "inspect"]:
+            return SimpleNamespace(returncode=0, stdout="false\n", stderr="")
+        if argv[:2] == ["docker", "stop"]:
+            raise OSError("docker stop is unavailable")
+        return _fsync_preflight_command(argv)
+
+    monkeypatch.setattr(driver.subprocess, "run", stop_error)
+    with pytest.raises(driver.StudyError, match="cannot stop failed iomon-bpf collector"):
+        host.start_fsync(tmp_path)
+
+    owned_output = tmp_path / "owned-output"
+    owned_output.mkdir()
+
+    def owned_stop_error(*args, **kwargs):
+        raise OSError("docker stop is unavailable")
+
+    monkeypatch.setattr(driver.subprocess, "run", owned_stop_error)
+    with pytest.raises(driver.StudyError, match="cannot stop owned iomon-bpf collector"):
+        host.stop_fsync(("owned-collector", owned_output))
 
 
 def test_local_discard_wait_logs_sample_and_root_helpers_are_mocked(tmp_path, monkeypatch):
@@ -1705,6 +2082,28 @@ class FakeProcess:
 
     def communicate(self):
         return self.output, "fake stderr"
+
+
+def test_fio_json_output_is_a_command_line_option_not_a_job_file_option(tmp_path, monkeypatch):
+    # fio 3.39 rejects `output-format` in a job file ("Bad option <output-format=json>",
+    # exit 1); it is accepted only on the command line. Verified by running the rendered
+    # jobs through `fio --parse-only`.
+    template = driver.JOB_TEMPLATE.read_text(encoding="utf-8")
+    assert "output-format" not in template
+    for rung in ("veryquick", "quick", "standard"):
+        for job in driver.rung_jobs(rung):
+            rendered = driver.render_job(job, target="/dev/fake", offset=0, size=driver.GIB,
+                                         log_prefix="/out/log")
+            assert "output-format" not in rendered
+    argvs = []
+
+    def popen(argv, **kwargs):
+        argvs.append(argv)
+        return FakeProcess()
+
+    monkeypatch.setattr(driver.subprocess, "Popen", popen)
+    driver.LocalHost().execute_fio(tmp_path / "job.fio", 5, lambda: None)
+    assert argvs == [["fio", "--output-format=json", str(tmp_path / "job.fio")]]
 
 
 def test_local_execute_fio_completion_timeout_errors_and_cleanup(tmp_path, monkeypatch):
@@ -2408,29 +2807,151 @@ def test_adaptive_repeat_requires_complete_slots_and_repeats_moving_error(tmp_pa
     run_set(tmp_path, "raw-t12h2", host=host)
 
 
-def write_cgroup(root: Path, *, io_max="", io_weight="default 100\n8:0 100\n", io_latency="",
-                 qos="enable=0\n", model=""):
-    for directory in (root, root / "bench"):
-        directory.mkdir(parents=True, exist_ok=True)
-        (directory / "io.max").write_text(io_max, encoding="utf-8")
-        (directory / "io.weight").write_text(io_weight, encoding="utf-8")
-        (directory / "io.latency").write_text(io_latency, encoding="utf-8")
-    (root / "io.cost.qos").write_text(qos, encoding="utf-8")
-    (root / "io.cost.model").write_text(model, encoding="utf-8")
-
-
-def test_io_control_snapshot_checks_full_cgroup_chain_and_iocost(tmp_path, monkeypatch):
+def materialize_real_cgroup_layout(tmp_path):
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    fixture_path = Path(__file__).parent / "fixtures/ibx-real-cgroup-layout.json"
+    fixture = json.loads(fixture_path.read_text(encoding="utf-8"))
     root = tmp_path / "cg"
-    write_cgroup(root, io_max="\n8:0 rbps=max wbps=max\n",
-                 io_weight="default 100\n  \n8:0 100\n")
-    snapshot = driver.io_control_snapshot(cgroup_root=root, cgroup_text="0::/bench\n")
-    assert [row["path"] for row in snapshot["cgroups"]] == [str(root), str(root / "bench")]
-    assert snapshot["io_cost"]["io.cost.qos"] == "enable=0"
-    assert driver.cgroup_path("0::/bench\n") == "/bench"
+    root.mkdir()
+    for relative, controls in fixture["groups"].items():
+        directory = root if relative == "." else root / relative
+        directory.mkdir(parents=True, exist_ok=True)
+        for name, contents in controls.items():
+            path = directory / name
+            if contents is None:
+                assert not path.exists()
+            else:
+                path.write_text(contents, encoding="utf-8")
+    return root, fixture
+
+
+def materialize_scheduler_fixture(tmp_path, case_name):
+    fixture_path = Path(__file__).parent / "fixtures/ibx-block-scheduler-layout.json"
+    fixture = json.loads(fixture_path.read_text(encoding="utf-8"))
+    case = fixture["cases"][case_name]
+    sys_root = tmp_path / "sys"
+    disk = "study-disk"
+    partition = "study-partition"
+    disk_path = sys_root / "block" / disk
+    partition_path = disk_path / partition
+    queue = disk_path / "queue"
+    queue.mkdir(parents=True)
+    partition_path.mkdir()
+    (partition_path / "partition").write_text("1\n", encoding="utf-8")
+    class_block = sys_root / "class/block"
+    class_block.mkdir(parents=True)
+    (class_block / disk).symlink_to(disk_path)
+    (class_block / partition).symlink_to(partition_path)
+    if case["scheduler"] is not None:
+        (queue / "scheduler").write_text(case["scheduler"], encoding="utf-8")
+    validation = {"target_disk": disk, "root_fs_devices": [partition]}
+    scheduler = driver.LocalHost(sys=sys_root).io_scheduler_snapshot(partition, validation)
+    return fixture, case, sys_root, scheduler
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("[bfq] none mq-deadline\n", ("bfq", ["bfq", "none", "mq-deadline"])),
+        ("none [mq-deadline]\n", ("mq-deadline", ["none", "mq-deadline"])),
+        ("none mq-deadline\n", (None, ["none", "mq-deadline"])),
+        ("none/bad\n", (None, [])),
+        ("[none] [bfq]\n", (None, ["none", "bfq"])),
+        ("[none] none\n", (None, ["none"])),
+        ("[none\n", (None, [])),
+        ("[]\n", (None, [])),
+        ("[bad/name]\n", (None, [])),
+    ],
+)
+def test_block_scheduler_parser_requires_one_well_formed_selection(text, expected):
+    assert driver._parse_block_scheduler(text) == expected
+
+
+def test_scheduler_discovery_resolves_whole_disks_and_records_root_scheduler(tmp_path):
+    _fixture, _case, sys_root, target_scheduler = materialize_scheduler_fixture(tmp_path, "real-none")
+    host = driver.LocalHost(sys=sys_root)
+    assert host._whole_disk_name("study-disk") == "study-disk"
+    direct_target = host.io_scheduler_snapshot("study-partition")
+    assert direct_target["target"] == target_scheduler["target"]
+    assert direct_target["root"] == {}
+    root_disk = sys_root / "block/root-disk"
+    (root_disk / "queue").mkdir(parents=True)
+    (root_disk / "queue/scheduler").write_text("none [bfq]\n", encoding="utf-8")
+    root_partition = root_disk / "root-partition"
+    root_partition.mkdir()
+    (root_partition / "partition").write_text("2\n", encoding="utf-8")
+    (sys_root / "class/block/root-disk").symlink_to(root_disk)
+    (sys_root / "class/block/root-partition").symlink_to(root_partition)
+    scheduler = host.io_scheduler_snapshot("study-partition", {
+        "target_disk": "study-disk", "root_fs_devices": ["root-partition"]})
+    assert scheduler["target"] == target_scheduler["target"]
+    assert scheduler["root"]["root-disk"]["selected"] == "bfq"
+    root_state = host.io_scheduler_snapshot("study-partition", {
+        "target_disk": "", "root_fs_devices": ["", 17, "root-partition", "missing-root"]})
+    assert root_state["target"]["selected"] == "none"
+    assert root_state["root"]["root-disk"]["selected"] == "bfq"
+    assert root_state["root"]["missing-root"]["status"] == "unknown"
+    assert host.io_scheduler_snapshot("study-partition", {
+        "target_disk": "study-disk", "root_fs_devices": "malformed"})["root"] == {}
+    unknown = host.io_scheduler_snapshot("missing")
+    assert unknown["target"]["status"] == "unknown"
+    assert "cannot resolve sysfs block device missing" in unknown["target"]["message"]
+
+
+def test_scheduler_discovery_refuses_bad_partition_markers(tmp_path, monkeypatch):
+    _fixture, _case, sys_root, _scheduler = materialize_scheduler_fixture(tmp_path, "real-none")
+    host = driver.LocalHost(sys=sys_root)
+    marker = sys_root / "block/study-disk/study-partition/partition"
+    real_stat = Path.stat
+
+    def denied(path, *args, **kwargs):
+        if path == marker:
+            raise PermissionError("fixture denies partition marker stat")
+        return real_stat(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "stat", denied)
+    with pytest.raises(driver.StudyError, match="cannot inspect sysfs partition identity"):
+        host._whole_disk_name("study-partition")
+    monkeypatch.setattr(Path, "stat", real_stat)
+    marker.unlink()
+    marker.mkdir()
+    with pytest.raises(driver.StudyError, match="partition identity.*malformed"):
+        host._whole_disk_name("study-partition")
+
+
+def test_io_control_snapshot_accepts_the_recorded_host_layout(tmp_path, monkeypatch):
+    root, fixture = materialize_real_cgroup_layout(tmp_path)
+    assert fixture["provenance"]["kernel"] == "7.2.12"
+    assert {source["sha256"] for source in fixture["provenance"]["sources"]} == {
+        "b0ff2a77f3b056d8a6da3aff5a2976d126eb2dc18668aa0fe09ab47aaedce9ad",
+        "cd4519778ee1a7baf0276b6caef0847550fb904df19d138a68637e9022b42a43",
+        "51861c8b2dd439195740ad1b3f014f86e3a75d8e31e028c64437cc322a5d4045",
+    }
+    snapshot = driver.io_control_snapshot(cgroup_root=root, cgroup_text=fixture["cgroup_text"])
+    assert [row["path"] for row in snapshot["cgroups"]] == [str(root), str(root / "system.slice")]
+    assert snapshot["cgroups"][0]["files"] == {
+        "io.max": None, "io.weight": None, "io.bfq.weight": None, "io.latency": None}
+    assert snapshot["cgroups"][1]["files"] == {
+        "io.max": "", "io.weight": "default 100", "io.bfq.weight": None, "io.latency": None}
+    assert "io_latency_peers" not in snapshot
+    assert snapshot["io_cost"]["io.cost.qos"].startswith("254:0 enable=0 ctrl=auto")
+    assert snapshot["io_cost"]["io.cost.model"].startswith("254:0 ctrl=auto model=linear")
+    for row in snapshot["cgroups"]:
+        io_max = row["files"]["io.max"]
+        if io_max is not None:
+            assert driver._io_max_active(io_max, Path(row["path"])) is False
+        io_weight = row["files"]["io.weight"]
+        if io_weight is not None:
+            assert driver._validate_io_weight_inactive(io_weight, Path(row["path"])) is None
+        bfq_weight = row["files"]["io.bfq.weight"]
+        if bfq_weight is not None:
+            assert driver._validate_io_bfq_weight_inactive(bfq_weight, Path(row["path"])) is None
+    assert fixture["groups"]["."]["io.bfq.weight"] is None
     assert driver._io_max_active("8:0 rbps=max wbps=max\n") is False
     assert driver._io_max_active("") is False
     assert driver._io_max_active("\n") is False
     assert driver._io_max_active("8:0 rbps=100\n") is True
+    assert driver.cgroup_path("0::/bench\n") == "/bench"
     with pytest.raises(driver.StudyError, match="malformed io.max"):
         driver._io_max_active("badline\n")
     with pytest.raises(driver.StudyError, match="malformed io.max setting"):
@@ -2439,57 +2960,490 @@ def test_io_control_snapshot_checks_full_cgroup_chain_and_iocost(tmp_path, monke
         driver.cgroup_path("1:name=systemd:/foo\n")
     with pytest.raises(driver.StudyError, match="cannot resolve"):
         driver.cgroup_path("0::/../escape\n")
+    appearing_control = root / "system.slice/io.max"
+    original_max = appearing_control.read_text(encoding="utf-8")
+    appearing_control.write_text("254:0 rbps=max\n", encoding="utf-8")
+    changed_snapshot = driver.io_control_snapshot(cgroup_root=root, cgroup_text=fixture["cgroup_text"])
+    assert snapshot != changed_snapshot
+    appearing_control.write_text(original_max, encoding="utf-8")
+    transient_peer = root / "cgprofile.slice"
+    (transient_peer / "io.weight").unlink()
+    transient_peer.rmdir()
+    assert driver.io_control_snapshot(cgroup_root=root, cgroup_text=fixture["cgroup_text"]) == snapshot
+    transient_peer.mkdir()
+    (transient_peer / "io.latency").write_text("\n", encoding="utf-8")
+    assert driver.io_control_snapshot(cgroup_root=root, cgroup_text=fixture["cgroup_text"]) == snapshot
 
     original_read_text = Path.read_text
 
     def proc_cgroup(path, *args, **kwargs):
         if path == Path("/proc/self/cgroup"):
-            return "0::/bench\n"
+            return fixture["cgroup_text"]
         return original_read_text(path, *args, **kwargs)
 
     monkeypatch.setattr(Path, "read_text", proc_cgroup)
-    assert driver.io_control_snapshot(cgroup_root=root)["io_cost"]["io.cost.qos"] == "enable=0"
+    assert driver.io_control_snapshot(cgroup_root=root)["io_cost"] == snapshot["io_cost"]
+
+
+def test_io_control_snapshot_accepts_root_cgroup_membership(tmp_path):
+    root, _fixture = materialize_real_cgroup_layout(tmp_path)
+    snapshot = driver.io_control_snapshot(cgroup_root=root, cgroup_text="0::/\n")
+    assert [row["path"] for row in snapshot["cgroups"]] == [str(root)]
+    assert snapshot["cgroups"][0]["files"] == {
+        "io.max": None, "io.weight": None, "io.bfq.weight": None, "io.latency": None}
+
+
+def test_io_control_snapshot_accepts_present_but_inactive_controls(tmp_path):
+    root, fixture = materialize_real_cgroup_layout(tmp_path)
+    benchmark = root / "system.slice/study.service"
+    benchmark.mkdir()
+    (benchmark / "io.max").write_text(
+        "254:0 rbps=max wbps=max riops=max wiops=max\n", encoding="utf-8")
+    (benchmark / "io.weight").write_text("default 100\n\n254:0 100\n", encoding="utf-8")
+    (benchmark / "io.bfq.weight").write_text("default 100\n\n254:0 100\n254:1 0\n", encoding="utf-8")
+    (benchmark / "io.latency").write_text("\n", encoding="utf-8")
+    snapshot = driver.io_control_snapshot(
+        cgroup_root=root, cgroup_text="0::/system.slice/study.service\n")
+    assert snapshot["cgroups"][-1]["files"] == {
+        "io.max": "254:0 rbps=max wbps=max riops=max wiops=max",
+        "io.weight": "default 100\n\n254:0 100",
+        "io.bfq.weight": "default 100\n\n254:0 100\n254:1 0",
+        "io.latency": "",
+    }
+    assert snapshot["io_cost"] == {
+        name: fixture["groups"]["."][name].strip()
+        for name in ("io.cost.qos", "io.cost.model")
+    }
+
+
+def test_recorded_real_scheduler_layout_has_no_active_io_limits(tmp_path):
+    _fixture, case, _sys_root, scheduler = materialize_scheduler_fixture(tmp_path, "real-none")
+    root, cgroup = materialize_real_cgroup_layout(tmp_path / "cgroup")
+    snapshot = driver.io_control_snapshot(
+        cgroup_root=root, cgroup_text=cgroup["cgroup_text"], scheduler_snapshot=scheduler)
+    assert case["scheduler"] == "[none] mq-deadline"
+    assert case["bfq_controller_file"] == "absent"
+    assert scheduler["target"]["selected"] == "none"
+    assert scheduler["root"]["study-disk"]["selected"] == "none"
+    assert scheduler["peer_bfq_policy"] == "inert"
+    assert snapshot["block_schedulers"] == scheduler
+    assert snapshot["cgroups"][0]["files"]["io.bfq.weight"] is None
+    for row in snapshot["cgroups"]:
+        files = row["files"]
+        if files["io.max"] is not None:
+            assert driver._io_max_active(files["io.max"], Path(row["path"])) is False
+        if files["io.weight"] is not None:
+            assert driver._validate_io_weight_inactive(files["io.weight"], Path(row["path"])) is None
+        if files["io.bfq.weight"] is not None:
+            assert driver._validate_io_bfq_weight_inactive(
+                files["io.bfq.weight"], Path(row["path"])) is None
+        assert files["io.latency"] in (None, "")
+    assert "enable=0" in snapshot["io_cost"]["io.cost.qos"]
+    assert "ctrl=auto model=linear" in snapshot["io_cost"]["io.cost.model"]
+
+
+@pytest.mark.parametrize("case_name", ("real-none", "mq-deadline"))
+def test_peer_bfq_weight_is_inert_when_target_scheduler_is_not_bfq(tmp_path, case_name):
+    _fixture, case, _sys_root, scheduler = materialize_scheduler_fixture(tmp_path, case_name)
+    root, cgroup = materialize_real_cgroup_layout(tmp_path / "cgroup")
+    (root / "cgprofile.slice/io.bfq.weight").write_text(
+        "default 50\n254:0 200\n", encoding="utf-8")
+    snapshot = driver.io_control_snapshot(
+        cgroup_root=root, cgroup_text=cgroup["cgroup_text"], scheduler_snapshot=scheduler)
+    assert case["scheduler"] is not None
+    assert scheduler["peer_bfq_policy"] == "inert"
+    assert snapshot["block_schedulers"]["target"]["selected"] != "bfq"
+
+
+def test_peer_bfq_weight_refuses_when_target_scheduler_is_bfq(tmp_path):
+    _fixture, _case, _sys_root, scheduler = materialize_scheduler_fixture(tmp_path, "bfq")
+    root, cgroup = materialize_real_cgroup_layout(tmp_path / "cgroup")
+    path = root / "cgprofile.slice/io.bfq.weight"
+    path.write_text("default 50\n254:0 200\n", encoding="utf-8")
+    with pytest.raises(driver.StudyError, match="non-default io.bfq.weight") as caught:
+        driver.io_control_snapshot(
+            cgroup_root=root, cgroup_text=cgroup["cgroup_text"], scheduler_snapshot=scheduler)
+    assert "cgprofile.slice/io.bfq.weight" in str(caught.value)
+
+
+@pytest.mark.parametrize("case_name", ("missing-scheduler", "malformed-scheduler"))
+def test_unknown_target_scheduler_conservatively_checks_peer_bfq_weight(tmp_path, case_name):
+    _fixture, _case, _sys_root, scheduler = materialize_scheduler_fixture(tmp_path, case_name)
+    root, cgroup = materialize_real_cgroup_layout(tmp_path / "cgroup")
+    path = root / "cgprofile.slice/io.bfq.weight"
+    path.write_text("default 50\n254:0 200\n", encoding="utf-8")
+    assert scheduler["target"]["status"] == "unknown"
+    assert scheduler["peer_bfq_policy"] == "conservative-check"
+    with pytest.raises(driver.StudyError, match="scheduler is unknown.*cgprofile.slice/io.bfq.weight"):
+        driver.io_control_snapshot(
+            cgroup_root=root, cgroup_text=cgroup["cgroup_text"], scheduler_snapshot=scheduler)
+
+
+def test_unreadable_scheduler_is_unknown_and_checks_peer_bfq_weight(tmp_path, monkeypatch):
+    _fixture, _case, sys_root, _scheduler = materialize_scheduler_fixture(tmp_path, "bfq")
+    scheduler_path = sys_root / "block/study-disk/queue/scheduler"
+    original_read_text = Path.read_text
+
+    def unreadable(path, *args, **kwargs):
+        if path == scheduler_path:
+            raise PermissionError("fixture denies scheduler read")
+        return original_read_text(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", unreadable)
+    host = driver.LocalHost(sys=sys_root)
+    scheduler = host.io_scheduler_snapshot("study-partition", {
+        "target_disk": "study-disk", "root_fs_devices": ["study-partition"]})
+    root, cgroup = materialize_real_cgroup_layout(tmp_path / "cgroup")
+    path = root / "cgprofile.slice/io.bfq.weight"
+    path.write_text("default 50\n254:0 200\n", encoding="utf-8")
+    assert scheduler["target"]["message"].startswith("cannot read scheduler file")
+    with pytest.raises(driver.StudyError, match="scheduler is unknown.*cgprofile.slice/io.bfq.weight"):
+        driver.io_control_snapshot(
+            cgroup_root=root, cgroup_text=cgroup["cgroup_text"], scheduler_snapshot=scheduler)
+
+
+def test_missing_bfq_controller_file_is_no_setting_with_unknown_scheduler(tmp_path):
+    _fixture, case, _sys_root, scheduler = materialize_scheduler_fixture(tmp_path, "no-bfq-controller")
+    root, cgroup = materialize_real_cgroup_layout(tmp_path / "cgroup")
+    snapshot = driver.io_control_snapshot(
+        cgroup_root=root, cgroup_text=cgroup["cgroup_text"], scheduler_snapshot=scheduler)
+    assert case["bfq_controller_file"] == "absent"
+    assert scheduler["target"]["status"] == "unknown"
+    assert scheduler["message"]
+    assert snapshot["cgroups"][0]["files"]["io.bfq.weight"] is None
 
 
 @pytest.mark.parametrize(
-    ("kwargs", "message"),
+    ("relative", "filename", "contents", "message"),
     [
-        ({"io_max": "8:0 rbps=100\n"}, "active io.max"),
-        ({"io_max": "8:0\n"}, "malformed io.max line"),
-        ({"io_max": "8:0 foo=max\n"}, "unknown or malformed io.max"),
-        ({"io_weight": "default 200\n"}, "non-default io.weight"),
-        ({"io_weight": "bad\n"}, "malformed io.weight"),
-        ({"io_latency": "8:0 target=1000\n"}, "active io.latency"),
-        ({"qos": "enable=1\n"}, "qos is enabled"),
-        ({"qos": "enable=0 enable=0\n"}, "must explicitly report enable=0"),
-        ({"model": "8:0 ctrl=user\n"}, "model is configured"),
+        ("system.slice", "io.max", "254:0 rbps=100\n", "active io.max limit"),
+        ("system.slice", "io.weight", "default 50\n", "non-default io.weight"),
+        ("system.slice", "io.bfq.weight", "default 100\n254:0 200\n", "non-default io.bfq.weight"),
+        ("system.slice", "io.latency", "254:0 target=1000\n", "active io.latency"),
+        ("cgprofile.slice", "io.latency", "254:0 target=1000\n", "active io.latency"),
+        (".", "io.cost.qos", "254:0 enable=1 ctrl=auto\n", "active io.cost.qos limit"),
+        (".", "io.cost.model", "254:0 ctrl=user model=linear rbps=1\n", "custom io.cost.model"),
     ],
 )
-def test_io_control_snapshot_refuses_active_or_unknown_controls(tmp_path, kwargs, message):
-    root = tmp_path / "cg"
-    write_cgroup(root, **kwargs)
-    with pytest.raises(driver.StudyError, match=message):
-        driver.io_control_snapshot(cgroup_root=root, cgroup_text="0::/bench\n")
+def test_io_control_snapshot_refuses_each_active_limit_by_filename(
+        tmp_path, relative, filename, contents, message):
+    root, fixture = materialize_real_cgroup_layout(tmp_path)
+    directory = root if relative == "." else root / relative
+    (directory / filename).write_text(contents, encoding="utf-8")
+    with pytest.raises(driver.StudyError, match=message) as caught:
+        driver.io_control_snapshot(cgroup_root=root, cgroup_text=fixture["cgroup_text"])
+    assert filename in str(caught.value)
 
 
-def test_io_control_snapshot_refuses_missing_files_and_nonzero_qos_with_disabled_flag(tmp_path):
-    root = tmp_path / "cg"
-    write_cgroup(root, qos="")
-    with pytest.raises(driver.StudyError, match="must explicitly report enable=0"):
-        driver.io_control_snapshot(cgroup_root=root, cgroup_text="0::/bench\n")
-    (root / "bench/io.latency").unlink()
-    with pytest.raises(driver.StudyError, match="cannot read required"):
-        driver.io_control_snapshot(cgroup_root=root, cgroup_text="0::/bench\n")
-    write_cgroup(root, qos="enable=0 enable=1\n")
-    with pytest.raises(driver.StudyError, match="qos is enabled"):
-        driver.io_control_snapshot(cgroup_root=root, cgroup_text="0::/bench\n")
-    write_cgroup(root, io_weight="8:0 100\n")
-    with pytest.raises(driver.StudyError, match="no explicit default"):
-        driver.io_control_snapshot(cgroup_root=root, cgroup_text="0::/bench\n")
-    write_cgroup(root)
+@pytest.mark.parametrize(
+    ("relative", "filename", "contents", "message"),
+    [
+        ("system.slice", "io.max", "8:0\n", "malformed io.max line"),
+        ("system.slice", "io.max", "bad rbps=max\n", "malformed io.max line"),
+        ("system.slice", "io.max", "8:0 foo=max\n", "unknown or malformed io.max control"),
+        ("system.slice", "io.max", "8:0 rbps=fast\n", "unknown or malformed io.max control"),
+        ("system.slice", "io.max", "8:0 rbps=max rbps=max\n", "unknown or malformed io.max control"),
+        ("system.slice", "io.weight", "bad\n", "malformed io.weight"),
+        ("system.slice", "io.weight", "8:0 100\n", "no explicit default 100"),
+        ("system.slice", "io.weight", "default 100\ndefault 100\n", "duplicate default"),
+        ("system.slice", "io.weight", "default many\n", "malformed io.weight"),
+        ("system.slice", "io.weight", "default 100\n8:0 100\n8:0 100\n", "duplicate device row"),
+        ("system.slice", "io.weight", "default 100\n8:0 many\n", "malformed io.weight"),
+        ("system.slice", "io.bfq.weight", "default 100\n254:0 1001\n", "malformed io.bfq.weight"),
+        ("system.slice", "io.bfq.weight", "default fast\n", "malformed io.bfq.weight"),
+        ("system.slice", "io.bfq.weight", "default 100\n254:0 fast\n", "malformed io.bfq.weight"),
+        ("system.slice", "io.bfq.weight", "not a row\n", "malformed io.bfq.weight"),
+        ("system.slice", "io.bfq.weight", "default 50\n", "non-default io.bfq.weight"),
+        ("system.slice", "io.bfq.weight", "default 100\ndefault 100\n", "duplicate default"),
+        ("system.slice", "io.bfq.weight", "default 100\n254:0 100\n254:0 100\n", "duplicate device row"),
+        ("system.slice", "io.bfq.weight", "254:0 100\n", "no explicit default 100"),
+        (".", "io.cost.qos", "254:0 enable=maybe\n", "no valid enable value"),
+        (".", "io.cost.qos", "bad\n", "malformed io.cost.qos"),
+        (".", "io.cost.qos", "254:0 mystery=1\n", "unknown or malformed io.cost.qos"),
+        (".", "io.cost.qos", "254:0 enable\n", "malformed io.cost.qos"),
+        (".", "io.cost.qos", "254:0 enable=0 enable=0\n", "unknown or malformed io.cost.qos"),
+        (".", "io.cost.qos", "254:0 enable=0\n254:0 enable=0\n", "malformed io.cost.qos"),
+        (".", "io.cost.qos", "254:0 enable=0 ctrl=broken\n", "malformed io.cost.qos controller"),
+        (".", "io.cost.qos", "254:0 enable=0 rlat=fast\n", "malformed io.cost.qos value"),
+        (".", "io.cost.qos", "254:0 enable=0 rpct=101\n", "malformed io.cost.qos value"),
+        (".", "io.cost.qos", "254:0 enable=0 min=0\n", "malformed io.cost.qos value"),
+        (".", "io.cost.qos", "254:0 enable=0 max=10001\n", "malformed io.cost.qos value"),
+        (".", "io.cost.model", "254:0 ctrl=auto model=linear mystery=1\n", "unknown or malformed io.cost.model"),
+        (".", "io.cost.model", "254:0 ctrl=auto model=linear rbps=fast\n", "malformed io.cost.model value"),
+    ],
+)
+def test_io_control_snapshot_refuses_weird_control_values(
+        tmp_path, relative, filename, contents, message):
+    root, fixture = materialize_real_cgroup_layout(tmp_path)
+    directory = root if relative == "." else root / relative
+    (directory / filename).write_text(contents, encoding="utf-8")
+    with pytest.raises(driver.StudyError, match=message) as caught:
+        driver.io_control_snapshot(cgroup_root=root, cgroup_text=fixture["cgroup_text"])
+    assert filename in str(caught.value)
+
+
+def test_io_control_snapshot_refuses_existing_unreadable_io_max(tmp_path, monkeypatch):
+    root, fixture = materialize_real_cgroup_layout(tmp_path)
+    path = root / "system.slice/io.max"
+    path.write_text("", encoding="utf-8")
+    original_read_text = Path.read_text
+
+    def unreadable(candidate, *args, **kwargs):
+        if candidate == path:
+            raise PermissionError("fixture denies read")
+        return original_read_text(candidate, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", unreadable)
+    with pytest.raises(driver.StudyError, match="cannot read existing cgroup IO control.*io.max"):
+        driver.io_control_snapshot(cgroup_root=root, cgroup_text=fixture["cgroup_text"])
+
+
+def test_io_control_snapshot_refuses_control_path_that_cannot_be_inspected(tmp_path, monkeypatch):
+    root, fixture = materialize_real_cgroup_layout(tmp_path)
+    path = root / "system.slice/io.max"
+    path.write_text("", encoding="utf-8")
+    original_lstat = Path.lstat
+
+    def inaccessible(candidate):
+        if candidate == path:
+            raise PermissionError("fixture denies stat")
+        return original_lstat(candidate)
+
+    monkeypatch.setattr(Path, "lstat", inaccessible)
+    with pytest.raises(driver.StudyError, match="cannot inspect existing cgroup IO control.*io.max"):
+        driver.io_control_snapshot(cgroup_root=root, cgroup_text=fixture["cgroup_text"])
+
+
+def test_absent_io_control_requires_an_enumerable_parent(tmp_path):
+    with pytest.raises(driver.StudyError, match="cannot enumerate cgroup IO control parent"):
+        driver._read_optional_control(tmp_path / "missing/io.max")
+
+
+def test_io_control_snapshot_refuses_unreadable_cgroup_membership(tmp_path, monkeypatch):
+    root, _fixture = materialize_real_cgroup_layout(tmp_path)
+    original_read_text = Path.read_text
+
+    def unreadable(candidate, *args, **kwargs):
+        if candidate == Path("/proc/self/cgroup"):
+            raise PermissionError("fixture denies membership read")
+        return original_read_text(candidate, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", unreadable)
+    with pytest.raises(driver.StudyError, match="cannot read unified cgroup membership.*proc/self/cgroup"):
+        driver.io_control_snapshot(cgroup_root=root)
+
+
+def test_io_control_snapshot_refuses_cgroup_that_cannot_be_enumerated(tmp_path):
+    root, fixture = materialize_real_cgroup_layout(tmp_path)
+    (root / "system.slice/io.max").unlink()
+    (root / "system.slice/io.weight").unlink()
+    (root / "system.slice").rmdir()
+    with pytest.raises(driver.StudyError, match="cannot enumerate benchmark cgroup.*system.slice"):
+        driver.io_control_snapshot(cgroup_root=root, cgroup_text=fixture["cgroup_text"])
+
+
+def test_io_control_snapshot_refuses_a_missing_cgroup_root_for_a_root_membership(tmp_path):
+    with pytest.raises(driver.StudyError, match="cannot enumerate benchmark cgroup .*absent"):
+        driver.io_control_snapshot(cgroup_root=tmp_path / "absent", cgroup_text="0::/\n")
+
+
+def test_io_control_snapshot_refuses_unenumerable_latency_peers(tmp_path, monkeypatch):
+    root, fixture = materialize_real_cgroup_layout(tmp_path)
+    original_iterdir = Path.iterdir
+
+    def unavailable_peers(path):
+        if path == root:
+            raise PermissionError("fixture denies cgroup enumeration")
+        return original_iterdir(path)
+
+    monkeypatch.setattr(Path, "iterdir", unavailable_peers)
+    with pytest.raises(driver.StudyError, match="cannot enumerate benchmark cgroup peers"):
+        driver.io_control_snapshot(cgroup_root=root, cgroup_text=fixture["cgroup_text"])
+
+
+def test_io_control_snapshot_refuses_unreadable_latency_peer_entry(tmp_path, monkeypatch):
+    root, fixture = materialize_real_cgroup_layout(tmp_path)
+    peer = root / "cgprofile.slice"
+    original_stat = Path.stat
+
+    def inaccessible(candidate, *args, **kwargs):
+        if candidate == peer:
+            raise PermissionError("fixture denies peer stat")
+        return original_stat(candidate, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "stat", inaccessible)
+    with pytest.raises(driver.StudyError, match="cannot enumerate benchmark cgroup peers"):
+        driver.io_control_snapshot(cgroup_root=root, cgroup_text=fixture["cgroup_text"])
+
+
+def test_io_control_snapshot_ignores_peer_removed_after_parent_listing(tmp_path, monkeypatch):
+    root, fixture = materialize_real_cgroup_layout(tmp_path)
+    removed_peer = root / "cgprofile.slice"
+    original_stat = Path.stat
+
+    def removed(candidate, *args, **kwargs):
+        if candidate == removed_peer:
+            raise FileNotFoundError("fixture removed peer after readdir")
+        return original_stat(candidate, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "stat", removed)
+    snapshot = driver.io_control_snapshot(cgroup_root=root, cgroup_text=fixture["cgroup_text"])
+    assert [row["path"] for row in snapshot["cgroups"]] == [str(root), str(root / "system.slice")]
+
+
+def test_io_control_snapshot_ignores_peer_removed_before_latency_read(tmp_path, monkeypatch):
+    root, fixture = materialize_real_cgroup_layout(tmp_path)
+    peer = root / "cgprofile.slice"
+    latency = peer / "io.latency"
+    original_stat = Path.stat
+    original_lstat = Path.lstat
+    peer_stat_count = 0
+
+    def disappearing_stat(candidate, *args, **kwargs):
+        nonlocal peer_stat_count
+        if candidate == peer:
+            peer_stat_count += 1
+            if peer_stat_count > 1:
+                raise FileNotFoundError("fixture removed peer after readdir")
+        return original_stat(candidate, *args, **kwargs)
+
+    def disappearing_lstat(candidate, *args, **kwargs):
+        if candidate == latency:
+            raise FileNotFoundError("fixture removed peer control after stat")
+        return original_lstat(candidate, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "stat", disappearing_stat)
+    monkeypatch.setattr(Path, "lstat", disappearing_lstat)
+    snapshot = driver.io_control_snapshot(cgroup_root=root, cgroup_text=fixture["cgroup_text"])
+    assert [row["path"] for row in snapshot["cgroups"]] == [str(root), str(root / "system.slice")]
+
+
+def test_io_control_snapshot_ignores_peer_control_removed_during_read(tmp_path, monkeypatch):
+    root, fixture = materialize_real_cgroup_layout(tmp_path)
+    latency = root / "cgprofile.slice/io.latency"
+    latency.write_text("\n", encoding="utf-8")
+    original_read_text = Path.read_text
+
+    def removed_read(candidate, *args, **kwargs):
+        if candidate == latency:
+            raise FileNotFoundError("fixture removed peer control during read")
+        return original_read_text(candidate, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", removed_read)
+    snapshot = driver.io_control_snapshot(cgroup_root=root, cgroup_text=fixture["cgroup_text"])
+    assert [row["path"] for row in snapshot["cgroups"]] == [str(root), str(root / "system.slice")]
+
+
+def test_io_control_snapshot_allows_vanished_parent_only_for_non_chain_peers(tmp_path, monkeypatch):
+    root, fixture = materialize_real_cgroup_layout(tmp_path)
+    allowed = {}
+    original = driver._read_optional_control
+
+    def record(path, *, allow_vanished_parent=False):
+        if path.name == "io.latency":
+            allowed[path.parent] = allow_vanished_parent
+        return original(path, allow_vanished_parent=allow_vanished_parent)
+
+    monkeypatch.setattr(driver, "_read_optional_control", record)
+    driver.io_control_snapshot(cgroup_root=root, cgroup_text=fixture["cgroup_text"])
+    assert allowed[root] is False
+    assert allowed[root / "system.slice"] is False
+    assert allowed[root / "cgprofile.slice"] is True
+    assert allowed[root / "dev.slice"] is True
+
+
+def test_io_control_snapshot_refuses_unreadable_peer_latency_control(tmp_path, monkeypatch):
+    root, fixture = materialize_real_cgroup_layout(tmp_path)
+    latency = root / "cgprofile.slice/io.latency"
+    latency.write_text("\n", encoding="utf-8")
+    original_read_text = Path.read_text
+
+    def denied(candidate, *args, **kwargs):
+        if candidate == latency:
+            raise PermissionError("fixture denies peer latency read")
+        return original_read_text(candidate, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", denied)
+    with pytest.raises(driver.StudyError, match="cannot read existing cgroup IO control.*cgprofile.slice/io.latency"):
+        driver.io_control_snapshot(cgroup_root=root, cgroup_text=fixture["cgroup_text"])
+
+
+def test_read_optional_control_vanished_parent_tolerance_is_enoent_only(tmp_path, monkeypatch):
+    peer = tmp_path / "peer"
+    peer.mkdir()
+    original_stat = Path.stat
+
+    def denied(candidate, *args, **kwargs):
+        if candidate == peer:
+            raise PermissionError("fixture denies peer stat")
+        return original_stat(candidate, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "stat", denied)
+    with pytest.raises(driver.StudyError, match="cannot enumerate cgroup IO control parent"):
+        driver._read_optional_control(peer / "io.latency", allow_vanished_parent=True)
+    assert driver._read_optional_control(tmp_path / "gone/io.latency", allow_vanished_parent=True) is None
+    with pytest.raises(driver.StudyError, match="cannot enumerate cgroup IO control parent"):
+        driver._read_optional_control(tmp_path / "gone/io.latency")
+
+
+def test_read_optional_control_read_enoent_is_fatal_unless_peer_tolerance_is_requested(
+        tmp_path, monkeypatch):
+    control = tmp_path / "io.latency"
+    control.write_text("\n", encoding="utf-8")
+    original_read_text = Path.read_text
+
+    def vanished(candidate, *args, **kwargs):
+        if candidate == control:
+            raise FileNotFoundError("fixture removed control during read")
+        return original_read_text(candidate, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", vanished)
+    with pytest.raises(driver.StudyError, match="cannot read existing cgroup IO control"):
+        driver._read_optional_control(control)
+    assert driver._read_optional_control(control, allow_vanished_parent=True) is None
+
+
+def test_io_control_snapshot_refuses_latency_peer_missing_from_parent_listing(tmp_path, monkeypatch):
+    root, fixture = materialize_real_cgroup_layout(tmp_path)
+    original_iterdir = Path.iterdir
+
+    def omit_benchmark_peer(path):
+        entries = list(original_iterdir(path))
+        if path == root:
+            entries = [entry for entry in entries if entry != root / "system.slice"]
+        return iter(entries)
+
+    monkeypatch.setattr(Path, "iterdir", omit_benchmark_peer)
+    with pytest.raises(driver.StudyError, match="system.slice is not a child cgroup"):
+        driver.io_control_snapshot(cgroup_root=root, cgroup_text=fixture["cgroup_text"])
+
+
+def test_io_control_snapshot_refuses_non_directory_cgroup_path(tmp_path):
+    root, fixture = materialize_real_cgroup_layout(tmp_path)
+    (root / "system.slice/io.max").unlink()
+    (root / "system.slice/io.weight").unlink()
+    (root / "system.slice").rmdir()
+    (root / "system.slice").write_text("not a cgroup", encoding="utf-8")
+    with pytest.raises(driver.StudyError, match="cannot enumerate benchmark cgroup.*not a directory"):
+        driver.io_control_snapshot(cgroup_root=root, cgroup_text=fixture["cgroup_text"])
+
+
+def test_io_control_snapshot_treats_absent_cost_controls_as_no_setting(tmp_path):
+    root, fixture = materialize_real_cgroup_layout(tmp_path)
+    (root / "io.cost.qos").unlink()
     (root / "io.cost.model").unlink()
-    with pytest.raises(driver.StudyError, match="io.cost state.*missing"):
-        driver.io_control_snapshot(cgroup_root=root, cgroup_text="0::/bench\n")
+    snapshot = driver.io_control_snapshot(cgroup_root=root, cgroup_text=fixture["cgroup_text"])
+    assert snapshot["io_cost"] == {"io.cost.qos": None, "io.cost.model": None}
+
+
+def test_io_control_snapshot_treats_empty_cost_files_as_no_setting(tmp_path):
+    root, fixture = materialize_real_cgroup_layout(tmp_path)
+    (root / "io.cost.qos").write_text(
+        "254:0 enable=0\n\n254:1 enable=0\n", encoding="utf-8")
+    (root / "io.cost.model").write_text("\n", encoding="utf-8")
+    snapshot = driver.io_control_snapshot(cgroup_root=root, cgroup_text=fixture["cgroup_text"])
+    assert snapshot["io_cost"] == {
+        "io.cost.qos": "254:0 enable=0\n\n254:1 enable=0", "io.cost.model": ""}
 
 
 def test_state_schema_resume_identity_and_timestamp_guards(tmp_path):
@@ -2622,9 +3576,45 @@ def test_run_dry_run_validates_and_renders_without_writing(tmp_path):
     result = run_set(out, "raw-t0", host=host, dry_run=True)
     assert result["dry_run"] is True and result["jobs_rendered"] > 0
     assert result["host_liveness_preflight"]["responsive"] is True
+    assert host.last_liveness_config == (
+        driver.LIVENESS_SSH_HOST, driver.LIVENESS_SSH_PORT, driver.LIVENESS_COCKPIT_CONTAINER)
     assert not out.exists()
     assert host.quiet_checked == 0 and host.liveness_calls == 1
+    assert host.study_tool_preflights == ["raw"] and host.trim_calls == ["vda5"]
     assert host.discards == [] and host.fio.calls == []
+
+
+def test_run_dry_run_reports_unknown_scheduler_and_conservative_peer_policy(tmp_path):
+    host = FakeHost()
+    host.scheduler_snapshot = {
+        "target": {"disk": "vda", "status": "unknown", "selected": None,
+                   "available": [], "message": "scheduler file is missing for vda"},
+        "root": {}, "peer_bfq_policy": "conservative-check",
+        "message": "target scheduler for vda is unknown; peer io.bfq.weight values are checked conservatively",
+    }
+    result = run_set(tmp_path / "dry-unknown-scheduler", "raw-t0", host=host, dry_run=True)
+    assert result["dry_run"] is True
+    assert result["run_manifest"]["io_schedulers"]["raw"] == host.scheduler_snapshot
+    assert "checked conservatively" in result["run_manifest"]["io_schedulers"]["raw"]["message"]
+
+
+@pytest.mark.parametrize(
+    ("history", "message"),
+    [
+        ([], "IO-scheduler history is malformed"),
+        ({"raw": {"target": {"selected": "bfq"}}},
+         "block scheduler changed since the previous attempt"),
+    ],
+)
+def test_run_refuses_malformed_or_changed_scheduler_history(tmp_path, history, message):
+    out = tmp_path / "scheduler-history"
+    out.mkdir()
+    state = driver.empty_state(driver.dt.datetime.now(driver.dt.UTC).isoformat(),
+                               "raw", "/dev/fake", "vda5", FAKE_IDENTITY)
+    state["run_manifest"]["io_schedulers"] = history
+    driver.write_json(out / driver.STATE_NAME, state)
+    with pytest.raises(driver.StudyError, match=message):
+        run_set(out, "raw-t0", host=FakeHost())
 
 
 def test_stop_policy_documentation_maps_manifest_fields_to_run_options(tmp_path):
@@ -2638,6 +3628,9 @@ def test_stop_policy_documentation_maps_manifest_fields_to_run_options(tmp_path)
         "max_probe_latency_seconds": "--max-probe-latency-seconds",
         "probe_consecutive_samples": "--probe-consecutive-samples",
         "probe_interval_seconds": "--probe-interval-seconds",
+        "liveness_ssh_host": "--liveness-ssh-host",
+        "liveness_ssh_port": "--liveness-ssh-port",
+        "liveness_cockpit_container": "--liveness-cockpit-container",
     }
     assert set(mapping) == set(policy) - {"io_psi"}
     parser = driver.build_parser()
@@ -2649,8 +3642,23 @@ def test_stop_policy_documentation_maps_manifest_fields_to_run_options(tmp_path)
         assert option in option_strings
 
 
+def test_liveness_options_are_passed_to_probe_and_saved_in_stop_policy(tmp_path):
+    host = FakeHost()
+    result = run_set(tmp_path / "dry-run", "raw-t0", host=host, dry_run=True,
+                     liveness_ssh_host="127.0.0.2", liveness_ssh_port=2222,
+                     liveness_cockpit_container="runner-test")
+    assert host.last_liveness_config == ("127.0.0.2", 2222, "runner-test")
+    assert result["run_manifest"]["stop_policy"]["liveness_ssh_host"] == "127.0.0.2"
+    assert result["run_manifest"]["stop_policy"]["liveness_ssh_port"] == 2222
+    assert result["run_manifest"]["stop_policy"]["liveness_cockpit_container"] == "runner-test"
+
+
 def test_acceptance_runbook_pins_the_expected_host_before_proceeding(tmp_path):
     acceptance = (driver.HERE / "ACCEPTANCE.md").read_text(encoding="utf-8")
+    assert "mdt-cockpit-runner.service` is not a systemd" in acceptance
+    assert "on r1002, sshd was verified listening on `0.0.0.0:22`" in acceptance
+    assert "acknowledged dry-run below intentionally omits `--fsync-cell`" in acceptance
+    assert "first host-liveness probe to pass" in acceptance
     match = re.search(r"(?ms)^assert_expected_host\(\) \{\n.*?^\}", acceptance)
     assert match is not None
     bash_scripts = re.findall(r"(?ms)^```bash\n(.*?)^```", acceptance)
@@ -2717,7 +3725,7 @@ def test_acceptance_runbook_pins_the_expected_host_before_proceeding(tmp_path):
         return subprocess.run(["bash", "-euo", "pipefail", "-c", probe_script], env=env,
                               check=False, capture_output=True, text=True)
 
-    for status, state in ((4, "unknown"), (3, "inactive"), (1, "failed")):
+    for status, state in ((4, "unknown"), (4, "inactive"), (3, "inactive"), (1, "failed")):
         accepted = invoke_probe(status, state)
         assert accepted.returncode == 0, (status, state, accepted.stderr)
         assert f"missing-unit systemd status: {state} ({status})" in accepted.stdout
@@ -2749,6 +3757,61 @@ def test_acceptance_runbook_pins_the_expected_host_before_proceeding(tmp_path):
     assert mismatch.returncode != 0 and "expected host compute-a" in mismatch.stderr
     missing = invoke(actual_host="compute-a")
     assert missing.returncode != 0 and "set the exact short hostname" in missing.stderr
+
+
+def test_acceptance_refusal_helper_continues_and_reports_a_failing_summary():
+    acceptance = (driver.HERE / "ACCEPTANCE.md").read_text(encoding="utf-8")
+    section = acceptance.split("## 1. Target-read-only inventory", 1)[1].split(
+        "## 2. Btrfs file and real fio-log acceptance", 1)[0]
+    script_match = re.search(r"(?ms)^```bash\n(.*?)^```", section)
+    assert script_match is not None
+    expect_refusal = re.search(r"(?ms)^expect_refusal\(\) \{\n.*?^\}", script_match.group(1))
+    record_check = re.search(r"(?ms)^record_check\(\) \{\n.*?^\}", script_match.group(1))
+    acknowledged_dry_run = re.search(
+        r"(?ms)^check_acknowledged_dry_run\(\) \{\n.*?^\}", script_match.group(1))
+    whole_disk_refusal = re.search(
+        r"(?ms)^check_whole_disk_refusal\(\) \{\n.*?^\}", script_match.group(1))
+    summary_tail = re.search(
+        r"(?ms)^printf 'SECTION 1 summary:.*?^printf 'SECTION1-PASS\\n'\n", script_match.group(1))
+    assert (expect_refusal is not None and record_check is not None and
+            acknowledged_dry_run is not None and whole_disk_refusal is not None)
+    assert summary_tail is not None
+    assert "set +e" not in expect_refusal.group(0) and "set -e" not in expect_refusal.group(0)
+    assert "SECTION 1 summary:" in script_match.group(1)
+    shell = f"""set -euo pipefail
+CHECK_COUNT=0
+FAIL_COUNT=0
+{expect_refusal.group(0)}
+{record_check.group(0)}
+{acknowledged_dry_run.group(0)}
+{whole_disk_refusal.group(0)}
+RAW=/dev/vda5
+IBX_TARGET_CONFIRMATION=/dev/vda5:34359738368:00000000-0000-0000-0000-000000000000
+current_system_disk_ack() {{ printf 'compute-a:vda:vda3:partuuid\\n'; }}
+raw_dry_run() {{
+  if [[ "$1" == /dev/vda ]]; then
+    printf '%s\\n' 'raw target must be a dedicated partition; whole disks are refused'
+    return 2
+  fi
+  printf '%s\\n' '{{"dry_run": true}}'
+}}
+host-escape() {{ printf '34359738368\\n'; }}
+fail_command() {{ printf 'unexpected command failure\\n'; return 1; }}
+pass_command() {{ return 0; }}
+record_check 'acknowledged dry-run' check_acknowledged_dry_run
+record_check 'whole-disk refusal' check_whole_disk_refusal
+record_check 'unexpected refusal' expect_refusal 'expected refusal text' fail_command
+record_check 'following check' pass_command
+{summary_tail.group(0)}
+"""
+    result = subprocess.run(["bash", "-c", shell], check=False, capture_output=True, text=True)
+    assert result.returncode == 1
+    assert "FAIL check: unexpected refusal" in result.stderr
+    assert "PASS check: acknowledged dry-run" in result.stdout
+    assert "PASS check: whole-disk refusal" in result.stdout
+    assert "PASS check: following check" in result.stdout
+    assert "SECTION 1 summary: 4 checks, 1 failures" in result.stdout
+    assert "SECTION1-FAIL" in result.stdout and "SECTION1-PASS" not in result.stdout
 
 
 def test_ibx_runbooks_pin_host_before_driver_runs_and_raw_transitions():
@@ -2868,6 +3931,21 @@ def test_first_liveness_probe_is_required_before_live_io_and_dry_run_acceptance(
 def test_liveness_probe_interval_must_be_a_finite_bounded_number(tmp_path, interval):
     with pytest.raises(driver.StudyError, match="probe interval must be finite"):
         run_set(tmp_path, "raw-t0", dry_run=True, probe_interval_s=interval)
+
+
+@pytest.mark.parametrize(
+    ("options", "message"),
+    [
+        ({"liveness_ssh_host": ""}, "SSH host must be a non-empty"),
+        ({"liveness_ssh_host": "bad host"}, "SSH host must be a non-empty"),
+        ({"liveness_ssh_port": 0}, "SSH port must be an integer"),
+        ({"liveness_ssh_port": True}, "SSH port must be an integer"),
+        ({"liveness_cockpit_container": "bad/name"}, "valid configured container name"),
+    ],
+)
+def test_liveness_probe_options_reject_malformed_configuration(tmp_path, options, message):
+    with pytest.raises(driver.StudyError, match=message):
+        run_set(tmp_path, "raw-t0", dry_run=True, **options)
 
 
 def test_run_dry_run_refuses_bad_output_and_monitor_samples(tmp_path, monkeypatch):
@@ -3236,6 +4314,20 @@ def test_parse_and_reduction_helpers_cover_kernel_counters_and_bad_inputs(tmp_pa
         driver.monitor_sample("vda", proc=sample)
 
 
+@pytest.mark.parametrize("missing", ("io", "memory"))
+def test_monitor_sample_turns_missing_pressure_file_into_study_error(tmp_path, missing):
+    proc = tmp_path / "proc"
+    pressure = proc / "pressure"
+    pressure.mkdir(parents=True)
+    (proc / "diskstats").write_text(
+        "8 0 vda 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18\n", encoding="utf-8")
+    (proc / "meminfo").write_text("MemAvailable: 100 kB\n", encoding="utf-8")
+    (pressure / "memory" if missing == "io" else pressure / "io").write_text(
+        "some avg10=0 total=0\nfull avg10=0 total=0\n", encoding="utf-8")
+    with pytest.raises(driver.StudyError, match=rf"cannot read required host monitoring file .*/pressure/{missing}"):
+        driver.monitor_sample("vda", proc=proc)
+
+
 def test_size_parsing_and_cli_modes(tmp_path, capsys, monkeypatch):
     assert driver.parse_size("24GiB") == 24 * GIB
     assert driver.parse_size("1MB") == 1_000_000
@@ -3329,7 +4421,8 @@ def test_state_reservation_and_meter_guards(tmp_path):
 
 def test_host_target_and_fsync_failure_edges(tmp_path, monkeypatch):
     host_api = driver.LocalHost()
-    monkeypatch.setattr(driver, "io_control_snapshot", lambda: {"guarded": True})
+    monkeypatch.setattr(driver, "io_control_snapshot",
+                        lambda *, scheduler_snapshot=None: {"guarded": True})
     assert host_api.io_control_snapshot() == {"guarded": True}
     monkeypatch.setattr(driver.time, "monotonic", lambda: 12.5)
     sleeps = []
@@ -3624,9 +4717,10 @@ def test_run_study_remaining_active_and_elapsed_limits_stop_before_fio(tmp_path,
             super().__init__()
             self.snapshot_number = 0
 
-        def io_control_snapshot(self):
+        def io_control_snapshot(self, *, scheduler_snapshot=None):
             self.snapshot_number += 1
-            return {"number": self.snapshot_number}
+            return {"number": self.snapshot_number,
+                    "block_schedulers": scheduler_snapshot}
 
     with pytest.raises(driver.StudyError, match="changed during the study"):
         run_set(tmp_path / "changed-snapshot", "file-ext4", host=ChangedSnapshot(),
