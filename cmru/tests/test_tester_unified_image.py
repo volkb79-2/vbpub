@@ -3863,7 +3863,7 @@ def assert_tester_base_has_no_published_vbpub_input(root: Path) -> None:
         line for line in (root / "tester-base" / "Dockerfile").read_text("utf-8").splitlines()
         if not line.lstrip().startswith("#")
     ]
-    froms = [line for line in code if re.match(r"(?i)^FROM\s", line)]
+    froms = [line.lstrip() for line in code if re.match(r"(?i)^FROM\s", line.lstrip())]
     assert froms, "tester-base Dockerfile has no FROM instruction"
     stages: set[str] = set()
     for instruction in froms:
@@ -3906,6 +3906,8 @@ def test_the_no_published_vbpub_image_check_can_fail(tmp_path):
     dockerfile = tmp_path / "tester-base" / "Dockerfile"
     dockerfile.write_text(good, encoding="utf-8")
     assert_tester_base_has_no_published_vbpub_input(tmp_path)
+    dockerfile.write_text("  " + good, encoding="utf-8")
+    assert_tester_base_has_no_published_vbpub_input(tmp_path)
     multi_stage = (
         f"FROM python:3.14@{digest} AS tester-base-common\n"
         "FROM tester-base-common AS tester-base-amd64\n"
@@ -3917,8 +3919,11 @@ def test_the_no_published_vbpub_image_check_can_fail(tmp_path):
     for bad in (
         f"FROM ghcr.io/volkb79-2/tester-base@{digest}\n",
         f"FROM docker.io/other/python:3.14@{digest}\n",
+        f"  FROM docker.io/other/python:3.14@{digest}\n",
         f"ARG B=python:3.14@{digest}\nFROM ${{B}}\n",
         good + "FROM missing-stage AS final\n",
+        good + "FROM tester-base-${TARGETARCH} AS final\n",
+        multi_stage + "FROM tester-base-common AS final\n",
         good + "FROM tester-base-${TARGETOS} AS final\n",
         good + "RUN curl -fsSL https://github.com/volkb79-2/vbpub/releases/download/x/y\n",
         "FROM python:3.14\n",

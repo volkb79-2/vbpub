@@ -152,6 +152,8 @@ def test_plan_preserves_special_alone_and_retry_work_on_one_host_and_renders_com
         _candidate("retry", 256 * 1024**2, memory_crash_evidence=True),
     ])
     host = _host_plan(plan, "host-large")
+    big = next(item for item in host["assigned"] if item["id"] == _cid("big"))
+    assert host["cap_bytes"] < big["memory_bytes"] <= host["cap_alone_bytes"]
     assert {batch["kind"] for batch in host["batches"] if "kind" in batch} == {"alone", "retry"}
     assert {item["id"] for item in host["assigned"]} == {_cid("big"), _cid("retry")}
     commands = render_commands(plan)
@@ -345,6 +347,8 @@ def test_mix_violation_is_flagged_without_turning_missing_eta_into_a_mix_flag():
     rows = [_candidate("a", 11_500_000_000), _candidate("b", 13_500_000_000)]
     plan = _plan(rows)
     host = _assigned_host(plan, "a")
+    assert _assigned_host(plan, "b")["id"] == host["id"]
+    assert all(item["memory_bytes"] <= host["cap_bytes"] for item in host["assigned"])
     assert host["mix_flagged"] is True
     assert host["mix_holds"] is False
     assert any("mix_flag_reason" in item for item in host["assigned"])
