@@ -137,6 +137,10 @@ def test_plan_cli_pins_clean_execution_context_and_rejects_unknown_transport(mon
     with pytest.raises(ContractError, match="only the identity-checked hx"):
         cli._manager(Namespace(transport="ssh"))
 
+    monkeypatch.setattr(cli, "_execution_context", lambda: None)
+    assert main(args) == 0
+    assert "execution" not in json.loads(capsys.readouterr().out)
+
 
 def test_fleet_campaign_cli_run_status_tick_collect_with_fake_transport(monkeypatch, tmp_path, capsys):
     plan_path = tmp_path / "plan.json"
