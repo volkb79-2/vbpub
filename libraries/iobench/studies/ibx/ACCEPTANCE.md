@@ -11,12 +11,16 @@ keep the setup shell open for the later live-run EXIT trap that restores timers.
 
 ```bash
 set -euo pipefail
-: "${IBX_EXPECTED_HOST:?set the exact short hostname from approved run authorization}"
-ACTUAL_HOST=$(host-escape -- hostname -s)
-[[ $ACTUAL_HOST == "$IBX_EXPECTED_HOST" ]] || {
-  printf 'refusing: expected host %s, connected to %s\n' "$IBX_EXPECTED_HOST" "$ACTUAL_HOST" >&2
-  exit 2
+assert_expected_host() {
+  : "${IBX_EXPECTED_HOST:?set the exact short hostname from approved run authorization}"
+  local actual_host
+  actual_host=$(host-escape -- hostname -s)
+  [[ $actual_host == "$IBX_EXPECTED_HOST" ]] || {
+    printf 'refusing: expected host %s, connected to %s\n' "$IBX_EXPECTED_HOST" "$actual_host" >&2
+    return 1
+  }
 }
+assert_expected_host
 RAW=/dev/vda5
 [[ $(host-escape -- lsblk -dn -o TYPE "$RAW") == part ]]
 [[ $(host-escape -- lsblk -dn -o PARTLABEL "$RAW") == iobench-raw ]]
@@ -128,13 +132,7 @@ If any check differs, stop before `mkfs`.
 
 ```bash
 assert_raw_idle() {
-  : "${IBX_EXPECTED_HOST:?set the exact short hostname from approved run authorization}"
-  local actual_host
-  actual_host=$(host-escape -- hostname -s)
-  [[ $actual_host == "$IBX_EXPECTED_HOST" ]] || {
-    printf 'refusing: expected host %s, connected to %s\n' "$IBX_EXPECTED_HOST" "$actual_host" >&2
-    return 1
-  }
+  assert_expected_host
   [[ $(host-escape -- lsblk -dn -o TYPE "$RAW") == part ]]
   [[ $(host-escape -- lsblk -dn -o PARTLABEL "$RAW") == iobench-raw ]]
   [[ $(host-escape -- blockdev --getsize64 "$RAW") == 34359738368 ]]
@@ -261,6 +259,7 @@ swap, and holder guards) before erasing the filesystem signature to restore the
 fresh-install raw partition.
 
 ```bash
+assert_expected_host
 assert_btrfs_mount
 host-escape -- umount "$MOUNT"
 assert_raw_idle

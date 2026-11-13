@@ -382,6 +382,7 @@ stop/restore and slot schedule
 from the [study-day procedure](../studies/ibx/README.md). Before raw writes or
 discard, the driver refuses whole disks, a mounted or swap-active target
 partition, active exclusive claims, and holders.
+The study README maps saved stop-policy fields to their run options.
 
 From the repository root, set the stop-policy variables to values supplied by
 the study host's approved policy, then plan the run and start the t0 set:

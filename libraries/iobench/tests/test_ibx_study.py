@@ -1331,15 +1331,21 @@ def test_local_liveness_probe_reports_fake_child_latency_and_failures(monkeypatc
     assert "not been confirmed stopped" in still_active["error"]
     assert timeout_calls[-1][:2] == ["systemctl", "is-active"]
 
-    def completed_after_timeout(*args, **kwargs):
-        if args[0][:2] == ["systemctl", "is-active"]:
-            return SimpleNamespace(returncode=3, stdout="inactive", stderr="")
-        return SimpleNamespace(returncode=0, stdout=json.dumps({
-            "responsive": True, "components": components}), stderr="")
-    monkeypatch.setattr(driver.subprocess, "run", completed_after_timeout)
-    recovered = host.liveness_probe(1)
-    assert recovered["responsive"] is True
-    assert host._liveness_probe_stalled is False
+    for stopped_state, returncode in (("inactive", 3), ("failed", 3), ("inactive", 1)):
+        clock[:] = [0.0, 2.0, 2.0, 2.2]
+        host = driver.LocalHost()
+
+        def completed_after_timeout(*args, _state=stopped_state, _returncode=returncode, **kwargs):
+            if args[0][:2] == ["systemctl", "is-active"]:
+                return SimpleNamespace(returncode=_returncode, stdout=_state, stderr="")
+            return SimpleNamespace(returncode=0, stdout=json.dumps({
+                "responsive": True, "components": components}), stderr="")
+
+        monkeypatch.setattr(driver.subprocess, "run", completed_after_timeout)
+        host.liveness_probe(1)
+        recovered = host.liveness_probe(1)
+        assert recovered["responsive"] is True
+        assert host._liveness_probe_stalled is False
 
     for status_error in (OSError("systemctl unavailable"),
                          driver.subprocess.TimeoutExpired(["systemctl", "is-active"], 1)):
@@ -2503,6 +2509,25 @@ def test_run_dry_run_validates_and_renders_without_writing(tmp_path):
     assert not out.exists()
     assert host.quiet_checked == 0 and host.liveness_calls == 1
     assert host.discards == [] and host.fio.calls == []
+
+
+def test_stop_policy_documentation_maps_manifest_fields_to_run_options():
+    readme = (driver.HERE / "README.md").read_text(encoding="utf-8")
+    mapping = {
+        "memory_psi_full_avg10_max_percent": "--max-memory-psi",
+        "min_memavailable_bytes": "--min-memavailable",
+        "min_free_bytes": "--min-free",
+        "max_probe_latency_seconds": "--max-probe-latency-seconds",
+        "probe_consecutive_samples": "--probe-consecutive-samples",
+        "probe_interval_seconds": "--probe-interval-seconds",
+    }
+    parser = driver.build_parser()
+    run_parser = next(action.choices["run"] for action in parser._actions
+                      if "run" in getattr(action, "choices", {}))
+    option_strings = run_parser._option_string_actions
+    for policy_key, option in mapping.items():
+        assert f"`{policy_key}` to `{option}`" in readme
+        assert option in option_strings
 
 
 def test_dry_run_skips_active_timer_guard_while_live_run_still_requires_quiet_window(tmp_path):
