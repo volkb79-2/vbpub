@@ -217,8 +217,9 @@ def test_zero_idle_delay_does_not_enter_the_idle_wait_loop():
 
 def test_budget_skipped_cache_evidence_keeps_its_distinct_status():
     run = Calibrator(make_host(cache=None), config())
-    allotment = plan.plan_calibration("standard", 435_853_320_192, 1.36e9)
-    assert allotment.stage("cache-evidence").required is False
+    allotment = plan.plan_calibration("standard", 435_853_320_192, 1.36e9, budget_s=3000)
+    cache_stage = allotment.stage("cache-evidence")
+    assert cache_stage.status == "skipped:budget" and cache_stage.required is False
     run.stage = lambda name, _fn, **_kwargs: (run.stages.__setitem__(name, "skipped: budget") or False)
     run.cache_evidence_stage(allotment)
     assert run.delayed_readback["status"] == "skipped:budget"
