@@ -72,6 +72,20 @@ def _archive_contents(archive: Path) -> tuple[dict, set[str]]:
     return manifest, names
 
 
+def test_copy_rejects_source_symlink_instead_of_bundling_its_target(tmp_path):
+    source = tmp_path / "src"
+    source.mkdir()
+    (source / "app.py").write_text("print('ok')\n", encoding="utf-8")
+    (tmp_path / "private.key").write_text("private material\n", encoding="utf-8")
+    (source / "public.txt").symlink_to(tmp_path / "private.key")
+    config = _write_bundle(tmp_path)
+
+    with pytest.raises(ValueError, match="symlink"):
+        bundle.run_bundle(config, manifest_project="demo", manifest_tag="demo-v1.2.3")
+
+    assert not list((tmp_path / "dist").glob("*.tar.xz"))
+
+
 def test_copy_keep_paths_are_exact_for_archive_and_manifest(tmp_path):
     source = tmp_path / "src"
     source.mkdir()
@@ -205,8 +219,13 @@ def test_keep_configuration_rejects_nonexistent_bundle_path_as_config_error(
     tmp_path, capsys,
 ):
     (tmp_path / "src").mkdir()
-    config = _write_bundle(tmp_path, keep=("src/missing.env",))
-    cmru_config = _write_cmru_project(tmp_path)
+    config, cmru_config = _write_cmru_project(tmp_path)
+    config.write_text(
+        config.read_text(encoding="utf-8").replace(
+            'format = "xztar"', 'format = "xztar"\nkeep = ["src/missing.env"]',
+        ),
+        encoding="utf-8",
+    )
 
     with pytest.raises(SystemExit) as raised:
         handlers.cmd_bundle_build(_handler_args(config, cmru_config))
