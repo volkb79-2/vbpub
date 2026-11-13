@@ -48,6 +48,9 @@ ACTIVE_CAP_S = 3 * 60 * 60
 ELAPSED_CAP_S = 12 * 60 * 60
 FIO_DRAIN_RESERVE_S = 60
 FIO_STARTUP_GRACE_DEFAULT_S = 5
+# Tools of the ext4/Btrfs file legs and the final wipe, which run hours after t0. A raw
+# dry-run and a raw run check them up front so a missing one cannot stop the study at t+9h.
+FILE_LEG_TOOLS = ("mkfs.ext4", "mkfs.btrfs", "mount", "umount", "wipefs", "fallocate")
 FIO_OUTPUT_RECORD_LIMIT_BYTES = 64 * 1024
 TEST_SCALE_EXTENT_BYTES = 8 * 1024**2
 TEST_SCALE_WRITE_BYTES = 4 * 1024**2
@@ -1694,7 +1697,8 @@ class LocalHost:
 
     def assert_study_tools(self, kind: str) -> None:
         """Exercise tools each pending study can need before dry-run passes."""
-        for executable in ("fio", "blkdiscard" if kind == "raw" else "fallocate"):
+        later_legs = FILE_LEG_TOOLS if kind == "raw" else ()
+        for executable in ("fio", "blkdiscard" if kind == "raw" else "fallocate", *later_legs):
             resolved = self.fio_executable if executable == "fio" else executable
             if shutil.which(resolved) is None and not Path(resolved).is_file():
                 raise StudyError(f"required study executable {executable} is unavailable in PATH")
@@ -2247,6 +2251,24 @@ class LocalHost:
                 result[kind] = parse_fio_log(path.read_text(encoding="utf-8"), bandwidth=is_bandwidth)
         return result
 
+    @staticmethod
+    def stop_fio(proc: Any, first_signal: int) -> bool:
+        """Stop fio, escalating to SIGKILL so a fio that ignores signals cannot outlive the driver.
+
+        Returns True when the first signal was not enough.
+        """
+        escalated = False
+        for value in dict.fromkeys((first_signal, signal.SIGTERM)):
+            proc.send_signal(value)
+            try:
+                proc.wait(timeout=30)
+                return escalated
+            except subprocess.TimeoutExpired:
+                escalated = True
+        proc.kill()
+        proc.wait(timeout=30)
+        return True
+
     def execute_fio(self, job_path: Path, runtime_s: float,
                     sample: Callable[[], None]) -> tuple[dict[str, Any], float]:
         try:
@@ -2265,20 +2287,13 @@ class LocalHost:
                 remaining = runtime_s - (self.now() - start)
                 if remaining <= 0:
                     sent_sigint = True
-                    proc.send_signal(signal.SIGINT)
-                    try:
-                        proc.wait(timeout=30)
-                    except subprocess.TimeoutExpired:
-                        escalated = True
-                        proc.send_signal(signal.SIGTERM)
-                        proc.wait(timeout=30)
+                    escalated = self.stop_fio(proc, signal.SIGINT)
                     break
                 self.sleep(min(1, remaining))
             stdout, stderr = proc.communicate()
         except BaseException as exc:
             if proc.poll() is None:
-                proc.send_signal(signal.SIGTERM)
-                proc.wait(timeout=30)
+                self.stop_fio(proc, signal.SIGTERM)
             stdout, stderr = proc.communicate()
             duration = self.now() - start
             try:

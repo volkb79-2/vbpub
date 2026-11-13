@@ -184,6 +184,11 @@ fio exits. An unexpected non-zero fio exit remains a failed attempt even when
 its stdout contains valid JSON; only a SIGINT exit sent by this driver's
 deadline handler is treated as its deliberate stop. Failed-attempt records
 retain at most 64 KiB each of raw stdout and stderr, with truncation recorded.
+A fio that ignores `SIGINT` and `SIGTERM` is sent `SIGKILL` after 30 s each, on
+the deadline and on a driver stop alike, so it cannot outlive the driver. A raw
+dry-run or run also requires `mkfs.ext4`, `mkfs.btrfs`, `mount`, `umount`,
+`wipefs` and `fallocate` in `PATH`, so a missing file-leg tool refuses before
+t0 instead of stopping the study at t+9h.
 Older run states migrate the new default grace and live-mode fields with a
 recorded stop-policy migration; other policy changes still refuse resume.
 

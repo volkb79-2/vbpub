@@ -126,8 +126,10 @@ them unchanged on resume.
 
 Real-fio end-to-end rehearsal required before the first live cell.
 
-Run this from the study checkout before starting any live cell. It requires
-upstream fio 3.39 and creates a fresh, planner-scaled rehearsal directory under
+Run this on the study host before starting any live cell, from the checkout or
+from the flat handoff copy (`driver.py` beside `job-template.fio`; no other
+repository file is read). It needs upstream fio 3.39 and `fallocate`, takes
+about ten minutes, and creates a fresh, planner-scaled rehearsal directory under
 `/tmp`; its target is a regular file inside that directory. Do not point this
 command at a device or reuse the study's live output directory.
 

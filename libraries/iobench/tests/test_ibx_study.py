@@ -2295,6 +2295,21 @@ def test_fsync_preflight_wraps_systemctl_docker_and_empty_image_errors(tmp_path,
         host.assert_fsync_preflight()
 
 
+def test_raw_preflight_also_requires_the_tools_of_the_later_file_legs(monkeypatch):
+    # The ext4/Btrfs legs run hours after t0; a missing mkfs must stop the dry-run, not the run.
+    host = driver.LocalHost()
+    monkeypatch.setattr(driver.subprocess, "run", lambda argv, **kwargs:
+                        SimpleNamespace(returncode=0, stdout="fio-3.39\n", stderr=""))
+    for tool in driver.FILE_LEG_TOOLS:
+        monkeypatch.setattr(driver.shutil, "which",
+                            lambda executable, tool=tool: None if executable == tool else f"/usr/sbin/{executable}")
+        with pytest.raises(driver.StudyError, match=f"required study executable {tool} is unavailable"):
+            host.assert_study_tools("raw")
+        if tool != "fallocate":  # file targets themselves need only fallocate
+            host.assert_study_tools("ext4-file")
+    assert set(driver.FILE_LEG_TOOLS) >= {"mkfs.ext4", "mkfs.btrfs", "mount", "umount", "wipefs", "fallocate"}
+
+
 @pytest.mark.parametrize(("kind", "missing"), (("raw", "blkdiscard"), ("ext4-file", "fallocate")))
 def test_study_tool_preflight_names_a_missing_target_operation(tmp_path, monkeypatch, kind, missing):
     host = driver.LocalHost()
@@ -2670,6 +2685,28 @@ def test_local_execute_fio_accepts_only_its_own_deliberate_sigint_exit(tmp_path,
     assert payload == {"jobs": []}
     assert process.signals == [driver.signal.SIGINT]
     assert host.last_fio_deliberate_stop is True
+
+
+def test_a_fio_that_ignores_sigint_and_sigterm_is_killed(tmp_path, monkeypatch):
+    host = driver.LocalHost()
+    clock = [0.0]
+    host.now = lambda: clock[0]
+    host.sleep = lambda seconds: clock.__setitem__(0, clock[0] + seconds)
+    hung = FakeProcess(finish_after=None, wait_timeouts=2, returncode=0)
+    monkeypatch.setattr(driver.subprocess, "Popen", lambda *args, **kwargs: hung)
+    with pytest.raises(driver.StudyError, match="fio failed with exit -9"):
+        host.execute_fio(tmp_path / "job.fio", 1, lambda: None)
+    assert hung.signals == [driver.signal.SIGINT, driver.signal.SIGTERM, driver.signal.SIGKILL]
+    assert host.last_fio_deliberate_stop is False
+
+    # A driver stop (monitor trip) while fio ignores SIGTERM also ends in SIGKILL.
+    clock[0] = 0
+    stubborn = FakeProcess(finish_after=None, wait_timeouts=1)
+    monkeypatch.setattr(driver.subprocess, "Popen", lambda *args, **kwargs: stubborn)
+    with pytest.raises(driver.FioExecutionError, match="monitor stop"):
+        host.execute_fio(tmp_path / "job.fio", 5,
+                         lambda: (_ for _ in ()).throw(driver.StudyError("monitor stop")))
+    assert stubborn.signals == [driver.signal.SIGTERM, driver.signal.SIGKILL]
 
 
 def test_failed_fio_attempt_saves_bounded_raw_streams_and_parsed_json(tmp_path):
