@@ -280,6 +280,8 @@ def test_malformed_inline_css_policy_is_synchronized_across_user_docs() -> None:
         "For `display`, a winning unresolved `var()`, `inherit`, `revert`, or `revert-layer` fails closed; `initial` and `unset` map to visible `inline`.",
         "For `visibility`, a winning unresolved `var()`, `inherit`, `unset`, `revert`, or `revert-layer` fails closed; `initial` maps to `visible`, and `collapse` is filtered as hidden.",
         "These fail-closed choices may omit text a browser ultimately shows because serialized HTML cannot resolve custom properties or the external cascade.",
+        "CSS comments form token boundaries. If either comment removal or whitespace separation leaves a hiding value in force, PWMCP omits the element.",
+        "For example, `--d:none;display:var(--d)` remains hidden because this filter cannot resolve the custom property.",
         "CSS escapes in property names and hiding keyword values are decoded",
         "Outside strings, a backslash escape consumes the next code point",
     )
@@ -666,7 +668,7 @@ def test_bad_string_fragment_checks_have_linear_work(monkeypatch) -> None:
     style = ('content:"x\n' * 512) + ";display:none"
     fragment_characters = 0
 
-    def count_fragment(fragment: str) -> bool:
+    def count_fragment(fragment: str, _comment_separator: str = "") -> bool:
         nonlocal fragment_characters
         fragment_characters += len(fragment)
         return False

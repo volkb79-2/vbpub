@@ -39,6 +39,7 @@ _PAGE_CHROME_TAGS = frozenset({"header", "nav", "footer"})
 _ZERO_WIDTH = re.compile("[\u200b-\u200d\u202a-\u202e\u2060\u2066-\u2069\ufeff\U000e0000-\U000e007f]")
 _UNRESOLVED_CSS_VALUE = "<pwmcp-unresolved-css-value>"
 _CSS_WHITESPACE = " \t\n\r\f"
+_CSS_ESCAPED_WHITESPACE = "\ufffd"
 _CSS_WHITESPACE_RUN = re.compile(r"[ \t\n\r\f]+")
 # CSS keywords and property names fold ASCII case only. Unicode lowercasing
 # maps U+212A KELVIN SIGN to ASCII "k".
@@ -91,8 +92,8 @@ def _walk(node: _Node):
             yield from _walk(child)
 
 
-def _strip_css_comments(style: str) -> str | None:
-    """Remove CSS comments outside strings, returning ``None`` for malformed input."""
+def _strip_css_comments(style: str, comment_separator: str = "") -> str | None:
+    """Remove CSS comments outside strings, optionally preserving their token boundary."""
 
     result: list[str] = []
     quote: str | None = None
@@ -119,6 +120,7 @@ def _strip_css_comments(style: str) -> str | None:
             end = style.find("*/", index + 2)
             if end < 0:
                 return None
+            result.append(comment_separator)
             index = end + 2
             continue
         if char == "\\":
@@ -180,7 +182,7 @@ def _split_css(value: str, delimiter: str) -> list[str] | None:
     return parts
 
 
-def _decode_css_escapes(value: str) -> str | None:
+def _decode_css_escapes(value: str, *, preserve_escaped_whitespace: bool = False) -> str | None:
     """Decode CSS escapes outside strings, returning ``None`` for invalid escapes."""
 
     result: list[str] = []
@@ -219,13 +221,23 @@ def _decode_css_escapes(value: str) -> str | None:
             codepoint = int(value[hex_start:index], 16)
             if codepoint == 0 or codepoint > 0x10FFFF or 0xD800 <= codepoint <= 0xDFFF:
                 codepoint = 0xFFFD
-            result.append(chr(codepoint))
+            decoded = chr(codepoint)
+            result.append(
+                _CSS_ESCAPED_WHITESPACE
+                if preserve_escaped_whitespace and decoded in _CSS_WHITESPACE
+                else decoded
+            )
             if index < len(value) and value[index] in " \t\r\n\f":
                 if value[index] == "\r" and index + 1 < len(value) and value[index + 1] == "\n":
                     index += 1
                 index += 1
             continue
-        result.append(value[index])
+        escaped_char = value[index]
+        result.append(
+            _CSS_ESCAPED_WHITESPACE
+            if preserve_escaped_whitespace and escaped_char in _CSS_WHITESPACE
+            else escaped_char
+        )
         index += 1
     if quote is not None or escaped:
         return None
@@ -335,10 +347,10 @@ def _visibility_property_value(value: str) -> str | None:
     return value if value in {"visible", "hidden"} else None
 
 
-def _style_declarations(style: str) -> dict[str, str] | None:
+def _style_declarations(style: str, comment_separator: str = "") -> dict[str, str] | None:
     """Parse inline declarations, retaining the winning value for each property."""
 
-    uncommented = _strip_css_comments(style)
+    uncommented = _strip_css_comments(style, comment_separator)
     if uncommented is None:
         return None
     declarations = _split_css(uncommented, ";")
@@ -358,7 +370,10 @@ def _style_declarations(style: str) -> dict[str, str] | None:
         if not property_name:
             return None
         value, important = _priority_value(value)
-        value = _decode_css_escapes(value)
+        value = _decode_css_escapes(
+            value,
+            preserve_escaped_whitespace=property_name in {"display", "visibility"},
+        )
         if value is None:
             return None
         value = value.translate(_ASCII_LOWER)
@@ -383,10 +398,10 @@ def _declarations_hide(declarations: dict[str, str]) -> bool:
     )
 
 
-def _contains_hiding_declaration(fragment: str) -> bool:
+def _contains_hiding_declaration(fragment: str, comment_separator: str = "") -> bool:
     """Find an existing hidden marker in a best-effort, independently parsed fragment."""
 
-    uncommented = _strip_css_comments(fragment)
+    uncommented = _strip_css_comments(fragment, comment_separator)
     if uncommented is None:
         return False
     declarations = _split_css(uncommented, ";")
@@ -395,24 +410,31 @@ def _contains_hiding_declaration(fragment: str) -> bool:
     for declaration in declarations:
         if not _strip_css_whitespace(declaration):
             continue
-        parsed = _style_declarations(declaration)
+        parsed = _style_declarations(declaration, comment_separator)
         if parsed is not None and _declarations_hide(parsed):
             return True
     return False
 
 
-def _append_recovered_declaration(segment: str, recovered: list[str]) -> bool:
+def _append_recovered_declaration(
+    segment: str,
+    recovered: list[str],
+    comment_separator: str = "",
+) -> bool:
     """Keep one complete valid declaration, reporting a hiding signal if malformed."""
 
     if not _strip_css_whitespace(segment):
         return False
-    if _style_declarations(segment) is None:
-        return _contains_hiding_declaration(segment)
+    if _style_declarations(segment, comment_separator) is None:
+        return _contains_hiding_declaration(segment, comment_separator)
     recovered.append(segment)
     return False
 
 
-def _recover_malformed_style(style: str) -> tuple[dict[str, str], bool]:
+def _recover_malformed_style(
+    style: str,
+    comment_separator: str = "",
+) -> tuple[dict[str, str], bool]:
     """Recover independent complete declarations and hiding signals from malformed CSS."""
 
     recovered: list[str] = []
@@ -442,11 +464,11 @@ def _recover_malformed_style(style: str) -> tuple[dict[str, str], bool]:
                 if depth:
                     if paren_start >= fragment_start:
                         malformed_hiding_signal |= _contains_hiding_declaration(
-                            style[fragment_start:paren_start]
+                            style[fragment_start:paren_start], comment_separator
                         )
                 else:
                     malformed_hiding_signal |= _contains_hiding_declaration(
-                        style[fragment_start:quote_start]
+                        style[fragment_start:quote_start], comment_separator
                     )
                 quote = None
                 quote_start = -1
@@ -458,8 +480,12 @@ def _recover_malformed_style(style: str) -> tuple[dict[str, str], bool]:
         if style.startswith("/*", index):
             end = style.find("*/", index + 2)
             if end < 0:
-                malformed_hiding_signal |= _contains_hiding_declaration(style[start:index])
-                malformed_hiding_signal |= _contains_hiding_declaration(style[index + 2 :])
+                malformed_hiding_signal |= _contains_hiding_declaration(
+                    style[start:index], comment_separator
+                )
+                malformed_hiding_signal |= _contains_hiding_declaration(
+                    style[index + 2 :], comment_separator
+                )
                 break
             index = end + 2
             continue
@@ -476,11 +502,15 @@ def _recover_malformed_style(style: str) -> tuple[dict[str, str], bool]:
                 if depth == 0:
                     paren_start = -1
             else:
-                malformed_hiding_signal |= _contains_hiding_declaration(style[start:index])
+                malformed_hiding_signal |= _contains_hiding_declaration(
+                    style[start:index], comment_separator
+                )
                 start = index + 1
                 fragment_start = start
         elif char == ";" and depth == 0:
-            malformed_hiding_signal |= _append_recovered_declaration(style[start:index], recovered)
+            malformed_hiding_signal |= _append_recovered_declaration(
+                style[start:index], recovered, comment_separator
+            )
             start = index + 1
             fragment_start = start
         elif char == "\\":
@@ -492,31 +522,40 @@ def _recover_malformed_style(style: str) -> tuple[dict[str, str], bool]:
             if depth:
                 if paren_start >= fragment_start:
                     malformed_hiding_signal |= _contains_hiding_declaration(
-                        style[fragment_start:paren_start]
+                        style[fragment_start:paren_start], comment_separator
                     )
             else:
                 malformed_hiding_signal |= _contains_hiding_declaration(
-                    style[fragment_start:quote_start]
+                    style[fragment_start:quote_start], comment_separator
                 )
         elif depth:
             if paren_start >= fragment_start:
                 malformed_hiding_signal |= _contains_hiding_declaration(
-                    style[fragment_start:paren_start]
+                    style[fragment_start:paren_start], comment_separator
                 )
         else:
-            malformed_hiding_signal |= _append_recovered_declaration(style[start:], recovered)
+            malformed_hiding_signal |= _append_recovered_declaration(
+                style[start:], recovered, comment_separator
+            )
 
     # Every retained segment parsed strictly; joining at top-level boundaries preserves validity.
-    declarations = cast(dict[str, str], _style_declarations(";".join(recovered)))
+    declarations = cast(
+        dict[str, str], _style_declarations(";".join(recovered), comment_separator)
+    )
     return declarations, malformed_hiding_signal
 
 
 def _style_is_hidden(style: str) -> bool:
-    declarations = _style_declarations(style)
-    if declarations is not None:
-        return _declarations_hide(declarations)
-    recovered, malformed_hiding_signal = _recover_malformed_style(style)
-    return malformed_hiding_signal or _declarations_hide(recovered)
+    for comment_separator in ("", " "):
+        declarations = _style_declarations(style, comment_separator)
+        if declarations is not None:
+            if _declarations_hide(declarations):
+                return True
+            continue
+        recovered, malformed_hiding_signal = _recover_malformed_style(style, comment_separator)
+        if malformed_hiding_signal or _declarations_hide(recovered):
+            return True
+    return False
 
 
 def _is_hidden(node: _Node) -> bool:

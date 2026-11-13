@@ -146,6 +146,8 @@ characters remain inside property and value tokens. Property names and
 keywords fold ASCII case only. The filter does not admit
 `run-in`, `ruby-base`, `ruby-text`, `ruby-base-container`, or
 `ruby-text-container` to its visible-value allowlist.
+CSS comments form token boundaries. If either comment removal or whitespace
+separation leaves a hiding value in force, PWMCP omits the element.
 If one of those values follows a valid hiding declaration, the earlier hide
 remains, which can omit text a browser shows. For `display`, a winning
 unresolved `var()`, `inherit`, `revert`, or `revert-layer` fails closed;
@@ -154,7 +156,9 @@ unresolved `var()`, `inherit`,
 `unset`, `revert`, or `revert-layer` fails closed; `initial` maps to `visible`,
 and `collapse` is filtered as hidden. These fail-closed choices may omit text a
 browser ultimately shows because serialized HTML cannot resolve custom
-properties or the external cascade.
+properties or the external cascade. For example,
+`--d:none;display:var(--d)` remains hidden because this filter cannot resolve
+the custom property.
 An unescaped LF, CR, or FF inside a CSS string ends that malformed string so
 later declarations can be recovered. CSS escapes in property names and hiding
 keyword values are decoded, because escaped identifiers still name the same
