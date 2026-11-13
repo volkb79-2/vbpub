@@ -78,6 +78,17 @@ RAW_BYTES=$(host-escape -- blockdev --getsize64 "$RAW")
 RAW_PARTUUID=$(host-escape -- blkid -s PARTUUID -o value "$RAW")
 [[ $RAW_BYTES == 34359738368 ]]
 IBX_TARGET_CONFIRMATION="$RAW:$RAW_BYTES:$RAW_PARTUUID"
+confirm_study_target() {
+  local actual_size actual_partuuid actual_identity
+  actual_size=$(host-escape -- blockdev --getsize64 /dev/vda5)
+  actual_partuuid=$(host-escape -- blkid -s PARTUUID -o value /dev/vda5)
+  actual_identity="/dev/vda5:${actual_size}:${actual_partuuid}"
+  if [[ "$actual_identity" != "$IBX_TARGET_CONFIRMATION" ]]; then
+    printf 'study partition identity changed: expected %s, read %s\n' \
+      "$IBX_TARGET_CONFIRMATION" "$actual_identity" >&2
+    return 1
+  fi
+}
 confirm_study_target
 host-escape -- lsblk -o NAME,TYPE,SIZE,PARTLABEL,FSTYPE,MOUNTPOINTS /dev/vda
 FIO_VERSION=$(host-escape -- fio --version)

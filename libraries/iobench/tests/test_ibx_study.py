@@ -1240,6 +1240,102 @@ def test_raw_target_refuses_unprovable_mount_namespace(tmp_path, monkeypatch):
         host.validate_target(str(target), "raw", 0, 4096, "vda5", confirmation=FAKE_IDENTITY)
 
 
+def _acknowledged_validation(host, target, acknowledgement=None):
+    expected = acknowledgement or driver.system_disk_acknowledgement(
+        driver.socket.gethostname(), "vda", ["vda1"], FAKE_IDENTITY.partuuid)
+    return host.validate_target(str(target), "raw", 0, 4096, "vda5", confirmation=FAKE_IDENTITY,
+                                allow_system_disk_partition=True, system_disk_ack=expected)
+
+
+def _add_mount_row(host, row):
+    for namespace in ("self", "1"):
+        path = host.proc / namespace / "mountinfo"
+        path.write_text(path.read_text(encoding="utf-8") + row, encoding="utf-8")
+
+
+def test_system_disk_opt_in_still_refuses_a_swap_alias_of_the_target(tmp_path, monkeypatch):
+    host, target, _, _ = _raw_target_fixture(tmp_path, monkeypatch, root_devno="8:1")
+    alias_dir = tmp_path / "dev/disk/by-uuid"
+    alias_dir.mkdir(parents=True)
+    alias = alias_dir / "swap-alias"
+    alias.symlink_to(target)
+    (host.proc / "swaps").write_text(
+        f"Filename Type Size Used Priority\n{alias} partition 1 0 -2\n", encoding="utf-8")
+    with pytest.raises(driver.StudyError, match="swap-active"):
+        _acknowledged_validation(host, target)
+
+
+@pytest.mark.parametrize("mountpoint", ("/boot", "/boot/efi", "/usr", "/var", "/etc", "/srv/cow/sub"))
+def test_system_disk_opt_in_still_refuses_system_mounts_on_the_target(tmp_path, monkeypatch, mountpoint):
+    host, target, _, _ = _raw_target_fixture(tmp_path, monkeypatch, root_devno="8:1")
+    _add_mount_row(host, f"37 25 0:0 / {mountpoint} rw,relatime - ext4 /dev/vda5 rw\n")
+    with pytest.raises(driver.StudyError, match="partition is mounted"):
+        _acknowledged_validation(host, target)
+
+
+def test_system_disk_opt_in_still_refuses_a_target_that_is_a_btrfs_member_of_a_mount(
+        tmp_path, monkeypatch):
+    host, target, part, _ = _raw_target_fixture(tmp_path, monkeypatch, root_devno="8:1")
+    _add_mount_row(host, "37 25 0:77 / /srv/cow rw,relatime - btrfs /dev/vda1 rw\n")
+    devices = host.sys / "fs/btrfs/abcd-1234/devices"
+    devices.mkdir(parents=True)
+    (devices / "vda5").symlink_to(part)
+    (devices / "vda1").symlink_to(host.sys / "devices/block/vda/vda1")
+    base_command = driver.subprocess.run
+
+    def command(args, **kwargs):
+        if args[0] == "findmnt":
+            return SimpleNamespace(returncode=0, stdout="btrfs abcd-1234 0:77\n", stderr="")
+        return base_command(args, **kwargs)
+
+    monkeypatch.setattr(driver.subprocess, "run", command)
+    with pytest.raises(driver.StudyError, match="partition is mounted"):
+        _acknowledged_validation(host, target)
+
+
+def test_system_disk_acknowledgement_is_bound_to_the_current_hostname(tmp_path, monkeypatch):
+    host, target, _, _ = _raw_target_fixture(tmp_path, monkeypatch, root_devno="8:1")
+    replayed = driver.system_disk_acknowledgement(
+        driver.socket.gethostname(), "vda", ["vda1"], FAKE_IDENTITY.partuuid)
+    assert _acknowledged_validation(host, target, replayed).identity == FAKE_IDENTITY
+    monkeypatch.setattr(driver.socket, "gethostname", lambda: "another-host")
+    with pytest.raises(driver.StudyError, match="does not match current host facts"):
+        _acknowledged_validation(host, target, replayed)
+
+
+def test_system_disk_opt_in_does_not_follow_a_target_symlink_or_hidden_mount(tmp_path, monkeypatch):
+    host, target, _, _ = _raw_target_fixture(tmp_path, monkeypatch, root_devno="8:1")
+    alias = tmp_path / "dev/alias"
+    alias.symlink_to(target)
+    with pytest.raises(driver.StudyError, match="must not be a symlink"):
+        _acknowledged_validation(host, alias)
+    init_mounts = host.proc / "1/mountinfo"
+    init_mounts.write_text(init_mounts.read_text(encoding="utf-8") +
+                           "37 25 0:0 / /mnt/hidden rw,relatime - ext4 /dev/vda5 rw\n",
+                           encoding="utf-8")
+    with pytest.raises(driver.StudyError, match="mount state across PID 1"):
+        _acknowledged_validation(host, target)
+
+
+def test_sibling_swap_on_a_separate_disk_still_refuses_without_the_opt_in(tmp_path, monkeypatch):
+    host, target, _, _ = _raw_target_fixture(tmp_path, monkeypatch, root_devno="8:99")
+    sibling_swap = tmp_path / "sibling-swap"
+    sibling_swap.touch()
+    (host.proc / "swaps").write_text(
+        f"Filename Type Size Used Priority\n{sibling_swap} partition 1 0 -2\n", encoding="utf-8")
+    original_stat = Path.stat
+
+    def stat_with_sibling_swap(path, *args, **kwargs):
+        if path == sibling_swap:
+            return SimpleNamespace(st_mode=driver.stat.S_IFBLK, st_rdev=os.makedev(8, 1),
+                                   st_dev=os.makedev(8, 1))
+        return original_stat(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "stat", stat_with_sibling_swap)
+    with pytest.raises(driver.StudyError, match="swap-active"):
+        host.validate_target(str(target), "raw", 0, 4096, "vda5", confirmation=FAKE_IDENTITY)
+
+
 def test_local_quiet_window_and_fsync_wrapper_are_mocked(tmp_path, monkeypatch):
     host = driver.LocalHost()
     quiet = [SimpleNamespace(returncode=0, stdout="loaded\ninactive\n", stderr="") for _ in range(3)]
