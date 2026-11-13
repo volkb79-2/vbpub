@@ -910,7 +910,7 @@ fits the work:
 | Preview or reproduce one declared step | `cmru run --step NAME …` | Direct single-step diagnostic using the project's normal `cmru.toml` |
 | Render a project's standalone `get.py`, or check the committed one for drift | `cmru installer render` / `cmru installer check` | Installer generator; `cmru get-py` is a deprecated alias of `render` (removal in a later major release) |
 | Prepare project settings or compose step/bundle behavior in Python | `cmru.runner.prepare_project_environment`, `cmru.runner.run_step`, or `cmru.bundle.run_bundle` | Supported library entrypoints; see the [design rationale](docs/DESIGN-GUIDE.md#consumer-side-environment-preparation) and [worked example](docs/CONSUMERS.md#python-entrypoints) |
-| Build the per-interpreter (variant) bundle archives: vendored wheels, stage step, manifest, archive | `cmru handler bundle-build --bundle-config bundle.toml --cmru-config cmru.toml --name NAME [--variant NAME\|all]` | Variants come from `[[project.variants]]` (`build_arg` = interpreter version); optional `[vendor]`, `[stage]`, `[exec]`, `[manifest]` tables in `bundle.toml` (SPEC S9.4a); [design rationale](docs/DESIGN-GUIDE.md#bundle-variants-use-one-declared-build-path-ki-126); [consumer guide](docs/CONSUMERS.md#per-interpreter-bundles-bundle-build) |
+| Build the per-interpreter (variant) bundle archives: vendored wheels, stage step, manifest, archive | `cmru handler bundle-build --bundle-config bundle.toml --cmru-config cmru.toml --name NAME [--variant NAME\|all]` | Variants come from `[[project.variants]]` (`build_arg` = interpreter version); `[archive].keep` names exact bundle-relative exceptions to suffix filters and `[archive].keep_tree` opts into retaining the staged tree; optional `[vendor]`, `[stage]`, `[exec]`, `[manifest]` tables in `bundle.toml` (SPEC S9.4a); [design rationale](docs/DESIGN-GUIDE.md#bundle-variants-use-one-declared-build-path-ki-126); [consumer guide](docs/CONSUMERS.md#per-interpreter-bundles-bundle-build) |
 | Manage generic Git worktree lifecycles | `worktree` package in the CMRU wheel | Stable shared API, versioned with the CMRU wheel; see the [worktree consumer guide](../libraries/worktree/CONSUMERS.md) |
 
 `cmru.bundle` builds an archive from its dedicated bundle TOML configuration;
@@ -918,6 +918,15 @@ the deterministic format is `xztar` as specified in S9. It is a Python library,
 not a module CLI or top-level `cmru bundle` verb. A project that needs the
 reusable operation imports `run_bundle`; a root verb should be added only when a
 concrete operator workflow needs one. `cmru run --step NAME` is the single-step CLI.
+`bundle-build` derives a development version from CMRU's project version plan
+when the configured version variable is absent; the `.devN+g<commit>` form is
+not a publishable release. Its one hard-exclude policy filters copy, archive,
+and manifest membership. Projects can keep a suffix-filtered runtime file only
+by naming its exact bundle-relative path in `[archive].keep`; unlisted matching
+files left by a stage command fail the build, and copied exclusions print a
+warning. Name exclusions and `.pyc` remain unkeepable. A successful build removes
+the staged tree by default; set `[archive].keep_tree = true` when the project
+needs to retain it.
 The standalone generated `get.py` remains intentionally independent and uses
 `argparse` because adopters run it without a CMRU installation. It is the generic
 installer only: a fail-closed, transactional `install`/`update`/`status`/`rollback` that

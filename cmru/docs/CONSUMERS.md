@@ -546,14 +546,17 @@ A project that publishes one tarball per interpreter (`[[project.variants]]`, `t
 builds them with `bundle.toml` plus the `bundle-build` handler instead of its own script
 (KI-126; see the [design rationale](DESIGN-GUIDE.md#bundle-variants-use-one-declared-build-path-ki-126)).
 The variant list stays in `cmru.toml`; each variant's `build_arg` is the interpreter
-version (`"3.11"` or the `PYTHON_VERSION=3.11` form naf already declares) handed to pip. Every table below is optional and inert when
-absent, so a `bundle.toml` without them builds exactly the archive it always did.
+version (`"3.11"` or the `PYTHON_VERSION=3.11` form naf already declares) handed to pip.
+`[archive]` and `[copy]` are required; `[vendor]`, `[stage]`, `[exec]`, and
+`[manifest]` are optional.
 
 ```bundle-toml
 [archive]
 name_template = "myproj-v{version}-{variant}.tar.xz"   # {variant} is mandatory when variants are built
 version_env = "MYPROJ_VERSION"
 format = "xztar"
+keep = ["src/app-defaults.env", "certifi/cacert.pem"] # exact bundle-relative paths
+# keep_tree = true                       # default false; keep the staged tree only if needed
 
 [vendor]                                  # pip download --only-binary=:all: for the variant's ABI
 requirements = ["requirements-runtime.txt"]
@@ -574,7 +577,7 @@ name = "manifest.json"
 ```
 
 ```sh
-MYPROJ_VERSION=1.2.3 cmru handler bundle-build --bundle-config bundle.toml \
+cmru handler bundle-build --bundle-config bundle.toml \
     --cmru-config cmru.toml --name myproj          # --variant all (default) or one declared name
 ```
 
@@ -583,11 +586,34 @@ Rules worth knowing: the archive for variant `py311` is `myproj-v1.2.3-py311.tar
 a failing vendor or stage command exits 1 and writes no archive; with `[exec].prefix` the runner must see the
 same tree at `{root}` (paths are passed project-root-relative) and the stage command runs from `{root}`,
 otherwise from the staged bundle directory; `[wheel].find_links` makes the vendor step `--no-index`.
-`[vendor].dest` and `[manifest].name` must name paths the archive will include; paths matching CMRU's
-hard-excludes are refused. From Python:
+If `MYPROJ_VERSION` is set, it names the archive version. When it is unset,
+`bundle-build` derives the planned release version (or the latest tag when the
+project is unchanged) from CMRU and adds `.devN+g<short-hash>` from Git, so the
+artifact remains tied to a commit and is not an immutable release version. The
+manifest tag uses the same canonical `<prefix>-v<version>` spelling as
+`cmru release`, including when the configured
+prefix already ends in `-v`.
+
+`[archive].keep` is an exact list of paths in the final bundle tree. It allows
+suffix-filtered files such as a runtime `.env` catalog or a public CA `.pem`
+only at those paths; it does not accept globs, absolute paths, or traversal.
+For `copy.dirs = ["a/b"]`, the output starts at `b/`; `copy.files` entries are
+flattened to the source basename. CMRU logs a WARN with every copied path it
+skips. If stage leaves an unlisted suffix-class file (`.toml`, `.env`, `.pem`,
+`.crt`, `.key`, `.p12`, `.pfx`, or `.log`), the build fails and names it. The
+name exclusions (`.git`, `.ciu`, `ciu.env`, `minisign.key`, cache directories,
+`node_modules`) and `.pyc` are never keepable and stay out of both archive and
+manifest. Included source symlinks and stage-created symlinks are refused.
+Vendored `.whl` files are unaffected by the suffix rules. After the archive
+and any configured manifest succeed, `bundle_dir` is removed; set
+`keep_tree = true` when a later step needs it. A failed build retains the
+staged tree for diagnosis.
+From Python:
 `run_bundle(Path("bundle.toml"), variant=<VariantConfig>, manifest_project=..., manifest_tag=..., runner=<optional recorder>)`.
-The manifest refuses a tree containing files the archive hard-excludes (`*.toml`, `*.env`, `*.pem`, ...), since the
-tarball would lack files the manifest lists.
+`run_bundle` also accepts `version_fallback` for callers that derive the same
+development version outside the handler. Archive, manifest, and copy all use
+the same filtering policy; a successful manifest therefore describes the files
+the archive includes.
 
 A real `wheel-build` handler invocation requires a Git worktree and a configured
 `CMRU_WHEEL_BUILDER_IMAGE`. It reads an explicit environment value first, then derives

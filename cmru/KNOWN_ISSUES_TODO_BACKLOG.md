@@ -14,10 +14,11 @@
 
 | ID | Status | Fix commit |
 | --- | --- | --- |
-| KI-165 | OPEN (bundle-build smaller gaps: manifest tag prefix, one exec prefix for all variants, no pip flags, fixed archive layout, SOURCE_DATE_EPOCH required, stale sibling archives) | — |
-| KI-164 | OPEN (`bundle-build` leaves the staged bundle tree in `dist_dir`) | — |
-| KI-163 | OPEN (`bundle-build` cannot build before a tag exists: version only from a required env var) | — |
-| KI-162 | OPEN (HIGH: `bundle-build` silently drops or refuses `.env`/`.pem`-suffixed files in the bundle, e.g. a runtime catalog `app-defaults.env` and `certifi/cacert.pem`) | — |
+| KI-166 | FIXED (included bundle source symlinks could dereference and ship their targets) | `f2b56b12743f6a764bbadefa8b937c1bd642b32f` |
+| KI-165 | OPEN (item 2 fixed; items 1, 3, 4, 5 and 6 remain) | `f2b56b12743f6a764bbadefa8b937c1bd642b32f` |
+| KI-164 | FIXED (`bundle-build` removes the staged tree after a successful archive by default) | `f2b56b12743f6a764bbadefa8b937c1bd642b32f` |
+| KI-163 | FIXED (`bundle-build` derives a non-release version when its configured variable is absent) | `f2b56b12743f6a764bbadefa8b937c1bd642b32f` |
+| KI-162 | OPEN (CMRU fix is implemented; the naf equivalence build remains part of KI-126 acceptance after the cmru patch release) | `f2b56b12743f6a764bbadefa8b937c1bd642b32f` |
 | KI-161 | OPEN (`cmru versions resolve` and `init` rewrite `cmru.toml` and drop comments; a document-wide blank-line collapse can change multi-line string values) | — |
 | KI-160 | OPEN (post-promotion evidence retention can exit 1 after a successful release) | — |
 | KI-158 | OPEN (retained release outputs can disappear with an outer release worktree) | — |
@@ -3537,7 +3538,7 @@ Only 10 of the 40 slowest tests use repositories (`test_release_end_to_end_real_
 
 ## KI-162 - `cmru handler bundle-build` silently drops, or refuses with an error, files whose names end in `.env` or `.pem` (a runtime catalog `app-defaults.env`, the vendored `certifi/cacert.pem`)
 
-**Status:** OPEN (filed 2026-11-13); severity: HIGH (blocks the KI-126 acceptance: a project cannot ship such files, and the copy path loses them without any message). Found by the netcup-api-filter canary (naf branch `bundle1`, commit `netcup-api-filter@b55cd10`, not merged). CHANGES checked: nothing in `[Unreleased]` covers it.
+**Status:** OPEN (CMRU implementation and regressions fixed in `f2b56b12743f6a764bbadefa8b937c1bd642b32f`; the naf equivalence build remains pending for KI-126 acceptance); severity: HIGH. Found by the netcup-api-filter canary (naf branch `bundle1`, commit `netcup-api-filter@b55cd10`, not merged).
 
 **Observed (run).** In the scratch project below the copy-only config exits 0 and the archive holds only `app/manifest.json` and `app/src/app.py`: `src/app-defaults.env` and `src/cacert.pem` are missing from the archive AND from the staged tree, with no log line. When a stage step creates `app-defaults.env` inside the bundle dir (`[stage] argv = ["sh", "-c", "printf 'KEY=value\\n' > \"$1/app-defaults.env\"", "stage", "{bundle_dir}"]`) the build exits 2 with `[ERROR] bundle-build: the archive hard-excludes files the bundle tree holds, so the manifest would list files the tarball lacks: app-defaults.env` after `Running stage step`. `cmru.bundle._is_excluded` returned `True` for `app-defaults.env`, `src/app-defaults.env` and `vendor/certifi/cacert.pem`, and `False` for `.env.defaults` and `netcup_filter.db` (run).
 
@@ -3546,6 +3547,8 @@ Only 10 of the 40 slowest tests use repositories (`test_release_end_to_end_real_
 **Consequence.** The copy path loses the files silently; the stage path (a stage step that writes or unpacks such a file) fails the whole build; a vendored `.whl` file itself is not affected. A shipped runtime that needs a `.env`-suffixed catalog or a CA bundle cannot use `bundle-build`, and a project that works around the manifest error would ship an archive without its CA bundle (every HTTPS call fails at runtime).
 
 **Wanted (the vbpub controller's preference).** One predicate, fail-closed. (1) The suffix hard excludes (`.toml .env .pem .crt .key .p12 .pfx .log`) stay on for every file of the final bundle tree; a file of that class that is not allowed makes the build fail naming the file and `[archive] keep`; the copy step may still skip such a source file but logs it at WARN with its path. (2) `[archive] keep = [...]` is the only override: PATH-EXACT bundle-relative posix paths (no glob characters, rejected at parse time), applied identically by the copy filter (translated to bundle-relative paths for nested `copy.dirs`), the archive filter and the manifest check, so tarball and manifest cannot diverge; the name-class excludes (`.git`, `.ciu`, `ciu.env`, `minisign.key`, `node_modules`, caches) and `.pyc`/`__pycache__` are not keepable and stay excluded from archive and manifest alike. (3) A stage step that writes a secret-class file the project did not list in `keep` therefore still fails closed.
+
+**Fix and evidence.** Commit `f2b56b12743f6a764bbadefa8b937c1bd642b32f` uses `_is_excluded(rel_path, keep_paths)` for copy, all archive formats, and manifest enumeration. It warns for copied paths it skips, validates exact keep paths after stage, rejects unkept suffix-class files left by stage, and leaves hard-name exclusions and `.pyc` unkeepable. Regression coverage is in `cmru/tests/test_bundle_ki162_165.py`; the registered red gate failed on the copy/keep reproduction at `74a58f3cf2680e9a7318fcd222d26a2950d47091`, and the final gate will bind the fixed result. The separate naf old-builder equivalence build was not run in this cmru-only work item; it remains the KI-126 acceptance step after the cmru patch release.
 
 **Close when.** Regression tests run (a) the copy-only scratch project with `keep = ["src/app-defaults.env", "src/cacert.pem"]` and assert both are in the archive and the manifest; (b) the same project WITHOUT `keep` and assert a WARN naming each skipped file; (c) a stage step creating `app-defaults.env` and a vendored `certifi/cacert.pem` and assert the build succeeds with both in the archive and the manifest; and the naf canary (`bundle1`) builds its Passenger tarball byte-equivalent (file list, sha256, database table counts) to the old builder; (d) a stage step writing `minisign.key`, and one writing an unlisted `.key`, still fail the build with the file named; (e) `keep` with a glob character is a config error; (f) `keep = ["b/app-defaults.env"]` works for `copy.dirs = ["a/b"]` (bundle-relative basis).
 
@@ -3611,11 +3614,13 @@ Call: `SOURCE_DATE_EPOCH=1700000000 DEMO_VERSION=1.0.0 cmru handler bundle-build
 
 ## KI-163 - `cmru handler bundle-build` needs a version before any tag exists, so it cannot build for `cmru build` or `cmru publish --build-output`
 
-**Status:** OPEN (filed 2026-11-13); severity: medium. Found by the naf canary (`netcup-api-filter@b55cd10`).
+**Status:** FIXED in `f2b56b12743f6a764bbadefa8b937c1bd642b32f`; severity: medium. Found by the naf canary (`netcup-api-filter@b55cd10`).
 
 **Observed (run).** Unsetting the version variable of the scratch project below makes the build fail with `[ERROR] bundle-build: DEMO_VERSION must be set for archive naming` (exit 3). The archive name embeds `{version}` and the only version source is the environment variable named by `[archive] version_env`. Code (read): `cmru/src/cmru/handlers.py` around line 1033-1036: `version = os.environ.get(parsed.archive_version_env, "")`, `if not version: raise RuntimeError(f"{parsed.archive_version_env} must be set for archive naming")`. `cmru release` injects the release tag into artifact steps, so only the release path works; `cmru build` (untagged, retained build) and a later `cmru publish --build-output` cannot produce the bundle, while a hand-written builder that wrote a version-agnostic `dist/<prefix>-<variant>.tar.xz` worked for build-then-publish-later (read from the old naf builder).
 
-**Wanted (acceptance criterion).** A version FALLBACK when `version_env` is unset, so untagged builds work and the archive name stays versioned (one source of truth). The same variable is also required by `bundle.archive_path` (bundle.py:572-578, called by `run_bundle` at :820), so the fallback version is passed into `run_bundle`/`archive_path` as a parameter, not only resolved in the handler. The fallback value for a non-Python project is composed by cmru, `<last tag version or 0.0.0>.dev<commits since tag>+g<short hash>`; the `[project.version]` strategies produce the next RELEASE version and do not yield it. Such a name makes `is_release_version` (release.py:57-59) false, which is what keeps it from being published as an immutable release; the close test asserts that. Rejected alternative: an unversioned name template renamed later by `tarball-publish` (it hides which commit a retained archive came from).
+**Wanted (acceptance criterion).** A version FALLBACK when `version_env` is unset, so untagged builds work and the archive name stays versioned (one source of truth). The fallback is passed through `run_bundle` to `archive_path`, not resolved only in the handler. CMRU resolves the selected project's next release version from its own version plan (or the last tag version when the project has no pending release), then composes `<resolved version>.dev<commits since tag>+g<short hash>`. Such a name makes `is_release_version` (release.py:57-59) false, which keeps immutable release publication from accepting it; the regression asserts that. Rejected alternative: an unversioned name template renamed later by `tarball-publish` (it hides which commit a retained archive came from).
+
+**Fix and evidence.** `bundle-build` now uses `cmru.version.status_records` for the configured project's release plan, appends the Git commit count and short hash, and passes the fallback through `run_bundle`/`archive_path`; an explicit environment version still wins. The regression runs an untagged SCM scratch project, checks the archive and manifest development version, and asserts `is_release_version` is false. A tagged environment value is covered by the prefix/tag regression for KI-165 item 2.
 
 **Close when.** A test runs `bundle-build` without the variable on a repository with the `scm` strategy and asserts a `.dev` version in the archive name and manifest tag, and a tagged `cmru release` run still uses the release tag; `cmru build` + `cmru publish --build-output` works for a bundle project.
 
@@ -3625,11 +3630,13 @@ Call: `SOURCE_DATE_EPOCH=1700000000 DEMO_VERSION=1.0.0 cmru handler bundle-build
 
 ## KI-164 - `cmru handler bundle-build` leaves the staged bundle tree in `dist_dir` after a successful build
 
-**Status:** OPEN (filed 2026-11-13); severity: medium (release retention copies the tree, thin deploys may ship it). Found by the naf canary (`netcup-api-filter@b55cd10`).
+**Status:** FIXED in `f2b56b12743f6a764bbadefa8b937c1bd642b32f`; severity: medium (release retention copies the tree, thin deploys may ship it). Found by the naf canary (`netcup-api-filter@b55cd10`).
 
 **Observed (run).** After a successful build of the scratch project below `dist/` holds `demo-v1.0.0-py311.tar.xz` AND the directory `dist/app/` (the staged tree: sources, vendored wheels and a seeded database in a real project). Code (read): `run_bundle` in `cmru/src/cmru/bundle.py` removes `dist_dir` or the stale bundle/client dirs BEFORE building (lines ~822-836, `shutil.rmtree(...)`) but never removes `bundle_dir` after `write_deterministic_tar`. Consequence (read, not run): `release.artifact_dirs = ["dist"]` retention copies the whole tree next to the archive and a thin deploy that does not exclude `dist` ships it.
 
 **Wanted (acceptance criterion).** `[archive] keep_tree = false` as the DEFAULT: remove `bundle_dir` after the archive and manifest were written successfully (on failure keep it for debugging); `keep_tree = true` opts in. The manifest file is written into the tree before archiving, so nothing is lost.
+
+**Fix and evidence.** `archive.keep_tree` defaults to false; `run_bundle` removes `bundle_dir` only after manifest and archive creation succeed. The regression covers default cleanup, explicit retention, stage failure retention, and archive failure retention.
 
 **Close when.** A test asserts that after a successful build only the archive (and any declared extra outputs) remain in `dist_dir`, that a failed stage keeps the tree, and that `keep_tree = true` keeps it.
 
@@ -3639,10 +3646,10 @@ Call: `SOURCE_DATE_EPOCH=1700000000 DEMO_VERSION=1.0.0 cmru handler bundle-build
 
 ## KI-165 - `bundle-build` smaller gaps found by the naf canary (one list)
 
-**Status:** OPEN (filed 2026-11-13); severity: low, except item 2 (medium). Source: the naf canary and its independent review (`netcup-api-filter@b55cd10`). Each item says whether it was RUN or only READ in the cmru source.
+**Status:** OPEN (item 2 fixed in `f2b56b12743f6a764bbadefa8b937c1bd642b32f`; items 1, 3, 4, 5, and 6 remain); severity: low for the remaining items. Source: the naf canary and its independent review (`netcup-api-filter@b55cd10`). Each item says whether it was RUN or only READ in the cmru source.
 
 1. **Stale sibling archives accumulate (run).** Building version `1.0.0` and then `1.1.0` with the scratch project below leaves BOTH `demo-v1.0.0-py311.tar.xz` and `demo-v1.1.0-py311.tar.xz` in `dist/`; a following `tarball-publish --glob` or an activation script that globs the archive sees two. Code (read): for a variant build `run_bundle` only unlinks `own_archive`, the archive of the same version (bundle.py ~lines 827-834).
-2. **Manifest tag carries the prefix twice (run).** With `prefix = "demo-v"` the scratch build writes `"tag": "demo-v-v1.0.0"` into `manifest.json`: `handlers.py:1037` calls `version_to_tag(project.prefix, version)` and `release.py:62-64` already appends `-v`, while `project.prefix` carries it (config.py:396; `_project_release_prefix`, cli.py:5569-5571, strips it). The installer refuses a manifest whose tag differs from the requested tag (`templates/get.py.tmpl:741-742`), so the manifest is uninstallable. Severity medium (the fixer may split it into its own KI). Fix: use `_project_release_prefix(project)` and add a test asserting the manifest tag equals the tag `cmru release` creates.
+2. **FIXED: manifest tag carried the prefix twice (run).** With `prefix = "demo-v"` the old scratch build wrote `"tag": "demo-v-v1.0.0"` into `manifest.json`; the installer refuses a manifest whose tag differs from the requested tag (`templates/get.py.tmpl:741-742`). Commit `f2b56b12743f6a764bbadefa8b937c1bd642b32f` uses `_project_release_prefix(project)` before `version_to_tag`; regression cases for `prefix = "demo"` and `prefix = "demo-v"` assert the manifest tag equals `cmru release`'s tag.
 3. **One `[exec].prefix` for all variants (read, not run).** `ExecConfig` holds a single prefix, so variants with different runner containers cannot be expressed in one `bundle.toml`.
 4. **`[vendor]` cannot pass extra pip flags (read, not run).** `vendor_dependencies` builds a fixed command (no hook for `--index-url`, `--no-deps`, `--prefer-binary` variants).
 5. **Fixed archive layout and metadata (read, not run).** Root directory always `bundle_dir/`, no flat-archive option. Modes 0644/0755, mtime normalisation, uid/gid and sorted order exist only for `format = "xztar"` (`write_deterministic_tar`); the DEFAULT format is `gztar` (bundle.py, `_string_value(archive, "format", ..., default="gztar")`), built by `shutil.make_archive` with none of that.
@@ -3653,3 +3660,15 @@ Call: `SOURCE_DATE_EPOCH=1700000000 DEMO_VERSION=1.0.0 cmru handler bundle-build
 **Reproduction setup (for item 1).**
 
 **Scratch project:** the one defined under KI-162 (same `cmru.toml` and copy-only `bundle.toml`); call as shown there.
+
+## KI-166 - bundle-build could dereference an included source symlink and ship its target
+
+**Status:** FIXED in `f2b56b12743f6a764bbadefa8b937c1bd642b32f`; severity: high for secret-bearing targets. Found while reviewing KI-162's suffix-filter safety boundary.
+
+**Observed (run).** A source tree with `src/public.txt` symlinked to `private.key` passes the old copy filter because it checks the destination name, then `shutil.copytree` dereferences the link. The key contents are staged and archived under the ordinary name `src/public.txt`, bypassing the suffix exclusion.
+
+**Fix and evidence.** Copy paths remain lexical until symlink components are checked. Included source symlinks and symlinks created by stage are refused before archive creation; excluded source paths still follow the normal exclusion and warning policy. The regression `test_copy_rejects_source_symlink_instead_of_bundling_its_target` failed on the clean pre-fix revision `b082ac25354abdc4b60492ad6a9cd42a51999cdd` and is covered on the final head.
+
+**Security boundary.** This prevents symlink dereferencing by the builder. It does not inspect file contents or sandbox stage code: a stage command can still write secret data under an ordinary filename, and that content is eligible for the archive.
+
+**Close when.** The source-symlink regression and registered final CMRU `r0-r1` gate pass; no archive is produced from a tree containing an included symlink.
