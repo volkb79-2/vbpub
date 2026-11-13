@@ -755,6 +755,22 @@ def test_non_css_unicode_whitespace_cannot_override_a_hidden_winner(style: str) 
 
 
 @pytest.mark.parametrize(
+    "value,hidden",
+    [
+        pytest.param("blocK", True, id="kelvin-sign-block"),
+        pytest.param("inline-blocK", True, id="kelvin-sign-inline-block"),
+        pytest.param("bloc\\212a", True, id="escaped-kelvin-sign-block"),
+        pytest.param("BLOCK", False, id="ascii-uppercase-block-still-overrides"),
+    ],
+)
+def test_css_keywords_fold_ascii_case_only(value: str, hidden: bool) -> None:
+    result = _extraction(f"<p style='display:none;display:{value}'>content</p>", fmt="text")
+
+    assert result.content == ("" if hidden else "content")
+    assert result.hidden_removed == (1 if hidden else 0)
+
+
+@pytest.mark.parametrize(
     "value",
     [
         pytest.param("run-in", id="run-in"),
