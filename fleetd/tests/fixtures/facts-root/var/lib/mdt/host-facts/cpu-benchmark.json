@@ -1,0 +1,1 @@
+{"schema":"mdt-host-cpu-benchmark/1","tool":"geekbench","tool_version":"6.4.0","tool_major":6,"baseline_score":2500,"cpu_model":"Fixture CPU Model","cpus_online":4,"single_core":2100,"multi_core":7800,"result_url":"private-field-must-not-export"}

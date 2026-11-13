@@ -1,0 +1,100 @@
+# fleetd known issues and TODO backlog
+
+## Summary
+
+| ID | Item | Priority | State | Filed |
+|---|---|---|---|---|
+| FD-001 | Fleet-level campaign submission, supervision, collection, and strict Assay merge are not implemented | P1 | OPEN | 2026-11-13 |
+| FD-002 | Standalone lane demand does not derive Assay mutation.jobs_max | P1 | OPEN | 2026-11-13 |
+| FD-003 | Manual Run-Gate commands cannot pass fleetd's per-host RAM budget to Assay | P1 | OPEN | 2026-11-13 |
+| FD-004 | Host facts and planning do not account for the dev-gates slice memory ceiling | P1 | OPEN | 2026-11-13 |
+| FD-005 | Learn one bounded f_h per host from independent timing samples | P2 | OPEN | 2026-11-13 |
+| FD-006 | Lift the one-slot-per-host and J worker cap in the campaign supervisor | P2 | OPEN | 2026-11-13 |
+| FD-007 | Replace the control-plane design default with configurable measured-p95 reserve | P2 | OPEN | 2026-11-13 |
+
+## FD-001 Fleet-level campaign lifecycle is not implemented
+
+**State:** OPEN. **Priority:** P1. **Filed:** 2026-11-13.
+
+This MVP validates inputs, collects local host facts, and prints plans and
+candidate-selection commands. It does not submit campaigns, supervise named
+jobs, collect remote stores, re-plan from progress, merge results, or maintain
+the campaign ledger. Implement the design's daemon and transport work packages
+only after the required host-entry, Run-Gate, Assay, and enrollment interfaces
+are accepted. No daemon, socket, SSH, or Docker behavior is implied by the
+current CLI.
+
+## FD-002 Demand upper bound is not joined to Assay inventory
+
+**State:** OPEN. **Priority:** P1. **Filed:** 2026-11-13.
+
+WP2 accepts `[lanes.<lane>.demand].efficient_upper_bound` from a standalone
+TOML file because Run-Gate 25.6.0 does not accept the `demand` key in
+`run-gate.toml`. The same value must be no greater than the lane's authoritative
+Assay `judge.mutation.jobs_max`; the current `fleet plan` CLI cannot derive that
+inventory and therefore cannot reject a stale or oversized declaration. Until
+the Run-Gate campaign client owns demand parsing, operators must keep these
+values aligned. The follow-on client must derive the upper bound from Assay or
+refuse a mismatch before rendering an executable command.
+
+## FD-003 Fleet RAM budget is not sent to the current runner
+
+**State:** OPEN. **Priority:** P1. **Filed:** 2026-11-13.
+
+`fleet plan` computes `B_h` and proves each planned wave against it, but the
+current Run-Gate `--only-candidates` interface has no per-invocation
+host-specific Assay memory-budget argument. The printed command supplies the
+planned worker count only; it does not enforce `B_h`. Runtime admission remains
+owned by the host's existing Run-Gate, Assay lane, and cgroup configuration.
+The Run-Gate campaign client must carry the selected host budget into Assay's
+memory admission (or establish an equivalent enforced bound) before treating
+the plan's wave proof as an execution guarantee.
+
+## FD-004 Host slice memory ceiling is not part of the planner facts
+
+**State:** OPEN. **Priority:** P1. **Filed:** 2026-11-13.
+
+WP1(a) reports physical lane memory and control-plane `memory.min`, while WP2
+computes `B_h = P_h × overcommit − O_h` as specified in the compute-host
+design. The facts do not include the host-owned `dev-gates.slice` `memory.max`
+ceiling, so the planner cannot report when its estimate exceeds that execution
+limit. The design lists slice `MemoryMax` as a downstream safety net; this MVP
+keeps the specified physical-RAM budget and does not reinterpret the cgroup
+ceiling as available RAM. A follow-up should collect the ceiling with a reason
+when unavailable and derive an effective limit that also accounts for current
+slice use and other running jobs before treating planned capacity as enforceable.
+
+## FD-005 Learn the per-host correction factor
+
+**State:** OPEN. **Priority:** P2. **Filed:** 2026-11-13.
+
+WP2 accepts one stored `f_h` per host, defaults it to 1.0, and validates it in
+`[0.5, 2.0]`; this package deliberately does not learn it. WP5 should implement
+the design's EWMA of actual/predicted time from finished candidates only when
+their normalized reference came from another host or from the declared value.
+Skip a sample normalized from that host's own prior measurement, reset on CPU
+model change or re-enrollment, and never fit by lane or hardware flavor.
+
+## FD-006 Lift the manual one-slot-per-host and J cap
+
+**State:** OPEN. **Priority:** P2. **Filed:** 2026-11-13.
+
+The current manual planner uses one campaign slot per host because concurrent
+same-lane selected runs share Run-Gate's in-flight identity and Assay store,
+and it caps `W_h` at the lane's `efficient_upper_bound` J. On a four-core host
+with oversubscribe 1.25 and J = 3, that leaves two of five CPU-derived worker
+slots unused. This is an accepted safety deviation for the no-supervisor MVP.
+WP4/WP5 should give selected runs distinct identities and schedule enough
+independent instances to use the remaining safe capacity without sharing state.
+
+## FD-007 Calibrate the control-plane reserve from measured p95
+
+**State:** OPEN. **Priority:** P2. **Filed:** 2026-11-13.
+
+WP2 currently uses the design default
+`clamp(256 MiB + 6% × MemTotal, 768 MiB, 2 GiB)` and takes the larger of that
+default or the reported `ctl.slice/memory.min`. The design later replaces the
+default with `1.25 × measured p95`, still clamped. A later host-policy change
+should make that measured value an explicit, host-owned configuration source
+after a reviewed measurement period; fleetd must not infer it from live host
+usage in this MVP.

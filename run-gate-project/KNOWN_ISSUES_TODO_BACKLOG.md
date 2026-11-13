@@ -168,6 +168,7 @@ SPEC §9.
 | RG-272 | a valid request base on a non-tag checkout produces zero mutation candidates despite changed source | Should-fix | OPEN 2026-11-12 |
 | RG-273 | ephemeral Run-Gate lanes opt in to the image-advertised KSM shim by default | Enhancement | IMPLEMENTED and released in Run-Gate 25.6.0; tester images rebuilt/deployed 2026-11-12; host lane smoke open |
 | RG-275 | lane campaigns cannot be placed across compute hosts: no lane demand model (expected charge vs cap, efficient upper bound), no central scheduler over host capabilities and RAM, supervision lives in a host-local netcup script | Enhancement | OPEN 2026-11-12 (design rev 5) |
+| RG-276 | Run-Gate has no campaign-plan client to assemble candidate and host inputs for fleetd | Enhancement | OPEN 2026-11-13; fleetd MVP-A exposes a standalone fleet plan CLI |
 ---
 
 ## RG-1 — conjunction lanes silently drop `--worktree` and `--allow-dirty`
@@ -8537,3 +8538,31 @@ WP8 profiles host runs. The daemon (WP3) depends on MDT-086. Batch dispatch
   charged only through `thaw_reserve_h`;
 - one real two-host campaign PASSes with its placement, named batch jobs and a
   predicted-against-actual ETA recorded.
+
+## RG-276 — the Run-Gate campaign-plan client is not implemented
+
+**Status:** OPEN (filed 2026-11-13); Enhancement. Design record:
+docs/DESIGN-compute-hosts-and-campaigns-2026-11.md, §4.4 and WP2 in §5.2.
+
+**Problem.** fleetd MVP-A now accepts a candidate table, a host-facts set, and
+the lane's [lanes.<lane>.demand], then emits a deterministic per-host plan
+and run-gate <lane> --only-candidates FILE commands. Run-Gate has no
+campaign plan verb to derive the candidate table from Assay records, assemble
+the host set, invoke fleetd, or present the result in its own CLI.
+
+**Contract for the follow-up.** Add a read-only run-gate campaign plan
+client. It derives candidate IDs and measured per-candidate RAM/time from the
+existing Assay plan and final records, reads lane demand from the selected
+Run-Gate TOML, accepts a caller-supplied host set/facts file until fleetd's
+daemon exists, and invokes fleetd's planner library or CLI. It prints the
+per-host candidate lists and existing --only-candidates FILE commands. It
+must not start campaigns, probe hosts, add transport, or invent facts.
+
+**Prerequisite.** Released Run-Gate refuses `demand` as an unknown lane key
+(`LANE_KEYS`, `_check_keys` in `run_gate.py`), so a project cannot yet keep the
+table in its own `run-gate.toml`; fleetd's CLI reads it from a separate TOML
+file until the loader accepts and validates `[lanes.<lane>.demand]` (RG-275).
+
+**Close when.** Candidate/facts/demand assembly is covered by deterministic
+contract tests, output matches fleetd's fleet-plan/1 behavior, and the
+Run-Gate registered lane plus docs gates pass.

@@ -1,0 +1,17 @@
+schema_version = 1
+
+[paths]
+geekbench_record = "/var/lib/mdt/host-facts/cpu-benchmark.json"
+host_setup_env = "/etc/mdt/host-setup.env"
+guard_config = "/etc/cgprofile/guard.toml"
+guard_state = "/run/cgprofile/guard-state"
+ksm_optin_shim = "/usr/lib/fleetd/ksm-optin.so"
+
+[control_plane]
+slice = "ctl.slice"
+
+[policy]
+overcommit = 1.5
+oversubscribe_max = 1.25
+psi_refuse_some_avg10 = 25
+max_lane_containers = 8
