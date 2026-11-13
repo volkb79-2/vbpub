@@ -2424,12 +2424,10 @@ def run_study(cell_set: str, *, target: str, device: str, out: Path, target_kind
     if base_budget_exceeded:
         raise StudyError("the remaining write budget cannot complete the base schedule")
     if optional_budget_exceeded:
-        if cell_set in FILE_STANDARD_CELL_SETS:
-            return {"cell_set": cell_set, "skipped": True,
-                    "reason": (f"the full file-standard cap and {required_cap} bytes required "
-                               f"by cell-sets still ahead do not fit in the remaining "
-                               f"{WRITE_CAP_GB} GB write budget")}
-        raise StudyError("the remaining write budget cannot complete this cell-set")
+        return {"cell_set": cell_set, "skipped": True,
+                "reason": (f"the full file-standard cap and {required_cap} bytes required "
+                           f"by cell-sets still ahead do not fit in the remaining "
+                           f"{WRITE_CAP_GB} GB write budget")}
     if pending_work:
         host.assert_study_tools(kind)
         host.trim_state(device)
