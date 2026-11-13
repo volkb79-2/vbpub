@@ -659,7 +659,7 @@ def test_time_reference_and_host_eta_refuse_incomparable_scores():
     _facts(known_reference, "host-small")["speed_reason"] = "unknown score"
     _facts(known_reference, "host-large")["psi"]["memory"]["some_avg10_pct"] = 99
     no_host_score = _plan([_candidate("x", 100_000_000)], hosts=known_reference)
-    assert _assigned_host(no_host_score, "x")["eta_reason"] == "host Geekbench score is unavailable or uses a different major/version"
+    assert _assigned_host(no_host_score, "x")["eta_reason"] == "common Geekbench reference is unavailable"
     assert no_host_score["eta_seconds"] is None
 
 
