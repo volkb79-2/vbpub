@@ -143,6 +143,10 @@ omits the element when a recovered winner or a best-effort tokenized malformed
 fragment contains `display:none` or `visibility:hidden`. A malformed style
 with neither marker remains visible. An unescaped LF, CR, or FF inside a CSS
 string ends that malformed string so later declarations can be recovered.
+Invalid `display` or `visibility` values are ignored, so they cannot override
+an earlier valid declaration. An unresolved winning `var()` or
+cascade-dependent value for either property fails closed, as does
+`visibility:collapse`; this can omit content the browser ultimately shows.
 CSS escapes in property names and hiding keyword values are decoded, so
 `d\69splay:none` and `display:\6e one` are omitted too. Tokenization ignores
 string and nested function contents. Outside strings, a backslash escape

@@ -199,8 +199,13 @@ recovered declaration or a best-effort tokenized malformed fragment contains
 `display:none` or `visibility:hidden`. For example,
 `<p style='display:none;content:"unfinished'>hidden text</p>` is omitted, while
 `<p style='display:block;color:red;broken'>visible text</p>` remains visible.
-A malformed style with neither marker remains visible. Tokenization ignores
-string and nested function contents; an unclosed comment's remainder is checked
+A malformed style with neither marker remains visible.
+Invalid `display` or `visibility` values are ignored, so they cannot override
+an earlier valid declaration. An unresolved winning `var()` or
+cascade-dependent value for either property fails closed, as does
+`visibility:collapse`; this can omit content the browser ultimately shows.
+Tokenization ignores string and nested
+function contents; an unclosed comment's remainder is checked
 as a malformed fragment. An unescaped LF, CR, or FF inside a CSS string ends
 that malformed string so later declarations can be recovered. CSS escapes in
 property names and hiding keyword values are decoded, so

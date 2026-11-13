@@ -6,6 +6,9 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 <!-- cmru: pending release notes begin -->
 
+- fix(pwmcp): ignore invalid inline display values and fail closed on unresolved or collapsed visibility (PWMCP-65, PWMCP-66)
+- test(pwmcp): close r8 page-content mutation survivors with behavioral boundary coverage
+
 <!-- cmru: pending release notes end -->
 
 <!-- cmru: release history -->

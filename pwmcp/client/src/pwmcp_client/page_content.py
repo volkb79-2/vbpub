@@ -37,6 +37,18 @@ _BLOCK_TAGS = frozenset({
 _IGNORED_TAGS = frozenset({"script", "style", "noscript", "template"})
 _PAGE_CHROME_TAGS = frozenset({"header", "nav", "footer"})
 _ZERO_WIDTH = re.compile("[\u200b-\u200d\u202a-\u202e\u2060\u2066-\u2069\ufeff\U000e0000-\U000e007f]")
+_UNRESOLVED_CSS_VALUE = "<pwmcp-unresolved-css-value>"
+_DISPLAY_OUTSIDE = frozenset({"block", "inline", "run-in"})
+_DISPLAY_INSIDE = frozenset({"flow", "flow-root", "table", "flex", "grid", "ruby"})
+_DISPLAY_LIST_ITEM_INSIDE = frozenset({"flow", "flow-root"})
+_DISPLAY_INTERNAL = frozenset({
+    "table-row-group", "table-header-group", "table-footer-group", "table-row", "table-cell",
+    "table-column-group", "table-column", "table-caption", "ruby-base", "ruby-text",
+    "ruby-base-container", "ruby-text-container",
+})
+_DISPLAY_SINGLE = frozenset({
+    "none", "contents", "list-item", "inline-block", "inline-table", "inline-flex", "inline-grid",
+}) | _DISPLAY_OUTSIDE | _DISPLAY_INSIDE | _DISPLAY_INTERNAL
 # Static hiding only: a CSS class that computes to display:none cannot be read from HTML.
 
 
@@ -247,6 +259,65 @@ def _priority_value(value: str) -> tuple[str, bool]:
     return value[:bang].strip(), True
 
 
+def _display_value_is_valid(value: str) -> bool:
+    """Accept the static single and multi-keyword values in CSS Display 3."""
+
+    words = value.split()
+    if len(words) == 1:
+        return words[0] in _DISPLAY_SINGLE
+    if len(set(words)) != len(words):
+        return False
+    if len(words) == 2:
+        pair = set(words)
+        return (
+            (len(pair & _DISPLAY_OUTSIDE) == 1 and len(pair & _DISPLAY_INSIDE) == 1)
+            or (
+                "list-item" in pair
+                and len(pair & (_DISPLAY_OUTSIDE | _DISPLAY_LIST_ITEM_INSIDE)) == 1
+            )
+        )
+    if len(words) != 3:
+        return False
+    word_set = set(words)
+    expected = (
+        {"list-item"}
+        | (word_set & _DISPLAY_OUTSIDE)
+        | (word_set & _DISPLAY_LIST_ITEM_INSIDE)
+    )
+    return (
+        "list-item" in word_set
+        and word_set == expected
+        and len(word_set & _DISPLAY_OUTSIDE) == 1
+        and len(word_set & _DISPLAY_LIST_ITEM_INSIDE) == 1
+    )
+
+
+def _display_property_value(value: str) -> str | None:
+    """Keep valid static display values; fail closed when computation is unknown."""
+
+    if value in {"initial", "unset"}:
+        return "inline"
+    if value in {"inherit", "revert", "revert-layer"} or (
+        value.startswith("var(") and value.endswith(")")
+    ):
+        return _UNRESOLVED_CSS_VALUE
+    return value if _display_value_is_valid(value) else None
+
+
+def _visibility_property_value(value: str) -> str | None:
+    """Keep valid static visibility values; fail closed when computation is unknown."""
+
+    if value == "initial":
+        return "visible"
+    if value in {"inherit", "unset", "revert", "revert-layer"} or (
+        value.startswith("var(") and value.endswith(")")
+    ):
+        return _UNRESOLVED_CSS_VALUE
+    if value == "collapse":
+        return "hidden"
+    return value if value in {"visible", "hidden"} else None
+
+
 def _style_declarations(style: str) -> dict[str, str] | None:
     """Parse inline declarations, retaining the winning value for each property."""
 
@@ -274,6 +345,14 @@ def _style_declarations(style: str) -> dict[str, str] | None:
         if value is None:
             return None
         value = value.lower()
+        if property_name == "display":
+            value = _display_property_value(value)
+            if value is None:
+                continue
+        elif property_name == "visibility":
+            value = _visibility_property_value(value)
+            if value is None:
+                continue
         previous = winners.get(property_name)
         if previous is None or important or not previous[0]:
             winners[property_name] = (important, value)
@@ -281,7 +360,10 @@ def _style_declarations(style: str) -> dict[str, str] | None:
 
 
 def _declarations_hide(declarations: dict[str, str]) -> bool:
-    return declarations.get("display") == "none" or declarations.get("visibility") == "hidden"
+    return (
+        declarations.get("display") in {"none", _UNRESOLVED_CSS_VALUE}
+        or declarations.get("visibility") in {"hidden", _UNRESOLVED_CSS_VALUE}
+    )
 
 
 def _contains_hiding_declaration(fragment: str) -> bool:

@@ -273,6 +273,8 @@ def test_malformed_inline_css_policy_is_synchronized_across_user_docs() -> None:
         "Tokenization ignores string and nested function contents",
         "unclosed comment's remainder is checked as a malformed fragment",
         "An unescaped LF, CR, or FF inside a CSS string ends that malformed string",
+        "Invalid `display` or `visibility` values are ignored, so they cannot override an earlier valid declaration.",
+        "An unresolved winning `var()` or cascade-dependent value for either property fails closed, as does `visibility:collapse`",
         "CSS escapes in property names and hiding keyword values are decoded",
         "Outside strings, a backslash escape consumes the next code point",
     )
@@ -442,6 +444,55 @@ def test_inline_style_parsing_uses_declarations_comments_and_priority() -> None:
         result = _extraction(source, fmt="text")
         assert result.content == ("" if hidden else expected), source
         assert result.hidden_removed == (1 if hidden else 0), source
+
+
+@pytest.mark.parametrize(
+    "style",
+    [
+        "color:red",
+        "color: red; background: url(a.png) no-repeat",
+        'font-family: "Helvetica Neue", Arial, sans-serif',
+        'background-image:url("data:image/svg+xml;utf8,<svg xmlns=\'http://www.w3.org/2000/svg\'/>")',
+        "width:calc(100% - (2px + 3px));margin:0 auto",
+        'content:"\\201C";color:#333',
+        "font-family:\\5FAE \\8F6F\\96C5\\9ED1, sans-serif",
+        "background:url(a\\)b.png)",
+        "display:block",
+        "display:inline-block!important",
+        "visibility:visible",
+        "display:flex;display:none;display:block",
+        "--x:{a:b};color:red",
+        'grid-template-areas:"a b" "c d"',
+        "transition: opacity .3s ease-in-out, transform .3s",
+        "filter:progid:DXImageTransform.Microsoft.gradient(startColorstr='#80000000',endColorstr='#80000000')",
+        "color:red;",
+        "  ;;  color:blue ;;",
+        "COLOR:RED",
+        "margin:-1px 0 0 -1px;",
+        'content:"a\\\nb"',
+        'content:"\\"display:none\\""',
+        "content:'display:none'",
+        'font:12px/1.5 "A;B", serif',
+        "color:red;)",
+        'color:red;"x',
+        "color:rgb(1,2",
+        "color:red;/*",
+        "width:calc((1px + 2px)",
+        'content:"a\nb"',
+        'background:url("a\nb")',
+        'a:\\"x;color:red',
+        "a:\\(;color:red",
+        "color:red\\",
+        "\\",
+    ],
+)
+def test_ordinary_visible_inline_style_battery_stays_visible(style: str) -> None:
+    escaped_style = style.replace("'", "&#39;")
+    source = f"<p style='{escaped_style}'>S</p>"
+    result = _extraction(source, fmt="text")
+
+    assert result.content == "S", style
+    assert result.hidden_removed == 0, style
 
 
 @pytest.mark.parametrize(
@@ -648,9 +699,19 @@ def test_inline_style_important_case_and_placement_follow_css_priority(
     "style",
     [
         pytest.param("display:none;display:block invalid", id="invalid-display-value"),
+        pytest.param("display:none;display:", id="empty-display-value"),
+        pytest.param("display:none;display:unknown", id="unknown-display-value"),
+        pytest.param("display:none;display:block inline", id="invalid-display-keyword-pair"),
+        pytest.param("display:none;display:grid list-item", id="invalid-list-item-pair"),
+        pytest.param("display:none;display:block flow flow", id="duplicate-display-keyword"),
+        pytest.param("display:none;display:block flow ruby", id="invalid-display-keyword-triple"),
         pytest.param("visibility:hidden;visibility:visible invalid", id="invalid-visibility-value"),
         pytest.param("display:var(--computed-display)", id="unresolved-display-variable"),
         pytest.param("visibility:var(--computed-visibility)", id="unresolved-visibility-variable"),
+        pytest.param("display:none;display:inherit", id="unresolved-display-inheritance"),
+        pytest.param("display:none;display:revert-layer", id="unresolved-display-revert-layer"),
+        pytest.param("visibility:hidden;visibility:unset", id="unresolved-visibility-unset"),
+        pytest.param("visibility:hidden;visibility:collapse", id="visibility-collapse"),
     ],
 )
 def test_invalid_or_unresolved_later_hiding_values_fail_closed(style: str) -> None:
@@ -658,6 +719,25 @@ def test_invalid_or_unresolved_later_hiding_values_fail_closed(style: str) -> No
 
     assert result.content == ""
     assert result.hidden_removed == 1
+
+
+@pytest.mark.parametrize(
+    "style",
+    [
+        pytest.param("display:none;display:block flow", id="outside-inside-pair"),
+        pytest.param("display:none;display:flow list-item", id="inside-list-item-pair"),
+        pytest.param("display:none;display:block flow list-item", id="outside-inside-list-item"),
+        pytest.param("display:none;display:inline-block", id="legacy-inline-block"),
+        pytest.param("display:none;display:initial", id="display-initial"),
+        pytest.param("display:none;display:unset", id="display-unset"),
+        pytest.param("visibility:hidden;visibility:initial", id="visibility-initial"),
+    ],
+)
+def test_valid_visible_hiding_property_values_still_override(style: str) -> None:
+    result = _extraction(f"<p style='{style}'>visible content</p>", fmt="text")
+
+    assert result.content == "visible content"
+    assert result.hidden_removed == 0
 
 
 def test_inline_style_priority_marker_at_value_start_is_parsed_as_empty_important_value() -> None:
@@ -879,3 +959,218 @@ def test_hidden_pruning_counts_one_per_hidden_element_not_per_descendant() -> No
 
     assert result.content == "kept"
     assert result.hidden_removed == 1
+
+
+def test_extraction_record_is_immutable() -> None:
+    from dataclasses import FrozenInstanceError
+
+    from pwmcp_client.page_content import Extraction
+
+    extraction = Extraction("content")
+    with pytest.raises(FrozenInstanceError):
+        extraction.content = "changed"
+
+
+def test_parser_decodes_character_references_in_visible_text() -> None:
+    assert _extract("<p>R&amp;D &copy; &#x1f642;</p>", fmt="text") == "R&D © 🙂"
+
+
+def test_boolean_aria_hidden_attribute_without_value_remains_readable() -> None:
+    assert _extract("<p aria-hidden>visible</p>", fmt="text") == "visible"
+
+
+def test_css_comment_stripper_preserves_escaped_quote_before_closing_quote() -> None:
+    from pwmcp_client.page_content import _strip_css_comments
+
+    style = r'content:"a\"";display:none'
+
+    assert _strip_css_comments(style) == style
+
+
+def test_css_comment_stripper_preserves_ordinary_escaped_character_in_string() -> None:
+    from pwmcp_client.page_content import _strip_css_comments
+
+    style = r'content:"x\y";color:red'
+
+    assert _strip_css_comments(style) == style
+
+
+def test_css_comment_stripper_does_not_close_on_an_escaped_quote() -> None:
+    from pwmcp_client.page_content import _strip_css_comments
+
+    style = r'content:"a\"b";display:none'
+
+    assert _strip_css_comments(style) == style
+
+
+def test_css_comment_stripper_preserves_escaped_crlf_inside_string() -> None:
+    from pwmcp_client.page_content import _strip_css_comments
+
+    style = 'content:"a' + "\\" + "\r\n" + 'b";display:none'
+
+    assert _strip_css_comments(style) == style
+
+
+def test_css_comment_stripper_rejects_newline_after_escaped_character() -> None:
+    from pwmcp_client.page_content import _strip_css_comments
+
+    style = 'content:"a' + "\\x" + "\n" + 'b";display:none'
+
+    assert _strip_css_comments(style) is None
+
+
+def test_css_comment_stripper_preserves_escaped_cr_without_lf() -> None:
+    from pwmcp_client.page_content import _strip_css_comments
+
+    style = 'content:"a' + "\\" + "\r" + '";display:none'
+
+    assert _strip_css_comments(style) == style
+
+
+def test_css_comment_stripper_rejects_trailing_escaped_cr() -> None:
+    from pwmcp_client.page_content import _strip_css_comments
+
+    style = 'content:"a' + "\\" + "\r"
+
+    assert _strip_css_comments(style) is None
+
+
+def test_css_comment_stripper_rejects_unclosed_quote() -> None:
+    from pwmcp_client.page_content import _strip_css_comments
+
+    assert _strip_css_comments('content:"unfinished') is None
+
+
+def test_css_split_keeps_balanced_function_declaration_boundary() -> None:
+    from pwmcp_client.page_content import _split_css
+
+    assert _split_css("background:var(--note);display:none", ";") == [
+        "background:var(--note)",
+        "display:none",
+    ]
+
+
+def test_css_split_preserves_escaped_cr_without_lf() -> None:
+    from pwmcp_client.page_content import _split_css
+
+    first = 'content:"a' + "\\" + "\r" + '"'
+
+    assert _split_css(first + ";display:none", ";") == [first, "display:none"]
+
+
+def test_css_split_rejects_newline_after_escaped_character() -> None:
+    from pwmcp_client.page_content import _split_css
+
+    style = 'content:"a' + "\\x" + "\n" + 'b";display:none'
+
+    assert _split_css(style, ";") is None
+
+
+def test_css_split_rejects_trailing_escaped_cr() -> None:
+    from pwmcp_client.page_content import _split_css
+
+    style = 'content:"a' + "\\" + "\r"
+
+    assert _split_css(style, ";") is None
+
+
+def test_css_decoder_replaces_last_surrogate_and_accepts_maximum_codepoint() -> None:
+    from pwmcp_client.page_content import _decode_css_escapes
+
+    assert _decode_css_escapes(r"\10ffff") == chr(0x10FFFF)
+    assert _decode_css_escapes(r"\dfff") == "\ufffd"
+
+
+def test_css_decoder_consumes_a_trailing_carriage_return_escape_whitespace() -> None:
+    from pwmcp_client.page_content import _decode_css_escapes
+
+    assert _decode_css_escapes(r"\41" + "\r") == "A"
+
+
+def test_recovery_handles_trailing_escaped_cr_without_index_error() -> None:
+    from pwmcp_client.page_content import _recover_malformed_style
+
+    style = 'content:"x' + "\\" + "\r"
+
+    assert _recover_malformed_style(style) == ({}, False)
+
+
+def test_recovery_keeps_unclosed_string_across_escaped_crlf() -> None:
+    from pwmcp_client.page_content import _style_is_hidden
+
+    style = 'content:"x' + "\\" + "\r\n;display:none"
+
+    assert not _style_is_hidden(style)
+
+
+def test_recovery_finds_hiding_declaration_after_bad_string_lone_cr() -> None:
+    from pwmcp_client.page_content import _style_is_hidden
+
+    assert _style_is_hidden('content:"x\r;display:none')
+
+
+def test_recovery_handles_bad_string_trailing_cr_without_index_error() -> None:
+    from pwmcp_client.page_content import _style_is_hidden
+
+    assert not _style_is_hidden('content:"x\r')
+
+
+def test_unmatched_close_does_not_hide_a_later_css_declaration() -> None:
+    result = _extraction('<p style="a:b);display:none">content</p>', fmt="text")
+
+    assert result.content == ""
+    assert result.hidden_removed == 1
+
+
+def test_recovery_finds_hidden_marker_before_a_later_unclosed_function() -> None:
+    result = _extraction(
+        '<p style="background:rgb(1,2,3);display:none(foo">content</p>',
+        fmt="text",
+    )
+
+    assert result.content == ""
+    assert result.hidden_removed == 1
+
+
+def test_recovery_does_not_lose_a_hidden_declaration_after_an_escaped_character() -> None:
+    style = r'content:"a\b";display:none;broken'
+    result = _extraction(f"<p style='{style}'>content</p>", fmt="text")
+
+    assert result.content == ""
+    assert result.hidden_removed == 1
+
+
+def test_invalid_priority_suffix_cannot_override_important_hidden_declaration() -> None:
+    result = _extraction(
+        "<p style='display:none !important;display:block !bogus'>content</p>",
+        fmt="text",
+    )
+
+    assert result.content == ""
+    assert result.hidden_removed == 1
+
+
+def test_br_is_a_normal_flow_boundary_around_collapsible_whitespace() -> None:
+    assert _extract("<p>a <br> b</p>", fmt="text") == "a\nb"
+
+
+def test_table_cell_separator_collapses_whitespace_around_cell_text() -> None:
+    source = "<table><tr><td>a </td><td> b</td></tr></table>"
+
+    assert _extract(source, fmt="text") == "a b"
+
+
+def test_text_normalizes_whitespace_between_adjacent_inline_nodes() -> None:
+    assert _extract("<p><span>a </span><span> b</span></p>", fmt="text") == "a b"
+
+
+def test_table_renderer_ignores_text_children_between_cells() -> None:
+    assert _extract("<table><tr>stray<td>cell</td></tr></table>", fmt="markdown") == "cell"
+
+
+def test_extract_content_default_does_not_drop_page_chrome() -> None:
+    from pwmcp_client.page_content import extract_content
+
+    source = "<nav>Navigation</nav><p>Page body</p>"
+
+    assert extract_content(source, fmt="text", base_url=URL) == "Navigation\nPage body"

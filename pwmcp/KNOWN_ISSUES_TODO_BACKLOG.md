@@ -5,7 +5,7 @@
 This file records consumer-facing product gaps for later triage. Normative
 behavior remains in the product specification and consumer documentation.
 
-Last updated: 2026-11-12 (PWMCP-63 linear malformed-style recovery and PWMCP-64 escaped CSS syntax implemented, unreleased; PWMCP-62 R2 follow-up remains open).
+Last updated: 2026-11-13 (PWMCP-63..66 implemented in their respective branches, unreleased; PWMCP-62's separate R2 follow-up remains open).
 
 ## PWMCP-01 — Provide a rendered-page inspection command
 
@@ -998,3 +998,19 @@ the operator limit.
 **Fix.** Decode CSS escapes in property names and values before comparing the existing hidden markers and resolving a trailing `!important`. The decoder handles simple and hexadecimal escapes, consumes the optional whitespace after a hexadecimal escape, and replaces invalid code points as CSS requires. All three structural scanners consume a backslash and its next code point as one unit outside strings, so escaped quotes, parentheses, and semicolons do not change declaration boundaries. No new hiding properties were added. README, DESIGN-GUIDE, and CONSUMERS document the behavior.
 
 **Close when.** Behavioral tests prove escaped property names and `display`/`visibility` keyword values are filtered, escaped `!important` retains normal precedence, escaped structural punctuation does not suppress a later hiding declaration, quoted lookalikes stay visible, and the registered R1 lane passes on the final head.
+
+## PWMCP-65 — invalid inline display values can override hidden content
+
+**Status: FIXED IN THIS BRANCH.** Severity: P2 security. Inline-style filtering compared the last `display` or `visibility` value as text without checking whether it was valid for that CSS property. A browser ignores an invalid declaration, so `display:none;display:block invalid` and `visibility:hidden;visibility:visible invalid` leave the earlier hiding value in effect. PWMCP's earlier cascade replaced it with the invalid text and exposed the element's content.
+
+**Fix and policy.** Validate the static `display` grammar and the `visibility` values before admitting either declaration to the existing priority cascade. Invalid declarations are ignored, preserving the earlier valid winner. Static visible forms such as `block flow`, `inline flex`, `list-item`, and `inline-block` still override an earlier hide. Because serialized HTML cannot resolve a winning `var()`, `inherit`, or `revert` value, those declarations fail closed even when they may compute visibly. `display:initial`/`unset` and `visibility:initial` retain their visible semantics; `visibility:unset` fails closed because it inherits. README, DESIGN-GUIDE, and CONSUMERS document this trade-off.
+
+**Test-first evidence.** The new extraction regression test failed on the r8 code in the registered R1 gate before the production change. It checks invalid display and visibility overrides and unresolved computed values. The prior review described a 33-style ordinary-visible battery; its saved probe contains 35 cases, all now preserved in a parameterized test. PWMCP-64's deterministic linear-work bound remains unchanged.
+
+**R8 R2 survivor closeout.** Each non-equivalent survivor is mapped to a behavior test and hand-mutated in an isolated scratch copy; equivalent mutations have an input-domain or output-use proof in the pwmcp R2 r8 report. The next scanner mutation set should include recovery `fragment_start` updates at `;` and stray `)` before a later declaration. Its oracle should check which hidden marker reaches extraction and which visible control remains readable, while retaining the linear-work bound.
+
+## PWMCP-66 — `visibility:collapse` can hide extracted content
+
+**Status: FIXED IN THIS BRANCH.** Severity: P2 security. `visibility:collapse` is a valid CSS value that removes table rows or columns from the rendered page, but the serialized-HTML filter recognized only `visibility:hidden` and returned collapsed-row text to the caller.
+
+**Fix.** Treat `visibility:collapse` as hidden before subtree pruning, with the same removal count and descendant behavior as the existing hidden marker. Extraction coverage and the synchronized policy docs ship with PWMCP-65.
