@@ -10,10 +10,43 @@ fleet facts collect --root ./host-root > host-facts.json
 fleet facts validate host-facts.json
 ```
 
-On a host, `fleet facts collect` uses the installed fleetd facts configuration.
-The Geekbench JSON path is host-owned configuration; fleetd reads the record
-and never invokes Geekbench. If the record is absent, `speed` is `null` with a
-reason. The JSON schema version is `host-facts/1`.
+On a host, `fleet facts collect` requires `/etc/fleetd/facts.toml`. The file is
+host-owned and must declare schema version 1, the control-plane slice, policy
+limits, and source paths. `--root DIR` maps both this config path and the
+config's absolute source paths beneath `DIR`; tests can collect facts without
+reading the calling machine. The Geekbench JSON path is host-owned config;
+fleetd reads the record and never invokes Geekbench. It exports only the
+matching model/count score fields. A missing, stale, or invalid record leaves
+`speed` as `null` with a reason. The JSON schema version is `host-facts/1`.
+
+```toml
+schema_version = 1
+
+[paths]
+geekbench_record = "/var/lib/mdt/host-facts/cpu-benchmark.json"
+guard_config = "/etc/cgprofile/guard.toml"
+
+[control_plane]
+slice = "ctl.slice"
+
+[policy]
+overcommit = 1.5
+oversubscribe_max = 1.25
+psi_refuse_some_avg10 = 25
+max_lane_containers = 8
+```
+
+`overcommit`, `oversubscribe_max`, and the PSI refusal threshold are explicit
+host policy inputs, so an incomplete file fails with a field-specific error.
+`host_role`, `max_lane_containers`, `guard_state`, and
+`ksm_optin_shim` may be omitted; their facts stay `null` with a reason. The
+collector reads guard config plus lexically ordered `.toml` drop-ins for its
+digest and effective `enabled` value. It reports but does not apply guard
+rules. It reads cgroup v2 controllers, the configured slice's `memory.min` and
+`cpu.weight`, PSI avg10, swap counters, and KSM sysfs values. `memory.for_lanes`
+is the raw `MemTotal` value; WP2 subtracts `control_plane.memory_min_bytes`
+once when it calculates physical lane RAM. KSM swappiness-argument support is
+unknown because the collector makes no write probe.
 
 ## Plan a candidate set
 

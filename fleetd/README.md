@@ -15,6 +15,11 @@ reasons and the [consumer guide](docs/CONSUMERS.md) for runnable examples.
 Serialized campaign inputs use the versioned `host-facts/1`, `work-request/1`,
 and `assay-merge-manifest/1` contracts.
 
+`fleet facts collect` reads only host-owned inputs and the read-only `/proc`
+and `/sys` interfaces. Its required policy and source paths come from
+`/etc/fleetd/facts.toml`; `--root DIR` maps that config and every absolute
+source path beneath a fixture root for reproducible collection.
+
 Runtime imports use only the Python standard library. The registered
 `r0-r1` lane runs tests in `tester-unified` with full line and branch coverage.
 The package does not include or start a daemon, socket, SSH client, Docker

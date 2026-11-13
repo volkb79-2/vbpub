@@ -30,6 +30,14 @@ The collector accepts a root directory so tests use synthetic `/proc` and
 does not run the benchmark. A missing fact stays `null` with a reason, and a
 planner that needs that fact refuses rather than inventing it.
 
+Collection requires versioned `/etc/fleetd/facts.toml` policy and source-path
+configuration. The CPU lane count comes from the online CPU list, and
+`memory.for_lanes_bytes` is raw `MemTotal`; the planner subtracts the configured
+control-plane slice's `memory.min` once. The design text also describes
+subtracting that reserve while constructing facts (§3.6); this package uses
+the explicit §4.3 formula and keeps the raw counter in facts to avoid a double
+subtraction.
+
 ## Determinism and manual command delivery
 
 Candidate, host, batch, and command ordering use explicit stable keys. JSON

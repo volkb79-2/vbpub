@@ -45,10 +45,22 @@ is an error.
 ## Facts collection
 
 `fleet facts collect [--root DIR]` reads `/proc` and `/sys` beneath the
-selected root, reads the Geekbench record from the host-owned config, and emits
-`host-facts/1` JSON. Missing source data is represented as `null` with a
-reason. Collection is read-only. `fleet facts validate FILE` validates a
-serialized record without contacting the host.
+selected root, reads required versioned configuration at
+`/etc/fleetd/facts.toml`, reads the Geekbench record from its configured
+host-owned path, and emits `host-facts/1` JSON. The config declares
+`overcommit`, `oversubscribe_max`, PSI refusal threshold, control-plane slice,
+and host source paths; missing required policy fails. Optional facts whose
+source is absent are represented as `null` with a reason. Collection is
+read-only: it never invokes Geekbench or writes sysfs/cgroup files.
+
+The collector exports only the benchmark's matching model and online-CPU
+count. It accepts measured Geekbench 6/7 records with their matching reference
+score, and never uses a table fallback. Guard config is validated after
+lexically merging TOML drop-ins; its digest covers the main file and drop-ins.
+The guard runtime state and KSM opt-in shim are nullable unless their paths are
+configured. `memory.for_lanes_bytes` is raw `MemTotal`; the planner applies the
+control-plane `memory.min` reserve once per §4.3. `fleet facts validate FILE`
+validates a serialized record without contacting the host.
 
 ## Planning
 
