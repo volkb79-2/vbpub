@@ -193,3 +193,50 @@ fixture uses the recorded `none` layout and evidence digest, with synthetic
 `bfq`, `mq-deadline`, missing, malformed, and no-BFQ-controller cases on the
 same sysfs tree shape. The new read-only evidence digest also confirms the
 captured 13-cgroup BFQ-file absence; no new host was accessed by this fix.
+
+## IOB-BL-48 — close the iobench 0.2.0 R2 survivors; repair lane base handoff
+
+**Status:** survivor closure completed 2026-11-13; lane-base follow-up OPEN.
+
+The diff-scoped R2 campaign against 0.2.0 reported 456 candidates: 388 killed,
+67 survived, and one timeout. The closure package adds behavioral tests for
+all 68 non-killed candidates. In a scratch worktree at the test baseline,
+61 mutations individually failed their mapped test and seven passed with
+equivalence proofs. The bounded fake-clock/iteration tests cover the idle-loop
+timeout; no wall-clock sleep or host/device run is part of this closure. No
+source defect reproduced, so this package changes no production source.
+
+The seven equivalent mutations are:
+
+- `capability.py:74` and `capability.py:111`, `True->False`: only JSON key
+  ordering changes; tests parse and compare the complete header or row.
+- `guard.py:167`, `False->True`: the live-identity caller explicitly passes
+  `machine_id_matches`, so the helper default is not consulted.
+- `guard.py:226` and `guard.py:229`, `None->[]`: the public backing-disk
+  caller refuses both missing and empty Btrfs member sets with the same
+  unknown-scope result.
+- `host.py:406`, `text=True->False`: `_ProcHandle` redirects stdout and stderr
+  to text temporary files, and `wait()` still reads text in either case.
+- `result.py:225`, `or->and`: valid weak-to-strong scopes are refused earlier;
+  valid strong-to-weak scopes mismatch their stored serial/WWN earlier. A
+  generated strong scope has no machine-id hash, so the changed hash fallback
+  is unreachable for valid scope records.
+
+Five candidates initially marked equivalent were instead killed by behavior
+tests: `cli.py:50` (zero-size diagnostic), and `host.py:667`, `:670`, `:677`,
+and `:685` (a missing extent-seek constant, end-boundary seeks, and a
+non-advancing hole). `capability.py:74` was reclassified from TEST GAP because
+the mutation changes `sort_keys`, not the header marker. The campaign report
+and the complete candidate/test/disposition table are recorded as the
+“iobench R2 0.2.0 report” and the iobench R2 tests report.
+
+**Open lane-base follow-up.** The iobench R2 lane cannot take `--base` for the
+released comparison base unless that base is also a host-local commit. Resolve
+the lane's base handoff so diff-scoped campaigns can name their authoritative
+released base without requiring a local commit; preserve the selected base in
+the resulting candidate inventory.
+
+**Close when.** The registered R0–R1 lane passes on the final reviewed head;
+the R2 mutation proof records every non-killed candidate as killed or
+equivalent with its test and evidence; and the lane accepts and records the
+released comparison base without requiring a host-local commit.

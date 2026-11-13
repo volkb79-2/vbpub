@@ -1309,3 +1309,20 @@ purged.
 **Close when.** Both reinstall helpers accept a controller-home setting and a
 fake-root check proves that they work from an alternate home; the remote-gate
 override remains documented and its default is no longer required.
+
+## NC-55 — deterministic budget-exceeded candidate is reported as stalled
+
+**Status:** OPEN (filed 2026-11-13).
+
+The campaign supervisor stops with exit 4 and reports “stalled” when the only
+remaining candidate has a deterministic `budget_exceeded` result. That
+candidate is a completed judgment, not evidence that candidate progress has
+stalled; the supervisor loses the distinction at the end of the campaign.
+
+**Where.** `scripts/netcup/runner/run-r2-campaign.sh` and its supervisor-state
+and exit-status tests.
+
+**Acceptance.** A deterministic fixture with one remaining `budget_exceeded`
+candidate finishes with that outcome reported and does not take the stalled
+exit-4 path. A genuinely non-progressing campaign still reports stalled with
+exit 4, and the saved candidate evidence is retained in both cases.
