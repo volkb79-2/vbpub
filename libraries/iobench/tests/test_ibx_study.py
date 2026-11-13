@@ -1339,6 +1339,7 @@ def test_local_liveness_probe_reports_fake_child_latency_and_failures(monkeypatc
 
         def completed_after_timeout(*args, _state=stopped_state, _returncode=returncode, **kwargs):
             if args[0][:2] == ["systemctl", "is-active"]:
+                assert args[0] == ["systemctl", "is-active", "ibx-liveness-prior.service"]
                 return SimpleNamespace(returncode=_returncode, stdout=_state, stderr="")
             return SimpleNamespace(returncode=0, stdout=json.dumps({
                 "responsive": True, "components": components}), stderr="")
@@ -1386,6 +1387,7 @@ def test_local_liveness_probe_reports_fake_child_latency_and_failures(monkeypatc
         def not_confirmed_stopped(*args, _returncode=returncode, _state=state, **kwargs):
             if args[0][0] == "systemd-run":
                 pytest.fail("an unconfirmed prior probe allowed another liveness probe")
+            assert args[0] == ["systemctl", "is-active", "ibx-liveness-prior.service"]
             return SimpleNamespace(returncode=_returncode, stdout=_state, stderr="")
 
         monkeypatch.setattr(driver.subprocess, "run", not_confirmed_stopped)
