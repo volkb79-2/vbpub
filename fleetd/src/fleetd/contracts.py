@@ -472,6 +472,8 @@ def _reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
 def load_json(path: str | Path) -> Any:
     try:
         return json.loads(Path(path).read_text(encoding="utf-8"), object_pairs_hook=_reject_duplicate_keys)
+    except UnicodeError as exc:
+        raise ContractError(f"{path}: JSON is not UTF-8: {exc}") from exc
     except json.JSONDecodeError as exc:
         raise ContractError(f"{path}: invalid JSON at line {exc.lineno} column {exc.colno}: {exc.msg}") from exc
 

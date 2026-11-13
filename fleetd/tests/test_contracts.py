@@ -295,6 +295,9 @@ def test_json_loader_rejects_duplicate_keys_and_reports_syntax_location(tmp_path
     malformed = tmp_path / "malformed.json"
     malformed.write_text("{bad", encoding="utf-8")
     _fails(lambda: load_json(malformed), "invalid JSON at line 1 column")
+    invalid_encoding = tmp_path / "not-utf8.json"
+    invalid_encoding.write_bytes(bytes([255]))
+    _fails(lambda: load_json(invalid_encoding), "JSON is not UTF-8")
 
 
 def test_json_renderer_sorts_keys_and_ends_with_newline():

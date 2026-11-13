@@ -1,0 +1,33 @@
+{
+  "schema": "candidate-table/1",
+  "candidates": [
+    {
+      "id": "candidate-low",
+      "file": "src/one.py",
+      "measured_memory_bytes": 125829120,
+      "elapsed_seconds": 95.0,
+      "measured_on_host": "host-small"
+    },
+    {
+      "id": "candidate-file-median",
+      "file": "src/one.py"
+    },
+    {
+      "id": "candidate-lane-median",
+      "file": "src/two.py"
+    },
+    {
+      "id": "candidate-big",
+      "file": "src/big.py",
+      "measured_memory_bytes": 8589934592,
+      "elapsed_seconds": 180.0,
+      "measured_on_host": "host-small"
+    },
+    {
+      "id": "candidate-retry",
+      "file": "src/retry.py",
+      "measured_memory_bytes": 268435456,
+      "memory_crash_evidence": true
+    }
+  ]
+}

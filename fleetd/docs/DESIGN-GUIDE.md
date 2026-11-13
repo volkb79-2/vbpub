@@ -23,6 +23,25 @@ host, defaulting to `1.0`. It never divides by multi-core score and never fits a
 factor per lane or hardware flavor. ETA is informational and cannot reject or
 time out work.
 
+Time samples are comparable only when the hosts share a Geekbench major,
+exact version, and baseline score. A missing or mismatched benchmark keeps RAM
+placement available but makes ETA unavailable with a reason.
+
+The planner calculates P = memory.for_lanes_bytes -
+control_plane.memory_min_bytes, O = other running expected charges +
+campaign_slots × instance_memory, and B = P × overcommit - O. It derives
+worker slots from CPU capacity after other running workers and bounds them by
+max_lane_containers × efficient_upper_bound. For a host with W slots, b = B /
+W; a candidate's shared cap is the smaller of B - (W - 1) × ram_low and
+P - O - (W - 1) × ram_low. A candidate that runs alone or as a retry must
+also fit the host's sum budget B and physical alone cap P - O. Thus
+overcommit never raises the physical cap, and every running wave's expected
+charge stays within B.
+
+Placement refuses a host with unknown role, explicit shared-prod role, PSI
+above the configured admission threshold, or missing facts needed for a safe
+RAM/CPU budget. A missing max_lane_containers is not guessed.
+
 ## Facts are read from their owner
 
 The collector accepts a root directory so tests use synthetic `/proc` and
@@ -45,6 +64,8 @@ contains no generated timestamp. `--commands` emits IDs into checkout-local
 candidate files before invoking Run-Gate's existing `--only-candidates FILE`
 interface. That lets the current runner execute the plan without adding a
 fleet-specific Run-Gate command.
+The unimplemented Run-Gate client verb is tracked as
+[RG-276](../../run-gate-project/KNOWN_ISSUES_TODO_BACKLOG.md#rg-276-the-run-gate-campaign-plan-client-is-not-implemented).
 
 ## Deliberate limits
 

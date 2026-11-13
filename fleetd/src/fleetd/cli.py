@@ -8,9 +8,10 @@ from pathlib import Path
 from typing import Sequence
 
 from . import __version__
-from .contracts import ContractError, dump_json, load_json, validate_assay_merge_manifest, validate_host_facts
+from .contracts import ContractError, dump_json, load_json, validate_host_facts
 from .facts import DEFAULT_ROOT, collect_host_facts
 from .guard import parse_guard_toml
+from .plan import extract_demand, plan_campaign, render_commands
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -32,6 +33,15 @@ def build_parser() -> argparse.ArgumentParser:
     guard_validate = guard_commands.add_parser("validate", help="parse and validate one guard TOML file")
     guard_validate.add_argument("file", type=Path)
     guard_validate.set_defaults(handler=_validate_guard)
+
+    plan = commands.add_parser("plan", help="create a deterministic RAM-first campaign plan")
+    plan.add_argument("lane", help="Run-Gate lane name")
+    plan.add_argument("--candidates", required=True, type=Path, help="candidate-table/1 JSON file")
+    plan.add_argument("--hosts", required=True, type=Path, help="fleet-host-set/1 JSON file")
+    plan.add_argument("--demand", required=True, type=Path, help="Run-Gate TOML file containing [lanes.<lane>.demand]")
+    plan.add_argument("--commands", action="store_true", help="print Run-Gate --only-candidates commands instead of plan JSON")
+    plan.add_argument("--batch-multiplier", type=float, default=4.0, help="candidate count per batch as a multiple of host worker slots (default: 4)")
+    plan.set_defaults(handler=_plan_campaign)
     return parser
 
 
@@ -49,6 +59,21 @@ def _collect_facts(args: argparse.Namespace) -> int:
 def _validate_guard(args: argparse.Namespace) -> int:
     parse_guard_toml(args.file.read_text(encoding="utf-8"))
     print("valid guard.toml")
+    return 0
+
+
+def _plan_campaign(args: argparse.Namespace) -> int:
+    result = plan_campaign(
+        args.lane,
+        load_json(args.candidates),
+        load_json(args.hosts),
+        extract_demand(args.demand, args.lane),
+        batch_multiplier=args.batch_multiplier,
+    )
+    if args.commands:
+        print(render_commands(result), end="")
+    else:
+        print(dump_json(result), end="")
     return 0
 
 

@@ -77,3 +77,34 @@ never multi-core scores. One bounded correction factor is read per host, with
 the design default `1.0`; factors are not learned or pooled by lane in this
 package. Identical inputs produce byte-identical JSON and stable command
 ordering.
+
+The planner's host-set input requires explicit other-running rows and rejects
+hosts with unknown role, shared-prod role, PSI above its configured threshold,
+or unknown capacity facts. Worker capacity is the CPU-derived worker count
+after other work, bounded by the host's maximum lane containers times the
+lane's efficient upper bound. It computes:
+
+- P = memory.for_lanes_bytes - control_plane.memory_min_bytes;
+- O = other running expected charges + campaign_slots × instance_memory;
+- B = P × overcommit - O;
+- b = B / W for W worker slots;
+- cap = min(B - (W - 1) × ram_low, P - O - (W - 1) × ram_low);
+- cap_alone = P - O.
+
+Each wave's expected charge must be no greater than B. Each individual
+candidate must fit cap_alone, including alone and retry batches. Retry goes
+only to the host with the largest cap_alone and must also fit that host's B.
+Overcommit applies to expected sums and never enlarges the physical cap.
+
+Candidate and host inputs use candidate-table/1 and fleet-host-set/1. Candidate
+measurements resolve by own id, same-file median, lane median, then declared
+demand. Candidate timing follows the same precedence after normalization to
+the common Geekbench major, exact version, and baseline. If timing is
+incomparable, placement still uses RAM and the output includes an ETA reason.
+The batch target defaults to four times W and is configurable with
+--batch-multiplier. Slot command blocks are emitted in stable host, batch,
+wave, and slot order.
+
+This package deliberately omits the Run-Gate campaign-plan client command;
+the integration contract is tracked under
+[RG-276](../../run-gate-project/KNOWN_ISSUES_TODO_BACKLOG.md#rg-276-the-run-gate-campaign-plan-client-is-not-implemented).
