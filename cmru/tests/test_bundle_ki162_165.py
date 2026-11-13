@@ -137,6 +137,7 @@ def test_copy_without_keep_warns_and_omits_excluded_source_files(tmp_path, capsy
     (source / "app.py").write_text("print('ok')\n", encoding="utf-8")
     (source / "app-defaults.env").write_text("MODE=public\n", encoding="utf-8")
     (source / "cacert.pem").write_text("public CA bundle\n", encoding="utf-8")
+    (source / "pyproject.toml").write_text("[project]\nname='app'\n", encoding="utf-8")
     config = _write_bundle(tmp_path)
 
     archive = bundle.run_bundle(config, manifest_project="demo", manifest_tag="demo-v1.2.3")
@@ -144,11 +145,14 @@ def test_copy_without_keep_warns_and_omits_excluded_source_files(tmp_path, capsy
     out = capsys.readouterr().err
     assert "[WARN]" in out and "src/app-defaults.env" in out
     assert "[WARN]" in out and "src/cacert.pem" in out
+    assert "[WARN]" in out and "src/pyproject.toml" in out
     manifest, names = _archive_contents(archive)
     assert "app/src/app-defaults.env" not in names
     assert "app/src/cacert.pem" not in names
+    assert "app/src/pyproject.toml" not in names
     assert "src/app-defaults.env" not in manifest["files"]
     assert "src/cacert.pem" not in manifest["files"]
+    assert "src/pyproject.toml" not in manifest["files"]
 
 
 def test_copy_still_rejects_missing_configured_excluded_file(tmp_path):
@@ -206,7 +210,7 @@ def test_stage_keep_allows_public_suffix_files_and_vendor_wheels_remain_included
     assert "vendor/demo-1.0-py3-none-any.whl" in manifest["files"]
 
 
-@pytest.mark.parametrize("filename", ["minisign.key", "private.key"])
+@pytest.mark.parametrize("filename", ["minisign.key", "private.key", "pyproject.toml"])
 def test_stage_written_secret_suffix_files_fail_closed_with_path(tmp_path, filename):
     (tmp_path / "src").mkdir()
     (tmp_path / "src/app.py").write_text("print('ok')\n", encoding="utf-8")
