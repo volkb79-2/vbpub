@@ -1200,6 +1200,31 @@ def finalize_interrupted_reservations(state: dict[str, Any]) -> list[dict[str, A
     return [entry]
 
 
+def take_latest_interrupted_charge(state: Mapping[str, Any], field: str, key: str) -> float:
+    """Remove and return the newest finalized interrupted reservation of one cell, or 0."""
+    for entry in reversed(state.get("interrupted_attempts", [])):
+        values = entry[field].get(key)
+        if values:
+            value = values.pop()
+            if not values:
+                del entry[field][key]
+            return value
+    return 0
+
+
+def reclaim_interrupted_attempt(state: dict[str, Any], key: str) -> None:
+    """Drop the conservative charge of an attempt whose saved result is now recovered.
+
+    A process can die after writing a cell's result but before the state file
+    records it. Resume first finalizes that attempt's reservation at its full
+    cap; adopting the saved result then settles the real figures, so the
+    finalized charge must go or the cell is counted twice.
+    """
+    state["write_bytes"] -= take_latest_interrupted_charge(state, "write_reservations", key)
+    state["active_seconds"] = max(0.0, state["active_seconds"] -
+                                  take_latest_interrupted_charge(state, "active_reservations", key))
+
+
 def fio_reported_bytes(payload: Mapping[str, Any] | None, job: Job) -> int | None:
     """Return a usable fio byte count without masking a malformed failure payload."""
     if not isinstance(payload, Mapping):
@@ -2528,6 +2553,23 @@ def run_study(cell_set: str, *, target: str, device: str, out: Path, target_kind
         if not preflight and probe_failed and bad_liveness >= probe_consecutive_samples:
             raise StudyError("host-liveness probe exceeded its latency limit or failed for "
                              f"{probe_consecutive_samples} consecutive samples")
+
+    def bounded_discard(discard_key: str, extent: int, timeout: float) -> float:
+        """Run a metered discard; a failed one settles its measured time, not the whole allowance."""
+        reserve_active(state, discard_key, timeout)
+        write_json(state_path, state)
+        began = host.now()
+        try:
+            seconds = host.discard(target, kind, offset, extent, timeout=timeout,
+                                   sample=monitor_host)
+        except BaseException:
+            settle_active(state, discard_key, max(0.0, min(timeout, host.now() - began)))
+            write_json(state_path, state)
+            raise
+        settle_active(state, discard_key, seconds)
+        write_json(state_path, state)
+        return seconds
+
     try:
         if pending_work:
             monitor_host(preflight=True)
@@ -2565,13 +2607,7 @@ def run_study(cell_set: str, *, target: str, device: str, out: Path, target_kind
                 timeout = ACTIVE_CAP_S - float(state["active_seconds"]) - FIO_DRAIN_RESERVE_S
                 if timeout <= 0:
                     raise StudyError("3 hour active-I/O cap would be exceeded by discard")
-                discard_key = f"{trim_key}|discard"
-                reserve_active(state, discard_key, timeout)
-                write_json(state_path, state)
-                discard_duration = host.discard(target, kind, offset, size, timeout=timeout,
-                                                sample=monitor_host)
-                settle_active(state, discard_key, discard_duration)
-                write_json(state_path, state)
+                bounded_discard(f"{trim_key}|discard", size, timeout)
             for job in jobs:
                 key = cell_key(kind, slot_for_cell, rung, job)
                 filename = re.sub(r"[^A-Za-z0-9_.-]", "_", key) + ".json"
@@ -2602,6 +2638,7 @@ def run_study(cell_set: str, *, target: str, device: str, out: Path, target_kind
                             not math.isfinite(recovered_duration) or recovered_duration < 0):
                         raise StudyError(f"orphan result has malformed duration: {result_path.name}")
                     state["cells"][key] = result_path.name
+                    reclaim_interrupted_attempt(state, key)
                     settle_write(state, key, recovered_bytes)
                     settle_active(state, key, float(recovered_duration))
                     write_json(state_path, state)
@@ -2637,17 +2674,11 @@ def run_study(cell_set: str, *, target: str, device: str, out: Path, target_kind
                 if active_left <= FIO_DRAIN_RESERVE_S:
                     raise StudyError("3 hour active-I/O cap would be exceeded")
                 if job.discard_before:
-                    discard_timeout = active_left - FIO_DRAIN_RESERVE_S
-                    discard_key = f"{key}|discard"
-                    reserve_active(state, discard_key, discard_timeout)
-                    write_json(state_path, state)
-                    discard_seconds = host.discard(target, kind, offset, job.extent_bytes or size,
-                                                   timeout=discard_timeout, sample=monitor_host)
-                    settle_active(state, discard_key, discard_seconds)
+                    bounded_discard(f"{key}|discard", job.extent_bytes or size,
+                                    active_left - FIO_DRAIN_RESERVE_S)
                     active_left = ACTIVE_CAP_S - float(state["active_seconds"])
                     if active_left <= FIO_DRAIN_RESERVE_S:
                         raise StudyError("3 hour active-I/O cap would be exceeded")
-                    write_json(state_path, state)
                 job_path = out / "jobs" / (filename[:-5] + ".fio")
                 log_prefix = out / "fio-logs" / filename[:-5]
                 prepared_key = (rung, job.name)

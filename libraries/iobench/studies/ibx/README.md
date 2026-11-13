@@ -76,7 +76,11 @@ write reservation with reported bytes when available; a failure before fio
 starts releases it. If fio started but its output cannot establish actual
 bytes, the full cap stays charged. On resume, any such outstanding reservation
 is recorded as an interrupted attempt and retained as conservative spent bytes,
-then a retry gets a fresh reservation. Every retry remains inside the same
+then a retry gets a fresh reservation. A cell result that was saved just before
+the process died is adopted on resume at its recorded bytes and seconds; the
+interrupted charge it replaces is dropped, so the cell is counted once. A
+discard that fails or is stopped settles its measured seconds, never the whole
+remaining active allowance. Every retry remains inside the same
 500 GB meter. Before starting any base cell-set, the driver also checks that
 bytes already charged plus all still-pending base caps fit the hard budget,
 including the conditional t+6h standard rung. A failed earlier attempt can

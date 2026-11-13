@@ -234,3 +234,22 @@ schedule without a driver stop, verifies the Btrfs file leg and monitor logs,
 produces rung-choice analysis, and restores timers and the target to the
 authorized final state. Preserve the full evidence and update the host-
 assumption table; do not rerun a destructive step outside that lease.
+
+## IOB-BL-48 — IBX driver: a hard-killed writer keeps its full cap charged
+
+**Status: OPEN (improvement, not a blocker).** `SIGTERM`, `SIGKILL`, an SSH
+drop or a host reboot while a write cell runs ends the driver without its
+`except` handlers, so no fio result is parsed. On resume the cell's full cap
+stays charged as spent (the conservative, documented outcome). The base
+schedule leaves only 4.877133824 GB of headroom under the 500 GB cap, so after
+a hard kill in any cell whose cap exceeds that headroom (every `seq1m-write`,
+`fill`, rewrite and part (c) sequential cell) the same output directory can
+no longer afford the rest of the schedule and refuses before the next cell.
+Two cheap improvements, either of which makes this recoverable: install a
+`SIGTERM` handler that raises into the existing failure path (fio's partial
+JSON then settles the real bytes), and estimate the bytes of a killed attempt
+from its saved per-second bandwidth log instead of the cap.
+
+**Close when.** A killed writer's actual bytes are recovered from fio's own
+records, or the runbook states that a hard kill requires a fresh authorized
+output budget.

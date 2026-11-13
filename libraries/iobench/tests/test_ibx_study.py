@@ -541,6 +541,140 @@ def test_interrupted_cell_keeps_write_and_active_allowances_on_resume(tmp_path, 
     assert state["interrupted_attempts"][0]["write_reservations"][writer_key] == [writer_cap]
 
 
+def test_recovered_orphan_result_replaces_its_finalized_interrupted_charge(tmp_path, monkeypatch):
+    # The process dies after a cell's result file exists but before the state
+    # file records it. A resume that refuses before adopting the orphan, and
+    # the one after it, must count that cell exactly once.
+    job = driver.Job("seq1m-write", "write", 1024**2, 1, 1, "wbps", 4 * 1024**2)
+    monkeypatch.setattr(driver, "rung_jobs", lambda rung, part_c=False: [job])
+    host = FakeHost()
+    real_write_json = driver.write_json
+    dead = {"now": False}
+
+    class ProcessDied(BaseException):
+        pass
+
+    def dying_write_json(path, data):
+        if Path(path).name == driver.STATE_NAME:
+            if dead["now"]:
+                return
+            if "raw|t0|standard|seq1m-write" in data["cells"]:
+                dead["now"] = True
+                raise ProcessDied()
+        real_write_json(path, data)
+
+    monkeypatch.setattr(driver, "write_json", dying_write_json)
+    with pytest.raises(ProcessDied):
+        run_set(tmp_path, "raw-t0", host=host)
+    monkeypatch.setattr(driver, "write_json", real_write_json)
+    state_path = tmp_path / driver.STATE_NAME
+    killed = json.loads(state_path.read_text(encoding="utf-8"))
+    writer_key = "raw|t0|standard|seq1m-write"
+    writer_cap = job.write_cap
+    assert killed["write_reservations"][writer_key] == [writer_cap]
+    assert "raw|t0|standard|seq1m-write" not in killed["cells"]
+
+    refusing = FakeHost(available=1)
+    with pytest.raises(driver.StudyError, match="MemAvailable"):
+        run_set(tmp_path, "raw-t0", host=refusing)
+    refused = json.loads(state_path.read_text(encoding="utf-8"))
+    assert refused["write_bytes"] == writer_cap and refused["write_reservations"] == {}
+
+    run_set(tmp_path, "raw-t0", host=host)
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    cell_bytes = sum(json.loads(path.read_text(encoding="utf-8")).get("write_bytes", 0)
+                     for path in (tmp_path / "cells").glob("*.json"))
+    cell_seconds = sum(json.loads(path.read_text(encoding="utf-8")).get("duration_s", 0)
+                       for path in (tmp_path / "cells").glob("*.json"))
+    # The killed attempt's result was adopted: nothing is charged for it beyond
+    # the bytes and seconds its saved result recorded.
+    assert state["write_bytes"] == cell_bytes
+    assert state["active_seconds"] == pytest.approx(cell_seconds + 0.01 * len(host.discards))
+    assert state["write_reservations"] == state["active_reservations"] == {}
+    assert state["interrupted_attempts"][0]["write_reservations"] == {}
+
+
+def test_interrupted_charge_helper_takes_the_newest_attempt_of_one_cell_only():
+    state = {"write_bytes": 70, "active_seconds": 9.0, "interrupted_attempts": [
+        {"write_reservations": {"cell": [10], "other": [5]}, "active_reservations": {"cell": [4.0]}},
+        {"write_reservations": {"cell": [20, 30]}, "active_reservations": {}},
+    ]}
+    assert driver.take_latest_interrupted_charge(state, "write_reservations", "cell") == 30
+    assert state["interrupted_attempts"][1]["write_reservations"] == {"cell": [20]}
+    assert driver.take_latest_interrupted_charge(state, "write_reservations", "cell") == 20
+    assert state["interrupted_attempts"][1]["write_reservations"] == {}
+    assert driver.take_latest_interrupted_charge(state, "write_reservations", "cell") == 10
+    assert state["interrupted_attempts"][0]["write_reservations"] == {"other": [5]}
+    assert driver.take_latest_interrupted_charge(state, "write_reservations", "cell") == 0
+    assert driver.take_latest_interrupted_charge({}, "write_reservations", "cell") == 0
+    driver.reclaim_interrupted_attempt(state, "cell")
+    assert state["active_seconds"] == 5.0 and state["write_bytes"] == 70
+    state["interrupted_attempts"][0]["active_reservations"] = {"cell": [100.0]}
+    driver.reclaim_interrupted_attempt(state, "cell")
+    assert state["active_seconds"] == 0.0
+
+
+class FailingDiscardHost(FakeHost):
+    """Fail the Nth discard after the clock advanced, as a blkdiscard error or a monitor stop would."""
+
+    def __init__(self, fail_on, advance_s, error):
+        super().__init__()
+        self.fail_on = fail_on
+        self.advance_s = advance_s
+        self.error = error
+
+    def discard(self, target, kind, offset, size, timeout=None, sample=None):
+        if len(self.discards) + 1 == self.fail_on:
+            self.discards.append((target, kind, offset, size, timeout))
+            self.clock += self.advance_s
+            raise self.error
+        return super().discard(target, kind, offset, size, timeout=timeout, sample=sample)
+
+
+@pytest.mark.parametrize("fail_on", (1, 2))
+@pytest.mark.parametrize("error", (driver.StudyError("bounded discard failed: not supported"),
+                                   KeyboardInterrupt()))
+def test_failed_discard_settles_measured_time_so_the_same_output_can_retry(tmp_path, monkeypatch,
+                                                                         fail_on, error):
+    # Second discard: a cell's own discard_before step, after the rung's initial one.
+    jobs = [driver.Job("fresh4k-write", "randwrite", 4096, 1, 1, "canary_iops", 8192,
+                       extent_bytes=GIB, discard_before=True)]
+    monkeypatch.setattr(driver, "rung_jobs", lambda rung, part_c=False: jobs)
+    host = FailingDiscardHost(fail_on, 7.0, error)
+    with pytest.raises(type(error)):
+        run_set(tmp_path, "raw-t0", host=host)
+    state = json.loads((tmp_path / driver.STATE_NAME).read_text(encoding="utf-8"))
+    assert state["active_reservations"] == {}
+    assert state["active_seconds"] == pytest.approx(7.0 + (0.01 if fail_on == 2 else 0.0))
+    run_set(tmp_path, "raw-t0", host=host)
+    state = json.loads((tmp_path / driver.STATE_NAME).read_text(encoding="utf-8"))
+    assert state["active_reservations"] == {} and "interrupted_attempts" not in state
+    assert state["active_seconds"] < 7.0 + 3 * 60
+
+
+def test_failed_discard_never_settles_more_than_its_bounded_allowance(tmp_path, monkeypatch):
+    jobs = [driver.Job("fresh4k-write", "randwrite", 4096, 1, 1, "canary_iops", 8192)]
+    monkeypatch.setattr(driver, "rung_jobs", lambda rung, part_c=False: jobs)
+    host = FailingDiscardHost(1, 10 * driver.ACTIVE_CAP_S, driver.StudyError("bounded discard timed out"))
+    with pytest.raises(driver.StudyError, match="timed out"):
+        run_set(tmp_path, "raw-t0", host=host)
+    state = json.loads((tmp_path / driver.STATE_NAME).read_text(encoding="utf-8"))
+    assert state["active_seconds"] == driver.ACTIVE_CAP_S - driver.FIO_DRAIN_RESERVE_S
+
+
+def test_fill_cap_keeps_one_whole_block_when_the_measured_rate_is_tiny(tmp_path, monkeypatch):
+    block = 1024**2
+    jobs = [driver.Job("seq1m-write", "write", block, 1, 1, "wbps", 4 * block),
+            driver.Job("fill", "write", block, 1, 1, "fill", 4 * block)]
+    monkeypatch.setattr(driver, "rung_jobs", lambda rung, part_c=False: jobs)
+    host = FakeHost()
+    host.fio.rate_bps = 8 * block
+    host.fio.bw_log_value = 1  # a few KiB/s: ten seconds of it is far below one block
+    run_set(tmp_path, "raw-t0", host=host)
+    fill = json.loads((tmp_path / "cells" / "raw_t0_standard_fill.json").read_text(encoding="utf-8"))
+    assert fill["io_size"] == block and fill["write_bytes"] == block
+
+
 def test_rejected_fio_result_is_saved_and_same_output_retry_keeps_actual_meter(tmp_path, monkeypatch):
     job = driver.Job("seq1m-write", "write", 1024**2, 1, 1, "wbps", 4 * 1024**2)
     monkeypatch.setattr(driver, "rung_jobs", lambda rung, part_c=False: [job])
