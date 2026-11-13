@@ -1,0 +1,5 @@
+{
+  "schema": "assay-merge-manifest/1",
+  "planned_ids": ["candidate-a", "candidate-b"],
+  "owners": {"candidate-a": "store-alpha", "candidate-b": "store-beta"}
+}

@@ -1,0 +1,26 @@
+enabled = true
+mode = "report"
+sample_interval_s = 2
+
+[trigger]
+soft_full_pct = 10.0
+soft_sustained_s = 30
+useful_cpu_min = 0.60
+hard_full_pct = 40.0
+hard_sustained_s = 10
+
+[thaw]
+full_below_pct = 2.0
+sustained_s = 120
+
+[victim]
+policy = "least-progress-per-ram"
+
+[reclaim]
+step_bytes = "256M"
+swappiness = 200
+max_parked = 2
+max_park_s = 7200
+
+[log]
+io_pressure = true

@@ -47,6 +47,8 @@ the PSI admission threshold is reported with a reason, never silently dropped.
 The lane demand is a table in the existing Run-Gate TOML file:
 
 ```toml
+schema_version = 1
+
 [lanes.r2.demand]
 unit = "candidate"
 instance_memory = "250m"

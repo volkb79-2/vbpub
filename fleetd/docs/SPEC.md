@@ -9,8 +9,10 @@ planner. It does not run campaigns or communicate with hosts.
 ## Contracts
 
 - `host-facts/1` carries CPU, Geekbench, memory, PSI, cgroup v2, KSM, and
-  control-plane facts. A missing nullable leaf must carry a non-empty sibling
-  `<field>_reason`.
+  kernel-interface, control-plane, guard, policy, job, and tool facts. When a
+  job or tool inventory is not available, that object is `null` with a
+  non-empty sibling `jobs_reason` or `tools_reason`. A missing nullable leaf
+  must carry a non-empty sibling `<field>_reason`.
 - `work-request/1` carries the lane, commit and image identity, floors, demand,
   planned and pending candidate IDs, and optional carry-over provenance.
 - `assay-merge-manifest/1` maps each planned candidate ID to exactly one owner
@@ -22,6 +24,23 @@ planner. It does not run campaigns or communicate with hosts.
 Unknown fields are rejected at every object boundary. Validators identify the
 field path and the missing, extra, or invalid value. See the [consumer guide](CONSUMERS.md)
 for examples and the [design guide](DESIGN-GUIDE.md) for invariants.
+
+### Lane demand
+
+The existing Run-Gate file carries a `[lanes.<lane>.demand]` table with these
+required keys: `unit`, `instance_memory`, `unit_memory`, `unit_seconds_ref`,
+and `efficient_upper_bound`. `unit_memory_high` is optional. Units are the
+closed set `candidate`, `worker`, and `run`; the CLI converts memory strings
+using binary k/m/g suffixes. The high estimate cannot be lower than the median
+estimate. Unknown keys are refused.
+
+### Merge ownership
+
+`assay-merge-manifest/1` has `planned_ids` and an `owners` object. The planned
+ID list must be unique, and its set must exactly equal the owner keys. For each
+ID, only the record in its named owner store is selected. A record with the
+same ID in any other store is ignored. A missing record from the owner store
+is an error.
 
 ## Facts collection
 
