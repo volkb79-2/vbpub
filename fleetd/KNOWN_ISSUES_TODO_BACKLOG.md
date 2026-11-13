@@ -7,6 +7,7 @@
 | FD-001 | Fleet-level campaign submission, supervision, collection, and strict Assay merge are not implemented | P1 | OPEN | 2026-11-13 |
 | FD-002 | Standalone lane demand does not derive Assay mutation.jobs_max | P1 | OPEN | 2026-11-13 |
 | FD-003 | Manual Run-Gate commands cannot pass fleetd's per-host RAM budget to Assay | P1 | OPEN | 2026-11-13 |
+| FD-004 | Host facts and planning do not account for the dev-gates slice memory ceiling | P1 | OPEN | 2026-11-13 |
 
 ## FD-001 Fleet-level campaign lifecycle is not implemented
 
@@ -45,3 +46,17 @@ owned by the host's existing Run-Gate, Assay lane, and cgroup configuration.
 The Run-Gate campaign client must carry the selected host budget into Assay's
 memory admission (or establish an equivalent enforced bound) before treating
 the plan's wave proof as an execution guarantee.
+
+## FD-004 Host slice memory ceiling is not part of the planner facts
+
+**State:** OPEN. **Priority:** P1. **Filed:** 2026-11-13.
+
+WP1(a) reports physical lane memory and control-plane `memory.min`, while WP2
+computes `B_h = P_h × overcommit − O_h` as specified in the compute-host
+design. The facts do not include the host-owned `dev-gates.slice` `memory.max`
+ceiling, so the planner cannot report when its estimate exceeds that execution
+limit. The design lists slice `MemoryMax` as a downstream safety net; this MVP
+keeps the specified physical-RAM budget and does not reinterpret the cgroup
+ceiling as available RAM. A follow-up should collect the ceiling with a reason
+when unavailable and derive an effective limit that also accounts for current
+slice use and other running jobs before treating planned capacity as enforceable.

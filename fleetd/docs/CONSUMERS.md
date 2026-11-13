@@ -133,23 +133,35 @@ execution guarantee.
 
 After all host sections finish, copy each host's whole same-judge Assay state
 store to its own directory beneath the final checkout's ignored
-`.run-gate/collected/`. For this project the normal Run-Gate state directory is
-`<repo>/.run-gate/assay-state/fleetd/`, where `<repo>` is the checkout that owns
-the shared `.git` (the main checkout, even when you run from a linked
-worktree); copy that directory as a whole, for
-example to `<repo>/.run-gate/collected/host-small/`. Then run a whole-lane
-closeout without `--only-candidates`; Run-Gate merges the copied records and
-executes any remaining candidates before writing the complete verdict:
+`.run-gate/collected/`. The store to copy is the directory each batch run
+prints as `run-gate: state directory: <path>`. By default that is
+`<repo>/.run-gate/assay-state/<project>/`, where `<repo>` is the checkout that
+owns the shared `.git` and `<project>` is the planned lane's project directory
+relative to it (a linked worktree inside `<repo>` adds its own path prefix, and
+an environment with a declared `state_root` moves the store there), so copy
+the printed path rather than reconstructing it. Copy that directory as a
+whole, for example to `<repo>/.run-gate/collected/host-small/`. Then run a
+whole-lane closeout without `--only-candidates` from the lane's project
+directory; Run-Gate merges the copied records and executes any remaining
+candidates before writing the complete verdict:
 
 ```sh
 run-gate r2 \
-  --merge-state .run-gate/collected/host-small \
-  --merge-state .run-gate/collected/host-large
+  --merge-state "<repo>/.run-gate/collected/host-small" \
+  --merge-state "<repo>/.run-gate/collected/host-large"
 ```
 
-Replace the example host names with the hosts in the plan. The source paths
-must be directories beneath the checkout or judged worktree. `--batch-multiplier N`
+Replace `<repo>` and the example host names with your checkout and the hosts
+in the plan. A relative `--merge-state` path resolves from the current
+directory (the project directory), not from `<repo>`. The source paths must be
+directories beneath the checkout or judged worktree. `--batch-multiplier N`
 changes the batch target from its default of 4 × worker slots.
+
+Run every host section with the same lane commit and tester image. Run-Gate's
+`--merge-state` imports only records for the current judge identity; records
+from a different commit or image are ignored and those candidates run again at
+closeout. Compare the closeout's candidate counts with the planned list before
+using its elapsed time as the campaign ETA.
 
 The host arithmetic uses P = memory.for_lanes_bytes -
 control_plane.memory_min_bytes, O = other running charges + one campaign

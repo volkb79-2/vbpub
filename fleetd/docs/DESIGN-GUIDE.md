@@ -84,10 +84,14 @@ candidates were not selected (the claim is `PARTIAL`; the code is Run-Gate's
 Generated scripts accept 0 or 4 and stop on any other result; the whole-lane
 closeout finishes any selected candidate that did not complete. Run only the
 matching host section from that host's lane checkout. Copy each host's whole
-Assay store from `<repo>/.run-gate/assay-state/fleetd/` beneath the final
-checkout's ignored `.run-gate/collected/` directory, then run the lane without
+Assay store (the path each run prints as `run-gate: state directory:`)
+beneath the final checkout's ignored `.run-gate/collected/` directory, then run the lane without
 `--only-candidates`, using repeatable `--merge-state` paths, to write the
 whole-lane verdict. The planner does not copy stores or provide transport.
+Every host must use the same lane commit and tester image; `--merge-state`
+ignores records from a different judge identity, so compare the closeout's
+candidate counts with the planned list before trusting its ETA. See the
+[consumer guide](CONSUMERS.md) for the exact store-path rules.
 The unimplemented Run-Gate client verb is tracked as
 [RG-276](../../run-gate-project/KNOWN_ISSUES_TODO_BACKLOG.md#rg-276-the-run-gate-campaign-plan-client-is-not-implemented).
 

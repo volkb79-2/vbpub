@@ -32,3 +32,6 @@
   campaign client.
 - Execute generated batch scripts against a fake Run-Gate to pin status-4
   continuation, failure stopping, and candidate-file creation.
+- Clarify that selected-run closeout copies the state path printed by Run-Gate
+  and requires the same lane commit and tester image on every host.
+- File FD-004 for the missing host-owned `dev-gates.slice` memory ceiling fact.

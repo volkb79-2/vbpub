@@ -70,6 +70,10 @@ The guard runtime state and KSM opt-in shim are nullable unless their paths are
 configured. `memory.for_lanes_bytes` is raw `MemTotal`; the planner applies the
 control-plane `memory.min` reserve once per §4.3. `fleet facts validate FILE`
 validates a serialized record without contacting the host.
+The collector and planner do not read `dev-gates.slice/memory.max`; the
+planner uses the design's physical-RAM budget and leaves slice `MemoryMax` as a
+downstream safety net. The missing host-owned ceiling fact is tracked under
+[FD-004](../KNOWN_ISSUES_TODO_BACKLOG.md#fd-004-host-slice-memory-ceiling-is-not-part-of-the-planner-facts).
 
 ## Planning
 
