@@ -2775,6 +2775,75 @@ def test_io_control_snapshot_ignores_peer_control_removed_during_read(tmp_path, 
     assert [row["path"] for row in snapshot["cgroups"]] == [str(root), str(root / "system.slice")]
 
 
+def test_io_control_snapshot_allows_vanished_parent_only_for_non_chain_peers(tmp_path, monkeypatch):
+    root, fixture = materialize_real_cgroup_layout(tmp_path)
+    allowed = {}
+    original = driver._read_optional_control
+
+    def record(path, *, allow_vanished_parent=False):
+        if path.name == "io.latency":
+            allowed[path.parent] = allow_vanished_parent
+        return original(path, allow_vanished_parent=allow_vanished_parent)
+
+    monkeypatch.setattr(driver, "_read_optional_control", record)
+    driver.io_control_snapshot(cgroup_root=root, cgroup_text=fixture["cgroup_text"])
+    assert allowed[root] is False
+    assert allowed[root / "system.slice"] is False
+    assert allowed[root / "cgprofile.slice"] is True
+    assert allowed[root / "dev.slice"] is True
+
+
+def test_io_control_snapshot_refuses_unreadable_peer_latency_control(tmp_path, monkeypatch):
+    root, fixture = materialize_real_cgroup_layout(tmp_path)
+    latency = root / "cgprofile.slice/io.latency"
+    latency.write_text("\n", encoding="utf-8")
+    original_read_text = Path.read_text
+
+    def denied(candidate, *args, **kwargs):
+        if candidate == latency:
+            raise PermissionError("fixture denies peer latency read")
+        return original_read_text(candidate, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", denied)
+    with pytest.raises(driver.StudyError, match="cannot read existing cgroup IO control.*cgprofile.slice/io.latency"):
+        driver.io_control_snapshot(cgroup_root=root, cgroup_text=fixture["cgroup_text"])
+
+
+def test_read_optional_control_vanished_parent_tolerance_is_enoent_only(tmp_path, monkeypatch):
+    peer = tmp_path / "peer"
+    peer.mkdir()
+    original_stat = Path.stat
+
+    def denied(candidate, *args, **kwargs):
+        if candidate == peer:
+            raise PermissionError("fixture denies peer stat")
+        return original_stat(candidate, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "stat", denied)
+    with pytest.raises(driver.StudyError, match="cannot enumerate cgroup IO control parent"):
+        driver._read_optional_control(peer / "io.latency", allow_vanished_parent=True)
+    assert driver._read_optional_control(tmp_path / "gone/io.latency", allow_vanished_parent=True) is None
+    with pytest.raises(driver.StudyError, match="cannot enumerate cgroup IO control parent"):
+        driver._read_optional_control(tmp_path / "gone/io.latency")
+
+
+def test_read_optional_control_read_enoent_is_fatal_unless_peer_tolerance_is_requested(
+        tmp_path, monkeypatch):
+    control = tmp_path / "io.latency"
+    control.write_text("\n", encoding="utf-8")
+    original_read_text = Path.read_text
+
+    def vanished(candidate, *args, **kwargs):
+        if candidate == control:
+            raise FileNotFoundError("fixture removed control during read")
+        return original_read_text(candidate, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", vanished)
+    with pytest.raises(driver.StudyError, match="cannot read existing cgroup IO control"):
+        driver._read_optional_control(control)
+    assert driver._read_optional_control(control, allow_vanished_parent=True) is None
+
+
 def test_io_control_snapshot_refuses_latency_peer_missing_from_parent_listing(tmp_path, monkeypatch):
     root, fixture = materialize_real_cgroup_layout(tmp_path)
     original_iterdir = Path.iterdir
