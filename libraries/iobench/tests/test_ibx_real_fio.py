@@ -13,7 +13,7 @@ from studies.ibx import driver
 
 
 @pytest.mark.real_fio
-@pytest.mark.time_limit(seconds=1800)
+@pytest.mark.time_limit(1800)
 def test_real_fio_rehearses_every_time_based_shape_and_analyzes(tmp_path):
     fio = shutil.which("fio")
     if fio is None:
