@@ -24,6 +24,7 @@ the MDT capacity boundary.
 | R2 portfolio | [portfolio plan](r2-portfolio/R2-PORTFOLIO-PLAN-2026-10-29.md) |
 | Resource-profile simulations | [budget model](resource-profiles-sim/sim-budget.md), [CLI-extended model](resource-profiles-sim/sim-cli-extended.md), [IO benchmark model](resource-profiles-sim/sim-iobench.md) |
 | Requirements naming | [final rename decision](requirements/REQUIREMENTS-RENAMES-2026-11-03.md) |
+| Cross-project reports | [scrubbed historical report copies](../reports/README.md) |
 | Telemetry platform | [design v2](telemetry-platform/DESIGN-v2-2026-11-07.md) |
 | Test policy | [requirements](test-policy/REQUIREMENTS-2026-11-09.md) |
 

@@ -88,8 +88,9 @@ Implemented (IOB-03 P3, reviewed through wave 2026-10-27) and partially accepted
 the outcomes observed on the fake host; an independent semantic review still has to confirm their rationales. The decisions behind it are IOB-D-001..014 and the rulings
 R-1..R-10 in the DESIGN-GUIDE. Nothing here is wired into `mdt-cockpit` or `debian-install-v2` yet (migration phases M1-M4 in the DESIGN-GUIDE).
 
-The historical R2 mutation campaign cited in IOB-R2-01 is retained in the
-[2026-11-02 campaign report](docs/reports/IOBENCH-R2-R1002-2026-11-02.md).
+The historical R2 mutation campaign cited in IOB-R2-01 is documented in the
+[2026-11-02 campaign report](docs/reports/IOBENCH-R2-R1002-2026-11-02.md) and
+the [raw evidence summary](docs/reports/IOBENCH-R2-R1002-EVIDENCE-SUMMARY-2026-11-13.md).
 
 The registered repository gate runs R0–R1 and native Assay R2 through
 Run-Gate. Its R2 lane opts into `jobs = "auto"` with an Assay ceiling of

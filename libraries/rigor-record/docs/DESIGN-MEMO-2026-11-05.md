@@ -51,7 +51,7 @@ Sources read:
 - run-gate 25.0.1: `SPEC.md` R-26, R-44, `run-gate.footprint.json`, backlog RG-144..RG-148.
 - cgprofile 2.0.0: `docs/PROTOCOL.md` sections 9-10, `docs/RG55-INTERFACE-CONTRACT.md` sections 2.4, 3.
 - `vbpub/docs/design/RESOURCE-PROFILES.md` (`resource-profile/1`, `lane-profile/1`, contamination ownership).
-- Release program: `R2-PORTFOLIO-PLAN.md`, `<host>/R2-BOARD-2026-11-05.md`, `reports/host-compute-REPORT.md`,
+- Release program: `docs/design/r2-portfolio/R2-PORTFOLIO-PLAN-2026-10-29.md`, `<host>/R2-BOARD-2026-11-05.md`, `reports/host-compute-REPORT.md`,
   `reports/dstdns-parallelism-REPORT.md`, `reports/DSTDNS-CMRU-ADOPTION-MEMO-2026-11-05.md` section 5 and 6.2.
 - Installers: `scripts/debian-install-v2/README.md` ("Not yet in v2", io.cost benchmark step, `state_dir`) and
   `scripts/debian-install/geekbench_runner.py` (v1 runner: result and claim URL parsing, result-page scrape).

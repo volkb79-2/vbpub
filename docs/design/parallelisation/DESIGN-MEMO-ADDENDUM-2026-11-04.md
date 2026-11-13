@@ -10,7 +10,7 @@ Status: DESIGN, no implementation. It amends `RP/reports/PARALLELISATION-DESIGN-
 Where the two disagree, this addendum wins. Inputs:
 - the operator directives of 2026-11-04 (memory `feedback-tests-load-independent-host-owned-limits.md:11-17`; AGENTS.md
   `:209-225`);
-- the measured tmpfs A/B (`RP/reports/assay-tmpfs-REPORT.md:30-66`) and the jobs audit;
+- the measured tmpfs A/B (`assay/docs/evidence/assay-tmpfs-REPORT.md:36-72`) and the jobs audit;
 - the mdt-cockpit host-setup code and docs, and the run-gate and assay code and docs;
 - the **upstream Linux v7.2.11 sources**, fetched read-only from kernel.org stable into the session scratchpad. The hosts
   run `7.2.11+deb13-amd64`; the Debian patch set was not checked;
@@ -277,7 +277,7 @@ Today both hosts run dev.slice High 7 G / Max 7.5 G, with tiers 3.5/4.5 (interac
 
 | Signal | Threshold | Consumer | Source |
 |---|---|---|---|
-| CPU some avg10 (host) | ≥ 25 → stop admitting | admission | operator rule (AGENT-RULES.md:4) |
+| CPU some avg10 (host) | ≥ 25 → stop admitting | admission | operator rule (docs/reports/AGENT-RULES.md:8) |
 | memory some avg10 (host or dev.slice) | ≥ 25 → stop admitting | admission | operator rule |
 | memory full avg10 (host) | ≥ 5 → stop admitting | admission | mdt-psi-guard host signal |
 | disk swap-in (`pswpin` delta over 60 s, not `zswpin`) | ≥ 256 pages/s (1 MiB/s) → stop admitting | admission | operator "heavy swapping"; zswpin is cheap (CGROUP-NOTES.md:527-531) |
@@ -418,7 +418,7 @@ Verdicts are unaffected: a pause only changes wall time.
 
 ### 4.1 What was measured, and why it is not the deciding case
 
-- The A/B (`assay-tmpfs-REPORT.md:36-57`) found no wall gain on <host> (0.06 vs 0.09-0.12 s materialise per
+- The A/B (`assay/docs/evidence/assay-tmpfs-REPORT.md:42-63`) found no wall gain on <host> (0.06 vs 0.09-0.12 s materialise per
   candidate), 18-25 % fewer bytes written, and +280/+670 MB peak at jobs 1/3.
 - It ran on a disk with headroom, without memory pressure, and with the per-worker template on btrfs.
 - The directives target the opposite case:
@@ -525,7 +525,7 @@ lane container (dev-gates, leaf memcg)
 | mdt-cockpit | the existing `vm-system` (systemd, slices, IO governance) gains the runtime-image tests that start containers (`scripts/test_runtime_lane.py`) | the `host_setup` wizard logic (assay-full). The 4.1 GiB peak is fine under the new policy |
 | modern-debian-tools-python-debug | none: retire its R2 lane (diverged duplicate, base memo §5.3) | — |
 | <private-host>-guide | `tests/test_soulmask_monitor_docker.py` → VM lane; a skip counts as a failure (today it skips silently, `run-gate.toml:5-7`) | the rest, `jobs_max = 3` after M2/M4 |
-| fake-Docker tests (dstdns uid 65534 smoke, `dstdns-p4-REVIEW.md:9-13`) | paired contract cases fake ⇄ guest dockerd in a dstdns VM lane | the fakes |
+| fake-Docker tests (dstdns uid 65534 smoke, `docs/reports/dstdns-p4-REVIEW.md:13-17`) | paired contract cases fake ⇄ guest dockerd in a dstdns VM lane | the fakes |
 | run-gate | its real-container launch tests (argv: `--memory`, mounts, `--init`, names) and the doctor/mountinfo R0 baseline that fails on the hosts → `run-gate-vm` | everything else. The fake-daemon flakes are test defects (section 6), not VM questions |
 | debian-install-v2 | already VM (`os_integration`) | — |
 
@@ -621,12 +621,12 @@ resolution.
 
 | Case | Evidence | First hypothesis [I] |
 |---|---|---|
-| assay `test_self_qualification_container.py::test_outer_runner_launches_bounded_cgroup_visible_container_and_reads_job_status[b110-screen…]` fails on <host>, passes on <host> at the same sha: "missing required environment fact ASSAY_B105_GATE_EXPECTED_TREE", log `worktree-untracked-by-assays-own-query` | `RP/reports/rigor-merge-prep-REPORT.md:26-30`. The brief reports three distinct <host> failure modes; only this one is written down, so the other two must be recovered from the <host> lane logs | shared checkout state: an untracked artefact from a concurrent process in the same checkout (<host> runs campaigns from shared checkouts) |
+| assay `test_self_qualification_container.py::test_outer_runner_launches_bounded_cgroup_visible_container_and_reads_job_status[b110-screen…]` fails on <host>, passes on <host> at the same sha: "missing required environment fact ASSAY_B105_GATE_EXPECTED_TREE", log `worktree-untracked-by-assays-own-query` | `docs/reports/rigor-merge-prep-REPORT.md:30-34`. The brief reports three distinct <host> failure modes; only this one is written down, so the other two must be recovered from the <host> lane logs | shared checkout state: an untracked artefact from a concurrent process in the same checkout (<host> runs campaigns from shared checkouts) |
 | run-gate RG-160: `test_reattach_adopts_recorded_session_stop_called_with_it`, "ctl stop unparsable response" from the in-test fake daemon (runs 2 and 3 failed, run 4 passed) | `RP/reports/fix-r2-lanes-REPORT.md:38-40` | the fake daemon reads its per-verb plan files at request time (`tests/test_run_gate.py:305-325`). A plan file rewritten non-atomically while the handler thread reads it yields a truncated body. Confirm with `slow-cpu`; fix with `os.replace` |
-| run-gate `TestStall*` environment-sensitive outside the gate | `RP/reports/rg-154-REPORT.md:16`, `fix-r2-lanes-REPORT.md:47` | timing thresholds |
-| nyxloom NL-12 timing flake (`test_behavioral.py:932`); `cfg_daemon` thread outlives teardown | `RP/reports/nyx-3-REPORT.md:61`; `BUGFIX-PROGRAM-2026-11-04.md:304` | leaked thread plus a timing assert |
+| run-gate `TestStall*` environment-sensitive outside the gate | `docs/reports/rg-154-REPORT.md:20`, `fix-r2-lanes-REPORT.md:47` | timing thresholds |
+| nyxloom NL-12 timing flake (`test_behavioral.py:932`); `cfg_daemon` thread outlives teardown | `docs/reports/nyx-3-REPORT.md:65`; `BUGFIX-PROGRAM-2026-11-04.md:304` | leaked thread plus a timing assert |
 | ciu CIU-101 flaky warning test; `TestPermissionRemovalRetry` xdist-order flake | `BUGFIX-PROGRAM-2026-11-04.md:280`; `ciu-4-REPORT.md:28` | order or shared state |
-| rigor chain "1 s timing test" | `RP/reports/rigor-chain-REVIEW.md:85` | wall-clock assertion |
+| rigor chain "1 s timing test" | `docs/reports/rigor-chain-REVIEW.md:89` | wall-clock assertion |
 | cgroup-profiler CP-53 accept-loop (fixed) | `cgp2-pkg3-REPORT.md:7` | template for the fix pattern |
 
 ---
@@ -717,9 +717,9 @@ replaced by AWP-6.
 - `scripts/<private-host>-guide/MEASUREMENTS.md:221-300`.
 - `cmru/run-gate.toml:39-40,74`; `mdt-cockpit/run-gate.toml:30-31,74-75`.
 
-**Reports (RP/reports):** `PARALLELISATION-DESIGN-MEMO-2026-11-05.md`, `assay-tmpfs-REPORT.md`,
-`assay-jobs-audit-REPORT.md`, `materialize-experiment-REPORT.md`, `AGENT-RULES.md`, `rigor-merge-prep-REPORT.md`,
-`fix-r2-lanes-REPORT.md`, `rg-154-REPORT.md`, `nyx-3-REPORT.md`, `ciu-4-REPORT.md`, `rigor-chain-REVIEW.md`,
+**Reports:** `PARALLELISATION-DESIGN-MEMO-2026-11-05.md`, `assay/docs/evidence/assay-tmpfs-REPORT.md`,
+`assay-jobs-audit-REPORT.md`, `materialize-experiment-REPORT.md`, `docs/reports/AGENT-RULES.md`, `docs/reports/rigor-merge-prep-REPORT.md`,
+`fix-r2-lanes-REPORT.md`, `docs/reports/rg-154-REPORT.md`, `docs/reports/nyx-3-REPORT.md`, `ciu-4-REPORT.md`, `docs/reports/rigor-chain-REVIEW.md`,
 `cgp2-pkg3-REPORT.md`, `BUGFIX-PROGRAM-2026-11-04.md`.
 
 **Memory:** `host-shared-with-production-load-rule.md`, `soulmask-memory-pressure-findings.md`,
