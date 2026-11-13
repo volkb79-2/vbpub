@@ -25,8 +25,9 @@ import shutil
 import stat
 import subprocess
 import tarfile
+import tempfile
 from dataclasses import dataclass, field
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from string import Formatter
 from typing import Callable, List, Mapping, Optional, Sequence
 
@@ -58,6 +59,12 @@ _HARD_EXCLUDE_SUFFIXES = (
     ".pyc",
 )
 
+_NEVER_KEEP_SUFFIXES = (".pyc",)
+_KEEPABLE_EXCLUDE_SUFFIXES = tuple(
+    suffix for suffix in _HARD_EXCLUDE_SUFFIXES if suffix not in _NEVER_KEEP_SUFFIXES
+)
+_KEEP_GLOB_CHARS = frozenset("*?[]{}!")
+
 # Specific filename exclusions (exact match on name, not suffix).
 _HARD_EXCLUDE_EXACT = frozenset({
     "ciu.env",
@@ -65,23 +72,65 @@ _HARD_EXCLUDE_EXACT = frozenset({
 })
 
 
-def _is_excluded(rel_path: str) -> bool:
-    """Return True if rel_path should be excluded from the archive."""
-    parts = Path(rel_path).parts
+def _has_hard_excluded_name(rel_path: str) -> bool:
+    parts = PurePosixPath(rel_path).parts
     for part in parts:
         if part in _HARD_EXCLUDE_NAMES:
             return True
         if part in _HARD_EXCLUDE_EXACT:
             return True
-    name = Path(rel_path).name
+    return False
+
+
+def _is_excluded(rel_path: str, keep_paths: Sequence[str] = ()) -> bool:
+    """The shared bundle-relative hard-exclude predicate used by every build phase."""
+    path = PurePosixPath(rel_path)
+    if _has_hard_excluded_name(rel_path):
+        return True
+    name = path.name
+    if any(name.endswith(suffix) for suffix in _NEVER_KEEP_SUFFIXES):
+        return True
     # A bundled source client must retain its build metadata.  This is an
     # explicitly allowlisted source file, not a rendered runtime config.
     if name == "pyproject.toml":
         return False
-    for suffix in _HARD_EXCLUDE_SUFFIXES:
-        if name.endswith(suffix):
-            return True
+    if any(name.endswith(suffix) for suffix in _KEEPABLE_EXCLUDE_SUFFIXES):
+        return path.as_posix() not in keep_paths
     return False
+
+
+def _validate_keep_paths(value: Sequence[str]) -> list[str]:
+    """Validate the exact, bundle-relative ``[archive].keep`` allowlist."""
+    result: list[str] = []
+    seen: set[str] = set()
+    for raw in value:
+        path = PurePosixPath(raw)
+        parts = raw.split("/")
+        if (
+            not raw
+            or raw.startswith("/")
+            or "\\" in raw
+            or PureWindowsPath(raw).drive
+            or any(part in {"", ".", ".."} for part in parts)
+            or any(char in _KEEP_GLOB_CHARS for char in raw)
+            or any(ord(char) < 32 for char in raw)
+        ):
+            raise ValueError(
+                f"[archive].keep entry {raw!r} must be an exact relative POSIX file path "
+                "without glob syntax"
+            )
+        if path.is_absolute() or _has_hard_excluded_name(raw) or any(
+            path.name.endswith(suffix) for suffix in _NEVER_KEEP_SUFFIXES
+        ):
+            raise ValueError(
+                f"[archive].keep entry {raw!r} names a hard-excluded, non-keepable path"
+            )
+        normalized = path.as_posix()
+        if normalized in seen:
+            raise ValueError(f"[archive].keep contains duplicate path {normalized!r}")
+        seen.add(normalized)
+        result.append(normalized)
+    return result
 
 
 @dataclass(frozen=True)
@@ -103,6 +152,8 @@ class BundleConfig:
     stage: Optional["StageConfig"] = None
     exec_prefix: Optional["ExecConfig"] = None
     manifest_name: Optional[str] = None
+    archive_keep: list[str] = field(default_factory=list)
+    keep_tree: bool = False
 
 
 @dataclass(frozen=True)
@@ -165,6 +216,9 @@ def write_deterministic_tar(
     members: Sequence[BundleMember],
     out_path: Path,
     source_date_epoch: Optional[int] = None,
+    *,
+    keep_paths: Sequence[str] = (),
+    bundle_prefix: Optional[str] = None,
 ) -> Path:
     """Write a byte-deterministic tar.xz to out_path (SPEC B §4).
 
@@ -191,8 +245,17 @@ def write_deterministic_tar(
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
-    # Filter hard-excludes, then sort by archive_path in byte (C) order.
-    filtered = [m for m in members if not _is_excluded(m.archive_path)]
+    # Filter hard-excludes, then sort by archive_path in byte (C) order. Archive
+    # members carry the bundle directory prefix, while keep entries do not.
+    def bundle_relative(archive_path: str) -> str:
+        if bundle_prefix and archive_path.startswith(bundle_prefix + "/"):
+            return archive_path[len(bundle_prefix) + 1:]
+        return archive_path
+
+    filtered = [
+        member for member in members
+        if not _is_excluded(bundle_relative(member.archive_path), keep_paths)
+    ]
     sorted_members = sorted(filtered, key=lambda m: m.archive_path.encode())
 
     with tarfile.open(str(out_path), mode="w:xz") as tf:
@@ -224,6 +287,7 @@ def collect_allowlist_members(
     *,
     archive_prefix: str = "bundle",
     extra_members: Optional[Sequence[BundleMember]] = None,
+    keep_paths: Sequence[str] = (),
 ) -> List[BundleMember]:
     """Expand an allowlist of project-relative paths to BundleMembers.
 
@@ -246,7 +310,7 @@ def collect_allowlist_members(
             raise FileNotFoundError(
                 f"Allowlisted path does not exist: {abs_path} (from {entry!r})"
             )
-        if _is_excluded(entry):
+        if _is_excluded(entry, keep_paths):
             continue
 
         if abs_path.is_dir():
@@ -254,7 +318,7 @@ def collect_allowlist_members(
                 if not child.is_file():
                     continue
                 rel = child.relative_to(project_root).as_posix()
-                if _is_excluded(rel):
+                if _is_excluded(rel, keep_paths):
                     continue
                 arc = f"{archive_prefix}/{rel}" if archive_prefix else rel
                 exe = bool(child.stat().st_mode & stat.S_IXUSR)
@@ -263,7 +327,8 @@ def collect_allowlist_members(
             rel = abs_path.relative_to(project_root).as_posix()
             arc = f"{archive_prefix}/{rel}" if archive_prefix else rel
             exe = bool(abs_path.stat().st_mode & stat.S_IXUSR)
-            result.append(BundleMember(archive_path=arc, source_path=abs_path, executable=exe))
+            if not _is_excluded(rel, keep_paths):
+                result.append(BundleMember(archive_path=arc, source_path=abs_path, executable=exe))
 
     if extra_members:
         result.extend(extra_members)
@@ -287,6 +352,16 @@ def resolve_path(base: Path, raw: str) -> Path:
     if path.is_absolute():
         return path
     return (base / path).resolve()
+
+
+def _copy_path(base: Path, raw: str) -> Path:
+    """Resolve a configured copy path lexically so symlink components remain visible."""
+    path = Path(raw)
+    return path.absolute() if path.is_absolute() else (base / path).absolute()
+
+
+def _has_symlink_component(path: Path) -> bool:
+    return any(component.is_symlink() for component in (path, *path.parents))
 
 
 def _reject_unknown_keys(table: dict, allowed: set[str], where: str) -> None:
@@ -463,7 +538,9 @@ def parse_config(config_path: Path) -> BundleConfig:
     archive = config.get("archive")
     if not isinstance(archive, dict):
         raise ValueError("[archive] section is required in bundle config")
-    _reject_unknown_keys(archive, {"name_template", "version_env", "format"}, "archive")
+    _reject_unknown_keys(
+        archive, {"name_template", "version_env", "format", "keep", "keep_tree"}, "archive"
+    )
     archive_template = _string_value(archive, "name_template", "archive")
     _validate_archive_template(archive_template)
     archive_version_env = _string_value(archive, "version_env", "archive")
@@ -471,6 +548,10 @@ def parse_config(config_path: Path) -> BundleConfig:
     archive_format = _string_value(archive, "format", "archive", default="gztar")
     if archive_format not in _valid_formats:
         raise ValueError(f"[archive].format must be one of {sorted(_valid_formats)}, got {archive_format!r}")
+    archive_keep = _validate_keep_paths(_string_list_value(archive, "keep", "archive"))
+    keep_tree = archive.get("keep_tree", False)
+    if not isinstance(keep_tree, bool):
+        raise ValueError("archive.keep_tree must be true or false")
 
     copy = config.get("copy")
     if not isinstance(copy, dict):
@@ -507,6 +588,8 @@ def parse_config(config_path: Path) -> BundleConfig:
         stage=_parse_stage(config),
         exec_prefix=_parse_exec(config),
         manifest_name=manifest_name,
+        archive_keep=archive_keep,
+        keep_tree=keep_tree,
     )
 
 
@@ -530,45 +613,94 @@ def build_wheel(config: BundleConfig) -> None:
     subprocess.run(command, check=True, cwd=str(config.wheel_project_root))
 
 
-def copy_sources(config: BundleConfig) -> None:
+def _warn_excluded_copy(path: str) -> None:
+    print(f"[WARN] Skipping hard-excluded bundle path: {path}", file=sys.stderr)
+
+
+def _copy_ignore(
+    config: BundleConfig, source_root: Path, bundle_prefix: str,
+) -> Callable[[str, list[str]], set[str]]:
     def ignore_excluded(directory: str, names: list[str]) -> set[str]:
         ignored: set[str] = set()
         base = Path(directory)
+        relative_dir = base.relative_to(source_root)
         for name in names:
-            candidate = base / name
-            try:
-                rel = candidate.relative_to(config.project_root).as_posix()
-            except ValueError:
-                rel = candidate.name
-            if _is_excluded(rel):
+            output_parts = [bundle_prefix]
+            if relative_dir != Path("."):
+                output_parts.extend(relative_dir.parts)
+            output_parts.append(name)
+            rel = PurePosixPath(*output_parts).as_posix()
+            if _is_excluded(rel, config.archive_keep):
+                _warn_excluded_copy(rel)
                 ignored.add(name)
         return ignored
 
+    return ignore_excluded
+
+
+def _reject_copy_symlinks(config: BundleConfig, source_root: Path, bundle_prefix: str) -> None:
+    """Do not dereference source symlinks into bundle files during copytree/copy2."""
+    for path in (source_root, *source_root.rglob("*")):
+        relative = path.relative_to(source_root)
+        output_parts = [bundle_prefix, *relative.parts] if relative != Path(".") else [bundle_prefix]
+        rel = PurePosixPath(*output_parts).as_posix()
+        if _is_excluded(rel, config.archive_keep):
+            continue
+        if _has_symlink_component(path):
+            raise ValueError(f"bundle source path {rel!r} is a symlink; refusing to copy its target")
+        if not path.is_dir() and not path.is_file():
+            raise ValueError(f"bundle source path {rel!r} is not a regular file or directory")
+
+
+def copy_sources(config: BundleConfig) -> None:
     for file_path in config.copy_files:
-        source = resolve_path(config.project_root, file_path)
+        source = _copy_path(config.project_root, file_path)
+        rel = PurePosixPath(source.name).as_posix()
+        if _is_excluded(rel, config.archive_keep):
+            _warn_excluded_copy(rel)
+            continue
         if not source.exists():
             raise FileNotFoundError(f"Bundle source file not found: {source}")
-        if _is_excluded(file_path):
-            continue
+        if _has_symlink_component(source) or not source.is_file():
+            raise ValueError(f"bundle source path {rel!r} is not a regular file")
         shutil.copy2(source, config.bundle_dir / source.name)
 
     for dir_path in config.copy_dirs:
-        source = resolve_path(config.project_root, dir_path)
+        source = _copy_path(config.project_root, dir_path)
         if not source.exists():
             raise FileNotFoundError(f"Bundle source dir not found: {source}")
-        shutil.copytree(source, config.bundle_dir / source.name, ignore=ignore_excluded)
+        if _has_symlink_component(source) or not source.is_dir():
+            raise ValueError(f"Bundle source dir is not a directory: {source}")
+        if _has_hard_excluded_name(source.name):
+            _warn_excluded_copy(PurePosixPath(source.name).as_posix())
+            continue
+        _reject_copy_symlinks(config, source, source.name)
+        shutil.copytree(
+            source, config.bundle_dir / source.name,
+            ignore=_copy_ignore(config, source, source.name),
+        )
 
     if config.client_dir.exists():
+        _reject_copy_symlinks(config, config.client_dir, config.client_dir.name)
         shutil.copytree(
             config.client_dir,
             config.bundle_dir / config.client_dir.name,
-            ignore=ignore_excluded,
+            ignore=_copy_ignore(config, config.client_dir, config.client_dir.name),
         )
 
 
-def archive_path(config: BundleConfig, variant_name: Optional[str] = None) -> Path:
+def archive_path(
+    config: BundleConfig,
+    variant_name: Optional[str] = None,
+    *,
+    version_fallback: Optional[str] = None,
+    environ: Optional[Mapping[str, str]] = None,
+) -> Path:
     """The archive this build writes; validated before any vendor/stage command runs."""
-    version_value = os.getenv(config.archive_version_env) if config.archive_version_env else None
+    environment = os.environ if environ is None else environ
+    version_value = environment.get(config.archive_version_env) if config.archive_version_env else None
+    if not version_value:
+        version_value = version_fallback
     if not version_value:
         raise RuntimeError(
             f"{config.archive_version_env} must be set for archive naming"
@@ -588,24 +720,43 @@ def archive_path(config: BundleConfig, variant_name: Optional[str] = None) -> Pa
     return config.dist_dir / tarball_name
 
 
-def create_archive(config: BundleConfig, variant_name: Optional[str] = None) -> Path:
-    tarball_path = archive_path(config, variant_name)
+def create_archive(
+    config: BundleConfig,
+    variant_name: Optional[str] = None,
+    *,
+    version_fallback: Optional[str] = None,
+    environ: Optional[Mapping[str, str]] = None,
+) -> Path:
+    tarball_path = archive_path(
+        config, variant_name, version_fallback=version_fallback, environ=environ,
+    )
 
     log_info(f"Creating archive {tarball_path}")
     if config.archive_format == "xztar":
         members = collect_allowlist_members(
-            config.dist_dir,
-            [config.bundle_dir.name],
-            archive_prefix="",
+            config.bundle_dir,
+            ["."],
+            archive_prefix=config.bundle_dir.name,
+            keep_paths=config.archive_keep,
         )
-        return write_deterministic_tar(members, tarball_path)
+        return write_deterministic_tar(
+            members, tarball_path, keep_paths=config.archive_keep,
+            bundle_prefix=config.bundle_dir.name,
+        )
 
-    shutil.make_archive(
-        tarball_path.with_suffix("").with_suffix(""),
-        config.archive_format,
-        root_dir=config.dist_dir,
-        base_dir=config.bundle_dir.name,
-    )
+    with tempfile.TemporaryDirectory(prefix="cmru-bundle-archive-", dir=config.dist_dir) as temp:
+        temp_root = Path(temp)
+        shutil.copytree(
+            config.bundle_dir,
+            temp_root / config.bundle_dir.name,
+            ignore=_copy_ignore(config, config.bundle_dir, config.bundle_dir.name),
+        )
+        shutil.make_archive(
+            tarball_path.with_suffix("").with_suffix(""),
+            config.archive_format,
+            root_dir=temp_root,
+            base_dir=config.bundle_dir.name,
+        )
     return tarball_path
 
 
@@ -722,6 +873,42 @@ def run_stage(
     runner(command, config.project_root if prefixed else config.bundle_dir)
 
 
+def _validate_final_bundle_tree(config: BundleConfig) -> None:
+    """Refuse unkept secret-class files and filesystem entries the bundle cannot safely copy."""
+    for keep_path in config.archive_keep:
+        kept = config.bundle_dir / keep_path
+        if kept.is_symlink() or not kept.is_file():
+            raise ValueError(
+                f"[archive].keep path {keep_path!r} must exist as a regular file in the bundle tree"
+            )
+
+    blocked: list[str] = []
+    for path in config.bundle_dir.rglob("*"):
+        rel = path.relative_to(config.bundle_dir).as_posix()
+        if _is_excluded(rel, config.archive_keep):
+            # Cache and private-name exclusions remain silent filters. Suffix
+            # exclusions that a stage step leaves behind fail closed instead.
+            if (
+                not path.is_dir()
+                and any(path.name.endswith(suffix) for suffix in _KEEPABLE_EXCLUDE_SUFFIXES)
+                and not _has_hard_excluded_name(rel)
+                and path.name != "pyproject.toml"
+            ):
+                blocked.append(rel)
+            continue
+        if path.is_symlink():
+            raise ValueError(f"bundle path {rel!r} is a symlink; refusing to archive its target")
+        if not path.is_dir() and not path.is_file():
+            raise ValueError(f"bundle path {rel!r} is not a regular file or directory")
+
+    if blocked:
+        paths = ", ".join(sorted(blocked))
+        raise ValueError(
+            "the archive hard-excludes unkept bundle files; add exact "
+            f"paths to [archive].keep or remove them: {paths}"
+        )
+
+
 def write_bundle_manifest(config: BundleConfig, *, project: str, tag: str) -> Path:
     """Write the installer manifest over the FINAL bundle tree (after vendor and stage)."""
     from cmru.manifest import bundle_tag_problem, build_bundle_manifest, write_manifest
@@ -730,19 +917,11 @@ def write_bundle_manifest(config: BundleConfig, *, project: str, tag: str) -> Pa
     problem = bundle_tag_problem(tag)
     if problem:
         raise ValueError(problem)
-    dropped = sorted(
-        path.relative_to(config.bundle_dir).as_posix()
-        for path in config.bundle_dir.rglob("*")
-        if path.is_file() and _is_excluded(path.relative_to(config.bundle_dir).as_posix())
-    )
-    if dropped:
-        raise ValueError(
-            "the archive hard-excludes files the bundle tree holds, so the manifest would "
-            f"list files the tarball lacks: {', '.join(dropped[:5])}"
-        )
+    _validate_final_bundle_tree(config)
     manifest = build_bundle_manifest(
         project=project, tag=tag, bundle_root=config.bundle_dir,
         exclude=(config.manifest_name, config.manifest_name + ".minisig"),
+        exclude_path=lambda rel: _is_excluded(rel, config.archive_keep),
     )
     return write_manifest(manifest, config.bundle_dir / config.manifest_name)
 
@@ -796,6 +975,7 @@ def run_bundle(
     variant: Optional[VariantConfig] = None,
     manifest_project: Optional[str] = None,
     manifest_tag: Optional[str] = None,
+    version_fallback: Optional[str] = None,
     runner: Optional[Runner] = None,
     environ: Optional[Mapping[str, str]] = None,
 ) -> Path:
@@ -817,7 +997,12 @@ def run_bundle(
     if config.manifest_name is not None and not (manifest_project and manifest_tag):
         raise ValueError("[manifest] needs manifest_project and manifest_tag")
 
-    own_archive = archive_path(config, variant.name if variant is not None else None)
+    own_archive = archive_path(
+        config,
+        variant.name if variant is not None else None,
+        version_fallback=version_fallback,
+        environ=environment,
+    )
     _preflight_bundle_steps(
         config, variant, manifest_project=manifest_project, manifest_tag=manifest_tag,
         environ=environment,
@@ -838,9 +1023,18 @@ def run_bundle(
     copy_sources(config)
     vendor_dependencies(config, variant, run, environment)
     run_stage(config, variant, run, environment)
+    _validate_final_bundle_tree(config)
     if config.manifest_name is not None:
         write_bundle_manifest(config, project=manifest_project, tag=manifest_tag)
-    return create_archive(config, variant.name if variant is not None else None)
+    archive = create_archive(
+        config,
+        variant.name if variant is not None else None,
+        version_fallback=version_fallback,
+        environ=environment,
+    )
+    if not config.keep_tree:
+        shutil.rmtree(config.bundle_dir)
+    return archive
 
 
 if __name__ == "__main__":

@@ -108,6 +108,26 @@ def test_copy_keep_paths_are_exact_for_archive_and_manifest(tmp_path):
     assert (tmp_path / "dist/app/src/cacert.pem").is_file()
 
 
+def test_keep_filter_also_applies_to_non_xztar_archive_format(tmp_path):
+    source = tmp_path / "src"
+    source.mkdir()
+    (source / "app.py").write_text("print('ok')\n", encoding="utf-8")
+    (source / "app-defaults.env").write_text("MODE=public\n", encoding="utf-8")
+    config = _write_bundle(
+        tmp_path, keep=("src/app-defaults.env",), fmt="gztar", keep_tree=True,
+    )
+    config.write_text(
+        config.read_text(encoding="utf-8").replace(".tar.xz", ".tar.gz"),
+        encoding="utf-8",
+    )
+
+    archive = bundle.run_bundle(config, manifest_project="demo", manifest_tag="demo-v1.2.3")
+
+    manifest, names = _archive_contents(archive)
+    assert "app/src/app-defaults.env" in names
+    assert "src/app-defaults.env" in manifest["files"]
+
+
 def test_copy_without_keep_warns_and_omits_excluded_source_files(tmp_path, capsys):
     source = tmp_path / "src"
     source.mkdir()
@@ -279,6 +299,19 @@ def test_keep_tree_true_and_build_failures_retain_the_staged_tree(tmp_path, monk
     (tmp_path / "src/app.py").write_text("print('ok')\n", encoding="utf-8")
     config = _write_bundle(tmp_path, keep_tree=True)
     bundle.run_bundle(config, manifest_project="demo", manifest_tag="demo-v1.2.3")
+    assert (tmp_path / "dist/app/src/app.py").is_file()
+
+    failed = _write_bundle(tmp_path, stage=True, keep_tree=False)
+    def fail_stage(_argv, _cwd):
+        raise subprocess.CalledProcessError(7, ["stage"])
+
+    with pytest.raises(subprocess.CalledProcessError):
+        bundle.run_bundle(
+            failed,
+            runner=fail_stage,
+            manifest_project="demo",
+            manifest_tag="demo-v1.2.3",
+        )
     assert (tmp_path / "dist/app/src/app.py").is_file()
 
     failed = _write_bundle(tmp_path, stage=True, keep_tree=False)

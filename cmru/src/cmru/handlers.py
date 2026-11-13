@@ -58,6 +58,51 @@ def _rigor_kwargs(rigor: list[Path]) -> dict:
     return {"rigor_assets": tuple(rigor)} if rigor else {}
 
 
+def _bundle_dev_version(forge, project_name: str, project) -> str:
+    """Resolve an untagged archive version from CMRU's release plan and Git identity."""
+    from cmru.version import _git, status_records
+
+    version_config = getattr(project, "version", None)
+    if version_config is None or str(version_config.strategy).startswith("external:"):
+        raise RuntimeError(
+            f"cannot derive a development archive version for {project_name}; "
+            "set the configured archive version environment variable"
+        )
+    if not getattr(forge, "repo_root", None):
+        raise RuntimeError(
+            f"cannot derive a development archive version for {project_name}; "
+            "the cmru configuration has no repository root"
+        )
+    records = status_records(forge.repo_root, dict(forge.projects))
+    record = next((item for item in records if item["project"] == project_name), None)
+    if record is None:
+        raise RuntimeError(f"cmru version resolution returned no record for {project_name}")
+
+    tag_prefix = project.prefix or f"{project_name}-v"
+    planned = record.get("next_version")
+    if planned:
+        if not planned.startswith(tag_prefix):
+            raise RuntimeError(
+                f"cmru resolved {planned!r}, which does not start with {tag_prefix!r}"
+            )
+        base_version = planned[len(tag_prefix):]
+    elif record.get("last_tag"):
+        last_tag = record["last_tag"]
+        if not last_tag.startswith(tag_prefix):
+            raise RuntimeError(f"cmru resolved unexpected release tag {last_tag!r}")
+        base_version = last_tag[len(tag_prefix):]
+    else:
+        raise RuntimeError(f"cmru version resolution returned no version for {project_name}")
+
+    last_tag = record.get("last_tag")
+    revision_range = f"{last_tag}..HEAD" if last_tag else "HEAD"
+    commits = _git(forge.repo_root, "rev-list", "--count", revision_range)
+    commit = _git(forge.repo_root, "rev-parse", "--short=12", "HEAD")
+    if not commits.isdecimal() or not re.fullmatch(r"[0-9a-fA-F]{7,40}", commit):
+        raise RuntimeError("git returned an invalid commit count or short hash for bundle versioning")
+    return f"{base_version}.dev{commits}+g{commit.lower()}"
+
+
 def _curated_release_notes(
     cwd: Path, prefix: str, version: str, build_output: Optional[dict],
 ) -> Optional[ReleaseNotes]:
@@ -1006,6 +1051,7 @@ def cmd_bundle_build(args: argparse.Namespace) -> None:
     """
     from cmru import bundle, exit_codes
     from cmru.config import load_forge_config
+    from cmru.cli import _project_release_prefix
     from cmru.release import version_to_tag
 
     forge = load_forge_config(Path(args.cmru_config))
@@ -1032,12 +1078,15 @@ def cmd_bundle_build(args: argparse.Namespace) -> None:
     try:
         parsed = bundle.parse_config(bundle_config)
         version = os.environ.get(parsed.archive_version_env, "")
+        version_fallback = None
         if not version:
-            raise RuntimeError(f"{parsed.archive_version_env} must be set for archive naming")
-        tag = version_to_tag(project.prefix, version)
+            version_fallback = _bundle_dev_version(forge, args.name, project)
+            version = version_fallback
+        tag = version_to_tag(_project_release_prefix(project), version)
         built = [
             bundle.run_bundle(
                 bundle_config, variant=variant, manifest_project=args.name, manifest_tag=tag,
+                version_fallback=version_fallback,
             )
             for variant in selected
         ]
