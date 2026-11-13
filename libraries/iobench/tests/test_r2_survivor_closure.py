@@ -240,6 +240,7 @@ def test_cache_evidence_stage_preserves_the_budget_skip_reason(monkeypatch):
 
 def test_absent_write_time_proof_serializes_as_null():
     run = Calibrator(make_host(cache=None), config())
+    run.proof = {}
     assert run.write_time_proof_doc() is None
 
 
@@ -285,7 +286,7 @@ def test_fill_replan_at_the_full_planned_size_is_not_a_time_truncation():
 
 def test_a_full_fill_finishing_at_its_deadline_is_not_truncated():
     run, host = _fill_run()
-    deadline = run.alloc.seconds("fill")
+    deadline = host.now() + run.alloc.seconds("fill")
 
     def full_chunk(job):
         host.clock = float(deadline)
@@ -299,7 +300,7 @@ def test_a_full_fill_finishing_at_its_deadline_is_not_truncated():
 
 def test_a_partial_fill_at_its_deadline_is_budget_truncated():
     run, host = _fill_run()
-    deadline = run.alloc.seconds("fill")
+    deadline = host.now() + run.alloc.seconds("fill")
 
     def partial_chunk(job):
         host.clock = float(deadline)
@@ -384,7 +385,7 @@ def test_veryquick_series_failure_is_required_and_stops_sixth_stage():
     run = Calibrator(make_host(cache=None), config(profile="veryquick"))
     run.s0 = lambda **_kwargs: None
     run.s1 = lambda: None
-    run.make_plan = lambda: object()
+    run.make_plan = lambda: SimpleNamespace(seconds=lambda _name: 0)
     run.fill = lambda _alloc: None
     run.e_cold = lambda: None
     run.cache_evidence_stage = lambda _alloc: None
@@ -431,31 +432,29 @@ def test_capability_history_rows_are_json_objects_independent_of_key_order():
 def test_capability_plateau_is_not_derived_from_a_noninteger_block_size():
     rung = {"dir": "write", "state": "steady", "ws_bytes": 100, "bs": "4k", "steady_iops": 100.0,
             "burst_units": None, "knee_s": None}
-    with pytest.raises(Refusal) as error:
-        _observation(rung)
-    assert error.value.condition == "capability_number"
+    row = _observation(rung)
+    assert row["post_cliff_bps"] is None
 
 
 def test_capability_burst_is_not_derived_from_nonnumeric_burst_units():
     rung = {"dir": "write", "state": "steady", "ws_bytes": 100, "bs": 4096, "steady_iops": None,
             "burst_units": "two", "knee_s": None}
-    with pytest.raises(Refusal) as error:
-        _observation(rung)
-    assert error.value.condition == "capability_number"
+    row = _observation(rung)
+    assert row["burst_bytes"] is None and row["pre_cliff_bps"] is None
 
 
 def test_capability_precliff_rate_is_absent_without_a_plateau():
     rung = {"dir": "write", "state": "steady", "ws_bytes": 100, "bs": 4096, "steady_iops": "bad",
             "burst_units": 2.0, "knee_s": 1.0}
-    with pytest.raises(TypeError):
-        _observation(rung)
+    row = _observation(rung)
+    assert row["pre_cliff_bps"] is None
 
 
 def test_capability_precliff_rate_is_absent_without_a_burst():
     rung = {"dir": "write", "state": "steady", "ws_bytes": 100, "bs": 4096, "steady_iops": 2.0,
             "burst_units": "bad", "knee_s": 1.0}
-    with pytest.raises(TypeError):
-        _observation(rung)
+    row = _observation(rung)
+    assert row["pre_cliff_bps"] is None
 
 
 def test_capability_precliff_rate_is_absent_without_a_knee():
@@ -505,7 +504,7 @@ def test_capability_cli_handler_returns_success_after_emitting_output():
 def test_fio_option_probe_error_includes_the_empty_stderr_fallback(monkeypatch):
     monkeypatch.setattr(devio, "probe", lambda *_args, **_kwargs: RunResult(2, "", ""))
     with pytest.raises(Refusal) as error:
-        devio.require_fio_option(make_host(cache=None), "--allow_mounted_write", (3, 39))
+        devio.require_fio_option(SimpleNamespace(), "--allow_mounted_write", (3, 39))
     assert "exit 2: no message" in str(error.value)
 
 
