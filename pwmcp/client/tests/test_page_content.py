@@ -836,6 +836,42 @@ def test_valid_visible_hiding_property_values_still_override(style: str) -> None
     assert result.hidden_removed == 0
 
 
+@pytest.mark.parametrize(
+    "value",
+    [
+        "block", "inline", "flow", "flow-root", "table", "flex", "grid", "ruby", "contents",
+        "list-item", "inline-block", "inline-table", "inline-flex", "inline-grid",
+        "table-row-group", "table-header-group", "table-footer-group", "table-row",
+        "table-cell", "table-caption",
+        "block flex", "inline flex", "block grid", "inline grid", "block table", "inline table",
+        "inline flow", "block flow-root", "inline flow-root", "block ruby", "inline ruby",
+        "block list-item", "inline list-item", "list-item flow-root",
+        "inline flow list-item", "inline flow-root list-item",
+    ],
+)
+def test_every_valid_static_display_value_overrides_an_earlier_hide(value: str) -> None:
+    result = _extraction(f"<p style='display:none;display:{value}'>visible content</p>", fmt="text")
+
+    assert result.content == "visible content"
+    assert result.hidden_removed == 0
+
+
+@pytest.mark.parametrize(
+    "style",
+    [
+        pytest.param("visibility:hidden;visibility:visible", id="visibility-visible-after-hidden"),
+        pytest.param("visibility:collapse;visibility:visible", id="visibility-visible-after-collapse"),
+        pytest.param("display:block;display:foo(x)", id="invalid-display-function-is-ignored"),
+        pytest.param("visibility:visible;visibility:foo(x)", id="invalid-visibility-function-is-ignored"),
+    ],
+)
+def test_visible_cascade_outcomes_are_not_hidden_by_invalid_or_visible_overrides(style: str) -> None:
+    result = _extraction(f"<p style='{style}'>visible content</p>", fmt="text")
+
+    assert result.content == "visible content"
+    assert result.hidden_removed == 0
+
+
 def test_inline_style_priority_marker_at_value_start_is_parsed_as_empty_important_value() -> None:
     from pwmcp_client.page_content import _priority_value
 
