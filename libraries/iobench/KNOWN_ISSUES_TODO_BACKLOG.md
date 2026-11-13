@@ -15,24 +15,34 @@ The builder now emits `--time_based` only when `io_size` is absent. FakeFio repe
 The IBX study's raw target path now checks a manually acknowledged exact path,
 size, and PARTUUID; sysfs partition identity; holders; both the caller and PID 1
 mount namespaces; swap; active exclusive claims; and root/system filesystems
-before any discard. The
-registered fake-sysfs lane covers the refusal branches, but this change has no
-study-host access and makes no claim that r1002's live namespace and device
+before any discard. A dedicated partition on the running system disk refuses
+by default. The operator consents to that layout by pairing
+`--allow-system-disk-partition` with the per-run `--system-disk-ack` drift-check
+token derived from the current hostname, target disk, root filesystem device(s),
+and target PARTUUID. This exception is separately
+recorded with observed system mounts and sibling swap devices; it does not
+relax target identity, mount, swap, holder, exclusive-claim, or whole-disk
+guards. The registered fake-sysfs lane covers these branches, but this change
+has no study-host access and makes no claim that the live namespace and device
 layout have accepted the guard.
 
 The command-by-command live probe is in
-[`studies/ibx/ACCEPTANCE.md`](studies/ibx/ACCEPTANCE.md). The saved fresh-install
-layout puts `/dev/vda5` on `/dev/vda`, which also holds the running system and
-swap, so the correct raw acknowledgement is expected to refuse; do not bypass
-that guard. Positive raw dry-run acceptance needs the reserved partition on a
-disk separate from system and swap.
+[`studies/ibx/ACCEPTANCE.md`](studies/ibx/ACCEPTANCE.md). The study-day sequence
+in [`studies/ibx/README.md`](studies/ibx/README.md) also requires the approved
+`IBX_EXPECTED_HOST` before each driver run and rechecks host plus target identity
+before each direct filesystem operation. The saved fresh-install
+layout puts the dedicated raw partition on the disk that also holds the running
+system and swap. The live acceptance now verifies both the byte-identical
+default refusal and a passing dry-run with the exact derived acknowledgement;
+no live raw write is part of acceptance.
 
 **Close-when:** on the approved study host, read-only acceptance confirms the
 dedicated partition identity and expected live sysfs/mount facts; the correct
 acknowledgement passes `run --dry-run`; changed size/PARTUUID, a mounted or
-swap-active target, a holder, a whole disk, and the root/system disk all refuse
-before any write or discard; the acceptance record names the host-independent
-facts observed without publishing a hostname or address.
+swap-active target, a holder, a whole disk, a wrong expected host, or a wrong
+host/disk/root/partition acknowledgement refuse before any write or discard;
+the acceptance record names host-independent facts without publishing a
+hostname or address.
 
 ## IOB-BL-42 — Live acceptance of IBX btrfs membership and fio logs
 
@@ -65,3 +75,30 @@ O_EXCL/busy/close-refusal oracle.
 
 **Close when.** No non-delegating exact-symbol test patch remains and the
 registered R0/R1 lane passes on a clean final commit.
+
+## IOB-BL-44 — IBX dry-run must not require timer changes
+
+**Status:** FIXED in this package. `run --dry-run` used to assert the fstrim,
+apt-daily, and governance timer quiet window before it knew that the invocation
+was read-only. The timer check now runs only for live executions; dry-run still
+performs target, identity, monitor-threshold, free-space, schedule, fio
+rendering, and the initial host-liveness probe without creating output or
+changing the target.
+
+**Close when.** Fake-host coverage proves an active timer does not block dry-run
+and live run still checks it; the registered R0–R1 lane passes on the final
+head.
+
+## IOB-BL-45 — IBX I/O PSI stop rule is self-triggered by fio
+
+**Status:** FIXED in this package. The former I/O PSI threshold could reach
+100% from the saturating benchmark cell itself. IBX now records I/O PSI as
+advisory and protects host responsiveness with memory PSI `full avg10`,
+`MemAvailable`, free-space floors, hard byte/time caps, and a configurable
+consecutive-sample host-liveness stop. A successful initial probe is required
+before target I/O; later probes use a recorded configurable interval (10 s by
+default). Each bounded root-filesystem fsync and SSH/cockpit check runs in a
+transient `system.slice` service outside the benchmark cgroup.
+
+**Close when.** Fake proc/clock/latency coverage proves each stop and advisory
+path; the registered R0–R1 lane passes on the final head.

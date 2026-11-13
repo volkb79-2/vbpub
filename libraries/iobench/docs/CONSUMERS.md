@@ -357,48 +357,97 @@ raw repeats (41 GB each) are skipped because none fits in the remaining
 4.876311552 GB. Required base rung caps remain unchanged. Each optional
 file-standard set costs 100 GB and runs only if its remaining cap and every
 unpaid required cell-set still ahead fit; otherwise it reports `skipped`. Use
-only the approved study host and its dedicated 32 GiB
-`iobench-raw` partition (`/dev/vda5` in the study design). It writes and
+only the approved disposable compute host and its dedicated 32 GiB
+`iobench-raw` partition. It writes and
 discards target data, formats the partition for the two file-target legs, and
 leaves it unformatted at the end. The driver refuses to start if the target,
-identity acknowledgement, IO-control state, timer state, or host-policy stop
-thresholds are wrong. Raw runs require the exact `/dev/vda5:SIZE_BYTES:PARTUUID`
-value checked against the approved target inventory; resume refuses a changed
-size or PARTUUID. Keep the complete timer stop/restore and slot schedule from the
-[study-day procedure](../studies/ibx/README.md). Before raw writes or discard,
-the driver refuses whole disks, mounted or swap-active partitions, active
-exclusive claims, holders, and devices that contain the running system.
+identity acknowledgement, IO-control state, timer state on live runs, or
+host-policy stop thresholds are wrong. Raw runs require the exact target path,
+size, and PARTUUID from the approved inventory; resume refuses a changed size
+or PARTUUID. A raw partition sharing the running system disk refuses by default.
+The operator can opt in only with both `--allow-system-disk-partition` and a
+fresh `system-disk-ack` value derived from hostname, disk, root filesystem
+device(s), and the target PARTUUID. The flag is the operator's consent; the
+per-run value is a drift check that binds it to current host and target facts.
+This exception does not relax any other guard. Its acknowledgement, stable
+system-disk identity, and per-attempt system mounts and sibling swap devices
+are stored in run state and included in the analysis; those results include
+system and sibling-swap activity. Resume refuses changed stable identity but
+accepts changed mount/swap observations and records them per attempt. A changed
+stop policy refuses resume and reports the recorded policy. Preserve the state
+and resume only with those values; if that policy cannot be used, obtain an
+operator decision. A new `--out` directory resets the byte and elapsed-time
+meters and requires explicit approval as a new budget. Keep the complete timer
+stop/restore and slot schedule
+from the [study-day procedure](../studies/ibx/README.md). Before raw writes or
+discard, the driver refuses whole disks, a mounted or swap-active target
+partition, active exclusive claims, and holders.
+The [study README](../studies/ibx/README.md) maps saved stop-policy fields to
+their run options.
 
-From the repository root, set the four threshold variables to values supplied
-by the study host's approved policy, then plan the run and start the t0 set:
+From the repository root, set the stop-policy variables to values supplied by
+the study host's approved policy. Set `IBX_EXPECTED_HOST` from the approved run
+authorization; do not derive it from the connected host. The example checks
+that host before planning or starting a driver run:
 
 ```bash
 set -euo pipefail
 
 STUDY="$PWD/libraries/iobench/studies/ibx/driver.py"
 OUT="$PWD/libraries/iobench/artifacts/ibx-study"
-: "${IBX_MAX_IO_PSI:?set from study-host policy}"
-: "${IBX_MAX_MEMORY_PSI:?set from study-host policy}"
+: "${IBX_MAX_MEMORY_PSI:?set memory PSI full avg10 limit from study-host policy}"
+: "${IBX_MAX_PROBE_LATENCY:?set independent host-probe latency limit in seconds}"
+: "${IBX_PROBE_CONSECUTIVE_SAMPLES:?set consecutive slow-probe sample count}"
 : "${IBX_MIN_MEMAVAILABLE:?set from study-host policy}"
 : "${IBX_MIN_FREE:?set from study-host policy}"
+: "${IBX_EXPECTED_HOST:?set the exact short hostname from approved run authorization}"
 # Read and check the exact path, byte size, and PARTUUID against the approved
 # inventory before setting this acknowledgement.
 : "${IBX_TARGET_CONFIRMATION:?set /dev/vda5:SIZE_BYTES:PARTUUID after checking the approved target inventory}"
-python3 "$STUDY" plan --out "$OUT"
 
-# The no-write rehearsal validates the raw target and renders every t0 fio job.
-host-escape -- python3 "$STUDY" run raw-t0 --target /dev/vda5 --device vda5 \
+assert_expected_host() {
+  : "${IBX_EXPECTED_HOST:?set the exact short hostname from approved run authorization}"
+  local actual_host
+  actual_host=$(host-escape -- hostname -s)
+  [[ $actual_host == "$IBX_EXPECTED_HOST" ]] || {
+    printf 'refusing: expected host %s, connected to %s\n' "$IBX_EXPECTED_HOST" "$actual_host" >&2
+    return 1
+  }
+}
+
+current_system_disk_ack() {
+  assert_expected_host || return 1
+  host-escape -- python3 "$STUDY" system-disk-ack --target /dev/vda5 --device vda5 \
+    --confirm-target "$IBX_TARGET_CONFIRMATION"
+}
+
+run_study() {
+  assert_expected_host || return 1
+  host-escape -- python3 "$STUDY" run "$@"
+}
+
+assert_expected_host || exit 1
+python3 "$STUDY" plan --out "$OUT" || exit 1
+
+# The target-read-only rehearsal validates the raw target and renders every t0 fio job.
+run_study raw-t0 --target /dev/vda5 --device vda5 \
   --target-type raw --confirm-target "$IBX_TARGET_CONFIRMATION" \
+  --allow-system-disk-partition --system-disk-ack "$(current_system_disk_ack)" \
   --confirm-quiet-window --offset 0B --size 24GiB --out "$OUT" --dry-run \
-  --max-io-psi "$IBX_MAX_IO_PSI" --max-memory-psi "$IBX_MAX_MEMORY_PSI" \
-  --min-memavailable "$IBX_MIN_MEMAVAILABLE" --min-free "$IBX_MIN_FREE"
+  --max-memory-psi "$IBX_MAX_MEMORY_PSI" \
+  --max-probe-latency-seconds "$IBX_MAX_PROBE_LATENCY" \
+  --probe-consecutive-samples "$IBX_PROBE_CONSECUTIVE_SAMPLES" \
+  --min-memavailable "$IBX_MIN_MEMAVAILABLE" --min-free "$IBX_MIN_FREE" || exit 1
 
-host-escape -- python3 "$STUDY" run raw-t0 --target /dev/vda5 --device vda5 \
+run_study raw-t0 --target /dev/vda5 --device vda5 \
   --target-type raw --confirm-target "$IBX_TARGET_CONFIRMATION" \
+  --allow-system-disk-partition --system-disk-ack "$(current_system_disk_ack)" \
   --confirm-quiet-window --offset 0B --size 24GiB --out "$OUT" \
-  --max-io-psi "$IBX_MAX_IO_PSI" --max-memory-psi "$IBX_MAX_MEMORY_PSI" \
+  --max-memory-psi "$IBX_MAX_MEMORY_PSI" \
+  --max-probe-latency-seconds "$IBX_MAX_PROBE_LATENCY" \
+  --probe-consecutive-samples "$IBX_PROBE_CONSECUTIVE_SAMPLES" \
   --min-memavailable "$IBX_MIN_MEMAVAILABLE" --min-free "$IBX_MIN_FREE" \
-  --fsync-cell standard:seq1m-write
+  --fsync-cell standard:seq1m-write || exit 1
 python3 "$STUDY" analyze "$OUT" --output "$OUT/rung-choice.md"
 ```
 
@@ -415,3 +464,19 @@ timer-restoration trap and the identity recheck before each formatting
 transition. The live raw-target and Btrfs fio-log probes are
 [documented here](../studies/ibx/ACCEPTANCE.md).
 Do not run `raw-t0` on a development partition or a controller-owned disk.
+
+I/O PSI is recorded as advisory because the fio workload can itself drive it
+to 100%. The live stop rules use memory PSI `full avg10`, `MemAvailable`, and
+free-space floors, plus a bounded host-liveness service in `system.slice` that
+fsyncs a temporary file on the root filesystem, checks the SSH banner, and
+verifies the cockpit runner with systemd and container exec. A configured
+number of consecutive slow or failed probes stops
+the run; the existing byte and elapsed-time caps also apply. The dry-run checks
+target and policy facts plus a successful initial liveness probe, without
+requiring the fstrim, apt-daily, or governance timers to be stopped. The probe
+uses a bounded root-filesystem fsync, SSH banner and cockpit runner check. Live
+runs require those timers inactive and perform later probes at the recorded
+10-second default cadence (`--probe-interval-seconds` changes the interval).
+The first successful probe is required before any target discard or fio write.
+One timed-out probe remains failed until its transient unit is confirmed
+stopped; later failures count toward the configured consecutive-sample limit.

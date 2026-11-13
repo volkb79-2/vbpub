@@ -13,6 +13,7 @@ import math
 import os
 import re
 import signal
+import socket
 import stat
 import subprocess
 import sys
@@ -27,6 +28,15 @@ REPO = HERE.parents[3]
 JOB_TEMPLATE = HERE / "job-template.fio"
 STATE_NAME = "ibx-study-state.json"
 SCHEMA = 2
+STATE_SCHEMA = 3
+RUN_MANIFEST_SCHEMA = 2
+DEFAULT_LIVENESS_PROBE_INTERVAL_S = 10.0
+LIVENESS_ROOT_DIRECTORY = "/"
+LIVENESS_SSH_HOST = "127.0.0.1"
+LIVENESS_SSH_PORT = 22
+LIVENESS_COCKPIT_UNIT = "mdt-cockpit-runner.service"
+LIVENESS_COCKPIT_CONTAINER = "mdt-cockpit-runner"
+LIVENESS_ACTIVE_UNIT_STATES = {"active", "activating", "deactivating", "reloading"}
 GIB = 1024**3
 GB = 10**9
 WRITE_CAP_GB = 500
@@ -69,6 +79,100 @@ class TargetIdentity:
 
     def as_json(self) -> dict[str, Any]:
         return {"size_bytes": self.size_bytes, "partuuid": self.partuuid}
+
+
+@dataclass(frozen=True)
+class TargetValidation:
+    """Target identity plus the root-disk facts needed to interpret a study run."""
+
+    identity: TargetIdentity | None
+    system_disk: dict[str, Any] | None = None
+
+
+def system_disk_acknowledgement(hostname: str, disk: str, root_devices: Iterable[str],
+                                partuuid: str) -> str:
+    """Format a per-run drift-check token from facts read from the running host."""
+    roots = sorted(set(root_devices))
+    if (not isinstance(hostname, str) or not re.fullmatch(r"[A-Za-z0-9_.-]+", hostname) or
+            not isinstance(disk, str) or not re.fullmatch(r"[A-Za-z0-9_.-]+", disk) or not roots or
+            any(not isinstance(name, str) or not re.fullmatch(r"[A-Za-z0-9_.-]+", name)
+                for name in roots) or not isinstance(partuuid, str) or
+            not re.fullmatch(r"[A-Fa-f0-9-]+", partuuid)):
+        raise StudyError("cannot format system-disk acknowledgement from malformed host facts")
+    return f"{hostname}:{disk}:{','.join(roots)}:{partuuid}"
+
+
+LIVENESS_PROBE_SCRIPT = r'''
+import json
+import os
+import socket
+import subprocess
+import sys
+import tempfile
+import time
+
+limit = float(sys.argv[1])
+root_directory = sys.argv[2]
+ssh_host = sys.argv[3]
+ssh_port = int(sys.argv[4])
+cockpit_unit = sys.argv[5]
+cockpit_container = sys.argv[6]
+components = {}
+try:
+    started = time.monotonic()
+    fd, path = tempfile.mkstemp(prefix=".ibx-liveness-", dir=root_directory)
+    try:
+        os.write(fd, b"ibx host liveness probe\n")
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+        os.unlink(path)
+    components["root_fsync_seconds"] = time.monotonic() - started
+
+    started = time.monotonic()
+    with socket.create_connection((ssh_host, ssh_port), timeout=limit) as connection:
+        connection.settimeout(limit)
+        if not connection.recv(255).startswith(b"SSH-2.0-"):
+            raise RuntimeError("sshd did not return an SSH protocol banner")
+    components["sshd_seconds"] = time.monotonic() - started
+
+    started = time.monotonic()
+    result = subprocess.run(
+        ["systemctl", "show", cockpit_unit, "--property=ActiveState", "--value"],
+        text=True, capture_output=True, check=False, timeout=limit,
+    )
+    if result.returncode or result.stdout.strip() != "active":
+        raise RuntimeError(f"{cockpit_unit} is not active")
+    result = subprocess.run(
+        ["docker", "exec", cockpit_container, "true"],
+        text=True, capture_output=True, check=False, timeout=limit,
+    )
+    if result.returncode:
+        raise RuntimeError(f"{cockpit_container} container did not respond to exec")
+    components["cockpit_seconds"] = time.monotonic() - started
+    print(json.dumps({"responsive": True, "components": components}))
+except Exception as exc:
+    print(json.dumps({"responsive": False, "components": components,
+                      "error": f"{type(exc).__name__}: {exc}"}))
+    raise SystemExit(1)
+'''
+
+
+def validate_liveness_probe(probe: Any) -> dict[str, Any]:
+    if not isinstance(probe, Mapping):
+        raise StudyError("host-liveness probe data is incomplete or malformed")
+    if not isinstance(probe.get("responsive"), bool):
+        raise StudyError("host-liveness probe data is incomplete or malformed")
+    latency = probe.get("latency_seconds")
+    if isinstance(latency, bool) or not isinstance(latency, (int, float)):
+        raise StudyError("host-liveness probe data is incomplete or malformed")
+    if not math.isfinite(latency) or latency < 0:
+        raise StudyError("host-liveness probe data is incomplete or malformed")
+    components = probe.get("components")
+    if not isinstance(components, dict):
+        raise StudyError("host-liveness probe data is incomplete or malformed")
+    return {"responsive": probe["responsive"], "latency_seconds": float(latency),
+            "components": components, "error": probe.get("error")}
 
 
 RUNG = {
@@ -625,9 +729,11 @@ def empty_state(started: str, target_kind: str, target: str, device: str,
         if target_identity is None:
             raise StudyError("raw target state requires size and PARTUUID identity")
         target_record.update(target_identity.as_json())
-    return {"schema": SCHEMA, "started_utc": started, "write_bytes": 0, "active_seconds": 0.0,
+    return {"schema": STATE_SCHEMA, "started_utc": started, "write_bytes": 0, "active_seconds": 0.0,
             "targets": {target_kind: target_record}, "cells": {},
-            "write_reservations": {}, "active_reservations": {}}
+            "write_reservations": {}, "active_reservations": {},
+            "run_manifest": {"schema": RUN_MANIFEST_SCHEMA, "stop_policy": None,
+                             "target_safety": {}, "target_safety_attempts": {}}}
 
 
 def load_state(path: Path, target_kind: str, target: str, device: str,
@@ -639,9 +745,9 @@ def load_state(path: Path, target_kind: str, target: str, device: str,
     except (OSError, json.JSONDecodeError) as exc:
         raise StudyError(f"study state is unreadable: {exc}") from exc
     if (not isinstance(state, dict) or isinstance(state.get("schema"), bool) or
-            state.get("schema") != SCHEMA):
+            state.get("schema") != STATE_SCHEMA):
         raise StudyError("unsupported or malformed study state")
-    required = ("started_utc", "write_bytes", "active_seconds", "targets", "cells")
+    required = ("started_utc", "write_bytes", "active_seconds", "targets", "cells", "run_manifest")
     if any(key not in state for key in required):
         raise StudyError("study state is missing required fields")
     if (not isinstance(state["targets"], dict) or not isinstance(state["cells"], dict) or
@@ -653,6 +759,13 @@ def load_state(path: Path, target_kind: str, target: str, device: str,
             not math.isfinite(state["active_seconds"]) or state["active_seconds"] < 0 or
             state["write_bytes"] > WRITE_CAP or state["active_seconds"] > ACTIVE_CAP_S):
         raise StudyError("study state fields are malformed")
+    manifest = state["run_manifest"]
+    if (not isinstance(manifest, dict) or manifest.get("schema") != RUN_MANIFEST_SCHEMA or
+            isinstance(manifest.get("schema"), bool) or
+            not isinstance(manifest.get("target_safety"), dict) or
+            not isinstance(manifest.get("target_safety_attempts"), dict) or
+            manifest.get("stop_policy") is not None and not isinstance(manifest.get("stop_policy"), dict)):
+        raise StudyError("study run manifest is malformed")
     expected_target: dict[str, Any] = {"target": target, "device": device}
     if target_kind == "raw":
         if target_identity is None:
@@ -803,18 +916,28 @@ def plan_document(state_path: Path | None = None) -> dict[str, Any]:
     time = {"active_io_cap_seconds": ACTIVE_CAP_S, "active_seconds_used": 0.0,
             "elapsed_cap_seconds": ELAPSED_CAP_S, "elapsed_seconds_used": 0.0,
             "scheduled_window_hours": 9, "optional_repeat_deadline_hours": 12}
+    run_manifest = None
     if state_path is not None and state_path.exists():
         try:
             state = json.loads(state_path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError) as exc:
             raise StudyError(f"study state is unreadable: {exc}") from exc
         if (not isinstance(state, dict) or isinstance(state.get("schema"), bool) or
-                state.get("schema") != SCHEMA or isinstance(state.get("write_bytes"), bool) or
+                state.get("schema") != STATE_SCHEMA or isinstance(state.get("write_bytes"), bool) or
                 not isinstance(state.get("write_bytes"), int) or state["write_bytes"] < 0 or
                 isinstance(state.get("active_seconds"), bool) or
                 not isinstance(state.get("active_seconds"), (int, float)) or
                 not math.isfinite(state["active_seconds"]) or state["active_seconds"] < 0):
             raise StudyError("study state cannot be used for the plan meter")
+        run_manifest = state.get("run_manifest")
+        if (not isinstance(run_manifest, dict) or
+                run_manifest.get("schema") != RUN_MANIFEST_SCHEMA or
+                isinstance(run_manifest.get("schema"), bool) or
+                not isinstance(run_manifest.get("target_safety"), dict) or
+                not isinstance(run_manifest.get("target_safety_attempts"), dict) or
+                run_manifest.get("stop_policy") is not None and
+                not isinstance(run_manifest.get("stop_policy"), dict)):
+            raise StudyError("study run manifest is malformed for the plan")
         meter["used_bytes"] = state["write_bytes"]
         meter["remaining_bytes"] = max(0, WRITE_CAP - state["write_bytes"])
         time["active_seconds_used"] = state["active_seconds"]
@@ -837,8 +960,17 @@ def plan_document(state_path: Path | None = None) -> dict[str, Any]:
                 for name, row in RUNG.items()},
         "limits": {"active_seconds": ACTIVE_CAP_S, "elapsed_seconds": ELAPSED_CAP_S,
                    "write_bytes": WRITE_CAP, "minimum_free_bytes": "required per host policy",
-                   "io_psi_threshold": "required per host policy", "mem_psi_threshold": "required per host policy",
-                   "minimum_memavailable_bytes": "required per host policy"},
+                   "io_psi": "advisory; recorded but does not stop the study",
+                   "memory_full_psi_threshold": "required per host policy",
+                   "minimum_memavailable_bytes": "required per host policy",
+                   "max_liveness_probe_latency_seconds": "required per host policy",
+                   "liveness_probe_consecutive_samples": "required per host policy",
+                   "liveness_probe_interval_seconds": DEFAULT_LIVENESS_PROBE_INTERVAL_S},
+        "risk_note": ("A raw partition on the running system disk requires both "
+                      "the operator's explicit --allow-system-disk-partition consent and an exact "
+                      "per-run --system-disk-ack drift check; results on that disk include system "
+                      "and sibling-swap activity."),
+        "run_manifest": run_manifest,
         "meter": meter, "time": time}
 
 
@@ -852,7 +984,23 @@ def print_plan(as_json: bool = False, state_path: Path | None = None) -> None:
         print(f"{row['slot']}: {', '.join(row['sets'])} — {row['detail']}")
     print("Time: scheduled window 9 h; elapsed cap 12 h; active I/O cap 3 h")
     print(f"Limits: 3 h active I/O; 12 h elapsed; {WRITE_CAP / GB:.2f} GB writes")
-    print("PSI, MemAvailable, and free-space stop thresholds come from host policy.")
+    print("I/O PSI is advisory. Stop thresholds for memory PSI full, MemAvailable, free space, and host liveness come from host policy.")
+    print(document["risk_note"])
+    manifest = document.get("run_manifest")
+    safety = manifest.get("target_safety") if isinstance(manifest, Mapping) else None
+    if isinstance(safety, Mapping) and isinstance(safety.get("raw"), Mapping):
+        raw = safety["raw"]
+        roots = ",".join(raw.get("root_fs_devices", [])) or "unknown"
+        mounts = ",".join(raw.get("system_mounts_on_disk", [])) or "none"
+        swaps = ",".join(raw.get("sibling_swap_devices", [])) or "none"
+        print(f"Recorded raw target facts: host={raw.get('hostname', 'unknown')}; "
+              f"disk={raw.get('target_disk', 'unknown')}; "
+              f"root filesystem device(s)={roots}; "
+              f"system mount(s)={mounts}; sibling swap device(s)={swaps}; "
+              f"PARTUUID={raw.get('target_partuuid', 'unknown')}; "
+              f"system-disk drift-check token={raw.get('system_disk_acknowledgement') or 'not required'}")
+    elif isinstance(manifest, Mapping):
+        print("Recorded raw target system-disk facts: not recorded yet.")
     meter = document["meter"]
     active_time = document["time"]
     print(f"Meter: {meter['used_bytes'] / GB:.1f} GB used; "
@@ -864,16 +1012,14 @@ def print_plan(as_json: bool = False, state_path: Path | None = None) -> None:
 
 
 def stop_reason(sample: Mapping[str, Any], *, min_memavailable: int, min_free: int) -> str | None:
-    io_some = sample.get("psi", {}).get("io", {}).get("some", {}).get("avg10")
-    mem_some = sample.get("psi", {}).get("memory", {}).get("some", {}).get("avg10")
+    mem_full = sample.get("psi", {}).get("memory", {}).get("full", {}).get("avg10")
     available = sample.get("meminfo", {}).get("MemAvailable")
     free = sample.get("free_bytes")
-    if io_some is None or mem_some is None or available is None or free is None:
+    if mem_full is None or available is None or free is None:
         return "monitor data incomplete"
-    if (isinstance(io_some, bool) or isinstance(mem_some, bool) or
-            not isinstance(io_some, (int, float)) or not isinstance(mem_some, (int, float)) or
-            not math.isfinite(io_some) or not math.isfinite(mem_some) or io_some < 0 or mem_some < 0):
-        return "monitor PSI data is malformed"
+    if (isinstance(mem_full, bool) or not isinstance(mem_full, (int, float)) or
+            not math.isfinite(mem_full) or mem_full < 0 or mem_full > 100):
+        return "monitor memory PSI data is malformed"
     if (isinstance(available, bool) or isinstance(free, bool) or
             not isinstance(available, int) or not isinstance(free, int) or available < 0 or free < 0):
         return "monitor memory or free-space data is malformed"
@@ -895,10 +1041,11 @@ def parse_target_confirmation(text: str | None, target: str) -> TargetIdentity:
     return TargetIdentity(int(fields[1]), fields[2])
 
 
+
 def _mountpoint_is_system(mountpoint: str) -> bool:
     return mountpoint == "/" or any(
         mountpoint == root or mountpoint.startswith(root.rstrip("/") + "/")
-        for root in ("/usr", "/var", "/etc", "/boot")
+        for root in ("/usr", "/var", "/etc", "/boot", "/srv/cow")
     )
 
 
@@ -908,6 +1055,9 @@ class LocalHost:
     def __init__(self, proc: Path = Path("/proc"), sys: Path = Path("/sys")) -> None:
         self.proc = proc
         self.sys = sys
+        self._liveness_probe_sequence = 0
+        self._liveness_probe_stalled = False
+        self._liveness_probe_stalled_unit: str | None = None
 
     def is_root(self) -> bool:
         return os.geteuid() == 0
@@ -916,7 +1066,8 @@ class LocalHost:
         return io_control_snapshot()
 
     def assert_quiet_window(self) -> None:
-        for unit in ("fstrim.timer", "apt-daily.timer", "apt-daily-upgrade.timer"):
+        for unit in ("fstrim.timer", "apt-daily.timer", "apt-daily-upgrade.timer",
+                     "mdt-dev-governance-reconcile.timer"):
             result = subprocess.run(["systemctl", "show", unit, "--property=LoadState",
                                     "--property=ActiveState", "--value"], text=True,
                                    capture_output=True, check=False)
@@ -1065,7 +1216,10 @@ class LocalHost:
         return out
 
     def validate_target(self, target: str, kind: str, offset: int, size: int, device: str,
-                        confirmation: TargetIdentity | None = None) -> TargetIdentity | None:
+                        confirmation: TargetIdentity | None = None, *,
+                        allow_system_disk_partition: bool = False,
+                        system_disk_ack: str | None = None,
+                        derive_system_disk_ack: bool = False) -> TargetValidation:
         path = Path(target)
         try:
             info = path.lstat()
@@ -1127,6 +1281,7 @@ class LocalHost:
             if len(root_rows) != 1 or not any((self.sys / "dev/block" / devno).exists()
                                                for _, devnos in root_rows for devno in devnos):
                 raise StudyError("cannot establish the running system's root block device")
+            root_devices = sorted({self._sys_device(devno).name for devno in root_rows[0][1]})
             touching_self = {(row["mountpoint"], tuple(sorted(devnos))) for row, devnos in resolved_self
                              if devnos & same_disk}
             touching_init = {(row["mountpoint"], tuple(sorted(devnos))) for row, devnos in resolved_init
@@ -1134,15 +1289,48 @@ class LocalHost:
             if touching_self != touching_init:
                 raise StudyError("cannot establish raw target mount state across PID 1 and current namespaces")
             target_related = self._holder_closure([target_sys])
+            # The whole-disk device and its holders cover the target extent; the
+            # system-disk opt-in relaxes sharing with SIBLING partitions only.
+            whole_disk_related = self._holder_closure([disk_sys])
+            system_mounts = sorted(row["mountpoint"] for row, devnos in resolved_self
+                                   if _mountpoint_is_system(row["mountpoint"]) and devnos & same_disk)
+            system_disk_shared = bool(system_mounts)
+            hostname = socket.gethostname()
+            expected_ack = system_disk_acknowledgement(hostname, disk_sys.name, root_devices,
+                                                       actual_partuuid)
             for row, devnos in resolved_self:
                 if devnos & target_related:
                     raise StudyError("raw target partition is mounted")
-                if _mountpoint_is_system(row["mountpoint"]) and devnos & same_disk:
+            if system_disk_shared:
+                if (not allow_system_disk_partition or
+                        any(devnos & whole_disk_related for row, devnos in resolved_self
+                            if _mountpoint_is_system(row["mountpoint"]))):
                     raise StudyError("raw target is on the root disk or contains a running system filesystem")
-            if self._swap_devnos() & same_disk:
+                if not derive_system_disk_ack and system_disk_ack != expected_ack:
+                    raise StudyError("system-disk acknowledgement does not match current host facts; "
+                                     f"expected {expected_ack}")
+            elif (allow_system_disk_partition or system_disk_ack is not None) and not derive_system_disk_ack:
+                raise StudyError("system-disk acknowledgement applies only to a target on the running system disk")
+            swaps = self._swap_devnos()
+            if (swaps & target_related or swaps & whole_disk_related or
+                    (swaps & same_disk and not system_disk_shared)):
                 raise StudyError("raw target partition or its disk is swap-active")
             self._assert_unheld(target)
-            return TargetIdentity(target_size, actual_partuuid)
+            system_disk = {
+                "hostname": hostname,
+                "target_disk": disk_sys.name,
+                "root_fs_devices": root_devices,
+                "system_mounts_on_disk": system_mounts,
+                "sibling_swap_devices": sorted(self._sys_device(devno).name
+                                                for devno in swaps & same_disk
+                                                if devno not in target_related),
+                "target_partuuid": actual_partuuid,
+                "root_disk_shared": system_disk_shared,
+                "system_disk_acknowledgement": expected_ack if system_disk_shared and derive_system_disk_ack
+                else system_disk_ack if system_disk_shared else None,
+                "acknowledgement_format": "<hostname>:<disk-kname>:<root-fs-device-kname[,root-fs-device-kname...]>:<target-PARTUUID>",
+            }
+            return TargetValidation(TargetIdentity(target_size, actual_partuuid), system_disk)
         if kind != "raw" and (not stat.S_ISREG(info.st_mode) or info.st_size != offset + size):
             raise StudyError("file study target must be a regular file exactly covering the requested extent")
         dev_path = self.sys / "class/block" / device / "dev"
@@ -1165,7 +1353,7 @@ class LocalHost:
             observed = devno
         if observed != expected:
             raise StudyError(f"target backing device {observed} does not match monitored device {device} ({expected})")
-        return None
+        return TargetValidation(None)
 
     def trim_state(self, device: str) -> dict[str, Any]:
         path = self.sys / "class/block" / device / "queue/discard_max_bytes"
@@ -1268,6 +1456,59 @@ class LocalHost:
     def sleep(self, seconds: float) -> None:
         time.sleep(seconds)
 
+    def liveness_probe(self, max_latency_s: float) -> dict[str, Any]:
+        if self._liveness_probe_stalled:
+            try:
+                status = subprocess.run(["systemctl", "is-active", self._liveness_probe_stalled_unit],
+                                        text=True, capture_output=True, check=False,
+                                        timeout=min(max_latency_s, 1.0))
+            except (OSError, subprocess.TimeoutExpired):
+                status = None
+            state = status.stdout.strip() if status is not None else ""
+            # --collect can leave a retained inactive/failed result or remove the
+            # timed-out unit before this check observes it.
+            confirmed_stopped = (status is not None and
+                                 ((status.returncode != 0 and state in {"inactive", "failed"}) or
+                                  (status.returncode == 4 and state == "unknown")))
+            if not confirmed_stopped:
+                return {"responsive": False, "latency_seconds": max_latency_s, "components": {},
+                        "error": "previous probe has not been confirmed stopped; no overlapping host probe was launched"}
+            self._liveness_probe_stalled = False
+            self._liveness_probe_stalled_unit = None
+        self._liveness_probe_sequence += 1
+        unit = f"ibx-liveness-{os.getpid()}-{self._liveness_probe_sequence}.service"
+        started = time.monotonic()
+        try:
+            result = subprocess.run(["systemd-run", "--quiet", "--wait", "--pipe", "--collect",
+                                     f"--unit={unit}", "--slice=system.slice",
+                                     f"--property=RuntimeMaxSec={max_latency_s}",
+                                     sys.executable, "-c", LIVENESS_PROBE_SCRIPT,
+                                     str(max_latency_s), LIVENESS_ROOT_DIRECTORY,
+                                     LIVENESS_SSH_HOST, str(LIVENESS_SSH_PORT),
+                                     LIVENESS_COCKPIT_UNIT, LIVENESS_COCKPIT_CONTAINER],
+                                    text=True, capture_output=True,
+                                    check=False, timeout=max_latency_s + 1)
+        except subprocess.TimeoutExpired:
+            self._liveness_probe_stalled = True
+            self._liveness_probe_stalled_unit = unit
+            return {"responsive": False, "latency_seconds": max(max_latency_s,
+                    time.monotonic() - started), "components": {}, "error": "probe timed out"}
+        except OSError as exc:
+            return {"responsive": False, "latency_seconds": time.monotonic() - started,
+                    "components": {}, "error": f"probe could not start: {exc}"}
+        latency = time.monotonic() - started
+        try:
+            payload = json.loads(result.stdout)
+        except json.JSONDecodeError:
+            payload = None
+        if (not isinstance(payload, dict) or not isinstance(payload.get("responsive"), bool) or
+                not isinstance(payload.get("components"), dict)):
+            return {"responsive": False, "latency_seconds": latency, "components": {},
+                    "error": "probe returned malformed output"}
+        return {"responsive": result.returncode == 0 and payload["responsive"],
+                "latency_seconds": latency, "components": payload["components"],
+                "error": payload.get("error")}
+
     def sample(self, device: str, out: Path, target: str | None = None) -> dict[str, Any]:
         row = monitor_sample(device, proc=self.proc)
         output_stat = os.statvfs(out)
@@ -1322,18 +1563,40 @@ class LocalHost:
             raise StudyError(f"fio returned invalid JSON: {exc}") from exc
 
 
+def derive_system_disk_ack(target: str, device: str, confirm_target: str,
+                           host: Any | None = None) -> str:
+    """Derive the opt-in from current host and target facts after all raw guards pass."""
+    host = host or LocalHost()
+    if not host.is_root():
+        raise StudyError("system-disk acknowledgement derivation requires root on the study host")
+    confirmation = parse_target_confirmation(confirm_target, target)
+    validation = host.validate_target(target, "raw", 0, 1, device, confirmation=confirmation,
+                                      allow_system_disk_partition=True,
+                                      derive_system_disk_ack=True)
+    if (validation.identity != confirmation or validation.system_disk is None or
+            validation.system_disk.get("root_disk_shared") is not True):
+        raise StudyError("raw target does not share the running system disk")
+    acknowledgement = validation.system_disk.get("system_disk_acknowledgement")
+    if not isinstance(acknowledgement, str) or not acknowledgement:
+        raise StudyError("cannot derive system-disk acknowledgement from current host facts")
+    return acknowledgement
+
+
 def run_study(cell_set: str, *, target: str, device: str, out: Path, target_kind: str | None,
-              offset: int, size: int, io_psi_max: float, mem_psi_max: float,
-              min_memavailable: int, min_free: int,
+              offset: int, size: int, mem_psi_max: float, min_memavailable: int, min_free: int,
+              max_probe_latency_s: float, probe_consecutive_samples: int,
+              probe_interval_s: float = DEFAULT_LIVENESS_PROBE_INTERVAL_S,
               host: Any | None = None, fsync_cell: str | None = None,
               quiet_window_confirmed: bool = False, confirm_target: str | None = None,
+              allow_system_disk_partition: bool = False, system_disk_ack: str | None = None,
               dry_run: bool = False) -> dict[str, Any]:
     host = host or LocalHost()
     if not host.is_root():
         raise StudyError("run requires root on the study host")
     if not quiet_window_confirmed:
         raise StudyError("run requires --confirm-quiet-window")
-    host.assert_quiet_window()
+    if not dry_run:
+        host.assert_quiet_window()
     kind, rungs, slot = parse_run_cellset(cell_set, target_kind)
     if cell_set == "raw-t6h" and not raw_standard_needed(out):
         rungs = tuple(rung for rung in rungs if rung != "standard")
@@ -1352,9 +1615,18 @@ def run_study(cell_set: str, *, target: str, device: str, out: Path, target_kind
                        (0, 24 * GIB))
     if (offset, size) != expected_extent:
         raise StudyError("cell-set target extent does not match its assigned study region")
-    if (not math.isfinite(io_psi_max) or not math.isfinite(mem_psi_max) or
-            io_psi_max <= 0 or io_psi_max > 100 or mem_psi_max <= 0 or mem_psi_max > 100):
-        raise StudyError("PSI limits must be percentages in (0,100]")
+    if not math.isfinite(mem_psi_max) or mem_psi_max <= 0 or mem_psi_max > 100:
+        raise StudyError("memory PSI full limit must be a percentage in (0,100]")
+    if (not math.isfinite(max_probe_latency_s) or max_probe_latency_s <= 0 or
+            max_probe_latency_s > 60):
+        raise StudyError("maximum host-liveness probe latency must be finite and in (0,60] seconds")
+    if (isinstance(probe_consecutive_samples, bool) or
+            not isinstance(probe_consecutive_samples, int) or probe_consecutive_samples <= 0):
+        raise StudyError("host-liveness consecutive-sample count must be a positive integer")
+    if (isinstance(probe_interval_s, bool) or not isinstance(probe_interval_s, (int, float)) or
+            not math.isfinite(probe_interval_s) or probe_interval_s <= 0 or
+            probe_interval_s > 60):
+        raise StudyError("host-liveness probe interval must be finite and in (0,60] seconds")
     if min_memavailable <= 0 or min_free <= 0:
         raise StudyError("memory and free-space floors must be positive")
     if not out.is_absolute():
@@ -1362,12 +1634,56 @@ def run_study(cell_set: str, *, target: str, device: str, out: Path, target_kind
     confirmation = parse_target_confirmation(confirm_target, target) if kind == "raw" else None
     if kind != "raw" and confirm_target is not None:
         raise StudyError("--confirm-target applies only to raw partition runs")
-    target_identity = host.validate_target(target, kind, offset, size, device, confirmation=confirmation)
+    if allow_system_disk_partition != (system_disk_ack is not None):
+        raise StudyError("--allow-system-disk-partition and --system-disk-ack must be supplied together")
+    if kind != "raw" and allow_system_disk_partition:
+        raise StudyError("--allow-system-disk-partition applies only to raw partition runs")
+    validation = host.validate_target(target, kind, offset, size, device, confirmation=confirmation,
+                                      allow_system_disk_partition=allow_system_disk_partition,
+                                      system_disk_ack=system_disk_ack)
+    target_identity = validation.identity
     if kind == "raw" and target_identity != confirmation:
         raise StudyError("validated raw target identity does not match --confirm-target")
     before = host.io_control_snapshot()
     state_path = out / STATE_NAME
     state = load_state(state_path, kind, target, device, target_identity)
+    stop_policy = {
+        "io_psi": "advisory; recorded, no stop threshold",
+        "memory_psi_full_avg10_max_percent": mem_psi_max,
+        "min_memavailable_bytes": min_memavailable,
+        "min_free_bytes": min_free,
+        "max_probe_latency_seconds": max_probe_latency_s,
+        "probe_consecutive_samples": probe_consecutive_samples,
+        "probe_interval_seconds": probe_interval_s,
+    }
+    manifest = state["run_manifest"]
+    existing_policy = manifest.get("stop_policy")
+    if existing_policy is not None and existing_policy != stop_policy:
+        recorded_policy = json.dumps(existing_policy, sort_keys=True, separators=(",", ":"))
+        raise StudyError("study stop policy changed since the previous attempt; resume is refused to preserve "
+                         f"the existing byte and time meters. Recorded stop policy: {recorded_policy}. "
+                         "Resume only with those values; if they are no longer acceptable, keep this state "
+                         "and obtain an operator decision. A new --out directory resets those meters")
+    manifest["stop_policy"] = stop_policy
+    target_safety = validation.system_disk
+    safety_history = manifest["target_safety"]
+    previous_safety = safety_history.get(kind)
+    if previous_safety is not None:
+        stable_keys = ("hostname", "target_disk", "root_fs_devices", "target_partuuid",
+                       "root_disk_shared", "system_disk_acknowledgement")
+        if (not isinstance(target_safety, Mapping) or not isinstance(previous_safety, Mapping) or
+                any(previous_safety.get(key) != target_safety.get(key) for key in stable_keys)):
+            raise StudyError("stable system-disk target identity changed since the previous attempt")
+    if target_safety is not None:
+        safety_history[kind] = target_safety
+        attempts_by_kind = manifest.setdefault("target_safety_attempts", {})
+        if not isinstance(attempts_by_kind, dict):
+            raise StudyError("system-disk target-safety history is malformed")
+        attempts = attempts_by_kind.setdefault(kind, [])
+        if not isinstance(attempts, list):
+            raise StudyError("system-disk target-safety history is malformed")
+        attempts.append({"recorded_utc": dt.datetime.now(dt.UTC).isoformat(),
+                         "facts": target_safety})
     snapshots = state.setdefault("io_control_runs", {})
     if not isinstance(snapshots, dict):
         raise StudyError("study IO-control snapshot history is malformed")
@@ -1405,8 +1721,24 @@ def run_study(cell_set: str, *, target: str, device: str, out: Path, target_kind
                     "reason": "the first rewrite/fstrim study did not confirm degradation"}
     destination = out / "cells"
     results: list[dict[str, Any]] = []
-    bad_psi = {"io": 0, "memory": 0}
+    bad_memory_psi = 0
+    bad_liveness = 0
+    last_liveness_probe_at: float | None = None
     current_metric: dict[str, float] = {}
+
+    def take_liveness_probe(*, preflight: bool = False) -> tuple[dict[str, Any], bool]:
+        nonlocal bad_liveness, last_liveness_probe_at
+        probe = validate_liveness_probe(host.liveness_probe(max_probe_latency_s))
+        last_liveness_probe_at = host.now()
+        failed = (not probe["responsive"] or probe["latency_seconds"] > max_probe_latency_s)
+        bad_liveness = bad_liveness + 1 if failed else 0
+        record = {**probe, "sampled": True, "limit_seconds": max_probe_latency_s,
+                  "consecutive_samples_required": probe_consecutive_samples,
+                  "probe_interval_seconds": probe_interval_s}
+        if preflight:
+            manifest["liveness_preflight"] = {
+                "recorded_utc": dt.datetime.now(dt.UTC).isoformat(), "probe": record}
+        return record, failed
 
     def remember(job: Job, record: Mapping[str, Any]) -> None:
         current_metric[job.value] = float(record["value"])
@@ -1475,23 +1807,27 @@ def run_study(cell_set: str, *, target: str, device: str, out: Path, target_kind
             if parent == sample_out:
                 raise StudyError("cannot find an existing output filesystem for --dry-run")
             sample_out = parent
-        bad_psi = {"io": 0, "memory": 0}
+        bad_memory_psi = 0
         for _ in range(3):
             sample = host.sample(device, sample_out, target if kind != "raw" else None)
             reason = stop_reason(sample, min_memavailable=min_memavailable, min_free=min_free)
             if reason:
                 raise StudyError(reason)
-            for name, threshold in (("io", io_psi_max), ("memory", mem_psi_max)):
-                avg10 = sample["psi"][name]["some"]["avg10"]
-                bad_psi[name] = bad_psi[name] + 1 if avg10 > threshold else 0
-                if bad_psi[name] >= 3:
-                    raise StudyError(f"{name} PSI exceeded threshold for three consecutive samples")
+            memory_full = sample["psi"]["memory"]["full"]["avg10"]
+            bad_memory_psi = bad_memory_psi + 1 if memory_full > mem_psi_max else 0
+            if bad_memory_psi >= 3:
+                raise StudyError("memory PSI full exceeded threshold for three consecutive samples")
+        preflight_probe, probe_failed = take_liveness_probe(preflight=True)
+        if probe_failed:
+            raise StudyError("initial host-liveness probe failed or exceeded its latency limit")
         return {"cell_set": cell_set, "dry_run": True, "jobs_rendered": len(rendered_jobs),
                 "write_bytes_used": state["write_bytes"], "write_cap_bytes": WRITE_CAP,
-                "target_identity": target_identity.as_json() if target_identity else None}
+                "target_identity": target_identity.as_json() if target_identity else None,
+                "host_liveness_preflight": preflight_probe, "run_manifest": manifest}
     out.mkdir(parents=True, exist_ok=True)
     destination.mkdir(parents=True, exist_ok=True)
     (out / "fio-logs").mkdir(parents=True, exist_ok=True)
+    write_json(state_path, state)
     if pending_work:
         first_rung = rungs[0]
         first_special = first_rung == "part-c"
@@ -1504,26 +1840,44 @@ def run_study(cell_set: str, *, target: str, device: str, out: Path, target_kind
         first_job_path.write_text(rendered_jobs[(first_rung, first_job.name)], encoding="utf-8")
     monitor_total = 0
 
-    def monitor_host() -> None:
-        nonlocal monitor_total
+    def monitor_host(*, preflight: bool = False) -> None:
+        nonlocal monitor_total, bad_memory_psi, bad_liveness
         row = host.sample(device, out, target if kind != "raw" else None)
         reason = stop_reason(row, min_memavailable=min_memavailable, min_free=min_free)
+        if reason:
+            row["host_liveness"] = None
+            row["sample_no"] = monitor_total
+            append_jsonl(out / "monitor.jsonl", row)
+            monitor_total += 1
+            raise StudyError(reason)
+        probe_failed = False
+        if (preflight or last_liveness_probe_at is None or
+                host.now() - last_liveness_probe_at + 1e-9 >= probe_interval_s):
+            probe_record, probe_failed = take_liveness_probe(preflight=preflight)
+            row["host_liveness"] = probe_record
+        else:
+            row["host_liveness"] = {
+                "sampled": False,
+                "seconds_since_last_probe": max(0.0, host.now() - last_liveness_probe_at),
+                "probe_interval_seconds": probe_interval_s,
+            }
         row["sample_no"] = monitor_total
         append_jsonl(out / "monitor.jsonl", row)
         monitor_total += 1
-        if reason:
-            raise StudyError(reason)
-        io_avg = row["psi"]["io"]["some"]["avg10"]
-        mem_avg = row["psi"]["memory"]["some"]["avg10"]
-        bad_psi["io"] = bad_psi["io"] + 1 if io_avg > io_psi_max else 0
-        bad_psi["memory"] = bad_psi["memory"] + 1 if mem_avg > mem_psi_max else 0
-        if bad_psi["io"] >= 3:
-            raise StudyError("I/O PSI exceeded threshold for three consecutive samples")
-        if bad_psi["memory"] >= 3:
-            raise StudyError("memory PSI exceeded threshold for three consecutive samples")
+        if preflight:
+            write_json(state_path, state)
+            if probe_failed:
+                raise StudyError("initial host-liveness probe failed or exceeded its latency limit")
+        mem_full = row["psi"]["memory"]["full"]["avg10"]
+        bad_memory_psi = bad_memory_psi + 1 if mem_full > mem_psi_max else 0
+        if bad_memory_psi >= 3:
+            raise StudyError("memory PSI full exceeded threshold for three consecutive samples")
+        if not preflight and probe_failed and bad_liveness >= probe_consecutive_samples:
+            raise StudyError("host-liveness probe exceeded its latency limit or failed for "
+                             f"{probe_consecutive_samples} consecutive samples")
     try:
         if pending_work:
-            monitor_host()
+            monitor_host(preflight=True)
         for rung in rungs:
             special = rung == "part-c"
             jobs = rung_jobs("quick" if special else rung, part_c=special)
@@ -1537,7 +1891,9 @@ def run_study(cell_set: str, *, target: str, device: str, out: Path, target_kind
                                "target_type": kind, "target": target, "device": device,
                                "slot": slot_for_cell, "rung": rung, "cell": "trim-state",
                                "number": "trim_state", "value": int(bool(capability["supported"])),
-                "trim": capability, "write_bytes": 0, "duration_s": 0,
+                               "target_identity": target_identity.as_json() if target_identity else None,
+                               "run_manifest": manifest,
+                               "trim": capability, "write_bytes": 0, "duration_s": 0,
                                "recorded_utc": dt.datetime.now(dt.UTC).isoformat()}
                 write_json(trim_file, trim_record)
                 state["cells"][trim_key] = trim_file.name
@@ -1695,6 +2051,7 @@ def run_study(cell_set: str, *, target: str, device: str, out: Path, target_kind
                 record = {"schema": SCHEMA, "cell_key": key, "cell_set": cell_set, "target_type": kind,
                           "target": target, "device": device, "slot": slot_for_cell, "rung": rung,
                           "target_identity": target_identity.as_json() if target_identity else None,
+                          "run_manifest": manifest,
                           "cell": job.name, "number": job.value, "value": value,
                           "started_utc": started_utc, "completed_utc": completed_utc,
                           "io_bytes": actual_bytes, "write_bytes": write_bytes,
@@ -1724,7 +2081,8 @@ def run_study(cell_set: str, *, target: str, device: str, out: Path, target_kind
         if before != after:
             raise StudyError("IO-control snapshot changed during the study cell-set")
     return {"cell_set": cell_set, "results": len(results), "write_bytes": state["write_bytes"],
-            "active_seconds": state["active_seconds"], "state": str(state_path)}
+            "active_seconds": state["active_seconds"], "state": str(state_path),
+            "run_manifest": manifest}
 
 
 TOLERANCES: dict[str, dict[str, Any]] = {
@@ -1997,6 +2355,26 @@ def load_results(root: Path) -> list[dict[str, Any]]:
     return rows
 
 
+def load_run_manifest(root: Path) -> dict[str, Any] | None:
+    path = root / STATE_NAME
+    if not path.exists():
+        return None
+    try:
+        state = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise StudyError(f"study state is unreadable: {exc}") from exc
+    manifest = state.get("run_manifest") if isinstance(state, dict) else None
+    if (not isinstance(state, dict) or isinstance(state.get("schema"), bool) or
+            state.get("schema") != STATE_SCHEMA or not isinstance(manifest, dict) or
+            isinstance(manifest.get("schema"), bool) or
+            manifest.get("schema") != RUN_MANIFEST_SCHEMA or
+            not isinstance(manifest.get("target_safety"), dict) or
+            not isinstance(manifest.get("target_safety_attempts"), dict) or
+            not isinstance(manifest.get("stop_policy"), dict)):
+        raise StudyError("study state run manifest is missing or malformed")
+    return manifest
+
+
 def raw_standard_needed(root: Path) -> bool:
     """Apply the 6.2 t0+6h standard rule to quick/veryquick evidence."""
     rows = load_results(root)
@@ -2149,6 +2527,7 @@ def analysis(root: Path) -> dict[str, Any]:
     rows = load_results(root)
     if not rows:
         raise StudyError("no recorded cell results to analyze")
+    manifest = load_run_manifest(root)
     targets = sorted({row["target_type"] for row in rows} | {"raw", "ext4-file", "btrfs-file"})
     numbers = sorted(TOLERANCES)
     report: dict[str, Any] = {
@@ -2158,8 +2537,16 @@ def analysis(root: Path) -> dict[str, Any]:
                 "status": "study decision",
                 "file_standard_cutoff": "T/1.5 <= e <= T+C",
                 "reason": "rev 4.1 does not give a numeric cutoff for optional file-standard runs",
-            }
+            },
+            "D-IBX-002": {
+                "status": "study decision",
+                "root_disk_exception": ("operator consent via --allow-system-disk-partition, bound to "
+                                         "current host and target facts by a per-run drift-check token"),
+                "reason": ("operator-requested controller policy dated 2026-11-13; "
+                           "system-disk and sibling-swap activity remains part of the measurement context"),
+            },
         },
+        "run_manifest": manifest,
     }
     raw_standard = [row for row in rows if row["target_type"] == "raw" and row["rung"] == "standard"]
     for number in numbers:
@@ -2218,6 +2605,37 @@ def analysis(root: Path) -> dict[str, Any]:
 
 def render_analysis(result: Mapping[str, Any]) -> str:
     lines: list[str] = []
+    manifest = result.get("run_manifest")
+    if isinstance(manifest, Mapping):
+        lines.extend(("## Run context", ""))
+        policy = manifest.get("stop_policy", {})
+        if isinstance(policy, Mapping):
+            lines.append("Stop policy: memory PSI full avg10 above "
+                         f"{policy.get('memory_psi_full_avg10_max_percent', 'unknown')}% for three "
+                         "consecutive samples, MemAvailable and free-space floors, and a host-liveness "
+                         f"probe above {policy.get('max_probe_latency_seconds', 'unknown')} s for "
+                         f"{policy.get('probe_consecutive_samples', 'unknown')} consecutive samples "
+                         f"at {policy.get('probe_interval_seconds', 'unknown')} s intervals. "
+                         "I/O PSI is recorded as advisory.")
+        safety = manifest.get("target_safety", {})
+        if isinstance(safety, Mapping) and isinstance(safety.get("raw"), Mapping):
+            raw = safety["raw"]
+            roots = ", ".join(raw.get("root_fs_devices", [])) or "unknown"
+            swaps = ", ".join(raw.get("sibling_swap_devices", [])) or "none"
+            mounts = ", ".join(raw.get("system_mounts_on_disk", [])) or "none"
+            if raw.get("root_disk_shared") is True:
+                lines.append("Raw target risk: **acknowledged system-disk run**. The benchmark shares "
+                             "the running system disk; results include system filesystem and sibling-swap "
+                             "activity and are not a quiet-disk study.")
+            else:
+                lines.append("Raw target risk: target disk was separate from the running system disk; "
+                             "no system-disk acknowledgement was required.")
+            lines.extend((f"Host: `{raw.get('hostname', 'unknown')}`; target disk: "
+                          f"`{raw.get('target_disk', 'unknown')}`; root filesystem device(s): `{roots}`; "
+                          f"system mount(s) on target disk: `{mounts}`; sibling swap device(s): `{swaps}`.",
+                          f"System-disk drift-check token: `{raw.get('system_disk_acknowledgement') or 'not required'}`.", ""))
+        else:
+            lines.extend(("Raw target system-disk facts were not recorded in this manifest.", ""))
     for target, table in result["tables"].items():
         lines.extend((f"## {target}", "", "| Number | T | C | veryquick | quick (default) | standard | V | Reason line |",
                       "|---|---:|---:|---:|---:|---:|---:|---|"))
@@ -2287,8 +2705,12 @@ def render_analysis(result: Mapping[str, Any]) -> str:
     if decisions:
         lines.extend(("", "## Study decisions"))
         for decision_id, facts in decisions.items():
-            lines.append(f"- **{decision_id}** ({facts['status']}): file-standard runs are selected when "
-                         f"`{facts['file_standard_cutoff']}`; {facts['reason']}.")
+            if decision_id == "D-IBX-001":
+                lines.append(f"- **{decision_id}** ({facts['status']}): file-standard runs are selected when "
+                             f"`{facts['file_standard_cutoff']}`; {facts['reason']}.")
+            else:
+                lines.append(f"- **{decision_id}** ({facts['status']}): "
+                             f"{facts['root_disk_exception']}; {facts['reason']}.")
     return "\n".join(lines).rstrip() + "\n"
 
 
@@ -2309,6 +2731,11 @@ def build_parser() -> argparse.ArgumentParser:
     plan = sub.add_parser("plan", help="print the bounded study schedule and empty meter")
     plan.add_argument("--json", action="store_true")
     plan.add_argument("--out", type=Path, help="read the existing study state for live meter values")
+    ack = sub.add_parser("system-disk-ack", help="derive the current system-disk drift-check token")
+    ack.add_argument("--target", required=True)
+    ack.add_argument("--device", required=True, help="block-device name used by diskstats")
+    ack.add_argument("--confirm-target", required=True,
+                     help="raw target identity: PATH:SIZE_BYTES:PARTUUID")
     run = sub.add_parser("run", help="run one scheduled cell-set; safe to resume")
     run.add_argument("cell_set", choices=tuple(CELL_SETS))
     run.add_argument("--target", required=True)
@@ -2318,11 +2745,22 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--offset", type=parse_size, required=True)
     run.add_argument("--size", type=parse_size, required=True)
     run.add_argument("--out", type=Path, required=True)
-    run.add_argument("--max-io-psi", type=float, required=True, help="study-host policy, percent avg10")
-    run.add_argument("--max-memory-psi", type=float, required=True, help="study-host policy, percent avg10")
+    run.add_argument("--max-memory-psi", type=float, required=True,
+                     help="study-host policy, memory PSI full avg10 percent")
     run.add_argument("--min-memavailable", type=parse_size, required=True, help="study-host policy floor")
     run.add_argument("--min-free", type=parse_size, required=True,
                      help="study-host policy floor for free space on output and target filesystems")
+    run.add_argument("--max-probe-latency-seconds", type=float, required=True,
+                     help="study-host policy limit for the root-fsync, sshd and cockpit probe")
+    run.add_argument("--probe-consecutive-samples", type=int, required=True,
+                     help="study-host policy count of consecutive slow or failed liveness probes")
+    run.add_argument("--probe-interval-seconds", type=float,
+                     default=DEFAULT_LIVENESS_PROBE_INTERVAL_S,
+                     help="seconds between independent liveness probes (default: 10)")
+    run.add_argument("--allow-system-disk-partition", action="store_true",
+                     help="operator consent to allow a raw partition sharing the running system disk")
+    run.add_argument("--system-disk-ack",
+                     help="per-run drift-check token: HOSTNAME:DISK:ROOT-DEVICE[,ROOT-DEVICE...]:PARTUUID")
     run.add_argument("--confirm-quiet-window", action="store_true", required=True,
                      help="confirm scheduled idle window; the driver checks required timers")
     run.add_argument("--dry-run", action="store_true",
@@ -2341,6 +2779,9 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "plan":
             print_plan(args.json, args.out / STATE_NAME if args.out else None)
             return 0
+        if args.command == "system-disk-ack":
+            print(derive_system_disk_ack(args.target, args.device, args.confirm_target))
+            return 0
         if args.command == "analyze":
             result = analysis(args.results)
             content = json.dumps(result, indent=2, sort_keys=True) + "\n" if args.json else render_analysis(result)
@@ -2351,10 +2792,15 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         result = run_study(args.cell_set, target=args.target, device=args.device, out=args.out,
                            target_kind=args.target_type, offset=args.offset, size=args.size,
-                           io_psi_max=args.max_io_psi, mem_psi_max=args.max_memory_psi,
+                           mem_psi_max=args.max_memory_psi,
                            min_memavailable=args.min_memavailable, min_free=args.min_free,
+                           max_probe_latency_s=args.max_probe_latency_seconds,
+                           probe_consecutive_samples=args.probe_consecutive_samples,
+                           probe_interval_s=args.probe_interval_seconds,
                            fsync_cell=args.fsync_cell, quiet_window_confirmed=args.confirm_quiet_window,
-                           confirm_target=args.confirm_target, dry_run=args.dry_run)
+                           confirm_target=args.confirm_target,
+                           allow_system_disk_partition=args.allow_system_disk_partition,
+                           system_disk_ack=args.system_disk_ack, dry_run=args.dry_run)
         print(json.dumps(result, sort_keys=True))
         return 0
     except StudyError as exc:
