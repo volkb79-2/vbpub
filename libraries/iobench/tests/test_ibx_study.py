@@ -736,6 +736,28 @@ def _raw_target_fixture(tmp_path, monkeypatch, *, root_devno="8:99"):
     return driver.LocalHost(proc=proc, sys=sysroot), target, part, sibling
 
 
+def test_new_host_subprocess_failures_are_study_errors(tmp_path, monkeypatch):
+    host = driver.LocalHost()
+
+    def unavailable(*args, **kwargs):
+        raise OSError("command is unavailable")
+
+    monkeypatch.setattr(driver.subprocess, "run", unavailable)
+    with pytest.raises(driver.StudyError, match="cannot establish filesystem identity"):
+        host._findmnt_facts("/mnt/data")
+
+    raw_host, target, _, _ = _raw_target_fixture(tmp_path / "raw", monkeypatch)
+    monkeypatch.setattr(driver.subprocess, "run", unavailable)
+    with pytest.raises(driver.StudyError, match="cannot establish raw target size"):
+        raw_host.validate_target(str(target), "raw", 0, 4096, "vda5", confirmation=FAKE_IDENTITY)
+
+    monkeypatch.setattr(driver.subprocess, "Popen", unavailable)
+    with pytest.raises(driver.StudyError, match="cannot start bounded target operation blkdiscard"):
+        host.discard("/dev/vda5", "raw", 0, 4096)
+    with pytest.raises(driver.StudyError, match="cannot start fio"):
+        host.execute_fio(tmp_path / "job.fio", 1, lambda: None)
+
+
 def test_localhost_sysfs_mount_btrfs_and_swap_refusal_edges(tmp_path, monkeypatch):
     host = driver.LocalHost(proc=tmp_path / "proc", sys=tmp_path / "sys")
     with pytest.raises(driver.StudyError, match="cannot resolve sysfs block device"):
@@ -1434,6 +1456,10 @@ def test_local_quiet_window_and_fsync_wrapper_are_mocked(tmp_path, monkeypatch):
     with pytest.raises(driver.StudyError, match="cannot verify"):
         host.assert_quiet_window()
 
+    missing_proc_host = driver.LocalHost(proc=tmp_path / "missing-proc")
+    with pytest.raises(driver.StudyError, match="fsync mode requires a Docker cgroup scope; cannot read"):
+        missing_proc_host.current_container_id()
+
     proc = tmp_path / "proc/self/cgroup"
     proc.parent.mkdir(parents=True)
     proc.write_text("0::/system.slice/docker-" + "a" * 64 + ".scope\n", encoding="utf-8")
@@ -1715,6 +1741,36 @@ def test_fsync_preflight_checks_parent_and_image_without_starting_collector(tmp_
         host.assert_fsync_preflight()
 
 
+def test_fsync_preflight_wraps_systemctl_docker_and_empty_image_errors(tmp_path, monkeypatch):
+    proc = tmp_path / "proc/self/cgroup"
+    proc.parent.mkdir(parents=True)
+    proc.write_text("0::/system.slice/docker-" + "a" * 64 + ".scope\n", encoding="utf-8")
+    host = driver.LocalHost(proc=tmp_path / "proc")
+    monkeypatch.setenv("CGROUP_PARENT_DEV_BACKGROUND", "dev-background.slice")
+
+    def systemctl_unavailable(*args, **kwargs):
+        raise OSError("systemctl is unavailable")
+
+    monkeypatch.setattr(driver.subprocess, "run", systemctl_unavailable)
+    with pytest.raises(driver.StudyError, match="cannot check fsync collector cgroup parent"):
+        host.assert_fsync_preflight()
+
+    def docker_unavailable(argv, **kwargs):
+        if argv[0] == "systemctl":
+            return SimpleNamespace(returncode=0, stdout="loaded\n", stderr="")
+        raise OSError("docker is unavailable")
+
+    monkeypatch.setattr(driver.subprocess, "run", docker_unavailable)
+    with pytest.raises(driver.StudyError, match="cannot inspect fsync collector image"):
+        host.assert_fsync_preflight()
+
+    monkeypatch.setenv("IOMON_BPF_IMAGE", "")
+    monkeypatch.setattr(driver.subprocess, "run", lambda *args, **kwargs:
+                        SimpleNamespace(returncode=0, stdout="loaded\n", stderr=""))
+    with pytest.raises(driver.StudyError, match="requires a non-empty IOMON_BPF_IMAGE"):
+        host.assert_fsync_preflight()
+
+
 @pytest.mark.parametrize(("kind", "missing"), (("raw", "blkdiscard"), ("ext4-file", "fallocate")))
 def test_study_tool_preflight_names_a_missing_target_operation(tmp_path, monkeypatch, kind, missing):
     host = driver.LocalHost()
@@ -1746,6 +1802,55 @@ def test_raw_study_tool_preflight_checks_fio_version_and_mounted_write_option(mo
     monkeypatch.setattr(driver.subprocess, "run", option_missing)
     with pytest.raises(driver.StudyError, match="must support the allow_mounted_write option"):
         host.assert_study_tools("raw")
+
+
+def test_study_tool_preflight_wraps_fio_launch_and_invalid_version(monkeypatch):
+    host = driver.LocalHost()
+    monkeypatch.setattr(driver.shutil, "which", lambda executable: f"/usr/bin/{executable}")
+
+    def unavailable(*args, **kwargs):
+        raise OSError("fio is unavailable")
+
+    monkeypatch.setattr(driver.subprocess, "run", unavailable)
+    with pytest.raises(driver.StudyError, match="cannot run fio preflight: fio is unavailable"):
+        host.assert_study_tools("raw")
+
+    monkeypatch.setattr(driver.subprocess, "run", lambda *args, **kwargs:
+                        SimpleNamespace(returncode=0, stdout="not-fio\n", stderr=""))
+    with pytest.raises(driver.StudyError, match="did not report a fio version"):
+        host.assert_study_tools("ext4-file")
+
+    monkeypatch.setattr(driver.subprocess, "run", lambda argv, **kwargs:
+                        SimpleNamespace(returncode=0, stdout="fio-3.39\n", stderr="")
+                        if argv == ["fio", "--version"] else
+                        (_ for _ in ()).throw(OSError("fio help is unavailable")))
+    with pytest.raises(driver.StudyError, match="cannot check fio allow_mounted_write support"):
+        host.assert_study_tools("raw")
+
+
+def test_file_study_tool_preflight_checks_fallocate_without_raw_option(monkeypatch):
+    host = driver.LocalHost()
+    monkeypatch.setattr(driver.shutil, "which", lambda executable: f"/usr/bin/{executable}")
+    calls = []
+
+    def run(argv, **kwargs):
+        calls.append(argv)
+        return SimpleNamespace(returncode=0, stdout="fio-3.39\n", stderr="")
+
+    monkeypatch.setattr(driver.subprocess, "run", run)
+    host.assert_study_tools("ext4-file")
+    assert calls == [["fio", "--version"]]
+
+
+def test_quiet_window_wraps_a_missing_systemctl(monkeypatch):
+    host = driver.LocalHost()
+
+    def unavailable(*args, **kwargs):
+        raise OSError("systemctl is unavailable")
+
+    monkeypatch.setattr(driver.subprocess, "run", unavailable)
+    with pytest.raises(driver.StudyError, match="cannot verify quiet-window timer state for fstrim.timer"):
+        host.assert_quiet_window()
 
 
 def test_fsync_cell_dry_run_reports_preflight_requirement_before_liveness(tmp_path):
@@ -1786,6 +1891,82 @@ def test_local_fsync_refuses_unloaded_slice_and_cleans_timed_out_collector(tmp_p
     host.sleep = lambda seconds: clock.__setitem__(0, clock[0] + seconds)
     with pytest.raises(driver.StudyError, match="did not start"):
         host.start_fsync(tmp_path)
+
+
+def _fsync_scope_fixture(tmp_path, monkeypatch):
+    proc = tmp_path / "proc/self/cgroup"
+    proc.parent.mkdir(parents=True)
+    proc.write_text("0::/system.slice/docker-" + "a" * 64 + ".scope\n", encoding="utf-8")
+    repo = tmp_path / "repo"
+    script = repo / "mdt-cockpit/scripts/iomon-bpf/run.sh"
+    script.parent.mkdir(parents=True)
+    script.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    script.chmod(0o755)
+    monkeypatch.setattr(driver, "REPO", repo)
+    monkeypatch.setenv("CGROUP_PARENT_DEV_BACKGROUND", "dev-background.slice")
+    return driver.LocalHost(proc=tmp_path / "proc"), script
+
+
+def _fsync_preflight_command(argv):
+    if argv[0] == "systemctl":
+        return SimpleNamespace(returncode=0, stdout="loaded\n", stderr="")
+    if argv[:3] == ["docker", "image", "inspect"]:
+        return SimpleNamespace(returncode=0, stdout="sha256:" + "a" * 64 + "\n", stderr="")
+    return None
+
+
+def test_fsync_collector_start_and_inspect_errors_are_study_errors(tmp_path, monkeypatch):
+    host, script = _fsync_scope_fixture(tmp_path, monkeypatch)
+
+    def wrapper_error(argv, **kwargs):
+        if argv[0] == str(script):
+            raise OSError("wrapper cannot start")
+        return _fsync_preflight_command(argv)
+
+    monkeypatch.setattr(driver.subprocess, "run", wrapper_error)
+    with pytest.raises(driver.StudyError, match="cannot start iomon-bpf collector"):
+        host.start_fsync(tmp_path)
+
+    def inspect_error(argv, **kwargs):
+        if argv[0] == str(script):
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+        if argv[:2] == ["docker", "inspect"]:
+            raise OSError("docker inspect is unavailable")
+        return _fsync_preflight_command(argv)
+
+    monkeypatch.setattr(driver.subprocess, "run", inspect_error)
+    with pytest.raises(driver.StudyError, match="cannot inspect iomon-bpf collector"):
+        host.start_fsync(tmp_path)
+
+
+def test_fsync_collector_stop_errors_are_study_errors(tmp_path, monkeypatch):
+    host, script = _fsync_scope_fixture(tmp_path, monkeypatch)
+    clock = [0.0]
+    host.now = lambda: clock[0]
+    host.sleep = lambda seconds: clock.__setitem__(0, clock[0] + seconds)
+
+    def stop_error(argv, **kwargs):
+        if argv[0] == str(script):
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+        if argv[:2] == ["docker", "inspect"]:
+            return SimpleNamespace(returncode=0, stdout="false\n", stderr="")
+        if argv[:2] == ["docker", "stop"]:
+            raise OSError("docker stop is unavailable")
+        return _fsync_preflight_command(argv)
+
+    monkeypatch.setattr(driver.subprocess, "run", stop_error)
+    with pytest.raises(driver.StudyError, match="cannot stop failed iomon-bpf collector"):
+        host.start_fsync(tmp_path)
+
+    owned_output = tmp_path / "owned-output"
+    owned_output.mkdir()
+
+    def owned_stop_error(*args, **kwargs):
+        raise OSError("docker stop is unavailable")
+
+    monkeypatch.setattr(driver.subprocess, "run", owned_stop_error)
+    with pytest.raises(driver.StudyError, match="cannot stop owned iomon-bpf collector"):
+        host.stop_fsync(("owned-collector", owned_output))
 
 
 def test_local_discard_wait_logs_sample_and_root_helpers_are_mocked(tmp_path, monkeypatch):
@@ -2741,6 +2922,7 @@ def test_io_control_snapshot_refuses_each_active_limit_by_filename(
         ("system.slice", "io.bfq.weight", "default 100\n254:0 1001\n", "malformed io.bfq.weight"),
         ("system.slice", "io.bfq.weight", "default fast\n", "malformed io.bfq.weight"),
         ("system.slice", "io.bfq.weight", "default 100\n254:0 fast\n", "malformed io.bfq.weight"),
+        ("system.slice", "io.bfq.weight", "not a row\n", "malformed io.bfq.weight"),
         ("system.slice", "io.bfq.weight", "default 50\n", "non-default io.bfq.weight"),
         ("system.slice", "io.bfq.weight", "default 100\ndefault 100\n", "duplicate default"),
         ("system.slice", "io.bfq.weight", "default 100\n254:0 100\n254:0 100\n", "duplicate device row"),
