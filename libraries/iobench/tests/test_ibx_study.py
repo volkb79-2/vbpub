@@ -2595,6 +2595,7 @@ def test_io_control_snapshot_refuses_each_active_limit_by_filename(
     ("relative", "filename", "contents", "message"),
     [
         ("system.slice", "io.max", "8:0\n", "malformed io.max line"),
+        ("system.slice", "io.max", "bad rbps=max\n", "malformed io.max line"),
         ("system.slice", "io.max", "8:0 foo=max\n", "unknown or malformed io.max control"),
         ("system.slice", "io.max", "8:0 rbps=fast\n", "unknown or malformed io.max control"),
         ("system.slice", "io.max", "8:0 rbps=max rbps=max\n", "unknown or malformed io.max control"),
