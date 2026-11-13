@@ -17,6 +17,7 @@ from project_fixture import copy_project_fixture  # noqa: E402
 #: Tracked files of each SUITE_COLLECTION_INPUTS pathspec in the estate below.
 SUPPORT_FILES = (
     "tester-base/Dockerfile",
+    "tester-base/ksm-optin.c",
     "tester-unified/Dockerfile",
     "nyxloom/pyproject.toml",
     "nyxloom/src/nyxloom/__init__.py",
@@ -50,6 +51,7 @@ def _estate(repo_root: Path) -> Path:
         # Suite collection inputs, and their tracked siblings that must stay out:
         # gen-requirements.py and build-image.sh are the tester modules' skip keys.
         "tester-base/Dockerfile",
+        "tester-base/ksm-optin.c",
         "wings-patchstack/stack.conf",
         "tester-unified/Dockerfile",
         "tester-unified/gen-requirements.py",
