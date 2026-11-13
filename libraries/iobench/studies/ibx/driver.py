@@ -569,6 +569,12 @@ def _read_optional_control(path: Path) -> str | None:
     try:
         path.lstat()
     except FileNotFoundError:
+        try:
+            parent_info = path.parent.stat()
+        except OSError as exc:
+            raise StudyError(f"cannot enumerate cgroup IO control parent {path.parent}: {exc}") from exc
+        if not stat.S_ISDIR(parent_info.st_mode):
+            raise StudyError(f"cannot enumerate cgroup IO control parent {path.parent}: not a directory")
         return None
     except OSError as exc:
         raise StudyError(f"cannot inspect existing cgroup IO control {path}: {exc}") from exc
@@ -602,7 +608,7 @@ def _io_max_active(text: str, path: Path | None = None) -> bool:
     return False
 
 
-def _io_weight_active(text: str, path: Path) -> bool:
+def _validate_io_weight_inactive(text: str, path: Path) -> None:
     saw_default = False
     seen_devices: set[str] = set()
     for line in text.splitlines():
@@ -626,7 +632,30 @@ def _io_weight_active(text: str, path: Path) -> bool:
             raise StudyError(f"non-default io.weight at {path}")
     if not saw_default:
         raise StudyError(f"io.weight has no explicit default 100 at {path}")
-    return False
+
+
+def _io_latency_peer_paths(directories: list[Path]) -> list[Path]:
+    """Return every cgroup which can be an io.latency peer of this process."""
+    peers: set[Path] = set()
+    for directory in directories[1:]:
+        parent = directory.parent
+        try:
+            entries = list(parent.iterdir())
+        except OSError as exc:
+            raise StudyError(f"cannot enumerate benchmark cgroup peers in {parent}: {exc}") from exc
+        children: set[Path] = set()
+        for entry in entries:
+            try:
+                info = entry.stat()
+            except OSError as exc:
+                raise StudyError(f"cannot enumerate benchmark cgroup peers in {parent}: {exc}") from exc
+            if stat.S_ISDIR(info.st_mode):
+                children.add(entry)
+        if directory not in children:
+            raise StudyError(f"cannot enumerate benchmark cgroup peers in {parent}: "
+                             f"{directory.name} is not a child cgroup")
+        peers.update(children)
+    return sorted(peers, key=lambda path: str(path))
 
 
 def _iocost_values(text: str, path: Path, *, model: bool) -> None:
@@ -684,6 +713,8 @@ def io_control_snapshot(*, cgroup_root: Path = Path("/sys/fs/cgroup"),
     Control files absent from a kernel or cgroup have no setting. Existing files
     are read and recorded so the before/after comparison detects changes. The
     benchmark cgroup and every ancestor must still be present and enumerable.
+    io.latency is peer-relative, so direct sibling groups at each level of the
+    benchmark path are also enumerated and included in the snapshot.
     """
     if cgroup_text is None:
         membership = Path("/proc/self/cgroup")
@@ -697,7 +728,6 @@ def io_control_snapshot(*, cgroup_root: Path = Path("/sys/fs/cgroup"),
     for part in rel.split("/") if rel else ():
         current = current / part
         dirs.append(current)
-    snapshot: dict[str, Any] = {"cgroups": [], "io_cost": {}}
     for directory in dirs:
         try:
             info = directory.stat()
@@ -705,10 +735,25 @@ def io_control_snapshot(*, cgroup_root: Path = Path("/sys/fs/cgroup"),
             raise StudyError(f"cannot enumerate benchmark cgroup {directory}: {exc}") from exc
         if not stat.S_ISDIR(info.st_mode):
             raise StudyError(f"cannot enumerate benchmark cgroup {directory}: not a directory")
+    latency_peers = _io_latency_peer_paths(dirs)
+    latency_values: dict[Path, str | None] = {}
+    for directory in [cgroup_root, *latency_peers]:
+        path = directory / "io.latency"
+        text = _read_optional_control(path)
+        if text:
+            raise StudyError(f"active io.latency setting at {path}")
+        latency_values[directory] = text
+    snapshot: dict[str, Any] = {
+        "cgroups": [],
+        "io_latency_peers": [{"path": str(path), "io.latency": latency_values[path]}
+                              for path in latency_peers],
+        "io_cost": {},
+    }
+    for directory in dirs:
         files: dict[str, str | None] = {}
         for name in ("io.max", "io.weight", "io.latency"):
             path = directory / name
-            text = _read_optional_control(path)
+            text = latency_values[directory] if name == "io.latency" else _read_optional_control(path)
             files[name] = text
             if text is None:
                 continue
@@ -716,9 +761,7 @@ def io_control_snapshot(*, cgroup_root: Path = Path("/sys/fs/cgroup"),
                 if _io_max_active(text, path):
                     raise StudyError(f"active io.max limit at {path}")
             elif name == "io.weight":
-                _io_weight_active(text, path)
-            elif text:
-                raise StudyError(f"active io.latency setting at {path}")
+                _validate_io_weight_inactive(text, path)
         snapshot["cgroups"].append({"path": str(directory), "files": files})
     for name in ("io.cost.qos", "io.cost.model"):
         path = cgroup_root / name
@@ -1448,11 +1491,30 @@ class LocalHost:
         return TargetValidation(None)
 
     def trim_state(self, device: str) -> dict[str, Any]:
-        path = self.sys / "class/block" / device / "queue/discard_max_bytes"
+        target_sys = self.sys / "class/block" / device
+        try:
+            target_sys = target_sys.resolve(strict=True)
+            target_info = target_sys.stat()
+        except OSError as exc:
+            raise StudyError(f"cannot resolve sysfs block device {device}: {exc}") from exc
+        if not stat.S_ISDIR(target_info.st_mode):
+            raise StudyError(f"sysfs block device {device} is not a directory")
+        partition_marker = target_sys / "partition"
+        try:
+            marker_info = partition_marker.stat()
+        except FileNotFoundError:
+            disk_sys = target_sys
+        except OSError as exc:
+            raise StudyError(f"cannot inspect partition identity for {device}: {exc}") from exc
+        else:
+            if not stat.S_ISREG(marker_info.st_mode):
+                raise StudyError(f"partition identity for {device} is malformed")
+            disk_sys = target_sys.parent
+        path = disk_sys / "queue/discard_max_bytes"
         try:
             raw = path.read_text(encoding="utf-8").strip()
         except OSError as exc:
-            raise StudyError(f"cannot read discard support for {device}: {exc}") from exc
+        raise StudyError(f"cannot read discard support for {device} at {path}: {exc}") from exc
         if not raw.isdigit():
             raise StudyError(f"discard support for {device} is malformed")
         maximum = int(raw)

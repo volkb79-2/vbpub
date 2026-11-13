@@ -200,7 +200,6 @@ record_check "size mismatch refusal" expect_refusal \
 record_check "PARTUUID mismatch refusal" expect_refusal \
   "raw target PARTUUID does not match --confirm-target" \
   raw_dry_run "$RAW" vda5 "$RAW:$RAW_BYTES:00000000-0000-0000-0000-000000000000"
-DISK_BYTES=$(host-escape -- blockdev --getsize64 /dev/vda)
 record_check "whole-disk refusal" check_whole_disk_refusal
 printf 'SECTION 1 summary: %s checks, %s failures\n' "$CHECK_COUNT" "$FAIL_COUNT"
 if ((FAIL_COUNT != 0)); then

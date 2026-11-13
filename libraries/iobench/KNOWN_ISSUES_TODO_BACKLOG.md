@@ -107,13 +107,23 @@ path; the registered R0–R1 lane passes on the final head.
 
 **Status: OPEN; guard and regression tests added in `ibx-io-snapshot-fix`.**
 The 2026-11-13 read-only acceptance reached the IO-control snapshot and showed
-that its fixture had hidden two real-kernel details: the cgroup root and
-`system.slice` do not expose every `io.*` control, and this kernel has no
-`io.latency` file. The old snapshot required all three controls at every path
-and treated the kernel-managed `ctrl=auto model=linear` io.cost model as a
-custom setting. The new snapshot records absent optional controls as no
-setting, refuses an existing unreadable/malformed control or active limit,
-and compares the same present/absent values before and after a cell-set.
+that its fixture had hidden real-kernel details: root has no `io.max`,
+`io.weight`, or `io.latency`; `system.slice/io.max` exists but is empty;
+`system.slice/io.weight` is `default 100`; and this kernel has no
+`io.latency` file anywhere (`CONFIG_BLK_CGROUP_IOLATENCY` is unset). The
+kernel-managed `ctrl=auto model=linear` io.cost model is inactive. The fixture
+now records observed present, empty, and absent states separately and cites
+the evidence files by SHA-256. Exact process leaf membership was not saved;
+the fixture follows the observed `system.slice` transient slice, with a
+separate synthetic leaf test for the deeper ancestry case.
+
+The snapshot treats missing controls as no setting, refuses existing but
+unreadable or malformed controls and active limits that can affect the study,
+and compares the same observed values before and after a cell-set. It checks
+`io.max` and `io.weight` along the benchmark path. Since `io.latency` may
+throttle peers, it enumerates direct peers at each path level and refuses an
+active target there. The host's active `dev.slice/io.max` is a sibling ceiling
+and is not inherited by the study process.
 
 The captured layout is checked in at
 [`tests/fixtures/ibx-real-cgroup-layout.json`](tests/fixtures/ibx-real-cgroup-layout.json)
@@ -121,12 +131,18 @@ with evidence provenance; tests materialize it under `tmp_path`. Keep that
 fixture tied to a reviewed live evidence record when extending the driver, so
 synthetic trees do not reintroduce files the host kernel omits. The acceptance
 runbook also had `expect_refusal` restore `set -e`, aborting at its first
-unexpected result. It now records each check and prints one final summary
-before returning non-zero when any check fails.
+unexpected result. It now records every check and prints one final summary
+before returning non-zero when any check fails. Review also found that a
+partition's sysfs directory does not own the disk `queue/`; the run2 acceptance
+did not reach that probe. The driver now resolves the partition's parent disk
+before reading `queue/discard_max_bytes`; r1002 live confirmation remains open.
 
 **Close when.** The registered R0–R1 lane passes on the final reviewed head,
 and the next approved read-only acceptance confirms the acknowledged dry-run
 passes on the real cgroup layout while every active-limit and target-safety
-refusal still fires. Other `/proc`, sysfs, systemd and host-liveness probes
-remain subject to the verification inventory in the package report; they were
-not reached by this acceptance run.
+refusal still fires. Run 2 verified target identity, partition, mount, swap,
+holder, system-disk acknowledgement, root/system.slice control values, the
+cost files, and the captured timer state. It did not reach diskstats, PSI,
+meminfo, the trim sysfs read, file-target backing-device checks, the live
+systemd timer guard, or host-liveness probes. The package report records the
+path-by-path verification inventory and the evidence that supports each item.

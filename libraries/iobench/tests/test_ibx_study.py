@@ -582,17 +582,26 @@ def test_optional_file_standard_requires_borderline_quick_replay(tmp_path):
 
 
 def test_local_trim_state_reads_explicit_sysfs_capability(tmp_path):
-    path = tmp_path / "class/block/vda5/queue/discard_max_bytes"
-    path.parent.mkdir(parents=True)
+    disk = tmp_path / "devices/block/vda"
+    partition = disk / "vda5"
+    (disk / "queue").mkdir(parents=True)
+    partition.mkdir()
+    (partition / "partition").write_text("5\n", encoding="utf-8")
+    class_block = tmp_path / "class/block"
+    class_block.mkdir(parents=True)
+    (class_block / "vda").symlink_to(disk)
+    (class_block / "vda5").symlink_to(partition)
+    path = disk / "queue/discard_max_bytes"
     path.write_text("4096\n", encoding="utf-8")
     host = driver.LocalHost(sys=tmp_path)
     assert host.trim_state("vda5") == {"supported": True, "discard_max_bytes": 4096}
+    assert host.trim_state("vda") == {"supported": True, "discard_max_bytes": 4096}
     path.write_text("0\n", encoding="utf-8")
     assert host.trim_state("vda5")["supported"] is False
     path.write_text("bad\n", encoding="utf-8")
     with pytest.raises(driver.StudyError, match="malformed"):
         host.trim_state("vda5")
-    with pytest.raises(driver.StudyError, match="cannot read"):
+    with pytest.raises(driver.StudyError, match="cannot resolve sysfs block device"):
         host.trim_state("missing")
 
 
@@ -2413,25 +2422,42 @@ def materialize_real_cgroup_layout(tmp_path):
     fixture = json.loads(fixture_path.read_text(encoding="utf-8"))
     root = tmp_path / "cg"
     root.mkdir()
-    for relative, contents in fixture["files"].items():
-        path = root / relative
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(contents, encoding="utf-8")
+    for relative, controls in fixture["groups"].items():
+        directory = root if relative == "." else root / relative
+        directory.mkdir(parents=True, exist_ok=True)
+        for name, contents in controls.items():
+            path = directory / name
+            if contents is None:
+                assert not path.exists()
+            else:
+                path.write_text(contents, encoding="utf-8")
     return root, fixture
 
 
 def test_io_control_snapshot_accepts_the_recorded_host_layout(tmp_path, monkeypatch):
     root, fixture = materialize_real_cgroup_layout(tmp_path)
-    assert fixture["provenance"].startswith("Live cgroup-v2 acceptance evidence")
-    assert all(not (root / name).exists() for name in fixture["absent"][:3])
+    assert fixture["provenance"]["kernel"] == "7.2.12"
+    assert {source["sha256"] for source in fixture["provenance"]["sources"]} == {
+        "b0ff2a77f3b056d8a6da3aff5a2976d126eb2dc18668aa0fe09ab47aaedce9ad",
+        "cd4519778ee1a7baf0276b6caef0847550fb904df19d138a68637e9022b42a43",
+    }
     snapshot = driver.io_control_snapshot(cgroup_root=root, cgroup_text=fixture["cgroup_text"])
     assert [row["path"] for row in snapshot["cgroups"]] == [str(root), str(root / "system.slice")]
     assert snapshot["cgroups"][0]["files"] == {
         "io.max": None, "io.weight": None, "io.latency": None}
     assert snapshot["cgroups"][1]["files"] == {
-        "io.max": None, "io.weight": "default 100", "io.latency": None}
+        "io.max": "", "io.weight": "default 100", "io.latency": None}
     assert snapshot["io_cost"]["io.cost.qos"].startswith("254:0 enable=0 ctrl=auto")
     assert snapshot["io_cost"]["io.cost.model"].startswith("254:0 ctrl=auto model=linear")
+    assert snapshot["io_latency_peers"]
+    assert all(peer["io.latency"] in (None, "") for peer in snapshot["io_latency_peers"])
+    for row in snapshot["cgroups"]:
+        io_max = row["files"]["io.max"]
+        if io_max is not None:
+            assert driver._io_max_active(io_max, Path(row["path"])) is False
+        io_weight = row["files"]["io.weight"]
+        if io_weight is not None:
+            assert driver._validate_io_weight_inactive(io_weight, Path(row["path"])) is None
     assert driver._io_max_active("8:0 rbps=max wbps=max\n") is False
     assert driver._io_max_active("") is False
     assert driver._io_max_active("\n") is False
@@ -2478,7 +2504,7 @@ def test_io_control_snapshot_accepts_present_but_inactive_controls(tmp_path):
         "io.latency": "",
     }
     assert snapshot["io_cost"] == {
-        name: fixture["files"][name].strip()
+        name: fixture["groups"]["."][name].strip()
         for name in ("io.cost.qos", "io.cost.model")
     }
 
@@ -2489,6 +2515,7 @@ def test_io_control_snapshot_accepts_present_but_inactive_controls(tmp_path):
         ("system.slice", "io.max", "254:0 rbps=100\n", "active io.max limit"),
         ("system.slice", "io.weight", "default 50\n", "non-default io.weight"),
         ("system.slice", "io.latency", "254:0 target=1000\n", "active io.latency"),
+        ("cgprofile.slice", "io.latency", "254:0 target=1000\n", "active io.latency"),
         (".", "io.cost.qos", "254:0 enable=1 ctrl=auto\n", "active io.cost.qos limit"),
         (".", "io.cost.model", "254:0 ctrl=user model=linear rbps=1\n", "custom io.cost.model"),
     ],
@@ -2573,6 +2600,11 @@ def test_io_control_snapshot_refuses_control_path_that_cannot_be_inspected(tmp_p
         driver.io_control_snapshot(cgroup_root=root, cgroup_text=fixture["cgroup_text"])
 
 
+def test_absent_io_control_requires_an_enumerable_parent(tmp_path):
+    with pytest.raises(driver.StudyError, match="cannot enumerate cgroup IO control parent"):
+        driver._read_optional_control(tmp_path / "missing/io.max")
+
+
 def test_io_control_snapshot_refuses_unreadable_cgroup_membership(tmp_path, monkeypatch):
     root, _fixture = materialize_real_cgroup_layout(tmp_path)
     original_read_text = Path.read_text
@@ -2589,13 +2621,30 @@ def test_io_control_snapshot_refuses_unreadable_cgroup_membership(tmp_path, monk
 
 def test_io_control_snapshot_refuses_cgroup_that_cannot_be_enumerated(tmp_path):
     root, fixture = materialize_real_cgroup_layout(tmp_path)
+    (root / "system.slice/io.max").unlink()
+    (root / "system.slice/io.weight").unlink()
     (root / "system.slice").rmdir()
     with pytest.raises(driver.StudyError, match="cannot enumerate benchmark cgroup.*system.slice"):
         driver.io_control_snapshot(cgroup_root=root, cgroup_text=fixture["cgroup_text"])
 
 
+def test_io_control_snapshot_refuses_unenumerable_latency_peers(tmp_path, monkeypatch):
+    root, fixture = materialize_real_cgroup_layout(tmp_path)
+    original_iterdir = Path.iterdir
+
+    def unavailable_peers(path):
+        if path == root:
+            raise PermissionError("fixture denies cgroup enumeration")
+        return original_iterdir(path)
+
+    monkeypatch.setattr(Path, "iterdir", unavailable_peers)
+    with pytest.raises(driver.StudyError, match="cannot enumerate benchmark cgroup peers"):
+        driver.io_control_snapshot(cgroup_root=root, cgroup_text=fixture["cgroup_text"])
+
+
 def test_io_control_snapshot_refuses_non_directory_cgroup_path(tmp_path):
     root, fixture = materialize_real_cgroup_layout(tmp_path)
+    (root / "system.slice/io.max").unlink()
     (root / "system.slice/io.weight").unlink()
     (root / "system.slice").rmdir()
     (root / "system.slice").write_text("not a cgroup", encoding="utf-8")
@@ -2846,7 +2895,7 @@ def test_acceptance_runbook_pins_the_expected_host_before_proceeding(tmp_path):
         return subprocess.run(["bash", "-euo", "pipefail", "-c", probe_script], env=env,
                               check=False, capture_output=True, text=True)
 
-    for status, state in ((4, "unknown"), (3, "inactive"), (1, "failed")):
+    for status, state in ((4, "unknown"), (4, "inactive"), (3, "inactive"), (1, "failed")):
         accepted = invoke_probe(status, state)
         assert accepted.returncode == 0, (status, state, accepted.stderr)
         assert f"missing-unit systemd status: {state} ({status})" in accepted.stdout
@@ -2888,7 +2937,15 @@ def test_acceptance_refusal_helper_continues_and_reports_a_failing_summary():
     assert script_match is not None
     expect_refusal = re.search(r"(?ms)^expect_refusal\(\) \{\n.*?^\}", script_match.group(1))
     record_check = re.search(r"(?ms)^record_check\(\) \{\n.*?^\}", script_match.group(1))
-    assert expect_refusal is not None and record_check is not None
+    acknowledged_dry_run = re.search(
+        r"(?ms)^check_acknowledged_dry_run\(\) \{\n.*?^\}", script_match.group(1))
+    whole_disk_refusal = re.search(
+        r"(?ms)^check_whole_disk_refusal\(\) \{\n.*?^\}", script_match.group(1))
+    summary_tail = re.search(
+        r"(?ms)^printf 'SECTION 1 summary:.*?^printf 'SECTION1-PASS'\n", script_match.group(1))
+    assert (expect_refusal is not None and record_check is not None and
+            acknowledged_dry_run is not None and whole_disk_refusal is not None)
+    assert summary_tail is not None
     assert "set +e" not in expect_refusal.group(0) and "set -e" not in expect_refusal.group(0)
     assert "SECTION 1 summary:" in script_match.group(1)
     shell = f"""set -euo pipefail
@@ -2896,22 +2953,34 @@ CHECK_COUNT=0
 FAIL_COUNT=0
 {expect_refusal.group(0)}
 {record_check.group(0)}
+{acknowledged_dry_run.group(0)}
+{whole_disk_refusal.group(0)}
+RAW=/dev/vda5
+IBX_TARGET_CONFIRMATION=/dev/vda5:34359738368:00000000-0000-0000-0000-000000000000
+current_system_disk_ack() {{ printf 'compute-a:vda:vda3:partuuid\\n'; }}
+raw_dry_run() {{
+  if [[ "$1" == /dev/vda ]]; then
+    printf '%s\\n' 'raw target must be a dedicated partition; whole disks are refused'
+    return 2
+  fi
+  printf '%s\\n' '{{"dry_run": true}}'
+}}
+host-escape() {{ printf '34359738368\\n'; }}
 fail_command() {{ printf 'unexpected command failure\\n'; return 1; }}
 pass_command() {{ return 0; }}
+record_check 'acknowledged dry-run' check_acknowledged_dry_run
+record_check 'whole-disk refusal' check_whole_disk_refusal
 record_check 'unexpected refusal' expect_refusal 'expected refusal text' fail_command
 record_check 'following check' pass_command
-printf 'SECTION 1 summary: %s checks, %s failures\\n' "$CHECK_COUNT" "$FAIL_COUNT"
-if ((FAIL_COUNT != 0)); then
-  printf 'SECTION1-FAIL\\n'
-  exit 1
-fi
-printf 'SECTION1-PASS\\n'
+{summary_tail.group(0)}
 """
     result = subprocess.run(["bash", "-c", shell], check=False, capture_output=True, text=True)
     assert result.returncode == 1
     assert "FAIL check: unexpected refusal" in result.stderr
+    assert "PASS check: acknowledged dry-run" in result.stdout
+    assert "PASS check: whole-disk refusal" in result.stdout
     assert "PASS check: following check" in result.stdout
-    assert "SECTION 1 summary: 2 checks, 1 failures" in result.stdout
+    assert "SECTION 1 summary: 4 checks, 1 failures" in result.stdout
     assert "SECTION1-FAIL" in result.stdout and "SECTION1-PASS" not in result.stdout
 
 

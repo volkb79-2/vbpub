@@ -378,18 +378,19 @@ orchestration code.
 The driver fails closed on target geometry, active io.cost and cgroup IO
 controls, monitor thresholds, write/time budgets, and timer state during live
 runs. It does not change IO controls. The IO snapshot covers the benchmark
-cgroup and each ancestor, because only those controls apply to the study
-process. A control file missing from that chain means the kernel/cgroup has no
-setting to enforce; its absence is recorded alongside present values so the
-before/after check detects a control appearing or changing. An existing but
-unreadable or malformed file refuses. `io.max` entries are inactive only when
-every per-device value is `max`; `io.weight` must report the default 100; and
-any `io.latency` target refuses. Root `io.cost.qos` must be disabled, and the
-built-in `ctrl=auto model=linear` model is accepted while user/custom models
-refuse. These distinctions let the study run on kernels that omit optional
-controls without weakening refusals for active limits. Unrelated sibling
-cgroups are not part of this check because their controls do not govern the
-study cgroup. A raw run requires an operator acknowledgement
+cgroup and each ancestor for `io.max` and `io.weight`. A control file missing
+from that chain means the kernel/cgroup has no setting to enforce; its absence
+is recorded alongside present values so the before/after check detects a
+control appearing or changing. An existing but unreadable or malformed file
+refuses. `io.max` entries are inactive only when every per-device value is
+`max`; `io.weight` must report the default 100. Because `io.latency` can
+throttle peer groups, the snapshot also enumerates sibling cgroups at each
+level of the benchmark path and refuses any active latency target there; those
+peer values are recorded for the before/after comparison. Missing optional
+files mean no setting. Root `io.cost.qos` must be disabled, and the built-in
+`ctrl=auto model=linear` model is accepted while user/custom models refuse.
+Other siblings' `io.max` caps are not inherited by the benchmark cgroup, so
+they do not prevent this study from running. A raw run requires an operator acknowledgement
 containing the exact partition path, byte size, and PARTUUID; resume compares
 those facts with state and refuses a replacement. Sysfs partition,
 exclusive-claim, holder, mount, and swap checks run before any discard. The

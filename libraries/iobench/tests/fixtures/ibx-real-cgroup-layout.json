@@ -1,34 +1,40 @@
 {
-  "provenance": "Live cgroup-v2 acceptance evidence recorded 2026-11-13; kernel 7.2.12. Values are transcribed from prior-state.txt and driver-io-control-refusal.txt. Host identity and absolute controller paths are omitted.",
-  "cgroup_text": "0::/system.slice\n",
-  "files": {
-    "io.cost.qos": "254:0 enable=0 ctrl=auto rpct=0.00 rlat=250000 wpct=0.00 wlat=250000 min=1.00 max=10000.00\n",
-    "io.cost.model": "254:0 ctrl=auto model=linear rbps=174019176 rseqiops=41708 rrandiops=370 wbps=178075866 wseqiops=42705 wrandiops=378\n",
-    "system.slice/io.weight": "default 100\n",
-    "cgprofile.slice/io.weight": "default 50\n",
-    "cgprofile.slice/cgprofiled.service/io.weight": "default 50\n",
-    "dev.slice/io.max": "254:0 rbps=2147483648 wbps=1073741824 riops=60000 wiops=40000\n",
-    "dev.slice/dev-buildkitd.slice/io.max": "254:0 rbps=max wbps=max riops=36000 wiops=24000\n",
-    "dev.slice/dev-buildkitd.slice/io.weight": "default 50\n",
-    "dev.slice/dev-background.slice/io.weight": "default 10\n",
-    "dev.slice/dev-gates.slice/io.max": "254:0 rbps=max wbps=max riops=36000 wiops=24000\n",
-    "dev.slice/dev-gates.slice/io.weight": "default 10\n"
+  "provenance": {
+    "date": "2026-11-13",
+    "kernel": "7.2.12",
+    "sources": [
+      {
+        "file": "driver-io-control-refusal.txt",
+        "sha256": "b0ff2a77f3b056d8a6da3aff5a2976d126eb2dc18668aa0fe09ab47aaedce9ad"
+      },
+      {
+        "file": "logs/prior-state.txt",
+        "sha256": "cd4519778ee1a7baf0276b6caef0847550fb904df19d138a68637e9022b42a43"
+      }
+    ],
+    "notes": "Relative cgroup paths only. Root and system.slice control states come from the refusal capture. The prior-state capture lists non-default controls; omitted controls outside the benchmark ancestry are not asserted absent. CONFIG_BLK_CGROUP_IOLATENCY is not set, so io.latency is absent from every cgroup. The exact process leaf membership was not recorded; cgroup_text follows the observed system.slice transient unit's slice."
   },
-  "absent": [
-    "io.max",
-    "io.weight",
-    "io.latency",
-    "system.slice/io.max",
-    "system.slice/io.latency",
-    "cgprofile.slice/io.max",
-    "cgprofile.slice/io.latency",
-    "cgprofile.slice/cgprofiled.service/io.max",
-    "cgprofile.slice/cgprofiled.service/io.latency",
-    "dev.slice/io.weight",
-    "dev.slice/io.latency",
-    "dev.slice/dev-buildkitd.slice/io.latency",
-    "dev.slice/dev-background.slice/io.max",
-    "dev.slice/dev-background.slice/io.latency",
-    "dev.slice/dev-gates.slice/io.latency"
-  ]
+  "cgroup_text": "0::/system.slice\n",
+  "groups": {
+    ".": {
+      "io.max": null,
+      "io.weight": null,
+      "io.latency": null,
+      "io.cost.qos": "254:0 enable=0 ctrl=auto rpct=0.00 rlat=250000 wpct=0.00 wlat=250000 min=1.00 max=10000.00\n",
+      "io.cost.model": "254:0 ctrl=auto model=linear rbps=174019176 rseqiops=41708 rrandiops=370 wbps=178075866 wseqiops=42705 wrandiops=378\n"
+    },
+    "system.slice": {
+      "io.max": "",
+      "io.weight": "default 100\n",
+      "io.latency": null
+    },
+    "cgprofile.slice": {
+      "io.weight": "default 50\n",
+      "io.latency": null
+    },
+    "dev.slice": {
+      "io.max": "254:0 rbps=2147483648 wbps=1073741824 riops=60000 wiops=40000\n",
+      "io.latency": null
+    }
+  }
 }
