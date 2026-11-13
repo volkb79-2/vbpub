@@ -5,7 +5,7 @@
 This file records consumer-facing product gaps for later triage. Normative
 behavior remains in the product specification and consumer documentation.
 
-Last updated: 2026-11-12 (PWMCP-63 linear malformed-style recovery and PWMCP-64 escaped CSS syntax implemented, unreleased; PWMCP-62 R2 follow-up remains open).
+Last updated: 2026-11-13 (PWMCP-63..69 implemented in their respective branches, unreleased; PWMCP-62's separate R2 follow-up remains open).
 
 ## PWMCP-01 — Provide a rendered-page inspection command
 
@@ -998,3 +998,49 @@ the operator limit.
 **Fix.** Decode CSS escapes in property names and values before comparing the existing hidden markers and resolving a trailing `!important`. The decoder handles simple and hexadecimal escapes, consumes the optional whitespace after a hexadecimal escape, and replaces invalid code points as CSS requires. All three structural scanners consume a backslash and its next code point as one unit outside strings, so escaped quotes, parentheses, and semicolons do not change declaration boundaries. No new hiding properties were added. README, DESIGN-GUIDE, and CONSUMERS document the behavior.
 
 **Close when.** Behavioral tests prove escaped property names and `display`/`visibility` keyword values are filtered, escaped `!important` retains normal precedence, escaped structural punctuation does not suppress a later hiding declaration, quoted lookalikes stay visible, and the registered R1 lane passes on the final head.
+
+## PWMCP-65 — invalid inline display values can override hidden content
+
+**Status: IMPLEMENTED (unreleased).** Severity: P2 security. Inline-style filtering compared the last `display` or `visibility` value as text without checking whether it was valid for that CSS property. A browser ignores an invalid declaration, so `display:none;display:block invalid` and `visibility:hidden;visibility:visible invalid` leave the earlier hiding value in effect. PWMCP's earlier cascade replaced it with the invalid text and exposed the element's content.
+
+**Fix and policy.** Validate the static `display` grammar and the `visibility` values before admitting either declaration to the existing priority cascade. Invalid declarations are ignored, preserving the earlier valid winner. Static visible forms such as `block flow`, `inline flex`, `list-item`, and `inline-block` still override an earlier hide. Because serialized HTML cannot resolve a winning `var()`, `inherit`, `revert`, or `revert-layer` value, those declarations fail closed even when they may compute visibly. `display:initial`/`unset` and `visibility:initial` retain their visible semantics; `visibility:unset` fails closed because it inherits. This can omit text shown by the browser. README, DESIGN-GUIDE, and CONSUMERS document the trade-off.
+
+**Fix round 2.** Escape-produced CSS whitespace remains part of the decoded identifier during `display` and `visibility` validation, so it cannot become a keyword separator or be trimmed away. CSS comments are checked both after removal and as whitespace token boundaries; if either parse leaves a hiding declaration in force, extraction omits the element. The second interpretation is threaded through malformed-style recovery as well. These checks keep real-letter escapes such as `b\6c ock` valid and do not hide the reviewer’s 70 ordinary visible styles. The fail-closed `var()` policy remains: for example, `--d:none;display:var(--d)` is treated as hidden because the serialized style cannot resolve the computed value.
+
+**Test-first evidence.** Test-only commit `f6bceec53` failed in the registered R1 lane on the reviewed production code, first at `escaped-tab-suffix`; 17 escape-whitespace and comment-split extraction cases failed. The added cases include the malformed recovery path, comment boundaries inside property names and values, valid `!important` placement, uppercase keywords, and controls that must remain visible. The full 70-case ordinary-visible and 47-case hidden batteries, the 1 MiB hostile-style observation, and PWMCP-64's deterministic linear-work bound remain covered.
+
+## PWMCP-66 — `visibility:collapse` can hide extracted content
+
+**Status: IMPLEMENTED (unreleased).** Severity: P2 security. `visibility:collapse` is a valid CSS value that removes table rows or columns from the rendered page, but the serialized-HTML filter recognized only `visibility:hidden` and returned collapsed-row text to the caller.
+
+**Fix.** Treat `visibility:collapse` as hidden before subtree pruning, with the same removal count and descendant behavior as the existing hidden marker. Standalone, later-than-visible, and collapsed-table-row cases are covered in the extraction tests and synchronized policy docs.
+
+## PWMCP-67 — Unicode separators can turn hidden CSS values into visible ones
+
+**Status: IMPLEMENTED (unreleased).** Severity: P2 security. Python's general Unicode whitespace rules are broader than CSS Syntax whitespace. Trimming or splitting on those extra separators accepted malformed later declarations such as `display:block ` or a property name ending in a non-breaking space, allowing them to replace an earlier `display:none` or `visibility:hidden` winner.
+
+**Fix and policy.** CSS declaration trimming and display-keyword splitting now recognize only ASCII space, tab, LF, CR, and FF. Other Unicode space-like characters remain inside property and value tokens, so they cannot turn an invalid later declaration into a valid visible one. Some declarations that a browser might recover differently can leave an earlier hiding declaration in force; this is the fail-closed choice for agent-facing text.
+
+**Test-first evidence.** The nine-case Unicode-whitespace extraction regression failed on the test-only commit in the registered tester-unified R1 lane before this parser change. The tests check both `display` and `visibility`, property names, suffixes, and multi-keyword values.
+
+## PWMCP-68 — unsupported display keywords can override a hidden value
+
+**Status: IMPLEMENTED (unreleased).** Severity: P2 security. The static display allowlist admitted `run-in` and ruby internal display values as visible overrides. When an engine does not implement one of those forms, its declaration is ignored and an earlier `display:none` remains effective, but the filter admitted the text to the agent.
+
+**Fix and policy.** The visible-value allowlist no longer admits `run-in` or ruby internal `display` values. The general `ruby` display-inside value remains supported. Preserving an earlier hide for these values can omit content shown by a browser that implements them; this is the documented fail-closed trade-off.
+
+**Test-first evidence.** Five extraction cases (`run-in` and the four ruby internal values) failed on the test-only commit in the registered tester-unified R1 lane before the allowlist change.
+
+## PWMCP-69 — Unicode case folding can turn an invalid keyword into a visible one
+
+**Status: IMPLEMENTED (unreleased).** Severity: P2 security. Python's `str.lower()` maps U+212A KELVIN SIGN to ASCII `k`, so `display:bloc\212a` (or the literal character) compared equal to `block`. A browser folds keyword case for ASCII only, treats the declaration as invalid, and keeps an earlier `display:none`; the filter instead admitted the text. Only `block` and `inline-block` contain a letter affected by this mapping.
+
+**Fix.** Property names and values fold ASCII `A-Z` only. README, DESIGN-GUIDE, and CONSUMERS state the rule beside the CSS-whitespace rule. Tests cover the literal and escaped forms and that ASCII upper case (`BLOCK`) still overrides.
+
+**Test-first evidence.** The registered tester-unified R1 run on test-only commit `d8ab1454c341a92a35f196060362fcadc1fedb23` exited FAIL before the production change; the log binds the first failure to `kelvin-sign-block`. The gate verdict recorded three failed Kelvin cases (literal `block`, literal `inline-block`, and escaped `block`), 1,901 passed, and five skipped. The ASCII-uppercase `BLOCK` control passed.
+
+## R8 mutation survivor closure
+
+The 46 survivors in the pwmcp R2 r8 report are closed with **35 KILLED and 11 EQUIVALENT**. Every killed row passed with the exact r8 source and failed after its exact mutation was applied in a separate scratch copy; each equivalent row has an input-domain or output-use proof. The original report classes are TEST GAP 26 KILLED / 5 EQUIVALENT, SECURITY-RELEVANT 8 / 0, and EQUIVALENT 1 / 6. The malformed nested-close mutant at line 377 is killed by a nested-close oracle, and the `extract_page(main=False)` default mutant at line 743 (first classed EQUIVALENT) is killed by a direct default-argument test. The complete row table and proof record are in the pwmcp R2 r8 report.
+
+For the next scanner mutation set, test recovery `fragment_start` updates at `;` and stray `)` before a later declaration. The oracle should check which hidden marker reaches extraction and which visible control remains readable, while retaining the linear-work bound.
