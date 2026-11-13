@@ -738,7 +738,7 @@ class CampaignManager:
                 job["last_progress_mono"] = job["last_progress_mono"] or now
                 self._write_state(state)
                 try:
-                    started = self.runner.start(host_id, _job_spec(job))
+                    started = self.runner.start(_job_spec(job))
                 except HostUnavailable as exc:
                     job["status"] = "QUEUED"
                     host_state["status"] = "UNREACHABLE"

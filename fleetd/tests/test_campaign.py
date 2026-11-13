@@ -90,7 +90,7 @@ def test_shell_commands_and_hx_transport_build_argv_without_running_a_host(monke
         shell_command(" \n")
     with pytest.raises(TransportError, match="NUL-free"):
         shell_command(["echo", "bad\x00arg"])
-    with pytest.raises(TransportError, match="NUL-free"):
+    with pytest.raises(TransportError, match="non-empty executable"):
         shell_command([""])
     with pytest.raises(TransportError, match="host alias"):
         HxTransport(wrapper).run("bad alias", "true")
@@ -126,7 +126,7 @@ def test_hx_file_operations_quote_paths_and_translate_errors(monkeypatch, tmp_pa
     transport.put("worker-a", "checkouts/rev/a b", b"bytes", 2)
     assert "base64 --decode" in scripts[0][1]
     assert transport.get("worker-a", "checkouts/rev/a b", 3) == b"saved"
-    assert "'a b'" in scripts[0][1]
+    assert "'checkouts/rev/a b'" in scripts[0][1]
     with pytest.raises(TransportError, match="beneath the remote home"):
         transport.put("worker-a", "../outside", b"x")
     with pytest.raises(TransportError, match="beneath the remote home"):
@@ -181,7 +181,7 @@ def test_job_names_digest_and_command_builders_are_stable_and_scoped():
     assert "fleetd-campaign-command/1" in probe and "list.sha256" in probe
     assert "run-job" in start and "--only-candidates" in start and "R2_MAX_ATTEMPTS" in start
     assert "sha256sum" in start and "EXISTING" in start
-    assert "run-r2-campaign.sh stop" in stop
+    assert 'run-r2-campaign.sh\" stop' in stop
     assert "ssh " not in start and "docker " not in start
     with pytest.raises(ContractError, match="safe name"):
         validate_job_spec(JobSpec("../bad", "host-a", 0, 0, values, "c" * 40, ".", "r2", 1))

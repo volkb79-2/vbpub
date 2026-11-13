@@ -50,8 +50,13 @@ def shell_command(command: Sequence[str] | str) -> str:
         if not command.strip():
             raise TransportError("remote script must not be empty")
         return command
-    if not command or any(not isinstance(value, str) or "\x00" in value for value in command):
-        raise TransportError("remote argv must contain NUL-free strings")
+    if (
+        not command
+        or not isinstance(command[0], str)
+        or not command[0]
+        or any(not isinstance(value, str) or "\x00" in value for value in command)
+    ):
+        raise TransportError("remote argv must start with a non-empty executable and contain NUL-free strings")
     return shlex.join(command)
 
 
