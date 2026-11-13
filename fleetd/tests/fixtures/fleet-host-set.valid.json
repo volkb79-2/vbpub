@@ -1,0 +1,183 @@
+{
+  "hosts": [
+    {
+      "f_h": 1.5,
+      "facts": {
+        "boot_id": "00112233-4455-6677-8899-aabbccddeeff",
+        "cgroup_v2": {
+          "controllers": [
+            "cpu",
+            "io",
+            "memory"
+          ],
+          "mounted": true
+        },
+        "control_plane": {
+          "cpu_weight": 10000,
+          "memory_min_bytes": 805306368,
+          "present": true,
+          "slice": "ctl.slice"
+        },
+        "cpu": {
+          "for_lanes": 4.0,
+          "model": "Fixture CPU",
+          "online": 4,
+          "oversubscribe_max": 1.25
+        },
+        "guard": {
+          "config_digest": "sha256:fixture",
+          "enabled": true,
+          "state": "idle"
+        },
+        "host_now_boottime_s": 1234.5,
+        "jobs": null,
+        "jobs_reason": "named job inventory is not available before WP4",
+        "kernel_interfaces": {
+          "cgroup_freeze": true,
+          "memory_reclaim": true,
+          "memory_reclaim_swappiness_arg": null,
+          "memory_reclaim_swappiness_arg_reason": "not probed by a read-only collector"
+        },
+        "ksm": {
+          "advisor_max_cpu": 8,
+          "advisor_mode": "scan-time",
+          "lane_optin_shim": true,
+          "pages_sharing": 16,
+          "run": 1
+        },
+        "memory": {
+          "available_bytes": 7516192768,
+          "for_lanes_bytes": 8589934592,
+          "overcommit": 1.5,
+          "swap_for_parking_bytes": 4294967296,
+          "swap_free_bytes": 4294967296,
+          "swap_total_bytes": 8589934592,
+          "total_bytes": 8589934592
+        },
+        "policy": {
+          "host_role": "dedicated-dev",
+          "max_lane_containers": 8,
+          "psi_refuse_some_avg10": 25
+        },
+        "psi": {
+          "cpu": {
+            "full_avg10_pct": null,
+            "full_avg10_pct_reason": "CPU PSI has no full line",
+            "some_avg10_pct": 0.5
+          },
+          "io": {
+            "full_avg10_pct": 0.0,
+            "some_avg10_pct": 0.3
+          },
+          "memory": {
+            "full_avg10_pct": 0.2,
+            "some_avg10_pct": 1.0
+          }
+        },
+        "schema": "host-facts/1",
+        "speed": {
+          "baseline_score": 2500,
+          "basis": "geekbench6-measured",
+          "geekbench_major": 6,
+          "geekbench_version": "6.4.0",
+          "multi_core": 6000,
+          "single_core": 2000
+        },
+        "tools": null,
+        "tools_reason": "tool inventory source is not configured"
+      },
+      "id": "host-small",
+      "other_running": []
+    },
+    {
+      "f_h": 0.7,
+      "facts": {
+        "boot_id": "00112233-4455-6677-8899-aabbccddeeff",
+        "cgroup_v2": {
+          "controllers": [
+            "cpu",
+            "io",
+            "memory"
+          ],
+          "mounted": true
+        },
+        "control_plane": {
+          "cpu_weight": 10000,
+          "memory_min_bytes": 805306368,
+          "present": true,
+          "slice": "ctl.slice"
+        },
+        "cpu": {
+          "for_lanes": 4.0,
+          "model": "Fixture CPU",
+          "online": 4,
+          "oversubscribe_max": 1.25
+        },
+        "guard": {
+          "config_digest": "sha256:fixture",
+          "enabled": true,
+          "state": "idle"
+        },
+        "host_now_boottime_s": 1234.5,
+        "jobs": null,
+        "jobs_reason": "named job inventory is not available before WP4",
+        "kernel_interfaces": {
+          "cgroup_freeze": true,
+          "memory_reclaim": true,
+          "memory_reclaim_swappiness_arg": null,
+          "memory_reclaim_swappiness_arg_reason": "not probed by a read-only collector"
+        },
+        "ksm": {
+          "advisor_max_cpu": 8,
+          "advisor_mode": "scan-time",
+          "lane_optin_shim": true,
+          "pages_sharing": 16,
+          "run": 1
+        },
+        "memory": {
+          "available_bytes": 16106127360,
+          "for_lanes_bytes": 17179869184,
+          "overcommit": 1.5,
+          "swap_for_parking_bytes": 4294967296,
+          "swap_free_bytes": 4294967296,
+          "swap_total_bytes": 8589934592,
+          "total_bytes": 17179869184
+        },
+        "policy": {
+          "host_role": "dedicated-dev",
+          "max_lane_containers": 8,
+          "psi_refuse_some_avg10": 25
+        },
+        "psi": {
+          "cpu": {
+            "full_avg10_pct": null,
+            "full_avg10_pct_reason": "CPU PSI has no full line",
+            "some_avg10_pct": 0.5
+          },
+          "io": {
+            "full_avg10_pct": 0.0,
+            "some_avg10_pct": 0.3
+          },
+          "memory": {
+            "full_avg10_pct": 0.2,
+            "some_avg10_pct": 1.0
+          }
+        },
+        "schema": "host-facts/1",
+        "speed": {
+          "baseline_score": 2500,
+          "basis": "geekbench6-measured",
+          "geekbench_major": 6,
+          "geekbench_version": "6.4.0",
+          "multi_core": 9000,
+          "single_core": 3000
+        },
+        "tools": null,
+        "tools_reason": "tool inventory source is not configured"
+      },
+      "id": "host-large",
+      "other_running": []
+    }
+  ],
+  "schema": "fleet-host-set/1"
+}

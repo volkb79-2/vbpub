@@ -34,6 +34,7 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 <!-- cmru: pending release notes begin -->
 
 - fix(cmru): retain only Assay evidence present in the project tree (KI-160).
+- fix(cmru): include tester-base's KSM source in generated project fixtures.
 
 ### Changed
 - Hash both tester-base build inputs when checking the local base image identity.

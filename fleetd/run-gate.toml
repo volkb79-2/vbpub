@@ -1,0 +1,17 @@
+# fleetd test lanes always run in tester-unified; the cockpit never runs tests.
+schema_version = 1
+
+[lanes.r0-r1]
+kind = "command"
+environment = "tester-unified"
+argv = [
+  "bash", "-c",
+  "cd {worktree}/fleetd && PYTHONPATH=src PYTHONDONTWRITEBYTECODE=1 /opt/tester-venv/bin/python3 -m pytest tests -q --cov=fleetd --cov-branch --cov-fail-under=100 --cov-report=term-missing --cov-report=json:coverage.json",
+]
+clean_tree = false
+budget = "30m"
+artifacts = ["coverage.json"]
+
+[lanes.r0-r1.resources]
+memory = "1g"
+io_sync = "durable"

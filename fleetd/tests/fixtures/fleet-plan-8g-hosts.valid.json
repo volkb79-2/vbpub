@@ -1,0 +1,45 @@
+{
+  "schema": "fleet-plan-host-profile/1",
+  "description": "Synthetic planning profile matching the two 4-core, 8-GiB compute hosts; Geekbench scores are test inputs, not live measurements.",
+  "cpu": {
+    "online": 4,
+    "for_lanes": 4.0,
+    "oversubscribe_max": 1.25
+  },
+  "memory": {
+    "total_bytes": 8589934592,
+    "available_bytes": 7516192768,
+    "for_lanes_bytes": 8589934592,
+    "overcommit": 1.5
+  },
+  "hosts": [
+    {
+      "id": "r1002",
+      "source_fixture_host": "host-small",
+      "cpu_model": "Synthetic r1002 hardware flavor",
+      "f_h": 1.0,
+      "speed": {
+        "geekbench_major": 6,
+        "geekbench_version": "6.4.0",
+        "baseline_score": 2500,
+        "single_core": 2000,
+        "multi_core": 6000,
+        "basis": "geekbench6-measured"
+      }
+    },
+    {
+      "id": "v1001",
+      "source_fixture_host": "host-large",
+      "cpu_model": "Synthetic v1001 hardware flavor",
+      "f_h": 1.0,
+      "speed": {
+        "geekbench_major": 6,
+        "geekbench_version": "6.4.0",
+        "baseline_score": 2500,
+        "single_core": 3000,
+        "multi_core": 9000,
+        "basis": "geekbench6-measured"
+      }
+    }
+  ]
+}
