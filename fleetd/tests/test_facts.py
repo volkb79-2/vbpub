@@ -288,7 +288,7 @@ def test_facts_config_rejects_policy_types_and_nonfinite_or_overflow_values(tmp_
         with pytest.raises(ContractError, match=message):
             load_facts_config(root)
     invalid_paths = original.replace(
-        '[paths]\ngeekbench_record = "/var/lib/mdt/host-facts/cpu-benchmark.json"\nguard_config = "/etc/cgprofile/guard.toml"\nguard_state = "/run/cgprofile/guard-state"\nksm_optin_shim = "/usr/lib/fleetd/ksm-optin.so"\n\n[control_plane]',
+        '[paths]\ngeekbench_record = "/var/lib/mdt/host-facts/cpu-benchmark.json"\nhost_setup_env = "/etc/mdt/host-setup.env"\nguard_config = "/etc/cgprofile/guard.toml"\nguard_state = "/run/cgprofile/guard-state"\nksm_optin_shim = "/usr/lib/fleetd/ksm-optin.so"\n\n[control_plane]',
         'paths = "invalid"\n\n[control_plane]',
     )
     config_path.write_text(invalid_paths, encoding="utf-8")
