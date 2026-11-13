@@ -415,9 +415,9 @@ def test_capability_row_rejects_a_wellformed_key_for_another_disk():
     assert error.value.condition == "capability_identity"
 
 
-def test_capability_history_header_keeps_its_header_marker():
+def test_capability_history_header_round_trips_its_values():
     header = json.loads(capability.header_line(DIGEST))
-    assert header["header"] is True
+    assert header == {"header": True, "schema": capability.SCHEMA, "identity_digest": DIGEST}
 
 
 def test_capability_history_rows_are_json_objects_independent_of_key_order():
