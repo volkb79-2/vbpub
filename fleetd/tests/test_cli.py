@@ -45,7 +45,7 @@ def test_non_utf8_guard_file_and_oversized_integers_are_input_errors_not_traceba
     # A candidate memory figure too large for float arithmetic is refused with exit 2.
     candidates = tmp_path / "candidates.json"
     candidates.write_text(
-        '{"schema":"candidate-table/1","candidates":[{"id":"x","file":"a.py","measured_memory_bytes":1'
+        '{"schema":"candidate-table/1","candidates":[{"id":"' + "a" * 64 + '","file":"a.py","measured_memory_bytes":1'
         + "0" * 400 + '}]}',
         encoding="utf-8",
     )

@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import math
 import random
 import subprocess
 from pathlib import Path
@@ -324,6 +325,87 @@ def test_seeded_property_sweep_enforces_physical_caps_sum_budget_mixes_and_retry
                 assert "host-small" not in assigned_hosts
 
 
+def test_input_derived_budgets_hold_for_varied_hosts_and_output_ignores_input_order():
+    """Recompute P, O, B, W and the retry host from the INPUT facts, never from the plan's own figures."""
+    demand = {**DEMAND, "efficient_upper_bound": 3}
+    instance = 250 * 1024**2
+    sizes = [50e6, 120e6, 400e6, 900e6, 1.5e9, 3e9, 5e9, 7e9, 9e9, 15e9]
+    saw_alone = saw_refused = False
+    for seed in range(120):
+        generator = random.Random(4100 + seed)
+        host_set = _hosts()
+        expected = {}
+        for host in host_set["hosts"]:
+            facts = host["facts"]
+            total = generator.choice([4, 6, 8, 8, 12, 16, 32]) * 1024**3
+            facts["memory"].update(
+                total_bytes=total, for_lanes_bytes=total, available_bytes=total // 2,
+                overcommit=generator.choice([1.0, 1.25, 1.5, 2.0]),
+            )
+            facts["control_plane"]["memory_min_bytes"] = generator.choice([768, 1024, 2048]) * 1024**2
+            facts["cpu"].update(
+                online=generator.choice([2, 4, 8]), oversubscribe_max=generator.choice([1.0, 1.25, 1.5]),
+            )
+            facts["cpu"]["for_lanes"] = float(facts["cpu"]["online"])
+            facts["speed"]["single_core"] = generator.choice([1500, 2000, 2500, 3000])
+            host["f_h"] = generator.choice([0.5, 1.0, 1.7, 2.0])
+            if generator.random() < 0.4:
+                host["other_running"] = [{
+                    "id": "other", "expected_memory_bytes": generator.choice([1, 2, 3]) * 1024**3,
+                    "workers": generator.choice([0, 1, 2]), "containers": 1,
+                }]
+            other = host["other_running"]
+            physical = total - facts["control_plane"]["memory_min_bytes"]
+            overhead = sum(job["expected_memory_bytes"] for job in other) + instance
+            slots = min(
+                int(facts["cpu"]["for_lanes"] * facts["cpu"]["oversubscribe_max"]) - sum(job["workers"] for job in other),
+                demand["efficient_upper_bound"],
+            )
+            expected[host["id"]] = (physical, overhead, physical * facts["memory"]["overcommit"] - overhead, slots)
+        rows = []
+        for index in range(generator.randint(1, 30)):
+            row = _candidate(f"p{seed}-{index}", int(generator.choice(sizes)), source=f"src/{index % 4}.py")
+            if generator.random() < 0.1:
+                row["memory_crash_evidence"] = True
+            rows.append(row)
+        plan = _plan(rows, hosts=host_set, demand=demand)
+        available = {host["id"]: host for host in plan["hosts"] if host["status"] == "available"}
+        saw_refused = saw_refused or len(available) < len(plan["hosts"])
+        placed = set()
+        for host_id, host in available.items():
+            physical, overhead, budget, slots = expected[host_id]
+            assert host["worker_slots"] == slots
+            assert host["budget_bytes"] == pytest.approx(budget)
+            assert host["cap_alone_bytes"] == physical - overhead
+            shared = [item["memory_bytes"] for item in host["assigned"] if item["assignment"] == "shared"]
+            for item in host["assigned"]:
+                placed.add(item["id"])
+                assert item["memory_bytes"] <= physical - overhead
+                saw_alone = saw_alone or item["assignment"] == "alone"
+            if shared and sum(shared) / len(shared) > budget / slots:
+                assert host["mix_flagged"] is True
+            for batch in host["batches"]:
+                for wave in batch["waves"]:
+                    assert wave["expected_charge_bytes"] <= budget
+                    if batch.get("kind") is None:
+                        assert len(wave["candidate_ids"]) <= slots
+        if available:
+            largest = max(physical - overhead for physical, overhead, _, _ in (expected[name] for name in available))
+            for host_id, host in available.items():
+                for item in host["assigned"]:
+                    if item["assignment"] == "retry":
+                        assert expected[host_id][0] - expected[host_id][1] == largest
+        listed = placed | {item["id"] for item in plan["unplaced"]} | {item["id"] for item in plan["terminal"]}
+        assert listed == {row["id"] for row in rows}
+        assert len(placed) + len(plan["unplaced"]) + len(plan["terminal"]) == len(rows)
+        shuffled_hosts = copy.deepcopy(host_set)
+        generator.shuffle(shuffled_hosts["hosts"])
+        shuffled_rows = list(rows)
+        generator.shuffle(shuffled_rows)
+        assert dump_json(_plan(shuffled_rows, hosts=shuffled_hosts, demand=demand)) == dump_json(plan)
+    assert saw_alone and saw_refused
+
+
 def test_batches_interleave_classes_respect_wave_budget_and_multiplier():
     rows = [
         _candidate("low-slow", 100_000_000, elapsed_seconds=200.0, measured_on_host="host-small"),
@@ -341,6 +423,21 @@ def test_batches_interleave_classes_respect_wave_budget_and_multiplier():
             assert wave["expected_charge_bytes"] <= host["budget_bytes"]
             assert wave["mix_holds"] or wave.get("mix_flag_reason")
     assert host["ram_low_bytes"] > 0
+
+
+def test_batch_multiplier_sets_the_candidate_count_of_every_full_batch():
+    rows = [_candidate(f"m{index}", 100_000_000, source="src/m.py") for index in range(40)]
+    for multiplier in (1.0, 2.5, 4.0):
+        plan = _plan(rows, batch_multiplier=multiplier)
+        multi_batch_hosts = 0
+        for host in plan["hosts"]:
+            target = math.ceil(multiplier * host["worker_slots"])
+            sizes = [len(batch["candidate_ids"]) for batch in host["batches"]]
+            assert all(batch["target_candidate_count"] == target for batch in host["batches"])
+            assert all(size == target for size in sizes[:-1])
+            assert 1 <= sizes[-1] <= target
+            multi_batch_hosts += len(sizes) > 1
+        assert multi_batch_hosts
 
 
 def test_mix_violation_is_flagged_without_turning_missing_eta_into_a_mix_flag():
