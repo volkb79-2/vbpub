@@ -65,6 +65,23 @@ remains target-read-only: do not run a live raw write, discard, or format in
 this procedure. The initial liveness probe writes and fsyncs a temporary file
 on the host root filesystem as its responsiveness check.
 
+Round-two read-only verification found that the cockpit runner is the Docker
+container `mdt-cockpit-runner`; `mdt-cockpit-runner.service` is not a systemd
+unit on the host. The liveness probe therefore checks the container with
+`docker exec` and does not query that unit. The SSH banner probe defaults to
+`127.0.0.1:22`; on r1002, sshd was verified listening on `0.0.0.0:22`. If a
+study host uses another SSH endpoint, pass `--liveness-ssh-host` and
+`--liveness-ssh-port`; the runner name can be changed with
+`--liveness-cockpit-container`.
+
+The acknowledged dry-run below intentionally omits `--fsync-cell`. That option
+requires the driver process to have exactly one `docker-<64-hex-id>.scope`
+identity in `/proc/self/cgroup`; a root SSH session does not meet this
+requirement. When `--fsync-cell` is selected, dry-run checks the Docker cgroup
+scope, loaded background slice, wrapper, and collector image before it can
+pass. Run that mode from the required Docker scope, or omit the optional fsync
+collector.
+
 ## 1. Target-read-only inventory and raw dry-run
 
 ```bash
@@ -163,7 +180,7 @@ check_acknowledged_dry_run() {
     printf 'acknowledged dry-run did not report dry_run=true:\n%s\n' "$result" >&2
     return 1
   fi
-  printf 'PASS acknowledged system-disk dry-run and IO-control smoke: %s\n' "$result"
+  printf 'PASS acknowledged system-disk dry-run, IO-control and liveness smoke: %s\n' "$result"
 }
 check_whole_disk_refusal() {
   local disk_bytes status
@@ -186,8 +203,9 @@ record_check "default system-disk refusal" expect_refusal \
 # The explicit flag records the operator's consent. The token derived here is
 # a drift check for this host, disk, root device and target PARTUUID. The
 # acknowledged dry-run must pass, does not create output files, and does not
-# require timer state changes; it does require the first liveness probe to pass.
-record_check "acknowledged system-disk dry-run and IO-control smoke" check_acknowledged_dry_run
+# require timer state changes; it does require the IO-control snapshot,
+# monitor sample, and first host-liveness probe to pass.
+record_check "acknowledged system-disk dry-run, IO-control and liveness smoke" check_acknowledged_dry_run
 record_check "wrong system-disk acknowledgement refusal" expect_refusal \
   "system-disk acknowledgement does not match current host facts" \
   raw_dry_run "$RAW" vda5 "$IBX_TARGET_CONFIRMATION" \

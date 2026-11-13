@@ -98,14 +98,17 @@ advisory and protects host responsiveness with memory PSI `full avg10`,
 consecutive-sample host-liveness stop. A successful initial probe is required
 before target I/O; later probes use a recorded configurable interval (10 s by
 default). Each bounded root-filesystem fsync and SSH/cockpit check runs in a
-transient `system.slice` service outside the benchmark cgroup.
+transient `system.slice` service outside the benchmark cgroup. The cockpit
+runner liveness check is `docker exec` against the configured container name;
+it does not require a matching systemd unit.
 
 **Close when.** Fake proc/clock/latency coverage proves each stop and advisory
 path; the registered R0–R1 lane passes on the final head.
 
 ## IOB-BL-46 — live acceptance catches host-layout assumptions fixtures missed
 
-**Status: OPEN; guard and regression tests added in `ibx-io-snapshot-fix`.**
+**Status: OPEN; guards and regression tests added in `ibx-io-snapshot-fix` and
+its round-two fix.**
 The 2026-11-13 read-only acceptance reached the IO-control snapshot and showed
 that its fixture had hidden real-kernel details: root has no `io.max`,
 `io.weight`, or `io.latency`; `system.slice/io.max` exists but is empty;
@@ -120,12 +123,15 @@ separate synthetic leaf test for the deeper ancestry case.
 The snapshot treats missing controls as no setting, refuses existing but
 unreadable or malformed controls and active limits that can affect the study,
 and compares the same observed values before and after a cell-set. It checks
-`io.max` and `io.weight` along the benchmark path. Since `io.latency` may
-throttle peers, it enumerates direct peers at each path level and refuses an
-active target there at each check. Peer membership is excluded from
-before/after equality because systemd units and containers change during a
-long study. The host's active `dev.slice/io.max` is a sibling ceiling and is
-not inherited by the study process.
+`io.max`, `io.weight`, and `io.bfq.weight` along the benchmark path. Since
+`io.latency` and BFQ sibling weights can affect the benchmark's share, it
+enumerates direct peers at each path level and refuses active values there at
+each check. Peer membership is excluded from before/after equality because
+systemd units and containers change during a long study. The host's active
+`dev.slice/io.max` is a sibling ceiling and is not inherited by the study
+process. Root `io.bfq.weight` absence is captured from the round-two host
+check; child BFQ control states were not captured, so the fixture does not
+claim those files are absent.
 
 The captured layout is checked in at
 [`tests/fixtures/ibx-real-cgroup-layout.json`](tests/fixtures/ibx-real-cgroup-layout.json)
@@ -139,12 +145,34 @@ partition's sysfs directory does not own the disk `queue/`; the run2 acceptance
 did not reach that probe. The driver now resolves the partition's parent disk
 before reading `queue/discard_max_bytes`; r1002 live confirmation remains open.
 
+Round two found and fixed the next host-layout assumption before another host
+run: the cockpit runner is a Docker container and has no
+`mdt-cockpit-runner.service` unit. The liveness probe now uses `docker exec`
+only, keeps the root-filesystem fsync and SSH banner checks, and configures the
+SSH host/port and runner name with defaults `127.0.0.1:22` and
+`mdt-cockpit-runner`. The read-only check verified sshd listening on
+`0.0.0.0:22`. Missing pressure files now fail as path-specific `StudyError`s.
+An optional `--fsync-cell` now checks its Docker cgroup scope, loaded
+`CGROUP_PARENT_DEV_BACKGROUND` slice, wrapper, and image during dry-run; a
+direct SSH root session without the required Docker cgroup scope refuses
+before study work. The round-two report inventories every driver invocation
+and `/proc`, `/sys`, and `/dev` assumption with its verification status.
+
+**Fixture guard (proposed):** keep a cgroup layout captured from a real host in
+`tests/fixtures/` with evidence provenance and explicit present/empty/absent
+states. Every host-liveness, monitoring, or optional collector assumption that
+was not verified on that host must either be exercised by the dry-run or
+refuse there with a clear `StudyError`, never surface first during a live cell.
+
 **Close when.** The registered R0–R1 lane passes on the final reviewed head,
 and the next approved read-only acceptance confirms the acknowledged dry-run
 passes on the real cgroup layout while every active-limit and target-safety
 refusal still fires. Run 2 verified target identity, partition, mount, swap,
 holder, system-disk acknowledgement, root/system.slice control values, the
-cost files, and the captured timer state. It did not reach diskstats, PSI,
-meminfo, the trim sysfs read, file-target backing-device checks, the live
-systemd timer guard, or host-liveness probes. The package report records the
-path-by-path verification inventory and the evidence that supports each item.
+cost files, fio 3.39 and `allow_mounted_write`, and the captured timer state.
+Round two additionally verified the cockpit container vs. systemd unit, sshd
+listener, pressure-file presence, and root BFQ-weight absence. It did not reach
+diskstats values, the trim sysfs read, file-target backing-device checks, or
+the live systemd timer guard. The package report records every driver host
+assumption as VERIFIED-ON-HOST or UNVERIFIED, with dry-run behavior for the
+latter.

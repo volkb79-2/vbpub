@@ -378,15 +378,16 @@ orchestration code.
 The driver fails closed on target geometry, active io.cost and cgroup IO
 controls, monitor thresholds, write/time budgets, and timer state during live
 runs. It does not change IO controls. The IO snapshot covers the benchmark
-cgroup and each ancestor for `io.max` and `io.weight`. A control file missing
+cgroup and each ancestor for `io.max`, `io.weight`, and `io.bfq.weight`. A control file missing
 from that chain means the kernel/cgroup has no setting to enforce; its absence
 is recorded alongside present values so the before/after check detects a
 control appearing or changing. An existing but unreadable or malformed file
 refuses. `io.max` entries are inactive only when every per-device value is
-`max`; `io.weight` must report the default 100. Because `io.latency` can
-throttle peer groups, the snapshot also enumerates sibling cgroups at each
-level of the benchmark path and refuses any active latency target there; those
-peer targets are checked on every snapshot call. Peer membership is not part
+`max`; `io.weight` and `io.bfq.weight` must report default 100 with no active
+device override. Because `io.latency` can throttle peers and BFQ weights affect
+sibling shares, the snapshot also enumerates sibling cgroups at each level of
+the benchmark path and refuses active latency targets or non-default BFQ
+weights there; those peer controls are checked on every snapshot call. Peer membership is not part
 of before/after equality because systemd services and containers can come and
 go during a study. Missing optional files mean no setting. Root `io.cost.qos`
 must be disabled, and the built-in
@@ -423,11 +424,18 @@ advisory because the saturating fio workload can cause high I/O pressure by
 itself. Host-protection stops use memory PSI `full avg10`, `MemAvailable`, and
 free-space floors plus a separate bounded `system.slice` liveness service that
 fsyncs a temporary file on the root filesystem, checks the local SSH banner,
-and verifies the cockpit runner with systemd and container exec. The first
+and verifies the configured cockpit Docker container with `docker exec`; it
+does not require a systemd unit for the runner. The SSH host and port default
+to `127.0.0.1:22`, and the container name defaults to `mdt-cockpit-runner`;
+all three can be configured with their `--liveness-*` run options. The first
 successful probe is required before target writes; subsequent probes run at a
 recorded 10-second default interval that can be set with
 `--probe-interval-seconds`. A configured number of consecutive slow or failed
 liveness samples stops the run; wall-time and byte caps remain hard stops.
+When `--fsync-cell` is selected, dry-run also checks for one Docker cgroup
+identity, the loaded background slice, the wrapper, and the configured
+collector image. An SSH root session without the Docker cgroup scope refuses
+before study work begins.
 
 The writer meter has a 500 GB decimal cap (500,000,000,000 bytes). The actual
 fio job caps for the full base schedule total 495.123688448 GB, including the

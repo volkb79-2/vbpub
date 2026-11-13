@@ -12,6 +12,7 @@ import json
 import math
 import os
 import re
+import shutil
 import signal
 import socket
 import stat
@@ -34,9 +35,8 @@ DEFAULT_LIVENESS_PROBE_INTERVAL_S = 10.0
 LIVENESS_ROOT_DIRECTORY = "/"
 LIVENESS_SSH_HOST = "127.0.0.1"
 LIVENESS_SSH_PORT = 22
-LIVENESS_COCKPIT_UNIT = "mdt-cockpit-runner.service"
 LIVENESS_COCKPIT_CONTAINER = "mdt-cockpit-runner"
-LIVENESS_ACTIVE_UNIT_STATES = {"active", "activating", "deactivating", "reloading"}
+IOMON_BPF_IMAGE_DEFAULT = "iomon-bpf:20261027"
 GIB = 1024**3
 GB = 10**9
 WRITE_CAP_GB = 500
@@ -115,8 +115,7 @@ limit = float(sys.argv[1])
 root_directory = sys.argv[2]
 ssh_host = sys.argv[3]
 ssh_port = int(sys.argv[4])
-cockpit_unit = sys.argv[5]
-cockpit_container = sys.argv[6]
+cockpit_container = sys.argv[5]
 components = {}
 try:
     started = time.monotonic()
@@ -137,12 +136,6 @@ try:
     components["sshd_seconds"] = time.monotonic() - started
 
     started = time.monotonic()
-    result = subprocess.run(
-        ["systemctl", "show", cockpit_unit, "--property=ActiveState", "--value"],
-        text=True, capture_output=True, check=False, timeout=limit,
-    )
-    if result.returncode or result.stdout.strip() != "active":
-        raise RuntimeError(f"{cockpit_unit} is not active")
     result = subprocess.run(
         ["docker", "exec", cockpit_container, "true"],
         text=True, capture_output=True, check=False, timeout=limit,
@@ -536,10 +529,16 @@ def summarize_series(series: Mapping[str, list[dict[str, float]]]) -> dict[str, 
 
 
 def monitor_sample(device: str, *, proc: Path = Path("/proc")) -> dict[str, Any]:
-    disk = parse_diskstats((proc / "diskstats").read_text(encoding="utf-8"))
-    io_psi = parse_psi((proc / "pressure/io").read_text(encoding="utf-8"))
-    mem_psi = parse_psi((proc / "pressure/memory").read_text(encoding="utf-8"))
-    meminfo = parse_meminfo((proc / "meminfo").read_text(encoding="utf-8"))
+    def read_required(path: Path) -> str:
+        try:
+            return path.read_text(encoding="utf-8")
+        except (OSError, UnicodeError) as exc:
+            raise StudyError(f"cannot read required host monitoring file {path}: {exc}") from exc
+
+    disk = parse_diskstats(read_required(proc / "diskstats"))
+    io_psi = parse_psi(read_required(proc / "pressure/io"))
+    mem_psi = parse_psi(read_required(proc / "pressure/memory"))
+    meminfo = parse_meminfo(read_required(proc / "meminfo"))
     if device not in disk:
         raise StudyError(f"diskstats has no row for {device!r}")
     required = ("discards_completed", "sectors_discarded", "flushes_completed", "flush_ms")
@@ -638,8 +637,40 @@ def _validate_io_weight_inactive(text: str, path: Path) -> None:
         raise StudyError(f"io.weight has no explicit default 100 at {path}")
 
 
+def _validate_io_bfq_weight_inactive(text: str, path: Path) -> None:
+    saw_default = False
+    seen_devices: set[str] = set()
+    for line in text.splitlines():
+        fields = line.split()
+        if not fields:
+            continue
+        if fields[0] == "default" and len(fields) == 2:
+            if saw_default:
+                raise StudyError(f"malformed io.bfq.weight at {path}: duplicate default row")
+            saw_default = True
+            value = fields[1]
+            if not re.fullmatch(r"\d+", value) or not 1 <= int(value) <= 1000:
+                raise StudyError(f"malformed io.bfq.weight at {path}")
+            if int(value) != 100:
+                raise StudyError(f"non-default io.bfq.weight at {path}")
+        elif re.fullmatch(r"\d+:\d+", fields[0]) and len(fields) == 2:
+            if fields[0] in seen_devices:
+                raise StudyError(f"malformed io.bfq.weight at {path}: duplicate device row")
+            seen_devices.add(fields[0])
+            value = fields[1]
+            if not re.fullmatch(r"\d+", value) or not 0 <= int(value) <= 1000:
+                raise StudyError(f"malformed io.bfq.weight at {path}")
+            # BFQ documents zero as resetting this device to the default.
+            if int(value) not in (0, 100):
+                raise StudyError(f"non-default io.bfq.weight at {path}")
+        else:
+            raise StudyError(f"malformed io.bfq.weight at {path}")
+    if not saw_default:
+        raise StudyError(f"io.bfq.weight has no explicit default 100 at {path}")
+
+
 def _io_latency_peer_paths(directories: list[Path]) -> list[Path]:
-    """Return every cgroup which can be an io.latency peer of this process."""
+    """Return direct peers whose latency targets or BFQ weights can affect the benchmark."""
     peers: set[Path] = set()
     for directory in directories[1:]:
         parent = directory.parent
@@ -721,9 +752,10 @@ def io_control_snapshot(*, cgroup_root: Path = Path("/sys/fs/cgroup"),
     Control files absent from a kernel or cgroup have no setting. Existing files
     are read and recorded so the before/after comparison detects changes. The
     benchmark cgroup and every ancestor must still be present and enumerable.
-    io.latency is peer-relative, so direct sibling groups at each level of the
-    benchmark path are enumerated and checked on every call. Their membership
-    is not included in the compared snapshot because services can come and go.
+    io.latency and io.bfq.weight can affect sibling shares, so direct peer
+    groups at each level of the benchmark path are checked on every call. Their
+    membership is not included in the compared snapshot because services can
+    come and go.
     """
     if cgroup_text is None:
         membership = Path("/proc/self/cgroup")
@@ -747,6 +779,14 @@ def io_control_snapshot(*, cgroup_root: Path = Path("/sys/fs/cgroup"),
     latency_peers = _io_latency_peer_paths(dirs)
     latency_values: dict[Path, str | None] = {}
     benchmark_chain = set(dirs)
+    bfq_checked_dirs = {cgroup_root, *dirs, *latency_peers}
+    bfq_values: dict[Path, str | None] = {}
+    for directory in bfq_checked_dirs:
+        path = directory / "io.bfq.weight"
+        text = _read_optional_control(path, allow_vanished_parent=directory not in benchmark_chain)
+        if text is not None:
+            _validate_io_bfq_weight_inactive(text, path)
+        bfq_values[directory] = text
     for directory in [cgroup_root, *latency_peers]:
         path = directory / "io.latency"
         text = _read_optional_control(path, allow_vanished_parent=directory not in benchmark_chain)
@@ -762,9 +802,14 @@ def io_control_snapshot(*, cgroup_root: Path = Path("/sys/fs/cgroup"),
     }
     for directory in dirs:
         files: dict[str, str | None] = {}
-        for name in ("io.max", "io.weight", "io.latency"):
+        for name in ("io.max", "io.weight", "io.bfq.weight", "io.latency"):
             path = directory / name
-            text = latency_values[directory] if name == "io.latency" else _read_optional_control(path)
+            if name == "io.latency":
+                text = latency_values[directory]
+            elif name == "io.bfq.weight":
+                text = bfq_values[directory]
+            else:
+                text = _read_optional_control(path)
             files[name] = text
             if text is None:
                 continue
@@ -773,6 +818,8 @@ def io_control_snapshot(*, cgroup_root: Path = Path("/sys/fs/cgroup"),
                     raise StudyError(f"active io.max limit at {path}")
             elif name == "io.weight":
                 _validate_io_weight_inactive(text, path)
+            elif name == "io.bfq.weight":
+                _validate_io_bfq_weight_inactive(text, path)
         snapshot["cgroups"].append({"path": str(directory), "files": files})
     for name in ("io.cost.qos", "io.cost.model"):
         path = cgroup_root / name
@@ -1211,12 +1258,35 @@ class LocalHost:
     def io_control_snapshot(self) -> dict[str, Any]:
         return io_control_snapshot()
 
+    def assert_study_tools(self, kind: str) -> None:
+        """Exercise tools each pending study can need before dry-run passes."""
+        for executable in ("fio", "blkdiscard" if kind == "raw" else "fallocate"):
+            if shutil.which(executable) is None:
+                raise StudyError(f"required study executable {executable} is unavailable in PATH")
+        try:
+            version = subprocess.run(["fio", "--version"], text=True, capture_output=True, check=False)
+        except OSError as exc:
+            raise StudyError(f"cannot run fio preflight: {exc}") from exc
+        if version.returncode or not version.stdout.strip().startswith("fio-"):
+            raise StudyError("fio preflight did not report a fio version")
+        if kind == "raw":
+            try:
+                option = subprocess.run(["fio", "--cmdhelp=allow_mounted_write"], text=True,
+                                        capture_output=True, check=False)
+            except OSError as exc:
+                raise StudyError(f"cannot check fio allow_mounted_write support: {exc}") from exc
+            if option.returncode or "allow_mounted_write" not in option.stdout:
+                raise StudyError("fio must support the allow_mounted_write option for raw studies")
+
     def assert_quiet_window(self) -> None:
         for unit in ("fstrim.timer", "apt-daily.timer", "apt-daily-upgrade.timer",
                      "mdt-dev-governance-reconcile.timer"):
-            result = subprocess.run(["systemctl", "show", unit, "--property=LoadState",
-                                    "--property=ActiveState", "--value"], text=True,
-                                   capture_output=True, check=False)
+            try:
+                result = subprocess.run(["systemctl", "show", unit, "--property=LoadState",
+                                        "--property=ActiveState", "--value"], text=True,
+                                       capture_output=True, check=False)
+            except OSError as exc:
+                raise StudyError(f"cannot verify quiet-window timer state for {unit}: {exc}") from exc
             values = result.stdout.splitlines()
             if result.returncode or len(values) != 2:
                 raise StudyError(f"cannot verify quiet-window timer state for {unit}")
@@ -1303,8 +1373,11 @@ class LocalHost:
         return rows
 
     def _findmnt_facts(self, target: str) -> tuple[str, str, str]:
-        result = subprocess.run(["findmnt", "--noheadings", "--raw", "--output", "FSTYPE,UUID,MAJ:MIN",
-                                 "--target", target], text=True, capture_output=True, check=False)
+        try:
+            result = subprocess.run(["findmnt", "--noheadings", "--raw", "--output", "FSTYPE,UUID,MAJ:MIN",
+                                     "--target", target], text=True, capture_output=True, check=False)
+        except OSError as exc:
+            raise StudyError(f"cannot establish filesystem identity for {target}: {exc}") from exc
         fields = result.stdout.split()
         if result.returncode or len(fields) != 3:
             raise StudyError(f"cannot establish filesystem identity for {target}")
@@ -1376,8 +1449,11 @@ class LocalHost:
         if kind == "raw" and not stat.S_ISBLK(info.st_mode):
             raise StudyError("raw study target must be a block device")
         if kind == "raw":
-            result = subprocess.run(["blockdev", "--getsize64", target], text=True,
-                                    capture_output=True, check=False)
+            try:
+                result = subprocess.run(["blockdev", "--getsize64", target], text=True,
+                                        capture_output=True, check=False)
+            except OSError as exc:
+                raise StudyError(f"cannot establish raw target size: {exc}") from exc
             if result.returncode or not result.stdout.strip().isdigit():
                 raise StudyError("cannot establish raw target size")
             target_size = int(result.stdout.strip())
@@ -1537,8 +1613,11 @@ class LocalHost:
                 ["fallocate", "-p", "-o", str(offset), "-l", str(size), target])
         if timeout is not None and timeout <= 0:
             raise StudyError("bounded discard exceeded the remaining active-I/O allowance")
-        process = subprocess.Popen(argv, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                                   close_fds=True)
+        try:
+            process = subprocess.Popen(argv, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                       close_fds=True)
+        except OSError as exc:
+            raise StudyError(f"cannot start bounded target operation {argv[0]}: {exc}") from exc
         start = self.now()
         try:
             while process.poll() is None:
@@ -1575,43 +1654,80 @@ class LocalHost:
             self.sleep(min(1.0, end - self.now()))
 
     def current_container_id(self) -> str:
-        text = (self.proc / "self/cgroup").read_text(encoding="utf-8")
+        path = self.proc / "self/cgroup"
+        try:
+            text = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeError) as exc:
+            raise StudyError(f"fsync mode requires a Docker cgroup scope; cannot read {path}: {exc}") from exc
         matches = re.findall(r"docker-([0-9a-f]{64})\.scope", text)
         if len(set(matches)) != 1:
-            raise StudyError("fsync mode requires one Docker cgroup identity from the host wrapper")
+            raise StudyError("fsync mode requires execution inside one Docker cgroup scope "
+                             "(docker-<64-hex-id>.scope); an SSH root session does not provide this")
         return matches[0]
 
-    def start_fsync(self, out: Path) -> tuple[str, Path]:
+    def assert_fsync_preflight(self) -> None:
+        """Check every stable iomon-bpf requirement before a dry-run can pass."""
+        self.current_container_id()
         parent = os.environ.get("CGROUP_PARENT_DEV_BACKGROUND")
         if not parent:
             raise StudyError("fsync mode requires CGROUP_PARENT_DEV_BACKGROUND from host policy")
-        state = subprocess.run(["systemctl", "show", parent, "--property=LoadState", "--value"],
-                               text=True, capture_output=True, check=False)
+        try:
+            state = subprocess.run(["systemctl", "show", parent, "--property=LoadState", "--value"],
+                                   text=True, capture_output=True, check=False)
+        except OSError as exc:
+            raise StudyError(f"cannot check fsync collector cgroup parent {parent}: {exc}") from exc
         if state.returncode or state.stdout.strip() != "loaded":
-            raise StudyError("fsync collector cgroup parent is not a loaded systemd slice")
+            raise StudyError(f"fsync collector cgroup parent {parent} is not a loaded systemd slice")
         script = REPO / "mdt-cockpit/scripts/iomon-bpf/run.sh"
-        if not script.is_file():
+        if not script.is_file() or not os.access(script, os.X_OK):
             raise StudyError(f"iomon-bpf wrapper is missing: {script}")
+        image = os.environ.get("IOMON_BPF_IMAGE", IOMON_BPF_IMAGE_DEFAULT)
+        if not image:
+            raise StudyError("fsync mode requires a non-empty IOMON_BPF_IMAGE")
+        try:
+            result = subprocess.run(["docker", "image", "inspect", "--format", "{{.Id}}", image],
+                                    text=True, capture_output=True, check=False)
+        except OSError as exc:
+            raise StudyError(f"cannot inspect fsync collector image {image}: {exc}") from exc
+        if (result.returncode or
+                not re.fullmatch(r"sha256:[0-9a-f]{64}", result.stdout.strip())):
+            raise StudyError(f"fsync collector image {image} is unavailable to Docker")
+
+    def start_fsync(self, out: Path) -> tuple[str, Path]:
+        self.assert_fsync_preflight()
+        script = REPO / "mdt-cockpit/scripts/iomon-bpf/run.sh"
         name = f"iomon-bpf-ibx-{os.getpid()}"
         bpf_out = out / "fsync-bpf"
-        subprocess.run([str(script), "--hours", "1", "--name", name, "--out", str(bpf_out),
-                        self.current_container_id()], check=True)
+        try:
+            subprocess.run([str(script), "--hours", "1", "--name", name, "--out", str(bpf_out),
+                            self.current_container_id()], check=True)
+        except (OSError, subprocess.CalledProcessError) as exc:
+            raise StudyError(f"cannot start iomon-bpf collector: {exc}") from exc
         deadline = self.now() + 30
         while self.now() < deadline:
-            probe = subprocess.run(["docker", "inspect", "--format", "{{.State.Running}}", "--", name],
-                                   text=True, capture_output=True, check=False)
+            try:
+                probe = subprocess.run(["docker", "inspect", "--format", "{{.State.Running}}", "--", name],
+                                       text=True, capture_output=True, check=False)
+            except OSError as exc:
+                raise StudyError(f"cannot inspect iomon-bpf collector {name}: {exc}") from exc
             if probe.returncode == 0 and probe.stdout.strip() == "true":
                 return name, bpf_out
             self.sleep(1)
-        subprocess.run(["docker", "stop", "-t", "10", name], text=True,
-                       capture_output=True, check=False)
+        try:
+            subprocess.run(["docker", "stop", "-t", "10", name], text=True,
+                           capture_output=True, check=False)
+        except OSError as exc:
+            raise StudyError(f"cannot stop failed iomon-bpf collector {name}: {exc}") from exc
         raise StudyError("iomon-bpf did not start within 30 seconds")
 
     def stop_fsync(self, collector: tuple[str, Path]) -> None:
         name, bpf_out = collector
-        (bpf_out / "STOP-BPF").touch()
-        stopped = subprocess.run(["docker", "stop", "-t", "60", name], text=True,
-                                 capture_output=True, check=False)
+        try:
+            (bpf_out / "STOP-BPF").touch()
+            stopped = subprocess.run(["docker", "stop", "-t", "60", name], text=True,
+                                     capture_output=True, check=False)
+        except OSError as exc:
+            raise StudyError(f"cannot stop owned iomon-bpf collector {name}: {exc}") from exc
         if stopped.returncode:
             raise StudyError(f"iomon-bpf stop failed for owned collector {name}: {stopped.stderr.strip()}")
 
@@ -1621,7 +1737,9 @@ class LocalHost:
     def sleep(self, seconds: float) -> None:
         time.sleep(seconds)
 
-    def liveness_probe(self, max_latency_s: float) -> dict[str, Any]:
+    def liveness_probe(self, max_latency_s: float, *, ssh_host: str = LIVENESS_SSH_HOST,
+                       ssh_port: int = LIVENESS_SSH_PORT,
+                       cockpit_container: str = LIVENESS_COCKPIT_CONTAINER) -> dict[str, Any]:
         if self._liveness_probe_stalled:
             try:
                 status = subprocess.run(["systemctl", "is-active", self._liveness_probe_stalled_unit],
@@ -1649,8 +1767,7 @@ class LocalHost:
                                      f"--property=RuntimeMaxSec={max_latency_s}",
                                      sys.executable, "-c", LIVENESS_PROBE_SCRIPT,
                                      str(max_latency_s), LIVENESS_ROOT_DIRECTORY,
-                                     LIVENESS_SSH_HOST, str(LIVENESS_SSH_PORT),
-                                     LIVENESS_COCKPIT_UNIT, LIVENESS_COCKPIT_CONTAINER],
+                                     ssh_host, str(ssh_port), cockpit_container],
                                     text=True, capture_output=True,
                                     check=False, timeout=max_latency_s + 1)
         except subprocess.TimeoutExpired:
@@ -1697,8 +1814,11 @@ class LocalHost:
 
     def execute_fio(self, job_path: Path, runtime_s: int,
                     sample: Callable[[], None]) -> tuple[dict[str, Any], float]:
-        proc = subprocess.Popen(["fio", str(job_path)], stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                                text=True, close_fds=True)
+        try:
+            proc = subprocess.Popen(["fio", str(job_path)], stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                    text=True, close_fds=True)
+        except OSError as exc:
+            raise StudyError(f"cannot start fio: {exc}") from exc
         start = self.now()
         try:
             while proc.poll() is None:
@@ -1751,6 +1871,9 @@ def run_study(cell_set: str, *, target: str, device: str, out: Path, target_kind
               offset: int, size: int, mem_psi_max: float, min_memavailable: int, min_free: int,
               max_probe_latency_s: float, probe_consecutive_samples: int,
               probe_interval_s: float = DEFAULT_LIVENESS_PROBE_INTERVAL_S,
+              liveness_ssh_host: str = LIVENESS_SSH_HOST,
+              liveness_ssh_port: int = LIVENESS_SSH_PORT,
+              liveness_cockpit_container: str = LIVENESS_COCKPIT_CONTAINER,
               host: Any | None = None, fsync_cell: str | None = None,
               quiet_window_confirmed: bool = False, confirm_target: str | None = None,
               allow_system_disk_partition: bool = False, system_disk_ack: str | None = None,
@@ -1792,6 +1915,15 @@ def run_study(cell_set: str, *, target: str, device: str, out: Path, target_kind
             not math.isfinite(probe_interval_s) or probe_interval_s <= 0 or
             probe_interval_s > 60):
         raise StudyError("host-liveness probe interval must be finite and in (0,60] seconds")
+    if (not isinstance(liveness_ssh_host, str) or not liveness_ssh_host or
+            any(char.isspace() for char in liveness_ssh_host) or "\x00" in liveness_ssh_host):
+        raise StudyError("host-liveness SSH host must be a non-empty hostname or address")
+    if (isinstance(liveness_ssh_port, bool) or not isinstance(liveness_ssh_port, int) or
+            not 1 <= liveness_ssh_port <= 65535):
+        raise StudyError("host-liveness SSH port must be an integer in [1,65535]")
+    if (not isinstance(liveness_cockpit_container, str) or
+            not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", liveness_cockpit_container)):
+        raise StudyError("host-liveness Docker container must be a valid configured container name")
     if min_memavailable <= 0 or min_free <= 0:
         raise StudyError("memory and free-space floors must be positive")
     if not out.is_absolute():
@@ -1820,6 +1952,9 @@ def run_study(cell_set: str, *, target: str, device: str, out: Path, target_kind
         "max_probe_latency_seconds": max_probe_latency_s,
         "probe_consecutive_samples": probe_consecutive_samples,
         "probe_interval_seconds": probe_interval_s,
+        "liveness_ssh_host": liveness_ssh_host,
+        "liveness_ssh_port": liveness_ssh_port,
+        "liveness_cockpit_container": liveness_cockpit_container,
     }
     manifest = state["run_manifest"]
     existing_policy = manifest.get("stop_policy")
@@ -1893,7 +2028,9 @@ def run_study(cell_set: str, *, target: str, device: str, out: Path, target_kind
 
     def take_liveness_probe(*, preflight: bool = False) -> tuple[dict[str, Any], bool]:
         nonlocal bad_liveness, last_liveness_probe_at
-        probe = validate_liveness_probe(host.liveness_probe(max_probe_latency_s))
+        probe = validate_liveness_probe(host.liveness_probe(
+            max_probe_latency_s, ssh_host=liveness_ssh_host, ssh_port=liveness_ssh_port,
+            cockpit_container=liveness_cockpit_container))
         last_liveness_probe_at = host.now()
         failed = (not probe["responsive"] or probe["latency_seconds"] > max_probe_latency_s)
         bad_liveness = bad_liveness + 1 if failed else 0
@@ -1927,6 +2064,7 @@ def run_study(cell_set: str, *, target: str, device: str, out: Path, target_kind
         raise StudyError("--fsync-cell must be written as RUNG:CELL and name a cell in this set")
     pending_cap = 0
     pending_work = False
+    fsync_cell_pending = False
     for rung in rungs:
         special = rung == "part-c"
         planned_jobs = rung_jobs("quick" if special else rung, part_c=special)
@@ -1941,6 +2079,8 @@ def run_study(cell_set: str, *, target: str, device: str, out: Path, target_kind
             if key not in state["cells"] and not (out / "cells" / filename).exists():
                 pending_cap += job.write_cap
                 pending_work = True
+                if fsync_cell == f"{rung}:{job.name}":
+                    fsync_cell_pending = True
     required_cap = required_remainder_write_cap(cell_set, out=out, state=state)
     if int(state["write_bytes"]) + pending_cap + required_cap > WRITE_CAP:
         if cell_set in FILE_STANDARD_CELL_SETS:
@@ -1949,6 +2089,11 @@ def run_study(cell_set: str, *, target: str, device: str, out: Path, target_kind
                                f"by cell-sets still ahead do not fit in the remaining "
                                f"{WRITE_CAP_GB} GB write budget")}
         raise StudyError("the remaining write budget cannot complete this cell-set")
+    if pending_work:
+        host.assert_study_tools(kind)
+        host.trim_state(device)
+    if fsync_cell_pending:
+        host.assert_fsync_preflight()
     rendered_jobs: dict[tuple[str, str], str] = {}
     planned_jobs: dict[tuple[str, str], Job] = {}
     for rung in rungs:
@@ -2922,6 +3067,12 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--probe-interval-seconds", type=float,
                      default=DEFAULT_LIVENESS_PROBE_INTERVAL_S,
                      help="seconds between independent liveness probes (default: 10)")
+    run.add_argument("--liveness-ssh-host", default=LIVENESS_SSH_HOST,
+                     help="host address used for the local SSH banner probe (default: 127.0.0.1)")
+    run.add_argument("--liveness-ssh-port", type=int, default=LIVENESS_SSH_PORT,
+                     help="port used for the local SSH banner probe (default: 22)")
+    run.add_argument("--liveness-cockpit-container", default=LIVENESS_COCKPIT_CONTAINER,
+                     help="Docker container checked by the liveness probe (default: mdt-cockpit-runner)")
     run.add_argument("--allow-system-disk-partition", action="store_true",
                      help="operator consent to allow a raw partition sharing the running system disk")
     run.add_argument("--system-disk-ack",
@@ -2930,7 +3081,7 @@ def build_parser() -> argparse.ArgumentParser:
                      help="confirm scheduled idle window; the driver checks required timers")
     run.add_argument("--dry-run", action="store_true",
                      help="validate the target, schedule and every fio job without writing files or target data")
-    run.add_argument("--fsync-cell", help="wrap exactly this cell with mdt-cockpit/scripts/iomon-bpf/run.sh")
+    run.add_argument("--fsync-cell", help="wrap exactly this cell with iomon-bpf; requires one Docker cgroup scope")
     analyze_parser = sub.add_parser("analyze", help="compute error, bias, spread and rung tables")
     analyze_parser.add_argument("results", type=Path)
     analyze_parser.add_argument("--output", type=Path)
@@ -2962,6 +3113,9 @@ def main(argv: list[str] | None = None) -> int:
                            max_probe_latency_s=args.max_probe_latency_seconds,
                            probe_consecutive_samples=args.probe_consecutive_samples,
                            probe_interval_s=args.probe_interval_seconds,
+                           liveness_ssh_host=args.liveness_ssh_host,
+                           liveness_ssh_port=args.liveness_ssh_port,
+                           liveness_cockpit_container=args.liveness_cockpit_container,
                            fsync_cell=args.fsync_cell, quiet_window_confirmed=args.confirm_quiet_window,
                            confirm_target=args.confirm_target,
                            allow_system_disk_partition=args.allow_system_disk_partition,
