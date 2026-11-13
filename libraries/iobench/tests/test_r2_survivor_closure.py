@@ -536,6 +536,15 @@ def test_weak_disk_lookup_does_not_accept_a_strong_candidate():
     assert found is None
 
 
+def test_weak_disk_lookup_does_not_accept_a_wwn_only_candidate():
+    host = standard_host()
+    host.put("/sys/class/block/vda/device/model", "M\n")
+    host.put("/sys/block/vda/wwid", "WWN-123\n")
+    found = guard.find_disk(host, model="M", serial=None, wwn=None, size_bytes=500 * GIB,
+                            hint="vda", machine_id_matches=True)
+    assert found is None
+
+
 def test_empty_btrfs_member_list_is_reported_as_unknown_disk_scope():
     host = standard_host()
     uuid = "00000000-0000-0000-0000-000000000001"
