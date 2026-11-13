@@ -906,6 +906,90 @@ def plan_campaign(
     return result
 
 
+def replan_pending(
+    plan: Mapping[str, Any],
+    candidate_ids: list[str] | tuple[str, ...],
+    host_id: str,
+) -> list[dict[str, Any]]:
+    """Rebuild batches for unfinished planned candidates on one selected host.
+
+    The host choice remains the campaign scheduler's policy; all RAM, worker,
+    mix, retry, and batching decisions are delegated to the same placement
+    functions used by the original planner.
+    """
+    candidates_by_id = {
+        candidate["id"]: candidate
+        for host in plan.get("hosts", [])
+        for candidate in host.get("assigned", [])
+    }
+    selected_host = next(
+        (host for host in plan.get("hosts", []) if host.get("id") == host_id and host.get("status") == "available"),
+        None,
+    )
+    if selected_host is None:
+        raise ContractError(f"replan host {host_id!r} is not available in the original plan")
+    if not candidate_ids:
+        return []
+
+    resolved: list[dict[str, Any]] = []
+    for index, candidate_id in enumerate(candidate_ids):
+        if not is_candidate_id(candidate_id):
+            raise ContractError(f"replan candidate_ids[{index}]: invalid candidate id")
+        source = candidates_by_id.get(candidate_id)
+        if source is None:
+            raise ContractError(f"replan candidate {candidate_id!r} is not assigned in the original plan")
+        retry = source.get("assignment") == "retry"
+        item = CandidateInput(
+            candidate_id=candidate_id,
+            source_file=source["file"],
+            measured_memory_bytes=source["memory_bytes"],
+            estimated_memory_class=source["ram_class"],
+            elapsed_seconds=None,
+            measured_on_host=None,
+            memory_crash_evidence=retry,
+            memory_crash_retries=0,
+        )
+        resolved.append({
+            "input": item,
+            "memory_bytes": source["memory_bytes"],
+            "time_ref_seconds": source["time_ref_seconds"],
+            "ram_class": source["ram_class"],
+        })
+
+    capacity = {
+        key: selected_host[key]
+        for key in (
+            "id", "status", "cap_bytes", "budget_bytes", "average_worker_budget_bytes",
+            "cap_alone_bytes", "worker_slots", "speed", "f_h", "slot_worker_capacities",
+        )
+        if key in selected_host
+    }
+    if "cap_bytes" not in capacity or "budget_bytes" not in capacity:
+        raise ContractError(f"replan host {host_id!r} is missing planner capacity facts")
+    time_reference = plan.get("time_reference", {})
+    assignments, specials, unplaced, terminal = _assign_candidates(
+        resolved,
+        [capacity],
+        time_reference.get("geekbench_major"),
+        time_reference.get("geekbench_version"),
+        time_reference.get("baseline_score"),
+    )
+    if unplaced or terminal:
+        details = unplaced + terminal
+        raise ContractError("planner could not place re-queued candidates: " + ", ".join(row["id"] for row in details))
+    normal = assignments[host_id]
+    alone_and_retry = specials[host_id]
+    retry_rows = [item for item in alone_and_retry if item["input"].memory_crash_evidence]
+    alone_rows = [item for item in alone_and_retry if not item["input"].memory_crash_evidence]
+    multiplier = plan.get("batch_multiplier", 4.0)
+    batches = _batch_groups(normal, capacity, multiplier)
+    batches.extend(_single_group(item, capacity, retry=False) for item in sorted(alone_rows, key=lambda row: row["input"].candidate_id))
+    batches.extend(_single_group(item, capacity, retry=True) for item in sorted(retry_rows, key=lambda row: row["input"].candidate_id))
+    for index, batch in enumerate(batches):
+        batch["batch"] = index
+    return batches
+
+
 def extract_demand(path: str | Path, lane: str) -> dict[str, Any]:
     return load_lane_demand(path, lane)
 
