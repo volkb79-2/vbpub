@@ -1,0 +1,41 @@
+# fleetd's release contract; this package builds the project but does not run a release.
+schema_version = 1
+
+[runtime]
+kind = "none"
+
+[project]
+id = "fleetd"
+description = "fleetd -- host facts and deterministic RAM-first campaign plans"
+template_revision = 4
+prefix = "fleetd-v"
+artifacts = ["wheel"]
+scm_dist = "fleetd"
+
+[project.version]
+strategy = "scm"
+bump = "conventional"
+
+[project.release]
+git_tag = true
+build_step = "build"
+artifact_dirs = ["dist"]
+evidence_paths = ["coverage.json"]
+
+[steps.run-tests]
+quiet = true
+commands = [
+  { label = "fleetd: r0-r1 (unit + 100% branch coverage)", argv = ["run-gate", "r0-r1"], cwd = "." },
+]
+
+[steps.build]
+quiet = true
+commands = [
+  { label = "fleetd: build wheel", argv = ["cmru", "handler", "wheel-build", "--cwd", "."], cwd = "." },
+]
+
+[steps.push]
+quiet = true
+commands = [
+  { label = "fleetd: publish wheel", argv = ["cmru", "handler", "wheel-publish", "--prefix", "fleetd", "--cwd", "."], cwd = "." },
+]

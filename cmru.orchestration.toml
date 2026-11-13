@@ -26,6 +26,7 @@ registry = ["ghcr.io"]
 #   cmru <- cli-extended, run-gate-project  (declared release order)
 #   ciu <- cli-extended  (declared release order)
 #   assay <- none  (declared release order)
+#   fleetd <- none  (declared release order)
 #   topos <- cli-extended, augeaswrap  (declared release order)
 #   nyxloom <- cli-extended  (declared release order)
 #   pwmcp <- cli-extended  (declared release order)
@@ -39,7 +40,7 @@ registry = ["ghcr.io"]
 #   tester-base <- none  (declared release order)
 #
 # LEVELS (a project releases after every project on a lower level; longest declared chain)
-#   L0: cli-extended, assay, test-policy, tls-edge, iogovmon, tester-base
+#   L0: cli-extended, assay, fleetd, test-policy, tls-edge, iogovmon, tester-base
 #   L1: augeaswrap, tnt, ciu, nyxloom, pwmcp, iobench, rigor-record
 #   L2: cgprofile, topos
 #   L3: run-gate-project
@@ -54,7 +55,7 @@ registry = ["ghcr.io"]
 # CMRU requires cli-extended at runtime and a published Run-Gate release for its gate.
 # Run-Gate's full R2 qualification requires the released CGProfile observer.
 # project_order must be a topological order of every level; the preflight enforces it.
-project_order = ["cli-extended", "augeaswrap", "tnt", "cgprofile", "run-gate-project", "cmru", "ciu", "assay", "topos", "nyxloom", "pwmcp", "iobench", "rigor-record", "test-policy", "tls-edge", "iogovmon", "mdt-cockpit", "tester-base"]
+project_order = ["cli-extended", "augeaswrap", "tnt", "cgprofile", "run-gate-project", "cmru", "ciu", "assay", "fleetd", "topos", "nyxloom", "pwmcp", "iobench", "rigor-record", "test-policy", "tls-edge", "iogovmon", "mdt-cockpit", "tester-base"]
 default_steps = ["run-tests", "build", "push"]
 execution_mode = "project-first"
 # Repository credentials live in gitignored root cmru.secret.toml. A project may
@@ -203,6 +204,11 @@ depends_on = ["cli-extended"]
 
 [orchestration.project.assay]
 config = "assay/cmru.toml"
+depends_on = []
+
+# Fleetd is stdlib-only and currently consumes no first-party release artifact.
+[orchestration.project.fleetd]
+config = "fleetd/cmru.toml"
 depends_on = []
 
 [orchestration.project.topos]

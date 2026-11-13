@@ -1,0 +1,70 @@
+# Using fleetd
+
+## Collect and validate host facts
+
+The facts command is read-only. A fixture root gives the same parser and
+collector behavior without reading the calling machine:
+
+```sh
+fleet facts collect --root ./host-root > host-facts.json
+fleet facts validate host-facts.json
+```
+
+On a host, `fleet facts collect` uses the installed fleetd facts configuration.
+The Geekbench JSON path is host-owned configuration; fleetd reads the record
+and never invokes Geekbench. If the record is absent, `speed` is `null` with a
+reason. The JSON schema version is `host-facts/1`.
+
+## Plan a candidate set
+
+The candidate table identifies candidates and their source files. Each
+candidate may carry its own measured RAM, elapsed seconds, measurement host,
+and retry evidence. Measurements are optional; absent values fall through to
+same-file and lane medians, then the lane demand declaration.
+
+```sh
+fleet plan r2 \
+  --candidates candidates.json \
+  --hosts hosts.json \
+  --demand run-gate.toml
+```
+
+Normal output is stable JSON with host capacities, assigned candidates,
+batches, and ETA. Add `--commands` to print shell-ready blocks. Each block
+writes a batch's candidate IDs beneath `.assay/fleetd-plan/` and then invokes
+the existing Run-Gate selector:
+
+```sh
+fleet plan r2 --candidates candidates.json --hosts hosts.json \
+  --demand run-gate.toml --commands
+```
+
+The selected candidate files are consumed by Run-Gate as
+`--only-candidates FILE`. Run each host's listed slots within the lane's
+declared efficient job bound. An unplaceable candidate or a host refused by
+the PSI admission threshold is reported with a reason, never silently dropped.
+
+The lane demand is a table in the existing Run-Gate TOML file:
+
+```toml
+[lanes.r2.demand]
+unit = "candidate"
+instance_memory = "250m"
+unit_memory = "120m"
+unit_memory_high = "600m"
+unit_seconds_ref = 95
+efficient_upper_bound = 3
+```
+
+The accepted units are `candidate`, `worker`, and `run`. Memory accepts
+positive integer bytes with `B`, `k`, `m`, `g`, `kib`, `mib`, or `gib` suffixes.
+See the [specification](SPEC.md) and [design choices](DESIGN-GUIDE.md).
+
+## Validate guard rules
+
+```sh
+fleet guard validate /etc/cgprofile/guard.toml
+```
+
+This validates one rule file. It does not load drop-ins, signal cgprofiled,
+freeze cgroups, or reclaim memory.

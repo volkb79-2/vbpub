@@ -1,0 +1,19 @@
+# fleetd
+
+`fleetd` is the small, central scheduling service proposed for distributing
+long Assay campaigns across enrolled compute hosts. This first package ships
+the data contracts, a read-only host-facts collector, and a deterministic
+RAM-first planner. It has no daemon, sockets, transport, or remote execution.
+
+The planner produces per-host candidate lists and shell commands that use
+Run-Gate's existing `--only-candidates FILE` option. Candidate RAM is resolved
+from its own measurement, the same-file median, the lane median, then the
+declared lane demand. Overcommit applies to expected sums; a single candidate
+must still fit physical lane RAM. Geekbench single-core scores and one factor
+per host inform ETA only. See the [design guide](docs/DESIGN-GUIDE.md) for the
+reasons and the [consumer guide](docs/CONSUMERS.md) for runnable examples.
+
+Runtime imports use only the Python standard library. The registered
+`r0-r1` lane runs tests in `tester-unified` with full line and branch coverage.
+The package does not include or start a daemon, socket, SSH client, Docker
+client, or Geekbench process.
