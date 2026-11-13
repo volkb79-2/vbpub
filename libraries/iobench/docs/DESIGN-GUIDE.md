@@ -466,6 +466,27 @@ degradation criteria. A complete assessment that does not confirm them returns
 `skipped` so the scheduled runbook continues; incomplete evidence remains an
 error.
 
+### Real-fio rehearsal and watchdog deadline
+
+The driver starts its wall clock when it launches fio, while fio begins a
+time-based job's `runtime` after its own startup and any rendered ramp. The
+watchdog therefore derives its deadline from the rendered job's `runtime` and
+`ramp_time`, a bounded configurable startup grace, and the existing 60-second
+drain reserve. Reading the rendered job keeps the deadline correct when the
+study clips a runtime to its remaining active or elapsed budget. The watchdog
+stays bounded, and a non-zero fio exit remains a failed attempt unless the
+driver deliberately sent the final SIGINT.
+
+The `real_fio` rehearsal runs this same planner, run path, fio JSON parser, and
+analysis command against a small regular file. `--test-scale` preserves every
+planned job and block-size shape while scaling extents, write caps, runtimes,
+and waits; the driver requires an output-contained regular file under `/tmp`
+and refuses device targets. That lets the rehearsal expose driver and fio
+integration errors without granting a device-sized study job. Hole-punching
+represents discard and final wipe for the file only. It cannot certify raw
+block discard, partition wiping, formatting and mounting, host protection, or
+hard-kill resume; those remain separate host acceptance checks.
+
 The result table applies design 6.3's reference/error computation and 6.4's
 rung verdicts; quick/veryquick latency-under-load values use the documented
 QD32 p99 proxy, and the noise-band action is reported with each measured

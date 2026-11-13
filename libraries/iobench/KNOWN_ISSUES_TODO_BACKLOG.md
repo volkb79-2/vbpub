@@ -304,3 +304,34 @@ the resulting candidate inventory.
 the R2 mutation proof records every non-killed candidate as killed or
 equivalent with its test and evidence; and the lane accepts and records the
 released comparison base without requiring a host-local commit.
+
+## IOB-BL-50 — IBX time-based fio deadline and real-binary rehearsal
+
+**Status: FIXED in this package.** Run4 found that the driver sent SIGINT at
+the rendered fio `runtime`, before fio's own runtime clock had completed its
+startup and optional ramp. The driver now derives the watchdog from the
+rendered `runtime` plus `ramp_time`, configurable startup grace, and the
+existing drain reserve. It parses a JSON object after a fio signal notice,
+still rejects unexpected non-zero exits, and preserves bounded raw stdout and
+stderr in failed-attempt records.
+
+The opt-in `real_fio` test and `rehearse` command now drive the actual planner,
+every base-schedule `run` cell-set, and `analyze` against a planner-scaled
+regular file with real fio JSON. It covers each time-based job shape in every
+rung, raw-style, file-target, latency, anchors, observation, rewrite, and
+recovery paths, and produces `rung-choice.md`. Its explicit `--test-scale`
+guard accepts only a regular file contained under the output directory in
+`/tmp`; file hole-punch stands in for raw discard and the final partition wipe.
+Host safety probes, actual block discard, partition wipe, filesystem creation
+and mount, and hard-kill resume remain outside the rehearsal; the acceptance
+runbook lists their degradation and the read-only checks that precede live use.
+Run4 independently confirmed the writer-cap repair live and passed all six
+read-only acceptance checks before this deadline defect stopped the schedule.
+Its target was discarded during restore, so its saved state is not a valid
+measurement resume; the next approved study needs a fresh authorized output
+directory. The still-pending complete study acceptance remains tracked by
+IOB-BL-47.
+
+**Close when.** The real-fio rehearsal passes with upstream fio 3.39 and
+produces `rung-choice.md`; the iobench R0–R1 gate passes on the reviewed final
+head; the next approved full live study proceeds under IOB-BL-47.

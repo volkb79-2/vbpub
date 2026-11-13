@@ -169,7 +169,55 @@ options: `memory_psi_full_avg10_max_percent` to `--max-memory-psi`,
 `probe_interval_seconds` to `--probe-interval-seconds`,
 `liveness_ssh_host` to `--liveness-ssh-host`,
 `liveness_ssh_port` to `--liveness-ssh-port`, and
-`liveness_cockpit_container` to `--liveness-cockpit-container`.
+`liveness_cockpit_container` to `--liveness-cockpit-container`,
+`fio_startup_grace_seconds` to `--fio-startup-grace-seconds`, and
+`test_scale` to `--test-scale`, and `test_scale_ioengine` to
+`--test-scale-engine`.
+
+## Fio completion deadline
+
+For every live cell, the driver reads `runtime` and `ramp_time` back from the
+rendered fio job. Its wall deadline is their sum plus the configured
+`--fio-startup-grace-seconds` (default 5) and the 60-second drain reserve. The
+same bound is reserved against the active and elapsed meters and checked after
+fio exits. An unexpected non-zero fio exit remains a failed attempt even when
+its stdout contains valid JSON; only a SIGINT exit sent by this driver's
+deadline handler is treated as its deliberate stop. Failed-attempt records
+retain at most 64 KiB each of raw stdout and stderr, with truncation recorded.
+A fio that ignores `SIGINT` and `SIGTERM` is sent `SIGKILL` after 30 s each, on
+the deadline and on a driver stop alike, so it cannot outlive the driver. A raw
+dry-run or run also requires `mkfs.ext4`, `mkfs.btrfs`, `mount`, `umount`,
+`wipefs` and `fallocate` in `PATH`, so a missing file-leg tool refuses before
+t0 instead of stopping the study at t+9h.
+Older run states migrate the new default grace and live-mode fields with a
+recorded stop-policy migration; other policy changes still refuse resume.
+
+## Real-fio rehearsal
+
+The opt-in `real_fio` test and `rehearse` command drive the normal planner and
+`run` command over the complete base schedule using upstream fio 3.39. The
+planner's explicit `--test-scale` mode keeps the same job names, rung ordering,
+block-size mix, latency, anchors, observation, rewrite, and file-target shapes,
+while using an 8 MiB regular file under the rehearsal output directory, 4 MiB
+writer caps, 2-second time-based jobs, and a 1-second idle wait. The rehearsal
+is accepted only when `analyze` writes `rung-choice.md`.
+
+`--test-scale` refuses anything except an existing regular file contained in
+the output directory under `/tmp`; it never opens a block device. Host safety
+facts and liveness samples are synthetic in this mode. Raw-style discard steps
+use `fallocate` hole punching on the regular file. The resulting measurements
+are driver-path evidence, not benchmark results. If fio is unavailable, the
+`real_fio` pytest marker skips with the manual command; a present but
+incompatible version fails.
+
+The rehearsal reads the installed fio build's `--enghelp` list and selects
+`libaio`, then `posixaio`, `io_uring`, or `psync` in that order. `run` accepts
+`--test-scale-engine` only alongside `--test-scale`; this override is saved in
+the run policy so a resumed rehearsal cannot silently change engines. Live
+jobs always use the repository's `libaio` template. If the selected fallback
+is `psync`, fio runs synchronously and its queue depth is not representative;
+the rehearsal still covers driver startup, runtime deadline, signal, JSON,
+recording, analysis, and file-target control flow.
 The study result is therefore explicitly marked as including system and
 sibling-swap activity. A swap-active target partition, mounted partition,
 changed SIZE/PARTUUID, or any other safety failure still refuses. Resume state

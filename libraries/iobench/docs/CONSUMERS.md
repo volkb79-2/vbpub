@@ -415,6 +415,29 @@ is not considered custom.
 The [study README](../studies/ibx/README.md) maps saved stop-policy fields to
 their run options.
 
+Before the first live study cell, rehearse the planner and real fio end to end
+with upstream fio 3.39. From the repository root, point `STUDY` at the driver
+and `FIO` at that binary; the rehearsal creates only an 8 MiB regular file
+inside a fresh `/tmp` output directory:
+
+```bash
+set -euo pipefail
+STUDY="$PWD/libraries/iobench/studies/ibx/driver.py"
+FIO=/path/to/fio-3.39
+OUT=$(mktemp -d /tmp/ibx-fio-rehearsal.XXXXXX)
+python3 "$STUDY" plan --test-scale --json
+python3 "$STUDY" rehearse --fio "$FIO" --out "$OUT"
+test -s "$OUT/rung-choice.md"
+cat "$OUT/rehearsal-transcript.txt"
+```
+
+`rehearse` runs all scheduled cell-sets and `analyze` with real fio JSON and
+prints `FIO-REHEARSAL-PASS` on success. Its test-scale mode accepts only the
+regular-file target it creates under the output directory in `/tmp`; it
+rejects block devices and other targets. The study acceptance section [0b](../studies/ibx/ACCEPTANCE.md#0b-rehearsal)
+lists the operations this rehearsal cannot cover and the dry-run checks that
+precede their live acceptance.
+
 From the repository root, set the stop-policy variables to values supplied by
 the study host's approved policy. Set `IBX_EXPECTED_HOST` from the approved run
 authorization; do not derive it from the connected host. The example checks
