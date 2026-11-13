@@ -247,6 +247,7 @@ def test_facts_config_rejects_policy_types_and_nonfinite_or_overflow_values(tmp_
         ("oversubscribe_max = 1.25", "oversubscribe_max = " + "9" * 400, "expected finite number"),
         ("psi_refuse_some_avg10 = 25", "psi_refuse_some_avg10 = true", "from 0 through 100"),
         ("psi_refuse_some_avg10 = 25", 'psi_refuse_some_avg10 = "25"', "from 0 through 100"),
+        ("psi_refuse_some_avg10 = 25", "psi_refuse_some_avg10 = []", "from 0 through 100"),
         ("psi_refuse_some_avg10 = 25", "psi_refuse_some_avg10 = inf", "from 0 through 100"),
         ("max_lane_containers = 8", "max_lane_containers = 0", "positive integer"),
     ):

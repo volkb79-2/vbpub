@@ -482,7 +482,7 @@ def collect_host_facts(root: Path = DEFAULT_ROOT) -> dict[str, Any]:
     controllers_path = cgroup_root / "cgroup.controllers"
     controllers_text, controllers_read_reason = _read_text(controllers_path, "cgroup v2 controllers")
     cgroup_mounted = controllers_path.is_file()
-    if controllers_text is None:
+    if controllers_read_reason is not None:
         controllers: list[str] | None = None
         controllers_reason = controllers_read_reason or "cgroup v2 controllers file is absent"
     else:
