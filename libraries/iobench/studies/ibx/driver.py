@@ -1465,6 +1465,7 @@ class LocalHost:
             except (OSError, subprocess.TimeoutExpired):
                 status = None
             state = status.stdout.strip() if status is not None else ""
+            # With --collect, "unknown" means systemd has removed the transient unit.
             confirmed_stopped = (status is not None and status.returncode != 0 and
                                  state in {"inactive", "failed", "unknown"})
             if not confirmed_stopped:
@@ -1656,9 +1657,11 @@ def run_study(cell_set: str, *, target: str, device: str, out: Path, target_kind
     manifest = state["run_manifest"]
     existing_policy = manifest.get("stop_policy")
     if existing_policy is not None and existing_policy != stop_policy:
+        recorded_policy = json.dumps(existing_policy, sort_keys=True, separators=(",", ":"))
         raise StudyError("study stop policy changed since the previous attempt; resume is refused to preserve "
-                         "the existing byte and time meters. Keep this state and obtain an operator decision; "
-                         "a new --out directory resets those meters")
+                         f"the existing byte and time meters. Recorded stop policy: {recorded_policy}. "
+                         "Resume only with those values; if they are no longer acceptable, keep this state "
+                         "and obtain an operator decision. A new --out directory resets those meters")
     manifest["stop_policy"] = stop_policy
     target_safety = validation.system_disk
     safety_history = manifest["target_safety"]

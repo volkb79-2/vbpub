@@ -888,10 +888,12 @@ def test_system_disk_ack_derivation_reads_facts_and_requires_shared_system_disk(
     with pytest.raises(driver.StudyError, match="cannot derive system-disk acknowledgement"):
         driver.derive_system_disk_ack(
             "/dev/fake", "vda5", f"/dev/fake:{FAKE_IDENTITY.size_bytes}:{FAKE_IDENTITY.partuuid}", host)
+    unprivileged = FakeHost()
+    unprivileged.is_root = lambda: False
     with pytest.raises(driver.StudyError, match="requires root"):
         driver.derive_system_disk_ack(
             "/dev/fake", "vda5", f"/dev/fake:{FAKE_IDENTITY.size_bytes}:{FAKE_IDENTITY.partuuid}",
-            SimpleNamespace(is_root=lambda: False))
+            unprivileged)
 
 
 def test_system_disk_ack_cli_prints_fresh_acknowledgement(tmp_path, capsys, monkeypatch):
@@ -919,21 +921,27 @@ def test_raw_target_refuses_device_number_that_differs_from_diskstats_device(tmp
 
 
 def test_raw_target_refuses_size_mismatch(tmp_path, monkeypatch):
-    host, target, _, _ = _raw_target_fixture(tmp_path, monkeypatch)
+    host, target, _, _ = _raw_target_fixture(tmp_path, monkeypatch, root_devno="8:1")
+    acknowledgement = driver.system_disk_acknowledgement(
+        driver.socket.gethostname(), "vda", ["vda1"], FAKE_IDENTITY.partuuid)
     with pytest.raises(driver.StudyError, match="raw target size does not match"):
         host.validate_target(str(target), "raw", 0, 4096, "vda5",
-                             confirmation=driver.TargetIdentity(GIB + 1, FAKE_IDENTITY.partuuid))
+                             confirmation=driver.TargetIdentity(GIB + 1, FAKE_IDENTITY.partuuid),
+                             allow_system_disk_partition=True, system_disk_ack=acknowledgement)
 
 
 def test_raw_target_refuses_replaced_partuuid(tmp_path, monkeypatch):
-    host, target, _, _ = _raw_target_fixture(tmp_path, monkeypatch)
+    host, target, _, _ = _raw_target_fixture(tmp_path, monkeypatch, root_devno="8:1")
     def replaced_partition(args, **kwargs):
         if args[0] == "blkid":
             return SimpleNamespace(returncode=0, stdout="beef-9999\n", stderr="")
         return SimpleNamespace(returncode=0, stdout=f"{FAKE_IDENTITY.size_bytes}\n", stderr="")
     monkeypatch.setattr(driver.subprocess, "run", replaced_partition)
+    acknowledgement = driver.system_disk_acknowledgement(
+        driver.socket.gethostname(), "vda", ["vda1"], "beef-9999")
     with pytest.raises(driver.StudyError, match="PARTUUID does not match"):
-        host.validate_target(str(target), "raw", 0, 4096, "vda5", confirmation=FAKE_IDENTITY)
+        host.validate_target(str(target), "raw", 0, 4096, "vda5", confirmation=FAKE_IDENTITY,
+                             allow_system_disk_partition=True, system_disk_ack=acknowledgement)
 
 
 def test_raw_target_refuses_unprovable_device_identity_and_partition_topology(tmp_path, monkeypatch):
@@ -1001,7 +1009,8 @@ def test_raw_target_refuses_whole_disk_with_partitions(tmp_path, monkeypatch):
     link.unlink()
     link.symlink_to(disk)
     with pytest.raises(driver.StudyError, match="whole disks are refused"):
-        host.validate_target(str(target), "raw", 0, 4096, "vda5", confirmation=FAKE_IDENTITY)
+        host.validate_target(str(target), "raw", 0, 4096, "vda5", confirmation=FAKE_IDENTITY,
+                             allow_system_disk_partition=True, system_disk_ack="fixture-drift-token")
 
 
 def test_raw_target_refuses_mounted_partition(tmp_path, monkeypatch):
@@ -1030,19 +1039,22 @@ def test_raw_target_refuses_swap_active_partition(tmp_path, monkeypatch):
 
 
 def test_raw_target_refuses_partition_with_holders(tmp_path, monkeypatch):
-    host, target, part, _ = _raw_target_fixture(tmp_path, monkeypatch)
+    host, target, part, _ = _raw_target_fixture(tmp_path, monkeypatch, root_devno="8:1")
     holder = host.sys / "devices/block/dm-0"
     (holder / "holders").mkdir(parents=True)
     (holder / "dev").write_text("253:0\n", encoding="utf-8")
     (host.sys / "class/block/dm-0").symlink_to(holder)
     (part / "holders/dm-0").symlink_to(holder)
     assert host._holders(part) == {"253:0"}
+    acknowledgement = driver.system_disk_acknowledgement(
+        driver.socket.gethostname(), "vda", ["vda1"], FAKE_IDENTITY.partuuid)
     with pytest.raises(driver.StudyError, match="active holders"):
-        host.validate_target(str(target), "raw", 0, 4096, "vda5", confirmation=FAKE_IDENTITY)
+        host.validate_target(str(target), "raw", 0, 4096, "vda5", confirmation=FAKE_IDENTITY,
+                             allow_system_disk_partition=True, system_disk_ack=acknowledgement)
 
 
 def test_raw_target_refuses_active_exclusive_claim(tmp_path, monkeypatch):
-    host, target, _, _ = _raw_target_fixture(tmp_path, monkeypatch)
+    host, target, _, _ = _raw_target_fixture(tmp_path, monkeypatch, root_devno="8:1")
     real_open = os.open
 
     def busy_open(target_path, flags, *args, **kwargs):
@@ -1053,8 +1065,11 @@ def test_raw_target_refuses_active_exclusive_claim(tmp_path, monkeypatch):
         return 123
 
     monkeypatch.setattr(driver.os, "open", busy_open)
+    acknowledgement = driver.system_disk_acknowledgement(
+        driver.socket.gethostname(), "vda", ["vda1"], FAKE_IDENTITY.partuuid)
     with pytest.raises(driver.StudyError, match="active exclusive holder"):
-        host.validate_target(str(target), "raw", 0, 4096, "vda5", confirmation=FAKE_IDENTITY)
+        host.validate_target(str(target), "raw", 0, 4096, "vda5", confirmation=FAKE_IDENTITY,
+                             allow_system_disk_partition=True, system_disk_ack=acknowledgement)
 
 
 def test_raw_target_refuses_when_exclusive_probe_cannot_be_established(tmp_path, monkeypatch):
@@ -1353,6 +1368,40 @@ def test_local_liveness_probe_reports_fake_child_latency_and_failures(monkeypatc
     unresolved = host.liveness_probe(1)
     assert unresolved["responsive"] is False
     assert "not been confirmed stopped" in unresolved["error"]
+
+    for returncode, state in ((3, "deactivating"), (3, ""), (0, "inactive")):
+        clock[:] = [0.0, 2.0]
+        host = driver.LocalHost()
+
+        def not_confirmed_stopped(*args, _returncode=returncode, _state=state, **kwargs):
+            if args[0][0] == "systemd-run":
+                raise driver.subprocess.TimeoutExpired(args[0], kwargs["timeout"])
+            return SimpleNamespace(returncode=_returncode, stdout=_state, stderr="")
+
+        monkeypatch.setattr(driver.subprocess, "run", not_confirmed_stopped)
+        host.liveness_probe(1)
+        unresolved = host.liveness_probe(1)
+        assert unresolved["responsive"] is False
+        assert "not been confirmed stopped" in unresolved["error"]
+
+    clock[:] = [0.0, 2.0, 2.0, 2.2]
+    host = driver.LocalHost()
+    probe_runs = [0]
+
+    def unit_collected(*args, **kwargs):
+        if args[0][:2] == ["systemctl", "is-active"]:
+            return SimpleNamespace(returncode=4, stdout="unknown", stderr="")
+        probe_runs[0] += 1
+        if probe_runs[0] == 1:
+            raise driver.subprocess.TimeoutExpired(args[0], kwargs["timeout"])
+        return SimpleNamespace(returncode=0, stdout=json.dumps({
+            "responsive": True, "components": components}), stderr="")
+
+    monkeypatch.setattr(driver.subprocess, "run", unit_collected)
+    host.liveness_probe(1)
+    collected = host.liveness_probe(1)
+    assert collected["responsive"] is True
+    assert host._liveness_probe_stalled is False
 
     clock[:] = [0.0, 0.5]
     host = driver.LocalHost()
@@ -2590,7 +2639,7 @@ def test_resume_refuses_changed_stable_identity_and_stop_policy(tmp_path):
     host = FakeHost()
     root = tmp_path / "policy"
     run_set(root, "raw-t0", host=host)
-    with pytest.raises(driver.StudyError, match="stop policy changed.*preserve.*meters.*new --out directory resets"):
+    with pytest.raises(driver.StudyError, match="stop policy changed.*preserve.*meters.*Recorded stop policy.*new --out directory resets"):
         run_set(root, "raw-t0", host=host, max_probe_latency_s=2.0)
 
 

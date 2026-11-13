@@ -128,7 +128,14 @@ If any check differs, stop before `mkfs`.
 
 ```bash
 assert_raw_idle() {
-    [[ $(host-escape -- lsblk -dn -o TYPE "$RAW") == part ]]
+  : "${IBX_EXPECTED_HOST:?set the exact short hostname from approved run authorization}"
+  local actual_host
+  actual_host=$(host-escape -- hostname -s)
+  [[ $actual_host == "$IBX_EXPECTED_HOST" ]] || {
+    printf 'refusing: expected host %s, connected to %s\n' "$IBX_EXPECTED_HOST" "$actual_host" >&2
+    return 1
+  }
+  [[ $(host-escape -- lsblk -dn -o TYPE "$RAW") == part ]]
   [[ $(host-escape -- lsblk -dn -o PARTLABEL "$RAW") == iobench-raw ]]
   [[ $(host-escape -- blockdev --getsize64 "$RAW") == 34359738368 ]]
   [[ $(host-escape -- blkid -s PARTUUID -o value "$RAW") == "$RAW_PARTUUID" ]]

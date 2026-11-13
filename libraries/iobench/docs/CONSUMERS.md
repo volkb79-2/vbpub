@@ -374,10 +374,10 @@ system-disk identity, and per-attempt system mounts and sibling swap devices
 are stored in run state and included in the analysis; those results include
 system and sibling-swap activity. Resume refuses changed stable identity but
 accepts changed mount/swap observations and records them per attempt. A changed
-stop policy refuses resume. Preserve the state and resume only with the policy
-recorded in its run manifest; if that policy cannot be used, obtain an operator
-decision. A new `--out` directory resets the byte and elapsed-time meters and
-requires explicit approval as a new budget. Keep the complete timer
+stop policy refuses resume and reports the recorded policy. Preserve the state
+and resume only with those values; if that policy cannot be used, obtain an
+operator decision. A new `--out` directory resets the byte and elapsed-time
+meters and requires explicit approval as a new budget. Keep the complete timer
 stop/restore and slot schedule
 from the [study-day procedure](../studies/ibx/README.md). Before raw writes or
 discard, the driver refuses whole disks, a mounted or swap-active target

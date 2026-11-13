@@ -103,9 +103,10 @@ devices are recorded in state, each attempt and cell, JSON/text plan output,
 and the analysis report. Resume compares stable host/root/disk/PARTUUID identity;
 it records changing mount and sibling-swap observations per attempt. Changing
 the stop policy refuses resume. Keep the existing state and resume only with
-the policy recorded in its run manifest; if that policy cannot be used, obtain
-an operator decision. Starting with a new `--out` directory resets the byte
-and elapsed-time meters and requires explicit approval as a new budget.
+the policy reported by the refusal and recorded in its run manifest; if that
+policy cannot be used, keep the state and obtain an operator decision. Starting
+with a new `--out` directory resets the byte and elapsed-time meters and
+requires explicit approval as a new budget.
 The study result is therefore explicitly marked as including system and
 sibling-swap activity. A swap-active target partition, mounted partition,
 changed SIZE/PARTUUID, or any other safety failure still refuses. Resume state
