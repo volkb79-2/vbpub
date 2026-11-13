@@ -383,6 +383,7 @@ def test_veryquick_fill_failure_is_required_and_stops_later_stages():
 
 def test_veryquick_series_failure_is_required_and_stops_sixth_stage():
     run = Calibrator(make_host(cache=None), config(profile="veryquick"))
+    run.start_budget(1000)
     run.s0 = lambda **_kwargs: None
     run.s1 = lambda: None
     run.make_plan = lambda: SimpleNamespace(seconds=lambda _name: 0)
