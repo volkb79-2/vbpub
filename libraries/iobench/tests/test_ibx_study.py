@@ -2855,6 +2855,7 @@ def materialize_scheduler_fixture(tmp_path, case_name):
         ("[bfq] none mq-deadline\n", ("bfq", ["bfq", "none", "mq-deadline"])),
         ("none [mq-deadline]\n", ("mq-deadline", ["none", "mq-deadline"])),
         ("none mq-deadline\n", (None, ["none", "mq-deadline"])),
+        ("none/bad\n", (None, [])),
         ("[none] [bfq]\n", (None, ["none", "bfq"])),
         ("[none] none\n", (None, ["none"])),
         ("[none\n", (None, [])),
@@ -2885,9 +2886,37 @@ def test_scheduler_discovery_resolves_whole_disks_and_records_root_scheduler(tmp
         "target_disk": "study-disk", "root_fs_devices": ["root-partition"]})
     assert scheduler["target"] == target_scheduler["target"]
     assert scheduler["root"]["root-disk"]["selected"] == "bfq"
+    root_state = host.io_scheduler_snapshot("study-partition", {
+        "target_disk": "", "root_fs_devices": ["", 17, "root-partition", "missing-root"]})
+    assert root_state["target"]["selected"] == "none"
+    assert root_state["root"]["root-disk"]["selected"] == "bfq"
+    assert root_state["root"]["missing-root"]["status"] == "unknown"
+    assert host.io_scheduler_snapshot("study-partition", {
+        "target_disk": "study-disk", "root_fs_devices": "malformed"})["root"] == {}
     unknown = host.io_scheduler_snapshot("missing")
     assert unknown["target"]["status"] == "unknown"
     assert "cannot resolve sysfs block device missing" in unknown["target"]["message"]
+
+
+def test_scheduler_discovery_refuses_bad_partition_markers(tmp_path, monkeypatch):
+    _fixture, _case, sys_root, _scheduler = materialize_scheduler_fixture(tmp_path, "real-none")
+    host = driver.LocalHost(sys=sys_root)
+    marker = sys_root / "block/study-disk/study-partition/partition"
+    real_stat = Path.stat
+
+    def denied(path, *args, **kwargs):
+        if path == marker:
+            raise PermissionError("fixture denies partition marker stat")
+        return real_stat(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "stat", denied)
+    with pytest.raises(driver.StudyError, match="cannot inspect sysfs partition identity"):
+        host._whole_disk_name("study-partition")
+    monkeypatch.setattr(Path, "stat", real_stat)
+    marker.unlink()
+    marker.mkdir()
+    with pytest.raises(driver.StudyError, match="partition identity.*malformed"):
+        host._whole_disk_name("study-partition")
 
 
 def test_io_control_snapshot_accepts_the_recorded_host_layout(tmp_path, monkeypatch):
@@ -3567,6 +3596,25 @@ def test_run_dry_run_reports_unknown_scheduler_and_conservative_peer_policy(tmp_
     assert result["dry_run"] is True
     assert result["run_manifest"]["io_schedulers"]["raw"] == host.scheduler_snapshot
     assert "checked conservatively" in result["run_manifest"]["io_schedulers"]["raw"]["message"]
+
+
+@pytest.mark.parametrize(
+    ("history", "message"),
+    [
+        ([], "IO-scheduler history is malformed"),
+        ({"raw": {"target": {"selected": "bfq"}}},
+         "block scheduler changed since the previous attempt"),
+    ],
+)
+def test_run_refuses_malformed_or_changed_scheduler_history(tmp_path, history, message):
+    out = tmp_path / "scheduler-history"
+    out.mkdir()
+    state = driver.empty_state(driver.dt.datetime.now(driver.dt.UTC).isoformat(),
+                               "raw", "/dev/fake", "vda5", FAKE_IDENTITY)
+    state["run_manifest"]["io_schedulers"] = history
+    driver.write_json(out / driver.STATE_NAME, state)
+    with pytest.raises(driver.StudyError, match=message):
+        run_set(out, "raw-t0", host=FakeHost())
 
 
 def test_stop_policy_documentation_maps_manifest_fields_to_run_options(tmp_path):
