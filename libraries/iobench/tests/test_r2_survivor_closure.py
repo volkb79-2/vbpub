@@ -596,14 +596,20 @@ def test_btrfs_member_absence_and_an_empty_member_list_have_the_same_refusal():
 
 
 def test_disk_scope_strength_transitions_are_refused_by_the_stored_identifiers():
-    strong = {"disk_scope": {"strength": "strong", "size_bytes": 500 * GIB, "model": "M",
-                             "serial": "SER-1", "wwn": None, "machine_id_hash": None}}
-    weak = {"disk_scope": {"strength": "weak", "size_bytes": 500 * GIB, "model": "M",
-                           "serial": None, "wwn": None, "machine_id_hash": "host-hash"}}
-    from iobench.result import identity_differs
+    from iobench.result import disk_scope, identity_differs
 
-    assert identity_differs(weak, strong) is True
-    assert identity_differs(strong, weak) is True
+    strong_host = standard_host()
+    strong_host.put("/sys/block/vda/serial", "SER-1\n")
+    strong_scope = disk_scope(strong_host, guard.disk_facts(strong_host, "vda"))
+    weak_host = standard_host()
+    weak_scope = disk_scope(weak_host, guard.disk_facts(weak_host, "vda"))
+    assert strong_scope["strength"] == "strong" and strong_scope["machine_id_hash"] is None
+    assert weak_scope["strength"] == "weak" and weak_scope["machine_id_hash"] is not None
+
+    # The line-225 disjunction is masked for valid scopes: weak-to-strong is
+    # refused earlier, and strong-to-weak mismatches the stored serial first.
+    assert identity_differs({"disk_scope": weak_scope}, {"disk_scope": strong_scope}) is True
+    assert identity_differs({"disk_scope": strong_scope}, {"disk_scope": weak_scope}) is True
 
 
 def test_strong_disk_lookup_default_is_not_used_by_its_production_caller(monkeypatch):
