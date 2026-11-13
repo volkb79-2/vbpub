@@ -2537,6 +2537,15 @@ def test_acceptance_runbook_pins_the_expected_host_before_proceeding(tmp_path):
     acceptance = (driver.HERE / "ACCEPTANCE.md").read_text(encoding="utf-8")
     match = re.search(r"(?ms)^assert_expected_host\(\) \{\n.*?^\}", acceptance)
     assert match is not None
+    assert acceptance.count("assert_expected_host") == 4
+    assert acceptance.index("\nassert_expected_host\n") < acceptance.index("host-escape -- lsblk")
+    raw_idle = re.search(r"(?ms)^assert_raw_idle\(\) \{\n(.*?)^\}", acceptance)
+    assert raw_idle is not None
+    assert raw_idle.group(1).lstrip().startswith("assert_expected_host")
+    rollback = acceptance.split("## Rollback", 1)[1]
+    assert rollback.index("assert_expected_host") < rollback.index('host-escape -- umount "$MOUNT"')
+    assert rollback.index('host-escape -- umount "$MOUNT"') < rollback.index("assert_raw_idle")
+    assert rollback.index("assert_raw_idle") < rollback.index('host-escape -- wipefs')
 
     fake_bin = tmp_path / "bin"
     fake_bin.mkdir()
