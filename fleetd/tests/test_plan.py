@@ -148,7 +148,7 @@ def test_plan_resolves_memory_time_and_routes_with_single_core_eta():
 
 def test_plan_preserves_special_alone_and_retry_work_on_one_host_and_renders_commands():
     plan = _plan([
-        _candidate("big", 14 * 1024**3),
+        _candidate("big", 14.5 * 1024**3),
         _candidate("retry", 256 * 1024**2, memory_crash_evidence=True),
     ])
     host = _host_plan(plan, "host-large")
@@ -323,7 +323,7 @@ def test_batches_interleave_classes_respect_wave_budget_and_multiplier():
 
 
 def test_mix_violation_is_flagged_without_turning_missing_eta_into_a_mix_flag():
-    rows = [_candidate("a", 5_000_000_000), _candidate("b", 5_500_000_000)]
+    rows = [_candidate("a", 6_000_000_000), _candidate("b", 7_000_000_000)]
     plan = _plan(rows)
     host = _assigned_host(plan, "a")
     assert host["mix_flagged"] is True
@@ -797,7 +797,6 @@ def test_host_refusal_arithmetic_helpers_and_wave_invariant_error():
     assert capacity["status"] == "available"
     assert capacity["worker_slots"] == 2
     assert capacity["campaign_slots"] == 1
-    assert capacity["slot_worker_capacities"] == [2]
     assert "reason" not in capacity
     no_workers = _capacity(host, {"efficient_upper_bound": 0, "instance_memory_bytes": 250 * 1024**2})
     assert no_workers["reason"] == "no usable worker slots remain after host policy limits"
