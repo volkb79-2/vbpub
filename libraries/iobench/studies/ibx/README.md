@@ -86,12 +86,32 @@ uses the documented recovery threshold as its explicit comparison: both idle
 probes must stay below 90% of pass 1, and both +10 min probes must recover to at
 least 90%. This comparison is recorded in the analysis output.
 
-The controller snapshots `io.cost.qos`, `io.cost.model`, `io.max`, `io.weight`,
-and `io.latency` for the benchmark cgroup and every ancestor before and after
-each cell-set. It refuses if io.cost is enabled/configured or any ancestor has
-an active IO control. It also refuses targets that are not the expected block
-device or file type/extent and verifies that the target's backing device is the
-same device monitored by diskstats. A raw target must be a partition whose
+The controller snapshots root `io.cost.qos` and `io.cost.model`, plus
+`io.max`, `io.weight`, and `io.bfq.weight` for the benchmark cgroup and every
+ancestor before and after each cell-set. A missing control file means there is
+no setting on that kernel or cgroup; the snapshot records that absence so a
+control appearing or changing before/after a run is still detected. Existing
+unreadable or malformed files refuse. The guard refuses numeric `io.max`
+limits, non-default `io.weight` or `io.bfq.weight`, enabled `io.cost.qos`, and
+a user/custom `io.cost.model`; the kernel-managed `ctrl=auto model=linear`
+model is allowed. `io.latency` can throttle peers, so the driver enumerates
+direct peers at each level of its cgroup path and refuses an active latency
+target on every check. Peer `io.weight` is not judged. Peer `io.bfq.weight` is
+judged when the target disk's selected scheduler is `bfq`, because sibling
+weights then affect its proportional bandwidth. The scheduler is read from
+`/sys/block/<disk>/queue/scheduler`, recorded in the manifest and compared with
+the IO-control snapshots. With any known non-BFQ scheduler, peer BFQ weights
+are inert, including `none` and `mq-deadline`. If the scheduler file is
+missing, unreadable, or malformed, the manifest reports that state and peer
+BFQ weights are checked conservatively; any non-default value refuses with
+the cgroup control path.
+Peer membership is not included in before/after equality because services and
+containers can come and go during a study. Other siblings' `io.max` caps are
+not inherited by the benchmark cgroup. This lets the study run on kernels that
+omit optional controls while retaining refusals for active limits that can
+affect the study process. It also refuses targets that are not the expected block device or
+file type/extent and verifies that the target's backing device is the same
+device monitored by diskstats. A raw target must be a partition whose
 size and PARTUUID exactly match the operator's `--confirm-target` acknowledgement.
 The driver refuses whole disks, mounted or swap-active target partitions, active
 exclusive claims, and holders. A raw partition sharing the running system disk
@@ -112,7 +132,10 @@ options: `memory_psi_full_avg10_max_percent` to `--max-memory-psi`,
 `min_memavailable_bytes` to `--min-memavailable`, `min_free_bytes` to
 `--min-free`, `max_probe_latency_seconds` to `--max-probe-latency-seconds`,
 `probe_consecutive_samples` to `--probe-consecutive-samples`, and
-`probe_interval_seconds` to `--probe-interval-seconds`.
+`probe_interval_seconds` to `--probe-interval-seconds`,
+`liveness_ssh_host` to `--liveness-ssh-host`,
+`liveness_ssh_port` to `--liveness-ssh-port`, and
+`liveness_cockpit_container` to `--liveness-cockpit-container`.
 The study result is therefore explicitly marked as including system and
 sibling-swap activity. A swap-active target partition, mounted partition,
 changed SIZE/PARTUUID, or any other safety failure still refuses. Resume state
@@ -129,7 +152,10 @@ schedule.
 `run --dry-run` performs target, identity, schedule, IO-control, memory and
 free-space checks and a successful first host-liveness probe, and renders every
 fio job, then exits without creating output files, starting fio, discarding, or
-changing the target. It does not check or require the fstrim, apt-daily,
+changing the target. It reads diskstats, both pressure files, and meminfo;
+missing required monitoring files produce a path-specific `StudyError`. It
+also reads the target's discard capability and verifies the required fio and
+target-operation tools before a pending run can pass. It does not check or require the fstrim, apt-daily,
 apt-daily-upgrade, or governance timers to be stopped. Live runs require those timers inactive and record I/O PSI
 as advisory; they stop on three consecutive memory PSI `full avg10` samples
 above policy, low `MemAvailable`, low free space, or the configured number of
@@ -137,11 +163,13 @@ consecutive slow/failed host-liveness probes. The initial liveness probe must
 succeed before any target discard or fio write. Subsequent probes run at the
 recorded 10-second default cadence (`--probe-interval-seconds` can set a
 different interval). Each bounded `system.slice` probe writes and fsyncs a
-temporary file on `/`, checks the local SSH banner on port 22, and verifies the
-`mdt-cockpit-runner.service` and `mdt-cockpit-runner` container, independently
-of the fio cgroup. One timed-out probe remains failed until its transient unit
-is confirmed stopped; its later samples still count toward the configured
-consecutive-failure limit. Wall-time and write-byte caps remain hard stops.
+temporary file on `/`, checks an SSH banner at the configured host and port
+(`127.0.0.1:22` by default), and verifies the configured Docker container with
+`docker exec` (`mdt-cockpit-runner` by default), independently of the fio
+cgroup. It does not require a systemd unit for the cockpit runner. One timed-out
+probe remains failed until its transient probe unit is confirmed stopped; its
+later samples still count toward the configured consecutive-failure limit.
+Wall-time and write-byte caps remain hard stops.
 The separately scoped live probes for the real raw target and Btrfs fio logs
 are in [ACCEPTANCE.md](ACCEPTANCE.md); they start with raw dry-run validation
 and never issue a raw write.
@@ -269,8 +297,7 @@ run_study raw-t0 --target /dev/vda5 --device vda5 \
   --max-memory-psi "$IBX_MAX_MEMORY_PSI" \
   --max-probe-latency-seconds "$IBX_MAX_PROBE_LATENCY" \
   --probe-consecutive-samples "$IBX_PROBE_CONSECUTIVE_SAMPLES" \
-  --min-memavailable "$IBX_MIN_MEMAVAILABLE" --min-free "$IBX_MIN_FREE" \
-  --fsync-cell standard:seq1m-write || exit 1
+  --min-memavailable "$IBX_MIN_MEMAVAILABLE" --min-free "$IBX_MIN_FREE" || exit 1
 
 # Stop only timers that were active beforehand. Keep this shell open so the
 # restoration block below can restart exactly those timers after live runs.
@@ -308,8 +335,8 @@ if ((${#ACTIVE_TIMER_UNITS[@]})); then
   host-escape -- systemctl stop "${ACTIVE_TIMER_UNITS[@]}"
 fi
 
-# t0: run the raw ladder. The optional fsync collection wraps only the named
-# standard rung cell and reuses mdt-cockpit/scripts/iomon-bpf/run.sh.
+# t0: run the raw ladder. This SSH-host sequence leaves optional fsync
+# collection disabled because the caller does not have a Docker cgroup scope.
 run_study raw-t0 --target /dev/vda5 --device vda5 \
   --target-type raw --confirm-target "$IBX_TARGET_CONFIRMATION" \
   --allow-system-disk-partition --system-disk-ack "$(current_system_disk_ack)" \
@@ -317,8 +344,7 @@ run_study raw-t0 --target /dev/vda5 --device vda5 \
   --max-memory-psi "$IBX_MAX_MEMORY_PSI" \
   --max-probe-latency-seconds "$IBX_MAX_PROBE_LATENCY" \
   --probe-consecutive-samples "$IBX_PROBE_CONSECUTIVE_SAMPLES" \
-  --min-memavailable "$IBX_MIN_MEMAVAILABLE" --min-free "$IBX_MIN_FREE" \
-  --fsync-cell standard:seq1m-write || exit 1
+  --min-memavailable "$IBX_MIN_MEMAVAILABLE" --min-free "$IBX_MIN_FREE" || exit 1
 
 # t0+1h: the bounded rewrite/fstrim cell set on region C.
 run_study part-c --target /dev/vda5 --device vda5 \
@@ -444,12 +470,16 @@ its receipt is verified. The EXIT trap starts exactly the timers that were
 active before the run, including when a command fails or the shell exits.
 
 `--fsync-cell RUNG:CELL` starts the existing `iomon-bpf/run.sh`, verifies its
-background slice is loaded, watches the host-wrapper container, and stops the
-exact collector it started after the selected fio cell finishes. For example,
-`--fsync-cell standard:seq1m-write` collects `sync.bt` around that standard
-cell; the JSONL files remain under `OUT/fsync-bpf/`. This mode requires the
-approved `CGROUP_PARENT_DEV_BACKGROUND` value in the wrapper's environment and
-a built `iomon-bpf:20261027` image.
+background slice and image are available, watches the host-wrapper container,
+and stops the exact collector it started after the selected fio cell finishes.
+For example, `--fsync-cell standard:seq1m-write` collects `sync.bt` around that
+standard cell; the JSONL files remain under `OUT/fsync-bpf/`. This mode requires
+the driver itself to run inside a Docker cgroup scope whose membership contains
+exactly one `docker-<64-hex-id>.scope`, the approved
+`CGROUP_PARENT_DEV_BACKGROUND` value, and a built `iomon-bpf:20261027` image.
+The dry-run checks those requirements and refuses clearly if they are absent;
+root sessions reached directly over SSH do not have the required Docker cgroup
+identity. Omit `--fsync-cell` when running outside that Docker scope.
 
 ## Resume and analysis
 
