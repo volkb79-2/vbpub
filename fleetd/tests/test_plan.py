@@ -148,7 +148,7 @@ def test_plan_resolves_memory_time_and_routes_with_single_core_eta():
 
 def test_plan_preserves_special_alone_and_retry_work_on_one_host_and_renders_commands():
     plan = _plan([
-        _candidate("big", 14 * 1024**3 + 512 * 1024**2),
+        _candidate("big", 15 * 1024**3 - 128 * 1024**2),
         _candidate("retry", 256 * 1024**2, memory_crash_evidence=True),
     ])
     host = _host_plan(plan, "host-large")
