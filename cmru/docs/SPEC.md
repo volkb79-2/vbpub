@@ -3061,8 +3061,9 @@ configuration boundary (KI-33).
 - Hard excludes applied at each bundle boundary: `.git`, `.ciu`, rendered `*.toml`, `ciu.env`,
   `minisign.key`, `__pycache__`, `*.pyc`, `*.log`, `*.pem/.key/.crt` and similar. Formats other
   than `xztar` archive a filtered temporary copy through the standard archive writer.
-  The source-package metadata file `pyproject.toml` is the deliberate exception when
-  its parent path is explicitly allowlisted (for example, a bundled companion client).
+  A source-package metadata file such as `client/pyproject.toml` is included only when that
+  exact bundle-relative file path appears in `[archive].keep`; there is no implicit `.toml`
+  exception.
 - The production `run_bundle()` path MUST use this normalized writer for `xztar`; all other
   supported formats MUST use the same membership predicate before `make_archive`.
 - A **build-twice gate** in the test suite asserts identical sha256 across two builds from

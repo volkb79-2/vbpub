@@ -604,6 +604,9 @@ skips. If stage leaves an unlisted suffix-class file (`.toml`, `.env`, `.pem`,
 name exclusions (`.git`, `.ciu`, `ciu.env`, `minisign.key`, cache directories,
 `node_modules`) and `.pyc` are never keepable and stay out of both archive and
 manifest. Included source symlinks and stage-created symlinks are refused.
+This includes client packaging metadata: put the exact path, such as
+`client/pyproject.toml`, in `keep` when the bundle needs it; `.toml` has no
+implicit exception.
 Vendored `.whl` files are unaffected by the suffix rules. After the archive
 and any configured manifest succeed, `bundle_dir` is removed; set
 `keep_tree = true` when a later step needs it. A failed build retains the

@@ -927,6 +927,8 @@ files left by a stage command fail the build, and copied exclusions print a
 warning. Name exclusions and `.pyc` remain unkeepable. A successful build removes
 the staged tree by default; set `[archive].keep_tree = true` when the project
 needs to retain it.
+Client metadata such as `client/pyproject.toml` also needs its exact path in
+`[archive].keep`; `.toml` files have no implicit exception.
 The standalone generated `get.py` remains intentionally independent and uses
 `argparse` because adopters run it without a CMRU installation. It is the generic
 installer only: a fail-closed, transactional `install`/`update`/`status`/`rollback` that

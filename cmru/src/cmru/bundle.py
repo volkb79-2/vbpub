@@ -91,10 +91,6 @@ def _is_excluded(rel_path: str, keep_paths: Sequence[str] = ()) -> bool:
     name = path.name
     if any(name.endswith(suffix) for suffix in _NEVER_KEEP_SUFFIXES):
         return True
-    # A bundled source client must retain its build metadata.  This is an
-    # explicitly allowlisted source file, not a rendered runtime config.
-    if name == "pyproject.toml":
-        return False
     if any(name.endswith(suffix) for suffix in _KEEPABLE_EXCLUDE_SUFFIXES):
         return path.as_posix() not in keep_paths
     return False
@@ -897,7 +893,6 @@ def _validate_final_bundle_tree(config: BundleConfig) -> None:
             if (
                 not path.is_dir()
                 and any(path.name.endswith(suffix) for suffix in _KEEPABLE_EXCLUDE_SUFFIXES)
-                and path.name != "pyproject.toml"
             ):
                 blocked.append(rel)
                 if _has_hard_excluded_name(rel):

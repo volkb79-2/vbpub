@@ -1643,7 +1643,9 @@ files such as `.env` and `.pem`; it cannot override `.git`, `minisign.key`, cach
 file without an exact keep entry fails before archive creation. Included source symlinks and
 stage-created symlinks are refused so the builder cannot dereference their targets into the
 artifact. This is a path policy, not content inspection: a stage step is executable project code,
-and content written under an ordinary filename remains eligible for the archive.
+and content written under an ordinary filename remains eligible for the archive. Client metadata
+such as `client/pyproject.toml` also needs its exact file path in `keep`; no `.toml` exception is
+implicit.
 
 When the archive version environment variable is absent, `bundle-build` asks CMRU for the
 selected project's planned release version (or its latest tag when unchanged) and combines it
