@@ -5,8 +5,10 @@
 
 # Assay `--jobs` pilot 3: analysis of the three bucket mismatches
 
-- Input: `ASSAY-JOBS-PILOT-2026-11-02.md` and `evidence/jobs-pilot3/`.
-- Method: I read the per-arm state records, progress streams and verdicts under `raw/<host>/remote/source/.assay/jobs-pilot3/`, plus the mutated source lines at `5fd78a8e4`. Nothing was run.
+- Input: `ASSAY-JOBS-PILOT-2026-11-02.md` and the raw evidence summarized in
+  [JOBS-PILOT3-EVIDENCE-SUMMARY-2026-11-13.md](JOBS-PILOT3-EVIDENCE-SUMMARY-2026-11-13.md).
+- Method: I reviewed the per-arm state records, progress streams, verdicts and
+  mutated source lines at `5fd78a8e4`. Nothing was run.
 
 **Recommendation: RELEASE assay 11.0.0.**
 - Ship it with a documented known issue and two backlog entries (B204, B205).

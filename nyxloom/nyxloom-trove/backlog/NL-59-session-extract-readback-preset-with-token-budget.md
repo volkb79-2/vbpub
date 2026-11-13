@@ -10,7 +10,7 @@ component: "session-extract"
 provenance: "controller session record 2026-11-10; backlog filing for the operator"
 filed_date: "2026-11-10"
 closed_date: "2026-11-11"
-closed_reason: "Delivered on nyx-readback-20261111 in commits 7f8dfcd01 and dc65ad159 with the fifth readback preset, primary --budget-tokens control, priority fill, no partial records, chars/4 estimate, category-level kept/dropped and timestamp-span disclosure, operator-overflow warning, explicit override, refusals, docs, and focused tests; final-head authoritative gate receipts are in /home/vscode/vbpub-release-program-20261027/reports/nyx-extract-readback-REPORT.md."
+closed_reason: "Delivered on nyx-readback-20261111 in commits 7f8dfcd01 and dc65ad159 with the fifth readback preset, primary --budget-tokens control, priority fill, no partial records, chars/4 estimate, category-level kept/dropped and timestamp-span disclosure, operator-overflow warning, explicit override, refusals, docs, and focused tests; final-head authoritative gate receipts are in nyxloom/nyxloom-trove/reports/nyx-extract-readback-REPORT.md."
 ---
 
 ## Problem

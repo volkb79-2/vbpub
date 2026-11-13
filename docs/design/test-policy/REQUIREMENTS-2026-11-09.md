@@ -12,7 +12,7 @@ Operator request: generalize and persist the release-gate optimization principle
 ## Related
 `reports/gate-reuse-INVESTIGATION.md` + `run-gate-project/docs/DESIGN-verdict-reuse.md` (RG-253), `libraries/test-policy` (existing project, unreleased), `RIGOR-COVERAGE-POLICY` (dstdns), assay rigor levels in `assay/docs/CONSUMERS.md` and DESIGN-GUIDE, lane conventions in `run-gate-project/LANE-AUTHORING.md`.
 
-## Decisions D1-D8 on the Opus tier methodology + lane-rework design (operator, 2026-11-10; design: run-gate-project/docs/DESIGN-lane-rework-2026-11.md on branch test-methodology-20261110, report reports/test-methodology-REPORT.md; independent Opus review in progress)
+## Decisions D1-D8 on the Opus tier methodology + lane-rework design (operator, 2026-11-10; design: run-gate-project/docs/DESIGN-lane-rework-2026-11.md on branch test-methodology-20261110, report docs/reports/test-methodology-REPORT.md; independent Opus review in progress)
 - **D1 yes:** Assay `whole_target` R1 replaces cmru's separate `coverage` lane at T2 (release).
 - **D2 yes:** second probes of one instrument (cmru uncovered-line canary, capture-mode second runs, Rust uncovered-line) move to T3 (async).
 - **D3 yes:** build Assay AS-1 (R3 canary uses the lane's own baseline run as control instead of a fresh full suite; opt-in per lane). **D5 OVERRIDE by operator: narrow Assay's installed-wheel R0 scope NOW** (not "measure first"); keep the measurement as evidence in the work package, not as a gate on doing it.

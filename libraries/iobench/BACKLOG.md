@@ -93,10 +93,9 @@ Entries IOB-BL-01..38 remain here. New entries continue in [`KNOWN_ISSUES_TODO_B
   cold start, then 3).
   - Outcome: 897 killed, **318 survived**, 0 equivalent, 0 crashed, 0 hung, **5 `budget_exceeded`**.
   - Campaign wall time 15 h 02 min, including one Docker-restart interruption and the resume attempts.
-- **Evidence:**
-  - `evidence/iobench-r2-r1002/` of the release-program directory: `survivors-from-verdict.csv`,
-    `budget-exceeded-from-verdict.csv`, `progress-iobench.jsonl`, the replay results;
-  - the [R2 campaign report](docs/reports/IOBENCH-R2-R1002-2026-11-02.md).
+- **Evidence:** the [raw evidence summary](docs/reports/IOBENCH-R2-R1002-EVIDENCE-SUMMARY-2026-11-13.md)
+  records the retained source set and how to regenerate it; see also the
+  [R2 campaign report](docs/reports/IOBENCH-R2-R1002-2026-11-02.md).
 - **Candidate profile** (the scheduling data):
   - every candidate runs essentially the whole suite: elapsed p50 97 s, CPU p50 89 s, CPU-bound;
   - peak RSS p50 372 MiB, 84% within 350–400 MiB;

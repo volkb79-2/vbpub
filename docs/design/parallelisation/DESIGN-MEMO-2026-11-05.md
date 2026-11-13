@@ -83,7 +83,7 @@ Do this before building anything else.
     the cause first (M3).
 
 **Q4: tests that use a fake Docker runner.**
-- The uid-65534 `py_compile` smoke failure (`RP/reports/dstdns-p4-REVIEW.md:9-13`) is a container-tier problem,
+- The uid-65534 `py_compile` smoke failure (`docs/reports/dstdns-p4-REVIEW.md:13-17`) is a container-tier problem,
   not a VM-tier one. It needs a real daemon, not a separate kernel.
 - Add a `real_docker` marker that runs against a per-lane DinD sidecar (run-gate `docker = "dind"`, WP10). A skip
   must count as a failure, the same way debian-install-v2's `os_integration` plugin already works.
@@ -149,24 +149,24 @@ already at the knee, and hosts are shared.
 | Gates tier (`dev.slice/dev-gates.slice`) | `cpu.max` 4 CPUs; `memory.high` **4 GiB**; `memory.max` 5.5 GiB; `memory.swap.max` 12.4 GiB (<host>) / 6.0 GiB (<host>); `memory.zswap.max` max | [M] probe |
 | zswap | enabled, zstd, `max_pool_percent=25` (about 2 GiB), `accept_threshold_percent=90`, shrinker on; `vm.swappiness=10`; swap 16 GiB (<host>) / 8 GiB (<host>, after ZFS took two partitions) | [M] probe; `RP/reports/zfs-eval-REPORT.md:25` |
 | CoW root | `/srv/cow` btrfs 455 GB, `user_subvol_rm_allowed`, about 1 % used, on both hosts | [M] probe |
-| `/dev/shm` | host 3.9 GB; **64 MiB inside a Docker lane container** (no run-gate key yet, RG-163) | [M] probe; `RP/reports/assay-tmpfs-CONTINUATION.md:11` |
+| `/dev/shm` | host 3.9 GB; **64 MiB inside a Docker lane container** (no run-gate key yet, RG-163) | [M] probe; `docs/reports/assay-tmpfs-CONTINUATION.md:15` |
 | Root disk | <host> `/` **97 % full (1.4 GB free)**; <host> 77 % | [M] probe (risk for image loads and DinD stores) |
 | Disk | one virtio disk with an IOPS cap of about 300; the reads in the steady state are file-by-file `git status` reads | [M] `RP/reports/materialize-experiment-REPORT.md:17,118` |
 | Per-candidate materialisation (whole-repo tree, 127 MB plus 36 MB pack) | btrfs today: 173.6 MB read, 2.31 s; primed index (B219): 37.2 MB, 0.33 s; tmpfs-worker (d2): 0 MB, 0.16 s; overlay on tmpfs (e2): 0 MB, 0.29 s; totals 6.03 / 3.53 / 3.22 / 3.63 s | [M] `materialize-experiment-REPORT.md:34-44` |
 | ZFS | no faster than primed btrfs; reflink on ZFS is 2.5x worse; DKMS/CDDL burden | [M] `zfs-eval-REPORT.md:7,42-52` |
 | Unprivileged overlay in a lane container | impossible under default seccomp/AppArmor | [M] `materialize-experiment-REPORT.md:120-129` |
 | Parallel requires btrfs | run-gate auto clamps to 1 unless `cheap_clone` (`run-gate-project/run_gate.py:4639-4640`); an explicit N > 1 refuses (`:4648-4657`); the probe hard-codes btrfs (`:11228-11252`); assay refuses too (`assay/src/assay/mutation.py:3639-3655`, `runner.py:6505-6515`); tmpfs-worker itself requires `cheap_clone` (`.worktrees/assay-tmpfs-20261105/assay/src/assay/isolation.py:960-967`) | [F] |
-| Auto formula | `min(jobs_max, cpus, ram_target × lane memory / candidate_ram, remaining)`, then 1 without `cheap_clone` | [F] `run_gate.py:4626-4640`; `RP/reports/assay-jobs-audit-REVIEW.md:25-34` |
+| Auto formula | `min(jobs_max, cpus, ram_target × lane memory / candidate_ram, remaining)`, then 1 without `cheap_clone` | [F] `run_gate.py:4626-4640`; `docs/reports/assay-jobs-audit-REVIEW.md:29-38` |
 | Concurrent windows (B157) | a limit event is attributed to every overlapping window; a failing candidate in that overlap becomes `crashed` (then a serial retry); PASS stays `survived` | [F] `assay/README.md:348-361` |
 | Coordinator knee | iobench jobs 3 = 2.9x, jobs 4 = 3.0x; integrity step 0.5 -> 9.7 -> 42 s; materialisations finish in lock-step (likely GIL [I]) | [M] `RP/reports/dstdns-parallelism-REPORT.md` |
 | Sharding today | `assay plan/run --shard INDEX/COUNT`, keyed-digest partition, merge = manifest set proof (`merge_mutation_shards`, library only, no CLI); one 0/1 shard qualifies, a multi-shard part does not | [F] `assay/docs/DESIGN-GUIDE.md:1672-1674`, `assay/docs/CONSUMERS.md:1817-1826`, `assay/README.md:101-102`, `assay/src/assay/mutation.py:3019` |
 | State lock | a whole state directory is locked per run ("already in use by another"), so one run per checkout (run-gate keys the state dir by checkout) | [F] `assay/src/assay/cli.py:933,1017`; `run-gate-project/SPEC.md` R-38 (:1721-1730); `RP/<host>/R2-BOARD-2026-11-05.md:72,82` |
-| run-gate `--shard` | none (usage error, rc 2) | [M] `assay-tmpfs-CONTINUATION.md:13` |
+| run-gate `--shard` | none (usage error, rc 2) | [M] `docs/reports/assay-tmpfs-CONTINUATION.md:17` |
 | Live campaign buckets | cmru: killed 49 / survived 10 / crashed 1 after about 12 h (plan 4640); killed median 572.6 s, survived 571.8 s; first candidate materialise 34.8 s. pwmcp: killed 279 at 301.5 s, survived 4 at 289.6 s, materialise median 17.2 s. run-gate-project (has `-x`): killed 152 s, survived 208 s | [M] read-only parse of `progress-*.jsonl` on <host>/<host> today |
 | cmru R2 argv | full suite with `--cov`, no `-x` | [F] `.worktrees/assay-jobs-audit-20261105/cmru/assay.toml:166-171` |
 | TCG cost | about 66 s from start to SSH (1 vCPU, 1 GB); Geekbench TCG/native 21-26x slower; runner peak 3.09 GB with a 4 GiB guest | [M] `testing/vm/DESIGN.md:407-420`, `testing/vm/USAGE-TESTING.md:490-534` |
 | Privileged systemd-as-PID1 container | cannot start on the controller's Docker daemon (control image `jrei/systemd-debian:12` also fails) | [M] memory `resume-2026-09-08-netcup-debian-install-v2-livetest.md:994-1010` |
-| Operator rules | PSI some avg10 > 25 or heavy swapping limits scheduling; up to about cores + 1 single-thread jobs | brief; `RP/reports/AGENT-RULES.md` |
+| Operator rules | PSI some avg10 > 25 or heavy swapping limits scheduling; up to about cores + 1 single-thread jobs | brief; `docs/reports/AGENT-RULES.md` |
 
 ---
 
@@ -181,7 +181,7 @@ already at the knee, and hosts are shared.
 | Memory | page cache only: clean and reclaimable for free; charged to the lane's memcg when first touched | **template-sized RAM pinned per worker** (175 MB for the whole vbpub repo) plus transient writes; shmem is charged to the writing task's memcg (the lane container), counts in `memory.current` and towards `dev-gates.slice` `memory.high` 4 GiB; reclaim only by swap-out | overlay upper 37 MB shmem per live candidate [M]; ZFS ARC outside the memcg |
 | Under memory pressure | reclaim = drop clean pages (no CPU, no IO); re-access = disk read (IOPS cap about 300) | reclaim = compress into zswap (CPU), shared pool about 2 GiB across every lane; writeback to disk swap when the pool fills; every access to an evicted page = decompress | n/a |
 | Tree size ceiling | 455 GB btrfs | min(`tmpfs_max_mib` default 1024, tmpfs size, lane memory). Docker default `/dev/shm` is **64 MiB**, so it needs a container tmpfs mount (RG-163) | overlay: host-side mount |
-| Isolation | fresh clone per candidate; residue cannot cross candidates inside the tree | one tree reused in place; `settle()` restores and runs a stat-walk (type, mode, size, mtime_ns, link). It misses a same-size rewrite with restored mtime and inode; an unclean tree is dropped. **There is no drop-after-crash, hang, budget or limit rule** (B223 deviation, `assay-tmpfs-CONTINUATION.md:5`), so a leaked process can write after `settle()` | fresh per candidate |
+| Isolation | fresh clone per candidate; residue cannot cross candidates inside the tree | one tree reused in place; `settle()` restores and runs a stat-walk (type, mode, size, mtime_ns, link). It misses a same-size rewrite with restored mtime and inode; an unclean tree is dropped. **There is no drop-after-crash, hang, budget or limit rule** (B223 deviation, `docs/reports/assay-tmpfs-CONTINUATION.md:9`), so a leaked process can write after `settle()` | fresh per candidate |
 | Resume / retry | candidate trees never persist (state records live in `--state-dir`); the template is rebuilt per invocation | same; the tree dies with the container; rebuild = one copy per worker | same |
 | Provisioning | btrfs area (done on both hosts; `cowtree` ioctl, no root at run time) | none on the host, but **today it requires a `cheap_clone` workspace anyway** (`isolation.py:960-967`) | root mount helper per candidate (overlay) or DKMS + pool (ZFS) |
 | Works without btrfs (controller devcontainer, CI) | no (parallel clamps to 1) | not yet (WP4 fixes it) | no |
@@ -262,7 +262,7 @@ Required change (WP3 + WP4):
 
 | Lane | Binding constraint | Evidence | What raises it |
 |---|---|---|---|
-| cmru `assay-first-release-r2` | **Memory (real).** 0.95-1.75 GiB RSS per candidate, about 85 % CPU. 4g lane × 75 % / 1536m = 2. Two candidates ≈ 3.5 GiB, which is the whole gates tier (4 GiB `memory.high`). A third would swap the tier and inflate `crashed` through B157 window overlap | `assay-jobs-audit-REPORT.md:27`, `assay-jobs-audit-REVIEW.md:13-17`, `cmru/assay.toml:242-247` (worktree) | WP1: `--no-cov` cuts candidate RSS and CPU [I; measure]. Cross-host shards (WP5-7). Tier-aware admission (WP8) so cmru is not co-scheduled with other heavy lanes |
+| cmru `assay-first-release-r2` | **Memory (real).** 0.95-1.75 GiB RSS per candidate, about 85 % CPU. 4g lane × 75 % / 1536m = 2. Two candidates ≈ 3.5 GiB, which is the whole gates tier (4 GiB `memory.high`). A third would swap the tier and inflate `crashed` through B157 window overlap | `assay-jobs-audit-REPORT.md:27`, `docs/reports/assay-jobs-audit-REVIEW.md:13-17`, `cmru/assay.toml:242-247` (worktree) | WP1: `--no-cov` cuts candidate RSS and CPU [I; measure]. Cross-host shards (WP5-7). Tier-aware admission (WP8) so cmru is not co-scheduled with other heavy lanes |
 | run-gate-project `assay-r2` | **Auto arithmetic on a 2g lane** (1.5g / 700m = 2). Tests spawn Docker/doctor. Only 23 candidates, so the cap barely matters (about 0.5 h). The R0 baseline currently fails on the hosts (doctor mountinfo) | `assay-jobs-audit-REPORT.md:29`; R2 board :55 | Nothing needed. Fix the R0 baseline first |
 | cgroup-profiler `r2` | **Caution, not a limit.** The memory formula allows 3 (1.5g / 500m); RSS is "not observed"; the comment only says "two workers halve" | `assay-jobs-audit-REPORT.md:28`, `scripts/cgroup-profiler/assay.toml:53-60` (worktree) | M2 (RSS). If the p95 is under 500 MiB, set `jobs_max = 3` |
 
@@ -471,7 +471,7 @@ run with A0 + A1 + A4 at once.
 
 ### 5.4 Q4: fake Docker runners
 
-- The dstdns finding (`RP/reports/dstdns-p4-REVIEW.md:9-13`): the smoke argv `python -m py_compile /app/x.py` run
+- The dstdns finding (`docs/reports/dstdns-p4-REVIEW.md:13-17`): the smoke argv `python -m py_compile /app/x.py` run
   as `--user 65534` fails in a root-owned `/app`, and the unit test cannot see it because it uses a fake runner.
 - **Which tier:** this is permission semantics of a real image under a real daemon, with no kernel state involved.
   It belongs in **T1, not T2**. A VM would add 20x CPU cost and an image-transfer problem for no extra fidelity.
@@ -557,7 +557,7 @@ Principles:
 | M2 | Per-candidate RSS for cgroup-profiler, ciu and <private-host> | `/usr/bin/time -v` of one baseline per lane in its lane container; or `memory.peak` of the container | about 5 min per lane | `jobs_max` / `candidate_ram` |
 | M3 | mdt host_setup per-file RSS | Each test file in its own `python -m pytest <file>` with `--cov`, record `ru_maxrss` | about 20 min | the WP9 split or a suite fix |
 | M4 | Concurrency safety | Two lane containers of the same commit (separate checkouts or snapshots), run concurrently, 3 repetitions. Diff `HOME`/`/tmp` listings before and after | about 30 min per lane | `jobs_max` > 1 for ciu and <private-host> |
-| M5 | tmpfs-worker A/B | The prepared OFF/ON arms (`assay-tmpfs-CONTINUATION.md:9-13`) with a bounded candidate subset. Compare `phase_seconds`, cgroup `io.stat`, container `memory.current`/`memory.stat shmem`, and zswap counters | about 1 h | whether WP4 matters beyond hosts without btrfs |
+| M5 | tmpfs-worker A/B | The prepared OFF/ON arms (`docs/reports/assay-tmpfs-CONTINUATION.md:13-17`) with a bounded candidate subset. Compare `phase_seconds`, cgroup `io.stat`, container `memory.current`/`memory.stat shmem`, and zswap counters | about 1 h | whether WP4 matters beyond hosts without btrfs |
 | M6 | Real tier headroom | cgpd or a 1 s sampler for 1 h on each host: `dev-gates.slice` `memory.current`, `memory.events high`, `memory.pressure`, `/proc/meminfo Zswap*`, CPU PSI under current campaigns | passive | WP8 reservations; how many workers really fit |
 | M7 | Instances vs workers | After WP6: `libraries/worktree` or cli-extended, jobs 4 in one container vs 2 containers × jobs 2 | about 1 h | whether A3 is worth using for throughput or only for isolation |
 | M8 | DinD on a runner host | Start the cmru tester-gate DinD sidecar on <host> (exact name, gates slice). Measure start time and idle RSS, preload one image, run the dstdns `docker-stats-exporter` smoke as uid 65534 | about 20 min | WP10 cost; proof that this bug class is caught |
@@ -588,9 +588,9 @@ Housekeeping before measuring:
 
 ## 10. Sources
 
-`RP/reports/assay-jobs-audit-REPORT.md`, `assay-jobs-audit-REVIEW.md`, `materialize-experiment-REPORT.md`,
-`zfs-eval-REPORT.md`, `assay-tmpfs-CONTINUATION.md`, `dstdns-parallelism-REPORT.md`, `remote-gate-REPORT.md`,
-`dstdns-p4-REVIEW.md`, `RIGOR-EVIDENCE-DESIGN-MEMO-2026-11-05.md` (§0, §3.2, §3.5, §3.7), `AGENT-RULES.md`;
+`RP/reports/assay-jobs-audit-REPORT.md`, `docs/reports/assay-jobs-audit-REVIEW.md`, `materialize-experiment-REPORT.md`,
+`zfs-eval-REPORT.md`, `docs/reports/assay-tmpfs-CONTINUATION.md`, `dstdns-parallelism-REPORT.md`, `remote-gate-REPORT.md`,
+`docs/reports/dstdns-p4-REVIEW.md`, `RIGOR-EVIDENCE-DESIGN-MEMO-2026-11-05.md` (§0, §3.2, §3.5, §3.7), `docs/reports/AGENT-RULES.md`;
 `RP/<host>/R2-BOARD-2026-11-05.md`.
 
 Code and docs: `run-gate-project/run_gate.py:4600-4680,11200-11360`, `run-gate-project/SPEC.md` (R-07 :289,

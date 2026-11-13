@@ -114,7 +114,7 @@ should be delegated to an implementer inside a brief.
 2. `ciu worktree create <id>`; one package per worktree; packages that touch
    the same files run one after another.
 3. Implementer runs. Gate lanes only through
-   `/home/vscode/vbpub-release-program-20261027/codex/gate-run.sh`, in the
+   `$CONTROLLER_HOME/codex/gate-run.sh`, in the
    foreground. Before launching a Codex job check that anonymous memory in the
    devcontainer is under 5 GB; at most one implementation and one review job
    at a time; run names start with the package id.

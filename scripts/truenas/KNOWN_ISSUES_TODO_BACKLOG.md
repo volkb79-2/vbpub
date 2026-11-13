@@ -26,6 +26,7 @@ detail lives. A FIXED entry means code, tests and docs landed together.
 | TN-13 | Storage layout migration (vm-lab, downloads, cache modes, requirements naming) | Minor | FIXED (finish-truenas-iso-20261104) |
 | TN-15 | `unit` and `unit-boot-pool-patch` lanes are red on main: the live-UI Playwright pin (1.64.0) no longer matches the pwmcp contract (1.64.1) | Major | OPEN |
 | TN-16 | `unit` and `unit-boot-pool-patch` lanes are red on main: the registered v27 RC.1 install bundle digest differs from the digest recomputed from the archive | Major | OPEN |
+| TN-17 | Acceptance uses a fixed release-program lock path with no alternate-home override | Minor | OPEN 2026-11-13 |
 
 ## Entries
 
@@ -98,3 +99,12 @@ The digest recomputed from a `git archive` export of that commit is
 value. First find out which side is stale: a bundle member changed without re-registration, or
 the registered value was never updated. Do not re-register before that is known; the registry is
 the closed compatibility boundary for the boot-pool patch.
+
+### TN-17 acceptance lock is rooted in the release-program directory
+
+`boot-pool-patch/acceptance/accept.py` opens `v1001.lock` from a fixed
+release-program location. The acceptance command has no lock-path or
+controller-home override, so it cannot run from an alternate program home
+today. Preserve that lock location while the acceptance script remains
+unchanged, or add a configuration-driven path before retiring the current
+program directory.

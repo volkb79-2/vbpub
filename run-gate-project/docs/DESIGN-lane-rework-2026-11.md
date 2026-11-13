@@ -28,7 +28,8 @@ Labels:
 | **estimated** | arithmetic on the above |
 | **UNVERIFIED** | not established by any file read for this design |
 
-`logs/...` and `reports/...` are under `/home/vscode/vbpub-release-program-20261027/`.
+`logs/...` and `reports/...` are under the configured controller home:
+`$CONTROLLER_HOME/logs/...` and `$CONTROLLER_HOME/reports/...`.
 
 Operator rules this design keeps:
 
