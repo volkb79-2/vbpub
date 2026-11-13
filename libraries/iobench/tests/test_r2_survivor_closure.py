@@ -546,6 +546,14 @@ def test_empty_btrfs_member_list_is_reported_as_unknown_disk_scope():
     assert error.value.condition == "target_fs_disk_unknown"
 
 
+def test_btrfs_member_lookup_without_a_filesystem_uuid_is_refused_as_unknown_scope():
+    host = standard_host()
+    fs = guard.FsInfo("/bench", "/dev/vda8", "btrfs", "rw", "254:8", None, 10 * GIB, 5 * GIB)
+    with pytest.raises(Refusal) as error:
+        guard.backing_disk_for_fs(host, fs, "/bench/target.img")
+    assert error.value.condition == "target_fs_disk_unknown"
+
+
 def test_mount_touching_by_raw_mount_devno_alone_is_retained():
     from test_tgt import btrfs_file_host
 
