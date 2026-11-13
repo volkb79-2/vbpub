@@ -708,6 +708,14 @@ def test_inline_style_important_case_and_placement_follow_css_priority(
         pytest.param("visibility:hidden;visibility:visible invalid", id="invalid-visibility-value"),
         pytest.param("display:var(--computed-display)", id="unresolved-display-variable"),
         pytest.param("visibility:var(--computed-visibility)", id="unresolved-visibility-variable"),
+        pytest.param(
+            "display:var(--computed-display);--computed-display:none",
+            id="custom-property-computes-display-none",
+        ),
+        pytest.param(
+            "visibility:var(--computed-visibility);--computed-visibility:hidden",
+            id="custom-property-computes-visibility-hidden",
+        ),
         pytest.param("display:none;display:inherit", id="unresolved-display-inheritance"),
         pytest.param("display:none;display:revert-layer", id="unresolved-display-revert-layer"),
         pytest.param("visibility:hidden;visibility:unset", id="unresolved-visibility-unset"),
