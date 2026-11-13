@@ -1035,7 +1035,7 @@ the operator limit.
 
 **Fix.** Property names and values fold ASCII `A-Z` only. README, DESIGN-GUIDE, and CONSUMERS state the rule beside the CSS-whitespace rule. Tests cover the literal and escaped forms and that ASCII upper case (`BLOCK`) still overrides.
 
-**Test-first evidence.** The test-only commit `d8ab1454c341a92a35f196060362fcadc1fedb23` failed in the registered tester-unified R1 lane before the production change. Three Kelvin cases failed (literal `block`, literal `inline-block`, and escaped `block`); the ASCII-uppercase `BLOCK` control passed. The result is recorded in `pwmcp-r8-survivors-pwmcp-r1-kelvin-reproduction.log`.
+**Test-first evidence.** The registered tester-unified R1 run on test-only commit `d8ab1454c341a92a35f196060362fcadc1fedb23` exited FAIL before the production change; the log binds the first failure to `kelvin-sign-block`. The gate verdict recorded three failed Kelvin cases (literal `block`, literal `inline-block`, and escaped `block`), 1,901 passed, and five skipped. The ASCII-uppercase `BLOCK` control passed.
 
 ## R8 mutation survivor closure
 

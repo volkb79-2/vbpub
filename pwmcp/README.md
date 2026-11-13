@@ -152,9 +152,9 @@ keywords fold ASCII case only. The filter does not admit
 `ruby-text-container` to its visible-value allowlist.
 If one of those values follows a valid hiding declaration, the earlier hide
 remains, which can omit text a browser shows. For `display`, a winning
-unresolved `var()`,
-`inherit`, `revert`, or `revert-layer` fails closed; `initial` and `unset` map
-to visible `inline`. For `visibility`, a winning unresolved `var()`, `inherit`,
+unresolved `var()`, `inherit`, `revert`, or `revert-layer` fails closed;
+`initial` and `unset` map to visible `inline`. For `visibility`, a winning
+unresolved `var()`, `inherit`,
 `unset`, `revert`, or `revert-layer` fails closed; `initial` maps to `visible`,
 and `collapse` is filtered as hidden. These fail-closed choices may omit text a
 browser ultimately shows because serialized HTML cannot resolve custom
