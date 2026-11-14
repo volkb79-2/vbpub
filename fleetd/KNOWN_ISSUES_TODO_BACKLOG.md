@@ -458,9 +458,10 @@ first window.
 **State:** OPEN. **Priority:** P3. **Filed:** 2026-11-14 (fix4 review, for the Opus final review).
 
 FD-021 records a transport or contract error on one host as ERROR and keeps
-supervising the others. A host that stays in ERROR is never declared LOST, because
-the loss timer runs from the last successful contact only in the healthy state, so
-its running batches are never re-queued elsewhere.
+supervising the others. The fix4 review found that a host that stays in ERROR has
+no loss timer, so it is not declared LOST and its running batches are not re-queued
+elsewhere. (The exact code path is not yet traced; the first step of the fix is to
+confirm it.)
 
 **Wanted.** Start a loss timer when a host enters ERROR and declare it LOST after
 the same threshold as an unreachable host; test that a host in ERROR beyond the
