@@ -15,3 +15,17 @@ artifacts = ["coverage.json"]
 [lanes.r0-r1.resources]
 memory = "1g"
 io_sync = "durable"
+
+[lanes.campaign-contract]
+kind = "command"
+environment = "tester-unified"
+argv = [
+  "bash", "-c",
+  "cd {worktree}/fleetd && PYTHONPATH=src PYTHONDONTWRITEBYTECODE=1 /opt/tester-venv/bin/python3 -m pytest tests/test_campaign.py -q",
+]
+clean_tree = false
+budget = "5m"
+
+[lanes.campaign-contract.resources]
+memory = "1g"
+io_sync = "durable"

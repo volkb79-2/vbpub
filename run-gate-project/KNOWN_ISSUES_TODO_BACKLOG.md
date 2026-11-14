@@ -169,6 +169,7 @@ SPEC §9.
 | RG-273 | ephemeral Run-Gate lanes opt in to the image-advertised KSM shim by default | Enhancement | IMPLEMENTED and released in Run-Gate 25.6.0; tester images rebuilt/deployed 2026-11-12; host lane smoke open |
 | RG-275 | lane campaigns cannot be placed across compute hosts: no lane demand model (expected charge vs cap, efficient upper bound), no central scheduler over host capabilities and RAM, supervision lives in a host-local netcup script | Enhancement | OPEN 2026-11-12 (design rev 5) |
 | RG-276 | Run-Gate has no campaign-plan client to assemble candidate and host inputs for fleetd | Enhancement | OPEN 2026-11-13; fleetd MVP-A exposes a standalone fleet plan CLI |
+| RG-277 | Run-Gate cannot forward fleetd's explicit candidate-owner manifest to Assay's strict store merge | Enhancement | OPEN 2026-11-13; fleetd MVP-B-lite collects candidate files only |
 ---
 
 ## RG-1 — conjunction lanes silently drop `--worktree` and `--allow-dirty`
@@ -8566,3 +8567,28 @@ file until the loader accepts and validates `[lanes.<lane>.demand]` (RG-275).
 **Close when.** Candidate/facts/demand assembly is covered by deterministic
 contract tests, output matches fleetd's fleet-plan/1 behavior, and the
 Run-Gate registered lane plus docs gates pass.
+
+## RG-277 — forward the candidate-owner manifest to Assay's strict merge
+
+**Status:** OPEN (filed 2026-11-13); Enhancement. Related: fleetd FD-008 and
+Assay B544.
+
+**Problem.** fleetd MVP-B-lite collects verdict and progress files into one
+candidate-level result, but it cannot ask Assay to merge per-host state stores
+into one strict same-judge whole-lane verdict. Assay's planned
+`assay-merge-manifest/1` contract owns candidate ownership and merge rules;
+Run-Gate must not duplicate or interpret those rules.
+
+**Contract for the follow-up.** Add a campaign closeout option that accepts
+the explicit Assay merge manifest and forwards it unchanged to the supported
+Assay merge verb. Validate that the supplied file is present and pass its path
+through the same controlled argument-building path used for other Assay
+inputs. Preserve the ordinary single-store closeout path. Do not infer owner
+stores from host names, read candidate records to choose a winner, or silently
+fall back to the lite JSON result.
+
+**Close when.** A fake Assay invocation proves the exact manifest path and
+bytes reach Assay, malformed/missing paths fail before merge, the existing
+single-store closeout remains unchanged, and the registered Run-Gate lane plus
+consumer docs pass. The Assay gate separately proves strict merge semantics
+under B544.

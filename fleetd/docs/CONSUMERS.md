@@ -138,6 +138,80 @@ campaign client must pass the host budget into Assay admission or establish an
 equivalent enforced bound before treating the planner's wave proof as an
 execution guarantee.
 
+## Run and collect a lite campaign
+
+For automated dispatch, generate the plan from a clean Git project. The plan
+then includes the full commit and project path that the runner must have in
+its persistent checkout. Host IDs in `hosts.json` are local aliases already
+configured for the hx wrapper; the repository contains no alias table or host
+address. Prepare the runner checkouts and scripts through the existing runner
+workflow before dispatch.
+
+```sh
+fleet plan r2 --candidates candidates.json --hosts hosts.json \
+  --demand lane-demand.toml > plan.json
+fleet run plan.json --transport hx --campaign r2-week46
+fleet status r2-week46
+fleet tick r2-week46
+fleet collect r2-week46
+```
+
+`fleet run` starts the first available batch on each planned host and returns.
+It can be invoked again after a controller restart; the same named jobs are
+probed and re-adopted. The plan's host slot limit is respected. `fleet status`
+refreshes progress, candidate rate, and the ETA blended from planner and
+observed rates. `fleet tick` makes one scheduling step; the caller decides
+when to call it again. Fleetd does not run a daemon or a hidden polling loop.
+
+If a host cannot be reached, stall time pauses. More than 30 minutes without
+contact marks it `LOST`; the next `tick` re-plans unfinished IDs from both
+running and never-started queued batches on the reachable planned host with
+the largest alone-capacity. Planned idle hosts are probed and may receive that
+work. A stopped stalled batch stays marked `STALLED` after its runner reports
+`EXIT`, so it gets one replacement only. A batch becomes
+`STALLED` after no candidate finishes for `max(15 minutes, 3 × observed p95
+candidate time)`. That is a stall detector, not a campaign time budget.
+Matching job names are idempotent. If the plan's sorted candidate list
+changes, the digest and job name change; the old job is stopped before
+replacement work starts.
+
+The runner stores each candidate list below the selected project in its
+persistent checkout. The first detached command writes the full list digest
+before starting `run-r2-campaign.sh`; a probe can recover the digest from the
+uploaded ID file during that startup window. Probe sends file paths instead of
+large candidate arrays, resolves the Assay lane from the checkout's
+`run-gate.toml`, and reads that lane's `progress-<assay-lane>.jsonl` in the
+project `.assay` directory. This is the plain-run layout and does not depend
+on an instance `progress-file` pointer.
+
+`fleet collect` writes one combined `fleet-campaign-result/1` JSON file and a
+Markdown report under the state directory. Each candidate has one owner, the
+earliest finished record; additional host or batch copies are counted as
+duplicates and ignored. The report includes totals, per-host wall time and
+rate, and missing artifacts/candidates. The state directory defaults to
+`$XDG_STATE_HOME/fleetd/campaigns` or
+`~/.local/state/fleetd/campaigns`; if you pass `--state-dir` to `run`, repeat
+it on every later command. Keep this local JSON state outside Git. State
+schema 2 records monotonic and UTC timestamps plus the controller boot ID.
+Same-boot deadlines use monotonic time; after a reboot they use UTC elapsed
+time. A backward UTC correction is clamped to zero and delays detection. A
+forward UTC correction counts as downtime and can advance detection after a
+reboot.
+
+The campaign client passes its generated `--jobs` and `--only-candidates`
+arguments only; arbitrary Run-Gate options such as `--base` and
+`--carry-over-main` are outside this MVP. Project paths follow the runner's
+relative-path rule and cannot contain `..` within a component. hx timeouts and
+unreachable results pause stall time; identity-check and guard refusals (exit
+97/98) remain errors instead of being treated as host loss.
+
+MVP-B-lite collects candidate verdicts but does not combine remote Assay state
+stores into a strict whole-lane verdict. Use the manual state-copy and
+Run-Gate closeout below when that merged store is required. `--merge-manifest`
+support, baseline reuse, the restricted forced-command host entry, daemon, and
+active guard are tracked for MVP-C (Assay B544, B542; Run-Gate RG-277; CIU-218;
+fleetd FD-008/FD-009; cgprofile CP-64).
+
 After all host sections finish, copy each host's whole same-judge Assay state
 store to its own directory beneath the final checkout's ignored
 `.run-gate/collected/`. The store to copy is the directory each batch run
