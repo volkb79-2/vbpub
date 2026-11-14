@@ -234,7 +234,7 @@ mutant("scripts/controller/ctl-status.sh", "ctl-status-fresh-results.sh",
 mutant("scripts/controller/ctl-status.sh", "ctl-status-pi-route.sh",
        'route=$(cat "$CONTROLLER_HOME/runs/$name.route" 2>/dev/null || echo unknown)', 'route=unknown')
 mutant("scripts/controller/ctl-status.sh", "ctl-status-pi-stall.sh",
-       '(( now - mtime > 900 ))', '(( now - mtime > 900000 ))')
+       '(( now - mtime > 900 ))', '(( now - mtime > 2147483647 ))')
 mutant("scripts/controller/job-check.sh", "job-check-pi-route.sh",
        'deepseek|deepseek-volker|deepseek-github2|deepseek-pi|deepseek-pi-volker|deepseek-pi-github2|opencode)',
        'deepseek|deepseek-volker|deepseek-github2|opencode)')
