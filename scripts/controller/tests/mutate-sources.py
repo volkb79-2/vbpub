@@ -297,8 +297,8 @@ account_helper_mutant(
 )
 account_helper_mutant(
     "od-both-blocked-exit-code",
-    'raise SystemExit(3)',
-    'raise SystemExit(2)',
+    '            "both Open Design accounts are blocked; earliest reset is " + format_epoch(earliest),\n            file=sys.stderr,\n        )\n        raise SystemExit(3)',
+    '            "both Open Design accounts are blocked; earliest reset is " + format_epoch(earliest),\n            file=sys.stderr,\n        )\n        raise SystemExit(2)',
 )
 account_helper_mutant(
     "od-state-path-absolute-guard",
