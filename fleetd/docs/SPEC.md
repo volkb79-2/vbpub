@@ -33,8 +33,11 @@ the lowercase 64-character SHA-256 digest emitted by native Assay R2.
 A TOML file passed to `--demand` carries a `[lanes.<lane>.demand]` table (released
 Run-Gate does not yet accept that key in its own file; see RG-276) with these
 required keys: `unit`, `instance_memory`, `unit_memory`, `unit_seconds_ref`,
-and `efficient_upper_bound`. `unit_memory_high` is optional. Units are the
-closed set `candidate`, `worker`, and `run`; the CLI converts memory strings
+and `efficient_upper_bound`. `unit_memory_high` and `baseline_seconds` are
+optional. `baseline_seconds` is a host-independent estimate of the Assay
+baseline wall time used to extend a batch's first progress window; when absent,
+fleetd uses measured baselines from completed batches on that host. Units are
+the closed set `candidate`, `worker`, and `run`; the CLI converts memory strings
 using binary k/m/g suffixes. This R2 candidate planner requires
 `unit = "candidate"` and refuses the other valid schema units because their
 placement meaning is not defined yet. The high estimate cannot be lower than
@@ -201,9 +204,13 @@ is a single remote shell argument, which the kernel caps at 128 KiB: about 100
 batches per host in one campaign (see FD-014). It resolves the Assay lane from the checkout's Run-Gate
 declaration and reads the plain run's `progress-<assay-lane>.jsonl` under the
 project `.assay` directory; it does not require the optional instance
-`progress-file` pointer. Probe returns running/EXIT/missing state, list digest,
-candidate progress count, progress file modification time, and progress and
-verdict paths.
+`progress-file` pointer. Each runner job records the progress file's byte size
+at its own start and end. Probe attributes events only when their candidate ID
+is in that job and their byte range falls between those markers. The job's own
+verdict supplies candidate outcomes resumed from Assay state, including cases
+with no new progress event. Probe returns running/EXIT/missing state, list
+digest, candidate progress count, progress file modification time, per-job
+progress bounds, verdict outcomes, and artifact paths.
 
 `fleet status ID` refreshes state and reports per-host and per-batch state,
 done/total counts, candidates per second, blended ETA, and `STALLED`/`LOST`
@@ -212,19 +219,51 @@ when both exist. `fleet tick ID` performs one scheduling step: adopt current
 jobs, detect exits and stalls, handle host loss, and start the next available
 batch. Neither command runs a polling loop.
 
-The stall threshold is `max(900 seconds, 3 × p95)` of observed per-candidate
-elapsed time. It measures silence since the last candidate finished; it never
-acts as a campaign wall budget. The stall clock pauses while the host is
-unreachable. More than 1800 seconds without host contact marks the host lost.
+The stall threshold is `max(900 seconds, 3 × p95 predicted candidate time for
+this batch on this host, 3 × p95 observed candidate time on this host)`. The
+prediction uses each candidate's `time_ref_seconds`, the host's matching
+Geekbench baseline and single-core score, and that host's `f_h`; when scores
+cannot be compared, fleetd uses the candidate's reference time. Observations
+and predictions are never pooled across hosts. The declared `baseline_seconds`
+or p95 of completed baseline measurements on this host is added to the first
+window, before any candidate has finished in the batch. Later windows measure
+silence since the last candidate finished without adding the baseline again.
+The threshold never acts as a campaign wall budget. The stall clock pauses
+while the host is unreachable. More than 1800 seconds without host contact marks the host lost.
 All work owned by the lost host, including batches that were queued but never
 started, is marked lost and considered for re-planning. Only unfinished
 candidate IDs are sent to the reachable planned host with the largest
 `cap_alone_bytes`, using the existing planner placement functions. If no
 target is available the work is deferred. Idle planned hosts are probed even
-when they had no initial batch, so they can become requeue targets. A stopped
-stalled job keeps its `STALLED` marker when a later probe sees its runner `EXIT`
-record and creates only one replacement batch. A returning host may finish a
-duplicate; no lease or renewal is used.
+when they had no initial batch, so they can become requeue targets. A host
+the planner refused (shared-prod, unknown role, PSI, missing facts) that owns
+no job of the campaign is never contacted by `run`, `status`, `tick`, or
+`collect`. Host loss is measured from the last successful contact, so call
+`tick` at least every few minutes: after a longer gap a single failed probe
+marks the host lost at once (FD-020). Dispatch does not re-check PSI; the
+plan-time refusal is the only PSI admission (FD-022). An `EXIT`, `missing_job`,
+or stalled batch with no finished candidate from its own start becomes
+`FAILED`, is not re-queued, and appears in status and collection with its
+failure reason and exit code when available. Re-queue remains unlimited for batches that made progress. A stalled
+batch that made progress keeps its `STALLED` marker and creates one replacement
+batch. A returning host may finish a duplicate; no lease or renewal is used.
+Transport or contract errors mark only the affected host `ERROR`; a tick still
+supervises the other hosts and reports the error in status.
+
+Before uploading a batch's ID file, start reads the probe's `checkout_ready`
+flag for the missing job: the persistent checkout must be a non-symlink
+directory with `.git` and the selected project directory. Otherwise start
+refuses and the batch stays queued; the upload would otherwise create
+`checkouts/<commit>/` as a plain directory that the supervisor refuses and the
+runner's checkout sync cannot replace. Probe reports a home-relative
+progress path computed lexically, so a symlinked `checkouts` directory works;
+if the path cannot be expressed below the remote home it reports `null`
+instead of failing the probe.
+
+Every `run`, `status`, `tick`, and `collect` holds an exclusive non-blocking
+lock on `<campaign>.lock` in the state directory for its whole
+read/modify/write interval. An overlapping command fails with "campaign ...
+is busy" and changes nothing.
 
 The only persistent controller state is plain JSON under `--state-dir`,
 written to a temporary file, fsynced, and atomically renamed. The
@@ -245,8 +284,13 @@ host clocks, so clock skew can change which duplicate is selected, while the
 one-owner rule and candidate outcome remain unchanged. Other finished copies are
 ignored and counted. The result includes one candidate row each, killed,
 survived, timeout, crashed, equivalent, and missing totals, duplicate count,
-per-host wall time/rate, and missing artifact details. Assay `budget_exceeded`
-and `hung` outcomes map to `timeout`.
+per-host wall time/rate, failed batches, and missing artifact details. Assay
+`budget_exceeded` and `hung` outcomes map to `timeout` only when process-tree
+evidence does not say the candidate never started. Never-started candidates
+remain `missing` with a distinct reason. Zero-progress failed batches list
+their failure reason and exit code when available for missing candidates. Older records in
+the append-only progress file are excluded by each runner job's own byte-range
+markers; resumed outcomes come from that job's verdict.
 
 MVP-B-lite reports candidate outcomes but does not merge Assay state stores or
 create a strict whole-lane verdict. Assay's `--merge-manifest` is tracked as

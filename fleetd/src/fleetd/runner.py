@@ -8,6 +8,7 @@ import json
 import math
 import re
 import shlex
+import zlib
 from dataclasses import dataclass
 from typing import Any, Mapping
 
@@ -124,10 +125,7 @@ def probe_script(jobs: Mapping[str, JobSpec]) -> str:
     metadata = command_metadata("probe", {"jobs": targets})
     payload = json.dumps(targets, sort_keys=True, separators=(",", ":")).encode()
     encoded = base64.b64encode(payload).decode("ascii")
-    remote = r'''set -euo pipefail
-source "$HOME/runner-scripts/lib.sh"
-python3 - "$RUNNER_HOME" PAYLOAD <<'PY'
-import base64
+    python_source = r'''import base64
 import hashlib
 import json
 import os
@@ -143,8 +141,12 @@ rows = []
 for target in sorted(targets, key=lambda row: row["name"]):
     name = target["name"]
     job_dir = home / "jobs" / name
+    checkout = runner_home / "checkouts" / target["commit"]
+    project_dir = checkout if target["project"] == "." else checkout / target["project"]
     if not job_dir.is_dir():
-        rows.append({"name": name, "state": "MISSING"})
+        # Start refuses an unsynced checkout before uploading into its path.
+        ready = checkout.is_dir() and not checkout.is_symlink() and (checkout / ".git").exists() and project_dir.is_dir()
+        rows.append({"name": name, "state": "MISSING", "checkout_ready": ready})
         continue
     ids_file = runner_home / target["ids_path"]
     try:
@@ -174,8 +176,18 @@ for target in sorted(targets, key=lambda row: row["name"]):
             state = "RUNNING"
         except (OSError, ValueError):
             pass
-    checkout = runner_home / "checkouts" / target["commit"]
-    project_dir = checkout if target["project"] == "." else checkout / target["project"]
+    def read_offset(filename):
+        try:
+            value = (job_dir / filename).read_text(encoding="ascii").strip()
+        except OSError:
+            return None
+        return int(value) if re.fullmatch(r"[0-9]+", value) else None
+    progress_offset = read_offset("progress-offset")
+    progress_end_offset = read_offset("progress-end-offset")
+    if progress_end_offset is not None and (
+        progress_offset is None or progress_end_offset < progress_offset
+    ):
+        progress_end_offset = None
     assay_lane = target["lane"]
     for config_path in (project_dir / "run-gate.toml", checkout / "run-gate.root.toml"):
         try:
@@ -188,13 +200,23 @@ for target in sorted(targets, key=lambda row: row["name"]):
     if not isinstance(assay_lane, str) or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", assay_lane) is None:
         raise ValueError("resolved Assay lane is not a safe artifact name")
     progress_source = project_dir / target["assay_dir"] / f"{target['progress_prefix']}{assay_lane}{target['progress_suffix']}"
-    progress_path = progress_source.resolve().relative_to(home.resolve()).as_posix()
+    # Home-relative for a later get. Lexical first, so a symlinked checkouts
+    # directory outside HOME still works; never fail the whole probe here.
+    try:
+        progress_path = progress_source.relative_to(home).as_posix()
+    except ValueError:
+        try:
+            progress_path = progress_source.resolve().relative_to(home.resolve()).as_posix()
+        except (OSError, ValueError):
+            progress_path = None
     records = []
     mtime = None
     try:
         mtime = progress_source.stat().st_mtime
-        with progress_source.open(encoding="utf-8") as stream:
-            for line in stream:
+        if progress_offset is not None and (state != "EXIT" or progress_end_offset is not None):
+            content = progress_source.read_bytes()
+            end_offset = progress_end_offset if state == "EXIT" else len(content)
+            for line in content[progress_offset:end_offset].decode("utf-8").splitlines():
                 try:
                     event = json.loads(line)
                 except json.JSONDecodeError:
@@ -206,15 +228,77 @@ for target in sorted(targets, key=lambda row: row["name"]):
     except (OSError, UnicodeError):
         mtime = None
     verdict_path = f"campaigns/{name}-s1/verdict.json"
+    verdict_records = []
+    baseline_seconds = None
+    if state == "EXIT":
+        try:
+            verdict = json.loads((runner_home / verdict_path).read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError):
+            verdict = None
+        mutations = []
+        claims = verdict.get("claims", []) if isinstance(verdict, dict) else []
+        if isinstance(claims, list):
+            for claim in claims:
+                if isinstance(claim, dict) and claim.get("rigor") == "R2" and isinstance(claim.get("mutation"), dict):
+                    mutations.append(claim["mutation"])
+        judgment = verdict.get("judgment") if isinstance(verdict, dict) else None
+        r2 = judgment.get("r2") if isinstance(judgment, dict) else None
+        if isinstance(r2, dict) and isinstance(r2.get("mutation"), dict):
+            mutations.append(r2["mutation"])
+        for mutation in mutations:
+            for bucket in ("killed", "survived", "budget_exceeded", "hung", "crashed", "equivalent"):
+                outcomes = mutation.get(bucket, [])
+                if not isinstance(outcomes, list):
+                    continue
+                for outcome in outcomes:
+                    if not isinstance(outcome, dict) or outcome.get("candidate_id") not in planned:
+                        continue
+                    evidence = outcome.get("process_tree_evidence")
+                    verdict_records.append({
+                        "candidate_id": outcome["candidate_id"],
+                        "outcome_bucket": bucket,
+                        "elapsed_seconds": None,
+                        "emitted_at": None,
+                        "not_started": (
+                            bucket == "budget_exceeded"
+                            and isinstance(evidence, dict)
+                            and evidence.get("leader_status") == "not-started"
+                        ),
+                    })
+        command = r2.get("r2_command") if isinstance(r2, dict) else None
+        baseline = command.get("r2_baseline") if isinstance(command, dict) else None
+        baseline_seconds = baseline.get("wall_s") if isinstance(baseline, dict) else None
+        if (
+            isinstance(baseline_seconds, bool)
+            or not isinstance(baseline_seconds, (int, float))
+            or not math.isfinite(float(baseline_seconds))
+            or baseline_seconds < 0
+        ):
+            baseline_seconds = None
     done = {event.get("candidate_id") for event in records if isinstance(event.get("candidate_id"), str)}
     rows.append({
         "name": name, "state": state, "exit_code": exit_code,
         "list_digest": list_digest, "progress_count": len(done),
         "progress_mtime": mtime, "progress_path": progress_path,
+        "progress_offset": progress_offset,
+        "progress_end_offset": progress_end_offset,
         "verdict_path": verdict_path, "records": records,
+        "verdict_records": verdict_records,
+        "baseline_seconds": baseline_seconds,
     })
 print(json.dumps({"jobs": rows}, sort_keys=True, separators=(",", ":")))
-PY'''.replace("PAYLOAD", shlex.quote(encoded))
+'''
+    compressed = base64.b64encode(zlib.compress(python_source.encode("utf-8"))).decode("ascii")
+    bootstrap = (
+        "import base64,zlib;exec(zlib.decompress(base64.b64decode("
+        + repr(compressed)
+        + ")))"
+    )
+    remote = "\n".join([
+        "set -euo pipefail",
+        'source "$HOME/runner-scripts/lib.sh"',
+        f"python3 -c {shlex.quote(bootstrap)} \"$RUNNER_HOME\" {shlex.quote(encoded)}",
+    ])
     return f"{metadata}\n{remote}"
 
 
@@ -232,6 +316,8 @@ def start_script(spec: JobSpec) -> str:
     })
     job_dir = f'"$HOME/jobs/{spec.name}"'
     candidate_file = f'"$RUNNER_HOME/{spec.candidate_file_home_path}"'
+    checkout_dir = f'"$RUNNER_HOME/checkouts/{spec.commit}"'
+    project_dir = checkout_dir if spec.project == "." else f'"$RUNNER_HOME/checkouts/{spec.commit}/{spec.project}"'
     run_job = '"$HOME/runner-scripts/run-job"'
     run_args = [
         shlex.quote(spec.runner_campaign),
@@ -244,27 +330,62 @@ def start_script(spec: JobSpec) -> str:
         shlex.quote(spec.candidate_file),
     ]
     expected_digest = shlex.quote(spec.list_digest)
-    launcher = (
+    launcher = "\n".join([
+        "set -euo pipefail",
         "printf '%s\\n' " + expected_digest
-        + f' > "$HOME/jobs/{spec.name}/list.sha256.tmp"; '
-        + f'mv -f -- "$HOME/jobs/{spec.name}/list.sha256.tmp" "$HOME/jobs/{spec.name}/list.sha256"; '
-        + 'exec "$@"'
-    )
+        + f' > "$HOME/jobs/{spec.name}/list.sha256.tmp"',
+        f'mv -f -- "$HOME/jobs/{spec.name}/list.sha256.tmp" "$HOME/jobs/{spec.name}/list.sha256"',
+        f'printf \'%s\\n\' "$FLEETD_PROGRESS_OFFSET" > "$HOME/jobs/{spec.name}/progress-offset.tmp"',
+        f'mv -f -- "$HOME/jobs/{spec.name}/progress-offset.tmp" "$HOME/jobs/{spec.name}/progress-offset"',
+        "set +e",
+        '"$@"',
+        "command_status=$?",
+        "set -e",
+        'if progress_end_offset=$(stat -c %s -- "$FLEETD_PROGRESS_PATH" 2>/dev/null); then :; else progress_end_offset=$FLEETD_PROGRESS_OFFSET; fi',
+        '[[ $progress_end_offset =~ ^[0-9]+$ ]] || progress_end_offset=$FLEETD_PROGRESS_OFFSET',
+        f'printf \'%s\\n\' "$progress_end_offset" > "$HOME/jobs/{spec.name}/progress-end-offset.tmp"',
+        f'mv -f -- "$HOME/jobs/{spec.name}/progress-end-offset.tmp" "$HOME/jobs/{spec.name}/progress-end-offset"',
+        'exit "$command_status"',
+    ])
     remote = "\n".join(
         [
             "set -euo pipefail",
             'source "$HOME/runner-scripts/lib.sh"',
             f"job_dir={job_dir}",
+            f"checkout_dir={checkout_dir}",
+            f"project_dir={project_dir}",
             f"candidate_file={candidate_file}",
+            "assay_lane=$(python3 - \"$checkout_dir\" " + shlex.quote(spec.project) + " " + shlex.quote(spec.lane) + " <<'PY'\n"
+            + "import re, sys, tomllib\n"
+            + "from pathlib import Path\n"
+            + "checkout = Path(sys.argv[1])\n"
+            + "project_dir = checkout if sys.argv[2] == '.' else checkout / sys.argv[2]\n"
+            + "assay_lane = sys.argv[3]\n"
+            + "for config_path in (project_dir / 'run-gate.toml', checkout / 'run-gate.root.toml'):\n"
+            + "    try:\n"
+            + "        declaration = tomllib.loads(config_path.read_text(encoding='utf-8')).get('lanes', {}).get(sys.argv[3])\n"
+            + "    except (OSError, UnicodeError, tomllib.TOMLDecodeError):\n"
+            + "        continue\n"
+            + "    if declaration is not None:\n"
+            + "        assay_lane = declaration.get('assay_lane', sys.argv[3])\n"
+            + "        break\n"
+            + "if not isinstance(assay_lane, str) or re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.-]*', assay_lane) is None:\n"
+            + "    raise SystemExit('resolved Assay lane is not a safe artifact name')\n"
+            + "print(assay_lane)\n"
+            + "PY\n)",
+            'progress_file="$project_dir/.assay/progress-$assay_lane.jsonl"',
             f"expected_digest={expected_digest}",
             'file_digest=$(sha256sum -- "$candidate_file" | cut -d " " -f 1)',
             '[[ $file_digest == "$expected_digest" ]] || { echo "candidate file digest mismatch" >&2; exit 73; }',
+            'progress_offset=0',
+            'if [[ -f $progress_file ]]; then progress_offset=$(stat -c %s -- "$progress_file"); fi',
+            '[[ $progress_offset =~ ^[0-9]+$ ]] || { echo "invalid Assay progress size" >&2; exit 73; }',
             'if [[ -e $job_dir ]]; then',
             '  stored_digest=$(cat -- "$job_dir/list.sha256" 2>/dev/null || sha256sum -- "$candidate_file" | cut -d " " -f 1)',
             '  if [[ $stored_digest == "$expected_digest" ]]; then echo EXISTING; exit 0; fi',
             '  echo "named job exists with another or unverifiable candidate-list digest" >&2; exit 73',
             "fi",
-            f"if {run_job} {shlex.quote(spec.name)} -- bash -c {shlex.quote(launcher)} fleetd-launch env R2_MAX_ATTEMPTS=2147483647 bash \"$HOME/runner-scripts/run-r2-campaign.sh\" "
+            f"if FLEETD_PROGRESS_PATH=\"$progress_file\" FLEETD_PROGRESS_OFFSET=\"$progress_offset\" {run_job} {shlex.quote(spec.name)} -- bash -c {shlex.quote(launcher)} fleetd-launch env R2_MAX_ATTEMPTS=2147483647 bash \"$HOME/runner-scripts/run-r2-campaign.sh\" "
             + " ".join(run_args) + " >/dev/null; then",
             "  start_status=0",
             "else",
@@ -338,6 +459,13 @@ class RunnerJobs:
             if not self._digest_matches(current.get("list_digest"), spec):
                 raise TransportError(f"named job {spec.name} exists with a different candidate-list digest")
             return False
+        if current.get("checkout_ready") is False:
+            # Uploading would create checkouts/<commit>/ as a plain directory, which
+            # the supervisor refuses and the runner's checkout sync cannot replace.
+            raise TransportError(
+                f"checkout {spec.commit} (project {spec.project}) is not synced on {spec.host}; "
+                f"sync it before starting {spec.name}"
+            )
         contents = "".join(f"{candidate_id}\n" for candidate_id in spec.sorted_candidate_ids).encode("ascii")
         self.transport.put(spec.host, spec.candidate_file_home_path, contents, self.timeout)
         rc, out, err = self.transport.run(spec.host, start_script(spec), self.timeout)
@@ -366,10 +494,22 @@ class RunnerJobs:
         return isinstance(actual, str) and actual == spec.list_digest
 
 
-def parse_progress(content: bytes, expected_ids: set[str]) -> list[dict[str, object]]:
+def parse_progress(
+    content: bytes,
+    expected_ids: set[str],
+    *,
+    start_offset: int = 0,
+    end_offset: int | None = None,
+) -> list[dict[str, object]]:
     """Parse the candidate events needed by the collector from one progress stream."""
+    if isinstance(start_offset, bool) or not isinstance(start_offset, int) or start_offset < 0:
+        raise ContractError("progress start offset must be a non-negative integer")
+    if end_offset is not None and (
+        isinstance(end_offset, bool) or not isinstance(end_offset, int) or end_offset < start_offset
+    ):
+        raise ContractError("progress end offset must be an integer at or after its start")
     try:
-        text = content.decode("utf-8")
+        text = content[start_offset:end_offset].decode("utf-8")
     except UnicodeDecodeError as exc:
         raise ContractError("progress artifact is not UTF-8") from exc
     records: list[dict[str, object]] = []

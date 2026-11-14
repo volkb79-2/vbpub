@@ -231,7 +231,7 @@ def validate_lane_demand(value: object, where: str = "demand") -> dict[str, Any]
     obj = _object(
         value, where,
         {"unit", "instance_memory", "unit_memory", "unit_seconds_ref", "efficient_upper_bound"},
-        {"unit_memory_high"},
+        {"unit_memory_high", "baseline_seconds"},
     )
     unit = _string(obj["unit"], f"{where}.unit")
     if unit not in {"candidate", "worker", "run"}:
@@ -247,6 +247,8 @@ def validate_lane_demand(value: object, where: str = "demand") -> dict[str, Any]
         result["unit_memory_high_bytes"] = parse_memory_bytes(obj["unit_memory_high"], f"{where}.unit_memory_high")
         if result["unit_memory_high_bytes"] < result["unit_memory_bytes"]:
             raise ContractError(f"{where}.unit_memory_high: must be at least unit_memory")
+    if "baseline_seconds" in obj:
+        result["baseline_seconds"] = _number(obj["baseline_seconds"], f"{where}.baseline_seconds", minimum=0)
     return result
 
 

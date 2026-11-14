@@ -77,3 +77,32 @@ All notable changes to this project are recorded here.
   host-clock ownership skew, and fail-closed hx identity/guard refusals.
 - File FD-013 for serializing concurrent state updates from overlapping
   `fleet run`, `status`, `tick`, or `collect` invocations.
+- Never contact a host the planner refused when it owns no campaign job; the
+  idle-host probe had reached refused (for example shared-prod) hosts on every
+  command.
+- Refuse to start a batch when the host's persistent checkout is not synced,
+  before the ID-file upload would create `checkouts/<commit>/` as a plain
+  directory that the supervisor refuses and the checkout sync cannot replace.
+- Compute the probe's progress path lexically below the remote home, so a
+  symlinked `checkouts` directory no longer fails every probe; report `null`
+  instead of failing when no home-relative path exists.
+- Restore a batch's start and stall clocks when its start is refused or the
+  host is unreachable, so a start retried after more than 15 minutes is no
+  longer stalled and stopped on the next tick; repeated refusals record one
+  warning instead of one per tick.
+- Close FD-013: hold a non-blocking per-campaign lock for each command; an
+  overlapping command fails with "busy" and changes nothing.
+- Pin per-host stall observations, repeated host loss, exit de-duplication
+  against work in flight elsewhere, and the start script's ID-file digest check
+  with tests (each closes a surviving hand mutant).
+- File FD-015 to FD-024 from the Opus series review and record the operator's
+  rejection of the RAM-proportional control-plane reserve under FD-007.
+- Set stall windows from per-candidate host predictions and host-local observations, with an optional declared or observed baseline allowance for the first progress window.
+- Fail zero-progress EXIT, missing-job, and stalled batches visibly with their failure reason and exit code when available; batches that made progress retain unlimited re-queue behavior.
+- Record progress byte bounds in each runner job and combine batch candidate IDs with those bounds; use the batch verdict for resumed outcomes so stale append-only records cannot count as new progress.
+- Keep Assay verdict entries marked process-tree `not-started` candidates as missing with a distinct reason, and include failed batches and reasons in collection.
+- Continue supervising other hosts when a host probe or operation returns a transport or contract error; report the affected host as `ERROR`.
+- Review of fleetd-fix4: a batch that never started (a QUEUED batch of a lost
+  host, or a start interrupted while STARTING) is no longer failed as
+  zero-progress when its host returns or the job is absent; it is re-queued or
+  retried with fresh clocks, so a single-host campaign keeps its unstarted work.
