@@ -512,6 +512,45 @@ def test_archive_rejects_a_file_added_after_manifest_creation(tmp_path, monkeypa
     assert not list(config.dist_dir.glob("*.tar.xz"))
 
 
+@pytest.mark.parametrize(
+    "manifest_kind, error_match",
+    [
+        ("missing", "cannot be read"),
+        ("invalid-json", "cannot be read"),
+        ("missing-files", "cannot be read"),
+        ("files-list", "invalid files map"),
+        ("non-string-key", "invalid files map"),
+        ("json-type-error", "cannot be read"),
+    ],
+)
+def test_prearchive_manifest_verification_rejects_invalid_inventory(
+    tmp_path, monkeypatch, manifest_kind, error_match,
+):
+    config_path = _write_bundle(tmp_path)
+    config = bundle.parse_config(config_path)
+    config.bundle_dir.mkdir(parents=True)
+    manifest_path = config.bundle_dir / config.manifest_name
+    if manifest_kind == "invalid-json":
+        manifest_path.write_text("{", encoding="utf-8")
+    elif manifest_kind == "missing-files":
+        manifest_path.write_text('{"other": {}}', encoding="utf-8")
+    elif manifest_kind == "files-list":
+        manifest_path.write_text('{"files": []}', encoding="utf-8")
+    elif manifest_kind == "non-string-key":
+        manifest_path.write_text('{"files": {}}', encoding="utf-8")
+        monkeypatch.setattr(bundle.json, "loads", lambda _text: {"files": {1: "src/app.py"}})
+    elif manifest_kind == "json-type-error":
+        manifest_path.write_text("{}", encoding="utf-8")
+
+        def reject_input_type(_text):
+            raise TypeError("not text")
+
+        monkeypatch.setattr(bundle.json, "loads", reject_input_type)
+
+    with pytest.raises(ValueError, match=error_match):
+        bundle._verify_manifest_inventory(config)
+
+
 def test_untagged_handler_uses_cmru_next_version_and_commit_identity(tmp_path, monkeypatch):
     bundle_config, cmru_config = _write_cmru_project(tmp_path)
     _git(tmp_path, "init", "-q", "-b", "main")
