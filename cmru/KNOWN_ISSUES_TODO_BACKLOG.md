@@ -14,6 +14,7 @@
 
 | ID | Status | Fix commit |
 | --- | --- | --- |
+| KI-170 | OPEN (bundle validator outcomes pinned; SPEC wording and R2 lane-cost policy remain) | — |
 | KI-169 | OPEN (`bundle_dir` set to `"."` makes the success cleanup delete the whole `dist_dir`; no containment check on `bundle_dir`/`client_dir`) | — |
 | KI-168 | OPEN (`cmru release` does not preflight the digest-pinned cgroup probe image; a missing one fails late in the wheel-build step, after the gate) | — |
 | KI-167 | OPEN (case-sensitive suffix checks, no `.env` / `.env.*` prefix class and an incomplete name list can miss secret-class paths) | — |
@@ -3140,6 +3141,8 @@ not implementable as the brief's "small" follow-on.
 
 **Close when.** The candidate is judged (killed, survived, equivalent) in a verdict, or the acceptance note exists and the assay entry is filed.
 
+**Selected-subset evidence, 2026-11-14.** The CMRU 7.3.1 changed-line campaign completed all 23/23 and 22/22 selected candidates in about 2 h 0 min and 2 h 7 min, respectively, but each attempt still ended `BUDGET_EXCEEDED/LANE_TIMEOUT` (exit 4) despite the lane's 7 h budget. No candidate timed out; the selected sets had reached zero pending. This is a second cause of the same misleading terminal verdict: a finished `--only-candidates` selection is reported like a lane timeout. The result should identify selection completion as a partial campaign, not a timeout. See also the Run-Gate/Assay consumer follow-up; this entry records the CMRU evidence.
+
 **Source.** [shard-s4-FINAL-REPORT.md](docs/evidence/shard-s4-FINAL-REPORT.md) (Result).
 
 ## KI-135 - R2 shard s12 result: 136 survivors and 1 crashed candidate in `cmru/src/cmru/cli.py`
@@ -3709,3 +3712,15 @@ Call: `SOURCE_DATE_EPOCH=1700000000 DEMO_VERSION=1.0.0 cmru handler bundle-build
 **Wanted.** Configuration validation rejects `bundle_dir` and `client_dir` values that resolve to `dist_dir` itself, to its parent, or outside it, and rejects the two being equal or nested in each other. The pre-build and success cleanups refuse to remove any path that is not a strict descendant of `dist_dir`.
 
 **Close when.** Tests show `"."`, `".."`, an absolute path outside `dist_dir`, equal and nested values are rejected with a named error before any file is touched (for `gztar`, `xztar` and a variant build), and a normal configuration still cleans only its own trees; SPEC documents the rule (it currently says only "relative to `dist_dir`").
+
+## KI-170 — cmru-v7.3.1 R2 bundle-survivor closeout and lane cost
+
+**Status:** OPEN (filed 2026-11-14); no product defect was found in the three validator survivors. The tests added for this closeout pin the current outcomes and exact validation message.
+
+**Equivalent survivors.** The R2 campaign's other three survivors are equivalent: (1) the redundant `not raw`/leading-slash reject clause is subsumed by rejecting empty path segments (`""` and a leading slash both produce one); (2) staged-dir removal order has no effect because each path is removed only if it still exists; (3) `BundleConfig.keep_tree`'s dataclass default is unreachable from production config loading because `parse_config` always supplies `archive.get("keep_tree", False)` explicitly.
+
+**Keep-entry grammar.** SPEC S9.4 requires an exact bundle-relative POSIX file path and explicitly rejects glob syntax, absolute paths, and traversal, but it does not spell out backslashes, drive-style prefixes, control characters, empty values, or trailing separators. The public config path rejects those forms and accepts spaces (the list reader rejects empty strings before the validator sees them); the regression table pins those current results and exact error text. Clarify the remaining grammar explicitly in S9.4 when the next SPEC edit is made.
+
+**Assay lane cost.** The `assay-first-release-r2` Run-Gate lane does not set `candidate_fail_fast`; each candidate runs the full 6,678-test suite, measured at about 500 seconds on one host flavor and 575 seconds on the other. The measured 4,890-candidate target projects to about 202 hours across two hosts; the campaign report projects about 60–70 hours with candidate fail-fast. Recommend enabling `candidate_fail_fast` after confirming test ordering preserves the required evidence, and update the stale `assay.toml` comment that currently says candidates fail fast. This entry records the decision and performance follow-up; no lane policy was changed here.
+
+**Close when.** S9.4 explicitly defines the tested keep-entry grammar, and the lane's fail-fast policy is either enabled with its comment and acceptance evidence updated or recorded as an intentional cost with a reason. The selected-subset verdict follow-up is tracked in KI-134; the missing-tag sync failure is tracked by netcup NC-56.

@@ -609,6 +609,44 @@ def test_keep_config_rejects_duplicate_paths_and_non_boolean_keep_tree(tmp_path)
         bundle.parse_config(bad_tree)
 
 
+@pytest.mark.parametrize(
+    ("entry", "expected_paths", "expected_error"),
+    [
+        ("runtime.env", ["runtime.env"], None),
+        ("src/my file.env", ["src/my file.env"], None),
+        ("vendor/python/certifi/cacert.pem", ["vendor/python/certifi/cacert.pem"], None),
+        ("src\\private.env", None, None),
+        ("C:foo.env", None, None),
+        ("/private.env", None, None),
+        ("src/../private.env", None, None),
+        ("", None, "archive.keep must be an array of non-empty strings"),
+        ("src/", None, None),
+        ("src/*.env", None, None),
+        ("src/\x1fprivate.env", None, None),
+    ],
+)
+def test_keep_entries_pin_exact_relative_posix_path_results(
+    tmp_path, entry, expected_paths, expected_error
+):
+    config_path = _write_bundle(tmp_path, keep=(entry,))
+
+    if expected_paths is not None:
+        parsed = bundle.parse_config(config_path)
+        assert parsed.archive_keep == expected_paths
+        return
+
+    with pytest.raises(ValueError) as exc_info:
+        bundle.parse_config(config_path)
+
+    if expected_error is not None:
+        assert str(exc_info.value) == expected_error
+    else:
+        assert str(exc_info.value) == (
+            f"[archive].keep entry {entry!r} must be an exact relative POSIX file path "
+            "without glob syntax"
+        )
+
+
 def test_copy_sources_rejects_bad_file_and_directory_inputs(tmp_path):
     (tmp_path / "target.txt").write_text("target\n", encoding="utf-8")
     (tmp_path / "alias.txt").symlink_to(tmp_path / "target.txt")
