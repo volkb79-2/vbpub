@@ -8,6 +8,7 @@ import json
 import math
 import re
 import shlex
+import zlib
 from dataclasses import dataclass
 from typing import Any, Mapping
 
@@ -124,10 +125,7 @@ def probe_script(jobs: Mapping[str, JobSpec]) -> str:
     metadata = command_metadata("probe", {"jobs": targets})
     payload = json.dumps(targets, sort_keys=True, separators=(",", ":")).encode()
     encoded = base64.b64encode(payload).decode("ascii")
-    remote = r'''set -euo pipefail
-source "$HOME/runner-scripts/lib.sh"
-python3 - "$RUNNER_HOME" PAYLOAD <<'PY'
-import base64
+    python_source = r'''import base64
 import hashlib
 import json
 import os
@@ -289,7 +287,18 @@ for target in sorted(targets, key=lambda row: row["name"]):
         "baseline_seconds": baseline_seconds,
     })
 print(json.dumps({"jobs": rows}, sort_keys=True, separators=(",", ":")))
-PY'''.replace("PAYLOAD", shlex.quote(encoded))
+'''
+    compressed = base64.b64encode(zlib.compress(python_source.encode("utf-8"))).decode("ascii")
+    bootstrap = (
+        "import base64,zlib;exec(zlib.decompress(base64.b64decode("
+        + repr(compressed)
+        + ")))"
+    )
+    remote = "\n".join([
+        "set -euo pipefail",
+        'source "$HOME/runner-scripts/lib.sh"',
+        f"python3 -c {shlex.quote(bootstrap)} \"$RUNNER_HOME\" {shlex.quote(encoded)}",
+    ])
     return f"{metadata}\n{remote}"
 
 

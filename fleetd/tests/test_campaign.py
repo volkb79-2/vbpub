@@ -1080,7 +1080,7 @@ def test_stall_stop_failure_and_already_finished_batches_do_not_requeue(tmp_path
     assert stopped_state["hosts"][stop_job["host"]]["status"] == "UNREACHABLE"
 
 
-def test_deferred_and_exited_requeues_drop_completed_work_and_retain_unreachable_work(tmp_path):
+def test_deferred_and_exited_requeues_drop_completed_work_and_fail_zero_progress_exits(tmp_path):
     plan, first_id, second_id = _two_host_one_candidate_plan()
     manager = CampaignManager(tmp_path, FakeTransport())
     manager.run("campaign", plan)
@@ -1106,6 +1106,7 @@ def test_deferred_and_exited_requeues_drop_completed_work_and_retain_unreachable
         "candidate_id": second_id, "outcome_bucket": "survived", "elapsed_seconds": 1,
         "emitted_at": None,
     }]
+    state["jobs"][job_b["name"]]["finished_ids"] = [second_id]
     manager._requeue_exited(state)
     assert state["jobs"][job_b["name"]]["requeued"] is True
     assert not any(job.get("requeue_reason") == "job-exit" for job in state["jobs"].values())
@@ -1113,10 +1114,47 @@ def test_deferred_and_exited_requeues_drop_completed_work_and_retain_unreachable
     state["jobs"][job_b["name"]]["status"] = "EXIT"
     state["jobs"][job_b["name"]]["requeued"] = False
     state["jobs"][job_b["name"]]["records"] = []
+    state["jobs"][job_b["name"]]["finished_ids"] = []
     state["jobs"][job_a["name"]]["records"] = []
     state["hosts"]["host-b"]["status"] = "UNREACHABLE"
     manager._requeue_exited(state)
-    assert state["deferred_requeues"][-1]["source_job"] == job_b["name"]
+    assert state["jobs"][job_b["name"]]["status"] == "FAILED"
+    assert state["deferred_requeues"] == []
+
+
+def test_progress_making_exit_defers_only_pending_work_when_host_is_unreachable(tmp_path):
+    plan = _plan(2)
+    candidates = [candidate for host in plan["hosts"] for candidate in host["assigned"]]
+    host_a = next(host for host in plan["hosts"] if host["id"] == "host-a")
+    host_b = next(host for host in plan["hosts"] if host["id"] == "host-b")
+    host_a["assigned"] = []
+    host_a["batches"] = []
+    host_b["assigned"] = candidates
+    host_b["batches"] = [{
+        "batch": 0, "kind": "regular", "candidate_ids": sorted(item["id"] for item in candidates),
+    }]
+    transport = FakeTransport()
+    manager = CampaignManager(tmp_path, transport)
+    manager.run("campaign", plan)
+    job = _first_running(_state(tmp_path), "host-b")
+    finished_id, pending_id = job["candidate_ids"]
+    transport.add_progress("host-b", job["name"], finished_id, "killed")
+    manager.status("campaign")
+
+    state = _state(tmp_path)
+    state_job = state["jobs"][job["name"]]
+    state_job["status"] = "EXIT"
+    state_job["exit_code"] = 2
+    state_job["requeued"] = False
+    state["hosts"]["host-b"]["status"] = "UNREACHABLE"
+    manager._requeue_exited(state)
+
+    assert state_job["status"] == "EXIT"
+    assert state_job["requeued"] is True
+    assert state["deferred_requeues"] == [{
+        "source_job": job["name"], "candidate_ids": [pending_id],
+        "reason": "job exited while its host is unreachable",
+    }]
 
 
 def test_lost_host_with_no_unfinished_candidates_does_not_create_requeue(tmp_path):
@@ -1921,6 +1959,9 @@ def test_real_run_job_starts_non_root_project_and_recovers_digest_from_ids_file(
     assert probe.returncode == 0, probe.stderr
     row = json.loads(probe.stdout)["jobs"][0]
     assert row["list_digest"] == spec.list_digest
+    progress_file = home / "checkouts" / spec.commit / ".assay" / "progress-contract-assay.jsonl"
+    assert row["progress_offset"] == 0, row
+    assert row["progress_end_offset"] == progress_file.stat().st_size, row
     assert row["progress_count"] == 1
     assert len(row["records"]) == 1
 
@@ -1960,6 +2001,9 @@ def test_real_plain_run_probe_reads_progress_without_campaign_pointer(tmp_path):
     assert probe.returncode == 0, probe.stderr
     row = json.loads(probe.stdout)["jobs"][0]
     assert row["progress_path"] == f"checkouts/{spec.commit}/.assay/progress-contract-assay.jsonl"
+    progress_file = home / "checkouts" / spec.commit / ".assay" / "progress-contract-assay.jsonl"
+    assert row["progress_offset"] == 0, row
+    assert row["progress_end_offset"] == progress_file.stat().st_size, row
     assert row["progress_count"] == 1
     assert [record["candidate_id"] for record in row["records"]] == list(spec.sorted_candidate_ids)
 
@@ -2245,7 +2289,7 @@ def test_exit_of_a_returned_job_does_not_requeue_work_in_flight_elsewhere(tmp_pa
     manager.tick("campaign")
 
     state = _state(tmp_path)
-    assert state["jobs"][returning["name"]]["status"] == "EXIT"
+    assert state["jobs"][returning["name"]]["status"] == "FAILED"
     assert [job for job in state["jobs"].values() if job.get("requeue_reason") == "job-exit"] == []
     in_flight_elsewhere = {
         candidate_id for job in state["jobs"].values()
@@ -2406,7 +2450,10 @@ def test_real_probe_reads_progress_through_a_symlinked_checkouts_directory(tmp_p
     assert probe.returncode == 0, probe.stderr
     row = json.loads(probe.stdout)["jobs"][0]
     assert row["progress_path"] == f"checkouts/{spec.commit}/.assay/progress-contract-assay.jsonl"
-    assert [record["candidate_id"] for record in row["records"]] == list(spec.sorted_candidate_ids)
+    progress_file = outside / spec.commit / ".assay" / "progress-contract-assay.jsonl"
+    assert row["progress_offset"] == 0, row
+    assert row["progress_end_offset"] == progress_file.stat().st_size, row
+    assert [record["candidate_id"] for record in row["records"]] == list(spec.sorted_candidate_ids), row
 
     foreign_runner_home = dict(environment, RUNNER_HOME=str(tmp_path / "data-disk"))
     probe = subprocess.run(
