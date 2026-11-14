@@ -204,7 +204,14 @@ is not included in this verification; see IOB-BL-47.
 
 ## IOB-BL-47 — Complete IBX study live acceptance after the fio cap repair
 
-**Status: OPEN.** Run3 stopped after `raw-t0 standard seq1m-write` because the
+**Status: DONE 2026-11-14 (attempt 5).** The full base schedule ran to
+`STUDY-COMPLETE` in 9 h 19 min of the 12 h lease: 0 stop events, 478.64 GB of
+the 500 GB cap, ext4 and Btrfs legs, Btrfs verifier (33 cells, 66 logs), final
+wipe and discard, timers and io.cost/IO limits restored, evidence sha256-verified.
+Report and findings: `reports/ibx-study-run5-REPORT.md`; remaining items are
+IOB-BL-48 (hard-kill resume, never exercised live) and IOB-BL-51..54.
+
+**Original state.** Run3 stopped after `raw-t0 standard seq1m-write` because the
 driver rejected fio's whole-block write count. The cap repair, accounting
 retry, analysis, discard, probe, sampler, and file-target paths have fixture
 and fake-host coverage in the registered iobench lane, and the rendered cap
@@ -335,3 +342,40 @@ IOB-BL-47.
 **Close when.** The real-fio rehearsal passes with upstream fio 3.39 and
 produces `rung-choice.md`; the iobench R0–R1 gate passes on the reviewed final
 head; the next approved full live study proceeds under IOB-BL-47.
+
+## IOB-BL-51 — IBX liveness probe margin on a shared system disk
+
+**Status: OPEN (P3).** Filed 2026-11-14 from the attempt-5 report. On a single
+shared disk the probe's root-fsync component reached 15.5 s and one of 483
+probes timed out at 21 s (limit 20 s) while fio saturated the disk; the
+"6 consecutive" stop rule absorbed it. **Wanted.** Record the slow-probe count
+and the maximum probe component per cell in the analysis, or document that a
+shared-disk study must expect isolated 15-20 s fsync stalls. **Close when.**
+The analysis prints per-cell slow-probe counts and the README states the
+expectation.
+
+## IOB-BL-52 — IBX analysis presentation glitches
+
+**Status: OPEN (P3).** Filed 2026-11-14. (a) In the file-rung tables the
+`standard` column of `trim_state` prints `discard unsupported —` although no
+standard set ran there; it should print the same unavailable marker as the
+other rows. (b) Part (c) prints a pass-4/pass-1 ratio (243.6 percent) next to
+`not reproduced`; the threshold direction is easy to misread. **Close when.**
+Both tables are fixed with tests on the rendered text.
+
+## IOB-BL-53 — ship a resumable IBX study-day orchestrator
+
+**Status: OPEN (P2).** Filed 2026-11-14. The README sequence needs `host-escape`
+and a long-lived shell; attempt 5 ran an equivalent resumable root orchestrator
+(phase markers, EXIT-trap timer restore) as a system.slice unit that is not in
+the repo. **Wanted.** A supported runner with phase markers so a hard stop
+mid-study resumes at a phase (also the natural home for the IOB-BL-48 handler).
+**Close when.** The runner is in the repo with fixture tests and one real
+rehearsal on a regular file.
+
+## IOB-BL-54 — document the two-point raw reference of the IBX design
+
+**Status: OPEN (P3).** Filed 2026-11-14. Under the 500 GB cap the raw reference
+has only two standard points (t0, t6h); the t9h and t12h standard sets cannot
+fit, so the V figures rest on two points. **Close when.** The README and the
+analysis output name this as the cap-constrained design limit.
