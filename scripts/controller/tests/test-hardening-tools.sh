@@ -94,7 +94,7 @@ fcntl.flock = record_flock
 os.environ["CONTROLLER_OD_STATE"] = sys.argv[2]
 os.environ["CONTROLLER_OD_PREFER_EXPIRING"] = "0"
 try:
-    module.main(["start", "auto"])
+    module.main(["record-thread", "thread-fixture", "volker"])
 finally:
     fcntl.flock = actual_flock
 assert operations == [fcntl.LOCK_EX], operations
