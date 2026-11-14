@@ -7,6 +7,7 @@ import json
 import os
 import re
 import runpy
+import shutil
 import subprocess
 from pathlib import Path
 from types import SimpleNamespace
@@ -16,10 +17,14 @@ from studies.ibx import driver
 
 GIB = driver.GIB
 FAKE_IDENTITY = driver.TargetIdentity(32 * GIB, "f00d-1234")
+REAL_FIO_JSON_FIXTURE = json.loads(
+    (Path(__file__).parent / "fixtures/ibx-fio-3.39-regular-file-write.json").read_text(
+        encoding="utf-8"))
 HEALTHY = {
     "psi": {"io": {"some": {"avg10": 0.1}, "full": {"avg10": 0.0}},
             "memory": {"some": {"avg10": 0.1}, "full": {"avg10": 0.1}}},
-    "meminfo": {"MemAvailable": 16 * GIB}, "free_bytes": 16 * GIB,
+    "meminfo": {"MemAvailable": 16 * GIB}, "output_free_bytes": 16 * GIB,
+    "target_free_bytes": 16 * GIB,
     "diskstats": {"writes_completed": 3, "sectors_written": 20, "flushes_completed": 1,
                    "discards_completed": 2, "sectors_discarded": 4},
 }
@@ -33,11 +38,15 @@ class FakeFio:
 
     def __init__(self):
         self.calls = []
+        self.write_overrun_bytes = 0
 
     def run(self, job_path: Path, max_runtime=None):
         text = job_path.read_text(encoding="utf-8")
         options = {}
+        jobname = "ibx-fake"
         for line in text.splitlines():
+            if line.startswith("[") and line.endswith("]") and line != "[global]":
+                jobname = line[1:-1]
             if "=" in line and not line.startswith("["):
                 key, value = line.split("=", 1)
                 options[key] = value
@@ -53,12 +62,24 @@ class FakeFio:
             done = min(io_size, self.rate_bps * runtime)
         else:
             done = self.rate_bps * runtime
+        if rw in ("write", "randwrite"):
+            done += self.write_overrun_bytes
         duration = float(runtime) if timed else min(float(runtime), done / self.rate_bps)
         stat_name = "write" if rw in ("write", "randwrite") else "read"
-        stats = {"io_bytes": done, "bw_bytes": done / max(duration, 0.001),
-                 "iops": done / block / max(duration, 0.001),
-                 "clat_ns": {"percentile": {"95.000000": 100_000.0, "99.000000": 120_000.0}}}
-        payload = {"jobs": [{stat_name: stats}]}
+        payload = json.loads(json.dumps(REAL_FIO_JSON_FIXTURE))
+        fio_job = payload["jobs"][0]
+        fio_job["jobname"] = jobname
+        fio_job["job options"] = options
+        stats = fio_job.pop("write")
+        stats["io_bytes"] = done
+        stats["bw_bytes"] = done / max(duration, 0.001)
+        stats["iops"] = done / block / max(duration, 0.001)
+        stats["runtime"] = max(1, int(duration * 1000))
+        stats["total_ios"] = done // block
+        stats["clat_ns"]["percentile"].update({
+            "95.000000": 100_000.0, "99.000000": 120_000.0})
+        fio_job[stat_name] = stats
+        payload["fio version"] = "fio-3.39"
         prefix = Path(options["write_bw_log"])
         bw_log_value = self.bw_log_value
         (Path(f"{prefix}_bw.1.log")).write_text(
@@ -70,7 +91,7 @@ class FakeFio:
 
 class FakeHost:
     def __init__(self, *, psi_io=0.1, psi_mem=0.1, psi_mem_full=None,
-                 available=16 * GIB, free=16 * GIB):
+                 available=16 * GIB, free=16 * GIB, target_free=16 * GIB):
         self.fio = FakeFio()
         self.snapshot = {"io_cost": {"enable": 0}, "cgroups": []}
         self.scheduler_snapshot = {
@@ -83,6 +104,7 @@ class FakeHost:
         self.psi_mem_full = psi_mem if psi_mem_full is None else psi_mem_full
         self.available = available
         self.free = free
+        self.target_free = target_free
         self.discards = []
         self.fsync_starts = []
         self.fsync_stops = []
@@ -161,11 +183,16 @@ class FakeHost:
 
     def sample(self, device, out, target=None):
         self.events.append("sample")
-        return {**HEALTHY, "device": device,
+        row = {**HEALTHY, "device": device,
                 "psi": {"io": {"some": {"avg10": self.psi_io}},
                         "memory": {"some": {"avg10": self.psi_mem},
                                    "full": {"avg10": self.psi_mem_full}}},
-                "meminfo": {"MemAvailable": self.available}, "free_bytes": self.free}
+                "meminfo": {"MemAvailable": self.available}, "output_free_bytes": self.free}
+        if target is not None:
+            row["target_free_bytes"] = self.target_free
+        else:
+            row.pop("target_free_bytes", None)
+        return row
 
     def liveness_probe(self, max_latency_s, *, ssh_host=driver.LIVENESS_SSH_HOST,
                        ssh_port=driver.LIVENESS_SSH_PORT,
@@ -225,13 +252,15 @@ class InterruptOnceHost(FakeHost):
         options = self.fio.calls[-1]["options"]
         if not self.interrupted and options["rw"] in ("write", "randwrite"):
             self.interrupted = True
-            raise driver.StudyError("simulated interruption after a partial write")
+            raise driver.FioExecutionError("simulated interruption after a partial write",
+                                           duration=duration)
         return payload, duration
 
 
 def run_set(tmp_path, name, *, host=None, target_type=None, target="/dev/fake", offset=0,
             size=24 * GIB, fsync_cell=None, dry_run=False,
             allow_system_disk_partition=False, system_disk_ack=None,
+            min_output_free=4 * GIB, min_target_free=1 * GIB,
             probe_consecutive_samples=3, max_probe_latency_s=1.0,
             probe_interval_s=driver.DEFAULT_LIVENESS_PROBE_INTERVAL_S,
             liveness_ssh_host=driver.LIVENESS_SSH_HOST,
@@ -240,7 +269,8 @@ def run_set(tmp_path, name, *, host=None, target_type=None, target="/dev/fake", 
     return driver.run_study(name, target=target, device="vda5", out=tmp_path,
                             target_kind=target_type, offset=offset, size=size,
                             mem_psi_max=20, min_memavailable=2 * GIB,
-                            min_free=4 * GIB, max_probe_latency_s=max_probe_latency_s,
+                            min_output_free=min_output_free, min_target_free=min_target_free,
+                            max_probe_latency_s=max_probe_latency_s,
                             probe_consecutive_samples=probe_consecutive_samples,
                             probe_interval_s=probe_interval_s,
                             liveness_ssh_host=liveness_ssh_host,
@@ -348,24 +378,32 @@ def seed_raw_t6h_evidence(out, *, quick=(100.0, 100.0), veryquick=(100.0, 100.0)
 
 
 def test_fio_writer_is_volume_bounded_and_fake_models_time_based_io_size(tmp_path):
-    writer = driver.Job("bounded", "write", 1024**2, 32, 10, "wbps", 4096)
+    writer = driver.Job("bounded", "write", 1024**2, 32, 10, "wbps", 4 * 1024**2)
     text = driver.render_job(writer, target="/dev/fake", offset=0, size=GIB,
                              log_prefix=str(tmp_path / "logs" / "one"))
     assert "direct=1" in text
-    assert "io_size=4096" in text
+    assert "io_size=4194304" in text
     assert "time_based=1" not in text
     path = tmp_path / "bounded.fio"
     path.write_text(text, encoding="utf-8")
     (tmp_path / "logs").mkdir()
     fake = FakeFio()
     payload, _ = fake.run(path)
-    assert payload["jobs"][0]["write"]["io_bytes"] == 4096
+    assert payload["jobs"][0]["write"]["io_bytes"] == 4 * 1024**2
 
-    opts = text + "time_based=1\nio_size=4096\n"
+    opts = text + "time_based=1\nio_size=4194304\n"
     timed = tmp_path / "timed.fio"
     timed.write_text(opts, encoding="utf-8")
     timed_payload, _ = fake.run(timed)
     assert timed_payload["jobs"][0]["write"]["io_bytes"] == 10 * FakeFio.rate_bps
+    assert writer.write_cap % writer.bs == 0
+
+
+def test_job_write_caps_require_positive_full_blocks():
+    with pytest.raises(driver.StudyError, match="block size must be positive"):
+        driver.Job("zero-block", "write", 0, 1, 1, "wbps", 4096)
+    with pytest.raises(driver.StudyError, match="at least one full block"):
+        driver.Job("sub-block", "write", 4096, 1, 1, "wbps", 1)
 
 
 def test_profile_cells_match_nested_family_and_total_write_caps():
@@ -388,6 +426,7 @@ def test_profile_cells_match_nested_family_and_total_write_caps():
     assert sum(job.write_cap for job in standard if job.writes) <= 100 * 10**9
     assert all(job.write_cap > 0 for job in standard if job.writes)
     for rung in ("veryquick", "quick", "standard"):
+        assert all(job.write_cap % job.bs == 0 for job in driver.rung_jobs(rung) if job.writes)
         assert all(job.read_written_extent for job in driver.rung_jobs(rung)
                    if job.rw in ("read", "randread"))
 
@@ -413,6 +452,8 @@ def test_run_resume_monitors_and_records_one_json_per_fio_cell(tmp_path):
                for job in host.fio.calls if job["options"]["rw"] in ("write", "randwrite"))
     assert all("io_size" in job["options"] for job in host.fio.calls
                if job["options"]["rw"] in ("write", "randwrite"))
+    assert all(json.loads(path.read_text(encoding="utf-8"))["fio"].get("fio version") == "fio-3.39"
+               for path in files if json.loads(path.read_text(encoding="utf-8")).get("fio") is not None)
     state = json.loads((tmp_path / driver.STATE_NAME).read_text(encoding="utf-8"))
     assert state["write_bytes"] == first["write_bytes"]
     assert first["run_manifest"] == state["run_manifest"]
@@ -475,7 +516,9 @@ def test_run_resume_monitors_and_records_one_json_per_fio_cell(tmp_path):
                 system_disk_ack=ack)
 
 
-def test_interrupted_cell_keeps_write_and_active_allowances_on_resume(tmp_path):
+def test_interrupted_cell_keeps_write_and_active_allowances_on_resume(tmp_path, monkeypatch):
+    job = driver.Job("seq1m-write", "write", 1024**2, 1, 1, "wbps", 4 * 1024**2)
+    monkeypatch.setattr(driver, "rung_jobs", lambda rung, part_c=False: [job])
     host = InterruptOnceHost()
     with pytest.raises(driver.StudyError, match="simulated interruption"):
         run_set(tmp_path, "raw-t0", host=host)
@@ -486,33 +529,498 @@ def test_interrupted_cell_keeps_write_and_active_allowances_on_resume(tmp_path):
                       if job.name == "seq1m-write")
     assert state["write_bytes"] == writer_cap
     assert state["write_reservations"][writer_key] == [writer_cap]
-    assert state["active_reservations"][writer_key] == [
-        driver.RUNG["standard"]["burst_s"] + driver.FIO_DRAIN_RESERVE_S]
+    assert state["active_reservations"] == {}
     resumed = run_set(tmp_path, "raw-t0", host=host)
     state = json.loads(state_path.read_text(encoding="utf-8"))
     assert resumed["write_bytes"] == state["write_bytes"]
-    assert state["write_reservations"][writer_key] == [writer_cap]
-    assert state["active_reservations"][writer_key] == [
-        driver.RUNG["standard"]["burst_s"] + driver.FIO_DRAIN_RESERVE_S]
+    completed_bytes = sum(json.loads(path.read_text(encoding="utf-8")).get("write_bytes", 0)
+                          for path in (tmp_path / "cells").glob("*.json"))
+    assert state["write_bytes"] == writer_cap + completed_bytes
+    assert state["write_reservations"] == {}
+    assert state["active_reservations"] == {}
+    assert state["interrupted_attempts"][0]["write_reservations"][writer_key] == [writer_cap]
 
 
-def test_reservation_helpers_replace_caps_with_actuals_and_fail_closed():
+def test_recovered_orphan_result_replaces_its_finalized_interrupted_charge(tmp_path, monkeypatch):
+    # The process dies after a cell's result file exists but before the state
+    # file records it. A resume that refuses before adopting the orphan, and
+    # the one after it, must count that cell exactly once.
+    job = driver.Job("seq1m-write", "write", 1024**2, 1, 1, "wbps", 4 * 1024**2)
+    monkeypatch.setattr(driver, "rung_jobs", lambda rung, part_c=False: [job])
+    host = FakeHost()
+    real_write_json = driver.write_json
+    dead = {"now": False}
+
+    class ProcessDied(BaseException):
+        pass
+
+    def dying_write_json(path, data):
+        if Path(path).name == driver.STATE_NAME:
+            if dead["now"]:
+                return
+            if "raw|t0|standard|seq1m-write" in data["cells"]:
+                dead["now"] = True
+                raise ProcessDied()
+        real_write_json(path, data)
+
+    monkeypatch.setattr(driver, "write_json", dying_write_json)
+    with pytest.raises(ProcessDied):
+        run_set(tmp_path, "raw-t0", host=host)
+    monkeypatch.setattr(driver, "write_json", real_write_json)
+    state_path = tmp_path / driver.STATE_NAME
+    killed = json.loads(state_path.read_text(encoding="utf-8"))
+    writer_key = "raw|t0|standard|seq1m-write"
+    writer_cap = job.write_cap
+    assert killed["write_reservations"][writer_key] == [writer_cap]
+    assert "raw|t0|standard|seq1m-write" not in killed["cells"]
+
+    refusing = FakeHost(available=1)
+    with pytest.raises(driver.StudyError, match="MemAvailable"):
+        run_set(tmp_path, "raw-t0", host=refusing)
+    refused = json.loads(state_path.read_text(encoding="utf-8"))
+    assert refused["write_bytes"] == writer_cap and refused["write_reservations"] == {}
+
+    run_set(tmp_path, "raw-t0", host=host)
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    cell_bytes = sum(json.loads(path.read_text(encoding="utf-8")).get("write_bytes", 0)
+                     for path in (tmp_path / "cells").glob("*.json"))
+    cell_seconds = sum(json.loads(path.read_text(encoding="utf-8")).get("duration_s", 0)
+                       for path in (tmp_path / "cells").glob("*.json"))
+    # The killed attempt's result was adopted: nothing is charged for it beyond
+    # the bytes and seconds its saved result recorded.
+    assert state["write_bytes"] == cell_bytes
+    assert state["active_seconds"] == pytest.approx(cell_seconds + 0.01 * len(host.discards))
+    assert state["write_reservations"] == state["active_reservations"] == {}
+    assert state["interrupted_attempts"][0]["write_reservations"] == {}
+
+
+def test_interrupted_charge_helper_takes_the_newest_attempt_of_one_cell_only():
+    state = {"write_bytes": 70, "active_seconds": 9.0, "interrupted_attempts": [
+        {"write_reservations": {"cell": [10], "other": [5]}, "active_reservations": {"cell": [4.0]}},
+        {"write_reservations": {"cell": [20, 30]}, "active_reservations": {}},
+    ]}
+    assert driver.take_latest_interrupted_charge(state, "write_reservations", "cell") == 30
+    assert state["interrupted_attempts"][1]["write_reservations"] == {"cell": [20]}
+    assert driver.take_latest_interrupted_charge(state, "write_reservations", "cell") == 20
+    assert state["interrupted_attempts"][1]["write_reservations"] == {}
+    assert driver.take_latest_interrupted_charge(state, "write_reservations", "cell") == 10
+    assert state["interrupted_attempts"][0]["write_reservations"] == {"other": [5]}
+    assert driver.take_latest_interrupted_charge(state, "write_reservations", "cell") == 0
+    assert driver.take_latest_interrupted_charge({}, "write_reservations", "cell") == 0
+    driver.reclaim_interrupted_attempt(state, "cell")
+    assert state["active_seconds"] == 5.0 and state["write_bytes"] == 70
+    state["interrupted_attempts"][0]["active_reservations"] = {"cell": [100.0]}
+    driver.reclaim_interrupted_attempt(state, "cell")
+    assert state["active_seconds"] == 0.0
+
+
+class FailingDiscardHost(FakeHost):
+    """Fail the Nth discard after the clock advanced, as a blkdiscard error or a monitor stop would."""
+
+    def __init__(self, fail_on, advance_s, error):
+        super().__init__()
+        self.fail_on = fail_on
+        self.advance_s = advance_s
+        self.error = error
+
+    def discard(self, target, kind, offset, size, timeout=None, sample=None):
+        if len(self.discards) + 1 == self.fail_on:
+            self.discards.append((target, kind, offset, size, timeout))
+            self.clock += self.advance_s
+            raise self.error
+        return super().discard(target, kind, offset, size, timeout=timeout, sample=sample)
+
+
+@pytest.mark.parametrize("fail_on", (1, 2))
+@pytest.mark.parametrize("error", (driver.StudyError("bounded discard failed: not supported"),
+                                   KeyboardInterrupt()))
+def test_failed_discard_settles_measured_time_so_the_same_output_can_retry(tmp_path, monkeypatch,
+                                                                         fail_on, error):
+    # Second discard: a cell's own discard_before step, after the rung's initial one.
+    jobs = [driver.Job("fresh4k-write", "randwrite", 4096, 1, 1, "canary_iops", 8192,
+                       extent_bytes=GIB, discard_before=True)]
+    monkeypatch.setattr(driver, "rung_jobs", lambda rung, part_c=False: jobs)
+    host = FailingDiscardHost(fail_on, 7.0, error)
+    with pytest.raises(type(error)):
+        run_set(tmp_path, "raw-t0", host=host)
+    state = json.loads((tmp_path / driver.STATE_NAME).read_text(encoding="utf-8"))
+    assert state["active_reservations"] == {}
+    assert state["active_seconds"] == pytest.approx(7.0 + (0.01 if fail_on == 2 else 0.0))
+    run_set(tmp_path, "raw-t0", host=host)
+    state = json.loads((tmp_path / driver.STATE_NAME).read_text(encoding="utf-8"))
+    assert state["active_reservations"] == {} and "interrupted_attempts" not in state
+    assert state["active_seconds"] < 7.0 + 3 * 60
+
+
+def test_failed_discard_never_settles_more_than_its_bounded_allowance(tmp_path, monkeypatch):
+    jobs = [driver.Job("fresh4k-write", "randwrite", 4096, 1, 1, "canary_iops", 8192)]
+    monkeypatch.setattr(driver, "rung_jobs", lambda rung, part_c=False: jobs)
+    host = FailingDiscardHost(1, 10 * driver.ACTIVE_CAP_S, driver.StudyError("bounded discard timed out"))
+    with pytest.raises(driver.StudyError, match="timed out"):
+        run_set(tmp_path, "raw-t0", host=host)
+    state = json.loads((tmp_path / driver.STATE_NAME).read_text(encoding="utf-8"))
+    assert state["active_seconds"] == driver.ACTIVE_CAP_S - driver.FIO_DRAIN_RESERVE_S
+
+
+def test_fill_cap_keeps_one_whole_block_when_the_measured_rate_is_tiny(tmp_path, monkeypatch):
+    block = 1024**2
+    jobs = [driver.Job("seq1m-write", "write", block, 1, 1, "wbps", 4 * block),
+            driver.Job("fill", "write", block, 1, 1, "fill", 4 * block)]
+    monkeypatch.setattr(driver, "rung_jobs", lambda rung, part_c=False: jobs)
+    host = FakeHost()
+    host.fio.rate_bps = 8 * block
+    host.fio.bw_log_value = 1  # a few KiB/s: ten seconds of it is far below one block
+    run_set(tmp_path, "raw-t0", host=host)
+    fill = json.loads((tmp_path / "cells" / "raw_t0_standard_fill.json").read_text(encoding="utf-8"))
+    assert fill["io_size"] == block and fill["write_bytes"] == block
+
+
+def test_rejected_fio_result_is_saved_and_same_output_retry_keeps_actual_meter(tmp_path, monkeypatch):
+    job = driver.Job("seq1m-write", "write", 1024**2, 1, 1, "wbps", 4 * 1024**2)
+    monkeypatch.setattr(driver, "rung_jobs", lambda rung, part_c=False: [job])
+    host = FakeHost()
+    host.fio.rate_bps = 8 * 1024**2
+    host.fio.write_overrun_bytes = 1024**2
+    with pytest.raises(driver.StudyError, match="more than the rendered block-aligned io_size cap"):
+        run_set(tmp_path, "raw-t0", host=host)
+
+    state_path = tmp_path / driver.STATE_NAME
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    failed_path = next((tmp_path / "failed-cells").glob("*.attempt-*.json"))
+    failed = json.loads(failed_path.read_text(encoding="utf-8"))
+    assert failed["fio"]["fio version"] == "fio-3.39"
+    assert failed["fio"]["jobs"][0]["jobname"] == "seq1m-write"
+    assert failed["fio"]["jobs"][0]["error"] == 0
+    assert failed["fio"]["jobs"][0]["job options"]["bs"] == str(1024**2)
+    assert failed["fio"]["jobs"][0]["write"]["io_bytes"] == 5 * 1024**2
+    assert failed["write_bytes_observed"] == failed["write_bytes_charged"] == 5 * 1024**2
+    assert state["write_bytes"] == 5 * 1024**2
+    assert state["write_reservations"] == {}
+
+    host.fio.write_overrun_bytes = 0
+    retried = run_set(tmp_path, "raw-t0", host=host)
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    assert retried["write_bytes"] == state["write_bytes"] == 17 * 1024**2
+    assert state["write_reservations"] == {}
+
+
+@pytest.mark.parametrize("failure_path", ("execute", "parse"))
+def test_fio_reported_write_overall_cap_is_rejected_after_actual_settlement(
+        tmp_path, monkeypatch, failure_path):
+    job = driver.Job("seq1m-write", "write", 1024**2, 1, 1, "wbps", 4 * 1024**2)
+    monkeypatch.setattr(driver, "rung_jobs", lambda rung, part_c=False: [job])
+    monkeypatch.setattr(driver, "BASE_SCHEDULE_CELL_SETS", ())
+    out = tmp_path / failure_path
+    out.mkdir()
+    state = driver.empty_state(driver.dt.datetime.now(driver.dt.UTC).isoformat(),
+                               "raw", "/dev/fake", "vda5", FAKE_IDENTITY)
+    state["write_bytes"] = driver.WRITE_CAP - job.write_cap
+    driver.write_json(out / driver.STATE_NAME, state)
+    host = FakeHost()
+    host.fio.rate_bps = 8 * 1024**2
+    host.fio.write_overrun_bytes = job.bs
+    if failure_path == "execute":
+        execute = host.execute_fio
+
+        def execute_then_fail(job_path, runtime_s, sample):
+            payload, duration = execute(job_path, runtime_s, sample)
+            raise driver.FioExecutionError("fio exit with a complete output record",
+                                           payload=payload, duration=duration)
+
+        host.execute_fio = execute_then_fail
+
+    with pytest.raises(driver.StudyError, match="fio-reported writes exceed the hard 500 GB cap"):
+        run_set(out, "raw-t0", host=host)
+
+    state = json.loads((out / driver.STATE_NAME).read_text(encoding="utf-8"))
+    assert state["write_bytes"] == driver.WRITE_CAP + job.bs
+    assert state["write_reservations"] == {}
+
+
+def test_real_fio_output_fixture_enforces_aligned_cap_and_run3_round_up(tmp_path):
+    # The run3 byte count is a report projection because its raw fio JSON was
+    # not retained in the original evidence bundle.
+    fixture_dir = Path(__file__).parent / "fixtures"
+    real_payload = json.loads((fixture_dir / "ibx-fio-3.39-regular-file-write.json").read_text())
+    block = 1024**2
+    cap = 4 * block
+    job = driver.Job("seq1m-write", "write", block, 32, 10, "wbps", cap)
+    assert real_payload["fio version"] == "fio-3.39"
+    assert real_payload["jobs"][0]["write"]["io_bytes"] == cap
+    assert driver.parse_fio_values(real_payload, job)[1] == cap
+
+    for bytes_done in (cap + block, cap + 5 * block):
+        payload = json.loads(json.dumps(real_payload))
+        payload["jobs"][0]["write"]["io_bytes"] = bytes_done
+        with pytest.raises(driver.StudyError, match="more than the rendered block-aligned io_size cap"):
+            driver.parse_fio_values(payload, job)
+
+    run3 = json.loads((fixture_dir / "ibx-run3-seq1m-write-observation.json").read_text())
+    assert run3["source"].startswith("ibx-study-run3-REPORT.md")
+    rounded = driver.Job("seq1m-write", "write", run3["bs_bytes"], 32, 10, "wbps",
+                         run3["io_size_requested_bytes"])
+    assert rounded.write_cap == 63_999_836_160
+    assert rounded.requested_write_cap == run3["io_size_requested_bytes"]
+    run3_payload = {"jobs": [{"write": {"io_bytes": run3["reported_write_bytes"]}}]}
+    with pytest.raises(driver.StudyError, match="more than the rendered block-aligned io_size cap"):
+        driver.parse_fio_values(run3_payload, rounded)
+
+
+def test_real_fio_rounding_verification_uses_only_tmp_regular_file():
+    fio = shutil.which("fio")
+    if fio is None:
+        pytest.skip("fio executable unavailable; see studies/ibx/ACCEPTANCE.md for the manual fio-3.39 command")
+    result = driver.verify_fio_rounding(fio)
+    assert result["fio_version"] == "fio-3.39"
+    assert result["writing_jobs_rendered"] == 51
+    assert len(result["distinct_block_size_classes"]) == 23
+    assert all(row["fio_io_bytes"] == row["rendered_io_size"]
+               for row in result["distinct_block_size_classes"])
+
+
+class FioVerificationCalls(list):
+    def __init__(self):
+        super().__init__()
+        self.job_file_contents = []
+
+
+def install_fio_verification_stub(tmp_path, monkeypatch, *, engine="libaio", mode="exact",
+                                  version="fio-3.39", error_stage=None):
+    executable = tmp_path / "fio-stub"
+    executable.write_text("fixture executable\n", encoding="utf-8")
+    executable.chmod(0o755)
+    calls = FioVerificationCalls()
+
+    def fake_run(argv, **_kwargs):
+        calls.append(argv)
+        if argv[1] == "--version":
+            if error_stage == "version":
+                raise OSError("version probe failed")
+            return SimpleNamespace(returncode=0, stdout=version, stderr="")
+        if argv[1] == "--enghelp":
+            if error_stage == "enghelp":
+                raise OSError("engine probe failed")
+            engines = "" if engine == "missing" else f"    {engine}\n"
+            return SimpleNamespace(returncode=0, stdout=engines, stderr="")
+        if error_stage == "job":
+            raise OSError("fio process could not start")
+        if mode == "nonzero":
+            return SimpleNamespace(returncode=2, stdout="", stderr="fio fixture failure")
+        if mode == "bad-json":
+            return SimpleNamespace(returncode=0, stdout="{", stderr="")
+        job_file = Path(argv[2]).read_text(encoding="utf-8")
+        calls.job_file_contents.append(job_file)
+        options = {}
+        for line in job_file.splitlines():
+            if "=" in line and not line.startswith("["):
+                key, value = line.split("=", 1)
+                options[key] = value
+        if engine == "psync":
+            assert options["iodepth"] == "1"
+        io_size = int(options["io_size"])
+        block = int(options["bs"])
+        payload = json.loads(json.dumps(REAL_FIO_JSON_FIXTURE))
+        fio_job = payload["jobs"][0]
+        fio_job["job options"] = options
+        fio_job["job options"]["ioengine"] = engine
+        fio_job["write"]["io_bytes"] = io_size
+        if mode == "over-cap":
+            fio_job["write"]["io_bytes"] = io_size + block
+        elif mode == "under-cap":
+            fio_job["write"]["io_bytes"] = io_size - block
+        elif mode == "missing-bytes":
+            fio_job["write"].pop("io_bytes")
+        return SimpleNamespace(returncode=0, stdout=json.dumps(payload), stderr="")
+
+    monkeypatch.setattr(driver.subprocess, "run", fake_run)
+    return str(executable), calls
+
+
+@pytest.mark.parametrize("engine", ("libaio", "posixaio", "psync"))
+def test_fio_rounding_verifier_accepts_real_json_shape_and_supported_engine_fallbacks(
+        tmp_path, monkeypatch, engine):
+    executable, calls = install_fio_verification_stub(tmp_path, monkeypatch, engine=engine)
+    result = driver.verify_fio_rounding(executable)
+    assert result["fio_version"] == "fio-3.39"
+    assert result["verification_ioengine"] == engine
+    assert result["writing_jobs_rendered"] == 51
+    assert len(result["distinct_block_size_classes"]) == 23
+    assert all(row["fio_io_bytes"] == row["rendered_io_size"]
+               for row in result["distinct_block_size_classes"])
+    if engine != "libaio":
+        job_file = calls.job_file_contents[0]
+        assert f"ioengine={engine}" in job_file
+    if engine == "psync":
+        assert "iodepth=1" in calls.job_file_contents[0]
+
+
+def test_fio_rounding_verifier_refuses_missing_incompatible_or_failed_fio(tmp_path, monkeypatch):
+    monkeypatch.setattr(driver.shutil, "which", lambda _name: None)
+    with pytest.raises(driver.StudyError, match="fio executable is unavailable"):
+        driver.verify_fio_rounding("fio-not-installed")
+
+    absent = tmp_path / "absent-fio"
+    with pytest.raises(driver.StudyError, match="fio executable is unavailable"):
+        driver.verify_fio_rounding(str(absent))
+    non_executable = tmp_path / "not-executable-fio"
+    non_executable.write_text("fixture\n", encoding="utf-8")
+    with pytest.raises(driver.StudyError, match="fio executable is unavailable"):
+        driver.verify_fio_rounding(str(non_executable))
+
+    executable, _ = install_fio_verification_stub(tmp_path, monkeypatch, version="fio-3.38")
+    with pytest.raises(driver.StudyError, match="requires fio-3.39"):
+        driver.verify_fio_rounding(executable)
+    executable, _ = install_fio_verification_stub(tmp_path, monkeypatch, engine="missing")
+    with pytest.raises(driver.StudyError, match="has no libaio, posixaio, or psync engine"):
+        driver.verify_fio_rounding(executable)
+    executable, _ = install_fio_verification_stub(tmp_path, monkeypatch, error_stage="version")
+    with pytest.raises(driver.StudyError, match="cannot inspect fio version"):
+        driver.verify_fio_rounding(executable)
+    executable, _ = install_fio_verification_stub(tmp_path, monkeypatch, error_stage="enghelp")
+    with pytest.raises(driver.StudyError, match="cannot inspect fio IO engines"):
+        driver.verify_fio_rounding(executable)
+
+
+@pytest.mark.parametrize(("mode", "message"), (
+    ("job-error", "real fio run failed"),
+    ("nonzero", "real fio exited 2"),
+    ("bad-json", "real fio returned invalid JSON"),
+    ("missing-bytes", "omitted write.io_bytes"),
+    ("over-cap", "above the rendered cap"),
+    ("under-cap", "instead of its complete aligned cap"),
+))
+def test_fio_rounding_verifier_refuses_bad_run_outputs(tmp_path, monkeypatch, mode, message):
+    error_stage = mode[:-6] if mode == "job-error" else None
+    output_mode = "exact" if mode == "job-error" else mode
+    executable, _ = install_fio_verification_stub(
+        tmp_path, monkeypatch, engine="posixaio", mode=output_mode, error_stage=error_stage)
+    with pytest.raises(driver.StudyError, match=message):
+        driver.verify_fio_rounding(executable)
+
+
+@pytest.mark.parametrize("failure", ("raises", "mismatch"))
+def test_fio_rounding_verifier_requires_study_parser_agreement(tmp_path, monkeypatch, failure):
+    executable, _ = install_fio_verification_stub(tmp_path, monkeypatch, engine="libaio")
+    if failure == "raises":
+        monkeypatch.setattr(driver, "parse_fio_values",
+                            lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                                driver.StudyError("fixture parser refusal")))
+        expected = "failed the study parser"
+    else:
+        monkeypatch.setattr(driver, "parse_fio_values", lambda payload, _job:
+                            (0.0, driver.fio_reported_bytes(payload, _job) + 1))
+        expected = "parser returned"
+    with pytest.raises(driver.StudyError, match=expected):
+        driver.verify_fio_rounding(executable)
+
+
+@pytest.mark.parametrize("failure", ("missing-requested-cap", "misaligned-render"))
+def test_fio_rounding_verifier_rejects_invalid_render_inputs(tmp_path, monkeypatch, failure):
+    executable, _ = install_fio_verification_stub(tmp_path, monkeypatch, engine="libaio")
+    job = driver.Job("writer", "write", 4096, 1, 1, "wbps", 8192)
+    monkeypatch.setattr(driver, "rung_jobs", lambda *_args, **_kwargs: [job])
+    if failure == "missing-requested-cap":
+        object.__setattr__(job, "requested_write_cap", None)
+        message = "lost its requested cap"
+    else:
+        monkeypatch.setattr(driver, "render_job", lambda *_args, **_kwargs: "io_size=1\n")
+        message = "not block aligned"
+    with pytest.raises(driver.StudyError, match=message):
+        driver.verify_fio_rounding(executable)
+
+
+def test_reservation_helpers_replace_caps_with_actuals_and_fail_closed(tmp_path):
     state = driver.empty_state(driver.dt.datetime.now(driver.dt.UTC).isoformat(),
                                "raw", "/dev/vda5", "vda5", FAKE_IDENTITY)
     driver.reserve_write(state, "cell", 100)
     driver.settle_write(state, "cell", 60)
     assert state["write_bytes"] == 60 and state["write_reservations"] == {}
     driver.settle_write(state, "other", 10)
-    with pytest.raises(driver.StudyError, match="reserved cell cap"):
-        driver.reserve_write(state, "bad", 5)
-        driver.settle_write(state, "bad", 6)
+    driver.reserve_write(state, "bad", 5)
+    driver.settle_write(state, "bad", 6)
+    assert state["write_bytes"] == 76
+    driver.reserve_write(state, "retry", 10)
+    driver.reserve_write(state, "retry", 20)
+    driver.settle_write(state, "retry", 15)
+    assert state["write_reservations"]["retry"] == [10]
+    assert state["write_bytes"] == 101
+    driver.settle_write(state, "retry", 8)
+    assert state["write_reservations"] == {}
+    assert state["write_bytes"] == 99
     driver.reserve_active(state, "cell", 30)
     driver.settle_active(state, "cell", 20)
     driver.settle_active(state, "other", 5)
     assert state["active_seconds"] == 25 and state["active_reservations"] == {}
-    with pytest.raises(driver.StudyError, match="reserved active-time allowance"):
-        driver.reserve_active(state, "bad", 2)
-        driver.settle_active(state, "bad", 3)
+    driver.reserve_active(state, "bad", 2)
+    driver.settle_active(state, "bad", 3)
+    assert state["active_seconds"] == 28
+    driver.reserve_active(state, "retry", 10)
+    driver.reserve_active(state, "retry", 20)
+    driver.settle_active(state, "retry", 15)
+    assert state["active_reservations"]["retry"] == [10]
+    assert state["active_seconds"] == 53
+    driver.settle_active(state, "retry", 8)
+    assert state["active_reservations"] == {}
+    assert state["active_seconds"] == 51
+
+    over_cap = driver.empty_state(driver.dt.datetime.now(driver.dt.UTC).isoformat(),
+                                  "raw", "/dev/vda5", "vda5", FAKE_IDENTITY)
+    over_cap["write_bytes"] = driver.WRITE_CAP - 5
+    with pytest.raises(driver.StudyError, match="reservation would exceed the hard 500 GB cap"):
+        driver.reserve_write(over_cap, "refused-cell", 6)
+    assert over_cap["write_reservations"] == {}
+    assert over_cap["write_bytes"] == driver.WRITE_CAP - 5
+    driver.reserve_write(over_cap, "last-cell", 5)
+    driver.settle_write(over_cap, "last-cell", 6)
+    path = tmp_path / driver.STATE_NAME
+    driver.write_json(path, over_cap)
+    with pytest.raises(driver.StudyError, match="exceeded the hard 500 GB write cap"):
+        driver.load_state(path, "raw", "/dev/vda5", "vda5", FAKE_IDENTITY)
+
+    no_start = driver.empty_state(driver.dt.datetime.now(driver.dt.UTC).isoformat(),
+                                  "raw", "/dev/vda5", "vda5", FAKE_IDENTITY)
+    no_start_path = tmp_path / "no-start-state.json"
+    no_start_job = driver.Job("writer", "write", 4096, 1, 1, "wbps", 4096)
+    driver.reserve_write(no_start, "cell", no_start_job.write_cap)
+    driver.reserve_active(no_start, "cell", 31)
+    driver.record_failed_fio_attempt(
+        out=tmp_path / "no-start", state_path=no_start_path, state=no_start,
+        key="cell", filename="cell.json", job=no_start_job, payload=None,
+        duration=None, error=driver.StudyError("fio executable missing"), started=False)
+    assert no_start["write_bytes"] == 0 and no_start["active_seconds"] == 0
+    assert no_start["write_reservations"] == no_start["active_reservations"] == {}
+    failed = json.loads((tmp_path / "no-start/failed-cells/cell.attempt-001.json").read_text())
+    assert failed["reservation_policy"] == "released before fio start"
+    driver.record_failed_fio_attempt(
+        out=tmp_path / "no-start", state_path=no_start_path, state=no_start,
+        key="cell", filename="cell.json", job=no_start_job, payload=None,
+        duration=None, error=driver.StudyError("second pre-start failure"), started=False)
+    assert (tmp_path / "no-start/failed-cells/cell.attempt-002.json").is_file()
+
+    assert driver.fio_reported_bytes(None, no_start_job) is None
+    assert driver.fio_reported_bytes({"jobs": "malformed"}, no_start_job) is None
+    assert driver.fio_reported_bytes({"jobs": [{"write": None}]}, no_start_job) is None
+
+    with pytest.raises(driver.StudyError, match="study reservations are malformed"):
+        driver.finalize_interrupted_reservations({"write_reservations": [],
+                                                   "active_reservations": {}})
+    with pytest.raises(driver.StudyError, match="interrupted-attempt history is malformed"):
+        driver.finalize_interrupted_reservations({"write_reservations": {"cell": [1]},
+                                                   "active_reservations": {},
+                                                   "interrupted_attempts": {}})
+
+
+def test_state_write_and_active_meters_refuse_values_above_hard_caps(tmp_path):
+    path = tmp_path / driver.STATE_NAME
+    for field, value, message in (
+            ("write_bytes", driver.WRITE_CAP + 1, "exceeded the hard 500 GB write cap"),
+            ("active_seconds", driver.ACTIVE_CAP_S + 1, "exceeded the 3 hour active-I/O cap")):
+        state = driver.empty_state(driver.dt.datetime.now(driver.dt.UTC).isoformat(),
+                                   "raw", "/dev/vda5", "vda5", FAKE_IDENTITY)
+        state[field] = value
+        driver.write_json(path, state)
+        with pytest.raises(driver.StudyError, match=message):
+            driver.load_state(path, "raw", "/dev/vda5", "vda5", FAKE_IDENTITY)
 
 
 def test_fsync_option_wraps_only_the_named_cell_and_file_run_does_not_discard(tmp_path):
@@ -1787,6 +2295,21 @@ def test_fsync_preflight_wraps_systemctl_docker_and_empty_image_errors(tmp_path,
         host.assert_fsync_preflight()
 
 
+def test_raw_preflight_also_requires_the_tools_of_the_later_file_legs(monkeypatch):
+    # The ext4/Btrfs legs run hours after t0; a missing mkfs must stop the dry-run, not the run.
+    host = driver.LocalHost()
+    monkeypatch.setattr(driver.subprocess, "run", lambda argv, **kwargs:
+                        SimpleNamespace(returncode=0, stdout="fio-3.39\n", stderr=""))
+    for tool in driver.FILE_LEG_TOOLS:
+        monkeypatch.setattr(driver.shutil, "which",
+                            lambda executable, tool=tool: None if executable == tool else f"/usr/sbin/{executable}")
+        with pytest.raises(driver.StudyError, match=f"required study executable {tool} is unavailable"):
+            host.assert_study_tools("raw")
+        if tool != "fallocate":  # file targets themselves need only fallocate
+            host.assert_study_tools("ext4-file")
+    assert set(driver.FILE_LEG_TOOLS) >= {"mkfs.ext4", "mkfs.btrfs", "mount", "umount", "wipefs", "fallocate"}
+
+
 @pytest.mark.parametrize(("kind", "missing"), (("raw", "blkdiscard"), ("ext4-file", "fallocate")))
 def test_study_tool_preflight_names_a_missing_target_operation(tmp_path, monkeypatch, kind, missing):
     host = driver.LocalHost()
@@ -2035,7 +2558,7 @@ def test_local_discard_wait_logs_sample_and_root_helpers_are_mocked(tmp_path, mo
     assert host.read_fio_logs(tmp_path / "missing") == {"bw": [], "iops": []}
     monkeypatch.setattr(driver, "monitor_sample", lambda device, proc: {"device": device})
     sampled = host.sample("vda5", tmp_path)
-    assert sampled["device"] == "vda5" and sampled["free_bytes"] > 0
+    assert sampled["device"] == "vda5" and sampled["output_free_bytes"] > 0
     sampled_target = host.sample("vda5", tmp_path, str(tmp_path))
     assert sampled_target["target_free_bytes"] == sampled_target["output_free_bytes"]
     monkeypatch.setattr(driver.os, "geteuid", lambda: 0)
@@ -2106,6 +2629,118 @@ def test_fio_json_output_is_a_command_line_option_not_a_job_file_option(tmp_path
     assert argvs == [["fio", "--output-format=json", str(tmp_path / "job.fio")]]
 
 
+def test_fio_deadline_comes_from_rendered_runtime_ramp_grace_and_drain():
+    job = driver.Job("timed", "randread", 4096, 32, 2, "rrandiops")
+    rendered = driver.render_job(job, target="/tmp/target", offset=0, size=8 * 1024**2,
+                                 log_prefix="/tmp/log")
+    assert driver.fio_timing_from_job(rendered) == (2, 0)
+    assert driver.fio_wall_allowance(rendered, startup_grace_s=7) == 69
+    assert driver.fio_wall_allowance(rendered.replace("ramp_time=0", "ramp_time=3"),
+                                     startup_grace_s=7) == 72
+    with pytest.raises(driver.StudyError, match="one non-negative runtime"):
+        driver.fio_wall_allowance("[global]\nramp_time=3\n", startup_grace_s=7)
+    with pytest.raises(driver.StudyError, match="runtime must be positive"):
+        driver.fio_wall_allowance(rendered.replace("runtime=2", "runtime=0"),
+                                  startup_grace_s=7)
+    for invalid_grace in (-1, float("nan"), float("inf"), True):
+        with pytest.raises(driver.StudyError, match="finite non-negative number"):
+            driver.fio_wall_allowance(rendered, startup_grace_s=invalid_grace)
+    assert driver.fio_json_from_stdout('fio: terminating on signal 2\n{"jobs": []}') == {"jobs": []}
+    assert driver.fio_json_from_stdout("noise {invalid json}\n{\"jobs\": []}") == {"jobs": []}
+    with pytest.raises(driver.StudyError, match="wrong top-level shape"):
+        driver.fio_json_from_stdout('[{"jobs": []}]')
+
+
+def test_local_execute_fio_keeps_prefixed_json_and_rejects_unexpected_nonzero_exit(
+        tmp_path, monkeypatch):
+    host = driver.LocalHost()
+    payload = json.dumps({"jobs": []})
+    process = FakeProcess(finish_after=0, returncode=2,
+                          output=f"fio: terminating on signal 2\n{payload}")
+    monkeypatch.setattr(driver.subprocess, "Popen", lambda *args, **kwargs: process)
+    with pytest.raises(driver.FioExecutionError, match="fio failed with exit 2") as caught:
+        host.execute_fio(tmp_path / "job.fio", 5, lambda: None)
+    assert caught.value.payload == {"jobs": []}
+    assert caught.value.raw_stdout["text"].startswith("fio: terminating on signal 2")
+    assert caught.value.raw_stderr["text"] == "fake stderr"
+
+
+def test_local_execute_fio_accepts_only_its_own_deliberate_sigint_exit(tmp_path, monkeypatch):
+    class DeliberateSignalProcess(FakeProcess):
+        def send_signal(self, value):
+            self.signals.append(value)
+            if value == driver.signal.SIGINT:
+                self.returncode = 128
+
+    host = driver.LocalHost()
+    clock = [0.0]
+    host.now = lambda: clock[0]
+    host.sleep = lambda seconds: clock.__setitem__(0, clock[0] + seconds)
+    process = DeliberateSignalProcess(
+        finish_after=None,
+        output='fio: terminating on signal 2\n{"jobs": []}',
+    )
+    monkeypatch.setattr(driver.subprocess, "Popen", lambda *args, **kwargs: process)
+    payload, _duration = host.execute_fio(tmp_path / "job.fio", 1, lambda: None)
+    assert payload == {"jobs": []}
+    assert process.signals == [driver.signal.SIGINT]
+    assert host.last_fio_deliberate_stop is True
+
+
+def test_a_fio_that_ignores_sigint_and_sigterm_is_killed(tmp_path, monkeypatch):
+    host = driver.LocalHost()
+    clock = [0.0]
+    host.now = lambda: clock[0]
+    host.sleep = lambda seconds: clock.__setitem__(0, clock[0] + seconds)
+    hung = FakeProcess(finish_after=None, wait_timeouts=2, returncode=0)
+    monkeypatch.setattr(driver.subprocess, "Popen", lambda *args, **kwargs: hung)
+    with pytest.raises(driver.StudyError, match="fio failed with exit -9"):
+        host.execute_fio(tmp_path / "job.fio", 1, lambda: None)
+    assert hung.signals == [driver.signal.SIGINT, driver.signal.SIGTERM, driver.signal.SIGKILL]
+    assert host.last_fio_deliberate_stop is False
+
+    # A driver stop (monitor trip) while fio ignores SIGTERM also ends in SIGKILL.
+    clock[0] = 0
+    stubborn = FakeProcess(finish_after=None, wait_timeouts=1)
+    monkeypatch.setattr(driver.subprocess, "Popen", lambda *args, **kwargs: stubborn)
+    with pytest.raises(driver.FioExecutionError, match="monitor stop"):
+        host.execute_fio(tmp_path / "job.fio", 5,
+                         lambda: (_ for _ in ()).throw(driver.StudyError("monitor stop")))
+    assert stubborn.signals == [driver.signal.SIGTERM, driver.signal.SIGKILL]
+
+
+def test_failed_fio_attempt_saves_bounded_raw_streams_and_parsed_json(tmp_path):
+    out = tmp_path / "out"
+    state_path = out / driver.STATE_NAME
+    key = "raw|t0|quick|seq1m-write"
+    job = driver.Job("seq1m-write", "write", 4096, 1, 2, "wbps", 4096)
+    state = driver.empty_state("2026-11-13T00:00:00+00:00", "raw", "/tmp/target",
+                               "rehearsal", FAKE_IDENTITY)
+    driver.reserve_write(state, key, job.write_cap)
+    driver.reserve_active(state, key, 70)
+    payload = {"jobs": [{"write": {"io_bytes": 4096}}]}
+    driver.record_failed_fio_attempt(
+        out=out, state_path=state_path, state=state, key=key,
+        filename="raw_t0_quick_seq1m-write.json", job=job, payload=payload,
+        duration=3, error=driver.FioExecutionError("fio failed with exit 128"),
+        raw_stdout=driver.bounded_fio_output("fio: terminating on signal 2\n{" + "json"),
+        raw_stderr=driver.bounded_fio_output("fio stderr"),
+    )
+    record = json.loads((out / "failed-cells" / "raw_t0_quick_seq1m-write.attempt-001.json")
+                        .read_text(encoding="utf-8"))
+    assert record["fio"] == payload
+    assert record["fio_output"]["stdout"]["text"].startswith("fio: terminating on signal 2")
+    assert record["fio_output"]["stderr"]["text"] == "fio stderr"
+    assert state["write_bytes"] == 4096
+    bounded = driver.bounded_fio_output("x" * (driver.FIO_OUTPUT_RECORD_LIMIT_BYTES + 1))
+    assert bounded["truncated"] is True
+    assert len(bounded["text"].encode()) == driver.FIO_OUTPUT_RECORD_LIMIT_BYTES
+    split_character = driver.bounded_fio_output(
+        "x" * (driver.FIO_OUTPUT_RECORD_LIMIT_BYTES - 1) + "😀")
+    assert split_character["truncated"] is True
+    assert len(split_character["text"].encode()) <= driver.FIO_OUTPUT_RECORD_LIMIT_BYTES
+
+
 def test_local_execute_fio_completion_timeout_errors_and_cleanup(tmp_path, monkeypatch):
     host = driver.LocalHost()
     clock = [0.0]
@@ -2138,6 +2773,27 @@ def test_local_execute_fio_completion_timeout_errors_and_cleanup(tmp_path, monke
     monkeypatch.setattr(driver.subprocess, "Popen", lambda *args, **kwargs: malformed)
     with pytest.raises(driver.StudyError, match="invalid JSON"):
         host.execute_fio(tmp_path / "job.fio", 5, lambda: None)
+    malformed_failed = FakeProcess(output="not json", returncode=2)
+    monkeypatch.setattr(driver.subprocess, "Popen", lambda *args, **kwargs: malformed_failed)
+    with pytest.raises(driver.StudyError, match="fio failed with exit 2"):
+        host.execute_fio(tmp_path / "job.fio", 5, lambda: None)
+    wrong_shape = FakeProcess(output="[]")
+    monkeypatch.setattr(driver.subprocess, "Popen", lambda *args, **kwargs: wrong_shape)
+    with pytest.raises(driver.StudyError, match="wrong top-level shape"):
+        host.execute_fio(tmp_path / "job.fio", 5, lambda: None)
+    non_mapping = FakeProcess(output='{"jobs": []}')
+    monkeypatch.setattr(driver.subprocess, "Popen", lambda *args, **kwargs: non_mapping)
+    json_parser = driver.fio_json_from_stdout
+    monkeypatch.setattr(driver, "fio_json_from_stdout", lambda _stdout: [])
+    with pytest.raises(driver.StudyError, match="wrong top-level shape"):
+        host.execute_fio(tmp_path / "job.fio", 5, lambda: None)
+    monkeypatch.setattr(driver, "fio_json_from_stdout", json_parser)
+    clock[0] = 0
+    interrupted_bad_json = FakeProcess(finish_after=None, output="not json")
+    monkeypatch.setattr(driver.subprocess, "Popen", lambda *args, **kwargs: interrupted_bad_json)
+    with pytest.raises(driver.StudyError, match="monitor stop"):
+        host.execute_fio(tmp_path / "job.fio", 5,
+                         lambda: (_ for _ in ()).throw(driver.StudyError("monitor stop")))
     interrupted = FakeProcess(finish_after=None)
     monkeypatch.setattr(driver.subprocess, "Popen", lambda *args, **kwargs: interrupted)
     with pytest.raises(driver.StudyError, match="monitor stop"):
@@ -2157,13 +2813,15 @@ def test_run_guards_and_stop_thresholds_are_fail_closed(tmp_path):
     with pytest.raises(driver.StudyError, match="root"):
         driver.run_study("raw-t0", target="/dev/fake", device="vda5", out=tmp_path / "a",
                          target_kind="raw", offset=0, size=24 * GIB, mem_psi_max=20,
-                         min_memavailable=GIB, min_free=GIB, max_probe_latency_s=1,
+                         min_memavailable=GIB, min_output_free=GIB, min_target_free=GIB,
+                         max_probe_latency_s=1,
                          probe_consecutive_samples=3,
                          host=SimpleNamespace(is_root=lambda: False), quiet_window_confirmed=True)
     with pytest.raises(driver.StudyError, match="confirm-quiet"):
         driver.run_study("raw-t0", target="/dev/fake", device="vda5", out=tmp_path / "b",
                          target_kind="raw", offset=0, size=24 * GIB, mem_psi_max=20,
-                         min_memavailable=GIB, min_free=GIB, max_probe_latency_s=1,
+                         min_memavailable=GIB, min_output_free=GIB, min_target_free=GIB,
+                         max_probe_latency_s=1,
                          probe_consecutive_samples=3, host=host)
     with pytest.raises(driver.StudyError, match="device a sysfs"):
         run_set(tmp_path / "c", "raw-t0", host=host, target="relative", size=GIB)
@@ -2172,59 +2830,75 @@ def test_run_guards_and_stop_thresholds_are_fail_closed(tmp_path):
     with pytest.raises(driver.StudyError, match="memory PSI full limit"):
         driver.run_study("raw-t0", target="/dev/fake", device="vda5", out=tmp_path / "e",
                          target_kind="raw", offset=0, size=24 * GIB, mem_psi_max=0,
-                         min_memavailable=GIB, min_free=GIB, max_probe_latency_s=1,
+                         min_memavailable=GIB, min_output_free=GIB, min_target_free=GIB,
+                         max_probe_latency_s=1,
                          probe_consecutive_samples=3, host=host,
                          quiet_window_confirmed=True)
     with pytest.raises(driver.StudyError, match="memory PSI full limit"):
         driver.run_study("raw-t0", target="/dev/fake", device="vda5", out=tmp_path / "nan",
                          target_kind="raw", offset=0, size=24 * GIB, mem_psi_max=float("nan"),
-                         min_memavailable=GIB, min_free=GIB, max_probe_latency_s=1,
+                         min_memavailable=GIB, min_output_free=GIB, min_target_free=GIB,
+                         max_probe_latency_s=1,
                          probe_consecutive_samples=3, host=host,
                          quiet_window_confirmed=True)
     with pytest.raises(driver.StudyError, match="maximum host-liveness probe latency"):
         driver.run_study("raw-t0", target="/dev/fake", device="vda5", out=tmp_path / "probe-limit",
                          target_kind="raw", offset=0, size=24 * GIB, mem_psi_max=20,
-                         min_memavailable=GIB, min_free=GIB, max_probe_latency_s=0,
+                         min_memavailable=GIB, min_output_free=GIB, min_target_free=GIB,
+                         max_probe_latency_s=0,
                          probe_consecutive_samples=3, host=host, quiet_window_confirmed=True)
     with pytest.raises(driver.StudyError, match="consecutive-sample count"):
         driver.run_study("raw-t0", target="/dev/fake", device="vda5", out=tmp_path / "probe-count",
                          target_kind="raw", offset=0, size=24 * GIB, mem_psi_max=20,
-                         min_memavailable=GIB, min_free=GIB, max_probe_latency_s=1,
+                         min_memavailable=GIB, min_output_free=GIB, min_target_free=GIB,
+                         max_probe_latency_s=1,
                          probe_consecutive_samples=0, host=host, quiet_window_confirmed=True)
-    with pytest.raises(driver.StudyError, match="memory and free-space floors"):
+    with pytest.raises(driver.StudyError, match="memory and output/target free-space floors"):
         driver.run_study("raw-t0", target="/dev/fake", device="vda5", out=tmp_path / "floor",
                          target_kind="raw", offset=0, size=24 * GIB, mem_psi_max=20,
-                         min_memavailable=0, min_free=GIB, max_probe_latency_s=1,
+                         min_memavailable=0, min_output_free=GIB, min_target_free=GIB,
+                         max_probe_latency_s=1,
                          probe_consecutive_samples=3, host=host,
                          quiet_window_confirmed=True)
-    healthy = {**HEALTHY, "free_bytes": 8 * GIB}
-    assert driver.stop_reason(healthy, min_memavailable=GIB, min_free=4 * GIB) is None
-    assert "incomplete" in driver.stop_reason({}, min_memavailable=GIB, min_free=GIB)
+    healthy = {**HEALTHY, "output_free_bytes": 8 * GIB, "target_free_bytes": 6 * GIB}
+    assert driver.stop_reason(healthy, min_memavailable=GIB, min_output_free=4 * GIB,
+                              min_target_free=GIB) is None
+    assert "incomplete" in driver.stop_reason({}, min_memavailable=GIB, min_output_free=GIB)
     lowmem = {**HEALTHY, "meminfo": {"MemAvailable": 1}}
-    assert "MemAvailable" in driver.stop_reason(lowmem, min_memavailable=GIB, min_free=1)
-    lowfree = {**HEALTHY, "free_bytes": 1}
-    assert "free space" in driver.stop_reason(lowfree, min_memavailable=1, min_free=GIB)
-    assert "malformed" in driver.stop_reason({**HEALTHY, "free_bytes": "1"},
-                                               min_memavailable=1, min_free=1)
+    assert "MemAvailable" in driver.stop_reason(lowmem, min_memavailable=GIB, min_output_free=1)
+    lowfree = {**HEALTHY, "output_free_bytes": 1}
+    assert "output-filesystem free space" in driver.stop_reason(
+        lowfree, min_memavailable=1, min_output_free=GIB)
+    low_target_free = {**HEALTHY, "output_free_bytes": 8 * GIB, "target_free_bytes": 1}
+    assert "study-target filesystem free space" in driver.stop_reason(
+        low_target_free, min_memavailable=1, min_output_free=GIB, min_target_free=GIB)
+    assert "target free-space data incomplete" in driver.stop_reason(
+        {**HEALTHY, "target_free_bytes": None}, min_memavailable=1,
+        min_output_free=1, min_target_free=1)
+    assert "target free-space data is malformed" in driver.stop_reason(
+        {**HEALTHY, "target_free_bytes": True}, min_memavailable=1,
+        min_output_free=1, min_target_free=1)
+    assert "malformed" in driver.stop_reason({**HEALTHY, "output_free_bytes": "1"},
+                                               min_memavailable=1, min_output_free=1)
     assert "malformed" in driver.stop_reason({**HEALTHY, "psi": {"memory": {"full": {"avg10": -1}}}},
-                                               min_memavailable=1, min_free=1)
+                                               min_memavailable=1, min_output_free=1)
     assert "malformed" in driver.stop_reason({**HEALTHY, "psi": {"memory": {"full": {"avg10": float("nan")}}}},
-                                               min_memavailable=1, min_free=1)
+                                               min_memavailable=1, min_output_free=1)
     for malformed_psi in (True, "100", 101):
         sample = {**HEALTHY, "psi": {"memory": {"full": {"avg10": malformed_psi}}}}
-        assert "malformed" in driver.stop_reason(sample, min_memavailable=1, min_free=1)
+        assert "malformed" in driver.stop_reason(sample, min_memavailable=1, min_output_free=1)
     assert "malformed" in driver.stop_reason({**HEALTHY, "meminfo": {"MemAvailable": True}},
-                                               min_memavailable=1, min_free=1)
-    assert "malformed" in driver.stop_reason({**HEALTHY, "free_bytes": True},
-                                               min_memavailable=1, min_free=1)
+                                               min_memavailable=1, min_output_free=1)
+    assert "malformed" in driver.stop_reason({**HEALTHY, "output_free_bytes": True},
+                                               min_memavailable=1, min_output_free=1)
     high_memory_some = {**HEALTHY,
                         "psi": {"io": {"some": {"avg10": 99}},
                                 "memory": {"some": {"avg10": 99},
                                            "full": {"avg10": 0.1}}}}
-    assert driver.stop_reason(high_memory_some, min_memavailable=1, min_free=1) is None
+    assert driver.stop_reason(high_memory_some, min_memavailable=1, min_output_free=1) is None
     assert driver.stop_reason({**HEALTHY, "psi": {
         "io": {"some": {"avg10": 100}}, "memory": HEALTHY["psi"]["memory"]}},
-                              min_memavailable=1, min_free=1) is None
+                              min_memavailable=1, min_output_free=1) is None
 
 
 def test_preflight_and_memory_or_free_space_stops_happen_before_fio_or_discard(tmp_path):
@@ -2404,6 +3078,482 @@ def test_schedule_adaptive_rules_and_plan_rendering(capsys, monkeypatch):
     assert driver.schedule_adaptive_repeats() == driver.ADAPTIVE_REPEAT_CELL_SETS
 
 
+def test_test_scale_planner_preserves_rung_shapes_and_refuses_nonregular_targets(tmp_path):
+    for rung in ("veryquick", "quick", "standard"):
+        original = driver.rung_jobs(rung)
+        scaled = driver.jobs_for_run(rung, test_scale=True)
+        assert [(job.name, job.rw, job.bs, job.qd) for job in scaled] == [
+            (job.name, job.rw, job.bs, job.qd) for job in original]
+        assert all(job.runtime_s == driver.TEST_SCALE_RUNTIME_S for job in scaled)
+        assert all(job.extent_bytes == driver.TEST_SCALE_EXTENT_BYTES for job in scaled)
+        assert all(job.write_cap == driver.TEST_SCALE_WRITE_BYTES
+                   for job in scaled if job.writes)
+    part_c = driver.jobs_for_run("quick", part_c=True, test_scale=True)
+    assert [(job.name, job.bs) for job in part_c] == [
+        (job.name, job.bs) for job in driver.rung_jobs("quick", part_c=True)]
+    assert all(job.wait_before_s <= driver.TEST_SCALE_WAIT_S for job in part_c)
+    too_large_block = driver.Job("too-large", "write", 2 * driver.TEST_SCALE_WRITE_BYTES,
+                                 1, 0, "wbps")
+    with pytest.raises(driver.StudyError, match="cannot hold one"):
+        driver.test_scale_jobs([too_large_block])
+
+    target = tmp_path / "test-scale-target.dat"
+    target.write_bytes(b"\0" * driver.TEST_SCALE_EXTENT_BYTES)
+    info = driver.test_scale_target_stat(str(target), tmp_path,
+                                         required_size=driver.TEST_SCALE_EXTENT_BYTES)
+    assert info.st_size == driver.TEST_SCALE_EXTENT_BYTES
+    small_target = tmp_path / "small-target.dat"
+    small_target.write_bytes(b"\0")
+    with pytest.raises(driver.StudyError, match="at least 2 bytes"):
+        driver.test_scale_target_stat(str(small_target), tmp_path, required_size=2)
+    with pytest.raises(driver.StudyError, match="regular file target"):
+        driver.test_scale_target_stat(str(tmp_path), tmp_path, required_size=1)
+    with pytest.raises(driver.StudyError, match="existing regular file target"):
+        driver.test_scale_target_stat(str(tmp_path / "missing-target"), tmp_path, required_size=1)
+    link = tmp_path / "target-link"
+    link.symlink_to(target)
+    with pytest.raises(driver.StudyError, match="regular file target"):
+        driver.test_scale_target_stat(str(link), tmp_path, required_size=1)
+    other_out = tmp_path / "other-output"
+    other_out.mkdir()
+    with pytest.raises(driver.StudyError, match="inside the output directory"):
+        driver.test_scale_target_stat(str(target), other_out, required_size=1)
+    with pytest.raises(driver.StudyError, match="inside the output directory under /tmp"):
+        driver.test_scale_target_stat("/proc/self/stat", Path("/proc"), required_size=1)
+
+    plan = driver.plan_document(test_scale=True)
+    assert plan["test_scale"]["enabled"] is True
+    assert plan["test_scale"]["cell_sets"] == list(driver.TEST_SCALE_CELL_SETS)
+
+
+def test_test_scale_engine_override_is_narrow_and_validated(tmp_path):
+    job = driver.Job("probe", "randread", 4096, 32, 2, "iops")
+    rendered = driver.render_job(job, target="/tmp/target", offset=0, size=8 * 1024**2,
+                                 log_prefix="/tmp/probe")
+    overridden = driver.with_fio_engine(rendered, "posixaio")
+    assert "ioengine=posixaio\n" in overridden
+    assert "ioengine=libaio\n" not in overridden
+    with pytest.raises(driver.StudyError, match="unsupported test-scale fio engine"):
+        driver.with_fio_engine(rendered, "not-an-engine")
+    with pytest.raises(driver.StudyError, match="exactly one ioengine"):
+        driver.with_fio_engine(rendered + "ioengine=psync\n", "posixaio")
+
+    target = tmp_path / "test-scale-target.dat"
+    target.write_bytes(b"\0" * driver.TEST_SCALE_EXTENT_BYTES)
+    with pytest.raises(driver.StudyError, match="supported rehearsal engine"):
+        driver.run_study(
+            "raw-t0", target=str(target), device="rehearsal", out=tmp_path,
+            target_kind="raw", offset=0, size=driver.TEST_SCALE_EXTENT_BYTES,
+            mem_psi_max=20, min_memavailable=1, min_output_free=1, min_target_free=1,
+            max_probe_latency_s=1, probe_consecutive_samples=3,
+            test_scale=True, test_scale_ioengine="not-an-engine")
+    with pytest.raises(driver.StudyError, match="regular-file rehearsal host"):
+        driver.run_study(
+            "raw-t0", target=str(target), device="rehearsal", out=tmp_path,
+            target_kind="raw", offset=0, size=driver.TEST_SCALE_EXTENT_BYTES,
+            mem_psi_max=20, min_memavailable=1, min_output_free=1, min_target_free=1,
+            max_probe_latency_s=1, probe_consecutive_samples=3,
+            test_scale=True, test_scale_ioengine="posixaio", host=FakeHost())
+    with pytest.raises(driver.StudyError, match="forbids device acknowledgements and fsync"):
+        driver.run_study(
+            "raw-t0", target=str(target), device="rehearsal", out=tmp_path,
+            target_kind="raw", offset=0, size=driver.TEST_SCALE_EXTENT_BYTES,
+            mem_psi_max=20, min_memavailable=1, min_output_free=1, min_target_free=1,
+            max_probe_latency_s=1, probe_consecutive_samples=3,
+            test_scale=True, test_scale_ioengine="posixaio", confirm_target="device-ack")
+    with pytest.raises(driver.StudyError, match="available only with --test-scale"):
+        driver.run_study(
+            "raw-t0", target=str(target), device="rehearsal", out=tmp_path,
+            target_kind="raw", offset=0, size=driver.TEST_SCALE_EXTENT_BYTES,
+            mem_psi_max=20, min_memavailable=1, min_output_free=1, min_target_free=1,
+            max_probe_latency_s=1, probe_consecutive_samples=3,
+            test_scale_ioengine="posixaio", host=FakeHost())
+
+
+def test_test_scale_run_dry_run_and_effect_boundary(tmp_path, monkeypatch):
+    out = tmp_path / "out"
+    out.mkdir()
+    target = out / "target.dat"
+    target.write_bytes(b"\0" * driver.TEST_SCALE_EXTENT_BYTES)
+    fio = _fake_fio_binary(tmp_path)
+    host = driver.TestScaleHost(fio_executable=fio)
+    monkeypatch.setattr(driver.subprocess, "run", lambda argv, **_kwargs:
+                        subprocess.CompletedProcess(argv, 0, "fio-3.39\n", ""))
+    host.assert_study_tools("raw")
+
+    raw_validation = host.validate_target(str(target), "raw", 0,
+                                          driver.TEST_SCALE_EXTENT_BYTES, "rehearsal")
+    file_validation = host.validate_target(str(target), "ext4-file", 0,
+                                           driver.TEST_SCALE_EXTENT_BYTES, "rehearsal")
+    assert raw_validation.identity is not None
+    assert file_validation.identity is None
+    assert host.is_root() is True
+    assert host.assert_quiet_window() is None
+    assert host.trim_state("rehearsal")["supported"] is False
+    assert host.io_scheduler_snapshot("rehearsal")["target"]["disk"] == "regular-file"
+    assert host.io_control_snapshot()["io_cost"]["enable"] == 0
+    assert host.io_control_snapshot(scheduler_snapshot={"target": "snap"})[
+        "block_schedulers"] == {"target": "snap"}
+    assert host.liveness_probe(1)["responsive"] is True
+    assert host.sample("rehearsal", out)["device"] == "regular-file-rehearsal"
+    assert "target_free_bytes" in host.sample("rehearsal", out, str(target))
+
+    calls = []
+    monkeypatch.setattr(driver.LocalHost, "discard",
+                        lambda _self, _target, kind, _offset, _size, **_kwargs:
+                        calls.append(kind) or 0.25)
+    assert host.discard(str(target), "raw", 0, driver.TEST_SCALE_EXTENT_BYTES) == 0.25
+    assert calls == ["ext4-file"]
+
+    result = driver.run_study(
+        "raw-t0", target=str(target), device="rehearsal", out=out,
+        target_kind="raw", offset=0, size=driver.TEST_SCALE_EXTENT_BYTES,
+        mem_psi_max=20, min_memavailable=1, min_output_free=1, min_target_free=1,
+        max_probe_latency_s=1, probe_consecutive_samples=3,
+        quiet_window_confirmed=True, test_scale=True, host=host, dry_run=True)
+    assert result["dry_run"] is True
+    assert result["run_manifest"]["test_scale"]["ioengine"] == "libaio"
+    assert result["jobs_rendered"] > 0
+    assert not (out / driver.STATE_NAME).exists()
+
+
+def test_test_scale_clipped_fill_rerenders_with_selected_engine(tmp_path, monkeypatch):
+    out = tmp_path / "test-scale-clipped"
+    out.mkdir()
+    target = out / "target.dat"
+    target.write_bytes(b"\0" * driver.TEST_SCALE_EXTENT_BYTES)
+    host = driver.TestScaleHost(fio_executable="/tmp/fio-unused")
+    host.assert_study_tools = lambda _kind: None
+    host.trim_state = lambda _device: {"supported": False, "discard_max_bytes": 0}
+    host.discard = lambda *_args, **_kwargs: 0.0
+    rendered = []
+
+    def stop_after_render(job_path, _runtime_s, _sample):
+        rendered.append(job_path.read_text(encoding="utf-8"))
+        raise driver.FioExecutionError("controlled stop after render", started=True)
+
+    host.execute_fio = stop_after_render
+    monkeypatch.setattr(driver, "state_elapsed",
+                        lambda _state: driver.ELAPSED_CAP_S - 66)
+    identity = host.validate_target(str(target), "raw", 0,
+                                    driver.TEST_SCALE_EXTENT_BYTES, "rehearsal").identity
+    state = driver.empty_state(driver.dt.datetime.now(driver.dt.UTC).isoformat(),
+                               "raw", str(target), "rehearsal", identity)
+    first_rung = driver.parse_run_cellset("raw-t0", "raw")[1][0]
+    first = driver.jobs_for_run(first_rung, test_scale=True)[0]
+    first_key = driver.cell_key("raw", "t0", first_rung, first)
+    first_name = re.sub(r"[^A-Za-z0-9_.-]", "_", first_key) + ".json"
+    first_record = {
+        "cell_key": first_key, "target_identity": identity.as_json(),
+        "value": 1.0, "write_bytes": first.write_cap,
+        "estimates": {"bw": {"early_10s": 1024}},
+    }
+    cells = out / "cells"
+    cells.mkdir()
+    driver.write_json(cells / first_name, first_record)
+    state["cells"][first_key] = first_name
+    state["write_bytes"] = first.write_cap
+    driver.write_json(out / driver.STATE_NAME, state)
+
+    with pytest.raises(driver.FioExecutionError, match="controlled stop after render"):
+        driver.run_study(
+            "raw-t0", target=str(target), device="rehearsal", out=out,
+            target_kind="raw", offset=0, size=driver.TEST_SCALE_EXTENT_BYTES,
+            mem_psi_max=20, min_memavailable=1, min_output_free=1, min_target_free=1,
+            max_probe_latency_s=1, probe_consecutive_samples=3,
+            quiet_window_confirmed=True, test_scale=True,
+            test_scale_ioengine="posixaio", host=host)
+
+    assert len(rendered) == 1
+    assert "ioengine=posixaio\n" in rendered[0]
+    assert "runtime=1\n" in rendered[0]
+    assert "io_size=1048576\n" in rendered[0]
+
+
+def test_test_scale_plan_print_and_analysis_are_labeled(capsys):
+    driver.print_plan(test_scale=True)
+    assert "TEST-SCALE rehearsal" in capsys.readouterr().out
+    assert "planner-scaled real-fio rehearsal" in driver.render_analysis({
+        "run_manifest": {"test_scale": {"enabled": True}},
+        "tables": {},
+    })
+
+
+def test_test_scale_startup_grace_validation_catches_type_and_range(tmp_path):
+    out = tmp_path / "out"
+    out.mkdir()
+    target = out / "target.dat"
+    target.write_bytes(b"\0" * driver.TEST_SCALE_EXTENT_BYTES)
+    kwargs = {
+        "target": str(target), "device": "rehearsal", "out": out,
+        "target_kind": "raw", "offset": 0, "size": driver.TEST_SCALE_EXTENT_BYTES,
+        "mem_psi_max": 20, "min_memavailable": 1, "min_output_free": 1,
+        "min_target_free": 1, "max_probe_latency_s": 1,
+        "probe_consecutive_samples": 3, "quiet_window_confirmed": True,
+        "test_scale": True,
+    }
+    with pytest.raises(driver.StudyError, match="finite non-negative number"):
+        driver.run_study("raw-t0", **kwargs, fio_startup_grace_s="bad")
+    with pytest.raises(driver.StudyError, match=r"finite and in \[0,60\]"):
+        driver.run_study("raw-t0", **kwargs, fio_startup_grace_s=61)
+
+
+def test_live_run_refuses_to_resume_a_test_scale_manifest(tmp_path):
+    target = tmp_path / "target.dat"
+    target.write_bytes(b"\0" * driver.TEST_SCALE_EXTENT_BYTES)
+    state = driver.empty_state("2026-11-13T00:00:00+00:00", "raw", str(target),
+                               "rehearsal", FAKE_IDENTITY)
+    state["run_manifest"]["test_scale"] = {"enabled": True}
+    driver.write_json(tmp_path / driver.STATE_NAME, state)
+    with pytest.raises(driver.StudyError, match="cannot resume a test-scale rehearsal as a live study"):
+        driver.run_study(
+            "raw-t0", target=str(target), device="rehearsal", out=tmp_path,
+            target_kind="raw", offset=0, size=24 * driver.GIB,
+            mem_psi_max=20, min_memavailable=1, min_output_free=1, min_target_free=1,
+            max_probe_latency_s=1, probe_consecutive_samples=3,
+            quiet_window_confirmed=True,
+            confirm_target=f"{target}:{FAKE_IDENTITY.size_bytes}:{FAKE_IDENTITY.partuuid}",
+            host=FakeHost())
+
+
+def test_rehearsal_engine_selection_uses_available_fio_engine(monkeypatch):
+    monkeypatch.setattr(driver.subprocess, "run", lambda *_a, **_k: subprocess.CompletedProcess(
+        args=["fio", "--enghelp"], returncode=0,
+        stdout="Available IO engines:\n\tpsync\n\tposixaio\n", stderr=""))
+    assert driver.rehearsal_ioengine("/tmp/fio") == "posixaio"
+
+
+def test_resolve_fio_executable_checks_an_explicit_path_when_not_in_path(tmp_path, monkeypatch):
+    fio = _fake_fio_binary(tmp_path)
+    monkeypatch.setattr(driver.shutil, "which", lambda _name: None)
+    assert driver.resolve_fio_executable(fio) == str(Path(fio).resolve())
+
+
+def test_resolve_fio_executable_refuses_missing_path_and_path_entry(monkeypatch):
+    monkeypatch.setattr(driver.shutil, "which", lambda _name: None)
+    with pytest.raises(driver.StudyError, match="was not found"):
+        driver.resolve_fio_executable("/tmp/ibx-no-such-fio-executable")
+
+
+@pytest.mark.parametrize("failure", ["launch", "exit", "no-engine"])
+def test_rehearsal_engine_selection_fails_closed(monkeypatch, failure):
+    def fake_run(*args, **kwargs):
+        if failure == "launch":
+            raise subprocess.TimeoutExpired(args[0], kwargs["timeout"])
+        if failure == "exit":
+            return subprocess.CompletedProcess(args[0], 2, "", "engine inventory failed")
+        return subprocess.CompletedProcess(args[0], 0, "Available IO engines:\n\tnet\n", "")
+
+    monkeypatch.setattr(driver.subprocess, "run", fake_run)
+    with pytest.raises(driver.StudyError, match="cannot inspect real-fio IO engines" if failure != "no-engine"
+                       else "no supported test-scale engine"):
+        driver.rehearsal_ioengine("/tmp/fio")
+
+
+def test_rehearsal_requires_a_fresh_output_directory_under_tmp(tmp_path):
+    with pytest.raises(driver.StudyError, match="must be an absolute path"):
+        driver.run_rehearsal(Path("relative-rehearsal"), "/not-needed")
+    nonempty = tmp_path / "nonempty-rehearsal"
+    nonempty.mkdir()
+    (nonempty / "keep.txt").write_text("existing data", encoding="utf-8")
+    with pytest.raises(driver.StudyError, match="new or empty directory"):
+        driver.run_rehearsal(nonempty, "/not-needed")
+    link = tmp_path / "rehearsal-link"
+    link.symlink_to(nonempty, target_is_directory=True)
+    with pytest.raises(driver.StudyError, match="new or empty directory"):
+        driver.run_rehearsal(link, "/not-needed")
+    with pytest.raises(driver.StudyError, match="parent must be under /tmp"):
+        driver.run_rehearsal(Path("/proc/ibx-fio-e2e-output"), "/not-needed")
+    with pytest.raises(driver.StudyError, match="path may contain only"):
+        driver.run_rehearsal(tmp_path / "rehearsal with space", "/not-needed")
+
+
+def test_main_dispatches_rehearsal_and_prints_its_summary(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(driver, "run_rehearsal", lambda out, fio: {
+        "out": str(out), "fio": fio, "status": "PASS"})
+    assert driver.main(["rehearse", "--fio", "fio-3.39", "--out", str(tmp_path)]) == 0
+    assert json.loads(capsys.readouterr().out) == {
+        "out": str(tmp_path), "fio": "fio-3.39", "status": "PASS"}
+
+
+def _fake_fio_binary(tmp_path):
+    executable = tmp_path / "fio"
+    executable.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    executable.chmod(0o755)
+    return str(executable)
+
+
+def test_run_rehearsal_orchestrates_all_planner_cells_with_realistic_json_shape(
+        tmp_path, monkeypatch, capsys):
+    fio = _fake_fio_binary(tmp_path)
+    out = tmp_path / "rehearsal"
+    commands = []
+
+    def fake_run(argv, *, text, capture_output, check, timeout=None):
+        commands.append(list(argv))
+        if argv[0] == fio and argv[1] == "--version":
+            return subprocess.CompletedProcess(argv, 0, "fio-3.39\n", "")
+        if argv[0] == fio and argv[1] == "--enghelp":
+            return subprocess.CompletedProcess(argv, 0, "Available IO engines:\n\tposixaio\n", "")
+        if len(argv) > 2 and argv[2] == "plan":
+            plan = {"test_scale": {"enabled": True,
+                                  "cell_sets": list(driver.TEST_SCALE_CELL_SETS)}}
+            return subprocess.CompletedProcess(argv, 0, json.dumps(plan), "")
+        if len(argv) > 2 and argv[2] == "run":
+            results = out / "cells"
+            results.mkdir(exist_ok=True)
+            record = {"cell_set": argv[3], "rung": "quick", "cell": "probe",
+                      "fio": {"global options": {"time_based": "1"}, "jobs": [{}]}}
+            (results / f"{argv[3]}.json").write_text(json.dumps(record), encoding="utf-8")
+            (results / "malformed.json").write_text("{", encoding="utf-8")
+            (results / "no-jobs.json").write_text(json.dumps({"fio": {"jobs": []}}),
+                                                  encoding="utf-8")
+            (results / "non-dict-options.json").write_text(json.dumps({"fio": {
+                "global options": [], "jobs": [{}]}}), encoding="utf-8")
+            (results / "not-time-based.json").write_text(json.dumps({"fio": {
+                "global options": {"time_based": "0"}, "jobs": [{}]}}),
+                encoding="utf-8")
+            return subprocess.CompletedProcess(argv, 0, "run complete\n", "")
+        if len(argv) > 2 and argv[2] == "analyze":
+            choice = Path(argv[argv.index("--output") + 1])
+            choice.write_text("planner-scaled real-fio rehearsal\n", encoding="utf-8")
+            return subprocess.CompletedProcess(argv, 0, "analysis complete\n", "")
+        if argv[0] == "fallocate":
+            return subprocess.CompletedProcess(argv, 0, "", "")
+        raise AssertionError(f"unexpected rehearsal command: {argv!r}")
+
+    monkeypatch.setattr(driver.subprocess, "run", fake_run)
+    result = driver.run_rehearsal(out, fio)
+    assert result["cell_sets"] == list(driver.TEST_SCALE_CELL_SETS)
+    assert result["time_based_records"] == len(driver.TEST_SCALE_CELL_SETS)
+    assert result["ioengine"] == "posixaio"
+    assert len([argv for argv in commands if len(argv) > 2 and argv[2] == "run"]) == len(
+        driver.TEST_SCALE_CELL_SETS)
+    assert (out / "rung-choice.md").is_file()
+    assert "FIO-REHEARSAL-PASS" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("failure", ["launch", "exit"])
+def test_run_rehearsal_records_planner_subprocess_failures(tmp_path, monkeypatch, failure):
+    fio = _fake_fio_binary(tmp_path)
+    out = tmp_path / f"rehearsal-{failure}"
+
+    def fake_run(argv, **_kwargs):
+        if argv[0] == fio and argv[1] == "--version":
+            return subprocess.CompletedProcess(argv, 0, "fio-3.39\n", "")
+        if argv[0] == fio and argv[1] == "--enghelp":
+            return subprocess.CompletedProcess(argv, 0, "\tposixaio\n", "")
+        if len(argv) > 2 and argv[2] == "plan":
+            if failure == "launch":
+                raise OSError("controlled launch failure")
+            return subprocess.CompletedProcess(argv, 7, "", "controlled planner failure")
+        raise AssertionError(f"unexpected rehearsal command: {argv!r}")
+
+    monkeypatch.setattr(driver.subprocess, "run", fake_run)
+    with pytest.raises(driver.StudyError, match="rehearsal could not launch planner" if failure == "launch"
+                       else "planner failed with exit 7"):
+        driver.run_rehearsal(out, fio)
+    transcript = (out / "rehearsal-transcript.txt").read_text(encoding="utf-8")
+    assert "planner" in transcript
+
+
+def test_run_rehearsal_reports_regular_file_creation_failure(tmp_path, monkeypatch):
+    fio = _fake_fio_binary(tmp_path)
+
+    def fake_run(argv, **_kwargs):
+        if argv[0] == fio and argv[1] == "--version":
+            return subprocess.CompletedProcess(argv, 0, "fio-3.39\n", "")
+        return subprocess.CompletedProcess(argv, 0, "\tposixaio\n", "")
+
+    def fail_open(*_args, **_kwargs):
+        raise OSError("controlled create failure")
+
+    monkeypatch.setattr(driver.subprocess, "run", fake_run)
+    monkeypatch.setattr(driver.os, "open", fail_open)
+    with pytest.raises(driver.StudyError, match="cannot create the regular-file rehearsal target"):
+        driver.run_rehearsal(tmp_path / "rehearsal", fio)
+
+
+@pytest.mark.parametrize("failure", ["invalid-json", "not-a-dict", "disabled-plan",
+                                      "wrong-cellsets", "missing-analysis", "empty-analysis",
+                                      "wipe-exit", "dirty-wipe", "no-timed"])
+def test_run_rehearsal_rejects_incomplete_or_corrupt_steps(tmp_path, monkeypatch, failure):
+    fio = _fake_fio_binary(tmp_path)
+    out = tmp_path / f"rehearsal-{failure}"
+
+    def fake_run(argv, **_kwargs):
+        if argv[0] == fio and argv[1] == "--version":
+            return subprocess.CompletedProcess(argv, 0, "fio-3.39\n", "")
+        if argv[0] == fio and argv[1] == "--enghelp":
+            return subprocess.CompletedProcess(argv, 0, "\tposixaio\n", "")
+        if len(argv) > 2 and argv[2] == "plan":
+            if failure == "invalid-json":
+                return subprocess.CompletedProcess(argv, 0, "not json", "")
+            if failure == "not-a-dict":
+                return subprocess.CompletedProcess(argv, 0, "[]", "")
+            schedule = list(driver.TEST_SCALE_CELL_SETS)
+            if failure == "wrong-cellsets":
+                schedule = ["raw-t0"]
+            plan = {"test_scale": {"enabled": failure != "disabled-plan",
+                                  "cell_sets": schedule}}
+            return subprocess.CompletedProcess(argv, 0, json.dumps(plan), "")
+        if len(argv) > 2 and argv[2] == "run":
+            cells = out / "cells"
+            cells.mkdir(exist_ok=True)
+            if failure in ("no-timed", "dirty-wipe", "wipe-exit"):
+                timed = "0" if failure == "no-timed" else "1"
+                (cells / f"{argv[3]}.json").write_text(json.dumps({"fio": {
+                    "global options": {"time_based": timed}, "jobs": [{}]}}),
+                    encoding="utf-8")
+            return subprocess.CompletedProcess(argv, 0, "run complete", "")
+        if len(argv) > 2 and argv[2] == "analyze":
+            if failure != "missing-analysis":
+                choice = Path(argv[argv.index("--output") + 1])
+                choice.write_text("" if failure == "empty-analysis" else "choice\n",
+                                  encoding="utf-8")
+            return subprocess.CompletedProcess(argv, 0, "", "")
+        if argv[0] == "fallocate":
+            if failure == "wipe-exit":
+                return subprocess.CompletedProcess(argv, 5, "", "controlled wipe failure")
+            if failure == "dirty-wipe":
+                with Path(argv[-1]).open("r+b") as stream:
+                    stream.write(b"x")
+            return subprocess.CompletedProcess(argv, 0, "", "")
+        raise AssertionError(f"unexpected rehearsal command: {argv!r}")
+
+    monkeypatch.setattr(driver.subprocess, "run", fake_run)
+    message = {
+        "invalid-json": "planner returned invalid JSON",
+        "not-a-dict": "did not return the full rehearsal cell-set schedule",
+        "disabled-plan": "did not return the full rehearsal cell-set schedule",
+        "wrong-cellsets": "did not return the full rehearsal cell-set schedule",
+        "missing-analysis": "did not produce rung-choice.md",
+        "empty-analysis": "did not produce rung-choice.md",
+        "wipe-exit": "regular-file wipe equivalent failed with exit 5",
+        "dirty-wipe": "left non-zero target data",
+        "no-timed": "without recording any time-based jobs",
+    }[failure]
+    with pytest.raises(driver.StudyError, match=message):
+        driver.run_rehearsal(out, fio)
+
+
+@pytest.mark.parametrize("failure", ["version", "version-launch"])
+def test_run_rehearsal_requires_upstream_fio_339(tmp_path, monkeypatch, failure):
+    fio = _fake_fio_binary(tmp_path)
+
+    def fake_run(argv, **_kwargs):
+        if failure == "version-launch":
+            raise OSError("controlled fio launch failure")
+        return subprocess.CompletedProcess(argv, 1 if failure == "version" else 0,
+                                            "fio-3.37\n", "version rejected")
+
+    monkeypatch.setattr(driver.subprocess, "run", fake_run)
+    message = ("cannot check the real fio executable" if failure == "version-launch" else
+               "real-fio rehearsal requires upstream fio 3.39")
+    with pytest.raises(driver.StudyError, match=message):
+        driver.run_rehearsal(tmp_path / "rehearsal", fio)
+
+
 def test_ibx_cap_is_pinned_in_user_documentation():
     documents = (
         driver.REPO / "libraries/iobench/README.md",
@@ -2412,10 +3562,23 @@ def test_ibx_cap_is_pinned_in_user_documentation():
         driver.REPO / "libraries/iobench/docs/CONSUMERS.md",
     )
     assert driver.WRITE_CAP_GB == 500
+    assert driver.REPO is not None
     for path in documents:
         content = path.read_text(encoding="utf-8")
         assert f"{driver.WRITE_CAP_GB} GB decimal" in content
         assert "626.25 GB" not in content
+
+
+def test_rehearsal_capability_is_explained_across_user_documents():
+    readme = (driver.REPO / "libraries/iobench/README.md").read_text(encoding="utf-8")
+    guide = (driver.REPO / "libraries/iobench/docs/DESIGN-GUIDE.md").read_text(encoding="utf-8")
+    consumers = (driver.REPO / "libraries/iobench/docs/CONSUMERS.md").read_text(encoding="utf-8")
+    assert "`rehearse`" in readme and "`--test-scale`" in readme
+    assert "fio begins a" in guide and "existing 60-second" in guide
+    assert "regular file under `/tmp`" in guide and "hard-kill resume" in guide
+    assert "plan --test-scale --json" in consumers
+    assert 'rehearse --fio "$FIO" --out "$OUT"' in consumers
+    assert "#0b-rehearsal" in consumers
 
 
 def test_t6_standard_is_omitted_when_quick_errors_are_far_from_boundary(tmp_path):
@@ -2448,14 +3611,14 @@ def test_t6_standard_runs_when_quick_movement_needs_second_reference_point(tmp_p
 def test_real_schedule_keeps_base_caps_and_drops_unfunded_adaptive_repeats(tmp_path):
     assert driver.WRITE_CAP_GB == 500
     assert driver.WRITE_CAP == driver.WRITE_CAP_GB * driver.GB == 500_000_000_000
-    assert driver.BASE_SCHEDULE_WRITE_CAP == driver.base_schedule_write_cap() == 495_123_688_448
+    assert driver.BASE_SCHEDULE_WRITE_CAP == driver.base_schedule_write_cap() == 495_122_866_176
     assert driver.BASE_SCHEDULE_WRITE_CAP <= driver.WRITE_CAP
-    assert driver.WRITE_CAP - driver.BASE_SCHEDULE_WRITE_CAP == 4_876_311_552
+    assert driver.WRITE_CAP - driver.BASE_SCHEDULE_WRITE_CAP == 4_877_133_824
 
     part_repeat_cap = driver.cell_set_write_cap("part-c-repeat")
     raw_repeat_cap = driver.cell_set_write_cap("raw-t12h")
     assert part_repeat_cap == 49_123_688_448
-    assert raw_repeat_cap == driver.cell_set_write_cap("raw-t12h2") == 41 * driver.GB
+    assert raw_repeat_cap == driver.cell_set_write_cap("raw-t12h2") == 40_999_899_136
     assert driver.adaptive_repeat_candidate_write_cap() == part_repeat_cap + 2 * raw_repeat_cap
     assert driver.SCHEDULED_ADAPTIVE_REPEAT_CELL_SETS == ()
     assert driver.DROPPED_ADAPTIVE_REPEAT_CELL_SETS == (
@@ -2463,9 +3626,9 @@ def test_real_schedule_keeps_base_caps_and_drops_unfunded_adaptive_repeats(tmp_p
     assert driver.ADAPTIVE_RESERVE_WRITE_CAP == driver.adaptive_reserve_write_cap() == 0
     assert driver.BASE_SCHEDULE_WRITE_CAP + driver.ADAPTIVE_RESERVE_WRITE_CAP <= driver.WRITE_CAP
     assert min(part_repeat_cap, raw_repeat_cap) > driver.WRITE_CAP - driver.BASE_SCHEDULE_WRITE_CAP
-    assert driver.cell_set_write_cap("file-ext4-standard") == 100 * driver.GB
-    assert driver.cell_set_write_cap("file-btrfs-standard") == 100 * driver.GB
-    assert driver.file_standard_write_cap() == 100 * driver.GB
+    assert driver.cell_set_write_cap("file-ext4-standard") == 99_999_891_456
+    assert driver.cell_set_write_cap("file-btrfs-standard") == 99_999_891_456
+    assert driver.file_standard_write_cap() == 99_999_891_456
     empty = {"cells": {}}
     assert (driver.pending_cell_set_write_cap("part-c", out=tmp_path, state=empty)
             == driver.cell_set_write_cap("part-c"))
@@ -2503,6 +3666,10 @@ def test_complete_maximum_base_schedule_fits_under_500_gb(tmp_path, monkeypatch)
     assert state["write_bytes"] == driver.BASE_SCHEDULE_WRITE_CAP
     assert state["write_bytes"] <= driver.WRITE_CAP
     assert state["write_reservations"] == {}
+    assert driver.part_c_assessment(out)["status"] == "not reproduced"
+    rung_choice = driver.analysis(out)
+    assert rung_choice["part_c"]["status"] == "not reproduced"
+    assert "## (c) rewrite/fstrim" in driver.render_analysis(rung_choice)
 
 
 def test_optional_file_standard_skips_when_its_full_cap_does_not_fit(tmp_path, monkeypatch):
@@ -2528,6 +3695,15 @@ def test_optional_file_standard_reserves_required_file_btrfs_remainder(tmp_path,
     state = driver.empty_state(driver.dt.datetime.now(driver.dt.UTC).isoformat(),
                                "ext4-file", "/mnt/target.dat", "vda5", None)
     state["write_bytes"] = 400 * driver.GB
+    for cell_set in driver.BASE_SCHEDULE_CELL_SETS:
+        if cell_set == "file-btrfs":
+            continue
+        kind, rungs, slot = driver.CELL_SETS[cell_set]
+        for rung in rungs:
+            special = rung == "part-c"
+            for job in driver.rung_jobs("quick" if special else rung, part_c=special):
+                key = driver.cell_key(kind, slot, rung, job)
+                state["cells"][key] = "fixture-completed-cell.json"
     driver.write_json(out / driver.STATE_NAME, state)
     monkeypatch.setattr(driver, "file_standard_needed", lambda *_: True)
 
@@ -2536,7 +3712,7 @@ def test_optional_file_standard_reserves_required_file_btrfs_remainder(tmp_path,
                        target_type="ext4-file", target="/mnt/target.dat")
     assert standard["skipped"] is True
     assert standard["reason"] == (
-        "the full file-standard cap and 41000000000 bytes required by cell-sets "
+        "the full file-standard cap and 40999899136 bytes required by cell-sets "
         "still ahead do not fit in the remaining 500 GB write budget")
     assert host.fio.calls == [] and host.discards == []
     assert json.loads((out / driver.STATE_NAME).read_text())["write_bytes"] == 400 * driver.GB
@@ -3552,15 +4728,15 @@ def test_target_and_cellset_validation_and_writer_cap_allocator():
     with pytest.raises(driver.StudyError, match="unknown rung"):
         driver.rung_jobs("thorough")
     assert driver.bound_write_caps([driver.Job("read", "read", 4096, 1, 1, "r")], GIB)[0].write_cap == 0
-    capped = driver.bound_write_caps([driver.Job("a", "write", 4096, 1, 1, "w", 8),
-                                      driver.Job("b", "write", 4096, 1, 1, "w", 8)], 10)
+    capped = driver.bound_write_caps([driver.Job("a", "write", 1, 1, 1, "w", 8),
+                                      driver.Job("b", "write", 1, 1, 1, "w", 8)], 10)
     assert [job.write_cap for job in capped] == [8, 2]
-    shared = driver.bound_write_caps([driver.Job("a", "write", 4096, 1, 1, "w"),
-                                      driver.Job("b", "write", 4096, 1, 1, "w")], 10)
+    shared = driver.bound_write_caps([driver.Job("a", "write", 1, 1, 1, "w"),
+                                      driver.Job("b", "write", 1, 1, 1, "w")], 10)
     assert sum(job.write_cap for job in shared) == 10
-    assert driver.bound_write_caps([driver.Job("a", "write", 4096, 1, 1, "w", 1)], 10)[0].write_cap == 1
+    assert driver.bound_write_caps([driver.Job("a", "write", 1, 1, 1, "w", 1)], 10)[0].write_cap == 1
     with pytest.raises(driver.StudyError, match="zero-duration cells"):
-        driver.bound_write_caps([driver.Job("zero", "write", 4096, 1, 0, "w")], 10)
+        driver.bound_write_caps([driver.Job("zero", "write", 1, 1, 0, "w")], 10)
 
 
 def test_run_refuses_a_target_extent_outside_its_assigned_region(tmp_path):
@@ -3624,13 +4800,17 @@ def test_stop_policy_documentation_maps_manifest_fields_to_run_options(tmp_path)
     mapping = {
         "memory_psi_full_avg10_max_percent": "--max-memory-psi",
         "min_memavailable_bytes": "--min-memavailable",
-        "min_free_bytes": "--min-free",
+        "min_output_free_bytes": "--min-output-free",
+        "min_target_free_bytes": "--min-target-free",
         "max_probe_latency_seconds": "--max-probe-latency-seconds",
         "probe_consecutive_samples": "--probe-consecutive-samples",
         "probe_interval_seconds": "--probe-interval-seconds",
         "liveness_ssh_host": "--liveness-ssh-host",
         "liveness_ssh_port": "--liveness-ssh-port",
         "liveness_cockpit_container": "--liveness-cockpit-container",
+        "fio_startup_grace_seconds": "--fio-startup-grace-seconds",
+        "test_scale": "--test-scale",
+        "test_scale_ioengine": "--test-scale-engine",
     }
     assert set(mapping) == set(policy) - {"io_psi"}
     parser = driver.build_parser()
@@ -3984,7 +5164,8 @@ def test_run_rejects_file_confirmation_and_unmatched_validated_identity(tmp_path
         driver.run_study("file-ext4", target="/mnt/ext4.dat", device="vda5", out=tmp_path,
                          target_kind="ext4-file", offset=0, size=24 * GIB,
                          mem_psi_max=20, min_memavailable=2 * GIB,
-                         min_free=4 * GIB, max_probe_latency_s=1,
+                         min_output_free=4 * GIB, min_target_free=GIB,
+                         max_probe_latency_s=1,
                          probe_consecutive_samples=3, host=host, quiet_window_confirmed=True,
                          confirm_target=f"/dev/fake:{FAKE_IDENTITY.size_bytes}:{FAKE_IDENTITY.partuuid}")
     host = FakeHost()
@@ -4044,6 +5225,120 @@ def test_resume_refuses_changed_stable_identity_and_stop_policy(tmp_path):
     run_set(root, "raw-t0", host=host)
     with pytest.raises(driver.StudyError, match="stop policy changed.*preserve.*meters.*Recorded stop policy.*new --out directory resets"):
         run_set(root, "raw-t0", host=host, max_probe_latency_s=2.0)
+
+
+def test_legacy_min_free_policy_migrates_exactly_and_recovers_reservations(tmp_path):
+    out = tmp_path / "legacy-policy"
+    out.mkdir()
+    state = driver.empty_state(driver.dt.datetime.now(driver.dt.UTC).isoformat(),
+                               "raw", "/dev/fake", "vda5", FAKE_IDENTITY)
+    write_key = "raw|t0|standard|seq1m-write"
+    active_key = "raw|t0|standard|seq1m-write|active"
+    legacy_floor = GIB
+    state["write_bytes"] = 64_000_000_000
+    state["active_seconds"] = 125.0
+    state["write_reservations"] = {write_key: [state["write_bytes"]]}
+    state["active_reservations"] = {active_key: [state["active_seconds"]]}
+    state["run_manifest"]["stop_policy"] = {
+        "io_psi": "advisory; recorded, no stop threshold",
+        "memory_psi_full_avg10_max_percent": 20,
+        "min_memavailable_bytes": 2 * GIB,
+        "min_free_bytes": legacy_floor,
+        "max_probe_latency_seconds": 1.0,
+        "probe_consecutive_samples": 3,
+        "probe_interval_seconds": driver.DEFAULT_LIVENESS_PROBE_INTERVAL_S,
+        "liveness_ssh_host": driver.LIVENESS_SSH_HOST,
+        "liveness_ssh_port": driver.LIVENESS_SSH_PORT,
+        "liveness_cockpit_container": driver.LIVENESS_COCKPIT_CONTAINER,
+    }
+    state_path = out / driver.STATE_NAME
+    driver.write_json(state_path, state)
+
+    with pytest.raises(driver.StudyError, match="remaining write budget cannot complete the base schedule"):
+        run_set(out, "raw-t0", min_output_free=legacy_floor,
+                min_target_free=legacy_floor)
+
+    resumed_state = json.loads(state_path.read_text(encoding="utf-8"))
+    manifest = resumed_state["run_manifest"]
+    assert manifest["stop_policy"]["min_output_free_bytes"] == legacy_floor
+    assert manifest["stop_policy"]["min_target_free_bytes"] == legacy_floor
+    assert "min_free_bytes" not in manifest["stop_policy"]
+    assert manifest["stop_policy_migrations"][0]["legacy_min_free_bytes"] == legacy_floor
+    assert manifest["stop_policy_migrations"][0]["equivalence"].startswith("both split floors")
+    assert resumed_state["interrupted_attempts"][0]["write_reservations"] == {
+        write_key: [64_000_000_000]}
+    assert resumed_state["interrupted_attempts"][0]["active_reservations"] == {
+        active_key: [125.0]}
+    assert resumed_state["write_bytes"] == 64_000_000_000
+    assert resumed_state["active_seconds"] == 125.0
+    assert resumed_state["write_reservations"] == {}
+    assert resumed_state["active_reservations"] == {}
+
+
+def test_legacy_policy_without_free_floor_migrates_only_added_fields(tmp_path):
+    out = tmp_path / "legacy-without-floor"
+    out.mkdir()
+    state = driver.empty_state(driver.dt.datetime.now(driver.dt.UTC).isoformat(),
+                               "raw", "/dev/fake", "vda5", FAKE_IDENTITY)
+    state["write_bytes"] = 64 * GIB
+    state["run_manifest"]["stop_policy"] = {
+        "io_psi": "advisory; recorded, no stop threshold",
+        "memory_psi_full_avg10_max_percent": 20,
+        "min_memavailable_bytes": 2 * GIB,
+        "min_output_free_bytes": 4 * GIB,
+        "min_target_free_bytes": GIB,
+        "max_probe_latency_seconds": 1.0,
+        "probe_consecutive_samples": 3,
+        "probe_interval_seconds": driver.DEFAULT_LIVENESS_PROBE_INTERVAL_S,
+        "liveness_ssh_host": driver.LIVENESS_SSH_HOST,
+        "liveness_ssh_port": driver.LIVENESS_SSH_PORT,
+        "liveness_cockpit_container": driver.LIVENESS_COCKPIT_CONTAINER,
+    }
+    driver.write_json(out / driver.STATE_NAME, state)
+
+    with pytest.raises(driver.StudyError, match="remaining write budget cannot complete the base schedule"):
+        run_set(out, "raw-t0", host=FakeHost())
+
+    migrated = json.loads((out / driver.STATE_NAME).read_text(encoding="utf-8"))
+    history = migrated["run_manifest"]["stop_policy_migrations"]
+    assert history[0]["upgraded_fields"] == [
+        "fio_startup_grace_seconds", "test_scale", "test_scale_ioengine"]
+    assert "legacy_min_free_bytes" not in history[0]
+    assert migrated["run_manifest"]["stop_policy"]["fio_startup_grace_seconds"] == float(
+        driver.FIO_STARTUP_GRACE_DEFAULT_S)
+
+
+def test_legacy_min_free_policy_refuses_changed_floors_and_bad_migration_history(tmp_path):
+    def legacy_state():
+        state = driver.empty_state(driver.dt.datetime.now(driver.dt.UTC).isoformat(),
+                                   "raw", "/dev/fake", "vda5", FAKE_IDENTITY)
+        state["run_manifest"]["stop_policy"] = {
+            "io_psi": "advisory; recorded, no stop threshold",
+            "memory_psi_full_avg10_max_percent": 20,
+            "min_memavailable_bytes": 2 * GIB,
+            "min_free_bytes": GIB,
+            "max_probe_latency_seconds": 1.0,
+            "probe_consecutive_samples": 3,
+            "probe_interval_seconds": driver.DEFAULT_LIVENESS_PROBE_INTERVAL_S,
+            "liveness_ssh_host": driver.LIVENESS_SSH_HOST,
+            "liveness_ssh_port": driver.LIVENESS_SSH_PORT,
+            "liveness_cockpit_container": driver.LIVENESS_COCKPIT_CONTAINER,
+        }
+        return state
+
+    changed = tmp_path / "changed-floor"
+    changed.mkdir()
+    driver.write_json(changed / driver.STATE_NAME, legacy_state())
+    with pytest.raises(driver.StudyError, match="stop policy changed"):
+        run_set(changed, "raw-t0", min_output_free=2 * GIB, min_target_free=GIB)
+
+    malformed = tmp_path / "malformed-history"
+    malformed.mkdir()
+    state = legacy_state()
+    state["run_manifest"]["stop_policy_migrations"] = {}
+    driver.write_json(malformed / driver.STATE_NAME, state)
+    with pytest.raises(driver.StudyError, match="stop-policy migration history is malformed"):
+        run_set(malformed, "raw-t0", min_output_free=GIB, min_target_free=GIB)
 
 
 def test_resume_records_changed_mount_and_swap_context_per_attempt(tmp_path):
@@ -4232,16 +5527,26 @@ def test_render_job_path_guard_and_reader_modes(tmp_path, monkeypatch):
     malformed = tmp_path / "bad.fio"
     malformed.write_text("[job]\ndirect=1\ntime_based=1\nio_size=4096\n", encoding="utf-8")
     monkeypatch.setattr(driver, "JOB_TEMPLATE", malformed)
-    writer = driver.Job("write", "write", 4096, 1, 1, "wbps", 1024)
+    writer = driver.Job("write", "write", 4096, 1, 1, "wbps", 8192)
     with pytest.raises(driver.StudyError, match="not volume bounded"):
         driver.render_job(writer, target="/dev/vda5", offset=0, size=GIB,
                           log_prefix=str(tmp_path / "writer"))
+    monkeypatch.setattr(driver, "JOB_TEMPLATE", tmp_path / "missing-template.fio")
+    with pytest.raises(driver.StudyError, match="must be kept beside driver.py"):
+        driver.render_job(read, target="/dev/vda5", offset=0, size=GIB,
+                          log_prefix=str(tmp_path / "missing-template"))
+
+
+def test_require_repo_root_fails_with_a_clear_layout_error(monkeypatch):
+    monkeypatch.setattr(driver, "REPO", None)
+    with pytest.raises(driver.StudyError, match="requires driver.py under libraries/iobench/studies/ibx"):
+        driver.require_repo_root()
 
 
 def test_parse_fio_result_refuses_shape_missing_stats_percentiles_and_overwrite(tmp_path):
-    job = driver.Job("write", "write", 4096, 1, 5, "wbps", 100)
-    good = {"jobs": [{"write": {"io_bytes": 50, "bw_bytes": 10, "iops": 2}}]}
-    assert driver.parse_fio_values(good, job) == (10.0, 50)
+    job = driver.Job("write", "write", 4096, 1, 5, "wbps", 8192)
+    good = {"jobs": [{"write": {"io_bytes": 8192, "bw_bytes": 10, "iops": 2}}]}
+    assert driver.parse_fio_values(good, job) == (10.0, 8192)
     assert driver.parse_fio_values({"jobs": [{"read": {"io_bytes": 50, "bw_bytes": 10,
                                                            "iops": 2}}]},
                                    driver.Job("read", "read", 4096, 1, 5, "rrandiops")) == (2.0, 50)
@@ -4258,7 +5563,7 @@ def test_parse_fio_result_refuses_shape_missing_stats_percentiles_and_overwrite(
     with pytest.raises(driver.StudyError, match="expected direction"):
         driver.parse_fio_values({"jobs": [{"read": {}}]}, job)
     with pytest.raises(driver.StudyError, match="more than"):
-        driver.parse_fio_values({"jobs": [{"write": {"io_bytes": 101}}]}, job)
+        driver.parse_fio_values({"jobs": [{"write": {"io_bytes": 8193}}]}, job)
     with pytest.raises(driver.StudyError, match="malformed io_bytes"):
         driver.parse_fio_values({"jobs": [{"write": {"io_bytes": True}}]}, job)
     with pytest.raises(driver.StudyError, match="no clat_ns"):
@@ -4351,16 +5656,21 @@ def test_size_parsing_and_cli_modes(tmp_path, capsys, monkeypatch):
     assert driver.main(["run", "raw-t0", "--target", "/dev/fake", "--device", "vda5",
                         "--offset", "0B", "--size", "24GiB", "--out", str(tmp_path),
                         "--max-memory-psi", "20", "--min-memavailable", "1GiB",
-                        "--min-free", "1GiB", "--max-probe-latency-seconds", "1",
+                        "--min-output-free", "1GiB", "--min-target-free", "1GiB",
+                        "--max-probe-latency-seconds", "1",
                         "--probe-consecutive-samples", "3", "--confirm-quiet-window"]) == 0
     assert json.loads(capsys.readouterr().out)["cell_set"] == "raw-t0"
     monkeypatch.setattr(driver, "run_study", lambda *args, **kwargs: (_ for _ in ()).throw(driver.StudyError("refused")))
     assert driver.main(["run", "raw-t0", "--target", "/dev/fake", "--device", "vda5",
                         "--offset", "0B", "--size", "24GiB", "--out", str(tmp_path),
                         "--max-memory-psi", "20", "--min-memavailable", "1GiB",
-                        "--min-free", "1GiB", "--max-probe-latency-seconds", "1",
+                        "--min-output-free", "1GiB", "--min-target-free", "1GiB",
+                        "--max-probe-latency-seconds", "1",
                         "--probe-consecutive-samples", "3", "--confirm-quiet-window"]) == 2
     assert "refused" in capsys.readouterr().err
+    monkeypatch.setattr(driver, "verify_fio_rounding", lambda fio: {"fio": fio})
+    assert driver.main(["verify-fio-rounding", "--fio", "fio-fixture"]) == 0
+    assert json.loads(capsys.readouterr().out) == {"fio": "fio-fixture"}
 
 
 def test_module_entrypoint_executes_plan(monkeypatch, capsys):
@@ -4369,6 +5679,31 @@ def test_module_entrypoint_executes_plan(monkeypatch, capsys):
         runpy.run_path(str(driver.HERE / "driver.py"), run_name="__main__")
     assert exit_info.value.code == 0
     assert json.loads(capsys.readouterr().out)["meter"]["used_bytes"] == 0
+
+
+def test_driver_imports_from_flat_copy_and_fsync_reports_required_layout(tmp_path):
+    flat = tmp_path / "flat"
+    flat.mkdir()
+    shutil.copyfile(driver.HERE / "driver.py", flat / "driver.py")
+    shutil.copyfile(driver.HERE / "job-template.fio", flat / "job-template.fio")
+    module = runpy.run_path(str(flat / "driver.py"), run_name="ibx_flat_copy")
+    assert module["REPO"] is None
+    assert module["Job"]("writer", "write", 4096, 1, 1, "wbps", 8192).write_cap == 8192
+    with pytest.raises(module["StudyError"],
+                       match="requires driver.py under libraries/iobench/studies/ibx"):
+        module["require_repo_root"]()
+    with pytest.raises(module["StudyError"],
+                       match="requires driver.py under libraries/iobench/studies/ibx"):
+        module["LocalHost"]().assert_fsync_preflight()
+
+    driver_only = tmp_path / "driver-only"
+    driver_only.mkdir()
+    shutil.copyfile(driver.HERE / "driver.py", driver_only / "driver.py")
+    alone = runpy.run_path(str(driver_only / "driver.py"), run_name="ibx_driver_only")
+    with pytest.raises(alone["StudyError"], match="job-template.fio must be kept beside driver.py"):
+        alone["render_job"](alone["Job"]("read", "read", 4096, 1, 1, "rbps"),
+                            target="/tmp/target", offset=0, size=4096,
+                            log_prefix="/tmp/fio-log")
 
 
 def test_state_reservation_and_meter_guards(tmp_path):
@@ -4543,7 +5878,7 @@ def test_run_study_snapshot_history_optional_standard_and_repeat_edges(tmp_path,
 def test_resume_refuses_broken_links_and_adopts_valid_orphan_results(tmp_path, monkeypatch):
     jobs = [
         driver.Job("rate-read-q32", "randread", 4096, 32, 1, "read_iops_cap"),
-        driver.Job("rate-write-q32", "randwrite", 4096, 32, 1, "write_iops_cap", 100),
+        driver.Job("rate-write-q32", "randwrite", 4096, 32, 1, "write_iops_cap", 4096),
         driver.Job("other-read", "read", 4096, 1, 1, "other_metric"),
     ]
     monkeypatch.setitem(driver.CELL_SETS, "file-ext4", ("ext4-file", ("quick",), "t9h"))
@@ -4665,11 +6000,11 @@ def test_run_study_remaining_active_and_elapsed_limits_stop_before_fio(tmp_path,
 
         def elapsed(state):
             calls["n"] += 1
-            if calls["n"] <= 2:
+            if calls["n"] == 1:
                 return 0.0
-            if calls["n"] == 3 and message.startswith("before"):
+            if calls["n"] == 2 and message.startswith("before"):
                 return driver.ELAPSED_CAP_S - 1
-            if calls["n"] >= 4:
+            if calls["n"] >= 3:
                 return elapsed_after_wait
             return 0.0
 
@@ -4680,7 +6015,7 @@ def test_run_study_remaining_active_and_elapsed_limits_stop_before_fio(tmp_path,
     wait_case("wait-before", 0.0, "before required idle wait")
     wait_case("wait-after", driver.ELAPSED_CAP_S + 1, "12 hour elapsed study limit reached")
     wait_case("runtime-zero", driver.ELAPSED_CAP_S - driver.FIO_DRAIN_RESERVE_S / 2,
-              "active-I/O or 12 hour elapsed")
+              "12 hour elapsed study limit reached")
 
     class LongFio(FakeHost):
         def execute_fio(self, job_path, runtime_s, sample):
@@ -4692,7 +6027,7 @@ def test_run_study_remaining_active_and_elapsed_limits_stop_before_fio(tmp_path,
         run_set(tmp_path / "duration", "file-ext4", host=LongFio(),
                 target_type="ext4-file", target="/mnt/file")
 
-    c_job = driver.Job("c-pass1-seq", "write", 1024**2, 32, 1, "c_seq_bps", 10,
+    c_job = driver.Job("c-pass1-seq", "write", 1024**2, 32, 1, "c_seq_bps", 1024**2,
                        extent_bytes=8 * GIB, discard_before=True)
     monkeypatch.setattr(driver, "rung_jobs", lambda rung, part_c=False: [c_job])
 
@@ -4725,6 +6060,20 @@ def test_run_study_remaining_active_and_elapsed_limits_stop_before_fio(tmp_path,
     with pytest.raises(driver.StudyError, match="changed during the study"):
         run_set(tmp_path / "changed-snapshot", "file-ext4", host=ChangedSnapshot(),
                 target_type="ext4-file", target="/mnt/file")
+
+
+def test_live_clipped_runtime_rerenders_without_test_scale_engine(tmp_path, monkeypatch):
+    job = driver.Job("one-read", "read", 4096, 1, 2, "rbps")
+    monkeypatch.setitem(driver.CELL_SETS, "file-ext4", ("ext4-file", ("quick",), "t9h"))
+    monkeypatch.setattr(driver, "rung_jobs", lambda _rung, part_c=False: [job])
+    monkeypatch.setattr(driver, "state_elapsed",
+                        lambda _state: driver.ELAPSED_CAP_S - 66)
+    host = FakeHost()
+    result = run_set(tmp_path / "live-clipped-runtime", "file-ext4", host=host,
+                     target_type="ext4-file", target="/mnt/file")
+    assert result["results"] == 2
+    assert host.fio.calls[0]["options"]["runtime"] == "1"
+    assert host.fio.calls[0]["options"]["time_based"] == "1"
 
 
 def test_analysis_markdown_covers_special_rows_and_reason_lines(tmp_path):

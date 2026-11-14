@@ -118,6 +118,10 @@ expect_killed gate-run-poll-both-final-wait-locks \
   env GATE_RUN_SCRIPT="$ROOT/mutants/scripts/controller/gate-run-poll-second-slot.sh" bash "$SCRIPT_DIR/test-hardening-tools.sh"
 expect_killed gate-run-refusal-names-example \
   env GATE_RUN_SCRIPT="$ROOT/mutants/scripts/controller/gate-run-refusal-example.sh" bash "$SCRIPT_DIR/test-hardening-tools.sh"
+expect_killed job-any-sol-trailer \
+  env JOB_CHECK_SCRIPT="$ROOT/mutants/scripts/controller/job-check-any-sol-trailer.sh" bash "$SCRIPT_DIR/test-job-check.sh"
+expect_killed job-sol-route-exact-trailer \
+  env JOB_CHECK_SCRIPT="$ROOT/mutants/scripts/controller/job-check-sol-route-trailer.sh" bash "$SCRIPT_DIR/test-job-check.sh"
 expect_killed job-any-multi-trailer-allowed-set \
   env JOB_CHECK_SCRIPT="$ROOT/mutants/scripts/controller/job-check-any-multi-trailer.sh" bash "$SCRIPT_DIR/test-job-check.sh"
 expect_killed job-usage-limit-dominates-message-flags \
@@ -164,4 +168,4 @@ expect_killed queue-controller-library-selection \
   env QUEUE_SCRIPT="$ROOT/mutants/scripts/netcup/runner/queue-controller-lib.sh" bash "$REPO_ROOT/scripts/netcup/runner/tests/test-queue.sh"
 expect_killed ctl-status-fresh-results-guard \
   env CTL_STATUS_SCRIPT="$ROOT/mutants/scripts/controller/ctl-status-fresh-results.sh" bash "$SCRIPT_DIR/test-ctl-status.sh"
-echo 'PASS hand mutations: 60 killed'
+echo 'PASS hand mutations: 62 killed'

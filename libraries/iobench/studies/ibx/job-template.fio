@@ -8,6 +8,7 @@ rw={{RW}}
 bs={{BS}}
 iodepth={{IODEPTH}}
 runtime={{RUNTIME}}
+ramp_time={{RAMP_TIME}}
 time_based={{TIME_BASED}}
 io_size={{IO_SIZE}}
 rate_iops={{RATE_IOPS}}

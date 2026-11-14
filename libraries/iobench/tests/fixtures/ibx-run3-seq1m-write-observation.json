@@ -1,0 +1,7 @@
+{
+  "bs_bytes": 1048576,
+  "fio_version": "fio-3.39",
+  "io_size_requested_bytes": 64000000000,
+  "reported_write_bytes": 64000884736,
+  "source": "ibx-study-run3-REPORT.md; raw fio JSON was not retained in run3 evidence"
+}

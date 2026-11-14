@@ -1,4 +1,4 @@
-# IBX live host acceptance (IOB-BL-41 / IOB-BL-42 / IOB-BL-44 / IOB-BL-45 / IOB-BL-46)
+# IBX live host acceptance (IOB-BL-41 / IOB-BL-42 / IOB-BL-44 / IOB-BL-45 / IOB-BL-46 / IOB-BL-50)
 
 Run only on the approved freshly reinstalled disposable compute host with its
 dedicated `iobench-raw` partition. This runbook has **not** been run here.
@@ -96,6 +96,83 @@ scope, loaded background slice, wrapper, and collector image before it can
 pass. Run that mode from the required Docker scope, or omit the optional fsync
 collector.
 
+## 0. Real fio block-cap verification
+
+Run this from the checkout or from a flat copy containing `driver.py` and
+`job-template.fio`, with upstream fio 3.39 available. It creates one temporary
+regular file under `/tmp`, renders every writing job from the standard, quick,
+veryquick, and part (c) profiles, then runs one small representative for each
+of the 23 distinct `(bs, requested io_size remainder)` classes. The real JSON
+is passed through the same study parser used for live cells. The command never
+opens a block device:
+
+```bash
+python3 "$STUDY" verify-fio-rounding --fio /path/to/fio-3.39
+```
+
+Record the printed JSON summary as evidence. The optional real-fio test skips
+only when no fio executable is installed and prints this manual command in its
+skip reason; a present but incompatible fio version is a test failure.
+
+The two free-space floors have separate meanings. `--min-output-free` measures
+the filesystem holding `--out`; `--min-target-free` measures the filesystem
+holding a file target and is ignored for raw partition runs. Both values are
+required and saved as one resume policy. For the study's 32 GiB partition with
+a preallocated 24 GiB target file, an approved 20 GiB output floor and 1 GiB
+target floor are distinct inputs; use values from the host policy and preserve
+them unchanged on resume.
+
+## 0b: rehearsal
+
+Real-fio end-to-end rehearsal required before the first live cell.
+
+Run this on the study host before starting any live cell, from the checkout or
+from the flat handoff copy (`driver.py` beside `job-template.fio`; no other
+repository file is read). It needs upstream fio 3.39 and `fallocate`, takes
+about ten minutes, and creates a fresh, planner-scaled rehearsal directory under
+`/tmp`; its target is a regular file inside that directory. Do not point this
+command at a device or reuse the study's live output directory.
+
+```bash
+set -euo pipefail
+STUDY=/path/to/libraries/iobench/studies/ibx/driver.py
+FIO=$(command -v fio)
+OUT=$(mktemp -d /tmp/ibx-fio-rehearsal.XXXXXX)
+python3 "$STUDY" plan --test-scale --json
+python3 "$STUDY" rehearse --fio "$FIO" --out "$OUT"
+test -s "$OUT/rung-choice.md"
+cat "$OUT/rehearsal-transcript.txt"
+```
+
+`rehearse` invokes the real `plan`, every listed `run` cell-set, and `analyze`
+commands in sequence. Its 8 MiB file retains the three rung block-size mixes,
+raw-style and ext4/Btrfs-file cell kinds, latency cells, anchors, observation,
+part (c) rewrite and recovery, and every time-based fio job. Writers use 4 MiB
+caps; time-based cells use 2 seconds; idle waits use one second. Raw-style
+discard steps use `fallocate` hole punching. The final partition-wipe step is
+replaced by a whole-file hole punch followed by a zero-content check. Keep the
+full transcript in the acceptance report and require `FIO-REHEARSAL-PASS`
+before the first live cell. The rehearsal selects the first advertised engine
+from `libaio`, `posixaio`, `io_uring`, and `psync`; the selected name is
+recorded in the manifest and transcript. A `psync` fallback runs synchronously,
+so its queue depth is not representative. The per-run `--test-scale-engine`
+override is refused unless `--test-scale` is also set; the live job template
+continues to use `libaio`.
+
+The rehearsal cannot accept actual block-device discard, partition wipe,
+`mkfs.ext4`, `mkfs.btrfs -K`, mount, `fallocate` preallocation, or hard-kill
+resume. Those degradations and their read-only checks are explicit:
+
+| Uncovered path | Rehearsal substitute | Read-only/dry-run check before live use |
+|---|---|---|
+| `blkdiscard` against a raw partition | Punch a hole in the regular file; no loop device | Section 1 `run --dry-run` checks the raw target identity, discard capability, and `blkdiscard` availability; it issues no discard. |
+| Final partition wipe/discard | Punch the entire rehearsal file and verify zeros | Section 2 `assert_raw_idle`, `wipefs -n`, and the section 1 raw dry-run verify identity and unused state; no partition wipe is issued here. |
+| ext4/Btrfs creation, mount, and preallocation | Treat the regular file as both file-target kinds | After authorized filesystem setup, section 2 checks `findmnt`, Btrfs UUID/member mapping, and `run --dry-run` on the mounted file; rehearsal does not format or mount anything. |
+| Hard-kill resume | No process kill or resume simulation | Before a resumed run, `plan --out "$OUT"` reads the saved meter and the normal `run --dry-run` rechecks target and policy identity; this does not simulate a process death. |
+
+The `real_fio` pytest marker skips with a manual command when no fio binary is
+available. A found binary that is not upstream fio 3.39 is a failure.
+
 ## 1. Target-read-only inventory and raw dry-run
 
 ```bash
@@ -136,7 +213,8 @@ raw_dry_run() {
     --max-memory-psi "$IBX_MAX_MEMORY_PSI" \
     --max-probe-latency-seconds "$IBX_MAX_PROBE_LATENCY" \
     --probe-consecutive-samples "$IBX_PROBE_CONSECUTIVE_SAMPLES" \
-    --min-memavailable "$IBX_MIN_MEMAVAILABLE" --min-free "$IBX_MIN_FREE" \
+    --min-memavailable "$IBX_MIN_MEMAVAILABLE" \
+    --min-output-free "$IBX_MIN_OUTPUT_FREE" --min-target-free "$IBX_MIN_TARGET_FREE" \
     --dry-run
 }
 current_system_disk_ack() {
@@ -341,7 +419,8 @@ host-escape -- python3 "$STUDY" run file-btrfs --target "$FILE" --device vda5 \
   --out "$OUT" --max-memory-psi "$IBX_MAX_MEMORY_PSI" \
   --max-probe-latency-seconds "$IBX_MAX_PROBE_LATENCY" \
   --probe-consecutive-samples "$IBX_PROBE_CONSECUTIVE_SAMPLES" \
-  --min-memavailable "$IBX_MIN_MEMAVAILABLE" --min-free "$IBX_MIN_FREE" --dry-run
+  --min-memavailable "$IBX_MIN_MEMAVAILABLE" \
+  --min-output-free "$IBX_MIN_OUTPUT_FREE" --min-target-free "$IBX_MIN_TARGET_FREE" --dry-run
 
 # Only after dry-run returns {"dry_run":true,"jobs_rendered":33,...}, run fio.
 host-escape -- python3 "$STUDY" run file-btrfs --target "$FILE" --device vda5 \
@@ -349,7 +428,8 @@ host-escape -- python3 "$STUDY" run file-btrfs --target "$FILE" --device vda5 \
   --out "$OUT" --max-memory-psi "$IBX_MAX_MEMORY_PSI" \
   --max-probe-latency-seconds "$IBX_MAX_PROBE_LATENCY" \
   --probe-consecutive-samples "$IBX_PROBE_CONSECUTIVE_SAMPLES" \
-  --min-memavailable "$IBX_MIN_MEMAVAILABLE" --min-free "$IBX_MIN_FREE"
+  --min-memavailable "$IBX_MIN_MEMAVAILABLE" \
+  --min-output-free "$IBX_MIN_OUTPUT_FREE" --min-target-free "$IBX_MIN_TARGET_FREE"
 
 # Require both file rungs (33 fio cells) and one non-empty bandwidth and IOPS
 # log per cell. This verifier only reads host output and prints a summary.

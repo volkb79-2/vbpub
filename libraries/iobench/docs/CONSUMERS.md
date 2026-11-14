@@ -352,11 +352,14 @@ campaign from that configuration must be restarted under the native lane.
 
 This is the one-off, host-root ladder error study, separate from
 `iobench calibrate`. Its meter is capped at 500 GB decimal. The maximum base
-schedule uses 495.123688448 GB; the part (c) repeat (49.123688448 GB) and both
-raw repeats (41 GB each) are skipped because none fits in the remaining
-4.876311552 GB. Required base rung caps remain unchanged. Each optional
-file-standard set costs 100 GB and runs only if its remaining cap and every
-unpaid required cell-set still ahead fit; otherwise it reports `skipped`. Use
+schedule uses 495.122866176 GB; the part (c) repeat (49.123688448 GB) and both
+raw repeats (40.999899136 GB each) are skipped because none fits in the
+remaining 4.877133824 GB. Every writer cap is rounded down to whole fio blocks;
+the nominal 15/26/100 GB rung budgets have effective writer sums of
+14.999912448/25.999986688/99.999891456 GB. Each optional file-standard set
+has a nominal 100 GB budget and an effective 99.999891456 GB cap; it runs only
+if its remaining cap and every unpaid required cell-set still ahead fit;
+otherwise it reports `skipped`. Use
 only the approved disposable compute host and its dedicated 32 GiB
 `iobench-raw` partition. It writes and
 discards target data, formats the partition for the two file-target legs, and
@@ -365,6 +368,13 @@ identity acknowledgement, IO-control state, timer state on live runs, or
 host-policy stop thresholds are wrong. Raw runs require the exact target path,
 size, and PARTUUID from the approved inventory; resume refuses a changed size
 or PARTUUID. A raw partition sharing the running system disk refuses by default.
+`--min-output-free` measures free space on the filesystem containing `--out`;
+`--min-target-free` measures the filesystem containing an ext4 or Btrfs target
+file and is not sampled for raw partition runs. Both floors are saved in the
+stop policy and must be reused unchanged on resume. For the 32 GiB study
+partition with its 24 GiB target file, choose a target floor below the remaining
+free space; an approved 20 GiB output floor and 1 GiB target floor are distinct
+example values.
 The operator can opt in only with both `--allow-system-disk-partition` and a
 fresh `system-disk-ack` value derived from hostname, disk, root filesystem
 device(s), and the target PARTUUID. The flag is the operator's consent; the
@@ -405,6 +415,29 @@ is not considered custom.
 The [study README](../studies/ibx/README.md) maps saved stop-policy fields to
 their run options.
 
+Before the first live study cell, rehearse the planner and real fio end to end
+with upstream fio 3.39. From the repository root, point `STUDY` at the driver
+and `FIO` at that binary; the rehearsal creates only an 8 MiB regular file
+inside a fresh `/tmp` output directory:
+
+```bash
+set -euo pipefail
+STUDY="$PWD/libraries/iobench/studies/ibx/driver.py"
+FIO=/path/to/fio-3.39
+OUT=$(mktemp -d /tmp/ibx-fio-rehearsal.XXXXXX)
+python3 "$STUDY" plan --test-scale --json
+python3 "$STUDY" rehearse --fio "$FIO" --out "$OUT"
+test -s "$OUT/rung-choice.md"
+cat "$OUT/rehearsal-transcript.txt"
+```
+
+`rehearse` runs all scheduled cell-sets and `analyze` with real fio JSON and
+prints `FIO-REHEARSAL-PASS` on success. Its test-scale mode accepts only the
+regular-file target it creates under the output directory in `/tmp`; it
+rejects block devices and other targets. The study acceptance section [0b](../studies/ibx/ACCEPTANCE.md#0b-rehearsal)
+lists the operations this rehearsal cannot cover and the dry-run checks that
+precede their live acceptance.
+
 From the repository root, set the stop-policy variables to values supplied by
 the study host's approved policy. Set `IBX_EXPECTED_HOST` from the approved run
 authorization; do not derive it from the connected host. The example checks
@@ -419,7 +452,8 @@ OUT="$PWD/libraries/iobench/artifacts/ibx-study"
 : "${IBX_MAX_PROBE_LATENCY:?set independent host-probe latency limit in seconds}"
 : "${IBX_PROBE_CONSECUTIVE_SAMPLES:?set consecutive slow-probe sample count}"
 : "${IBX_MIN_MEMAVAILABLE:?set from study-host policy}"
-: "${IBX_MIN_FREE:?set from study-host policy}"
+: "${IBX_MIN_OUTPUT_FREE:?set output-filesystem floor from study-host policy}"
+: "${IBX_MIN_TARGET_FREE:?set study-target filesystem floor from study-host policy}"
 : "${IBX_EXPECTED_HOST:?set the exact short hostname from approved run authorization}"
 # Read and check the exact path, byte size, and PARTUUID against the approved
 # inventory before setting this acknowledgement.
@@ -457,7 +491,8 @@ run_study raw-t0 --target /dev/vda5 --device vda5 \
   --max-memory-psi "$IBX_MAX_MEMORY_PSI" \
   --max-probe-latency-seconds "$IBX_MAX_PROBE_LATENCY" \
   --probe-consecutive-samples "$IBX_PROBE_CONSECUTIVE_SAMPLES" \
-  --min-memavailable "$IBX_MIN_MEMAVAILABLE" --min-free "$IBX_MIN_FREE" || exit 1
+  --min-memavailable "$IBX_MIN_MEMAVAILABLE" \
+  --min-output-free "$IBX_MIN_OUTPUT_FREE" --min-target-free "$IBX_MIN_TARGET_FREE" || exit 1
 
 run_study raw-t0 --target /dev/vda5 --device vda5 \
   --target-type raw --confirm-target "$IBX_TARGET_CONFIRMATION" \
@@ -466,7 +501,8 @@ run_study raw-t0 --target /dev/vda5 --device vda5 \
   --max-memory-psi "$IBX_MAX_MEMORY_PSI" \
   --max-probe-latency-seconds "$IBX_MAX_PROBE_LATENCY" \
   --probe-consecutive-samples "$IBX_PROBE_CONSECUTIVE_SAMPLES" \
-  --min-memavailable "$IBX_MIN_MEMAVAILABLE" --min-free "$IBX_MIN_FREE" || exit 1
+  --min-memavailable "$IBX_MIN_MEMAVAILABLE" \
+  --min-output-free "$IBX_MIN_OUTPUT_FREE" --min-target-free "$IBX_MIN_TARGET_FREE" || exit 1
 python3 "$STUDY" analyze "$OUT" --output "$OUT/rung-choice.md"
 ```
 

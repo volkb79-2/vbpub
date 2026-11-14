@@ -446,11 +446,14 @@ collector image. An SSH root session without the Docker cgroup scope refuses
 before study work begins.
 
 The writer meter has a 500 GB decimal cap (500,000,000,000 bytes). The actual
-fio job caps for the full base schedule total 495.123688448 GB, including the
-conditional t+6h standard rung, leaving 4.876311552 GB. A part (c) repeat costs
-49.123688448 GB and either raw quick/veryquick repeat costs 41 GB, so all three
-adaptive repeat sets report `skipped` under this cap. No base rung is reduced.
-An optional file-standard set costs 100 GB and runs only if its remaining cap
+fio job caps for the full base schedule total 495.122866176 GB, including the
+conditional t+6h standard rung, leaving 4.877133824 GB. Caps are rounded down
+to whole blocks; the nominal 15/26/100 GB rung budgets have effective writer
+sums of 14.999912448/25.999986688/99.999891456 GB. A part (c) repeat costs
+49.123688448 GB and either raw quick/veryquick repeat costs 40.999899136 GB,
+so all three adaptive repeat sets report `skipped` under this cap. No base rung
+is reduced. An optional file-standard set has a nominal 100 GB budget and an
+effective 99.999891456 GB cap; it runs only if its remaining cap
 and the unpaid caps of required cell-sets still ahead fit; otherwise it reports
 `skipped` before fio starts. The t+6h standard
 rung is conditional on the 6.2 boundary rule or the need for a second standard
@@ -462,6 +465,27 @@ The part (c) repeat runs only after a complete first assessment confirms the
 degradation criteria. A complete assessment that does not confirm them returns
 `skipped` so the scheduled runbook continues; incomplete evidence remains an
 error.
+
+### Real-fio rehearsal and watchdog deadline
+
+The driver starts its wall clock when it launches fio, while fio begins a
+time-based job's `runtime` after its own startup and any rendered ramp. The
+watchdog therefore derives its deadline from the rendered job's `runtime` and
+`ramp_time`, a bounded configurable startup grace, and the existing 60-second
+drain reserve. Reading the rendered job keeps the deadline correct when the
+study clips a runtime to its remaining active or elapsed budget. The watchdog
+stays bounded, and a non-zero fio exit remains a failed attempt unless the
+driver deliberately sent the final SIGINT.
+
+The `real_fio` rehearsal runs this same planner, run path, fio JSON parser, and
+analysis command against a small regular file. `--test-scale` preserves every
+planned job and block-size shape while scaling extents, write caps, runtimes,
+and waits; the driver requires an output-contained regular file under `/tmp`
+and refuses device targets. That lets the rehearsal expose driver and fio
+integration errors without granting a device-sized study job. Hole-punching
+represents discard and final wipe for the file only. It cannot certify raw
+block discard, partition wiping, formatting and mounting, host protection, or
+hard-kill resume; those remain separate host acceptance checks.
 
 The result table applies design 6.3's reference/error computation and 6.4's
 rung verdicts; quick/veryquick latency-under-load values use the documented

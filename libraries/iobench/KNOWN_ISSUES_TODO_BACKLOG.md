@@ -193,3 +193,145 @@ fixture uses the recorded `none` layout and evidence digest, with synthetic
 `bfq`, `mq-deadline`, missing, malformed, and no-BFQ-controller cases on the
 same sysfs tree shape. The new read-only evidence digest also confirms the
 captured 13-cgroup BFQ-file absence; no new host was accessed by this fix.
+
+The 2026-11-13 run3 acceptance then passed 6/6 checks, including the
+acknowledged dry-run, successful initial liveness probe, and IO-control
+snapshot. It also verified the raw partition's discard and diskstats path,
+fio 3.39's command-line JSON option and rendered 1 MiB writer, live quiet-window
+timer checks, and persistent-unit timer restoration. These facts are marked
+`VERIFIED-ON-HOST` in the run3 and follow-up reports. The complete post-t0 study
+is not included in this verification; see IOB-BL-47.
+
+## IOB-BL-47 — Complete IBX study live acceptance after the fio cap repair
+
+**Status: OPEN.** Run3 stopped after `raw-t0 standard seq1m-write` because the
+driver rejected fio's whole-block write count. The cap repair, accounting
+retry, analysis, discard, probe, sampler, and file-target paths have fixture
+and fake-host coverage in the registered iobench lane, and the rendered cap
+classes have separate real fio 3.39 regular-file evidence. No full study was
+run during this code fix.
+
+Run3's raw fio JSON was not retained. The report records 64,000,884,736 bytes
+written against the old 64,000,000,000-byte reservation. The repaired driver
+cannot treat that rejected cell as a valid measurement, and the complete
+remaining base schedule plus its already charged attempt does not fit under
+the same 500 GB meter. A full rerun therefore needs a new authorized output
+budget; the driver accounts a parseable failed attempt at its observed bytes
+and refuses before a later cell if the complete remaining schedule no longer
+fits.
+
+The unexecuted live schedule includes the remaining raw-t0 cells, part (c)'s
+interleaved rewrite/idle/discard/recovery probes and analysis, later raw slots
+and conditional t+6h rung choice, ext4 and Btrfs format/mount/preallocate and
+file legs, Btrfs output verifier, final target wipe, and the final rung-choice
+analysis over the complete dataset. Their failure modes are guarded by the
+driver, but fixture success does not prove host-specific commands, timings,
+filesystem transitions, or output shape on the approved study host.
+
+**Close when.** A new approved study lease has enough time for the full schedule
+from t0 and an authorized fresh output budget. The run finishes the base
+schedule without a driver stop, verifies the Btrfs file leg and monitor logs,
+produces rung-choice analysis, and restores timers and the target to the
+authorized final state. Preserve the full evidence and update the host-
+assumption table; do not rerun a destructive step outside that lease.
+
+## IOB-BL-48 — IBX driver: a hard-killed writer keeps its full cap charged
+
+**Status: OPEN (improvement, not a blocker).** `SIGTERM`, `SIGKILL`, an SSH
+drop or a host reboot while a write cell runs ends the driver without its
+`except` handlers, so no fio result is parsed. On resume the cell's full cap
+stays charged as spent (the conservative, documented outcome). The base
+schedule leaves only 4.877133824 GB of headroom under the 500 GB cap, so after
+a hard kill in any cell whose cap exceeds that headroom (every `seq1m-write`,
+`fill`, rewrite and part (c) sequential cell) the same output directory can
+no longer afford the rest of the schedule and refuses before the next cell.
+Two cheap improvements, either of which makes this recoverable: install a
+`SIGTERM` handler that raises into the existing failure path (fio's partial
+JSON then settles the real bytes), and estimate the bytes of a killed attempt
+from its saved per-second bandwidth log instead of the cap.
+
+**Close when.** A killed writer's actual bytes are recovered from fio's own
+records, or the runbook states that a hard kill requires a fresh authorized
+output budget.
+
+## IOB-BL-49 — close the iobench 0.2.0 R2 survivors; repair lane base handoff
+
+**Status:** survivor closure completed 2026-11-13; lane-base follow-up OPEN.
+
+The diff-scoped R2 campaign against 0.2.0 reported 456 candidates: 388 killed,
+67 survived, and one timeout. The closure package adds behavioral tests for
+all 68 non-killed candidates. In a scratch worktree at the test baseline,
+62 mutations individually failed their mapped test and six passed with
+equivalence proofs. The idle-loop timeout (`calibrate.py:202`) is killed by a
+bounded fake-sleep test, and the shared test configuration refuses a
+non-advancing `FakeHost.sleep`, so the same mutant now fails the whole suite
+in about a minute instead of running into the lane budget (it burned the
+budget because nearly every calibration run reaches `remaining == 0.0`, also in
+module-scoped fixtures that the per-test CPU limit does not cover). No
+wall-clock sleep or host/device run is part of this closure. No source defect
+reproduced, so this package changes no production source.
+
+The six equivalent mutations are:
+
+- `capability.py:74` and `capability.py:111`, `True->False`: only JSON key
+  ordering changes; tests parse and compare the complete header or row.
+- `guard.py:226` and `guard.py:229`, `None->[]`: the public backing-disk
+  caller refuses both missing and empty Btrfs member sets with the same
+  unknown-scope result.
+- `host.py:406`, `text=True->False`: `_ProcHandle` redirects stdout and stderr
+  to text temporary files, and `wait()` still reads text in either case.
+- `result.py:225`, `or->and`: valid weak-to-strong scopes are refused earlier;
+  valid strong-to-weak scopes mismatch their stored serial/WWN earlier. A
+  generated strong scope has no machine-id hash, so the changed hash fallback
+  is unreachable for valid scope records.
+
+Six candidates initially marked equivalent were instead killed by behavior
+tests: `cli.py:50` (zero-size diagnostic), `guard.py:167` (the public
+`find_disk` default must not confirm the machine id), and `host.py:667`,
+`:670`, `:677`, and `:685` (a missing extent-seek constant, end-boundary
+seeks, and a non-advancing hole). `capability.py:74` was reclassified from TEST GAP because
+the mutation changes `sort_keys`, not the header marker. The campaign report
+and the complete candidate/test/disposition table are recorded as the
+“iobench R2 0.2.0 report” and the iobench R2 tests report.
+
+**Open lane-base follow-up.** The iobench R2 lane cannot take `--base` for the
+released comparison base unless that base is also a host-local commit. Resolve
+the lane's base handoff so diff-scoped campaigns can name their authoritative
+released base without requiring a local commit; preserve the selected base in
+the resulting candidate inventory.
+
+**Close when.** The registered R0–R1 lane passes on the final reviewed head;
+the R2 mutation proof records every non-killed candidate as killed or
+equivalent with its test and evidence; and the lane accepts and records the
+released comparison base without requiring a host-local commit.
+
+## IOB-BL-50 — IBX time-based fio deadline and real-binary rehearsal
+
+**Status: FIXED in this package.** Run4 found that the driver sent SIGINT at
+the rendered fio `runtime`, before fio's own runtime clock had completed its
+startup and optional ramp. The driver now derives the watchdog from the
+rendered `runtime` plus `ramp_time`, configurable startup grace, and the
+existing drain reserve. It parses a JSON object after a fio signal notice,
+still rejects unexpected non-zero exits, and preserves bounded raw stdout and
+stderr in failed-attempt records.
+
+The opt-in `real_fio` test and `rehearse` command now drive the actual planner,
+every base-schedule `run` cell-set, and `analyze` against a planner-scaled
+regular file with real fio JSON. It covers each time-based job shape in every
+rung, raw-style, file-target, latency, anchors, observation, rewrite, and
+recovery paths, and produces `rung-choice.md`. Its explicit `--test-scale`
+guard accepts only a regular file contained under the output directory in
+`/tmp`; file hole-punch stands in for raw discard and the final partition wipe.
+Host safety probes, actual block discard, partition wipe, filesystem creation
+and mount, and hard-kill resume remain outside the rehearsal; the acceptance
+runbook lists their degradation and the read-only checks that precede live use.
+Run4 independently confirmed the writer-cap repair live and passed all six
+read-only acceptance checks before this deadline defect stopped the schedule.
+Its target was discarded during restore, so its saved state is not a valid
+measurement resume; the next approved study needs a fresh authorized output
+directory. The still-pending complete study acceptance remains tracked by
+IOB-BL-47.
+
+**Close when.** The real-fio rehearsal passes with upstream fio 3.39 and
+produces `rung-choice.md`; the iobench R0–R1 gate passes on the reviewed final
+head; the next approved full live study proceeds under IOB-BL-47.

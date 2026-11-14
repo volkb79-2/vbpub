@@ -18,6 +18,7 @@ import socket
 import stat
 import subprocess
 import sys
+import tempfile
 import time
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import asdict, dataclass
@@ -25,7 +26,9 @@ from pathlib import Path
 from typing import Any
 
 HERE = Path(__file__).resolve().parent
-REPO = HERE.parents[3]
+DRIVER_PATH = Path(__file__).resolve()
+REPO = next((parent for parent in (HERE, *HERE.parents)
+             if (parent / "libraries/iobench/studies/ibx/driver.py").resolve() == DRIVER_PATH), None)
 JOB_TEMPLATE = HERE / "job-template.fio"
 STATE_NAME = "ibx-study-state.json"
 SCHEMA = 2
@@ -44,10 +47,47 @@ WRITE_CAP = WRITE_CAP_GB * GB
 ACTIVE_CAP_S = 3 * 60 * 60
 ELAPSED_CAP_S = 12 * 60 * 60
 FIO_DRAIN_RESERVE_S = 60
+FIO_STARTUP_GRACE_DEFAULT_S = 5
+# Tools of the ext4/Btrfs file legs and the final wipe, which run hours after t0. A raw
+# dry-run and a raw run check them up front so a missing one cannot stop the study at t+9h.
+FILE_LEG_TOOLS = ("mkfs.ext4", "mkfs.btrfs", "mount", "umount", "wipefs", "fallocate")
+FIO_OUTPUT_RECORD_LIMIT_BYTES = 64 * 1024
+TEST_SCALE_EXTENT_BYTES = 8 * 1024**2
+TEST_SCALE_WRITE_BYTES = 4 * 1024**2
+TEST_SCALE_RUNTIME_S = 2
+TEST_SCALE_WAIT_S = 1
+TEST_SCALE_CELL_SETS = ("raw-t0", "part-c", "raw-t3h", "raw-t6h", "raw-t9h",
+                        "file-ext4", "file-btrfs")
+TEST_SCALE_IOENGINES = ("libaio", "posixaio", "io_uring", "psync")
 
 
 class StudyError(RuntimeError):
     """A deliberate refusal or an invalid study record."""
+
+
+class FioExecutionError(StudyError):
+    """A fio failure with any complete output that can still settle its meter."""
+
+    def __init__(self, message: str, *, payload: Mapping[str, Any] | None = None,
+                 duration: float | None = None, started: bool = True,
+                 raw_stdout: str | None = None, raw_stderr: str | None = None) -> None:
+        super().__init__(message)
+        self.payload = payload
+        self.duration = duration
+        self.started = started
+        self.raw_stdout = bounded_fio_output(raw_stdout)
+        self.raw_stderr = bounded_fio_output(raw_stderr)
+
+
+def bounded_fio_output(value: str | None) -> dict[str, Any] | None:
+    """Keep a bounded raw fio stream while preserving whether it was truncated."""
+    if value is None:
+        return None
+    raw = value.encode("utf-8", errors="replace")
+    truncated = len(raw) > FIO_OUTPUT_RECORD_LIMIT_BYTES
+    text = raw[:FIO_OUTPUT_RECORD_LIMIT_BYTES].decode("utf-8", errors="ignore")
+    return {"text": text, "truncated": truncated,
+            "limit_bytes": FIO_OUTPUT_RECORD_LIMIT_BYTES}
 
 
 @dataclass(frozen=True)
@@ -64,6 +104,22 @@ class Job:
     discard_before: bool = False
     wait_before_s: int = 0
     read_written_extent: bool = False
+    requested_write_cap: int | None = None
+
+    def __post_init__(self) -> None:
+        # fio completes an io_size request in whole blocks. Store the downward
+        # rounded value as the actual job cap so the plan, reservation, argv,
+        # and post-run oracle all describe the same hard limit.
+        if self.requested_write_cap is None:
+            object.__setattr__(self, "requested_write_cap", self.write_cap)
+        if not self.writes or self.write_cap == 0:
+            return
+        if self.bs <= 0:
+            raise StudyError("write cell block size must be positive")
+        cap = self.write_cap - self.write_cap % self.bs
+        if cap <= 0:
+            raise StudyError("write cell cap must be at least one full block")
+        object.__setattr__(self, "write_cap", cap)
 
     @property
     def writes(self) -> bool:
@@ -87,6 +143,12 @@ class TargetValidation:
 
     identity: TargetIdentity | None
     system_disk: dict[str, Any] | None = None
+
+
+def require_repo_root() -> Path:
+    if REPO is None:
+        raise StudyError("this operation requires driver.py under libraries/iobench/studies/ibx")
+    return REPO
 
 
 def system_disk_acknowledgement(hostname: str, disk: str, root_devices: Iterable[str],
@@ -195,6 +257,8 @@ CELL_SETS: dict[str, tuple[str, tuple[str, ...], str]] = {
     "part-c-repeat": ("raw", ("part-c",), "t4h"),
 }
 
+BASE_SCHEDULE_CELL_SETS = ("raw-t0", "raw-t3h", "raw-t6h", "raw-t9h",
+                           "file-ext4", "file-btrfs", "part-c")
 ADAPTIVE_REPEAT_CELL_SETS = ("part-c-repeat", "raw-t12h", "raw-t12h2")
 FILE_STANDARD_CELL_SETS = ("file-ext4-standard", "file-btrfs-standard")
 REQUIRED_CELL_SETS_AFTER_OPTIONAL = {
@@ -290,6 +354,29 @@ def rung_jobs(rung: str, *, part_c: bool = False) -> list[Job]:
     return bound_write_caps(rows, spec["write_gb"] * GB)
 
 
+def test_scale_jobs(jobs: Iterable[Job]) -> list[Job]:
+    """Scale planner-produced jobs while preserving every job and block-size shape."""
+    scaled: list[Job] = []
+    for job in jobs:
+        values = asdict(job)
+        values["runtime_s"] = TEST_SCALE_RUNTIME_S if job.runtime_s else 0
+        values["wait_before_s"] = min(job.wait_before_s, TEST_SCALE_WAIT_S)
+        values["extent_bytes"] = TEST_SCALE_EXTENT_BYTES
+        if job.writes:
+            cap = TEST_SCALE_WRITE_BYTES - TEST_SCALE_WRITE_BYTES % job.bs
+            if cap <= 0:
+                raise StudyError(f"test-scale write cap cannot hold one {job.bs}-byte block")
+            values["write_cap"] = cap
+            values["requested_write_cap"] = cap
+        scaled.append(Job(**values))
+    return scaled
+
+
+def jobs_for_run(rung: str, *, part_c: bool = False, test_scale: bool = False) -> list[Job]:
+    jobs = rung_jobs(rung, part_c=part_c)
+    return test_scale_jobs(jobs) if test_scale else jobs
+
+
 def bound_write_caps(jobs: list[Job], total: int) -> list[Job]:
     """Give every write job an io_size and prove their planned sum fits the rung cap."""
     writers = [i for i, job in enumerate(jobs) if job.writes]
@@ -301,7 +388,9 @@ def bound_write_caps(jobs: list[Job], total: int) -> list[Job]:
         out = list(jobs)
         for i in writers:
             cap = min(jobs[i].write_cap, left)
-            out[i] = Job(**{**asdict(jobs[i]), "write_cap": cap})
+            requested = jobs[i].requested_write_cap if jobs[i].write_cap else cap
+            out[i] = Job(**{**asdict(jobs[i]), "write_cap": cap,
+                            "requested_write_cap": requested})
             left -= cap
         return out
     missing = [i for i in writers if jobs[i].write_cap == 0]
@@ -316,15 +405,16 @@ def bound_write_caps(jobs: list[Job], total: int) -> list[Job]:
         if cap == 0:
             cap = (remaining * jobs[i].runtime_s // total_weight) if i != missing[-1] else extra
             extra -= cap
-        out[i] = Job(**{**asdict(jobs[i]), "write_cap": cap})
+        requested = jobs[i].requested_write_cap if jobs[i].write_cap else cap
+        out[i] = Job(**{**asdict(jobs[i]), "write_cap": cap,
+                        "requested_write_cap": requested})
     return out
 
 
 def base_schedule_write_cap() -> int:
     """Derive the base schedule's maximum, including conditional t0+6h standard."""
-    cell_sets = ("raw-t0", "raw-t3h", "raw-t6h", "raw-t9h", "file-ext4", "file-btrfs", "part-c")
     total = 0
-    for cell_set in cell_sets:
+    for cell_set in BASE_SCHEDULE_CELL_SETS:
         _, rungs, _ = CELL_SETS[cell_set]
         for rung in rungs:
             jobs = rung_jobs("quick" if rung == "part-c" else rung, part_c=rung == "part-c")
@@ -358,6 +448,12 @@ def pending_cell_set_write_cap(cell_set: str, *, out: Path,
             if key not in state["cells"] and not (out / "cells" / filename).exists():
                 pending += job.write_cap
     return pending
+
+
+def pending_base_schedule_write_cap(*, out: Path, state: Mapping[str, Any]) -> int:
+    """Return all unpaid caps in the required base schedule, including t+6h standard."""
+    return sum(pending_cell_set_write_cap(cell_set, out=out, state=state)
+               for cell_set in BASE_SCHEDULE_CELL_SETS)
 
 
 def required_remainder_write_cap(optional_cell_set: str, *, out: Path,
@@ -412,14 +508,18 @@ def file_standard_write_cap() -> int:
 
 
 def render_job(job: Job, *, target: str, offset: int, size: int, log_prefix: str,
-               rate_iops: int | None = None) -> str:
+               rate_iops: int | None = None, runtime_s: int | None = None) -> str:
     """Render the repository job template; bounded writers never combine time_based and io_size."""
     values = {
         "NAME": job.name, "FILENAME": target, "OFFSET": str(offset), "SIZE": str(size),
         "RW": job.rw, "BS": str(job.bs), "IODEPTH": str(job.qd),
-        "RUNTIME": str(job.runtime_s), "LOG_PREFIX": log_prefix,
+        "RUNTIME": str(job.runtime_s if runtime_s is None else runtime_s),
+        "RAMP_TIME": "0", "LOG_PREFIX": log_prefix,
     }
-    template = JOB_TEMPLATE.read_text(encoding="utf-8")
+    try:
+        template = JOB_TEMPLATE.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise StudyError("fio job template job-template.fio must be kept beside driver.py") from exc
     text = template
     for key, value in values.items():
         if "\n" in value or "\r" in value or "=" in value:
@@ -445,6 +545,62 @@ def render_job(job: Job, *, target: str, offset: int, size: int, log_prefix: str
     if job.writes and ("time_based=1" in rendered or f"io_size={job.write_cap}" not in rendered):
         raise StudyError("fio writer is not volume bounded")
     return rendered
+
+
+def with_fio_engine(rendered_job: str, engine: str) -> str:
+    """Set the engine on one rendered job; callers limit overrides to test-scale."""
+    if engine not in TEST_SCALE_IOENGINES:
+        raise StudyError(f"unsupported test-scale fio engine: {engine}")
+    lines = rendered_job.splitlines()
+    engine_lines = [index for index, line in enumerate(lines) if line.startswith("ioengine=")]
+    if len(engine_lines) != 1:
+        raise StudyError("rendered fio job must contain exactly one ioengine setting")
+    lines[engine_lines[0]] = f"ioengine={engine}"
+    return "\n".join(lines) + "\n"
+
+
+def fio_timing_from_job(rendered_job: str) -> tuple[int, int]:
+    """Read fio's effective runtime and ramp_time from the rendered job file."""
+    options: dict[str, list[str]] = {"runtime": [], "ramp_time": []}
+    for line in rendered_job.splitlines():
+        key, separator, value = line.partition("=")
+        if separator and key in options:
+            options[key].append(value.strip())
+    values: dict[str, int] = {}
+    for key in ("runtime", "ramp_time"):
+        raw_values = options[key]
+        if len(raw_values) != 1 or not raw_values[0].isdigit():
+            raise StudyError(f"rendered fio job must contain one non-negative {key}")
+        values[key] = int(raw_values[0])
+    if values["runtime"] <= 0:
+        raise StudyError("rendered fio runtime must be positive")
+    return values["runtime"], values["ramp_time"]
+
+
+def fio_wall_allowance(rendered_job: str, *, startup_grace_s: float) -> float:
+    """Bound fio by its rendered runtime, ramp-up, startup grace and drain reserve."""
+    if (isinstance(startup_grace_s, bool) or not isinstance(startup_grace_s, (int, float)) or
+            not math.isfinite(startup_grace_s) or startup_grace_s < 0):
+        raise StudyError("fio startup grace must be a finite non-negative number")
+    runtime_s, ramp_time_s = fio_timing_from_job(rendered_job)
+    return runtime_s + ramp_time_s + float(startup_grace_s) + FIO_DRAIN_RESERVE_S
+
+
+def fio_json_from_stdout(stdout: str) -> dict[str, Any]:
+    """Decode fio JSON even when fio printed a signal notice before the object."""
+    decoder = json.JSONDecoder()
+    last_error: json.JSONDecodeError | None = None
+    for match in re.finditer(r"[\[{]", stdout):
+        try:
+            payload, _ = decoder.raw_decode(stdout, match.start())
+        except json.JSONDecodeError as exc:
+            last_error = exc
+            continue
+        if isinstance(payload, dict):
+            return payload
+        raise StudyError("fio returned JSON with the wrong top-level shape")
+    detail = str(last_error) if last_error is not None else "no JSON object found"
+    raise StudyError(f"fio returned invalid JSON: {detail}")
 
 
 def parse_psi(text: str) -> dict[str, dict[str, float]]:
@@ -922,7 +1078,7 @@ def parse_fio_values(payload: Mapping[str, Any], job: Job,
     if isinstance(bytes_done, bool) or not isinstance(bytes_done, int) or bytes_done < 0:
         raise StudyError("fio JSON has malformed io_bytes")
     if job.writes and bytes_done > job.write_cap:
-        raise StudyError("fio wrote more than the cell's io_size cap")
+        raise StudyError("fio wrote more than the rendered block-aligned io_size cap")
     if (job.value in ("rlat", "wlat", "latency_under_load_read", "latency_under_load_write")
             or job.value.startswith("latency_under_load_")):
         percentiles = stats.get("clat_ns", {}).get("percentile", {})
@@ -999,9 +1155,12 @@ def load_state(path: Path, target_kind: str, target: str, device: str,
             isinstance(state["write_bytes"], bool) or not isinstance(state["write_bytes"], int) or
             state["write_bytes"] < 0 or isinstance(state["active_seconds"], bool) or
             not isinstance(state["active_seconds"], (int, float)) or
-            not math.isfinite(state["active_seconds"]) or state["active_seconds"] < 0 or
-            state["write_bytes"] > WRITE_CAP or state["active_seconds"] > ACTIVE_CAP_S):
+            not math.isfinite(state["active_seconds"]) or state["active_seconds"] < 0):
         raise StudyError("study state fields are malformed")
+    if state["write_bytes"] > WRITE_CAP:
+        raise StudyError(f"study has exceeded the hard {WRITE_CAP_GB} GB write cap")
+    if state["active_seconds"] > ACTIVE_CAP_S:
+        raise StudyError("study has exceeded the 3 hour active-I/O cap")
     manifest = state["run_manifest"]
     if (not isinstance(manifest, dict) or manifest.get("schema") != RUN_MANIFEST_SCHEMA or
             isinstance(manifest.get("schema"), bool) or
@@ -1057,16 +1216,19 @@ def reserve_write(state: dict[str, Any], key: str, cap: int) -> None:
     if (not isinstance(reservations, dict) or isinstance(cap, bool) or
             not isinstance(cap, int) or cap <= 0):
         raise StudyError("study write reservations are malformed")
-    attempts = reservations.setdefault(key, [])
+    attempts = reservations.get(key, [])
     if not isinstance(attempts, list) or any(
             isinstance(value, bool) or not isinstance(value, int) or value <= 0 for value in attempts):
         raise StudyError("study write reservations are malformed")
+    if state.get("write_bytes", 0) + cap > WRITE_CAP:
+        raise StudyError(f"write reservation would exceed the hard {WRITE_CAP_GB} GB cap")
+    attempts = reservations.setdefault(key, attempts)
     attempts.append(cap)
     state["write_bytes"] += cap
 
 
 def settle_write(state: dict[str, Any], key: str, actual: int) -> None:
-    """Replace the latest attempt's conservative reservation with its recorded fio bytes."""
+    """Replace the latest attempt's reservation with the actual reported fio bytes."""
     reservations = state.setdefault("write_reservations", {})
     if isinstance(actual, bool) or not isinstance(actual, int) or actual < 0:
         raise StudyError("recorded fio writes are malformed")
@@ -1077,9 +1239,7 @@ def settle_write(state: dict[str, Any], key: str, actual: int) -> None:
     if not isinstance(attempts, list) or not attempts:
         raise StudyError("study write reservations are malformed")
     reserved = attempts.pop()
-    if actual > reserved:
-        raise StudyError("recorded fio writes exceed the reserved cell cap")
-    state["write_bytes"] -= reserved - actual
+    state["write_bytes"] += actual - reserved
     if not attempts:
         del reservations[key]
 
@@ -1112,11 +1272,132 @@ def settle_active(state: dict[str, Any], key: str, actual: float) -> None:
     if not isinstance(attempts, list) or not attempts:
         raise StudyError("study active-time reservations are malformed")
     reserved = attempts.pop()
-    if actual > reserved:
-        raise StudyError("recorded cell duration exceeds the reserved active-time allowance")
-    state["active_seconds"] -= reserved - actual
+    state["active_seconds"] += actual - reserved
     if not attempts:
         del reservations[key]
+
+
+def finalize_interrupted_reservations(state: dict[str, Any]) -> list[dict[str, Any]]:
+    """Convert reservations left by a process death into conservative spent totals.
+
+    A fio result that was not saved may have reached its full cap. Keep those
+    bytes and seconds charged, remove the stale reservation markers, and record
+    why they remain charged so a same-output retry cannot count them twice as
+    pending reservations or quietly lose them.
+    """
+    writes = state.get("write_reservations", {})
+    active = state.get("active_reservations", {})
+    if not isinstance(writes, dict) or not isinstance(active, dict):
+        raise StudyError("study reservations are malformed")
+    if not writes and not active:
+        return []
+    recovered = state.setdefault("interrupted_attempts", [])
+    if not isinstance(recovered, list):
+        raise StudyError("study interrupted-attempt history is malformed")
+    entry = {
+        "recorded_utc": dt.datetime.now(dt.UTC).isoformat(),
+        "metering": "full outstanding reservation retained because process ended before actual result was saved",
+        "write_reservations": {key: list(caps) for key, caps in writes.items()},
+        "active_reservations": {key: list(seconds) for key, seconds in active.items()},
+    }
+    recovered.append(entry)
+    state["write_reservations"] = {}
+    state["active_reservations"] = {}
+    return [entry]
+
+
+def take_latest_interrupted_charge(state: Mapping[str, Any], field: str, key: str) -> float:
+    """Remove and return the newest finalized interrupted reservation of one cell, or 0."""
+    for entry in reversed(state.get("interrupted_attempts", [])):
+        values = entry[field].get(key)
+        if values:
+            value = values.pop()
+            if not values:
+                del entry[field][key]
+            return value
+    return 0
+
+
+def reclaim_interrupted_attempt(state: dict[str, Any], key: str) -> None:
+    """Drop the conservative charge of an attempt whose saved result is now recovered.
+
+    A process can die after writing a cell's result but before the state file
+    records it. Resume first finalizes that attempt's reservation at its full
+    cap; adopting the saved result then settles the real figures, so the
+    finalized charge must go or the cell is counted twice.
+    """
+    state["write_bytes"] -= take_latest_interrupted_charge(state, "write_reservations", key)
+    state["active_seconds"] = max(0.0, state["active_seconds"] -
+                                  take_latest_interrupted_charge(state, "active_reservations", key))
+
+
+def fio_reported_bytes(payload: Mapping[str, Any] | None, job: Job) -> int | None:
+    """Return a usable fio byte count without masking a malformed failure payload."""
+    if not isinstance(payload, Mapping):
+        return None
+    jobs = payload.get("jobs")
+    if not isinstance(jobs, list) or len(jobs) != 1 or not isinstance(jobs[0], Mapping):
+        return None
+    stats = jobs[0].get("write" if job.writes else "read")
+    if not isinstance(stats, Mapping):
+        return None
+    value = stats.get("io_bytes")
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        return None
+    return value
+
+
+def record_failed_fio_attempt(*, out: Path, state_path: Path, state: dict[str, Any],
+                              key: str, filename: str, job: Job,
+                              payload: Mapping[str, Any] | None, duration: float | None,
+                              error: BaseException, started: bool = True,
+                              raw_stdout: Mapping[str, Any] | None = None,
+                              raw_stderr: Mapping[str, Any] | None = None) -> None:
+    """Persist failed output and settle any bytes/duration fio reported.
+
+    When fio started but produced no parseable byte count, its full cap remains
+    charged as a conservative bound. A failure before process start releases
+    the reservation because no target I/O could have happened.
+    """
+    write_before = state["write_bytes"]
+    active_before = state["active_seconds"]
+    observed = fio_reported_bytes(payload, job)
+    write_charged: int | None = None
+    if job.writes:
+        if observed is not None:
+            settle_write(state, key, observed)
+            write_charged = observed
+        elif not started:
+            settle_write(state, key, 0)
+            write_charged = 0
+        else:
+            reservations = state.get("write_reservations", {})
+            attempts = reservations.get(key, []) if isinstance(reservations, dict) else []
+            write_charged = attempts[-1] if attempts else 0
+    if duration is not None and not isinstance(duration, bool) and isinstance(duration, (int, float)) and \
+            math.isfinite(duration) and duration >= 0:
+        settle_active(state, key, float(duration))
+    elif not started:
+        settle_active(state, key, 0.0)
+    failure_dir = out / "failed-cells"
+    failure_dir.mkdir(parents=True, exist_ok=True)
+    stem = filename[:-5] if filename.endswith(".json") else filename
+    attempt = 1
+    while (failure_dir / f"{stem}.attempt-{attempt:03d}.json").exists():
+        attempt += 1
+    write_json(failure_dir / f"{stem}.attempt-{attempt:03d}.json", {
+        "schema": SCHEMA, "cell_key": key, "attempt": attempt, "status": "failed",
+        "error": f"{type(error).__name__}: {error}", "fio": payload,
+        "fio_output": {"stdout": raw_stdout, "stderr": raw_stderr},
+        "io_size_cap_bytes": job.write_cap if job.writes else None,
+        "write_bytes_observed": observed, "write_bytes_charged": write_charged,
+        "write_bytes_before": write_before, "write_bytes_after": state["write_bytes"],
+        "active_seconds_before": active_before, "active_seconds_after": state["active_seconds"],
+        "reservation_policy": ("actual fio bytes" if observed is not None else
+                                "released before fio start" if not started else
+                                "full cap retained because actual bytes are unavailable"),
+    })
+    write_json(state_path, state)
 
 
 def state_elapsed(state: Mapping[str, Any], now: dt.datetime | None = None) -> float:
@@ -1147,7 +1428,7 @@ def parse_run_cellset(name: str, target_kind: str | None) -> tuple[str, tuple[st
     return expected_kind, rungs, slot
 
 
-def plan_document(state_path: Path | None = None) -> dict[str, Any]:
+def plan_document(state_path: Path | None = None, *, test_scale: bool = False) -> dict[str, Any]:
     base_cap = base_schedule_write_cap()
     reserve_cap = adaptive_reserve_write_cap()
     meter = {"base_schedule_bytes": base_cap, "adaptive_reserve_bytes": reserve_cap,
@@ -1185,7 +1466,7 @@ def plan_document(state_path: Path | None = None) -> dict[str, Any]:
         meter["remaining_bytes"] = max(0, WRITE_CAP - state["write_bytes"])
         time["active_seconds_used"] = state["active_seconds"]
         time["elapsed_seconds_used"] = state_elapsed(state)
-    return {"schedule": [
+    document = {"schedule": [
         {"slot": "t0", "sets": ["raw-t0"], "detail": "standard, quick, veryquick"},
         {"slot": "t0+1h", "sets": ["part-c"], "detail": "rewrite/fstrim study on region C"},
         {"slot": "t0+3h", "sets": ["raw-t3h"], "detail": "veryquick, quick"},
@@ -1202,7 +1483,9 @@ def plan_document(state_path: Path | None = None) -> dict[str, Any]:
     ], "rungs": {name: {"runtime_cap_s": row["runtime"], "writes_gb": row["write_gb"]}
                 for name, row in RUNG.items()},
         "limits": {"active_seconds": ACTIVE_CAP_S, "elapsed_seconds": ELAPSED_CAP_S,
-                   "write_bytes": WRITE_CAP, "minimum_free_bytes": "required per host policy",
+                   "write_bytes": WRITE_CAP,
+                   "minimum_output_free_bytes": "required per host policy",
+                   "minimum_target_free_bytes": "required per host policy for file targets",
                    "io_psi": "advisory; recorded but does not stop the study",
                    "memory_full_psi_threshold": "required per host policy",
                    "minimum_memavailable_bytes": "required per host policy",
@@ -1215,10 +1498,29 @@ def plan_document(state_path: Path | None = None) -> dict[str, Any]:
                       "and sibling-swap activity."),
         "run_manifest": run_manifest,
         "meter": meter, "time": time}
+    if test_scale:
+        document["test_scale"] = {
+            "enabled": True,
+            "target": "existing regular file inside --out under /tmp; device targets are refused",
+            "extent_bytes": TEST_SCALE_EXTENT_BYTES,
+            "write_io_size_bytes": TEST_SCALE_WRITE_BYTES,
+            "time_based_runtime_seconds": TEST_SCALE_RUNTIME_S,
+            "idle_wait_seconds": TEST_SCALE_WAIT_S,
+            "cell_sets": list(TEST_SCALE_CELL_SETS),
+            "planned_jobs": {
+                name: {rung: len(jobs_for_run("quick" if rung == "part-c" else rung,
+                                              part_c=rung == "part-c", test_scale=True))
+                       for rung in CELL_SETS[name][1]}
+                for name in TEST_SCALE_CELL_SETS},
+            "degradation": ("synthetic host monitors and safety facts; file hole-punch stands in for "
+                            "block discard; no partition wipe, mkfs, mount, or hard-kill resume"),
+        }
+    return document
 
 
-def print_plan(as_json: bool = False, state_path: Path | None = None) -> None:
-    document = plan_document(state_path)
+def print_plan(as_json: bool = False, state_path: Path | None = None, *,
+               test_scale: bool = False) -> None:
+    document = plan_document(state_path, test_scale=test_scale)
     if as_json:
         print(json.dumps(document, indent=2, sort_keys=True))
         return
@@ -1229,6 +1531,8 @@ def print_plan(as_json: bool = False, state_path: Path | None = None) -> None:
     print(f"Limits: 3 h active I/O; 12 h elapsed; {WRITE_CAP / GB:.2f} GB writes")
     print("I/O PSI is advisory. Stop thresholds for memory PSI full, MemAvailable, free space, and host liveness come from host policy.")
     print(document["risk_note"])
+    if test_scale:
+        print("TEST-SCALE rehearsal: regular file under /tmp only; no device target is allowed.")
     manifest = document.get("run_manifest")
     safety = manifest.get("target_safety") if isinstance(manifest, Mapping) else None
     if isinstance(safety, Mapping) and isinstance(safety.get("raw"), Mapping):
@@ -1254,22 +1558,32 @@ def print_plan(as_json: bool = False, state_path: Path | None = None) -> None:
           f"{active_time['elapsed_seconds_used'] / 3600:.2f} h elapsed")
 
 
-def stop_reason(sample: Mapping[str, Any], *, min_memavailable: int, min_free: int) -> str | None:
+def stop_reason(sample: Mapping[str, Any], *, min_memavailable: int,
+                min_output_free: int, min_target_free: int | None = None) -> str | None:
     mem_full = sample.get("psi", {}).get("memory", {}).get("full", {}).get("avg10")
     available = sample.get("meminfo", {}).get("MemAvailable")
-    free = sample.get("free_bytes")
-    if mem_full is None or available is None or free is None:
+    output_free = sample.get("output_free_bytes")
+    target_free = sample.get("target_free_bytes")
+    if mem_full is None or available is None or output_free is None:
         return "monitor data incomplete"
     if (isinstance(mem_full, bool) or not isinstance(mem_full, (int, float)) or
             not math.isfinite(mem_full) or mem_full < 0 or mem_full > 100):
         return "monitor memory PSI data is malformed"
-    if (isinstance(available, bool) or isinstance(free, bool) or
-            not isinstance(available, int) or not isinstance(free, int) or available < 0 or free < 0):
+    if (isinstance(available, bool) or isinstance(output_free, bool) or
+            not isinstance(available, int) or not isinstance(output_free, int) or
+            available < 0 or output_free < 0):
         return "monitor memory or free-space data is malformed"
     if available < min_memavailable:
         return "MemAvailable fell below policy floor"
-    if free < min_free:
-        return "free space fell below required floor"
+    if output_free < min_output_free:
+        return "output-filesystem free space fell below policy floor"
+    if min_target_free is not None:
+        if target_free is None:
+            return "monitor target free-space data incomplete"
+        if isinstance(target_free, bool) or not isinstance(target_free, int) or target_free < 0:
+            return "monitor target free-space data is malformed"
+        if target_free < min_target_free:
+            return "study-target filesystem free space fell below policy floor"
     return None
 
 
@@ -1295,9 +1609,12 @@ def _mountpoint_is_system(mountpoint: str) -> bool:
 class LocalHost:
     """Effect boundary. Tests replace this with FakeHost/FakeFio."""
 
-    def __init__(self, proc: Path = Path("/proc"), sys: Path = Path("/sys")) -> None:
+    def __init__(self, proc: Path = Path("/proc"), sys: Path = Path("/sys"),
+                 fio_executable: str = "fio") -> None:
         self.proc = proc
         self.sys = sys
+        self.fio_executable = fio_executable
+        self.last_fio_deliberate_stop = False
         self._liveness_probe_sequence = 0
         self._liveness_probe_stalled = False
         self._liveness_probe_stalled_unit: str | None = None
@@ -1380,18 +1697,21 @@ class LocalHost:
 
     def assert_study_tools(self, kind: str) -> None:
         """Exercise tools each pending study can need before dry-run passes."""
-        for executable in ("fio", "blkdiscard" if kind == "raw" else "fallocate"):
-            if shutil.which(executable) is None:
+        later_legs = FILE_LEG_TOOLS if kind == "raw" else ()
+        for executable in ("fio", "blkdiscard" if kind == "raw" else "fallocate", *later_legs):
+            resolved = self.fio_executable if executable == "fio" else executable
+            if shutil.which(resolved) is None and not Path(resolved).is_file():
                 raise StudyError(f"required study executable {executable} is unavailable in PATH")
         try:
-            version = subprocess.run(["fio", "--version"], text=True, capture_output=True, check=False)
+            version = subprocess.run([self.fio_executable, "--version"], text=True,
+                                     capture_output=True, check=False)
         except OSError as exc:
             raise StudyError(f"cannot run fio preflight: {exc}") from exc
         if version.returncode or not version.stdout.strip().startswith("fio-"):
             raise StudyError("fio preflight did not report a fio version")
         if kind == "raw":
             try:
-                option = subprocess.run(["fio", "--cmdhelp=allow_mounted_write"], text=True,
+                option = subprocess.run([self.fio_executable, "--cmdhelp=allow_mounted_write"], text=True,
                                         capture_output=True, check=False)
             except OSError as exc:
                 raise StudyError(f"cannot check fio allow_mounted_write support: {exc}") from exc
@@ -1787,6 +2107,7 @@ class LocalHost:
 
     def assert_fsync_preflight(self) -> None:
         """Check every stable iomon-bpf requirement before a dry-run can pass."""
+        repo = require_repo_root()
         self.current_container_id()
         parent = os.environ.get("CGROUP_PARENT_DEV_BACKGROUND")
         if not parent:
@@ -1798,7 +2119,7 @@ class LocalHost:
             raise StudyError(f"cannot check fsync collector cgroup parent {parent}: {exc}") from exc
         if state.returncode or state.stdout.strip() != "loaded":
             raise StudyError(f"fsync collector cgroup parent {parent} is not a loaded systemd slice")
-        script = REPO / "mdt-cockpit/scripts/iomon-bpf/run.sh"
+        script = repo / "mdt-cockpit/scripts/iomon-bpf/run.sh"
         if not script.is_file() or not os.access(script, os.X_OK):
             raise StudyError(f"iomon-bpf wrapper is missing: {script}")
         image = os.environ.get("IOMON_BPF_IMAGE", IOMON_BPF_IMAGE_DEFAULT)
@@ -1815,7 +2136,7 @@ class LocalHost:
 
     def start_fsync(self, out: Path) -> tuple[str, Path]:
         self.assert_fsync_preflight()
-        script = REPO / "mdt-cockpit/scripts/iomon-bpf/run.sh"
+        script = require_repo_root() / "mdt-cockpit/scripts/iomon-bpf/run.sh"
         name = f"iomon-bpf-ibx-{os.getpid()}"
         bpf_out = out / "fsync-bpf"
         try:
@@ -1916,12 +2237,10 @@ class LocalHost:
         output_stat = os.statvfs(out)
         output_free = output_stat.f_bavail * output_stat.f_frsize
         row["output_free_bytes"] = output_free
-        row["free_bytes"] = output_free
         if target is not None:
             target_stat = os.statvfs(target)
             target_free = target_stat.f_bavail * target_stat.f_frsize
             row["target_free_bytes"] = target_free
-            row["free_bytes"] = min(output_free, target_free)
         return row
 
     def read_fio_logs(self, prefix: Path) -> dict[str, list[dict[str, float]]]:
@@ -1932,41 +2251,168 @@ class LocalHost:
                 result[kind] = parse_fio_log(path.read_text(encoding="utf-8"), bandwidth=is_bandwidth)
         return result
 
-    def execute_fio(self, job_path: Path, runtime_s: int,
+    @staticmethod
+    def stop_fio(proc: Any, first_signal: int) -> bool:
+        """Stop fio, escalating to SIGKILL so a fio that ignores signals cannot outlive the driver.
+
+        Returns True when the first signal was not enough.
+        """
+        escalated = False
+        for value in dict.fromkeys((first_signal, signal.SIGTERM)):
+            proc.send_signal(value)
+            try:
+                proc.wait(timeout=30)
+                return escalated
+            except subprocess.TimeoutExpired:
+                escalated = True
+        proc.kill()
+        proc.wait(timeout=30)
+        return True
+
+    def execute_fio(self, job_path: Path, runtime_s: float,
                     sample: Callable[[], None]) -> tuple[dict[str, Any], float]:
         try:
-            proc = subprocess.Popen(["fio", "--output-format=json", str(job_path)],
+            proc = subprocess.Popen([self.fio_executable, "--output-format=json", str(job_path)],
                                     stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                     text=True, close_fds=True)
         except OSError as exc:
-            raise StudyError(f"cannot start fio: {exc}") from exc
+            raise FioExecutionError(f"cannot start fio: {exc}", started=False) from exc
         start = self.now()
+        sent_sigint = False
+        escalated = False
+        self.last_fio_deliberate_stop = False
         try:
             while proc.poll() is None:
                 sample()
                 remaining = runtime_s - (self.now() - start)
                 if remaining <= 0:
-                    proc.send_signal(signal.SIGINT)
-                    try:
-                        proc.wait(timeout=30)
-                    except subprocess.TimeoutExpired:
-                        proc.send_signal(signal.SIGTERM)
-                        proc.wait(timeout=30)
+                    sent_sigint = True
+                    escalated = self.stop_fio(proc, signal.SIGINT)
                     break
                 self.sleep(min(1, remaining))
             stdout, stderr = proc.communicate()
-        except BaseException:
+        except BaseException as exc:
             if proc.poll() is None:
-                proc.send_signal(signal.SIGTERM)
-                proc.wait(timeout=30)
-            raise
+                self.stop_fio(proc, signal.SIGTERM)
+            stdout, stderr = proc.communicate()
+            duration = self.now() - start
+            try:
+                payload = fio_json_from_stdout(stdout)
+            except (StudyError, TypeError):
+                payload = None
+            raise FioExecutionError(f"fio execution was interrupted: {exc}",
+                                    payload=payload if isinstance(payload, Mapping) else None,
+                                    duration=duration, raw_stdout=stdout,
+                                    raw_stderr=stderr) from exc
         duration = self.now() - start
-        if proc.returncode != 0:
-            raise StudyError(f"fio failed with exit {proc.returncode}: {stderr.strip()}")
+        deliberate_sigint_exit = (sent_sigint and not escalated and
+                                  proc.returncode in (-signal.SIGINT, 128))
         try:
-            return json.loads(stdout), duration
-        except json.JSONDecodeError as exc:
-            raise StudyError(f"fio returned invalid JSON: {exc}") from exc
+            payload = fio_json_from_stdout(stdout)
+        except StudyError as exc:
+            detail = stderr.strip() or stdout.strip() or str(exc)
+            if proc.returncode != 0 and not deliberate_sigint_exit:
+                message = f"fio failed with exit {proc.returncode}: {detail[:4000]}"
+            elif "wrong top-level shape" in str(exc):
+                message = str(exc)
+            else:
+                message = f"fio returned invalid JSON: {detail[:4000]}"
+            raise FioExecutionError(message,
+                                    duration=duration, raw_stdout=stdout,
+                                    raw_stderr=stderr) from exc
+        if proc.returncode != 0 and not deliberate_sigint_exit:
+            detail = stderr.strip() or stdout.strip() or "no stdout or stderr"
+            raise FioExecutionError(f"fio failed with exit {proc.returncode}: {detail[:4000]}",
+                                    payload=payload, duration=duration,
+                                    raw_stdout=stdout, raw_stderr=stderr)
+        if not isinstance(payload, dict):
+            raise FioExecutionError("fio returned JSON with the wrong top-level shape",
+                                    duration=duration, raw_stdout=stdout, raw_stderr=stderr)
+        self.last_fio_deliberate_stop = deliberate_sigint_exit
+        return payload, duration
+
+
+def test_scale_target_stat(target: str, out: Path, *, required_size: int) -> os.stat_result:
+    """Require the test-scale effect target to be a regular file inside /tmp output."""
+    path = Path(target)
+    try:
+        info = path.lstat()
+    except OSError as exc:
+        raise StudyError(f"test-scale requires an existing regular file target under /tmp: {exc}") from exc
+    if stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode):
+        raise StudyError("test-scale requires a regular file target under /tmp; device targets are refused")
+    try:
+        tmp_root = Path("/tmp").resolve(strict=True)
+        out_root = out.resolve(strict=True)
+        target_path = path.resolve(strict=True)
+        out_root.relative_to(tmp_root)
+        target_path.relative_to(out_root)
+    except (OSError, ValueError) as exc:
+        raise StudyError("test-scale requires its regular file target inside the output directory under /tmp") from exc
+    if info.st_size < required_size:
+        raise StudyError(f"test-scale target is {info.st_size} bytes; at least {required_size} bytes are required")
+    return info
+
+
+class TestScaleHost(LocalHost):
+    """Real-fio rehearsal boundary: real file I/O, synthetic host policy facts."""
+
+    def __init__(self, *, fio_executable: str = "fio") -> None:
+        super().__init__(fio_executable=fio_executable)
+
+    def is_root(self) -> bool:
+        return True
+
+    def assert_quiet_window(self) -> None:
+        return None
+
+    def validate_target(self, target: str, kind: str, offset: int, size: int, device: str,
+                        **_kwargs: Any) -> TargetValidation:
+        info = test_scale_target_stat(target, Path(target).parent, required_size=size)
+        identity = TargetIdentity(info.st_size,
+                                  f"regular-file-{info.st_dev:x}-{info.st_ino:x}-{info.st_size:x}")
+        return TargetValidation(identity if kind == "raw" else None)
+
+    def io_scheduler_snapshot(self, device: str,
+                              system_disk: Mapping[str, Any] | None = None) -> dict[str, Any]:
+        return {"target": {"disk": "regular-file", "status": "unknown", "selected": None,
+                            "available": [], "message": "test-scale has no block-device target"},
+                "root": {}, "peer_bfq_policy": "inert",
+                "message": "test-scale has no block-device target"}
+
+    def io_control_snapshot(self, *, scheduler_snapshot: Mapping[str, Any] | None = None) -> dict[str, Any]:
+        return {"io_cost": {"enable": 0}, "cgroups": [],
+                "block_schedulers": dict(scheduler_snapshot or {})}
+
+    def assert_study_tools(self, _kind: str) -> None:
+        super().assert_study_tools("ext4-file")
+
+    def trim_state(self, _device: str) -> dict[str, Any]:
+        return {"supported": False, "discard_max_bytes": 0,
+                "reason": "test-scale uses a regular file; block-device discard is not exercised"}
+
+    def discard(self, target: str, _kind: str, offset: int, size: int,
+                timeout: float | None = None,
+                sample: Callable[[], None] | None = None) -> float:
+        # Hole-punching a regular file is the safe file equivalent of a discard step.
+        return super().discard(target, "ext4-file", offset, size, timeout=timeout, sample=sample)
+
+    def liveness_probe(self, max_latency_s: float, **_kwargs: Any) -> dict[str, Any]:
+        return {"responsive": True, "latency_seconds": min(0.001, max_latency_s),
+                "components": {"root_fsync_seconds": 0.0, "sshd_seconds": 0.0,
+                               "cockpit_seconds": 0.0}}
+
+    def sample(self, _device: str, out: Path, target: str | None = None) -> dict[str, Any]:
+        output_stat = os.statvfs(out)
+        row = {"device": "regular-file-rehearsal",
+               "psi": {"memory": {"full": {"avg10": 0.0}, "some": {"avg10": 0.0}},
+                       "io": {"some": {"avg10": 0.0}, "full": {"avg10": 0.0}}},
+               "meminfo": {"MemAvailable": 16 * GIB},
+               "output_free_bytes": output_stat.f_bavail * output_stat.f_frsize}
+        if target is not None:
+            target_stat = os.statvfs(target)
+            row["target_free_bytes"] = target_stat.f_bavail * target_stat.f_frsize
+        return row
 
 
 def derive_system_disk_ack(target: str, device: str, confirm_target: str,
@@ -1989,17 +2435,37 @@ def derive_system_disk_ack(target: str, device: str, confirm_target: str,
 
 
 def run_study(cell_set: str, *, target: str, device: str, out: Path, target_kind: str | None,
-              offset: int, size: int, mem_psi_max: float, min_memavailable: int, min_free: int,
+              offset: int, size: int, mem_psi_max: float, min_memavailable: int,
+              min_output_free: int, min_target_free: int,
               max_probe_latency_s: float, probe_consecutive_samples: int,
               probe_interval_s: float = DEFAULT_LIVENESS_PROBE_INTERVAL_S,
               liveness_ssh_host: str = LIVENESS_SSH_HOST,
               liveness_ssh_port: int = LIVENESS_SSH_PORT,
               liveness_cockpit_container: str = LIVENESS_COCKPIT_CONTAINER,
+              fio_startup_grace_s: float = FIO_STARTUP_GRACE_DEFAULT_S,
+              fio_executable: str = "fio", test_scale: bool = False,
+              test_scale_ioengine: str | None = None,
               host: Any | None = None, fsync_cell: str | None = None,
               quiet_window_confirmed: bool = False, confirm_target: str | None = None,
               allow_system_disk_partition: bool = False, system_disk_ack: str | None = None,
               dry_run: bool = False) -> dict[str, Any]:
-    host = host or LocalHost()
+    host = host or (TestScaleHost(fio_executable=fio_executable) if test_scale else
+                    LocalHost(fio_executable=fio_executable))
+    if test_scale and not isinstance(host, TestScaleHost):
+        raise StudyError("--test-scale requires the regular-file rehearsal host")
+    if test_scale:
+        test_scale_target_stat(target, out, required_size=TEST_SCALE_EXTENT_BYTES)
+        if test_scale_ioengine is None:
+            test_scale_ioengine = "libaio"
+        if test_scale_ioengine not in TEST_SCALE_IOENGINES:
+            raise StudyError("--test-scale-engine must name a supported rehearsal engine")
+        if (size != TEST_SCALE_EXTENT_BYTES or offset != 0 or confirm_target is not None or
+                allow_system_disk_partition or system_disk_ack is not None or fsync_cell is not None):
+            raise StudyError("--test-scale requires the 8 MiB output file extent and forbids device acknowledgements and fsync")
+        if not isinstance(fio_startup_grace_s, (int, float)) or isinstance(fio_startup_grace_s, bool):
+            raise StudyError("fio startup grace must be a finite non-negative number")
+    elif test_scale_ioengine is not None:
+        raise StudyError("--test-scale-engine is available only with --test-scale")
     if not host.is_root():
         raise StudyError("run requires root on the study host")
     if not quiet_window_confirmed:
@@ -2007,7 +2473,7 @@ def run_study(cell_set: str, *, target: str, device: str, out: Path, target_kind
     if not dry_run:
         host.assert_quiet_window()
     kind, rungs, slot = parse_run_cellset(cell_set, target_kind)
-    if cell_set == "raw-t6h" and not raw_standard_needed(out):
+    if cell_set == "raw-t6h" and not test_scale and not raw_standard_needed(out):
         rungs = tuple(rung for rung in rungs if rung != "standard")
     if cell_set in ("file-ext4-standard", "file-btrfs-standard") and not file_standard_needed(out, kind):
         return {"cell_set": cell_set, "skipped": True,
@@ -2020,7 +2486,8 @@ def run_study(cell_set: str, *, target: str, device: str, out: Path, target_kind
         raise StudyError("target must be an absolute path and device a sysfs block name")
     if offset < 0 or size <= 0 or offset + size > (32 * GIB if kind == "raw" else 24 * GIB):
         raise StudyError("target extent is outside the study's 24 GiB/32 GiB geometry")
-    expected_extent = ((24 * GIB, 8 * GIB) if cell_set in ("part-c", "part-c-repeat") else
+    expected_extent = ((0, TEST_SCALE_EXTENT_BYTES) if test_scale else
+                       (24 * GIB, 8 * GIB) if cell_set in ("part-c", "part-c-repeat") else
                        (0, 24 * GIB))
     if (offset, size) != expected_extent:
         raise StudyError("cell-set target extent does not match its assigned study region")
@@ -2045,12 +2512,16 @@ def run_study(cell_set: str, *, target: str, device: str, out: Path, target_kind
     if (not isinstance(liveness_cockpit_container, str) or
             not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", liveness_cockpit_container)):
         raise StudyError("host-liveness Docker container must be a valid configured container name")
-    if min_memavailable <= 0 or min_free <= 0:
-        raise StudyError("memory and free-space floors must be positive")
+    if min_memavailable <= 0 or min_output_free <= 0 or min_target_free <= 0:
+        raise StudyError("memory and output/target free-space floors must be positive")
     if not out.is_absolute():
         raise StudyError("--out must be an absolute path")
-    confirmation = parse_target_confirmation(confirm_target, target) if kind == "raw" else None
-    if kind != "raw" and confirm_target is not None:
+    if (isinstance(fio_startup_grace_s, bool) or not isinstance(fio_startup_grace_s, (int, float)) or
+            not math.isfinite(fio_startup_grace_s) or fio_startup_grace_s < 0 or fio_startup_grace_s > 60):
+        raise StudyError("fio startup grace must be finite and in [0,60] seconds")
+    confirmation = (parse_target_confirmation(confirm_target, target)
+                    if kind == "raw" and not test_scale else None)
+    if (kind != "raw" or test_scale) and confirm_target is not None:
         raise StudyError("--confirm-target applies only to raw partition runs")
     if allow_system_disk_partition != (system_disk_ack is not None):
         raise StudyError("--allow-system-disk-partition and --system-disk-ack must be supplied together")
@@ -2060,7 +2531,7 @@ def run_study(cell_set: str, *, target: str, device: str, out: Path, target_kind
                                       allow_system_disk_partition=allow_system_disk_partition,
                                       system_disk_ack=system_disk_ack)
     target_identity = validation.identity
-    if kind == "raw" and target_identity != confirmation:
+    if kind == "raw" and not test_scale and target_identity != confirmation:
         raise StudyError("validated raw target identity does not match --confirm-target")
     scheduler_before = host.io_scheduler_snapshot(device, validation.system_disk)
     before = host.io_control_snapshot(scheduler_snapshot=scheduler_before)
@@ -2070,23 +2541,78 @@ def run_study(cell_set: str, *, target: str, device: str, out: Path, target_kind
         "io_psi": "advisory; recorded, no stop threshold",
         "memory_psi_full_avg10_max_percent": mem_psi_max,
         "min_memavailable_bytes": min_memavailable,
-        "min_free_bytes": min_free,
+        "min_output_free_bytes": min_output_free,
+        "min_target_free_bytes": min_target_free,
         "max_probe_latency_seconds": max_probe_latency_s,
         "probe_consecutive_samples": probe_consecutive_samples,
         "probe_interval_seconds": probe_interval_s,
         "liveness_ssh_host": liveness_ssh_host,
         "liveness_ssh_port": liveness_ssh_port,
         "liveness_cockpit_container": liveness_cockpit_container,
+        "fio_startup_grace_seconds": float(fio_startup_grace_s),
+        "test_scale": test_scale,
+        "test_scale_ioengine": test_scale_ioengine,
     }
     manifest = state["run_manifest"]
+    if test_scale:
+        manifest["test_scale"] = {
+            "enabled": True, "target_kind": "regular-file-under-/tmp",
+            "extent_bytes": TEST_SCALE_EXTENT_BYTES,
+            "write_io_size_bytes": TEST_SCALE_WRITE_BYTES,
+            "time_based_runtime_seconds": TEST_SCALE_RUNTIME_S,
+            "idle_wait_seconds": TEST_SCALE_WAIT_S,
+            "ioengine": test_scale_ioengine,
+            "host_monitoring": "synthetic; not host acceptance",
+            "discard": "fallocate hole-punch on the regular file; no block discard",
+        }
+    elif "test_scale" in manifest:
+        raise StudyError("cannot resume a test-scale rehearsal as a live study")
     existing_policy = manifest.get("stop_policy")
+    migrated_policy = False
     if existing_policy is not None and existing_policy != stop_policy:
-        recorded_policy = json.dumps(existing_policy, sort_keys=True, separators=(",", ":"))
-        raise StudyError("study stop policy changed since the previous attempt; resume is refused to preserve "
-                         f"the existing byte and time meters. Recorded stop policy: {recorded_policy}. "
-                         "Resume only with those values; if they are no longer acceptable, keep this state "
-                         "and obtain an operator decision. A new --out directory resets those meters")
+        candidate = dict(existing_policy)
+        legacy_free = candidate.pop("min_free_bytes", None)
+        has_split_floors = ("min_output_free_bytes" in existing_policy or
+                            "min_target_free_bytes" in existing_policy)
+        valid_legacy_floor = (isinstance(legacy_free, int) and
+                              not isinstance(legacy_free, bool) and legacy_free > 0)
+        if not has_split_floors and valid_legacy_floor:
+            candidate["min_output_free_bytes"] = legacy_free
+            candidate["min_target_free_bytes"] = legacy_free
+        upgraded_fields = []
+        for name, default in (("fio_startup_grace_seconds", float(FIO_STARTUP_GRACE_DEFAULT_S)),
+                              ("test_scale", False),
+                              ("test_scale_ioengine", "libaio" if candidate.get("test_scale") else None)):
+            if name not in candidate:
+                candidate[name] = default
+                upgraded_fields.append(name)
+        if candidate == stop_policy:
+            migrations = manifest.setdefault("stop_policy_migrations", [])
+            if not isinstance(migrations, list):
+                raise StudyError("study stop-policy migration history is malformed")
+            migration = {
+                "recorded_utc": dt.datetime.now(dt.UTC).isoformat(),
+                "upgraded_fields": upgraded_fields,
+            }
+            if valid_legacy_floor:
+                migration.update({
+                    "legacy_min_free_bytes": legacy_free,
+                    "min_output_free_bytes": legacy_free,
+                    "min_target_free_bytes": legacy_free,
+                    "equivalence": "both split floors preserve the previous minimum-free comparison",
+                })
+            migrations.append(migration)
+            migrated_policy = True
+        else:
+            recorded_policy = json.dumps(existing_policy, sort_keys=True, separators=(",", ":"))
+            raise StudyError("study stop policy changed since the previous attempt; resume is refused to preserve "
+                             f"the existing byte and time meters. Recorded stop policy: {recorded_policy}. "
+                             "Resume only with those values; if they are no longer acceptable, keep this state "
+                             "and obtain an operator decision. A new --out directory resets those meters")
     manifest["stop_policy"] = stop_policy
+    recovered_attempts = finalize_interrupted_reservations(state)
+    if recovered_attempts or migrated_policy:
+        write_json(state_path, state)
     target_safety = validation.system_disk
     scheduler_history = manifest.setdefault("io_schedulers", {})
     if not isinstance(scheduler_history, dict):
@@ -2188,7 +2714,8 @@ def run_study(cell_set: str, *, target: str, device: str, out: Path, target_kind
             raise StudyError(f"cell result target identity changed: {filename}")
 
     all_planned = {(rung, job.name) for rung in rungs for job in
-                   rung_jobs("quick" if rung == "part-c" else rung, part_c=rung == "part-c")}
+                   jobs_for_run("quick" if rung == "part-c" else rung,
+                                part_c=rung == "part-c", test_scale=test_scale)}
     if fsync_cell is not None and fsync_cell not in {f"{rung}:{name}" for rung, name in all_planned}:
         raise StudyError("--fsync-cell must be written as RUNG:CELL and name a cell in this set")
     pending_cap = 0
@@ -2196,7 +2723,8 @@ def run_study(cell_set: str, *, target: str, device: str, out: Path, target_kind
     fsync_cell_pending = False
     for rung in rungs:
         special = rung == "part-c"
-        planned_jobs = rung_jobs("quick" if special else rung, part_c=special)
+        planned_jobs = jobs_for_run("quick" if special else rung, part_c=special,
+                                    test_scale=test_scale)
         planned_slot = slot
         trim_key = cell_key(kind, planned_slot, rung, Job("trim-state", "read", 4096, 1, 0, "trim_state"))
         trim_name = re.sub(r"[^A-Za-z0-9_.-]", "_", trim_key) + ".json"
@@ -2211,13 +2739,18 @@ def run_study(cell_set: str, *, target: str, device: str, out: Path, target_kind
                 if fsync_cell == f"{rung}:{job.name}":
                     fsync_cell_pending = True
     required_cap = required_remainder_write_cap(cell_set, out=out, state=state)
-    if int(state["write_bytes"]) + pending_cap + required_cap > WRITE_CAP:
-        if cell_set in FILE_STANDARD_CELL_SETS:
-            return {"cell_set": cell_set, "skipped": True,
-                    "reason": (f"the full file-standard cap and {required_cap} bytes required "
-                               f"by cell-sets still ahead do not fit in the remaining "
-                               f"{WRITE_CAP_GB} GB write budget")}
-        raise StudyError("the remaining write budget cannot complete this cell-set")
+    base_pending_cap = pending_base_schedule_write_cap(out=out, state=state)
+    base_budget_exceeded = (cell_set in BASE_SCHEDULE_CELL_SETS and
+                            int(state["write_bytes"]) + base_pending_cap > WRITE_CAP)
+    optional_budget_exceeded = (cell_set in FILE_STANDARD_CELL_SETS and
+                                int(state["write_bytes"]) + pending_cap + required_cap > WRITE_CAP)
+    if base_budget_exceeded:
+        raise StudyError("the remaining write budget cannot complete the base schedule")
+    if optional_budget_exceeded:
+        return {"cell_set": cell_set, "skipped": True,
+                "reason": (f"the full file-standard cap and {required_cap} bytes required "
+                           f"by cell-sets still ahead do not fit in the remaining "
+                           f"{WRITE_CAP_GB} GB write budget")}
     if pending_work:
         host.assert_study_tools(kind)
         host.trim_state(device)
@@ -2227,16 +2760,21 @@ def run_study(cell_set: str, *, target: str, device: str, out: Path, target_kind
     planned_jobs: dict[tuple[str, str], Job] = {}
     for rung in rungs:
         special = rung == "part-c"
-        for job in rung_jobs("quick" if special else rung, part_c=special):
+        for job in jobs_for_run("quick" if special else rung, part_c=special,
+                                test_scale=test_scale):
             planned_jobs[(rung, job.name)] = job
             filename = re.sub(r"[^A-Za-z0-9_.-]", "_",
                               cell_key(kind, slot, rung, job)) + ".json"
-            extent = job.extent_bytes or (RUNG[rung]["fill_gb"] * GIB
+            extent = job.extent_bytes or (TEST_SCALE_EXTENT_BYTES if test_scale else
+                                          RUNG[rung]["fill_gb"] * GIB
                                           if job.read_written_extent else size)
-            rendered_jobs[(rung, job.name)] = render_job(
+            rendered = render_job(
                 job, target=target, offset=offset, size=extent,
                 log_prefix=str(out / "fio-logs" / filename[:-5]),
                 rate_iops=1 if job.rate_fraction is not None else None)
+            if test_scale:
+                rendered = with_fio_engine(rendered, str(test_scale_ioengine))
+            rendered_jobs[(rung, job.name)] = rendered
     if dry_run:
         if out.exists() and not out.is_dir():
             raise StudyError("--out exists and is not a directory")
@@ -2248,8 +2786,10 @@ def run_study(cell_set: str, *, target: str, device: str, out: Path, target_kind
             sample_out = parent
         bad_memory_psi = 0
         for _ in range(3):
-            sample = host.sample(device, sample_out, target if kind != "raw" else None)
-            reason = stop_reason(sample, min_memavailable=min_memavailable, min_free=min_free)
+            sample = host.sample(device, sample_out, target if kind != "raw" or test_scale else None)
+            reason = stop_reason(sample, min_memavailable=min_memavailable,
+                                 min_output_free=min_output_free,
+                                 min_target_free=min_target_free if kind != "raw" or test_scale else None)
             if reason:
                 raise StudyError(reason)
             memory_full = sample["psi"]["memory"]["full"]["avg10"]
@@ -2270,8 +2810,8 @@ def run_study(cell_set: str, *, target: str, device: str, out: Path, target_kind
     if pending_work:
         first_rung = rungs[0]
         first_special = first_rung == "part-c"
-        first_job = rung_jobs("quick" if first_special else first_rung,
-                              part_c=first_special)[0]
+        first_job = jobs_for_run("quick" if first_special else first_rung,
+                                 part_c=first_special, test_scale=test_scale)[0]
         first_key = cell_key(kind, slot, first_rung, first_job)
         first_filename = re.sub(r"[^A-Za-z0-9_.-]", "_", first_key) + ".json"
         first_job_path = out / "jobs" / (first_filename[:-5] + ".fio")
@@ -2281,8 +2821,10 @@ def run_study(cell_set: str, *, target: str, device: str, out: Path, target_kind
 
     def monitor_host(*, preflight: bool = False) -> None:
         nonlocal monitor_total, bad_memory_psi, bad_liveness
-        row = host.sample(device, out, target if kind != "raw" else None)
-        reason = stop_reason(row, min_memavailable=min_memavailable, min_free=min_free)
+        row = host.sample(device, out, target if kind != "raw" or test_scale else None)
+        reason = stop_reason(row, min_memavailable=min_memavailable,
+                             min_output_free=min_output_free,
+                             min_target_free=min_target_free if kind != "raw" or test_scale else None)
         if reason:
             row["host_liveness"] = None
             row["sample_no"] = monitor_total
@@ -2314,12 +2856,30 @@ def run_study(cell_set: str, *, target: str, device: str, out: Path, target_kind
         if not preflight and probe_failed and bad_liveness >= probe_consecutive_samples:
             raise StudyError("host-liveness probe exceeded its latency limit or failed for "
                              f"{probe_consecutive_samples} consecutive samples")
+
+    def bounded_discard(discard_key: str, extent: int, timeout: float) -> float:
+        """Run a metered discard; a failed one settles its measured time, not the whole allowance."""
+        reserve_active(state, discard_key, timeout)
+        write_json(state_path, state)
+        began = host.now()
+        try:
+            seconds = host.discard(target, kind, offset, extent, timeout=timeout,
+                                   sample=monitor_host)
+        except BaseException:
+            settle_active(state, discard_key, max(0.0, min(timeout, host.now() - began)))
+            write_json(state_path, state)
+            raise
+        settle_active(state, discard_key, seconds)
+        write_json(state_path, state)
+        return seconds
+
     try:
         if pending_work:
             monitor_host(preflight=True)
         for rung in rungs:
             special = rung == "part-c"
-            jobs = rung_jobs("quick" if special else rung, part_c=special)
+            jobs = jobs_for_run("quick" if special else rung, part_c=special,
+                                test_scale=test_scale)
             slot_for_cell = slot
             trim_job = Job("trim-state", "read", 4096, 1, 0, "trim_state")
             trim_key = cell_key(kind, slot_for_cell, rung, trim_job)
@@ -2351,13 +2911,7 @@ def run_study(cell_set: str, *, target: str, device: str, out: Path, target_kind
                 timeout = ACTIVE_CAP_S - float(state["active_seconds"]) - FIO_DRAIN_RESERVE_S
                 if timeout <= 0:
                     raise StudyError("3 hour active-I/O cap would be exceeded by discard")
-                discard_key = f"{trim_key}|discard"
-                reserve_active(state, discard_key, timeout)
-                write_json(state_path, state)
-                discard_duration = host.discard(target, kind, offset, size, timeout=timeout,
-                                                sample=monitor_host)
-                settle_active(state, discard_key, discard_duration)
-                write_json(state_path, state)
+                bounded_discard(f"{trim_key}|discard", size, timeout)
             for job in jobs:
                 key = cell_key(kind, slot_for_cell, rung, job)
                 filename = re.sub(r"[^A-Za-z0-9_.-]", "_", key) + ".json"
@@ -2388,6 +2942,7 @@ def run_study(cell_set: str, *, target: str, device: str, out: Path, target_kind
                             not math.isfinite(recovered_duration) or recovered_duration < 0):
                         raise StudyError(f"orphan result has malformed duration: {result_path.name}")
                     state["cells"][key] = result_path.name
+                    reclaim_interrupted_attempt(state, key)
                     settle_write(state, key, recovered_bytes)
                     settle_active(state, key, float(recovered_duration))
                     write_json(state_path, state)
@@ -2401,8 +2956,12 @@ def run_study(cell_set: str, *, target: str, device: str, out: Path, target_kind
                         raise StudyError("latency-under-load cell lacks its preceding QD32 rate")
                     rate_iops = max(1, math.floor(base * job.rate_fraction))
                 if job.name == "fill" and current_metric.get("wbps_r_est") is not None:
-                    fill_cap = max(1, min(job.write_cap, math.ceil(current_metric["wbps_r_est"] * 10)))
-                    job = Job(**{**asdict(job), "write_cap": fill_cap})
+                    # A fio write needs one whole block to make progress. Keep
+                    # that minimum inside the already-funded rung cap.
+                    fill_cap = min(job.write_cap,
+                                   max(job.bs, math.ceil(current_metric["wbps_r_est"] * 10)))
+                    job = Job(**{**asdict(job), "write_cap": fill_cap,
+                                 "requested_write_cap": fill_cap})
                 cap = job.write_cap
                 if job.writes and cap <= 0:
                     raise StudyError(f"write cell {job.name} has no io_size")
@@ -2412,38 +2971,30 @@ def run_study(cell_set: str, *, target: str, device: str, out: Path, target_kind
                         raise StudyError(f"read cell {job.name} has no recorded written extent")
                 else:
                     read_extent = job.extent_bytes or size
-                elapsed_left = ELAPSED_CAP_S - state_elapsed(state)
-                active_left = ACTIVE_CAP_S - float(state["active_seconds"])
-                if elapsed_left <= FIO_DRAIN_RESERVE_S:
-                    raise StudyError("12 hour elapsed study limit reached")
-                if active_left <= FIO_DRAIN_RESERVE_S:
-                    raise StudyError("3 hour active-I/O cap would be exceeded")
-                if job.discard_before:
-                    discard_timeout = active_left - FIO_DRAIN_RESERVE_S
-                    discard_key = f"{key}|discard"
-                    reserve_active(state, discard_key, discard_timeout)
-                    write_json(state_path, state)
-                    discard_seconds = host.discard(target, kind, offset, job.extent_bytes or size,
-                                                   timeout=discard_timeout, sample=monitor_host)
-                    settle_active(state, discard_key, discard_seconds)
-                    active_left = ACTIVE_CAP_S - float(state["active_seconds"])
-                    if active_left <= FIO_DRAIN_RESERVE_S:
-                        raise StudyError("3 hour active-I/O cap would be exceeded")
-                    write_json(state_path, state)
                 job_path = out / "jobs" / (filename[:-5] + ".fio")
                 log_prefix = out / "fio-logs" / filename[:-5]
                 prepared_key = (rung, job.name)
                 text = rendered_jobs[prepared_key]
                 prepared_job = planned_jobs[prepared_key]
                 prepared_extent = (prepared_job.extent_bytes or
-                                   (RUNG[rung]["fill_gb"] * GIB
+                                   (TEST_SCALE_EXTENT_BYTES if test_scale else
+                                    RUNG[rung]["fill_gb"] * GIB
                                     if prepared_job.read_written_extent else size))
                 if (job != prepared_job or rate_iops is not None or
                         (job.read_written_extent and read_extent != prepared_extent)):
                     text = render_job(job, target=target, offset=offset, size=read_extent,
                                       log_prefix=str(log_prefix), rate_iops=rate_iops)
-                job_path.parent.mkdir(parents=True, exist_ok=True)
-                job_path.write_text(text, encoding="utf-8")
+                    if test_scale:
+                        text = with_fio_engine(text, str(test_scale_ioengine))
+                planned_runtime_s, ramp_time_s = fio_timing_from_job(text)
+                runtime_overhead_s = (ramp_time_s + float(fio_startup_grace_s) +
+                                      FIO_DRAIN_RESERVE_S)
+                if job.discard_before:
+                    bounded_discard(f"{key}|discard", job.extent_bytes or size,
+                                    ACTIVE_CAP_S - float(state["active_seconds"]) - FIO_DRAIN_RESERVE_S)
+                    active_left = ACTIVE_CAP_S - float(state["active_seconds"])
+                    if active_left <= FIO_DRAIN_RESERVE_S:
+                        raise StudyError("3 hour active-I/O cap would be exceeded")
                 samples = 0
 
                 collector: Any | None = None
@@ -2454,18 +3005,31 @@ def run_study(cell_set: str, *, target: str, device: str, out: Path, target_kind
                     monitor_host()
 
                 if job.wait_before_s:
-                    if state_elapsed(state) + job.wait_before_s + FIO_DRAIN_RESERVE_S > ELAPSED_CAP_S:
+                    if state_elapsed(state) + job.wait_before_s + planned_runtime_s + runtime_overhead_s > ELAPSED_CAP_S:
                         raise StudyError("12 hour elapsed study limit reached before required idle wait")
                     host.wait_with_samples(job.wait_before_s, sample_once)
                     if state_elapsed(state) > ELAPSED_CAP_S:
                         raise StudyError("12 hour elapsed study limit reached")
                 elapsed_left = ELAPSED_CAP_S - state_elapsed(state)
                 active_left = ACTIVE_CAP_S - float(state["active_seconds"])
-                runtime_limit = min(job.runtime_s,
-                                    math.floor(elapsed_left - FIO_DRAIN_RESERVE_S),
-                                    math.floor(active_left - FIO_DRAIN_RESERVE_S))
-                if runtime_limit <= 0:
-                    raise StudyError("3 hour active-I/O or 12 hour elapsed study limit reached")
+                elapsed_runtime_limit = math.floor(elapsed_left - runtime_overhead_s)
+                active_runtime_limit = math.floor(active_left - runtime_overhead_s)
+                if elapsed_runtime_limit <= 0:
+                    raise StudyError("12 hour elapsed study limit reached")
+                if active_runtime_limit <= 0:
+                    raise StudyError("3 hour active-I/O cap would be exceeded")
+                runtime_limit = min(planned_runtime_s, elapsed_runtime_limit, active_runtime_limit)
+                if runtime_limit != planned_runtime_s:
+                    job = Job(**{**asdict(job), "runtime_s": runtime_limit})
+                    text = render_job(job, target=target, offset=offset, size=read_extent,
+                                      log_prefix=str(log_prefix), rate_iops=rate_iops,
+                                      runtime_s=runtime_limit)
+                    if test_scale:
+                        text = with_fio_engine(text, str(test_scale_ioengine))
+                fio_wall_deadline_s = fio_wall_allowance(
+                    text, startup_grace_s=fio_startup_grace_s)
+                job_path.parent.mkdir(parents=True, exist_ok=True)
+                job_path.write_text(text, encoding="utf-8")
                 collector_info: dict[str, Any] | None = None
                 if fsync_cell == f"{rung}:{job.name}":
                     collector = host.start_fsync(out)
@@ -2473,19 +3037,41 @@ def run_study(cell_set: str, *, target: str, device: str, out: Path, target_kind
                 try:
                     if job.writes:
                         reserve_write(state, key, cap)
-                    reserve_active(state, key, runtime_limit + FIO_DRAIN_RESERVE_S)
+                    reserve_active(state, key, fio_wall_deadline_s)
                     write_json(state_path, state)
                     started_utc = dt.datetime.now(dt.UTC).isoformat()
-                    fio_json, duration = host.execute_fio(job_path, runtime_limit, sample_once)
+                    try:
+                        fio_json, duration = host.execute_fio(job_path, fio_wall_deadline_s, sample_once)
+                    except BaseException as exc:
+                        record_failed_fio_attempt(
+                            out=out, state_path=state_path, state=state, key=key,
+                            filename=filename, job=job,
+                            payload=getattr(exc, "payload", None),
+                            duration=getattr(exc, "duration", None), error=exc,
+                            started=getattr(exc, "started", True),
+                            raw_stdout=getattr(exc, "raw_stdout", None),
+                            raw_stderr=getattr(exc, "raw_stderr", None))
+                        if state["write_bytes"] > WRITE_CAP:
+                            raise StudyError(f"fio-reported writes exceed the hard {WRITE_CAP_GB} GB cap") from exc
+                        raise
                 finally:
                     if collector is not None:
                         host.stop_fsync(collector)
                 completed_utc = dt.datetime.now(dt.UTC).isoformat()
-                if duration < 0 or duration > runtime_limit + FIO_DRAIN_RESERVE_S:
-                    raise StudyError("fio duration is outside the bounded cell allowance")
-                fio_series = host.read_fio_logs(log_prefix)
-                estimates = summarize_series(fio_series)
-                value, actual_bytes = parse_fio_values(fio_json, job, fio_series)
+                try:
+                    if duration < 0 or duration > fio_wall_deadline_s:
+                        raise StudyError("fio duration is outside the bounded cell allowance")
+                    fio_series = host.read_fio_logs(log_prefix)
+                    estimates = summarize_series(fio_series)
+                    value, actual_bytes = parse_fio_values(fio_json, job, fio_series)
+                except BaseException as exc:
+                    record_failed_fio_attempt(
+                        out=out, state_path=state_path, state=state, key=key,
+                        filename=filename, job=job, payload=fio_json, duration=duration,
+                        error=exc, started=True)
+                    if state["write_bytes"] > WRITE_CAP:
+                        raise StudyError(f"fio-reported writes exceed the hard {WRITE_CAP_GB} GB cap") from exc
+                    raise
                 write_bytes = actual_bytes if job.writes else 0
                 record = {"schema": SCHEMA, "cell_key": key, "cell_set": cell_set, "target_type": kind,
                           "target": target, "device": device, "slot": slot_for_cell, "rung": rung,
@@ -2497,6 +3083,9 @@ def run_study(cell_set: str, *, target: str, device: str, out: Path, target_kind
                           "read_extent_bytes": read_extent if job.read_written_extent else None,
                           "io_size": job.write_cap if job.writes else None, "duration_s": duration,
                           "runtime_limit_s": runtime_limit,
+                          "fio_wall_deadline_s": fio_wall_deadline_s,
+                          "fio_driver_deliberate_stop": bool(
+                              getattr(host, "last_fio_deliberate_stop", False)),
                           "meter": {"write_bytes_before": state["write_bytes"],
                                     "write_cap_bytes": WRITE_CAP,
                                     "active_seconds_before": state["active_seconds"]},
@@ -3048,6 +3637,10 @@ def render_analysis(result: Mapping[str, Any]) -> str:
     manifest = result.get("run_manifest")
     if isinstance(manifest, Mapping):
         lines.extend(("## Run context", ""))
+        rehearsal = manifest.get("test_scale")
+        if isinstance(rehearsal, Mapping) and rehearsal.get("enabled") is True:
+            lines.extend(("This is a planner-scaled real-fio rehearsal on a regular file. "
+                          "Its measurements are not study benchmark results.", ""))
         policy = manifest.get("stop_policy", {})
         if isinstance(policy, Mapping):
             lines.append("Stop policy: memory PSI full avg10 above "
@@ -3165,17 +3758,273 @@ def parse_size(text: str) -> int:
     return amount * factor
 
 
+def verify_fio_rounding(fio: str) -> dict[str, Any]:
+    """Exercise rendered IBX writers with fio 3.39 on one regular file under /tmp."""
+    executable = shutil.which(fio) if not os.path.isabs(fio) else fio
+    if not executable or not Path(executable).is_file() or not os.access(executable, os.X_OK):
+        raise StudyError(f"fio executable is unavailable: {fio}")
+    try:
+        version = subprocess.run([executable, "--version"], text=True, capture_output=True,
+                                 check=False, timeout=10).stdout.strip()
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise StudyError(f"cannot inspect fio version: {exc}") from exc
+    if version != "fio-3.39":
+        raise StudyError(f"real-fio verification requires fio-3.39; found {version or 'no version output'}")
+    try:
+        engines = subprocess.run([executable, "--enghelp"], text=True, capture_output=True,
+                                 check=False, timeout=10).stdout
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise StudyError(f"cannot inspect fio IO engines: {exc}") from exc
+    engine = next((candidate for candidate in ("libaio", "posixaio", "psync")
+                   if re.search(rf"^\s+{candidate}$", engines, re.MULTILINE)), None)
+    if engine is None:
+        raise StudyError("fio 3.39 has no libaio, posixaio, or psync engine for regular-file verification")
+
+    rung_rows = [(rung, rung_jobs(rung)) for rung in ("standard", "quick", "veryquick")]
+    rung_rows.append(("part-c", rung_jobs("quick", part_c=True)))
+    block_classes: dict[tuple[int, int], tuple[str, Job]] = {}
+    rendered_count = 0
+    with tempfile.TemporaryDirectory(prefix="ibx-fio-rounding-", dir="/tmp") as directory:
+        root = Path(directory)
+        target = root / "regular-file.dat"
+        with target.open("wb") as stream:
+            stream.truncate(64 * 1024**2)
+        for rung, jobs in rung_rows:
+            for job in jobs:
+                if not job.writes:
+                    continue
+                if job.requested_write_cap is None:
+                    raise StudyError(f"writer {rung}:{job.name} lost its requested cap")
+                rendered = render_job(
+                    job, target=str(target), offset=0, size=64 * 1024**2,
+                    log_prefix=str(root / f"render-{rung}-{job.name}"))
+                if f"io_size={job.write_cap}\n" not in rendered or job.write_cap % job.bs:
+                    raise StudyError(f"rendered writer {rung}:{job.name} is not block aligned")
+                rendered_count += 1
+                block_classes.setdefault((job.bs, job.requested_write_cap % job.bs), (rung, job))
+
+        results = []
+        for index, ((block, remainder), (rung, original)) in enumerate(sorted(block_classes.items()), 1):
+            requested = 4 * block + remainder
+            scaled = Job(
+                name=f"verify-{index:02d}-{rung}-{original.name}", rw=original.rw,
+                bs=block, qd=original.qd, runtime_s=10, value=original.value,
+                write_cap=requested, requested_write_cap=requested)
+            prefix = root / f"run-{index:02d}"
+            rendered = render_job(scaled, target=str(target), offset=0,
+                                  size=64 * 1024**2, log_prefix=str(prefix))
+            if engine != "libaio":
+                rendered = rendered.replace("ioengine=libaio", f"ioengine={engine}")
+            if engine == "psync":
+                rendered = rendered.replace(f"iodepth={scaled.qd}\n", "iodepth=1\n")
+            job_path = root / f"run-{index:02d}.fio"
+            job_path.write_text(rendered, encoding="utf-8")
+            try:
+                result = subprocess.run([executable, "--output-format=json", str(job_path)],
+                                        text=True, capture_output=True, check=False, timeout=60)
+            except (OSError, subprocess.TimeoutExpired) as exc:
+                raise StudyError(f"real fio run failed for block-size class {block}/{remainder}: {exc}") from exc
+            if result.returncode:
+                raise StudyError(f"real fio exited {result.returncode} for block-size class "
+                                 f"{block}/{remainder}: {result.stderr.strip()}")
+            try:
+                payload = json.loads(result.stdout)
+            except json.JSONDecodeError as exc:
+                raise StudyError(f"real fio returned invalid JSON for block-size class "
+                                 f"{block}/{remainder}: {exc}") from exc
+            actual = fio_reported_bytes(payload, scaled)
+            if actual is None:
+                raise StudyError(f"real fio JSON omitted write.io_bytes for block-size class "
+                                 f"{block}/{remainder}")
+            if actual > scaled.write_cap:
+                raise StudyError(f"fio wrote {actual} bytes above the rendered cap "
+                                 f"{scaled.write_cap} for block-size class {block}/{remainder}")
+            try:
+                _, parsed_bytes = parse_fio_values(payload, scaled)
+            except StudyError as exc:
+                raise StudyError(f"real fio output failed the study parser for block-size class "
+                                 f"{block}/{remainder}: {exc}") from exc
+            if parsed_bytes != actual:
+                raise StudyError(f"real fio parser returned {parsed_bytes} bytes, but the reported "
+                                 f"write.io_bytes was {actual}")
+            if actual != scaled.write_cap:
+                raise StudyError(f"fio wrote {actual} bytes instead of its complete aligned cap "
+                                 f"{scaled.write_cap} for block-size class {block}/{remainder}")
+            results.append({"block_size": block, "requested_remainder": remainder,
+                            "scaled_requested_io_size": requested,
+                            "rendered_io_size": scaled.write_cap, "fio_io_bytes": actual,
+                            "source_rung": rung, "source_cell": original.name,
+                            "verification_ioengine": engine})
+    return {"fio_version": version, "target_kind": "regular-file-under-/tmp",
+            "verification_ioengine": engine,
+            "writing_jobs_rendered": rendered_count, "distinct_block_size_classes": results}
+
+
+def resolve_fio_executable(executable: str) -> str:
+    found = shutil.which(executable)
+    if found:
+        return str(Path(found).resolve())
+    candidate = Path(executable)
+    if candidate.is_file() and os.access(candidate, os.X_OK):
+        return str(candidate.resolve())
+    raise StudyError(f"fio executable {executable!r} was not found; install fio 3.39 or pass --fio")
+
+
+def rehearsal_ioengine(fio_path: str) -> str:
+    """Choose an engine advertised by this fio build, preferring live's libaio."""
+    try:
+        result = subprocess.run([fio_path, "--enghelp"], text=True, capture_output=True,
+                                check=False, timeout=10)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise StudyError(f"cannot inspect real-fio IO engines: {exc}") from exc
+    if result.returncode:
+        raise StudyError("cannot inspect real-fio IO engines: " +
+                         (result.stderr.strip() or f"exit {result.returncode}"))
+    advertised = set(re.findall(r"^\s+([A-Za-z0-9_]+)\s*$", result.stdout, re.MULTILINE))
+    engine = next((candidate for candidate in TEST_SCALE_IOENGINES if candidate in advertised), None)
+    if engine is None:
+        raise StudyError("fio 3.39 has no supported test-scale engine (libaio, posixaio, io_uring, psync)")
+    return engine
+
+
+def run_rehearsal(out: Path, fio_executable: str = "fio") -> dict[str, Any]:
+    """Run the real driver CLI over its planner-scaled schedule on one /tmp file."""
+    if not out.is_absolute():
+        raise StudyError("rehearsal --out must be an absolute path under /tmp")
+    if out.exists() and (out.is_symlink() or not out.is_dir() or any(out.iterdir())):
+        raise StudyError("rehearsal --out must be a new or empty directory under /tmp")
+    try:
+        tmp_root = Path("/tmp").resolve(strict=True)
+        out.parent.resolve(strict=True).relative_to(tmp_root)
+    except (OSError, ValueError) as exc:
+        raise StudyError("rehearsal --out parent must be under /tmp") from exc
+    if not re.fullmatch(r"/[A-Za-z0-9_./-]+", str(out)):
+        raise StudyError("rehearsal --out path may contain only letters, numbers, '.', '_', '/', and '-'")
+    fio_path = resolve_fio_executable(fio_executable)
+    try:
+        version = subprocess.run([fio_path, "--version"], text=True, capture_output=True,
+                                 check=False, timeout=10)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise StudyError(f"cannot check the real fio executable: {exc}") from exc
+    if version.returncode or not version.stdout.strip().startswith("fio-3.39"):
+        raise StudyError("real-fio rehearsal requires upstream fio 3.39; got "
+                         f"{version.stdout.strip() or version.stderr.strip() or 'no version output'}")
+    engine = rehearsal_ioengine(fio_path)
+
+    out.mkdir(parents=True, exist_ok=True)
+    target = out / "test-scale-target.dat"
+    try:
+        fd = os.open(target, os.O_CREAT | os.O_EXCL | os.O_RDWR | os.O_CLOEXEC, 0o600)
+        try:
+            os.ftruncate(fd, TEST_SCALE_EXTENT_BYTES)
+        finally:
+            os.close(fd)
+    except OSError as exc:
+        raise StudyError(f"cannot create the regular-file rehearsal target: {exc}") from exc
+    test_scale_target_stat(str(target), out, required_size=TEST_SCALE_EXTENT_BYTES)
+
+    transcript: list[str] = [f"fio={fio_path} {version.stdout.strip()}; ioengine={engine}",
+                              f"target={target}; bytes={TEST_SCALE_EXTENT_BYTES}; regular-file-only"]
+
+    def run_step(label: str, argv: list[str]) -> subprocess.CompletedProcess[str]:
+        try:
+            result = subprocess.run(argv, text=True, capture_output=True, check=False)
+        except OSError as exc:
+            transcript.append(f"## {label}\nCOMMAND: {argv!r}\nLAUNCH ERROR: {exc}")
+            (out / "rehearsal-transcript.txt").write_text("\n\n".join(transcript) + "\n",
+                                                             encoding="utf-8")
+            raise StudyError(f"rehearsal could not launch {label}: {exc}") from exc
+        transcript.append(f"## {label}\nCOMMAND: {argv!r}\nEXIT: {result.returncode}\n"
+                          f"STDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}")
+        if result.returncode:
+            (out / "rehearsal-transcript.txt").write_text("\n\n".join(transcript) + "\n",
+                                                             encoding="utf-8")
+            raise StudyError(f"real-fio rehearsal {label} failed with exit {result.returncode}: "
+                             f"{result.stderr.strip() or result.stdout.strip()}")
+        return result
+
+    base = [sys.executable, str(DRIVER_PATH)]
+    plan_result = run_step("planner", [*base, "plan", "--test-scale", "--json"])
+    try:
+        plan = json.loads(plan_result.stdout)
+    except json.JSONDecodeError as exc:
+        raise StudyError(f"test-scale planner returned invalid JSON: {exc}") from exc
+    scale = plan.get("test_scale") if isinstance(plan, dict) else None
+    cell_sets = scale.get("cell_sets") if isinstance(scale, dict) else None
+    if (not isinstance(scale, dict) or scale.get("enabled") is not True or
+            cell_sets != list(TEST_SCALE_CELL_SETS)):
+        raise StudyError("test-scale planner did not return the full rehearsal cell-set schedule")
+
+    for cell_set in cell_sets:
+        kind = CELL_SETS[cell_set][0]
+        command = [*base, "run", cell_set, "--target", str(target), "--device", "rehearsal",
+                   "--target-type", kind, "--offset", "0B", "--size", f"{TEST_SCALE_EXTENT_BYTES}B",
+                   "--out", str(out), "--max-memory-psi", "20", "--min-memavailable", "1B",
+                   "--min-output-free", "1B", "--min-target-free", "1B",
+                   "--max-probe-latency-seconds", "1", "--probe-consecutive-samples", "3",
+                   "--probe-interval-seconds", "1", "--fio-startup-grace-seconds",
+                   str(FIO_STARTUP_GRACE_DEFAULT_S), "--fio", fio_path,
+                   "--confirm-quiet-window", "--test-scale", "--test-scale-engine", engine]
+        run_step(f"run {cell_set}", command)
+
+    choice = out / "rung-choice.md"
+    run_step("analyze", [*base, "analyze", str(out), "--output", str(choice)])
+    if not choice.is_file() or choice.stat().st_size == 0:
+        raise StudyError("real-fio analyze did not produce rung-choice.md")
+    run_step("regular-file wipe equivalent", ["fallocate", "-p", "-o", "0",
+                                                "-l", str(TEST_SCALE_EXTENT_BYTES), str(target)])
+    test_scale_target_stat(str(target), out, required_size=TEST_SCALE_EXTENT_BYTES)
+    with target.open("rb") as stream:
+        if any(stream.read(TEST_SCALE_EXTENT_BYTES)):
+            raise StudyError("regular-file wipe equivalent left non-zero target data")
+    cell_count = len(list((out / "cells").glob("*.json")))
+    timed_count = 0
+    for path in (out / "cells").glob("*.json"):
+        try:
+            record = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        fio_jobs = record.get("fio", {}).get("jobs", []) if isinstance(record, dict) else []
+        if len(fio_jobs) == 1:
+            fio = record.get("fio", {})
+            options = fio.get("global options", fio_jobs[0].get("job options", {}))
+            if isinstance(options, dict) and str(options.get("time_based", "0")) == "1":
+                timed_count += 1
+    if timed_count == 0:
+        raise StudyError("real-fio rehearsal completed without recording any time-based jobs")
+    transcript.append(f"RESULT: PASS; cell_records={cell_count}; time_based_records={timed_count}; "
+                      f"analysis={choice.name}; file_equivalent_wipe=verified-zeroes")
+    transcript_path = out / "rehearsal-transcript.txt"
+    transcript_path.write_text("\n\n".join(transcript) + "\n", encoding="utf-8")
+    print(f"FIO-REHEARSAL-PASS: fio={version.stdout.strip()} cell_records={cell_count} "
+          f"time_based_records={timed_count} analysis={choice} file_wipe=verified-zeroes")
+    print(f"full command transcript: {transcript_path}")
+    return {"fio_version": version.stdout.strip(), "cell_records": cell_count,
+            "time_based_records": timed_count, "rung_choice": str(choice),
+            "file_equivalent_wipe": "verified-zeroes",
+            "transcript": str(transcript_path), "cell_sets": cell_sets, "ioengine": engine}
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
     plan = sub.add_parser("plan", help="print the bounded study schedule and empty meter")
     plan.add_argument("--json", action="store_true")
     plan.add_argument("--out", type=Path, help="read the existing study state for live meter values")
+    plan.add_argument("--test-scale", action="store_true",
+                      help="show the explicitly scaled, regular-file-only rehearsal schedule")
     ack = sub.add_parser("system-disk-ack", help="derive the current system-disk drift-check token")
     ack.add_argument("--target", required=True)
     ack.add_argument("--device", required=True, help="block-device name used by diskstats")
     ack.add_argument("--confirm-target", required=True,
                      help="raw target identity: PATH:SIZE_BYTES:PARTUUID")
+    verify = sub.add_parser("verify-fio-rounding",
+                            help="verify block-rounded IBX write caps with fio on a /tmp regular file")
+    verify.add_argument("--fio", default="fio", help="fio 3.39 executable or PATH name")
+    rehearsal = sub.add_parser("rehearse", help="run the planner-scaled full schedule on a /tmp regular file")
+    rehearsal.add_argument("--fio", default="fio", help="upstream fio 3.39 executable or PATH name")
+    rehearsal.add_argument("--out", type=Path, required=True,
+                           help="new output directory under /tmp for target, cells and rung-choice.md")
     run = sub.add_parser("run", help="run one scheduled cell-set; safe to resume")
     run.add_argument("cell_set", choices=tuple(CELL_SETS))
     run.add_argument("--target", required=True)
@@ -3188,8 +4037,10 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--max-memory-psi", type=float, required=True,
                      help="study-host policy, memory PSI full avg10 percent")
     run.add_argument("--min-memavailable", type=parse_size, required=True, help="study-host policy floor")
-    run.add_argument("--min-free", type=parse_size, required=True,
-                     help="study-host policy floor for free space on output and target filesystems")
+    run.add_argument("--min-output-free", type=parse_size, required=True,
+                     help="study-host policy floor for free space on the output filesystem")
+    run.add_argument("--min-target-free", type=parse_size, required=True,
+                     help="study-host policy floor for free space on a file-target filesystem")
     run.add_argument("--max-probe-latency-seconds", type=float, required=True,
                      help="study-host policy limit for the root-fsync, sshd and cockpit probe")
     run.add_argument("--probe-consecutive-samples", type=int, required=True,
@@ -3212,6 +4063,14 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--dry-run", action="store_true",
                      help="validate the target, schedule and every fio job without writing files or target data")
     run.add_argument("--fsync-cell", help="wrap exactly this cell with iomon-bpf; requires one Docker cgroup scope")
+    run.add_argument("--fio-startup-grace-seconds", type=float,
+                     default=FIO_STARTUP_GRACE_DEFAULT_S,
+                     help="startup allowance added after rendered runtime and ramp_time")
+    run.add_argument("--fio", default="fio", help="fio executable or PATH name")
+    run.add_argument("--test-scale", action="store_true",
+                     help="planner-scaled rehearsal; accepts only an output-contained /tmp regular file")
+    run.add_argument("--test-scale-engine", choices=TEST_SCALE_IOENGINES,
+                     help="fio engine override for the regular-file test-scale rehearsal only")
     analyze_parser = sub.add_parser("analyze", help="compute error, bias, spread and rung tables")
     analyze_parser.add_argument("results", type=Path)
     analyze_parser.add_argument("--output", type=Path)
@@ -3223,10 +4082,18 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
         if args.command == "plan":
-            print_plan(args.json, args.out / STATE_NAME if args.out else None)
+            print_plan(args.json, args.out / STATE_NAME if args.out else None,
+                       test_scale=args.test_scale)
             return 0
         if args.command == "system-disk-ack":
             print(derive_system_disk_ack(args.target, args.device, args.confirm_target))
+            return 0
+        if args.command == "verify-fio-rounding":
+            print(json.dumps(verify_fio_rounding(args.fio), sort_keys=True))
+            return 0
+        if args.command == "rehearse":
+            result = run_rehearsal(args.out, args.fio)
+            print(json.dumps(result, sort_keys=True))
             return 0
         if args.command == "analyze":
             result = analysis(args.results)
@@ -3239,13 +4106,18 @@ def main(argv: list[str] | None = None) -> int:
         result = run_study(args.cell_set, target=args.target, device=args.device, out=args.out,
                            target_kind=args.target_type, offset=args.offset, size=args.size,
                            mem_psi_max=args.max_memory_psi,
-                           min_memavailable=args.min_memavailable, min_free=args.min_free,
+                           min_memavailable=args.min_memavailable,
+                           min_output_free=args.min_output_free,
+                           min_target_free=args.min_target_free,
                            max_probe_latency_s=args.max_probe_latency_seconds,
                            probe_consecutive_samples=args.probe_consecutive_samples,
                            probe_interval_s=args.probe_interval_seconds,
                            liveness_ssh_host=args.liveness_ssh_host,
                            liveness_ssh_port=args.liveness_ssh_port,
                            liveness_cockpit_container=args.liveness_cockpit_container,
+                           fio_startup_grace_s=args.fio_startup_grace_seconds,
+                           fio_executable=args.fio, test_scale=args.test_scale,
+                           test_scale_ioengine=args.test_scale_engine,
                            fsync_cell=args.fsync_cell, quiet_window_confirmed=args.confirm_quiet_window,
                            confirm_target=args.confirm_target,
                            allow_system_disk_partition=args.allow_system_disk_partition,

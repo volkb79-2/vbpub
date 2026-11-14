@@ -24,8 +24,12 @@
 - Every commit carries exactly one route-specific trailer. Audit all commits
   in the task range, including merge commits.
 - Exact OpenAI route trailers are `Co-Authored-By: Codex gpt-6-luna
-  <noreply@openai.com>` for Luna and `Co-Authored-By: Codex
-  deepseek-v4.1-flash <noreply@openai.com>` for DeepSeek or OpenCode.
+  <noreply@openai.com>` for Luna, `Co-Authored-By: Codex gpt-6-sol
+  <noreply@openai.com>` for Sol (the Codex review route: Sol reviewers hold the
+  same allowances as other reviewers, including fixing small things in the
+  reviewed branch under their own trailer; every commit still carries exactly
+  one trailer) and `Co-Authored-By: Codex deepseek-v4.1-flash
+  <noreply@openai.com>` for DeepSeek or OpenCode.
 - Run each registered lane under the shared lock, one lane at a time:
 
   ```bash
