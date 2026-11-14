@@ -35,8 +35,12 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 - fix(cmru): retain only Assay evidence present in the project tree (KI-160).
 - fix(cmru): include tester-base's KSM source in generated project fixtures.
+- fix(cmru): align bundle copy, archive, and manifest exclusions; derive dev versions, clean staged trees, and canonicalize manifest tags (KI-162..165).
+- fix(cmru): refuse bundle source symlinks that could dereference outside the selected tree (KI-166).
+- fix(cmru): remove both bundle and wheel staging trees after success, deduplicate skipped-path warnings, and check manifest membership immediately before archiving (KI-164).
 
 ### Changed
+- Bundle builds no longer implicitly keep `pyproject.toml`; add `keep = ["pyproject.toml"]` under `[archive]` when that exact bundle-relative file is needed.
 - Hash both tester-base build inputs when checking the local base image identity.
 
 <!-- cmru: pending release notes end -->
