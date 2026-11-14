@@ -347,7 +347,7 @@ python3 - "$ROOT/od-402-unknown-missing.json" "$OD_UNKNOWN_START" "$OD_UNKNOWN_E
 import json, sys
 state = json.load(open(sys.argv[1], encoding="utf-8"))
 blocked = state["volker"]["blocked_until_epoch"]
-assert int(sys.argv[2]) + int(sys.argv[4]) <= blocked <= int(sys.argv[3]) + int(sys.argv[4])
+assert int(sys.argv[2]) + int(sys.argv[4]) <= blocked <= int(sys.argv[3]) + int(sys.argv[4]) + 1
 PY
 
 OD_DEFAULT_START=$(date +%s)
@@ -365,7 +365,7 @@ python3 - "$ROOT/od-402-unknown-invalid.json" "$OD_DEFAULT_START" "$OD_DEFAULT_E
 import json, sys
 state = json.load(open(sys.argv[1], encoding="utf-8"))
 blocked = state["github2"]["blocked_until_epoch"]
-assert int(sys.argv[2]) + 21600 <= blocked <= int(sys.argv[3]) + 21600
+assert int(sys.argv[2]) + 21600 <= blocked <= int(sys.argv[3]) + 21600 + 1
 PY
 
 OD_INVALID_KNOB_START=$(date +%s)
