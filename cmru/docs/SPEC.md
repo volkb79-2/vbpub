@@ -2989,9 +2989,11 @@ covered by the existing subtree mount.
 | `[wheel].python_bin` | string | Optional; defaults to `python3`. Executable used for the wheel build. |
 | `[wheel].project_root` | path | Optional; defaults to `project_root`. A relative value is based on the config directory. |
 | `[wheel].find_links` | path | Optional. Declares the local wheelhouse as the ONLY package source of the wheel build (`pip wheel . --no-index --find-links DIR`; it must therefore also contain the build requirements and every dependency, so a public index can never supply an estate-internal name); a relative value is based on the config directory. Omitted, pip uses its default index. |
-| `[archive].name_template` | string | Required. Filename template containing exactly one plain `{version}` field and no path separators; it is replaced with the value of the named environment variable. The resulting filename is checked again after substitution. |
-| `[archive].version_env` | string | Required. Name of the environment variable that must be set for preview and build. |
+| `[archive].name_template` | string | Required. Filename template containing exactly one plain `{version}` field and no path separators; `bundle-build` uses the named environment value when set, otherwise it supplies the CMRU-derived development version. A direct `run_bundle()` caller may pass `version_fallback`. The resulting filename is checked again after substitution. |
+| `[archive].version_env` | string | Required. Name of the environment variable used for an explicit release version. When that variable is unset, `bundle-build` resolves a development version from the selected project's CMRU release plan and current Git identity. |
 | `[archive].format` | string | Optional; defaults to `gztar`. Allowed values: `tar`, `gztar`, `bztar`, `xztar`, `zip`. The deterministic normalized writer is guaranteed for `xztar`. |
+| `[archive].keep` | array of strings | Optional; defaults to empty. Each value is one exact bundle-relative POSIX file path, with no glob syntax, absolute path, or traversal. It lets that named file pass the suffix hard-exclude filter at copy, archive, and manifest time. The path must exist as a regular file after copy/vendor/stage. Hard-excluded names (`.git`, `.ciu`, `ciu.env`, `minisign.key`, cache directories, `node_modules`) and `.pyc` files cannot be kept. There is no implicit exception for `pyproject.toml`; set `keep = ["pyproject.toml"]` under `[archive]` when that bundle-relative file is needed. |
+| `[archive].keep_tree` | boolean | Optional; defaults to `false`. After the archive and any configured manifest are created successfully, CMRU removes both `bundle_dir` and the wheel output `client_dir` from `dist_dir`; `true` retains both trees. Failures after staging starts retain both trees for diagnosis. |
 | `[copy].files` | array of strings | Within the required `[copy]` table; defaults to an empty list when omitted. File paths are resolved from `project_root`. |
 | `[copy].dirs` | array of strings | Within the required `[copy]` table; defaults to an empty list when omitted. Directory paths are resolved from `project_root`. |
 | `[archive].name_template` `{variant}` | field | Optional second plain field, at most once. Required exactly when a variant is built (`run_bundle(..., variant=...)`), refused otherwise; it is replaced by the variant name so the asset is `<prefix>-v<version>-<variant>.tar.xz`, the name `publish_versioned_variants` expects. |
@@ -3000,7 +3002,7 @@ covered by the existing subtree mount.
 | `[stage].argv` | array of strings | Optional (KI-126). One command run after vendor, before the manifest. Tokens: `{bundle_dir}`, `{variant}`, `{python_version}` only; any other field, format spec or conversion is refused. Runs with `bundle_dir` as its working directory, or with `project_root` when `[exec].prefix` is set. A non-zero exit fails the build and no archive is written. |
 | `[exec].prefix` | array of strings | Optional (KI-126). A runner prefix (for example `["docker","exec","-w","{root}","{container}"]`) put in front of the vendor and stage commands ONLY; copy, manifest and archive stay on the controller. Tokens: `{root}`, `{container}`. With a prefix, paths passed to the commands are relative to `project_root` (the runner must see the same tree there) and a path outside it is refused. |
 | `[exec].env` | table | Required for every token the prefix uses: maps `root` / `container` to the NAME of the environment variable holding the value; an unset variable is an error. No container name or host path is stored in the file. |
-| `[manifest].name` | string | Optional table (KI-126); name defaults to `manifest.json`, single filename not excluded from the archive. When present, the installer manifest is written LAST (after vendor and stage) so it covers every file in the tree; it needs the project name and tag (`bundle-build` supplies them) and refuses a tree holding files the archive hard-excludes. |
+| `[manifest].name` | string | Optional table (KI-126); name defaults to `manifest.json`, single filename not excluded from the archive. When present, the installer manifest is written LAST (after vendor and stage) so it covers every archive-eligible file in the tree; it needs the project name and release tag (`bundle-build` supplies the canonical tag). A suffix-excluded file left by stage without an exact `[archive].keep` entry fails closed; excluded name and cache paths are omitted from both archive and manifest. |
 
 For example, a project with no client wheel can start with:
 
@@ -3018,13 +3020,35 @@ dirs = ["src"]
 ```
 
 Set `EXAMPLE_VERSION` before calling `run_bundle()`; the library validates the
-configuration and then performs the build. A legacy no-variant build removes
+configuration and then performs the build. If `cmru handler bundle-build` has
+no value for that variable, it uses the version resolved by CMRU plus the
+commit count and short hash, for example `1.2.4.dev3+gabc123def456`. This
+PEP 440 development version is not a release version, so the immutable release
+publishers refuse it. A legacy no-variant build removes
 the whole `dist_dir` before assembling output. A variant build instead removes
 only `bundle_dir`, `client_dir` and that variant's own archive, preserving
 sibling variant archives. The template must contain one plain `{version}` field;
 other placeholders, format conversions, and path separators are refused. The
 rendered filename is also refused if the environment value introduces a path
-separator.
+separator. `[archive].keep` paths describe the final output layout: `copy.dirs =
+["a/b"]` writes under `b/`, while a `copy.files` entry is flattened to its
+basename. Suffix rules apply to regular files; directories whose names end in a
+protected suffix are traversed. CMRU emits one WARN per skipped copy path per
+build. A stage-created suffix-class file without an exact keep entry fails with
+its path. Suffix matching is currently case-sensitive, and secret-class names
+outside the exclusion list remain eligible (KI-167). Included source symlinks
+and stage-created symlinks are refused, so the archive writer does not
+dereference their targets. Set `keep_tree = true` only when a later consumer
+needs the assembled bundle and wheel trees; the default removes both after a
+successful archive. Failures after staging starts keep both trees, including an
+unkept suffix-class file that caused validation to fail; that file remains on
+disk but is not archived.
+
+When a manifest is configured, CMRU rechecks archive-eligible path membership
+against the written manifest immediately before archive creation and fails if
+paths have been added or removed. A concurrent external writer can still alter
+paths or file contents after that check and before the archive reads them, so
+the bundle tree must remain private for the build's duration.
 There is no bundle CLI or library dry-run API. Consumers
 that need a review step should inspect their declared source inputs before
 calling the build function. Unknown keys and wrong TOML types fail at the
@@ -3032,17 +3056,36 @@ configuration boundary (KI-33).
 
 **S9.4** Given the same source commit and toolchain pin, two independent builds MUST produce byte-identical artifacts (deterministic build contract). For the `bundle` profile specifically:
 
-- Archive membership comes from an explicit git-tracked allowlist (never a recursive walk).
+- Archive membership comes from configured copy paths and generated wheel, vendor, and stage
+  outputs. One bundle-relative hard-exclude predicate filters copied files, archive members, and
+  manifest entries; suffix classes can pass only through exact `[archive].keep` paths. Suffix
+  rules apply to regular files, so a directory named `certs.pem/` is traversed.
+- The name-class exclusions and `.pyc`/`__pycache__` remain non-keepable. A suffix-class file
+  left by stage without a keep entry fails closed before the manifest or archive is written.
+- `bundle-build` uses the version from its named environment variable when set. If it is absent,
+  CMRU derives a PEP 440 `.devN+g<short-hash>` version from the selected project's release plan
+  and Git history; immutable release publication rejects that version.
+- After the archive and any configured manifest succeed, both `bundle_dir` and `client_dir` are removed by
+  default. The explicit `[archive].keep_tree = true` option retains both; failures after staging
+  starts keep both trees for debugging, including an unkept suffix-class file that caused
+  validation to fail.
 - Every `TarInfo` is normalized: `mtime = SOURCE_DATE_EPOCH`; `uid = gid = 0`;
   `uname = gname = ""`; mode = `0o644` (files) / `0o755` (executable files);
   members sorted by path in byte order.
 - Compression: `tarfile` with `mode="w:xz"` (fixed format; no timestamp in container).
-- Hard excludes applied belt-and-suspenders: `.git`, `.ciu`, rendered `*.toml`, `ciu.env`,
-  `minisign.key`, `__pycache__`, `*.pyc`, `*.log`, `*.pem/.key/.crt` and similar.
-  The source-package metadata file `pyproject.toml` is the deliberate exception when
-  its parent path is explicitly allowlisted (for example, a bundled companion client).
-- The production `run_bundle()` path MUST use this normalized writer for `xztar`; it
-  must not bypass membership filtering through `copytree`/`make_archive`.
+- Hard excludes applied at each bundle boundary: `.git`, `.ciu`, rendered `*.toml`, `ciu.env`,
+  `minisign.key`, `__pycache__`, `*.pyc`, `*.log`, `*.pem/.key/.crt` and similar. Formats other
+  than `xztar` archive a filtered temporary copy through the standard archive writer.
+  A source-package metadata file such as `client/pyproject.toml` is included only when that
+  exact bundle-relative file path appears in `[archive].keep`; there is no implicit `.toml`
+  exception. For a root `pyproject.toml`, add `keep = ["pyproject.toml"]` under `[archive]`.
+- Suffix matching is case-sensitive; secret-class names outside the configured exclusion list
+  remain eligible (KI-167). With a manifest, archive-eligible path membership is rechecked against
+  the manifest immediately before archiving. This catches paths added or removed since manifest
+  creation, but a concurrent writer can change paths or file contents after the check and before
+  archive reading; the bundle tree must remain private during the build.
+- The production `run_bundle()` path MUST use this normalized writer for `xztar`; all other
+  supported formats MUST use the same membership predicate before `make_archive`.
 - A **build-twice gate** in the test suite asserts identical sha256 across two builds from
   the same `SOURCE_DATE_EPOCH`; flipping the epoch asserts the digest changes.
 

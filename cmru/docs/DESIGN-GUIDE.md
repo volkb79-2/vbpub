@@ -1626,12 +1626,46 @@ cross-ABI wheel download. This keeps the artifact names and published variant na
 The optional `[vendor]`, `[stage]`, `[exec]`, and `[manifest]` tables let a project describe
 the parts that vary by interpreter while CMRU retains ownership of copying sources, writing the
 manifest, and creating the deterministic archive. The runner prefix applies only to vendor and
-stage commands, where the target ABI matters. Projects without these tables keep the existing
-single-archive behavior and bytes. Vendor destinations and manifest names cannot use paths the
-archive hard-excludes, because the manifest must never describe files the archive drops. This
+stage commands, where the target ABI matters. Projects without these tables keep the single-archive
+assembly path; staged-tree cleanup follows the explicit archive policy below. Vendor destinations
+and manifest names cannot use paths the archive hard-excludes, because the manifest
+must never describe files the archive drops. This
 replaces consumer-specific builder scripts with one reviewable configuration and a single
 supported handler. See the [consumer example](CONSUMERS.md#per-interpreter-bundles-bundle-build)
 and the [S9 bundle configuration](SPEC.md#s9--reproducibility).
+
+The hard-exclude rule is one bundle-relative predicate shared by source copying, archive
+creation, and manifest enumeration. This matters because filtering only one phase either drops a
+legitimate runtime file without notice or lets a stage-created sensitive file reach the archive
+without a manifest entry. Suffix rules apply to regular files, so a directory named `certs.pem/`
+does not hide files beneath it. `[archive].keep` is an exact, reviewed exception for suffix-class
+files such as `.env` and `.pem`; it cannot override `.git`, `minisign.key`, cache directories,
+`node_modules`, or `.pyc`. Copy skips emit one WARN per path per build. A stage-created suffix
+file without an exact keep entry fails before archive creation. Suffix matching is currently
+case-sensitive, and secret-class names outside the exclusion list remain eligible (KI-167).
+Included source symlinks and stage-created symlinks are refused so the builder cannot dereference
+their targets into the artifact. This is a path policy, not content inspection: a stage step is
+executable project code, and content written under an ordinary filename remains eligible for the
+archive. Client metadata such as `client/pyproject.toml` also needs its exact file path in `keep`;
+no `.toml` exception is implicit. For a root `pyproject.toml`, use
+`keep = ["pyproject.toml"]` under `[archive]`.
+
+When the archive version environment variable is absent, `bundle-build` asks CMRU for the
+selected project's planned release version (or its latest tag when unchanged) and combines it
+with the commit count and short hash as a
+PEP 440 development version (`<planned-version>.devN+g<hash>`). That keeps retained build
+artifacts versioned and identifiable while `is_release_version` continues to prevent immutable
+release publication. An explicit release environment value still takes precedence, and the
+manifest tag is built through the same normalized prefix used by `cmru release`.
+
+`[archive].keep_tree` defaults to `false`: after the archive and any configured manifest succeed,
+CMRU removes both `bundle_dir` and the wheel output `client_dir` so release retention contains the
+distributable artifact without duplicate staging trees. `true` is an explicit opt-in for consumers
+that need to inspect or reuse those trees; failures after staging starts leave them in place for
+diagnosis, including an unkept suffix-class file that caused validation to fail. When a manifest is
+present, CMRU checks archive-eligible path membership against it immediately before archiving
+and refuses added or missing paths. A concurrent writer can still change paths or contents after that check
+and before archive reading, so the build tree must remain private for the duration of the build.
 
 ## The bundle asset name is one contract, and producers conform to it (KI-89 / PWMCP-07)
 
