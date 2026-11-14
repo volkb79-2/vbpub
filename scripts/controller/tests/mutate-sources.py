@@ -414,8 +414,8 @@ account_helper_mutant(
 )
 account_helper_mutant(
     "od-both-blocked-exit-code",
-    '        raise SystemExit(3)\n    return other',
-    '        raise SystemExit(2)\n    return other',
+    '    if not candidates:\n        earliest = min(state[account]["blocked_until_epoch"] for account in ACCOUNTS)\n        print(\n            "both Open Design accounts are blocked; earliest reset is " + format_epoch(earliest),\n            file=sys.stderr,\n        )\n        raise SystemExit(3)',
+    '    if not candidates:\n        earliest = min(state[account]["blocked_until_epoch"] for account in ACCOUNTS)\n        print(\n            "both Open Design accounts are blocked; earliest reset is " + format_epoch(earliest),\n            file=sys.stderr,\n        )\n        raise SystemExit(2)',
 )
 account_helper_mutant(
     "od-state-path-absolute-guard",
