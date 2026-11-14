@@ -15,6 +15,9 @@ content are redacted where needed.
 | `reviewer-wait-mention.jsonl` | Reviewer close from the stall investigation | A closing message quoting a wait-status phrase without ending on a pending wait. |
 | `killed-run.jsonl` | Trimmed interrupted Codex stream | A started turn and final message without `turn.completed`. |
 | `stalled-run.jsonl` | `assay-wp3` | The earlier prototype MID-WAIT fixture; its message body is replaced in `test-job-check.sh`. |
+| `pi-success.jsonl` | Sanitized pi 1.5.0 event stream | A completed assistant message and session id. |
+| `pi-402.jsonl` | Sanitized pi 1.5.0 error events | `message_end` with `stopReason=error` and a 402 `errorMessage`; pi's process can still exit zero. |
+| `pi-402-unknown.jsonl` | Sanitized pi 1.5.0 error events | A 402 `errorMessage` with no `reset_at`, for the bounded unknown-reset rule. |
 
 The fixtures are intentionally minimal: classification uses the real event
 types and messages that distinguish each terminal state, while the tests

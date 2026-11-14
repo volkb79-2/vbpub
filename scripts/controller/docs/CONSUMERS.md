@@ -65,6 +65,42 @@ stream is absent; this does not mean the child completed. Read the wrapper's
 `.done` marker for its exit status. See the
 [design guide](DESIGN-GUIDE.md#job-check-compatibility) for the checks.
 
+## Run Pi on Open Design
+
+`deepseek-pi` is the favored Pi route and alternates the two available Open
+Design accounts. Pin with `deepseek-pi-volker` or `deepseek-pi-github2`. The
+wrapper loads the selected key environment variable by sourcing
+`$HOME/.env.ai`; Pi provider definitions stay in the operator-owned
+`$HOME/.pi/agent/models.json`. Set `PI_MODEL`, `PI_THINKING`, or
+`PI_SESSION_DIR` in the local controller environment to override the defaults.
+
+Start the wrapper detached with an absolute prompt path:
+
+```bash
+nohup env CONTROLLER_HOME="$HOME/controller" PI_ROUTE=deepseek-pi \
+  scripts/controller/pi-impl.sh \
+  /path/to/worktree /absolute/path/to/brief.md pi-run \
+  > "$HOME/controller/logs/pi-run.launch.log" 2>&1 < /dev/null &
+```
+
+Check the stream, exit code, and account outcome with the route that was
+selected, then inspect current run/stall status:
+
+```bash
+scripts/controller/job-check.sh pi-run /path/to/worktree deepseek-pi
+scripts/controller/ctl-status.sh
+```
+
+A pi 402 may exit zero; the `.done` record uses `OUTCOME=USAGE-LIMIT` and the
+shared account state stores the reset. Resume by the saved pi session id; the
+wrapper uses the recorded account and applies the shared blocked-account
+fallback:
+
+```bash
+PI_ROUTE=deepseek-pi scripts/controller/pi-impl.sh \
+  /path/to/worktree /absolute/path/to/brief.md pi-resume resume <session-id>
+```
+
 ## Resume a usage-limited run or schedule a launch
 
 Preview recent usage-limit failures, then resume eligible runs on their saved

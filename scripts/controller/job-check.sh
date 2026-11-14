@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 # Mechanical run/worktree evidence check. Read-only; exits nonzero on red flags.
-# Usage: job-check.sh <run-name> <worktree-path> <luna|sol|deepseek|deepseek-volker|deepseek-github2|opencode|any|none> [absolute-report-path ...]
+# Usage: job-check.sh <run-name> <worktree-path> <luna|sol|deepseek|deepseek-volker|deepseek-github2|deepseek-pi|deepseek-pi-volker|deepseek-pi-github2|opencode|any|none> [absolute-report-path ...]
 set -uo pipefail
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 # shellcheck source=lib.sh
 . "$SCRIPT_DIR/lib.sh"
 controller_init
-[[ $# -ge 3 ]] || { echo "usage: $0 <run-name> <worktree-path> <luna|sol|deepseek|deepseek-volker|deepseek-github2|opencode|any|none> [absolute-report-path ...]" >&2; exit 2; }
+[[ $# -ge 3 ]] || { echo "usage: $0 <run-name> <worktree-path> <luna|sol|deepseek|deepseek-volker|deepseek-github2|deepseek-pi|deepseek-pi-volker|deepseek-pi-github2|opencode|any|none> [absolute-report-path ...]" >&2; exit 2; }
 run=$1 worktree=$2 route=$3; shift 3
 [[ $run =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ && $run != *..* ]] || { echo "invalid run name" >&2; exit 2; }
 red=0
@@ -19,7 +19,7 @@ case $route in
     trailer_mode=single
     trailer='Co-Authored-By: Codex gpt-6-sol <noreply@openai.com>'
     ;;
-  deepseek|deepseek-volker|deepseek-github2|opencode)
+  deepseek|deepseek-volker|deepseek-github2|deepseek-pi|deepseek-pi-volker|deepseek-pi-github2|opencode)
     trailer_mode=single
     trailer='Co-Authored-By: Codex deepseek-v4.1-flash <noreply@openai.com>'
     ;;
@@ -57,11 +57,47 @@ turn_state = None
 turn_last_item = None
 usage_reset = None
 last_error = ""
+pi_detected = False
+pi_stop_reason = None
+pi_usage_limited = False
+
+def pi_text(message):
+    content = message.get("content")
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "".join(
+            part.get("text", "")
+            for part in content
+            if isinstance(part, dict) and isinstance(part.get("text"), str)
+        )
+    return message.get("text", "") if isinstance(message.get("text"), str) else ""
 
 def error_text(value):
     if isinstance(value, dict):
         return str(value.get("message") or "")
     return str(value or "")
+
+def pi_402_error(message):
+    if not isinstance(message, str):
+        return False
+    match = re.match(r"^\s*402:\s*(\{.*\})\s*$", message, re.DOTALL)
+    if match is None:
+        return False
+    try:
+        value = json.loads(match.group(1))
+    except ValueError:
+        return False
+    pending = [value]
+    while pending:
+        current = pending.pop()
+        if isinstance(current, dict):
+            if current.get("code") == "insufficient_balance":
+                return True
+            pending.extend(current.values())
+        elif isinstance(current, list):
+            pending.extend(current)
+    return False
 
 for line in open(sys.argv[1], encoding="utf-8", errors="replace"):
     try:
@@ -70,7 +106,27 @@ for line in open(sys.argv[1], encoding="utf-8", errors="replace"):
         continue
     event_type = event.get("type")
     item = event.get("item") or {}
-    if event_type == "turn.started":
+    if event_type == "session":
+        pi_detected = True
+    elif event_type == "message_end":
+        message = event.get("message")
+        if isinstance(message, dict) and message.get("role") == "assistant":
+            pi_detected = True
+            last_message = pi_text(message)
+            messages += 1
+            pi_stop_reason = message.get("stopReason")
+            if pi_stop_reason == "error":
+                usage_reset = sys.argv[2] or None
+                pi_usage_limited = pi_402_error(message.get("errorMessage"))
+    elif event_type == "tool_execution_start":
+        pi_detected = True
+        turn_state = "in_progress"
+        commands += 1
+    elif event_type == "agent_settled":
+        pi_detected = True
+        turn_state = "failed" if event.get("aborted") is True else "completed"
+        turn_last_item = "agent_message"
+    elif event_type == "turn.started":
         turn_state = "started"
         turn_last_item = None
         usage_reset = None
@@ -95,8 +151,13 @@ for line in open(sys.argv[1], encoding="utf-8", errors="replace"):
 text = last_message.strip()
 low = text.lower()
 flags = []
-usage_limited = turn_state == "failed" and usage_reset is not None
+usage_limited = (
+    (turn_state == "failed" and usage_reset is not None)
+    or (pi_detected and pi_stop_reason == "error" and pi_usage_limited)
+)
 if not usage_limited:
+    if pi_detected and pi_stop_reason == "error":
+        flags.append("PI-ERROR (assistant stopReason=error)")
     if not text:
         flags.append("EMPTY-RUN (no final agent message)")
     else:
@@ -126,7 +187,7 @@ if not usage_limited:
             flags.append("MID-WAIT ending (gate/process may be orphaned)")
 
 if usage_limited:
-    flags.append(f"USAGE-LIMIT (reset {usage_reset})")
+    flags.append(f"USAGE-LIMIT (reset {usage_reset or 'unknown'})")
 elif turn_state == "completed" and turn_last_item == "reasoning":
     flags.append("REASONING-END (turn completed after reasoning, without a message or tool call)")
 elif turn_state != "completed":

@@ -33,6 +33,9 @@
 - The Codex DeepSeek routes are `deepseek` (automatic account selection),
   `deepseek-volker`, and `deepseek-github2` (pinned accounts). The two pinned
   forms use the same DeepSeek trailer above.
+- Pi's favored Open Design route is `deepseek-pi` (automatic account
+  selection), with `deepseek-pi-volker` and `deepseek-pi-github2` as pinned
+  forms. They use the same DeepSeek trailer above.
 - Run each registered lane under the shared lock, one lane at a time:
 
   ```bash

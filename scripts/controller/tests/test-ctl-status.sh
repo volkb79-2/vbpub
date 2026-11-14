@@ -67,4 +67,11 @@ else
 fi
 not_contains "$ROOT/status-fresh.out" '--- recent host queue results' 'fresh status omits the absent results section'
 
-echo 'PASS ctl-status: repo snapshot, queue liveness, streak, pause metadata, attention, missing config'
+printf '{"type":"session","id":"pi-session-fixture"}\n' > "$HOME_ROOT/runs/pi-stalled.jsonl"
+printf 'deepseek-pi-github2\n' > "$HOME_ROOT/runs/pi-stalled.route"
+touch -d '@0' "$HOME_ROOT/runs/pi-stalled.jsonl"
+CONTROLLER_HOME=$HOME_ROOT CONTROLLER_REPO=$REPO "$SRC" > "$ROOT/status-pi.out" 2>&1
+contains "$ROOT/status-pi.out" 'pi-stalled route=deepseek-pi-github2 RUNNING' 'status lists a pi run and its selected route'
+contains "$ROOT/status-pi.out" 'STALLED?' 'a pi stream with an old last event receives the normal stall warning'
+
+echo 'PASS ctl-status: repo snapshot, queue liveness, streak, pause metadata, attention, pi run stalls, missing config'

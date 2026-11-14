@@ -115,6 +115,41 @@ for pinned_route in deepseek-volker deepseek-github2; do
   contains "$ROOT/route-$pinned_route.out" "trailers OK (all commits incl. merges: $pinned_route)" \
     "$pinned_route route remains available"
 done
+git -C "$REPO" switch -qc pi-task "$BASE"
+printf 'pi implementation\n' > "$REPO/pi.txt"
+git -C "$REPO" add pi.txt
+git -C "$REPO" commit -qm 'Pi route commit' -m 'Co-Authored-By: Codex deepseek-v4.1-flash <noreply@openai.com>'
+cp "$SCRIPT_DIR/fixtures/pi-success.jsonl" "$HOME_ROOT/runs/pi-success.jsonl"
+printf 'EXIT=0 OUTCOME=SUCCESS\n' > "$HOME_ROOT/runs/pi-success.done"
+write_gate_log
+CONTROLLER_HOME=$HOME_ROOT CONTROLLER_REPO=$REPO CONTROLLER_BASE_REF=origin/main \
+  "$SRC" pi-success "$REPO" deepseek-pi-volker > "$ROOT/route-pi.out" 2>&1 || {
+    cat "$ROOT/route-pi.out" >&2
+    fail 'pi route should accept its DeepSeek trailer and event stream'
+  }
+contains "$ROOT/route-pi.out" 'trailers OK (all commits incl. merges: deepseek-pi-volker)' 'pi route is accepted by job-check'
+contains "$ROOT/route-pi.out" 'last: Completed the fixture task.' 'pi assistant message is included in the run summary'
+contains "$ROOT/route-pi.out" 'JOB-CHECK: green' 'completed pi run is recognized as complete'
+cp "$SCRIPT_DIR/fixtures/pi-402.jsonl" "$HOME_ROOT/runs/pi-402.jsonl"
+printf 'EXIT=0 OUTCOME=USAGE-LIMIT\n' > "$HOME_ROOT/runs/pi-402.done"
+if CONTROLLER_HOME=$HOME_ROOT CONTROLLER_REPO=$REPO CONTROLLER_BASE_REF=origin/main \
+  "$SRC" pi-402 "$REPO" deepseek-pi-volker > "$ROOT/pi-402-check.out" 2>&1; then
+  fail 'pi 402 stream was accepted as a successful job'
+fi
+contains "$ROOT/pi-402-check.out" 'USAGE-LIMIT (reset 2099-11-17T11:44:44Z)' 'job-check extracts the pi 402 reset time'
+if grep -qF 'EMPTY-RUN' "$ROOT/pi-402-check.out" || grep -qF 'KILLED' "$ROOT/pi-402-check.out"; then
+  fail 'pi 402 outcome was obscured by empty-run or killed classification'
+fi
+cp "$SCRIPT_DIR/fixtures/pi-402-unknown.jsonl" "$HOME_ROOT/runs/pi-402-unknown.jsonl"
+printf 'EXIT=0 OUTCOME=USAGE-LIMIT\n' > "$HOME_ROOT/runs/pi-402-unknown.done"
+if CONTROLLER_HOME=$HOME_ROOT CONTROLLER_REPO=$REPO CONTROLLER_BASE_REF=origin/main \
+  "$SRC" pi-402-unknown "$REPO" deepseek-pi-volker > "$ROOT/pi-402-unknown-check.out" 2>&1; then
+  fail 'pi 402 without reset_at was accepted as a successful job'
+fi
+contains "$ROOT/pi-402-unknown-check.out" 'USAGE-LIMIT (reset unknown)' 'job-check identifies a pi 402 with an unknown reset'
+if grep -qF 'EMPTY-RUN' "$ROOT/pi-402-unknown-check.out" || grep -qF 'PI-ERROR' "$ROOT/pi-402-unknown-check.out"; then
+  fail 'unknown-reset 402 was obscured by generic error classification'
+fi
 git -C "$REPO" switch -qc sol-task "$BASE"
 printf 'sol review fix\n' > "$REPO/sol.txt"
 git -C "$REPO" add sol.txt

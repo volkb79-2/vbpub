@@ -185,6 +185,20 @@ def record_start(state, account):
     state[account]["last_used_epoch"] = max(now, latest + 0.000001)
 
 
+def account_for_resume(state, account, now):
+    if state[account]["blocked_until_epoch"] <= now:
+        return account
+    other = next(name for name in ACCOUNTS if name != account)
+    if state[other]["blocked_until_epoch"] > now:
+        earliest = min(state[name]["blocked_until_epoch"] for name in ACCOUNTS)
+        print(
+            "both Open Design accounts are blocked; earliest reset is " + format_epoch(earliest),
+            file=sys.stderr,
+        )
+        raise SystemExit(3)
+    return other
+
+
 def gateway_text_reset(event):
     if not isinstance(event, dict) or event.get("type") not in ("error", "turn.failed"):
         return False, None
@@ -222,6 +236,29 @@ def coding_plan_reset(value):
     return found, latest
 
 
+def pi_error_reset(event):
+    if not isinstance(event, dict) or event.get("type") not in ("message_start", "message_end"):
+        return False, None
+    message = event.get("message")
+    if (
+        not isinstance(message, dict)
+        or message.get("role") != "assistant"
+        or message.get("stopReason") != "error"
+    ):
+        return False, None
+    error_message = message.get("errorMessage")
+    if not isinstance(error_message, str):
+        return False, None
+    match = re.match(r"^\s*402:\s*(\{.*\})\s*$", error_message, re.DOTALL)
+    if match is None:
+        return False, None
+    try:
+        error = json.loads(match.group(1))
+    except ValueError:
+        return False, None
+    return coding_plan_reset(error)
+
+
 def reset_from_files(paths):
     found = False
     latest = None
@@ -237,8 +274,9 @@ def reset_from_files(paths):
                 continue
             text_found, text_reset = gateway_text_reset(event)
             json_found, json_reset = coding_plan_reset(event)
-            found = found or text_found or json_found
-            for reset in (text_reset, json_reset):
+            pi_found, pi_reset = pi_error_reset(event)
+            found = found or text_found or json_found or pi_found
+            for reset in (text_reset, json_reset, pi_reset):
                 if reset is not None and (latest is None or reset[1] > latest[1]):
                     latest = reset
     return found, latest
@@ -292,6 +330,10 @@ def thread_in_stream(path, thread_id):
             and event.get("thread_id") == thread_id
         ):
             return True
+        if isinstance(event, dict) and event.get("type") == "session":
+            session_id = event.get("id") or event.get("sessionId")
+            if session_id == thread_id:
+                return True
     return False
 
 
@@ -305,6 +347,8 @@ def account_for_thread(state, thread_id, runs_dir):
         route_to_account = {
             "deepseek-volker": "volker",
             "deepseek-github2": "github2",
+            "deepseek-pi-volker": "volker",
+            "deepseek-pi-github2": "github2",
         }
         account = route_to_account.get(route_path.read_text(encoding="utf-8").strip())
         if account is None:
@@ -326,13 +370,18 @@ def main(argv):
     if len(argv) < 2:
         raise StateError(
             "usage: opendesign-accounts.py start <auto|volker|github2> <catalogs...> "
+            "| start-pi <auto|volker|github2> [session-id] "
+            "| start-pi-resume <account> <session-id> "
             "| start-resume <account> <thread-id> <volker-catalog> <github2-catalog> "
             "| resume <volker|github2> | find-thread-account <thread-id> <runs-dir> "
             "| record-thread <thread-id> <account> | block-run <account> <run-file>..."
         )
     action = argv[0]
     account = argv[1]
-    if action not in ("start", "start-resume", "resume", "find-thread-account", "record-thread", "block-run"):
+    if action not in (
+        "start", "start-pi", "start-pi-resume", "start-resume",
+        "resume", "find-thread-account", "record-thread", "block-run",
+    ):
         raise StateError("unknown Open Design account action")
     if action == "start":
         if account == "auto" and len(argv) not in (4, 5):
@@ -341,6 +390,11 @@ def main(argv):
             raise StateError("pinned start requires its account catalog and an optional thread id")
         if account not in ("auto", *ACCOUNTS):
             raise StateError("unknown Open Design account")
+    if action == "start-pi":
+        if account not in ("auto", *ACCOUNTS) or len(argv) not in (2, 3):
+            raise StateError("start-pi requires an account choice and an optional session id")
+    if action == "start-pi-resume" and (account not in ACCOUNTS or len(argv) != 3 or argv[2] == ""):
+        raise StateError("start-pi-resume requires an account and session id")
     if action == "start-resume" and (account not in ACCOUNTS or len(argv) != 5):
         raise StateError("start-resume requires an account, thread id, and both account catalogs")
     if action in ("resume", "block-run") and account not in ACCOUNTS:
@@ -375,20 +429,34 @@ def main(argv):
             save_state(stream, state)
             print(selected)
             return 0
+        if action == "start-pi":
+            # Pi owns its provider catalog; this records only shared account policy state.
+            thread_id = argv[2] if len(argv) == 3 else None
+            selected = pick_available(state, now) if account == "auto" else account
+            record_start(state, selected)
+            if thread_id:
+                state["threads"][thread_id] = selected
+            save_state(stream, state)
+            print(selected)
+            return 0
+        if action == "start-pi-resume":
+            thread_id = argv[2]
+            selected = account_for_resume(state, account, now)
+            record_start(state, selected)
+            state["threads"][thread_id] = selected
+            save_state(stream, state)
+            if selected != account:
+                print(
+                    f"account fallback from deepseek-{account} to deepseek-{selected} "
+                    "because the recorded account is blocked",
+                    file=sys.stderr,
+                )
+            print(selected)
+            return 0
         if action == "start-resume":
             thread_id, volker_catalog, github2_catalog = argv[2:5]
             catalogs = {"volker": volker_catalog, "github2": github2_catalog}
-            selected = account
-            if state[account]["blocked_until_epoch"] > now:
-                other = next(name for name in ACCOUNTS if name != account)
-                if state[other]["blocked_until_epoch"] > now:
-                    earliest = min(state[name]["blocked_until_epoch"] for name in ACCOUNTS)
-                    print(
-                        "both Open Design accounts are blocked; earliest reset is " + format_epoch(earliest),
-                        file=sys.stderr,
-                    )
-                    return 3
-                selected = other
+            selected = account_for_resume(state, account, now)
             ensure_catalog_safe(catalogs[selected])
             record_start(state, selected)
             state["threads"][thread_id] = selected

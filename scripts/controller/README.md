@@ -43,6 +43,20 @@ Use this order for each implementation task.
      scripts/controller/codex-impl.sh /path/to/worktree /absolute/path/brief.md task-run
    ```
 
+   Pi is the favored Open Design DeepSeek route. Start the wrapper detached so
+   the controller can return immediately; it writes run evidence under
+   `$CONTROLLER_RUNS_DIR`:
+
+   ```bash
+   nohup env CONTROLLER_HOME="$HOME/controller" PI_ROUTE=deepseek-pi \
+     scripts/controller/pi-impl.sh /path/to/worktree /absolute/path/brief.md pi-run \
+     > "$HOME/controller/logs/pi-run.launch.log" 2>&1 < /dev/null &
+   ```
+
+   Pi may exit zero after a provider 402. The wrapper classifies the final
+   assistant event and records `OUTCOME=USAGE-LIMIT` in `.done` while blocking
+   the selected account until its reset.
+
    Use `CODEX_ROUTE=deepseek` to select an Open Design account automatically,
    or pin one with `CODEX_ROUTE=deepseek-volker` or
    `CODEX_ROUTE=deepseek-github2`. OpenCode is available through
@@ -145,6 +159,18 @@ for the safety checks.
 
 ## Open Design account selection
 
+| Route | Launcher | Account behavior |
+|---|---|---|
+| `deepseek-pi` | `pi-impl.sh` | Favored Open Design route; alternates available accounts. |
+| `deepseek-pi-volker`, `deepseek-pi-github2` | `pi-impl.sh` | Pi pinned to the named account. |
+| `deepseek` | `codex-impl.sh` | Codex automatically selects an Open Design account. |
+| `deepseek-volker`, `deepseek-github2` | `codex-impl.sh` | Codex pinned to the named account. |
+| `opencode` | `opencode-impl.sh` | OpenCode using its configured Open Design provider. |
+| `luna` | `codex-impl.sh` | Luna Codex route. |
+
+The existing `luna` route remains available for side-by-side implementation
+runs while the favored Pi route gathers operating experience.
+
 The `deepseek` route uses the two locally configured Codex homes:
 `$HOME/.codex-opendesign-volker` and `$HOME/.codex-opendesign-github2`. Set
 `CODEX_HOME_DEEPSEEK_VOLKER` or `CODEX_HOME_DEEPSEEK_GITHUB2` to override either
@@ -165,12 +191,12 @@ The state file defaults to
 `$CONTROLLER_RUNS_DIR/opendesign-accounts.json`. Set `CONTROLLER_OD_STATE` to
 an absolute path to move it. It contains account names and numeric
 `last_used_epoch` and `blocked_until_epoch` values, plus an optional
-`window_end_epoch` per account and a `threads` map from known Codex thread ids
-to their Open Design account. Thread mappings let a manual
-`CODEX_ROUTE=deepseek ... resume <thread>` resume on the account that started
-that thread. If no run or state mapping exists, the wrapper says so and picks
-an account automatically. A later resume updates the mapping to the account it
-uses.
+`window_end_epoch` per account and a `threads` map from Codex thread ids or Pi
+session ids to their Open Design account. Thread mappings let a manual
+`CODEX_ROUTE=deepseek ... resume <thread>` or `PI_ROUTE=deepseek-pi ... resume
+<session-id>` resume on the account that started that conversation. If no run
+or state mapping exists, the wrapper says so and picks an account
+automatically. A later resume updates the mapping to the account it uses.
 
 A 402 `insufficient_balance` response with a parseable `reset_at` value records
 that reset for the account used by the run. If the gateway reports 402 but the
@@ -209,6 +235,57 @@ current weekly window end. The state schema rejects unknown fields so account
 keys cannot be stored there by mistake.
 
 `CODEX_HOME_OVERRIDE` is honoured only on the luna route.
+
+### Pi on Open Design
+
+`PI_ROUTE=deepseek-pi` selects between the same two Open Design accounts using
+the shared account state and alternation logic. Use
+`PI_ROUTE=deepseek-pi-volker` or `PI_ROUTE=deepseek-pi-github2` to pin an
+account. The default model is `deepseek-v4.1-flash-eco` at `high` thinking;
+override these with `PI_MODEL` and `PI_THINKING`. Pi receives the selected
+provider/model pair (`opendesign_volker/<model>` or
+`opendesign_github2/<model>`).
+
+Pi reads its provider definitions from the operator-owned
+`$HOME/.pi/agent/models.json`. The wrapper sources `$HOME/.env.ai` in its own
+shell, exports only the selected `OPENDESIGN_API_KEY_*` variable to pi, and
+does not print or record key values. Do not put credentials in the controller
+environment example or run files. The session directory defaults to
+`$HOME/.pi/agent/sessions`; set `PI_SESSION_DIR` to override it.
+
+The pi event stream is saved as `<run>.jsonl`, stderr as `<run>.err`, the last
+assistant text as `<run>.last.txt`, and the worktree, selected route, and pi
+session id as `<run>.wt`, `<run>.route`, and `<run>.thread`. The `.done` marker
+includes the pi exit code and `OUTCOME=SUCCESS`, `OUTCOME=USAGE-LIMIT`,
+`OUTCOME=ERROR`, or `OUTCOME=INCOMPLETE`. Non-interactive pi requires closed
+stdin; the wrapper always redirects it from `/dev/null`.
+
+Resume with the recorded session id and automatic route:
+
+```bash
+PI_ROUTE=deepseek-pi scripts/controller/pi-impl.sh \
+  /path/to/worktree /absolute/path/brief.md pi-resume resume <session-id>
+```
+
+The wrapper resumes on the account recorded for that session. If it has become
+blocked, the shared helper selects the other available account and logs the
+fallback; if both accounts are blocked, it exits 3 before starting pi. A pi
+402 is detected from the final assistant `message_end` event even though pi
+exits 0. Its `errorMessage` reset is recorded by the account helper; an
+unparseable reset uses the existing bounded unknown-reset default. No quota
+probe is made before a start.
+
+See the [design guide](docs/DESIGN-GUIDE.md#pi-open-design-route) for the
+reason Pi runs are classified from the event stream and how its session id
+joins the shared account map. The [consumer guide](docs/CONSUMERS.md#run-pi-on-open-design)
+has a copyable launch and resume example.
+
+Check a completed Pi run with its route name:
+
+```bash
+scripts/controller/job-check.sh pi-run /path/to/worktree deepseek-pi
+scripts/controller/ctl-status.sh
+```
 
 OpenCode defaults to `opendesign_github2/deepseek-v4.1-flash-eco`. Set
 `OPENCODE_PROVIDER=opendesign_volker` to choose the other provider, or set

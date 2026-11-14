@@ -16,7 +16,7 @@ if ! CONTROLLER_TEST_PARALLEL_OD_STARTS=0 bash "$SCRIPT_DIR/test-wrappers.sh" > 
   exit 1
 fi
 echo 'PASS unmutated wrapper tests before wrapper mutation checks'
-for baseline in test-job-check.sh test-hardening-tools.sh; do
+for baseline in test-job-check.sh test-hardening-tools.sh test-pi-impl.sh; do
   if ! bash "$SCRIPT_DIR/$baseline" > "$ROOT/${baseline%.sh}-unmutated.log" 2>&1; then
     cat "$ROOT/${baseline%.sh}-unmutated.log" >&2
     echo "FAIL: unmutated $baseline must pass before its mutants are judged" >&2
@@ -76,6 +76,18 @@ expect_killed job-any-claude-trailer-compatibility \
   env JOB_CHECK_SCRIPT="$ROOT/mutants/scripts/controller/job-check-any-claude-trailer.sh" bash "$SCRIPT_DIR/test-job-check.sh"
 expect_killed job-check-deepseek-pinned-routes \
   env JOB_CHECK_SCRIPT="$ROOT/mutants/scripts/controller/job-check-deepseek-pinned-routes.sh" bash "$SCRIPT_DIR/test-job-check.sh"
+expect_killed job-check-pi-route \
+  env JOB_CHECK_SCRIPT="$ROOT/mutants/scripts/controller/job-check-pi-route.sh" bash "$SCRIPT_DIR/test-job-check.sh"
+expect_killed job-check-pi-message-end \
+  env JOB_CHECK_SCRIPT="$ROOT/mutants/scripts/controller/job-check-pi-message-end.sh" bash "$SCRIPT_DIR/test-job-check.sh"
+expect_killed job-check-pi-402-error-code \
+  env JOB_CHECK_SCRIPT="$ROOT/mutants/scripts/controller/job-check-pi-402-error-code.sh" bash "$SCRIPT_DIR/test-job-check.sh"
+expect_killed usage-retry-pi-error-message \
+  env CONTROLLER_LIB_SCRIPT="$ROOT/mutants/scripts/controller/usage-retry-pi-error-message.sh" bash "$SCRIPT_DIR/test-hardening-tools.sh"
+expect_killed ctl-status-pi-route \
+  env CTL_STATUS_SCRIPT="$ROOT/mutants/scripts/controller/ctl-status-pi-route.sh" bash "$SCRIPT_DIR/test-ctl-status.sh"
+expect_killed ctl-status-pi-stall \
+  env CTL_STATUS_SCRIPT="$ROOT/mutants/scripts/controller/ctl-status-pi-stall.sh" bash "$SCRIPT_DIR/test-ctl-status.sh"
 expect_killed hx-provider-identity-guard \
   env HX_WRAPPER="$ROOT/mutants/scripts/controller/hx-identity.sh" bash "$SCRIPT_DIR/test-wrappers.sh"
 expect_killed release-evidence-archive \
@@ -100,6 +112,36 @@ expect_killed docs-codex-home-override-route \
   env README_SOURCE="$ROOT/mutants/scripts/controller/README-home-override-route.md" bash "$SCRIPT_DIR/test-wrappers.sh"
 expect_killed opencode-default-provider \
   env OPENCODE_IMPL_SCRIPT="$ROOT/mutants/scripts/controller/opencode-default-provider.sh" bash "$SCRIPT_DIR/test-wrappers.sh"
+for pi_mutant in \
+  pi-prompt-absolute pi-worktree-exists pi-session-id-guard pi-mode-guard \
+  pi-run-name-guard pi-run-collision-guard pi-auth-file-guard pi-auth-source-guard \
+  pi-prompt-preserve-newlines pi-volker-key-guard pi-github2-key-guard \
+  pi-unknown-route-guard pi-route-sidecar-pinned pi-resume-recorded-account \
+  pi-provider-account pi-source-auth-env pi-session-sidecar pi-stdin-closed \
+  pi-402-outcome pi-account-block-run pi-key-selected-export pi-key-volker-export \
+  pi-key-unselected-unset; do
+  expect_killed "$pi_mutant" \
+    env PI_IMPL_SCRIPT="$ROOT/mutants/scripts/controller/$pi_mutant.sh" bash "$SCRIPT_DIR/test-pi-impl.sh"
+done
+for pi_doc_mutant in README-pi-route-table DESIGN-pi-402-classification CONSUMER-pi-launch-route; do
+  case $pi_doc_mutant in
+    README-pi-route-table) doc_env=README_SOURCE ;;
+    DESIGN-pi-402-classification) doc_env=DESIGN_SOURCE ;;
+    CONSUMER-pi-launch-route) doc_env=CONSUMER_SOURCE ;;
+  esac
+  case $pi_doc_mutant in
+    README-pi-route-table) doc_path="$ROOT/mutants/scripts/controller/$pi_doc_mutant.md" ;;
+    DESIGN-pi-402-classification) doc_path="$ROOT/mutants/scripts/controller/$pi_doc_mutant.md" ;;
+    CONSUMER-pi-launch-route) doc_path="$ROOT/mutants/scripts/controller/$pi_doc_mutant.md" ;;
+  esac
+  expect_killed "$pi_doc_mutant" env "$doc_env=$doc_path" bash "$SCRIPT_DIR/test-pi-impl.sh"
+done
+for od_pi_mutant in od-pi-402-reset-detection od-pi-session-event-id od-pi-route-thread-map \
+  od-pi-blocked-account-selection od-pi-resume-blocked-fallback \
+  od-pi-resume-both-blocked-exit od-pi-unknown-reset-default; do
+  expect_killed "$od_pi_mutant" \
+    env PI_IMPL_SCRIPT="$ROOT/mutants/scripts/controller/$od_pi_mutant/pi-impl.sh" bash "$SCRIPT_DIR/test-pi-impl.sh"
+done
 expect_killed od-blocked-account-selection \
   env CODEX_IMPL_SCRIPT="$ROOT/mutants/scripts/controller/od-blocked-account-selection/codex-impl.sh" bash "$SCRIPT_DIR/test-wrappers.sh"
 expect_killed od-prefer-expiring-window \
