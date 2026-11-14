@@ -72,7 +72,7 @@ launch() {
   local fake_session_id="${run}-session"
   if [[ ${1:-} == resume && -n ${2:-} ]]; then fake_session_id=$2; fi
   PATH="$ROOT/bin:$PATH" HOME="$HOME_ROOT" PI_ROUTE="$route" \
-    FAKE_PI_STREAM="$SCRIPT_DIR/fixtures/$fixture" FAKE_PI_SESSION_ID="$fake_session_id" FAKE_PI_RC=0 \
+    FAKE_PI_STREAM="$SCRIPT_DIR/fixtures/$fixture.jsonl" FAKE_PI_SESSION_ID="$fake_session_id" FAKE_PI_RC=0 \
     "$SRC" "$WORKTREE" "$PROMPT" "$run" "$@" \
     > "$ROOT/$run.launch.log" 2>&1 < "$input"
 }
