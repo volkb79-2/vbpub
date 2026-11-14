@@ -2909,4 +2909,3 @@ def test_a_start_interrupted_before_the_job_existed_is_retried_not_failed(tmp_pa
     assert after["status"] == "RUNNING"
     assert after["started_mono"] is not None and after["last_progress_mono"] is not None
     assert not any(job["status"] == "FAILED" for job in _state(tmp_path)["jobs"].values())
-
