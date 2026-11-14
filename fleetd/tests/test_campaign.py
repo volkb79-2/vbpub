@@ -380,8 +380,8 @@ def test_job_names_digest_and_command_builders_are_stable_and_scoped():
     probe = probe_script({spec.name: spec})
     start = start_script(spec)
     stop = stop_script(spec.name)
-    assert "fleetd-campaign-command/1" in probe and "list.sha256" in probe
-    assert "list_digest = calculated_digest if planned else None" in probe
+    assert "fleetd-campaign-command/1" in probe and "python3 -c" in probe
+    assert spec.list_digest not in probe
     assert "run-job" in start and "--only-candidates" in start and "R2_MAX_ATTEMPTS" in start
     assert "sha256sum" in start and "EXISTING" in start
     assert 'run-r2-campaign.sh\" stop' in stop
@@ -1959,7 +1959,7 @@ def test_real_run_job_starts_non_root_project_and_recovers_digest_from_ids_file(
     assert probe.returncode == 0, probe.stderr
     row = json.loads(probe.stdout)["jobs"][0]
     assert row["list_digest"] == spec.list_digest
-    progress_file = home / "checkouts" / spec.commit / ".assay" / "progress-contract-assay.jsonl"
+    progress_file = home / "checkouts" / spec.commit / "ciu" / ".assay" / "progress-contract-assay.jsonl"
     assert row["progress_offset"] == 0, row
     assert row["progress_end_offset"] == progress_file.stat().st_size, row
     assert row["progress_count"] == 1

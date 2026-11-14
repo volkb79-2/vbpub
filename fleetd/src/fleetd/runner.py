@@ -316,7 +316,8 @@ def start_script(spec: JobSpec) -> str:
     })
     job_dir = f'"$HOME/jobs/{spec.name}"'
     candidate_file = f'"$RUNNER_HOME/{spec.candidate_file_home_path}"'
-    progress_file = f'"$RUNNER_HOME/{progress_home_path(spec.commit, spec.project, spec.lane)}"'
+    checkout_dir = f'"$RUNNER_HOME/checkouts/{spec.commit}"'
+    project_dir = checkout_dir if spec.project == "." else f'"$RUNNER_HOME/checkouts/{spec.commit}/{spec.project}"'
     run_job = '"$HOME/runner-scripts/run-job"'
     run_args = [
         shlex.quote(spec.runner_campaign),
@@ -351,8 +352,28 @@ def start_script(spec: JobSpec) -> str:
             "set -euo pipefail",
             'source "$HOME/runner-scripts/lib.sh"',
             f"job_dir={job_dir}",
+            f"checkout_dir={checkout_dir}",
+            f"project_dir={project_dir}",
             f"candidate_file={candidate_file}",
-            f"progress_file={progress_file}",
+            "assay_lane=$(python3 - \"$checkout_dir\" " + shlex.quote(spec.project) + " " + shlex.quote(spec.lane) + " <<'PY'\n"
+            + "import re, sys, tomllib\n"
+            + "from pathlib import Path\n"
+            + "checkout = Path(sys.argv[1])\n"
+            + "project_dir = checkout if sys.argv[2] == '.' else checkout / sys.argv[2]\n"
+            + "assay_lane = sys.argv[3]\n"
+            + "for config_path in (project_dir / 'run-gate.toml', checkout / 'run-gate.root.toml'):\n"
+            + "    try:\n"
+            + "        declaration = tomllib.loads(config_path.read_text(encoding='utf-8')).get('lanes', {}).get(sys.argv[3])\n"
+            + "    except (OSError, UnicodeError, tomllib.TOMLDecodeError):\n"
+            + "        continue\n"
+            + "    if declaration is not None:\n"
+            + "        assay_lane = declaration.get('assay_lane', sys.argv[3])\n"
+            + "        break\n"
+            + "if not isinstance(assay_lane, str) or re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.-]*', assay_lane) is None:\n"
+            + "    raise SystemExit('resolved Assay lane is not a safe artifact name')\n"
+            + "print(assay_lane)\n"
+            + "PY\n)",
+            'progress_file="$project_dir/.assay/progress-$assay_lane.jsonl"',
             f"expected_digest={expected_digest}",
             'file_digest=$(sha256sum -- "$candidate_file" | cut -d " " -f 1)',
             '[[ $file_digest == "$expected_digest" ]] || { echo "candidate file digest mismatch" >&2; exit 73; }',
