@@ -134,13 +134,32 @@ identity-checked `scripts/controller/hx.sh` wrapper. Tests use an in-memory
 fake with a controllable clock, job table, progress files, and unreachable or
 slow hosts; tests do not start a host, SSH client, or Docker container.
 
-The controller keeps `fleet-campaign-state/1` JSON outside Git and updates it
-with a temporary file plus rename. A restarted controller probes by job name
-and re-adopts existing work. There are no leases. On a failed probe, stall
-time pauses for that host. More than 30 minutes without contact marks the host
-lost; `tick` re-plans only unfinished candidate IDs on the reachable planned
-host with the largest `cap_alone_bytes`. If the original host later returns,
-the duplicate run may finish too; collection chooses one owner per candidate.
+The controller keeps `fleet-campaign-state/2` JSON outside Git and updates it
+with a temporary file plus rename. Deadline records include monotonic and UTC
+timestamps plus the controller boot ID. On the same boot, calculations use
+monotonic time. After reboot, deadlines are rebased using UTC elapsed time; a
+backward UTC step clamps elapsed time to zero and delays a detector; a forward
+UTC step counts as downtime and can advance detection after reboot. A restarted
+controller probes by job name and re-adopts existing work. There are no leases.
+On a failed probe, stall time pauses for that host. More than 30 minutes
+without contact marks the host lost; `tick`
+re-plans only unfinished candidate IDs from running and queued batches on the
+reachable planned host with the largest `cap_alone_bytes`. Idle planned hosts
+are probed too, so they can receive requeued work. If the original host later
+returns, the duplicate run may finish too; collection chooses one owner per
+candidate.
+
+The first detached command writes `list.sha256` before the campaign supervisor
+starts. During the brief startup interval, probe can recompute it from the
+uploaded ID file, so a controller disconnect cannot leave an existing job
+unadoptable. Probe transmits job names and ID-file paths rather than candidate
+arrays. It resolves the Assay lane from the checkout's Run-Gate declaration
+and reads the plain-run `progress-<assay-lane>.jsonl` beneath the project
+`.assay` directory; this matches `run-r2-campaign.sh` without relying on its
+optional instance pointer. Project paths follow the runner contract and cannot
+contain `..` within a component. The campaign client passes generated
+`--jobs` and `--only-candidates` only; it does not forward arbitrary Run-Gate
+options such as `--base` or `--carry-over-main`.
 
 The fleetd stall threshold is `max(900 seconds, 3 × p95)` from that host's
 observed per-candidate elapsed times. It measures time since that batch last
@@ -152,11 +171,16 @@ the next `tick` as an unfinished batch. The runner policy is not changed here.
 
 `collect` fetches each known progress stream and batch verdict. Per candidate,
 the earliest valid finished event owns the result; later events are ignored
-and counted. If timestamps tie or are absent, stable host and job ordering
-keeps the report deterministic. The collector counts `killed`, `survived`,
+and counted. Timestamps come from separate host clocks, so skew can change
+which valid duplicate is selected without changing one-owner accounting. If
+timestamps tie or are absent, stable host and job ordering keeps the report
+deterministic. The collector counts `killed`, `survived`,
 `timeout` (`budget_exceeded` and `hung`), `crashed`, `equivalent`, and
 `missing`, and reports artifact gaps. Per-host wall time and observed candidate
-rate accompany the one-owner table.
+rate accompany the one-owner table. hx timeouts and unreachable results pause
+the host's deadlines. Identity-check and guard refusals (exit 97/98) remain
+transport errors and fail closed; they are not converted into `UNREACHABLE` or
+`LOST` status.
 
 The lightweight collector does not merge Assay state stores. Assay's strict
 `--merge-manifest` and Run-Gate forwarding are tracked under Assay B544 and

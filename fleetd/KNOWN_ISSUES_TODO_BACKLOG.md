@@ -16,6 +16,7 @@
 | FD-010 | Consume Assay's exact-key baseline reuse in campaign execution | P2 | OPEN | 2026-11-13 |
 | FD-011 | Optional persistent campaign scheduler after the one-shot loop is proven | P2 | OPEN | 2026-11-13 |
 | FD-012 | Export campaign progress for cgprofile guard policy and evidence | P2 | OPEN | 2026-11-13 |
+| FD-013 | Serialize concurrent campaign state updates | P2 | OPEN | 2026-11-14 |
 
 ## FD-001 Lite campaign lifecycle
 
@@ -167,3 +168,16 @@ then specify evidence and refusal behavior before enabling enforcement.
 Fleetd owns stable campaign progress and ownership facts; cgprofile owns the
 guard decision and any cgroup action. Track the cgprofile side in CP-64. The
 lite controller itself must remain report-only with respect to guard rules.
+
+## FD-013 Serialize concurrent campaign state updates
+
+**State:** OPEN. **Priority:** P2. **Filed:** 2026-11-14.
+
+Each `fleet run`, `status`, `tick`, and `collect` call currently reads and
+atomically replaces the same campaign JSON without a per-campaign lock. Two
+overlapping controller invocations can therefore both make valid transitions
+from the same prior file and let the last rename discard the other's records.
+Named runner starts remain idempotent, so this is a state-accounting race.
+Add an exclusive lock at `<campaign>.lock` around each command's full
+read/modify/write interval. Keep locks local to the state directory and do not
+add leases, host-side locks, or a daemon.

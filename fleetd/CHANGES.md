@@ -23,6 +23,9 @@ All notable changes to this project are recorded here.
 - Add `fleet run`, `status`, `tick`, and `collect` with atomic versioned local
   state, restart recovery, stall/loss handling, planner-based re-queues, and
   one-owner combined JSON and Markdown results.
+- Add real-runner contract checks that execute generated start, probe, and stop
+  scripts with the checked-in `run-job` and `run-r2-campaign.sh` under a
+  temporary HOME, while stubbing only the lane command.
 
 ### Changed
 
@@ -62,3 +65,15 @@ All notable changes to this project are recorded here.
   restricted host enrollment, baseline reuse, the always-on daemon, and
   campaign-aware guard enforcement in fleetd and their owning project
   backlogs.
+- Fix the project-scoped ID path and plain-run Assay progress discovery against
+  the runner layout. Probes carry ID-file paths rather than candidate arrays,
+  and recover a missing startup digest from the uploaded ID file.
+- Requeue queued as well as running batches from lost hosts, preserve one
+  requeue for a stalled batch, and probe idle planned hosts as requeue targets.
+- Persist controller boot IDs with monotonic/UTC deadline records so restart
+  recovery re-bases deadlines; bump campaign state to schema 2. Backward UTC
+  steps delay detection after reboot; forward steps count as downtime and can
+  advance detection. Document runner option limits, project path rules,
+  host-clock ownership skew, and fail-closed hx identity/guard refusals.
+- File FD-013 for serializing concurrent state updates from overlapping
+  `fleet run`, `status`, `tick`, or `collect` invocations.

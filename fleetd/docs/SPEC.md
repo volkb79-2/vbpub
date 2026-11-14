@@ -170,7 +170,7 @@ clean Git project that has a Run-Gate configuration:
 ```
 
 `fleet run PLAN.json --transport hx --campaign ID --state-dir DIR` requires
-this object. It validates the plan, creates a `fleet-campaign-state/1` file,
+this object. It validates the plan, creates a `fleet-campaign-state/2` file,
 probes the planned hosts, and starts available batches up to the plan's
 per-host campaign slot limit. A subsequent `fleet run` with the same campaign
 and plan re-adopts existing jobs by name. The same campaign ID is bound to the
@@ -189,12 +189,19 @@ stored in fleetd source or tests.
 The runner job name is
 `<campaign>.<host>.s<slot>.b<n>.<list8>`. `list8` is the first eight hex
 characters of SHA-256 over the batch's sorted candidate IDs with one newline
-per ID. Start probes the job table and full list digest before writing the ID
-file or starting a new runner job. An existing matching name is a no-op; an
-existing name with a mismatched or unreadable digest refuses. The command
-builders invoke the existing `run-job` and `run-r2-campaign.sh` tools. Probe
-returns running/EXIT/missing state, list digest, candidate progress count,
-progress file modification time, and progress and verdict paths.
+per ID. Start probes the job table and full list digest before starting a new
+runner job. The uploaded ID file lives below the selected project in the
+persistent checkout. The first detached command writes `list.sha256` before it
+invokes `run-r2-campaign.sh`; if the controller or session ends before that
+write, probe recomputes the digest from the uploaded ID file. An existing
+matching name is a no-op; a mismatched digest refuses. Probe sends job names
+and ID-file paths rather than candidate arrays, so its command size does not
+grow with lane size. It resolves the Assay lane from the checkout's Run-Gate
+declaration and reads the plain run's `progress-<assay-lane>.jsonl` under the
+project `.assay` directory; it does not require the optional instance
+`progress-file` pointer. Probe returns running/EXIT/missing state, list digest,
+candidate progress count, progress file modification time, and progress and
+verdict paths.
 
 `fleet status ID` refreshes state and reports per-host and per-batch state,
 done/total counts, candidates per second, blended ETA, and `STALLED`/`LOST`
@@ -207,22 +214,33 @@ The stall threshold is `max(900 seconds, 3 × p95)` of observed per-candidate
 elapsed time. It measures silence since the last candidate finished; it never
 acts as a campaign wall budget. The stall clock pauses while the host is
 unreachable. More than 1800 seconds without host contact marks the host lost.
-Only unfinished candidate IDs are re-planned on the reachable planned host
-with the largest `cap_alone_bytes`, using the existing planner placement
-functions. If no target is available the work is deferred. A returning host
-may finish a duplicate; no lease or renewal is used.
+All work owned by the lost host, including batches that were queued but never
+started, is marked lost and considered for re-planning. Only unfinished
+candidate IDs are sent to the reachable planned host with the largest
+`cap_alone_bytes`, using the existing planner placement functions. If no
+target is available the work is deferred. Idle planned hosts are probed even
+when they had no initial batch, so they can become requeue targets. A stopped
+stalled job keeps its `STALLED` marker when a later probe sees its runner `EXIT`
+record and creates only one replacement batch. A returning host may finish a
+duplicate; no lease or renewal is used.
 
 The only persistent controller state is plain JSON under `--state-dir`,
-written to a temporary file, fsynced, and atomically renamed. The state is
-schema-versioned and is not part of the plan or Git. A restarted controller
-reconstructs remote state by probing deterministic job names.
+written to a temporary file, fsynced, and atomically renamed. The
+`fleet-campaign-state/2` record stores monotonic and UTC timestamps plus the
+controller boot ID. On the same boot elapsed time uses the monotonic clock;
+after reboot it is rebased from UTC. A backward UTC step is clamped to zero,
+which delays a detector; a forward UTC step counts as downtime and can advance
+detection after reboot. A restarted controller reconstructs remote state by
+probing deterministic job names.
 
 ## Collection
 
 `fleet collect ID` fetches known host progress streams and per-batch verdicts,
 then writes `fleet-campaign-result/1` JSON plus a Markdown report. Candidate
 ownership is selected by earliest valid finished-record timestamp; stable
-host/job order breaks ties or missing timestamps. Other finished copies are
+host/job order breaks ties or missing timestamps. Event timestamps come from
+host clocks, so clock skew can change which duplicate is selected, while the
+one-owner rule and candidate outcome remain unchanged. Other finished copies are
 ignored and counted. The result includes one candidate row each, killed,
 survived, timeout, crashed, equivalent, and missing totals, duplicate count,
 per-host wall time/rate, and missing artifact details. Assay `budget_exceeded`
@@ -234,3 +252,11 @@ B544, Run-Gate's pass-through as RG-277, and the baseline cache is already
 tracked by Assay B542. The restricted forced-command host entry is CIU-218;
 the fleetd daemon is FD-011; campaign-aware guard enforcement is cgprofile
 CP-64. Those are explicit later work, not implicit behavior of these commands.
+
+The campaign client passes only the generated `--jobs` and
+`--only-candidates` arguments to Run-Gate; it does not forward arbitrary
+options such as `--base` or `--carry-over-main`. Project paths must match
+`run-r2-campaign.sh`'s relative-path contract and cannot contain `..` anywhere
+in a component. hx timeout/unreachable results mark a host unreachable;
+identity-check and guard refusals (exit 97/98) remain fail-closed transport
+errors and do not silently become host-loss signals.

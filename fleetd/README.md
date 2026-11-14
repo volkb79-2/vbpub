@@ -53,6 +53,26 @@ host is unreachable. A re-plan with a different sorted candidate list gets a
 different job name and stops the old job when it is no longer wanted. No lease
 or wall-clock budget is maintained.
 
+The controller probes idle planned hosts as well, so a host with no initial
+batch can receive requeued work. Loss requeues unfinished candidates from
+queued and running batches. A stopped stalled batch remains `STALLED` after
+its runner exit is observed and produces one replacement. Runner ID files are
+stored below the selected project checkout; the digest is written before the
+campaign supervisor starts and can be reconstructed from that ID file during
+startup. Probe resolves the Assay lane from the checkout's Run-Gate config and
+reads its plain-run `progress-<assay-lane>.jsonl` file, without relying on the
+optional instance pointer. Probe requests carry file paths rather than
+candidate arrays.
+
+State schema 2 stores monotonic and UTC timestamps with the controller boot
+ID. Same-boot deadline calculations use monotonic time; a reboot rebases them
+from UTC. A backward UTC step is clamped to zero and delays detection; a
+forward UTC step counts as downtime and can advance detection after reboot.
+Candidate ownership uses event timestamps from separate host clocks, so skew
+may select a different valid duplicate owner.
+The campaign client passes generated `--jobs` and `--only-candidates` only;
+options such as `--base` and `--carry-over-main` are outside this MVP.
+
 `fleet collect` fetches available progress and verdict files and writes one
 combined `fleet-campaign-result/1` JSON file plus a Markdown report in the
 state directory. Each candidate has one owner: the earliest finished record
