@@ -149,6 +149,8 @@ class FakeJob:
     progress_records: list[dict[str, object]] = field(default_factory=list)
     progress_path: str = ""
     verdict_path: str = ""
+    progress_offset: int = 0
+    progress_end_offset: int | None = None
 
 
 @dataclass
@@ -208,6 +210,7 @@ class FakeTransport:
             if job.state == "RUNNING":
                 job.state = "EXIT"
                 job.exit_code = 137
+                job.progress_end_offset = len(host.files.get(job.progress_path, b""))
                 host.files[f"jobs/{job.name}/EXIT"] = b"137\n"
 
     def add_progress(
@@ -231,23 +234,16 @@ class FakeTransport:
         }
         job.progress_records.append(event)
         job.progress_mtime = self.clock()
-        shared_records = sorted(
-            (
-                record for other in host.jobs.values() if other.progress_path == job.progress_path
-                for record in other.progress_records
-            ),
-            key=lambda record: str(record.get("emitted_at", "")),
-        )
-        host.files[job.progress_path] = b"".join(
-            (json.dumps(record, sort_keys=True, separators=(",", ":")) + "\n").encode()
-            for record in shared_records
-        )
+        host.files[job.progress_path] = host.files.get(job.progress_path, b"") + (
+            json.dumps(event, sort_keys=True, separators=(",", ":")) + "\n"
+        ).encode()
 
     def finish(self, alias: str, job_name: str, exit_code: int = 0, verdict: bytes | None = None) -> None:
         host = self.host(alias)
         job = host.jobs[job_name]
         job.state = "EXIT"
         job.exit_code = exit_code
+        job.progress_end_offset = len(host.files.get(job.progress_path, b""))
         host.files[f"jobs/{job.name}/EXIT"] = f"{exit_code}\n".encode()
         if verdict is None:
             verdict = json.dumps({"final_exit": exit_code}, sort_keys=True).encode()
@@ -330,8 +326,11 @@ class FakeTransport:
                 str(target.get("lane", "")),
             )
             raw_progress = host.files.get(progress_path, b"")
+            end_offset = job.progress_end_offset if job.state == "EXIT" else len(raw_progress)
+            if end_offset is None or end_offset < job.progress_offset:
+                end_offset = job.progress_offset
             progress_records = []
-            for line in raw_progress.decode("utf-8", errors="replace").splitlines():
+            for line in raw_progress[job.progress_offset:end_offset].decode("utf-8", errors="replace").splitlines():
                 try:
                     event = json.loads(line)
                 except json.JSONDecodeError:
@@ -347,6 +346,54 @@ class FakeTransport:
                 candidate_id = event.get("candidate_id")
                 if isinstance(candidate_id, str) and candidate_id not in finished:
                     finished[candidate_id] = event
+            verdict_records = []
+            baseline_seconds = None
+            if job.state == "EXIT":
+                try:
+                    verdict = json.loads(host.files[job.verdict_path].decode("utf-8"))
+                except (KeyError, UnicodeError, json.JSONDecodeError):
+                    verdict = None
+                mutations = []
+                claims = verdict.get("claims", []) if isinstance(verdict, dict) else []
+                if isinstance(claims, list):
+                    mutations.extend(
+                        claim["mutation"] for claim in claims
+                        if isinstance(claim, dict) and claim.get("rigor") == "R2"
+                        and isinstance(claim.get("mutation"), dict)
+                    )
+                judgment = verdict.get("judgment") if isinstance(verdict, dict) else None
+                r2 = judgment.get("r2") if isinstance(judgment, dict) else None
+                if isinstance(r2, dict) and isinstance(r2.get("mutation"), dict):
+                    mutations.append(r2["mutation"])
+                for mutation in mutations:
+                    for bucket in ("killed", "survived", "budget_exceeded", "hung", "crashed", "equivalent"):
+                        outcomes = mutation.get(bucket, [])
+                        if not isinstance(outcomes, list):
+                            continue
+                        for outcome in outcomes:
+                            if not isinstance(outcome, dict) or outcome.get("candidate_id") not in planned:
+                                continue
+                            evidence = outcome.get("process_tree_evidence")
+                            verdict_records.append({
+                                "candidate_id": outcome["candidate_id"],
+                                "outcome_bucket": bucket,
+                                "elapsed_seconds": None,
+                                "emitted_at": None,
+                                "not_started": (
+                                    bucket == "budget_exceeded"
+                                    and isinstance(evidence, dict)
+                                    and evidence.get("leader_status") == "not-started"
+                                ),
+                            })
+                command = r2.get("r2_command") if isinstance(r2, dict) else None
+                baseline = command.get("r2_baseline") if isinstance(command, dict) else None
+                baseline_seconds = baseline.get("wall_s") if isinstance(baseline, dict) else None
+                if (
+                    isinstance(baseline_seconds, bool)
+                    or not isinstance(baseline_seconds, (int, float))
+                    or baseline_seconds < 0
+                ):
+                    baseline_seconds = None
             rows.append({
                 "name": job.name,
                 "state": job.state,
@@ -355,8 +402,12 @@ class FakeTransport:
                 "progress_count": len(finished),
                 "progress_mtime": job.progress_mtime if raw_progress else None,
                 "progress_path": progress_path,
+                "progress_offset": job.progress_offset,
+                "progress_end_offset": job.progress_end_offset,
                 "verdict_path": job.verdict_path,
                 "records": progress_records,
+                "verdict_records": verdict_records,
+                "baseline_seconds": baseline_seconds,
             })
         return json.dumps({"jobs": rows}, sort_keys=True, separators=(",", ":"))
 
@@ -387,6 +438,7 @@ class FakeTransport:
             progress_mtime=None,
             progress_path=str(metadata.get("progress_path", "")),
             verdict_path=f"{suffix}/verdict.json",
+            progress_offset=len(host.files.get(str(metadata.get("progress_path", "")), b"")),
         )
         host.jobs[name] = job
         host.starts += 1
@@ -400,6 +452,7 @@ class FakeTransport:
             return 0, "NOT_RUNNING\n", ""
         job.state = "EXIT"
         job.exit_code = 143
+        job.progress_end_offset = len(host.files.get(job.progress_path, b""))
         host.stops += 1
         host.files[f"jobs/{name}/EXIT"] = b"143\n"
         return 0, "STOPPED\n", ""

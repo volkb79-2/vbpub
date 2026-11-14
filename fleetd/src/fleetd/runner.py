@@ -178,6 +178,18 @@ for target in sorted(targets, key=lambda row: row["name"]):
             state = "RUNNING"
         except (OSError, ValueError):
             pass
+    def read_offset(filename):
+        try:
+            value = (job_dir / filename).read_text(encoding="ascii").strip()
+        except OSError:
+            return None
+        return int(value) if re.fullmatch(r"[0-9]+", value) else None
+    progress_offset = read_offset("progress-offset")
+    progress_end_offset = read_offset("progress-end-offset")
+    if progress_end_offset is not None and (
+        progress_offset is None or progress_end_offset < progress_offset
+    ):
+        progress_end_offset = None
     assay_lane = target["lane"]
     for config_path in (project_dir / "run-gate.toml", checkout / "run-gate.root.toml"):
         try:
@@ -203,8 +215,10 @@ for target in sorted(targets, key=lambda row: row["name"]):
     mtime = None
     try:
         mtime = progress_source.stat().st_mtime
-        with progress_source.open(encoding="utf-8") as stream:
-            for line in stream:
+        if progress_offset is not None and (state != "EXIT" or progress_end_offset is not None):
+            content = progress_source.read_bytes()
+            end_offset = progress_end_offset if state == "EXIT" else len(content)
+            for line in content[progress_offset:end_offset].decode("utf-8").splitlines():
                 try:
                     event = json.loads(line)
                 except json.JSONDecodeError:
@@ -216,12 +230,63 @@ for target in sorted(targets, key=lambda row: row["name"]):
     except (OSError, UnicodeError):
         mtime = None
     verdict_path = f"campaigns/{name}-s1/verdict.json"
+    verdict_records = []
+    baseline_seconds = None
+    if state == "EXIT":
+        try:
+            verdict = json.loads((runner_home / verdict_path).read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError):
+            verdict = None
+        mutations = []
+        claims = verdict.get("claims", []) if isinstance(verdict, dict) else []
+        if isinstance(claims, list):
+            for claim in claims:
+                if isinstance(claim, dict) and claim.get("rigor") == "R2" and isinstance(claim.get("mutation"), dict):
+                    mutations.append(claim["mutation"])
+        judgment = verdict.get("judgment") if isinstance(verdict, dict) else None
+        r2 = judgment.get("r2") if isinstance(judgment, dict) else None
+        if isinstance(r2, dict) and isinstance(r2.get("mutation"), dict):
+            mutations.append(r2["mutation"])
+        for mutation in mutations:
+            for bucket in ("killed", "survived", "budget_exceeded", "hung", "crashed", "equivalent"):
+                outcomes = mutation.get(bucket, [])
+                if not isinstance(outcomes, list):
+                    continue
+                for outcome in outcomes:
+                    if not isinstance(outcome, dict) or outcome.get("candidate_id") not in planned:
+                        continue
+                    evidence = outcome.get("process_tree_evidence")
+                    verdict_records.append({
+                        "candidate_id": outcome["candidate_id"],
+                        "outcome_bucket": bucket,
+                        "elapsed_seconds": None,
+                        "emitted_at": None,
+                        "not_started": (
+                            bucket == "budget_exceeded"
+                            and isinstance(evidence, dict)
+                            and evidence.get("leader_status") == "not-started"
+                        ),
+                    })
+        command = r2.get("r2_command") if isinstance(r2, dict) else None
+        baseline = command.get("r2_baseline") if isinstance(command, dict) else None
+        baseline_seconds = baseline.get("wall_s") if isinstance(baseline, dict) else None
+        if (
+            isinstance(baseline_seconds, bool)
+            or not isinstance(baseline_seconds, (int, float))
+            or not math.isfinite(float(baseline_seconds))
+            or baseline_seconds < 0
+        ):
+            baseline_seconds = None
     done = {event.get("candidate_id") for event in records if isinstance(event.get("candidate_id"), str)}
     rows.append({
         "name": name, "state": state, "exit_code": exit_code,
         "list_digest": list_digest, "progress_count": len(done),
         "progress_mtime": mtime, "progress_path": progress_path,
+        "progress_offset": progress_offset,
+        "progress_end_offset": progress_end_offset,
         "verdict_path": verdict_path, "records": records,
+        "verdict_records": verdict_records,
+        "baseline_seconds": baseline_seconds,
     })
 print(json.dumps({"jobs": rows}, sort_keys=True, separators=(",", ":")))
 PY'''.replace("PAYLOAD", shlex.quote(encoded))
@@ -242,6 +307,7 @@ def start_script(spec: JobSpec) -> str:
     })
     job_dir = f'"$HOME/jobs/{spec.name}"'
     candidate_file = f'"$RUNNER_HOME/{spec.candidate_file_home_path}"'
+    progress_file = f'"$RUNNER_HOME/{progress_home_path(spec.commit, spec.project, spec.lane)}"'
     run_job = '"$HOME/runner-scripts/run-job"'
     run_args = [
         shlex.quote(spec.runner_campaign),
@@ -254,27 +320,42 @@ def start_script(spec: JobSpec) -> str:
         shlex.quote(spec.candidate_file),
     ]
     expected_digest = shlex.quote(spec.list_digest)
-    launcher = (
+    launcher = "\n".join([
+        "set -euo pipefail",
         "printf '%s\\n' " + expected_digest
-        + f' > "$HOME/jobs/{spec.name}/list.sha256.tmp"; '
-        + f'mv -f -- "$HOME/jobs/{spec.name}/list.sha256.tmp" "$HOME/jobs/{spec.name}/list.sha256"; '
-        + 'exec "$@"'
-    )
+        + f' > "$HOME/jobs/{spec.name}/list.sha256.tmp"',
+        f'mv -f -- "$HOME/jobs/{spec.name}/list.sha256.tmp" "$HOME/jobs/{spec.name}/list.sha256"',
+        f'printf \'%s\\n\' "$FLEETD_PROGRESS_OFFSET" > "$HOME/jobs/{spec.name}/progress-offset.tmp"',
+        f'mv -f -- "$HOME/jobs/{spec.name}/progress-offset.tmp" "$HOME/jobs/{spec.name}/progress-offset"',
+        "set +e",
+        '"$@"',
+        "command_status=$?",
+        "set -e",
+        'if progress_end_offset=$(stat -c %s -- "$FLEETD_PROGRESS_PATH" 2>/dev/null); then :; else progress_end_offset=$FLEETD_PROGRESS_OFFSET; fi',
+        '[[ $progress_end_offset =~ ^[0-9]+$ ]] || progress_end_offset=$FLEETD_PROGRESS_OFFSET',
+        f'printf \'%s\\n\' "$progress_end_offset" > "$HOME/jobs/{spec.name}/progress-end-offset.tmp"',
+        f'mv -f -- "$HOME/jobs/{spec.name}/progress-end-offset.tmp" "$HOME/jobs/{spec.name}/progress-end-offset"',
+        'exit "$command_status"',
+    ])
     remote = "\n".join(
         [
             "set -euo pipefail",
             'source "$HOME/runner-scripts/lib.sh"',
             f"job_dir={job_dir}",
             f"candidate_file={candidate_file}",
+            f"progress_file={progress_file}",
             f"expected_digest={expected_digest}",
             'file_digest=$(sha256sum -- "$candidate_file" | cut -d " " -f 1)',
             '[[ $file_digest == "$expected_digest" ]] || { echo "candidate file digest mismatch" >&2; exit 73; }',
+            'progress_offset=0',
+            'if [[ -f $progress_file ]]; then progress_offset=$(stat -c %s -- "$progress_file"); fi',
+            '[[ $progress_offset =~ ^[0-9]+$ ]] || { echo "invalid Assay progress size" >&2; exit 73; }',
             'if [[ -e $job_dir ]]; then',
             '  stored_digest=$(cat -- "$job_dir/list.sha256" 2>/dev/null || sha256sum -- "$candidate_file" | cut -d " " -f 1)',
             '  if [[ $stored_digest == "$expected_digest" ]]; then echo EXISTING; exit 0; fi',
             '  echo "named job exists with another or unverifiable candidate-list digest" >&2; exit 73',
             "fi",
-            f"if {run_job} {shlex.quote(spec.name)} -- bash -c {shlex.quote(launcher)} fleetd-launch env R2_MAX_ATTEMPTS=2147483647 bash \"$HOME/runner-scripts/run-r2-campaign.sh\" "
+            f"if FLEETD_PROGRESS_PATH=\"$progress_file\" FLEETD_PROGRESS_OFFSET=\"$progress_offset\" {run_job} {shlex.quote(spec.name)} -- bash -c {shlex.quote(launcher)} fleetd-launch env R2_MAX_ATTEMPTS=2147483647 bash \"$HOME/runner-scripts/run-r2-campaign.sh\" "
             + " ".join(run_args) + " >/dev/null; then",
             "  start_status=0",
             "else",
@@ -383,10 +464,22 @@ class RunnerJobs:
         return isinstance(actual, str) and actual == spec.list_digest
 
 
-def parse_progress(content: bytes, expected_ids: set[str]) -> list[dict[str, object]]:
+def parse_progress(
+    content: bytes,
+    expected_ids: set[str],
+    *,
+    start_offset: int = 0,
+    end_offset: int | None = None,
+) -> list[dict[str, object]]:
     """Parse the candidate events needed by the collector from one progress stream."""
+    if isinstance(start_offset, bool) or not isinstance(start_offset, int) or start_offset < 0:
+        raise ContractError("progress start offset must be a non-negative integer")
+    if end_offset is not None and (
+        isinstance(end_offset, bool) or not isinstance(end_offset, int) or end_offset < start_offset
+    ):
+        raise ContractError("progress end offset must be an integer at or after its start")
     try:
-        text = content.decode("utf-8")
+        text = content[start_offset:end_offset].decode("utf-8")
     except UnicodeDecodeError as exc:
         raise ContractError("progress artifact is not UTF-8") from exc
     records: list[dict[str, object]] = []

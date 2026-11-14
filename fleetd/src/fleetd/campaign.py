@@ -209,6 +209,7 @@ class CampaignManager:
             host_id = host["id"]
             hosts[host_id] = {
                 "status": "UNKNOWN",
+                "error": None,
                 "capacity_alone_bytes": host.get("cap_alone_bytes", 0),
                 "inflight_limit": max(1, host.get("campaign_slots", 1)),
                 "last_contact_mono": None,
@@ -278,10 +279,15 @@ class CampaignManager:
             "paused_seconds": 0.0,
             "progress_mtime": None,
             "progress_path": None,
+            "progress_offset": None,
+            "progress_end_offset": None,
             "verdict_path": f"campaigns/{spec.runner_campaign}/verdict.json",
             "progress_count": 0,
             "records": [],
+            "not_started_ids": [],
+            "baseline_seconds": None,
             "exit_code": None,
+            "failure_reason": None,
             "requeued": False,
             "stop_pending": False,
             "requeue_reason": reason,
@@ -466,9 +472,8 @@ class CampaignManager:
                 # A host the planner refused (shared-prod, unknown role, PSI) and
                 # that owns no job of this campaign is never contacted.
                 continue
-            wanted = {name: _job_spec(job) for name, job in job_rows.items()}
             try:
-                rows = self.runner.probe(host_id, wanted)
+                self._refresh_host(state, host_id, host_state, job_rows, now)
             except HostUnavailable:
                 if host_state["unreachable_since_mono"] is None:
                     host_state["unreachable_since_mono"] = host_state["last_contact_mono"]
@@ -478,127 +483,174 @@ class CampaignManager:
                 if now - host_state["unreachable_since_mono"] > LOST_AFTER_SECONDS:
                     host_state["status"] = "LOST"
                 continue
-            prior_status = host_state["status"]
-            returned_lost = (
-                host_state["unreachable_since_mono"] is not None
-                and now - host_state["unreachable_since_mono"] > LOST_AFTER_SECONDS
-            ) or prior_status == "LOST"
-            if host_state["unreachable_since_mono"] is not None:
-                pause = max(0.0, now - host_state["unreachable_since_mono"])
-                host_state["paused_seconds"] += pause
-                for job in job_rows.values():
-                    if job["status"] in {"RUNNING", "STARTING", "UNKNOWN", "LOST"}:
-                        job["paused_seconds"] += pause
-                host_state["unreachable_since_mono"] = None
-            host_state["last_contact_mono"] = now
-            host_state["status"] = "ONLINE"
-            if returned_lost:
-                host_state["loss_requeued"] = False
-                host_state["returned_after_loss"] = True
-            for name, job in job_rows.items():
-                row = rows[name]
-                state_name = row.get("state")
-                superseded_pending = job["status"] == "SUPERSEDED_PENDING"
-                was_unstarted = job["status"] in {"QUEUED", "STARTING"}
-                digest = row.get("list_digest")
-                if state_name != "MISSING" and (
-                    not isinstance(digest, str) or digest not in {job["list_digest"], job["list8"]}
-                ):
-                    raise ContractError(f"named job {name} has a different candidate-list digest")
-                if state_name == "MISSING":
-                    if superseded_pending:
-                        job["status"] = "SUPERSEDED"
-                        job["stop_pending"] = False
-                        continue
-                    if job["status"] in {"STARTING", "RUNNING", "UNKNOWN", "LOST"}:
-                        job["status"] = "EXIT"
-                        job["missing_job"] = True
-                        job["ended_mono"] = now
-                    continue
-                old_finished = set(job.get("finished_ids", []))
-                records = row.get("records", [])
-                if not isinstance(records, list):
-                    raise TransportError(f"probe row for {name} has an invalid records field")
-                allowed = set(job["candidate_ids"])
-                all_records = job.setdefault("records", [])
-                record_keys = {
-                    (item.get("candidate_id"), item.get("outcome_bucket"), item.get("emitted_at"), item.get("elapsed_seconds"))
-                    for item in all_records if isinstance(item, dict)
-                }
-                new_records: list[dict[str, Any]] = []
-                for event in records:
-                    if not isinstance(event, dict):
-                        continue
-                    candidate_id = event.get("candidate_id")
-                    if not isinstance(candidate_id, str):
-                        continue
-                    if candidate_id not in allowed:
-                        continue
-                    outcome = event.get("outcome_bucket")
-                    if not is_candidate_id(candidate_id):
-                        raise TransportError(f"probe row for {name} has an invalid candidate id")
-                    if not isinstance(outcome, str) or outcome not in {
-                        "killed", "survived", "budget_exceeded", "hung", "crashed", "equivalent"
-                    }:
-                        continue
-                    elapsed = event.get("elapsed_seconds")
-                    if isinstance(elapsed, bool) or not isinstance(elapsed, (int, float)) or not math.isfinite(float(elapsed)) or elapsed < 0:
-                        elapsed = None
-                    emitted = event.get("emitted_at") if isinstance(event.get("emitted_at"), str) else None
-                    record = {
-                        "candidate_id": candidate_id,
-                        "outcome_bucket": outcome,
-                        "elapsed_seconds": elapsed,
-                        "emitted_at": emitted,
-                    }
-                    key = (candidate_id, outcome, emitted, elapsed)
-                    if key not in record_keys:
-                        record_keys.add(key)
-                        all_records.append(record)
-                        new_records.append(record)
-                finished = {record["candidate_id"] for record in all_records}
-                job["finished_ids"] = sorted(finished)
-                job["progress_count"] = len(finished)
-                job["progress_mtime"] = row.get("progress_mtime")
-                if row.get("progress_path") is not None:
-                    job["progress_path"] = row["progress_path"]
-                if row.get("verdict_path") is not None:
-                    job["verdict_path"] = row["verdict_path"]
-                new_finished = finished - old_finished
-                if new_finished:
-                    job["last_progress_mono"] = now
-                    job["paused_seconds"] = 0.0
-                    host_state["last_progress_mono"] = now
-                if state_name == "RUNNING":
-                    if was_unstarted:
-                        job["adopted"] = True
-                    if job["started_mono"] is None:
-                        job["started_mono"] = now
-                    if job["last_progress_mono"] is None:
-                        job["last_progress_mono"] = now
-                    job["status"] = "RUNNING"
-                elif state_name == "EXIT":
-                    if job["status"] != "STALLED":
-                        job["status"] = "COMPLETE" if set(job["candidate_ids"]) <= finished else "EXIT"
-                    job["exit_code"] = row.get("exit_code")
-                    job["ended_mono"] = job.get("ended_mono", now)
-                elif state_name == "UNKNOWN":
-                    job["status"] = "UNKNOWN"
-                    if job["started_mono"] is None:
-                        job["started_mono"] = now
-                    if job["last_progress_mono"] is None:
-                        job["last_progress_mono"] = now
-                else:
-                    raise TransportError(f"probe row for {name} has unsupported job state {state_name!r}")
+            except (ContractError, TransportError) as exc:
+                self._record_host_error(host_state, str(exc))
+
+    def _refresh_host(
+        self,
+        state: dict[str, Any],
+        host_id: str,
+        host_state: dict[str, Any],
+        job_rows: Mapping[str, dict[str, Any]],
+        now: float,
+    ) -> None:
+        wanted = {name: _job_spec(job) for name, job in job_rows.items()}
+        rows = self.runner.probe(host_id, wanted)
+        prior_status = host_state["status"]
+        returned_lost = (
+            host_state["unreachable_since_mono"] is not None
+            and now - host_state["unreachable_since_mono"] > LOST_AFTER_SECONDS
+        ) or prior_status == "LOST"
+        if host_state["unreachable_since_mono"] is not None:
+            pause = max(0.0, now - host_state["unreachable_since_mono"])
+            host_state["paused_seconds"] += pause
+            for job in job_rows.values():
+                if job["status"] in {"RUNNING", "STARTING", "UNKNOWN", "LOST"}:
+                    job["paused_seconds"] += pause
+            host_state["unreachable_since_mono"] = None
+        host_state["last_contact_mono"] = now
+        host_state["status"] = "ONLINE"
+        host_state.pop("error", None)
+        if returned_lost:
+            host_state["loss_requeued"] = False
+            host_state["returned_after_loss"] = True
+        for name, job in job_rows.items():
+            row = rows[name]
+            state_name = row.get("state")
+            superseded_pending = job["status"] == "SUPERSEDED_PENDING"
+            was_unstarted = job["status"] in {"QUEUED", "STARTING"}
+            digest = row.get("list_digest")
+            if state_name != "MISSING" and (
+                not isinstance(digest, str) or digest not in {job["list_digest"], job["list8"]}
+            ):
+                raise ContractError(f"named job {name} has a different candidate-list digest")
+            if state_name == "MISSING":
                 if superseded_pending:
-                    if state_name in {"EXIT", "MISSING"}:
-                        job["status"] = "SUPERSEDED"
-                        job["stop_pending"] = False
+                    job["status"] = "SUPERSEDED"
+                    job["stop_pending"] = False
+                    continue
+                if job["status"] in {"STARTING", "RUNNING", "UNKNOWN", "LOST"}:
+                    job["status"] = "EXIT"
+                    job["missing_job"] = True
+                    job["ended_mono"] = now
+                    if not job.get("finished_ids"):
+                        job["status"] = "FAILED"
+                        job["failure_reason"] = "missing_job (exit code unavailable)"
+                continue
+            old_finished = set(job.get("finished_ids", []))
+            records = row.get("records", [])
+            verdict_records = row.get("verdict_records", []) if state_name == "EXIT" else []
+            if not isinstance(records, list):
+                raise TransportError(f"probe row for {name} has an invalid records field")
+            if not isinstance(verdict_records, list):
+                raise TransportError(f"probe row for {name} has an invalid verdict records field")
+            for field in ("progress_offset", "progress_end_offset"):
+                value = row.get(field, job.get(field))
+                if value is not None and (isinstance(value, bool) or not isinstance(value, int) or value < 0):
+                    raise TransportError(f"probe row for {name} has an invalid {field}")
+                job[field] = value
+            baseline_seconds = row.get("baseline_seconds")
+            if baseline_seconds is not None:
+                if (
+                    isinstance(baseline_seconds, bool)
+                    or not isinstance(baseline_seconds, (int, float))
+                    or not math.isfinite(float(baseline_seconds))
+                    or baseline_seconds < 0
+                ):
+                    raise TransportError(f"probe row for {name} has an invalid baseline time")
+                job["baseline_seconds"] = float(baseline_seconds)
+            allowed = set(job["candidate_ids"])
+            all_records = job.setdefault("records", [])
+            record_keys = {
+                (item.get("candidate_id"), item.get("outcome_bucket"), item.get("emitted_at"), item.get("elapsed_seconds"))
+                for item in all_records if isinstance(item, dict)
+            }
+            not_started_ids = set(job.get("not_started_ids", []))
+            for event in [*records, *verdict_records]:
+                if not isinstance(event, dict):
+                    continue
+                candidate_id = event.get("candidate_id")
+                if not isinstance(candidate_id, str) or candidate_id not in allowed:
+                    continue
+                if not is_candidate_id(candidate_id):
+                    raise TransportError(f"probe row for {name} has an invalid candidate id")
+                if event.get("not_started") is True:
+                    not_started_ids.add(candidate_id)
+                    continue
+                outcome = event.get("outcome_bucket")
+                if not isinstance(outcome, str) or outcome not in {
+                    "killed", "survived", "budget_exceeded", "hung", "crashed", "equivalent"
+                }:
+                    continue
+                elapsed = event.get("elapsed_seconds")
+                if isinstance(elapsed, bool) or not isinstance(elapsed, (int, float)) or not math.isfinite(float(elapsed)) or elapsed < 0:
+                    elapsed = None
+                emitted = event.get("emitted_at") if isinstance(event.get("emitted_at"), str) else None
+                record = {
+                    "candidate_id": candidate_id,
+                    "outcome_bucket": outcome,
+                    "elapsed_seconds": elapsed,
+                    "emitted_at": emitted,
+                }
+                key = (candidate_id, outcome, emitted, elapsed)
+                if key not in record_keys:
+                    record_keys.add(key)
+                    all_records.append(record)
+            job["not_started_ids"] = sorted(not_started_ids)
+            finished = {record["candidate_id"] for record in all_records if isinstance(record, dict)}
+            job["finished_ids"] = sorted(finished)
+            job["progress_count"] = len(finished)
+            job["progress_mtime"] = row.get("progress_mtime")
+            if row.get("progress_path") is not None:
+                job["progress_path"] = row["progress_path"]
+            if row.get("verdict_path") is not None:
+                job["verdict_path"] = row["verdict_path"]
+            new_finished = finished - old_finished
+            if new_finished:
+                job["last_progress_mono"] = now
+                job["paused_seconds"] = 0.0
+                host_state["last_progress_mono"] = now
+            if state_name == "RUNNING":
+                if was_unstarted:
+                    job["adopted"] = True
+                if job["started_mono"] is None:
+                    job["started_mono"] = now
+                if job["last_progress_mono"] is None:
+                    job["last_progress_mono"] = now
+                job["status"] = "RUNNING"
+            elif state_name == "EXIT":
+                job["exit_code"] = row.get("exit_code")
+                job["ended_mono"] = job.get("ended_mono", now)
+                if job["status"] not in {"STALLED", "FAILED"}:
+                    if set(job["candidate_ids"]) <= finished:
+                        job["status"] = "COMPLETE"
+                    elif not finished:
+                        job["status"] = "FAILED"
+                        job["failure_reason"] = f"exit code {job['exit_code']}"
                     else:
-                        job["status"] = "SUPERSEDED_PENDING"
-            if prior_status == "LOST":
-                self._stop_returned_duplicates(state, host_id)
-            self._stop_superseded_host(state, host_id)
+                        job["status"] = "EXIT"
+            elif state_name == "UNKNOWN":
+                job["status"] = "UNKNOWN"
+                if job["started_mono"] is None:
+                    job["started_mono"] = now
+                if job["last_progress_mono"] is None:
+                    job["last_progress_mono"] = now
+            else:
+                raise TransportError(f"probe row for {name} has unsupported job state {state_name!r}")
+            if superseded_pending:
+                if state_name in {"EXIT", "MISSING"}:
+                    job["status"] = "SUPERSEDED"
+                    job["stop_pending"] = False
+                else:
+                    job["status"] = "SUPERSEDED_PENDING"
+        if prior_status == "LOST":
+            self._stop_returned_duplicates(state, host_id)
+        self._stop_superseded_host(state, host_id)
+
+    @staticmethod
+    def _record_host_error(host_state: dict[str, Any], message: str) -> None:
+        host_state["status"] = "ERROR"
+        host_state["error"] = message
 
     def _stop_superseded_host(self, state: dict[str, Any], host_id: str) -> None:
         for job in state["jobs"].values():
@@ -613,6 +665,9 @@ class CampaignManager:
                 state["hosts"][host_id]["status"] = "UNREACHABLE"
                 if state["hosts"][host_id]["unreachable_since_mono"] is None:
                     state["hosts"][host_id]["unreachable_since_mono"] = state["hosts"][host_id]["last_contact_mono"]
+                continue
+            except (TransportError, ContractError) as exc:
+                self._record_host_error(state["hosts"][host_id], str(exc))
                 continue
             job["stop_pending"] = False
             job["status"] = "SUPERSEDED"
@@ -631,6 +686,9 @@ class CampaignManager:
                     self.runner.stop(host_id, job["name"])
                 except HostUnavailable:
                     state["hosts"][host_id]["status"] = "UNREACHABLE"
+                    continue
+                except (TransportError, ContractError) as exc:
+                    self._record_host_error(state["hosts"][host_id], str(exc))
                     continue
                 job["status"] = "SUPERSEDED"
                 job["stop_pending"] = False
@@ -729,7 +787,7 @@ class CampaignManager:
             host_state = state["hosts"][job["host"]]
             if host_state["status"] != "ONLINE" or job["last_progress_mono"] is None:
                 continue
-            threshold = self._stall_threshold(state, job["host"])
+            threshold = self._stall_threshold(state, job)
             age = max(0.0, now - job["last_progress_mono"] - job["paused_seconds"])
             if age < threshold:
                 continue
@@ -739,15 +797,74 @@ class CampaignManager:
                 host_state["status"] = "UNREACHABLE"
                 host_state["unreachable_since_mono"] = host_state["last_contact_mono"] or now
                 continue
+            except (TransportError, ContractError) as exc:
+                self._record_host_error(host_state, str(exc))
+                continue
             job["status"] = "STALLED"
             job["stalled_mono"] = now
             job["stall_after_seconds"] = threshold
             done = self._done_ids(state)
             pending = [candidate_id for candidate_id in job["candidate_ids"] if candidate_id not in done]
-            self._enqueue_replanned(state, job, pending, job["host"], "stalled")
+            if not job.get("finished_ids"):
+                job["status"] = "FAILED"
+                job["exit_code"] = job.get("exit_code") if job.get("exit_code") is not None else 143
+                job["failure_reason"] = f"exit code {job['exit_code']}"
+                job["ended_mono"] = now
+                job["requeued"] = True
+            elif pending:
+                self._enqueue_replanned(state, job, pending, job["host"], "stalled")
 
     @staticmethod
-    def _stall_threshold(state: Mapping[str, Any], host_id: str) -> float:
+    def _p95(values: Sequence[float]) -> float | None:
+        if not values:
+            return None
+        ordered = sorted(values)
+        index = min(len(ordered) - 1, math.ceil(0.95 * len(ordered)) - 1)
+        return ordered[index]
+
+    @staticmethod
+    def _predicted_candidate_seconds(state: Mapping[str, Any], job: Mapping[str, Any]) -> list[float]:
+        plan = state["plan"]
+        time_reference = plan.get("time_reference", {})
+        reference_baseline = time_reference.get("baseline_score") if isinstance(time_reference, dict) else None
+        reference_major = time_reference.get("geekbench_major") if isinstance(time_reference, dict) else None
+        reference_version = time_reference.get("geekbench_version") if isinstance(time_reference, dict) else None
+        host_plan = next((row for row in plan["hosts"] if row["id"] == job["host"]), {})
+        speed = host_plan.get("speed")
+        comparable = (
+            isinstance(speed, dict)
+            and isinstance(reference_baseline, (int, float))
+            and not isinstance(reference_baseline, bool)
+            and speed.get("geekbench_major") == reference_major
+            and speed.get("geekbench_version") == reference_version
+            and speed.get("baseline_score") == reference_baseline
+            and isinstance(speed.get("single_core"), (int, float))
+            and not isinstance(speed.get("single_core"), bool)
+            and speed["single_core"] > 0
+        )
+        factor = host_plan.get("f_h", 1.0)
+        result = []
+        for candidate_id in job["candidate_ids"]:
+            candidate = state["candidate_metadata"].get(candidate_id, {})
+            reference_seconds = candidate.get("time_ref_seconds")
+            if (
+                isinstance(reference_seconds, bool)
+                or not isinstance(reference_seconds, (int, float))
+                or not math.isfinite(float(reference_seconds))
+                or reference_seconds < 0
+            ):
+                continue
+            predicted = (
+                float(reference_seconds) * float(reference_baseline) / float(speed["single_core"]) * float(factor)
+                if comparable else float(reference_seconds)
+            )
+            if math.isfinite(predicted) and predicted >= 0:
+                result.append(predicted)
+        return result
+
+    @classmethod
+    def _stall_threshold(cls, state: Mapping[str, Any], job: Mapping[str, Any]) -> float:
+        host_id = job["host"]
         durations = sorted(
             float(record["elapsed_seconds"])
             for job in state["jobs"].values() if job["host"] == host_id
@@ -758,10 +875,36 @@ class CampaignManager:
             and math.isfinite(float(record["elapsed_seconds"]))
             and record["elapsed_seconds"] >= 0
         )
-        if not durations:
-            return float(STALL_FLOOR_SECONDS)
-        index = min(len(durations) - 1, math.ceil(0.95 * len(durations)) - 1)
-        return max(float(STALL_FLOOR_SECONDS), 3.0 * durations[index])
+        predicted_p95 = cls._p95(cls._predicted_candidate_seconds(state, job))
+        observed_p95 = cls._p95(durations)
+        threshold = max(
+            float(STALL_FLOOR_SECONDS),
+            3.0 * predicted_p95 if predicted_p95 is not None else 0.0,
+            3.0 * observed_p95 if observed_p95 is not None else 0.0,
+        )
+        if not job.get("finished_ids"):
+            demand = state["plan"].get("demand", {})
+            declared_baseline = demand.get("baseline_seconds") if isinstance(demand, dict) else None
+            if (
+                isinstance(declared_baseline, (int, float))
+                and not isinstance(declared_baseline, bool)
+                and math.isfinite(float(declared_baseline))
+                and declared_baseline >= 0
+            ):
+                baseline_seconds = float(declared_baseline)
+            else:
+                host_baselines = [
+                    float(row["baseline_seconds"])
+                    for row in state["jobs"].values()
+                    if row["host"] == host_id
+                    and isinstance(row.get("baseline_seconds"), (int, float))
+                    and not isinstance(row.get("baseline_seconds"), bool)
+                    and math.isfinite(float(row["baseline_seconds"]))
+                    and row["baseline_seconds"] >= 0
+                ]
+                baseline_seconds = cls._p95(host_baselines) or 0.0
+            threshold += baseline_seconds
+        return threshold
 
     def _requeue_exited(self, state: dict[str, Any]) -> None:
         done = self._done_ids(state)
@@ -769,6 +912,14 @@ class CampaignManager:
             if job["status"] != "EXIT" or job["requeued"]:
                 continue
             job["requeued"] = True
+            if not job.get("finished_ids"):
+                job["status"] = "FAILED"
+                if job.get("missing_job"):
+                    job["failure_reason"] = "missing_job (exit code unavailable)"
+                else:
+                    job["failure_reason"] = f"exit code {job.get('exit_code')}"
+                job["ended_mono"] = job.get("ended_mono", self.clock())
+                continue
             pending = [candidate_id for candidate_id in job["candidate_ids"] if candidate_id not in done]
             inflight = self._inflight_ids(state, exclude_host=job["host"])
             pending = [candidate_id for candidate_id in pending if candidate_id not in inflight]
@@ -847,12 +998,13 @@ class CampaignManager:
                     host_state["status"] = "UNREACHABLE"
                     host_state["unreachable_since_mono"] = host_state["last_contact_mono"] or now
                     job["start_error"] = str(exc)
-                    continue
-                except TransportError as exc:
+                    break
+                except (TransportError, ContractError) as exc:
                     job["status"] = "QUEUED"
                     job["start_error"] = str(exc)
                     state["warnings"].append(str(exc))
-                    continue
+                    self._record_host_error(host_state, str(exc))
+                    break
                 job["status"] = "RUNNING"
                 job["adopted"] = not started
                 host_state["status"] = "ONLINE"
@@ -892,10 +1044,12 @@ class CampaignManager:
                     "stall_after_seconds": job.get("stall_after_seconds"),
                     "progress_mtime": job.get("progress_mtime"),
                     "exit_code": job.get("exit_code"),
+                    "reason": job.get("failure_reason"),
                 })
             result_hosts.append({
                 "host": host_id,
                 "state": host_state["status"],
+                "error": host_state.get("error"),
                 "done": len({candidate_id for job in host_jobs for candidate_id in job.get("finished_ids", [])}),
                 "total": len(host_plan.get("assigned", [])),
                 "batches": rows,
@@ -928,7 +1082,8 @@ class CampaignManager:
         events: list[dict[str, Any]] = []
         seen_progress: set[tuple[str, str, str, str | None, float | None]] = set()
         missing_artifacts: list[dict[str, str]] = []
-        progress_paths: dict[tuple[str, str], set[str]] = {}
+        not_started_reasons: dict[str, str] = {}
+        progress_paths: dict[tuple[str, str], list[dict[str, Any]]] = {}
         for job in state["jobs"].values():
             allowed = set(job["candidate_ids"])
             for record in job.get("records", []):
@@ -961,25 +1116,41 @@ class CampaignManager:
                 continue
             path = job.get("progress_path")
             if isinstance(path, str) and path:
-                progress_paths.setdefault((job["host"], path), set()).update(job["candidate_ids"])
-        for (host, path), ids in sorted(progress_paths.items()):
+                progress_paths.setdefault((job["host"], path), []).append(job)
+        for (host, path), jobs in sorted(progress_paths.items()):
             try:
                 content = self.runner.get(host, path)
             except (TransportError, HostUnavailable):
                 missing_artifacts.append({"host": host, "artifact": "progress", "path": path})
                 continue
-            for record in parse_progress(content, expected_ids & ids):
-                emitted_at = record.get("emitted_at") if isinstance(record.get("emitted_at"), str) else None
-                elapsed = record.get("elapsed_seconds")
-                elapsed_seconds = (
-                    float(elapsed)
-                    if isinstance(elapsed, (int, float)) and not isinstance(elapsed, bool) and math.isfinite(float(elapsed))
-                    else None
-                )
-                key = (host, record["candidate_id"], record["outcome_bucket"], emitted_at, elapsed_seconds)
-                if key not in seen_progress:
-                    events.append({**record, "host": host, "job": self._job_for_record(state, host, record["candidate_id"])})
-                    seen_progress.add(key)
+            for job in sorted(jobs, key=lambda row: row["name"]):
+                offset = job.get("progress_offset")
+                end_offset = job.get("progress_end_offset")
+                if isinstance(offset, bool) or not isinstance(offset, int) or offset < 0:
+                    continue
+                if end_offset is not None and (
+                    isinstance(end_offset, bool) or not isinstance(end_offset, int) or end_offset < offset
+                ):
+                    continue
+                if job["status"] in {"COMPLETE", "EXIT", "FAILED", "STALLED"} and end_offset is None:
+                    continue
+                for record in parse_progress(
+                    content,
+                    expected_ids & set(job["candidate_ids"]),
+                    start_offset=offset,
+                    end_offset=end_offset,
+                ):
+                    emitted_at = record.get("emitted_at") if isinstance(record.get("emitted_at"), str) else None
+                    elapsed = record.get("elapsed_seconds")
+                    elapsed_seconds = (
+                        float(elapsed)
+                        if isinstance(elapsed, (int, float)) and not isinstance(elapsed, bool) and math.isfinite(float(elapsed))
+                        else None
+                    )
+                    key = (host, record["candidate_id"], record["outcome_bucket"], emitted_at, elapsed_seconds)
+                    if key not in seen_progress:
+                        events.append({**record, "host": host, "job": job["name"]})
+                        seen_progress.add(key)
         for job in sorted(state["jobs"].values(), key=lambda row: row["name"]):
             if job["status"] in {"QUEUED", "STARTING"}:
                 continue
@@ -998,12 +1169,37 @@ class CampaignManager:
                 event["candidate_id"] for event in events if event["host"] == host
             }
             for record in verdict_events:
+                if record.get("not_started") is True:
+                    not_started_reasons.setdefault(
+                        record["candidate_id"], "never started (Assay process tree status: not-started)"
+                    )
+                    continue
                 if record["candidate_id"] not in existing_host_ids:
                     events.append({**record, "host": host, "job": job["name"]})
                     existing_host_ids.add(record["candidate_id"])
         for job in state["jobs"].values():
             if job["status"] not in {"QUEUED", "STARTING"} and not job.get("progress_path"):
                 missing_artifacts.append({"host": job["host"], "job": job["name"], "artifact": "progress", "path": ""})
+            for candidate_id in job.get("not_started_ids", []):
+                not_started_reasons.setdefault(
+                    candidate_id, "never started (Assay process tree status: not-started)"
+                )
+        failed_jobs = [
+            {
+                "host": job["host"],
+                "job": job["name"],
+                "exit_code": job.get("exit_code"),
+                "reason": job.get("failure_reason") or f"exit code {job.get('exit_code')}",
+                "candidate_ids": list(job["candidate_ids"]),
+            }
+            for job in sorted(state["jobs"].values(), key=lambda row: row["name"])
+            if job["status"] == "FAILED"
+        ]
+        failed_candidate_reasons = {
+            candidate_id: failed["reason"]
+            for failed in failed_jobs
+            for candidate_id in failed["candidate_ids"]
+        }
         by_candidate: dict[str, list[dict[str, Any]]] = {}
         for event in events:
             candidate_id = event.get("candidate_id")
@@ -1023,7 +1219,11 @@ class CampaignManager:
                     "owner_job": None,
                     "emitted_at": None,
                     "duplicates_ignored": 0,
-                    "reason": state["unplaced_reasons"].get(candidate_id),
+                    "reason": (
+                        failed_candidate_reasons.get(candidate_id)
+                        or not_started_reasons.get(candidate_id)
+                        or state["unplaced_reasons"].get(candidate_id)
+                    ),
                 })
                 continue
             owner = records[0]
@@ -1049,6 +1249,7 @@ class CampaignManager:
             "candidates": candidate_rows,
             "totals": {**totals, "missing": sum(row["outcome"] == "missing" for row in candidate_rows), "duplicates_ignored": duplicates},
             "per_host": per_host,
+            "failed_jobs": failed_jobs,
             "missing_artifacts": sorted(missing_artifacts, key=lambda item: (item["host"], item.get("job", ""), item["artifact"], item.get("path", ""))),
         }
 
@@ -1101,6 +1302,11 @@ class CampaignManager:
                         "outcome_bucket": bucket,
                         "elapsed_seconds": None,
                         "emitted_at": None,
+                        "not_started": (
+                            bucket == "budget_exceeded"
+                            and isinstance(outcome.get("process_tree_evidence"), dict)
+                            and outcome["process_tree_evidence"].get("leader_status") == "not-started"
+                        ),
                     })
         return records
 
@@ -1142,13 +1348,22 @@ class CampaignManager:
             "",
             "## Candidates",
             "",
-            "| Candidate | Outcome | Owner host | Owner job | Finished at | Duplicates ignored |",
-            "|---|---|---|---|---|---:|",
+            "| Candidate | Outcome | Owner host | Owner job | Finished at | Duplicates ignored | Reason |",
+            "|---|---|---|---|---|---:|---|",
         ]
         for row in result["candidates"]:
+            reason = str(row.get("reason") or "—").replace("|", "\\|")
             lines.append(
-                f"| `{row['candidate_id']}` | {row['outcome']} | {row['owner_host'] or '—'} | {row['owner_job'] or '—'} | {row['emitted_at'] or '—'} | {row['duplicates_ignored']} |"
+                f"| `{row['candidate_id']}` | {row['outcome']} | {row['owner_host'] or '—'} | {row['owner_job'] or '—'} | {row['emitted_at'] or '—'} | {row['duplicates_ignored']} | {reason} |"
             )
+        lines.extend(["", "## Failed batches", ""])
+        if result.get("failed_jobs"):
+            lines.extend(["| Host | Job | Exit code | Reason |", "|---|---|---:|---|"])
+            for job in result["failed_jobs"]:
+                reason = str(job["reason"]).replace("|", "\\|")
+                lines.append(f"| {job['host']} | `{job['job']}` | {job['exit_code']} | {reason} |")
+        else:
+            lines.append("None.")
         lines.extend(["", "## Hosts", "", "| Host | State | Wall seconds | Candidates / second | Owned | Planned | Batches |", "|---|---|---:|---:|---:|---:|---:|"])
         for host in result["per_host"]:
             rate = "—" if host["candidate_rate_per_second"] is None else str(host["candidate_rate_per_second"])

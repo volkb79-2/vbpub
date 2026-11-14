@@ -67,6 +67,23 @@ measurement host, and retry evidence. Measurements are optional; absent
 values fall through to same-file and lane medians, then the lane demand
 declaration.
 
+The demand file may declare the Assay baseline wall time in seconds. Fleetd
+adds this value to the first stall window; if it is absent, fleetd uses
+completed baseline measurements from the same host.
+
+```toml
+schema_version = 1
+
+[lanes.r2.demand]
+unit = "candidate"
+instance_memory = "250m"
+unit_memory = "120m"
+unit_memory_high = "600m"
+unit_seconds_ref = 95
+efficient_upper_bound = 2
+baseline_seconds = 400
+```
+
 The input envelopes are closed and versioned. Candidate files use
 candidate-table/1; host files use fleet-host-set/1. The host envelope
 contains { "id", "facts", "other_running" } per host, with optional f_h.
@@ -167,10 +184,14 @@ If a host cannot be reached, stall time pauses. More than 30 minutes without
 contact marks it `LOST`; the next `tick` re-plans unfinished IDs from both
 running and never-started queued batches on the reachable planned host with
 the largest alone-capacity. Planned idle hosts are probed and may receive that
-work. A stopped stalled batch stays marked `STALLED` after its runner reports
-`EXIT`, so it gets one replacement only. A batch becomes
-`STALLED` after no candidate finishes for `max(15 minutes, 3 × observed p95
-candidate time)`. That is a stall detector, not a campaign time budget.
+work. A batch becomes `STALLED` after the larger of the 15-minute floor,
+three times its predicted p95 candidate time on that host, and three times
+that host's observed p95 candidate time. The first window also includes the
+declared `baseline_seconds` or the host's measured baseline. A batch that
+exits, goes missing, or stalls without finishing any candidate becomes
+`FAILED`; status shows the reason and collect marks its candidates missing
+with the exit code when one is available. A batch that made progress can be
+re-queued without an attempt cap.
 Matching job names are idempotent. If the plan's sorted candidate list
 changes, the digest and job name change; the old job is stopped before
 replacement work starts.
@@ -178,17 +199,25 @@ replacement work starts.
 The runner stores each candidate list below the selected project in its
 persistent checkout. The first detached command writes the full list digest
 before starting `run-r2-campaign.sh`; a probe can recover the digest from the
-uploaded ID file during that startup window. Probe sends file paths instead of
-large candidate arrays, resolves the Assay lane from the checkout's
-`run-gate.toml`, and reads that lane's `progress-<assay-lane>.jsonl` in the
-project `.assay` directory. This is the plain-run layout and does not depend
-on an instance `progress-file` pointer.
+uploaded ID file during that startup window. Each runner job records the
+append-only progress file's start and end byte offsets. Probe matches the byte
+range and the job's candidate IDs, then uses that job's verdict for candidates
+resumed by Assay. This prevents an older campaign's records on the same commit
+from counting as new progress. Probe sends file paths instead of large
+candidate arrays, resolves the Assay lane from the checkout's `run-gate.toml`,
+and reads that lane's `progress-<assay-lane>.jsonl` in the project `.assay`
+directory. This is the plain-run layout and does not depend on an instance
+`progress-file` pointer.
 
 `fleet collect` writes one combined `fleet-campaign-result/1` JSON file and a
 Markdown report under the state directory. Each candidate has one owner, the
 earliest finished record; additional host or batch copies are counted as
 duplicates and ignored. The report includes totals, per-host wall time and
-rate, and missing artifacts/candidates. The state directory defaults to
+rate, failed batches, and missing artifacts/candidates. A verdict entry whose
+process-tree evidence says `not-started` stays `missing` with a distinct
+reason; ordinary `budget_exceeded` and `hung` outcomes remain timeouts. A
+transport or contract error marks only that host `ERROR`, and the next tick
+continues supervising other hosts. The state directory defaults to
 `$XDG_STATE_HOME/fleetd/campaigns` or
 `~/.local/state/fleetd/campaigns`; if you pass `--state-dir` to `run`, repeat
 it on every later command. Keep this local JSON state outside Git. State

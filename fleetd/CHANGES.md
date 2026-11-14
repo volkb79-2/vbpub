@@ -93,3 +93,8 @@ All notable changes to this project are recorded here.
   with tests (each closes a surviving hand mutant).
 - File FD-015 to FD-024 from the Opus series review and record the operator's
   rejection of the RAM-proportional control-plane reserve under FD-007.
+- Set stall windows from per-candidate host predictions and host-local observations, with an optional declared or observed baseline allowance for the first progress window.
+- Fail zero-progress EXIT, missing-job, and stalled batches visibly with their failure reason and exit code when available; batches that made progress retain unlimited re-queue behavior.
+- Record progress byte bounds in each runner job and combine batch candidate IDs with those bounds; use the batch verdict for resumed outcomes so stale append-only records cannot count as new progress.
+- Keep Assay verdict entries marked process-tree `not-started` candidates as missing with a distinct reason, and include failed batches and reasons in collection.
+- Continue supervising other hosts when a host probe or operation returns a transport or contract error; report the affected host as `ERROR`.

@@ -189,6 +189,8 @@ def test_demand_parser_accepts_design_units_and_rejects_shadowing_values():
     without_high = dict(demand)
     without_high.pop("unit_memory_high")
     assert "unit_memory_high_bytes" not in validate_lane_demand(without_high)
+    with_baseline = {**demand, "baseline_seconds": 400}
+    assert validate_lane_demand(with_baseline)["baseline_seconds"] == 400
     _fails(lambda: validate_lane_demand({**demand, "unknown": 1}), "unknown field.*unknown")
     missing = dict(demand)
     del missing["unit"]
@@ -197,6 +199,9 @@ def test_demand_parser_accepts_design_units_and_rejects_shadowing_values():
         ({**demand, "unit": "host"}, "expected candidate, worker, or run"),
         ({**demand, "instance_memory": "0m"}, "invalid memory value"),
         ({**demand, "unit_memory_high": "1m"}, "must be at least unit_memory"),
+        ({**demand, "baseline_seconds": True}, "expected number"),
+        ({**demand, "baseline_seconds": -1}, "must be at least 0"),
+        ({**demand, "baseline_seconds": 10**400}, "expected finite number"),
         ({**demand, "unit_seconds_ref": True}, "expected number"),
         ({**demand, "unit_seconds_ref": 0}, "must be at least"),
         # An integer beyond float range is a contract error, not an OverflowError.
