@@ -77,3 +77,19 @@ All notable changes to this project are recorded here.
   host-clock ownership skew, and fail-closed hx identity/guard refusals.
 - File FD-013 for serializing concurrent state updates from overlapping
   `fleet run`, `status`, `tick`, or `collect` invocations.
+- Never contact a host the planner refused when it owns no campaign job; the
+  idle-host probe had reached refused (for example shared-prod) hosts on every
+  command.
+- Refuse to start a batch when the host's persistent checkout is not synced,
+  before the ID-file upload would create `checkouts/<commit>/` as a plain
+  directory that the supervisor refuses and the checkout sync cannot replace.
+- Compute the probe's progress path lexically below the remote home, so a
+  symlinked `checkouts` directory no longer fails every probe; report `null`
+  instead of failing when no home-relative path exists.
+- Close FD-013: hold a non-blocking per-campaign lock for each command; an
+  overlapping command fails with "busy" and changes nothing.
+- Pin per-host stall observations, repeated host loss, exit de-duplication
+  against work in flight elsewhere, and the start script's ID-file digest check
+  with tests (each closes a surviving hand mutant).
+- File FD-015 to FD-024 from the Opus series review and record the operator's
+  rejection of the RAM-proportional control-plane reserve under FD-007.

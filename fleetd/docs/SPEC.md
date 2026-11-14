@@ -213,18 +213,48 @@ jobs, detect exits and stalls, handle host loss, and start the next available
 batch. Neither command runs a polling loop.
 
 The stall threshold is `max(900 seconds, 3 × p95)` of observed per-candidate
-elapsed time. It measures silence since the last candidate finished; it never
-acts as a campaign wall budget. The stall clock pauses while the host is
+elapsed time on that host only; observations are never pooled across hosts.
+It measures silence since the last candidate finished; it never
+acts as a campaign wall budget. This deviates from the design, which takes the
+p95 of the *predicted* candidate time on that host: before the first candidate
+on a host finishes, the threshold is the 900-second floor, and that window also
+has to cover the batch's baseline. Lanes whose baseline plus first candidate
+exceed 15 minutes stall and are re-queued without end until
+[FD-015](../KNOWN_ISSUES_TODO_BACKLOG.md#fd-015-cold-start-stall-threshold-ignores-the-predicted-candidate-time)
+is fixed. The stall clock pauses while the host is
 unreachable. More than 1800 seconds without host contact marks the host lost.
 All work owned by the lost host, including batches that were queued but never
 started, is marked lost and considered for re-planning. Only unfinished
 candidate IDs are sent to the reachable planned host with the largest
 `cap_alone_bytes`, using the existing planner placement functions. If no
 target is available the work is deferred. Idle planned hosts are probed even
-when they had no initial batch, so they can become requeue targets. A stopped
+when they had no initial batch, so they can become requeue targets. A host
+the planner refused (shared-prod, unknown role, PSI, missing facts) that owns
+no job of the campaign is never contacted by `run`, `status`, `tick`, or
+`collect`. Host loss is measured from the last successful contact, so call
+`tick` at least every few minutes: after a longer gap a single failed probe
+marks the host lost at once (FD-020). Dispatch does not re-check PSI; the
+plan-time refusal is the only PSI admission (FD-022). A job that exits with
+unfinished candidates is re-queued on every exit, with no limit even when it
+made no progress (FD-016). A stopped
 stalled job keeps its `STALLED` marker when a later probe sees its runner `EXIT`
 record and creates only one replacement batch. A returning host may finish a
 duplicate; no lease or renewal is used.
+
+Before uploading a batch's ID file, start reads the probe's `checkout_ready`
+flag for the missing job: the persistent checkout must be a non-symlink
+directory with `.git` and the selected project directory. Otherwise start
+refuses and the batch stays queued; the upload would otherwise create
+`checkouts/<commit>/` as a plain directory that the supervisor refuses and the
+runner's checkout sync cannot replace. Probe reports a home-relative
+progress path computed lexically, so a symlinked `checkouts` directory works;
+if the path cannot be expressed below the remote home it reports `null`
+instead of failing the probe.
+
+Every `run`, `status`, `tick`, and `collect` holds an exclusive non-blocking
+lock on `<campaign>.lock` in the state directory for its whole
+read/modify/write interval. An overlapping command fails with "campaign ...
+is busy" and changes nothing.
 
 The only persistent controller state is plain JSON under `--state-dir`,
 written to a temporary file, fsynced, and atomically renamed. The
@@ -246,7 +276,12 @@ one-owner rule and candidate outcome remain unchanged. Other finished copies are
 ignored and counted. The result includes one candidate row each, killed,
 survived, timeout, crashed, equivalent, and missing totals, duplicate count,
 per-host wall time/rate, and missing artifact details. Assay `budget_exceeded`
-and `hung` outcomes map to `timeout`.
+and `hung` outcomes map to `timeout`. A batch verdict also lists the batch's
+never-started candidates under `budget_exceeded`; the verdict fallback
+currently counts those as `timeout`, so on an incomplete campaign `missing`
+can be too low (FD-018). Records in the append-only progress file from an
+earlier campaign on the same commit and lane count as finished for a new batch
+with the same candidate IDs (FD-019).
 
 MVP-B-lite reports candidate outcomes but does not merge Assay state stores or
 create a strict whole-lane verdict. Assay's `--merge-manifest` is tracked as

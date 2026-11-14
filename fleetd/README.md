@@ -47,9 +47,21 @@ returns. There is no polling loop. Use repeated `tick` calls from the
 controller that owns the campaign.
 
 `tick` re-queues unfinished work when a host has been unreachable for more than
-30 minutes. A batch with no finished candidate becomes `STALLED` after
-`max(15 minutes, 3 × observed p95 candidate time)`; the timer pauses while its
-host is unreachable. A re-plan with a different sorted candidate list gets a
+30 minutes, measured from its last successful contact: call `tick` at least
+every few minutes, or one failed probe after a long gap marks the host lost.
+A batch with no finished candidate becomes `STALLED` after
+`max(15 minutes, 3 × observed p95 candidate time on that host)`; the timer
+pauses while its host is unreachable. Until the first candidate on a host
+finishes the threshold is the 15-minute floor, which also has to cover the
+batch's baseline; lanes slower than that stall and re-queue without end
+(FD-015). A batch that exits with unfinished candidates is re-queued on every
+exit without limit (FD-016), so watch `status` for repeated `EXIT` batches.
+
+Sync the plan's commit to every planned host before `fleet run`: start
+refuses (and leaves the batch queued) when the persistent checkout is missing,
+instead of creating its directory. A host the planner refused is never
+contacted. Overlapping `run`/`status`/`tick`/`collect` calls on one campaign
+fail fast with "busy" instead of racing on the state file. A re-plan with a different sorted candidate list gets a
 different job name and stops the old job when it is no longer wanted. No lease
 or wall-clock budget is maintained.
 
