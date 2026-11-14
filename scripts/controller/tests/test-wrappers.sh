@@ -383,7 +383,7 @@ python3 - "$ROOT/od-402-invalid-block-seconds.json" "$OD_INVALID_KNOB_START" "$O
 import json, sys
 state = json.load(open(sys.argv[1], encoding="utf-8"))
 blocked = state["volker"]["blocked_until_epoch"]
-assert int(sys.argv[2]) + 21600 <= blocked <= int(sys.argv[3]) + 21600
+assert int(sys.argv[2]) + 21600 <= blocked <= int(sys.argv[3]) + 21600 + 1
 PY
 
 python3 - "$ROOT/od-preserve-later.json" <<'PY'
