@@ -2,6 +2,7 @@
 set -uo pipefail
 unset CODEX_ROUTE CODEX_HOME_OVERRIDE CODEX_HOME_LUNA CODEX_HOME_DEEPSEEK_VOLKER CODEX_HOME_DEEPSEEK_GITHUB2 CODEX_HOME_REVIEW CODEX_MODEL CODEX_EFFORT
 unset CODEX_REVIEW_MODEL CODEX_REVIEW_EFFORT CODEX_SQLITE_HOME
+unset PI_TEST_FOCUS
 unset CONTROLLER_OD_STATE CONTROLLER_OD_PREFER_EXPIRING CONTROLLER_OD_UNKNOWN_BLOCK_SECONDS OPENDESIGN_API_KEY_VOLKER OPENDESIGN_API_KEY_GITHUB2
 unset CONTROLLER_OD_ACCOUNTS_SCRIPT OPENCODE_COMMAND OPENCODE_MODEL OPENCODE_PROVIDER OPENCODE_IMPL_SCRIPT
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
@@ -112,16 +113,23 @@ expect_killed docs-codex-home-override-route \
   env README_SOURCE="$ROOT/mutants/scripts/controller/README-home-override-route.md" bash "$SCRIPT_DIR/test-wrappers.sh"
 expect_killed opencode-default-provider \
   env OPENCODE_IMPL_SCRIPT="$ROOT/mutants/scripts/controller/opencode-default-provider.sh" bash "$SCRIPT_DIR/test-wrappers.sh"
-for pi_mutant in \
-  pi-prompt-absolute pi-worktree-exists pi-session-id-guard pi-mode-guard \
-  pi-run-name-guard pi-run-collision-guard pi-auth-file-guard pi-auth-source-guard \
-  pi-prompt-preserve-newlines pi-volker-key-guard pi-github2-key-guard \
-  pi-unknown-route-guard pi-route-sidecar-pinned pi-resume-recorded-account \
-  pi-provider-account pi-source-auth-env pi-session-sidecar pi-stdin-closed \
-  pi-402-outcome pi-account-block-run pi-key-selected-export pi-key-volker-export \
-  pi-key-unselected-unset; do
+for pi_case in \
+  pi-prompt-absolute:prompt-absolute pi-worktree-exists:worktree-exists \
+  pi-session-id-guard:session-id pi-mode-guard:mode pi-run-name-guard:run-name \
+  pi-run-collision-guard:run-collision pi-auth-file-guard:auth-file \
+  pi-auth-source-guard:auth-source pi-prompt-preserve-newlines:prompt-newline \
+  pi-volker-key-guard:volker-key-missing pi-github2-key-guard:github2-key-missing \
+  pi-unknown-route-guard:unknown-route pi-route-sidecar-pinned:pinned-route \
+  pi-resume-recorded-account:resume-recorded pi-provider-account:provider-account \
+  pi-source-auth-env:source-env pi-session-sidecar:session-sidecar \
+  pi-stdin-closed:stdin-closed pi-402-outcome:quota-outcome \
+  pi-account-block-run:quota-block pi-key-selected-export:github2-key-export \
+  pi-key-volker-export:volker-key-export pi-key-unselected-unset:unselected-key-unset; do
+  pi_mutant=${pi_case%%:*}
+  pi_focus=${pi_case#*:}
   expect_killed "$pi_mutant" \
-    env PI_IMPL_SCRIPT="$ROOT/mutants/scripts/controller/$pi_mutant.sh" bash "$SCRIPT_DIR/test-pi-impl.sh"
+    env PI_TEST_FOCUS="$pi_focus" PI_IMPL_SCRIPT="$ROOT/mutants/scripts/controller/$pi_mutant.sh" \
+      bash "$SCRIPT_DIR/test-pi-impl.sh"
 done
 for pi_doc_mutant in README-pi-route-table DESIGN-pi-402-classification CONSUMER-pi-launch-route; do
   case $pi_doc_mutant in
@@ -134,13 +142,19 @@ for pi_doc_mutant in README-pi-route-table DESIGN-pi-402-classification CONSUMER
     DESIGN-pi-402-classification) doc_path="$ROOT/mutants/scripts/controller/$pi_doc_mutant.md" ;;
     CONSUMER-pi-launch-route) doc_path="$ROOT/mutants/scripts/controller/$pi_doc_mutant.md" ;;
   esac
-  expect_killed "$pi_doc_mutant" env "$doc_env=$doc_path" bash "$SCRIPT_DIR/test-pi-impl.sh"
+  expect_killed "$pi_doc_mutant" env PI_TEST_FOCUS=docs "$doc_env=$doc_path" bash "$SCRIPT_DIR/test-pi-impl.sh"
 done
-for od_pi_mutant in od-pi-402-reset-detection od-pi-session-event-id od-pi-route-thread-map \
-  od-pi-blocked-account-selection od-pi-resume-blocked-fallback \
-  od-pi-resume-both-blocked-exit od-pi-unknown-reset-default; do
+for od_pi_case in \
+  od-pi-402-reset-detection:quota-block od-pi-session-event-id:session-event-id \
+  od-pi-route-thread-map:session-event-id od-pi-blocked-account-selection:blocked-skip \
+  od-pi-resume-blocked-fallback:resume-fallback \
+  od-pi-resume-both-blocked-exit:both-blocked-resume od-pi-unknown-reset-default:quota-reset; do
+  od_pi_mutant=${od_pi_case%%:*}
+  od_pi_focus=${od_pi_case#*:}
   expect_killed "$od_pi_mutant" \
-    env PI_IMPL_SCRIPT="$ROOT/mutants/scripts/controller/$od_pi_mutant/pi-impl.sh" bash "$SCRIPT_DIR/test-pi-impl.sh"
+    env PI_TEST_FOCUS="$od_pi_focus" \
+      PI_IMPL_SCRIPT="$ROOT/mutants/scripts/controller/$od_pi_mutant/pi-impl.sh" \
+      bash "$SCRIPT_DIR/test-pi-impl.sh"
 done
 expect_killed od-blocked-account-selection \
   env CODEX_IMPL_SCRIPT="$ROOT/mutants/scripts/controller/od-blocked-account-selection/codex-impl.sh" bash "$SCRIPT_DIR/test-wrappers.sh"

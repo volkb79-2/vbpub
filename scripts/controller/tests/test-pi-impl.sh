@@ -88,6 +88,264 @@ wait_launch() {
   fi
 }
 
+expect_rc() {
+  local expected=$1
+  shift
+  if "$@" > "$ROOT/focused-command.out" 2>&1; then
+    fail "command unexpectedly succeeded; expected exit $expected"
+  else
+    local actual=$?
+    [[ $actual == "$expected" ]] || fail "command exit was $actual, expected $expected"
+  fi
+}
+
+if [[ -n ${PI_TEST_FOCUS:-} ]]; then
+  case $PI_TEST_FOCUS in
+    prompt-absolute)
+      expect_rc 2 env PATH="$ROOT/bin:$PATH" HOME="$HOME_ROOT" PI_ROUTE=deepseek-pi \
+        "$SRC" "$WORKTREE" relative-prompt focused-relative
+      contains "$ROOT/focused-command.out" 'prompt path must be absolute' 'relative prompt path is refused'
+      ;;
+    worktree-exists)
+      expect_rc 2 env PATH="$ROOT/bin:$PATH" HOME="$HOME_ROOT" PI_ROUTE=deepseek-pi \
+        "$SRC" "$ROOT/missing-worktree" "$PROMPT" focused-worktree
+      contains "$ROOT/focused-command.out" 'usage: ' 'missing worktree is refused'
+      ;;
+    session-id)
+      expect_rc 2 env PATH="$ROOT/bin:$PATH" HOME="$HOME_ROOT" PI_ROUTE=deepseek-pi \
+        "$SRC" "$WORKTREE" "$PROMPT" focused-session resume 'invalid session id'
+      contains "$ROOT/focused-command.out" 'usage: ' 'invalid resume session id is refused'
+      ;;
+    mode)
+      expect_rc 2 env PATH="$ROOT/bin:$PATH" HOME="$HOME_ROOT" PI_ROUTE=deepseek-pi \
+        "$SRC" "$WORKTREE" "$PROMPT" focused-mode new unused
+      contains "$ROOT/focused-command.out" 'usage: ' 'unused mode arguments are refused'
+      ;;
+    run-name)
+      expect_rc 2 env PATH="$ROOT/bin:$PATH" HOME="$HOME_ROOT" PI_ROUTE=deepseek-pi \
+        "$SRC" "$WORKTREE" "$PROMPT" ../escape
+      contains "$ROOT/focused-command.out" 'invalid run name' 'traversing run names are refused'
+      ;;
+    run-collision)
+      mkdir -p "$CONTROLLER_ROOT/runs"
+      : > "$CONTROLLER_ROOT/runs/focused-collision.done"
+      expect_rc 2 env PATH="$ROOT/bin:$PATH" HOME="$HOME_ROOT" PI_ROUTE=deepseek-pi \
+        "$SRC" "$WORKTREE" "$PROMPT" focused-collision
+      contains "$ROOT/focused-command.out" 'controller run name already has evidence' 'existing run evidence is refused'
+      ;;
+    auth-file)
+      local_home=$ROOT/focused-no-env
+      mkdir -p "$local_home"
+      expect_rc 2 env PATH="$ROOT/bin:$PATH" HOME="$local_home" PI_ROUTE=deepseek-pi-volker \
+        "$SRC" "$WORKTREE" "$PROMPT" focused-auth-file
+      contains "$ROOT/focused-command.out" "pi route requires the local \$HOME/.env.ai file" 'missing auth file is refused'
+      ;;
+    auth-source)
+      local_home=$ROOT/focused-no-env
+      mkdir -p "$local_home"
+      printf 'false\n' > "$local_home/.env.ai"
+      expect_rc 2 env PATH="$ROOT/bin:$PATH" HOME="$local_home" PI_ROUTE=deepseek-pi-volker \
+        "$SRC" "$WORKTREE" "$PROMPT" focused-auth-source
+      contains "$ROOT/focused-command.out" 'could not load the local pi API-key environment' 'auth source failure is refused'
+      ;;
+    source-env)
+      local_home=$ROOT/focused-unexported
+      mkdir -p "$local_home"
+      cat > "$local_home/.env.ai" <<'ENV'
+OPENDESIGN_API_KEY_VOLKER=test-key
+OPENDESIGN_API_KEY_GITHUB2=test-key
+ENV
+      if ! PATH="$ROOT/bin:$PATH" HOME="$local_home" PI_ROUTE=deepseek-pi-github2 \
+        FAKE_PI_STREAM="$SCRIPT_DIR/fixtures/pi-success.jsonl" FAKE_PI_SESSION_ID=focused-source \
+        FAKE_PI_RC=0 "$SRC" "$WORKTREE" "$PROMPT" focused-source \
+        > "$ROOT/focused-source.launch.log" 2>&1 < /dev/null; then
+        cat "$ROOT/focused-source.launch.log" >&2
+        fail 'wrapper did not source and export the selected key'
+      fi
+      grep 'VOLKER_PRESENT=' "$PI_ENV_LOG" | tail -n 1 > "$ROOT/focused-source.names"
+      contains "$ROOT/focused-source.names" 'VOLKER_PRESENT= GITHUB2_PRESENT=yes' 'selected key is exported from sourced values'
+      ;;
+    prompt-newline)
+      printf 'brief\n' > "$ROOT/focused-prompt.md"
+      wait_launch focused-newline deepseek-pi-volker pi-success /dev/null
+      cmp -s "$PI_PROMPT_LOG" "$ROOT/focused-prompt.md" || fail 'prompt file trailing newline was lost'
+      ;;
+    volker-key-missing|github2-key-missing)
+      local_home=$ROOT/focused-no-key
+      mkdir -p "$local_home"
+      : > "$local_home/.env.ai"
+      if [[ $PI_TEST_FOCUS == volker-key-missing ]]; then
+        key_message='OPENDESIGN_API_KEY_VOLKER is not set'
+        key_route=deepseek-pi-volker
+      else
+        key_message='OPENDESIGN_API_KEY_GITHUB2 is not set'
+        key_route=deepseek-pi-github2
+      fi
+      expect_rc 2 env PATH="$ROOT/bin:$PATH" HOME="$local_home" PI_ROUTE="$key_route" \
+        "$SRC" "$WORKTREE" "$PROMPT" focused-key-missing
+      contains "$ROOT/focused-command.out" "$key_message" 'missing selected provider key is refused'
+      ;;
+    unknown-route)
+      expect_rc 2 env PATH="$ROOT/bin:$PATH" HOME="$HOME_ROOT" PI_ROUTE=unknown \
+        "$SRC" "$WORKTREE" "$PROMPT" focused-unknown-route
+      contains "$ROOT/focused-command.out" 'unknown PI_ROUTE=unknown' 'unknown pi route is refused'
+      ;;
+    pinned-route)
+      wait_launch focused-pinned deepseek-pi-github2 pi-success /dev/null
+      [[ $(cat "$CONTROLLER_ROOT/runs/focused-pinned.route") == deepseek-pi-github2 ]] \
+        || fail 'pinned Pi route sidecar lost its account'
+      ;;
+    resume-recorded)
+      python3 - "$STATE" <<'PY'
+import json, sys
+json.dump({
+    "volker": {"last_used_epoch": 2, "blocked_until_epoch": 0},
+    "github2": {"last_used_epoch": 1, "blocked_until_epoch": 0},
+    "threads": {"recorded-session": "volker"},
+}, open(sys.argv[1], "w", encoding="utf-8"))
+PY
+      wait_launch focused-resume deepseek-pi pi-success /dev/null resume recorded-session
+      [[ $(cat "$CONTROLLER_ROOT/runs/focused-resume.route") == deepseek-pi-volker ]] \
+        || fail 'Pi resume did not use the session recorded account'
+      ;;
+    provider-account)
+      wait_launch focused-provider deepseek-pi-volker pi-success /dev/null
+      contains "$PI_ARGV_LOG" '--model opendesign_volker/deepseek-v4.1-flash-eco' \
+        'Pi model provider follows the selected account'
+      ;;
+    session-sidecar)
+      wait_launch focused-thread deepseek-pi-volker pi-success /dev/null
+      contains "$CONTROLLER_ROOT/runs/focused-thread.thread" 'focused-thread-session' \
+        'Pi session is saved in its sidecar'
+      ;;
+    session-event-id)
+      wait_launch focused-event-session deepseek-pi-volker pi-success /dev/null
+      python3 - "$STATE" <<'PY'
+import json, sys
+path = sys.argv[1]
+state = json.load(open(path, encoding="utf-8"))
+state["threads"].pop("focused-event-session-session", None)
+json.dump(state, open(path, "w", encoding="utf-8"))
+PY
+      rm -f "$CONTROLLER_ROOT/runs/focused-event-session.thread"
+      helper=$(dirname -- "$SRC")/opendesign-accounts.py
+      found_account=$(CONTROLLER_RUNS_DIR="$CONTROLLER_ROOT/runs" CONTROLLER_OD_STATE="$STATE" \
+        python3 "$helper" find-thread-account focused-event-session-session "$CONTROLLER_ROOT/runs") \
+        || fail 'Pi session event was not usable for account recovery'
+      [[ $found_account == volker ]] || fail 'Pi session event recovered the wrong account'
+      ;;
+    stdin-closed)
+      mkfifo "$ROOT/focused-stdin.fifo"
+      exec 9<> "$ROOT/focused-stdin.fifo"
+      setsid env PATH="$ROOT/bin:$PATH" HOME="$HOME_ROOT" PI_ROUTE=deepseek-pi-volker \
+        FAKE_PI_STREAM="$SCRIPT_DIR/fixtures/pi-success.jsonl" FAKE_PI_RC=0 \
+        FAKE_PI_STDIN_OPEN_MARKER="$ROOT/focused-stdin-open.marker" \
+        "$SRC" "$WORKTREE" "$PROMPT" focused-stdin \
+        > "$ROOT/focused-stdin.launch.log" 2>&1 < "$ROOT/focused-stdin.fifo" &
+      stdin_pid=$!
+      while kill -0 "$stdin_pid" 2>/dev/null && [[ ! -e $ROOT/focused-stdin-open.marker && ! -e $CONTROLLER_ROOT/runs/focused-stdin.done ]]; do
+        sleep 0.05
+      done
+      if [[ -e $ROOT/focused-stdin-open.marker ]]; then
+        kill -TERM -- "-$stdin_pid" 2>/dev/null || true
+        wait "$stdin_pid" 2>/dev/null || true
+        fail 'fake pi remained attached to caller stdin'
+      fi
+      if ! wait "$stdin_pid"; then
+        cat "$ROOT/focused-stdin.launch.log" >&2
+        fail 'pi did not complete with open caller stdin'
+      fi
+      exec 9>&-
+      contains "$PI_ENV_LOG" 'STDIN_EOF=1' 'pi stdin is closed'
+      ;;
+    quota-outcome|quota-block)
+      wait_launch focused-quota deepseek-pi-volker pi-402 /dev/null
+      [[ $(cat "$CONTROLLER_ROOT/runs/focused-quota.done") == 'EXIT=0 OUTCOME=USAGE-LIMIT' ]] \
+        || fail 'Pi 402 event is not recorded as a usage limit'
+      if [[ $PI_TEST_FOCUS == quota-block ]]; then
+        python3 - "$STATE" <<'PY' || fail 'Pi 402 did not block its account'
+import json, sys
+assert json.load(open(sys.argv[1], encoding="utf-8"))["volker"]["blocked_until_epoch"] > 4_000_000_000
+PY
+      fi
+      ;;
+    quota-reset)
+      wait_launch focused-quota-reset deepseek-pi-github2 pi-402-unknown /dev/null
+      contains "$ROOT/focused-quota-reset.launch.log" 'reset time unknown; temporary block for 21600 seconds' \
+        'Pi 402 without reset uses its bounded unknown-reset block'
+      python3 - "$STATE" <<'PY' || fail 'unknown-reset Pi 402 did not persist its bounded block'
+import json, sys, time
+until = json.load(open(sys.argv[1], encoding="utf-8"))["github2"]["blocked_until_epoch"]
+assert until > time.time() + 20_000
+PY
+      ;;
+    github2-key-export|volker-key-export|unselected-key-unset)
+      case $PI_TEST_FOCUS in
+        github2-key-export) selected_route=deepseek-pi-github2; expected_keys='VOLKER_PRESENT= GITHUB2_PRESENT=yes' ;;
+        volker-key-export) selected_route=deepseek-pi-volker; expected_keys='VOLKER_PRESENT=yes GITHUB2_PRESENT=' ;;
+        unselected-key-unset) selected_route=deepseek-pi-github2; expected_keys='VOLKER_PRESENT= GITHUB2_PRESENT=yes' ;;
+      esac
+      wait_launch focused-keys "$selected_route" pi-success /dev/null
+      grep 'VOLKER_PRESENT=' "$PI_ENV_LOG" | tail -n 1 > "$ROOT/focused-key-names"
+      contains "$ROOT/focused-key-names" "$expected_keys" 'Pi receives only the selected API-key variable'
+      ;;
+    blocked-skip)
+      python3 - "$STATE" <<'PY'
+import json, sys
+json.dump({
+    "volker": {"last_used_epoch": 1, "blocked_until_epoch": 4_102_444_800},
+    "github2": {"last_used_epoch": 2, "blocked_until_epoch": 0},
+}, open(sys.argv[1], "w", encoding="utf-8"))
+PY
+      wait_launch focused-blocked deepseek-pi pi-success /dev/null
+      [[ $(cat "$CONTROLLER_ROOT/runs/focused-blocked.route") == deepseek-pi-github2 ]] \
+        || fail 'automatic Pi route did not skip the blocked account'
+      ;;
+    resume-fallback)
+      python3 - "$STATE" <<'PY'
+import json, sys
+json.dump({
+    "volker": {"last_used_epoch": 2, "blocked_until_epoch": 4_102_444_800},
+    "github2": {"last_used_epoch": 1, "blocked_until_epoch": 0},
+    "threads": {"recorded-session": "volker"},
+}, open(sys.argv[1], "w", encoding="utf-8"))
+PY
+      wait_launch focused-fallback deepseek-pi pi-success /dev/null resume recorded-session
+      [[ $(cat "$CONTROLLER_ROOT/runs/focused-fallback.route") == deepseek-pi-github2 ]] \
+        || fail 'Pi resume did not fall back from its blocked recorded account'
+      ;;
+    both-blocked-resume)
+      python3 - "$STATE" <<'PY'
+import json, sys
+json.dump({
+    "volker": {"last_used_epoch": 2, "blocked_until_epoch": 4_102_444_800},
+    "github2": {"last_used_epoch": 1, "blocked_until_epoch": 4_102_444_800},
+    "threads": {"recorded-session": "volker"},
+}, open(sys.argv[1], "w", encoding="utf-8"))
+PY
+      expect_rc 3 env PATH="$ROOT/bin:$PATH" HOME="$HOME_ROOT" PI_ROUTE=deepseek-pi \
+        "$SRC" "$WORKTREE" "$PROMPT" focused-both-blocked resume recorded-session
+      [[ ! -e $PI_ARGV_LOG ]] || [[ ! -s $PI_ARGV_LOG ]] || fail 'Pi ran while both accounts were blocked'
+      contains "$ROOT/focused-command.out" 'both Open Design accounts are blocked' 'both-blocked Pi resume is refused'
+      ;;
+    docs)
+      README_SOURCE=${README_SOURCE:-$SCRIPT_DIR/../README.md}
+      DESIGN_SOURCE=${DESIGN_SOURCE:-$SCRIPT_DIR/../docs/DESIGN-GUIDE.md}
+      CONSUMER_SOURCE=${CONSUMER_SOURCE:-$SCRIPT_DIR/../docs/CONSUMERS.md}
+      RULES_SOURCE=${RULES_SOURCE:-$SCRIPT_DIR/../rules.md}
+      ENV_SOURCE=${ENV_SOURCE:-$SCRIPT_DIR/../controller.local.env.example}
+      contains "$README_SOURCE" "\`deepseek-pi\` | \`pi-impl.sh\` | Favored Open Design route" 'README names the favored Pi route'
+      contains "$DESIGN_SOURCE" 'Pi 1.5.0 can report a provider 402' 'design guide documents Pi 402 handling'
+      contains "$CONSUMER_SOURCE" "\`deepseek-pi\` is the favored Pi route" 'consumer guide names the favored Pi route'
+      contains "$CONSUMER_SOURCE" 'PI_ROUTE=deepseek-pi' 'consumer guide gives a Pi launch example'
+      contains "$RULES_SOURCE" 'deepseek-pi-volker' 'rules list the pinned Pi routes'
+      contains "$ENV_SOURCE" 'PI_THINKING="high"' 'environment example documents Pi thinking'
+      ;;
+    *) fail "unknown PI_TEST_FOCUS=$PI_TEST_FOCUS" ;;
+  esac
+  exit 0
+fi
+
 wait_launch auto-1 deepseek-pi pi-success /dev/null
 [[ $(cat "$CONTROLLER_ROOT/runs/auto-1.route") == deepseek-pi-volker ]] || fail 'first automatic pi start must select volker'
 if ! grep -qF -- 'EXIT=0 OUTCOME=SUCCESS' "$CONTROLLER_ROOT/runs/auto-1.done"; then
