@@ -26,6 +26,7 @@ def _write_bundle(
     keep: tuple[str, ...] = (),
     stage: bool = False,
     vendor: bool = False,
+    wheel_enabled: bool = False,
     fmt: str = "xztar",
     keep_tree: bool | None = None,
 ) -> Path:
@@ -43,12 +44,16 @@ def _write_bundle(
         'project_root = "."',
         'dist_dir = "dist"',
         'bundle_dir = "app"',
+    ]
+    if wheel_enabled:
+        rows.extend(["[wheel]", "enabled = true"])
+    rows.extend([
         "[archive]",
         *archive_rows,
         "[copy]",
         "files = []",
         "dirs = " + json.dumps(list(copy_dirs)),
-    ]
+    ])
     if vendor:
         (root / "requirements-runtime.txt").write_text("demo-dependency==1.0\n", encoding="utf-8")
         rows.extend([
@@ -354,6 +359,128 @@ def test_keep_tree_true_and_build_failures_retain_the_staged_tree(tmp_path, monk
     assert (tmp_path / "dist/app/src/app.py").is_file()
 
 
+@pytest.mark.parametrize("variant_build", [False, True])
+def test_keep_tree_false_removes_bundle_and_wheel_trees_after_success(
+    tmp_path, monkeypatch, variant_build,
+):
+    config_path = _write_bundle(tmp_path, wheel_enabled=True)
+    variant = None
+    if variant_build:
+        config_path.write_text(
+            config_path.read_text(encoding="utf-8").replace(
+                'name_template = "demo-v{version}.tar.xz"',
+                'name_template = "demo-v{version}-{variant}.tar.xz"',
+            ),
+            encoding="utf-8",
+        )
+        variant = SimpleNamespace(name="py311", build_arg="3.11", label="Python 3.11")
+
+    def build_wheel(config):
+        config.client_dir.mkdir(parents=True, exist_ok=True)
+        (config.client_dir / "demo-client.whl").write_bytes(b"wheel bytes\n")
+
+    monkeypatch.setattr(bundle, "build_wheel", build_wheel)
+    config = bundle.parse_config(config_path)
+    archive = bundle.run_bundle(
+        config_path,
+        variant=variant,
+        manifest_project="demo",
+        manifest_tag="demo-v1.2.3",
+    )
+
+    manifest, names = _archive_contents(archive)
+    assert "app/client/demo-client.whl" in names
+    assert "client/demo-client.whl" in manifest["files"]
+    assert sorted(path.name for path in config.dist_dir.iterdir()) == [archive.name]
+    assert not config.bundle_dir.exists()
+    assert not config.client_dir.exists()
+
+
+def test_keep_tree_true_retains_bundle_and_wheel_trees_after_success(tmp_path, monkeypatch):
+    config_path = _write_bundle(tmp_path, wheel_enabled=True, keep_tree=True)
+
+    def build_wheel(config):
+        config.client_dir.mkdir(parents=True, exist_ok=True)
+        (config.client_dir / "demo-client.whl").write_bytes(b"wheel bytes\n")
+
+    monkeypatch.setattr(bundle, "build_wheel", build_wheel)
+    config = bundle.parse_config(config_path)
+    archive = bundle.run_bundle(
+        config_path, manifest_project="demo", manifest_tag="demo-v1.2.3",
+    )
+
+    assert archive.is_file()
+    assert (config.bundle_dir / "client/demo-client.whl").is_file()
+    assert (config.client_dir / "demo-client.whl").is_file()
+
+
+@pytest.mark.parametrize("failure_point", ["stage", "archive"])
+def test_keep_tree_false_retains_bundle_and_wheel_trees_on_failure(
+    tmp_path, monkeypatch, failure_point,
+):
+    config_path = _write_bundle(
+        tmp_path, wheel_enabled=True, stage=failure_point == "stage",
+    )
+
+    def build_wheel(config):
+        config.client_dir.mkdir(parents=True, exist_ok=True)
+        (config.client_dir / "demo-client.whl").write_bytes(b"wheel bytes\n")
+
+    monkeypatch.setattr(bundle, "build_wheel", build_wheel)
+    config = bundle.parse_config(config_path)
+    if failure_point == "stage":
+        def fail_stage(_argv, _cwd):
+            secret = config.bundle_dir / "failed.env"
+            secret.write_text("TOKEN=retained for diagnosis\n", encoding="utf-8")
+            raise subprocess.CalledProcessError(7, ["stage"])
+
+        runner = fail_stage
+    else:
+        def fail_archive(*args, **kwargs):
+            raise OSError("archive write failed")
+
+        monkeypatch.setattr(bundle, "create_archive", fail_archive)
+        runner = None
+
+    error = subprocess.CalledProcessError if failure_point == "stage" else OSError
+    with pytest.raises(error):
+        bundle.run_bundle(
+            config_path,
+            runner=runner,
+            manifest_project="demo",
+            manifest_tag="demo-v1.2.3",
+        )
+
+    assert (config.client_dir / "demo-client.whl").is_file()
+    assert (config.bundle_dir / "client/demo-client.whl").is_file()
+    assert (config.bundle_dir / "src/app.py").is_file()
+    if failure_point == "stage":
+        assert (config.bundle_dir / "failed.env").read_text(encoding="utf-8") == "TOKEN=retained for diagnosis\n"
+    assert not list(config.dist_dir.glob("*.tar.xz"))
+
+
+def test_archive_rejects_a_file_added_after_manifest_creation(tmp_path, monkeypatch):
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src/app.py").write_text("print('ok')\n", encoding="utf-8")
+    config_path = _write_bundle(tmp_path)
+    config = bundle.parse_config(config_path)
+    write_manifest = bundle.write_bundle_manifest
+
+    def add_file_after_manifest(config, *, project, tag):
+        manifest_path = write_manifest(config, project=project, tag=tag)
+        (config.bundle_dir / "late-output.txt").write_text("created after manifest\n", encoding="utf-8")
+        return manifest_path
+
+    monkeypatch.setattr(bundle, "write_bundle_manifest", add_file_after_manifest)
+    with pytest.raises(ValueError, match="changed after the manifest"):
+        bundle.run_bundle(
+            config_path, manifest_project="demo", manifest_tag="demo-v1.2.3",
+        )
+
+    assert (config.bundle_dir / "late-output.txt").is_file()
+    assert not list(config.dist_dir.glob("*.tar.xz"))
+
+
 def test_untagged_handler_uses_cmru_next_version_and_commit_identity(tmp_path, monkeypatch):
     bundle_config, cmru_config = _write_cmru_project(tmp_path)
     _git(tmp_path, "init", "-q", "-b", "main")
@@ -459,6 +586,42 @@ def test_copy_sources_warns_and_skips_a_hard_excluded_directory(tmp_path, capsys
 
     assert "[WARN]" in capsys.readouterr().err
     assert not (config.bundle_dir / ".git").exists()
+
+
+@pytest.mark.parametrize("origin", ["copy", "stage"])
+def test_suffix_named_directories_are_not_filtered_as_protected_files(tmp_path, origin):
+    if origin == "copy":
+        (tmp_path / "src/certs.pem").mkdir(parents=True)
+        (tmp_path / "src/certs.pem/ca.txt").write_text("public CA catalog\n", encoding="utf-8")
+    config = _write_bundle(tmp_path, stage=origin == "stage")
+
+    def runner(_argv, _cwd):
+        directory = tmp_path / "dist/app/certs.pem"
+        directory.mkdir(parents=True)
+        (directory / "ca.txt").write_text("public CA catalog\n", encoding="utf-8")
+
+    archive = bundle.run_bundle(
+        config,
+        runner=runner if origin == "stage" else None,
+        manifest_project="demo",
+        manifest_tag="demo-v1.2.3",
+    )
+
+    manifest, names = _archive_contents(archive)
+    relative = "src/certs.pem/ca.txt" if origin == "copy" else "certs.pem/ca.txt"
+    assert f"app/{relative}" in names
+    assert relative in manifest["files"]
+
+
+def test_duplicate_copy_inputs_warn_once_for_each_skipped_path(tmp_path, capsys):
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src/private.env").write_text("TOKEN=secret\n", encoding="utf-8")
+    config = _write_bundle(tmp_path, copy_dirs=("src", "src"))
+
+    bundle.run_bundle(config, manifest_project="demo", manifest_tag="demo-v1.2.3")
+
+    warning = "[WARN] Skipping hard-excluded bundle path: src/private.env"
+    assert capsys.readouterr().err.count(warning) == 1
 
 
 def test_copy_sources_rejects_non_regular_entries(tmp_path):
