@@ -47,22 +47,42 @@ returns. There is no polling loop. Use repeated `tick` calls from the
 controller that owns the campaign.
 
 `tick` re-queues unfinished work when a host has been unreachable for more than
-30 minutes. A batch with no finished candidate becomes `STALLED` after
-`max(15 minutes, 3 × observed p95 candidate time)`; the timer pauses while its
-host is unreachable. A re-plan with a different sorted candidate list gets a
+30 minutes, measured from its last successful contact: call `tick` at least
+every few minutes, or one failed probe after a long gap marks the host lost.
+A batch becomes `STALLED` after
+`max(15 minutes, 3 × predicted p95 candidate time for the batch on that host,
+3 × observed p95 candidate time on that host)`. The prediction uses that
+host's Geekbench score and correction factor, or the reference time when
+scores cannot be compared. The first window adds the declared `baseline_seconds`
+or the p95 baseline measured by earlier batches on that host. Later windows
+start after a candidate finishes and do not add the baseline again. The timer
+pauses while its host is unreachable. A batch that exits, goes missing, or is
+stalled before finishing any candidate becomes `FAILED` and is not re-queued;
+status and collection show its failure reason and exit code when available.
+Batches that made progress continue to re-queue without an attempt cap. See
+the [design guide](docs/DESIGN-GUIDE.md#campaign-stall-detection-and-no-progress-failures)
+for why stall predictions and observations stay host-local.
+
+Sync the plan's commit to every planned host before `fleet run`: start
+refuses (and leaves the batch queued) when the persistent checkout is missing,
+instead of creating its directory. A host the planner refused is never
+contacted. Overlapping `run`/`status`/`tick`/`collect` calls on one campaign
+fail fast with "busy" instead of racing on the state file. A re-plan with a different sorted candidate list gets a
 different job name and stops the old job when it is no longer wanted. No lease
 or wall-clock budget is maintained.
 
 The controller probes idle planned hosts as well, so a host with no initial
 batch can receive requeued work. Loss requeues unfinished candidates from
-queued and running batches. A stopped stalled batch remains `STALLED` after
-its runner exit is observed and produces one replacement. Runner ID files are
+queued and running batches. A stalled batch that made progress keeps its
+`STALLED` marker and produces one replacement. Runner ID files are
 stored below the selected project checkout; the digest is written before the
 campaign supervisor starts and can be reconstructed from that ID file during
-startup. Probe resolves the Assay lane from the checkout's Run-Gate config and
-reads its plain-run `progress-<assay-lane>.jsonl` file, without relying on the
-optional instance pointer. Probe requests carry file paths rather than
-candidate arrays.
+startup. Each runner job stores the progress file size at its own start and
+exit. Probe matches both that byte range and the job's candidate IDs, then uses
+the job's verdict for Assay-resumed candidates. It resolves the Assay lane from
+the checkout's Run-Gate config and reads its plain-run
+`progress-<assay-lane>.jsonl` file, without relying on the optional instance
+pointer. Probe requests carry file paths rather than candidate arrays.
 
 State schema 2 stores monotonic and UTC timestamps with the controller boot
 ID. Same-boot deadline calculations use monotonic time; a reboot rebases them
@@ -76,8 +96,11 @@ options such as `--base` and `--carry-over-main` are outside this MVP.
 `fleet collect` fetches available progress and verdict files and writes one
 combined `fleet-campaign-result/1` JSON file plus a Markdown report in the
 state directory. Each candidate has one owner: the earliest finished record
-wins, and later copies are counted as ignored duplicates. Missing artifacts or
-candidates are reported. This lightweight result does not merge host Assay
+wins, and later copies are counted as ignored duplicates. Never-started
+candidates remain `missing` with a distinct reason; zero-progress failed
+batches include the failure reason and exit code when available. Host transport or
+contract errors are shown as `ERROR` in status while other hosts continue to
+be supervised. Missing artifacts or candidates are reported. This lightweight result does not merge host Assay
 stores with `--merge-manifest`; strict store ownership, the baseline cache,
 forced-command host entry, always-on daemon, and active guard remain follow-up
 work (see the [backlog](KNOWN_ISSUES_TODO_BACKLOG.md)).

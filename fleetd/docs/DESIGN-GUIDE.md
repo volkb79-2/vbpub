@@ -161,11 +161,38 @@ contain `..` within a component. The campaign client passes generated
 `--jobs` and `--only-candidates` only; it does not forward arbitrary Run-Gate
 options such as `--base` or `--carry-over-main`.
 
-The fleetd stall threshold is `max(900 seconds, 3 × p95)` from that host's
-observed per-candidate elapsed times. It measures time since that batch last
-finished a candidate and never imposes a campaign wall budget. The existing
-runner also has its own no-progress attempt stop; an exited job is handled by
-the next `tick` as an unfinished batch. The runner policy is not changed here.
+## Campaign stall detection and no-progress failures
+
+A stall detector needs to protect a genuinely stuck batch without rejecting a
+slow but healthy first candidate. Its threshold is the larger of 900 seconds,
+three times the p95 predicted candidate time for that batch on that host, and
+three times the p95 observed candidate time on that host. Prediction uses the
+plan's per-candidate reference time and only that host's matching Geekbench
+score and correction factor. When scores cannot be compared, the reference
+time is used. Neither prediction nor observations are pooled across hosts;
+r1002 and v1001 therefore use independent thresholds.
+
+The first progress window also needs room for Assay's baseline. Fleetd adds a
+declared `baseline_seconds` from lane demand, or the p95 of completed baseline
+measurements on that host when no estimate was declared. Once a candidate
+finishes, later windows measure silence since the last finished candidate and
+do not add the baseline again. This keeps the threshold tied to expected work
+instead of hiding a slow lane behind a larger fixed timeout.
+
+The scheduler treats an `EXIT`, missing runner job, or stalled batch with no
+finished candidate from its own start as `FAILED`. Re-queuing such a batch
+cannot make progress and would start another identical failing job on every
+tick. A batch that has finished at least one candidate remains eligible for
+unlimited re-queues, because those retries move the campaign forward. A
+stalled batch with progress keeps its `STALLED` marker and creates one
+replacement. These decisions use the job's candidate IDs and its own progress
+file start/end offsets; the append-only progress file alone is not evidence
+that a later campaign finished the same candidate. Assay-resumed candidates
+come from that runner job's verdict.
+
+Transport or contract errors set only the affected host to `ERROR`. The
+scheduler records the message and continues the tick for other hosts; identity
+and guard refusals remain errors rather than being misclassified as host loss.
 
 ## Collection and ownership
 
