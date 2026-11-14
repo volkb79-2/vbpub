@@ -627,6 +627,13 @@ verdict still exits 70. The T3 docs name `final-exit` as the ledger source.
 
 **Evidence.** The host-campaign controller session record 2026-11-11 records the exact pwmcp release tag repeatedly exiting 4 with `MUTANT_LIMIT_EXCEEDED`; the report notes the supervisor would relaunch 12 times although a baseline emits enough progress events to satisfy the current F8 check. It also records `NO_MUTANTS` after a roughly four-minute baseline. The host-rehearsal controller session record 2026-11-10 independently records F8 counting thousands of progress lines across baseline/restart and identifies `mutation-state-r2/*.json` or `event=candidate` records as the meaningful progress unit. NC-32 owns stale campaign/job names and stale `final-exit`; this item owns semantic reason classification and the true-progress guard.
 
+**Observed again 2026-11-14 (Run-Gate native R2, not triggered).** The Run-Gate 25.6.0 native R2
+(89 candidates, one attempt) ended by itself with lane verdict FAIL, so the supervisor never relaunched.
+Had the lane returned exit 4 with `completed_candidates` unchanged (N->N, for example a candidate lost to the
+lane budget with progress `budget_exceeded`), the same exit-4 relaunch rule would have started another
+attempt over unresolved work. The reason-aware classification proposed below already covers this case; the
+fixture list should include an unchanged-count exit 4 with a budget-exceeded candidate.
+
 **Proposed minimal solution.** Read the current attempt's fresh verdict/progress terminal after each exit. Treat `BUDGET_EXCEEDED/LANE_TIMEOUT` or another explicitly resumable time boundary as the only exit-4 case eligible for relaunch. Stop with a durable reason and final exit when the terminal reason is `MUTANT_LIMIT_EXCEEDED`, `NO_MUTANTS`, or another non-resumable plan/config refusal. Never read a previous attempt's stale verdict; bind the reason artifact to the attempt/run identity. Replace the F8 line-count check with completed-candidate count for the current run: `mutation-state-<lane>/*.json` or current-run `event=candidate` records, excluding baseline/plan/candidate-header events. Preserve the resume state on a real budget stop.
 
 **Where.** `scripts/netcup/runner/run-r2-campaign.sh`: exit classification, current-attempt verdict/progress selection, `final-exit`, and stall bookkeeping. `scripts/netcup/runner/lib.sh` for shared fresh-artifact helpers. Runner tests under `scripts/netcup/tests/`, with fake progress, verdict, and state files.
@@ -1074,6 +1081,12 @@ in one container. State the observed per-instance memory overhead as a
 measurement, not a universal constant. Link the rationale from the DESIGN-GUIDE
 and cross-reference NC-48 for the guard and CPU advisory rather than restating
 its design.
+
+**Also observed 2026-11-14 (Run-Gate 25.6.0 native R2).** The `assay-r2` lane has `jobs_max = 2`; `--jobs 2`
+filled about 200% of a four-CPU host and left two CPUs idle (the runner printed the `--instances` hint), while
+`--instances 2` would have doubled the lane's configured 2 GiB memory demand. The guidance added here should
+state this `jobs_max` versus `--instances` trade-off for a low-`jobs_max` lane next to the `jobs_max = 1`
+example.
 
 **Where.** `scripts/netcup/runner/README.md`,
 `scripts/netcup/CONSUMERS.md`, the relevant DESIGN-GUIDE section, and the
