@@ -65,13 +65,15 @@ PY
   for file in "${ordered[@]}"; do
     [[ -n $file ]] || continue
     name=${file##*/}; name=${name%.jsonl}; mtime=$(stat -c %Y "$file" 2>/dev/null || true)
+    route=$(cat "$CONTROLLER_HOME/runs/$name.route" 2>/dev/null || echo unknown)
     if [[ -f $CONTROLLER_HOME/runs/$name.done ]]; then
-      printf '  %s %s age=%s\n' "$name" "$(head -c 40 "$CONTROLLER_HOME/runs/$name.done")" "$(age "$mtime")"
+      printf '  %s route=%s %s age=%s\n' "$name" "$route" \
+        "$(head -c 40 "$CONTROLLER_HOME/runs/$name.done")" "$(age "$mtime")"
     else
       size=$(stat -c %s "$file" 2>/dev/null || echo '?')
       state="RUNNING (last write $(age "$mtime") ago, ${size} bytes)"
       [[ $mtime =~ ^[0-9]+$ ]] && (( now - mtime > 900 )) && state="$state STALLED?"
-      printf '  %s %s\n' "$name" "$state"
+      printf '  %s route=%s %s\n' "$name" "$route" "$state"
     fi
   done
 fi

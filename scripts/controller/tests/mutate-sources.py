@@ -23,7 +23,7 @@ def account_helper_mutant(name: str, before: str, after: str) -> Path:
         raise SystemExit(f"{source}: expected one mutation target, found {count}: {before!r}")
     variant = controller / name
     variant.mkdir(parents=True)
-    for filename in ("lib.sh", "codex-impl.sh", "resume-usage-limited.sh", "finisher-generic.md"):
+    for filename in ("lib.sh", "codex-impl.sh", "pi-impl.sh", "resume-usage-limited.sh", "finisher-generic.md"):
         shutil.copy2(repo / "scripts/controller" / filename, variant / filename)
     target = variant / "opendesign-accounts.py"
     target.write_text(original.replace(before, after, 1), encoding="utf-8")
@@ -63,9 +63,11 @@ mutant("scripts/controller/job-check.sh", "job-check-report-head.sh",
 mutant("scripts/controller/job-check.sh", "job-check-reasoning-end.sh",
        'elif turn_state == "completed" and turn_last_item == "reasoning":', 'elif False:')
 mutant("scripts/controller/job-check.sh", "job-check-usage-limit.sh",
-       'usage_limited = turn_state == "failed" and usage_reset is not None', 'usage_limited = False')
+       'usage_limited = (\n    (turn_state == "failed" and usage_reset is not None)\n    or (pi_detected and pi_stop_reason == "error" and pi_usage_limited)\n)',
+       'usage_limited = False')
 mutant("scripts/controller/job-check.sh", "job-check-usage-retry-binding.sh",
-       "        usage_reset = sys.argv[2] or None", "        usage_reset = None")
+       '    elif event_type == "turn.failed":\n        turn_state = "failed"\n        usage_reset = sys.argv[2] or None',
+       '    elif event_type == "turn.failed":\n        turn_state = "failed"\n        usage_reset = None')
 mutant("scripts/controller/job-check.sh", "job-check-killed-run.sh",
        'elif turn_state != "completed":', 'elif False:')
 mutant("scripts/controller/job-check.sh", "job-check-mid-wait-trailing.sh",
@@ -117,8 +119,8 @@ mutant("scripts/controller/job-check.sh", "job-check-merge-trailer.sh",
 mutant("scripts/controller/job-check.sh", "job-check-any-claude-trailer.sh",
        'Claude [A-Za-z0-9. ]+', 'Claude NEVER')
 mutant("scripts/controller/job-check.sh", "job-check-deepseek-pinned-routes.sh",
-       '  deepseek|deepseek-volker|deepseek-github2|opencode)\n    trailer_mode=single',
-       '  deepseek|opencode)\n    trailer_mode=single')
+       '  deepseek|deepseek-volker|deepseek-github2|deepseek-pi|deepseek-pi-volker|deepseek-pi-github2|opencode)\n    trailer_mode=single',
+       '  deepseek|deepseek-pi|opencode)\n    trailer_mode=single')
 account_helper_mutant(
     "codex-deepseek-catalog-safety",
     'not isinstance(model, dict) or model.get("tool_mode") is not None',
@@ -229,6 +231,133 @@ mutant("scripts/netcup/runner/host-sat-queue.sh", "queue-numeric-probe.sh",
        '', runner)
 mutant("scripts/controller/ctl-status.sh", "ctl-status-fresh-results.sh",
        'if [[ -f $CONTROLLER_HOME/logs/host-sat-results.tsv ]]; then', 'if true; then')
+mutant("scripts/controller/ctl-status.sh", "ctl-status-pi-route.sh",
+       'route=$(cat "$CONTROLLER_HOME/runs/$name.route" 2>/dev/null || echo unknown)', 'route=unknown')
+mutant("scripts/controller/ctl-status.sh", "ctl-status-pi-stall.sh",
+       '(( now - mtime > 900 ))', '(( now - mtime > 2147483647 ))')
+mutant("scripts/controller/job-check.sh", "job-check-pi-route.sh",
+       'deepseek|deepseek-volker|deepseek-github2|deepseek-pi|deepseek-pi-volker|deepseek-pi-github2|opencode)',
+       'deepseek|deepseek-volker|deepseek-github2|opencode)')
+mutant("scripts/controller/job-check.sh", "job-check-pi-message-end.sh",
+       'elif event_type == "message_end":', 'elif event_type == "pi_message_end":')
+mutant("scripts/controller/job-check.sh", "job-check-pi-402-error-code.sh",
+       'pi_usage_limited = pi_402_error(message.get("errorMessage"))', 'pi_usage_limited = False')
+mutant("scripts/controller/lib.sh", "usage-retry-pi-error-message.sh",
+       'gateway_text_reset(event) or coding_plan_reset(event) or pi_error_reset(event)',
+       'gateway_text_reset(event) or coding_plan_reset(event)')
+mutant("scripts/controller/pi-impl.sh", "pi-prompt-absolute.sh",
+       '[[ $2 == /* ]] || { echo \'prompt path must be absolute\' >&2; exit 2; }',
+       ': # removed absolute prompt guard')
+mutant("scripts/controller/pi-impl.sh", "pi-worktree-exists.sh",
+       'worktree=$(realpath -e -- "$1") || usage', 'worktree=$1')
+mutant("scripts/controller/pi-impl.sh", "pi-session-id-guard.sh",
+       '[[ -n $session_id && $session_id =~ ^[A-Za-z0-9._-]+$ && $session_id != *..* ]] || usage',
+       '[[ -n $session_id ]] || usage')
+mutant("scripts/controller/pi-impl.sh", "pi-mode-guard.sh",
+       'elif [[ $mode != new || $# -gt 4 ]]; then', 'elif [[ $mode != new ]]; then')
+mutant("scripts/controller/pi-impl.sh", "pi-run-name-guard.sh",
+       '[[ $name =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ && $name != *..* ]] || {',
+       '[[ -n $name ]] || {')
+mutant("scripts/controller/pi-impl.sh", "pi-run-collision-guard.sh",
+       'if [[ ${CONTROLLER_RUN_FORCE:-0} != 1 ]] && (( ${#existing[@]} > 0 )); then',
+       'if false; then')
+mutant("scripts/controller/pi-impl.sh", "pi-prompt-preserve-newlines.sh",
+       'IFS= read -r -d \'\' prompt_text < "$prompt" || :',
+       'prompt_text=$(<"$prompt")')
+mutant("scripts/controller/pi-impl.sh", "pi-unknown-route-guard.sh",
+       '  *) echo "unknown PI_ROUTE=$route" >&2; exit 2 ;;',
+       '  *) route=deepseek-pi; od_start_kind=auto ;;')
+mutant("scripts/controller/pi-impl.sh", "pi-route-sidecar-pinned.sh",
+       'volker|github2) route_record=deepseek-pi-$od_account ;;',
+       'volker|github2) route_record=deepseek-pi ;;')
+mutant("scripts/controller/pi-impl.sh", "pi-resume-recorded-account.sh",
+       '        od_start_kind=resume', '        od_start_kind=auto-resume')
+mutant("scripts/controller/pi-impl.sh", "pi-provider-account.sh",
+       '    provider=opendesign_volker', '    provider=opendesign_github2')
+mutant("scripts/controller/pi-impl.sh", "pi-source-auth-env.sh",
+       '. "$HOME/.env.ai" >/dev/null 2>&1', 'true')
+mutant("scripts/controller/pi-impl.sh", "pi-auth-file-guard.sh",
+       'if [[ ! -r $HOME/.env.ai ]]; then', 'if false; then')
+mutant("scripts/controller/pi-impl.sh", "pi-auth-source-guard.sh",
+       'if ! . "$HOME/.env.ai" >/dev/null 2>&1; then', 'if false; then')
+mutant("scripts/controller/pi-impl.sh", "pi-volker-key-guard.sh",
+       '    [[ -v OPENDESIGN_API_KEY_VOLKER ]] && (( ${#OPENDESIGN_API_KEY_VOLKER} > 0 )) || {\n      echo "OPENDESIGN_API_KEY_VOLKER is not set by \\$HOME/.env.ai" >&2\n      exit 2\n    }',
+       ': # removed selected Volker key guard')
+mutant("scripts/controller/pi-impl.sh", "pi-volker-key-xtrace.sh",
+       '[[ -v OPENDESIGN_API_KEY_VOLKER ]] && (( ${#OPENDESIGN_API_KEY_VOLKER} > 0 )) || {',
+       '[[ -n ${OPENDESIGN_API_KEY_VOLKER:-} ]] || {')
+mutant("scripts/controller/pi-impl.sh", "pi-github2-key-xtrace.sh",
+       '[[ -v OPENDESIGN_API_KEY_GITHUB2 ]] && (( ${#OPENDESIGN_API_KEY_GITHUB2} > 0 )) || {',
+       '[[ -n ${OPENDESIGN_API_KEY_GITHUB2:-} ]] || {')
+mutant("scripts/controller/pi-impl.sh", "pi-github2-key-guard.sh",
+       '    [[ -v OPENDESIGN_API_KEY_GITHUB2 ]] && (( ${#OPENDESIGN_API_KEY_GITHUB2} > 0 )) || {\n      echo "OPENDESIGN_API_KEY_GITHUB2 is not set by \\$HOME/.env.ai" >&2\n      exit 2\n    }',
+       ': # removed selected github2 key guard')
+mutant("scripts/controller/pi-impl.sh", "pi-session-sidecar.sh",
+       '  printf \'%s\\n\' "$thread_id" > "$out/$name.thread"',
+       '  : # omit the pi session sidecar')
+mutant("scripts/controller/pi-impl.sh", "pi-stdin-closed.sh",
+       '  < /dev/null > "$out/$name.jsonl" 2> "$out/$name.err"); then',
+       '  > "$out/$name.jsonl" 2> "$out/$name.err"); then')
+mutant("scripts/controller/pi-impl.sh", "pi-402-outcome.sh",
+       'if [[ $stop_reason == error && $usage_limited == 1 ]]; then', 'if False; then')
+mutant("scripts/controller/pi-impl.sh", "pi-error-outcome.sh",
+       'elif [[ $stop_reason == error ]]; then\n  outcome=ERROR', 'elif False; then\n  outcome=ERROR')
+mutant("scripts/controller/pi-impl.sh", "pi-nonzero-exit-outcome.sh",
+       'elif [[ $rc != 0 ]]; then\n  outcome=ERROR', 'elif False; then\n  outcome=ERROR')
+mutant("scripts/controller/pi-impl.sh", "pi-success-stop-only.sh",
+       '&& -n $thread_id && $stop_reason == stop ]]; then', '&& -n $thread_id && -n $stop_reason ]]; then')
+mutant("scripts/controller/pi-impl.sh", "pi-account-block-run.sh",
+       'block-run "$od_account"', 'record-thread "$thread_id"')
+mutant("scripts/controller/pi-impl.sh", "pi-key-selected-export.sh",
+       '    export OPENDESIGN_API_KEY_GITHUB2', '    : # selected key not exported')
+mutant("scripts/controller/pi-impl.sh", "pi-key-volker-export.sh",
+       '    export OPENDESIGN_API_KEY_VOLKER', '    : # selected key not exported')
+mutant("scripts/controller/pi-impl.sh", "pi-key-unselected-unset.sh",
+       '    unset OPENDESIGN_API_KEY_VOLKER', '    : # unselected key not removed')
+mutant("scripts/controller/README.md", "README-pi-route-table.md",
+       '| `deepseek-pi` | `pi-impl.sh` | Favored Open Design route; alternates available accounts. |',
+       '| `deepseek-pi` | `pi-impl.sh` | Route. |')
+mutant("scripts/controller/docs/DESIGN-GUIDE.md", "DESIGN-pi-402-classification.md",
+       'Pi 1.5.0 can report a provider 402 in the final assistant `message_end` event',
+       'Pi 1.5.0 reports provider errors outside the final assistant `message_end` event')
+mutant("scripts/controller/docs/CONSUMERS.md", "CONSUMER-pi-launch-route.md",
+       '`deepseek-pi` is the favored Pi route',
+       '`deepseek-pi` is unavailable in the Pi route selector.')
+account_helper_mutant(
+    'od-pi-402-reset-detection',
+    'return coding_plan_reset(error)',
+    'return False, None',
+)
+account_helper_mutant(
+    'od-pi-session-event-id',
+    'if isinstance(event, dict) and event.get("type") == "session":',
+    'if False:',
+)
+account_helper_mutant(
+    'od-pi-route-thread-map',
+    '"deepseek-pi-volker": "volker",',
+    '"deepseek-pi-volker": "github2",',
+)
+account_helper_mutant(
+    'od-pi-blocked-account-selection',
+    'return [account for account in ACCOUNTS if state[account]["blocked_until_epoch"] <= now]',
+    'return list(ACCOUNTS)',
+)
+account_helper_mutant(
+    'od-pi-resume-blocked-fallback',
+    '    return other',
+    '    return account',
+)
+account_helper_mutant(
+    'od-pi-resume-both-blocked-exit',
+    '        raise SystemExit(3)\n    return other',
+    '        return account\n    return other',
+)
+account_helper_mutant(
+    'od-pi-unknown-reset-default',
+    'observed_until = time.time() + block_seconds',
+    'observed_until = time.time()',
+)
 
 account_helper_mutant(
     "od-blocked-account-selection",
@@ -272,8 +401,8 @@ account_helper_mutant(
 )
 account_helper_mutant(
     "od-manual-resume-blocked-fallback",
-    '            selected = account\n            if state[account]["blocked_until_epoch"] > now:',
-    '            selected = account\n            if False:',
+    '    if state[account]["blocked_until_epoch"] <= now:\n        return account',
+    '    if True:\n        return account',
 )
 account_helper_mutant(
     "od-catalog-guard-before-start-record",
@@ -282,8 +411,8 @@ account_helper_mutant(
 )
 account_helper_mutant(
     "od-resume-blocked-fallback",
-    '        if action == "resume":\n            if state[account]["blocked_until_epoch"] > now:',
-    '        if action == "resume":\n            if False:',
+    '    return other',
+    '    return account',
 )
 account_helper_mutant(
     "od-reject-unknown-state-fields",
@@ -297,8 +426,8 @@ account_helper_mutant(
 )
 account_helper_mutant(
     "od-both-blocked-exit-code",
-    '            "both Open Design accounts are blocked; earliest reset is " + format_epoch(earliest),\n            file=sys.stderr,\n        )\n        raise SystemExit(3)',
-    '            "both Open Design accounts are blocked; earliest reset is " + format_epoch(earliest),\n            file=sys.stderr,\n        )\n        raise SystemExit(2)',
+    '    if not candidates:\n        earliest = min(state[account]["blocked_until_epoch"] for account in ACCOUNTS)\n        print(\n            "both Open Design accounts are blocked; earliest reset is " + format_epoch(earliest),\n            file=sys.stderr,\n        )\n        raise SystemExit(3)',
+    '    if not candidates:\n        earliest = min(state[account]["blocked_until_epoch"] for account in ACCOUNTS)\n        print(\n            "both Open Design accounts are blocked; earliest reset is " + format_epoch(earliest),\n            file=sys.stderr,\n        )\n        raise SystemExit(2)',
 )
 account_helper_mutant(
     "od-state-path-absolute-guard",

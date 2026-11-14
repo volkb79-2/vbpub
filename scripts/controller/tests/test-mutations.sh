@@ -2,6 +2,7 @@
 set -uo pipefail
 unset CODEX_ROUTE CODEX_HOME_OVERRIDE CODEX_HOME_LUNA CODEX_HOME_DEEPSEEK_VOLKER CODEX_HOME_DEEPSEEK_GITHUB2 CODEX_HOME_REVIEW CODEX_MODEL CODEX_EFFORT
 unset CODEX_REVIEW_MODEL CODEX_REVIEW_EFFORT CODEX_SQLITE_HOME
+unset PI_TEST_FOCUS
 unset CONTROLLER_OD_STATE CONTROLLER_OD_PREFER_EXPIRING CONTROLLER_OD_UNKNOWN_BLOCK_SECONDS OPENDESIGN_API_KEY_VOLKER OPENDESIGN_API_KEY_GITHUB2
 unset CONTROLLER_OD_ACCOUNTS_SCRIPT OPENCODE_COMMAND OPENCODE_MODEL OPENCODE_PROVIDER OPENCODE_IMPL_SCRIPT
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
@@ -16,7 +17,7 @@ if ! CONTROLLER_TEST_PARALLEL_OD_STARTS=0 bash "$SCRIPT_DIR/test-wrappers.sh" > 
   exit 1
 fi
 echo 'PASS unmutated wrapper tests before wrapper mutation checks'
-for baseline in test-job-check.sh test-hardening-tools.sh; do
+for baseline in test-job-check.sh test-hardening-tools.sh test-pi-impl.sh; do
   if ! bash "$SCRIPT_DIR/$baseline" > "$ROOT/${baseline%.sh}-unmutated.log" 2>&1; then
     cat "$ROOT/${baseline%.sh}-unmutated.log" >&2
     echo "FAIL: unmutated $baseline must pass before its mutants are judged" >&2
@@ -76,6 +77,18 @@ expect_killed job-any-claude-trailer-compatibility \
   env JOB_CHECK_SCRIPT="$ROOT/mutants/scripts/controller/job-check-any-claude-trailer.sh" bash "$SCRIPT_DIR/test-job-check.sh"
 expect_killed job-check-deepseek-pinned-routes \
   env JOB_CHECK_SCRIPT="$ROOT/mutants/scripts/controller/job-check-deepseek-pinned-routes.sh" bash "$SCRIPT_DIR/test-job-check.sh"
+expect_killed job-check-pi-route \
+  env JOB_CHECK_SCRIPT="$ROOT/mutants/scripts/controller/job-check-pi-route.sh" bash "$SCRIPT_DIR/test-job-check.sh"
+expect_killed job-check-pi-message-end \
+  env JOB_CHECK_SCRIPT="$ROOT/mutants/scripts/controller/job-check-pi-message-end.sh" bash "$SCRIPT_DIR/test-job-check.sh"
+expect_killed job-check-pi-402-error-code \
+  env JOB_CHECK_SCRIPT="$ROOT/mutants/scripts/controller/job-check-pi-402-error-code.sh" bash "$SCRIPT_DIR/test-job-check.sh"
+expect_killed usage-retry-pi-error-message \
+  env CONTROLLER_LIB_SCRIPT="$ROOT/mutants/scripts/controller/usage-retry-pi-error-message.sh" bash "$SCRIPT_DIR/test-hardening-tools.sh"
+expect_killed ctl-status-pi-route \
+  env CTL_STATUS_SCRIPT="$ROOT/mutants/scripts/controller/ctl-status-pi-route.sh" bash "$SCRIPT_DIR/test-ctl-status.sh"
+expect_killed ctl-status-pi-stall \
+  env CTL_STATUS_SCRIPT="$ROOT/mutants/scripts/controller/ctl-status-pi-stall.sh" bash "$SCRIPT_DIR/test-ctl-status.sh"
 expect_killed hx-provider-identity-guard \
   env HX_WRAPPER="$ROOT/mutants/scripts/controller/hx-identity.sh" bash "$SCRIPT_DIR/test-wrappers.sh"
 expect_killed release-evidence-archive \
@@ -100,6 +113,52 @@ expect_killed docs-codex-home-override-route \
   env README_SOURCE="$ROOT/mutants/scripts/controller/README-home-override-route.md" bash "$SCRIPT_DIR/test-wrappers.sh"
 expect_killed opencode-default-provider \
   env OPENCODE_IMPL_SCRIPT="$ROOT/mutants/scripts/controller/opencode-default-provider.sh" bash "$SCRIPT_DIR/test-wrappers.sh"
+for pi_case in \
+  pi-prompt-absolute:prompt-absolute pi-worktree-exists:worktree-exists \
+  pi-session-id-guard:session-id pi-mode-guard:mode pi-run-name-guard:run-name \
+  pi-run-collision-guard:run-collision pi-auth-file-guard:auth-file \
+  pi-auth-source-guard:auth-source pi-prompt-preserve-newlines:prompt-newline \
+  pi-volker-key-guard:volker-key-missing pi-github2-key-guard:github2-key-missing \
+  pi-unknown-route-guard:unknown-route pi-route-sidecar-pinned:pinned-route \
+  pi-resume-recorded-account:resume-recorded pi-provider-account:provider-account \
+  pi-source-auth-env:source-env pi-session-sidecar:session-sidecar \
+  pi-stdin-closed:stdin-closed pi-402-outcome:quota-outcome \
+  pi-account-block-run:quota-block pi-key-selected-export:github2-key-export \
+  pi-key-volker-export:volker-key-export pi-key-unselected-unset:unselected-key-unset \
+  pi-volker-key-xtrace:xtrace-key pi-github2-key-xtrace:xtrace-key \
+  pi-error-outcome:outcome-error pi-nonzero-exit-outcome:outcome-rc \
+  pi-success-stop-only:outcome-length; do
+  pi_mutant=${pi_case%%:*}
+  pi_focus=${pi_case#*:}
+  expect_killed "$pi_mutant" \
+    env PI_TEST_FOCUS="$pi_focus" PI_IMPL_SCRIPT="$ROOT/mutants/scripts/controller/$pi_mutant.sh" \
+      bash "$SCRIPT_DIR/test-pi-impl.sh"
+done
+for pi_doc_mutant in README-pi-route-table DESIGN-pi-402-classification CONSUMER-pi-launch-route; do
+  case $pi_doc_mutant in
+    README-pi-route-table) doc_env=README_SOURCE ;;
+    DESIGN-pi-402-classification) doc_env=DESIGN_SOURCE ;;
+    CONSUMER-pi-launch-route) doc_env=CONSUMER_SOURCE ;;
+  esac
+  case $pi_doc_mutant in
+    README-pi-route-table) doc_path="$ROOT/mutants/scripts/controller/$pi_doc_mutant.md" ;;
+    DESIGN-pi-402-classification) doc_path="$ROOT/mutants/scripts/controller/$pi_doc_mutant.md" ;;
+    CONSUMER-pi-launch-route) doc_path="$ROOT/mutants/scripts/controller/$pi_doc_mutant.md" ;;
+  esac
+  expect_killed "$pi_doc_mutant" env PI_TEST_FOCUS=docs "$doc_env=$doc_path" bash "$SCRIPT_DIR/test-pi-impl.sh"
+done
+for od_pi_case in \
+  od-pi-402-reset-detection:quota-block od-pi-session-event-id:session-event-id \
+  od-pi-route-thread-map:session-event-id od-pi-blocked-account-selection:blocked-skip \
+  od-pi-resume-blocked-fallback:resume-fallback \
+  od-pi-resume-both-blocked-exit:both-blocked-resume od-pi-unknown-reset-default:quota-reset; do
+  od_pi_mutant=${od_pi_case%%:*}
+  od_pi_focus=${od_pi_case#*:}
+  expect_killed "$od_pi_mutant" \
+    env PI_TEST_FOCUS="$od_pi_focus" \
+      PI_IMPL_SCRIPT="$ROOT/mutants/scripts/controller/$od_pi_mutant/pi-impl.sh" \
+      bash "$SCRIPT_DIR/test-pi-impl.sh"
+done
 expect_killed od-blocked-account-selection \
   env CODEX_IMPL_SCRIPT="$ROOT/mutants/scripts/controller/od-blocked-account-selection/codex-impl.sh" bash "$SCRIPT_DIR/test-wrappers.sh"
 expect_killed od-prefer-expiring-window \

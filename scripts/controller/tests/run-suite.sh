@@ -9,6 +9,7 @@ files=(
   "$SCRIPT_DIR/../lib.sh"
   "$SCRIPT_DIR/../hx.sh"
   "$SCRIPT_DIR/../codex-impl.sh"
+  "$SCRIPT_DIR/../pi-impl.sh"
   "$SCRIPT_DIR/../codex-review.sh"
   "$SCRIPT_DIR/../opencode-impl.sh"
   "$SCRIPT_DIR/../resume-usage-limited.sh"
@@ -20,6 +21,7 @@ files=(
   "$SCRIPT_DIR/test-ctl-status.sh"
   "$SCRIPT_DIR/test-job-check.sh"
   "$SCRIPT_DIR/test-wrappers.sh"
+  "$SCRIPT_DIR/test-pi-impl.sh"
   "$SCRIPT_DIR/test-hardening-tools.sh"
   "$SCRIPT_DIR/test-mutations.sh"
   "$SCRIPT_DIR/run-suite.sh"
@@ -34,6 +36,7 @@ fi
 bash "$SCRIPT_DIR/test-ctl-status.sh" || exit $?
 bash "$SCRIPT_DIR/test-job-check.sh" || exit $?
 bash "$SCRIPT_DIR/test-wrappers.sh" || exit $?
+bash "$SCRIPT_DIR/test-pi-impl.sh" || exit $?
 bash "$SCRIPT_DIR/test-hardening-tools.sh" || exit $?
 bash "$queue_test" || exit $?
 bash "$SCRIPT_DIR/test-mutations.sh" || exit $?

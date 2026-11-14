@@ -55,6 +55,12 @@ usage_retry_402_output=$(CONTROLLER_LIB_SCRIPT="$LIB_SRC" \
   || fail 'shared usage-retry parser rejected a coding-plan 402 reset'
 [[ $usage_retry_402_output == '2099-11-17T11:44:44Z' ]] \
   || fail "coding-plan usage-retry parser returned unexpected reset: $usage_retry_402_output"
+usage_retry_pi_output=$(CONTROLLER_LIB_SCRIPT="$LIB_SRC" \
+  bash -c '. "$CONTROLLER_LIB_SCRIPT"; usage_retry_text "$1"' _ \
+  "$SCRIPT_DIR/fixtures/pi-402.jsonl") \
+  || fail 'shared usage-retry parser rejected pi errorMessage 402 JSON'
+[[ $usage_retry_pi_output == '2099-11-17T11:44:44Z' ]] \
+  || fail "pi errorMessage usage-retry parser returned unexpected reset: $usage_retry_pi_output"
 usage_retry_402_epoch=$(CONTROLLER_LIB_SCRIPT="$LIB_SRC" \
   bash -c '. "$CONTROLLER_LIB_SCRIPT"; usage_retry_epoch "$1"' _ \
   "$usage_retry_402_output") \

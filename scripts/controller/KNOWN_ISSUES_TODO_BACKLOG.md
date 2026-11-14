@@ -14,6 +14,7 @@ together.
 |---|---|---|---|
 | CTL-01 | OpenCode and incomplete Codex run-name guards can reuse stale completion or mixed run records | Major | OPEN 2026-11-12 |
 | CTL-02 | Host queue status is read from the configured controller home; retained queue state must move with that home before purge | Minor | OPEN 2026-11-13 |
+| CTL-03 | `pi-impl.sh` passes the whole prompt file as one argv element; a prompt above about 128 KiB fails to start, and a leading `@` may be read as a file reference | Minor | OPEN 2026-11-14 |
 
 ---
 
@@ -54,3 +55,27 @@ the required state before retiring the current controller home.
 **Close when.** The controller-home migration procedure names these files,
 retains the needed status history and pause state, and a fake-root check
 confirms `ctl-status.sh` reads them from an alternate configured home.
+
+---
+
+## CTL-03 — pi-impl.sh delivers the prompt as a single command-line argument
+
+**Status:** OPEN (filed 2026-11-14); known limit of the pi route, not a defect in a
+shipped guard.
+
+**Limit.** `pi-impl.sh` reads the prompt file into one shell variable and passes
+it as the last argv element of `pi -p --mode json ... -- <prompt>`. Linux caps a
+single argv element at 131072 bytes (measured: a 100000-byte argument runs, a
+200000-byte one fails with "Argument list too long", exec status 126), so a
+prompt file above that size makes the wrapper record `OUTCOME=ERROR` without
+starting pi. `pi --help` documents the form `pi [options] [--] [@files...]
+[messages...]` and states that `--` treats the remaining arguments as
+messages or files, so a prompt whose first characters are `@` may be read as a
+file reference; this was read from the help text only, because a check needs a
+model request and the kit rule is no token spend in review.
+
+**Close when.** Either the wrapper refuses a prompt above a documented size
+before launching, or it passes the brief through an `@file` argument that the
+real pi accepts, and a fake-pi test covers a prompt beginning with `@` and one
+larger than the limit. Re-measure the `@` behavior against the real pi in a
+controller session with budget for one request.

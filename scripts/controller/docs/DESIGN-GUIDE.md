@@ -25,6 +25,31 @@ the process or shell is interrupted. Codex markers also record the number of
 bounded same-thread auto-resumes. The caller selects and records the route
 because the child cannot attest reliable invocation metadata.
 
+## Pi Open Design route
+
+Pi's Open Design wrapper uses the shared account helper for account alternation,
+blocking, and session-to-account mapping. It makes no quota probe before a
+start. Pi's operator-owned provider definitions select API-key environment
+variable names; the wrapper sources `$HOME/.env.ai` and exports only the
+selected account variable to the pi process. Key values never go in argv or
+controller run evidence.
+
+Pi 1.5.0 can report a provider 402 in the final assistant `message_end` event
+and still exit zero. The wrapper therefore classifies the final assistant
+`stopReason`, records `OUTCOME=USAGE-LIMIT` for an `insufficient_balance`
+error, and passes the stream to the shared blocker to store its `reset_at`.
+When the reset is missing or malformed, the account helper applies its bounded
+temporary block. This keeps success and quota exhaustion distinguishable even
+when their process exit codes match.
+
+New sessions are identified by the pi `session` event and stored in the same
+thread map the Codex routes use. Resume looks up that session's account and
+starts on it; if that account is blocked, the shared helper selects the other
+available account or exits 3 when neither can run. The controller starts
+`pi-impl.sh` detached and checks its `.done` marker, while the wrapper always
+closes pi's stdin to prevent the non-interactive process from waiting for
+input.
+
 ### Job-check compatibility
 
 `job-check.sh` keeps the prototype's `any` route as an explicit allowed-set

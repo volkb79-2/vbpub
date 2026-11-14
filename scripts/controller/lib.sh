@@ -87,6 +87,28 @@ def coding_plan_reset(value):
     return None
 
 
+def pi_error_reset(event):
+    if not isinstance(event, dict) or event.get("type") not in ("message_start", "message_end"):
+        return None
+    message = event.get("message")
+    if (
+        not isinstance(message, dict)
+        or message.get("role") != "assistant"
+        or message.get("stopReason") != "error"
+    ):
+        return None
+    error_message = message.get("errorMessage")
+    if not isinstance(error_message, str):
+        return None
+    match = re.match(r"^\s*402:\s*(\{.*\})\s*$", error_message, re.DOTALL)
+    if match is None:
+        return None
+    try:
+        return coding_plan_reset(json.loads(match.group(1)))
+    except ValueError:
+        return None
+
+
 last_retry = None
 last_error = ""
 coding_plan_retry = None
@@ -101,7 +123,7 @@ for path in sys.argv[1:]:
                 event = json.loads(line)
             except ValueError:
                 continue
-            reset_at = gateway_text_reset(event) or coding_plan_reset(event)
+            reset_at = gateway_text_reset(event) or coding_plan_reset(event) or pi_error_reset(event)
             if reset_at is not None:
                 coding_plan_retry = reset_at
             event_type = event.get("type") if isinstance(event, dict) else None
