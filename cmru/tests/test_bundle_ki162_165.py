@@ -363,6 +363,8 @@ def test_keep_tree_true_and_build_failures_retain_the_staged_tree(tmp_path, monk
 def test_keep_tree_false_removes_bundle_and_wheel_trees_after_success(
     tmp_path, monkeypatch, variant_build,
 ):
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src/app.py").write_text("print('ok')\n", encoding="utf-8")
     config_path = _write_bundle(tmp_path, wheel_enabled=True)
     variant = None
     if variant_build:
@@ -397,6 +399,8 @@ def test_keep_tree_false_removes_bundle_and_wheel_trees_after_success(
 
 
 def test_keep_tree_true_retains_bundle_and_wheel_trees_after_success(tmp_path, monkeypatch):
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src/app.py").write_text("print('ok')\n", encoding="utf-8")
     config_path = _write_bundle(tmp_path, wheel_enabled=True, keep_tree=True)
 
     def build_wheel(config):
@@ -418,6 +422,8 @@ def test_keep_tree_true_retains_bundle_and_wheel_trees_after_success(tmp_path, m
 def test_keep_tree_false_retains_bundle_and_wheel_trees_on_failure(
     tmp_path, monkeypatch, failure_point,
 ):
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src/app.py").write_text("print('ok')\n", encoding="utf-8")
     config_path = _write_bundle(
         tmp_path, wheel_enabled=True, stage=failure_point == "stage",
     )
@@ -590,6 +596,8 @@ def test_copy_sources_warns_and_skips_a_hard_excluded_directory(tmp_path, capsys
 
 @pytest.mark.parametrize("origin", ["copy", "stage"])
 def test_suffix_named_directories_are_not_filtered_as_protected_files(tmp_path, origin):
+    (tmp_path / "src").mkdir(parents=True)
+    (tmp_path / "src/app.py").write_text("print('ok')\n", encoding="utf-8")
     if origin == "copy":
         (tmp_path / "src/certs.pem").mkdir(parents=True)
         (tmp_path / "src/certs.pem/ca.txt").write_text("public CA catalog\n", encoding="utf-8")
@@ -614,13 +622,22 @@ def test_suffix_named_directories_are_not_filtered_as_protected_files(tmp_path, 
 
 
 def test_duplicate_copy_inputs_warn_once_for_each_skipped_path(tmp_path, capsys):
-    (tmp_path / "src").mkdir()
-    (tmp_path / "src/private.env").write_text("TOKEN=secret\n", encoding="utf-8")
-    config = _write_bundle(tmp_path, copy_dirs=("src", "src"))
+    (tmp_path / "src/.git").mkdir(parents=True)
+    (tmp_path / "src/app.py").write_text("print('ok')\n", encoding="utf-8")
+    (tmp_path / "src/.git/config").write_text("source private ref\n", encoding="utf-8")
+    config = _write_bundle(tmp_path, stage=True, fmt="gztar")
 
-    bundle.run_bundle(config, manifest_project="demo", manifest_tag="demo-v1.2.3")
+    def stage_private_path(_argv, _cwd):
+        private = tmp_path / "dist/app/src/.git/config"
+        private.parent.mkdir(parents=True, exist_ok=True)
+        private.write_text("generated private ref\n", encoding="utf-8")
 
-    warning = "[WARN] Skipping hard-excluded bundle path: src/private.env"
+    bundle.run_bundle(
+        config, runner=stage_private_path,
+        manifest_project="demo", manifest_tag="demo-v1.2.3",
+    )
+
+    warning = "[WARN] Skipping hard-excluded bundle path: src/.git"
     assert capsys.readouterr().err.count(warning) == 1
 
 
