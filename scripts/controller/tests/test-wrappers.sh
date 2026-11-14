@@ -137,7 +137,7 @@ contains "$CODEX_LOG" 'model_reasoning_effort="high"' 'DeepSeek route uses high 
 not_contains "$CODEX_LOG" test-key 'API key values are absent from Codex argv logs'
 not_contains "$OD_STATE" test-key 'Open Design account state contains no key material'
 for run in od-alternation-1 od-alternation-2 od-alternation-3 od-alternation-4; do
-  for extension in jsonl err done autoresume.log; do
+  for extension in jsonl err 'done' autoresume.log; do
     not_contains "$ROOT/controller/runs/$run.$extension" test-key "API key values are absent from $run.$extension"
   done
 done
