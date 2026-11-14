@@ -38699,6 +38699,38 @@ class TestKsmR2Survivors:
         assert latest["history_eligible"] is False
         assert "KSM override is not history-eligible" in latest["excluded_reason"]
 
+    @pytest.mark.parametrize("ambient", ["0", "1"])
+    def test_ambient_ksm_override_is_not_recorded_for_exec_only_sequence(
+            self, tmp_path, monkeypatch, ambient):
+        repo = make_repo(tmp_path)
+        project = make_project(repo, """\
+            schema_version = 1
+
+            [environments.runner]
+            mode = "exec"
+            image = "tester:local"
+            container_name = "fixture"
+
+            [lanes.batch]
+            kind = "sequence"
+            lanes = ["suite"]
+
+            [lanes.suite]
+            kind = "command"
+            environment = "runner"
+            argv = ["true"]
+            clean_tree = false
+        """, name="exec-sequence-ambient-ksm")
+        monkeypatch.chdir(project)
+        monkeypatch.setenv(run_gate.KSM_AMBIENT_ENV_VAR, ambient)
+        self._patch_recording_runners(monkeypatch)
+
+        assert run_gate.main(["batch"]) == 0
+        latest = lane_slot(project, "batch")["latest"]
+        assert latest["ksm_override"] is False
+        assert latest["history_eligible"] is True
+        assert latest["ksm"]["by_member"] == {}
+
     @pytest.mark.parametrize("flag", ["--ksm", "--no-ksm"])
     def test_sequence_cli_ksm_override_marks_run_record(
             self, tmp_path, monkeypatch, flag):
