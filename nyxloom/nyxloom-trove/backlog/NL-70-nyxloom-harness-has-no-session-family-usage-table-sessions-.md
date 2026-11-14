@@ -34,8 +34,8 @@ this:
   and are not part of the Claude Code family report at all.
 
 One controller session accumulated 265 subagent transcripts over about nine
-days; on 2026-11-12/13 alone 63 of them carried about 1.97 billion cache-read
-tokens. Answering "which sessions cost what" took hand-written scripting over
+days; on 2026-11-12/13 alone 62 of them carried about 1.2 billion cache-read
+tokens (about 1.97 billion with the controller's own). Answering "which sessions cost what" took hand-written scripting over
 several transcript files.
 
 ## Wanted
