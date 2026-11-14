@@ -247,6 +247,7 @@ def test_keep_paths_are_bundle_relative_for_nested_copy_directories(tmp_path):
 
 @pytest.mark.parametrize("keep, message", [
     ("/absolute/secret.env", "relative POSIX"),
+    ("src/../secret.env", "relative POSIX"),
     ("src/*.env", "glob"),
     ("src/.git/config.env", "hard-excluded"),
     ("src/minisign.key", "hard-excluded"),
@@ -372,6 +373,8 @@ def test_untagged_handler_uses_cmru_next_version_and_commit_identity(tmp_path, m
     assert manifest["tag"] == f"demo-v{version.replace('+', '-')}"
     from cmru.release import is_release_version
     assert not is_release_version(version)
+    # keep_tree defaults to false for a variant build too: only the archive remains.
+    assert sorted(path.name for path in (tmp_path / "dist").iterdir()) == [archive.name]
 
 
 @pytest.mark.parametrize("prefix", ["demo", "demo-v"])
@@ -691,3 +694,144 @@ def _git(root: Path, *args: str) -> str:
         ["git", *args], cwd=root, check=True, capture_output=True, text=True,
     )
     return result.stdout.strip()
+
+
+def _without_manifest(config: Path) -> None:
+    config.write_text(
+        config.read_text(encoding="utf-8").replace('[manifest]\nname = "manifest.json"\n', ""),
+        encoding="utf-8",
+    )
+
+
+def test_keep_names_one_exact_path_not_a_suffix_or_a_basename(tmp_path, capsys):
+    for directory in ("src", "xsrc", "other"):
+        (tmp_path / directory).mkdir()
+        (tmp_path / directory / "app.py").write_text("print('ok')\n", encoding="utf-8")
+        (tmp_path / directory / "cacert.pem").write_text("public CA bundle\n", encoding="utf-8")
+    config = _write_bundle(
+        tmp_path, copy_dirs=("src", "xsrc", "other"), keep=("src/cacert.pem",),
+    )
+
+    archive = bundle.run_bundle(config, manifest_project="demo", manifest_tag="demo-v1.2.3")
+
+    manifest, names = _archive_contents(archive)
+    assert "app/src/cacert.pem" in names and "src/cacert.pem" in manifest["files"]
+    for lookalike in ("xsrc/cacert.pem", "other/cacert.pem"):
+        assert f"app/{lookalike}" not in names
+        assert lookalike not in manifest["files"]
+    err = capsys.readouterr().err
+    assert "xsrc/cacert.pem" in err and "other/cacert.pem" in err
+
+
+def test_stage_written_lookalike_of_a_keep_path_still_fails_closed(tmp_path):
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src/app.py").write_text("print('ok')\n", encoding="utf-8")
+    (tmp_path / "src/cacert.pem").write_text("public CA bundle\n", encoding="utf-8")
+    config = _write_bundle(tmp_path, stage=True, keep=("src/cacert.pem",))
+
+    def runner(_argv, _cwd):
+        (tmp_path / "dist/app/vendor/src").mkdir(parents=True)
+        (tmp_path / "dist/app/vendor/src/cacert.pem").write_text("other\n", encoding="utf-8")
+        (tmp_path / "dist/app/cacert.pem").write_text("other\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match=r"\[archive\]\.keep") as raised:
+        bundle.run_bundle(
+            config, runner=runner, manifest_project="demo", manifest_tag="demo-v1.2.3",
+        )
+    assert "cacert.pem, vendor/src/cacert.pem" in str(raised.value)
+
+
+def test_stage_written_unkeepable_name_reports_that_keep_cannot_help(tmp_path):
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src/app.py").write_text("print('ok')\n", encoding="utf-8")
+    config = _write_bundle(tmp_path, stage=True)
+
+    def runner(_argv, _cwd):
+        (tmp_path / "dist/app/nested").mkdir()
+        (tmp_path / "dist/app/nested/ciu.env").write_text("SECRET=1\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="cannot be listed in") as raised:
+        bundle.run_bundle(
+            config, runner=runner, manifest_project="demo", manifest_tag="demo-v1.2.3",
+        )
+    assert "nested/ciu.env" in str(raised.value)
+
+
+@pytest.mark.parametrize("fmt, suffix", [("xztar", ".tar.xz"), ("gztar", ".tar.gz")])
+def test_stage_written_cache_and_private_names_never_reach_any_archive_format(
+    tmp_path, fmt, suffix,
+):
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src/app.py").write_text("print('ok')\n", encoding="utf-8")
+    config = _write_bundle(tmp_path, stage=True, fmt=fmt)
+    config.write_text(
+        config.read_text(encoding="utf-8").replace(".tar.xz", suffix), encoding="utf-8",
+    )
+    _without_manifest(config)
+
+    def runner(_argv, _cwd):
+        root = tmp_path / "dist/app"
+        (root / "pkg/__pycache__").mkdir(parents=True)
+        (root / "pkg/__pycache__/module.txt").write_text("cache\n", encoding="utf-8")
+        (root / "pkg/ok.txt").write_text("ok\n", encoding="utf-8")
+        (root / "module.pyc").write_bytes(b"cache\n")
+        (root / ".git").mkdir()
+        (root / ".git/config").write_text("[core]\n", encoding="utf-8")
+        (root / "node_modules").mkdir()
+        (root / "node_modules/index.js").write_text("x\n", encoding="utf-8")
+
+    archive = bundle.run_bundle(config, runner=runner)
+
+    with tarfile.open(archive, "r:xz" if fmt == "xztar" else "r:gz") as tf:
+        names = set(tf.getnames())
+    assert "app/pkg/ok.txt" in names
+    assert not {n for n in names if any(
+        marker in n for marker in ("__pycache__", ".pyc", ".git", "node_modules")
+    )}
+
+
+@pytest.mark.parametrize("kind", ["secret", "symlink"])
+def test_stage_output_is_validated_even_without_a_manifest(tmp_path, kind):
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src/app.py").write_text("print('ok')\n", encoding="utf-8")
+    config = _write_bundle(tmp_path, stage=True)
+    _without_manifest(config)
+
+    def runner(_argv, _cwd):
+        root = tmp_path / "dist/app"
+        if kind == "secret":
+            (root / "server.pem").write_text("private\n", encoding="utf-8")
+        else:
+            outside = tmp_path / "outside.txt"
+            outside.write_text("outside\n", encoding="utf-8")
+            (root / "public.txt").symlink_to(outside)
+
+    with pytest.raises(ValueError, match=r"\[archive\]\.keep" if kind == "secret" else "symlink"):
+        bundle.run_bundle(config, runner=runner)
+    assert not list((tmp_path / "dist").glob("*.tar.xz"))
+
+
+def test_copy_files_are_flattened_so_their_keep_path_is_the_basename(tmp_path, capsys):
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src/app.py").write_text("print('ok')\n", encoding="utf-8")
+    (tmp_path / "extra").mkdir()
+    (tmp_path / "extra/cacert.pem").write_text("public CA bundle\n", encoding="utf-8")
+    config = _write_bundle(tmp_path)
+    config.write_text(
+        config.read_text(encoding="utf-8").replace("files = []", 'files = ["extra/cacert.pem"]'),
+        encoding="utf-8",
+    )
+
+    archive = bundle.run_bundle(config, manifest_project="demo", manifest_tag="demo-v1.2.3")
+    manifest, names = _archive_contents(archive)
+    assert "app/cacert.pem" not in names and "cacert.pem" not in manifest["files"]
+    assert "[WARN]" in capsys.readouterr().err
+
+    kept = _write_bundle(tmp_path, keep=("cacert.pem",))
+    kept.write_text(
+        kept.read_text(encoding="utf-8").replace("files = []", 'files = ["extra/cacert.pem"]'),
+        encoding="utf-8",
+    )
+    archive = bundle.run_bundle(kept, manifest_project="demo", manifest_tag="demo-v1.2.3")
+    manifest, names = _archive_contents(archive)
+    assert "app/cacert.pem" in names and "cacert.pem" in manifest["files"]
