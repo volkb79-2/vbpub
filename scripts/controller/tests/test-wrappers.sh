@@ -85,7 +85,7 @@ PUSH_IMAGE_SCRIPT=${PUSH_IMAGE_SCRIPT:-$SCRIPT_DIR/../push-image.sh}
 CODEX_IMPL_SCRIPT=${CODEX_IMPL_SCRIPT:-$SCRIPT_DIR/../codex-impl.sh}
 OPENCODE_IMPL_SCRIPT=${OPENCODE_IMPL_SCRIPT:-$SCRIPT_DIR/../opencode-impl.sh}
 README_SOURCE=${README_SOURCE:-$SCRIPT_DIR/../README.md}
-contains "$README_SOURCE" 'CODEX_HOME_OVERRIDE is honoured only on the luna route.' \
+contains "$README_SOURCE" '`CODEX_HOME_OVERRIDE` is honoured only on the luna route.' \
   'README states that CODEX_HOME_OVERRIDE applies only to Luna'
 
 python3 - "$ROOT/controller/hosts.local.json" "$ROOT/bin" <<'PY'
