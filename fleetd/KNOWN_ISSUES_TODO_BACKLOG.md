@@ -28,6 +28,8 @@
 | FD-022 | Dispatch does not re-check memory/IO PSI before starting the next batch | P2 | OPEN | 2026-11-14 |
 | FD-023 | The hx wrapper path is derived from the source checkout and fails from an installed wheel | P3 | OPEN | 2026-11-14 |
 | FD-024 | Deferred re-queue de-duplication is not pinned for three or more hosts | P3 | DONE | 2026-11-14 |
+| FD-025 | The first stall window uses unscaled reference seconds when no comparable host speed reference exists | P3 | OPEN | 2026-11-14 |
+| FD-026 | A host that stays in ERROR has no loss timer | P3 | OPEN | 2026-11-14 |
 
 ## FD-001 Lite campaign lifecycle
 
@@ -435,3 +437,31 @@ implemented the filter, but the suite did not pin this cross-host case.
 to assert a deferred candidate already running on a third host is not enqueued
 again. Removing the in-flight filter is killed by that test (commit
 `bee29cf0c`).
+
+## FD-025 First stall window with a non-comparable speed reference
+
+**State:** OPEN. **Priority:** P3. **Filed:** 2026-11-14 (fix4 review, for the Opus final review).
+
+When no comparable host speed reference (Geekbench) exists, the FD-015 predicted
+per-candidate time uses the plan's reference seconds unscaled. A host much slower
+than the reference then gets a lower first-window stall threshold than it needs,
+and a healthy first batch can be stopped before its first candidate finishes.
+The observed per-host p95 corrects this only after the first candidate.
+
+**Wanted.** Without a comparable reference, widen the first window by a documented
+factor, or record the first observed candidate time per host before the first stall
+decision. Test: a host measured 3x slower than the reference is not stalled in its
+first window.
+
+## FD-026 Host in ERROR has no loss timer
+
+**State:** OPEN. **Priority:** P3. **Filed:** 2026-11-14 (fix4 review, for the Opus final review).
+
+FD-021 records a transport or contract error on one host as ERROR and keeps
+supervising the others. A host that stays in ERROR is never declared LOST, because
+the loss timer runs from the last successful contact only in the healthy state, so
+its running batches are never re-queued elsewhere.
+
+**Wanted.** Start a loss timer when a host enters ERROR and declare it LOST after
+the same threshold as an unreachable host; test that a host in ERROR beyond the
+threshold has its batches re-queued and a recovery before it keeps them.
