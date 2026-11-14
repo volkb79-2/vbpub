@@ -165,8 +165,20 @@ The state file defaults to
 `$CONTROLLER_RUNS_DIR/opendesign-accounts.json`. Set `CONTROLLER_OD_STATE` to
 an absolute path to move it. It contains account names and numeric
 `last_used_epoch` and `blocked_until_epoch` values, plus an optional
-`window_end_epoch` per account. A 402 `insufficient_balance` response with a
-`reset_at` value records that reset for the account used by the run. Codex
+`window_end_epoch` per account and a `threads` map from known Codex thread ids
+to their Open Design account. Thread mappings let a manual
+`CODEX_ROUTE=deepseek ... resume <thread>` resume on the account that started
+that thread. If no run or state mapping exists, the wrapper says so and picks
+an account automatically. A later resume updates the mapping to the account it
+uses.
+
+A 402 `insufficient_balance` response with a parseable `reset_at` value records
+that reset for the account used by the run. If the gateway reports 402 but the
+reset time is missing or malformed, the wrapper logs that the reset time is
+unknown and records a temporary block for six hours. Set the positive integer
+`CONTROLLER_OD_UNKNOWN_BLOCK_SECONDS` to change the default `21600` second
+block. A later block is never shortened by a new response with an earlier
+reset time. Invalid overrides log a warning and use the six-hour default. Codex
 prints the real 402 as a final plain-text `error`/`turn.failed` message
 (`unexpected status 402 Payment Required: [code=insufficient_balance] ... resets
 at <UTC time>`), which is recognized too; `Reconnecting...` retries and text
@@ -187,13 +199,16 @@ The editable state shape is:
 ```json
 {
   "volker": {"last_used_epoch": 0, "blocked_until_epoch": 0},
-  "github2": {"last_used_epoch": 0, "blocked_until_epoch": 0}
+  "github2": {"last_used_epoch": 0, "blocked_until_epoch": 0},
+  "threads": {"codex-thread-id": "volker"}
 }
 ```
 
 Add a numeric `window_end_epoch` field to an account when recording its
 current weekly window end. The state schema rejects unknown fields so account
 keys cannot be stored there by mistake.
+
+`CODEX_HOME_OVERRIDE` is honoured only on the luna route.
 
 OpenCode defaults to `opendesign_github2/deepseek-v4.1-flash-eco`. Set
 `OPENCODE_PROVIDER=opendesign_volker` to choose the other provider, or set

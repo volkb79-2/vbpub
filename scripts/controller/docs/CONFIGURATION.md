@@ -25,10 +25,12 @@ Useful settings:
 | `CONTROLLER_GATE2_LOCK` | Distinct absolute path for the second gate slot; both slot paths are required by `gate-run.sh`. |
 | `CONTROLLER_REPO` | Checkout used for status and queue work; repo-local scripts derive it. Set it when the queue is installed under `CONTROLLER_HOME/bin`. |
 | `CODEX_HOME_LUNA`, `CODEX_HOME_DEEPSEEK_VOLKER`, `CODEX_HOME_DEEPSEEK_GITHUB2`, `CODEX_HOME_REVIEW` | Explicit Codex config homes for Luna, the two pinned Open Design accounts, and review. |
+| `CODEX_HOME_OVERRIDE` | Optional home override honoured only on the Luna route. |
 | `CODEX_SQLITE_HOME` | Shared Codex session database path. |
 | `CODEX_AUTO_CONTINUE` | Optional non-negative Codex resume count after a reasoning-only completed turn; defaults to `0` for Luna and `2` for DeepSeek. |
 | `CONTROLLER_OD_STATE` | Optional absolute path for key-free Open Design account state; defaults to `$CONTROLLER_RUNS_DIR/opendesign-accounts.json`. |
 | `CONTROLLER_OD_PREFER_EXPIRING` | Set to `1` to prefer the available Open Design account with the soonest recorded `window_end_epoch`; defaults to `0`. |
+| `CONTROLLER_OD_UNKNOWN_BLOCK_SECONDS` | Positive integer seconds to block an account when a 402 has no parseable reset time; defaults to `21600` (6 hours). |
 | `RESUME_SKIP` | Space-separated run names excluded by `resume-usage-limited.sh`. |
 | `RESUME_EXCLUDE_PREFIXES` | Space-separated run-name prefixes owned by another controller; defaults to `naf-`. |
 | `RESUME_MAX_AGE_MINUTES` | Recent-run scan window for `resume-usage-limited.sh`; defaults to `180`. |

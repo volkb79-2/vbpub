@@ -35,6 +35,8 @@ fi
 route=${CODEX_ROUTE:-luna}
 route_record=$route
 od_account=''
+od_start_kind=''
+od_recorded_account=''
 case $route in
   luna)
     route_home=${CODEX_HOME_LUNA:-"$HOME/.codex"}
@@ -43,16 +45,18 @@ case $route in
     auto_default=0
     ;;
   deepseek)
-    if od_account=$(CONTROLLER_RUNS_DIR="$out" python3 "$SCRIPT_DIR/opendesign-accounts.py" start auto); then
-      :
-    else
-      exit $?
+    od_start_kind=auto
+    if [[ $mode == resume ]]; then
+      if od_account=$(CONTROLLER_RUNS_DIR="$out" python3 "$SCRIPT_DIR/opendesign-accounts.py" find-thread-account "$session_id" "$out"); then
+        od_recorded_account=$od_account
+        od_start_kind=resume
+      else
+        lookup_rc=$?
+        if (( lookup_rc != 1 )); then exit "$lookup_rc"; fi
+        printf 'no recorded Open Design account for thread %s; picking a fresh account\n' "$session_id" >&2
+        od_start_kind=auto-resume
+      fi
     fi
-    route_record=deepseek-$od_account
-    case $od_account in
-      volker) route_home=${CODEX_HOME_DEEPSEEK_VOLKER:-"$HOME/.codex-opendesign-volker"} ;;
-      github2) route_home=${CODEX_HOME_DEEPSEEK_GITHUB2:-"$HOME/.codex-opendesign-github2"} ;;
-    esac
     default_model=deepseek-v4.1-flash-eco
     default_effort=high
     auto_default=2
@@ -60,11 +64,7 @@ case $route in
   deepseek-volker|deepseek-github2)
     od_account=${route#deepseek-}
     route_record=$route
-    CONTROLLER_RUNS_DIR="$out" python3 "$SCRIPT_DIR/opendesign-accounts.py" start "$od_account" >/dev/null || exit $?
-    case $od_account in
-      volker) route_home=${CODEX_HOME_DEEPSEEK_VOLKER:-"$HOME/.codex-opendesign-volker"} ;;
-      github2) route_home=${CODEX_HOME_DEEPSEEK_GITHUB2:-"$HOME/.codex-opendesign-github2"} ;;
-    esac
+    od_start_kind=pinned
     default_model=deepseek-v4.1-flash-eco
     default_effort=high
     auto_default=2
@@ -85,21 +85,52 @@ then
   exit 2
 fi
 export CODEX_SQLITE_HOME=${CODEX_SQLITE_HOME:-"$HOME/.codex/sqlite-shared"}
-if [[ $route == luna ]]; then
-  export CODEX_HOME=${CODEX_HOME_OVERRIDE:-$route_home}
-else
-  export CODEX_HOME=$route_home
-fi
 model=${CODEX_MODEL:-$default_model}
 effort=${CODEX_EFFORT:-$default_effort}
 
-if [[ -n $od_account ]]; then
-  catalog=$CODEX_HOME/catalog/opendesign-models.json
-  python3 - "$catalog" <<'PY' || { echo "refusing: deepseek catalog has a non-null tool_mode; repair the selected account's local catalog first" >&2; exit 3; }
-import json, sys
-data = json.load(open(sys.argv[1], encoding="utf-8"))
-sys.exit(1 if any(m.get("tool_mode") is not None for m in data.get("models", [])) else 0)
-PY
+if [[ -n $od_start_kind ]]; then
+  volker_home=${CODEX_HOME_DEEPSEEK_VOLKER:-"$HOME/.codex-opendesign-volker"}
+  github2_home=${CODEX_HOME_DEEPSEEK_GITHUB2:-"$HOME/.codex-opendesign-github2"}
+  volker_catalog=$volker_home/catalog/opendesign-models.json
+  github2_catalog=$github2_home/catalog/opendesign-models.json
+  case $od_start_kind in
+    auto)
+      od_account=$(CONTROLLER_RUNS_DIR="$out" python3 "$SCRIPT_DIR/opendesign-accounts.py" \
+        start auto "$volker_catalog" "$github2_catalog") || exit $?
+      ;;
+    auto-resume)
+      od_account=$(CONTROLLER_RUNS_DIR="$out" python3 "$SCRIPT_DIR/opendesign-accounts.py" \
+        start auto "$volker_catalog" "$github2_catalog" "$session_id") || exit $?
+      ;;
+    resume)
+      od_account=$(CONTROLLER_RUNS_DIR="$out" python3 "$SCRIPT_DIR/opendesign-accounts.py" \
+        start-resume "$od_recorded_account" "$session_id" "$volker_catalog" "$github2_catalog") || exit $?
+      ;;
+    pinned)
+      catalog=$volker_catalog
+      [[ $od_account != github2 ]] || catalog=$github2_catalog
+      if [[ $mode == resume ]]; then
+        CONTROLLER_RUNS_DIR="$out" python3 "$SCRIPT_DIR/opendesign-accounts.py" \
+          start "$od_account" "$catalog" "$session_id" >/dev/null || exit $?
+      else
+        CONTROLLER_RUNS_DIR="$out" python3 "$SCRIPT_DIR/opendesign-accounts.py" \
+          start "$od_account" "$catalog" >/dev/null || exit $?
+      fi
+      ;;
+  esac
+  route_record=deepseek-$od_account
+  case $od_account in
+    volker) route_home=$volker_home ;;
+    github2) route_home=$github2_home ;;
+    *) echo 'Open Design account selector returned an invalid account' >&2; exit 2 ;;
+  esac
+else
+  if [[ $route == luna ]]; then
+    export CODEX_HOME=${CODEX_HOME_OVERRIDE:-$route_home}
+  fi
+fi
+if [[ -n $od_start_kind ]]; then
+  export CODEX_HOME=$route_home
 fi
 
 printf '%s\n' "$worktree" > "$out/$name.wt"
@@ -166,6 +197,16 @@ PY
 )
 fi
 if [[ -n $thread_id ]]; then printf '%s\n' "$thread_id" > "$out/$name.thread"; fi
+if [[ -n $od_account && -n $thread_id ]]; then
+  if CONTROLLER_RUNS_DIR="$out" python3 "$SCRIPT_DIR/opendesign-accounts.py" \
+    record-thread "$thread_id" "$od_account"; then
+    :
+  else
+    thread_state_rc=$?
+    printf 'Open Design thread-account bookkeeping failed for run %s (exit %s); preserving Codex exit %s\n' \
+      "$name" "$thread_state_rc" "$rc" >&2
+  fi
+fi
 
 continue_prompt='You stopped after thinking without acting: continue the task from where you are now, call tools for real'
 auto_count=0
@@ -190,8 +231,14 @@ while (( auto_count < auto_limit )) && reasoning_end "$out/$name.jsonl"; do
   rc=$attempt_rc
 done
 if [[ -n $od_account ]]; then
-  CONTROLLER_RUNS_DIR="$out" python3 "$SCRIPT_DIR/opendesign-accounts.py" block-run "$od_account" \
-    "$out/$name.err" "$out/$name.jsonl" || rc=$?
+  if CONTROLLER_RUNS_DIR="$out" python3 "$SCRIPT_DIR/opendesign-accounts.py" block-run "$od_account" \
+    "$out/$name.err" "$out/$name.jsonl"; then
+    :
+  else
+    bookkeeping_rc=$?
+    printf 'block-run bookkeeping failed for run %s (exit %s); preserving Codex exit %s\n' \
+      "$name" "$bookkeeping_rc" "$rc" >&2
+  fi
 fi
 printf 'EXIT=%s AUTORESUME=%s\n' "$rc" "$auto_count" > "$out/$name.done"
 exit "$rc"

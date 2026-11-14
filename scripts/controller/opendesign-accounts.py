@@ -15,8 +15,12 @@ import time
 
 ACCOUNTS = ("volker", "github2")
 FIELDS = {"last_used_epoch", "blocked_until_epoch", "window_end_epoch"}
+DEFAULT_UNKNOWN_BLOCK_SECONDS = 6 * 60 * 60
 # Codex renders the gateway's 402 as a plain-text message on a final `error` or
 # `turn.failed` event (the `Reconnecting...` retries are deliberately not matched).
+GATEWAY_402_PREFIX = re.compile(
+    r"^unexpected status 402 Payment Required: \[code=insufficient_balance\]"
+)
 GATEWAY_402 = re.compile(
     r"unexpected status 402 Payment Required: \[code=insufficient_balance\].*?"
     r"\bresets at (\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z)",
@@ -43,10 +47,12 @@ def state_path():
 
 
 def fresh_state():
-    return {
+    state = {
         account: {"last_used_epoch": 0, "blocked_until_epoch": 0}
         for account in ACCOUNTS
     }
+    state["threads"] = {}
+    return state
 
 
 def numeric(value, field, account):
@@ -61,7 +67,7 @@ def numeric(value, field, account):
 
 
 def normalize_state(value):
-    if not isinstance(value, dict) or set(value) - set(ACCOUNTS):
+    if not isinstance(value, dict) or set(value) - {*ACCOUNTS, "threads"}:
         raise StateError("invalid Open Design account state schema")
     result = fresh_state()
     for account in ACCOUNTS:
@@ -78,6 +84,14 @@ def normalize_state(value):
             result[account]["window_end_epoch"] = numeric(
                 entry["window_end_epoch"], "window_end_epoch", account
             )
+    threads = value.get("threads", {})
+    if not isinstance(threads, dict) or any(
+        not isinstance(thread_id, str) or not thread_id
+        or account not in ACCOUNTS
+        for thread_id, account in threads.items()
+    ):
+        raise StateError("invalid Open Design thread-account state schema")
+    result["threads"] = dict(threads)
     return result
 
 
@@ -173,37 +187,44 @@ def record_start(state, account):
 
 def gateway_text_reset(event):
     if not isinstance(event, dict) or event.get("type") not in ("error", "turn.failed"):
-        return None
+        return False, None
     message = event.get("message")
     if message is None and isinstance(event.get("error"), dict):
         message = event["error"].get("message")
-    if not isinstance(message, str):
-        return None
+    if not isinstance(message, str) or GATEWAY_402_PREFIX.match(message) is None:
+        return False, None
     match = GATEWAY_402.match(message)
     if match is None:
-        return None
+        return True, None
     reset_epoch = epoch_from_iso(match.group(1))
-    return (match.group(1), reset_epoch) if reset_epoch is not None else None
+    return True, (match.group(1), reset_epoch) if reset_epoch is not None else None
 
 
 def coding_plan_reset(value):
     pending = [value]
+    found = False
+    latest = None
     while pending:
         current = pending.pop()
         if isinstance(current, dict):
             if current.get("code") == "insufficient_balance":
+                found = True
                 details = current.get("details")
                 if isinstance(details, dict):
                     reset_epoch = epoch_from_iso(details.get("reset_at"))
                     if reset_epoch is not None:
-                        return details["reset_at"], reset_epoch
+                        reset = (details["reset_at"], reset_epoch)
+                        if latest is None or reset_epoch > latest[1]:
+                            latest = reset
             pending.extend(current.values())
         elif isinstance(current, list):
             pending.extend(current)
-    return None
+    return found, latest
 
 
 def reset_from_files(paths):
+    found = False
+    latest = None
     for path in paths:
         try:
             lines = Path(path).read_text(encoding="utf-8", errors="replace").splitlines()
@@ -214,22 +235,123 @@ def reset_from_files(paths):
                 event = json.loads(line)
             except ValueError:
                 continue
-            reset = gateway_text_reset(event) or coding_plan_reset(event)
-            if reset:
-                return reset
-    return None
+            text_found, text_reset = gateway_text_reset(event)
+            json_found, json_reset = coding_plan_reset(event)
+            found = found or text_found or json_found
+            for reset in (text_reset, json_reset):
+                if reset is not None and (latest is None or reset[1] > latest[1]):
+                    latest = reset
+    return found, latest
+
+
+def unknown_block_seconds():
+    raw = os.environ.get(
+        "CONTROLLER_OD_UNKNOWN_BLOCK_SECONDS", str(DEFAULT_UNKNOWN_BLOCK_SECONDS)
+    )
+    try:
+        seconds = int(raw)
+    except ValueError:
+        seconds = 0
+    if not re.fullmatch(r"[0-9]+", raw) or seconds <= 0 or seconds > 2_147_483_647:
+        print(
+            "invalid CONTROLLER_OD_UNKNOWN_BLOCK_SECONDS; using the six-hour default",
+            file=sys.stderr,
+        )
+        seconds = DEFAULT_UNKNOWN_BLOCK_SECONDS
+    return seconds
+
+
+def ensure_catalog_safe(path):
+    try:
+        data = json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, ValueError):
+        print("refusing: deepseek catalog could not be read; repair the selected account's local catalog first", file=sys.stderr)
+        raise SystemExit(3)
+    models = data.get("models", []) if isinstance(data, dict) else None
+    if not isinstance(models, list) or any(
+        not isinstance(model, dict) or model.get("tool_mode") is not None
+        for model in models
+    ):
+        print("refusing: deepseek catalog has a non-null tool_mode; repair the selected account's local catalog first", file=sys.stderr)
+        raise SystemExit(3)
+
+
+def thread_in_stream(path, thread_id):
+    try:
+        lines = Path(path).read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return False
+    for line in lines:
+        try:
+            event = json.loads(line)
+        except ValueError:
+            continue
+        if (
+            isinstance(event, dict)
+            and event.get("type") == "thread.started"
+            and event.get("thread_id") == thread_id
+        ):
+            return True
+    return False
+
+
+def account_for_thread(state, thread_id, runs_dir):
+    account = state["threads"].get(thread_id)
+    if account is not None:
+        return account
+    found = set()
+    root = Path(runs_dir)
+    for route_path in root.glob("*.route"):
+        route_to_account = {
+            "deepseek-volker": "volker",
+            "deepseek-github2": "github2",
+        }
+        account = route_to_account.get(route_path.read_text(encoding="utf-8").strip())
+        if account is None:
+            continue
+        run = route_path.name[:-len(".route")]
+        thread_path = root / f"{run}.thread"
+        try:
+            recorded_thread = thread_path.read_text(encoding="utf-8").strip()
+        except OSError:
+            recorded_thread = ""
+        if recorded_thread == thread_id or thread_in_stream(root / f"{run}.jsonl", thread_id):
+            found.add(account)
+    if len(found) > 1:
+        raise StateError("thread is recorded under multiple Open Design accounts")
+    return next(iter(found)) if found else None
 
 
 def main(argv):
     if len(argv) < 2:
-        raise StateError("usage: opendesign-accounts.py start <auto|volker|github2> | resume <volker|github2> | block-run <account> <run-file>...")
+        raise StateError(
+            "usage: opendesign-accounts.py start <auto|volker|github2> <catalogs...> "
+            "| start-resume <account> <thread-id> <volker-catalog> <github2-catalog> "
+            "| resume <volker|github2> | find-thread-account <thread-id> <runs-dir> "
+            "| record-thread <thread-id> <account> | block-run <account> <run-file>..."
+        )
     action = argv[0]
     account = argv[1]
-    if action not in ("start", "resume", "block-run"):
+    if action not in ("start", "start-resume", "resume", "find-thread-account", "record-thread", "block-run"):
         raise StateError("unknown Open Design account action")
-    if action == "start" and account not in ("auto", *ACCOUNTS):
-        raise StateError("unknown Open Design account")
+    if action == "start":
+        if account == "auto" and len(argv) not in (4, 5):
+            raise StateError("automatic start requires both account catalogs and an optional thread id")
+        if account in ACCOUNTS and len(argv) not in (3, 4):
+            raise StateError("pinned start requires its account catalog and an optional thread id")
+        if account not in ("auto", *ACCOUNTS):
+            raise StateError("unknown Open Design account")
+    if action == "start-resume" and (account not in ACCOUNTS or len(argv) != 5):
+        raise StateError("start-resume requires an account, thread id, and both account catalogs")
     if action in ("resume", "block-run") and account not in ACCOUNTS:
+        raise StateError("unknown Open Design account")
+    if action == "resume" and len(argv) != 2:
+        raise StateError("resume requires one account")
+    if action == "find-thread-account" and len(argv) != 3:
+        raise StateError("find-thread-account requires a thread id and runs directory")
+    if action == "record-thread" and (len(argv) != 3 or argv[1] == ""):
+        raise StateError("record-thread requires a thread id and account")
+    if action == "record-thread" and argv[2] not in ACCOUNTS:
         raise StateError("unknown Open Design account")
     if action == "block-run" and len(argv) < 3:
         raise StateError("block-run requires at least one run stream")
@@ -238,9 +360,45 @@ def main(argv):
     with locked_state(path) as (stream, state):
         now = time.time()
         if action == "start":
-            selected = pick_available(state, now) if account == "auto" else account
+            if account == "auto":
+                catalogs = dict(zip(ACCOUNTS, argv[2:4]))
+                thread_id = argv[4] if len(argv) == 5 else None
+                selected = pick_available(state, now)
+            else:
+                catalogs = {account: argv[2]}
+                thread_id = argv[3] if len(argv) == 4 else None
+                selected = account
+            ensure_catalog_safe(catalogs[selected])
             record_start(state, selected)
+            if thread_id:
+                state["threads"][thread_id] = selected
             save_state(stream, state)
+            print(selected)
+            return 0
+        if action == "start-resume":
+            thread_id, volker_catalog, github2_catalog = argv[2:5]
+            catalogs = {"volker": volker_catalog, "github2": github2_catalog}
+            selected = account
+            if state[account]["blocked_until_epoch"] > now:
+                other = next(name for name in ACCOUNTS if name != account)
+                if state[other]["blocked_until_epoch"] > now:
+                    earliest = min(state[name]["blocked_until_epoch"] for name in ACCOUNTS)
+                    print(
+                        "both Open Design accounts are blocked; earliest reset is " + format_epoch(earliest),
+                        file=sys.stderr,
+                    )
+                    return 3
+                selected = other
+            ensure_catalog_safe(catalogs[selected])
+            record_start(state, selected)
+            state["threads"][thread_id] = selected
+            save_state(stream, state)
+            if selected != account:
+                print(
+                    f"account fallback from deepseek-{account} to deepseek-{selected} "
+                    "because the recorded account is blocked",
+                    file=sys.stderr,
+                )
             print(selected)
             return 0
         if action == "resume":
@@ -256,13 +414,42 @@ def main(argv):
                 account = other
             print(account)
             return 0
-        reset = reset_from_files(argv[2:])
-        if reset is None:
+        if action == "find-thread-account":
+            thread_id, runs_dir = argv[1:3]
+            if not thread_id:
+                raise StateError("thread id cannot be empty")
+            found_account = account_for_thread(state, thread_id, runs_dir)
+            if found_account is None:
+                return 1
+            print(found_account)
             return 0
-        reset_text, reset_epoch = reset
-        state[account]["blocked_until_epoch"] = reset_epoch
-        save_state(stream, state)
-        print(f"Open Design account {account} blocked until {reset_text} (insufficient_balance)", file=sys.stderr)
+        if action == "record-thread":
+            thread_id, thread_account = argv[1:3]
+            state["threads"][thread_id] = thread_account
+            save_state(stream, state)
+            return 0
+        found_402, reset = reset_from_files(argv[2:])
+        if not found_402:
+            return 0
+        if reset is None:
+            block_seconds = unknown_block_seconds()
+            observed_until = time.time() + block_seconds
+            reset_description = f"reset time unknown; temporary block for {block_seconds} seconds"
+        else:
+            observed_until = reset[1]
+            reset_description = "reset time observed"
+        previous_until = state[account]["blocked_until_epoch"]
+        blocked_until = max(previous_until, observed_until)
+        if blocked_until != previous_until:
+            state[account]["blocked_until_epoch"] = blocked_until
+            save_state(stream, state)
+        if previous_until > observed_until:
+            reset_description += "; later existing block retained"
+        print(
+            f"Open Design account {account} {reset_description}; blocked until "
+            f"{format_epoch(blocked_until)} (insufficient_balance)",
+            file=sys.stderr,
+        )
         return 0
 
 

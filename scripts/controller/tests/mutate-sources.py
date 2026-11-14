@@ -119,11 +119,18 @@ mutant("scripts/controller/job-check.sh", "job-check-any-claude-trailer.sh",
 mutant("scripts/controller/job-check.sh", "job-check-deepseek-pinned-routes.sh",
        '  deepseek|deepseek-volker|deepseek-github2|opencode)\n    trailer_mode=single',
        '  deepseek|opencode)\n    trailer_mode=single')
-mutant("scripts/controller/codex-impl.sh", "codex-deepseek-catalog.sh",
-       'sys.exit(1 if any(m.get("tool_mode") is not None for m in data.get("models", [])) else 0)',
-       'sys.exit(0)')
+account_helper_mutant(
+    "codex-deepseek-catalog-safety",
+    'not isinstance(model, dict) or model.get("tool_mode") is not None',
+    'False',
+)
 mutant("scripts/controller/codex-impl.sh", "codex-pinned-route-fallback.sh",
-       'start "$od_account" >/dev/null || exit $?', 'start auto >/dev/null || exit $?')
+       'start "$od_account" "$catalog" >/dev/null || exit $?',
+       'start auto "$volker_catalog" "$github2_catalog" >/dev/null || exit $?')
+mutant("scripts/controller/codex-impl.sh", "codex-manual-resume-account.sh",
+       'od_start_kind=resume', 'od_start_kind=auto-resume')
+mutant("scripts/controller/codex-impl.sh", "codex-bookkeeping-exit-overwrite.sh",
+       '    bookkeeping_rc=$?', '    bookkeeping_rc=$?\n    rc=$bookkeeping_rc')
 mutant("scripts/controller/codex-impl.sh", "codex-route-sidecar-unpinned.sh",
        'route_record=deepseek-$od_account', 'route_record=deepseek')
 mutant("scripts/controller/codex-impl.sh", "codex-unknown-route-fallback.sh",
@@ -131,6 +138,9 @@ mutant("scripts/controller/codex-impl.sh", "codex-unknown-route-fallback.sh",
        '*) route=luna; route_home=${CODEX_HOME_LUNA:-"$HOME/.codex"}; default_model=gpt-6-luna; default_effort=xhigh; auto_default=0 ;;')
 mutant("scripts/controller/opencode-impl.sh", "opencode-default-provider.sh",
        'provider=${OPENCODE_PROVIDER:-opendesign_github2}', 'provider=${OPENCODE_PROVIDER:-opendesign}')
+mutant("scripts/controller/README.md", "README-home-override-route.md",
+       'CODEX_HOME_OVERRIDE is honoured only on the luna route.',
+       'CODEX_HOME_OVERRIDE is honoured on every route.')
 mutant("scripts/controller/codex-impl.sh", "codex-autoresume-bound.sh",
        'while (( auto_count < auto_limit )) && reasoning_end',
        'while (( auto_count <= auto_limit )) && reasoning_end')
@@ -241,9 +251,39 @@ account_helper_mutant(
     'if False:',
 )
 account_helper_mutant(
+    "od-unknown-reset-default-block",
+    'if reset is None:\n            block_seconds = unknown_block_seconds()',
+    'if False:\n            block_seconds = unknown_block_seconds()',
+)
+account_helper_mutant(
+    "od-unknown-reset-knob",
+    'raw = os.environ.get(\n        "CONTROLLER_OD_UNKNOWN_BLOCK_SECONDS", str(DEFAULT_UNKNOWN_BLOCK_SECONDS)\n    )',
+    'raw = str(DEFAULT_UNKNOWN_BLOCK_SECONDS)',
+)
+account_helper_mutant(
+    "od-unknown-block-invalid-value-fallback",
+    'seconds = DEFAULT_UNKNOWN_BLOCK_SECONDS',
+    'seconds = 0',
+)
+account_helper_mutant(
+    "od-preserve-later-block",
+    '        previous_until = state[account]["blocked_until_epoch"]\n        blocked_until = max(previous_until, observed_until)',
+    '        previous_until = state[account]["blocked_until_epoch"]\n        blocked_until = observed_until',
+)
+account_helper_mutant(
+    "od-manual-resume-blocked-fallback",
+    '            selected = account\n            if state[account]["blocked_until_epoch"] > now:',
+    '            selected = account\n            if False:',
+)
+account_helper_mutant(
+    "od-catalog-guard-before-start-record",
+    '            ensure_catalog_safe(catalogs[selected])\n            record_start(state, selected)\n            if thread_id:\n                state["threads"][thread_id] = selected',
+    '            record_start(state, selected)\n            if thread_id:\n                state["threads"][thread_id] = selected',
+)
+account_helper_mutant(
     "od-resume-blocked-fallback",
-    'if state[account]["blocked_until_epoch"] > now:',
-    'if False:',
+    '        if action == "resume":\n            if state[account]["blocked_until_epoch"] > now:',
+    '        if action == "resume":\n            if False:',
 )
 account_helper_mutant(
     "od-reject-unknown-state-fields",

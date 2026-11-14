@@ -2,7 +2,7 @@
 set -uo pipefail
 unset CODEX_ROUTE CODEX_HOME_OVERRIDE CODEX_HOME_LUNA CODEX_HOME_DEEPSEEK_VOLKER CODEX_HOME_DEEPSEEK_GITHUB2 CODEX_HOME_REVIEW CODEX_MODEL CODEX_EFFORT
 unset CODEX_REVIEW_MODEL CODEX_REVIEW_EFFORT CODEX_SQLITE_HOME
-unset CONTROLLER_OD_STATE CONTROLLER_OD_PREFER_EXPIRING OPENDESIGN_API_KEY_VOLKER OPENDESIGN_API_KEY_GITHUB2
+unset CONTROLLER_OD_STATE CONTROLLER_OD_PREFER_EXPIRING CONTROLLER_OD_UNKNOWN_BLOCK_SECONDS OPENDESIGN_API_KEY_VOLKER OPENDESIGN_API_KEY_GITHUB2
 unset CONTROLLER_OD_ACCOUNTS_SCRIPT OPENCODE_COMMAND OPENCODE_MODEL OPENCODE_PROVIDER OPENCODE_IMPL_SCRIPT
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 REPO_ROOT=$(cd -- "$SCRIPT_DIR/../../.." && pwd -P)
@@ -84,13 +84,19 @@ expect_killed release-clean-worktree-guard \
 expect_killed release-psi-input-validation \
   env RELEASE_SCRIPT="$ROOT/mutants/scripts/controller/release-psi-validation.sh" bash "$SCRIPT_DIR/test-wrappers.sh"
 expect_killed codex-deepseek-catalog-safety \
-  env CODEX_IMPL_SCRIPT="$ROOT/mutants/scripts/controller/codex-deepseek-catalog.sh" bash "$SCRIPT_DIR/test-wrappers.sh"
+  env CODEX_IMPL_SCRIPT="$ROOT/mutants/scripts/controller/codex-deepseek-catalog-safety/codex-impl.sh" bash "$SCRIPT_DIR/test-wrappers.sh"
 expect_killed codex-pinned-route-no-fallback \
   env CODEX_IMPL_SCRIPT="$ROOT/mutants/scripts/controller/codex-pinned-route-fallback.sh" bash "$SCRIPT_DIR/test-wrappers.sh"
 expect_killed codex-route-sidecar-pinned-form \
   env CODEX_IMPL_SCRIPT="$ROOT/mutants/scripts/controller/codex-route-sidecar-unpinned.sh" bash "$SCRIPT_DIR/test-hardening-tools.sh"
 expect_killed codex-unknown-route-refusal \
   env CODEX_IMPL_SCRIPT="$ROOT/mutants/scripts/controller/codex-unknown-route-fallback.sh" bash "$SCRIPT_DIR/test-wrappers.sh"
+expect_killed codex-manual-resume-account \
+  env CODEX_IMPL_SCRIPT="$ROOT/mutants/scripts/controller/codex-manual-resume-account.sh" bash "$SCRIPT_DIR/test-wrappers.sh"
+expect_killed codex-bookkeeping-exit-overwrite \
+  env CODEX_IMPL_SCRIPT="$ROOT/mutants/scripts/controller/codex-bookkeeping-exit-overwrite.sh" bash "$SCRIPT_DIR/test-wrappers.sh"
+expect_killed docs-codex-home-override-route \
+  env README_SOURCE="$ROOT/mutants/scripts/controller/README-home-override-route.md" bash "$SCRIPT_DIR/test-wrappers.sh"
 expect_killed opencode-default-provider \
   env OPENCODE_IMPL_SCRIPT="$ROOT/mutants/scripts/controller/opencode-default-provider.sh" bash "$SCRIPT_DIR/test-wrappers.sh"
 expect_killed od-blocked-account-selection \
@@ -101,6 +107,18 @@ expect_killed od-preference-value-guard \
   env CODEX_IMPL_SCRIPT="$ROOT/mutants/scripts/controller/od-preference-value-guard/codex-impl.sh" bash "$SCRIPT_DIR/test-wrappers.sh"
 expect_killed od-insufficient-balance-detection \
   env CODEX_IMPL_SCRIPT="$ROOT/mutants/scripts/controller/od-insufficient-balance-detection/codex-impl.sh" bash "$SCRIPT_DIR/test-wrappers.sh"
+expect_killed od-unknown-reset-default-block \
+  env CODEX_IMPL_SCRIPT="$ROOT/mutants/scripts/controller/od-unknown-reset-default-block/codex-impl.sh" bash "$SCRIPT_DIR/test-wrappers.sh"
+expect_killed od-unknown-reset-knob \
+  env CODEX_IMPL_SCRIPT="$ROOT/mutants/scripts/controller/od-unknown-reset-knob/codex-impl.sh" bash "$SCRIPT_DIR/test-wrappers.sh"
+expect_killed od-unknown-block-invalid-value-fallback \
+  env CODEX_IMPL_SCRIPT="$ROOT/mutants/scripts/controller/od-unknown-block-invalid-value-fallback/codex-impl.sh" bash "$SCRIPT_DIR/test-wrappers.sh"
+expect_killed od-preserve-later-block \
+  env CODEX_IMPL_SCRIPT="$ROOT/mutants/scripts/controller/od-preserve-later-block/codex-impl.sh" bash "$SCRIPT_DIR/test-wrappers.sh"
+expect_killed od-catalog-guard-before-start-record \
+  env CODEX_IMPL_SCRIPT="$ROOT/mutants/scripts/controller/od-catalog-guard-before-start-record/codex-impl.sh" bash "$SCRIPT_DIR/test-wrappers.sh"
+expect_killed od-manual-resume-blocked-fallback \
+  env CODEX_IMPL_SCRIPT="$ROOT/mutants/scripts/controller/od-manual-resume-blocked-fallback/codex-impl.sh" bash "$SCRIPT_DIR/test-wrappers.sh"
 for gateway_mutant in od-gateway-text-detection od-gateway-text-anchor od-gateway-text-event-type; do
   expect_killed "$gateway_mutant" \
     env CODEX_IMPL_SCRIPT="$ROOT/mutants/scripts/controller/$gateway_mutant/codex-impl.sh" bash "$SCRIPT_DIR/test-wrappers.sh"
@@ -118,8 +136,8 @@ expect_killed od-both-blocked-exit-code \
 expect_killed od-state-path-absolute-guard \
   env CODEX_IMPL_SCRIPT="$ROOT/mutants/scripts/controller/od-state-path-absolute-guard/codex-impl.sh" bash "$SCRIPT_DIR/test-wrappers.sh"
 expect_killed od-exclusive-state-flock \
-  env CONTROLLER_OD_ACCOUNTS_SCRIPT="$ROOT/mutants/scripts/controller/od-exclusive-state-flock/opendesign-accounts.py" \
-    bash "$SCRIPT_DIR/test-hardening-tools.sh"
+  env CODEX_IMPL_SCRIPT="$ROOT/mutants/scripts/controller/od-exclusive-state-flock/codex-impl.sh" \
+    bash "$SCRIPT_DIR/test-wrappers.sh"
 expect_killed od-resume-blocked-fallback \
   env RESUME_USAGE_LIMITED_SCRIPT="$ROOT/mutants/scripts/controller/od-resume-blocked-fallback/resume-usage-limited.sh" bash "$SCRIPT_DIR/test-hardening-tools.sh"
 expect_killed codex-autoresume-bound \
