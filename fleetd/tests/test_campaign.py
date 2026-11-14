@@ -6,7 +6,10 @@ import copy
 import hashlib
 import json
 import math
+import os
+import shutil
 import subprocess
+import time
 from dataclasses import replace
 from pathlib import Path
 
@@ -62,6 +65,115 @@ def _plan(count: int = 12) -> dict:
     plan = plan_campaign("r2", _candidate_table(candidates), hosts, DEMAND)
     plan["execution"] = dict(EXECUTION)
     return plan
+
+
+def _real_runner_home(tmp_path: Path, spec: JobSpec) -> tuple[Path, dict[str, str]]:
+    repo = Path(__file__).resolve().parents[2]
+    runner_source = repo / "scripts/netcup/runner"
+    home = tmp_path / "runner-home"
+    runner_scripts = home / "runner-scripts"
+    runner_scripts.mkdir(parents=True)
+    for directory in ("jobs", "campaigns", "locks", "checkouts"):
+        (home / directory).mkdir()
+    shutil.copy2(runner_source / "run-job", runner_scripts / "run-job")
+    shutil.copy2(runner_source / "run-r2-campaign.sh", runner_scripts / "run-r2-campaign.sh")
+    (runner_scripts / "lib.sh").write_text(
+        'RUNNER_HOME="${RUNNER_HOME:-$HOME}"\n'
+        'RUNNER_UID="$(id -u)"\n'
+        'GATES_SLICE=dev-gates.slice\n'
+        'identity_check() { :; }\n',
+        encoding="utf-8",
+    )
+    (runner_scripts / "run-lane.sh").write_text(
+        """#!/usr/bin/env bash
+set -euo pipefail
+shopt -s nullglob
+digest_files=("$HOME"/jobs/*/list.sha256)
+(( ${#digest_files[@]} == 1 )) && [[ -s ${digest_files[0]} ]] || exit 79
+commit=$1; project=$2; lane=$3; shift 3
+ids=
+while (( $# )); do
+  if [[ $1 == --only-candidates ]]; then ids=$2; break; fi
+  shift
+done
+project_dir="$RUNNER_HOME/checkouts/$commit/$project"
+progress="$project_dir/.assay/progress-contract-assay.jsonl"
+mkdir -p -- "$project_dir/.assay"
+while IFS= read -r candidate; do
+  printf '{"candidate_id":"%s","elapsed_seconds":1.0,"emitted_at":"2030-01-01T00:00:00Z","event":"candidate","outcome_bucket":"killed"}\\n' "$candidate" >> "$progress"
+done < "$project_dir/$ids"
+printf '{}\\n' > "$project_dir/.assay/verdict-contract-assay.json"
+""",
+        encoding="utf-8",
+    )
+    (runner_scripts / "run-lane.sh").chmod(0o755)
+
+    checkout = home / "checkouts" / spec.commit
+    project_dir = checkout if spec.project == "." else checkout / spec.project
+    project_dir.mkdir(parents=True)
+    (project_dir / ".gitignore").write_text(".assay/\n", encoding="utf-8")
+    (project_dir / "run-gate.toml").write_text(
+        '[lanes.contract-lane]\nkind = "assay"\nassay_lane = "contract-assay"\n',
+        encoding="utf-8",
+    )
+    subprocess.run(["git", "-C", str(checkout), "init", "-q"], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(checkout), "add", "."], check=True, capture_output=True)
+    subprocess.run(
+        ["git", "-C", str(checkout), "-c", "user.name=Fleetd Contract", "-c", "user.email=fleetd-contract@example.invalid", "commit", "-qm", "fixture"],
+        check=True,
+        capture_output=True,
+    )
+    ids_path = home / spec.candidate_file_home_path
+    ids_path.parent.mkdir(parents=True, exist_ok=True)
+    ids_path.write_text("".join(f"{candidate_id}\n" for candidate_id in spec.sorted_candidate_ids), encoding="ascii")
+    environment = dict(os.environ)
+    isolated_bin = tmp_path / "bin"
+    isolated_bin.mkdir()
+    for command in (
+        "bash", "python3", "git", "sha256sum", "cut", "cat", "mkdir", "mv", "rm", "cp",
+        "flock", "awk", "sleep", "nproc", "date", "tr", "sed", "grep", "ps", "nohup",
+        "dirname", "basename", "id", "stat", "head", "tail", "uname", "env", "install",
+    ):
+        source = shutil.which(command, path=environment.get("PATH"))
+        if source:
+            (isolated_bin / command).symlink_to(source)
+    environment.update({"HOME": str(home), "RUNNER_HOME": str(home), "PATH": str(isolated_bin)})
+    return home, environment
+
+
+def _real_start(home: Path, environment: dict[str, str], spec: JobSpec) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ["bash", "-c", start_script(spec)],
+        cwd=home,
+        env=environment,
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=15,
+    )
+
+
+def _wait_real_job(home: Path, spec: JobSpec) -> Path:
+    job_dir = home / "jobs" / spec.name
+    deadline = time.monotonic() + 15
+    while not (job_dir / "EXIT").is_file() and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert (job_dir / "EXIT").is_file(), (job_dir / "job.log").read_text(encoding="utf-8")
+    return job_dir
+
+
+def _spec_for_project(project: str) -> JobSpec:
+    return JobSpec(
+        campaign="contract",
+        host="host-a",
+        slot=0,
+        batch=0,
+        candidate_ids=("a" * 64,),
+        commit="b" * 40,
+        project=project,
+        lane="contract-lane",
+        jobs=1,
+    )
 
 
 def _two_host_one_candidate_plan() -> tuple[dict, str, str]:
@@ -204,19 +316,19 @@ def test_fake_transport_models_unreachable_slow_restart_and_duplicate_starts():
     assert transport.host("host-a").starts == 1
     transport.add_progress("host-a", spec.name, "a" * 64, "killed")
     transport.add_progress("host-a", spec.name, "a" * 64, "killed")
-    row = runner.probe("host-a", {spec.name: spec.candidate_ids})[spec.name]
+    row = runner.probe("host-a", {spec.name: spec})[spec.name]
     assert row["progress_count"] == 1 and len(row["records"]) == 2
     clock.advance(3)
     transport.set_slow("host-a")
     with pytest.raises(HostUnavailable):
-        runner.probe("host-a", {spec.name: spec.candidate_ids})
+        runner.probe("host-a", {spec.name: spec})
     transport.set_slow("host-a", False)
     transport.restart("host-a")
-    row = runner.probe("host-a", {spec.name: spec.candidate_ids})[spec.name]
+    row = runner.probe("host-a", {spec.name: spec})[spec.name]
     assert row["state"] == "EXIT" and row["exit_code"] == 137
     transport.set_unreachable("host-a")
     with pytest.raises(HostUnavailable):
-        runner.probe("host-a", {spec.name: spec.candidate_ids})
+        runner.probe("host-a", {spec.name: spec})
 
 
 def test_job_names_digest_and_command_builders_are_stable_and_scoped():
@@ -226,11 +338,11 @@ def test_job_names_digest_and_command_builders_are_stable_and_scoped():
     expected = hashlib.sha256(("a" * 64 + "\n" + "b" * 64 + "\n").encode()).hexdigest()
     assert spec.list_digest == expected
     assert spec.name == f"campaign.host-a.s0.b4.{expected[:8]}"
-    probe = probe_script({spec.name: values})
+    probe = probe_script({spec.name: spec})
     start = start_script(spec)
     stop = stop_script(spec.name)
     assert "fleetd-campaign-command/1" in probe and "list.sha256" in probe
-    assert "list_digest = None" in probe
+    assert "list_digest = calculated_digest if planned else None" in probe
     assert "run-job" in start and "--only-candidates" in start and "R2_MAX_ATTEMPTS" in start
     assert "sha256sum" in start and "EXISTING" in start
     assert 'run-r2-campaign.sh\" stop' in stop
@@ -247,6 +359,7 @@ def test_runner_probe_start_stop_and_progress_errors_are_closed():
     runner = RunnerJobs(transport)
     spec = JobSpec("campaign", "host-a", 0, 0, ("a" * 64,), "b" * 40, ".", "r2", 1)
     assert runner.probe("host-a", {}) == {}
+    assert transport.calls[-1][1] == "run"
     assert runner.start(spec) is True
     assert runner.stop("host-a", spec.name) is True
     assert runner.stop("host-a", spec.name) is False
@@ -307,7 +420,15 @@ def test_fake_job_table_handles_direct_duplicate_start_and_repeated_restart():
     assert runner.start(spec)
     rc, out, err = transport.run("host-a", start_script(spec))
     assert (rc, out.strip(), err) == (0, "EXISTING", "")
-    mismatch = command_metadata("start", {"name": spec.name, "list_digest": "bad", "candidate_ids": []})
+    other_id = "c" * 64
+    host = transport.host("host-a")
+    host.files[spec.candidate_file_home_path] = f"{other_id}\n".encode("ascii")
+    other_digest = hashlib.sha256(f"{other_id}\n".encode("ascii")).hexdigest()
+    mismatch = command_metadata("start", {
+        "name": spec.name,
+        "list_digest": other_digest,
+        "ids_path": spec.candidate_file_home_path,
+    })
     assert transport.run("host-a", mismatch) == (73, "", "named job exists with another candidate-list digest")
     transport.restart("host-a")
     assert transport.host("host-a").jobs[spec.name].exit_code == 137
@@ -343,11 +464,14 @@ def test_runner_probe_start_and_stop_translate_malformed_responses_and_failures(
     name = spec.name
     for response in ((124, "", "timeout"), (255, "", "down")):
         with pytest.raises(HostUnavailable):
-            RunnerJobs(ScriptedTransport([response])).probe("host-a", {name: spec.candidate_ids})
+            RunnerJobs(ScriptedTransport([response])).probe("host-a", {name: spec})
+    for status in (97, 98):
+        with pytest.raises(TransportError, match=f"exit {status}"):
+            RunnerJobs(ScriptedTransport([(status, "", "refused")])).probe("host-a", {name: spec})
     with pytest.raises(TransportError, match="exit 2"):
-        RunnerJobs(ScriptedTransport([(2, "", "bad")])).probe("host-a", {name: spec.candidate_ids})
+        RunnerJobs(ScriptedTransport([(2, "", "bad")])).probe("host-a", {name: spec})
     with pytest.raises(TransportError, match="invalid JSON"):
-        RunnerJobs(ScriptedTransport([(0, "not json", "")])).probe("host-a", {name: spec.candidate_ids})
+        RunnerJobs(ScriptedTransport([(0, "not json", "")])).probe("host-a", {name: spec})
     for output in (
         json.dumps({"jobs": "bad"}),
         json.dumps({"jobs": [None]}),
@@ -355,7 +479,7 @@ def test_runner_probe_start_and_stop_translate_malformed_responses_and_failures(
         json.dumps({"jobs": []}),
     ):
         with pytest.raises(TransportError):
-            RunnerJobs(ScriptedTransport([(0, output, "")])).probe("host-a", {name: spec.candidate_ids})
+            RunnerJobs(ScriptedTransport([(0, output, "")])).probe("host-a", {name: spec})
 
     mismatch = _probe_json(name, "RUNNING", "bad")
     with pytest.raises(TransportError, match="different candidate-list digest"):
@@ -496,6 +620,12 @@ def test_lost_host_requeues_only_unfinished_candidates_and_uses_largest_cap(tmp_
     manager.run("campaign", plan)
     before = _state(tmp_path)
     lost_job = _first_running(before, "host-b")
+    lost_candidates = {
+        candidate
+        for row in before["jobs"].values()
+        if row["host"] == "host-b"
+        for candidate in row["candidate_ids"]
+    }
     completed = lost_job["candidate_ids"][0]
     transport.add_progress("host-b", lost_job["name"], completed, "survived", emitted_at="2026-11-13T00:00:00+00:00")
     manager.status("campaign")
@@ -510,7 +640,7 @@ def test_lost_host_requeues_only_unfinished_candidates_and_uses_largest_cap(tmp_
     assert after["hosts"]["host-b"]["status"] == "LOST"
     assert requeued
     assert all(completed not in job["candidate_ids"] for job in requeued)
-    assert set(candidate for job in requeued for candidate in job["candidate_ids"]) == set(lost_job["candidate_ids"][1:])
+    assert set(candidate for job in requeued for candidate in job["candidate_ids"]) == lost_candidates - {completed}
     expected_target = max(
         (host["cap_alone_bytes"], host["id"])
         for host in plan["hosts"] if host["id"] != "host-b" and host["status"] == "available"
@@ -1064,12 +1194,13 @@ def test_refresh_digest_mismatch_and_missing_running_jobs_are_detected(tmp_path)
     manager = CampaignManager(tmp_path, transport)
     manager.run("campaign", plan)
     job = next(iter(_state(tmp_path)["jobs"].values()))
-    transport.host(job["host"]).jobs[job["name"]].list_digest = "wrong"
+    host = transport.host(job["host"])
+    host.files[f"jobs/{job['name']}/list.sha256"] = b"wrong\n"
     with pytest.raises(ContractError, match="different candidate-list digest"):
         manager.status("campaign")
 
-    transport.host(job["host"]).jobs[job["name"]].list_digest = job["list_digest"]
-    del transport.host(job["host"]).jobs[job["name"]]
+    host.files[f"jobs/{job['name']}/list.sha256"] = f"{job['list_digest']}\n".encode()
+    del host.jobs[job["name"]]
     manager.tick("campaign")
     state = _state(tmp_path)
     assert state["jobs"][job["name"]]["status"] == "EXIT"
@@ -1143,7 +1274,7 @@ def test_refresh_unknown_initializes_progress_and_rejects_corrupt_candidate_ids(
             "records": [{"candidate_id": "invalid", "outcome_bucket": "killed"}],
         }
     }
-    with pytest.raises(TransportError, match="invalid candidate id"):
+    with pytest.raises(ContractError, match="candidate list"):
         manager.status("campaign")
 
 
@@ -1321,10 +1452,10 @@ def test_campaign_state_loading_and_atomic_write_reject_corruption(tmp_path):
     _atomic_write(path, b"second")
     assert path.read_bytes() == b"second"
     malformed = tmp_path / "wrong-identity.json"
-    malformed.write_text(json.dumps({"schema": "fleet-campaign-state/1", "campaign": "other", "hosts": {}, "jobs": {}}), encoding="utf-8")
+    malformed.write_text(json.dumps({"schema": "fleet-campaign-state/2", "campaign": "other", "hosts": {}, "jobs": {}}), encoding="utf-8")
     with pytest.raises(ContractError, match="identity or tables"):
         manager.status("wrong-identity")
-    malformed.write_text(json.dumps({"schema": "fleet-campaign-state/1", "campaign": "wrong-identity", "hosts": [], "jobs": {}}), encoding="utf-8")
+    malformed.write_text(json.dumps({"schema": "fleet-campaign-state/2", "campaign": "wrong-identity", "hosts": [], "jobs": {}}), encoding="utf-8")
     with pytest.raises(ContractError, match="identity or tables"):
         manager.status("wrong-identity")
 
@@ -1488,3 +1619,277 @@ def test_state_write_failure_keeps_the_previous_state_and_leaves_no_temporary_fi
         _atomic_write(path, b"new")
     assert path.read_bytes() == b"old"
     assert [item.name for item in tmp_path.iterdir()] == ["state.json"]
+
+
+def test_real_run_job_starts_non_root_project_and_recovers_digest_from_ids_file(tmp_path):
+    spec = _spec_for_project("ciu")
+    home, environment = _real_runner_home(tmp_path, spec)
+
+    started = _real_start(home, environment, spec)
+    assert started.returncode == 0, started.stderr
+    assert started.stdout.strip() == "STARTED"
+    job_dir = _wait_real_job(home, spec)
+    assert (job_dir / "EXIT").read_text(encoding="ascii").strip() == "0"
+
+    (job_dir / "list.sha256").unlink()
+    adopted = _real_start(home, environment, spec)
+    assert adopted.returncode == 0, adopted.stderr
+    assert adopted.stdout.strip() == "EXISTING"
+
+    probe = subprocess.run(
+        ["bash", "-c", probe_script({spec.name: spec})],
+        cwd=home,
+        env=environment,
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    assert probe.returncode == 0, probe.stderr
+    row = json.loads(probe.stdout)["jobs"][0]
+    assert row["list_digest"] == spec.list_digest
+    assert row["progress_count"] == 1
+    assert len(row["records"]) == 1
+
+    stopped = subprocess.run(
+        ["bash", "-c", stop_script(spec.name)],
+        cwd=home,
+        env=environment,
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    assert stopped.returncode == 0, stopped.stderr
+    assert stopped.stdout.strip() == "NOT_RUNNING"
+
+
+def test_real_plain_run_probe_reads_progress_without_campaign_pointer(tmp_path):
+    spec = _spec_for_project(".")
+    home, environment = _real_runner_home(tmp_path, spec)
+    started = _real_start(home, environment, spec)
+    assert started.returncode == 0, started.stderr
+    job_dir = _wait_real_job(home, spec)
+    campaign_dir = home / "campaigns" / spec.runner_campaign
+    assert not (campaign_dir / "progress-file").exists()
+    assert (home / "checkouts" / spec.commit / ".assay" / "progress-contract-assay.jsonl").is_file()
+    assert (job_dir / "EXIT").read_text(encoding="ascii").strip() == "0"
+
+    probe = subprocess.run(
+        ["bash", "-c", probe_script({spec.name: spec})],
+        cwd=home,
+        env=environment,
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    assert probe.returncode == 0, probe.stderr
+    row = json.loads(probe.stdout)["jobs"][0]
+    assert row["progress_path"] == f"checkouts/{spec.commit}/.assay/progress-contract-assay.jsonl"
+    assert row["progress_count"] == 1
+    assert [record["candidate_id"] for record in row["records"]] == list(spec.sorted_candidate_ids)
+
+
+def test_probe_command_size_does_not_scale_with_candidate_count():
+    candidates = tuple(f"{index:064x}" for index in range(8447))
+    spec = replace(_spec_for_project("ciu"), candidate_ids=candidates)
+    command = probe_script({spec.name: spec})
+    assert len(command) < 8192
+    assert candidates[-1] not in command
+
+
+def test_stop_script_accepts_any_generated_job_name_length():
+    name = "a" + "b" * 150
+    assert f"{name}-s1" in stop_script(name)
+
+
+def test_runner_project_path_matches_campaign_supervisor_contract():
+    spec = replace(_spec_for_project("."), project="ciu/name..segment")
+    with pytest.raises(ContractError, match="relative project path"):
+        validate_job_spec(spec)
+
+
+def test_idle_planned_host_is_probed_and_can_receive_lost_work(tmp_path):
+    plan = _plan(1)
+    source = next(host for host in plan["hosts"] if host["assigned"])
+    idle = next(host for host in plan["hosts"] if not host["assigned"])
+    clock = FakeClock()
+    transport = FakeTransport(clock=clock)
+    manager = CampaignManager(tmp_path, transport, clock=clock)
+    manager.run("campaign", plan)
+
+    transport.set_unreachable(source["id"])
+    manager.tick("campaign")
+    clock.advance(LOST_AFTER_SECONDS + 1)
+    manager.tick("campaign")
+
+    state = _state(tmp_path)
+    assert state["hosts"][idle["id"]]["status"] == "ONLINE"
+    assert not state["deferred_requeues"]
+    assert any(
+        job["host"] == idle["id"] and job.get("requeue_reason") == "host-lost"
+        for job in state["jobs"].values()
+    )
+
+
+def test_stall_keeps_marker_and_creates_exactly_one_replacement(tmp_path):
+    clock = FakeClock()
+    transport = FakeTransport(clock=clock)
+    manager = CampaignManager(tmp_path, transport, clock=clock)
+    manager.run("campaign", _plan(40))
+    original = _first_running(_state(tmp_path), "host-a")
+    transport.set_unreachable("host-b")
+    manager.tick("campaign")
+    clock.advance(STALL_FLOOR_SECONDS + 1)
+    manager.tick("campaign")
+
+    after_detection = _state(tmp_path)
+    assert after_detection["jobs"][original["name"]]["status"] == "STALLED"
+    assert len([job for job in after_detection["jobs"].values() if job.get("requeue_reason") == "stalled"]) == 1
+
+    manager.tick("campaign")
+    after_probe_exit = _state(tmp_path)
+    assert after_probe_exit["jobs"][original["name"]]["status"] == "STALLED"
+    assert len([job for job in after_probe_exit["jobs"].values() if job.get("requeue_reason") == "stalled"]) == 1
+
+
+def test_unreachable_host_becomes_lost_after_controller_restart(tmp_path):
+    plan = _plan(12)
+    monotonic_before = FakeClock(1_000_000)
+    wall_before = FakeClock(1_000_000)
+    boot = ["boot-before"]
+    transport = FakeTransport(clock=monotonic_before)
+    first = CampaignManager(
+        tmp_path,
+        transport,
+        clock=monotonic_before,
+        utc_clock=wall_before,
+        boot_id=lambda: boot[0],
+    )
+    first.run("campaign", plan)
+    transport.set_unreachable("host-a")
+    first.tick("campaign")
+
+    wall_before.advance(100)
+    monotonic_before.advance(100)
+    first.tick("campaign")
+    saved = _state(tmp_path)
+    assert saved["hosts"]["host-a"]["unreachable_since_utc"] is not None
+
+    monotonic_after = FakeClock(50)
+    wall_after = FakeClock(wall_before() + 2 * 60 * 60)
+    boot[0] = "boot-after"
+    restarted = CampaignManager(
+        tmp_path,
+        transport,
+        clock=monotonic_after,
+        utc_clock=wall_after,
+        boot_id=lambda: boot[0],
+    )
+    restarted.tick("campaign")
+    assert _state(tmp_path)["hosts"]["host-a"]["status"] == "LOST"
+
+
+def test_backward_utc_step_after_controller_restart_delays_lost_detection(tmp_path):
+    plan = _plan(1)
+    monotonic_before = FakeClock(1_000_000)
+    wall_before = FakeClock(1_000_000)
+    boot = ["boot-before"]
+    transport = FakeTransport(clock=monotonic_before)
+    first = CampaignManager(
+        tmp_path,
+        transport,
+        clock=monotonic_before,
+        utc_clock=wall_before,
+        boot_id=lambda: boot[0],
+    )
+    first.run("campaign", plan)
+    transport.set_unreachable("host-a")
+    first.tick("campaign")
+    monotonic_before.advance(100)
+    wall_before.advance(100)
+    first.tick("campaign")
+
+    monotonic_after = FakeClock(25)
+    wall_after = FakeClock(wall_before() - LOST_AFTER_SECONDS * 4)
+    boot[0] = "boot-after"
+    restarted = CampaignManager(
+        tmp_path,
+        transport,
+        clock=monotonic_after,
+        utc_clock=wall_after,
+        boot_id=lambda: boot[0],
+    )
+    restarted.tick("campaign")
+    assert _state(tmp_path)["hosts"]["host-a"]["status"] == "UNREACHABLE"
+    monotonic_after.advance(LOST_AFTER_SECONDS - 1)
+    wall_after.advance(LOST_AFTER_SECONDS - 1)
+    restarted.tick("campaign")
+    assert _state(tmp_path)["hosts"]["host-a"]["status"] == "UNREACHABLE"
+    monotonic_after.advance(2)
+    wall_after.advance(2)
+    restarted.tick("campaign")
+    assert _state(tmp_path)["hosts"]["host-a"]["status"] == "LOST"
+
+
+def test_large_golden_plan_requeues_all_work_after_one_stall_and_permanent_loss(tmp_path):
+    plan = _plan(230)
+    assert len(plan["hosts"]) == 2
+    assert sum(len(host["assigned"]) for host in plan["hosts"]) == 230
+    assert all(host["assigned"] for host in plan["hosts"])
+    clock = FakeClock()
+    transport = FakeTransport(clock=clock)
+    manager = CampaignManager(tmp_path, transport, clock=clock)
+    manager.run("large", plan)
+    state = _state(tmp_path, "large")
+
+    lost_host_job = _first_running(state, "host-b")
+    stalled_job = _first_running(state, "host-a")
+    already_finished = lost_host_job["candidate_ids"][0]
+    transport.add_progress("host-b", lost_host_job["name"], already_finished, "survived")
+    manager.status("large")
+    transport.set_unreachable("host-b")
+    manager.tick("large")
+
+    clock.advance(STALL_FLOOR_SECONDS + 1)
+    manager.tick("large")
+    assert _state(tmp_path, "large")["jobs"][stalled_job["name"]]["status"] == "STALLED"
+    manager.tick("large")
+    state = _state(tmp_path, "large")
+    assert state["jobs"][stalled_job["name"]]["status"] == "STALLED"
+    assert len([job for job in state["jobs"].values() if job.get("requeue_reason") == "stalled"]) == 1
+
+    def finish_host_a_work() -> None:
+        for _ in range(300):
+            manager.tick("large")
+            current = _state(tmp_path, "large")
+            active = [
+                job for job in current["jobs"].values()
+                if job["host"] == "host-a" and job["status"] in {"QUEUED", "STARTING", "RUNNING", "UNKNOWN"}
+            ]
+            running = [job for job in active if job["status"] == "RUNNING"]
+            for job in running:
+                finished = CampaignManager._done_ids(current)
+                for candidate_id in job["candidate_ids"]:
+                    if candidate_id not in finished:
+                        transport.add_progress("host-a", job["name"], candidate_id, "killed")
+                transport.finish("host-a", job["name"])
+            if not active:
+                return
+        pytest.fail("host-a retained campaign work after 300 scheduling steps")
+
+    finish_host_a_work()
+    clock.advance(LOST_AFTER_SECONDS - STALL_FLOOR_SECONDS)
+    manager.tick("large")
+    state = _state(tmp_path, "large")
+    lost_jobs = [job for job in state["jobs"].values() if job["host"] == "host-b"]
+    assert lost_jobs and all(job["status"] == "LOST" for job in lost_jobs)
+    assert any(already_finished in job.get("finished_ids", []) for job in lost_jobs)
+
+    finish_host_a_work()
+    final_state = _state(tmp_path, "large")
+    owners = CampaignManager._done_ids(final_state)
+    assert owners == set(final_state["planned_ids"])
+    assert len(owners) == 230
+    assert all(already_finished not in job["candidate_ids"] for job in final_state["jobs"].values() if job.get("requeue_reason") == "host-lost")

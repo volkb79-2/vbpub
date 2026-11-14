@@ -9,9 +9,17 @@ import math
 import re
 import shlex
 from dataclasses import dataclass
-from typing import Any, Mapping, Sequence
+from typing import Any, Mapping
 
 from .contracts import ContractError, is_candidate_id
+from .runner_layout import (
+    ASSAY_DIR,
+    PROGRESS_PREFIX,
+    PROGRESS_SUFFIX,
+    candidate_ids_home_path,
+    candidate_ids_relative,
+    progress_home_path,
+)
 from .transport import HostUnavailable, Transport, TransportError, command_metadata, json_output
 
 
@@ -58,12 +66,11 @@ class JobSpec:
 
     @property
     def candidate_file(self) -> str:
-        return f".assay/fleetd-plan/{self.campaign}/{self.host}/{self.name}.ids"
+        return candidate_ids_relative(self.campaign, self.host, self.name)
 
     @property
     def candidate_file_home_path(self) -> str:
-        project = "" if self.project == "." else f"{self.project}/"
-        return f"checkouts/{self.commit}/{project}.assay/fleetd-plan/{self.campaign}/{self.host}/{self.name}.ids"
+        return candidate_ids_home_path(self.commit, self.project, self.campaign, self.host, self.name)
 
 
 def _safe_identifier(value: object, where: str) -> str:
@@ -88,7 +95,7 @@ def validate_job_spec(spec: JobSpec) -> None:
         raise ContractError("execution commit: expected a full lowercase Git commit id")
     if spec.project != ".":
         parts = spec.project.split("/")
-        if not parts or any(part in {"", ".", ".."} or _SAFE_PROJECT_PART.fullmatch(part) is None for part in parts):
+        if not parts or ".." in spec.project or any(part in {"", ".", ".."} or _SAFE_PROJECT_PART.fullmatch(part) is None for part in parts):
             raise ContractError("execution project: expected a safe relative project path")
     _safe_identifier(spec.lane, "lane")
     if isinstance(spec.jobs, bool) or not isinstance(spec.jobs, int) or spec.jobs < 1:
@@ -97,34 +104,60 @@ def validate_job_spec(spec: JobSpec) -> None:
         raise ContractError("generated job name is too long or unsafe")
 
 
-def _b64_json(value: object) -> str:
-    return base64.b64encode(json.dumps(value, sort_keys=True, separators=(",", ":")).encode()).decode("ascii")
-
-
-def probe_script(jobs: Mapping[str, Sequence[str]]) -> str:
-    names = sorted(jobs)
-    expected = {name: sorted(jobs[name]) for name in names}
-    metadata = command_metadata("probe", {"jobs": names, "candidate_ids": expected})
-    payload = _b64_json(expected)
+def probe_script(jobs: Mapping[str, JobSpec]) -> str:
+    targets = []
+    for name in sorted(jobs):
+        spec = jobs[name]
+        validate_job_spec(spec)
+        if spec.name != name:
+            raise ContractError("probe job key does not match its generated name")
+        targets.append({
+            "name": name,
+            "ids_path": spec.candidate_file_home_path,
+            "commit": spec.commit,
+            "project": spec.project,
+            "lane": spec.lane,
+            "assay_dir": ASSAY_DIR,
+            "progress_prefix": PROGRESS_PREFIX,
+            "progress_suffix": PROGRESS_SUFFIX,
+        })
+    metadata = command_metadata("probe", {"jobs": targets})
+    payload = json.dumps(targets, sort_keys=True, separators=(",", ":")).encode()
+    encoded = base64.b64encode(payload).decode("ascii")
     remote = r'''set -euo pipefail
 source "$HOME/runner-scripts/lib.sh"
 python3 - "$RUNNER_HOME" PAYLOAD <<'PY'
 import base64
+import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import sys
+import tomllib
 
 runner_home = Path(sys.argv[1])
-expected = json.loads(base64.b64decode(sys.argv[2], validate=True))
+targets = json.loads(base64.b64decode(sys.argv[2], validate=True))
 home = Path.home()
 rows = []
-for name, planned in sorted(expected.items()):
+for target in sorted(targets, key=lambda row: row["name"]):
+    name = target["name"]
     job_dir = home / "jobs" / name
     if not job_dir.is_dir():
         rows.append({"name": name, "state": "MISSING"})
         continue
-    campaign_dir = runner_home / "campaigns" / f"{name}-s1"
+    ids_file = runner_home / target["ids_path"]
+    try:
+        planned = [line.strip() for line in ids_file.read_text(encoding="ascii").splitlines() if line.strip()]
+    except (OSError, UnicodeError):
+        planned = []
+    calculated_digest = hashlib.sha256("".join(f"{candidate_id}\n" for candidate_id in sorted(planned)).encode("ascii")).hexdigest()
+    try:
+        list_digest = (job_dir / "list.sha256").read_text(encoding="ascii").strip()
+    except OSError:
+        # run-job creates the job directory before its detached command starts;
+        # the uploaded ids file is the durable recovery source during that gap.
+        list_digest = calculated_digest if planned else None
     exit_file = job_dir / "EXIT"
     exit_code = None
     if exit_file.is_file():
@@ -141,24 +174,26 @@ for name, planned in sorted(expected.items()):
             state = "RUNNING"
         except (OSError, ValueError):
             pass
-    digest_file = job_dir / "list.sha256"
-    try:
-        list_digest = digest_file.read_text(encoding="ascii").strip()
-    except OSError:
-        list_digest = None
-    progress_path = None
+    checkout = runner_home / "checkouts" / target["commit"]
+    project_dir = checkout if target["project"] == "." else checkout / target["project"]
+    assay_lane = target["lane"]
+    for config_path in (project_dir / "run-gate.toml", checkout / "run-gate.root.toml"):
+        try:
+            declaration = tomllib.loads(config_path.read_text(encoding="utf-8")).get("lanes", {}).get(target["lane"])
+        except (OSError, UnicodeError, tomllib.TOMLDecodeError):
+            continue
+        if declaration is not None:
+            assay_lane = declaration.get("assay_lane", target["lane"])
+            break
+    if not isinstance(assay_lane, str) or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", assay_lane) is None:
+        raise ValueError("resolved Assay lane is not a safe artifact name")
+    progress_source = project_dir / target["assay_dir"] / f"{target['progress_prefix']}{assay_lane}{target['progress_suffix']}"
+    progress_path = progress_source.resolve().relative_to(home.resolve()).as_posix()
     records = []
     mtime = None
-    pointer = campaign_dir / "progress-file"
     try:
-        raw_path = Path(pointer.read_text(encoding="utf-8").strip())
-        if raw_path.is_absolute():
-            progress_path = raw_path.resolve().relative_to(home.resolve()).as_posix()
-        else:
-            progress_path = raw_path.as_posix()
-        source = home / progress_path
-        mtime = source.stat().st_mtime
-        with source.open(encoding="utf-8") as stream:
+        mtime = progress_source.stat().st_mtime
+        with progress_source.open(encoding="utf-8") as stream:
             for line in stream:
                 try:
                     event = json.loads(line)
@@ -168,8 +203,7 @@ for name, planned in sorted(expected.items()):
                     records.append({key: event[key] for key in (
                         "candidate_id", "outcome_bucket", "elapsed_seconds", "emitted_at"
                     ) if key in event})
-    except (OSError, UnicodeError, ValueError):
-        progress_path = None
+    except (OSError, UnicodeError):
         mtime = None
     verdict_path = f"campaigns/{name}-s1/verdict.json"
     done = {event.get("candidate_id") for event in records if isinstance(event.get("candidate_id"), str)}
@@ -180,7 +214,7 @@ for name, planned in sorted(expected.items()):
         "verdict_path": verdict_path, "records": records,
     })
 print(json.dumps({"jobs": rows}, sort_keys=True, separators=(",", ":")))
-PY'''.replace("PAYLOAD", shlex.quote(payload))
+PY'''.replace("PAYLOAD", shlex.quote(encoded))
     return f"{metadata}\n{remote}"
 
 
@@ -189,15 +223,15 @@ def start_script(spec: JobSpec) -> str:
     metadata = command_metadata("start", {
         "name": spec.name,
         "list_digest": spec.list_digest,
-        "candidate_ids": list(spec.sorted_candidate_ids),
         "ids_path": spec.candidate_file_home_path,
+        "progress_path": progress_home_path(spec.commit, spec.project, spec.lane),
         "commit": spec.commit,
         "project": spec.project,
         "lane": spec.lane,
         "jobs": spec.jobs,
     })
     job_dir = f'"$HOME/jobs/{spec.name}"'
-    candidate_file = f'"$RUNNER_HOME/checkouts/{spec.commit}/{spec.candidate_file}"'
+    candidate_file = f'"$RUNNER_HOME/{spec.candidate_file_home_path}"'
     run_job = '"$HOME/runner-scripts/run-job"'
     run_args = [
         shlex.quote(spec.runner_campaign),
@@ -210,6 +244,12 @@ def start_script(spec: JobSpec) -> str:
         shlex.quote(spec.candidate_file),
     ]
     expected_digest = shlex.quote(spec.list_digest)
+    launcher = (
+        "printf '%s\\n' " + expected_digest
+        + f' > "$HOME/jobs/{spec.name}/list.sha256.tmp"; '
+        + f'mv -f -- "$HOME/jobs/{spec.name}/list.sha256.tmp" "$HOME/jobs/{spec.name}/list.sha256"; '
+        + 'exec "$@"'
+    )
     remote = "\n".join(
         [
             "set -euo pipefail",
@@ -220,24 +260,22 @@ def start_script(spec: JobSpec) -> str:
             'file_digest=$(sha256sum -- "$candidate_file" | cut -d " " -f 1)',
             '[[ $file_digest == "$expected_digest" ]] || { echo "candidate file digest mismatch" >&2; exit 73; }',
             'if [[ -e $job_dir ]]; then',
-            '  stored_digest=$(cat -- "$job_dir/list.sha256" 2>/dev/null || true)',
+            '  stored_digest=$(cat -- "$job_dir/list.sha256" 2>/dev/null || sha256sum -- "$candidate_file" | cut -d " " -f 1)',
             '  if [[ $stored_digest == "$expected_digest" ]]; then echo EXISTING; exit 0; fi',
             '  echo "named job exists with another or unverifiable candidate-list digest" >&2; exit 73',
             "fi",
-            f"if {run_job} {shlex.quote(spec.name)} -- env R2_MAX_ATTEMPTS=2147483647 bash \"$HOME/runner-scripts/run-r2-campaign.sh\" "
+            f"if {run_job} {shlex.quote(spec.name)} -- bash -c {shlex.quote(launcher)} fleetd-launch env R2_MAX_ATTEMPTS=2147483647 bash \"$HOME/runner-scripts/run-r2-campaign.sh\" "
             + " ".join(run_args) + " >/dev/null; then",
             "  start_status=0",
             "else",
             "  start_status=$?",
             '  if [[ $start_status == 3 && -d $job_dir ]]; then',
-            '    stored_digest=$(cat -- "$job_dir/list.sha256" 2>/dev/null || true)',
+            '    stored_digest=$(cat -- "$job_dir/list.sha256" 2>/dev/null || sha256sum -- "$candidate_file" | cut -d " " -f 1)',
             '    if [[ $stored_digest == "$expected_digest" ]]; then echo EXISTING; exit 0; fi',
             '    echo "duplicate run-job name has an unverifiable list digest" >&2; exit 73',
             "  fi",
             '  exit "$start_status"',
             "fi",
-            'printf "%s\\n" "$expected_digest" > "$job_dir/list.sha256.tmp"',
-            'mv -f -- "$job_dir/list.sha256.tmp" "$job_dir/list.sha256"',
             "echo STARTED",
         ]
     )
@@ -245,7 +283,8 @@ def start_script(spec: JobSpec) -> str:
 
 
 def stop_script(name: str) -> str:
-    _safe_identifier(name, "job name")
+    if not isinstance(name, str) or _SAFE_JOB_NAME.fullmatch(name) is None:
+        raise ContractError("job name: expected a safe name of at most 240 letters, digits, '.', '_' or '-' characters")
     metadata = command_metadata("stop", {"name": name})
     remote = "\n".join(
         [
@@ -270,9 +309,7 @@ class RunnerJobs:
         self.transport = transport
         self.timeout = timeout
 
-    def probe(self, host: str, jobs: Mapping[str, Sequence[str]]) -> dict[str, dict[str, Any]]:
-        if not jobs:
-            return {}
+    def probe(self, host: str, jobs: Mapping[str, JobSpec]) -> dict[str, dict[str, Any]]:
         rc, out, err = self.transport.run(host, probe_script(jobs), self.timeout)
         if rc in {124, 255}:
             raise HostUnavailable(f"probe could not reach {host}: {err.strip()}")
@@ -296,7 +333,7 @@ class RunnerJobs:
 
     def start(self, spec: JobSpec) -> bool:
         validate_job_spec(spec)
-        current = self.probe(spec.host, {spec.name: spec.sorted_candidate_ids})[spec.name]
+        current = self.probe(spec.host, {spec.name: spec})[spec.name]
         if current.get("state") != "MISSING":
             if not self._digest_matches(current.get("list_digest"), spec):
                 raise TransportError(f"named job {spec.name} exists with a different candidate-list digest")
@@ -305,7 +342,7 @@ class RunnerJobs:
         self.transport.put(spec.host, spec.candidate_file_home_path, contents, self.timeout)
         rc, out, err = self.transport.run(spec.host, start_script(spec), self.timeout)
         if rc != 0:
-            current = self.probe(spec.host, {spec.name: spec.sorted_candidate_ids})[spec.name]
+            current = self.probe(spec.host, {spec.name: spec})[spec.name]
             if current.get("state") != "MISSING" and self._digest_matches(current.get("list_digest"), spec):
                 return False
             raise TransportError(f"start-job failed for {spec.name} with exit {rc}: {err.strip() or out.strip()}")

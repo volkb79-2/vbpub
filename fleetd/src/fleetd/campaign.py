@@ -18,7 +18,7 @@ from .runner import JobSpec, RunnerJobs, parse_progress, validate_job_spec
 from .transport import HostUnavailable, Transport, TransportError
 
 
-STATE_SCHEMA = "fleet-campaign-state/1"
+STATE_SCHEMA = "fleet-campaign-state/2"
 RESULT_SCHEMA = "fleet-campaign-result/1"
 STALL_FLOOR_SECONDS = 15 * 60
 LOST_AFTER_SECONDS = 30 * 60
@@ -41,6 +41,16 @@ def _safe_campaign(value: object) -> str:
     return value
 
 
+def _system_boot_id() -> str:
+    try:
+        value = Path("/proc/sys/kernel/random/boot_id").read_text(encoding="ascii").strip()
+    except OSError as exc:
+        raise ContractError("controller boot id is unavailable; persistent campaign clocks cannot be made restart-safe") from exc
+    if re.fullmatch(r"[0-9a-f-]{36}", value) is None:
+        raise ContractError("controller boot id has an invalid format")
+    return value
+
+
 def _execution(plan: Mapping[str, Any]) -> dict[str, str]:
     value = plan.get("execution")
     if not isinstance(value, dict) or value.get("schema") != "fleet-plan-execution/1":
@@ -52,6 +62,7 @@ def _execution(plan: Mapping[str, Any]) -> dict[str, str]:
     if (
         not isinstance(project, str)
         or project.startswith("/")
+        or ".." in project
         or (project != "." and any(
             not part or part in {".", ".."} or _PROJECT_PART.fullmatch(part) is None
             for part in project.split("/")
@@ -94,11 +105,15 @@ class CampaignManager:
         state_dir: Path,
         transport: Transport,
         *,
-        clock: Callable[[], float] = time.monotonic,
+        clock: Callable[[], float] | None = None,
+        utc_clock: Callable[[], float] | None = None,
+        boot_id: Callable[[], str] | None = None,
         transport_timeout: float = 30.0,
     ):
         self.state_dir = Path(state_dir)
-        self.clock = clock
+        self.clock = clock or time.monotonic
+        self.utc_clock = utc_clock or time.time
+        self.boot_id = boot_id or _system_boot_id
         self.runner = RunnerJobs(transport, timeout=transport_timeout)
 
     def run(self, campaign: str, plan: Mapping[str, Any]) -> dict[str, Any]:
@@ -200,6 +215,7 @@ class CampaignManager:
         expected_ids = sorted(candidate_metadata)
         state = {
             "schema": STATE_SCHEMA,
+            "clock_boot_id": self.boot_id(),
             "campaign": campaign,
             "plan": dict(plan),
             "plan_sha256": _plan_fingerprint(plan),
@@ -328,11 +344,50 @@ class CampaignManager:
             raise ContractError(f"campaign state has an unsupported schema: {campaign}")
         if value.get("campaign") != campaign or not isinstance(value.get("jobs"), dict) or not isinstance(value.get("hosts"), dict):
             raise ContractError(f"campaign state identity or tables are invalid: {campaign}")
+        self._rebase_after_restart(value)
         return value
 
     def _write_state(self, state: dict[str, Any]) -> None:
-        state["updated_mono"] = self.clock()
+        now_mono = self.clock()
+        now_utc = self.utc_clock()
+        state["updated_mono"] = now_mono
+        state["updated_utc"] = now_utc
+        state["clock_boot_id"] = self.boot_id()
+        self._sync_utc_timestamps(state, now_mono, now_utc)
         _atomic_write(self._state_path(state["campaign"]), _canonical(state))
+
+    def _rebase_after_restart(self, state: dict[str, Any]) -> None:
+        current_boot = self.boot_id()
+        if state.get("clock_boot_id") == current_boot:
+            return
+        now_mono = self.clock()
+        now_utc = self.utc_clock()
+
+        def rebase(value: object) -> None:
+            if isinstance(value, dict):
+                for key, item in list(value.items()):
+                    if key.endswith("_mono") and isinstance(item, (int, float)) and not isinstance(item, bool):
+                        utc_value = value.get(key[:-5] + "_utc")
+                        if isinstance(utc_value, (int, float)) and not isinstance(utc_value, bool):
+                            # A backward UTC step pauses fallback age; it can delay a
+                            # detector but cannot make a deadline fire early.
+                            elapsed = max(0.0, now_utc - float(utc_value))
+                            value[key] = now_mono - elapsed
+                    else:
+                        rebase(item)
+
+        rebase(state)
+        state["clock_boot_id"] = current_boot
+
+    @staticmethod
+    def _sync_utc_timestamps(value: object, now_mono: float, now_utc: float) -> None:
+        if isinstance(value, dict):
+            for key, item in list(value.items()):
+                if key.endswith("_mono") and isinstance(item, (int, float)) and not isinstance(item, bool):
+                    elapsed = max(0.0, now_mono - float(item))
+                    value[key[:-5] + "_utc"] = now_utc - elapsed
+                else:
+                    CampaignManager._sync_utc_timestamps(item, now_mono, now_utc)
 
     def _reconcile(self, state: dict[str, Any], plan: Mapping[str, Any]) -> None:
         self._validate_plan(plan)
@@ -382,9 +437,9 @@ class CampaignManager:
                 name: job for name, job in state["jobs"].items()
                 if job["host"] == host_id and job["status"] != "SUPERSEDED"
             }
-            if not job_rows:
+            if host_state["status"] == "REMOVED_FROM_PLAN":
                 continue
-            wanted = {name: job["candidate_ids"] for name, job in job_rows.items()}
+            wanted = {name: _job_spec(job) for name, job in job_rows.items()}
             try:
                 rows = self.runner.probe(host_id, wanted)
             except HostUnavailable:
@@ -496,7 +551,8 @@ class CampaignManager:
                         job["last_progress_mono"] = now
                     job["status"] = "RUNNING"
                 elif state_name == "EXIT":
-                    job["status"] = "COMPLETE" if set(job["candidate_ids"]) <= finished else "EXIT"
+                    if job["status"] != "STALLED":
+                        job["status"] = "COMPLETE" if set(job["candidate_ids"]) <= finished else "EXIT"
                     job["exit_code"] = row.get("exit_code")
                     job["ended_mono"] = job.get("ended_mono", now)
                 elif state_name == "UNKNOWN":
@@ -588,7 +644,7 @@ class CampaignManager:
             inflight = self._inflight_ids(state, exclude_host=host_id)
             pending_by_job: list[tuple[dict[str, Any], list[str]]] = []
             for job in state["jobs"].values():
-                if job["host"] != host_id or job["status"] not in {"RUNNING", "STARTING", "UNKNOWN"}:
+                if job["host"] != host_id or job["status"] not in {"QUEUED", "RUNNING", "STARTING", "UNKNOWN"}:
                     continue
                 pending = [candidate_id for candidate_id in job["candidate_ids"] if candidate_id not in done and candidate_id not in inflight]
                 job["status"] = "LOST"

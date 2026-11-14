@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import shlex
 import subprocess
@@ -10,6 +11,8 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import Callable, Mapping, Protocol, Sequence
+
+from .runner_layout import progress_home_path
 
 
 class TransportError(RuntimeError):
@@ -297,15 +300,48 @@ class FakeTransport:
         return host.files[relative]
 
     def _probe(self, host: FakeHost, metadata: Mapping[str, object]) -> str:
-        names = metadata.get("jobs", [])
+        targets = metadata.get("jobs", [])
         rows = []
-        for name in names if isinstance(names, list) else []:
+        for target in targets if isinstance(targets, list) else []:
+            if not isinstance(target, dict):
+                continue
+            name = str(target.get("name", ""))
             job = host.jobs.get(str(name))
             if job is None:
                 rows.append({"name": name, "state": "MISSING"})
                 continue
+            ids_path = str(target.get("ids_path", ""))
+            try:
+                planned = tuple(
+                    line for line in host.files[ids_path].decode("ascii").splitlines() if line
+                )
+            except (KeyError, UnicodeError):
+                planned = ()
+            calculated_digest = hashlib.sha256("".join(f"{candidate_id}\n" for candidate_id in sorted(planned)).encode("ascii")).hexdigest()
+            try:
+                list_digest = host.files[f"jobs/{name}/list.sha256"].decode("ascii").strip()
+            except (KeyError, UnicodeError):
+                list_digest = calculated_digest if planned else None
+            progress_path = progress_home_path(
+                str(target.get("commit", "")),
+                str(target.get("project", ".")),
+                str(target.get("lane", "")),
+            )
+            raw_progress = host.files.get(progress_path, b"")
+            progress_records = []
+            for line in raw_progress.decode("utf-8", errors="replace").splitlines():
+                try:
+                    event = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(event, dict) and event.get("event") == "candidate" and event.get("candidate_id") in planned:
+                    progress_records.append({
+                        key: event[key] for key in (
+                            "candidate_id", "outcome_bucket", "elapsed_seconds", "emitted_at"
+                        ) if key in event
+                    })
             finished = {}
-            for event in job.progress_records:
+            for event in progress_records:
                 candidate_id = event.get("candidate_id")
                 if isinstance(candidate_id, str) and candidate_id not in finished:
                     finished[candidate_id] = event
@@ -313,40 +349,46 @@ class FakeTransport:
                 "name": job.name,
                 "state": job.state,
                 "exit_code": job.exit_code,
-                "list_digest": job.list_digest,
+                "list_digest": list_digest,
                 "progress_count": len(finished),
-                "progress_mtime": job.progress_mtime,
-                "progress_path": job.progress_path,
+                "progress_mtime": job.progress_mtime if raw_progress else None,
+                "progress_path": progress_path,
                 "verdict_path": job.verdict_path,
-                "records": list(job.progress_records),
+                "records": progress_records,
             })
         return json.dumps({"jobs": rows}, sort_keys=True, separators=(",", ":"))
 
     def _start(self, alias: str, host: FakeHost, metadata: Mapping[str, object]) -> tuple[int, str, str]:
         name = str(metadata.get("name", ""))
         digest = str(metadata.get("list_digest", ""))
-        candidate_ids = tuple(str(value) for value in metadata.get("candidate_ids", []))
+        ids_path = str(metadata.get("ids_path", ""))
+        try:
+            candidate_ids = tuple(
+                line for line in host.files[ids_path].decode("ascii").splitlines() if line
+            )
+        except (KeyError, UnicodeError):
+            return 73, "", "candidate ids file is missing or invalid"
+        actual_digest = hashlib.sha256("".join(f"{candidate_id}\n" for candidate_id in sorted(candidate_ids)).encode("ascii")).hexdigest()
+        if actual_digest != digest:
+            return 73, "", "candidate ids file digest mismatch"
         if name in host.jobs:
             old = host.jobs[name]
             if old.list_digest != digest:
                 return 73, "", "named job exists with another candidate-list digest"
             return 0, "EXISTING\n", ""
         suffix = f"campaigns/{name}-s1"
-        project = str(metadata.get("project"))
-        project_prefix = "" if project in {"", "."} else f"{project}/"
         job = FakeJob(
             name=name,
             candidate_ids=candidate_ids,
             list_digest=digest,
             started_at=self.clock(),
             progress_mtime=None,
-            progress_path=f"checkouts/{metadata.get('commit')}/{project_prefix}.assay/progress-{metadata.get('lane')}.jsonl",
+            progress_path=str(metadata.get("progress_path", "")),
             verdict_path=f"{suffix}/verdict.json",
         )
         host.jobs[name] = job
         host.starts += 1
         host.files[f"jobs/{name}/list.sha256"] = (digest + "\n").encode()
-        host.files[str(metadata.get("ids_path"))] = ("\n".join(sorted(candidate_ids)) + "\n").encode()
         return 0, "STARTED\n", ""
 
     def _stop(self, host: FakeHost, metadata: Mapping[str, object]) -> tuple[int, str, str]:
