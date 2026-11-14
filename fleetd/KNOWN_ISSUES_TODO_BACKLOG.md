@@ -28,6 +28,8 @@
 | FD-022 | Dispatch does not re-check memory/IO PSI before starting the next batch | P2 | OPEN | 2026-11-14 |
 | FD-023 | The hx wrapper path is derived from the source checkout and fails from an installed wheel | P3 | OPEN | 2026-11-14 |
 | FD-024 | Deferred re-queue de-duplication is not pinned for three or more hosts | P3 | DONE | 2026-11-14 |
+| FD-025 | The first stall window uses unscaled reference seconds when no comparable host speed reference exists | P3 | OPEN | 2026-11-14 |
+| FD-026 | A host that stays in ERROR has no loss timer | P3 | OPEN | 2026-11-14 |
 
 ## FD-001 Lite campaign lifecycle
 
@@ -435,3 +437,57 @@ implemented the filter, but the suite did not pin this cross-host case.
 to assert a deferred candidate already running on a third host is not enqueued
 again. Removing the in-flight filter is killed by that test (commit
 `bee29cf0c`).
+
+## FD-025 First stall window with a non-comparable speed reference
+
+**State:** OPEN. **Priority:** P3. **Filed:** 2026-11-14 (fix4 review, for the Opus final review).
+
+`CampaignManager._predicted_candidate_seconds` scales a candidate's
+`time_ref_seconds` by the reference baseline, the host's single-core score and
+`f_h` only when the host's Geekbench major, version and baseline score match the
+plan's `time_reference`. Otherwise it uses `time_ref_seconds` unscaled (and
+ignores `f_h`); the SPEC documents this fallback. The stall threshold is
+`max(900 s, 3 x predicted p95, 3 x observed p95)` plus the declared (or
+host-p95) `baseline_seconds` while the batch has finished no candidate. A host
+that is slower than the reference by more than that margin, with no comparable
+score, can therefore be stopped during its first candidate; the batch then has
+no finished candidate and becomes `FAILED` (not re-queued, FD-016). The
+host-observed p95 corrects the threshold only after a candidate has finished on
+that host. The 900 s floor and the baseline term hide the gap for short
+candidates but not for long ones.
+
+**Wanted.** Without a comparable score, widen the first window by a documented
+factor, or require a first observed candidate time per host before the first
+stall decision, or have the planner refuse to start a non-comparable host
+without an explicit stall allowance. **Close when.** A test with a non-comparable
+host whose first candidate takes more than `3 x time_ref_seconds + baseline`
+(and more than 900 s) is not stalled in its first window, and the SPEC and
+design guide state the new rule.
+
+## FD-026 Host in ERROR has no loss timer
+
+**State:** OPEN. **Priority:** P3. **Filed:** 2026-11-14 (fix4 review, for the Opus final review); code path traced and confirmed 2026-11-14.
+
+FD-021 records a `ContractError` or non-`HostUnavailable` `TransportError` on one
+host as `ERROR` and keeps supervising the others. The loss timer lives only in
+the `HostUnavailable` branch of `CampaignManager._refresh`
+(`unreachable_since_mono`, `LOST` after `LOST_AFTER_SECONDS`); `_record_host_error`
+neither starts nor evaluates it. `_detect_stalls` skips any job whose host is not
+`ONLINE`, and `_handle_lost_hosts` acts only on `LOST`, so the batches on a host
+that keeps answering with an error are neither stopped, declared stalled nor
+re-queued. Confirmed with the fake transport: a probe that raised a
+`ContractError` on every tick for 5 hours of campaign time left the host
+`ERROR`, `unreachable_since_mono` unset, `loss_requeued` false and its batches
+`RUNNING`. The same applies to a host that was `UNREACHABLE` and then answers
+with an error: its existing timer is not evaluated while the status is `ERROR`.
+The campaign shows the error text but nothing ages it, so an unattended campaign
+can wait on that host indefinitely.
+
+**Wanted.** Decide the policy and document it: either age a persistent `ERROR`
+(status reports the time in error and the campaign warns past a threshold), or
+declare `LOST` after the same 1800 s as an unreachable host and re-queue its
+unfinished candidates elsewhere (a returning host may duplicate work, as for any
+lost host; contract faults mean its batches may in fact be alive). **Close when.**
+Tests show a host in `ERROR` beyond the threshold is reported (and, if LOST is
+chosen, has its unfinished candidates re-queued) and that a recovery before the
+threshold keeps its batches; SPEC and design guide state the rule.
