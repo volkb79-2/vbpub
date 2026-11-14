@@ -208,8 +208,12 @@ is not included in this verification; see IOB-BL-47.
 `STUDY-COMPLETE` in 9 h 19 min of the 12 h lease: 0 stop events, 478.64 GB of
 the 500 GB cap, ext4 and Btrfs legs, Btrfs verifier (33 cells, 66 logs), final
 wipe and discard, timers and io.cost/IO limits restored, evidence sha256-verified.
-Report and findings: `reports/ibx-study-run5-REPORT.md`; remaining items are
-IOB-BL-48 (hard-kill resume, never exercised live) and IOB-BL-51..54.
+The study report and evidence (`ibx-study-run5-REPORT.md`, with the
+verified-live host-assumption list) are release-program artifacts, not
+repo files. Not exercised live and still open: hard-kill resume (IOB-BL-48),
+the `--fsync-cell` collector, and the optional repeat and file-standard sets,
+which the 500 GB cap prevents under any schedule (IOB-BL-54). New findings:
+IOB-BL-51..53.
 
 **Original state.** Run3 stopped after `raw-t0 standard seq1m-write` because the
 driver rejected fio's whole-block write count. The cap repair, accounting
@@ -377,5 +381,8 @@ rehearsal on a regular file.
 
 **Status: OPEN (P3).** Filed 2026-11-14. Under the 500 GB cap the raw reference
 has only two standard points (t0, t6h); the t9h and t12h standard sets cannot
-fit, so the V figures rest on two points. **Close when.** The README and the
-analysis output name this as the cap-constrained design limit.
+fit, so the V figures rest on two points. The optional part-c repeat, both
+file-standard sets and both raw repeats are skipped by the cap rule and so can
+never run live under the same cap. **Close when.** The README and the
+analysis output name this as the cap-constrained design limit, including the
+sets that cannot run.
