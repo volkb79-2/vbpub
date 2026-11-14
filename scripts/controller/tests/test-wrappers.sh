@@ -263,6 +263,12 @@ PATH="$ROOT/bin:$PATH" HOME="$ROOT/home" CONTROLLER_HOME="$ROOT/controller" CONT
   || fail 'pinned DeepSeek route failed instead of staying on volker'
 [[ $(cat "$ROOT/controller/runs/od-pinned.route") == deepseek-volker ]] || fail 'pinned route changed accounts'
 contains "$ROOT/od-pinned-codex.log" "HOME=$VOLKER_HOME" 'pinned DeepSeek route uses the named account home'
+python3 - "$ROOT/od-pinned.json" <<'PY' || fail 'pinned DeepSeek start selected the other account in state'
+import json, sys
+state = json.load(open(sys.argv[1], encoding="utf-8"))
+assert state["volker"]["last_used_epoch"] > 1
+assert state["github2"]["last_used_epoch"] == 2
+PY
 
 if PATH="$ROOT/bin:$PATH" HOME="$ROOT/home" CONTROLLER_HOME="$ROOT/controller" CONTROLLER_REPO="$ROOT/repo" \
   CONTROLLER_OD_STATE="$ROOT/od-402.json" CODEX_HOME_DEEPSEEK_VOLKER="$VOLKER_HOME" CODEX_HOME_DEEPSEEK_GITHUB2="$GITHUB2_HOME" \
