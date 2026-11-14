@@ -14,6 +14,8 @@
 
 | ID | Status | Fix commit |
 | --- | --- | --- |
+| KI-169 | OPEN (`bundle_dir` or `client_dir` set to `"."` makes the success cleanup delete the whole `dist_dir`) | — |
+| KI-168 | OPEN (`cmru release` has no preflight for the digest-pinned probe/base image; a missing image fails late in the wheel build) | — |
 | KI-167 | OPEN (case-sensitive suffix checks, no `.env` / `.env.*` prefix class and an incomplete name list can miss secret-class paths) | — |
 | KI-166 | FIXED (included bundle source symlinks could dereference and ship their targets) | `f2b56b12743f6a764bbadefa8b937c1bd642b32f` |
 | KI-165 | OPEN (item 2 fixed; items 1, 3, 4, 5 and 6 remain) | `f2b56b12743f6a764bbadefa8b937c1bd642b32f` |
@@ -3448,6 +3450,8 @@ Only 10 of the 40 slowest tests use repositories (`test_release_end_to_end_real_
 
 **Problem.** After a successful non-feature-source release, `_sync_local_main_result` tries `git branch -f main origin/main` when local main is not checked out in the transaction checkout. When local `main` is checked out in the shared main worktree, Git refuses to update that checked-out ref. CMRU currently reports `Could not sync local main automatically: updating the non-current local main ref failed; local main was left untouched. Inspect the ref and synchronize it manually.` The "non-current" wording is false in the reported case, and "inspect the ref" does not tell the operator the safe remedy: fast-forward the main worktree from the controller command line.
 
+**Reproduced 2026-11-14 on cmru 7.3.1:** the same message appeared after a successful release (`fatal: cannot force update the branch 'main' used by worktree ...`, then "Could not sync local main automatically: updating the non-current local main ref failed"). The release had succeeded and `git pull --ff-only` in the main worktree synchronized it.
+
 **Proposed minimal solution.** Derive whether any worktree currently has `refs/heads/main` checked out using `git worktree list --porcelain`. If so, do not attempt `git branch -f`; return a refusal that names the derived main worktree and the exact non-destructive remedy `git -C <main-worktree> pull --ff-only` so CMRU's message prescribes a fact read from the repository. Document that CMRU leaves shared `main` checkout synchronization to its owner and never force-updates a checked-out branch. If a safe transactional fast-forward is implemented later, preserve the same ownership/concurrency refusal.
 
 **Where.** `cmru/src/cmru/transaction.py` `_sync_local_main_result` and its local-main comparison branch; `cmru/tests/test_release_transaction.py` near the existing non-current-main failure test; `cmru/README.md` and `cmru/docs/RELEASE-TRANSACTIONS.md` successful-release cleanup guidance.
@@ -3683,3 +3687,23 @@ Call: `SOURCE_DATE_EPOCH=1700000000 DEMO_VERSION=1.0.0 cmru handler bundle-build
 **Wanted.** Make protected suffix matching case-insensitive while keeping `[archive].keep` paths exact and case-sensitive. Add the dotenv prefix class (`.env` and `.env.*`, case-insensitive) as a protected name class that follows the same keep rules as the suffix class (an exact `[archive].keep` path may allow a deliberate public file such as `.env.defaults`; a stage-written one without keep fails closed). Add a configurable extension to the exact secret-class name exclusions, with a documented default set including common private-key and credential filenames. Keep one predicate governing source copy, archive membership, and manifest inventory; do not infer safety from the producer or content type.
 
 **Close when.** Tests show `.env.local`, `.env.defaults` and `.ENV.Local` are skipped with a WARN at copy, fail closed at stage and are absent from every supported archive format and manifest unless the exact path is kept; upper-case and mixed-case protected suffixes are skipped or fail closed at copy and stage, remain absent from every supported archive format and manifest unless the exact path is kept, and configured secret-class names are rejected consistently by copy, stage, archive, and manifest checks. Tests also show ordinary paths outside the configured suffix and name policy remain unaffected. Document the limits of filename-based filtering and the configuration migration.
+
+## KI-168 - `cmru release` fails late when the digest-pinned base/probe image is missing on the Docker host
+
+**Status:** OPEN (filed 2026-11-14); severity: medium (a full provisional gate of about 27 minutes is spent before the failure, and the rollback must be repeated).
+
+**Observed (run).** The first cmru 7.3.1 release attempt failed in the wheel-build step because the digest-pinned probe image (`debian@sha256:...`) was not present on the Docker host. The cause of its absence is unknown. The release rolled back the local and remote tag, so nothing was published. `docker pull` of the same digest, `cmru abandon --yes <worktree>` and a restart of the release fixed it.
+
+**Wanted.** Before the release transaction creates its tag or starts the gate, `cmru release` checks that every digest-pinned image the wheel build and the gate need is present locally (or pullable) and fails fast with the image reference and the exact remedy (`docker pull <ref>`). The check is read-only and belongs in the existing preflight phase.
+
+**Close when.** A test with a fake Docker client shows a missing pinned image is reported at preflight with the reference and remedy, before any tag, worktree or gate step, and a present image passes; SPEC and the release docs name the preflight.
+
+## KI-169 - `bundle_dir` or `client_dir` set to `"."` makes the success cleanup delete the whole `dist_dir`
+
+**Status:** OPEN (filed 2026-11-14, found during the cmru-bundle-fix review as G1); severity: medium (data loss inside `dist_dir` after an otherwise successful build).
+
+**Problem.** `[archive].keep_tree = false` removes `bundle_dir` and `client_dir` after the archive and manifest succeed. Both are paths relative to `dist_dir`. When either is configured as `"."` it resolves to `dist_dir` itself, so the cleanup removes the whole `dist_dir`, including the archive just written and sibling variant archives.
+
+**Wanted.** Configuration validation rejects `bundle_dir` and `client_dir` values that resolve to `dist_dir` itself, to its parent, or outside it, and rejects the two being equal or nested in each other. The success cleanup refuses to remove any path that is not a strict descendant of `dist_dir`.
+
+**Close when.** Tests show `"."`, `".."`, an absolute path, equal and nested values are rejected with a named error before any file is touched, and a normal configuration still cleans only its own trees; SPEC documents the rule.
