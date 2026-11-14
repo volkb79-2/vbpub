@@ -137,8 +137,8 @@ expect_killed od-both-blocked-exit-code \
 expect_killed od-state-path-absolute-guard \
   env CODEX_IMPL_SCRIPT="$ROOT/mutants/scripts/controller/od-state-path-absolute-guard/codex-impl.sh" bash "$SCRIPT_DIR/test-wrappers.sh"
 expect_killed od-exclusive-state-flock \
-  env CONTROLLER_TEST_PARALLEL_OD_STARTS=1 CODEX_IMPL_SCRIPT="$ROOT/mutants/scripts/controller/od-exclusive-state-flock/codex-impl.sh" \
-    bash "$SCRIPT_DIR/test-wrappers.sh"
+  env CONTROLLER_OD_ACCOUNTS_SCRIPT="$ROOT/mutants/scripts/controller/od-exclusive-state-flock/opendesign-accounts.py" \
+    bash "$SCRIPT_DIR/test-hardening-tools.sh"
 expect_killed od-resume-blocked-fallback \
   env RESUME_USAGE_LIMITED_SCRIPT="$ROOT/mutants/scripts/controller/od-resume-blocked-fallback/resume-usage-limited.sh" bash "$SCRIPT_DIR/test-hardening-tools.sh"
 expect_killed codex-autoresume-bound \
