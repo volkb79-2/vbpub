@@ -90,7 +90,18 @@ wait_launch() {
 
 wait_launch auto-1 deepseek-pi pi-success /dev/null
 [[ $(cat "$CONTROLLER_ROOT/runs/auto-1.route") == deepseek-pi-volker ]] || fail 'first automatic pi start must select volker'
-contains "$CONTROLLER_ROOT/runs/auto-1.done" 'EXIT=0 OUTCOME=SUCCESS' 'normal pi completion is recorded as success'
+if ! grep -qF -- 'EXIT=0 OUTCOME=SUCCESS' "$CONTROLLER_ROOT/runs/auto-1.done"; then
+  echo 'pi completion diagnostics:' >&2
+  for evidence in auto-1.done auto-1.jsonl auto-1.err; do
+    if [[ -f $CONTROLLER_ROOT/runs/$evidence ]]; then
+      printf '%s: ' "$evidence" >&2
+      cat "$CONTROLLER_ROOT/runs/$evidence" >&2
+    fi
+  done
+  printf 'launch log: ' >&2
+  cat "$ROOT/auto-1.launch.log" >&2
+  fail 'normal pi completion is recorded as success'
+fi
 contains "$CONTROLLER_ROOT/runs/auto-1.thread" 'auto-1-session' 'the pi session id is recorded in a sidecar'
 contains "$CONTROLLER_ROOT/runs/auto-1.last.txt" 'Completed the fixture task.' 'last assistant text is saved'
 
