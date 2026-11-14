@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import fcntl
 import hashlib
 import json
 import math
@@ -1986,3 +1987,255 @@ def test_large_golden_plan_requeues_all_work_after_one_stall_and_permanent_loss(
     assert owners == set(final_state["planned_ids"])
     assert len(owners) == 230
     assert all(already_finished not in job["candidate_ids"] for job in final_state["jobs"].values() if job.get("requeue_reason") == "host-lost")
+
+
+def test_stall_threshold_never_pools_observations_across_hosts(tmp_path):
+    # r1002 and v1001 are different hardware flavors; one host's candidate
+    # times must never stretch another host's stall threshold.
+    plan = _plan(12)
+    clock = FakeClock()
+    transport = FakeTransport(clock=clock)
+    manager = CampaignManager(tmp_path, transport, clock=clock)
+    manager.run("campaign", plan)
+    state = _state(tmp_path)
+    slow = _first_running(state, "host-a")
+    quiet = _first_running(state, "host-b")
+    transport.add_progress("host-a", slow["name"], slow["candidate_ids"][0], "killed", elapsed_seconds=600)
+    manager.status("campaign")
+
+    clock.advance(STALL_FLOOR_SECONDS)
+    manager.tick("campaign")
+    state = _state(tmp_path)
+    assert state["jobs"][quiet["name"]]["status"] == "STALLED"
+    assert state["jobs"][quiet["name"]]["stall_after_seconds"] == STALL_FLOOR_SECONDS
+    assert state["jobs"][slow["name"]]["status"] == "RUNNING"
+
+
+def _lose(manager: CampaignManager, transport: FakeTransport, clock: FakeClock, host: str) -> None:
+    transport.set_unreachable(host)
+    manager.tick("campaign")
+    clock.advance(LOST_AFTER_SECONDS + 1)
+    manager.tick("campaign")
+
+
+def test_repeated_loss_requeues_again_but_never_work_already_in_flight_elsewhere(tmp_path):
+    plan = _plan(12)
+    clock = FakeClock()
+    transport = FakeTransport(clock=clock)
+    manager = CampaignManager(tmp_path, transport, clock=clock)
+    manager.run("campaign", plan)
+    returning = _first_running(_state(tmp_path), "host-a")
+
+    _lose(manager, transport, clock, "host-a")
+    first_requeues = {
+        name for name, job in _state(tmp_path)["jobs"].items()
+        if job["host"] == "host-b" and job.get("requeue_reason") == "host-lost"
+    }
+    assert first_requeues
+    transport.set_unreachable("host-a", False)
+    manager.tick("campaign")
+    state = _state(tmp_path)
+    assert state["hosts"]["host-a"]["status"] == "ONLINE"
+    assert state["jobs"][returning["name"]]["status"] == "RUNNING"
+
+    _lose(manager, transport, clock, "host-a")
+    state = _state(tmp_path)
+    assert state["jobs"][returning["name"]]["status"] == "LOST"
+    second_requeues = {
+        name for name, job in state["jobs"].items()
+        if job["host"] == "host-b" and job.get("requeue_reason") == "host-lost"
+    }
+    assert second_requeues == first_requeues
+
+
+def test_exit_of_a_returned_job_does_not_requeue_work_in_flight_elsewhere(tmp_path):
+    plan = _plan(12)
+    clock = FakeClock()
+    transport = FakeTransport(clock=clock)
+    manager = CampaignManager(tmp_path, transport, clock=clock)
+    manager.run("campaign", plan)
+    returning = _first_running(_state(tmp_path), "host-a")
+
+    _lose(manager, transport, clock, "host-a")
+    transport.set_unreachable("host-a", False)
+    transport.finish("host-a", returning["name"], exit_code=2)
+    manager.tick("campaign")
+
+    state = _state(tmp_path)
+    assert state["jobs"][returning["name"]]["status"] == "EXIT"
+    assert [job for job in state["jobs"].values() if job.get("requeue_reason") == "job-exit"] == []
+    in_flight_elsewhere = {
+        candidate_id for job in state["jobs"].values()
+        if job["host"] == "host-b" and job["status"] in {"QUEUED", "RUNNING"}
+        for candidate_id in job["candidate_ids"]
+    }
+    assert set(returning["candidate_ids"]) <= in_flight_elsewhere
+
+
+def test_real_start_refuses_an_ids_file_whose_digest_differs_from_the_job_name(tmp_path):
+    spec = _spec_for_project("ciu")
+    home, environment = _real_runner_home(tmp_path, spec)
+    (home / spec.candidate_file_home_path).write_text("b" * 64 + "\n", encoding="ascii")
+
+    started = _real_start(home, environment, spec)
+    assert started.returncode == 73
+    assert "candidate file digest mismatch" in started.stderr
+    assert not (home / "jobs" / spec.name).exists()
+
+
+def _plan_with_refused_shared_prod_host() -> dict:
+    hosts = _golden_8g_host_set()
+    for index, host in enumerate(hosts["hosts"]):
+        host["id"] = f"host-{chr(ord('a') + index)}"
+    refused = copy.deepcopy(hosts["hosts"][0])
+    refused["id"] = "host-shared-prod"
+    refused["facts"]["policy"]["host_role"] = "shared-prod"
+    hosts["hosts"].append(refused)
+    candidates = [_candidate(f"refused-host-{index:03d}", 100 * 1024**2) for index in range(12)]
+    plan = plan_campaign("r2", _candidate_table(candidates), hosts, DEMAND)
+    plan["execution"] = dict(EXECUTION)
+    assert next(host for host in plan["hosts"] if host["id"] == "host-shared-prod")["status"] == "refused"
+    return plan
+
+
+def test_refused_host_is_never_contacted_by_any_campaign_command(tmp_path):
+    plan = _plan_with_refused_shared_prod_host()
+    clock = FakeClock()
+    transport = FakeTransport(clock=clock)
+    manager = CampaignManager(tmp_path, transport, clock=clock)
+    manager.run("campaign", plan)
+    manager.status("campaign")
+    transport.set_unreachable("host-a")
+    manager.tick("campaign")
+    clock.advance(LOST_AFTER_SECONDS + 1)
+    manager.tick("campaign")
+    manager.collect("campaign")
+
+    assert [call for call in transport.calls if call[0] == "host-shared-prod"] == []
+    state = _state(tmp_path)
+    assert state["hosts"]["host-a"]["status"] == "LOST"
+    assert all(job["host"] != "host-shared-prod" for job in state["jobs"].values())
+    assert any(job["host"] == "host-b" and job.get("requeue_reason") == "host-lost" for job in state["jobs"].values())
+
+
+def test_campaign_commands_refuse_to_overlap_on_one_state_file(tmp_path):
+    plan = _plan(4)
+    clock = FakeClock()
+    transport = FakeTransport(clock=clock)
+    manager = CampaignManager(tmp_path, transport, clock=clock)
+    manager.run("campaign", plan)
+    before = (tmp_path / "campaign.json").read_bytes()
+    calls = len(transport.calls)
+
+    holder = os.open(tmp_path / "campaign.lock", os.O_RDWR)
+    try:
+        fcntl.flock(holder, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        for command in (
+            lambda: manager.run("campaign", plan),
+            lambda: manager.status("campaign"),
+            lambda: manager.tick("campaign"),
+            lambda: manager.collect("campaign"),
+        ):
+            with pytest.raises(ContractError, match="campaign campaign is busy"):
+                command()
+    finally:
+        os.close(holder)
+
+    assert (tmp_path / "campaign.json").read_bytes() == before
+    assert len(transport.calls) == calls
+    assert manager.tick("campaign")["campaign"] == "campaign"
+
+
+def test_start_refuses_an_unsynced_checkout_before_uploading(tmp_path):
+    plan = _plan(4)
+    clock = FakeClock()
+    transport = FakeTransport(clock=clock)
+    for host in ("host-a", "host-b"):
+        transport.host(host).missing_checkouts.add(EXECUTION["commit"])
+    manager = CampaignManager(tmp_path, transport, clock=clock)
+    manager.run("campaign", plan)
+
+    assert [call for call in transport.calls if call[1] == "put"] == []
+    state = _state(tmp_path)
+    assert {job["status"] for job in state["jobs"].values()} == {"QUEUED"}
+    assert any("is not synced" in job.get("start_error", "") for job in state["jobs"].values())
+
+    for host in ("host-a", "host-b"):
+        transport.host(host).missing_checkouts.clear()
+    manager.tick("campaign")
+    assert any(job["status"] == "RUNNING" for job in _state(tmp_path)["jobs"].values())
+
+
+def test_real_probe_reports_checkout_readiness_and_never_creates_the_checkout(tmp_path):
+    spec = _spec_for_project("ciu")
+    home, environment = _real_runner_home(tmp_path, spec)
+    unsynced = replace(spec, commit="c" * 40, batch=1)
+
+    probe = subprocess.run(
+        ["bash", "-c", probe_script({spec.name: spec, unsynced.name: unsynced})],
+        cwd=home,
+        env=environment,
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    assert probe.returncode == 0, probe.stderr
+    rows = {row["name"]: row for row in json.loads(probe.stdout)["jobs"]}
+    assert rows[spec.name] == {"name": spec.name, "state": "MISSING", "checkout_ready": True}
+    assert rows[unsynced.name] == {"name": unsynced.name, "state": "MISSING", "checkout_ready": False}
+    assert not (home / "checkouts" / unsynced.commit).exists()
+
+    missing_project = replace(spec, project="absent-project", batch=2)
+    probe = subprocess.run(
+        ["bash", "-c", probe_script({missing_project.name: missing_project})],
+        cwd=home,
+        env=environment,
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    assert probe.returncode == 0, probe.stderr
+    assert json.loads(probe.stdout)["jobs"][0]["checkout_ready"] is False
+
+
+def test_real_probe_reads_progress_through_a_symlinked_checkouts_directory(tmp_path):
+    spec = _spec_for_project(".")
+    home, environment = _real_runner_home(tmp_path, spec)
+    started = _real_start(home, environment, spec)
+    assert started.returncode == 0, started.stderr
+    _wait_real_job(home, spec)
+    outside = tmp_path / "data-disk" / "checkouts"
+    outside.parent.mkdir()
+    (home / "checkouts").rename(outside)
+    (home / "checkouts").symlink_to(outside)
+
+    probe = subprocess.run(
+        ["bash", "-c", probe_script({spec.name: spec})],
+        cwd=home,
+        env=environment,
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    assert probe.returncode == 0, probe.stderr
+    row = json.loads(probe.stdout)["jobs"][0]
+    assert row["progress_path"] == f"checkouts/{spec.commit}/.assay/progress-contract-assay.jsonl"
+    assert [record["candidate_id"] for record in row["records"]] == list(spec.sorted_candidate_ids)
+
+    foreign_runner_home = dict(environment, RUNNER_HOME=str(tmp_path / "data-disk"))
+    probe = subprocess.run(
+        ["bash", "-c", probe_script({spec.name: spec})],
+        cwd=home,
+        env=foreign_runner_home,
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    assert probe.returncode == 0, probe.stderr
+    row = json.loads(probe.stdout)["jobs"][0]
+    assert row["progress_path"] is None
+    assert [record["candidate_id"] for record in row["records"]] == list(spec.sorted_candidate_ids)

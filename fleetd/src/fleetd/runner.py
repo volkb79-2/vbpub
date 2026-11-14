@@ -143,8 +143,12 @@ rows = []
 for target in sorted(targets, key=lambda row: row["name"]):
     name = target["name"]
     job_dir = home / "jobs" / name
+    checkout = runner_home / "checkouts" / target["commit"]
+    project_dir = checkout if target["project"] == "." else checkout / target["project"]
     if not job_dir.is_dir():
-        rows.append({"name": name, "state": "MISSING"})
+        # Start refuses an unsynced checkout before uploading into its path.
+        ready = checkout.is_dir() and not checkout.is_symlink() and (checkout / ".git").exists() and project_dir.is_dir()
+        rows.append({"name": name, "state": "MISSING", "checkout_ready": ready})
         continue
     ids_file = runner_home / target["ids_path"]
     try:
@@ -174,8 +178,6 @@ for target in sorted(targets, key=lambda row: row["name"]):
             state = "RUNNING"
         except (OSError, ValueError):
             pass
-    checkout = runner_home / "checkouts" / target["commit"]
-    project_dir = checkout if target["project"] == "." else checkout / target["project"]
     assay_lane = target["lane"]
     for config_path in (project_dir / "run-gate.toml", checkout / "run-gate.root.toml"):
         try:
@@ -188,7 +190,15 @@ for target in sorted(targets, key=lambda row: row["name"]):
     if not isinstance(assay_lane, str) or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", assay_lane) is None:
         raise ValueError("resolved Assay lane is not a safe artifact name")
     progress_source = project_dir / target["assay_dir"] / f"{target['progress_prefix']}{assay_lane}{target['progress_suffix']}"
-    progress_path = progress_source.resolve().relative_to(home.resolve()).as_posix()
+    # Home-relative for a later get. Lexical first, so a symlinked checkouts
+    # directory outside HOME still works; never fail the whole probe here.
+    try:
+        progress_path = progress_source.relative_to(home).as_posix()
+    except ValueError:
+        try:
+            progress_path = progress_source.resolve().relative_to(home.resolve()).as_posix()
+        except (OSError, ValueError):
+            progress_path = None
     records = []
     mtime = None
     try:
@@ -338,6 +348,13 @@ class RunnerJobs:
             if not self._digest_matches(current.get("list_digest"), spec):
                 raise TransportError(f"named job {spec.name} exists with a different candidate-list digest")
             return False
+        if current.get("checkout_ready") is False:
+            # Uploading would create checkouts/<commit>/ as a plain directory, which
+            # the supervisor refuses and the runner's checkout sync cannot replace.
+            raise TransportError(
+                f"checkout {spec.commit} (project {spec.project}) is not synced on {spec.host}; "
+                f"sync it before starting {spec.name}"
+            )
         contents = "".join(f"{candidate_id}\n" for candidate_id in spec.sorted_candidate_ids).encode("ascii")
         self.transport.put(spec.host, spec.candidate_file_home_path, contents, self.timeout)
         rc, out, err = self.transport.run(spec.host, start_script(spec), self.timeout)

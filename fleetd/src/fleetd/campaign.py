@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import contextlib
+import fcntl
 import hashlib
 import json
 import math
@@ -10,7 +12,7 @@ import re
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Callable, Mapping, Sequence
+from typing import Any, Callable, Iterator, Mapping, Sequence
 
 from .contracts import ContractError, is_candidate_id
 from .plan import replan_pending
@@ -116,52 +118,72 @@ class CampaignManager:
         self.boot_id = boot_id or _system_boot_id
         self.runner = RunnerJobs(transport, timeout=transport_timeout)
 
+    @contextlib.contextmanager
+    def _locked(self, campaign: str) -> Iterator[None]:
+        """Hold the campaign's local lock for one whole read/modify/write command."""
+        self.state_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+        descriptor = os.open(self.state_dir / f"{campaign}.lock", os.O_RDWR | os.O_CREAT, 0o600)
+        try:
+            try:
+                fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError as exc:
+                raise ContractError(f"campaign {campaign} is busy: another fleet command holds its state lock") from exc
+            yield
+        finally:
+            os.close(descriptor)
+
     def run(self, campaign: str, plan: Mapping[str, Any]) -> dict[str, Any]:
         campaign = _safe_campaign(campaign)
-        self.state_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
-        path = self._state_path(campaign)
-        if path.exists():
-            state = self._load_state(campaign)
-            self._reconcile(state, plan)
-        else:
-            state = self._new_state(campaign, plan)
+        with self._locked(campaign):
+            path = self._state_path(campaign)
+            if path.exists():
+                state = self._load_state(campaign)
+                self._reconcile(state, plan)
+            else:
+                state = self._new_state(campaign, plan)
+                self._write_state(state)
+            self._refresh(state)
+            self._requeue_exited(state)
+            self._handle_lost_hosts(state)
+            self._retry_deferred(state)
+            self._start_available(state)
             self._write_state(state)
-        self._refresh(state)
-        self._requeue_exited(state)
-        self._handle_lost_hosts(state)
-        self._retry_deferred(state)
-        self._start_available(state)
-        self._write_state(state)
-        return self.status_document(state)
+            return self.status_document(state)
 
     def status(self, campaign: str) -> dict[str, Any]:
-        state = self._load_state(_safe_campaign(campaign))
-        self._refresh(state)
-        self._write_state(state)
-        return self.status_document(state)
+        campaign = _safe_campaign(campaign)
+        with self._locked(campaign):
+            state = self._load_state(campaign)
+            self._refresh(state)
+            self._write_state(state)
+            return self.status_document(state)
 
     def tick(self, campaign: str) -> dict[str, Any]:
-        state = self._load_state(_safe_campaign(campaign))
-        self._refresh(state)
-        self._handle_lost_hosts(state)
-        self._retry_deferred(state)
-        self._detect_stalls(state)
-        self._requeue_exited(state)
-        self._stop_superseded(state)
-        self._start_available(state)
-        self._write_state(state)
-        return self.status_document(state)
+        campaign = _safe_campaign(campaign)
+        with self._locked(campaign):
+            state = self._load_state(campaign)
+            self._refresh(state)
+            self._handle_lost_hosts(state)
+            self._retry_deferred(state)
+            self._detect_stalls(state)
+            self._requeue_exited(state)
+            self._stop_superseded(state)
+            self._start_available(state)
+            self._write_state(state)
+            return self.status_document(state)
 
     def collect(self, campaign: str) -> tuple[dict[str, Any], str, Path, Path]:
-        state = self._load_state(_safe_campaign(campaign))
-        self._refresh(state)
-        result = self._collect_result(state)
-        json_path = self.state_dir / f"{campaign}.result.json"
-        report_path = self.state_dir / f"{campaign}.report.md"
-        _atomic_write(json_path, _canonical(result))
-        _atomic_write(report_path, self._render_report(result).encode("utf-8"))
-        self._write_state(state)
-        return result, report_path.read_text(encoding="utf-8"), json_path, report_path
+        campaign = _safe_campaign(campaign)
+        with self._locked(campaign):
+            state = self._load_state(campaign)
+            self._refresh(state)
+            result = self._collect_result(state)
+            json_path = self.state_dir / f"{campaign}.result.json"
+            report_path = self.state_dir / f"{campaign}.report.md"
+            _atomic_write(json_path, _canonical(result))
+            _atomic_write(report_path, self._render_report(result).encode("utf-8"))
+            self._write_state(state)
+            return result, report_path.read_text(encoding="utf-8"), json_path, report_path
 
     def _state_path(self, campaign: str) -> Path:
         return self.state_dir / f"{campaign}.json"
@@ -431,6 +453,7 @@ class CampaignManager:
 
     def _refresh(self, state: dict[str, Any]) -> None:
         now = self.clock()
+        available = {row["id"] for row in state["plan"]["hosts"] if row.get("status") == "available"}
         for host_id in sorted(state["hosts"]):
             host_state = state["hosts"][host_id]
             job_rows = {
@@ -438,6 +461,10 @@ class CampaignManager:
                 if job["host"] == host_id and job["status"] != "SUPERSEDED"
             }
             if host_state["status"] == "REMOVED_FROM_PLAN":
+                continue
+            if not job_rows and host_id not in available:
+                # A host the planner refused (shared-prod, unknown role, PSI) and
+                # that owns no job of this campaign is never contacted.
                 continue
             wanted = {name: _job_spec(job) for name, job in job_rows.items()}
             try:

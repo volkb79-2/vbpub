@@ -159,6 +159,7 @@ class FakeHost:
     slow: bool = False
     jobs: dict[str, FakeJob] = field(default_factory=dict)
     files: dict[str, bytes] = field(default_factory=dict)
+    missing_checkouts: set[str] = field(default_factory=set)
     starts: int = 0
     stops: int = 0
 
@@ -308,7 +309,8 @@ class FakeTransport:
             name = str(target.get("name", ""))
             job = host.jobs.get(str(name))
             if job is None:
-                rows.append({"name": name, "state": "MISSING"})
+                ready = str(target.get("commit", "")) not in host.missing_checkouts
+                rows.append({"name": name, "state": "MISSING", "checkout_ready": ready})
                 continue
             ids_path = str(target.get("ids_path", ""))
             try:
