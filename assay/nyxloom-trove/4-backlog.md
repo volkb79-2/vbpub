@@ -195,6 +195,7 @@ items:
   - {id: B542, title: "Reuse passing R2 baseline facts across restarts without dropping the cheap environment smoke", type: feature, component: mutation, context_estimate: medium}
   - {id: B543, title: "Measure and reduce per-candidate pytest startup time without writing bytecode into the snapshot", type: improvement, component: execution, context_estimate: medium}
   - {id: B544, title: "Merge candidate-scoped Assay stores from an explicit owner manifest and refuse incomplete or conflicting ownership", type: feature, component: mutation, context_estimate: medium}
+  - {id: B545, title: "Resolve progress/verdict disagreement for a timeout-killed R2 candidate", type: bugfix, component: mutation, context_estimate: medium}
 ---
 
 # assay — backlog
@@ -15047,3 +15048,30 @@ identical merged bytes and candidate dispositions.
 consumer docs, behavioral tests, and mutation proofs land together; the
 registered Assay gate passes at 100% line and branch coverage; and Run-Gate
 RG-277 proves it forwards the manifest unchanged through its registered gate.
+
+## B545 — resolve progress/verdict disagreement for a timeout-killed R2 candidate
+
+**Status:** OPEN (filed 2026-11-14); mutation-evidence integrity. Related to
+Run-Gate RG-278, which records the originating campaign discrepancy.
+
+**Problem.** One mutation candidate was stopped after its per-candidate
+budget, and the verdict counted it as killed by the hang while the progress
+record classified it as `budget_exceeded`. Assay's closeout rejects this
+progress/verdict pair as an evidence error, leaving the campaign's result
+unreportable even though both artifacts describe the same timeout event.
+
+**Contract to decide.** Define whether the candidate outcome is `killed` with
+timeout evidence, `budget_exceeded`, or an explicitly compatible pair. Make
+the closeout derive its accepted interpretation from the documented
+termination evidence; do not accept unrelated mismatches or infer a kill from
+the absence of a result.
+
+**Oracles.** A fixture for a supervisor-killed nonterminating mutant with a
+budget-exceeded progress event reaches the chosen documented disposition and
+is accepted. A progress/verdict mismatch without that matching timeout
+evidence is refused with a specific reason. The release summary preserves the
+candidate ID, progress state, verdict state, and termination evidence.
+
+**Close when.** The schema/analysis policy, adversarial fixtures, and tests
+land together; the registered Assay lane passes; and a real campaign closeout
+demonstrates the agreed classification without discarding candidate evidence.

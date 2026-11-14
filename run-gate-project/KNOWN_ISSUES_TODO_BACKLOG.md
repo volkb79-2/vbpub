@@ -170,6 +170,9 @@ SPEC §9.
 | RG-275 | lane campaigns cannot be placed across compute hosts: no lane demand model (expected charge vs cap, efficient upper bound), no central scheduler over host capabilities and RAM, supervision lives in a host-local netcup script | Enhancement | OPEN 2026-11-12 (design rev 5) |
 | RG-276 | Run-Gate has no campaign-plan client to assemble candidate and host inputs for fleetd | Enhancement | OPEN 2026-11-13; fleetd MVP-A exposes a standalone fleet plan CLI |
 | RG-277 | Run-Gate cannot forward fleetd's explicit candidate-owner manifest to Assay's strict store merge | Enhancement | OPEN 2026-11-13; fleetd MVP-B-lite collects candidate files only |
+| RG-278 | Run-Gate 25.6.0 KSM R2 survivor test debt | Major | CLOSED 2026-11-14; behavioral tests kill all 17 non-equivalent survivors and document the six equivalents |
+| RG-279 | Native-R2 campaign supervision may retry an unchanged candidate set after exit 4 | Medium | OPEN 2026-11-14; observed as a possible generic supervisor retry, not triggered in the campaign |
+| RG-280 | Explain native-R2 worker and instance concurrency together in consumer docs | Enhancement | OPEN 2026-11-14; clarify `jobs_max`/`--jobs` versus `--instances` and per-instance memory demand |
 ---
 
 ## RG-1 — conjunction lanes silently drop `--worktree` and `--allow-dirty`
@@ -8592,3 +8595,71 @@ bytes reach Assay, malformed/missing paths fail before merge, the existing
 single-store closeout remains unchanged, and the registered Run-Gate lane plus
 consumer docs pass. The Assay gate separately proves strict merge semantics
 under B544.
+
+## RG-278 — Run-Gate 25.6.0 KSM R2 survivor test debt
+
+**Status:** CLOSED 2026-11-14 by the survivor-test package; Run-Gate `selftest`
+and the hand-mutant checks pass on its final commit. Related: RG-273, whose
+KSM opt-in behavior shipped in 25.6.0.
+
+**Scope.** The 25.6.0 R2 campaign left 23 rows classified as survivors: 17
+non-equivalent behavior gaps and six equivalents. This entry closes the test
+debt without changing shipped KSM behavior. The tests cover CLI opt-out and
+ephemeral-only refusals (19158, 19161, both 19693 mutations, 19290),
+high-water and unreadable-counter telemetry (15767, 15754), sequence and
+history recording including nested forwarding (18960, 18969, both 18970
+mutations, 18987, 19042, 19801), and owner/follower/attach measurement plumbing
+(16135, 16319, 16802).
+
+**Equivalent rows, recorded individually.** 15775 is equivalent because an
+unavailable baseline and unavailable best delta are both `None` by
+construction. 2299, 15780, 15794, 15808, and 16926 change only `flush=True`
+on notices; their text and program decisions are unchanged.
+
+**Evidence boundary.** Candidate 16300 remains counted as killed by the hang,
+while its progress record says `budget_exceeded`; that verdict/progress
+disagreement is filed under Assay B545. It is not changed by this test package.
+
+**Close when.** The registered selftest passes on the final commit, with the
+new tests included, and hand-mutating each of the four behavioral test groups
+causes its owning oracle to fail.
+
+## RG-279 — native-R2 supervision may retry an unchanged candidate set after exit 4
+
+**Status:** OPEN (filed 2026-11-14); investigation. The 25.6.0 campaign did
+not trigger this path.
+
+**Problem.** The generic native-R2 supervisor can start another attempt after
+a lane returns exit 4 while `completed_candidates` is unchanged. If the
+unchanged count represents a candidate lost to the lane budget, an automatic
+retry may repeat the same unresolved work instead of surfacing the candidate
+and its progress evidence for disposition.
+
+**Contract to establish.** Classify exit 4 together with the progress and
+verdict artifacts before deciding to restart. Retry only when the evidence
+shows resumable unfinished work; stop and report a terminal or contradictory
+candidate state. Preserve the attempt history and candidate counts.
+
+**Close when.** Deterministic supervisor tests cover unchanged and advancing
+candidate counts, a budget-exceeded candidate, a genuine resumable attempt,
+and contradictory progress/verdict evidence. The registered campaign tests
+prove no unbounded restart loop and retain the exact reason for each decision.
+
+## RG-280 — explain native-R2 worker and instance concurrency together
+
+**Status:** OPEN (filed 2026-11-14); documentation follow-up.
+
+**Problem.** The consumer docs explain `jobs_max` and `--jobs` as per-lane
+worker controls but do not explain their interaction with `--instances`. The
+25.6.0 `assay-r2` configuration has `jobs_max = 2`; two workers fill that
+ceiling, while two lane instances double the lane's configured memory demand.
+Readers need that distinction before choosing whether to add workers or
+instances.
+
+**Where.** `README.md`, `CONSUMERS.md`, and `docs/DESIGN-GUIDE.md`, at the
+native-R2 sizing and campaign sections. Explain the per-lane worker ceiling,
+parallel lane instances, and the resulting per-instance resource demand
+without encoding any host limit.
+
+**Close when.** A docs contract test pins the distinction and the registered
+Run-Gate selftest passes.
