@@ -33,9 +33,10 @@ this:
 - Codex runs (the implementation and review routes) have their own transcripts
   and are not part of the Claude Code family report at all.
 
-On 2026-11-12/13 one controller session plus 263 subagent transcripts consumed
-1.3 billion cached-read tokens; answering "which sessions cost what" took
-hand-written scripting over several transcript files.
+One controller session accumulated 265 subagent transcripts over about nine
+days; on 2026-11-12/13 alone 63 of them carried about 1.97 billion cache-read
+tokens. Answering "which sessions cost what" took hand-written scripting over
+several transcript files.
 
 ## Wanted
 
