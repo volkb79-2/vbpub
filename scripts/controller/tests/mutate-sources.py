@@ -313,7 +313,7 @@ account_helper_mutant(
 account_helper_mutant(
     "od-gateway-text-anchor",
     'GATEWAY_402_PREFIX.match(message) is None',
-    'GATEWAY_402_PREFIX.search(message) is None',
+    'GATEWAY_402.search(message) is None',
 )
 account_helper_mutant(
     "od-gateway-text-event-type",
