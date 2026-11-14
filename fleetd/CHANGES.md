@@ -86,6 +86,10 @@ All notable changes to this project are recorded here.
 - Compute the probe's progress path lexically below the remote home, so a
   symlinked `checkouts` directory no longer fails every probe; report `null`
   instead of failing when no home-relative path exists.
+- Restore a batch's start and stall clocks when its start is refused or the
+  host is unreachable, so a start retried after more than 15 minutes is no
+  longer stalled and stopped on the next tick; repeated refusals record one
+  warning instead of one per tick.
 - Close FD-013: hold a non-blocking per-campaign lock for each command; an
   overlapping command fails with "busy" and changes nothing.
 - Pin per-host stall observations, repeated host loss, exit de-duplication

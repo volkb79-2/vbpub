@@ -837,6 +837,9 @@ class CampaignManager:
                     continue
                 job["status"] = "STARTING"
                 now = self.clock()
+                # A refused start must not leave a stall deadline from the failed
+                # attempt behind: restore both clocks so a later start begins fresh.
+                previous_clocks = (job["started_mono"], job["last_progress_mono"])
                 job["started_mono"] = job["started_mono"] or now
                 job["last_progress_mono"] = job["last_progress_mono"] or now
                 self._write_state(state)
@@ -844,14 +847,17 @@ class CampaignManager:
                     started = self.runner.start(_job_spec(job))
                 except HostUnavailable as exc:
                     job["status"] = "QUEUED"
+                    job["started_mono"], job["last_progress_mono"] = previous_clocks
                     host_state["status"] = "UNREACHABLE"
                     host_state["unreachable_since_mono"] = host_state["last_contact_mono"] or now
                     job["start_error"] = str(exc)
                     continue
                 except TransportError as exc:
                     job["status"] = "QUEUED"
+                    job["started_mono"], job["last_progress_mono"] = previous_clocks
                     job["start_error"] = str(exc)
-                    state["warnings"].append(str(exc))
+                    if str(exc) not in state["warnings"]:
+                        state["warnings"].append(str(exc))
                     continue
                 job["status"] = "RUNNING"
                 job["adopted"] = not started
