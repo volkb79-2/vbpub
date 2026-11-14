@@ -27,7 +27,7 @@
 | FD-021 | A transport or contract error on one host aborts the scheduling step for every host | P2 | DONE | 2026-11-14 |
 | FD-022 | Dispatch does not re-check memory/IO PSI before starting the next batch | P2 | OPEN | 2026-11-14 |
 | FD-023 | The hx wrapper path is derived from the source checkout and fails from an installed wheel | P3 | OPEN | 2026-11-14 |
-| FD-024 | Deferred re-queue de-duplication is not pinned for three or more hosts | P3 | OPEN | 2026-11-14 |
+| FD-024 | Deferred re-queue de-duplication is not pinned for three or more hosts | P3 | DONE | 2026-11-14 |
 
 ## FD-001 Lite campaign lifecycle
 
@@ -357,8 +357,9 @@ candidates from the batch verdict's resumed set (or a per-candidate Assay
 **Fix/evidence:** Each runner job records start/end byte offsets; progress is
 filtered by that range and the job's candidate IDs. Resumed results come from
 that job's verdict. `test_prior_campaign_progress_does_not_count_for_a_new_batch_on_same_commit`
-and `test_progress_parser_filters_noise_and_normalizes_optional_fields`
-(commit `9197fbce0`).
+and `test_real_run_job_starts_non_root_project_and_recovers_digest_from_ids_file`
+(commits `9197fbce0`, `c4b8a1e23`, `614a913c2`). The real runner resolves
+the declared Assay artifact lane before recording the job's start offset.
 
 ## FD-020 Host loss timing and slow probes
 
@@ -423,11 +424,14 @@ installed as a wheel.
 
 ## FD-024 Deferred re-queue de-duplication with three or more hosts
 
-**State:** OPEN. **Priority:** P3. **Filed:** 2026-11-14 (Opus series review).
+**State:** DONE (2026-11-14). **Priority:** P3. **Filed:** 2026-11-14 (Opus series review).
 
 The in-flight filter in `_retry_deferred()` excludes the source host by design
 (its work is the work being moved). With three or more hosts it also prevents
-re-queuing candidates already in flight on a third host. Removing that filter
-survives the whole suite; the effect would be harmless duplicate runs. Add a
-three-host test that defers a loss, re-queues the same candidates elsewhere
-in the meantime, and asserts no second copy.
+re-queuing candidates already in flight on a third host. The existing code
+implemented the filter, but the suite did not pin this cross-host case.
+
+**Fix/evidence:** Add `test_deferred_retry_skips_work_already_running_on_a_third_host`
+to assert a deferred candidate already running on a third host is not enqueued
+again. Removing the in-flight filter is killed by that test (commit
+`bee29cf0c`).
