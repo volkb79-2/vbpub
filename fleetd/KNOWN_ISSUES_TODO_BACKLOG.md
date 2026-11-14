@@ -18,13 +18,13 @@
 | FD-012 | Export campaign progress for cgprofile guard policy and evidence | P2 | OPEN | 2026-11-13 |
 | FD-013 | Serialize concurrent campaign state updates | P2 | DONE | 2026-11-14 |
 | FD-014 | Probe command grows with the number of batches and hits the 128 KiB argument limit near 100 batches per host | P2 | OPEN | 2026-11-14 |
-| FD-015 | Cold-start stall threshold ignores the predicted candidate time, so slow lanes stall and re-queue without end | P1 | OPEN | 2026-11-14 |
-| FD-016 | A batch that exits without progress is re-queued on every exit, without limit | P1 | OPEN | 2026-11-14 |
+| FD-015 | Cold-start stall threshold ignores the predicted candidate time, so slow lanes stall and re-queue without end | P1 | DONE | 2026-11-14 |
+| FD-016 | A batch that exits without progress is re-queued on every exit, without limit | P1 | DONE | 2026-11-14 |
 | FD-017 | One candidate that does not fit the re-queue target drops every other pending candidate of its batch | P2 | OPEN | 2026-11-14 |
-| FD-018 | Collect counts a verdict's never-started budget_exceeded candidates as timeouts and hides missing work | P1 | OPEN | 2026-11-14 |
-| FD-019 | Stale records in the append-only progress file count as finished for a later campaign on the same commit | P2 | OPEN | 2026-11-14 |
+| FD-018 | Collect counts a verdict's never-started budget_exceeded candidates as timeouts and hides missing work | P1 | DONE | 2026-11-14 |
+| FD-019 | Stale records in the append-only progress file count as finished for a later campaign on the same commit | P2 | DONE | 2026-11-14 |
 | FD-020 | Host loss is measured from the last contact, and a slow probe counts as unreachable | P2 | OPEN | 2026-11-14 |
-| FD-021 | A transport or contract error on one host aborts the scheduling step for every host | P2 | OPEN | 2026-11-14 |
+| FD-021 | A transport or contract error on one host aborts the scheduling step for every host | P2 | DONE | 2026-11-14 |
 | FD-022 | Dispatch does not re-check memory/IO PSI before starting the next batch | P2 | OPEN | 2026-11-14 |
 | FD-023 | The hx wrapper path is derived from the source checkout and fails from an installed wheel | P3 | OPEN | 2026-11-14 |
 | FD-024 | Deferred re-queue de-duplication is not pinned for three or more hosts | P3 | OPEN | 2026-11-14 |
@@ -242,7 +242,7 @@ the real script. Until then keep campaigns under about 100 batches per host.
 
 ## FD-015 Cold-start stall threshold ignores the predicted candidate time
 
-**State:** OPEN. **Priority:** P1. **Filed:** 2026-11-14 (Opus series review).
+**State:** DONE (2026-11-14). **Priority:** P1. **Filed:** 2026-11-14 (Opus series review).
 
 Design §3.9: `T_stall = max(15 min, 3 × p95 predicted candidate time on that
 host)`. `campaign.py` `_stall_threshold()` uses only *observed* elapsed times
@@ -258,12 +258,19 @@ Fix: compute the predicted host time of each candidate already in the plan
 (`time_ref_seconds × baseline_score / host single_core × f_h`, or the
 reference time when no Geekbench comparison exists) and use
 `max(900, 3 × p95(predicted for the job's candidates), 3 × p95(observed on
-that host))`. Optionally add the observed or declared baseline time to the
-first window. Only the host's own values are used.
+that host))`. Add the declared or observed baseline time to the first window.
+Only the host's own values are used.
+
+**Fix/evidence:** Use each batch's candidate predictions and host-local
+observations, adding the declared or same-host observed baseline in the first
+window. `test_first_stall_window_uses_batch_prediction_and_declared_baseline`,
+`test_first_stall_window_uses_baseline_observed_on_the_same_host`, and
+`test_stall_threshold_never_pools_observations_across_hosts` (commit
+`9197fbce0`).
 
 ## FD-016 Zero-progress exits are re-queued without limit
 
-**State:** OPEN. **Priority:** P1. **Filed:** 2026-11-14 (Opus series review).
+**State:** DONE (2026-11-14). **Priority:** P1. **Filed:** 2026-11-14 (Opus series review).
 
 `_requeue_exited()` re-plans the unfinished candidates of every `EXIT` batch
 on the same host, every time. A batch that fails before any candidate
@@ -276,10 +283,17 @@ path. The design's "no max-attempt cap" applies to the relaunch loop while
 candidates advance, not to batches that made no progress.
 
 Fix: when an exited batch (`EXIT`, `missing_job`, or `STALLED`) added no
-finished candidate since it started, mark it `FAILED` with its exit code, do
-not re-queue it, and surface it in `status` and `collect` (its candidates end
-as missing with the exit code as reason). The operator re-runs after fixing
-the cause. Re-queue stays unlimited for batches that made progress.
+finished candidate since it started, mark it `FAILED`, do not re-queue it,
+and surface its failure reason and exit code when available in `status` and
+`collect`. The operator re-runs after fixing the cause. Re-queue stays
+unlimited for batches that made progress.
+
+**Fix/evidence:** Zero-progress exits, missing jobs, and stalls become visible
+`FAILED` batches and are not re-queued; progress-making batches still re-plan
+pending candidates. `test_failed_zero_progress_batch_is_not_requeued_across_ten_ticks`,
+`test_stall_floor_and_unreachable_pause_are_progress_based`, and
+`test_refresh_digest_mismatch_and_missing_running_jobs_are_detected` (commit
+`9197fbce0`).
 
 ## FD-017 Re-plan of a lost batch is all-or-nothing
 
@@ -300,7 +314,7 @@ with enough `cap_alone` is online (or report them missing with the reason).
 
 ## FD-018 Verdict fallback hides never-started candidates
 
-**State:** OPEN. **Priority:** P1. **Filed:** 2026-11-14 (Opus series review).
+**State:** DONE (2026-11-14). **Priority:** P1. **Filed:** 2026-11-14 (Opus series review).
 
 Assay lists every candidate of a selected run that did not start (unselected,
 or the deadline remainder) under `budget_exceeded` with not-started evidence
@@ -316,9 +330,14 @@ Fix: skip verdict `budget_exceeded` entries whose process-tree evidence says
 not started, or use the verdict only when the batch has no progress artifact
 at all.
 
+**Fix/evidence:** Verdict entries with `process_tree_evidence.leader_status`
+`not-started` remain missing with a distinct reason and do not increase the
+timeout total. `test_collect_reports_assay_not_started_candidates_as_missing`
+(commit `9197fbce0`).
+
 ## FD-019 Stale progress records from an earlier campaign
 
-**State:** OPEN. **Priority:** P2. **Filed:** 2026-11-14 (Opus series review).
+**State:** DONE (2026-11-14). **Priority:** P2. **Filed:** 2026-11-14 (Opus series review).
 
 Assay opens `progress-<lane>.jsonl` with `O_APPEND` and never truncates it.
 The probe filters records by candidate ID only, so records left by an earlier
@@ -334,6 +353,12 @@ batch would look like it made no progress and loop (FD-016). Record the
 progress file size at launch and count only newer events, and count resumed
 candidates from the batch verdict's resumed set (or a per-candidate Assay
 "resumed" event).
+
+**Fix/evidence:** Each runner job records start/end byte offsets; progress is
+filtered by that range and the job's candidate IDs. Resumed results come from
+that job's verdict. `test_prior_campaign_progress_does_not_count_for_a_new_batch_on_same_commit`
+and `test_progress_parser_filters_noise_and_normalizes_optional_fields`
+(commit `9197fbce0`).
 
 ## FD-020 Host loss timing and slow probes
 
@@ -353,7 +378,7 @@ from ssh exit 255. Until then, call `tick` every few minutes (SPEC, README).
 
 ## FD-021 One host's error aborts the scheduling step
 
-**State:** OPEN. **Priority:** P2. **Filed:** 2026-11-14 (Opus series review).
+**State:** DONE (2026-11-14). **Priority:** P2. **Filed:** 2026-11-14 (Opus series review).
 
 `_refresh()` catches only `HostUnavailable`. A `TransportError` (hx exit 97/98,
 a failing probe, a stop refused during the start race) or a `ContractError`
@@ -365,6 +390,11 @@ should still be supervised.
 Fix: record the error per host (status `ERROR` with the message), skip that
 host for the step, and continue with the others; still never treat 97/98 as
 loss.
+
+**Fix/evidence:** Catch transport and contract errors at host scope, persist
+the message as host `ERROR`, and continue refreshing the other hosts.
+`test_one_host_probe_error_is_reported_without_stopping_other_hosts` (commit
+`9197fbce0`).
 
 ## FD-022 Dispatch does not re-check PSI
 
