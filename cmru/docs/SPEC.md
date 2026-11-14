@@ -2992,8 +2992,8 @@ covered by the existing subtree mount.
 | `[archive].name_template` | string | Required. Filename template containing exactly one plain `{version}` field and no path separators; `bundle-build` uses the named environment value when set, otherwise it supplies the CMRU-derived development version. A direct `run_bundle()` caller may pass `version_fallback`. The resulting filename is checked again after substitution. |
 | `[archive].version_env` | string | Required. Name of the environment variable used for an explicit release version. When that variable is unset, `bundle-build` resolves a development version from the selected project's CMRU release plan and current Git identity. |
 | `[archive].format` | string | Optional; defaults to `gztar`. Allowed values: `tar`, `gztar`, `bztar`, `xztar`, `zip`. The deterministic normalized writer is guaranteed for `xztar`. |
-| `[archive].keep` | array of strings | Optional; defaults to empty. Each value is one exact bundle-relative POSIX file path, with no glob syntax, absolute path, or traversal. It lets that named file pass the suffix hard-exclude filter at copy, archive, and manifest time. The path must exist as a regular file after copy/vendor/stage. Hard-excluded names (`.git`, `.ciu`, `ciu.env`, `minisign.key`, cache directories, `node_modules`) and `.pyc` files cannot be kept. |
-| `[archive].keep_tree` | boolean | Optional; defaults to `false`. After the archive and any configured manifest are created successfully, CMRU removes `bundle_dir` from `dist_dir`; `true` retains the staged tree. Any failed build keeps the tree for diagnosis. |
+| `[archive].keep` | array of strings | Optional; defaults to empty. Each value is one exact bundle-relative POSIX file path, with no glob syntax, absolute path, or traversal. It lets that named file pass the suffix hard-exclude filter at copy, archive, and manifest time. The path must exist as a regular file after copy/vendor/stage. Hard-excluded names (`.git`, `.ciu`, `ciu.env`, `minisign.key`, cache directories, `node_modules`) and `.pyc` files cannot be kept. There is no implicit exception for `pyproject.toml`; set `keep = ["pyproject.toml"]` under `[archive]` when that bundle-relative file is needed. |
+| `[archive].keep_tree` | boolean | Optional; defaults to `false`. After the archive and any configured manifest are created successfully, CMRU removes both `bundle_dir` and the wheel output `client_dir` from `dist_dir`; `true` retains both trees. Failures after staging starts retain both trees for diagnosis. |
 | `[copy].files` | array of strings | Within the required `[copy]` table; defaults to an empty list when omitted. File paths are resolved from `project_root`. |
 | `[copy].dirs` | array of strings | Within the required `[copy]` table; defaults to an empty list when omitted. Directory paths are resolved from `project_root`. |
 | `[archive].name_template` `{variant}` | field | Optional second plain field, at most once. Required exactly when a variant is built (`run_bundle(..., variant=...)`), refused otherwise; it is replaced by the variant name so the asset is `<prefix>-v<version>-<variant>.tar.xz`, the name `publish_versioned_variants` expects. |
@@ -3032,11 +3032,23 @@ other placeholders, format conversions, and path separators are refused. The
 rendered filename is also refused if the environment value introduces a path
 separator. `[archive].keep` paths describe the final output layout: `copy.dirs =
 ["a/b"]` writes under `b/`, while a `copy.files` entry is flattened to its
-basename. CMRU warns with each skipped copy path; a stage-created suffix-class
-file without an exact keep entry fails with its path. Included source symlinks and
-stage-created symlinks are refused, so the archive writer does not dereference
-their targets. Set `keep_tree = true` only when a later consumer needs the
-assembled directory; the default removes it after a successful archive.
+basename. Suffix rules apply to regular files; directories whose names end in a
+protected suffix are traversed. CMRU emits one WARN per skipped copy path per
+build. A stage-created suffix-class file without an exact keep entry fails with
+its path. Suffix matching is currently case-sensitive, and secret-class names
+outside the exclusion list remain eligible (KI-167). Included source symlinks
+and stage-created symlinks are refused, so the archive writer does not
+dereference their targets. Set `keep_tree = true` only when a later consumer
+needs the assembled bundle and wheel trees; the default removes both after a
+successful archive. Failures after staging starts keep both trees, including an
+unkept suffix-class file that caused validation to fail; that file remains on
+disk but is not archived.
+
+When a manifest is configured, CMRU rechecks archive-eligible path membership
+against the written manifest immediately before archive creation and fails if
+paths have been added or removed. A concurrent external writer can still alter
+paths or file contents after that check and before the archive reads them, so
+the bundle tree must remain private for the build's duration.
 There is no bundle CLI or library dry-run API. Consumers
 that need a review step should inspect their declared source inputs before
 calling the build function. Unknown keys and wrong TOML types fail at the
@@ -3046,14 +3058,17 @@ configuration boundary (KI-33).
 
 - Archive membership comes from configured copy paths and generated wheel, vendor, and stage
   outputs. One bundle-relative hard-exclude predicate filters copied files, archive members, and
-  manifest entries; suffix classes can pass only through exact `[archive].keep` paths.
+  manifest entries; suffix classes can pass only through exact `[archive].keep` paths. Suffix
+  rules apply to regular files, so a directory named `certs.pem/` is traversed.
 - The name-class exclusions and `.pyc`/`__pycache__` remain non-keepable. A suffix-class file
   left by stage without a keep entry fails closed before the manifest or archive is written.
 - `bundle-build` uses the version from its named environment variable when set. If it is absent,
   CMRU derives a PEP 440 `.devN+g<short-hash>` version from the selected project's release plan
   and Git history; immutable release publication rejects that version.
-- After a successful manifest and archive, `bundle_dir` is removed by default. The explicit
-  `[archive].keep_tree = true` option retains it; any failed build keeps the tree for debugging.
+- After the archive and any configured manifest succeed, both `bundle_dir` and `client_dir` are removed by
+  default. The explicit `[archive].keep_tree = true` option retains both; failures after staging
+  starts keep both trees for debugging, including an unkept suffix-class file that caused
+  validation to fail.
 - Every `TarInfo` is normalized: `mtime = SOURCE_DATE_EPOCH`; `uid = gid = 0`;
   `uname = gname = ""`; mode = `0o644` (files) / `0o755` (executable files);
   members sorted by path in byte order.
@@ -3063,7 +3078,12 @@ configuration boundary (KI-33).
   than `xztar` archive a filtered temporary copy through the standard archive writer.
   A source-package metadata file such as `client/pyproject.toml` is included only when that
   exact bundle-relative file path appears in `[archive].keep`; there is no implicit `.toml`
-  exception.
+  exception. For a root `pyproject.toml`, add `keep = ["pyproject.toml"]` under `[archive]`.
+- Suffix matching is case-sensitive; secret-class names outside the configured exclusion list
+  remain eligible (KI-167). With a manifest, archive-eligible path membership is rechecked against
+  the manifest immediately before archiving. This catches paths added or removed since manifest
+  creation, but a concurrent writer can change paths or file contents after the check and before
+  archive reading; the bundle tree must remain private during the build.
 - The production `run_bundle()` path MUST use this normalized writer for `xztar`; all other
   supported formats MUST use the same membership predicate before `make_archive`.
 - A **build-twice gate** in the test suite asserts identical sha256 across two builds from

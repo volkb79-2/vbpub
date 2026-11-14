@@ -14,9 +14,10 @@
 
 | ID | Status | Fix commit |
 | --- | --- | --- |
+| KI-167 | OPEN (case-sensitive suffix checks and incomplete name list can miss secret-class paths) | — |
 | KI-166 | FIXED (included bundle source symlinks could dereference and ship their targets) | `f2b56b12743f6a764bbadefa8b937c1bd642b32f` |
 | KI-165 | OPEN (item 2 fixed; items 1, 3, 4, 5 and 6 remain) | `f2b56b12743f6a764bbadefa8b937c1bd642b32f` |
-| KI-164 | FIXED (`bundle-build` removes the staged tree after a successful archive by default) | `f2b56b12743f6a764bbadefa8b937c1bd642b32f` |
+| KI-164 | FIXED (`bundle-build` removes bundle and wheel staging trees after a successful archive by default) | `d6cd7fb54aff97dfb47fb7a537e0d31b0d7af3e0` |
 | KI-163 | FIXED (`bundle-build` derives a non-release version when its configured variable is absent) | `f2b56b12743f6a764bbadefa8b937c1bd642b32f` |
 | KI-162 | OPEN (CMRU fix is implemented; the naf equivalence build remains part of KI-126 acceptance after the cmru patch release) | `f2b56b12743f6a764bbadefa8b937c1bd642b32f` |
 | KI-161 | OPEN (`cmru versions resolve` and `init` rewrite `cmru.toml` and drop comments; a document-wide blank-line collapse can change multi-line string values) | — |
@@ -3538,7 +3539,7 @@ Only 10 of the 40 slowest tests use repositories (`test_release_end_to_end_real_
 
 ## KI-162 - `cmru handler bundle-build` silently drops, or refuses with an error, files whose names end in `.env` or `.pem` (a runtime catalog `app-defaults.env`, the vendored `certifi/cacert.pem`)
 
-**Status:** OPEN (CMRU implementation and regressions fixed in `f2b56b12743f6a764bbadefa8b937c1bd642b32f`; the naf equivalence build remains pending for KI-126 acceptance); severity: HIGH. Found by the netcup-api-filter canary (naf branch `bundle1`, commit `netcup-api-filter@b55cd10`, not merged).
+**Status:** OPEN (CMRU implementation and regressions fixed in `f2b56b12743f6a764bbadefa8b937c1bd642b32f`, with directory handling and warning-deduplication regressions added in this fix round; the naf equivalence build remains pending for KI-126 acceptance); severity: HIGH. Found by the netcup-api-filter canary (naf branch `bundle1`, commit `netcup-api-filter@b55cd10`, not merged).
 
 **Observed (run).** In the scratch project below the copy-only config exits 0 and the archive holds only `app/manifest.json` and `app/src/app.py`: `src/app-defaults.env` and `src/cacert.pem` are missing from the archive AND from the staged tree, with no log line. When a stage step creates `app-defaults.env` inside the bundle dir (`[stage] argv = ["sh", "-c", "printf 'KEY=value\\n' > \"$1/app-defaults.env\"", "stage", "{bundle_dir}"]`) the build exits 2 with `[ERROR] bundle-build: the archive hard-excludes files the bundle tree holds, so the manifest would list files the tarball lacks: app-defaults.env` after `Running stage step`. `cmru.bundle._is_excluded` returned `True` for `app-defaults.env`, `src/app-defaults.env` and `vendor/certifi/cacert.pem`, and `False` for `.env.defaults` and `netcup_filter.db` (run).
 
@@ -3548,7 +3549,7 @@ Only 10 of the 40 slowest tests use repositories (`test_release_end_to_end_real_
 
 **Wanted (the vbpub controller's preference).** One predicate, fail-closed. (1) The suffix hard excludes (`.toml .env .pem .crt .key .p12 .pfx .log`) stay on for every file of the final bundle tree; a file of that class that is not allowed makes the build fail naming the file and `[archive] keep`; the copy step may still skip such a source file but logs it at WARN with its path. (2) `[archive] keep = [...]` is the only override: PATH-EXACT bundle-relative posix paths (no glob characters, rejected at parse time), applied identically by the copy filter (translated to bundle-relative paths for nested `copy.dirs`), the archive filter and the manifest check, so tarball and manifest cannot diverge; the name-class excludes (`.git`, `.ciu`, `ciu.env`, `minisign.key`, `node_modules`, caches) and `.pyc`/`__pycache__` are not keepable and stay excluded from archive and manifest alike. (3) A stage step that writes a secret-class file the project did not list in `keep` therefore still fails closed.
 
-**Fix and evidence.** Commit `f2b56b12743f6a764bbadefa8b937c1bd642b32f` uses `_is_excluded(rel_path, keep_paths)` for copy, all archive formats, and manifest enumeration. It warns for copied paths it skips, validates exact keep paths after stage, rejects unkept suffix-class files left by stage, and leaves hard-name exclusions and `.pyc` unkeepable. Regression coverage is in `cmru/tests/test_bundle_ki162_165.py`; the registered red gate failed on the copy/keep reproduction at `74a58f3cf2680e9a7318fcd222d26a2950d47091`, and the final gate will bind the fixed result. The separate naf old-builder equivalence build was not run in this cmru-only work item; it remains the KI-126 acceptance step after the cmru patch release.
+**Fix and evidence.** Commit `f2b56b12743f6a764bbadefa8b937c1bd642b32f` uses `_is_excluded(rel_path, keep_paths)` for copy, all archive formats, and manifest enumeration. It warns for copied paths it skips, validates exact keep paths after stage, rejects unkept suffix-class files left by stage, and leaves hard-name exclusions and `.pyc` unkeepable. This round also traverses suffix-named directories and emits one WARN per skipped path per build. Regression coverage is in `cmru/tests/test_bundle_ki162_165.py`; the registered red gate failed on the copy/keep reproduction at `74a58f3cf2680e9a7318fcd222d26a2950d47091`. The naf old-builder equivalence build was not run in this cmru-only work item; it remains the KI-126 acceptance step after the cmru patch release.
 
 **Close when.** Regression tests run (a) the copy-only scratch project with `keep = ["src/app-defaults.env", "src/cacert.pem"]` and assert both are in the archive and the manifest; (b) the same project WITHOUT `keep` and assert a WARN naming each skipped file; (c) a stage step creating `app-defaults.env` and a vendored `certifi/cacert.pem` and assert the build succeeds with both in the archive and the manifest; and the naf canary (`bundle1`) builds its Passenger tarball byte-equivalent (file list, sha256, database table counts) to the old builder; (d) a stage step writing `minisign.key`, and one writing an unlisted `.key`, still fail the build with the file named; (e) `keep` with a glob character is a config error; (f) `keep = ["b/app-defaults.env"]` works for `copy.dirs = ["a/b"]` (bundle-relative basis).
 
@@ -3628,17 +3629,17 @@ Call: `SOURCE_DATE_EPOCH=1700000000 DEMO_VERSION=1.0.0 cmru handler bundle-build
 
 **Scratch project:** the one defined under KI-162 (same `cmru.toml` and copy-only `bundle.toml`); call as shown there.
 
-## KI-164 - `cmru handler bundle-build` leaves the staged bundle tree in `dist_dir` after a successful build
+## KI-164 - `cmru handler bundle-build` leaves staged bundle and wheel trees in `dist_dir` after a successful build
 
-**Status:** FIXED in `f2b56b12743f6a764bbadefa8b937c1bd642b32f`; severity: medium (release retention copies the tree, thin deploys may ship it). Found by the naf canary (`netcup-api-filter@b55cd10`).
+**Status:** FIXED in `d6cd7fb54aff97dfb47fb7a537e0d31b0d7af3e0`; severity: medium (release retention copies staging trees, thin deploys may ship them). Found by the naf canary (`netcup-api-filter@b55cd10`).
 
-**Observed (run).** After a successful build of the scratch project below `dist/` holds `demo-v1.0.0-py311.tar.xz` AND the directory `dist/app/` (the staged tree: sources, vendored wheels and a seeded database in a real project). Code (read): `run_bundle` in `cmru/src/cmru/bundle.py` removes `dist_dir` or the stale bundle/client dirs BEFORE building (lines ~822-836, `shutil.rmtree(...)`) but never removes `bundle_dir` after `write_deterministic_tar`. Consequence (read, not run): `release.artifact_dirs = ["dist"]` retention copies the whole tree next to the archive and a thin deploy that does not exclude `dist` ships it.
+**Observed (run).** With the default `keep_tree = false`, an ordinary build leaves `dist/app/` next to the archive. When `[wheel].enabled = true`, it also leaves `dist/client/` (verified by the independent review). `release.artifact_dirs = ["dist"]` retention copies these trees next to the archive and a thin deploy that does not exclude `dist` may ship them.
 
-**Wanted (acceptance criterion).** `[archive] keep_tree = false` as the DEFAULT: remove `bundle_dir` after the archive and manifest were written successfully (on failure keep it for debugging); `keep_tree = true` opts in. The manifest file is written into the tree before archiving, so nothing is lost.
+**Wanted (acceptance criterion).** `[archive] keep_tree = false` as the DEFAULT: after archive and manifest success remove both `bundle_dir` and the wheel output `client_dir`; failures after staging starts retain both for debugging; `keep_tree = true` opts in to retaining both. The manifest file is in the bundle tree before archiving, so nothing is lost from the archive.
 
-**Fix and evidence.** `archive.keep_tree` defaults to false; `run_bundle` removes `bundle_dir` only after manifest and archive creation succeed. The regression covers default cleanup, explicit retention, stage failure retention, and archive failure retention.
+**Fix and evidence.** `archive.keep_tree` defaults to false; `run_bundle` removes both `bundle_dir` and `client_dir` only after manifest and archive creation succeed. Tests cover builds with and without a variant, wheel-enabled cleanup, explicit retention, and wheel, stage, and archive failure retention. A stage-written protected-suffix file that causes failure remains in the staged tree on disk for diagnosis and does not enter an archive.
 
-**Close when.** A test asserts that after a successful build only the archive (and any declared extra outputs) remain in `dist_dir`, that a failed stage keeps the tree, and that `keep_tree = true` keeps it.
+**Close when.** Tests assert that after successful builds with and without a wheel build only the archive (and any declared extra outputs) remain in `dist_dir`; wheel, stage, and archive failures retain both existing staging trees; and `keep_tree = true` retains both trees.
 
 **Reproduction setup.**
 
@@ -3672,3 +3673,13 @@ Call: `SOURCE_DATE_EPOCH=1700000000 DEMO_VERSION=1.0.0 cmru handler bundle-build
 **Security boundary.** This prevents symlink dereferencing by the builder. It does not inspect file contents or sandbox stage code: a stage command can still write secret data under an ordinary filename, and that content is eligible for the archive.
 
 **Close when.** The source-symlink regression and registered final CMRU `r0-r1` gate pass; no archive is produced from a tree containing an included symlink.
+
+## KI-167 - bundle-build can ship case-variant suffixes and secret-class names outside its exclusion list
+
+**Status:** OPEN (pre-existing on `origin/main`; filed during the cmru-bundle-fix round 2 and out of scope for that fix); severity: medium for bundles that contain private key or credential material. The identifier was checked against origin refs and registered worktree backlog files before filing.
+
+**Observed (run/review).** The suffix predicate compares names case-sensitively, so files such as `SERVER.PEM`, `prod.ENV`, `.ENV`, and `a.Key` do not match the lowercase suffixes and remain eligible for the archive. The current name exclusions also do not include common credential names such as `id_rsa`, `id_ed25519`, `.netrc`, `credentials.json`, or `.env.local`; these ordinary names remain eligible. This behavior predates the cmru-bundle-fix changes.
+
+**Wanted.** Make protected suffix matching case-insensitive while keeping `[archive].keep` paths exact and case-sensitive. Add a configurable extension to the exact secret-class name exclusions, with a documented default set including common private-key and credential filenames. Keep one predicate governing source copy, archive membership, and manifest inventory; do not infer safety from the producer or content type.
+
+**Close when.** Tests show upper-case and mixed-case protected suffixes are skipped or fail closed at copy and stage, remain absent from every supported archive format and manifest unless the exact path is kept, and configured secret-class names are rejected consistently by copy, stage, archive, and manifest checks. Tests also show ordinary paths outside the configured suffix and name policy remain unaffected. Document the limits of filename-based filtering and the configuration migration.

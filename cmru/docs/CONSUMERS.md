@@ -556,7 +556,7 @@ name_template = "myproj-v{version}-{variant}.tar.xz"   # {variant} is mandatory 
 version_env = "MYPROJ_VERSION"
 format = "xztar"
 keep = ["src/app-defaults.env", "certifi/cacert.pem"] # exact bundle-relative paths
-# keep_tree = true                       # default false; keep the staged tree only if needed
+# keep_tree = true                       # default false; keep bundle and wheel trees only if needed
 
 [vendor]                                  # pip download --only-binary=:all: for the variant's ABI
 requirements = ["requirements-runtime.txt"]
@@ -598,9 +598,13 @@ prefix already ends in `-v`.
 suffix-filtered files such as a runtime `.env` catalog or a public CA `.pem`
 only at those paths; it does not accept globs, absolute paths, or traversal.
 For `copy.dirs = ["a/b"]`, the output starts at `b/`; `copy.files` entries are
-flattened to the source basename. CMRU logs a WARN with every copied path it
-skips. If stage leaves an unlisted suffix-class file (`.toml`, `.env`, `.pem`,
-`.crt`, `.key`, `.p12`, `.pfx`, or `.log`), the build fails and names it. The
+flattened to the source basename. Suffix rules apply to regular files, so a
+directory named `certs.pem/` is traversed and its files remain eligible.
+CMRU emits one WARN per skipped copied path per build. If stage leaves an
+unlisted suffix-class file (`.toml`, `.env`, `.pem`, `.crt`, `.key`, `.p12`,
+`.pfx`, or `.log`), the build fails and names it. Suffix matching is currently
+case-sensitive, and secret-class names outside the exclusion list are eligible
+(KI-167). The
 name exclusions (`.git`, `.ciu`, `ciu.env`, `minisign.key`, cache directories,
 `node_modules`) and `.pyc` are never keepable and stay out of both archive and
 manifest. Included source symlinks and stage-created symlinks are refused.
@@ -608,9 +612,14 @@ This includes client packaging metadata: put the exact path, such as
 `client/pyproject.toml`, in `keep` when the bundle needs it; `.toml` has no
 implicit exception.
 Vendored `.whl` files are unaffected by the suffix rules. After the archive
-and any configured manifest succeed, `bundle_dir` is removed; set
-`keep_tree = true` when a later step needs it. A failed build retains the
-staged tree for diagnosis.
+and any configured manifest succeed, both `bundle_dir` and the wheel output
+`client_dir` are removed; set `keep_tree = true` when a later step needs them.
+Failures after staging starts retain both trees for diagnosis. An unkept
+protected-suffix file that caused validation to fail therefore remains in the
+staged tree on disk, though it is not packaged. With a manifest, CMRU compares
+archive-eligible path membership immediately before archiving and fails if paths were added or
+removed since manifest creation. A concurrent writer can still alter a path or
+file content after that check; keep the bundle root private until the build ends.
 From Python:
 `run_bundle(Path("bundle.toml"), variant=<VariantConfig>, manifest_project=..., manifest_tag=..., runner=<optional recorder>)`.
 `run_bundle` also accepts `version_fallback` for callers that derive the same
