@@ -33,6 +33,7 @@ from fleetd.plan import (
     parse_host_set,
     plan_campaign,
     render_commands,
+    replan_pending,
 )
 
 
@@ -861,7 +862,11 @@ def test_golden_cli_plan_for_two_eight_gib_four_core_hosts_and_230_candidates(tm
 
     assert 3000 < plan["eta_seconds"] < 10000
     assert plan["eta_seconds"] == max(host["eta_seconds"] for host in plan["hosts"])
-    digest = hashlib.sha256(dump_json(plan).encode("utf-8")).hexdigest()
+    if "execution" in plan:
+        assert plan["execution"]["schema"] == "fleet-plan-execution/1"
+        assert len(plan["execution"]["commit"]) == 40
+    deterministic_plan = {key: value for key, value in plan.items() if key != "execution"}
+    digest = hashlib.sha256(dump_json(deterministic_plan).encode("utf-8")).hexdigest()
     assert digest == "13b036934c44c7f0ddb96061bc78e5b592d913aa73e76085a168a0fef934b18a"
 
 
@@ -924,6 +929,47 @@ def test_retry_terminal_unplaceable_and_no_available_host_paths():
     assert {item["id"] for item in none_available["unplaced"]} == {_cid("normal"), _cid("retry")}
     assert none_available["eta_seconds"] == 0.0
     assert "run-gate " not in render_commands(none_available)
+
+
+def test_replan_pending_reuses_placement_rules_and_refuses_bad_inputs():
+    rows = [
+        _candidate("replan-low", 120 * 1024**2),
+        _candidate("replan-retry", 130 * 1024**2, memory_crash_evidence=True),
+    ]
+    plan = plan_campaign("r2", _candidate_table(rows), _hosts(), DEMAND)
+    host = next(row for row in plan["hosts"] if row["status"] == "available" and row["assigned"])
+    low_id = _cid("replan-low")
+    retry_id = _cid("replan-retry")
+    batches = replan_pending(plan, [low_id], host["id"])
+    assert [candidate_id for batch in batches for candidate_id in batch["candidate_ids"]] == [low_id]
+    assert replan_pending(plan, [], host["id"]) == []
+    retry_batches = replan_pending(plan, [retry_id], host["id"])
+    assert retry_batches[0]["kind"] == "retry"
+    assert retry_batches[0]["waves"][0]["retry_reason"] == "memory-crash retry must run alone with --jobs 1"
+
+    with pytest.raises(ContractError, match="invalid candidate id"):
+        replan_pending(plan, ["invalid"], host["id"])
+    with pytest.raises(ContractError, match="not assigned"):
+        replan_pending(plan, ["f" * 64], host["id"])
+    blocked = copy.deepcopy(plan)
+    next(row for row in blocked["hosts"] if row["id"] == host["id"])["status"] = "blocked"
+    with pytest.raises(ContractError, match="not available"):
+        replan_pending(blocked, [low_id], host["id"])
+    missing_facts = copy.deepcopy(plan)
+    missing_host = next(row for row in missing_facts["hosts"] if row["id"] == host["id"])
+    del missing_host["cap_bytes"]
+    with pytest.raises(ContractError, match="missing planner capacity facts"):
+        replan_pending(missing_facts, [low_id], host["id"])
+    impossible = copy.deepcopy(plan)
+    impossible_host = next(row for row in impossible["hosts"] if row["id"] == host["id"])
+    candidate = next(row for row in impossible_host["assigned"] if row["id"] == low_id)
+    candidate["memory_bytes"] = impossible_host["cap_alone_bytes"] + 1
+    with pytest.raises(ContractError, match="could not place re-queued"):
+        replan_pending(impossible, [low_id], host["id"])
+
+    without_multiplier = copy.deepcopy(plan)
+    without_multiplier.pop("batch_multiplier", None)
+    assert replan_pending(without_multiplier, [low_id], host["id"])
 
 
 def test_overcommit_changes_sum_budget_but_never_physical_alone_cap():

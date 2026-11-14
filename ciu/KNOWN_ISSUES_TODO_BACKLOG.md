@@ -21,6 +21,8 @@ and its documentation-contract test).**
 
 Later update, 2026-11-13 — **CIU-217 FILED** for the KSM ELF verifier accepting a zero-sized program-header entry declaration. The KSM R2 test-gap closure for CIU 7.25.1 is recorded below under CIU-211.
 
+Later update, 2026-11-13 — **CIU-218 FILED** for an opt-in restricted `authorized_keys` forced-command mode used by the fleet campaign runner; general-purpose host enrollment remains the default.
+
 Previously, 2026-09-02 — **V8-2 BACKPORTED (ciu-P47): the identity-file
 split and the overlay rename.** `[ciu.instance.generated]` moved out of the
 shared per-checkout overlay into its own CIU-owned
@@ -669,6 +671,7 @@ entries.
 | CIU-215 | Linked-worktree exec runners rendered by CIU 7 lack the git common-dir mount, so every assay lane fails with GIT_FAILED | Major | OPEN 2026-11-13 |
 | CIU-216 | `ciu worktree create` renders no `ciu.global.toml` when `DOCKER_HOST` is unset and the socket is at a non-default path | Minor | OPEN 2026-11-13 |
 | CIU-217 | The KSM ELF verifier accepts a program-header table whose declared entry size is zero (`e_phentsize = 0`) | Minor | OPEN 2026-11-13 (strict xfail `test_zero_program_header_entry_size_is_refused` records it) |
+| CIU-218 | `ciu host enroll` cannot install an opt-in forced-command key for the fleet campaign runner | Major | OPEN 2026-11-13 |
 
 
 The approved milestone decisions and serial package order are in
@@ -6984,3 +6987,33 @@ test.
 **Wanted.** Refuse an ELF program-header table whose declared entry size is smaller than the ELF64 program-header structure that the parser reads, with the normal `cannot verify` refusal.
 
 **Close when.** A production fix makes the xfail pass, and a malformed-header oracle demonstrates that an undersized `e_phentsize` cannot be accepted as a dependency-free object.
+
+## CIU-218 — `ciu host enroll` cannot install an opt-in forced-command key for the fleet campaign runner
+
+**Status:** OPEN (filed 2026-11-13); severity: major for restricted fleet
+campaign access. Related: fleetd FD-009 and the compute-host campaign design,
+§3.7.
+
+**Observed gap.** CIU-93/CIU-P52 provides trusted host enrollment and a
+general-purpose SSH identity. It does not install a key restricted to the
+campaign runner's named-job protocol. fleetd MVP-B-lite correctly reuses the
+existing identity-checked hx transport, but a general-purpose account leaves
+the operator without the later least-privilege host-entry option.
+
+**Wanted.** Add an explicit opt-in enrollment mode that writes a
+`restrict`/forced-command authorized-key entry for the runner wrapper while
+preserving the current general-purpose enrollment behavior. The forced command
+must accept only the documented list, start, probe/progress, and stop
+operations; reject arbitrary shell commands, extra arguments, and malformed
+input; and retain the existing pinned-host-identity checks. Key rotation and
+removal must identify only the enrolled restricted entry. Host aliases,
+addresses, public/private key material, and provider credentials remain local
+configuration and never enter repository files.
+
+**Close when.** Parser and authorized-key tests prove the exact allowed
+operation grammar and refusal of shell escape, malformed quoting, unknown
+verbs, and extra arguments. Round-trip tests preserve unrelated authorized-key
+bytes and a general enrollment. A fake hx transport reaches every allowed
+runner operation and no other operation. The registered CIU enrollment gate,
+SPEC, and consumer documentation pass; no live host is needed for the unit
+contract.
