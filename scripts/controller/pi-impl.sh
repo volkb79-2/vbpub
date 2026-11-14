@@ -135,6 +135,7 @@ fi
 case $od_account in
   volker)
     # Length test, never a value test: `bash -x` would trace the value into stderr.
+    # shellcheck disable=SC2015 # intended: any failed test (unset or empty) takes the error branch
     [[ -v OPENDESIGN_API_KEY_VOLKER ]] && (( ${#OPENDESIGN_API_KEY_VOLKER} > 0 )) || {
       echo "OPENDESIGN_API_KEY_VOLKER is not set by \$HOME/.env.ai" >&2
       exit 2
@@ -144,6 +145,7 @@ case $od_account in
     provider=opendesign_volker
     ;;
   github2)
+    # shellcheck disable=SC2015 # intended: any failed test (unset or empty) takes the error branch
     [[ -v OPENDESIGN_API_KEY_GITHUB2 ]] && (( ${#OPENDESIGN_API_KEY_GITHUB2} > 0 )) || {
       echo "OPENDESIGN_API_KEY_GITHUB2 is not set by \$HOME/.env.ai" >&2
       exit 2
