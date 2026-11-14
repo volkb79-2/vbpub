@@ -489,6 +489,42 @@ def test_fake_probe_uses_shared_runner_files_and_rejects_invalid_start_inputs():
     assert transport.run("host-a", start_script(spec)) == (73, "", "candidate ids file is missing or invalid")
 
 
+def test_fake_probe_clamps_offsets_and_ignores_non_candidate_events():
+    transport = FakeTransport()
+    runner = RunnerJobs(transport)
+    candidate_id = "a" * 64
+    spec = JobSpec("campaign", "host-a", 0, 0, (candidate_id,), "b" * 40, ".", "r2", 1)
+    runner.start(spec)
+    host = transport.host("host-a")
+    job = host.jobs[spec.name]
+    raw_progress = json.dumps({"candidate_id": candidate_id, "event": "heartbeat"}).encode() + b"\n"
+    host.files[job.progress_path] = raw_progress
+
+    row = runner.probe("host-a", {spec.name: spec})[spec.name]
+    assert row["records"] == []
+
+    job.progress_offset = len(raw_progress) + 1
+    row = runner.probe("host-a", {spec.name: spec})[spec.name]
+    assert row["progress_end_offset"] is None
+    assert row["records"] == []
+
+
+def test_fake_probe_skips_malformed_verdict_mutation_shapes():
+    verdicts = [
+        {"claims": "not-an-array"},
+        {"claims": [{"rigor": "R2", "mutation": {"killed": "not-an-array"}}]},
+        {"claims": [{"rigor": "R2", "mutation": {"killed": [None, {"candidate_id": "f" * 64}]}}]},
+    ]
+    for index, verdict in enumerate(verdicts):
+        transport = FakeTransport()
+        runner = RunnerJobs(transport)
+        spec = JobSpec(f"campaign-{index}", "host-a", 0, 0, ("a" * 64,), "b" * 40, ".", "r2", 1)
+        runner.start(spec)
+        transport.finish("host-a", spec.name, verdict=json.dumps(verdict).encode())
+        row = runner.probe("host-a", {spec.name: spec})[spec.name]
+        assert row["verdict_records"] == []
+
+
 def test_fake_job_table_handles_direct_duplicate_start_and_repeated_restart():
     transport = FakeTransport()
     spec = JobSpec("campaign", "host-a", 0, 0, ("a" * 64,), "b" * 40, ".", "r2", 1)
@@ -718,6 +754,66 @@ def test_first_stall_window_uses_batch_prediction_and_declared_baseline(tmp_path
     assert _state(tmp_path, "slow")["jobs"][job["name"]]["status"] == "RUNNING"
 
 
+def test_predicted_candidate_times_skip_invalid_measurements_and_nonfinite_results():
+    plan = _plan(1)
+    host = next(row for row in plan["hosts"] if row["assigned"])
+    candidate_id = host["assigned"][0]["id"]
+    job = {"host": host["id"], "candidate_ids": [candidate_id]}
+    state = {
+        "plan": plan,
+        "candidate_metadata": {candidate_id: {"time_ref_seconds": True}},
+    }
+    assert CampaignManager._predicted_candidate_seconds(state, job) == []
+
+    state["candidate_metadata"][candidate_id]["time_ref_seconds"] = 560
+    plan["time_reference"] = {
+        "baseline_score": 100, "geekbench_major": 6, "geekbench_version": "6.3.0",
+    }
+    host["speed"] = {
+        "baseline_score": 100, "geekbench_major": 6, "geekbench_version": "6.3.0",
+        "single_core": 100,
+    }
+    host["f_h"] = math.nan
+    assert CampaignManager._predicted_candidate_seconds(state, job) == []
+
+
+def test_stall_stop_that_flushes_final_progress_does_not_create_an_empty_replacement(tmp_path):
+    plan = _plan(2)
+    candidates = [candidate for host in plan["hosts"] for candidate in host["assigned"]]
+    owner = next(host for host in plan["hosts"] if host["assigned"])
+    owner["assigned"] = candidates
+    owner["batches"] = [{
+        "batch": 0, "kind": "regular", "candidate_ids": [candidate["id"] for candidate in candidates],
+    }]
+    for host in plan["hosts"]:
+        if host is not owner:
+            host["assigned"] = []
+            host["batches"] = []
+    clock = FakeClock()
+    transport = FakeTransport(clock=clock)
+    manager = CampaignManager(tmp_path, transport, clock=clock)
+    manager.run("campaign", plan)
+    job = next(iter(_state(tmp_path)["jobs"].values()))
+    first_id, last_id = job["candidate_ids"]
+    transport.add_progress(job["host"], job["name"], first_id, "killed")
+    manager.status("campaign")
+    state = _state(tmp_path)
+    state_job = state["jobs"][job["name"]]
+
+    def flush_final_event(_host, _name):
+        state_job["records"].append({
+            "candidate_id": last_id, "outcome_bucket": "survived", "elapsed_seconds": 1,
+            "emitted_at": "2030-01-01T00:00:01+00:00",
+        })
+
+    manager.runner.stop = flush_final_event
+    clock.advance(STALL_FLOOR_SECONDS + 1)
+    manager._detect_stalls(state)
+
+    assert state_job["status"] == "STALLED"
+    assert len(state["jobs"]) == 1
+
+
 def test_first_stall_window_uses_baseline_observed_on_the_same_host(tmp_path):
     plan = _plan(1)
     plan["time_reference"] = {"reason": "no comparable host scores"}
@@ -773,6 +869,35 @@ def test_failed_zero_progress_batch_is_not_requeued_across_ten_ticks(tmp_path):
     assert "exit code 2" in report
 
 
+def test_requeue_exited_preserves_missing_reason_and_replans_pending_progress(tmp_path):
+    manager = CampaignManager(tmp_path, FakeTransport())
+    missing = {
+        "name": "missing-job", "host": "host-a", "status": "EXIT", "requeued": False,
+        "missing_job": True, "finished_ids": [], "candidate_ids": [],
+    }
+    missing_state = {"jobs": {"missing-job": missing}, "deferred_requeues": []}
+    manager._requeue_exited(missing_state)
+    assert missing["status"] == "FAILED"
+    assert missing["failure_reason"] == "missing_job (exit code unavailable)"
+
+    first_id, pending_id = "a" * 64, "b" * 64
+    progressed = {
+        "name": "progressed-job", "host": "host-a", "status": "EXIT", "requeued": False,
+        "missing_job": False, "finished_ids": [first_id], "candidate_ids": [first_id, pending_id],
+        "records": [{"candidate_id": first_id}],
+    }
+    state = {
+        "jobs": {"progressed-job": progressed}, "deferred_requeues": [],
+        "hosts": {"host-a": {"status": "ONLINE"}},
+    }
+    requeued = []
+    manager._enqueue_replanned = lambda _state, source, ids, target, reason: requeued.append(
+        (source["name"], ids, target, reason)
+    )
+    manager._requeue_exited(state)
+    assert requeued == [("progressed-job", [pending_id], "host-a", "job-exit")]
+
+
 def test_one_host_probe_error_is_reported_without_stopping_other_hosts(tmp_path):
     plan, _first_id, _second_id = _two_host_one_candidate_plan()
     transport = FakeTransport()
@@ -791,6 +916,42 @@ def test_one_host_probe_error_is_reported_without_stopping_other_hosts(tmp_path)
     assert hosts["host-a"]["state"] == "ERROR"
     assert hosts["host-a"]["error"] == "host-a probe rejected"
     assert hosts["host-b"]["state"] == "ONLINE"
+
+
+def test_stop_errors_are_recorded_for_the_affected_host(tmp_path):
+    def fail_stop(*_args):
+        raise TransportError("stop rejected")
+
+    superseded_manager = CampaignManager(tmp_path / "superseded", FakeTransport())
+    superseded_manager.run("campaign", _plan(1))
+    superseded_state = _state(tmp_path / "superseded")
+    superseded_job = next(iter(superseded_state["jobs"].values()))
+    superseded_job["status"] = "SUPERSEDED_PENDING"
+    superseded_job["stop_pending"] = True
+    superseded_manager.runner.stop = fail_stop
+    superseded_manager._stop_superseded_host(superseded_state, superseded_job["host"])
+    assert superseded_state["hosts"][superseded_job["host"]]["status"] == "ERROR"
+
+    duplicate_manager = CampaignManager(tmp_path / "duplicate", FakeTransport())
+    duplicate_manager.run("campaign", _two_host_one_candidate_plan()[0])
+    duplicate_state = _state(tmp_path / "duplicate")
+    first = next(job for job in duplicate_state["jobs"].values() if job["host"] == "host-a")
+    second = next(job for job in duplicate_state["jobs"].values() if job["host"] == "host-b")
+    second["records"].append({"candidate_id": first["candidate_ids"][0]})
+    duplicate_manager.runner.stop = fail_stop
+    duplicate_manager._stop_returned_duplicates(duplicate_state, "host-a")
+    assert duplicate_state["hosts"]["host-a"]["status"] == "ERROR"
+
+    clock = FakeClock()
+    stall_manager = CampaignManager(tmp_path / "stall", FakeTransport(clock=clock), clock=clock)
+    stall_manager.run("campaign", _plan(1))
+    stall_state = _state(tmp_path / "stall")
+    stalled_job = next(iter(stall_state["jobs"].values()))
+    clock.advance(STALL_FLOOR_SECONDS + 1)
+    stall_manager.runner.stop = fail_stop
+    stall_manager._detect_stalls(stall_state)
+    assert stall_state["hosts"][stalled_job["host"]]["status"] == "ERROR"
+    assert stalled_job["status"] == "RUNNING"
 
 
 def test_collect_reports_assay_not_started_candidates_as_missing(tmp_path):
@@ -827,6 +988,28 @@ def test_collect_reports_assay_not_started_candidates_as_missing(tmp_path):
     assert missing["reason"] == "never started (Assay process tree status: not-started)"
     assert result["totals"]["timeout"] == 0
     assert result["totals"]["missing"] >= 1
+
+
+@pytest.mark.parametrize(("status", "offset", "end_offset"), [
+    ("RUNNING", True, None),
+    ("RUNNING", 0, -1),
+    ("FAILED", 0, None),
+])
+def test_collect_skips_invalid_or_open_progress_ranges(tmp_path, status, offset, end_offset):
+    transport = FakeTransport()
+    manager = CampaignManager(tmp_path, transport)
+    manager.run("campaign", _plan(1))
+    manager.status("campaign")
+    state = _state(tmp_path)
+    job = next(iter(state["jobs"].values()))
+    job["status"] = status
+    job["progress_offset"] = offset
+    job["progress_end_offset"] = end_offset
+    transport.host(job["host"]).files[job["progress_path"]] = b""
+
+    result = manager._collect_result(state)
+
+    assert result["totals"]["missing"] == 1
 
 
 def test_prior_campaign_progress_does_not_count_for_a_new_batch_on_same_commit(tmp_path):
@@ -1442,6 +1625,29 @@ def test_refresh_normalizes_probe_records_and_rejects_bad_probe_tables(tmp_path)
     assert "invalid records field" in host_status["error"]
 
 
+@pytest.mark.parametrize(("field", "value", "message"), [
+    ("verdict_records", "not-an-array", "invalid verdict records field"),
+    ("progress_offset", True, "invalid progress_offset"),
+    ("baseline_seconds", True, "invalid baseline time"),
+])
+def test_refresh_rejects_invalid_verdict_and_progress_metadata(tmp_path, field, value, message):
+    manager = CampaignManager(tmp_path, FakeTransport())
+    manager.run("campaign", _plan(1))
+    job = next(iter(_state(tmp_path)["jobs"].values()))
+    row = {
+        "name": job["name"], "state": "EXIT", "exit_code": 2,
+        "list_digest": job["list_digest"], "records": [], "verdict_records": [],
+    }
+    row[field] = value
+    manager.runner.probe = lambda _host, wanted: {name: row for name in wanted}
+
+    status = manager.status("campaign")
+
+    host_status = next(item for item in status["hosts"] if item["host"] == job["host"])
+    assert host_status["state"] == "ERROR"
+    assert message in host_status["error"]
+
+
 def test_refresh_handles_unreachable_before_contact_and_superseded_missing_jobs(tmp_path):
     plan = _plan(1)
     host_id = next(host["id"] for host in plan["hosts"] if host["batches"])
@@ -1493,6 +1699,24 @@ def test_refresh_digest_mismatch_and_missing_running_jobs_are_detected(tmp_path)
     assert state["jobs"][job["name"]]["status"] == "FAILED"
     assert state["jobs"][job["name"]]["missing_job"] is True
     assert not any(item.get("requeue_reason") == "job-exit" for item in state["jobs"].values())
+
+
+def test_missing_job_with_finished_progress_keeps_its_partial_result(tmp_path):
+    transport = FakeTransport()
+    manager = CampaignManager(tmp_path, transport)
+    manager.run("campaign", _plan(1))
+    job = next(iter(_state(tmp_path)["jobs"].values()))
+    candidate_id = job["candidate_ids"][0]
+    transport.add_progress(job["host"], job["name"], candidate_id, "killed")
+    manager.status("campaign")
+
+    del transport.host(job["host"]).jobs[job["name"]]
+    manager.status("campaign")
+
+    missing = _state(tmp_path)["jobs"][job["name"]]
+    assert missing["missing_job"] is True
+    assert missing["status"] == "EXIT"
+    assert missing.get("failure_reason") is None
 
 
 def test_campaign_accepts_blocked_plan_without_worker_facts_and_keeps_completed_jobs(tmp_path):
