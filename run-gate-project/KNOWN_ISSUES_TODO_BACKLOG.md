@@ -170,6 +170,7 @@ SPEC §9.
 | RG-275 | lane campaigns cannot be placed across compute hosts: no lane demand model (expected charge vs cap, efficient upper bound), no central scheduler over host capabilities and RAM, supervision lives in a host-local netcup script | Enhancement | OPEN 2026-11-12 (design rev 5) |
 | RG-276 | Run-Gate has no campaign-plan client to assemble candidate and host inputs for fleetd | Enhancement | OPEN 2026-11-13; fleetd MVP-A exposes a standalone fleet plan CLI |
 | RG-277 | Run-Gate cannot forward fleetd's explicit candidate-owner manifest to Assay's strict store merge | Enhancement | OPEN 2026-11-13; fleetd MVP-B-lite collects candidate files only |
+| RG-278 | Run-Gate 25.6.0 KSM R2 survivor test debt | Major | CLOSED 2026-11-14; behavioral tests kill all 17 non-equivalent survivors and document the six equivalents |
 ---
 
 ## RG-1 — conjunction lanes silently drop `--worktree` and `--allow-dirty`
@@ -8592,3 +8593,37 @@ bytes reach Assay, malformed/missing paths fail before merge, the existing
 single-store closeout remains unchanged, and the registered Run-Gate lane plus
 consumer docs pass. The Assay gate separately proves strict merge semantics
 under B544.
+
+## RG-278 — Run-Gate 25.6.0 KSM R2 survivor test debt
+
+**Status:** CLOSED 2026-11-14 by the survivor-test package; Run-Gate `selftest`
+and the hand-mutant checks pass on its final commit. Related: RG-273, whose
+KSM opt-in behavior shipped in 25.6.0.
+
+**Scope.** The 25.6.0 R2 campaign left 23 rows classified as survivors: 17
+non-equivalent behavior gaps and six equivalents. This entry closes the test
+debt without changing shipped KSM behavior. The tests cover CLI opt-out and
+ephemeral-only refusals (19158, 19161, both 19693 mutations, 19290),
+high-water and unreadable-counter telemetry (15767, 15754), sequence and
+history recording including nested forwarding (18960, 18969, both 18970
+mutations, 18987, 19042, 19801), and owner/follower/attach measurement plumbing
+(16135, 16319, 16802).
+
+**Equivalent rows, recorded individually.** 15775 is equivalent because an
+unavailable baseline and unavailable best delta are both `None` by
+construction. 2299, 15780, 15794, 15808, and 16926 change only `flush=True`
+on notices; their text and program decisions are unchanged.
+
+**Evidence boundary.** Candidate 16300 remains counted as killed by the hang,
+while its progress record says `budget_exceeded`; that verdict/progress
+disagreement is filed under Assay B545. It is not changed by this test package.
+
+**Close when.** The registered selftest passes on the final commit, with the
+new tests included, and hand-mutating each of the four behavioral test groups
+causes its owning oracle to fail.
+
+**Not filed here.** The native-R2 supervisor retry observation and the
+`jobs_max` versus `--instances` guidance belong to the runner, not to
+Run-Gate: `--instances` is a `scripts/netcup/runner/run-r2-campaign.sh`
+option and the supervisor lives there. They are recorded as confirmations
+under netcup NC-36 and NC-49.
