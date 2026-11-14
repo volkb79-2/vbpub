@@ -26,6 +26,10 @@ SH
 cat > "$ROOT/bin/codex" <<'SH'
 #!/usr/bin/env bash
 printf 'HOME=%s\nSQLITE=%s\nARGS=%s\n' "$CODEX_HOME" "$CODEX_SQLITE_HOME" "$*" >> "$CODEX_LOG"
+if [[ -n ${FAKE_CODEX_STREAM:-} ]]; then
+  cat -- "$FAKE_CODEX_STREAM"
+  exit 42
+fi
 if [[ ${FAKE_CODEX_402:-0} == 1 ]]; then
   printf '{"error":{"code":"insufficient_balance","details":{"coding_plan_exhausted":true,"reset_at":"2099-11-17T11:44:44Z"}}}\n' >&2
   exit 42
@@ -284,6 +288,34 @@ state = json.load(open(sys.argv[1], encoding="utf-8"))
 expected = int(datetime(2099, 11, 17, 11, 44, 44, tzinfo=timezone.utc).timestamp())
 assert state["volker"]["blocked_until_epoch"] == expected
 assert state["github2"]["blocked_until_epoch"] == 0
+PY
+
+# The real gateway 402 reaches the run stream as a plain-text message on a final error event.
+if PATH="$ROOT/bin:$PATH" HOME="$ROOT/home" CONTROLLER_HOME="$ROOT/controller" CONTROLLER_REPO="$ROOT/repo" \
+  CONTROLLER_OD_STATE="$ROOT/od-402-text.json" CODEX_HOME_DEEPSEEK_VOLKER="$VOLKER_HOME" CODEX_HOME_DEEPSEEK_GITHUB2="$GITHUB2_HOME" \
+  CODEX_SQLITE_HOME="$ROOT/sqlite" CODEX_LOG="$CODEX_LOG" CODEX_ROUTE=deepseek-github2 CODEX_AUTO_CONTINUE=0 \
+  FAKE_CODEX_STREAM="$SCRIPT_DIR/fixtures/usage-limit-insufficient-balance-text.jsonl" \
+  "$CODEX_IMPL_SCRIPT" "$ROOT/worktree" "$ROOT/brief.md" od-402-text > "$ROOT/od-402-text.out" 2>&1; then
+  fail 'fake plain-text 402 Codex run unexpectedly succeeded'
+else rc=$?; [[ $rc == 42 ]] || fail "plain-text 402 child exit was $rc, expected 42"; fi
+contains "$ROOT/od-402-text.out" 'Open Design account github2 blocked until 2099-11-17T11:44:44Z' 'plain-text 402 records the account reset time'
+python3 - "$ROOT/od-402-text.json" <<'PY' || fail 'plain-text 402 did not persist blocked_until_epoch for the run account'
+from datetime import datetime, timezone
+import json, sys
+state = json.load(open(sys.argv[1], encoding="utf-8"))
+expected = int(datetime(2099, 11, 17, 11, 44, 44, tzinfo=timezone.utc).timestamp())
+assert state["github2"]["blocked_until_epoch"] == expected
+assert state["volker"]["blocked_until_epoch"] == 0
+PY
+PATH="$ROOT/bin:$PATH" HOME="$ROOT/home" CONTROLLER_HOME="$ROOT/controller" CONTROLLER_REPO="$ROOT/repo" \
+  CONTROLLER_OD_STATE="$ROOT/od-not-402.json" CODEX_HOME_DEEPSEEK_VOLKER="$VOLKER_HOME" CODEX_HOME_DEEPSEEK_GITHUB2="$GITHUB2_HOME" \
+  CODEX_SQLITE_HOME="$ROOT/sqlite" CODEX_LOG="$CODEX_LOG" CODEX_ROUTE=deepseek-github2 CODEX_AUTO_CONTINUE=0 \
+  FAKE_CODEX_STREAM="$SCRIPT_DIR/fixtures/insufficient-balance-text-not-a-402.jsonl" \
+  "$CODEX_IMPL_SCRIPT" "$ROOT/worktree" "$ROOT/brief.md" od-not-402 > "$ROOT/od-not-402.out" 2>&1
+python3 - "$ROOT/od-not-402.json" <<'PY' || fail 'ordinary text blocked an Open Design account'
+import json, sys
+state = json.load(open(sys.argv[1], encoding="utf-8"))
+assert state["github2"]["blocked_until_epoch"] == 0 and state["volker"]["blocked_until_epoch"] == 0
 PY
 
 if PATH="$ROOT/bin:$PATH" HOME="$ROOT/home" CONTROLLER_HOME="$ROOT/controller" CONTROLLER_REPO="$ROOT/repo" \

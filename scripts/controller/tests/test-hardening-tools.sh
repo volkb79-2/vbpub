@@ -61,6 +61,18 @@ usage_retry_402_epoch=$(CONTROLLER_LIB_SCRIPT="$LIB_SRC" \
   || fail 'shared usage-retry parser could not convert a UTC reset to epoch'
 [[ $usage_retry_402_epoch == "$(date -u -d '2099-11-17T11:44:44Z' +%s)" ]] \
   || fail 'coding-plan reset epoch did not preserve UTC'
+# Real Codex streams carry the gateway 402 as a plain-text message, not as a JSON body.
+usage_retry_402_text_output=$(CONTROLLER_LIB_SCRIPT="$LIB_SRC" \
+  bash -c '. "$CONTROLLER_LIB_SCRIPT"; usage_retry_text "$1"' _ \
+  "$SCRIPT_DIR/fixtures/usage-limit-insufficient-balance-text.jsonl") \
+  || fail 'shared usage-retry parser rejected the plain-text gateway 402 message'
+[[ $usage_retry_402_text_output == '2099-11-17T11:44:44Z' ]] \
+  || fail "plain-text gateway 402 returned unexpected reset: $usage_retry_402_text_output"
+if CONTROLLER_LIB_SCRIPT="$LIB_SRC" \
+  bash -c '. "$CONTROLLER_LIB_SCRIPT"; usage_retry_text "$1"' _ \
+  "$SCRIPT_DIR/fixtures/insufficient-balance-text-not-a-402.jsonl" > /dev/null; then
+  fail 'ordinary text, reconnect retries or non-error events were classified as a gateway 402'
+fi
 python3 - "$OD_ACCOUNTS_SRC" "$ROOT/od-lock-state.json" <<'PY' \
   || fail 'Open Design state updates did not request an exclusive flock'
 import fcntl

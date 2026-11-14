@@ -53,6 +53,25 @@ def error_text(value):
     return str(value or "")
 
 
+gateway_402 = re.compile(
+    r"unexpected status 402 Payment Required: \[code=insufficient_balance\].*?"
+    r"\bresets at (\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z)",
+    re.DOTALL,
+)
+
+
+def gateway_text_reset(event):
+    # Codex renders the gateway 402 as plain text on a final error/turn.failed
+    # event; the "Reconnecting..." retries are deliberately not matched.
+    if not isinstance(event, dict) or event.get("type") not in ("error", "turn.failed"):
+        return None
+    message = event.get("message")
+    if message is None and isinstance(event.get("error"), dict):
+        message = event["error"].get("message")
+    match = gateway_402.match(message) if isinstance(message, str) else None
+    return match.group(1) if match else None
+
+
 def coding_plan_reset(value):
     pending = [value]
     while pending:
@@ -82,7 +101,7 @@ for path in sys.argv[1:]:
                 event = json.loads(line)
             except ValueError:
                 continue
-            reset_at = coding_plan_reset(event)
+            reset_at = gateway_text_reset(event) or coding_plan_reset(event)
             if reset_at is not None:
                 coding_plan_retry = reset_at
             event_type = event.get("type") if isinstance(event, dict) else None

@@ -8,12 +8,20 @@ import json
 import math
 import os
 from pathlib import Path
+import re
 import sys
 import time
 
 
 ACCOUNTS = ("volker", "github2")
 FIELDS = {"last_used_epoch", "blocked_until_epoch", "window_end_epoch"}
+# Codex renders the gateway's 402 as a plain-text message on a final `error` or
+# `turn.failed` event (the `Reconnecting...` retries are deliberately not matched).
+GATEWAY_402 = re.compile(
+    r"unexpected status 402 Payment Required: \[code=insufficient_balance\].*?"
+    r"\bresets at (\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z)",
+    re.DOTALL,
+)
 
 
 class StateError(ValueError):
@@ -163,6 +171,21 @@ def record_start(state, account):
     state[account]["last_used_epoch"] = max(now, latest + 0.000001)
 
 
+def gateway_text_reset(event):
+    if not isinstance(event, dict) or event.get("type") not in ("error", "turn.failed"):
+        return None
+    message = event.get("message")
+    if message is None and isinstance(event.get("error"), dict):
+        message = event["error"].get("message")
+    if not isinstance(message, str):
+        return None
+    match = GATEWAY_402.match(message)
+    if match is None:
+        return None
+    reset_epoch = epoch_from_iso(match.group(1))
+    return (match.group(1), reset_epoch) if reset_epoch is not None else None
+
+
 def coding_plan_reset(value):
     pending = [value]
     while pending:
@@ -191,7 +214,7 @@ def reset_from_files(paths):
                 event = json.loads(line)
             except ValueError:
                 continue
-            reset = coding_plan_reset(event)
+            reset = gateway_text_reset(event) or coding_plan_reset(event)
             if reset:
                 return reset
     return None

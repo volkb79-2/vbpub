@@ -101,6 +101,14 @@ expect_killed od-preference-value-guard \
   env CODEX_IMPL_SCRIPT="$ROOT/mutants/scripts/controller/od-preference-value-guard/codex-impl.sh" bash "$SCRIPT_DIR/test-wrappers.sh"
 expect_killed od-insufficient-balance-detection \
   env CODEX_IMPL_SCRIPT="$ROOT/mutants/scripts/controller/od-insufficient-balance-detection/codex-impl.sh" bash "$SCRIPT_DIR/test-wrappers.sh"
+for gateway_mutant in od-gateway-text-detection od-gateway-text-anchor od-gateway-text-event-type; do
+  expect_killed "$gateway_mutant" \
+    env CODEX_IMPL_SCRIPT="$ROOT/mutants/scripts/controller/$gateway_mutant/codex-impl.sh" bash "$SCRIPT_DIR/test-wrappers.sh"
+done
+for gateway_mutant in usage-retry-gateway-text usage-retry-gateway-anchor usage-retry-gateway-event-type; do
+  expect_killed "$gateway_mutant" \
+    env CONTROLLER_LIB_SCRIPT="$ROOT/mutants/scripts/controller/$gateway_mutant.sh" bash "$SCRIPT_DIR/test-hardening-tools.sh"
+done
 expect_killed od-reject-unknown-state-fields \
   env CODEX_IMPL_SCRIPT="$ROOT/mutants/scripts/controller/od-reject-unknown-state-fields/codex-impl.sh" bash "$SCRIPT_DIR/test-wrappers.sh"
 expect_killed od-numeric-state-fields \

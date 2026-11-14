@@ -166,7 +166,11 @@ The state file defaults to
 an absolute path to move it. It contains account names and numeric
 `last_used_epoch` and `blocked_until_epoch` values, plus an optional
 `window_end_epoch` per account. A 402 `insufficient_balance` response with a
-`reset_at` value records that reset for the account used by the run. Automatic
+`reset_at` value records that reset for the account used by the run. Codex
+prints the real 402 as a final plain-text `error`/`turn.failed` message
+(`unexpected status 402 Payment Required: [code=insufficient_balance] ... resets
+at <UTC time>`), which is recognized too; `Reconnecting...` retries and text
+inside agent or tool output are not. Automatic
 selection skips an account until that time; if both are blocked, the wrapper
 exits 3 and reports the earliest reset. Usage-limit recovery resumes on the
 account in the run's `.route` sidecar. If that account is still blocked, it

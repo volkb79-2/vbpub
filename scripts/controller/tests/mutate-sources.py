@@ -266,6 +266,30 @@ account_helper_mutant(
     'if False:',
 )
 account_helper_mutant(
+    "od-gateway-text-detection",
+    'match = GATEWAY_402.match(message)',
+    'match = None',
+)
+account_helper_mutant(
+    "od-gateway-text-anchor",
+    'match = GATEWAY_402.match(message)',
+    'match = GATEWAY_402.search(message)',
+)
+account_helper_mutant(
+    "od-gateway-text-event-type",
+    'if not isinstance(event, dict) or event.get("type") not in ("error", "turn.failed"):',
+    'if not isinstance(event, dict):',
+)
+mutant("scripts/controller/lib.sh", "usage-retry-gateway-text.sh",
+       'match = gateway_402.match(message) if isinstance(message, str) else None',
+       'match = None')
+mutant("scripts/controller/lib.sh", "usage-retry-gateway-anchor.sh",
+       'match = gateway_402.match(message) if isinstance(message, str) else None',
+       'match = gateway_402.search(message) if isinstance(message, str) else None')
+mutant("scripts/controller/lib.sh", "usage-retry-gateway-event-type.sh",
+       'if not isinstance(event, dict) or event.get("type") not in ("error", "turn.failed"):',
+       'if not isinstance(event, dict):')
+account_helper_mutant(
     "od-exclusive-state-flock",
     'fcntl.flock(stream.fileno(), fcntl.LOCK_EX)',
     'fcntl.flock(stream.fileno(), fcntl.LOCK_SH)',
