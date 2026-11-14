@@ -33,6 +33,56 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 <!-- cmru: pending release notes begin -->
 
+<!-- cmru: pending release notes end -->
+
+<!-- cmru: release history -->
+
+## [7.3.1] - 2026-11-14
+<!-- cmru: generated -->
+<!-- cmru: source-end=012754056303b86a00a9d08f627bc72cf611528a -->
+
+### Added
+- feat(fleetd): scaffold the stdlib campaign planner project (0ac933d68)
+
+### Fixed
+- fix(cmru): close bundle archive cleanup and inventory gaps (d6cd7fb54)
+- fix(cmru): require explicit keeps for all toml outputs (0cfb6fdcc)
+- fix(cmru): identify copy source symlinks (2d887014b)
+- fix(cmru): match archive filters to bundle-relative keeps (f3f95baf8)
+- fix(cmru): handle suffix exclusions during bundle validation (1098d4893)
+- fix(cmru): preserve missing bundle source errors (419bb197e)
+- fix(cmru): enforce bundle output policies (f2b56b127)
+- fix(cmru): align release evidence with Assay retention (64c11504c)
+
+### Changed
+- test+backlog(cmru): pin suffix-named directory symlink skip; KI-167 names the .env/.env.* prefix class (2a7bca868)
+- backlog(cmru): correct KI-162..165 after review (vendor only downloads wheels, filter sites, manifest tag duplication reproduces, version fallback must be composed, default archive format, SOURCE_DATE_EPOCH ordering) (7b5bd0f40)
+- backlog(cmru): file KI-162..165 from the naf bundle-build canary (hard excludes, untagged version, retained staged tree, smaller gaps) (3f4c9fdfc)
+- backlog(cmru): correct KI-161 after review (init also affected, blank-line collapse is value-changing, comment above the next table is lost too) (1f20a18ae)
+- backlog(cmru): file KI-161, versions resolve drops comments in the [versions] region of cmru.toml (c8c014630)
+- Close reviewer coverage gaps (673c6b8e8)
+- Allow verified multi-stage tester base builds (22307b227)
+- cmru: include tester-base KSM source in fixtures (78049dee9)
+- Add CIU KSM preload to ephemeral Run-Gate lanes (fe428ce6e)
+
+### Documentation
+- docs(cmru): close bundle fix round 2 findings (fbc60b923)
+- docs(cmru): document bundle build safety rules (3f4027bea)
+
+### Testing
+- test(cmru): cover invalid manifest inventories (996783bca)
+- test(cmru): cover wheel tree outcomes across variants (6be3d8f0c)
+- test(cmru): fix bundle round two fixtures (d43a84e3f)
+- test(cmru): cover bundle round two review findings (98348e111)
+- test(cmru): pin bundle keep exactness, no-manifest stage validation and non-xztar filtering (a82ef909c)
+- test(cmru): update pyproject exclusion contract (dcbe03e1c)
+- test(cmru): require explicit keep for client pyproject (ccd496cc8)
+- test(cmru): cover resolved exclude paths (522d291fe)
+- test(cmru): cover bundle policy rejection paths (5dcfac4d5)
+- test(cmru): reproduce bundle source symlink escape (b082ac253)
+- test(cmru): reproduce bundle-build defects (74a58f3cf)
+
+<!-- cmru: pending release notes begin -->
 - fix(cmru): retain only Assay evidence present in the project tree (KI-160).
 - fix(cmru): include tester-base's KSM source in generated project fixtures.
 - fix(cmru): align bundle copy, archive, and manifest exclusions; derive dev versions, clean staged trees, and canonicalize manifest tags (KI-162..165).
@@ -42,10 +92,7 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 ### Changed
 - Bundle builds no longer implicitly keep `pyproject.toml`; add `keep = ["pyproject.toml"]` under `[archive]` when that exact bundle-relative file is needed.
 - Hash both tester-base build inputs when checking the local base image identity.
-
 <!-- cmru: pending release notes end -->
-
-<!-- cmru: release history -->
 
 ## [7.3.0] - 2026-11-12
 <!-- cmru: generated -->
