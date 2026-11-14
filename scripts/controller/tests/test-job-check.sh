@@ -101,6 +101,25 @@ CONTROLLER_HOME=$HOME_ROOT CONTROLLER_REPO=$REPO CONTROLLER_BASE_REF=origin/main
     fail 'deepseek route should require its own exact trailer'
   }
 contains "$ROOT/route-deepseek.out" 'trailers OK (all commits incl. merges: deepseek)' 'deepseek route remains available'
+git -C "$REPO" switch -qc sol-task "$BASE"
+printf 'sol review fix\n' > "$REPO/sol.txt"
+git -C "$REPO" add sol.txt
+git -C "$REPO" commit -qm 'Sol route commit' -m 'Co-Authored-By: Codex gpt-6-sol <noreply@openai.com>'
+write_gate_log
+CONTROLLER_HOME=$HOME_ROOT CONTROLLER_REPO=$REPO CONTROLLER_BASE_REF=origin/main \
+  "$SRC" healthy "$REPO" sol > "$ROOT/route-sol.out" 2>&1 || {
+    cat "$ROOT/route-sol.out" >&2
+    fail 'sol route should accept its own exact trailer'
+  }
+contains "$ROOT/route-sol.out" 'trailers OK (all commits incl. merges: sol)' 'sol route is available'
+CONTROLLER_HOME=$HOME_ROOT CONTROLLER_REPO=$REPO CONTROLLER_BASE_REF=origin/main \
+  "$SRC" healthy "$REPO" any > "$ROOT/route-sol-any.out" 2>&1 || {
+    cat "$ROOT/route-sol-any.out" >&2
+    fail 'route any should accept the sol trailer'
+  }
+contains "$ROOT/route-sol-any.out" 'trailers OK (all commits incl. merges: any)' 'any route accepts the sol trailer'
+if CONTROLLER_HOME=$HOME_ROOT CONTROLLER_REPO=$REPO CONTROLLER_BASE_REF=origin/main \
+  "$SRC" healthy "$REPO" luna > "$ROOT/route-sol-as-luna.out" 2>&1; then fail 'luna route accepted a sol trailer'; fi
 git -C "$REPO" switch -q task
 write_gate_log
 printf "run-gate.commit=%s\nPASS ctl-status\nrun-gate: lane 'suite' verdict PASS; exit_code 0\n" \

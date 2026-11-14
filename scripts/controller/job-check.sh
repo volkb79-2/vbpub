@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 # Mechanical run/worktree evidence check. Read-only; exits nonzero on red flags.
-# Usage: job-check.sh <run-name> <worktree-path> <luna|deepseek|opencode|any|none> [absolute-report-path ...]
+# Usage: job-check.sh <run-name> <worktree-path> <luna|sol|deepseek|opencode|any|none> [absolute-report-path ...]
 set -uo pipefail
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 # shellcheck source=lib.sh
 . "$SCRIPT_DIR/lib.sh"
 controller_init
-[[ $# -ge 3 ]] || { echo "usage: $0 <run-name> <worktree-path> <luna|deepseek|opencode|any|none> [absolute-report-path ...]" >&2; exit 2; }
+[[ $# -ge 3 ]] || { echo "usage: $0 <run-name> <worktree-path> <luna|sol|deepseek|opencode|any|none> [absolute-report-path ...]" >&2; exit 2; }
 run=$1 worktree=$2 route=$3; shift 3
 [[ $run =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ && $run != *..* ]] || { echo "invalid run name" >&2; exit 2; }
 red=0
@@ -15,13 +15,17 @@ case $route in
     trailer_mode=single
     trailer='Co-Authored-By: Codex gpt-6-luna <noreply@openai.com>'
     ;;
+  sol)
+    trailer_mode=single
+    trailer='Co-Authored-By: Codex gpt-6-sol <noreply@openai.com>'
+    ;;
   deepseek|opencode)
     trailer_mode=single
     trailer='Co-Authored-By: Codex deepseek-v4.1-flash <noreply@openai.com>'
     ;;
   any)
     trailer_mode=allowed_set
-    trailer_pattern='Co-Authored-By: (Codex (gpt-6-luna|deepseek-v4.1-flash)|Claude [A-Za-z0-9. ]+) <noreply@(openai|anthropic)\.com>'
+    trailer_pattern='Co-Authored-By: (Codex (gpt-6-luna|gpt-6-sol|deepseek-v4.1-flash)|Claude [A-Za-z0-9. ]+) <noreply@(openai|anthropic)\.com>'
     ;;
   none)
     trailer_mode=none
