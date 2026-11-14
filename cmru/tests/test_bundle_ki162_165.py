@@ -1079,3 +1079,19 @@ def test_copy_files_are_flattened_so_their_keep_path_is_the_basename(tmp_path, c
     archive = bundle.run_bundle(kept, manifest_project="demo", manifest_tag="demo-v1.2.3")
     manifest, names = _archive_contents(archive)
     assert "app/cacert.pem" in names and "cacert.pem" in manifest["files"]
+
+
+def test_suffix_named_symlink_to_a_directory_is_skipped_not_dereferenced(tmp_path, capsys):
+    (tmp_path / "private").mkdir()
+    (tmp_path / "private/credentials.txt").write_text("private\n", encoding="utf-8")
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src/app.py").write_text("print('ok')\n", encoding="utf-8")
+    (tmp_path / "src/certs.pem").symlink_to(tmp_path / "private", target_is_directory=True)
+    config = _write_bundle(tmp_path)
+
+    archive = bundle.run_bundle(config, manifest_project="demo", manifest_tag="demo-v1.2.3")
+
+    manifest, names = _archive_contents(archive)
+    assert not [name for name in names if "credentials.txt" in name or "certs.pem" in name]
+    assert not [path for path in manifest["files"] if "credentials.txt" in path]
+    assert "src/certs.pem" in capsys.readouterr().err
