@@ -1383,3 +1383,108 @@ def test_large_golden_plan_runs_stall_and_loss_requeue_scenario(tmp_path):
     assert lost_requeues and all(finished not in job["candidate_ids"] for job in lost_requeues)
     assert final_state["hosts"]["host-b"]["status"] == "LOST"
 
+
+def test_stall_and_loss_constants_are_the_operator_decisions():
+    # The scenario tests advance by these module constants, so pin the literals here.
+    assert STALL_FLOOR_SECONDS == 15 * 60
+    assert LOST_AFTER_SECONDS == 30 * 60
+
+
+def test_stall_floor_holds_when_observed_candidates_are_fast(tmp_path):
+    plan = _plan(12)
+    clock = FakeClock()
+    transport = FakeTransport(clock=clock)
+    manager = CampaignManager(tmp_path, transport, clock=clock)
+    manager.run("campaign", plan)
+    job = _first_running(_state(tmp_path), "host-a")
+    transport.add_progress("host-a", job["name"], job["candidate_ids"][0], "killed", elapsed_seconds=1)
+    manager.tick("campaign")
+    clock.advance(899)
+    manager.tick("campaign")
+    assert _state(tmp_path)["jobs"][job["name"]]["status"] == "RUNNING"
+    clock.advance(1)
+    manager.tick("campaign")
+    stalled = _state(tmp_path)["jobs"][job["name"]]
+    assert stalled["status"] == "STALLED"
+    assert stalled["stall_after_seconds"] == 900
+
+
+def test_a_finished_candidate_restarts_the_stall_clock(tmp_path):
+    plan = _plan(12)
+    clock = FakeClock()
+    transport = FakeTransport(clock=clock)
+    manager = CampaignManager(tmp_path, transport, clock=clock)
+    manager.run("campaign", plan)
+    job = _first_running(_state(tmp_path), "host-a")
+    clock.advance(600)
+    transport.add_progress("host-a", job["name"], job["candidate_ids"][0], "killed", elapsed_seconds=1)
+    manager.tick("campaign")
+    clock.advance(600)  # 1200 s after the start, but only 600 s after the last finished candidate
+    manager.tick("campaign")
+    assert _state(tmp_path)["jobs"][job["name"]]["status"] == "RUNNING"
+    clock.advance(300)
+    manager.tick("campaign")
+    assert _state(tmp_path)["jobs"][job["name"]]["status"] == "STALLED"
+
+
+def test_stall_threshold_is_three_times_the_p95_not_the_median_or_the_maximum(tmp_path):
+    plan = _plan(230)
+    clock = FakeClock()
+    transport = FakeTransport(clock=clock)
+    manager = CampaignManager(tmp_path, transport, clock=clock)
+    manager.run("campaign", plan)
+    elapsed = [10.0] * 22 + [400.0, 1000.0]  # 24 observations: nearest-rank p95 is the 23rd = 400
+    seen = 0
+    for _ in range(3):
+        job = _first_running(_state(tmp_path), "host-a")
+        for candidate_id in job["candidate_ids"]:
+            transport.add_progress("host-a", job["name"], candidate_id, "killed", elapsed_seconds=elapsed[seen])
+            seen += 1
+        transport.finish("host-a", job["name"])
+        manager.tick("campaign")
+    assert seen == 24
+    running = _first_running(_state(tmp_path), "host-a")
+    clock.advance(1199)
+    manager.tick("campaign")
+    assert _state(tmp_path)["jobs"][running["name"]]["status"] == "RUNNING"
+    clock.advance(1)
+    manager.tick("campaign")
+    assert _state(tmp_path)["jobs"][running["name"]]["stall_after_seconds"] == 1200
+
+
+@pytest.mark.parametrize("larger", ["host-a", "host-c"])
+def test_lost_host_work_goes_to_the_largest_alone_capacity_of_three_hosts(tmp_path, larger):
+    plan = _plan(40)
+    host_a = next(host for host in plan["hosts"] if host["id"] == "host-a")
+    host_c = copy.deepcopy(host_a)
+    host_c["id"] = "host-c"
+    host_c["assigned"] = host_a["assigned"][:8]
+    host_c["batches"] = [dict(host_a["batches"][0], batch=0)]
+    host_a["assigned"] = host_a["assigned"][8:]
+    host_a["batches"] = [dict(host_a["batches"][1], batch=0)]
+    plan["hosts"].append(host_c)
+    host_a["cap_alone_bytes"] = 9 * 1024**3 if larger == "host-a" else 8 * 1024**3
+    host_c["cap_alone_bytes"] = 9 * 1024**3 if larger == "host-c" else 8 * 1024**3
+    clock = FakeClock()
+    transport = FakeTransport(clock=clock)
+    manager = CampaignManager(tmp_path, transport, clock=clock)
+    manager.run("campaign", plan)
+    transport.set_unreachable("host-b")
+    clock.advance(LOST_AFTER_SECONDS + 1)
+    manager.tick("campaign")
+    requeued = [job for job in _state(tmp_path)["jobs"].values() if job.get("requeue_reason") == "host-lost"]
+    assert requeued and {job["host"] for job in requeued} == {larger}
+
+
+def test_state_write_failure_keeps_the_previous_state_and_leaves_no_temporary_file(tmp_path, monkeypatch):
+    path = tmp_path / "state.json"
+    _atomic_write(path, b"old")
+
+    def refuse(*_args, **_kwargs):
+        raise OSError("rename refused")
+
+    monkeypatch.setattr("fleetd.campaign.os.replace", refuse)
+    with pytest.raises(OSError, match="rename refused"):
+        _atomic_write(path, b"new")
+    assert path.read_bytes() == b"old"
+    assert [item.name for item in tmp_path.iterdir()] == ["state.json"]
