@@ -529,11 +529,20 @@ class CampaignManager:
                     job["status"] = "SUPERSEDED"
                     job["stop_pending"] = False
                     continue
-                if job["status"] in {"STARTING", "RUNNING", "UNKNOWN", "LOST"}:
+                if job["status"] == "STARTING":
+                    # The controller stopped between writing STARTING and launching
+                    # the job (for example Ctrl-C during the upload): nothing ran,
+                    # so retry the start with fresh clocks instead of failing it.
+                    job["status"] = "QUEUED"
+                    job["started_mono"] = None
+                    job["last_progress_mono"] = None
+                elif job["status"] in {"RUNNING", "UNKNOWN", "LOST"}:
                     job["status"] = "EXIT"
                     job["missing_job"] = True
                     job["ended_mono"] = now
-                    if not job.get("finished_ids"):
+                    # A job that never started (a QUEUED batch of a lost host) is not
+                    # a failure: its work is re-queued like any exited batch.
+                    if not job.get("finished_ids") and job["started_mono"] is not None:
                         job["status"] = "FAILED"
                         job["failure_reason"] = "missing_job (exit code unavailable)"
                 continue
@@ -912,7 +921,7 @@ class CampaignManager:
             if job["status"] != "EXIT" or job["requeued"]:
                 continue
             job["requeued"] = True
-            if not job.get("finished_ids"):
+            if not job.get("finished_ids") and job.get("started_mono") is not None:
                 job["status"] = "FAILED"
                 if job.get("missing_job"):
                     job["failure_reason"] = "missing_job (exit code unavailable)"

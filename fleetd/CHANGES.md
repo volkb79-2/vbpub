@@ -102,3 +102,7 @@ All notable changes to this project are recorded here.
 - Record progress byte bounds in each runner job and combine batch candidate IDs with those bounds; use the batch verdict for resumed outcomes so stale append-only records cannot count as new progress.
 - Keep Assay verdict entries marked process-tree `not-started` candidates as missing with a distinct reason, and include failed batches and reasons in collection.
 - Continue supervising other hosts when a host probe or operation returns a transport or contract error; report the affected host as `ERROR`.
+- Review of fleetd-fix4: a batch that never started (a QUEUED batch of a lost
+  host, or a start interrupted while STARTING) is no longer failed as
+  zero-progress when its host returns or the job is absent; it is re-queued or
+  retried with fresh clocks, so a single-host campaign keeps its unstarted work.

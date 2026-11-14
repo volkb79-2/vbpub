@@ -873,7 +873,7 @@ def test_requeue_exited_preserves_missing_reason_and_replans_pending_progress(tm
     manager = CampaignManager(tmp_path, FakeTransport())
     missing = {
         "name": "missing-job", "host": "host-a", "status": "EXIT", "requeued": False,
-        "missing_job": True, "finished_ids": [], "candidate_ids": [],
+        "missing_job": True, "finished_ids": [], "candidate_ids": [], "started_mono": 1.0,
     }
     missing_state = {"jobs": {"missing-job": missing}, "deferred_requeues": []}
     manager._requeue_exited(missing_state)
@@ -2871,3 +2871,42 @@ def test_real_probe_treats_a_symlinked_or_non_git_checkout_as_not_ready(tmp_path
     assert probe.returncode == 0, probe.stderr
     rows = {row["name"]: row["checkout_ready"] for row in json.loads(probe.stdout)["jobs"]}
     assert rows == {plain.name: False, linked.name: False, spec.name: True}
+
+
+def test_a_lost_hosts_never_started_batch_runs_when_the_only_host_returns(tmp_path):
+    plan = _plan(40)
+    plan["hosts"] = [host for host in plan["hosts"] if host["id"] == "host-a"]
+    clock = FakeClock()
+    transport = FakeTransport(clock=clock)
+    manager = CampaignManager(tmp_path, transport, clock=clock)
+    manager.run("campaign", plan)
+    assert sorted(job["status"] for job in _state(tmp_path)["jobs"].values()) == ["QUEUED", "RUNNING"]
+    _lose(manager, transport, clock, "host-a")
+    assert sorted(job["status"] for job in _state(tmp_path)["jobs"].values()) == ["LOST", "LOST"]
+    transport.set_unreachable("host-a", False)
+    manager.tick("campaign")
+    state = _state(tmp_path)
+    assert [job["name"] for job in state["jobs"].values() if job["status"] == "FAILED"] == []
+    never_started = [job for job in state["jobs"].values() if job["started_mono"] is None and job["status"] == "EXIT"]
+    assert never_started
+    assert any(job.get("requeue_reason") == "job-exit" for job in state["jobs"].values())
+
+
+def test_a_start_interrupted_before_the_job_existed_is_retried_not_failed(tmp_path):
+    plan = _plan(4)
+    clock = FakeClock()
+    transport = FakeTransport(clock=clock)
+    manager = CampaignManager(tmp_path, transport, clock=clock)
+    manager.run("campaign", plan)
+    path = tmp_path / "campaign.json"
+    state = json.loads(path.read_text(encoding="utf-8"))
+    victim = next(job for job in state["jobs"].values() if job["status"] == "RUNNING")
+    del transport.host(victim["host"]).jobs[victim["name"]]  # the controller died before the runner launched it
+    victim["status"] = "STARTING"
+    path.write_text(json.dumps(state), encoding="utf-8")
+    manager.tick("campaign")
+    after = _state(tmp_path)["jobs"][victim["name"]]
+    assert after["status"] == "RUNNING"
+    assert after["started_mono"] is not None and after["last_progress_mono"] is not None
+    assert not any(job["status"] == "FAILED" for job in _state(tmp_path)["jobs"].values())
+
