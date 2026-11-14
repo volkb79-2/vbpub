@@ -128,6 +128,7 @@ state = json.load(open(path, encoding="utf-8"))
 state["threads"].pop("auto-1-session", None)
 json.dump(state, open(path, "w", encoding="utf-8"))
 PY
+rm -f "$CONTROLLER_ROOT/runs/auto-1.thread"
 found_account=$(CONTROLLER_RUNS_DIR="$CONTROLLER_ROOT/runs" CONTROLLER_OD_STATE="$STATE" \
   python3 "$SCRIPT_DIR/../opendesign-accounts.py" find-thread-account auto-1-session "$CONTROLLER_ROOT/runs") \
   || fail 'pi session id in the run stream and route sidecar was not found'
