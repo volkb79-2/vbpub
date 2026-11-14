@@ -322,7 +322,7 @@ if PATH="$ROOT/bin:$PATH" HOME="$ROOT/home" CONTROLLER_HOME="$ROOT/controller" C
   "$CODEX_IMPL_SCRIPT" "$ROOT/worktree" "$ROOT/brief.md" od-402-text > "$ROOT/od-402-text.out" 2>&1; then
   fail 'fake plain-text 402 Codex run unexpectedly succeeded'
 else rc=$?; [[ $rc == 42 ]] || fail "plain-text 402 child exit was $rc, expected 42"; fi
-contains "$ROOT/od-402-text.out" 'Open Design account github2 blocked until 2099-11-17T11:44:44Z' 'plain-text 402 records the account reset time'
+contains "$ROOT/od-402-text.out" 'Open Design account github2 reset time observed; blocked until 2099-11-17T11:44:44Z' 'plain-text 402 records the account reset time'
 python3 - "$ROOT/od-402-text.json" <<'PY' || fail 'plain-text 402 did not persist blocked_until_epoch for the run account'
 from datetime import datetime, timezone
 import json, sys
