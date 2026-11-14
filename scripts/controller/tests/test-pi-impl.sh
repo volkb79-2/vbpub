@@ -296,7 +296,7 @@ if ! PATH="$ROOT/bin:$PATH" HOME="$UNEXPORTED_HOME" PI_ROUTE=deepseek-pi-github2
   cat "$ROOT/unexported-env.launch.log" >&2
   fail 'pi wrapper did not export a key loaded from .env.ai'
 fi
-tail -n 1 "$PI_ENV_LOG" > "$ROOT/unexported-env.names"
+grep 'VOLKER_PRESENT=' "$PI_ENV_LOG" | tail -n 1 > "$ROOT/unexported-env.names"
 contains "$ROOT/unexported-env.names" 'VOLKER_PRESENT= GITHUB2_PRESENT=yes' 'wrapper exports only the selected key name from sourced shell variables'
 if ! PATH="$ROOT/bin:$PATH" HOME="$UNEXPORTED_HOME" PI_ROUTE=deepseek-pi-volker \
   FAKE_PI_STREAM="$SCRIPT_DIR/fixtures/pi-success.jsonl" FAKE_PI_SESSION_ID=unexported-volker-session \
@@ -305,7 +305,7 @@ if ! PATH="$ROOT/bin:$PATH" HOME="$UNEXPORTED_HOME" PI_ROUTE=deepseek-pi-volker 
   cat "$ROOT/unexported-volker-env.launch.log" >&2
   fail 'pi wrapper did not export the Volker key loaded from .env.ai'
 fi
-tail -n 1 "$PI_ENV_LOG" > "$ROOT/unexported-volker-env.names"
+grep 'VOLKER_PRESENT=' "$PI_ENV_LOG" | tail -n 1 > "$ROOT/unexported-volker-env.names"
 contains "$ROOT/unexported-volker-env.names" 'VOLKER_PRESENT=yes GITHUB2_PRESENT=' 'wrapper exports the selected Volker key name'
 
 if PATH="$ROOT/bin:$PATH" HOME="$HOME_ROOT" PI_ROUTE=deepseek-pi-volker \
