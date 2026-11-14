@@ -285,6 +285,12 @@ PY
         volker-key-export) selected_route=deepseek-pi-volker; expected_keys='VOLKER_PRESENT=yes GITHUB2_PRESENT=' ;;
         unselected-key-unset) selected_route=deepseek-pi-github2; expected_keys='VOLKER_PRESENT= GITHUB2_PRESENT=yes' ;;
       esac
+      if [[ $PI_TEST_FOCUS != unselected-key-unset ]]; then
+        cat > "$HOME_ROOT/.env.ai" <<'ENV'
+OPENDESIGN_API_KEY_VOLKER=test-key
+OPENDESIGN_API_KEY_GITHUB2=test-key
+ENV
+      fi
       wait_launch focused-keys "$selected_route" pi-success /dev/null
       grep 'VOLKER_PRESENT=' "$PI_ENV_LOG" | tail -n 1 > "$ROOT/focused-key-names"
       contains "$ROOT/focused-key-names" "$expected_keys" 'Pi receives only the selected API-key variable'
