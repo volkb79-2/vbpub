@@ -472,7 +472,7 @@ if PATH="$ROOT/bin:$PATH" HOME="$ROOT/home" CONTROLLER_HOME="$ROOT/controller" C
   "$CODEX_IMPL_SCRIPT" "$ROOT/worktree" "$ROOT/brief.md" od-bookkeeping-failure > "$ROOT/od-bookkeeping-failure.out" 2>&1; then
   :
 else rc=$?; fail "bookkeeping failure changed a successful Codex exit to $rc"; fi
-contains "$ROOT/od-bookkeeping-failure.out" 'block-run bookkeeping failed; preserving Codex exit 0' \
+contains "$ROOT/od-bookkeeping-failure.out" 'block-run bookkeeping failed for run od-bookkeeping-failure' \
   'block-run bookkeeping errors are logged without replacing the Codex status'
 contains "$ROOT/controller/runs/od-bookkeeping-failure.done" 'EXIT=0' \
   'successful Codex status remains in the done marker after bookkeeping failure'
