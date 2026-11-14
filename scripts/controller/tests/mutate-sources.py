@@ -312,8 +312,8 @@ account_helper_mutant(
 )
 account_helper_mutant(
     "od-gateway-text-anchor",
-    'match = GATEWAY_402.match(message)',
-    'match = GATEWAY_402.search(message)',
+    'GATEWAY_402_PREFIX.match(message) is None',
+    'GATEWAY_402_PREFIX.search(message) is None',
 )
 account_helper_mutant(
     "od-gateway-text-event-type",
