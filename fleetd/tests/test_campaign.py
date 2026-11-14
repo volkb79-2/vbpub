@@ -2422,3 +2422,135 @@ def test_real_probe_reads_progress_through_a_symlinked_checkouts_directory(tmp_p
     row = json.loads(probe.stdout)["jobs"][0]
     assert row["progress_path"] is None
     assert [record["candidate_id"] for record in row["records"]] == list(spec.sorted_candidate_ids)
+
+
+def test_a_long_refused_start_does_not_leave_a_stale_stall_deadline_behind(tmp_path):
+    plan = _plan(12)
+    clock = FakeClock()
+    transport = FakeTransport(clock=clock)
+    for host in ("host-a", "host-b"):
+        transport.host(host).missing_checkouts.add(EXECUTION["commit"])
+    manager = CampaignManager(tmp_path, transport, clock=clock)
+    manager.run("campaign", plan)
+    for _ in range(3):
+        clock.advance(600)  # 30 minutes of refused starts, longer than the stall floor
+        manager.tick("campaign")
+    state = _state(tmp_path)
+    assert all(job["started_mono"] is None and job["last_progress_mono"] is None for job in state["jobs"].values())
+    assert len(state["warnings"]) == len(set(state["warnings"]))
+
+    for host in ("host-a", "host-b"):
+        transport.host(host).missing_checkouts.clear()
+    manager.tick("campaign")
+    started = {name for name, job in _state(tmp_path)["jobs"].items() if job["status"] == "RUNNING"}
+    assert started
+    manager.tick("campaign")
+    state = _state(tmp_path)
+    assert {name for name, job in state["jobs"].items() if job["status"] == "RUNNING"} == started
+    assert sum(host.stops for host in transport.hosts.values()) == 0
+
+
+class _CompetingTransport(FakeTransport):
+    """A fake whose host calls try every campaign command from a second manager."""
+
+    def __init__(self, rival: CampaignManager | None = None, plan: dict | None = None, **kwargs):
+        super().__init__(**kwargs)
+        self.rival = rival
+        self.plan = plan
+        self.refusals: list[str] = []
+
+    def run(self, host_alias, command, timeout=None):
+        if self.rival is not None:
+            rival, self.rival = self.rival, None  # one attempt per host call, never re-entrant
+            for name, attempt in (
+                ("run", lambda: rival.run("campaign", self.plan)),
+                ("status", lambda: rival.status("campaign")),
+                ("tick", lambda: rival.tick("campaign")),
+                ("collect", lambda: rival.collect("campaign")),
+            ):
+                try:
+                    attempt()
+                except ContractError as exc:
+                    assert "is busy" in str(exc)
+                    self.refusals.append(name)
+            self.rival = rival
+        return super().run(host_alias, command, timeout)
+
+
+@pytest.mark.parametrize("command", ["run", "status", "tick", "collect"])
+def test_a_second_manager_is_refused_for_the_whole_duration_of_every_command(tmp_path, command):
+    plan = _plan(4)
+    clock = FakeClock()
+    seed = FakeTransport(clock=clock)
+    CampaignManager(tmp_path, seed, clock=clock).run("campaign", plan)
+    transport = _CompetingTransport(clock=clock)
+    transport.hosts = seed.hosts
+    rival = CampaignManager(tmp_path, transport, clock=clock)
+    transport.rival, transport.plan = rival, plan
+    holder = CampaignManager(tmp_path, transport, clock=clock)
+    {
+        "run": lambda: holder.run("campaign", plan),
+        "status": lambda: holder.status("campaign"),
+        "tick": lambda: holder.tick("campaign"),
+        "collect": lambda: holder.collect("campaign"),
+    }[command]()
+    assert transport.refusals, "the holder never reached a host call"
+    assert set(transport.refusals) == {"run", "status", "tick", "collect"}
+    assert len(transport.refusals) % 4 == 0
+
+
+def test_a_killed_lock_holder_never_wedges_the_campaign(tmp_path):
+    plan = _plan(4)
+    clock = FakeClock()
+    transport = FakeTransport(clock=clock)
+    manager = CampaignManager(tmp_path, transport, clock=clock)
+    manager.run("campaign", plan)
+    source = Path(__file__).resolve().parents[1] / "src"
+    holder = subprocess.Popen(
+        [
+            "python3", "-c",
+            "import fcntl, os, sys, time\n"
+            "fd = os.open(sys.argv[1], os.O_RDWR | os.O_CREAT, 0o600)\n"
+            "fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)\n"
+            "print('held', flush=True)\n"
+            "time.sleep(60)\n",
+            str(tmp_path / "campaign.lock"),
+        ],
+        stdout=subprocess.PIPE,
+        text=True,
+        env={**os.environ, "PYTHONPATH": str(source)},
+    )
+    try:
+        assert holder.stdout.readline().strip() == "held"
+        with pytest.raises(ContractError, match="is busy"):
+            manager.tick("campaign")
+    finally:
+        holder.kill()
+        holder.wait(timeout=10)
+    assert manager.tick("campaign")["campaign"] == "campaign"
+    assert (tmp_path / "campaign.lock").exists()
+
+
+def test_the_lock_is_released_when_a_command_fails(tmp_path):
+    manager = CampaignManager(tmp_path, FakeTransport())
+    with pytest.raises(ContractError, match="does not exist"):
+        manager.tick("campaign")
+    with pytest.raises(ContractError, match="does not exist"):
+        manager.tick("campaign")
+
+
+def test_real_probe_treats_a_symlinked_or_non_git_checkout_as_not_ready(tmp_path):
+    spec = _spec_for_project("ciu")
+    home, environment = _real_runner_home(tmp_path, spec)
+    plain = replace(spec, commit="d" * 40, batch=1)
+    (home / "checkouts" / plain.commit / "ciu").mkdir(parents=True)  # a directory, but not a git checkout
+    linked = replace(spec, commit="e" * 40, batch=2)
+    (home / "checkouts" / linked.commit).symlink_to(home / "checkouts" / spec.commit)  # the supervisor refuses links
+
+    probe = subprocess.run(
+        ["bash", "-c", probe_script({plain.name: plain, linked.name: linked, spec.name: spec})],
+        cwd=home, env=environment, check=False, capture_output=True, text=True, timeout=10,
+    )
+    assert probe.returncode == 0, probe.stderr
+    rows = {row["name"]: row["checkout_ready"] for row in json.loads(probe.stdout)["jobs"]}
+    assert rows == {plain.name: False, linked.name: False, spec.name: True}
