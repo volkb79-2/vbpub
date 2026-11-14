@@ -28,7 +28,6 @@
 | FD-022 | Dispatch does not re-check memory/IO PSI before starting the next batch | P2 | OPEN | 2026-11-14 |
 | FD-023 | The hx wrapper path is derived from the source checkout and fails from an installed wheel | P3 | OPEN | 2026-11-14 |
 | FD-024 | Deferred re-queue de-duplication is not pinned for three or more hosts | P3 | DONE | 2026-11-14 |
-| FD-027 | A completed selected candidate set starts an unnecessary retry baseline | P2 | OPEN | 2026-11-14 |
 
 ## FD-001 Lite campaign lifecycle
 
@@ -436,28 +435,3 @@ implemented the filter, but the suite did not pin this cross-host case.
 to assert a deferred candidate already running on a third host is not enqueued
 again. Removing the in-flight filter is killed by that test (commit
 `bee29cf0c`).
-
-## FD-027 A completed selected candidate set starts an unnecessary retry baseline
-
-**State:** OPEN. **Priority:** P2. **Filed:** 2026-11-14 from the PWMCP R9 R2 campaign.
-
-When a campaign runs a selected candidate subset, the last Assay attempt can exit
-4 after completing every selected candidate. The supervisor must check the
-selected set's remaining `pending_total` before starting another attempt. In the
-PWMCP R9 campaign, the first attempt advanced `completed_candidates` from 0 to
-44, then a second attempt started only to spend about eight minutes on a baseline
-with no candidates left. That baseline has no useful campaign work and delays
-the final result.
-
-This is not covered by fix4's FD-016 change: that fix makes zero-progress EXIT,
-missing-job, and stalled batches terminal, while this attempt made progress and
-finished its complete selected set. FD-010's baseline reuse is also separate:
-reuse can reduce the cost of a legitimate resumed attempt, but it does not stop
-an attempt when `pending_total` is already zero. Selected-subset exhaustion must
-remain a partial R2 result; early termination must not relabel it as whole-target
-completion.
-
-**Close when.** A deterministic supervisor test supplies an exit-4 attempt that
-completed every selected candidate and reports `pending_total = 0`, then proves
-no follow-up attempt or baseline is started. A control case with pending work
-still resumes, and the completed result retains its partial-campaign status.

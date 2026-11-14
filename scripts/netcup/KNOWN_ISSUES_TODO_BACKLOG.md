@@ -646,6 +646,13 @@ candidate completion was possible. The decision must therefore include a full te
 when both the current attempt's judged-candidate delta and the resumable pending count are zero, regardless
 of the stored outcome label.
 
+**Confirmed again 2026-11-14 (selected subset).** The PWMCP R9 campaign ran an `--only-candidates` set of 44
+candidates. Attempt 1 ended exit 4 with `completed_candidates` 0->44, so the stall counter saw progress and the
+supervisor launched attempt 2, which spent about eight minutes on a baseline with nothing left to judge. The
+pre-launch check must therefore compare the pending count of the SELECTED set (zero here) before starting any
+further attempt, not only the judged-candidate delta after a wasted one. The result stays a partial campaign,
+not a whole-target completion.
+
 ## NC-37 — a T3 campaign has no explicit comparison base or pre-baseline source-diff check
 
 **Priority:** should-fix. Filed 2026-11-11. Source: host-campaign controller session record 2026-11-11; related to Run-Gate RG-26 and RG-263.
