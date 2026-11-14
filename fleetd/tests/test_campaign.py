@@ -1935,6 +1935,18 @@ def test_state_write_failure_keeps_the_previous_state_and_leaves_no_temporary_fi
 def test_real_run_job_starts_non_root_project_and_recovers_digest_from_ids_file(tmp_path):
     spec = _spec_for_project("ciu")
     home, environment = _real_runner_home(tmp_path, spec)
+    progress_file = home / "checkouts" / spec.commit / "ciu" / ".assay" / "progress-contract-assay.jsonl"
+    progress_file.parent.mkdir(parents=True, exist_ok=True)
+    stale_progress = (
+        json.dumps({
+            "candidate_id": spec.sorted_candidate_ids[0],
+            "elapsed_seconds": 99.0,
+            "emitted_at": "2029-01-01T00:00:00Z",
+            "event": "candidate",
+            "outcome_bucket": "survived",
+        }, sort_keys=True, separators=(",", ":")) + "\n"
+    ).encode("utf-8")
+    progress_file.write_bytes(stale_progress)
 
     started = _real_start(home, environment, spec)
     assert started.returncode == 0, started.stderr
@@ -1959,11 +1971,11 @@ def test_real_run_job_starts_non_root_project_and_recovers_digest_from_ids_file(
     assert probe.returncode == 0, probe.stderr
     row = json.loads(probe.stdout)["jobs"][0]
     assert row["list_digest"] == spec.list_digest
-    progress_file = home / "checkouts" / spec.commit / "ciu" / ".assay" / "progress-contract-assay.jsonl"
-    assert row["progress_offset"] == 0, row
+    assert row["progress_offset"] == len(stale_progress), row
     assert row["progress_end_offset"] == progress_file.stat().st_size, row
     assert row["progress_count"] == 1
     assert len(row["records"]) == 1
+    assert row["records"][0]["outcome_bucket"] == "killed"
 
     stopped = subprocess.run(
         ["bash", "-c", stop_script(spec.name)],
