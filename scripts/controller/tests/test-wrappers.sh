@@ -477,22 +477,23 @@ contains "$ROOT/od-bookkeeping-failure.out" 'block-run bookkeeping failed for ru
 contains "$ROOT/controller/runs/od-bookkeeping-failure.done" 'EXIT=0' \
   'successful Codex status remains in the done marker after bookkeeping failure'
 
-PARALLEL_DIR=$ROOT/parallel-codex-logs
-mkdir -p "$PARALLEL_DIR"
-parallel_pids=()
-for index in {1..20}; do
-  run="parallel-start-$index"
-  PATH="$ROOT/bin:$PATH" HOME="$ROOT/home" CONTROLLER_HOME="$ROOT/controller" CONTROLLER_REPO="$ROOT/repo" \
-    CONTROLLER_OD_STATE="$ROOT/parallel-state.json" CODEX_HOME_DEEPSEEK_VOLKER="$VOLKER_HOME" CODEX_HOME_DEEPSEEK_GITHUB2="$GITHUB2_HOME" \
-    CODEX_SQLITE_HOME="$ROOT/sqlite" CODEX_LOG="$PARALLEL_DIR/$index.log" CODEX_ROUTE=deepseek CODEX_AUTO_CONTINUE=0 \
-    OPENDESIGN_API_KEY_VOLKER=test-key OPENDESIGN_API_KEY_GITHUB2=test-key \
-    "$CODEX_IMPL_SCRIPT" "$ROOT/worktree" "$ROOT/brief.md" "$run" > "$PARALLEL_DIR/$index.out" 2>&1 &
-  parallel_pids+=("$!")
-done
-for pid in "${parallel_pids[@]}"; do
-  wait "$pid" || fail 'parallel automatic DeepSeek start failed'
-done
-python3 - "$ROOT/controller/runs" "$ROOT/parallel-state.json" <<'PY' || fail 'parallel starts lost account state or failed to split evenly'
+if [[ ${CONTROLLER_TEST_PARALLEL_OD_STARTS:-1} == 1 ]]; then
+  PARALLEL_DIR=$ROOT/parallel-codex-logs
+  mkdir -p "$PARALLEL_DIR"
+  parallel_pids=()
+  for index in {1..20}; do
+    run="parallel-start-$index"
+    PATH="$ROOT/bin:$PATH" HOME="$ROOT/home" CONTROLLER_HOME="$ROOT/controller" CONTROLLER_REPO="$ROOT/repo" \
+      CONTROLLER_OD_STATE="$ROOT/parallel-state.json" CODEX_HOME_DEEPSEEK_VOLKER="$VOLKER_HOME" CODEX_HOME_DEEPSEEK_GITHUB2="$GITHUB2_HOME" \
+      CODEX_SQLITE_HOME="$ROOT/sqlite" CODEX_LOG="$PARALLEL_DIR/$index.log" CODEX_ROUTE=deepseek CODEX_AUTO_CONTINUE=0 \
+      OPENDESIGN_API_KEY_VOLKER=test-key OPENDESIGN_API_KEY_GITHUB2=test-key \
+      "$CODEX_IMPL_SCRIPT" "$ROOT/worktree" "$ROOT/brief.md" "$run" > "$PARALLEL_DIR/$index.out" 2>&1 &
+    parallel_pids+=("$!")
+  done
+  for pid in "${parallel_pids[@]}"; do
+    wait "$pid" || fail 'parallel automatic DeepSeek start failed'
+  done
+  python3 - "$ROOT/controller/runs" "$ROOT/parallel-state.json" <<'PY' || fail 'parallel starts lost account state or failed to split evenly'
 from pathlib import Path
 import json, sys
 runs = Path(sys.argv[1])
@@ -505,6 +506,7 @@ assert set(state) == {"volker", "github2", "threads"}
 assert state["volker"]["last_used_epoch"] > 0 and state["github2"]["last_used_epoch"] > 0
 assert state["threads"] == {}
 PY
+fi
 
 if PATH="$ROOT/bin:$PATH" HOME="$ROOT/home" CONTROLLER_HOME="$ROOT/controller" CONTROLLER_REPO="$ROOT/repo" \
   CODEX_ROUTE=unknown CODEX_LOG="$CODEX_LOG" \

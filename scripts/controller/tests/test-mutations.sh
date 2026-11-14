@@ -10,7 +10,7 @@ ROOT=$(mktemp -d "${TMPDIR:-/tmp}/controller-mutation-test.XXXXXX")
 cleanup() { [[ -n ${KEEP_TEST_ROOT:-} ]] || rm -rf -- "$ROOT"; }
 trap cleanup EXIT
 python3 "$SCRIPT_DIR/mutate-sources.py" "$ROOT" || exit $?
-if ! bash "$SCRIPT_DIR/test-wrappers.sh" > "$ROOT/wrappers-unmutated.log" 2>&1; then
+if ! CONTROLLER_TEST_PARALLEL_OD_STARTS=0 bash "$SCRIPT_DIR/test-wrappers.sh" > "$ROOT/wrappers-unmutated.log" 2>&1; then
   cat "$ROOT/wrappers-unmutated.log" >&2
   echo 'FAIL: unmutated wrapper tests must pass before wrapper mutants are judged' >&2
   exit 1
@@ -24,6 +24,7 @@ for baseline in test-job-check.sh test-hardening-tools.sh; do
   fi
 done
 echo 'PASS unmutated job-check and hardening tests before their mutation checks'
+export CONTROLLER_TEST_PARALLEL_OD_STARTS=0
 expect_killed() {
   local label=$1; shift
   if "$@" > "$ROOT/$label.log" 2>&1; then
@@ -136,7 +137,7 @@ expect_killed od-both-blocked-exit-code \
 expect_killed od-state-path-absolute-guard \
   env CODEX_IMPL_SCRIPT="$ROOT/mutants/scripts/controller/od-state-path-absolute-guard/codex-impl.sh" bash "$SCRIPT_DIR/test-wrappers.sh"
 expect_killed od-exclusive-state-flock \
-  env CODEX_IMPL_SCRIPT="$ROOT/mutants/scripts/controller/od-exclusive-state-flock/codex-impl.sh" \
+  env CONTROLLER_TEST_PARALLEL_OD_STARTS=1 CODEX_IMPL_SCRIPT="$ROOT/mutants/scripts/controller/od-exclusive-state-flock/codex-impl.sh" \
     bash "$SCRIPT_DIR/test-wrappers.sh"
 expect_killed od-resume-blocked-fallback \
   env RESUME_USAGE_LIMITED_SCRIPT="$ROOT/mutants/scripts/controller/od-resume-blocked-fallback/resume-usage-limited.sh" bash "$SCRIPT_DIR/test-hardening-tools.sh"
