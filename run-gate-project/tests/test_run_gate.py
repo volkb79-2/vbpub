@@ -38586,40 +38586,47 @@ class TestKsmR2Survivors:
         measured = monitor.report()
         assert measured["merging_pages"] == 0
 
-    def test_main_dry_run_reports_each_cli_override(self, tmp_path,
-                                                    monkeypatch, capsys):
-        cases = (("--ksm", True,
-                  "KSM opt-in: enabled (source: command line (--ksm); "
-                  "image shim: not advertised)"),
-                 ("--no-ksm", False,
-                  "KSM opt-in: disabled (source: command line (--no-ksm); "
-                  "image shim: not inspected (KSM opted out))"))
-        for index, (flag, enabled, expected) in enumerate(cases):
-            case_root = tmp_path / str(index)
-            case_root.mkdir()
-            repo = make_repo(case_root)
-            project = make_project(
-                repo,
-                self._ephemeral_config("""\
-                    [lanes.suite]
-                    kind = "command"
-                    environment = "runner"
-                    argv = ["true"]
-                    clean_tree = false
-                """), name="cli-dry-run")
-            monkeypatch.chdir(project)
-            monkeypatch.delenv(run_gate.KSM_AMBIENT_ENV_VAR, raising=False)
-            self._patch_dry_run_container(monkeypatch)
-
-            assert run_gate.main(["suite", "--dry-run", flag]) == 0
-            output = capsys.readouterr().out
-            assert expected in output
-            assert ("KSM opt-in: enabled" in output) is enabled
-
-    def test_exec_mode_refuses_ksm_flag_and_lane_declaration(
-            self, tmp_path, monkeypatch, capsys):
+    @pytest.mark.parametrize(("flag", "enabled", "expected"), [
+        ("--ksm", True,
+         "KSM opt-in: enabled (source: command line (--ksm); "
+         "image shim: not advertised)"),
+        ("--no-ksm", False,
+         "KSM opt-in: disabled (source: command line (--no-ksm); "
+         "image shim: not inspected (KSM opted out))"),
+    ])
+    def test_main_dry_run_reports_each_cli_override(
+            self, tmp_path, monkeypatch, capsys, flag, enabled, expected):
         repo = make_repo(tmp_path)
-        exec_config = """\
+        project = make_project(
+            repo,
+            self._ephemeral_config("""\
+                [lanes.suite]
+                kind = "command"
+                environment = "runner"
+                argv = ["true"]
+                clean_tree = false
+            """), name="cli-dry-run")
+        monkeypatch.chdir(project)
+        monkeypatch.delenv(run_gate.KSM_AMBIENT_ENV_VAR, raising=False)
+        self._patch_dry_run_container(monkeypatch)
+
+        assert run_gate.main(["suite", "--dry-run", flag]) == 0
+        output = capsys.readouterr().out
+        assert expected in output
+        assert ("KSM opt-in: enabled" in output) is enabled
+
+    @pytest.mark.parametrize(("flag", "declared", "expected"), [
+        ("--ksm", False,
+         "--ksm and --no-ksm apply only to ephemeral container lanes"),
+        (None, True,
+         "lane 'suite' declares ksm but its environment does not start an "
+         "ephemeral container"),
+    ])
+    def test_exec_mode_refuses_ksm_flag_and_lane_declaration(
+            self, tmp_path, monkeypatch, capsys, flag, declared, expected):
+        repo = make_repo(tmp_path)
+        ksm_line = "ksm = true\n" if declared else ""
+        exec_config = f"""\
             schema_version = 1
 
             [environments.runner]
@@ -38631,24 +38638,16 @@ class TestKsmR2Survivors:
             kind = "command"
             environment = "runner"
             argv = ["true"]
+            {ksm_line}
             clean_tree = false
         """
         project = make_project(repo, exec_config, name="exec-ksm")
         monkeypatch.chdir(project)
         self._patch_recording_runners(monkeypatch)
+        args = ["suite"] + ([flag] if flag is not None else [])
 
-        assert run_gate.main(["suite", "--ksm"]) == 2
-        assert ("--ksm and --no-ksm apply only to ephemeral container lanes"
-                in capsys.readouterr().err)
-
-        declared_project = make_project(
-            repo, exec_config.replace('argv = ["true"]',
-                                      'argv = ["true"]\nksm = true'),
-            name="exec-ksm-declared")
-        monkeypatch.chdir(declared_project)
-        assert run_gate.main(["suite"]) == 2
-        assert ("lane 'suite' declares ksm but its environment does not start "
-                "an ephemeral container" in capsys.readouterr().err)
+        assert run_gate.main(args) == 2
+        assert expected in capsys.readouterr().err
 
     @pytest.mark.parametrize("ambient", ["0", "1"])
     def test_ambient_ksm_value_marks_lane_history_as_overridden(
@@ -38948,8 +38947,11 @@ class TestKsmR2Survivors:
                             lambda **_kwargs: monitor)
         observed = []
 
-        def resolve(*_args, **kwargs):
-            observed.append(kwargs.get("ksm_monitor"))
+        def resolve(*args, **kwargs):
+            monitor_arg = kwargs.get("ksm_monitor")
+            if monitor_arg is None and len(args) > 9:
+                monitor_arg = args[9]
+            observed.append(monitor_arg)
             return 0
 
         monkeypatch.setattr(run_gate, "resolve_inflight", resolve)
