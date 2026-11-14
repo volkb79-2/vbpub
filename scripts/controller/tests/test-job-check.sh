@@ -101,6 +101,20 @@ CONTROLLER_HOME=$HOME_ROOT CONTROLLER_REPO=$REPO CONTROLLER_BASE_REF=origin/main
     fail 'deepseek route should require its own exact trailer'
   }
 contains "$ROOT/route-deepseek.out" 'trailers OK (all commits incl. merges: deepseek)' 'deepseek route remains available'
+for pinned_route in deepseek-volker deepseek-github2; do
+  git -C "$REPO" switch -qc "$pinned_route-task" "$BASE"
+  printf '%s implementation\n' "$pinned_route" > "$REPO/$pinned_route.txt"
+  git -C "$REPO" add "$pinned_route.txt"
+  git -C "$REPO" commit -qm "$pinned_route route commit" -m 'Co-Authored-By: Codex deepseek-v4.1-flash <noreply@openai.com>'
+  write_gate_log
+  CONTROLLER_HOME=$HOME_ROOT CONTROLLER_REPO=$REPO CONTROLLER_BASE_REF=origin/main \
+    "$SRC" healthy "$REPO" "$pinned_route" > "$ROOT/route-$pinned_route.out" 2>&1 || {
+      cat "$ROOT/route-$pinned_route.out" >&2
+      fail "$pinned_route route should accept the DeepSeek trailer"
+    }
+  contains "$ROOT/route-$pinned_route.out" "trailers OK (all commits incl. merges: $pinned_route)" \
+    "$pinned_route route remains available"
+done
 git -C "$REPO" switch -qc sol-task "$BASE"
 printf 'sol review fix\n' > "$REPO/sol.txt"
 git -C "$REPO" add sol.txt

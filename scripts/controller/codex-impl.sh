@@ -31,9 +31,10 @@ if [[ $mode == new ]]; then
     exit 2
   fi
 fi
-printf '%s\n' "$worktree" > "$out/$name.wt"
 
 route=${CODEX_ROUTE:-luna}
+route_record=$route
+od_account=''
 case $route in
   luna)
     route_home=${CODEX_HOME_LUNA:-"$HOME/.codex"}
@@ -42,14 +43,34 @@ case $route in
     auto_default=0
     ;;
   deepseek)
-    route_home=${CODEX_HOME_DEEPSEEK:-"$HOME/.codex-opendesign"}
+    if od_account=$(CONTROLLER_RUNS_DIR="$out" python3 "$SCRIPT_DIR/opendesign-accounts.py" start auto); then
+      :
+    else
+      exit $?
+    fi
+    route_record=deepseek-$od_account
+    case $od_account in
+      volker) route_home=${CODEX_HOME_DEEPSEEK_VOLKER:-"$HOME/.codex-opendesign-volker"} ;;
+      github2) route_home=${CODEX_HOME_DEEPSEEK_GITHUB2:-"$HOME/.codex-opendesign-github2"} ;;
+    esac
+    default_model=deepseek-v4.1-flash-eco
+    default_effort=high
+    auto_default=2
+    ;;
+  deepseek-volker|deepseek-github2)
+    od_account=${route#deepseek-}
+    route_record=$route
+    CONTROLLER_RUNS_DIR="$out" python3 "$SCRIPT_DIR/opendesign-accounts.py" start "$od_account" >/dev/null || exit $?
+    case $od_account in
+      volker) route_home=${CODEX_HOME_DEEPSEEK_VOLKER:-"$HOME/.codex-opendesign-volker"} ;;
+      github2) route_home=${CODEX_HOME_DEEPSEEK_GITHUB2:-"$HOME/.codex-opendesign-github2"} ;;
+    esac
     default_model=deepseek-v4.1-flash-eco
     default_effort=high
     auto_default=2
     ;;
   *) echo "unknown CODEX_ROUTE=$route" >&2; exit 2 ;;
 esac
-printf '%s\n' "$route" > "$out/$name.route"
 auto_limit=${CODEX_AUTO_CONTINUE:-$auto_default}
 if [[ ! $auto_limit =~ ^[0-9]+$ ]] || ! python3 - "$auto_limit" <<'PY'
 import sys
@@ -64,18 +85,25 @@ then
   exit 2
 fi
 export CODEX_SQLITE_HOME=${CODEX_SQLITE_HOME:-"$HOME/.codex/sqlite-shared"}
-export CODEX_HOME=${CODEX_HOME_OVERRIDE:-$route_home}
+if [[ $route == luna ]]; then
+  export CODEX_HOME=${CODEX_HOME_OVERRIDE:-$route_home}
+else
+  export CODEX_HOME=$route_home
+fi
 model=${CODEX_MODEL:-$default_model}
 effort=${CODEX_EFFORT:-$default_effort}
 
-if [[ $route == deepseek ]]; then
+if [[ -n $od_account ]]; then
   catalog=$CODEX_HOME/catalog/opendesign-models.json
-  python3 - "$catalog" <<'PY' || { echo "refusing: deepseek catalog has a non-null tool_mode; repair the local catalog first" >&2; exit 3; }
+  python3 - "$catalog" <<'PY' || { echo "refusing: deepseek catalog has a non-null tool_mode; repair the selected account's local catalog first" >&2; exit 3; }
 import json, sys
 data = json.load(open(sys.argv[1], encoding="utf-8"))
 sys.exit(1 if any(m.get("tool_mode") is not None for m in data.get("models", [])) else 0)
 PY
 fi
+
+printf '%s\n' "$worktree" > "$out/$name.wt"
+printf '%s\n' "$route_record" > "$out/$name.route"
 
 if [[ $mode == resume ]]; then
   if (cd -- "$worktree" && nice codex exec resume -m "$model" -c "model_reasoning_effort=\"$effort\"" \
@@ -142,7 +170,7 @@ if [[ -n $thread_id ]]; then printf '%s\n' "$thread_id" > "$out/$name.thread"; f
 continue_prompt='You stopped after thinking without acting: continue the task from where you are now, call tools for real'
 auto_count=0
 auto_log=$out/$name.autoresume.log
-printf 'ROUTE=%s LIMIT=%s\n' "$route" "$auto_limit" > "$auto_log"
+printf 'ROUTE=%s LIMIT=%s\n' "$route_record" "$auto_limit" > "$auto_log"
 while (( auto_count < auto_limit )) && reasoning_end "$out/$name.jsonl"; do
   if [[ -z $thread_id ]]; then
     echo 'AUTORESUME stopped: no thread id in the Codex stream' >> "$auto_log"
@@ -161,5 +189,9 @@ while (( auto_count < auto_limit )) && reasoning_end "$out/$name.jsonl"; do
   printf 'AUTORESUME attempt=%s EXIT=%s THREAD=%s\n' "$auto_count" "$attempt_rc" "$thread_id" >> "$auto_log"
   rc=$attempt_rc
 done
+if [[ -n $od_account ]]; then
+  CONTROLLER_RUNS_DIR="$out" python3 "$SCRIPT_DIR/opendesign-accounts.py" block-run "$od_account" \
+    "$out/$name.err" "$out/$name.jsonl" || rc=$?
+fi
 printf 'EXIT=%s AUTORESUME=%s\n' "$rc" "$auto_count" > "$out/$name.done"
 exit "$rc"

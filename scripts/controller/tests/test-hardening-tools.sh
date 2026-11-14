@@ -7,6 +7,7 @@ START_AFTER_SRC=${START_AFTER_SCRIPT:-$SCRIPT_DIR/../start-after.sh}
 GATE_RUN_SRC=${GATE_RUN_SCRIPT:-$SCRIPT_DIR/../gate-run.sh}
 READBACK_SRC=${BUILD_READBACK_SCRIPT:-$SCRIPT_DIR/../build-readback.py}
 LIB_SRC=${CONTROLLER_LIB_SCRIPT:-$SCRIPT_DIR/../lib.sh}
+OD_ACCOUNTS_SRC=${CONTROLLER_OD_ACCOUNTS_SCRIPT:-$SCRIPT_DIR/../opendesign-accounts.py}
 ROOT=$(mktemp -d "${TMPDIR:-/tmp}/controller-hardening-test.XXXXXX")
 cleanup() { [[ -n ${KEEP_TEST_ROOT:-} ]] || rm -rf -- "$ROOT"; }
 trap cleanup EXIT
@@ -23,7 +24,7 @@ not_contains() {
   esac
 }
 
-mkdir -p "$ROOT/home" "$ROOT/bin" "$ROOT/worktree" "$ROOT/controller" "$ROOT/deepseek/catalog"
+mkdir -p "$ROOT/home" "$ROOT/bin" "$ROOT/worktree" "$ROOT/controller" "$ROOT/deepseek-volker/catalog" "$ROOT/deepseek-github2/catalog"
 LIB_TEST_HOME=$ROOT/lib-config-home
 LIB_TEST_RUNS=$ROOT/lib-run-dir-override
 mkdir -p "$LIB_TEST_HOME" "$LIB_TEST_RUNS"
@@ -48,6 +49,44 @@ usage_retry_iso_output=$(CONTROLLER_LIB_SCRIPT="$LIB_SRC" \
   || fail 'shared usage-retry parser rejected the dated retry form for ISO conversion'
 [[ $usage_retry_iso_output == '2026-11-17T00:59:00' ]] \
   || fail "shared usage-retry parser returned unexpected ISO time: $usage_retry_iso_output"
+usage_retry_402_output=$(CONTROLLER_LIB_SCRIPT="$LIB_SRC" \
+  bash -c '. "$CONTROLLER_LIB_SCRIPT"; usage_retry_text "$1"' _ \
+  "$SCRIPT_DIR/fixtures/usage-limit-insufficient-balance.jsonl") \
+  || fail 'shared usage-retry parser rejected a coding-plan 402 reset'
+[[ $usage_retry_402_output == '2099-11-17T11:44:44Z' ]] \
+  || fail "coding-plan usage-retry parser returned unexpected reset: $usage_retry_402_output"
+usage_retry_402_epoch=$(CONTROLLER_LIB_SCRIPT="$LIB_SRC" \
+  bash -c '. "$CONTROLLER_LIB_SCRIPT"; usage_retry_epoch "$1"' _ \
+  "$usage_retry_402_output") \
+  || fail 'shared usage-retry parser could not convert a UTC reset to epoch'
+[[ $usage_retry_402_epoch == "$(date -u -d '2099-11-17T11:44:44Z' +%s)" ]] \
+  || fail 'coding-plan reset epoch did not preserve UTC'
+python3 - "$OD_ACCOUNTS_SRC" "$ROOT/od-lock-state.json" <<'PY' \
+  || fail 'Open Design state updates did not request an exclusive flock'
+import fcntl
+import importlib.util
+import os
+import sys
+
+spec = importlib.util.spec_from_file_location("od_accounts", sys.argv[1])
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+actual_flock = fcntl.flock
+operations = []
+
+def record_flock(fd, operation):
+    operations.append(operation)
+    return actual_flock(fd, operation)
+
+fcntl.flock = record_flock
+os.environ["CONTROLLER_OD_STATE"] = sys.argv[2]
+os.environ["CONTROLLER_OD_PREFER_EXPIRING"] = "0"
+try:
+    module.main(["start", "auto"])
+finally:
+    fcntl.flock = actual_flock
+assert operations == [fcntl.LOCK_EX], operations
+PY
 cat > "$ROOT/bin/codex" <<'SH'
 #!/usr/bin/env bash
 set -uo pipefail
@@ -92,9 +131,11 @@ printf '%s|%s\n' "$PWD" "$*" >> "$RUN_GATE_LOG"
 exit "${FAKE_RUN_GATE_RC:-0}"
 SH
 chmod +x "$ROOT/bin/codex" "$ROOT/bin/fake-impl" "$ROOT/bin/pgrep" "$ROOT/bin/after-impl" "$ROOT/bin/run-gate"
-printf '{"models":[{"slug":"fixture","tool_mode":null}]}\n' > "$ROOT/deepseek/catalog/opendesign-models.json"
+printf '{"models":[{"slug":"fixture","tool_mode":null}]}\n' > "$ROOT/deepseek-volker/catalog/opendesign-models.json"
+printf '{"models":[{"slug":"fixture","tool_mode":null}]}\n' > "$ROOT/deepseek-github2/catalog/opendesign-models.json"
 
 unset CODEX_ROUTE CODEX_AUTO_CONTINUE CODEX_HOME_OVERRIDE CODEX_MODEL CODEX_EFFORT CODEX_HOME CODEX_SQLITE_HOME
+unset CODEX_HOME_DEEPSEEK_VOLKER CODEX_HOME_DEEPSEEK_GITHUB2 CONTROLLER_OD_STATE CONTROLLER_OD_PREFER_EXPIRING
 unset CONTROLLER_RUNS_DIR CONTROLLER_LOGS_DIR CONTROLLER_GATE_LOCK CONTROLLER_GATE2_LOCK RESUME_EXCLUDE_PREFIXES
 CODEX_CALL_LOG=$ROOT/codex-calls.log
 CODEX_CALL_COUNT=$ROOT/codex-call-count
@@ -102,7 +143,8 @@ CODEX_RESUME_PROMPTS=$ROOT/codex-resume-prompts.log
 export CODEX_CALL_LOG CODEX_CALL_COUNT CODEX_RESUME_PROMPTS
 printf 'brief\n' > "$ROOT/prompt.md"
 PATH="$ROOT/bin:$PATH" HOME="$ROOT/home" CONTROLLER_HOME="$ROOT/controller" \
-  CODEX_HOME_LUNA="$ROOT/luna" CODEX_HOME_DEEPSEEK="$ROOT/deepseek" CODEX_SQLITE_HOME="$ROOT/sqlite" \
+  CODEX_HOME_LUNA="$ROOT/luna" CODEX_HOME_DEEPSEEK_VOLKER="$ROOT/deepseek-volker" \
+  CODEX_HOME_DEEPSEEK_GITHUB2="$ROOT/deepseek-github2" CODEX_SQLITE_HOME="$ROOT/sqlite" \
   CODEX_ROUTE=deepseek "$CODEX_IMPL" "$ROOT/worktree" "$ROOT/prompt.md" deepseek-bound \
   > "$ROOT/deepseek.out" 2>&1 || fail 'DeepSeek auto-continue run failed'
 [[ $(wc -l < "$CODEX_CALL_LOG") == 3 ]] || fail 'DeepSeek default must make one initial call and at most two resumes'
@@ -113,7 +155,7 @@ contains "$CODEX_RESUME_PROMPTS" 'You stopped after thinking without acting: con
 contains "$ROOT/controller/runs/deepseek-bound.done" 'EXIT=0 AUTORESUME=2' 'final done marker records bounded resumes'
 contains "$ROOT/controller/runs/deepseek-bound.autoresume.log" 'attempt=2 EXIT=0 THREAD=thread-for-test' 'auto-resume log records its second attempt'
 contains "$ROOT/controller/runs/deepseek-bound.wt" "$ROOT/worktree" 'Codex run stores its explicit worktree map for later recovery'
-contains "$ROOT/controller/runs/deepseek-bound.route" 'deepseek' 'Codex run records its originating route'
+contains "$ROOT/controller/runs/deepseek-bound.route" 'deepseek-volker' 'Codex records the automatically selected pinned account route'
 
 rm -f -- "$CODEX_CALL_LOG" "$CODEX_CALL_COUNT"
 PATH="$ROOT/bin:$PATH" HOME="$ROOT/home" CONTROLLER_HOME="$ROOT/controller" \
@@ -125,7 +167,8 @@ contains "$ROOT/controller/runs/luna-reasoning.done" 'EXIT=0 AUTORESUME=0' 'Luna
 
 rm -f -- "$CODEX_CALL_LOG" "$CODEX_CALL_COUNT"
 PATH="$ROOT/bin:$PATH" HOME="$ROOT/home" CONTROLLER_HOME="$ROOT/controller" \
-  CODEX_HOME_DEEPSEEK="$ROOT/deepseek" CODEX_SQLITE_HOME="$ROOT/sqlite" CODEX_ROUTE=deepseek \
+  CODEX_HOME_DEEPSEEK_VOLKER="$ROOT/deepseek-volker" CODEX_HOME_DEEPSEEK_GITHUB2="$ROOT/deepseek-github2" \
+  CODEX_SQLITE_HOME="$ROOT/sqlite" CODEX_ROUTE=deepseek \
   FAKE_CODEX_MODE=clean "$CODEX_IMPL" "$ROOT/worktree" "$ROOT/prompt.md" deepseek-clean \
   > "$ROOT/deepseek-clean.out" 2>&1 || fail 'clean DeepSeek run failed'
 [[ $(wc -l < "$CODEX_CALL_LOG") == 1 ]] || fail 'clean run should not be auto-resumed'
@@ -220,7 +263,7 @@ for name in limited skipme success nonusage noroute invalidroute naf-owned live-
     printf '%s\n' "$ROOT/worktree" > "$RUNS/$name.wt"
   fi
   if [[ $name != noroute ]]; then
-    if [[ $name == invalidroute ]]; then printf 'unknown\n' > "$RUNS/$name.route"; elif [[ $name == limited ]]; then printf 'deepseek\n' > "$RUNS/$name.route"; else printf 'luna\n' > "$RUNS/$name.route"; fi
+    if [[ $name == invalidroute ]]; then printf 'unknown\n' > "$RUNS/$name.route"; elif [[ $name == limited ]]; then printf 'deepseek-volker\n' > "$RUNS/$name.route"; else printf 'luna\n' > "$RUNS/$name.route"; fi
   fi
   printf 'EXIT=1\n' > "$RUNS/$name.done"
 done
@@ -278,7 +321,7 @@ PATH="$ROOT/bin:$PATH" HOME="$ROOT/home" CONTROLLER_HOME="$ROOT/controller" \
   "$RESUME_SRC" --runs-dir "$RUNS" --skip skipme --skip live-wrapper --skip foreign-owned > "$ROOT/resume-live.out" 2>&1 \
   || fail 'usage-limit resume invocation failed'
 contains "$RESUME_CALL_LOG" 'limited-resumed resume 01a1c574-3312-71e1-a10a-16379be028dc' 'resume uses a new run name and the original thread'
-contains "$RESUME_CALL_LOG" 'CODEX_ROUTE=deepseek' 'usage-limit recovery preserves the originating route'
+contains "$RESUME_CALL_LOG" 'CODEX_ROUTE=deepseek-volker' 'usage-limit recovery resumes on the recorded account'
 contains "$RESUME_CALL_LOG" "CONTROLLER_RUNS_DIR=$RUNS" 'usage-limit recovery writes into its configured runs directory'
 not_contains "$RESUME_CALL_LOG" 'skipme' 'skip list prevents a resume call'
 not_contains "$RESUME_CALL_LOG" 'naf-owned-resumed' 'other-controller run is not resumed'
@@ -287,6 +330,29 @@ not_contains "$RESUME_CALL_LOG" 'live-wrapper-resumed' 'live wrapper is not resu
 not_contains "$RESUME_CALL_LOG" 'success-resumed' 'successful run is not resumed'
 not_contains "$RESUME_CALL_LOG" 'nonusage-resumed' 'non-usage turn failure is not resumed'
 not_contains "$RESUME_CALL_LOG" 'dated-future-resumed' 'future dated retry was not launched by a real scan'
+
+FALLBACK_RUNS=$ROOT/fallback-runs
+mkdir -p "$FALLBACK_RUNS"
+printf '{"type":"thread.started","thread_id":"fallback-thread"}\n' > "$FALLBACK_RUNS/fallback.jsonl"
+printf '{"error":{"code":"insufficient_balance","details":{"coding_plan_exhausted":true,"reset_at":"2020-01-01T00:00:00Z"}}}\n' \
+  > "$FALLBACK_RUNS/fallback.err"
+printf '%s\n' "$ROOT/worktree" > "$FALLBACK_RUNS/fallback.wt"
+printf 'deepseek-volker\n' > "$FALLBACK_RUNS/fallback.route"
+printf 'EXIT=42\n' > "$FALLBACK_RUNS/fallback.done"
+OD_FUTURE_EPOCH=$(( $(date +%s) + 86400 ))
+python3 - "$ROOT/fallback-state.json" "$OD_FUTURE_EPOCH" <<'PY'
+import json, sys
+json.dump({"volker": {"last_used_epoch": 1, "blocked_until_epoch": int(sys.argv[2])},
+           "github2": {"last_used_epoch": 2, "blocked_until_epoch": 0}}, open(sys.argv[1], "w"))
+PY
+PATH="$ROOT/bin:$PATH" HOME="$ROOT/home" CONTROLLER_HOME="$ROOT/controller" CONTROLLER_OD_STATE="$ROOT/fallback-state.json" \
+  CODEX_IMPL_SCRIPT="$ROOT/bin/fake-impl" RESUME_SKIP='' \
+  "$RESUME_SRC" --runs-dir "$FALLBACK_RUNS" > "$ROOT/resume-fallback.out" 2>&1 \
+  || fail 'usage-limit recovery with a blocked recorded account failed'
+contains "$ROOT/resume-fallback.out" 'account fallback from deepseek-volker to deepseek-github2 because the recorded account is blocked' \
+  'usage-limit recovery logs when it falls back from the blocked recorded account'
+contains "$RESUME_CALL_LOG" 'fallback-resumed resume fallback-thread' 'fallback recovery continues the original thread'
+contains "$RESUME_CALL_LOG" 'CODEX_ROUTE=deepseek-github2' 'fallback recovery uses the other pinned account'
 
 cp "$SCRIPT_DIR/fixtures/usage-limit.jsonl" "$RUNS/claimed.jsonl"
 printf '%s\n' "$ROOT/worktree" > "$RUNS/claimed.wt"

@@ -33,7 +33,7 @@ controller_init() {
 }
 
 usage_retry_text() {
-  python3 - "$1" <<'PY'
+  python3 - "$@" <<'PY'
 import json
 import re
 import sys
@@ -53,26 +53,55 @@ def error_text(value):
     return str(value or "")
 
 
+def coding_plan_reset(value):
+    pending = [value]
+    while pending:
+        current = pending.pop()
+        if isinstance(current, dict):
+            if current.get("code") == "insufficient_balance":
+                details = current.get("details")
+                if isinstance(details, dict) and isinstance(details.get("reset_at"), str):
+                    return details["reset_at"]
+            pending.extend(current.values())
+        elif isinstance(current, list):
+            pending.extend(current)
+    return None
+
+
 last_retry = None
 last_error = ""
-for line in open(sys.argv[1], encoding="utf-8", errors="replace"):
+coding_plan_retry = None
+for path in sys.argv[1:]:
     try:
-        event = json.loads(line)
-    except ValueError:
+        source = open(path, encoding="utf-8", errors="replace")
+    except OSError:
         continue
-    event_type = event.get("type")
-    if event_type == "turn.started":
-        last_retry = None
-        last_error = ""
-    elif event_type == "error":
-        last_error = error_text(event.get("error") or event)
-    elif event_type == "turn.failed":
-        message = error_text(event.get("error")) or last_error
-        if re.search(r"hit your usage limit", message, re.IGNORECASE):
-            match = reset_pattern.search(message)
-            last_retry = match.group(1).strip() if match else "unknown"
-        else:
-            last_retry = None
+    with source:
+        for line in source:
+            try:
+                event = json.loads(line)
+            except ValueError:
+                continue
+            reset_at = coding_plan_reset(event)
+            if reset_at is not None:
+                coding_plan_retry = reset_at
+            event_type = event.get("type") if isinstance(event, dict) else None
+            if event_type == "turn.started":
+                last_retry = None
+                last_error = ""
+            elif event_type == "error":
+                last_error = error_text(event.get("error") or event)
+            elif event_type == "turn.failed":
+                message = error_text(event.get("error")) or last_error
+                if re.search(r"hit your usage limit", message, re.IGNORECASE):
+                    match = reset_pattern.search(message)
+                    last_retry = match.group(1).strip() if match else "unknown"
+                else:
+                    last_retry = None
+
+if coding_plan_retry is not None:
+    print(coding_plan_retry)
+    raise SystemExit(0)
 
 if last_retry is None:
     raise SystemExit(1)
@@ -88,6 +117,10 @@ usage_retry_epoch() {
 
 usage_retry_iso() {
   local retry=${1-} normalized
+  if [[ $retry =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]+)?Z$ ]]; then
+    date -u -d "$retry" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null
+    return $?
+  fi
   [[ $retry =~ ^[A-Za-z]{3,9}[[:space:]]+[0-9]{1,2}(st|nd|rd|th)?, ]] || return 1
   normalized=$(printf '%s\n' "$retry" | sed -E 's/([0-9]{1,2})(st|nd|rd|th),/\1,/')
   date -d "$normalized" +%Y-%m-%dT%H:%M:%S 2>/dev/null

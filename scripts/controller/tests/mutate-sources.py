@@ -12,6 +12,23 @@ runner = root / "mutants/scripts/netcup/runner"
 controller.mkdir(parents=True)
 runner.mkdir(parents=True)
 shutil.copy2(repo / "scripts/controller/lib.sh", controller / "lib.sh")
+shutil.copy2(repo / "scripts/controller/opendesign-accounts.py", controller / "opendesign-accounts.py")
+
+
+def account_helper_mutant(name: str, before: str, after: str) -> Path:
+    source = repo / "scripts/controller/opendesign-accounts.py"
+    original = source.read_text(encoding="utf-8")
+    count = original.count(before)
+    if count != 1:
+        raise SystemExit(f"{source}: expected one mutation target, found {count}: {before!r}")
+    variant = controller / name
+    variant.mkdir(parents=True)
+    for filename in ("lib.sh", "codex-impl.sh", "resume-usage-limited.sh", "finisher-generic.md"):
+        shutil.copy2(repo / "scripts/controller" / filename, variant / filename)
+    target = variant / "opendesign-accounts.py"
+    target.write_text(original.replace(before, after, 1), encoding="utf-8")
+    target.chmod(0o755)
+    return variant
 
 
 def mutant(source: str, name: str, before: str, after: str, destination: Path = controller) -> Path:
@@ -99,9 +116,20 @@ mutant("scripts/controller/job-check.sh", "job-check-merge-trailer.sh",
        'commits=$(git -C "$worktree" rev-list --no-merges "$base..HEAD" 2>/dev/null)')
 mutant("scripts/controller/job-check.sh", "job-check-any-claude-trailer.sh",
        'Claude [A-Za-z0-9. ]+', 'Claude NEVER')
+mutant("scripts/controller/job-check.sh", "job-check-deepseek-pinned-routes.sh",
+       'deepseek|deepseek-volker|deepseek-github2|opencode', 'deepseek|opencode')
 mutant("scripts/controller/codex-impl.sh", "codex-deepseek-catalog.sh",
        'sys.exit(1 if any(m.get("tool_mode") is not None for m in data.get("models", [])) else 0)',
        'sys.exit(0)')
+mutant("scripts/controller/codex-impl.sh", "codex-pinned-route-fallback.sh",
+       'start "$od_account" >/dev/null || exit $?', 'start auto >/dev/null || exit $?')
+mutant("scripts/controller/codex-impl.sh", "codex-route-sidecar-unpinned.sh",
+       'route_record=deepseek-$od_account', 'route_record=deepseek')
+mutant("scripts/controller/codex-impl.sh", "codex-unknown-route-fallback.sh",
+       '*) echo "unknown CODEX_ROUTE=$route" >&2; exit 2 ;;',
+       '*) route=luna; route_home=${CODEX_HOME_LUNA:-"$HOME/.codex"}; default_model=gpt-6-luna; default_effort=xhigh; auto_default=0 ;;')
+mutant("scripts/controller/opencode-impl.sh", "opencode-default-provider.sh",
+       'provider=${OPENCODE_PROVIDER:-opendesign_github2}', 'provider=${OPENCODE_PROVIDER:-opendesign}')
 mutant("scripts/controller/codex-impl.sh", "codex-autoresume-bound.sh",
        'while (( auto_count < auto_limit )) && reasoning_end',
        'while (( auto_count <= auto_limit )) && reasoning_end')
@@ -126,11 +154,13 @@ mutant("scripts/controller/job-check.sh", "job-check-reattach-evidence.sh",
 mutant("scripts/controller/lib.sh", "usage-retry-time-only-lib.sh",
        'r"[A-Za-z]{3,9}\\s+\\d{1,2}(?:st|nd|rd|th)?,\\s+\\d{4}\\s+\\d{1,2}:\\d{2}(?:\\s*[AP]M)?"',
        'r"NEVER_MATCH_A_DATED_RETRY"')
+mutant("scripts/controller/lib.sh", "usage-retry-insufficient-balance.sh",
+       'if current.get("code") == "insufficient_balance":', 'if False:')
 mutant("scripts/controller/lib.sh", "controller-run-dir-override.sh",
        '[[ -z $requested_runs_dir ]] || CONTROLLER_RUNS_DIR=$requested_runs_dir',
        ': # ignore the explicit environment override')
 mutant("scripts/controller/resume-usage-limited.sh", "resume-usage-detection.sh",
-       'if ! reset_time=$(usage_retry_text "$run_file"); then continue; fi',
+       'if ! reset_time=$(usage_retry_text "$run_file" "$runs_dir/$run.err"); then continue; fi',
        'reset_time=unknown')
 mutant("scripts/controller/resume-usage-limited.sh", "resume-future-retry.sh",
        "    if (( reset_epoch > now_epoch )); then", "    if false; then")
@@ -139,7 +169,7 @@ mutant("scripts/controller/resume-usage-limited.sh", "resume-skip-list.sh",
 mutant("scripts/controller/resume-usage-limited.sh", "resume-route-sidecar.sh",
        'if [[ ! -f $runs_dir/$run.route ]]; then', 'if false; then')
 mutant("scripts/controller/resume-usage-limited.sh", "resume-route-value.sh",
-       'case $route in luna|deepseek) ;; *) echo "SKIP $run (invalid route sidecar)"; continue ;; esac',
+       'case $route in luna|deepseek|deepseek-volker|deepseek-github2) ;; *) echo "SKIP $run (invalid route sidecar)"; continue ;; esac',
        'case $route in *) ;; esac')
 mutant("scripts/controller/resume-usage-limited.sh", "resume-max-age-validation.sh",
        "if [[ ! $max_age =~ ^[0-9]+$ ]] || (( max_age <= 0 )); then",
@@ -188,6 +218,57 @@ mutant("scripts/netcup/runner/host-sat-queue.sh", "queue-numeric-probe.sh",
        '', runner)
 mutant("scripts/controller/ctl-status.sh", "ctl-status-fresh-results.sh",
        'if [[ -f $CONTROLLER_HOME/logs/host-sat-results.tsv ]]; then', 'if true; then')
+
+account_helper_mutant(
+    "od-blocked-account-selection",
+    'return [account for account in ACCOUNTS if state[account]["blocked_until_epoch"] <= now]',
+    'return list(ACCOUNTS)',
+)
+account_helper_mutant(
+    "od-prefer-expiring-window",
+    'if prefer_expiring == "1":',
+    'if False:',
+)
+account_helper_mutant(
+    "od-preference-value-guard",
+    'if prefer_expiring not in ("0", "1"):',
+    'if False:',
+)
+account_helper_mutant(
+    "od-insufficient-balance-detection",
+    'if current.get("code") == "insufficient_balance":',
+    'if False:',
+)
+account_helper_mutant(
+    "od-resume-blocked-fallback",
+    'if state[account]["blocked_until_epoch"] > now:',
+    'if False:',
+)
+account_helper_mutant(
+    "od-reject-unknown-state-fields",
+    'if not isinstance(entry, dict) or set(entry) - FIELDS:',
+    'if not isinstance(entry, dict):',
+)
+account_helper_mutant(
+    "od-numeric-state-fields",
+    'if isinstance(value, bool) or not isinstance(value, (int, float)):',
+    'if False:',
+)
+account_helper_mutant(
+    "od-both-blocked-exit-code",
+    'raise SystemExit(3)',
+    'raise SystemExit(2)',
+)
+account_helper_mutant(
+    "od-state-path-absolute-guard",
+    'if not path.is_absolute():',
+    'if False:',
+)
+account_helper_mutant(
+    "od-exclusive-state-flock",
+    'fcntl.flock(stream.fileno(), fcntl.LOCK_EX)',
+    'fcntl.flock(stream.fileno(), fcntl.LOCK_SH)',
+)
 
 queue_source = repo / "scripts/netcup/runner/host-sat-queue.sh"
 

@@ -24,14 +24,18 @@ Useful settings:
 | `CONTROLLER_GATE_LOCK` | Absolute path for the first gate slot; read it from host policy before running `gate-run.sh`. |
 | `CONTROLLER_GATE2_LOCK` | Distinct absolute path for the second gate slot; both slot paths are required by `gate-run.sh`. |
 | `CONTROLLER_REPO` | Checkout used for status and queue work; repo-local scripts derive it. Set it when the queue is installed under `CONTROLLER_HOME/bin`. |
-| `CODEX_HOME_LUNA`, `CODEX_HOME_DEEPSEEK`, `CODEX_HOME_REVIEW` | Explicit Codex config homes for each route. |
+| `CODEX_HOME_LUNA`, `CODEX_HOME_DEEPSEEK_VOLKER`, `CODEX_HOME_DEEPSEEK_GITHUB2`, `CODEX_HOME_REVIEW` | Explicit Codex config homes for Luna, the two pinned Open Design accounts, and review. |
 | `CODEX_SQLITE_HOME` | Shared Codex session database path. |
 | `CODEX_AUTO_CONTINUE` | Optional non-negative Codex resume count after a reasoning-only completed turn; defaults to `0` for Luna and `2` for DeepSeek. |
+| `CONTROLLER_OD_STATE` | Optional absolute path for key-free Open Design account state; defaults to `$CONTROLLER_RUNS_DIR/opendesign-accounts.json`. |
+| `CONTROLLER_OD_PREFER_EXPIRING` | Set to `1` to prefer the available Open Design account with the soonest recorded `window_end_epoch`; defaults to `0`. |
 | `RESUME_SKIP` | Space-separated run names excluded by `resume-usage-limited.sh`. |
 | `RESUME_EXCLUDE_PREFIXES` | Space-separated run-name prefixes owned by another controller; defaults to `naf-`. |
 | `RESUME_MAX_AGE_MINUTES` | Recent-run scan window for `resume-usage-limited.sh`; defaults to `180`. |
 | `CMRU_VENV` | Selected project engine venv used by `release-from-wt.sh`. |
 | `OPENCODE_COMMAND` | OpenCode wrapper executable; defaults to `opencode` on `PATH`. |
+| `OPENCODE_PROVIDER` | Provider id used with the default DeepSeek model; defaults to `opendesign_github2`. |
+| `OPENCODE_MODEL` | Full OpenCode provider/model identifier; overrides `OPENCODE_PROVIDER`. |
 | `NETCUP_TOKEN_FILE` | Local provider token-file location for the configured `api_check` command. |
 | `REMOTE_GATE_HOSTS` | Host table used by `remote-gate.py`; defaults to `hosts.local.json`. |
 
