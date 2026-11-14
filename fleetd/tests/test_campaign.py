@@ -1676,6 +1676,40 @@ def test_deferred_requeue_is_dropped_when_candidate_finishes_before_target_retur
     assert not any(job.get("requeue_reason") == "host-lost" for job in state["jobs"].values())
 
 
+def test_deferred_retry_skips_work_already_running_on_a_third_host(tmp_path):
+    candidate_id = "a" * 64
+    manager = CampaignManager(tmp_path, FakeTransport())
+    requeued = []
+    manager._enqueue_replanned = lambda _state, source, ids, target, reason: requeued.append(
+        (source["name"], ids, target, reason)
+    )
+    state = {
+        "jobs": {
+            "lost-job": {"name": "lost-job", "host": "host-a", "candidate_ids": [candidate_id]},
+            "third-host-job": {
+                "name": "third-host-job", "host": "host-c", "candidate_ids": [candidate_id], "status": "RUNNING",
+            },
+        },
+        "deferred_requeues": [{
+            "source_job": "lost-job", "candidate_ids": [candidate_id], "reason": "lost host has no target",
+        }],
+        "hosts": {
+            "host-a": {"status": "LOST", "capacity_alone_bytes": 0},
+            "host-b": {"status": "ONLINE", "capacity_alone_bytes": 2},
+            "host-c": {"status": "ONLINE", "capacity_alone_bytes": 3},
+        },
+        "plan": {"hosts": [
+            {"id": "host-b", "status": "available"},
+            {"id": "host-c", "status": "available"},
+        ]},
+    }
+
+    manager._retry_deferred(state)
+
+    assert state["deferred_requeues"] == []
+    assert requeued == []
+
+
 def test_collection_uses_remote_progress_deduplicates_events_and_skips_owned_verdict(tmp_path):
     plan = _plan(30)
     transport = FakeTransport()
