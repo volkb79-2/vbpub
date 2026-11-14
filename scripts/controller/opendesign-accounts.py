@@ -470,17 +470,7 @@ def main(argv):
             print(selected)
             return 0
         if action == "resume":
-            if state[account]["blocked_until_epoch"] > now:
-                other = next(name for name in ACCOUNTS if name != account)
-                if state[other]["blocked_until_epoch"] > now:
-                    earliest = min(state[name]["blocked_until_epoch"] for name in ACCOUNTS)
-                    print(
-                        "both Open Design accounts are blocked; earliest reset is " + format_epoch(earliest),
-                        file=sys.stderr,
-                    )
-                    return 3
-                account = other
-            print(account)
+            print(account_for_resume(state, account, now))
             return 0
         if action == "find-thread-account":
             thread_id, runs_dir = argv[1:3]
