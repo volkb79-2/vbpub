@@ -281,10 +281,16 @@ mutant("scripts/controller/pi-impl.sh", "pi-auth-file-guard.sh",
 mutant("scripts/controller/pi-impl.sh", "pi-auth-source-guard.sh",
        'if ! . "$HOME/.env.ai" >/dev/null 2>&1; then', 'if false; then')
 mutant("scripts/controller/pi-impl.sh", "pi-volker-key-guard.sh",
-       '    [[ -n ${OPENDESIGN_API_KEY_VOLKER:-} ]] || {\n      echo "OPENDESIGN_API_KEY_VOLKER is not set by \\$HOME/.env.ai" >&2\n      exit 2\n    }',
+       '    [[ -v OPENDESIGN_API_KEY_VOLKER ]] && (( ${#OPENDESIGN_API_KEY_VOLKER} > 0 )) || {\n      echo "OPENDESIGN_API_KEY_VOLKER is not set by \\$HOME/.env.ai" >&2\n      exit 2\n    }',
        ': # removed selected Volker key guard')
+mutant("scripts/controller/pi-impl.sh", "pi-volker-key-xtrace.sh",
+       '[[ -v OPENDESIGN_API_KEY_VOLKER ]] && (( ${#OPENDESIGN_API_KEY_VOLKER} > 0 )) || {',
+       '[[ -n ${OPENDESIGN_API_KEY_VOLKER:-} ]] || {')
+mutant("scripts/controller/pi-impl.sh", "pi-github2-key-xtrace.sh",
+       '[[ -v OPENDESIGN_API_KEY_GITHUB2 ]] && (( ${#OPENDESIGN_API_KEY_GITHUB2} > 0 )) || {',
+       '[[ -n ${OPENDESIGN_API_KEY_GITHUB2:-} ]] || {')
 mutant("scripts/controller/pi-impl.sh", "pi-github2-key-guard.sh",
-       '    [[ -n ${OPENDESIGN_API_KEY_GITHUB2:-} ]] || {\n      echo "OPENDESIGN_API_KEY_GITHUB2 is not set by \\$HOME/.env.ai" >&2\n      exit 2\n    }',
+       '    [[ -v OPENDESIGN_API_KEY_GITHUB2 ]] && (( ${#OPENDESIGN_API_KEY_GITHUB2} > 0 )) || {\n      echo "OPENDESIGN_API_KEY_GITHUB2 is not set by \\$HOME/.env.ai" >&2\n      exit 2\n    }',
        ': # removed selected github2 key guard')
 mutant("scripts/controller/pi-impl.sh", "pi-session-sidecar.sh",
        '  printf \'%s\\n\' "$thread_id" > "$out/$name.thread"',
@@ -294,6 +300,12 @@ mutant("scripts/controller/pi-impl.sh", "pi-stdin-closed.sh",
        '  > "$out/$name.jsonl" 2> "$out/$name.err"); then')
 mutant("scripts/controller/pi-impl.sh", "pi-402-outcome.sh",
        'if [[ $stop_reason == error && $usage_limited == 1 ]]; then', 'if False; then')
+mutant("scripts/controller/pi-impl.sh", "pi-error-outcome.sh",
+       'elif [[ $stop_reason == error ]]; then\n  outcome=ERROR', 'elif False; then\n  outcome=ERROR')
+mutant("scripts/controller/pi-impl.sh", "pi-nonzero-exit-outcome.sh",
+       'elif [[ $rc != 0 ]]; then\n  outcome=ERROR', 'elif False; then\n  outcome=ERROR')
+mutant("scripts/controller/pi-impl.sh", "pi-success-stop-only.sh",
+       '&& -n $thread_id && $stop_reason == stop ]]; then', '&& -n $thread_id && -n $stop_reason ]]; then')
 mutant("scripts/controller/pi-impl.sh", "pi-account-block-run.sh",
        'block-run "$od_account"', 'record-thread "$thread_id"')
 mutant("scripts/controller/pi-impl.sh", "pi-key-selected-export.sh",

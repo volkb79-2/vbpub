@@ -18,6 +18,9 @@ content are redacted where needed.
 | `pi-success.jsonl` | Sanitized pi 1.5.0 event stream | A completed assistant message and session id. |
 | `pi-402.jsonl` | Sanitized pi 1.5.0 error events | `message_end` with `stopReason=error` and a 402 `errorMessage`; pi's process can still exit zero. |
 | `pi-402-unknown.jsonl` | Sanitized pi 1.5.0 error events | A 402 `errorMessage` with no `reset_at`, for the bounded unknown-reset rule. |
+| `pi-error-other.jsonl` | Sanitized pi 1.5.0 error events | A final `stopReason=error` whose `errorMessage` is not a 402; a plain failure that must not block an account. |
+| `pi-402-other-code.jsonl` | Sanitized pi 1.5.0 error events | A 402 `errorMessage` whose JSON `code` is not `insufficient_balance`; a plain failure, not a quota block. |
+| `pi-length.jsonl` | Sanitized pi 1.5.0 event stream | A settled run whose final assistant `stopReason` is `length`; not a success. |
 
 The fixtures are intentionally minimal: classification uses the real event
 types and messages that distinguish each terminal state, while the tests

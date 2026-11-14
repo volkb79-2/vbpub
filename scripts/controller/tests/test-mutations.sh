@@ -124,7 +124,10 @@ for pi_case in \
   pi-source-auth-env:source-env pi-session-sidecar:session-sidecar \
   pi-stdin-closed:stdin-closed pi-402-outcome:quota-outcome \
   pi-account-block-run:quota-block pi-key-selected-export:github2-key-export \
-  pi-key-volker-export:volker-key-export pi-key-unselected-unset:unselected-key-unset; do
+  pi-key-volker-export:volker-key-export pi-key-unselected-unset:unselected-key-unset \
+  pi-volker-key-xtrace:xtrace-key pi-github2-key-xtrace:xtrace-key \
+  pi-error-outcome:outcome-error pi-nonzero-exit-outcome:outcome-rc \
+  pi-success-stop-only:outcome-length; do
   pi_mutant=${pi_case%%:*}
   pi_focus=${pi_case#*:}
   expect_killed "$pi_mutant" \

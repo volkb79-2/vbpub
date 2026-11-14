@@ -134,7 +134,8 @@ if ! . "$HOME/.env.ai" >/dev/null 2>&1; then
 fi
 case $od_account in
   volker)
-    [[ -n ${OPENDESIGN_API_KEY_VOLKER:-} ]] || {
+    # Length test, never a value test: `bash -x` would trace the value into stderr.
+    [[ -v OPENDESIGN_API_KEY_VOLKER ]] && (( ${#OPENDESIGN_API_KEY_VOLKER} > 0 )) || {
       echo "OPENDESIGN_API_KEY_VOLKER is not set by \$HOME/.env.ai" >&2
       exit 2
     }
@@ -143,7 +144,7 @@ case $od_account in
     provider=opendesign_volker
     ;;
   github2)
-    [[ -n ${OPENDESIGN_API_KEY_GITHUB2:-} ]] || {
+    [[ -v OPENDESIGN_API_KEY_GITHUB2 ]] && (( ${#OPENDESIGN_API_KEY_GITHUB2} > 0 )) || {
       echo "OPENDESIGN_API_KEY_GITHUB2 is not set by \$HOME/.env.ai" >&2
       exit 2
     }
@@ -264,7 +265,7 @@ elif [[ $stop_reason == error ]]; then
   outcome=ERROR
 elif [[ $rc != 0 ]]; then
   outcome=ERROR
-elif [[ $settled == 1 && $aborted == 0 && -n $thread_id && -n $stop_reason ]]; then
+elif [[ $settled == 1 && $aborted == 0 && -n $thread_id && $stop_reason == stop ]]; then
   outcome=SUCCESS
 else
   outcome=INCOMPLETE

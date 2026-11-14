@@ -1,0 +1,4 @@
+{"type":"session","id":"pi-session-error"}
+{"type":"message_end","message":{"role":"assistant","content":[],"usage":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"reasoning":0,"totalTokens":0},"stopReason":"error","durationMs":1,"errorMessage":"500: {\"code\":\"internal_error\",\"message\":\"upstream failure\",\"type\":\"server_error\"}"}}
+{"type":"agent_end"}
+{"type":"agent_settled","aborted":false}

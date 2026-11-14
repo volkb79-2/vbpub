@@ -257,7 +257,10 @@ The pi event stream is saved as `<run>.jsonl`, stderr as `<run>.err`, the last
 assistant text as `<run>.last.txt`, and the worktree, selected route, and pi
 session id as `<run>.wt`, `<run>.route`, and `<run>.thread`. The `.done` marker
 includes the pi exit code and `OUTCOME=SUCCESS`, `OUTCOME=USAGE-LIMIT`,
-`OUTCOME=ERROR`, or `OUTCOME=INCOMPLETE`. Non-interactive pi requires closed
+`OUTCOME=ERROR`, or `OUTCOME=INCOMPLETE`; `SUCCESS` needs a settled stream, a
+session id and a final assistant `stopReason` of `stop` (a stream ending on
+`length` is `INCOMPLETE`, any other error is `ERROR` and blocks nothing).
+Non-interactive pi requires closed
 stdin; the wrapper always redirects it from `/dev/null`.
 
 Resume with the recorded session id and automatic route:

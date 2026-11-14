@@ -99,8 +99,67 @@ expect_rc() {
   fi
 }
 
+check_xtrace_key() {
+  local home=$ROOT/xtrace-home route suffix
+  mkdir -p "$home"
+  cat > "$home/.env.ai" <<'ENV'
+OPENDESIGN_API_KEY_VOLKER=xtrace-marker-volker
+OPENDESIGN_API_KEY_GITHUB2=xtrace-marker-github2
+ENV
+  for route in deepseek-pi-volker deepseek-pi-github2; do
+    suffix=${route#deepseek-pi-}
+    if ! PATH="$ROOT/bin:$PATH" HOME="$home" PI_ROUTE="$route" \
+      CONTROLLER_OD_STATE="$ROOT/xtrace-state.json" \
+      FAKE_PI_STREAM="$SCRIPT_DIR/fixtures/pi-success.jsonl" FAKE_PI_SESSION_ID="xtrace-$suffix-session" \
+      FAKE_PI_RC=0 bash -x "$SRC" "$WORKTREE" "$PROMPT" "xtrace-$suffix" \
+      > "$ROOT/xtrace-$suffix.log" 2>&1 < /dev/null; then
+      cat "$ROOT/xtrace-$suffix.log" >&2
+      fail "traced pi wrapper failed for $route"
+    fi
+    ! grep -qF xtrace-marker "$ROOT/xtrace-$suffix.log" || fail "shell tracing leaked a key value for $route"
+  done
+}
+
+check_outcome_error() {
+  local od_state=$ROOT/outcome-error-state.json
+  CONTROLLER_OD_STATE=$od_state wait_launch outcome-error deepseek-pi-volker pi-error-other /dev/null
+  [[ $(cat "$CONTROLLER_ROOT/runs/outcome-error.done") == 'EXIT=0 OUTCOME=ERROR' ]] \
+    || fail 'a pi error that is not a 402 is recorded as a plain failure'
+  CONTROLLER_OD_STATE=$od_state wait_launch outcome-402-other deepseek-pi-volker pi-402-other-code /dev/null
+  [[ $(cat "$CONTROLLER_ROOT/runs/outcome-402-other.done") == 'EXIT=0 OUTCOME=ERROR' ]] \
+    || fail 'a 402 with another error code is recorded as a plain failure'
+  python3 - "$od_state" <<'PY' || fail 'a non-quota pi error blocked an account'
+import json, sys
+state = json.load(open(sys.argv[1], encoding="utf-8"))
+assert state["volker"]["blocked_until_epoch"] == 0
+assert state["github2"]["blocked_until_epoch"] == 0
+PY
+}
+
+check_outcome_length() {
+  CONTROLLER_OD_STATE=$ROOT/outcome-length-state.json \
+    wait_launch outcome-length deepseek-pi-volker pi-length /dev/null
+  [[ $(cat "$CONTROLLER_ROOT/runs/outcome-length.done") == 'EXIT=0 OUTCOME=INCOMPLETE' ]] \
+    || fail 'a settled pi run whose final stopReason is not stop is not a success'
+}
+
+check_outcome_rc() {
+  local rc=0
+  PATH="$ROOT/bin:$PATH" HOME="$HOME_ROOT" PI_ROUTE=deepseek-pi-volker \
+    CONTROLLER_OD_STATE="$ROOT/outcome-rc-state.json" \
+    FAKE_PI_STREAM="$SCRIPT_DIR/fixtures/pi-success.jsonl" FAKE_PI_SESSION_ID=outcome-rc-session FAKE_PI_RC=1 \
+    "$SRC" "$WORKTREE" "$PROMPT" outcome-rc > "$ROOT/outcome-rc.launch.log" 2>&1 < /dev/null || rc=$?
+  [[ $rc == 1 ]] || fail "pi exit 1 was returned as $rc"
+  [[ $(cat "$CONTROLLER_ROOT/runs/outcome-rc.done") == 'EXIT=1 OUTCOME=ERROR' ]] \
+    || fail 'a nonzero pi exit with a clean stream is recorded as an error'
+}
+
 if [[ -n ${PI_TEST_FOCUS:-} ]]; then
   case $PI_TEST_FOCUS in
+    xtrace-key) check_xtrace_key ;;
+    outcome-error) check_outcome_error ;;
+    outcome-length) check_outcome_length ;;
+    outcome-rc) check_outcome_rc ;;
     prompt-absolute)
       expect_rc 2 env PATH="$ROOT/bin:$PATH" HOME="$HOME_ROOT" PI_ROUTE=deepseek-pi \
         "$SRC" "$WORKTREE" relative-prompt focused-relative
@@ -585,6 +644,11 @@ if PATH="$ROOT/bin:$PATH" HOME="$HOME_ROOT" PI_ROUTE=deepseek-pi-volker \
   fail 'pi wrapper accepted a traversing run name'
 else rc=$?; [[ $rc == 2 ]] || fail "run traversal exit was $rc, expected 2"; fi
 contains "$ROOT/run-traversal.log" 'invalid run name' 'pi run name traversal guard fires'
+
+check_xtrace_key
+check_outcome_error
+check_outcome_length
+check_outcome_rc
 
 not_contains test-key 'run evidence contains no key material' "$CONTROLLER_ROOT/runs"
 not_contains test-key 'account state contains no key material' "$STATE"
