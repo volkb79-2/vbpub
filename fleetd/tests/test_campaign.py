@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pytest
 
-from fleetd.campaign import CampaignManager, LOST_AFTER_SECONDS, STALL_FLOOR_SECONDS, _atomic_write, _event_key
+from fleetd.campaign import CampaignManager, LOST_AFTER_SECONDS, STALL_FLOOR_SECONDS, _atomic_write, _event_key, _system_boot_id
 from fleetd.contracts import ContractError
 from fleetd.plan import plan_campaign
 from fleetd.runner import (
@@ -37,6 +37,7 @@ from fleetd.transport import (
     json_output,
     shell_command,
 )
+from fleetd.runner_layout import progress_home_path
 from test_plan import DEMAND, _candidate, _candidate_table, _golden_8g_host_set
 
 
@@ -52,6 +53,43 @@ class FakeClock:
 
     def advance(self, seconds: float) -> None:
         self.value += seconds
+
+
+def test_system_boot_id_fails_closed_when_unavailable_or_invalid(monkeypatch):
+    boot_path = Path("/proc/sys/kernel/random/boot_id")
+    original_read_text = Path.read_text
+
+    def unavailable(path, *args, **kwargs):
+        if path == boot_path:
+            raise OSError("missing boot id")
+        return original_read_text(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", unavailable)
+    with pytest.raises(ContractError, match="boot id is unavailable"):
+        _system_boot_id()
+
+    def malformed(path, *args, **kwargs):
+        if path == boot_path:
+            return "not-a-boot-id"
+        return original_read_text(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", malformed)
+    with pytest.raises(ContractError, match="boot id has an invalid format"):
+        _system_boot_id()
+
+
+def test_restart_rebase_leaves_a_monotonic_value_without_utc_partner(tmp_path):
+    manager = CampaignManager(
+        tmp_path,
+        FakeTransport(),
+        clock=FakeClock(50),
+        utc_clock=FakeClock(1000),
+        boot_id=lambda: "boot-after",
+    )
+    state = {"clock_boot_id": "boot-before", "updated_mono": 123.0}
+    manager._rebase_after_restart(state)
+    assert state["updated_mono"] == 123.0
+    assert state["clock_boot_id"] == "boot-after"
 
 
 def _plan(count: int = 12) -> dict:
@@ -348,6 +386,10 @@ def test_job_names_digest_and_command_builders_are_stable_and_scoped():
     assert 'run-r2-campaign.sh\" stop' in stop
     assert "ssh " not in start and "docker " not in start
     assert canonical_probe_json({"jobs": []}) == '{"jobs":[]}'
+    with pytest.raises(ContractError, match="probe job key"):
+        probe_script({"wrong-name": spec})
+    with pytest.raises(ContractError, match="safe name"):
+        stop_script("unsafe/name")
     with pytest.raises(ContractError, match="safe name"):
         validate_job_spec(JobSpec("../bad", "host-a", 0, 0, values, "c" * 40, ".", "r2", 1))
     with pytest.raises(ContractError, match="full lowercase Git commit"):
@@ -411,6 +453,39 @@ def test_transport_paths_fake_metadata_and_fake_file_failures():
     with pytest.raises(HostUnavailable, match="unreachable"):
         transport.get("host-a", "a")
     assert json_output({"z": 2, "a": 1}) == '{"a":1,"z":2}'
+
+
+def test_fake_probe_uses_shared_runner_files_and_rejects_invalid_start_inputs():
+    transport = FakeTransport()
+    runner = RunnerJobs(transport)
+    spec = JobSpec("campaign", "host-a", 0, 0, ("a" * 64,), "b" * 40, ".", "r2", 1)
+    runner.start(spec)
+    host = transport.host("host-a")
+    digest_path = f"jobs/{spec.name}/list.sha256"
+    progress_path = progress_home_path(spec.commit, spec.project, spec.lane)
+    host.files[progress_path] = b"not-json\n"
+    del host.files[digest_path]
+
+    row = runner.probe("host-a", {spec.name: spec})[spec.name]
+    assert row["list_digest"] == spec.list_digest
+    assert row["progress_path"] == progress_path
+    assert row["records"] == []
+
+    mismatch = command_metadata("start", {
+        "name": "other-job",
+        "list_digest": "bad",
+        "ids_path": spec.candidate_file_home_path,
+    })
+    assert transport.run("host-a", mismatch) == (73, "", "candidate ids file digest mismatch")
+
+    rc, out, err = transport.run("host-a", command_metadata("probe", {"jobs": [None]}))
+    assert (rc, json.loads(out), err) == (0, {"jobs": []}, "")
+
+    del host.files[spec.candidate_file_home_path]
+    row = runner.probe("host-a", {spec.name: spec})[spec.name]
+    assert row["list_digest"] is None
+    assert row["progress_count"] == 0
+    assert transport.run("host-a", start_script(spec)) == (73, "", "candidate ids file is missing or invalid")
 
 
 def test_fake_job_table_handles_direct_duplicate_start_and_repeated_restart():
@@ -1275,6 +1350,24 @@ def test_refresh_unknown_initializes_progress_and_rejects_corrupt_candidate_ids(
         }
     }
     with pytest.raises(ContractError, match="candidate list"):
+        manager.status("campaign")
+
+
+def test_refresh_rejects_a_candidate_id_that_fails_the_runtime_validator(tmp_path, monkeypatch):
+    manager = CampaignManager(tmp_path, FakeTransport())
+    manager.run("campaign", _plan(1))
+    job = next(iter(_state(tmp_path)["jobs"].values()))
+    candidate_id = job["candidate_ids"][0]
+    manager.runner.probe = lambda _host, _wanted: {
+        job["name"]: {
+            "name": job["name"],
+            "state": "RUNNING",
+            "list_digest": job["list_digest"],
+            "records": [{"candidate_id": candidate_id, "outcome_bucket": "killed"}],
+        }
+    }
+    monkeypatch.setattr("fleetd.campaign.is_candidate_id", lambda _value: False)
+    with pytest.raises(TransportError, match="invalid candidate id"):
         manager.status("campaign")
 
 
