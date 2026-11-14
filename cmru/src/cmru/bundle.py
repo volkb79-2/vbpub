@@ -19,6 +19,7 @@ It is REQUIRED for deterministic builds; the function raises clearly if unset.
 from __future__ import annotations
 
 import io
+import json
 import os
 import re
 import shutil
@@ -610,13 +611,19 @@ def build_wheel(config: BundleConfig) -> None:
     subprocess.run(command, check=True, cwd=str(config.wheel_project_root))
 
 
-def _warn_excluded_copy(path: str) -> None:
+def _warn_excluded_copy(path: str, warned_paths: set[str]) -> None:
+    if path in warned_paths:
+        return
+    warned_paths.add(path)
     print(f"[WARN] Skipping hard-excluded bundle path: {path}", file=sys.stderr)
 
 
 def _copy_ignore(
     config: BundleConfig, source_root: Path, bundle_prefix: str,
+    warned_paths: Optional[set[str]] = None,
 ) -> Callable[[str, list[str]], set[str]]:
+    seen_warnings = set() if warned_paths is None else warned_paths
+
     def ignore_excluded(directory: str, names: list[str]) -> set[str]:
         ignored: set[str] = set()
         base = Path(directory)
@@ -627,8 +634,12 @@ def _copy_ignore(
                 output_parts.extend(relative_dir.parts)
             output_parts.append(name)
             rel = PurePosixPath(*output_parts).as_posix()
-            if _is_excluded(rel, config.archive_keep):
-                _warn_excluded_copy(rel)
+            candidate = base / name
+            is_directory = candidate.is_dir() and not candidate.is_symlink()
+            if _has_hard_excluded_name(rel) or (
+                not is_directory and _is_excluded(rel, config.archive_keep)
+            ):
+                _warn_excluded_copy(rel, seen_warnings)
                 ignored.add(name)
         return ignored
 
@@ -649,14 +660,15 @@ def _reject_copy_symlinks(config: BundleConfig, source_root: Path, bundle_prefix
             raise ValueError(f"bundle source path {rel!r} is not a regular file or directory")
 
 
-def copy_sources(config: BundleConfig) -> None:
+def copy_sources(config: BundleConfig, warned_paths: Optional[set[str]] = None) -> None:
+    seen_warnings = set() if warned_paths is None else warned_paths
     for file_path in config.copy_files:
         source = _copy_path(config.project_root, file_path)
         if not source.exists() and not source.is_symlink():
             raise FileNotFoundError(f"Bundle source file not found: {source}")
         rel = PurePosixPath(source.name).as_posix()
         if _is_excluded(rel, config.archive_keep):
-            _warn_excluded_copy(rel)
+            _warn_excluded_copy(rel, seen_warnings)
             continue
         if _has_symlink_component(source):
             raise ValueError(f"bundle source path {rel!r} is a symlink; refusing to copy its target")
@@ -671,12 +683,12 @@ def copy_sources(config: BundleConfig) -> None:
         if _has_symlink_component(source) or not source.is_dir():
             raise ValueError(f"Bundle source dir is not a directory: {source}")
         if _has_hard_excluded_name(source.name):
-            _warn_excluded_copy(PurePosixPath(source.name).as_posix())
+            _warn_excluded_copy(PurePosixPath(source.name).as_posix(), seen_warnings)
             continue
         _reject_copy_symlinks(config, source, source.name)
         shutil.copytree(
             source, config.bundle_dir / source.name,
-            ignore=_copy_ignore(config, source, source.name),
+            ignore=_copy_ignore(config, source, source.name, seen_warnings),
         )
 
     if config.client_dir.exists():
@@ -684,7 +696,7 @@ def copy_sources(config: BundleConfig) -> None:
         shutil.copytree(
             config.client_dir,
             config.bundle_dir / config.client_dir.name,
-            ignore=_copy_ignore(config, config.client_dir, config.client_dir.name),
+            ignore=_copy_ignore(config, config.client_dir, config.client_dir.name, seen_warnings),
         )
 
 
@@ -725,6 +737,7 @@ def create_archive(
     *,
     version_fallback: Optional[str] = None,
     environ: Optional[Mapping[str, str]] = None,
+    warned_paths: Optional[set[str]] = None,
 ) -> Path:
     tarball_path = archive_path(
         config, variant_name, version_fallback=version_fallback, environ=environ,
@@ -750,7 +763,7 @@ def create_archive(
             temp_root / config.bundle_dir.name,
             # Keep entries are relative to the bundle root, without the archive
             # member prefix used only when writing the final archive.
-            ignore=_copy_ignore(config, config.bundle_dir, ""),
+            ignore=_copy_ignore(config, config.bundle_dir, "", warned_paths),
         )
         shutil.make_archive(
             tarball_path.with_suffix("").with_suffix(""),
@@ -934,6 +947,40 @@ def write_bundle_manifest(config: BundleConfig, *, project: str, tag: str) -> Pa
     return write_manifest(manifest, config.bundle_dir / config.manifest_name)
 
 
+def _verify_manifest_inventory(config: BundleConfig) -> None:
+    """Fail if archive-eligible paths changed after their manifest was written."""
+    assert config.manifest_name is not None
+    _validate_final_bundle_tree(config)
+    manifest_path = config.bundle_dir / config.manifest_name
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        expected_files = manifest["files"]
+    except (OSError, json.JSONDecodeError, KeyError, TypeError):
+        raise ValueError("bundle manifest cannot be read for pre-archive verification") from None
+    if not isinstance(expected_files, dict) or any(
+        not isinstance(path, str) for path in expected_files
+    ):
+        raise ValueError("bundle manifest has an invalid files map for pre-archive verification")
+
+    excluded = {config.manifest_name, config.manifest_name + ".minisig"}
+    actual_paths: set[str] = set()
+    for path in config.bundle_dir.rglob("*"):
+        relative = path.relative_to(config.bundle_dir).as_posix()
+        if relative in excluded or _is_excluded(relative, config.archive_keep):
+            continue
+        if path.is_file():
+            actual_paths.add(relative)
+
+    expected_paths = set(expected_files)
+    if actual_paths != expected_paths:
+        added = sorted(actual_paths - expected_paths)
+        missing = sorted(expected_paths - actual_paths)
+        raise ValueError(
+            "bundle tree changed after the manifest was written; archive membership would "
+            f"not match the manifest (added: {added}, missing: {missing})"
+        )
+
+
 def _preflight_bundle_steps(
     config: BundleConfig,
     variant: Optional[VariantConfig],
@@ -1026,20 +1073,26 @@ def run_bundle(
         own_archive.unlink(missing_ok=True)
     config.bundle_dir.mkdir(parents=True, exist_ok=True)
 
+    warned_paths: set[str] = set()
     build_wheel(config)
-    copy_sources(config)
+    copy_sources(config, warned_paths)
     vendor_dependencies(config, variant, run, environment)
     run_stage(config, variant, run, environment)
     _validate_final_bundle_tree(config)
     if config.manifest_name is not None:
         write_bundle_manifest(config, project=manifest_project, tag=manifest_tag)
+        _verify_manifest_inventory(config)
     archive = create_archive(
         config,
         variant.name if variant is not None else None,
         version_fallback=version_fallback,
+        warned_paths=warned_paths,
     )
     if not config.keep_tree:
-        shutil.rmtree(config.bundle_dir)
+        staged_dirs = {config.bundle_dir, config.client_dir}
+        for staged_dir in sorted(staged_dirs, key=lambda path: len(path.parts), reverse=True):
+            if staged_dir.exists():
+                shutil.rmtree(staged_dir)
     return archive
 
 
