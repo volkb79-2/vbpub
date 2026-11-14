@@ -40,7 +40,7 @@ fi
 out=$CONTROLLER_RUNS_DIR
 if [[ $mode == new ]]; then
   existing=()
-  for extension in done jsonl err; do
+  for extension in 'done' 'jsonl' 'err'; do
     [[ -e $out/$name.$extension ]] && existing+=("$out/$name.$extension")
   done
   if [[ ${CONTROLLER_RUN_FORCE:-0} != 1 ]] && (( ${#existing[@]} > 0 )); then
@@ -124,9 +124,10 @@ if [[ $mode == resume ]]; then
 fi
 
 if [[ ! -r $HOME/.env.ai ]]; then
-  echo 'pi route requires the local $HOME/.env.ai file' >&2
+  echo "pi route requires the local \$HOME/.env.ai file" >&2
   exit 2
 fi
+# shellcheck disable=SC1091
 if ! . "$HOME/.env.ai" >/dev/null 2>&1; then
   echo 'could not load the local pi API-key environment' >&2
   exit 2
@@ -134,7 +135,7 @@ fi
 case $od_account in
   volker)
     [[ -n ${OPENDESIGN_API_KEY_VOLKER:-} ]] || {
-      echo 'OPENDESIGN_API_KEY_VOLKER is not set by $HOME/.env.ai' >&2
+      echo "OPENDESIGN_API_KEY_VOLKER is not set by \$HOME/.env.ai" >&2
       exit 2
     }
     export OPENDESIGN_API_KEY_VOLKER
@@ -143,7 +144,7 @@ case $od_account in
     ;;
   github2)
     [[ -n ${OPENDESIGN_API_KEY_GITHUB2:-} ]] || {
-      echo 'OPENDESIGN_API_KEY_GITHUB2 is not set by $HOME/.env.ai' >&2
+      echo "OPENDESIGN_API_KEY_GITHUB2 is not set by \$HOME/.env.ai" >&2
       exit 2
     }
     export OPENDESIGN_API_KEY_GITHUB2

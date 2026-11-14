@@ -2,7 +2,6 @@
 set -uo pipefail
 unset PI_ROUTE PI_MODEL PI_THINKING PI_SESSION_DIR OPENDESIGN_API_KEY_VOLKER OPENDESIGN_API_KEY_GITHUB2
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
-REPO_ROOT=$(cd -- "$SCRIPT_DIR/../../.." && pwd -P)
 SRC=${PI_IMPL_SCRIPT:-$SCRIPT_DIR/../pi-impl.sh}
 ROOT=$(mktemp -d "${TMPDIR:-/tmp}/controller-pi-test.XXXXXX")
 cleanup() { [[ -n ${KEEP_TEST_ROOT:-} ]] || rm -rf -- "$ROOT"; }
@@ -271,7 +270,7 @@ if PATH="$ROOT/bin:$PATH" HOME="$MISSING_ENV_HOME" PI_ROUTE=deepseek-pi-volker \
   "$SRC" "$WORKTREE" "$PROMPT" missing-env > "$ROOT/missing-env.log" 2>&1; then
   fail 'pi wrapper started without the local .env.ai file'
 else rc=$?; [[ $rc == 2 ]] || fail "missing env-file exit was $rc, expected 2"; fi
-contains "$ROOT/missing-env.log" 'pi route requires the local $HOME/.env.ai file' 'missing .env.ai is refused'
+contains "$ROOT/missing-env.log" "pi route requires the local \$HOME/.env.ai file" 'missing .env.ai is refused'
 
 UNEXPORTED_HOME=$ROOT/unexported-home
 mkdir -p "$UNEXPORTED_HOME"
@@ -323,11 +322,11 @@ DESIGN_SOURCE=${DESIGN_SOURCE:-$SCRIPT_DIR/../docs/DESIGN-GUIDE.md}
 CONSUMER_SOURCE=${CONSUMER_SOURCE:-$SCRIPT_DIR/../docs/CONSUMERS.md}
 RULES_SOURCE=${RULES_SOURCE:-$SCRIPT_DIR/../rules.md}
 ENV_SOURCE=${ENV_SOURCE:-$SCRIPT_DIR/../controller.local.env.example}
-contains "$README_SOURCE" '`deepseek-pi` | `pi-impl.sh` | Favored Open Design route' 'README names pi as the favored route'
+contains "$README_SOURCE" "\`deepseek-pi\` | \`pi-impl.sh\` | Favored Open Design route" 'README names pi as the favored route'
 contains "$README_SOURCE" 'docs/DESIGN-GUIDE.md#pi-open-design-route' 'README links the pi route design rationale'
 contains "$README_SOURCE" 'docs/CONSUMERS.md#run-pi-on-open-design' 'README links the pi adoption guide'
 contains "$DESIGN_SOURCE" 'Pi 1.5.0 can report a provider 402' 'design guide explains pi exit-zero 402 classification'
-contains "$CONSUMER_SOURCE" '`deepseek-pi` is the favored Pi route' 'consumer guide names the favored pi route'
+contains "$CONSUMER_SOURCE" "\`deepseek-pi\` is the favored Pi route" 'consumer guide names the favored pi route'
 contains "$CONSUMER_SOURCE" 'PI_ROUTE=deepseek-pi' 'consumer guide has a copyable pi launch'
 contains "$RULES_SOURCE" 'deepseek-pi-volker' 'controller rules list pinned pi routes'
 contains "$ENV_SOURCE" 'PI_THINKING="high"' 'local environment example documents the thinking default'

@@ -281,10 +281,10 @@ mutant("scripts/controller/pi-impl.sh", "pi-auth-file-guard.sh",
 mutant("scripts/controller/pi-impl.sh", "pi-auth-source-guard.sh",
        'if ! . "$HOME/.env.ai" >/dev/null 2>&1; then', 'if false; then')
 mutant("scripts/controller/pi-impl.sh", "pi-volker-key-guard.sh",
-       "    [[ -n ${OPENDESIGN_API_KEY_VOLKER:-} ]] || {\n      echo 'OPENDESIGN_API_KEY_VOLKER is not set by $HOME/.env.ai' >&2\n      exit 2\n    }",
+       '    [[ -n ${OPENDESIGN_API_KEY_VOLKER:-} ]] || {\n      echo "OPENDESIGN_API_KEY_VOLKER is not set by \\$HOME/.env.ai" >&2\n      exit 2\n    }',
        ': # removed selected Volker key guard')
 mutant("scripts/controller/pi-impl.sh", "pi-github2-key-guard.sh",
-       "    [[ -n ${OPENDESIGN_API_KEY_GITHUB2:-} ]] || {\n      echo 'OPENDESIGN_API_KEY_GITHUB2 is not set by $HOME/.env.ai' >&2\n      exit 2\n    }",
+       '    [[ -n ${OPENDESIGN_API_KEY_GITHUB2:-} ]] || {\n      echo "OPENDESIGN_API_KEY_GITHUB2 is not set by \\$HOME/.env.ai" >&2\n      exit 2\n    }',
        ': # removed selected github2 key guard')
 mutant("scripts/controller/pi-impl.sh", "pi-session-sidecar.sh",
        '  printf \'%s\\n\' "$thread_id" > "$out/$name.thread"',
