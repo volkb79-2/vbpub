@@ -194,6 +194,7 @@ items:
   - {id: B541, title: "The B105 container driver accepts only /workspaces/vbpub layouts, but the T3 runner stores checkouts under /workspaces/<commit>", type: bugfix, component: runner, context_estimate: small}
   - {id: B542, title: "Reuse passing R2 baseline facts across restarts without dropping the cheap environment smoke", type: feature, component: mutation, context_estimate: medium}
   - {id: B543, title: "Measure and reduce per-candidate pytest startup time without writing bytecode into the snapshot", type: improvement, component: execution, context_estimate: medium}
+  - {id: B544, title: "Merge candidate-scoped Assay stores from an explicit owner manifest and refuse incomplete or conflicting ownership", type: feature, component: mutation, context_estimate: medium}
 ---
 
 # assay — backlog
@@ -15014,3 +15015,35 @@ location remains outside the snapshot; and the result is documented with the
 adopt-or-defer decision. If the change is adopted in PWMCP, its A/B evidence
 and snapshot-cleanliness tests are recorded there too, and the applicable
 registered ciu R2 and PWMCP R1/R2 lanes pass.
+
+## B544 — merge candidate-scoped Assay stores from an explicit owner manifest
+
+**Status:** OPEN (filed 2026-11-13); correctness contract for fleet collection.
+Related: fleetd FD-008 and Run-Gate RG-277.
+
+**Problem.** fleetd MVP-B-lite can report one earliest finished record per
+candidate and count duplicate runs, but it does not merge remote Assay state
+stores into one same-judge store or produce a strict whole-lane verdict. A
+candidate-level table is not a substitute for Assay's full verdict and
+provenance contract.
+
+**Proposed contract.** Accept an explicit versioned `assay-merge-manifest/1`
+whose planned candidate IDs map to exactly one owner store. Require every
+owner store and record, require one matching judge identity across stores,
+and reject absent, ambiguous, or mismatched owners. A non-owner duplicate is
+ignored and counted; it cannot replace the designated owner's record even if
+it finished earlier. Preserve the existing native verdict schema and normal
+Assay state validation. Run-Gate may forward the manifest but does not define
+or interpret Assay's merge semantics.
+
+**Oracles.** A complete two-store campaign reconstructs the same final record
+set as a same-judge serial run. Missing owner records, duplicate owner claims,
+unknown candidate IDs, judge mismatch, and missing stores each refuse with a
+specific reason. A finished non-owner duplicate is counted and ignored;
+changing timestamps does not change ownership. Deterministic reruns produce
+identical merged bytes and candidate dispositions.
+
+**Close when.** The versioned manifest contract, source implementation,
+consumer docs, behavioral tests, and mutation proofs land together; the
+registered Assay gate passes at 100% line and branch coverage; and Run-Gate
+RG-277 proves it forwards the manifest unchanged through its registered gate.
