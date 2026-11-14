@@ -29,7 +29,7 @@ because the child cannot attest reliable invocation metadata.
 
 `job-check.sh` keeps the prototype's `any` route as an explicit allowed-set
 mode: each commit in the selected base range, including merge commits, must
-contain at least one accepted Codex Luna/DeepSeek or Claude trailer. More than
+contain at least one accepted Codex Luna/Sol/DeepSeek or Claude trailer. More than
 one recognized trailer is accepted and reported as `INFO`, because one commit
 can legitimately carry the trailers of multiple agents. Named routes still
 require exactly their own Codex trailer, while `none` skips trailer auditing.
