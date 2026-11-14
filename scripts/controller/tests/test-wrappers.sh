@@ -10,6 +10,7 @@ cleanup() { [[ -n ${KEEP_TEST_ROOT:-} ]] || rm -rf -- "$ROOT"; }
 trap cleanup EXIT
 fail() { echo "FAIL: $*" >&2; exit 1; }
 contains() { grep -qF -- "$2" "$1" || fail "$3 (missing: $2)"; }
+not_contains() { ! grep -qF -- "$2" "$1" || fail "$3 (unexpected: $2)"; }
 
 mkdir -p "$ROOT/home" "$ROOT/bin" "$ROOT/controller" "$ROOT/repo" "$ROOT/venv/bin"
 cat > "$ROOT/bin/api-check" <<'SH'

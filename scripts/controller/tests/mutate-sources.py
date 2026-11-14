@@ -117,7 +117,8 @@ mutant("scripts/controller/job-check.sh", "job-check-merge-trailer.sh",
 mutant("scripts/controller/job-check.sh", "job-check-any-claude-trailer.sh",
        'Claude [A-Za-z0-9. ]+', 'Claude NEVER')
 mutant("scripts/controller/job-check.sh", "job-check-deepseek-pinned-routes.sh",
-       'deepseek|deepseek-volker|deepseek-github2|opencode', 'deepseek|opencode')
+       '  deepseek|deepseek-volker|deepseek-github2|opencode)\n    trailer_mode=single',
+       '  deepseek|opencode)\n    trailer_mode=single')
 mutant("scripts/controller/codex-impl.sh", "codex-deepseek-catalog.sh",
        'sys.exit(1 if any(m.get("tool_mode") is not None for m in data.get("models", [])) else 0)',
        'sys.exit(0)')
