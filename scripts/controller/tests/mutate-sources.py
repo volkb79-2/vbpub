@@ -113,6 +113,10 @@ mutant("scripts/controller/codex-impl.sh", "codex-stale-run-markers.sh",
 mutant("scripts/controller/codex-impl.sh", "codex-stale-run-resume-mode.sh",
        'if [[ $mode == new ]]; then\n  existing=()',
        'if true; then\n  existing=()')
+mutant("scripts/controller/job-check.sh", "job-check-any-sol-trailer.sh",
+       '|gpt-6-sol|', '|')
+mutant("scripts/controller/job-check.sh", "job-check-sol-route-trailer.sh",
+       '  sol)\n    trailer_mode=single', '  sol)\n    trailer_mode=none')
 mutant("scripts/controller/job-check.sh", "job-check-any-multi-trailer.sh",
        'if (( count == 0 )); then', 'if (( count != 1 )); then')
 mutant("scripts/controller/job-check.sh", "job-check-usage-limit-message-flags.sh",

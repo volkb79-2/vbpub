@@ -101,8 +101,40 @@ CONTROLLER_HOME=$HOME_ROOT CONTROLLER_REPO=$REPO CONTROLLER_BASE_REF=origin/main
     fail 'deepseek route should require its own exact trailer'
   }
 contains "$ROOT/route-deepseek.out" 'trailers OK (all commits incl. merges: deepseek)' 'deepseek route remains available'
+git -C "$REPO" switch -qc sol-task "$BASE"
+printf 'sol review fix\n' > "$REPO/sol.txt"
+git -C "$REPO" add sol.txt
+git -C "$REPO" commit -qm 'Sol route commit' -m 'Co-Authored-By: Codex gpt-6-sol <noreply@openai.com>'
+write_gate_log
+CONTROLLER_HOME=$HOME_ROOT CONTROLLER_REPO=$REPO CONTROLLER_BASE_REF=origin/main \
+  "$SRC" healthy "$REPO" sol > "$ROOT/route-sol.out" 2>&1 || {
+    cat "$ROOT/route-sol.out" >&2
+    fail 'sol route should accept its own exact trailer'
+  }
+contains "$ROOT/route-sol.out" 'trailers OK (all commits incl. merges: sol)' 'sol route is available'
+CONTROLLER_HOME=$HOME_ROOT CONTROLLER_REPO=$REPO CONTROLLER_BASE_REF=origin/main \
+  "$SRC" healthy "$REPO" any > "$ROOT/route-sol-any.out" 2>&1 || {
+    cat "$ROOT/route-sol-any.out" >&2
+    fail 'route any should accept the sol trailer'
+  }
+contains "$ROOT/route-sol-any.out" 'trailers OK (all commits incl. merges: any)' 'any route accepts the sol trailer'
+if CONTROLLER_HOME=$HOME_ROOT CONTROLLER_REPO=$REPO CONTROLLER_BASE_REF=origin/main \
+  "$SRC" healthy "$REPO" luna > "$ROOT/route-sol-as-luna.out" 2>&1; then fail 'luna route accepted a sol trailer'; fi
+contains "$ROOT/route-sol-as-luna.out" 'NO/WRONG TRAILER' 'luna route reports the sol trailer as wrong'
+git -C "$REPO" switch -qc sol-double "$BASE"
+printf 'sol double\n' > "$REPO/sol-double.txt"
+git -C "$REPO" add sol-double.txt
+git -C "$REPO" commit -qm 'Sol double trailer' -m 'Co-Authored-By: Codex gpt-6-sol <noreply@openai.com>
+Co-Authored-By: Codex gpt-6-sol <noreply@openai.com>'
+write_gate_log
+if CONTROLLER_HOME=$HOME_ROOT CONTROLLER_REPO=$REPO CONTROLLER_BASE_REF=origin/main \
+  "$SRC" healthy "$REPO" sol > "$ROOT/route-sol-double.out" 2>&1; then fail 'sol route accepted two sol trailers on one commit'; fi
+contains "$ROOT/route-sol-double.out" 'NO/WRONG TRAILER' 'sol route requires exactly one trailer'
 git -C "$REPO" switch -q task
 write_gate_log
+if CONTROLLER_HOME=$HOME_ROOT CONTROLLER_REPO=$REPO CONTROLLER_BASE_REF=origin/main \
+  "$SRC" healthy "$REPO" sol > "$ROOT/route-luna-as-sol.out" 2>&1; then fail 'sol route accepted luna trailers'; fi
+contains "$ROOT/route-luna-as-sol.out" 'NO/WRONG TRAILER' 'sol route reports luna trailers as wrong'
 printf "run-gate.commit=%s\nPASS ctl-status\nrun-gate: lane 'suite' verdict PASS; exit_code 0\n" \
   "$(git -C "$REPO" rev-parse HEAD)" > "$CONTROLLER_LOGS_DIR/suite.log"
 printf "run-gate.commit=%s\nPASS ctl-status\nrun-gate: lane 'suite' verdict PASS; exit_code 0\n" \
