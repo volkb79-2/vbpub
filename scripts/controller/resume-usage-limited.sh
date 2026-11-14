@@ -108,7 +108,7 @@ resumed_wrapper_is_alive() {
 
 resume_with_claim() {
   local run=$1 worktree=$2 route=$3 thread_id=$4
-  local resumed_name=$run-resumed lock_path=$runs_dir/$run-resumed.resume.lock lock_fd lock_rc process_rc rc
+  local resumed_name=$run-resumed lock_path=$runs_dir/$run-resumed.resume.lock lock_fd lock_rc process_rc rc account selected
   exec {lock_fd}>"$lock_path" || { echo "cannot open resume claim: $lock_path" >&2; return 2; }
   flock -n "$lock_fd"
   lock_rc=$?
@@ -129,7 +129,23 @@ resume_with_claim() {
     return 2
   fi
 
-  printf 'RESUME %s thread=%s reset=%s worktree=%s\n' "$run" "$thread_id" "$reset_time" "$worktree"
+  case $route in
+    deepseek-volker|deepseek-github2)
+      account=${route#deepseek-}
+      if selected=$(CONTROLLER_RUNS_DIR="$runs_dir" python3 "$SCRIPT_DIR/opendesign-accounts.py" resume "$account"); then
+        if [[ $selected != "$account" ]]; then
+          printf 'RESUME %s account fallback from %s to %s because the recorded account is blocked\n' \
+            "$run" "$route" "deepseek-$selected"
+          route=deepseek-$selected
+        fi
+      else
+        rc=$?
+        exec {lock_fd}>&-
+        return "$rc"
+      fi
+      ;;
+  esac
+  printf 'RESUME %s thread=%s reset=%s worktree=%s route=%s\n' "$run" "$thread_id" "$reset_time" "$worktree" "$route"
   rc=0
   if CODEX_ROUTE=$route "$impl" "$worktree" "$SCRIPT_DIR/finisher-generic.md" "$resumed_name" resume "$thread_id"; then
     :
@@ -159,7 +175,7 @@ while IFS= read -r -d '' run_file; do
   done_status=$(head -n 1 "$runs_dir/$run.done")
   if [[ $done_status =~ ^EXIT=0([[:space:]]|$) ]]; then echo "SKIP $run (EXIT=0)"; continue; fi
   if [[ -e $runs_dir/$run-resumed.done ]]; then echo "SKIP $run (resume attempt already recorded)"; continue; fi
-  if ! reset_time=$(usage_retry_text "$run_file"); then continue; fi
+  if ! reset_time=$(usage_retry_text "$run_file" "$runs_dir/$run.err"); then continue; fi
   if [[ ! $reset_time =~ ^[0-9]{1,2}:[0-9]{2}([[:space:]]*[AP]M)?$ ]]; then
     if ! reset_epoch=$(usage_retry_epoch "$reset_time"); then
       echo "SKIP $run (cannot parse limit retry date: $reset_time)"
@@ -173,7 +189,7 @@ while IFS= read -r -d '' run_file; do
   fi
   if [[ ! -f $runs_dir/$run.route ]]; then echo "SKIP $run (no route sidecar)"; continue; fi
   IFS= read -r route < "$runs_dir/$run.route" || true
-  case $route in luna|deepseek) ;; *) echo "SKIP $run (invalid route sidecar)"; continue ;; esac
+  case $route in luna|deepseek|deepseek-volker|deepseek-github2) ;; *) echo "SKIP $run (invalid route sidecar)"; continue ;; esac
   thread_id=$(thread_id_from_stream "$run_file")
   if [[ -z $thread_id ]]; then echo "SKIP $run (no thread id)"; continue; fi
   if (( dry_run )); then

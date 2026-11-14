@@ -1,14 +1,17 @@
 #!/usr/bin/env bash
 set -uo pipefail
-unset CODEX_ROUTE CODEX_HOME_OVERRIDE CODEX_HOME_LUNA CODEX_HOME_DEEPSEEK CODEX_HOME_REVIEW CODEX_MODEL CODEX_EFFORT
+unset CODEX_ROUTE CODEX_HOME_OVERRIDE CODEX_HOME_LUNA CODEX_HOME_DEEPSEEK_VOLKER CODEX_HOME_DEEPSEEK_GITHUB2 CODEX_HOME_REVIEW CODEX_MODEL CODEX_EFFORT
 unset CODEX_REVIEW_MODEL CODEX_REVIEW_EFFORT CODEX_SQLITE_HOME
-unset OPENCODE_COMMAND OPENCODE_MODEL
+unset CONTROLLER_OD_STATE CONTROLLER_OD_PREFER_EXPIRING CONTROLLER_OD_UNKNOWN_BLOCK_SECONDS OPENDESIGN_API_KEY_VOLKER OPENDESIGN_API_KEY_GITHUB2
+unset OPENCODE_COMMAND OPENCODE_MODEL OPENCODE_PROVIDER
+unset FAKE_CODEX_402 FAKE_CODEX_402_UNKNOWN FAKE_CODEX_THREAD_ID FAKE_CODEX_CORRUPT_STATE CODEX_RC
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 ROOT=$(mktemp -d "${TMPDIR:-/tmp}/controller-wrapper-test.XXXXXX")
 cleanup() { [[ -n ${KEEP_TEST_ROOT:-} ]] || rm -rf -- "$ROOT"; }
 trap cleanup EXIT
 fail() { echo "FAIL: $*" >&2; exit 1; }
 contains() { grep -qF -- "$2" "$1" || fail "$3 (missing: $2)"; }
+not_contains() { ! grep -qF -- "$2" "$1" || fail "$3 (unexpected: $2)"; }
 
 mkdir -p "$ROOT/home" "$ROOT/bin" "$ROOT/controller" "$ROOT/repo" "$ROOT/venv/bin"
 cat > "$ROOT/bin/api-check" <<'SH'
@@ -24,11 +27,31 @@ SH
 cat > "$ROOT/bin/codex" <<'SH'
 #!/usr/bin/env bash
 printf 'HOME=%s\nSQLITE=%s\nARGS=%s\n' "$CODEX_HOME" "$CODEX_SQLITE_HOME" "$*" >> "$CODEX_LOG"
+if [[ -n ${FAKE_CODEX_STREAM:-} ]]; then
+  cat -- "$FAKE_CODEX_STREAM"
+  exit 42
+fi
+if [[ ${FAKE_CODEX_402:-0} == 1 ]]; then
+  printf '{"error":{"code":"insufficient_balance","details":{"coding_plan_exhausted":true,"reset_at":"2099-11-17T11:44:44Z"}}}\n' >&2
+  exit 42
+fi
+if [[ ${FAKE_CODEX_402_UNKNOWN:-} == missing ]]; then
+  printf '{"error":{"code":"insufficient_balance","details":{"coding_plan_exhausted":true}}}\n' >&2
+  exit 42
+elif [[ ${FAKE_CODEX_402_UNKNOWN:-} == invalid ]]; then
+  printf '{"error":{"code":"insufficient_balance","details":{"coding_plan_exhausted":true,"reset_at":"not-a-date"}}}\n' >&2
+  exit 42
+fi
+if [[ -n ${FAKE_CODEX_THREAD_ID:-} ]]; then
+  printf '{"type":"thread.started","thread_id":"%s"}\n' "$FAKE_CODEX_THREAD_ID"
+fi
 printf '{"type":"item.completed","item":{"type":"agent_message","text":"complete"}}\n'
+if [[ -n ${FAKE_CODEX_CORRUPT_STATE:-} ]]; then printf '{' > "$FAKE_CODEX_CORRUPT_STATE"; fi
 exit "${CODEX_RC:-0}"
 SH
 cat > "$ROOT/bin/opencode" <<'SH'
 #!/usr/bin/env bash
+printf '%s\n' "$*" >> "$OPENCODE_LOG"
 printf '{"text":"opencode-complete"}\n'
 SH
 cat > "$ROOT/venv/bin/cmru" <<'SH'
@@ -55,11 +78,15 @@ echo remote-image
 SH
 chmod +x "$ROOT/bin/api-check" "$ROOT/bin/fake-ssh" "$ROOT/bin/codex" "$ROOT/bin/opencode" \
   "$ROOT/venv/bin/cmru" "$ROOT/bin/docker" "$ROOT/bin/fake-hx"
-export API_LOG=$ROOT/api.log SSH_LOG=$ROOT/ssh.log CODEX_LOG=$ROOT/codex.log CMRU_LOG=$ROOT/cmru.log HX_LOG=$ROOT/hx.log
+export API_LOG=$ROOT/api.log SSH_LOG=$ROOT/ssh.log CODEX_LOG=$ROOT/codex.log OPENCODE_LOG=$ROOT/opencode.log CMRU_LOG=$ROOT/cmru.log HX_LOG=$ROOT/hx.log
 HX_WRAPPER=${HX_WRAPPER:-$SCRIPT_DIR/../hx.sh}
 RELEASE_SCRIPT=${RELEASE_SCRIPT:-$SCRIPT_DIR/../release-from-wt.sh}
 PUSH_IMAGE_SCRIPT=${PUSH_IMAGE_SCRIPT:-$SCRIPT_DIR/../push-image.sh}
 CODEX_IMPL_SCRIPT=${CODEX_IMPL_SCRIPT:-$SCRIPT_DIR/../codex-impl.sh}
+OPENCODE_IMPL_SCRIPT=${OPENCODE_IMPL_SCRIPT:-$SCRIPT_DIR/../opencode-impl.sh}
+README_SOURCE=${README_SOURCE:-$SCRIPT_DIR/../README.md}
+contains "$README_SOURCE" "\`CODEX_HOME_OVERRIDE\` is honoured only on the luna route." \
+  'README states that CODEX_HOME_OVERRIDE applies only to Luna'
 
 python3 - "$ROOT/controller/hosts.local.json" "$ROOT/bin" <<'PY'
 import json, pathlib, sys
@@ -94,17 +121,396 @@ else rc=$?; [[ $rc == 7 ]] || fail "Codex exit was $rc, expected 7"; fi
 contains "$ROOT/controller/runs/codex-fail.done" 'EXIT=7' 'Codex child exit is persisted'
 contains "$CODEX_LOG" "HOME=$ROOT/codex-luna" 'Luna profile path is explicit'
 contains "$CODEX_LOG" 'SQLITE=' 'shared session database path is set'
-mkdir -p "$ROOT/codex-deepseek/catalog"
-printf '{"models":[{"name":"fixture","tool_mode":"enabled"}]}\n' > "$ROOT/codex-deepseek/catalog/opendesign-models.json"
+mkdir -p "$ROOT/codex-deepseek-volker/catalog"
+printf '{"models":[{"name":"fixture","tool_mode":"enabled"}]}\n' > "$ROOT/codex-deepseek-volker/catalog/opendesign-models.json"
 if PATH="$ROOT/bin:$PATH" HOME="$ROOT/home" CONTROLLER_HOME="$ROOT/controller" CONTROLLER_REPO="$ROOT/repo" \
-  CODEX_ROUTE=deepseek CODEX_HOME_DEEPSEEK="$ROOT/codex-deepseek" CODEX_LOG="$ROOT/deepseek-codex.log" \
+  CODEX_ROUTE=deepseek-volker CODEX_HOME_DEEPSEEK_VOLKER="$ROOT/codex-deepseek-volker" \
+  CONTROLLER_OD_STATE="$ROOT/od-catalog-state.json" CODEX_LOG="$ROOT/deepseek-codex.log" \
   "$CODEX_IMPL_SCRIPT" "$ROOT/worktree" "$ROOT/brief.md" deepseek-catalog > "$ROOT/deepseek-catalog.out" 2>&1; then
   fail 'DeepSeek catalog with tool_mode was accepted'
 else rc=$?; [[ $rc == 3 ]] || fail "unsafe DeepSeek catalog exit was $rc, expected 3"; fi
 [[ ! -e $ROOT/deepseek-codex.log ]] || fail 'Codex ran after the DeepSeek catalog guard refused the catalog'
+python3 - "$ROOT/od-catalog-state.json" <<'PY' || fail 'catalog refusal marked an Open Design account as used'
+import json, sys
+state = json.load(open(sys.argv[1], encoding="utf-8"))
+assert state["volker"]["last_used_epoch"] == 0
+assert state["github2"]["last_used_epoch"] == 0
+PY
+
+VOLKER_HOME=$ROOT/opendesign-volker
+GITHUB2_HOME=$ROOT/opendesign-github2
+mkdir -p "$VOLKER_HOME/catalog" "$GITHUB2_HOME/catalog"
+printf '{"models":[{"name":"fixture","tool_mode":null}]}\n' > "$VOLKER_HOME/catalog/opendesign-models.json"
+printf '{"models":[{"name":"fixture","tool_mode":null}]}\n' > "$GITHUB2_HOME/catalog/opendesign-models.json"
+OD_STATE=$ROOT/opendesign-state.json
+OD_FUTURE_EPOCH=$(( $(date +%s) + 86400 ))
+rm -f -- "$CODEX_LOG"
+for run in od-alternation-1 od-alternation-2 od-alternation-3 od-alternation-4; do
+  PATH="$ROOT/bin:$PATH" HOME="$ROOT/home" CONTROLLER_HOME="$ROOT/controller" CONTROLLER_REPO="$ROOT/repo" \
+    CONTROLLER_OD_STATE="$OD_STATE" CODEX_HOME_DEEPSEEK_VOLKER="$VOLKER_HOME" CODEX_HOME_DEEPSEEK_GITHUB2="$GITHUB2_HOME" \
+    CODEX_SQLITE_HOME="$ROOT/sqlite" CODEX_LOG="$CODEX_LOG" CODEX_ROUTE=deepseek CODEX_AUTO_CONTINUE=0 \
+    OPENDESIGN_API_KEY_VOLKER=test-key OPENDESIGN_API_KEY_GITHUB2=test-key \
+    "$CODEX_IMPL_SCRIPT" "$ROOT/worktree" "$ROOT/brief.md" "$run" > "$ROOT/$run.out" 2>&1 \
+    || fail "automatic DeepSeek start failed: $run"
+done
+[[ $(cat "$ROOT/controller/runs/od-alternation-1.route") == deepseek-volker ]] || fail 'automatic DeepSeek selection must start with volker on an empty state'
+[[ $(cat "$ROOT/controller/runs/od-alternation-2.route") == deepseek-github2 ]] || fail 'automatic DeepSeek selection must alternate to github2'
+[[ $(cat "$ROOT/controller/runs/od-alternation-3.route") == deepseek-volker ]] || fail 'automatic DeepSeek selection must alternate back to volker'
+[[ $(cat "$ROOT/controller/runs/od-alternation-4.route") == deepseek-github2 ]] || fail 'automatic DeepSeek selection must alternate back to github2'
+contains "$CODEX_LOG" "HOME=$VOLKER_HOME" 'volker route selects the volker Codex home'
+contains "$CODEX_LOG" "HOME=$GITHUB2_HOME" 'github2 route selects the github2 Codex home'
+contains "$CODEX_LOG" 'deepseek-v4.1-flash-eco' 'DeepSeek route uses the configured default model'
+contains "$CODEX_LOG" 'model_reasoning_effort="high"' 'DeepSeek route uses high reasoning effort'
+not_contains "$CODEX_LOG" test-key 'API key values are absent from Codex argv logs'
+not_contains "$OD_STATE" test-key 'Open Design account state contains no key material'
+for run in od-alternation-1 od-alternation-2 od-alternation-3 od-alternation-4; do
+  for extension in jsonl err 'done' autoresume.log; do
+    not_contains "$ROOT/controller/runs/$run.$extension" test-key "API key values are absent from $run.$extension"
+  done
+done
+python3 - "$OD_STATE" <<'PY' || fail 'generated Open Design state contains fields outside its key-free schema'
+import json, sys
+state = json.load(open(sys.argv[1], encoding="utf-8"))
+assert set(state) == {"volker", "github2", "threads"}
+assert isinstance(state["threads"], dict)
+assert all(set(state[name]) <= {"last_used_epoch", "blocked_until_epoch", "window_end_epoch"} for name in ("volker", "github2"))
+assert all(account in {"volker", "github2"} for account in state["threads"].values())
+PY
+
+python3 - "$ROOT/od-unsafe-state.json" <<'PY'
+import json, sys
+json.dump({"volker": {"last_used_epoch": 1, "blocked_until_epoch": 0, "api_key": "test-key"}}, open(sys.argv[1], "w"))
+PY
+before_calls=$(wc -l < "$CODEX_LOG")
+if PATH="$ROOT/bin:$PATH" HOME="$ROOT/home" CONTROLLER_HOME="$ROOT/controller" CONTROLLER_REPO="$ROOT/repo" \
+  CONTROLLER_OD_STATE="$ROOT/od-unsafe-state.json" CODEX_HOME_DEEPSEEK_VOLKER="$VOLKER_HOME" \
+  CODEX_SQLITE_HOME="$ROOT/sqlite" CODEX_LOG="$CODEX_LOG" CODEX_ROUTE=deepseek-volker CODEX_AUTO_CONTINUE=0 \
+  "$CODEX_IMPL_SCRIPT" "$ROOT/worktree" "$ROOT/brief.md" od-unsafe-state > "$ROOT/od-unsafe-state.out" 2>&1; then
+  fail 'Open Design account state accepted an unrecognized field that could contain key material'
+fi
+contains "$ROOT/od-unsafe-state.out" 'invalid Open Design account state schema' 'invalid state schema is rejected without echoing its contents'
+not_contains "$ROOT/od-unsafe-state.out" test-key 'state validation does not print unrecognized credential fields'
+[[ $(wc -l < "$CODEX_LOG") == "$before_calls" ]] || fail 'Codex ran with an invalid account state schema'
+
+python3 - "$ROOT/od-nonnumeric-state.json" <<'PY'
+import json, sys
+json.dump({"volker": {"last_used_epoch": "not-an-epoch", "blocked_until_epoch": 0}}, open(sys.argv[1], "w"))
+PY
+if PATH="$ROOT/bin:$PATH" HOME="$ROOT/home" CONTROLLER_HOME="$ROOT/controller" CONTROLLER_REPO="$ROOT/repo" \
+  CONTROLLER_OD_STATE="$ROOT/od-nonnumeric-state.json" CODEX_HOME_DEEPSEEK_VOLKER="$VOLKER_HOME" \
+  CODEX_SQLITE_HOME="$ROOT/sqlite" CODEX_LOG="$CODEX_LOG" CODEX_ROUTE=deepseek-volker CODEX_AUTO_CONTINUE=0 \
+  "$CODEX_IMPL_SCRIPT" "$ROOT/worktree" "$ROOT/brief.md" od-nonnumeric-state > "$ROOT/od-nonnumeric-state.out" 2>&1; then
+  fail 'Open Design account state accepted a non-numeric last_used_epoch'
+fi
+contains "$ROOT/od-nonnumeric-state.out" 'invalid last_used_epoch for account volker' 'numeric account-state fields are validated'
+[[ $(wc -l < "$CODEX_LOG") == "$before_calls" ]] || fail 'Codex ran with a non-numeric account state'
+
+if (cd "$ROOT" && PATH="$ROOT/bin:$PATH" HOME="$ROOT/home" CONTROLLER_HOME="$ROOT/controller" CONTROLLER_REPO="$ROOT/repo" \
+  CONTROLLER_OD_STATE=relative-state.json CODEX_HOME_DEEPSEEK_VOLKER="$VOLKER_HOME" \
+  CODEX_SQLITE_HOME="$ROOT/sqlite" CODEX_LOG="$CODEX_LOG" CODEX_ROUTE=deepseek-volker CODEX_AUTO_CONTINUE=0 \
+  "$CODEX_IMPL_SCRIPT" "$ROOT/worktree" "$ROOT/brief.md" od-relative-state > "$ROOT/od-relative-state.out" 2>&1); then
+  fail 'relative Open Design state path was accepted'
+fi
+contains "$ROOT/od-relative-state.out" 'CONTROLLER_OD_STATE must be an absolute path' 'Open Design state path must be absolute'
+[[ $(wc -l < "$CODEX_LOG") == "$before_calls" ]] || fail 'Codex ran after rejecting a relative state path'
+
+if PATH="$ROOT/bin:$PATH" HOME="$ROOT/home" CONTROLLER_HOME="$ROOT/controller" CONTROLLER_REPO="$ROOT/repo" \
+  CONTROLLER_OD_STATE="$ROOT/od-invalid-preference.json" CONTROLLER_OD_PREFER_EXPIRING=yes \
+  CODEX_HOME_DEEPSEEK_VOLKER="$VOLKER_HOME" CODEX_SQLITE_HOME="$ROOT/sqlite" CODEX_LOG="$CODEX_LOG" \
+  CODEX_ROUTE=deepseek CODEX_AUTO_CONTINUE=0 "$CODEX_IMPL_SCRIPT" "$ROOT/worktree" "$ROOT/brief.md" od-invalid-preference \
+  > "$ROOT/od-invalid-preference.out" 2>&1; then
+  fail 'invalid Open Design expiring-window preference was accepted'
+fi
+contains "$ROOT/od-invalid-preference.out" 'CONTROLLER_OD_PREFER_EXPIRING must be 0 or 1' 'invalid expiring-window preference is rejected'
+[[ $(wc -l < "$CODEX_LOG") == "$before_calls" ]] || fail 'Codex ran after rejecting an invalid expiring-window preference'
+
+python3 - "$ROOT/od-blocked.json" "$OD_FUTURE_EPOCH" <<'PY'
+import json, sys
+json.dump({"volker": {"last_used_epoch": 1, "blocked_until_epoch": int(sys.argv[2])},
+           "github2": {"last_used_epoch": 100, "blocked_until_epoch": 0}}, open(sys.argv[1], "w"))
+PY
+PATH="$ROOT/bin:$PATH" HOME="$ROOT/home" CONTROLLER_HOME="$ROOT/controller" CONTROLLER_REPO="$ROOT/repo" \
+  CONTROLLER_OD_STATE="$ROOT/od-blocked.json" CODEX_HOME_DEEPSEEK_VOLKER="$VOLKER_HOME" CODEX_HOME_DEEPSEEK_GITHUB2="$GITHUB2_HOME" \
+  CODEX_SQLITE_HOME="$ROOT/sqlite" CODEX_LOG="$CODEX_LOG" CODEX_ROUTE=deepseek CODEX_AUTO_CONTINUE=0 \
+  "$CODEX_IMPL_SCRIPT" "$ROOT/worktree" "$ROOT/brief.md" od-blocked-skip > "$ROOT/od-blocked-skip.out" 2>&1 \
+  || fail 'automatic DeepSeek start failed with one blocked account'
+[[ $(cat "$ROOT/controller/runs/od-blocked-skip.route") == deepseek-github2 ]] || fail 'automatic DeepSeek selection did not skip the blocked account'
+
+python3 - "$ROOT/od-expired.json" <<'PY'
+import json, sys
+json.dump({"volker": {"last_used_epoch": 1, "blocked_until_epoch": 1},
+           "github2": {"last_used_epoch": 100, "blocked_until_epoch": 0}}, open(sys.argv[1], "w"))
+PY
+PATH="$ROOT/bin:$PATH" HOME="$ROOT/home" CONTROLLER_HOME="$ROOT/controller" CONTROLLER_REPO="$ROOT/repo" \
+  CONTROLLER_OD_STATE="$ROOT/od-expired.json" CODEX_HOME_DEEPSEEK_VOLKER="$VOLKER_HOME" CODEX_HOME_DEEPSEEK_GITHUB2="$GITHUB2_HOME" \
+  CODEX_SQLITE_HOME="$ROOT/sqlite" CODEX_LOG="$CODEX_LOG" CODEX_ROUTE=deepseek CODEX_AUTO_CONTINUE=0 \
+  "$CODEX_IMPL_SCRIPT" "$ROOT/worktree" "$ROOT/brief.md" od-expired-unblocked > "$ROOT/od-expired-unblocked.out" 2>&1 \
+  || fail 'automatic DeepSeek start failed when a block had expired'
+[[ $(cat "$ROOT/controller/runs/od-expired-unblocked.route") == deepseek-volker ]] || fail 'a past blocked_until_epoch remained blocked'
+
+OD_EARLIEST_RESET=$((OD_FUTURE_EPOCH + 50))
+OD_LATER_RESET=$((OD_FUTURE_EPOCH + 100))
+python3 - "$ROOT/od-both-blocked.json" "$OD_LATER_RESET" "$OD_EARLIEST_RESET" <<'PY'
+import json, sys
+json.dump({"volker": {"last_used_epoch": 1, "blocked_until_epoch": int(sys.argv[2])},
+           "github2": {"last_used_epoch": 2, "blocked_until_epoch": int(sys.argv[3])}}, open(sys.argv[1], "w"))
+PY
+before_calls=$(wc -l < "$CODEX_LOG")
+if PATH="$ROOT/bin:$PATH" HOME="$ROOT/home" CONTROLLER_HOME="$ROOT/controller" CONTROLLER_REPO="$ROOT/repo" \
+  CONTROLLER_OD_STATE="$ROOT/od-both-blocked.json" CODEX_HOME_DEEPSEEK_VOLKER="$VOLKER_HOME" CODEX_HOME_DEEPSEEK_GITHUB2="$GITHUB2_HOME" \
+  CODEX_SQLITE_HOME="$ROOT/sqlite" CODEX_LOG="$CODEX_LOG" CODEX_ROUTE=deepseek CODEX_AUTO_CONTINUE=0 \
+  "$CODEX_IMPL_SCRIPT" "$ROOT/worktree" "$ROOT/brief.md" od-both-blocked > "$ROOT/od-both-blocked.out" 2>&1; then
+  fail 'automatic DeepSeek start accepted two blocked accounts'
+else rc=$?; [[ $rc == 3 ]] || fail "both-blocked exit was $rc, expected 3"; fi
+contains "$ROOT/od-both-blocked.out" "earliest reset is $(date -u -d "@$OD_EARLIEST_RESET" +%Y-%m-%dT%H:%M:%SZ)" 'both-blocked refusal reports the earliest reset'
+[[ $(wc -l < "$CODEX_LOG") == "$before_calls" ]] || fail 'Codex ran while both accounts were blocked'
+
+python3 - "$ROOT/od-expiring.json" "$OD_FUTURE_EPOCH" <<'PY'
+import json, sys
+future = int(sys.argv[2])
+json.dump({"volker": {"last_used_epoch": 1, "blocked_until_epoch": 0, "window_end_epoch": future + 100},
+           "github2": {"last_used_epoch": 100, "blocked_until_epoch": 0, "window_end_epoch": future + 50}}, open(sys.argv[1], "w"))
+PY
+PATH="$ROOT/bin:$PATH" HOME="$ROOT/home" CONTROLLER_HOME="$ROOT/controller" CONTROLLER_REPO="$ROOT/repo" \
+  CONTROLLER_OD_STATE="$ROOT/od-expiring.json" CONTROLLER_OD_PREFER_EXPIRING=1 \
+  CODEX_HOME_DEEPSEEK_VOLKER="$VOLKER_HOME" CODEX_HOME_DEEPSEEK_GITHUB2="$GITHUB2_HOME" CODEX_SQLITE_HOME="$ROOT/sqlite" \
+  CODEX_LOG="$CODEX_LOG" CODEX_ROUTE=deepseek CODEX_AUTO_CONTINUE=0 \
+  "$CODEX_IMPL_SCRIPT" "$ROOT/worktree" "$ROOT/brief.md" od-expiring > "$ROOT/od-expiring.out" 2>&1 \
+  || fail 'DeepSeek prefer-expiring start failed'
+[[ $(cat "$ROOT/controller/runs/od-expiring.route") == deepseek-github2 ]] || fail 'prefer-expiring did not choose the earliest window end'
+
+python3 - "$ROOT/od-pinned.json" "$OD_FUTURE_EPOCH" <<'PY'
+import json, sys
+json.dump({"volker": {"last_used_epoch": 1, "blocked_until_epoch": int(sys.argv[2])},
+           "github2": {"last_used_epoch": 2, "blocked_until_epoch": 0}}, open(sys.argv[1], "w"))
+PY
+PATH="$ROOT/bin:$PATH" HOME="$ROOT/home" CONTROLLER_HOME="$ROOT/controller" CONTROLLER_REPO="$ROOT/repo" \
+  CONTROLLER_OD_STATE="$ROOT/od-pinned.json" CODEX_HOME_DEEPSEEK_VOLKER="$VOLKER_HOME" CODEX_HOME_DEEPSEEK_GITHUB2="$GITHUB2_HOME" \
+  CODEX_SQLITE_HOME="$ROOT/sqlite" CODEX_LOG="$ROOT/od-pinned-codex.log" CODEX_ROUTE=deepseek-volker CODEX_AUTO_CONTINUE=0 \
+  "$CODEX_IMPL_SCRIPT" "$ROOT/worktree" "$ROOT/brief.md" od-pinned > "$ROOT/od-pinned.out" 2>&1 \
+  || fail 'pinned DeepSeek route failed instead of staying on volker'
+[[ $(cat "$ROOT/controller/runs/od-pinned.route") == deepseek-volker ]] || fail 'pinned route changed accounts'
+contains "$ROOT/od-pinned-codex.log" "HOME=$VOLKER_HOME" 'pinned DeepSeek route uses the named account home'
+python3 - "$ROOT/od-pinned.json" <<'PY' || fail 'pinned DeepSeek start selected the other account in state'
+import json, sys
+state = json.load(open(sys.argv[1], encoding="utf-8"))
+assert state["volker"]["last_used_epoch"] > 1
+assert state["github2"]["last_used_epoch"] == 2
+PY
+
+if PATH="$ROOT/bin:$PATH" HOME="$ROOT/home" CONTROLLER_HOME="$ROOT/controller" CONTROLLER_REPO="$ROOT/repo" \
+  CONTROLLER_OD_STATE="$ROOT/od-402.json" CODEX_HOME_DEEPSEEK_VOLKER="$VOLKER_HOME" CODEX_HOME_DEEPSEEK_GITHUB2="$GITHUB2_HOME" \
+  CODEX_SQLITE_HOME="$ROOT/sqlite" CODEX_LOG="$CODEX_LOG" CODEX_ROUTE=deepseek-volker CODEX_AUTO_CONTINUE=0 FAKE_CODEX_402=1 \
+  "$CODEX_IMPL_SCRIPT" "$ROOT/worktree" "$ROOT/brief.md" od-402 > "$ROOT/od-402.out" 2>&1; then
+  fail 'fake 402 Codex run unexpectedly succeeded'
+else rc=$?; [[ $rc == 42 ]] || fail "402 child exit was $rc, expected 42"; fi
+contains "$ROOT/od-402.out" 'blocked until 2099-11-17T11:44:44Z' '402 response records the account reset time'
+python3 - "$ROOT/od-402.json" <<'PY' || fail '402 did not persist blocked_until_epoch for the run account'
+from datetime import datetime, timezone
+import json, sys
+state = json.load(open(sys.argv[1], encoding="utf-8"))
+expected = int(datetime(2099, 11, 17, 11, 44, 44, tzinfo=timezone.utc).timestamp())
+assert state["volker"]["blocked_until_epoch"] == expected
+assert state["github2"]["blocked_until_epoch"] == 0
+PY
+
+# The real gateway 402 reaches the run stream as a plain-text message on a final error event.
+if PATH="$ROOT/bin:$PATH" HOME="$ROOT/home" CONTROLLER_HOME="$ROOT/controller" CONTROLLER_REPO="$ROOT/repo" \
+  CONTROLLER_OD_STATE="$ROOT/od-402-text.json" CODEX_HOME_DEEPSEEK_VOLKER="$VOLKER_HOME" CODEX_HOME_DEEPSEEK_GITHUB2="$GITHUB2_HOME" \
+  CODEX_SQLITE_HOME="$ROOT/sqlite" CODEX_LOG="$CODEX_LOG" CODEX_ROUTE=deepseek-github2 CODEX_AUTO_CONTINUE=0 \
+  FAKE_CODEX_STREAM="$SCRIPT_DIR/fixtures/usage-limit-insufficient-balance-text.jsonl" \
+  "$CODEX_IMPL_SCRIPT" "$ROOT/worktree" "$ROOT/brief.md" od-402-text > "$ROOT/od-402-text.out" 2>&1; then
+  fail 'fake plain-text 402 Codex run unexpectedly succeeded'
+else rc=$?; [[ $rc == 42 ]] || fail "plain-text 402 child exit was $rc, expected 42"; fi
+contains "$ROOT/od-402-text.out" 'Open Design account github2 reset time observed; blocked until 2099-11-17T11:44:44Z' 'plain-text 402 records the account reset time'
+python3 - "$ROOT/od-402-text.json" <<'PY' || fail 'plain-text 402 did not persist blocked_until_epoch for the run account'
+from datetime import datetime, timezone
+import json, sys
+state = json.load(open(sys.argv[1], encoding="utf-8"))
+expected = int(datetime(2099, 11, 17, 11, 44, 44, tzinfo=timezone.utc).timestamp())
+assert state["github2"]["blocked_until_epoch"] == expected
+assert state["volker"]["blocked_until_epoch"] == 0
+PY
+
+OD_UNKNOWN_START=$(date +%s)
+if PATH="$ROOT/bin:$PATH" HOME="$ROOT/home" CONTROLLER_HOME="$ROOT/controller" CONTROLLER_REPO="$ROOT/repo" \
+  CONTROLLER_OD_STATE="$ROOT/od-402-unknown-missing.json" CONTROLLER_OD_UNKNOWN_BLOCK_SECONDS=3600 \
+  CODEX_HOME_DEEPSEEK_VOLKER="$VOLKER_HOME" CODEX_SQLITE_HOME="$ROOT/sqlite" CODEX_LOG="$CODEX_LOG" \
+  CODEX_ROUTE=deepseek-volker CODEX_AUTO_CONTINUE=0 FAKE_CODEX_402_UNKNOWN=missing \
+  "$CODEX_IMPL_SCRIPT" "$ROOT/worktree" "$ROOT/brief.md" od-402-unknown-missing > "$ROOT/od-402-unknown-missing.out" 2>&1; then
+  fail 'fake 402 without reset_at unexpectedly succeeded'
+else rc=$?; [[ $rc == 42 ]] || fail "unknown-reset child exit was $rc, expected 42"; fi
+OD_UNKNOWN_END=$(date +%s)
+contains "$ROOT/od-402-unknown-missing.out" 'reset time unknown; temporary block for 3600 seconds' \
+  'missing reset_at uses and logs the configured conservative block'
+python3 - "$ROOT/od-402-unknown-missing.json" "$OD_UNKNOWN_START" "$OD_UNKNOWN_END" 3600 <<'PY' || fail 'missing reset_at did not persist the configured default block'
+import json, sys
+state = json.load(open(sys.argv[1], encoding="utf-8"))
+blocked = state["volker"]["blocked_until_epoch"]
+assert int(sys.argv[2]) + int(sys.argv[4]) <= blocked <= int(sys.argv[3]) + int(sys.argv[4]) + 1
+PY
+
+OD_DEFAULT_START=$(date +%s)
+if PATH="$ROOT/bin:$PATH" HOME="$ROOT/home" CONTROLLER_HOME="$ROOT/controller" CONTROLLER_REPO="$ROOT/repo" \
+  CONTROLLER_OD_STATE="$ROOT/od-402-unknown-invalid.json" CODEX_HOME_DEEPSEEK_GITHUB2="$GITHUB2_HOME" \
+  CODEX_SQLITE_HOME="$ROOT/sqlite" CODEX_LOG="$CODEX_LOG" CODEX_ROUTE=deepseek-github2 CODEX_AUTO_CONTINUE=0 \
+  FAKE_CODEX_402_UNKNOWN=invalid "$CODEX_IMPL_SCRIPT" "$ROOT/worktree" "$ROOT/brief.md" od-402-unknown-invalid \
+  > "$ROOT/od-402-unknown-invalid.out" 2>&1; then
+  fail 'fake 402 with an invalid reset_at unexpectedly succeeded'
+else rc=$?; [[ $rc == 42 ]] || fail "invalid-reset child exit was $rc, expected 42"; fi
+OD_DEFAULT_END=$(date +%s)
+contains "$ROOT/od-402-unknown-invalid.out" 'reset time unknown; temporary block for 21600 seconds' \
+  'invalid reset_at uses and logs the six-hour default block'
+python3 - "$ROOT/od-402-unknown-invalid.json" "$OD_DEFAULT_START" "$OD_DEFAULT_END" <<'PY' || fail 'invalid reset_at did not persist the six-hour default block'
+import json, sys
+state = json.load(open(sys.argv[1], encoding="utf-8"))
+blocked = state["github2"]["blocked_until_epoch"]
+assert int(sys.argv[2]) + 21600 <= blocked <= int(sys.argv[3]) + 21600 + 1
+PY
+
+OD_INVALID_KNOB_START=$(date +%s)
+if PATH="$ROOT/bin:$PATH" HOME="$ROOT/home" CONTROLLER_HOME="$ROOT/controller" CONTROLLER_REPO="$ROOT/repo" \
+  CONTROLLER_OD_STATE="$ROOT/od-402-invalid-block-seconds.json" CONTROLLER_OD_UNKNOWN_BLOCK_SECONDS=0 \
+  CODEX_HOME_DEEPSEEK_VOLKER="$VOLKER_HOME" CODEX_SQLITE_HOME="$ROOT/sqlite" CODEX_LOG="$CODEX_LOG" \
+  CODEX_ROUTE=deepseek-volker CODEX_AUTO_CONTINUE=0 FAKE_CODEX_402_UNKNOWN=missing \
+  "$CODEX_IMPL_SCRIPT" "$ROOT/worktree" "$ROOT/brief.md" od-402-invalid-block-seconds > "$ROOT/od-402-invalid-block-seconds.out" 2>&1; then
+  fail 'fake 402 with an invalid block-seconds override unexpectedly succeeded'
+else rc=$?; [[ $rc == 42 ]] || fail "invalid-knob child exit was $rc, expected 42"; fi
+OD_INVALID_KNOB_END=$(date +%s)
+contains "$ROOT/od-402-invalid-block-seconds.out" 'invalid CONTROLLER_OD_UNKNOWN_BLOCK_SECONDS; using the six-hour default' \
+  'invalid unknown-reset block override is logged and replaced with the safe default'
+python3 - "$ROOT/od-402-invalid-block-seconds.json" "$OD_INVALID_KNOB_START" "$OD_INVALID_KNOB_END" <<'PY' || fail 'invalid block-seconds override did not keep the account blocked'
+import json, sys
+state = json.load(open(sys.argv[1], encoding="utf-8"))
+blocked = state["volker"]["blocked_until_epoch"]
+assert int(sys.argv[2]) + 21600 <= blocked <= int(sys.argv[3]) + 21600 + 1
+PY
+
+python3 - "$ROOT/od-preserve-later.json" <<'PY'
+from datetime import datetime, timezone
+import json, sys
+future = int(datetime(2100, 1, 1, tzinfo=timezone.utc).timestamp())
+json.dump({"volker": {"last_used_epoch": 1, "blocked_until_epoch": future},
+           "github2": {"last_used_epoch": 2, "blocked_until_epoch": 0}}, open(sys.argv[1], "w"))
+PY
+if PATH="$ROOT/bin:$PATH" HOME="$ROOT/home" CONTROLLER_HOME="$ROOT/controller" CONTROLLER_REPO="$ROOT/repo" \
+  CONTROLLER_OD_STATE="$ROOT/od-preserve-later.json" CODEX_HOME_DEEPSEEK_VOLKER="$VOLKER_HOME" \
+  CODEX_SQLITE_HOME="$ROOT/sqlite" CODEX_LOG="$CODEX_LOG" CODEX_ROUTE=deepseek-volker CODEX_AUTO_CONTINUE=0 FAKE_CODEX_402=1 \
+  "$CODEX_IMPL_SCRIPT" "$ROOT/worktree" "$ROOT/brief.md" od-preserve-later > "$ROOT/od-preserve-later.out" 2>&1; then
+  fail 'fake 402 run with an earlier reset unexpectedly succeeded'
+else rc=$?; [[ $rc == 42 ]] || fail "preserve-later child exit was $rc, expected 42"; fi
+python3 - "$ROOT/od-preserve-later.json" <<'PY' || fail 'block-run shortened an existing later block'
+from datetime import datetime, timezone
+import json, sys
+state = json.load(open(sys.argv[1], encoding="utf-8"))
+assert state["volker"]["blocked_until_epoch"] == int(datetime(2100, 1, 1, tzinfo=timezone.utc).timestamp())
+PY
+PATH="$ROOT/bin:$PATH" HOME="$ROOT/home" CONTROLLER_HOME="$ROOT/controller" CONTROLLER_REPO="$ROOT/repo" \
+  CONTROLLER_OD_STATE="$ROOT/od-not-402.json" CODEX_HOME_DEEPSEEK_VOLKER="$VOLKER_HOME" CODEX_HOME_DEEPSEEK_GITHUB2="$GITHUB2_HOME" \
+  CODEX_SQLITE_HOME="$ROOT/sqlite" CODEX_LOG="$CODEX_LOG" CODEX_ROUTE=deepseek-github2 CODEX_AUTO_CONTINUE=0 \
+  FAKE_CODEX_STREAM="$SCRIPT_DIR/fixtures/insufficient-balance-text-not-a-402.jsonl" \
+  "$CODEX_IMPL_SCRIPT" "$ROOT/worktree" "$ROOT/brief.md" od-not-402 > "$ROOT/od-not-402.out" 2>&1
+python3 - "$ROOT/od-not-402.json" <<'PY' || fail 'ordinary text blocked an Open Design account'
+import json, sys
+state = json.load(open(sys.argv[1], encoding="utf-8"))
+assert state["github2"]["blocked_until_epoch"] == 0 and state["volker"]["blocked_until_epoch"] == 0
+PY
+
+MANUAL_STATE=$ROOT/manual-resume-state.json
+PATH="$ROOT/bin:$PATH" HOME="$ROOT/home" CONTROLLER_HOME="$ROOT/controller" CONTROLLER_REPO="$ROOT/repo" \
+  CONTROLLER_OD_STATE="$MANUAL_STATE" CODEX_HOME_DEEPSEEK_VOLKER="$VOLKER_HOME" CODEX_HOME_DEEPSEEK_GITHUB2="$GITHUB2_HOME" \
+  CODEX_SQLITE_HOME="$ROOT/sqlite" CODEX_LOG="$ROOT/manual-origin.log" CODEX_ROUTE=deepseek CODEX_AUTO_CONTINUE=0 \
+  FAKE_CODEX_THREAD_ID=manual-resume-thread \
+  "$CODEX_IMPL_SCRIPT" "$ROOT/worktree" "$ROOT/brief.md" manual-origin > "$ROOT/manual-origin.out" 2>&1 \
+  || fail 'DeepSeek origin run for manual resume failed'
+[[ $(cat "$ROOT/controller/runs/manual-origin.route") == deepseek-volker ]] || fail 'manual resume origin did not select Volker'
+PATH="$ROOT/bin:$PATH" HOME="$ROOT/home" CONTROLLER_HOME="$ROOT/controller" CONTROLLER_REPO="$ROOT/repo" \
+  CONTROLLER_OD_STATE="$MANUAL_STATE" CODEX_HOME_DEEPSEEK_VOLKER="$VOLKER_HOME" CODEX_HOME_DEEPSEEK_GITHUB2="$GITHUB2_HOME" \
+  CODEX_SQLITE_HOME="$ROOT/sqlite" CODEX_LOG="$ROOT/manual-resume.log" CODEX_ROUTE=deepseek CODEX_AUTO_CONTINUE=0 \
+  "$CODEX_IMPL_SCRIPT" "$ROOT/worktree" "$ROOT/brief.md" manual-resume resume manual-resume-thread \
+  > "$ROOT/manual-resume.out" 2>&1 || fail 'manual DeepSeek resume failed'
+[[ $(cat "$ROOT/controller/runs/manual-resume.route") == deepseek-volker ]] || fail 'manual resume did not retain its recorded account'
+contains "$ROOT/manual-resume.log" "HOME=$VOLKER_HOME" 'manual resume uses the original account home'
+contains "$ROOT/manual-resume.log" 'resume -m deepseek-v4.1-flash-eco' 'manual DeepSeek resume passes the original thread'
+python3 - "$MANUAL_STATE" <<'PY' || fail 'manual resume did not keep the thread account mapping'
+import json, sys
+state = json.load(open(sys.argv[1], encoding="utf-8"))
+assert state["threads"]["manual-resume-thread"] == "volker"
+PY
+
+PATH="$ROOT/bin:$PATH" HOME="$ROOT/home" CONTROLLER_HOME="$ROOT/controller" CONTROLLER_REPO="$ROOT/repo" \
+  CONTROLLER_OD_STATE="$MANUAL_STATE" CODEX_HOME_DEEPSEEK_VOLKER="$VOLKER_HOME" CODEX_HOME_DEEPSEEK_GITHUB2="$GITHUB2_HOME" \
+  CODEX_SQLITE_HOME="$ROOT/sqlite" CODEX_LOG="$ROOT/manual-resume-unmapped.log" CODEX_ROUTE=deepseek CODEX_AUTO_CONTINUE=0 \
+  "$CODEX_IMPL_SCRIPT" "$ROOT/worktree" "$ROOT/brief.md" manual-resume-unmapped resume unrecorded-thread \
+  > "$ROOT/manual-resume-unmapped.out" 2>&1 || fail 'unmapped manual DeepSeek resume did not select an account'
+contains "$ROOT/manual-resume-unmapped.out" 'no recorded Open Design account for thread unrecorded-thread; picking a fresh account' \
+  'unmapped manual resume explains its fresh account pick'
+[[ $(cat "$ROOT/controller/runs/manual-resume-unmapped.route") == deepseek-github2 ]] || fail 'unmapped manual resume did not pick the least recently used account'
+python3 - "$MANUAL_STATE" "$OD_FUTURE_EPOCH" <<'PY'
+import json, sys
+path, blocked_until = sys.argv[1], int(sys.argv[2])
+state = json.load(open(path, encoding="utf-8"))
+state["volker"]["blocked_until_epoch"] = blocked_until
+state["github2"]["blocked_until_epoch"] = 0
+json.dump(state, open(path, "w"))
+PY
+PATH="$ROOT/bin:$PATH" HOME="$ROOT/home" CONTROLLER_HOME="$ROOT/controller" CONTROLLER_REPO="$ROOT/repo" \
+  CONTROLLER_OD_STATE="$MANUAL_STATE" CODEX_HOME_DEEPSEEK_VOLKER="$VOLKER_HOME" CODEX_HOME_DEEPSEEK_GITHUB2="$GITHUB2_HOME" \
+  CODEX_SQLITE_HOME="$ROOT/sqlite" CODEX_LOG="$ROOT/manual-resume-blocked.log" CODEX_ROUTE=deepseek CODEX_AUTO_CONTINUE=0 \
+  "$CODEX_IMPL_SCRIPT" "$ROOT/worktree" "$ROOT/brief.md" manual-resume-blocked resume manual-resume-thread \
+  > "$ROOT/manual-resume-blocked.out" 2>&1 || fail 'blocked recorded-account manual resume did not fall back'
+contains "$ROOT/manual-resume-blocked.out" \
+  'account fallback from deepseek-volker to deepseek-github2 because the recorded account is blocked' \
+  'manual resume logs fallback from a blocked recorded account'
+[[ $(cat "$ROOT/controller/runs/manual-resume-blocked.route") == deepseek-github2 ]] || fail 'manual resume fallback did not pin the available account'
+
+BOOKKEEPING_STATE=$ROOT/od-bookkeeping-failure.json
+if PATH="$ROOT/bin:$PATH" HOME="$ROOT/home" CONTROLLER_HOME="$ROOT/controller" CONTROLLER_REPO="$ROOT/repo" \
+  CONTROLLER_OD_STATE="$BOOKKEEPING_STATE" CODEX_HOME_DEEPSEEK_VOLKER="$VOLKER_HOME" CODEX_SQLITE_HOME="$ROOT/sqlite" \
+  CODEX_LOG="$ROOT/od-bookkeeping-failure.log" CODEX_ROUTE=deepseek-volker CODEX_AUTO_CONTINUE=0 CODEX_RC=0 \
+  FAKE_CODEX_CORRUPT_STATE="$BOOKKEEPING_STATE" \
+  "$CODEX_IMPL_SCRIPT" "$ROOT/worktree" "$ROOT/brief.md" od-bookkeeping-failure > "$ROOT/od-bookkeeping-failure.out" 2>&1; then
+  :
+else rc=$?; fail "bookkeeping failure changed a successful Codex exit to $rc"; fi
+contains "$ROOT/od-bookkeeping-failure.out" 'block-run bookkeeping failed for run od-bookkeeping-failure' \
+  'block-run bookkeeping errors are logged without replacing the Codex status'
+contains "$ROOT/controller/runs/od-bookkeeping-failure.done" 'EXIT=0' \
+  'successful Codex status remains in the done marker after bookkeeping failure'
+
+if [[ ${CONTROLLER_TEST_PARALLEL_OD_STARTS:-1} == 1 ]]; then
+  PARALLEL_DIR=$ROOT/parallel-codex-logs
+  mkdir -p "$PARALLEL_DIR"
+  parallel_pids=()
+  for index in {1..20}; do
+    run="parallel-start-$index"
+    PATH="$ROOT/bin:$PATH" HOME="$ROOT/home" CONTROLLER_HOME="$ROOT/controller" CONTROLLER_REPO="$ROOT/repo" \
+      CONTROLLER_OD_STATE="$ROOT/parallel-state.json" CODEX_HOME_DEEPSEEK_VOLKER="$VOLKER_HOME" CODEX_HOME_DEEPSEEK_GITHUB2="$GITHUB2_HOME" \
+      CODEX_SQLITE_HOME="$ROOT/sqlite" CODEX_LOG="$PARALLEL_DIR/$index.log" CODEX_ROUTE=deepseek CODEX_AUTO_CONTINUE=0 \
+      OPENDESIGN_API_KEY_VOLKER=test-key OPENDESIGN_API_KEY_GITHUB2=test-key \
+      "$CODEX_IMPL_SCRIPT" "$ROOT/worktree" "$ROOT/brief.md" "$run" > "$PARALLEL_DIR/$index.out" 2>&1 &
+    parallel_pids+=("$!")
+  done
+  for pid in "${parallel_pids[@]}"; do
+    wait "$pid" || fail 'parallel automatic DeepSeek start failed'
+  done
+  python3 - "$ROOT/controller/runs" "$ROOT/parallel-state.json" <<'PY' || fail 'parallel starts lost account state or failed to split evenly'
+from pathlib import Path
+import json, sys
+runs = Path(sys.argv[1])
+routes = [path.read_text(encoding="utf-8").strip() for path in runs.glob("parallel-start-*.route")]
+assert len(routes) == 20
+assert routes.count("deepseek-volker") == 10
+assert routes.count("deepseek-github2") == 10
+state = json.load(open(sys.argv[2], encoding="utf-8"))
+assert set(state) == {"volker", "github2", "threads"}
+assert state["volker"]["last_used_epoch"] > 0 and state["github2"]["last_used_epoch"] > 0
+assert state["threads"] == {}
+PY
+fi
+
 if PATH="$ROOT/bin:$PATH" HOME="$ROOT/home" CONTROLLER_HOME="$ROOT/controller" CONTROLLER_REPO="$ROOT/repo" \
   CODEX_ROUTE=unknown CODEX_LOG="$CODEX_LOG" \
-  "$SCRIPT_DIR/../codex-impl.sh" "$ROOT/worktree" "$ROOT/brief.md" bad-route > "$ROOT/route.out" 2>&1; then
+  "$CODEX_IMPL_SCRIPT" "$ROOT/worktree" "$ROOT/brief.md" bad-route > "$ROOT/route.out" 2>&1; then
   fail 'unknown Codex route was accepted'
 fi
 if PATH="$ROOT/bin:$PATH" HOME="$ROOT/home" CONTROLLER_HOME="$ROOT/controller" CONTROLLER_REPO="$ROOT/repo" \
@@ -114,11 +520,22 @@ contains "$CODEX_LOG" "HOME=$ROOT/codex-review" 'review uses its separately conf
 contains "$CODEX_LOG" 'gpt-6-sol' 'review uses the independent review model default'
 
 PATH="$ROOT/bin:$PATH" HOME="$ROOT/home" CONTROLLER_HOME="$ROOT/controller" CONTROLLER_REPO="$ROOT/repo" \
-  OPENCODE_COMMAND="$ROOT/bin/opencode" \
-  "$SCRIPT_DIR/../opencode-impl.sh" "$ROOT/worktree" "$ROOT/brief.md" opencode-run > "$ROOT/opencode.out" 2>&1 \
+  OPENCODE_COMMAND="$ROOT/bin/opencode" OPENCODE_LOG="$OPENCODE_LOG" \
+  "$OPENCODE_IMPL_SCRIPT" "$ROOT/worktree" "$ROOT/brief.md" opencode-run > "$ROOT/opencode.out" 2>&1 \
   || fail 'OpenCode wrapper failed'
 contains "$ROOT/controller/runs/opencode-run.last.txt" opencode-complete 'OpenCode final text is extracted'
 contains "$ROOT/controller/runs/opencode-run.done" 'EXIT=0' 'OpenCode completion is persisted'
+contains "$OPENCODE_LOG" 'run -m opendesign_github2/deepseek-v4.1-flash-eco' 'OpenCode defaults to the github2 provider'
+OPENCODE_LOG=$ROOT/opencode-override.log PATH="$ROOT/bin:$PATH" HOME="$ROOT/home" CONTROLLER_HOME="$ROOT/controller" CONTROLLER_REPO="$ROOT/repo" \
+  OPENCODE_COMMAND="$ROOT/bin/opencode" OPENCODE_PROVIDER=opendesign_volker \
+  "$OPENCODE_IMPL_SCRIPT" "$ROOT/worktree" "$ROOT/brief.md" opencode-provider > "$ROOT/opencode-provider.out" 2>&1 \
+  || fail 'OpenCode provider override failed'
+contains "$ROOT/opencode-override.log" 'run -m opendesign_volker/deepseek-v4.1-flash-eco' 'OpenCode provider override selects volker'
+OPENCODE_LOG=$ROOT/opencode-model.log PATH="$ROOT/bin:$PATH" HOME="$ROOT/home" CONTROLLER_HOME="$ROOT/controller" CONTROLLER_REPO="$ROOT/repo" \
+  OPENCODE_COMMAND="$ROOT/bin/opencode" OPENCODE_PROVIDER=opendesign_volker OPENCODE_MODEL=opendesign_github2/custom-model \
+  "$OPENCODE_IMPL_SCRIPT" "$ROOT/worktree" "$ROOT/brief.md" opencode-model > "$ROOT/opencode-model.out" 2>&1 \
+  || fail 'OpenCode full model override failed'
+contains "$ROOT/opencode-model.log" 'run -m opendesign_github2/custom-model' 'full OpenCode model overrides provider selection'
 
 REL_REPO=$ROOT/rel-worktree
 mkdir -p "$REL_REPO/project/logs" "$REL_REPO/project/artifacts" "$REL_REPO/project/evidence"

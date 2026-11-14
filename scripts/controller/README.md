@@ -43,8 +43,10 @@ Use this order for each implementation task.
      scripts/controller/codex-impl.sh /path/to/worktree /absolute/path/brief.md task-run
    ```
 
-   Use `CODEX_ROUTE=deepseek` for the configured DeepSeek route, or
-   `scripts/controller/opencode-impl.sh` for OpenCode. Codex stores its run
+   Use `CODEX_ROUTE=deepseek` to select an Open Design account automatically,
+   or pin one with `CODEX_ROUTE=deepseek-volker` or
+   `CODEX_ROUTE=deepseek-github2`. OpenCode is available through
+   `scripts/controller/opencode-impl.sh`. Codex stores its run
    stream and completion marker in `$CONTROLLER_RUNS_DIR` (default
    `$CONTROLLER_HOME/runs/`); OpenCode uses `$CONTROLLER_HOME/runs/`. Run long
    jobs detached and read the `.done` marker to learn the child process exit
@@ -77,9 +79,10 @@ Use this order for each implementation task.
    `.done`, it prints `RUNNING (no .done)` and exits 0 even if the event stream
    is absent. That status does not mean the child completed. See the
    [job-check design](docs/DESIGN-GUIDE.md#job-check-compatibility) for the
-   accepted forms and completion rules. Usage-limit detection accepts both a
-   time-only retry and a month-name date with an ordinal day and 12-hour time;
-   the dated text is printed verbatim because its message carries no timezone.
+   accepted forms and completion rules. Usage-limit detection accepts a
+   gateway `insufficient_balance` reset timestamp, a time-only retry, and a
+   month-name date with an ordinal day and 12-hour time; month-name text is
+   printed verbatim because its message carries no timezone.
 4. **Review on another route.** Give an independent reviewer the exact commit
    and a read-only review prompt. Do not have an implementer review its own
    change. For a Luna implementation, `codex-review.sh` defaults to the Sol
@@ -139,6 +142,78 @@ scripts/controller/start-after.sh 1430 /path/to/worktree /absolute/path/to/brief
 
 See the [recovery and scheduling design](docs/DESIGN-GUIDE.md#recover-and-schedule-codex-work)
 for the safety checks.
+
+## Open Design account selection
+
+The `deepseek` route uses the two locally configured Codex homes:
+`$HOME/.codex-opendesign-volker` and `$HOME/.codex-opendesign-github2`. Set
+`CODEX_HOME_DEEPSEEK_VOLKER` or `CODEX_HOME_DEEPSEEK_GITHUB2` to override either
+home. Both homes must have their own catalog with a null `tool_mode`; the
+selected home's catalog is checked before Codex starts. The model defaults to
+`deepseek-v4.1-flash-eco` at `high` effort.
+
+The gateway has no quota endpoint, so the wrapper never probes it. It reads
+only its local state and chooses the available account with the oldest
+`last_used_epoch`; the start is serialized with `flock` so automatic starts
+alternate safely. `deepseek-volker` and `deepseek-github2` always pin the
+named account. A pin does not fail over. Codex reads the key through the
+selected home and its `env_key` configuration; the wrapper does not read
+`.env` or `auth.json`, and does not place key values in command arguments,
+run evidence, reports, or account state.
+
+The state file defaults to
+`$CONTROLLER_RUNS_DIR/opendesign-accounts.json`. Set `CONTROLLER_OD_STATE` to
+an absolute path to move it. It contains account names and numeric
+`last_used_epoch` and `blocked_until_epoch` values, plus an optional
+`window_end_epoch` per account and a `threads` map from known Codex thread ids
+to their Open Design account. Thread mappings let a manual
+`CODEX_ROUTE=deepseek ... resume <thread>` resume on the account that started
+that thread. If no run or state mapping exists, the wrapper says so and picks
+an account automatically. A later resume updates the mapping to the account it
+uses.
+
+A 402 `insufficient_balance` response with a parseable `reset_at` value records
+that reset for the account used by the run. If the gateway reports 402 but the
+reset time is missing or malformed, the wrapper logs that the reset time is
+unknown and records a temporary block for six hours. Set the positive integer
+`CONTROLLER_OD_UNKNOWN_BLOCK_SECONDS` to change the default `21600` second
+block. A later block is never shortened by a new response with an earlier
+reset time. Invalid overrides log a warning and use the six-hour default. Codex
+prints the real 402 as a final plain-text `error`/`turn.failed` message
+(`unexpected status 402 Payment Required: [code=insufficient_balance] ... resets
+at <UTC time>`), which is recognized too; `Reconnecting...` retries and text
+inside agent or tool output are not. Automatic
+selection skips an account until that time; if both are blocked, the wrapper
+exits 3 and reports the earliest reset. Usage-limit recovery resumes on the
+account in the run's `.route` sidecar. If that account is still blocked, it
+uses the other available account and logs the fallback.
+
+To use credits that would otherwise expire, fill in each account's
+`window_end_epoch` in the state file using the dashboard or an observed
+`reset_at` plus whole 7-day windows, then set
+`CONTROLLER_OD_PREFER_EXPIRING=1`. Selection prefers the available account
+whose recorded window ends soonest, with `last_used_epoch` breaking ties. The
+preference is off by default because the wrapper cannot see remaining quota.
+The editable state shape is:
+
+```json
+{
+  "volker": {"last_used_epoch": 0, "blocked_until_epoch": 0},
+  "github2": {"last_used_epoch": 0, "blocked_until_epoch": 0},
+  "threads": {"codex-thread-id": "volker"}
+}
+```
+
+Add a numeric `window_end_epoch` field to an account when recording its
+current weekly window end. The state schema rejects unknown fields so account
+keys cannot be stored there by mistake.
+
+`CODEX_HOME_OVERRIDE` is honoured only on the luna route.
+
+OpenCode defaults to `opendesign_github2/deepseek-v4.1-flash-eco`. Set
+`OPENCODE_PROVIDER=opendesign_volker` to choose the other provider, or set
+`OPENCODE_MODEL` to a full provider/model identifier. On the command line,
+choose a provider and model with `opencode run -m <provider>/<model>`.
 
 The reusable brief format is [`BRIEF-TEMPLATE.md`](BRIEF-TEMPLATE.md), and
 implementation-job constraints are in [`rules.md`](rules.md). The two

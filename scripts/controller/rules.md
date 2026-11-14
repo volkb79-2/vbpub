@@ -30,6 +30,9 @@
   reviewed branch under their own trailer; every commit still carries exactly
   one trailer) and `Co-Authored-By: Codex deepseek-v4.1-flash
   <noreply@openai.com>` for DeepSeek or OpenCode.
+- The Codex DeepSeek routes are `deepseek` (automatic account selection),
+  `deepseek-volker`, and `deepseek-github2` (pinned accounts). The two pinned
+  forms use the same DeepSeek trailer above.
 - Run each registered lane under the shared lock, one lane at a time:
 
   ```bash
