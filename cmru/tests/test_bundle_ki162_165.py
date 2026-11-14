@@ -70,6 +70,19 @@ def _write_bundle(
     return config
 
 
+def _variant_build(config_path: Path, enabled: bool):
+    if not enabled:
+        return None
+    config_path.write_text(
+        config_path.read_text(encoding="utf-8").replace(
+            'name_template = "demo-v{version}.tar.xz"',
+            'name_template = "demo-v{version}-{variant}.tar.xz"',
+        ),
+        encoding="utf-8",
+    )
+    return SimpleNamespace(name="py311", build_arg="3.11", label="Python 3.11")
+
+
 def _archive_contents(archive: Path) -> tuple[dict, set[str]]:
     mode = "r:gz" if archive.name.endswith(".tar.gz") else "r:xz"
     with tarfile.open(archive, mode) as tf:
@@ -366,16 +379,7 @@ def test_keep_tree_false_removes_bundle_and_wheel_trees_after_success(
     (tmp_path / "src").mkdir()
     (tmp_path / "src/app.py").write_text("print('ok')\n", encoding="utf-8")
     config_path = _write_bundle(tmp_path, wheel_enabled=True)
-    variant = None
-    if variant_build:
-        config_path.write_text(
-            config_path.read_text(encoding="utf-8").replace(
-                'name_template = "demo-v{version}.tar.xz"',
-                'name_template = "demo-v{version}-{variant}.tar.xz"',
-            ),
-            encoding="utf-8",
-        )
-        variant = SimpleNamespace(name="py311", build_arg="3.11", label="Python 3.11")
+    variant = _variant_build(config_path, variant_build)
 
     def build_wheel(config):
         config.client_dir.mkdir(parents=True, exist_ok=True)
@@ -398,10 +402,14 @@ def test_keep_tree_false_removes_bundle_and_wheel_trees_after_success(
     assert not config.client_dir.exists()
 
 
-def test_keep_tree_true_retains_bundle_and_wheel_trees_after_success(tmp_path, monkeypatch):
+@pytest.mark.parametrize("variant_build", [False, True])
+def test_keep_tree_true_retains_bundle_and_wheel_trees_after_success(
+    tmp_path, monkeypatch, variant_build,
+):
     (tmp_path / "src").mkdir()
     (tmp_path / "src/app.py").write_text("print('ok')\n", encoding="utf-8")
     config_path = _write_bundle(tmp_path, wheel_enabled=True, keep_tree=True)
+    variant = _variant_build(config_path, variant_build)
 
     def build_wheel(config):
         config.client_dir.mkdir(parents=True, exist_ok=True)
@@ -410,7 +418,8 @@ def test_keep_tree_true_retains_bundle_and_wheel_trees_after_success(tmp_path, m
     monkeypatch.setattr(bundle, "build_wheel", build_wheel)
     config = bundle.parse_config(config_path)
     archive = bundle.run_bundle(
-        config_path, manifest_project="demo", manifest_tag="demo-v1.2.3",
+        config_path, variant=variant,
+        manifest_project="demo", manifest_tag="demo-v1.2.3",
     )
 
     assert archive.is_file()
@@ -418,18 +427,23 @@ def test_keep_tree_true_retains_bundle_and_wheel_trees_after_success(tmp_path, m
     assert (config.client_dir / "demo-client.whl").is_file()
 
 
-@pytest.mark.parametrize("failure_point", ["stage", "archive"])
+@pytest.mark.parametrize("failure_point", ["wheel", "stage", "archive"])
+@pytest.mark.parametrize("variant_build", [False, True])
 def test_keep_tree_false_retains_bundle_and_wheel_trees_on_failure(
-    tmp_path, monkeypatch, failure_point,
+    tmp_path, monkeypatch, failure_point, variant_build,
 ):
     (tmp_path / "src").mkdir()
     (tmp_path / "src/app.py").write_text("print('ok')\n", encoding="utf-8")
     config_path = _write_bundle(
         tmp_path, wheel_enabled=True, stage=failure_point == "stage",
     )
+    variant = _variant_build(config_path, variant_build)
 
     def build_wheel(config):
         config.client_dir.mkdir(parents=True, exist_ok=True)
+        (config.client_dir / "partial-client.whl").write_bytes(b"partial wheel\n")
+        if failure_point == "wheel":
+            raise RuntimeError("wheel build failed")
         (config.client_dir / "demo-client.whl").write_bytes(b"wheel bytes\n")
 
     monkeypatch.setattr(bundle, "build_wheel", build_wheel)
@@ -441,25 +455,36 @@ def test_keep_tree_false_retains_bundle_and_wheel_trees_on_failure(
             raise subprocess.CalledProcessError(7, ["stage"])
 
         runner = fail_stage
-    else:
+    elif failure_point == "archive":
         def fail_archive(*args, **kwargs):
             raise OSError("archive write failed")
 
         monkeypatch.setattr(bundle, "create_archive", fail_archive)
         runner = None
+    else:
+        runner = None
 
-    error = subprocess.CalledProcessError if failure_point == "stage" else OSError
+    error = {
+        "wheel": RuntimeError,
+        "stage": subprocess.CalledProcessError,
+        "archive": OSError,
+    }[failure_point]
     with pytest.raises(error):
         bundle.run_bundle(
             config_path,
+            variant=variant,
             runner=runner,
             manifest_project="demo",
             manifest_tag="demo-v1.2.3",
         )
 
-    assert (config.client_dir / "demo-client.whl").is_file()
-    assert (config.bundle_dir / "client/demo-client.whl").is_file()
-    assert (config.bundle_dir / "src/app.py").is_file()
+    assert (config.client_dir / "partial-client.whl").is_file()
+    if failure_point == "wheel":
+        assert config.bundle_dir.is_dir()
+        assert not (config.bundle_dir / "src/app.py").exists()
+    else:
+        assert (config.bundle_dir / "client/demo-client.whl").is_file()
+        assert (config.bundle_dir / "src/app.py").is_file()
     if failure_point == "stage":
         assert (config.bundle_dir / "failed.env").read_text(encoding="utf-8") == "TOKEN=retained for diagnosis\n"
     assert not list(config.dist_dir.glob("*.tar.xz"))
