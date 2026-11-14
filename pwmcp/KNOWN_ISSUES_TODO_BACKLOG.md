@@ -5,7 +5,7 @@
 This file records consumer-facing product gaps for later triage. Normative
 behavior remains in the product specification and consumer documentation.
 
-Last updated: 2026-11-13 (PWMCP-63..69 implemented in their respective branches, unreleased; PWMCP-62's separate R2 follow-up remains open).
+Last updated: 2026-11-14 (PWMCP-63..69 implemented in their respective branches, unreleased; PWMCP-70 documents R9 equivalent survivors; PWMCP-71 tracks the release-scoped R2 recipe; PWMCP-62's separate R2 follow-up remains open).
 
 ## PWMCP-01 — Provide a rendered-page inspection command
 
@@ -900,21 +900,21 @@ Future `builtins.open` or `io.open` patches follow the same rule.
 storage-state tests and the registered unit lane passes on a clean final
 commit.
 
-## PWMCP-59 — `r2` has `max_mutants = 1000` while the current selected candidate inventory is 1165
+## PWMCP-59 — `r2` has `max_mutants = 1000` while the latest planned inventory is 1293
 
-**Status:** OPEN (filed 2026-11-11); priority major (the exact release tag cannot complete an unmodified R2 campaign); source: host-campaign controller session record 2026-11-11.
+**Status:** OPEN (filed 2026-11-11; updated 2026-11-14); priority major (the exact release tag cannot complete an unmodified R2 campaign); source: host-campaign records 2026-11-11 and 2026-11-14.
 
-**Problem.** `pwmcp/assay.toml` declares `max_mutants = 1000`, but the selected mutation inventory for `pwmcp-v1.64.1-r7` is 1165. Assay correctly refuses over-cap discovery before executing a partial sample, so every unmodified R2 campaign ends `BUDGET_EXCEEDED/MUTANT_LIMIT_EXCEEDED` with exit 4 after paying for the baseline. The cap therefore makes the release lane unusable rather than bounding an unexpectedly large run, and there is no documented rule for choosing the next cap from candidate inventory and expected runtime.
+**Problem.** `pwmcp/assay.toml` declares `max_mutants = 1000`, below both the 1165 candidates measured for `pwmcp-v1.64.1-r7` and the 1293-candidate plan for `pwmcp-v1.64.1-r9`. Assay refuses over-cap discovery before executing a partial sample, so an unmodified R2 run against the latest inventory would report `BUDGET_EXCEEDED/MUTANT_LIMIT_EXCEEDED` with exit 4 after paying for the baseline. The cap therefore makes the release lane unusable rather than bounding an unexpectedly large run, and there is no documented rule for choosing the next cap from candidate inventory and expected runtime.
 
-**Evidence.** The host-campaign controller session record 2026-11-11 tested tag commit `520e9ae660dbd0462959fa5151a55d30af078339`; the exact tag reported `max_mutants = 1000`, real selected candidates 1165, `over_candidate_cap`, and verdict `BUDGET_EXCEEDED/MUTANT_LIMIT_EXCEEDED`, exit 4 after the 400 s baseline. The two temporary host-checkout commits `3d1249019` and `1a11be5bde6d2110c1336ad31e9cf4ed77346b87` changed only this cap. Repository `main` still has `pwmcp/assay.toml:106 max_mutants = 1000`. This is distinct from PWMCP-20, which tracks completion of the waived campaign; this item is the configuration defect that prevents it from starting.
+**Evidence.** The 2026-11-11 host-campaign record tested the r7 tag with `max_mutants = 1000`, 1165 selected candidates, `over_candidate_cap`, and `BUDGET_EXCEEDED/MUTANT_LIMIT_EXCEEDED` after the 400-second baseline. The 2026-11-14 R9 plan reports 1293 total candidates; the main configuration is still `max_mutants = 1000`. The R9 campaign used a temporary campaign-checkout cap of 1400 to run its explicitly selected changed-line set; that does not change the main configuration or make a full-target campaign fit on main. This is distinct from PWMCP-20, which tracks completion of the waived campaign; this item is the configuration defect that prevents it from starting.
 
-**Proposed minimal solution.** Raise `pwmcp/assay.toml`'s `max_mutants` above the measured inventory with explicit headroom: at least 1200, and choose the concrete value as `ceil(expected_selected_candidates * headroom_factor)` with a documented minimum 10% headroom and a declared upper bound checked against expected lane runtime. For the current 1165 candidate set, that rule requires a final value above 1281; do not lower the cap back to the former value unless a new measured inventory and budget justify it. Document the rule beside the lane: refresh the expected inventory from a bounded plan/selection result before raising or lowering the cap, preserve a full inventory rather than truncate, and review the cap alongside `budget`, `jobs`, and per-candidate cost. No host-local edit of the judged checkout is a supported remedy.
+**Proposed minimal solution.** Raise `pwmcp/assay.toml`'s `max_mutants` above the latest measured inventory with explicit headroom. Choose the value as `ceil(expected_selected_candidates * 1.10)` or higher, and check it against expected lane runtime before changing the cap. For 1293 candidates, the cap must be at least 1423; 1500 leaves practical room for ordinary inventory growth. Refresh the inventory before raising or lowering the cap, preserve a full inventory rather than truncate, and review the cap alongside `budget`, `jobs`, and per-candidate cost. No host-local edit of the judged checkout is a supported remedy.
 
 **Where.** `pwmcp/assay.toml` (`[lanes.r2]` / `judge.mutation.max_mutants`), with the cap-choice rule in PWMCP's lane-authoring or consumer documentation and a focused config/docs contract test.
 
-**Acceptance test idea.** A recorded 1165-candidate inventory and the chosen cap satisfy the headroom formula without an over-cap refusal; a test consumes a candidate inventory fixture and fails if the cap is at or below the inventory or below the declared 10% headroom. A control fixture with fewer candidates still passes, and a hand mutation restoring `1000` trips the oracle.
+**Acceptance test idea.** A recorded 1293-candidate inventory and the chosen cap satisfy the headroom formula without an over-cap refusal; a test consumes a candidate inventory fixture and fails if the cap is at or below the inventory or below the declared 10% headroom. A control fixture with fewer candidates still passes, and a hand mutation restoring `1000` trips the oracle.
 
-**Close when.** The repository cap is raised to at least 1200 with at least 10% measured headroom, the cap-choice rule and inventory-refresh obligation are documented, and an R2 plan/selection preflight (not a host-local `assay.toml` commit) proves the current campaign fits the cap on a clean final commit.
+**Close when.** The repository cap is raised to at least 1423 for the current 1293-candidate plan, the cap-choice rule and inventory-refresh obligation are documented, and an R2 plan/selection preflight (not a host-local `assay.toml` commit) proves the current campaign fits the cap on a clean final commit.
 
 ## PWMCP-61 — the R2 lane lets memory-runaway mutants swap instead of dying
 
@@ -1044,3 +1044,28 @@ the operator limit.
 The 46 survivors in the pwmcp R2 r8 report are closed with **35 KILLED and 11 EQUIVALENT**. Every killed row passed with the exact r8 source and failed after its exact mutation was applied in a separate scratch copy; each equivalent row has an input-domain or output-use proof. The original report classes are TEST GAP 26 KILLED / 5 EQUIVALENT, SECURITY-RELEVANT 8 / 0, and EQUIVALENT 1 / 6. The malformed nested-close mutant at line 377 is killed by a nested-close oracle, and the `extract_page(main=False)` default mutant at line 743 (first classed EQUIVALENT) is killed by a direct default-argument test. The complete row table and proof record are in the pwmcp R2 r8 report.
 
 For the next scanner mutation set, test recovery `fragment_start` updates at `;` and stray `)` before a later declaration. The oracle should check which hidden marker reaches extraction and which visible control remains readable, while retaining the linear-work bound.
+
+## PWMCP-70 — record the R9 equivalent page-content mutants
+
+**Status:** CLOSED 2026-11-14 (documented); priority P3 evidence.
+
+The R9 campaign left two mutations that do not change the hidden-text decision under the current implementation:
+
+- **Line 185, decoder default `False -> True`.** The flag-less call sites decode property names and `!important` priority text. Preserving escaped whitespace there cannot make a property name equal `display` or `visibility`, or a priority equal `important`; the campaign's probes showed no hide-decision difference.
+- **Line 287, bogus-priority flag `False -> True`.** The invalid `!bogus` suffix remains in the returned value. The current display/visibility validators reject that value and discard the declaration either way, so the altered importance flag cannot replace a hiding declaration. The R9 campaign's probes showed no hide-decision difference.
+
+The R8 line-246 `False -> True` mutation was also rechecked. Its original bypass reading was correct for the R8 source: `test_invalid_priority_suffix_cannot_override_important_hidden_declaration` passed on that source and failed under the exact mutation for `display:none !important;display:block !bogus`. R9's line-287 mutation is equivalent because the later PWMCP-65 display-value validation now rejects `block !bogus`; the two campaign readings describe different source revisions.
+
+No helper-internal assertion was added for these cases because their claimed equivalence is about the public hidden-text decision. The R9 evidence, R8 exact-source test result, and the source-path difference above provide the disposition.
+
+## PWMCP-71 — document the release-scoped R2 candidate recipe
+
+**Status:** OPEN (filed 2026-11-14); priority P2 (campaign reproducibility).
+
+The registered `r2` lane plans the whole target. A release-to-release campaign can instead select candidates on changed source lines, but the recipe must preserve the exact release diff and candidate IDs and must not be described as a whole-target R2 PASS.
+
+**Recipe to document.** On the release checkout, run `assay plan r2 --json`; obtain changed source line ranges from `git diff -U0 <base>..<release> -- <source-path>`; select the plan's candidate IDs whose source locations fall within those changed ranges; write one ID per line to `<checkout>/.run-gate/only-candidates-<scope>.txt`; and pass that file through the supported campaign invocation's `--only-candidates` option. The file stays inside the checkout so the campaign can read it. Registered Assay lanes must retain Run-Gate's `--resume --progress .assay/progress-r2.jsonl` handling. Record the selection file, diff base, and candidate counts with the campaign evidence. A selected subset is partial by construction and leaves unselected candidates unevaluated. `assay plan --file` accepts an Assay TOML config, not a source-file filter.
+
+**Where.** PWMCP's R2 lane-authoring documentation and the operator campaign recipe.
+
+**Close when.** A reader can reproduce the changed-line candidate list from the release diff and plan, run it through the supported campaign workflow, and distinguish its partial result from whole-target R2 completion.

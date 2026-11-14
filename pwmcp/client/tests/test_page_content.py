@@ -820,6 +820,23 @@ def test_invalid_or_unresolved_later_hiding_values_fail_closed(style: str) -> No
 @pytest.mark.parametrize(
     ("style", "hidden"),
     [
+        pytest.param("display:none;display:list-item foo bar", True, id="invalid-list-item-triple"),
+        pytest.param("display:none;display:block flow x", True, id="invalid-block-flow-triple"),
+        pytest.param("display:none;display:block flow-root x", True, id="invalid-block-flow-root-triple"),
+        pytest.param("display:none;display:block flow", False, id="valid-block-flow-pair"),
+        pytest.param("display:none;display:list-item block", False, id="valid-list-item-block-pair"),
+    ],
+)
+def test_invalid_multi_keyword_display_overrides_are_ignored(style: str, hidden: bool) -> None:
+    result = _extraction(f"<p style='{style}'>content</p>", fmt="text")
+
+    assert result.content == ("" if hidden else "content"), style
+    assert result.hidden_removed == (1 if hidden else 0), style
+
+
+@pytest.mark.parametrize(
+    ("style", "hidden"),
+    [
         pytest.param(r"display:none;display:block\9", True, id="escaped-tab-suffix"),
         pytest.param(r"display:none;display:block\20 flow", True, id="escaped-space-inside-ident"),
         pytest.param(r"display:none;display:block\a flow", True, id="escaped-lf-inside-ident"),
@@ -859,6 +876,22 @@ def test_escaped_whitespace_and_comment_splits_do_not_expose_hidden_text(
     hidden: bool,
 ) -> None:
     result = _extraction(f'<p style="{escape(style, quote=True)}">content</p>', fmt="text")
+
+    assert result.content == ("" if hidden else "content"), style
+    assert result.hidden_removed == (1 if hidden else 0), style
+
+
+@pytest.mark.parametrize(
+    ("style", "hidden"),
+    [
+        pytest.param(r"display:\none", True, id="simple-escape-hidden-display-keyword"),
+        pytest.param(r"visibility:\hidden", True, id="simple-escape-hidden-visibility-keyword"),
+        pytest.param(r"display:none;display:b\lock", False, id="simple-escape-visible-display-keyword"),
+        pytest.param(r"display:none;display:block\ flow", True, id="escaped-whitespace-stays-a-sentinel"),
+    ],
+)
+def test_simple_css_escapes_preserve_hidden_and_visible_values(style: str, hidden: bool) -> None:
+    result = _extraction(f"<p style='{style}'>content</p>", fmt="text")
 
     assert result.content == ("" if hidden else "content"), style
     assert result.hidden_removed == (1 if hidden else 0), style
