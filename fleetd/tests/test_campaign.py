@@ -2909,3 +2909,46 @@ def test_a_start_interrupted_before_the_job_existed_is_retried_not_failed(tmp_pa
     assert after["status"] == "RUNNING"
     assert after["started_mono"] is not None and after["last_progress_mono"] is not None
     assert not any(job["status"] == "FAILED" for job in _state(tmp_path)["jobs"].values())
+
+
+def _foreign_candidate_setup(tmp_path):
+    plan = _plan(40)
+    clock = FakeClock()
+    transport = FakeTransport(clock=clock)
+    manager = CampaignManager(tmp_path, transport, clock=clock)
+    manager.run("campaign", plan)
+    jobs = _state(tmp_path)["jobs"]
+    running = next(job for job in jobs.values() if job["host"] == "host-a" and job["status"] == "RUNNING")
+    other = next(job for job in jobs.values() if job["host"] == "host-a" and job["status"] == "QUEUED")
+    return manager, transport, running, other["candidate_ids"][0]
+
+
+def test_refresh_never_attributes_a_foreign_candidate_to_a_job(tmp_path):
+    manager, transport, running, foreign = _foreign_candidate_setup(tmp_path)
+    probe = manager.runner.probe
+
+    def with_foreign_record(host, wanted):
+        rows = probe(host, wanted)
+        for row in rows.values():
+            if row.get("state") != "MISSING":
+                row["records"] = [*row.get("records", []), {
+                    "candidate_id": foreign, "outcome_bucket": "killed",
+                    "elapsed_seconds": 1.0, "emitted_at": "2030-01-01T00:00:00+00:00",
+                }]
+        return rows
+
+    manager.runner.probe = with_foreign_record
+    manager.tick("campaign")
+    job = _state(tmp_path)["jobs"][running["name"]]
+    assert foreign not in job["finished_ids"]
+    assert all(record["candidate_id"] in running["candidate_ids"] for record in job["records"])
+
+
+def test_collect_never_attributes_a_foreign_candidate_found_in_a_jobs_progress_window(tmp_path):
+    manager, transport, running, foreign = _foreign_candidate_setup(tmp_path)
+    transport.add_progress("host-a", running["name"], foreign, "killed", emitted_at="2030-01-01T00:00:01+00:00")
+    manager.tick("campaign")
+    result, _report, _json_path, _report_path = manager.collect("campaign")
+    row = next(row for row in result["candidates"] if row["candidate_id"] == foreign)
+    assert row["outcome"] == "missing"
+    assert result["totals"]["killed"] == 0
