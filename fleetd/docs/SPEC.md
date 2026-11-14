@@ -195,8 +195,10 @@ persistent checkout. The first detached command writes `list.sha256` before it
 invokes `run-r2-campaign.sh`; if the controller or session ends before that
 write, probe recomputes the digest from the uploaded ID file. An existing
 matching name is a no-op; a mismatched digest refuses. Probe sends job names
-and ID-file paths rather than candidate arrays, so its command size does not
-grow with lane size. It resolves the Assay lane from the checkout's Run-Gate
+and ID-file paths rather than candidate arrays, so its command size grows with
+the number of batches on a host, not with the number of candidates. One probe
+is a single remote shell argument, which the kernel caps at 128 KiB: about 100
+batches per host in one campaign (see FD-014). It resolves the Assay lane from the checkout's Run-Gate
 declaration and reads the plain run's `progress-<assay-lane>.jsonl` under the
 project `.assay` directory; it does not require the optional instance
 `progress-file` pointer. Probe returns running/EXIT/missing state, list digest,

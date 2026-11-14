@@ -17,6 +17,7 @@
 | FD-011 | Optional persistent campaign scheduler after the one-shot loop is proven | P2 | OPEN | 2026-11-13 |
 | FD-012 | Export campaign progress for cgprofile guard policy and evidence | P2 | OPEN | 2026-11-13 |
 | FD-013 | Serialize concurrent campaign state updates | P2 | OPEN | 2026-11-14 |
+| FD-014 | Probe command grows with the number of batches and hits the 128 KiB argument limit near 100 batches per host | P2 | OPEN | 2026-11-14 |
 
 ## FD-001 Lite campaign lifecycle
 
@@ -181,3 +182,18 @@ Named runner starts remain idempotent, so this is a state-accounting race.
 Add an exclusive lock at `<campaign>.lock` around each command's full
 read/modify/write interval. Keep locks local to the state directory and do not
 add leases, host-side locks, or a daemon.
+
+## FD-014 Probe size is bounded by batches per host
+
+**State:** OPEN. **Priority:** P2. **Filed:** 2026-11-14.
+
+`probe_script` carries one JSON target per job (name, ID-file path, commit,
+project, lane) twice: once as the base64 payload argument and once in the
+leading metadata comment that only the fake transport reads. The whole script
+is one remote shell argument, capped at 128 KiB (`MAX_ARG_STRLEN`), so a host
+with more than about 100 batches in one campaign (all non-superseded jobs are
+probed, finished ones included) fails every probe with `Argument list too long`.
+The 230-candidate golden plan uses 18 batches on its larger host. Fix by
+uploading the targets with `put` and probing only non-terminal jobs, or by
+deriving paths on the host from the job name; drop the duplicate comment from
+the real script. Until then keep campaigns under about 100 batches per host.
