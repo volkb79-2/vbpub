@@ -610,11 +610,19 @@ then remains in its background tier. Missing gate placement is a hard error,
 so no consumer silently returns to `dev-background.slice` or Docker's
 unbounded default.
 
-The devcontainer template consumes host service endpoints published through
-augeaswrap. `mdt-cockpit/host-setup` no longer creates cgprofile or topos
-directories, groups, tmpfiles entries, or service drop-ins. Install those
-services through `cgprofiled install` and `toposd install`; each service owns
-its socket contract, endpoint fragment, and doctor. See [Host service
+Service endpoint fragments are combined by augeaswrap, but the generic
+devcontainer template does not yet deliver cgprofile or topos endpoint
+environment and numeric group IDs into its session. The test-host runner
+launcher does load and forward its endpoint record. This generic-template gap
+is tracked by MDT-086; do not infer that a socket-directory mount alone meets
+the Run-Gate or Assay contract. Before changing a host or rolling out an image,
+run [`estate_doctor.py`](estate_doctor.py) and read the
+[machine-readable estate requirements](../docs/ESTATE-REQUIREMENTS.toml).
+
+`mdt-cockpit/host-setup` no longer creates cgprofile or topos directories,
+groups, tmpfiles entries, or service drop-ins. Install those services through
+`cgprofiled install` and `toposd install`; each service owns its socket
+contract, endpoint fragment, and doctor. See [Host service
 installation and endpoint publication](#host-service-installation-and-endpoint-publication)
 and the [pasteable service commands](../docs/CONSUMERS.md#host-service-endpoints).
 

@@ -500,7 +500,15 @@ def test_release_source_writer_removes_partial_file_after_write_failure(tmp_path
     monkeypatch.setattr(transaction, "_valid_local_branch_name", lambda *_: True)
     descriptor = {}
 
-    def fail_after_open(fd, *_args, **_kwargs):
+    real_fdopen = transaction.os.fdopen
+
+    def fail_after_open(fd, *args, **kwargs):
+        try:
+            opened = os.path.realpath(os.readlink(f"/proc/self/fd/{fd}"))
+        except OSError:
+            return real_fdopen(fd, *args, **kwargs)
+        if not opened.startswith(str(scope.resolve()) + os.sep):
+            return real_fdopen(fd, *args, **kwargs)
         descriptor["fd"] = fd
         raise OSError("disk full")
 

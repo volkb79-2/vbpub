@@ -1,0 +1,4 @@
+{"type":"session","id":"pi-session-402-other"}
+{"type":"message_end","message":{"role":"assistant","content":[],"usage":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"reasoning":0,"totalTokens":0},"stopReason":"error","durationMs":1,"errorMessage":"402: {\"code\":\"payment_required_other\",\"details\":{\"reset_at\":\"2099-11-17T11:44:44Z\"},\"message\":\"Payment is required for another reason.\",\"type\":\"payment_required_other\"}"}}
+{"type":"agent_end"}
+{"type":"agent_settled","aborted":false}

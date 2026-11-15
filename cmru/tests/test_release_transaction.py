@@ -1377,7 +1377,12 @@ def test_snapshot_pipe_refuses_oversized_payload(tmp_path, monkeypatch):
     read_fd, write_fd = os.pipe()
     os.close(write_fd)
     monkeypatch.setenv(cli._RELEASE_PREFLIGHT_SNAPSHOT_FD_ENV, str(read_fd))
-    monkeypatch.setattr(cli.os, "read", lambda *_args: b"x" * 8193)
+    real_read = cli.os.read
+    monkeypatch.setattr(
+        cli.os,
+        "read",
+        lambda fd, size: b"x" * 8193 if fd == read_fd else real_read(fd, size),
+    )
 
     with pytest.raises(RuntimeError, match="snapshot handoff payload is too large"):
         cli._read_release_snapshot_handoff_from_pipe()

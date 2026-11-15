@@ -672,6 +672,23 @@ def test_tracked_gate_evidence_path_refuses_before_any_lane(tmp_path, monkeypatc
     assert calls == []
 
 
+def test_release_evidence_paths_are_retained_by_the_assay_lane():
+    project = tomllib.loads((ROOT / "cmru.toml").read_text(encoding="utf-8"))
+    assay = tomllib.loads((ROOT / "assay.toml").read_text(encoding="utf-8"))
+    evidence_paths = project["project"]["release"]["evidence_paths"]
+    coverage_artifacts = {
+        lane["judge"]["coverage"]["artifact"]
+        for lane in assay["lanes"].values()
+        if "judge" in lane and "coverage" in lane["judge"]
+    }
+
+    # Assay's coverage artifact lives in its isolated lane snapshot; only
+    # .assay is retained in CMRU's project tree for release evidence.
+    assert "coverage.json" in coverage_artifacts
+    assert evidence_paths == [".assay"]
+    assert set(evidence_paths).isdisjoint(coverage_artifacts)
+
+
 def test_release_candidate_cleanup_removes_its_gate_snapshot(tmp_path):
     import worktree
 
@@ -924,7 +941,15 @@ def test_postponement_is_refused_for_a_later_release_before_any_lane_runs(
     _git(repo, "add", "cmru/CHANGES.md")
     _git(repo, "commit", "--quiet", "-m", "prepare a later release")
 
-    with pytest.raises(RuntimeError, match=r"authorized only for CMRU >= 6\.2\.0 and < 6\.3\.0 .*identifies 6\.3\.0"):
+    with pytest.raises(
+        RuntimeError,
+        match=(
+            r"authorized only for CMRU >= 6\.2\.0 and < 6\.3\.0 .*"
+            r" or >= 7\.0\.0 and < 7\.1\.0 .* or >= 7\.1\.0 and < 7\.2\.0 .*"
+            r" or >= 7\.2\.0 and < 7\.3\.0 .* or >= 7\.3\.0 and < 7\.4\.0 .*"
+            r"identifies 6\.3\.0"
+        ),
+    ):
         run_release_gate.run_release_gate(
             repo, temp_parent=private_root, postpone_mutation="KI-79",
         )

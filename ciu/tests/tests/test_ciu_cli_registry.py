@@ -151,6 +151,30 @@ def test_run_legacy_maps_every_way_an_implementation_stops(monkeypatch, capsys):
     assert cli._run_legacy(["x"]) == 0
 
 
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["-h", "tools/runner", "--", "true"],
+        ["--dry", "--json", "tools/runner", "--", "true"],
+    ],
+)
+def test_run_parser_refuses_help_and_abbreviated_options(argv, capsys):
+    with pytest.raises(SystemExit) as raised:
+        cli._run_cli(argv)
+
+    assert raised.value.code == 2
+    assert "unrecognized arguments" in capsys.readouterr().err
+
+
+def test_run_registry_refuses_progress_option():
+    status, _out, err, _dispatch = harness.run(
+        ["run", "--progress", "quiet", "tools/runner", "--", "true"],
+    )
+
+    assert status == 2
+    assert "[ERROR] ciu run: unrecognized arguments: --progress" in err
+
+
 def test_ksm_overrides_set_the_ambient_variable_for_this_run(monkeypatch):
     from ciu import governance
 

@@ -851,6 +851,50 @@ files, which lets augeaswrap re-render only the facts that remain owned by
 other services. See the [pasteable host service commands](CONSUMERS.md#host-service-endpoints)
 and [host endpoint guide](../host-setup/README.md#host-endpoint-facts-and-upgrade-refusal).
 
+## Estate requirements have one machine-readable owner
+
+The host setup and cockpit contract crosses project boundaries: cgprofile and
+topos publish host endpoints, MDT delivers session environment and mounts,
+Run-Gate and Assay consume those facts, and tester-unified carries a
+commit-bound Run-Gate wheel. Keeping this inventory in `mdt-cockpit/docs/`
+places it beside the host lifecycle owner instead of copying partial lists
+into each consumer. The [requirements table](ESTATE-REQUIREMENTS.toml) names
+dependencies, observable evidence, owner, repair path and source document for
+each component.
+
+TOML uses Python's standard-library parser, so the checker adds no framework
+or package dependency. Each probe is a bounded read-only command. A result the
+current context cannot see is `unknown`; it cannot make the host pass, and a
+dependent check remains blocked until its prerequisite passes. Optional host
+capabilities still appear in the report without gating the result. Remote
+checks reuse remote-gate's provider identity, fail-closed host guard and
+injectable process boundary, preserving the same host-selection contract as
+registered lanes. A focused `estate-doctor` Run-Gate lane keeps these
+contract tests cheap to repeat while `smoke` continues to run the full project
+suite.
+
+Session variables are tested from the process that consumes them, independently
+of the host endpoint-record probe. That lets the doctor identify an unset
+`CGPROFILE_CONTROL_SOCKET` when the cockpit cannot read the host record. Blocked
+rows include the prerequisite status and evidence, including when the
+prerequisite is `unknown`; this keeps a missing observation distinct from a
+passing prerequisite. The tester image check derives the stable version from
+the installed CLI, resolves that version's stable published release, verifies
+the wheel bytes against the release checksum asset, and checks the installed
+wheel identity against those bytes before comparing both image labels.
+`direct_url.json` alone is insufficient because it can describe any local
+wheel; comparing only runner configuration pins could also accept a stale
+image when the installed `RUN_GATE_BIN` has changed.
+
+The endpoint record is the authoritative value source. A daemon's successful
+install updates the aggregate record, while a running login or VS Code process
+keeps its original environment. The runner cockpit launcher already loads and
+forwards the record. The generic MDT template does not yet deliver cgprofile's
+control/observer socket variables and GIDs, or `MDT_HOST_DOCKER_GID`; Run-Gate
+25.5.0 and Assay correctly refuse those missing facts. MDT-086 owns the
+remaining consumer-delivery decision. See the [pasteable checker commands and
+current limitation](CONSUMERS.md#estate-prerequisite-check).
+
 ## BuildKit guard policy
 
 The guard defaults to `report-only` because a reserved Buildx worker may be

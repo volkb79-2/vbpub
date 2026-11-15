@@ -321,6 +321,11 @@ items:
     type: bugfix
     component: code-shape
     context_estimate: medium
+  - id: B-059
+    title: "The P52 concurrent-client test uses a load-sensitive one-second latency assertion"
+    type: bugfix
+    component: tests
+    context_estimate: small
 ---
 
 # Backlog
@@ -447,3 +452,21 @@ That happened in the test suite under xdist, where the test now signals its own 
 runs inside the TUI (D-033 control submenu) or any process with worker threads, block the guarded
 signals in every thread, or run the restore in a single-threaded child. Add a test with a second live
 thread.
+
+## B-059 — P52's concurrent-client test has a load-sensitive one-second assertion
+
+**Status:** OPEN (filed 2026-11-12); test reliability. Source:
+`topos/tests/test_daemon_p52.py:1010-1035`; residual noted in
+`reports/pytest92-audit-REVIEW2.md` under Topos watchdog widening.
+
+**Problem.** `test_concurrent_mixed_clients_fast_observes_bounded_latency`
+asserts that each fast client's elapsed time is below one second. The test
+already asserts four successful responses while a slow client remains
+connected, which is the useful concurrency contract; its additional absolute
+latency threshold can fail under arbitrary host load.
+
+**Close when.** The test proves all four valid fast responses complete while
+the slow client is still held open, using synchronization/order assertions
+rather than a sub-second performance threshold. A generous timeout is only a
+hang guard. The registered `topos-suite` lane passes, including under the
+declared tester environment.

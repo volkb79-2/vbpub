@@ -1,0 +1,64 @@
+BEFORE_VERSION=27.0.0-MASTER+20261027-173422
+BOOT_POOL_AVAILABLE=2.72G
+Reading update file
+Verifying rootfs.squashfs
+Verifying truenas_install/__main__.py
+Verifying truenas_install/__init__.py
+Verifying truenas_install/utils.py
+Verifying truenas_install/dhs.py
+Verifying truenas_install/arch.py
+Verifying truenas_install/fhs.py
+Running pre-checks
+Starting installer
+Creating dataset
+Extracting
+Performing post-install tasks
+Copying previous configuration
+Migrating configuration database
+Running autotune
+Checking hardware entitlement
+Preparing NVDIMM configuration
+Preparing GRUB configuration
+Updating initramfs
+Updating GRUB
+Configuring FIPS
+No need to update grub in ESP
+Upgrade completed successfully
+Cleaning up
+Update completed
+null
+POST_JOB_VERSION=27.0.0-MASTER+20261027-173422
+BOOTFS=boot-pool/ROOT/28.0.0-MASTER-20261027-175229
+BOOT_POOL_HEALTH=pool 'boot-pool' is healthy
+BOOT_ENVS=boot-pool/ROOT
+boot-pool/ROOT/27.0.0-MASTER-20261027-173422
+boot-pool/ROOT/27.0.0-MASTER-20261027-173422/audit
+boot-pool/ROOT/27.0.0-MASTER-20261027-173422/conf
+boot-pool/ROOT/27.0.0-MASTER-20261027-173422/data
+boot-pool/ROOT/27.0.0-MASTER-20261027-173422/etc
+boot-pool/ROOT/27.0.0-MASTER-20261027-173422/home
+boot-pool/ROOT/27.0.0-MASTER-20261027-173422/mnt
+boot-pool/ROOT/27.0.0-MASTER-20261027-173422/opt
+boot-pool/ROOT/27.0.0-MASTER-20261027-173422/root
+boot-pool/ROOT/27.0.0-MASTER-20261027-173422/usr
+boot-pool/ROOT/27.0.0-MASTER-20261027-173422/var
+boot-pool/ROOT/27.0.0-MASTER-20261027-173422/var/ca-certificates
+boot-pool/ROOT/27.0.0-MASTER-20261027-173422/var/lib
+boot-pool/ROOT/27.0.0-MASTER-20261027-173422/var/log
+boot-pool/ROOT/27.0.0-MASTER-20261027-173422/var/log/journal
+boot-pool/ROOT/28.0.0-MASTER-20261027-175229
+boot-pool/ROOT/28.0.0-MASTER-20261027-175229/audit
+boot-pool/ROOT/28.0.0-MASTER-20261027-175229/conf
+boot-pool/ROOT/28.0.0-MASTER-20261027-175229/data
+boot-pool/ROOT/28.0.0-MASTER-20261027-175229/etc
+boot-pool/ROOT/28.0.0-MASTER-20261027-175229/home
+boot-pool/ROOT/28.0.0-MASTER-20261027-175229/mnt
+boot-pool/ROOT/28.0.0-MASTER-20261027-175229/opt
+boot-pool/ROOT/28.0.0-MASTER-20261027-175229/root
+boot-pool/ROOT/28.0.0-MASTER-20261027-175229/usr
+boot-pool/ROOT/28.0.0-MASTER-20261027-175229/var
+boot-pool/ROOT/28.0.0-MASTER-20261027-175229/var/ca-certificates
+boot-pool/ROOT/28.0.0-MASTER-20261027-175229/var/lib
+boot-pool/ROOT/28.0.0-MASTER-20261027-175229/var/log
+boot-pool/ROOT/28.0.0-MASTER-20261027-175229/var/log/journal
+V28_UPDATE_JOB_EXIT=0

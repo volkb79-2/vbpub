@@ -89,6 +89,23 @@ def test_time_limit(request):
         signal.signal(signal.SIGPROF, previous)
 
 
+# R2 calibrate.py:202 (``while remaining > 0`` -> ``>= 0``): the idle wait then sleeps zero seconds forever.  Almost every
+# calibration run reaches ``remaining == 0.0`` exactly, and module-scoped fixtures run outside the per-test CPU limit
+# above, so without this guard the mutant hangs the whole suite until the campaign budget (BUDGET_EXCEEDED) instead of
+# failing tests.  A fake sleep that cannot advance the fake clock can never end a wait loop; refusing it makes every such
+# loop fail at its first iteration, independent of host load.  Applied at import so fixtures of every scope see it.
+_fake_sleep = testing.FakeHost.sleep
+
+
+def _advancing_fake_sleep(self, seconds):
+    if seconds <= 0:
+        raise AssertionError(f"FakeHost.sleep({seconds!r}): a non-advancing sleep cannot end a wait loop")
+    return _fake_sleep(self, seconds)
+
+
+testing.FakeHost.sleep = _advancing_fake_sleep
+
+
 @pytest.fixture
 def host():
     return testing.standard_host()

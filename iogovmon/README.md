@@ -1,5 +1,8 @@
 # iogovmon: recommend-only recorder of long-term virtual-disk capability shifts
 
+Retained acceptance record:
+[install record 2026-10-27](docs/evidence/INSTALL-RECORD-2026-10-27.md).
+
 Standalone background service for ANY Linux host with systemd and cgroup v2: no mdt-cockpit, no host-tuning, no iobench, no docker. Extracted from
 `mdt-cockpit/iogov` (WP-IGM-a of the host-tuning program: a move and rename, with the reviewed empty `governed_cgroups` default and version provenance fixes).
 Design and decisions: [docs/DESIGN-GUIDE.md](docs/DESIGN-GUIDE.md). Adopter examples: [docs/CONSUMERS.md](docs/CONSUMERS.md). Background and the blind opinions (they stay with mdt-cockpit):

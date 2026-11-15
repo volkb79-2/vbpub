@@ -31,17 +31,44 @@ static long sys5(long n, long a, long b, long c, long d, long e)
     return rax;
 }
 
-#define SYS_write 1
 #define SYS_prctl 157
 #define PR_SET_MEMORY_MERGE 67
+
+#ifdef KSM_OPTIN_TESTING
+/* Test-only override: production builds do not read this environment key. */
+extern char *getenv(const char *name);
+int ksm_optin_test_loaded = 0;
+
+static int test_value_is(const char *value, const char *expected)
+{
+    if (!value)
+        return 0;
+    while (*value && *expected && *value == *expected) {
+        value++;
+        expected++;
+    }
+    return *value == *expected;
+}
+
+static long test_prctl_result(void)
+{
+    const char *forced = getenv("KSM_OPTIN_TEST_PRCTL");
+    if (test_value_is(forced, "success"))
+        return 0;
+    if (test_value_is(forced, "failure"))
+        return -1;
+    return sys5(SYS_prctl, PR_SET_MEMORY_MERGE, 1, 0, 0, 0);
+}
+#endif
 
 __attribute__((constructor))
 static void ksm_optin(void)
 {
-    static const char ok[]   = "[ksm-optin] KSM enabled (PR_SET_MEMORY_MERGE=1)\n";
-    static const char fail[] = "[ksm-optin] PR_SET_MEMORY_MERGE failed (kernel<6.4/CONFIG_KSM?)\n";
-    if (sys5(SYS_prctl, PR_SET_MEMORY_MERGE, 1, 0, 0, 0) == 0)
-        sys5(SYS_write, 2, (long)ok, sizeof(ok) - 1, 0, 0);
-    else
-        sys5(SYS_write, 2, (long)fail, sizeof(fail) - 1, 0, 0);
+#ifdef KSM_OPTIN_TESTING
+    ksm_optin_test_loaded = 1;
+    (void)test_prctl_result();
+#else
+    /* This constructor runs in every dynamically linked child. Stay silent. */
+    (void)sys5(SYS_prctl, PR_SET_MEMORY_MERGE, 1, 0, 0, 0);
+#endif
 }

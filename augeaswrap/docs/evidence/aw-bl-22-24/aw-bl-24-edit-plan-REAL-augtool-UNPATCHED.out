@@ -1,0 +1,40 @@
+
+###### S1 new mount, plain options
+PlanRefused: [('resource.plan.failed', 'planning edit failed: records sequence has an unsupported node label')]
+augnew leftovers: ['fstab']
+
+###### S2 new mount, option with '='
+PlanRefused: [('resource.plan.failed', 'planning edit failed: records sequence has an unsupported node label')]
+augnew leftovers: ['fstab']
+
+###### S3 new swap pri=
+PlanRefused: [('resource.plan.failed', 'planning edit failed: records sequence has an unsupported node label')]
+augnew leftovers: ['fstab']
+
+###### S4 unchanged: item equal to existing record 3 (flat opts)
+PlanRefused: [('resource.plan.failed', 'planning edit failed: records sequence has an unsupported node label')]
+augnew leftovers: ['fstab']
+
+###### S5 changed existing record 3
+PlanRefused: [('resource.plan.failed', 'planning edit failed: records sequence has an unsupported node label')]
+augnew leftovers: ['fstab']
+
+###### S6 empty file, new mount
+PlanRefused: [('resource.plan.failed', 'planning edit failed: records sequence has an unsupported node label')]
+augnew leftovers: ['fstab']
+
+###### S7 comments-only file, new mount
+PlanRefused: [('resource.plan.failed', 'planning edit failed: records sequence has an unsupported node label')]
+augnew leftovers: ['fstab']
+
+###### S8 two new mounts
+PlanRefused: [('resource.plan.failed', 'planning edit failed: records sequence has an unsupported node label')]
+augnew leftovers: ['fstab']
+
+###### S9 unchanged: item equals existing record 3 incl '=' option
+PlanRefused: [('resource.plan.failed', 'planning edit failed: records sequence has an unsupported node label')]
+augnew leftovers: ['fstab']
+
+###### S10 unchanged: item equals existing record 1 (errors=remount-ro,noatime)
+PlanRefused: [('resource.plan.failed', 'planning edit failed: records sequence has an unsupported node label')]
+augnew leftovers: ['fstab']

@@ -53,6 +53,7 @@ any survivor.
   | Route | Exact trailer |
   | --- | --- |
   | Codex Luna | `Co-Authored-By: Codex gpt-6-luna <noreply@openai.com>` |
+  | Codex Sol (review route) | `Co-Authored-By: Codex gpt-6-sol <noreply@openai.com>` |
   | Codex DeepSeek or OpenCode | `Co-Authored-By: Codex deepseek-v4.1-flash <noreply@openai.com>` |
 
   Name the exact route in the brief; never use a generic Codex trailer.

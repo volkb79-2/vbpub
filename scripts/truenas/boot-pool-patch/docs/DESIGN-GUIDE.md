@@ -1,3 +1,5 @@
+<!-- Evidence scrub 2026-11-10: environment-specific host identities, host addresses, controller paths, SSH key material and fingerprints were normalized to neutral placeholders; command output and verdict text are otherwise unchanged. -->
+<!-- Evidence scrub 2026-11-10: environment-specific home, checkout, worktree, and per-run temporary paths were normalized to neutral placeholders; command output and verdict text are otherwise unchanged. -->
 # Boot-pool patch design and evidence
 
 **Status: experimental. Exact-build adapters are registered for v27 RC.1, one
@@ -198,10 +200,10 @@ by the state-aware acceptance tests and by the A+B survival cell. The
 [consumer workflow](CONSUMERS.md#update-and-reapply-workflow) shows how the
 registered runner applies this policy.
 
-### Historical v1001 observed-source exploration (2026-10-21)
+### Historical <host> observed-source exploration (2026-10-21)
 
-The `live-ui-observed-v1001` lane was a narrow exception for UI exploration on
-v1001's already-customized v27 RC.1 installation. The normal `live-v27-patch`
+The `live-ui-observed-<host>` lane was a narrow exception for UI exploration on
+<host>'s already-customized v27 RC.1 installation. The normal `live-v27-patch`
 lane correctly refuses it because 14 of 15 current adapter targets do not
 match the release fingerprints, and no install manifest identifies the custom
 state. Rather than overwrite unknown code, the exploratory lane pins the exact
@@ -217,13 +219,13 @@ before storage mutations.
 This provides an evidence path when a disposable host is available but no
 local TCG guest can be admitted. It does not validate the adapter bundle,
 attribute the custom files to the golden image, or generalize beyond this
-specific v1001 fingerprint. On the 2026-10-21 live run, the root passed
+specific <host> fingerprint. On the 2026-10-21 live run, the root passed
 verification but the first child dataset create failed with
 `NameError: name 'mountpoint' is not defined` in middleware at
 `pool_/dataset.py:117`. No child dataset was created, and the remaining UI
 workflow did not run. This is a failed exploratory acceptance and a middleware
 defect to diagnose, not evidence for the release adapter. The pre-patch
-provider snapshot was restored afterward. This is an archived state; v1001 was
+provider snapshot was restored afterward. This is an archived state; <host> was
 later reinstalled from the operator's pristine v27 snapshot and re-tested as
 recorded in the current checkpoint below.
 
@@ -287,7 +289,7 @@ the Oct 27 Path A/B UI matrix is historical evidence for that earlier adapter,
 not a pass for the current nightly.
 
 The RC.1-to-nightly update created and activated a new BE with stock `/usr`.
-It copied `/root/v27-boot-pool-patch-install.json` into the new BE, where the
+It copied `<home>` into the new BE, where the
 RC.1 version and bundle digest were stale. Path A data survived outside the BE
 but `boot-pool/user-data` was unmounted until the new adapter was reapplied.
 Path B pool identity and data stay on the reserved partition. A record alone
@@ -328,7 +330,7 @@ post-apply reverse dry-runs. A new version is not accepted by a version prefix.
 
 ### Update-survival runner boundary
 
-The three survival steps use `run-live-gate.py` for the external v1001 host,
+The three survival steps use `run-live-gate.py` for the external <host> host,
 then delegate their verdicts to registered `run-gate` lanes. The wrapper
 starts one capped tester on a selected custom bridge and keeps the repository
 mount read-only. Each invocation receives a separate, mode-0700 state bind for
@@ -648,7 +650,7 @@ absent. The same ISO rootfs contains `/usr/bin/qemu-system-x86_64` and
 for these architectures. The installed v27 RC has the same `/dev/kvm` KVM
 check, but its VM XML generator hardcodes `domain type="kvm"`; v27 therefore needs a backend XML
 change in addition to the middleware gates. The installed v27 QEMU binary is
-present. The exact v27 nightly adapter was applied to v1001. With
+present. The exact v27 nightly adapter was applied to <host>. With
 `/dev/kvm` absent, middleware reported support, kept hardware CPU flags false,
 and accepted a VM backed by the new pool's zvol. The QEMU domain started and
 reported `RUNNING` with `-accel tcg`, then was shut down. `HOST-MODEL` and
@@ -969,7 +971,7 @@ fingerprints and refuse an unknown source shape. The current v28 adapter pins
 19 target files to this exact build and is separate from the earlier v28
 adapter and the v27 nightlies. The v28 `truenas_pylibvirt` code selects QEMU
 when `/dev/kvm` is absent. The v27 nightly adapter also changes its VM backend
-to select TCG on the tested host. `/dev/kvm` was absent on v1001, so these runs
+to select TCG on the tested host. `/dev/kvm` was absent on <host>, so these runs
 verified QEMU TCG process start, not actual KVM selection or guest OS boot.
 
 Path A also needs a boot-time remount. The v27 reboot gate showed that the
@@ -1180,8 +1182,8 @@ probe datasets, containers, or VM records. See the
 [UI run](../artifacts/live-ui-v27-path-a-clean-20261019.log) and
 [post-run inventory](../artifacts/live-inspect-v27-path-a-clean-20261019-post-ui.log).
 The registered `unit-boot-pool-patch` lane passed with 340 tests and 45
-subtests in round two. Its text log is stored outside the checkout at
-`/home/vscode/vbpub-release-program-20261027/evidence/truenas-live-20261029/unit-boot-pool-patch-final-round2.log`.
+subtests in round two. Its text log is retained at
+[unit-boot-pool-patch-final-round2.log](../../docs/evidence/truenas-live-20261029/unit-boot-pool-patch-final-round2.log).
 The cache exercise used a temporary file-backed
 target pool on both Path A and Path B. This demonstrates cross-pool L2ARC
 attachment in that setup, not a separate disk-backed pool, import ordering, or

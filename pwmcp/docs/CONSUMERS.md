@@ -193,13 +193,48 @@ content a reader cannot see: `hidden` (including `hidden="until-found"`),
 `aria-hidden="true"`, inline `display:none`/`visibility:hidden`, hidden
 inputs, and the body of closed `<details>` (the summary remains). Inline styles
 are parsed by declaration, including comments, `!important`, and declaration
-order. A selected node is checked with its own outer HTML and its ancestors.
+order. When inline CSS is malformed, PWMCP recovers complete declarations
+independently and applies their normal cascade. It omits the element if a
+recovered declaration or a best-effort tokenized malformed fragment contains
+`display:none` or `visibility:hidden`. For example,
+`<p style='display:none;content:"unfinished'>hidden text</p>` is omitted, while
+`<p style='display:block;color:red;broken'>visible text</p>` remains visible.
+A malformed style with neither marker remains visible.
+Invalid `display` or `visibility` values are ignored, so they cannot override
+an earlier valid declaration. This filter recognizes only CSS Syntax
+whitespace: ASCII space, tab, LF, CR, and FF; other Unicode space-like
+characters remain inside property and value tokens. Property names and
+keywords fold ASCII case only. The filter does not admit
+`run-in`, `ruby-base`, `ruby-text`, `ruby-base-container`, or
+`ruby-text-container` to its visible-value allowlist.
+CSS comments form token boundaries. If either comment removal or whitespace
+separation leaves a hiding value in force, PWMCP omits the element.
+If one of those values follows a valid hiding declaration, the earlier hide
+remains, which can omit text a browser shows. For `display`, a winning
+unresolved `var()`, `inherit`, `revert`, or `revert-layer` fails closed;
+`initial` and `unset` map to visible `inline`. For `visibility`, a winning
+unresolved `var()`, `inherit`,
+`unset`, `revert`, or `revert-layer` fails closed; `initial` maps to `visible`,
+and `collapse` is filtered as hidden. These fail-closed choices may omit text a
+browser ultimately shows because serialized HTML cannot resolve custom
+properties or the external cascade. For example,
+`--d:none;display:var(--d)` remains hidden because this filter cannot resolve
+the custom property.
+Tokenization ignores string and nested
+function contents; an unclosed comment's remainder is checked
+as a malformed fragment. An unescaped LF, CR, or FF inside a CSS string ends
+that malformed string so later declarations can be recovered. CSS escapes in
+property names and hiding keyword values are decoded, so
+`d\69splay:none` and `display:\6e one` are omitted too.
+Outside strings, a backslash escape consumes the next code point, so escaped
+quotes, parentheses, and semicolons do not change CSS boundaries. For example,
+`<p style="a:\(;display:none;b:\)">hidden text</p>` is omitted.
+A selected node is checked with its own outer HTML and its ancestors.
 The result reports `hidden_removed` and strips U+200B..U+200D, U+202A..U+202E,
 U+2060, U+2066..U+2069, U+FEFF, and U+E0000..U+E007F; the count is named
 `zero_width_stripped` for compatibility. This removes U+200D from joined emoji
-too, which can change their display. Malformed inline styles are treated as
-visible. Hiding applied by computed CSS (a class or stylesheet rule) is not
-detectable in serialized HTML and is a known limit.
+too, which can change their display. Hiding applied by computed CSS (a class
+or stylesheet rule) is not detectable in serialized HTML and is a known limit.
 See the [content-format design](DESIGN-GUIDE.md#rendered-content-formats).
 
 `inspect --json` always returns the same object envelope, including when there

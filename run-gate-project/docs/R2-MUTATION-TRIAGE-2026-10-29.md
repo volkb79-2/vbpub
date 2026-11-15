@@ -195,7 +195,7 @@ The registered selftest evidence is:
 4. Controller-verified final tree: registered lane `selftest` passed on clean
    commit `6650bd3f58f2be4e3ec40ba5315c74fac2e5d805` (2026-10-29; run
    `36c16001a136fad42be6e751e0473ba3`, log
-   `/home/vscode/vbpub-release-program-20261027/logs/g-rg.log`): 2,446 passed,
+   the historical Run-Gate log, which is no longer retained): 2,446 passed,
    one skipped in 217.95 seconds; diff coverage 48/48 changed executable lines
    (100.0%) and 20/20 branches; exit 0. The earlier 45/50 result is superseded
    by this green run. No R2 campaign was run for this change.

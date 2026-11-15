@@ -243,7 +243,9 @@ def test_prepared_version_reader_matches_the_release_gate_policy_at_head(tmp_pat
 
     assert release_preconditions._prepared_version_error(gate, "7.1.4") is None
     assert release_preconditions._prepared_version_error(gate, "7.2.0") is None
-    error = release_preconditions._prepared_version_error(gate, "7.3.0")
+    assert release_preconditions._prepared_version_error(gate, "7.3.0") is None
+    assert release_preconditions._prepared_version_error(gate, "7.3.9") is None
+    error = release_preconditions._prepared_version_error(gate, "7.4.0")
     assert error is not None
     assert "authorized only for CMRU" in error
 
@@ -1235,7 +1237,10 @@ def test_release_precondition_helper_passes_the_full_gate_choice_through(
 
 @pytest.mark.parametrize(
     "version",
-    ["6.1.9", "6.2.0", "6.3.0", "7.0.0", "7.1.9", "7.2.0", "7.2.1", "7.2.9", "7.3.0", "8.0.0"],
+    [
+        "6.1.9", "6.2.0", "6.3.0", "7.0.0", "7.1.9",
+        "7.2.0", "7.2.1", "7.2.9", "7.3.0", "7.3.9", "7.4.0", "8.0.0",
+    ],
 )
 def test_dry_run_precondition_agrees_with_the_real_gate_window_table(tmp_path, monkeypatch, version):
     """KI-79/KI-109: the dry-run row and the gate table are one source and cannot diverge."""

@@ -1,0 +1,34 @@
+{
+  "provenance": {
+    "date": "2026-11-10",
+    "kernel": "7.2.12",
+    "source_sha256": "51861c8b2dd439195740ad1b3f014f86e3a75d8e31e028c64437cc322a5d4045",
+    "notes": "The recorded study disk queue/scheduler value is [none] mq-deadline. All 13 captured cgroups at depth two report io.bfq.weight null. Other scheduler selections are synthetic inputs using the same sysfs directory layout."
+  },
+  "cases": {
+    "real-none": {
+      "scheduler": "[none] mq-deadline",
+      "bfq_controller_file": "absent"
+    },
+    "bfq": {
+      "scheduler": "none [bfq] mq-deadline",
+      "bfq_controller_file": "present"
+    },
+    "mq-deadline": {
+      "scheduler": "none [mq-deadline]",
+      "bfq_controller_file": "present"
+    },
+    "missing-scheduler": {
+      "scheduler": null,
+      "bfq_controller_file": "present"
+    },
+    "malformed-scheduler": {
+      "scheduler": "none mq-deadline",
+      "bfq_controller_file": "present"
+    },
+    "no-bfq-controller": {
+      "scheduler": null,
+      "bfq_controller_file": "absent"
+    }
+  }
+}

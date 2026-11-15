@@ -134,11 +134,47 @@ text as page content. It drops elements with the `hidden` attribute (including
 `visibility:hidden`, and `<input type="hidden">`, with their whole subtree.
 Inline declarations are parsed after comments are removed; property names are
 case-insensitive, `!important` takes priority, and the last declaration at the
-winning priority applies. A malformed style is treated as visible. Closed
-`<details>` keeps its first `<summary>` and removes its body; open details keep
-their body. When `--selector` selects a node, PWMCP serializes that node's
-`outerHTML` and checks its ancestor chain for the same static hidden markers,
-so attributes outside the selected fragment cannot bypass filtering.
+winning priority applies. If a style is malformed, the parser recovers complete
+declarations independently and applies that same cascade among them. It omits
+the element if a recovered winner or a best-effort tokenized malformed fragment
+contains either existing inline hiding marker, `display:none` or
+`visibility:hidden`. A malformed style with neither marker remains visible.
+Invalid `display` or `visibility` values are ignored, so they cannot override
+an earlier valid declaration. This filter recognizes only CSS Syntax
+whitespace: ASCII space, tab, LF, CR, and FF; other Unicode space-like
+characters remain inside property and value tokens. Property names and
+keywords fold ASCII case only. The filter does not admit
+`run-in`, `ruby-base`, `ruby-text`, `ruby-base-container`, or
+`ruby-text-container` to its visible-value allowlist.
+CSS comments form token boundaries. If either comment removal or whitespace
+separation leaves a hiding value in force, PWMCP omits the element.
+If one of those values follows a valid hiding declaration, the earlier hide
+remains, which can omit text a browser shows. For `display`, a winning
+unresolved `var()`, `inherit`, `revert`, or `revert-layer` fails closed;
+`initial` and `unset` map to visible `inline`. For `visibility`, a winning
+unresolved `var()`, `inherit`,
+`unset`, `revert`, or `revert-layer` fails closed; `initial` maps to `visible`,
+and `collapse` is filtered as hidden. These fail-closed choices may omit text a
+browser ultimately shows because serialized HTML cannot resolve custom
+properties or the external cascade. For example,
+`--d:none;display:var(--d)` remains hidden because this filter cannot resolve
+the custom property.
+An unescaped LF, CR, or FF inside a CSS string ends that malformed string so
+later declarations can be recovered. CSS escapes in property names and hiding
+keyword values are decoded, because escaped identifiers still name the same
+CSS property or value (`d\69splay:none`, `display:\6e one`). Tokenization
+ignores string and nested function contents. Outside strings, a backslash
+escape consumes the next code point before quote, parenthesis, and delimiter
+checks, so escaped punctuation does not change CSS structure. An unclosed
+comment's remainder is checked as a malformed fragment. Recovery advances its
+fragment cursor after each bad string so checking repeated malformed fragments
+stays linear in the style length. This keeps an earlier valid hide from
+disappearing behind a later parse error without hiding every element that has a
+stray malformed declaration. Closed `<details>` keeps its first `<summary>` and
+removes its body; open details keep their body. When
+`--selector` selects a node, PWMCP serializes that node's `outerHTML` and checks
+its ancestor chain for the same static hidden markers, so attributes outside
+the selected fragment cannot bypass filtering.
 
 The filter strips U+200B..U+200D, U+202A..U+202E, U+2060, U+2066..U+2069,
 U+FEFF, and U+E0000..U+E007F. This includes bidi formatting controls and

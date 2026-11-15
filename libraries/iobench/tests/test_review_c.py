@@ -1,6 +1,7 @@
 """IOB-03 P3 coordinator rulings after the first review wave (dry-run preflight, mounted-write guard, runtime bindings, probe, namespaces)."""
 import errno
 import json
+import os
 
 import pytest
 
@@ -142,8 +143,11 @@ def test_rev_c_n2_a_failing_probe_unit_fails_the_cell():
 def test_rev_c_nr2_1_a_busy_device_is_a_refusal_exit_2(monkeypatch):
     real = RealHost()
     monkeypatch.setattr(RealHost, "_verify_live", lambda self, target: None)
+    real_open = os.open
 
     def busy(path, flags, *a):
+        if os.path.realpath(os.fspath(path)) != DEV:
+            return real_open(path, flags, *a)
         raise OSError(errno.EBUSY, "Device or resource busy")
 
     monkeypatch.setattr("os.open", busy)

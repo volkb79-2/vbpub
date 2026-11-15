@@ -1,0 +1,4 @@
+{"type":"session","id":"pi-session-402"}
+{"type":"message_end","message":{"role":"assistant","content":[],"usage":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"reasoning":0,"totalTokens":0},"stopReason":"error","durationMs":1,"errorMessage":"402: {\"code\":\"insufficient_balance\",\"details\":{\"coding_plan_exhausted\":true,\"reset_at\":\"2099-11-17T11:44:44Z\"},\"message\":\"[code=insufficient_balance] Coding Plan quota is exhausted; quota resets at 2099-11-17T11:44:44Z.\",\"type\":\"insufficient_balance\"}"}}
+{"type":"agent_end"}
+{"type":"agent_settled","aborted":false}

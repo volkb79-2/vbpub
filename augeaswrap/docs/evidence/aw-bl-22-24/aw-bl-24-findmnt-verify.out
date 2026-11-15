@@ -1,0 +1,263 @@
+brw-r--r-- 1 root root 7, 250 Nov  9 16:54 /dev/aw-blk0
+
+/dev/disk/by-label/:
+total 0
+lrwxrwxrwx 1 root root 13 Nov  9 16:54 data -> ../../aw-blk0
+
+/dev/disk/by-uuid/:
+total 0
+lrwxrwxrwx 1 root root 13 Nov  9 16:54 11111111-2222-3333-4444-555555555555 -> ../../aw-blk0
+##### findmnt version
+findmnt from util-linux 2.41.5
+##### Verify with the real system fstab absent: tab-file only
+
+=== present_path
+--- staged bytes:
+/dev/aw-blk0^I/srv^Iext4^Idefaults^I0 2$
+--- $ findmnt --verify --tab-file /work/fm/present_path.tab
+[exit=0]
+--- stdout:
+/srv
+   [W] cannot detect on-disk filesystem type (Operation not permitted)
+--- stderr:
+
+0 parse errors, 0 errors, 1 warning
+
+=== present_uuid
+--- staged bytes:
+UUID=11111111-2222-3333-4444-555555555555^I/srv^Iext4^Idefaults^I0 2$
+--- $ findmnt --verify --tab-file /work/fm/present_uuid.tab
+[exit=0]
+--- stdout:
+/srv
+   [W] cannot detect on-disk filesystem type (Operation not permitted)
+--- stderr:
+
+0 parse errors, 0 errors, 1 warning
+
+=== present_label
+--- staged bytes:
+LABEL=data^I/srv^Iext4^Idefaults^I0 2$
+--- $ findmnt --verify --tab-file /work/fm/present_label.tab
+[exit=0]
+--- stdout:
+/srv
+   [W] cannot detect on-disk filesystem type (Operation not permitted)
+--- stderr:
+
+0 parse errors, 0 errors, 1 warning
+
+=== absent_path
+--- staged bytes:
+/dev/aw-absent0^I/srv^Iext4^Idefaults^I0 2$
+--- $ findmnt --verify --tab-file /work/fm/absent_path.tab
+[exit=0]
+--- stdout:
+/srv
+   [W] unreachable source: /dev/aw-absent0: No such file or directory
+   [W] cannot detect on-disk filesystem type (No such file or directory)
+--- stderr:
+
+0 parse errors, 0 errors, 2 warnings
+
+=== absent_uuid
+--- staged bytes:
+UUID=99999999-2222-3333-4444-555555555555^I/srv^Iext4^Idefaults^I0 2$
+--- $ findmnt --verify --tab-file /work/fm/absent_uuid.tab
+[exit=1]
+--- stdout:
+/srv
+   [E] unreachable on boot required source: UUID=99999999-2222-3333-4444-555555555555
+--- stderr:
+
+0 parse errors, 1 error, 0 warnings
+
+=== absent_label
+--- staged bytes:
+LABEL=nolabel^I/srv^Iext4^Idefaults^I0 2$
+--- $ findmnt --verify --tab-file /work/fm/absent_label.tab
+[exit=1]
+--- stdout:
+/srv
+   [E] unreachable on boot required source: LABEL=nolabel
+--- stderr:
+
+0 parse errors, 1 error, 0 warnings
+
+=== absent_nofail
+--- staged bytes:
+UUID=99999999-2222-3333-4444-555555555555^I/srv^Iext4^Idefaults,nofail^I0 2$
+--- $ findmnt --verify --tab-file /work/fm/absent_nofail.tab
+[exit=1]
+--- stdout:
+/srv
+   [E] unreachable on boot required source: UUID=99999999-2222-3333-4444-555555555555
+--- stderr:
+
+0 parse errors, 1 error, 0 warnings
+
+=== absent_x_systemd
+--- staged bytes:
+UUID=99999999-2222-3333-4444-555555555555^I/srv^Iext4^Idefaults,x-systemd.device-timeout=5^I0 2$
+--- $ findmnt --verify --tab-file /work/fm/absent_x_systemd.tab
+[exit=1]
+--- stdout:
+/srv
+   [E] unreachable on boot required source: UUID=99999999-2222-3333-4444-555555555555
+--- stderr:
+
+0 parse errors, 1 error, 0 warnings
+
+=== absent_swap
+--- staged bytes:
+/dev/aw-absent0^Inone^Iswap^Isw^I0 0$
+--- $ findmnt --verify --tab-file /work/fm/absent_swap.tab
+[exit=0]
+--- stdout:
+none
+   [W] unreachable source: /dev/aw-absent0: No such file or directory
+   [W] cannot detect on-disk filesystem type (No such file or directory)
+--- stderr:
+
+0 parse errors, 0 errors, 2 warnings
+
+=== swap_uuid_absent
+--- staged bytes:
+UUID=99999999-2222-3333-4444-555555555555^Inone^Iswap^Isw,pri=5^I0 0$
+--- $ findmnt --verify --tab-file /work/fm/swap_uuid_absent.tab
+[exit=1]
+--- stdout:
+none
+   [E] unreachable on boot required source: UUID=99999999-2222-3333-4444-555555555555
+--- stderr:
+
+0 parse errors, 1 error, 0 warnings
+
+=== target_missing
+--- staged bytes:
+/dev/aw-blk0^I/mnt/does-not-exist^Iext4^Idefaults^I0 2$
+--- $ findmnt --verify --tab-file /work/fm/target_missing.tab
+[exit=1]
+--- stdout:
+/mnt/does-not-exist
+   [E] unreachable on boot required target: No such file or directory
+   [W] cannot detect on-disk filesystem type (Operation not permitted)
+--- stderr:
+
+0 parse errors, 1 error, 1 warning
+
+=== pseudo
+--- staged bytes:
+proc^I/proc^Iproc^Idefaults^I0 0$
+--- $ findmnt --verify --tab-file /work/fm/pseudo.tab
+[exit=0]
+--- stdout:
+Success, no errors or warnings detected
+--- stderr:
+
+=== unknown_fs
+--- staged bytes:
+/dev/aw-blk0^I/srv^Izzzfs^Idefaults^I0 2$
+--- $ findmnt --verify --tab-file /work/fm/unknown_fs.tab
+[exit=0]
+--- stdout:
+/srv
+   [W] zzzfs seems unsupported by the current kernel
+   [W] cannot detect on-disk filesystem type (Operation not permitted)
+--- stderr:
+
+0 parse errors, 0 errors, 2 warnings
+
+=== syntax_3fields
+--- staged bytes:
+/dev/aw-blk0^I/srv$
+--- $ findmnt --verify --tab-file /work/fm/syntax_3fields.tab
+[exit=139]
+--- stdout:
+/work/fm1.sh: line 10: 19002 Segmentation fault      (core dumped) findmnt --verify --tab-file $W/$1.tab > $W/$1.out 2> $W/$1.err
+--- stderr:
+findmnt: /work/fm/syntax_3fields.tab: parse error at line 1 -- ignored
+
+=== syntax_bad_dump
+--- staged bytes:
+/dev/aw-blk0^I/srv^Iext4^Idefaults^Ix 2$
+--- $ findmnt --verify --tab-file /work/fm/syntax_bad_dump.tab
+[exit=139]
+--- stdout:
+/work/fm1.sh: line 10: 19006 Segmentation fault      (core dumped) findmnt --verify --tab-file $W/$1.tab > $W/$1.out 2> $W/$1.err
+--- stderr:
+findmnt: /work/fm/syntax_bad_dump.tab: parse error at line 1 -- ignored
+
+=== syntax_bad_pass
+--- staged bytes:
+/dev/aw-blk0^I/srv^Iext4^Idefaults^I0 y$
+--- $ findmnt --verify --tab-file /work/fm/syntax_bad_pass.tab
+[exit=139]
+--- stdout:
+/work/fm1.sh: line 10: 19010 Segmentation fault      (core dumped) findmnt --verify --tab-file $W/$1.tab > $W/$1.out 2> $W/$1.err
+--- stderr:
+findmnt: /work/fm/syntax_bad_pass.tab: parse error at line 1 -- ignored
+
+=== syntax_relative_target
+--- staged bytes:
+/dev/aw-blk0^Isrv^Iext4^Idefaults^I0 2$
+--- $ findmnt --verify --tab-file /work/fm/syntax_relative_target.tab
+[exit=0]
+--- stdout:
+srv
+   [W] non-canonical target path (real: /srv)
+   [W] cannot detect on-disk filesystem type (Operation not permitted)
+--- stderr:
+
+0 parse errors, 0 errors, 2 warnings
+
+=== empty
+--- staged bytes:
+--- $ findmnt --verify --tab-file /work/fm/empty.tab
+[exit=0]
+--- stdout:
+Success, no errors or warnings detected
+--- stderr:
+
+=== comments_only
+--- staged bytes:
+# just a comment$
+--- $ findmnt --verify --tab-file /work/fm/comments_only.tab
+[exit=0]
+--- stdout:
+Success, no errors or warnings detected
+--- stderr:
+
+=== dup_target
+--- staged bytes:
+/dev/aw-blk0^I/srv^Iext4^Idefaults^I0 2$
+/dev/aw-blk0^I/srv^Iext4^Idefaults^I0 2$
+--- $ findmnt --verify --tab-file /work/fm/dup_target.tab
+[exit=0]
+--- stdout:
+/srv
+   [W] target specified more than once
+   [W] cannot detect on-disk filesystem type (Operation not permitted)
+/srv
+   [W] cannot detect on-disk filesystem type (Operation not permitted)
+--- stderr:
+
+0 parse errors, 0 errors, 3 warnings
+
+=== nonexistent_tabfile_dummy
+--- staged bytes:
+x$
+--- $ findmnt --verify --tab-file /work/fm/nonexistent_tabfile_dummy.tab
+[exit=139]
+--- stdout:
+--- stderr:
+findmnt: /work/fm/nonexistent_tabfile_dummy.tab: parse error at line 1 -- ignored
+
+=== missing tab file
+[exit=1]
+
+=== unreadable/dir tab file
+Success, no errors or warnings detected
+[exit=0]
+/work/fm1.sh: line 10: 19030 Segmentation fault      (core dumped) findmnt --verify --tab-file $W/$1.tab > $W/$1.out 2> $W/$1.err
+findmnt: can't read /work/fm/nope.tab: No such file or directory

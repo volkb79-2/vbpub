@@ -13,6 +13,13 @@ Test tiers T0-T3 are part of the public contract:
 rationale is in the
 [feature design](docs/DESIGN-lane-rework-2026-11.md#2-features-needed) and
 [T3 queue and distribution design](docs/DESIGN-lane-rework-2026-11.md#3-t3-trigger-and-distribution).
+Assay <= 12.1.1 includes `jobs_max` in judge identity, so changing it
+invalidates finished-candidate state. Assay >= 12.2.0 keeps reusable finished
+records when only resource settings change; changes to tests, sources, `argv`,
+`env`, or Assay version still invalidate. See the [versioned identity rule](CONSUMERS.md#native-r2-worker-selection).
+
+Retained cross-project plan:
+[RG-102 / CIU-141 ephemeral CIU launch](docs/PLAN-RG-102-CIU-141.md).
 
 Ephemeral command and Assay lanes can declare `network = "none"` to disable
 Docker networking for that lane container, with an optional environment
@@ -178,6 +185,21 @@ In vbpub, the central `tester-unified` environment and CMRU's separate
 `cmru-mutation` environment select `io_sync = "relaxed"`; the general default
 remains `strict`, and IO-measurement lanes stay `durable`. See the
 [design rationale](docs/DESIGN-GUIDE.md#combined-resource-settings).
+Ephemeral lane containers also preload the KSM opt-in shim advertised by
+their image, by default. Use `ksm = false` on a lane, `[defaults].ksm =
+false`, `RUN_GATE_KSM=0`, or `--no-ksm` to opt out; the image must carry
+`org.vbpub.tester.ksm-optin`. Run-Gate composes KSM with eatmydata in one
+read-only `/etc/ld.so.preload` mount and reports a best-effort merge count.
+The shim is silent on stdout and stderr whether the kernel accepts or rejects
+the opt-in; it has no verbose-banner setting. If the image is not local yet,
+Run-Gate prints one notice and continues to Docker's usual pull. The current
+CIU shim supports x86-64; ARM64 images without the label produce one notice
+and continue without KSM. See the [KSM consumer contract](CONSUMERS.md#ksm-opt-in)
+and [design rationale](docs/DESIGN-GUIDE.md#ksm-preload).
+The measured identical-page probe shared about 359 MiB, while three pytest
+workers shared about 1 MiB from roughly 390 MiB anonymous and gained little.
+See the [KSM consumer contract](CONSUMERS.md#ksm-opt-in) and
+[design rationale](docs/DESIGN-GUIDE.md#ksm-preload).
 Native R2 Assay lanes
 can opt into worker selection with `jobs = N` or `jobs = "auto"`; the
 `--jobs N|auto` lane flag overrides that setting. Auto derives a count from

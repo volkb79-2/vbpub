@@ -7,6 +7,7 @@ START_AFTER_SRC=${START_AFTER_SCRIPT:-$SCRIPT_DIR/../start-after.sh}
 GATE_RUN_SRC=${GATE_RUN_SCRIPT:-$SCRIPT_DIR/../gate-run.sh}
 READBACK_SRC=${BUILD_READBACK_SCRIPT:-$SCRIPT_DIR/../build-readback.py}
 LIB_SRC=${CONTROLLER_LIB_SCRIPT:-$SCRIPT_DIR/../lib.sh}
+OD_ACCOUNTS_SRC=${CONTROLLER_OD_ACCOUNTS_SCRIPT:-$SCRIPT_DIR/../opendesign-accounts.py}
 ROOT=$(mktemp -d "${TMPDIR:-/tmp}/controller-hardening-test.XXXXXX")
 cleanup() { [[ -n ${KEEP_TEST_ROOT:-} ]] || rm -rf -- "$ROOT"; }
 trap cleanup EXIT
@@ -23,7 +24,7 @@ not_contains() {
   esac
 }
 
-mkdir -p "$ROOT/home" "$ROOT/bin" "$ROOT/worktree" "$ROOT/controller" "$ROOT/deepseek/catalog"
+mkdir -p "$ROOT/home" "$ROOT/bin" "$ROOT/worktree" "$ROOT/controller" "$ROOT/deepseek-volker/catalog" "$ROOT/deepseek-github2/catalog"
 LIB_TEST_HOME=$ROOT/lib-config-home
 LIB_TEST_RUNS=$ROOT/lib-run-dir-override
 mkdir -p "$LIB_TEST_HOME" "$LIB_TEST_RUNS"
@@ -36,6 +37,74 @@ if HOME="$ROOT/home" CONTROLLER_HOME="$LIB_TEST_HOME" CONTROLLER_RUNS_DIR="$LIB_
 else
   fail 'environment run directory did not override the local configuration file'
 fi
+usage_retry_text_output=$(CONTROLLER_LIB_SCRIPT="$LIB_SRC" \
+  bash -c '. "$CONTROLLER_LIB_SCRIPT"; usage_retry_text "$1"' _ \
+  "$SCRIPT_DIR/fixtures/usage-limit-dated.jsonl") \
+  || fail 'shared usage-retry parser rejected the dated retry form'
+[[ $usage_retry_text_output == 'Nov 17th, 2026 12:59 AM' ]] \
+  || fail "shared usage-retry parser returned unexpected dated text: $usage_retry_text_output"
+usage_retry_iso_output=$(CONTROLLER_LIB_SCRIPT="$LIB_SRC" \
+  bash -c '. "$CONTROLLER_LIB_SCRIPT"; usage_retry_iso "$1"' _ \
+  'Nov 17th, 2026 12:59 AM') \
+  || fail 'shared usage-retry parser rejected the dated retry form for ISO conversion'
+[[ $usage_retry_iso_output == '2026-11-17T00:59:00' ]] \
+  || fail "shared usage-retry parser returned unexpected ISO time: $usage_retry_iso_output"
+usage_retry_402_output=$(CONTROLLER_LIB_SCRIPT="$LIB_SRC" \
+  bash -c '. "$CONTROLLER_LIB_SCRIPT"; usage_retry_text "$1"' _ \
+  "$SCRIPT_DIR/fixtures/usage-limit-insufficient-balance.jsonl") \
+  || fail 'shared usage-retry parser rejected a coding-plan 402 reset'
+[[ $usage_retry_402_output == '2099-11-17T11:44:44Z' ]] \
+  || fail "coding-plan usage-retry parser returned unexpected reset: $usage_retry_402_output"
+usage_retry_pi_output=$(CONTROLLER_LIB_SCRIPT="$LIB_SRC" \
+  bash -c '. "$CONTROLLER_LIB_SCRIPT"; usage_retry_text "$1"' _ \
+  "$SCRIPT_DIR/fixtures/pi-402.jsonl") \
+  || fail 'shared usage-retry parser rejected pi errorMessage 402 JSON'
+[[ $usage_retry_pi_output == '2099-11-17T11:44:44Z' ]] \
+  || fail "pi errorMessage usage-retry parser returned unexpected reset: $usage_retry_pi_output"
+usage_retry_402_epoch=$(CONTROLLER_LIB_SCRIPT="$LIB_SRC" \
+  bash -c '. "$CONTROLLER_LIB_SCRIPT"; usage_retry_epoch "$1"' _ \
+  "$usage_retry_402_output") \
+  || fail 'shared usage-retry parser could not convert a UTC reset to epoch'
+[[ $usage_retry_402_epoch == "$(date -u -d '2099-11-17T11:44:44Z' +%s)" ]] \
+  || fail 'coding-plan reset epoch did not preserve UTC'
+# Real Codex streams carry the gateway 402 as a plain-text message, not as a JSON body.
+usage_retry_402_text_output=$(CONTROLLER_LIB_SCRIPT="$LIB_SRC" \
+  bash -c '. "$CONTROLLER_LIB_SCRIPT"; usage_retry_text "$1"' _ \
+  "$SCRIPT_DIR/fixtures/usage-limit-insufficient-balance-text.jsonl") \
+  || fail 'shared usage-retry parser rejected the plain-text gateway 402 message'
+[[ $usage_retry_402_text_output == '2099-11-17T11:44:44Z' ]] \
+  || fail "plain-text gateway 402 returned unexpected reset: $usage_retry_402_text_output"
+if CONTROLLER_LIB_SCRIPT="$LIB_SRC" \
+  bash -c '. "$CONTROLLER_LIB_SCRIPT"; usage_retry_text "$1"' _ \
+  "$SCRIPT_DIR/fixtures/insufficient-balance-text-not-a-402.jsonl" > /dev/null; then
+  fail 'ordinary text, reconnect retries or non-error events were classified as a gateway 402'
+fi
+python3 - "$OD_ACCOUNTS_SRC" "$ROOT/od-lock-state.json" <<'PY' \
+  || fail 'Open Design state updates did not request an exclusive flock'
+import fcntl
+import importlib.util
+import os
+import sys
+
+spec = importlib.util.spec_from_file_location("od_accounts", sys.argv[1])
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+actual_flock = fcntl.flock
+operations = []
+
+def record_flock(fd, operation):
+    operations.append(operation)
+    return actual_flock(fd, operation)
+
+fcntl.flock = record_flock
+os.environ["CONTROLLER_OD_STATE"] = sys.argv[2]
+os.environ["CONTROLLER_OD_PREFER_EXPIRING"] = "0"
+try:
+    module.main(["record-thread", "thread-fixture", "volker"])
+finally:
+    fcntl.flock = actual_flock
+assert operations == [fcntl.LOCK_EX], operations
+PY
 cat > "$ROOT/bin/codex" <<'SH'
 #!/usr/bin/env bash
 set -uo pipefail
@@ -80,9 +149,11 @@ printf '%s|%s\n' "$PWD" "$*" >> "$RUN_GATE_LOG"
 exit "${FAKE_RUN_GATE_RC:-0}"
 SH
 chmod +x "$ROOT/bin/codex" "$ROOT/bin/fake-impl" "$ROOT/bin/pgrep" "$ROOT/bin/after-impl" "$ROOT/bin/run-gate"
-printf '{"models":[{"slug":"fixture","tool_mode":null}]}\n' > "$ROOT/deepseek/catalog/opendesign-models.json"
+printf '{"models":[{"slug":"fixture","tool_mode":null}]}\n' > "$ROOT/deepseek-volker/catalog/opendesign-models.json"
+printf '{"models":[{"slug":"fixture","tool_mode":null}]}\n' > "$ROOT/deepseek-github2/catalog/opendesign-models.json"
 
 unset CODEX_ROUTE CODEX_AUTO_CONTINUE CODEX_HOME_OVERRIDE CODEX_MODEL CODEX_EFFORT CODEX_HOME CODEX_SQLITE_HOME
+unset CODEX_HOME_DEEPSEEK_VOLKER CODEX_HOME_DEEPSEEK_GITHUB2 CONTROLLER_OD_STATE CONTROLLER_OD_PREFER_EXPIRING
 unset CONTROLLER_RUNS_DIR CONTROLLER_LOGS_DIR CONTROLLER_GATE_LOCK CONTROLLER_GATE2_LOCK RESUME_EXCLUDE_PREFIXES
 CODEX_CALL_LOG=$ROOT/codex-calls.log
 CODEX_CALL_COUNT=$ROOT/codex-call-count
@@ -90,7 +161,8 @@ CODEX_RESUME_PROMPTS=$ROOT/codex-resume-prompts.log
 export CODEX_CALL_LOG CODEX_CALL_COUNT CODEX_RESUME_PROMPTS
 printf 'brief\n' > "$ROOT/prompt.md"
 PATH="$ROOT/bin:$PATH" HOME="$ROOT/home" CONTROLLER_HOME="$ROOT/controller" \
-  CODEX_HOME_LUNA="$ROOT/luna" CODEX_HOME_DEEPSEEK="$ROOT/deepseek" CODEX_SQLITE_HOME="$ROOT/sqlite" \
+  CODEX_HOME_LUNA="$ROOT/luna" CODEX_HOME_DEEPSEEK_VOLKER="$ROOT/deepseek-volker" \
+  CODEX_HOME_DEEPSEEK_GITHUB2="$ROOT/deepseek-github2" CODEX_SQLITE_HOME="$ROOT/sqlite" \
   CODEX_ROUTE=deepseek "$CODEX_IMPL" "$ROOT/worktree" "$ROOT/prompt.md" deepseek-bound \
   > "$ROOT/deepseek.out" 2>&1 || fail 'DeepSeek auto-continue run failed'
 [[ $(wc -l < "$CODEX_CALL_LOG") == 3 ]] || fail 'DeepSeek default must make one initial call and at most two resumes'
@@ -101,7 +173,7 @@ contains "$CODEX_RESUME_PROMPTS" 'You stopped after thinking without acting: con
 contains "$ROOT/controller/runs/deepseek-bound.done" 'EXIT=0 AUTORESUME=2' 'final done marker records bounded resumes'
 contains "$ROOT/controller/runs/deepseek-bound.autoresume.log" 'attempt=2 EXIT=0 THREAD=thread-for-test' 'auto-resume log records its second attempt'
 contains "$ROOT/controller/runs/deepseek-bound.wt" "$ROOT/worktree" 'Codex run stores its explicit worktree map for later recovery'
-contains "$ROOT/controller/runs/deepseek-bound.route" 'deepseek' 'Codex run records its originating route'
+contains "$ROOT/controller/runs/deepseek-bound.route" 'deepseek-volker' 'Codex records the automatically selected pinned account route'
 
 rm -f -- "$CODEX_CALL_LOG" "$CODEX_CALL_COUNT"
 PATH="$ROOT/bin:$PATH" HOME="$ROOT/home" CONTROLLER_HOME="$ROOT/controller" \
@@ -113,11 +185,65 @@ contains "$ROOT/controller/runs/luna-reasoning.done" 'EXIT=0 AUTORESUME=0' 'Luna
 
 rm -f -- "$CODEX_CALL_LOG" "$CODEX_CALL_COUNT"
 PATH="$ROOT/bin:$PATH" HOME="$ROOT/home" CONTROLLER_HOME="$ROOT/controller" \
-  CODEX_HOME_DEEPSEEK="$ROOT/deepseek" CODEX_SQLITE_HOME="$ROOT/sqlite" CODEX_ROUTE=deepseek \
+  CODEX_HOME_DEEPSEEK_VOLKER="$ROOT/deepseek-volker" CODEX_HOME_DEEPSEEK_GITHUB2="$ROOT/deepseek-github2" \
+  CODEX_SQLITE_HOME="$ROOT/sqlite" CODEX_ROUTE=deepseek \
   FAKE_CODEX_MODE=clean "$CODEX_IMPL" "$ROOT/worktree" "$ROOT/prompt.md" deepseek-clean \
   > "$ROOT/deepseek-clean.out" 2>&1 || fail 'clean DeepSeek run failed'
 [[ $(wc -l < "$CODEX_CALL_LOG") == 1 ]] || fail 'clean run should not be auto-resumed'
 contains "$ROOT/controller/runs/deepseek-clean.done" 'AUTORESUME=0' 'clean run records no resume attempts'
+
+STALE_RUN=$ROOT/controller/runs/stale-collision
+mkdir -p "$ROOT/controller/runs"
+printf 'EXIT=0\n' > "$STALE_RUN.done"
+printf 'old stream\n' > "$STALE_RUN.jsonl"
+printf 'old stderr\n' > "$STALE_RUN.err"
+rm -f -- "$CODEX_CALL_LOG" "$CODEX_CALL_COUNT"
+if PATH="$ROOT/bin:$PATH" HOME="$ROOT/home" CONTROLLER_HOME="$ROOT/controller" \
+  CODEX_HOME_LUNA="$ROOT/luna" CODEX_SQLITE_HOME="$ROOT/sqlite" CODEX_ROUTE=luna \
+  FAKE_CODEX_MODE=clean "$CODEX_IMPL" "$ROOT/worktree" "$ROOT/prompt.md" stale-collision \
+  > "$ROOT/stale-collision.out" 2>&1; then
+  fail 'Codex accepted a run name with existing completion, stream and error files'
+fi
+contains "$ROOT/stale-collision.out" 'controller run name already has evidence: stale-collision' 'stale Codex run name refusal names the run'
+contains "$ROOT/stale-collision.out" "$STALE_RUN.done" 'stale Codex refusal lists the existing done marker'
+contains "$ROOT/stale-collision.out" "$STALE_RUN.jsonl" 'stale Codex refusal lists the existing event stream'
+contains "$ROOT/stale-collision.out" "$STALE_RUN.err" 'stale Codex refusal lists the existing error log'
+contains "$ROOT/stale-collision.out" 'CONTROLLER_RUN_FORCE=1' 'stale Codex refusal names the explicit override'
+[[ ! -e $CODEX_CALL_LOG ]] || fail 'Codex started despite stale run evidence'
+PATH="$ROOT/bin:$PATH" HOME="$ROOT/home" CONTROLLER_HOME="$ROOT/controller" \
+  CODEX_HOME_LUNA="$ROOT/luna" CODEX_SQLITE_HOME="$ROOT/sqlite" CODEX_ROUTE=luna \
+  CONTROLLER_RUN_FORCE=1 FAKE_CODEX_MODE=clean \
+  "$CODEX_IMPL" "$ROOT/worktree" "$ROOT/prompt.md" stale-collision \
+  > "$ROOT/stale-collision-force.out" 2>&1 || fail 'explicit CONTROLLER_RUN_FORCE=1 did not permit a replacement run'
+[[ $(wc -l < "$CODEX_CALL_LOG") == 1 ]] || fail 'forced Codex replacement did not start exactly once'
+contains "$ROOT/controller/runs/stale-collision.done" 'AUTORESUME=0' 'forced replacement rewrites the stale done marker'
+RESUME_EXISTING=$ROOT/controller/runs/resume-existing
+printf 'old resumed stream\n' > "$RESUME_EXISTING.jsonl"
+printf 'old resumed stderr\n' > "$RESUME_EXISTING.err"
+rm -f -- "$CODEX_CALL_LOG" "$CODEX_CALL_COUNT"
+PATH="$ROOT/bin:$PATH" HOME="$ROOT/home" CONTROLLER_HOME="$ROOT/controller" \
+  CODEX_HOME_LUNA="$ROOT/luna" CODEX_SQLITE_HOME="$ROOT/sqlite" CODEX_ROUTE=luna \
+  FAKE_CODEX_MODE=clean "$CODEX_IMPL" "$ROOT/worktree" "$ROOT/prompt.md" resume-existing \
+  resume thread-for-test > "$ROOT/resume-existing.out" 2>&1 \
+  || fail 'Codex resume mode refused a crashed run with existing stream and error output'
+[[ $(wc -l < "$CODEX_CALL_LOG") == 1 ]] || fail 'Codex resume mode did not start exactly once'
+contains "$CODEX_CALL_LOG" 'exec resume' 'existing crashed run was continued with exec resume'
+contains "$ROOT/controller/runs/resume-existing.done" 'EXIT=0 AUTORESUME=0' 'resumed run wrote a fresh completion marker'
+
+NEW_EXISTING=$ROOT/controller/runs/new-existing
+printf 'old stream without completion\n' > "$NEW_EXISTING.jsonl"
+printf 'old stderr without completion\n' > "$NEW_EXISTING.err"
+rm -f -- "$CODEX_CALL_LOG" "$CODEX_CALL_COUNT"
+if PATH="$ROOT/bin:$PATH" HOME="$ROOT/home" CONTROLLER_HOME="$ROOT/controller" \
+  CODEX_HOME_LUNA="$ROOT/luna" CODEX_SQLITE_HOME="$ROOT/sqlite" CODEX_ROUTE=luna \
+  FAKE_CODEX_MODE=clean "$CODEX_IMPL" "$ROOT/worktree" "$ROOT/prompt.md" new-existing \
+  > "$ROOT/new-existing.out" 2>&1; then
+  fail 'new Codex mode accepted a run name with existing stream and error output and no completion marker'
+fi
+contains "$ROOT/new-existing.out" 'controller run name already has evidence: new-existing' 'new-run refusal still names the run'
+contains "$ROOT/new-existing.out" "$NEW_EXISTING.jsonl" 'new-run refusal lists the existing event stream'
+contains "$ROOT/new-existing.out" "$NEW_EXISTING.err" 'new-run refusal lists the existing error log'
+[[ ! -e $CODEX_CALL_LOG ]] || fail 'Codex started despite stale evidence for a new run'
 
 CUSTOM_WRAPPER_RUNS=$ROOT/custom-wrapper-runs
 mkdir -p "$CUSTOM_WRAPPER_RUNS"
@@ -155,10 +281,14 @@ for name in limited skipme success nonusage noroute invalidroute naf-owned live-
     printf '%s\n' "$ROOT/worktree" > "$RUNS/$name.wt"
   fi
   if [[ $name != noroute ]]; then
-    if [[ $name == invalidroute ]]; then printf 'unknown\n' > "$RUNS/$name.route"; elif [[ $name == limited ]]; then printf 'deepseek\n' > "$RUNS/$name.route"; else printf 'luna\n' > "$RUNS/$name.route"; fi
+    if [[ $name == invalidroute ]]; then printf 'unknown\n' > "$RUNS/$name.route"; elif [[ $name == limited ]]; then printf 'deepseek-volker\n' > "$RUNS/$name.route"; else printf 'luna\n' > "$RUNS/$name.route"; fi
   fi
   printf 'EXIT=1\n' > "$RUNS/$name.done"
 done
+cp "$SCRIPT_DIR/fixtures/usage-limit-dated-future.jsonl" "$RUNS/dated-future.jsonl"
+printf '%s\n' "$ROOT/worktree" > "$RUNS/dated-future.wt"
+printf 'luna\n' > "$RUNS/dated-future.route"
+printf 'EXIT=1\n' > "$RUNS/dated-future.done"
 printf 'EXIT=0\n' > "$RUNS/success.done"
 printf '{"type":"thread.started","thread_id":"nonusage-thread"}\n{"type":"turn.failed","error":{"message":"connection lost"}}\n' \
   > "$RUNS/nonusage.jsonl"
@@ -181,8 +311,10 @@ contains "$ROOT/resume-dry.out" 'SKIP noroute (no route sidecar)' 'usage-limit r
 contains "$ROOT/resume-dry.out" 'SKIP invalidroute (invalid route sidecar)' 'usage-limit recovery validates the originating route'
 contains "$ROOT/resume-dry.out" 'SKIP naf-owned (excluded controller prefix: naf-)' 'default foreign-controller prefix is excluded'
 contains "$ROOT/resume-dry.out" 'SKIP missingmap (no valid missingmap.wt worktree map; refusing to guess)' 'missing .wt map refuses legacy worktree guessing'
+contains "$ROOT/resume-dry.out" 'SKIP dated-future (limit until Nov 17th, 2099 12:59 AM)' 'future dated retry is not resumed early'
 not_contains "$ROOT/resume-dry.out" 'RESUME skipme' 'skipped run is not scheduled'
 not_contains "$ROOT/resume-dry.out" 'RESUME missingmap' 'run without .wt is never scheduled'
+not_contains "$ROOT/resume-dry.out" 'RESUME dated-future' 'future dated retry is never scheduled'
 [[ $(cat "$RUNS/missingmap.done") == EXIT=1 ]] || fail 'run without .wt had its completion marker changed'
 [[ ! -e $RUNS/missingmap-resumed.resume.lock ]] || fail 'run without .wt had a resume lock created'
 [[ ! -e $RESUME_CALL_LOG ]] || fail 'dry-run launched an implementer'
@@ -207,7 +339,7 @@ PATH="$ROOT/bin:$PATH" HOME="$ROOT/home" CONTROLLER_HOME="$ROOT/controller" \
   "$RESUME_SRC" --runs-dir "$RUNS" --skip skipme --skip live-wrapper --skip foreign-owned > "$ROOT/resume-live.out" 2>&1 \
   || fail 'usage-limit resume invocation failed'
 contains "$RESUME_CALL_LOG" 'limited-resumed resume 01a1c574-3312-71e1-a10a-16379be028dc' 'resume uses a new run name and the original thread'
-contains "$RESUME_CALL_LOG" 'CODEX_ROUTE=deepseek' 'usage-limit recovery preserves the originating route'
+contains "$RESUME_CALL_LOG" 'CODEX_ROUTE=deepseek-volker' 'usage-limit recovery resumes on the recorded account'
 contains "$RESUME_CALL_LOG" "CONTROLLER_RUNS_DIR=$RUNS" 'usage-limit recovery writes into its configured runs directory'
 not_contains "$RESUME_CALL_LOG" 'skipme' 'skip list prevents a resume call'
 not_contains "$RESUME_CALL_LOG" 'naf-owned-resumed' 'other-controller run is not resumed'
@@ -215,6 +347,30 @@ not_contains "$RESUME_CALL_LOG" 'missingmap-resumed' 'run without .wt is not res
 not_contains "$RESUME_CALL_LOG" 'live-wrapper-resumed' 'live wrapper is not resumed again'
 not_contains "$RESUME_CALL_LOG" 'success-resumed' 'successful run is not resumed'
 not_contains "$RESUME_CALL_LOG" 'nonusage-resumed' 'non-usage turn failure is not resumed'
+not_contains "$RESUME_CALL_LOG" 'dated-future-resumed' 'future dated retry was not launched by a real scan'
+
+FALLBACK_RUNS=$ROOT/fallback-runs
+mkdir -p "$FALLBACK_RUNS"
+printf '{"type":"thread.started","thread_id":"fallback-thread"}\n' > "$FALLBACK_RUNS/fallback.jsonl"
+printf '{"error":{"code":"insufficient_balance","details":{"coding_plan_exhausted":true,"reset_at":"2020-01-01T00:00:00Z"}}}\n' \
+  > "$FALLBACK_RUNS/fallback.err"
+printf '%s\n' "$ROOT/worktree" > "$FALLBACK_RUNS/fallback.wt"
+printf 'deepseek-volker\n' > "$FALLBACK_RUNS/fallback.route"
+printf 'EXIT=42\n' > "$FALLBACK_RUNS/fallback.done"
+OD_FUTURE_EPOCH=$(( $(date +%s) + 86400 ))
+python3 - "$ROOT/fallback-state.json" "$OD_FUTURE_EPOCH" <<'PY'
+import json, sys
+json.dump({"volker": {"last_used_epoch": 1, "blocked_until_epoch": int(sys.argv[2])},
+           "github2": {"last_used_epoch": 2, "blocked_until_epoch": 0}}, open(sys.argv[1], "w"))
+PY
+PATH="$ROOT/bin:$PATH" HOME="$ROOT/home" CONTROLLER_HOME="$ROOT/controller" CONTROLLER_OD_STATE="$ROOT/fallback-state.json" \
+  CODEX_IMPL_SCRIPT="$ROOT/bin/fake-impl" RESUME_SKIP='' \
+  "$RESUME_SRC" --runs-dir "$FALLBACK_RUNS" > "$ROOT/resume-fallback.out" 2>&1 \
+  || fail 'usage-limit recovery with a blocked recorded account failed'
+contains "$ROOT/resume-fallback.out" 'account fallback from deepseek-volker to deepseek-github2 because the recorded account is blocked' \
+  'usage-limit recovery logs when it falls back from the blocked recorded account'
+contains "$RESUME_CALL_LOG" 'fallback-resumed resume fallback-thread' 'fallback recovery continues the original thread'
+contains "$RESUME_CALL_LOG" 'CODEX_ROUTE=deepseek-github2' 'fallback recovery uses the other pinned account'
 
 cp "$SCRIPT_DIR/fixtures/usage-limit.jsonl" "$RUNS/claimed.jsonl"
 printf '%s\n' "$ROOT/worktree" > "$RUNS/claimed.wt"
@@ -324,7 +480,7 @@ PATH="$ROOT/bin:$PATH" HOME="$ROOT/home" CONTROLLER_HOME="$LOCK_HOME" \
 GATE_PID=$!
 exec 7< "$ROOT/gate-wait.fifo"
 IFS= read -r wait_line <&7 || fail 'gate-run did not announce its blocking wait'
-[[ $wait_line == 'gate-run: both slots busy, waiting on gate.lock' ]] || fail "unexpected wait line: $wait_line"
+[[ $wait_line == 'gate-run: both slots busy, polling gate.lock and gate2.lock every 5s' ]] || fail "unexpected wait line: $wait_line"
 release_lock "$ROOT/release-one" "$FIRST_HOLDER_PID" "$ROOT/ready-one"
 IFS= read -r slot_line <&7 || fail 'gate-run did not announce acquisition of the first slot'
 [[ $slot_line == 'gate-run: slot gate.lock' ]] || fail "unexpected acquired-slot line: $slot_line"
@@ -346,12 +502,72 @@ if (cd -- "$ROOT" && PATH="$ROOT/bin:$PATH" HOME="$ROOT/home" CONTROLLER_HOME="$
   fail 'relative gate lock path was accepted'
 fi
 contains "$ROOT/gate-relative.out" 'must both be configured as absolute paths' 'gate lock paths must be absolute'
+contains "$ROOT/gate-relative.out" 'controller.local.env.example' 'gate lock refusal names the committed local configuration example'
+contains "$ROOT/gate-relative.out" 'CONTROLLER_GATE_LOCK' 'gate lock refusal names the first exact variable'
+contains "$ROOT/gate-relative.out" 'CONTROLLER_GATE2_LOCK' 'gate lock refusal names the second exact variable'
+contains "$SCRIPT_DIR/../controller.local.env.example" 'CONTROLLER_GATE_LOCK=' 'configuration example documents the first gate lock variable'
+contains "$SCRIPT_DIR/../controller.local.env.example" 'CONTROLLER_GATE2_LOCK=' 'configuration example documents the second gate lock variable'
 [[ $(wc -l < "$RUN_GATE_LOG") == "$before" ]] || fail 'run-gate started with a relative lock path'
 if PATH="$ROOT/bin:$PATH" HOME="$ROOT/home" CONTROLLER_HOME="$LOCK_HOME" \
   CONTROLLER_GATE_LOCK="$LOCK1" CONTROLLER_GATE2_LOCK="$LOCK2" FAKE_RUN_GATE_RC=7 \
   "$GATE_RUN_SRC" suite > "$ROOT/gate-fail.out" 2>&1; then
   fail 'gate-run hid the gate command exit code'
 else rc=$?; [[ $rc == 7 ]] || fail "gate-run returned $rc instead of the gate exit 7"; fi
+
+POLL_BIN=$ROOT/gate-poll-bin
+POLL_STATE=$ROOT/gate-poll-state
+mkdir -p "$POLL_BIN" "$POLL_STATE"
+cat > "$POLL_BIN/flock" <<'SH'
+#!/usr/bin/env bash
+set -uo pipefail
+printf '%s\n' "$*" >> "$FAKE_FLOCK_LOG"
+nonblocking=0
+for arg in "$@"; do [[ $arg == -n ]] && nonblocking=1; done
+fd=${!#}
+busy=0
+case $fd in
+  9) [[ -e $FAKE_GATE1_BUSY ]] && busy=1 ;;
+  8) [[ -e $FAKE_GATE2_BUSY ]] && busy=1 ;;
+  *) echo "fake flock: unexpected fd $fd" >&2; exit 2 ;;
+esac
+if (( nonblocking )); then
+  (( busy )) && exit 75
+  exit 0
+fi
+echo 'fake flock: blocking acquisition is not expected in the two-slot poll' >&2
+exit 75
+SH
+cat > "$POLL_BIN/sleep" <<'SH'
+#!/usr/bin/env bash
+set -uo pipefail
+[[ $1 == 5 ]] || { echo "fake sleep: expected 5, got $1" >&2; exit 2; }
+count=$(cat "$FAKE_SLEEP_COUNT" 2>/dev/null || echo 0)
+count=$((count + 1))
+printf '%s\n' "$count" > "$FAKE_SLEEP_COUNT"
+if (( count >= ${FAKE_GATE2_FREE_AFTER:-2} )); then rm -f -- "$FAKE_GATE2_BUSY"; fi
+if (( count >= ${FAKE_GATE1_FREE_AFTER:-70} )); then rm -f -- "$FAKE_GATE1_BUSY"; fi
+SH
+chmod +x "$POLL_BIN/flock" "$POLL_BIN/sleep"
+FAKE_FLOCK_LOG=$ROOT/fake-flock.log
+FAKE_SLEEP_COUNT=$ROOT/fake-sleep-count
+FAKE_GATE1_BUSY=$POLL_STATE/gate1-busy
+FAKE_GATE2_BUSY=$POLL_STATE/gate2-busy
+export FAKE_FLOCK_LOG FAKE_SLEEP_COUNT FAKE_GATE1_BUSY FAKE_GATE2_BUSY
+touch "$FAKE_GATE1_BUSY" "$FAKE_GATE2_BUSY"
+PATH="$ROOT/bin:$POLL_BIN:$PATH" HOME="$ROOT/home" CONTROLLER_HOME="$LOCK_HOME" \
+  CONTROLLER_GATE_LOCK="$LOCK1" CONTROLLER_GATE2_LOCK="$LOCK2" \
+  FAKE_GATE2_FREE_AFTER=2 "$GATE_RUN_SRC" suite --poll-second > "$ROOT/gate-poll-second.out" 2>&1 \
+  || fail 'gate-run did not acquire the freed second slot while the first stayed busy'
+contains "$ROOT/gate-poll-second.out" 'slot gate2.lock' 'the final wait loop polls both configured slots'
+touch "$FAKE_GATE1_BUSY" "$FAKE_GATE2_BUSY"
+rm -f -- "$FAKE_SLEEP_COUNT" "$FAKE_FLOCK_LOG"
+PATH="$ROOT/bin:$POLL_BIN:$PATH" HOME="$ROOT/home" CONTROLLER_HOME="$LOCK_HOME" \
+  CONTROLLER_GATE_LOCK="$LOCK1" CONTROLLER_GATE2_LOCK="$LOCK2" \
+  FAKE_GATE2_FREE_AFTER=65 "$GATE_RUN_SRC" suite --poll-progress > "$ROOT/gate-poll-progress.out" 2>&1 \
+  || fail 'gate-run two-slot progress case failed'
+contains "$ROOT/gate-poll-progress.out" 'both slots busy, polling gate.lock and gate2.lock' 'gate-run announces two-slot polling'
+contains "$ROOT/gate-poll-progress.out" 'still waiting after 300s' 'gate-run prints a progress line every 300 seconds'
+contains "$ROOT/gate-poll-progress.out" 'slot gate2.lock' 'progress polling still acquires the second slot'
 
 SESSION=$ROOT/session.jsonl
 RUNS_DIR=$ROOT/readback-runs

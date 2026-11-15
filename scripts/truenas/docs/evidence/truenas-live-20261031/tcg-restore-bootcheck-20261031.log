@@ -1,0 +1,12 @@
+# Evidence scrub 2026-11-10: environment-specific home, checkout, worktree, and per-run temporary paths were normalized to neutral placeholders; command output and verdict text are otherwise unchanged.
+[preflight] slice=dev-background.slice cgroup=/dev.slice/dev-background.slice cpu-quota=5.0 current-memory=208789504 new-guest-cap=3758096384 projected-memory=3966885888 high-advisory=8589934592 cap-exceeds-high-advisory=False max=10737418240 cap-exceeds-hard-max=False full-avg10-limit=1% psi-some-avg10=0.0 psi-full-avg10=0.0
+[memory-admission] cgroup=/dev.slice/dev-background.slice current=208789504 projected-memory=3966885888 high-advisory=8589934592 cap-exceeds-high-advisory=False max=10737418240 cap-exceeds-hard-max=False psi-some-avg10=0.0 psi-full-avg10=0.0
+[memory-admission] cgroup=/dev.slice current=3035971584 projected-memory=6794067968 high-advisory=12348030976 cap-exceeds-high-advisory=False max=16642998272 cap-exceeds-hard-max=False psi-some-avg10=0.69 psi-full-avg10=0.69
+[memory-admission] cgroup=/ current=0 projected-memory=3758096384 high-advisory=None cap-exceeds-high-advisory=None max=None cap-exceeds-hard-max=None psi-some-avg10=0.39 psi-full-avg10=0.39
+[admission] max-concurrent-guests=1 active=0 memory-check=current-usage-plus-next-guest-cap
+[source] base=<worktree>/scripts/truenas/.vm/truenas-restore-20g-qcow2-20261031/disk-overlay.qcow2 state=<worktree>/scripts/truenas/.vm/truenas-restore-20g-bootcheck-20261031
+[container] host base mount=<worktree>/scripts/truenas/.vm/truenas-restore-20g-qcow2-20261031/disk-overlay.qcow2 host state mount=<worktree>/scripts/truenas/.vm/truenas-restore-20g-bootcheck-20261031
+[limits] cgroup-parent=dev-background.slice cpus=2 memory=3758096384 memory-swap=3758096384 guest-RAM=3072MiB network=dstdns-hox0ju-network
+tcg_vm.py: QEMU container exited during startup:
+; startup cleanup: stopped container removed; state files preserved
+EXIT=1

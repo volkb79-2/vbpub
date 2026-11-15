@@ -1260,6 +1260,12 @@ def test_report_blocks_detects_a_file_truncated_after_its_size_was_read(
 
     def truncate_after_stat(fd):
         info = real_fstat(fd)
+        try:
+            opened = os.path.realpath(os.readlink(f"/proc/self/fd/{fd}"))
+        except OSError:
+            return info
+        if opened != str(path.resolve()):
+            return info
         path.write_bytes(b"")
         return info
 

@@ -12,6 +12,23 @@ runner = root / "mutants/scripts/netcup/runner"
 controller.mkdir(parents=True)
 runner.mkdir(parents=True)
 shutil.copy2(repo / "scripts/controller/lib.sh", controller / "lib.sh")
+shutil.copy2(repo / "scripts/controller/opendesign-accounts.py", controller / "opendesign-accounts.py")
+
+
+def account_helper_mutant(name: str, before: str, after: str) -> Path:
+    source = repo / "scripts/controller/opendesign-accounts.py"
+    original = source.read_text(encoding="utf-8")
+    count = original.count(before)
+    if count != 1:
+        raise SystemExit(f"{source}: expected one mutation target, found {count}: {before!r}")
+    variant = controller / name
+    variant.mkdir(parents=True)
+    for filename in ("lib.sh", "codex-impl.sh", "pi-impl.sh", "resume-usage-limited.sh", "finisher-generic.md"):
+        shutil.copy2(repo / "scripts/controller" / filename, variant / filename)
+    target = variant / "opendesign-accounts.py"
+    target.write_text(original.replace(before, after, 1), encoding="utf-8")
+    target.chmod(0o755)
+    return variant
 
 
 def mutant(source: str, name: str, before: str, after: str, destination: Path = controller) -> Path:
@@ -31,7 +48,7 @@ mutant("scripts/controller/ctl-status.sh", "ctl-status-infra.sh",
 mutant("scripts/controller/ctl-status.sh", "ctl-status-flag.sh",
        "${flag_mtime:-0} -gt $pass_epoch", "${flag_mtime:-0} -lt $pass_epoch")
 mutant("scripts/controller/job-check.sh", "job-check-empty-final.sh",
-       'if not text and not usage_limited:', 'if False and not usage_limited:')
+       '    if not text:', '    if False:')
 mutant("scripts/controller/job-check.sh", "job-check-tool-call-case.sh",
        "text[-600:], re.M | re.I", "text[-600:], re.M")
 mutant("scripts/controller/job-check.sh", "job-check-report-path.sh",
@@ -46,13 +63,17 @@ mutant("scripts/controller/job-check.sh", "job-check-report-head.sh",
 mutant("scripts/controller/job-check.sh", "job-check-reasoning-end.sh",
        'elif turn_state == "completed" and turn_last_item == "reasoning":', 'elif False:')
 mutant("scripts/controller/job-check.sh", "job-check-usage-limit.sh",
-       'usage_limited = turn_state == "failed" and usage_reset is not None', 'usage_limited = False')
+       'usage_limited = (\n    (turn_state == "failed" and usage_reset is not None)\n    or (pi_detected and pi_stop_reason == "error" and pi_usage_limited)\n)',
+       'usage_limited = False')
+mutant("scripts/controller/job-check.sh", "job-check-usage-retry-binding.sh",
+       '    elif event_type == "turn.failed":\n        turn_state = "failed"\n        usage_reset = sys.argv[2] or None',
+       '    elif event_type == "turn.failed":\n        turn_state = "failed"\n        usage_reset = None')
 mutant("scripts/controller/job-check.sh", "job-check-killed-run.sh",
        'elif turn_state != "completed":', 'elif False:')
 mutant("scripts/controller/job-check.sh", "job-check-mid-wait-trailing.sh",
-       '    if pending_wait:', '    if False:')
+       '        if pending_wait:', '        if False:')
 mutant("scripts/controller/job-check.sh", "job-check-mid-wait-resolution.sh",
-       "        pending_wait = None", "        pending_wait = pending_wait")
+       "            pending_wait = None", "            pending_wait = pending_wait")
 mutant("scripts/controller/hx.sh", "hx-identity.sh",
        'if ! controller_host_api_check "$host" >/dev/null; then', 'if false; then')
 mutant("scripts/controller/release-from-wt.sh", "release-archive.sh",
@@ -97,26 +118,71 @@ mutant("scripts/controller/job-check.sh", "job-check-merge-trailer.sh",
        'commits=$(git -C "$worktree" rev-list --no-merges "$base..HEAD" 2>/dev/null)')
 mutant("scripts/controller/job-check.sh", "job-check-any-claude-trailer.sh",
        'Claude [A-Za-z0-9. ]+', 'Claude NEVER')
-mutant("scripts/controller/codex-impl.sh", "codex-deepseek-catalog.sh",
-       'sys.exit(1 if any(m.get("tool_mode") is not None for m in data.get("models", [])) else 0)',
-       'sys.exit(0)')
+mutant("scripts/controller/job-check.sh", "job-check-deepseek-pinned-routes.sh",
+       '  deepseek|deepseek-volker|deepseek-github2|deepseek-pi|deepseek-pi-volker|deepseek-pi-github2|opencode)\n    trailer_mode=single',
+       '  deepseek|deepseek-pi|opencode)\n    trailer_mode=single')
+account_helper_mutant(
+    "codex-deepseek-catalog-safety",
+    'not isinstance(model, dict) or model.get("tool_mode") is not None',
+    'False',
+)
+mutant("scripts/controller/codex-impl.sh", "codex-pinned-route-fallback.sh",
+       'start "$od_account" "$catalog" >/dev/null || exit $?',
+       'start auto "$volker_catalog" "$github2_catalog" >/dev/null || exit $?')
+mutant("scripts/controller/codex-impl.sh", "codex-manual-resume-account.sh",
+       'od_start_kind=resume', 'od_start_kind=auto-resume')
+mutant("scripts/controller/codex-impl.sh", "codex-bookkeeping-exit-overwrite.sh",
+       '    bookkeeping_rc=$?', '    bookkeeping_rc=$?\n    rc=$bookkeeping_rc')
+mutant("scripts/controller/codex-impl.sh", "codex-route-sidecar-unpinned.sh",
+       'route_record=deepseek-$od_account', 'route_record=deepseek')
+mutant("scripts/controller/codex-impl.sh", "codex-unknown-route-fallback.sh",
+       '*) echo "unknown CODEX_ROUTE=$route" >&2; exit 2 ;;',
+       '*) route=luna; route_home=${CODEX_HOME_LUNA:-"$HOME/.codex"}; default_model=gpt-6-luna; default_effort=xhigh; auto_default=0 ;;')
+mutant("scripts/controller/opencode-impl.sh", "opencode-default-provider.sh",
+       'provider=${OPENCODE_PROVIDER:-opendesign_github2}', 'provider=${OPENCODE_PROVIDER:-opendesign}')
+mutant("scripts/controller/README.md", "README-home-override-route.md",
+       '`CODEX_HOME_OVERRIDE` is honoured only on the luna route.',
+       '`CODEX_HOME_OVERRIDE` is honoured on every route.')
 mutant("scripts/controller/codex-impl.sh", "codex-autoresume-bound.sh",
        'while (( auto_count < auto_limit )) && reasoning_end',
        'while (( auto_count <= auto_limit )) && reasoning_end')
 mutant("scripts/controller/codex-impl.sh", "codex-autoresume-limit-validation.sh",
        'raise SystemExit(0 if value <= 2147483647 else 1)', 'raise SystemExit(0)')
+mutant("scripts/controller/codex-impl.sh", "codex-stale-run-markers.sh",
+       'if [[ ${CONTROLLER_RUN_FORCE:-0} != 1 ]] && (( ${#existing[@]} > 0 )); then',
+       'if false; then')
+mutant("scripts/controller/codex-impl.sh", "codex-stale-run-resume-mode.sh",
+       'if [[ $mode == new ]]; then\n  existing=()',
+       'if true; then\n  existing=()')
+mutant("scripts/controller/job-check.sh", "job-check-any-sol-trailer.sh",
+       '|gpt-6-sol|', '|')
+mutant("scripts/controller/job-check.sh", "job-check-sol-route-trailer.sh",
+       '  sol)\n    trailer_mode=single', '  sol)\n    trailer_mode=none')
+mutant("scripts/controller/job-check.sh", "job-check-any-multi-trailer.sh",
+       'if (( count == 0 )); then', 'if (( count != 1 )); then')
+mutant("scripts/controller/job-check.sh", "job-check-usage-limit-message-flags.sh",
+       'if not usage_limited:', 'if True:')
+mutant("scripts/controller/job-check.sh", "job-check-reattach-evidence.sh",
+       'if reattach_ok:', 'if False:')
+mutant("scripts/controller/lib.sh", "usage-retry-time-only-lib.sh",
+       'r"[A-Za-z]{3,9}\\s+\\d{1,2}(?:st|nd|rd|th)?,\\s+\\d{4}\\s+\\d{1,2}:\\d{2}(?:\\s*[AP]M)?"',
+       'r"NEVER_MATCH_A_DATED_RETRY"')
+mutant("scripts/controller/lib.sh", "usage-retry-insufficient-balance.sh",
+       'if current.get("code") == "insufficient_balance":', 'if False:')
 mutant("scripts/controller/lib.sh", "controller-run-dir-override.sh",
        '[[ -z $requested_runs_dir ]] || CONTROLLER_RUNS_DIR=$requested_runs_dir',
        ': # ignore the explicit environment override')
 mutant("scripts/controller/resume-usage-limited.sh", "resume-usage-detection.sh",
-       'if not re.search(r"hit your usage limit", message, re.IGNORECASE):',
-       'if True:')
+       'if ! reset_time=$(usage_retry_text "$run_file" "$runs_dir/$run.err"); then continue; fi',
+       'reset_time=unknown')
+mutant("scripts/controller/resume-usage-limited.sh", "resume-future-retry.sh",
+       "    if (( reset_epoch > now_epoch )); then", "    if false; then")
 mutant("scripts/controller/resume-usage-limited.sh", "resume-skip-list.sh",
        'if is_skipped "$run"; then', 'if false; then')
 mutant("scripts/controller/resume-usage-limited.sh", "resume-route-sidecar.sh",
        'if [[ ! -f $runs_dir/$run.route ]]; then', 'if false; then')
 mutant("scripts/controller/resume-usage-limited.sh", "resume-route-value.sh",
-       'case $route in luna|deepseek) ;; *) echo "SKIP $run (invalid route sidecar)"; continue ;; esac',
+       'case $route in luna|deepseek|deepseek-volker|deepseek-github2) ;; *) echo "SKIP $run (invalid route sidecar)"; continue ;; esac',
        'case $route in *) ;; esac')
 mutant("scripts/controller/resume-usage-limited.sh", "resume-max-age-validation.sh",
        "if [[ ! $max_age =~ ^[0-9]+$ ]] || (( max_age <= 0 )); then",
@@ -138,6 +204,12 @@ mutant("scripts/controller/gate-run.sh", "gate-run-distinct-locks.sh",
        '[[ $CONTROLLER_GATE_LOCK != "$CONTROLLER_GATE2_LOCK" ]] ||', 'true ||')
 mutant("scripts/controller/gate-run.sh", "gate-run-absolute-locks.sh",
        '[[ -n $lock && $lock == /* ]] || {', '[[ -n $lock ]] || {')
+mutant("scripts/controller/gate-run.sh", "gate-run-poll-second-slot.sh",
+       '  poll_lock 8 "$CONTROLLER_GATE2_LOCK" gate2.lock "$@"',
+       '  : # deliberately skip the second slot')
+mutant("scripts/controller/gate-run.sh", "gate-run-refusal-example.sh",
+       'gate-run: CONTROLLER_GATE_LOCK and CONTROLLER_GATE2_LOCK must both be configured as absolute paths; copy both names from controller.local.env.example and export them before running',
+       'gate-run: configure the gate lock paths before running')
 mutant("scripts/controller/build-readback.py", "build-readback-budget-minimum.py",
        'if args.budget_chars < 512:', 'if False:')
 mutant("scripts/controller/release-from-wt.sh", "release-psi-validation.sh",
@@ -159,6 +231,238 @@ mutant("scripts/netcup/runner/host-sat-queue.sh", "queue-numeric-probe.sh",
        '', runner)
 mutant("scripts/controller/ctl-status.sh", "ctl-status-fresh-results.sh",
        'if [[ -f $CONTROLLER_HOME/logs/host-sat-results.tsv ]]; then', 'if true; then')
+mutant("scripts/controller/ctl-status.sh", "ctl-status-pi-route.sh",
+       'route=$(cat "$CONTROLLER_HOME/runs/$name.route" 2>/dev/null || echo unknown)', 'route=unknown')
+mutant("scripts/controller/ctl-status.sh", "ctl-status-pi-stall.sh",
+       '(( now - mtime > 900 ))', '(( now - mtime > 2147483647 ))')
+mutant("scripts/controller/job-check.sh", "job-check-pi-route.sh",
+       'deepseek|deepseek-volker|deepseek-github2|deepseek-pi|deepseek-pi-volker|deepseek-pi-github2|opencode)',
+       'deepseek|deepseek-volker|deepseek-github2|opencode)')
+mutant("scripts/controller/job-check.sh", "job-check-pi-message-end.sh",
+       'elif event_type == "message_end":', 'elif event_type == "pi_message_end":')
+mutant("scripts/controller/job-check.sh", "job-check-pi-402-error-code.sh",
+       'pi_usage_limited = pi_402_error(message.get("errorMessage"))', 'pi_usage_limited = False')
+mutant("scripts/controller/lib.sh", "usage-retry-pi-error-message.sh",
+       'gateway_text_reset(event) or coding_plan_reset(event) or pi_error_reset(event)',
+       'gateway_text_reset(event) or coding_plan_reset(event)')
+mutant("scripts/controller/pi-impl.sh", "pi-prompt-absolute.sh",
+       '[[ $2 == /* ]] || { echo \'prompt path must be absolute\' >&2; exit 2; }',
+       ': # removed absolute prompt guard')
+mutant("scripts/controller/pi-impl.sh", "pi-worktree-exists.sh",
+       'worktree=$(realpath -e -- "$1") || usage', 'worktree=$1')
+mutant("scripts/controller/pi-impl.sh", "pi-session-id-guard.sh",
+       '[[ -n $session_id && $session_id =~ ^[A-Za-z0-9._-]+$ && $session_id != *..* ]] || usage',
+       '[[ -n $session_id ]] || usage')
+mutant("scripts/controller/pi-impl.sh", "pi-mode-guard.sh",
+       'elif [[ $mode != new || $# -gt 4 ]]; then', 'elif [[ $mode != new ]]; then')
+mutant("scripts/controller/pi-impl.sh", "pi-run-name-guard.sh",
+       '[[ $name =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ && $name != *..* ]] || {',
+       '[[ -n $name ]] || {')
+mutant("scripts/controller/pi-impl.sh", "pi-run-collision-guard.sh",
+       'if [[ ${CONTROLLER_RUN_FORCE:-0} != 1 ]] && (( ${#existing[@]} > 0 )); then',
+       'if false; then')
+mutant("scripts/controller/pi-impl.sh", "pi-prompt-preserve-newlines.sh",
+       'IFS= read -r -d \'\' prompt_text < "$prompt" || :',
+       'prompt_text=$(<"$prompt")')
+mutant("scripts/controller/pi-impl.sh", "pi-unknown-route-guard.sh",
+       '  *) echo "unknown PI_ROUTE=$route" >&2; exit 2 ;;',
+       '  *) route=deepseek-pi; od_start_kind=auto ;;')
+mutant("scripts/controller/pi-impl.sh", "pi-route-sidecar-pinned.sh",
+       'volker|github2) route_record=deepseek-pi-$od_account ;;',
+       'volker|github2) route_record=deepseek-pi ;;')
+mutant("scripts/controller/pi-impl.sh", "pi-resume-recorded-account.sh",
+       '        od_start_kind=resume', '        od_start_kind=auto-resume')
+mutant("scripts/controller/pi-impl.sh", "pi-provider-account.sh",
+       '    provider=opendesign_volker', '    provider=opendesign_github2')
+mutant("scripts/controller/pi-impl.sh", "pi-source-auth-env.sh",
+       '. "$HOME/.env.ai" >/dev/null 2>&1', 'true')
+mutant("scripts/controller/pi-impl.sh", "pi-auth-file-guard.sh",
+       'if [[ ! -r $HOME/.env.ai ]]; then', 'if false; then')
+mutant("scripts/controller/pi-impl.sh", "pi-auth-source-guard.sh",
+       'if ! . "$HOME/.env.ai" >/dev/null 2>&1; then', 'if false; then')
+mutant("scripts/controller/pi-impl.sh", "pi-volker-key-guard.sh",
+       '    [[ -v OPENDESIGN_API_KEY_VOLKER ]] && (( ${#OPENDESIGN_API_KEY_VOLKER} > 0 )) || {\n      echo "OPENDESIGN_API_KEY_VOLKER is not set by \\$HOME/.env.ai" >&2\n      exit 2\n    }',
+       ': # removed selected Volker key guard')
+mutant("scripts/controller/pi-impl.sh", "pi-volker-key-xtrace.sh",
+       '[[ -v OPENDESIGN_API_KEY_VOLKER ]] && (( ${#OPENDESIGN_API_KEY_VOLKER} > 0 )) || {',
+       '[[ -n ${OPENDESIGN_API_KEY_VOLKER:-} ]] || {')
+mutant("scripts/controller/pi-impl.sh", "pi-github2-key-xtrace.sh",
+       '[[ -v OPENDESIGN_API_KEY_GITHUB2 ]] && (( ${#OPENDESIGN_API_KEY_GITHUB2} > 0 )) || {',
+       '[[ -n ${OPENDESIGN_API_KEY_GITHUB2:-} ]] || {')
+mutant("scripts/controller/pi-impl.sh", "pi-github2-key-guard.sh",
+       '    [[ -v OPENDESIGN_API_KEY_GITHUB2 ]] && (( ${#OPENDESIGN_API_KEY_GITHUB2} > 0 )) || {\n      echo "OPENDESIGN_API_KEY_GITHUB2 is not set by \\$HOME/.env.ai" >&2\n      exit 2\n    }',
+       ': # removed selected github2 key guard')
+mutant("scripts/controller/pi-impl.sh", "pi-session-sidecar.sh",
+       '  printf \'%s\\n\' "$thread_id" > "$out/$name.thread"',
+       '  : # omit the pi session sidecar')
+mutant("scripts/controller/pi-impl.sh", "pi-stdin-closed.sh",
+       '  < /dev/null > "$out/$name.jsonl" 2> "$out/$name.err"); then',
+       '  > "$out/$name.jsonl" 2> "$out/$name.err"); then')
+mutant("scripts/controller/pi-impl.sh", "pi-402-outcome.sh",
+       'if [[ $stop_reason == error && $usage_limited == 1 ]]; then', 'if False; then')
+mutant("scripts/controller/pi-impl.sh", "pi-error-outcome.sh",
+       'elif [[ $stop_reason == error ]]; then\n  outcome=ERROR', 'elif False; then\n  outcome=ERROR')
+mutant("scripts/controller/pi-impl.sh", "pi-nonzero-exit-outcome.sh",
+       'elif [[ $rc != 0 ]]; then\n  outcome=ERROR', 'elif False; then\n  outcome=ERROR')
+mutant("scripts/controller/pi-impl.sh", "pi-success-stop-only.sh",
+       '&& -n $thread_id && $stop_reason == stop ]]; then', '&& -n $thread_id && -n $stop_reason ]]; then')
+mutant("scripts/controller/pi-impl.sh", "pi-account-block-run.sh",
+       'block-run "$od_account"', 'record-thread "$thread_id"')
+mutant("scripts/controller/pi-impl.sh", "pi-key-selected-export.sh",
+       '    export OPENDESIGN_API_KEY_GITHUB2', '    : # selected key not exported')
+mutant("scripts/controller/pi-impl.sh", "pi-key-volker-export.sh",
+       '    export OPENDESIGN_API_KEY_VOLKER', '    : # selected key not exported')
+mutant("scripts/controller/pi-impl.sh", "pi-key-unselected-unset.sh",
+       '    unset OPENDESIGN_API_KEY_VOLKER', '    : # unselected key not removed')
+mutant("scripts/controller/README.md", "README-pi-route-table.md",
+       '| `deepseek-pi` | `pi-impl.sh` | Favored Open Design route; alternates available accounts. |',
+       '| `deepseek-pi` | `pi-impl.sh` | Route. |')
+mutant("scripts/controller/docs/DESIGN-GUIDE.md", "DESIGN-pi-402-classification.md",
+       'Pi 1.5.0 can report a provider 402 in the final assistant `message_end` event',
+       'Pi 1.5.0 reports provider errors outside the final assistant `message_end` event')
+mutant("scripts/controller/docs/CONSUMERS.md", "CONSUMER-pi-launch-route.md",
+       '`deepseek-pi` is the favored Pi route',
+       '`deepseek-pi` is unavailable in the Pi route selector.')
+account_helper_mutant(
+    'od-pi-402-reset-detection',
+    'return coding_plan_reset(error)',
+    'return False, None',
+)
+account_helper_mutant(
+    'od-pi-session-event-id',
+    'if isinstance(event, dict) and event.get("type") == "session":',
+    'if False:',
+)
+account_helper_mutant(
+    'od-pi-route-thread-map',
+    '"deepseek-pi-volker": "volker",',
+    '"deepseek-pi-volker": "github2",',
+)
+account_helper_mutant(
+    'od-pi-blocked-account-selection',
+    'return [account for account in ACCOUNTS if state[account]["blocked_until_epoch"] <= now]',
+    'return list(ACCOUNTS)',
+)
+account_helper_mutant(
+    'od-pi-resume-blocked-fallback',
+    '    return other',
+    '    return account',
+)
+account_helper_mutant(
+    'od-pi-resume-both-blocked-exit',
+    '        raise SystemExit(3)\n    return other',
+    '        return account\n    return other',
+)
+account_helper_mutant(
+    'od-pi-unknown-reset-default',
+    'observed_until = time.time() + block_seconds',
+    'observed_until = time.time()',
+)
+
+account_helper_mutant(
+    "od-blocked-account-selection",
+    'return [account for account in ACCOUNTS if state[account]["blocked_until_epoch"] <= now]',
+    'return list(ACCOUNTS)',
+)
+account_helper_mutant(
+    "od-prefer-expiring-window",
+    'if prefer_expiring == "1":',
+    'if False:',
+)
+account_helper_mutant(
+    "od-preference-value-guard",
+    'if prefer_expiring not in ("0", "1"):',
+    'if False:',
+)
+account_helper_mutant(
+    "od-insufficient-balance-detection",
+    'if current.get("code") == "insufficient_balance":',
+    'if False:',
+)
+account_helper_mutant(
+    "od-unknown-reset-default-block",
+    'if reset is None:\n            block_seconds = unknown_block_seconds()',
+    'if False:\n            block_seconds = unknown_block_seconds()',
+)
+account_helper_mutant(
+    "od-unknown-reset-knob",
+    'raw = os.environ.get(\n        "CONTROLLER_OD_UNKNOWN_BLOCK_SECONDS", str(DEFAULT_UNKNOWN_BLOCK_SECONDS)\n    )',
+    'raw = str(DEFAULT_UNKNOWN_BLOCK_SECONDS)',
+)
+account_helper_mutant(
+    "od-unknown-block-invalid-value-fallback",
+    'seconds = DEFAULT_UNKNOWN_BLOCK_SECONDS',
+    'seconds = 0',
+)
+account_helper_mutant(
+    "od-preserve-later-block",
+    '        previous_until = state[account]["blocked_until_epoch"]\n        blocked_until = max(previous_until, observed_until)',
+    '        previous_until = state[account]["blocked_until_epoch"]\n        blocked_until = observed_until',
+)
+account_helper_mutant(
+    "od-manual-resume-blocked-fallback",
+    '    if state[account]["blocked_until_epoch"] <= now:\n        return account',
+    '    if True:\n        return account',
+)
+account_helper_mutant(
+    "od-catalog-guard-before-start-record",
+    '            ensure_catalog_safe(catalogs[selected])\n            record_start(state, selected)\n            if thread_id:\n                state["threads"][thread_id] = selected',
+    '            record_start(state, selected)\n            if thread_id:\n                state["threads"][thread_id] = selected',
+)
+account_helper_mutant(
+    "od-resume-blocked-fallback",
+    '    return other',
+    '    return account',
+)
+account_helper_mutant(
+    "od-reject-unknown-state-fields",
+    'if not isinstance(entry, dict) or set(entry) - FIELDS:',
+    'if not isinstance(entry, dict):',
+)
+account_helper_mutant(
+    "od-numeric-state-fields",
+    'if isinstance(value, bool) or not isinstance(value, (int, float)):',
+    'if False:',
+)
+account_helper_mutant(
+    "od-both-blocked-exit-code",
+    '    if not candidates:\n        earliest = min(state[account]["blocked_until_epoch"] for account in ACCOUNTS)\n        print(\n            "both Open Design accounts are blocked; earliest reset is " + format_epoch(earliest),\n            file=sys.stderr,\n        )\n        raise SystemExit(3)',
+    '    if not candidates:\n        earliest = min(state[account]["blocked_until_epoch"] for account in ACCOUNTS)\n        print(\n            "both Open Design accounts are blocked; earliest reset is " + format_epoch(earliest),\n            file=sys.stderr,\n        )\n        raise SystemExit(2)',
+)
+account_helper_mutant(
+    "od-state-path-absolute-guard",
+    'if not path.is_absolute():',
+    'if False:',
+)
+account_helper_mutant(
+    "od-gateway-text-detection",
+    'match = GATEWAY_402.match(message)',
+    'match = None',
+)
+account_helper_mutant(
+    "od-gateway-text-anchor",
+    'GATEWAY_402_PREFIX.match(message) is None',
+    'GATEWAY_402.search(message) is None',
+)
+account_helper_mutant(
+    "od-gateway-text-event-type",
+    'if not isinstance(event, dict) or event.get("type") not in ("error", "turn.failed"):',
+    'if not isinstance(event, dict):',
+)
+mutant("scripts/controller/lib.sh", "usage-retry-gateway-text.sh",
+       'match = gateway_402.match(message) if isinstance(message, str) else None',
+       'match = None')
+mutant("scripts/controller/lib.sh", "usage-retry-gateway-anchor.sh",
+       'match = gateway_402.match(message) if isinstance(message, str) else None',
+       'match = gateway_402.search(message) if isinstance(message, str) else None')
+mutant("scripts/controller/lib.sh", "usage-retry-gateway-event-type.sh",
+       'if not isinstance(event, dict) or event.get("type") not in ("error", "turn.failed"):',
+       'if not isinstance(event, dict):')
+account_helper_mutant(
+    "od-exclusive-state-flock",
+    'fcntl.flock(stream.fileno(), fcntl.LOCK_EX)',
+    'fcntl.flock(stream.fileno(), fcntl.LOCK_SH)',
+)
 
 queue_source = repo / "scripts/netcup/runner/host-sat-queue.sh"
 

@@ -1,0 +1,42 @@
+# Evidence scrub 2026-11-10: environment-specific host identities, addresses, controller paths, and key material were normalized to neutral placeholders; command output and verdict text are otherwise unchanged.
+Collecting playwright==1.64.0 (from -r requirements-live-ui.txt (line 1))
+  Downloading playwright-1.64.0-py3-none-manylinux1_x86_64.whl.metadata (3.3 kB)
+Collecting pyee<15,>=13 (from playwright==1.64.0->-r requirements-live-ui.txt (line 1))
+  Downloading pyee-14.0.0-py3-none-any.whl.metadata (1.8 kB)
+Collecting greenlet<4.0.0,>=3.1.1 (from playwright==1.64.0->-r requirements-live-ui.txt (line 1))
+  Downloading greenlet-3.5.6-cp314-cp314-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl.metadata (3.8 kB)
+Requirement already satisfied: typing-extensions in /opt/tester-venv/lib/python3.14/site-packages (from pyee<15,>=13->playwright==1.64.0->-r requirements-live-ui.txt (line 1)) (4.16.0)
+Downloading playwright-1.64.0-py3-none-manylinux1_x86_64.whl (48.3 MB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 48.3/48.3 MB 22.0 MB/s  0:00:02
+Downloading greenlet-3.5.6-cp314-cp314-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl (670 kB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 670.8/670.8 kB 56.7 MB/s  0:00:00
+Downloading pyee-14.0.0-py3-none-any.whl (15 kB)
+Installing collected packages: pyee, greenlet, playwright
+
+Successfully installed greenlet-3.5.6 playwright-1.64.0 pyee-14.0.0
+[container-image-registry] target UI image entry: {"name": "alpine:3.24:amd64:default", "version": "20261016_13:00"}
+[path-b-device-inventory] {'selected_disk': '/dev/vda', 'boot_pool_partition': '/dev/vda3', 'block_devices': {'blockdevices': [{'path': '/dev/vda', 'name': '/dev/vda', 'type': 'disk', 'size': 549755813888, 'ro': False, 'rm': False, 'partn': None, 'parttype': None, 'partlabel': None, 'children': [{'path': '/dev/vda1', 'name': '/dev/vda1', 'type': 'part', 'size': 1048576, 'ro': False, 'rm': False, 'partn': 1, 'parttype': '21686148-6449-6e6f-744e-656564454649', 'partlabel': None}, {'path': '/dev/vda2', 'name': '/dev/vda2', 'type': 'part', 'size': 536870912, 'ro': False, 'rm': False, 'partn': 2, 'parttype': 'c12a7328-f81f-11d2-ba4b-00a0c93ec93b', 'partlabel': None}, {'path': '/dev/vda3', 'name': '/dev/vda3', 'type': 'part', 'size': 17179869184, 'ro': False, 'rm': False, 'partn': 3, 'parttype': '6a898cc3-1dd2-11b2-99a6-080020736631', 'partlabel': None}, {'path': '/dev/vda4', 'name': '/dev/vda4', 'type': 'part', 'size': 532035911168, 'ro': False, 'rm': False, 'partn': 4, 'parttype': '6a898cc3-1dd2-11b2-99a6-080020736631', 'partlabel': 'boot-disk-data'}]}]}, 'middleware_disks': [{'name': 'vda', 'devname': 'vda', 'identifier': '{uuid}23d40421-623f-4dfa-9f6b-c8bf16af4f67', 'size': 549755813888, 'model': None}]}
+[readonly-inventory] profile=path-b pool=boot-disk-data unconfigured-root=boot-disk-data direct-pools={'boot-pool': 'ONLINE'} middleware-pool-query=[{'id': 0, 'name': 'boot-pool', 'guid': '14641633342097355085', 'all_sed': False, 'status': 'ONLINE', 'path': '/', 'scan': None, 'expand': None, 'healthy': True, 'warning': False, 'status_code': 'OK', 'status_detail': None, 'size': 16642998272, 'allocated': 4248436736, 'free': 12394561536, 'freeing': 0, 'dedup_table_size': 0, 'dedup_table_quota': 'auto', 'fragmentation': '2', 'size_str': '16642998272', 'allocated_str': '4248436736', 'free_str': '12394561536', 'freeing_str': '0', 'autotrim': {'parsed': 'off', 'rawvalue': 'off', 'source': 'DEFAULT', 'value': 'off'}, 'topology': {'data': [{'name': '/dev/vda3', 'guid': '8109586552204817366', 'stats': {'timestamp': 1954167885447, 'read_errors': 0, 'write_errors': 0, 'checksum_errors': 0, 'ops': [0, 15212, 18166, 0, 0, 0, 0], 'bytes': [0, 247246848, 325939200, 0, 0, 0, 0], 'size': 16642998272, 'allocated': 4248436736, 'fragmentation': 2, 'self_healed': 0, 'configured_ashift': 12, 'logical_ashift': 9, 'physical_ashift': 9}, 'children': [], 'path': '/dev/vda3', 'type': 'DISK', 'status': 'ONLINE', 'device': 'vda3', 'disk': 'vda', 'unavail_disk': None}], 'log': [], 'cache': [], 'spare': [], 'special': [], 'dedup': []}}] datasets=2 containers=0 vms=0 direct-zfs-rows=0 cached-ui-images=[]
+[browser] connecting to PWMCP Playwright endpoint with a managed browser lease
+[browser] connected to PWMCP
+[navigation] opening TrueNAS sign-in at https://<host>
+[navigation] sign-in page loaded at https://<host>/ui/
+[login] waiting for the username field to become enabled
+[login] username entered; waiting for the password field to become enabled
+[login] credentials entered; submitting login
+[login] login redirected to https://<host>/ui/dashboard
+[login] PWMCP browser authenticated to TrueNAS 27.0.0-RC.1
+[session-timeout-dashboard] url=https://<host>/ui/dashboard; controls=['- link "mdi-folder-account Shares":', '- img "mdi-folder-account"', '- button "System submenu":', '- text: System', '- text: TrueNAS® Community Edition © 2026 iXsystems, Inc. dba', '- button "truenas_admin account-circle":', '- text: truenas_admin', '- img "account-circle"', '- button "Configure Dashboard": Configure', '- heading "System Information" [level=3]', '- button "System Reports":', '- text: is a collaborative website with helpful guides and information about your new storage system.', '- link "account-group":', '- img "account-group"', '- text: software, which is provided as-is with no warranty. TrueNAS® Community Edition © 2026 iXsystems, Inc. dba']
+[session-timeout-user-menu] url=https://<host>/ui/dashboard; controls=['- link "mdi-folder-account Shares":', '- img "mdi-folder-account"', '- button "System submenu":', '- text: System', '- text: TrueNAS® Community Edition © 2026 iXsystems, Inc. dba', '- button "truenas_admin account-circle" [expanded]:', '- text: truenas_admin', '- img "account-circle"', '- button "Configure Dashboard": Configure', '- heading "System Information" [level=3]', '- button "System Reports":', '- text: is a collaborative website with helpful guides and information about your new storage system.', '- link "account-group":', '- img "account-group"', '- text: software, which is provided as-is with no warranty. TrueNAS® Community Edition © 2026 iXsystems, Inc. dba', '- menuitem "Session Timeout":', '- text: Preferences']
+[session-timeout-preferences] url=https://<host>/ui/dashboard; controls=['- link "mdi-folder-account Shares":', '- img "mdi-folder-account"', '- button "System submenu":', '- text: System', '- text: TrueNAS® Community Edition © 2026 iXsystems, Inc. dba', '- button "truenas_admin account-circle":', '- text: truenas_admin', '- img "account-circle"', '- button "Configure Dashboard": Configure', '- heading "System Information" [level=3]', '- button "System Reports":', '- text: is a collaborative website with helpful guides and information about your new storage system.', '- link "account-group":', '- img "account-group"', '- text: software, which is provided as-is with no warranty. TrueNAS® Community Edition © 2026 iXsystems, Inc. dba', '- heading "Preferences" [level=3]', '- text: Session Timeout', '- spinbutton "Session Timeout": "300"']
+[session-timeout-ui] Session Timeout is visible in Preferences
+[page] opening Datasets route
+[page] Datasets route loaded
+[page] opening Containers route
+[page] Containers route loaded
+[page] opening Virtual Machines route
+[page] Virtual Machines route loaded
+[page] opening Shares route
+[page] Shares route loaded
+[path-b-partition-ui-inventory] Storage dashboard did not expose exactly one visible Disks navigation control; found=0 page='https://<host>/ui/signin' form='- progressbar\n- status: Logging in...'
+FAIL: PWMCP Playwright UI interaction failed during profile-storage-setup: TimeoutError: Locator.wait_for: Timeout 60000ms exceeded. Call log:   - waiting for get_by_text("Datasets", exact=True).first to be visible

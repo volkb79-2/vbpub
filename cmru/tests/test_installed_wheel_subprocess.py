@@ -97,6 +97,15 @@ def _toy_wheel(directory: Path) -> tuple[Path, str]:
     return wheel, hashlib.sha256(wheel.read_bytes()).hexdigest()
 
 
+def _tester_base_source_hash(tester_base: Path) -> str:
+    """Match the bootstrap's sha256sum-of-records over its declared inputs."""
+    records = "".join(
+        f"{hashlib.sha256(path.read_bytes()).hexdigest()}  {path.name}\n"
+        for path in (tester_base / "Dockerfile",
+                     tester_base / "ksm-optin.c"))
+    return hashlib.sha256(records.encode("utf-8")).hexdigest()
+
+
 def _bootstrap_tree(tmp_path: Path) -> dict[str, object]:
     # A throw-away tree with its own git history: the gate fixtures copy the
     # project without .git, so the real checkout cannot be assumed here.
@@ -113,6 +122,8 @@ def _bootstrap_tree(tmp_path: Path) -> dict[str, object]:
     (repo_root / "tester-base" / "Dockerfile").write_text(
         (REPO_ROOT / "tester-base" / "Dockerfile").read_text(encoding="utf-8"), encoding="utf-8",
     )
+    (repo_root / "tester-base" / "ksm-optin.c").write_bytes(
+        (REPO_ROOT / "tester-base" / "ksm-optin.c").read_bytes())
     (repo_root / "wheel-builder").mkdir()
     (repo_root / "wheel-builder" / "Dockerfile").write_text(
         (REPO_ROOT / "wheel-builder" / "Dockerfile").read_text(encoding="utf-8"), encoding="utf-8",
@@ -231,9 +242,9 @@ def _bootstrap_tree(tmp_path: Path) -> dict[str, object]:
         "PATH": f"{fake_bin}:{os.environ['PATH']}",
         "CMRU_BOOTSTRAP_PYTHON": "fakepython",
         "CMRU_WHEEL_BUILDER_IMAGE": "wheel-builder:test",
-        # a present tester-base:local is, by default, a current tester-base build of this tree's Dockerfile
+        # a present tester-base:local is, by default, a current tester-base build of this tree's inputs
         "CMRU_TEST_TB_KIND": "tester-base",
-        "CMRU_TEST_TB_HASH": hashlib.sha256((repo_root / "tester-base" / "Dockerfile").read_bytes()).hexdigest(),
+        "CMRU_TEST_TB_HASH": _tester_base_source_hash(repo_root / "tester-base"),
         "CMRU_BOOTSTRAP_CGROUP_PARENT": "test.slice",
         "SOURCE_DATE_EPOCH": "1",
         "TMPDIR": str(tmp_path),
@@ -352,15 +363,17 @@ def test_bootstrap_rebuilds_a_stale_tester_base(tmp_path):
     assert "built from other tester-base sources" in result.stderr
 
 
-def test_bootstrap_hashes_the_working_tree_tester_base_dockerfile_not_head(tmp_path):
-    """An uncommitted edit to tester-base/Dockerfile must not be labelled with the committed bytes' hash:
-    the tag carries HEAD's hash, the file being built differs, so the tag is stale and is rebuilt with the
-    hash of the file actually in the build context."""
+@pytest.mark.parametrize("filename", ["Dockerfile", "ksm-optin.c"])
+def test_bootstrap_hashes_the_working_tree_tester_base_inputs_not_head(
+        tmp_path, filename):
+    """An uncommitted edit to a declared tester-base input rebuilds with its working-tree hash."""
     tree = _bootstrap_tree(tmp_path)
-    dockerfile = Path(tree["repo_root"]) / "tester-base" / "Dockerfile"
+    tester_base = Path(tree["repo_root"]) / "tester-base"
+    source = tester_base / filename
     head_hash = tree["env"]["CMRU_TEST_TB_HASH"]
-    dockerfile.write_text(dockerfile.read_text(encoding="utf-8") + "# uncommitted edit\n", encoding="utf-8")
-    working_hash = hashlib.sha256(dockerfile.read_bytes()).hexdigest()
+    source.write_text(source.read_text(encoding="utf-8") + "# uncommitted edit\n",
+                      encoding="utf-8")
+    working_hash = _tester_base_source_hash(tester_base)
     assert working_hash != head_hash
     wheel, digest = _toy_wheel(tmp_path / "release")
     tree["env"].update(CMRU_BOOTSTRAP_CLI_EXTENDED_WHEEL=str(wheel), CMRU_BOOTSTRAP_CLI_EXTENDED_SHA256=digest)

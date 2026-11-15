@@ -1,0 +1,49 @@
+PATCH=middleware.patch EXIT=0
+checking file middlewared/plugins/vm/info.py
+
+PATCH=storage.patch EXIT=1
+checking file middlewared/async_validators.py
+checking file middlewared/plugins/pool_/dataset_query_utils.py
+checking file middlewared/plugins/pool_/dataset.py
+Hunk #1 succeeded at 10 with fuzz 1.
+Hunk #2 succeeded at 29 (offset 1 line).
+Hunk #3 succeeded at 98 (offset 1 line).
+Hunk #4 succeeded at 183 (offset 1 line).
+Hunk #5 succeeded at 218 (offset 1 line).
+Hunk #6 succeeded at 626 (offset 2 lines).
+Hunk #7 succeeded at 809 (offset 3 lines).
+Hunk #8 succeeded at 1028 (offset 4 lines).
+Hunk #9 FAILED at 1061.
+Hunk #10 succeeded at 1076 (offset 7 lines).
+Hunk #11 succeeded at 1105 (offset 7 lines).
+1 out of 11 hunks FAILED
+checking file middlewared/plugins/container/container.py
+Hunk #1 FAILED at 21.
+Hunk #2 succeeded at 459 (offset 11 lines).
+1 out of 2 hunks FAILED
+checking file middlewared/plugins/container/dataset.py
+checking file middlewared/plugins/container/utils.py
+checking file middlewared/plugins/container/image.py
+checking file middlewared/plugins/container/lifecycle.py
+checking file middlewared/plugins/vm/vm_devices.py
+checking file middlewared/utils/libvirt/storage_devices.py
+checking file middlewared/plugins/zfs/utils.py
+Hunk #1 succeeded at 71 (offset 10 lines).
+
+PATCH=libvirt.patch EXIT=0
+checking file truenas_pylibvirt/domain/vm/xml.py
+Hunk #1 succeeded at 5 with fuzz 1.
+
+PATCH=boot-mount.patch EXIT=0
+checking file middlewared/plugins/pool_/import_pool.py
+Hunk #2 succeeded at 576 (offset 16 lines).
+Hunk #3 succeeded at 816 (offset 16 lines).
+
+PATCH=zvol-blocksize.patch EXIT=0
+checking file middlewared/plugins/pool_/dataset_info.py
+
+PATCH=ui-pools.patch EXIT=0
+checking file middlewared/plugins/pool_/pool.py
+checking file middlewared/plugins/disk_/availability.py
+checking file middlewared/plugins/pool_/export.py
+Hunk #1 succeeded at 99 (offset -6 lines).

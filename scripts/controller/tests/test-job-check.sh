@@ -54,6 +54,27 @@ import pathlib, sys
 pathlib.Path(sys.argv[1]).write_text("Reviewed head: " + sys.argv[2] + "\n" + "Review evidence.\n" * 100)
 PY
 }
+write_reattach_evidence() {
+  local head short container
+  head=$(git -C "$REPO" rev-parse HEAD)
+  short=${head:0:8}
+  container="vbpub-run-gate-controller-suite-$short-261112-0101-123456789"
+  rm -f -- "$CONTROLLER_LOGS_DIR"/*.log
+  printf "run-gate: collected %s (exited 0 at 2026-11-12T01:01:01Z)\nPASS controller suite\nrun-gate: lane 'suite' verdict PASS; exit_code 0\n" \
+    "$container" > "$CONTROLLER_LOGS_DIR/reattached.log"
+  printf "run-gate: docker argv: docker run -d --name %s --label run-gate.commit=%s tester-unified:local bash -c suite\n" \
+    "$container" "$head" > "$CONTROLLER_LOGS_DIR/original.log"
+  python3 - "$ROOT/report.md" "$head" "$container" <<'PY'
+import pathlib
+import sys
+
+pathlib.Path(sys.argv[1]).write_text(
+    "Reviewed head: " + sys.argv[2] + "\n"
+    + "Re-attached container: " + sys.argv[3] + "\n"
+    + "Review evidence.\n" * 100
+)
+PY
+}
 write_gate_log
 write_report
 
@@ -80,8 +101,89 @@ CONTROLLER_HOME=$HOME_ROOT CONTROLLER_REPO=$REPO CONTROLLER_BASE_REF=origin/main
     fail 'deepseek route should require its own exact trailer'
   }
 contains "$ROOT/route-deepseek.out" 'trailers OK (all commits incl. merges: deepseek)' 'deepseek route remains available'
+for pinned_route in deepseek-volker deepseek-github2; do
+  git -C "$REPO" switch -qc "$pinned_route-task" "$BASE"
+  printf '%s implementation\n' "$pinned_route" > "$REPO/$pinned_route.txt"
+  git -C "$REPO" add "$pinned_route.txt"
+  git -C "$REPO" commit -qm "$pinned_route route commit" -m 'Co-Authored-By: Codex deepseek-v4.1-flash <noreply@openai.com>'
+  write_gate_log
+  CONTROLLER_HOME=$HOME_ROOT CONTROLLER_REPO=$REPO CONTROLLER_BASE_REF=origin/main \
+    "$SRC" healthy "$REPO" "$pinned_route" > "$ROOT/route-$pinned_route.out" 2>&1 || {
+      cat "$ROOT/route-$pinned_route.out" >&2
+      fail "$pinned_route route should accept the DeepSeek trailer"
+    }
+  contains "$ROOT/route-$pinned_route.out" "trailers OK (all commits incl. merges: $pinned_route)" \
+    "$pinned_route route remains available"
+done
+git -C "$REPO" switch -qc pi-task "$BASE"
+printf 'pi implementation\n' > "$REPO/pi.txt"
+git -C "$REPO" add pi.txt
+git -C "$REPO" commit -qm 'Pi route commit' -m 'Co-Authored-By: Codex deepseek-v4.1-flash <noreply@openai.com>'
+cp "$SCRIPT_DIR/fixtures/pi-success.jsonl" "$HOME_ROOT/runs/pi-success.jsonl"
+printf 'EXIT=0 OUTCOME=SUCCESS\n' > "$HOME_ROOT/runs/pi-success.done"
+write_gate_log
+CONTROLLER_HOME=$HOME_ROOT CONTROLLER_REPO=$REPO CONTROLLER_BASE_REF=origin/main \
+  "$SRC" pi-success "$REPO" deepseek-pi-volker > "$ROOT/route-pi.out" 2>&1 || {
+    cat "$ROOT/route-pi.out" >&2
+    fail 'pi route should accept its DeepSeek trailer and event stream'
+  }
+contains "$ROOT/route-pi.out" 'trailers OK (all commits incl. merges: deepseek-pi-volker)' 'pi route is accepted by job-check'
+contains "$ROOT/route-pi.out" 'last: Completed the fixture task.' 'pi assistant message is included in the run summary'
+contains "$ROOT/route-pi.out" 'JOB-CHECK: green' 'completed pi run is recognized as complete'
+cp "$SCRIPT_DIR/fixtures/pi-402.jsonl" "$HOME_ROOT/runs/pi-402.jsonl"
+printf 'EXIT=0 OUTCOME=USAGE-LIMIT\n' > "$HOME_ROOT/runs/pi-402.done"
+if CONTROLLER_HOME=$HOME_ROOT CONTROLLER_REPO=$REPO CONTROLLER_BASE_REF=origin/main \
+  "$SRC" pi-402 "$REPO" deepseek-pi-volker > "$ROOT/pi-402-check.out" 2>&1; then
+  fail 'pi 402 stream was accepted as a successful job'
+fi
+contains "$ROOT/pi-402-check.out" 'USAGE-LIMIT (reset 2099-11-17T11:44:44Z)' 'job-check extracts the pi 402 reset time'
+if grep -qF 'EMPTY-RUN' "$ROOT/pi-402-check.out" || grep -qF 'KILLED' "$ROOT/pi-402-check.out"; then
+  fail 'pi 402 outcome was obscured by empty-run or killed classification'
+fi
+cp "$SCRIPT_DIR/fixtures/pi-402-unknown.jsonl" "$HOME_ROOT/runs/pi-402-unknown.jsonl"
+printf 'EXIT=0 OUTCOME=USAGE-LIMIT\n' > "$HOME_ROOT/runs/pi-402-unknown.done"
+if CONTROLLER_HOME=$HOME_ROOT CONTROLLER_REPO=$REPO CONTROLLER_BASE_REF=origin/main \
+  "$SRC" pi-402-unknown "$REPO" deepseek-pi-volker > "$ROOT/pi-402-unknown-check.out" 2>&1; then
+  fail 'pi 402 without reset_at was accepted as a successful job'
+fi
+contains "$ROOT/pi-402-unknown-check.out" 'USAGE-LIMIT (reset unknown)' 'job-check identifies a pi 402 with an unknown reset'
+if grep -qF 'EMPTY-RUN' "$ROOT/pi-402-unknown-check.out" || grep -qF 'PI-ERROR' "$ROOT/pi-402-unknown-check.out"; then
+  fail 'unknown-reset 402 was obscured by generic error classification'
+fi
+git -C "$REPO" switch -qc sol-task "$BASE"
+printf 'sol review fix\n' > "$REPO/sol.txt"
+git -C "$REPO" add sol.txt
+git -C "$REPO" commit -qm 'Sol route commit' -m 'Co-Authored-By: Codex gpt-6-sol <noreply@openai.com>'
+write_gate_log
+CONTROLLER_HOME=$HOME_ROOT CONTROLLER_REPO=$REPO CONTROLLER_BASE_REF=origin/main \
+  "$SRC" healthy "$REPO" sol > "$ROOT/route-sol.out" 2>&1 || {
+    cat "$ROOT/route-sol.out" >&2
+    fail 'sol route should accept its own exact trailer'
+  }
+contains "$ROOT/route-sol.out" 'trailers OK (all commits incl. merges: sol)' 'sol route is available'
+CONTROLLER_HOME=$HOME_ROOT CONTROLLER_REPO=$REPO CONTROLLER_BASE_REF=origin/main \
+  "$SRC" healthy "$REPO" any > "$ROOT/route-sol-any.out" 2>&1 || {
+    cat "$ROOT/route-sol-any.out" >&2
+    fail 'route any should accept the sol trailer'
+  }
+contains "$ROOT/route-sol-any.out" 'trailers OK (all commits incl. merges: any)' 'any route accepts the sol trailer'
+if CONTROLLER_HOME=$HOME_ROOT CONTROLLER_REPO=$REPO CONTROLLER_BASE_REF=origin/main \
+  "$SRC" healthy "$REPO" luna > "$ROOT/route-sol-as-luna.out" 2>&1; then fail 'luna route accepted a sol trailer'; fi
+contains "$ROOT/route-sol-as-luna.out" 'NO/WRONG TRAILER' 'luna route reports the sol trailer as wrong'
+git -C "$REPO" switch -qc sol-double "$BASE"
+printf 'sol double\n' > "$REPO/sol-double.txt"
+git -C "$REPO" add sol-double.txt
+git -C "$REPO" commit -qm 'Sol double trailer' -m 'Co-Authored-By: Codex gpt-6-sol <noreply@openai.com>
+Co-Authored-By: Codex gpt-6-sol <noreply@openai.com>'
+write_gate_log
+if CONTROLLER_HOME=$HOME_ROOT CONTROLLER_REPO=$REPO CONTROLLER_BASE_REF=origin/main \
+  "$SRC" healthy "$REPO" sol > "$ROOT/route-sol-double.out" 2>&1; then fail 'sol route accepted two sol trailers on one commit'; fi
+contains "$ROOT/route-sol-double.out" 'NO/WRONG TRAILER' 'sol route requires exactly one trailer'
 git -C "$REPO" switch -q task
 write_gate_log
+if CONTROLLER_HOME=$HOME_ROOT CONTROLLER_REPO=$REPO CONTROLLER_BASE_REF=origin/main \
+  "$SRC" healthy "$REPO" sol > "$ROOT/route-luna-as-sol.out" 2>&1; then fail 'sol route accepted luna trailers'; fi
+contains "$ROOT/route-luna-as-sol.out" 'NO/WRONG TRAILER' 'sol route reports luna trailers as wrong'
 printf "run-gate.commit=%s\nPASS ctl-status\nrun-gate: lane 'suite' verdict PASS; exit_code 0\n" \
   "$(git -C "$REPO" rev-parse HEAD)" > "$CONTROLLER_LOGS_DIR/suite.log"
 printf "run-gate.commit=%s\nPASS ctl-status\nrun-gate: lane 'suite' verdict PASS; exit_code 0\n" \
@@ -145,6 +247,23 @@ contains "$ROOT/route-any-claude.out" 'trailers OK (all commits incl. merges: an
 git -C "$REPO" switch -q task
 write_gate_log
 
+git -C "$REPO" switch -qc any-multi-trailer "$BASE"
+printf 'multi-trailer implementation\n' > "$REPO/multi-trailer.txt"
+git -C "$REPO" add multi-trailer.txt
+git -C "$REPO" commit -qm 'Claude and Codex multi-trailer commit' \
+  -m 'Co-Authored-By: Claude Opus 4 <noreply@anthropic.com>' \
+  -m 'Co-Authored-By: Codex deepseek-v4.1-flash <noreply@openai.com>'
+write_gate_log
+CONTROLLER_HOME=$HOME_ROOT CONTROLLER_REPO=$REPO CONTROLLER_BASE_REF=origin/main \
+  "$SRC" healthy "$REPO" any > "$ROOT/route-any-multi.out" 2>&1 || {
+    cat "$ROOT/route-any-multi.out" >&2
+    fail 'route any should accept a commit with multiple known agent trailers'
+  }
+contains "$ROOT/route-any-multi.out" 'INFO: multiple agent trailers' 'multiple known agent trailers are informational'
+contains "$ROOT/route-any-multi.out" 'trailers OK (all commits incl. merges: any)' 'allowed-set trailer mode accepts multiple known agents'
+git -C "$REPO" switch -q task
+write_gate_log
+
 GOOD_HEAD=$(git -C "$REPO" rev-parse HEAD)
 git -C "$REPO" commit --amend -m 'merge side without route trailer' -q
 if CONTROLLER_HOME=$HOME_ROOT CONTROLLER_REPO=$REPO CONTROLLER_BASE_REF=origin/main \
@@ -155,6 +274,37 @@ contains "$ROOT/merge-trailer.out" 'NO/WRONG TRAILER' 'merge trailer is audited'
 contains "$ROOT/merge-trailer.out" 'merge side without route trailer' 'merge failure identifies the merge commit'
 git -C "$REPO" reset --hard -q "$GOOD_HEAD"
 write_gate_log
+
+write_reattach_evidence
+CONTROLLER_HOME=$HOME_ROOT CONTROLLER_REPO=$REPO CONTROLLER_BASE_REF=origin/main \
+  "$SRC" healthy "$REPO" none "$ROOT/report.md" > "$ROOT/reattach-gate.out" 2>&1 \
+  || {
+    cat "$ROOT/reattach-gate.out" >&2
+    fail 're-attached gate evidence with a bound container label was rejected'
+  }
+contains "$ROOT/reattach-gate.out" 're-attach gate evidence:' 're-attached evidence is accepted explicitly'
+contains "$ROOT/reattach-gate.out" 'run-gate.commit=' 're-attach output names the resolved commit label'
+write_report
+if CONTROLLER_HOME=$HOME_ROOT CONTROLLER_REPO=$REPO CONTROLLER_BASE_REF=origin/main \
+  "$SRC" healthy "$REPO" none "$ROOT/report.md" > "$ROOT/reattach-report-missing.out" 2>&1; then
+  fail 're-attached evidence was accepted without a report naming its container'
+fi
+contains "$ROOT/reattach-report-missing.out" 'GATE EVIDENCE MISSING' 're-attach requires the report to name the collected container'
+write_reattach_evidence
+python3 - "$CONTROLLER_LOGS_DIR/original.log" "$(git -C "$REPO" rev-parse HEAD)" "$BASE" <<'PY'
+import pathlib
+import sys
+
+path = pathlib.Path(sys.argv[1])
+path.write_text(path.read_text().replace(sys.argv[2], sys.argv[3]))
+PY
+if CONTROLLER_HOME=$HOME_ROOT CONTROLLER_REPO=$REPO CONTROLLER_BASE_REF=origin/main \
+  "$SRC" healthy "$REPO" none "$ROOT/report.md" > "$ROOT/reattach-wrong-label.out" 2>&1; then
+  fail 're-attached evidence with a label for another commit was accepted'
+fi
+contains "$ROOT/reattach-wrong-label.out" 'GATE EVIDENCE MISSING' 're-attach label must bind the full current head'
+write_gate_log
+write_report
 
 if CONTROLLER_HOME=$HOME_ROOT CONTROLLER_REPO=$REPO CONTROLLER_BASE_REF=origin/main \
   "$SRC" ../escape "$REPO" luna > "$ROOT/traversal.out" 2>&1; then
@@ -184,7 +334,7 @@ if CONTROLLER_HOME=$HOME_ROOT CONTROLLER_REPO=$REPO CONTROLLER_BASE_REF=origin/m
   "$SRC" stalled "$REPO" luna > "$ROOT/stalled.out" 2>&1; then fail 'stalled real-run fixture was accepted'; fi
 contains "$ROOT/stalled.out" 'MID-WAIT ending' 'trimmed real-run fixture detects a mid-wait ending'
 
-for fixture in reasoning-end intent-only usage-limit clean-run reviewer-wait-mention killed-run; do
+for fixture in reasoning-end intent-only usage-limit usage-limit-mid-wait usage-limit-dated clean-run reviewer-wait-mention killed-run; do
   cp "$SCRIPT_DIR/fixtures/$fixture.jsonl" "$HOME_ROOT/runs/$fixture.jsonl"
   printf 'EXIT=0\n' > "$HOME_ROOT/runs/$fixture.done"
 done
@@ -199,6 +349,25 @@ if CONTROLLER_HOME=$HOME_ROOT CONTROLLER_REPO=$REPO CONTROLLER_BASE_REF=origin/m
 contains "$ROOT/usage-limit.out" 'USAGE-LIMIT (reset 3:46 PM)' 'usage-limit classification prints the reset time'
 if grep -qF 'KILLED' "$ROOT/usage-limit.out"; then fail 'usage-limit classification was obscured by the generic killed class'; fi
 if grep -qF 'EMPTY-RUN' "$ROOT/usage-limit.out"; then fail 'usage-limit classification was obscured by the empty-message class'; fi
+if CONTROLLER_HOME=$HOME_ROOT CONTROLLER_REPO=$REPO CONTROLLER_BASE_REF=origin/main \
+  "$SRC" usage-limit-mid-wait "$REPO" none > "$ROOT/usage-limit-mid-wait.out" 2>&1; then
+  fail 'usage-limit ending after a pending-wait message was accepted'
+fi
+contains "$ROOT/usage-limit-mid-wait.out" 'USAGE-LIMIT (reset 3:46 PM)' 'usage-limit dominates a prior pending-wait message'
+if grep -qF 'MID-WAIT ending' "$ROOT/usage-limit-mid-wait.out"; then
+  fail 'pending-wait text obscured the usage-limit classification order'
+fi
+if CONTROLLER_HOME=$HOME_ROOT CONTROLLER_REPO=$REPO CONTROLLER_BASE_REF=origin/main \
+  "$SRC" usage-limit-dated "$REPO" none > "$ROOT/usage-limit-dated.out" 2>&1; then
+  fail 'dated usage-limit stream was accepted'
+fi
+contains "$ROOT/usage-limit-dated.out" 'USAGE-LIMIT (reset Nov 17th, 2026 12:59 AM)' 'dated usage-limit classification prints the retry text verbatim'
+if grep -qF 'KILLED' "$ROOT/usage-limit-dated.out"; then
+  fail 'dated usage-limit classification was obscured by the generic killed class'
+fi
+if grep -qF 'MID-WAIT ending' "$ROOT/usage-limit-dated.out"; then
+  fail 'dated usage-limit classification was obscured by a wait detector'
+fi
 rm -f -- "$CONTROLLER_LOGS_DIR"/*.log
 printf "run-gate.commit=%s\nPASS ctl-status\nrun-gate: lane 'suite' verdict PASS; exit_code 0\n" \
   "$BASE" > "$CONTROLLER_LOGS_DIR/old-head-pass.log"
@@ -342,4 +511,4 @@ if CONTROLLER_HOME=$HOME_ROOT CONTROLLER_REPO=$REPO CONTROLLER_BASE_REF=missing-
   "$SRC" healthy "$REPO" luna > "$ROOT/missing-base.out" 2>&1; then fail 'missing base ref was accepted'; fi
 contains "$ROOT/missing-base.out" 'BASE REF MISSING OR HEAD UNREADABLE: missing-ref' 'missing trailer audit base fails loudly'
 
-echo 'PASS job-check: real-run fixture, completion, absolute report, clean tree, all commit trailers including merge'
+echo 'PASS job-check: real-run fixtures, dated usage-limit, completion, absolute report, clean tree, all commit trailers including merge'

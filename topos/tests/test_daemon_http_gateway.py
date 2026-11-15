@@ -65,7 +65,7 @@ def _request(
     authenticated: bool = True,
 ) -> tuple[int, dict[str, str], bytes]:
     host, port = gateway.server_address
-    connection = http.client.HTTPConnection(host, port, timeout=2.0)
+    connection = http.client.HTTPConnection(host, port, timeout=60.0)
     headers = {IDENTITY_HEADER: "operator"} if authenticated else {}
     connection.request(method, target, headers=headers)
     response = connection.getresponse()

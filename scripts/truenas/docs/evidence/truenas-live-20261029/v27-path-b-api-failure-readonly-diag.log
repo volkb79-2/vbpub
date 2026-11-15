@@ -1,0 +1,17 @@
+PARTUUID=cab722e6-ccff-41ee-b91c-ac1af05a40d8
+IMPORT_SCAN_BEGIN
+  pool: apiprobepool
+    id: 15745235015703213432
+ state: ONLINE
+action: The pool can be imported using its name or numeric identifier.
+config:
+
+	apiprobepool                            ONLINE
+	  cab722e6-ccff-41ee-b91c-ac1af05a40d8  ONLINE
+IMPORT_SCAN_END
+POOL_NAMES_BEGIN
+boot-pool
+POOL_NAMES_END
+MIDDLEWARE_BEGIN
+[]
+MIDDLEWARE_END

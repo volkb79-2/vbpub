@@ -1,0 +1,2 @@
+tcg_vm.py: memory PSI full avg10 2.29% at /dev.slice meets or exceeds the 1% admission limit
+EXIT=1

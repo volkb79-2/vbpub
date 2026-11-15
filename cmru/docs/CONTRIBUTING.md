@@ -37,9 +37,10 @@ The gate prepares authenticated origin baseline facts on the host, then runs
 the campaign in `tester-unified`; the publisher token is not forwarded into the
 test container. Run `mutation` directly only when you have supplied fresh
 `CMRU_ASSAY_BASELINE_FACTS` from the host preflight. The known-good full-suite
-control and each candidate have a 600-second timeout. A candidate timeout is
-recorded as a killed mutant so an infinite-loop
-mutation cannot hold the lane indefinitely. The runner updates
+control has an 1800-second ceiling, and each candidate has at least that timeout,
+scaled to twice the measured control when higher. A timed-out candidate is
+inconclusive and cannot count as killed, so an infinite-loop mutation cannot hold
+the lane indefinitely. The runner updates
 `.assay/mutation-cmru.json` and appends per-candidate events to
 `.assay/progress-mutation-cmru.jsonl`; another run resumes from completed killed
 results and retries survivors or interrupted candidates. **Read the evidence

@@ -20,6 +20,8 @@ from pathlib import Path, PurePosixPath
 
 import pytest
 
+from conftest import GIT_MAINTENANCE_OFF
+
 from assay import isolation
 from assay.config import IsolationConfig
 from assay.errors import AssayError, ReasonCode
@@ -55,7 +57,13 @@ def _git(repo: Path, *args: str) -> str:
         **_FIXTURE_ENV,
     }
     completed = subprocess.run(
-        [shutil.which("git") or "git", "-C", str(repo), *args],
+        [
+            shutil.which("git") or "git",
+            *GIT_MAINTENANCE_OFF,
+            "-C",
+            str(repo),
+            *args,
+        ],
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         env=env,

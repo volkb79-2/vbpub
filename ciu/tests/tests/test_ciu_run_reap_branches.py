@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import sys
 from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
 
@@ -104,6 +105,30 @@ def test_owner_liveness_classification(tmp_path):
     )[0] == "unknown"
 
 
+def test_owner_identity_range_accepts_one_and_zero_start_but_reports_pidns_one(
+    tmp_path,
+):
+    proc = _proc(tmp_path)
+    namespace_file = proc / "self" / "ns" / "pid"
+    _add(proc, 1, stat_text=_stat(start=10), link_to=namespace_file)
+    pid_one = _labels(proc, **{"ciu.run.owner-pid": "1"})
+    assert oneshot._reap_owner_state(pid_one, proc_root=proc) == (
+        "alive", "owner process identity still matches",
+    )
+
+    _add(proc, 7, stat_text=_stat(start=0), link_to=namespace_file)
+    start_zero = _labels(proc, **{"ciu.run.owner-start": "0"})
+    assert oneshot._reap_owner_state(start_zero, proc_root=proc) == (
+        "alive", "owner process identity still matches",
+    )
+
+    outside_namespace, reason = oneshot._reap_owner_state(
+        _labels(proc, **{"ciu.run.pidns": "1"}), proc_root=proc,
+    )
+    assert outside_namespace == "unknown"
+    assert reason == "owner PID belongs to another namespace"
+
+
 def test_owner_liveness_fail_closed_on_unreadable_state(tmp_path):
     proc = _proc(tmp_path)
     namespace_file = proc / "self" / "ns" / "pid"
@@ -193,13 +218,35 @@ class _Docker:
         self.calls = []
         monkeypatch.setattr(oneshot.procutil, "run_cmd", self.run)
 
-    def run(self, argv, **kwargs):
+    @staticmethod
+    def _completed(argv, rc, stdout, stderr, *, check, capture):
+        if capture:
+            returned_stdout, returned_stderr = stdout, stderr
+        else:
+            if stdout:
+                sys.stdout.write(stdout)
+            if stderr:
+                sys.stderr.write(stderr)
+            returned_stdout = returned_stderr = None
+        if check and rc != 0:
+            raise subprocess.CalledProcessError(
+                rc, argv, output=returned_stdout, stderr=returned_stderr,
+            )
+        return subprocess.CompletedProcess(argv, rc, returned_stdout, returned_stderr)
+
+    def run(
+        self, argv, *, timeout=None, check=False, env=None, cwd=None,
+        capture=True, input=None,
+    ):
         argv = list(argv)
         self.calls.append(argv)
         if argv[:2] == ["docker", "ps"]:
             if self.ps_raises:
                 raise self.ps_raises
-            return subprocess.CompletedProcess(argv, self.ps_rc, "".join(i + "\n" for i in self.ids), "")
+            return self._completed(
+                argv, self.ps_rc, "".join(i + "\n" for i in self.ids), "",
+                check=check, capture=capture,
+            )
         if argv[:2] == ["docker", "inspect"]:
             assert argv[:4] == ["docker", "inspect", "--type", "container"], argv
             if self.inspect_raises:
@@ -207,11 +254,15 @@ class _Docker:
             stdout = self.inspect_stdout
             if stdout is None:
                 stdout = json.dumps([self.document])
-            return subprocess.CompletedProcess(argv, self.inspect_rc, stdout, "")
+            return self._completed(
+                argv, self.inspect_rc, stdout, "", check=check, capture=capture,
+            )
         if argv[:2] == ["docker", "rm"]:
             if self.rm_raises:
                 raise self.rm_raises
-            return subprocess.CompletedProcess(argv, self.rm_rc, "", "")
+            return self._completed(
+                argv, self.rm_rc, _ID + "\n", "", check=check, capture=capture,
+            )
         raise AssertionError(argv)
 
     def removals(self):
@@ -371,6 +422,54 @@ def test_reap_actions_by_owner_age_and_status(reap_world, monkeypatch):
     docker.rm_raises = FileNotFoundError("docker")
     with pytest.raises(RuntimeError, match="Docker unavailable while removing"):
         _reap(reap_world, yes=True)
+
+
+def test_running_one_shot_at_the_exact_age_bound_is_eligible_for_removal(
+    reap_world, monkeypatch,
+):
+    started = (_NOW - timedelta(seconds=3600)).isoformat().replace("+00:00", "Z")
+    docker = _Docker(
+        monkeypatch,
+        _container(
+            reap_world.proc, working_dir=str(reap_world.root), owner_pid="999",
+            status="running", started=started,
+        ),
+    )
+
+    rows = _reap(reap_world, yes=True, older_than_seconds=3600)
+
+    assert rows[0]["action"] == "removed"
+    assert docker.removals() == [["docker", "rm", "-f", _ID]]
+
+
+def test_reap_inspection_output_is_not_written_to_the_caller(
+    reap_world, monkeypatch, capsys,
+):
+    docker = _Docker(
+        monkeypatch,
+        _container(reap_world.proc, working_dir=str(reap_world.root), owner_pid="999"),
+    )
+
+    rows = _reap(reap_world)
+
+    assert rows[0]["action"] == "would-remove"
+    assert docker.removals() == []
+    assert capsys.readouterr().out == ""
+
+
+def test_reap_removal_output_is_not_written_to_the_caller(
+    reap_world, monkeypatch, capsys,
+):
+    docker = _Docker(
+        monkeypatch,
+        _container(reap_world.proc, working_dir=str(reap_world.root), owner_pid="999"),
+    )
+
+    rows = _reap(reap_world, yes=True)
+
+    assert rows[0]["action"] == "removed"
+    assert docker.removals() == [["docker", "rm", _ID]]
+    assert capsys.readouterr().out == ""
 
 
 def _finished(seconds_ago, *, fraction=".987654321", zone="Z"):

@@ -1,0 +1,116 @@
+<!-- Evidence scrub 2026-11-10: environment-specific host identities, account email/name/ID/username/contact data, controller paths, SSH key material and fingerprints were normalized to neutral placeholders; command output and verdict text are otherwise unchanged. -->
+<!-- Network redaction 2026-11-10: retained evidence uses documented IPv4/IPv6 placeholder address space (192.0.2.0/24, 198.51.100.0/24, 203.0.113.0/24, 2001:db8::/32) or named fields such as <host-address>, <link-local-address>, <account-id>, <name>, <user>, and <contact>. SHA-256 rows bind the redacted retained bytes; raw-source hashes no longer apply to redacted copies. -->
+<!-- origin: 2026-10-31; status: evidence; copied from the controller program dir 2026-11-10 -->
+<!-- source: evidence/truenas-live-20261031 -->
+<!-- relation: TrueNAS final live acceptance evidence; text scrubbed, binary/non-document source excluded -->
+<!-- Evidence scrub 2026-11-10: environment-specific home, checkout, worktree, and per-run temporary paths were normalized to neutral placeholders; command output and verdict text are otherwise unchanged. -->
+
+# evidence/truenas-live-20261031
+
+The retained text evidence is in `truenas-live-20261031/`; hashes below bind this index to the redacted copied bytes.
+
+| File | SHA-256 |
+|---|---|
+| `path-b-rebuild-stock-action-20261031.log` | `d56d89d16470a7693847ec53ef013dfbb05095009b7fba3940271cf92477815e` |
+| `path-b-stock-poweron-r2-20261031.log` | `310407fb32f44f65ac1f2845d2d2362868c50d4fe5411fc037662772579a8384` |
+| `revert-stock-for-path-b-20261031.log` | `35c8df762b18c95ce34c02dc73c75a1c2c3a17a3833792ad198b96b060413c92` |
+| `revert-stock-for-path-b-provision-20261031-watch.log` | `95461bb3750c1bec06afda8690310a388f7238209b8ec14b0cc0a7670b275357` |
+| `run-gate-unit-resolver-20261031-r2.log` | `8229271036ea1a49a3ab9cf985506e09dd9b89545e5f7282bc37beac777345ae` |
+| `run-gate-unit-resolver-20261031.log` | `f1a312b78fd35da0ac91ac7bb5f875581029db4a998aa94029cff075a529f0d1` |
+| `tcg-restore-start-20261031-r7.log` | `af640f7c898a59bdde37c31d7c25adfb51c8042572917a79256bdcd25762a923` |
+| `tcg-restore-start-20261031-r4.log` | `b8ebe5762d62754c762db685488bee80812f014d78a46743f7498520268ced30` |
+| `revert-stock-for-path-b-provision-20261031-action.log` | `2ebd64448b2478788aa53c73837a5fdbd631a80d9501b5662ca7f5ce2d4f957f` |
+| `path-b-provision-host-20g-20261031-r2.log` | `4794e0bf750357957e71e55beabab0e2b3ab28b8d29f3441b0f2aa244a4b9946` |
+| `path-a-provision-host-20g-20261031.log` | `a9b07dd3fcb734aa13b545a55e23523317238c8e946506386272f281b98dce66` |
+| `path-b-snapshot-dryrun-20261031.log` | `37517e5f3dc66819f61f5a7bb8ace1921282415f10551d2defa5c3eb0985b570` |
+| `path-b-preprovision-readonly-inventory-20261031.txt` | `9d80783c069ba734828986be1460384d326b0d479f5aea7d4f75c2c064f7b56a` |
+| `path-b-clean-inspect-host-20g-rebuilt-20261031.log` | `92769e08cebcbca65899c03e1a3d06a017e4628f9499444013929c29d9664f55` |
+| `path-b-rebuild-stock-watch-20261031.log` | `6bdbafab29d85fb73d4e14bd9115fb2e3ada990c06e87764100393ad456f3830` |
+| `accept-path-a-20g-resume-verify-r3-20261031.log` | `3717e4e4e827791eb7eaad062916fe7a307049a9d988045eed5948fdcb332bb4` |
+| `path-b-rebuild-poweron-20261031.log` | `48e58aad50bfef16e30842d4f6955fec2d358bc1d8af307a0c659772aea7d3f1` |
+| `tcg-restore-start-20261031-r2.log` | `ad81744f8fd2816f03d05724b10d753c450f40b5a390899735d622ec5ebf55f7` |
+| `tcg-restore-start-20261031-r5.log` | `ea75bde3fce5b85e6043d4ce6f2fac693367c14070db3add620a0719e1cfd94b` |
+| `step2-build-20g-retry1.log` | `d0538dd6cf6b4c0f61a46037a49bc169de936a33fa09f19ef359b7c6c14d184d` |
+| `tn-v27rc1-20g-tcg-start.log` | `6f84d9afd0521d98184791b1dc2cb051e28086d08198064bcf4a407a5a38f60b` |
+| `path-b-rebuild-stock-dryrun-20261031.log` | `976ea04a4bdbf5df749d969d51e63b0ce2b446cbfe05f95585342e1d3bf42f8a` |
+| `run-gate-unit.log` | `4c867fca6569649cf1d204a26868d333bd5829dd51b0df32ff36e5dd466ee6c8` |
+| `accept-path-ab-20g-rc1-to-v28-20261031.log` | `fcd51a807483f27559bc37d6f876b901c15680263d4b0f8ff94ca07489965f74` |
+| `path-b-snapshot-r2-create-watch-20261031.log` | `9afb06e1bd76df15bab2b90baf72dfde82c645733c27b8ec470f11550b6258b8` |
+| `accept-path-ab-20g-rc1-to-v28-r3-20261031.log` | `7eb51cb4b187c10fc45271fcbce55917ce9de04ef5d8b4de41305aa22db82487` |
+| `path-b-partition-host-20g-20261031.log` | `f05fb6a394ba19350045336104d28b3b86dc0b847e88a503c86155ad29c92187` |
+| `tn-v27rc1-20g-tcg-start-r3.log` | `19661bbe0f010abf426b66c163c9e7b24c3181e0b057f941416677ab11855784` |
+| `tn-v27rc1-20g-tcg-start-r4.log` | `41b35888791238da0f0970293ab26a2f0915a020cca16ac198161d9b8a738fda` |
+| `tcg-environment-preflight.txt` | `ded6c4ffb2afb7db70576c30531dcc5ea10d349daa976b6ab0098c7de22f1761` |
+| `live-ui-auth-host-20g-r2-20261031.log` | `aeb4b0a77212d74671714fd45bd2a6be3a46ad24df07da944a8d68851e0ad84b` |
+| `step2-build-20g-resolverfix-20261031.log` | `a80dc6481091b72113e1e6139a0b4a430d48f09bb7565c89a323e28db9c6b71c` |
+| `accept-path-b-20g-rc1-to-v28-20261031.log` | `4d3a55d451af517f089c6fdd5f3114d88b1c2ddfedac0de7cbc1e35e4c920417` |
+| `unit-final-20261031.log` | `9e2904ca292c2210c2f7d75df2ddae613300e9c7fef62dc836c9263a8aee4bd7` |
+| `step1-20g.log` | `c72341723237b7a1724feb546e2e5dcb26b2f1019bf3207c0ae1c0b49a016b2a` |
+| `path-b-stock-poweron-20261031.log` | `545f0cba8016613f3dce3b5fd880d7305d12762c3b2df9776af1b2dbb5850eb5` |
+| `blocked-step2-chroot-dns-20261031.md` | `3e800699b0c1f6d152ee8fa3a03d8cdd9ccbd9614c9ae78920c3795daf28079d` |
+| `path-b-snapshot-r2-create-20261031.log` | `58ea273b87ef7a3a3f8e4c0aeb27f9363bfe039fe8c78f65659aeb3485cfe5c5` |
+| `path-b-rebuild-provider-state-20261031.json` | `53772c9d0f3c179a0ac45725aa549da5dcad4fa38174f30a318ead892018795c` |
+| `v27-patch-host-20g-path-b-rebuild-20261031.log` | `cf3b5b8865885a94393c145565de94ec8c7763a98185646d4864343d2555a98d` |
+| `path-ab-restore-path-a-dryrun-20261031.log` | `4ee9bae3ae10b39c77b8490528f687fd666ba31f5df068b4e630018df862f966` |
+| `revert-stock-for-path-b-20261031-action.log` | `44b6ed17b22e149276843cd9e111722be4b24ce6b09ccc9c7038f77dd7fe3221` |
+| `host-20g-restore-start-20261031.log` | `92743df74bb10cceb2b1b830084a5a88be26ed00eb956419847d2ec94ace0617` |
+| `path-b-rebuild-poweron-watch-20261031.log` | `e5caf6d202f62ab5566aca3876a14b04804dd37898f4fd50b93defd6e4f25e44` |
+| `revert-stock-for-path-b-20261031-watch.log` | `5a7ec8b035402f50792d74bfd45cea831c6f8b1502da63aac8faec825ecb9ffd` |
+| `path-b-stock-provider-state-r2-20261031.json` | `84de4d7cb65e9db51b9c4a39769f9bbcceb28035cb3aea60e44d228eb73c4dbb` |
+| `flatten-20g.log` | `64d20c53bd909df6d81db973c019e9ee93b7226c5fd36dfaa6d2f0dab6db1093` |
+| `tcg-restore-disk-boot-20261031.log` | `16beb32fe8b2d7fb417d5ad34ecc5984c10c2fd3a8fece8a69f4d3dcbbb2d38a` |
+| `step2-resolver-fix-20261031.txt` | `690661b32e155fc03612dee507f103547782ab93688293604671b15ebb0c2dd9` |
+| `path-b-snapshot-r2-dryrun-20261031.log` | `37517e5f3dc66819f61f5a7bb8ace1921282415f10551d2defa5c3eb0985b570` |
+| `tcg-image-build.log` | `39d3da9b6db49685c222d997fbf9703a7dff510ef9dd4b2be7da428240274ed0` |
+| `step2-build-20g.log` | `d0538dd6cf6b4c0f61a46037a49bc169de936a33fa09f19ef359b7c6c14d184d` |
+| `path-ab-restore-path-a-watch-20261031.log` | `95461bb3750c1bec06afda8690310a388f7238209b8ec14b0cc0a7670b275357` |
+| `revert-stock-for-path-b-20261031-worktree-cli.log` | `976ea04a4bdbf5df749d969d51e63b0ce2b446cbfe05f95585342e1d3bf42f8a` |
+| `tcg-restore-start-20261031-r6.log` | `d181d0bb4439f73064b0746df8e38ba75371e9a6c6988f10e5ebed3b9bc10e55` |
+| `tcg-harness-prepare.log` | `063c40abbfed59dc7deb167fb122d4b927df7a625d01d2a15267b1b912d4f25c` |
+| `tcg-restore-start-20261031.log` | `e2ae2f7863833125e74e678ef959ab915c04ea87d2f4cd6822a67f739493fb62` |
+| `path-b-rebuilt-readonly-inventory-20261031.txt` | `dff70f62f033886b7de85c1bcb0d3ca83f50c1eeb80b380864b9c7b15a99d8ca` |
+| `path-ab-restore-path-a-action-20261031.log` | `1238b1543efc852cd0ab98c145b6aaf30a3d77cd2f379f706078aa0202bfb09e` |
+| `path-b-stock-poweron-watch-20261031.log` | `e5caf6d202f62ab5566aca3876a14b04804dd37898f4fd50b93defd6e4f25e44` |
+| `path-b-clean-inspect-host-20g-20261031.log` | `0512fc1dd1e60eedc90b179249fb323b4419d04d4e594c3b2be4c2f54f2fd74b` |
+| `path-b-stock-poweron-r2-watch-20261031.log` | `16e58543c83c01750d44d79ed8c438786763e856766c0f39d595935812f101b3` |
+| `tn-v27rc1-20g-tcg-start-r2.log` | `d61fc2d3887bbba00ba5746d6327f08b51f11ef6872ae1e545e698e2c040e1d1` |
+| `rc1-iso-download.log` | `d35e19065eb0801bee5827d9627a6b42eae948af6ac392b3dc116182fae65beb` |
+| `accept-path-a-20g-rc1-to-v28-20261031.log` | `25935832920f13bb64a8add6b96ae61f115f3d056b45eb7d92bd883f50475009` |
+| `step1-20g-source-console.log` | `a0eab132644787138d1bb04256180d3701cecf6880acece1f665a8331ae833a2` |
+| `path-ab-live-inspect-host-20g-20261031.log` | `132576cd3492d0a6c9783810f6f7d0579085336e77263869c3a9d3f9786b92e3` |
+| `v27-patch-host-20g-path-b-20261031.log` | `2bebdbdb9134b44d82bfc03be68e93fb8c91a68db08dd74504537d0bb9a4f0c8` |
+| `path-b-snapshot-verify-20261031.json` | `5d7f7f847d52ffde1b6614eec619ad702c0a8c5c1cab0086e9bc8f9fc11f42e8` |
+| `tcg-restore-start-20261031-r3.log` | `43ca41b228c555842bffd29da23da7e5709599a4eeabe390cc978283fdc2fec6` |
+| `tcg-restore-disk-boot-20261031-attempt2.log` | `9eb6a720940b5c2799bcea5a48c977295017e7606e63fae1bf1153f16ca5f4b7` |
+| `create-path-ab-snapshot-20261031.log` | `c99f368a235ccc02c3803d49dbb6652cf6c277fa6c248b1dfda790d112ed115b` |
+| `accept-path-ab-20g-rc1-to-v28-r4-20261031.log` | `8cf460659857ffc2c5afafedae73aeee1f73a3fbd4496e5019373f81e8b5d5d9` |
+| `path-ab-path-b-provision-host-20g-20261031.log` | `f22f54cccae0d22dccf3ee19184c45931086d7ce70b71cb44e601780e9dcde38` |
+| `live-ui-prepare-ssh-host-20g-20261031.log` | `4ea289eb25c36d5231cec921ffe5b983df845a5af1a198b94933a6a37d424b50` |
+| `revert-stock-for-path-b-provision-20261031-dryrun.log` | `976ea04a4bdbf5df749d969d51e63b0ce2b446cbfe05f95585342e1d3bf42f8a` |
+| `path-b-stock-readonly-inventory-20261031.txt` | `00a9aba99cc1fab332ef916ef0127822495d91bf4af3c4797edf67df58c963ba` |
+| `tcg-restore-bootcheck-20261031.log` | `ee04354b75802d04c149b018c48af3afb746262c9e89f38ad5b5d589e562b05e` |
+| `local-restore-replay-20261031.txt` | `3ed207a77df21e09091e2953500c7c473bb0b5f2abac71b5940057b8e432a344` |
+| `path-b-snapshot-r2-verify-20261031.json` | `5bc1faea2787f4367f46387917c791521eed053b496af00b9d4296d2bb9b0d5b` |
+| `debian-live-download-20261031.log` | `a7cac6d3f62faca04dfd744baa5a9649684021529997926ce9db65129542919e` |
+| `live-ui-auth-host-20g-20261031.log` | `526ffdd8803f41555ca32309f1c91a72391c255e4fd1cd11fc2c6ceb66465331` |
+| `path-ab-poweron-20261031.log` | `8666f15a76db71a34f9472f6216921ecc65e9ae35e9d78b9af3f4586f8121832` |
+| `path-b-provision-host-20g-20261031.log` | `40cd508461a1abcaca111148e4b3d096c03cd5e900335d1a15cbf833e3278a42` |
+| `path-ab-provider-state-20261031.json` | `b0135d0a0cf9cdc44314c689482ea31d2c1492e6c9f889e62e1234f210b723a5` |
+| `path-b-snapshot-create-watch-20261031.log` | `01fe00a4fcb218b75e49c15a8e017b2ea656645a3731c60574c1a1a4db1504be` |
+| `accept-path-ab-20g-rc1-to-v28-r2-20261031.log` | `125e3c554d8afca4553cf0b4dc0c8a0cdf4de80e474ee3307a678f930ca678a3` |
+| `tcg-restore-start-20261031-r8.log` | `234267afd54a1b97d340ad616369e9fdf621f8e3192f53334d07c56720690108` |
+| `accept-path-a-20g-resume-verify-r2-20261031.log` | `b4fc2b3614c23d4eb05433858287df23b79a359ceabbdca13d1c8c860e2feb4c` |
+| `v27-patch-host-20g-path-a-20261031.log` | `f97cdd930bfab69f4d4910ac05eb10f3be93e53827d32de0fcaf03354e539fbe` |
+| `accept-path-a-20g-resume-verify-20261031.log` | `672c30ca07e7f430a640f26d281f1d24c9d300f47a5e2a23f7838f237e6f9167` |
+| `run-gate-unit-allow-dirty.log` | `bbb95d9a0d0451228a26c37970d30aebeba6f8cf63853f8aad2a028288df8818` |
+| `path-b-stock-provider-state-20261031.json` | `84de4d7cb65e9db51b9c4a39769f9bbcceb28035cb3aea60e44d228eb73c4dbb` |
+| `tcg-runner-build-20261031.txt` | `d793fd04ede1fd012199eced173fee7b6ebd0c122a364043ffd137e55d9b950e` |
+| `path-ab-poweron-watch-20261031.log` | `e5caf6d202f62ab5566aca3876a14b04804dd37898f4fd50b93defd6e4f25e44` |
+| `accept-path-b-corrected-20g-rc1-to-v28-20261031.log` | `d7eb11c7bfdc09aa8c43d6af9cd7cc7990a46346f7889e62db469fd408df5bb6` |
+| `path-b-provision-host-20g-20261031-rebuilt.log` | `9cb3fa45fea23cb1ee9213ae51e391cc3d3f60adf9ccbb4e8000155bff1c95f6` |
+| `path-b-provision-host-20g-20261031-r3.log` | `1e8c7b9fe262e1d4b9dae6f269f26c783f3e2098e9ce9c5006c01c1caeb4235f` |
+| `path-b-prepartition-readonly-inventory-20261031.txt` | `f06ed52887c171610df4c116c48fb5432b80a45a876f9d461c390bed62acfb31` |
+| `blocked-local-tcg-20261030.md` | `1189403c42e0d44aee09ff195f10721c5e2ae46f1340bb3a23b10ace1988669b` |
+| `path-b-snapshot-create-20261031.log` | `b283a363a5d5091e3ace6060e28209484c24e8a5516006326b37f4ec08122649` |
+
+Omitted by the docs-only/sanitisation filter: none

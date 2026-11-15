@@ -1,0 +1,5 @@
+{"type":"item.completed","item":{"type":"agent_message","text":"unexpected status 402 Payment Required: [code=insufficient_balance] quota resets at 2099-01-01T00:00:00Z"}}
+{"type":"item.completed","item":{"type":"command_execution","aggregated_output":"unexpected status 402 Payment Required: [code=insufficient_balance] quota resets at 2099-01-01T00:00:00Z"}}
+{"type":"thread.note","message":"unexpected status 402 Payment Required: [code=insufficient_balance] quota resets at 2099-01-01T00:00:00Z"}
+{"type":"error","message":"Reconnecting... 1/5 (unexpected status 402 Payment Required: [code=insufficient_balance] quota resets at 2099-01-01T00:00:00Z)"}
+{"type":"error","message":"see the log: unexpected status 402 Payment Required: [code=insufficient_balance] quota resets at 2099-01-01T00:00:00Z"}

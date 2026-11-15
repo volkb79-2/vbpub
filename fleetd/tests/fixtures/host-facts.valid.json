@@ -1,0 +1,62 @@
+{
+  "schema": "host-facts/1",
+  "boot_id": "00112233-4455-6677-8899-aabbccddeeff",
+  "host_now_boottime_s": 1234.5,
+  "cpu": {
+    "model": "Fixture CPU",
+    "online": 4,
+    "for_lanes": 4.0,
+    "oversubscribe_max": 1.25
+  },
+  "speed": {
+    "geekbench_major": 6,
+    "geekbench_version": "6.4.0",
+    "baseline_score": 2500,
+    "single_core": 2100,
+    "multi_core": 7800,
+    "basis": "geekbench6-measured"
+  },
+  "memory": {
+    "total_bytes": 8589934592,
+    "available_bytes": 7516192768,
+    "for_lanes_bytes": 8589934592,
+    "swap_total_bytes": 8589934592,
+    "swap_free_bytes": 4294967296,
+    "swap_for_parking_bytes": 4294967296,
+    "overcommit": 1.5
+  },
+  "psi": {
+    "cpu": {"some_avg10_pct": 0.5, "full_avg10_pct": null, "full_avg10_pct_reason": "CPU PSI has no full line"},
+    "memory": {"some_avg10_pct": 1.0, "full_avg10_pct": 0.2},
+    "io": {"some_avg10_pct": 0.3, "full_avg10_pct": 0.0}
+  },
+  "cgroup_v2": {
+    "mounted": true,
+    "controllers": ["cpu", "io", "memory"]
+  },
+  "kernel_interfaces": {
+    "cgroup_freeze": true,
+    "memory_reclaim": true,
+    "memory_reclaim_swappiness_arg": null,
+    "memory_reclaim_swappiness_arg_reason": "not probed by a read-only collector"
+  },
+  "ksm": {
+    "run": 1,
+    "advisor_mode": "scan-time",
+    "advisor_max_cpu": 8,
+    "pages_sharing": 16,
+    "lane_optin_shim": true
+  },
+  "control_plane": {
+    "slice": "ctl.slice",
+    "present": true,
+    "memory_min_bytes": 805306368,
+    "cpu_weight": 10000
+  },
+  "guard": {"enabled": true, "config_digest": "sha256:fixture", "state": "idle"},
+  "policy": {"host_role": "dedicated-dev", "psi_refuse_some_avg10": 25, "max_lane_containers": 8},
+  "jobs": null,
+  "jobs_reason": "named job inventory is not available before WP4",
+  "tools": null,
+  "tools_reason": "tool inventory source is not configured"
+}

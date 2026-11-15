@@ -1,0 +1,4 @@
+[INFO] Task state: RUNNING (40%) — ServerSnapshotRevertTask — Snapshot is being restored.
+[INFO] Task state: RUNNING (57%) — ServerSnapshotRevertTask — Snapshot is being restored.
+[INFO] Task state: FINISHED (100%) — ServerSnapshotRevertTask
+[INFO] Task finished: FINISHED

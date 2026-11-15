@@ -65,3 +65,13 @@ Open work. Each item names what it needs and what closes it. Consumers: `ciu wor
 * **COW-BL-09 shared keyed trees and overlay slots (AD2-3): library delivered 2026-11-05 on branch `cowtree-shared-20261105`.** `cowtree.cache`, `cowtree.overlay`, `cowtree cache survey|gc|verify`, README/DESIGN-GUIDE, 100 % line and branch tests (fake runner for anything docker).
   * **Review fixes 2026-11-05 (cowtree-shared-REVIEW).** Layout aligned to HOST-CONTRACT item 3 (`<key>/.lease`, `<key>/.last-used`, flock only; pid leases dropped) with interop tests against the shipped `mdt_tree_cache.py` and a contract reference GC; explicit umask-independent modes; mandatory `require_tmpfs`; all-process mountinfo; `identity=` collision guard (`key-collision`, exit 13); read-only commands create nothing; tmpfs charging and chmod copy-up documented.
   * **Open, for the owning packages.** (0) The legacy `Run`/`detect` API still reads `MDT_COW_ROOT`/`COWTREE_MODE`; moving that into `cowtree.adapters` (settings object, env translated by the caller) completes the no-vbpub-names rule for the whole library. (1) mdt-cockpit AD2-2 installs the tmpfs mounts, env keys and the `mdt-tree-cache-gc.timer` calling `cowtree cache gc --root "$MDT_TREE_CACHE_ROOT"` (the cowtree wheel in `/opt/mdt`). (2) run-gate AD2-5 and assay consume `Provisioner` (assay walks the levels with `decide(...).report()` logged; no vbpub name is needed by a third party). (3) assay `template ensure` supplies the key and `build`. (4) Live check on r1002/v1001 (a real dockerd overlay volume through `worker_volume` plus `cache gc` with a mounted key) is not yet run; the mountinfo parser is covered by fixtures only. (5) Lock files under `.locks` are retained; revisit if `nr_inodes` pressure is observed. (6) `redirect_dir` hazard "upper reused under a changed lower" is guarded by a marker; a kernel-level check (`trusted.overlay.origin`) is not attempted.
+
+* **COW-BL-10 tests must scope process-wide `os.*` syscall fakes.** Filed
+  2026-11-12 from the pytest 9.2 process-wide filesystem-mock audit. Pytest
+  9.2 calls `os.fstat` during capture and teardown. Cowtree's device,
+  lease, lock, and owner-stat fakes now match the tested path/descriptor and
+  delegate every unrelated call to the real function. Future process-wide
+  `os.*`, `builtins.open`, or `io.open` patches must preserve the same
+  target-specific fallback and the original refusal or short-I/O oracle.
+  Close when no non-delegating exact-symbol patch remains and the registered
+  R0/R1 lane passes on a clean final commit.

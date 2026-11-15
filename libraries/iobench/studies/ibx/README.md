@@ -6,6 +6,12 @@ and the bounded schedule and analysis in sections 6.2–6.7. The controller uses
 fio is the only benchmark executable. It does not contain SSH code and this
 change has not run against a host.
 
+The driver also works from a flat handoff copy when `driver.py` and
+`job-template.fio` stay together. Repository discovery is optional for the
+normal study and analysis paths. `--fsync-cell` needs the driver under
+`libraries/iobench/studies/ibx/` because its collector wrapper belongs to that
+checkout; a flat copy refuses that option with a layout-specific error.
+
 `veryquick` leaves 4 KiB sequential cells unmeasured; the table marks those
 numbers unavailable and explains that the profile only has a coarse random
 IOPS proxy. `quick` and `standard` run the 4 KiB sequential read and write cells.
@@ -27,40 +33,73 @@ study at `t0+1h`, raw veryquick/quick at `t0+3h`, then quick/veryquick at
 `t0+6h`. The `t0+6h` standard set runs only when a quick/veryquick error is
 within 1.5 times its tolerance boundary or the observed movement means `V`
 needs a second standard point. Raw quick/veryquick and file quick/veryquick
-follow by `t0+9h`. Up to two extra
-quick/veryquick slots run only if the fourth or fifth observation moves `e` by
-more than 20 percent. They require complete results for every planned cell in
-the preceding slots. The optional slots must finish before the 12-hour elapsed
-limit. A file-target standard set runs only when its quick result is borderline;
+follow by `t0+9h`. The analysis rule can select up to two extra
+quick/veryquick slots if the fourth or fifth observation moves `e` by more
+than 20 percent, but the current 500 GB cap cannot reserve either complete
+set, so both run commands report `skipped`. A file-target standard set runs
+only when its quick result is borderline, its remaining 100 GB cap fits, and
+the unpaid required sets still ahead also fit;
 because rev 4.1 does not give that cutoff a number, the driver defines it as
 `T/1.5 ≤ e ≤ T+C`. **Study decision D-IBX-001:** this file-standard cutoff is
 an explicit controller policy, not a rev 4.1 requirement; the selected cutoff
 is recorded in the analysis report.
 
 The part (c) repeat reports `skipped` when the complete first assessment does
-not confirm degradation; incomplete first-run evidence is an error and must be
-completed before the decision can be made.
+not confirm degradation. The current 500 GB schedule also skips the part (c)
+repeat and both optional raw repeats because none fits after the maximum base
+schedule; incomplete first-run evidence is still an error when deciding whether
+the part (c) result is complete.
 
-The meter derives the base schedule's maximum from the fio job caps (currently
-495.12 GB) and adds an explicit 131.12 GB reserve for one part (c) repeat and
-both possible raw repeats, for a 626.25 GB total cap. The driver derives both
-figures from the cell families, so the complete adaptive schedule fits even
-when every writer reaches its cap. A conditional set that is not needed exits
-successfully with a `skipped` result and no target or output writes. Every
-writing job uses `io_size` and omits `time_based`;
+The meter derives the base schedule's maximum from the block-aligned fio job
+caps: 495.122866176 GB. Its hard write cap is 500 GB decimal (500,000,000,000
+bytes), leaving 4.877133824 GB after the maximum base schedule. The optional
+part (c) repeat costs 49.123688448 GB, and each optional raw repeat costs
+40.999899136 GB, so none is reserved or run under this cap. These are the
+effective sums after every writer cap is rounded down to a whole block. The
+nominal rung budgets remain 15/26/100 GB; their aligned writer sums are
+14.999912448/25.999986688/99.999891456 GB. Each optional file-standard set has
+a nominal 100 GB budget and an effective 99.999891456 GB cap; it runs only
+when its remaining cap and every required cell-set still ahead fit; the ext4
+standard therefore reserves the required Btrfs quick/veryquick set. Otherwise
+it exits successfully with
+`skipped` before creating jobs or starting fio. The t0+6h raw standard cap is
+included in the base schedule even
+though that rung runs only when its design condition selects it. Every writing
+job uses `io_size` aligned down to its `bs`, and omits `time_based`;
 fio's `time_based` mode ignores `io_size`. Reads are time-based. Each rung also
-has its own write allotment (15/26/100 GB), and the study state meters actual
-fio write bytes separately from read `io_bytes`. Before an attempt starts, the
-state reserves that cell's full write cap and active-time allowance. A completed
-result replaces those reservations with measured bytes and duration; an
-interrupted attempt keeps its full reservation so resume cannot undercount it.
+has its nominal write allotment (15/26/100 GB), and the study state meters
+actual fio write bytes separately from read `io_bytes`. Before an attempt
+starts, the state reserves that cell's aligned write cap and active-time
+allowance. A completed result replaces those reservations with measured bytes
+and duration. Rejected or failed attempts save their fio JSON and replace the
+write reservation with reported bytes when available; a failure before fio
+starts releases it. If fio started but its output cannot establish actual
+bytes, the full cap stays charged. On resume, any such outstanding reservation
+is recorded as an interrupted attempt and retained as conservative spent bytes,
+then a retry gets a fresh reservation. A cell result that was saved just before
+the process died is adopted on resume at its recorded bytes and seconds; the
+interrupted charge it replaces is dropped, so the cell is counted once. A
+discard that fails or is stopped settles its measured seconds, never the whole
+remaining active allowance. Every retry remains inside the same
+500 GB meter. Before starting any base cell-set, the driver also checks that
+bytes already charged plus all still-pending base caps fit the hard budget,
+including the conditional t+6h standard rung. A failed earlier attempt can
+make the complete remaining schedule unaffordable; the driver refuses before
+the next cell instead of silently shrinking later caps.
 The controller stops before a cell that could exceed the
-626.25 GB, 3-hour active-I/O, or 12-hour elapsed limits. It also stops on three
-consecutive I/O or memory PSI samples over the supplied thresholds, low
-`MemAvailable`, or free space below the supplied floor on the output or file
-target filesystem. The PSI, memory, and
-free-space thresholds are required run options because the design does not set
-numeric values; select them from the study host's approved operating policy.
+500 GB, 3-hour active-I/O, or 12-hour elapsed limits. It also stops on three
+consecutive memory PSI `full avg10` samples over the supplied threshold, low
+`MemAvailable`, low free space on the output or file-target filesystem, or the
+configured number of consecutive slow or failed host-liveness probes. I/O PSI
+is recorded as advisory. The memory, liveness, and free-space thresholds are
+required run options because the design does not set numeric values; select
+them from the study host's approved policy. `--min-output-free` compares free
+space on the filesystem containing `--out`. `--min-target-free` compares free
+space on the filesystem containing a file target and is not sampled for raw
+partition runs. With approved policy values, a 20 GiB output floor and a 1 GiB
+target floor leave headroom on the repository filesystem while allowing the
+32 GiB study partition to hold its preallocated 24 GiB file. Both values are
+saved as one resume policy and must be reused unchanged.
 
 Raw ladder sets must use exactly `[0, 24 GiB)`; part (c) must use exactly
 `[24, 32 GiB)`. File sets must cover exactly `[0, 24 GiB)` of their preallocated
@@ -76,27 +115,159 @@ uses the documented recovery threshold as its explicit comparison: both idle
 probes must stay below 90% of pass 1, and both +10 min probes must recover to at
 least 90%. This comparison is recorded in the analysis output.
 
-The controller snapshots `io.cost.qos`, `io.cost.model`, `io.max`, `io.weight`,
-and `io.latency` for the benchmark cgroup and every ancestor before and after
-each cell-set. It refuses if io.cost is enabled/configured or any ancestor has
-an active IO control. It also refuses targets that are not the expected block
-device or file type/extent and verifies that the target's backing device is the
-same device monitored by diskstats. A raw target must be a partition whose
+The controller snapshots root `io.cost.qos` and `io.cost.model`, plus
+`io.max`, `io.weight`, and `io.bfq.weight` for the benchmark cgroup and every
+ancestor before and after each cell-set. A missing control file means there is
+no setting on that kernel or cgroup; the snapshot records that absence so a
+control appearing or changing before/after a run is still detected. Existing
+unreadable or malformed files refuse. The guard refuses numeric `io.max`
+limits, non-default `io.weight` or `io.bfq.weight`, enabled `io.cost.qos`, and
+a user/custom `io.cost.model`; the kernel-managed `ctrl=auto model=linear`
+model is allowed. `io.latency` can throttle peers, so the driver enumerates
+direct peers at each level of its cgroup path and refuses an active latency
+target on every check. Peer `io.weight` is not judged. Peer `io.bfq.weight` is
+judged when the target disk's selected scheduler is `bfq`, because sibling
+weights then affect its proportional bandwidth. The scheduler is read from
+`/sys/block/<disk>/queue/scheduler`, recorded in the manifest and compared with
+the IO-control snapshots. With any known non-BFQ scheduler, peer BFQ weights
+are inert, including `none` and `mq-deadline`. If the scheduler file is
+missing, unreadable, or malformed, the manifest reports that state and peer
+BFQ weights are checked conservatively; any non-default value refuses with
+the cgroup control path.
+Peer membership is not included in before/after equality because services and
+containers can come and go during a study. Other siblings' `io.max` caps are
+not inherited by the benchmark cgroup. This lets the study run on kernels that
+omit optional controls while retaining refusals for active limits that can
+affect the study process. It also refuses targets that are not the expected block device or
+file type/extent and verifies that the target's backing device is the same
+device monitored by diskstats. A raw target must be a partition whose
 size and PARTUUID exactly match the operator's `--confirm-target` acknowledgement.
-The driver refuses whole disks, mounted or swap-active partitions, partitions
-with active exclusive claims or holders, and disks that contain the running
-system. Resume state stores the size and PARTUUID and refuses a replaced
-partition. A btrfs file target resolves
+The driver refuses whole disks, mounted or swap-active target partitions, active
+exclusive claims, and holders. A raw partition sharing the running system disk
+also refuses by default; the only exception requires both
+`--allow-system-disk-partition` and a current acknowledgement derived by
+`system-disk-ack` from hostname, disk, root filesystem device(s), and target
+PARTUUID. The acknowledgement and observed system mounts and sibling swap
+devices are recorded in state, each attempt and cell, JSON/text plan output,
+and the analysis report. Resume compares stable host/root/disk/PARTUUID identity;
+it records changing mount and sibling-swap observations per attempt. Changing
+the stop policy refuses resume. A state with the former `min_free_bytes` field
+is migrated only when both supplied split floors equal its saved value; that
+preserves the previous minimum-free comparison and is recorded in the manifest.
+Other policy changes still refuse. Keep the existing state and resume only with
+the policy reported by the refusal and recorded in its run manifest; if that
+policy cannot be used, keep the state and obtain an operator decision. Starting
+with a new `--out` directory resets the byte and elapsed-time meters and
+requires explicit approval as a new budget.
+The refusal prints the saved policy as JSON. Map its fields back to the run
+options: `memory_psi_full_avg10_max_percent` to `--max-memory-psi`,
+`min_memavailable_bytes` to `--min-memavailable`,
+`min_output_free_bytes` to `--min-output-free`,
+`min_target_free_bytes` to `--min-target-free`,
+`max_probe_latency_seconds` to `--max-probe-latency-seconds`,
+`probe_consecutive_samples` to `--probe-consecutive-samples`, and
+`probe_interval_seconds` to `--probe-interval-seconds`,
+`liveness_ssh_host` to `--liveness-ssh-host`,
+`liveness_ssh_port` to `--liveness-ssh-port`, and
+`liveness_cockpit_container` to `--liveness-cockpit-container`,
+`fio_startup_grace_seconds` to `--fio-startup-grace-seconds`, and
+`test_scale` to `--test-scale`, and `test_scale_ioengine` to
+`--test-scale-engine`.
+
+## Fio completion deadline
+
+For every live cell, the driver reads `runtime` and `ramp_time` back from the
+rendered fio job. Its wall deadline is their sum plus the configured
+`--fio-startup-grace-seconds` (default 5) and the 60-second drain reserve. The
+same bound is reserved against the active and elapsed meters and checked after
+fio exits. An unexpected non-zero fio exit remains a failed attempt even when
+its stdout contains valid JSON; only a SIGINT exit sent by this driver's
+deadline handler is treated as its deliberate stop. Failed-attempt records
+retain at most 64 KiB each of raw stdout and stderr, with truncation recorded.
+A fio that ignores `SIGINT` and `SIGTERM` is sent `SIGKILL` after 30 s each, on
+the deadline and on a driver stop alike, so it cannot outlive the driver. A raw
+dry-run or run also requires `mkfs.ext4`, `mkfs.btrfs`, `mount`, `umount`,
+`wipefs` and `fallocate` in `PATH`, so a missing file-leg tool refuses before
+t0 instead of stopping the study at t+9h.
+Older run states migrate the new default grace and live-mode fields with a
+recorded stop-policy migration; other policy changes still refuse resume.
+
+## Real-fio rehearsal
+
+The opt-in `real_fio` test and `rehearse` command drive the normal planner and
+`run` command over the complete base schedule using upstream fio 3.39. The
+planner's explicit `--test-scale` mode keeps the same job names, rung ordering,
+block-size mix, latency, anchors, observation, rewrite, and file-target shapes,
+while using an 8 MiB regular file under the rehearsal output directory, 4 MiB
+writer caps, 2-second time-based jobs, and a 1-second idle wait. The rehearsal
+is accepted only when `analyze` writes `rung-choice.md`.
+
+`--test-scale` refuses anything except an existing regular file contained in
+the output directory under `/tmp`; it never opens a block device. Host safety
+facts and liveness samples are synthetic in this mode. Raw-style discard steps
+use `fallocate` hole punching on the regular file. The resulting measurements
+are driver-path evidence, not benchmark results. If fio is unavailable, the
+`real_fio` pytest marker skips with the manual command; a present but
+incompatible version fails.
+
+The rehearsal reads the installed fio build's `--enghelp` list and selects
+`libaio`, then `posixaio`, `io_uring`, or `psync` in that order. `run` accepts
+`--test-scale-engine` only alongside `--test-scale`; this override is saved in
+the run policy so a resumed rehearsal cannot silently change engines. Live
+jobs always use the repository's `libaio` template. If the selected fallback
+is `psync`, fio runs synchronously and its queue depth is not representative;
+the rehearsal still covers driver startup, runtime deadline, signal, JSON,
+recording, analysis, and file-target control flow.
+The study result is therefore explicitly marked as including system and
+sibling-swap activity. A swap-active target partition, mounted partition,
+changed SIZE/PARTUUID, or any other safety failure still refuses. Resume state
+stores the size, PARTUUID, and system-disk facts and refuses a replaced or
+changed target. A btrfs file target resolves
 its backing member through `/sys/fs/btrfs/<uuid>/devices`; an anonymous mount
 device number is not treated as a member identity. Raw partitions must be
 unmounted; file targets must be on the selected ext4 or btrfs filesystem. Raw run sets issue a bounded `blkdiscard`
 for the 24 GiB region before each rung. The rewrite test uses only its 8 GiB
-region. The one optional repeat of (c) and both optional t+12 sets must also fit
-the remaining write meter before they start.
+region. The optional repeat sets are listed in the plan, but return `skipped`
+under the 500 GB cap because their full job caps do not fit after the base
+schedule.
 
-`run --dry-run` performs the same target, identity, schedule, IO-control,
-threshold and fio-job rendering checks as a live run, then exits without
-creating output files, starting fio, discarding, or changing the target.
+`run --dry-run` performs target, identity, schedule, IO-control, memory and
+free-space checks and a successful first host-liveness probe, and renders every
+fio job, then exits without creating output files, starting fio, discarding, or
+changing the target. It reads diskstats, both pressure files, and meminfo;
+missing required monitoring files produce a path-specific `StudyError`. It
+also reads the target's discard capability and verifies the required fio and
+target-operation tools before a pending run can pass. It does not check or require the fstrim, apt-daily,
+apt-daily-upgrade, or governance timers to be stopped. Live runs require those timers inactive and record I/O PSI
+as advisory; they stop on three consecutive memory PSI `full avg10` samples
+above policy, low `MemAvailable`, low free space, or the configured number of
+consecutive slow/failed host-liveness probes. The initial liveness probe must
+succeed before any target discard or fio write. Subsequent probes run at the
+recorded 10-second default cadence (`--probe-interval-seconds` can set a
+different interval). Each bounded `system.slice` probe writes and fsyncs a
+temporary file on `/`, checks an SSH banner at the configured host and port
+(`127.0.0.1:22` by default), and verifies the configured Docker container with
+`docker exec` (`mdt-cockpit-runner` by default), independently of the fio
+cgroup. It does not require a systemd unit for the cockpit runner. One timed-out
+probe remains failed until its transient probe unit is confirmed stopped; its
+later samples still count toward the configured consecutive-failure limit.
+Wall-time and write-byte caps remain hard stops.
+The separately scoped live probes for the real raw target and Btrfs fio logs
+are in [ACCEPTANCE.md](ACCEPTANCE.md); they start with raw dry-run validation
+and never issue a raw write.
+
+**Study decision D-IBX-002:** the root-disk exception is controller policy,
+requested by the operator on 2026-11-13 because the approved disposable compute
+hosts have only one virtual disk. It relaxes only the refusal for a dedicated
+target partition sharing that disk; the driver retains every other target
+guard and records the acknowledgement and system-disk context in the result.
+Supplying `--allow-system-disk-partition` is the operator's consent to run on
+the shared system disk. The per-run `--system-disk-ack` value is a drift check
+that binds that consent to the current hostname, target disk, root filesystem
+device(s), and target PARTUUID; deriving the value in a wrapper does not by
+itself grant permission to write.
+The study remains a root-disk study with system and sibling-swap activity, not
+a quiet-disk measurement.
 
 ## Study-day invocation
 
@@ -107,8 +278,17 @@ wrapper. It writes resumable state, one JSON file per fio cell, generated fio
 job files, and one-second monitor JSONL under the ignored
 `libraries/iobench/artifacts/ibx-study/` directory.
 
-Set the four stop thresholds from the study host policy before starting; the
-commands refuse if any are absent. No values are guessed by this controller.
+Set the stop thresholds from the study host policy before starting; the
+commands refuse if any are absent. The probe cadence is a separately recorded
+controller default of 10 seconds and can be changed with
+`--probe-interval-seconds`.
+I/O PSI is recorded but is advisory because the saturating fio cell itself can
+drive it to 100%. The independent host-liveness threshold and consecutive
+sample count are configurable policy inputs alongside the memory, output-space,
+and target-space floors. Set `IBX_EXPECTED_HOST` from the approved run authorization;
+the sequence checks it before every driver run and checks both host and target
+identity immediately before each direct filesystem operation. Do not derive
+the expected hostname from the connected host.
 
 ```bash
 set -euo pipefail
@@ -136,13 +316,26 @@ LOCAL_STUDY="$REPO/libraries/iobench/studies/ibx/driver.py"
 LOCAL_OUT="$REPO/libraries/iobench/artifacts/ibx-study"
 STUDY="$HOST_REPO/libraries/iobench/studies/ibx/driver.py"
 OUT="$HOST_REPO/libraries/iobench/artifacts/ibx-study"
-: "${IBX_MAX_IO_PSI:?set the approved I/O PSI avg10 stop threshold (percent)}"
-: "${IBX_MAX_MEMORY_PSI:?set the approved memory PSI avg10 stop threshold (percent)}"
+: "${IBX_MAX_MEMORY_PSI:?set the approved memory PSI full avg10 stop threshold (percent)}"
+: "${IBX_MAX_PROBE_LATENCY:?set the approved independent host-probe latency limit in seconds}"
+: "${IBX_PROBE_CONSECUTIVE_SAMPLES:?set the approved consecutive slow-probe sample count}"
 : "${IBX_MIN_MEMAVAILABLE:?set the approved MemAvailable floor, for example 8GiB}"
-: "${IBX_MIN_FREE:?set the approved output-filesystem free-space floor}"
+: "${IBX_MIN_OUTPUT_FREE:?set the approved free-space floor for the output filesystem}"
+: "${IBX_MIN_TARGET_FREE:?set the approved free-space floor for the study target filesystem}"
+: "${IBX_EXPECTED_HOST:?set the exact short hostname from approved run authorization}"
 # Read the partition size and PARTUUID and compare them with the approved
 # study-target inventory. Set this exact literal only after that check.
 : "${IBX_TARGET_CONFIRMATION:?after checking the dedicated partition, set /dev/vda5:SIZE_BYTES:PARTUUID}"
+
+assert_expected_host() {
+  : "${IBX_EXPECTED_HOST:?set the exact short hostname from approved run authorization}"
+  local actual_host
+  actual_host=$(host-escape -- hostname -s)
+  [[ $actual_host == "$IBX_EXPECTED_HOST" ]] || {
+    printf 'refusing: expected host %s, connected to %s\n' "$IBX_EXPECTED_HOST" "$actual_host" >&2
+    return 1
+  }
+}
 
 confirm_study_target() {
   local actual_size actual_partuuid actual_identity
@@ -156,9 +349,43 @@ confirm_study_target() {
   fi
 }
 
+assert_study_host_and_target() {
+  assert_expected_host || return 1
+  confirm_study_target || return 1
+}
+
+study_transition() {
+  assert_study_host_and_target || return 1
+  host-escape -- "$@"
+}
+
+current_system_disk_ack() {
+  assert_study_host_and_target || return 1
+  host-escape -- python3 "$STUDY" system-disk-ack --target /dev/vda5 --device vda5 \
+    --confirm-target "$IBX_TARGET_CONFIRMATION"
+}
+
+run_study() {
+  assert_expected_host || return 1
+  host-escape -- python3 "$STUDY" run "$@"
+}
+
+# Plan and target-read-only dry-run can run before checking or stopping timers.
+assert_study_host_and_target || exit 1
+host-escape -- python3 "$STUDY" plan --out "$OUT" || exit 1
+run_study raw-t0 --target /dev/vda5 --device vda5 \
+  --target-type raw --confirm-target "$IBX_TARGET_CONFIRMATION" \
+  --allow-system-disk-partition --system-disk-ack "$(current_system_disk_ack)" \
+  --confirm-quiet-window --offset 0B --size 24GiB --out "$OUT" --dry-run \
+  --max-memory-psi "$IBX_MAX_MEMORY_PSI" \
+  --max-probe-latency-seconds "$IBX_MAX_PROBE_LATENCY" \
+  --probe-consecutive-samples "$IBX_PROBE_CONSECUTIVE_SAMPLES" \
+  --min-memavailable "$IBX_MIN_MEMAVAILABLE" \
+  --min-output-free "$IBX_MIN_OUTPUT_FREE" --min-target-free "$IBX_MIN_TARGET_FREE" || exit 1
+
 # Stop only timers that were active beforehand. Keep this shell open so the
-# restoration block below can restart exactly those timers after the study.
-TIMER_UNITS=(fstrim.timer apt-daily.timer apt-daily-upgrade.timer)
+# restoration block below can restart exactly those timers after live runs.
+TIMER_UNITS=(fstrim.timer apt-daily.timer apt-daily-upgrade.timer mdt-dev-governance-reconcile.timer)
 ACTIVE_TIMER_UNITS=()
 for unit in "${TIMER_UNITS[@]}"; do
   state=$(host-escape -- systemctl show "$unit" --property=LoadState --property=ActiveState --value)
@@ -192,131 +419,163 @@ if ((${#ACTIVE_TIMER_UNITS[@]})); then
   host-escape -- systemctl stop "${ACTIVE_TIMER_UNITS[@]}"
 fi
 
-confirm_study_target
-host-escape -- python3 "$STUDY" plan --out "$OUT"
-
-# Read-only run rehearsal: same raw target identity and policies as t0; no
-# output directory, fio files, discard, or target writes are created.
-host-escape -- python3 "$STUDY" run raw-t0 --target /dev/vda5 --device vda5 \
+# t0: run the raw ladder. This SSH-host sequence leaves optional fsync
+# collection disabled because the caller does not have a Docker cgroup scope.
+run_study raw-t0 --target /dev/vda5 --device vda5 \
   --target-type raw --confirm-target "$IBX_TARGET_CONFIRMATION" \
-  --confirm-quiet-window --offset 0B --size 24GiB --out "$OUT" --dry-run \
-  --max-io-psi "$IBX_MAX_IO_PSI" --max-memory-psi "$IBX_MAX_MEMORY_PSI" \
-  --min-memavailable "$IBX_MIN_MEMAVAILABLE" --min-free "$IBX_MIN_FREE" \
-  --fsync-cell standard:seq1m-write
-
-# t0: run the raw ladder. The optional fsync collection wraps only the named
-# standard rung cell and reuses mdt-cockpit/scripts/iomon-bpf/run.sh.
-host-escape -- python3 "$STUDY" run raw-t0 --target /dev/vda5 --device vda5 \
-  --target-type raw --confirm-target "$IBX_TARGET_CONFIRMATION" \
+  --allow-system-disk-partition --system-disk-ack "$(current_system_disk_ack)" \
   --confirm-quiet-window --offset 0B --size 24GiB --out "$OUT" \
-  --max-io-psi "$IBX_MAX_IO_PSI" --max-memory-psi "$IBX_MAX_MEMORY_PSI" \
-  --min-memavailable "$IBX_MIN_MEMAVAILABLE" --min-free "$IBX_MIN_FREE" \
-  --fsync-cell standard:seq1m-write
+  --max-memory-psi "$IBX_MAX_MEMORY_PSI" \
+  --max-probe-latency-seconds "$IBX_MAX_PROBE_LATENCY" \
+  --probe-consecutive-samples "$IBX_PROBE_CONSECUTIVE_SAMPLES" \
+  --min-memavailable "$IBX_MIN_MEMAVAILABLE" \
+  --min-output-free "$IBX_MIN_OUTPUT_FREE" --min-target-free "$IBX_MIN_TARGET_FREE" || exit 1
 
 # t0+1h: the bounded rewrite/fstrim cell set on region C.
-host-escape -- python3 "$STUDY" run part-c --target /dev/vda5 --device vda5 \
+run_study part-c --target /dev/vda5 --device vda5 \
   --target-type raw --confirm-target "$IBX_TARGET_CONFIRMATION" \
+  --allow-system-disk-partition --system-disk-ack "$(current_system_disk_ack)" \
   --confirm-quiet-window --offset 24GiB --size 8GiB --out "$OUT" \
-  --max-io-psi "$IBX_MAX_IO_PSI" --max-memory-psi "$IBX_MAX_MEMORY_PSI" \
-  --min-memavailable "$IBX_MIN_MEMAVAILABLE" --min-free "$IBX_MIN_FREE"
+  --max-memory-psi "$IBX_MAX_MEMORY_PSI" \
+  --max-probe-latency-seconds "$IBX_MAX_PROBE_LATENCY" \
+  --probe-consecutive-samples "$IBX_PROBE_CONSECUTIVE_SAMPLES" \
+  --min-memavailable "$IBX_MIN_MEMAVAILABLE" \
+  --min-output-free "$IBX_MIN_OUTPUT_FREE" --min-target-free "$IBX_MIN_TARGET_FREE" || exit 1
 
 # t0+3h, then quick/veryquick at t0+6h; raw-t6h adds standard only if its 6.2 rule fires.
-host-escape -- python3 "$STUDY" run raw-t3h --target /dev/vda5 --device vda5 \
+run_study raw-t3h --target /dev/vda5 --device vda5 \
   --target-type raw --confirm-target "$IBX_TARGET_CONFIRMATION" \
+  --allow-system-disk-partition --system-disk-ack "$(current_system_disk_ack)" \
   --confirm-quiet-window --offset 0B --size 24GiB --out "$OUT" \
-  --max-io-psi "$IBX_MAX_IO_PSI" --max-memory-psi "$IBX_MAX_MEMORY_PSI" \
-  --min-memavailable "$IBX_MIN_MEMAVAILABLE" --min-free "$IBX_MIN_FREE"
+  --max-memory-psi "$IBX_MAX_MEMORY_PSI" \
+  --max-probe-latency-seconds "$IBX_MAX_PROBE_LATENCY" \
+  --probe-consecutive-samples "$IBX_PROBE_CONSECUTIVE_SAMPLES" \
+  --min-memavailable "$IBX_MIN_MEMAVAILABLE" \
+  --min-output-free "$IBX_MIN_OUTPUT_FREE" --min-target-free "$IBX_MIN_TARGET_FREE" || exit 1
 
-# t0+4h: repeat (c) once at another slot only if the first analysis says
-# confirmed. The driver checks pass 4, the idle probe, and +10m recovery first.
-host-escape -- python3 "$STUDY" run part-c-repeat --target /dev/vda5 --device vda5 \
+# t0+4h: the driver reports this optional repeat as skipped under the 500 GB
+# cap, even if the first analysis reports degradation.
+run_study part-c-repeat --target /dev/vda5 --device vda5 \
   --target-type raw --confirm-target "$IBX_TARGET_CONFIRMATION" \
+  --allow-system-disk-partition --system-disk-ack "$(current_system_disk_ack)" \
   --confirm-quiet-window --offset 24GiB --size 8GiB --out "$OUT" \
-  --max-io-psi "$IBX_MAX_IO_PSI" --max-memory-psi "$IBX_MAX_MEMORY_PSI" \
-  --min-memavailable "$IBX_MIN_MEMAVAILABLE" --min-free "$IBX_MIN_FREE"
+  --max-memory-psi "$IBX_MAX_MEMORY_PSI" \
+  --max-probe-latency-seconds "$IBX_MAX_PROBE_LATENCY" \
+  --probe-consecutive-samples "$IBX_PROBE_CONSECUTIVE_SAMPLES" \
+  --min-memavailable "$IBX_MIN_MEMAVAILABLE" \
+  --min-output-free "$IBX_MIN_OUTPUT_FREE" --min-target-free "$IBX_MIN_TARGET_FREE" || exit 1
 
-host-escape -- python3 "$STUDY" run raw-t6h --target /dev/vda5 --device vda5 \
+run_study raw-t6h --target /dev/vda5 --device vda5 \
   --target-type raw --confirm-target "$IBX_TARGET_CONFIRMATION" \
+  --allow-system-disk-partition --system-disk-ack "$(current_system_disk_ack)" \
   --confirm-quiet-window --offset 0B --size 24GiB --out "$OUT" \
-  --max-io-psi "$IBX_MAX_IO_PSI" --max-memory-psi "$IBX_MAX_MEMORY_PSI" \
-  --min-memavailable "$IBX_MIN_MEMAVAILABLE" --min-free "$IBX_MIN_FREE"
+  --max-memory-psi "$IBX_MAX_MEMORY_PSI" \
+  --max-probe-latency-seconds "$IBX_MAX_PROBE_LATENCY" \
+  --probe-consecutive-samples "$IBX_PROBE_CONSECUTIVE_SAMPLES" \
+  --min-memavailable "$IBX_MIN_MEMAVAILABLE" \
+  --min-output-free "$IBX_MIN_OUTPUT_FREE" --min-target-free "$IBX_MIN_TARGET_FREE" || exit 1
 
 # t0+9h raw measurements, then format the study partition for each file target.
-host-escape -- python3 "$STUDY" run raw-t9h --target /dev/vda5 --device vda5 \
+run_study raw-t9h --target /dev/vda5 --device vda5 \
   --target-type raw --confirm-target "$IBX_TARGET_CONFIRMATION" \
+  --allow-system-disk-partition --system-disk-ack "$(current_system_disk_ack)" \
   --confirm-quiet-window --offset 0B --size 24GiB --out "$OUT" \
-  --max-io-psi "$IBX_MAX_IO_PSI" --max-memory-psi "$IBX_MAX_MEMORY_PSI" \
-  --min-memavailable "$IBX_MIN_MEMAVAILABLE" --min-free "$IBX_MIN_FREE" && \
-confirm_study_target && \
-host-escape -- mkfs.ext4 -E nodiscard,lazy_itable_init=0,lazy_journal_init=0 /dev/vda5 && \
-host-escape -- mkdir -p /mnt/ibx-study && \
-host-escape -- mount -o noatime /dev/vda5 /mnt/ibx-study && \
-host-escape -- fallocate -l 24GiB /mnt/ibx-study/target.dat
+  --max-memory-psi "$IBX_MAX_MEMORY_PSI" \
+  --max-probe-latency-seconds "$IBX_MAX_PROBE_LATENCY" \
+  --probe-consecutive-samples "$IBX_PROBE_CONSECUTIVE_SAMPLES" \
+  --min-memavailable "$IBX_MIN_MEMAVAILABLE" \
+  --min-output-free "$IBX_MIN_OUTPUT_FREE" --min-target-free "$IBX_MIN_TARGET_FREE" || exit 1
+study_transition mkfs.ext4 -E nodiscard,lazy_itable_init=0,lazy_journal_init=0 /dev/vda5 || exit 1
+study_transition mkdir -p /mnt/ibx-study || exit 1
+study_transition mount -o noatime /dev/vda5 /mnt/ibx-study || exit 1
+study_transition fallocate -l 24GiB /mnt/ibx-study/target.dat || exit 1
 
 # These are deliberate study-day filesystem transitions on the dedicated target.
 # Run each through the same host-root wrapper and only after raw-t9h has finished.
-host-escape -- python3 "$STUDY" run file-ext4 --target /mnt/ibx-study/target.dat --device vda5 \
+run_study file-ext4 --target /mnt/ibx-study/target.dat --device vda5 \
   --target-type ext4-file --confirm-quiet-window --offset 0B --size 24GiB --out "$OUT" \
-  --max-io-psi "$IBX_MAX_IO_PSI" --max-memory-psi "$IBX_MAX_MEMORY_PSI" \
-  --min-memavailable "$IBX_MIN_MEMAVAILABLE" --min-free "$IBX_MIN_FREE"
+  --max-memory-psi "$IBX_MAX_MEMORY_PSI" \
+  --max-probe-latency-seconds "$IBX_MAX_PROBE_LATENCY" \
+  --probe-consecutive-samples "$IBX_PROBE_CONSECUTIVE_SAMPLES" \
+  --min-memavailable "$IBX_MIN_MEMAVAILABLE" \
+  --min-output-free "$IBX_MIN_OUTPUT_FREE" --min-target-free "$IBX_MIN_TARGET_FREE" || exit 1
 python3 "$LOCAL_STUDY" analyze "$LOCAL_OUT" --output "$LOCAL_OUT/rung-choice.md"
 # Optional: runs only if the ext4 quick result is borderline; otherwise reports skipped.
-host-escape -- python3 "$STUDY" run file-ext4-standard --target /mnt/ibx-study/target.dat --device vda5 \
+run_study file-ext4-standard --target /mnt/ibx-study/target.dat --device vda5 \
   --target-type ext4-file --confirm-quiet-window --offset 0B --size 24GiB --out "$OUT" \
-  --max-io-psi "$IBX_MAX_IO_PSI" --max-memory-psi "$IBX_MAX_MEMORY_PSI" \
-  --min-memavailable "$IBX_MIN_MEMAVAILABLE" --min-free "$IBX_MIN_FREE"
-host-escape -- umount /mnt/ibx-study && \
-confirm_study_target && \
-host-escape -- wipefs -a /dev/vda5 && \
-confirm_study_target && \
-host-escape -- mkfs.btrfs -K /dev/vda5 && \
-host-escape -- mount -o noatime /dev/vda5 /mnt/ibx-study && \
-host-escape -- fallocate -l 24GiB /mnt/ibx-study/target.dat
-host-escape -- python3 "$STUDY" run file-btrfs --target /mnt/ibx-study/target.dat --device vda5 \
+  --max-memory-psi "$IBX_MAX_MEMORY_PSI" \
+  --max-probe-latency-seconds "$IBX_MAX_PROBE_LATENCY" \
+  --probe-consecutive-samples "$IBX_PROBE_CONSECUTIVE_SAMPLES" \
+  --min-memavailable "$IBX_MIN_MEMAVAILABLE" \
+  --min-output-free "$IBX_MIN_OUTPUT_FREE" --min-target-free "$IBX_MIN_TARGET_FREE" || exit 1
+study_transition umount /mnt/ibx-study || exit 1
+study_transition wipefs -a /dev/vda5 || exit 1
+study_transition mkfs.btrfs -K /dev/vda5 || exit 1
+study_transition mount -o noatime /dev/vda5 /mnt/ibx-study || exit 1
+study_transition fallocate -l 24GiB /mnt/ibx-study/target.dat || exit 1
+run_study file-btrfs --target /mnt/ibx-study/target.dat --device vda5 \
   --target-type btrfs-file --confirm-quiet-window --offset 0B --size 24GiB --out "$OUT" \
-  --max-io-psi "$IBX_MAX_IO_PSI" --max-memory-psi "$IBX_MAX_MEMORY_PSI" \
-  --min-memavailable "$IBX_MIN_MEMAVAILABLE" --min-free "$IBX_MIN_FREE"
+  --max-memory-psi "$IBX_MAX_MEMORY_PSI" \
+  --max-probe-latency-seconds "$IBX_MAX_PROBE_LATENCY" \
+  --probe-consecutive-samples "$IBX_PROBE_CONSECUTIVE_SAMPLES" \
+  --min-memavailable "$IBX_MIN_MEMAVAILABLE" \
+  --min-output-free "$IBX_MIN_OUTPUT_FREE" --min-target-free "$IBX_MIN_TARGET_FREE" || exit 1
 python3 "$LOCAL_STUDY" analyze "$LOCAL_OUT" --output "$LOCAL_OUT/rung-choice.md"
 # Optional: runs only if the btrfs quick result is borderline; otherwise reports skipped.
-host-escape -- python3 "$STUDY" run file-btrfs-standard --target /mnt/ibx-study/target.dat --device vda5 \
+run_study file-btrfs-standard --target /mnt/ibx-study/target.dat --device vda5 \
   --target-type btrfs-file --confirm-quiet-window --offset 0B --size 24GiB --out "$OUT" \
-  --max-io-psi "$IBX_MAX_IO_PSI" --max-memory-psi "$IBX_MAX_MEMORY_PSI" \
-  --min-memavailable "$IBX_MIN_MEMAVAILABLE" --min-free "$IBX_MIN_FREE"
-host-escape -- umount /mnt/ibx-study && \
-confirm_study_target && \
-host-escape -- wipefs -a /dev/vda5 && \
-confirm_study_target && \
-host-escape -- blkdiscard /dev/vda5
+  --max-memory-psi "$IBX_MAX_MEMORY_PSI" \
+  --max-probe-latency-seconds "$IBX_MAX_PROBE_LATENCY" \
+  --probe-consecutive-samples "$IBX_PROBE_CONSECUTIVE_SAMPLES" \
+  --min-memavailable "$IBX_MIN_MEMAVAILABLE" \
+  --min-output-free "$IBX_MIN_OUTPUT_FREE" --min-target-free "$IBX_MIN_TARGET_FREE" || exit 1
+study_transition umount /mnt/ibx-study || exit 1
+study_transition wipefs -a /dev/vda5 || exit 1
+study_transition blkdiscard /dev/vda5 || exit 1
 
-# Optional extra repetitions: analyze after four quick/veryquick raw runs.
-# Each set reports skipped unless the newest observation moved e by >20%.
-host-escape -- python3 "$STUDY" run raw-t12h --target /dev/vda5 --device vda5 \
+# The optional raw repeats are listed for traceability, but report skipped under
+# the 500 GB cap because their complete job caps do not fit after the base set.
+run_study raw-t12h --target /dev/vda5 --device vda5 \
   --target-type raw --confirm-target "$IBX_TARGET_CONFIRMATION" \
+  --allow-system-disk-partition --system-disk-ack "$(current_system_disk_ack)" \
   --confirm-quiet-window --offset 0B --size 24GiB --out "$OUT" \
-  --max-io-psi "$IBX_MAX_IO_PSI" --max-memory-psi "$IBX_MAX_MEMORY_PSI" \
-  --min-memavailable "$IBX_MIN_MEMAVAILABLE" --min-free "$IBX_MIN_FREE"
-host-escape -- python3 "$STUDY" run raw-t12h2 --target /dev/vda5 --device vda5 \
+  --max-memory-psi "$IBX_MAX_MEMORY_PSI" \
+  --max-probe-latency-seconds "$IBX_MAX_PROBE_LATENCY" \
+  --probe-consecutive-samples "$IBX_PROBE_CONSECUTIVE_SAMPLES" \
+  --min-memavailable "$IBX_MIN_MEMAVAILABLE" \
+  --min-output-free "$IBX_MIN_OUTPUT_FREE" --min-target-free "$IBX_MIN_TARGET_FREE" || exit 1
+run_study raw-t12h2 --target /dev/vda5 --device vda5 \
   --target-type raw --confirm-target "$IBX_TARGET_CONFIRMATION" \
+  --allow-system-disk-partition --system-disk-ack "$(current_system_disk_ack)" \
   --confirm-quiet-window --offset 0B --size 24GiB --out "$OUT" \
-  --max-io-psi "$IBX_MAX_IO_PSI" --max-memory-psi "$IBX_MAX_MEMORY_PSI" \
-  --min-memavailable "$IBX_MIN_MEMAVAILABLE" --min-free "$IBX_MIN_FREE"
+  --max-memory-psi "$IBX_MAX_MEMORY_PSI" \
+  --max-probe-latency-seconds "$IBX_MAX_PROBE_LATENCY" \
+  --probe-consecutive-samples "$IBX_PROBE_CONSECUTIVE_SAMPLES" \
+  --min-memavailable "$IBX_MIN_MEMAVAILABLE" \
+  --min-output-free "$IBX_MIN_OUTPUT_FREE" --min-target-free "$IBX_MIN_TARGET_FREE" || exit 1
 
 python3 "$LOCAL_STUDY" analyze "$LOCAL_OUT" --output "$LOCAL_OUT/rung-choice.md"
 ```
 
-The repeated optional set returns a successful `skipped` result when its rule
-says no extra run is needed. After the study, copy the output directory off the
+The adaptive repeat sets return a successful `skipped` result under the current
+500 GB cap. Optional file-standard sets also return `skipped` when their
+remaining 100 GB set plus the unpaid required remainder does not fit. After the
+study, copy the output directory off the
 host to the designated report location and remove the transient output after
 its receipt is verified. The EXIT trap starts exactly the timers that were
 active before the run, including when a command fails or the shell exits.
 
 `--fsync-cell RUNG:CELL` starts the existing `iomon-bpf/run.sh`, verifies its
-background slice is loaded, watches the host-wrapper container, and stops the
-exact collector it started after the selected fio cell finishes. For example,
-`--fsync-cell standard:seq1m-write` collects `sync.bt` around that standard
-cell; the JSONL files remain under `OUT/fsync-bpf/`. This mode requires the
-approved `CGROUP_PARENT_DEV_BACKGROUND` value in the wrapper's environment and
-a built `iomon-bpf:20261027` image.
+background slice and image are available, watches the host-wrapper container,
+and stops the exact collector it started after the selected fio cell finishes.
+For example, `--fsync-cell standard:seq1m-write` collects `sync.bt` around that
+standard cell; the JSONL files remain under `OUT/fsync-bpf/`. This mode requires
+the driver itself to run inside a Docker cgroup scope whose membership contains
+exactly one `docker-<64-hex-id>.scope`, the approved
+`CGROUP_PARENT_DEV_BACKGROUND` value, and a built `iomon-bpf:20261027` image.
+The dry-run checks those requirements and refuses clearly if they are absent;
+root sessions reached directly over SSH do not have the required Docker cgroup
+identity. Omit `--fsync-cell` when running outside that Docker scope.
 
 ## Resume and analysis
 

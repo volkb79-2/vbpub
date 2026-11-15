@@ -1000,6 +1000,110 @@ effects = ["Refuses on the missing SOURCE_DATE_EPOCH (exit 3); nothing is writte
 test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[handler/bundle-manifest/option-spelling/--name/--name]"]
 
 [[cases]]
+id = "case:route:entrypoint:cmru/handler/bundle-build/minimum"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:071f85a7e6057cd1863b92e2768abc51e92d88ba1a2c008b9f5be4520207dcfb"
+rationale = "--bundle-config, --cmru-config and --name are required; --variant defaults to all (every variant the project declares). The verb loads the project's variants from cmru.toml, so the sandbox, which has no configuration, stops at config discovery."
+invocation = ["handler", "bundle-build", "--bundle-config", "bundle.toml", "--cmru-config", "cmru.toml", "--name", "demo"]
+expected_exit_status = 2
+expected_stdout_contains = ""
+expected_stderr_contains = "config file not found"
+effects = ["Refuses at configuration discovery (exit 2); dist/ is not touched and no command runs."]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[handler/bundle-build/minimum]"]
+
+[[cases]]
+id = "case:route:entrypoint:cmru/handler/bundle-build/option-spelling/option:route:entrypoint:cmru/handler/bundle-build/--bundle-config/--bundle-config"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:7432b18b3d21c38e0a47c1bb3b2d8f720414aff41200ba93db91e6d75e07c7d7"
+rationale = "--bundle-config PATH is the project's bundle.toml (copy list, [vendor], [stage], [exec], [manifest], archive name)."
+invocation = ["handler", "bundle-build", "--bundle-config", "bundle.toml", "--cmru-config", "cmru.toml", "--name", "demo"]
+expected_exit_status = 2
+expected_stdout_contains = ""
+expected_stderr_contains = "config file not found"
+effects = ["Refuses at configuration discovery (exit 2); nothing is built."]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[handler/bundle-build/option-spelling/--bundle-config/--bundle-config]"]
+
+[[cases]]
+id = "case:route:entrypoint:cmru/handler/bundle-build/option-spelling/option:route:entrypoint:cmru/handler/bundle-build/--cmru-config/--cmru-config"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:fe8af02acf83eebf4431e0e0c11a33becc0d802c76982ccb266432fac089a4a2"
+rationale = "--cmru-config PATH is the cmru.toml that declares the project and its [[project.variants]] (the single source of the variant list)."
+invocation = ["handler", "bundle-build", "--bundle-config", "bundle.toml", "--cmru-config", "cmru.toml", "--name", "demo"]
+expected_exit_status = 2
+expected_stdout_contains = ""
+expected_stderr_contains = "config file not found"
+effects = ["Refuses at configuration discovery (exit 2); nothing is built."]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[handler/bundle-build/option-spelling/--cmru-config/--cmru-config]"]
+
+[[cases]]
+id = "case:route:entrypoint:cmru/handler/bundle-build/option-spelling/option:route:entrypoint:cmru/handler/bundle-build/--debug-raw/--debug-raw"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:e33ffe0e99fdb352d5c2a6436e3b7cfdc056254c71900394bbb297a8a5d1cb97"
+rationale = "Library control: --debug-raw lifts diagnostic redaction and warns."
+invocation = ["handler", "bundle-build", "--bundle-config", "bundle.toml", "--cmru-config", "cmru.toml", "--name", "demo", "--debug-raw"]
+expected_exit_status = 2
+expected_stdout_contains = ""
+expected_stderr_contains = "--debug-raw is active"
+effects = ["Prints the warning, then refuses at configuration discovery (exit 2); nothing is built."]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[handler/bundle-build/option-spelling/--debug-raw/--debug-raw]"]
+
+[[cases]]
+id = "case:route:entrypoint:cmru/handler/bundle-build/option-spelling/option:route:entrypoint:cmru/handler/bundle-build/--dry-run/--dry-run"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:ff9e4b16be6efeb9ad80207098a729425cf9cdbd2af92b041760d863c28cde56"
+rationale = "--dry-run shows the accepted inputs and builds nothing."
+invocation = ["handler", "bundle-build", "--bundle-config", "bundle.toml", "--cmru-config", "cmru.toml", "--name", "demo", "--dry-run"]
+expected_exit_status = 0
+expected_stdout_contains = "[DRY RUN] Would run cmru handler bundle-build"
+expected_stderr_contains = ""
+effects = ["Prints the inputs only; no config is read, no command runs, dist/ is untouched."]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[handler/bundle-build/option-spelling/--dry-run/--dry-run]"]
+
+[[cases]]
+id = "case:route:entrypoint:cmru/handler/bundle-build/option-spelling/option:route:entrypoint:cmru/handler/bundle-build/--log-prefix-time-short/--log-prefix-time-short"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:a825dc975249408ce09d0d0efd4b3518f445e90fbe72ab7456625bab4137706b"
+rationale = "Consumer-global presentation option; output only."
+invocation = ["handler", "bundle-build", "--bundle-config", "bundle.toml", "--cmru-config", "cmru.toml", "--name", "demo", "--log-prefix-time-short"]
+expected_exit_status = 2
+expected_stdout_contains = ""
+expected_stderr_contains = "config file not found"
+effects = ["Presentation only; refuses at configuration discovery (exit 2)."]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[handler/bundle-build/option-spelling/--log-prefix-time-short/--log-prefix-time-short]"]
+
+[[cases]]
+id = "case:route:entrypoint:cmru/handler/bundle-build/option-spelling/option:route:entrypoint:cmru/handler/bundle-build/--name/--name"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:e716bb734912ed8cc913ab368cb61348079390582376db8d6079be5499d154ba"
+rationale = "--name NAME (the project, as for bundle-manifest) selects the project in cmru.toml whose variants and release prefix drive the build and the manifest tag."
+invocation = ["handler", "bundle-build", "--bundle-config", "bundle.toml", "--cmru-config", "cmru.toml", "--name", "demo"]
+expected_exit_status = 2
+expected_stdout_contains = ""
+expected_stderr_contains = "config file not found"
+effects = ["Refuses at configuration discovery (exit 2); nothing is built."]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[handler/bundle-build/option-spelling/--name/--name]"]
+
+[[cases]]
+id = "case:route:entrypoint:cmru/handler/bundle-build/option-spelling/option:route:entrypoint:cmru/handler/bundle-build/--variant/--variant"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:c73384a6f9111a91e407a9218144a6313cb3485acdf224072330d04f1656decb"
+rationale = "--variant NAME builds one declared variant; the default all builds every declared variant. A project without variants accepts only all."
+invocation = ["handler", "bundle-build", "--bundle-config", "bundle.toml", "--cmru-config", "cmru.toml", "--name", "demo", "--variant", "all"]
+expected_exit_status = 2
+expected_stdout_contains = ""
+expected_stderr_contains = "config file not found"
+effects = ["Refuses at configuration discovery (exit 2); nothing is built."]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[handler/bundle-build/option-spelling/--variant/--variant]"]
+
+[[cases]]
 id = "case:route:entrypoint:cmru/handler/bundle-manifest/option-spelling/option:route:entrypoint:cmru/handler/bundle-manifest/--root/--root"
 state = "active"
 decision = "accept"

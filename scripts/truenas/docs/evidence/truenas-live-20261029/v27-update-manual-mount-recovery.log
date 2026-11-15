@@ -1,0 +1,4 @@
+ROOT_FINDMNT=boot-pool/user-data /mnt/boot-pool/user-data
+CHILD_FINDMNT=boot-pool/user-data/update-proof-20261029-v27nightly /mnt/boot-pool/user-data/update-proof-20261029-v27nightly
+MARKER=truenas-v27-update-survival-20261029MARKER_SHA256=a21c34ad92ce285ea5f5c90812664860ad8e25c5d48a971b10becdd3ff1527ce  /mnt/boot-pool/user-data/update-proof-20261029-v27nightly/marker
+MANUAL_MOUNT_EXIT=0

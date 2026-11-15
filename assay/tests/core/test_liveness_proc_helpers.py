@@ -13,13 +13,90 @@ from conftest import timeout_expired
 
 import json
 import os
+import signal
 import subprocess
-import time
+import sys
 from pathlib import Path
 
 import pytest
 
 from assay import liveness
+
+
+def _live_process_group_members(process_group: int) -> list[int]:
+    """Return live (non-zombie) members of a process group from ``/proc``."""
+    members: list[int] = []
+    for entry in Path("/proc").iterdir():
+        if not entry.name.isdecimal():
+            continue
+        try:
+            stat = (entry / "stat").read_text(encoding="utf-8")
+        except (FileNotFoundError, ProcessLookupError, OSError):
+            continue
+        close = stat.rfind(")")
+        if close < 0:
+            continue
+        fields = stat[close + 1 :].split()
+        if len(fields) < 3:
+            continue
+        state, group = fields[0], fields[2]
+        if state != "Z" and group.isdecimal() and int(group) == process_group:
+            members.append(int(entry.name))
+    return members
+
+
+def _start_process_with_sleeping_child() -> subprocess.Popen:
+    """Start a live parent/child tree and wait until the child is running."""
+    code = "\n".join(
+        (
+            "import signal",
+            "import subprocess",
+            "import sys",
+            "child = subprocess.Popen(['sleep', '3600'], stdin=subprocess.DEVNULL, "
+            "stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)",
+            "def stop(_signum, _frame):",
+            "    try:",
+            "        child.kill()",
+            "    except ProcessLookupError:",
+            "        pass",
+            "    child.wait()",
+            "    raise SystemExit(0)",
+            "signal.signal(signal.SIGTERM, stop)",
+            "print('ready', flush=True)",
+            "signal.pause()",
+        )
+    )
+    parent = subprocess.Popen(
+        [sys.executable, "-c", code],
+        start_new_session=True,
+        stdout=subprocess.PIPE,
+        text=True,
+    )
+    assert parent.stdout is not None
+    try:
+        ready = parent.stdout.readline()
+    finally:
+        parent.stdout.close()
+    if ready != "ready\n":
+        try:
+            os.killpg(parent.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        parent.wait()
+        raise AssertionError(f"sleeping-child helper exited before readiness: {ready!r}")
+    return parent
+
+
+def _stop_process_and_reap_child(parent: subprocess.Popen) -> None:
+    """Ask the parent to terminate and reap its child before it exits."""
+    try:
+        parent.send_signal(signal.SIGTERM)
+    except ProcessLookupError:
+        pass
+    parent.wait()
+    assert parent.returncode == 0, f"process-tree helper exited {parent.returncode}"
+    live = _live_process_group_members(parent.pid)
+    assert not live, f"process group {parent.pid} still has live members {live}"
 
 
 # --------------------------------------------------------------------------
@@ -89,21 +166,13 @@ def test_tree_cpu_seconds_falls_back_to_ppid_scan_when_task_api_unavailable(
 
 
 def test_tree_cpu_seconds_walks_a_real_live_child(tmp_path: Path) -> None:
-    """The main traversal (500-514) with a REAL, live child: `sh -c "sleep 2
-    & wait"` keeps a genuine child process alive for the duration of this
-    test, so `tree_cpu_seconds` must actually enter the while-loop body
-    (rather than finding an empty frontier, the shape `sleep`'s own
-    childless case never exercises) and sum a real descendant's CPU time
-    via the default `_pid_children_via_task` path.
-    """
-    parent = subprocess.Popen(["sh", "-c", "sleep 2 & wait"])
+    """The live child keeps tree traversal's while-loop on the real path."""
+    parent = _start_process_with_sleeping_child()
     try:
-        time.sleep(0.1)  # let the shell actually fork its background child.
         cpu = liveness.tree_cpu_seconds(parent.pid)
         assert cpu >= 0.0
     finally:
-        parent.kill()
-        parent.wait()
+        _stop_process_and_reap_child(parent)
 
 
 def test_tree_cpu_seconds_skips_a_child_that_already_exited(
@@ -171,7 +240,7 @@ def test_tree_cpu_seconds_falls_back_per_child_when_that_childs_task_api_fails(
     fall back to a ppid-scan for exactly that child, while the root's own
     (successful) discovery is untouched.
     """
-    parent = subprocess.Popen(["sh", "-c", "sleep 2 & wait"])
+    parent = _start_process_with_sleeping_child()
     try:
         real_children_via_task = liveness._pid_children_via_task
 
@@ -181,12 +250,10 @@ def test_tree_cpu_seconds_falls_back_per_child_when_that_childs_task_api_fails(
             raise OSError("simulated per-child task API failure")
 
         monkeypatch.setattr(liveness, "_pid_children_via_task", _fail_only_for_children)
-        time.sleep(0.1)  # let the shell actually fork its background child.
         cpu = liveness.tree_cpu_seconds(parent.pid)
         assert cpu >= 0.0
     finally:
-        parent.kill()
-        parent.wait()
+        _stop_process_and_reap_child(parent)
 
 
 # --------------------------------------------------------------------------

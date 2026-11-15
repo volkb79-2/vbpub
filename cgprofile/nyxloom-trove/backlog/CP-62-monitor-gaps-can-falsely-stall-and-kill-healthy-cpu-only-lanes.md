@@ -26,7 +26,7 @@ therefore be marked stalled and killed. Daemon throttling and a blocked or
 stopped monitor could also leave the kill path without fresh evidence.
 
 The finding and required fail-safe behavior are in
-`/home/vscode/vbpub-release-program-20261027/reports/telemetry-platform-DESIGN-v2.md`
+[telemetry-platform-DESIGN-v2.md](../../../docs/design/telemetry-platform/DESIGN-v2-2026-11-07.md)
 section 3 (FS-1 through FS-6).
 
 ## Why cgroup-profiler owns it

@@ -74,6 +74,7 @@ class Result:
     elapsed_seconds: float
     descendants_killed: int = 0
     resource_limit_evidence: dict[str, Any] | None = None
+    resource_limit_advisories: tuple[str, ...] = ()
     process_tree_evidence: dict[str, Any] | None = None
 
 
@@ -252,6 +253,7 @@ def _candidate_result(
     job: Any, *, returncode: int | None, elapsed_seconds: float, timed_out: bool,
     descendants_killed: int = 0,
     resource_limit_evidence: Any | None = None,
+    resource_limit_advisories: Sequence[str] = (),
     process_tree_evidence: dict[str, Any],
 ) -> Result:
     evidence = (
@@ -289,6 +291,7 @@ def _candidate_result(
         elapsed_seconds=round(elapsed_seconds, 3),
         descendants_killed=descendants_killed,
         resource_limit_evidence=evidence,
+        resource_limit_advisories=tuple(resource_limit_advisories),
         process_tree_evidence=process_tree_evidence,
     )
 
@@ -565,30 +568,48 @@ def _assay_source_package_paths(assay_source: Path) -> list[str]:
         )
 
     roots: list[str] = []
+    repo_top: Path | None = None
 
     def validate_root(raw: object) -> tuple[str, Path]:
+        nonlocal repo_top
         if not isinstance(raw, str) or not raw:
             raise RuntimeError(f"Assay declares an invalid package source root: {raw!r}")
         if any(character in raw for character in "*?[]:\\"):
             raise RuntimeError(f"Assay declares a non-literal package source root: {raw!r}")
         path = PurePosixPath(raw)
-        if path.is_absolute() or ".." in path.parts:
+        if path.is_absolute():
             raise RuntimeError(f"Assay declares an unsafe package source root: {raw!r}")
-        normalized = path.as_posix()
-        package_root = source_root / Path(*path.parts)
+        package_root = source_root.joinpath(*path.parts)
         try:
             resolved_root = package_root.resolve(strict=True)
-            resolved_relative = resolved_root.relative_to(source_root).as_posix()
         except (OSError, ValueError) as exc:
             raise RuntimeError(
                 f"Assay's declared package source root escapes or is missing: {package_root}"
             ) from exc
-        if package_root.is_symlink():
-            raise RuntimeError(f"Assay's declared package source root must not be a symlink: {package_root}")
-        if resolved_relative != normalized:
-            raise RuntimeError(
-                f"Assay's declared package source root contains a symlinked path component: {package_root}"
-            )
+
+        component = source_root
+        for part in path.parts:
+            if part == "..":
+                component = component.parent
+                continue
+            component = component / part
+            if component.is_symlink():
+                raise RuntimeError(
+                    "Assay's declared package source root contains a symlinked path component: "
+                    f"{package_root}"
+                )
+        try:
+            resolved_root.relative_to(source_root)
+        except ValueError:
+            if repo_top is None:
+                _, repo_top, _, _ = _git_command_context(source_root)
+            try:
+                resolved_root.relative_to(repo_top)
+            except ValueError as exc:
+                raise RuntimeError(
+                    "Assay's declared package source root escapes its Git worktree: "
+                    f"{package_root}"
+                ) from exc
         if not package_root.is_dir():
             raise RuntimeError(f"Assay's declared package source root is missing: {package_root}")
         for directory, child_directories, files in os.walk(package_root, followlinks=False):
@@ -596,6 +617,7 @@ def _assay_source_package_paths(assay_source: Path) -> list[str]:
                 raise RuntimeError(
                     f"Assay's declared package source root contains a symlink entry: {package_root}"
                 )
+        normalized = Path(os.path.relpath(resolved_root, source_root)).as_posix()
         return normalized, resolved_root
 
     def add_root(raw: object, *, allow_existing: bool = False) -> None:
@@ -615,13 +637,34 @@ def _assay_source_package_paths(assay_source: Path) -> list[str]:
     for package_name, raw in package_dir.items():
         if not isinstance(package_name, str):
             raise RuntimeError(f"Assay declares an invalid package-dir key: {package_name!r}")
-        if package_name:
+        if package_name and any(
+            not component.isidentifier() for component in package_name.split(".")
+        ):
             raise RuntimeError(
-                f"Assay uses an unsupported named package-dir mapping: {package_name!r}"
+                f"Assay declares an invalid package-dir key: {package_name!r}"
             )
-        add_root(raw, allow_existing=True)
+        add_root(raw, allow_existing=package_name == "")
 
     return [*roots, "pyproject.toml"]
+
+
+def _assay_source_package_git_paths(
+    assay_source: Path, *, repo_top: Path | None = None,
+) -> list[str]:
+    """Return declared package roots as pathspecs relative to Assay's Git worktree."""
+    source_root = assay_source.resolve()
+    if repo_top is None:
+        _, repo_top, _, _ = _git_command_context(source_root)
+    paths: list[str] = []
+    for relative in _assay_source_package_paths(source_root):
+        resolved = (source_root / relative).resolve(strict=True)
+        try:
+            paths.append(resolved.relative_to(repo_top).as_posix())
+        except ValueError as exc:
+            raise RuntimeError(
+                f"Assay's declared package source root escapes its Git worktree: {relative}"
+            ) from exc
+    return paths
 
 
 def _is_generated_ignored_path(status_record: str, worktree: Path) -> bool:
@@ -671,13 +714,11 @@ def _assay_source_tree_status(assay_source: Path) -> str:
     _, repo_top, _, _ = _git_command_context(assay_source)
     source_root = assay_source.resolve()
     try:
-        prefix = source_root.relative_to(repo_top)
+        prefix = source_root.relative_to(repo_top).as_posix()
     except ValueError as exc:
         raise RuntimeError("Assay source is outside its resolved Git worktree") from exc
-    relative = prefix.as_posix()
-    roots = _assay_source_package_paths(source_root)
-    paths = [f"{relative}/{path}" if relative != "." else path for path in roots]
-    paths.append(f":(exclude){relative + '/' if relative != '.' else ''}.assay")
+    paths = _assay_source_package_git_paths(source_root, repo_top=repo_top)
+    paths.append(f":(exclude){prefix + '/' if prefix != '.' else ''}.assay")
     status = _git_worktree_status(repo_top, paths, include_ignored=True)
     return "\0".join(
         record for record in status.split("\0")
@@ -695,6 +736,10 @@ def _assay_install_tree_status(assay_source: Path) -> str:
         raise RuntimeError("Assay source is outside its resolved Git worktree") from exc
     prefix = "" if prefix == "." else prefix
     paths = [prefix or "."]
+    for package_path in _assay_source_package_git_paths(source_root, repo_top=repo_top):
+        if prefix and (package_path == prefix or package_path.startswith(f"{prefix}/")):
+            continue
+        paths.append(package_path)
     for state_dir in (".assay", ".run-gate"):
         paths.append(f":(exclude){prefix + '/' if prefix else ''}{state_dir}")
     status = _git_worktree_status(repo_top, paths, include_ignored=True)
@@ -837,12 +882,17 @@ def _resume_results(
         raise ValueError(f"could not read mutation resume evidence: {evidence_path}") from exc
     previous_head = previous.get("head") if isinstance(previous, dict) else None
     if not isinstance(previous, dict) \
-            or previous.get("schema_version") != 5 \
+            or previous.get("schema_version") != 6 \
             or previous.get("candidate_isolation") != "process-tree/1":
         raise ValueError(
-            "mutation resume evidence predates the current process-tree evidence schema; "
+            "mutation resume evidence predates the current resource and process-tree evidence schema; "
             f"archive or remove {evidence_path} and start a fresh campaign"
         )
+    baseline_advisories = previous.get("baseline_resource_limit_advisories")
+    if not isinstance(baseline_advisories, list) or any(
+        not isinstance(item, str) or not item for item in baseline_advisories
+    ):
+        raise ValueError("mutation resume evidence has invalid baseline resource advisories")
     from assay.process_tree import ProcessTreeEvidence
 
     try:
@@ -906,16 +956,9 @@ def _resume_results(
     previous_assay_source_commit = previous.get("assay_source_commit")
     if previous_assay_source_commit != assay_source_commit:
         assay_repo_root = assay_git.repo_top(assay_source_root).resolve()
-        source_root = assay_source_root.resolve()
-        try:
-            source_prefix = source_root.relative_to(assay_repo_root)
-        except ValueError as exc:
-            raise ValueError("Assay source is outside its resolved Git worktree") from exc
-        prefix = source_prefix.as_posix()
-        assay_paths = [
-            f"{prefix}/{path}" if prefix != "." else path
-            for path in _assay_source_package_paths(source_root)
-        ]
+        assay_paths = _assay_source_package_git_paths(
+            assay_source_root, repo_top=assay_repo_root,
+        )
         if _changed_since(
             assay_repo_root, previous_assay_source_commit, assay_source_commit, assay_paths,
             assay_git=assay_git,
@@ -942,6 +985,13 @@ def _resume_results(
             continue
         if not isinstance(prior, dict) or _result_identity(prior) != _job_identity(jobs[index]):
             raise ValueError(f"mutation resume evidence does not match candidate {index}")
+        advisories = prior.get("resource_limit_advisories")
+        if not isinstance(advisories, list) or any(
+            not isinstance(item, str) or not item for item in advisories
+        ):
+            raise ValueError(
+                f"mutation resume evidence has invalid resource advisories for candidate {index}"
+            )
         try:
             resource_evidence = ResourceLimitEvidence.from_dict(
                 prior["resource_limit_evidence"]
@@ -1126,7 +1176,7 @@ def _run_campaign(
             finally:
                 control_seconds = time.monotonic() - control_started
             baseline_resource_after = _read_resource_limit_counters()
-            baseline_resource_evidence = _resource_limit_evidence(
+            baseline_resource_evidence, baseline_resource_advisories = _resource_limit_evidence(
                 baseline_resource_before, baseline_resource_after
             )
     except subprocess.TimeoutExpired as exc:
@@ -1177,7 +1227,7 @@ def _run_campaign(
         raise RuntimeError("frozen test fixture changed while the known-good control ran")
 
     document: dict[str, Any] = {
-        "schema_version": 5,
+        "schema_version": 6,
         "candidate_isolation": "process-tree/1",
         "tool": "cmru mutation campaign using worktree Assay mutation sites",
         "assay_distribution_version": assay.__version__,
@@ -1196,6 +1246,7 @@ def _run_campaign(
         "candidate_count": len(jobs),
         "baseline_exit_code": baseline.returncode,
         "baseline_resource_limit_evidence": baseline_resource_evidence.to_dict(),
+        "baseline_resource_limit_advisories": list(baseline_resource_advisories),
         "baseline_process_tree_evidence": baseline.process_tree_evidence,
         "status": "running",
         "results": results,
@@ -1325,7 +1376,9 @@ def _run_campaign(
                 process_tree_evidence = completed.process_tree_evidence
             try:
                 resource_after = _read_resource_limit_counters()
-                limit_evidence = _resource_limit_evidence(resource_before, resource_after)
+                limit_evidence, limit_advisories = _resource_limit_evidence(
+                    resource_before, resource_after,
+                )
             except (OSError, RuntimeError, ValueError) as exc:
                 document["status"] = "infrastructure-error"
                 document["infrastructure_error"] = (
@@ -1345,6 +1398,7 @@ def _run_campaign(
                     timed_out=True,
                     descendants_killed=descendants_killed,
                     resource_limit_evidence=limit_evidence,
+                    resource_limit_advisories=limit_advisories,
                     process_tree_evidence=process_tree_evidence,
                 )
             else:
@@ -1354,6 +1408,7 @@ def _run_campaign(
                     timed_out=False,
                     descendants_killed=descendants_killed,
                     resource_limit_evidence=limit_evidence,
+                    resource_limit_advisories=limit_advisories,
                     process_tree_evidence=process_tree_evidence,
                 )
         fail_if_assay_source_changed(f"during candidate {index}")
@@ -1388,6 +1443,7 @@ def _run_campaign(
             "termination": result.termination,
             "descendants_killed": result.descendants_killed,
             "resource_limit_evidence": result.resource_limit_evidence,
+            "resource_limit_advisories": list(result.resource_limit_advisories),
             "process_tree_evidence": result.process_tree_evidence,
             "elapsed_seconds": result.elapsed_seconds,
             "campaign_elapsed_seconds": round(time.monotonic() - started, 3),

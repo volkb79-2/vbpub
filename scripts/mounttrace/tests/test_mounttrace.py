@@ -295,13 +295,26 @@ class ParsingTests(unittest.TestCase):
                 self.assertEqual(m.propagation, expected)
 
     def test_canonicalize_missing_leaf_has_a_stable_display_warning_and_kind(self):
-        with patch.object(self.mt, 'proc_root', return_value='/proc/42/root'), \
-                patch.object(self.mt.os, 'lstat', side_effect=FileNotFoundError):
+        real_lstat = self.mt.os.lstat
+        target_root = '/proc/42/root'
+        missing_path = target_root + '/future-mount'
+        seen = []
+
+        def missing(path, *args, **kwargs):
+            candidate = self.mt.os.fspath(path)
+            seen.append(candidate)
+            if candidate == missing_path:
+                raise FileNotFoundError()
+            return real_lstat(path, *args, **kwargs)
+
+        with patch.object(self.mt, 'proc_root', return_value=target_root), \
+                patch.object(self.mt.os, 'lstat', new=missing):
             self.assertEqual(
                 self.mt.canonicalize('/future-mount', 42),
                 ('/future-mount',
                  '/future-mount does not exist; the rest of the path is analysed lexically',
                  self.mt.CANONICAL_WARNING_MISSING_LEAF))
+        self.assertIn(missing_path, seen)
 
     def test_terminal_controls_are_sanitized_at_output_boundaries(self):
         mt = self.mt
@@ -401,15 +414,38 @@ class CliReportTests(unittest.TestCase):
 
     def test_no_probe_soulmask_ramdisk_never_touches_paths(self):
         mt = self.mt
+        real_stat, real_lstat, real_readlink = mt.os.stat, mt.os.lstat, mt.os.readlink
+        translated_roots = (mt.proc_root(42), mt.proc_root(None))
+        fixture_paths = ("/state", "/ram", "/data", "/btrfs", "/dev/loop0")
+
+        def refused(name, real):
+            def guarded(path, *args, **kwargs):
+                if isinstance(path, int):
+                    return real(path, *args, **kwargs)
+                try:
+                    candidate = mt.os.fsdecode(mt.os.fspath(path))
+                except TypeError:
+                    return real(path, *args, **kwargs)
+                if candidate.startswith('/proc/self/fd/'):
+                    return real(path, *args, **kwargs)
+                if any(candidate == root or candidate.startswith(root.rstrip('/') + '/')
+                       for root in translated_roots):
+                    raise AssertionError(f"{name} probed translated path {candidate}")
+                if any(candidate == fixture or candidate.startswith(fixture.rstrip('/') + '/')
+                       for fixture in fixture_paths):
+                    raise AssertionError(f"{name} probed fixture path {candidate}")
+                return real(path, *args, **kwargs)
+            return guarded
+
         tables = self.fixture_tables()
         tables['state'] = (b'RAMDISK=/ram\nREADONLY=0\nPI_ERRORS=0\n'
                            b'TARGET=/data/u/WS/Content/Paks\n')
         btrfs_tables = self.fixture_tables()
         btrfs_tables['host'].append(mt.parse_mountinfo_line(
             '20 1 0:20 / /btrfs rw - btrfs /dev/loop0 rw,subvolid=5'))
-        with patch.object(mt.os, 'stat', side_effect=AssertionError('stat called')), \
-                patch.object(mt.os, 'lstat', side_effect=AssertionError('lstat called')), \
-                patch.object(mt.os, 'readlink', side_effect=AssertionError('readlink called')), \
+        with patch.object(mt.os, 'stat', new=refused('stat', real_stat)), \
+                patch.object(mt.os, 'lstat', new=refused('lstat', real_lstat)), \
+                patch.object(mt.os, 'readlink', new=refused('readlink', real_readlink)), \
                 patch.object(mt.fcntl, 'ioctl', side_effect=AssertionError('ioctl called')), \
                 patch.object(argparse, '_', new=lambda message: message):
             status, stdout, stderr = invoke_main(
@@ -885,8 +921,17 @@ class HumanGoldenTests(unittest.TestCase):
         mt = self.mt
         warning = ('could not resolve symlinks: [Errno 13] Permission denied '
                    '(run as root to inspect another process root); lexical analysis only')
-        with patch.object(mt, 'proc_root', return_value='/proc/42/root'), \
-                patch.object(mt.os, 'lstat', side_effect=PermissionError(13, 'Permission denied')):
+        target_root = '/proc/42/root'
+        denied_path = target_root + '/denied'
+        real_lstat = mt.os.lstat
+
+        def denied(path, *args, **kwargs):
+            if mt.os.fspath(path) == denied_path:
+                raise PermissionError(13, 'Permission denied')
+            return real_lstat(path, *args, **kwargs)
+
+        with patch.object(mt, 'proc_root', return_value=target_root), \
+                patch.object(mt.os, 'lstat', new=denied):
             self.assertEqual(
                 mt.canonicalize('/denied', 42),
                 ('/denied', warning, mt.CANONICAL_WARNING_RESOLUTION_FAILED))

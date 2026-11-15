@@ -58,6 +58,51 @@ def _rigor_kwargs(rigor: list[Path]) -> dict:
     return {"rigor_assets": tuple(rigor)} if rigor else {}
 
 
+def _bundle_dev_version(forge, project_name: str, project) -> str:
+    """Resolve an untagged archive version from CMRU's release plan and Git identity."""
+    from cmru.version import _git, status_records
+
+    version_config = getattr(project, "version", None)
+    if version_config is None or str(version_config.strategy).startswith("external:"):
+        raise RuntimeError(
+            f"cannot derive a development archive version for {project_name}; "
+            "set the configured archive version environment variable"
+        )
+    if not getattr(forge, "repo_root", None):
+        raise RuntimeError(
+            f"cannot derive a development archive version for {project_name}; "
+            "the cmru configuration has no repository root"
+        )
+    records = status_records(forge.repo_root, dict(forge.projects))
+    record = next((item for item in records if item["project"] == project_name), None)
+    if record is None:
+        raise RuntimeError(f"cmru version resolution returned no record for {project_name}")
+
+    tag_prefix = project.prefix or f"{project_name}-v"
+    planned = record.get("next_version")
+    if planned:
+        if not planned.startswith(tag_prefix):
+            raise RuntimeError(
+                f"cmru resolved {planned!r}, which does not start with {tag_prefix!r}"
+            )
+        base_version = planned[len(tag_prefix):]
+    elif record.get("last_tag"):
+        last_tag = record["last_tag"]
+        if not last_tag.startswith(tag_prefix):
+            raise RuntimeError(f"cmru resolved unexpected release tag {last_tag!r}")
+        base_version = last_tag[len(tag_prefix):]
+    else:
+        raise RuntimeError(f"cmru version resolution returned no version for {project_name}")
+
+    last_tag = record.get("last_tag")
+    revision_range = f"{last_tag}..HEAD" if last_tag else "HEAD"
+    commits = _git(forge.repo_root, "rev-list", "--count", revision_range)
+    commit = _git(forge.repo_root, "rev-parse", "--short=12", "HEAD")
+    if not commits.isdecimal() or not re.fullmatch(r"[0-9a-fA-F]{7,40}", commit):
+        raise RuntimeError("git returned an invalid commit count or short hash for bundle versioning")
+    return f"{base_version}.dev{commits}+g{commit.lower()}"
+
+
 def _curated_release_notes(
     cwd: Path, prefix: str, version: str, build_output: Optional[dict],
 ) -> Optional[ReleaseNotes]:
@@ -997,6 +1042,68 @@ def cmd_bundle_manifest(args: argparse.Namespace) -> None:
           f"sha256 {manifest_sha256(out)})")
 
 
+def cmd_bundle_build(args: argparse.Namespace) -> None:
+    """Build the per-interpreter bundle archives of one project (KI-126).
+
+    The variant list is the project's own ``[[project.variants]]``; ``--variant all``
+    builds every declared variant, a NAME builds one. A project that declares no variants
+    builds the single legacy archive and refuses a variant name.
+    """
+    from cmru import bundle, exit_codes
+    from cmru.config import load_forge_config
+    from cmru.cli import _project_release_prefix
+    from cmru.release import version_to_tag
+
+    forge = load_forge_config(Path(args.cmru_config))
+    project = forge.projects.get(args.name)
+    if project is None:
+        print(f"[ERROR] bundle-build: no project {args.name!r} in {args.cmru_config}", file=sys.stderr)
+        raise SystemExit(exit_codes.CONFIG_ERROR)
+    bundle_config = Path(args.bundle_config).resolve()
+    declared = list(project.variants)
+    if declared:
+        names = {v.name for v in declared}
+        if args.variant != "all" and args.variant not in names:
+            print(f"[ERROR] bundle-build: --variant {args.variant!r} is not declared by "
+                  f"{args.name} (declared: {', '.join(sorted(names))}, or all)", file=sys.stderr)
+            raise SystemExit(exit_codes.CONFIG_ERROR)
+        selected = [v for v in declared if args.variant in ("all", v.name)]
+    elif args.variant != "all":
+        print(f"[ERROR] bundle-build: {args.name} declares no variants; use --variant all",
+              file=sys.stderr)
+        raise SystemExit(exit_codes.CONFIG_ERROR)
+    else:
+        selected = [None]
+
+    try:
+        parsed = bundle.parse_config(bundle_config)
+        version = os.environ.get(parsed.archive_version_env, "")
+        version_fallback = None
+        if not version:
+            version_fallback = _bundle_dev_version(forge, args.name, project)
+            version = version_fallback
+        tag = version_to_tag(_project_release_prefix(project), version)
+        built = [
+            bundle.run_bundle(
+                bundle_config, variant=variant, manifest_project=args.name, manifest_tag=tag,
+                version_fallback=version_fallback,
+            )
+            for variant in selected
+        ]
+    except (ValueError, FileNotFoundError) as exc:
+        print(f"[ERROR] bundle-build: {exc}", file=sys.stderr)
+        raise SystemExit(exit_codes.CONFIG_ERROR) from None
+    except RuntimeError as exc:
+        print(f"[ERROR] bundle-build: {exc}", file=sys.stderr)
+        raise SystemExit(exit_codes.PREREQ_MISSING) from None
+    except subprocess.CalledProcessError as exc:
+        print(f"[ERROR] bundle-build: step failed (exit {exc.returncode}): {' '.join(map(str, exc.cmd))}",
+              file=sys.stderr)
+        raise SystemExit(exit_codes.FAILURE) from None
+    for path in built:
+        print(f"[INFO] Built {path}")
+
+
 def cmd_tarball_validate(args: argparse.Namespace) -> None:
     """Assert the resolved latest <prefix>-v* release carries a tarball + .sha256."""
     owner = _require_env("GITHUB_USERNAME")
@@ -1203,6 +1310,12 @@ def handlers_cli():
             required_name("--tag", "full release tag, e.g. tls-edge-v1.2.3", "TAG"),
             required_path("--root", "the staged bundle directory (the tarball's top-level dir)"),
             OptionSpec(("--manifest-name",), "manifest file name (default manifest.json)", metavar="NAME", parser_kwargs={"dest": "manifest_name", "default": "manifest.json"}),
+        )),
+        ("bundle-build", "Build the per-interpreter bundle archives (vendor, stage, manifest, archive).", cmd_bundle_build, (
+            required_path("--bundle-config", "bundle.toml of the project"),
+            required_path("--cmru-config", "the cmru.toml that declares the project's variants"),
+            required_name("--name", "project name (as in cmru.toml)", "NAME"),
+            OptionSpec(("--variant",), "declared variant NAME to build, or all (default all)", metavar="NAME", parser_kwargs={"default": "all"}),
         )),
         ("tarball-validate", "Validate the resolved latest tarball release.", cmd_tarball_validate, (
             required_name("--prefix", "release prefix without -v", "PREFIX"),

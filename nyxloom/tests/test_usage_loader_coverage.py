@@ -493,8 +493,14 @@ def test_scanner_discloses_snapshot_changes_and_read_errors(tmp_path, monkeypatc
 
     def mutate_after_snapshot(fd):
         nonlocal calls
-        calls += 1
         initial = real_fstat(fd)
+        try:
+            opened = os.path.realpath(os.readlink(f"/proc/self/fd/{fd}"))
+        except OSError:
+            return initial
+        if opened != str(path.resolve()):
+            return initial
+        calls += 1
         if calls == 1:
             if change == "truncate":
                 path.write_bytes(b"")

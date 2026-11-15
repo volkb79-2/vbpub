@@ -4,6 +4,15 @@ All notable changes to debian-install-v2 are recorded here.
 
 ## [Unreleased]
 
+### Changed
+- KSM defaults to `advisor_max_cpu=10` (percent of one CPU), a 300-second target scan, and
+  `sleep_millisecs=100`. Installer config can override them with `ksm_advisor_max_cpu_percent` (1–100),
+  `ksm_target_scan_time_seconds` (positive seconds), and the positive-integer `ksm_sleep_millisecs`
+  (milliseconds). Measurements showed the advisor CPU cap alone left ksmd near 15% of a core under
+  load; the 100 ms sleep brought it to about 4%. Existing hosts should refresh the drop-in by rerunning
+  the installer step or updating its KSM entries and applying them with
+  `systemd-tmpfiles --create --boot /etc/tmpfiles.d/vbpub-ksm.conf`.
+
 ### Fixed (netcup NC-17..NC-20 and DIV2-BL-01/02/04)
 - Host-pin scans count and store only key records, ignoring the newer `ssh-keyscan` banner comment,
   while still refusing multiple keys.

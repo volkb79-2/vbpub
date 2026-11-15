@@ -1,12 +1,13 @@
+<!-- Evidence scrub 2026-11-10: environment-specific host identities, addresses, controller paths, and key material were normalized to neutral placeholders; command output and verdict text are otherwise unchanged. -->
 # Boot-pool patch follow-up work
 
 For the current release/path test matrix, active gate checkpoint, and exact
 resume instructions, see [`HANDOFF.md`](HANDOFF.md).
 
-## Current checkpoint: 2026-10-30 v1001 matrix complete; later-build checks remain open
+## Current checkpoint: 2026-10-30 <host> matrix complete; later-build checks remain open
 
-The operator-authorized v1001 run is complete for the tested release builds.
-Only v1001 was mutated. It now runs
+The operator-authorized <host> run is complete for the tested release builds.
+Only <host> was mutated. It now runs
 `28.0.0-MASTER+20261027-175229`; Path A `boot-pool/user-data` is mounted,
 `boot-pool` is ONLINE, and `/dev/vda4` is an empty/unmounted reserved
 `boot-disk-data` partition with no imported pool or ZFS label.
@@ -20,7 +21,7 @@ Only v1001 was mutated. It now runs
   refused before source mutation. The Path A marker bytes survived but were
   unmounted after boot; manually mounting restored access. This is not
   automatic patch/data availability through update.
-- [x] Updated v1001 to official v28 nightly
+- [x] Updated <host> to official v28 nightly
   `28.0.0-MASTER+20261027-175229`; its exact version is not covered by the
   2026-10-14 adapter. The separate 19-target adapter is installed and its
   Path A and Path B API/UI matrices passed. The Path B `reclaim_path_b.py`
@@ -51,13 +52,13 @@ Only v1001 was mutated. It now runs
 - [ ] Keep VM guest OS boot, actual KVM selection, NFS/SMB client access,
   separate-disk cache/import order, and real device failure behavior open.
 
-All live text/DOM dumps are outside the checkout at
-`/home/vscode/vbpub-release-program-20261027/evidence/truenas-live-20261029/`.
+All live text/DOM dumps are indexed at
+[truenas-live-20261029](../docs/evidence/truenas-live-20261029.md).
 No screenshots are committed. The current version matrix and user-facing
 summary are in [README](README.md#supported-builds), [DESIGN-GUIDE](docs/DESIGN-GUIDE.md#v28-rolling-nightly-adapter-design),
 and [CONSUMERS](docs/CONSUMERS.md#v28-rolling-nightly-acceptance).
 
-## Historical v1001 access checkpoint: 2026-10-21
+## Historical <host> access checkpoint: 2026-10-21
 
 ## Live validation status (2026-10-21)
 
@@ -76,7 +77,7 @@ These results do not prove guest OS boot or a separate user-data volume mounted
 inside the container. The v27-to-v28 update and v28 patch have not yet been
 tested with these records and hashes.
 
-The public v1001 host is an authenticated, key-only SSH UI test target. The
+The public <host> host is an authenticated, key-only SSH UI test target. The
 registered `live-ui-auth` lane used the operator-confirmed install-time account
 credential; the earlier failure used the wrong golden-sidecar password. The
 registered `live-ui-prepare-ssh` lane then installed the root Ed25519 key,
@@ -85,11 +86,11 @@ autostart enabled. A read-only inventory passed and a provider snapshot was
 created before storage UI tests. After a brief post-snapshot boot-readiness
 timeout, PWMCP and SSH both succeeded.
 
-The regular v27 patch installer safely refused v1001 before mutation because
+The regular v27 patch installer safely refused <host> before mutation because
 14 of 15 adapter source hashes differ. Two custom modules match this worktree,
 but there is no install record and the rest of the state is unexplained. Do not
 force the adapter onto this host. The fingerprint-pinned
-[`live-ui-observed-v1001` lane](docs/CONSUMERS.md#exploratory-ui-check-on-v1001)
+[`live-ui-observed-<host>` lane](docs/CONSUMERS.md#exploratory-ui-check-on-<host>)
 is only for exploratory UI behavior evidence; it is not adapter certification.
 
 On 2026-10-21, that lane verified all 17 observed source hashes and the absent
@@ -101,21 +102,21 @@ failed in middleware with `NameError: name 'mountpoint' is not defined` at
 dataset was created, so the UI workflow did not reach zvol/container/VM forms.
 This is a failed live UI acceptance and a concrete middleware defect to
 investigate; it is not evidence that the current patch adapter works. The
-registered unit lane passed with 194 tests and 45 subtests. Evidence is in
-[`live-ui-observed-v1001-child-create-nameerror-20261021.log`](artifacts/live-ui-observed-v1001-child-create-nameerror-20261021.log)
-and [`unit-boot-pool-patch-observed-root-bootstrap-20261021.log`](artifacts/unit-boot-pool-patch-observed-root-bootstrap-20261021.log).
+registered unit lane passed with 194 tests and 45 subtests. Evidence is labelled
+`live-ui-observed-<host>-child-create-nameerror-20261021.log` and
+`unit-boot-pool-patch-observed-root-bootstrap-20261021.log`.
 
 The supported Netcup snapshot `truenas-v27-rc1-base-20261021`
 (`b8e286a2-9248-4c35-b9ad-ca82fd2fde95`) was restored after the failed UI
 attempt. The restore task `fbad4f98-cfb0-4740-96dc-dff1e562113f` finished;
-Netcup reported v1001 `SHUTOFF`, uptime 0. Stop testing here. Do not power on
-v1001 or start a local QEMU guest until the operator resumes testing. The next
+Netcup reported <host> `SHUTOFF`, uptime 0. Stop testing here. Do not power on
+<host> or start a local QEMU guest until the operator resumes testing. The next
 live run must first replace the public default `truenas_admin` password with a
 fresh random host-specific password and save it in a mode-0600, gitignored
 host-secret TOML for later access. The current golden recipe's public default
 must never be used as a lasting live-test credential.
 
-See the shared [access checkpoint](../TODO.md#2026-10-21-v1001-public-host-access-check)
+See the shared [access checkpoint](../TODO.md#2026-10-21-<host>-public-host-access-check)
 and the [golden-image credential remediation](../golden-iso/TODO.md#preserve-the-golden-image-credential-boundary).
 
 After the 2026-10-21 host restart, the same guest passed a fresh read-only
@@ -970,16 +971,16 @@ needed for this question because this setting is exposed in Preferences.
   backing pool is unavailable, physical fault tolerance, and representative
   performance tests open.
 
-## Detailed v1001 upgrade and v28 evidence (2026-10-29/30)
+## Detailed <host> upgrade and v28 evidence (2026-10-29/30)
 
 - [x] Verified the official v27 nightly `27.0.0-MASTER+20261027-173422` on
-  v1001. The update replaced the RC.1 middleware patch files; the old install
+  <host>. The update replaced the RC.1 middleware patch files; the old install
   manifest remained stale and the exact RC.1 reapply lane refused before source
   mutation. The Path A marker dataset survived but booted unmounted; manual
   mounting restored access. Feed metadata, checksum, update job, reboot, and
   post-update logs are in the external `truenas-live-20261029/` evidence dir.
 - [x] Installed the official v28 nightly
-  `28.0.0-MASTER+20261027-175229` on v1001 through the TrueNAS update job and
+  `28.0.0-MASTER+20261027-175229` on <host> through the TrueNAS update job and
   verified its feed checksum and rebooted version. The 2026-10-14 adapter
   correctly refused this build before mutation. Its storage patch has rejected
   hunks against changed targets, so the 2026-10-27 adapter is a separate

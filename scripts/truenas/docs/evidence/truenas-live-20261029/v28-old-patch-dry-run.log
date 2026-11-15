@@ -1,0 +1,46 @@
+# Evidence scrub 2026-11-10: environment-specific home, checkout, worktree, and per-run temporary paths were normalized to neutral placeholders; command output and verdict text are otherwise unchanged.
+checking file middlewared/async_validators.py
+checking file middlewared/plugins/container/dataset.py
+checking file middlewared/plugins/container/info.py
+checking file middlewared/plugins/container/lifecycle.py
+Hunk #1 FAILED at 22.
+Hunk #2 FAILED at 114.
+Hunk #3 succeeded at 169 (offset 7 lines).
+2 out of 3 hunks FAILED
+checking file middlewared/plugins/container/query_pull_images.py
+Hunk #2 FAILED at 44.
+Hunk #4 FAILED at 113.
+Hunk #5 FAILED at 123.
+3 out of 5 hunks FAILED
+checking file middlewared/plugins/container/crud.py
+Hunk #1 FAILED at 21.
+Hunk #2 FAILED at 217.
+2 out of 2 hunks FAILED
+checking file middlewared/plugins/container/utils.py
+checking file middlewared/plugins/pool_/dataset.py
+Hunk #1 FAILED at 22.
+Hunk #2 FAILED at 203.
+Hunk #3 succeeded at 239 (offset -18 lines).
+Hunk #4 FAILED at 338.
+Hunk #5 succeeded at 455 (offset -18 lines).
+Hunk #6 succeeded at 493 (offset -18 lines).
+Hunk #7 succeeded at 522 (offset -18 lines).
+3 out of 7 hunks FAILED
+checking file middlewared/plugins/zfs/encryption_info.py
+Hunk #1 FAILED at 14.
+Hunk #2 FAILED at 100.
+2 out of 2 hunks FAILED
+checking file middlewared/plugins/zfs/utils.py
+Hunk #1 FAILED at 9.
+Hunk #2 FAILED at 76.
+2 out of 2 hunks FAILED
+checking file middlewared/utils/libvirt/storage_devices.py
+PATCH_storage=REFUSES
+checking file middlewared/plugins/vm/__init__.py
+checking file middlewared/plugins/vm/info.py
+checking file middlewared/plugins/vm/crud.py
+PATCH_middleware=APPLIES
+checking file middlewared/plugins/pool_/import_pool.py
+Hunk #2 succeeded at 661 (offset 1 line).
+PATCH_boot-mount=APPLIES
+CHECK_DIR=<temp-path>

@@ -1,0 +1,33 @@
+{
+  "schema": "candidate-table/1",
+  "candidates": [
+    {
+      "id": "d4ef2112b3ea0cd5113a69aa0d628e050ce8f2ec7f3aae8745b6afab2178cf5b",
+      "file": "src/one.py",
+      "measured_memory_bytes": 125829120,
+      "elapsed_seconds": 95.0,
+      "measured_on_host": "host-small"
+    },
+    {
+      "id": "d9318a70db8021e9fb52ce541495d2a4facec16d2b56e952a13f7a07fce5ffb8",
+      "file": "src/one.py"
+    },
+    {
+      "id": "ec2d9e36deec11dd98a996e72efce00317c873bb4c119d128245a9e0dbd88fb2",
+      "file": "src/two.py"
+    },
+    {
+      "id": "f5f41c65e605696c73941b3f2171fd4c9723f84a6597910217e1b40a79fe5a79",
+      "file": "src/big.py",
+      "measured_memory_bytes": 8589934592,
+      "elapsed_seconds": 180.0,
+      "measured_on_host": "host-small"
+    },
+    {
+      "id": "e7f9d2dd0dbacbc4bdffca94b7d2c9e6f7a384164d4482c087d407739f70842e",
+      "file": "src/retry.py",
+      "measured_memory_bytes": 268435456,
+      "memory_crash_evidence": true
+    }
+  ]
+}

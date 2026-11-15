@@ -1,0 +1,19 @@
+<!-- origin: controller report, historical date stated in source -->
+<!-- status: scrubbed historical copy -->
+<!-- source: reports/AGENT-RULES.md -->
+
+# Agent rules (all packages)
+- UPDATE 2026-11-04b (operator, supersedes the CPU-PSI wait rule below): CPU PSI (`some avg10`) is a STALL measure (share of time some task waited for CPU), not utilisation. The goal is to SATURATE the CPUs with the sum of our work: ~700-800% CPU on the controller (8 cores), ~350-400% on r1002 and v1001 (4 vCPU each). A high CPU PSI (50-60) while saturated is expected and is NOT a reason to stop. The only stop signals are MEMORY pressure (some avg10 >25), IO pressure (full avg10 >25), heavy swapping/thrash, and OOM kills. Interactive tiers are protected by cpu.weight (interactive 200, gates/background 20). Check utilisation (e.g. `top -bn1`, `/proc/stat` or `cat /sys/fs/cgroup/dev.slice/cpu.stat`) and ADD parallel work (lanes, stacks, bakes, jobs up to jobs_max) when a host is below its target; remove nothing already running. Never starve one host while another is saturated: use remote-gate to spread lanes over all three hosts.
+- UPDATE 2026-11-04 (operator): the prod game servers on the controller host are STOPPED, so the controller may run gates, release transactions and dstdns stacks generously (still PSI avg10 <25 and no heavy swap; the controller has 8 cores/16 GB). Gates still go through remote-gate when a test host is idle: use ALL THREE hosts. Test-hosts memory/IO limits are host-owned (dedicated-dev policy); `--memory 1g|2g` below is superseded for lane containers by host policy (use `--cgroup-parent dev-gates.slice` and no artificial small cap; keep exact names). A flaky or load-dependent test is a defect: root-cause it (see <local-path>).
+- Model Sonnet. Edit tool only for text changes (no sed/python/cat>> rewriting of repo files).
+- No `rm` with globs or unresolved variables; remove only exact paths you created.
+- Before starting ANY container or gate lane: read /proc/pressure/cpu and /proc/pressure/memory; if some avg10 > 25 on either, wait (poll every 2-5 min) and start only below 25. One gate container at a time.
+- Containers: `--memory 1g|2g --cgroup-parent dev-gates.slice`, unique exact names (include your package id), DOCKER_CONFIG=$HOME/.docker-nocreds. Remove containers by exact name only.
+- Work only in your assigned worktree (plain `git worktree add -b <branch> .worktrees/<name> main` if you must create one; ciu worktree create is broken, CIU-161). Run lanes from the linked worktree, never from the main checkout.
+- Commit with `git commit --only -- <paths>`; trailer `Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>`. No push, no merge, no tags, no releases.
+- No live-edge, prod-host, provider-firewall or <host-address> actions. r1002/v1001 only if your brief says so.
+- Read gate verdicts in a separate step (never a pipe tail). A lane failure that differs between runs under load is inconclusive: rerun when quiet, never report it as PASS.
+- At ~120k context or ~60 tool calls: write a continuation brief to <controller-home>/reports/<pkg>-CONTINUATION.md, commit, return.
+- Final answer: per item FIXED/OPEN with commit hashes, gate verdicts quoted, deviations, new backlog ids (check max existing id first; do not reuse), and a report at <controller-home>/reports/<pkg>-REPORT.md.
+- Package definitions are part of the assigned task. Fold new bug fixes in by default; keep CHANGES [Unreleased] and backlog statuses current.
+- Remote gates: when controller policy directs lanes to test hosts, use the repository's registered workflow and controller-owned host configuration; keep the configuration outside Git. It selects an eligible host, runs the lane, and records the verdict. Long runs can be detached, then polled, collected, or cancelled. Not for R2 campaigns (those use run-r2-campaign.sh via the R2 board). Docs: scripts/netcup/CONSUMERS.md "Remote gate".

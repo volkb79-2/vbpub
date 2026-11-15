@@ -22,7 +22,7 @@ RECORD = ROOT / "versions" / "oci-images.json"
 
 # (Dockerfile, the stage selector, the cmru target that vets it)
 PINS = [
-    (ROOT / "Dockerfile", None, "oci.python.314.trixie"),
+    (ROOT / "Dockerfile", "tester-base-common", "oci.python.314.trixie"),
     (REPO / "tester-unified" / "Dockerfile", "node-source", "oci.node.26.trixie"),
 ]
 FROM = re.compile(r"^FROM (?P<image>[^\s:@]+):(?P<tag>[^\s@]+)@(?P<digest>sha256:[0-9a-f]{64})(?: AS (?P<stage>\S+))?$", re.MULTILINE)
@@ -117,7 +117,7 @@ class Pins(unittest.TestCase):
         self.assertNotEqual(match.group("digest"), "sha256:" + "b" * 64)
 
     def test_the_python_base_literal_has_the_patch_tag_cmru_tracks(self) -> None:
-        pinned = literal(ROOT / "Dockerfile", None)
+        pinned = literal(ROOT / "Dockerfile", "tester-base-common")
         self.assertRegex(pinned.group("tag"), r"^3\.14\.\d+-trixie$")
 
 

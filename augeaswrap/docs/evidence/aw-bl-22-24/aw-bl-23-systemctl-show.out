@@ -1,0 +1,220 @@
+##### systemd
+systemd 257 (257.13-1~deb13u1)
++PAM +AUDIT +SELINUX +APPARMOR +IMA +IPE +SMACK +SECCOMP +GCRYPT -GNUTLS +OPENSSL +ACL +BLKID +CURL +ELFUTILS +FIDO2 +IDN2 -IDN +IPTC +KMOD +LIBCRYPTSETUP +LIBCRYPTSETUP_PLUGINS +LIBFDISK +PCRE2 +PWQUALITY +P11KIT +QRENCODE +TPM2 +BZIP2 +LZ4 +XZ +ZLIB +ZSTD +BPF_FRAMEWORK +BTF -XKBCOMMON -UTMP +SYSVINIT +LIBARCHIVE
+PID1: systemd ; is-system-running: running
+PRETTY_NAME="Debian GNU/Linux 13 (trixie)"
+NAME="Debian GNU/Linux"
+Unit aw-masked.service does not exist, proceeding anyway.
+Created symlink '/etc/systemd/system/aw-masked.service' → '/dev/null'.
+
+monotonic now (usec): 85559387732
+
+=== ACTIVE
+$ systemctl show -p ActiveEnterTimestampMonotonic,ActiveState,LoadState aw-active.service
+[exit=0]
+--- stdout (cat -A):
+LoadState=loaded$
+ActiveState=active$
+ActiveEnterTimestampMonotonic=85558340585$
+--- stderr (cat -A):
+
+=== ACTIVE_ONESHOT_REMAIN
+$ systemctl show -p ActiveEnterTimestampMonotonic,ActiveState,LoadState aw-oneshot.service
+[exit=0]
+--- stdout (cat -A):
+LoadState=loaded$
+ActiveState=active$
+ActiveEnterTimestampMonotonic=85558354917$
+--- stderr (cat -A):
+
+=== INACTIVE_NEVER_STARTED
+$ systemctl show -p ActiveEnterTimestampMonotonic,ActiveState,LoadState aw-inactive.service
+[exit=0]
+--- stdout (cat -A):
+LoadState=loaded$
+ActiveState=inactive$
+ActiveEnterTimestampMonotonic=0$
+--- stderr (cat -A):
+
+=== FAILED
+$ systemctl show -p ActiveEnterTimestampMonotonic,ActiveState,LoadState aw-failed.service
+[exit=0]
+--- stdout (cat -A):
+LoadState=loaded$
+ActiveState=failed$
+ActiveEnterTimestampMonotonic=85558373492$
+--- stderr (cat -A):
+
+=== ACTIVATING
+$ systemctl show -p ActiveEnterTimestampMonotonic,ActiveState,LoadState aw-activating.service
+[exit=0]
+--- stdout (cat -A):
+LoadState=loaded$
+ActiveState=activating$
+ActiveEnterTimestampMonotonic=0$
+--- stderr (cat -A):
+
+=== MASKED
+$ systemctl show -p ActiveEnterTimestampMonotonic,ActiveState,LoadState aw-masked.service
+[exit=0]
+--- stdout (cat -A):
+LoadState=masked$
+ActiveState=inactive$
+ActiveEnterTimestampMonotonic=0$
+--- stderr (cat -A):
+
+=== MISSING
+$ systemctl show -p ActiveEnterTimestampMonotonic,ActiveState,LoadState aw-missing.service
+[exit=0]
+--- stdout (cat -A):
+LoadState=not-found$
+ActiveState=inactive$
+ActiveEnterTimestampMonotonic=0$
+--- stderr (cat -A):
+
+=== MISSING_NO_SUFFIX
+$ systemctl show -p ActiveEnterTimestampMonotonic,ActiveState,LoadState aw-missing
+[exit=0]
+--- stdout (cat -A):
+LoadState=not-found$
+ActiveState=inactive$
+ActiveEnterTimestampMonotonic=0$
+--- stderr (cat -A):
+
+=== BROKEN_UNIT_FILE
+$ systemctl show -p ActiveEnterTimestampMonotonic,ActiveState,LoadState aw-broken.service
+[exit=0]
+--- stdout (cat -A):
+LoadState=error$
+ActiveState=inactive$
+ActiveEnterTimestampMonotonic=0$
+--- stderr (cat -A):
+
+=== BADEXEC_NEVER_STARTED
+$ systemctl show -p ActiveEnterTimestampMonotonic,ActiveState,LoadState aw-badunit.service
+[exit=0]
+--- stdout (cat -A):
+LoadState=loaded$
+ActiveState=inactive$
+ActiveEnterTimestampMonotonic=0$
+--- stderr (cat -A):
+
+=== INVALID_NAME
+$ systemctl show -p ActiveEnterTimestampMonotonic,ActiveState,LoadState bad name!.service
+[exit=1]
+--- stdout (cat -A):
+--- stderr (cat -A):
+Invalid unit name "bad name!.service" escaped as "bad\x20name!.service" (maybe you should use systemd-escape?).$
+Failed to get properties: Unit name bad\\x20name!.service.service is neither a valid invocation ID nor unit name.$
+
+=== INVALID_EMPTY
+$ systemctl show -p ActiveEnterTimestampMonotonic,ActiveState,LoadState 
+[exit=1]
+--- stdout (cat -A):
+--- stderr (cat -A):
+Failed to mangle name: Invalid argument$
+Failed to expand names: Invalid argument$
+
+=== INVALID_UNKNOWN_SUFFIX
+$ systemctl show -p ActiveEnterTimestampMonotonic,ActiveState,LoadState aw.nosuchtype
+[exit=0]
+--- stdout (cat -A):
+LoadState=not-found$
+ActiveState=inactive$
+ActiveEnterTimestampMonotonic=0$
+--- stderr (cat -A):
+
+=== LEADING_DASH_NO_SEPARATOR
+$ systemctl show -p ActiveEnterTimestampMonotonic,ActiveState,LoadState -aw-dash.service
+[exit=1]
+--- stdout (cat -A):
+--- stderr (cat -A):
+systemctl: invalid option -- 'w'$
+
+=== BUS_TWO_UNITS
+$ systemctl show -p ActiveEnterTimestampMonotonic,ActiveState,LoadState aw-active.service aw-missing.service
+[exit=0]
+--- stdout (cat -A):
+LoadState=loaded$
+ActiveState=active$
+ActiveEnterTimestampMonotonic=85558340585$
+$
+LoadState=not-found$
+ActiveState=inactive$
+ActiveEnterTimestampMonotonic=0$
+--- stderr (cat -A):
+
+=== with explicit '--' separator
+LoadState=not-found
+ActiveState=inactive
+ActiveEnterTimestampMonotonic=0
+[exit=0]
+
+=== missing property name (-p Bogus)
+[exit=0]
+
+=== stop active, then query (timestamp retained?)
+before stop ActiveEnter=85558340585
+
+=== INACTIVE_AFTER_STOP
+$ systemctl show -p ActiveEnterTimestampMonotonic,ActiveState,LoadState aw-active.service
+[exit=0]
+--- stdout (cat -A):
+LoadState=loaded$
+ActiveState=inactive$
+ActiveEnterTimestampMonotonic=0$
+--- stderr (cat -A):
+
+=== restart changes timestamp
+start=85559624351 restart=85560676553 (restart later: yes)
+
+=== restart of missing unit (the action the pending journal records)
+Failed to restart aw-missing.service: Unit aw-missing.service not found.
+[exit=5]
+
+=== restart of failed-load unit
+[exit=0]
+
+=== non-root caller
+LoadState=loaded$
+ActiveState=active$
+ActiveEnterTimestampMonotonic=85560676553$
+[exit=0]$
+LoadState=not-found$
+ActiveState=inactive$
+ActiveEnterTimestampMonotonic=0$
+[exit=0]$
+
+=== operational failure: no systemd bus reachable (override socket path)
+ActiveState=active$
+[exit=0]
+
+=== operational failure: systemctl --root (offline, no manager)
+Verb 'show' cannot be used with --root= or --image=.
+[exit=1]
+
+=== operational failure: timeout (hung query) is a Python-level TimeoutExpired, not an exit code (30s) -- not simulated
+
+=== cleanup units
+Removed '/etc/systemd/system/aw-masked.service'.
+##### operational failure A: user-scope (no session bus), as nobody
+[exit=1]
+stdout:
+stderr:
+Failed to connect to user scope bus via local transport: $DBUS_SESSION_BUS_ADDRESS and $XDG_RUNTIME_DIR not defined (consider using --machine=<user>@.host --user to connect to bus of other user)$
+
+##### operational failure B: other host-ish: unreachable machine
+[exit=1]
+stdout:
+stderr:
+Failed to connect to system scope bus via machine transport: Host is down$
+
+##### operational failure C: systemctl binary absent -> Python FileNotFoundError (OSError), not an exit code
+systemd 257 (257.13-1~deb13u1)
+PID1: sleep
+##### operational failure D: systemd installed but not PID 1 (chroot/container/no-boot)
+[exit=1]
+stdout:
+stderr:
+System has not been booted with systemd as init system (PID 1). Can't operate.$
+Failed to connect to system scope bus via local transport: Host is down$

@@ -10,6 +10,90 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 <!-- cmru: release history -->
 
+## [1.64.1-r9] - 2026-11-13
+<!-- cmru: generated -->
+<!-- cmru: source-end=fc1f30cf8163097da02d56789420fdf22558c382 -->
+
+### Fixed
+- fix(pwmcp): reject escaped whitespace and comment-glued hiding overrides (23ce6320a)
+- fix(pwmcp): use ASCII CSS case folding (0dc945020)
+- fix(pwmcp): align hidden-style parsing with CSS tokens (5c8faf1ee)
+- fix(pwmcp): validate hidden-style declaration values (4b789134d)
+
+### Changed
+- Persist cited controller evidence slice (e89045795)
+- Complete persistence fix round 2 (b217175db)
+- backlog: fix filing9 review and file follow-ups (cd933d7ba)
+- backlog: file KSM and R2 runner follow-ups (bbdb2f9ad)
+
+### Documentation
+- docs(pwmcp): clarify CSS policy evidence (77ef828ae)
+
+### Testing
+- test(pwmcp): pin simple escaped whitespace inside a display identifier (review finding F1a) (245a99878)
+- test(pwmcp): reproduce escaped whitespace and comment token bypasses (f6bceec53)
+- test(pwmcp): pin every valid static display keyword and visible cascade outcome; backlog status wording (ebaf2224f)
+- test(pwmcp): reproduce Unicode case-folding bypass (d8ab1454c)
+- test(pwmcp): cover survivor review edge cases (240facfde)
+- test(pwmcp): reproduce custom-property hidden values (7746eacee)
+- test(pwmcp): pin balanced stray-close and whitespace boundaries (c8c826423)
+- test(pwmcp): cover self-closing links and CSS recovery boundaries (40d16e8cf)
+- test(pwmcp): reproduce invalid inline style cascade bypass (e89bb96e6)
+
+<!-- cmru: pending release notes begin -->
+- fix(pwmcp): ignore invalid display and visibility declarations, fail closed on unresolved cascade values, and filter collapsed visibility (PWMCP-65, PWMCP-66)
+- fix(pwmcp): keep escaped whitespace inside CSS identifiers and comments from gluing inline-style tokens (PWMCP-65)
+- fix(pwmcp): parse only CSS whitespace and prevent non-interoperable display values from overriding hidden content (PWMCP-67, PWMCP-68)
+- fix(pwmcp): fold only ASCII case in inline-style property names and values so U+212A cannot spell `block` (PWMCP-69)
+- test(pwmcp): close r8 page-content mutation survivors with behavioral boundary coverage
+<!-- cmru: pending release notes end -->
+
+## [1.64.1-r8] - 2026-11-12
+<!-- cmru: generated -->
+<!-- cmru: source-end=51f24610b832533a9931264c86b6a4bc1360dcdc -->
+
+### Fixed
+- fix(pwmcp): bound CSS recovery and honor escapes (10ba61de5)
+- fix(pwmcp): recover CSS bad strings and escapes (1d7241c9c)
+- fix(pwmcp): fail closed on malformed hidden styles (PWMCP-63) (3ef8b2642)
+- fix(vm-lab): VML-02 delta review: keep ignored SIGHUP, tolerate malformed inbox objects (8ee60df47)
+- fix(vm-lab): VML-02 review round 1 (work in progress, unverified) (e3530bf2f)
+- fix(docs): complete host and key scrub in persisted evidence (35a98f69a)
+- fix(docs): complete evidence scrub headers (d52fb6bf8)
+- fix(docs): scrub evidence paths and reconcile persistence inventory (6cb74ce43)
+
+### Changed
+- Add PWMCP R2 survivor behavior tests (d9cf867e4)
+- Place audit backlog entries outside upstream append points (ea6b8f682)
+- Reconcile pytest audit backlogs with fresh main (c33b66a87)
+- backlog: file R2 restart and cockpit follow-ups (6e972a588)
+- refactor(pwmcp): consume vm-lab for QEMU console capture (3128c7449)
+- Scope pytest 9.2 filesystem syscall fakes (0d9de342f)
+- persist-docs: redact identity and network evidence (c5ff8eb07)
+- backlog: file host-campaign findings H1-H7 and cross-host campaign constraints (0c6ea9de4)
+
+### Documentation
+- docs: finish copied-document host scrub (9b6378432)
+- docs: persist release designs and cited evidence (e1d5fb29c)
+- docs(pwmcp): file PWMCP-54..58 from Obscura comparison (64c3533c1)
+
+### Testing
+- test(pwmcp): cover nested bad-string EOF paths (ea2871a62)
+- test(pwmcp): cover escaped scanners and nested bad strings (cd16e94f2)
+- test(pwmcp): cover CSS decoder strict rejects (04a438e24)
+
+<!-- cmru: pending release notes begin -->
+### Removed
+- Remove `console_capture.py` and `launch-truenas-vm.sh`; generic console recording and QEMU launching now live in `scripts/vm-lab/`. The recorder no longer accepts `--own-qemu` or `--qemu-pidfile`, and `ctl --quit` ends only the recorder instead of stopping QEMU.
+
+### Changed
+- feat(pwmcp): move the generic QEMU console recorder and typing commands into `scripts/vm-lab/`; remove the private QEMU launcher in favour of the admission-controlled VM tool
+- The replaced recorder exits 1 after recording an error; its former lifecycle always exited 0.
+
+### Fixed
+- fix(pwmcp): malformed inline CSS no longer exposes browser-hidden page text: declarations are parsed independently, newline-terminated bad strings and CSS escapes (property names, values, escaped quotes and parentheses) are honored, a malformed parent hides its subtree, and the scan stays linear (PWMCP-63, PWMCP-64)
+<!-- cmru: pending release notes end -->
+
 ## [1.64.1-r7] - 2026-11-09
 <!-- cmru: generated -->
 <!-- cmru: source-end=41389b6a86efa80d3a1c57c7bee68f9810bdcb2b -->

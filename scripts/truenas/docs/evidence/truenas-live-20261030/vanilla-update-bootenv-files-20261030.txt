@@ -1,0 +1,64 @@
+SYSTEM_INFO
+{"version":"27.0.0-MASTER+20261027-173422","hostname":"truenas"}
+BOOT_ENVIRONMENTS
+[{"name":null,"active":true,"can_activate":true,"keep":false},{"name":null,"active":false,"can_activate":true,"keep":false}]
+ROOT_ZFS_DATASETS
+boot-pool/ROOT	filesystem	none	-	off
+boot-pool/ROOT/27.0.0-MASTER-20261027-173422	filesystem	legacy	-	on
+boot-pool/ROOT/27.0.0-MASTER-20261027-173422/audit	filesystem	/audit	-	off
+boot-pool/ROOT/27.0.0-MASTER-20261027-173422/conf	filesystem	/conf	-	on
+boot-pool/ROOT/27.0.0-MASTER-20261027-173422/data	filesystem	/data	-	off
+boot-pool/ROOT/27.0.0-MASTER-20261027-173422/etc	filesystem	/etc	-	off
+boot-pool/ROOT/27.0.0-MASTER-20261027-173422/home	filesystem	/home	-	off
+boot-pool/ROOT/27.0.0-MASTER-20261027-173422/mnt	filesystem	/mnt	-	off
+boot-pool/ROOT/27.0.0-MASTER-20261027-173422/opt	filesystem	/opt	-	on
+boot-pool/ROOT/27.0.0-MASTER-20261027-173422/root	filesystem	/root	-	off
+boot-pool/ROOT/27.0.0-MASTER-20261027-173422/usr	filesystem	/usr	-	on
+boot-pool/ROOT/27.0.0-MASTER-20261027-173422/var	filesystem	/var	-	off
+boot-pool/ROOT/27.0.0-MASTER-20261027-173422/var/ca-certificates	filesystem	/var/local/ca-certificates	-	off
+boot-pool/ROOT/27.0.0-MASTER-20261027-173422/var/lib	filesystem	/var/lib	-	off
+boot-pool/ROOT/27.0.0-MASTER-20261027-173422/var/log	filesystem	/var/log	-	off
+boot-pool/ROOT/27.0.0-MASTER-20261027-173422/var/log/journal	filesystem	/var/log/journal	-	off
+boot-pool/ROOT/27.0.0-RC.1	filesystem	legacy	-	on
+boot-pool/ROOT/27.0.0-RC.1/audit	filesystem	/audit	boot-pool/ROOT/27.0.0-MASTER-20261027-173422/audit@install-2026-10-30-05-26-33	off
+boot-pool/ROOT/27.0.0-RC.1/conf	filesystem	/conf	-	on
+boot-pool/ROOT/27.0.0-RC.1/data	filesystem	/data	boot-pool/ROOT/27.0.0-MASTER-20261027-173422/data@install-2026-10-30-05-26-33	off
+boot-pool/ROOT/27.0.0-RC.1/etc	filesystem	/etc	-	off
+boot-pool/ROOT/27.0.0-RC.1/home	filesystem	/home	boot-pool/ROOT/27.0.0-MASTER-20261027-173422/home@install-2026-10-30-05-26-33	off
+boot-pool/ROOT/27.0.0-RC.1/mnt	filesystem	/mnt	-	off
+boot-pool/ROOT/27.0.0-RC.1/opt	filesystem	/opt	-	on
+boot-pool/ROOT/27.0.0-RC.1/root	filesystem	/root	boot-pool/ROOT/27.0.0-MASTER-20261027-173422/root@install-2026-10-30-05-26-33	off
+boot-pool/ROOT/27.0.0-RC.1/usr	filesystem	/usr	-	on
+boot-pool/ROOT/27.0.0-RC.1/var	filesystem	/var	-	off
+boot-pool/ROOT/27.0.0-RC.1/var/ca-certificates	filesystem	/var/local/ca-certificates	-	off
+boot-pool/ROOT/27.0.0-RC.1/var/lib	filesystem	/var/lib	-	off
+boot-pool/ROOT/27.0.0-RC.1/var/log	filesystem	/var/log	boot-pool/ROOT/27.0.0-MASTER-20261027-173422/var/log@install-2026-10-30-05-26-33	off
+boot-pool/ROOT/27.0.0-RC.1/var/log/journal	filesystem	/var/log/journal	-	off
+ACTIVE_USR_MOUNT
+boot-pool/ROOT/27.0.0-MASTER-20261027-173422/usr zfs ro,nodev,noatime,xattr,noacl,casesensitive
+boot-pool/ROOT/27.0.0-MASTER-20261027-173422/usr	readonly	on
+boot-pool/ROOT/27.0.0-MASTER-20261027-173422/usr	mountpoint	/usr
+ACTIVE_BE_FILE_MD5_TARGETS
+c238fd4743174c94e44e013699a95d94  /usr/lib/python3/dist-packages/middlewared/async_validators.py
+5579185892f06ea3181ca7cf7b33302e  /usr/lib/python3/dist-packages/middlewared/plugins/boot.py
+28dbc9f31432ae59a27712b7e99f0b44  /usr/lib/python3/dist-packages/middlewared/plugins/container/container.py
+9bdd4defbdb0e2b47405dbd7da4974ee  /usr/lib/python3/dist-packages/middlewared/plugins/container/dataset.py
+740a4d0bcba008a261786f5f2b4c4fa0  /usr/lib/python3/dist-packages/middlewared/plugins/container/image.py
+df4d93da34d1232c1c34ccd6d6dd072d  /usr/lib/python3/dist-packages/middlewared/plugins/container/lifecycle.py
+ba96afed3c4da229e7f630f1f6cfaa98  /usr/lib/python3/dist-packages/middlewared/plugins/container/utils.py
+d4532d34f911cf00f0e999b6d2f8254b  /usr/lib/python3/dist-packages/middlewared/plugins/disk_/availability.py
+8284f71c38628b1faea94ce7ed737ca6  /usr/lib/python3/dist-packages/middlewared/plugins/pool_/dataset.py
+86011919b165004bf3cb569b81a4bec7  /usr/lib/python3/dist-packages/middlewared/plugins/pool_/dataset_info.py
+f469cfdb687447109ba90a09e01dc0b7  /usr/lib/python3/dist-packages/middlewared/plugins/pool_/dataset_query_utils.py
+546d5b3362350a2bed99ce8021c865bc  /usr/lib/python3/dist-packages/middlewared/plugins/pool_/export.py
+ab260462ba2e58ea62b2ea9d45b42fd5  /usr/lib/python3/dist-packages/middlewared/plugins/pool_/import_pool.py
+1aaca66420abe53cf721620fffddf249  /usr/lib/python3/dist-packages/middlewared/plugins/pool_/pool.py
+005469984befa2e73df6fa30fc42c99a  /usr/lib/python3/dist-packages/middlewared/plugins/vm/info.py
+84b77b4d4a051fe464584fad24a76bc5  /usr/lib/python3/dist-packages/middlewared/plugins/vm/vm_devices.py
+7ba9a8b1ab5404f280ee758f1169405a  /usr/lib/python3/dist-packages/middlewared/plugins/zfs/utils.py
+ebfbd801168b79a6344712d3e9153212  /usr/lib/python3/dist-packages/middlewared/utils/libvirt/storage_devices.py
+861cdd284e9944ccd2ac3c26f96f1e6b  /usr/lib/python3/dist-packages/truenas_pylibvirt/domain/vm/xml.py
+PATCH_MARKER
+ABSENT
+DATABASE_HASHES
+62b9a976601a090f2f53a5886fe2017bd5072a53b06944b6a057337fd06e8b73  /data/freenas-v1.db

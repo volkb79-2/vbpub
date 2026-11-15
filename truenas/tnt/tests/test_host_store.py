@@ -365,7 +365,14 @@ def test_lock_failure_after_open_closes_descriptor_and_optional_host_removal_kee
     def lock_failure(*_args):
         raise OSError("lock busy")
 
-    monkeypatch.setattr(host_store.os, "open", track_open)
+    real_open = os.open
+
+    def scoped_track_open(path, *args, **kwargs):
+        if not os.fspath(path).endswith(".lock"):
+            return real_open(path, *args, **kwargs)
+        return track_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(host_store.os, "open", scoped_track_open)
     monkeypatch.setattr(host_store.fcntl, "flock", lock_failure)
     with pytest.raises(ProfileError, match="cannot lock host files"):
         with _serialized(paths, create_parents=False):
@@ -431,6 +438,16 @@ def test_store_file_decode_and_serialization_preflight_errors(tmp_path, monkeypa
     seen = []
 
     def report_directory(fd):
+        info = real_fstat(fd)
+        try:
+            opened = os.path.realpath(os.readlink(f"/proc/self/fd/{fd}"))
+        except OSError:
+            return info
+        if not opened.endswith(".lock") or not (
+            opened.endswith(f".{Path(regular.config).name}.lock")
+            or opened.endswith(f".{Path(regular.secrets).name}.lock")
+        ):
+            return info
         seen.append(fd)
         return type("FakeStat", (), {"st_mode": 0o040755, "st_uid": os.geteuid()})()
 
@@ -447,7 +464,23 @@ def test_stage_failure_removes_partial_file(tmp_path, monkeypatch):
     from tnt import host_store
 
     path = tmp_path / "private.toml"
-    monkeypatch.setattr(host_store.os, "fdopen", lambda *args, **kwargs: (_ for _ in ()).throw(OSError("disk error")))
+    real_fdopen = host_store.os.fdopen
+    target_prefix = str(path.parent.resolve() / f".{path.name}.")
+
+    def broken_stage(fd, *args, **kwargs):
+        try:
+            opened = os.path.realpath(os.readlink(f"/proc/self/fd/{fd}"))
+        except OSError:
+            return real_fdopen(fd, *args, **kwargs)
+        if not opened.startswith(target_prefix) or not opened.endswith(".tmp"):
+            return real_fdopen(fd, *args, **kwargs)
+        raise OSError("disk error")
+
+    monkeypatch.setattr(
+        host_store.os,
+        "fdopen",
+        broken_stage,
+    )
     with pytest.raises(OSError, match="disk error"):
         _stage(path, b"schema_version=1\n")
     assert list(tmp_path.glob(".private.toml.*.tmp")) == []

@@ -1,0 +1,16 @@
+{"attribution":"overlap-conservative","budget_per_candidate_s":null,"budget_s":25200.0,"candidate_total":null,"commit":"c7d07240825e5ca28c45194556444d17e910ba92","elapsed_s":0.013,"emitted_at":"2026-11-07T07:23:17.110940+00:00","event":"run","jobs":2,"lane":"cmru-r2-s11","rigor":["R0","R1","R2","R3"],"started":"2026-11-07T07:23:17.110920+00:00"}
+{"commit":"c7d07240825e5ca28c45194556444d17e910ba92","elapsed_s":7.928,"emitted_at":"2026-11-07T07:23:25.026141+00:00","event":"snapshot_materialized","phase":"baseline"}
+{"argv":["/opt/tester-venv/bin/python","-m","pytest","tests","-q","--cov=src/cmru","--cov-branch","--cov-report=json:coverage.json","-p","assay_liveness_plugin"],"elapsed_s":7.933,"emitted_at":"2026-11-07T07:23:25.031124+00:00","event":"command_started","phase":"baseline"}
+{"command_elapsed_s":60.003,"elapsed_s":67.936,"emitted_at":"2026-11-07T07:24:25.033763+00:00","event":"command_running","phase":"baseline"}
+{"command_elapsed_s":120.003,"elapsed_s":127.936,"emitted_at":"2026-11-07T07:25:25.033998+00:00","event":"command_running","phase":"baseline"}
+{"command_elapsed_s":180.003,"elapsed_s":187.937,"emitted_at":"2026-11-07T07:26:25.034586+00:00","event":"command_running","phase":"baseline"}
+{"command_elapsed_s":240.005,"elapsed_s":247.939,"emitted_at":"2026-11-07T07:27:25.036055+00:00","event":"command_running","phase":"baseline"}
+{"command_elapsed_s":300.019,"elapsed_s":307.953,"emitted_at":"2026-11-07T07:28:25.050691+00:00","event":"command_running","phase":"baseline"}
+{"command_elapsed_s":360.021,"elapsed_s":367.954,"emitted_at":"2026-11-07T07:29:25.051831+00:00","event":"command_running","phase":"baseline"}
+{"command_elapsed_s":420.022,"elapsed_s":427.956,"emitted_at":"2026-11-07T07:30:25.053434+00:00","event":"command_running","phase":"baseline"}
+{"command_elapsed_s":480.022,"elapsed_s":487.956,"emitted_at":"2026-11-07T07:31:25.053684+00:00","event":"command_running","phase":"baseline"}
+{"command_elapsed_s":540.023,"elapsed_s":547.956,"emitted_at":"2026-11-07T07:32:25.053895+00:00","event":"command_running","phase":"baseline"}
+{"command_elapsed_s":600.024,"elapsed_s":607.957,"emitted_at":"2026-11-07T07:33:25.055032+00:00","event":"command_running","phase":"baseline"}
+{"elapsed_s":652.924,"emitted_at":"2026-11-07T07:34:10.021636+00:00","ended":"2026-11-07T07:34:10.020156+00:00","event":"command_finished","outcome":"PASS","phase":"baseline","reason_code":null,"returncode":0,"started":"2026-11-07T07:23:25.031562+00:00"}
+{"elapsed_s":653.071,"emitted_at":"2026-11-07T07:34:10.168316+00:00","event":"coverage_parsed","parsed":true,"phase":"baseline","reason_code":null}
+{"destination":".assay/verdict-cmru-r2-s11.json","elapsed_s":1226.241,"emitted_at":"2026-11-07T07:43:43.338853+00:00","event":"verdict_written","exit_code":2,"outcome":"ERROR","reason_code":"BAD_LANE_CONFIG"}

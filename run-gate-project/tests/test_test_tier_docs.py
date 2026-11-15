@@ -99,3 +99,43 @@ def test_readme_points_to_the_tier_contract_and_design_rationale() -> None:
         "## 3. T3 trigger and distribution",
     }
     assert headings <= set(DESIGN.read_text(encoding="utf-8").splitlines())
+
+
+def test_r2_worker_ceiling_identity_and_t3_choice_are_documented() -> None:
+    design_guide = REPO_ROOT / "run-gate-project" / "docs" / "DESIGN-GUIDE.md"
+    documents = {
+        "README.md": README.read_text(encoding="utf-8"),
+        "CONSUMERS.md": CONSUMERS.read_text(encoding="utf-8"),
+        "LANE-AUTHORING.md": LANE_AUTHORING.read_text(encoding="utf-8"),
+        "DESIGN-GUIDE.md": design_guide.read_text(encoding="utf-8"),
+        "T3 design": DESIGN.read_text(encoding="utf-8"),
+    }
+    for name in ("ciu/assay.toml", "ciu/CHANGES.md"):
+        path = REPO_ROOT / name
+        if path.is_file():
+            documents[name] = path.read_text(encoding="utf-8")
+    for name, text in documents.items():
+        normalized = " ".join(text.lower().replace("#", " ").split())
+        assert "jobs_max" in normalized, f"{name} omits the R2 worker ceiling"
+        assert "judge identity" in normalized, f"{name} omits the identity boundary"
+        assert "invalidates" in normalized, f"{name} omits the resume consequence"
+        assert "finished-candidate state" in normalized, f"{name} omits the affected state"
+        assert "assay <= 12.1.1" in normalized, (
+            f"{name} omits the Assay 12.1.1 identity boundary"
+        )
+        assert "assay >= 12.2.0" in normalized, (
+            f"{name} omits the Assay 12.2.0 identity boundary"
+        )
+        assert all(token in normalized for token in ("tests", "sources", "argv", "env")), (
+            f"{name} omits judged-input invalidation behavior"
+        )
+        if name != "CONSUMERS.md":
+            assert "native-r2-worker-selection" in normalized, (
+                f"{name} must point to the versioned rule in CONSUMERS.md"
+            )
+        assert "this ceiling is part of the judged-tree identity" not in normalized, (
+            f"{name} repeats the obsolete unconditional identity rule"
+        )
+        assert "change it only in a new campaign tree, never during a resume" not in normalized, (
+            f"{name} repeats the obsolete resume instruction"
+        )

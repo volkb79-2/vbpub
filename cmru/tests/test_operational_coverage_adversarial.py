@@ -43,7 +43,8 @@ def test_bundle_config_accepts_explicitly_disabled_wheel_table_and_excludes_meta
     parsed = bundle.parse_config(cfg)
     assert parsed.wheel_enabled is False
     assert parsed.wheel_project_root == (tmp_path / "client").resolve()
-    assert bundle._is_excluded("src/pyproject.toml") is False
+    assert bundle._is_excluded("src/pyproject.toml") is True
+    assert bundle._is_excluded("src/pyproject.toml", ["src/pyproject.toml"]) is False
     assert bundle._is_excluded("src/minisign.key") is True
 
 

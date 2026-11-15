@@ -180,12 +180,13 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   per lane, sorted by name — THREE columns, stable, machine-readable, never
   extended (consumers parse it). `--help`/no-args prints the installed version + the
   human lane table — each lane's `clean_tree`, hard `budget`, `memory`,
-  and declared `description` — plus a FLAGS section (`--worktree`;
+  and declared `description` — plus a FLAGS section (`--worktree`,
+  `--ksm`, `--no-ksm`;
   `--allow-dirty` with the caveat that assay lanes still enforce assay's own
   clean-tree rule) and an ENVIRONMENT CONTRACT section naming every
   environment variable the tool reads and when it fails
   (`CGROUP_PARENT_DEV_GATES`, `RUN_GATE_EXTRA_MOUNTS`,
-  `RUN_GATE_MOUNT_ALIAS`) plus `--check-env` (R-24 drift sweep) (RG-7);
+  `RUN_GATE_MOUNT_ALIAS`, `RUN_GATE_KSM`) plus `--check-env` (R-24 drift sweep) (RG-7);
   unknown lane exits non-zero naming the
   known lanes and the config path. `--check-env` also runs the assay-lane
   toolchain fitness check (`R-34`): its env-drift half stays advisory (exit
@@ -279,13 +280,15 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   resolved slice + its source (on exec lanes this is naming-only disclosure
   — `docker exec` can neither place nor cap work), and (container AND exec
   lanes) the fully assembled docker argv; forwarded values are never on it
-  (`-e KEY`, the value rides in the docker client's environment, RG-117a). Mechanics are visible, never buried.
+  (`-e KEY`, the value rides in the docker client's environment, RG-117a);
+  an ephemeral lane also prints its effective KSM setting and source. Mechanics
+  are visible, never buried.
 
 ## 3. Config schema (both files; `schema_version` must equal 1)
 
 - `R-06` Top-level keys: `schema_version` (required), `environments`,
   `lanes`, `history`, `profile`, `footprint`, `project`, `assay`, `resources`,
-  and project-local `admission`. Unknown top-level key → error naming key + file. A
+  `defaults`, and project-local `admission`. Unknown top-level key → error naming key + file. A
   central config's `[lanes.*]` are legal (R-22). `[history]` (RG-27) takes
   one optional key, `keep` (integer ≥ 1, default 10 — a bool is refused,
   not silently read as 1); a project `[history]` shadows the central one
@@ -293,6 +296,8 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   branch name; project config shadows an inherited value). `[assay]` accepts
   shared judge defaults and the inventory import policy (`R-49`). `[admission]`
   is forbidden in a central config and is never inherited (`R-50`).
+  `[defaults]` accepts the boolean `ksm`; project defaults take precedence
+  over central defaults.
 - `R-07` `[environments.<name>]`: `mode` is required and must be exactly
   `"ephemeral"`, `"exec"`, or `"host"` — the name selects no behavior.
   `ephemeral` requires `image` and starts a fresh container per invocation;
@@ -404,6 +409,25 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   and execution settings. Missing members and cycles are configuration
   errors. The sequence records one ordered composite plus each member's
   independent result.
+- `R-08e` **KSM opt-in.** Command and Assay leaf lanes may set boolean
+  `ksm` only when their resolved environment is `ephemeral`; a sequence
+  sets it on its member lanes. Top-level `[defaults].ksm` applies to
+  ephemeral lanes. The resolution order is `--ksm`/`--no-ksm`, non-empty
+  `RUN_GATE_KSM=1|0`, lane `ksm`, project `[defaults].ksm`, central
+  `[defaults].ksm`, then built-in true. Empty `RUN_GATE_KSM` is absent;
+  other non-empty values are refused. This mirrors CIU's
+  `governance.resolve_ksm_optin` and `cli_registry._KsmAction`. The selected
+  image advertises the absolute shim library path in
+  `org.vbpub.tester.ksm-optin`; an absent label or Docker's `No such image`
+  result emits one notice and continues without KSM, preserving the normal
+  pull-on-run path for a missing local image. Other inspect failures and
+  invalid paths are errors. The shim writes no stdout or stderr whether the
+  kernel accepts or rejects the opt-in and has no verbose-banner setting.
+  Run-Gate
+  combines KSM and eatmydata, when both apply, in one read-only
+  `/etc/ld.so.preload` bind. `--ksm` and `--no-ksm` overrides are passed
+  through sequences only to ephemeral members. One-run CLI and environment
+  overrides are recorded and excluded from history.
 - `R-08a` **Pin tables carry two keys, and `budget` is not one of them
   (RG-32).** `[lanes.<name>.pins.<pin>]` accepts `sha256` and `version`
   ONLY. A `budget` key there is refused at load, by name, with the message
@@ -813,6 +837,12 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   `strict`, and history JSON/human output separates statistics by mode.
   A sequence with members on different modes is excluded as an aggregate
   history measurement; its per-member records retain their respective modes.
+
+  Every ephemeral run reports one best-effort `ksm: merging_pages=N (X MiB)`
+  line based on the host-wide `/sys/kernel/mm/ksm/pages_sharing` high-water
+  delta sampled while the lane is alive. This reports host activity and is not
+  process-attributed; the run record carries the setting, source, and
+  measurement.
 
   `[resources.vm] disk_cache` accepts `unsafe|writeback` at project or lane
   scope and is valid only for a host-mode VM lane; it is forwarded as

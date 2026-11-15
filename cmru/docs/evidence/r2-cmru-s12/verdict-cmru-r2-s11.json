@@ -1,0 +1,104 @@
+{
+  "argv_appended": [],
+  "argv_declared": [
+    "/opt/tester-venv/bin/python",
+    "-m",
+    "pytest",
+    "tests",
+    "-q",
+    "--cov=src/cmru",
+    "--cov-branch",
+    "--cov-report=json:coverage.json"
+  ],
+  "argv_effective": [
+    "/opt/tester-venv/bin/python",
+    "-m",
+    "pytest",
+    "tests",
+    "-q",
+    "--cov=src/cmru",
+    "--cov-branch",
+    "--cov-report=json:coverage.json"
+  ],
+  "argv_modified": false,
+  "assay_version": "12.0.1.dev258+gc7d072408",
+  "claims": [
+    {
+      "detail": "judge.mutation.candidate_fail_fast: the candidate command (/opt/tester-venv/bin/python -m pytest tests -q -p assay_liveness_plugin -p assay_mutation_witness_plugin -x -p no:pytest_cov) did not pass on the unmutated snapshot (FAIL, exit 1; ERROR tests/test_tester_unified_image.py::test_build_image_requires_the_fetchers_digest_to_equal_its_own_hash); every candidate would be a false kill. Fix the pytest configuration or the test (an addopts entry or a test that needs pytest-cov is the usual cause) or drop the key",
+      "detail_dropped_bytes": 0,
+      "reason_code": "BAD_LANE_CONFIG",
+      "rigor": "R0",
+      "source": "computed",
+      "status": "ERROR",
+      "verified_by_assay": true
+    },
+    {
+      "detail": "judge.mutation.candidate_fail_fast: the candidate command (/opt/tester-venv/bin/python -m pytest tests -q -p assay_liveness_plugin -p assay_mutation_witness_plugin -x -p no:pytest_cov) did not pass on the unmutated snapshot (FAIL, exit 1; ERROR tests/test_tester_unified_image.py::test_build_image_requires_the_fetchers_digest_to_equal_its_own_hash); every candidate would be a false kill. Fix the pytest configuration or the test (an addopts entry or a test that needs pytest-cov is the usual cause) or drop the key",
+      "detail_dropped_bytes": 0,
+      "reason_code": "BAD_LANE_CONFIG",
+      "rigor": "R1",
+      "source": "computed",
+      "status": "ERROR",
+      "verified_by_assay": true
+    },
+    {
+      "detail": "judge.mutation.candidate_fail_fast: the candidate command (/opt/tester-venv/bin/python -m pytest tests -q -p assay_liveness_plugin -p assay_mutation_witness_plugin -x -p no:pytest_cov) did not pass on the unmutated snapshot (FAIL, exit 1; ERROR tests/test_tester_unified_image.py::test_build_image_requires_the_fetchers_digest_to_equal_its_own_hash); every candidate would be a false kill. Fix the pytest configuration or the test (an addopts entry or a test that needs pytest-cov is the usual cause) or drop the key",
+      "detail_dropped_bytes": 0,
+      "reason_code": "BAD_LANE_CONFIG",
+      "rigor": "R2",
+      "source": "computed",
+      "status": "ERROR",
+      "verified_by_assay": true
+    },
+    {
+      "detail": "judge.mutation.candidate_fail_fast: the candidate command (/opt/tester-venv/bin/python -m pytest tests -q -p assay_liveness_plugin -p assay_mutation_witness_plugin -x -p no:pytest_cov) did not pass on the unmutated snapshot (FAIL, exit 1; ERROR tests/test_tester_unified_image.py::test_build_image_requires_the_fetchers_digest_to_equal_its_own_hash); every candidate would be a false kill. Fix the pytest configuration or the test (an addopts entry or a test that needs pytest-cov is the usual cause) or drop the key",
+      "detail_dropped_bytes": 0,
+      "reason_code": "BAD_LANE_CONFIG",
+      "rigor": "R3",
+      "source": "computed",
+      "status": "ERROR",
+      "verified_by_assay": true
+    }
+  ],
+  "commit": "c7d07240825e5ca28c45194556444d17e910ba92",
+  "declared_evidence": [],
+  "declared_rigor": [
+    "R0",
+    "R1",
+    "R2",
+    "R3"
+  ],
+  "ended": "2026-11-07T07:43:43.315731+00:00",
+  "enforcement": "gate",
+  "env_declared": {
+    "PYTHONDONTWRITEBYTECODE": "1",
+    "PYTHONPATH": "src:../libraries/worktree/src"
+  },
+  "env_effective": {
+    "PATH": "<passthrough>",
+    "PYTHONDONTWRITEBYTECODE": "1",
+    "PYTHONPATH": "src:../libraries/worktree/src"
+  },
+  "env_effective_passthrough_sha256": {
+    "PATH": "fa4abe3418e8ae98a98cc3187c58a9d444b8ab74bb0ee244821ae540daad9e33"
+  },
+  "env_passthrough": [
+    "PATH"
+  ],
+  "evidence": [],
+  "exit_code": 2,
+  "lane": "cmru-r2-s11",
+  "outcome": "ERROR",
+  "reason_code": "BAD_LANE_CONFIG",
+  "schema_version": 18,
+  "scope": "S1",
+  "snapshot_policy": {
+    "selection": "repository-minus-unsafe-symlinks",
+    "unsafe_symlink_omissions": [
+      "topos/tests/fixtures/inspect_files/_danger/passwd_link",
+      "topos/tests/fixtures/inspect_files/cgroup_escape/system.slice/ssh.service/dangerous_link/passwd_escape",
+      "topos/tests/fixtures/inspect_files/cgroup_nonreg/system.slice/ssh.service/memory.current"
+    ]
+  },
+  "started": "2026-11-07T07:43:43.315727+00:00"
+}

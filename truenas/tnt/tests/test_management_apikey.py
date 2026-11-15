@@ -1,8 +1,10 @@
 import asyncio
 import json
+import os
 import stat
 from datetime import datetime, timezone
 from dataclasses import replace
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -247,7 +249,14 @@ def test_api_key_file_reports_open_and_finish_errors_and_cleans_partial_files(mo
     from tnt import keyfiles
 
     target = tmp_path / "save.key"
-    monkeypatch.setattr(keyfiles.os, "open", lambda *args: (_ for _ in ()).throw(OSError("open failed")))
+    real_open = keyfiles.os.open
+    target_path = str(target.resolve())
+    monkeypatch.setattr(
+        keyfiles.os,
+        "open",
+        lambda path, *args, **kwargs: (_ for _ in ()).throw(OSError("open failed"))
+        if Path(path) == target else real_open(path, *args, **kwargs),
+    )
     with pytest.raises(Refused, match="cannot create API key file"):
         keyfiles.write_api_key_file(str(target), "secret")
     assert not target.exists()
@@ -260,13 +269,34 @@ def test_api_key_file_reports_open_and_finish_errors_and_cleans_partial_files(mo
     assert not target.exists()
     monkeypatch.setattr(keyfiles.os, "fchmod", original_fchmod)
 
-    monkeypatch.setattr(keyfiles.os, "write", lambda *_: 0)
+    real_write = keyfiles.os.write
+
+    def target_path_for(fd):
+        try:
+            return os.path.realpath(os.readlink(f"/proc/self/fd/{fd}"))
+        except OSError:
+            return None
+
+    monkeypatch.setattr(
+        keyfiles.os,
+        "write",
+        lambda fd, data: 0
+        if target_path_for(fd) == target_path
+        else real_write(fd, data),
+    )
     with pytest.raises(Refused, match="cannot finish writing"):
         keyfiles.write_api_key_file(str(target), "secret")
     assert not target.exists()
     monkeypatch.undo()
 
-    monkeypatch.setattr(keyfiles.os, "fsync", lambda *_: (_ for _ in ()).throw(OSError("sync failed")))
+    real_fsync = keyfiles.os.fsync
+    monkeypatch.setattr(
+        keyfiles.os,
+        "fsync",
+        lambda fd: (_ for _ in ()).throw(OSError("sync failed"))
+        if target_path_for(fd) == target_path
+        else real_fsync(fd),
+    )
     with pytest.raises(Refused, match="cannot finish writing"):
         keyfiles.write_api_key_file(str(target), "secret")
     assert not target.exists()
@@ -280,7 +310,22 @@ def test_api_key_file_cleanup_failure_does_not_hide_short_write(monkeypatch, tmp
     target = tmp_path / "partial.key"
     with monkeypatch.context() as patcher:
         patcher.delattr(keyfiles.os, "O_NOFOLLOW")
-        patcher.setattr(keyfiles.os, "write", lambda _fd, _view: 0)
+        real_write = keyfiles.os.write
+        target_path = str(target.resolve())
+
+        def target_path_for(fd):
+            try:
+                return os.path.realpath(os.readlink(f"/proc/self/fd/{fd}"))
+            except OSError:
+                return None
+
+        patcher.setattr(
+            keyfiles.os,
+            "write",
+            lambda fd, view: 0
+            if target_path_for(fd) == target_path
+            else real_write(fd, view),
+        )
         patcher.setattr(Path, "unlink", lambda _path, **_kwargs: (_ for _ in ()).throw(OSError("busy")))
         with pytest.raises(Refused, match="cannot finish writing"):
             keyfiles.write_api_key_file(str(target), "synthetic-key")

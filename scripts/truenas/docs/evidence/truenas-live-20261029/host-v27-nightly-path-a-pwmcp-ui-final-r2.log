@@ -1,0 +1,439 @@
+# Evidence scrub 2026-11-10: environment-specific host identities, host addresses, controller paths, SSH key material and fingerprints were normalized to neutral placeholders; command output and verdict text are otherwise unchanged.
+# Evidence scrub 2026-11-10: environment-specific home, checkout, worktree, and per-run temporary paths were normalized to neutral placeholders; command output and verdict text are otherwise unchanged.
+[admission] explicit PSI override: keeping finite-memory, current-memory, CPU-quota, and tester-container caps; skipping only PSI threshold refusals
+[tester] {"container": "truenas-live-acceptance-runner", "cpu_cores": 0.5, "host_cgroup": "/dev.slice/dev-gates.slice/docker-e95e98299b0967d7dc1b76ec712021ac38de39b36faaac18901dc927e18d9abc.scope", "host_pid": 468052, "memory_max_bytes": 536870912, "network": "dstdns-hox0ju-network", "user": "1003:1003"}
+run-gate: config: <worktree>/scripts/truenas/run-gate.toml
+run-gate: 24.1.2 | lane live-ui | env [environments.networked-tester] in <worktree>/scripts/truenas/run-gate.toml | container truenas-live-acceptance-runner (declared container_name ([environments.networked-tester] in <worktree>/scripts/truenas/run-gate.toml)) | slice dev-gates.slice ($CGROUP_PARENT_DEV_GATES, naming-only)
+run-gate: exec env (forwarded: PWMCP_PLAYWRIGHT_VERSION, PWMCP_WS_URL, TRUENAS_EXPECTED_VERSION, TRUENAS_STORAGE_PROFILE, TRUENAS_TEST_ALLOW_MUTATIONS, TRUENAS_TEST_HOST, TRUENAS_TEST_KEY, TRUENAS_TEST_KNOWN_HOSTS, TRUENAS_TEST_PORT, TRUENAS_TEST_RESUME_EXISTING_UI_ROOT, TRUENAS_TEST_USER, TRUENAS_UI_SECRET_FILE, TRUENAS_UI_URL ; declared but ABSENT: TRUENAS_BOOT_POOL_PARTITION, TRUENAS_DISK_DEVICE, TRUENAS_MINIMUM_FREE_BYTES, TRUENAS_OBSERVED_PATCH_MANIFEST, TRUENAS_PATH_B_SETUP, TRUENAS_ROOT_SSH_PUBLIC_KEY_FILE, TRUENAS_TEST_ALLOW_DISK_PROVISION, TRUENAS_TEST_ALLOW_PATCH_REAPPLY, TRUENAS_TEST_ALLOW_PATCH_REPAIR, TRUENAS_TEST_ALLOW_PATCH_REPLACE, TRUENAS_TEST_ALLOW_PATCH_UNINSTALL, TRUENAS_TEST_ALLOW_PATH_A_ROOT_PROVISION, TRUENAS_TEST_ALLOW_REBOOT, TRUENAS_TEST_ALLOW_UNRECORDED_PATCH, TRUENAS_TEST_ALLOW_UPDATE, TRUENAS_TEST_CACHE_TARGET, TRUENAS_TEST_CLEANUP_STALE_UI_CONTAINER, TRUENAS_TEST_PRESERVE_UI_WORKLOADS, TRUENAS_TEST_RESUME_EXISTING_UI_DATASET, TRUENAS_UI_WORKLOAD_MANIFEST, TRUENAS_UPDATE_EXPECTED_VERSION, TRUENAS_UPDATE_ISO, TRUENAS_UPDATE_JOB_ID, TRUENAS_UPDATE_METADATA, TRUENAS_UPDATE_PROOF_DATASET, TRUENAS_UPDATE_PROOF_SHA256, TRUENAS_V27_EXPECTED_PRIOR_BUNDLE_SHA256, TRUENAS_V27_EXPECTED_PRIOR_DATASET_INFO_SHA256, TRUENAS_V27_EXPECTED_PRIOR_DATASET_SHA256, TRUENAS_V27_PATCH_ACTION, TRUENAS_V27_PATCH_BUNDLE, TRUENAS_V27_PATCH_BUNDLE_SHA256, TRUENAS_V27_PRIOR_PATCH_BUNDLE, TRUENAS_V28_EXPECTED_PRIOR_BUNDLE_SHA256, TRUENAS_V28_PATCH_ACTION)
+run-gate: budget 45m (hard limit; clock starts after admission and lock waits)
+run-gate: docker argv: /usr/bin/docker exec --workdir <checkout> -e CGROUP_PARENT_DEV_GATES=dev-gates.slice -e 'TRUENAS_TEST_HOST=<redacted>' -e 'TRUENAS_TEST_PORT=<redacted>' -e 'TRUENAS_TEST_KEY=<redacted>' -e 'TRUENAS_TEST_KNOWN_HOSTS=<redacted>' -e 'TRUENAS_TEST_USER=<redacted>' -e 'TRUENAS_STORAGE_PROFILE=<redacted>' -e 'TRUENAS_EXPECTED_VERSION=<redacted>' -e 'TRUENAS_TEST_ALLOW_MUTATIONS=<redacted>' -e 'TRUENAS_UI_URL=<redacted>' -e 'TRUENAS_UI_SECRET_FILE=<redacted>' -e 'TRUENAS_TEST_RESUME_EXISTING_UI_ROOT=<redacted>' -e 'PWMCP_WS_URL=<redacted>' -e 'PWMCP_PLAYWRIGHT_VERSION=<redacted>' -e 'RUN_GATE_PROFILE_SESSION=<redacted>' truenas-live-acceptance-runner timeout --preserve-status --signal=TERM --kill-after=5s 2700s bash -c 'set -euo pipefail && __rg_git_n="${GIT_CONFIG_COUNT:-0}" && case "$__rg_git_n" in '"'"''"'"'|*[!0-9]*|0?*) echo "run-gate: GIT_CONFIG_COUNT='"'"'$__rg_git_n'"'"' is not a plain non-negative integer; refusing to append safe.directory to an unreadable Git config environment" >&2; exit 2;; esac && if command -v git >/dev/null 2>&1; then __rg_git_v="$(git --version 2>/dev/null | sed -n '"'"'s/^git version \([0-9][0-9]*\)\.\([0-9][0-9]*\).*/\1 \2/p'"'"')"; if [ -n "$__rg_git_v" ]; then read -r __rg_git_major __rg_git_minor <<< "$__rg_git_v"; if [ "$__rg_git_major" -lt 2 ] || { [ "$__rg_git_major" -eq 2 ] && [ "$__rg_git_minor" -lt 38 ]; }; then echo "run-gate: git $__rg_git_major.$__rg_git_minor is older than 2.38; it ignores safe.directory from the environment, so the lane would fail as '"'"'dubious ownership'"'"'. Use an image with git >= 2.38" >&2; exit 2; fi; fi; fi && export "GIT_CONFIG_KEY_${__rg_git_n}=safe.directory" "GIT_CONFIG_VALUE_${__rg_git_n}=*" "GIT_CONFIG_COUNT=$((__rg_git_n + 1))" && bash -c '"'"'cd <worktree>/scripts/truenas/boot-pool-patch/acceptance && "$TESTER_VENV/bin/python" -m pip install --disable-pip-version-check -r requirements-live-ui.txt && PYTHONPATH=<worktree>/pwmcp/client/src "$TESTER_VENV/bin/python" live_ui.py'"'"''
+run-gate: admission: skipped — gates slice capacity is not derivable
+run-gate: host memory PSI full avg10=0.22% avg60=0.33% | profiler cgprofile-host-daemon (cgprofile 1.1.0, damon available)
+run-gate: profile session s-20261030T020311Z-da9d (scope container-shared, baseline 1 MiB, damon unavailable:no pids to monitor yet, via socket, policy idle auto ceiling auto on-stall report)
+Collecting playwright==1.64.0 (from -r requirements-live-ui.txt (line 1))
+  Downloading playwright-1.64.0-py3-none-manylinux1_x86_64.whl.metadata (3.3 kB)
+Collecting pyee<15,>=13 (from playwright==1.64.0->-r requirements-live-ui.txt (line 1))
+  Downloading pyee-14.0.0-py3-none-any.whl.metadata (1.8 kB)
+Collecting greenlet<4.0.0,>=3.1.1 (from playwright==1.64.0->-r requirements-live-ui.txt (line 1))
+  Downloading greenlet-3.5.6-cp314-cp314-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl.metadata (3.8 kB)
+Requirement already satisfied: typing-extensions in /opt/tester-venv/lib/python3.14/site-packages (from pyee<15,>=13->playwright==1.64.0->-r requirements-live-ui.txt (line 1)) (4.16.0)
+Downloading playwright-1.64.0-py3-none-manylinux1_x86_64.whl (48.3 MB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 48.3/48.3 MB 29.7 MB/s  0:00:01
+Downloading greenlet-3.5.6-cp314-cp314-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl (670 kB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 670.8/670.8 kB 4.7 MB/s  0:00:00
+Downloading pyee-14.0.0-py3-none-any.whl (15 kB)
+Installing collected packages: pyee, greenlet, playwright
+
+Successfully installed greenlet-3.5.6 playwright-1.64.0 pyee-14.0.0
+[container-image-registry] target UI image entry: {"name": "alpine:3.24:amd64:default", "version": "20261016_13:00"}
+[readonly-inventory] profile=path-a pool=boot-pool resuming-verified-ui-root=boot-pool/user-data direct-pools={'boot-pool': 'ONLINE'} middleware-pool-query=[{'id': 0, 'name': 'boot-pool', 'guid': '14641633342097355085', 'all_sed': False, 'status': 'ONLINE', 'path': '/', 'scan': None, 'expand': None, 'healthy': True, 'warning': False, 'status_code': 'OK', 'status_detail': None, 'size': 16642998272, 'allocated': 10872033280, 'free': 5770964992, 'freeing': 0, 'dedup_table_size': 0, 'dedup_table_quota': 'auto', 'fragmentation': '12', 'size_str': '16642998272', 'allocated_str': '10872033280', 'free_str': '5770964992', 'freeing_str': '0', 'autotrim': {'parsed': 'off', 'rawvalue': 'off', 'source': 'DEFAULT', 'value': 'off'}, 'topology': {'data': [{'name': '/dev/vda3', 'guid': '8109586552204817366', 'stats': {'timestamp': 427381177376, 'read_errors': 0, 'write_errors': 0, 'checksum_errors': 0, 'ops': [0, 47379, 7005, 0, 0, 0, 0], 'bytes': [0, 1821523968, 93036544, 0, 0, 0, 0], 'size': 16642998272, 'allocated': 10872033280, 'fragmentation': 12, 'self_healed': 0, 'configured_ashift': 12, 'logical_ashift': 9, 'physical_ashift': 9}, 'children': [], 'path': '/dev/vda3', 'stats_ex': None, 'type': 'DISK', 'status': 'ONLINE', 'device': 'vda3', 'disk': 'vda', 'unavail_disk': None}], 'log': [], 'cache': [], 'spare': [], 'special': [], 'dedup': []}}] datasets=2 containers=0 vms=0 direct-zfs-rows=48 cached-ui-images=['boot-pool/user-data/.truenas_containers/images/alpine:3.24:amd64:default:20261016_13:00']
+[browser] connecting to PWMCP Playwright endpoint with a managed browser lease
+[browser] connected to PWMCP
+[navigation] opening TrueNAS sign-in at https://<host>
+[navigation] sign-in page loaded at https://<host>/ui/
+[login] waiting for the username field to become enabled
+[login] username entered; waiting for the password field to become enabled
+[login] credentials entered; submitting login
+[login] login redirected to https://<host>/ui/dashboard
+[login] PWMCP browser authenticated to TrueNAS 27.0.0-MASTER+20261027-173422
+[session-timeout-dashboard] url=https://<host>/ui/dashboard; controls=['- link "mdi-folder-account Shares":', '- img "mdi-folder-account"', '- button "System submenu":', '- text: System', '- text: TrueNAS® Community Edition © 2026 iXsystems, Inc. dba', '- button "truenas_admin account-circle":', '- text: truenas_admin', '- img "account-circle"', '- button "Configure Dashboard": Configure', '- heading "System Information" [level=3]', '- button "System Reports":', '- text: is a collaborative website with helpful guides and information about your new storage system.', '- link "account-group":', '- img "account-group"', '- text: software, which is provided as-is with no warranty. TrueNAS® Community Edition © 2026 iXsystems, Inc. dba', '- heading "System" [level=4]', '- heading "A system update is available. Go to System → Update to download and apply the update." [level=4]', '- button "mdi-update Go to System Updates":', '- text: Go to System Updates']
+[session-timeout-user-menu] url=https://<host>/ui/dashboard; controls=['- link "mdi-folder-account Shares":', '- img "mdi-folder-account"', '- button "System submenu":', '- text: System', '- text: TrueNAS® Community Edition © 2026 iXsystems, Inc. dba', '- button "truenas_admin account-circle" [expanded]:', '- text: truenas_admin', '- img "account-circle"', '- button "Configure Dashboard": Configure', '- heading "System Information" [level=3]', '- button "System Reports":', '- text: is a collaborative website with helpful guides and information about your new storage system.', '- link "account-group":', '- img "account-group"', '- text: software, which is provided as-is with no warranty. TrueNAS® Community Edition © 2026 iXsystems, Inc. dba', '- heading "System" [level=4]', '- heading "A system update is available. Go to System → Update to download and apply the update." [level=4]', '- button "mdi-update Go to System Updates":', '- text: Go to System Updates', '- menuitem "Session Timeout":', '- text: Preferences']
+[session-timeout-preferences] url=https://<host>/ui/dashboard; controls=['- link "mdi-folder-account Shares":', '- img "mdi-folder-account"', '- button "System submenu":', '- text: System', '- text: TrueNAS® Community Edition © 2026 iXsystems, Inc. dba', '- button "truenas_admin account-circle":', '- text: truenas_admin', '- img "account-circle"', '- button "Configure Dashboard": Configure', '- heading "System Information" [level=3]', '- button "System Reports":', '- text: is a collaborative website with helpful guides and information about your new storage system.', '- link "account-group":', '- img "account-group"', '- text: software, which is provided as-is with no warranty. TrueNAS® Community Edition © 2026 iXsystems, Inc. dba', '- heading "System" [level=4]', '- heading "A system update is available. Go to System → Update to download and apply the update." [level=4]', '- button "mdi-update Go to System Updates":', '- text: Go to System Updates', '- heading "Preferences" [level=3]', '- text: Session Timeout (minutes)', '- spinbutton "Session Timeout (minutes)": "5"']
+[session-timeout-ui] Session Timeout is visible in Preferences
+[page] opening Datasets route
+[page] Datasets route loaded
+[page] opening Containers route
+[page] Containers route loaded
+[page] opening Virtual Machines route
+[page] Virtual Machines route loaded
+[page] opening Shares route
+[page] Shares route loaded
+[path-a-root-ui] using the strictly verified pre-existing Path A root; root provisioning is outside this UI workflow
+[browser-rpc] pool.dataset.query request: {"id": "230c03e6-3108-4e4f-a19f-13774ad6d158", "jsonrpc": "2.0", "method": "pool.dataset.query", "params": [[["id", "=", "boot-pool/user-data"]]]}
+[browser-rpc] pool.dataset.recommended_zvol_blocksize request: {"id": "f4832407-80e1-4357-9fcb-eb68cb3b9813", "jsonrpc": "2.0", "method": "pool.dataset.recommended_zvol_blocksize", "params": ["boot-pool"]}
+[dataset-create-ui-form-loading] visible form: - dialog "Slide-in form": | - heading "Add Dataset" [level=3] | - button "close": | - img "close" | - group: | - text: Name and Options | - table: | - rowgroup: | - cell "Parent Path:" | - cell "boot-pool/user-data" | - text: Name * | - img "help-circle-outline" | - textbox "Name" | - text: Dataset Preset * | - combobox "Dataset Preset": Generic | - group: Generic dataset suitable for any share type. | - button "Save" [disabled] | - button "Advanced Options"
+[browser-rpc-response] pool.dataset.recommended_zvol_blocksize response: {"id": "f4832407-80e1-4357-9fcb-eb68cb3b9813", "jsonrpc": "2.0", "result": "16K"}
+[dataset-create-ui-form-ready] visible form: - dialog "Slide-in form": | - heading "Add Dataset" [level=3] | - button "close": | - img "close" | - group: | - text: Name and Options | - table: | - rowgroup: | - cell "Parent Path:" | - cell "boot-pool/user-data" | - text: Name * | - img "help-circle-outline" | - textbox "Name" | - text: Dataset Preset * | - combobox "Dataset Preset": Generic | - group: Generic dataset suitable for any share type. | - button "Save" [disabled] | - button "Advanced Options" | - text: "Errors in Name: Name is required"
+[browser-rpc] pool.dataset.create request: {"id": "e7dda71f-35b5-4a53-b92c-70bd4fd6aefd", "jsonrpc": "2.0", "method": "pool.dataset.create", "params": [{"aclmode": "INHERIT", "acltype": "INHERIT", "atime": "INHERIT", "casesensitivity": "SENSITIVE", "checksum": "INHERIT", "comments": "", "compression": "INHERIT", "copies": "INHERIT", "deduplication": "INHERIT", "exec": "INHERIT", "name": "boot-pool/user-data/ui-acceptance-20261030020320a508e8", "readonly": "INHERIT", "recordsize": "INHERIT", "share_type": "GENERIC", "snapdev": "INHERIT", "snapdir": "INHERIT", "special_small_block_size": "INHERIT", "sync": "INHERIT"}]}
+[dataset-ui] created boot-pool/user-data/ui-acceptance-20261030020320a508e8; findmnt source matches; 65536-byte probe increased ZFS used from 98304 to 163840
+[browser-rpc] pool.dataset.query request: {"id": "eb8238d4-fdbd-4c83-94bc-58d04ddbcaec", "jsonrpc": "2.0", "method": "pool.dataset.query", "params": [[["id", "=", "boot-pool/user-data/ui-acceptance-20261030020320a508e8"]]]}
+[browser-rpc] pool.dataset.recommended_zvol_blocksize request: {"id": "ab360b20-2bd0-4d18-9954-847ba72573f2", "jsonrpc": "2.0", "method": "pool.dataset.recommended_zvol_blocksize", "params": ["boot-pool"]}
+[browser-rpc] pool.dataset.compression_choices request: {"id": "a81d5319-c5b3-4bc3-ba4f-b11a57436dfc", "jsonrpc": "2.0", "method": "pool.dataset.compression_choices", "params": []}
+[zvol-ui-form-loading] visible form: - dialog "Slide-in form": | - heading "Add Zvol" [level=3] | - button "close": | - img "close" | - progressbar | - group: | - text: Name * | - img "help-circle-outline" | - textbox "Name" | - text: Size * | - img "help-circle-outline" | - textbox "Size" | - group: | - text: Additional Options | - checkbox "Force size" | - text: Force size | - img "help-circle-outline" | - checkbox "Sparse" | - text: Sparse | - img "help-circle-outline" | - table: | - rowgroup: | - cell "Comments" | - cell "Current value is . Click to edit.": | - button "Current value is . Click to edit.": | - text: Not Set | - img "pencil" | - cell "Sync help-circle-outline": | - text: Sync | - img "help-circle-outline" | - cell "Current value is . Click to edit.": | - button "Current value is . Click to edit.":
+[browser-rpc-response] pool.dataset.recommended_zvol_blocksize response: {"id": "ab360b20-2bd0-4d18-9954-847ba72573f2", "jsonrpc": "2.0", "result": "16K"}
+[browser-rpc-response] pool.dataset.compression_choices response: {"id": "a81d5319-c5b3-4bc3-ba4f-b11a57436dfc", "jsonrpc": "2.0", "result": {"GZIP": "GZIP", "GZIP-1": "GZIP-1", "GZIP-9": "GZIP-9", "LZ4": "LZ4", "LZJB": "LZJB", "OFF": "OFF", "ON": "ON", "ZLE": "ZLE", "ZSTD": "ZSTD", "ZSTD-1": "ZSTD-1", "ZSTD-10": "ZSTD-10", "ZSTD-11": "ZSTD-11", "ZSTD-12": "ZSTD-12", "ZSTD-13": "ZSTD-13", "ZSTD-14": "ZSTD-14", "ZSTD-15": "ZSTD-15", "ZSTD-16": "ZSTD-16", "ZSTD-17": "ZSTD-17", "ZSTD-18": "ZSTD-18", "ZSTD-19": "ZSTD-19", "ZSTD-2": "ZSTD-2", "ZSTD-3": "ZSTD-3", "ZSTD-4": "ZSTD-4", "ZSTD-5": "ZSTD-5", "ZSTD-6": "ZSTD-6", "ZSTD-7": "ZSTD-7", "ZSTD-8": "ZSTD-8", "ZSTD-9": "ZSTD-9", "ZSTD-FAST": "ZSTD-FAST", "ZSTD-FAST-1": "ZSTD-FAST-1", "ZSTD-FAST-10": "ZSTD-FAST-10", "ZSTD-FAST-100": "ZSTD-FAST-100", "ZSTD-FAST-1000": "ZSTD-FAST-1000", "ZSTD-FAST-2": "ZSTD-FAST-2", "ZSTD-FAST-20": "ZSTD-FAST-20", "ZSTD-FAST-3": "ZSTD-FAST-3", "ZSTD-FAST-30": "ZSTD-FAST-30", "ZSTD-FAST-4": "ZSTD-FAST-4", "ZSTD-FAST-40": "ZSTD-FAST-40", "ZSTD-FAST-5": "ZSTD-FAST-5", "ZSTD-FAST-50": "ZSTD-FAST-50", "ZSTD-FAST-500": "ZSTD-FAST-500", "ZSTD-FAST-6": "ZSTD-FAST-6", "ZSTD-FAST-60": "ZSTD-FAST-60", "ZSTD-FAST-7": "ZSTD-FAST-7", "ZSTD-FAST-70": "ZSTD-FAST-70", "ZSTD-FAST-8": "ZSTD-FAST-8", "ZSTD-FAST-80": "ZSTD-FAST-80", "ZSTD-FAST-9": "ZSTD-FAST-9", "ZSTD-FAST-90": "ZSTD-FAST-90"}}
+[zvol-ui-form-ready] visible form: - dialog "Slide-in form": | - heading "Add Zvol" [level=3] | - button "close": | - img "close" | - group: | - text: Name * | - img "help-circle-outline" | - textbox "Name" | - text: Size * | - img "help-circle-outline" | - textbox "Size" | - group: | - text: Additional Options | - checkbox "Force size" | - text: Force size | - img "help-circle-outline" | - checkbox "Sparse" | - text: Sparse | - img "help-circle-outline" | - table: | - rowgroup: | - cell "Comments" | - cell "Current value is . Click to edit.": | - button "Current value is . Click to edit.": | - text: Not Set | - img "pencil" | - cell "Sync help-circle-outline": | - text: Sync | - img "help-circle-outline" | - cell "Current value is Inherit (standard). Click to edit.": | - button "Current value is Inherit (standard). Click to edit.": | - text: Inherit (standard) | - img "pencil" | - cell "Compression help-circle-outline": | - text: Compression | - img "help-circle-outline" | - cell "Current value is Inherit (on). Click to edit.": | - button "Current value is Inherit (on). Click to edit.": | - text: Inherit (on) | - img "pencil" | - cell "ZFS Deduplication help-circle-outline": | - text: ZFS Deduplication | - img "help-circle-outline" | - cell "Current value is Inherit (off). Click to edit.": | - button "Current value is Inherit (off). Click to edit.": | - text: Inherit (off) | - img "pencil" | - cell "Read-only help-circle-outline": | - text: Read-only | - img "help-circle-outline" | - cell "Current value is Inherit (off). Click to edit.": | - button "Current value is Inherit (off). Click to edit.": | - text: Inherit (off) | - img "pencil" | - cell "Block size help-circle-outline": | - text: Block size | - img "help-circle-outline" | - cell "Current value is 16 KiB. Click to edit.": | - button "Current value is 16 KiB. Click to edit.": | - text: 16 KiB | - img "pencil" | - cell "Snapdev help-circle-outline": | - text: Snapdev | - img "help-circle-outline" | - cell "Current value is Inherit (hidden). Click to edit.": | - button "Current value is Inherit (hidden). Click to edit.": | - text: Inherit (hidden) | - img "pencil" | - cell "Use Metadata (Special) VDEVs help-circle-outline": | - text: Use Metadata (Special) VDEVs | - img "help-circle-outline" | - cell "Current value is Inherit (off). Click to edit.": | - button "Current value is Inherit (off). Click to edit.": | - text: Inherit (off) | - img "pencil" | - group: | - text: Encryption | - checkbox "Inherit (non-encrypted)" [checked] | - text: Inherit (non-encrypted) | - img "help-circle-outline" | - button "Save" [disabled]
+[zvol-ui-ready-form] visible form: - dialog "Slide-in form": | - heading "Add Zvol" [level=3] | - button "close": | - img "close" | - group: | - text: Name * | - img "help-circle-outline" | - textbox "Name": vm-disk | - img "close-circle" | - alert | - text: Size * | - img "help-circle-outline" | - textbox "Size": 128 MiB | - img "close-circle" | - alert | - group: | - text: Additional Options | - checkbox "Force size" | - text: Force size | - img "help-circle-outline" | - checkbox "Sparse" [checked] | - text: Sparse | - img "help-circle-outline" | - alert | - table: | - rowgroup: | - cell "Comments" | - cell "Current value is . Click to edit.": | - button "Current value is . Click to edit.": | - text: Not Set | - img "pencil" | - cell "Sync help-circle-outline": | - text: Sync | - img "help-circle-outline" | - cell "Current value is Inherit (standard). Click to edit.": | - button "Current value is Inherit (standard). Click to edit.": | - text: Inherit (standard) | - img "pencil" | - cell "Compression help-circle-outline": | - text: Compression | - img "help-circle-outline" | - cell "Current value is Inherit (on). Click to edit.": | - button "Current value is Inherit (on). Click to edit.": | - text: Inherit (on) | - img "pencil" | - cell "ZFS Deduplication help-circle-outline": | - text: ZFS Deduplication | - img "help-circle-outline" | - cell "Current value is Inherit (off). Click to edit.": | - button "Current value is Inherit (off). Click to edit.": | - text: Inherit (off) | - img "pencil" | - cell "Read-only help-circle-outline": | - text: Read-only | - img "help-circle-outline" | - cell "Current value is Inherit (off). Click to edit.": | - button "Current value is Inherit (off). Click to edit.": | - text: Inherit (off) | - img "pencil" | - cell "Block size help-circle-outline": | - text: Block size | - img "help-circle-outline" | - cell "Current value is 16 KiB. Click to edit.": | - button "Current value is 16 KiB. Click to edit.": | - text: 16 KiB | - img "pencil" | - cell "Snapdev help-circle-outline": | - text: Snapdev | - img "help-circle-outline" | - cell "Current value is Inherit (hidden). Click to edit.": | - button "Current value is Inherit (hidden). Click to edit.": | - text: Inherit (hidden) | - img "pencil" | - cell "Use Metadata (Special) VDEVs help-circle-outline": | - text: Use Metadata (Special) VDEVs | - img "help-circle-outline" | - cell "Current value is Inherit (off). Click to edit.": | - button "Current value is Inherit (off). Click to edit.": | - text: Inherit (off) | - img "pencil" | - group: | - text: Encryption | - checkbox "Inherit (non-encrypted)" [checked] | - text: Inherit (non-encrypted) | - img "help-circle-outline" | - button "Save"
+[zvol-ui-size-control] after blur value='128 MiB'; DOM={"dataTest": "input-volsize", "invalid": "false", "placeholder": null, "type": "text", "value": "128 MiB"}; field errors=[]
+[browser-rpc] pool.dataset.create request: {"id": "2674e007-be00-48e4-a159-293215640958", "jsonrpc": "2.0", "method": "pool.dataset.create", "params": [{"comments": "", "force_size": false, "inherit_encryption": true, "name": "boot-pool/user-data/ui-acceptance-20261030020320a508e8/vm-disk", "snapdev": "INHERIT", "sparse": true, "type": "VOLUME", "volblocksize": "16K", "volsize": 134217728}]}
+[zvol-ui-wire] boot-pool/user-data/ui-acceptance-20261030020320a508e8/vm-disk request type='VOLUME' volsize=134217728 bytes after size textbox blur value='128 MiB'
+[zvol-ui] created boot-pool/user-data/ui-acceptance-20261030020320a508e8/vm-disk; 65536 bytes written; SHA-256=f9109d31eb50526dcd066e3b9f22daef492c8947f60af450e2674b91ed245579; ZFS used=131072
+[browser-rpc] pool.dataset.query request: {"id": "6d01afd0-a987-41d7-aab7-de95bf225d9c", "jsonrpc": "2.0", "method": "pool.dataset.query", "params": [[["id", "=", "boot-pool/user-data/ui-acceptance-20261030020320a508e8"]]]}
+[browser-rpc] pool.dataset.recommended_zvol_blocksize request: {"id": "45b2549d-cc14-410d-b3fe-aa7ad764e431", "jsonrpc": "2.0", "method": "pool.dataset.recommended_zvol_blocksize", "params": ["boot-pool"]}
+[browser-rpc] pool.dataset.compression_choices request: {"id": "45db3de6-9717-41bd-8298-7bb67df2c3f6", "jsonrpc": "2.0", "method": "pool.dataset.compression_choices", "params": []}
+[zvol-ui-form-loading] visible form: - dialog "Slide-in form": | - heading "Add Zvol" [level=3] | - button "close": | - img "close" | - progressbar | - group: | - text: Name * | - img "help-circle-outline" | - textbox "Name" | - text: Size * | - img "help-circle-outline" | - textbox "Size" | - group: | - text: Additional Options | - checkbox "Force size" | - text: Force size | - img "help-circle-outline" | - checkbox "Sparse" | - text: Sparse | - img "help-circle-outline" | - table: | - rowgroup: | - cell "Comments" | - cell "Current value is . Click to edit.": | - button "Current value is . Click to edit.": | - text: Not Set | - img "pencil" | - cell "Sync help-circle-outline": | - text: Sync | - img "help-circle-outline" | - cell "Current value is . Click to edit.": | - button "Current value is . Click to edit.":
+[browser-rpc-response] pool.dataset.recommended_zvol_blocksize response: {"id": "45b2549d-cc14-410d-b3fe-aa7ad764e431", "jsonrpc": "2.0", "result": "16K"}
+[browser-rpc-response] pool.dataset.compression_choices response: {"id": "45db3de6-9717-41bd-8298-7bb67df2c3f6", "jsonrpc": "2.0", "result": {"GZIP": "GZIP", "GZIP-1": "GZIP-1", "GZIP-9": "GZIP-9", "LZ4": "LZ4", "LZJB": "LZJB", "OFF": "OFF", "ON": "ON", "ZLE": "ZLE", "ZSTD": "ZSTD", "ZSTD-1": "ZSTD-1", "ZSTD-10": "ZSTD-10", "ZSTD-11": "ZSTD-11", "ZSTD-12": "ZSTD-12", "ZSTD-13": "ZSTD-13", "ZSTD-14": "ZSTD-14", "ZSTD-15": "ZSTD-15", "ZSTD-16": "ZSTD-16", "ZSTD-17": "ZSTD-17", "ZSTD-18": "ZSTD-18", "ZSTD-19": "ZSTD-19", "ZSTD-2": "ZSTD-2", "ZSTD-3": "ZSTD-3", "ZSTD-4": "ZSTD-4", "ZSTD-5": "ZSTD-5", "ZSTD-6": "ZSTD-6", "ZSTD-7": "ZSTD-7", "ZSTD-8": "ZSTD-8", "ZSTD-9": "ZSTD-9", "ZSTD-FAST": "ZSTD-FAST", "ZSTD-FAST-1": "ZSTD-FAST-1", "ZSTD-FAST-10": "ZSTD-FAST-10", "ZSTD-FAST-100": "ZSTD-FAST-100", "ZSTD-FAST-1000": "ZSTD-FAST-1000", "ZSTD-FAST-2": "ZSTD-FAST-2", "ZSTD-FAST-20": "ZSTD-FAST-20", "ZSTD-FAST-3": "ZSTD-FAST-3", "ZSTD-FAST-30": "ZSTD-FAST-30", "ZSTD-FAST-4": "ZSTD-FAST-4", "ZSTD-FAST-40": "ZSTD-FAST-40", "ZSTD-FAST-5": "ZSTD-FAST-5", "ZSTD-FAST-50": "ZSTD-FAST-50", "ZSTD-FAST-500": "ZSTD-FAST-500", "ZSTD-FAST-6": "ZSTD-FAST-6", "ZSTD-FAST-60": "ZSTD-FAST-60", "ZSTD-FAST-7": "ZSTD-FAST-7", "ZSTD-FAST-70": "ZSTD-FAST-70", "ZSTD-FAST-8": "ZSTD-FAST-8", "ZSTD-FAST-80": "ZSTD-FAST-80", "ZSTD-FAST-9": "ZSTD-FAST-9", "ZSTD-FAST-90": "ZSTD-FAST-90"}}
+[zvol-ui-form-ready] visible form: - dialog "Slide-in form": | - heading "Add Zvol" [level=3] | - button "close": | - img "close" | - group: | - text: Name * | - img "help-circle-outline" | - textbox "Name" | - text: Size * | - img "help-circle-outline" | - textbox "Size" | - group: | - text: Additional Options | - checkbox "Force size" | - text: Force size | - img "help-circle-outline" | - checkbox "Sparse" | - text: Sparse | - img "help-circle-outline" | - table: | - rowgroup: | - cell "Comments" | - cell "Current value is . Click to edit.": | - button "Current value is . Click to edit.": | - text: Not Set | - img "pencil" | - cell "Sync help-circle-outline": | - text: Sync | - img "help-circle-outline" | - cell "Current value is Inherit (standard). Click to edit.": | - button "Current value is Inherit (standard). Click to edit.": | - text: Inherit (standard) | - img "pencil" | - cell "Compression help-circle-outline": | - text: Compression | - img "help-circle-outline" | - cell "Current value is Inherit (on). Click to edit.": | - button "Current value is Inherit (on). Click to edit.": | - text: Inherit (on) | - img "pencil" | - cell "ZFS Deduplication help-circle-outline": | - text: ZFS Deduplication | - img "help-circle-outline" | - cell "Current value is Inherit (off). Click to edit.": | - button "Current value is Inherit (off). Click to edit.": | - text: Inherit (off) | - img "pencil" | - cell "Read-only help-circle-outline": | - text: Read-only | - img "help-circle-outline" | - cell "Current value is Inherit (off). Click to edit.": | - button "Current value is Inherit (off). Click to edit.": | - text: Inherit (off) | - img "pencil" | - cell "Block size help-circle-outline": | - text: Block size | - img "help-circle-outline" | - cell "Current value is 16 KiB. Click to edit.": | - button "Current value is 16 KiB. Click to edit.": | - text: 16 KiB | - img "pencil" | - cell "Snapdev help-circle-outline": | - text: Snapdev | - img "help-circle-outline" | - cell "Current value is Inherit (hidden). Click to edit.": | - button "Current value is Inherit (hidden). Click to edit.": | - text: Inherit (hidden) | - img "pencil" | - cell "Use Metadata (Special) VDEVs help-circle-outline": | - text: Use Metadata (Special) VDEVs | - img "help-circle-outline" | - cell "Current value is Inherit (off). Click to edit.": | - button "Current value is Inherit (off). Click to edit.": | - text: Inherit (off) | - img "pencil" | - group: | - text: Encryption | - checkbox "Inherit (non-encrypted)" [checked] | - text: Inherit (non-encrypted) | - img "help-circle-outline" | - button "Save" [disabled]
+[zvol-ui-ready-form] visible form: - dialog "Slide-in form": | - heading "Add Zvol" [level=3] | - button "close": | - img "close" | - group: | - text: Name * | - img "help-circle-outline" | - textbox "Name": cache-device | - img "close-circle" | - alert | - text: Size * | - img "help-circle-outline" | - textbox "Size": 128 MiB | - img "close-circle" | - alert | - group: | - text: Additional Options | - checkbox "Force size" | - text: Force size | - img "help-circle-outline" | - checkbox "Sparse" [checked] | - text: Sparse | - img "help-circle-outline" | - alert | - table: | - rowgroup: | - cell "Comments" | - cell "Current value is . Click to edit.": | - button "Current value is . Click to edit.": | - text: Not Set | - img "pencil" | - cell "Sync help-circle-outline": | - text: Sync | - img "help-circle-outline" | - cell "Current value is Inherit (standard). Click to edit.": | - button "Current value is Inherit (standard). Click to edit.": | - text: Inherit (standard) | - img "pencil" | - cell "Compression help-circle-outline": | - text: Compression | - img "help-circle-outline" | - cell "Current value is Inherit (on). Click to edit.": | - button "Current value is Inherit (on). Click to edit.": | - text: Inherit (on) | - img "pencil" | - cell "ZFS Deduplication help-circle-outline": | - text: ZFS Deduplication | - img "help-circle-outline" | - cell "Current value is Inherit (off). Click to edit.": | - button "Current value is Inherit (off). Click to edit.": | - text: Inherit (off) | - img "pencil" | - cell "Read-only help-circle-outline": | - text: Read-only | - img "help-circle-outline" | - cell "Current value is Inherit (off). Click to edit.": | - button "Current value is Inherit (off). Click to edit.": | - text: Inherit (off) | - img "pencil" | - cell "Block size help-circle-outline": | - text: Block size | - img "help-circle-outline" | - cell "Current value is 16 KiB. Click to edit.": | - button "Current value is 16 KiB. Click to edit.": | - text: 16 KiB | - img "pencil" | - cell "Snapdev help-circle-outline": | - text: Snapdev | - img "help-circle-outline" | - cell "Current value is Inherit (hidden). Click to edit.": | - button "Current value is Inherit (hidden). Click to edit.": | - text: Inherit (hidden) | - img "pencil" | - cell "Use Metadata (Special) VDEVs help-circle-outline": | - text: Use Metadata (Special) VDEVs | - img "help-circle-outline" | - cell "Current value is Inherit (off). Click to edit.": | - button "Current value is Inherit (off). Click to edit.": | - text: Inherit (off) | - img "pencil" | - group: | - text: Encryption | - checkbox "Inherit (non-encrypted)" [checked] | - text: Inherit (non-encrypted) | - img "help-circle-outline" | - button "Save"
+[zvol-ui-size-control] after blur value='128 MiB'; DOM={"dataTest": "input-volsize", "invalid": "false", "placeholder": null, "type": "text", "value": "128 MiB"}; field errors=[]
+[browser-rpc] pool.dataset.create request: {"id": "281354ef-8fc5-4719-be84-8fbff66a8416", "jsonrpc": "2.0", "method": "pool.dataset.create", "params": [{"comments": "", "force_size": false, "inherit_encryption": true, "name": "boot-pool/user-data/ui-acceptance-20261030020320a508e8/cache-device", "snapdev": "INHERIT", "sparse": true, "type": "VOLUME", "volblocksize": "16K", "volsize": 134217728}]}
+[zvol-ui-wire] boot-pool/user-data/ui-acceptance-20261030020320a508e8/cache-device request type='VOLUME' volsize=134217728 bytes after size textbox blur value='128 MiB'
+[cache-device] UI-created boot-pool/user-data/ui-acceptance-20261030020320a508e8/cache-device stored ZFS data and served as a cache vdev for a temporary file-backed pool; add/status/remove/export passed (ZFS used=229376)
+[container-ui] submitting a container on pool boot-pool using alpine:3.24:amd64:default
+[container-ui-form] visible form: - dialog "Slide-in form": | - heading "Add Container" [level=3] | - button "close": | - img "close" | - group: | - text: Basic Name * | - img "help-circle-outline" | - textbox "Name" | - text: Description | - img "help-circle-outline" | - textbox "Description" | - checkbox "Autostart" [checked] | - text: Autostart | - img "help-circle-outline" | - text: Image * | - textbox "Image" | - button "Browse Catalog" | - text: Pool * | - img "help-circle-outline" | - combobox "Pool" | - progressbar | - button "Create" [disabled] | - button "Advanced Options"
+[container-ui-autostart] selected Autostart=True through the UI
+[browser-rpc] container.image.query_registry request: {"id": "9a8dcb4b-8d97-413f-b586-5c9c00c1c68e", "jsonrpc": "2.0", "method": "container.image.query_registry", "params": []}
+[container-image-picker] visible form: - dialog "Select Image": | - heading "Select Image" [level=1] | - button "Close Container Form": | - img "cancel" | - group: | - text: Filters Search Images | - textbox "Search Images" | - text: OS | - combobox "OS" [disabled] | - progressbar | - text: Variant | - combobox "Variant" [disabled] | - progressbar | - text: Release | - combobox "Release" [disabled] | - progressbar | - table: | - rowgroup: | - row "Label OS Release Archs Variant": | - columnheader "Label" | - columnheader "OS" | - columnheader "Release" | - columnheader "Archs" | - columnheader "Variant" | - columnheader | - rowgroup | - progressbar
+[browser-rpc-response] container.image.query_registry response: {"id": "9a8dcb4b-8d97-413f-b586-5c9c00c1c68e", "jsonrpc": "2.0", "result": [{"name": "almalinux:10:amd64:default", "versions": [{"version": "20261027_15:38"}, {"version": "20261027_23:08"}, {"version": "20261028_23:08"}]}, {"name": "almalinux:8:amd64:default", "versions": [{"version": "20261027_15:35"}, {"version": "20261027_23:08"}, {"version": "20261028_23:08"}]}, {"name": "almalinux:9:amd64:default", "versions": [{"version": "20261027_15:55"}, {"version": "20261027_23:08"}, {"version": "20261028_23:08"}]}, {"name": "alpine:3.21:amd64:default", "versions": [{"version": "20261014_13:00"}, {"version": "20261015_13:00"}, {"version": "20261016_13:00"}]}, {"name": "alpine:3.21:amd64:tinycloud", "versions": [{"version": "20261014_13:00"}, {"version": "20261015_13:00"}, {"version": "20261016_13:00"}]}, {"name": "alpine:3.22:amd64:default", "versions": [{"version": "20261014_13:00"}, {"version": "20261015_13:00"}, {"version": "20261016_13:00"}]}, {"name": "alpine:3.22:amd64:tinycloud", "versions": [{"version": "20261014_13:00"}, {"version": "20261015_13:00"}, {"version": "20261016_13:00"}]}, {"name": "alpine:3.23:amd64:default", "versions": [{"version": "20261014_13:00"}, {"version": "20261015_13:00"}, {"version": "20261016_13:00"}]}, {"name": "alpine:3.23:amd64:tinycloud", "versions": [{"version": "20261014_13:00"}, {"version": "20261015_13:00"}, {"version": "20261016_13:00"}]}, {"name": "alpine:3.24:amd64:default", "versions": [{"version": "20261014_13:00"}, {"version": "20261015_13:00"}, {"version": "20261016_13:00"}]}, {"name": "alpine:3.24:amd64:tinycloud", "versions": [{"version": "20261014_13:00"}, {"version": "20261015_13:00"}, {"version": "20261016_13:00"}]}, {"name": "alpine:edge:amd64:default", "versions": [{"version": "20261014_13:00"}, {"version": "20261015_13:00"}, {"version": "20261016_13:00"}]}, {"name": "alpine:edge:amd64:tinycloud", "versions": [{"version": "20261014_13:00"}, {"version": "20261015_13:00"}, {"version": "20261016_13:00"}]}, {"name": "alt:Sisyphus:amd64:default", "versions": [{"version": "20261027_15:18"}, {"version": "20261028_01:17"}, {"version": "20261029_01:17"}]}, {"name": "alt:p11:amd64:default", "versions": [{"version": "20261027_15:19"}, {"version": "20261028_01:17"}, {"version": "20261029_01:17"}]}, {"name": "amazonlinux:2023:amd64:default", "versions": [{"version": "20261027_15:50"}, {"version": "20261028_05:09"}, {"version": "20261029_05:09"}]}, {"name": "archlinux:current:amd64:default", "versions": [{"version": "20261027_16:02"}, {"version": "20261028_04:44"}, {"version": "20261029_05:02"}]}, {"name": "busybox:1.38.0:amd64:default", "versions": [{"version": "20261027_15:32"}, {"version": "20261028_06:00"}, {"version": "20261029_06:00"}]}, {"name": "centos:10-Stream:amd64:default", "versions": [{"version": "20261027_16:53"}, {"version": "20261028_07:08"}, {"version": "20261029_07:08"}]}, {"name": "centos:9-Stream:amd64:default", "versions": [{"version": "20261027_18:13"}, {"version": "20261028_07:08"}, {"version": "20261029_07:40"}]}, {"name": "debian:bookworm:amd64:default", "versions": [{"version": "20261027_16:22"}, {"version": "20261028_05:24"}, {"version": "20261029_05:24"}]}, {"name": "debian:forky:amd64:default", "versions": [{"version": "20261027_16:04"}, {"version": "20261028_05:24"}, {"version": "20261029_05:24"}]}, {"name": "debian:trixie:amd64:default", "versions": [{"version": "20261027_16:22"}, {"version": "20261028_05:24"}, {"version": "20261029_05:24"}]}, {"name": "devuan:daedalus:amd64:default", "versions": [{"version": "20261027_22:38"}, {"version": "20261028_11:50"}, {"version": "20261029_11:50"}]}, {"name": "devuan:excalibur:amd64:default", "versions": [{"version": "20261027_22:38"}, {"version": "20261028_11:50"}, {"version": "20261029_11:50"}]}, {"name": "fedora:43:amd64:default", "versions": [{"version": "20261021_20:33"}, {"version": "20261027_20:33"}, {"version": "20261028_20:33"}]}, {"name": "fedora:44:amd64:default", "versions": [{"version": "20261021_20:33"}, {"version": "20261027_20:33"}, {"version": "20261028_20:33"}]}, {"name": "gentoo:current:amd64:openrc", "versions": [{"version": "20261014_16:07"}, {"version": "20261015_16:07"}, {"version": "20261016_16:07"}]}, {"name": "gentoo:current:amd64:systemd", "versions": [{"version": "20261014_16:07"}, {"version": "20261015_16:07"}, {"version": "20261016_16:07"}]}, {"name": "kali:current:amd64:default", "versions": [{"version": "20261027_17:14"}, {"version": "20261028_17:14"}, {"version": "20261029_17:14"}]}, {"name": "mint:vanessa:amd64:default", "versions": [{"version": "20261027_15:47"}, {"version": "20261028_08:51"}, {"version": "20261029_08:51"}]}, {"name": "mint:vera:amd64:default", "versions": [{"version": "20261027_15:22"}, {"version": "20261028_08:51"}, {"version": "20261029_08:51"}]}, {"name": "mint:victoria:amd64:default", "versions": [{"version": "20261027_15:31"}, {"version": "20261028_08:51"}, {"version": "20261029_08:51"}]}, {"name": "mint:virginia:amd64:default", "versions": [{"v
+[container-image-ui] selected 'alpine:3.24:amd64:default:20261016_13:00' version '20261016_13:00' through Browse Catalog
+[browser-rpc] container.create request: {"id": "1081e2dd-8c7d-4a9e-a398-06c7e56a4fcb", "jsonrpc": "2.0", "method": "container.create", "params": [{"autostart": true, "capabilities_policy": "DEFAULT", "idmap": {"type": "DEFAULT"}, "image": {"name": "alpine:3.24:amd64:default", "version": "20261016_13:00"}, "name": "uiacceptance20a508e8", "pool": "boot-pool", "shutdown_timeout": 30, "time": "LOCAL"}]}
+[container-ui-wire] UI request submitted pool=boot-pool, image=alpine:3.24:amd64:default, version=20261016_13:00
+[container-ui] created container uiacceptance20a508e8 on boot-pool; direct ZFS dataset boot-pool/user-data/.truenas_containers/containers/uiacceptance20a508e8 used=0 bytes, referenced=8011776 bytes; image dataset boot-pool/user-data/.truenas_containers/images/alpine:3.24:amd64:default:20261016_13:00 uses 8011776 bytes; selected pool and storage root match
+[vm-ui] submitting VM wizard uiacceptancevm20a508e8
+[vm-create-entry-page] url=https://<host>/ui/vm; controls=- link "app-truenas-logo-mark-color app-truenas-logo-type-color":
+  - /url: /ui/dashboard
+  - img "app-truenas-logo-mark-color"
+  - img "app-truenas-logo-type-color"
+- navigation "Main menu":
+  - listitem:
+    - link "mdi-view-dashboard Dashboard":
+      - /url: /ui/dashboard
+      - img "mdi-view-dashboard"
+      - text: Dashboard
+  - listitem:
+    - link "mdi-dns Storage":
+      - /url: /ui/storage
+      - img "mdi-dns"
+      - text: Storage
+  - listitem:
+    - link "tn-dataset-root Datasets":
+      - /url: /ui/datasets
+      - img "tn-dataset-root"
+      - text: Datasets
+  - listitem:
+    - link "mdi-folder-account Shares":
+      - /url: /ui/sharing
+      - img "mdi-folder-account"
+      - text: Shares
+  - listitem:
+    - link "mdi-security Data Protection":
+      - /url: /ui/data-protection
+      - img "mdi-security"
+      - text: Data Protection
+  - listitem:
+    - button "Credentials submenu":
+      - img "mdi-key"
+      - text: Credentials
+      - img "chevron-right"
+  - listitem:
+    - link "mdi-package-variant-closed Containers":
+      - /url: /ui/containers
+      - img "mdi-package-variant-closed"
+      - text: Containers
+  - listitem:
+    - link "mdi-laptop Virtual Machines":
+      - /url: /ui/vm
+      - img "mdi-laptop"
+      - text: Virtual Machines
+  - listitem:
+    - link "mdi-apps Apps":
+      - /url: /ui/apps
+      - img "mdi-apps"
+      - text: Apps
+  - listitem:
+    - link "mdi-chart-bar Reporting":
+      - /url: /ui/reportsdashboard/cpu
+      - img "mdi-chart-bar"
+      - text: Reporting
+  - listitem:
+    - button "System submenu":
+      - img "mdi-cog"
+      - text: System
+      - img "chevron-right"
+- text: truenas
+- paragraph:
+  - link "Community Edition":
+    - /url: https://truenas.com/explore-truenas-enterprise/?m=Q09NTVVOSVRZX0VESVRJT04=
+- text: TrueNAS® Community Edition © 2026 iXsystems, Inc. dba
+- link "TrueNAS":
+  - /url: https://truenas.com/testdrive
+- list
+- navigation "Top bar":
+  - button "Toggle Sidenav":
+    - img "menu"
+  - img "magnify"
+  - textbox "Search UI"
+  - text: Ctrl + /
+  - button "Send Feedback":
+    - img "emoticon"
+  - button "Status of TrueCommand":
+    - img "tn-truecommand-logo-mark"
+  - button "TrueNAS Connect is disabled":
+    - img "tn-truenas-connect-logo"
+  - button "Jobs History":
+    - img "clipboard-text"
+  - button "Alerts":
+    - img "bell"
+  - button "truenas_admin account-circle":
+    - text: truenas_admin
+    - img "account-circle"
+  - button "power":
+    - img "power"
+- main:
+  - list
+  - heading "Virtual Machines" [level=1]
+  - strong: "Available Memory:"
+  - text: 5.63 GiB
+  - img "information"
+  - img "magnify"
+  - textbox "Search"
+  - button "Columns menu-down":
+    - text: Columns
+    - img "menu-down"
+  - button "Add VM": Add
+  - table:
+    - rowgroup:
+      - row "Name Running Start on Boot":
+        - columnheader "Name"
+        - columnheader "Running"
+        - columnheader "Start on Boot"
+    - rowgroup
+  - img "mdi-format-list-text"
+  - heading "No records have been added yet" [level=3]
+  - text: "Items per page:"
+  - combobox "Items per page": "50"
+  - text: 0 of 0
+  - button "First Page" [disabled]:
+    - img "page-first"
+  - button "Previous Page" [disabled]:
+    - img "chevron-left"
+  - button "Next Page" [disabled]:
+    - img "chevron-right"
+  - button "Last Page" [disabled]:
+    - img "page-last"
+- complementary "Alerts":
+  - heading "Alerts" [level=3]
+  - button "cog":
+    - img "cog"
+  - button "close":
+    - img "close"
+  - button "All Alerts 1"
+  - button "Critical 0"
+  - button "Warnings 0"
+  - button "Info 1"
+  - button "Dismissed 0"
+  - img "mdi-cog"
+  - heading "System" [level=4]
+  - text: "1"
+  - listitem:
+    - img "mdi-information"
+    - heading "Info" [level=3]
+    - heading "A system update is available. Go to System → Update to download and apply the update." [level=4]
+    - text: 2026-10-30 01:57:33 (America/Los_Angeles)
+    - button "mdi-update Go to System Updates":
+      - img "mdi-update"
+      - text: Go to System Updates
+    - button "Dismiss"
+    - button "Dismiss":
+      - img "mdi-close"
+  - button "Dismiss All Alerts"
+[vm-create-entry] - button "Add VM": Add
+[vm-create-form-page] url=https://<host>/ui/vm; controls=- link "app-truenas-logo-mark-color app-truenas-logo-type-color":
+  - /url: /ui/dashboard
+  - img "app-truenas-logo-mark-color"
+  - img "app-truenas-logo-type-color"
+- navigation "Main menu":
+  - listitem:
+    - link "mdi-view-dashboard Dashboard":
+      - /url: /ui/dashboard
+      - img "mdi-view-dashboard"
+      - text: Dashboard
+  - listitem:
+    - link "mdi-dns Storage":
+      - /url: /ui/storage
+      - img "mdi-dns"
+      - text: Storage
+  - listitem:
+    - link "tn-dataset-root Datasets":
+      - /url: /ui/datasets
+      - img "tn-dataset-root"
+      - text: Datasets
+  - listitem:
+    - link "mdi-folder-account Shares":
+      - /url: /ui/sharing
+      - img "mdi-folder-account"
+      - text: Shares
+  - listitem:
+    - link "mdi-security Data Protection":
+      - /url: /ui/data-protection
+      - img "mdi-security"
+      - text: Data Protection
+  - listitem:
+    - button "Credentials submenu":
+      - img "mdi-key"
+      - text: Credentials
+      - img "chevron-right"
+  - listitem:
+    - link "mdi-package-variant-closed Containers":
+      - /url: /ui/containers
+      - img "mdi-package-variant-closed"
+      - text: Containers
+  - listitem:
+    - link "mdi-laptop Virtual Machines":
+      - /url: /ui/vm
+      - img "mdi-laptop"
+      - text: Virtual Machines
+  - listitem:
+    - link "mdi-apps Apps":
+      - /url: /ui/apps
+      - img "mdi-apps"
+      - text: Apps
+  - listitem:
+    - link "mdi-chart-bar Reporting":
+      - /url: /ui/reportsdashboard/cpu
+      - img "mdi-chart-bar"
+      - text: Reporting
+  - listitem:
+    - button "System submenu":
+      - img "mdi-cog"
+      - text: System
+      - img "chevron-right"
+- text: truenas
+- paragraph:
+  - link "Community Edition":
+    - /url: https://truenas.com/explore-truenas-enterprise/?m=Q09NTVVOSVRZX0VESVRJT04=
+- text: TrueNAS® Community Edition © 2026 iXsystems, Inc. dba
+- link "TrueNAS":
+  - /url: https://truenas.com/testdrive
+- list
+- navigation "Top bar":
+  - button "Toggle Sidenav":
+    - img "menu"
+  - img "magnify"
+  - textbox "Search UI"
+  - text: Ctrl + /
+  - button "Send Feedback":
+    - img "emoticon"
+  - button "Status of TrueCommand":
+    - img "tn-truecommand-logo-mark"
+  - button "TrueNAS Connect is disabled":
+    - img "tn-truenas-connect-logo"
+  - button "Jobs History":
+    - img "clipboard-text"
+  - button "Alerts":
+    - img "bell"
+  - button "truenas_admin account-circle":
+    - text: truenas_admin
+    - img "account-circle"
+  - button "power":
+    - img "power"
+- main:
+  - list
+  - heading "Virtual Machines" [level=1]
+  - strong: "Available Memory:"
+  - text: 5.63 GiB
+  - img "information"
+  - img "magnify"
+  - textbox "Search"
+  - button "Columns menu-down":
+    - text: Columns
+    - img "menu-down"
+  - button "Add VM": Add
+  - table:
+    - rowgroup:
+      - row "Name Running Start on Boot":
+        - columnheader "Name"
+        - columnheader "Running"
+        - columnheader "Start on Boot"
+    - rowgroup
+  - img "mdi-format-list-text"
+  - heading "No records have been added yet" [level=3]
+  - text: "Items per page:"
+  - combobox "Items per page": "50"
+  - text: 0 of 0
+  - button "First Page" [disabled]:
+    - img "page-first"
+  - button "Previous Page" [disabled]:
+    - img "chevron-left"
+  - button "Next Page" [disabled]:
+    - img "chevron-right"
+  - button "Last Page" [disabled]:
+    - img "page-last"
+- complementary "Alerts":
+  - heading "Alerts" [level=3]
+  - button "cog":
+    - img "cog"
+  - button "close":
+    - img "close"
+  - button "All Alerts 1"
+  - button "Critical 0"
+  - button "Warnings 0"
+  - button "Info 1"
+  - button "Dismissed 0"
+  - img "mdi-cog"
+  - heading "System" [level=4]
+  - text: "1"
+  - listitem:
+    - img "mdi-information"
+    - heading "Info" [level=3]
+    - heading "A system update is available. Go to System → Update to download and apply the update." [level=4]
+    - text: 2026-10-30 01:57:33 (America/Los_Angeles)
+    - button "mdi-update Go to System Updates":
+      - img "mdi-update"
+      - text: Go to System Updates
+    - button "Dismiss"
+    - button "Dismiss":
+      - img "mdi-close"
+  - button "Dismiss All Alerts"
+- dialog "Slide-in form":
+  - heading "Create Virtual Machine" [level=3]
+  - button "close":
+    - img "close"
+  - button "Operating System" [expanded]
+  - region "Operating System":
+    - text: Guest Operating System *
+    - img "help-circle-outline"
+    - combobox "Guest Operating System"
+    - text: Name *
+    - img "help-circle-outline"
+    - textbox "Name"
+    - text: Description
+    - img "help-circle-outline"
+    - textbox "Description"
+    - text: System Clock *
+    - img "help-circle-outline"
+    - combobox "System Clock": Local
+    - text: Boot Method *
+    - img "help-circle-outline"
+    - combobox "Boot Method": UEFI
+    - checkbox "Enable Secure Boot"
+    - text: Enable Secure Boot
+    - img "help-circle-outline"
+    - checkbox "Enable Trusted Platform Module (TPM)"
+    - text: Enable Trusted Platform Module (TPM)
+    - img "help-circle-outline"
+    - text: Shutdown Timeo
+[vm-ui-form] visible form: - dialog "Slide-in form": | - heading "Create Virtual Machine" [level=3] | - button "close": | - img "close" | - button "Operating System" [expanded] | - region "Operating System": | - text: Guest Operating System * | - img "help-circle-outline" | - combobox "Guest Operating System" | - text: Name * | - img "help-circle-outline" | - textbox "Name" | - text: Description | - img "help-circle-outline" | - textbox "Description" | - text: System Clock * | - img "help-circle-outline" | - combobox "System Clock": Local | - text: Boot Method * | - img "help-circle-outline" | - combobox "Boot Method": UEFI | - checkbox "Enable Secure Boot" | - text: Enable Secure Boot | - img "help-circle-outline" | - checkbox "Enable Trusted Platform Module (TPM)" | - text: Enable Trusted Platform Module (TPM) | - img "help-circle-outline" | - text: Shutdown Timeout | - img "help-circle-outline" | - spinbutton "Shutdown Timeout": "90" | - img "close-circle" | - checkbox "Start on Boot" [checked] | - text: Start on Boot | - img "help-circle-outline" | - checkbox "Enable Display (VNC)" [checked] | - text: Enable Display (VNC) | - img "help-circle-outline" | - text: Bind * | - img "help-circle-outline" | - combobox "Bind": <host-address> | - text: Password * | - img "help-circle-outline" | - textbox "Password" | - button "Show Password": | - img "eye-off" | - paragraph: | - strong: "Note:" | - text: VNC requires a separate client application and cannot be accessed through the web browser. Password is limited to 8 characters. | - button "Next" [disabled] | - button "CPU And Memory" [disabled] | - button "Disks" [disabled] | - button "Network Interface" [disabled] | - button "Installation Media" [disabled] | - button "GPU" [disabled] | - button "Confirm Options" [disabled]
+[vm-ui-cpu-memory] visible form: - dialog "Slide-in form": | - heading "Create Virtual Machine" [level=3] | - button "close": | - img "close" | - button "pencil Operating System": | - img "pencil" | - text: Operating System | - region "pencil Operating System": | - text: Guest Operating System * | - img "help-circle-outline" | - combobox "Guest Operating System": Linux | - alert | - text: Name * | - img "help-circle-outline" | - textbox "Name": uiacceptancevm20a508e8 | - img "close-circle" | - alert | - text: Description | - img "help-circle-outline" | - textbox "Description" | - text: System Clock * | - img "help-circle-outline" | - combobox "System Clock": Local | - text: Boot Method * | - img "help-circle-outline" | - combobox "Boot Method": UEFI | - checkbox "Enable Secure Boot" | - text: Enable Secure Boot | - img "help-circle-outline" | - checkbox "Enable Trusted Platform Module (TPM)" | - text: Enable Trusted Platform Module (TPM) | - img "help-circle-outline"
+[vm-ui-disks] visible form: - dialog "Slide-in form": | - heading "Create Virtual Machine" [level=3] | - button "close": | - img "close" | - button "pencil Operating System": | - img "pencil" | - text: Operating System | - button "pencil CPU And Memory": | - img "pencil" | - text: CPU And Memory | - region "pencil CPU And Memory": | - paragraph: The product of vCPUs, cores and threads must not exceed 255 on this system. | - text: Virtual CPUs * | - img "help-circle-outline" | - spinbutton "Virtual CPUs": "1" | - img "close-circle" | - alert | - text: Cores * | - img "help-circle-outline" | - spinbutton "Cores": "1" | - img "close-circle" | - text: Threads * | - img "help-circle-outline" | - spinbutton "Threads": "1" | - img "close-circle" | - text: "Optional: CPU Set (Examples: 0-3,8-11)" | - img "help-circle-outline" | - 'textbox "Optional: CPU Set (Examples: 0-3,8-11)"' | - checkbox "Pin vcpus" | - text: Pin vcpus | - img "help-circle-outline" | - text: CPU Mode *
+[vm-ui-existing-disk] selected and verified Use existing disk image
+[vm-ui-disk] selected existing zvol boot-pool/user-data/ui-acceptance-20261030020320a508e8/vm-disk in the VM wizard
+[vm-ui-step] advancing the active Disks wizard region
+[vm-ui-step] visible form: - dialog "Slide-in form": | - heading "Create Virtual Machine" [level=3] | - button "close": | - img "close" | - button "pencil Operating System": | - img "pencil" | - text: Operating System | - button "pencil CPU And Memory": | - img "pencil" | - text: CPU And Memory | - button "pencil Disks": | - img "pencil" | - text: Disks | - button "Network Interface" [expanded] | - region "Network Interface": | - text: Adapter Type * | - img "help-circle-outline" | - combobox "Adapter Type": VirtIO | - text: Mac Address * | - img "help-circle-outline" | - textbox "Mac Address": 00:a0:98:6d:69:c3 | - img "close-circle" | - text: Attach NIC * | - img "help-circle-outline" | - combobox "Attach NIC" | - checkbox "Trust Guest Filters" | - text: Trust Guest Filters | - button "Back" | - button "Next" [disabled] | - button "Installation Media" [disabled] | - button "GPU" [disabled] | - button "Confirm Options" [disabled]
+[vm-ui-network] selected the only available Attach NIC option 'ens3'
+[vm-ui-step] advancing the active Network Interface wizard region
+[vm-ui-step] visible form: - dialog "Slide-in form": | - heading "Create Virtual Machine" [level=3] | - button "close": | - img "close" | - button "pencil Operating System": | - img "pencil" | - text: Operating System | - button "pencil CPU And Memory": | - img "pencil" | - text: CPU And Memory | - button "pencil Disks": | - img "pencil" | - text: Disks | - button "pencil Network Interface": | - img "pencil" | - text: Network Interface | - button "Installation Media" [expanded] | - region "Installation Media": | - text: "Optional: Choose installation media image" | - img "help-circle-outline" | - 'textbox "Enter path for Optional: Choose installation media image."' | - img "folder-open" | - text: /mnt | - button "Upload New Image File" | - button "Back" | - button "Next" | - button "GPU" [disabled] | - button "Confirm Options" [disabled]
+[vm-ui-step] advancing the active Installation Media wizard region
+[vm-ui-step] visible form: - dialog "Slide-in form": | - heading "Create Virtual Machine" [level=3] | - button "close": | - img "close" | - button "pencil Operating System": | - img "pencil" | - text: Operating System | - button "pencil CPU And Memory": | - img "pencil" | - text: CPU And Memory | - button "pencil Disks": | - img "pencil" | - text: Disks | - button "pencil Network Interface": | - img "pencil" | - text: Network Interface | - button "pencil Installation Media": | - img "pencil" | - text: Installation Media | - button "GPU" [expanded] | - region "GPU": | - checkbox "Hide from MSR" | - text: Hide from MSR | - checkbox "Ensure Display Device" [checked] | - text: Ensure Display Device | - img "help-circle-outline" | - text: GPUs | - combobox "GPUs" | - button "Back" | - button "Next" | - button "Confirm Options" [disabled]
+[vm-ui-step] advancing the active GPU wizard region
+[vm-ui-step] visible form: - dialog "Slide-in form": | - heading "Create Virtual Machine" [level=3] | - button "close": | - img "close" | - button "pencil Operating System": | - img "pencil" | - text: Operating System | - button "pencil CPU And Memory": | - img "pencil" | - text: CPU And Memory | - button "pencil Disks": | - img "pencil" | - text: Disks | - button "pencil Network Interface": | - img "pencil" | - text: Network Interface | - button "pencil Installation Media": | - img "pencil" | - text: Installation Media | - button "pencil GPU": | - img "pencil" | - text: GPU | - button "Confirm Options" [expanded] | - region "Confirm Options": | - table: | - 'row "Name: uiacceptancevm20a508e8"': | - cell "Name:" | - cell "uiacceptancevm20a508e8" | - 'row "Guest Operating System: Linux"': | - cell "Guest Operating System:" | - cell "Linux" | - 'row "CPU Configuration: 1 CPU, 1 core, 1 thread"':
+[vm-ui] UI wizard created VM uiacceptancevm20a508e8 with existing zvol /dev/zvol/boot-pool/user-data/ui-acceptance-20261030020320a508e8/vm-disk; zvol is on boot-pool and uses 131072 bytes
+[shares-ui] opening SMB and NFS sections
+[shares-ui] SMB and NFS share pages/actions are available
+[shares-ui] SMB/NFS sections present=True; Add actions=5
+[cleanup] removed UI test tree boot-pool/user-data/ui-acceptance-20261030020320a508e8
+[result] PASS TrueNAS 27.0.0-MASTER+20261027-173422 path-a UI
+run-gate: footprint live-ui: peak 314 MiB (+312 MiB over baseline), p90 289 MiB, 0.03 cores avg, 2.8 s stalled on memory (full); history median peak - (0 runs)
+run-gate: lane 'live-ui' verdict PASS; exit_code 0; log <run-gate-state>/lanes/live-ui/9114a3beb8e59f3428d3ef8512a97c5b.log
+EXIT=0

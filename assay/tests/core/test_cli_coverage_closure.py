@@ -7,6 +7,7 @@ returned value.  Nothing here touches docker, the network or a cgroup.
 from __future__ import annotations
 
 import dataclasses
+import hashlib
 import io
 import os
 import signal
@@ -39,9 +40,19 @@ def test_proc_fd_root_that_is_not_openable_is_refused(tmp_path):
 def test_proc_fd_root_that_fstat_reports_as_non_directory_is_refused(tmp_path, monkeypatch):
     descriptor = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
     real_fstat = os.fstat
-    monkeypatch.setattr(
-        safeio.os, "fstat", lambda fd: real_fstat(os.open(__file__, os.O_RDONLY))
-    )
+    target = os.path.realpath(tmp_path)
+
+    def non_directory_for_target(fd):
+        try:
+            opened = os.path.realpath(os.readlink(f"/proc/self/fd/{fd}"))
+        except OSError:
+            return real_fstat(fd)
+        if opened != target:
+            return real_fstat(fd)
+        with open(__file__, "rb") as handle:
+            return real_fstat(handle.fileno())
+
+    monkeypatch.setattr(safeio.os, "fstat", non_directory_for_target)
     try:
         with pytest.raises(AssayError, match="is not a directory"):
             safeio._open_root(Path(f"/proc/self/fd/{descriptor}"))
@@ -123,6 +134,8 @@ def _handler_stubs(monkeypatch, *, first_request=True, request_error=None,
         if terminate_error is not None:
             raise terminate_error
 
+    real_write = cli.os.write
+
     def write(fd, data):
         calls.append(("write", fd, data))
         if write_error is not None:
@@ -131,7 +144,11 @@ def _handler_stubs(monkeypatch, *, first_request=True, request_error=None,
 
     monkeypatch.setattr(cli.runner, "request_termination", request_termination)
     monkeypatch.setattr(cli.liveness, "terminate_live_process_groups", terminate)
-    monkeypatch.setattr(cli.os, "write", write)
+    monkeypatch.setattr(
+        cli.os,
+        "write",
+        lambda fd, data: write(fd, data) if fd == 2 else real_write(fd, data),
+    )
     return calls
 
 
@@ -320,9 +337,16 @@ def test_pilot_state_that_grows_after_fstat_is_refused_by_the_read_loop(state_ro
     root, descriptor = state_root
     (root / "PILOT-STATE").write_bytes(b"x" * (cli._PILOT_STATE_LIMIT + 1))
     real_fstat = os.fstat
+    target = root / "PILOT-STATE"
 
     def small(fd):
         info = real_fstat(fd)
+        try:
+            opened = os.path.realpath(os.readlink(f"/proc/self/fd/{fd}"))
+        except OSError:
+            return info
+        if opened != str(target.resolve()):
+            return info
         return type("S", (), {"st_mode": info.st_mode, "st_nlink": 1, "st_size": 1})()
 
     monkeypatch.setattr(cli.os, "fstat", small)
@@ -332,9 +356,17 @@ def test_pilot_state_that_grows_after_fstat_is_refused_by_the_read_loop(state_ro
 
 def test_pilot_state_read_error_is_wrapped(state_root, monkeypatch):
     root, descriptor = state_root
-    (root / "PILOT-STATE").write_text("{}")
+    target = root / "PILOT-STATE"
+    target.write_text("{}")
+    real_read = os.read
 
     def broken(fd, size):
+        try:
+            opened = os.path.realpath(os.readlink(f"/proc/self/fd/{fd}"))
+        except OSError:
+            return real_read(fd, size)
+        if opened != str(target.resolve()):
+            return real_read(fd, size)
         raise OSError("io error")
 
     monkeypatch.setattr(cli.os, "read", broken)
@@ -345,12 +377,21 @@ def test_pilot_state_read_error_is_wrapped(state_root, monkeypatch):
 # ------------------------------------------------------------------- state locking
 
 
-def _fstat_overrides(monkeypatch, overrides: dict[int, dict]):
+def _fstat_overrides(monkeypatch, target: Path, overrides: dict[int, dict]):
     """Make the Nth ``os.fstat`` call report altered fields."""
     real = os.fstat
     count = {"n": 0}
+    lock_root = Path("/tmp") / f"assay-state-locks-{os.geteuid()}"
+    lock_path = lock_root / (hashlib.sha256(os.fsencode(target)).hexdigest() + ".lock")
+    targets = {str(lock_root), str(lock_path)}
 
     def fake(fd):
+        try:
+            opened = os.path.realpath(os.readlink(f"/proc/self/fd/{fd}"))
+        except OSError:
+            return real(fd)
+        if opened not in targets:
+            return real(fd)
         count["n"] += 1
         info = real(fd)
         fields = {
@@ -364,15 +405,17 @@ def _fstat_overrides(monkeypatch, overrides: dict[int, dict]):
 
 
 def test_path_lock_refuses_a_lock_directory_that_is_not_private(tmp_path, monkeypatch):
-    _fstat_overrides(monkeypatch, {1: {"st_mode": stat.S_IFDIR | 0o755}})
+    target = tmp_path / "s"
+    _fstat_overrides(monkeypatch, target, {1: {"st_mode": stat.S_IFDIR | 0o755}})
     with pytest.raises(cli.PilotStateError, match="is not a private directory owned by this user"):
-        cli._acquire_state_path_lock(tmp_path / "s")
+        cli._acquire_state_path_lock(target)
 
 
 def test_path_lock_refuses_a_lock_file_that_is_not_private(tmp_path, monkeypatch):
-    _fstat_overrides(monkeypatch, {2: {"st_mode": stat.S_IFREG | 0o644}})
+    target = tmp_path / "s"
+    _fstat_overrides(monkeypatch, target, {2: {"st_mode": stat.S_IFREG | 0o644}})
     with pytest.raises(cli.PilotStateError, match="is not a private regular file owned by this user"):
-        cli._acquire_state_path_lock(tmp_path / "s")
+        cli._acquire_state_path_lock(target)
 
 
 def test_path_lock_reports_contention_with_another_run(tmp_path):
@@ -1008,9 +1051,29 @@ def test_progress_parent_walk_that_never_terminates_is_refused(tmp_path, monkeyp
     state, outside = _state_and_outside(tmp_path)
     state_fd, parent_fd = _root_fd(state), _root_fd(outside)
     inode = iter(range(1, 10_000))
-    monkeypatch.setattr(
-        cli.os, "fstat", lambda fd: SimpleNamespace(st_dev=0, st_ino=next(inode))
-    )
+    real_fstat = os.fstat
+    real_open = os.open
+    real_dup = os.dup
+    owned = {state_fd, parent_fd}
+
+    def tracked_open(*args, **kwargs):
+        fd = real_open(*args, **kwargs)
+        owned.add(fd)
+        return fd
+
+    def tracked_dup(fd, *args, **kwargs):
+        duplicate = real_dup(fd, *args, **kwargs)
+        owned.add(duplicate)
+        return duplicate
+
+    def never_terminates(fd):
+        if fd not in owned:
+            return real_fstat(fd)
+        return SimpleNamespace(st_dev=0, st_ino=next(inode))
+
+    monkeypatch.setattr(cli.os, "open", tracked_open)
+    monkeypatch.setattr(cli.os, "dup", tracked_dup)
+    monkeypatch.setattr(cli.os, "fstat", never_terminates)
     try:
         with pytest.raises(LaneConfigError, match="cannot prove that --progress 'p' is outside"):
             cli._refuse_progress_parent_in_state("p", state, parent_fd, state_fd)
@@ -1023,9 +1086,19 @@ def test_progress_parent_walk_that_never_terminates_is_refused(tmp_path, monkeyp
 def test_progress_parent_walk_failure_is_wrapped(tmp_path, monkeypatch):
     state, outside = _state_and_outside(tmp_path)
     state_fd, parent_fd = _root_fd(state), _root_fd(outside)
+    real_open = cli.os.open
+    outside_path = os.path.realpath(outside)
 
-    def broken(path, flags, **kwargs):
-        raise PermissionError("no parent")
+    def broken(path, flags, *args, **kwargs):
+        dir_fd = kwargs.get("dir_fd")
+        if os.fspath(path) == ".." and dir_fd is not None:
+            try:
+                opened = os.path.realpath(os.readlink(f"/proc/self/fd/{dir_fd}"))
+            except OSError:
+                opened = ""
+            if opened == outside_path:
+                raise PermissionError("no parent")
+        return real_open(path, flags, *args, **kwargs)
 
     monkeypatch.setattr(cli.os, "open", broken)
     try:

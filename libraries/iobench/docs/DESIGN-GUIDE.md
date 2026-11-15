@@ -375,22 +375,89 @@ controlled raw-partition reference and therefore invokes its own bounded fio
 job files through the approved host wrapper. It records no SSH or host
 orchestration code.
 
-The driver fails closed on target geometry, io.cost and cgroup IO-control
-state, monitor thresholds, write/time budgets, and timer state. It does not
-change IO controls. A raw run requires an operator acknowledgement containing
-the exact partition path, byte size, and PARTUUID; resume compares those facts
-with state and refuses a replacement. Sysfs partition, exclusive-claim, holder,
-mount, swap, and root/system checks run before any discard. Btrfs file targets
-resolve the filesystem UUID through `/sys/fs/btrfs/<uuid>/devices`, because the
-mounted filesystem's `MAJ:MIN` may be anonymous and unrelated to its backing member's
-number. The `run --dry-run` path exercises target and policy validation plus
-all fio rendering without creating output or changing the target.
+The driver fails closed on target geometry, active io.cost and cgroup IO
+controls, monitor thresholds, write/time budgets, and timer state during live
+runs. It does not change IO controls. The IO snapshot covers the benchmark
+cgroup and each ancestor for `io.max`, `io.weight`, and `io.bfq.weight`. A control file missing
+from that chain means the kernel/cgroup has no setting to enforce; its absence
+is recorded alongside present values so the before/after check detects a
+control appearing or changing. An existing but unreadable or malformed file
+refuses. `io.max` entries are inactive only when every per-device value is
+`max`; `io.weight` and `io.bfq.weight` must report default 100 with no active
+device override. Because `io.latency` can throttle peers, the snapshot also enumerates
+sibling cgroups at each level of the benchmark path and refuses active latency
+targets there; those peer controls are checked on every snapshot call. Peer
+`io.weight` is not judged. The target disk scheduler is read from
+`/sys/block/<disk>/queue/scheduler`, stored in the manifest and compared in
+the IO snapshot. Peer `io.bfq.weight` is judged when the selected target
+scheduler is `bfq`, because sibling group weights then affect proportional
+bandwidth. With any known non-BFQ scheduler, peer BFQ weights are inert,
+including `none` and `mq-deadline`. A
+missing, unreadable, or malformed scheduler is recorded as unknown and peer
+BFQ weights are checked conservatively; active values refuse with a message
+that names the cgroup control. Peer membership is not part of before/after
+equality because systemd services and containers can come and go during a
+study. Missing optional files mean no setting. Root `io.cost.qos`
+must be disabled, and the built-in
+`ctrl=auto model=linear` model is accepted while user/custom models refuse.
+Other siblings' `io.max` caps are not inherited by the benchmark cgroup, so
+they do not prevent this study from running. A raw run requires an operator acknowledgement
+containing the exact partition path, byte size, and PARTUUID; resume compares
+those facts with state and refuses a replacement. Sysfs partition,
+exclusive-claim, holder, mount, and swap checks run before any discard. The
+running-system-disk refusal remains the default. **Study decision D-IBX-002**
+allows a controller-policy exception only when the operator supplies both
+`--allow-system-disk-partition` and an acknowledgement derived at run time from
+hostname, target disk, root filesystem device(s), and target PARTUUID. The
+explicit flag is consent; the per-run acknowledgement is a drift check that
+binds that consent to current host and target facts. This relaxes only the
+disk-sharing refusal: the target partition itself must still be unmounted and
+not swap-active, and every identity, holder, geometry, exclusive-claim, and
+IO-control guard remains. Run state, cell records, plan, and analysis preserve
+the acknowledgement and observed system mounts and sibling swap devices; the
+stable identity is checked on resume and volatile mount/swap facts are stored
+per attempt. The result is marked as including system and sibling-swap
+activity. This controller policy was requested on 2026-11-13
+because approved disposable compute hosts have one virtual disk. Btrfs file
+targets resolve the filesystem UUID through
+`/sys/fs/btrfs/<uuid>/devices`, because the mounted filesystem's `MAJ:MIN` may
+be anonymous and unrelated to its backing member's number.
 
-The writer meter reserves the derived full base schedule plus a separate
-reserve for the optional repeat sets, so conditional measurements remain
-schedulable after every base writer reaches its cap. The t+6h standard rung is
-conditional on the 6.2 boundary rule or the need for a second standard point
-to calculate `V`. File-standard selection uses **study decision D-IBX-001**:
+The `run --dry-run` path exercises target identity, schedule, IO-control,
+memory PSI, `MemAvailable`, free-space checks, a successful initial
+host-liveness probe, and fio rendering without creating output or changing the
+target. It does not require fstrim, apt-daily, or governance timers to be
+stopped. Live runs require those timers inactive. I/O PSI remains recorded as
+advisory because the saturating fio workload can cause high I/O pressure by
+itself. Host-protection stops use memory PSI `full avg10`, `MemAvailable`, and
+free-space floors plus a separate bounded `system.slice` liveness service that
+fsyncs a temporary file on the root filesystem, checks the local SSH banner,
+and verifies the configured cockpit Docker container with `docker exec`; it
+does not require a systemd unit for the runner. The SSH host and port default
+to `127.0.0.1:22`, and the container name defaults to `mdt-cockpit-runner`;
+all three can be configured with their `--liveness-*` run options. The first
+successful probe is required before target writes; subsequent probes run at a
+recorded 10-second default interval that can be set with
+`--probe-interval-seconds`. A configured number of consecutive slow or failed
+liveness samples stops the run; wall-time and byte caps remain hard stops.
+When `--fsync-cell` is selected, dry-run also checks for one Docker cgroup
+identity, the loaded background slice, the wrapper, and the configured
+collector image. An SSH root session without the Docker cgroup scope refuses
+before study work begins.
+
+The writer meter has a 500 GB decimal cap (500,000,000,000 bytes). The actual
+fio job caps for the full base schedule total 495.122866176 GB, including the
+conditional t+6h standard rung, leaving 4.877133824 GB. Caps are rounded down
+to whole blocks; the nominal 15/26/100 GB rung budgets have effective writer
+sums of 14.999912448/25.999986688/99.999891456 GB. A part (c) repeat costs
+49.123688448 GB and either raw quick/veryquick repeat costs 40.999899136 GB,
+so all three adaptive repeat sets report `skipped` under this cap. No base rung
+is reduced. An optional file-standard set has a nominal 100 GB budget and an
+effective 99.999891456 GB cap; it runs only if its remaining cap
+and the unpaid caps of required cell-sets still ahead fit; otherwise it reports
+`skipped` before fio starts. The t+6h standard
+rung is conditional on the 6.2 boundary rule or the need for a second standard
+point to calculate `V`. File-standard selection uses **study decision D-IBX-001**:
 `T/1.5 ≤ e ≤ T+C`; rev 4.1 does not specify that numeric file cutoff. Its
 implementation and analysis label that choice explicitly.
 
@@ -398,6 +465,27 @@ The part (c) repeat runs only after a complete first assessment confirms the
 degradation criteria. A complete assessment that does not confirm them returns
 `skipped` so the scheduled runbook continues; incomplete evidence remains an
 error.
+
+### Real-fio rehearsal and watchdog deadline
+
+The driver starts its wall clock when it launches fio, while fio begins a
+time-based job's `runtime` after its own startup and any rendered ramp. The
+watchdog therefore derives its deadline from the rendered job's `runtime` and
+`ramp_time`, a bounded configurable startup grace, and the existing 60-second
+drain reserve. Reading the rendered job keeps the deadline correct when the
+study clips a runtime to its remaining active or elapsed budget. The watchdog
+stays bounded, and a non-zero fio exit remains a failed attempt unless the
+driver deliberately sent the final SIGINT.
+
+The `real_fio` rehearsal runs this same planner, run path, fio JSON parser, and
+analysis command against a small regular file. `--test-scale` preserves every
+planned job and block-size shape while scaling extents, write caps, runtimes,
+and waits; the driver requires an output-contained regular file under `/tmp`
+and refuses device targets. That lets the rehearsal expose driver and fio
+integration errors without granting a device-sized study job. Hole-punching
+represents discard and final wipe for the file only. It cannot certify raw
+block discard, partition wiping, formatting and mounting, host protection, or
+hard-kill resume; those remain separate host acceptance checks.
 
 The result table applies design 6.3's reference/error computation and 6.4's
 rung verdicts; quick/veryquick latency-under-load values use the documented

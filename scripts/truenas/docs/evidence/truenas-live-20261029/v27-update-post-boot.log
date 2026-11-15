@@ -1,0 +1,8 @@
+# Evidence scrub 2026-11-10: environment-specific home, checkout, worktree, and per-run temporary paths were normalized to neutral placeholders; command output and verdict text are otherwise unchanged.
+SYSTEM_INFO={"version": "27.0.0-MASTER+20261027-173422", "buildtime": {"$date": 1793122462000}, "hostname": "truenas", "physmem": 8323096576, "model": "AMD EPYC-Genoa Processor", "cores": 4, "physical_cores": 4, "loadavg": [3.294921875, 0.85546875, 0.2900390625], "uptime": "0:01:18.733442", "uptime_seconds": 78.733441676, "system_serial": "Not Specified", "system_product": "KVM Server", "system_product_version": "VPS 1000 G12 Pro", "license": null, "boottime": {"$date": 1793312149000}, "datetime": {"$date": 1793312227000}, "timezone": "America/Los_Angeles", "system_manufacturer": "netcup", "ecc_memory": true}
+BOOTFS=boot-pool/ROOT/27.0.0-MASTER-20261027-173422
+CURRENT_USR_RO=on
+PATCH_INSTALL_RECORD={"bundle_sha256":"c2d4b6de78c9048c25bd48e96905f592cbdecdb8cdbf4b2bdb4d4745025b666a","kvm_device":false,"patch":"v27","recommended_zvol_blocksize_boot_pool":"boot-pool-defaults-to-16k-v1","root_create_guard":"root-excluded-from-descendant-readiness-v1","root_parent_mountpoint_guard":"root-create-skips-parent-mountpoint-none-v1","supported":true,"version":"27.0.0-RC.1"}
+CURRENT_DATASET_PY_SHA256=07c4717640c2bc016ccdbbe63858ed03f325cc4b5cd058e6ce4bf68d9340bb08  /usr/lib/python3/dist-packages/middlewared/plugins/pool_/dataset.py
+OLD_PATCHED_DATASET_PY_SHA256=cat: /mnt/boot-pool/ROOT/27.0.0-RC.1<home>: No such file or directory
+POST_BOOT_INSPECT_EXIT=1

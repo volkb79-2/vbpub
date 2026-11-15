@@ -33,6 +33,7 @@
 |---|---|
 | [ARCHITECTURE.md](ARCHITECTURE.md) | Contributors: module map, invariants, data-flow sketch |
 | [DESIGN-NOTES.md](DESIGN-NOTES.md) | Contributors: considered-but-not-built options and open design questions (non-normative — SPEC.md wins on any conflict) |
+| [plan-release-2026-11-02.md](plan-release-2026-11-02.md) | Contributors: retained release plan and gate facts from the 2026-11-02 release wave |
 
 ## Demo Repo
 

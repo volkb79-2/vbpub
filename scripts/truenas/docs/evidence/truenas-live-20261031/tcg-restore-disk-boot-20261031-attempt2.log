@@ -1,0 +1,12 @@
+# Evidence scrub 2026-11-10: environment-specific home, checkout, worktree, and per-run temporary paths were normalized to neutral placeholders; command output and verdict text are otherwise unchanged.
+[preflight] slice=dev-background.slice cgroup=/dev.slice/dev-background.slice cpu-quota=5.0 current-memory=108154880 new-guest-cap=3758096384 projected-memory=3866251264 high-advisory=8589934592 cap-exceeds-high-advisory=False max=10737418240 cap-exceeds-hard-max=False full-avg10-limit=1% psi-some-avg10=0.0 psi-full-avg10=0.0
+[memory-admission] cgroup=/dev.slice/dev-background.slice current=108154880 projected-memory=3866251264 high-advisory=8589934592 cap-exceeds-high-advisory=False max=10737418240 cap-exceeds-hard-max=False psi-some-avg10=0.0 psi-full-avg10=0.0
+[memory-admission] cgroup=/dev.slice current=3595493376 projected-memory=7353589760 high-advisory=12348030976 cap-exceeds-high-advisory=False max=16642998272 cap-exceeds-hard-max=False psi-some-avg10=0.13 psi-full-avg10=0.13
+[memory-admission] cgroup=/ current=0 projected-memory=3758096384 high-advisory=None cap-exceeds-high-advisory=None max=None cap-exceeds-hard-max=None psi-some-avg10=0.13 psi-full-avg10=0.13
+[admission] max-concurrent-guests=1 active=0 memory-check=current-usage-plus-next-guest-cap
+[source] base=<worktree>/scripts/truenas/.vm/truenas-restore-20g-replay-flat.qcow2 state=<worktree>/scripts/truenas/.vm/truenas-restore-20g-replay-boot-20261031
+[container] host base mount=<worktree>/scripts/truenas/.vm/truenas-restore-20g-replay-flat.qcow2 host state mount=<worktree>/scripts/truenas/.vm/truenas-restore-20g-replay-boot-20261031
+[limits] cgroup-parent=dev-background.slice cpus=2 memory=3758096384 memory-swap=3758096384 guest-RAM=3072MiB network=dstdns-hox0ju-network
+[console] serial listens on Unix socket only: <temp-path>
+[started] {"cgroup_parent": "dev-background.slice", "container": "truenas-restore-20g-replay-boot", "cpu_cores": 2.0, "guest_memory_mib": 3072, "host_cgroup": "/dev.slice/dev-background.slice/docker-b1283b0b3da107a3fd28d422ac125c113c19f61f0af4b2907f7c357613881e00.scope", "host_pid": 3446830, "memory_max_bytes": 3758096384, "memory_swap_bytes": 3758096384, "network": "dstdns-hox0ju-network", "overlay": "<worktree>/scripts/truenas/.vm/truenas-restore-20g-replay-boot-20261031/disk-overlay.qcow2", "qmp_status": {"running": true, "status": "running"}, "serial_socket": "<temp-path>", "state_dir": "<worktree>/scripts/truenas/.vm/truenas-restore-20g-replay-boot-20261031"}
+EXIT=0

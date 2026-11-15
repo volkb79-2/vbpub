@@ -21,6 +21,72 @@ the technical detail below it.
 
 ## [Unreleased]
 
+<!-- cmru: release history -->
+
+## [7.25.1] - 2026-11-12
+<!-- cmru: generated -->
+<!-- cmru: source-end=ce7c889b64dcbe6ed5c87de356c29fc87e12404a -->
+
+### Fixed
+- fix(ksm): silence shim and tolerate missing images (e1c07d03c)
+- fix(docs): note remaining evidence scrubs (e16c4acc4)
+
+### Changed
+- Reconcile pytest audit backlog entries with current main (b8cced42f)
+- Scope pytest 9.2 filesystem syscall fakes (0d9de342f)
+
+### Documentation
+- docs(ciu): record R2 timeout decisions in CIU-211 (2facefb01)
+- docs: persist release designs and cited evidence (e1d5fb29c)
+
+### Testing
+- test(ciu): close remaining 7.25.0 R2 survivors (8c9e77767)
+- test(ciu): close R2 campaign survivor gaps (12ef6fbf7)
+
+<!-- cmru: pending release notes begin -->
+### Fixed
+- Make CIU's bundled KSM shim silent on stdout and stderr whether `PR_SET_MEMORY_MERGE` succeeds or fails. This source is shipped in the CIU wheel; consumers need a CIU release to receive it, and tester-base images need rebuilding to include the updated copy.
+
+### Adoption / Migration Notes
+- Existing KSM configuration remains valid. Rebuild tester-base and its dependent tester-unified image to deploy the silent shim; no configuration change is required.
+<!-- cmru: pending release notes end -->
+
+## [7.25.0] - 2026-11-12
+<!-- cmru: generated -->
+<!-- cmru: source-end=a636d62f7a588bb8aeb6477058f3605e36ec76e2 -->
+
+### Changed
+- File CIU parallel R2 lane finding (c7bbddfbf)
+- ciu: raise the R2 worker ceiling to three (bade3f089)
+- backlog: file CIU-208 and CIU-209 profile-render gaps (5cfd2ea39)
+- ciu backlog: CIU-205 and CIU-206 FIXED (unreleased) on their merged branches; status lines applied at merge (6a37e3b87)
+- ciu: CIU-193 scope cut: labelled candidates filtered exactly, unlabelled ones fail closed in worktrees (03725b6ac)
+- ciu: CIU-193 review round 6: the git worktree containing a nested CIU root is this checkout (bef5c594d)
+- ciu: CIU-193 review round 5: a primary checkout leaves unlabelled containers that Compose places in another worktree (2caf0ec0d)
+- ciu: CIU-205 review round 3: one record boundary for profile mode and --dir (the start of a stack's pipeline) (f480dd610)
+- ciu: CIU-193 review round 4: nested CIU roots and registered worktrees are boundaries; a shipped stack's deleted override still counts (aeb87d50d)
+- ciu: CIU-206 docs: the store lock only attempts chmod 0700; a still-writable root is refused by the directory check (011dd765a)
+- ciu: CIU-206 review round 2 nits: document that prompting sets the store root 0700; CIU.md env wording (390c1ef2a)
+- ciu: CIU-205 review round 2: profile mode records just before its first stack starts (6ef63a6e7)
+- ciu: CIU-193 review round 3: unlabelled worktree containers need full Compose evidence (no nested checkout, no symlink out, config files inside) (0a801ea26)
+- ciu: CIU-205 review round 1: profile mode records before its first Docker mutation; atomic record publish (0cdb6de07)
+- backlog: file naf-reported gaps (ciu selection under --dir, host-wide secrets, run-gate per-lane secret mounts) (b6debd54e)
+- ciu: CIU-206 review round 1: no-follow host store walk, fail-closed modes, one prompt under a store lock (9d206c363)
+- backlog: remove test-host names from campaign evidence (cadd964c8)
+- ciu: CIU-193 CONSUMERS example shows the round-2 skip reason (0d05cc569)
+- ciu: CIU-193 review round 2: attribute unlabelled worktree containers by Compose working_dir; drop the tag==instance-id shortcut (ce693e676)
+- ciu: CIU-205 document the clean-vs-vanilla divergence from SPEC-V8 S9.4.3 in CONSUMERS; pin that a partial --ignore-errors clean keeps the record (f982a566a)
+- ciu: CIU-193 review round 1: refuse in unlabelled linked worktrees, strict bare listing, per-instance tags unfiltered (5e5532f45)
+- ciu: CIU-206 ASK_HOST per-user operator secret shared by every checkout; notice when env replaces a stored ASK_EXTERNAL value (c07fda5da)
+- ciu: CIU-205 selection facts under `ciu up --dir` and an opt-in selection record (1290dd024)
+- backlog: file host-campaign findings H1-H7 and cross-host campaign constraints (0c6ea9de4)
+- ciu: CIU-193 ownership-filter every `ciu down` form like `ciu clean` (6a20835bb)
+
+### Documentation
+- docs: scope R2 identity by Assay version (33842800f)
+- docs(backlog): file backlog-filing2 items (f59972d13)
+
+<!-- cmru: pending release notes begin -->
 ### Added
 - CIU-205: `ciu up --dir <stack>` now exposes the S3.12 selection facts to
   templates and hooks: `ciu.selected_profiles` is the checkout's default
@@ -46,6 +112,15 @@ the technical detail below it.
   same user shares one credential with one prompt.
 
 ### Changed
+- The async CIU R2 lane now asks Run-Gate for auto-selected workers, with a
+  committed `jobs_max = 3`, a 3 GiB lane cap and a 400 MiB per-candidate RAM
+  estimate. The 2026-11-11 pilot measured 1.27 candidates/minute at three
+  workers versus 0.41 serial, with a 0.83 GiB lane peak and no OOM. Assay <=
+  12.1.1 includes `jobs_max` in judge identity, so changing it invalidates
+  finished-candidate state. Assay >= 12.2.0 keeps reusable finished records
+  when only resource settings change; changes to tests, sources, `argv`, `env`,
+  or Assay version still invalidate. See the [versioned identity rule](../run-gate-project/CONSUMERS.md#native-r2-worker-selection).
+  The three-worker ceiling remains the committed CIU execution policy.
 - CIU-206: when an environment value replaces a different stored
   `ASK_EXTERNAL` value, CIU prints `[NOTICE] [CIU-206] ASK_EXTERNAL secret
   '<name>': the value from env '<VAR>' replaced the stored value in <path>`
@@ -65,6 +140,13 @@ the technical detail below it.
   no instance id refuses before stopping anything. A failed `docker ps` now
   fails every `down` form, including the unfiltered bare one that used to
   report "No matching containers running" (SPEC S7.8, S10.2a).
+
+### Testing
+- CIU R2 campaign 7241: added behavior-focused regressions for the surviving
+  parser, one-shot launch/event, cleanup, preparation, and worktree-removal
+  paths. The CIU runtime is unchanged; the retained equivalent mutants and
+  the bounded decisions for all seven timed-out candidates are recorded under
+  CIU-211 in `ciu/KNOWN_ISSUES_TODO_BACKLOG.md`.
 
 ### Adoption / Migration Notes
 - Main checkouts: no change for their own containers. A main checkout's
@@ -87,15 +169,13 @@ the technical detail below it.
 - naf-style consumers can replace a `pre_compose` hook that stores the
   deployment type with the guard (CONSUMERS §10a).
 
-<!-- cmru: release history -->
 - Additive. Existing directives behave as before; `ASK_HOST` is new
   vocabulary (S4.5's misplaced-directive check now also flags an
   `ASK_HOST...` string outside a secrets table).
 - To share an operator credential across worktrees, replace
   `ASK_EXTERNAL:<VAR>` with `ASK_HOST:<entry>`, stop exporting the variable,
   and create the host file once (CONSUMERS §5c-bis).
-
-<!-- cmru: release history -->
+<!-- cmru: pending release notes end -->
 
 ## [7.24.1] - 2026-11-09
 <!-- cmru: generated -->

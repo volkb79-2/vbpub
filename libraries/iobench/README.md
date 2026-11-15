@@ -23,7 +23,7 @@ requirements and the result schema.
 | Proposals | `proposals.writeback`, `proposals.caps`, `proposals.iocost_model`, `proposals.iocost_qos`, each value with `rule`, `inputs`, `status` | `IOB-DER` |
 | Ceiling history | append-only disk history; raw rows supply proposal values, while file/probe rows can confirm stability only; weak disks require the remembered device name and model, and a known stored machine-id must still match; a chroot record with no stored id stays unbound after first boot ([why](docs/DESIGN-GUIDE.md#71-the-key-is-the-disk-not-the-partition-host-tuning-review-b2-2026-11-05)) | `IOB-CEI` |
 | Safety | a raw-device target can be initialized for its marker, but RealHost refuses raw-device write and discard stages until a writer can use a held kernel `O_EXCL` descriptor; the marker's `O_EXCL` open protects only marker creation; fio's `--allow_mounted_write=0` is an additional mounted-device guard, not a process-holder claim; file targets are preallocated files on existing filesystems; refuses mounted, swap, signature-bearing or root-disk targets; refuses multi-device btrfs work dirs and targets; Host binds file writers and discards to the authorised extent (plain `run`/`spawn` cannot reach a target); never touches any cgroup `io.max`; restores every changed runtime knob on every exit; never creates or mounts a filesystem | `IOB-TGT`, `IOB-SAF`, `IOB-ARC-05` |
-| IBX ladder error study | a separate, root-run fio controller measures rung spread and bias on an identity-acknowledged raw partition and ext4/btrfs files under a schedule-derived 626.25 GB cap; `run --dry-run` rehearses validation without writes, and conditional standards/repeats report `skipped` when their rules do not select them ([why](docs/DESIGN-GUIDE.md#ibx-ladder-error-study)) | [study-day procedure](studies/ibx/README.md); [consumer example](docs/CONSUMERS.md#ibx-host-study) |
+| IBX ladder error study | a separate, root-run fio controller measures rung spread and bias under a 500 GB decimal write cap; a shared-system-disk raw partition refuses by default and needs the operator's consent flag plus a per-run drift-check token whose risk context is recorded; `run --dry-run` validates without study-output or target writes or timer changes and requires an initial liveness probe; `rehearse` runs planner-scaled real fio across scheduled job shapes, using `--test-scale` only with an output-contained regular file under `/tmp`; absent kernel IO-control files mean no setting, while present unreadable or active controls refuse; I/O PSI is advisory and independent liveness checks protect the host ([why](docs/DESIGN-GUIDE.md#ibx-ladder-error-study)) | [study-day procedure](studies/ibx/README.md); [host acceptance](studies/ibx/ACCEPTANCE.md); [consumer example](docs/CONSUMERS.md#ibx-host-study) |
 
 Device target identity uses a PARTUUID or a usable whole-disk serial. For virtio-blk, iobench reads that serial from `/sys/block/<disk>/serial` ([design](docs/DESIGN-GUIDE.md#71-the-key-is-the-disk-not-the-partition-host-tuning-review-b2-2026-11-05)).
 
@@ -75,7 +75,8 @@ iobench capability --json
 
 ```
 libraries/iobench/
-  README.md  docs/{DESIGN-GUIDE,CONSUMERS,SPEC,CLI-SPEC}.md  docs/{cli-surface.json,cli-review.toml,cli-review-findings.toml}
+  README.md  docs/{DESIGN-GUIDE,CONSUMERS,SPEC,CLI-SPEC}.md  docs/reports/IOBENCH-R2-R1002-2026-11-02.md
+  docs/{cli-surface.json,cli-review.toml,cli-review-findings.toml}
   pyproject.toml  cmru.toml  run-gate.toml  assay.toml  .coveragerc
   src/iobench/   pure core (planning, reduction, derivation, schema) behind an injected Host; cli.py is the thin shell
   tests/         fake-fio and fake-sysfs scenarios, recorded-evidence replays, controlled-wrong plausibility cases
@@ -86,6 +87,10 @@ libraries/iobench/
 Implemented (IOB-03 P3, reviewed through wave 2026-10-27) and partially accepted live on 2026-11-09: the r1002 Debian 13 QEMU/TCG guest verified target refusals, fio 3.39 compatibility, file extents on ext4/XFS/btrfs, and veryquick run/restore mechanics. TCG performance numbers and cache conclusions are not evidence about disk performance. IOB-ACC-01 still owes the mounted-filesystem raw-boundary case, `systemd-run --wait`, a second SIGTERM during file `fallocate -p`, a real 150 s fresh observation, cross-direction/plausibility checks, and a disk with a known cache. The parent-death cleanup guarantee covers asynchronously spawned benchmark commands through `_ProcHandle` (`Host.spawn`/`Host.write_range`), and has a no-device forked-process regression; a live re-probe is still owed. Synchronous `Host.run` clients are outside that guarantee: killing a `systemd-run --wait` client leaves its unit running until explicit stop or `RuntimeMaxSec`. See the [design rationale](docs/DESIGN-GUIDE.md#9-safety-design) and [adoption notes](docs/CONSUMERS.md#2-calibrate-once-per-host-or-storage-class). The first cmru release remains open (IOB-REL-01; wheel plus sha256). The CLI review cases in `docs/cli-review.toml` record real invocations and
 the outcomes observed on the fake host; an independent semantic review still has to confirm their rationales. The decisions behind it are IOB-D-001..014 and the rulings
 R-1..R-10 in the DESIGN-GUIDE. Nothing here is wired into `mdt-cockpit` or `debian-install-v2` yet (migration phases M1-M4 in the DESIGN-GUIDE).
+
+The historical R2 mutation campaign cited in IOB-R2-01 is documented in the
+[2026-11-02 campaign report](docs/reports/IOBENCH-R2-R1002-2026-11-02.md) and
+the [raw evidence summary](docs/reports/IOBENCH-R2-R1002-EVIDENCE-SUMMARY-2026-11-13.md).
 
 The registered repository gate runs R0–R1 and native Assay R2 through
 Run-Gate. Its R2 lane opts into `jobs = "auto"` with an Assay ceiling of

@@ -1,0 +1,5 @@
+[admission] explicit PSI override: keeping finite-memory, current-memory, CPU-quota, and tester-container caps; skipping only PSI threshold refusals
+[tester] {"container": "truenas-live-acceptance-runner", "cpu_cores": 0.5, "host_cgroup": "/dev.slice/dev-gates.slice/docker-016e3f949bd2e9121380533ffc3763cf327bf26436326e291424f85d6d0faf7f.scope", "host_pid": 3503480, "memory_max_bytes": 536870912, "network": "dstdns-hox0ju-network", "user": "1003:1003"}
+run-gate: lane 'live-api-probe' requires $TRUENAS_DISK_DEVICE but it is unset or empty — export it before invoking this gate (run-gate refuses to start a lane whose declared inputs are missing)
+run-gate: lane 'live-api-probe' verdict NOT_RUN; reason env-missing
+GATE_EXIT=3

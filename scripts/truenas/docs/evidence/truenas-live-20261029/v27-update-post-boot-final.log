@@ -1,0 +1,13 @@
+VERSION=27.0.0-MASTER+20261027-173422
+BOOTFS=boot-pool/ROOT/27.0.0-MASTER-20261027-173422
+USR_READONLY=on
+PATCH_RECORD={"bundle_sha256":"c2d4b6de78c9048c25bd48e96905f592cbdecdb8cdbf4b2bdb4d4745025b666a","kvm_device":false,"patch":"v27","recommended_zvol_blocksize_boot_pool":"boot-pool-defaults-to-16k-v1","root_create_guard":"root-excluded-from-descendant-readiness-v1","root_parent_mountpoint_guard":"root-create-skips-parent-mountpoint-none-v1","supported":true,"version":"27.0.0-RC.1"}
+PATCHED_TARGET_SHA256=07c4717640c2bc016ccdbbe63858ed03f325cc4b5cd058e6ce4bf68d9340bb08  /usr/lib/python3/dist-packages/middlewared/plugins/pool_/dataset.py
+PATCH_HELPER=MISSING
+PATH_A_ROOT=/mnt/boot-pool/user-data
+on
+no
+UPDATE_PROOF=MISSING
+POOL_HEALTH=pool 'boot-pool' is healthy
+VDA4=cab722e6-ccff-41ee-b91c-ac1af05a40d8 boot-disk-data 
+POST_BOOT_INSPECT_EXIT=0

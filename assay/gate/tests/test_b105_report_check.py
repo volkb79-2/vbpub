@@ -1580,9 +1580,18 @@ def test_bounded_reader_rejects_file_growth_after_open(tmp_path, monkeypatch):
     path.write_bytes(b"{}")
     real_read = os.read
     grew = False
+    target = path.resolve()
 
     def grow_then_read(descriptor, size):
         nonlocal grew
+        try:
+            opened = os.path.realpath(
+                os.readlink(f"/proc/self/fd/{descriptor}")
+            )
+        except OSError:
+            return real_read(descriptor, size)
+        if opened != str(target):
+            return real_read(descriptor, size)
         if not grew:
             grew = True
             with path.open("ab") as stream:

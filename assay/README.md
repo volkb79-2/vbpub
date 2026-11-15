@@ -1,3 +1,5 @@
+<!-- Evidence scrub 2026-11-10: environment-specific host identities, host addresses, controller paths, SSH key material and fingerprints were normalized to neutral placeholders; command output and verdict text are otherwise unchanged. -->
+<!-- Evidence scrub 2026-11-10: environment-specific home, checkout, worktree, and per-run temporary paths were normalized to neutral placeholders; command output and verdict text are otherwise unchanged. -->
 # assay
 
 **How to judge a change: declared lanes, declared rigor, one machine-readable verdict.**
@@ -29,6 +31,10 @@ linking against assay itself.
   See also [the tier design](docs/DESIGN-GUIDE.md#rust-adapter-status-and-tier-design).
   **Full matrix, and what R0–R3 each actually mean:
   [Rigor levels, and what's registered where](#rigor-levels-and-whats-registered-where).**
+
+Retained design records: [load-independent verdict design](docs/ASSAY-DESIGN-OPUS-2026-10-30.md),
+[review and package plan](docs/ASSAY-OPUS-REVIEW-AND-PLAN-2026-10-31.md), and
+[Rust adapter design](docs/DESIGN-RUST-ADAPTER-2026-11-08.md).
 
 ---
 
@@ -1621,8 +1627,9 @@ you're changing assay itself:
   The separately invoked `run-gate self-qualification` requires that receipt for
   its own commit and tree (run `run-gate tester-unified` first, in the same worktree and with no commit in between: any later commit, a docs-only or merge commit included, needs a fresh `tester-unified` run; exit 3 means incomplete or infrastructure evidence and must be retried), then runs full-source
   R0-R3 qualification in `tester-unified`. During the currently authorized
-  `assay >=10.0.0, <12.2.0` waiver window, extended on 2026-11-08 for the
-  release carrying the E4 env-only launchers and delegated release-gate changes,
+  `assay >=10.0.0, <12.3.0` waiver window, extended on 2026-11-12 (A-507) for
+  the flexible-R2 release 12.2.0, whose own R2 then runs as the T3 check on that
+  release (B535),
   CMRU's Assay `run-tests` step also invokes
   `self-qualification-provisional`, which runs R0, R1 and R3 and records
   the R2 postponement in `.assay/mutation-postponed-assay.json`; its
@@ -1635,7 +1642,7 @@ you're changing assay itself:
   a successful Run-Gate result for the same source tree; a Run-Gate admission
   refusal before the wrapper starts can leave a previous marker in place.
   CMRU delegates only its two Assay gate commands according to the required
-  `ASSAY_RELEASE_GATE_HOST` setting (`local`, `v1001`, or `r1002`). The CMRU
+  `ASSAY_RELEASE_GATE_HOST` setting (`local`, `<host>`, or `<host>`). The CMRU
   release transaction, build, tag, and publish remain on the controller. A
   delegated result is accepted only when the remote run metadata matches
   `CMRU_RELEASE_GATE_COMMIT` and its verdict is `PASS`; extending the provisional
@@ -1657,7 +1664,7 @@ you're changing assay itself:
   keeps Docker's private cgroup namespace, uses `--init`, sets explicit
   CPU/memory bounds, and receives only the read-only resource-observer socket
   needed for hidden ancestors. It mounts the whole
-  workspace root at both its physical host path and `/workspaces/vbpub` so
+  workspace root at both its physical host path and `<checkout>` so
   linked-worktree Git paths resolve inside the runner, disables networking,
   and verifies the returned container ID, ownership, launch settings, and
   `docker wait` status. The five registered Assay qualification lanes share a

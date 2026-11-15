@@ -239,19 +239,51 @@ class TestSaveContainerLogsCreation:
 
         class _Foreign:
             def __init__(self, inner):
+                self._inner = inner
                 self.st_uid = inner.st_uid + 1
 
-        monkeypatch.setattr(run_gate.os, "fstat",
-                            lambda fd: _Foreign(real_stat(fd)))
+            def __getattr__(self, name):
+                # Mirror the complete os.stat_result shape while changing only
+                # ownership, as a real fstat result does on Python 3.14 too.
+                return getattr(self._inner, name)
+
+        real_target_stat = target.stat()
+        foreign_stat = _Foreign(real_target_stat)
+        assert foreign_stat.st_uid == real_target_stat.st_uid + 1
+        assert foreign_stat.st_mode == real_target_stat.st_mode
+        assert foreign_stat.st_size == real_target_stat.st_size
+        assert foreign_stat.st_mtime == real_target_stat.st_mtime
+        assert foreign_stat.st_mtime_ns == real_target_stat.st_mtime_ns
+
+        def foreign_target(fd):
+            info = real_stat(fd)
+            try:
+                opened = os.path.realpath(os.readlink(f"/proc/self/fd/{fd}"))
+            except OSError:
+                return info
+            if opened != str(target.resolve()):
+                return info
+            return _Foreign(info)
+
+        monkeypatch.setattr(run_gate.os, "fstat", foreign_target)
         assert run_gate.save_container_logs("docker", "x", target) is None
         assert target.read_text() == "theirs"
 
     def test_a_partial_write_is_completed(self, tmp_path, monkeypatch):
         self._docker_logs(monkeypatch, "0123456789" * 50)
         real_write = os.write
-        monkeypatch.setattr(run_gate.os, "write",
-                            lambda fd, data: real_write(fd, bytes(data[:7])))
         target = tmp_path / "big.log"
+
+        def partial_target(fd, data):
+            try:
+                opened = os.path.realpath(os.readlink(f"/proc/self/fd/{fd}"))
+            except OSError:
+                return real_write(fd, data)
+            if opened != str(target.resolve()):
+                return real_write(fd, data)
+            return real_write(fd, bytes(data[:7]))
+
+        monkeypatch.setattr(run_gate.os, "write", partial_target)
         assert run_gate.save_container_logs("docker", "x", target) == target
         assert target.read_text() == "0123456789" * 50
 

@@ -1,0 +1,5 @@
+version=TrueNAS-27.0.0-MASTER+20261027-173422
+marker=82474e4898fbcc495e1135e2943ed38aebe8f104dfe65c9c775eee25c1ba2aa2  /mnt/boot-pool/user-data/reapply-proof-r2/marker
+True
+marker_dataset=absent_after_cleanup
+EXIT=0

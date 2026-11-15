@@ -43,8 +43,24 @@ Use this order for each implementation task.
      scripts/controller/codex-impl.sh /path/to/worktree /absolute/path/brief.md task-run
    ```
 
-   Use `CODEX_ROUTE=deepseek` for the configured DeepSeek route, or
-   `scripts/controller/opencode-impl.sh` for OpenCode. Codex stores its run
+   Pi is the favored Open Design DeepSeek route. Start the wrapper detached so
+   the controller can return immediately; it writes run evidence under
+   `$CONTROLLER_RUNS_DIR`:
+
+   ```bash
+   nohup env CONTROLLER_HOME="$HOME/controller" PI_ROUTE=deepseek-pi \
+     scripts/controller/pi-impl.sh /path/to/worktree /absolute/path/brief.md pi-run \
+     > "$HOME/controller/logs/pi-run.launch.log" 2>&1 < /dev/null &
+   ```
+
+   Pi may exit zero after a provider 402. The wrapper classifies the final
+   assistant event and records `OUTCOME=USAGE-LIMIT` in `.done` while blocking
+   the selected account until its reset.
+
+   Use `CODEX_ROUTE=deepseek` to select an Open Design account automatically,
+   or pin one with `CODEX_ROUTE=deepseek-volker` or
+   `CODEX_ROUTE=deepseek-github2`. OpenCode is available through
+   `scripts/controller/opencode-impl.sh`. Codex stores its run
    stream and completion marker in `$CONTROLLER_RUNS_DIR` (default
    `$CONTROLLER_HOME/runs/`); OpenCode uses `$CONTROLLER_HOME/runs/`. Run long
    jobs detached and read the `.done` marker to learn the child process exit
@@ -52,22 +68,35 @@ Use this order for each implementation task.
    thread up to `CODEX_AUTO_CONTINUE` times after a reasoning-only completed
    turn; the default is two for DeepSeek and zero for Luna. The `.done` marker
    records `EXIT=<n> AUTORESUME=<k>`, and the attempt log is
-   `<run>.autoresume.log`.
+   `<run>.autoresume.log`. A new run name with an existing `<run>.done`,
+   `<run>.jsonl`, or `<run>.err` record is refused before the child starts and
+   all existing paths are printed. `CONTROLLER_RUN_FORCE=1` permits replacing
+   evidence for a new run that was intentionally abandoned or failed. Resume
+   mode does not take that new-run guard: it continues the same thread over an
+   existing stream and writes a fresh completion marker when it finishes.
 3. **Check the result.** Run `scripts/controller/job-check.sh` with the run
    name, exact worktree path, route, and absolute report paths. It reports runs
    without `.done` as running; for completed runs it checks intent-only
-   endings, reasoning-end, usage-limit reset time, missing turn completion,
+   endings, reasoning-end, usage-limit retry text, missing turn completion,
    tool-call text, report completeness and HEAD binding, worktree cleanliness,
    final-head gate evidence, and the route trailer on every commit, including
    merges. The last lane verdict in a bound gate log must be
    `run-gate: lane ... verdict PASS`; an earlier PASS line cannot override a
    final FAIL. The prototype's `any`
-   route remains supported for the accepted Codex and Claude trailers; it also
-   reports untracked files under `reports/` and `scripts/*/reports/`. Without
+   route remains supported for the accepted Codex and Claude trailers;
+   multiple recognized agent trailers on one commit are reported as `INFO`
+   instead of a failure. It also reports untracked files under `reports/` and
+   `scripts/*/reports/`. A collected Run-Gate container can bind evidence only
+   when its name contains the current eight-character head prefix, an earlier
+   log has the matching full `run-gate.commit` label on a line naming that
+   container, and a supplied report names the same container. Without
    `.done`, it prints `RUNNING (no .done)` and exits 0 even if the event stream
    is absent. That status does not mean the child completed. See the
    [job-check design](docs/DESIGN-GUIDE.md#job-check-compatibility) for the
-   accepted forms and completion rules.
+   accepted forms and completion rules. Usage-limit detection accepts a
+   gateway `insufficient_balance` reset timestamp, a time-only retry, and a
+   month-name date with an ordinal day and 12-hour time; month-name text is
+   printed verbatim because its message carries no timezone.
 4. **Review on another route.** Give an independent reviewer the exact commit
    and a read-only review prompt. Do not have an implementer review its own
    change. For a Luna implementation, `codex-review.sh` defaults to the Sol
@@ -101,8 +130,11 @@ Use this order for each implementation task.
 After a usage-limit failure, the resume helper scans recent completed runs in
 `$CONTROLLER_HOME/runs/`. It resumes eligible runs on their recorded thread,
 explicit `<run>.wt` worktree map, and route; it does not infer a worktree from
-the event stream or wait until the reset time. Missing or invalid maps are
-skipped. By default it excludes `naf-*` runs owned by another controller;
+the event stream. A dated retry that is still in the future is skipped with
+`SKIP <run> (limit until <text>)`; the helper uses GNU `date -d` after removing
+the ordinal suffix and never guesses a timezone. A time-only retry retains the
+immediate-resume behavior because it has no date to compare. Missing or invalid
+maps are skipped. By default it excludes `naf-*` runs owned by another controller;
 configure the space-separated `RESUME_EXCLUDE_PREFIXES` list to change that.
 It skips a live `<run>-resumed` wrapper and holds a per-run lock through the
 resume to prevent concurrent launches. Use `--dry-run` to inspect the
@@ -124,6 +156,144 @@ scripts/controller/start-after.sh 1430 /path/to/worktree /absolute/path/to/brief
 
 See the [recovery and scheduling design](docs/DESIGN-GUIDE.md#recover-and-schedule-codex-work)
 for the safety checks.
+
+## Open Design account selection
+
+| Route | Launcher | Account behavior |
+|---|---|---|
+| `deepseek-pi` | `pi-impl.sh` | Favored Open Design route; alternates available accounts. |
+| `deepseek-pi-volker`, `deepseek-pi-github2` | `pi-impl.sh` | Pi pinned to the named account. |
+| `deepseek` | `codex-impl.sh` | Codex automatically selects an Open Design account. |
+| `deepseek-volker`, `deepseek-github2` | `codex-impl.sh` | Codex pinned to the named account. |
+| `opencode` | `opencode-impl.sh` | OpenCode using its configured Open Design provider. |
+| `luna` | `codex-impl.sh` | Luna Codex route. |
+
+The existing `luna` route remains available for side-by-side implementation
+runs while the favored Pi route gathers operating experience.
+
+The `deepseek` route uses the two locally configured Codex homes:
+`$HOME/.codex-opendesign-volker` and `$HOME/.codex-opendesign-github2`. Set
+`CODEX_HOME_DEEPSEEK_VOLKER` or `CODEX_HOME_DEEPSEEK_GITHUB2` to override either
+home. Both homes must have their own catalog with a null `tool_mode`; the
+selected home's catalog is checked before Codex starts. The model defaults to
+`deepseek-v4.1-flash-eco` at `high` effort.
+
+The gateway has no quota endpoint, so the wrapper never probes it. It reads
+only its local state and chooses the available account with the oldest
+`last_used_epoch`; the start is serialized with `flock` so automatic starts
+alternate safely. `deepseek-volker` and `deepseek-github2` always pin the
+named account. A pin does not fail over. Codex reads the key through the
+selected home and its `env_key` configuration; the wrapper does not read
+`.env` or `auth.json`, and does not place key values in command arguments,
+run evidence, reports, or account state.
+
+The state file defaults to
+`$CONTROLLER_RUNS_DIR/opendesign-accounts.json`. Set `CONTROLLER_OD_STATE` to
+an absolute path to move it. It contains account names and numeric
+`last_used_epoch` and `blocked_until_epoch` values, plus an optional
+`window_end_epoch` per account and a `threads` map from Codex thread ids or Pi
+session ids to their Open Design account. Thread mappings let a manual
+`CODEX_ROUTE=deepseek ... resume <thread>` or `PI_ROUTE=deepseek-pi ... resume
+<session-id>` resume on the account that started that conversation. If no run
+or state mapping exists, the wrapper says so and picks an account
+automatically. A later resume updates the mapping to the account it uses.
+
+A 402 `insufficient_balance` response with a parseable `reset_at` value records
+that reset for the account used by the run. If the gateway reports 402 but the
+reset time is missing or malformed, the wrapper logs that the reset time is
+unknown and records a temporary block for six hours. Set the positive integer
+`CONTROLLER_OD_UNKNOWN_BLOCK_SECONDS` to change the default `21600` second
+block. A later block is never shortened by a new response with an earlier
+reset time. Invalid overrides log a warning and use the six-hour default. Codex
+prints the real 402 as a final plain-text `error`/`turn.failed` message
+(`unexpected status 402 Payment Required: [code=insufficient_balance] ... resets
+at <UTC time>`), which is recognized too; `Reconnecting...` retries and text
+inside agent or tool output are not. Automatic
+selection skips an account until that time; if both are blocked, the wrapper
+exits 3 and reports the earliest reset. Usage-limit recovery resumes on the
+account in the run's `.route` sidecar. If that account is still blocked, it
+uses the other available account and logs the fallback.
+
+To use credits that would otherwise expire, fill in each account's
+`window_end_epoch` in the state file using the dashboard or an observed
+`reset_at` plus whole 7-day windows, then set
+`CONTROLLER_OD_PREFER_EXPIRING=1`. Selection prefers the available account
+whose recorded window ends soonest, with `last_used_epoch` breaking ties. The
+preference is off by default because the wrapper cannot see remaining quota.
+The editable state shape is:
+
+```json
+{
+  "volker": {"last_used_epoch": 0, "blocked_until_epoch": 0},
+  "github2": {"last_used_epoch": 0, "blocked_until_epoch": 0},
+  "threads": {"codex-thread-id": "volker"}
+}
+```
+
+Add a numeric `window_end_epoch` field to an account when recording its
+current weekly window end. The state schema rejects unknown fields so account
+keys cannot be stored there by mistake.
+
+`CODEX_HOME_OVERRIDE` is honoured only on the luna route.
+
+### Pi on Open Design
+
+`PI_ROUTE=deepseek-pi` selects between the same two Open Design accounts using
+the shared account state and alternation logic. Use
+`PI_ROUTE=deepseek-pi-volker` or `PI_ROUTE=deepseek-pi-github2` to pin an
+account. The default model is `deepseek-v4.1-flash-eco` at `high` thinking;
+override these with `PI_MODEL` and `PI_THINKING`. Pi receives the selected
+provider/model pair (`opendesign_volker/<model>` or
+`opendesign_github2/<model>`).
+
+Pi reads its provider definitions from the operator-owned
+`$HOME/.pi/agent/models.json`. The wrapper sources `$HOME/.env.ai` in its own
+shell, exports only the selected `OPENDESIGN_API_KEY_*` variable to pi, and
+does not print or record key values. Do not put credentials in the controller
+environment example or run files. The session directory defaults to
+`$HOME/.pi/agent/sessions`; set `PI_SESSION_DIR` to override it.
+
+The pi event stream is saved as `<run>.jsonl`, stderr as `<run>.err`, the last
+assistant text as `<run>.last.txt`, and the worktree, selected route, and pi
+session id as `<run>.wt`, `<run>.route`, and `<run>.thread`. The `.done` marker
+includes the pi exit code and `OUTCOME=SUCCESS`, `OUTCOME=USAGE-LIMIT`,
+`OUTCOME=ERROR`, or `OUTCOME=INCOMPLETE`; `SUCCESS` needs a settled stream, a
+session id and a final assistant `stopReason` of `stop` (a stream ending on
+`length` is `INCOMPLETE`, any other error is `ERROR` and blocks nothing).
+Non-interactive pi requires closed
+stdin; the wrapper always redirects it from `/dev/null`.
+
+Resume with the recorded session id and automatic route:
+
+```bash
+PI_ROUTE=deepseek-pi scripts/controller/pi-impl.sh \
+  /path/to/worktree /absolute/path/brief.md pi-resume resume <session-id>
+```
+
+The wrapper resumes on the account recorded for that session. If it has become
+blocked, the shared helper selects the other available account and logs the
+fallback; if both accounts are blocked, it exits 3 before starting pi. A pi
+402 is detected from the final assistant `message_end` event even though pi
+exits 0. Its `errorMessage` reset is recorded by the account helper; an
+unparseable reset uses the existing bounded unknown-reset default. No quota
+probe is made before a start.
+
+See the [design guide](docs/DESIGN-GUIDE.md#pi-open-design-route) for the
+reason Pi runs are classified from the event stream and how its session id
+joins the shared account map. The [consumer guide](docs/CONSUMERS.md#run-pi-on-open-design)
+has a copyable launch and resume example.
+
+Check a completed Pi run with its route name:
+
+```bash
+scripts/controller/job-check.sh pi-run /path/to/worktree deepseek-pi
+scripts/controller/ctl-status.sh
+```
+
+OpenCode defaults to `opendesign_github2/deepseek-v4.1-flash-eco`. Set
+`OPENCODE_PROVIDER=opendesign_volker` to choose the other provider, or set
+`OPENCODE_MODEL` to a full provider/model identifier. On the command line,
+choose a provider and model with `opencode run -m <provider>/<model>`.
 
 The reusable brief format is [`BRIEF-TEMPLATE.md`](BRIEF-TEMPLATE.md), and
 implementation-job constraints are in [`rules.md`](rules.md). The two
@@ -147,9 +317,19 @@ The lane runs the deterministic fake-root shell suite in `tests/` and the
 queue tests in `scripts/netcup/runner/tests/`. It runs `bash -n` on the kit and
 uses ShellCheck when the tester image provides it. The two slot lock paths
 come from `CONTROLLER_GATE_LOCK` and `CONTROLLER_GATE2_LOCK`; see
-[`docs/CONFIGURATION.md`](docs/CONFIGURATION.md).
+[`docs/CONFIGURATION.md`](docs/CONFIGURATION.md). Copy those exact names from
+`controller.local.env.example` and export both before invoking the wrapper.
+
+`gate-run.sh` first tries both slots without waiting. If both are busy, it polls
+both locks with non-blocking attempts every 5 seconds, takes whichever slot is
+freed first, and prints which slot it took. It prints a progress line every
+300 seconds while both remain busy. The gate command's exit code is propagated
+unchanged, and the configured-path and distinct-path refusals still run before
+the gate command can start.
 
 ## Build a bounded session read-back
+
+For the controller's own compaction recovery use the operator-mandated recipe in the root `AGENTS.md` (`nyxloom-harness extract --preset readback --budget-tokens N`, which never drops operator turns or interview answers). `build-readback.py` below is the older character-budget builder; it also bundles Codex run finals, but its character cut can truncate operator material, so do not use it alone for compaction recovery.
 
 Pass the session file and runs directory explicitly. `--budget-chars` limits
 the complete output across the session extract, returned results, sent

@@ -159,7 +159,15 @@ def test_progress_writer_types_write_and_close_failures(
     destination = tmp_path / "progress.jsonl"
     stream = _FailingProgressStream(**stream_options)
 
-    def fdopen(descriptor, *_args, **_kwargs):
+    real_fdopen = mutation.os.fdopen
+
+    def fdopen(descriptor, *args, **kwargs):
+        try:
+            opened = os.path.realpath(os.readlink(f"/proc/self/fd/{descriptor}"))
+        except OSError:
+            return real_fdopen(descriptor, *args, **kwargs)
+        if opened != str(destination.resolve()):
+            return real_fdopen(descriptor, *args, **kwargs)
         os.close(descriptor)
         return stream
 

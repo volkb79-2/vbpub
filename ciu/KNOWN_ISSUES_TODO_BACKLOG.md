@@ -11,13 +11,17 @@ WITHDRAWN issue means the claimed product behavior was removed or never
 adopted after its premise was disproved; it must not remain described as a
 shipped capability.
 
-Last updated: 2026-11-11 — **CIU-193 FIXED** on `ciu-193-down-owner-20261111` (`ciu down` ownership-filtered like `clean`; unlabelled candidates fail closed in worktrees). **CIU-205 and CIU-206 FILED and FIXED** (on `ciu-205-dir-selection-20261111` and `ciu-206-host-secret-20261111`, unreleased) from an independent review of the naf deployment plan: `ciu up --dir` omits the S3.12 selection facts from its render context and does not record or guard the resolved selection across invocations, while no host-wide cross-checkout operator-secret scope exists; an uncached stack can prompt or fail in another checkout only when neither an environment value nor a cached value is available, and an environment value can silently replace a cached value. **CIU-208 and CIU-209 FILED** from side findings in the CIU-205 implementation report: profile-mode `ciu up` does not carry a profile's `topology_overrides` into the per-stack engine render even though preflight renders and `ciu resolve` apply them; `ciu dev` bypasses `[ciu.instance] service_profiles` and the CIU-205 selection-record check by calling the profile-package resolver directly. CIU-204 remains OPEN (Docker network-cleanup evidence is UNVERIFIED and must be reconciled without inventing names). CIU-203 is FIXED on `ciu-fix-20261109`; CIU-141 is implemented on `ciu-run-20261105` (unreleased); CIU-202/134/153/154/155/156/157/158 are FIXED; CIU-151 remains OPEN pending live physical-path verification. Historical 7.18 wave update, 2026-10-27: CIU-135 FIXED (its tests and coverage repaired, record schema 6 added for Run-Gate); CIU-107 stays FIXED; CIU-134's retry implementation was parked with unresolved review findings now closed below; CIU-154 (branch pruning discards ignored resumable state; was CIU-143 on an unmerged branch, CIU-152 on the wave branch before integration) and CIU-153 (`rm` deletes unmerged branches) were FILED; CIU-151 has a second reproduction. Previous update 2026-10-15 — **CIU-144 and CIU-143 FILED**: linked-worktree JSON output can be polluted by the CIU-117 image-tag notice, and a conflicting Compose-managed network escapes `ciu check` and fails late during deployment. **CIU-140 remains IN PROGRESS; CIU-142 and CIU-139 remain OPEN (CIU-141 was OPEN then; it is implemented on `ciu-run-20261105` as of 2026-11-06). CIU-135 remains OPEN** pending its registered gate and final review; its candidate also includes direct `ciu up` network verification, truthful collision vs indeterminate status, unreadable CIU-root sibling records, exact legacy-network claims, and explicit root selection (P53 review 04). **CIU-129 is FIXED by Assay B146** for the hidden-failure diagnostic (first failing test retained in the R0 summary/claim; fail-fast coverage warning emitted). **CIU-136** tracks the open CIU-118 service-discovery follow-up (attached networks, aliases, URLs, exit status; the shipped `ciu resolve`/`ciu exec` stay FIXED). **CIU-131 FIXED**: the exact registered CMRU sequence passed on `fcffeee8c`; a controlled break of `get.py` failed on the intended key-duplication assertions. **CIU-128 FIXED** with its registered gate pass. The release flow runs the registered `enroll` lane inside tester-unified through CMRU's isolated DinD path, checks the installed Run-Gate wheel against both checkout modules, and uses a digest-pinned fixture. Previous update 2026-10-05: **CIU-103, CIU-107, CIU-109, CIU-112, CIU-115, CIU-118, CIU-119, CIU-124, CIU-125, CIU-126, and CIU-127 FIXED** in the CIU v7 worktree/identity wave; dstdns caller migration ships with CIU-118, and RG-70's direct service command path is folded into `ciu exec`, while run-gate remains the owner of declared test invocations and their budgets.
+Last updated: 2026-11-13 — **CIU-214, CIU-215 and CIU-216 FILED** from the netcup-api-filter migration (`ciu down --dir` parser rejects flags the help lists; CIU 7 linked-worktree exec runners lack the git common-dir mount; `ciu worktree create` renders no `ciu.global.toml` without `DOCKER_HOST`). Previous update 2026-11-11 — **CIU-193 FIXED** on `ciu-193-down-owner-20261111` (`ciu down` ownership-filtered like `clean`; unlabelled candidates fail closed in worktrees). **CIU-205 and CIU-206 FILED and FIXED** (on `ciu-205-dir-selection-20261111` and `ciu-206-host-secret-20261111`, unreleased) from an independent review of the naf deployment plan: `ciu up --dir` omits the S3.12 selection facts from its render context and does not record or guard the resolved selection across invocations, while no host-wide cross-checkout operator-secret scope exists; an uncached stack can prompt or fail in another checkout only when neither an environment value nor a cached value is available, and an environment value can silently replace a cached value. **CIU-208 and CIU-209 FILED** from side findings in the CIU-205 implementation report: profile-mode `ciu up` does not carry a profile's `topology_overrides` into the per-stack engine render even though preflight renders and `ciu resolve` apply them; `ciu dev` bypasses `[ciu.instance] service_profiles` and the CIU-205 selection-record check by calling the profile-package resolver directly. CIU-204 remains OPEN (Docker network-cleanup evidence is UNVERIFIED and must be reconciled without inventing names). CIU-203 is FIXED on `ciu-fix-20261109`; CIU-141 is implemented on `ciu-run-20261105` (unreleased); CIU-202/134/153/154/155/156/157/158 are FIXED; CIU-151 remains OPEN pending live physical-path verification. Historical 7.18 wave update, 2026-10-27: CIU-135 FIXED (its tests and coverage repaired, record schema 6 added for Run-Gate); CIU-107 stays FIXED; CIU-134's retry implementation was parked with unresolved review findings now closed below; CIU-154 (branch pruning discards ignored resumable state; was CIU-143 on an unmerged branch, CIU-152 on the wave branch before integration) and CIU-153 (`rm` deletes unmerged branches) were FILED; CIU-151 has a second reproduction. Previous update 2026-10-15 — **CIU-144 and CIU-143 FILED**: linked-worktree JSON output can be polluted by the CIU-117 image-tag notice, and a conflicting Compose-managed network escapes `ciu check` and fails late during deployment. **CIU-140 remains IN PROGRESS; CIU-142 and CIU-139 remain OPEN (CIU-141 was OPEN then; it is implemented on `ciu-run-20261105` as of 2026-11-06). CIU-135 remains OPEN** pending its registered gate and final review; its candidate also includes direct `ciu up` network verification, truthful collision vs indeterminate status, unreadable CIU-root sibling records, exact legacy-network claims, and explicit root selection (P53 review 04). **CIU-129 is FIXED by Assay B146** for the hidden-failure diagnostic (first failing test retained in the R0 summary/claim; fail-fast coverage warning emitted). **CIU-136** tracks the open CIU-118 service-discovery follow-up (attached networks, aliases, URLs, exit status; the shipped `ciu resolve`/`ciu exec` stay FIXED). **CIU-131 FIXED**: the exact registered CMRU sequence passed on `fcffeee8c`; a controlled break of `get.py` failed on the intended key-duplication assertions. **CIU-128 FIXED** with its registered gate pass. The release flow runs the registered `enroll` lane inside tester-unified through CMRU's isolated DinD path, checks the installed Run-Gate wheel against both checkout modules, and uses a digest-pinned fixture. Previous update 2026-10-05: **CIU-103, CIU-107, CIU-109, CIU-112, CIU-115, CIU-118, CIU-119, CIU-124, CIU-125, CIU-126, and CIU-127 FIXED** in the CIU v7 worktree/identity wave; dstdns caller migration ships with CIU-118, and RG-70's direct service command path is folded into `ciu exec`, while run-gate remains the owner of declared test invocations and their budgets.
 
 Later update, 2026-11-11 — **CIU-207 FILED (CIU R2 economics and diff-scoped
 release campaign planning are not expressed by a declared campaign base or
 cost preflight). CIU-210 FILED and PENDING on branch `r2-jobs-20261111`
 (the CIU R2 lane is pinned to one worker by both its tag-time configuration
 and its documentation-contract test).**
+
+Later update, 2026-11-13 — **CIU-217 FILED** for the KSM ELF verifier accepting a zero-sized program-header entry declaration. The KSM R2 test-gap closure for CIU 7.25.1 is recorded below under CIU-211.
+
+Later update, 2026-11-13 — **CIU-218 FILED** for an opt-in restricted `authorized_keys` forced-command mode used by the fleet campaign runner; general-purpose host enrollment remains the default.
 
 Previously, 2026-09-02 — **V8-2 BACKPORTED (ciu-P47): the identity-file
 split and the overlay rename.** `[ciu.instance.generated]` moved out of the
@@ -660,6 +664,14 @@ entries.
 | CIU-208 | Profile-mode `ciu up` drops a profile's `topology_overrides` from the per-stack engine render even though preflight renders and `ciu resolve` apply them | Medium | OPEN 2026-11-11 |
 | CIU-209 | `ciu dev` bypasses `[ciu.instance] service_profiles` and the CIU-205 selection-record check | Medium | OPEN 2026-11-11 |
 | CIU-210 | The CIU R2 lane is pinned to one worker in both tag-time configuration and its documentation-contract test | Major | PENDING on `r2-jobs-20261111` |
+| CIU-211 | CIU R2 campaign 7241 survivor equivalences and seven bounded timeout decisions | Minor | KNOWN ISSUE/work record on `ciu-r2-tests-20261112` |
+| CIU-212 | The CIU test suite has no per-test timeout, so non-terminating mutants exhaust the candidate budget | Major | OPEN 2026-11-12 |
+| CIU-213 | Tests must scope process-wide `os.*` syscall fakes to the descriptor or path under test | Not rated in the entry | OPEN 2026-11-12 (the observed hazards are fixed on the pytest 9.2 audit branch) |
+| CIU-214 | `ciu down --dir PATH` rejects flags that `ciu down --help` lists (`--yes`, `--phases`, `--i-understand-this-is-protected`) | Minor | OPEN 2026-11-13 |
+| CIU-215 | Linked-worktree exec runners rendered by CIU 7 lack the git common-dir mount, so every assay lane fails with GIT_FAILED | Major | OPEN 2026-11-13 |
+| CIU-216 | `ciu worktree create` renders no `ciu.global.toml` when `DOCKER_HOST` is unset and the socket is at a non-default path | Minor | OPEN 2026-11-13 |
+| CIU-217 | The KSM ELF verifier accepts a program-header table whose declared entry size is zero (`e_phentsize = 0`) | Minor | OPEN 2026-11-13 (strict xfail `test_zero_program_header_entry_size_is_refused` records it) |
+| CIU-218 | `ciu host enroll` cannot install an opt-in forced-command key for the fleet campaign runner | Major | OPEN 2026-11-13 |
 
 
 The approved milestone decisions and serial package order are in
@@ -6735,3 +6747,273 @@ candidate progress and finished-candidate state under that release tag; and
 no OOM or other capacity refusal. The campaign evidence must also show that
 the ceiling was committed in the tagged tree before the run, not changed while
 the campaign was active.
+
+## CIU-211 — equivalence and bounded-timeout record for CIU R2 campaign survivors
+
+**Status:** KNOWN ISSUE/work record for the campaign evidence on branch
+`ciu-r2-tests-20261112`; no CIU-specific Assay equivalence-waiver mechanism is
+configured. Twelve candidates remain survivors in the original verdict with
+the source-level dispositions below. Seven `budget_exceeded` candidates were
+reapplied by hand and killed through deterministic, bounded tests; their
+timeout-killed campaign label is not itself counted as a kill. The remaining
+suite-level per-test deadline gap is tracked separately as CIU-212.
+
+The 7.25.0 follow-up equivalences below are indexed by source location and
+mutation because the supplied campaign file set did not include candidate
+hashes for these rows.
+
+**Equivalent candidates.**
+- `bebee6f0bbdd0fd9f2b5697097639b5387ed1d35fc43dd567814a41980911092` —
+  `_is_linked_git_worktree.rev()` returns `""` or `None` only on command
+  failure; its caller tests both with truthiness and short-circuits before
+  `realpath`, so the result is identical.
+- `1409e8cec99fa5dc79236c7dd3cf4be428fedc9a80852b06af81d6e611d03284` —
+  `_root_has_cleanable_stack()` resolves its root and removes every symlink
+  directory from `os.walk`'s descent list; `followlinks=True` cannot traverse
+  those children.
+- `a6ea8803203888e4222e335953a8f2cf3e6937e5454f9d0e240dd0a4836ba1ce` —
+  the prepare-only progress message is followed only by result construction
+  and function return, so normal CLI process exit flushes the same output.
+- `de47231c52974668686e82de56b0b751b760a38d7a660b4c638e2db5d9bb37b9` —
+  the dry-run “skipping compose up” message is followed by result construction
+  and return; no child process or blocking operation waits on the flush.
+- `45f4e33b281c17e49984a078229e66a37d1179c2389758b7eaa4528766cdf9cc` —
+  the supported one-shot preparation caller passes `skip_hooks` explicitly to
+  `engine.prepare_stack`, so that internal helper's default is not consumed.
+- `9de29b8c1199292035de29b85c4774967f3415a6d4a64d9f8cd3aebd83abef85` —
+  the supported `ciu run` caller passes `opts.skip_hooks` explicitly to
+  `oneshot.run_cli`; its internal helper default is not consumed.
+- `726989a145d7ad4e80cbf09cc184df6ba9cb26fc9c919e41c41c9ac3680adbc2` —
+  changing key order in the normalized extension YAML only changes a private
+  temporary input; Compose parses the same YAML mapping.
+- `a2ca1cef7c649179a1c6cb0fec8c9f3b4813ac61b6fbadd5f21763adfcc86ba1` —
+  `_compose_file_args()` writes the normalized extension to a private temp
+  file; unsorted YAML mapping keys have the same Compose meaning.
+- `de3f30a43951fc6c9f1719b39eb07bd8ba223d01eefda9d7e814833c7b23a817` —
+  `_run_detached()` always passes `detach=True`, and `_run_compose_argv()`
+  disables TTY/stdin whenever detached regardless of `interactive`.
+- `24801879a3334de2c85ab87c80dfbd066b0bb27714d7dac4fcc2439a45c3d1bb` —
+  after `forwarded_signal` is set, the Docker signal command either raises
+  and exits or succeeds and sets `signal_deadline` before the next loop guard;
+  the two non-None facts are paired on every reachable path.
+- `89ce62ebee7c13d7791a81cbe18defb49f8c140bf672660bedd0385e82cb3205` —
+  every `_preflight_clean_roots()` call supplies `json_output` explicitly,
+  so its default does not affect a caller.
+- `d48d03b2e6ed85a035ab541c601daa679b142e2d510e19173a39e150f2ae7790` —
+  `_preflight_clean_roots()` calls `_clean_in(..., plan_only=True)`; that path
+  always builds `--dry-run`, and the `yes` value is never used to mutate state.
+
+**7.25.0 source-location equivalences.**
+
+| Source location | Mutation | Equivalence rationale |
+|---|---|---|
+| `engine.py:2545` | `flush=True` → `False` on the “Starting stack” progress message | The text, control flow, and Compose invocation are unchanged; only delivery timing can differ while stdout is buffered, and the owning CLI flushes the same output when it returns. |
+| `materialize.py:623` | `flush=True` → `False` on the replacement notice | The same diagnostic and secret result are produced; stderr is line-buffered and the stream is flushed on process exit. |
+| `selection_record.py:149` | `flush=True` → `False` on the record-created notice | The record is already atomically published and the function returns the same selection; only progress-output delivery timing can differ. |
+| `oneshot.py:711` | `flush=True` → `False` on the event-sink failure notice | The same failure notice is emitted and the one-shot continues with the same dropped-event behavior; no control-flow decision depends on the flush flag. |
+| `deploy.py:5808` | `followlinks=False` → `True` in the cleanability walk | The loop removes symlink directories from `directories` before descent, so the walker never follows those links. This is the 7.25.0 location for the existing symlink-pruning equivalence above. |
+| `deploy.py:4886` | `return ""` → `None` on a failed Git metadata query | Both values are falsey, and the caller short-circuits on truthiness before `realpath`; this is the 7.25.0 location for the existing Git-metadata equivalence above. |
+
+**CIU 7.25.1 KSM survivor closure.** The 20 survivors from the CIU R2 7.25.1 report were individually replayed against the new KSM tests in an isolated scratch checkout. Nineteen are test gaps and are killed by the behavioral tests listed in the package report; one is equivalent.
+
+| Source location | Mutation | Disposition |
+|---|---|---|
+| `ksm.py:135` | `or` → `and` | Killed by `test_wrong_magic_in_header_sized_object_is_refused` using a 200-byte ELF-shaped blob with wrong magic. |
+| `ksm.py:135` | `<` → `<=` | Killed by `test_64_byte_elf_header_threshold_distinguishes_short_and_exact`; a complete 64-byte header remains accepted. |
+| `ksm.py:150` | `>` → `>=` | Killed by `test_program_header_ending_at_eof_is_accepted_but_truncation_is_refused`. |
+| `ksm.py:187` | `==` → `!=` | Killed by `test_dependency_error_uses_the_matching_singular_or_plural`. |
+| `ksm.py:233` | `parents=True` → `False` | Killed by `test_build_creates_all_cache_parent_directories[shim]`. |
+| `ksm.py:254` | `capture_output=True` → `False` | Killed by `test_failed_build_reports_captured_text_with_stderr_precedence[shim]`. |
+| `ksm.py:254` | `text=True` → `False` | Killed by `test_failed_build_reports_captured_text_with_stderr_precedence[shim]`. |
+| `ksm.py:264` | `or` → `and` | Killed by `test_failed_build_reports_captured_text_with_stderr_precedence[shim]`. |
+| `ksm.py:277` | `missing_ok=True` → `False` | Killed by `test_missing_bad_build_artifact_does_not_mask_verification_error[shim]`. |
+| `ksm.py:280` | `missing_ok=True` → `False` | Killed by `test_source_cleanup_is_safe_when_the_copy_is_already_gone[shim]`. |
+| `ksm.py:347` | `parents=True` → `False` | Killed by `test_build_creates_all_cache_parent_directories[wrapper]`. |
+| `ksm.py:362` | `capture_output=True` → `False` | Killed by `test_failed_build_reports_captured_text_with_stderr_precedence[wrapper]`. |
+| `ksm.py:362` | `text=True` → `False` | Killed by `test_failed_build_reports_captured_text_with_stderr_precedence[wrapper]`. |
+| `ksm.py:372` | `or` → `and` | Killed by `test_failed_build_reports_captured_text_with_stderr_precedence[wrapper]`. |
+| `ksm.py:381` | `missing_ok=True` → `False` | Killed by `test_missing_bad_build_artifact_does_not_mask_verification_error[wrapper]`. |
+| `ksm.py:384` | `missing_ok=True` → `False` | Killed by `test_source_cleanup_is_safe_when_the_copy_is_already_gone[wrapper]`. |
+| `ksm.py:403` | `capture_output=True` → `False` | Killed by `test_image_entrypoint_returns_the_captured_declared_array`. |
+| `ksm.py:403` | `text=True` → `False` | Killed by `test_image_entrypoint_treats_json_null_as_no_entrypoint`. |
+| `ksm.py:403` | `check=False` → `True` | Killed by `test_image_entrypoint_returns_none_for_nonzero_inspect_without_raising`. |
+| `ksm.py:465` | `""` → `None` | EQUIVALENT: the sole consumer, `check_entrypoint_drift`, tests `not current` before comparing it; both values are falsey and produce the same refusal for an uninspectable image. |
+
+The malformed-header probes also found a separate accepted-invalid-input defect: `e_phentsize = 0` is used as an empty bounds length while the parser still reads fixed-width fields. CIU-217 tracks that defect; the strict xfail documents current behavior and is not counted as a survivor closure.
+
+**Review scope.** These equivalences are tied to campaign 7241 and the stated
+control-flow invariants. If any invariant changes, re-triage the corresponding
+candidate before relying on this record; do not silently convert the original
+survivor verdict into a kill.
+
+**Seven budget-exceeded decisions.** The candidate IDs and mutations below are
+the complete `budget_exceeded.csv` set. Each mutant was reapplied in a scratch
+copy and the named focused test failed promptly; the unmutated branch passes
+the same test. The decisions use injected clocks, fake process sentinels, and
+the fake process's poll limit, so none relies on host speed or a wall-clock
+wait.
+
+| Candidate ID | Mutation | Why it never terminates | Bounded decision | Test or reason |
+|---|---|---|---|---|
+| `be980696232af74d984cc101e748931e4de388098d544cca81a2394ce07b7bbd` | `_EventWriter.__init__`: `self.failed = False` → `True` | The event sink starts dead, so launch/exit records are permanently suppressed and an event consumer waits for output that cannot arrive. | test added | `tests/tests/test_ciu_r2_7241_survivors.py::test_event_writer_starts_live_and_emits_a_record` |
+| `26d710e1d03c6fbe92363a53f59de588cf352d2758b523db810f1f8245215fca` | `_EventWriter.write`: `written <= 0` → `written < 0` | A zero-byte write leaves the memoryview unchanged and the loop immediately retries forever. | test added | `tests/tests/test_ciu_r2_7241_survivors.py::test_event_writer_treats_zero_byte_write_as_a_bounded_failure`; a second-write sentinel raises instead of waiting. |
+| `31fc9e9fc82339745bffdce00c08a25e5a40e6b91ae0596820d39787cb0833af` | `_run_foreground`: initial `escalated = False` → `True` | The grace-deadline branch believes escalation already happened and never sends the grace-expired kill while Compose remains alive. | test added | `tests/tests/test_ciu_run_launch.py::test_foreground_escalation_is_once_even_while_compose_remains_alive`; fake monotonic time and a bounded fake process force the transition. |
+| `b1193374a0c63a2bc2fd2defc0d87ce426aa147bf207e9ae141dee53cb626a22` | `_run_foreground` poll: `returncode is not None` → `returncode is None` | The inverted exit check treats a live Compose client as exited and can no longer take the terminal break for a real exit, leaving the launch path unresolved. | test added | `tests/tests/test_ciu_run_launch.py::test_foreground_start_timeout_removes_ours_and_stops_the_compose_client`; the fake poll limit bounds the wrong path. |
+| `97dabf64f11267ecbfa5e3a578b7a49e161030d4f7e8bdef2bad43fe29865bcb` | `_run_foreground` start guard: `launched is None` → `launched is not None` | The missing-launch deadline becomes unreachable, so a Compose process that never exposes the container is polled forever. | test added | `tests/tests/test_ciu_run_launch.py::test_foreground_start_timeout_removes_ours_and_stops_the_compose_client`; the fake poll limit bounds the wrong path. |
+| `d0f6ec4e3e3891bb72f3499f8081f7c62ba30c729b183a15ddc84512aff13343` | `_run_foreground` escalation guard: `forwarded_signal is not None` → `is None` | After a signal is forwarded, the guard becomes false forever, so escalation never fires while Compose remains alive. | test added | `tests/tests/test_ciu_run_launch.py::test_foreground_escalation_is_once_even_while_compose_remains_alive`; fake monotonic time and a bounded fake process force the transition. |
+| `1820562f20b00866601536d1f6df3e088b67df90ff06231e072517a93d62068b` | `_run_foreground` escalation guard: `signal_deadline is not None` → `is None` | The deadline-established branch becomes false forever, so the process is never escalated after the signal grace period. | test added | `tests/tests/test_ciu_run_launch.py::test_foreground_escalation_is_once_even_while_compose_remains_alive`; fake monotonic time and a bounded fake process force the transition. |
+
+## CIU-212 — the CIU test suite has no per-test timeout, so non-terminating mutants exhaust the candidate budget instead of failing promptly
+
+**Status:** OPEN (filed 2026-11-12); priority major for R2 classification and
+capacity. Source: CIU R2 campaign 7241 analysis (2026-11-12); related to the
+behavioral survivor work and equivalence record on pending branch
+`ciu-r2-tests-20261112`. This entry covers the remaining suite-level timeout
+gap, not another survivor test or equivalence disposition.
+
+**Problem.** Both CIU's `ciu` R2 lane and `ciu-gate` invoke pytest without a
+per-test deadline. `--maxfail=1` stops after a failing assertion, but it cannot
+bound a test that never returns. Campaign 7241 therefore recorded seven
+CPU-live, non-terminating `oneshot.py` mutants as `budget_exceeded` rather than
+as ordinary kills. The same lack of a per-test bound makes a slow suite and a
+true hang indistinguishable at the candidate budget. The margin is thin:
+survivors reached 282 s against the 300 s candidate budget, and 21 survivors
+exceeded 250 s. Future worker contention can therefore turn an ordinary slow
+survivor into another adverse bucket or hide it behind a timeout.
+
+**Evidence.** Campaign `ciu-v7.24.1` against `ciu-v7.22.0` judged 627
+candidates: 539 killed, 81 survived, and 7 `budget_exceeded`. All seven are in
+`ciu/src/ciu/oneshot.py` at release lines 660, 703, 1176, 1276, 1287, 1292
+(two operators at 1292). They are timeout-killed after about 301 s and
+CPU-live at the deadline: a zero-byte sink write spins, foreground poll-loop
+guards are unreachable, and signal escalation/failure state never advances.
+The current pytest configuration has no `pytest-timeout` dependency,
+`timeout_method`, or command-line deadline. The pending survivor branch adds
+behavioral coverage and documents source-level equivalences, but it does not
+add a suite-wide test deadline.
+
+**Minimal solution.** Add an explicit per-test deadline to both CIU pytest
+lanes, using a timeout plugin whose failure protocol terminates the test
+process rather than leaving a live worker. Keep the R2 per-candidate budget as
+the outer guard. Calibrate the per-test bound from measured CIU test durations
+under the selected worker count, record that derivation and its margin in the
+lane documentation, and revise it only through a recorded lane/judge identity
+change. A timeout must surface as an ordinary failed test naming the hung
+test, so Assay classifies the mutant as killed rather than alive at the
+candidate deadline.
+
+**Where.** `ciu/pyproject.toml` test dependency closure,
+`ciu/tests/conftest.py` or the pytest configuration location chosen for one
+policy source, both pytest argv lists in `ciu/assay.toml`, the timeout-policy
+contract in `ciu/tests/tests/test_ciu_documentation_contract.py`, and the R2
+docs that state the candidate-budget/test-deadline distinction.
+
+**Acceptance test idea.** A deterministic child that busy-loops or waits on a
+never-written event fails the lane because of the per-test deadline, with the
+hanging test named; a normal slow contract test below the selected bound
+passes. Reapply the seven campaign mutants in a scratch tree and verify each
+fails promptly inside its test rather than consuming the full candidate
+budget. A three-worker measurement records the slowest legitimate tests and
+the remaining margin, and no normal test is killed by the new policy.
+
+**Priority.** Major. The current suite cannot distinguish a hung mutant from a
+slow suite, converts true kills into unresolved campaign outcomes, and risks
+hidden survivors as worker contention rises.
+
+**Close when.** Both CIU pytest lanes enforce one documented, calibrated
+per-test deadline that terminates hangs as named test failures; the seven
+7241 timeout candidates are reproduced as ordinary kills; the slowest
+legitimate tests pass with recorded margin under the selected R2 worker
+ceiling; and a fresh campaign records no non-terminating candidate in the
+`budget_exceeded` bucket on a clean final commit.
+
+## CIU-213 — tests must scope process-wide `os.*` syscall fakes to the descriptor or path under test
+
+**Status:** OPEN (filed 2026-11-12); the observed CIU hazards are fixed in the
+pytest 9.2 audit branch. Pytest 9.2 calls `os.fstat` during capture and
+teardown. The run-launch, transport-temporary-file, workspace-env, and
+worktree-overlay tests originally replaced shared `os.write`, `os.fdopen`, or
+`os.open` with raising or incomplete fakes for every caller. They now match
+the synthetic descriptor or overlay path under test and delegate every other
+call to the saved real function.
+
+**Contract.** A process-wide `os.*` patch must prove the fd/path is the one
+under test. It may affect only that call and must delegate unrelated calls to
+the real function. The original short-write, temporary-file cleanup, and
+overlay-refusal oracles remain mandatory. `builtins.open` and `io.open`
+patches follow the same rule.
+
+**Close when.** No non-delegating exact-symbol test patch remains in CIU,
+the registered CIU unit lane passes on a clean final commit, and a deliberate
+removal of an unrelated-call fallback is shown to fail the owning focused
+test.
+
+## CIU-214 — `ciu down --dir PATH` rejects flags that `ciu down --help` lists (`--yes`, `--phases`, `--i-understand-this-is-protected`)
+
+**Status:** OPEN (filed 2026-11-13); severity: minor, automation friction. Found migrating netcup-api-filter onto CIU 7.25 (reproduced on 7.25.1: `ciu down --dir <path> --yes` exits with `ciu down --dir: error: unrecognized arguments: --yes`).
+
+**Cause (read from source).** The `--dir` branch of `ciu down` (`ciu/src/ciu/cli.py`, the `verb == "down"` handler, about lines 2056-2090) builds its own sub-parser that declares only `--dir` and `--profile` and calls `parse_args`. The registry adapter (`cli_registry.py`, about lines 161-162) forwards `--yes` whenever the caller gave it, and `ciu down --help` lists `--yes`, `--phases` and `--i-understand-this-is-protected`, so each of them is rejected on the `--dir` form. `down` never prompts for confirmation (`deploy.py`, `_refuse_if_protected`: `--stop`/`--clean` have never had an `input()` gate), so `--yes` is harmless there; the defect is that the parser and the help disagree, which breaks a non-interactive caller that passes the documented flag.
+
+**Wanted.** The adapter and the `--dir` parser accept the same flags as the help lists (or the help marks which flags apply to which form).
+
+**Close when.** A CLI parse test covers `ciu down --dir <stack>` with every flag the help lists for `down`, and none is rejected as unrecognized.
+
+## CIU-215 — linked-worktree exec runners rendered by CIU 7 lack the git common-dir mount, so every assay lane fails with GIT_FAILED
+
+**Status:** OPEN (filed 2026-11-13); severity: major for projects that gate from linked worktrees. Found in netcup-api-filter (per-checkout test runners, CIU 7.25.0). Related: the v8 design mounts the git common directory for exec environments of a linked checkout (`ciu/docs/SPEC-V8.md` S16.4, S16.4.9 and S16.12; dstdns D-653 Q7); CIU 7 does not.
+
+**Observed.** A per-checkout exec runner mounts only the worktree. A linked worktree's `.git` is a file that points at the main repository's git directory outside the mount, so inside the runner `git` fails and every assay lane (which needs a git context) ends with `GIT_FAILED`. Shared runners that mount the whole repository never showed it. netcup-api-filter works around it by adding the linked worktree's `.git` common-dir mount to its own `tooling/test-runner/ciu.compose.yml.j2`.
+
+**Wanted.** Backport the v8 common-dir mount to CIU 7 for exec runners created for a linked worktree, so the project template does not need to know about it.
+
+**Close when.** A runner created for a linked worktree runs `git rev-parse HEAD` and an assay lane to a verdict without any project-side mount.
+
+## CIU-216 — `ciu worktree create` renders no `ciu.global.toml` when `DOCKER_HOST` is unset and the Docker socket is at a non-default path
+
+**Status:** OPEN (filed 2026-11-13); severity: minor, silent failure. Found in netcup-api-filter on CIU 7.25.0 (a clean environment with `env -i`, socket at a non-default path). Not re-reproduced on 7.25.1.
+
+**Observed.** `ciu worktree create` finished and created the checkout and its identity file, but the worktree had no `ciu.global.toml`, so run-gate lanes for it failed on infrastructure instead of on the code. Setting `DOCKER_HOST` to the socket, or copying a sibling's rendered file, restored it. The command printed no error.
+
+**Wanted.** Fail with a clear message naming the missing Docker endpoint instead of returning success without the rendered file.
+
+**Close when.** `ciu worktree create` under a clean environment either produces `ciu.global.toml` or exits non-zero naming the missing Docker endpoint.
+
+## CIU-217 — KSM ELF verifier accepts a zero-sized program-header entry declaration
+
+**Status:** OPEN (filed 2026-11-13); severity: minor, fail-open artifact verification.
+
+**Observed.** A dependency-free ELF64-shaped object with one program header and `e_phentsize = 0` passes `_verify`. `_dt_needed_count` uses the zero entry size for its bounds check, then reads program-header fields at their fixed offsets anyway. The verifier therefore accepts an artifact whose declared program-header table cannot be interpreted as specified. The strict xfail `test_zero_program_header_entry_size_is_refused` records this behavior without weakening the verifier or hiding the issue.
+
+**Wanted.** Refuse an ELF program-header table whose declared entry size is smaller than the ELF64 program-header structure that the parser reads, with the normal `cannot verify` refusal.
+
+**Close when.** A production fix makes the xfail pass, and a malformed-header oracle demonstrates that an undersized `e_phentsize` cannot be accepted as a dependency-free object.
+
+## CIU-218 — `ciu host enroll` cannot install an opt-in forced-command key for the fleet campaign runner
+
+**Status:** OPEN (filed 2026-11-13); severity: major for restricted fleet
+campaign access. Related: fleetd FD-009 and the compute-host campaign design,
+§3.7.
+
+**Observed gap.** CIU-93/CIU-P52 provides trusted host enrollment and a
+general-purpose SSH identity. It does not install a key restricted to the
+campaign runner's named-job protocol. fleetd MVP-B-lite correctly reuses the
+existing identity-checked hx transport, but a general-purpose account leaves
+the operator without the later least-privilege host-entry option.
+
+**Wanted.** Add an explicit opt-in enrollment mode that writes a
+`restrict`/forced-command authorized-key entry for the runner wrapper while
+preserving the current general-purpose enrollment behavior. The forced command
+must accept only the documented list, start, probe/progress, and stop
+operations; reject arbitrary shell commands, extra arguments, and malformed
+input; and retain the existing pinned-host-identity checks. Key rotation and
+removal must identify only the enrolled restricted entry. Host aliases,
+addresses, public/private key material, and provider credentials remain local
+configuration and never enter repository files.
+
+**Close when.** Parser and authorized-key tests prove the exact allowed
+operation grammar and refusal of shell escape, malformed quoting, unknown
+verbs, and extra arguments. Round-trip tests preserve unrelated authorized-key
+bytes and a general enrollment. A fake hx transport reaches every allowed
+runner operation and no other operation. The registered CIU enrollment gate,
+SPEC, and consumer documentation pass; no live host is needed for the unit
+contract.

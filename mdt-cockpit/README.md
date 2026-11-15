@@ -1,3 +1,4 @@
+<!-- Evidence scrub 2026-11-10: environment-specific home, checkout, worktree, and per-run temporary paths were normalized to neutral placeholders; command output and verdict text are otherwise unchanged. -->
 # mdt-cockpit — a curated Debian + Python devcontainer cockpit
 
 A curated, reproducible Debian + Python environment with modern CLI tooling, an AI-agent
@@ -403,7 +404,7 @@ containers built from the same layers.
 
 The vendored template mounts one host directory per checkout,
 `${localEnv:HOME}/mdt-cockpit-${localWorkspaceFolderBasename}-home/` (mode `0700`; for a
-checkout named `myrepo` that is `~/mdt-cockpit-myrepo-home/`), over `/home/vscode`. Agent
+checkout named `myrepo` that is `~/mdt-cockpit-myrepo-home/`), over `<home>`. Agent
 logins, keys, histories, shell preferences, caches, worktrees, and arbitrary user-created home
 data therefore survive image rebuilds without maintaining a list of individual mount points, and
 two checkouts on one host never share a home. `/tmp` is a second host-backed source,
@@ -412,7 +413,7 @@ source is named `${localEnv:HOME}/mdt-cockpit-<purpose>`. The role of a source (
 comes from its mount target, so a consumer may spell the sources differently (for example one
 shared `~/mdt-cockpit-home/`).
 
-**A new home starts empty and stays that way.** The image leaves `/home/vscode` empty and ships
+**A new home starts empty and stays that way.** The image leaves `<home>` empty and ships
 no copy of any default into it: image-owned runtimes and CLIs live under `/opt/mdt` and `/srv`,
 and every default (bash, zsh, nano, htop, mc, Neovim, `less`, the MDT shell files) is wired
 where its tool reads system-wide configuration, so you override a default by creating your
@@ -431,7 +432,7 @@ lists what is worth copying and what is not. See the
 [path policy and rationale](docs/DESIGN-GUIDE.md#the-home-is-user-state-image-assets-live-outside-it)
 and the [home path inventory](docs/HOME-PERSISTENCE.md).
 
-The template sets `CODEX_SQLITE_HOME` to `/home/vscode/.codex/sqlite-shared` and keeps the
+The template sets `CODEX_SQLITE_HOME` to `<home>/.codex/sqlite-shared` and keeps the
 container running when its Dev Containers session disconnects with `shutdownAction: "none"`.
 See the [Codex profile and container-lifetime notes](docs/CONSUMERS.md#codex-profile-state-and-container-lifetime).
 
@@ -442,7 +443,7 @@ Image defaults, user config, and secrets have distinct roles:
 - `/usr/local/share/mdt-cockpit/` — image-owned profile files, default shell/editor config,
   examples (`ai.env.example`, `aliases.sh.example`) and manifest support files. Nothing copies
   these into the home.
-- `/home/vscode/.config/mdt-cockpit/` — **yours, created by you**: `ai.env` (keys), plus
+- `<home>/.config/mdt-cockpit/` — **yours, created by you**: `ai.env` (keys), plus
   optional `shell.env` and `aliases.sh` that are sourced after the image's own and can override
   them. The image never writes this directory.
 
@@ -548,6 +549,15 @@ block before changing host state.
 See the [endpoint ownership design](docs/DESIGN-GUIDE.md#host-service-endpoint-ownership)
 and [pasteable service commands](docs/CONSUMERS.md#host-service-endpoints).
 
+Before changing a host or rolling out a cockpit/tool image, run the read-only
+[estate requirements checker](host-setup/estate_doctor.py) and read the
+[machine-readable requirements](docs/ESTATE-REQUIREMENTS.toml). Its
+[consumer guide](docs/CONSUMERS.md#estate-prerequisite-check) explains local
+and remote-host checks, explicit missing-session evidence, and the installed
+Run-Gate published-wheel/image identity check. The
+[design guide](docs/DESIGN-GUIDE.md#estate-requirements-have-one-machine-readable-owner)
+records why the inventory lives here.
+
 For host inspection from an MDT devcontainer, `host-escape -- <command>` runs
 the command in the host's namespaces with host-root authority; `host-escape`
 opens a host shell. Review commands before running them. The helper runs
@@ -640,8 +650,8 @@ The default artifact and BuildKit caches live under the repository's common Git 
 not a disposable cmru release worktree. Override them only for a deliberate isolated cache:
 
 ```bash
-MDT_ARTIFACT_CACHE_DIR=/var/tmp/mdt-artifacts ./build-push.py --build
-MDT_BUILDKIT_CACHE_DIR=/var/tmp/mdt-buildkit ./build-push.py --build
+MDT_ARTIFACT_CACHE_DIR=/var<temp-path> ./build-push.py --build
+MDT_BUILDKIT_CACHE_DIR=/var<temp-path> ./build-push.py --build
 ```
 
 The staging API is intentionally DRY: all tool download paths flow through the same
@@ -891,6 +901,10 @@ production-quality. Support windows as of June 2026:
 | [docs/OCI-IMAGE-TOOLING.md](docs/OCI-IMAGE-TOOLING.md) | Human-manifest vs OCI-manifest, registry clients, layer trade-offs, CMRU reuse boundary |
 | [docs/IMAGE-DELIVERY-BENCHMARKS.md](docs/IMAGE-DELIVERY-BENCHMARKS.md) | Compression and time-to-connect measurements and policy |
 | [docs/DOCKER-IMAGE-STORE.md](docs/DOCKER-IMAGE-STORE.md) | Docker image store behavior |
+| [docs/DESIGN-PLATFORM-OPTIONS-2026-11-04.md](docs/DESIGN-PLATFORM-OPTIONS-2026-11-04.md) | Platform alternatives and the decisions that bound the cockpit image |
+| [docs/RELEASE-PLAN-2026-11-03.md](docs/RELEASE-PLAN-2026-11-03.md) | Release requirements and sequence from the 2026-11-03 planning wave |
+| [docs/ANALYSIS-CODEX-IMAGE-2026-11-08.md](docs/ANALYSIS-CODEX-IMAGE-2026-11-08.md) | Codex image packaging analysis |
+| [docs/evidence/hosts-ksm-instances-REPORT-2026-11-12.md](docs/evidence/hosts-ksm-instances-REPORT-2026-11-12.md) | KSM eligibility and multi-instance R2 evidence |
 | [GHCR-ACCESS-GUIDE.md](GHCR-ACCESS-GUIDE.md) | Registry auth, package visibility |
 | [TODO.md](TODO.md) | Backlog |
 
@@ -913,6 +927,9 @@ host, with product assertions inside the guest:
 
 - `run-gate smoke` runs Python syntax checks, the host-setup renderer and
   the complete `scripts/` and `host-setup/tests/` pytest suites.
+- `RUN_GATE_PROFILE=off run-gate estate-doctor` runs the focused checker contract tests, including
+  its injected local/remote runner, timeout, dependency, version and manifest
+  validation cases.
 - `run-gate host-setup-admission` runs the host admission, wizard, installer,
   and capacity subset in `tester-unified` with a two CPU lane limit.
 - `run-gate release` is the image-release gate for the Docker/OCI release

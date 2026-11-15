@@ -698,7 +698,14 @@ def test_shared_lock_and_backend_failures_are_reported(tmp_path, monkeypatch):
     real_fstat = gc_module.os.fstat
 
     def directory_stat(fd):
-        return StatResultProxy(real_fstat(fd), st_mode=0o040700)
+        info = real_fstat(fd)
+        try:
+            opened = os.path.realpath(os.readlink(f"/proc/self/fd/{fd}"))
+        except OSError:
+            return info
+        if opened != str(lock.resolve()):
+            return info
+        return StatResultProxy(info, st_mode=0o040700)
 
     monkeypatch.setattr(gc_module.os, "fstat", directory_stat)
     with pytest.raises(PathRefused, match="regular file"):

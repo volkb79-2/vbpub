@@ -382,3 +382,6 @@ core
 **/evidence/
 nyxloom/ntfy/.secrets/
 nyxloom/nyxloomd/secrets.env
+# long-running controller working state (AGENTS.md: controller plan and handoff)
+/plan.yaml
+/.controller-state/

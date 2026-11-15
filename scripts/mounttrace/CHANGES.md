@@ -1,3 +1,4 @@
+<!-- Evidence scrub 2026-11-10: environment-specific host identities, addresses, controller paths, and key material were normalized to neutral placeholders; command output and verdict text are otherwise unchanged. -->
 # mounttrace changes
 
 This file records the shipped interface and maintenance status.
@@ -49,7 +50,7 @@ return 2.
 | MT-10 watch, error messages, and Soulmask volume audit | Fixed | `c0c0302f0`, `6794cf18f`, review fixes `ae5bfafa3` |
 | MT-11 citation nit | Fixed on main; MT-08..MT-10 rows cite `ae5bfafa3` | `3d9f722ad` |
 | MT-11 command/phase error matrix | Fixed; 30 command, phase, and error combinations | `e8b318a6b` |
-| MT-11 final fixed-head QEMU VM acceptance | Fixed/accepted: six-input preflight, 67+67 tests, whole-lane PASS on r1002 in 536 s | `9d4ebce3f`, evidence `04a224fab` |
+| MT-11 final fixed-head QEMU VM acceptance | Fixed/accepted: six-input preflight, 67+67 tests, whole-lane PASS on <host> in 536 s | `9d4ebce3f`, evidence `04a224fab` |
 | MT-12 P3 sibling-row collapse | Deferred by design; preserve mount multiplicity | `bff533daf` |
 | MT-12 offline `--mountinfo FILE` | Deferred by design; retain live mountinfo input | `bff533daf` |
 | MT-12 color | Deferred by design; the analysis says no color | `bff533daf` |
@@ -81,17 +82,17 @@ return 2.
   is not a volume, and label the value as recorded in mountinfo (`e8b318a6b`).
 - MT-11's automated error matrix covers all five commands at initial read and
   watch refresh for bare ENOENT, ESRCH, and PermissionError (`e8b318a6b`).
-  The final fixed-head r1002 acceptance run
+  The final fixed-head <host> acceptance run
   (`04a224fab326d8728792b9a737f32a0bd7563ef5`, 2026-11-09) passed the six-input
   manifest preflight, then ran 67 unprivileged tests with `OK (skipped=5)` for
   the five expected root-only cases and 67 root tests with `OK`, 0 skips, and
   0 failures. The whole lane ended with its PASS marker in 536 s. The earlier
   Wings-shaped checks at `cc16de7f2` passed at 120 and 80 columns, non-TTY, and
-  through files and pipes. r1002 has no real Wings tree, so those checks used
+  through files and pipes. <host> has no real Wings tree, so those checks used
   the documented stand-in; a real Wings-tree observation remains optional when
   an operator has one. Evidence:
-  `/home/vscode/vbpub-release-program-20261027/reports/mt-close-vm-LIVE-REPORT.md`
-  and `/home/vscode/vbpub-release-program-20261027/reports/mt-close-vm-LIVE-artifacts/`.
+  [mt-close-vm-LIVE-REPORT.md](docs/evidence/mt-close-vm-LIVE-REPORT.md)
+  and [mt-close-vm-LIVE-artifacts/](docs/evidence/mt-close-vm-LIVE-artifacts/).
 - `--watch` flushes every emitted human line and NDJSON object, including the
   first pass and change lines. A block-buffered file or pipe therefore receives
   the first report before the sleep.

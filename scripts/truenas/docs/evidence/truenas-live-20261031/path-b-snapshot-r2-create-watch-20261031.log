@@ -1,0 +1,6 @@
+[INFO] Task state: RUNNING (15%) — ServerSnapshotCreateTask — Server snapshot creation is running.
+[INFO] Task state: RUNNING (31%) — ServerSnapshotCreateTask — Server snapshot creation is running.
+[INFO] Task state: RUNNING (60%) — ServerSnapshotCreateTask — Server snapshot creation is running.
+[INFO] Task state: RUNNING (73%) — ServerSnapshotCreateTask — Server snapshot creation is running.
+[INFO] Task state: FINISHED (100%) — ServerSnapshotCreateTask
+[INFO] Task finished: FINISHED

@@ -1,0 +1,34 @@
+# Evidence scrub 2026-11-10: environment-specific host identities, host addresses, controller paths, SSH key material and fingerprints were normalized to neutral placeholders; command output and verdict text are otherwise unchanged.
+# Evidence scrub 2026-11-10: environment-specific home, checkout, worktree, and per-run temporary paths were normalized to neutral placeholders; command output and verdict text are otherwise unchanged.
+run-gate: admission WARNING: no derivable memory ceiling for slice dev-gates.slice (/sys/fs/cgroup/dev.slice/dev-gates.slice/memory.max absent; export $RUN_GATE_CGROUPFS_ROOT if the host cgroupfs hides here) — /proc/self/cgroup is '0::/' and no slice directory is visible: cgroupns=private; host-side slice truth is only reachable through the profiler daemon (run-gate doctor's own 'profiler' check, RG-55/C7) — admission by shared-infra rules only
+run-gate: config: <worktree>/scripts/truenas/run-gate.toml
+run-gate: rev 64 | lane unit-boot-pool-patch | env [environments.tester-unified] in <worktree>/scripts/truenas/run-gate.toml | slice dev-gates.slice ($CGROUP_PARENT_DEV_GATES (declared [environments.tester-unified] in <worktree>/scripts/truenas/run-gate.toml))
+run-gate: ephemeral env (forwarded: CGROUP_PARENT_DEV_BACKGROUND ; declared but ABSENT: TRUENAS_BOOT_POOL_PARTITION, TRUENAS_DISK_DEVICE, TRUENAS_EXPECTED_VERSION, TRUENAS_MINIMUM_FREE_BYTES, TRUENAS_PATH_B_SETUP, TRUENAS_STORAGE_PROFILE, TRUENAS_TEST_ALLOW_DISK_PROVISION, TRUENAS_TEST_ALLOW_MUTATIONS, TRUENAS_TEST_ALLOW_REBOOT, TRUENAS_TEST_CACHE_TARGET, TRUENAS_TEST_HOST, TRUENAS_TEST_KEY, TRUENAS_TEST_KNOWN_HOSTS, TRUENAS_TEST_PORT, TRUENAS_TEST_USER)
+run-gate: budget 3m (hard limit; clock starts after admission and lock waits)
+run-gate: docker argv: /usr/bin/docker run -d --name run-gate-vbpub-unit-boot-pool-patch-2333380-1793312638 --init --cgroup-parent dev-gates.slice -e CGROUP_PARENT_DEV_GATES=dev-gates.slice -v <worktree>:<worktree> -v <worktree>:<worktree> -v <checkout>/.git:<checkout>/.git -v <checkout>/.git:<checkout>/.git -v <checkout>/.git/worktrees:<checkout>/.git/worktrees:ro -v <checkout>/.git/worktrees:<checkout>/.git/worktrees:ro -v <checkout>/.git/worktrees/truenas-restore-iso:<checkout>/.git/worktrees/truenas-restore-iso -v <checkout>/.git/worktrees/truenas-restore-iso:<checkout>/.git/worktrees/truenas-restore-iso -v <temp-path>/run-gate-gitcfg-w9onqr42/0.config:<checkout>/.git/config:ro -v <temp-path>/run-gate-gitcfg-w9onqr42/0.config:<checkout>/.git/config:ro -e 'CGROUP_PARENT_DEV_BACKGROUND=<redacted>' -e 'RUN_GATE_PROFILE_SESSION=<redacted>' --memory 256m tester-unified:local bash -c 'set -euo pipefail && export GIT_CONFIG_GLOBAL=<run-gate-state>-gitconfig && git config --global --replace-all safe.directory '"'"'*'"'"' && bash -c '"'"'cd <worktree>/scripts/truenas && export PYTHONPATH=boot-pool-patch/acceptance:../../libraries/cli-extended/src${PYTHONPATH:+:$PYTHONPATH} && "$TESTER_VENV/bin/python" -m pytest boot-pool-patch/tests/ -q'"'"''
+run-gate: admission: gates slice 1369MB of 8192MB used; lane needs 256MB — admitted
+run-gate: host memory PSI full avg10=1.55% avg60=0.62% | profiler cgprofile-host-daemon (cgprofile 1.1.0, damon available)
+run-gate: profile session s-20261029T222358Z-2f38 (scope container, baseline 9 MiB, damon unavailable:no verified-off DAMON pool slot available (capacity=16, live=[0], quarantined=[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]), via socket, policy idle auto ceiling auto on-stall report)
+................................................................................................... [ 34%]
+........................................F............................... [ 59%]
+........................................................................ [ 84%]
+...........................................                              [100%]
+=================================== FAILURES ===================================
+_ test_v28_patch_lane_can_target_an_external_guest_through_its_guarded_runner __
+
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7f9397895e50>
+
+    def test_v28_patch_lane_can_target_an_external_guest_through_its_guarded_runner(monkeypatch) -> None:
+        runner = load_runner()
+        monkeypatch.setenv("TRUENAS_TEST_HOST", "<host>")
+>       assert "live-v28-patch" in runner.EXTERNAL_TARGET_LANES
+E       AssertionError: assert 'live-v28-patch' in frozenset({'live-api-probe', 'live-inspect', 'live-path-b-partition', 'live-path-b-provision', 'live-ui', 'live-ui-auth', ...})
+E        +  where frozenset({'live-api-probe', 'live-inspect', 'live-path-b-partition', 'live-path-b-provision', 'live-ui', 'live-ui-auth', ...}) = <module 'truenas_networked_live_gate' from '<worktree>/scripts/truenas/boot-pool-patch/run-live-gate.py'>.EXTERNAL_TARGET_LANES
+
+boot-pool-patch/tests/test_networked_live_gate_artifact.py:943: AssertionError
+=========================== short test summary info ============================
+FAILED boot-pool-patch/tests/test_networked_live_gate_artifact.py::test_v28_patch_lane_can_target_an_external_guest_through_its_guarded_runner
+1 failed, 285 passed, 45 subtests passed in 3.37s
+run-gate: footprint unit-boot-pool-patch: peak 62 MiB, p90 61 MiB, 0.60 cores avg, 0.0 s stalled on memory (full); history median peak - (0 runs)
+run-gate: lane 'unit-boot-pool-patch' failed with exit 1; full container logs preserved at <controller-program-dir>/evidence/truenas-live-20261029/run-gate/run-gate-vbpub-unit-boot-pool-patch-2333380-1793312638.log
+run-gate: lane 'unit-boot-pool-patch' verdict FAIL; exit_code 1; log <controller-program-dir>/evidence/truenas-live-20261029/run-gate/lanes/unit-boot-pool-patch/4091a26a7a1825044e4fa4e3af484469.log

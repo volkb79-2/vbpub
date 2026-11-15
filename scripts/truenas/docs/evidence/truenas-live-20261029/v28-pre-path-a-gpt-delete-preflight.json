@@ -1,0 +1,73 @@
+{
+  "boot_pool_status": "pool: boot-pool\n state: ONLINE\nconfig:\n\n\tNAME         STATE     READ WRITE CKSUM\n\tboot-pool    ONLINE       0     0     0\n\t  /dev/vda3  ONLINE       0     0     0\n\nerrors: No known data errors",
+  "lsblk": {
+    "blockdevices": [
+      {
+        "fstype": null,
+        "mountpoint": null,
+        "partlabel": null,
+        "partn": null,
+        "parttype": null,
+        "partuuid": null,
+        "path": "/dev/vda",
+        "pkname": null,
+        "size": 549755813888,
+        "type": "disk"
+      },
+      {
+        "fstype": null,
+        "mountpoint": null,
+        "partlabel": null,
+        "partn": 1,
+        "parttype": "21686148-6449-6e6f-744e-656564454649",
+        "partuuid": "201aed93-b5c1-4c1d-b1c9-20d0db094e24",
+        "path": "/dev/vda1",
+        "pkname": "/dev/vda",
+        "size": 1048576,
+        "type": "part"
+      },
+      {
+        "fstype": "vfat",
+        "mountpoint": null,
+        "partlabel": null,
+        "partn": 2,
+        "parttype": "c12a7328-f81f-11d2-ba4b-00a0c93ec93b",
+        "partuuid": "e59e3cb0-f9d2-4a93-9341-9de3a4039bce",
+        "path": "/dev/vda2",
+        "pkname": "/dev/vda",
+        "size": 536870912,
+        "type": "part"
+      },
+      {
+        "fstype": "zfs_member",
+        "mountpoint": null,
+        "partlabel": null,
+        "partn": 3,
+        "parttype": "6a898cc3-1dd2-11b2-99a6-080020736631",
+        "partuuid": "23d40421-623f-4dfa-9f6b-c8bf16af4f67",
+        "path": "/dev/vda3",
+        "pkname": "/dev/vda",
+        "size": 17179869184,
+        "type": "part"
+      },
+      {
+        "fstype": null,
+        "mountpoint": null,
+        "partlabel": "boot-disk-data",
+        "partn": 4,
+        "parttype": "6a898cc3-1dd2-11b2-99a6-080020736631",
+        "partuuid": "cab722e6-ccff-41ee-b91c-ac1af05a40d8",
+        "path": "/dev/vda4",
+        "pkname": "/dev/vda",
+        "size": 532035911168,
+        "type": "part"
+      }
+    ]
+  },
+  "partition_import_scan": "no pools available to import",
+  "partition_mounts": "",
+  "pool_rows": [],
+  "sgdisk_partition_4": "Partition GUID code: 6A898CC3-1DD2-11B2-99A6-080020736631 (Solaris /usr & Mac ZFS)\nPartition unique GUID: CAB722E6-CCFF-41EE-B91C-AC1AF05A40D8\nFirst sector: 34609152 (at 16.5 GiB)\nLast sector: 1073741790 (at 512.0 GiB)\nPartition size: 1039132639 sectors (495.5 GiB)\nAttribute flags: 0000000000000000\nPartition name: 'boot-disk-data'",
+  "version": "28.0.0-MASTER+20261027-175229",
+  "zpool_list": "boot-pool\tONLINE"
+}

@@ -1,0 +1,45 @@
+F                                                                        [100%]
+=================================== FAILURES ===================================
+_______ test_v28_partition_helper_uses_only_the_recorded_20261027_schema _______
+
+    def test_v28_partition_helper_uses_only_the_recorded_20261027_schema() -> None:
+        helper_path = PATCH_ROOT / "v28-nightly-20261027" / "boot_disk_partition.py"
+        schema_path = PATCH_ROOT / "v28-nightly-20261027" / "pool_create_schema_v28.json"
+        schema = json.loads(schema_path.read_text())
+        helper = load_helper(helper_path)
+        assert schema["release"] == "28.0.0-MASTER+20261027-175229"
+        assert set(schema["fields"]) == helper.ALLOWED_CREATE_FIELDS | helper.REFUSED_CREATE_FIELDS
+        assert schema["fields"]["encryption_options"]["nested_defaults"]["key"] == ""
+        assert helper.unsupported_create_options({"name": "data", "topology": {"data": []}}) == []
+        assert helper.unsupported_create_options({
+            "name": "data", "topology": {"data": []}, "encryption": True,
+        }) == ["encryption"]
+        assert helper.unsupported_create_options({
+            "name": "data", "topology": {"data": []}, "future_option": True,
+        }) == ["future_option"]
+    
+        class SecretValue:
+            def __init__(self, value):
+                self.value = value
+    
+            def get_secret_value(self):
+                return self.value
+    
+        middleware_defaults = schema["fields"]["encryption_options"]["nested_defaults"] | {
+            "key": SecretValue(None),
+            "passphrase": SecretValue(None),
+        }
+>       assert helper.unsupported_create_options({
+            "name": "data", "topology": {"data": []},
+            "encryption_options": middleware_defaults,
+        }) == []
+E       AssertionError: assert ['encryption_options'] == []
+E         
+E         Left contains one more item: 'encryption_options'
+E         Use -v to get more diff
+
+scripts/truenas/boot-pool-patch/tests/test_ui_pools_patch.py:198: AssertionError
+=========================== short test summary info ============================
+FAILED scripts/truenas/boot-pool-patch/tests/test_ui_pools_patch.py::test_v28_partition_helper_uses_only_the_recorded_20261027_schema
+1 failed in 0.17s
+TEST_EXIT=1

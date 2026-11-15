@@ -14,6 +14,8 @@ sudo mounttrace --json --no-probe explain "$pid:/data"
 
 - **[mounttrace.md](mounttrace.md)**: the guide (concepts, native `findmnt` recipes, propagation with
   worked and tested examples, btrfs subvolumes, limits, tool reference, Soulmask/Wings case study).
+- **[Output and CLI analysis](docs/ANALYSIS-output-cli-2026-11-08.md)**: the requirements record behind
+  the current subcommands, report object, JSON contract and bounded human rendering.
 - Five subcommands answer distinct questions: `explain`, `compare`, `audit`, `predict`, and `soulmask`.
   Path operands that select a process view use `/absolute/path` for the host view or
   `PID:/absolute/path` for the process view. The

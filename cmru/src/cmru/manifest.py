@@ -19,7 +19,7 @@ import re
 import stat
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Callable, Dict, Iterable, List, Optional
 
 from cmru.release import sha256_file
 
@@ -107,7 +107,12 @@ def bundle_tag_problem(tag: str) -> Optional[str]:
     return None
 
 
-def bundle_files(root: Path, exclude: Iterable[str] = ()) -> Dict[str, Dict[str, Any]]:
+def bundle_files(
+    root: Path,
+    exclude: Iterable[str] = (),
+    *,
+    exclude_path: Optional[Callable[[str], bool]] = None,
+) -> Dict[str, Dict[str, Any]]:
     """The manifest ``files`` map of a bundle tree: ``{relpath: {sha256, size, mode}}`` for
     every regular file below ``root`` (posix relative paths, sorted by canonical
     serialization). ``exclude`` names root-level files that are not part of the content
@@ -124,7 +129,7 @@ def bundle_files(root: Path, exclude: Iterable[str] = ()) -> Dict[str, Dict[str,
     files: Dict[str, Dict[str, Any]] = {}
     for path in sorted(root.rglob("*")):
         rel = path.relative_to(root).as_posix()
-        if rel in skip:
+        if rel in skip or (exclude_path is not None and exclude_path(rel)):
             continue
         if path.is_symlink() or (not path.is_dir() and not path.is_file()):
             raise ValueError(f"bundle entry {rel!r} is a symlink or special file; the "
@@ -143,6 +148,7 @@ def build_bundle_manifest(
     tag: str,
     bundle_root: Path,
     exclude: Iterable[str] = ("manifest.json", "manifest.json.minisig"),
+    exclude_path: Optional[Callable[[str], bool]] = None,
 ) -> Dict[str, Any]:
     """The schema-1 manifest for a plain bundle (no wheels): what a project whose release
     is a tarball of files (tls-edge) needs for the hardened ``get.py``.
@@ -156,7 +162,7 @@ def build_bundle_manifest(
         "project": project,
         "tag": tag,
         "created": _iso8601_from_epoch(_epoch()),
-        "files": bundle_files(bundle_root, exclude),
+        "files": bundle_files(bundle_root, exclude, exclude_path=exclude_path),
     }
 
 

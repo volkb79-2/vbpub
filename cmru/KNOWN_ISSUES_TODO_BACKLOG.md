@@ -1,3 +1,5 @@
+<!-- Evidence scrub 2026-11-10: environment-specific host identities, host addresses, controller paths, SSH key material and fingerprints were normalized to neutral placeholders; command output and verdict text are otherwise unchanged. -->
+<!-- Evidence scrub 2026-11-10: environment-specific home, checkout, worktree, and per-run temporary paths were normalized to neutral placeholders; command output and verdict text are otherwise unchanged. -->
 # CMRU — Known Issues, TODO & Backlog
 
 > **This is the canonical CMRU issue tracker.** File CMRU bugs and enhancements **here**, in
@@ -12,6 +14,22 @@
 
 | ID | Status | Fix commit |
 | --- | --- | --- |
+| KI-170 | OPEN (bundle validator outcomes pinned; SPEC wording and R2 lane-cost policy remain) | — |
+| KI-169 | OPEN (`bundle_dir` set to `"."` makes the success cleanup delete the whole `dist_dir`; no containment check on `bundle_dir`/`client_dir`) | — |
+| KI-168 | OPEN (`cmru release` does not preflight the digest-pinned cgroup probe image; a missing one fails late in the wheel-build step, after the gate) | — |
+| KI-167 | OPEN (case-sensitive suffix checks, no `.env` / `.env.*` prefix class and an incomplete name list can miss secret-class paths) | — |
+| KI-166 | FIXED (included bundle source symlinks could dereference and ship their targets) | `f2b56b12743f6a764bbadefa8b937c1bd642b32f` |
+| KI-165 | OPEN (item 2 fixed; items 1, 3, 4, 5 and 6 remain) | `f2b56b12743f6a764bbadefa8b937c1bd642b32f` |
+| KI-164 | FIXED (`bundle-build` removes bundle and wheel staging trees after a successful archive by default) | `d6cd7fb54aff97dfb47fb7a537e0d31b0d7af3e0` |
+| KI-163 | FIXED (`bundle-build` derives a non-release version when its configured variable is absent) | `f2b56b12743f6a764bbadefa8b937c1bd642b32f` |
+| KI-162 | FIXED (released in cmru 7.3.1; the naf equivalence build on 2026-11-14 was EQUIVALENT, which also closes KI-126) | `f2b56b12743f6a764bbadefa8b937c1bd642b32f` |
+| KI-161 | OPEN (`cmru versions resolve` and `init` rewrite `cmru.toml` and drop comments; a document-wide blank-line collapse can change multi-line string values) | — |
+| KI-160 | OPEN (post-promotion evidence retention can exit 1 after a successful release) | — |
+| KI-158 | OPEN (retained release outputs can disappear with an outer release worktree) | — |
+| KI-157 | OPEN (local-main sync failure message names the wrong condition) | — |
+| KI-155 | FIXED (2026-11-12; tuple resource evidence) | `152ba5c9a5181b128ebf1364a9d57d2524ce4415` |
+| KI-154 | FIXED (2026-11-12; sibling Assay package roots) | `a25c265373e2d010033203ea10dedfb8915aba4c` |
+| KI-153 | FIXED (2026-11-12; process-tree fixture schema) | `152ba5c9a5181b128ebf1364a9d57d2524ce4415` |
 | KI-152 | OPEN (R2 resume reruns non-killed candidates) | — |
 | KI-151 | OPEN (filed; T3 tag bundle authenticity) | — |
 | KI-149 | OPEN (filed; stack-image scope and floating-tag checks) | — |
@@ -89,7 +107,7 @@ project's gate is unaffected. `tester-unified`'s image ships
 
 Validated end-to-end, including registry networking (the nested daemon's own bridge
 network — `test_oci_layout_push.py`'s `registry:2` fixture is reachable at plain
-`127.0.0.1:<published-port>` from the gate container, no gateway-IP fallback needed,
+`<host-address>:<published-port>` from the gate container, no gateway-IP fallback needed,
 since it shares netns with the sidecar) and `docker buildx create --driver
 docker-container` + `--output type=oci` working inside the nested daemon. Also
 rebuilt `tester-unified:local` (a stale local cache — built before crane/regctl
@@ -312,7 +330,7 @@ continues to remove a retained record explicitly.
 inside its isolated release/build worktree. Portable project contracts often
 use an argv beginning `cmru tester-gate`; ambient `PATH` could resolve an older
 installed wheel. In the 2026-08-12 incident the source engine was
-`3.0.1.dev4+g128a3da5` while `/home/vscode/.local/bin/cmru` was `2.0.1` and did
+`3.0.1.dev4+g128a3da5` while `<home>/.local/bin/cmru` was `2.0.1` and did
 not expose the current `cmru version` verb.
 
 **Resolution:** before running project commands, CMRU creates a launcher bound
@@ -332,7 +350,7 @@ configuration to replace the protected binding.
 ### KI-02 — CMRU OCI repack is disabled pending production equivalence — *fail-closed*
 **Status:** guarded; do not enable for production releases.
 **SPEC:** `S14`.
-**Symptom:** the prototype used shared `/tmp/oci-src` and `/tmp/oci-dst` paths, blurred
+**Symptom:** the prototype used shared `<temp-path>` and `<temp-path>` paths, blurred
 OCI layout-directory and archive/build-context semantics, and its push branch could
 fall back to a second bake rather than proving that the validated repacked artifact
 was the object published.
@@ -958,8 +976,8 @@ get.py [--manifest-pubkey …] enroll --authorized-key 'KEY' --controller FQDN
 In order, fail-fast, idempotent on re-run: (1) prerequisites BEFORE any
 network I/O — Linux, root/sudo, an SSH server (`sshd` on `PATH` or
 `/usr/sbin/sshd`; absent → `EXIT_PREREQ` naming `openssh-server`), the key
-line parses as `<type> <base64>[ <comment>]` with `type ∈ ssh-ed25519 |
-ecdsa-sha2-* | sk-* | ssh-rsa` (else `EXIT_CONFIG`); the installer never
+line parses as `<type> <base64>[ <comment>]` with recognized OpenSSH key
+types (Ed25519, ECDSA, and RSA; else `EXIT_CONFIG`); the installer never
 installs system packages. (2) `install --scope system` verbatim (transaction,
 manifest verification, `current` switch); `--no-install` skips it. (3)
 `--user` (default `ciu`) created with `useradd --create-home --shell
@@ -972,7 +990,7 @@ is refused with `EXIT_CONFIG`. (5) Print: the SHA256 fingerprint of every
 `/etc/ssh/ssh_host_*_key.pub` (`ssh-keygen -lf`), the addresses from
 `hostname -I` labelled unconfirmed, the user, the installed version, and the
 exact completion command `ciu host enroll <NAME> --ssh-host <address>
---fingerprint SHA256:<ed25519 fingerprint>` (`<NAME>` from `--name`, else a
+--fingerprint <fingerprint>` (`<NAME>` from `--name`, else a
 placeholder). It never generates keys, calls anything back, opens a
 listener, edits `sshd_config` or runs the adapter verbs.
 
@@ -1274,23 +1292,23 @@ unless it encountered a preflight failure (KI-29 replaced that behavior with the
 standalone `cmru abandon` command); the evidence report records the additional
 attempts and the exact root-level path needed to clean the last one.
 
-From `/workspaces/vbpub/.worktrees/assay-wave-c-controller`, the exact command
+From `<worktree>`, the exact command
 `cmru release assay --dry-run` created a transaction snapshot at
-`/workspaces/vbpub/.worktrees/assay-wave-c-controller/.worktrees/cmru-release-20260923_213534-assay-0uror9`
+`<worktree>/.worktrees/cmru-release-20260923_213534-assay-0uror9`
 and the child failed with:
 
 ```
-ValueError: assay: transaction project config is missing from the isolated worktree: /workspaces/vbpub/.worktrees/assay-wave-c-controller/.worktrees/cmru-release-20260923_213534-assay-0uror9/.worktrees/cmru-release-20260923_213534-assay-0uror9/assay/cmru.toml
+ValueError: assay: transaction project config is missing from the isolated worktree: <worktree>/.worktrees/cmru-release-20260923_213534-assay-0uror9/.worktrees/cmru-release-20260923_213534-assay-0uror9/assay/cmru.toml
 ```
 
 The project path is prefixed by the transaction worktree twice. A second
-attempt passing `--config /workspaces/vbpub/cmru.orchestration.toml` directly
+attempt passing `--config <checkout>/cmru.orchestration.toml` directly
 from that worktree also failed with the same doubled-path shape, because the
 parent rebuilds the child argv in `_child_release_args`. The prior B101
 controller log reports a temporary `CMRU_BIN` wrapper that rewrote the child
 `--config` argument to that absolute central path and allowed the v7.0.0 dry
 run/release to complete; the wrapper itself is no longer present. The retained
-`/tmp/assay-release-wrapper-args.log` records the argv rewrite, but the direct
+`<temp-path>` records the argv rewrite, but the direct
 absolute `--config` retry here did not prove that workaround. Treat the wrapper
 as a reported workaround until its exact implementation is recovered and
 verified. The failed probe transactions were not promoted and were removed by
@@ -1756,11 +1774,11 @@ reproducible procedure: choose the tag under the 14-day rule, pull, read `RepoDi
 
 ### KI-63 — release-gate secret-overlay inventory aborted on a foreign-owned unreadable directory (blocked the 6.0.0 release gate) — *superseded by KI-74; retained as incident history*
 
-**Observed:** `cmru release cmru --set-version 6.0.0` failed in `gate-provisional` with `cmru-release-gate: cannot inventory CMRU secret overlays: [Errno 13] Permission denied: '/workspaces/vbpub/nyxloom/mattermost/vol-postgres-data'`. `_secret_overlay_paths` in `tools/run_release_gate.py` walks the whole mount root and its `onerror` raised on any error; that directory is the live production Postgres data dir (`drwx------`, uid 70).
+**Observed:** `cmru release cmru --set-version 6.0.0` failed in `gate-provisional` with `cmru-release-gate: cannot inventory CMRU secret overlays: [Errno 13] Permission denied: '<checkout>/nyxloom/mattermost/vol-postgres-data'`. `_secret_overlay_paths` in `tools/run_release_gate.py` walks the whole mount root and its `onerror` raised on any error; that directory is the live production Postgres data dir (`drwx------`, uid 70).
 
 **Fix:** CMRU derives the tester UID from the final `USER` in the shipped `tester-unified/Dockerfile`, rather than comparing directory ownership with the host CMRU process. A `PermissionError` is skipped with a one-line stderr WARN only when the directory's mode proves that UID cannot traverse it; possible group/other traversal remains an error because a mutation lane may add supplementary groups. A vanished path is skipped only after an `lstat` confirms it is absent. Other errors, ambiguous ownership, and unreadable paths the tester may traverse fail closed.
 
-**Oracle (historical; the inventory and these tests were removed with KI-74):** `tests/test_release_gate.py::test_overlay_inventory_*`, and `_secret_overlay_paths` on the real `/workspaces/vbpub` returns and WARNs for `vol-postgres-data`.
+**Oracle (historical; the inventory and these tests were removed with KI-74):** `tests/test_release_gate.py::test_overlay_inventory_*`, and `_secret_overlay_paths` on the real `<checkout>` returns and WARNs for `vol-postgres-data`.
 
 ### KI-65 — release-gate secret masker walks nested sibling worktrees and can fail restore during a concurrent change (related: KI-63, run-gate RG-86) — *superseded by KI-74; retained as incident history*
 
@@ -1944,23 +1962,25 @@ one-command UX without shell-specific pipe-status traps.
 
 **Oracle:** a gate run against Run-Gate below SemVer `24.0.0`, a development/local package, or a CLI/package version mismatch refuses before any CMRU sub-lane; the manifest records the stable wheel version. The mutation lane demonstrates contract-2 event evidence; other lanes do not claim event evidence until they consume it. Tests also prove a lane cannot rewrite/delete a release tag or move `main` non-fast-forward.
 
-### KI-79 — CMRU 6.2.x provisional releases defer the long R2 campaign
+### KI-79 — CMRU provisional releases defer the long R2 campaign
 
-**Status:** OPEN (R2 debt); the deferral mechanism remains IN FORCE for the 6.2 patch line (`>= 6.2.0`, `< 6.3.0`), the 7.0 patch line (`>= 7.0.0`, `< 7.1.0`), and the 7.1 patch line (`>= 7.1.0`, `< 7.2.0`; `POSTPONEMENT_RELEASE_VERSIONS` holds a tuple of (low, below) windows per id): first applied to the 2026-10-14 6.2.0 release candidate, widened by operator decisions on 2026-10-21, 2026-10-23 and 2026-10-27; R2 remains owed (see Follow-up); severity: major (mutation evidence gap).
+**Status:** OPEN (R2 debt); the deferral mechanism remains IN FORCE for the 6.2 patch line (`>= 6.2.0`, `< 6.3.0`) and the 7.0 through 7.3 patch lines (`>= 7.0.0`, `< 7.1.0`; `>= 7.1.0`, `< 7.2.0`; `>= 7.2.0`, `< 7.3.0`; `>= 7.3.0`, `< 7.4.0`; `POSTPONEMENT_RELEASE_VERSIONS` holds a tuple of (low, below) windows per id): first applied to the 2026-10-14 6.2.0 release candidate, widened by operator decisions through 2026-11-12; R2 remains owed (see Follow-up); severity: major (mutation evidence gap).
 
 **Reason:** the full CMRU mutation lane is a multi-hour R2 campaign. The operator's release objective explicitly permits long R2 to run asynchronously or be postponed so short correctness, coverage, and integration gates can unblock the tool release wave.
 
 **Chosen behavior:** the 6.2.x release step invokes `gate-provisional`. It runs every lane in the full `gate` conjunction except `mutation`, including ref-probe, installed-wheel/live, Assay R0/R1/R3, coverage, and canary. `tools/run_release_gate.py --postpone-mutation KI-79` writes a timestamped marker bound to the candidate commit under `.assay/mutation-postponed-cmru.json` and emits a WARN; that marker is deferral evidence, not an R2 pass. The full `gate` remains available for the exact tagged source after release.
 
-**Extension to the whole 6.2 line (operator decisions 2026-10-21):** first "extend the mutation postponement to 6.2.1" (the cmru 6.2.1 release refused in its gate: `mutation postponement KI-79 is authorized only for CMRU 6.2.0; prepared changelog identifies 6.2.1`), then, the same day, "release more cmru also without prior R2; revisit R2 when we are confident we have a release worth testing". `POSTPONEMENT_RELEASE_VERSIONS` in `tools/run_release_gate.py` now binds KI-79 to the window `>= 6.2.0` and `< 6.3.0`; versions outside the windows (6.3.x through 6.9.x, 7.2.0 and later; 7.0.x was added by the 2026-10-23 decision and 7.1.x by the 2026-10-27 one) refuse before a lane runs (`tests/test_release_gate_provisional.py`: 6.2.0, 6.2.1, 6.2.9 and 6.2.10 allowed; 6.3.0, 7.2.0 and below-6.2 refused; 7.0.x was added on 2026-10-23). Every 6.2.x release shipped this way is a provisional release without an R2 pass (6.2.1 is the second). **R2 obligation:** one full-`gate` R2 run (a branch at the chosen release tag, the same prerequisites) before the first release judged worth R2, and at the latest before 6.3.0 or 7.2.0 (whichever is first), which the guard refuses to defer; it judges the accumulated 6.2.x source, not each patch. **7.1 line (operator decision 2026-10-27):** the R2 mutation campaign is waived for EVERY release in the current release wave (`cmru release cmru --set-version 7.1.0` refused with `authorized only for CMRU >= 6.2.0 and < 6.3.0 ... or >= 7.0.0 and < 7.1.0 ...; prepared changelog identifies 7.1.0`). The constant now also lists `>= 7.1.0`, `< 7.2.0` (bounded, explicit; 7.2.0 and later refuse; `tests/test_release_gate_provisional.py`: 7.1.0, 7.1.1, 7.1.9 allowed, 7.2.0, 7.2.1 refused). Only `mutation` is waived; every other lane stays mandatory and `--skip-gates` is not used. **The R2 debt is deferred, not closed:** the full-`gate` run owed above now falls due before 7.2.0 (or the first release judged worth R2). **7.2 line (operator decision 2026-11-04):** the constant now also lists `>= 7.2.0`, `< 7.3.0` (7.3.0 and later refuse); the R2 debt falls due as one full R2 (`--jobs auto` on r1002) over the 7.2 content, at the latest before 7.3.0. A wider window needs a new operator decision and a reviewed change to that constant.
+**Extension to the whole 6.2 line (operator decisions 2026-10-21):** first "extend the mutation postponement to 6.2.1" (the cmru 6.2.1 release refused in its gate: `mutation postponement KI-79 is authorized only for CMRU 6.2.0; prepared changelog identifies 6.2.1`), then, the same day, "release more cmru also without prior R2; revisit R2 when we are confident we have a release worth testing". `POSTPONEMENT_RELEASE_VERSIONS` in `tools/run_release_gate.py` now binds KI-79 to the window `>= 6.2.0` and `< 6.3.0`; versions outside the windows (6.3.x through 6.9.x, 7.2.0 and later; 7.0.x was added by the 2026-10-23 decision and 7.1.x by the 2026-10-27 one) refuse before a lane runs (`tests/test_release_gate_provisional.py`: 6.2.0, 6.2.1, 6.2.9 and 6.2.10 allowed; 6.3.0, 7.2.0 and below-6.2 refused; 7.0.x was added on 2026-10-23). Every 6.2.x release shipped this way is a provisional release without an R2 pass (6.2.1 is the second). **R2 obligation:** one full-`gate` R2 run (a branch at the chosen release tag, the same prerequisites) before the first release judged worth R2, and at the latest before 6.3.0 or 7.2.0 (whichever is first), which the guard refuses to defer; it judges the accumulated 6.2.x source, not each patch. **7.1 line (operator decision 2026-10-27):** the R2 mutation campaign is waived for EVERY release in the current release wave (`cmru release cmru --set-version 7.1.0` refused with `authorized only for CMRU >= 6.2.0 and < 6.3.0 ... or >= 7.0.0 and < 7.1.0 ...; prepared changelog identifies 7.1.0`). The constant now also lists `>= 7.1.0`, `< 7.2.0` (bounded, explicit; 7.2.0 and later refuse; `tests/test_release_gate_provisional.py`: 7.1.0, 7.1.1, 7.1.9 allowed, 7.2.0, 7.2.1 refused). Only `mutation` is waived; every other lane stays mandatory and `--skip-gates` is not used. **The R2 debt is deferred, not closed:** the full-`gate` run owed above now falls due before 7.2.0 (or the first release judged worth R2). **7.2 line (operator decision 2026-11-04):** the constant now also lists `>= 7.2.0`, `< 7.3.0` (7.3.0 and later refuse); the R2 debt falls due as one full R2 (`--jobs auto` on <host>) over the 7.2 content, at the latest before 7.3.0. A wider window needs a new operator decision and a reviewed change to that constant.
 
 **Provisional representation (2026-10-15 hardening):** a deferred gate still exits 0, but its retained snapshot manifest (`cmru/.assay/release-gate-snapshot.json`, schema 4) records `state: "provisional"` (never `"passed"`) and a `deferred_lanes` entry `{lane: "mutation", tracking_id, reason, follow_up_lane, follow_up_prerequisites}`; the marker carries `result: "provisional"`. Both are written only after every required non-mutation lane and the final canary succeeded, a gate start deletes any earlier marker, a failed lane or canary leaves no success-shaped record, and a full `gate` records `state: "passed"` with `deferred_lanes: []`. The report line is `WARN: PROVISIONAL PASS ... NOT an R2 pass`. Follow-up hardening (2026-10-15, review `release-hardening-followup-claude-opus-high-2026-10-15.md` M-1/L-1/L-2): success is decided only after snapshot cleanup, so a canary-removal or snapshot-close failure after all lanes passed exits non-zero, removes the marker and records `state: "failed"` with empty `deferred_lanes`; the recorded `follow_up_lane` is `gate` (the standalone `mutation` lane needs gate-prepared baseline facts), or `assay-first-release-r2` for a first release; input validation runs before any evidence is touched so a refused invocation preserves the previous run's evidence, and a valid new gate clears stale success-shaped state before its first lane (`tests/test_release_gate_provisional.py`). No survivor or mutation-quality claim is made until that campaign completes and survivors are triaged.
 
-**Release command:** a 6.2.x release is an ordinary patch release (`cmru release cmru`). `--minor` or `--major` that computes a version in the gap `>= 6.3.0`, `< 7.0.0`, or `>= 7.3.0`, is refused by the gate AFTER the candidate has been prepared and backed up, because KI-79 covers only `>= 6.2.0`, `< 6.3.0`; `>= 7.0.0`, `< 7.1.0`; `>= 7.1.0`, `< 7.2.0`; and `>= 7.2.0`, `< 7.3.0`; for that release the step returns to full `gate`.
+**7.3 line (operator decision 2026-11-12):** the cmru 7.3.0 release was refused by `gate-provisional` because the prior upper bound was `< 7.3.0`. Under the standing rule that R2 runs asynchronously at T3 on the latest release, 7.3.0 ships with the provisional gate and its whole-source R2 remains owed after release. `POSTPONEMENT_RELEASE_VERSIONS["KI-79"]` now includes `>= 7.3.0`, `< 7.4.0` (7.4.0 and later refuse); the release uses the same dry-run validator and behavioral coverage in `tests/test_release_gate_provisional.py` and `tests/test_release_gate_preconditions.py`. The T3 follow-up uses the persistent checkout command `run-gate --base cmru-v6.1.0 r2` when that remains the controller-selected base; T3 verifies the bundled tags before launch. Run one whole-source campaign on the latest 7.3.x release and triage its survivors. KI-159 tracks a future policy to stop editing the allowlist for every new minor; it does not change this window.
 
-**Follow-up prerequisites (exact):** (1) judge the current complete `cmru/src/` tree through 7.1.2 with the declared whole-source lane, not the 7.1.0 diff-scoped `r2-debt` run; (2) deploy and reach the CGProfile host observer through the declared CIU workflow (the follow-up lane declares `resource_observer = "cgprofile"`); (3) provide the D-4 capacity evidence the Run-Gate follow-up lane requires for a multi-hour R2 run. Item 3's artifact is defined by the Run-Gate RG-55 program, not by CMRU (see the work-log note in `nyxloom-trove/reports/`); CMRU records it as a named prerequisite and never fabricates it.
+**Release command:** a 6.2.x release is an ordinary patch release (`cmru release cmru`). `--minor` or `--major` that computes a version in the gap `>= 6.3.0`, `< 7.0.0`, or `>= 7.4.0`, is refused by the gate AFTER the candidate has been prepared and backed up, because KI-79 covers only `>= 6.2.0`, `< 6.3.0`; `>= 7.0.0`, `< 7.1.0`; `>= 7.1.0`, `< 7.2.0`; `>= 7.2.0`, `< 7.3.0`; and `>= 7.3.0`, `< 7.4.0`; for that release the step returns to full `gate`.
 
-**Follow-up:** complete one whole-source R2 judgment of CMRU through 7.1.2 using the declared whole-source lane, with the capacity and observer prerequisites above, before the first release judged worth R2 and at the latest before 7.2.0. The 2026-10-29 diff-scoped run below only judges 7.1.0-era to 7.1.2 changed lines and does not satisfy this obligation. As of 2026-11-01, the registered `mutation` lane bounds the known-good control and candidates at 600 seconds, so a future whole-source run can finish its control. A plan-only inventory found 4,465 whole-source candidates across 35 files; the risk-first per-file shard order is recorded in `nyxloom-trove/reports/cmru-R2-diff-triage-20261029.md`. Triage and fix or disposition any survivors, then retain the report. KI-99's exact `cmru-v7.0.0` obligation remains open until a decision says whether a later whole-source result supersedes that exact-tag requirement. This does not retroactively qualify earlier releases or close KI-62's historical 6.0.0 evidence gap.
+**Follow-up prerequisites (exact):** (1) judge the complete source tree at the latest provisional CMRU release with the whole-source T3 `r2` lane, not the 7.1.0 diff-scoped `r2-debt` run; (2) deploy and reach the CGProfile host observer through the declared CIU workflow (the lane declares `resource_observer = "cgprofile"`); (3) provide the D-4 capacity evidence the Run-Gate follow-up lane requires for a multi-hour R2 run. Item 3's artifact is defined by the Run-Gate RG-55 program, not by CMRU (see the work-log note in `nyxloom-trove/reports/`); CMRU records it as a named prerequisite and never fabricates it.
+
+**Follow-up:** after the latest provisional release, complete one whole-source R2 judgment through the T3 `r2` lane, using the persistent checkout and the controller-selected base; the current fallback command is `run-gate --base cmru-v6.1.0 r2`. Complete it asynchronously before the current KI-79 upper bound 7.4.0. The 2026-10-29 diff-scoped run below only judges 7.1.0-era to 7.1.2 changed lines and does not satisfy this obligation. The registered R2 control ceiling is now 1800 seconds (KI-141), and candidate timeouts retain the existing twice-control scaling. A plan-only inventory found 4,465 whole-source candidates across 35 files; the risk-first per-file shard order is recorded in `nyxloom-trove/reports/cmru-R2-diff-triage-20261029.md`. Triage and fix or disposition any survivors, then retain the report. KI-99's exact `cmru-v7.0.0` obligation remains open until a decision says whether a later whole-source result supersedes that exact-tag requirement. This does not retroactively qualify earlier releases or close KI-62's historical 6.0.0 evidence gap.
 
 **Oracles:** the release step selects `gate-provisional`; the marker records KI-79 and the judged commit; every non-mutation lane runs and passes; the gate summary makes the R2 deferral visible; full `gate` still includes `mutation`; docs and changelog distinguish provisional release evidence from a mutation pass; a finished deferred gate has a machine-readable `provisional` manifest state with `mutation` deferred, a failed canary or other lane has no provisional marker, and a full gate clears stale deferral state (`tests/test_release_gate_provisional.py`).
 
@@ -2670,7 +2690,7 @@ refusal now points only to the complete output above in the lane log. The focuse
 with a minor bump (cmru proposed 7.2.0 from the commit types) is refused in `gate-provisional`. 7.1.3 was released as a patch instead.
 `cmru release --dry-run` now calls the gate's own KI-79 validator for the planned version before creating a candidate worktree and exits 4 with a remedy if the gate would refuse it, but only when `cmru.toml`'s run-tests step runs `gate-provisional`; with the full `gate` configured the row is `SKIPPED`. The KI-79 window is unchanged: run the full `gate` lane for a version outside it, or widen the window only through a recorded operator decision.
 
-**2026-11-04 operator decision (window widened for 7.2.x):** R2 mutation campaigns stay waived for releases and run later with `--jobs` on the scratch host (standing since 2026-10-27; extended to assay by decision D1 on 2026-11-04). cmru 7.2.0 (minor, from the `feat` KI-108 content) could not pass `gate-provisional`, so `POSTPONEMENT_RELEASE_VERSIONS["KI-79"]` gained `>= 7.2.0`, `< 7.3.0`; 7.3.0, 8.0.0 and everything else still refuse (tests in `tests/test_release_gate_provisional.py`). The dry-run precondition reads the same table through the gate's validator; `tests/test_release_gate_preconditions.py` fails if the two diverge. **Closes when:** one full R2 (`--jobs auto` on r1002) over the 7.2 content is done and survivors triaged; at the latest before 7.3.0.
+**2026-11-04 operator decision (window widened for 7.2.x):** R2 mutation campaigns stay waived for releases and run later with `--jobs` on the scratch host (standing since 2026-10-27; extended to assay by decision D1 on 2026-11-04). cmru 7.2.0 (minor, from the `feat` KI-108 content) could not pass `gate-provisional`, so `POSTPONEMENT_RELEASE_VERSIONS["KI-79"]` gained `>= 7.2.0`, `< 7.3.0`; 7.3.0, 8.0.0 and everything else still refuse (tests in `tests/test_release_gate_provisional.py`). The dry-run precondition reads the same table through the gate's validator; `tests/test_release_gate_preconditions.py` fails if the two diverge. **Closes when:** one full R2 (`--jobs auto` on <host>) over the 7.2 content is done and survivors triaged; at the latest before 7.3.0.
 
 ## KI-110 — the canary leaves an unnamed temporary copy of a red control log
 
@@ -2801,7 +2821,7 @@ Residual: packages not linked to the repository on GitHub are not covered by the
 
 ## KI-118 - `project.version.exclude_paths`: let doc-only / evidence-only commits not count as project changes
 
-**Status:** FIXED 2026-11-05 on branch `rigor-c13-20261105` (rigor package C-3; commit hash in `reports/rigor-c13-REPORT.md`; unreleased). **Re-scoped** by the rigor-evidence design memo (`RIGOR-EVIDENCE-DESIGN-MEMO-2026-11-05.md` sections 5.4, 7.5, 8): in addition to `project.version.exclude_paths`, the project's own `rigor/` directory and `RIGOR.md` are ALWAYS ignored by change detection and generated-note collection (anchored to the project directory, so a source package that happens to be called `rigor` deeper in the tree still counts), so `chore(rigor): ...` record commits never make a project changed. Implemented in `version.project_change_excludes` (used by `detect_changed_projects` and `changelog._generated_exclusions`); config validation in `config._version_exclude_paths`; tests `tests/test_exclude_paths_rigor_ki118.py`. Original severity: minor (quality of `cmru status`). Origin: dstdns adoption memo V2.
+**Status:** FIXED 2026-11-05 on branch `rigor-c13-20261105` (rigor package C-3; commit hash in [rigor-c13-REPORT.md](docs/evidence/rigor-c13-REPORT.md); unreleased). **Re-scoped** by the rigor-evidence design memo (`RIGOR-EVIDENCE-DESIGN-MEMO-2026-11-05.md` sections 5.4, 7.5, 8): in addition to `project.version.exclude_paths`, the project's own `rigor/` directory and `RIGOR.md` are ALWAYS ignored by change detection and generated-note collection (anchored to the project directory, so a source package that happens to be called `rigor` deeper in the tree still counts), so `chore(rigor): ...` record commits never make a project changed. Implemented in `version.project_change_excludes` (used by `detect_changed_projects` and `changelog._generated_exclusions`); config validation in `config._version_exclude_paths`; tests `tests/test_exclude_paths_rigor_ki118.py`. Original severity: minor (quality of `cmru status`). Origin: dstdns adoption memo V2.
 A repository-root project (dstdns) watches the whole tree (`watch_paths = [cwd] + project.version.paths`, `cli.py` ~811-815), so a commit touching only
 `docs/`, `nyxloom-trove/` or `rigor/` makes `cmru status` report the project changed and a release due.
 Implement: new optional `project.version.exclude_paths = [..]` (project-relative; same validation as `paths`: no `..`, no absolute paths; globs via the
@@ -2890,7 +2910,7 @@ and stops the project's resolve. Wanted: per-target `allow_prerelease = true`, o
 
 ## KI-126 - `bundle.toml` cannot build a per-interpreter bundle, so every variant consumer hand-rolls its tarball builder
 
-**Status:** OPEN, TRIAGED 2026-11-05: a FEATURE (not a bug; nothing regressed) and not small: new config schema + cross-ABI vendoring + runner prefix + stage hook + docs + tests, estimate one Sonnet package of roughly 450 LOC plus 25-30 tests, plan below. Severity: enhancement (adoption friction; found adopting cmru in netcup-api-filter, `netcup-api-filter@38f8731`). CHANGES checked: nothing in `[Unreleased]` or 7.x covers it.
+**Status:** CLOSED 2026-11-14 (implemented 2026-11-05 on branch `cmru-ki126-20261105`, released in cmru 7.3.1; the netcup-api-filter canary build with cmru 7.3.1 was EQUIVALENT to its old builder, see **Acceptance evidence** under KI-162). That evidence covers naf only. Original status: implemented, acceptance (naf/tls-edge deleting their builders) open until the canary. Decisions where the plan was open: (1) `run_bundle(..., variant=)` takes the declared `VariantConfig` object, `build_arg` is the interpreter version (no new `python_version` key); (2) `[exec].env` is a TABLE mapping `root`/`container` to env-var NAMES (the plan said "a list"); (3) a `[manifest]` table (name, default `manifest.json`) opts the manifest in, because writing it unconditionally would change the legacy archive; project and tag come from the handler (`project` name, `version_to_tag(prefix, $version_env)`); (4) cleanup has two modes: a no-variant legacy build removes the whole `dist_dir`, while each variant build removes only `bundle_dir`, `client_dir` and its own archive, preserving sibling variant archives (including during a named rebuild); (5) with an exec prefix, paths are project-root-relative and the stage command runs from `{root}` (otherwise from the bundle dir); a path outside `project_root` is refused before cleanup; (6) vendor destinations and manifest names matching archive hard-excludes are refused, and the manifest also refuses a tree holding excluded files (else the manifest would list files the tarball lacks); (7) runner inputs, interpreter arguments, archive name, and manifest tag are preflighted before cleanup; (8) handler `--variant` defaults to `all` (declared in help, no hidden default). Original triage follows. a FEATURE (not a bug; nothing regressed) and not small: new config schema + cross-ABI vendoring + runner prefix + stage hook + docs + tests, estimate one Sonnet package of roughly 450 LOC plus 25-30 tests, plan below. Severity: enhancement (adoption friction; found adopting cmru in netcup-api-filter, `netcup-api-filter@38f8731`). CHANGES checked: nothing in `[Unreleased]` or 7.x covers it.
 
 **Implementation plan (triage).** Today `cmru.bundle.run_bundle(config_path)` (`bundle.py`, a Python library with no CLI; `BundleConfig` is a frozen dataclass; `parse_config` rejects unknown top-level keys) does: rmtree `dist_dir`, optional `pip wheel .` into `client_dir`, `copy_sources`, `create_archive` (one archive named by `[archive].name_template` with a single `{version}` field, from env `archive.version_env`). Variants exist only on the publish side (`config.VariantConfig{name,build_arg,label}`, `release.publish_versioned_variants`, `handlers.py:849` takes already-built `VariantArtifact` paths). Nothing connects them. Minimal correct design, additive and inert when absent:
 1. `bundle.toml` gains optional `[vendor]` (`requirements = ["requirements-runtime.txt"]`, `dest = "vendor"`, `platforms = ["manylinux2014_x86_64"]`, `only_binary = true` fixed, `find_links` reuses `[wheel].find_links` with `--no-index` semantics for estate-internal names, BG-05) and `[stage]` (`argv = [...]`, run with cwd = the staged bundle dir after copy, before archive; tokens `{bundle_dir}`, `{variant}`, `{python_version}` only). No secrets or host limits in the file (`_reject_unknown_keys` keeps it closed).
@@ -2925,7 +2945,7 @@ and stops the project's resolve. Wanted: per-target `allow_prerelease = true`, o
 
 ## KI-129 - R2 shard s1 survivors in CMRU 7.2.2
 
-**Status:** FIXED 2026-11-06 on branch `cmru-surv1-20261106` (unreleased); severity: test strength plus fail-closed precondition defects. Campaign `cmru-r2c-s1` judged 304 candidates from CMRU 7.2.2 sources: 248 killed, 56 survived. Evidence: `/home/vscode/vbpub-release-program-20261027/r1002/r2-closeouts-20261105/cmru-r2c-s1/` and section 12 of `reports/r2-board-20261105b-REPORT.md`; source line numbers below refer to the 7.2.2 source and map to the same code on the closeout branch. Root-cause classes: (a) ordinary behavioral gaps (input validation, immutable records, subprocess flags/output handling, serialization, and preflight failure reporting); (b) three equivalent/dead-code survivors, removed or simplified at source; and (c) the Run-Gate image preflight accepted a missing version by substituting `unknown`, now refused as FAIL. Review also found the adjacent missing-wheel-digest fallback could print `unknown` on PASS; the preflight now requires a valid 64-character lowercase SHA-256 and fails closed when it is absent or malformed. Each new behavioral oracle was checked with its individual mutation or controlled wrong implementation hand-applied in a scratch copy. `test_assay_lane_inventory.py` also checks that both whole-target lanes list exactly executable modules; `src/cmru/__init__.py` was removed because it contains only a docstring and Assay reports `TARGET_NOT_MEASURED` for that target.
+**Status:** FIXED 2026-11-06 on branch `cmru-surv1-20261106` (unreleased); severity: test strength plus fail-closed precondition defects. Campaign `cmru-r2c-s1` judged 304 candidates from CMRU 7.2.2 sources: 248 killed, 56 survived. Evidence: [cmru-r2c-s1](docs/evidence/r2-cmru-r2c-s1.md) and section 12 of [r2-board-20261105b-REPORT.md](docs/evidence/r2-board-20261105b-REPORT.md); source line numbers below refer to the 7.2.2 source and map to the same code on the closeout branch. Root-cause classes: (a) ordinary behavioral gaps (input validation, immutable records, subprocess flags/output handling, serialization, and preflight failure reporting); (b) three equivalent/dead-code survivors, removed or simplified at source; and (c) the Run-Gate image preflight accepted a missing version by substituting `unknown`, now refused as FAIL. Review also found the adjacent missing-wheel-digest fallback could print `unknown` on PASS; the preflight now requires a valid 64-character lowercase SHA-256 and fails closed when it is absent or malformed. Each new behavioral oracle was checked with its individual mutation or controlled wrong implementation hand-applied in a scratch copy. `test_assay_lane_inventory.py` also checks that both whole-target lanes list exactly executable modules; `src/cmru/__init__.py` was removed because it contains only a docstring and Assay reports `TARGET_NOT_MEASURED` for that target.
 
 | Survivor (7.2.2 line) | Mutation | Class | Test / change |
 | --- | --- | --- | --- |
@@ -2988,7 +3008,7 @@ and stops the project's resolve. Wanted: per-target `allow_prerelease = true`, o
 
 **Additional fixes.** `assay-first-release` and `assay-first-release-r2` included the docstring-only `src/cmru/__init__.py`, so Assay refused to measure the baseline. Both target lists now omit it. `test_assay_lane_inventory.py` derives executable modules from AST and requires exact equality with both target lists; its controlled wrong-target case was verified red after adding the initializer back. The same Run-Gate preflight now rejects a missing or malformed published-wheel digest instead of reporting `sha256 unknown` in a PASS row; its controlled wrong-digest oracle was also verified red. The one full-suite run exposed that `test_estate_python_callers_import_only_what_cmru_exports` read `mdt-cockpit/build-push.py` from a shared COW overlay; its asserted contract is the checked commit. The oracle now reads that tracked blob with `git show HEAD:<path>` and checks its import with AST, so harmless import formatting does not cause a false failure. Assay runs the baseline command for an R1+ lane inside a private Git snapshot; R0-only lanes use the direct path. The snapshot has `.git`, `HEAD` points at the judged commit, and its shallow boundary retains that commit's complete tree, so `git show HEAD:<path>` needs no history or refs. The final-lane attempt confirmed this oracle passes in the snapshot. The same run exposed three `TYPE_CHECKING`-excluded lines in `tool_deps.py`, which violate the lane's strict whole-target exclusion policy. `ToolDependency` is now imported at runtime so the type reference is measurable. The original closeout's full lane failed before these follow-up corrections; the fix-round report records the final-commit rerun.
 
-The reusable closeout oracles live in `tests/test_r2_survivors_s1.py`; the inventory oracle is in `tests/test_assay_lane_inventory.py`. The source/test changes and focused tester-unified gate are recorded in `/home/vscode/vbpub-release-program-20261027/reports/cmru-surv1-REPORT.md`.
+The reusable closeout oracles live in `tests/test_r2_survivors_s1.py`; the inventory oracle is in `tests/test_assay_lane_inventory.py`. The source/test changes and focused tester-unified gate are recorded in [cmru-surv1-REPORT.md](docs/evidence/cmru-surv1-REPORT.md).
 
 ## KI-130 - `cmru release` regenerates a changelog for a target version that is already tagged
 
@@ -3082,7 +3102,7 @@ not implementable as the brief's "small" follow-on.
 
 ## KI-133 - R2 shard s4 survivors in the CMRU sources at `37ea9ad87`
 
-**Status:** OPEN (filed 2026-11-08); severity: test strength. Campaign `cmru-r2-s4` judged all 305 candidates of the CMRU sources at `37ea9ad87` (2026-11-05, after `cmru-v7.2.2`; assay `12.0.1.dev257`, run-gate 25.0.2): 283 killed, 21 survived, 1 `budget_exceeded` (KI-134), 0 crashed/hung/equivalent. Survivors by file: `git_auth.py` 11, `versions.py` 8, `hosts/__init__.py` 2. Evidence: `/home/vscode/vbpub-release-program-20261027/shard-move-s4/final/` (`survivors.json`, `progress-cmru-r2-s4-final.jsonl`, campaign analysis `0ccc8e7af8cb2741df0fcc04f3d68b41.campaign.{json,txt}`); report `reports/shard-s4-FINAL-REPORT.md`. The survivors json carries no line numbers; resolve them against the `37ea9ad87` tree.
+**Status:** OPEN (filed 2026-11-08); severity: test strength. Campaign `cmru-r2-s4` judged all 305 candidates of the CMRU sources at `37ea9ad87` (2026-11-05, after `cmru-v7.2.2`; assay `12.0.1.dev257`, run-gate 25.0.2): 283 killed, 21 survived, 1 `budget_exceeded` (KI-134), 0 crashed/hung/equivalent. Survivors by file: `git_auth.py` 11, `versions.py` 8, `hosts/__init__.py` 2. Evidence: [final](docs/evidence/r2-shard-s4.md) (`survivors.json`, `progress-cmru-r2-s4-final.jsonl`, campaign analysis `0ccc8e7af8cb2741df0fcc04f3d68b41.campaign.{json,txt}`); report [shard-s4-FINAL-REPORT.md](docs/evidence/shard-s4-FINAL-REPORT.md). The survivors json carries no line numbers; resolve them against the `37ea9ad87` tree.
 
 | Source (`cmru/src/cmru/`) | Operator | Mutation | Candidate id |
 | --- | --- | --- | --- |
@@ -3113,7 +3133,7 @@ not implementable as the brief's "small" follow-on.
 
 ## KI-134 - R2 shard s4: one `budget_exceeded` candidate keeps every campaign verdict at `BUDGET_EXCEEDED/LANE_TIMEOUT`
 
-**Status:** OPEN (filed 2026-11-08); severity: minor (blocks a clean lane verdict, not a product defect). Candidate `30580dc1d4ef3134956c9aa4609d2193caa58f61d7f7a16137543d9246e6ba98` (`cmru/src/cmru/versions.py`, `python:boolop-swap` And->Or) was recorded `budget_exceeded` on v1001 on 2026-11-07 (1861 s wall against a per-candidate budget of about 1714 s).
+**Status:** OPEN (filed 2026-11-08); severity: minor (blocks a clean lane verdict, not a product defect). Candidate `30580dc1d4ef3134956c9aa4609d2193caa58f61d7f7a16137543d9246e6ba98` (`cmru/src/cmru/versions.py`, `python:boolop-swap` And->Or) was recorded `budget_exceeded` on <host> on 2026-11-07 (1861 s wall against a per-candidate budget of about 1714 s).
 
 **Finding.** `--resume` does not re-run a recorded `budget_exceeded` candidate: the 13:25Z controller attempt printed `resumed_total 305, pending_total 0`. Every further attempt runs only the roughly 20 minute baseline (about 10 minutes per pass) and writes the same verdict, exit 4 `BUDGET_EXCEEDED/LANE_TIMEOUT` ("campaign incomplete, planned 305, completed 304, pending 1"; blockers `coverage_not_reverified`, `lane_timeout_or_unstarted`). A killed attempt deletes the previous verdict file, so none is preserved for the judged state; the campaign analysis is kept in `shard-move-s4/final/`. The controller stopped the supervisor after two such loops.
 
@@ -3121,13 +3141,15 @@ not implementable as the brief's "small" follow-on.
 
 **Close when.** The candidate is judged (killed, survived, equivalent) in a verdict, or the acceptance note exists and the assay entry is filed.
 
-**Source.** `reports/shard-s4-FINAL-REPORT.md` (Result).
+**Selected-subset evidence, 2026-11-14.** The CMRU 7.3.1 changed-line campaign completed all 23/23 and 22/22 selected candidates in about 2 h 0 min and 2 h 7 min, respectively, but each attempt still ended `BUDGET_EXCEEDED/LANE_TIMEOUT` (exit 4) despite the lane's 7 h budget. No candidate timed out; the selected sets had reached zero pending. This is a second cause of the same misleading terminal verdict: a finished `--only-candidates` selection is reported like a lane timeout. The result should identify selection completion as a partial campaign, not a timeout. See also the Run-Gate/Assay consumer follow-up; this entry records the CMRU evidence.
+
+**Source.** [shard-s4-FINAL-REPORT.md](docs/evidence/shard-s4-FINAL-REPORT.md) (Result).
 
 ## KI-135 - R2 shard s12 result: 136 survivors and 1 crashed candidate in `cmru/src/cmru/cli.py`
 
-**Status:** OPEN (filed 2026-11-08); severity: test strength. Campaign `cmru-r2-s12` (lane `assay-r2-s12`, sources at `c7d07240825e5ca28c45194556444d17e910ba92`, assay `12.0.1.dev258`, run-gate 25.0.2, run on v1001) judged all 421 candidates, all in `cmru/src/cmru/cli.py`: 284 killed, 136 survived, 1 crashed, 0 hung, 0 equivalent, 0 `budget_exceeded`. The lane verdict is `ERROR` / `EXEC_FAILED` (exit 2; blocker `coverage_not_reverified`), started 11:45Z and ended 12:39Z on 2026-11-08; the report lists 136 survivors by aggregate only.
+**Status:** OPEN (filed 2026-11-08); severity: test strength. Campaign `cmru-r2-s12` (lane `assay-r2-s12`, sources at `c7d07240825e5ca28c45194556444d17e910ba92`, assay `12.0.1.dev258`, run-gate 25.0.2, run on <host>) judged all 421 candidates, all in `cmru/src/cmru/cli.py`: 284 killed, 136 survived, 1 crashed, 0 hung, 0 equivalent, 0 `budget_exceeded`. The lane verdict is `ERROR` / `EXEC_FAILED` (exit 2; blocker `coverage_not_reverified`), started 11:45Z and ended 12:39Z on 2026-11-08; the report lists 136 survivors by aggregate only.
 
-**Where.** `/home/vscode/vbpub-release-program-20261027/v1001/r2-handover-20261108/tree/checkouts/c7d07240825e5ca28c45194556444d17e910ba92/cmru/.assay/`: `campaign-cmru-r2-s12.txt` and `.json` (analysis), `verdict-cmru-r2-s12.json`, `progress-cmru-r2-s12.jsonl`. Context: `reports/v1001-reinstall-PREP-REPORT.md` (shard table).
+**Where.** [.assay](docs/evidence/r2-cmru-s12.md): `campaign-cmru-r2-s12.txt` and `.json` (analysis), `verdict-cmru-r2-s12.json`, `progress-cmru-r2-s12.jsonl`. Context: [host-reinstall-PREP-REPORT.md](../scripts/debian-install-v2/docs/evidence/host-reinstall-PREP-REPORT.md) (shard table).
 
 **Fix.** Triage the 136 survivors per KI-129/KI-133 (CLI tests are the likely home; check against `tests/test_cli_*adversarial*.py`), identify the crashed candidate from the progress file and decide whether it is a harness crash or a product defect, and find why the verdict is `EXEC_FAILED` rather than a judged `FAIL` with survivors (the candidate work finished: planned 421, completed 421, pending 0).
 
@@ -3135,7 +3157,7 @@ not implementable as the brief's "small" follow-on.
 
 ## KI-136 - no supported verbs to export and import an R2 shard between hosts
 
-**Status:** OPEN (filed 2026-11-08); severity: enhancement. The manual recipe works but is a sequence of hand steps, proven twice (s4 and s13 moved from v1001 to the controller, `reports/shard-move-s4-REPORT.md`, `reports/shard-s13-REPORT.md`): (1) stop the supervisor, then the campaign wrapper, then the lane container (`docker stop -t 90`, graceful, so no stale inflight record remains); (2) `tar` the checkout (with `.git`, `cmru/.assay`, `.run-gate/assay-state`), the campaign directory and the job directory, with a `SHA256SUMS` manifest and `sha256sum -c` on the target; (3) `docker save | gzip` of the exact tester image tag and `docker load` on the target, then compare the image ID; (4) restore the tree to a path the Docker daemon can translate, point the lane at the image with `RUN_GATE_TESTER_UNIFIED_IMAGE`, pin the same run-gate release in a private venv; (5) if a dead client's inflight record names another PID namespace, move it aside (RG-249); (6) re-run and check the `resume` event: `resumed_total` equal to the judged count, `rejected_total 0`, `rejudged_total 0`, and the `judge_sha256` byte-identical to the previous attempt's. The resume identity survives a changed host and checkout path only with an identical image ID, run-gate and assay versions and the same tree; a different image would silently become a fresh run (up to about 34 compute-hours lost, `reports/v1001-reinstall-PREP-REPORT.md` section 3.3).
+**Status:** OPEN (filed 2026-11-08); severity: enhancement. The manual recipe works but is a sequence of hand steps, proven twice (s4 and s13 moved from <host> to the controller, [shard-move-s4-REPORT.md](docs/evidence/shard-move-s4-REPORT.md), [shard-s13-REPORT.md](docs/evidence/shard-s13-REPORT.md)): (1) stop the supervisor, then the campaign wrapper, then the lane container (`docker stop -t 90`, graceful, so no stale inflight record remains); (2) `tar` the checkout (with `.git`, `cmru/.assay`, `.run-gate/assay-state`), the campaign directory and the job directory, with a `SHA256SUMS` manifest and `sha256sum -c` on the target; (3) `docker save | gzip` of the exact tester image tag and `docker load` on the target, then compare the image ID; (4) restore the tree to a path the Docker daemon can translate, point the lane at the image with `RUN_GATE_TESTER_UNIFIED_IMAGE`, pin the same run-gate release in a private venv; (5) if a dead client's inflight record names another PID namespace, move it aside (RG-249); (6) re-run and check the `resume` event: `resumed_total` equal to the judged count, `rejected_total 0`, `rejudged_total 0`, and the `judge_sha256` byte-identical to the previous attempt's. The resume identity survives a changed host and checkout path only with an identical image ID, run-gate and assay versions and the same tree; a different image would silently become a fresh run (up to about 34 compute-hours lost, [host-reinstall-PREP-REPORT.md](../scripts/debian-install-v2/docs/evidence/host-reinstall-PREP-REPORT.md) section 3.3).
 
 **Fix.** Add `cmru r2 export <campaign>` and `cmru r2 import <archive>` (or the equivalent in run-gate or assay if the ownership analysis says so) that perform steps 2-3 and 6, refuse a mismatched image ID or version pin before touching state, and print the resume-identity comparison. Stopping (step 1) stays the operator's, because it is host-specific.
 
@@ -3143,14 +3165,14 @@ not implementable as the brief's "small" follow-on.
 
 ## KI-137 - SIGPIPE race in the source-binding refusal of `build-initial-standalone.sh` fails a lane baseline at random
 
-**Status:** OPEN (filed 2026-11-08); severity: minor (flaky test, no product effect). **Finding.** `cmru/build-initial-standalone.sh:206` prints the refusal path list with `printf '%s\n' "$2" | head -n 20 | sed ...` under `set -o pipefail`. When more than 20 paths are listed, `head` can close the pipe before `printf` finishes, `printf` gets SIGPIPE, and the script exits 141 instead of the refusal's 2. `tests/test_installed_wheel_subprocess.py::test_the_refusal_names_at_most_twenty_paths_and_the_remedy` (line 1067) then fails with returncode 141. Seen once on 2026-11-08 (shard s13 try 1, the R0 baseline failed 1 of 6371 tests; the same test passed in the v1001 baseline at 12:59Z and in try 2), so a campaign baseline can fail on it at random.
+**Status:** OPEN (filed 2026-11-08); severity: minor (flaky test, no product effect). **Finding.** `cmru/build-initial-standalone.sh:206` prints the refusal path list with `printf '%s\n' "$2" | head -n 20 | sed ...` under `set -o pipefail`. When more than 20 paths are listed, `head` can close the pipe before `printf` finishes, `printf` gets SIGPIPE, and the script exits 141 instead of the refusal's 2. `tests/test_installed_wheel_subprocess.py::test_the_refusal_names_at_most_twenty_paths_and_the_remedy` (line 1067) then fails with returncode 141. Seen once on 2026-11-08 (shard s13 try 1, the R0 baseline failed 1 of 6371 tests; the same test passed in the <host> baseline at 12:59Z and in try 2), so a campaign baseline can fail on it at random.
 **Fix.** Make the listing independent of pipe timing: `printf '%s\n' "$2" | sed -n '1,20p'` (sed reads all input) or build the list with `mapfile` and a bounded loop, and keep the exit code 2 explicit. Add a test with a path list large enough to make `head` close early.
 **Close when.** The new large-list test passes repeatedly, and the old pipeline re-applied fails it.
-**Source.** `reports/shard-s13-REPORT.md` (Anomaly).
+**Source.** [shard-s13-REPORT.md](docs/evidence/shard-s13-REPORT.md) (Anomaly).
 
 ## KI-138 - R2 shard s13 survivors: three `compare-swap` mutants in `cmru/src/cmru/transaction.py`
 
-**Status:** FIXED 2026-11-09 (`c29fd5cfbd612744e62c104c5a3fbc04031cf62e`; `tests/test_r2_survivors_s13.py`); severity: test strength. The three focused hand-mutants were each killed by the new behavioral oracle. The formal close-when remains a three-id `assay --rejudge`. Campaign `cmru-r2-s13` (lane `assay-r2-s13`, run `cmru-r2-s13-move-20261108`, sources at `c7d07240825e5ca28c45194556444d17e910ba92`, assay `12.0.1.dev258`, run-gate 25.0.2) judged all 277 candidates on 2026-11-08 (150 on v1001, 127 on the controller after the shard move, KI-136): 274 killed, 3 survived, 0 budget_exceeded, 0 crashed, 0 hung, 0 equivalent. Lane verdict `FAIL / MUTANTS_SURVIVED` (exit 1).
+**Status:** FIXED 2026-11-09 (`c29fd5cfbd612744e62c104c5a3fbc04031cf62e`; `tests/test_r2_survivors_s13.py`); severity: test strength. The three focused hand-mutants were each killed by the new behavioral oracle. The formal close-when remains a three-id `assay --rejudge`. Campaign `cmru-r2-s13` (lane `assay-r2-s13`, run `cmru-r2-s13-move-20261108`, sources at `c7d07240825e5ca28c45194556444d17e910ba92`, assay `12.0.1.dev258`, run-gate 25.0.2) judged all 277 candidates on 2026-11-08 (150 on <host>, 127 on the controller after the shard move, KI-136): 274 killed, 3 survived, 0 budget_exceeded, 0 crashed, 0 hung, 0 equivalent. Lane verdict `FAIL / MUTANTS_SURVIVED` (exit 1).
 
 | Source (`cmru/src/cmru/`) | Line at `c7d07240` | Operator | Mutation | Code | Candidate id |
 | --- | --- | --- | --- | --- | --- |
@@ -3158,13 +3180,13 @@ not implementable as the brief's "small" follow-on.
 | `transaction.py` | 3660 | `python:compare-swap` | Gt->GtE | `... if len(touched.splitlines()) > 5 else ''` (touched-files summary truncation) | `39e93a251ee6f4b14fa64b418a71a060d741b56dc0d1d0c55588b745a9fb7327` |
 | `transaction.py` | 4044 | `python:compare-swap` | IsNot->Is | `if abort_result is not None and abort_result.returncode == 0:` | `a6a3ec8dd2991269d4ddcd6fe2d401abd2cc29e2e0c0893f0d46b360a71b9dd2` |
 
-**Where.** `/home/vscode/vbpub-release-program-20261027/shard-move-s13/final/`: `survivors.json` (full candidate records), `verdict-cmru-r2-s13.json`, `progress-cmru-r2-s13.jsonl`, the campaign analysis `232986a4ca103fe5c033250e1fca1724.campaign.{json,txt}`. `c7d07240825e5ca28c45194556444d17e910ba92` is not in the repo; it and the candidate ids below come from the non-repo export. The line numbers also hold at origin/main `2f7f386cc` (verified), and `main` may move them again.
+**Where.** [final](docs/evidence/r2-shard-s13.md): `survivors.json` (full candidate records), `verdict-cmru-r2-s13.json`, `progress-cmru-r2-s13.jsonl`, the campaign analysis `232986a4ca103fe5c033250e1fca1724.campaign.{json,txt}`. `c7d07240825e5ca28c45194556444d17e910ba92` is not in the repo; it and the candidate ids below come from the non-repo export. The line numbers also hold at origin/main `2f7f386cc` (verified), and `main` may move them again.
 
 **Fix.** Triage each as in KI-129/KI-133: (1) a test whose workspace id differs between the loaded and the expected workspace (the swapped `==` must change the outcome); (2) a boundary test with exactly 5 and exactly 6 touched files asserting the `...` suffix appears only for 6; (3) a test for the abort path where `abort_result` is `None` (no abort attempted) versus a returncode-0 result, asserting the branch taken. Or justify any one as `equivalent` for the ledger with the input-domain argument.
 
 **Close when.** A rejudge of these three ids (assay `--rejudge`, forwarded by run-gate per RG-66) reports each killed or equivalent.
 
-**Source.** `reports/shard-s13-REPORT.md` (Verdict), `shard-move-s13/final/survivors.json`.
+**Source.** [shard-s13-REPORT.md](docs/evidence/shard-s13-REPORT.md) (Verdict), `shard-move-s13/final/survivors.json`.
 
 ## KI-139 - the assay closeout on a resumed R2 shard says `blocker coverage_not_reverified` although the lane verdict is final
 
@@ -3176,7 +3198,7 @@ not implementable as the brief's "small" follow-on.
 
 **Close when.** The closeout of a resumed, fully judged shard states what the blocker means (or does not raise it), with a test on the disclosure text.
 
-**Source.** `reports/shard-s13-REPORT.md` (Verdict), `shard-move-s13/final/232986a4ca103fe5c033250e1fca1724.campaign.txt`.
+**Source.** [shard-s13-REPORT.md](docs/evidence/shard-s13-REPORT.md) (Verdict), [campaign analysis](docs/evidence/r2-shard-s13/232986a4ca103fe5c033250e1fca1724.campaign.txt).
 
 ## KI-140 - the cmru self-release recipe is undocumented: a first release after a bootstrap-check change needs the NEW engine, built as a non-editable wheel with a recorded sha256
 
@@ -3190,21 +3212,25 @@ not implementable as the brief's "small" follow-on.
 
 **Source.** cmru-v7.2.4 release session (2026-11-08); `cmru/docs/RELEASE-TRANSACTIONS.md` 52-70.
 
-## KI-141 - record a full R2 run before the next cmru minor (7.3.0); R2 remains deferred across the 7.2.x line (KI-79)
+## KI-141 - record a full R2 run on the latest provisional CMRU release (KI-79)
 
-**Status:** OPEN (filed 2026-11-09); severity: major (mutation evidence gap, tracking entry). `cmru-v7.2.4` shipped on 2026-11-08 through `gate-provisional` under the KI-79 window `>= 7.2.0`, `< 7.3.0` (operator decision 2026-11-04, R2 waived for releases). The mutation lane did not run for it; the retained marker `.assay/mutation-postponed-cmru.json` is deferral evidence, not a pass.
+**Status:** OPEN (filed 2026-11-09); severity: major (mutation evidence gap, tracking entry). `cmru-v7.2.4` shipped on 2026-11-08 through `gate-provisional` under the KI-79 window `>= 7.2.0`, `< 7.3.0` (operator decision 2026-11-04, R2 waived for releases). The mutation lane did not run for it; the retained marker `.assay/mutation-postponed-cmru.json` is deferral evidence, not a pass. By the 2026-11-12 decision, the 7.3.x line also ships provisionally and its T3 R2 campaign is owed after the latest release.
 
 **State of the owed R2.** The whole-source campaign is sharded; recorded so far: s4 (KI-133: 21 survivors, KI-134: 1 `budget_exceeded`), s12 (KI-135: 136 survivors, 1 crashed, `EXEC_FAILED`), s13 (KI-138: 3 survivors) and the earlier s1 (KI-129). Shards not named here, and one aggregate judgment over the current whole-source tree, have no recorded result in this file.
 
-**Constraint.** A minor bump (`7.3.0`) computes a version outside the KI-79 window; the release gate refuses it AFTER the candidate is prepared and backed up (see the KI-79 "Release command" paragraph), so the 7.3.0 release needs either a recorded full R2 run of the 7.2 content first, or a new explicit operator decision extending the window (and `POSTPONEMENT_RELEASE_VERSIONS` in `tools/run_release_gate.py`, plus the `tests/test_release_gate_provisional.py` oracles).
+The 2026-11-12 T3 rehearsal of `r2` remained PARTIAL: its preflight had six failing process-tree fixture tests, Assay's declared `../libraries/cowtree/src` package root was rejected, and the campaign crashed when `ResourceLimitEvidence.between` returned its current tuple contract. KI-153 through KI-155 fix these lane blockers in source and tests; the rehearsal is not an R2 campaign result and this entry remains open. The measured controls took 368, 752, and 825 seconds with other lanes running. The registered control ceiling is now 1800 seconds (2.18 times the longest measurement), and candidate timeouts retain the existing twice-control scaling.
 
-**Fix.** finish the owed R2 as the T3 lane `r2` on a host, base `cmru-v6.1.0` (the last R2-covered tag); kill the survivors of KI-129/133/134/135/138; an unkillable (equivalent) survivor leaves only the operator-decision branch of Close when.
+**Constraint.** The 2026-11-12 operator decision extends KI-79 through `>= 7.3.0`, `< 7.4.0`, so 7.3.0 may use `gate-provisional` without an earlier R2 run. The full R2 obligation is still open and follows the standing T3 schedule: run it asynchronously after the latest provisional release, before KI-79's current upper bound 7.4.0 unless the operator records another decision.
 
-**Close when.** a T3 ledger PASS row for cmru `r2` at a 7.2.x tag whose base is ≤ the last R2-covered tag (`cmru-v6.1.0`), every candidate killed with no survivors, and the reviewed change that opens the window cites that row; or the operator extends the window and this entry records that decision.
+**Fix.** Finish the owed whole-source R2 as the T3 lane `r2` on the latest release tag, using the controller-selected base (currently `cmru-v6.1.0` when no newer R2 PASS row exists); the copyable lane command is `run-gate --base cmru-v6.1.0 r2` when that base is selected. Kill the survivors of KI-129/133/134/135/138; an unkillable (equivalent) survivor leaves the existing operator-decision branch of Close when.
 
-**After KI-141 closes.** The closing change must replace the bounded KI-79 version window with one open-ended from `7.3.0`, so later minors are not refused by a new upper bound; any later boundary needs its own declared precondition.
+**Close when.** A T3 ledger PASS row records cmru `r2` at the latest 7.3.x release tag, with a base at or before the last R2-covered tag (`cmru-v6.1.0`) and every candidate killed with no survivors; the campaign judges the latest released source and closes the accumulated 7.2.x/7.3.x R2 debt.
 
-**Source.** `reports/shard-s13-REPORT.md`; KI-79 above; cmru-v7.2.4 release (2026-11-08).
+**Remaining WP-CMRU parts 6, 7, and 9.** Part 6 follows a successful part-5 T3 rehearsal: make CMRU's `gate` a mutation-free release orchestrator and always write the R2-owed marker with `follow_up_lane = "r2"`. Part 7 follows parts 6 and 1 (`whole_target`): retire `cmru-first-release`, `assay-first-release`, and the `_plan_gate` first-release branch. Part 9 still needs the `TMPDIR`/`PYTHONPYCACHEPREFIX` A/B and a duration survey on a quiet host, including an explanation of the control variance in an isolated run; the current `io_sync = "relaxed"` setting remains in place.
+
+**After KI-141 closes.** KI-159 tracks whether to replace per-minor window edits with a rolling rule or a declared release-policy field. Until that design is selected and implemented, KI-79 remains a bounded allowlist.
+
+**Source.** [shard-s13-REPORT.md](docs/evidence/shard-s13-REPORT.md); KI-79 above; cmru-v7.2.4 release (2026-11-08).
 
 ## KI-142 - real releases read an external version before prepare under 7.2.4
 
@@ -3347,6 +3373,27 @@ An absent image at either boundary refuses with `PREREQ_MISSING` (or the establi
 
 **Close when.** Declared stack-image scopes reject floating/unresolved tags in `check` and the release gate, resolved values reach consumer files through the one documented mechanism, drift is refused with a focused oracle, and all three user documents pass on a clean final commit. If implementation review shows the file-update mechanism is separable from the scan contract, it may be carved into its own entry; the scan and fail-closed gate behavior remain here.
 
+## KI-156 — tests must scope process-wide `os.*` syscall fakes to the descriptor or path under test
+
+**Status:** OPEN (filed 2026-11-12); the observed CMRU hazards are fixed in the
+pytest 9.2 audit branch. Pytest 9.2 calls `os.fstat` during capture and
+teardown. The release-snapshot, credential-pipe, release-writer, retained-
+output, and snapshot-reader tests originally replaced shared `os.write`,
+`os.fdopen`, `os.open`, `os.close`, `os.read`, or `os.lstat` with incomplete
+or raising fakes for every caller. They now match the synthetic descriptor or
+fixture path under test and delegate every unrelated call to the saved real
+function.
+
+**Contract.** A process-wide `os.*` patch must prove the fd/path is the one
+under test. It may affect only that call and must delegate unrelated calls to
+the real function. The original short-write, partial-file cleanup,
+descriptor-close, and filesystem-indeterminacy oracles remain mandatory.
+
+**Close when.** No non-delegating exact-symbol test patch remains in CMRU,
+the registered CMRU unit lane passes on a clean final commit, and a deliberate
+removal of an unrelated-call fallback is shown to fail the owning focused
+test.
+
 ## KI-150 - temporary Git repository creation in the full suite is not the bottleneck
 
 **Status:** OPEN (filed 2026-11-11); severity: low (measurement says the proposed optimisation cannot recover enough time to justify a new repository template and clone lifecycle); no implementation in this documentation-only filing.
@@ -3399,3 +3446,283 @@ Only 10 of the 40 slowest tests use repositories (`test_release_end_to_end_real_
 **Priority.** Should-fix. Repeating many expensive survivors can prevent an otherwise resumable full R2 campaign from reaching later candidates.
 
 **Close when.** Resume reuses only fingerprint-matched survivors with complete clean evidence, reruns every timeout and incomplete or eventful outcome, and a focused bounded campaign proves progress beyond more than 40 earlier survivors without changing mutation verdict semantics.
+
+## KI-157 — automatic local-main synchronization reports a non-current ref failure when `main` is checked out elsewhere
+
+**Status:** OPEN (filed 2026-11-12); severity: minor (the release itself succeeds, but the final synchronization diagnostic and remedy are misleading).
+
+**Problem.** After a successful non-feature-source release, `_sync_local_main_result` tries `git branch -f main origin/main` when local main is not checked out in the transaction checkout. When local `main` is checked out in the shared main worktree, Git refuses to update that checked-out ref. CMRU currently reports `Could not sync local main automatically: updating the non-current local main ref failed; local main was left untouched. Inspect the ref and synchronize it manually.` The "non-current" wording is false in the reported case, and "inspect the ref" does not tell the operator the safe remedy: fast-forward the main worktree from the controller command line.
+
+**Reproduced 2026-11-14 while releasing cmru 7.3.1 (driven by the installed 7.2.5.dev149 controller):** after the release completed (and also after the rolled-back first attempt, see KI-168) the log shows `fatal: cannot force update the branch 'main' used by worktree ...`, then "Could not sync local main automatically: updating the non-current local main ref failed". The successful release needed only `git pull --ff-only` in the main worktree to synchronize it.
+
+**Proposed minimal solution.** Derive whether any worktree currently has `refs/heads/main` checked out using `git worktree list --porcelain`. If so, do not attempt `git branch -f`; return a refusal that names the derived main worktree and the exact non-destructive remedy `git -C <main-worktree> pull --ff-only` so CMRU's message prescribes a fact read from the repository. Document that CMRU leaves shared `main` checkout synchronization to its owner and never force-updates a checked-out branch. If a safe transactional fast-forward is implemented later, preserve the same ownership/concurrency refusal.
+
+**Where.** `cmru/src/cmru/transaction.py` `_sync_local_main_result` and its local-main comparison branch; `cmru/tests/test_release_transaction.py` near the existing non-current-main failure test; `cmru/README.md` and `cmru/docs/RELEASE-TRANSACTIONS.md` successful-release cleanup guidance.
+
+**Acceptance test idea.** With `main` checked out in a second linked worktree while the release checkout is on another branch, a successful release emits the main worktree's derived path and `git pull --ff-only` remedy, performs no `git branch -f`, and leaves both refs untouched. With no worktree holding `main`, the existing safe update path still succeeds. A failed fast-forward in the consuming main worktree names that exact operation and preserves its diagnostics without claiming the branch was non-current.
+
+**Priority.** Minor and cosmetic, but the command currently tells an operator to inspect when the correct fast-forward remedy is already derivable.
+
+**Close when.** A checked-out local-main worktree is detected and named, the final diagnostic gives the correct owner-scoped `git pull --ff-only` remedy, no force-update is attempted against a checked-out branch, and focused real-Git tests plus synchronized release documentation pass on a clean final commit.
+
+## KI-158 — release outputs retained inside their caller's `rel-*` worktree disappear when that outer worktree is removed
+
+**Status:** OPEN (filed 2026-11-12 from the nyxloom 0.13.0 release incident); severity: should-fix (successful release evidence can be silently destroyed during routine worktree cleanup).
+
+**Problem.** `retain_success_outputs` correctly moves logs, declared artifact directories, and declared gate evidence out of CMRU's internal transaction worktree before removing it. Its destination is relative to the caller's `repo_root`, however. When the whole release is driven from a `rel-*` worktree, successful output is retained under that outer worktree, for example `nyxloom/artifacts/nyxloom-v0.13.0` and project release logs under `logs/cmru-release`. Those paths are Git-ignored, so a later `git worktree remove` sees a clean checkout, removes the directory, and deletes the retained evidence. The nyxloom 0.13.0 incident lost both paths this way.
+
+**Proposed minimal solution.** Make retention durable independently of the caller checkout. The preferred route is an explicitly configured drain root supplied to `cmru release`; copy each already-validated retention coordinate there with the same immutable-ID and hash-manifest contract, and fail closed if the destination is absent, unchecked, or already occupied. Do not invent a machine-specific archive default. When no durable destination is configured, print one prominent completion warning before returning success that names the retained paths and states they live in a removable worktree, with the exact supported remedy. Advise the existing controller `release-from-wt.sh` workflow to provide/configure the drain root and to verify it after release rather than relying on its current pre-release-only archive.
+
+**Where.** `cmru/src/cmru/transaction.py` `retain_success_outputs`; `cmru/src/cmru/cli.py` successful-release retention and final completion report; release configuration/docs (`cmru/README.md`, `cmru/docs/RELEASE-TRANSACTIONS.md`, `cmru/docs/CONSUMERS.md`); `scripts/controller/release-from-wt.sh` and its documentation for an explicitly configured durable destination; retention tests including a linked `rel-*` caller checkout.
+
+**Acceptance test idea.** Run a successful release from a linked `rel-*` worktree. With an explicit durable destination, the exact logs/artifacts/evidence coordinates and manifests exist there after the outer worktree is removed and no source coordinate is left mutable. Without a destination, completion emits the warning naming every retained path and the supported transfer/configuration remedy. An absent, escaping, symlinked, or already-populated destination refuses before worktree cleanup and preserves the internal transaction for inspection. Removing the post-success durability operation or omitting the warning makes the focused oracle fail.
+
+**Priority.** Should-fix. Release evidence must not depend on whether an operator later removes the checkout that happened to launch the release.
+
+**Close when.** Every successful release either drains its validated retained outputs to an explicitly configured durable location with integrity manifests or emits an actionable no-destination warning naming them; a linked-worktree removal cannot silently erase the only retained copy; focused retention/caller-worktree tests and all three user documents agree on a clean final commit.
+## KI-153 - R2 preflight fixture uses the retired Assay process-tree evidence shape
+
+**Status:** FIXED 2026-11-12 in this work item; implementation commit is recorded in the latest closeout table. Severity: major (the R2 lane fails before campaign startup).
+
+**Finding.** `tools/test_mutation_campaign.py` supplied process-tree evidence from the old wire format. Assay's current `ProcessTreeEvidence` requires `assay-process-tree/2`, including `signal` and `descendants`; the obsolete fixture caused six resume tests to fail on the lane's first preflight step.
+
+**Fix and oracle.** The shared fixture now matches Assay's current wire schema and a regression parses it through Assay's `ProcessTreeEvidence.from_dict`. The legacy resume cases include schema 5 and continue to refuse old campaign evidence. The original six failures were reproduced by the registered `r2` lane on origin/main at `140d3f3e93f5c1c0e6905114afa3341f1a63e1a1`.
+
+**Close when.** The `release-preconditions`, `r0-r1`, `survivor-regressions`, and `r2` preflight pass on a clean final head; the T3 campaign result remains tracked by KI-141.
+
+## KI-154 - R2 cannot bind Assay's declared sibling package roots
+
+**Status:** FIXED 2026-11-12 in this work item; implementation commit is recorded in the latest closeout table. Severity: major (the current Assay source layout is refused before campaign startup).
+
+**Finding.** Assay declares `../libraries/cowtree/src` and a named `package-dir` root in its `pyproject.toml`. CMRU rejected every parent-relative root, and its pre-install dirty-source check covered only the `assay/` subtree. That prevented the R2 campaign from starting with the current in-repo Assay layout and could omit edits to a declared sibling package from source identity checks.
+
+**Fix and oracle.** CMRU now accepts declared roots only when their resolved paths remain within Assay's Git worktree, supports valid named `package-dir` keys, and refuses symlink components, symlink entries, and roots outside that worktree. Git cleanliness, install-preflight, and resume history comparisons use worktree-relative pathspecs for every declared root. Regressions exercise the current sibling layout, modified sibling source before editable install, outside-worktree refusal, and symlink-component refusal. The host rehearsal's origin/main run reproduced the original parser refusal; its exact rejection and patch are retained with the rehearsal evidence.
+
+**Close when.** The focused CMRU tests pass and hand mutations that omit sibling roots from the install/status and resume-history checks fail their respective oracles.
+
+## KI-155 - R2 crashes on Assay's tuple resource-limit evidence contract
+
+**Status:** FIXED 2026-11-12 in this work item; implementation commit is recorded in the latest closeout table. Severity: major (the campaign crashes after the baseline control).
+
+**Finding.** CMRU treated `ResourceLimitEvidence.between(before, after)` as one evidence object and accessed `.limit_hit`. Current Assay returns `(ResourceLimitEvidence, advisory_details)`, so the control run raised `AttributeError: 'tuple' object has no attribute 'limit_hit'`.
+
+**Fix and oracle.** The campaign now unpacks the evidence and advisories, uses the evidence object for the event verdict, and retains advisory details for baseline and candidate results in resume-compatible evidence schema 6. A regression changes configured cgroup limits without an event and checks that the `limit_hit` verdict stays false while advisory details are serialized. The host rehearsal reproduced the tuple-return crash after its control run.
+
+**Close when.** The resource-advisory regression and registered R2 preflight pass; hand mutations that treat the tuple as an evidence object or drop recorded advisories fail the oracle. KI-141 remains open until the actual T3 campaign is recorded.
+
+## KI-159 - KI-79 release windows need a policy that does not require a new edit for each minor
+
+**Status:** OPEN (filed 2026-11-12); severity: minor (release-window maintenance).
+
+**Problem.** KI-79's explicit bounded windows have been extended one minor line at a time. Each extension needs synchronized gate, test, changelog, and user-documentation edits; a missed bound can refuse the next provisional release before its gates run.
+
+**Proposal.** Decide whether the allowed window should roll across the latest minor line plus its predecessor, or come from a declared release-policy field. Keep refusal behavior explicit and tested at both edges. No implementation is part of this backlog item.
+
+**Close when.** The operator selects one policy, its edge behavior and compatibility are documented, and a separate reviewed change implements and tests it across the gate and dry-run precondition.
+
+## KI-160 - successful promotion can exit 1 before retaining artifacts when declared gate evidence is missing
+
+**Status:** OPEN (filed 2026-11-12); severity: major (post-promotion reporting and release evidence).
+
+**Finding.** The `cmru-v7.3.0` release completed its tag, wheel publication, push, and promotion, then exited 1 while retaining outputs because `cmru/cmru.toml` declared `coverage.json` even though Assay produced it only inside its isolated lane snapshot. The missing path caused the all-or-nothing retention pass to stop before collecting either gate evidence or built artifacts. Correcting CMRU's declaration to `.assay` removes this trigger, but a different missing declared path can still make a publicly promoted release appear to have failed and leave no retained artifact directory.
+
+**Trade-off.** Warning and retaining available artifacts would avoid reporting a promoted release as failed, but could present incomplete audit evidence as a successful retention result and weaken the all-or-nothing contract. Keeping exit 1 is honest about the retention failure but obscures that publication and promotion already succeeded. Design a distinct post-promotion degraded outcome before changing this behavior; a warning must not imply rollback or complete evidence.
+
+**Close when.** A regression reproduces a missing evidence path after successful publication and promotion, and a separately reviewed outcome reports publication state accurately while retaining valid artifacts and clearly identifying incomplete evidence.
+
+## KI-161 - `cmru versions resolve` and `cmru versions init` rewrite `cmru.toml` and drop comments (and can change multi-line string values)
+
+**Status:** OPEN (filed 2026-11-13); severity: minor (silent loss of hand-written documentation; no functional effect). Found in netcup-api-filter with cmru 7.3.0. CHANGES checked: nothing in `[Unreleased]` covers it.
+
+**Evidence.** In netcup-api-filter, branch `pdns51`, the commit that ran one `cmru versions resolve` (`netcup-api-filter@9847b7b`, "chore(versions): record the PowerDNS 5.1.5 resolution") removed two hand-written comments from `cmru.toml`: a comment on the python314 target and a multi-line "partial migration" marker the previous commit had put directly above the `[versions.targets."oci.powerdns-auth"]` table. The resolved values were rewritten correctly; only the comments disappeared, so the marker that made a half-migrated state detectable was erased by the very command meant to complete it.
+
+**Cause (read from source).** `cmru/src/cmru/versions.py` `_update_versions_file` parses the document, mutates a copy of the `[versions]` table and calls `_replace_versions_region`. That function deletes the line range of EVERY `[versions...]` block (each block runs from its header to the next `[` header, so comments between two versions tables belong to the preceding block and are removed too) and inserts a fresh rendering from `_render_versions_toml`, which writes only key/value pairs. A document-wide `re.sub(r"\n{3,}", "\n\n", ...)` at `versions.py:221` also collapses runs of blank lines everywhere in `cmru.toml`, including inside multi-line string values (reproduced by the reviewer: a value with two consecutive blank lines loses one), so this is value-changing data loss, not only formatting; the fix must scope or drop that substitution. Comments before the first versions table survive, and so do comments after the first non-versions header that follows the last versions block; a comment directly above that following non-versions table belongs to the preceding versions block and is deleted too. When a non-versions table sits between two versions tables, its leading comment is deleted and the versions content is hoisted to the first versions position. Any rewrite drops the comments even when no value changes (only the `rendered != original` guard protects files that have none).
+
+**Other commands.** The tool-dependency pin rewrite (`cmru/src/cmru/tool_deps.py` `_rewrite_tool_dependency_toml`) and `standards._update_project_revision` document and implement surgical text edits of one marked region (rest of the file byte-for-byte unchanged), so they do not show this defect. `cmru versions init` writes through the same `_replace_versions_region` (`versions.py:1229`) and drops comments the same way (reproduced by the reviewer); `resolve` and `init` are the only two writers with the defect. `cmru versions check` is read-only; the tool-dependency pin rewrite (`tool_deps.py` `_rewrite_tool_dependency_toml`), `standards._update_project_revision` and `cmru dependencies --write` (marked comment block only) are surgical edits and lose nothing; `cmru init` refuses to overwrite an existing file; release version bumps never write `cmru.toml`.
+
+**Expected.** Either (a) a round-trip edit that preserves comments and ordering of the region (surgical per-key text edits in the style of `_rewrite_tool_dependency_toml`, or a comment-preserving TOML library), or (b) an explicit documented contract that the `[versions]` region is machine-owned, with a supported place for hand-written notes (for example a reserved comment block that is never rewritten) and a `--dry-run` diff that shows what would be lost.
+
+**Close when.** A regression test runs `cmru versions resolve` AND `cmru versions init` on a `cmru.toml` with per-target comments, a hand-written marker comment above a target (between two versions tables), a comment directly above a non-versions table that follows the region, and a multi-line string value containing consecutive blank lines, and asserts every comment and every value is byte-identical afterwards (option a); or the documented contract plus a test that the tool refuses or warns before discarding comments (option b; note `resolve --dry-run` currently prints a report only, not a file diff, so a dry-run diff is new behaviour); and the writers of `cmru.toml` are listed with the same guarantee.
+
+## KI-162 - `cmru handler bundle-build` silently drops, or refuses with an error, files whose names end in `.env` or `.pem` (a runtime catalog `app-defaults.env`, the vendored `certifi/cacert.pem`)
+
+**Status:** FIXED (CMRU implementation and regressions in `f2b56b12743f6a764bbadefa8b937c1bd642b32f`, released in cmru 7.3.1; the naf equivalence build ran on 2026-11-14 and was EQUIVALENT, see **Acceptance evidence** below); severity: HIGH. Found by the netcup-api-filter canary (naf branch `bundle1`, commit `netcup-api-filter@b55cd10`, not merged).
+
+**Observed (run).** In the scratch project below the copy-only config exits 0 and the archive holds only `app/manifest.json` and `app/src/app.py`: `src/app-defaults.env` and `src/cacert.pem` are missing from the archive AND from the staged tree, with no log line. When a stage step creates `app-defaults.env` inside the bundle dir (`[stage] argv = ["sh", "-c", "printf 'KEY=value\\n' > \"$1/app-defaults.env\"", "stage", "{bundle_dir}"]`) the build exits 2 with `[ERROR] bundle-build: the archive hard-excludes files the bundle tree holds, so the manifest would list files the tarball lacks: app-defaults.env` after `Running stage step`. `cmru.bundle._is_excluded` returned `True` for `app-defaults.env`, `src/app-defaults.env` and `vendor/certifi/cacert.pem`, and `False` for `.env.defaults` and `netcup_filter.db` (run).
+
+**Code relied on (origin/main, quoted).** `cmru/src/cmru/bundle.py`: `_HARD_EXCLUDE_SUFFIXES = (".toml", ".env", ".pem", ".crt", ".key", ".p12", ".pfx", ".log", ".pyc")` (lines 49-60) and `_is_excluded` (line 68) whose only exemption is `if name == "pyproject.toml": return False`; the filter sites include `filtered = [m for m in members if not _is_excluded(m.archive_path)]` in `write_deterministic_tar` (line 195) and the same predicate at five more sites: the copy step (`copy_sources`, bundle.py:543 relative to `project_root`, and :551), the archive collection (`collect_allowlist_members`, :249 and :257, which run for `format = "xztar"` only; the other formats use `shutil.make_archive` and are not filtered at archive time but still hit the manifest check), and the config validation of `vendor.dest` (:380) and `manifest.name` (:489); `write_bundle_manifest` (line 725) raises `ValueError("the archive hard-excludes files the bundle tree holds, so the manifest would list files the tarball lacks: ...")` after listing files for which `_is_excluded(...)` is true in the FINAL bundle tree (after vendor and stage). The `[vendor]` step itself only runs `pip download`, which writes `.whl` files into `vendor.dest` (`vendor_dependencies`, bundle.py:671-704) and unpacks nothing, so `certifi/cacert.pem` reaches the bundle tree only when a stage step unpacks or installs the wheels (for example `pip install --target`) or the project copies it; in those cases `write_bundle_manifest` refuses it (read, not run: needs pip and network).
+
+**Consequence.** The copy path loses the files silently; the stage path (a stage step that writes or unpacks such a file) fails the whole build; a vendored `.whl` file itself is not affected. A shipped runtime that needs a `.env`-suffixed catalog or a CA bundle cannot use `bundle-build`, and a project that works around the manifest error would ship an archive without its CA bundle (every HTTPS call fails at runtime).
+
+**Wanted (the vbpub controller's preference).** One predicate, fail-closed. (1) The suffix hard excludes (`.toml .env .pem .crt .key .p12 .pfx .log`) stay on for every file of the final bundle tree; a file of that class that is not allowed makes the build fail naming the file and `[archive] keep`; the copy step may still skip such a source file but logs it at WARN with its path. (2) `[archive] keep = [...]` is the only override: PATH-EXACT bundle-relative posix paths (no glob characters, rejected at parse time), applied identically by the copy filter (translated to bundle-relative paths for nested `copy.dirs`), the archive filter and the manifest check, so tarball and manifest cannot diverge; the name-class excludes (`.git`, `.ciu`, `ciu.env`, `minisign.key`, `node_modules`, caches) and `.pyc`/`__pycache__` are not keepable and stay excluded from archive and manifest alike. (3) A stage step that writes a secret-class file the project did not list in `keep` therefore still fails closed.
+
+**Fix and evidence.** Commit `f2b56b12743f6a764bbadefa8b937c1bd642b32f` uses `_is_excluded(rel_path, keep_paths)` for copy, all archive formats, and manifest enumeration. It warns for copied paths it skips, validates exact keep paths after stage, rejects unkept suffix-class files left by stage, and leaves hard-name exclusions and `.pyc` unkeepable. This round also traverses suffix-named directories and emits one WARN per skipped path per build. Regression coverage is in `cmru/tests/test_bundle_ki162_165.py`; the registered red gate failed on the copy/keep reproduction at `74a58f3cf2680e9a7318fcd222d26a2950d47091`. The naf old-builder equivalence build was not run in this cmru-only work item; it was the KI-126 acceptance step after the cmru patch release and is recorded below.
+
+**Acceptance evidence (2026-11-14).** The naf controller ran the real old and new builds with cmru 7.3.1 and reported EQUIVALENT: 1515 files in both archives, the only file only in the old archive is the old builder script, the only file only in the new archive is `manifest.json`, no content differences, and the seeded database is identical. The keep list was `app-defaults.env` and `vendor/certifi/cacert.pem`. KI-163 (version fallback without a tag), KI-164 (staging trees removed after success) and KI-165 item 2 (manifest tag) were verified live in the same build, and the run produced no new cmru findings. naf merges the change to its own main without a release tag. KI-126 is closed by this evidence.
+
+**Close when.** Regression tests run (a) the copy-only scratch project with `keep = ["src/app-defaults.env", "src/cacert.pem"]` and assert both are in the archive and the manifest; (b) the same project WITHOUT `keep` and assert a WARN naming each skipped file; (c) a stage step creating `app-defaults.env` and a vendored `certifi/cacert.pem` and assert the build succeeds with both in the archive and the manifest; and the naf canary (`bundle1`) builds its Passenger tarball byte-equivalent (file list, sha256, database table counts) to the old builder; (d) a stage step writing `minisign.key`, and one writing an unlisted `.key`, still fail the build with the file named; (e) `keep` with a glob character is a config error; (f) `keep = ["b/app-defaults.env"]` works for `copy.dirs = ["a/b"]` (bundle-relative basis).
+
+**Reproduction (offline, run 2026-11-13 with cmru 7.3.0; no network, no docker).** Scratch project `proj/` with `src/app.py`, `src/app-defaults.env` (`KEY=value`), `src/cacert.pem`, and:
+
+```toml
+# cmru.toml (minimal accepted by bundle-build: the loader demands every table below)
+schema_version = 1
+[runtime]
+kind = "none"
+[github]
+owner = "example-owner"
+repo = "demo"
+owner_type = "user"
+token_source = "gh"
+[targets]
+host = "github"
+registry = ["ghcr.io"]
+[project]
+id = "demo"
+description = "offline reproduction"
+template_revision = 5
+prefix = "demo-v"
+artifacts = ["tarball"]
+[project.version]
+strategy = "scm"
+bump = "conventional"
+[project.release]
+git_tag = true
+build_step = "build"
+artifact_dirs = ["dist"]
+[[project.variants]]
+name = "py311"
+build_arg = "PYTHON_VERSION=3.11"
+label = "Demo Python 3.11"
+[steps.build]
+quiet = true
+commands = [{ label = "noop", argv = ["true"], cwd = "." }]
+[steps.run-tests]
+quiet = true
+commands = [{ label = "noop", argv = ["true"], cwd = "." }]
+[steps.push]
+quiet = true
+commands = [{ label = "noop", argv = ["true"], cwd = "." }]
+```
+
+```toml
+# bundle.toml (copy-only variant)
+project_root = "."
+dist_dir = "dist"
+bundle_dir = "app"
+[archive]
+name_template = "demo-v{version}-{variant}.tar.xz"
+version_env = "DEMO_VERSION"
+format = "xztar"
+[copy]
+dirs = ["src"]
+[manifest]
+name = "manifest.json"
+```
+
+Call: `SOURCE_DATE_EPOCH=1700000000 DEMO_VERSION=1.0.0 cmru handler bundle-build --bundle-config bundle.toml --cmru-config cmru.toml --name demo`.
+
+## KI-163 - `cmru handler bundle-build` needs a version before any tag exists, so it cannot build for `cmru build` or `cmru publish --build-output`
+
+**Status:** FIXED in `f2b56b12743f6a764bbadefa8b937c1bd642b32f`; severity: medium. Found by the naf canary (`netcup-api-filter@b55cd10`).
+
+**Observed (run).** Unsetting the version variable of the scratch project below makes the build fail with `[ERROR] bundle-build: DEMO_VERSION must be set for archive naming` (exit 3). The archive name embeds `{version}` and the only version source is the environment variable named by `[archive] version_env`. Code (read): `cmru/src/cmru/handlers.py` around line 1033-1036: `version = os.environ.get(parsed.archive_version_env, "")`, `if not version: raise RuntimeError(f"{parsed.archive_version_env} must be set for archive naming")`. `cmru release` injects the release tag into artifact steps, so only the release path works; `cmru build` (untagged, retained build) and a later `cmru publish --build-output` cannot produce the bundle, while a hand-written builder that wrote a version-agnostic `dist/<prefix>-<variant>.tar.xz` worked for build-then-publish-later (read from the old naf builder).
+
+**Wanted (acceptance criterion).** A version FALLBACK when `version_env` is unset, so untagged builds work and the archive name stays versioned (one source of truth). The fallback is passed through `run_bundle` to `archive_path`, not resolved only in the handler. CMRU resolves the selected project's next release version from its own version plan (or the last tag version when the project has no pending release), then composes `<resolved version>.dev<commits since tag>+g<short hash>`. Such a name makes `is_release_version` (release.py:57-59) false, which keeps immutable release publication from accepting it; the regression asserts that. Rejected alternative: an unversioned name template renamed later by `tarball-publish` (it hides which commit a retained archive came from).
+
+**Fix and evidence.** `bundle-build` now uses `cmru.version.status_records` for the configured project's release plan, appends the Git commit count and short hash, and passes the fallback through `run_bundle`/`archive_path`; an explicit environment version still wins. The regression runs an untagged SCM scratch project, checks the archive and manifest development version, and asserts `is_release_version` is false. A tagged environment value is covered by the prefix/tag regression for KI-165 item 2.
+
+**Close when.** A test runs `bundle-build` without the variable on a repository with the `scm` strategy and asserts a `.dev` version in the archive name and manifest tag, and a tagged `cmru release` run still uses the release tag; `cmru build` + `cmru publish --build-output` works for a bundle project.
+
+**Reproduction setup.**
+
+**Scratch project:** the one defined under KI-162 (same `cmru.toml` and copy-only `bundle.toml`); call as shown there.
+
+## KI-164 - `cmru handler bundle-build` leaves staged bundle and wheel trees in `dist_dir` after a successful build
+
+**Status:** FIXED in `d6cd7fb54aff97dfb47fb7a537e0d31b0d7af3e0`; severity: medium (release retention copies staging trees, thin deploys may ship them). Found by the naf canary (`netcup-api-filter@b55cd10`).
+
+**Observed (run).** With the default `keep_tree = false`, an ordinary build leaves `dist/app/` next to the archive. When `[wheel].enabled = true`, it also leaves `dist/client/` (verified by the independent review). `release.artifact_dirs = ["dist"]` retention copies these trees next to the archive and a thin deploy that does not exclude `dist` may ship them.
+
+**Wanted (acceptance criterion).** `[archive] keep_tree = false` as the DEFAULT: after archive and manifest success remove both `bundle_dir` and the wheel output `client_dir`; failures after staging starts retain both for debugging; `keep_tree = true` opts in to retaining both. The manifest file is in the bundle tree before archiving, so nothing is lost from the archive.
+
+**Fix and evidence.** `archive.keep_tree` defaults to false; `run_bundle` removes both `bundle_dir` and `client_dir` only after manifest and archive creation succeed. Tests cover builds with and without a variant, wheel-enabled cleanup, explicit retention, and wheel, stage, and archive failure retention. A stage-written protected-suffix file that causes failure remains in the staged tree on disk for diagnosis and does not enter an archive.
+
+**Close when.** Tests assert that after successful builds with and without a wheel build only the archive (and any declared extra outputs) remain in `dist_dir`; wheel, stage, and archive failures retain both existing staging trees; and `keep_tree = true` retains both trees.
+
+**Reproduction setup.**
+
+**Scratch project:** the one defined under KI-162 (same `cmru.toml` and copy-only `bundle.toml`); call as shown there.
+
+## KI-165 - `bundle-build` smaller gaps found by the naf canary (one list)
+
+**Status:** OPEN (item 2 fixed in `f2b56b12743f6a764bbadefa8b937c1bd642b32f`; items 1, 3, 4, 5, and 6 remain); severity: low for the remaining items. Source: the naf canary and its independent review (`netcup-api-filter@b55cd10`). Each item says whether it was RUN or only READ in the cmru source.
+
+1. **Stale sibling archives accumulate (run).** Building version `1.0.0` and then `1.1.0` with the scratch project below leaves BOTH `demo-v1.0.0-py311.tar.xz` and `demo-v1.1.0-py311.tar.xz` in `dist/`; a following `tarball-publish --glob` or an activation script that globs the archive sees two. Code (read): for a variant build `run_bundle` only unlinks `own_archive`, the archive of the same version (bundle.py ~lines 827-834).
+2. **FIXED: manifest tag carried the prefix twice (run).** With `prefix = "demo-v"` the old scratch build wrote `"tag": "demo-v-v1.0.0"` into `manifest.json`; the installer refuses a manifest whose tag differs from the requested tag (`templates/get.py.tmpl:741-742`). Commit `f2b56b12743f6a764bbadefa8b937c1bd642b32f` uses `_project_release_prefix(project)` before `version_to_tag`; regression cases for `prefix = "demo"` and `prefix = "demo-v"` assert the manifest tag equals `cmru release`'s tag.
+3. **One `[exec].prefix` for all variants (read, not run).** `ExecConfig` holds a single prefix, so variants with different runner containers cannot be expressed in one `bundle.toml`.
+4. **`[vendor]` cannot pass extra pip flags (read, not run).** `vendor_dependencies` builds a fixed command (no hook for `--index-url`, `--no-deps`, `--prefer-binary` variants).
+5. **Fixed archive layout and metadata (read, not run).** Root directory always `bundle_dir/`, no flat-archive option. Modes 0644/0755, mtime normalisation, uid/gid and sorted order exist only for `format = "xztar"` (`write_deterministic_tar`); the DEFAULT format is `gztar` (bundle.py, `_string_value(archive, "format", ..., default="gztar")`), built by `shutil.make_archive` with none of that.
+6. **`SOURCE_DATE_EPOCH` is required with no fallback (read, not run).** `_read_source_date_epoch`; a fallback to the commit time of the built checkout would make local canaries easier. It is read in `write_deterministic_tar` only, i.e. after `run_bundle` has already removed the previous staged tree and (for a no-variant build) the whole `dist_dir`, so a missing variable destroys the previous output before failing (run: `dist/app` was gone); the check belongs in the preflight (`_preflight_bundle_steps`).
+
+**Close when.** Each item is either fixed with a test, or recorded as a documented contract in the cmru docs, or closed as not wanted with a reason; item 1 has a regression test with two consecutive builds.
+
+**Reproduction setup (for item 1).**
+
+**Scratch project:** the one defined under KI-162 (same `cmru.toml` and copy-only `bundle.toml`); call as shown there.
+
+## KI-166 - bundle-build could dereference an included source symlink and ship its target
+
+**Status:** FIXED in `f2b56b12743f6a764bbadefa8b937c1bd642b32f`; severity: high for secret-bearing targets. Found while reviewing KI-162's suffix-filter safety boundary.
+
+**Observed (run).** A source tree with `src/public.txt` symlinked to `private.key` passes the old copy filter because it checks the destination name, then `shutil.copytree` dereferences the link. The key contents are staged and archived under the ordinary name `src/public.txt`, bypassing the suffix exclusion.
+
+**Fix and evidence.** Copy paths remain lexical until symlink components are checked. Included source symlinks and symlinks created by stage are refused before archive creation; excluded source paths still follow the normal exclusion and warning policy. The regression `test_copy_rejects_source_symlink_instead_of_bundling_its_target` failed on the clean pre-fix revision `b082ac25354abdc4b60492ad6a9cd42a51999cdd` and is covered on the final head.
+
+**Security boundary.** This prevents symlink dereferencing by the builder. It does not inspect file contents or sandbox stage code: a stage command can still write secret data under an ordinary filename, and that content is eligible for the archive.
+
+**Close when.** The source-symlink regression and registered final CMRU `r0-r1` gate pass; no archive is produced from a tree containing an included symlink.
+
+## KI-167 - bundle-build can ship case-variant suffixes and secret-class names outside its exclusion list
+
+**Status:** OPEN (pre-existing on `origin/main`; filed during the cmru-bundle-fix round 2 and out of scope for that fix); severity: medium for bundles that contain private key or credential material. The identifier was checked against origin refs and registered worktree backlog files before filing.
+
+**Observed (run/review).** The suffix predicate compares names case-sensitively, so files such as `SERVER.PEM`, `prod.ENV`, `.ENV`, and `a.Key` do not match the lowercase suffixes and remain eligible for the archive. The `.env` rule is a suffix rule only (`name.endswith(".env")`), so the dotenv PREFIX class is not excluded at all: `.env.local`, `.env.production`, `.env.defaults`, `.env.example` and `app.env.bak` do not end in `.env` and ship silently from source and from stage output (run: `.env.local` was in the archive and the manifest on the review head; KI-162 recorded `.env.defaults` as not excluded). The current name exclusions also do not include common credential names such as `id_rsa`, `id_ed25519`, `.netrc` or `credentials.json`; these ordinary names remain eligible. This behavior predates the cmru-bundle-fix changes.
+
+**Wanted.** Make protected suffix matching case-insensitive while keeping `[archive].keep` paths exact and case-sensitive. Add the dotenv prefix class (`.env` and `.env.*`, case-insensitive) as a protected name class that follows the same keep rules as the suffix class (an exact `[archive].keep` path may allow a deliberate public file such as `.env.defaults`; a stage-written one without keep fails closed). Add a configurable extension to the exact secret-class name exclusions, with a documented default set including common private-key and credential filenames. Keep one predicate governing source copy, archive membership, and manifest inventory; do not infer safety from the producer or content type.
+
+**Close when.** Tests show `.env.local`, `.env.defaults` and `.ENV.Local` are skipped with a WARN at copy, fail closed at stage and are absent from every supported archive format and manifest unless the exact path is kept; upper-case and mixed-case protected suffixes are skipped or fail closed at copy and stage, remain absent from every supported archive format and manifest unless the exact path is kept, and configured secret-class names are rejected consistently by copy, stage, archive, and manifest checks. Tests also show ordinary paths outside the configured suffix and name policy remain unaffected. Document the limits of filename-based filtering and the configuration migration.
+
+## KI-168 - `cmru release` fails late when the digest-pinned cgroup probe image is missing on the Docker host
+
+**Status:** OPEN (filed 2026-11-14); severity: medium (a full provisional gate of about 27 minutes is spent before the failure, and the rollback must be repeated).
+
+**Observed (run).** The first cmru 7.3.1 release attempt passed its provisional gate (1648.7 s) and then failed in `cmru handler wheel-build`: `wheel-build refuses to launch: CMRU_TESTER_CGROUP_PARENT=... is not a verified host slice ... (probe stderr: docker: Error response from daemon: No such image: debian@sha256:...)`. The digest-pinned `CMRU_TESTER_CGROUP_PROBE_IMAGE` was not present on the Docker host; the cause of its absence is unknown. The release rolled back the local and remote tag, so nothing was published. `docker pull` of the same digest and a restart of the release fixed it.
+
+**Problem.** The probe image runs with `--pull=never` (`tester_gate._run_probe`), so a missing image surfaces only at the first probe, which for a release is the slice check in `handlers.py` before the wheel-builder `docker run`, after the gate. Existing image checks do not cover it: `cmru doctor`'s `images` check (`doctor.IMAGE_VARIABLES`) inspects only `CMRU_TESTER_UNIFIED_IMAGE` and `CMRU_WHEEL_BUILDER_IMAGE`, and is operator-invoked, not part of `cmru release`; the release precondition "Run-Gate image identity" (`release_preconditions.py`, dry-run) inspects only the selected tester-unified image and is SKIPPED without Docker. Neither names `CMRU_TESTER_CGROUP_PROBE_IMAGE` (or the nested-Docker image).
+
+**Wanted.** Before the release transaction creates its tag or starts the gate, `cmru release` checks that every image the gate and the wheel-build step will run, including the cgroup probe image, is present locally and fails fast with the variable name, the reference and the exact remedy (`docker pull <ref>`). The check is read-only; the simplest form adds the probe image to `doctor.IMAGE_VARIABLES` and runs the same check as a release precondition.
+
+**Close when.** A test with a fake Docker client shows a missing probe image is reported at preflight with the variable, reference and remedy, before any tag, worktree or gate step, and a present image passes; SPEC and the release docs name the preflight.
+
+## KI-169 - `bundle_dir` set to `"."` makes the success cleanup delete the whole `dist_dir`
+
+**Status:** OPEN (filed 2026-11-14, found in the 2026-11 bundle-fix review); severity: medium (data loss inside `dist_dir` after an otherwise successful build; trusted-configuration misuse).
+
+**Problem.** `bundle_dir` and `client_dir` are resolved by `parse_config` with `resolve_path(dist_dir, raw)` in `cmru/src/cmru/bundle.py`, with no check that the result is a strict descendant of `dist_dir` (an absolute value is accepted unchanged). `"."` resolves to `dist_dir` itself. At the end of `run_bundle`, `[archive].keep_tree = false` runs `shutil.rmtree` on `bundle_dir` and `client_dir` after the archive and manifest succeed, and the archive is written inside `dist_dir`. Measured on this head with a scratch project: `bundle_dir = "."` with `format = "xztar"` returns the archive path with exit 0, but `dist_dir` no longer exists, so the archive and any sibling files are gone. With `format = "gztar"` the archive step instead fails (`shutil.Error`, recursive copy into its own temporary directory) and the trees are kept. `client_dir = "."` fails earlier in the client copy with `RecursionError`, so it does not reach the cleanup today; it is guarded only by that crash. In a variant build the pre-build cleanup of `bundle_dir` and `client_dir` removes `dist_dir` the same way, including sibling variant archives.
+
+**Wanted.** Configuration validation rejects `bundle_dir` and `client_dir` values that resolve to `dist_dir` itself, to its parent, or outside it, and rejects the two being equal or nested in each other. The pre-build and success cleanups refuse to remove any path that is not a strict descendant of `dist_dir`.
+
+**Close when.** Tests show `"."`, `".."`, an absolute path outside `dist_dir`, equal and nested values are rejected with a named error before any file is touched (for `gztar`, `xztar` and a variant build), and a normal configuration still cleans only its own trees; SPEC documents the rule (it currently says only "relative to `dist_dir`").
+
+## KI-170 — cmru-v7.3.1 R2 bundle-survivor closeout and lane cost
+
+**Status:** OPEN (filed 2026-11-14); no product defect was found in the three validator survivors. The tests added for this closeout pin the current outcomes and exact validation message.
+
+**Equivalent survivors.** The R2 campaign's other three survivors are equivalent: (1) the redundant `not raw`/leading-slash reject clause is subsumed by rejecting empty path segments (`""` and a leading slash both produce one); (2) staged-dir removal order has no effect because each path is removed only if it still exists; (3) `BundleConfig.keep_tree`'s dataclass default is unreachable from production config loading because `parse_config` always supplies `archive.get("keep_tree", False)` explicitly.
+
+**Keep-entry grammar.** SPEC S9.4 requires an exact bundle-relative POSIX file path and explicitly rejects glob syntax, absolute paths, and traversal, but it does not spell out backslashes, drive-style prefixes, control characters, empty values, or trailing separators. The public config path rejects those forms and accepts spaces (the list reader rejects empty strings before the validator sees them); the regression table pins those current results and exact error text. Clarify the remaining grammar explicitly in S9.4 when the next SPEC edit is made.
+
+**Assay lane cost.** The `assay-first-release-r2` Run-Gate lane does not set `candidate_fail_fast`; each candidate runs the full 6,678-test suite, measured at about 500 seconds on one host flavor and 575 seconds on the other. The measured 4,890-candidate target projects to about 202 hours across two hosts; the campaign report projects about 60–70 hours with candidate fail-fast. Recommend enabling `candidate_fail_fast` after confirming test ordering preserves the required evidence, and update the stale `assay.toml` comment that currently says candidates fail fast. This entry records the decision and performance follow-up; no lane policy was changed here.
+
+**Close when.** S9.4 explicitly defines the tested keep-entry grammar, and the lane's fail-fast policy is either enabled with its comment and acceptance evidence updated or recorded as an intentional cost with a reason. The selected-subset verdict follow-up is tracked in KI-134; the missing-tag sync failure is tracked by netcup NC-56.

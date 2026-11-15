@@ -1,0 +1,15 @@
+/augeas/files/etc/fstab/error = "put_failed"
+/augeas/files/etc/fstab/error/path = "/files/etc/fstab/files/etc/fstab/01"
+/augeas/files/etc/fstab/error/lens = "/usr/share/augeas/lenses/dist/fstab.aug:25.17-33.38:"
+/augeas/files/etc/fstab/error/message = "Failed to match tree under /files/etc/fstab/01\n\n     { \"spec\" = \"UUID=bb\" }\n     { \"file\" = \"/data\" }\n     { \"vfstype\" = \"ext4\" }\n     { \"opt\" = \"errors=remount-ro\" }\n     { \"dump\" = \"0\" }\n     { \"passno\" = \"2\" }\n\n  with pattern\n   \n    { /spec/ = /[^\\t\\n #,][^\\t\\n ]*/ }\n    { /file/ = /[^\\t\\n #]+/ }\n    { /vfstype/ = /[^\\t\\n #,=]+/ }\n(\n    { /vfstype/ = /[^\\t\\n #,=]+/ })*\n(\n    { /opt/ = /[^\\t\\n #,=]+/ }\n(\n    { /opt/ = /[^\\t\\n #,=]+/ })*\n(\n    { /dump/ = /[0-9]+/ }\n(\n    { /passno/ = /[0-9]+/ })?)?)?\n    ({ /#comment/ = /[^\\t\\n\\r ].*[^\\t\\n\\r ]|[^\\t\\n\\r ]/ }\n      | ())\n"
+[exit=1]
+--- same, but save error detail via separate load of /augeas tree (-r not needed): use 'errors'-less approach:
+error: Failed to execute command
+saving failed (run 'errors' for details)
+error: Failed to execute command
+saving failed (run 'errors' for details)
+[exit=1]
+--- with -e/--echo? and with set /augeas/save? try: augtool ... ; interactive stdin 'errors' after failing save
+error: Failed to execute command
+saving failed (run 'errors' for details)
+[exit=0]

@@ -1042,8 +1042,11 @@ def test_execute_request_rejects_invalid_protocol_shapes(payload):
 
 def test_response_writer_handles_partial_writes_and_rejects_bad_output(monkeypatch):
     writes = []
+    real_write = _window_host.os.write
 
-    def partial_write(_fd, view):
+    def partial_write(fd, view):
+        if fd != 1:
+            return real_write(fd, view)
         chunk = bytes(view[:2])
         writes.append(chunk)
         return len(chunk)
@@ -1055,7 +1058,11 @@ def test_response_writer_handles_partial_writes_and_rejects_bad_output(monkeypat
     with pytest.raises(ValueError, match="size limit"):
         _window_host._write_response(1, {"ok": True})
     monkeypatch.setattr(_window_host, "_RESPONSE_LIMIT_BYTES", 100)
-    monkeypatch.setattr(_window_host.os, "write", lambda *_a: 0)
+    monkeypatch.setattr(
+        _window_host.os,
+        "write",
+        lambda fd, view: 0 if fd == 1 else real_write(fd, view),
+    )
     with pytest.raises(OSError, match="stopped accepting"):
         _window_host._write_response(1, {"ok": True})
 
@@ -1702,10 +1709,13 @@ def test_window_host_pid_report_validation_and_candidate_cleanup(
     monkeypatch.setenv("ASSAY_WINDOW_HOST_CANDIDATE_FD", "3")
     with pytest.raises(Exception, match="descriptor or pid is invalid"):
         process_tree_module._report_window_host_candidate_pid(0)
+    real_write = process_tree_module.os.write
     monkeypatch.setattr(
         process_tree_module.os,
         "write",
-        lambda *_args: (_ for _ in ()).throw(OSError("closed")),
+        lambda fd, data: (_ for _ in ()).throw(OSError("closed"))
+        if fd == 3
+        else real_write(fd, data),
     )
     with pytest.raises(Exception, match="cannot report candidate process"):
         process_tree_module._report_window_host_candidate_pid(123)
@@ -1730,3 +1740,15 @@ def test_liveness_host_spec_declines_injected_process_seams(tmp_path):
         sleep=lambda _delay: None,
     )
     assert process_runner.assay_window_host_spec() is None
+
+
+def test_a_non_object_underlying_outcome_is_refused_on_the_host_wire():
+    """B251: the window-host result carries the completed command outcome as
+    an object or null; any other wire value is a protocol error, not data."""
+    plan = _plan((sys.executable, "-c", "pass"))
+    payload = _window_host._command_result_to_payload(
+        _command_result(plan, outcome=Outcome.PASS, reason_code=None, returncode=0)
+    )
+    payload["underlying_outcome"] = "PASS"
+    with pytest.raises(ValueError, match="underlying outcome must be an object or null"):
+        _window_host._command_result_from_payload(plan, payload)

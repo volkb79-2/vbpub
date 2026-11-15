@@ -202,3 +202,17 @@ are enabled.
   btrfs filesystem. An undeletable subvolume is a refusal that names the path and the missing mount option, never a partial
   removal. Closes when a fake-backend test shows the order (subvolumes first, then the tree) and a live btrfs test removes a
   worktree holding a nested subvolume.
+- **WT-OW-03 tests must scope process-wide `os.*` syscall fakes.** Filed
+  2026-11-12 from the pytest 9.2 process-wide filesystem-mock audit. Pytest
+  9.2 calls `os.fstat` during capture and teardown. The path-inspection tests
+  now scope `os.lstat`/`os.stat` to the fixture path and delegate unrelated
+  calls to the saved real function. Future process-wide `os.*`,
+  `builtins.open`, or `io.open` patches must apply only to the fd/path under
+  test. The admin-directory symlink refusal test proves the refusal outcome,
+  but does not kill a guard-removal mutant: a later intact traversal check
+  still refuses the path. Keep that distinction in the mutation evidence.
+  Close when no non-delegating exact-symbol patch remains; the registered
+  R0/R1/R3 lane and its 100% coverage floor pass on the clean final commit;
+  and tests-only changes report R2 `INCONCLUSIVE/NO_MUTANTS` rather than
+  claiming a mutation pass. Any production guard changed by this work has a
+  focused mutant-killing oracle.

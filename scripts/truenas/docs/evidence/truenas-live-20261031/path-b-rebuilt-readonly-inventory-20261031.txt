@@ -1,0 +1,53 @@
+VERSION
+27.0.0-RC.1
+V27_PATCH_RECORD
+{
+  "bundle_sha256": "9d96a3ae5603f33f470cf23929b5f3857a48b85d7055da76060a58bc0a6d0409",
+  "kvm_device": false,
+  "patch": "v27",
+  "recommended_zvol_blocksize_boot_pool": "boot-pool-defaults-to-16k-v1",
+  "root_create_guard": "root-excluded-from-descendant-readiness-v1",
+  "root_parent_mountpoint_guard": "root-create-skips-parent-mountpoint-none-v1",
+  "supported": true,
+  "version": "27.0.0-RC.1"
+}
+POOLS
+boot-disk-data	523986010112	1243136	523984766976
+boot-pool	20401094656	4237946880	16163147776
+  pool: boot-disk-data
+ state: ONLINE
+config:
+
+	NAME            STATE     READ WRITE CKSUM
+	boot-disk-data  ONLINE       0     0     0
+	  vda4          ONLINE       0     0     0
+
+errors: No known data errors
+
+  pool: boot-pool
+ state: ONLINE
+config:
+
+	NAME        STATE     READ WRITE CKSUM
+	boot-pool   ONLINE       0     0     0
+	  vda3      ONLINE       0     0     0
+
+errors: No known data errors
+PATH_B_MOUNT
+boot-disk-data zfs /mnt/boot-disk-data
+DISK
+NAME           SIZE TYPE PARTN PARTUUID
+vda    549755813888 disk       
+├─vda1      1048576 part     1 37a32e95-a68a-46a3-a24c-350c8e68e7ee
+├─vda2    536870912 part     2 a947a881-a066-4300-a705-a9f0755f1c73
+├─vda3  20934802944 part     3 df7b184a-2457-4c2d-af69-737efcb13aab
+└─vda4 528280960512 part     4 4811130d-8e21-41c3-becb-9e4c24ebe137
+
+Caution: Partition 3 doesn't end on a 2048-sector boundary. This may
+result in problems with some disk encryption tools.
+
+Caution: Partition 4 doesn't end on a 2048-sector boundary. This may
+result in problems with some disk encryption tools.
+
+No problems found. 4095 free sectors (2.0 MiB) available in 2
+segments, the largest of which is 4062 (2.0 MiB) in size.

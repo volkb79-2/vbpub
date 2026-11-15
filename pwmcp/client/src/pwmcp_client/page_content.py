@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 from html.parser import HTMLParser
+from typing import cast
 from urllib.parse import urljoin
 
 
@@ -36,6 +37,23 @@ _BLOCK_TAGS = frozenset({
 _IGNORED_TAGS = frozenset({"script", "style", "noscript", "template"})
 _PAGE_CHROME_TAGS = frozenset({"header", "nav", "footer"})
 _ZERO_WIDTH = re.compile("[\u200b-\u200d\u202a-\u202e\u2060\u2066-\u2069\ufeff\U000e0000-\U000e007f]")
+_UNRESOLVED_CSS_VALUE = "<pwmcp-unresolved-css-value>"
+_CSS_WHITESPACE = " \t\n\r\f"
+_CSS_ESCAPED_WHITESPACE = "\ufffd"
+_CSS_WHITESPACE_RUN = re.compile(r"[ \t\n\r\f]+")
+# CSS keywords and property names fold ASCII case only. Unicode lowercasing
+# maps U+212A KELVIN SIGN to ASCII "k".
+_ASCII_LOWER = str.maketrans("ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz")
+_DISPLAY_OUTSIDE = frozenset({"block", "inline"})
+_DISPLAY_INSIDE = frozenset({"flow", "flow-root", "table", "flex", "grid", "ruby"})
+_DISPLAY_LIST_ITEM_INSIDE = frozenset({"flow", "flow-root"})
+_DISPLAY_INTERNAL = frozenset({
+    "table-row-group", "table-header-group", "table-footer-group", "table-row", "table-cell",
+    "table-column-group", "table-column", "table-caption",
+})
+_DISPLAY_SINGLE = frozenset({
+    "none", "contents", "list-item", "inline-block", "inline-table", "inline-flex", "inline-grid",
+}) | _DISPLAY_OUTSIDE | _DISPLAY_INSIDE | _DISPLAY_INTERNAL
 # Static hiding only: a CSS class that computes to display:none cannot be read from HTML.
 
 
@@ -74,8 +92,8 @@ def _walk(node: _Node):
             yield from _walk(child)
 
 
-def _strip_css_comments(style: str) -> str | None:
-    """Remove CSS comments outside strings, returning ``None`` for malformed input."""
+def _strip_css_comments(style: str, comment_separator: str = "") -> str | None:
+    """Remove CSS comments outside strings, optionally preserving their token boundary."""
 
     result: list[str] = []
     quote: str | None = None
@@ -87,8 +105,13 @@ def _strip_css_comments(style: str) -> str | None:
             result.append(char)
             if escaped:
                 escaped = False
+                if char == "\r" and index + 1 < len(style) and style[index + 1] == "\n":
+                    result.append("\n")
+                    index += 1
             elif char == "\\":
                 escaped = True
+            elif char in "\r\n\f":
+                return None
             elif char == quote:
                 quote = None
             index += 1
@@ -97,7 +120,16 @@ def _strip_css_comments(style: str) -> str | None:
             end = style.find("*/", index + 2)
             if end < 0:
                 return None
+            result.append(comment_separator)
             index = end + 2
+            continue
+        if char == "\\":
+            result.append(char)
+            if index + 1 < len(style):
+                result.append(style[index + 1])
+                index += 2
+            else:
+                index += 1
             continue
         if char in {'"', "'"}:
             quote = char
@@ -122,12 +154,18 @@ def _split_css(value: str, delimiter: str) -> list[str] | None:
         if quote is not None:
             if escaped:
                 escaped = False
+                if char == "\r" and index + 1 < len(value) and value[index + 1] == "\n":
+                    index += 1
             elif char == "\\":
                 escaped = True
+            elif char in "\r\n\f":
+                return None
             elif char == quote:
                 quote = None
         elif char in {'"', "'"}:
             quote = char
+        elif char == "\\":
+            index += 1
         elif char == "(":
             depth += 1
         elif char == ")":
@@ -144,6 +182,81 @@ def _split_css(value: str, delimiter: str) -> list[str] | None:
     return parts
 
 
+def _decode_css_escapes(value: str, *, preserve_escaped_whitespace: bool = False) -> str | None:
+    """Decode CSS escapes outside strings, returning ``None`` for invalid escapes."""
+
+    result: list[str] = []
+    quote: str | None = None
+    escaped = False
+    index = 0
+    while index < len(value):
+        char = value[index]
+        if quote is not None:
+            result.append(char)
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == quote:
+                quote = None
+            index += 1
+            continue
+        if char in {'"', "'"}:
+            quote = char
+            result.append(char)
+            index += 1
+            continue
+        if char != "\\":
+            result.append(char)
+            index += 1
+            continue
+
+        index += 1
+        if index >= len(value) or value[index] in "\r\n\f":
+            return None
+        if value[index] in "0123456789abcdefABCDEF":
+            hex_start = index
+            while index < len(value) and index - hex_start < 6 and value[index] in "0123456789abcdefABCDEF":
+                index += 1
+            codepoint = int(value[hex_start:index], 16)
+            if codepoint == 0 or codepoint > 0x10FFFF or 0xD800 <= codepoint <= 0xDFFF:
+                codepoint = 0xFFFD
+            decoded = chr(codepoint)
+            result.append(
+                _CSS_ESCAPED_WHITESPACE
+                if preserve_escaped_whitespace and decoded in _CSS_WHITESPACE
+                else decoded
+            )
+            if index < len(value) and value[index] in " \t\r\n\f":
+                if value[index] == "\r" and index + 1 < len(value) and value[index + 1] == "\n":
+                    index += 1
+                index += 1
+            continue
+        escaped_char = value[index]
+        result.append(
+            _CSS_ESCAPED_WHITESPACE
+            if preserve_escaped_whitespace and escaped_char in _CSS_WHITESPACE
+            else escaped_char
+        )
+        index += 1
+    if quote is not None or escaped:
+        return None
+    return "".join(result)
+
+
+def _strip_css_whitespace(value: str) -> str:
+    """Trim CSS Syntax whitespace without treating Unicode separators as whitespace."""
+
+    return value.strip(_CSS_WHITESPACE)
+
+
+def _split_css_whitespace(value: str) -> list[str]:
+    """Split CSS keywords on CSS Syntax whitespace only."""
+
+    stripped = _strip_css_whitespace(value)
+    return _CSS_WHITESPACE_RUN.split(stripped) if stripped else []
+
+
 def _priority_value(value: str) -> tuple[str, bool]:
     """Remove a trailing top-level ``!important`` from an already validated value."""
 
@@ -152,12 +265,12 @@ def _priority_value(value: str) -> tuple[str, bool]:
     depth = 0
     bang = -1
     for index, char in enumerate(value):
-        if quote is not None:
-            if escaped:
-                escaped = False
-            elif char == "\\":
-                escaped = True
-            elif char == quote:
+        if escaped:
+            escaped = False
+        elif char == "\\":
+            escaped = True
+        elif quote is not None:
+            if char == quote:
                 quote = None
         elif char in {'"', "'"}:
             quote = char
@@ -167,15 +280,77 @@ def _priority_value(value: str) -> tuple[str, bool]:
             depth -= 1
         elif depth == 0 and char == "!":
             bang = index
-    if bang < 0 or value[bang + 1 :].strip().lower() != "important":
-        return value.strip(), False
-    return value[:bang].strip(), True
+    if bang < 0:
+        return _strip_css_whitespace(value), False
+    priority = _decode_css_escapes(_strip_css_whitespace(value[bang + 1 :]))
+    if priority is None or priority.translate(_ASCII_LOWER) != "important":
+        return _strip_css_whitespace(value), False
+    return _strip_css_whitespace(value[:bang]), True
 
 
-def _style_declarations(style: str) -> dict[str, str] | None:
+def _display_value_is_valid(value: str) -> bool:
+    """Accept the static single and multi-keyword values in CSS Display 3."""
+
+    words = _split_css_whitespace(value)
+    if len(words) == 1:
+        return words[0] in _DISPLAY_SINGLE
+    if len(set(words)) != len(words):
+        return False
+    if len(words) == 2:
+        pair = set(words)
+        return (
+            (len(pair & _DISPLAY_OUTSIDE) == 1 and len(pair & _DISPLAY_INSIDE) == 1)
+            or (
+                "list-item" in pair
+                and len(pair & (_DISPLAY_OUTSIDE | _DISPLAY_LIST_ITEM_INSIDE)) == 1
+            )
+        )
+    if len(words) != 3:
+        return False
+    word_set = set(words)
+    expected = (
+        {"list-item"}
+        | (word_set & _DISPLAY_OUTSIDE)
+        | (word_set & _DISPLAY_LIST_ITEM_INSIDE)
+    )
+    return (
+        "list-item" in word_set
+        and word_set == expected
+        and len(word_set & _DISPLAY_OUTSIDE) == 1
+        and len(word_set & _DISPLAY_LIST_ITEM_INSIDE) == 1
+    )
+
+
+def _display_property_value(value: str) -> str | None:
+    """Keep valid static display values; fail closed when computation is unknown."""
+
+    if value in {"initial", "unset"}:
+        return "inline"
+    if value in {"inherit", "revert", "revert-layer"} or (
+        value.startswith("var(") and value.endswith(")")
+    ):
+        return _UNRESOLVED_CSS_VALUE
+    return value if _display_value_is_valid(value) else None
+
+
+def _visibility_property_value(value: str) -> str | None:
+    """Keep valid static visibility values; fail closed when computation is unknown."""
+
+    if value == "initial":
+        return "visible"
+    if value in {"inherit", "unset", "revert", "revert-layer"} or (
+        value.startswith("var(") and value.endswith(")")
+    ):
+        return _UNRESOLVED_CSS_VALUE
+    if value == "collapse":
+        return "hidden"
+    return value if value in {"visible", "hidden"} else None
+
+
+def _style_declarations(style: str, comment_separator: str = "") -> dict[str, str] | None:
     """Parse inline declarations, retaining the winning value for each property."""
 
-    uncommented = _strip_css_comments(style)
+    uncommented = _strip_css_comments(style, comment_separator)
     if uncommented is None:
         return None
     declarations = _split_css(uncommented, ";")
@@ -183,26 +358,204 @@ def _style_declarations(style: str) -> dict[str, str] | None:
         return None
     winners: dict[str, tuple[bool, str]] = {}
     for declaration in declarations:
-        if not declaration.strip():
+        if not _strip_css_whitespace(declaration):
             continue
         property_name, separator, value = declaration.partition(":")
         if not separator:
             return None
-        property_name = property_name.strip().lower()
+        property_name = _decode_css_escapes(_strip_css_whitespace(property_name))
+        if property_name is None:
+            return None
+        property_name = property_name.translate(_ASCII_LOWER)
         if not property_name:
             return None
         value, important = _priority_value(value)
+        value = _decode_css_escapes(
+            value,
+            preserve_escaped_whitespace=property_name in {"display", "visibility"},
+        )
+        if value is None:
+            return None
+        value = value.translate(_ASCII_LOWER)
+        if property_name == "display":
+            value = _display_property_value(value)
+            if value is None:
+                continue
+        elif property_name == "visibility":
+            value = _visibility_property_value(value)
+            if value is None:
+                continue
         previous = winners.get(property_name)
         if previous is None or important or not previous[0]:
-            winners[property_name] = (important, value.lower())
+            winners[property_name] = (important, value)
     return {name: value for name, (_important, value) in winners.items()}
 
 
-def _style_is_hidden(style: str) -> bool:
-    declarations = _style_declarations(style)
-    return declarations is not None and (
-        declarations.get("display") == "none" or declarations.get("visibility") == "hidden"
+def _declarations_hide(declarations: dict[str, str]) -> bool:
+    return (
+        declarations.get("display") in {"none", _UNRESOLVED_CSS_VALUE}
+        or declarations.get("visibility") in {"hidden", _UNRESOLVED_CSS_VALUE}
     )
+
+
+def _contains_hiding_declaration(fragment: str, comment_separator: str = "") -> bool:
+    """Find an existing hidden marker in a best-effort, independently parsed fragment."""
+
+    uncommented = _strip_css_comments(fragment, comment_separator)
+    if uncommented is None:
+        return False
+    declarations = _split_css(uncommented, ";")
+    if declarations is None:
+        return False
+    for declaration in declarations:
+        if not _strip_css_whitespace(declaration):
+            continue
+        parsed = _style_declarations(declaration, comment_separator)
+        if parsed is not None and _declarations_hide(parsed):
+            return True
+    return False
+
+
+def _append_recovered_declaration(
+    segment: str,
+    recovered: list[str],
+    comment_separator: str = "",
+) -> bool:
+    """Keep one complete valid declaration, reporting a hiding signal if malformed."""
+
+    if not _strip_css_whitespace(segment):
+        return False
+    if _style_declarations(segment, comment_separator) is None:
+        return _contains_hiding_declaration(segment, comment_separator)
+    recovered.append(segment)
+    return False
+
+
+def _recover_malformed_style(
+    style: str,
+    comment_separator: str = "",
+) -> tuple[dict[str, str], bool]:
+    """Recover independent complete declarations and hiding signals from malformed CSS."""
+
+    recovered: list[str] = []
+    malformed_hiding_signal = False
+    start = 0
+    fragment_start = 0
+    index = 0
+    quote: str | None = None
+    quote_start = -1
+    escaped = False
+    depth = 0
+    paren_start = -1
+
+    while index < len(style):
+        char = style[index]
+        if quote is not None:
+            if escaped:
+                escaped = False
+                if char == "\r" and index + 1 < len(style) and style[index + 1] == "\n":
+                    index += 1
+            elif char == "\\":
+                escaped = True
+            elif char == quote:
+                quote = None
+                quote_start = -1
+            elif char in "\r\n\f":
+                if depth:
+                    if paren_start >= fragment_start:
+                        malformed_hiding_signal |= _contains_hiding_declaration(
+                            style[fragment_start:paren_start], comment_separator
+                        )
+                else:
+                    malformed_hiding_signal |= _contains_hiding_declaration(
+                        style[fragment_start:quote_start], comment_separator
+                    )
+                quote = None
+                quote_start = -1
+                if char == "\r" and index + 1 < len(style) and style[index + 1] == "\n":
+                    index += 1
+                fragment_start = index + 1
+            index += 1
+            continue
+        if style.startswith("/*", index):
+            end = style.find("*/", index + 2)
+            if end < 0:
+                malformed_hiding_signal |= _contains_hiding_declaration(
+                    style[start:index], comment_separator
+                )
+                malformed_hiding_signal |= _contains_hiding_declaration(
+                    style[index + 2 :], comment_separator
+                )
+                break
+            index = end + 2
+            continue
+        if char in {'"', "'"}:
+            quote = char
+            quote_start = index
+        elif char == "(":
+            if depth == 0:
+                paren_start = index
+            depth += 1
+        elif char == ")":
+            if depth:
+                depth -= 1
+                if depth == 0:
+                    paren_start = -1
+            else:
+                malformed_hiding_signal |= _contains_hiding_declaration(
+                    style[start:index], comment_separator
+                )
+                start = index + 1
+                fragment_start = start
+        elif char == ";" and depth == 0:
+            malformed_hiding_signal |= _append_recovered_declaration(
+                style[start:index], recovered, comment_separator
+            )
+            start = index + 1
+            fragment_start = start
+        elif char == "\\":
+            index += 1 if index + 1 >= len(style) else 2
+            continue
+        index += 1
+    else:
+        if quote is not None or escaped:
+            if depth:
+                if paren_start >= fragment_start:
+                    malformed_hiding_signal |= _contains_hiding_declaration(
+                        style[fragment_start:paren_start], comment_separator
+                    )
+            else:
+                malformed_hiding_signal |= _contains_hiding_declaration(
+                    style[fragment_start:quote_start], comment_separator
+                )
+        elif depth:
+            if paren_start >= fragment_start:
+                malformed_hiding_signal |= _contains_hiding_declaration(
+                    style[fragment_start:paren_start], comment_separator
+                )
+        else:
+            malformed_hiding_signal |= _append_recovered_declaration(
+                style[start:], recovered, comment_separator
+            )
+
+    # Every retained segment parsed strictly; joining at top-level boundaries preserves validity.
+    declarations = cast(
+        dict[str, str], _style_declarations(";".join(recovered), comment_separator)
+    )
+    return declarations, malformed_hiding_signal
+
+
+def _style_is_hidden(style: str) -> bool:
+    for comment_separator in ("", " "):
+        declarations = _style_declarations(style, comment_separator)
+        if declarations is not None:
+            if _declarations_hide(declarations):
+                return True
+            continue
+        recovered, malformed_hiding_signal = _recover_malformed_style(style, comment_separator)
+        if malformed_hiding_signal or _declarations_hide(recovered):
+            return True
+    return False
 
 
 def _is_hidden(node: _Node) -> bool:

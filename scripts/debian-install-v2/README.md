@@ -1,3 +1,5 @@
+<!-- Evidence scrub 2026-11-10: environment-specific host identities, host addresses, controller paths, SSH key material and fingerprints were normalized to neutral placeholders; command output and verdict text are otherwise unchanged. -->
+<!-- Evidence scrub 2026-11-10: environment-specific home, checkout, worktree, and per-run temporary paths were normalized to neutral placeholders; command output and verdict text are otherwise unchanged. -->
 # debian-install-v2
 
 An idempotent, config-driven bootstrap installer for fresh Debian VPS hosts
@@ -10,7 +12,8 @@ both starting-disk shapes (see "Case A vs. Case B" below).
 Design/status docs elsewhere in this tree, not duplicated here:
 `CASE-B-ROOT-SHRINK-DESIGN.md` (the offline root-shrink mechanism), `TODO.md`
 + `zswap-shrinker-threshold-feasibility.md` (open zswap-shrinker work),
-`testing/vm/DESIGN.md` (the QEMU/TCG test-VM harness).
+`testing/vm/DESIGN.md` (the QEMU/TCG test-VM harness), and the retained
+[data-area design review](docs/DESIGN-data-area-v2-REVIEW-2026-11-05.md).
 
 ## Operator CLI
 
@@ -332,7 +335,7 @@ messages: [docs/DESIGN-data-area-v2.md](docs/DESIGN-data-area-v2.md).
   installed or started, without a stop or seed step. The supported journal
   exception is `/var/log/journal` and its descendants; `/var/log` and other log
   paths stay protected. The refusal names the requested mount and reason. Data
-  mounts such as `/srv/cow`, `/srv/data`, `/home/runner`, and
+  mounts such as `/srv/cow`, `/srv/data`, `<home>`, and
   `/var/log/journal` are allowed when they do not cover protected state. Equal
   and nested planned mounts are refused. See
   [Data mount safety](docs/DESIGN-GUIDE.md#data-mount-safety) for the rationale.
@@ -448,8 +451,25 @@ replace the earlier `ksm-config.service` / `thp-config.service` units; on a
 re-run or resume those old units are disabled and removed if present.
 
 - THP: `enabled=madvise`, `defrag=madvise`.
-- KSM: `run=1`, `advisor_mode=scan-time`, `advisor_target_scan_time=200`,
-  `use_zero_pages=1` (installed when `run_ksm` is true).
+- KSM: `run=1`, `advisor_mode=scan-time`, `advisor_max_cpu=10` (percent of
+  one CPU), `sleep_millisecs=100`, `advisor_target_scan_time=300` seconds,
+  `use_zero_pages=1`
+  (installed when `run_ksm` is true). The installer config keys
+  `ksm_advisor_max_cpu_percent` (1–100) and
+  `ksm_target_scan_time_seconds` (positive seconds) override the advisor
+  values; `ksm_sleep_millisecs` (positive milliseconds) sets the scanner's
+  wake-up interval. Measurements showed the advisor CPU cap alone did not
+  bind for a small opted-in set, while a 100 ms sleep lowered ksmd from about
+  15% to about 4% of one core under load. See the
+  [DESIGN-GUIDE](docs/DESIGN-GUIDE.md#ksm-scan-budget) for the rationale.
+
+The advisor knobs are available on kernels that provide the KSM scan-time
+advisor (Linux 6.8 and later); a missing sysfs knob warns for that entry while
+the installer continues and applies the remaining entries. Existing hosts
+need the drop-in refreshed with the desired values. Rerun the installer step
+to write and apply it, or update the KSM entries manually and then
+run `systemd-tmpfiles --create --boot /etc/tmpfiles.d/vbpub-ksm.conf` as root.
+`--boot` is required because the entries use `w!`.
 
 ### cgroup2 and sysctls
 
@@ -556,7 +576,7 @@ stage1 upgrade is reported as "reboot required". The enabled stage2 unit still
 starts at the next boot, whoever causes that boot. It is not a hold on stage2.
 
 Provider-driven restarts are outside the installer's control. On netcup (live
-finding LT-F-r1002-04, run LT-04-run3) the provider's cloud-init ends with
+finding LT-F-<host>-04, run LT-04-run3) the provider's cloud-init ends with
 `Post-Script finished / restarting... / Poweroff requested`, so the host is
 restarted after the customScript returns REGARDLESS of `never_reboot`. The
 enabled stage2 unit then runs on that boot (about a minute after it), without
@@ -586,7 +606,7 @@ Full Docker CE install from Docker's own official apt repo
 `docker_live_restore`, `docker_default_address_pools`), plus a cleanup timer
 (`docker_cleanup_max_age_hours`) that prunes stale images/containers.
 
-`docker_default_address_pools` (default `[{"base":"10.240.0.0/16","size":24}]`,
+`docker_default_address_pools` (default `[{"base":"<host-address>/16","size":24}]`,
 from mdt MDT-002) is rendered as `default-address-pools` in the same
 `daemon.json`. Each pool needs a valid network `base` and an integer `size`
 with `base prefix <= size <= 30` (IPv4) / `<= 128` (IPv6); at most 16 pools,

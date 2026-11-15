@@ -351,59 +351,199 @@ campaign from that configuration must be restarted under the native lane.
 ## IBX host study
 
 This is the one-off, host-root ladder error study, separate from
-`iobench calibrate`. Use only the approved study host and its dedicated 32 GiB
-`iobench-raw` partition (`/dev/vda5` in the study design). It writes and
+`iobench calibrate`. Its meter is capped at 500 GB decimal. The maximum base
+schedule uses 495.122866176 GB; the part (c) repeat (49.123688448 GB) and both
+raw repeats (40.999899136 GB each) are skipped because none fits in the
+remaining 4.877133824 GB. Every writer cap is rounded down to whole fio blocks;
+the nominal 15/26/100 GB rung budgets have effective writer sums of
+14.999912448/25.999986688/99.999891456 GB. Each optional file-standard set
+has a nominal 100 GB budget and an effective 99.999891456 GB cap; it runs only
+if its remaining cap and every unpaid required cell-set still ahead fit;
+otherwise it reports `skipped`. Use
+only the approved disposable compute host and its dedicated 32 GiB
+`iobench-raw` partition. It writes and
 discards target data, formats the partition for the two file-target legs, and
 leaves it unformatted at the end. The driver refuses to start if the target,
-identity acknowledgement, IO-control state, timer state, or host-policy stop
-thresholds are wrong. Raw runs require the exact `/dev/vda5:SIZE_BYTES:PARTUUID`
-value checked against the approved target inventory; resume refuses a changed
-size or PARTUUID. Keep the complete timer stop/restore and slot schedule from the
-[study-day procedure](../studies/ibx/README.md). Before raw writes or discard,
-the driver refuses whole disks, mounted or swap-active partitions, active
-exclusive claims, holders, and devices that contain the running system.
+identity acknowledgement, IO-control state, timer state on live runs, or
+host-policy stop thresholds are wrong. Raw runs require the exact target path,
+size, and PARTUUID from the approved inventory; resume refuses a changed size
+or PARTUUID. A raw partition sharing the running system disk refuses by default.
+`--min-output-free` measures free space on the filesystem containing `--out`;
+`--min-target-free` measures the filesystem containing an ext4 or Btrfs target
+file and is not sampled for raw partition runs. Both floors are saved in the
+stop policy and must be reused unchanged on resume. For the 32 GiB study
+partition with its 24 GiB target file, choose a target floor below the remaining
+free space; an approved 20 GiB output floor and 1 GiB target floor are distinct
+example values.
+The operator can opt in only with both `--allow-system-disk-partition` and a
+fresh `system-disk-ack` value derived from hostname, disk, root filesystem
+device(s), and the target PARTUUID. The flag is the operator's consent; the
+per-run value is a drift check that binds it to current host and target facts.
+This exception does not relax any other guard. Its acknowledgement, stable
+system-disk identity, and per-attempt system mounts and sibling swap devices
+are stored in run state and included in the analysis; those results include
+system and sibling-swap activity. Resume refuses changed stable identity but
+accepts changed mount/swap observations and records them per attempt. A changed
+stop policy refuses resume and reports the recorded policy. Preserve the state
+and resume only with those values; if that policy cannot be used, obtain an
+operator decision. A new `--out` directory resets the byte and elapsed-time
+meters and requires explicit approval as a new budget. Keep the complete timer
+stop/restore and slot schedule
+from the [study-day procedure](../studies/ibx/README.md). Before raw writes or
+discard, the driver refuses whole disks, a mounted or swap-active target
+partition, active exclusive claims, and holders.
+The IO-control preflight checks `io.max`, `io.weight`, and `io.bfq.weight` on
+the benchmark cgroup and its ancestors. A kernel or cgroup that omits an optional control
+file has no setting there, so the dry-run can pass that layout; an existing
+unreadable or malformed control, an active `io.max`, a non-default
+`io.weight`, non-default `io.bfq.weight`, enabled io.cost QoS, or a user/custom
+io.cost model still refuses. Because `io.latency` can throttle peer groups, the
+driver also enumerates the benchmark's direct peers at each level of its
+cgroup path and refuses active latency targets on every check. Peer
+`io.weight` is not judged. The target disk scheduler is read from
+`/sys/block/<disk>/queue/scheduler` and recorded in the run manifest and IO
+snapshot. Peer `io.bfq.weight` is judged when the selected target scheduler is
+`bfq`; any known non-BFQ scheduler makes those peer weights inert, including
+`none` and `mq-deadline`.
+A missing, unreadable, or malformed scheduler is recorded as unknown and
+causes a conservative peer BFQ check, with a clear dry-run manifest message.
+Peer membership is excluded from before/after equality because systemd
+services and containers can come and go. Missing optional files mean no
+setting, and benchmark-chain values plus scheduler state are compared before
+and after a cell-set. The kernel-managed `ctrl=auto model=linear` cost model
+is not considered custom.
+The [study README](../studies/ibx/README.md) maps saved stop-policy fields to
+their run options.
 
-From the repository root, set the four threshold variables to values supplied
-by the study host's approved policy, then plan the run and start the t0 set:
+Before the first live study cell, rehearse the planner and real fio end to end
+with upstream fio 3.39. From the repository root, point `STUDY` at the driver
+and `FIO` at that binary; the rehearsal creates only an 8 MiB regular file
+inside a fresh `/tmp` output directory:
+
+```bash
+set -euo pipefail
+STUDY="$PWD/libraries/iobench/studies/ibx/driver.py"
+FIO=/path/to/fio-3.39
+OUT=$(mktemp -d /tmp/ibx-fio-rehearsal.XXXXXX)
+python3 "$STUDY" plan --test-scale --json
+python3 "$STUDY" rehearse --fio "$FIO" --out "$OUT"
+test -s "$OUT/rung-choice.md"
+cat "$OUT/rehearsal-transcript.txt"
+```
+
+`rehearse` runs all scheduled cell-sets and `analyze` with real fio JSON and
+prints `FIO-REHEARSAL-PASS` on success. Its test-scale mode accepts only the
+regular-file target it creates under the output directory in `/tmp`; it
+rejects block devices and other targets. The study acceptance section [0b](../studies/ibx/ACCEPTANCE.md#0b-rehearsal)
+lists the operations this rehearsal cannot cover and the dry-run checks that
+precede their live acceptance.
+
+From the repository root, set the stop-policy variables to values supplied by
+the study host's approved policy. Set `IBX_EXPECTED_HOST` from the approved run
+authorization; do not derive it from the connected host. The example checks
+that host before planning or starting a driver run:
 
 ```bash
 set -euo pipefail
 
 STUDY="$PWD/libraries/iobench/studies/ibx/driver.py"
 OUT="$PWD/libraries/iobench/artifacts/ibx-study"
-: "${IBX_MAX_IO_PSI:?set from study-host policy}"
-: "${IBX_MAX_MEMORY_PSI:?set from study-host policy}"
+: "${IBX_MAX_MEMORY_PSI:?set memory PSI full avg10 limit from study-host policy}"
+: "${IBX_MAX_PROBE_LATENCY:?set independent host-probe latency limit in seconds}"
+: "${IBX_PROBE_CONSECUTIVE_SAMPLES:?set consecutive slow-probe sample count}"
 : "${IBX_MIN_MEMAVAILABLE:?set from study-host policy}"
-: "${IBX_MIN_FREE:?set from study-host policy}"
+: "${IBX_MIN_OUTPUT_FREE:?set output-filesystem floor from study-host policy}"
+: "${IBX_MIN_TARGET_FREE:?set study-target filesystem floor from study-host policy}"
+: "${IBX_EXPECTED_HOST:?set the exact short hostname from approved run authorization}"
 # Read and check the exact path, byte size, and PARTUUID against the approved
 # inventory before setting this acknowledgement.
 : "${IBX_TARGET_CONFIRMATION:?set /dev/vda5:SIZE_BYTES:PARTUUID after checking the approved target inventory}"
-python3 "$STUDY" plan --out "$OUT"
 
-# The no-write rehearsal validates the raw target and renders every t0 fio job.
-host-escape -- python3 "$STUDY" run raw-t0 --target /dev/vda5 --device vda5 \
+assert_expected_host() {
+  : "${IBX_EXPECTED_HOST:?set the exact short hostname from approved run authorization}"
+  local actual_host
+  actual_host=$(host-escape -- hostname -s)
+  [[ $actual_host == "$IBX_EXPECTED_HOST" ]] || {
+    printf 'refusing: expected host %s, connected to %s\n' "$IBX_EXPECTED_HOST" "$actual_host" >&2
+    return 1
+  }
+}
+
+current_system_disk_ack() {
+  assert_expected_host || return 1
+  host-escape -- python3 "$STUDY" system-disk-ack --target /dev/vda5 --device vda5 \
+    --confirm-target "$IBX_TARGET_CONFIRMATION"
+}
+
+run_study() {
+  assert_expected_host || return 1
+  host-escape -- python3 "$STUDY" run "$@"
+}
+
+assert_expected_host || exit 1
+python3 "$STUDY" plan --out "$OUT" || exit 1
+
+# The target-read-only rehearsal validates the raw target and renders every t0 fio job.
+run_study raw-t0 --target /dev/vda5 --device vda5 \
   --target-type raw --confirm-target "$IBX_TARGET_CONFIRMATION" \
+  --allow-system-disk-partition --system-disk-ack "$(current_system_disk_ack)" \
   --confirm-quiet-window --offset 0B --size 24GiB --out "$OUT" --dry-run \
-  --max-io-psi "$IBX_MAX_IO_PSI" --max-memory-psi "$IBX_MAX_MEMORY_PSI" \
-  --min-memavailable "$IBX_MIN_MEMAVAILABLE" --min-free "$IBX_MIN_FREE"
+  --max-memory-psi "$IBX_MAX_MEMORY_PSI" \
+  --max-probe-latency-seconds "$IBX_MAX_PROBE_LATENCY" \
+  --probe-consecutive-samples "$IBX_PROBE_CONSECUTIVE_SAMPLES" \
+  --min-memavailable "$IBX_MIN_MEMAVAILABLE" \
+  --min-output-free "$IBX_MIN_OUTPUT_FREE" --min-target-free "$IBX_MIN_TARGET_FREE" || exit 1
 
-host-escape -- python3 "$STUDY" run raw-t0 --target /dev/vda5 --device vda5 \
+run_study raw-t0 --target /dev/vda5 --device vda5 \
   --target-type raw --confirm-target "$IBX_TARGET_CONFIRMATION" \
+  --allow-system-disk-partition --system-disk-ack "$(current_system_disk_ack)" \
   --confirm-quiet-window --offset 0B --size 24GiB --out "$OUT" \
-  --max-io-psi "$IBX_MAX_IO_PSI" --max-memory-psi "$IBX_MAX_MEMORY_PSI" \
-  --min-memavailable "$IBX_MIN_MEMAVAILABLE" --min-free "$IBX_MIN_FREE" \
-  --fsync-cell standard:seq1m-write
+  --max-memory-psi "$IBX_MAX_MEMORY_PSI" \
+  --max-probe-latency-seconds "$IBX_MAX_PROBE_LATENCY" \
+  --probe-consecutive-samples "$IBX_PROBE_CONSECUTIVE_SAMPLES" \
+  --min-memavailable "$IBX_MIN_MEMAVAILABLE" \
+  --min-output-free "$IBX_MIN_OUTPUT_FREE" --min-target-free "$IBX_MIN_TARGET_FREE" || exit 1
 python3 "$STUDY" analyze "$OUT" --output "$OUT/rung-choice.md"
 ```
 
 Run the remaining cell sets at their scheduled times in the full procedure.
 The driver writes resumable state and one JSON result per completed fio cell;
 repeat a completed cell-set command after interruption to resume idempotently.
-The t+6h standard rung and optional file-standard/raw-repeat sets run only when
-their design rules require them; otherwise the command reports `skipped` and
-exits successfully. Every read stays within the rung's fio-recorded written
-extent. Use the full procedure for the EXIT timer-restoration trap and the
-identity recheck before each formatting transition.
-The part-c repeat also reports `skipped` after a complete assessment that does
-not confirm degradation; incomplete part-c evidence remains a refusal.
+The t+6h standard rung and optional file-standard sets run only when their
+design rules require them and their remaining cap, plus any unpaid required
+remainder, fits; otherwise the command reports `skipped` and exits successfully.
+The part-c and raw t+12h repeats
+report `skipped` under the 500 GB cap. Every read stays within the rung's
+fio-recorded written extent. Use the full procedure for the EXIT
+timer-restoration trap and the identity recheck before each formatting
+transition. The live raw-target and Btrfs fio-log probes are
+[documented here](../studies/ibx/ACCEPTANCE.md).
 Do not run `raw-t0` on a development partition or a controller-owned disk.
+
+I/O PSI is recorded as advisory because the fio workload can itself drive it
+to 100%. The live stop rules use memory PSI `full avg10`, `MemAvailable`, and
+free-space floors, plus a bounded host-liveness service in `system.slice` that
+fsyncs a temporary file on the root filesystem, checks the SSH banner, and
+verifies the configured cockpit Docker container with `docker exec`. It does
+not require a systemd unit for the runner. SSH host and port default to
+`127.0.0.1:22` and can be set with `--liveness-ssh-host` and
+`--liveness-ssh-port`; the container defaults to `mdt-cockpit-runner` and can
+be set with `--liveness-cockpit-container`. A configured
+number of consecutive slow or failed probes stops
+the run; the existing byte and elapsed-time caps also apply. The dry-run checks
+target and policy facts plus a successful initial liveness probe, without
+requiring the fstrim, apt-daily, or governance timers to be stopped. The probe
+uses a bounded root-filesystem fsync, SSH banner and cockpit runner check. Live
+runs require those timers inactive and perform later probes at the recorded
+10-second default cadence (`--probe-interval-seconds` changes the interval).
+The dry-run reads diskstats, `/proc/pressure/io`, `/proc/pressure/memory`, and
+`/proc/meminfo`; a missing required file is reported as a path-specific
+`StudyError`. It also checks target discard support and required fio and
+target-operation tools before a pending study can pass.
+The first successful probe is required before any target discard or fio write.
+One timed-out probe remains failed until its transient unit is confirmed
+stopped; later failures count toward the configured consecutive-sample limit.
+`--fsync-cell` requires the driver to run inside a Docker cgroup scope with
+exactly one `docker-<64-hex-id>.scope` identity. Its dry-run verifies that
+scope, the configured background systemd slice, the wrapper, and the collector
+image; a root SSH session without that Docker scope gets a clear `StudyError`.

@@ -235,8 +235,12 @@ def test_progress_writer_closes_parent_when_the_parent_open_fails_with_oserror(t
     real_open = mutation.os.open
     calls = []
 
-    def flaky(*args, **kwargs):
-        calls.append(args[0])
+    def flaky(path, flags, *args, **kwargs):
+        if os.path.commonpath([
+            os.path.abspath(os.fspath(path)), os.path.abspath(tmp_path)
+        ]) != os.path.abspath(tmp_path):
+            return real_open(path, flags, *args, **kwargs)
+        calls.append(path)
         raise OSError("no parent for you")
 
     monkeypatch.setattr(mutation.os, "open", flaky)
@@ -255,7 +259,17 @@ def test_progress_writer_propagates_non_oserror_failures_and_releases_descriptor
     real_open = mutation.os.open
     parent_guard = open_guard = None
 
-    def explode(*_args, **_kwargs):
+    def explode(*args, **kwargs):
+        if args and isinstance(args[0], (str, bytes, os.PathLike)):
+            try:
+                inside = os.path.commonpath([
+                    os.path.abspath(os.fspath(args[0])),
+                    os.path.abspath(tmp_path),
+                ]) == os.path.abspath(tmp_path)
+            except ValueError:
+                inside = False
+            if not inside:
+                return real_open(*args, **kwargs)
         raise RuntimeError(where)
 
     if where == "parent-open":
@@ -468,24 +482,38 @@ def test_state_read_refuses_a_record_that_grows_past_the_limit_while_being_read(
     tmp_path, state_fd, monkeypatch
 ):
     monkeypatch.setattr(mutation, "MUTATION_STATE_RECORD_LIMIT", 8)
-    (tmp_path / _name()).write_bytes(b"x" * 20)
+    target = tmp_path / _name()
+    target.write_bytes(b"x" * 20)
     real_fstat = os.fstat
-    monkeypatch.setattr(
-        mutation.os,
-        "fstat",
-        lambda fd: SimpleNamespace(st_mode=stat.S_IFREG, st_size=0)
-        if fd != state_fd
-        else real_fstat(fd),
-    )
+
+    def small_record(fd):
+        info = real_fstat(fd)
+        try:
+            opened = os.path.realpath(os.readlink(f"/proc/self/fd/{fd}"))
+        except OSError:
+            return info
+        if opened != str(target.resolve()):
+            return info
+        return SimpleNamespace(st_mode=stat.S_IFREG, st_size=0)
+
+    monkeypatch.setattr(mutation.os, "fstat", small_record)
     with pytest.raises(mutation.MutationStateError, match="exceeds the 8-byte limit"):
         mutation._read_state_record_bytes(tmp_path, mutation.candidate_id(_job()), state_root_fd=state_fd)
 
 
 def test_state_read_reports_an_io_error_as_a_state_error(tmp_path, state_fd, monkeypatch):
-    (tmp_path / _name()).write_bytes(b"{}")
+    target = tmp_path / _name()
+    target.write_bytes(b"{}")
+    real_read = mutation.os.read
 
     def broken(fd, n):
-        raise OSError("EIO")
+        try:
+            opened = os.path.realpath(os.readlink(f"/proc/self/fd/{fd}"))
+        except OSError:
+            return real_read(fd, n)
+        if opened == str(target.resolve()):
+            raise OSError("EIO")
+        return real_read(fd, n)
 
     monkeypatch.setattr(mutation.os, "read", broken)
     with pytest.raises(mutation.MutationStateError, match="could not be read safely"):
@@ -897,6 +925,11 @@ def test_candidate_error_state_is_restricted_to_the_crashed_bucket(tmp_path):
         (
             {"underlying_outcome": {"outcome": "INVALID", "returncode": 0}},
             "has invalid underlying_outcome",
+        ),
+        ({"candidate_error": "EXEC_FAILED"}, "candidate_error must be an object"),
+        (
+            {"candidate_error": {"reason_code": "EXEC_FAILED"}},
+            "has invalid candidate_error",
         ),
         ({"underlying_outcome": None}, "inconsistent underlying_outcome"),
         (
@@ -1713,6 +1746,30 @@ def test_repeated_outcome_validation_failure_uses_total_crashed_fallback(
         "src/mod.py",
         "src/other.py",
     ]
+
+
+def test_a_worker_that_yields_no_run_cannot_shrink_the_verdict(tmp_path, monkeypatch):
+    """A candidate that is neither budget-excluded nor projected is refused by
+    name: a broken executor must not silently drop it from the buckets."""
+    from concurrent.futures import Future
+
+    class _EmptyPool:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_exc):
+            return False
+
+        def submit(self, *_args, **_kwargs):
+            future = Future()
+            future.set_result(None)
+            return future
+
+    with pytest.raises(mutation.MutationStateError, match="has no validated outcome projection"):
+        _execute(
+            tmp_path, monkeypatch, [_result(_ECHO_PLAN)],
+            executor_factory=lambda _jobs: _EmptyPool(),
+        )
 
 
 def test_candidate_outcome_error_text_is_bounded_by_utf8_bytes():

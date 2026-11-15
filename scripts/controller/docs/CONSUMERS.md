@@ -46,18 +46,73 @@ worktree's configured base range, including merges. Gate logs are read from
 in a bound log must be `PASS`. It reports a trailing pending wait as MID-WAIT,
 including “I am continuing to wait,” while quoted or historical wait mentions
 in a completed close are allowed. Use `any` when the run
-intentionally accepts the prototype's supported Codex or Claude trailers. A
+intentionally accepts the prototype's supported Codex or Claude trailers;
+multiple recognized trailers on one commit are allowed and reported as `INFO`.
+A usage-limit failure is reported with its parsed retry time instead of being
+masked by pending-wait text. Both `3:46 PM` and
+`Nov 17th, 2026 12:59 AM` retry forms are accepted; the latter is printed
+verbatim because no timezone is supplied in the message.
+
+When a dead wrapper leaves a Run-Gate container for a later invocation to
+collect, pass the report path normally. `job-check.sh` can bind the collection
+log only when it names one container containing the current head's
+eight-character prefix, an earlier log has the full `run-gate.commit` label on
+the same line as that container name, and the report names the container. A
+missing report, missing label, wrong commit label, or container without the
+head prefix leaves the gate evidence red. A
 missing `.done` marker prints `RUNNING (no .done)` and exits 0 even if the event
 stream is absent; this does not mean the child completed. Read the wrapper's
 `.done` marker for its exit status. See the
 [design guide](DESIGN-GUIDE.md#job-check-compatibility) for the checks.
 
+## Run Pi on Open Design
+
+`deepseek-pi` is the favored Pi route and alternates the two available Open
+Design accounts. Pin with `deepseek-pi-volker` or `deepseek-pi-github2`. The
+wrapper loads the selected key environment variable by sourcing
+`$HOME/.env.ai`; Pi provider definitions stay in the operator-owned
+`$HOME/.pi/agent/models.json`. Set `PI_MODEL`, `PI_THINKING`, or
+`PI_SESSION_DIR` in the local controller environment to override the defaults.
+
+Start the wrapper detached with an absolute prompt path:
+
+```bash
+nohup env CONTROLLER_HOME="$HOME/controller" PI_ROUTE=deepseek-pi \
+  scripts/controller/pi-impl.sh \
+  /path/to/worktree /absolute/path/to/brief.md pi-run \
+  > "$HOME/controller/logs/pi-run.launch.log" 2>&1 < /dev/null &
+```
+
+Check the stream, exit code, and account outcome with the route that was
+selected, then inspect current run/stall status:
+
+```bash
+scripts/controller/job-check.sh pi-run /path/to/worktree deepseek-pi
+scripts/controller/ctl-status.sh
+```
+
+A pi 402 may exit zero; the `.done` record uses `OUTCOME=USAGE-LIMIT` and the
+shared account state stores the reset. Resume by the saved pi session id; the
+wrapper uses the recorded account and applies the shared blocked-account
+fallback:
+
+```bash
+PI_ROUTE=deepseek-pi scripts/controller/pi-impl.sh \
+  /path/to/worktree /absolute/path/to/brief.md pi-resume resume <session-id>
+```
+
 ## Resume a usage-limited run or schedule a launch
 
 Preview recent usage-limit failures, then resume eligible runs on their saved
 thread, worktree, and route. `RESUME_SKIP` is a space-separated list of run names;
-`--skip` can exclude a run for one invocation. The helper does not sleep until
-the reset time:
+`--skip` can exclude a run for one invocation. A dated retry still in the
+future is skipped without sleeping, with this observable form:
+
+```text
+SKIP <run> (limit until Nov 17th, 2026 12:59 AM)
+```
+
+Time-only retries remain immediately eligible because they carry no date:
 
 ```bash
 scripts/controller/resume-usage-limited.sh --dry-run --skip release-review
@@ -89,6 +144,12 @@ change the count. Each run records its attempts in `.autoresume.log` and
 `AUTORESUME=<k>` in `.done`.
 
 ## Build a session read-back
+
+For compaction recovery of a Claude Code controller, use the operator-mandated
+recipe in the root `AGENTS.md` (`nyxloom-harness extract --preset readback
+--budget-tokens N --since <marker>`). It never drops operator turns. The older
+character-budget builder below can truncate operator material; use it only for
+non-Claude sessions or bounded run summaries.
 
 Provide the session and run directories and a total output character budget:
 
@@ -135,5 +196,8 @@ CONTROLLER_HOME=${CONTROLLER_HOME:-"$HOME/controller"}
 ```
 
 `CONTROLLER_GATE_LOCK` and `CONTROLLER_GATE2_LOCK` must be distinct absolute
-paths from controller configuration. The suite is a validation lane, not a
-release lane.
+paths from controller configuration; copy their names from
+`controller.local.env.example` and export both. Once both slots are busy the
+wrapper polls both every 5 seconds and prints progress every 300 seconds, so a
+gate uses the first freed slot instead of waiting only for the first path. The
+suite is a validation lane, not a release lane.

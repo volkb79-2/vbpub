@@ -413,10 +413,22 @@ def test_p22_pump_retries_blocked_writes_and_preserves_partial_buffers(monkeypat
     monkeypatch.setattr(git.selectors, "DefaultSelector", lambda: selector)
     monkeypatch.setattr(git.os, "set_blocking", lambda *_args: None)
     closed = []
-    monkeypatch.setattr(git.os, "close", closed.append)
+    real_close = git.os.close
+
+    def close_target(fd):
+        if fd == 101:
+            closed.append(fd)
+            return None
+        return real_close(fd)
+
+    monkeypatch.setattr(git.os, "close", close_target)
     writes = []
 
-    def write(_fd, buffer):
+    real_write = git.os.write
+
+    def write(fd, buffer):
+        if fd != 101:
+            return real_write(fd, buffer)
         if not writes:
             writes.append("blocked")
             raise BlockingIOError
@@ -443,9 +455,20 @@ def test_p22_pump_closes_a_broken_pipe_and_stops_submitting_that_writer(
     monkeypatch.setattr(git.selectors, "DefaultSelector", lambda: selector)
     monkeypatch.setattr(git.os, "set_blocking", lambda *_args: None)
     closed = []
-    monkeypatch.setattr(git.os, "close", closed.append)
+    real_close = git.os.close
+
+    def close_target(fd):
+        if fd == 102:
+            closed.append(fd)
+            return None
+        return real_close(fd)
+
+    monkeypatch.setattr(git.os, "close", close_target)
+    real_write = git.os.write
     monkeypatch.setattr(
-        git.os, "write", lambda *_args: (_ for _ in ()).throw(BrokenPipeError())
+        git.os, "write",
+        lambda fd, data: (_ for _ in ()).throw(BrokenPipeError())
+        if fd == 102 else real_write(fd, data),
     )
     git._p22_pump(
         (),
@@ -530,7 +553,15 @@ def test_p22_pump_timeout_closes_pending_descriptor_even_if_close_races(
         closed.append(fd)
         raise OSError("descriptor was already closed")
 
-    monkeypatch.setattr(git.os, "close", close)
+    real_close = git.os.close
+
+    def close_target(fd):
+        if fd == 103:
+            closed.append(fd)
+            raise OSError("descriptor was already closed")
+        return real_close(fd)
+
+    monkeypatch.setattr(git.os, "close", close_target)
     with pytest.raises(AssayError) as caught:
         git._p22_pump(
             (),
@@ -642,10 +673,13 @@ def _stub_p22_pack_pipeline(
     monkeypatch.setattr(git, "_p22_spawn", spawn)
     monkeypatch.setattr(git.os, "dup", lambda _fd: 400)
     monkeypatch.setattr(git.os, "set_blocking", lambda *_args: None)
+    real_write = git.os.write
+    pipe_fds = {200, 201, 202, 300, 301, 302, 400}
     monkeypatch.setattr(
         git.os,
         "write",
-        lambda fd, data: writes.append((fd, bytes(data))) or len(data),
+        lambda fd, data: writes.append((fd, bytes(data))) or len(data)
+        if fd in pipe_fds else real_write(fd, data),
     )
     monkeypatch.setattr(git, "_p22_kill", lambda proc: killed.append(proc))
     monkeypatch.setattr(git, "_MAX_GIT_STDERR_BYTES", 4)

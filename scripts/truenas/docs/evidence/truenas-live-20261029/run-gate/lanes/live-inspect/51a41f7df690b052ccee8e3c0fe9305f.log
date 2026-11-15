@@ -1,0 +1,3 @@
+# Evidence scrub 2026-11-10: environment-specific host identities, addresses, controller paths, and key material were normalized to neutral placeholders; command output and verdict text are otherwise unchanged.
+FAIL: midclt call system.info failed: remote command failed (255): midclt
+ssh: connect to host <host> port 22: Connection timed out

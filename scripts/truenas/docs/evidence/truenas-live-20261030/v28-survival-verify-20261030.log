@@ -1,0 +1,1 @@
+PASS fixture=20261030-f436378ab3 version=28.0.0-MASTER+20261029-175210 data_checksums=7; expected_differences=3 report=/run/truenas-update-survival/report.json

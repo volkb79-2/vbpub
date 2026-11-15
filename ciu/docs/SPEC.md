@@ -4840,6 +4840,9 @@ naming `governance.ksm_optin` and the resolved path. CIU MUST NOT rely on
 Docker's bind-mount behavior, which would otherwise create a phantom directory
 and leave `LD_PRELOAD` ineffective. Set `ksm_optin = ""` to disable the opt-in.
 
+The bundled shim constructor is silent: whether `PR_SET_MEMORY_MERGE` succeeds
+or fails, it writes nothing to the process's stdout or stderr.
+
 Rules: the shim MUST be dependency-free — a libc-linked shim is FATAL
 under the other libc's loader (measured: glibc `ld.so` exits 127 on a
 musl-linked preload; a zero-dependency `.so` loads under both).

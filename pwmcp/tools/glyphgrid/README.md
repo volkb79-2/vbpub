@@ -88,7 +88,8 @@ minority colour, so light-on-dark, dark-on-grey and reverse video give the same 
 ## Performance (measured 2026-10-27, 242-frame TrueNAS series, 1280x800, one core, nice 10)
 
 Per frame, `read_image`, same atlas, output BIT-IDENTICAL to the pre-optimisation code on all 242 frames (and `reference_mode()` is
-asserted identical on the 20 committed frames and on synthetic screens by `tests/test_glyphgrid_perf.py`):
+asserted identical on the 20 committed frames and synthetic screens by `tests/test_glyphgrid_perf.py`; `tests/test_glyphgrid_generator_identity.py`
+also checks the full deterministic imagegen transform matrix):
 
 | | before | now (fast paths) | `GlyphReader`, few cells changed |
 |---|---|---|---|

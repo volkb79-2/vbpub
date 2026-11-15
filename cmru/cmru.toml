@@ -32,8 +32,10 @@ bump = "conventional"
 git_tag = true
 build_step = "build"
 artifact_dirs = ["dist"]
-# Release-gate outputs retained under evidence/cmru-release/<tag> with hashes.
-evidence_paths = ["coverage.json", ".assay"]
+# Assay judges coverage inside its isolated lane snapshot and leaves the
+# resumable verdict/progress evidence in .assay; it does not retain the
+# temporary coverage.json in the caller's project tree.
+evidence_paths = [".assay"]
 
 [steps.run-tests]
 quiet = true

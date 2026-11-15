@@ -180,7 +180,7 @@ def _commit(png_path: Path, json_path: Path, png: bytes, side: dict[str, Any], f
 
 def ocr_pair(client, out_prefix: Path, *, dump_dir: str | None, blink_mode: bool = True, pause: bool = True,
              allow_inexact: bool = False, accept_partial: bool = False, force: bool = False, reconnect: Callable[[], Any] | None = None,
-             sleep: Callable[[float], None] = time.sleep) -> dict[str, Any]:
+             sleep: Callable[[float], None] = time.sleep, qemu_dump_dir: str | None = None) -> dict[str, Any]:
     """Write ``<prefix>.png`` and ``<prefix>.json``.  Only the VGA text buffer is a candidate (the screen, not a serial stream).
     Without exact text (graphical screen, ``exact: "unverified"`` or ``"partial"``) exit 4 (NoExactText) unless ``allow_inexact``
     (anything) or ``accept_partial`` (only ``"partial"``: all cells verified except the listed ``uncertain_cells``)."""
@@ -221,12 +221,13 @@ def ocr_pair(client, out_prefix: Path, *, dump_dir: str | None, blink_mode: bool
                 stopped = True  # set BEFORE the call: a lost reply may still have stopped the guest
                 client.execute("stop")
             try:
-                res = sources.read_vga(client, dump_dir, blink_mode, stable_check=status == "running" and not do_pause)
+                res = sources.read_vga(client, dump_dir, blink_mode, stable_check=status == "running" and not do_pause,
+                                       qemu_dump_dir=qemu_dump_dir)
                 png = res.png or b""
                 tried = res.tried
             except NoExactText as exc:
                 reason, tried = str(exc), exc.tried
-                png = sources.screendump_png(client, dump_dir)
+                png = sources.screendump_png(client, dump_dir, qemu_dump_dir)
         except BaseException as exc:  # noqa: BLE001 - everything must pass through the resume below, then be re-raised
             err = exc
         if stopped:

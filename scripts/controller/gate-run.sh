@@ -10,7 +10,7 @@ controller_init
 [[ $# -gt 0 ]] || { echo "usage: $0 <run-gate arguments...>" >&2; exit 2; }
 for lock in "${CONTROLLER_GATE_LOCK:-}" "${CONTROLLER_GATE2_LOCK:-}"; do
   [[ -n $lock && $lock == /* ]] || {
-    echo 'CONTROLLER_GATE_LOCK and CONTROLLER_GATE2_LOCK must both be configured as absolute paths' >&2
+    echo 'gate-run: CONTROLLER_GATE_LOCK and CONTROLLER_GATE2_LOCK must both be configured as absolute paths; copy both names from controller.local.env.example and export them before running' >&2
     exit 2
   }
 done
@@ -50,9 +50,49 @@ rc=$?
 if (( slot_acquired )); then exit "$rc"; fi
 [[ $rc == 75 ]] || exit "$rc"
 
-echo 'gate-run: both slots busy, waiting on gate.lock' >&2
-if ! exec 9>"$CONTROLLER_GATE_LOCK"; then echo "cannot open gate lock: $CONTROLLER_GATE_LOCK" >&2; exit 2; fi
-if ! flock 9; then echo 'cannot acquire gate.lock' >&2; exit 2; fi
-echo 'gate-run: slot gate.lock' >&2
-nice -n 10 run-gate "$@"
-exit $?
+poll_lock() {
+  local lock_fd=$1 lock=$2 label=$3 rc
+  shift 3
+  slot_acquired=0
+  if flock -n -E 75 "$lock_fd"; then
+    slot_acquired=1
+    echo "gate-run: slot $label" >&2
+    nice -n 10 run-gate "$@"
+    return $?
+  else
+    rc=$?
+  fi
+  [[ $rc == 75 ]] && return 75
+  echo "cannot lock gate slot $label (flock exit $rc; $lock)" >&2
+  return "$rc"
+}
+
+echo 'gate-run: both slots busy, polling gate.lock and gate2.lock every 5s' >&2
+if ! exec 9>"$CONTROLLER_GATE_LOCK"; then
+  echo "cannot open gate lock: $CONTROLLER_GATE_LOCK" >&2
+  exit 2
+fi
+if ! exec 8>"$CONTROLLER_GATE2_LOCK"; then
+  echo "cannot open gate2 lock: $CONTROLLER_GATE2_LOCK" >&2
+  exit 2
+fi
+waited=0
+next_progress=300
+while :; do
+  poll_lock 9 "$CONTROLLER_GATE_LOCK" gate.lock "$@"
+  rc=$?
+  if (( slot_acquired )); then exit "$rc"; fi
+  [[ $rc == 75 ]] || exit "$rc"
+
+  poll_lock 8 "$CONTROLLER_GATE2_LOCK" gate2.lock "$@"
+  rc=$?
+  if (( slot_acquired )); then exit "$rc"; fi
+  [[ $rc == 75 ]] || exit "$rc"
+
+  if (( waited >= next_progress )); then
+    echo "gate-run: still waiting after ${waited}s; gate.lock and gate2.lock are both busy" >&2
+    next_progress=$((next_progress + 300))
+  fi
+  sleep 5 || { echo 'gate-run: wait interval failed' >&2; exit 2; }
+  waited=$((waited + 5))
+done

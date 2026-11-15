@@ -1,0 +1,11 @@
+version=27.0.0-RC.1
+active_env=boot-pool/ROOT/27.0.0-RC.1/usr
+user_data=boot-pool/user-data
+stale_candidate={"bundle_sha256": "07fd9ba7e4df11349525203ac29ee6377b56ff55e1391b7b2c4b72123914895f", "patch": "v27", "version": "27.0.0-RC.1"}
+marker=b6bb5398759051939dd46f2bcdc8c7f603a64a67f2375ef754bd68b5bad9df91  /mnt/boot-pool/user-data/reapply-proof-r2b/marker
+root=2G
+/mnt/boot-pool/user-data
+on
+yes
+boot_pool=boot-pool	ONLINE
+EXIT=0

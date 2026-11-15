@@ -1,0 +1,8 @@
+# The repository root ignores `lib/`, `var/`, and every `*.so`. These paths
+# hold synthetic host files read by collector tests and must be tracked or a
+# clean checkout collects different facts than a developer tree.
+!lib/
+!var/
+!etc/mdt/
+!etc/mdt/host-setup.env
+!usr/lib/fleetd/ksm-optin.so

@@ -22,8 +22,12 @@ def test_durable_fsync_raw_syscall(tmp_path, monkeypatch):
     try:
         os.write(descriptor, b"durable bytes\n")
 
-        def forbidden(_fd):
-            raise AssertionError("durable writes must not call os.fsync")
+        real_fsync = os.fsync
+
+        def forbidden(fd):
+            if fd == descriptor:
+                raise AssertionError("durable writes must not call os.fsync")
+            return real_fsync(fd)
 
         monkeypatch.setattr(os, "fsync", forbidden)
         _durable.fsync(descriptor)
@@ -63,6 +67,7 @@ def test_a_32_bit_userland_never_uses_the_64_bit_syscall_table(pointer_bytes):
 
 def test_non_linux_platforms_use_os_fsync_without_proc_or_raw_syscall(monkeypatch):
     calls = []
+    real_fsync = os.fsync
     monkeypatch.setattr(_durable, "_is_linux", lambda: False)
     monkeypatch.setattr(
         _durable, "_syscall", lambda *_args: pytest.fail("no Linux syscall off Linux")
@@ -72,7 +77,11 @@ def test_non_linux_platforms_use_os_fsync_without_proc_or_raw_syscall(monkeypatc
         "_preload_shim_mapped",
         lambda: pytest.fail("no /proc mapping check off Linux"),
     )
-    monkeypatch.setattr(os, "fsync", calls.append)
+    monkeypatch.setattr(
+        os,
+        "fsync",
+        lambda fd: calls.append(fd) if fd == 19 else real_fsync(fd),
+    )
 
     _durable.fsync(19)
 
@@ -81,9 +90,14 @@ def test_non_linux_platforms_use_os_fsync_without_proc_or_raw_syscall(monkeypatc
 
 def test_unknown_architecture_without_interposer_uses_os_fsync(monkeypatch):
     calls = []
+    real_fsync = os.fsync
     monkeypatch.setattr(_durable.platform, "machine", lambda: "unknown-test-architecture")
     monkeypatch.setattr(_durable, "_preload_shim_mapped", lambda: False)
-    monkeypatch.setattr(os, "fsync", calls.append)
+    monkeypatch.setattr(
+        os,
+        "fsync",
+        lambda fd: calls.append(fd) if fd == 19 else real_fsync(fd),
+    )
 
     _durable.fsync(19)
 
@@ -93,7 +107,14 @@ def test_unknown_architecture_without_interposer_uses_os_fsync(monkeypatch):
 def test_unknown_architecture_with_interposer_refuses_os_fsync(monkeypatch):
     monkeypatch.setattr(_durable.platform, "machine", lambda: "unknown-test-architecture")
     monkeypatch.setattr(_durable, "_preload_shim_mapped", lambda: True)
-    monkeypatch.setattr(os, "fsync", lambda _fd: pytest.fail("interposed fsync must be refused"))
+    real_fsync = os.fsync
+    monkeypatch.setattr(
+        os,
+        "fsync",
+        lambda fd: pytest.fail("interposed fsync must be refused")
+        if fd == 19
+        else real_fsync(fd),
+    )
 
     with pytest.raises(OSError, match="unsupported Linux syscall architecture"):
         _durable.fsync(19)

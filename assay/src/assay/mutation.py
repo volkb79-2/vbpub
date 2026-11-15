@@ -6942,14 +6942,15 @@ def _execute_mutation_jobs(
             )
         resource_observation = None
         if resource_limit_evidence is None:
-            if run.resource_limit_evidence is None:
-                reason = run.resource_observation_reason
-                if not isinstance(reason, str) or not reason.strip():
-                    raise MutationStateError(
-                        "unobserved candidate resource-limit evidence lacks a reason"
-                    )
-            else:
-                reason = "candidate outcome projection did not retain resource evidence"
+            # The projection (including B251's recovery) keeps the run's
+            # ResourceLimitEvidence whenever the run has one -- the worker
+            # refuses any other type -- so a missing value here is the run's
+            # own unobserved window and must carry its reason.
+            reason = run.resource_observation_reason
+            if not isinstance(reason, str) or not reason.strip():
+                raise MutationStateError(
+                    "unobserved candidate resource-limit evidence lacks a reason"
+                )
             resource_observation = {"status": "unobserved", "reason": reason}
             one_line_reason = " ".join(reason.split())
             sys.stderr.write(

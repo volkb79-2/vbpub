@@ -121,9 +121,9 @@ def test_the_duration_parser_rejects_what_it_cannot_read():
         raise AssertionError(f"{bad!r} was accepted")
 
 
-#: The known-good cmru suite (no coverage) took ~439 s in tester-unified; the mutation lane's
-#: shared control/candidate timeout must leave headroom above it.
-MUTATION_TIMEOUT_FLOOR = 600
+#: The known-good cmru suite took up to 825 s under concurrent lanes in the
+#: 2026-11-12 R2 rehearsal; the control/candidate timeout must leave headroom above it.
+MUTATION_TIMEOUT_FLOOR = 1800
 
 
 def mutation_timeout_seconds(gate_doc: dict) -> int | None:
@@ -143,7 +143,7 @@ def test_a_mutation_timeout_below_the_suite_is_reported():
     _assay, gate = _load()
     wrong = copy.deepcopy(gate)
     wrong["lanes"]["mutation"]["argv"] = [
-        part.replace("--timeout-seconds 600", "--timeout-seconds 120")
+        part.replace("--timeout-seconds 1800", "--timeout-seconds 120")
         for part in wrong["lanes"]["mutation"]["argv"]
     ]
     assert mutation_timeout_seconds(wrong) == 120 < MUTATION_TIMEOUT_FLOOR

@@ -1,0 +1,5 @@
+REMOVED_VERIFIED_V27_UPDATE=1
+Filesystem                                         Size  Used Avail Use% Mounted on
+boot-pool/ROOT/27.0.0-MASTER-20261027-173422/root  7.1G  2.2G  4.9G  31% /root
+4.89G
+CLEANUP_EXIT=0

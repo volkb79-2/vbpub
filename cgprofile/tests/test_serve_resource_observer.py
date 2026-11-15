@@ -687,9 +687,15 @@ def test_unlink_observer_socket_returns_if_its_identity_cannot_be_read(
     tmp_path, monkeypatch,
 ):
     server = serve.SessionServer(sessions_dir=str(tmp_path / "sessions"))
+    real_lstat = serve.os.lstat
+
+    def unreadable_target(path, *args, **kwargs):
+        if Path(path) == tmp_path / "resource-observer.sock":
+            raise PermissionError("stat denied")
+        return real_lstat(path, *args, **kwargs)
+
     monkeypatch.setattr(
-        serve.os, "lstat",
-        lambda _path: (_ for _ in ()).throw(PermissionError("stat denied")),
+        serve.os, "lstat", unreadable_target,
     )
 
     server._unlink_observer_socket_if_owned((10, 20))

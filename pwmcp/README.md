@@ -1,3 +1,4 @@
+<!-- Evidence scrub 2026-11-10: environment-specific host identities, addresses, controller paths, and key material were normalized to neutral placeholders; command output and verdict text are otherwise unchanged. -->
 # PWMCP — Playwright-as-a-Service
 
 PWMCP is a thin, hardened [ciu](https://github.com/volkb79-2/vbpub/tree/main/ciu) packaging of the **official Microsoft Playwright unified image**. It provides browser automation as a service so consuming projects never install a browser into their own devcontainer or CI runner.
@@ -136,11 +137,43 @@ cannot see: elements with the `hidden` attribute (including
 `hidden="until-found"`), `aria-hidden="true"`, inline `display:none` or
 `visibility:hidden`, and `<input type="hidden">`, together with their hidden
 subtrees. Inline styles are read as declarations, including comments,
-`!important`, and later overrides. Closed `<details>` keeps its `<summary>` and
-omits its body; an open `<details>` keeps both. A selected node is filtered with
-its own attributes and hidden ancestors. This applies to `markdown`, `links`,
-and to `text` with `--selector` or `--main`; plain `text` reads the browser's
-`innerText`, which already omits hidden elements. It strips U+200B..U+200D,
+`!important`, and later overrides. When inline CSS is malformed, PWMCP recovers
+complete declarations independently and applies their usual priority order. It
+omits the element when a recovered winner or a best-effort tokenized malformed
+fragment contains `display:none` or `visibility:hidden`. A malformed style
+with neither marker remains visible. An unescaped LF, CR, or FF inside a CSS
+string ends that malformed string so later declarations can be recovered.
+Invalid `display` or `visibility` values are ignored, so they cannot override
+an earlier valid declaration. This filter recognizes only CSS Syntax
+whitespace: ASCII space, tab, LF, CR, and FF; other Unicode space-like
+characters remain inside property and value tokens. Property names and
+keywords fold ASCII case only. The filter does not admit
+`run-in`, `ruby-base`, `ruby-text`, `ruby-base-container`, or
+`ruby-text-container` to its visible-value allowlist.
+CSS comments form token boundaries. If either comment removal or whitespace
+separation leaves a hiding value in force, PWMCP omits the element.
+If one of those values follows a valid hiding declaration, the earlier hide
+remains, which can omit text a browser shows. For `display`, a winning
+unresolved `var()`, `inherit`, `revert`, or `revert-layer` fails closed;
+`initial` and `unset` map to visible `inline`. For `visibility`, a winning
+unresolved `var()`, `inherit`,
+`unset`, `revert`, or `revert-layer` fails closed; `initial` maps to `visible`,
+and `collapse` is filtered as hidden. These fail-closed choices may omit text a
+browser ultimately shows because serialized HTML cannot resolve custom
+properties or the external cascade. For example,
+`--d:none;display:var(--d)` remains hidden because this filter cannot resolve
+the custom property.
+CSS escapes in property names and hiding keyword values are decoded, so
+`d\69splay:none` and `display:\6e one` are omitted too. Tokenization ignores
+string and nested function contents. Outside strings, a backslash escape
+consumes the next code point, so escaped quotes, parentheses, and semicolons do
+not change comment, string, or declaration boundaries. An unclosed comment's
+remainder is checked as a malformed fragment. Closed `<details>` keeps its
+`<summary>` and omits its body; an open `<details>` keeps both. A selected node
+is filtered with its own attributes and hidden ancestors. This applies to
+`markdown`, `links`, and to `text` with `--selector` or `--main`; plain `text`
+reads the browser's `innerText`, which
+already omits hidden elements. It strips U+200B..U+200D,
 U+202A..U+202E, U+2060, U+2066..U+2069, U+FEFF, and U+E0000..U+E007F. The
 `zero_width_stripped` count includes these invisible controls and tags as well
 as zero-width characters. JSON reports removals in `hidden_removed` and
@@ -155,9 +188,8 @@ as zero-width characters. JSON reports removals in `hidden_removed` and
 - The `--main` fallback removes nested `header`, `nav`, and `footer` elements,
   including any inside article content, when no semantic candidate exists.
 - Hidden-content filtering sees serialized HTML and inline styles; a CSS class
-  or stylesheet rule that computes to hidden is not detected. Malformed inline
-  style declarations are treated as visible. The extracted text can still
-  include content hidden only by computed style.
+  or stylesheet rule that computes to hidden is not detected. The extracted
+  text can still include content hidden only by computed style.
 - `hidden="until-found"` is treated as hidden at extraction time because the
   content remains concealed until the user invokes find-in-page.
 - U+200D is stripped even inside joined emoji, so a sequence such as `👩‍💻` can
@@ -473,7 +505,7 @@ Note: `lighthouse-mcp` is served via `mcp-proxy`, same as `chrome-devtools-mcp`.
 PWMCP_MCP_ALLOWED_HOSTS=pwmcp:8931,<project>-<env>-pwmcp:8931
 ```
 
-The image default is `localhost:8931,127.0.0.1:8931` for standalone usage. Override via `extra_args` in `ciu.toml.j2` to add further hosts.
+The image default is `localhost:8931,<host-address>:8931` for standalone usage. Override via `extra_args` in `ciu.toml.j2` to add further hosts.
 
 ## Shared Persistent Browser Mode (P03, opt-in)
 
@@ -727,7 +759,7 @@ words). The response:
 ```
 
 > **Confidence is NOT calibrated: do not treat "unflagged" or "high" as "correct".** Tesseract read a garbled
-> TrueNAS installer dialog at a mean confidence of 91%, and misread digits (`10.0.2.15` as `16.0.2.15`,
+> TrueNAS installer dialog at a mean confidence of 91%, and misread digits (`<host-address>` as `192.0.2.15`,
 > `9)` as `3)`). `low_conf` is a hint, never a safety check. Missing or fuzzy-matched text means UNKNOWN.
 > Anything that will later trigger a keystroke needs an EXACT match of a known screen signature (or the
 > glyph-grid engine, phase 2), never merely "unflagged". Without `min_conf` nothing is assessed at all.
@@ -999,6 +1031,8 @@ ciu-build -d . push-images
 - [docs/USAGE.md](docs/USAGE.md) — consumer connect() and MCP usage details
 - [docs/DESIGN-GUIDE.md](docs/DESIGN-GUIDE.md) — why standalone roots and client bundles use these boundaries; [competitors and alternatives](docs/DESIGN-GUIDE.md#competitors-and-alternatives)
 - [docs/CONSUMERS.md](docs/CONSUMERS.md) — installation, updates, CLI inspection, MCP, and release gates
+- [docs/COMPARISON-obscura-2026-11-09.md](docs/COMPARISON-obscura-2026-11-09.md) — the build-versus-no-fork comparison and decision
+- [docs/RELEASE-PLAN-R4-2026-11-02.md](docs/RELEASE-PLAN-R4-2026-11-02.md) — the retained R4 release plan
 - [GlyphGrid development tools](tools/glyphgrid/README.md) — local font atlases,
   reference-checked reads, and deterministic synthetic images; offline tooling
   only, with the service engine still HTTP 501. See the [design rationale](docs/DESIGN-GUIDE.md#glyphgrid-development-tooling)

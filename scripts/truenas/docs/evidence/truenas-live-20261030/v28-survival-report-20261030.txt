@@ -1,0 +1,17 @@
+RESULT=PASS
+FIXTURE=20261030-f436378ab3
+BEFORE=27.0.0-MASTER+20261027-173422
+AFTER=28.0.0-MASTER+20261029-175210
+DATA_CHECKSUMS=7 DATA_ERRORS=0
+EXPECTED_DIFFERENCES=3 UNEXPECTED_DIFFERENCES=0
+EXPECTED boot_environment.active: '27.0.0-MASTER-20261027-173422' -> '28.0.0-MASTER-20261029-175210'
+EXPECTED storage.path_a.auto_mounted: True -> False
+EXPECTED system.version: '27.0.0-MASTER+20261027-173422' -> '28.0.0-MASTER+20261029-175210'
+PATH_A exists=True auto_mounted=False fixtures=4
+PATH_B exists=True auto_mounted=True fixtures=5
+DIRECT_ZFS_DATASET_ROWS=9
+DIRECT_ZFS boot-pool/user-data/update-survival-clone-f436378ab3: type=filesystem mountpoint=/mnt/boot-pool/user-data/update-survival-clone-f436378ab3 quota=0 refquota=0 recordsize=131072 volsize=-
+DIRECT_ZFS boot-pool/user-data/update-survival-f436378ab3: type=filesystem mountpoint=/mnt/boot-pool/user-data/update-survival-f436378ab3 quota=1073741824 refquota=805306368 recordsize=65536 volsize=-
+DIRECT_ZFS boot-pool/user-data/update-survival-f436378ab3/nested: type=filesystem mountpoint=/mnt/boot-pool/user-data/update-survival-f436378ab3/nested quota=536870912 refquota=402653184 recordsize=65536 volsize=-
+DIRECT_ZFS boot-pool/user-data/update-survival-f436378ab3/record-zvol: type=volume mountpoint=- quota=- refquota=- recordsize=- volsize=67108864
+V27_INSTALL_MARKER=27.0.0-MASTER+20261027-173422 bundle=489be0c005e4e64cff1cf81077418546b8c9a03cd77bfafa2711048a52a1c0fe

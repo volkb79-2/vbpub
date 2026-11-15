@@ -142,8 +142,16 @@ def test_match_owner_calls_chown_only_when_owner_differs(env):
 
 def test_create_worker_uses_injected_chown(env, monkeypatch):
     seen = []
-    monkeypatch.setattr(overlay.os, "stat", lambda path: SimpleNamespace(
-        st_uid=os.getuid() + 7, st_gid=os.getgid(), st_mode=0o40750) if path.endswith("/tree") else os.lstat(path))
+    real_stat = overlay.os.stat
+    target = os.path.realpath(str(env.cache.tree_path(KEY)))
+    monkeypatch.setattr(
+        overlay.os,
+        "stat",
+        lambda path, *args, **kwargs: SimpleNamespace(
+            st_uid=os.getuid() + 7, st_gid=os.getgid(), st_mode=0o40750)
+        if os.path.realpath(os.fspath(path)) == target
+        else real_stat(path, *args, **kwargs),
+    )
     overlay.create_worker(env.upper, "tokc", 0, env.cache, KEY, chown=lambda *a: seen.append(a))
     assert seen and seen[0][1] == os.getuid() + 7
 

@@ -540,6 +540,93 @@ copying CMRU implementation code. Do not import private helpers as an API. For
 operator commands, use the installed `cmru` script. The bundle module is a library, and the runner module's supported CLI
 is `cmru run --step NAME`.
 
+### Per-interpreter bundles (`bundle-build`)
+
+A project that publishes one tarball per interpreter (`[[project.variants]]`, `tarball-publish --variant`)
+builds them with `bundle.toml` plus the `bundle-build` handler instead of its own script
+(KI-126; see the [design rationale](DESIGN-GUIDE.md#bundle-variants-use-one-declared-build-path-ki-126)).
+The variant list stays in `cmru.toml`; each variant's `build_arg` is the interpreter
+version (`"3.11"` or the `PYTHON_VERSION=3.11` form naf already declares) handed to pip.
+`[archive]` and `[copy]` are required; `[vendor]`, `[stage]`, `[exec]`, and
+`[manifest]` are optional.
+
+```bundle-toml
+[archive]
+name_template = "myproj-v{version}-{variant}.tar.xz"   # {variant} is mandatory when variants are built
+version_env = "MYPROJ_VERSION"
+format = "xztar"
+keep = ["src/app-defaults.env", "certifi/cacert.pem"] # exact bundle-relative paths
+# keep_tree = true                       # default false; keep bundle and wheel trees only if needed
+
+[vendor]                                  # pip download --only-binary=:all: for the variant's ABI
+requirements = ["requirements-runtime.txt"]
+platforms = ["manylinux2014_x86_64"]
+dest = "vendor"                           # inside the bundle
+
+[stage]                                   # one command, after vendor, before the manifest
+argv = ["python", "scripts/seed_db.py", "{bundle_dir}", "{python_version}"]
+
+[exec]                                    # runs vendor + stage in the project's runner; cmru keeps the rest
+prefix = ["docker", "exec", "-w", "{root}", "{container}"]
+[exec.env]                                # token -> NAME of the environment variable (no container name in the file)
+root = "MYPROJ_RUNNER_ROOT"
+container = "MYPROJ_RUNNER_CONTAINER"
+
+[manifest]                                # written LAST, so it lists vendored and staged files
+name = "manifest.json"
+```
+
+```sh
+cmru handler bundle-build --bundle-config bundle.toml \
+    --cmru-config cmru.toml --name myproj          # --variant all (default) or one declared name
+```
+
+Rules worth knowing: the archive for variant `py311` is `myproj-v1.2.3-py311.tar.xz`, the name
+`tarball-publish --variant` expects; the build order is clean, wheel, copy, vendor, stage, manifest, archive;
+a failing vendor or stage command exits 1 and writes no archive; with `[exec].prefix` the runner must see the
+same tree at `{root}` (paths are passed project-root-relative) and the stage command runs from `{root}`,
+otherwise from the staged bundle directory; `[wheel].find_links` makes the vendor step `--no-index`.
+If `MYPROJ_VERSION` is set, it names the archive version. When it is unset,
+`bundle-build` derives the planned release version (or the latest tag when the
+project is unchanged) from CMRU and adds `.devN+g<short-hash>` from Git, so the
+artifact remains tied to a commit and is not an immutable release version. The
+manifest tag uses the same canonical `<prefix>-v<version>` spelling as
+`cmru release`, including when the configured
+prefix already ends in `-v`.
+
+`[archive].keep` is an exact list of paths in the final bundle tree. It allows
+suffix-filtered files such as a runtime `.env` catalog or a public CA `.pem`
+only at those paths; it does not accept globs, absolute paths, or traversal.
+For `copy.dirs = ["a/b"]`, the output starts at `b/`; `copy.files` entries are
+flattened to the source basename. Suffix rules apply to regular files, so a
+directory named `certs.pem/` is traversed and its files remain eligible.
+CMRU emits one WARN per skipped copied path per build. If stage leaves an
+unlisted suffix-class file (`.toml`, `.env`, `.pem`, `.crt`, `.key`, `.p12`,
+`.pfx`, or `.log`), the build fails and names it. Suffix matching is currently
+case-sensitive, and secret-class names outside the exclusion list are eligible
+(KI-167). The
+name exclusions (`.git`, `.ciu`, `ciu.env`, `minisign.key`, cache directories,
+`node_modules`) and `.pyc` are never keepable and stay out of both archive and
+manifest. Included source symlinks and stage-created symlinks are refused.
+This includes client packaging metadata: put the exact path, such as
+`client/pyproject.toml`, in `keep` when the bundle needs it; `.toml` has no
+implicit exception.
+Vendored `.whl` files are unaffected by the suffix rules. After the archive
+and any configured manifest succeed, both `bundle_dir` and the wheel output
+`client_dir` are removed; set `keep_tree = true` when a later step needs them.
+Failures after staging starts retain both trees for diagnosis. An unkept
+protected-suffix file that caused validation to fail therefore remains in the
+staged tree on disk, though it is not packaged. With a manifest, CMRU compares
+archive-eligible path membership immediately before archiving and fails if paths were added or
+removed since manifest creation. A concurrent writer can still alter a path or
+file content after that check; keep the bundle root private until the build ends.
+From Python:
+`run_bundle(Path("bundle.toml"), variant=<VariantConfig>, manifest_project=..., manifest_tag=..., runner=<optional recorder>)`.
+`run_bundle` also accepts `version_fallback` for callers that derive the same
+development version outside the handler. Archive, manifest, and copy all use
+the same filtering policy; a successful manifest therefore describes the files
+the archive includes.
+
 A real `wheel-build` handler invocation requires a Git worktree and a configured
 `CMRU_WHEEL_BUILDER_IMAGE`. It reads an explicit environment value first, then derives
 the value from the nearest enclosing orchestration config or standalone project config;
@@ -923,9 +1010,7 @@ The native-R2 `mutation` lane requests contract-2 event evidence from
 working observation to those command lanes. The CMRU release step currently
 runs `run-gate gate-provisional`, which skips the long mutation
 lane and records that deferral in `.assay/mutation-postponed-cmru.json` under
-KI-79. The deferral is authorized only for CMRU >= 6.2.0 and < 6.3.0 (the 6.2 patch line) or >= 7.0.0 and < 7.1.0 (the 7.0 patch line) or >= 7.1.0 and < 7.2.0 (the 7.1 patch line) or >= 7.2.0 and < 7.3.0 (the 7.2 patch line; operator decision 2026-11-04;
-6.3.x, 7.3.0 and everything else refuse), so a 6.2.x, 7.0.x, 7.1.x or 7.2.x release uses the deferral; a
-bump that computes a version outside those windows is refused by the gate. Every release deferred this way is without an R2 pass; one full R2 run is owed before 6.3.0 or 7.3.0, whichever is first (KI-79). That release
+KI-79. The deferral is authorized only for CMRU >= 6.2.0 and < 6.3.0 (the 6.2 patch line), >= 7.0.0 and < 7.1.0 (the 7.0 patch line), >= 7.1.0 and < 7.2.0 (the 7.1 patch line), >= 7.2.0 and < 7.3.0 (the 7.2 patch line), or >= 7.3.0 and < 7.4.0 (the 7.3 patch line; operator decision 2026-11-12; earlier windows were approved 2026-10-14, 2026-10-21, 2026-10-23, 2026-10-27, and 2026-11-04). Versions 6.3.x through 6.9.x, 7.4.0, and everything else refuse, so a 6.2.x or 7.0.x through 7.3.x release uses the deferral; a bump that computes a version outside those windows is refused by the gate. Every release deferred this way is without an R2 pass. The full-source R2 campaign is owed asynchronously at T3 after the latest provisional release and before the current window ends at 7.4.0 (KI-79); use the T3 command shown below, `run-gate --base cmru-v6.1.0 r2` when that remains the selected base. That release
 therefore has no mutation event evidence. Read its result from
 `cmru/.assay/release-gate-snapshot.json`: `"state": "provisional"` with a `deferred_lanes`
 entry for `mutation` (never `"passed"`), for example
@@ -1005,9 +1090,12 @@ it records a skipped result bound to the candidate HEAD instead of claiming
 mutants ran. If rerun at a release-tagged HEAD, the checker excludes every
 local CMRU release tag at HEAD and selects the highest-version published tag
 from its full ancestry for the existing aggregate release flow. The known-good
-full-suite control
-and each serial R2 candidate are capped at 600 seconds; a failed candidate
-stops after its first failing test (`--maxfail=1`). Mutation outcomes are in
+full-suite control has an 1800-second ceiling (30 minutes), and each serial R2
+candidate has at least that timeout, scaled to twice the measured control when
+higher. The 2026-11-12 rehearsal measured controls at 368, 752, and 825 seconds
+under concurrent lanes; 1800 seconds is 2.18 times the longest measurement.
+This is a hang bound, not a speed target. A failed candidate stops after its
+first failing test (`--maxfail=1`). Mutation outcomes are in
 `.assay/mutation-cmru.json`; the append-only
 `.assay/progress-mutation-cmru.jsonl` stream reports progress. Resume reuses killed outcomes only
 when the tests, copied fixture closure, and timeout exactly match the recorded run. Changing
@@ -1086,18 +1174,24 @@ helpers that call `setsid()` or double-fork. A normal leader exit with leftover
 descendants is recorded as `crashed`; the campaign continues after cleanup,
 but this attempt cannot count as killed or survived. A timeout and any
 observed cgroup resource event are also inconclusive. The evidence file uses
-schema 5 and records `candidate_isolation = "process-tree/1"` plus process-tree
-proof for each run; resume reuses a kill only when that proof, the unchanged
-timeout, and clean resource counters are present. Older evidence schemas are refused.
+schema 6 and records `candidate_isolation = "process-tree/1"` plus process-tree
+proof for each run; it also preserves configured resource-limit changes as
+advisories alongside cgroup event evidence. Resume reuses a kill only when
+that proof, the unchanged timeout, and clean resource counters are present.
+Older evidence schemas are refused.
 The record names `assay_distribution_version` as package metadata and
 `assay_source_commit` as the exact source identity. CMRU checks Assay source
 cleanliness with a sanitized Git process before import, binds the import to a
 declared package root, and repeats cleanliness and both HEAD checks after the
-baseline control. Ignored untracked source or test files and Git index entries
-marked assume-unchanged or skip-worktree refuse the campaign. Known generated
-bytecode, pytest and Hypothesis caches, coverage outputs, and editable-install metadata are
-allowed. Unsupported layouts such as `py-modules` or named `package-dir`
-mappings refuse closed; configured package roots cannot contain symlinks.
+baseline control. Package roots may be sibling directories inside Assay's Git
+worktree, including a named `package-dir` mapping; roots outside that worktree
+and symlinked components are refused. The editable-install preflight checks
+these roots before pip runs. Ignored untracked source or test files and Git
+index entries marked assume-unchanged or skip-worktree refuse the campaign.
+Known generated bytecode, pytest and Hypothesis caches, coverage outputs, and
+editable-install metadata are allowed. Unsupported layouts such as `py-modules` and unsupported external
+data-file mappings refuse closed; configured package roots cannot contain
+symlink components or entries.
 Before installing Assay editable, the mutation lane runs
 `tools/check_assay_source.py`. It rejects uncommitted or ignored files anywhere
 in the Assay checkout that could affect package building; only declared

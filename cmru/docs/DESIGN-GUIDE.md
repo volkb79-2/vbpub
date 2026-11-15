@@ -261,9 +261,10 @@ release. `build-initial-standalone.sh` has an explicit source mode, selected wit
 `cli-extended` from the same checkout at CMRU's declared runtime floor and
 marks it `+bootstrap.source`. The standalone wheel-builder is built FROM the local
 `tester-base` tag (operator decision 2026-10-18: the gate images share one digest-pinned base;
-`tester-base` builds from public upstream inputs alone, so the bootstrap needs no PUBLISHED vbpub
+`tester-base` builds from this repository's Dockerfile and checked CIU shim copy plus public upstream
+inputs, so the bootstrap needs no PUBLISHED vbpub
 image and none of MDT's). The script builds that tag first when it is absent or stale (`org.vbpub.tester-base.kind` plus a
-source-hash label of `tester-base/Dockerfile`, its only build input; an image tagged `tester-base:local`
+source-hash label of `tester-base/Dockerfile` and `tester-base/ksm-optin.c`; an image tagged `tester-base:local`
 without the kind label is refused, never reused), with the `docker`
 driver builder and without `--pull`, because a local-only tag is invisible to a remote builder and
 to a registry. The bootstrap verifies the builder image's dedicated label and
@@ -762,8 +763,12 @@ When no explicit base is supplied by the existing aggregate release flow, it
 retains
 the latest-published-ancestor selection for that flow. An empty source diff
 records skip evidence bound to the candidate HEAD. The known-good full-suite
-control and every serial candidate share a 600-second timeout, and each failed
-candidate stops at its first failing test (`--maxfail=1`). Mutation outcomes
+control has an 1800-second ceiling, and each candidate has at least that
+timeout, scaled to twice the measured control when higher. The 2026-11-12
+rehearsal measured controls at 368, 752, and 825 seconds under concurrent lanes, so
+1800 seconds gives more than twice the longest observed run. This is a hang
+bound, not a speed target. Each failed candidate stops at its first failing
+test (`--maxfail=1`). Mutation outcomes
 live in `.assay/mutation-cmru.json`; the append-only
 `.assay/progress-mutation-cmru.jsonl` stream reports progress. Resume requires
 the exact test and copied-fixture fingerprints. An added test can change
@@ -837,22 +842,26 @@ embedding process.
 A normal leader exit with descendants becomes `crashed` after successful
 cleanup; the campaign continues, and the attempt cannot count as killed or
 survived. Cleanup failures stop the campaign as infrastructure errors.
-Timeouts and cgroup resource events also remain inconclusive. The schema-5
+Timeouts and cgroup resource events also remain inconclusive. The schema-6
 resume record identifies `candidate_isolation = "process-tree/1"` and stores
 per-candidate process-tree evidence. A killed result is reusable only when its
 leader exited normally, no descendants outlived it, the timeout is unchanged,
-and resource counters show no limit event. Changing the timeout starts a fresh
-campaign because it changes whether a candidate could have completed. Earlier
+and resource counters show no limit event. Schema 6 also records configured
+resource-limit changes as advisories alongside the event evidence. Changing
+the timeout starts a fresh campaign because it changes whether a candidate
+could have completed. Earlier
 schemas are refused so they cannot silently reuse a result without those proofs.
 
 Resume also binds the Assay implementation that runs the campaign. CMRU derives
 the shipped package roots from Assay's `pyproject.toml` and uses a sanitized Git
 subprocess to establish cleanliness before importing Assay. That avoids using
 the code being checked to certify its own clean state. The imported package must
-resolve inside a declared root. Unsupported layouts such as `py-modules` or
-named `package-dir` mappings, and package roots containing symlinks, refuse
-closed until CMRU can bind their
-imports precisely. After the baseline control, CMRU checks source cleanliness
+resolve inside a declared root. Roots may sit outside the `assay/` directory
+when they remain inside the same Git worktree, including a named `package-dir`
+mapping. CMRU uses Git-relative pathspecs and refuses roots
+outside the worktree or any symlinked path component or package entry. Layouts
+such as `py-modules` still refuse closed. The pre-install check covers sibling
+package roots too. After the baseline control, CMRU checks source cleanliness
 and both repository HEADs again so edits during that control cannot be hidden.
 The source commit is the exact Assay identity; `assay_distribution_version` is
 only the package metadata label and may not describe an unbuilt source edit.
@@ -871,10 +880,10 @@ checked source.
 The history comparison runs from Assay's own Git worktree. That matters when
 CMRU's campaign repository and the selected Assay source are different linked
 worktrees: a path under `.worktrees/` is not part of the main checkout's
-committed tree. Package discovery and root-level package-directory mappings
-are derived from `pyproject.toml`; named package-directory mappings and
-unsupported external data-file mappings refuse instead of creating a partial
-source identity. Ignored files under the bound roots or mutation test closure
+committed tree. Package discovery and root-level and named package-directory
+mappings are derived from `pyproject.toml`; unsupported external data-file
+mappings refuse instead of creating a partial source identity. Ignored files
+under the bound roots or mutation test closure
 also refuse, apart from generated bytecode/pytest caches, coverage data, and
 editable-install metadata. Assume-unchanged and skip-worktree index flags also
 refuse.
@@ -1124,9 +1133,13 @@ Any failed check prints the observed fact and an actionable remedy, then exits
 4 before a candidate worktree is created. The launcher compares the checked
 source revision again before allocation, so the plan cannot drift between the
 check and the candidate. When every check passes, one summary line preserves
-the existing dry-run output. This check does not widen KI-79: a release outside
-its windows must run the full `gate` lane or follow a recorded operator
-decision to change the window. The focused `release-preconditions` lane covers
+the existing dry-run output. KI-79 remains a bounded allowlist so mutation
+deferral is authorized only for release lines covered by an explicit operator
+decision; the dry-run and release gate call the same validator to prevent
+policy drift. A release outside the current windows must run the full `gate`
+lane or follow a recorded operator decision to change the window. KI-159 tracks
+whether to replace per-minor edits with a rolling window or a declared policy
+field. The focused `release-preconditions` lane covers
 the three checks and their refusal paths, plus the changelog release-start
 guards moved out of Assay. It runs first in the aggregate gate so those guards
 run before the full suite.
@@ -1602,6 +1615,57 @@ the controller version, original wheel digest, and installed-file digest. This k
 mechanism itself reviewable and identifies the exact controller if a transaction must be resumed.
 `cmru release --dry-run` remains available from a source checkout because it cannot publish or
 promote anything.
+
+## Bundle variants use one declared build path (KI-126)
+
+The project variant list stays in `cmru.toml`, beside the release metadata consumed by
+`tarball-publish --variant`. `bundle-build` reads that list instead of introducing a second
+variant schema in `bundle.toml`; each `build_arg` supplies the interpreter version used for
+cross-ABI wheel download. This keeps the artifact names and published variant names aligned.
+
+The optional `[vendor]`, `[stage]`, `[exec]`, and `[manifest]` tables let a project describe
+the parts that vary by interpreter while CMRU retains ownership of copying sources, writing the
+manifest, and creating the deterministic archive. The runner prefix applies only to vendor and
+stage commands, where the target ABI matters. Projects without these tables keep the single-archive
+assembly path; staged-tree cleanup follows the explicit archive policy below. Vendor destinations
+and manifest names cannot use paths the archive hard-excludes, because the manifest
+must never describe files the archive drops. This
+replaces consumer-specific builder scripts with one reviewable configuration and a single
+supported handler. See the [consumer example](CONSUMERS.md#per-interpreter-bundles-bundle-build)
+and the [S9 bundle configuration](SPEC.md#s9--reproducibility).
+
+The hard-exclude rule is one bundle-relative predicate shared by source copying, archive
+creation, and manifest enumeration. This matters because filtering only one phase either drops a
+legitimate runtime file without notice or lets a stage-created sensitive file reach the archive
+without a manifest entry. Suffix rules apply to regular files, so a directory named `certs.pem/`
+does not hide files beneath it. `[archive].keep` is an exact, reviewed exception for suffix-class
+files such as `.env` and `.pem`; it cannot override `.git`, `minisign.key`, cache directories,
+`node_modules`, or `.pyc`. Copy skips emit one WARN per path per build. A stage-created suffix
+file without an exact keep entry fails before archive creation. Suffix matching is currently
+case-sensitive, and secret-class names outside the exclusion list remain eligible (KI-167).
+Included source symlinks and stage-created symlinks are refused so the builder cannot dereference
+their targets into the artifact. This is a path policy, not content inspection: a stage step is
+executable project code, and content written under an ordinary filename remains eligible for the
+archive. Client metadata such as `client/pyproject.toml` also needs its exact file path in `keep`;
+no `.toml` exception is implicit. For a root `pyproject.toml`, use
+`keep = ["pyproject.toml"]` under `[archive]`.
+
+When the archive version environment variable is absent, `bundle-build` asks CMRU for the
+selected project's planned release version (or its latest tag when unchanged) and combines it
+with the commit count and short hash as a
+PEP 440 development version (`<planned-version>.devN+g<hash>`). That keeps retained build
+artifacts versioned and identifiable while `is_release_version` continues to prevent immutable
+release publication. An explicit release environment value still takes precedence, and the
+manifest tag is built through the same normalized prefix used by `cmru release`.
+
+`[archive].keep_tree` defaults to `false`: after the archive and any configured manifest succeed,
+CMRU removes both `bundle_dir` and the wheel output `client_dir` so release retention contains the
+distributable artifact without duplicate staging trees. `true` is an explicit opt-in for consumers
+that need to inspect or reuse those trees; failures after staging starts leave them in place for
+diagnosis, including an unkept suffix-class file that caused validation to fail. When a manifest is
+present, CMRU checks archive-eligible path membership against it immediately before archiving
+and refuses added or missing paths. A concurrent writer can still change paths or contents after that check
+and before archive reading, so the build tree must remain private for the duration of the build.
 
 ## The bundle asset name is one contract, and producers conform to it (KI-89 / PWMCP-07)
 

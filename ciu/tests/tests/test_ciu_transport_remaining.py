@@ -81,7 +81,18 @@ def test_vault_key_write_failure_removes_the_partially_created_private_key(
         return fd, path
 
     monkeypatch.setattr(transport.tempfile, "mkstemp", make_temp)
-    monkeypatch.setattr(transport.os, "fdopen", lambda fd, *_args, **_kwargs: _FailingWriter(fd))
+    real_fdopen = transport.os.fdopen
+
+    def failing_temp(fd, *args, **kwargs):
+        try:
+            opened = os.path.realpath(os.readlink(f"/proc/self/fd/{fd}"))
+        except OSError:
+            return real_fdopen(fd, *args, **kwargs)
+        if opened not in {str(Path(path).resolve()) for path in created}:
+            return real_fdopen(fd, *args, **kwargs)
+        return _FailingWriter(fd)
+
+    monkeypatch.setattr(transport.os, "fdopen", failing_temp)
     monkeypatch.setattr("ciu.secrets.providers.resolve_vault_token", lambda *_: "token")
     monkeypatch.setattr("ciu.secrets.providers.vault_addr_from_config", lambda _: "https://vault.invalid")
     monkeypatch.setattr(
@@ -107,7 +118,18 @@ def test_known_hosts_write_failure_removes_its_partial_pin_file(
         return fd, path
 
     monkeypatch.setattr(transport.tempfile, "mkstemp", make_temp)
-    monkeypatch.setattr(transport.os, "fdopen", lambda fd, *_args, **_kwargs: _FailingWriter(fd))
+    real_fdopen = transport.os.fdopen
+
+    def failing_temp(fd, *args, **kwargs):
+        try:
+            opened = os.path.realpath(os.readlink(f"/proc/self/fd/{fd}"))
+        except OSError:
+            return real_fdopen(fd, *args, **kwargs)
+        if opened not in {str(Path(path).resolve()) for path in created}:
+            return real_fdopen(fd, *args, **kwargs)
+        return _FailingWriter(fd)
+
+    monkeypatch.setattr(transport.os, "fdopen", failing_temp)
 
     with pytest.raises(OSError, match="disk full"):
         transport._known_hosts_file(_host("/key"))

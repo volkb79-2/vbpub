@@ -210,7 +210,8 @@ class TestAllowlistAndExcludes:
         assert _is_excluded("ciu.env") is True
         assert _is_excluded("app.log") is True
         assert _is_excluded("docker-compose.toml") is True
-        assert _is_excluded("client/pyproject.toml") is False
+        assert _is_excluded("client/pyproject.toml") is True
+        assert _is_excluded("client/pyproject.toml", ["client/pyproject.toml"]) is False
         # minisign.key must be excluded (secret).
         assert _is_excluded("minisign.key") is True
         # normal source files must NOT be excluded.
@@ -241,6 +242,7 @@ bundle_dir = "bundle"
 name_template = "example-{version}.tar.xz"
 format = "xztar"
 version_env = "TEST_BUNDLE_VERSION"
+keep = ["client/pyproject.toml"]
 [copy]
 files = ["README.md"]
 dirs = ["client"]

@@ -43,6 +43,9 @@ exit 0
     fake_docker = bindir / "docker"
     fake_docker.write_text("#!/usr/bin/env bash\nexit 0\n")
     fake_docker.chmod(0o755)
+    fake_nproc = bindir / "nproc"
+    fake_nproc.write_text('#!/usr/bin/env bash\nprintf "%s\\n" "${FAKE_NPROC:-4}"\n')
+    fake_nproc.chmod(0o755)
     project = home / "checkouts" / COMMIT / "proj"
     project.mkdir(parents=True, exist_ok=True)
     return home, runner, bindir, project
@@ -517,15 +520,26 @@ exit "${FLEET_EXIT:-0}"
 
 
 def fleet(tmp_path, args, *, meminfo_kb=64 * 1024 * 1024, extra_env=None, name="camp-s1",
-          lane_body=FLEET_LANE):
+          lane_body=FLEET_LANE, rg_toml=None, assay_toml=None, meminfo_text=None):
     home, runner, bindir, project = prepare(tmp_path)
     argv_path = tmp_path / "argv.log"
     (runner / "run-lane.sh").write_text(
         lane_body.replace("@ARGV@", shlex.quote(str(argv_path)))
         .replace("@ASSAY@", shlex.quote(str(project / ".assay")))
     )
+    if rg_toml is not None:
+        (project / "run-gate.toml").write_text(rg_toml)
+    if assay_toml is not None:
+        (project / "assay.toml").write_text(assay_toml)
     meminfo = tmp_path / "meminfo"
-    meminfo.write_text(f"MemTotal: {meminfo_kb} kB\nMemAvailable: {meminfo_kb} kB\n")
+    meminfo.write_text(meminfo_text or (
+        f"MemTotal: {meminfo_kb} kB\nMemAvailable: {meminfo_kb} kB\n"
+        "SwapTotal: 0 kB\nSwapFree: 0 kB\n"))
+    fake_ksm = tmp_path / "ksm-default"
+    fake_ksm.mkdir()
+    (fake_ksm / "run").write_text("0\n")
+    (fake_ksm / "pages_sharing").write_text("0\n")
+    (fake_ksm / "pages_shared").write_text("0\n")
     env = {
         **os.environ,
         "PATH": f"{bindir}:{os.environ['PATH']}",
@@ -533,10 +547,14 @@ def fleet(tmp_path, args, *, meminfo_kb=64 * 1024 * 1024, extra_env=None, name="
         "R2_MAX_ATTEMPTS": "3",
         "R2_INSTANCE_STAGGER_S": "0",
         "R2_MEMINFO": str(meminfo),
+        "R2_KSM_SYSFS": str(fake_ksm),
         "R2_INSTANCE_MEM_MIB": "1024",
         "FAKE_RG_HELP": NEW_RG_HELP,
-        **(extra_env or {}),
     }
+    for key in ("R2_HOST_RESERVE_MIB", "R2_OVERCOMMIT", "R2_WORKER_MEM_MIB",
+                "R2_EXPECTED_PEAK_CREDIT_MIB", "FAKE_NPROC"):
+        env.pop(key, None)
+    env.update(extra_env or {})
     env = {key: value for key, value in env.items() if value is not None}
     err_path = tmp_path / "fleet.err"
     with err_path.open("w") as err:
@@ -603,19 +621,241 @@ def test_the_memory_guard_refuses_before_any_campaign_state(tmp_path):
         tmp_path, ["--instances", "3"], meminfo_kb=4 * 1024 * 1024,
         extra_env={"R2_INSTANCE_MEM_MIB": "2048"})
     assert result.returncode == 75
-    assert "memory guard" in result.stderr and "> MemAvailable 4096 MiB" in result.stderr
+    assert "memory guard" in result.stderr
+    assert "expected 3 instance(s) x 2048 MiB = 6144 MiB" in result.stderr
+    assert "budget=3072 MiB" in result.stderr
     assert argv == []
     assert not (home / "campaigns" / "camp-s1").exists()
 
 
 def test_the_memory_guard_reads_the_lanes_declared_memory(tmp_path):
-    home, _runner, _bindir, project = prepare(tmp_path)
-    (project / "run-gate.toml").write_text(
-        '[lanes.mylane]\nkind = "assay"\n[lanes.mylane.resources]\nmemory = "3g"\n')
-    result, *_ = fleet(tmp_path, ["--instances", "2"], meminfo_kb=6 * 1024 * 1024,
-                       extra_env={"R2_INSTANCE_MEM_MIB": None})
+    result, _home, argv, *_ = fleet(
+        tmp_path, ["--instances", "2"], meminfo_kb=6 * 1024 * 1024,
+        rg_toml=('[lanes.mylane]\nkind = "assay"\njobs = "auto"\n'
+                 '[lanes.mylane.resources]\nmemory = "3g"\n'),
+        assay_toml='[lanes.mylane.judge.mutation]\njobs_max = 3\n',
+        extra_env={"R2_INSTANCE_MEM_MIB": None})
+    assert result.returncode == 0, result.stderr
+    assert "expected 2 instance(s) x 2048 MiB = 4096 MiB" in result.stderr
+    assert "workers_per_instance=2/3" in result.stderr
+    assert all("--jobs 2" in line for line in argv)
+
+
+def test_explicit_jobs_are_clamped_before_fleet_memory_estimation(tmp_path):
+    result, _home, argv, *_ = fleet(
+        tmp_path, ["--instances", "2", "--jobs", "6"], meminfo_kb=32 * 1024 * 1024,
+        rg_toml=('[lanes.mylane]\nkind = "assay"\n[lanes.mylane.resources]\n'
+                 'memory = "3g"\n'),
+        assay_toml='[lanes.mylane.judge.mutation]\njobs_max = 3\n',
+        extra_env={"R2_INSTANCE_MEM_MIB": None, "R2_OVERCOMMIT": "2.0"})
+    assert result.returncode == 0, result.stderr
+    assert "clamping --jobs 6 -> 3" in result.stderr
+    assert "workers_per_instance=3/3" in result.stderr
+    assert all("--jobs 3" in line for line in argv if "--shard " in line)
+
+
+def test_three_one_worker_shards_scale_the_declared_lane_ceiling(tmp_path):
+    result, _home, argv, *_ = fleet(
+        tmp_path, ["--instances", "3", "--jobs", "1"], meminfo_kb=5 * 1024 * 1024,
+        rg_toml=('[lanes.mylane]\nkind = "assay"\njobs = "auto"\n'
+                 '[lanes.mylane.resources]\nmemory = "3g"\n'),
+        assay_toml='[lanes.mylane.judge.mutation]\njobs_max = 3\n',
+        extra_env={"R2_INSTANCE_MEM_MIB": None, "R2_OVERCOMMIT": "2.0"})
+    assert result.returncode == 0, result.stderr
+    assert "expected 3 instance(s) x 1024 MiB = 3072 MiB" in result.stderr
+    assert "workers_per_instance=1/3, scaled_lane_ceiling=1024 MiB" in result.stderr
+    assert len([line for line in argv if "--shard " in line]) == 3
+    assert all("--jobs 1" in line for line in argv if "--shard " in line)
+
+
+def test_worker_memory_override_is_applied_per_worker(tmp_path):
+    result, *_ = fleet(
+        tmp_path, ["--instances", "3", "--jobs", "1"], meminfo_kb=4 * 1024 * 1024,
+        rg_toml=('[lanes.mylane]\nkind = "assay"\n[lanes.mylane.resources]\n'
+                 'memory = "3g"\n'),
+        assay_toml='[lanes.mylane.judge.mutation]\njobs_max = 3\n',
+        extra_env={"R2_INSTANCE_MEM_MIB": None, "R2_WORKER_MEM_MIB": "430",
+                   "R2_OVERCOMMIT": "3.0"})
+    assert result.returncode == 0, result.stderr
+    assert "expected 3 instance(s) x 430 MiB = 1290 MiB" in result.stderr
+
+
+def test_scaled_lane_ceiling_rounds_up_and_has_a_128_mib_floor(tmp_path):
+    result, *_ = fleet(
+        tmp_path, ["--instances", "3", "--jobs", "1"], meminfo_kb=1024 * 1024,
+        rg_toml=('[lanes.mylane]\nkind = "assay"\n[lanes.mylane.resources]\n'
+                 'memory = "129k"\n'),
+        assay_toml='[lanes.mylane.judge.mutation]\njobs_max = 3\n',
+        extra_env={"R2_INSTANCE_MEM_MIB": None, "R2_HOST_RESERVE_MIB": "0",
+                   "R2_OVERCOMMIT": "1.0"})
+    assert result.returncode == 0, result.stderr
+    assert "lane_cap=1 MiB" in result.stderr
+    assert "scaled_lane_ceiling=128 MiB" in result.stderr
+    assert "expected 3 instance(s) x 128 MiB = 384 MiB" in result.stderr
+
+
+@pytest.mark.parametrize(("instances", "expected_jobs", "expected_total"), [
+    (1, 3, 3072),
+    (2, 2, 4096),
+    (3, 1, 3072),
+    (4, 1, 4096),
+])
+def test_auto_lane_defaults_per_instance_jobs_by_instance_count(
+        tmp_path, instances, expected_jobs, expected_total):
+    result, _home, argv, *_ = fleet(
+        tmp_path, ["--instances", str(instances)], meminfo_kb=32 * 1024 * 1024,
+        rg_toml=('[lanes.mylane]\nkind = "assay"\njobs = "auto"\n'
+                 '[lanes.mylane.resources]\nmemory = "3g"\n'),
+        assay_toml='[lanes.mylane.judge.mutation]\njobs_max = 3\n',
+        extra_env={"R2_INSTANCE_MEM_MIB": None})
+    assert result.returncode == 0, result.stderr
+    assert f"expected {instances} instance(s) x {1024 * expected_jobs} MiB = {expected_total} MiB" in result.stderr
+    assert f"workers_per_instance={expected_jobs}/3" in result.stderr
+    assert f"--jobs {expected_jobs}" in result.stderr
+    assert all(f"--jobs {expected_jobs}" in line for line in argv)
+
+
+def test_memory_guard_uses_the_last_jobs_value_like_run_gate(tmp_path):
+    result, home, argv, *_ = fleet(
+        tmp_path, ["--instances", "3", "--jobs", "1", "--jobs", "3"],
+        meminfo_kb=8 * 1024 * 1024,
+        rg_toml=('[lanes.mylane]\nkind = "assay"\njobs = "auto"\n'
+                 '[lanes.mylane.resources]\nmemory = "3g"\n'),
+        assay_toml='[lanes.mylane.judge.mutation]\njobs_max = 3\n',
+        extra_env={"R2_INSTANCE_MEM_MIB": None})
     assert result.returncode == 75
-    assert "2 instance(s) x 3072 MiB" in result.stderr
+    assert "workers_per_instance=3/3" in result.stderr
+    assert "expected 3 instance(s) x 3072 MiB = 9216 MiB" in result.stderr
+    assert argv == [] and not (home / "campaigns" / "camp-s1").exists()
+
+
+def live_host_fleet(tmp_path, args, *, ksm_run="1", credit=None):
+    ksm = tmp_path / "live-ksm"
+    ksm.mkdir()
+    (ksm / "run").write_text(f"{ksm_run}\n")
+    (ksm / "pages_sharing").write_text("123456\n")
+    (ksm / "pages_shared").write_text("654321\n")
+    meminfo = (
+        "MemTotal: 8192000 kB\nMemAvailable: 6608896 kB\n"
+        "SwapTotal: 4194304 kB\nSwapFree: 4096000 kB\n")
+    return fleet(
+        tmp_path, args,
+        rg_toml=('[lanes.mylane]\nkind = "assay"\njobs = "auto"\n'
+                 '[lanes.mylane.resources]\nmemory = "3g"\n'),
+        assay_toml='[lanes.mylane.judge.mutation]\njobs_max = 3\n',
+        meminfo_text=meminfo,
+        extra_env={"R2_INSTANCE_MEM_MIB": None, "R2_WORKER_MEM_MIB": None,
+                   "R2_KSM_SYSFS": str(ksm),
+                   "R2_EXPECTED_PEAK_CREDIT_MIB": credit})
+
+
+def test_live_host_three_instances_default_to_one_worker_and_are_admitted(tmp_path):
+    result, _home, argv, *_ = live_host_fleet(tmp_path, ["--instances", "3"])
+    assert result.returncode == 0, result.stderr
+    assert "expected 3 instance(s) x 1024 MiB = 3072 MiB" in result.stderr
+    assert "workers_per_instance=1/3" in result.stderr
+    assert "--jobs 1" in result.stderr
+    assert all("--jobs 1" in line for line in argv)
+
+
+@pytest.mark.parametrize("ksm_run", ["0", "1"])
+def test_swap_and_ksm_do_not_credit_expected_peaks(tmp_path, ksm_run):
+    result, home, argv, *_ = live_host_fleet(
+        tmp_path, ["--instances", "3", "--jobs", "3"], ksm_run=ksm_run)
+    assert result.returncode == 75
+    assert "expected 3 instance(s) x 3072 MiB = 9216 MiB" in result.stderr
+    assert "expected_budget=5430 MiB" in result.stderr
+    assert "expected_peak_credit=0 MiB" in result.stderr
+    assert "declared caps 3 x 3072 MiB = 9216 MiB <= 12908 MiB" in result.stderr
+    assert "cap_budget=MemAvailable=6454 MiB x 2.0 = 12908 MiB" in result.stderr
+    assert "KSM do not credit expected peaks" in result.stderr
+    assert "advice: retry with --instances 3 --jobs 1" in result.stderr
+    assert "3 x 1024 MiB = 3072 MiB <= 5430 MiB" in result.stderr
+    assert argv == []
+    assert not (home / "campaigns" / "camp-s1").exists()
+
+
+def test_explicit_expected_peak_credit_is_printed_and_only_changes_expected_budget(tmp_path):
+    result, *_ = fleet(
+        tmp_path, ["--instances", "1"], meminfo_kb=4 * 1024 * 1024,
+        rg_toml='[lanes.mylane]\nkind = "assay"\n',
+        extra_env={"R2_INSTANCE_MEM_MIB": "4096",
+                   "R2_EXPECTED_PEAK_CREDIT_MIB": "1024",
+                   "R2_HOST_RESERVE_MIB": "1024"})
+    assert result.returncode == 0, result.stderr
+    assert "expected_peak_credit=1024 MiB" in result.stderr
+    assert "expected_budget=4096 MiB" in result.stderr
+    assert "declared_cap_total=not-applicable" in result.stderr
+
+
+def test_declared_caps_use_overcommit_separately_from_expected_peaks(tmp_path):
+    result, home, argv, *_ = fleet(
+        tmp_path, ["--instances", "3", "--jobs", "1"], meminfo_kb=4 * 1024 * 1024,
+        rg_toml=('[lanes.mylane]\nkind = "assay"\n[lanes.mylane.resources]\n'
+                 'memory = "3g"\n'),
+        assay_toml='[lanes.mylane.judge.mutation]\njobs_max = 3\n',
+        extra_env={"R2_INSTANCE_MEM_MIB": None, "R2_OVERCOMMIT": "1.0"})
+    assert result.returncode == 75
+    assert "expected_budget=3072 MiB" in result.stderr
+    assert "expected 3 instance(s) x 1024 MiB = 3072 MiB" in result.stderr
+    assert "declared caps 1 x 3072 MiB = 3072 MiB <= 4096 MiB" in result.stderr
+    assert "cap_budget=MemAvailable=4096 MiB x 1.0 = 4096 MiB" in result.stderr
+    assert "declared caps exceed cap budget" in result.stderr
+    assert argv == [] and not (home / "campaigns" / "camp-s1").exists()
+
+
+def test_scaled_lane_ceiling_rounding_is_shown_as_ceil_arithmetic(tmp_path):
+    result, *_ = fleet(
+        tmp_path, ["--instances", "3", "--jobs", "1"], meminfo_kb=2 * 1024 * 1024,
+        rg_toml=('[lanes.mylane]\nkind = "assay"\n[lanes.mylane.resources]\n'
+                 'memory = "1000m"\n'),
+        assay_toml='[lanes.mylane.judge.mutation]\njobs_max = 3\n',
+        extra_env={"R2_INSTANCE_MEM_MIB": None, "R2_HOST_RESERVE_MIB": "0",
+                   "R2_OVERCOMMIT": "3.0"})
+    assert result.returncode == 0, result.stderr
+    assert "lane_cap=1000 MiB" in result.stderr
+    assert "scaled_lane_ceiling=334 MiB" in result.stderr
+    assert "worker_peak=334 MiB" in result.stderr
+
+
+def test_missing_ksm_sysfs_reports_unavailable_and_continues(tmp_path):
+    result, *_ = fleet(
+        tmp_path, ["--instances", "1"],
+        extra_env={"R2_KSM_SYSFS": str(tmp_path / "missing-ksm")})
+    assert result.returncode == 0, result.stderr
+    assert ("KSM: run=unavailable pages_sharing=unavailable pages_shared=unavailable "
+            "lane_eligibility=unverified") in result.stderr
+
+
+def test_cpu_underuse_hint_names_instance_count_without_changing_jobs(tmp_path):
+    result, _home, argv, *_ = fleet(
+        tmp_path, ["--jobs", "1"],
+        rg_toml='[lanes.mylane]\nkind = "assay"\njobs = 1\n',
+        assay_toml='[lanes.mylane.judge.mutation]\njobs_max = 3\n')
+    assert result.returncode == 0, result.stderr
+    assert "CPU hint: 1 worker(s) per native R2 instance on 4 CPUs" in result.stderr
+    assert "--instances 4" in result.stderr
+    assert argv == [f"{COMMIT} proj mylane --jobs 1"]
+
+
+def test_ksm_preflight_is_saved_for_status_and_reports_eligibility(tmp_path):
+    ksm = tmp_path / "ksm"
+    ksm.mkdir()
+    (ksm / "run").write_text("1\n")
+    (ksm / "pages_sharing").write_text("23\n")
+    (ksm / "pages_shared").write_text("7\n")
+    result, _home, _argv, runner, env = fleet(
+        tmp_path, [], extra_env={"R2_KSM_SYSFS": str(ksm)})
+    assert result.returncode == 0, result.stderr
+    expected = ("KSM: run=1 pages_sharing=23 pages_shared=7 "
+                "lane_eligibility=unverified (workloads must opt in with "
+                "MADV_MERGEABLE or PR_SET_MEMORY_MERGE)")
+    assert f"INFO: {expected}" in result.stderr
+    status = subprocess.run(
+        ["bash", str(runner / "run-r2-campaign.sh"), "status", "camp"],
+        capture_output=True, text=True, env=env)
+    assert status.returncode == 0, status.stderr
+    assert f"  {expected}" in status.stdout
 
 
 def test_carry_over_main_points_at_the_checkouts_own_store(tmp_path):
@@ -685,6 +925,7 @@ def test_status_lists_the_fleet_and_each_instance(tmp_path):
     assert any(line.startswith("camp.i1of2-s1: final_exit=0") and
                "completed_candidates=1" in line for line in lines)
     assert any(line.startswith("camp.merge-s1: final_exit=0") for line in lines)
+    assert any("expected_peak_credit=0 MiB" in line for line in lines)
     missing = subprocess.run(
         ["bash", str(runner / "run-r2-campaign.sh"), "status", "nothing"],
         capture_output=True, text=True, env=env)
@@ -700,7 +941,7 @@ def test_stop_of_a_fleet_stops_every_instance(tmp_path):
     home, runner, bindir, project = prepare(tmp_path)
     (runner / "run-lane.sh").write_text(SLEEPING_LANE)
     meminfo = tmp_path / "meminfo"
-    meminfo.write_text("MemAvailable: 67108864 kB\n")
+    meminfo.write_text("MemAvailable: 67108864 kB\nSwapTotal: 0 kB\nSwapFree: 0 kB\n")
     env = {**os.environ, "PATH": f"{bindir}:{os.environ['PATH']}",
            "R2_INSTANCE_STAGGER_S": "0", "R2_MEMINFO": str(meminfo),
            "R2_INSTANCE_MEM_MIB": "1024", "FAKE_RG_HELP": NEW_RG_HELP}
@@ -740,7 +981,7 @@ def test_stop_reaches_the_instances_of_a_dead_fleet_supervisor(tmp_path):
     home, runner, bindir, project = prepare(tmp_path)
     (runner / "run-lane.sh").write_text(SLEEPING_LANE)
     meminfo = tmp_path / "meminfo"
-    meminfo.write_text("MemAvailable: 67108864 kB\n")
+    meminfo.write_text("MemAvailable: 67108864 kB\nSwapTotal: 0 kB\nSwapFree: 0 kB\n")
     env = {**os.environ, "PATH": f"{bindir}:{os.environ['PATH']}",
            "R2_INSTANCE_STAGGER_S": "0", "R2_MEMINFO": str(meminfo),
            "R2_INSTANCE_MEM_MIB": "1024", "FAKE_RG_HELP": NEW_RG_HELP}
@@ -784,7 +1025,8 @@ def test_stop_reaches_the_instances_of_a_dead_fleet_supervisor(tmp_path):
 def test_an_uncapped_lane_is_refused_without_a_per_instance_estimate(tmp_path):
     """Run-Gate applies no memory cap without resources.memory: no default."""
     result, home, argv, *_ = fleet(tmp_path, ["--instances", "2"],
-                                   extra_env={"R2_INSTANCE_MEM_MIB": None})
+                                   extra_env={"R2_INSTANCE_MEM_MIB": None,
+                                              "R2_WORKER_MEM_MIB": "430"})
     assert result.returncode == 2
     assert "declares no resources.memory" in result.stderr
     assert "R2_INSTANCE_MEM_MIB" in result.stderr
@@ -795,11 +1037,17 @@ def test_an_uncapped_lane_is_refused_without_a_per_instance_estimate(tmp_path):
     {"R2_INSTANCE_MEM_MIB": "99999999999999999999"},
     {"R2_INSTANCE_MEM_MIB": "0"},
     {"R2_HOST_RESERVE_MIB": "99999999999999999999"},
+    {"R2_OVERCOMMIT": "0.5"},
+    {"R2_OVERCOMMIT": "4.01"},
+    {"R2_EXPECTED_PEAK_CREDIT_MIB": "-1"},
+    {"R2_EXPECTED_PEAK_CREDIT_MIB": ""},
+    {"R2_EXPECTED_PEAK_CREDIT_MIB": "10000000"},
 ])
 def test_memory_guard_values_are_bounded(tmp_path, env):
     result, _home, argv, *_ = fleet(tmp_path, ["--instances", "2"], extra_env=env)
     assert result.returncode == 2
-    assert "below 10^7" in result.stderr and argv == []
+    assert ("below 10^7" in result.stderr or "R2_OVERCOMMIT" in result.stderr)
+    assert argv == []
 
 
 @pytest.mark.parametrize("args", [

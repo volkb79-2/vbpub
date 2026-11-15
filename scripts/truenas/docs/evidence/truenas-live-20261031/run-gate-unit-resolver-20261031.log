@@ -1,0 +1,4 @@
+# Evidence scrub 2026-11-10: environment-specific home, checkout, worktree, and per-run temporary paths were normalized to neutral placeholders; command output and verdict text are otherwise unchanged.
+run-gate: no run-gate.toml found in the current project directory <worktree> — run-gate loads config from the current working directory
+run-gate: lane 'unit' verdict ERROR; reason no run-gate.toml found in the current project directory <worktree> — run-gate loads config from the current working directory
+EXIT=2

@@ -1,3 +1,5 @@
+<!-- Evidence scrub 2026-11-10: environment-specific host identities, host addresses, controller paths, SSH key material and fingerprints were normalized to neutral placeholders; command output and verdict text are otherwise unchanged. -->
+<!-- Evidence scrub 2026-11-10: environment-specific home, checkout, worktree, and per-run temporary paths were normalized to neutral placeholders; command output and verdict text are otherwise unchanged. -->
 # netcup — known issues, TODO, and backlog
 
 Created 2026-10-21 from the INT-03 review
@@ -17,9 +19,9 @@ docs landed together.
 | NC-03 | The install wizard connects with `StrictHostKeyChecking=no`; the host-key pin is trust-on-first-use | Minor | OPEN |
 | NC-04 | A runner account must be uid 1003 (tester-unified lane uid); provisioning created uid 1000 | Major | FIXED (this branch) |
 | NC-13 | Flexible installer-managed CoW and data storage replacing runner-side partition creation | Minor | SUPERSEDED by the single `partitioning` plan in div2-data-area-v2; live use OPEN |
-| NC-12 | Test-host disk layout: 40 GiB root, swap in the middle, cow behind it; root filled to 91-97% and neither root nor cow could grow | Major | SUPERSEDED by the single `partitioning` plan in div2-data-area-v2; live reinstall of v1001/r1002 OPEN |
-| NC-14 | Assay `self-qualification*` lanes need `/workspaces/<repo>` to be a bind mount of its own; the host cockpit mounts `~runner/checkouts` as `/workspaces`, so a remote-gate run ends `ERROR` ("not inside the declared /workspaces/vbpub bind") | Major | FIXED in repository 2026-11-10: launcher bind plus rendered-argv regression; live host acceptance remains separate |
-| NC-15 | Host cockpits carry run-gate 24.3.0 (r1002 default) / 25.0.0 (v1001 default) while the controller runs 25.1.1; only the `gate-tools2502` venv (25.0.2) meets the vbpub floor | Minor | OPEN (host refresh needs the host board; remote-gate floors at 25.0.1 meanwhile) |
+| NC-12 | Test-host disk layout: 40 GiB root, swap in the middle, cow behind it; root filled to 91-97% and neither root nor cow could grow | Major | SUPERSEDED by the single `partitioning` plan in div2-data-area-v2; live reinstall of <host>/<host> OPEN |
+| NC-14 | Assay `self-qualification*` lanes need `/workspaces/<repo>` to be a bind mount of its own; the host cockpit mounts `~runner/checkouts` as `/workspaces`, so a remote-gate run ends `ERROR` ("not inside the declared <checkout> bind") | Major | FIXED in repository 2026-11-10: launcher bind plus rendered-argv regression; live host acceptance remains separate |
+| NC-15 | Host cockpits carry run-gate 24.3.0 (<host> default) / 25.0.0 (<host> default) while the controller runs 25.1.1; only the `gate-tools2502` venv (25.0.2) meets the vbpub floor | Minor | OPEN (host refresh needs the host board; remote-gate floors at 25.0.1 meanwhile) |
 | NC-16 | Controller Ctrl-C can leave the read-only remote evidence collector running without the controller timeout | Minor | BY DESIGN |
 | NC-17 | `update-host-pin.sh` counts the `#` banner line that newer `ssh-keyscan` prints to stdout, so it refuses a good scan | Minor | FIXED d951f417d |
 | NC-18 | `runner/start-cockpit-runner.sh` makes the host-endpoint record a hard requirement: a runner cockpit cannot start on a host without mdt host-setup | Minor | FIXED d951f417d (host-setup mandatory) |
@@ -29,7 +31,7 @@ docs landed together.
 | NC-23 | Host Run-Gate default and pin hold | Decision | DECIDED HP-D10 2026-11-10: target 25.4.1 on both test hosts after old campaign state collection; rollout and verification pending |
 | NC-24 | The host-sat queue has a per-host pause flag (`host-sat-queue.disabled.<host>`) that no runner doc mentions | Minor | FIXED at `ac0a78dcd` (queue relocation and runner documentation) |
 | NC-25 | Assay's `cgroup-parent.sh` refuses a host without mdt host-setup slice units; the minimal marker-unit workaround is not recorded | Should-fix | DOCUMENTED at `9541bbffe52cc71d30e725d63a6281e77da08d4f`; automated provisioning and fresh-host acceptance OPEN |
-| NC-26 | The cockpit container has Docker restart policy `no`; after a host reboot it stayed down and the queue exhausted its INFRA allowance | Should-fix | FIXED at `726550ed8` (launcher policy, argv regression test, and README); reboot acceptance OPEN |
+| NC-26 | The cockpit container has Docker restart policy `no`; after a host reboot it stayed down and the queue exhausted its INFRA allowance | Should-fix | PARTIAL at `726550ed8`: restart policy fixed; a fresh reboot showed Docker does not retry a failed create, so boot dependency ordering remains OPEN in mdt-cockpit MDT-095 |
 | NC-27 | Remote-gate preflight can show a stopped cockpit as a stale run-gate, and the queue log keeps only the misleading last line | Should-fix | FIXED at `726550ed8` (ordered causal preflight messages, conditional run-gate hint, queue-tail regression tests) |
 | NC-28 | Queue auto-pause leaves no durable who/why/when signal; controller status shows PAUSED without the reason | Should-fix | FIXED at `12ab909a1` (structured pause metadata and both status views) |
 | NC-29 | A queue `stop` during an in-flight lane removes the loop pid file immediately but leaves that lane's `.current` marker stale, blocking or misreporting restart | Should-fix | OPEN |
@@ -46,6 +48,20 @@ docs landed together.
 | NC-40 | R2 supervisor counts re-reported kills as progress and misses a stalled resume | Major | OPEN |
 | NC-41 | The R2 supervisor does not record the selected worker count and has no sustained under-utilisation advisory for a campaign consuming little of its CPU allocation | Should-fix | OPEN 2026-11-11 |
 | NC-42 | The R2 supervisor runs one lane container per host, so a host with spare RAM cannot run several shard instances, split a campaign with another host or restart across a judge change | Enhancement | FIXED in `netcup-r2-instances-20261111` |
+| NC-43 | The runner endpoint loader forbids `MDT_BUILDKIT_GID` from equalling the Docker GID, while host-setup always makes the BuildKit socket Docker-group accessible | Should-fix | OPEN 2026-11-12 |
+| NC-44 | The reinstall runbook does not explain the post-wipe root wrapper or link the guarded `pre-reinstall.py --yes` flow into the ordered runner bring-up | Minor | OPEN 2026-11-12 |
+| NC-45 | The R2 supervisor hard-codes commit checkouts under /workspaces/<commit>, while the assay full-qualification driver accepts only the /workspaces/vbpub worktree family | Should-fix | OPEN 2026-11-12 |
+| NC-46 | Bundle filenames become lane-container repository names, so exact-name selection depends on the uploaded bundle name | Minor | OPEN 2026-11-12 |
+| NC-47 | Remote-gate's artifact filter discards the tester-unified receipt required by assay's full qualification | Should-fix | OPEN 2026-11-12 |
+| NC-48 | R2 fleet memory admission multiplies the full lane ceiling per shard and hides CPU/KSM capacity signals | Should-fix | IMPLEMENTED unreleased |
+| NC-49 | Runner guidance does not explain when `--instances` helps or its single-host cost | Enhancement | OPEN 2026-11-12 |
+| NC-50 | `run-job` is installed under `~/bin` but bare-name examples fail in non-login runner shells | Should-fix | OPEN 2026-11-12 |
+| NC-51 | Fleet merge launch lacks an incomplete-shard gate and status does not distinguish merging | Should-fix | OPEN 2026-11-12 |
+| NC-52 | Campaign supervision logic (attempts, fleet, memory guard, merge) lives in the netcup runner scripts although it is provider-neutral; it should move out of the netcup script | Should-fix | OPEN 2026-11-12 (design) |
+| NC-53 | the Run-Gate 25.6.0 image rollout did not synchronize runner scripts or verify the selected private Run-Gate profile | Should-fix | OPEN 2026-11-12 |
+| NC-54 | Pre-reinstall helpers use a fixed release-program root; remote-gate's output root is configurable | Minor | OPEN 2026-11-13 |
+| NC-55 | A deterministic budget-exceeded candidate is reported as stalled | Should-fix | OPEN 2026-11-13 |
+| NC-56 | T3 bundle import can omit release tags needed to derive the required Assay version | Should-fix | OPEN 2026-11-14 |
 
 ---
 
@@ -68,7 +84,7 @@ docs landed together.
 
 ## NC-02 — runner provisioning scripts: first-run bugs, host-specific values
 
-**Status:** FIXED on `fix-r1002-findings-20261104`. Found on a reinstalled runner host; the scripts lived in a task directory with the host name, server id and
+**Status:** FIXED on `fix-<host>-findings-20261104`. Found on a reinstalled runner host; the scripts lived in a task directory with the host name, server id and
 paths hard-coded.
 
 Bugs fixed in `runner/provision-runner.sh` and `runner/sync-from-devcontainer`:
@@ -92,26 +108,26 @@ from the provider console or the installer's own custom-script output (it can pr
 
 ## NC-04 — the runner account must be uid 1003
 
-**Status:** FIXED on `fix-r1002-findings-20261104` (documented + provisioned). `tester-unified` runs lanes as uid 1003. A runner account at uid 1000 made every Run-Gate
+**Status:** FIXED on `fix-<host>-findings-20261104` (documented + provisioned). `tester-unified` runs lanes as uid 1003. A runner account at uid 1000 made every Run-Gate
 `worktree` lane fail one of three ways (see Run-Gate RG-150): Git `dubious ownership` in the lane, `Permission denied` on `<project>/.run-gate`, or `MDT_COW_ROOT must be
 owned by the non-root caller uid`. `provision-runner.sh` now creates the account with `RUNNER_UID` (default 1003) and refuses a different existing uid unless
 `RUNNER_UID_ALLOW_CHANGE=1`; `start-cockpit-runner.sh` remaps the cockpit's `vscode` user to it. To migrate a live host: stop the cockpit and BuildKit containers, `groupmod -g`/`usermod -u`,
 `chown -R -h` the runner home and the CoW root, restart, rerun `start-cockpit-runner.sh`.
 
-<!-- Id note (2026-11-04): NC-02..NC-04 (runner provisioning, host-key pin, uid 1003) exist only on branch fix-r1002-findings-20261104. The
+<!-- Id note (2026-11-04): NC-02..NC-04 (runner provisioning, host-key pin, uid 1003) exist only on branch fix-<host>-findings-20261104. The
      ids below start at NC-05 to leave that gap; the controller resolves ordering and the status-table rows on merge. The runner README
      lives at scripts/netcup/runner/README.md on that branch. -->
 
-## NC-05 — r1002 migration of the cgprofile host daemon to the native service (host-setup, pinned wheel)
+## NC-05 — <host> migration of the cgprofile host daemon to the native service (host-setup, pinned wheel)
 
 **Status:** OPEN. Filed 2026-11-04. Blocked on cgprofile CP-41/CP-42 and mdt-cockpit MDT-055.
 
-**Problem.** On r1002 the daemon is a ciu-managed container deployed from a repo checkout that carries two uncommitted hand edits
+**Problem.** On <host> the daemon is a ciu-managed container deployed from a repo checkout that carries two uncommitted hand edits
 (`RUNBOOK.md:52-90`): the gates slice name and the slice unit, because the compose template authors both literally. The container also
 restarts with dockerd.
 
 **Decision record (operator, 2026-11-04).** The cgprofile daemon becomes a native systemd service from a released wheel, installed and pinned
-by `mdt host-setup`; the ciu deployment is retired (CP-44). r1002 migrates first, the shared host later in an idle window.
+by `mdt host-setup`; the ciu deployment is retired (CP-44). <host> migrates first, the shared host later in an idle window.
 
 **Design.** Per-host steps in the RUNBOOK: record the current revision label; `ciu down` of the host profile; set `CGPROFILE_WHEEL`
 (version plus sha256) in `/etc/mdt/host-setup.env`; run host-setup (installs the wheel into `/opt/cgprofile`, renders the unit and the
@@ -126,18 +142,18 @@ remain in the checkout; the RUNBOOK documents the sequence and rollback.
 
 **Status:** OPEN. Filed 2026-11-04. Interim (option C of the platform memo) until NC-05 lands; skip it if NC-05 is imminent.
 
-**Problem.** The ciu deployment reads `[cgprofile.daemon] gates_slice` and the slice unit is installed by hand; r1002 needs different
+**Problem.** The ciu deployment reads `[cgprofile.daemon] gates_slice` and the slice unit is installed by hand; <host> needs different
 tier names and has local edits to the template.
 
 **Design.** Render both the `gates_slice` value and the `cgprofile.slice` content from `/etc/mdt/host-setup.env` (the tier-name source of
 truth) into the ciu override for the host, so the checkout stays clean. No new feature in the daemon.
 
-**Acceptance.** `git status` of the r1002 checkout is clean after an upgrade; the rendered values equal host-setup's tier names; a test of the
+**Acceptance.** `git status` of the <host> checkout is clean after an upgrade; the rendered values equal host-setup's tier names; a test of the
 rendering with a fake env file.
 
 ## NC-07 — restricted `cockpit` ssh key with a forced command, plus a `docker context` recipe in the runner README
 
-**Status:** OPEN. Filed 2026-11-04. Needs `fix-r1002-findings-20261104` merged first (the runner README exists only there). Docs companion:
+**Status:** OPEN. Filed 2026-11-04. Needs `fix-<host>-findings-20261104` merged first (the runner README exists only there). Docs companion:
 mdt-cockpit MDT-058.
 
 **Problem.** Entering the runner container takes ssh to the host as `runner` and then `docker exec -u vscode ...` (`RUNBOOK.md:7-10,130`); there is
@@ -152,7 +168,7 @@ surface for no isolation gain: the container already holds the Docker socket). I
 - `provision-runner.sh` (optionally, off by default) installs a second authorized key for the `runner` account with
   `command="docker exec -it -u vscode -w /workspaces mdt-cockpit-runner zsh -l",restrict` (plus `pty`), `no-port-forwarding`,
   `no-agent-forwarding`, `no-X11-forwarding`, so that key can open only that shell.
-- Runner README recipe: `docker context create r1002 --docker host=ssh://runner@<host>`, then VS Code "Attach to Running Container" with the
+- Runner README recipe: `docker context create <host> --docker host=ssh://runner@<host>`, then VS Code "Attach to Running Container" with the
   context; the shell gets the remapped uid of the runner user. Security note: `runner` is in the docker group, so it is host-root equivalent;
   its keys belong only to operators and the controller. Both mechanisms add no new exposure.
 - The forced-command key is separate from the main key and is listed by fingerprint in the README so it can be revoked on its own.
@@ -163,7 +179,7 @@ the lane-uid rollout (run-gate RG-151..153) the "same uid everywhere" wording re
 
 ## NC-08 — a provider image install removes the server's snapshots; the listing is empty afterwards
 
-**Status:** OPEN (filed 2026-11-04 from the v1001 reinstall). Before `install-host.py wizard` (ServerImageSetupTask) `scp-api.py snapshots 804027` listed eight snapshots
+**Status:** OPEN (filed 2026-11-04 from the <host> reinstall). Before `install-host.py wizard` (ServerImageSetupTask) `scp-api.py snapshots 804027` listed eight snapshots
 (the server record said `snapshotCount` 1); after the task finished the listing said "no snapshots for this server", and `snapshots ... revert <name> --dry-run` answered
 "existing: none"; `snapshotCount` stayed 1. No snapshot verb was called. An operator who keeps a TrueNAS/rollback snapshot on a host and then reinstalls it with the
 wizard loses the rollback. **Fix.** `install-host.py` lists the target's snapshots in its preflight and refuses (or needs `--accept-snapshot-loss`) when any exist; the
@@ -171,13 +187,13 @@ README and DESIGN-GUIDE state that a provider reinstall does not preserve snapsh
 
 ## NC-09 — the cockpit container has no `run-gate` and no `assay` after `start-cockpit-runner.sh`
 
-**Status:** FIXED on `ops-v1001-20261104` (`setup-cockpit-tools.sh`). `run-lane.sh` calls a controller-local `run-gate` path, but the image ships neither tool; on r1002 they were
+**Status:** FIXED on `ops-<host>-20261104` (`setup-cockpit-tools.sh`). `run-lane.sh` calls a controller-local `run-gate` path, but the image ships neither tool; on <host> they were
 installed by hand. `setup-cockpit-tools.sh` creates `~/.venvs/gate-tools` in the cockpit with the pinned Run-Gate wheel (sha256 checked) and the synced checkout's Assay (editable).
 Also added: `run-jobs-window.sh` and `run-jobs-compare.sh` (native-R2 `--jobs` comparisons on fresh state; a run-gate lane refuses `--jobs N` above the lane's `judge.mutation.jobs_max`, worktree 1, iobench 4).
 
 ## NC-10 — running the mdt host-setup wizard or `install.sh` as root from the runner checkout leaves root-owned `__pycache__` that breaks the next lane
 
-**Status:** OPEN (docs). On v1001, `mdt-host-setup-wizard.py` and `install.sh` run as root from `~/src/vbpub-current/mdt-cockpit/host-setup` created root-owned `__pycache__` dirs; the next
+**Status:** OPEN (docs). On <host>, `mdt-host-setup-wizard.py` and `install.sh` run as root from `~/src/vbpub-current/mdt-cockpit/host-setup` created root-owned `__pycache__` dirs; the next
 `run-gate smoke` (tester uid 1003) failed with `[Errno 13] Permission denied: './host-setup/__pycache__/mdt-host-setup-wizard...pyc'`. **Fix.** The runner README order step 5 runs host-setup
 with `PYTHONDONTWRITEBYTECODE=1` (or from a throw-away copy), or `provision`-time `chown -R` after it. **Acceptance.** README states it; the smoke lane passes after a host-setup run in the documented form.
 
@@ -199,9 +215,9 @@ answered `missing NETCUP_SCP_API_REFRESH_TOKEN`, so `.env` is found relative to 
 
 ## NC-12 — test hosts were installed with swap in the middle of the disk and a 40 GiB root
 
-**Status:** CODE DONE 2026-11-05 on `div2-disk-layout-20261105`; reinstall of v1001 then r1002 OPEN (`reports/div2-reinstall-RUNBOOK.md` in the release-program directory). Severity Major.
+**Status:** CODE DONE 2026-11-05 on `div2-disk-layout-20261105`; reinstall of <host> then <host> OPEN ([div2-reinstall-RUNBOOK.md](../debian-install-v2/docs/evidence/div2-reinstall-RUNBOOK.md)). Severity Major.
 
-**Observed.** r1002 and v1001 (512 GiB virtual disks) were installed as ESP 243 MiB, `/boot` 977 MiB, 40 GiB ext4 root, four 4 GiB swap partitions, then a 454.8 GiB btrfs `/srv/cow`. Root reached 91-97% (docker 27 GB, runner checkouts, build cache) and could not grow because the swap partitions sit directly behind it. Cause: the predecessor installer required swap directly after root, and `provision-runner.sh` created CoW storage in the last free row. Both layout decisions are superseded by the single `partitioning` plan.
+**Observed.** <host> and <host> (512 GiB virtual disks) were installed as ESP 243 MiB, `/boot` 977 MiB, 40 GiB ext4 root, four 4 GiB swap partitions, then a 454.8 GiB btrfs `/srv/cow`. Root reached 91-97% (docker 27 GB, runner checkouts, build cache) and could not grow because the swap partitions sit directly behind it. Cause: the predecessor installer required swap directly after root, and `provision-runner.sh` created CoW storage in the last free row. Both layout decisions are superseded by the single `partitioning` plan.
 
 **Current behavior.** The `partitioning` plan defines root, data, the raw iobench reservation, reserve, and tail swap in physical order. The CoW partition is planned at install time and grows with its assigned size; the runner does not allocate it. Reinstall remains OPEN and must use the current plan contract documented in `scripts/debian-install-v2/README.md`.
 
@@ -209,9 +225,9 @@ answered `missing NETCUP_SCP_API_REFRESH_TOKEN`, so `.env` is found relative to 
 
 **Status:** FIXED in repository 2026-11-10. Severity Major. Live host acceptance was not run.
 
-**Observed.** `remote-gate run r1002 <worktree> self-qualification-provisional --project-dir assay` (run `assay-selfqual-cov-a`) ended `ERROR; exit_code 2` after 3 s with only `self-qualification-container: the selected worktree is not inside the declared /workspaces/vbpub bind`. `assay/tools/self-qualification-container.sh` requires `findmnt --target <worktree>` to report TARGET `/workspaces/vbpub`; in the host cockpit `/workspaces` is the mount (`~runner/checkouts`), so TARGET is `/workspaces`.
+**Observed.** `remote-gate run <host> <worktree> self-qualification-provisional --project-dir assay` (run `assay-selfqual-cov-a`) ended `ERROR; exit_code 2` after 3 s with only `self-qualification-container: the selected worktree is not inside the declared <checkout> bind`. `assay/tools/self-qualification-container.sh` requires `findmnt --target <worktree>` to report TARGET `<checkout>`; in the host cockpit `/workspaces` is the mount (`~runner/checkouts`), so TARGET is `/workspaces`.
 
-**Fix and evidence.** `start-cockpit-runner.sh` now adds the documented nested bind `--mount type=bind,source="$RUNNER_HOME/checkouts/vbpub",target=/workspaces/vbpub,consistency=cached`. `tests/test_runner_scripts.py::test_cockpit_launcher_binds_vbpub_checkout_at_assay_workspace_path` renders the Docker argv with a fake Docker executable and asserts the exact source, target and consistency option. The remote-gate diagnostic remains useful if the bind is absent on a running host.
+**Fix and evidence.** `start-cockpit-runner.sh` now adds the documented nested bind `--mount type=bind,source="$RUNNER_HOME/checkouts/vbpub",target=<checkout>,consistency=cached`. `tests/test_runner_scripts.py::test_cockpit_launcher_binds_vbpub_checkout_at_assay_workspace_path` renders the Docker argv with a fake Docker executable and asserts the exact source, target and consistency option. The remote-gate diagnostic remains useful if the bind is absent on a running host.
 
 **Residual acceptance.** No host was accessed for this change. A live `self-qualification*` replay is not claimed here and remains part of the fresh-host acceptance.
 
@@ -219,7 +235,7 @@ answered `missing NETCUP_SCP_API_REFRESH_TOKEN`, so `.env` is found relative to 
 
 **Status:** OPEN. Severity Minor.
 
-**Observed.** `docker exec mdt-cockpit-runner <controller-local-run-gate-path> --version`: r1002 24.3.0, v1001 25.0.0; `~/.venvs/gate-tools2502/bin/run-gate` is 25.0.2 on both; the controller runs 25.1.1.
+**Observed.** `docker exec mdt-cockpit-runner <controller-local-run-gate-path> --version`: <host> 24.3.0, <host> 25.0.0; `~/.venvs/gate-tools2502/bin/run-gate` is 25.0.2 on both; the controller runs 25.1.1.
 
 **Needed.** After the R2 campaigns on a host finish, `runner/setup-cockpit-run-gate.sh 25.1.1 <sha256>` (own venv, the default is left alone) and add that venv to the `run_gate_bins` of the vbpub and dstdns profiles. No host was changed by this entry.
 
@@ -233,9 +249,9 @@ controller-side and no longer applies after interruption.
 
 **Status:** FIXED 2026-11-09 in `d951f417d`. `tests/test_update_host_pin.py` covers banner-plus-one-key and still-refused two-key scans.
 
-**Priority:** minor. Source: `reports/v1001-reinstall-EXEC-LOG.md` (17:21Z) and `reports/div2-reinstall-v1001-RESULT.md`.
+**Priority:** minor. Source: [host-reinstall-EXEC-LOG.md](../debian-install-v2/docs/evidence/host-reinstall-EXEC-LOG.md) (17:21Z) and [div2-reinstall-host-RESULT.md](../debian-install-v2/docs/evidence/div2-reinstall-host-RESULT.md).
 
-**Finding.** `update-host-pin.sh:56-62` runs `ssh-keyscan -T 10 -t ed25519` and requires `grep -c '[^[:space:]]'` of the output to be 1. The controller's OpenSSH `ssh-keyscan` now prints a `# host:22 SSH-2.0-...` banner comment to stdout, so a correct single-key scan counts 2 lines and the script refuses ("expected exactly one scanned ed25519 host key"). The 2026-11-08 v1001 reinstall ran the unmodified script with a PATH shim that drops `#` lines; the script's own rescan and fingerprint-equality check still applied.
+**Finding.** `update-host-pin.sh:56-62` runs `ssh-keyscan -T 10 -t ed25519` and requires `grep -c '[^[:space:]]'` of the output to be 1. The controller's OpenSSH `ssh-keyscan` now prints a `# host:22 SSH-2.0-...` banner comment to stdout, so a correct single-key scan counts 2 lines and the script refuses ("expected exactly one scanned ed25519 host key"). The 2026-11-08 <host> reinstall ran the unmodified script with a PATH shim that drops `#` lines; the script's own rescan and fingerprint-equality check still applied.
 
 **Fix.** Count only key lines: `grep -vc '^#'` (or `grep -c '^[^#[:space:]]'`), and use the same filtered output for the stored pin. Add a test in `tests/test_update_host_pin.py` with a fake `ssh-keyscan` that prints a banner line plus one key, and one that prints two keys.
 
@@ -245,9 +261,9 @@ controller-side and no longer applies after interruption.
 
 **Status:** FIXED 2026-11-09 in `d951f417d` by choosing the reviewed mandatory-host-setup rule. The runner README, consumers guide, and design guide state that no raw-socket degraded mode is supported.
 
-**Priority:** minor, decision. Source: `reports/v1001-reinstall-EXEC-LOG.md` (17:30Z), `reports/div2-reinstall-v1001-RESULT.md`.
+**Priority:** minor, decision. Source: [host-reinstall-EXEC-LOG.md](../debian-install-v2/docs/evidence/host-reinstall-EXEC-LOG.md) (17:30Z), [div2-reinstall-host-RESULT.md](../debian-install-v2/docs/evidence/div2-reinstall-host-RESULT.md).
 
-**Finding.** `runner/start-cockpit-runner.sh:7` calls `load_host_endpoints /etc/host-endpoints.env || exit $?` and needs the Docker-API, cgprofile, topos and BuildKit socket directories that mdt host-setup creates. On the freshly reinstalled v1001 (host-setup deliberately not yet run) the pinned script refused, and the operator used a local, unreviewed variant that bound the raw docker socket with no cgprofile or BuildKit mounts. That variant is a deviation from the reviewed scripts.
+**Finding.** `runner/start-cockpit-runner.sh:7` calls `load_host_endpoints /etc/host-endpoints.env || exit $?` and needs the Docker-API, cgprofile, topos and BuildKit socket directories that mdt host-setup creates. On the freshly reinstalled <host> (host-setup deliberately not yet run) the pinned script refused, and the operator used a local, unreviewed variant that bound the raw docker socket with no cgprofile or BuildKit mounts. That variant is a deviation from the reviewed scripts.
 
 **Decide.** Either state in the runner README that host-setup is mandatory before the cockpit (the current behavior, NC-20), or provide a reviewed degraded mode (an explicit flag, never a silent default) that names what is missing (no observer socket means run-gate lanes with `resource_observer = "cgprofile"` refuse; no BuildKit mount means no governed builds).
 
@@ -257,9 +273,9 @@ controller-side and no longer applies after interruption.
 
 **Status:** FIXED 2026-11-09 in `d951f417d`. `tests/test_cow_select.py` covers the selected-device message and both reused and successfully formatted paths in `provision-runner.sh`.
 
-**Priority:** nit. Source: `reports/v1001-reinstall-EXEC-LOG.md` (17:26-17:32Z).
+**Priority:** nit. Source: [host-reinstall-EXEC-LOG.md](../debian-install-v2/docs/evidence/host-reinstall-EXEC-LOG.md) (17:26-17:32Z).
 
-**Finding.** `runner/provision-runner.sh:70-100` resolves the CoW volume by `PARTLABEL=MDT_COW` (`cow_select_device`) and reuses an already-mounted btrfs, but prints no line naming the selected device, the match rule, or "reused, no mkfs". On v1001 the operator had to infer from the log that `/dev/vda4` was selected by PARTLABEL and that no mkfs or partition command ran.
+**Finding.** `runner/provision-runner.sh:70-100` resolves the CoW volume by `PARTLABEL=MDT_COW` (`cow_select_device`) and reuses an already-mounted btrfs, but prints no line naming the selected device, the match rule, or "reused, no mkfs". On <host> the operator had to infer from the log that `/dev/vda4` was selected by PARTLABEL and that no mkfs or partition command ran.
 
 **Fix.** Print one line after the selection: `selected MDT_COW by PARTLABEL: <device> (<fs type>, reused|formatted)`. Cover it in the provisioning test that already exercises `cow_select_device`.
 
@@ -269,23 +285,23 @@ controller-side and no longer applies after interruption.
 
 **Status:** FIXED. `d951f417d` moved host-setup ahead of the cockpit; the 2026-11-10 host-plan update orders all seven README steps across P1–P15 and places source sync before host-setup.
 
-**Priority:** minor, docs. Source: `reports/div2-reinstall-v1001-RESULT.md` (runner provisioning section), `reports/v1001-reinstall-EXEC-LOG.md`.
+**Priority:** minor, docs. Source: [div2-reinstall-host-RESULT.md](../debian-install-v2/docs/evidence/div2-reinstall-host-RESULT.md) (runner provisioning section), [host-reinstall-EXEC-LOG.md](../debian-install-v2/docs/evidence/host-reinstall-EXEC-LOG.md).
 
 **Finding.** The earlier order correction put host-setup before cockpit-dependent steps but still listed host-setup before `sync-from-devcontainer`, even though host-setup runs from the synced runner checkout. The host-plan dependency graph also distinguishes the required order: source sync, root-PATH Augeaswrap, host-setup, service checks and images, then cockpit and acceptance.
 
 **Fix.** The seven numbered runner README steps now follow P1–P15: provider reinstall, host-key/layout check, runner provisioning, source sync, Augeaswrap then host-setup, services/checks/venvs/images, and cockpit/registration/acceptance. They state what works after provisioning alone and which host facts each later stage needs.
 
-**Close when.** README "Order" names each dependency and matches the behavior observed on v1001.
+**Close when.** README "Order" names each dependency and matches the behavior observed on <host>.
 
 ## NC-21 — the cut-over recipe for a reinstalled host without mdt host-setup exists only in agent logs, not in the repo
 
-**Priority:** should-fix (the working path is undocumented). Filed 2026-11-09, status OPEN. Source: cutover and cockpit execution logs and handoff notes retained as scratch evidence. Supersedes the decision half of NC-18 (it chooses the degraded path as a supported one) and extends NC-20.
+**Priority:** should-fix (the working path is undocumented). Filed 2026-11-09, status OPEN. Source: [host-cutover-EXEC-LOG.md](docs/evidence/host-cutover-EXEC-LOG.md), [host-cockpit-EXEC-LOG.md](docs/evidence/host-cockpit-EXEC-LOG.md), and the controller continuity record (22:25Z and 23:35Z entries, retained outside this repository). Supersedes the decision half of NC-18 (it chooses the degraded path as a supported one) and extends NC-20.
 
 **Status:** DOCUMENTED at `9541bbffe52cc71d30e725d63a6281e77da08d4f`; implementation and fresh-host acceptance OPEN. The documented prerequisites, commands, verification and rollback are in `runner/README.md` under "Host without mdt host-setup"; the Netcup README links to that section.
 
-**Finding.** On 2026-11-08 v1001 was moved to cgprofile 3.0.0 and a cgprofile-aware cockpit without mdt host-setup. The steps that worked are in no file under `scripts/netcup/`:
-1. cgprofile 3.0.0 install on the host: `cgprofiled install` from the pinned wheels (cgprofile 3.0.0, cli-extended 0.5.3, augeaswrap), `--dry-run --json` first, then apply; it creates the control and observer sockets, the `cgprofile-control` and `cgprofile-observer` groups and publishes the six `CGPROFILE_*` keys to `/etc/host-endpoints.env` (`v1001-cutover-EXEC-LOG.md`, 21:33Z-21:34Z).
-2. The cockpit start variant `start-cockpit-runner-cgprofile.sh` (kept at `v1001/runner-scripts-local/` and `v1001/cockpit-20261108/`, outside the repo): reads `CGPROFILE_*` from `/etc/host-endpoints.env` with a strict regex (nothing typed by hand), bind-mounts the control and observer socket directories read-only at identity paths, adds `--group-add <control gid>` (986), and sets a container-only `MDT_HOST_DOCKER_GID` (RG-252). Rollback script: `start-cockpit-runner-nohostsetup.sh`.
+**Finding.** On 2026-11-08 <host> was moved to cgprofile 3.0.0 and a cgprofile-aware cockpit without mdt host-setup. The steps that worked are in no file under `scripts/netcup/`:
+1. cgprofile 3.0.0 install on the host: `cgprofiled install` from the pinned wheels (cgprofile 3.0.0, cli-extended 0.5.3, augeaswrap), `--dry-run --json` first, then apply; it creates the control and observer sockets, the `cgprofile-control` and `cgprofile-observer` groups and publishes the six `CGPROFILE_*` keys to `/etc/host-endpoints.env` (`host-cutover-EXEC-LOG.md`, 21:33Z-21:34Z).
+2. The cockpit start variant `start-cockpit-runner-cgprofile.sh` (kept at `<host>/runner-scripts-local/` and `<host>/cockpit-20261108/`, outside the repo): reads `CGPROFILE_*` from `/etc/host-endpoints.env` with a strict regex (nothing typed by hand), bind-mounts the control and observer socket directories read-only at identity paths, adds `--group-add <control gid>` (986), and sets a container-only `MDT_HOST_DOCKER_GID` (RG-252). Rollback script: `start-cockpit-runner-nohostsetup.sh`.
 3. run-gate 25.4.0 installed by the existing `scripts/netcup/runner/setup-cockpit-run-gate.sh 25.4.0 <sha>` as the second venv `gate-tools2540` next to the default 25.0.2.
 4. Minimal slice units where host-setup is absent: `dev-interactive.slice` as a limit-free marker unit, and `dev-gates.slice` with `CPUWeight=100`, `IOWeight=101` and `MemoryMax=6G`; size these from `MemTotal` as in NC-25.
 `runner/start-cockpit-runner.sh` and `runner/README.md` know none of this (NC-18, NC-20).
@@ -296,17 +312,17 @@ controller-side and no longer applies after interruption.
 
 ## NC-22 — the cockpit image carries only the old `cgpctl` 2.1.0 client (no `cgprofilectl`)
 
-**Priority:** should-fix. Filed 2026-11-09, status OPEN. Found by the v1001 cockpit agent: with cgprofile 3.0.0 on the host the cockpit image still holds only the 2.1.0 `cgpctl` client and has no `cgprofilectl`. Source: `HANDOFF-STATE-20261107.md` (22:25Z "Backlog to file"), `reports/v1001-cockpit-EXEC-LOG.md` (21:46Z, the 25.0.2 cockpit run-gate ignores `CGPROFILE_*`).
+**Priority:** should-fix. Filed 2026-11-09, status OPEN. Found by the <host> cockpit agent: with cgprofile 3.0.0 on the host the cockpit image still holds only the 2.1.0 `cgpctl` client and has no `cgprofilectl`. Source: `HANDOFF-STATE-20261107.md` (22:25Z "Backlog to file"), [host-cockpit-EXEC-LOG.md](docs/evidence/host-cockpit-EXEC-LOG.md) (21:46Z, the 25.0.2 cockpit run-gate ignores `CGPROFILE_*`).
 
-**Finding.** The estate image pipeline lists the wheel in `mdt-cockpit/pip/wheels.list` (entry `cgprofile`, clients `cgprofile` and `cgprofilectl` from 2.0.0 on); the image on v1001 pre-dates the 3.0.0 wheel. Which pipeline produced the v1001 cockpit image (mdt-cockpit image build versus the runner scripts `build-tester-*.sh` / `setup-cockpit-tools.sh`) is to be confirmed first; the rebuild with the 3.0.0 CLI is tracked as MDT-090 in `mdt-cockpit/KNOWN_ISSUES_TODO_BACKLOG.md`, the runner side only has to use and check it.
+**Finding.** The estate image pipeline lists the wheel in `mdt-cockpit/pip/wheels.list` (entry `cgprofile`, clients `cgprofile` and `cgprofilectl` from 2.0.0 on); the image on <host> pre-dates the 3.0.0 wheel. Which pipeline produced the <host> cockpit image (mdt-cockpit image build versus the runner scripts `build-tester-*.sh` / `setup-cockpit-tools.sh`) is to be confirmed first; the rebuild with the 3.0.0 CLI is tracked as MDT-090 in `mdt-cockpit/KNOWN_ISSUES_TODO_BACKLOG.md`, the runner side only has to use and check it.
 
 **Fix.** Rebuild or retag the cockpit image with the 3.0.0 wheel (MDT-090), and have `setup-cockpit-tools.sh` verify after the build that `cgprofilectl --version` reports 3.0.x inside the container, failing with the image tag named.
 
-**Close when.** `docker exec` into the v1001 cockpit shows `cgprofilectl` 3.0.x and no stale `cgpctl`, and `setup-cockpit-tools.sh` checks it.
+**Close when.** `docker exec` into the <host> cockpit shows `cgprofilectl` 3.0.x and no stale `cgpctl`, and `setup-cockpit-tools.sh` checks it.
 
 ## NC-23 — Run-Gate host profile default and campaign-state pin hold
 
-**Priority:** decision. Historical state recorded 2026-11-09: `gate-tools2540` (Run-Gate 25.4.0) was installed next to the default 25.0.2 on v1001 and used for an observer-lane smoke and the Assay 12.1.0 release attempt; the queue still resolved 25.0.2. These are historical observations, not current host evidence.
+**Priority:** decision. Historical state recorded 2026-11-09: `gate-tools2540` (Run-Gate 25.4.0) was installed next to the default 25.0.2 on <host> and used for an observer-lane smoke and the Assay 12.1.0 release attempt; the queue still resolved 25.0.2. These are historical observations, not current host evidence.
 
 **Decision HP-D10 (operator accepted 2026-11-10).** Both test hosts target Run-Gate 25.4.1 as the default only after old campaign and resume state has been collected. Until collection is complete, preserve the existing pins and venvs so campaigns can resume; retain prior venvs for rollback. This branch records the policy only: no host hosts-file was edited and neither live host version nor profile was checked.
 
@@ -329,7 +345,7 @@ flags". The controller install and update sequence is in
 
 **Status:** DOCUMENTED at `9541bbffe52cc71d30e725d63a6281e77da08d4f`; automated provisioning and fresh-host acceptance OPEN. The minimal marker-unit bodies, installation, verification, rationale and rollback are in `runner/README.md` under "Install the two slice marker units"; details absent from the source trail are marked `to be confirmed`.
 
-**Finding.** The release attempt on v1001 failed in seconds with `cgroup-parent: Docker-host unit "dev-interactive.slice" is not a loaded installed slice (FragmentPath=)`. `assay/tools/cgroup-parent.sh` requires, for each named slice: a loaded unit with a real `FragmentPath` (`:324-332`; a runtime-generated slice is refused); positive effective `CPUWeight` and `IOWeight` properties on the gates slice (`:354-355`); at least one non-default control; and, with `--memory-reserve-bytes`, a finite `memory.max` with the requested headroom (2 GiB for the B105 self-qualification lanes; `:394-402`). It does not test whether the weight properties were explicitly assigned in the unit file. mdt host-setup installs these units; v1001 was reinstalled without it. Fixed by hand on 2026-11-08 with `/etc/systemd/system/dev-interactive.slice` as a limit-free marker unit and `/etc/systemd/system/dev-gates.slice` configured with `CPUWeight=100`, `IOWeight=101` and `MemoryMax=6G`. Revert: `rm` both files and `systemctl daemon-reload`; the before-file of `MemoryMax` is on v1001 under `/root/slicefix-20261108/`.
+**Finding.** The release attempt on <host> failed in seconds with `cgroup-parent: Docker-host unit "dev-interactive.slice" is not a loaded installed slice (FragmentPath=)`. `assay/tools/cgroup-parent.sh` requires, for each named slice: a loaded unit with a real `FragmentPath` (`:324-332`; a runtime-generated slice is refused); positive effective `CPUWeight` and `IOWeight` properties on the gates slice (`:354-355`); at least one non-default control; and, with `--memory-reserve-bytes`, a finite `memory.max` with the requested headroom (2 GiB for the B105 self-qualification lanes; `:394-402`). It does not test whether the weight properties were explicitly assigned in the unit file. mdt host-setup installs these units; <host> was reinstalled without it. Fixed by hand on 2026-11-08 with `/etc/systemd/system/dev-interactive.slice` as a limit-free marker unit and `/etc/systemd/system/dev-gates.slice` configured with `CPUWeight=100`, `IOWeight=101` and `MemoryMax=6G`. Revert: `rm` both files and `systemctl daemon-reload`; the before-file of `MemoryMax` is on <host> under `<home>/`.
 
 **Fix.** Ship the two unit files as templates under `scripts/netcup/runner/` (sizes derived from `MemTotal`, never hard-coded: `MemoryMax = MemTotal - reserve`, reserve at least 2 GiB), install them from `provision-runner.sh` when host-setup is absent, and make the script refuse to overwrite a host-setup-owned unit. Record in the runner README why a marker unit satisfies the check and what it does not do (no governance). Consider whether assay should accept a documented "no-governance host" mode instead of units that mimic governance, as an assay backlog item.
 
@@ -337,18 +353,22 @@ flags". The controller install and update sequence is in
 
 ## NC-26 — cockpit restart policy `no` leaves remote gates down after a host reboot
 
-**Priority:** should-fix. Filed 2026-11-09, status OPEN. Source: the r1002 queue incident report and host log retained as scratch evidence;
+**Priority:** should-fix. Filed 2026-11-09, status OPEN. Source: [host-queue-REPORT.md](docs/evidence/host-queue-REPORT.md) (Root cause, Before, Change, Follow-ups);
+the controller queue log (02:00-04:58Z entries, retained outside this repository);
 `scripts/netcup/runner/start-cockpit-runner.sh` (`docker run` omits `--restart`), plus the pinned launch variants under the release-program artifacts
-(`r1002/start-cockpit-runner-20261104.sh`, `v1001/runner-scripts*/start-cockpit-runner*.sh`) which also omit it.
+(`<host>/start-cockpit-runner-20261104.sh`, `<host>/runner-scripts*/start-cockpit-runner*.sh`) which also omit it.
 
-**Status:** FIXED at `726550ed8`. `start-cockpit-runner.sh` now passes `--restart unless-stopped`, an argv-level fake-Docker
+**Status:** PARTIAL at `726550ed8`; reboot acceptance FAILED on 2026-11-12. `start-cockpit-runner.sh` now passes `--restart unless-stopped`, an argv-level fake-Docker
 test covers every tracked `start-cockpit-runner*.sh`, and `runner/README.md` documents the reboot behavior plus the applied
 `docker update --restart unless-stopped` workaround and its `--restart no` revert. The operator applied the live update
-to both test hosts on 2026-11-09. The full host-reboot acceptance is still OPEN; no host access was used for this fix.
+to both test hosts on 2026-11-09. The r1002 reinstall execution record 2026-11-12 then supplied the previously missing
+reboot acceptance and disproved the sufficiency of the policy: Docker attempted the container once before
+`mdt-buildkitd.service` recreated its bind source, runc failed the create, and Docker did not retry it (`RestartCount=0`).
+A manual `docker start mdt-cockpit-runner` recovered it. Dependency ordering is owned by mdt-cockpit MDT-095.
 
-**Finding.** The r1002 host rebooted at 02:02Z on 2026-11-09 while a queue lane was running. Docker's default restart policy is `no`, and the cockpit launcher never
+**Finding.** The <host> host rebooted at 02:02Z on 2026-11-09 while a queue lane was running. Docker's default restart policy is `no`, and the cockpit launcher never
 sets one, so `mdt-cockpit-runner` remained `Exited (143)`. The interrupted lane became `INFRA:NO_FINISH`; from 03:22Z every new launch failed preflight with rc 4,
-and the fifth consecutive INFRA result at 03:52Z touched `host-sat-queue.disabled.r1002`. The operator restarted the cockpit and removed the flag at 04:57Z, after which
+and the fifth consecutive INFRA result at 03:52Z touched `host-sat-queue.disabled.<host>`. The operator restarted the cockpit and removed the flag at 04:57Z, after which
 the queue launched a lane normally. The first failed queue preflight was recorded at 03:22Z, about 1 h 20 min after the 02:02Z reboot; the queue remained paused until the
 operator recovery at 04:57Z.
 
@@ -357,12 +377,15 @@ implicit `--restart no`. Add an offline test/check that each such launcher carri
 unless it was explicitly stopped, and how to inspect or revert the policy. The already-applied `docker update` is only the live workaround; the launchers remain the
 durable fix.
 
-**Close when.** A reboot of a test host brings `mdt-cockpit-runner` back by itself, a queue lane starts without a manual `docker start`, the launcher policy check passes, and
-the runner README documents the reboot behavior.
+**Close when.** A reboot of a test host brings `mdt-cockpit-runner` back by itself after every published socket mount
+source exists, a queue lane starts without a manual `docker start`, the launcher policy check passes, and the runner
+README documents the reboot behavior and its dependency on MDT-095's boot-order fix.
 
 ## NC-27 — a stopped cockpit is misreported as a stale run-gate, and the queue logs only the misleading hint
 
-**Priority:** should-fix. Filed 2026-11-09, status OPEN. Source: the r1002 queue incident report and runtime log retained as scratch evidence; `scripts/netcup/runner/remote-gate.py` (`check_prereqs`/`preflight`, especially lines 638-711).
+**Priority:** should-fix. Filed 2026-11-09, status OPEN. Source: [host-queue-REPORT.md](docs/evidence/host-queue-REPORT.md) (Root cause, Follow-ups);
+the checked-in `scripts/netcup/runner/remote-gate.py` (`check_prereqs`/`preflight`, especially
+lines 638-711); the controller queue log (03:22-03:52Z launch failures, retained outside this repository).
 
 **Status:** FIXED at `726550ed8`. A failed cockpit exec now stops run-gate probing, preserving the cockpit message as the
 first prerequisite without a fabricated `no run-gate` consequence. The newer-run-gate hint is emitted only when the
@@ -390,7 +413,10 @@ consequence is fabricated, the queue log records that first prerequisite even wh
 
 ## NC-28 — queue self-pause has no controller-visible who/why/when
 
-**Priority:** should-fix. Filed 2026-11-09.
+**Priority:** should-fix. Filed 2026-11-09, status OPEN. Source: [host-queue-REPORT.md](docs/evidence/host-queue-REPORT.md) (Root cause, After);
+the controller queue log (03:52-04:02Z entries, retained outside this repository);
+the checked-in `scripts/netcup/runner/host-sat-queue.sh` (`record`, `status`, and auto-pause at lines 97-99, 177 and 191-203);
+the checked-in `scripts/controller/ctl-status.sh` (host flags and recent results, lines 63-70).
 
 **Status:** FIXED at `12ab909a1`. Automatic per-host pauses atomically record
 the actor, UTC time, INFRA streak, latest lane/result/run/log, and recovery
@@ -443,7 +469,7 @@ A mismatch between the recorded PID and the line's emitting attempt, a missing n
 
 **Priority.** Should-fix. This closes the remaining ambiguity in a procedure that already caused a dual-queue outage.
 
-**Close when.** The restart helper/procedure is documented and tested with fake queues, and a live r1002/v1001 restart records the old PID exit, exact disabled-no-launch line, `.current` drain, and new loop startup without manual inference.
+**Close when.** The restart helper/procedure is documented and tested with fake queues, and a live <host>/<host> restart records the old PID exit, exact disabled-no-launch line, `.current` drain, and new loop startup without manual inference.
 
 ## NC-29 — queue `stop` leaves the in-flight lane's `.current` marker stale and can hold both host queues down
 
@@ -477,7 +503,7 @@ If the external queue script remains outside the repository, put the exact safe 
 
 **Priority:** major. Filed 2026-11-10, status OPEN; evidence extended 2026-11-11 from the host campaigns. Source: controller session records 2026-11-10 and 2026-11-11; related to NC-15, NC-21, and NC-23.
 
-**Problem.** Test hosts can carry different cgprofile and Run-Gate versions. r1002 was observed with cgprofile 2.0.0 and Run-Gate 25.0.2, a legacy pair that works with the old path/CLI. Run-Gate >=25.4 uses cgprofile 3.0.0's host socket layout and CLI. An incompatible pair can pass startup/preflight until an observer lane fails with an unrelated-looking endpoint, version, or missing-client error, and operators have no matrix saying which pairing is supported.
+**Problem.** Test hosts can carry different cgprofile and Run-Gate versions. <host> was observed with cgprofile 2.0.0 and Run-Gate 25.0.2, a legacy pair that works with the old path/CLI. Run-Gate >=25.4 uses cgprofile 3.0.0's host socket layout and CLI. An incompatible pair can pass startup/preflight until an observer lane fails with an unrelated-looking endpoint, version, or missing-client error, and operators have no matrix saying which pairing is supported.
 
 **Evidence.** The controller session record 2026-11-10 records one test host with cgprofile 2.0.0 plus Run-Gate 25.0.2, and states that Run-Gate >=25.4 requires the 3.0.0 socket layout. The host-campaign controller session record 2026-11-11 then found live skew across two test hosts: one had cgprofile 2.0.0 and only a working Run-Gate up to 25.0.2, while the other had cgprofile 3.0.0 and Run-Gate 25.4.0. The 25.4.0 rule from the earlier host rehearsal did not transfer to the 2.0.0 host, and the campaign had to use temporary host-local `run-lane.sh` copies pointing at different versioned binaries. The existing records NC-15 (run-gate version skew), NC-21 (3.0.0 cutover recipe), and NC-23 (25.0.2 pin hold) describe the individual host transitions but not the compatibility relation between the two products.
 
@@ -603,6 +629,13 @@ verdict still exits 70. The T3 docs name `final-exit` as the ledger source.
 
 **Evidence.** The host-campaign controller session record 2026-11-11 records the exact pwmcp release tag repeatedly exiting 4 with `MUTANT_LIMIT_EXCEEDED`; the report notes the supervisor would relaunch 12 times although a baseline emits enough progress events to satisfy the current F8 check. It also records `NO_MUTANTS` after a roughly four-minute baseline. The host-rehearsal controller session record 2026-11-10 independently records F8 counting thousands of progress lines across baseline/restart and identifies `mutation-state-r2/*.json` or `event=candidate` records as the meaningful progress unit. NC-32 owns stale campaign/job names and stale `final-exit`; this item owns semantic reason classification and the true-progress guard.
 
+**Observed again 2026-11-14 (Run-Gate native R2, not triggered).** The Run-Gate 25.6.0 native R2
+(89 candidates, one attempt) ended by itself with lane verdict FAIL, so the supervisor never relaunched.
+Had the lane returned exit 4 with `completed_candidates` unchanged (N->N, for example a candidate lost to the
+lane budget with progress `budget_exceeded`), the same exit-4 relaunch rule would have started another
+attempt over unresolved work. The reason-aware classification proposed below already covers this case; the
+fixture list should include an unchanged-count exit 4 with a budget-exceeded candidate.
+
 **Proposed minimal solution.** Read the current attempt's fresh verdict/progress terminal after each exit. Treat `BUDGET_EXCEEDED/LANE_TIMEOUT` or another explicitly resumable time boundary as the only exit-4 case eligible for relaunch. Stop with a durable reason and final exit when the terminal reason is `MUTANT_LIMIT_EXCEEDED`, `NO_MUTANTS`, or another non-resumable plan/config refusal. Never read a previous attempt's stale verdict; bind the reason artifact to the attempt/run identity. Replace the F8 line-count check with completed-candidate count for the current run: `mutation-state-<lane>/*.json` or current-run `event=candidate` records, excluding baseline/plan/candidate-header events. Preserve the resume state on a real budget stop.
 
 **Where.** `scripts/netcup/runner/run-r2-campaign.sh`: exit classification, current-attempt verdict/progress selection, `final-exit`, and stall bookkeeping. `scripts/netcup/runner/lib.sh` for shared fresh-artifact helpers. Runner tests under `scripts/netcup/tests/`, with fake progress, verdict, and state files.
@@ -613,6 +646,22 @@ verdict still exits 70. The T3 docs name `final-exit` as the ledger source.
 
 **Close when.** Fake-campaign tests prove reason-aware stop/relaunch classification, fresh-attempt artifact binding, and completed-candidate stall progress; a live campaign stop records the exact non-resumable reason and final exit without relaunching; and the runner documentation names which reasons are resumable.
 
+**Confirmed again 2026-11-12.** The CIU R2 campaign report records attempts 3-12 each judging exactly 0
+candidates with `pending_total=0`; every attempt nevertheless re-ran the baseline, and the stall detector
+counted those test events as progress. The supervisor therefore used ten attempts and about 75 minutes after
+all 627 candidates had already reached terminal state. The current-attempt outcome was
+`BUDGET_EXCEEDED`, but that did not make any of the seven stored `budget_exceeded` candidates runnable and no
+candidate completion was possible. The decision must therefore include a full terminal-condition fast stop
+when both the current attempt's judged-candidate delta and the resumable pending count are zero, regardless
+of the stored outcome label.
+
+**Confirmed again 2026-11-14 (selected subset).** The PWMCP R9 campaign ran an `--only-candidates` set of 44
+candidates. Attempt 1 ended exit 4 with `completed_candidates` 0->44, so the stall counter saw progress and the
+supervisor launched attempt 2, which spent about eight minutes on a baseline with nothing left to judge. The
+pre-launch check must therefore compare the pending count of the SELECTED set (zero here) before starting any
+further attempt, not only the judged-candidate delta after a wasted one. The result stays a partial campaign,
+not a whole-target completion.
+
 ## NC-37 — a T3 campaign has no explicit comparison base or pre-baseline source-diff check
 
 **Priority:** should-fix. Filed 2026-11-11. Source: host-campaign controller session record 2026-11-11; related to Run-Gate RG-26 and RG-263.
@@ -620,6 +669,11 @@ verdict still exits 70. The T3 docs name `final-exit` as the ledger source.
 **Problem.** The delegated mutation lane requires a comparison base, but the campaign entry has no explicit `base` field. Operators pass an ad hoc Run-Gate argument, so the candidate population can change without appearing in the campaign identity. A base that differs only in tests is especially expensive to discover after the fact: Run-Gate runs the baseline and assays the source diff, finds no source candidates, then ends `NO_MUTANTS`. Combining different bases under one campaign name can also mix incompatible progress/resume state.
 
 **Evidence.** The host-campaign controller session record 2026-11-11 records CIU's `base_source = "request"` behavior: no `--base` refuses `NOT_RUN`. The previous release tag `ciu-v7.24.0` produced `NO_MUTANTS` for target `ciu-v7.24.1` because the release changed only tests, after about four minutes of baseline. The campaign instead ran with `--base ciu-v7.22.0`, producing 9-10 source files and 627 candidates. The two bases were selected through run-gate arguments, not a declared campaign fact.
+
+**Scope after 2026-11-12.** The CIU campaign's ten zero-judged-candidate attempts did not arise from an
+empty source diff: the campaign had already judged all 627 candidates, and attempts 3-12 resumed that terminal
+record set. Their stop-and-progress behavior belongs to NC-36 and NC-40. This entry remains limited to
+creating and freezing the comparison base and refusing an empty source scope before the first baseline.
 
 **Proposed minimal solution.** Add `base` to the campaign entry as a required immutable field when the selected lane's `base_source = "request"`. Resolve and record the base ref and commit at campaign creation. Before importing/materializing or starting Run-Gate's baseline, run a read-only `git diff --stat <base> <tag> -- <source paths>` for the declared lane source scope; refuse early and visibly when the source diff is empty, when the base/tag cannot be resolved, or when an existing campaign name has any other base. Treat an empty source diff as a planning refusal with a path to choose a new campaign name, not as `NO_MUTANTS` evidence. Do not silently fall back to a previous campaign's base or to `HEAD`.
 
@@ -657,15 +711,33 @@ verdict still exits 70. The T3 docs name `final-exit` as the ledger source.
 
 **Evidence.** The host-campaign controller session record 2026-11-11 compared an installed runner with repository `main`: installed `run-job` sha256 began `6dc59f73` while main began `149c818c`; installed `lib.sh` began `66890af0` while main began `8435e07f`. The installed scripts worked but the difference was not investigated or reconciled. The later host-parallel R2 record found that both test hosts still ran the old supervisor, with no supported stop and no per-start suffix state; terminating the cockpit-side Run-Gate process was the only clean stop and preserved campaign state. Repository main now carries the merged supervisor with the supported lifecycle, making this a deployed-component reconciliation gap rather than a new supervisor design item.
 
+**Confirmed again 2026-11-12.** A legacy supervisor had no active campaign
+record, so the merged `stop <base>` refused at
+`scripts/netcup/runner/run-r2-campaign.sh:205-220`. The supported fallback was
+to terminate the cockpit-side `run-gate <lane>` client between attempts; the
+legacy supervisor then exited on a status other than 4, released its lock and
+left no supervisor or sampler process. Runner documentation must state this
+boundary for the pre-NC-42 supervisor rather than imply that the new stop verb
+can reconcile an unrecorded start.
+
+**Documentation addendum.** The runner README must explain that `stop <base>`
+addresses only NC-42 starts with a readable active record. For a pre-NC-42
+start, terminate the cockpit-side `run-gate <lane>` client between attempts;
+the legacy supervisor then exits on a status other than 4 and releases its
+lock. Do not imply that the new stop verb can address an unrecorded start.
+
 **Proposed minimal solution.** Add one supported, read-only provenance verb that takes the selected repository commit/source root and inventories every installed runner component, including the campaign supervisor and its helper scripts, with its resolved path, SHA-256, selected-repository SHA-256, and match/missing/extra state. Refuse an unrecognised selected source rather than compare against an implicit latest checkout. Provide a reconcile/update path that stages the reviewed files from the exact selected commit, verifies hashes, and refuses while a conflicting campaign or job is active; never silently overwrite live scripts or infer equivalence from matching versions. Require reconciliation before the next campaign on a host whose supervisor lacks the selected commit's supported lifecycle. The report may say reconciliation is deferred, but it must identify every differing file and the exact installed and selected hashes.
 
 **Where.** `scripts/netcup/runner/run-job`, `scripts/netcup/runner/lib.sh`, `scripts/netcup/runner/run-r2-campaign.sh`, the runner install/update scripts and README, plus offline tests using fake installed/repository trees.
 
 **Acceptance test idea.** A fake host with one matching and three differing scripts, including a supervisor without a supported stop or per-start directory, prints all paths and full hashes and exits non-zero while drift exists. Reconciliation from a selected commit updates exactly those files, records before/after hashes, and preserves unrelated/extraneous files for an explicit decision. An active campaign causes reconciliation to refuse without writing. A changed but unreported script is never classified as current. The selected supervisor is proven by its `stop` usage and per-start state behavior, not by a version string alone.
 
+The acceptance oracle also includes a docs-contract test for the pre-NC-42
+stop boundary and the between-attempt fallback.
+
 **Priority.** Should-fix. Campaign evidence must come from code whose exact deployed identity is knowable.
 
-**Close when.** The provenance command reports exact installed/repository hashes for every runner component, including the supervisor; a supported reconcile operation can update from a selected commit only after active-work checks and hash verification; the reconciled supervisor exposes its supported stop and per-start lifecycle; and fake-tree pass/drift/conflict oracles pass on a clean final commit.
+**Close when.** The provenance command reports exact installed/repository hashes for every runner component, including the supervisor; a supported reconcile operation can update from a selected commit only after active-work checks and hash verification; the reconciled supervisor exposes its supported stop and per-start lifecycle; the runner README documents the pre-NC-42 stop boundary and fallback; and fake-tree plus docs oracles pass on a clean final commit.
 
 ## NC-40 — R2 supervisor counts re-reported kills as progress and misses a stalled resume
 
@@ -679,7 +751,15 @@ verdict still exits 70. The T3 docs name `final-exit` as the ledger source.
 
 **Acceptance test idea.** Feed the stall check repeated `candidate` records with `reused: true` and no new candidate result; assert the progress counter does not advance and the configured stall response occurs. Then append a newly completed candidate result and assert it advances progress and resets the stall count. Include baseline events to preserve NC-36's separate guard.
 
-**Close when.** Replayed kills and baseline events do not reset the stall counter, a new completed candidate does, and focused tests prove the supervisor stops or resumes according to real candidate progress rather than repeated evidence rows.
+**Confirmed again 2026-11-12.** The CIU R2 campaign report records 6,344 baseline `test` events in each of
+attempts 3-12. Those events advanced the current line-counting signal while each attempt judged zero
+candidates. The real-signal threshold is a newly completed, non-reused candidate outcome;
+`pending_total=0` plus a zero judged-candidate delta must stop the supervisor immediately.
+
+**Close when.** Replayed kills, baseline/test events, and progress-file writes do not reset the stall counter;
+a new non-reused completed candidate does; a current attempt with a zero judged-candidate delta and no
+resumable pending candidate stops without relaunch; and focused tests prove all three behaviors rather than
+repeated evidence rows.
 
 ## NC-41 — the R2 supervisor does not record the selected worker count and has no sustained under-utilisation advisory for a campaign consuming little of its CPU allocation
 
@@ -712,3 +792,571 @@ verdict still exits 70. The T3 docs name `final-exit` as the ledger source.
 **Named limits.** The memory guard is an admission check at start, not a runtime limit (each container keeps its own cap). Copying remote shard stores for a cross-host merge is a manual step. A fleet's children share the exit-4 relaunch policy of NC-36.
 
 **Tests.** `tests/test_run_r2_campaign.py` (NC-42 section).
+
+## NC-43 — the runner endpoint loader rejects the BuildKit/Docker GID identity that host-setup produces
+
+**Status:** OPEN (filed 2026-11-12); priority should-fix, fresh-host launch blocker. Source: r1002 reinstall
+execution record 2026-11-12.
+
+**Problem.** `scripts/netcup/runner/lib.sh` loads the published host endpoints and requires each level GID
+(`CGPROFILE_CONTROL_GID`, `TOPOS_OBSERVE_GID`, `MDT_BUILDKIT_GID`) to differ from `MDT_HOST_DOCKER_GID`,
+then requires the level GIDs to differ pairwise. mdt-cockpit's `mdt-buildkitd.service` deliberately changes
+the BuildKit socket to the host's `docker` group and publishes that group as `MDT_BUILDKIT_GID`. On a real
+host these contracts cannot both hold. The checked-in `start-cockpit-runner.sh` consequently refused to
+start; a host-local patch exempted only the BuildKit-versus-Docker comparison while preserving the other
+checks.
+
+**Evidence.** The r1002 reinstall execution record 2026-11-12 records the refusal
+`MDT_BUILDKIT_GID must differ from MDT_HOST_DOCKER_GID` immediately after host-setup, cgprofile and topos
+installation had published one coherent endpoint record. The BuildKit socket was owned by the Docker group
+and mode `0660`, which is the producer's stated access contract. The same record documents the minimal
+host-local loader patch and successful launcher start. This is a consumer/producer contract mismatch, not an
+invalid host endpoint record.
+
+**Minimal solution.** Treat Docker-group access as the BuildKit endpoint's intentional exception: continue
+requiring `CGPROFILE_CONTROL_GID` and `TOPOS_OBSERVE_GID` to differ from the Docker GID, and keep pairwise
+distinctness where it protects separate authority levels. Permit `MDT_BUILDKIT_GID ==
+MDT_HOST_DOCKER_GID` only when the declared BuildKit socket directory and socket contract passes the
+existing ownership/mode checks. Do not weaken the local Docker group/GID cross-check or invent a new
+BuildKit group in host-setup. Link the producer contract in mdt-cockpit rather than duplicating it there.
+
+**Where.** `scripts/netcup/runner/lib.sh` (`load_host_endpoints`), the rendered cockpit launcher behavior in
+`scripts/netcup/runner/start-cockpit-runner.sh`, and `scripts/netcup/tests/test_runner_host_endpoints.py`.
+The producer is `mdt-cockpit/host-setup/units/mdt-buildkitd.service.in` and its endpoint publisher.
+
+**Acceptance test idea.** An endpoint fixture with `MDT_BUILDKIT_GID == MDT_HOST_DOCKER_GID`, distinct
+cgprofile/topos GIDs and the matching local Docker group loads successfully. Equality for either
+cgprofile/topos GID still fails by name; pairwise collisions among the remaining authority levels still fail;
+a mismatched local Docker group still fails; and the fake-Docker launcher acceptance shows the resulting
+`--group-add` set and BuildKit mount. Reintroducing the blanket BuildKit inequality fails the new equality
+oracle.
+
+**Priority.** Should-fix. The checked-in fresh-host launch path is unusable until this mismatch is resolved.
+
+**Close when.** The supported endpoint loader accepts host-setup's BuildKit/Docker group identity, preserves
+the other authority-separation checks, renders and starts the cockpit against such a record without a
+host-local patch, and the endpoint plus launcher tests pass on a clean final commit.
+
+## NC-44 — the ordered reinstall runbook omits the post-wipe root wrapper and the guarded --yes flow
+
+**Status:** OPEN (filed 2026-11-12); priority minor, documentation ambiguity in a destructive workflow. Source:
+r1002 reinstall execution record 2026-11-12.
+
+**Problem.** `scripts/netcup/CONSUMERS.md` documents the guarded `pre-reinstall.py` dry-run and `--yes`
+flow, including the exact reviewed bundle hash, commit and SSH-key identity. The runner README's ordered
+reinstall sequence starts at the provider reinstall but does not link that flow or explain the wrapper switch
+required after a wipe. A runner-only wrapper depends on the runner account and its server-id file; neither
+exists until runner provisioning. The real reinstall therefore required a separately authorized root
+wrapper for post-key-pin and provisioning checks. Leaving that fact only in an execution record makes the
+next operator likely to stop at a correct refusal or reconstruct an unreviewed root path.
+
+**Evidence.** The r1002 reinstall execution record 2026-11-12 records the guarded dry-run, the detached `--yes`
+submission with its reviewed bundle SHA-256, and the post-wipe deviation to a root wrapper because no runner
+account or server-id existed yet. The same record accepts an absent server-id only during bootstrap while
+retaining the hostname and static-hostname identity checks and the pinned host key. The current netcup
+consumer guide already contains the `--yes` invocation; the missing piece is its placement and linkage in
+the runner's ordered runbook, plus the root-wrapper boundary.
+
+**Minimal solution.** In `scripts/netcup/runner/README.md`, make P1 link directly to the guarded reinstall
+consumer section and name the order: reviewed dry-run, record the bundle hash, then the foreground `--yes`
+submission with the exact commit/hash/key identity. Between P1 and P3, document the root wrapper as the only
+path while the runner identity is absent, including its hostname/static-hostname guard, pinned host key,
+bootstrap treatment of a missing server-id, and the transition back to the runner wrapper after
+provisioning. Do not copy machine-specific addresses, controller paths or account IDs into the repository.
+
+**Where.** `scripts/netcup/runner/README.md` P1-P3; link to
+`scripts/netcup/CONSUMERS.md#guarded-data-area-v2-reinstall` and the existing wrapper verification rather
+than restating safety mechanics. Any documentation-contract test that checks the ordered reinstall
+vocabulary.
+
+**Acceptance test idea.** The runbook contains both the guarded dry-run and `--yes` invocations or direct
+links, names the bundle-hash/commit/key preconditions, and states which wrapper is valid before and after
+runner provisioning. A docs check fails if the root-wrapper boundary or the `--yes` sequence disappears. The
+text contains no host address, controller filesystem path or account key identifier.
+
+**Priority.** Minor. The destructive flow is already guarded; the gap is operator reachability and ordering.
+
+**Close when.** The ordered runner reinstall documentation names both wrappers and their switch point, links
+the guarded dry-run/`--yes` consumer flow, explains the bootstrap identity exception, and the documentation
+contract passes on a clean final commit.
+
+## NC-45 — the R2 supervisor's checkout layout is outside the assay full-qualification driver's accepted workspace family
+
+**Status:** OPEN (filed 2026-11-12); priority should-fix for B535's T3 path.
+Source: 2026-11-12 host R2 restart record; cross-reference assay B541.
+
+**Problem.** `run-r2-campaign.sh` requires the persistent checkout at
+`$RUNNER_HOME/checkouts/$commit` and validates only that directory and its
+project subdirectory (`scripts/netcup/runner/run-r2-campaign.sh:377-391`).
+The synchronized runner checkout is exposed in the cockpit as
+`/workspaces/<commit>`. Assay's full-qualification driver accepts only
+`/workspaces/vbpub` and nested vbpub worktrees
+(`assay/tools/self-qualification-container.sh:104-107`), so the supervisor exits
+before preflight for the only lane B535 accepts.
+
+**Minimal solution.** Add an explicit, validated checkout-directory option to
+the supervisor for lanes that declare a narrower workspace requirement, or
+document a supported layout-neutral handoff. The option must resolve an
+existing non-symlink directory and preserve the full commit, clean-tree,
+project-directory and exact-container-label checks. Do not derive a location
+from lane output, and do not make arbitrary runner paths acceptable by default.
+
+**Where.** `scripts/netcup/runner/run-r2-campaign.sh`,
+`scripts/netcup/runner/README.md`, and `scripts/netcup/tests/test_run_r2_campaign.py`.
+Assay B541 owns acceptance of the selected layout inside the driver.
+
+**Acceptance test idea.** A fake nested-vbpub checkout accepted explicitly by
+the option reaches the supervisor launch with the same clean-tree and commit
+checks; the default `/workspaces/<commit>` path remains unchanged; relative,
+symlink, missing, dirty and wrong-commit targets refuse by name. A control run
+without the option reproduces the current assay refusal.
+
+**Close when.** The supported supervisor can run B535's full qualification from
+the required nested checkout layout, uses the same full commit and container
+identity checks, and the documented layout choice plus positive/refusal
+oracles pass on a clean final commit.
+
+## NC-46 — a bundle filename becomes the lane-container repository name
+
+**Status:** OPEN (filed 2026-11-12); priority minor for operator exact-name
+selection. Source: 2026-11-12 host R2 restart record.
+
+**Problem.** `sync-from-devcontainer` clones directly from the uploaded bundle,
+so the clone's `remote.origin.url` remains the bundle path
+(`scripts/netcup/runner/sync-from-devcontainer:31-33`).
+`run-r2-campaign.sh` derives the container repository part from that URL tail,
+removing only `.git`
+(`scripts/netcup/runner/run-r2-campaign.sh:393-425`), so a filename such as
+`release.bundle` survives into `release.bundle-run-gate-...`. Operators
+selecting or guarding a lane by
+exact container name therefore become coupled to an incidental upload name.
+
+**Minimal solution.** Set the imported checkout's `origin` to a stable,
+declared repository identity, or add an explicit validated repository-name
+input to the sync/campaign contract. Derive the displayed repository count from
+the selected repository contract rather than inventing one from an uploaded
+filename. Remove only known transport suffixes and still name the actual
+observed name in refusals.
+
+**Where.** `scripts/netcup/runner/sync-from-devcontainer`,
+`scripts/netcup/runner/run-r2-campaign.sh`, `scripts/netcup/runner/README.md`,
+and focused runner tests.
+
+**Acceptance test idea.** Imports from two differently named bundles of the
+same repository produce the same deterministic repository container part.
+Explicit names are validated, absent names have one documented supported
+derivation, and a stale label-based stop still reports the exact name it
+searched.
+
+**Close when.** Bundle names no longer appear as repository identities in
+new lane-container names, both bundle-name fixtures produce the declared name,
+and exact-name discovery/stop documentation and tests agree on the same
+derivation.
+
+## NC-47 — remote-gate collection discards the registered tester-unified receipt
+
+**Status:** OPEN (filed 2026-11-12); priority should-fix for reusable release
+qualification evidence. Source: 2026-11-12 host R2 restart record;
+cross-reference assay B123 and B535.
+
+**Problem.** Assay's full qualification requires a four-key receipt at
+`.assay/registered-gate/tester-unified.json`
+(`assay/tools/b105_report_check.py:1081-1128`), but the self-qualification lane's
+declared artifacts do not include that path (`assay/run-gate.toml:138-145`).
+Remote-gate archives only files under `.assay/` or `.run-gate/` whose names
+match verdict, progress, coverage, log or XML globs
+(`scripts/netcup/runner/remote-gate.py:599-601`); it then collects that tarball
+unchanged (`scripts/netcup/runner/remote-gate.py:887-904`). A release's passing
+tester-unified run therefore leaves a receipt on the runner but drops it from
+the collected evidence, preventing the tag's throwaway checkout from feeding
+the later full qualification.
+
+**Minimal solution.** Archive every artifact explicitly declared by the
+selected lane, with safe path validation, or declare the receipt as a
+self-qualification artifact and include it in the bounded collection filter.
+The copy must preserve bytes and path identity, and its collection must be
+reported even when empty. Do not widen the archive to every file under
+`.assay/`.
+
+**Where.** `scripts/netcup/runner/remote-gate.py`,
+`scripts/netcup/runner/tests/test_remote_gate.py`, and the artifact declaration
+in `assay/run-gate.toml`; B123 owns receipt validation.
+
+**Acceptance test idea.** A fake completed run containing
+`.assay/registered-gate/tester-unified.json` collects the exact bytes at the
+declared path. Missing, oversized, symlinked or traversal-shaped paths fail or
+are reported by name; unrelated `.assay` files remain excluded; and an archive
+without the receipt cannot be mistaken for a complete qualification input.
+
+**Close when.** A remote tester-unified run from a release checkout yields its
+same-commit receipt in collected artifacts, B535 can consume it without a
+runner-side side channel, and focused exact-path and exclusion tests pass on a
+clean final commit.
+
+## NC-48 — R2 fleet admission multiplies the full lane ceiling and hides host capacity signals
+
+**Status:** IMPLEMENTED unreleased in `r2-guard-20261112`; suite and final
+commit evidence recorded in `r2-guard-REPORT.md`.
+
+**Problem.** The fleet guard charged every shard the lane's full
+`resources.memory`, although that ceiling is sized for all workers in one
+container. A PWMCP R2 lane declared 3 GiB and ran three workers at about 430
+MiB and 104% CPU in an observed sample. Two instances then required
+`2 x 3072 + 1024 = 7168 MiB`, so the guard refused against 6454 MiB available.
+This made spare CPU unusable and treated a container ceiling as expected RAM
+demand. The runner also printed no CPU hint for an underused single-worker
+native R2 lane and did not expose whether KSM was active or useful to its
+workloads.
+
+**Design.** Keep the configured Run-Gate memory as the per-container hard
+ceiling; Run-Gate has no per-invocation memory override. For `jobs_max = J` and
+`j` workers per instance, disclose a scaled ceiling
+`max(128 MiB, ceil(lane_cap x j / J))`. The expected peak defaults to
+`ceil(lane_cap / J)` per worker and sums across the workers and instances.
+`R2_WORKER_MEM_MIB` overrides that expected per-worker peak, while the existing
+`R2_INSTANCE_MEM_MIB` remains an explicit measured per-instance peak. Refuse
+an uncapped lane unless the per-instance override is supplied.
+
+When a lane declares `jobs = "auto"` and a fleet start omits `--jobs`, pass
+`--jobs max(1, ceil(lane_jobs_max / K))` to each shard, where K is the instance
+count. An explicit `--jobs` overrides this default.
+
+Expected peaks must fit `MemAvailable - R2_HOST_RESERVE_MIB +
+R2_EXPECTED_PEAK_CREDIT_MIB`. The reserve defaults to 1024 MiB and the explicit
+expected-peak credit defaults to 0 MiB. Swap and KSM state add no automatic
+credit; the credit variable is an operator opt-in for a measured value and
+affects only the expected-peak budget. Separately, compare the sum of full
+declared container caps (`K x lane_cap`) with `MemAvailable x R2_OVERCOMMIT`.
+`R2_OVERCOMMIT` accepts 1.0..4.0, defaults to 2.0, and applies only to this
+declared-cap comparison. Print the arithmetic for both budgets and the
+explicit expected-peak credit.
+When a native R2 lane's worker count is below `nproc`, print the advised
+`--instances floor(nproc / workers)` when the workers are single-threaded; do
+not change the command automatically. Print and save KSM `run`, `pages_sharing`
+and `pages_shared`, with lane eligibility marked unverified unless workload
+processes opt in through `MADV_MERGEABLE` or `PR_SET_MEMORY_MERGE`. Do not
+enable KSM.
+
+**Where.** `scripts/netcup/runner/run-r2-campaign.sh`, its runner tests and
+README, plus the Netcup README, DESIGN-GUIDE, CONSUMERS and CHANGES.
+
+**Acceptance and mutation oracles.** The registered `scripts/netcup suite`
+must prove that three one-worker shards of a 3 GiB / three-worker lane are
+admitted when their expected peaks fit the available-memory budget; a measured
+worker override is summed per worker; explicit expected-peak credit affects
+only that budget, while swap and KSM state alone do not admit over-budget
+peaks; and overcommit applies only to the sum of declared caps. The suite must
+also prove the default per-instance jobs formula, refusal of an uncapped lane
+without `R2_INSTANCE_MEM_MIB` even when `R2_WORKER_MEM_MIB` is set, the CPU hint
+without rewriting args, and fake KSM sysfs values in preflight and status.
+Mutants that multiply the full ceiling, apply swap/KSM or cap overcommit to
+expected peaks, skip the declared-cap comparison, suppress the CPU hint, or
+omit KSM status must fail their corresponding tests.
+
+**Close when.** The registered suite passes on the final committed head, the
+merge-tree check against `origin/main` succeeds, and the report records the
+gate and mutation evidence.
+
+## NC-49 — runner guidance does not explain when `--instances` helps or its single-host cost
+
+**Status:** OPEN (filed 2026-11-12); priority enhancement. Source:
+[`KSM evidence report`](../../mdt-cockpit/docs/evidence/hosts-ksm-instances-REPORT-2026-11-12.md) sections 0.5–0.7 and 10.2–10.3.
+Related: NC-48, implemented unreleased in `r2-guard-20261112`; it owns
+per-instance memory admission and the CPU hint. This item adds measured
+operator guidance and cross-references NC-48 without restating either behavior.
+
+**Problem.** The runner guides explain how to start shards and check the
+memory guard, but do not tell an operator when extra instances are useful.
+The measured ciu pilots used about 310 MiB more across three one-worker
+instances than one three-worker container, while throughput stayed within
+candidate-mix variation. Four one-worker instances reached 29–40% CPU PSI on a
+four-core runner for an effectively unchanged 1.75/min versus 1.7/min at three
+instances. Operators can read `--instances` as a way to add CPU capacity on
+one host when its actual use is to shard work across hosts or to run a lane
+whose worker limit prevents sharing one container.
+
+**Evidence.** The report records 1 x 3 at 1.3–2.4 candidates/min, 3 x 1 at
+1.7/min and 4 x 1 at 1.75/min, with 29–40% CPU PSI in the four-instance pilot
+([`KSM evidence report`](../../mdt-cockpit/docs/evidence/hosts-ksm-instances-REPORT-2026-11-12.md):14-19, 145-154). The runner README
+documents the shard mechanics and guard but not this trade-off
+(`scripts/netcup/runner/README.md:134-164`). NC-48 owns the admission estimate
+and CPU hint; this item adds measured operator guidance only.
+
+**Minimal solution.** Add the measured use cases and limits to the runner
+README and CONSUMERS guide: use instances to split a campaign across hosts or
+to honor a lane's `jobs_max = 1` sharding constraint; on a four-core host, do not expect more
+throughput from `--instances K --jobs 1` than from sharing up to three workers
+in one container. State the observed per-instance memory overhead as a
+measurement, not a universal constant. Link the rationale from the DESIGN-GUIDE
+and cross-reference NC-48 for the guard and CPU advisory rather than restating
+its design.
+
+**Also observed 2026-11-14 (Run-Gate 25.6.0 native R2).** The `assay-r2` lane has `jobs_max = 2`; `--jobs 2`
+filled about 200% of a four-CPU host and left two CPUs idle (the runner printed the `--instances` hint), while
+`--instances 2` would have doubled the lane's configured 2 GiB memory demand. The guidance added here should
+state this `jobs_max` versus `--instances` trade-off for a low-`jobs_max` lane next to the `jobs_max = 1`
+example.
+
+**Where.** `scripts/netcup/runner/README.md`,
+`scripts/netcup/CONSUMERS.md`, the relevant DESIGN-GUIDE section, and the
+runner docs-contract test.
+
+**Acceptance test idea.** A docs contract pins both supported use cases, the
+four-core measurement as an example rather than a machine limit, and the link
+to NC-48. It rejects wording that promises single-host throughput gains or
+duplicates NC-48's memory guard design.
+
+**Close when.** README, DESIGN-GUIDE and CONSUMERS state the same use cases
+and trade-offs; CONSUMERS contains a pasteable example for a cross-host split
+and a `jobs_max = 1` lane; the docs contract passes in the registered suite;
+and NC-48 remains the sole owner of the memory-admission and CPU-hint behavior.
+
+## NC-50 — `run-job` is installed under `~/bin` but bare-name examples fail in non-login runner shells
+
+**Status:** OPEN (filed 2026-11-12); priority should-fix for reproducible
+runner commands. Source: [`KSM evidence report`](../../mdt-cockpit/docs/evidence/hosts-ksm-instances-REPORT-2026-11-12.md) sections
+6.1 and 10.8.
+
+**Problem.** Runner provisioning installs `run-job` at `~/bin/run-job` and
+copies it into `~/runner-scripts`, while several runner examples invoke
+`run-job` by bare name. The non-login
+`bash -c` wrapper used for runner commands does not include `~/bin` in its
+PATH, so the bare command fails with `command not found` before the campaign
+starts. This makes a documented command depend on an interactive login PATH.
+
+**Evidence.** Provisioning installs the executable at
+`$RUNNER_HOME/bin/run-job` and copies it to `$RUNNER_HOME/runner-scripts`
+(`scripts/netcup/runner/provision-runner.sh:142-149`),
+and the runner README uses the unqualified name in its command examples
+(`scripts/netcup/runner/README.md:105, 129, 216, 582`). The report
+records that the non-login wrapper succeeds with `~/bin/run-job`
+([`KSM evidence report`](../../mdt-cockpit/docs/evidence/hosts-ksm-instances-REPORT-2026-11-12.md):87-92, 177).
+
+**Minimal solution.** Use `~/bin/run-job` in runner instructions that may run
+under a non-login shell, including the command snippets in README and
+CONSUMERS. If the runner PATH is changed instead, make it part of the
+provisioned non-login environment and keep the absolute installed location
+explicit in diagnostics.
+
+**Where.** `scripts/netcup/runner/README.md`,
+`scripts/netcup/CONSUMERS.md`, runner provisioning only if PATH is changed,
+and a docs or script regression check for the non-login invocation.
+
+**Acceptance test idea.** A clean environment with no login profile runs the
+documented `~/bin/run-job` form successfully. A bare-name invocation with
+`~/bin` absent reproduces the named failure; a test must not pass because the
+test process inherited the cockpit's interactive PATH.
+
+**Close when.** Every documented non-login runner command resolves the
+provisioned `run-job` executable deterministically, the README/CONSUMERS
+examples match that contract, and the focused fake-PATH check plus the
+registered suite pass.
+
+## NC-51 — a fleet launches a merge without a visible incomplete-shard gate, and status says generic `running`
+
+**Status:** OPEN (filed 2026-11-12); priority should-fix for fleet-result
+integrity. Source: [`KSM evidence report`](../../mdt-cockpit/docs/evidence/hosts-ksm-instances-REPORT-2026-11-12.md) section 10.9.
+Related: NC-42, which introduced fleet starts, child status and strict merges.
+
+**Problem.** When all three child campaigns ended with `final_exit=1`, the
+supervisor still launched the merge run without first recording whether each
+shard was complete. A fleet with an active merge is reported as `running`, so
+its status line does not distinguish mutation work from merge work or show
+that child failures preceded the merge. A strict merge may legitimately
+combine complete non-passing shards; it must not run when a child left an
+incomplete shard, and the status must name that state.
+
+**Evidence.** The campaign report records three children at `final_exit=1`
+followed by a running `merge-s1` ([`KSM evidence report`](../../mdt-cockpit/docs/evidence/hosts-ksm-instances-REPORT-2026-11-12.md):178).
+`run_fleet()` collects every child exit before its merge branch, selected by
+`shard_offset == 0 && instances == shard_total`
+(`scripts/netcup/runner/run-r2-campaign.sh`, `run_fleet()`); NC-51 needs to
+check shard completeness at that point, independent of exit code.
+`status_campaign()` labels a directory without `final-exit` as `running`
+(`scripts/netcup/runner/run-r2-campaign.sh`, `status_campaign()`). NC-42 documents the
+strict merge and the per-run status lines, but not the incomplete-child gate
+or a distinct merging state (`scripts/netcup/runner/README.md:134-164`).
+
+**Minimal solution.** Before launching the strict merge, determine whether
+every required shard is complete for the current judge and plan. Keep merging
+complete shards even when their final verdict is non-passing. If any required
+shard is incomplete, skip the merge and write a durable `merge-skipped` reason
+with the missing or incomplete shard; report the active merge phase as
+`merging`, not generic `running`.
+
+**Where.** `scripts/netcup/runner/run-r2-campaign.sh`, fleet status and
+summary generation, runner tests using fake child exits and shard manifests,
+and the runner README/CONSUMERS/DESIGN-GUIDE.
+
+**Acceptance test idea.** Complete shards with a nonzero, non-passing child
+verdict still launch a strict merge and preserve the whole-lane result.
+An incomplete shard prevents any merge invocation, writes `merge-skipped`
+with the exact shard reason, and appears that way in status. A currently
+active strict merge is reported as `merging`. Mutating the completeness check
+to use exit codes alone either drops a complete non-pass shard or merges an
+incomplete one, and the focused tests catch both.
+
+**Close when.** A fleet merges every complete shard regardless of whether its
+verdict passes, skips merge on an incomplete shard with a durable reason,
+distinguishes the merge phase in status, and the registered suite plus
+user-facing docs pass on the same final commit.
+
+## NC-52 — supervision logic should move out of the netcup script
+
+**Status:** OPEN (filed 2026-11-12, design only, rev 5); Should-fix. Design
+record:
+[`run-gate-project/docs/DESIGN-compute-hosts-and-campaigns-2026-11.md`](../../run-gate-project/docs/DESIGN-compute-hosts-and-campaigns-2026-11.md)
+(Run-Gate RG-275). Cross-references: NC-42, NC-48, NC-45.
+
+**Problem.** Host installation is provider-specific: `install-host.py`, the
+SCP API client, debian-install-v2 and `pre-reinstall*.py`. Two runtime pieces
+are provider-coupled as well:
+
+- the per-host `api_check` (a provider API identity check, required by
+  `runner/remote-gate.py:196-198` and called by `host-sat-queue.sh`);
+- the hard `ALLOWED_HOSTS` allowlist (`remote-gate.py:30`).
+
+The rest is generic SSH + Docker + Run-Gate code that happens to sit under
+`scripts/netcup/runner/`:
+
+- `runner/run-r2-campaign.sh` (the attempt loop, stall counter, fleet of shard
+  children, MemAvailable guard, merge and stop/status);
+- `remote-gate.py`'s transport;
+- `host-sat-queue.sh`.
+
+In particular, the supervisor's fleet and memory-guard decisions (instances,
+per-instance memory, overcommit; NC-48 is the interim per-host fix) belong to
+the central scheduler service that knows every host. A per-host bash script
+configured by environment variables cannot make them.
+
+**Minimal solution.** Follow the design's migration (§5).
+`run-r2-campaign.sh` becomes a thin wrapper around
+`run-gate campaign supervise` with the same arguments and the same lock,
+active-record and campaign-directory layout, so legacy and new supervisors
+exclude each other on one host. The fleet options print the equivalent
+`run-gate campaign submit` to the central scheduler service (design WP4). After
+one release the wrapper is deprecated.
+
+The fleet and memory-guard decisions move to the service. The service enrolls
+its own per-host keys with `ciu host enroll` (run as its user). Existing
+controller keys are never copied: they are revoked once remote-gate and the
+queue submit through the service. The provider identity check stays a
+provisioning step, and the allowlist is replaced by explicit enrollment plus a
+refusal of `HOST_ROLE=shared-prod`. Once the service dispatches campaigns
+(design WP5, WP12), the generic runner scripts move to a provider-neutral
+home, and netcup keeps installation only. Active campaigns finish under the
+script that started them; runner scripts are not replaced on a host while its
+campaign is active.
+
+**Where.** `scripts/netcup/runner/run-r2-campaign.sh`, `runner/README.md`,
+`scripts/netcup/tests/test_run_r2_campaign.py` (whose cases become Run-Gate
+parity tests), and `scripts/netcup/README.md`.
+
+**Close when.** The wrapper delegates to `run-gate campaign supervise`, the
+parity tests pass in Run-Gate, a lock-interop test proves that legacy and new
+supervisors refuse each other's campaign base, and the netcup suite passes on
+the final head.
+
+## NC-53 — Run-Gate rollout leaves runner scripts and selected profile unverified
+
+**Status:** OPEN (filed 2026-11-12); Should-fix. The 2026-11-12 Run-Gate
+25.6.0 image rollout rebuilt and deployed tester-base/tester-unified, but its
+report records that runner scripts on the compute hosts still came from an
+older repository revision and that one private `run_gate_bins` profile may
+still select Run-Gate 25.4.0. Related: NC-39 tracks general runner-component
+provenance and reconciliation; NC-23 tracks earlier per-host Run-Gate pin
+decisions.
+
+**Problem.** Updating the tester images and Run-Gate venv does not update the
+separately installed runner scripts or prove which Run-Gate binary the
+controller profile selects. After an image/runtime rollout, older
+`run-r2-campaign.sh` and `build-tester-base.sh` copies can remain active, and
+a private profile can continue selecting an older versioned venv. A campaign
+can therefore combine the new image with stale orchestration code or an old
+Run-Gate selection.
+
+**Evidence.** The 2026-11-12 image rollout report records that the host runner
+scripts were older than the current repository versions and that a private
+`run_gate_bins` entry may still pin 25.4.0. The runner guide says the runner
+directory is uploaded together (`scripts/netcup/runner/README.md:8-11`) and
+documents the checkout synchronization flow
+(`scripts/netcup/runner/README.md:283`). The controller profile parser accepts
+an explicit `run_gate_bins` list and passes it to the remote lane
+(`scripts/netcup/runner/remote-gate.py:86,134-138,682`); the guide documents
+that profile setting (`scripts/netcup/runner/README.md:600-601`).
+
+**Minimal solution.** Make the rollout procedure synchronize the runner
+scripts from the selected repository revision after the image/runtime update,
+while respecting the rule that active campaigns finish under their starting
+script. Record the deployed source revision or hashes. As part of the same
+rollout check, inspect the active controller profile's `run_gate_bins` and
+confirm it selects the intended 25.6.0 Run-Gate binary. Keep general component
+provenance under NC-39 and the earlier pin policy under NC-23.
+
+**Where.** Runner rollout documentation and synchronization/check tooling;
+controller profile validation for `run_gate_bins`; focused runner tests and
+the registered Netcup suite.
+
+**Acceptance test idea.** A fixture with an older deployed runner script is
+detected until synchronization records the selected source revision and the
+deployed scripts match it. A profile fixture selecting 25.4.0 is reported as
+stale for a 25.6.0 rollout, while a profile resolving to the intended 25.6.0
+binary passes. Verification must not replace runner scripts during an active
+campaign.
+
+**Close when.** The rollout procedure synchronizes and records the runner
+script revision after image/runtime changes without interrupting an active
+campaign; the registered suite detects stale scripts and a 25.4.0 profile and
+accepts scripts plus a profile verified for 25.6.0; and the rollout check
+records successful verification of the deployed scripts and selected
+`run_gate_bins` on each compute host.
+
+## NC-54 — release-program paths in reinstall and remote-gate helpers
+
+**Status:** OPEN (filed 2026-11-13); documents the exact purge dependency.
+
+**Limitation.** `pre-reinstall.py` and `pre-reinstall-export.py` set a fixed
+release-program root and read `dstdns-r2/env.sh` beneath it. They cannot use a
+different program root today. `runner/remote-gate.py` has a default output
+directory under the release-program root, but supports `REMOTE_GATE_OUT` and
+`--out-dir`; callers can use it without that default path by setting an
+override. The fixed reinstall helpers must be made configuration-driven or
+retained with their required helper before the old program directory can be
+purged.
+
+**Where.** `scripts/netcup/pre-reinstall.py`,
+`scripts/netcup/pre-reinstall-export.py`, and
+`scripts/netcup/runner/remote-gate.py`.
+
+**Close when.** Both reinstall helpers accept a controller-home setting and a
+fake-root check proves that they work from an alternate home; the remote-gate
+override remains documented and its default is no longer required.
+
+## NC-55 — deterministic budget-exceeded candidate is reported as stalled
+
+**Status:** OPEN (filed 2026-11-13).
+
+The campaign supervisor stops with exit 4 and reports “stalled” when the only
+remaining candidate has a deterministic `budget_exceeded` result. That
+candidate is a completed judgment, not evidence that candidate progress has
+stalled; the supervisor loses the distinction at the end of the campaign.
+
+**Where.** `scripts/netcup/runner/run-r2-campaign.sh` and its supervisor-state
+and exit-status tests.
+
+**Acceptance.** A deterministic fixture with one remaining `budget_exceeded`
+candidate finishes with that outcome reported and does not take the stalled
+exit-4 path. A genuinely non-progressing campaign still reports stalled with
+exit 4, and the saved candidate evidence is retained in both cases.
+
+## NC-56 — T3 bundle import can omit release tags needed to derive the required Assay version
+
+**Status:** OPEN (filed 2026-11-14); first observed on both test-host campaign launches.
+
+**Problem.** `sync-from-devcontainer` clones a bundle with `--single-branch`. If the bundle contains only the branch and a small subset of tag refs, the imported checkout lacks the `assay-v*` tags used by setuptools-scm. The CMRU R2 launch required Assay 12.2.0 or newer but derived `0.1.1.dev12052` from the tag-incomplete checkout and refused in four seconds on both hosts. The version guard was correct and remained enabled; the wasted launch came from the sync recipe not carrying all tags.
+
+**Needed.** Bundle the reviewed branch together with all release tags, and fetch `refs/tags/*` from that bundle into the imported checkout. Add a preflight with a clear missing-tags diagnosis before a campaign is launched. Do not weaken the Assay version floor.
+
+**Where.** `scripts/netcup/runner/sync-from-devcontainer`, its focused tests, and the P4 import instructions in `scripts/netcup/runner/README.md`. The Run-Gate project also documents this import at `run-gate-project/docs/DESIGN-lane-rework-2026-11.md` §3.6; keep that consumer guidance synchronized when this entry is implemented. This issue is filed here because the netcup project owns the sync script.
+
+**Close when.** A branch-plus-all-tags bundle imports with the required release tags present, an incomplete bundle is diagnosed before the lane starts, and the runner README and the referenced Run-Gate consumer instructions describe the same tag-complete recipe.

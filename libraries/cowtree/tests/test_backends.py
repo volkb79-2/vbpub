@@ -622,9 +622,12 @@ def test_ingest_file_copies_across_devices_and_reflinks_on_same_device(tmp_path,
 
 def test_ingest_file_device_inspection_failure_is_typed(monkeypatch):
     backend = ReflinkBackend(FakeOps())
+    real_stat = backend_module.os.stat
 
-    def fail_stat(*_args, **_kwargs):
-        raise PermissionError(errno.EACCES, "stat denied")
+    def fail_stat(path, *args, **kwargs):
+        if path == "source":
+            raise PermissionError(errno.EACCES, "stat denied")
+        return real_stat(path, *args, **kwargs)
 
     monkeypatch.setattr(backend_module.os, "stat", fail_stat)
     with pytest.raises(BackendFailed) as caught:

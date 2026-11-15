@@ -264,8 +264,9 @@ if docker image inspect "${builder_image}" >/dev/null 2>&1; then
 fi
 if [[ "${builder_kind}" != "python-wheel-builder" ]]; then
     # The builder's base is the declared ARG default of wheel-builder/Dockerfile (read, not retyped).
-    # The estate default is tester-base:local, a LOCAL tag built from public upstream inputs only
-    # (tester-base/Dockerfile): no published vbpub image is needed, but the tag must exist before
+    # The estate default is tester-base:local, a LOCAL tag built from this repository's Dockerfile
+    # and checked CIU shim copy plus public upstream inputs: no published vbpub image is needed, but
+    # the tag must exist before
     # this build, and a local-only tag is visible to the `docker` driver builder only (a remote
     # builder would try a registry), and `--pull` would ask a registry for it too.
     builder_base="$(sed -n 's/^ARG WHEEL_BUILDER_BASE_IMAGE=\(.*\)$/\1/p' \
@@ -282,14 +283,14 @@ if [[ "${builder_kind}" != "python-wheel-builder" ]]; then
     }
     if [[ "${builder_base}" == "tester-base:local" ]]; then
         # Reuse an existing tester-base:local only when it is a tester-base build of THIS source: a
-        # kind label plus the sha256 of its only build input (tester-base/Dockerfile, no COPY). A stale
+        # kind label plus the sha256 of its build inputs (Dockerfile + the checked KSM source copy). A stale
         # build is rebuilt (docker's layer cache keeps that cheap); an image without the kind label is
         # not ours and is refused rather than silently used as the builder's base.
         # the WORKING-TREE file: it is what the build context contains, so an uncommitted edit cannot
         # be labelled with the hash of the committed bytes
-        tester_base_source_hash="$(sha256sum "${repo_root}/tester-base/Dockerfile" | cut -d' ' -f1)"
+        tester_base_source_hash="$(cd "${repo_root}/tester-base" && sha256sum Dockerfile ksm-optin.c | sha256sum | cut -d' ' -f1)"
         [[ "${tester_base_source_hash}" =~ ^[0-9a-f]{64}$ ]] || {
-            echo "[ERROR] cannot hash tester-base/Dockerfile" >&2
+            echo "[ERROR] cannot hash tester-base build inputs" >&2
             exit 2
         }
         build_tester_base=1
@@ -316,7 +317,7 @@ if [[ "${builder_kind}" != "python-wheel-builder" ]]; then
             fi
         fi
         if (( build_tester_base )); then
-            echo "[INFO] Building ${builder_base} from tester-base/Dockerfile (public upstream inputs only)" >&2
+            echo "[INFO] Building ${builder_base} from tester-base/Dockerfile and checked shim source" >&2
             BUILDX_BUILDER=default docker buildx build --load \
                 --cgroup-parent "${cgroup_parent}" \
                 --build-arg "TESTER_BASE_SOURCE_HASH=${tester_base_source_hash}" \

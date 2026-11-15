@@ -156,6 +156,15 @@ none exists. R2 never blocks an ordinary release unless the project has an
 explicit version-boundary precondition. A finding opens a backlog item; a
 missing or failed T3 result is attention, not a release refusal.
 
+Assay <= 12.1.1 includes `jobs_max` in judge identity, so changing it
+invalidates finished-candidate state. Assay >= 12.2.0 keeps reusable finished
+records when only resource settings change; changes to tests, sources, `argv`,
+`env`, or Assay version still invalidate. See the [versioned identity rule](CONSUMERS.md#native-r2-worker-selection).
+For a four-core host, cap at three to reserve a core for the host and sampler,
+then fit the lane's memory budget to measured per-candidate RSS p95 (or an
+evidence-based `candidate_ram` estimate when history is absent). Use
+`jobs = "auto"` when Run-Gate should select the count under those limits.
+
 The queue entry and result ledger are the stable interface (CONSUMERS.md,
 "T3 trigger, queue and ledger"). The current host queue, campaign supervisor
 and `remote-gate` are replaceable machinery; lane declarations and release

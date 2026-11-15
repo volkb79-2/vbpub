@@ -161,7 +161,13 @@ def test_drain_discards_output_after_the_bounded_capture_is_full(
 
     monkeypatch.setattr(execute.selectors, "DefaultSelector", Selector)
     chunks = iter((b"x" * execute._MAX_OUTPUT_BYTES, b"discarded", b""))
-    monkeypatch.setattr(execute.os, "read", lambda *_args: next(chunks))
+    target_fd = Process.stdout.fileno()
+    real_read = execute.os.read
+    monkeypatch.setattr(
+        execute.os,
+        "read",
+        lambda fd, size: next(chunks) if fd == target_fd else real_read(fd, size),
+    )
 
     assert execute._drain_process(Process(), 1.0) == (
         b"x" * execute._MAX_OUTPUT_BYTES,

@@ -167,7 +167,8 @@ exec /opt/tester-venv/bin/python -m pytest \
   tests/test_release_gate.py \
   tests/test_release_gate_preconditions.py \
   tests/test_release_gate_provisional.py \
-  tests/test_project_fixture.py -q --cli-case-partial
+  tests/test_project_fixture.py \
+  tools/test_mutation_campaign.py -q --cli-case-partial
 ''',
 ]
 budget = "10m"
@@ -200,7 +201,8 @@ export PYTHONPATH="src:../libraries/worktree/src"
 export PYTHONDONTWRITEBYTECODE=1
 if [ "$#" -eq 0 ]; then
     set -- tests/test_assay_lane_inventory.py tests/test_assay_baseline_gate.py \
-        tests/test_docs_config_examples.py tests/test_r2_survivors_s*.py
+        tests/test_docs_config_examples.py tests/test_r2_survivors_s*.py \
+        tools/test_mutation_campaign.py
 fi
 exec nice -n 10 /opt/tester-venv/bin/python -m pytest -q --cli-case-partial "$@"
 ''',
@@ -235,6 +237,10 @@ io_sync = "relaxed"
 # to prepare one-shot origin facts before its aggregate mutation campaign.
 # An empty source diff writes skip evidence bound to candidate HEAD and emits
 # no tag; otherwise only an older skip record is removed before emitting it.
+# The 2026-11-12 R2 rehearsal measured full-suite controls from 368 to 825 s
+# under concurrent lanes (CPU PSI 20-43). The 1800 s control ceiling is 2.18x
+# the longest observed run; it is also the candidate-timeout floor, while
+# candidate_timeout_seconds scales further from the measured control.
 [lanes.mutation]
 kind = "command"
 environment = "cmru-mutation"
@@ -257,7 +263,7 @@ fi
 mkdir -p .assay
 exec /opt/tester-venv/bin/python tools/mutation_campaign.py \
     --assay-source {worktree}/assay --repo-root {worktree} --project-root . \
-    --base "$BASE" --max-mutants 10000 --timeout-seconds 600 \
+    --base "$BASE" --max-mutants 10000 --timeout-seconds 1800 \
     --evidence .assay/mutation-cmru.json \
     --progress .assay/progress-mutation-cmru.jsonl \
     --require-candidates --resume -- \
@@ -301,7 +307,7 @@ if [ -z "$BASE" ]; then
     exit 0
 fi
 mkdir -p .assay
-exec /opt/tester-venv/bin/python tools/mutation_campaign.py --assay-source {worktree}/assay --repo-root {worktree} --project-root . --base "$BASE" --max-mutants 10000 --timeout-seconds 600 --evidence .assay/mutation-cmru.json --progress .assay/progress-mutation-cmru.jsonl --require-candidates --resume -- env PYTHONPATH=src:../libraries/worktree/src PYTHONDONTWRITEBYTECODE=1 /opt/tester-venv/bin/python -m pytest tests -q --maxfail=1
+exec /opt/tester-venv/bin/python tools/mutation_campaign.py --assay-source {worktree}/assay --repo-root {worktree} --project-root . --base "$BASE" --max-mutants 10000 --timeout-seconds 1800 --evidence .assay/mutation-cmru.json --progress .assay/progress-mutation-cmru.jsonl --require-candidates --resume -- env PYTHONPATH=src:../libraries/worktree/src PYTHONDONTWRITEBYTECODE=1 /opt/tester-venv/bin/python -m pytest tests -q --maxfail=1
 ''',
   "--",
 ]

@@ -1,0 +1,34 @@
+{
+  "helper_files_after_update": {
+    "middlewared/plugins/boot_disk_partition.py": "ABSENT",
+    "middlewared/plugins/boot_pool_user_data.py": "ABSENT",
+    "middlewared/plugins/pool_create_schema_v27.json": "ABSENT",
+    "middlewared/plugins/vm/virtualization_support.py": "ABSENT"
+  },
+  "kvm_device": "absent",
+  "partition_table": "NAME    SIZE TYPE FSTYPE     PARTUUID                             PARTLABEL\nvda     512G disk                                                 \n\u251c\u2500vda1    1M part            201aed93-b5c1-4c1d-b1c9-20d0db094e24 \n\u251c\u2500vda2  512M part vfat       e59e3cb0-f9d2-4a93-9341-9de3a4039bce \n\u2514\u2500vda3   16G part zfs_member 23d40421-623f-4dfa-9f6b-c8bf16af4f67 \nDisk /dev/vda: 1073741824 sectors, 512.0 GiB\nSector size (logical/physical): 512/512 bytes\nDisk identifier (GUID): F471AF68-93F2-4AD1-B9E2-9B04B89F44D9\nPartition table holds up to 128 entries\nMain partition table begins at sector 2 and ends at sector 33\nFirst usable sector is 34, last usable sector is 1073741790\nPartitions will be aligned on 2048-sector boundaries\nTotal free space is 1039136701 sectors (495.5 GiB)\n\nNumber  Start (sector)    End (sector)  Size       Code  Name\n   1            4096            6143   1024.0 KiB  EF02  \n   2            6144         1054719   512.0 MiB   EF00  \n   3         1054720        34609151   16.0 GiB    BF01",
+  "pools": "boot-pool\tONLINE\t14641633342097355085",
+  "root_properties": "type\tfilesystem\nquota\t2147483648\nmountpoint\t/mnt/boot-pool/user-data\ncanmount\ton\nmounted\tno",
+  "target_count": 18,
+  "target_stock_sha256": {
+    "middlewared/async_validators.py": "8dd8707d0a24be1accca74a761594c298ee79cd4ead517bef2e848602dcc8108",
+    "middlewared/plugins/container/container.py": "8b51d2a2d90eb10eb55a26a0b206d8ec856dfa537fd4c98a52b30a0640402097",
+    "middlewared/plugins/container/dataset.py": "98b02756661cc13921b74e9cd349fd184be7479019f5867147edbc4d5a2c3079",
+    "middlewared/plugins/container/image.py": "be727201b76974b524f8d346f53827e384b63ad496b7cb9c647a2f0d7764dbad",
+    "middlewared/plugins/container/lifecycle.py": "426076f311a744e712a5f65372a99dcef240362d6dbdbc7dd1d0d2f418429b9b",
+    "middlewared/plugins/container/utils.py": "a724c7ceb9813471911cda858de5b1163180a6374eac001df75be51e825ff315",
+    "middlewared/plugins/disk_/availability.py": "2c7fb23ae47f16826e84607c1350ade66887cdd9960860150d117749c6fe73d9",
+    "middlewared/plugins/pool_/dataset.py": "07c4717640c2bc016ccdbbe63858ed03f325cc4b5cd058e6ce4bf68d9340bb08",
+    "middlewared/plugins/pool_/dataset_info.py": "437ee090a00fb877c8a030d60646b0e17ed1958b9817d6dcba9a046e95670720",
+    "middlewared/plugins/pool_/dataset_query_utils.py": "66da11a41b89a0730f5cc292ba7f023b4dc8b8f0d84084f0e870f2d28304120e",
+    "middlewared/plugins/pool_/export.py": "9a2ce0b4bdaf4b84cd9f72ee6327d5ba6340e13c65ce7e5232f2ffaf0d1c8321",
+    "middlewared/plugins/pool_/import_pool.py": "112453a7cb4dd84c2a25c313278f8d91b88cb9dd336912911c1043ed11eb1588",
+    "middlewared/plugins/pool_/pool.py": "69bc2630097975bb7c8547bf6feb7ae24f908a357e161c243d71b8520dd56270",
+    "middlewared/plugins/vm/info.py": "472746556b11b512da0bcd29e925ac625870627d5b4d224401f55fc5147b34d5",
+    "middlewared/plugins/vm/vm_devices.py": "a937cea6bbf6175fc2cd1c49ab50c9a1834b80dfff85eb18ed2ef1c1382c5e48",
+    "middlewared/plugins/zfs/utils.py": "83a76048f1f740b54751a553bf9ec88879d9fcd7af763f9f6142541a1524d922",
+    "middlewared/utils/libvirt/storage_devices.py": "16a8945d780d632c652c6b54f4b928c1c592d5b5f69df29f7c990d6d9311ad07",
+    "truenas_pylibvirt/domain/vm/xml.py": "ff32f797999039a7aa45b8189430d78f8349bb77087f8b8b8638d940d9ed3bcf"
+  },
+  "version": "27.0.0-MASTER+20261027-173422"
+}

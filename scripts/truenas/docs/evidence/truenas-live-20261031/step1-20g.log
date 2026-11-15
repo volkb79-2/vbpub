@@ -1,0 +1,43 @@
+# Evidence scrub 2026-11-10: environment-specific home, checkout, worktree, and per-run temporary paths were normalized to neutral placeholders; command output and verdict text are otherwise unchanged.
+Starting the installed 20 GiB source VM with loopback-only SSH/API forwards.
+QEMU serial log: <controller-program-dir>/evidence/truenas-live-20261031/step1-20g-source-console.log
+Waiting for the installed TrueNAS VM's root SSH service.
+Root SSH is ready and returned UID 0.
+Waiting for TrueNAS middleware system.ready before making configuration changes.
+TrueNAS middleware reports system.ready.
+Calling TrueNAS middleware method system.info.
+TrueNAS middleware method system.info returned in 3.7s.
+Source TrueNAS version: 27.0.0-RC.1
+Calling TrueNAS middleware method user.query.
+TrueNAS middleware method user.query returned in 3.7s.
+Calling TrueNAS middleware method user.update.
+TrueNAS middleware method user.update returned in 12.4s.
+Updated the truenas_admin password from the protected sidecar.
+Calling TrueNAS middleware method user.query.
+TrueNAS middleware method user.query returned in 4.4s.
+Calling TrueNAS middleware method user.update.
+TrueNAS middleware method user.update returned in 9.9s.
+Calling TrueNAS middleware method ssh.update.
+TrueNAS middleware method ssh.update returned in 5.7s.
+Calling TrueNAS middleware method service.query.
+TrueNAS middleware method service.query returned in 3.4s.
+Calling TrueNAS middleware method service.update.
+TrueNAS middleware method service.update returned in 4.5s.
+Calling TrueNAS middleware method service.control.
+TrueNAS middleware method service.control returned in 3.4s.
+Calling TrueNAS middleware method core.get_jobs.
+TrueNAS middleware method core.get_jobs returned in 3.6s.
+Configured root Ed25519 SSH access; SSH password authentication is disabled.
+Creating API key for truenas_admin with the explicit 30-day expiry.
+Calling TrueNAS middleware method api_key.query.
+TrueNAS middleware method api_key.query returned in 3.5s.
+Calling TrueNAS middleware method api_key.create.
+TrueNAS middleware method api_key.create returned in 7.6s.
+New API key authenticated through the shared client to TrueNAS 27.0.0-RC.1.
+Requesting a clean source VM shutdown before reading its disk.
+Source VM powered off cleanly.
+Converting the powered-off QCOW2 to a sparse raw whole-disk image.
+Comparing the raw capture with the guest-visible QCOW2 sectors.
+Golden raw image: <worktree>/scripts/truenas/golden-iso/artifacts/truenas-27-20GiB-golden.raw (21474836480 bytes)
+Golden raw SHA-256: 721a8b22698f7be66d853c3719351849dacfc59271d023734a846615ebc6b1d7
+Protected secret sidecar: <worktree>/scripts/truenas/golden-iso/artifacts/truenas-27-20GiB-golden.secrets.toml (mode 0600)

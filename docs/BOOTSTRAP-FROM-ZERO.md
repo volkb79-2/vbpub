@@ -33,7 +33,7 @@ builder. No published vbpub image is needed.
 The checked-in level view must match the graph:
 
 ```project-order
-L0: cli-extended, assay, test-policy, tls-edge, iogovmon, tester-base
+L0: cli-extended, assay, fleetd, test-policy, tls-edge, iogovmon, tester-base
 L1: augeaswrap, tnt, ciu, nyxloom, pwmcp, iobench, rigor-record
 L2: cgprofile, topos
 L3: run-gate-project
@@ -45,7 +45,9 @@ Every project registered in `cmru.orchestration.toml` appears in this table,
 whether or not it has published a release yet: `test-policy` (L0, no first-party
 dependency) is registered but has no release of its own before TP-01, so a
 bootstrap from zero has nothing to publish for it and nothing downstream waits on
-it. Its place in the table is only the graph's level, which the test compares.
+it. `fleetd` is also L0 and has no first-party artifact dependency; the first
+week ships facts and planning only, with no daemon or remote execution. Its
+place in the table is only the graph's level, which the test compares.
 Topos is at L2 because its runtime now consumes both `cli-extended` and
 `augeaswrap`.
 When you add a project to `cmru.orchestration.toml`, regenerate this block from

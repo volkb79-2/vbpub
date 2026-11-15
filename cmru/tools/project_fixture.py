@@ -36,6 +36,7 @@ SHARED_LIBRARIES = (
 # - assay/src: run_release_gate's isolated component loader imports Assay there;
 # - tester-base/Dockerfile: test_installed_wheel_subprocess's _bootstrap_tree
 #   copies it into the throw-away tree it bootstraps (the script hashes it);
+# - tester-base/ksm-optin.c: the same bootstrap script hashes and copies it;
 # - docs/BOOTSTRAP-FROM-ZERO.md: linked from CMRU's README, DESIGN-GUIDE and
 #   CONSUMERS (test_docs_config_examples' cross-document link oracle).
 # - wings-patchstack/stack.conf: test_tester_image_cli_extended_identity reads
@@ -49,6 +50,7 @@ SUITE_COLLECTION_INPUTS = (
     Path("assay/src"),
     Path("docs/BOOTSTRAP-FROM-ZERO.md"),
     Path("tester-base/Dockerfile"),
+    Path("tester-base/ksm-optin.c"),
     Path("wings-patchstack/stack.conf"),
 )
 # mutation_campaign fingerprints and dirty-checks exactly the pathspecs of the

@@ -1,0 +1,71 @@
+{
+  "boot.environment.activate": [
+    {
+      "_attrs_order_": [
+        "id"
+      ],
+      "_name_": "boot_environment_activate",
+      "_required_": true,
+      "additionalProperties": false,
+      "description": "BootEnvironmentActivateArgs parameters.",
+      "properties": {
+        "id": {
+          "_name_": "id",
+          "_required_": true,
+          "description": "Name of the boot environment to activate for next boot.",
+          "minLength": 1,
+          "title": "id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "title": "boot_environment_activate",
+      "type": "object"
+    }
+  ],
+  "system.reboot": [
+    {
+      "_name_": "reason",
+      "_required_": true,
+      "description": "Reason for the system reboot.",
+      "minLength": 1,
+      "title": "reason",
+      "type": "string"
+    },
+    {
+      "_attrs_order_": [
+        "delay"
+      ],
+      "_name_": "options",
+      "_required_": false,
+      "additionalProperties": false,
+      "description": "Options for controlling the reboot process.",
+      "properties": {
+        "delay": {
+          "_name_": "delay",
+          "_required_": false,
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Delay in seconds before rebooting. `null` for immediate reboot.",
+          "title": "delay"
+        }
+      },
+      "title": "options",
+      "type": "object"
+    }
+  ]
+}
+
+state={"boot_id": null, "version": "27.0.0-MASTER+20261027-173422"}
+active_env=boot-pool/ROOT/27.0.0-MASTER-20261027-173422/usr
+user_data=boot-pool/user-data
+boot_pool=boot-pool	ONLINE

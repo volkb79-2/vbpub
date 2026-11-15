@@ -1,0 +1,62 @@
+Reading update file
+Verifying rootfs.squashfs
+Verifying truenas_install/__main__.py
+Verifying truenas_install/__init__.py
+Verifying truenas_install/utils.py
+Verifying truenas_install/dhs.py
+Verifying truenas_install/fhs.py
+Running pre-checks
+Starting installer
+Creating dataset
+Extracting
+Performing post-install tasks
+Copying previous configuration
+Migrating configuration database
+Running autotune
+Checking hardware entitlement
+Preparing NVDIMM configuration
+Preparing GRUB configuration
+Updating initramfs
+Updating GRUB
+Configuring FIPS
+No need to update grub in ESP
+Upgrade completed successfully
+Cleaning up
+Update completed
+null
+POST_JOB_VERSION=27.0.0-RC.1
+BOOT_ENVS=boot-pool/ROOT
+boot-pool/ROOT/27.0.0-MASTER-20261027-173422
+boot-pool/ROOT/27.0.0-MASTER-20261027-173422/audit
+boot-pool/ROOT/27.0.0-MASTER-20261027-173422/conf
+boot-pool/ROOT/27.0.0-MASTER-20261027-173422/data
+boot-pool/ROOT/27.0.0-MASTER-20261027-173422/etc
+boot-pool/ROOT/27.0.0-MASTER-20261027-173422/home
+boot-pool/ROOT/27.0.0-MASTER-20261027-173422/mnt
+boot-pool/ROOT/27.0.0-MASTER-20261027-173422/opt
+boot-pool/ROOT/27.0.0-MASTER-20261027-173422/root
+boot-pool/ROOT/27.0.0-MASTER-20261027-173422/usr
+boot-pool/ROOT/27.0.0-MASTER-20261027-173422/var
+boot-pool/ROOT/27.0.0-MASTER-20261027-173422/var/ca-certificates
+boot-pool/ROOT/27.0.0-MASTER-20261027-173422/var/lib
+boot-pool/ROOT/27.0.0-MASTER-20261027-173422/var/log
+boot-pool/ROOT/27.0.0-MASTER-20261027-173422/var/log/journal
+boot-pool/ROOT/27.0.0-RC.1
+boot-pool/ROOT/27.0.0-RC.1/audit
+boot-pool/ROOT/27.0.0-RC.1/conf
+boot-pool/ROOT/27.0.0-RC.1/data
+boot-pool/ROOT/27.0.0-RC.1/etc
+boot-pool/ROOT/27.0.0-RC.1/home
+boot-pool/ROOT/27.0.0-RC.1/mnt
+boot-pool/ROOT/27.0.0-RC.1/opt
+boot-pool/ROOT/27.0.0-RC.1/root
+boot-pool/ROOT/27.0.0-RC.1/usr
+boot-pool/ROOT/27.0.0-RC.1/var
+boot-pool/ROOT/27.0.0-RC.1/var/ca-certificates
+boot-pool/ROOT/27.0.0-RC.1/var/lib
+boot-pool/ROOT/27.0.0-RC.1/var/log
+boot-pool/ROOT/27.0.0-RC.1/var/log/journal
+UPDATE_STATUS={"code": "NORMAL", "status": {"current_version": {"train": "TrueNAS-27-RC", "profile": "EARLY_ADOPTER", "matches_profile": true}, "new_version": null}, "error": null, "update_download_progress": null}
+PATCH_RECORD={"bundle_sha256":"c2d4b6de78c9048c25bd48e96905f592cbdecdb8cdbf4b2bdb4d4745025b666a","kvm_device":false,"patch":"v27","recommended_zvol_blocksize_boot_pool":"boot-pool-defaults-to-16k-v1","root_create_guard":"root-excluded-from-descendant-readiness-v1","root_parent_mountpoint_guard":"root-create-skips-parent-mountpoint-none-v1","supported":true,"version":"27.0.0-RC.1"}
+PATCHED_FILE_SHA256=82e997cefaaac4e20623c11808d8b30ef3b2372fe2b11eeb86bebc5a785115cf  /usr/lib/python3/dist-packages/middlewared/plugins/pool_/dataset.py
+UPDATE_JOB_EXIT=0

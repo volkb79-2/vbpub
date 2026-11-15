@@ -1,0 +1,166 @@
+# Evidence scrub 2026-11-10: environment-specific host identities, host addresses, controller paths, SSH key material and fingerprints were normalized to neutral placeholders; command output and verdict text are otherwise unchanged.
+# Evidence scrub 2026-11-10: environment-specific home, checkout, worktree, and per-run temporary paths were normalized to neutral placeholders; command output and verdict text are otherwise unchanged.
+TrueNAS patch update, drift, and survival evidence
+Recorded: 2026-10-30 UTC
+Target: disposable <host>; baseline snapshot tn-v27rc1-stock-ssh-ready-20261027
+
+Q1 UPDATE MECHANICS
+-------------------
+The v27 RC.1 installation changed middleware Python files under
+/usr/lib/python3/dist-packages/middlewared/ and the adapter helper modules
+under that same Python package tree. Those files are in
+boot-pool/ROOT/<BE>/usr, a per-boot-environment ZFS dataset. <host> reports
+/usr mounted read-only, with the active dataset property readonly=on; it is
+not mounted from a live SquashFS filesystem. The update payload contains
+rootfs.squashfs, which the updater verifies and extracts into the new BE.
+
+The RC.1 marker <home> is in the
+boot-pool/ROOT/<BE>/root dataset. Before the update it identified version
+27.0.0-RC.1 and bundle 23e7667f4893f26f4861b17edc20e73f00ae2f8b797f9ff95cde446af1f25de1.
+The update created and activated boot-pool/ROOT/27.0.0-MASTER-20261027-173422
+with a new /usr dataset containing the nightly's unpatched stock hashes. It
+also copied the BE's /root dataset, including the RC.1 marker, into the new
+BE. The marker therefore survived but was stale: it described the previous
+/usr contents, not the new BE. The active /data/freenas-v1.db belongs to that
+BE's /data child dataset and was migrated by the update.
+
+The old RC.1 BE remained listed with can_activate=true and retained its own
+patched /usr and marker. It was booted successfully during the rollback
+acceptance, then the target nightly was reactivated. This is an actual rollback
+boot, not only a boot-environment API claim. Per-BE database files are separate
+and have distinct hashes before/after migration; pool datasets outside
+boot-pool/ROOT (Path A boot-pool/user-data and Path B boot-disk-data) remain
+outside each BE and retained planted bytes, snapshots, clones, properties and
+zvol contents. Boot-time mounting of those pools is middleware behavior and
+can change with the selected BE.
+
+Evidence:
+- v27-rc1-patched-be-before-update-20261030.txt: active RC.1 dataset
+  sources, marker, read-only /usr, config DB hash, per-target MD5 and SHA256.
+- v27-new-be-before-reapply-20261030.txt: new nightly stock target hashes,
+  copied stale marker, per-BE database hashes, old RC.1 target hashes and
+  restored temporary dataset mount properties.
+- v27-nightly-patched-be-after-reapply-20261030.txt: final nightly patched
+  target hashes, updated marker bundle 489be0c005e4e64cff1cf81077418546b8c9a03cd77bfafa2711048a52a1c0fe,
+  new BE database hash, Path A mount and pool status.
+- v27-update-property-diff-diagnostic-20261030.txt: effective ZFS properties
+  for the only observed fixture reservation change.
+- host-rc1-bootenv-rollback-readiness-r2.log and
+  host-activate-rc1-and-reboot-r2.log (in truenas-live-20261029): rollback
+  boot evidence.
+- host-rc1-to-v27-nightly-update-r2b.log and
+  host-v27-to-v28-update-reboot-r2.log: real updater logs showing update
+  extraction, database migration, initramfs/bootloader work and reboot.
+
+Q2 DRIFT AND FAIL-CLOSED COMPATIBILITY
+--------------------------------------
+The supported builds are exact strings in scripts/truenas/boot-pool-patch/
+supported-builds.json: v27 RC.1, v27 nightly 27.0.0-MASTER+20261027-173422,
+v28 nightly 28.0.0-MASTER+20261014-230204, and v28 nightly
+28.0.0-MASTER+20261027-175229. There is no registered v27 RC.2, v27 GA or
+later nightly adapter.
+
+Before apply, each adapter checks exact version, adapter/registry metadata,
+full target path set and SHA-256 preimage hashes, then performs patch
+--dry-run --fuzz=0. Missing, extra, symlinked or changed target files and any
+anchor mismatch fail with a per-path diff. Apply is transactional; post-apply
+checks validate output hashes, Python compilation, API probes, reverse zero-
+fuzz patch dry-runs and restore /usr readonly=on. The recovery/reapply path
+also requires the exact prior marker digest and the complete new-build stock
+fingerprint set. This prevents version-prefix-only acceptance and fuzzy hunk
+relocation.
+
+Read-only commands are implemented by patch_drift.py: verify for one exact
+registered extracted source tree, diagnose for an unknown candidate tree, and
+upstream for official version listings plus current upstream middleware and
+truenas_pylibvirt source anchors. The latter does not install anything on
+<host>. When the official download listing is JavaScript-only, it uses PWMCP to
+read rendered object names. The official v27 Nightlies listing reported
+TrueNAS-27.0.0-MASTER+20261029-173417.iso, newer than the Oct 27 adapter and
+unsupported. The v27 RC listing was not re-inspected: PWMCP's selector timed
+out. The updater API advertised 28.0.0-MASTER+20261029-175210, and the live
+lane rejected the older Oct 27 request before installing that exact Oct 29
+build. The v28 rendered listing failed with HTTP 503. Neither Oct 29 build has
+an adapter. Current upstream source differs from the pinned adapter targets
+and reports REVIEW_REQUIRED; that is a source drift signal, not proof of the
+exact ISO's installed file bytes. A new build requires extracted ISO or
+package fingerprints and review before it can be registered.
+
+Evidence: patch-drift-27-nightlies-20261030.log,
+patch-drift-27-rc-20261030.log, patch-drift-28-nightlies-20261030.log,
+patch-drift-upstream-20261030.log, v28-rejected-stale-oct27-target-20261030.log;
+the exact per-BE target hashes above; the registry and per-adapter
+`targets.sha256` files are in the checkout.
+
+Q3 PATCH INVENTORY
+------------------
+The exact per-build patch/hunk and added/deleted line counts, file locations,
+risks, dependencies and proposed surgical subsets are in
+scripts/truenas/docs/UPDATE-AND-DRIFT.md, section "Patch inventory and smaller
+variants". The inventory counts unified-diff hunks and source lines; adapter
+helper files are itemized separately. UI behavior changes are middleware API
+handlers; there are no React/Angular webui files or systemd unit edits.
+
+Q4 UPDATE-SURVIVAL ACCEPTANCE
+----------------------------
+Registered lanes live-update-survival-plant, live-update-survival-update and
+live-update-survival-verify use midclt/WebSocket, direct ZFS properties and
+SHA-256 file/zvol reads. They plant a unique group and user, hashed password
+expectation, SSH key, API key digest, nested datasets with quota/refquota and
+compression, snapshot/clone, zvol, disabled SMB/NFS records, cron/snapshot/
+replication tasks, stopped container record when available, stopped VM and
+device records, local certificate, and pre/post network/system configuration
+and app/cloud-sync inventories. No guest VM is booted. Password and API
+secrets are represented by digests only.
+
+Vanilla v27 RC.1 -> v27 nightly: PASS. It planted Path A plus an ordinary
+non-reserved pool on /dev/vda4; Path B was unavailable in that host setup.
+The post-update verifier passed with seven data checksums and four explicit
+expected differences. Logs: vanilla-plant-20261030.log,
+vanilla-update-20261030.log, vanilla-verify-20261030.log.
+
+Patched v27 RC.1 -> v27 nightly -> exact nightly reapply: update and reapply
+PASS. The fixture used Path A and Path B together; Path B provisioning used
+the only free tail partition and left no separate non-reserved pool. The final verifier passed with seven data checksums, nine expected
+differences, and no unexpected changes. Evidence: `patched-survival-
+verify-20261030.log`; per-BE hashes and the observed Path A zvol reservation
+delta are listed above. Plant, update, and reapply logs are
+`live-update-survival-plant/6e6cb8d9e9021f9c9515ba54607d2892.log`,
+`live-update-survival-update/ecd4be9b063f8abc150413979845534e.log`, and
+`live-v27-patch/31055446888f2b6523d48e6d38c797ad.log`.
+
+Combined Path A + Path B + an ordinary non-reserved pool was not physically
+possible on this one-disk <host>: Path B consumes the remaining disk tail.
+The checker reports a missing selected pool rather than silently substituting
+another. No encryption escrow key was available, and no KVM guest was booted.
+
+Patched v27 Oct 27 Nightly -> v28 Oct 29 Nightly also passed: seven data
+checksums, three expected differences, and no unexpected changes. Path A was
+present in direct ZFS inventory but unmounted under stock v28; Path B remained
+mounted, and the v27 install marker remained stale. Evidence:
+`v28-survival-plant-20261030.log`, `v27-to-v28-oct29-update-20261030.log`,
+`v28-survival-verify-20261030.log`, and `v28-survival-report-20261030.txt`. The
+old Oct 27 target was refused because the updater advertised the newer Oct 29
+build.
+
+Q5 AUTOMATION INVENTORY
+-----------------------
+The detailed check/runner/determinism/judgement matrix is in
+scripts/truenas/docs/UPDATE-AND-DRIFT.md, section "Automation inventory".
+Registered pytest, SSH/midclt/ZFS and PWMCP selector gates assert deterministic
+values and fail on ambiguity. The final `unit-boot-pool-patch` run passed 400
+tests and 45 subtests (final log: `unit-boot-pool-patch-20261030.log`). Human judgement
+remains for semantic review of upstream source/DOM changes, actual guest boot
+and share-client availability; these boundaries and automation steps are in
+that table.
+
+
+HOST RETURN AND FINAL GATE
+--------------------------
+After acceptance, <host> was reverted to snapshot
+tn-v27rc1-stock-ssh-ready-20261027, powered on, and returned
+`TrueNAS-27.0.0-RC.1` from `midclt call system.version`. The shared host lock
+was released after the SSH readiness probe.
+
+The final registered `unit-boot-pool-patch` gate passed 400 tests and 45
+subtests. Its copied text log is `unit-boot-pool-patch-20261030.log`.

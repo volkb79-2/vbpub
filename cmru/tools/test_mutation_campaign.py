@@ -9,6 +9,7 @@ import re
 import subprocess
 import sys
 import tomllib
+from dataclasses import asdict
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -17,6 +18,8 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO_ROOT / "assay" / "src"))
 from assay import git as assay_git
+from assay.process_tree import ProcessTreeEvidence
+from assay.resource_limits import ResourceLimitCounters, ResourceLimitEvidence
 
 sys.path.insert(0, str(Path(__file__).parent))
 import mutation_campaign
@@ -27,14 +30,15 @@ def test_registered_mutation_timeout_covers_known_good_suite():
     config = tomllib.loads(
         (REPO_ROOT / "cmru" / "run-gate.toml").read_text(encoding="utf-8")
     )
-    command = "\n".join(config["lanes"]["mutation"]["argv"])
-    timeout = re.search(r"--timeout-seconds\s+([0-9]+)\b", command)
+    for lane_name in ("mutation", "r2"):
+        command = "\n".join(config["lanes"][lane_name]["argv"])
+        timeout = re.search(r"--timeout-seconds\s+([0-9]+)\b", command)
 
-    assert timeout is not None, "mutation lane must declare its candidate timeout"
-    assert int(timeout.group(1)) >= 600, (
-        "the tester-unified known-good CMRU suite took 439 seconds; "
-        "mutation control and candidates need a 600-second ceiling with headroom"
-    )
+        assert timeout is not None, f"{lane_name} must declare its control timeout"
+        assert int(timeout.group(1)) >= 1800, (
+            f"{lane_name} must allow the 825-second control measured in the R2 rehearsal "
+            "more than two times to finish under contention"
+        )
 
 
 def test_disposable_fixture_copies_shared_libraries_and_estate_configs(tmp_path, monkeypatch):
@@ -199,6 +203,103 @@ def _make_assay_source(repo: Path) -> Path:
     return assay
 
 
+def _make_assay_source_with_sibling_package(repo: Path) -> tuple[Path, Path]:
+    assay = _make_assay_source(repo)
+    package = repo / "libraries" / "cowtree" / "src" / "cowtree"
+    package.mkdir(parents=True)
+    package_file = package / "__init__.py"
+    package_file.write_text("VALUE = 1\n", encoding="utf-8")
+    (assay / "pyproject.toml").write_text(
+        "[build-system]\nbuild-backend = 'setuptools.build_meta'\n\n"
+        "[tool.setuptools]\n"
+        "package-dir = {'' = 'src', 'cowtree' = '../libraries/cowtree/src/cowtree'}\n"
+        "[tool.setuptools.packages.find]\n"
+        "where = ['src', 'analysis/src', '../libraries/cowtree/src']\n",
+        encoding="utf-8",
+    )
+    return assay, package_file
+
+
+def test_assay_package_paths_accept_the_declared_sibling_library_roots(tmp_path):
+    repo = tmp_path / "repo"
+    assay, _package_file = _make_assay_source_with_sibling_package(repo)
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    subprocess.run(["git", "-C", str(repo), "add", "assay", "libraries"], check=True)
+    subprocess.run(
+        ["git", "-C", str(repo), "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-qm", "base"],
+        check=True,
+    )
+
+    roots = mutation_campaign._assay_source_package_paths(assay)
+
+    assert "../libraries/cowtree/src" in roots
+    assert "../libraries/cowtree/src/cowtree" in roots
+    assert "pyproject.toml" in roots
+
+
+def test_assay_install_preflight_tracks_a_declared_sibling_package_root(tmp_path):
+    repo = tmp_path / "repo"
+    assay, package_file = _make_assay_source_with_sibling_package(repo)
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    subprocess.run(["git", "-C", str(repo), "add", "assay", "libraries"], check=True)
+    subprocess.run(
+        ["git", "-C", str(repo), "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-qm", "base"],
+        check=True,
+    )
+
+    assert mutation_campaign._assay_install_tree_status(assay) == ""
+    package_file.write_text("VALUE = 2\n", encoding="utf-8")
+
+    status = mutation_campaign._assay_install_tree_status(assay)
+    assert "libraries/cowtree/src/cowtree/__init__.py" in status
+    source_status = mutation_campaign._assay_source_tree_status(assay)
+    assert "libraries/cowtree/src/cowtree/__init__.py" in source_status
+
+
+def test_assay_package_roots_refuse_a_source_outside_the_git_worktree(tmp_path):
+    repo = tmp_path / "repo"
+    assay = _make_assay_source(repo)
+    outside = tmp_path / "outside" / "src"
+    outside.mkdir(parents=True)
+    (assay / "pyproject.toml").write_text(
+        "[build-system]\nbuild-backend = 'setuptools.build_meta'\n\n"
+        "[tool.setuptools.packages.find]\nwhere = ['src', '../../outside/src']\n",
+        encoding="utf-8",
+    )
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    subprocess.run(["git", "-C", str(repo), "add", "assay"], check=True)
+    subprocess.run(
+        ["git", "-C", str(repo), "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-qm", "base"],
+        check=True,
+    )
+
+    with pytest.raises(RuntimeError, match="escapes its Git worktree"):
+        mutation_campaign._assay_source_package_paths(assay)
+
+
+def test_assay_package_roots_refuse_symlink_components_in_sibling_sources(tmp_path):
+    repo = tmp_path / "repo"
+    assay = _make_assay_source(repo)
+    actual = repo / "libraries" / "cowtree-real" / "src"
+    (actual / "cowtree").mkdir(parents=True)
+    (actual / "cowtree" / "__init__.py").write_text("VALUE = 1\n", encoding="utf-8")
+    (repo / "libraries" / "cowtree").symlink_to(actual.parent, target_is_directory=True)
+    (assay / "pyproject.toml").write_text(
+        "[build-system]\nbuild-backend = 'setuptools.build_meta'\n\n"
+        "[tool.setuptools.packages.find]\nwhere = ['src', '../libraries/cowtree/src']\n",
+        encoding="utf-8",
+    )
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    subprocess.run(["git", "-C", str(repo), "add", "assay", "libraries/cowtree-real"], check=True)
+    subprocess.run(
+        ["git", "-C", str(repo), "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-qm", "base"],
+        check=True,
+    )
+
+    with pytest.raises(RuntimeError, match="symlinked path component"):
+        mutation_campaign._assay_source_package_paths(assay)
+
+
 def test_assay_install_status_refuses_even_ignored_build_hooks(tmp_path):
     repo = tmp_path / "repo"
     assay = _make_assay_source(repo)
@@ -247,7 +348,6 @@ def test_assay_install_status_refuses_even_ignored_build_hooks(tmp_path):
     ("metadata", "message"),
     [
         ("[tool.setuptools.packages.find\nwhere = ['src']\n", "could not derive"),
-        ("[tool.setuptools.packages.find]\nwhere = ['../src']\n", "unsafe package source root"),
         ("[tool.setuptools]\n", "could not derive"),
         ("[tool.setuptools.packages.find]\nwhere = []\n", "non-empty"),
         ("[tool.setuptools.packages.find]\nwhere = '../src'\n", "non-empty"),
@@ -265,8 +365,8 @@ def test_assay_install_status_refuses_even_ignored_build_hooks(tmp_path):
         ("[tool.setuptools.packages.find]\nwhere = ['src/*']\n", "non-literal package source root"),
         ("[tool.setuptools]\npackage-dir = 'bad'\n"
          "[tool.setuptools.packages.find]\nwhere = ['src']\n", "package-dir.*mapping"),
-        ("[tool.setuptools]\npackage-dir = { assay = 'src' }\n"
-         "[tool.setuptools.packages.find]\nwhere = ['src']\n", "unsupported named package-dir mapping"),
+        ("[tool.setuptools]\npackage-dir = { 'bad/name' = 'src' }\n"
+         "[tool.setuptools.packages.find]\nwhere = ['src']\n", "invalid package-dir key"),
     ],
 )
 def test_assay_package_roots_refuse_unreadable_or_unsupported_build_metadata(
@@ -331,7 +431,7 @@ def test_assay_package_roots_refuse_a_symlinked_source_directory(tmp_path):
         encoding="utf-8",
     )
 
-    with pytest.raises(RuntimeError, match="escapes or is missing|must not be a symlink"):
+    with pytest.raises(RuntimeError, match="symlinked path component"):
         mutation_campaign._assay_source_package_paths(source)
 
 
@@ -633,7 +733,10 @@ def test_mutation_resume_refusal_happens_before_baseline(tmp_path, monkeypatch):
     )
     original_sys_path = list(sys.path)
     try:
-        with pytest.raises(ValueError, match="predates the current process-tree evidence schema"):
+        with pytest.raises(
+            ValueError,
+            match="predates the current resource and process-tree evidence schema",
+        ):
             mutation_campaign.run([
                 "--repo-root", str(repo),
                 "--project-root", str(project),
@@ -687,17 +790,27 @@ def test_resume_refuses_an_explicit_none_assay_source_root(tmp_path):
         )
 
 
-def test_resume_compares_assay_source_from_its_linked_worktree(tmp_path):
+@pytest.mark.parametrize(
+    ("changed_path", "pathspec"),
+    [
+        ("assay/analysis/src/assay_analysis/__init__.py", "assay/analysis/src"),
+        ("libraries/cowtree/src/cowtree/__init__.py", "libraries/cowtree/src"),
+    ],
+)
+def test_resume_compares_assay_source_from_its_linked_worktree(
+        tmp_path, changed_path, pathspec):
     repo = tmp_path / "repo"
     project = repo / "cmru"
-    assay = _make_assay_source(repo)
+    assay, _sibling_package = _make_assay_source_with_sibling_package(repo)
     (project / "src" / "cmru").mkdir(parents=True)
     (project / "src" / "cmru" / "thing.py").write_text("value = 1\n", encoding="utf-8")
     (project / "tests").mkdir()
     (project / "tests" / "test_thing.py").write_text("def test_ok(): assert True\n", encoding="utf-8")
     (project / "pyproject.toml").write_text("[tool.pytest.ini_options]\n", encoding="utf-8")
     subprocess.run(["git", "init", "-q", str(repo)], check=True)
-    subprocess.run(["git", "-C", str(repo), "add", "cmru", "assay"], check=True)
+    subprocess.run(
+        ["git", "-C", str(repo), "add", "cmru", "assay", "libraries"], check=True,
+    )
     subprocess.run(
         ["git", "-C", str(repo), "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-qm", "base"],
         check=True,
@@ -714,9 +827,9 @@ def test_resume_compares_assay_source_from_its_linked_worktree(tmp_path):
         check=True,
     )
     linked_assay = linked_root / "assay"
-    changed_file = linked_assay / "analysis" / "src" / "assay_analysis" / "__init__.py"
+    changed_file = linked_root / changed_path
     changed_file.write_text("VALUE = 2\n", encoding="utf-8")
-    subprocess.run(["git", "-C", str(linked_root), "add", "assay/analysis/src"], check=True)
+    subprocess.run(["git", "-C", str(linked_root), "add", pathspec], check=True)
     subprocess.run(
         ["git", "-C", str(linked_root), "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-qm", "change Assay source"],
         check=True,
@@ -797,24 +910,256 @@ def _process_tree_evidence(
     descendants_signalled: int = 0,
 ):
     return {
-        "protocol": "assay-process-tree/1",
+        "protocol": "assay-process-tree/2",
         "leader_status": leader_status,
         "group_signalled_before_reap": leader_status == "timeout-killed",
         "outliving_descendants": outliving_descendants,
         "descendants_signalled": descendants_signalled,
-        "cleanup_seconds": 0.001,
+        "signal": 9 if leader_status == "timeout-killed" else None,
+        "descendants": [
+            {"pid": 100 + index, "ppid": 50, "comm": "python"}
+            for index in range(outliving_descendants)
+        ],
         "clean": True,
     }
 
 
+def test_process_tree_evidence_fixture_matches_the_assay_wire_schema():
+    evidence = _process_tree_evidence()
+
+    assert ProcessTreeEvidence.from_dict(evidence).to_dict() == evidence
+
+
+def test_assay_resource_limit_advisories_are_recorded_in_candidate_evidence():
+    signature = (
+        ("/cg", 1, True, True, True, True, True, True, False, False),
+    )
+    before = ResourceLimitCounters(
+        pids_max=0, memory_oom=0, memory_max=0, memory_oom_kill=0,
+        memory_oom_group_kill=0, limit_signature=signature,
+        limit_values=((100, 200),),
+    )
+    after = ResourceLimitCounters(
+        pids_max=0, memory_oom=0, memory_max=0, memory_oom_kill=0,
+        memory_oom_group_kill=0, limit_signature=signature,
+        limit_values=((120, 200),),
+    )
+    resource_evidence, advisories = mutation_campaign._resource_limit_evidence(
+        before, after,
+    )
+    result = mutation_campaign._candidate_result(
+        _job(), returncode=1, elapsed_seconds=2, timed_out=False,
+        resource_limit_evidence=resource_evidence,
+        resource_limit_advisories=advisories,
+        process_tree_evidence=_process_tree_evidence(),
+    )
+
+    assert isinstance(resource_evidence, ResourceLimitEvidence)
+    assert resource_evidence.limit_hit is False
+    assert advisories == ("cgroup[0].pids.max changed: 100 -> 120",)
+    assert asdict(result)["resource_limit_advisories"] == advisories
+
+
+def test_campaign_control_unpacks_and_records_assay_resource_advisories(tmp_path, monkeypatch):
+    import assay
+    from assay import diff as assay_diff
+    from assay import mutation as assay_mutation
+
+    repo = tmp_path / "repo"
+    project = repo / "cmru"
+    project.mkdir(parents=True)
+    assay_source, _package_file = _make_assay_source_with_sibling_package(repo)
+    before = ResourceLimitCounters(
+        pids_max=0, memory_oom=0, memory_max=0, memory_oom_kill=0,
+        memory_oom_group_kill=0,
+        limit_signature=(("/cg", 1, True, True, True, True, True, True, False, False),),
+        limit_values=((100, 200),),
+    )
+    after = ResourceLimitCounters(
+        pids_max=0, memory_oom=0, memory_max=0, memory_oom_kill=0,
+        memory_oom_group_kill=0,
+        limit_signature=(("/cg", 1, True, True, True, True, True, True, False, False),),
+        limit_values=((120, 200),),
+    )
+    resource_reads = iter((before, after))
+
+    monkeypatch.setattr(mutation_campaign, "_assay_source_package_paths", lambda _source: ["src"])
+    monkeypatch.setattr(mutation_campaign, "_assay_source_tree_status", lambda _source: "")
+    monkeypatch.setattr(mutation_campaign, "_assay_import_is_bound_to_source", lambda *_args: True)
+    monkeypatch.setattr(mutation_campaign, "_campaign_tree_status", lambda *_args: "")
+    monkeypatch.setattr(mutation_campaign, "_git_head", lambda _root: "head")
+    monkeypatch.setattr(mutation_campaign, "_test_manifest", lambda *_args: {})
+    monkeypatch.setattr(mutation_campaign, "_fixture_matches_manifest", lambda **_kwargs: True)
+    monkeypatch.setattr(mutation_campaign, "copy_project_fixture", lambda **_kwargs: None)
+    monkeypatch.setattr(
+        mutation_campaign, "_copy_frozen_fixture",
+        lambda *, workspace, **_kwargs: workspace,
+    )
+    monkeypatch.setattr(mutation_campaign, "_read_resource_limit_counters", lambda: next(resource_reads))
+    monkeypatch.setattr(
+        mutation_campaign, "_run",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            returncode=0, stdout="", descendants_killed=0,
+            process_tree_evidence=_process_tree_evidence(),
+        ),
+    )
+    monkeypatch.setattr(assay_git, "resolve_base", lambda *_args, **_kwargs: "base")
+    monkeypatch.setattr(assay_git, "run", lambda *_args, **_kwargs: "")
+    monkeypatch.setattr(assay_diff, "parse_added_lines", lambda _diff: [])
+    monkeypatch.setattr(assay_mutation, "resolve_mutation_targets", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(assay_mutation, "collect_mutation_sites", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(assay, "__file__", str(assay_source / "src" / "assay" / "__init__.py"))
+
+    evidence_path = tmp_path / "mutation.json"
+    progress_path = tmp_path / "progress.jsonl"
+    result = mutation_campaign._run_campaign(
+        [
+            "--repo-root", str(repo), "--project-root", str(project),
+            "--assay-source", str(assay_source), "--base", "base",
+            "--max-mutants", "1", "--timeout-seconds", "1",
+            "--evidence", str(evidence_path), "--progress", str(progress_path),
+            "--", sys.executable, "-m", "pytest", "tests",
+        ],
+        template_root=tmp_path / "fixture-template",
+    )
+
+    evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
+    assert result == 0
+    assert evidence["baseline_resource_limit_advisories"] == [
+        "cgroup[0].pids.max changed: 100 -> 120",
+    ]
+
+
+@pytest.mark.parametrize("candidate_limit_hit", [False, True])
+def test_campaign_candidate_unpacks_and_records_assay_resource_advisories(
+    tmp_path, monkeypatch, candidate_limit_hit,
+):
+    import assay
+    from assay import diff as assay_diff
+    from assay import mutation as assay_mutation
+
+    repo = tmp_path / "repo"
+    project = repo / "cmru"
+    project.mkdir(parents=True)
+    assay_source, _package_file = _make_assay_source_with_sibling_package(repo)
+    signature = (
+        ("/cg", 1, True, True, True, True, True, True, False, False),
+    )
+
+    def counters(*, pids_max_value=100, oom_kill=0):
+        return ResourceLimitCounters(
+            pids_max=0, memory_oom=0, memory_max=0, memory_oom_kill=oom_kill,
+            memory_oom_group_kill=0, limit_signature=signature,
+            limit_values=((pids_max_value, 200),),
+        )
+
+    baseline = counters()
+    candidate_after = counters(
+        pids_max_value=120,
+        oom_kill=1 if candidate_limit_hit else 0,
+    )
+    resource_reads = iter((baseline, baseline, baseline, candidate_after))
+    job = SimpleNamespace(
+        path="cmru/src/cmru/thing.py",
+        original_text="value = 1\n",
+        site=SimpleNamespace(
+            lineno=7,
+            operator="python:compare-swap",
+            description="Eq->NotEq",
+            apply=lambda _source: b"value = 2\n",
+        ),
+    )
+    run_calls = 0
+
+    def run(_argv, **_kwargs):
+        nonlocal run_calls
+        run_calls += 1
+        return SimpleNamespace(
+            returncode=0 if run_calls == 1 else 1,
+            stdout="",
+            descendants_killed=0,
+            process_tree_evidence=_process_tree_evidence(),
+        )
+
+    def copy_candidate_fixture(*, workspace, project_prefix, **_kwargs):
+        candidate_project = workspace / project_prefix
+        target = candidate_project / "src" / "cmru" / "thing.py"
+        target.parent.mkdir(parents=True)
+        target.write_text(job.original_text, encoding="utf-8")
+        return candidate_project
+
+    monkeypatch.setattr(mutation_campaign, "_assay_source_package_paths", lambda _source: ["src"])
+    monkeypatch.setattr(mutation_campaign, "_assay_source_tree_status", lambda _source: "")
+    monkeypatch.setattr(mutation_campaign, "_assay_import_is_bound_to_source", lambda *_args: True)
+    monkeypatch.setattr(mutation_campaign, "_campaign_tree_status", lambda *_args: "")
+    monkeypatch.setattr(mutation_campaign, "_git_head", lambda _root: "head")
+    monkeypatch.setattr(mutation_campaign, "_test_manifest", lambda *_args: {})
+    monkeypatch.setattr(mutation_campaign, "_fixture_matches_manifest", lambda **_kwargs: True)
+    monkeypatch.setattr(mutation_campaign, "copy_project_fixture", lambda **_kwargs: None)
+    monkeypatch.setattr(mutation_campaign, "_copy_frozen_fixture", copy_candidate_fixture)
+    monkeypatch.setattr(mutation_campaign, "_read_resource_limit_counters", lambda: next(resource_reads))
+    monkeypatch.setattr(mutation_campaign, "_run", run)
+    monkeypatch.setattr(assay_git, "resolve_base", lambda *_args, **_kwargs: "base")
+    monkeypatch.setattr(assay_git, "run", lambda *_args, **_kwargs: "")
+    monkeypatch.setattr(assay_diff, "parse_added_lines", lambda _diff: [])
+    monkeypatch.setattr(assay_mutation, "resolve_mutation_targets", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(assay_mutation, "collect_mutation_sites", lambda *_args, **_kwargs: [job])
+    monkeypatch.setattr(assay, "__file__", str(assay_source / "src" / "assay" / "__init__.py"))
+
+    evidence_path = tmp_path / "mutation.json"
+    progress_path = tmp_path / "progress.jsonl"
+    argv = [
+        "--repo-root", str(repo), "--project-root", str(project),
+        "--assay-source", str(assay_source), "--base", "base",
+        "--max-mutants", "1", "--timeout-seconds", "1",
+        "--evidence", str(evidence_path), "--progress", str(progress_path),
+        "--", sys.executable, "-m", "pytest", "tests",
+    ]
+
+    if candidate_limit_hit:
+        with pytest.raises(RuntimeError, match="resource-limit event occurred during candidate 0"):
+            mutation_campaign._run_campaign(
+                argv, template_root=tmp_path / "fixture-template",
+            )
+    else:
+        assert mutation_campaign._run_campaign(
+            argv, template_root=tmp_path / "fixture-template",
+        ) == 0
+
+    evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
+    candidate_record = evidence["results"][0]
+    assert evidence["schema_version"] == 6
+    assert candidate_record["resource_limit_advisories"] == [
+        "cgroup[0].pids.max changed: 100 -> 120",
+    ]
+    assert ResourceLimitEvidence.from_dict(
+        candidate_record["resource_limit_evidence"]
+    ).limit_hit is candidate_limit_hit
+    assert candidate_record["outcome"] == ("crashed" if candidate_limit_hit else "killed")
+    assert candidate_record["termination"] == ("resource-limit" if candidate_limit_hit else "exit")
+
+    progress = [json.loads(line) for line in progress_path.read_text(encoding="utf-8").splitlines()]
+    candidate_event = next(event for event in progress if event["event"] == "candidate")
+    assert candidate_event["outcome"] == candidate_record["outcome"]
+    assert ResourceLimitEvidence.from_dict(
+        candidate_event["resource_limit_evidence"]
+    ).limit_hit is candidate_limit_hit
+    assert candidate_event["resource_limit_advisories"] == candidate_record[
+        "resource_limit_advisories"
+    ]
+    assert evidence["status"] == ("infrastructure-error" if candidate_limit_hit else "passed")
+
+
 def _with_process_tree_contract(document):
-    document["schema_version"] = 5
+    document["schema_version"] = 6
     document["candidate_isolation"] = "process-tree/1"
+    document["baseline_resource_limit_advisories"] = []
     document["baseline_process_tree_evidence"] = _process_tree_evidence()
     for result in document.get("results", []):
         if result is None:
             continue
         result.setdefault("resource_limit_evidence", _zero_resource_evidence())
+        result.setdefault("resource_limit_advisories", [])
         if result.get("outcome") == "killed":
             result.setdefault("termination", "exit")
         status = "timeout-killed" if result.get("termination") == "timeout" else "exited"
@@ -824,6 +1169,135 @@ def _with_process_tree_contract(document):
             descendants_signalled=result.get("descendants_killed", 0),
         )
     return document
+
+
+def _make_resume_case(tmp_path, *, baseline_advisories, candidate_advisories):
+    repo = tmp_path / "repo"
+    project = repo / "cmru"
+    assay = _make_assay_source(repo)
+    (project / "src" / "cmru").mkdir(parents=True)
+    (project / "tests").mkdir()
+    (project / "src" / "cmru" / "thing.py").write_text("value = 1\n", encoding="utf-8")
+    (project / "tests" / "test_thing.py").write_text(
+        "def test_ok(): assert True\n", encoding="utf-8",
+    )
+    (project / "pyproject.toml").write_text("[tool.pytest.ini_options]\n", encoding="utf-8")
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    subprocess.run(["git", "-C", str(repo), "add", "cmru", "assay"], check=True)
+    subprocess.run(
+        ["git", "-C", str(repo), "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-qm", "base"],
+        check=True,
+    )
+    head = subprocess.run(
+        ["git", "-C", str(repo), "rev-parse", "HEAD"], check=True, text=True,
+        stdout=subprocess.PIPE,
+    ).stdout.strip()
+    job = _job()
+    previous = {
+        "schema_version": 3,
+        "candidate_isolation": "subreaper/1",
+        "base": head,
+        "head": head,
+        "project_prefix": "cmru",
+        "assay_source_commit": head,
+        "max_mutants": 1,
+        "operators": list(mutation_campaign.OPERATORS),
+        "test_argv": ["pytest", "tests"],
+        "timeout_seconds": 120,
+        "candidate_count": 1,
+        "test_manifest": mutation_campaign._test_manifest(repo, Path("cmru")),
+        "results": [{
+            "path": job.path,
+            "line": job.site.lineno,
+            "operator": job.site.operator,
+            "description": job.site.description,
+            "exit_code": 1,
+            "outcome": "killed",
+            "resource_limit_evidence": _zero_resource_evidence(),
+        }],
+    }
+    document = _with_process_tree_contract(previous)
+    document["baseline_resource_limit_advisories"] = baseline_advisories
+    document["results"][0]["resource_limit_advisories"] = candidate_advisories
+    evidence = project / ".assay" / "mutation-cmru.json"
+    evidence.parent.mkdir()
+    evidence.write_text(json.dumps(document), encoding="utf-8")
+
+    def resume_results():
+        return mutation_campaign._resume_results(
+            evidence_path=evidence,
+            repo_root=repo,
+            resume=True,
+            base=head,
+            head=head,
+            project_prefix=Path("cmru"),
+            assay_source_commit=head,
+            assay_source_root=assay,
+            assay_git=assay_git,
+            test_argv=["pytest", "tests"],
+            jobs=[job],
+            max_mutants=1,
+            timeout_seconds=120,
+        )
+
+    return evidence, resume_results
+
+
+def test_resume_accepts_valid_baseline_and_candidate_resource_advisories(tmp_path):
+    evidence, resume_results = _make_resume_case(
+        tmp_path,
+        baseline_advisories=["baseline advisory"],
+        candidate_advisories=["candidate advisory"],
+    )
+
+    resumed = resume_results()
+
+    assert resumed[0]["resource_limit_advisories"] == ["candidate advisory"]
+    assert json.loads(evidence.read_text(encoding="utf-8"))[
+        "baseline_resource_limit_advisories"
+    ] == ["baseline advisory"]
+
+
+@pytest.mark.parametrize(
+    ("scope", "invalid_value"),
+    [
+        ("baseline", "missing"),
+        ("baseline", None),
+        ("baseline", [1]),
+        ("baseline", [""]),
+        ("candidate", "missing"),
+        ("candidate", None),
+        ("candidate", [1]),
+        ("candidate", [""]),
+    ],
+)
+def test_resume_refuses_missing_or_mismatched_resource_advisories(
+    tmp_path, scope, invalid_value,
+):
+    evidence, resume_results = _make_resume_case(
+        tmp_path,
+        baseline_advisories=["baseline advisory"],
+        candidate_advisories=["candidate advisory"],
+    )
+    document = json.loads(evidence.read_text(encoding="utf-8"))
+    field = (
+        "baseline_resource_limit_advisories"
+        if scope == "baseline" else "resource_limit_advisories"
+    )
+    target = document if scope == "baseline" else document["results"][0]
+    if invalid_value == "missing":
+        target.pop(field)
+    else:
+        target[field] = invalid_value
+    evidence.write_text(json.dumps(document), encoding="utf-8")
+
+    message = (
+        "invalid baseline resource advisories"
+        if scope == "baseline"
+        else "invalid resource advisories for candidate 0"
+    )
+    with pytest.raises(ValueError, match=message):
+        resume_results()
 
 
 def _run_in_subreaper_process(argv, *, cwd, timeout_seconds, output_dir, full_log=None):
@@ -993,14 +1467,14 @@ def test_timeout_is_inconclusive_and_cannot_count_as_a_kill():
     assert result.exit_code == 124
 
 
-@pytest.mark.parametrize("schema_version", [1, 2, 3, 4])
+@pytest.mark.parametrize("schema_version", [1, 2, 3, 4, 5])
 def test_legacy_resume_evidence_without_subreaper_identity_is_refused(
         tmp_path, schema_version):
     evidence = tmp_path / "mutation.json"
     evidence.write_text(json.dumps({"schema_version": schema_version}), encoding="utf-8")
     with pytest.raises(
         ValueError,
-        match=f"predates the current process-tree evidence schema.*{evidence}",
+        match=f"predates the current resource and process-tree evidence schema.*{evidence}",
     ):
         mutation_campaign._resume_results(
             evidence_path=evidence,

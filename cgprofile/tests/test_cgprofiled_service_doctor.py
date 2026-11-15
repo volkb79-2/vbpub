@@ -58,34 +58,45 @@ def _as(monkeypatch, euid):
 _REAL_LSTAT = os.lstat
 
 
-def _patch_lstat(monkeypatch, answer):
+def _patch_lstat(monkeypatch, answer, *, root=None, targets=None):
     """Route ``lstat(path)`` through ``answer(path)``.
 
-    Calls that carry ``dir_fd`` (pytest's own tmp cleanup) stay real, because the
-    patch is still active while the tmp directory is removed.
+    Calls outside the path(s) under test stay real, including pytest's own tmp
+    cleanup and capture descriptors.
     """
+    roots = {str(Path(path).resolve()) + os.sep for path in root or ()}
+    exact = {os.fspath(path) for path in targets or ()}
+    if not roots and not exact:
+        raise AssertionError("the lstat fake requires a target root or path")
+
     def lstat(path, *args, **kwargs):
-        if args or kwargs:
+        candidate = os.fspath(path)
+        in_scope = (
+            not roots and not exact
+            or candidate in exact
+            or any(os.path.abspath(candidate).startswith(prefix) for prefix in roots)
+        )
+        if args or kwargs or not in_scope:
             return _REAL_LSTAT(path, *args, **kwargs)
         return answer(path)
 
     monkeypatch.setattr(service_doctor.os, "lstat", lstat)
 
 
-def _owned_by(monkeypatch, uid, gid=None):
+def _owned_by(monkeypatch, uid, gid=None, *, root=None, targets=None):
     """Report the real node with another owner (the fake root belongs to the test user)."""
     def answer(path):
         info = _REAL_LSTAT(path)
         return SimpleNamespace(st_mode=info.st_mode, st_uid=uid, st_gid=info.st_gid if gid is None else gid)
 
-    _patch_lstat(monkeypatch, answer)
+    _patch_lstat(monkeypatch, answer, root=root, targets=targets)
 
 
-def _lstat_raises(monkeypatch, exc):
+def _lstat_raises(monkeypatch, exc, *, root=None, targets=None):
     def answer(_path):
         raise exc
 
-    _patch_lstat(monkeypatch, answer)
+    _patch_lstat(monkeypatch, answer, root=root, targets=targets)
 
 
 def _broken_config(root):
@@ -366,7 +377,8 @@ def test_systemctl_helper_reports_exit_status_and_failures(monkeypatch):
 def test_expected_socket_problem_checks_type_owner_group_and_mode(monkeypatch, tmp_path):
     _groups(monkeypatch, {"control": 10})
     details = SimpleNamespace(st_mode=stat.S_IFSOCK | 0o660, st_uid=0, st_gid=10)
-    _patch_lstat(monkeypatch, lambda _path: details)
+    targets = {str(tmp_path / "s"), "s", "absent"}
+    _patch_lstat(monkeypatch, lambda _path: details, targets=targets)
     assert service_doctor._expected_socket_problem(str(tmp_path / "s"), "control", "0660") is None
     details.st_mode = stat.S_IFREG | 0o660
     assert "not a socket" in service_doctor._expected_socket_problem("s", "control", "0660")
@@ -377,9 +389,9 @@ def test_expected_socket_problem_checks_type_owner_group_and_mode(monkeypatch, t
     assert "expected root:control 0660" in service_doctor._expected_socket_problem("s", "control", "0660")
     _groups(monkeypatch, {})
     assert "does not exist" in service_doctor._expected_socket_problem("s", "missing", "0660")
-    _lstat_raises(monkeypatch, FileNotFoundError())
+    _lstat_raises(monkeypatch, FileNotFoundError(), targets=targets)
     assert "FileNotFoundError" in service_doctor._expected_socket_problem("absent", "control", "0660")
-    _lstat_raises(monkeypatch, PermissionError("denied"))
+    _lstat_raises(monkeypatch, PermissionError("denied"), targets=targets)
     with pytest.raises(PermissionError):
         service_doctor._expected_socket_problem("s", "control", "0660")
 
@@ -409,7 +421,7 @@ def test_socket_nodes_check_uses_configured_mode_and_group(monkeypatch, tmp_path
                 return SimpleNamespace(st_mode=_REAL_LSTAT(path).st_mode, st_uid=0, st_gid=7102)
             return _REAL_LSTAT(path)
 
-        _patch_lstat(monkeypatch, answer)
+        _patch_lstat(monkeypatch, answer, root=(tmp_path,))
         assert service_doctor._check_socket_nodes(_runtime(), _args(tmp_path)).status == "ok"
         os.chmod(nodes["observer"], 0o600)
         result = service_doctor._check_socket_nodes(_runtime(), _args(tmp_path))
@@ -422,7 +434,7 @@ def test_socket_nodes_check_uses_configured_mode_and_group(monkeypatch, tmp_path
 
 def test_socket_nodes_check_permission_handling(monkeypatch, tmp_path):
     _config_file(tmp_path)
-    _lstat_raises(monkeypatch, PermissionError(13, "denied"))
+    _lstat_raises(monkeypatch, PermissionError(13, "denied"), root=(tmp_path,))
     _as(monkeypatch, 1000)
     assert service_doctor._check_socket_nodes(_runtime(), _args(tmp_path)).status == "skip"
     _as(monkeypatch, 0)
@@ -440,7 +452,7 @@ def test_socket_dirs_check_requires_root_owned_nonwritable_directories(monkeypat
     paths = _paths(tmp_path)
     for directory in (paths.runtime_root, paths.control_dir, paths.observer_dir):
         _make_dir(directory, 0o755)
-    _owned_by(monkeypatch, 0, 0)
+    _owned_by(monkeypatch, 0, 0, root=(tmp_path,))
     assert service_doctor._check_socket_dirs(_runtime(), _args(tmp_path)).status == "ok"
     # 0750 is stricter than the layout and still fine: the check forbids group/other WRITE
     os.chmod(paths.observer_dir, 0o750)
@@ -449,13 +461,13 @@ def test_socket_dirs_check_requires_root_owned_nonwritable_directories(monkeypat
     result = service_doctor._check_socket_dirs(_runtime(), _args(tmp_path))
     assert result.status == "fail" and "not group/other writable" in result.summary and result.remedy
     os.chmod(paths.control_dir, 0o755)
-    _owned_by(monkeypatch, 5, 0)
+    _owned_by(monkeypatch, 5, 0, root=(tmp_path,))
     assert service_doctor._check_socket_dirs(_runtime(), _args(tmp_path)).status == "fail"
-    _owned_by(monkeypatch, 0, 0)
+    _owned_by(monkeypatch, 0, 0, root=(tmp_path,))
     Path(paths.observer_dir).rmdir()
     missing = service_doctor._check_socket_dirs(_runtime(), _args(tmp_path))
     assert missing.status == "fail" and "No such file" in missing.summary
-    _lstat_raises(monkeypatch, PermissionError(13, "denied"))
+    _lstat_raises(monkeypatch, PermissionError(13, "denied"), root=(tmp_path,))
     _as(monkeypatch, 1000)
     assert service_doctor._check_socket_dirs(_runtime(), _args(tmp_path)).status == "skip"
 
@@ -465,13 +477,13 @@ def test_state_dir_check_passes_fails_and_skips_permission_denial(monkeypatch, t
     missing = service_doctor._check_state_dir(_runtime(), _args(tmp_path))
     assert missing.status == "fail" and missing.remedy and "No such file" in missing.summary
     _make_dir(paths.state_dir, 0o700)
-    _owned_by(monkeypatch, 0, 0)
+    _owned_by(monkeypatch, 0, 0, root=(tmp_path,))
     assert service_doctor._check_state_dir(_runtime(), _args(tmp_path)).status == "ok"
     os.chmod(paths.state_dir, 0o755)
     result = service_doctor._check_state_dir(_runtime(), _args(tmp_path))
     assert result.status == "fail" and "0755" in result.summary
     _as(monkeypatch, 1000)
-    _lstat_raises(monkeypatch, PermissionError("denied"))
+    _lstat_raises(monkeypatch, PermissionError("denied"), root=(tmp_path,))
     skipped = service_doctor._check_state_dir(_runtime(), _args(tmp_path))
     assert skipped.status == "skip" and "run as root" in skipped.summary
 

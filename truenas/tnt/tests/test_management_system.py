@@ -1,10 +1,12 @@
 import json
+import os
 import threading
 import stat
 import tarfile
 import io
 import ssl
 import urllib.error
+from pathlib import Path
 
 import pytest
 from textual.widgets import Button, Checkbox, Input, Select, Static, TextArea, Tree
@@ -1742,7 +1744,22 @@ def test_config_export_download_closes_and_cleans_when_write_fails(monkeypatch, 
 
     target = tmp_path / "short-write.tar"
     _install_download_opener(monkeypatch, _DownloadResponse(_config_tar()))
-    monkeypatch.setattr(config_export.os, "write", lambda _fd, _view: 0)
+    real_write = config_export.os.write
+    target_path = str(target.resolve())
+
+    def target_path_for(fd):
+        try:
+            return os.path.realpath(os.readlink(f"/proc/self/fd/{fd}"))
+        except OSError:
+            return None
+
+    monkeypatch.setattr(
+        config_export.os,
+        "write",
+        lambda fd, view: 0
+        if target_path_for(fd) == target_path
+        else real_write(fd, view),
+    )
     with pytest.raises(Refused, match="OSError"):
         config_export.download_config_export(server.profile(), False, 46,
                                              "/_download/46?auth_token=x", str(target))
@@ -1755,7 +1772,13 @@ def test_config_export_refuses_local_open_errors(monkeypatch, server, tmp_path):
     monkeypatch.delattr(config_export.os, "O_NOFOLLOW")
     target = tmp_path / "open-failure.tar"
     for failure, expected in ((FileExistsError(), "overwrite"), (OSError(13, "permission denied"), "cannot create")):
-        monkeypatch.setattr(config_export.os, "open", lambda *_args, _failure=failure, **_kwargs: (_ for _ in ()).throw(_failure))
+        real_open = config_export.os.open
+        monkeypatch.setattr(
+            config_export.os,
+            "open",
+            lambda path, *args, _failure=failure, **kwargs: (_ for _ in ()).throw(_failure)
+            if Path(path) == target else real_open(path, *args, **kwargs),
+        )
         with pytest.raises(Refused, match=expected):
             config_export.download_config_export(server.profile(), False, 47,
                                                  "/_download/47?auth_token=x", str(target))

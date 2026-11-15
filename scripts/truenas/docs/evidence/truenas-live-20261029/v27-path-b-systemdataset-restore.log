@@ -1,0 +1,5 @@
+BEFORE={"id": 1, "pool": "boot-disk-data", "pool_set": true, "uuid": "ae32c386e13840b2bf9c0083275e7941", "basename": "boot-disk-data/.system", "path": "/var/db/system"}
+{"id": 1, "pool": "boot-pool", "uuid": "ae32c386e13840b2bf9c0083275e7941", "pool_set": true, "basename": "boot-pool/.system", "path": "/var/db/system"}
+AFTER={"id": 1, "pool": "boot-pool", "pool_set": true, "uuid": "ae32c386e13840b2bf9c0083275e7941", "basename": "boot-pool/.system", "path": "/var/db/system"}
+BOOT_POOL_ONLINE
+SYSTEMDATASET_RESTORE_EXIT=0

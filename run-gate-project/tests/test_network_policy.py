@@ -294,8 +294,9 @@ def test_rg256_network_contract_stays_synchronized_in_user_docs() -> None:
                                  "Admission and observer",
                                  "probes keep their own network behavior",
                                  "Unix socket mounted into the lane"),
-        "CHANGES.md": ("[Unreleased]", 'network = "none"',
-                       'network = "default"'),
+        # CMRU folds [Unreleased] into the newest dated section at release
+        # preparation, so keep the changelog contract check section-agnostic.
+        "CHANGES.md": ('network = "none"', 'network = "default"'),
     }
     for relative, required in docs.items():
         text = (RUN_GATE_DIR / relative).read_text(encoding="utf-8")

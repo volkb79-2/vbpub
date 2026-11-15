@@ -1,9 +1,11 @@
+<!-- Evidence scrub 2026-11-10: environment-specific host identities, host addresses, controller paths, SSH key material and fingerprints were normalized to neutral placeholders; command output and verdict text are otherwise unchanged. -->
+<!-- Evidence scrub 2026-11-10: environment-specific home, checkout, worktree, and per-run temporary paths were normalized to neutral placeholders; command output and verdict text are otherwise unchanged. -->
 # PWMCP — known issues, TODO, and backlog
 
 This file records consumer-facing product gaps for later triage. Normative
 behavior remains in the product specification and consumer documentation.
 
-Last updated: 2026-11-11 (PWMCP-59: the configured R2 mutation cap is below the current pwmcp candidate inventory and blocked the exact release tag).
+Last updated: 2026-11-14 (PWMCP-63..69 implemented in their respective branches, unreleased; PWMCP-70 documents R9 equivalent survivors; PWMCP-71 tracks the release-scoped R2 recipe; PWMCP-62's separate R2 follow-up remains open).
 
 ## PWMCP-01 — Provide a rendered-page inspection command
 
@@ -162,7 +164,7 @@ this lifecycle case.
 Found 2026-10-20 by `BUILD_NO_CACHE=1 cmru build mdt-cockpit`; independently reviewed, and the
 review's conclusions (contract, keystone scope, unblock preconditions) are inlined below.
 
-**Evidence.** Stage-2 step 39/55 (`python3 /tmp/install_pwmcp_instance.py`) fails:
+**Evidence.** Stage-2 step 39/55 (`python3 <temp-path>`) fails:
 `==> Pinned version: pwmcp-v1.64.0-r2` / `==> Downloading pwmcp-v1.64.0-r2.tar.xz ...` /
 `err Download of pwmcp-v1.64.0-r2.tar.xz failed (HTTP 404).` (log: the build worktree's
 `mdt-cockpit/logs/cmru/build.log`, search `#51 `). Release `pwmcp-v1.64.0-r2` (2026-10-17T19:16:20Z)
@@ -279,7 +281,7 @@ does not mistake it for page content; the `pwmcp-fetch` skill documents the outc
 
 **Status: MESSAGES FIXED 2026-11-04 (6be337905): the `pwmcp-fetch` skill and `docs/CONSUMERS.md` say fetches must be serialised and the `--isolated` hint must not be followed. The error text itself is emitted by the upstream Playwright MCP and cannot be changed here. Concurrent sessions remain OPEN (per-session contexts) (filed 2026-10-27).** Running four `browser_navigate` clients in parallel against
 `http://pwmcp:8931/mcp` made all but one fail with: `Browser is already in use for
-/tmp/.cache/ms-playwright-mcp/mcp-chrome-for-testing-8a5edab, use --isolated to run multiple instances of the
+<temp-path>/ms-playwright-mcp/mcp-chrome-for-testing-8a5edab, use --isolated to run multiple instances of the
 same browser`. Sequential use works. `containers/pwmcp/supervisord.shared.conf:27,114` records that `--isolated`
 broke the shared-browser mode on 2026-07-13, so the fix is not "add the flag". **Acceptance.** Either concurrent
 sessions are served (per-session contexts on the one browser) or the `pwmcp-fetch` skill and the error text say
@@ -376,7 +378,7 @@ branch, to be merged after this one):
 - (b) `_capture_element` captures at CSS size, which RESAMPLES the exact 8x16 px cell grid. Phase 2 must capture
   the canvas's intrinsic bitmap (and verify the size), not a displayed-size screenshot.
 - (c) Tesseract reads light-on-black console text at 92-100% but FAILS black-on-grey installer dialogs (needs
-  colour-aware preprocessing: invert/threshold) and mis-reads digits (`10.0.2.15` -> `16.0.2.15`, `9)` -> `3)`).
+  colour-aware preprocessing: invert/threshold) and mis-reads digits (`<host-address>` -> `192.0.2.15`, `9)` -> `3)`).
   Exact values need glyph matching: the console is an exact 8x16 px cell grid.
 - (d) Confidence is NOT calibrated: a garbled dialog read at 91% mean confidence. `low_conf` is a hint; an
   unflagged word is not verified; without `min_conf` the flags are null. Keystrokes need an EXACT match of a
@@ -435,7 +437,7 @@ image rebuild and the `test` extra in `client/pyproject.toml` (not touched on th
 
 ## PWMCP-12 — the session cleanliness guard makes Git a prerequisite for the whole test suite
 
-**Status: FIXED 2026-11-04 (48838ede3).** Guard in `pwmcp/conftest.py`: missing git / non-worktree / `safe.directory` each give one `UsageError` before the suite, `--no-optional-locks`, 60 s timeout, explicit warned opt-out `PWMCP_ALLOW_NO_GIT_GUARD=1`; oracle `tests/test_git_guard.py`. (Original: Severity P2.) Filed 2026-10-30 from `reviews/pwmcp2.out`.
+**Status: FIXED 2026-11-04 (48838ede3).** Guard in `pwmcp/conftest.py`: missing git / non-worktree / `safe.directory` each give one `UsageError` before the suite, `--no-optional-locks`, 60 s timeout, explicit warned opt-out `PWMCP_ALLOW_NO_GIT_GUARD=1`; oracle `tests/test_git_guard.py`. (Original: Severity P2.) Filed 2026-10-30 from `pwmcp/docs/reports/pwmcp2-review-2026-10-30.md`.
 
 **Observed.** The autouse session fixture in `pwmcp/conftest.py:17-30,33-38`
 invokes `git status` before and after every test session. If Git is absent, the
@@ -453,7 +455,7 @@ identity setup in sync.
 
 ## PWMCP-13 — the Git-visible cleanliness guard misses ignored and exit-time writes
 
-**Status: FIXED 2026-11-04 (48838ede3), narrower contract chosen.** The module docstring of `pwmcp/conftest.py` now states that ignored paths and exit-time writers (coverage) are out of scope; the guard certifies no new Git-visible entries under `pwmcp/`. (Original: Severity P2.) Filed 2026-10-30 from `reviews/pwmcp2.out`.
+**Status: FIXED 2026-11-04 (48838ede3), narrower contract chosen.** The module docstring of `pwmcp/conftest.py` now states that ignored paths and exit-time writers (coverage) are out of scope; the guard certifies no new Git-visible entries under `pwmcp/`. (Original: Severity P2.) Filed 2026-10-30 from `pwmcp/docs/reports/pwmcp2-review-2026-10-30.md`.
 
 **Observed.** `pwmcp/conftest.py:23-29,35-42` compares `git status
 --untracked-files=all`, which omits ignored paths such as `.pytest_cache/`,
@@ -469,7 +471,7 @@ runs after coverage and other interpreter-exit writers complete.
 
 ## PWMCP-14 — repository-wide status can blame PWMCP for another subtree's writes
 
-**Status: FIXED 2026-11-04 (48838ede3).** `git status ... -- .` from `pwmcp/`; oracle `test_write_outside_pwmcp_is_not_blamed`. (Original: Severity P2.) Filed 2026-10-30 from `reviews/pwmcp2.out`.
+**Status: FIXED 2026-11-04 (48838ede3).** `git status ... -- .` from `pwmcp/`; oracle `test_write_outside_pwmcp_is_not_blamed`. (Original: Severity P2.) Filed 2026-10-30 from `pwmcp/docs/reports/pwmcp2-review-2026-10-30.md`.
 
 **Observed.** `pwmcp/conftest.py:23-29` runs `git status` from the PWMCP
 directory but supplies no pathspec, so Git reports changes anywhere in the
@@ -481,7 +483,7 @@ the assertion's scope and wording aligned.
 
 ## PWMCP-15 — the session guard can report xdist workers' temporary writes as failures
 
-**Status: FIXED 2026-11-04 (48838ede3).** The comparison runs in `pytest_sessionstart`/`pytest_sessionfinish` of the xdist controller only (workers return early); oracle `test_xdist_workers_do_not_trip_the_guard` runs `-n 2` with transient writes. (Original: Severity P3.) Filed 2026-10-30 from `reviews/pwmcp2.out`.
+**Status: FIXED 2026-11-04 (48838ede3).** The comparison runs in `pytest_sessionstart`/`pytest_sessionfinish` of the xdist controller only (workers return early); oracle `test_xdist_workers_do_not_trip_the_guard` runs `-n 2` with transient writes. (Original: Severity P3.) Filed 2026-10-30 from `pwmcp/docs/reports/pwmcp2-review-2026-10-30.md`.
 
 **Observed.** The current suite does not enable pytest-xdist, but the session
 fixture in `pwmcp/conftest.py:33-43` takes independent before/after snapshots
@@ -495,7 +497,7 @@ overlap and misattribute a write.
 
 ## PWMCP-16 — the session guard walks and prints more repository state than needed
 
-**Status: FIXED 2026-11-04 (48838ede3).** Pathspec-limited status with `--no-optional-locks`; failure report lists at most 20 added and 20 removed entries plus "... and N more" (oracle `test_new_file_under_pwmcp_fails_with_bounded_report`). (Original: Severity P3.) Filed 2026-10-30 from `reviews/pwmcp2.out`.
+**Status: FIXED 2026-11-04 (48838ede3).** Pathspec-limited status with `--no-optional-locks`; failure report lists at most 20 added and 20 removed entries plus "... and N more" (oracle `test_new_file_under_pwmcp_fails_with_bounded_report`). (Original: Severity P3.) Filed 2026-10-30 from `pwmcp/docs/reports/pwmcp2-review-2026-10-30.md`.
 
 **Observed.** `pwmcp/conftest.py:23-29,39-43` walks the whole monorepo twice
 per session, including nested pytest sessions, and prints complete before and
@@ -508,7 +510,7 @@ omitted paths.
 
 ## PWMCP-17 — the new top-level test is separated from the next statement by one blank line
 
-**Status: STALE 2026-11-04 (48838ede3).** `flake8` 7.3.0 no longer reports E305 for `tests/test_ocr_service.py` (two blank lines precede the `try:` block); it did report an unused `import shutil` (F401), removed in that commit. (Original: Severity P3.) Filed 2026-10-30 from `reviews/pwmcp2.out`.
+**Status: STALE 2026-11-04 (48838ede3).** `flake8` 7.3.0 no longer reports E305 for `tests/test_ocr_service.py` (two blank lines precede the `try:` block); it did report an unused `import shutil` (F401), removed in that commit. (Original: Severity P3.) Filed 2026-10-30 from `pwmcp/docs/reports/pwmcp2-review-2026-10-30.md`.
 
 **Observed.** `pwmcp/tests/test_ocr_service.py:51-58` has one blank line
 between the top-level test function and the following top-level `try:` block,
@@ -558,12 +560,12 @@ declared `jobs` above 1 (or `"auto"`) in `assay.toml`, which is a pwmcp decision
 **Close by:** resume the r2 campaign on the btrfs runner with the supported lane and parallelism, account for all candidates, triage the five pending
 rows and remaining survivors, then record the final verdict and any accepted survivors here or in the linked R2 report.
 
+**v1.64.1 follow-up (2026-11-12).** The v1.64.1 R2 campaign completed collection and analysis but retained 29 survivors in follow-up packages 1 and 4: 23 in hidden-content CSS parsing/details pruning and 6 in MCP response limits, redirect refusal, constructor validation, and timeout classification. Their test-only follow-up and per-mutant scratch proofs are tracked in PWMCP-62; this does not close the separate v1.64.1 campaign findings.
+
 ## PWMCP-21 — corpus tooling should consume the per-project VM layout
 
-**Status:** PARTLY FIXED 2026-11-04 (6be337905): `eval_glyphgrid.py` defaults derive from the script location and the docs name `pwmcp/artifacts/console-corpus` as the place to point `PWMCP_CONSOLE_CORPUS_DIR` at (unset still raises `CorpusMissing`). Still open: `console_corpus.py run --out`/verifier defaults (explicit paths) (filed 2026-11-03). The console-capture launcher now defaults to
-`pwmcp/artifacts/vm-lab/<vm-name>/` and resolves bare ISO names in the repo `downloads/` directory (root `AGENTS.md`,
-"VM files and downloads"). The corpus side does not yet follow: capture output (`console_capture.py run --out`) and the
-verifier still take explicit paths, and `tools/glyphgrid/eval_glyphgrid.py` hardcodes `DEFAULT_SERIES` under a home directory.
+**Status:** PARTLY FIXED 2026-11-04 (6be337905): `eval_glyphgrid.py` defaults derive from the script location and the docs name `pwmcp/artifacts/console-corpus` as the place to point `PWMCP_CONSOLE_CORPUS_DIR` at (unset still raises `CorpusMissing`). Still open: `console_corpus.py run --out`/verifier defaults (explicit paths) (filed 2026-11-03). Console recording moved to the VM tool: its `console record --out` and `--state-dir` both take explicit paths, and `--readonly-media` takes an explicit ISO path. The corpus side
+does not yet follow: capture output and the verifier still take explicit paths, and `tools/glyphgrid/eval_glyphgrid.py` hardcodes `DEFAULT_SERIES` under a home directory.
 
 **Proposed fix.** Keep captured frames in `pwmcp/artifacts/console-corpus/` (`frames/`, `manifest.jsonl`), derived from the script
 location, and make that the documented place to point `PWMCP_CONSOLE_CORPUS_DIR` at. Do not turn it into an implicit default:
@@ -586,7 +588,7 @@ TrueNAS/Netcup scripts; three ideas from it are not on main.
 
 **Source.** Commits `c827746d9`, `7c5b35beb`, `19a78ceb2` (modules `pwmcp_client/{canvas,login,terminal}.py`, tests, CLI-SPEC/USAGE/surface
 entries). The branch was deleted; the commits are preserved as a git bundle at
-`/workspaces/vbpub/artifacts/worktree-archive-20261104/worktree-agent-ae5983017bc3b1d7e.bundle` (gitignored, local; `git fetch <bundle> <ref>`).
+`<checkout>/artifacts/worktree-archive-20261104/worktree-agent-ae5983017bc3b1d7e.bundle` (gitignored, local; `git fetch <bundle> <ref>`).
 
 **Close by:** decide against the PWMCP-11 phase 2 watcher design whether the in-page bitmap read and the xterm reader belong in the watcher or as
 standalone verbs, then port the wanted pieces from the bundle onto current main (the CLI surface files conflict) or drop them with a reason here.
@@ -616,7 +618,7 @@ fail-closed shim (mdt-cockpit MDT-056); on the host the shim may even remap `BUI
 
 **Dependencies and order.** Package 5 of MDT-056, after TB-14 and the cmru `build_contexts` option (KI-113).
 
-<!-- Id note (2026-11-04): PWMCP-24..30 file the lazy/flaky-page findings (`reports/PWMCP-LAZY-PAGE-FINDINGS-2026-11-04.md` in the release-program directory, ChatGPT share test case: staged hydration, first-party assets answered 403, silent partial results). PWMCP-22 exists only on branch finish-pwmcp-1-20261104 and PWMCP-23 above is on main; check both before taking the next id. -->
+<!-- Id note (2026-11-04): PWMCP-24..30 file the lazy/flaky-page findings ([PWMCP-LAZY-PAGE-FINDINGS-2026-11-04.md](docs/evidence/PWMCP-LAZY-PAGE-FINDINGS-2026-11-04.md), ChatGPT share test case: staged hydration, first-party assets answered 403, silent partial results). PWMCP-22 exists only on branch finish-pwmcp-1-20261104 and PWMCP-23 above is on main; check both before taking the next id. -->
 
 ## PWMCP-24 — `inspect --retries N` with a stable-DOM check (finding PW-A, F1/F8)
 
@@ -701,15 +703,15 @@ fail-closed shim (mdt-cockpit MDT-056); on the host the shim may even remap `BUI
 
 ## PWMCP-40 — PWMCP-33 was incomplete: the killed `git status` wrapper's children were still adopted (as zombies) by the gate's subreaper (R2 baseline `leaked-process-tree`, round 2)
 
-**Status:** FIXED 2026-11-05 on branch `pwmcp-leak2-20261105` (not released). Severity: P1 (same R0 baseline failure as PWMCP-33, reproduced at `pwmcp-v1.64.1-r3` on r1002 twice: 1258 passed, 4 skipped, then `ERROR/EXEC_FAILED`).
+**Status:** FIXED 2026-11-05 on branch `pwmcp-leak2-20261105` (not released). Severity: P1 (same R0 baseline failure as PWMCP-33, reproduced at `pwmcp-v1.64.1-r3` on <host> twice: 1258 passed, 4 skipped, then `ERROR/EXEC_FAILED`).
 
-**Root cause.** PWMCP-33 killed the whole process group, but a SIGKILLed wrapper and its `sleep` die together, so the `sleep` is re-parented to the nearest child subreaper: assay's process-tree window, one level above pytest. Nobody reaps it before the window closes, and assay counts every adopted process, dead or alive, in `outliving_descendants`. Evidence (assay B233 diagnostics, lane `r2` in `tester-unified:r25-d38b3324fba5` on r1002): `command_finished.leaked_descendants` = four `comm=sleep`, `ppid` = assay, empty cmdline (zombies), one per sleeping wrapper in `tests/test_git_guard.py`. The same four appear when only that file runs under a `ProcessTreeProcessRunner` (`sleep`, `sleep`, `slow-git`, `sleep`). A plain `docker run --init` hides it because init reaps silently.
+**Root cause.** PWMCP-33 killed the whole process group, but a SIGKILLed wrapper and its `sleep` die together, so the `sleep` is re-parented to the nearest child subreaper: assay's process-tree window, one level above pytest. Nobody reaps it before the window closes, and assay counts every adopted process, dead or alive, in `outliving_descendants`. Evidence (assay B233 diagnostics, lane `r2` in `tester-unified:r25-d38b3324fba5` on <host>): `command_finished.leaked_descendants` = four `comm=sleep`, `ppid` = assay, empty cmdline (zombies), one per sleeping wrapper in `tests/test_git_guard.py`. The same four appear when only that file runs under a `ProcessTreeProcessRunner` (`sleep`, `sleep`, `slow-git`, `sleep`). A plain `docker run --init` hides it because init reaps silently.
 
 **Fix.** `snapshot()` makes the pytest process a child subreaper for the duration of the query (restored afterwards; no-op off Linux), so orphans are adopted here, and reaps the adopted members of the git process group (`reap_process_group`). The setsid escapee test now reaps its escapee. The check in assay is unchanged. Regression: `test_snapshot_timeout_leaves_no_orphan_for_the_gates_subreaper` (fails on the PWMCP-33 conftest with a zombie `sleep`, passes now), which plays the gate's subreaper itself.
 
 ## PWMCP-41 — close the R2 survivor and OOM-crash findings from pwmcp-v1.64.1-r4
 
-**Status: FIXED 2026-11-07 on branch `pwmcp-surv3-20261106` (not released).** R2 reported 29 survivors and three OOM crashes across 493 candidates. The closeout adds mutation-sensitive boundary and logging tests, and corrects the rejected-body reader fake so it honors `read1(size)` including `read1(0)`; an eight-read cap makes a non-progressing drain fail clearly. The OOM was caused by that fake returning a byte for a zero-byte read while the `or`→`and` mutant repeatedly retried it; it was not evidence that the service's configured memory envelope was too small. No lane or host memory limit changed. The hostless invalid-port origin `https://:99999` is now covered: it must be ignored without raising. Four survivors are equivalent under supported inputs and remain explicitly waived; 25 now have test evidence, including the `cli.py:369` mutant killed by the exact-`None` assertions. The three formerly crashed candidates are covered by clean test failures. The first final R1 run also exposed a load-sensitive timeout test that gave both the forced timeout and the follow-up success the same 0.4-second subprocess deadline; it now injects timeout then success deterministically, with no wall-clock dependency. A full R2 rerun was not performed; expected closeout classification is 489 killed, 4 equivalent, and 0 crashed. Per-candidate decisions and hand-mutant results: `/home/vscode/vbpub-release-program-20261027/reports/pwmcp-surv3-REPORT.md`.
+**Status: FIXED 2026-11-07 on branch `pwmcp-surv3-20261106` (not released).** R2 reported 29 survivors and three OOM crashes across 493 candidates. The closeout adds mutation-sensitive boundary and logging tests, and corrects the rejected-body reader fake so it honors `read1(size)` including `read1(0)`; an eight-read cap makes a non-progressing drain fail clearly. The OOM was caused by that fake returning a byte for a zero-byte read while the `or`→`and` mutant repeatedly retried it; it was not evidence that the service's configured memory envelope was too small. No lane or host memory limit changed. The hostless invalid-port origin `https://:99999` is now covered: it must be ignored without raising. Four survivors are equivalent under supported inputs and remain explicitly waived; 25 now have test evidence, including the `cli.py:369` mutant killed by the exact-`None` assertions. The three formerly crashed candidates are covered by clean test failures. The first final R1 run also exposed a load-sensitive timeout test that gave both the forced timeout and the follow-up success the same 0.4-second subprocess deadline; it now injects timeout then success deterministically, with no wall-clock dependency. A full R2 rerun was not performed; expected closeout classification is 489 killed, 4 equivalent, and 0 crashed. Per-candidate decisions and hand-mutant results: [pwmcp-surv3-REPORT.md](docs/evidence/pwmcp-surv3-REPORT.md).
 
 ## PWMCP-42 — browser crashes were misclassified and the CLI lacked page evaluation and HTML output
 
@@ -755,7 +757,11 @@ with `hidden` (including `hidden="until-found"`), `aria-hidden="true"`, inline
 `display:none`/`visibility:hidden`, or `<input type="hidden">`. Inline CSS is
 parsed declaration by declaration: comments are removed, property names are
 case-insensitive, `!important` takes priority, and the last declaration at
-the winning priority applies. Malformed inline styles fail open as visible.
+the winning priority applies. PWMCP-63 makes malformed inline CSS fail closed
+when a recovered declaration or best-effort tokenization contains the existing
+`display:none` or `visibility:hidden` marker; malformed CSS without either
+signal stays visible. See README, DESIGN-GUIDE, and CONSUMERS for the full
+policy.
 Closed `<details>` retains its first `<summary>` and prunes its body (counted as
 one removed body region); `<details open>` retains its body. For a selected node,
 the CLI serializes its `outerHTML` and checks its ancestor chain for those static
@@ -790,8 +796,8 @@ seen in serialized HTML. Marking such nodes needs a live-page evaluation
 (`getComputedStyle` over the subtree, then a data attribute) before
 serialization, which would add a browser-dependent step to a
 fixture-testable renderer. This remains open in README/DESIGN-GUIDE/CONSUMERS
-until there is a consumer case. Malformed inline style is also treated as
-visible by design.
+until there is a consumer case. Malformed inline style handling is resolved by
+PWMCP-63; malformed styles without an existing hiding signal remain visible.
 
 Original report: the affected formats omitted nothing the browser hid, so a
 prompt-injection payload rendered invisible to a human still reached the agent
@@ -877,18 +883,189 @@ covered by a CLI review case.
 
 **Acceptance test idea.** A docs-sync check can assert the comparison trigger list and the stealth non-goal are present as a closed set; a future adoption proposal is incomplete unless it cites evidence for every trigger and names an isolated, non-stealth evaluation path.
 
-## PWMCP-59 — `r2` has `max_mutants = 1000` while the current selected candidate inventory is 1165
+## PWMCP-60 — tests must scope process-wide `os.*` syscall fakes
 
-**Status:** OPEN (filed 2026-11-11); priority major (the exact release tag cannot complete an unmodified R2 campaign); source: host-campaign controller session record 2026-11-11.
+**Status:** OPEN (filed 2026-11-12); the observed PWMCP hazard is fixed in the
+pytest 9.2 audit branch. Pytest 9.2 calls `os.fstat` during capture and
+teardown. The storage-state test now scopes `fdopen`, `open`, and its
+descriptor spy to the JSON file under test and delegates every unrelated call
+to the saved real function.
 
-**Problem.** `pwmcp/assay.toml` declares `max_mutants = 1000`, but the selected mutation inventory for `pwmcp-v1.64.1-r7` is 1165. Assay correctly refuses over-cap discovery before executing a partial sample, so every unmodified R2 campaign ends `BUDGET_EXCEEDED/MUTANT_LIMIT_EXCEEDED` with exit 4 after paying for the baseline. The cap therefore makes the release lane unusable rather than bounding an unexpectedly large run, and there is no documented rule for choosing the next cap from candidate inventory and expected runtime.
+**Contract.** A process-wide `os.*` patch must identify the fd/path under test
+and delegate every other call to the real function. It must preserve the
+original read-failure, checked-descriptor, and no-secret-in-error oracles.
+Future `builtins.open` or `io.open` patches follow the same rule.
 
-**Evidence.** The host-campaign controller session record 2026-11-11 tested tag commit `520e9ae660dbd0462959fa5151a55d30af078339`; the exact tag reported `max_mutants = 1000`, real selected candidates 1165, `over_candidate_cap`, and verdict `BUDGET_EXCEEDED/MUTANT_LIMIT_EXCEEDED`, exit 4 after the 400 s baseline. The two temporary host-checkout commits `3d1249019` and `1a11be5bde6d2110c1336ad31e9cf4ed77346b87` changed only this cap. Repository `main` still has `pwmcp/assay.toml:106 max_mutants = 1000`. This is distinct from PWMCP-20, which tracks completion of the waived campaign; this item is the configuration defect that prevents it from starting.
+**Close when.** No non-delegating exact-symbol test patch remains in PWMCP's
+storage-state tests and the registered unit lane passes on a clean final
+commit.
 
-**Proposed minimal solution.** Raise `pwmcp/assay.toml`'s `max_mutants` above the measured inventory with explicit headroom: at least 1200, and choose the concrete value as `ceil(expected_selected_candidates * headroom_factor)` with a documented minimum 10% headroom and a declared upper bound checked against expected lane runtime. For the current 1165 candidate set, that rule requires a final value above 1281; do not lower the cap back to the former value unless a new measured inventory and budget justify it. Document the rule beside the lane: refresh the expected inventory from a bounded plan/selection result before raising or lowering the cap, preserve a full inventory rather than truncate, and review the cap alongside `budget`, `jobs`, and per-candidate cost. No host-local edit of the judged checkout is a supported remedy.
+## PWMCP-59 — `r2` has `max_mutants = 1000` while the latest planned inventory is 1293
+
+**Status:** OPEN (filed 2026-11-11; updated 2026-11-14); priority major (the exact release tag cannot complete an unmodified R2 campaign); source: host-campaign records 2026-11-11 and 2026-11-14.
+
+**Problem.** `pwmcp/assay.toml` declares `max_mutants = 1000`, below both the 1165 candidates measured for `pwmcp-v1.64.1-r7` and the 1293-candidate plan for `pwmcp-v1.64.1-r9`. Assay refuses over-cap discovery before executing a partial sample, so an unmodified R2 run against the latest inventory would report `BUDGET_EXCEEDED/MUTANT_LIMIT_EXCEEDED` with exit 4 after paying for the baseline. The cap therefore makes the release lane unusable rather than bounding an unexpectedly large run, and there is no documented rule for choosing the next cap from candidate inventory and expected runtime.
+
+**Evidence.** The 2026-11-11 host-campaign record tested the r7 tag with `max_mutants = 1000`, 1165 selected candidates, `over_candidate_cap`, and `BUDGET_EXCEEDED/MUTANT_LIMIT_EXCEEDED` after the 400-second baseline. The 2026-11-14 R9 plan reports 1293 total candidates; the main configuration is still `max_mutants = 1000`. The R9 campaign used a temporary campaign-checkout cap of 1400 to run its explicitly selected changed-line set; that does not change the main configuration or make a full-target campaign fit on main. This is distinct from PWMCP-20, which tracks completion of the waived campaign; this item is the configuration defect that prevents it from starting.
+
+**Proposed minimal solution.** Raise `pwmcp/assay.toml`'s `max_mutants` above the latest measured inventory with explicit headroom. Choose the value as `ceil(expected_selected_candidates * 1.10)` or higher, and check it against expected lane runtime before changing the cap. For 1293 candidates, the cap must be at least 1423; 1500 leaves practical room for ordinary inventory growth. Refresh the inventory before raising or lowering the cap, preserve a full inventory rather than truncate, and review the cap alongside `budget`, `jobs`, and per-candidate cost. No host-local edit of the judged checkout is a supported remedy.
 
 **Where.** `pwmcp/assay.toml` (`[lanes.r2]` / `judge.mutation.max_mutants`), with the cap-choice rule in PWMCP's lane-authoring or consumer documentation and a focused config/docs contract test.
 
-**Acceptance test idea.** A recorded 1165-candidate inventory and the chosen cap satisfy the headroom formula without an over-cap refusal; a test consumes a candidate inventory fixture and fails if the cap is at or below the inventory or below the declared 10% headroom. A control fixture with fewer candidates still passes, and a hand mutation restoring `1000` trips the oracle.
+**Acceptance test idea.** A recorded 1293-candidate inventory and the chosen cap satisfy the headroom formula without an over-cap refusal; a test consumes a candidate inventory fixture and fails if the cap is at or below the inventory or below the declared 10% headroom. A control fixture with fewer candidates still passes, and a hand mutation restoring `1000` trips the oracle.
 
-**Close when.** The repository cap is raised to at least 1200 with at least 10% measured headroom, the cap-choice rule and inventory-refresh obligation are documented, and an R2 plan/selection preflight (not a host-local `assay.toml` commit) proves the current campaign fits the cap on a clean final commit.
+**Close when.** The repository cap is raised to at least 1423 for the current 1293-candidate plan, the cap-choice rule and inventory-refresh obligation are documented, and an R2 plan/selection preflight (not a host-local `assay.toml` commit) proves the current campaign fits the cap on a clean final commit.
+
+## PWMCP-61 — the R2 lane lets memory-runaway mutants swap instead of dying
+
+**Status:** OPEN (filed 2026-11-12); priority should-fix; resource-only change
+under Assay B529. Source: 2026-11-12 host R2 restart record.
+
+**Problem.** `pwmcp/run-gate.toml:30-34` declares a 3 GiB lane memory limit but
+no `memory_swap`, so Docker leaves swap unbounded for the lane. Re-executing
+five previously crashed `client/src/pwmcp_client/cli.py` candidates around
+lines 853-876 drove the container to its 3 GiB anonymous-memory cap while
+continuing to use host swap. Three concurrent executions raised host memory
+PSI above the operator's 25% stop threshold for roughly ten minutes. One of
+the five candidates was killed, two crashed and two exceeded their per-candidate
+budget under the new judge in that earlier sample; the campaign itself did not
+prove a product defect.
+
+**Final R2 campaign disposition (2026-11-12).** The completed campaign ended
+`ERROR/EXEC_FAILED` with exit 2: planned 1165, completed 1164, pending 1;
+terminal buckets were 991 killed, 171 survived, 2 crashed and 1
+`budget_exceeded`. Five later re-execution records for previously crashed
+candidates ended with 2 crashed (853, 871), 2 killed (855, 876) and 1
+`budget_exceeded` (855). The supervisor stops on exit 2 without retry, so
+this campaign has no R2 PASS/FAIL claim. The error is execution evidence, not
+proof of a PWMCP product defect. Source:
+[`KSM evidence report`](../mdt-cockpit/docs/evidence/hosts-ksm-instances-REPORT-2026-11-12.md) sections 0.1 and 10.7.
+
+**Remaining disposition.** Decide whether the terminal crashed and
+`budget_exceeded` records need a deliberate bounded follow-up under the
+3 GiB memory-plus-swap limit, or remain an explicit error outcome. Do not
+convert `ERROR/EXEC_FAILED` into a product pass or fail.
+
+**Minimal solution.** Add `memory_swap = "3g"` to `[lanes.r2.resources]` so the
+combined memory-plus-swap ceiling equals the existing memory ceiling and a
+runaway mutant is OOM-killed instead of swapping. This is an execution-resource
+change only; finished records remain reusable under B529.
+
+**Where.** `pwmcp/run-gate.toml` (`[lanes.r2.resources]`) and the lane
+configuration/documentation test that pins its resource contract.
+
+**Acceptance test idea.** The parsed lane contract requires `memory_swap` equal
+to `memory`; a fake Docker argv shows the exact `--memory` and `--memory-swap`
+arguments; removing or weakening the swap ceiling makes the oracle fail. A
+judge-identity fixture proves the resource change does not invalidate killed or
+survived records.
+
+**Close when.** The R2 lane's combined memory-plus-swap cap is 3 GiB, the
+resource-only identity behavior is pinned, and a campaign containing the five
+known runaway candidates completes without sustained host memory PSI above
+the operator limit.
+
+## PWMCP-62 — pin v1.64.1 hidden-content and MCP transport R2 survivors
+
+**Status:** OPEN (test-only R2 follow-up; malformed-style policy implemented separately by PWMCP-63, unreleased). Severity: security-relevant for hidden-content filtering, response caps, and redirects; test gap for constructor and timeout boundaries. The v1.64.1 campaign report's follow-up packages 1 and 4 contain 29 survivors: 23 in `client/src/pwmcp_client/page_content.py` and 6 in `client/src/pwmcp_client/mcp_client.py`.
+
+**Observed and test scope.** Added behavioral cases for CSS comments inside hidden tokens; escaped quotes; semicolons and parentheses inside strings/functions; `!important` case, placement, and cascade order; closed `<details>` with and without a summary; response bodies exactly at the configured cap and one byte over; boolean/string response limits and the configured ceiling; HTTP 300 and 399 redirect refusal without following `Location`; and timeout classification from `URLError.reason` text. No production source change belongs in this test-only follow-up. Each non-equivalent survivor is matched to its campaign mutation, hand-mutated in a scratch copy, and shown killed by its named test; equivalent mutations are recorded with reasons.
+
+**Production issue found and resolved separately.** `_style_declarations` still rejects malformed input, but `_style_is_hidden` now recovers complete declarations and conservatively omits the element when an existing hiding marker is present in those declarations or a best-effort tokenized malformed fragment. PWMCP-63 updates README, DESIGN-GUIDE, and CONSUMERS with that policy. This test-only R2 follow-up remains separate and must not claim R2 evidence for the production fix.
+
+**Close when.** Each non-equivalent survivor has individual scratch-copy KILLED evidence and a test name in the report, equivalent mutations have reasons, and the registered R1 lane passes on the final committed head with its `run-gate.commit` matching that full head. PWMCP-63 resolves the separate malformed-style policy but does not close this R2 survivor follow-up.
+
+## PWMCP-63 — malformed inline CSS can expose browser-hidden content to extraction
+
+**Status: IMPLEMENTED (unreleased).** Severity: P2 security. The R2 follow-up request requires malformed or unbalanced inline styles to fail closed because extracted content is consumed by agents and can contain prompt-injection text hidden from a page reader.
+
+**Evidence.** `_style_declarations` returns `None` when comments, strings, or parentheses are unbalanced. Previously `_style_is_hidden` treated that `None` as visible, so `_prune_hidden` kept the element and its text. For example, `<p style='display:none;content:"unfinished'>hidden text</p>` had a valid hidden declaration before an unterminated string but extraction retained `hidden text`. Review round 2 also confirmed that CSS bad-string tokens end at unescaped LF, CR, or FF; a declaration after that newline can still hide the element. PWMCP-63 handles that resynchronization and updates README, DESIGN-GUIDE, and CONSUMERS.
+
+**Implemented policy.** Keep `_style_declarations` as the strict parser oracle. When it rejects a style, recover complete declarations independently and apply their existing cascade and `!important` precedence. Omit the element if a recovered winning declaration or a best-effort tokenized malformed fragment contains either existing inline hiding marker, `display:none` or `visibility:hidden`. Do not interpret markers inside strings or nested function contents as declarations; for an unclosed comment, check its remainder as a malformed fragment. Malformed styles without either existing hiding marker remain visible. This preserves well-formed behavior and avoids hiding the world on a stray malformed declaration.
+
+**Review fixes.** An unescaped LF, CR, or FF ends a CSS string as a malformed string token, so the recovery scanner resumes and can recognize following declarations. A backslash-escaped newline remains inside the string. The scanner advances a separate fragment cursor after each bad-string check, making repeated malformed fragments linear in the input length while preserving declaration boundaries. `_strip_css_comments` and `_split_css` still reject the bad string as a whole, preserving the strict parser oracle. CSS scanners also consume backslash escapes outside strings before checking comments, quotes, parentheses, or semicolons; see PWMCP-64 for the escaped-identifier coverage.
+
+**Files.** `client/src/pwmcp_client/page_content.py`, `client/tests/test_page_content.py`, `README.md`, `docs/DESIGN-GUIDE.md`, `docs/CONSUMERS.md`, `CHANGES.md`, and this backlog entry. The test also checks that all three user-facing documents retain the same policy.
+
+**Close when.** Regression tests prove malformed/unbalanced styles cannot expose text hidden by a valid declaration, including declarations after an unescaped string newline; repeated bad-string scanning has a deterministic linear-work bound; the unterminated-quote and unclosed-parenthesis fragment checks have killing tests; malformed fragments with an existing hiding marker are omitted, and malformed controls without a hiding signal remain visible; R1 coverage remains at the lane floor; and README, DESIGN-GUIDE, and CONSUMERS state the same policy.
+
+## PWMCP-64 — escaped CSS identifiers bypass hidden-content filtering
+
+**Status: IMPLEMENTED (unreleased).** Severity: P2 security. Escaped CSS identifiers name the same properties and values as their decoded forms, but the inline-style filter previously compared their source spelling literally.
+
+**Evidence.** Both the old source and PWMCP-63's first implementation extracted content from `<p style="d\69splay:none">hidden text</p>` and `<p style="display:\6e one">hidden text</p>`, despite browsers interpreting those as `display:none`. Escaped quotes and parentheses outside strings also hid later delimiters from the scanners; for example, `a:\(;display:none;b:\)` failed to hide on the earlier source. These affect well-formed styles too, so malformed-style recovery alone does not address them.
+
+**Fix.** Decode CSS escapes in property names and values before comparing the existing hidden markers and resolving a trailing `!important`. The decoder handles simple and hexadecimal escapes, consumes the optional whitespace after a hexadecimal escape, and replaces invalid code points as CSS requires. All three structural scanners consume a backslash and its next code point as one unit outside strings, so escaped quotes, parentheses, and semicolons do not change declaration boundaries. No new hiding properties were added. README, DESIGN-GUIDE, and CONSUMERS document the behavior.
+
+**Close when.** Behavioral tests prove escaped property names and `display`/`visibility` keyword values are filtered, escaped `!important` retains normal precedence, escaped structural punctuation does not suppress a later hiding declaration, quoted lookalikes stay visible, and the registered R1 lane passes on the final head.
+
+## PWMCP-65 — invalid inline display values can override hidden content
+
+**Status: IMPLEMENTED (unreleased).** Severity: P2 security. Inline-style filtering compared the last `display` or `visibility` value as text without checking whether it was valid for that CSS property. A browser ignores an invalid declaration, so `display:none;display:block invalid` and `visibility:hidden;visibility:visible invalid` leave the earlier hiding value in effect. PWMCP's earlier cascade replaced it with the invalid text and exposed the element's content.
+
+**Fix and policy.** Validate the static `display` grammar and the `visibility` values before admitting either declaration to the existing priority cascade. Invalid declarations are ignored, preserving the earlier valid winner. Static visible forms such as `block flow`, `inline flex`, `list-item`, and `inline-block` still override an earlier hide. Because serialized HTML cannot resolve a winning `var()`, `inherit`, `revert`, or `revert-layer` value, those declarations fail closed even when they may compute visibly. `display:initial`/`unset` and `visibility:initial` retain their visible semantics; `visibility:unset` fails closed because it inherits. This can omit text shown by the browser. README, DESIGN-GUIDE, and CONSUMERS document the trade-off.
+
+**Fix round 2.** Escape-produced CSS whitespace remains part of the decoded identifier during `display` and `visibility` validation, so it cannot become a keyword separator or be trimmed away. CSS comments are checked both after removal and as whitespace token boundaries; if either parse leaves a hiding declaration in force, extraction omits the element. The second interpretation is threaded through malformed-style recovery as well. These checks keep real-letter escapes such as `b\6c ock` valid and do not hide the reviewer’s 70 ordinary visible styles. The fail-closed `var()` policy remains: for example, `--d:none;display:var(--d)` is treated as hidden because the serialized style cannot resolve the computed value.
+
+**Test-first evidence.** Test-only commit `f6bceec53` failed in the registered R1 lane on the reviewed production code, first at `escaped-tab-suffix`; 17 escape-whitespace and comment-split extraction cases failed. The added cases include the malformed recovery path, comment boundaries inside property names and values, valid `!important` placement, uppercase keywords, and controls that must remain visible. The full 70-case ordinary-visible and 47-case hidden batteries, the 1 MiB hostile-style observation, and PWMCP-64's deterministic linear-work bound remain covered.
+
+## PWMCP-66 — `visibility:collapse` can hide extracted content
+
+**Status: IMPLEMENTED (unreleased).** Severity: P2 security. `visibility:collapse` is a valid CSS value that removes table rows or columns from the rendered page, but the serialized-HTML filter recognized only `visibility:hidden` and returned collapsed-row text to the caller.
+
+**Fix.** Treat `visibility:collapse` as hidden before subtree pruning, with the same removal count and descendant behavior as the existing hidden marker. Standalone, later-than-visible, and collapsed-table-row cases are covered in the extraction tests and synchronized policy docs.
+
+## PWMCP-67 — Unicode separators can turn hidden CSS values into visible ones
+
+**Status: IMPLEMENTED (unreleased).** Severity: P2 security. Python's general Unicode whitespace rules are broader than CSS Syntax whitespace. Trimming or splitting on those extra separators accepted malformed later declarations such as `display:block ` or a property name ending in a non-breaking space, allowing them to replace an earlier `display:none` or `visibility:hidden` winner.
+
+**Fix and policy.** CSS declaration trimming and display-keyword splitting now recognize only ASCII space, tab, LF, CR, and FF. Other Unicode space-like characters remain inside property and value tokens, so they cannot turn an invalid later declaration into a valid visible one. Some declarations that a browser might recover differently can leave an earlier hiding declaration in force; this is the fail-closed choice for agent-facing text.
+
+**Test-first evidence.** The nine-case Unicode-whitespace extraction regression failed on the test-only commit in the registered tester-unified R1 lane before this parser change. The tests check both `display` and `visibility`, property names, suffixes, and multi-keyword values.
+
+## PWMCP-68 — unsupported display keywords can override a hidden value
+
+**Status: IMPLEMENTED (unreleased).** Severity: P2 security. The static display allowlist admitted `run-in` and ruby internal display values as visible overrides. When an engine does not implement one of those forms, its declaration is ignored and an earlier `display:none` remains effective, but the filter admitted the text to the agent.
+
+**Fix and policy.** The visible-value allowlist no longer admits `run-in` or ruby internal `display` values. The general `ruby` display-inside value remains supported. Preserving an earlier hide for these values can omit content shown by a browser that implements them; this is the documented fail-closed trade-off.
+
+**Test-first evidence.** Five extraction cases (`run-in` and the four ruby internal values) failed on the test-only commit in the registered tester-unified R1 lane before the allowlist change.
+
+## PWMCP-69 — Unicode case folding can turn an invalid keyword into a visible one
+
+**Status: IMPLEMENTED (unreleased).** Severity: P2 security. Python's `str.lower()` maps U+212A KELVIN SIGN to ASCII `k`, so `display:bloc\212a` (or the literal character) compared equal to `block`. A browser folds keyword case for ASCII only, treats the declaration as invalid, and keeps an earlier `display:none`; the filter instead admitted the text. Only `block` and `inline-block` contain a letter affected by this mapping.
+
+**Fix.** Property names and values fold ASCII `A-Z` only. README, DESIGN-GUIDE, and CONSUMERS state the rule beside the CSS-whitespace rule. Tests cover the literal and escaped forms and that ASCII upper case (`BLOCK`) still overrides.
+
+**Test-first evidence.** The registered tester-unified R1 run on test-only commit `d8ab1454c341a92a35f196060362fcadc1fedb23` exited FAIL before the production change; the log binds the first failure to `kelvin-sign-block`. The gate verdict recorded three failed Kelvin cases (literal `block`, literal `inline-block`, and escaped `block`), 1,901 passed, and five skipped. The ASCII-uppercase `BLOCK` control passed.
+
+## R8 mutation survivor closure
+
+The 46 survivors in the pwmcp R2 r8 report are closed with **35 KILLED and 11 EQUIVALENT**. Every killed row passed with the exact r8 source and failed after its exact mutation was applied in a separate scratch copy; each equivalent row has an input-domain or output-use proof. The original report classes are TEST GAP 26 KILLED / 5 EQUIVALENT, SECURITY-RELEVANT 8 / 0, and EQUIVALENT 1 / 6. The malformed nested-close mutant at line 377 is killed by a nested-close oracle, and the `extract_page(main=False)` default mutant at line 743 (first classed EQUIVALENT) is killed by a direct default-argument test. The complete row table and proof record are in the pwmcp R2 r8 report.
+
+For the next scanner mutation set, test recovery `fragment_start` updates at `;` and stray `)` before a later declaration. The oracle should check which hidden marker reaches extraction and which visible control remains readable, while retaining the linear-work bound.
+
+## PWMCP-70 — record the R9 equivalent page-content mutants
+
+**Status:** CLOSED 2026-11-14 (documented); priority P3 evidence.
+
+The R9 campaign left two mutations that do not change the hidden-text decision under the current implementation:
+
+- **Line 185, decoder default `False -> True`.** The flag-less call sites decode property names and `!important` priority text. Preserving escaped whitespace there cannot make a property name equal `display` or `visibility`, or a priority equal `important`; the campaign's probes showed no hide-decision difference.
+- **Line 287, bogus-priority flag `False -> True`.** The invalid `!bogus` suffix remains in the returned value. The current display/visibility validators reject that value and discard the declaration either way, so the altered importance flag cannot replace a hiding declaration. The R9 campaign's probes showed no hide-decision difference.
+
+The R8 line-246 `False -> True` mutation was also rechecked. Its original bypass reading was correct for the R8 source: `test_invalid_priority_suffix_cannot_override_important_hidden_declaration` passed on that source and failed under the exact mutation for `display:none !important;display:block !bogus`. R9's line-287 mutation is equivalent because the later PWMCP-65 display-value validation now rejects `block !bogus`; the two campaign readings describe different source revisions.
+
+No helper-internal assertion was added for these cases because their claimed equivalence is about the public hidden-text decision. The R9 evidence, R8 exact-source test result, and the source-path difference above provide the disposition.
+
+## PWMCP-71 — document the release-scoped R2 candidate recipe
+
+**Status:** OPEN (filed 2026-11-14); priority P2 (campaign reproducibility).
+
+The registered `r2` lane plans the whole target. A release-to-release campaign can instead select candidates on changed source lines, but the recipe must preserve the exact release diff and candidate IDs and must not be described as a whole-target R2 PASS.
+
+**Recipe to document.** On the release checkout, run `assay plan r2 --json`; obtain changed source line ranges from `git diff -U0 <base>..<release> -- <source-path>`; select the plan's candidate IDs whose source locations fall within those changed ranges; write one ID per line to `<checkout>/.run-gate/only-candidates-<scope>.txt`; and pass that file through the supported campaign invocation's `--only-candidates` option. The file stays inside the checkout so the campaign can read it. Registered Assay lanes must retain Run-Gate's `--resume --progress .assay/progress-r2.jsonl` handling. Record the selection file, diff base, and candidate counts with the campaign evidence. A selected subset is partial by construction and leaves unselected candidates unevaluated. `assay plan --file` accepts an Assay TOML config, not a source-file filter.
+
+**Where.** PWMCP's R2 lane-authoring documentation and the operator campaign recipe.
+
+**Close when.** A reader can reproduce the changed-line candidate list from the release diff and plan, run it through the supported campaign workflow, and distinguish its partial result from whole-target R2 completion.

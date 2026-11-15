@@ -13,4 +13,4 @@ Use `vmscreen` when you work with a local QEMU guest that has a QMP socket (`-qm
 4. `vmscreen send --qmp SOCK --keys ret` or `--type 'text\n'` drives the guest.
 5. `vmscreen ocr-pair --qmp SOCK --out corpus/name` writes name.png and name.json captured at the same instant.
 
-Rules: QMP serves one client, so stop other pollers (for example pwmcp console_capture) first. QEMU writes dump files itself, so `--dump-dir` must be a path both processes see. Never start QEMU in the interactive devcontainer; guests run through the VM harness.
+Rules: QMP serves one client, so do not run two QMP clients at the same instant; the VM tool's recorder (`vm_lab.py console record`) connects per command, so it may stay running. QEMU writes dump files itself, so `--dump-dir` must be a path both processes see; when QEMU sees that directory under another path (a container that mounts the state directory at `/state`), also pass `--qemu-dump-dir /state` (or `$VMSCREEN_QEMU_DUMP_DIR`). Never start QEMU in the interactive devcontainer; guests run through the VM harness.

@@ -219,11 +219,28 @@ why it must deviate, and what it checks instead of speed.
 
 **Resource limits belong to the host, not to repository files.** In-repo lane files may state what a lane
 needs (an estimate or hint); they never encode the limits of the machine they happen to run on. Hosts are
-planned for overcommit by design (zswap, swap, KSM): the hot working set is far below the nominal maximum, so
-`dev.slice`/`dev-gates.slice` memory ceilings come from host policy (`HOST_ROLE`, about RAM plus swap minus a
-small host reserve on test hosts), and parallelism is sized to the host's CPU and memory pressure, not to a
-per-lane constant. When a tool needs a limit, it asks the host policy. Pressure (PSI) and heavy swapping are
-the signals that bound work.
+planned for overcommit by design (zswap, swap): the hot working set is far below the nominal maximum. Hosts
+configure KSM through tmpfiles. KSM merges only memory from processes that opt
+in with `prctl(PR_SET_MEMORY_MERGE)` or `madvise(MADV_MERGEABLE)`. CIU ships an
+opt-in shim in `ciu/src/ciu/ksm.py` and `ciu/src/ciu/data/ksm-optin.c` (named
+`ksm-optin-universal.c` in its source header). Run-Gate 25.6.0 (RG-273) opts
+ephemeral lane containers into the image-advertised shim by default; tester-base
+(TB-17) builds and labels that shim. Use lane `ksm = false` or
+`RUN_GATE_KSM=0` to opt out. Run-Gate 25.6.0 is released, and tester-base and
+tester-unified were rebuilt and deployed on 2026-11-12 with the KSM label;
+controller smoke confirmed the preload. No host lane-level `ksm_merge_any` or
+`pages_sharing` smoke has been recorded. Runner-script synchronization and
+the selected `run_gate_bins` profile check are tracked by Netcup NC-53.
+Measurements before opt-in found zero lane contribution to `pages_sharing`; an
+opted-in Python workload shared only about 1 MiB from roughly 390 MiB anonymous
+memory and showed negative KSM `general_profit`. The ksmd advisor CPU cap and
+sleep interval are host settings owned by
+debian-install-v2 through `KSM_TMPFILES`. Do not count KSM toward lane
+overcommit capacity.
+`dev.slice`/`dev-gates.slice` memory ceilings come from host policy
+(`HOST_ROLE`, about RAM plus swap minus a small host reserve on test hosts), and parallelism is sized to
+the host's CPU and memory pressure, not to a per-lane constant. When a tool needs a limit, it asks the host
+policy. Pressure (PSI) and heavy swapping are the signals that bound work.
 
 ## Defaults and fallbacks are hazards (MANDATORY, estate-wide)
 
@@ -601,6 +618,55 @@ real exit status (2) was read as 0 through a `| head`, which put a wrong
 conclusion into a design document; and two cmru mutation-campaign runs that
 executed **zero mutants** were both announced as "exit code 0" while their logs
 said `MUTATION_EXIT=1`.
+
+## Long-running controllers: plan, handoff and compaction recovery (operator-agreed, 2026-11-12)
+
+Applies to a long-running controller or orchestrator: one agent that coordinates
+jobs, hosts or other agents across hours and context compactions. Short-lived
+implementers, reviewers and host agents do not keep a plan; they report to the
+controller. Durable facts (decisions, designs, evidence) still go into the repo
+([Persist reusable work in the repository](#persist-reusable-work-in-the-repository));
+the files below are WORKING STATE, not the record.
+
+- **One owner.** The controller owns a **gitignored `plan.yaml` at the repo root**
+  and a gitignored `.controller-state/` directory. Every other agent talks to the
+  controller (messages, reports) and never edits them. A second controller in the
+  same repository keeps its own checkout and its own state files.
+- **`plan.yaml`** is the controller's work plan: one item per track with `id`,
+  `title`, `state` (`planned|running|awaiting-review|fix-round|mergeable|merged|released|blocked|parked|decision|done`),
+  `owner` (route, agent or host), `depends_on` and `next`. Running jobs and agents are
+  DERIVED from the run directory, not listed. Edit it with a script or patch that fails
+  loudly, and verify every edit (a string replacement that matched nothing has
+  silently kept a stale state more than once).
+- **`.controller-state/`** holds `HANDOFF.md` (append-only ticks with real `date -u`
+  timestamps and, before a compaction, a `RESUME HERE #n` section: standing rules, what
+  is merged, in flight, hosts, next priorities, lessons), `operator-decisions.md`
+  (EVERY operator turn and interview answer, VERBATIM) and `readback-N.md`.
+- **Read-back recipe.** Before a compaction (about 70 % of the context window) build a
+  read-back: `nyxloom-harness extract <session.jsonl> --preset readback --budget-tokens N --since <marker of the previous read-back>`.
+  `N` is the controller's choice (the window and the amount of agent communication decide);
+  the preset includes agent prompts and results and never drops operator turns or interview
+  answers. The `readback` preset exists for Claude Code transcripts only; a controller on
+  another harness uses `extract` with `--profile all --agent-comms full` and its own budget until
+  [NL-65](nyxloom/nyxloom-trove/backlog/NL-65-readback-weights-older-agent-comms.md)
+  extends it. This supersedes the older character-budget builder
+  (`scripts/controller/build-readback.py`) for the operator-mandated recipe; the builder remains
+  for Codex run finals. The compaction prompt names this order and nothing else: (0) `plan.yaml`,
+  (1) `operator-decisions.md`, (2) the newest `readback-N.md` IN FULL, (3) the `RESUME HERE`
+  section of `HANDOFF.md`; older material only by grep. After the compaction, check reality
+  before acting (job status, `git worktree list`, host campaigns) and re-arm the watches.
+- **Plan consistency** is checked by a validator in the controller kit
+  (`scripts/controller`, planned: parses `plan.yaml`, checks schema and states, flags items
+  whose branch, run or report no longer exists). It must run as part of the status and
+  watch scripts the controller already runs, so the controller reads exceptions only and
+  does not pay an extra call per tick. Until it exists, verify each edit by hand.
+- **Known limits of the extract.** Not all prose is equal: older agent communication
+  should weigh less than recent decisions (open: NL-65). The read-back is large
+  (50-100k tokens); budget it deliberately.
+- **State placement.** The controller's working state (`plan.yaml`, `.controller-state/`) is
+  the one exception to the kit rule "keep state outside the checkout"
+  (`scripts/controller/docs/DESIGN-GUIDE.md`): run records, queue state, host facts,
+  credentials and evidence archives still live under `CONTROLLER_HOME`.
 
 ## Persist reusable work in the repository
 

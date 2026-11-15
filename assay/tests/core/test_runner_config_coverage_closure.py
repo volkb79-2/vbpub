@@ -123,6 +123,8 @@ import socket
 import subprocess
 from pathlib import Path, PurePosixPath
 
+from conftest import GIT_MAINTENANCE_OFF
+
 from assay import resource_limits
 from assay.config import IsolationConfig
 from assay.isolation import DEFAULT_SNAPSHOT_LIMITS, SnapshotSpec, prepare_snapshot
@@ -145,7 +147,10 @@ def _tiny_repo(tmp_path: Path):
 
     def run(*args: str) -> str:
         done = subprocess.run(
-            [git, "-C", str(repo), *args], env=env, capture_output=True, check=True
+            [git, *GIT_MAINTENANCE_OFF, "-C", str(repo), *args],
+            env=env,
+            capture_output=True,
+            check=True,
         )
         return done.stdout.decode().strip()
 

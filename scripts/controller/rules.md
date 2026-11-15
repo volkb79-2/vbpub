@@ -4,7 +4,9 @@
   registered `run-gate` lane in `tester-unified`; never run a test suite in the
   cockpit. Acquire the shared gate lock and run one lane at a time.
 - Keep run logs, run streams, host config, queue state, release archives, and
-  reports outside the repository under `CONTROLLER_HOME` or their explicitly
+  reports outside the repository (the controller's own `plan.yaml` and
+  `.controller-state/` are the one gitignored in-checkout exception, see the root
+  `AGENTS.md`) under `CONTROLLER_HOME` or their explicitly
   requested absolute destination. The default is `$HOME/controller`.
 - Do not commit host addresses, server IDs, token paths, SSH key paths, or
   private credentials. Put local values in ignored config files and commit
@@ -22,8 +24,18 @@
 - Every commit carries exactly one route-specific trailer. Audit all commits
   in the task range, including merge commits.
 - Exact OpenAI route trailers are `Co-Authored-By: Codex gpt-6-luna
-  <noreply@openai.com>` for Luna and `Co-Authored-By: Codex
-  deepseek-v4.1-flash <noreply@openai.com>` for DeepSeek or OpenCode.
+  <noreply@openai.com>` for Luna, `Co-Authored-By: Codex gpt-6-sol
+  <noreply@openai.com>` for Sol (the Codex review route: Sol reviewers hold the
+  same allowances as other reviewers, including fixing small things in the
+  reviewed branch under their own trailer; every commit still carries exactly
+  one trailer) and `Co-Authored-By: Codex deepseek-v4.1-flash
+  <noreply@openai.com>` for DeepSeek or OpenCode.
+- The Codex DeepSeek routes are `deepseek` (automatic account selection),
+  `deepseek-volker`, and `deepseek-github2` (pinned accounts). The two pinned
+  forms use the same DeepSeek trailer above.
+- Pi's favored Open Design route is `deepseek-pi` (automatic account
+  selection), with `deepseek-pi-volker` and `deepseek-pi-github2` as pinned
+  forms. They use the same DeepSeek trailer above.
 - Run each registered lane under the shared lock, one lane at a time:
 
   ```bash
