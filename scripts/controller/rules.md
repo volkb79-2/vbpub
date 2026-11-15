@@ -55,5 +55,12 @@
 - For `rel-*` worktrees, preserve each project `logs/`, `artifacts/`, and
   `evidence/` under the local release archive before any workflow can remove
   the worktree. Do not run `git clean -x` in a checkout that holds artifacts.
+- Harness environment limits measured here (re-measure per harness before
+  generalising; a stale limit is dropped, not carried): a Codex worker under a
+  read-only sandbox fails in this devcontainer because its nested bubblewrap
+  cannot mount `/proc` (2026-11-14, CTL-10), and the Claude Code Bash tool
+  rejects a long foreground sleep such as `sleep 40` (2026-11-14, CTL-10). Use a
+  shorter command or a background command there, and pick an explicit sandbox
+  where the read-only one does not start.
 - Review a change on a separate route and against the exact final commit. The
   review must critique the design as well as list defects.
