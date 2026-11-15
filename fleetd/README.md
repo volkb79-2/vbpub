@@ -113,11 +113,15 @@ host section with one Run-Gate invocation per batch. It accepts Run-Gate exit 4
 whole-lane closeout still has to execute any selected candidates that remain
 pending.
 
-`fleet facts collect` reads only host-owned inputs and read-only `/proc` and
-`/sys` interfaces. Its required policy and source paths come from
+`fleet facts collect` reads host-owned inputs, read-only `/proc` and `/sys`
+interfaces, and the fixed control-plane service list's `MemoryMin` properties
+through `systemctl show`. Its required policy and source paths come from
 `/etc/fleetd/facts.toml`; `--root DIR` maps those absolute paths beneath a
-fixture root for reproducible collection. The host role comes from the
-configured `HOST_ROLE` source. Fleetd never invokes Geekbench.
+fixture root for reproducible collection without querying systemd. The host
+role comes from the configured `HOST_ROLE` source. Fleetd never invokes
+Geekbench. The planner reserves the sum of all positive service `MemoryMin`
+values, or the host profile's fixed constant when any are missing; see the
+[facts and planning contract](docs/SPEC.md#facts-collection).
 
 Serialized campaign inputs use `host-facts/1`, `work-request/1`,
 `candidate-table/1`, `fleet-host-set/1`, and `assay-merge-manifest/1`. Runtime

@@ -10,7 +10,8 @@
 | FD-004 | Host facts and planning do not account for the dev-gates slice memory ceiling | P1 | OPEN | 2026-11-13 |
 | FD-005 | Learn one bounded f_h per host from independent timing samples | P2 | OPEN | 2026-11-13 |
 | FD-006 | Lift the one-slot-per-host and J worker cap in the campaign supervisor | P2 | OPEN | 2026-11-13 |
-| FD-007 | Replace the RAM-proportional control-plane reserve (operator-rejected) with the sum of reported MemoryMin or a fixed profile constant | P1 | OPEN | 2026-11-13 |
+| FD-007 | Replace the RAM-proportional control-plane reserve with service MemoryMin facts or a fixed profile constant | P1 | DONE | 2026-11-13 |
+| FD-007b | Calibrate the fixed profile reserve from measured p95 under load | P2 | OPEN | 2026-11-15 |
 | FD-008 | Strict whole-lane result merge from an explicit candidate-owner manifest | P1 | OPEN | 2026-11-13 |
 | FD-009 | Restricted host enrollment for the existing hx transport | P1 | OPEN | 2026-11-13 |
 | FD-010 | Consume Assay's exact-key baseline reuse in campaign execution | P2 | OPEN | 2026-11-13 |
@@ -74,8 +75,8 @@ the plan's wave proof as an execution guarantee.
 
 **State:** OPEN. **Priority:** P1. **Filed:** 2026-11-13.
 
-WP1(a) reports physical lane memory and control-plane `memory.min`, while WP2
-computes `B_h = P_h × overcommit − O_h` as specified in the compute-host
+WP1(a) reports physical lane memory and per-service control-plane `MemoryMin`,
+while WP2 computes `B_h = P_h × overcommit − O_h` as specified in the compute-host
 design. The facts do not include the host-owned `dev-gates.slice` `memory.max`
 ceiling, so the planner cannot report when its estimate exceeds that execution
 limit. The design lists slice `MemoryMax` as a downstream safety net; this MVP
@@ -107,47 +108,45 @@ slots unused. This is an accepted safety deviation for the no-supervisor MVP.
 WP4/WP5 should give selected runs distinct identities and schedule enough
 independent instances to use the remaining safe capacity without sharing state.
 
-## FD-007 Calibrate the control-plane reserve from measured p95
+## FD-007 Replace the rejected RAM-proportional control-plane reserve
 
-**State:** OPEN. **Priority:** P1 (raised 2026-11-14). **Filed:** 2026-11-13.
+**State:** DONE. **Priority:** P1. **Filed:** 2026-11-13. **Completed:**
+fleetd-reserve wave, design rev 6.
 
-WP2 currently uses the design default
-`clamp(256 MiB + 6% × MemTotal, 768 MiB, 2 GiB)` and takes the larger of that
-default or the reported `ctl.slice/memory.min`.
+The rejected `clamp(256 MiB + 6% × MemTotal, 768 MiB, 2 GiB)` rule and the
+`max(reported ctl.slice/memory.min, default)` floor are replaced. Fleetd sums
+the positive `MemoryMin` facts for its fixed control-plane service list only
+when every listed service reports a positive value. If any service is absent,
+zero, or `infinity`, it uses that host's fixed profile constant and reports the
+missing service units. The compatibility profile constant is 768 MiB, the
+former lower bound and above the measured 450–500 MB near-idle hot RSS on the
+two 8 GiB hosts (2026-11-14). No reserve term depends on installed RAM.
 
-**Operator decision 2026-11-14: this rule is rejected.** The control plane does
-not grow with installed RAM; it depends on the services that run before fleet
-work starts. The replacement (design rev 6, not yet written): host install
-(debian-install-v2 drop-ins) or a fleetd host profile sets `MemoryMin` per
-control-plane service (sshd, dockerd, containerd, journald, cgprofiled,
-psi-guard); fleetd's reserve becomes the sum of the reported `MemoryMin` facts,
-else a fixed profile constant. There is no RAM-proportional term and no clamp
-around one. Measured hot RSS on the two 8 GiB hosts (2026-11-14, read-only) is
-about 450-500 MB. The earlier "1.25 × measured p95, still clamped" direction
-is superseded.
+The collector does not read parent `ctl.slice/memory.min`; older facts may
+contain that field, which is accepted for compatibility and ignored. Fleetd
+emits `reserve_bytes`, `reserve_source`, and
+`reserve_missing_services` in plan and campaign status output. Old host facts
+without the new service values use their profile constant, allowing host
+setup's per-service drop-ins to roll out without a flag day. This close covers
+the replacement rule only; measured-p95 calibration is FD-007b.
 
-Every place that applies the rejected rule (all must change together; at
-`f931ed67b` and this review's head):
+## FD-007b Calibrate profile reserve from measured p95 under load
 
-- `src/fleetd/plan.py` constants `_CONTROL_PLANE_MIN_*` and
-  `_control_plane_reserve()`;
-- `_refusal()` (reserve subtracted for the "no physical RAM" refusal) and
-  `_capacity()` (`P = for_lanes - reserve`, hence `B`, `cap`, `cap_alone`,
-  and the reported `reserve_bytes`/`reserve_source`);
-- downstream through the plan: `cap_alone_bytes` drives the campaign's
-  re-queue target (`campaign.py` `_largest_available_host`), and
-  `cap_bytes`/`budget_bytes` drive `replan_pending()` placement;
-- facts: `facts.py` reads `ctl.slice/memory.min` as one value; the sum of
-  per-service `MemoryMin` needs a new fact;
-- tests: `test_plan.py` reserve clamp cases, the seeded sweep's recomputed
-  reserve, and the 768 MiB assertions on the golden 8 GiB hosts;
-- docs: SPEC (facts collection and planning formulas), CONSUMERS (planning
-  inputs), DESIGN-GUIDE (planning invariants), CHANGES; design doc §3.6 and
-  §7.2 Q3.
+**State:** OPEN. **Priority:** P2. **Filed:** 2026-11-15.
 
-On the two 8 GiB hosts the default is the 768 MiB floor (256 MiB + 6% of
-8 GiB is about 747 MiB), above the measured 450-500 MB, so the current plans
-are conservative, not unsafe.
+The 768 MiB compatibility value is a safe starting profile constant, not a
+calibrated target. The measured near-idle hot RSS on the two 8 GiB hosts was
+about 450–500 MB; it does not establish the protected working set under
+representative fleet load. Calibrate the fixed constant separately for each
+host profile from measured p95 control-plane use under load. Do not scale the
+reserve with `MemTotal`, pool samples across hardware flavors, or infer a
+calibration from idle RSS.
+
+**Close when.** The workload and measurement window are recorded, each profile
+has a measured p95 and an explicit fixed reserve derived from it, and the
+profile values are updated in host-owned facts configuration with tests
+showing that planning uses the selected value. Keep the existing fallback
+until that evidence is accepted.
 
 ## FD-008 Strict whole-lane result merge
 

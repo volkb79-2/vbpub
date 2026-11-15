@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 from fleetd.contracts import (
+    CONTROL_PLANE_SERVICE_UNITS,
     AssayMergeManifest,
     ContractError,
     HostFacts,
@@ -78,6 +79,12 @@ def test_host_facts_fixture_is_typed_and_preserved():
         (lambda data: data["control_plane"].update(slice=""), "control_plane.slice: expected non-empty string"),
         (lambda data: data["control_plane"].update(present="yes"), "control_plane.present: expected boolean"),
         (lambda data: data["control_plane"].update(cpu_weight=0), "cpu_weight: must be at least 1"),
+        (lambda data: data["control_plane"].update(profile_reserve_bytes=True), "profile_reserve_bytes: expected integer"),
+        (
+            lambda data: (data["control_plane"].pop("memory_min_bytes"), data["control_plane"].update(memory_min_bytes_reason="stale")),
+            "memory_min_bytes_reason: only allowed when memory_min_bytes is null",
+        ),
+        (lambda data: data["control_plane"].update(service_memory_min={}), "service_memory_min: missing field.*cgprofiled.service"),
         (lambda data: data["guard"].update(enabled=None), "null requires enabled_reason"),
         (lambda data: data["policy"].update(psi_refuse_some_avg10=101), "psi_refuse_some_avg10: must be at most 100"),
         (lambda data: data["policy"].update(max_lane_containers=0), "max_lane_containers: must be at least 1"),
@@ -129,6 +136,35 @@ def test_host_facts_reasoned_nulls_are_valid_at_each_group_boundary():
     data["policy"]["host_role"] = None
     data["policy"]["host_role_reason"] = "host role not configured"
     assert validate_host_facts(data).to_dict()["cpu"]["model"] is None
+
+
+def test_host_facts_accepts_profile_reserve_and_reasoned_per_service_memory_min():
+    data = _fixture("host-facts.valid.json")
+    data["control_plane"]["profile_reserve_bytes"] = 900 * 1024**2
+    data["control_plane"]["service_memory_min"] = {
+        unit: {
+            "memory_min_bytes": 1024 if index == 0 else None,
+            **({} if index == 0 else {"memory_min_bytes_reason": "systemd property is unset"}),
+        }
+        for index, unit in enumerate(CONTROL_PLANE_SERVICE_UNITS)
+    }
+    validated = validate_host_facts(data).to_dict()
+    assert validated["control_plane"]["profile_reserve_bytes"] == 900 * 1024**2
+    assert validated["control_plane"]["service_memory_min"]["ssh.service"]["memory_min_bytes"] == 1024
+
+
+@pytest.mark.parametrize(
+    ("mutation", "message"),
+    [
+        (lambda data: data["control_plane"].update(service_memory_min={"unknown.service": {"memory_min_bytes": 1}}), "service_memory_min: unknown field.*unknown.service"),
+        (lambda data: data["control_plane"].update(service_memory_min={unit: {"memory_min_bytes": None} for unit in CONTROL_PLANE_SERVICE_UNITS}), "null requires memory_min_bytes_reason"),
+        (lambda data: data["control_plane"].update(service_memory_min={unit: {"memory_min_bytes": True} for unit in CONTROL_PLANE_SERVICE_UNITS}), "memory_min_bytes: expected integer"),
+    ],
+)
+def test_host_facts_rejects_invalid_service_memory_min_maps(mutation, message):
+    data = _fixture("host-facts.valid.json")
+    mutation(data)
+    _fails(lambda: validate_host_facts(data), message)
 
 
 def test_host_facts_accepts_null_cgroup_controllers_with_reason():

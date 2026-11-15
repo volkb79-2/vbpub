@@ -12,6 +12,8 @@ All notable changes to this project are recorded here.
 - Add a read-only, injectable-root host-facts collector with strict host-owned
   config, PSI/cgroup/KSM/control-plane facts, and privacy-filtered Geekbench
   records.
+- Report bounded per-service control-plane `MemoryMin` facts and each host
+  profile's fixed fallback reserve.
 - Add a deterministic RAM-first plan library and CLI with physical candidate
   caps, explicit worker-wave budgets, per-host Geekbench ETA, memory-crash
   retries, and stable Run-Gate candidate-list commands.
@@ -53,13 +55,18 @@ All notable changes to this project are recorded here.
 - Clarify that selected-run closeout copies the state path printed by Run-Gate
   and requires the same lane commit and tester image on every host.
 - File FD-004 for the missing host-owned `dev-gates.slice` memory ceiling fact.
-- Apply the design's clamped control-plane reserve when `ctl.slice` or its
-  `memory.min` is absent or below the default, and report reserve bytes/source.
-- Add tests for the five assignment heuristics, reserve clamp boundaries, and a
-  deterministic CLI golden plan for two 4-core, 8-GiB host profiles and 230
-  mixed-RAM candidates.
-- Record follow-up items FD-005 through FD-007 for host-factor learning,
-  selected-run capacity, and the future measured-p95 reserve.
+- Replace the rejected RAM-proportional control-plane reserve with the sum of
+  all six positive per-service `MemoryMin` facts, or the host profile's fixed
+  constant when any service is missing. Stop collecting parent-slice
+  `memory.min`; accept it only as a legacy input field and ignore it. Expose
+  reserve source and missing units in plans and campaign status.
+- Test complete and partial reports, zero/infinity/unset parsing, profile
+  fallback, RAM-independent reserve values, capacity and refusal changes, and
+  reserve-driven lost-host placement. Retain the deterministic CLI golden plan
+  for two 4-core, 8-GiB host profiles and 230 mixed-RAM candidates.
+- Record FD-005 through FD-007 for host-factor learning, selected-run capacity,
+  and reserve calibration; the rejected formula is replaced and p95-under-load
+  profile calibration remains open as FD-007b.
 - Correct Assay's tracked fixture-symlink omissions for the fleetd judge lane.
 - Record MVP-C follow-ups for strict Assay merge, Run-Gate option forwarding,
   restricted host enrollment, baseline reuse, the always-on daemon, and

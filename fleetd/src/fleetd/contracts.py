@@ -10,6 +10,23 @@ from pathlib import Path
 from typing import Any, Callable, Mapping
 
 
+_MIB = 1024**2
+DEFAULT_CONTROL_PLANE_PROFILE_RESERVE_BYTES = 768 * _MIB
+
+# Keep the control-plane MemoryMin probe bounded and shared by facts collection,
+# validation, and planning. Unit names are verified against the Debian installer
+# and host-setup sources, cgprofile's native unit, and mdt-psi-guard's protected
+# unit list. ssh.service is the unit used by host-setup's SSH drop-in.
+CONTROL_PLANE_SERVICE_UNITS = (
+    "ssh.service",
+    "docker.service",
+    "containerd.service",
+    "systemd-journald.service",
+    "cgprofiled.service",
+    "mdt-psi-guard.service",
+)
+
+
 class ContractError(ValueError):
     """Input does not match a versioned fleetd contract."""
 
@@ -393,13 +410,40 @@ def validate_host_facts(value: object) -> HostFacts:
     })
     control = _object(
         root["control_plane"], "host-facts/1.control_plane",
-        {"slice", "present", "memory_min_bytes", "cpu_weight"},
-        {"memory_min_bytes_reason", "cpu_weight_reason"},
+        {"slice", "present", "cpu_weight"},
+        {
+            "memory_min_bytes", "memory_min_bytes_reason", "cpu_weight_reason",
+            "profile_reserve_bytes", "service_memory_min",
+        },
     )
     _string(control["slice"], "host-facts/1.control_plane.slice")
     _boolean(control["present"], "host-facts/1.control_plane.present")
-    _nullable_int(control, "memory_min_bytes", "host-facts/1.control_plane", minimum=0)
+    if "memory_min_bytes" in control:
+        _nullable_int(control, "memory_min_bytes", "host-facts/1.control_plane", minimum=0)
+    elif "memory_min_bytes_reason" in control:
+        raise ContractError(
+            "host-facts/1.control_plane.memory_min_bytes_reason: only allowed when memory_min_bytes is null"
+        )
     _nullable_int(control, "cpu_weight", "host-facts/1.control_plane", minimum=1)
+    if "profile_reserve_bytes" in control:
+        _integer(
+            control["profile_reserve_bytes"],
+            "host-facts/1.control_plane.profile_reserve_bytes",
+            minimum=1,
+        )
+    if "service_memory_min" in control:
+        service_facts = _object(
+            control["service_memory_min"],
+            "host-facts/1.control_plane.service_memory_min",
+            set(CONTROL_PLANE_SERVICE_UNITS),
+        )
+        for unit in CONTROL_PLANE_SERVICE_UNITS:
+            path = f"host-facts/1.control_plane.service_memory_min.{unit}"
+            service = _object(
+                service_facts[unit], path,
+                {"memory_min_bytes"}, {"memory_min_bytes_reason"},
+            )
+            _nullable_int(service, "memory_min_bytes", path, minimum=0)
     _validate_group(root["guard"], "host-facts/1.guard", {
         "enabled": ("bool", None, None), "config_digest": ("str", None, None), "state": ("str", None, None),
     })
