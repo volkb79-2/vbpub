@@ -108,6 +108,23 @@ canary command-allowlist-disabled debian_install_v2/actions.py \
             raise ActionError(f"executable is not on the action allowlist: {command}")' \
   debian_install_v2/tests/test_actions.py::test_unallowlisted_executable_and_option_are_refused
 
+# 4. The `system.slice` floor must stay DERIVED from the per-service table. A
+#    hand-written number that happens to equal today's sum would pass an
+#    accidental equality but stop tracking a table change, and the unit floors
+#    would silently become inert (measured 2026-11-15).
+canary system-slice-floor-hand-written debian_install_v2/templates.py \
+  'return child_bytes + CONTROL_PLANE_SYSTEM_SLICE_HEADROOM_MIB * 1024 * 1024' \
+  'return 373 * 1024 * 1024' \
+  debian_install_v2/tests/test_control_plane_memory_min.py::test_system_slice_floor_follows_a_child_floor_change
+
+# 5. The documented 460 MiB ceiling is a measured limit, not a comment: above
+#    it the 2026-11-15 measurement saw unexplained journald/docker refaults.
+#    Dropping the check would let a table change cross into that range.
+canary system-slice-ceiling-dropped debian_install_v2/installer.py \
+  '        if expected > ceiling:' \
+  '        if False:' \
+  debian_install_v2/tests/test_control_plane_memory_min.py::test_system_slice_floor_above_the_measured_ceiling_refuses
+
 echo
 if [ "$fail" -gt 0 ]; then
   echo "canaries: $pass rejected, $fail SURVIVED — the gate is not discriminating"

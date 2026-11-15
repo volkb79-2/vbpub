@@ -41,42 +41,114 @@ injection cases remain rejected; and the registered `r0-r1` lane passes.
 
 ## OPEN (DIV2-BL-08, 2026-11-15): apply control-plane MemoryMin to completed installations
 
-The `div2-memorymin` installer change writes fixed `MemoryMin` drop-ins for all
+The `div2-memorymin` installer change writes `MemoryMin` drop-ins for all
 six fleetd units on the default profile (four when Docker installation is
-disabled), including on an incomplete stage-two resume. It does not retrofit
+disabled) plus the derived `system.slice` floor, including on an incomplete
+stage-two resume. It does not retrofit
 hosts whose install-complete marker is already present. The two
-8 GiB hosts in the 2026-11-14 read-only measurement therefore still need either
-an in-place application of the documented drop-ins or a reinstall. This is
-operator-approved host work to schedule separately; do not run the installer
+8 GiB hosts in the 2026-11-15 measurement therefore still need either
+an in-place application of the documented drop-ins or a reinstall — and
+the measured table now differs from whatever the placeholder round would have
+written, so a retrofit must apply the current table, not the old numbers. This
+is operator-approved host work to schedule separately; do not run the installer
 or edit hosts as part of this backlog item. Verification permits absent or
 masked cgprofile/psi-guard optional units; fleetd treats either as a missing
 fact and keeps its profile-constant fallback until all six facts are positive.
 Keep fleetd-reserve's per-service list aligned with
 `docs/CONTROL-PLANE-MEMORY.md`.
 
-## OPEN (DIV2-BL-09, 2026-11-15): effective ancestor protection is unconfirmed
+## DONE in code (DIV2-BL-09, closed 2026-11-15): ancestor protection is installed and read back
 
-The follow-up writes drop-ins for all six fleetd units. The canonical units
+**State:** closed by the measured-table change in this wave. **Filed:**
+2026-11-15.
+
+The installer now writes drop-ins for all six fleetd units AND for the
+`system.slice` ancestor that makes them effective. The canonical units
 `cgprofiled.service` (installed by `cgprofiled install`) and
 `mdt-psi-guard.service` (installed by mdt-cockpit host-setup) are optional in
-the DI2 profile; an absent or masked optional unit is skipped by verification.
-The six fixed floors total 640 MiB (671,088,640 bytes) on the default profile,
-deliberately above the measured whole-plane RSS to reserve conservatively for
-fleetd. The fact collector must report each absent optional unit as missing,
-not zero, so fleetd's current all-six-positive rule falls back to its profile
-constant until all six units are present and report positive values. Mandatory
-in the default DI2 profile:
-`ssh.service`, `systemd-journald.service`, `docker.service`, and
+the DI2 profile; an absent or masked optional unit is still skipped by
+verification. The six floors now total 345 MiB (361,758,720 bytes) — measured
+hot sets at 1.25 × `H` — instead of the 640 MiB placeholders. The fact
+collector must report each absent optional unit as missing, not zero, so
+fleetd's all-six-positive rule falls back to its profile constant until all six
+units are present and report positive values. Mandatory in the default DI2
+profile: `ssh.service`, `systemd-journald.service`, `docker.service`, and
 `containerd.service`; the Docker pair is omitted when Docker installation is
 disabled.
 
-The remaining caveat is effective reclaim protection. DI2 sets no
-`MemoryMin` on `system.slice`, and the kernel limits a child service's effective
-protection by ancestor cgroups. On a live test VM, compare
-`systemctl show -p MemoryMin` with the unit cgroup's `memory.min` and effective
-protection before claiming the values protect pages from reclaim. No host work
-was done here. Existing completed installs still need the separate,
-operator-approved retrofit or reinstall recorded in DIV2-BL-08.
+What the measurement settled: on v1001, per-unit `MemoryMin` is inert while
+`system.slice.memory.min` is 0, because cgroup2 is mounted with
+`memory_recursiveprot` (docker refaulted 231–251 MiB with 1.5 × `H` unit floors
+and no slice floor, versus 0–4 MiB with a slice floor). The installer therefore
+derives a `system.slice` `MemoryMin` from the same per-service table (floors of
+the units under `system.slice` + 32 MiB headroom = 373 MiB), refuses a derived
+value above the documented 460 MiB ceiling, and reads the value back in
+`verify`. The slice drop-in sets `MemoryMin` only, so an existing
+`system.slice` `MemoryLow` (r1002's `1G`) stays as it is.
+
+What remains open and is filed separately: the per-container increment for
+docker/containerd floors (DIV2-BL-11); the unexplained large-floor anomaly
+(DIV2-BL-10); r1002's 1.25 × figure, which is inferred between measured 1.0 ×
+and 1.5 × `H`; and the retrofit/re-measurement work: existing completed
+installs still need the separate, operator-approved retrofit or reinstall
+recorded in DIV2-BL-08. fleetd itself is unchanged here: v1001 has no psi-guard
+unit, so its reserve keeps using the profile constant until the per-service
+fallback (FD-007c) lands.
+
+## OPEN (DIV2-BL-10, 2026-11-15): unexplained refaults above large `system.slice` floors
+
+Source: the 2026-11-15 hot-set measurement report (evidence
+`control-plane-hotset`, section "The system.slice ancestor finding").
+
+On v1001 the two steps with the largest `system.slice` floors (608 MiB and
+585 MiB) showed refaults that the 430–455 MiB steps did not: docker 45–99 and
+162–185 MiB journald refaults in one step, docker 95–147 and 64–72 MiB
+journald in the other, although the units' `memory.current` (journald about
+40 MiB, docker about 110 MiB) stayed far below their floors. The same 608 MiB
+step was clean on r1002. Candidate causes (journal file churn from
+`journalctl -t` scans, previous-step residue) were not isolated, so the effect
+is unexplained rather than attributed.
+
+**Current mitigation.** The installer refuses a derived `system.slice`
+`MemoryMin` above 460 MiB (`CONTROL_PLANE_SYSTEM_SLICE_MEMORY_MIN_CEILING_MIB`),
+so a future table change cannot silently cross into that range; the current
+derived value is 373 MiB. This is a documented limit, not a diagnosis.
+
+**Close when.** A repeat measurement at 585–610 MiB isolates the cause (for
+example by removing journal churn and the previous step's residue as variables),
+and either the ceiling is removed with the cause documented or the ceiling is
+kept with a measured reason for the observed refaults. Do not raise the ceiling
+on the strength of a single clean run.
+
+## OPEN (DIV2-BL-11, 2026-11-15): per-container increment for docker/containerd floors
+
+The measured docker (`H` 156–168 MiB) and containerd (`H` 69–73 MiB, including
+the container shims, which live in containerd's cgroup) hot sets were taken with
+the two containers that existed on the test hosts plus the probe containers.
+Running containers add to both: docker's own bookkeeping and containerd's
+per-shim pages. The floors in `docs/CONTROL-PLANE-MEMORY.md` are therefore a
+**base, not a bound**, which is inferred, not measured.
+
+**Close when.** docker/containerd hot sets are measured at several running
+container counts (for example 2, 8, 32) with the same protocol, and the result
+is either a measured per-container increment added to the table by code or a
+documented container-count limit with a measured justification. Until then, do
+not treat the documented floors as sufficient on a host that carries many
+containers.
+
+## OPEN (DIV2-BL-12, 2026-11-15): no RAM sanity bound on the control-plane floors
+
+The per-service floors and the derived `system.slice` floor (373 MiB) are fixed
+values; the installer does not compare them with installed RAM, so on a host
+far smaller than the 8 GiB test hosts it would still configure the same floors.
+`MemoryMin` only protects pages the cgroup actually uses, so the practical
+exposure is bounded by real `system.slice` usage, but a floor that is a large
+fraction of RAM is no longer a "hot set" floor. Not measured, not tested.
+
+**Close when.** The installer either refuses or caps the derived `system.slice`
+floor at a documented fraction of `MemTotal` (with a clear message and a test
+that mutates the RAM figure), or the supported minimum RAM is documented with a
+measured reason that makes the bound unnecessary.
 
 ## DONE in code, OPEN live (div2-data-area-v2, 2026-11-05): explicit `partitioning` plan
 

@@ -13,7 +13,11 @@ from debian_install_v2.bootstrap import build_cli, main
 from debian_install_v2.config import Config, ConfigError, load_config
 from debian_install_v2.installer import Installer
 from debian_install_v2.state import StateError, StateStore
-from debian_install_v2.templates import CONTROL_PLANE_MEMORY_MIN
+from debian_install_v2.templates import (
+    CONTROL_PLANE_MEMORY_MIN,
+    CONTROL_PLANE_SYSTEM_SLICE_UNIT,
+    control_plane_system_slice_memory_min_bytes,
+)
 
 
 BASE_CONFIG = {
@@ -159,6 +163,9 @@ def test_cli_verify_after_manifest_is_read_only(tmp_path, monkeypatch):
     expected_memory_min = {
         unit: str(value[1]) for unit, value in CONTROL_PLANE_MEMORY_MIN.items()
     }
+    expected_memory_min[CONTROL_PLANE_SYSTEM_SLICE_UNIT] = str(
+        control_plane_system_slice_memory_min_bytes(CONTROL_PLANE_MEMORY_MIN)
+    )
     observed_units = []
 
     def systemctl_show(self, argv, description=""):

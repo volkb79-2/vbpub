@@ -7,22 +7,74 @@ from .config import (
 )
 
 
-# Fixed control-plane floors. These are policy values, not values scaled to
-# installed RAM. Keep the systemd token beside the exact byte count so the
-# post-install check can compare systemctl's numeric output.
+# Control-plane reclaim-protection floors. These are policy values, not
+# values scaled to installed RAM. Keep the systemd token beside the exact
+# byte count so the post-install check can compare systemctl's numeric output.
+#
+# The numbers are MEASURED, not placeholders: the 2026-11-15 hot-set
+# measurement (evidence `control-plane-hotset`, report
+# `control-plane-hotset-REPORT.md`) derived each floor as 1.25 x the service's
+# measured hot working set, taking the larger value of the two test-host
+# hardware flavors so one table serves both. Re-measure when the Docker or
+# containerd version changes; the floors are a base, not a bound, because
+# docker/containerd hot sets grow with the number of running containers.
 CONTROL_PLANE_MEMORY_MIN = {
-    "ssh.service": ("32M", 32 * 1024 * 1024),
-    "docker.service": ("256M", 256 * 1024 * 1024),
-    "containerd.service": ("128M", 128 * 1024 * 1024),
-    "systemd-journald.service": ("128M", 128 * 1024 * 1024),
-    "cgprofiled.service": ("64M", 64 * 1024 * 1024),
-    "mdt-psi-guard.service": ("32M", 32 * 1024 * 1024),
+    "ssh.service": ("10M", 10 * 1024 * 1024),
+    "docker.service": ("210M", 210 * 1024 * 1024),
+    "containerd.service": ("92M", 92 * 1024 * 1024),
+    "systemd-journald.service": ("24M", 24 * 1024 * 1024),
+    "cgprofiled.service": ("4M", 4 * 1024 * 1024),
+    "mdt-psi-guard.service": ("5M", 5 * 1024 * 1024),
 }
 CONTROL_PLANE_MEMORY_MIN_OPTIONAL_UNITS = frozenset({
     "cgprofiled.service",
     "mdt-psi-guard.service",
 })
 CONTROL_PLANE_MEMORY_MIN_DROPIN = "90-vbpub-memory-min.conf"
+
+# `system.slice` needs its own floor, and it is DERIVED from the table above
+# rather than a second hand-written number. Measured on v1001 (2026-11-15):
+# cgroup2 is mounted with `memory_recursiveprot`, so a child unit's `memory.min`
+# is capped by what its ancestors hand out; while `system.slice.memory.min` is
+# 0 the per-unit floors are inert (docker refaulted 231-251 MiB with unit floors
+# and no slice floor, 0-4 MiB with the slice floor). Only units that actually
+# live under system.slice contribute their floor; `cgprofiled.service` runs
+# under `cgprofile.slice`, which already carries MemoryMin=128M.
+CONTROL_PLANE_SYSTEM_SLICE_UNIT = "system.slice"
+CONTROL_PLANE_SYSTEM_SLICE_CHILD_UNITS = frozenset({
+    "ssh.service",
+    "docker.service",
+    "containerd.service",
+    "systemd-journald.service",
+    "mdt-psi-guard.service",
+})
+# Headroom for the other system.slice children (logind, dbus, udevd, hostnamed;
+# about 1-3 MiB hot each). Inferred, not measured: the experiment used 64 MiB.
+CONTROL_PLANE_SYSTEM_SLICE_HEADROOM_MIB = 32
+# Documented ceiling. Above roughly this size the 2026-11-15 measurement saw
+# journald/docker refaults at the largest floors and never explained them
+# (open anomaly), so the derived value is checked against this bound.
+CONTROL_PLANE_SYSTEM_SLICE_MEMORY_MIN_CEILING_MIB = 460
+
+
+def control_plane_system_slice_memory_min_bytes(
+    entries: dict[str, tuple[str, int]],
+) -> int:
+    """Derive `system.slice`'s floor from the units that live under it."""
+    child_bytes = sum(
+        expected_bytes
+        for unit, (_token, expected_bytes) in entries.items()
+        if unit in CONTROL_PLANE_SYSTEM_SLICE_CHILD_UNITS
+    )
+    return child_bytes + CONTROL_PLANE_SYSTEM_SLICE_HEADROOM_MIB * 1024 * 1024
+
+
+def format_memory_mib_token(nbytes: int) -> str:
+    """Render a whole-MiB byte count as the systemd token systemctl reads back."""
+    mib, remainder = divmod(nbytes, 1024 * 1024)
+    if remainder or mib <= 0:
+        raise ValueError(f"not a whole positive MiB count: {nbytes}")
+    return f"{mib}M"
 
 
 def render_control_plane_memory_min_dropin(value: str) -> str:
@@ -31,6 +83,17 @@ def render_control_plane_memory_min_dropin(value: str) -> str:
         "# Managed by debian-install-v2.\n"
         "# Fixed reclaim-protection floor; this is not a usage limit.\n"
         "[Service]\n"
+        f"MemoryMin={value}\n"
+    )
+
+
+def render_control_plane_memory_min_slice_dropin(value: str) -> str:
+    """Render the `system.slice` drop-in whose floor is derived from the table."""
+    return (
+        "# Managed by debian-install-v2.\n"
+        "# Derived reclaim-protection floor: the sum of this slice's unit\n"
+        "# floors plus headroom for the slice's other children.\n"
+        "[Slice]\n"
         f"MemoryMin={value}\n"
     )
 
