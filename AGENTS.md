@@ -628,6 +628,125 @@ controller. Durable facts (decisions, designs, evidence) still go into the repo
 ([Persist reusable work in the repository](#persist-reusable-work-in-the-repository));
 the files below are WORKING STATE, not the record.
 
+The session-kind, pressure and readback rules below are the operator's decisions of
+2026-11-14/15. They separate the two session kinds we run, because the same pressure
+signal means different things in each: an interactive session cannot terminate itself,
+a spawned one must. The harness facts are the ctlstat measurements of 2026-11-14 (X6:
+2026-11-15) recorded in `docs/design/ctlstat/EXPERIMENT-compaction-steering-2026-11.md` and
+`docs/design/ctlstat/EXPERIMENT-compaction-hooks.md`; read them for the evidence and the
+verdict tables, and do not restate any behaviour they do not record.
+
+### Interactive controller session (a person sits in it)
+
+Nobody outside compacts or restarts this session, so it **cannot terminate itself**. It
+relies on its harness's auto-compaction (or the operator's manual compaction) and on the
+recovery setup: `plan.yaml`, `.controller-state/` and its readbacks in the repo, plus
+hooks that print the read order after a compaction.
+
+It does not stand still in anticipation of a compaction — neither an automatic one nor the
+operator's `/compact`. On a pressure note it persists its working state at the next
+semantic boundary and CONTINUES; the compaction happens when the harness or the operator
+makes it happen, and the recovery files plus the readback are what survive it. (This rule
+exists because a controller read "stop at a semantic boundary" as an instruction to stand
+still until the operator compacted, and lost hours in which work was ready to run.)
+
+Before it ends a turn it keeps one monitor armed over every running job, so a job cannot
+finish or fail unnoticed while the session sits idle.
+
+### Spawned or non-interactive session (subagent, Codex/opencode/pi job, worker)
+
+Nobody sits in it and nobody applies a recovery read order for it, so it **self-terminates**
+instead of continuing into a compaction: from 200k on, at the next semantic boundary, it
+writes a forward-oriented continuation brief to a durable file, commits it and returns.
+The controller then chooses one of two continuations:
+
+- **compact it externally and resume the same session** with a readback attached, or
+- **start a fresh successor seeded with that brief** (design of a successor brief: nyxloom
+  LESSONS L23).
+
+It resumes rather than replaces when the cache is warm, the context is reasonably sized
+and the full session context is valuable for the continuation — for example review round
+n+1 after the fixes came back, where the reviewer's own reading of the diff is the asset;
+an external compaction is then the worse choice.
+
+A spawned session never keeps working past 200k at a boundary. The 200k mark is the point
+from which the note tells it to stop, not a target to reach.
+
+### Context pressure ladder
+
+A note, not a checkpoint: it arrives with a tool result, so it costs no extra model
+roundtrip. The delivery channel measured in the hooks experiment (E3) is a Claude Code
+`PostToolUse` hook appending `additionalContext`; the same kind of note has to be delivered
+some other way on a harness that has no such channel. The ladder is a rule about wording
+and cadence.
+
+- **From 100k on**: a note every 50k tokens of context.
+- **Below 200k**: the wording prefers finishing the current unit of work.
+- **From 200k on**: the wording says stop at the next semantic boundary.
+
+A **semantic boundary** is a point where a unit of work is finished, its outcome is
+durably recorded and nothing is half-edited. It is **not** necessarily a commit or a green
+gate — either of those is one way to reach such a point, not the definition.
+
+No tool-call count appears anywhere in this rule: call counts are an artifact of tool
+granularity, and the earlier ARM/CUT rule built on them is retired. Which boundaries real
+sessions actually reach has not been measured yet (a later study).
+
+### Readback after a compaction or resume
+
+A readback is built from the session transcript before a compaction, or on resume after
+one, and it contains:
+
+1. **the session's original goal prompt** — what the work is for, in the words it began with;
+2. **the most recent prose**, about 10k tokens (the controller chooses the size); prose
+   between (1) and (2) may be lost on purpose;
+3. **the delta since the previous readback's marker**, never duplicating an earlier readback.
+
+Budget: the controller's own readbacks run about 17-25k tokens. `plan.yaml`, the operator
+decision log (verbatim turns and interview answers) and the `HANDOFF.md` resume section are
+read FIRST and are not part of that budget.
+
+Build it with:
+
+```
+nyxloom-harness extract <session.jsonl> --preset readback --budget-tokens N --since <marker of the previous read-back>
+```
+
+`N` is the controller's choice (the window and the amount of agent communication decide).
+The preset includes agent prompts and results and never drops operator turns or interview
+answers — the original goal prompt is an operator turn, so it is protected from the budget.
+The `readback` preset exists for Claude Code transcripts only; a controller on
+another harness uses `extract` with `--profile all --agent-comms full` and its own budget
+until [NL-65](nyxloom/nyxloom-trove/backlog/NL-65-readback-weights-older-agent-comms.md)
+extends it. This supersedes the older character-budget builder
+(`scripts/controller/build-readback.py`) for the operator-mandated recipe; the builder
+remains for Codex run finals.
+
+The compaction prompt, and the recovery hook after a compaction, name this read order and
+nothing else: (0) `plan.yaml`, (1) `operator-decisions.md`, (2) the newest `readback-N.md`
+IN FULL, (3) the `RESUME HERE` section of `HANDOFF.md`; older material only by grep. After
+the compaction, check reality before acting (job status, `git worktree list`, host
+campaigns) and re-arm the watches.
+
+### Harness support matrix (measured 2026-11-14; X6 measured 2026-11-15; UNTESTED stated per row)
+
+| Harness (version measured) | Steered compaction and resume | UNTESTED |
+|---|---|---|
+| Claude Code (2.1.319 in E1-E6, 2.1.325 in X1/X2) | the interactive steering channel is hooks: `PreCompact` stdout reaches the summarizer, so a handover file becomes part of the compaction instructions, and `SessionStart[compact]` output lands after the summary and the kept messages, so the recovery read order is republished into a compacted context; headless: `claude -p --resume <id> "/compact <instr>"` per message, and one long-lived `-p --input-format stream-json` process where `/compact` is a stream message (E1, E2, X1, X2) | auto-compaction inside the stream-json process; whether an external process can compact a RUNNING interactive session; `claude --bg` (E6 refuses to start without an interactive trust acceptance) |
+| opencode 2.2.6 | `POST /api/session/:id/compact` compacts with a real model and streams the SSE compaction events; the endpoint has no instruction field, so steering is the plugin `compaction` hook plus a handover file (X4, `POC-opencode.md`) | the `compaction` config block with a real model; `opencode run` as a compaction trigger |
+| pi 1.5.0 | rpc `compact` with `customInstructions` obeyed by a real model; `session_before_compact` fires for auto (`threshold`) and manual compactions and can read a handover file, and in supply mode returns that handover as the summary with zero model calls (X5) | the json-mode (`-p`) compaction event |
+| Codex 0.167.0 | `exec resume <thread_id>` works (3 resumes in X3); the app-server trigger `thread/compact/start` works and reports the compaction as a `contextCompaction` item pair, and `compact_prompt` steers the summary, both at launch (`-c`) and per thread on `thread/resume` (X6); a spawned Codex session may equally continue as a successor seeded with its brief | the AUTOMATIC threshold compaction (X3: no event under four `model_auto_compact_token_limit` settings); that a per-thread `compact_prompt` persists into later automatic compactions (X6); `exec resume <id> "/compact"` is measured NOT to compact (X6), so it is not a trigger |
+
+An interactive controller is steered by hooks where its harness has them, and is
+otherwise left to the harness's own compaction, with the recovery files as what it can rely
+on. A spawned session never depends on being compacted: it self-terminates with a brief,
+and the controller chooses compaction-resume or successor.
+
+### Controller working state (`plan.yaml`, `.controller-state/`)
+
+This is the recovery setup an interactive session relies on (above), and the reason a
+readback is worth building at all.
+
 - **One owner.** The controller owns a **gitignored `plan.yaml` at the repo root**
   and a gitignored `.controller-state/` directory. Every other agent talks to the
   controller (messages, reports) and never edits them. A second controller in the
@@ -642,27 +761,14 @@ the files below are WORKING STATE, not the record.
   timestamps and, before a compaction, a `RESUME HERE #n` section: standing rules, what
   is merged, in flight, hosts, next priorities, lessons), `operator-decisions.md`
   (EVERY operator turn and interview answer, VERBATIM) and `readback-N.md`.
-- **Read-back recipe.** Before a compaction (about 70 % of the context window) build a
-  read-back: `nyxloom-harness extract <session.jsonl> --preset readback --budget-tokens N --since <marker of the previous read-back>`.
-  `N` is the controller's choice (the window and the amount of agent communication decide);
-  the preset includes agent prompts and results and never drops operator turns or interview
-  answers. The `readback` preset exists for Claude Code transcripts only; a controller on
-  another harness uses `extract` with `--profile all --agent-comms full` and its own budget until
-  [NL-65](nyxloom/nyxloom-trove/backlog/NL-65-readback-weights-older-agent-comms.md)
-  extends it. This supersedes the older character-budget builder
-  (`scripts/controller/build-readback.py`) for the operator-mandated recipe; the builder remains
-  for Codex run finals. The compaction prompt names this order and nothing else: (0) `plan.yaml`,
-  (1) `operator-decisions.md`, (2) the newest `readback-N.md` IN FULL, (3) the `RESUME HERE`
-  section of `HANDOFF.md`; older material only by grep. After the compaction, check reality
-  before acting (job status, `git worktree list`, host campaigns) and re-arm the watches.
+- **Read-back recipe:** built per [Readback after a compaction or resume](#readback-after-a-compaction-or-resume).
 - **Plan consistency** is checked by a validator in the controller kit
   (`scripts/controller`, planned: parses `plan.yaml`, checks schema and states, flags items
   whose branch, run or report no longer exists). It must run as part of the status and
   watch scripts the controller already runs, so the controller reads exceptions only and
   does not pay an extra call per tick. Until it exists, verify each edit by hand.
 - **Known limits of the extract.** Not all prose is equal: older agent communication
-  should weigh less than recent decisions (open: NL-65). The read-back is large
-  (50-100k tokens); budget it deliberately.
+  should weigh less than recent decisions (open: NL-65).
 - **State placement.** The controller's working state (`plan.yaml`, `.controller-state/`) is
   the one exception to the kit rule "keep state outside the checkout"
   (`scripts/controller/docs/DESIGN-GUIDE.md`): run records, queue state, host facts,
