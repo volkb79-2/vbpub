@@ -87,7 +87,7 @@ EXPANSIONS = {
     "ledger": "--no-prose --ledger --stop-state",
     "readback": (
         "--profile all --tool-calls intent --agent-comms full --timestamps gaps "
-        "--gap-marker none --budget-tokens 50000"
+        "--gap-marker none --budget-tokens 50000 --tail-prose-tokens 10000"
     ),
 }
 

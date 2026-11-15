@@ -235,8 +235,9 @@ class TestRealEstate:
         report = self._report()
         assert report.ok, report.errors
         assert report.levels["cli-extended"] == 0
-        # Fleetd is a stdlib-only root project with no first-party wheel edges.
-        assert report.levels["fleetd"] == 0
+        # Fleetd's wheel requires cli-extended (its `fleet` CLI is a registered cli-extended
+        # CLI, CX-D1), so it is L1 and releases after the shared library.
+        assert report.levels["fleetd"] == 1
         # Augeaswrap's endpoint CLI consumes the shared cli-extended contract, so it is L1.
         assert report.levels["augeaswrap"] == 1
         # cgprofile's wheel requires cli-extended and augeaswrap, so it follows both at L2.
@@ -246,8 +247,9 @@ class TestRealEstate:
         assert report.levels["nyxloom"] == 1
         assert report.levels["mdt-cockpit"] == max(report.levels.values()) == 5
         assert all(report.levels[name] == 0 for name in (
-            "assay", "fleetd", "tls-edge", "tester-base",
+            "assay", "tls-edge", "tester-base",
         ))
+        assert set(self._forge().orchestration.dependencies["fleetd"]) == {"cli-extended"}
         # topos requires both shared CLI and endpoint wheels, so it follows the L1 providers at L2.
         assert report.levels["topos"] == 2
         # ciu consumes the cli-extended wheel (CIU-114 adoption): a real wheel edge, so L1.

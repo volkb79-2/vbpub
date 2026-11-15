@@ -3,7 +3,9 @@
 Multi-host, multi-instance R2 is the default way mutation judging runs: one
 lane, several worker instances on each of the two test hosts, and shards whose
 budgets derive from measured per-candidate cost instead of a hand-written
-`12h`. Four pieces make that a mechanism instead of a per-tool script:
+`12h`. Four pieces make that a mechanism instead of a per-tool script (they are
+verbs of the `fleet` CLI, which declares `cli-extended>=0.5.0` as a wheel
+dependency):
 
 | piece | command | what it replaces |
 |---|---|---|

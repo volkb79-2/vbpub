@@ -26,7 +26,7 @@ registry = ["ghcr.io"]
 #   cmru <- cli-extended, run-gate-project  (declared release order)
 #   ciu <- cli-extended  (declared release order)
 #   assay <- none  (declared release order)
-#   fleetd <- none  (declared release order)
+#   fleetd <- cli-extended  (declared release order)
 #   topos <- cli-extended, augeaswrap  (declared release order)
 #   nyxloom <- cli-extended  (declared release order)
 #   pwmcp <- cli-extended  (declared release order)
@@ -40,8 +40,8 @@ registry = ["ghcr.io"]
 #   tester-base <- none  (declared release order)
 #
 # LEVELS (a project releases after every project on a lower level; longest declared chain)
-#   L0: cli-extended, assay, fleetd, test-policy, tls-edge, iogovmon, tester-base
-#   L1: augeaswrap, tnt, ciu, nyxloom, pwmcp, iobench, rigor-record
+#   L0: cli-extended, assay, test-policy, tls-edge, iogovmon, tester-base
+#   L1: augeaswrap, tnt, ciu, fleetd, nyxloom, pwmcp, iobench, rigor-record
 #   L2: cgprofile, topos
 #   L3: run-gate-project
 #   L4: cmru
@@ -206,10 +206,12 @@ depends_on = ["cli-extended"]
 config = "assay/cmru.toml"
 depends_on = []
 
-# Fleetd is stdlib-only and currently consumes no first-party release artifact.
+# Fleetd's wheel requires cli-extended (FDCLI, CX-D1): the `fleet` CLI is a registered
+# cli-extended CLI, so the release preflight demands the declaration and fleetd releases
+# after cli-extended (L1). cmru is an installed tool, not a build edge.
 [orchestration.project.fleetd]
 config = "fleetd/cmru.toml"
-depends_on = []
+depends_on = ["cli-extended"]
 
 [orchestration.project.topos]
 config = "topos/cmru.toml"

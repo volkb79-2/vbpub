@@ -610,21 +610,36 @@ prose only, timestamped, coloured on a terminal, interviews kept compactly; `--j
 fresh agent, `review` audits what an agent did at full fidelity, and `ledger`
 prints only external effects, touched files and stop state. `successor` and
 `readback` include full agent communication. `readback` is a bounded Claude Code
-controller handoff:
+controller handoff. It carries the newest prose of the session (the end of the
+transcript, after the previous read-back's marker), then the delta since that
+marker minus the prose already shown:
 
 ```bash
 nyxloom-harness extract SESSION_LOG --preset watch --follow
 nyxloom-harness extract SESSION_LOG --preset watch --follow --jsonl
-nyxloom-harness extract SESSION_LOG --preset readback --budget-tokens 50000 > readback.md
+nyxloom-harness extract SESSION_LOG --preset readback --budget-tokens 30000 --since PREVIOUS_READBACK_MARKER > readback-N.md
+nyxloom-harness extract SESSION_LOG --preset readback --goal-prompt --budget-tokens 20000 > spawned-agent-readback.md
+nyxloom-harness extract SESSION_LOG --preset readback --goal-file GOAL.md --budget-tokens 20000 > pinned-goal-readback.md
 nyxloom-harness extract SESSION_LOG --profile all --agent-comms full > with-agents.md
 ```
+
+A controller session uses the 30000-token readback and no goal anchor (its
+anchor is its `plan.yaml`); a spawned session's controller chooses a smaller
+`--budget-tokens` and adds `--goal-prompt`, because its anchor is the goal it
+started with. The last line of the output is `[readback marker: <marker>]`:
+pass that marker (or the file as `--since-file`) to the NEXT read-back so it
+never repeats what this one carried. `--goal-file` pins the anchor when the
+session's own first prompt is not the goal (for example a resumed worker
+whose first record is a wake-up).
 
 The readback footer reports the effective budget, `chars/4` estimator,
 footer reserve, protected-content cost, kept/dropped counts, estimated dropped
 cost and dropped time span for each priority class, and the source time span.
-Operator turns and interview answers are never budget-dropped. If they alone
-exceed the requested content budget, lower-priority classes yield first and
-the footer reports the protected overrun plainly. `off` preserves the prior
+When a goal anchor is requested it is never truncated; the recent-prose
+tail shrinks first, and the delta takes the rest. Operator turns and interview answers are never
+budget-dropped. If they alone exceed the requested content budget,
+lower-priority classes yield first and the footer reports the protected
+overrun plainly. `off` preserves the prior
 extract bytes; `summary` is bounded; `full` keeps every complete rendered
 Agent/Task/SendMessage or notification item, including its header, within the
 per-item cap. The recognized

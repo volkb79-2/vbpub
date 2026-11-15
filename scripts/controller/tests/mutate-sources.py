@@ -212,6 +212,32 @@ mutant("scripts/controller/gate-run.sh", "gate-run-refusal-example.sh",
        'gate-run: configure the gate lock paths before running')
 mutant("scripts/controller/build-readback.py", "build-readback-budget-minimum.py",
        'if args.budget_chars < 512:', 'if False:')
+mutant("scripts/controller/hooks/ctx-hooks.py", "ctx-hooks-since-marker.py",
+       '    if marker:\n        command += ["--since", marker]',
+       '    if False:\n        command += ["--since", marker]')
+mutant("scripts/controller/hooks/ctx-hooks.py", "ctx-hooks-number-next.py",
+       '    return highest + 1', '    return highest')
+mutant("scripts/controller/hooks/ctx-hooks.py", "ctx-hooks-subagent-own.py",
+       '    if agent_id:\n        own = Path(path).parent',
+       '    if False:\n        own = Path(path).parent')
+mutant("scripts/controller/hooks/ctx-hooks.py", "ctx-hooks-failure-record.py",
+       '    log(log_path, {"ev": "readback", **result, "rc": rc})\n    write_state(',
+       '    log(log_path, {"ev": "readback", **result, "rc": rc})\n    return result\n    write_state(')
+mutant("scripts/controller/hooks/ctx-hooks.py", "ctx-hooks-pressure-rearm.py",
+       '    if step < recorded:\n        # The context shrank',
+       '    if False:\n        # The context shrank')
+mutant("scripts/controller/hooks/ctx-hooks.py", "ctx-hooks-hard-timeout.py",
+       'HARD_TIMEOUT = 20.0', 'HARD_TIMEOUT = 600.0')
+mutant("scripts/controller/hooks/ctx-hooks.py", "ctx-hooks-kind-wording.py",
+       '    controller = kind != "spawned"', '    controller = False')
+mutant("scripts/controller/hooks/ctx-hooks.py", "ctx-hooks-pattern-leak.py",
+       'shown += ["--redact-pattern", "<REGEX>"]', 'shown += ["--redact-pattern", pattern]')
+mutant("scripts/controller/hooks/ctx-hooks.py", "ctx-hooks-spawned-goal.py",
+       '        or kind == "spawned"\n', '        or False\n')
+mutant("scripts/controller/hooks/ctx-hooks.py", "ctx-hooks-subagent-skip.py",
+       '        if hook.get("agent_id") and not explicit:', '        if False:')
+mutant("scripts/controller/hooks/ctx-hooks.py", "ctx-hooks-crash-log.py",
+       'log(ACTIVE_LOG, {"ev": "hook-error"', 'log(None, {"ev": "hook-error"')
 mutant("scripts/controller/release-from-wt.sh", "release-psi-validation.sh",
        "[[ $psi_limit =~ ^[0-9]+([.][0-9]+)?$ && $poll_seconds =~ ^[0-9]+$ ]] || {\n  echo 'RELEASE_PSI_LIMIT must be numeric and RELEASE_PSI_POLL_SECONDS must be integer seconds' >&2; exit 2;\n}",
        ': # removed PSI input validation')

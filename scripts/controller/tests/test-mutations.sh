@@ -258,6 +258,28 @@ expect_killed usage-retry-dated-parser \
   env CONTROLLER_LIB_SCRIPT="$ROOT/mutants/scripts/controller/usage-retry-time-only-lib.sh" bash "$SCRIPT_DIR/test-hardening-tools.sh"
 expect_killed build-readback-budget-minimum \
   env BUILD_READBACK_SCRIPT="$ROOT/mutants/scripts/controller/build-readback-budget-minimum.py" bash "$SCRIPT_DIR/test-hardening-tools.sh"
+expect_killed ctx-hooks-since-marker \
+  env CTX_HOOKS_SCRIPT="$ROOT/mutants/scripts/controller/ctx-hooks-since-marker.py" bash "$SCRIPT_DIR/test-ctx-hooks.sh"
+expect_killed ctx-hooks-number-next \
+  env CTX_HOOKS_SCRIPT="$ROOT/mutants/scripts/controller/ctx-hooks-number-next.py" bash "$SCRIPT_DIR/test-ctx-hooks.sh"
+expect_killed ctx-hooks-subagent-own \
+  env CTX_HOOKS_SCRIPT="$ROOT/mutants/scripts/controller/ctx-hooks-subagent-own.py" bash "$SCRIPT_DIR/test-ctx-hooks.sh"
+expect_killed ctx-hooks-failure-record \
+  env CTX_HOOKS_SCRIPT="$ROOT/mutants/scripts/controller/ctx-hooks-failure-record.py" bash "$SCRIPT_DIR/test-ctx-hooks.sh"
+expect_killed ctx-hooks-pressure-rearm \
+  env CTX_HOOKS_SCRIPT="$ROOT/mutants/scripts/controller/ctx-hooks-pressure-rearm.py" bash "$SCRIPT_DIR/test-ctx-hooks.sh"
+expect_killed ctx-hooks-hard-timeout \
+  env CTX_HOOKS_SCRIPT="$ROOT/mutants/scripts/controller/ctx-hooks-hard-timeout.py" bash "$SCRIPT_DIR/test-ctx-hooks.sh"
+expect_killed ctx-hooks-kind-wording \
+  env CTX_HOOKS_SCRIPT="$ROOT/mutants/scripts/controller/ctx-hooks-kind-wording.py" bash "$SCRIPT_DIR/test-ctx-hooks.sh"
+expect_killed ctx-hooks-pattern-leak \
+  env CTX_HOOKS_SCRIPT="$ROOT/mutants/scripts/controller/ctx-hooks-pattern-leak.py" bash "$SCRIPT_DIR/test-ctx-hooks.sh"
+expect_killed ctx-hooks-spawned-goal \
+  env CTX_HOOKS_SCRIPT="$ROOT/mutants/scripts/controller/ctx-hooks-spawned-goal.py" bash "$SCRIPT_DIR/test-ctx-hooks.sh"
+expect_killed ctx-hooks-subagent-skip \
+  env CTX_HOOKS_SCRIPT="$ROOT/mutants/scripts/controller/ctx-hooks-subagent-skip.py" bash "$SCRIPT_DIR/test-ctx-hooks.sh"
+expect_killed ctx-hooks-crash-log \
+  env CTX_HOOKS_SCRIPT="$ROOT/mutants/scripts/controller/ctx-hooks-crash-log.py" bash "$SCRIPT_DIR/test-ctx-hooks.sh"
 expect_killed push-pipeline-exit-propagation \
   env PUSH_IMAGE_SCRIPT="$ROOT/mutants/scripts/controller/push-image-status.sh" bash "$SCRIPT_DIR/test-wrappers.sh"
 expect_killed queue-auto-pause-threshold \

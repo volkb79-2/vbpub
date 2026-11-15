@@ -1,7 +1,17 @@
+"""The public documents say what the shipped CLI does, and their examples still parse.
+
+None of these checks can be satisfied by intention: every one of them goes red when a
+document drifts from the parser, from the declared dependency floor, or from a verb that
+exists. That matters because the docs are what an adopter reads before the code.
+"""
+
 import re
 import tomllib
 from pathlib import Path
 
+import pytest
+
+from fleetd.cli import build_cli
 from fleetd.contracts import validate_lane_demand
 from fleetd.facts import load_facts_config
 from fleetd.merge import IDENTITY_SCHEMA, IDENTITY_SET_SCHEMA
@@ -17,7 +27,6 @@ from fleetd.scope import (
 )
 from fleetd.sizing import SIZING_SCHEMA
 
-
 PROJECT = Path(__file__).parents[1]
 PUBLIC_DOCS = [
     PROJECT / "README.md",
@@ -26,11 +35,20 @@ PUBLIC_DOCS = [
     PROJECT / "docs" / "CONSUMERS.md",
     PROJECT / "docs" / "R2-DEFAULT.md",
 ]
+PYPROJECT = PROJECT / "pyproject.toml"
 
 
 def _slug(heading):
     value = re.sub(r"[^a-z0-9 -]", "", heading.lower()).strip().replace(" ", "-")
     return re.sub(r"-+", "-", value)
+
+
+def _declared_dependency() -> str:
+    pyproject = tomllib.loads(PYPROJECT.read_text(encoding="utf-8"))
+    requirements = pyproject["project"]["dependencies"]
+    matches = [item for item in requirements if item.lower().startswith("cli-extended")]
+    assert len(matches) == 1, requirements
+    return matches[0]
 
 
 def test_public_docs_toml_examples_parse_and_declare_their_schema(tmp_path):
@@ -101,3 +119,80 @@ def test_docs_name_every_default_r2_capability_and_value_a_consumer_types():
         assert command in combined, command
     for key in ("worker_memory", "worker_cpu", "instance_cpu", "image_digest", "slice_size"):
         assert key in combined, key
+
+
+# --- the cli-extended adoption, as a documentation obligation ---------------------------
+
+
+def test_every_public_doc_states_the_same_dependency_floor_as_the_manifest():
+    """A doc that quotes a different floor sends an adopter to a library that cannot run it."""
+
+    floor = _declared_dependency()
+    for path in PUBLIC_DOCS:
+        text = path.read_text(encoding="utf-8")
+        if path.name == "DESIGN-GUIDE.md":
+            continue  # rationale, not an install instruction; it links to the SPEC clause
+        assert floor in text or floor.replace(">=", " ") in text, path
+
+
+def test_the_readme_and_consumer_guide_carry_a_runnable_host_install():
+    """Pasteable, not described: both wheels, offline, and the verification command."""
+
+    for path in (PROJECT / "README.md", PROJECT / "docs" / "CONSUMERS.md"):
+        text = path.read_text(encoding="utf-8")
+        assert "--no-index" in text, path
+        assert "cli_extended-0.5.0-py3-none-any.whl" in text, path
+        assert "fleetd-<version>-py3-none-any.whl" in text, path
+        assert "fleet --version" in text, path
+        assert "exit 3" in text, path
+
+
+def test_the_spec_has_one_generated_surface_region():
+    spec = (PROJECT / "docs" / "SPEC.md").read_text(encoding="utf-8")
+    assert spec.count("<!-- cli-extended-surface:start -->") == 1
+    assert spec.count("<!-- cli-extended-surface:end -->") == 1
+    assert spec.index("<!-- cli-extended-surface:start -->") < spec.index("<!-- cli-extended-surface:end -->")
+
+
+@pytest.mark.parametrize("verb", ["facts", "guard", "plan", "run", "status", "tick", "collect", "skills"])
+def test_every_registered_verb_is_documented(verb):
+    """A capability nobody can find is not shipped: each verb appears in the guides."""
+
+    text = (PROJECT / "docs" / "CONSUMERS.md").read_text(encoding="utf-8")
+    assert f"fleet {verb}" in text or f"`fleet {verb}" in text, verb
+    assert any(f"fleet {verb}" in path.read_text(encoding="utf-8")
+               for path in (PROJECT / "README.md", PROJECT / "docs" / "SPEC.md")), verb
+
+
+def test_the_consumer_guide_records_every_adoption_checklist_judgement():
+    """The checklist rows are part of the change, not a follow-up."""
+
+    text = (PROJECT / "docs" / "CONSUMERS.md").read_text(encoding="utf-8")
+    for row in range(1, 26):
+        assert f"AC-{row:02d}" in text, f"AC-{row:02d} is unrecorded"
+    # The two manual rows must say WHY, not only that they are manual.
+    assert "AC-12" in text and "idempotent" in text
+    assert "AC-20" in text and "host-facts/1" in text
+
+
+def test_the_skill_ships_and_the_cli_registers_the_library_verbs():
+    skill = PROJECT / "src" / "fleetd" / "skills" / "fleetd-campaigns" / "SKILL.md"
+    assert skill.is_file()
+    assert build_cli().skills_package == ("fleetd", "skills")
+
+
+def test_gate_lanes_use_the_review_plugin_mode_their_scope_needs():
+    """The full-suite lane stays strict; a lane that collects one file must be partial.
+
+    Getting this backwards is not cosmetic: strict collection in a focused lane fails the
+    whole lane with "references uncollected test", which looks like a product defect.
+    """
+
+    lanes = tomllib.loads((PROJECT / "run-gate.toml").read_text(encoding="utf-8"))["lanes"]
+    full = " ".join(lanes["r0-r1"]["argv"])
+    focused = " ".join(lanes["campaign-contract"]["argv"])
+    assert "pytest tests -q" in full
+    assert "--cli-case-partial" not in full, "the whole-suite lane must stay strict"
+    assert "pytest tests/test_campaign.py" in focused
+    assert "--cli-case-partial" in focused
+    assert "tests/test_cli_review_cases.py" not in focused

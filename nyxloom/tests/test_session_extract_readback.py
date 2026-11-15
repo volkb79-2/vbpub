@@ -872,7 +872,12 @@ def test_readback_combines_time_bound_budget_and_agent_communication(capsys):
         "--no-color",
     )
     assert code == 0, err
+    # The shipped preset does NOT carry a goal anchor (a controller's anchor is
+    # its plan file), and the operator turn BEFORE the cut belongs to an earlier
+    # readback: the tail is the newest prose after the cut only.
     assert "Implement the bounded readback" not in out
+    assert "## Goal of the session" not in out
+    assert "## Recent prose" in out
     assert "AGENT-IN: task=task-example" in out
     assert "[readback budget: limit=10000" in out
     assert (

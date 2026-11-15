@@ -3026,9 +3026,8 @@ def test_measurement_cli_reports_the_document(tmp_path, capsys, monkeypatch):
     from fleetd import cli
 
     monkeypatch.setattr("fleetd.cli._manager", lambda _args: manager)
-    from argparse import Namespace
 
-    assert cli._measurement_campaign(Namespace(campaign="campaign", transport="hx", state_dir=tmp_path)) == 0
+    assert cli.main(["measurement", "campaign", "--state-dir", str(tmp_path)]) == 0
     payload = json.loads(capsys.readouterr().out)
     assert payload["schema"] == "fleet-r2-measurement/1"
     assert payload["campaign"] == "campaign"
