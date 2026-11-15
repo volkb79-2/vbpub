@@ -712,13 +712,17 @@ def _due_entries(
     by_path: Mapping[str, Sequence[PlannedCandidate]],
     marks: Mapping[str, Mapping[str, Any]],
     blobs: Mapping[str, str],
+    pass_index: int,
 ) -> tuple[list[tuple[int, int, str, PlannedCandidate]], dict[str, int], int]:
     """Return the due candidates, their accounting, and how many paths changed.
 
     One entry is ``(rank, last_pass, path, candidate)``: rank 0 is a path whose
     content changed since its mark (judged first, least recently judged first),
     rank 1 is a never-judged or not-yet-judged-in-this-content candidate
-    (path order).
+    (path order), and rank 2 is a path fully judged in an EARLIER pass than
+    *pass_index* (least recently judged first, then path order): a mark only
+    counts for the pass it was written in, so every later pass sweeps the whole
+    target again instead of re-judging the first slice for ever.
     """
     due: list[tuple[int, int, str, PlannedCandidate]] = []
     accounting = {
@@ -744,6 +748,10 @@ def _due_entries(
             due.extend((0, mark["last_pass"], path, row) for row in rows)
             accounting["changed_candidates"] += len(rows)
             changed_files += 1
+            continue
+        if mark["last_pass"] < pass_index:
+            due.extend((2, mark["last_pass"], path, row) for row in rows)
+            accounting["pending_candidates"] += len(rows)
             continue
         judged = set(mark["keys"])
         judged_rows = [row for row in rows if row.key in judged]
@@ -791,7 +799,7 @@ def rolling_slice(
     marks = {} if cursor is None or rebaseline else previous_files
     previous_pass = 0 if cursor is None else cursor["pass_index"]
     pass_index = previous_pass
-    due, accounting, changed_files = _due_entries(by_path, marks, blobs)
+    due, accounting, changed_files = _due_entries(by_path, marks, blobs, pass_index)
     # Retirement is accounted from the PREVIOUS cursor even under --rebaseline:
     # a discarded mark is still a mark this release is choosing not to resume,
     # and the evidence says so instead of the path vanishing from the record.
@@ -813,11 +821,10 @@ def rolling_slice(
         pass_index = previous_pass + 1
     if new_pass:
         pass_index = previous_pass + 1
-        due = [
-            (2, previous_pass, path, row)
-            for path, rows in by_path.items()
-            for row in rows
-        ]
+        # Every path now carries a mark of an earlier pass, so each one is due
+        # at rank 2, least recently judged first (the accounting above keeps
+        # describing the finished pass the cursor was found in).
+        due = _due_entries(by_path, marks, blobs, pass_index)[0]
     chosen = _slice_order(due)[:slice_size]
     selected = tuple(row.id for _, _, _, row in chosen)
     files: dict[str, dict[str, Any]] = {}
@@ -832,7 +839,9 @@ def rolling_slice(
             continue
         reusable = (
             ()
-            if new_pass or mark is None or not _mark_is_current(mark, rows, blobs[path])
+            if mark is None
+            or mark["last_pass"] < pass_index
+            or not _mark_is_current(mark, rows, blobs[path])
             else tuple(mark["keys"])
         )
         files[path] = {

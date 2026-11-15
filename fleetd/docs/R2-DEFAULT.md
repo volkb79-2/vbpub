@@ -41,6 +41,7 @@ An empty selection is an explicit `nothing-to-judge` result with its reason,
 and `--out` refuses to write an empty candidate file for it; the CLI exits 4.
 A campaign that judged nothing can therefore never look like a campaign that
 passed.
+
 The rolling baseline is a **per-tool opt-in**, declared in a committed
 `r2-scope.toml` beside the project's `run-gate.toml`:
 
@@ -54,8 +55,9 @@ cursor = ".assay/r2-scope-cursor.json"
 note = "every release judges the next 40 candidates of the whole-target list"
 ```
 
-With that mode each release judges the release's own changed candidates **plus**
-the next slice of a persisted sweep over the whole target, so successive releases
+With that mode each release judges, within ONE `slice_size` budget, first the
+candidates of files that changed since they were last judged and then the next
+slice of a persisted sweep over the whole target, so successive releases
 cover the target without re-judging the whole list at once. The sweep state is a
 `fleet-r2-scope-cursor/2` file, and it is keyed by **file content**: each path
 records the git blob id of the content its marks belong to, the planned
@@ -86,7 +88,18 @@ The rules, which are what make rolling a sweep instead of a sample:
   the budget, and changing it re-slices the same sweep rather than refusing.
 - A finished sweep does not idle and is not reported as `nothing-to-judge`:
   the next release starts a new pass, least recently judged first, and the
-  document says `"new_pass": true`.
+  document says `"new_pass": true`. A mark counts only for the pass it was
+  written in, so every later pass sweeps the whole target again (a path judged
+  in an earlier pass is due again, least recently judged first).
+- The changed files and the sweep share ONE budget, `slice_size`. Rolling is not
+  "all changed candidates plus a slice": a release that changes more candidates
+  than `slice_size` judges only the first `slice_size` of them (least recently
+  judged first), and the rest of a half-judged changed file continues in path
+  order with the other pending candidates, not first. A target whose files are
+  edited every release by more than `slice_size` candidates can therefore starve
+  the never-judged remainder. Size `slice_size` above the expected per-release
+  churn, or use `changed-lines` for a release gate and `rolling-whole-target` for
+  the background sweep.
 
 The cursor is versioned and digest-protected (`state_digest` covers the whole
 document), so a hand-edited cursor is refused rather than trusted, and a cursor

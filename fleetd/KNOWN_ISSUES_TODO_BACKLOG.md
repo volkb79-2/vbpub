@@ -40,6 +40,7 @@
 | FD-034 | No host-install script for fleetd; the docs prescribed a system-Python pip install that Debian 13 refuses | P2 | DONE | 2026-11-15 |
 | FD-035 | `host-facts/1` validation does not bound a service `MemoryMin`, so an implausible fact is first refused at plan time, not at collect or validate time | P3 | OPEN | 2026-11-15 |
 | FD-037 | Rolling mode keys a candidate by its file's content, so a partial edit re-judges the whole file | P3 | OPEN | 2026-11-15 |
+| FD-038 | Rolling mode's changed candidates share the `slice_size` budget, so heavy per-release churn can defer them and starve the never-judged remainder | P3 | OPEN | 2026-11-15 |
 
 ## FD-001 Lite campaign lifecycle
 
@@ -724,14 +725,17 @@ candidate-id list:
   is that migration (one new pass from the current content) and reports the
   schema it migrated from in `slice.legacy_cursor`.
 
-Rolling therefore means: **the changed-lines findings of the release** (a
-changed file is judged whole) **plus the next slice of never-/least-recently
-judged candidates**. `--rebaseline` is now rare and explicit rather than a
-per-release ritual.
+Rolling therefore means: **the candidates of files changed since they were last
+judged** (a changed file is judged whole) **then the next slice of never-/
+least-recently judged candidates, all within one `slice_size` budget** (FD-038:
+the changed candidates are not exempt from the budget). A mark counts only for
+the pass it was written in, so every later pass sweeps the whole target again.
+`--rebaseline` is now rare and explicit rather than a per-release ritual.
 
 **Evidence.** `tests/test_scope.py` covers a synthetic target of 60 candidates
 across five releases (full coverage in `ceil(N / slice_size)` releases, then a
-recorded new pass), an edit between releases (edited file judged whole, others
+recorded new pass; every later pass sweeps the whole target again, the review
+round's regression), an edit between releases (edited file judged whole, others
 resume, no candidate skipped, no re-judge of untouched files), file adds/
 deletes/plan-shape changes (`changed`/`retired` accounting), determinism
 (identical input sequences produce identical slices), corrupt/stale/hand-edited/
@@ -744,6 +748,24 @@ and `CHANGES.md`.
 whole file (FD-037); the key assumes `assay plan` reports a stable `operator`
 for a site; cross-worktree/other-origin id collisions are assay's problem, not
 the cursor's, because the cursor keys on content rather than on ids.
+
+## FD-038 Rolling mode's changed candidates share the `slice_size` budget
+
+**State:** OPEN. **Priority:** P3. **Filed:** 2026-11-15 (review of FD-033).
+
+The rolling slice is a prefix of one order: files whose content changed since
+their mark first, then never-/not-yet-judged candidates. A release that changes
+more candidates than `slice_size` judges only a prefix of them (the rest of a
+half-judged changed file continues in path order, not first), and a target whose
+files are re-edited every release by more than `slice_size` candidates never
+reaches the never-judged remainder. `changed-lines` has no such budget.
+
+**Wanted.** A decision: either the changed candidates are exempt from
+`slice_size` (rolling = changed-lines + a budgeted slice, at the cost of an
+unbounded release), or a separate cap for the sweep share (a minimum number of
+never-judged candidates per release), with the accounting naming what was
+deferred. **Close when.** A synthetic target edited every release shows the
+chosen rule and a test pins that no file is deferred without being reported.
 
 ## FD-037 Rolling keys a candidate by its file's content, so a partial edit re-judges the whole file
 

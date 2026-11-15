@@ -725,6 +725,39 @@ def test_the_sweep_covers_the_whole_target_across_releases():
     # full target is a full new pass, never a half-covered leftover.
 
 
+def test_every_later_pass_sweeps_the_whole_target_again():
+    # Review finding: a mark counted as "judged" for ever, so after pass 0 the
+    # sweep re-judged only the first slice (and its half-judged file) on every
+    # later release and never reached the rest of the target again.
+    files = {f"src/f{index}.py": 10 for index in range(6)}
+    edits = [{path: 0 for path in files} for _ in range(16)]
+    judged = _sweep(files, edits, slice_size=15)
+    passes: dict[int, set] = {}
+    for item in judged:
+        passes.setdefault(item["pass_index"], set()).update(item["selected"])
+    assert sorted(passes) == [0, 1, 2, 3]
+    for index in (0, 1, 2):
+        assert len(passes[index]) == 60, index
+    # Pass N+1 starts exactly where the least recently judged work is.
+    assert [item["new_pass"] for item in judged].count(True) == 3
+
+
+def test_a_pass_that_is_swept_with_edits_between_releases_still_covers_every_file():
+    files = {f"src/f{index}.py": 6 for index in range(5)}
+    epochs = [{path: 0 for path in files} for _ in range(24)]
+    for release in range(8, 24):
+        epochs[release] = {
+            path: (release // 8 if path == "src/f2.py" else 0) for path in files
+        }
+    judged = _sweep(files, epochs, slice_size=7)
+    per_path: dict[str, set[int]] = {}
+    for item in judged[8:]:
+        for path, _line, _epoch in item["selected"]:
+            per_path.setdefault(path, set()).add(item["pass_index"])
+    # After the early passes every path is still reached again in later passes.
+    assert all(len(per_path[path]) >= 2 for path in files), per_path
+
+
 def test_the_sweep_keeps_covering_after_edits_between_releases():
     files = {f"src/f{index}.py": 5 for index in range(4)}
     edited = {"src/f0.py": 1, **{path: 0 for path in files if path != "src/f0.py"}}
@@ -751,6 +784,27 @@ def test_the_sweep_keeps_covering_after_edits_between_releases():
     # (f0, 0), the release after the edit judged (f0, 1) whole.
     assert any(entry[0] == "src/f0.py" and entry[2] == 0 for entry in covered)
     assert any(entry[0] == "src/f0.py" and entry[2] == 1 for entry in covered)
+
+
+def test_changed_files_are_judged_least_recently_judged_first():
+    rows = _candidates(
+        ("src/a.py", 1, "python:compare-swap"),
+        ("src/b.py", 1, "python:compare-swap"),
+    )
+    cursor = _with_digest(_cursor(
+        pass_index=3,
+        files={
+            # src/a.py was judged more recently than src/b.py; both changed since.
+            "src/a.py": _mark(blob="1" * 40, keys=[_key("src/a.py")], last_pass=3),
+            "src/b.py": _mark(blob="2" * 40, keys=[_key("src/b.py")], last_pass=1),
+        },
+    ))
+    result = rolling_slice(
+        rows, slice_size=1, lane="r2", blobs=_blobs(**{"src/a.py": A, "src/b.py": B}),
+        cursor=validate_cursor(cursor),
+    )
+    assert result.selected == (_cid(1),)
+    assert result.changed_files == 2
 
 
 def test_the_sweep_is_deterministic_for_the_same_inputs():

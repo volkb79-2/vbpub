@@ -354,8 +354,9 @@ for the worked examples.
 `git diff -U0 <previous release tag>..<commit>`; a renamed file is judged
 whole because candidate identity folds in its path. An empty selection is
 `nothing-to-judge` with a reason, exit 4, and `--out` refuses to write an empty
-file. The opt-in `rolling-whole-target` mode judges the release's own changed
-candidates plus the next slice of a persisted sweep whose state document is
+file. The opt-in `rolling-whole-target` mode judges, within one `slice_size`
+budget, the candidates of files changed since they were last judged and then
+the next slice of a persisted sweep whose state document is
 `fleet-r2-scope-cursor/2`; it is keyed by **file content** (git blob id) and by
 a location-stable candidate key `(path, operator, ordinal)`, never by Assay's
 candidate id. A release that edits a target file judges that file whole and
