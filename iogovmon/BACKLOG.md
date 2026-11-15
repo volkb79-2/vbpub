@@ -160,3 +160,27 @@ environment variables, and `iogovmon.slice` keep their existing names.
 **Priority.** Major. This is the release and default-on safety gate for a host-writing service.
 
 **Close when.** The M0/M1 and installer-adapter implementation passes its registered gates, the named WRITE-mode acceptance passes on both designated hosts with rollback/audit/opt-out evidence, and the first release records the resulting default-on decision with bounds.
+
+## IGM-16 - `install.sh` ends with an ACL check that races the asynchronous udev trigger
+
+**Status:** OPEN. Filed 2026-11-15 from the r1002 48 h acceptance install (source `vbpub@04c7af43c`, iogovmon 0.1.0).
+
+**Problem.** Step 7 runs `udevadm trigger --action=change ... --sysname-match=<disk>`, which returns before udev has applied the rule, and the closing "Next, by hand" text tells the operator to verify the read-only ACL at once with `sudo -u iogovmon dd if=<node> ... iflag=direct`. On a reinstall right after an uninstall the first `dd` failed with `Permission denied`; `udevadm settle` and a second `dd` then succeeded and `getfacl` showed `user:iogovmon:r--`. An operator reads that first failure as a rejected ACL review (IGM-01) instead of a timing effect.
+
+**Do.** Run `udevadm settle --timeout=30` right after the trigger, and have the installer perform the read-only verification itself (read one 4 KiB block as the service user, assert `test -w` is false, print the `getfacl` line) so the "Next" text no longer asks for it by hand. Cover the new step in `tests/` for the staging (`--destdir`) mode as a skipped step.
+
+**Acceptance.** A real install followed by an immediate uninstall/install cycle never prints a failed ACL read; the staging test asserts the skip line.
+
+**Priority.** Minor.
+
+## IGM-17 - one empty-offset sequential-read lane marks an otherwise valid bench `aborted`
+
+**Status:** OPEN. Filed 2026-11-15 from the same r1002 install.
+
+**Problem.** `bench.seq_read` picks 8 random aligned offsets and requires a non-zero first block. On a mostly unallocated disk (r1002: 512 GiB virtual disk, roughly 25 GB of data, the rest unwritten or swap) all 8 picks can be zero, so the lane sets `aborted = "no_nonzero_offset_found"`. The caller turns any lane abort into a `LaneAbort`, so the run is journalled with `status: "aborted"` and `abort: no_nonzero_offset_found` although `w_fresh_qd1`, `w_fresh_qd4` and `w_over_4k` all finished valid (the first bench on r1002: 3 valid write lanes, 65 MiB written, then `aborted`). `status` then shows `bench: aborted no_nonzero_offset_found`, which says nothing about the disk or the safety gates (only a crashed run counts toward `bench_max_failures`, so there is no backoff), and a weekly escalation only follows an `ok` run.
+
+**Do.** Treat "no allocated offset found" as a lane result (`valid: false`, reason `thin_disk`) instead of a run abort, and bias the search toward allocated space (more probes at the same 4 KiB cost, or probe the offsets of the witness blocks that `tick` already found non-zero). Keep real aborts (`budget:*`, `unsafe_path`, gate stops) as run aborts.
+
+**Acceptance.** A fake disk that is all zero except a few blocks yields a bench with `status: "ok"` and `r_seq.valid == false`; the budget numbers in `plan` still hold (a probe is charged per attempt).
+
+**Priority.** Minor; it makes the r_seq series sparse on thin disks and holds back the weekly escalation (it follows an `ok` run only).
