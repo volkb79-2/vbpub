@@ -277,8 +277,6 @@ pub struct TierScan {
     /// Stale `.seg.open` twins removed because a sealed segment with the same (tier, start_s,
     /// seq) was verified: the crash window between a seal's rename and its unlink.
     pub stale_open_removed: Vec<String>,
-    /// True when the open segment's tail was damaged in a way the scan could not repair.
-    pub open_damaged: bool,
     /// The tier's total bytes in its own segments.
     pub bytes: u64,
 }
@@ -351,12 +349,6 @@ impl Tier {
             seq_water: 0,
         };
         tier.rescan()?;
-        if tier.scan.open_damaged {
-            return Err(StoreError::Config {
-                key: "open-segment",
-                reason: "the open segment has a tail the store could not repair",
-            });
-        }
         tier.reopen_open_segment()?;
         Ok(tier)
     }
@@ -438,7 +430,6 @@ impl Tier {
         let mut oversized: Vec<String> = Vec::new();
         let mut unreadable: Vec<String> = Vec::new();
         let mut stale_open_removed: Vec<String> = Vec::new();
-        let mut open_damaged = false;
         let mut bytes: u64 = 0;
         for entry in entries {
             let parsed = match SegmentFileName::parse(&entry.name) {
@@ -475,16 +466,10 @@ impl Tier {
             if entry.len > self.config.segment_file_bound()
                 || entry.len > u64::try_from(self.max_file_bytes).unwrap_or(u64::MAX)
             {
-                let quarantine = match crate::segment::quarantine_name(&entry.name) {
-                    Ok(name) => name,
-                    Err(error) => {
-                        notes.push(TierNote {
-                            name: entry.name.clone(),
-                            reason: format!("oversized and unnamed: {}", error.kind()),
-                        });
-                        continue;
-                    }
-                };
+                // The quarantine name comes from the parsed name this scan already accepted, so
+                // it cannot refuse here: `quarantine_name` is exactly this formatting plus a
+                // parse that has already succeeded.
+                let quarantine = format!("{}.corrupt", parsed.file_name());
                 // Only quarantine what is provably ours: a look-alike name holding someone
                 // else's bytes is reported and left alone. The header is read as a **window**
                 // here: this branch exists because the file is past the whole-file bound, so
@@ -590,17 +575,7 @@ impl Tier {
                     }
                 },
                 TailState::Corrupt { .. } => {
-                    let quarantine = match crate::segment::quarantine_name(&entry.name) {
-                        Ok(name) => name,
-                        Err(error) => {
-                            unreadable.push(entry.name.clone());
-                            notes.push(TierNote {
-                                name: entry.name.clone(),
-                                reason: format!("corrupt and unnamed: {}", error.kind()),
-                            });
-                            continue;
-                        }
-                    };
+                    let quarantine = format!("{}.corrupt", parsed.file_name());
                     match scan.quarantine(&self.dir, &quarantine) {
                         Ok(()) => {
                             quarantined.push(entry.name.clone());
@@ -643,9 +618,6 @@ impl Tier {
             } else {
                 scan
             };
-            if parsed.open && scan.tail.is_damaged() {
-                open_damaged = true;
-            }
             bytes = bytes.saturating_add(scan.file_len);
             segments.push(ring_segment(&entry.name, parsed, scan));
         }
@@ -695,7 +667,6 @@ impl Tier {
             oversized,
             unreadable,
             stale_open_removed,
-            open_damaged,
             bytes,
         };
         self.bytes = self.scan.bytes;

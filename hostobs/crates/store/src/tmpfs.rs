@@ -223,16 +223,22 @@ impl MountTable {
     pub fn resolve(&self, path: &Path) -> Result<std::path::PathBuf, StoreError> {
         use std::path::Component;
         let mut resolved = std::path::PathBuf::new();
+        // `Path::components` already normalises an interior `.` away and keeps `..` as its own
+        // component, so the shapes left here are the root, a `..` and a normal name; a leading
+        // `.` (a path that is only `.`) still arrives as `CurDir` and is dropped, and the
+        // `is_absolute` check below then refuses it.
+        // A Windows prefix cannot occur on the Unix target this crate builds for, but the arm
+        // exists so the match stays exhaustive rather than silently falling through.
         for component in path.components() {
             match component {
                 Component::RootDir => resolved.push("/"),
-                Component::CurDir => {}
                 Component::ParentDir => {
                     return Err(StoreError::Config {
                         key: "tmpfs_dir",
                         reason: "must not contain a `..` component",
                     });
                 }
+                Component::CurDir => {}
                 Component::Prefix(_) => {
                     return Err(StoreError::Config {
                         key: "tmpfs_dir",
