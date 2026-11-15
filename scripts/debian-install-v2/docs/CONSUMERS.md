@@ -103,6 +103,37 @@ systemd-tmpfiles --create --boot /etc/tmpfiles.d/vbpub-ksm.conf
 
 The `--boot` option is required for the drop-in's `w!` entries.
 
+## Control-plane service MemoryMin floors
+
+The default install writes fixed systemd drop-ins for
+`ssh.service`, `docker.service`, `containerd.service`,
+`systemd-journald.service`, `cgprofiled.service`, and
+`mdt-psi-guard.service`. Docker and containerd are included when
+`run_docker_install=true` (the default). The latter two units are optional on
+hosts where cgprofile or mdt-cockpit host-setup is not installed. The values
+are fixed across host RAM sizes; see the
+[control-plane value table](CONTROL-PLANE-MEMORY.md) and
+[design rationale](DESIGN-GUIDE.md#control-plane-memory-protection).
+
+After the installer completes, inspect the values systemd reports:
+
+```bash
+for unit in ssh.service docker.service containerd.service systemd-journald.service cgprofiled.service mdt-psi-guard.service; do
+  systemctl show -p LoadState -p MemoryMin "$unit"
+done
+```
+
+Each loaded unit should report its positive byte value from the table. A
+`LoadState=not-found` or `masked` result is allowed only for the optional
+cgprofile and psi-guard units; fleetd-reserve treats that as a missing fact, so
+its all-six check uses the profile constant until every unit is reported. If
+Docker installation was disabled, the Docker and containerd units are omitted.
+`MemoryMin` requests reclaim protection; effective protection also depends on
+ancestor cgroups. It is not a usage cap. A completed
+installation does not have a standalone retrofit verb, so existing hosts need a
+separately scheduled, operator-approved in-place drop-in application or
+reinstall.
+
 ## Disk plan and offline preview
 
 The one `partitioning` plan describes root, optional data, reserve, and the

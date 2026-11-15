@@ -4,6 +4,21 @@ All notable changes to debian-install-v2 are recorded here.
 
 ## [Unreleased]
 
+### Added (div2-memorymin)
+- Install fixed per-service `MemoryMin` drop-ins for `ssh.service`, `docker.service`,
+  `containerd.service`, `systemd-journald.service`, `cgprofiled.service`, and
+  `mdt-psi-guard.service`; omit the Docker pair when Docker installation is disabled.
+  The latter two are optional: verification skips them only when systemd reports
+  `LoadState=not-found` or `masked`, and fails if a loaded unit has a missing or
+  wrong value.
+  The values are unmeasured policy placeholders (the total is considered too
+  large) pending a per-service hot-set measurement and a follow-up that replaces them.
+  Values and measurement status are recorded in `docs/CONTROL-PLANE-MEMORY.md`; existing
+  hosts still need a separately scheduled in-place application or reinstall.
+  `verify` now reads these values back, so it fails on a host installed before
+  this change until mandatory and installed-unit drop-ins are applied
+  (DIV2-BL-08, DIV2-BL-09).
+
 ### Changed
 - KSM defaults to `advisor_max_cpu=10` (percent of one CPU), a 300-second target scan, and
   `sleep_millisecs=100`. Installer config can override them with `ksm_advisor_max_cpu_percent` (1–100),

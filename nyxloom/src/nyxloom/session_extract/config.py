@@ -132,6 +132,28 @@ class ExtractConfig:
     # Agent communication is optional and the complete rendered item is
     # bounded per item (including AGENT-OUT/AGENT-IN headers).
     budget_tokens: int | None = None
+
+    # `readback` LAYOUT (layout.py, operator decision 2026-11-15): the
+    # document is [goal anchor] + recent prose + delta rather than the delta
+    # alone. Enabled when any of the three fields below is set; the readback
+    # preset sets tail_prose_tokens, so a plain `--preset readback` already
+    # emits the tail and the marker. The anchor stays OPT-IN because the two
+    # session kinds differ (root AGENTS.md): a controller session's anchor is
+    # its plan.yaml, a spawned or targeted one's is its original goal.
+    #   goal_prompt       -- prepend the session's first genuine user prompt
+    #                        (harness framing such as a system-reminder block
+    #                        and slash-command wrappers excluded by the
+    #                        adapter) as the goal anchor.
+    #   goal_file         -- pin the goal text from this file instead of the
+    #                        session's first prompt. Implied goal section.
+    #   tail_prose_tokens -- the NEWEST user/assistant prose of the session
+    #                        (the end of the transcript, after the previous
+    #                        marker), in estimated tokens; 0 = no tail
+    #                        section. The delta excludes what the tail carries.
+    goal_prompt: bool = False
+    goal_file: str | None = None
+    tail_prose_tokens: int = 0
+
     agent_comms: str = "off"
     agent_comms_summary_chars: int = 480
     agent_comms_item_max_chars: int = 20_000
@@ -368,6 +390,10 @@ class ExtractConfig:
                 raise ValueError("since_time must include a timezone")
         if self.budget_tokens is not None and self.budget_tokens < 1:
             raise ValueError("budget_tokens must be positive or None")
+        if self.tail_prose_tokens < 0:
+            raise ValueError("tail_prose_tokens must be non-negative")
+        if self.goal_file is not None and not self.goal_file.strip():
+            raise ValueError("goal_file must be a non-empty path or None")
         if self.tool_errors not in {"show", "hide"}:
             raise ValueError("tool_errors must be show or hide")
         if self.edit_calls not in {"show", "collapse", "omit"}:

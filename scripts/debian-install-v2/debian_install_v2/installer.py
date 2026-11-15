@@ -38,6 +38,9 @@ from .templates import (
     BOOTSTRAP_FAILED_SERVICE,
     CGROUP2_FLAGS_SCRIPT,
     CGROUP2_FLAGS_SERVICE,
+    CONTROL_PLANE_MEMORY_MIN,
+    CONTROL_PLANE_MEMORY_MIN_DROPIN,
+    CONTROL_PLANE_MEMORY_MIN_OPTIONAL_UNITS,
     DOCKER_CLEANUP_SERVICE,
     DOCKER_CLEANUP_TIMER,
     FSTRIM_OVERRIDE,
@@ -62,6 +65,7 @@ from .templates import (
     UNATTENDED_UPGRADES_CONFIG,
     ZSWAP_MODULES_LOAD,
     ZSWAP_SERVICE,
+    render_control_plane_memory_min_dropin,
     render_min_free_floor_script,
 )
 from .userconfig import BASHRC_ALIASES_SNIPPET, USER_RC_FILES
@@ -850,6 +854,7 @@ class Installer:
             raise InstallerError(f"backup checksum mismatch: expected {expected}, got {actual}")
         if self.actions.dry_run:
             raise InstallerError("verify requires live host checks; --dry-run is not meaningful here")
+        self._verify_control_plane_memory_min(mark_step=False)
         self._health_gate_swap_devices(mark_step=False)
 
     def disable_stage2(self) -> None:
@@ -1005,6 +1010,89 @@ MaxFileSec=1month
         self.actions.write_file("/etc/systemd/journald.conf.d/99-vbpub-v2.conf", content)
         self._run(["/usr/bin/systemctl", "restart", "systemd-journald"], "restart journald", dangerous=True)
         self._mark_step("journald_config", "success", "persistent 1G/60d journal")
+
+    def _control_plane_memory_min_entries(self) -> dict[str, tuple[str, int]]:
+        """Return profile units, omitting Docker when this profile disables it."""
+        entries = dict(CONTROL_PLANE_MEMORY_MIN)
+        if not self.config.run_docker_install:
+            entries.pop("docker.service")
+            entries.pop("containerd.service")
+        return entries
+
+    def _configure_control_plane_memory_min(self) -> None:
+        """Write fixed per-unit MemoryMin drop-ins and reload systemd."""
+        entries = self._control_plane_memory_min_entries()
+        for unit, (memory_min, _expected_bytes) in entries.items():
+            path = f"/etc/systemd/system/{unit}.d/{CONTROL_PLANE_MEMORY_MIN_DROPIN}"
+            self.actions.write_file(path, render_control_plane_memory_min_dropin(memory_min))
+        self._run(["/usr/bin/systemctl", "daemon-reload"], "reload control-plane MemoryMin drop-ins")
+        self._mark_step(
+            "control_plane_memory_min",
+            "planned" if self.actions.dry_run else "success",
+            ", ".join(f"{unit}={memory_min}" for unit, (memory_min, _bytes) in entries.items()),
+        )
+
+    def _verify_control_plane_memory_min(self, *, mark_step: bool = True) -> None:
+        """Check exact floors for mandatory units and any installed optional units."""
+        if self.actions.dry_run:
+            return
+        entries = self._control_plane_memory_min_entries()
+        verified_units = []
+        absent_optional_units = []
+        for unit, (_memory_min, expected_bytes) in entries.items():
+            load_output = self._run(
+                ["/usr/bin/systemctl", "show", "-p", "LoadState", unit],
+                f"verify {unit} load state",
+            ) or ""
+            load_states = [
+                line.partition("=")[2].strip()
+                for line in load_output.splitlines()
+                if line.startswith("LoadState=")
+            ]
+            if load_states == ["not-found"] or load_states == ["masked"]:
+                if unit in CONTROL_PLANE_MEMORY_MIN_OPTIONAL_UNITS:
+                    absent_optional_units.append(unit)
+                    continue
+                raise InstallerError(
+                    f"{unit} is mandatory in this profile but systemd reports "
+                    f"LoadState={load_states[0]}"
+                )
+            if load_states != ["loaded"]:
+                reported = ", ".join(load_states) if load_states else "missing"
+                raise InstallerError(
+                    f"{unit} LoadState readback is {reported}; expected loaded"
+                )
+            output = self._run(
+                ["/usr/bin/systemctl", "show", "-p", "MemoryMin", unit],
+                f"verify {unit} MemoryMin",
+            ) or ""
+            observed = [
+                line.partition("=")[2].strip()
+                for line in output.splitlines()
+                if line.startswith("MemoryMin=")
+            ]
+            expected = str(expected_bytes)
+            if observed != [expected]:
+                reported = ", ".join(observed) if observed else "missing"
+                raise InstallerError(
+                    f"{unit} MemoryMin readback is {reported}; expected {expected} bytes"
+                )
+            verified_units.append(unit)
+        if mark_step:
+            detail = (
+                "systemctl read back the expected MemoryMin for "
+                + ", ".join(verified_units)
+            )
+            if absent_optional_units:
+                detail += (
+                    "; optional units absent or masked: "
+                    + ", ".join(absent_optional_units)
+                )
+            self._mark_step(
+                "control_plane_memory_min",
+                "success",
+                detail,
+            )
 
     def _install_docker(self) -> None:
         arch = platform.machine()
@@ -4428,6 +4516,7 @@ MaxFileSec=1month
         # update-initramfs can take long enough for an unplanned reboot.
         self._configure_root_cap_boot_guards()
         self._plan_root_shrink(root_shrink_plan)
+        self._configure_control_plane_memory_min()
         self._install_stage2()
         self._reboot()
 
@@ -4529,6 +4618,9 @@ MaxFileSec=1month
         self.actions.write_file("/etc/growroot-disabled", "")
 
     def _stage2(self) -> None:
+        # Also apply this on a resumed stage-two run whose stage-one work was
+        # completed by an older installer revision.
+        self._configure_control_plane_memory_min()
         self._packages(["e2fsprogs", "util-linux"], "stage2")
         # True iff Case B's own hook already wrote the swap partitions as
         # part of shrinking root -- _apply_known_swap_shape() must then be
@@ -4571,6 +4663,7 @@ MaxFileSec=1month
         if self._data_area_cfg().kind != "none":
             self._configure_data_area()
         self._health_gate_swap_devices()
+        self._verify_control_plane_memory_min()
         # While the host is still idle (apt timers not released yet, no workload
         # started): advisory, never stops the install.
         self._run_cpu_benchmark()

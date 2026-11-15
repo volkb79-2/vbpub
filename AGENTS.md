@@ -628,6 +628,151 @@ controller. Durable facts (decisions, designs, evidence) still go into the repo
 ([Persist reusable work in the repository](#persist-reusable-work-in-the-repository));
 the files below are WORKING STATE, not the record.
 
+The session-kind, pressure and readback rules below are the operator's decisions of
+2026-11-14/15. They separate the two session kinds we run, because the same pressure
+signal means different things in each: an interactive session cannot terminate itself,
+a spawned one must. The harness facts are the ctlstat measurements of 2026-11-14 (X6:
+2026-11-15) recorded in `docs/design/ctlstat/EXPERIMENT-compaction-steering-2026-11.md` and
+`docs/design/ctlstat/EXPERIMENT-compaction-hooks.md`; read them for the evidence and the
+verdict tables, and do not restate any behaviour they do not record.
+
+### Interactive controller session (a person sits in it)
+
+Nobody outside compacts or restarts this session, so it **cannot terminate itself**. It
+relies on its harness's auto-compaction (or the operator's manual compaction) and on the
+recovery setup: `plan.yaml`, `.controller-state/` and its readbacks in the repo, plus
+hooks that print the read order after a compaction.
+
+It does not stand still in anticipation of a compaction — neither an automatic one nor the
+operator's `/compact`. On a pressure note it persists its working state at the next
+semantic boundary and CONTINUES; the compaction happens when the harness or the operator
+makes it happen, and the recovery files plus the readback are what survive it. (This rule
+exists because a controller read "stop at a semantic boundary" as an instruction to stand
+still until the operator compacted, and lost hours in which work was ready to run.)
+
+Before it ends a turn it keeps one monitor armed over every running job, so a job cannot
+finish or fail unnoticed while the session sits idle.
+
+### Spawned or non-interactive session (subagent, Codex/opencode/pi job, worker)
+
+Nobody sits in it and nobody applies a recovery read order for it, so it **self-terminates**
+instead of continuing into a compaction: from 200k on, at the next semantic boundary, it
+writes a forward-oriented continuation brief to a durable file, commits it and returns.
+The controller then chooses one of two continuations:
+
+- **compact it externally and resume the same session** with a readback attached, or
+- **start a fresh successor seeded with that brief** (design of a successor brief: nyxloom
+  LESSONS L23).
+
+It resumes rather than replaces when the cache is warm, the context is reasonably sized
+and the full session context is valuable for the continuation — for example review round
+n+1 after the fixes came back, where the reviewer's own reading of the diff is the asset;
+an external compaction is then the worse choice.
+
+A spawned session never keeps working past 200k at a boundary. The 200k mark is the point
+from which the note tells it to stop, not a target to reach.
+
+### Context pressure ladder
+
+A note, not a checkpoint: it arrives with a tool result, so it costs no extra model
+roundtrip. The delivery channel measured in the hooks experiment (E3) is a Claude Code
+`PostToolUse` hook appending `additionalContext`; the same kind of note has to be delivered
+some other way on a harness that has no such channel. The ladder is a rule about wording
+and cadence.
+
+- **From 100k on**: a note every 50k tokens of context.
+- **Below 200k**: the wording prefers finishing the current unit of work.
+- **From 200k on**: the wording says stop at the next semantic boundary.
+
+"Stop" is the spawned session's instruction: it ends the session there (see above). The
+same note read by an interactive controller means persist state at that boundary and
+CONTINUE; it never means stand still or wait for a compaction.
+
+Measure the fill from the session's OWN transcript. Inside an Agent-tool subagent the
+hook input's `transcript_path` is the PARENT session's file (its own is
+`<parent dir>/<session_id>/subagents/agent-<agent_id>.jsonl`); reading the parent's size
+once produced a false "past 200k" note that made a subagent stop early (live-session
+observations 1-2 in `EXPERIMENT-compaction-steering-2026-11.md`).
+
+A **semantic boundary** is a point where a unit of work is finished, its outcome is
+durably recorded and nothing is half-edited. It is **not** necessarily a commit or a green
+gate — either of those is one way to reach such a point, not the definition.
+
+No tool-call count appears anywhere in this rule: call counts are an artifact of tool
+granularity, and the earlier ARM/CUT rule built on them is retired. Which boundaries real
+sessions actually reach has not been measured yet (a later study).
+
+### Readback after a compaction or resume
+
+A readback is built from the session transcript before a compaction, or on resume after
+one. Its content depends on the session kind (operator refinement of 2026-11-15):
+
+- **Controller session** (about 30k tokens in total): **the most recent prose** (about 10k
+  tokens) **plus the delta since the previous readback's marker**. It does NOT carry the
+  original goal prompt: a controller's anchor is its plan file, and its goal shifts over
+  time, so the first prompt would mislead.
+- **Spawned or targeted session**: **the original goal prompt** (what the work is for, in
+  the words it began with) **plus the most recent prose** (about 10k tokens) **plus the
+  delta since the previous marker**.
+
+The controller chooses the sizes. Prose between the original prompt and the recent prose
+may be lost on purpose, and a readback never duplicates an earlier one (that is what the
+marker is for). `plan.yaml`, the operator decision log (verbatim turns and interview
+answers) and the `HANDOFF.md` resume section are read FIRST and are not part of the
+readback budget.
+
+Mechanics on a harness with the hooks: the `PreCompact` hook builds the readback file
+(its stdout also reaches the summarizer: E2, X2), and the `SessionStart[compact]` output,
+which lands after the summary and the kept messages (X2), points to that file; the session
+ingests it as its FIRST action. For a spawned session the controller compacts externally,
+the resume prompt carries the same pointer.
+
+Build it with:
+
+```
+nyxloom-harness extract <session.jsonl> --preset readback --budget-tokens N --since <marker of the previous read-back>
+                                    [--goal-prompt | --goal-file GOAL.md]   # spawned/targeted sessions only
+```
+
+`N` is the controller's choice (the window and the amount of agent communication decide);
+the recent-prose tail is `--tail-prose-tokens` (10000 by the preset), and the anchor is the
+opt-in flag, exactly because a controller session must not inherit its first prompt as a
+goal.
+The preset includes agent prompts and results and never drops operator turns or interview
+answers. The `readback` preset exists for Claude Code transcripts only; a controller on
+another harness uses `extract` with `--profile all --agent-comms full` and its own budget
+until [NL-65](nyxloom/nyxloom-trove/backlog/NL-65-readback-weights-older-agent-comms.md)
+extends it. This supersedes the older character-budget builder
+(`scripts/controller/build-readback.py`) for the operator-mandated recipe; the builder
+remains for Codex run finals.
+
+Per-harness situations (interactive, headless, opencode, pi, Codex) with what builds a readback, what makes a session ingest it, whether each row is tested, and the command lines: [docs/design/ctlstat/HARNESS-COMPACTION-CHECKLIST.md](docs/design/ctlstat/HARNESS-COMPACTION-CHECKLIST.md).
+
+The compaction prompt, and the recovery hook after a compaction, name this read order and
+nothing else: (0) `plan.yaml`, (1) `operator-decisions.md`, (2) the newest `readback-N.md`
+IN FULL, (3) the `RESUME HERE` section of `HANDOFF.md`; older material only by grep. After
+the compaction, check reality before acting (job status, `git worktree list`, host
+campaigns) and re-arm the watches.
+
+### Harness support matrix (measured 2026-11-14; X6 measured 2026-11-15; UNTESTED stated per row)
+
+| Harness (version measured) | Steered compaction and resume | UNTESTED |
+|---|---|---|
+| Claude Code (2.1.319 in E1-E6, 2.1.325 in X1/X2) | the interactive steering channel is hooks: `PreCompact` stdout reaches the summarizer, so a handover file becomes part of the compaction instructions, and `SessionStart[compact]` output lands after the summary and the kept messages, so the recovery read order is republished into a compacted context (both measured headless in X2, one observation each; the experiment doc still lists the live interactive observation as pending); headless: `claude -p --resume <id> "/compact <instr>"` per message, and one long-lived `-p --input-format stream-json` process where `/compact` is a stream message (E1, E2, X1, X2) | auto-compaction inside the stream-json process; whether a non-zero `PreCompact` exit blocks compaction; whether an external process can compact a RUNNING interactive session; `claude --bg` (E6 refuses to start without an interactive trust acceptance) |
+| opencode 2.2.6 | `POST /api/session/:id/compact` compacts with a real model and streams the SSE compaction events; the endpoint has no instruction field, so steering is the plugin `compaction` hook plus a handover file (X4, `POC-opencode.md`) | the `compaction` config block with a real model; `opencode run` as a compaction trigger |
+| pi 1.5.0 | rpc `compact` with `customInstructions` obeyed by a real model; `session_before_compact` fires for auto (`threshold`) and manual compactions and can read a handover file, and in supply mode returns that handover as the summary with zero model calls (X5) | the json-mode (`-p`) compaction event |
+| Codex 0.167.0 | `exec resume <thread_id>` works (3 resumes in X3). Triggers: the app-server `thread/compact/start` works 4 of 4 (returns `{}` before the work ends; wait for the `contextCompaction` item pair; the summary is not in any event, only in the rollout file) and the TUI `/compact` works (tmux); `exec resume <id> "/compact"` does NOT compact (the text is sent as a plain prompt), so it is not a trigger (X6). Steering: `thread/compact/start` has no instruction field and the default summary is not steered by instructions, but the config key `compact_prompt` steers it, at launch (`-c`) and per thread on `thread/resume` (X6). Compaction keeps the user messages verbatim and drops the assistant messages (X6). A spawned Codex session may equally continue as a successor seeded with its brief | the AUTOMATIC threshold compaction (X3: no event under four `model_auto_compact_token_limit` settings; `..._scope=total` untried); that a per-thread `compact_prompt` persists into later automatic compactions (X6); `thread/goal/set` and a goal as a brief carrier across compaction (X6); retention of very long user messages; TUI and app-server combined on one thread |
+
+An interactive controller is steered by hooks where its harness has them, and is
+otherwise left to the harness's own compaction, with the recovery files as what it can rely
+on. A spawned session never depends on being compacted: it self-terminates with a brief,
+and the controller chooses compaction-resume or successor.
+
+### Controller working state (`plan.yaml`, `.controller-state/`)
+
+This is the recovery setup an interactive session relies on (above), and the reason a
+readback is worth building at all.
+
 - **One owner.** The controller owns a **gitignored `plan.yaml` at the repo root**
   and a gitignored `.controller-state/` directory. Every other agent talks to the
   controller (messages, reports) and never edits them. A second controller in the
@@ -642,27 +787,14 @@ the files below are WORKING STATE, not the record.
   timestamps and, before a compaction, a `RESUME HERE #n` section: standing rules, what
   is merged, in flight, hosts, next priorities, lessons), `operator-decisions.md`
   (EVERY operator turn and interview answer, VERBATIM) and `readback-N.md`.
-- **Read-back recipe.** Before a compaction (about 70 % of the context window) build a
-  read-back: `nyxloom-harness extract <session.jsonl> --preset readback --budget-tokens N --since <marker of the previous read-back>`.
-  `N` is the controller's choice (the window and the amount of agent communication decide);
-  the preset includes agent prompts and results and never drops operator turns or interview
-  answers. The `readback` preset exists for Claude Code transcripts only; a controller on
-  another harness uses `extract` with `--profile all --agent-comms full` and its own budget until
-  [NL-65](nyxloom/nyxloom-trove/backlog/NL-65-readback-weights-older-agent-comms.md)
-  extends it. This supersedes the older character-budget builder
-  (`scripts/controller/build-readback.py`) for the operator-mandated recipe; the builder remains
-  for Codex run finals. The compaction prompt names this order and nothing else: (0) `plan.yaml`,
-  (1) `operator-decisions.md`, (2) the newest `readback-N.md` IN FULL, (3) the `RESUME HERE`
-  section of `HANDOFF.md`; older material only by grep. After the compaction, check reality
-  before acting (job status, `git worktree list`, host campaigns) and re-arm the watches.
+- **Read-back recipe:** built per [Readback after a compaction or resume](#readback-after-a-compaction-or-resume).
 - **Plan consistency** is checked by a validator in the controller kit
   (`scripts/controller`, planned: parses `plan.yaml`, checks schema and states, flags items
   whose branch, run or report no longer exists). It must run as part of the status and
   watch scripts the controller already runs, so the controller reads exceptions only and
   does not pay an extra call per tick. Until it exists, verify each edit by hand.
 - **Known limits of the extract.** Not all prose is equal: older agent communication
-  should weigh less than recent decisions (open: NL-65). The read-back is large
-  (50-100k tokens); budget it deliberately.
+  should weigh less than recent decisions (open: NL-65).
 - **State placement.** The controller's working state (`plan.yaml`, `.controller-state/`) is
   the one exception to the kit rule "keep state outside the checkout"
   (`scripts/controller/docs/DESIGN-GUIDE.md`): run records, queue state, host facts,

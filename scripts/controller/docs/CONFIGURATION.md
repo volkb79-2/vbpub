@@ -40,6 +40,16 @@ Useful settings:
 | `OPENCODE_MODEL` | Full OpenCode provider/model identifier; overrides `OPENCODE_PROVIDER`. |
 | `NETCUP_TOKEN_FILE` | Local provider token-file location for the configured `api_check` command. |
 | `REMOTE_GATE_HOSTS` | Host table used by `remote-gate.py`; defaults to `hosts.local.json`. |
+| `CTX_STATE_DIR` | Optional controller state directory for `hooks/ctx-hooks.py`; defaults to the hook input's own `cwd/.controller-state`. |
+| `CTX_EXTRACT_CMD` | The extract command `hooks/ctx-hooks.py` runs; defaults to `nyxloom-harness` on `PATH`. |
+| `CTX_READBACK_BUDGET_TOKENS` | Readback budget for a controller session; defaults to `30000` (a spawned session's controller passes a smaller flag or this variable). |
+| `CTX_READBACK_TAIL_PROSE_TOKENS` | Recent-prose tail of the readback; defaults to `10000`. |
+| `CTX_READBACK_GOAL_FILE` | Optional file pinning the readback's goal anchor instead of the session's first prompt. |
+| `CTX_READBACK_GOAL_PROMPT` | `1` adds the session's first prompt as the goal anchor (`--goal-prompt`); implied by `CTX_SESSION_KIND=spawned`; a controller does not get it unless set. `CTX_READBACK_GOAL_FILE` wins. |
+| `CTX_READBACK_REDACT_PATTERNS` | Regexes, one per line, forwarded to the extract as `--redact-pattern` (the flag `--redact-pattern` is repeatable too). A matching paragraph is replaced in the whole readback, tail included. The hook never logs, stores or prints a pattern (the manual fallback shows `<REGEX>`), but the extract's own placeholder names the pattern that matched, so use a pattern that matches the surrounding text, not the literal secret. An invalid regex makes the extract refuse, so the build fails closed. |
+| `CTX_READBACK_TIMEOUT` | Seconds allowed for the readback build; defaults to `15` and is capped at the hard 20 s limit. |
+| `CTX_HOOK_LOG` | Hook log path; defaults to `<state dir>/hooks/hook-log.jsonl`. |
+| `CTX_SESSION_KIND` | `controller` or `spawned`; selects the pressure-note wording from 200k on (persist and continue vs stop at the boundary). Default: `spawned` inside an Agent-tool subagent (hook input has `agent_id`), otherwise `controller`. |
 
 ## `hosts.local.json`
 

@@ -111,6 +111,8 @@ def test_stage_two_applies_optional_zswap_and_cgroup_configuration_from_profile(
     config = load_config(raw_json=json.dumps(profile))
     installer = Installer(config, HostActions(dry_run=True), inspect_host=False)
     events = []
+    monkeypatch.setattr(installer, "_configure_control_plane_memory_min", lambda: None)
+    monkeypatch.setattr(installer, "_verify_control_plane_memory_min", lambda: None)
     monkeypatch.setattr(installer, "_packages", lambda *args: events.append("packages"))
     monkeypatch.setattr(installer, "_verify_and_apply_root_shrink", lambda: False)
     monkeypatch.setattr(installer, "_swap_partitions_already_planned_in_table", lambda: False)

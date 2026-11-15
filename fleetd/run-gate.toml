@@ -19,9 +19,12 @@ io_sync = "durable"
 [lanes.campaign-contract]
 kind = "command"
 environment = "tester-unified"
+# A focused subset of the suite, so the cli-extended review plugin runs in partial mode
+# (AC-22): the catalog's grammar cases live in tests/test_cli_review_cases.py and are covered
+# by the r0-r1 lane, which collects the whole suite and stays strict.
 argv = [
   "bash", "-c",
-  "cd {worktree}/fleetd && PYTHONPATH=src PYTHONDONTWRITEBYTECODE=1 /opt/tester-venv/bin/python3 -m pytest tests/test_campaign.py -q",
+  "cd {worktree}/fleetd && PYTHONPATH=src PYTHONDONTWRITEBYTECODE=1 /opt/tester-venv/bin/python3 -m pytest tests/test_campaign.py -q --cli-case-partial",
 ]
 clean_tree = false
 budget = "5m"

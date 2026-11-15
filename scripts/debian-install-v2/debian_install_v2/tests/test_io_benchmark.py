@@ -291,6 +291,8 @@ def test_stage_two_benchmark_result_is_consumed_by_iocost_after_the_table_write(
     disk.exists = lambda _path: False
     events: list[str] = []
     monkeypatch.setattr(installer, "_packages", lambda *args, **kwargs: None)
+    monkeypatch.setattr(installer, "_configure_control_plane_memory_min", lambda: None)
+    monkeypatch.setattr(installer, "_verify_control_plane_memory_min", lambda: None)
     monkeypatch.setattr(installer, "_verify_and_apply_root_shrink", lambda: False)
     monkeypatch.setattr(installer, "_swap_partitions_already_planned_in_table", lambda: False)
     monkeypatch.setattr(installer, "_disable_active_swap", lambda: None)

@@ -288,7 +288,7 @@ def test_journald_precedes_every_other_stage1_step(tmp_path, monkeypatch):
         "_hold_apt_timers", "_configure_apt", "_install_notify_helper", "_configure_users",
         "_install_docker", "_configure_docker_daemon", "_configure_docker_cleanup",
         "_configure_apt_auto_upgrade", "_upgrade_at_install", "_plan_root_shrink",
-        "_install_stage2", "_reboot",
+        "_configure_control_plane_memory_min", "_install_stage2", "_reboot",
     ):
         monkeypatch.setattr(installer, hook, lambda hook=hook: order.append(hook))
     monkeypatch.setattr(installer, "_packages", lambda *a, **k: order.append("_packages"))

@@ -21,6 +21,36 @@ to expected sums; each candidate must still fit physical lane RAM. Geekbench
 single-core scores inform ETA only. See [the design guide](docs/DESIGN-GUIDE.md)
 for the invariants and [the consumer guide](docs/CONSUMERS.md) for examples.
 
+## Install the CLI
+
+The `fleet` command is a registered `cli-extended` CLI: one grammar, one real
+wheel dependency (`cli-extended>=0.5.0`), never vendored and never put on a
+path. A managed host that runs `fleet facts collect` or `fleet guard validate`
+installs both wheels offline; the host needs neither the repository nor an
+`hx` wrapper.
+
+```sh
+python3 -m pip install --no-index --no-deps cli_extended-0.5.0-py3-none-any.whl
+python3 -m pip install --no-index --no-deps fleetd-<version>-py3-none-any.whl
+fleet --version
+```
+
+`cli-extended` is published on GitHub Releases only, so the two wheels come from
+the same directory (a wheelhouse with both files lets you use one `pip install
+--find-links` instead). The console script is `fleetd.entry:main`: it imports only
+the standard library first, so a host missing the dependency gets one install
+instruction and exit 3 rather than a traceback. `python -m fleetd` keeps working
+for a source checkout. See [the CLI contract and host install steps](docs/SPEC.md#host-install-and-the-wheel-layout).
+
+Agent skills ship inside the wheel (`fleetd/skills/fleetd-campaigns/SKILL.md`) and
+are installed by the library verbs:
+
+```sh
+fleet skills install            # ~/.agents/skills and ~/.claude/skills
+fleet skills check             # exit 1 unless the installed copies are current
+fleet skills list --json
+```
+
 ## Run a planned campaign
 
 The remote runner must already have the plan's commit under its persistent
@@ -105,6 +135,31 @@ stores with `--merge-manifest`; strict store ownership, the baseline cache,
 forced-command host entry, always-on daemon, and active guard remain follow-up
 work (see the [backlog](KNOWN_ISSUES_TODO_BACKLOG.md)).
 
+## The default R2 campaign
+
+Multi-host, multi-instance R2 is the default way mutation judging runs, and
+fleetd supplies the four pieces that make it a mechanism rather than per-tool
+scripts. None of them contacts a host.
+
+- `fleet scope` produces the campaign's candidate-id set. The default scope
+  judges only the lines added since the tool's previous release tag; a
+  committed `r2-scope.toml` opts a project into a rolling whole-target
+  baseline instead. An empty scope is an explicit `nothing-to-judge` result
+  (exit 4), never an id file that judged nothing.
+- `fleet sizing` derives instances per host, shards, each per-instance budget
+  and Run-Gate's outer bound from the plan's own host budgets, a per-worker
+  resource unit, and measured per-candidate seconds and memory — instead of a
+  fixed `cpus = "3"` container and a hand-written `11h`/`12h` pair.
+- `fleet collect` then `fleet measurement` record what each candidate actually
+  cost in the campaign evidence, so the next campaign's sizing has a `measured`
+  basis instead of a guess.
+- `fleet merge-check` refuses a shard set whose shards judged a different
+  commit, tester image or plan, or left an index missing.
+
+See [the default R2 campaign](docs/R2-DEFAULT.md) for the mechanism and
+[docs/CONSUMERS.md](docs/CONSUMERS.md#declare-the-campaign-scope) for commands
+you can paste.
+
 ## Existing planning and facts commands
 
 `fleet plan` writes no files except for stdout. `--commands` prints one serial
@@ -124,7 +179,9 @@ values, or the host profile's fixed constant when any are missing; see the
 [facts and planning contract](docs/SPEC.md#facts-collection).
 
 Serialized campaign inputs use `host-facts/1`, `work-request/1`,
-`candidate-table/1`, `fleet-host-set/1`, and `assay-merge-manifest/1`. Runtime
-imports use only the Python standard library. The registered `r0-r1` lane runs
+`candidate-table/1`, `fleet-host-set/1`, and `assay-merge-manifest/1`. The `fleet`
+command itself is registered with the shared `cli-extended` library, its one
+runtime dependency (see [the CLI and install section](docs/SPEC.md#host-install-and-the-wheel-layout));
+all other imports are the Python standard library. The registered `r0-r1` lane runs
 in `tester-unified` with full line and branch coverage. The package does not
 start a daemon, socket, Docker client, or Geekbench process.

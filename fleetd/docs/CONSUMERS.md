@@ -1,5 +1,102 @@
 # Using fleetd
 
+## Install the CLI
+
+The `fleet` command is registered with the shared `cli-extended` CLI library.
+That library is a real wheel dependency of `fleetd`; it is never vendored and
+never put on `sys.path`. `cli-extended` is published on GitHub Releases only
+(the bare name is unclaimed on PyPI), so install both wheels from the same
+directory:
+
+```sh
+python3 -m pip install --no-index --no-deps cli_extended-0.5.0-py3-none-any.whl
+python3 -m pip install --no-index --no-deps fleetd-<version>-py3-none-any.whl
+fleet --version
+```
+
+With a wheelhouse that holds both files, one command does the same work:
+
+```sh
+python3 -m pip install --no-index --find-links ./wheelhouse fleetd-<version>-py3-none-any.whl
+```
+
+The console script is `fleetd.entry:main`. It imports only the standard library
+before it touches the registered CLI, so a host that lacks `cli-extended` gets
+one actionable line and exit 3 instead of a `ModuleNotFoundError` traceback:
+
+```sh
+fleet --version
+# fleet: ERROR cli-extended is not installed and the fleet CLI is registered with it; ...
+```
+
+Do not copy the sources onto a path, and do not treat a source checkout as an
+install: the version comes from installed distribution metadata, so an
+uninstalled checkout refuses to run instead of inventing a number. From a source
+checkout, `PYTHONPATH=src python -m fleetd --version` works once the project is
+installed (`pip install -e .`).
+
+### What a managed host needs
+
+A host that runs only `fleet facts collect` or `fleet guard validate` needs
+these two wheels and nothing from this repository. `fleet facts collect` reads
+`/etc/fleetd/facts.toml` and the host's own `/proc`, `/sys`, `systemctl`
+service properties and Geekbench record; all of those are host-owned and
+absolute (see [the facts config below](#collect-and-validate-host-facts)).
+
+The campaign commands are the *controller's*: `fleet run`, `status`, `tick` and
+`collect` launch jobs through the controller kit's identity-checked `hx`
+wrapper, which must sit beside a repository checkout. A facts-only host needs
+neither the wrapper nor a checkout (FD-023 tracks the installed-wheel path for
+the wrapper).
+
+### Agent skills
+
+The packaged skill source is `fleetd/skills/fleetd-campaigns/SKILL.md` inside
+the wheel. The library verbs install a stamped copy plus an integrity sidecar,
+so a modified copy is detected rather than silently overwritten:
+
+```sh
+fleet skills install                 # default: ~/.agents/skills and ~/.claude/skills
+fleet skills install --harness claude
+fleet skills install --dest /some/dir
+fleet skills check                  # exit 1 unless every copy is current
+fleet skills list --json
+fleet skills uninstall --dry-run
+```
+
+## Adoption checklist status
+
+`cli-extended audit` rows for this CLI, as of the registration commit. The
+audit is mechanical; the two `manual` rows are judgements recorded here.
+
+| Checklist row | Status | Evidence |
+|---|---|---|
+| AC-01 version source | pass | `CliIdentity.resolve(distribution="fleetd")`, no literal (`tests/test_cli_entry.py`) |
+| AC-02 identity fields | pass | `FLEET` / `fleet` / long name in `fleetd.cli.identity` |
+| AC-03 registered grammar | pass | every verb, argument and option is a `VerbSpec`/`ArgumentSpec`/`OptionSpec` |
+| AC-04 synopsis overrides | pass | none; the synopsis is derived |
+| AC-05 shadowed controls | pass | no consumer option reuses `--json`, `--dry-run`, `--traceback`, ... |
+| AC-06 declared constraints | pass | `--candidates/--hosts/--demand` and `--campaign` are `required` in the specs |
+| AC-07 configure callbacks | pass | none |
+| AC-08 hidden options | pass | none |
+| AC-09 SelectorList | not used | no comma- or space-separated name list exists in this CLI |
+| AC-10 exception policy | pass | `unexpected_exceptions="report"` on every registry |
+| AC-11 domain failures | pass | one mapping in `fleetd.cli._domain` → `CliFailure(exit_code=2)` (`tests/test_cli_boundary.py`) |
+| AC-12 mutation safety | **manual, accepted** | `run`/`tick` are mutating without `--yes` or `--dry-run` because they are idempotent supervisors: `run` re-adopts jobs by deterministic name, `tick` is one scheduling step whose only state is the campaign's own versioned file, and an accidental repeat changes nothing a first call would not have changed. A confirmation prompt would break the controller loop that calls `tick` unattended. Destructive acts (`skills install` overwriting a modified copy) do require `--overwrite-modified`, a library-owned guard. |
+| AC-13 shared prompts | pass | no interactive question is asked by this CLI |
+| AC-14 output and `--json` | pass | `runtime.output`; every read verb declares `include_json` |
+| AC-15 progress/colour | pass | no long operation renders progress; the library colour policy applies |
+| AC-16 surface configured | pass | `[tool.cli-extended.clis]` in `pyproject.toml` |
+| AC-17 surface check | pass | `cli-extended surface check` exits 0 (manifest, spec region, 94 reviewed cases, no open finding) |
+| AC-18 syntax complete | pass | `syntax_complete: true` in `docs/cli-surface.json` |
+| AC-19 skills packaged | pass | `fleetd/skills/fleetd-campaigns` as package data, no checkout install tree (`tests/test_cli_skills.py`) |
+| AC-20 doctor | **manual, deferred** | needs a doctor only when it has an environment to verify. `facts collect` already *is* the environment report for a host (it emits `host-facts/1` with a reason for every unavailable leaf), and the controller's environment is the runner checkout it already refuses to guess. A separate `fleet doctor` would duplicate both; revisit if a third environment appears. |
+| AC-21 contract tests | pass | `tests/test_cli_characterization.py` pins the pre-migration contract; `tests/test_cli_review_cases.py` replays the reviewed catalog |
+| AC-22 pytest plugin | pass | `pytest_plugins = ["cli_extended.pytest_plugin"]` in `tests/conftest.py`. A focused run — a single test file, or the `campaign-contract` lane, which collects only `tests/test_campaign.py` — passes `--cli-case-partial`; `r0-r1` collects the whole suite and stays strict. |
+| AC-23 invoker helpers | not applicable | fleetd's tests do not wrap `subprocess` for the CLI; they call `main()` and, where a real process matters, the library's helpers |
+| AC-24 dependency declared | pass | `dependencies = ["cli-extended>=0.5.0"]`, no `package-dir` mapping |
+| AC-25 no path hacks | pass | no `sys.path`/`PYTHONPATH` insertion in project sources |
+
 ## Collect and validate host facts
 
 The facts command is read-only. A fixture root reads only the supplied files
@@ -345,6 +442,132 @@ planner currently requires `unit = "candidate"`; it refuses the other valid
 schema units until their placement meaning is defined. Memory accepts positive
 integer bytes with `B`, `k`, `m`, `g`, `kib`, `mib`, or `gib` suffixes.
 See the [specification](SPEC.md) and [design choices](DESIGN-GUIDE.md).
+
+## Declare the campaign scope
+
+The default R2 scope is the lines changed since the tool's previous release
+tag: a candidate is in scope only when its start line is an added line of that
+diff. Generate the id file Run-Gate consumes with `--only-candidates`:
+
+```sh
+assay plan r2 --json > plan.json
+fleet scope r2 --plan plan.json --repo . --from-tag tool-v1.4.0 \
+  --out .run-gate/r2-candidates.txt > scope.json
+run-gate r2 --only-candidates .run-gate/r2-candidates.txt
+```
+
+`fleet scope` exits `0` when it produced a scope, `4` when the release changed
+no mutation target line (`nothing-to-judge`, and `--out` refuses to write an
+empty file), and `3` when a rolling cursor no longer describes the list. Each
+of those prints its `fleet-r2-scope/1` document on stdout, so redirect it to
+keep the record; a bad argument or a refused `--out`/`--write-cursor` exits `2`
+with the reason on stderr and writes nothing.
+
+To run a rolling whole-target baseline instead — every release judging the
+next slice of the whole list — commit this file beside the project's
+`run-gate.toml`. Without it a project keeps the default:
+
+```toml
+schema_version = 1
+
+[r2]
+mode = "rolling-whole-target"
+slice_size = 40
+cursor = ".assay/r2-scope-cursor.json"
+note = "each release judges the next 40 candidates"
+```
+
+Then pass the cursor through. The cursor records the digest and length of the
+list it was taken from, so a changed list is refused rather than resumed at
+an offset that now points at a different candidate:
+
+```sh
+fleet scope r2 --plan plan.json --repo . --from-tag tool-v1.4.0 \
+  --cursor .assay/r2-scope-cursor.json \
+  --write-cursor .assay/r2-scope-cursor.json \
+  --out .run-gate/r2-candidates.txt > scope.json
+```
+
+`--mode changed-lines|rolling-whole-target` overrides the declared mode, and
+`--rebaseline` accepts a changed whole-target list explicitly (recording a new
+pass) instead of refusing it.
+
+## Size the campaign from measured units
+
+Sizing needs the per-worker unit in the demand file. Keep
+`efficient_upper_bound` at or below the native lane's
+`judge.mutation.jobs_max`:
+
+```toml
+schema_version = 1
+
+[lanes.r2.demand]
+unit = "candidate"
+instance_memory = "250m"
+unit_memory = "120m"
+unit_memory_high = "600m"
+unit_seconds_ref = 95
+efficient_upper_bound = 3
+baseline_seconds = 400
+worker_memory = "120m"
+worker_cpu = 1
+instance_cpu = 1
+```
+
+```sh
+fleet sizing plan.json
+fleet sizing plan.json --measurement r2-week46.measurement.json
+```
+
+The first call sizes from the lane's declared estimate and reports
+`"basis": "declared"`; the second uses a finished campaign's own medians and
+reports `"basis": "measured"`. Each shard row states its `candidate_count`,
+`jobs`, `estimate_seconds`, `budget_seconds` and `outer_budget_seconds`, so a
+lane's `budget` and the Run-Gate outer bound come from one derivation. Override
+policy numbers with `--margin`, `--minimum-budget`, `--startup-allowance`,
+`--per-candidate-seconds` and `--per-candidate-memory`.
+
+## Record what a candidate cost
+
+```sh
+fleet collect r2-week46
+fleet measurement r2-week46
+```
+
+`fleet measurement` writes `<campaign>.measurement.json` beside the campaign
+result in the same state directory. Each planned candidate carries its
+`outcome_bucket`, `elapsed_seconds` and `memory_peak_bytes`; the `summary`
+keeps medians over `killed` and `survived` candidates. A candidate the cgprofile
+observer could not measure keeps `null`, never `0`, and the summary reports
+`memory_measured_candidates`, so you can see how much of the number is
+observed. Pass that file to `fleet sizing --measurement` next time.
+
+## Check that the shards can be merged
+
+Each shard writes one `fleet-shard-identity/1` document:
+
+```json
+{
+  "schema": "fleet-shard-identity/1",
+  "lane": "assay-r2",
+  "host": "runner-a",
+  "commit": "<full lowercase Git object id>",
+  "image_digest": "sha256:<64 lowercase hex digits>",
+  "plan_sha256": "<64 lowercase hex digits>",
+  "shard": {"index": 0, "count": 2}
+}
+```
+
+```sh
+fleet merge-check shard-0.json shard-1.json --require-complete
+```
+
+Exit `0` means every shard agrees on lane, commit, image, plan and shard
+count, and every index is present. `mismatched` and a duplicated index exit
+`3`; a missing index is reported as `incomplete` and also exits `3`
+(`--require-complete` is accepted and changes nothing). Name the tester image in the plan
+(`execution.image_digest`) to have one: a campaign without it can run, but
+its shards cannot be merged, and the check never invents an image identity.
 
 ## Validate guard rules
 

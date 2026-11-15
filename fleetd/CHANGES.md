@@ -4,8 +4,51 @@ All notable changes to this project are recorded here.
 
 ## [Unreleased]
 
+### Changed
+
+- Migrate the `fleet` CLI from a hand-built `argparse` parser to a registered
+  `cli-extended` CLI. Every subcommand, flag spelling, default, output document
+  and success or domain-error exit status is unchanged; the shared library now
+  owns help, the identity banner, the output controls and the exception
+  boundary. What the library changes, on purpose: the error line on stderr is
+  `[ERROR] <message>` (was `fleet: ERROR <message>`) and a parse error is one
+  such line without the argparse usage block (exit 2 as before); `-h` is gone
+  (use `--help` or `fleet help [verb]`); option names must be spelled in full
+  (argparse prefix abbreviations such as `--cand` are refused); a group without a
+  verb (`fleet`, `fleet facts`) prints its help and exits 0 instead of 2; and
+  every verb gains `--quiet`, `--debug` and the other shared controls (and
+  `--json` where it emits a document).
+  Callers that matched the old stderr prefix or relied on `-h` must be updated.
+  The pre-migration
+  contract is pinned by `tests/test_cli_characterization.py`, written before the
+  change and green on both implementations.
+- Declare `cli-extended>=0.5.0` as a real wheel dependency (unified-adoption
+  CX-D1). It is never vendored and never put on `sys.path`; 0.5.0 is the
+  revision the registered gate image installs, so a managed host and the gate
+  run the same contract. `cmru`'s release graph gains the matching
+  `fleetd -> cli-extended` edge, which moves fleetd from L0 to L1.
+- The console script is now `fleetd.entry:main`: it imports only the standard
+  library first, so a host without the declared dependency gets one actionable
+  install line and exit 3 instead of a `ModuleNotFoundError` traceback. Any
+  other missing module still raises. `python -m fleetd` keeps working.
+- The package version comes from `CliIdentity.resolve(distribution="fleetd")`
+  instead of a literal. An uninstalled source checkout refuses (exit 3) rather
+  than inventing a version.
+
 ### Added
 
+- Surface lifecycle for the registered CLI: `docs/cli-surface.json`, the
+  generated region in `docs/SPEC.md`, the reviewed catalog
+  `docs/cli-review.toml` (94 characterized cases), `docs/cli-review-findings.toml`,
+  and the `cli_extended.pytest_plugin` link between a catalog row and its test.
+  `tools/gen-cli-review-catalog.py` regenerates the catalog from the exported
+  surface.
+- `fleet skills install|check|list|uninstall` from the library, backed by the
+  packaged skill source `fleetd/skills/fleetd-campaigns/SKILL.md` (package data,
+  one source of truth inside the wheel).
+- Exit-code and entry-point boundary tests (`tests/test_cli_boundary.py`,
+  `tests/test_cli_entry.py`) and packaging/skill tests
+  (`tests/test_cli_skills.py`).
 - Scaffold the standalone `fleetd` project and its R0/R1 gate.
 - Add versioned host facts, work request, Assay merge manifest, and guard TOML
   contracts with strict validators and fixtures.
@@ -28,6 +71,47 @@ All notable changes to this project are recorded here.
 - Add real-runner contract checks that execute generated start, probe, and stop
   scripts with the checked-in `run-job` and `run-r2-campaign.sh` under a
   temporary HOME, while stubbing only the lane command.
+
+- Add `fleet scope`, the committed R2 candidate-scope producer: the default
+  `changed-lines` mode selects candidates on lines added since the previous
+  release tag (`git diff -U0`, renamed files judged whole), an empty scope is
+  an explicit `nothing-to-judge` result (exit 4) that refuses to write an id
+  file, and the opt-in `rolling-whole-target` mode walks a persisted cursor
+  whose list digest and length are validated (stale cursors exit 3 unless
+  `--rebaseline`).
+- Add a committed `r2-scope.toml` (`schema_version = 1`, `[r2]` with `mode`,
+  optional `slice_size`, `cursor`, `note`) so a project declares its scope
+  instead of passing a hand-prepared id file; no file keeps the default.
+- Add `fleet sizing`, which derives instances per host, shard count, each
+  shard's budget and the outer bound from the plan's host budgets, a per-worker
+  unit and a fixed per-instance charge, and records whether the numbers are
+  `measured` or `declared`.
+- Accept optional `worker_memory`, `worker_cpu` and `instance_cpu` in the lane
+  demand table, refusing a worker charge above `unit_memory`; sizing names the
+  missing keys instead of guessing a unit.
+- Add `fleet measurement`, which writes `fleet-r2-measurement/1` per-candidate
+  elapsed seconds and observer memory peaks plus medians over killed and
+  survived candidates; a missing number stays `null`, never zero, and the
+  collector now carries the cgprofile `resource-profile/1` peak per candidate.
+- Add `fleet merge-check`, which refuses shard sets whose lane, commit, tester
+  image, plan digest or shard count differ, refuses a duplicated shard index,
+  and reports a missing index as incomplete and refuses it (`--require-complete` is accepted and changes nothing).
+- Accept an optional `execution.image_digest` in plans so a shard can state the
+  tester image it judged under; a campaign without one runs but cannot be
+  merged.
+- Add `docs/R2-DEFAULT.md` and consumer, README, SPEC and design-guide sections
+  for the four commands, plus a docs test that every closed value a consumer
+  types (`changed-lines`, `rolling-whole-target`, the four document schemas and
+  the scope exit statuses) appears, every TOML example parses with the shipped
+  loader, and every cross-document anchor resolves.
+- File FD-029 (no workflow wires the producers), FD-030 (Run-Gate refuses the
+  per-worker demand keys), FD-031 (budgets from medians, not a measured tail)
+  and FD-033 (the rolling cursor goes stale when a target file changes).
+- `fleet scope` refuses a checkout that is not exactly the named commit
+  (different HEAD, or uncommitted changes to tracked files): FD-032 is done.
+- The diff reader no longer drops or shifts files for a form feed, U+2028 or lone
+  carriage return inside a source line, a path containing a space, or a changed
+  file that is not UTF-8.
 
 ### Changed
 

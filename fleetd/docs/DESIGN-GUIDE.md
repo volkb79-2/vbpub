@@ -78,6 +78,110 @@ Placement refuses a host with unknown role, explicit shared-prod role, PSI
 above the configured admission threshold, or missing facts needed for a safe
 RAM/CPU budget. A missing max_lane_containers is not guessed.
 
+## Why the default R2 scope is changed lines
+
+A mutation verdict is only about the lines a release changed; judging the whole
+target every release re-pays the baseline for code nobody touched. So the
+default scope is `git diff -U0 <previous tag>..<commit>`, and a file the release
+did not touch contributes nothing at all — not even its unchanged lines inside
+a touched file (`lines_unchanged` says how many were dropped).
+
+Three shapes of "empty" are kept apart, because folding them together is the
+defect this producer exists to end. A scope with no candidates is
+`nothing-to-judge` with a reason and exit 4, and `--out` refuses to write the
+empty file, so a campaign can never judge nothing and look green. A scope file
+that names a mode is echoed in `mode_source`, so a report cannot claim the
+default while a project opted into something else. And a tool that commits no
+scope file keeps the default, so no existing lane changes behaviour.
+
+**Renames are judged whole.** Assay's candidate identity folds in the
+repo-relative path, so every candidate in a renamed file is an identity that has
+never been judged; a pure rename produces no hunk at all, so added-line
+filtering alone would silently drop the file. The diff is read with
+`--find-renames` and a `rename to` header marks the new path whole.
+
+The diff is parsed with a real hunk state machine rather than a header regex:
+a hunk header's own `-old_count/+new_count` is what closes a hunk, so a body
+line whose content starts with `++` (patch text `+++ value`) can never be
+mistaken for a file header. A test pins exactly that.
+
+**Why the rolling baseline is an opt-in, not the default.** Successive releases
+covering the whole target is what a project wants when its candidate list is
+larger than one campaign should judge; it is also what makes a cursor
+necessary. A cursor that resumes at a raw offset can silently skip candidates
+when the list changes underneath it, so the cursor stores the list's digest and
+length and a mismatch is a refusal (exit 3), never a resume. `--rebaseline`
+exists because "the list legitimately changed" is a real state that must be
+expressible without hand-editing the cursor file.
+
+## Why sizing is a derivation, not a declaration
+
+A lane that declares `cpus = "3"` and `budget = "12h"` has stated the right
+numbers for exactly one shard size on one worker count. With several instances
+per host, every one of those numbers must come from the plan:
+
+- **the per-worker unit** (one pytest worker's CPU share and memory) is the
+  charged unit, and the fixed **per-instance** charge covers the judge, the
+  container and its workspace, so the first worker of an instance costs
+  instance + one unit — a per-container cap that already includes three workers
+  cannot express that;
+- **shards = instances**, because each instance is one `--shard K/N` run;
+- **each shard's budget** from its candidate count divided by its workers and
+  the per-candidate seconds, plus the lane baseline — an instance with no
+  candidate still pays the baseline, because sizing must never pretend an idle
+  instance is free;
+- **the outer bound** as budget plus a launch/collection allowance, so a lane's
+  declared budget and Run-Gate's bound are one derivation instead of the two
+  numbers that produced the 11h-below-12h warning.
+
+The new demand keys are optional in the contract on purpose: every existing
+demand file must keep validating, and a project that does not size its campaign
+does not have to declare a worker unit. Sizing refuses a plan without them **by
+name** — a silent fallback here would size the campaign from a number nobody
+chose.
+
+Every figure carries its `basis`. A `declared` sizing document is honest about
+being a guess; `measured` means a finished campaign's own per-candidate records
+supplied it. This is the one place where the tool could easily lie, so the
+label is part of the document rather than a comment.
+
+## Why a missing measurement is null, not zero
+
+The measurement recorder exists because budgets were estimates. A candidate
+nobody measured contributes `null`, and the summary counts how many numbers it
+actually had (`measured_candidates`, `memory_measured_candidates`). A zero would
+look like a measurement and drag every median down, sizing the next campaign's
+budgets too small — the exact class of silent wrong answer this estate treats as
+a defect. Memory comes from the cgprofile observer's `resource-profile/1`
+`memory_peak_bytes` and nothing else: Assay 12 removed its own sampled
+`peak_rss_bytes`, so a lane without the observer records elapsed seconds only
+and says so.
+
+Medians are taken over `killed` and `survived` candidates only. A
+`budget_exceeded` or `hung` candidate's elapsed time is the budget that stopped
+it, not the cost of judging, and including it would inflate the next budget
+forever.
+
+## Why the merge check compares identity, not counts
+
+Two shards that judged different commits or different tester images produce a
+merged verdict that *looks* complete either way. The check therefore compares
+the lane, full commit, image digest, plan digest and shard count across every
+shard, and reports both values on a mismatch instead of picking one. Three
+shapes are kept distinct:
+
+- a **duplicated index** is a disagreement about which slice a store holds — a
+  refusal, never an "incomplete" report;
+- a **missing index** is a genuinely incomplete set: reported as `incomplete`
+  and refused (`--require-complete` is accepted and changes nothing), because a
+  merge over a missing shard reports its candidates as absent work;
+- a **differing field** is `mismatched` regardless of completeness.
+
+The image digest is optional in the plan executor and required by the merge
+check. That asymmetry is deliberate: refusing to run a campaign because nobody
+declared an image would be a default invented by the tool, while merging two
+unknown image identities is precisely the mixed-image merge to refuse.
+
 ## Facts are read from their owner
 
 The collector accepts a root directory so tests use synthetic `/proc` and
@@ -246,3 +350,113 @@ RG-275 lands; the missing client verb is tracked as RG-276. `efficient_upper_bou
 must match Assay's authoritative `judge.mutation.jobs_max`, tracked as
 [FD-002](../KNOWN_ISSUES_TODO_BACKLOG.md#fd-002-demand-upper-bound-is-not-joined-to-assay-inventory). See
 [FD-001](../KNOWN_ISSUES_TODO_BACKLOG.md#fd-001-lite-campaign-lifecycle).
+
+## One grammar, owned by cli-extended
+
+`fleet` is registered with the shared `cli-extended` library rather than a
+hand-written `argparse` builder, for the same reason cmru, ciu and the pwmcp
+client are: the estate already pays for that grammar once, and every hand-built
+copy of it drifts. What the library owns and what fleetd owns is the whole
+decision, so it is written down here instead of being re-argued per verb.
+
+Library-owned (fleetd must not re-implement it):
+
+- the help screens, the identity banner and the `version`/`--version`/`help`
+  built-ins, the shared output controls (`--json`, `--log-level`, `--quiet`,
+  `--debug*`, `--traceback`, the colour policy) and the JSON-mode result stream;
+- the exception boundary: domain refusals become one `[ERROR]` line with the
+  status a `CliFailure` carries, unexpected exceptions stay visible as a bug;
+- the surface lifecycle: the manifest, the generated SPEC region, the reviewed
+  catalog and the pytest link between a catalog row and its test (`surface
+  sync`/`check`, the `cli_case` marker) — so an unreviewed grammar change fails
+  a check instead of passing review by silence;
+- the `skills` verbs and the stamp/integrity sidecar behind them.
+
+Fleetd-owned: every verb, argument, option and constraint of the product
+interface, the handlers behind them, and the skill *content*. A grammar change
+therefore lands in `fleetd.cli.build_cli`, and the library delivers the rest.
+
+### Why the version comes from installed metadata
+
+The package version is derived by `setuptools_scm` from the `fleetd-v*` tag, so
+a literal `__version__` in the source could only go stale between a tag and the
+next commit — and it would be read by `--version` and by anything that imports
+`fleetd`. The CLI therefore resolves the version from the installed
+distribution and refuses (exit 3, one actionable line) when it cannot. That
+refusal is deliberate: a silent fallback would report a plausible number for a
+wheel that is not installed, which is the "defaults and fallbacks are hazards"
+failure this estate already paid for elsewhere.
+
+### Why the console script is a separate module
+
+`fleet`'s console script is `fleetd.entry:main`, not `fleetd.cli:main`. The
+entry module imports only the standard library, so on a managed host without
+`cli-extended` the user sees one install instruction and exit 3 instead of a
+`ModuleNotFoundError` traceback that names no remedy. The check is narrow on
+purpose: only the declared dependency is reported that way. Any *other* missing
+module still raises, because swallowing it would hide a broken installation —
+one status must not stand for two different conditions.
+
+### Why the reviewed catalog is a characterization, not a wish list
+
+`docs/cli-review.toml` is generated from the exported surface by
+`tools/gen-cli-review-catalog.py`: each row records the invocation *and* the
+outcome the real registry produced in `tests/cli_review_harness.py` (a
+throw-away HOME, a private non-repository working directory, fixture inputs).
+Two consequences are deliberate:
+
+- the catalog pins the grammar and the early refusals (spellings, accepted
+  value shapes, exclusive groups, declared constraints, and the refusals that
+  precede any host contact). It is not a behavioural specification: the
+  behaviour behind a verb is pinned by that verb's own tests, listed in
+  [SPEC "Verb semantics beyond the catalog"](SPEC.md#verb-semantics-beyond-the-catalog);
+- a row must be machine-independent. Where a command's outcome would otherwise
+  depend on the generating machine — `facts collect` reading a real
+  `/etc/fleetd/facts.toml`, a campaign command contacting a host — the
+  generator supplies a fixture root or an input that cannot exist in the
+  sandbox, so the recorded status is a property of the grammar, not of a host.
+
+A stale row, a changed signature or a catalog row with no linked test fails
+`cli-extended surface check` (and the pytest plugin at collection), which is the
+mechanical part of the review. The judgement — is this spelling, this default,
+this refusal the right product decision? — stays a reviewed row with its
+`rationale`, `effects` and `decision`.
+
+### Why `run` and `tick` need no confirmation prompt
+
+AC-12 asks every mutating verb for `--yes` or `--dry-run` unless there is a
+recorded reason. These two are idempotent supervisors over one campaign's own
+versioned state file: `run` re-adopts jobs by their deterministic names, and
+`tick` performs one scheduling step whose only effect is that state file. A
+repeated call cannot do what a first call would not have done, and a prompt
+would break the controller loop that calls `tick` unattended. The destructive
+case in this CLI — overwriting a locally *modified* skill copy — is guarded by
+the library's `--overwrite-modified`, not by this package.
+
+### Why there is no `fleet doctor`
+
+A doctor earns its place when there is an environment to verify and no other
+verb reports it. Here both environments already are reported: `fleet facts
+collect` *is* the host-environment report (`host-facts/1` carries a reason for
+every unavailable leaf), and the controller side refuses rather than guesses a
+missing runner checkout or `hx` wrapper. A `doctor` would duplicate those two
+and add a third place to drift. The row is recorded as a judgement in
+[the consumer guide](CONSUMERS.md#adoption-checklist-status), with the trigger
+to revisit: a third environment that nothing else reports.
+
+### Why `--state-dir` has no declarative default
+
+`--state-dir` falls back to `$XDG_STATE_HOME/fleetd/campaigns`, or
+`~/.local/state/fleetd/campaigns` when that variable is unset. That value belongs
+to the *invocation's* environment, so it is derived in `fleetd.cli._manager` when
+a campaign command runs, not declared as an `OptionSpec` default.
+
+A declared default is resolved once, while the registry is built, which put one
+machine's home directory into the exported surface manifest, the generated SPEC
+region and therefore into every reviewed-case signature. Two hosts would then
+report different signatures for the same CLI (each one *self-consistent*, so no
+check would fail), and the generated documents would carry a path from whichever
+machine happened to run `surface sync` first. The spec-export test therefore
+asserts the surface carries no environment-specific default, and the outcome —
+which directory a command reads — is pinned by a behavioural test in two different
+`XDG_STATE_HOME` environments.

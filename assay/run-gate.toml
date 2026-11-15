@@ -221,6 +221,29 @@ artifacts = [
   ".assay/mutation-postponed-assay.json",
 ]
 
+# B535's T3 follow-up uses the native Assay lane so the runner can scope and
+# shard it with --only-candidates and --shard. The one measured full-suite
+# baseline is 595s on one host flavor. A 181-candidate shard at three workers
+# is about 10h if every candidate costs a full baseline; this is a projection,
+# not a per-candidate measurement, and v1001 has no Assay measurement yet.
+[lanes.assay-r2]
+kind = "assay"
+assay_lane = "assay-r2"
+environment = "tester-unified"
+resource_observer = "cgprofile"
+clean_tree = true
+# Outer margin covers the estimated 11h Assay budget plus launch/collection.
+budget = "12h"
+jobs = "auto"
+# No candidate-RSS sample exists for Assay's suite. Leave candidate_ram
+# undeclared so Run-Gate discloses its documented 1 GiB no-history estimate;
+# the three-worker result is an estimate until the T3 campaign measures it.
+
+[lanes.assay-r2.resources]
+memory = "3g"
+pids = 8192
+cpus = "3"
+
 # A-474 / B110 P7: the bounded pilot is a non-qualifying measurement. Campaign
 # init happens after clone/build/venv setup and before plan/selection. Campaign
 # init, planning, selection and Assay execution share one hard 90m

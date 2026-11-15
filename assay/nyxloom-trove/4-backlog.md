@@ -196,6 +196,7 @@ items:
   - {id: B543, title: "Measure and reduce per-candidate pytest startup time without writing bytecode into the snapshot", type: improvement, component: execution, context_estimate: medium}
   - {id: B544, title: "Merge candidate-scoped Assay stores from an explicit owner manifest and refuse incomplete or conflicting ownership", type: feature, component: mutation, context_estimate: medium}
   - {id: B545, title: "Resolve progress/verdict disagreement for a timeout-killed R2 candidate", type: bugfix, component: mutation, context_estimate: medium}
+  - {id: B546, title: "Assay's own T3 R2 had no native kind-assay lane for changed-line campaigns", type: bugfix, component: gate, context_estimate: small}
 ---
 
 # assay — backlog
@@ -13715,7 +13716,7 @@ registered gates (preflight, tester-unified, provisional) pass on the same
 commit in the tester container.
 The CW9 pilot's matched cowtree arms (plain and btrfs) did not show it. That
 initial probe did not isolate the cause; the later T3 evidence below supersedes
-its leak count and records the surviving process types. The cause remains open.
+its leak count and records the surviving process types.
 
 **Confirmed deterministically at assay-v12.2.0 (2026-11-12).** The full
 `self-qualification` lane baseline on the bare-host T3 path ended
@@ -13723,9 +13724,14 @@ its leak count and records the surviving process types. The cause remains open.
 first run and 318 on the retry, including a stable sample of 18 `git` and two
 `sleep` processes with one common parent. The R0/R1-only preflight leaked zero
 descendants on the same suite, commit and tester image. The full lane therefore
-never reached R2, which leaves B535 blocked. The lane declaration that selects
-the full run is `assay/run-gate.toml:125-145`; the workspace restriction that
-prevents the runner's native layout from reaching this path is B541.
+never reached R2 on the 12.2.0 tag; B535 now rolls forward under the latest-
+release-only campaign rule. The test-only repair merged to main as
+`367bc2abd` on branch `assay-r2-unblock-20261112`: fixture Git calls disable
+automatic maintenance and inherit an isolated global config, while the
+liveness tests kill their process group and reap the adopted child. The next
+assay release must carry this repair; the 12.2.0 tag does not. The native
+`assay-r2` lane added for B535 avoids the B105 wrapper. B541's path restriction
+still applies to the command-backed full and provisional lanes.
 
 **Close when.** Full and preflight self-qualification baselines on the same
 clean commit and image both report zero outliving descendants across repeated
@@ -14879,7 +14885,21 @@ fallback is shown to fail the owning focused test.
 
 **Problem.** Following operator decision A-507, assay 12.2.0 is released through `self-qualification-provisional` (R0, R1, R3 canary) with R2 mutation of its own source postponed: the B169 window in `tools/self-qualification-gate.sh` is now `assay >= 10.0.0, < 12.3.0`. Until assay's own R2 runs on the released code, 12.2.0 carries no R2 evidence for itself.
 
-**Owed work.** Run the full `self-qualification` lane (R2 included) on the `assay-v12.2.0` release as a T3 post-release check (host, `--jobs`, flexible R2 campaigns allowed), and record its verdict. A survivor or crash found there is filed and fixed in a later release; it does not retract 12.2.0.
+**Owed work.** The 12.2.0 T3 attempt stopped before any host work: its command
+lane rejected the flexible-R2 flags, the B105 driver refuses the runner's
+`/workspaces/<commit>` checkout, and the full-lane baseline on that tag leaked
+`git`/`sleep` descendants. Do not retry 12.2.0 after it is superseded. The
+next latest assay release must carry main's test-only leak repair
+(`367bc2abd`) and is the T3 target. Use the native `assay-r2` kind-assay lane,
+which retains the full source target and 100% R1 floor while the prepared
+changed-line ID list scopes R2. For the first campaign, the 362 candidates
+from `assay-v12.1.1..assay-v12.2.0` remain the unjudged source delta if the
+next release changes only tests and lane configuration. Run two shards and
+strictly merge them under the same release tree and tester image. A survivor
+or crash is filed and fixed later; it does not retract the judged release.
+The existing runner second-attempt case is tracked by netcup NC-36; its
+2026-11-14 selected-subset repro already records attempt 2 baselining after
+all 44 selected candidates completed.
 
 **2026-11-12 unblock extension (test-only; no `assay/src` change).** Two test
 defects prevented the released commit from reaching R2. (1)
@@ -14895,7 +14915,11 @@ isolated global config; per-test and session-end guards reject unreaped
 `git`/`sleep` descendants. The two liveness tests kill their process group and
 reap the adopted child. These repairs do not provide R2 evidence themselves.
 
-**Close when.** T3 R2 PASS recorded for assay-v12.2.0.
+**Close when.** A T3 R2 PASS is recorded for the latest eligible assay release
+using `run-gate assay-r2`, with the changed-line candidate set split into two
+shards and strictly merged. The PASS must bind the exact same release tree and
+tester image for baseline and mutants. The 12.2.0 tag remains without R2; it is
+not retro-run.
 
 ## B540 — the tester-unified release-manifest test fails at every assay release tag
 
@@ -14934,8 +14958,9 @@ ambient tag state.
 
 ## B541 — the B105 container driver accepts only vbpub worktree layouts
 
-**Status:** OPEN (filed 2026-11-12); severity: blocks B535's supported T3
-runner path. Source: 2026-11-12 host R2 restart record.
+**Status:** OPEN (filed 2026-11-12); partial B535 mitigation by the native
+`assay-r2` lane in this package. The B105 driver restriction remains for
+command-backed qualification. Source: 2026-11-12 host R2 restart record.
 
 **Problem.** `assay/tools/self-qualification-container.sh:104-107` accepts only
 `/workspaces/vbpub`, its `.worktrees/` and `.claude/worktrees/` forms; the
@@ -14944,8 +14969,12 @@ same driver separately requires the Git common directory under
 The committed runner supervisor instead requires a persistent checkout at
 `$RUNNER_HOME/checkouts/$commit`
 (`scripts/netcup/runner/run-r2-campaign.sh:377-390`), exposed in the cockpit
-as `/workspaces/<commit>`. The owed full self-qualification therefore fails
-before preflight under the supported campaign supervisor.
+as `/workspaces/<commit>`. The `self-qualification` and
+`self-qualification-provisional` command lanes still fail before preflight
+from that location. B535's R2-only T3 route no longer depends on this driver:
+the new `kind = "assay"` lane runs directly in `tester-unified` and accepts the
+supervisor's native checkout path. This package does not change the driver's
+literal workspace-family or Git common-directory checks.
 
 **Minimal solution.** Replace the literal path-family check with one configured
 workspace root that is derived from the resolved checkout bind, or accept the
@@ -14964,10 +14993,10 @@ are accepted, while a worktree or common directory outside the declared root
 still refuses by name. An unset or contradictory root refuses rather than
 falling back to `/workspaces/vbpub`.
 
-**Close when.** The full lane reaches its preflight from the supervisor's
-persistent checkout without relocating the clone, the allowed root is disclosed
-in the run, escape fixtures remain red, and B535's T3 R2 campaign completes on
-the supported layout.
+**Close when.** If command-backed qualification remains a supported supervisor
+use, the B105 driver accepts a declared runner workspace root and records both
+resolved paths, while escape fixtures remain red. B535's native R2 campaign is
+no longer a close condition for this driver-specific issue.
 
 ## B542 — R2 restarts repeat a passing single-core baseline and leave a serial retry tail
 
@@ -15117,3 +15146,34 @@ the existing hand-mutant table gains one mutant per new guard.
 
 **Close when.** Lexer change plus tests land, the registered Assay lanes pass,
 and the host self-qualification run passes on the final head.
+
+## B546 — Assay's own T3 R2 had no native kind-assay lane for changed-line campaigns
+
+**Status: FIXED by this package (assay-r2-lane-20261115).** B535's only
+own-source R2 declaration was the B105 `self-qualification` command lane.
+Run-Gate correctly refused `--only-candidates` and `--shard` for that kind, so
+the 362 changed-line candidates could not be scoped and split across the two
+T3 hosts.
+
+The registered `assay-r2` lane is `kind = "assay"`, maps to Assay's
+`[lanes.assay-r2]`, reuses the existing full-source snapshot isolation and
+100% whole-target R1 declaration, and enables native R2 with an explicit
+fail-fast policy. Run-Gate's declared budget and the 11h Assay lane budget are
+estimates from the measured 595s full-suite baseline: 181 candidates per shard
+would take about 10h at three workers if every candidate ran the full suite.
+Per-candidate duration and RSS are not measured; the lane does not claim either
+as a fact.
+
+A Run-Gate `--dry-run` of `assay-r2 --only-candidates <file under .run-gate/>
+--shard 0/2 --jobs 3` resolves the lane as `assay-r2.shard0of2` with three
+explicit workers and plans the container, but it stops at the cgprofile
+observer check on a host without a `CGPROFILE_OBSERVER_SOCKET` endpoint. With
+the observer line removed in a scratch copy the same dry-run ends PASS and
+only prints Run-Gate's warning that the 11h Assay budget is below the 12h outer
+budget. The declaration oracle checks the parsed Assay lane and its native R2
+settings; the observer-backed dry-run is repeated on a host that has the
+endpoint. The B105 `self-qualification` and
+`self-qualification-provisional` declarations remain command lanes with their
+prior commands and rigor. No R2 campaign was run in this package; B535 owns the
+next latest-release T3 result. The layout refusal itself remains under B541,
+and the selected-set second-attempt repro remains under netcup NC-36.

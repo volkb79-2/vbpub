@@ -234,12 +234,56 @@ tag must be listable, and its latest version must be below 12.3.0. The
 E4 env-only launchers and delegated release-gate changes; the 2026-11-12
 operator decision (A-507) extends it to the flexible-R2 release 12.2.0, gated
 by R0, R1 and the R3 canary, with assay's own R2 run afterwards as the T3 check
-on that release (known issue B535 until a PASS is recorded). A release at
+owed under B535 (until a PASS is recorded for the latest eligible release).
+The superseded 12.2.0 release is not retro-run. A release at
 9.9.9, 12.3.0 or later, an unreadable tag
 list, or no visible stable tag refuses the waiver. Any further extension
 requires a new operator R2-waiver decision. The refusal names this decision
 and recommends the full self-qualification lane when the waiver no longer
 applies.
+
+#### T3 changed-line R2 campaign (B535)
+
+The `assay-v12.2.0` tag did not reach its R2 baseline. Its full-lane tests
+leaked `git` and `sleep` descendants; the test-only repair is on main at
+`367bc2abd` and must be included in the next assay release. Under the latest-
+release-only campaign policy, do not retro-run 12.2.0 after it is superseded.
+Run the next latest release through the native `assay-r2` lane, whose R0/R1/R2
+suite keeps the existing 100% whole-target line and branch coverage floor over
+`src/assay`. It reuses the full lane's isolated snapshot selection. Run-Gate
+installs the selected worktree's `assay/` source as the judge (not the wheel the
+B105 wrapper builds), so the judge imports the unmutated release tree; baseline
+and mutants run in separate snapshots, whose `pythonpath = ["src", ...]` puts the
+snapshot's `src/assay` first. Baseline and mutants use the same release tree and
+tester image. The lane omits R3, has no persisted B117 campaign deadline, and
+does not replace `self-qualification` or `self-qualification-provisional`.
+
+For the first post-12.2.0 campaign, keep the changed-source candidates from
+`assay-v12.1.1` through the latest release tag in one ordered ID file (placed
+under the checkout's git-ignored `.run-gate/`, which the lane container can
+see). The 12.1.1-to-12.2.0 plan had 362 changed-line candidates out of 8447
+whole-target candidates. Candidate ids fold in the exact file bytes, so those
+362 are the scope only for files the next release leaves unchanged: later
+`src/assay` changes (for example `coverage_parsers/rust_lcov.py`) add
+candidates, and the ID file must be regenerated against the release tag. Split
+the same ID file across the two host shards, then strictly merge both stores:
+
+```sh
+run-gate assay-r2 --jobs 3 --only-candidates .run-gate/changed-source-candidates.txt --shard 0/2
+run-gate assay-r2 --jobs 3 --only-candidates .run-gate/changed-source-candidates.txt --shard 1/2
+run-gate assay-r2 --only-candidates .run-gate/changed-source-candidates.txt --merge-shards 2
+```
+
+The measured full-suite baseline is 595 seconds on one host flavor, not a
+per-candidate measurement. If every one of 181 candidates ran the whole
+baseline, three workers would need about ten hours per shard; this is an
+estimate, and the other host flavor has no Assay measurement yet. Candidate
+fail-fast stops after the first failing assertion once the unmutated baseline
+has passed. Run-Gate adds resume and progress reporting to the native lane.
+`assay-r2` declares no `candidate_ram`, so the memory guard falls back to
+`memory / jobs_max` (1 GiB per worker); that is an estimate until measured.
+This path does not call the B105 wrapper, so it avoids that wrapper's current
+`/workspaces/vbpub` restriction without changing the command-backed full lanes.
 
 Once the bare-host wrapper starts for the full or provisional lane, it removes
 an old postponement marker before its dirty-tree and cgroup-capacity checks. A
