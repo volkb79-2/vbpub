@@ -239,6 +239,10 @@ def test_pre_merge_tooling_lane_binds_the_release_attempt_failure_groups() -> No
         "tests/core/test_trust_boundary.py",
         "tests/core/test_dataclass_contract.py",
         "tests/core/test_b105_source_coverage_controls.py",
+        # Test-file layout rule: a misplaced new test file was found only by the
+        # host R1 lane (Rust R-1 merged-branch qualification).
+        "tests/core/test_import_contracts.py",
+        "tests/parsers/coverage/test_coverage_rust_lcov_normalization.py",
     ):
         assert test_path in command
 
