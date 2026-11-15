@@ -1,16 +1,15 @@
-# assay's own lane declaration.
+# assay's own lane declarations.
 #
-# A-046 — a lane file declares WHAT EXISTS, not a target architecture. assay's
-# subject matter is changed-line coverage, canaries and mutation, and it has
-# none of them yet. Declaring R1/R2/R3 here today would be the
-# lane-table-implies-capability failure this project exists to remove, committed
-# in assay's own config on day one. So: R0 only, and therefore NO [judge] table
-# at all, which is exactly what A-048 says an R0-only lane looks like.
+# A-046 — a lane file declares WHAT EXISTS, not a target architecture. Keep
+# the ordinary release lane R0-only: it makes no coverage or mutation claim.
+# The full self-qualification lane declares R0-R3, its provisional companion
+# declares R0/R1/R3, and B535's native `assay-r2` lane declares R0/R1/R2 for
+# the T3 follow-up with the same whole-source R1 floor and isolated snapshots.
 #
-# The ordinary release lane stays R0-only (A-133, superseded only for the
-# separate B105 qualification lane by A-462). Self-qualification is explicit,
-# expensive, full-source R0-R3 evidence; it does not change the release lane's
-# default cost or release semantics. Both declarations run in tester-unified.
+# The ordinary release lane stays R0-only (A-133). The full and T3 lanes are
+# explicit, expensive, full-source evidence and do not change its default cost
+# or release semantics. The native T3 lane runs in tester-unified; the full
+# and provisional lanes retain their bare-host B105 wrappers.
 
 schema_version = 2
 
@@ -211,6 +210,133 @@ liveness = true
 mechanism = "import-break"
 target = "src/assay/cli.py"
 budget_per_attempt = "30m"
+
+# Native kind-assay lane for B535's latest-release T3 R2 campaign. Its test
+# command and isolated snapshot boundary match self-qualification; the campaign
+# supplies a changed-line candidate file and Run-Gate shards that selection.
+# The only measured full-suite baseline is 595s on one host flavor. With 181
+# selected candidates per shard and three workers, about 10h is a projection if
+# every candidate pays the full suite, not a per-candidate measurement. Keep
+# candidate_fail_fast enabled: after the full passing baseline, the first
+# failing assertion proves a kill, so the remaining suite adds no kill evidence.
+[lanes.assay-r2]
+scope = "S1"
+rigor = ["R0", "R1", "R2"]
+enforcement = "gate"
+argv = [
+  "python", "-m", "pytest", "tests", "-q",
+  "--cov=src/assay", "--cov-branch",
+  "--cov-report=json:.assay/coverage-assay-r2.json",
+]
+env = {}
+env_passthrough = ["PATH"]
+# Estimate for one two-host shard. Run-Gate's outer bound is 12h to allow
+# startup and artifact collection after this 11h Assay execution budget.
+budget = "11h"
+allow_argv_append = false
+
+[lanes.assay-r2.infrastructure]
+ASSAY_RESOURCE_OBSERVER_SOCKET = "required-env:ASSAY_RESOURCE_OBSERVER_SOCKET"
+
+[lanes.assay-r2.isolation]
+snapshot_selection = "repository-minus-unsafe-symlinks"
+snapshot_history = "shallow"
+unsafe_symlink_omissions = [
+  "topos/tests/fixtures/inspect_files/_danger/passwd_link",
+  "topos/tests/fixtures/inspect_files/cgroup_escape/system.slice/ssh.service/dangerous_link/passwd_escape",
+  "topos/tests/fixtures/inspect_files/cgroup_nonreg/system.slice/ssh.service/memory.current",
+]
+
+[lanes.assay-r2.judge]
+language = "python"
+source_roots = ["src/assay"]
+mode = "whole_target"
+targets = [
+  "src/assay/__init__.py",
+  "src/assay/_cow_workspace.py",
+  "src/assay/_durable.py",
+  "src/assay/_judge_projection.py",
+  "src/assay/_limit_ledger.py",
+  "src/assay/_mutation_inventory.py",
+  "src/assay/_schedule.py",
+  "src/assay/_tmpfs_worker.py",
+  "src/assay/_window_host.py",
+  "src/assay/adapters/__init__.py",
+  "src/assay/adapters/base.py",
+  "src/assay/adapters/go.py",
+  "src/assay/adapters/go_modfile.py",
+  "src/assay/adapters/go_stmtpos.py",
+  "src/assay/adapters/javascript.py",
+  "src/assay/adapters/python.py",
+  "src/assay/adapters/sql.py",
+  "src/assay/adapters/sql_lex.py",
+  "src/assay/adjudication.py",
+  "src/assay/attestation.py",
+  "src/assay/canary.py",
+  "src/assay/candidate_identity.py",
+  "src/assay/cli.py",
+  "src/assay/config.py",
+  "src/assay/contention.py",
+  "src/assay/coverage.py",
+  "src/assay/coverage_parsers/__init__.py",
+  "src/assay/coverage_parsers/cobertura.py",
+  "src/assay/coverage_parsers/coverage_istanbul_json.py",
+  "src/assay/coverage_parsers/coverage_py_json.py",
+  "src/assay/coverage_parsers/go_cover.py",
+  "src/assay/coverage_parsers/lcov.py",
+  "src/assay/coverage_parsers/model.py",
+  "src/assay/diff.py",
+  "src/assay/errors.py",
+  "src/assay/evaluate.py",
+  "src/assay/failure_summary.py",
+  "src/assay/git.py",
+  "src/assay/guards.py",
+  "src/assay/isolation.py",
+  "src/assay/liveness.py",
+  "src/assay/liveness_resources.py",
+  "src/assay/measurability.py",
+  "src/assay/mutation.py",
+  "src/assay/mutation_parsers/__init__.py",
+  "src/assay/mutation_parsers/model.py",
+  "src/assay/mutation_parsers/mutation_report_json.py",
+  "src/assay/mutation_witness.py",
+  "src/assay/observer_windows.py",
+  "src/assay/output.py",
+  "src/assay/process_tree.py",
+  "src/assay/provenance.py",
+  "src/assay/r2_command.py",
+  "src/assay/records.py",
+  "src/assay/redaction.py",
+  "src/assay/registry.py",
+  "src/assay/resource_limits.py",
+  "src/assay/result_reports/__init__.py",
+  "src/assay/result_reports/model.py",
+  "src/assay/result_reports/vitest_json.py",
+  "src/assay/reuse.py",
+  "src/assay/runner.py",
+  "src/assay/safeio.py",
+  "src/assay/statement_attribution.py",
+  "src/assay/termination.py",
+  "src/assay/verdict.py",
+  "src/assay/verify.py",
+  "src/assay/vocabulary.py",
+  "src/assay/workspace.py",
+]
+fail_under = 100.0
+allow_excluded = true
+require_branch = true
+
+[lanes.assay-r2.judge.coverage]
+format = "coverage-py-json"
+artifact = ".assay/coverage-assay-r2.json"
+
+[lanes.assay-r2.judge.mutation]
+jobs_max = 3
+max_mutants = 10000
+operators = ["python:compare-swap", "python:boolop-swap", "python:bool-const-flip", "python:falsy-swap"]
+budget_per_candidate = "auto"
+liveness = true
+candidate_fail_fast = true
 
 # B105: R0/R1 coverage preflight, also used by the full qualification gate.
 [lanes.self-qualification-preflight]

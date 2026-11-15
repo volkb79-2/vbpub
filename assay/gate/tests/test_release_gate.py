@@ -15,11 +15,14 @@ from pathlib import Path
 import pytest
 
 from gate.tests.support import PROJECT_ROOT
+from assay.config import load_lane_file
 
 SCRIPT = PROJECT_ROOT / "tools" / "release-gate.sh"
 REPO_ROOT = PROJECT_ROOT.parent
 CMRU_FILE = PROJECT_ROOT / "cmru.toml"
 RUN_GATE_FILE = PROJECT_ROOT / "run-gate.toml"
+ASSAY_FILE = PROJECT_ROOT / "assay.toml"
+CONSUMERS_FILE = PROJECT_ROOT / "docs" / "CONSUMERS.md"
 WORKFLOW_FILE = PROJECT_ROOT / "nyxloom-trove" / "WORKFLOW.md"
 
 
@@ -263,6 +266,59 @@ def test_pre_merge_tooling_lane_binds_the_release_attempt_failure_groups() -> No
         "assay/docs/CONSUMERS.md",
     ):
         assert trigger in workflow
+
+
+def test_native_assay_r2_lane_matches_b535_scope_without_changing_b105_lanes() -> None:
+    run_gate = tomllib.loads(RUN_GATE_FILE.read_text(encoding="utf-8"))["lanes"]
+    assay_lanes = tomllib.loads(ASSAY_FILE.read_text(encoding="utf-8"))["lanes"]
+    parsed_lanes = load_lane_file(ASSAY_FILE)
+
+    gate_lane = run_gate["assay-r2"]
+    assert gate_lane["kind"] == "assay"
+    assert gate_lane["assay_lane"] == "assay-r2"
+    assert gate_lane["environment"] == "tester-unified"
+    assert gate_lane["jobs"] == "auto"
+    assert gate_lane["resources"] == {"memory": "3g", "pids": 8192, "cpus": "3"}
+
+    native_lane = assay_lanes["assay-r2"]
+    parsed_native_lane = parsed_lanes.lane("assay-r2")
+    full_lane = assay_lanes["self-qualification"]
+    provisional_lane = assay_lanes["self-qualification-provisional"]
+    assert native_lane["scope"] == "S1"
+    assert native_lane["rigor"] == ["R0", "R1", "R2"]
+    assert parsed_native_lane.scope == "S1"
+    assert parsed_native_lane.rigor == ("R0", "R1", "R2")
+    assert native_lane["judge"]["source_roots"] == ["src/assay"]
+    assert native_lane["judge"]["mode"] == "whole_target"
+    assert native_lane["judge"]["targets"] == full_lane["judge"]["targets"]
+    assert native_lane["judge"]["fail_under"] == full_lane["judge"]["fail_under"] == 100.0
+    assert native_lane["judge"]["require_branch"] is True
+    assert native_lane["isolation"] == full_lane["isolation"]
+    assert parsed_native_lane.isolation == parsed_lanes.lane("self-qualification").isolation
+    assert native_lane["argv"][:-1] == full_lane["argv"][:-1]
+    assert native_lane["judge"]["mutation"]["candidate_fail_fast"] is True
+    assert native_lane["judge"]["mutation"]["budget_per_candidate"] == "auto"
+    assert parsed_native_lane.judge is not None
+    assert parsed_native_lane.judge.mutation is not None
+    assert parsed_native_lane.judge.mutation.jobs_max == 3
+    assert parsed_native_lane.judge.mutation.candidate_fail_fast is True
+
+    assert full_lane["rigor"] == ["R0", "R1", "R2", "R3"]
+    assert provisional_lane["rigor"] == ["R0", "R1", "R3"]
+    for lane_name in ("self-qualification", "self-qualification-provisional"):
+        assert run_gate[lane_name]["kind"] == "command"
+        assert run_gate[lane_name]["argv"] == [
+            "bash",
+            "{worktree}/assay/tools/self-qualification-container.sh",
+            "{worktree}",
+            lane_name,
+        ]
+
+    consumers = " ".join(CONSUMERS_FILE.read_text(encoding="utf-8").split())
+    assert "T3 changed-line R2 campaign (B535)" in consumers
+    assert "run-gate assay-r2" in consumers
+    assert "--only-candidates" in consumers
+    assert "--merge-shards 2" in consumers
 
 
 def test_release_gate_requires_the_host_selector(tmp_path: Path) -> None:

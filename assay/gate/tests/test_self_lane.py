@@ -1,9 +1,9 @@
 """assay's own ``assay.toml`` loads under the loader assay ships.
 
 This is O2's negative made mechanical. The ordinary release lane remains
-R0-only; B105 adds a separate full-source R0-R3 qualification lane. This
-module keeps both lane declarations loadable and checks that their distinct
-roles do not drift.
+R0-only; B105 adds separate full-source qualification lanes, and B535 adds a
+native changed-line R2 lane. This module keeps those declarations loadable and
+checks that their distinct roles do not drift.
 
 It also cross-checks the two files that have to agree about assay's own gate:
 ``assay.toml`` (WHAT) and ``nyxloom-trove/nyxloom.toml`` (WHERE). Reading the
@@ -85,6 +85,7 @@ def test_assays_own_lane_file_loads():
     assert list(lane_file.lanes) == [
         GATE_ID,
         QUALIFICATION_ID,
+        "assay-r2",
         PREFLIGHT_ID,
         PROVISIONAL_ID,
         "analysis",
@@ -128,6 +129,7 @@ def test_all_observer_lanes_parse_the_socket_as_a_required_infrastructure_fact()
         "self-qualification",
         "self-qualification-preflight",
         "self-qualification-provisional",
+        "assay-r2",
         "analysis",
         "analysis-r2",
     )
@@ -389,6 +391,7 @@ def test_assay_lanes_lists_assays_own_lane(monkeypatch):
     assert err.getvalue() == ""
     assert GATE_ID in out.getvalue()
     assert QUALIFICATION_ID in out.getvalue()
+    assert "assay-r2" in out.getvalue()
     assert PREFLIGHT_ID in out.getvalue()
     assert "analysis  scope=S1  rigor=R0,R1" in out.getvalue()
     assert "judge=none" in out.getvalue()

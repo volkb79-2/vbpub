@@ -882,7 +882,8 @@ contract passes on a clean final commit.
 
 ## NC-45 — the R2 supervisor's checkout layout is outside the assay full-qualification driver's accepted workspace family
 
-**Status:** OPEN (filed 2026-11-12); priority should-fix for B535's T3 path.
+**Status:** OPEN (filed 2026-11-12); no longer blocks B535's native
+`assay-r2` lane; remains applicable to command-backed qualification.
 Source: 2026-11-12 host R2 restart record; cross-reference assay B541.
 
 **Problem.** `run-r2-campaign.sh` requires the persistent checkout at
@@ -891,8 +892,11 @@ project subdirectory (`scripts/netcup/runner/run-r2-campaign.sh:377-391`).
 The synchronized runner checkout is exposed in the cockpit as
 `/workspaces/<commit>`. Assay's full-qualification driver accepts only
 `/workspaces/vbpub` and nested vbpub worktrees
-(`assay/tools/self-qualification-container.sh:104-107`), so the supervisor exits
-before preflight for the only lane B535 accepts.
+(`assay/tools/self-qualification-container.sh:104-107`), so command-backed
+`self-qualification` exits before preflight from the supervisor checkout.
+Assay's B535 R2 follow-up now uses native `kind = "assay"` lane `assay-r2`,
+which bypasses this driver and therefore removes this layout as a blocker for
+that R2-only campaign. The driver itself remains unchanged.
 
 **Minimal solution.** Add an explicit, validated checkout-directory option to
 the supervisor for lanes that declare a narrower workspace requirement, or
@@ -911,10 +915,12 @@ checks; the default `/workspaces/<commit>` path remains unchanged; relative,
 symlink, missing, dirty and wrong-commit targets refuse by name. A control run
 without the option reproduces the current assay refusal.
 
-**Close when.** The supported supervisor can run B535's full qualification from
-the required nested checkout layout, uses the same full commit and container
-identity checks, and the documented layout choice plus positive/refusal
-oracles pass on a clean final commit.
+**Close when.** If the runner continues to support command-backed Assay
+qualification, its documented handoff lets the B105 driver accept the
+supervisor checkout while preserving full-commit, clean-tree, project-directory
+and container-identity checks; positive and refusal oracles pass on a clean
+final commit. B535's native R2 campaign is covered by `assay-r2` and is not a
+close condition for this command-driver issue.
 
 ## NC-46 — a bundle filename becomes the lane-container repository name
 
