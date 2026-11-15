@@ -366,6 +366,22 @@ impl WriterQueue {
         Some(job)
     }
 
+    /// Every incarnation id a queued job names.
+    ///
+    /// This is what a retirement pass must union with the segments' own reachability: a job
+    /// that was submitted and not yet written is a record the store still owes, and freeing its
+    /// dictionary entry would make the write name an id the index no longer holds.
+    #[must_use]
+    pub fn pending_incarnations(&self) -> std::collections::BTreeSet<u64> {
+        let mut ids = std::collections::BTreeSet::new();
+        for (job, _bytes) in &self.jobs {
+            for inc in &job.incarnations {
+                ids.insert(*inc);
+            }
+        }
+        ids
+    }
+
     /// Take every queued job (the shutdown drain the caller owns).
     #[must_use]
     pub fn drain(&mut self) -> Vec<Job> {

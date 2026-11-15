@@ -266,6 +266,17 @@ pub struct TierScan {
     pub torn_repaired: Vec<String>,
     /// Segments quarantined because their tail was corrupt.
     pub quarantined: Vec<String>,
+    /// Files quarantined because they grew past the reader's bound: a file bigger than this
+    /// store's own segment budget is not a segment it wrote, so it is taken out of service and
+    /// counted rather than silently skipped.
+    pub oversized: Vec<String>,
+    /// Store-owned names that could not be read: reported and left in place, because a file
+    /// whose header cannot be read cannot be *proved* to be this store's own, and a store only
+    /// ever removes what it can prove it wrote.
+    pub unreadable: Vec<String>,
+    /// Stale `.seg.open` twins removed because a sealed segment with the same (tier, start_s,
+    /// seq) was verified: the crash window between a seal's rename and its unlink.
+    pub stale_open_removed: Vec<String>,
     /// True when the open segment's tail was damaged in a way the scan could not repair.
     pub open_damaged: bool,
     /// The tier's total bytes in its own segments.
@@ -395,17 +406,38 @@ impl Tier {
     /// Scan the directory again: validate names and headers, repair torn tails, quarantine
     /// corrupt segments, and rebuild the ring and the byte total.
     ///
+    /// Four crash and hostile-file shapes are recognised here rather than left to a reader:
+    ///
+    /// * **A stale `.seg.open` beside its sealed twin.** The seal's order (rename, fsync,
+    ///   unlink) leaves both names if the process dies between the last two steps. A sealed
+    ///   segment is verified first; an open name with the same `(tier, start_s, seq)` is a copy
+    ///   of it, so it is removed (`stale_open_removed`) — never counted, never reopened, never
+    ///   served twice.
+    /// * **A file past the reader's bound.** It cannot be this store's segment (the bound is
+    ///   checked against every tier's own `segment_file_bound` by
+    ///   [`crate::store::StoreConfig::check`]), so it is quarantined under `<name>.corrupt` and
+    ///   counted (`oversized`), not skipped: a skipped file would sit outside the ring and
+    ///   outside the byte total, so eviction would never reach it.
+    /// * **A store-owned name that cannot be read** (EACCES, EIO, a race) is reported
+    ///   (`unreadable`) and left in place, because a file whose header cannot be read cannot be
+    ///   *proved* to be this store's own and a store only removes what it can prove.
+    /// * **A file the store did not write** (a foreign name, another tier's corpus, a link, a
+    ///   directory, a FIFO) is reported as a note and never touched.
+    ///
     /// # Errors
     ///
-    /// [`StoreError::EntryLimit`], [`StoreError::Symlink`] (the root), [`StoreError::Io`] and
-    /// every header/segment refusal the store cannot repair. A torn or corrupt *segment* is
-    /// repaired or quarantined and reported, never an error.
+    /// [`StoreError::EntryLimit`] and [`StoreError::Symlink`] (the root). A per-file refusal is
+    /// a report, not an abort: one damaged or unreadable segment must not make the whole tier
+    /// unopenable.
     pub fn rescan(&mut self) -> Result<(), StoreError> {
         let entries = self.dir.list(MAX_SEGMENTS)?;
         let mut segments: Vec<RingSegment> = Vec::new();
         let mut notes: Vec<TierNote> = Vec::new();
         let mut torn_repaired: Vec<String> = Vec::new();
         let mut quarantined: Vec<String> = Vec::new();
+        let mut oversized: Vec<String> = Vec::new();
+        let mut unreadable: Vec<String> = Vec::new();
+        let mut stale_open_removed: Vec<String> = Vec::new();
         let mut open_damaged = false;
         let mut bytes: u64 = 0;
         for entry in entries {
@@ -436,11 +468,63 @@ impl Tier {
                     continue;
                 }
             }
+            // A file past the bound is not a file this store wrote: the writer's largest legal
+            // segment is `segment_file_bound`, and the bound is only accepted when it exceeds
+            // that. It is quarantined rather than skipped, because a skipped file is one the
+            // ring and the cap accounting both ignore.
+            if entry.len > self.config.segment_file_bound()
+                || entry.len > u64::try_from(self.max_file_bytes).unwrap_or(u64::MAX)
+            {
+                let quarantine = match crate::segment::quarantine_name(&entry.name) {
+                    Ok(name) => name,
+                    Err(error) => {
+                        notes.push(TierNote {
+                            name: entry.name.clone(),
+                            reason: format!("oversized and unnamed: {}", error.kind()),
+                        });
+                        continue;
+                    }
+                };
+                // Only quarantine what is provably ours: a look-alike name holding someone
+                // else's bytes is reported and left alone.
+                match self.header_of(&entry.name) {
+                    Ok(header) if header.kind == self.config.kind => {}
+                    Ok(_) => {
+                        notes.push(TierNote {
+                            name: entry.name.clone(),
+                            reason: "oversized, and header names another tier kind".to_string(),
+                        });
+                        continue;
+                    }
+                    Err(error) => {
+                        notes.push(TierNote {
+                            name: entry.name.clone(),
+                            reason: format!(
+                                "oversized, and holds no header this tier can read: {}",
+                                error.kind()
+                            ),
+                        });
+                        continue;
+                    }
+                }
+                match self.dir.rename(&entry.name, &quarantine) {
+                    Ok(()) => {
+                        oversized.push(entry.name.clone());
+                        quarantined.push(entry.name.clone());
+                    }
+                    Err(error) => notes.push(TierNote {
+                        name: entry.name.clone(),
+                        reason: format!("oversized and could not be quarantined: {}", error.kind()),
+                    }),
+                }
+                continue;
+            }
             // Only a file whose own header says it is this tier's corpus is ours to touch; a
             // name that looks right and holds something else is reported and left alone.
             let header = match self.header_of(&entry.name) {
                 Ok(header) => header,
                 Err(reason) => {
+                    unreadable.push(entry.name.clone());
                     notes.push(TierNote {
                         name: entry.name.clone(),
                         reason: format!("holds no header this tier can read: {}", reason.kind()),
@@ -455,12 +539,25 @@ impl Tier {
                 });
                 continue;
             }
-            let scan = crate::segment::scan(
+            let scan = match crate::segment::scan(
                 &self.dir,
                 &entry.name,
                 self.max_file_bytes,
                 self.config.max_incarnations,
-            )?;
+            ) {
+                Ok(scan) => scan,
+                Err(error) => {
+                    // A single unreadable segment must not brick the tier's open, and it must
+                    // not be silently dropped either: it is reported and left where it is,
+                    // because the store cannot prove what it is without reading it.
+                    unreadable.push(entry.name.clone());
+                    notes.push(TierNote {
+                        name: entry.name.clone(),
+                        reason: format!("could not be scanned: {}", error.kind()),
+                    });
+                    continue;
+                }
+            };
             match &scan.tail {
                 TailState::Complete => {}
                 TailState::Incomplete { .. } => {
@@ -476,12 +573,22 @@ impl Tier {
             }
             // Re-scan the repaired file, so the ring's facts describe what is actually there.
             let scan = if scan.tail.is_damaged() {
-                crate::segment::scan(
+                match crate::segment::scan(
                     &self.dir,
                     &entry.name,
                     self.max_file_bytes,
                     self.config.max_incarnations,
-                )?
+                ) {
+                    Ok(scan) => scan,
+                    Err(error) => {
+                        unreadable.push(entry.name.clone());
+                        notes.push(TierNote {
+                            name: entry.name.clone(),
+                            reason: format!("could not be re-scanned: {}", error.kind()),
+                        });
+                        continue;
+                    }
+                }
             } else {
                 scan
             };
@@ -491,6 +598,39 @@ impl Tier {
             bytes = bytes.saturating_add(scan.file_len);
             segments.push(ring_segment(&entry.name, parsed, scan));
         }
+        // The stale-open rule: a sealed segment wins, and its `.seg.open` twin is a copy of it.
+        // A reader that saw both would serve every record twice, and `reopen_open_segment`
+        // would append behind a file whose records already left.
+        let sealed_keys: Vec<(u64, u64)> = segments
+            .iter()
+            .filter(|segment| !segment.open)
+            .map(|segment| (segment.parsed.start_s, segment.parsed.seq))
+            .collect();
+        let mut kept: Vec<RingSegment> = Vec::with_capacity(segments.len());
+        for segment in segments {
+            if segment.open && sealed_keys.contains(&(segment.parsed.start_s, segment.parsed.seq)) {
+                match self.dir.remove(&segment.name) {
+                    Ok(()) => {
+                        bytes = bytes.saturating_sub(segment.file_len);
+                        stale_open_removed.push(segment.name.clone());
+                        notes.push(TierNote {
+                            name: segment.name.clone(),
+                            reason: "stale open twin of a sealed segment; removed".to_string(),
+                        });
+                    }
+                    Err(error) => notes.push(TierNote {
+                        name: segment.name.clone(),
+                        reason: format!(
+                            "stale open twin of a sealed segment, could not be removed: {}",
+                            error.kind()
+                        ),
+                    }),
+                }
+                continue;
+            }
+            kept.push(segment);
+        }
+        let mut segments = kept;
         // The ring's order: a segment's own start, then its sequence. A clock step can make a
         // name's start repeat, so the sequence is the tie-break rather than the name's bytes.
         segments.sort_by(|left, right| {
@@ -501,6 +641,9 @@ impl Tier {
             notes,
             torn_repaired,
             quarantined,
+            oversized,
+            unreadable,
+            stale_open_removed,
             open_damaged,
             bytes,
         };
@@ -785,8 +928,11 @@ impl Tier {
 
     /// Remove one segment this tier owns, updating the ring and the byte total.
     ///
-    /// Ownership is re-validated immediately before the unlink: a name the scan accepted is a
-    /// name this store may delete, and the scan is the only list the tier keeps.
+    /// The ownership check is the ring: a name this tier no longer holds in `scan.segments` is
+    /// not removed. It is *not* re-validated on the filesystem immediately before the unlink —
+    /// a name swapped between the scan and the unlink would be a link this call would then
+    /// follow (`HOB-31`), so the scan-time check plus [`StoreDir::remove`]'s own
+    /// `symlink_metadata` refusal are the whole guarantee, and nothing here claims more.
     fn remove_segment(&mut self, name: &str, evicted: &mut Evicted) -> Result<(), StoreError> {
         let Some(position) = self
             .scan

@@ -31,7 +31,10 @@
 //! * **Retirement is by reachability, from all tiers at once.** §A.4: "inactive incs retire
 //!   with their segments". [`Store::retire`] unions every tier's reachable set before retiring
 //!   anything, so an id that moved from hot to cold by re-sealing is never retired between the
-//!   two.
+//!   two — and it unions the two sources a segment cannot see: the jobs still in the writer
+//!   queue, and the ids this store minted or adopted whose first record is not on disk yet. An
+//!   id the store still owes is **live**, so a pass can never free it and turn a later write
+//!   into a record naming an id the index no longer holds.
 //! * **A store's loss counters are cumulative and typed.** Every dropped job, every torn tail,
 //!   every quarantine and every disk-full is in [`StoreStats`]; nothing is a log line only.
 
@@ -47,9 +50,15 @@ use crate::fsio::StoreDir;
 use crate::queue::{Job, QueueStats, Submit, WriterQueue};
 use crate::tier::{AppendOutcome, Evicted, Tier, TierConfig, TierNote};
 
-/// The default read bound of one segment file (a segment is bounded by its tier's own
-/// `segment_bytes`, which this comfortably exceeds).
-pub const DEFAULT_MAX_FILE_BYTES: usize = 16 << 20;
+/// The default read bound of one segment file.
+///
+/// Plan v4's per-tier budget is `max_payload × 64` (64 MiB at the 1 MiB payload bound), and a
+/// writer seals *after* appending the record that crossed the budget, so a legitimate segment
+/// may hold one record more than its budget. The read bound must therefore exceed the largest
+/// tier's [`TierConfig::segment_file_bound`] — 64 MiB + a 1 MiB record + slack — or the store
+/// would refuse to read a segment it just wrote, leave it out of the ring and never evict it
+/// (`StoreConfig::check` refuses that combination rather than allowing it).
+pub const DEFAULT_MAX_FILE_BYTES: usize = 96 << 20;
 
 /// The tier names the store always has, in the order the plan lists them.
 pub const HOT: &str = "hot";
@@ -234,6 +243,19 @@ impl StoreConfig {
                 reason: "cannot hold a segment header",
             });
         }
+        // The read bound must be able to hold what the writer may legitimately produce: a
+        // segment whose budget was reached by the record that crossed it. A smaller bound makes
+        // a store-written segment unreadable, so the rescan could not put it in the ring, the
+        // byte total would understate the disk, and eviction would never reach it.
+        for tier in self.tiers.iter().chain(std::iter::once(&self.events)) {
+            let needed = tier.segment_file_bound();
+            if u64::try_from(self.max_file_bytes).unwrap_or(u64::MAX) < needed {
+                return Err(StoreError::Config {
+                    key: "max_file_bytes",
+                    reason: "is below a tier's own segment file bound",
+                });
+            }
+        }
         Ok(())
     }
 
@@ -343,6 +365,14 @@ pub struct Store {
     dictionary: ActiveDictionary,
     queue: WriterQueue,
     stats: StoreStats,
+    /// Incarnation ids minted or adopted for which no record has been written yet.
+    ///
+    /// A segment cannot prove an id is live before its first record exists, and the id is
+    /// exactly what the next write will name, so the store pins it here: [`Store::adopt`]
+    /// inserts, a successful [`Store::write_one`] releases only the ids that record named, and
+    /// [`Store::retire`] unions the set. Without it, `adopt(0, …)` followed by a retirement pass
+    /// would free an id the store is about to write (the review of `pi-hostobs-m1c`, B1).
+    unwritten: BTreeSet<u64>,
 }
 
 impl Store {
@@ -422,6 +452,7 @@ impl Store {
             dictionary,
             queue,
             stats: StoreStats::default(),
+            unwritten: BTreeSet::new(),
         };
         store.recount();
         Ok(store)
@@ -563,10 +594,22 @@ impl Store {
     /// id the index retired, and every [`ActiveDictionary::adopt`] refusal.
     pub fn adopt(&mut self, inc: u64, label: &str) -> Result<u64, StoreError> {
         if inc == 0 {
-            return self.dictionary.mint(label);
+            let minted = self.dictionary.mint(label)?;
+            self.unwritten.insert(minted);
+            return Ok(minted);
         }
         self.dictionary.adopt(inc, label)?;
+        self.unwritten.insert(inc);
         Ok(inc)
+    }
+
+    /// The ids this store has minted or adopted that no record names yet.
+    ///
+    /// These are live by [`Store::retire`]'s own rule: the store owes their first record. The
+    /// set is bounded by `dict_active_max`, because it is a subset of the active index.
+    #[must_use]
+    pub const fn unwritten(&self) -> &BTreeSet<u64> {
+        &self.unwritten
     }
 
     /// Put a job on the writer queue, reporting exactly what it displaced.
@@ -634,6 +677,12 @@ impl Store {
             .get_mut(&name)
             .ok_or(StoreError::UnknownTier { name: name.clone() })?;
         let outcome = state.tier.append(job, epoch, generation)?;
+        // The record is on disk, so the ids it named are no longer "owed": the segment that
+        // holds them is now their proof. A *failed* append leaves them pinned, because the
+        // store never durably named them and the caller may resubmit the same job.
+        for inc in &job.incarnations {
+            self.unwritten.remove(inc);
+        }
         self.stats.written = self.stats.written.saturating_add(1);
         self.stats.records = self.stats.records.saturating_add(1);
         self.stats.bytes = self.stats.bytes.saturating_add(outcome.bytes_written);
@@ -734,18 +783,26 @@ impl Store {
         Ok(evicted)
     }
 
-    /// Retire dictionary entries no tier references (from the **union** of every tier's
-    /// reachability, §A.4's "GC by segment reachability").
+    /// Retire dictionary entries nothing can still reach (§A.4's "GC by segment reachability").
+    ///
+    /// Reachability has **three** sources and not one:
+    ///
+    /// * every tier and the events corpus, for the records a stored segment still names;
+    /// * [`WriterQueue::pending_incarnations`], for the records the store owes but has not
+    ///   written (a queued job is a record in flight);
+    /// * [`Store::unwritten`], for ids minted or adopted whose first record does not exist yet.
+    ///
+    /// A pass therefore cannot free a live id. Only an id that no segment, no queued job and no
+    /// pin names is retired — and from then on [`Store::adopt`] of that id is the documented
+    /// [`StoreError::IncarnationReused`], never a silent id reuse.
     #[must_use]
     pub fn retire(&mut self) -> Retired {
-        let mut reach: BTreeSet<u64> = BTreeSet::new();
-        for state in self.tiers.values() {
-            for inc in state.tier.reachable() {
-                reach.insert(inc);
-            }
-        }
-        for inc in self.events.tier().reachable() {
+        let mut reach: BTreeSet<u64> = self.reachable();
+        for inc in self.queue.pending_incarnations() {
             reach.insert(inc);
+        }
+        for inc in &self.unwritten {
+            reach.insert(*inc);
         }
         let retired = self.dictionary.retire_with_set(&reach);
         self.stats.retired = self.stats.retired.saturating_add(retired.len() as u64);
@@ -754,6 +811,10 @@ impl Store {
     }
 
     /// The ids any stored segment still references, across every tier.
+    ///
+    /// This deliberately means *on disk only*: [`Store::retire`] adds the writer queue's own
+    /// pending ids and this store's unwritten pins to it, and a caller that wants the whole
+    /// live set should read `retire`'s rule rather than this one (the two are different facts).
     #[must_use]
     pub fn reachable(&self) -> BTreeSet<u64> {
         let mut reach = BTreeSet::new();
@@ -871,7 +932,10 @@ impl StoreRange {
 
 #[cfg(test)]
 mod tests {
-    use super::{StoreConfig, StoreDirs, StoreStats, COLD, DEFAULT_ACTIVE_MAX, EVENTS, HOT, WARM};
+    use super::{
+        StoreConfig, StoreDirs, StoreStats, COLD, DEFAULT_ACTIVE_MAX, DEFAULT_MAX_FILE_BYTES, EVENTS,
+        HOT, WARM,
+    };
     use crate::error::StoreError;
     use crate::events::{EventKind, Outcome};
     use crate::format::{TierKind, BLOCK_FRAME_TYPE, FRAME_FLAG_SECTIONED};
@@ -879,6 +943,7 @@ mod tests {
     use crate::queue::Job;
     use crate::store::Store;
     use crate::tmpfs::{Mount, MountTable};
+    use std::collections::BTreeSet;
 
     fn block(len: usize) -> Vec<u8> {
         let mut frame = vec![0u8; len.max(16)];
@@ -907,7 +972,10 @@ mod tests {
         store.writer_queue_bytes = 1 << 16;
         store.dict_active_max = 16;
         store.events_ring_bytes = 1 << 12;
-        store.max_file_bytes = 1 << 22;
+        // The read bound must exceed the largest tier's own segment file bound (the plan's
+        // 64 MiB budget plus the record that crossed it), which `DEFAULT_MAX_FILE_BYTES`
+        // does; a smaller value is refused by `check`.
+        store.max_file_bytes = DEFAULT_MAX_FILE_BYTES;
         store
     }
 
@@ -1010,6 +1078,32 @@ mod tests {
                 reason: "cannot hold a segment header"
             })
         );
+        // A bound that fits a header but not a tier's own largest legal segment is refused too:
+        // accepting it would make a segment this store wrote unreadable, so the rescan could
+        // not put it in the ring, the byte total would understate the disk and eviction would
+        // never reach it.
+        let mut below_segment = config(&temp);
+        let needed = below_segment
+            .tiers
+            .iter()
+            .map(crate::tier::TierConfig::segment_file_bound)
+            .max()
+            .expect("a tier");
+        assert!(needed > crate::format::HEADER_LEN as u64);
+        below_segment.max_file_bytes = usize::try_from(needed - 1).expect("fits");
+        assert_eq!(
+            below_segment.check(),
+            Err(StoreError::Config {
+                key: "max_file_bytes",
+                reason: "is below a tier's own segment file bound"
+            })
+        );
+        below_segment.max_file_bytes = usize::try_from(needed).expect("fits");
+        assert_eq!(
+            below_segment.check(),
+            Ok(()),
+            "exactly the bound is enough: the writer can never exceed it"
+        );
     }
 
     #[test]
@@ -1110,6 +1204,128 @@ mod tests {
         assert!(temp.path().join("tiers").is_dir());
         assert!(temp.path().join("cold").is_dir());
         assert!(temp.path().join("events").is_dir());
+    }
+
+    #[test]
+    fn a_minted_id_is_live_until_its_record_reaches_a_segment_and_only_then_retirable() {
+        // A minted id has no record yet, so no segment can prove it: retirement must keep it
+        // anyway (the review of `pi-hostobs-m1c`, B1). The sequence is mint, retire (live),
+        // write and seal (the segment now proves it), evict (nothing proves it) and only then
+        // retire — and from that point `adopt` of the id is the documented typed refusal.
+        let temp = TempDir::new("mint-retire");
+        let mut config = config(&temp);
+        config.tiers[0].cap_bytes = 0;
+        let mut store = Store::open_with_mounts(config, Some(tmpfs_everywhere())).expect("open");
+        let inc = store.adopt(0, "/probe").expect("mint");
+        assert_eq!(store.unwritten(), &BTreeSet::from([inc]));
+        // A retirement pass with no segment and no job holding it still keeps it: the store
+        // owes its first record.
+        assert!(store.retire().is_empty(), "a minted id is live before its record");
+        assert!(store.dictionary().holds(inc));
+        assert!(store.reachable().is_empty(), "nothing on disk names it yet");
+        store
+            .submit(Job::new(block(16), 20_000_000_000, vec![inc]))
+            .expect("submit");
+        // A queued job is a record in flight; its ids are live too.
+        assert!(store.retire().is_empty(), "a queued job keeps its ids live");
+        assert_eq!(
+            store.adopt(inc, "/probe").expect("an id the index holds is adopted again"),
+            inc
+        );
+        store.write_pending(20_000_000_000, 1).expect("write");
+        assert!(
+            store.unwritten().is_empty(),
+            "the record released the pin: the segment proof now exists"
+        );
+        assert!(store.retire().is_empty(), "the open segment still names it");
+        store.seal_all().expect("seal");
+        assert_eq!(
+            store.reachable(),
+            BTreeSet::from([inc]),
+            "the sealed segment is the proof"
+        );
+        assert!(store.retire().is_empty());
+        store.evict(i64::MAX / 2).expect("evict");
+        assert!(store.reachable().is_empty());
+        let retired = store.retire();
+        assert_eq!(retired.ids, vec![inc]);
+        assert!(!store.dictionary().holds(inc));
+        // The id was issued once: adopting it again is a typed refusal, never a fresh id.
+        assert_eq!(
+            store.adopt(inc, "/probe"),
+            Err(StoreError::IncarnationReused {
+                epoch: 4242,
+                inc,
+                highest: inc
+            })
+        );
+    }
+
+    #[test]
+    fn a_queued_job_keeps_an_id_live_after_its_segment_is_evicted() {
+        // The id's only remaining proof is the queue: the sealed segment that named it was
+        // evicted, and the record that will name it again is still in flight. A retirement pass
+        // that consulted only the segments would free it here and refuse the write's own id.
+        let temp = TempDir::new("queued-retire");
+        let mut config = config(&temp);
+        config.tiers[0].cap_bytes = 0;
+        let mut store = Store::open_with_mounts(config, Some(tmpfs_everywhere())).expect("open");
+        let inc = store.adopt(0, "/probe").expect("mint");
+        let now = 20_000_000_000i64;
+        store
+            .submit(Job::new(block(16), now, vec![inc]))
+            .expect("submit");
+        store.write_pending(now, 1).expect("write");
+        store.seal_all().expect("seal");
+        assert_eq!(store.reachable(), BTreeSet::from([inc]));
+        // A second record naming the same incarnation is in flight, and the segment that
+        // proved the id is about to be evicted.
+        store
+            .submit(Job::new(block(16), now, vec![inc]))
+            .expect("submit");
+        assert_eq!(
+            store.queue().pending_incarnations(),
+            BTreeSet::from([inc]),
+            "the queued job names the id"
+        );
+        store.evict(i64::MAX / 2).expect("evict every sealed segment");
+        assert!(store.reachable().is_empty(), "nothing on disk names it");
+        assert!(
+            store.unwritten().is_empty(),
+            "its first record was written already"
+        );
+        assert!(
+            store.retire().is_empty(),
+            "a queued job is a record the store still owes"
+        );
+        assert!(store.dictionary().holds(inc));
+        // And the write it was owed succeeds, naming an id the index still holds.
+        store.write_pending(now, 1).expect("the owed record is written");
+        assert!(store.retire().is_empty(), "the new segment proves it");
+    }
+
+    #[test]
+    fn a_failed_write_leaves_the_id_pinned_because_nothing_named_it_durably() {
+        // A write the store refused wrote nothing, so the id is still owed. Releasing the pin
+        // on a refusal would make the next retirement pass free the id the caller is about to
+        // resubmit — the same hole as B1, one step later.
+        let temp = TempDir::new("failed-pin");
+        let mut store = Store::open_with_mounts(config(&temp), Some(tmpfs_everywhere()))
+            .expect("open");
+        let inc = store.adopt(0, "/probe").expect("mint");
+        // A record older than every tier is refused by `route`, before any append.
+        store
+            .submit(Job::new(block(16), 0, vec![inc]))
+            .expect("submit");
+        assert!(store.write_pending(i64::MAX / 2, 1).is_err());
+        assert_eq!(store.stats().write_failures, 1);
+        assert_eq!(
+            store.unwritten(),
+            &BTreeSet::from([inc]),
+            "a refused write named nothing on disk"
+        );
+        assert!(store.retire().is_empty());
+        assert!(store.dictionary().holds(inc));
     }
 
     #[test]

@@ -39,8 +39,9 @@
 //! between the two calls (`HOB-31`).
 
 use core::fmt;
-use std::fs::{self, File, OpenOptions};
+use std::fs::{self, DirBuilder, File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
+use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 
 use crate::error::StoreError;
@@ -50,6 +51,23 @@ pub const LIST_BOUND: usize = 4096;
 
 /// The chunk size a streamed copy uses, so a copy never needs the whole file in memory.
 pub const COPY_CHUNK: usize = 64 * 1024;
+
+/// The mode every file the store creates carries: owner read/write, nobody else.
+pub const FILE_MODE: u32 = 0o600;
+
+/// The mode every directory the store creates carries: owner only.
+pub const DIR_MODE: u32 = 0o700;
+
+/// How far a seal is carried out, so a test can reproduce the crash window the seal's order
+/// leaves (and a caller cannot ask for anything else).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SealStop {
+    /// The whole seal: temp name, footer, fsync, rename, fsync directory, unlink the open name.
+    Complete,
+    /// Stop after the rename and the directory fsync: the sealed name is durable and the open
+    /// name is still present. **A fault-injection point for tests**, never a production policy.
+    AfterRename,
+}
 
 /// Check that `name` is one path component the store may join under its root.
 ///
@@ -151,9 +169,15 @@ impl StoreDir {
                 if !create {
                     return Err(StoreError::io("open", &root.display().to_string(), &error));
                 }
-                fs::create_dir_all(root).map_err(|error| {
-                    StoreError::io("create-dir", &root.display().to_string(), &error)
-                })?;
+                // The directory is the store's own state, so it is created owner-only rather
+                // than left at whatever the caller's umask allows.
+                let mut builder = DirBuilder::new();
+                builder.recursive(true).mode(DIR_MODE);
+                builder
+                    .create(root)
+                    .map_err(|error| {
+                        StoreError::io("create-dir", &root.display().to_string(), &error)
+                    })?;
                 let meta = fs::symlink_metadata(root)
                     .map_err(|error| StoreError::io("stat", &root.display().to_string(), &error))?;
                 if meta.file_type().is_symlink() || !meta.is_dir() {
@@ -209,8 +233,15 @@ impl StoreDir {
                 StoreError::io("list", &self.root.display().to_string(), &error)
             })?;
             let name = entry.file_name().to_string_lossy().into_owned();
-            let meta = fs::symlink_metadata(entry.path())
-                .map_err(|error| StoreError::io("stat", &name, &error))?;
+            // A name that vanished between `read_dir` and this stat is not a directory the
+            // store must refuse to scan: it is a file someone else removed. Skipping it is the
+            // difference between a restart that works and a tier that cannot open because a
+            // concurrent `rm` won a race.
+            let meta = match fs::symlink_metadata(entry.path()) {
+                Ok(meta) => meta,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(error) => return Err(StoreError::io("stat", &name, &error)),
+            };
             let kind = if meta.file_type().is_symlink() {
                 EntryKind::Symlink
             } else if meta.is_dir() {
@@ -325,6 +356,11 @@ impl StoreDir {
                 name: name.to_string(),
             });
         }
+        if !meta.is_file() {
+            return Err(StoreError::NotADirectory {
+                path: path.display().to_string(),
+            });
+        }
         if meta.len() > max_file_bytes {
             return Err(StoreError::FileTooLarge {
                 len: meta.len(),
@@ -335,10 +371,7 @@ impl StoreDir {
         file.seek(SeekFrom::Start(offset))
             .map_err(|error| StoreError::io("seek", name, &error))?;
         let mut buffer = Vec::new();
-        let budget = u64::try_from(len)
-            .map_err(|_| StoreError::LengthOverflow)?
-            .checked_add(0)
-            .ok_or(StoreError::LengthOverflow)?;
+        let budget = u64::try_from(len).map_err(|_| StoreError::LengthOverflow)?;
         let read = file
             .take(budget)
             .read_to_end(&mut buffer)
@@ -373,12 +406,52 @@ impl StoreDir {
         let mut file = OpenOptions::new()
             .write(true)
             .create_new(true)
+            .mode(FILE_MODE)
             .open(&path)
             .map_err(|error| StoreError::io("create", name, &error))?;
         write_all(&mut file, name, bytes)?;
         file.sync_all()
             .map_err(|error| StoreError::io("sync", name, &error))?;
         Ok(())
+    }
+
+    /// Read at most `len` bytes at `offset`, bounded by the window rather than by the file's
+    /// size.
+    ///
+    /// This exists for exactly one caller: a rescan that must decide whether an oversized file
+    /// is this store's own segment before quarantining it. [`StoreDir::read_at`] refuses by the
+    /// whole file's size, which is the right rule for a scan and the wrong one here — the point
+    /// is to read the header of a file that is *too large*, and the window is what bounds the
+    /// allocation either way.
+    ///
+    /// # Errors
+    ///
+    /// [`StoreError::Symlink`], [`StoreError::NotADirectory`] for a non-regular file, and
+    /// [`StoreError::Io`]. A window past the end is short, not an error.
+    pub fn read_window(&self, name: &str, offset: u64, len: usize) -> Result<Vec<u8>, StoreError> {
+        let path = self.checked_path(name)?;
+        let meta =
+            fs::symlink_metadata(&path).map_err(|error| StoreError::io("stat", name, &error))?;
+        if meta.file_type().is_symlink() {
+            return Err(StoreError::Symlink {
+                name: name.to_string(),
+            });
+        }
+        if !meta.is_file() {
+            // A FIFO planted under a segment name would block this open forever.
+            return Err(StoreError::NotADirectory {
+                path: path.display().to_string(),
+            });
+        }
+        let mut file = File::open(&path).map_err(|error| StoreError::io("read", name, &error))?;
+        file.seek(SeekFrom::Start(offset))
+            .map_err(|error| StoreError::io("seek", name, &error))?;
+        let budget = u64::try_from(len).map_err(|_| StoreError::LengthOverflow)?;
+        let mut buffer = Vec::new();
+        file.take(budget)
+            .read_to_end(&mut buffer)
+            .map_err(|error| StoreError::io("read", name, &error))?;
+        Ok(buffer)
     }
 
     /// Open an existing file for appending.
@@ -400,6 +473,11 @@ impl StoreDir {
         if meta.file_type().is_symlink() {
             return Err(StoreError::Symlink {
                 name: name.to_string(),
+            });
+        }
+        if !meta.is_file() {
+            return Err(StoreError::NotADirectory {
+                path: path.display().to_string(),
             });
         }
         let file = OpenOptions::new()
@@ -425,6 +503,11 @@ impl StoreDir {
         if meta.file_type().is_symlink() {
             return Err(StoreError::Symlink {
                 name: name.to_string(),
+            });
+        }
+        if !meta.is_file() {
+            return Err(StoreError::NotADirectory {
+                path: path.display().to_string(),
             });
         }
         let file = OpenOptions::new()
@@ -517,7 +600,9 @@ impl StoreDir {
     ///
     /// The copy is streamed in [`COPY_CHUNK`] chunks and bounded by `max_bytes`: a file
     /// larger than the bound is refused rather than copied, so a corrupt or foreign file
-    /// can never be duplicated into a trusted name.
+    /// can never be duplicated into a trusted name. A copy that fails after the temporary
+    /// file was created removes that file again, so a failed seal leaves the open segment
+    /// exactly as it was and no `.tmp` behind.
     ///
     /// # Errors
     ///
@@ -531,6 +616,28 @@ impl StoreDir {
         footer: &[u8],
         max_bytes: u64,
     ) -> Result<(), StoreError> {
+        self.seal_open_segment_until(open, sealed, temp, footer, max_bytes, SealStop::Complete)
+    }
+
+    /// As [`StoreDir::seal_open_segment`], but able to stop at a named point.
+    ///
+    /// [`SealStop::AfterRename`] is the **crash window the seal's order creates**: the sealed
+    /// name is durable and the open name still exists. A test uses it to reproduce that state
+    /// without a fault-injecting filesystem; the store's own open path is what has to cope with
+    /// it, and `Tier::rescan` removes the stale open name it finds.
+    ///
+    /// # Errors
+    ///
+    /// As [`StoreDir::seal_open_segment`].
+    pub fn seal_open_segment_until(
+        &self,
+        open: &str,
+        sealed: &str,
+        temp: &str,
+        footer: &[u8],
+        max_bytes: u64,
+        stop: SealStop,
+    ) -> Result<(), StoreError> {
         for name in [open, sealed, temp] {
             check_name(name)?;
         }
@@ -540,6 +647,11 @@ impl StoreDir {
         if meta.file_type().is_symlink() {
             return Err(StoreError::Symlink {
                 name: open.to_string(),
+            });
+        }
+        if !meta.is_file() {
+            return Err(StoreError::NotADirectory {
+                path: open_path.display().to_string(),
             });
         }
         if meta.len() > max_bytes {
@@ -558,12 +670,47 @@ impl StoreDir {
         }
         let temp_path = self.checked_path(temp)?;
         let sealed_path = self.checked_path(sealed)?;
+        // From here on a failure must not leave the temporary file behind: a `.tmp` naming a
+        // copy of a segment is a file an operator cannot distinguish from a live one.
+        let copied = self.copy_with_footer(open, &open_path, temp, &temp_path, footer, max_bytes);
+        if let Err(error) = copied {
+            let _ = fs::remove_file(&temp_path);
+            return Err(error);
+        }
+        fs::rename(&temp_path, &sealed_path)
+            .map_err(|error| StoreError::io("rename", sealed, &error))?;
+        self.sync()?;
+        if stop == SealStop::AfterRename {
+            // The injected crash: the sealed name is durable and the open name is still there.
+            return Ok(());
+        }
+        // Only now, with the sealed name durable, is the open file removed. A crash before
+        // this point leaves both names; `Tier::rescan` recognises the pair by its (tier,
+        // start_s, seq) identity and removes the stale open name, because a reader that saw
+        // both would serve every record twice and an append would land behind a copy.
+        fs::remove_file(&open_path).map_err(|error| StoreError::io("remove", open, &error))?;
+        self.sync()
+    }
+
+    /// Copy `open_path` into `temp_path`, append `footer`, and fsync the copy.
+    ///
+    /// Split out so the caller can remove its own temporary file on every error path.
+    fn copy_with_footer(
+        &self,
+        open: &str,
+        open_path: &Path,
+        temp: &str,
+        temp_path: &Path,
+        footer: &[u8],
+        max_bytes: u64,
+    ) -> Result<(), StoreError> {
         let mut source =
-            File::open(&open_path).map_err(|error| StoreError::io("read", open, &error))?;
+            File::open(open_path).map_err(|error| StoreError::io("read", open, &error))?;
         let mut target = OpenOptions::new()
             .write(true)
             .create_new(true)
-            .open(&temp_path)
+            .mode(FILE_MODE)
+            .open(temp_path)
             .map_err(|error| StoreError::io("create", temp, &error))?;
         let mut buffer = [0u8; COPY_CHUNK];
         let mut copied: u64 = 0;
@@ -588,16 +735,7 @@ impl StoreDir {
         write_all(&mut target, temp, footer)?;
         target
             .sync_all()
-            .map_err(|error| StoreError::io("sync", temp, &error))?;
-        drop(target);
-        fs::rename(&temp_path, &sealed_path)
-            .map_err(|error| StoreError::io("rename", sealed, &error))?;
-        self.sync()?;
-        // Only now, with the sealed name durable, is the open file removed. A crash before
-        // this point leaves both names: the sealed one is complete and the open one is a
-        // duplicate, which the open path removes as an orphan it created.
-        fs::remove_file(&open_path).map_err(|error| StoreError::io("remove", open, &error))?;
-        self.sync()
+            .map_err(|error| StoreError::io("sync", temp, &error))
     }
 
     fn sync_root(root: &Path) -> Result<(), StoreError> {
