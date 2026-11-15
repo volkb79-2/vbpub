@@ -787,18 +787,22 @@ def rolling_slice(
             {path: dict(mark) for path, mark in cursor["files"].items()},
             f"the cursor was written for lane {cursor['lane']!r}, this scope is lane {lane!r}",
         )
-    marks = {} if cursor is None or rebaseline else dict(cursor["files"])
+    previous_files = {} if cursor is None else dict(cursor["files"])
+    marks = {} if cursor is None or rebaseline else previous_files
     previous_pass = 0 if cursor is None else cursor["pass_index"]
     pass_index = previous_pass
     due, accounting, changed_files = _due_entries(by_path, marks, blobs)
+    # Retirement is accounted from the PREVIOUS cursor even under --rebaseline:
+    # a discarded mark is still a mark this release is choosing not to resume,
+    # and the evidence says so instead of the path vanishing from the record.
     retired = tuple(
         {
             "path": path,
-            "candidates": marks[path]["count"],
-            "last_judged_pass": marks[path]["last_pass"],
+            "candidates": previous_files[path]["count"],
+            "last_judged_pass": previous_files[path]["last_pass"],
             "reason": "no planned candidate remains at this path",
         }
-        for path in sorted(set(marks) - set(by_path))
+        for path in sorted(set(previous_files) - set(by_path))
     )
     # A complete sweep over the current content does not idle: the next release
     # starts a NEW pass at the least recently judged file, and the document says

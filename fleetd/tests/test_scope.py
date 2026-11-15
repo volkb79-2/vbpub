@@ -1346,3 +1346,25 @@ def test_validate_cursor_is_the_same_shape_reader_and_writer_use():
     document = _with_digest(_cursor())
     assert validate_cursor(document) == document
     assert validate_cursor(document, "cursor x") == document
+
+
+def test_rebaseline_still_reports_retired_paths_from_the_discarded_cursor():
+    rows = _candidates(("src/kept.py", 1, "python:compare-swap"))
+    blobs = _blobs(**{"src/kept.py": A})
+    cursor = _with_digest(_cursor(files={
+        "src/kept.py": _mark(blob=A, keys=[_key("src/kept.py")], last_pass=2),
+        "src/gone.py": _mark(blob=B, count=3, keys=[_key("src/gone.py")], last_pass=1),
+    }, pass_index=2))
+    result = rolling_slice(
+        rows, slice_size=1, lane="r2", blobs=blobs, cursor=cursor, rebaseline=True,
+    )
+    # The discarded marks do not become invisible: the retired path is still
+    # named, with the evidence the previous cursor held about it.
+    assert result.retired == ({
+        "path": "src/gone.py",
+        "candidates": 3,
+        "last_judged_pass": 1,
+        "reason": "no planned candidate remains at this path",
+    },)
+    assert result.new_pass is False
+    assert result.pass_index == 3
