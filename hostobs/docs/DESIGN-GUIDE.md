@@ -326,6 +326,14 @@ checked length (`crc::checked_region_len` is the only arithmetic that can wrap, 
 and nothing panics on fixture-shaped corruption — the golden fixture suite decodes each file
 and the Python reference decodes the same bytes independently.
 
+**What an answer is, and is not (`HOB-39`).** A range answer is the stored payload — the whole
+`proto` BLOCK frame, byte-identical to what was written — plus the record's own time and
+incarnation list. The quality bytes are inside that payload, so nothing is lost, but decoding
+is the caller's step: the store cannot carry a column codec while `HOB-27` bans the dependency,
+and copying the entire wire decoder here would be a second implementation of the format rather
+than a join. `quality::Reading`/`QualityCode` are the store's own vocabulary, bound to
+`fixtures/wire/quality.json`, and ready for the join that `HOB-27`'s rebuild will allow.
+
 ## Gates and coverage
 
 `lint` runs formatting, Clippy with `-D warnings`, rustdoc with `-D warnings`, cargo-deny

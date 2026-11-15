@@ -83,14 +83,16 @@ store's bounds and crash-safety guards, all killed). Each is a stored patch in a
 script, and every restore is SHA-256-verified.
 
 Open items found while building these packages are in
-[`KNOWN_ISSUES_TODO_BACKLOG.md`](KNOWN_ISSUES_TODO_BACKLOG.md) (`HOB-1` … `HOB-38`): the
+[`KNOWN_ISSUES_TODO_BACKLOG.md`](KNOWN_ISSUES_TODO_BACKLOG.md) (`HOB-1` … `HOB-40`): the
 sharpest still-open ones are `HOB-17`/`HOB-27` (the `kernel` and `store` crates carry their
 own value and quality types until the Rust lane image can be rebuilt against a new
 `Cargo.lock`), `HOB-21`/`HOB-29` (no `/sys` device-topology source, and `store`'s tmpfs check
-reads the mount table rather than `statfs`), `HOB-4` (the Python conformance run is still a
-manual check, not a registered lane) and `HOB-30` (no session spools, which are out of this
-package's scope). `HOB-26` states the SP-2 limit plainly: the kernel-side rate arithmetic is a
-test-local helper, because `kernel` cannot depend on `model` (`HOB-17`).
+reads the mount table rather than `statfs`), `HOB-39` (a store range answer is the stored
+payload, not decoded `model` rows — the join waits for the same rebuild), `HOB-4` (the Python
+conformance run is still a manual check, not a registered lane) and `HOB-30` (no session
+spools, which are out of this package's scope). `HOB-26` states the SP-2 limit plainly: the
+kernel-side rate arithmetic is a test-local helper, because `kernel` cannot depend on `model`
+(`HOB-17`).
 
 ## Gates
 

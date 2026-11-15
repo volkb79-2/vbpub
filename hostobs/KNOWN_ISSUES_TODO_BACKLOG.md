@@ -51,6 +51,8 @@ A `FIXED` entry means code, tests, and docs landed together.
 | HOB-36 | Events are keyed by `(issuer, key)` strings rather than dictionary incarnations, so an event's cgroup identity is a label a caller supplies, not an identity the store can validate | Minor | OPEN (probe package) |
 | HOB-37 | Span abandonment is a caller call (`abandon_issuer`); nothing in the store ties it to an incarnation disappearing, so `inferred: true` closes only happen when the caller loops over them | Minor | OPEN (probe package) |
 | HOB-38 | A full writer queue always drops the oldest job; there is no blocking or sample-shedding policy, which is a product choice to revisit with the probe's own loop | Minor | OPEN (probe package) |
+| HOB-39 | A range answer is the stored payload bytes (a whole `proto` BLOCK) plus the record's time and incarnations, not decoded `model` values with quality codes: the join needs `proto`/`model`, which `HOB-27` forbids | Major | OPEN (needs an image rebuild) |
+| HOB-40 | No focus tier is configured by `plan_v4`; the tier machinery accepts one, but the plan does not yet say what a focus tier keeps | Minor | OPEN (plan decision) |
 
 ---
 
@@ -690,3 +692,40 @@ writer falls behind always loses the oldest measurements rather than the newest.
 **Exit criteria.** A policy code in the store's config (`drop_oldest | drop_newest | block`) with
 a bounded block timeout and a decimation counter reported as `NOT_SAMPLED` values, decided with
 the probe's own scheduling observation.
+
+## HOB-39 — A range answer is payload bytes, not decoded `model` values
+
+**Where:** `crates/store/src/segment.rs` (`ScannedRecord`), `crates/store/src/store.rs` (`StoreRange`).
+
+The brief asks a range query to return "`model` values with quality codes intact". The store
+returns the **payload** it was given — a complete `proto` BLOCK frame, byte-identical to what
+the writer wrote — plus the record's own time and incarnation list. The quality bytes are
+inside that payload, so nothing is lost, but a caller must decode it: the store has no
+`build_dispatch`-shaped join to `model`, because it may not depend on `proto` or `model`
+(`HOB-27`). `quality::Reading`/`QualityCode` exist as the store's own vocabulary (used by
+nothing yet, asserted against `fixtures/wire/quality.json`), so the types are ready for that
+join to land on top of them.
+
+Doing the join inside the store would mean a decoder and a value model in this crate — the
+duplication `HOB-27` already forces on four header facts, multiplied by the whole column codec,
+which is the wrong trade while the lock is pinned.
+
+**Exit criteria.** After the image rebuild that `HOB-27` needs, `Store::range` (or a layer above
+it) returns `model` rows with their quality codes and the payload form becomes an internal
+detail; `quality::Reading` is then replaced by `model`'s type.
+
+## HOB-40 — No focus tier is configured by `plan_v4`
+
+**Where:** `crates/store/src/store.rs` (`StoreConfig::plan_v4`), `crates/store/src/tier.rs`.
+
+Plan v4 §A.4 and the brief name "focus tiers" among the per-tier directories. The machinery is
+general — `TierConfig::new(name, kind, segment_s, keep_s, cap_bytes, require_tmpfs)` plus
+`StoreDirs` accepts any tier set — but `plan_v4` configures exactly hot, warm, cold and events,
+because the plan does not yet say which focus tiers exist, what they keep or where they live;
+inventing that here would be a default standing in for a product decision. A caller that wants
+one adds it to `StoreConfig::tiers` and points `dirs` at a directory (the `tmpfs` field covers
+the shared hot/warm directory, so a focus tier outside it needs a `StoreDirs` extension).
+
+**Exit criteria.** The plan states the focus tier's trigger (a queried cgroup, an operator flag,
+a window), its `segment_s`/`keep_s`/`cap_bytes` and its directory; `plan_v4` configures it and a
+test asserts a record for that cgroup lands there and is retained past `hot`'s window.

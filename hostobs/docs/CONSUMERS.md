@@ -153,10 +153,12 @@ store.write_pending(now_ns, 64)?;   // bounded drain; a write failure is counted
 store.evict(now_ns)?;               // keep_s first, then cap_bytes, whole segments oldest first
 store.seal_all()?;                   // temp name -> write -> fsync -> rename -> fsync dir
 
-// A range query is bounded in records and bytes across the whole store.
+// A range query is bounded in records and bytes across the whole store, and answers with the
+// stored payload byte for byte. Decoding it is the caller's step: the store carries no column
+// codec (`HOB-39`), only the quality vocabulary.
 let answer = store.range(from_ns, to_ns, 4096, 1 << 20)?;
-for routed in &answer.records {      // payload bytes exactly as written, per tier
-    // decode with `hostobs-proto`, or by hand: the payload carries its own quality bytes
+for routed in &answer.records {      // `routed.tier` says which tier it came from
+    // routed.record.payload, routed.record.real_ns, routed.record.incarnations
 }
 ```
 

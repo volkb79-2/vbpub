@@ -43,12 +43,14 @@
   a symlink followed, and three in the Python reference). All fifteen killed; the ring-order
   patch survived the first pass and was killed by a test that pins `oldest()`/`newest()` by
   name rather than the outcome of one eviction.
-- **Backlog** grows from `HOB-26` to `HOB-38`: the `store`'s dependency limit on
-  `proto`/`model`, the O(records) range scan, the mount-table tmpfs check, the absent session
-  spools, the non-atomic symlink refusal, the absent fault injection, the single writer as a
-  property rather than an observable, retirement's blindness to externally-held incarnations,
-  the in-process events displacement count, string-keyed event issuers, caller-driven span
-  abandonment and the drop-oldest queue policy.
+- **Backlog** grows from `HOB-26` to `HOB-40`: the `store`'s dependency limit on
+  `proto`/`model` (and with it a range answer that is stored payload rather than decoded
+  `model` rows, and a `plan_v4` with no focus tier), the O(records) range scan, the
+  mount-table tmpfs check, the absent session spools, the non-atomic symlink refusal, the
+  absent fault injection, the single writer as a property rather than an observable,
+  retirement's blindness to externally-held incarnations, the in-process events displacement
+  count, string-keyed event issuers, caller-driven span abandonment and the drop-oldest
+  queue policy.
 - **`kernel` crate (M1 part 2):** the read-only collectors — cgroupfs (`cpu.stat`,
   `cpu.max`/`weight`, `memory.current`/`.stat`/`.events`/`.max` and the other limits,
   `io.stat` with iocost, `pids.current`/`.max`, `memory.swap.current`, the three PSI files)
