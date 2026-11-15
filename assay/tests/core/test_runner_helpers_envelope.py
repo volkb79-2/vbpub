@@ -340,6 +340,9 @@ class _BlockOracleAdapter:
     def normalize_coverage_key(self, key: str) -> str:
         return key
 
+    def normalize_coverage_text(self, text: str) -> str:
+        return text
+
     def statement_spans(self, text: str):
         return None
 

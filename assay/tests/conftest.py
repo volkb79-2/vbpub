@@ -1456,6 +1456,9 @@ class FakeAdapter:
     def normalize_coverage_key(self, key: str) -> str:
         return key.removeprefix(self.key_prefix) if self.key_prefix else key
 
+    def normalize_coverage_text(self, text: str) -> str:
+        return text
+
 
 def as_statement_attributed(profile):
     """*profile* marked ``statement_attributed`` **because its line sets

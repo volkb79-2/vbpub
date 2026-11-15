@@ -16,6 +16,8 @@ Recognised producers, each of which a lane's declared R0 command may be:
   whose ``Action`` is ``fail`` and that names a ``Test``.
 * vitest text: `` FAIL  file > suite > test``.
 * jest text: ``● suite › test``.
+* cargo-nextest: ``FAIL [ 0.012s] crate::module::test``.
+* libtest: ``test crate::module::test ... FAILED``.
 
 Output no recogniser matches yields ``None``: the summary then states nothing
 rather than guessing. The scan sees only the bounded tail the verdict retains,
@@ -44,6 +46,15 @@ _PYTEST_HEADER = re.compile(
 _GO_TEXT = re.compile(r"^\s*--- FAIL: (\S+)", re.MULTILINE)
 _VITEST = re.compile(r"^\s*FAIL +(\S.* > \S.*)$", re.MULTILINE)
 _JEST = re.compile(r"^\s*● (\S.* › \S.*)$", re.MULTILINE)
+_NEXTEST = re.compile(
+    # Horizontal whitespace only: ``\s`` would let a one-token line after the
+    # FAIL row be read as part of the name. nextest right-aligns the counter
+    # (``( 2/10)``), so the counter may carry inner padding.
+    r"^[ \t]*FAIL \[[ \t]*\d+(?:\.\d+)?s\][ \t]+(?:\([ \t]*\d+/\d+\)[ \t]+)?"
+    r"(\S+(?:[ \t]+\S+)?)[ \t]*$",
+    re.MULTILINE,
+)
+_LIBTEST = re.compile(r"^\s*test (\S+) \.\.\. FAILED\s*$", re.MULTILINE)
 _CONTROL = re.compile(r"[\x00-\x1f\x7f]")
 
 
@@ -83,6 +94,8 @@ _RECOGNISERS: tuple[Callable[[str], tuple[int, str] | None], ...] = (
     _go_json,
     _regex(_VITEST),
     _regex(_JEST),
+    _regex(_NEXTEST),
+    _regex(_LIBTEST),
 )
 _FALLBACK = _regex(_PYTEST_HEADER)
 

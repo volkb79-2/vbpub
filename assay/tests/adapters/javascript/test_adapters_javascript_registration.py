@@ -21,6 +21,7 @@ from assay.adapters.go import GoAdapter
 from assay.adapters.javascript import JavaScriptAdapter
 from assay.adapters.python import PythonAdapter
 from assay.adapters.sql import SqlAdapter
+from assay.adapters.rust import RustAdapter
 from assay.cli import _built_in_registry
 from assay.coverage_parsers.model import CoverageProfile, FileCoverage
 from assay.diff import AddedLines
@@ -150,11 +151,11 @@ def test_a_registry_built_javascript_adapter_evaluates_coverage_identically():
     assert result.covered == 1
 
 
-def test_all_four_adapters_coexist_in_one_registry_each_independently_addressable():
-    """The mechanical proof of additivity, now at four languages: registering
+def test_all_five_adapters_coexist_in_one_registry_each_independently_addressable():
+    """The mechanical proof of additivity, now at five languages: registering
     every real adapter together, none shadows or is required by another, and
-    the registry (and every module it depends on) needed zero changes to
-    accommodate the fourth.
+    the registry (and every module it depends on) keeps each language
+    independently addressable.
 
     Round-1 review nitpick: an earlier version of this test said "four" and
     registered three -- `GoAdapter` was missing, so the claim in its own name
@@ -165,18 +166,21 @@ def test_all_four_adapters_coexist_in_one_registry_each_independently_addressabl
     python = PythonAdapter()
     sql = SqlAdapter()
     go = GoAdapter()
+    rust = RustAdapter()
     registry = new_registry(
         RegistryEntry(adapter=javascript, rigor=frozenset({"R1"})),
         RegistryEntry(adapter=python, rigor=frozenset({"R1"})),
         RegistryEntry(adapter=sql, rigor=frozenset({"R2"})),
         RegistryEntry(adapter=go, rigor=frozenset({"R1"})),
+        RegistryEntry(adapter=rust, rigor=frozenset({"R1"})),
     )
 
     assert get_adapter(registry, "javascript", "R1") is javascript
     assert get_adapter(registry, "python", "R1") is python
     assert get_adapter(registry, "sql", "R2") is sql
     assert get_adapter(registry, "go", "R1") is go
-    assert len(registry.entries) == 4
+    assert get_adapter(registry, "rust", "R1") is rust
+    assert len(registry.entries) == 5
 
 
 # --- Built-in registry capabilities ----------------------------------------
@@ -303,4 +307,6 @@ def test_the_built_in_registry_names_exactly_the_languages_this_build_reaches():
         # extents as statement truth. This test is what made that landing
         # visible rather than silent, which is what it is for.
         "go": ["R1"],
+        # B243: rust, at R1 ONLY (R2 ingestion and R3 canaries are unregistered).
+        "rust": ["R1"],
     }

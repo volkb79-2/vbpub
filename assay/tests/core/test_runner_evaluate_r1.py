@@ -122,6 +122,9 @@ class _UnparsableSpanAdapter:
     def normalize_coverage_key(self, key: str) -> str:
         return key
 
+    def normalize_coverage_text(self, text: str) -> str:
+        return text
+
     def statement_spans(self, text: str) -> tuple[StatementSpan, ...] | None:
         return None
 
@@ -630,6 +633,9 @@ def test_evaluate_r1_still_propagates_a_genuine_programmer_error(git_repo: GitRe
 
         def normalize_coverage_key(self, key: str) -> str:
             raise RuntimeError("a real programmer error, not an AssayError")
+
+        def normalize_coverage_text(self, text: str) -> str:
+            return text
 
     with pytest.raises(RuntimeError, match="a real programmer error"):
         runner.evaluate_r1(

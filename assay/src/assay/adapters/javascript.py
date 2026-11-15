@@ -554,6 +554,10 @@ class JavaScriptAdapter:
         prefix to strip at all."""
         return key
 
+    def normalize_coverage_text(self, text: str) -> str:
+        """Istanbul coverage text needs no adapter-specific normalization."""
+        return text
+
     def statement_spans(self, text: str) -> tuple[StatementSpan, ...] | None:
         return None
 

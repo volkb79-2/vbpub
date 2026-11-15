@@ -290,6 +290,7 @@ _SPLIT_CASES: dict[str, tuple[str | None, str]] = {
     # branch for a declaration to be wrong about and the flag is correctly
     # inert for a Go lane. `None` records that as an answer.
     "go": (None, "internal/pkg/thing_test.go"),
+    "rust": ("tests/integration.rs", "src/math_tests.rs"),
 }
 
 

@@ -3383,12 +3383,13 @@ filesystem):
 ```
 name, source_globs, excluded_dir_names, requires_span_attribution, external_tools
 is_test_path(rel)                      has_executable_code(rel, text)
-normalize_coverage_key(key)            statement_spans(text) -> spans | None
+normalize_coverage_key(key)            normalize_coverage_text(text)
+statement_spans(text) -> spans | None
 inject_import_break(text)              inject_uncovered_line(text)
 generate_mutation_sites(text, lines, operators, limit) -> sites | UNSUPPORTED
 ```
 
-Four adapters implement it today, and each reaches only the rigor levels this
+Five adapters implement it today, and each reaches only the rigor levels this
 build actually wires it to (§7 — an adapter existing is not a capability):
 
 | `judge.language` | reached here | notes |
@@ -3397,6 +3398,7 @@ build actually wires it to (§7 — an adapter existing is not a capability):
 | `sql` | R2 only | a stdlib lexer over DDL; no coverage tool exists for it, so no R1, and A-192 forbids R3 without R1 |
 | `javascript` | R1, R2 by ingestion (B046), R3 canary (B087) | `.js`/`.jsx`/`.ts`/`.tsx` under one name (A-340). The lane runs Stryker and Assay judges its report; native `generate_mutation_sites` remains `UNSUPPORTED`. The existing import-break and uncovered-line injectors use the shared isolated R3 runner and have local real-Vitest oracles; import-break expects a clean `COMMAND_FAILED`, while uncovered-line expects `UNCOVERED_LINES`. Both dstdns canaries were qualified under Assay 9.0.0/schema v15, with retained verdicts and verifier transcripts for that release |
 | `go` | R1 only (A-394) | requires the real Go toolchain for source-derived statement positions (A-217); R2 and R3 have no producer path and are not registered |
+| `rust` | R1 only (B243) | changed-line LCOV judgment; the adapter normalizes stable cargo-llvm-cov's marker-only zero branch totals before the shared parser. Rust R2 and R3 are not registered |
 
 ### R3 import-break receipt attribution
 
@@ -4510,14 +4512,19 @@ kill which mutants.
 
 ### Rust adapter status and tier design
 
-Rust support remains a plan at the Assay boundary; the shared LCOV parser does
-not imply a registered Rust adapter. R-1 now provides the separate
-`tester-unified-rust` image and hostobs `lint`/`selftest` baseline lanes, with
-per-crate line and region floors. They do not judge changed lines through
-Assay. The planned adapter can reuse Assay's format parser while
-`cargo-llvm-cov` supplies the language's line and region data. This keeps
-format parsing shared instead of binding an LCOV implementation to every
-language that emits LCOV.
+B243 registers Assay's pure-Python Rust adapter at R1. Rust lanes declare
+`language = "rust"`, line-granular LCOV, and changed-line mode; their argv runs
+`cargo llvm-cov` in the pinned `tester-unified-rust` image. Assay reuses the
+shared LCOV parser. The adapter only normalizes the stable producer's complete
+zero `BRF`/`BRH` pairs when no `BRDA` exists, so branch capability is
+`unavailable`; a `require_branch` lane refuses rather than accepting an
+available-but-empty result. R1 qualification uses real nextest, libtest, and
+cargo-llvm-cov output from an offline fixture crate.
+
+Hostobs still owns its 90% line / 85% region per-crate floors. Its current
+`selftest` consumer lane has not yet been replaced with `assay-r1`; that
+consumer adoption is outside B243's Assay source boundary and remains open.
+This keeps the shared parser reusable for every language that emits LCOV.
 
 The lane tiers separate the expensive evidence by event. T1 uses sequence
 [`lint`, `assay-r1`]. T2 `gate` uses [`lint`, `assay-r3`, `conformance`] and
@@ -4537,12 +4544,13 @@ the crate cache: `tester-unified-rust` carries the cache built from
 `Cargo.lock` by `cargo fetch --locked`, and lanes run `--offline --locked` with
 a precheck that names any missing crate. The detailed adoption contract is in
 [`Rust methodology`](RUST-METHODOLOGY.md); the consumer steps are in
-[`CONSUMERS.md`](CONSUMERS.md#rust-lanes-planned-not-implemented).
+[`CONSUMERS.md`](CONSUMERS.md#rust-lanes-r1).
 
-The stable-Rust `BRF:0`/`BRH:0` normalizer is producer-specific and has a test
-against the measured R-0 artifact. It is preparatory until R-2 registers the
-adapter; the generic LCOV parser keeps its branch evidence rules. Rust R2 is
-not adopted yet and remains a known issue rather than a per-release waiver.
+The stable-Rust `BRF:0`/`BRH:0` normalizer is producer-specific, is consumed by
+the registered adapter, and has tests against the measured R-0 artifact and
+real Rust-image output. The generic LCOV parser keeps its branch evidence
+rules. Rust R2 is not adopted yet and remains a known issue rather than a
+per-release waiver.
 
 ## 12. Lane file structure = D7's three questions, literally
 

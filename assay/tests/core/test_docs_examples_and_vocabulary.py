@@ -78,6 +78,7 @@ _LANGUAGE_DISPLAY_NAMES = {
     "python": "Python",
     "javascript": "JavaScript",
     "go": "Go",
+    "rust": "Rust",
     "sql": "SQL",
 }
 _INGESTED_ONLY_SKILL_CAPABILITIES = {("javascript", "R2")}
@@ -219,18 +220,17 @@ def test_rust_baseline_docs_match_the_available_assay_surface():
     changes = (REPO_ROOT / "CHANGES.md").read_text(encoding="utf-8")
     unreleased = changes.split("## [Unreleased]", 1)[1].split("<!-- cmru: release history -->", 1)[0]
 
-    assert "no registered Rust adapter" in readme
-    assert "hostobs baseline lanes" in readme
-    assert "90% line / 85% region" in readme
-    assert "Rust lanes" in readme and "CONSUMERS.md#rust-lanes-planned-not-implemented" in readme
-    assert "tester-unified-rust" in design and "do not judge changed lines through" in design
-    assert "BRF:0" in design and "generic LCOV parser keeps its branch evidence rules" in design
+    assert "Rust is supported at **R1 only**" in readme
+    assert "hostobs keeps" in readme.casefold() and "90% line / 85% region" in readme
+    assert "Rust lanes" in readme and "CONSUMERS.md#rust-lanes-r1" in readme
+    assert "tester-unified-rust" in design and "changed-line mode" in design
+    assert "BRF:0" in design and "consumed by" in design
     assert "Rust R2 is not adopted yet" in consumers
     assert "not a per-release waiver" in consumers
-    assert "## Rust lanes (planned, not implemented)" in consumers
+    assert "## Rust lanes (R1)" in consumers
     assert "run-gate lint" in consumers and "run-gate selftest" in consumers
-    assert "Status: R-1 baseline available; Assay adapter not registered." in methodology
-    assert "do not make Assay judgments" in methodology
+    assert "Status: R-2 registers the Assay adapter at R1." in methodology
+    assert "R2 and R3 remain unregistered" in methodology
     assert "R-1 `tester-unified-rust` image" in unreleased
     assert "Rust R2 is a known issue, not a per-release waiver." in unreleased
 

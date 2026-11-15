@@ -667,6 +667,10 @@ class GoAdapter:
             )
         return key
 
+    def normalize_coverage_text(self, text: str) -> str:
+        """Go's coverprofile parser consumes its text without rewriting."""
+        return text
+
     def statement_spans(self, text: str) -> tuple[StatementSpan, ...] | None:
         return None
 

@@ -170,7 +170,11 @@ def load_coverage_profile(
 
 
 def parse_coverage_artifact(
-    raw: bytes | None, *, declared_format: str, producer: str | None = None
+    raw: bytes | None,
+    *,
+    declared_format: str,
+    producer: str | None = None,
+    normalizer: Callable[[str], str] | None = None,
 ) -> CoverageProfile:
     """Parse *raw* coverage-artifact bytes as *declared_format* (see
     :func:`load_coverage_profile`), or render the artifact's ABSENCE.
@@ -185,9 +189,11 @@ def parse_coverage_artifact(
     for an object that exists but cannot be trusted (wrong type, undecodable,
     oversized, or a race the caller's own reservation already detected).
 
-    Invalid UTF-8 is ``ERROR``/``UNREADABLE_ARTIFACT``; a declared-format
-    sniff mismatch or malformed record raises whatever
-    :func:`load_coverage_profile` raises.
+    *normalizer*, when supplied by the resolved language adapter, transforms
+    producer-specific metadata before the shared format parser runs. It never
+    selects a parser or changes its vocabulary. Invalid UTF-8 is
+    ``ERROR``/``UNREADABLE_ARTIFACT``; a declared-format sniff mismatch or
+    malformed record raises whatever :func:`load_coverage_profile` raises.
     """
     if raw is None:
         raise AssayError(
@@ -206,13 +212,18 @@ def parse_coverage_artifact(
             outcome=Outcome.ERROR,
             reason_code=ReasonCode.UNREADABLE_ARTIFACT,
         ) from exc
-    return load_coverage_profile(
-        text, declared_format=declared_format, producer=producer
-    )
+    if normalizer is not None:
+        text = normalizer(text)
+    return load_coverage_profile(text, declared_format=declared_format, producer=producer)
 
 
 def read_coverage_artifact(
-    project_root: Path, artifact: str, *, declared_format: str, producer: str | None = None
+    project_root: Path,
+    artifact: str,
+    *,
+    declared_format: str,
+    producer: str | None = None,
+    normalizer: Callable[[str], str] | None = None,
 ) -> CoverageProfile:
     """Read the project-relative *artifact* and parse it as *declared_format*
     (see :func:`parse_coverage_artifact`).
@@ -230,7 +241,10 @@ def read_coverage_artifact(
     """
     raw = safeio.read_bounded_file(project_root, artifact, limit=MAX_COVERAGE_ARTIFACT_BYTES)
     return parse_coverage_artifact(
-        raw, declared_format=declared_format, producer=producer
+        raw,
+        declared_format=declared_format,
+        producer=producer,
+        normalizer=normalizer,
     )
 
 

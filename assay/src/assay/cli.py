@@ -94,6 +94,7 @@ from .adapters.base import LanguageAdapter
 from .adapters.go import GoAdapter
 from .adapters.javascript import JavaScriptAdapter
 from .adapters.python import PythonAdapter
+from .adapters.rust import RustAdapter
 from .adapters.sql import SqlAdapter
 from .config import (
     MUTATION_BUDGET_PER_CANDIDATE_AUTO,
@@ -1654,8 +1655,9 @@ def _built_in_registry() -> registry.Registry:
     CLI-level test exercised the unknown-language branch at all. The
     adversarial round-1 review found it; one of the two is now
     ``test_run_refuses_a_language_this_registry_does_not_know_at_all``, which
-    declares ``rust`` and asserts ``rust`` really is absent from the registry
-    so it cannot drift the same way. The unit-level control is
+    declares ``fortran`` and asserts it really is absent from the registry,
+    so a future adapter registration cannot turn it into a decoy. Rust is now
+    registered at R1 and has its own R2/R3 refusal controls. The unit-level control is
     ``test_registry.py::test_an_unregistered_language_is_refused_not_defaulted``.
 
     **P34/W6: SQL is registered at R2 ONLY** (A-242's own sentence,
@@ -1725,6 +1727,12 @@ def _built_in_registry() -> registry.Registry:
     ``nyxloom-trove/reports/B087-js-r3-qualification.md`` for scope and limits.
     This consumer evidence is separate from the integrated
     Assay release gate. No verdict or schema change was needed for registration.
+
+    **B243 registers Rust at R1 only.** Its adapter maps Rust sources and
+    normalizes stable ``cargo-llvm-cov`` marker-only branch totals before the
+    shared LCOV parser. Rust lanes run the declared Cargo tools; the adapter
+    itself stays pure Python. R2 ingestion and R3 canaries remain unavailable
+    and are refused by this entry.
     """
     return registry.new_registry(
         registry.RegistryEntry(
@@ -1741,6 +1749,7 @@ def _built_in_registry() -> registry.Registry:
         # landed -- see this function's docstring for why the ordering is
         # load-bearing rather than tidy.
         registry.RegistryEntry(adapter=GoAdapter(), rigor=frozenset({"R1"})),
+        registry.RegistryEntry(adapter=RustAdapter(), rigor=frozenset({"R1"})),
     )
 
 
