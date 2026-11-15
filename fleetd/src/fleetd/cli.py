@@ -41,10 +41,29 @@ from cli_extended import (
     register_skills_verbs,
 )
 
-from .contracts import ContractError, dump_json, load_json, validate_host_facts
+import re
+
+from .contracts import ContractError, dump_json, load_json, parse_memory_bytes, validate_host_facts
 from .facts import DEFAULT_ROOT, collect_host_facts
 from .guard import parse_guard_toml
+from .measurement import load_measurement
+from .merge import load_shard_identity, validate_shard_set
 from .plan import plan_campaign, read_lane_demand_table, render_commands
+from .scope import (
+    DEFAULT_SCOPE_MODE,
+    EXIT_NOTHING_TO_JUDGE,
+    EXIT_OK,
+    EXIT_STALE_CURSOR,
+    SCOPE_MODES,
+    load_scope_file,
+    read_cursor,
+    refuse_unpinned_checkout,
+    release_diff,
+    resolve_commit,
+    scope_document,
+    write_cursor,
+)
+from .sizing import derive_sizing, sizing_input_from_plan
 from .campaign import CampaignManager
 from .transport import HxTransport, TransportError
 
@@ -208,6 +227,122 @@ def _collect_campaign(args: argparse.Namespace, runtime: CliRuntime) -> None:
         "report": str(report_path),
         "totals": result["totals"],
     })
+
+
+def _measurement_campaign(args: argparse.Namespace, runtime: CliRuntime) -> None:
+    _emit(runtime, _manager(args).measurement(args.campaign))
+
+
+def _scope_campaign(args: argparse.Namespace, runtime: CliRuntime) -> None:
+    repo = Path(os.path.abspath(os.path.expanduser(str(args.repo))))
+    commit = args.commit or resolve_commit(repo)
+    refuse_unpinned_checkout(repo, commit)
+    scope_file = args.scope_file
+    if scope_file is None:
+        default = repo / "r2-scope.toml"
+        scope_file = default if default.is_file() else None
+    declared = load_scope_file(scope_file) if scope_file is not None else {
+        "mode": None, "slice_size": None, "cursor": None, "note": None, "path": None,
+    }
+    if args.mode is not None:
+        mode, mode_source = args.mode, "--mode"
+    elif declared["mode"] is not None:
+        mode, mode_source = declared["mode"], f"scope file {declared['path']}"
+    else:
+        mode, mode_source = DEFAULT_SCOPE_MODE, "default"
+    if mode == DEFAULT_SCOPE_MODE and not args.from_tag:
+        raise ContractError(
+            "--from-tag: the changed-lines scope needs the previous release tag; "
+            "there is nothing to compare against without it"
+        )
+    slice_size = args.slice_size if args.slice_size is not None else declared["slice_size"]
+    cursor_path = args.cursor
+    if cursor_path is None and declared["cursor"] is not None:
+        cursor_path = (repo if Path(declared["cursor"]).is_absolute() else repo / declared["cursor"])
+    cursor = read_cursor(cursor_path) if cursor_path is not None else None
+    plan = load_json(args.plan)
+    diff_text = release_diff(repo, args.from_tag, commit) if mode == DEFAULT_SCOPE_MODE else ""
+    document = scope_document(
+        mode=mode,
+        mode_source=mode_source,
+        lane=args.lane,
+        from_tag=args.from_tag or "",
+        commit=commit,
+        plan=plan,
+        diff_text=diff_text,
+        slice_size=slice_size,
+        cursor=cursor,
+        rebaseline=args.rebaseline,
+    )
+    if args.write_cursor is not None:
+        if document["cursor"] is None:
+            raise ContractError(
+                "--write-cursor: only a rolling scope publishes an advanced cursor; "
+                f"this scope is {document['status']}"
+            )
+        write_cursor(args.write_cursor, document["cursor"])
+    if args.out is not None:
+        if document["status"] != "ok":
+            raise ContractError(
+                f"--out: refusing to write an empty candidate file; the scope is "
+                f"{document['status']}: {document['reason']}"
+            )
+        args.out.parent.mkdir(parents=True, exist_ok=True)
+        args.out.write_text(
+            "".join(f"{candidate_id}\n" for candidate_id in document["candidate_ids"]),
+            encoding="ascii",
+        )
+    _emit(runtime, document)
+    # The document is the result even when the scope is refused; the exit status
+    # carries the verdict (3 stale cursor, 4 nothing to judge) and the reason.
+    if document["status"] == "stale-cursor":
+        raise CliFailure(f"stale cursor: {document['reason']}", exit_code=EXIT_STALE_CURSOR)
+    if document["status"] == "nothing-to-judge":
+        raise CliFailure(f"nothing to judge: {document['reason']}", exit_code=EXIT_NOTHING_TO_JUDGE)
+
+
+def _sizing_campaign(args: argparse.Namespace, runtime: CliRuntime) -> None:
+    plan = load_json(args.plan)
+    measurement = load_measurement(args.measurement) if args.measurement is not None else None
+    sizing = sizing_input_from_plan(
+        plan,
+        measurement=measurement,
+        per_candidate_seconds=args.per_candidate_seconds,
+        per_candidate_memory_bytes=(
+            parse_memory_bytes(args.per_candidate_memory, "--per-candidate-memory")
+            if args.per_candidate_memory is not None else None
+        ),
+    )
+    limit = None
+    allowance = None
+    for value, name in (
+        (args.minimum_budget, "--minimum-budget"),
+        (args.startup_allowance, "--startup-allowance"),
+    ):
+        if not isinstance(value, str) or not re.fullmatch(r"[0-9]+[smh]", value):
+            raise ContractError(f"{name}: expected a duration like 15m or 1h")
+        seconds = int(value[:-1]) * {"s": 1, "m": 60, "h": 3600}[value[-1]]
+        if name == "--minimum-budget":
+            limit = seconds
+        else:
+            allowance = seconds
+    _emit(runtime, derive_sizing(
+        sizing,
+        margin=args.margin,
+        minimum_budget_seconds=limit,
+        startup_allowance_seconds=allowance,
+    ))
+
+
+def _merge_check(args: argparse.Namespace, runtime: CliRuntime) -> None:
+    identities = [load_shard_identity(path) for path in args.identity]
+    document = validate_shard_set(identities, require_complete=args.require_complete)
+    _emit(runtime, document)
+    if document["status"] != "ok":
+        raise CliFailure(
+            f"the shard set is {document['status']}; see problems in the document",
+            exit_code=EXIT_STALE_CURSOR,
+        )
 
 
 def _emit(runtime: CliRuntime, document: object) -> None:
@@ -393,6 +528,81 @@ def build_cli(cli_identity: CliIdentity | None = None) -> RegisteredCli:
         handler=_domain(_plan_campaign),
     ))
     registry.register(VerbSpec(
+        "scope",
+        description=(
+            "produce the R2 candidate-id scope: the candidates on lines changed since the previous "
+            "release tag by default, or the next slice of the opt-in rolling whole-target baseline; "
+            "exit 3 for a stale cursor, 4 for nothing to judge"
+        ),
+        group=VerbGroup.EXPLORATION.value,
+        include_progress=False,
+        examples=(
+            "fleet scope r2 --plan plan.json --repo . --from-tag tool-v1.2.0 --out candidates.txt",
+            "fleet scope r2 --plan plan.json --mode rolling-whole-target --slice-size 40 --cursor cursor.json --write-cursor cursor.json",
+        ),
+        arguments=(ArgumentSpec("lane", "Run-Gate lane whose Assay candidates form the whole-target list", metavar="LANE"),),
+        options=(
+            OptionSpec(("--plan",), "output of `assay plan <lane> --json`", group="INPUT", metavar="FILE",
+                       parser_kwargs={"type": Path, "required": True}),
+            OptionSpec(("--repo",), "the Git checkout the plan describes", group="INPUT", metavar="DIR",
+                       parser_kwargs={"type": Path, "default": "."}),
+            OptionSpec(("--from-tag",), "previous release tag (required by the changed-lines scope)", group="SCOPE", metavar="TAG"),
+            OptionSpec(("--commit",), "commit to judge (default: HEAD of --repo)", group="SCOPE", metavar="SHA"),
+            OptionSpec(("--mode",), f"scope mode (default: {DEFAULT_SCOPE_MODE})", group="SCOPE", metavar="MODE",
+                       parser_kwargs={"choices": SCOPE_MODES}),
+            OptionSpec(("--scope-file",), "project r2 scope file (default: <repo>/r2-scope.toml when present)",
+                       group="SCOPE", metavar="FILE", parser_kwargs={"type": Path}),
+            OptionSpec(("--slice-size",), "rolling-whole-target slice size", group="SCOPE", metavar="N",
+                       parser_kwargs={"type": int}),
+            OptionSpec(("--cursor",), "rolling cursor file to resume from", group="SCOPE", metavar="FILE",
+                       parser_kwargs={"type": Path}),
+            OptionSpec(("--write-cursor",), "write the advanced rolling cursor here", group="OUTPUT", metavar="FILE",
+                       parser_kwargs={"type": Path}),
+            OptionSpec(("--rebaseline",), "accept a stale rolling cursor and extend its list, recording a new pass",
+                       group="SCOPE", parser_kwargs={"action": "store_true", "default": False}),
+            OptionSpec(("--out",), "write the candidate-id file here (refused for an empty scope)", group="OUTPUT",
+                       metavar="FILE", parser_kwargs={"type": Path}),
+        ),
+        handler=_domain(_scope_campaign),
+    ))
+    registry.register(VerbSpec(
+        "sizing",
+        description="derive shards, instances per host and budgets from measured units",
+        group=VerbGroup.EXPLORATION.value,
+        include_progress=False,
+        examples=("fleet sizing plan.json --measurement r2-week46.measurement.json",),
+        arguments=(ArgumentSpec("plan", "fleet-plan/1 JSON file", metavar="PLAN", parser_kwargs={"type": Path}),),
+        options=(
+            OptionSpec(("--measurement",), "fleet-r2-measurement/1 from a finished campaign", group="INPUT",
+                       metavar="FILE", parser_kwargs={"type": Path}),
+            OptionSpec(("--per-candidate-seconds",), "declared per-candidate wall seconds", group="INPUT",
+                       metavar="SECONDS", parser_kwargs={"type": float}),
+            OptionSpec(("--per-candidate-memory",), "declared per-candidate memory charge", group="INPUT", metavar="SIZE"),
+            OptionSpec(("--margin",), "budget margin over the estimate (default: 1.10)", group="BUDGET",
+                       metavar="FACTOR", parser_kwargs={"type": float, "default": 1.10}),
+            OptionSpec(("--minimum-budget",), "shortest per-instance budget (default: 15m)", group="BUDGET",
+                       metavar="DURATION", parser_kwargs={"default": "15m"}),
+            OptionSpec(("--startup-allowance",), "outer-bound allowance beside each instance budget (default: 15m)",
+                       group="BUDGET", metavar="DURATION", parser_kwargs={"default": "15m"}),
+        ),
+        handler=_domain(_sizing_campaign),
+    ))
+    registry.register(VerbSpec(
+        "merge-check",
+        description="refuse a shard merge whose shards judged different commits, images or plans",
+        group=VerbGroup.EXPLORATION.value,
+        include_progress=False,
+        examples=("fleet merge-check shard-0.identity.json shard-1.identity.json --require-complete",),
+        arguments=(ArgumentSpec("identity", "fleet-shard-identity/1 files, one per shard", metavar="IDENTITY",
+                                parser_kwargs={"type": Path, "nargs": "+"}),),
+        options=(OptionSpec(
+            ("--require-complete",),
+            "accepted for explicitness; an incomplete shard set is always refused",
+            group="CHECK", parser_kwargs={"action": "store_true", "default": False},
+        ),),
+        handler=_domain(_merge_check),
+    ))
+    registry.register(VerbSpec(
         "run",
         description="start or re-adopt the named jobs in a fleet plan",
         group=VerbGroup.MODIFICATION.value,
@@ -432,6 +642,13 @@ def build_cli(cli_identity: CliIdentity | None = None) -> RegisteredCli:
             "fetch available progress streams and per-batch verdicts and write "
             "fleet-campaign-result/1 JSON plus a Markdown report",
             _collect_campaign,
+        ),
+        (
+            "measurement",
+            "write the per-candidate measurement evidence that sizes the next campaign",
+            "write fleet-r2-measurement/1 evidence (per-candidate seconds and memory peaks, medians over "
+            "killed and survived candidates) beside the campaign state",
+            _measurement_campaign,
         ),
     ):
         registry.register(VerbSpec(

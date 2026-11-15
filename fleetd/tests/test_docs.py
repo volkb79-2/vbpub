@@ -14,6 +14,18 @@ import pytest
 from fleetd.cli import build_cli
 from fleetd.contracts import validate_lane_demand
 from fleetd.facts import load_facts_config
+from fleetd.merge import IDENTITY_SCHEMA, IDENTITY_SET_SCHEMA
+from fleetd.measurement import MEASUREMENT_SCHEMA
+from fleetd.scope import (
+    CURSOR_SCHEMA,
+    DEFAULT_SCOPE_MODE,
+    EXIT_NOTHING_TO_JUDGE,
+    EXIT_STALE_CURSOR,
+    SCOPE_MODES,
+    SCOPE_SCHEMA,
+    load_scope_file,
+)
+from fleetd.sizing import SIZING_SCHEMA
 
 PROJECT = Path(__file__).parents[1]
 PUBLIC_DOCS = [
@@ -21,6 +33,7 @@ PUBLIC_DOCS = [
     PROJECT / "docs" / "SPEC.md",
     PROJECT / "docs" / "DESIGN-GUIDE.md",
     PROJECT / "docs" / "CONSUMERS.md",
+    PROJECT / "docs" / "R2-DEFAULT.md",
 ]
 PYPROJECT = PROJECT / "pyproject.toml"
 
@@ -53,6 +66,14 @@ def test_public_docs_toml_examples_parse_and_declare_their_schema(tmp_path):
                 assert parsed_facts.overcommit == 1.5
                 assert parsed_facts.psi_refuse_some_avg10 == 25
                 continue
+            if "r2" in config:
+                # A project's scope file, parsed by the SHIPPED loader.
+                scope_path = tmp_path / "r2-scope.toml"
+                scope_path.write_text(block, encoding="utf-8")
+                declared = load_scope_file(scope_path)
+                assert declared["mode"] in SCOPE_MODES, path
+                assert declared["path"] == str(scope_path)
+                continue
             assert "lanes" in config and "r2" in config["lanes"], path
             validate_lane_demand(config["lanes"]["r2"]["demand"], f"{path}:lanes.r2.demand")
 
@@ -77,6 +98,27 @@ def test_docs_keep_the_first_week_boundary_and_closed_vocabularies_visible():
         assert value in combined
     assert "no daemon" in combined.lower()
     assert "--only-candidates FILE" in combined
+
+
+def test_docs_name_every_default_r2_capability_and_value_a_consumer_types():
+    """A capability that ships undocumented cannot be adopted (AGENTS.md)."""
+    combined = "\n".join(path.read_text(encoding="utf-8") for path in PUBLIC_DOCS)
+    for value in SCOPE_MODES + (DEFAULT_SCOPE_MODE,):
+        assert value in combined, value
+    for value in (
+        SCOPE_SCHEMA,
+        CURSOR_SCHEMA,
+        SIZING_SCHEMA,
+        MEASUREMENT_SCHEMA,
+        IDENTITY_SCHEMA,
+        IDENTITY_SET_SCHEMA,
+    ):
+        assert value in combined, value
+    assert str(EXIT_STALE_CURSOR) in combined and str(EXIT_NOTHING_TO_JUDGE) in combined
+    for command in ("fleet scope", "fleet sizing", "fleet measurement", "fleet merge-check"):
+        assert command in combined, command
+    for key in ("worker_memory", "worker_cpu", "instance_cpu", "image_digest", "slice_size"):
+        assert key in combined, key
 
 
 # --- the cli-extended adoption, as a documentation obligation ---------------------------

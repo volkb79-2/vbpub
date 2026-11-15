@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any, Callable, Iterator, Mapping, Sequence
 
 from .contracts import ContractError, is_candidate_id
+from .measurement import measurement_document
 from .plan import replan_pending
 from .runner import JobSpec, RunnerJobs, parse_progress, validate_job_spec
 from .transport import HostUnavailable, Transport, TransportError
@@ -26,6 +27,7 @@ STALL_FLOOR_SECONDS = 15 * 60
 LOST_AFTER_SECONDS = 30 * 60
 _CAMPAIGN_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,119}\Z")
 _EXEC_COMMIT = re.compile(r"[0-9a-f]{40,64}\Z")
+_EXEC_IMAGE = re.compile(r"sha256:[0-9a-f]{64}\Z")
 _PROJECT_PART = re.compile(r"[A-Za-z0-9._-]+\Z")
 
 
@@ -71,7 +73,20 @@ def _execution(plan: Mapping[str, Any]) -> dict[str, str]:
         ))
     ):
         raise ContractError("plan execution.project: expected a relative project path")
-    return {"commit": commit, "project": project or "."}
+    result = {"commit": commit, "project": project or "."}
+    # The tester image identity a shard judged under. OPTIONAL here and
+    # REQUIRED by the merge check: a campaign that never names an image can
+    # still run, but its shards cannot be merged, because a merge over two
+    # unknown image identities is exactly the mixed-image merge that check
+    # exists to refuse.
+    image = value.get("image_digest")
+    if image is not None:
+        if not isinstance(image, str) or _EXEC_IMAGE.fullmatch(image) is None:
+            raise ContractError(
+                "plan execution.image_digest: expected sha256: followed by 64 lowercase hex digits"
+            )
+        result["image_digest"] = image
+    return result
 
 
 def _job_spec(job: Mapping[str, Any]) -> JobSpec:
@@ -184,6 +199,42 @@ class CampaignManager:
             _atomic_write(report_path, self._render_report(result).encode("utf-8"))
             self._write_state(state)
             return result, report_path.read_text(encoding="utf-8"), json_path, report_path
+
+    def measurement(self, campaign: str) -> dict[str, Any]:
+        """Write and return this campaign's per-candidate measurement evidence.
+
+        The measured record is the sizing input of the NEXT campaign: without
+        it, every budget is an estimate somebody typed. It lives beside the
+        result under ``--state-dir`` and is regenerated from the same owner
+        records ``collect`` used, so the two can never disagree about which
+        number came from which candidate.
+        """
+        campaign = _safe_campaign(campaign)
+        with self._locked(campaign):
+            state = self._load_state(campaign)
+            self._refresh(state)
+            result = self._collect_result(state)
+            document = measurement_document(
+                campaign=campaign,
+                lane=state["lane"],
+                commit=state["execution"]["commit"],
+                image_digest=state["execution"].get("image_digest"),
+                planned_ids=state["planned_ids"],
+                records=[
+                    {
+                        "candidate_id": row["candidate_id"],
+                        "outcome_bucket": self._measured_bucket(row),
+                        "elapsed_seconds": row.get("elapsed_seconds"),
+                        "memory_peak_bytes": row.get("memory_peak_bytes"),
+                    }
+                    for row in result["candidates"]
+                ],
+                baseline_seconds=self._campaign_baseline(state),
+            )
+            path = self.state_dir / f"{campaign}.measurement.json"
+            _atomic_write(path, _canonical(document))
+            self._write_state(state)
+            return document
 
     def _state_path(self, campaign: str) -> Path:
         return self.state_dir / f"{campaign}.json"
@@ -595,11 +646,15 @@ class CampaignManager:
                 if isinstance(elapsed, bool) or not isinstance(elapsed, (int, float)) or not math.isfinite(float(elapsed)) or elapsed < 0:
                     elapsed = None
                 emitted = event.get("emitted_at") if isinstance(event.get("emitted_at"), str) else None
+                memory_peak = event.get("memory_peak_bytes")
+                if isinstance(memory_peak, bool) or not isinstance(memory_peak, int) or memory_peak < 1:
+                    memory_peak = None
                 record = {
                     "candidate_id": candidate_id,
                     "outcome_bucket": outcome,
                     "elapsed_seconds": elapsed,
                     "emitted_at": emitted,
+                    "memory_peak_bytes": memory_peak,
                 }
                 key = (candidate_id, outcome, emitted, elapsed)
                 if key not in record_keys:
@@ -1237,6 +1292,9 @@ class CampaignManager:
                     "owner_job": None,
                     "emitted_at": None,
                     "duplicates_ignored": 0,
+                    "outcome_bucket": None,
+                    "elapsed_seconds": None,
+                    "memory_peak_bytes": None,
                     "reason": (
                         failed_candidate_reasons.get(candidate_id)
                         or not_started_reasons.get(candidate_id)
@@ -1252,11 +1310,14 @@ class CampaignManager:
             candidate_rows.append({
                 "candidate_id": candidate_id,
                 "outcome": outcome,
+                "outcome_bucket": owner["outcome_bucket"],
                 "owner_host": owner["host"],
                 "owner_job": owner["job"],
                 "emitted_at": owner.get("emitted_at"),
                 "duplicates_ignored": ignored,
                 "file": metadata.get("file"),
+                "elapsed_seconds": owner.get("elapsed_seconds"),
+                "memory_peak_bytes": owner.get("memory_peak_bytes"),
             })
         per_host = self._host_totals(state, candidate_rows)
         return {
@@ -1327,6 +1388,24 @@ class CampaignManager:
                         ),
                     })
         return records
+
+    @staticmethod
+    def _measured_bucket(row: Mapping[str, Any]) -> str | None:
+        """The owner's own Assay bucket, or ``None`` for a missing candidate."""
+        value = row.get("outcome_bucket")
+        return value if isinstance(value, str) else None
+
+    @staticmethod
+    def _campaign_baseline(state: Mapping[str, Any]) -> float | None:
+        """Any baseline wall time a runner job of this campaign recorded."""
+        values = [
+            job["baseline_seconds"] for job in state["jobs"].values()
+            if isinstance(job.get("baseline_seconds"), (int, float))
+            and not isinstance(job.get("baseline_seconds"), bool)
+            and math.isfinite(float(job["baseline_seconds"]))
+            and job["baseline_seconds"] >= 0
+        ]
+        return float(max(values)) if values else None
 
     def _host_totals(self, state: Mapping[str, Any], candidate_rows: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
         now = self.clock()

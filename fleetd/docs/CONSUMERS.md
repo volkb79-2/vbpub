@@ -443,6 +443,132 @@ schema units until their placement meaning is defined. Memory accepts positive
 integer bytes with `B`, `k`, `m`, `g`, `kib`, `mib`, or `gib` suffixes.
 See the [specification](SPEC.md) and [design choices](DESIGN-GUIDE.md).
 
+## Declare the campaign scope
+
+The default R2 scope is the lines changed since the tool's previous release
+tag: a candidate is in scope only when its start line is an added line of that
+diff. Generate the id file Run-Gate consumes with `--only-candidates`:
+
+```sh
+assay plan r2 --json > plan.json
+fleet scope r2 --plan plan.json --repo . --from-tag tool-v1.4.0 \
+  --out .run-gate/r2-candidates.txt > scope.json
+run-gate r2 --only-candidates .run-gate/r2-candidates.txt
+```
+
+`fleet scope` exits `0` when it produced a scope, `4` when the release changed
+no mutation target line (`nothing-to-judge`, and `--out` refuses to write an
+empty file), and `3` when a rolling cursor no longer describes the list. Each
+of those prints its `fleet-r2-scope/1` document on stdout, so redirect it to
+keep the record; a bad argument or a refused `--out`/`--write-cursor` exits `2`
+with the reason on stderr and writes nothing.
+
+To run a rolling whole-target baseline instead — every release judging the
+next slice of the whole list — commit this file beside the project's
+`run-gate.toml`. Without it a project keeps the default:
+
+```toml
+schema_version = 1
+
+[r2]
+mode = "rolling-whole-target"
+slice_size = 40
+cursor = ".assay/r2-scope-cursor.json"
+note = "each release judges the next 40 candidates"
+```
+
+Then pass the cursor through. The cursor records the digest and length of the
+list it was taken from, so a changed list is refused rather than resumed at
+an offset that now points at a different candidate:
+
+```sh
+fleet scope r2 --plan plan.json --repo . --from-tag tool-v1.4.0 \
+  --cursor .assay/r2-scope-cursor.json \
+  --write-cursor .assay/r2-scope-cursor.json \
+  --out .run-gate/r2-candidates.txt > scope.json
+```
+
+`--mode changed-lines|rolling-whole-target` overrides the declared mode, and
+`--rebaseline` accepts a changed whole-target list explicitly (recording a new
+pass) instead of refusing it.
+
+## Size the campaign from measured units
+
+Sizing needs the per-worker unit in the demand file. Keep
+`efficient_upper_bound` at or below the native lane's
+`judge.mutation.jobs_max`:
+
+```toml
+schema_version = 1
+
+[lanes.r2.demand]
+unit = "candidate"
+instance_memory = "250m"
+unit_memory = "120m"
+unit_memory_high = "600m"
+unit_seconds_ref = 95
+efficient_upper_bound = 3
+baseline_seconds = 400
+worker_memory = "120m"
+worker_cpu = 1
+instance_cpu = 1
+```
+
+```sh
+fleet sizing plan.json
+fleet sizing plan.json --measurement r2-week46.measurement.json
+```
+
+The first call sizes from the lane's declared estimate and reports
+`"basis": "declared"`; the second uses a finished campaign's own medians and
+reports `"basis": "measured"`. Each shard row states its `candidate_count`,
+`jobs`, `estimate_seconds`, `budget_seconds` and `outer_budget_seconds`, so a
+lane's `budget` and the Run-Gate outer bound come from one derivation. Override
+policy numbers with `--margin`, `--minimum-budget`, `--startup-allowance`,
+`--per-candidate-seconds` and `--per-candidate-memory`.
+
+## Record what a candidate cost
+
+```sh
+fleet collect r2-week46
+fleet measurement r2-week46
+```
+
+`fleet measurement` writes `<campaign>.measurement.json` beside the campaign
+result in the same state directory. Each planned candidate carries its
+`outcome_bucket`, `elapsed_seconds` and `memory_peak_bytes`; the `summary`
+keeps medians over `killed` and `survived` candidates. A candidate the cgprofile
+observer could not measure keeps `null`, never `0`, and the summary reports
+`memory_measured_candidates`, so you can see how much of the number is
+observed. Pass that file to `fleet sizing --measurement` next time.
+
+## Check that the shards can be merged
+
+Each shard writes one `fleet-shard-identity/1` document:
+
+```json
+{
+  "schema": "fleet-shard-identity/1",
+  "lane": "assay-r2",
+  "host": "runner-a",
+  "commit": "<full lowercase Git object id>",
+  "image_digest": "sha256:<64 lowercase hex digits>",
+  "plan_sha256": "<64 lowercase hex digits>",
+  "shard": {"index": 0, "count": 2}
+}
+```
+
+```sh
+fleet merge-check shard-0.json shard-1.json --require-complete
+```
+
+Exit `0` means every shard agrees on lane, commit, image, plan and shard
+count, and every index is present. `mismatched` and a duplicated index exit
+`3`; a missing index is reported as `incomplete` and also exits `3`
+(`--require-complete` is accepted and changes nothing). Name the tester image in the plan
+(`execution.image_digest`) to have one: a campaign without it can run, but
+its shards cannot be merged, and the check never invents an image identity.
+
 ## Validate guard rules
 
 ```sh

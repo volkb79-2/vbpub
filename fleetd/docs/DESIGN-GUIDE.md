@@ -78,6 +78,110 @@ Placement refuses a host with unknown role, explicit shared-prod role, PSI
 above the configured admission threshold, or missing facts needed for a safe
 RAM/CPU budget. A missing max_lane_containers is not guessed.
 
+## Why the default R2 scope is changed lines
+
+A mutation verdict is only about the lines a release changed; judging the whole
+target every release re-pays the baseline for code nobody touched. So the
+default scope is `git diff -U0 <previous tag>..<commit>`, and a file the release
+did not touch contributes nothing at all — not even its unchanged lines inside
+a touched file (`lines_unchanged` says how many were dropped).
+
+Three shapes of "empty" are kept apart, because folding them together is the
+defect this producer exists to end. A scope with no candidates is
+`nothing-to-judge` with a reason and exit 4, and `--out` refuses to write the
+empty file, so a campaign can never judge nothing and look green. A scope file
+that names a mode is echoed in `mode_source`, so a report cannot claim the
+default while a project opted into something else. And a tool that commits no
+scope file keeps the default, so no existing lane changes behaviour.
+
+**Renames are judged whole.** Assay's candidate identity folds in the
+repo-relative path, so every candidate in a renamed file is an identity that has
+never been judged; a pure rename produces no hunk at all, so added-line
+filtering alone would silently drop the file. The diff is read with
+`--find-renames` and a `rename to` header marks the new path whole.
+
+The diff is parsed with a real hunk state machine rather than a header regex:
+a hunk header's own `-old_count/+new_count` is what closes a hunk, so a body
+line whose content starts with `++` (patch text `+++ value`) can never be
+mistaken for a file header. A test pins exactly that.
+
+**Why the rolling baseline is an opt-in, not the default.** Successive releases
+covering the whole target is what a project wants when its candidate list is
+larger than one campaign should judge; it is also what makes a cursor
+necessary. A cursor that resumes at a raw offset can silently skip candidates
+when the list changes underneath it, so the cursor stores the list's digest and
+length and a mismatch is a refusal (exit 3), never a resume. `--rebaseline`
+exists because "the list legitimately changed" is a real state that must be
+expressible without hand-editing the cursor file.
+
+## Why sizing is a derivation, not a declaration
+
+A lane that declares `cpus = "3"` and `budget = "12h"` has stated the right
+numbers for exactly one shard size on one worker count. With several instances
+per host, every one of those numbers must come from the plan:
+
+- **the per-worker unit** (one pytest worker's CPU share and memory) is the
+  charged unit, and the fixed **per-instance** charge covers the judge, the
+  container and its workspace, so the first worker of an instance costs
+  instance + one unit — a per-container cap that already includes three workers
+  cannot express that;
+- **shards = instances**, because each instance is one `--shard K/N` run;
+- **each shard's budget** from its candidate count divided by its workers and
+  the per-candidate seconds, plus the lane baseline — an instance with no
+  candidate still pays the baseline, because sizing must never pretend an idle
+  instance is free;
+- **the outer bound** as budget plus a launch/collection allowance, so a lane's
+  declared budget and Run-Gate's bound are one derivation instead of the two
+  numbers that produced the 11h-below-12h warning.
+
+The new demand keys are optional in the contract on purpose: every existing
+demand file must keep validating, and a project that does not size its campaign
+does not have to declare a worker unit. Sizing refuses a plan without them **by
+name** — a silent fallback here would size the campaign from a number nobody
+chose.
+
+Every figure carries its `basis`. A `declared` sizing document is honest about
+being a guess; `measured` means a finished campaign's own per-candidate records
+supplied it. This is the one place where the tool could easily lie, so the
+label is part of the document rather than a comment.
+
+## Why a missing measurement is null, not zero
+
+The measurement recorder exists because budgets were estimates. A candidate
+nobody measured contributes `null`, and the summary counts how many numbers it
+actually had (`measured_candidates`, `memory_measured_candidates`). A zero would
+look like a measurement and drag every median down, sizing the next campaign's
+budgets too small — the exact class of silent wrong answer this estate treats as
+a defect. Memory comes from the cgprofile observer's `resource-profile/1`
+`memory_peak_bytes` and nothing else: Assay 12 removed its own sampled
+`peak_rss_bytes`, so a lane without the observer records elapsed seconds only
+and says so.
+
+Medians are taken over `killed` and `survived` candidates only. A
+`budget_exceeded` or `hung` candidate's elapsed time is the budget that stopped
+it, not the cost of judging, and including it would inflate the next budget
+forever.
+
+## Why the merge check compares identity, not counts
+
+Two shards that judged different commits or different tester images produce a
+merged verdict that *looks* complete either way. The check therefore compares
+the lane, full commit, image digest, plan digest and shard count across every
+shard, and reports both values on a mismatch instead of picking one. Three
+shapes are kept distinct:
+
+- a **duplicated index** is a disagreement about which slice a store holds — a
+  refusal, never an "incomplete" report;
+- a **missing index** is a genuinely incomplete set: reported as `incomplete`
+  and refused (`--require-complete` is accepted and changes nothing), because a
+  merge over a missing shard reports its candidates as absent work;
+- a **differing field** is `mismatched` regardless of completeness.
+
+The image digest is optional in the plan executor and required by the merge
+check. That asymmetry is deliberate: refusing to run a campaign because nobody
+declared an image would be a default invented by the tool, while merging two
+unknown image identities is precisely the mixed-image merge to refuse.
+
 ## Facts are read from their owner
 
 The collector accepts a root directory so tests use synthetic `/proc` and
