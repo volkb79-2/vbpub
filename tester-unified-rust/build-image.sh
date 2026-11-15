@@ -77,7 +77,7 @@ for key in keys:
                 raise SystemExit(f"{key} requires {variable} to be set")
     if not isinstance(value, str) or not value or "\n" in value:
         raise SystemExit(f"{key} is missing or malformed")
-    values.append(value)
+    values.append(f"{key}={value}")
 print("\n".join(values))
 PY
 )"
@@ -86,17 +86,24 @@ mapfile -t tester_gate_values <<< "$tester_gate_defaults"
   printf 'could not resolve CMRU tester-gate defaults from cmru.orchestration.toml\n' >&2
   exit 2
 }
+# tester-gate resolves every bound from its CMRU_TESTER_* variable when the matching
+# option is absent (its documented explicit > environment precedence), which is how
+# `cmru release` hands the same bounds to it. Passing them in the environment keeps
+# the invocation below free of shell-expanded option values, so the estate argv check
+# (cmru/tests/test_w2_integ.py) parses it literally and tester-gate validates the
+# real values at run time.
+for tester_gate_assignment in "${tester_gate_values[@]}"; do
+  [[ "$tester_gate_assignment" =~ ^CMRU_TESTER_[A-Z_]+=. ]] || {
+    printf 'malformed CMRU tester-gate default: %s\n' "$tester_gate_assignment" >&2
+    exit 2
+  }
+  export "$tester_gate_assignment"
+done
 
 cd "$repo_root"
 cmru tester-gate \
   --cwd run-gate-project \
-  --image "${tester_gate_values[0]}" \
   --cgroup-parent "$cgroup_parent" \
-  --memory "${tester_gate_values[1]}" \
-  --memory-swap "${tester_gate_values[2]}" \
-  --cpus "${tester_gate_values[3]}" \
-  --pids-limit "${tester_gate_values[4]}" \
-  --cgroup-probe-image "${tester_gate_values[5]}" \
   /bin/true
 
 docker buildx inspect mdt-managed >/dev/null

@@ -59,6 +59,15 @@ class ImageContractTests(unittest.TestCase):
         self.assertIn('refusing an ungoverned image build', build)
         self.assertIn('[[ -f "$repo_root/hostobs/Cargo.lock" ]] || {', build)
         self.assertIn("cmru tester-gate \\\n  --cwd run-gate-project", build)
+        # The bounds travel in CMRU_TESTER_* variables, never as shell-expanded option values:
+        # cmru's estate argv check parses this invocation literally and a typed option
+        # (--cpus) cannot take an unexpanded ${...} word.
+        self.assertIn('values.append(f"{key}={value}")', build)
+        self.assertIn('export "$tester_gate_assignment"', build)
+        invocation = build.split("cmru tester-gate \\\n", 1)[1].split("/bin/true", 1)[0]
+        self.assertNotIn("$", invocation.replace('"$cgroup_parent"', ""))
+        for option in ("--image", "--memory", "--memory-swap", "--cpus", "--pids-limit", "--cgroup-probe-image"):
+            self.assertNotRegex(invocation, rf"(?m)^\s*{option}\b")
         self.assertIn('"$repo_root/cmru.orchestration.toml"', build)
         self.assertIn('document["orchestration"]["defaults"]["env"]', build)
         self.assertIn('--cgroup-parent "$cgroup_parent"', build)
