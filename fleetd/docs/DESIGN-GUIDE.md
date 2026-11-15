@@ -47,8 +47,9 @@ The planner computes `reserve_h` as the sum of all positive per-service
 `MemoryMin` values when the complete fixed unit list is reported. If any
 service is absent, zero, or `infinity`, it uses that host's fixed profile
 constant (768 MiB when the host has no override) and reports the missing
-services. The parent `ctl.slice/memory.min` remains a reported protection fact,
-never a reserve floor. Then `P = memory.for_lanes_bytes - reserve_h`, O = other
+services. The collector does not read parent `ctl.slice/memory.min`. Older
+facts may include `control_plane.memory_min_bytes`, which is accepted for
+compatibility and ignored. Then `P = memory.for_lanes_bytes - reserve_h`, O = other
 running expected charges + campaign_slots × instance_memory, and B = P ×
 overcommit - O. It derives worker slots from CPU capacity after other running
 workers and bounds them by
@@ -93,8 +94,8 @@ with a reason and cannot receive work. The CPU lane count comes from the
 online CPU list, and `memory.for_lanes_bytes` is raw `MemTotal`. Fleetd probes
 the fixed `CONTROL_PLANE_SERVICE_UNITS` list with `systemctl show -p MemoryMin`.
 WP2 sums all positive service values, or uses the host's fixed profile constant
-when any service value is absent, zero, or `infinity`. The parent slice's
-`memory.min` remains reported and is not used to floor that sum. Host plans and
+when any service value is absent, zero, or `infinity`. Legacy parent-slice
+`memory_min_bytes` is accepted and ignored. Host plans and
 campaign status show `reserve_bytes`, `reserve_source`, and
 `reserve_missing_services`. Reserve selection never scales with `MemTotal` or
 uses measured RSS. Old facts without service values use the profile constant,

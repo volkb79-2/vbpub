@@ -74,16 +74,19 @@ count. It accepts measured Geekbench 6/7 records with their matching reference
 score, and never uses a table fallback. Guard config is validated after
 lexically merging TOML drop-ins; its digest covers the main file and drop-ins.
 The guard runtime state and KSM opt-in shim are nullable unless their paths are
-configured. `memory.for_lanes_bytes` is raw `MemTotal`. The bounded
+configured. `memory.for_lanes_bytes` is raw `MemTotal`. The collector reports
+configured slice presence and `cpu.weight`, but does not collect the parent
+slice's `memory.min`. Older host-facts/1 inputs may include
+`control_plane.memory_min_bytes`; the validator accepts that legacy field and
+planning ignores it. The bounded
 `CONTROL_PLANE_SERVICE_UNITS` list in `fleetd.contracts` supplies one
 `service_memory_min` entry per service. `0`, `infinity`, unset, and failed
 queries are not reported positive values. The planner uses the sum only when
 all listed services report positive values; otherwise it uses that host's
 `profile_reserve_bytes` (768 MiB when the config has no profile override).
 Thus reserve selection does not depend on `MemTotal`, `MemAvailable`, measured
-RSS, or the parent slice's `memory_min_bytes`. The parent slice value remains
-available as a reported protection fact. Plans expose `reserve_bytes`,
-`reserve_source` (`service-memory-min` or `profile-constant`), and
+RSS, or any legacy parent-slice `memory_min_bytes` value. Plans expose
+`reserve_bytes`, `reserve_source` (`service-memory-min` or `profile-constant`), and
 `reserve_missing_services`. Missing `memory.for_lanes_bytes` still refuses
 planning because physical capacity cannot be derived. Calibration of the
 profile constant from measured p95 under load remains open as

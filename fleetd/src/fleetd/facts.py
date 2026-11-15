@@ -607,20 +607,16 @@ def collect_host_facts(
     slice_path = _slice_path(config.control_plane_slice)
     control_path = cgroup_root / slice_path
     control_present = control_path.is_dir()
-    memory_min, memory_min_reason = _read_integer(control_path / "memory.min", "control-plane memory.min") if control_present else (None, "control-plane slice is absent")
     cpu_weight, cpu_weight_reason = _read_integer(control_path / "cpu.weight", "control-plane cpu.weight", minimum=1) if control_present else (None, "control-plane slice is absent")
     if service_memory_min_reader is None and root == DEFAULT_ROOT:
         service_memory_min_reader = _read_systemd_memory_min
     control: dict[str, Any] = {
         "slice": config.control_plane_slice,
         "present": control_present,
-        "memory_min_bytes": memory_min,
         "cpu_weight": cpu_weight,
         "profile_reserve_bytes": config.control_plane_profile_reserve_bytes,
         "service_memory_min": _service_memory_min_facts(service_memory_min_reader),
     }
-    if memory_min is None:
-        control["memory_min_bytes_reason"] = memory_min_reason
     if cpu_weight is None:
         control["cpu_weight_reason"] = cpu_weight_reason
 

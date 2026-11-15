@@ -49,8 +49,8 @@ are "host A/B".
     fixed reserve constant and report the missing units;
   - the default profile constant is 768 MiB, the former lower bound and above
     the measured 450–500 MB near-idle hot RSS on the two 8 GiB hosts;
-  - no reserve term depends on `MemTotal`, and the parent slice's `memory.min`
-    remains a reported protection fact rather than a reserve floor;
+  - no reserve term depends on `MemTotal`; fleetd does not collect the parent
+    slice's `memory.min`, because service properties supply the reserve;
   - older hosts without per-service facts use their profile constant, so the
     fleet can migrate as host setup installs service drop-ins without a flag
     day; calibrating each profile from measured p95 under load stays open.
@@ -67,7 +67,7 @@ are "host A/B".
 | D6 | **Wall time is extrapolated** from Geekbench single-core scores × a learned factor per host. It matters less than RAM. | §4.2 |
 | D7 | **RAM drives placement:** per-candidate RAM, per-host candidate lists, low/high mix, routing of big candidates to big hosts, and memory-crash retry on the biggest host. Expected charges are summed against `RAM for lanes × 1.5`, but a **single candidate is bounded by physical RAM**; PSI is the safety net. | §4.3, §4.4 |
 | D8 | **Named jobs + a progress-based deadline:** idempotent job names, re-adoption after a restart, a lost-host timeout, harmless duplicates (the merge manifest picks one record), and stall detection instead of a tight wall budget. No leases. | §3.9 |
-| D9 | The **guard** acts on memory PSI `full` only, and **never while useful lane CPU stays high** below the hard threshold. It freezes + reclaims the lane with the least progress per RAM and thaws when pressure stays low. Its rules live in a host-owned `/etc` file. The **control plane** is protected by `memory.min` and `cpu.weight`. | §3.6, §3.7 |
+| D9 | The **guard** acts on memory PSI `full` only, and **never while useful lane CPU stays high** below the hard threshold. It freezes + reclaims the lane with the least progress per RAM and thaws when pressure stays low. Its rules live in a host-owned `/etc` file. The **control plane** is protected by per-service `MemoryMin` values and `cpu.weight`. | §3.6, §3.7 |
 | D10 | **Preparation** overlaps plan, workspace setup and staging. Candidates start after the host-local baseline, which is measured once per host per campaign. | §3.10 |
 | D11 | **The controller host runs no fleet work in the MVP.** A locked-down small-lane runner comes later, on approval (WP9). | §3.8 |
 
@@ -183,7 +183,7 @@ are "host A/B".
  │ fleet-host-entry: probe | import | start-job | stop-job | fetch      │
  │ run-job <campaign>.<host>.<slot>.b<n> → run-gate campaign supervise   │
  │   → run-gate <lane> --only-candidates <batch> --merge-state <slot store>
- │ ctl.slice (memory.min, cpu.weight 10000): sshd, docker, containerd,   │
+ │ ctl.slice (cpu.weight 10000): sshd, docker, containerd,               │
  │   cockpit, cgprofiled(+guard), mdt-psi-guard, runner's user slice     │
  │ dev-gates.slice (cpu.weight 100): lane containers                     │
  └──────────────────────────────────────────────────────────────────────┘
@@ -221,7 +221,7 @@ not sit in a project, a devcontainer or an agent session (operator: option 3).
  "memory": {"total_bytes": …, "for_lanes_bytes": …, "swap_for_parking_bytes": …, "overcommit": 1.5},
  "ksm": {"run": 1, "advisor_mode": "…", "advisor_max_cpu": 8, "pages_sharing": …, "lane_optin_shim": true},
  "kernel_interfaces": {"cgroup_freeze": true, "memory_reclaim": true, "memory_reclaim_swappiness_arg": true},
- "control_plane": {"slice": "ctl.slice", "memory_min_bytes": …, "cpu_weight": 10000,
+ "control_plane": {"slice": "ctl.slice", "cpu_weight": 10000,
                    "profile_reserve_bytes": 805306368,
                    "service_memory_min": {"ssh.service": {"memory_min_bytes": …},
                      "docker.service": {"memory_min_bytes": …},
@@ -429,8 +429,10 @@ io_pressure = true               # io.pressure is logged, never a trigger
     the two 8 GiB hosts. This fallback is independent of installed RAM.
   - There is no flag day: old host facts without per-service values use the
     profile constant while host setup rolls out the service drop-ins. The
-    collector reports `ctl.slice/memory.min` and `cpu.weight` for the slice,
-    but the parent `memory.min` is never a floor under the service sum.
+    collector reports slice presence and `cpu.weight`, not parent
+    `ctl.slice/memory.min`. Older host facts may still contain
+    `control_plane.memory_min_bytes`; the contract accepts that legacy field
+    and the planner ignores it.
   - Calibration of the fixed profile constant from measured p95 under load
     remains open as FD-007b; no load measurement is inferred from near-idle
     RSS.
@@ -637,7 +639,8 @@ unit_seconds_ref = 95                # median wall seconds per unit at the REFER
 ### 4.3 Host RAM budget
 
 ```text
-P_h = memory.for_lanes_h − control_plane.memory_min_h          (PHYSICAL RAM for lanes, no overcommit)
+reserve_h = sum(service MemoryMin_h) when all six are positive; otherwise profile_reserve_h
+P_h = memory.for_lanes_h − reserve_h                            (PHYSICAL RAM for lanes, no overcommit)
 O_h = Σ expected charge of other running jobs + Σ instance_memory of this campaign's slots on h
 B_h = P_h × overcommit_h(1.5) − O_h          (budget for the SUM of many workers' expected peaks)
 W_h = worker slots = floor(cpu.for_lanes_h × oversubscribe_max_h) − running workers of other jobs
@@ -852,7 +855,7 @@ supervisor gets a fleet mode: progress-based relaunch and no attempt cap.
 | Candidate larger than any host's physical RAM for lanes | UNPLACEABLE, attention (overcommit never applies to a single candidate) |
 | Memory-crashed candidate | retried once, alone, on the biggest host |
 | Candidate too big for every host | UNPLACEABLE, attention |
-| Control plane starved | prevented by `ctl.slice` `memory.min` + `cpu.weight 10000` |
+| Control plane starved | prevented by per-service `MemoryMin` values + `cpu.weight 10000` |
 | Host reinstalled | `identity-changed`, re-enroll |
 
 ## 7. Operator decisions and open questions
@@ -882,7 +885,7 @@ supervisor gets a fleet mode: progress-based relaunch and no attempt cap.
     It does not act while useful CPU usage stays high. Its victim is the lane
     with the least progress per RAM, it thaws when pressure stays low, and it
     reads a configurable host-owned `/etc` file.
-    **Control-plane protection** uses `memory.min` + a high `cpu.weight`.
+    **Control-plane protection** uses per-service `MemoryMin` values + a high `cpu.weight`.
 14. KSM is host policy. Standing rules: CPU overcommit; PSI > 25 stops new
     work; tests are load-independent.
 
@@ -941,7 +944,7 @@ supervisor gets a fleet mode: progress-based relaunch and no attempt cap.
 - Guard and psi-guard facts come from `mdt-cockpit/host-setup/README.md:199-228`
   and `cgprofile/docs/RG55-INTERFACE-CONTRACT.md:549-660`. Enrollment facts
   come from `ciu/docs/CIU-HOST-ENROLLMENT-PROPOSAL.md`.
-- The `memory.min` default and the guard thresholds are proposals to be
-  measured in WP1 and WP6.
+- The fixed profile reserve still needs measured-p95 calibration under load
+  (FD-007b); service drop-ins are owned by host setup.
 - The KSM Run-Gate default (job ksm-default2) and ksmd tuning are in-flight
   work reported by the coordinator, not verified here.

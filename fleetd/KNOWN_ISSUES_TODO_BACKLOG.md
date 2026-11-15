@@ -75,8 +75,8 @@ the plan's wave proof as an execution guarantee.
 
 **State:** OPEN. **Priority:** P1. **Filed:** 2026-11-13.
 
-WP1(a) reports physical lane memory and control-plane `memory.min`, while WP2
-computes `B_h = P_h × overcommit − O_h` as specified in the compute-host
+WP1(a) reports physical lane memory and per-service control-plane `MemoryMin`,
+while WP2 computes `B_h = P_h × overcommit − O_h` as specified in the compute-host
 design. The facts do not include the host-owned `dev-gates.slice` `memory.max`
 ceiling, so the planner cannot report when its estimate exceeds that execution
 limit. The design lists slice `MemoryMax` as a downstream safety net; this MVP
@@ -122,8 +122,9 @@ missing service units. The compatibility profile constant is 768 MiB, the
 former lower bound and above the measured 450–500 MB near-idle hot RSS on the
 two 8 GiB hosts (2026-11-14). No reserve term depends on installed RAM.
 
-`ctl.slice/memory.min` remains a reported protection fact but is not a reserve
-floor. Fleetd emits `reserve_bytes`, `reserve_source`, and
+The collector does not read parent `ctl.slice/memory.min`; older facts may
+contain that field, which is accepted for compatibility and ignored. Fleetd
+emits `reserve_bytes`, `reserve_source`, and
 `reserve_missing_services` in plan and campaign status output. Old host facts
 without the new service values use their profile constant, allowing host
 setup's per-service drop-ins to roll out without a flag day. This close covers

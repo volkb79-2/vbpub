@@ -820,7 +820,7 @@ def test_reserve_does_not_change_with_tiny_or_huge_ram(total_bytes):
     )
 
 
-def test_parent_slice_memory_min_is_reported_but_never_floors_service_sum():
+def test_legacy_parent_slice_memory_min_is_ignored_by_service_sum():
     host_set = _hosts()
     facts = _facts(host_set, "host-small")
     control = facts["control_plane"]

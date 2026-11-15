@@ -80,6 +80,10 @@ def test_host_facts_fixture_is_typed_and_preserved():
         (lambda data: data["control_plane"].update(present="yes"), "control_plane.present: expected boolean"),
         (lambda data: data["control_plane"].update(cpu_weight=0), "cpu_weight: must be at least 1"),
         (lambda data: data["control_plane"].update(profile_reserve_bytes=True), "profile_reserve_bytes: expected integer"),
+        (
+            lambda data: (data["control_plane"].pop("memory_min_bytes"), data["control_plane"].update(memory_min_bytes_reason="stale")),
+            "memory_min_bytes_reason: only allowed when memory_min_bytes is null",
+        ),
         (lambda data: data["control_plane"].update(service_memory_min={}), "service_memory_min: missing field.*cgprofiled.service"),
         (lambda data: data["guard"].update(enabled=None), "null requires enabled_reason"),
         (lambda data: data["policy"].update(psi_refuse_some_avg10=101), "psi_refuse_some_avg10: must be at most 100"),

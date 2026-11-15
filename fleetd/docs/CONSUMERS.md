@@ -47,7 +47,7 @@ host-owned `HOST_ROLE` setting. `max_lane_containers`, `guard_state`, and
 `ksm_optin_shim` may be omitted; their facts stay `null` with a reason. The
 collector reads guard config plus lexically ordered `.toml` drop-ins for its
 digest and effective `enabled` value. It reports but does not apply guard
-rules. It reads cgroup v2 controllers, the configured slice's `memory.min` and
+rules. It reads cgroup v2 controllers, configured slice presence and
 `cpu.weight`, PSI avg10, swap counters, and KSM sysfs values. It also reads
 `MemoryMin` for the fixed, bounded `CONTROL_PLANE_SERVICE_UNITS` list in
 `fleetd.contracts` with `systemctl show -p MemoryMin`. A fixture root does not
@@ -57,8 +57,9 @@ is raw `MemTotal`. Planning sums the service values only if every listed unit
 reports a positive value; otherwise it uses the per-profile fixed constant and
 reports `reserve_source = "profile-constant"` plus `reserve_missing_services`.
 When every unit reports, `reserve_source = "service-memory-min"` and the
-reserve is their sum. The parent slice's `memory.min` remains visible as a
-protection fact, but is never a floor under the reserve. KSM
+reserve is their sum. The collector does not read the parent slice's
+`memory.min`; older host facts may carry `control_plane.memory_min_bytes`, which
+the contract accepts for compatibility and the planner ignores. KSM
 swappiness-argument support is unknown because the collector makes no write
 probe.
 
@@ -288,8 +289,7 @@ The host arithmetic uses the sum of all positive service `memory_min_bytes`
 values when the complete fixed service list is present. If a service is
 missing, zero, or `infinity`, it uses that host's fixed profile constant
 (768 MiB when the host config has no override); partial sums are never used.
-The parent `control_plane.memory_min_bytes` remains a reported fact and is not
-a reserve floor. The
+The legacy parent `control_plane.memory_min_bytes` is accepted but ignored.
 `P = memory.for_lanes_bytes - reserve_h`, O = other running charges + one
 campaign instance's `instance_memory`, and B = P × overcommit - O. Each host
 plan and campaign status record `reserve_bytes`, `reserve_source`, and

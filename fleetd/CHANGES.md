@@ -57,9 +57,9 @@ All notable changes to this project are recorded here.
 - File FD-004 for the missing host-owned `dev-gates.slice` memory ceiling fact.
 - Replace the rejected RAM-proportional control-plane reserve with the sum of
   all six positive per-service `MemoryMin` facts, or the host profile's fixed
-  constant when any service is missing. Keep the parent slice's `memory.min`
-  as a reported fact, never as a floor; expose reserve source and missing units
-  in plans and campaign status.
+  constant when any service is missing. Stop collecting parent-slice
+  `memory.min`; accept it only as a legacy input field and ignore it. Expose
+  reserve source and missing units in plans and campaign status.
 - Test complete and partial reports, zero/infinity/unset parsing, profile
   fallback, RAM-independent reserve values, capacity and refusal changes, and
   reserve-driven lost-host placement. Retain the deterministic CLI golden plan

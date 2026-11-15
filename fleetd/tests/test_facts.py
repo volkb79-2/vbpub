@@ -79,7 +79,7 @@ def test_facts_collector_reads_only_injected_root_and_emits_design_facts():
     }
     assert facts["control_plane"] == {
         "slice": "ctl.slice", "present": True,
-        "memory_min_bytes": 805306368, "cpu_weight": 10000,
+        "cpu_weight": 10000,
         "profile_reserve_bytes": DEFAULT_CONTROL_PLANE_PROFILE_RESERVE_BYTES,
         "service_memory_min": {
             unit: {
@@ -410,7 +410,7 @@ def test_facts_collector_keeps_unknowns_reasoned_and_does_not_guess(tmp_path):
     assert facts["cgroup_v2"]["mounted"] is False
     assert facts["cgroup_v2"]["controllers"] is None
     assert facts["control_plane"]["present"] is False
-    assert facts["control_plane"]["memory_min_bytes"] is None
+    assert "memory_min_bytes" not in facts["control_plane"]
     assert facts["kernel_interfaces"]["memory_reclaim"] is None
     assert facts["ksm"]["run"] is None and facts["ksm"]["run_reason"]
 
@@ -477,13 +477,12 @@ def test_control_plane_slice_path_supports_nested_systemd_slices(tmp_path):
     config_path.write_text(text, encoding="utf-8")
     parent = root / "sys/fs/cgroup/dev.slice/dev-background.slice"
     parent.mkdir(parents=True)
-    (parent / "memory.min").write_text("1048576", encoding="utf-8")
     (parent / "cpu.weight").write_text("200", encoding="utf-8")
     (parent / "cgroup.freeze").write_text("0", encoding="utf-8")
     facts = collect_host_facts(root)
     assert facts["control_plane"]["present"] is True
-    assert facts["control_plane"]["memory_min_bytes"] == 1048576
     assert facts["control_plane"]["cpu_weight"] == 200
+    assert "memory_min_bytes" not in facts["control_plane"]
 
 
 def test_service_memory_min_facts_use_the_bounded_unit_list_and_injected_reader(tmp_path):

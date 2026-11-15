@@ -410,15 +410,20 @@ def validate_host_facts(value: object) -> HostFacts:
     })
     control = _object(
         root["control_plane"], "host-facts/1.control_plane",
-        {"slice", "present", "memory_min_bytes", "cpu_weight"},
+        {"slice", "present", "cpu_weight"},
         {
-            "memory_min_bytes_reason", "cpu_weight_reason",
+            "memory_min_bytes", "memory_min_bytes_reason", "cpu_weight_reason",
             "profile_reserve_bytes", "service_memory_min",
         },
     )
     _string(control["slice"], "host-facts/1.control_plane.slice")
     _boolean(control["present"], "host-facts/1.control_plane.present")
-    _nullable_int(control, "memory_min_bytes", "host-facts/1.control_plane", minimum=0)
+    if "memory_min_bytes" in control:
+        _nullable_int(control, "memory_min_bytes", "host-facts/1.control_plane", minimum=0)
+    elif "memory_min_bytes_reason" in control:
+        raise ContractError(
+            "host-facts/1.control_plane.memory_min_bytes_reason: only allowed when memory_min_bytes is null"
+        )
     _nullable_int(control, "cpu_weight", "host-facts/1.control_plane", minimum=1)
     if "profile_reserve_bytes" in control:
         _integer(
