@@ -107,6 +107,23 @@ let decoded = decode_block(&bytes)?;          // the same typed block, or one ty
 panics on untrusted bytes, never returns a partial result, and reports an unknown optional
 section in `skipped_sections` while refusing an unknown required one.
 
+The refusals a producer will meet while assembling blocks, with their `kind()` names:
+
+| Condition | Refusal |
+|---|---|
+| the dictionary body repeats one identity (an `inc`, a metric name, a label, free text) | `duplicate-dictionary-entry` |
+| a metric entry's aggregation mask is not the mask its kind derives | `dictionary-entry-mask` |
+| a row names a dictionary entry that is not an incarnation | `row-reference-not-entity` |
+| a column names a dictionary entry that is not a metric | `column-reference-not-metric` |
+| a column's kind contradicts the dictionary's metric facts | `column-kind-mismatch` |
+| a non-zero row count with neither a rows nor a time section | `no-rows-or-time` |
+| both a rows and a time section, even when both are empty | `rows-and-time` |
+
+A dictionary body is reproduced position for position: `Dictionary::decode` refuses a
+repeated identity instead of merging it, because merging would shift every later index away
+from the sender's numbering. Use `Dictionary::encode_with` to write an exact list of entries
+when a test needs to express a wire list a live table would never build.
+
 ## Changing a Rust dependency
 
 Changing a Rust dependency or `Cargo.lock` requires rebuilding `tester-unified-rust`

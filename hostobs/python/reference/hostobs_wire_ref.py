@@ -205,12 +205,29 @@ def encode_dictionary(dictionary: dict) -> bytes:
     return body + b"\x00" * (_align8(len(body)) - len(body))
 
 
+def _entry_identity(entry: dict) -> tuple:
+    """The identity a dictionary entry is unique by, matching the Rust `Entry::key`.
+
+    An entity's identity is its incarnation (its label is not identity, plan v4 C.1);
+    a metric's is its name; a label's is kind+source+text; a free entry's is its text.
+    """
+    kind = entry["kind"]
+    if kind == "entity":
+        return ("entity", entry["inc"])
+    if kind == "metric":
+        return ("metric", entry["text"])
+    if kind == "label":
+        return ("label", entry["label_kind"], entry["label_source"], entry["text"])
+    return ("free", entry["text"])
+
+
 def decode_dictionary(body: bytes) -> dict:
     if len(body) < 8:
         raise WireError("truncated", context="dictionary section", need=8, have=len(body))
     generation, count = struct.unpack_from("<II", body, 0)
     offset = 8
     entries = []
+    seen_identities: list[object] = []
     for index in range(count):
         kind_code, flags, length = struct.unpack_from("<BBH", body, offset)
         offset += 4
@@ -239,7 +256,12 @@ def decode_dictionary(body: bytes) -> dict:
                 "source": SOURCES_BY_CODE[source],
             }
             if mask != AGGREGATION_MASKS[COLUMN_KINDS_BY_CODE[kind]]:
-                raise WireError("dictionary-entry-unknown-code", index=index, code=kind)
+                raise WireError(
+                    "dictionary-entry-mask",
+                    index=index,
+                    mask=mask,
+                    expected=AGGREGATION_MASKS[COLUMN_KINDS_BY_CODE[kind]],
+                )
         elif kind_code == DICTIONARY_KINDS["label"]:
             label_kind, label_source = struct.unpack_from("<BB", body, offset)
             offset += 2
@@ -247,6 +269,13 @@ def decode_dictionary(body: bytes) -> dict:
             entry["label_source"] = label_source
         entry["text"] = body[offset : offset + length].decode("utf-8", errors="strict")
         offset += length
+        # A wire list is the sender's numbering: entry `index` must be at index `index`.
+        # A repeated identity is a corrupt frame, not a list to de-duplicate, because
+        # de-duplicating would shift every later index away from what the sender wrote.
+        identity = _entry_identity(entry)
+        if identity in seen_identities:
+            raise WireError("duplicate-dictionary-entry", index=index)
+        seen_identities.append(identity)
         entries.append(entry)
     end = _align8(offset)
     pad = body[offset:end]
@@ -481,6 +510,8 @@ def decode_frame(data: bytes) -> dict:
     }
     n_rows = header["n_rows"]
     seen = set()
+    saw_rows = False
+    saw_time = False
     for (kind, _version, _flags, _body_len), body in zip(directory, bodies, strict=True):
         if kind not in SECTION_KINDS_BY_CODE:
             continue
@@ -492,8 +523,10 @@ def decode_frame(data: bytes) -> dict:
         if name == "header":
             continue
         if name == "rows":
+            saw_rows = True
             frame["rows"] = decode_rows(body, n_rows)
         elif name == "time":
+            saw_time = True
             frame["time"] = decode_time(body, n_rows)
         elif name == "columns":
             column = decode_column(body, n_rows)
@@ -502,18 +535,38 @@ def decode_frame(data: bytes) -> dict:
             frame["columns"].append(column)
         elif name == "dictionary":
             frame["dictionary"] = decode_dictionary(body)
-    if frame["rows"] and frame["time"]:
+    # Rows and buckets are exclusive by PRESENCE: a block carrying both sections is refused
+    # even when both are empty, so the two layouts can never be mixed by accident.
+    if saw_rows and saw_time:
         raise WireError("rows-and-time", rows=len(frame["rows"]), buckets=len(frame["time"]))
+    # Values with neither an entity nor a bucket have no place in a block.
+    if n_rows > 0 and not saw_rows and not saw_time:
+        raise WireError("no-rows-or-time", n_rows=n_rows)
     dictionary = frame.get("dictionary")
     if dictionary is not None:
         if dictionary["generation"] != header["dict_gen"]:
             raise WireError("stale-dictionary-generation", needed=header["dict_gen"], held=dictionary["generation"])
+        entries = dictionary["entries"]
+        # A row addresses an incarnation and a column a metric: a reference of the right
+        # range but the wrong entry kind would make a consumer read text as an id.
         for row in frame["rows"]:
-            if row["ent"] >= len(dictionary["entries"]):
-                raise WireError("dangling-dictionary-ref", index=row["ent"], entries=len(dictionary["entries"]))
+            if row["ent"] >= len(entries):
+                raise WireError("dangling-dictionary-ref", index=row["ent"], entries=len(entries))
+            if entries[row["ent"]]["kind"] != "entity":
+                raise WireError("row-reference-not-entity", index=row["ent"])
         for column in frame["columns"]:
-            if column["metric"] >= len(dictionary["entries"]):
-                raise WireError("dangling-dictionary-ref", index=column["metric"], entries=len(dictionary["entries"]))
+            if column["metric"] >= len(entries):
+                raise WireError("dangling-dictionary-ref", index=column["metric"], entries=len(entries))
+            facts = entries[column["metric"]].get("facts")
+            if facts is None:
+                raise WireError("column-reference-not-metric", index=column["metric"])
+            if facts["kind"] != column["kind"]:
+                raise WireError(
+                    "column-kind-mismatch",
+                    index=column["metric"],
+                    declared=COLUMN_KINDS[column["kind"]],
+                    dictionary=COLUMN_KINDS[facts["kind"]],
+                )
     return frame
 
 

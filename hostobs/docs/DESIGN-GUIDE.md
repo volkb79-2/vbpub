@@ -102,6 +102,35 @@ interval → `not-sampled`; reversed interval → `stale`; reset → `reset`; a 
 propagates its own code; a value of the wrong type → `unsupported` (a caller defect
 visible in the quality column instead of a panic).
 
+## Dictionary decoding: the wire list is the sender's numbering
+
+`Dictionary::intern` de-duplicates and re-labels, which is correct for a *live* table
+(plan v4 §C.1: an incarnation's label is not its identity, so a rename keeps the entry and
+its index) and wrong for a *wire* body. `decode` therefore never trusts `intern`'s index: it
+checks that the entry it just interned came back at the position the sender wrote it and
+refuses with `duplicate-dictionary-entry` otherwise. Deduplicating instead would shorten the
+table and shift every later index, which is precisely the meaning change §B.3 forbids, and
+would make the two decoders disagree with no fixture to catch it.
+
+The aggregation mask is treated the same way: it is **derived** from the metric kind, so the
+decoder requires equality, not "no extra bits". A strict subset used to decode and then be
+re-widened by `encode`, which silently discarded the sender's restriction; a subset is now
+`dictionary-entry-mask`.
+
+A reference is also checked for **kind**, not only for range: a row must name an
+incarnation, a column a metric, and a column's declared arithmetic kind must agree with the
+dictionary's facts. Range alone would let a consumer print a metric name as a cgroup, or
+aggregate a gauge by counter rules, while every individual field looked valid.
+
+Finally, the block's shape rules are about **presence**, not about counts: rows and time
+sections are mutually exclusive even when both are empty, and a non-zero row count with
+neither section is `no-rows-or-time` on both the encode and the decode path. There is no
+"rowless host-scope block" in this codec: values that carry neither an entity nor a bucket
+cannot be addressed, so inventing a layout for them would be a new mode with no specification
+behind it. If a later package needs host-scope values that are not per-incarnation, that is
+a deliberate schema addition (a new section kind with its own fixture), not a relaxation of
+this rule.
+
 ## Cross-language conformance without a shared type
 
 `fixtures/wire/*.bin` are canonical bytes and `*.json` their decoded typed values.

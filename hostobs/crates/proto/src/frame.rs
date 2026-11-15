@@ -60,7 +60,7 @@
 //! A block carries rows **or** time buckets; both at once, or columns for a row count
 //! nobody declared, are refused.
 
-use crate::dict::{Aggregation, Dictionary, MetricKind, MetricValueType};
+use crate::dict::{Aggregation, Dictionary, Entry, MetricKind, MetricValueType};
 use crate::error::{ProtoError, MAX_FRAME_BYTES};
 use crate::quality::Quality;
 use crate::read::Cursor;
@@ -383,14 +383,17 @@ impl Column {
     /// [`ProtoError::Truncated`] for a row that does not exist and
     /// [`ProtoError::UnknownQuality`] for a quality byte outside the closed table.
     pub fn sample(&self, row: usize) -> Result<SampleRow, ProtoError> {
+        // `row` is caller-supplied: `row + 1` could overflow at `usize::MAX`, so the
+        // reported need is computed checked and the lookup is a `get`, never an index.
+        let need = row.checked_add(1).ok_or(ProtoError::LengthOverflow)?;
         let raw = *self.values.get(row).ok_or(ProtoError::Truncated {
             context: "column values",
-            need: row + 1,
+            need,
             have: self.values.len(),
         })?;
         let code = *self.quality.get(row).ok_or(ProtoError::Truncated {
             context: "column quality",
-            need: row + 1,
+            need,
             have: self.quality.len(),
         })?;
         let quality = Quality::from_code(code, row)?;
@@ -820,6 +823,13 @@ pub fn encode_block(block: &Block) -> Result<Vec<u8>, ProtoError> {
         });
     }
     let n_rows = usize::try_from(block.header.n_rows).map_err(|_| ProtoError::LengthOverflow)?;
+    // The encoder refuses the shape the decoder refuses: values with no entity and no bucket
+    // have no place in a block, so a non-zero row count requires one of the two sections.
+    if n_rows > 0 && block.rows.is_empty() && block.time.is_empty() {
+        return Err(ProtoError::NoRowsOrTime {
+            n_rows: block.header.n_rows,
+        });
+    }
     if !block.rows.is_empty() && block.rows.len() != n_rows {
         return Err(ProtoError::SectionLength {
             kind: SectionKind::Rows.code(),
@@ -990,7 +1000,14 @@ pub fn decode_block(bytes: &[u8]) -> Result<Block, ProtoError> {
             kind: SectionKind::Header.code(),
         });
     }
-    let mut cursor = Cursor::new(&bytes[FRAME_HEADER_LEN..], "block directory");
+    // `FrameHeader::parse` has already consumed these bytes, so the slice exists; using
+    // `.get(..)` keeps the crate's "no indexing on untrusted input" rule literal.
+    let directory_bytes = bytes.get(FRAME_HEADER_LEN..).ok_or(ProtoError::Truncated {
+        context: "frame",
+        need: FRAME_HEADER_LEN,
+        have: bytes.len(),
+    })?;
+    let mut cursor = Cursor::new(directory_bytes, "block directory");
     let n_sec = cursor.u16()?;
     let reserved = cursor.u16()?;
     if reserved != 0 {
@@ -1081,6 +1098,8 @@ pub fn decode_block(bytes: &[u8]) -> Result<Block, ProtoError> {
     let mut columns: Vec<Column> = Vec::new();
     let mut dictionary: Option<Dictionary> = None;
     let mut seen_single: Vec<UnknownSectionKind> = Vec::new();
+    let mut saw_rows = false;
+    let mut saw_time = false;
     for ((kind, _version, flags, _len), body) in directory.iter().zip(bodies.iter()) {
         let Some(section) = SectionKind::from_code(*kind) else {
             continue;
@@ -1096,8 +1115,14 @@ pub fn decode_block(bytes: &[u8]) -> Result<Block, ProtoError> {
         let _ = *flags;
         match section {
             SectionKind::Header => {}
-            SectionKind::Rows => rows = decode_rows_body(body, n_rows)?,
-            SectionKind::Time => time = decode_time_body(body, n_rows)?,
+            SectionKind::Rows => {
+                saw_rows = true;
+                rows = decode_rows_body(body, n_rows)?;
+            }
+            SectionKind::Time => {
+                saw_time = true;
+                time = decode_time_body(body, n_rows)?;
+            }
             SectionKind::Column => {
                 let column = decode_column_body(body, n_rows)?;
                 if columns
@@ -1115,19 +1140,53 @@ pub fn decode_block(bytes: &[u8]) -> Result<Block, ProtoError> {
             }
         }
     }
-    if !rows.is_empty() && !time.is_empty() {
+    // Rows and buckets are exclusive by presence, not by count: a block carrying both
+    // sections is refused even when both are empty (that is the n_rows == 0 case), so the
+    // two layouts can never be mixed by accident.
+    if saw_rows && saw_time {
         return Err(ProtoError::RowsAndTime {
             rows: rows.len(),
             buckets: time.len(),
         });
     }
+    // Values without an entity or a bucket have no place in a block: a declared row count
+    // with neither section would hand the consumer eight-byte values it cannot address.
+    if n_rows > 0 && !saw_rows && !saw_time {
+        return Err(ProtoError::NoRowsOrTime {
+            n_rows: header.n_rows,
+        });
+    }
     if let Some(table) = &dictionary {
         table.require_generation(header.dict_gen)?;
+        // A row addresses an incarnation and a column addresses a metric. A reference of
+        // the right range but the wrong entry kind would make a consumer read a label's
+        // text as a cgroup id or a metric's facts as a path, so the kind is checked too.
         for row in &rows {
-            table.lookup(row.ent)?;
+            match table.lookup(row.ent)? {
+                Entry::Entity { .. } => {}
+                _ => return Err(ProtoError::RowReferenceNotEntity { index: row.ent }),
+            }
         }
         for column in &columns {
-            table.lookup(column.metric)?;
+            match table.lookup(column.metric)? {
+                Entry::Metric { facts, .. } => {
+                    // The column header and the dictionary both declare the arithmetic kind.
+                    // They must agree: a consumer aggregates by one of them, and a
+                    // disagreement silently picks whichever it trusts.
+                    if column.kind != facts.kind {
+                        return Err(ProtoError::ColumnKindMismatch {
+                            index: column.metric,
+                            declared: column.kind as u8,
+                            dictionary: facts.kind as u8,
+                        });
+                    }
+                }
+                _ => {
+                    return Err(ProtoError::ColumnReferenceNotMetric {
+                        index: column.metric,
+                    })
+                }
+            }
         }
     }
     Ok(Block {
@@ -1296,6 +1355,27 @@ mod tests {
                 context: "column values",
                 need: 3,
                 have: 2
+            })
+        );
+    }
+
+    #[test]
+    fn a_row_index_past_the_end_is_refused_without_arithmetic_overflow() {
+        // `row` is caller-supplied, so `row + 1` must not overflow: at usize::MAX the
+        // reported need is a typed length refusal, not a panic in debug or a wrap in release.
+        let block = live_block();
+        let column = &block.columns[0];
+        assert_eq!(
+            column.sample(usize::MAX),
+            Err(ProtoError::LengthOverflow),
+            "the row index itself is out of range before any addition"
+        );
+        assert_eq!(
+            column.sample(2).map(|sample| sample.value),
+            Err(ProtoError::Truncated {
+                context: "column values",
+                need: 3,
+                have: 2,
             })
         );
     }
@@ -1532,10 +1612,34 @@ mod tests {
         );
         let mut block = live_block();
         block.rows = Vec::new();
+        assert_eq!(
+            encode_block(&block),
+            Err(ProtoError::NoRowsOrTime { n_rows: 2 }),
+            "values without an entity or a bucket are refused, never encoded rowless"
+        );
+        block.header.n_rows = 0;
+        block.columns = Vec::new();
         assert!(
             encode_block(&block).is_ok(),
-            "a block without rows has no rows section"
+            "a zero-row block (the empty selection) needs no rows section"
         );
+        // A row-count disagreement with a column is still reported as that disagreement;
+        // the rowless-shape rule is about a block with NO rows section at all.
+        block = live_block();
+        block.rows = vec![
+            Row {
+                ent: 0,
+                t_off_us: 0,
+            },
+            Row {
+                ent: 1,
+                t_off_us: 1,
+            },
+            Row {
+                ent: 0,
+                t_off_us: 2,
+            },
+        ];
         block.header.n_rows = 3;
         assert_eq!(
             encode_block(&block),
@@ -1806,7 +1910,10 @@ mod tests {
         // The bound is inclusive ("max frame 16 MiB"): a frame that declares exactly
         // MAX_FRAME_BYTES is legal, one byte more is not. Without this case an off-by-one
         // in the comparison is invisible.
-        let block = live_block();
+        // A block with zero rows is the legal "empty selection": the size bound is a
+        // property of the frame layout, not of how many rows it carries.
+        let mut block = live_block();
+        block.header.n_rows = 0;
         let header = Section::new(
             SectionKind::Header,
             super::encode_header_body(&block.header),
@@ -2224,6 +2331,175 @@ mod tests {
         assert_eq!(
             decode_block(&encode_block(&block).expect("encode")),
             Err(ProtoError::DanglingDictionaryRef { index: 40, len: 4 })
+        );
+    }
+
+    #[test]
+    fn a_reference_of_the_right_range_but_the_wrong_entry_kind_is_refused() {
+        // Range is not consistency: a row must name an incarnation and a column a metric.
+        // A row pointing at a *metric* entry would make a consumer print a metric name as
+        // a cgroup, and a column pointing at an *entity* would do the reverse.
+        let mut block = live_block();
+        block.rows[0].ent = 2; // dictionary entry 2 is the cpu.usage_usec metric
+        assert_eq!(
+            decode_block(&encode_block(&block).expect("encode")),
+            Err(ProtoError::RowReferenceNotEntity { index: 2 })
+        );
+        let mut block = live_block();
+        block.columns[0].metric = 0; // dictionary entry 0 is an incarnation
+        assert_eq!(
+            decode_block(&encode_block(&block).expect("encode")),
+            Err(ProtoError::ColumnReferenceNotMetric { index: 0 })
+        );
+        // A label entry is neither an incarnation nor a metric.
+        let mut block = live_block();
+        let mut dictionary = block.dictionary.clone().expect("dictionary");
+        dictionary
+            .intern(Entry::Label {
+                kind: 1,
+                source: 1,
+                text: "web".into(),
+            })
+            .expect("intern");
+        block.dictionary = Some(dictionary);
+        block.rows[0].ent = 4;
+        assert_eq!(
+            decode_block(&encode_block(&block).expect("encode")),
+            Err(ProtoError::RowReferenceNotEntity { index: 4 })
+        );
+    }
+
+    #[test]
+    fn a_column_kind_that_contradicts_the_dictionary_is_refused() {
+        // The column header and the dictionary both declare the arithmetic kind. A consumer
+        // aggregates by whichever it trusts, so a disagreement is refused rather than
+        // silently resolved in favour of one of them.
+        let mut block = live_block();
+        block.columns[0].kind = MetricKind::Gauge; // the dictionary says counter
+        assert_eq!(
+            decode_block(&encode_block(&block).expect("encode")),
+            Err(ProtoError::ColumnKindMismatch {
+                index: 2,
+                declared: MetricKind::Gauge as u8,
+                dictionary: MetricKind::Counter as u8,
+            })
+        );
+        // The reverse direction is refused too (a counter column for a gauge metric).
+        let mut block = live_block();
+        block.columns[1].kind = MetricKind::Counter;
+        assert_eq!(
+            decode_block(&encode_block(&block).expect("encode")),
+            Err(ProtoError::ColumnKindMismatch {
+                index: 3,
+                declared: MetricKind::Counter as u8,
+                dictionary: MetricKind::Gauge as u8,
+            })
+        );
+    }
+
+    #[test]
+    fn a_non_zero_row_count_needs_a_rows_or_a_time_section() {
+        // Three declared rows and neither section: the values cannot be addressed, so the
+        // shape is refused in both directions (encoder and decoder).
+        let block = live_block();
+        let header = Section::new(
+            SectionKind::Header,
+            super::encode_header_body(&block.header),
+        );
+        let column = Section::new(
+            SectionKind::Column,
+            super::encode_column_body(&block.columns[0]).expect("column"),
+        );
+        let bytes = encode_frame(FrameType::Block, 1, &[header, column]).expect("encode");
+        assert_eq!(
+            decode_block(&bytes),
+            Err(ProtoError::NoRowsOrTime { n_rows: 2 })
+        );
+        let mut block = live_block();
+        block.rows = Vec::new();
+        assert_eq!(
+            encode_block(&block),
+            Err(ProtoError::NoRowsOrTime { n_rows: 2 })
+        );
+        // One row is the smallest declared count that still needs an address: the bound is
+        // `> 0`, not `> 1`, so a single row without a section is refused too.
+        let block = live_block();
+        let mut single = block.clone();
+        single.header.n_rows = 1;
+        single.rows = Vec::new();
+        single.columns = vec![Column::new(
+            2,
+            MetricValueType::U64,
+            MetricKind::Counter,
+            vec![1],
+            vec![Quality::Ok.code()],
+        )
+        .expect("column")];
+        assert_eq!(
+            encode_block(&single),
+            Err(ProtoError::NoRowsOrTime { n_rows: 1 })
+        );
+
+        // ...and the decoder refuses the same single row without a section, so the bound
+        // is enforced on both sides and not only in `encode_block`.
+        let mut single_block = live_block();
+        single_block.header.n_rows = 1;
+        let header = Section::new(
+            SectionKind::Header,
+            super::encode_header_body(&single_block.header),
+        );
+        let column = Section::new(
+            SectionKind::Column,
+            super::encode_column_body(
+                &Column::new(
+                    2,
+                    MetricValueType::U64,
+                    MetricKind::Counter,
+                    vec![1],
+                    vec![Quality::Ok.code()],
+                )
+                .expect("column"),
+            )
+            .expect("column"),
+        );
+        let bytes = encode_frame(FrameType::Block, 1, &[header, column]).expect("encode");
+        assert_eq!(
+            decode_block(&bytes),
+            Err(ProtoError::NoRowsOrTime { n_rows: 1 })
+        );
+
+        // A zero-row block is the empty selection and needs neither section.
+        let mut block = live_block();
+        block.header.n_rows = 0;
+        block.rows = Vec::new();
+        block.columns = Vec::new();
+        assert!(encode_block(&block).is_ok(), "the empty selection is legal");
+    }
+
+    #[test]
+    fn rows_and_buckets_are_exclusive_by_presence_even_when_empty() {
+        // With n_rows == 0 the count-based check cannot fire, so the exclusivity rule is
+        // presence-based: a block carrying both sections is refused even when both are empty.
+        let mut block = live_block();
+        block.header.n_rows = 0;
+        block.rows = Vec::new();
+        let empty_buckets: Vec<TimeBucket> = Vec::new();
+        let header = Section::new(
+            SectionKind::Header,
+            super::encode_header_body(&block.header),
+        );
+        let rows = Section::new(SectionKind::Rows, super::encode_rows_body(&block.rows));
+        let time = Section::new(
+            SectionKind::Time,
+            super::encode_time_body(&empty_buckets).expect("time"),
+        );
+        let bytes = encode_frame(FrameType::Block, 1, &[header, rows, time]).expect("encode");
+        assert_eq!(
+            decode_block(&bytes),
+            Err(ProtoError::RowsAndTime {
+                rows: 0,
+                buckets: 0
+            })
         );
     }
 

@@ -375,6 +375,63 @@ def column_reserved_frame() -> dict:
     return frame
 
 
+def duplicate_dictionary_frame() -> dict:
+    """Two entries whose identity is the same incarnation: the wire index would shift."""
+    frame = live_frame()
+    frame["corr"] = 30
+    frame["dictionary"] = {
+        "generation": 1,
+        "entries": [
+            {"kind": "entity", "inc": 11, "text": "/system.slice"},
+            {"kind": "entity", "inc": 11, "text": "/renamed"},
+            {"kind": "metric", "text": "cpu.usage_usec", "facts": METRIC_FACTS["cpu_usage"]},
+            {"kind": "metric", "text": "mem.current", "facts": METRIC_FACTS["mem_current"]},
+        ],
+    }
+    return frame
+
+
+def bad_metric_mask_frame() -> dict:
+    frame = live_frame()
+    frame["corr"] = 31
+    return frame
+
+
+def row_references_metric_frame() -> dict:
+    frame = live_frame()
+    frame["corr"] = 32
+    return frame
+
+
+def column_references_entity_frame() -> dict:
+    frame = live_frame()
+    frame["corr"] = 33
+    return frame
+
+
+def column_kind_mismatch_frame() -> dict:
+    frame = live_frame()
+    frame["corr"] = 34
+    return frame
+
+
+def no_rows_or_time_frame() -> dict:
+    """Three declared rows but neither a rows nor a time section."""
+    frame = live_frame()
+    frame["corr"] = 35
+    frame["sections"] = ["header", "dictionary", "columns"]
+    frame["rows"] = []
+    return frame
+
+
+def empty_rows_and_time_frame() -> dict:
+    """n_rows == 0 with BOTH sections present (and empty): exclusivity is by presence."""
+    frame = empty_frame()
+    frame["corr"] = 36
+    frame["sections"] = ["header", "dictionary", "rows", "time"]
+    return frame
+
+
 def patch(data: bytes, offset: int, replacement: bytes) -> bytes:
     return data[:offset] + replacement + data[offset + len(replacement) :]
 
@@ -389,6 +446,17 @@ def body_offset(data: bytes, index: int) -> int:
     for position in range(index):
         start += struct.unpack_from("<I", data, directory_offset(data, position) + 4)[0]
     return start
+
+
+def dictionary_entry_offset(data: bytes, entry_index: int) -> int:
+    """The body offset of dictionary entry `entry_index` (its kind byte)."""
+    start = body_offset(data, section_index(data, "dictionary")) + 8
+    offset = start
+    for index in range(entry_index):
+        kind_code, _flags, length = struct.unpack_from("<BBH", data, offset)
+        fixed = {0: 8, 1: 6, 2: 2, 3: 0}[kind_code]
+        offset += 4 + fixed + length
+    return offset
 
 
 def section_index(data: bytes, kind_name: str) -> int:
@@ -462,6 +530,48 @@ CASES: list[tuple[str, dict, list[tuple[int, bytes]] | None, dict | None]] = [
         "column-reserved",
         {"kind": "column-reserved", "metric": 2, "pad": 1},
     ),
+    (
+        "duplicate-dictionary-entry",
+        duplicate_dictionary_frame(),
+        None,
+        {"kind": "duplicate-dictionary-entry", "index": 1},
+    ),
+    (
+        "bad-metric-mask",
+        bad_metric_mask_frame(),
+        "bad-metric-mask",
+        {"kind": "dictionary-entry-mask", "index": 2, "mask": 0, "expected": 7},
+    ),
+    (
+        "row-references-metric",
+        row_references_metric_frame(),
+        "row-references-metric",
+        {"kind": "row-reference-not-entity", "index": 2},
+    ),
+    (
+        "column-references-entity",
+        column_references_entity_frame(),
+        "column-references-entity",
+        {"kind": "column-reference-not-metric", "index": 0},
+    ),
+    (
+        "column-kind-mismatch",
+        column_kind_mismatch_frame(),
+        "column-kind-mismatch",
+        {"kind": "column-kind-mismatch", "index": 2, "declared": 0, "dictionary": 1},
+    ),
+    (
+        "no-rows-or-time",
+        no_rows_or_time_frame(),
+        None,
+        {"kind": "no-rows-or-time", "n_rows": 3},
+    ),
+    (
+        "empty-rows-and-time",
+        empty_rows_and_time_frame(),
+        None,
+        {"kind": "rows-and-time", "rows": 0, "buckets": 0},
+    ),
 ]
 
 
@@ -510,6 +620,36 @@ def build(name: str, frame: dict, edits: object) -> tuple[bytes, dict | None]:
             "kind": "column-reserved",
             "metric": 2,
             "pad": 1,
+        }
+    if edits == "bad-metric-mask":
+        # Entry 2 is the cpu.usage_usec metric; its mask field follows the four code bytes.
+        kind_at = dictionary_entry_offset(data, 2)
+        mask_at = kind_at + 4 + 4
+        return patch(data, mask_at, struct.pack("<H", 0)), {
+            "kind": "dictionary-entry-mask",
+            "index": 2,
+            "mask": 0,
+            "expected": wire.AGGREGATION_MASKS["counter"],
+        }
+    if edits == "row-references-metric":
+        rows = section_index(data, "rows")
+        return patch(data, body_offset(data, rows), struct.pack("<I", 2)), {
+            "kind": "row-reference-not-entity",
+            "index": 2,
+        }
+    if edits == "column-references-entity":
+        columns = section_index(data, "columns")
+        return patch(data, body_offset(data, columns), struct.pack("<I", 0)), {
+            "kind": "column-reference-not-metric",
+            "index": 0,
+        }
+    if edits == "column-kind-mismatch":
+        columns = section_index(data, "columns")
+        return patch(data, body_offset(data, columns) + 5, b"\x00"), {
+            "kind": "column-kind-mismatch",
+            "index": 2,
+            "declared": 0,
+            "dictionary": 1,
         }
     if edits is None:
         return data, None
@@ -593,6 +733,24 @@ DOC = {
     "truncated-frame": "A valid frame with its last eight body bytes removed.",
     "non-zero-reserved": "A frame header whose reserved u16 is not zero.",
     "column-reserved": "A column whose reserved u16 padding field is not zero.",
+    "duplicate-dictionary-entry": (
+        "Two dictionary entries with the same incarnation identity. A decoder that "
+        "de-duplicated them would shift every later index away from the sender's numbering."
+    ),
+    "bad-metric-mask": (
+        "A metric entry whose aggregation mask is a strict subset (0) of the mask its kind "
+        "derives; a decoder that kept it would widen it again on re-encode."
+    ),
+    "row-references-metric": "A row referencing dictionary index 2, which is a metric entry, not an incarnation.",
+    "column-references-entity": "A column referencing dictionary index 0, which is an incarnation entry, not a metric.",
+    "column-kind-mismatch": (
+        "A column declaring kind `gauge` for a metric the dictionary declares `counter`."
+    ),
+    "no-rows-or-time": "A block declaring three rows but carrying neither a rows nor a time section.",
+    "empty-rows-and-time": (
+        "A block with zero rows that carries BOTH the rows and the time section (each empty): "
+        "rows and buckets are exclusive by presence, not by count."
+    ),
 }
 
 

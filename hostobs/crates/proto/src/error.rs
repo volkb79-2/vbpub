@@ -142,13 +142,35 @@ pub enum ProtoError {
         /// The code.
         code: u8,
     },
-    /// A dictionary entry's own field code (unit, column kind, scope, source, mask) is
-    /// outside the table, or its aggregation mask permits something its kind does not.
+    /// A dictionary entry's own field code (unit, column kind, scope, source) is outside
+    /// the table.
     DictionaryEntryUnknownCode {
         /// The index in the frame.
         index: usize,
         /// The code.
         code: u8,
+    },
+    /// A dictionary entry's aggregation mask is not the mask its kind derives.
+    ///
+    /// The mask is a *derived* fact (§B.3), so a subset is as corrupt as an extra bit: a
+    /// decoder that kept a subset would widen it on re-encode and silently drop the
+    /// sender's restriction.
+    DictionaryEntryMask {
+        /// The index in the frame.
+        index: usize,
+        /// The mask the sender wrote.
+        mask: u16,
+        /// The mask the entry's kind derives.
+        expected: u16,
+    },
+    /// A dictionary carries an entry whose identity already appears earlier.
+    ///
+    /// Indices must not change meaning inside one generation (§B.3), so a wire list that
+    /// repeats an identity is refused instead of deduplicated: deduplication would shift
+    /// every later index away from the sender's numbering.
+    DuplicateDictionaryEntry {
+        /// The wire position of the repeated entry.
+        index: usize,
     },
     /// A dictionary entry's reserved flags byte is not zero.
     DictionaryEntryReserved {
@@ -194,6 +216,33 @@ pub enum ProtoError {
         rows: usize,
         /// Time buckets.
         buckets: usize,
+    },
+    /// A block declares rows or buckets but carries neither a rows nor a time section.
+    ///
+    /// Values without an entity or a bucket have no place in the frame, so this is refused
+    /// rather than carried as a "host-scope block" nobody defined.
+    NoRowsOrTime {
+        /// The row count the header declares.
+        n_rows: u32,
+    },
+    /// A row references a dictionary entry that is not an incarnation.
+    RowReferenceNotEntity {
+        /// The dictionary index the row names.
+        index: u32,
+    },
+    /// A column references a dictionary entry that is not a metric.
+    ColumnReferenceNotMetric {
+        /// The dictionary index the column names.
+        index: u32,
+    },
+    /// A column's declared kind contradicts the metric facts in the dictionary.
+    ColumnKindMismatch {
+        /// The dictionary index the column names.
+        index: u32,
+        /// The kind code the column header declares.
+        declared: u8,
+        /// The kind code the dictionary declares.
+        dictionary: u8,
     },
 }
 
@@ -300,6 +349,22 @@ impl fmt::Display for ProtoError {
             ProtoError::DictionaryEntryUnknownCode { index, code } => {
                 write!(f, "dictionary entry {index} has unknown field code {code}")
             }
+            ProtoError::DictionaryEntryMask {
+                index,
+                mask,
+                expected,
+            } => {
+                write!(
+                    f,
+                    "dictionary entry {index} declares aggregation mask {mask:#04x}, its kind derives {expected:#04x}"
+                )
+            }
+            ProtoError::DuplicateDictionaryEntry { index } => {
+                write!(
+                    f,
+                    "dictionary entry {index} repeats an identity an earlier entry already holds"
+                )
+            }
             ProtoError::DictionaryEntryReserved { index, flags } => {
                 write!(
                     f,
@@ -334,6 +399,34 @@ impl fmt::Display for ProtoError {
                 write!(
                     f,
                     "block carries {rows} rows and {buckets} time buckets; they are exclusive"
+                )
+            }
+            ProtoError::NoRowsOrTime { n_rows } => {
+                write!(
+                    f,
+                    "block declares {n_rows} rows but carries neither a rows nor a time section"
+                )
+            }
+            ProtoError::RowReferenceNotEntity { index } => {
+                write!(
+                    f,
+                    "row references dictionary entry {index}, which is not an incarnation"
+                )
+            }
+            ProtoError::ColumnReferenceNotMetric { index } => {
+                write!(
+                    f,
+                    "column references dictionary entry {index}, which is not a metric"
+                )
+            }
+            ProtoError::ColumnKindMismatch {
+                index,
+                declared,
+                dictionary,
+            } => {
+                write!(
+                    f,
+                    "column for metric {index} declares kind {declared}, the dictionary declares {dictionary}"
                 )
             }
         }
@@ -379,6 +472,8 @@ impl ProtoError {
             ProtoError::DictionaryEntryNotUtf8 { .. } => "dictionary-entry-not-utf8",
             ProtoError::UnknownDictionaryKind { .. } => "unknown-dictionary-kind",
             ProtoError::DictionaryEntryUnknownCode { .. } => "dictionary-entry-unknown-code",
+            ProtoError::DictionaryEntryMask { .. } => "dictionary-entry-mask",
+            ProtoError::DuplicateDictionaryEntry { .. } => "duplicate-dictionary-entry",
             ProtoError::DictionaryEntryReserved { .. } => "dictionary-entry-reserved",
             ProtoError::DictionaryTooLarge { .. } => "dictionary-too-large",
             ProtoError::DanglingDictionaryRef { .. } => "dangling-dictionary-ref",
@@ -386,6 +481,10 @@ impl ProtoError {
             ProtoError::GenerationExhausted => "generation-exhausted",
             ProtoError::StaleDictionaryGeneration { .. } => "stale-dictionary-generation",
             ProtoError::RowsAndTime { .. } => "rows-and-time",
+            ProtoError::NoRowsOrTime { .. } => "no-rows-or-time",
+            ProtoError::RowReferenceNotEntity { .. } => "row-reference-not-entity",
+            ProtoError::ColumnReferenceNotMetric { .. } => "column-reference-not-metric",
+            ProtoError::ColumnKindMismatch { .. } => "column-kind-mismatch",
         }
     }
 }
@@ -440,6 +539,12 @@ mod tests {
             ProtoError::DictionaryEntryNotUtf8 { index: 1 },
             ProtoError::UnknownDictionaryKind { index: 1, code: 9 },
             ProtoError::DictionaryEntryUnknownCode { index: 0, code: 9 },
+            ProtoError::DictionaryEntryMask {
+                index: 0,
+                mask: 0,
+                expected: 0b0011,
+            },
+            ProtoError::DuplicateDictionaryEntry { index: 3 },
             ProtoError::DictionaryEntryReserved { index: 0, flags: 1 },
             ProtoError::DictionaryTooLarge {
                 count: 70000,
@@ -455,6 +560,14 @@ mod tests {
             ProtoError::RowsAndTime {
                 rows: 3,
                 buckets: 2,
+            },
+            ProtoError::NoRowsOrTime { n_rows: 3 },
+            ProtoError::RowReferenceNotEntity { index: 2 },
+            ProtoError::ColumnReferenceNotMetric { index: 0 },
+            ProtoError::ColumnKindMismatch {
+                index: 2,
+                declared: 0,
+                dictionary: 1,
             },
         ];
         for case in cases {
@@ -555,6 +668,18 @@ mod tests {
                 ProtoError::DictionaryEntryUnknownCode { index: 1, code: 1 },
             ),
             (
+                "dictionary-entry-mask",
+                ProtoError::DictionaryEntryMask {
+                    index: 1,
+                    mask: 0,
+                    expected: 1,
+                },
+            ),
+            (
+                "duplicate-dictionary-entry",
+                ProtoError::DuplicateDictionaryEntry { index: 1 },
+            ),
+            (
                 "dictionary-entry-reserved",
                 ProtoError::DictionaryEntryReserved { index: 1, flags: 1 },
             ),
@@ -585,6 +710,23 @@ mod tests {
                     buckets: 1,
                 },
             ),
+            ("no-rows-or-time", ProtoError::NoRowsOrTime { n_rows: 1 }),
+            (
+                "row-reference-not-entity",
+                ProtoError::RowReferenceNotEntity { index: 1 },
+            ),
+            (
+                "column-reference-not-metric",
+                ProtoError::ColumnReferenceNotMetric { index: 1 },
+            ),
+            (
+                "column-kind-mismatch",
+                ProtoError::ColumnKindMismatch {
+                    index: 1,
+                    declared: 0,
+                    dictionary: 1,
+                },
+            ),
         ];
         let mut names = Vec::new();
         for (expected, error) in cases {
@@ -597,7 +739,7 @@ mod tests {
         }
         assert_eq!(
             names.len(),
-            34,
+            40,
             "the refused-variant count is part of the contract"
         );
     }

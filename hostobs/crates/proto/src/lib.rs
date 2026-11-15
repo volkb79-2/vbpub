@@ -16,6 +16,19 @@
 //! - **Raw `u64` counters and a `u8` quality per value** (§C.2/§C.3). Zero is a value;
 //!   absence is never zero, which is why the quality column is mandatory and why the
 //!   `measured` accessors refuse to return a placeholder.
+//! - **A dictionary body is reproduced position for position.** `intern` de-duplicates and
+//!   re-labels for a *live* table, which is right there and wrong on the wire: a body that
+//!   repeats an identity is refused (`duplicate-dictionary-entry`), never shortened, because
+//!   shortening would shift every later index away from the sender's numbering.
+//! - **A metric entry's aggregation mask is derived, so it must equal the derived mask.**
+//!   A subset is as corrupt as an extra bit: keeping it would widen it again on re-encode
+//!   and silently drop the sender's restriction.
+//! - **A reference is checked for kind, not only for range.** A row names an incarnation and
+//!   a column names a metric; a column's declared kind must agree with the dictionary's
+//!   metric facts, because a consumer aggregates by whichever one it trusts.
+//! - **Rows and buckets are exclusive by presence**, and a non-zero row count needs one of
+//!   them: values without an entity or a bucket cannot be addressed, so they are refused
+//!   rather than carried as a "rowless block" nobody defined.
 //! - **Self-contained dictionaries with bounded generations** (§B.3). Indices never
 //!   change meaning within `(epoch, dict_gen)`; compaction is a new generation sent
 //!   complete; a receiver refuses a block from a generation it was not sent.

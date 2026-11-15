@@ -17,7 +17,11 @@ binary packages.
   and bounded per-segment dictionaries. No I/O, no clock, no `unsafe`, no dependencies.
 
 Both crates are pure: facts in, typed answers out, and every refusal is a typed error
-rather than a panic or an invented zero. The commitments they implement — identity by
+rather than a panic or an invented zero. The codec's refusals cover the frame's own shape
+too: a dictionary body that repeats an identity, a metric mask that is not the mask its kind
+derives, a row naming a metric, a column naming an incarnation, a column whose kind
+contradicts the dictionary, and a non-zero row count with neither a rows nor a time section
+are all refused with a named error, in both the Rust and the Python decoder. The commitments they implement — identity by
 incarnation and never by cgroup path, absence never written as zero, counters stored raw
 with rates derived from the real interval, unknown future versions refused — are stated
 in each crate's module docs and in

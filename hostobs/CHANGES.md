@@ -16,9 +16,9 @@
   live rows, history buckets, and bounded per-segment dictionaries with generation
   retirement. Every decode failure is one typed `ProtoError`; nothing panics, nothing
   returns a partial block, and unknown or future section versions are refused.
-- **Shared golden fixtures:** `fixtures/wire/` (16 cases: u64 boundaries, `-0.0`/NaN
+- **Shared golden fixtures:** `fixtures/wire/` (23 cases: u64 boundaries, `-0.0`/NaN
   placeholder, Unicode dictionary, every quality code, empty selection, unknown optional
-  section, and nine refusal cases) and `fixtures/rates/rates.json` (18 hand-computed
+  section, and sixteen refusal cases) and `fixtures/rates/rates.json` (18 hand-computed
   classifier and rate cases). Bind the Rust tests and an independent stdlib-only Python
   reference codec (`python/reference/`, `python/tests/`) to one contract.
 - **SP-4 measurement** (`crates/proto/examples/sp4_wire_size.rs`, deterministic,
@@ -34,6 +34,38 @@
   SHA-256-verified; the two first-pass survivors became tests.
 - **Docs:** `README.md`, `docs/DESIGN-GUIDE.md` and `docs/CONSUMERS.md` rewritten for the
   functional crates (contracts, rejected alternatives, paste-ready examples).
+
+### Fixed
+
+- **Dictionary decode no longer de-duplicates the wire list** (`duplicate-dictionary-entry`).
+  `intern` merges a repeated identity (correct for a live table, wrong on the wire), so a
+  body repeating an incarnation, metric name, label or free text came back with fewer
+  entries and every later index shifted. The decoder now refuses when the entry it interned
+  is not at the position the sender wrote; the Python reference decoder refuses the same
+  input with the same kind name, and `duplicate-dictionary-entry` is a committed fixture.
+- **A metric aggregation mask must equal the mask its kind derives**
+  (`dictionary-entry-mask`). Previously only extra bits were refused, so a strict subset
+  decoded and was silently widened on re-encode. Both languages now refuse a subset or an
+  extra bit, pinned by the `bad-metric-mask` fixture.
+- **Dictionary references are checked for kind, not only for range.** A row must name an
+  incarnation (`row-reference-not-entity`), a column a metric
+  (`column-reference-not-metric`), and a column's declared kind must agree with the
+  dictionary's metric facts (`column-kind-mismatch`); fixtures pin all three in both
+  languages.
+- **Values without an address are refused** (`no-rows-or-time`): a non-zero row count
+  requires a rows or a time section, on the encoder and the decoder side. Rows and buckets
+  are now exclusive **by presence**, so a block carrying both sections is refused even
+  when both are empty (`n_rows == 0`), which the count-based check missed.
+- `Column::sample` computes its reported need with `checked_add` (a caller-supplied
+  `usize::MAX` row was a debug-build overflow), and `decode_block` takes the directory slice
+  with `.get(..)` instead of an index.
+- The refusal vocabulary grows from 34 to 40 names; the count test, the display test, the
+  fixture comparison in both languages and the crate docs were updated together.
+- `Dictionary::encode_with` writes an exact entry list (tests and fixtures need to express
+  wire lists a live table would never build); `Dictionary::encode` is unchanged.
+- Fix-round hand-mutation campaign stored as a replayable script
+  (`docs/hand-mutants/fix-round-mutants.py`, 16 patches, all killed) and the backlog grew
+  to `HOB-13`.
 
 ### Changed
 

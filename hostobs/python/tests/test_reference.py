@@ -15,6 +15,7 @@ either implementation is a red test run rather than a silent mismatch.
 from __future__ import annotations
 
 import json
+import struct
 import sys
 import unittest
 from pathlib import Path
@@ -28,10 +29,25 @@ import hostobs_rate_ref  # noqa: E402
 import hostobs_wire_ref  # noqa: E402
 
 
+CPU_USAGE_FACTS = {
+    "unit": "usec",
+    "kind": "counter",
+    "scope": "cgroup",
+    "source": "cgroupfs",
+}
+
+MEM_CURRENT_FACTS = {
+    "unit": "bytes",
+    "kind": "gauge",
+    "scope": "cgroup",
+    "source": "cgroupfs",
+}
+
+
 class WireFixtures(unittest.TestCase):
     def test_every_fixture_round_trips_in_the_reference_codec(self):
         cases = hostobs_wire_ref.load_cases(FIXTURES)
-        self.assertEqual(len(cases), 16, "the fixture case list is part of the contract")
+        self.assertEqual(len(cases), 23, "the fixture case list is part of the contract")
         for spec_path, spec, data in cases:
             with self.subTest(case=spec_path.stem):
                 hostobs_wire_ref.check_case(spec, data)
@@ -72,6 +88,65 @@ class WireFixtures(unittest.TestCase):
         with self.assertRaises(hostobs_wire_ref.WireError) as caught:
             hostobs_wire_ref.decode_frame((FIXTURES / "required-section-refused.bin").read_bytes())
         self.assertEqual(caught.exception.as_dict()["kind"], spec["expect_error"]["kind"])
+
+    def test_a_dictionary_body_repeating_an_identity_is_refused(self):
+        # The wire list is the sender's numbering. A de-duplicating decoder would return a
+        # shorter table and shift every later index; both languages must refuse instead.
+        body = hostobs_wire_ref.encode_dictionary(
+            {
+                "generation": 1,
+                "entries": [
+                    {"kind": "entity", "inc": 7, "text": "/a"},
+                    {"kind": "entity", "inc": 7, "text": "/b"},
+                    {"kind": "metric", "text": "mem.current", "facts": MEM_CURRENT_FACTS},
+                ],
+            }
+        )
+        with self.assertRaises(hostobs_wire_ref.WireError) as caught:
+            hostobs_wire_ref.decode_dictionary(body)
+        self.assertEqual(caught.exception.as_dict(), {"kind": "duplicate-dictionary-entry", "index": 1})
+
+    def test_a_metric_mask_that_is_not_the_derived_mask_is_refused(self):
+        # The mask is derived from the kind, so a subset is as corrupt as an extra bit.
+        for mask, derived in ((0, 7), (7 | 8, 7)):
+            with self.subTest(mask=mask):
+                body = hostobs_wire_ref.encode_dictionary(
+                    {
+                        "generation": 1,
+                        "entries": [
+                            {"kind": "metric", "text": "cpu.usage_usec", "facts": CPU_USAGE_FACTS},
+                        ],
+                    }
+                )
+                # generation + count + entry header, then unit, kind, scope, source, mask.
+                at = 8 + 4 + 4
+                body = body[:at] + struct.pack("<H", mask) + body[at + 2 :]
+                with self.assertRaises(hostobs_wire_ref.WireError) as caught:
+                    hostobs_wire_ref.decode_dictionary(body)
+                self.assertEqual(
+                    caught.exception.as_dict(),
+                    {"kind": "dictionary-entry-mask", "index": 0, "mask": mask, "expected": derived},
+                )
+
+    def test_the_fixture_set_pins_every_new_guard(self):
+        # Each guard added in the fix round has committed bytes, so a language that loses
+        # the guard fails here rather than silently accepting the corrupt frame.
+        expected = {
+            "duplicate-dictionary-entry": "duplicate-dictionary-entry",
+            "bad-metric-mask": "dictionary-entry-mask",
+            "row-references-metric": "row-reference-not-entity",
+            "column-references-entity": "column-reference-not-metric",
+            "column-kind-mismatch": "column-kind-mismatch",
+            "no-rows-or-time": "no-rows-or-time",
+            "empty-rows-and-time": "rows-and-time",
+        }
+        for case, refusal in expected.items():
+            with self.subTest(case=case):
+                spec = json.loads((FIXTURES / f"{case}.json").read_text(encoding="utf-8"))
+                self.assertEqual(spec["expect_error"]["kind"], refusal)
+                with self.assertRaises(hostobs_wire_ref.WireError) as caught:
+                    hostobs_wire_ref.decode_frame((FIXTURES / f"{case}.bin").read_bytes())
+                self.assertEqual(caught.exception.as_dict()["kind"], refusal)
 
     def test_the_quality_vocabulary_is_the_one_the_rust_side_declares(self):
         vocabulary = json.loads((FIXTURES / "quality.json").read_text(encoding="utf-8"))

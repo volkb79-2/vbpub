@@ -61,6 +61,48 @@ narrowed counter aggregation mask, a rate stored as `stale`, a wrong-type rate m
 `zero-interval`, retirement keeping every entry, absent rounds never accumulating and
 rounds never advancing.
 
+## The fix round (replayable)
+
+The review at `26f0c93f9` found two blockers and two recommended findings, so the fix round
+added guards that the M1 table above did not cover. Those mutations are **stored as a
+script**, not as prose (`HOB-12`):
+
+```sh
+CGROUP_PARENT_DEV_GATES=dev-gates.slice python3 docs/hand-mutants/fix-round-mutants.py
+python3 docs/hand-mutants/fix-round-mutants.py --dry-run     # patches only
+```
+
+The script discovers the lane container's mount path from `docker inspect` of the running
+cockpit (never a hardcoded or defaulted path), applies one patch at a time, runs the affected
+suite (`hostobs-proto` in `tester-unified-rust:local`, or the Python reference suite under
+`python3 -I`), restores the file, and asserts the restored SHA-256 matches. Sixteen patches,
+**all killed**:
+
+| Finding | Mutation | Killed by |
+|---|---|---|
+| B1 | duplicate check only refuses a *later* index | `a_relabel_keeps_one_entry_in_a_live_table_but_a_wire_repeat_is_refused` |
+| B1 | duplicate comparison disabled entirely | same |
+| B1 (Python) | duplicate-identity check disabled | `test_a_dictionary_body_repeating_an_identity_is_refused` + 2 fixture cases |
+| B2 | only extra mask bits refused (subset accepted again) | `a_corrupt_dictionary_body_is_refused_every_way_it_can_be_corrupt` |
+| B2 (Python) | Python mask check only refuses extra bits | `test_a_metric_mask_that_is_not_the_derived_mask_is_refused` + `bad-metric-mask` |
+| R1 | row entry-kind check removed | `a_reference_of_the_right_range_but_the_wrong_entry_kind_is_refused` |
+| R1 | column-kind agreement disabled | `a_column_kind_that_contradicts_the_dictionary_is_refused` |
+| R1 | column entry-kind check removed | `a_reference_of_the_right_range_but_the_wrong_entry_kind_is_refused` |
+| R1 (Python) | row entry-kind check removed | `row-references-metric` fixture case |
+| R1 (Python) | column-kind agreement removed | `column-kind-mismatch` fixture case |
+| R2 | encoder rowless bound weakened to `n_rows > 1` | `a_non_zero_row_count_needs_a_rows_or_a_time_section` |
+| R2 | decoder rowless bound weakened to `n_rows > 1` | same |
+| R2 | exclusivity by count instead of by presence | `rows_and_buckets_are_exclusive_by_presence_even_when_empty` |
+| R2 (Python) | exclusivity by count instead of by presence | `empty-rows-and-time` fixture case |
+| R2 (Python) | rowless bound removed | `no-rows-or-time` fixture case |
+| hygiene | row index need computed unchecked | `a_row_index_past_the_end_is_refused_without_arithmetic_overflow` |
+
+Two survivors were found while running the campaign and closed by adding tests, not by
+re-running the mutation blindly: the `n_rows == 1` rowless case (the first version of the
+test only exercised the encoder with `n_rows == 2`, so a `> 1` bound survived — the decoded
+single-row case now pins it) and the *later-index* variant of B1 (a `>` comparison instead of
+`!=` survived until the wire-repeat test asserted the exact index).
+
 ## What the campaign changed in the code
 
 Two mutations **survived at first** and produced the tests this package added:

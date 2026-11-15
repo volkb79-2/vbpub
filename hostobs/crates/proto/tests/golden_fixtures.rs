@@ -341,6 +341,40 @@ fn refusal_of(error: &ProtoError) -> BTreeMap<&'static str, String> {
         ProtoError::UnsupportedRequiredSection { kind } => {
             map.insert("kind_code", kind.to_string());
         }
+        ProtoError::DuplicateDictionaryEntry { index } => {
+            map.insert("index", index.to_string());
+        }
+        ProtoError::DictionaryEntryMask {
+            index,
+            mask,
+            expected,
+        } => {
+            map.insert("index", index.to_string());
+            map.insert("mask", mask.to_string());
+            map.insert("expected", expected.to_string());
+        }
+        ProtoError::RowsAndTime { rows, buckets } => {
+            map.insert("rows", rows.to_string());
+            map.insert("buckets", buckets.to_string());
+        }
+        ProtoError::NoRowsOrTime { n_rows } => {
+            map.insert("n_rows", n_rows.to_string());
+        }
+        ProtoError::RowReferenceNotEntity { index } => {
+            map.insert("index", index.to_string());
+        }
+        ProtoError::ColumnReferenceNotMetric { index } => {
+            map.insert("index", index.to_string());
+        }
+        ProtoError::ColumnKindMismatch {
+            index,
+            declared,
+            dictionary,
+        } => {
+            map.insert("index", index.to_string());
+            map.insert("declared", declared.to_string());
+            map.insert("dictionary", dictionary.to_string());
+        }
         _ => {}
     }
     map
@@ -367,7 +401,7 @@ fn declared_refusal(spec: &Json) -> BTreeMap<String, String> {
 fn every_fixture_is_decoded_by_the_rust_codec() {
     let names = fixture_names();
     assert!(
-        names.len() >= 16,
+        names.len() >= 23,
         "the fixture set is the §B.5 case list: {}",
         names.len()
     );
@@ -440,7 +474,7 @@ fn every_fixture_is_decoded_by_the_rust_codec() {
     }
     assert_eq!(valid, 7, "the valid fixture count is part of the case list");
     assert_eq!(
-        refused, 9,
+        refused, 16,
         "the refusal fixture count is part of the case list"
     );
 }

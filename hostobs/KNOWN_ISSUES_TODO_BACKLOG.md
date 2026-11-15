@@ -19,6 +19,135 @@ A `FIXED` entry means code, tests, and docs landed together.
 | HOB-4 | No registered `conformance` lane: the independent Python fixture check is not gate-enforced | Major | OPEN |
 | HOB-5 | Section version 1 has no history min/max/mean columns; `TIME` carries one value per bucket plus the aggregation code | Minor | OPEN (M2 work) |
 | HOB-6 | `DICT` frame type is defined but consumed nowhere: the dictionary travels inside the block frame | Minor | OPEN (deliberate) |
+| HOB-7 | `IncarnationRegistry` grows without bound and `end_round` is O(all ids ever minted) | Major | OPEN (SP-3 bound) |
+| HOB-8 | `FrameHeader::parse` does not bound its declared length; only `decode_block` does | Major | OPEN (next package's streaming reader) |
+| HOB-9 | `derive_rate` carries no boot/epoch/incarnation context, so "no rate across a boundary" is a caller contract only | Major | OPEN (store package) |
+| HOB-10 | The metric code tables (`unit`, `scope`, `source`, `aggregation`, kind mask) are duplicated in `model` and `proto` and only the quality table is fixture-bound | Major | OPEN |
+| HOB-11 | SP-4's sampler arm is a reproduction with synthetic delta magnitudes, and the example never runs in a lane, so its numbers can drift unnoticed | Minor | OPEN |
+| HOB-12 | Rust R2 is still `cargo-mutants`-less: hand mutants are the substitute, and only the fix round's patches are replayable | Minor | OPEN (R-3b) |
+| HOB-13 | Small code-hygiene items found at review (indexing, `row + 1`, relabel validation, error names, `O(n×m)` retirement scan, `Unit::Ratio` for load average) | Minor | PARTLY FIXED, rest OPEN |
+
+---
+
+## HOB-7 — The incarnation registry grows without bound
+
+**Where:** `crates/model/src/identity.rs` (`IncarnationRegistry`).
+
+`entries` is a `Vec<Option<Entry>>` indexed by id so `snapshot`/`is_active` are O(1), but a
+retired slot stays as `None` for the life of the process and `end_round` walks every slot
+ever created. Ids are never reused, which is the correctness property; the cost is size and
+time. At the plan's 10 cgroup churn per second that is roughly 860k slots per day, and
+`end_round` is O(all ids ever minted) once per scan round. Plan §A.4/SP-3 requires a bound
+on every structure that grows with churn.
+
+**Fix shape.** Key live entries by id in a `BTreeMap<Incarnation, Entry>` (or a `HashMap`
+plus a dense "active id" list for iteration) so retirement actually frees the slot, and keep
+a compact reverse index for `incarnation_of`. `end_round` then walks live entries only. The
+observable behaviour must not change: ids stay monotonic, a retired key re-minted gets a
+fresh id, two absent rounds retire, double `end_round` is a no-op — all covered by existing
+tests.
+
+## HOB-8 — `FrameHeader::parse` does not bound the declared length
+
+**Where:** `crates/proto/src/frame.rs` (`FrameHeader::parse`).
+
+`decode_block` refuses a frame whose declared length exceeds [`MAX_FRAME_BYTES`] *before* it
+uses that number, and every later allocation is bounded by the verified frame. `parse` alone
+does not: it reads the twelve header bytes and hands the caller the declared length
+unchecked. The streaming reader of the next package starts with `parse` and must allocate
+`len` bytes, so the safe path today is only the one `decode_block` happens to take.
+
+**Fix shape.** Validate `FRAME_HEADER_LEN <= len <= MAX_FRAME_BYTES` inside `parse` (and keep
+`decode_block`'s own check, so a future caller that bypasses `parse` is still bounded), plus
+a test at the bound and one past it. No wire change.
+
+## HOB-9 — `derive_rate` has no boot/epoch/incarnation context
+
+**Where:** `crates/model/src/rate.rs`.
+
+Plan §C says no rate may cross a reset, a boot, an epoch change or an incarnation change.
+Inside `derive_rate` the two readings are bare `(Sample, MonoTime)` pairs, so that rule is
+the *caller's* contract: the function cannot see a boot id, an epoch or an `inc`. A caller
+that pairs readings from two different incarnations gets a plausible, wrong rate.
+
+Related and worth stating together: a sample stored with `Quality::Reset` keeps its raw
+bytes, but `Sample::value()` returns `None` for it, so "the current reading is the new
+baseline" only works if the caller keeps that reading as an `Ok` sample.
+
+**Fix shape.** A `Baseline { boot, epoch, inc, sample, at }` guard in the store/probe
+package (the next package owns the segment), checked before `derive_rate` is called, so a
+cross-boundary pair is refused rather than averaged. Document the caller contract in
+`docs/DESIGN-GUIDE.md` until the guard exists.
+
+## HOB-10 — The metric code tables are duplicated and only quality is fixture-bound
+
+**Where:** `crates/model/src/metric.rs` (`Unit`, `Scope`, `Source`, `Aggregation`,
+`Metric::aggregation_mask`) and `crates/proto/src/dict.rs` (the same closed sets as wire
+codes).
+
+The quality vocabulary is bound across the two crates (and the Python decoder) by
+`fixtures/wire/quality.json`. The metric tables are not: a unit code added in `proto` and not
+in `model` (or a renamed scope) drifts silently, caught only if the corresponding crate's
+own tests happen to name the value. This is the same root cause as HOB-3 (no dependency edge
+possible under the locked image) but a different consequence: HOB-3 is about the quality
+table, this is about every other code table.
+
+**Fix shape.** A `fixtures/wire/metric-vocabulary.json` listing every `unit`/`scope`/
+`source`/`aggregation` name and its wire code plus the per-kind mask, asserted by
+`model`, `proto` and the Python decoder — the same three-way binding the quality fixture
+already uses. Then a rename in one language is a red test in all three.
+
+## HOB-11 — SP-4's baseline arm is a reproduction, and nothing runs the example
+
+**Where:** `docs/SP-4-WIRE-SIZES.md`, `crates/proto/examples/sp4_wire_size.rs`.
+
+Two caveats the document states, and one it should enforce:
+
+- The sampler byte counts come from a faithful re-implementation of the sampler's varint
+  encoding written inside the example, **not** from running the sampler. That is stated in
+  the doc; it means the sampler arm is a reproduction, not a measurement of shipped code.
+- The sampler's per-tick *delta* magnitudes are synthetic, so its varint size depends on
+  invented values. The raw-counter line is the robust like-for-like comparison, and the D4
+  verdict rests on that line. This is stated too.
+- The example is compiled by `clippy` but **never executed in a lane**, so the published
+  numbers can drift silently if either encoding changes.
+
+**Fix shape.** Either a `selftest`-visible assertion on the deterministic column-side byte
+counts at 100 and 1,000 cgroups (which is a pure function of the format), or a dedicated
+step in a lane that runs the example and compares its output with a committed snapshot. The
+CPU/allocation half stays in HOB-2.
+
+## HOB-12 — Hand mutants are recorded as prose, not as replayable patches
+
+**Where:** `docs/HAND-MUTANTS-M1.md`.
+
+The M1 campaign (21 mutations, all killed) is recorded as a table of labels and verdicts
+plus SHA-256 restore checks. That is honest evidence of *what* was done, but the exact
+mutation text is not stored, so nothing can replay or re-verify it: a later reader has to
+trust the prose, and a shifted line number makes a manual replay ambiguous. Rust R2
+(`cargo-mutants`, R-3b) remains the real mechanism; this is its substitute until then.
+
+**Progress in the fix round.** The fix round's 15 mutations (Rust and Python, both wiring
+directions) are stored as a replayable script rather than prose — see
+`docs/hand-mutants/fix-round-mutants.py` and the table in `docs/HAND-MUTANTS-M1.md`. The
+M1 campaign's own patches are still prose; converting them is the remaining work.
+
+## HOB-13 — Small code-hygiene items from review
+
+**Status: partly fixed in the fix round.** Items and their state:
+
+| Item | State |
+|---|---|
+| `&bytes[FRAME_HEADER_LEN..]` in `decode_block` (safe, but an index) | **FIXED** — replaced by `.get(..)` on the same call |
+| `Column::sample` does `need: row + 1` (can overflow at `usize::MAX`) | **FIXED** — uses `checked_add` |
+| `intern`'s relabel path skips `validate` | OPEN (the encoder still refuses an over-long label, so no bad bytes escape) |
+| The relabel/duplicate refusal reused `ConflictingColumn { metric: index }` | **FIXED** — the wire path now has `DuplicateDictionaryEntry { index }`; the live-table relabel conflict keeps `ConflictingColumn` because it is a different condition |
+| `retire_unreachable` does `reachable.contains` inside a loop (O(n×m)) | OPEN (bounded by 65,536 entries today) |
+| `forbid(unsafe_code)` only via `[lints] workspace = true` | OPEN (belt-and-braces `#![forbid(unsafe_code)]` per crate) |
+| `host.load1/5/15` declared with `Unit::Ratio` whose symbol is `%` | OPEN (a load average is not a percentage; needs a unit that says "count per core" without inventing one) |
+| `sampler_baseline()` is a subset of the sampler's metrics | OPEN (M1 baseline; disk/procs/per-device lines are later packages) |
+| `BootIdLength.len` counts bytes, not characters | OPEN (documented in the variant; the id is ASCII by definition) |
+| `SampleRow.value` is a public field, so a placeholder can be read without `measured()` | OPEN (documented hazard; the golden fixture pins the absent case) |
 
 ---
 

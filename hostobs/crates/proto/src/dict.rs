@@ -745,6 +745,50 @@ impl Dictionary {
         Ok(writer.finish())
     }
 
+    /// Encode an exact list of entries, without the live table's deduplication.
+    ///
+    /// This exists for tests and fixtures that must express a wire list a live table would
+    /// never build (a repeated identity, for example): it writes `entries` at their
+    /// positions verbatim, which is what a sender does and what a decoder must reproduce.
+    ///
+    /// # Errors
+    ///
+    /// [`ProtoError::DictionaryEntryTooLong`] or [`ProtoError::DictionaryEntryControl`] for
+    /// an entry that cannot be written, and [`ProtoError::LengthOverflow`] for an oversized
+    /// count.
+    pub fn encode_with(&self, entries: &[Entry]) -> Result<Vec<u8>, ProtoError> {
+        let mut writer = Writer::with_capacity(8 + entries.len() * 8);
+        writer.u32(self.generation);
+        writer.u32(
+            u32::try_from(entries.len())
+                .map_err(|_| ProtoError::RowCountOverflow(entries.len() as u64))?,
+        );
+        for (index, entry) in entries.iter().enumerate() {
+            entry.validate(index)?;
+            writer.u8(entry.kind_code());
+            writer.u8(0);
+            writer.u16(u16::try_from(entry.text().len()).map_err(|_| ProtoError::LengthOverflow)?);
+            match entry {
+                Entry::Entity { inc, .. } => writer.u64(*inc),
+                Entry::Metric { facts, .. } => {
+                    writer.u8(facts.unit as u8);
+                    writer.u8(facts.kind as u8);
+                    writer.u8(facts.scope as u8);
+                    writer.u8(facts.source as u8);
+                    writer.u16(facts.aggregation_mask());
+                }
+                Entry::Label { kind, source, .. } => {
+                    writer.u8(*kind);
+                    writer.u8(*source);
+                }
+                Entry::Free { .. } => {}
+            }
+            writer.bytes(entry.text().as_bytes());
+        }
+        writer.pad_to(8);
+        Ok(writer.finish())
+    }
+
     /// Decode a canonical DICT body of exactly `body` bytes.
     ///
     /// # Errors
@@ -792,13 +836,17 @@ impl Dictionary {
                     let scope = MetricScope::from_code(cursor.u8()?, index)?;
                     let source = MetricSource::from_code(cursor.u8()?, index)?;
                     let mask = cursor.u16()?;
-                    // The mask is derived from the kind (§B.3), so a mask that permits
-                    // anything the kind does not is a corrupt entry, named like every other
-                    // bad field code. The independent Python decoder raises the same kind.
-                    if mask & !kind.aggregation_mask() != 0 {
-                        return Err(ProtoError::DictionaryEntryUnknownCode {
+                    // The mask is *derived* from the kind (§B.3), so it must equal the
+                    // derived mask exactly: an extra bit and a missing bit are both a
+                    // corrupt entry. Accepting a subset would widen it again on re-encode
+                    // and silently drop the sender's restriction, and the independent
+                    // Python decoder refuses both the same way.
+                    let expected_mask = kind.aggregation_mask();
+                    if mask != expected_mask {
+                        return Err(ProtoError::DictionaryEntryMask {
                             index,
-                            code: kind_code,
+                            mask,
+                            expected: expected_mask,
                         });
                     }
                     Entry::Metric {
@@ -835,7 +883,17 @@ impl Dictionary {
                 Entry::Label { kind, source, .. } => Entry::Label { kind, source, text },
                 Entry::Free { .. } => Entry::Free { text },
             };
-            dictionary.intern(entry)?;
+            // A wire list is the sender's numbering: entry `index` must *be* at index
+            // `index`. `intern` de-duplicates and re-labels (both correct for a live
+            // table), so a body that repeats an identity would come back with fewer
+            // entries and every later index shifted. That is a corrupt frame, not a table
+            // to normalise: refuse it instead of renumbering the sender's data.
+            let interned = dictionary.intern(entry)?;
+            let position =
+                u32::try_from(index).map_err(|_| ProtoError::RowCountOverflow(index as u64))?;
+            if interned != position {
+                return Err(ProtoError::DuplicateDictionaryEntry { index });
+            }
         }
         cursor.pad_to_end(8)?;
         Ok(dictionary)
@@ -1084,6 +1142,44 @@ mod tests {
     }
 
     #[test]
+    fn decode_keeps_every_wire_position_and_never_shortens_the_table() {
+        // The decoder's job is to reproduce the sender's numbering exactly. A body mixing
+        // all four entry kinds must come back with the same count and the same entry at
+        // every index — that is the property the duplicate check protects.
+        let entries = vec![
+            Entry::Entity {
+                inc: 5,
+                label: "/a".into(),
+            },
+            Entry::Metric {
+                facts: facts(),
+                name: "cpu.usage_usec".into(),
+            },
+            Entry::Label {
+                kind: 1,
+                source: 2,
+                text: "web".into(),
+            },
+            Entry::Free { text: "/b".into() },
+        ];
+        let body = Dictionary::new(9).encode_with(&entries).expect("encode");
+        let decoded = Dictionary::decode(&body, DEFAULT_ACTIVE_MAX).expect("decode");
+        assert_eq!(decoded.len(), 4, "no entry is merged, dropped or added");
+        assert_eq!(decoded.generation(), 9);
+        for (index, entry) in entries.iter().enumerate() {
+            let expected_index = u32::try_from(index).expect("index");
+            assert_eq!(
+                decoded.lookup(expected_index),
+                Ok(entry),
+                "entry {index} must stay at index {index}"
+            );
+        }
+        // ...and the decoded table re-encodes to the same bytes, which is the encoder's
+        // half of the same contract.
+        assert_eq!(decoded.encode().expect("re-encode"), body);
+    }
+
+    #[test]
     fn a_corrupt_dictionary_body_is_refused_every_way_it_can_be_corrupt() {
         let mut dictionary = Dictionary::new(2);
         dictionary
@@ -1147,17 +1243,34 @@ mod tests {
             Dictionary::decode(&bad, DEFAULT_ACTIVE_MAX).is_err(),
             "a body longer than its entries is corrupt"
         );
-        // A mask that permits an aggregation the entry's column kind does not.
+        // An aggregation mask that permits anything the entry's kind does not.
         let mut metrics = Dictionary::new(4);
         metrics.intern(metric("cpu.usage_usec")).expect("intern");
         let mut bad = metrics.encode().expect("encode");
         // generation + count + entry header, then unit, kind, scope, source, mask.
         let mask_at = 8 + 4 + 4;
-        // Bit 3 is `mean`, which a counter does not permit.
-        bad[mask_at..mask_at + 2].copy_from_slice(&(1u16 << 3).to_le_bytes());
+        let counter_mask = MetricKind::Counter.aggregation_mask();
+        // Bit 3 is `mean`, which a counter does not permit: an EXTRA bit.
+        bad[mask_at..mask_at + 2].copy_from_slice(&(counter_mask | (1u16 << 3)).to_le_bytes());
         assert_eq!(
             Dictionary::decode(&bad, DEFAULT_ACTIVE_MAX).map(|_| ()),
-            Err(ProtoError::DictionaryEntryUnknownCode { index: 0, code: 1 })
+            Err(ProtoError::DictionaryEntryMask {
+                index: 0,
+                mask: counter_mask | (1u16 << 3),
+                expected: counter_mask,
+            })
+        );
+        // A strict SUBSET is refused too: the mask is derived from the kind, so a missing
+        // bit would be re-widened on re-encode and the sender's restriction silently lost.
+        let mut bad = metrics.encode().expect("encode");
+        bad[mask_at..mask_at + 2].copy_from_slice(&0u16.to_le_bytes());
+        assert_eq!(
+            Dictionary::decode(&bad, DEFAULT_ACTIVE_MAX).map(|_| ()),
+            Err(ProtoError::DictionaryEntryMask {
+                index: 0,
+                mask: 0,
+                expected: counter_mask,
+            })
         );
 
         // A column kind code outside the table (metric entry).
@@ -1362,9 +1475,9 @@ mod tests {
     }
 
     #[test]
-    fn a_dictionary_that_repeats_one_identity_is_refused_at_decode() {
-        // Two entries with the same `inc` but different labels are legal (a relabel), but two
-        // metric entries with the same name and different facts are not.
+    fn a_relabel_keeps_one_entry_in_a_live_table_but_a_wire_repeat_is_refused() {
+        // Two entries with the same `inc` but different labels are a *live-table* relabel
+        // (plan v4 §C.1): the entry is rewritten and keeps its index.
         let mut good = Dictionary::new(1);
         good.intern(Entry::Entity {
             inc: 1,
@@ -1382,6 +1495,42 @@ mod tests {
             "a relabel rewrites the entry, it does not add one"
         );
         assert_eq!(good.lookup(0).map(Entry::text), Ok("b"));
+
+        // On the WIRE the same shape is a different thing: the sender's list is the
+        // sender's numbering, so entry 1 must live at index 1. A decoder that interned
+        // here would return index 0 and shift every later entry one position down.
+        let body = Dictionary::new(1)
+            .encode_with(&[
+                Entry::Entity {
+                    inc: 1,
+                    label: "a".into(),
+                },
+                Entry::Entity {
+                    inc: 1,
+                    label: "b".into(),
+                },
+                metric("cpu.usage_usec"),
+            ])
+            .expect("encode");
+        assert_eq!(
+            Dictionary::decode(&body, DEFAULT_ACTIVE_MAX).map(|_| ()),
+            Err(ProtoError::DuplicateDictionaryEntry { index: 1 }),
+            "a wire repeat is refused, never deduplicated into a shorter table"
+        );
+
+        // The same identity repeated at a LATER position (a metric name twice) is refused
+        // identically, so the check is not specific to incarnations.
+        let body = Dictionary::new(2)
+            .encode_with(&[
+                metric("cpu.usage_usec"),
+                Entry::Free { text: "/a".into() },
+                metric("cpu.usage_usec"),
+            ])
+            .expect("encode");
+        assert_eq!(
+            Dictionary::decode(&body, DEFAULT_ACTIVE_MAX).map(|_| ()),
+            Err(ProtoError::DuplicateDictionaryEntry { index: 2 })
+        );
     }
 
     #[test]
