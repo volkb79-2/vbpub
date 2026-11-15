@@ -216,15 +216,20 @@ def test_allowlist_refuses_force_binary_and_state_dir():
             HostActions(dry_run=True).run(["/opt/x/tools/cpu_benchmark.py", flag, "x"])
 
 
-def test_stage2_runs_it_after_swap_health_before_apt_timers_and_completion_note(tmp_path):
+def test_stage2_runs_it_after_swap_health_before_apt_timers_and_completion_note(tmp_path, monkeypatch):
     installer, disk = make_stage2(tmp_path)
     installer.config = replace(installer.config, run_io_benchmark=False, run_cpu_benchmark=True)
     order: list[str] = []
-    for name in ("_grow_root_to_plan", "_health_gate_swap_devices", "_release_apt_timers", "_run_cpu_benchmark"):
+    monkeypatch.setattr(installer, "_configure_control_plane_memory_min", lambda: None)
+    for name in (
+        "_grow_root_to_plan", "_health_gate_swap_devices", "_verify_control_plane_memory_min",
+        "_release_apt_timers", "_run_cpu_benchmark",
+    ):
         setattr(installer, name, (lambda n: lambda *a, **k: order.append(n))(name))
     installer._stage2()
     assert order == [
-        "_grow_root_to_plan", "_health_gate_swap_devices", "_run_cpu_benchmark", "_release_apt_timers"
+        "_grow_root_to_plan", "_health_gate_swap_devices", "_verify_control_plane_memory_min",
+        "_run_cpu_benchmark", "_release_apt_timers",
     ]
 
 

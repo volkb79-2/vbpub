@@ -39,6 +39,17 @@ maximum plus one before any tmpfiles write; the rendered maximum reaches the
 expected sysfs entry; existing zero, negative, bool, float, string, null, and
 injection cases remain rejected; and the registered `r0-r1` lane passes.
 
+## OPEN (DIV2-BL-08, 2026-11-15): apply control-plane MemoryMin to completed installations
+
+The `div2-memorymin` installer change writes fixed `MemoryMin` drop-ins on a
+fresh install or an incomplete stage-two resume. It does not retrofit hosts
+whose install-complete marker is already present. The two 8 GiB hosts in the
+2026-11-14 read-only measurement therefore still need either an in-place
+application of the documented drop-ins or a reinstall. This is operator-
+approved host work to schedule separately; do not run the installer or edit
+hosts as part of this backlog item. Keep fleetd-reserve's per-service list
+aligned with `docs/CONTROL-PLANE-MEMORY.md`.
+
 ## DONE in code, OPEN live (div2-data-area-v2, 2026-11-05): explicit `partitioning` plan
 
 Replaces the predecessor rule-sized layout and separate root-cap setting with

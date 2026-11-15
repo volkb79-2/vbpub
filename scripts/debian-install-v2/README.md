@@ -498,6 +498,15 @@ sysctl file carries a one-line "why" per value:
   `vbpub-min-free-floor.service` only when the kernel's computed value is
   lower. It never lowers the kernel's own value (large-RAM hosts compute more).
 
+### Control-plane service memory protection
+
+The default install writes fixed `MemoryMin` drop-ins for the SSH, Docker,
+containerd, and journald services, then checks the values with systemd. These
+are reclaim-protection floors, not usage limits, and do not scale with installed
+RAM. The exact service list, values, and evidence are in the
+[control-plane memory design](docs/DESIGN-GUIDE.md#control-plane-memory-protection)
+and [value table](docs/CONTROL-PLANE-MEMORY.md).
+
 ### io.cost (from the benchmark, not bfq)
 
 If the install-time io benchmark (`/var/lib/vbpub/bootstrap/io-benchmark.json`)

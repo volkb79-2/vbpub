@@ -156,6 +156,8 @@ def _stage2_harness(*, fail_before_cleanup: bool = False):
         save=lambda **kwargs: events.append(("state-save", kwargs))
     )
     installer._packages = lambda *args: events.append("packages")
+    installer._configure_control_plane_memory_min = lambda: events.append("memory-min-configure")
+    installer._verify_control_plane_memory_min = lambda: events.append("memory-min-readback")
     installer._verify_and_apply_root_shrink = lambda: True
     installer._run_io_benchmark = lambda **kwargs: events.append("benchmark")
     installer._disable_active_swap = lambda: events.append("swap-disable")
@@ -187,6 +189,8 @@ def test_cleanup_runs_after_successful_stage2_work():
         "cloud-init-cleanup",
         ("state-save", {"phase": "done", "status": "success"}),
     ]
+    assert events.index("memory-min-configure") < events.index("packages")
+    assert events.index("swap-health") < events.index("memory-min-readback") < events.index("cpu-benchmark")
 
 
 def test_fixed_completion_marker_is_written_before_cloud_init_clean():

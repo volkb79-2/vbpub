@@ -76,6 +76,41 @@ installer step, or update the entries manually and apply them with
 `systemd-tmpfiles --create --boot /etc/tmpfiles.d/vbpub-ksm.conf` as root. The
 `--boot` option is required to execute these `w!` rules.
 
+## Control-plane memory protection
+
+fleetd uses the sum of reported per-service `MemoryMin` values as the control-
+plane reservation, with a fixed profile constant only when a host reports no
+service values. The two 8 GiB hosts measured read-only on 2026-11-14 had about
+450–500 MB of hot control-plane RSS. This installer uses fixed service floors
+that total 544 MiB (570,425,344 bytes), above that aggregate measurement and
+well below 8 GiB. The values do not vary with installed RAM.
+
+The service-by-service RSS was not measured in the available installer
+evidence, so each floor is explicitly marked unmeasured in the
+[control-plane value table](CONTROL-PLANE-MEMORY.md). The floors are a
+documented conservative policy, not a claim about measured per-service use.
+`MemoryMin` is written only in `/etc/systemd/system/<unit>.d/` drop-ins and is
+a reclaim-protection floor; debian-install-v2 emits no `MemoryMax`,
+`MemoryHigh`, or `MemoryLow` for these units. Its post-install check compares
+`systemctl show -p MemoryMin <unit>` with the exact expected byte value.
+
+The installed-unit list is `ssh.service`, `docker.service`,
+`containerd.service`, and `systemd-journald.service`. The Docker pair is omitted
+when `run_docker_install=false`. The Debian image provides SSH and journald;
+the installer configures them but does not install their base packages.
+`cgprofiled.service` is installed by cgprofile, and `mdt-psi-guard.service` by
+mdt-cockpit host-setup; neither is installed or configured by
+debian-install-v2, so neither belongs in its table or drop-ins. FD-007's
+fleetd-reserve list uses the six actual systemd units
+`ssh.service`, `docker.service`, `containerd.service`,
+`systemd-journald.service`, `cgprofiled.service`, and
+`mdt-psi-guard.service`; this installer supplies the first four values and the
+owning packages supply the other two.
+
+An already completed installation needs a separately scheduled,
+operator-approved in-place drop-in application or reinstall. This change does
+not run against hosts or add a retrofit operation.
+
 ## Cloud-init cache cleanup policy
 
 `cloud_init_cleanup_mode` is part of the shared validated `Config`, not a

@@ -103,6 +103,30 @@ systemd-tmpfiles --create --boot /etc/tmpfiles.d/vbpub-ksm.conf
 
 The `--boot` option is required for the drop-in's `w!` entries.
 
+## Control-plane service MemoryMin floors
+
+The default install writes fixed systemd drop-ins for `ssh.service`,
+`docker.service`, `containerd.service`, and `systemd-journald.service`. Docker
+and containerd are included when `run_docker_install=true` (the default). The
+values are fixed across host RAM sizes; see the
+[control-plane value table](CONTROL-PLANE-MEMORY.md) and
+[design rationale](DESIGN-GUIDE.md#control-plane-memory-protection).
+
+After the installer completes, inspect the values systemd reports:
+
+```bash
+for unit in ssh.service docker.service containerd.service systemd-journald.service; do
+  systemctl show -p MemoryMin "$unit"
+done
+```
+
+Each installed unit should report its positive byte value from the table. If
+Docker installation was disabled, the Docker and containerd units are omitted.
+`MemoryMin` protects memory from reclaim; it is not a usage cap. A completed
+installation does not have a standalone retrofit verb, so existing hosts need a
+separately scheduled, operator-approved in-place drop-in application or
+reinstall.
+
 ## Disk plan and offline preview
 
 The one `partitioning` plan describes root, optional data, reserve, and the
