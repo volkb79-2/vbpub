@@ -125,9 +125,10 @@ def prose_before_time(
 ) -> list[NormalizedEvent]:
     """The exact complement of select.filter_since_time for a time-based
     --since: every timestamped event older than the resolved cutoff."""
+    # ExtractConfig validates `since_time` as a timezone-bearing ISO-8601
+    # stamp, and select.parse_timestamp is the same parser, so this cannot
+    # return None here.
     cutoff = select.parse_timestamp(config.since_time)
-    if cutoff is None:
-        raise ValueError("--since time must be a valid ISO-8601 timestamp")
     out: list[NormalizedEvent] = []
     for event in events:
         timestamp = select.parse_timestamp(event.timestamp)

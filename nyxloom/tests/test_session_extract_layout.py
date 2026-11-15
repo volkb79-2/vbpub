@@ -18,6 +18,7 @@ import pytest
 
 from nyxloom.cli_harness import main as harness_main
 from nyxloom.session_extract import extract, layout, presets, select
+from nyxloom.session_extract.events import EventKind, NormalizedEvent
 from nyxloom.session_extract.config import ExtractConfig
 
 FIX = Path(__file__).parent / "fixtures" / "readback"
@@ -288,6 +289,106 @@ def test_config_rejects_a_negative_tail_and_an_empty_goal_file_path():
         ExtractConfig(tail_prose_tokens=-1)
     with pytest.raises(ValueError):
         ExtractConfig(goal_file="   ")
+
+
+# --- the layout helpers' own edge branches ----------------------------------
+
+def _event(seq, kind, text, *, marker=None, timestamp="", meta=None):
+    return NormalizedEvent(
+        seq, marker or f"m{seq}", timestamp, kind, text, meta=meta or {},
+    )
+
+
+def test_goal_candidate_skips_records_that_are_not_operator_intent():
+    events = [
+        _event(1, EventKind.ASSISTANT_TEXT, "an assistant message comes first"),
+        _event(2, EventKind.TOOL_CALL, "a tool call"),
+        _event(3, EventKind.OPERATOR_TEXT, "check the queue", meta={"slash_command": "loop"}),
+        _event(4, EventKind.OPERATOR_TEXT, "<system-reminder>framing only</system-reminder>"),
+        _event(5, EventKind.OPERATOR_TEXT, "The real goal."),
+    ]
+    found = layout.goal_candidate(events)
+    assert found is not None
+    assert found[0].marker == "m5" and found[1] == "The real goal."
+    # A session with no operator intent at all has no anchor.
+    assert layout.goal_candidate(events[:2]) is None
+
+
+def test_prose_events_keeps_operator_and_qa_prose_and_drops_noise():
+    events = [
+        _event(1, EventKind.OPERATOR_TEXT, "operator"),
+        _event(2, EventKind.QA_PAIR, "interview"),
+        _event(3, EventKind.ASSISTANT_TEXT, "assistant"),
+        _event(4, EventKind.TOOL_CALL, "a tool call"),
+        _event(5, EventKind.ASSISTANT_TEXT, "[API ERROR: overloaded_error]"),
+    ]
+    shown = layout.prose_events(events, _layout_config())
+    assert [ev.text for ev in shown] == ["operator", "interview", "assistant"]
+    # hide_api_errors=False keeps the transport noise (the delta honours the
+    # same switch, so the tail must too).
+    assert len(layout.prose_events(events, _layout_config(hide_api_errors=False))) == 4
+
+
+def test_prose_before_time_complements_the_time_cut_exactly():
+    events = [
+        _event(1, EventKind.ASSISTANT_TEXT, "before", timestamp="2026-11-15T09:00:00Z"),
+        _event(2, EventKind.ASSISTANT_TEXT, "at the cut", timestamp="2026-11-15T09:05:00Z"),
+        _event(3, EventKind.ASSISTANT_TEXT, "after", timestamp="2026-11-15T09:10:00Z"),
+        _event(4, EventKind.ASSISTANT_TEXT, "undated"),
+    ]
+    # Strictly after the stamp goes in the delta; the stamp itself does NOT
+    # (filter_since_time is exclusive by default), so the tail keeps it -- a
+    # record is carried by exactly one of the two sections.
+    strict = layout.prose_before_time(
+        events, _layout_config(since_time="2026-11-15T09:05:00Z"),
+    )
+    assert [ev.text for ev in strict] == ["before", "at the cut"]
+    # With --since-time-inclusive the stamp belongs to the DELTA, so the
+    # exact complement drops it from the tail.
+    inclusive = layout.prose_before_time(
+        events,
+        _layout_config(since_time="2026-11-15T09:05:00Z", since_time_inclusive=True),
+    )
+    assert [ev.text for ev in inclusive] == ["before"]
+
+
+def test_build_requires_a_budget_and_skips_the_tail_when_it_is_zero():
+    with pytest.raises(ValueError, match="--budget-tokens"):
+        layout.build(
+            full_events=[], tail_region=[], config=ExtractConfig(), last_marker=None,
+        )
+    plan = layout.build(
+        full_events=[], tail_region=[],
+        config=_layout_config(tail_prose_tokens=0, goal_prompt=False),
+        last_marker="abc",
+    )
+    assert plan.tail is None
+    assert plan.footer_lines[-1] == "[readback marker: abc]"
+    assert all(layout.GOAL_HEADER not in section for section in plan.sections)
+
+
+def test_cut_header_names_the_cut_in_force():
+    assert layout.cut_header(_layout_config(since_marker="abc")).endswith(
+        "(strictly after marker abc)"
+    )
+    assert layout.cut_header(_layout_config(since_time="2026-11-15T09:05:00Z")).endswith(
+        "(after 2026-11-15T09:05:00Z)"
+    )
+    assert "no previous read-back marker was given" in layout.cut_header(_layout_config())
+
+
+def test_readback_without_the_layout_uses_the_plain_selection(capsys):
+    """--tail-prose-tokens 0 turns the layout OFF, so the run keeps the
+    pre-layout selection path (no anchor, no tail, no marker line)."""
+    code, out, err = _run(
+        capsys, LAYOUT, "--preset", "readback", "--tail-prose-tokens", "0",
+        "--budget-tokens", "30000", "--no-color",
+    )
+    assert code == 0, err
+    assert layout.GOAL_HEADER not in out
+    assert "## Recent prose before the cut" not in out
+    assert "[readback marker:" not in out
+    assert "[readback budget: limit=30000" in out
 
 
 def test_cut_index_resolves_the_marker_and_reports_absence():
