@@ -1,0 +1,393 @@
+{
+  "doc": "Hand-computed rate-derivation oracles (plan v4 C.3 and F.3 SP-2). Each case names the arithmetic in `doc`; the Rust model test and the independent Python reference both assert these values.",
+  "cases": [
+    {
+      "case": "one-second-linear",
+      "doc": "prev=1000 at t=2s, cur=1500 at t=3s: delta=500 over dt=1s -> 500/s; no missed sample.",
+      "nominal_interval_ns": 1000000000,
+      "previous": {
+        "quality": "ok",
+        "mono_ns": 2000000000,
+        "type": "u64",
+        "value": 1000
+      },
+      "current": {
+        "quality": "ok",
+        "mono_ns": 3000000000,
+        "type": "u64",
+        "value": 1500
+      },
+      "expect": {
+        "delta": 500,
+        "denominator": 1000000000,
+        "per_second": 500,
+        "missed": 0
+      }
+    },
+    {
+      "case": "three-second-gap-is-an-average",
+      "doc": "prev=0 at t=0, cur=3000 at t=3s: delta=3000 over dt=3s -> 1000/s. The delta is NOT attributed to a single nominal bucket (that would be 3000/s), and two nominal samples were missed: floor(3s/1s)-1 = 2.",
+      "nominal_interval_ns": 1000000000,
+      "previous": {
+        "quality": "ok",
+        "mono_ns": 0,
+        "type": "u64",
+        "value": 0
+      },
+      "current": {
+        "quality": "ok",
+        "mono_ns": 3000000000,
+        "type": "u64",
+        "value": 3000
+      },
+      "expect": {
+        "delta": 3000,
+        "denominator": 3000000000,
+        "per_second": 1000,
+        "missed": 2
+      }
+    },
+    {
+      "case": "sub-nominal-interval",
+      "doc": "prev=0 at t=0, cur=100 at t=0.25s: delta=100 over dt=0.25s -> 400/s; a shorter interval is not a missed sample.",
+      "nominal_interval_ns": 1000000000,
+      "previous": {
+        "quality": "ok",
+        "mono_ns": 0,
+        "type": "u64",
+        "value": 0
+      },
+      "current": {
+        "quality": "ok",
+        "mono_ns": 250000000,
+        "type": "u64",
+        "value": 100
+      },
+      "expect": {
+        "delta": 100,
+        "denominator": 250000000,
+        "per_second": 400,
+        "missed": 0
+      }
+    },
+    {
+      "case": "zero-delta-is-a-measurement",
+      "doc": "prev=cur=42 at t=1s and t=2s: delta=0 over dt=1s -> 0/s. A zero is a value, not an absence (plan \u00a7C.2).",
+      "nominal_interval_ns": 1000000000,
+      "previous": {
+        "quality": "ok",
+        "mono_ns": 1000000000,
+        "type": "u64",
+        "value": 42
+      },
+      "current": {
+        "quality": "ok",
+        "mono_ns": 2000000000,
+        "type": "u64",
+        "value": 42
+      },
+      "expect": {
+        "delta": 0,
+        "denominator": 1000000000,
+        "per_second": 0,
+        "missed": 0
+      }
+    },
+    {
+      "case": "zero-interval-has-no-rate",
+      "doc": "prev=5 and cur=9 at the SAME instant t=7: dividing by zero dt is not a rate, so there is none.",
+      "nominal_interval_ns": 1000000000,
+      "previous": {
+        "quality": "ok",
+        "mono_ns": 7,
+        "type": "u64",
+        "value": 5
+      },
+      "current": {
+        "quality": "ok",
+        "mono_ns": 7,
+        "type": "u64",
+        "value": 9
+      },
+      "expect_refusal": {
+        "reason": "zero-interval",
+        "reading": null
+      }
+    },
+    {
+      "case": "backwards-interval-has-no-rate",
+      "doc": "prev=5 at t=10, cur=9 at t=9: the monotonic clock went backwards. Never clamped to a tiny dt.",
+      "nominal_interval_ns": 1000000000,
+      "previous": {
+        "quality": "ok",
+        "mono_ns": 10,
+        "type": "u64",
+        "value": 5
+      },
+      "current": {
+        "quality": "ok",
+        "mono_ns": 9,
+        "type": "u64",
+        "value": 9
+      },
+      "expect_refusal": {
+        "reason": "negative-interval",
+        "reading": null
+      }
+    },
+    {
+      "case": "counter-reset",
+      "doc": "prev=100 at t=10, cur=7 at t=11: a decrease. The new reading is the baseline, no delta of either sign.",
+      "nominal_interval_ns": 1000000000,
+      "previous": {
+        "quality": "ok",
+        "mono_ns": 10,
+        "type": "u64",
+        "value": 100
+      },
+      "current": {
+        "quality": "ok",
+        "mono_ns": 11,
+        "type": "u64",
+        "value": 7
+      },
+      "expect_refusal": {
+        "reason": "counter-reset",
+        "reading": "current"
+      }
+    },
+    {
+      "case": "smallest-decrease-is-a-reset",
+      "doc": "prev=1, cur=0: the smallest possible decrease. Still a reset, never a wrapping delta near 2^64.",
+      "nominal_interval_ns": 1000000000,
+      "previous": {
+        "quality": "ok",
+        "mono_ns": 0,
+        "type": "u64",
+        "value": 1
+      },
+      "current": {
+        "quality": "ok",
+        "mono_ns": 1000000000,
+        "type": "u64",
+        "value": 0
+      },
+      "expect_refusal": {
+        "reason": "counter-reset",
+        "reading": "current"
+      }
+    },
+    {
+      "case": "u64-extremes",
+      "doc": "prev=0, cur=2^64-1 over dt=1s: the largest representable delta; no wrapping involved.",
+      "nominal_interval_ns": 1000000000,
+      "previous": {
+        "quality": "ok",
+        "mono_ns": 0,
+        "type": "u64",
+        "value": 0
+      },
+      "current": {
+        "quality": "ok",
+        "mono_ns": 1000000000,
+        "type": "u64",
+        "value": 18446744073709551615
+      },
+      "expect": {
+        "delta": 18446744073709551615,
+        "denominator": 1000000000,
+        "missed": 0
+      }
+    },
+    {
+      "case": "top-equal",
+      "doc": "prev=cur=2^64-1 over dt=1s: a zero delta at the top of the range.",
+      "nominal_interval_ns": 1000000000,
+      "previous": {
+        "quality": "ok",
+        "mono_ns": 0,
+        "type": "u64",
+        "value": 18446744073709551615
+      },
+      "current": {
+        "quality": "ok",
+        "mono_ns": 1000000000,
+        "type": "u64",
+        "value": 18446744073709551615
+      },
+      "expect": {
+        "delta": 0,
+        "denominator": 1000000000,
+        "per_second": 0,
+        "missed": 0
+      }
+    },
+    {
+      "case": "previous-absent",
+      "doc": "The previous reading is `absent`: the gap propagates the `absent` code and no rate is invented.",
+      "nominal_interval_ns": 1000000000,
+      "previous": {
+        "quality": "absent",
+        "mono_ns": 0,
+        "type": "u64"
+      },
+      "current": {
+        "quality": "ok",
+        "mono_ns": 1000000000,
+        "type": "u64",
+        "value": 5
+      },
+      "expect_refusal": {
+        "reason": "missing",
+        "reading": "previous"
+      }
+    },
+    {
+      "case": "current-unreadable",
+      "doc": "The current reading is `unreadable`: that code propagates unchanged.",
+      "nominal_interval_ns": 1000000000,
+      "previous": {
+        "quality": "ok",
+        "mono_ns": 0,
+        "type": "u64",
+        "value": 5
+      },
+      "current": {
+        "quality": "unreadable",
+        "mono_ns": 1000000000,
+        "type": "u64"
+      },
+      "expect_refusal": {
+        "reason": "missing",
+        "reading": "current"
+      }
+    },
+    {
+      "case": "current-not-sampled",
+      "doc": "The current reading was shed under load (`not-sampled`): a gap, not a zero.",
+      "nominal_interval_ns": 1000000000,
+      "previous": {
+        "quality": "ok",
+        "mono_ns": 0,
+        "type": "u64",
+        "value": 5
+      },
+      "current": {
+        "quality": "not-sampled",
+        "mono_ns": 1000000000,
+        "type": "u64"
+      },
+      "expect_refusal": {
+        "reason": "missing",
+        "reading": "current"
+      }
+    },
+    {
+      "case": "wrong-value-type",
+      "doc": "An f64 sample is not a counter reading; asking for a rate of it is a caller defect, not a panic.",
+      "nominal_interval_ns": 1000000000,
+      "previous": {
+        "quality": "ok",
+        "mono_ns": 0,
+        "type": "f64"
+      },
+      "current": {
+        "quality": "ok",
+        "mono_ns": 1000000000,
+        "type": "u64",
+        "value": 5
+      },
+      "expect_refusal": {
+        "reason": "wrong-value-type",
+        "reading": "previous"
+      }
+    },
+    {
+      "case": "reading-wins-over-interval",
+      "doc": "The current reading is `unreadable` AND the interval is backwards: the missing reading is reported first, because that is the fact a consumer can act on.",
+      "nominal_interval_ns": 1000000000,
+      "previous": {
+        "quality": "ok",
+        "mono_ns": 10,
+        "type": "u64",
+        "value": 5
+      },
+      "current": {
+        "quality": "unreadable",
+        "mono_ns": 9,
+        "type": "u64"
+      },
+      "expect_refusal": {
+        "reason": "missing",
+        "reading": "current"
+      }
+    },
+    {
+      "case": "interval-wins-over-reset",
+      "doc": "The interval is backwards AND the counter decreased: the interval is reported, since dt is unusable first.",
+      "nominal_interval_ns": 1000000000,
+      "previous": {
+        "quality": "ok",
+        "mono_ns": 10,
+        "type": "u64",
+        "value": 5
+      },
+      "current": {
+        "quality": "ok",
+        "mono_ns": 9,
+        "type": "u64",
+        "value": 3
+      },
+      "expect_refusal": {
+        "reason": "negative-interval",
+        "reading": null
+      }
+    },
+    {
+      "case": "zero-nominal-interval",
+      "doc": "A nominal interval of 0 cannot report gaps: it reports 0 missed samples rather than dividing by zero.",
+      "nominal_interval_ns": 0,
+      "previous": {
+        "quality": "ok",
+        "mono_ns": 0,
+        "type": "u64",
+        "value": 0
+      },
+      "current": {
+        "quality": "ok",
+        "mono_ns": 1000000000,
+        "type": "u64",
+        "value": 10
+      },
+      "expect": {
+        "delta": 10,
+        "denominator": 1000000000,
+        "per_second": 10,
+        "missed": 0
+      }
+    },
+    {
+      "case": "many-missed-samples",
+      "doc": "prev=0 at t=0, cur=3600 at t=3600s: delta=3600 over 3600s -> 1/s, with floor(3600/1)-1 = 3599 missed samples.",
+      "nominal_interval_ns": 1000000000,
+      "previous": {
+        "quality": "ok",
+        "mono_ns": 0,
+        "type": "u64",
+        "value": 0
+      },
+      "current": {
+        "quality": "ok",
+        "mono_ns": 3600000000000,
+        "type": "u64",
+        "value": 3600
+      },
+      "expect": {
+        "delta": 3600,
+        "denominator": 3600000000000,
+        "per_second": 1,
+        "missed": 3599
+      }
+    }
+  ]
+}

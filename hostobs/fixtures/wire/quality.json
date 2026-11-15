@@ -1,0 +1,46 @@
+{
+  "case": "quality-vocabulary",
+  "doc": "the closed quality vocabulary of plan v4 C.2; codes are append-only, names are the fixture names",
+  "codes": [
+    {
+      "code": 0,
+      "name": "ok",
+      "measurement": true
+    },
+    {
+      "code": 1,
+      "name": "absent",
+      "measurement": false
+    },
+    {
+      "code": 2,
+      "name": "unreadable",
+      "measurement": false
+    },
+    {
+      "code": 3,
+      "name": "stale",
+      "measurement": false
+    },
+    {
+      "code": 4,
+      "name": "reset",
+      "measurement": false
+    },
+    {
+      "code": 5,
+      "name": "not-sampled",
+      "measurement": false
+    },
+    {
+      "code": 6,
+      "name": "unsupported",
+      "measurement": false
+    },
+    {
+      "code": 7,
+      "name": "unknown-topology",
+      "measurement": false
+    }
+  ]
+}

@@ -7108,6 +7108,36 @@ class TestEstateSourceAssayPythonPathGuard:
                    for finding in neutered["findings"]), (
             "neutered Cowtree-import detector survived the non-vacuity guard")
 
+    def test_real_rust_r1_lane_declares_its_cowtree_route(self):
+        """Pin Assay's Rust R1 lane to the real file, with a hand-mutant.
+
+        The lane runs source Assay (whose lazy workspace importer is a Cowtree
+        importer) from the tester-unified-rust image. It must keep declaring
+        the Cowtree source on its effective PYTHONPATH like every sibling
+        Python lane; the estate guard has no per-lane opt-out.
+        """
+        repo = RUN_GATE_DIR.parent
+        project_root = repo / "assay"
+        config = tomllib.loads(
+            (project_root / "run-gate.toml").read_text(encoding="utf-8"))
+        lane = config["lanes"]["rust-r1-qualification"]
+        contexts = self._lane_python_contexts(lane, project_root)
+        assert contexts, "the lane no longer runs a Python command"
+        assert self._lane_uses_python(repo, lane, project_root)
+        assert self._lane_route(repo, project_root, lane, contexts) \
+            == "Cowtree source on effective PYTHONPATH"
+
+        mutant = dict(lane)
+        mutant["argv"] = [
+            item.replace(":{worktree}/libraries/cowtree/src", "")
+            for item in lane["argv"]
+        ]
+        assert mutant["argv"] != lane["argv"], "hand mutation changed nothing"
+        mutant_contexts = self._lane_python_contexts(mutant, project_root)
+        assert mutant_contexts, "the mutated lane no longer runs Python"
+        assert self._lane_route(repo, project_root, mutant, mutant_contexts) \
+            is None, "lane without the Cowtree source survived the route check"
+
 
 class TestConjunctionOverrideGuard:
     """RG-1: a conjunction/container command lane whose argv carries no

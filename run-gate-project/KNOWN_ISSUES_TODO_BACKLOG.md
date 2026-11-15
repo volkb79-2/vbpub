@@ -172,6 +172,7 @@ SPEC §9.
 | RG-277 | Run-Gate cannot forward fleetd's explicit candidate-owner manifest to Assay's strict store merge | Enhancement | OPEN 2026-11-13; fleetd MVP-B-lite collects candidate files only |
 | RG-278 | Run-Gate 25.6.0 KSM R2 survivor test debt | Major | CLOSED 2026-11-14; behavioral tests kill all 17 non-equivalent survivors and document the six equivalents |
 | RG-281 | the repo-level run-gate skill has no install or check path, so an installed copy silently rots | Enhancement | OPEN 2026-11-15 |
+| RG-282 | A package that adds or edits a lane declaration in another project's `run-gate.toml` merges without the run-gate-project `selftest` lane (gate-coverage gap) | Major | OPEN 2026-11-15; the instance (assay `rust-r1-qualification`) is fixed, the coverage rule is not built |
 ---
 
 ## RG-1 — conjunction lanes silently drop `--worktree` and `--allow-dirty`
@@ -8654,3 +8655,17 @@ install, which is the only mechanism that cannot be forgotten.
 against a tmp destination; `check` goes red on a stale copy and green after
 install; the existing `test_assay_resume_state_contract_is_documented_in_spec_and_skill`
 still passes against the packaged path; and the docs name the install step.
+
+## RG-282 — lane declarations in any project merge without the run-gate-project `selftest` lane (gate-coverage gap)
+
+**Status:** OPEN (filed 2026-11-15); severity: major (a merged package left `main` red in the run-gate-project `selftest` lane; found only by a later estate run). Same family as cmru KI-174 (`cmru/KNOWN_ISSUES_TODO_BACKLOG.md`): an estate-wide guard lives in one project and the packages that can break it are judged only by their own project lane set. Coordinate the selection mechanism with KI-174; one path-triggered mechanism should serve both.
+
+**Observed (run).** `main` at 4503bc7e1 fails `selftest` with `assay/run-gate.toml:[lanes.rust-r1-qualification] runs Python in a project with Cowtree importers but declares no Cowtree source or verified Assay artifact route`. The merged assay RustAdapter package added that lane (with `PYTHONPATH="src"` only); its own gate ran the assay lanes, not run-gate-project `selftest`.
+
+**Root cause.** `TestEstateSourceAssayPythonPathGuard` in `run-gate-project/tests/test_run_gate.py` reads every project's `run-gate.toml` and Python sources (and `assay/pyproject.toml`, `run_gate.py`), so it constrains lane declarations everywhere. No lane selection ties an edit of a `run-gate.toml` outside run-gate-project to that lane. The guard did its job; the package simply never ran it.
+
+**Instance fix.** The assay lane now declares `PYTHONPATH="src:{worktree}/libraries/cowtree/src"`, as its sibling Python lanes do. The guard was not changed: the lane imports source Assay, whose lazy copy-on-write workspace importer is a Cowtree importer, and the guard deliberately has no per-lane opt-out. The new test `test_real_rust_r1_lane_declares_its_cowtree_route` pins that lane against the real file with a hand-mutant.
+
+**Wanted.** A rule, enforced mechanically rather than by reviewer memory, that a change which adds or edits a lane in any tracked `run-gate.toml`, or edits the files the estate guards scan (`run-gate-project/run_gate.py`, `assay/pyproject.toml`, `assay/src/**/*.py` import statements of `cowtree`), includes the run-gate-project `selftest` lane in its gate set. The cheapest form is a path-triggered lane requirement in package-gate selection (run-gate or the nyxloom merge step) with the trigger list derived from the guards' own scan selection so the two cannot drift; the fallback is a checklist line in the package brief template.
+
+**Close when.** A change that adds a lane to `assay/run-gate.toml` is refused or auto-extended with the run-gate-project `selftest` lane, shown by a test of the selection rule, and the trigger list is derived from the guard's own file selection.
