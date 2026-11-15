@@ -273,6 +273,15 @@ def test_native_assay_r2_lane_matches_b535_scope_without_changing_b105_lanes() -
     assay_lanes = tomllib.loads(ASSAY_FILE.read_text(encoding="utf-8"))["lanes"]
     parsed_lanes = load_lane_file(ASSAY_FILE)
 
+    assert list(parsed_lanes.lanes) == [
+        "tester-unified",
+        "self-qualification",
+        "assay-r2",
+        "self-qualification-preflight",
+        "self-qualification-provisional",
+        "analysis",
+        "analysis-r2",
+    ]
     gate_lane = run_gate["assay-r2"]
     assert gate_lane["kind"] == "assay"
     assert gate_lane["assay_lane"] == "assay-r2"
