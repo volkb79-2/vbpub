@@ -10,6 +10,11 @@ a survivor), and `--dry-run` lists every patch so it can be spotted by inspectio
 
     python3 -I docs/hand-mutants/m1c-mutants.py            # the full campaign
     python3 -I docs/hand-mutants/m1c-mutants.py --dry-run  # the patches only
+    python3 -I docs/hand-mutants/m1c-mutants.py --only M1c-13  # one finding's patches, re-run
+
+The fix round's findings (B1, B2, B4 and M1–M6) are rows M1c-13 … M1c-22 in the same table;
+`--only` exists so a re-run of one finding after an edit costs a few patches rather than the
+whole campaign, and never replaces the full run in the evidence.
 
 The nine failures the brief names, each with the test that kills it:
 
@@ -24,6 +29,16 @@ The nine failures the brief names, each with the test that kills it:
 | M1c-7 | a dropped job not counted | `the_queue_drops_the_oldest_job_first_and_counts_every_drop` |
 | M1c-8 | a foreign file deleted, and a foreign corpus adopted (two patches) | `a_foreign_file_a_link_and_a_directory_are_left_alone_and_reported`, `a_segment_of_another_corpus_in_this_directory_is_reported_and_never_touched` |
 | M1c-9 | a symlink followed | `a_link_is_never_read_written_truncated_or_removed` |
+| M1c-13 | retirement ignores the queue's pending ids, or the unwritten pins (two patches) | `a_queued_job_keeps_an_id_live_after_its_segment_is_evicted`, `a_minted_id_is_live_until_its_record_reaches_a_segment_and_only_then_retirable` |
+| M1c-14 | a stale `.seg.open` twin is adopted beside its sealed segment | `a_stale_open_twin_of_a_sealed_segment_is_removed_never_counted_or_reopened` |
+| M1c-15 | a file past the read bound is skipped instead of quarantined and counted | `a_file_past_the_bound_is_quarantined_and_counted_not_skipped` |
+| M1c-16 | a zero-filled tail is quarantined as corrupt (Rust and Python) | `a_zero_filled_tail_is_an_unwritten_tail_and_the_valid_prefix_stays_readable`, `a_zero_filled_tail_is_an_unwritten_tail_not_a_corrupt_segment`, `test_a_zero_filled_tail_is_an_unwritten_tail_and_an_other_tail_is_corrupt` |
+| M1c-17 | the ring is appended at the end rather than inserted in order | `a_clock_step_backwards_still_leaves_the_ring_oldest_first` |
+| M1c-18 | two mounts at one point resolve to the first line, not the last | `the_last_mount_at_a_point_is_the_one_the_kernel_exposes` |
+| M1c-19 | the tmpfs check compares the caller's spelling without resolving it | `a_path_that_is_relative_contains_a_parent_or_crosses_a_link_is_refused` |
+| M1c-20 | an unreadable header aborts the whole tier scan | `a_rescan_keeps_going_when_one_store_file_cannot_be_read` |
+| M1c-21 | a refused seal is not restored | `a_failed_seal_puts_the_ring_entry_and_the_handle_back_and_leads_no_temp_behind` |
+| M1c-22 | a created segment or directory is world readable (two patches) | `files_and_directories_the_store_creates_are_owner_only` |
 
 The verdicts — including the one patch that survived the first pass (the ring's order) and the
 test that killed it — are recorded in [`../HAND-MUTANTS-M1C.md`](../HAND-MUTANTS-M1C.md).
@@ -114,8 +129,8 @@ MUTANTS: tuple[Mutant, ...] = (
         "M1c-5",
         "the seal copies onto the final name, with no temp name and no rename",
         "crates/store/src/fsio.rs",
-        "            .open(temp_path)\n            .map_err(|error| StoreError::io(\"create\", temp, &error))?;",
-        "            .open(&sealed_path)\n            .map_err(|error| StoreError::io(\"create\", sealed, &error))?;",
+        "        let copied = self.copy_with_footer(open, &open_path, temp, &temp_path, footer, max_bytes);",
+        "        let copied = self.copy_with_footer(open, &open_path, sealed, &sealed_path, footer, max_bytes);",
         "store",
     ),
     # ------------------------------------------------------- the fix round
@@ -195,10 +210,10 @@ MUTANTS: tuple[Mutant, ...] = (
     ),
     Mutant(
         "M1c-20",
-        "one unreadable segment aborts the whole tier scan (M5)",
+        "an unreadable header aborts the whole tier scan instead of being reported (M5)",
         "crates/store/src/tier.rs",
-        "                Err(error) => {\n                    // A single unreadable segment must not brick the tier's open, and it must\n                    // not be silently dropped either: it is reported and left where it is,\n                    // because the store cannot prove what it is without reading it.\n                    unreadable.push(entry.name.clone());",
-        "                Err(error) => {\n                    return Err(error);\n                    #[allow(unreachable_code)]\n                    unreadable.push(entry.name.clone());",
+        "                Err(error) => {\n                    // A header that could not be *read* (EACCES, EIO, a race, a file that grew\n                    // past the bound between the listing and the read) is a different fact:",
+        "                Err(error) => {\n                    return Err(error);\n                    #[allow(unreachable_code, unused_variables)]\n                    // A header that could not be *read* is a different fact:",
         "store",
     ),
     Mutant(
@@ -410,6 +425,11 @@ def run_python() -> tuple[bool, list[str]]:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--dry-run", action="store_true", help="print the patches and exit")
+    parser.add_argument(
+        "--only",
+        metavar="FINDING",
+        help="run only the patches whose finding id is this (a focused re-run, never a substitute)",
+    )
     args = parser.parse_args()
     if args.dry_run:
         for mutant in MUTANTS:
@@ -424,6 +444,8 @@ def main() -> int:
         return 2
     survivors = 0
     for mutant in MUTANTS:
+        if args.only and mutant.finding != args.only:
+            continue
         path = ROOT / mutant.path
         original = path.read_text(encoding="utf-8")
         if mutant.old not in original:

@@ -52,15 +52,16 @@ file certifies a segment the Rust reader refuses.
 
 ## Verdicts
 
-Fifteen patches, **all fifteen killed**, and no patch left in the tree (every restore is
-SHA-256-verified). All rows were kills on the first complete run **except M1c-3**, which
-survived: flipping the ring's sort comparator left every existing test green, because every
-test that evicted happened to list the files in the order the ring would have sorted them
-anyway. The answer was a test that pins the *order* rather than the *outcome of one eviction*
+Fifteen patches in the first round, **all fifteen killed**, and no patch left in the tree (every
+restore is SHA-256-verified). All rows were kills on the first complete run **except M1c-3**,
+which survived: flipping the ring's sort comparator left every existing test green, because
+every test that evicted happened to list the files in the order the ring would have sorted
+them anyway. The answer was a test that pins the *order* rather than the *outcome of one eviction*
 — `eviction_takes_the_oldest_segment_and_the_ring_is_ordered_by_start_not_by_arrival` asserts
 `oldest()`/`newest()` by name, then evicts at one segment over the cap and asserts that the
 bucket-0 segment and never the bucket-60 one is gone. The campaign was re-run from scratch
-after the new test landed.
+after the new test landed. The fix round added thirteen patches (rows M1c-13 … M1c-22 below);
+all twenty-eight now run in one campaign, and the fix-round run killed all of them.
 
 | # | patch | mutation | verdict | tests that failed |
 |---|---|---|---|---|
@@ -90,6 +91,36 @@ are kept.
 Rows 5 and 6 are the two halves of M1c-4: the *reader* (which must report and truncate) and
 the *tier's rescan* (which must call the reader and keep the count). A fix in one would not
 save the other, and the row that survived would have been the one nobody looked at.
+
+## The fix round's rows (M1c-13 … M1c-22)
+
+The Sonnet review of the first round (`reports/pi-hostobs-m1c-REVIEW.md`) left four blockers
+and six major findings. B3 was fixed in the review's own commit; the other nine are rows here,
+replayed on the fix-round head. **All twenty-eight stored patches were killed**, each restore
+verified by SHA-256, and the two patches that had gone stale while the code moved (`M1c-5`'s
+seal copy and the first `M1c-20` fragment) were repaired before the definitive run rather than
+counted as survivors:
+
+| # | finding | patch | verdict | the test that failed |
+|---|---|---|---|---|
+| M1c-13 | B1 | retirement drops the queue's pending ids | killed | `store::tests::a_queued_job_keeps_an_id_live_after_its_segment_is_evicted` |
+| M1c-13 | B1 | retirement drops the unwritten pins | killed | `store::tests::a_minted_id_is_live_until_its_record_reaches_a_segment_and_only_then_retirable` |
+| M1c-14 | B2 | the stale open twin is adopted beside its sealed segment | killed | `tier::tests::a_stale_open_twin_of_a_sealed_segment_is_removed_never_counted_or_reopened` |
+| M1c-15 | B4 | a file past the bound is skipped, not counted | killed | `tier::tests::a_file_past_the_bound_is_quarantined_and_counted_not_skipped` |
+| M1c-16 | M6 | a zero-filled tail is corrupt (Rust) | killed | `segment::tests::a_zero_filled_tail_is_an_unwritten_tail_and_the_valid_prefix_stays_readable`; `tier::tests::a_zero_filled_tail_is_an_unwritten_tail_not_a_corrupt_segment` |
+| M1c-16 | M6 | the Python reference calls a zero-filled tail corrupt | killed | `FAIL: test_a_zero_filled_tail_is_an_unwritten_tail_and_an_other_tail_is_corrupt` |
+| M1c-17 | M1 | the ring is appended at the end | killed | `tier::tests::a_clock_step_backwards_still_leaves_the_ring_oldest_first` |
+| M1c-18 | M4 | the first mount at a point wins | killed | `tmpfs::tests::the_last_mount_at_a_point_is_the_one_the_kernel_exposes` |
+| M1c-19 | M4 | the tmpfs check does not resolve the path | killed | `tmpfs::tests::a_path_that_is_relative_contains_a_parent_or_crosses_a_link_is_refused` |
+| M1c-20 | M5 | an unreadable header aborts the scan | killed | `tier::tests::a_rescan_keeps_going_when_one_store_file_cannot_be_read` |
+| M1c-21 | M2 | a refused seal is not restored | killed | `tier::tests::a_failed_seal_puts_the_ring_entry_and_the_handle_back_and_leads_no_temp_behind` |
+| M1c-22 | M3 | `FILE_MODE` is 0666 | killed | `tier::tests::files_and_directories_the_store_creates_are_owner_only` |
+| M1c-22 | M3 | `DIR_MODE` is 0777 | killed | `tier::tests::files_and_directories_the_store_creates_are_owner_only` |
+
+Two rows of the original fifteen also changed their killing test: `M1c-4`'s tier patch now
+kills on two tests (the repaired tail test and the new zero-tail one, because the repair branch
+is shared), and `M1c-2`'s expiry patch also fails the three new retirement tests, which drive
+clock moves through a store. Neither is a weaker guard; both are more tests on one behaviour.
 
 ## What the campaign does not cover
 
