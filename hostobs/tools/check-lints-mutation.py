@@ -136,6 +136,28 @@ def main() -> int:
         )
         expect_refusal(case, "write in a planted file", "planted.rs uses '.write(true)'")
 
+        # Every other way to change the filesystem is refused outside fsio too, not only the
+        # `.write(true)` and `create_dir(` forms above.
+        other_forms = (
+            ('std::fs::write("x", b"")', "fs::write("),
+            ('std::fs::File::create("x")', "File::create("),
+            ('std::fs::remove_file("x")', "remove_file("),
+            ('std::fs::rename("a", "b")', "fs::rename("),
+            ('std::fs::OpenOptions::new().append(true).open("x")', ".append(true)"),
+            ('std::fs::OpenOptions::new().create_new(true).open("x")', ".create_new(true)"),
+            ('std::fs::File::open("x").unwrap().set_len(0)', ".set_len("),
+            ('std::fs::set_permissions("x", std::fs::metadata("x").unwrap().permissions())', "set_permissions("),
+        )
+        for expression, token in other_forms:
+            case = fresh()
+            insert(
+                case,
+                "crates/store/src/queue.rs",
+                "use std::collections::VecDeque;",
+                f"use std::collections::VecDeque;\nfn _forbidden() {{ let _ = {expression}; }}\n",
+            )
+            expect_refusal(case, f"{token} in queue.rs", f"queue.rs uses {token!r}")
+
         case = fresh()
         insert(
             case,
@@ -153,9 +175,9 @@ def main() -> int:
         assert ".write(true)" in expected, "fsio.rs must be the writer this check exercises"
         expect_ok(case, "fsio.rs as the allowed write path")
     print(
-        "lint mutation check: 5 refusals, 2 allowances, all as expected "
-        "(write outside fsio, mkdir, Command::new, planted file, mutants::skip; "
-        "fsio.rs and crates/act allowed)"
+        "lint mutation check: 13 refusals, 2 allowances, all as expected "
+        "(write outside fsio, mkdir, Command::new, planted file, mutants::skip, "
+        "eight further filesystem-mutating forms; fsio.rs and crates/act allowed)"
     )
     return 0
 

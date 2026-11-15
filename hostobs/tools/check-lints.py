@@ -45,6 +45,22 @@ _FORBIDDEN_SOURCE_TOKENS = (
     "create_dir_all(",
     "remove_dir(",
     "remove_dir_all(",
+    # The other ways to mutate the filesystem without `.write(true)` (review of pi-hostobs-m1c:
+    # the M0 token set accepted `std::fs::write`, `File::create`, `remove_file`, `fs::rename`,
+    # `set_len`, `set_permissions`, `.append(true)` and `.create_new(true)` anywhere).
+    "fs::write(",
+    "File::create(",
+    "File::create_new(",
+    ".create_new(true)",
+    ".append(true)",
+    ".truncate(true)",
+    "remove_file(",
+    "fs::rename(",
+    "fs::copy(",
+    "fs::hard_link(",
+    "fs::symlink(",
+    ".set_len(",
+    "set_permissions(",
 )
 
 

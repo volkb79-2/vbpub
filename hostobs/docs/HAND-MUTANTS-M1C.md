@@ -102,5 +102,5 @@ save the other, and the row that survived would have been the one nobody looked 
   (deliberately out of this package's scope), and `HOB-28` the O(records) scan that a range
   query pays per candidate file.
 * The `lint` lane's own boundary check is mutated separately, by
-  `tools/check-lints-mutation.py` (five planted writes and two allowances), because a lint
+  `tools/check-lints-mutation.py` (thirteen planted writes, one per forbidden form, and two allowances), because a lint
   that cannot go red on a planted write certifies nothing (plan v4 §A.3).
