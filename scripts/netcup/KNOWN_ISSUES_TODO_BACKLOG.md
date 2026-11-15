@@ -62,6 +62,7 @@ docs landed together.
 | NC-54 | Pre-reinstall helpers use a fixed release-program root; remote-gate's output root is configurable | Minor | OPEN 2026-11-13 |
 | NC-55 | A deterministic budget-exceeded candidate is reported as stalled | Should-fix | OPEN 2026-11-13 |
 | NC-56 | T3 bundle import can omit release tags needed to derive the required Assay version | Should-fix | OPEN 2026-11-14 |
+| NC-57 | fleetd had no host-install script, and the docs prescribed a system-Python pip install that Debian 13 refuses | Should-fix | FIXED 2026-11-15 (install-fleetd.sh; live host acceptance OPEN) |
 
 ---
 
@@ -1366,3 +1367,30 @@ exit 4, and the saved candidate evidence is retained in both cases.
 **Where.** `scripts/netcup/runner/sync-from-devcontainer`, its focused tests, and the P4 import instructions in `scripts/netcup/runner/README.md`. The Run-Gate project also documents this import at `run-gate-project/docs/DESIGN-lane-rework-2026-11.md` §3.6; keep that consumer guidance synchronized when this entry is implemented. This issue is filed here because the netcup project owns the sync script.
 
 **Close when.** A branch-plus-all-tags bundle imports with the required release tags present, an incomplete bundle is diagnosed before the lane starts, and the runner README and the referenced Run-Gate consumer instructions describe the same tag-complete recipe.
+
+## NC-57 — fleetd had no host-install script, and the docs prescribed a system-Python pip install
+
+**Status:** FIXED (filed and implemented 2026-11-15, `pi-fleetd-followups`); live
+host acceptance remains a host-board step (no host was touched).
+
+**Problem.** `fleetd` made its wheel depend on `cli-extended`, so a managed host
+needs two wheels. The docs described that install but no runner script existed,
+and both `fleetd/README.md` and `fleetd/docs/SPEC.md` told an operator to run
+`python3 -m pip install` — which Debian 13 refuses for the system Python
+(PEP 668). There was also no idempotent way to tell whether a host already had
+the exact reviewed wheel.
+
+**Fix.** `runner/install-fleetd.sh` verifies both wheel SHA-256 inputs before
+writing, installs offline (`--no-index --no-deps`) into
+`/opt/fleetd/<version>/venv`, links `/usr/local/bin/fleet`, is idempotent for
+the same hashes and reinstalls when a hash changes (`--check` verifies the
+inputs and reports current/not-current with exit 0/1 without writing). It
+refuses a symlinked install path, an incomplete existing venv, and a
+non-symlink file at the command path; it never uses the system Python and
+touches nothing outside its prefix. It mirrors the accepted
+`install-augeaswrap.sh` shape, including `lib.sh` + `identity_check`.
+
+**Where.** `scripts/netcup/runner/install-fleetd.sh`,
+`scripts/netcup/tests/test_install_fleetd.py` (hermetic: fake wheels, fake venv,
+temp prefix only), `scripts/netcup/runner/README.md`, `scripts/netcup/CONSUMERS.md`,
+and the three fleetd documents that carry the install steps.

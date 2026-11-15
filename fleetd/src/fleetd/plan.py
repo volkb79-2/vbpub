@@ -12,6 +12,12 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from .contracts import (
+    CONTROL_PLANE_ABSENT_LOAD_STATES,
+    CONTROL_PLANE_SERVICE_MEMORY_MIN_CEILING_FACTOR,
+    CONTROL_PLANE_SERVICE_MEMORY_MIN_CEILINGS,
+    CONTROL_PLANE_SERVICE_MEMORY_MIN_DEFAULTS,
+    CONTROL_PLANE_SERVICE_MEMORY_MIN_TOTAL_CEILING_BYTES,
+    CONTROL_PLANE_SERVICE_OPTIONAL_UNITS,
     CONTROL_PLANE_SERVICE_UNITS,
     DEFAULT_CONTROL_PLANE_PROFILE_RESERVE_BYTES,
     ContractError,
@@ -33,6 +39,23 @@ class CandidateInput:
     measured_on_host: str | None
     memory_crash_evidence: bool
     memory_crash_retries: int
+
+
+# The closed vocabulary of one service's reserve provenance, in the order the
+# plan evidence uses it. Documented in docs/SPEC.md and docs/DESIGN-GUIDE.md; a
+# docs test fails when a value a reader will see is not stated there.
+RESERVE_SOURCES = ("reported", "default", "absent-optional")
+
+
+@dataclass(frozen=True)
+class ControlPlaneReserve:
+    """One host's control-plane reserve and the provenance of every term."""
+
+    bytes: int
+    source: str
+    missing: tuple[str, ...]
+    services: tuple[dict[str, Any], ...]
+    reason: str | None = None
 
 
 @dataclass(frozen=True)
@@ -70,25 +93,115 @@ def _host_id(value: object, where: str) -> str:
     return value
 
 
-def _control_plane_reserve(facts: Mapping[str, Any]) -> tuple[int, str, list[str]]:
-    """Return the complete service floor, or this host profile's fixed reserve."""
+def _control_plane_reserve(facts: Mapping[str, Any]) -> ControlPlaneReserve:
+    """Resolve one reserve term per control-plane service, with its provenance.
+
+    Each listed service contributes exactly one of: its own reported positive
+    ``MemoryMin`` (``reported``); the documented per-service default for that
+    service when its own fact is unavailable or untrustworthy (``default``); or
+    zero when the service is declared optional and systemd reports its unit as
+    absent (``absent-optional``). The total is the sum of those contributions,
+    so it can never be below the sum of the values actually reported.
+
+    The fixed profile constant is used ONLY when no per-service fact is
+    available at all -- the ``service_memory_min`` table is missing, malformed
+    as a whole, or has no listed unit in it, which is the failed-collection
+    case. A table with per-service entries always yields per-service terms.
+    """
     control_plane = facts["control_plane"]
     service_facts = control_plane.get("service_memory_min")
-    reported: list[int] = []
-    missing: list[str] = []
-    for unit in CONTROL_PLANE_SERVICE_UNITS:
-        service = service_facts.get(unit) if isinstance(service_facts, Mapping) else None
-        value = service.get("memory_min_bytes") if isinstance(service, Mapping) else None
-        if type(value) is int and value > 0:
-            reported.append(value)
-        else:
-            missing.append(unit)
-    if not missing:
-        return sum(reported), "service-memory-min", []
     profile_reserve = control_plane.get(
         "profile_reserve_bytes", DEFAULT_CONTROL_PLANE_PROFILE_RESERVE_BYTES,
     )
-    return profile_reserve, "profile-constant", missing
+    units = list(CONTROL_PLANE_SERVICE_UNITS)
+    if not _has_per_service_fact(service_facts, units):
+        # No per-service fact at all: collection did not run, the table did not
+        # arrive, or every query failed (a table of rows that carry neither a
+        # positive MemoryMin nor a load state). This is the ONE case that still
+        # uses the fixed profile constant; six defaults would silently lower the
+        # reserve on exactly the host whose systemd could not be asked.
+        return ControlPlaneReserve(
+            bytes=profile_reserve,
+            source="profile-constant",
+            missing=tuple(units),
+            services=(),
+            reason=None,
+        )
+
+    services: list[dict[str, Any]] = []
+    missing: list[str] = []
+    total = 0
+    for unit in units:
+        service = service_facts.get(unit)
+        reported_bytes = service.get("memory_min_bytes") if isinstance(service, Mapping) else None
+        load_state = service.get("load_state") if isinstance(service, Mapping) else None
+        reported = type(reported_bytes) is int and reported_bytes > 0
+        if reported and reported_bytes <= CONTROL_PLANE_SERVICE_MEMORY_MIN_CEILINGS[unit]:
+            source, contribution = "reported", reported_bytes
+        elif unit in CONTROL_PLANE_SERVICE_OPTIONAL_UNITS and load_state in CONTROL_PLANE_ABSENT_LOAD_STATES:
+            # Declared optional and systemd reports the unit absent: this host
+            # legitimately has no such service, so it promises nothing.
+            source, contribution = "absent-optional", 0
+        else:
+            # Either no positive fact, or a positive value above its own sane
+            # ceiling (named in the refusal below). Fall back to that service's
+            # documented floor; never to zero, which would silently lower the
+            # reserve.
+            source, contribution = "default", CONTROL_PLANE_SERVICE_MEMORY_MIN_DEFAULTS[unit]
+        if source != "reported":
+            # Includes a reported value that was refused as above its ceiling: the
+            # term is a default, so reserve_source must not say "all reported".
+            missing.append(unit)
+        total += contribution
+        services.append({"unit": unit, "source": source, "bytes": contribution})
+
+    refusal = _reserve_refusal(service_facts, units, total)
+    source_name = "service-memory-min" if not missing else "per-service-default"
+    return ControlPlaneReserve(total, source_name, tuple(missing), tuple(services), refusal)
+
+
+def _has_per_service_fact(service_facts: object, units: list[str]) -> bool:
+    """True when at least one listed unit row carries a usable fact.
+
+    A usable fact is a positive integer ``MemoryMin`` or a string ``load_state``.
+    Rows holding only nulls with reasons say the query failed, not what the unit
+    protects; a table made only of those is the failed-collection case.
+    """
+    if not isinstance(service_facts, Mapping):
+        return False
+    for unit in units:
+        service = service_facts.get(unit)
+        if not isinstance(service, Mapping):
+            continue
+        value = service.get("memory_min_bytes")
+        if (type(value) is int and value > 0) or isinstance(service.get("load_state"), str):
+            return True
+    return False
+
+
+def _reserve_refusal(
+    service_facts: Mapping[str, Any], units: list[str], total: int,
+) -> str | None:
+    """Refuse out-of-bound reported values instead of trusting or clamping them."""
+    for unit in units:
+        service = service_facts.get(unit)
+        value = service.get("memory_min_bytes") if isinstance(service, Mapping) else None
+        if type(value) is int and value > CONTROL_PLANE_SERVICE_MEMORY_MIN_CEILINGS[unit]:
+            ceiling = CONTROL_PLANE_SERVICE_MEMORY_MIN_CEILINGS[unit]
+            default = CONTROL_PLANE_SERVICE_MEMORY_MIN_DEFAULTS[unit]
+            return (
+                f"{unit} reports MemoryMin {value} bytes above the documented per-service ceiling "
+                f"of {ceiling} bytes ({CONTROL_PLANE_SERVICE_MEMORY_MIN_CEILING_FACTOR} x its "
+                f"{default}-byte default); the reported value is not trusted and the host is refused"
+            )
+    if total > CONTROL_PLANE_SERVICE_MEMORY_MIN_TOTAL_CEILING_BYTES:
+        return (
+            f"the per-service MemoryMin total of {total} bytes exceeds twice the documented "
+            f"control-plane floors ({CONTROL_PLANE_SERVICE_MEMORY_MIN_TOTAL_CEILING_BYTES} bytes); "
+            "each value is individually plausible, so the floors need re-measuring (FD-007b) "
+            "rather than a larger sum"
+        )
+    return None
 
 
 def _integer(value: object, where: str, *, minimum: int = 0) -> int:
@@ -382,8 +495,10 @@ def _refusal(host: HostInput, other_memory: int, other_workers: int, other_conta
         return "cgroup v2 controller list is unknown"
     if facts["memory"]["for_lanes_bytes"] is None:
         return "physical lane memory is unknown"
-    reserve_bytes, _reserve_source, _missing_services = _control_plane_reserve(facts)
-    physical = facts["memory"]["for_lanes_bytes"] - reserve_bytes
+    reserve = _control_plane_reserve(facts)
+    if reserve.reason is not None:
+        return reserve.reason
+    physical = facts["memory"]["for_lanes_bytes"] - reserve.bytes
     if physical <= 0:
         return "control-plane memory reserve leaves no physical RAM for lanes"
     cpus = facts["cpu"]["for_lanes"]
@@ -406,7 +521,8 @@ def _refusal(host: HostInput, other_memory: int, other_workers: int, other_conta
 
 def _capacity(host: HostInput, demand: dict[str, Any]) -> dict[str, Any]:
     facts = host.facts
-    reserve_bytes, reserve_source, missing_services = _control_plane_reserve(facts)
+    reserve = _control_plane_reserve(facts)
+    reserve_bytes, reserve_source, missing_services = reserve.bytes, reserve.source, list(reserve.missing)
     other_memory = sum(job["expected_memory_bytes"] for job in host.other_running)
     other_workers = sum(job["workers"] for job in host.other_running)
     other_containers = sum(job["containers"] for job in host.other_running)
@@ -422,6 +538,12 @@ def _capacity(host: HostInput, demand: dict[str, Any]) -> dict[str, Any]:
         "reserve_source": reserve_source,
         "reserve_missing_services": missing_services,
     }
+    if reserve.services:
+        # Per-service provenance, in the fixed unit order. Omitted for the
+        # failed-collection case, where no per-service fact exists at all.
+        result["reserve_services"] = [dict(row) for row in reserve.services]
+    if reserve.reason is not None:
+        result["reserve_reason"] = reserve.reason
     if refusal is not None:
         result["reason"] = refusal
         return result

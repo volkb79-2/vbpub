@@ -6,6 +6,24 @@ All notable changes to this project are recorded here.
 
 ### Changed
 
+- Replace the all-or-nothing control-plane reserve with a per-service fallback
+  (FD-007c). Each listed service contributes its reported `MemoryMin`, its
+  documented default when the fact is missing or implausible, or `0` when a
+  declared-optional unit is absent from that host; the fixed profile constant
+  remains only for the case where no per-service fact exists at all. Plans and
+  campaign status expose `reserve_services` provenance (`reported`, `default`,
+  `absent-optional`) next to `reserve_bytes`, `reserve_source`,
+  `reserve_missing_services` and `reserve_reason`. `host-facts/1` carries each
+  unit's `load_state` (nullable with a reason) and
+  `control_plane.service_memory_min_reason` when a facts root queries no unit.
+  A reported value above 4 x its documented default, or a total above twice the
+  documented floors, refuses the host with a reason instead of a clamped sum.
+  The per-service table equals the one `scripts/debian-install-v2` writes, and
+  `tests/test_control_plane_memory_table.py` parses the installer's source and
+  its documented table so drift fails.
+- Point the host install at the runner's `install-fleetd.sh` (`/opt/fleetd/
+  <version>/venv`, hash-verified wheels, `--check`) instead of `pip install`
+  into the system Python, which Debian 13 refuses (PEP 668; FD-034).
 - Migrate the `fleet` CLI from a hand-built `argparse` parser to a registered
   `cli-extended` CLI. Every subcommand, flag spelling, default, output document
   and success or domain-error exit status is unchanged; the shared library now

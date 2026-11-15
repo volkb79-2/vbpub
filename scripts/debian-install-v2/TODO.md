@@ -91,9 +91,9 @@ docker/containerd floors (DIV2-BL-11); the unexplained large-floor anomaly
 (DIV2-BL-10); r1002's 1.25 × figure, which is inferred between measured 1.0 ×
 and 1.5 × `H`; and the retrofit/re-measurement work: existing completed
 installs still need the separate, operator-approved retrofit or reinstall
-recorded in DIV2-BL-08. fleetd itself is unchanged here: v1001 has no psi-guard
-unit, so its reserve keeps using the profile constant until the per-service
-fallback (FD-007c) lands.
+recorded in DIV2-BL-08. fleetd's per-service fallback (FD-007c) has landed in
+fleetd: v1001's missing psi-guard unit is a declared-absent optional unit and
+contributes 0, so this table now takes effect there too.
 
 ## OPEN (DIV2-BL-10, 2026-11-15): unexplained refaults above large `system.slice` floors
 

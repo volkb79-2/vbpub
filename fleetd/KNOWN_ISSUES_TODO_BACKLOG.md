@@ -12,6 +12,7 @@
 | FD-006 | Lift the one-slot-per-host and J worker cap in the campaign supervisor | P2 | OPEN | 2026-11-13 |
 | FD-007 | Replace the RAM-proportional control-plane reserve with service MemoryMin facts or a fixed profile constant | P1 | DONE | 2026-11-13 |
 | FD-007b | Calibrate the fixed profile reserve from measured p95 under load | P2 | OPEN | 2026-11-15 |
+| FD-007c | Per-service reserve fallback with provenance for optional and missing units | P1 | DONE | 2026-11-15 |
 | FD-008 | Strict whole-lane result merge from an explicit candidate-owner manifest | P1 | OPEN | 2026-11-13 |
 | FD-009 | Restricted host enrollment for the existing hx transport | P1 | OPEN | 2026-11-13 |
 | FD-010 | Consume Assay's exact-key baseline reuse in campaign execution | P2 | OPEN | 2026-11-13 |
@@ -36,6 +37,8 @@
 | FD-031 | Sizing budgets come from medians and a fixed margin, not a measured tail | P2 | OPEN | 2026-11-15 |
 | FD-032 | `fleet scope` reads a checkout it never checks for uncommitted or untracked work | P3 | DONE | 2026-11-15 |
 | FD-033 | The rolling cursor goes stale on every release that changes a target file | P2 | OPEN | 2026-11-15 |
+| FD-034 | No host-install script for fleetd; the docs prescribed a system-Python pip install that Debian 13 refuses | P2 | DONE | 2026-11-15 |
+| FD-035 | `host-facts/1` validation does not bound a service `MemoryMin`, so an implausible fact is first refused at plan time, not at collect or validate time | P3 | OPEN | 2026-11-15 |
 
 ## FD-001 Lite campaign lifecycle
 
@@ -152,6 +155,93 @@ has a measured p95 and an explicit fixed reserve derived from it, and the
 profile values are updated in host-owned facts configuration with tests
 showing that planning uses the selected value. Keep the existing fallback
 until that evidence is accepted.
+
+**Per-service floors.** This entry covers the FIXED profile constant, which is
+now used only when no per-service fact exists at all (see FD-007c). The
+per-service fallback introduced by FD-007c already carries the installer's
+measured floors, so a host with the documented drop-ins gets the measured table
+rather than the constant. Calibration below is still open for the
+`profile-constant` case, and for any host whose per-service table drifted
+above twice the documented floors (the plan then refuses with FD-007b named in
+the reason).
+
+## FD-007c Per-service reserve fallback with provenance
+
+**State:** DONE. **Priority:** P1. **Filed:** 2026-11-13 (as a reference),
+completed 2026-11-15 in the `pi-fleetd-followups` package.
+
+The old rule summed per-service `MemoryMin` facts only when every listed
+service reported a positive value, and otherwise used the host's fixed profile
+constant. `mdt-psi-guard.service` is optional and absent on hosts that do not
+run it, so every such host fell back to the constant forever and the measured
+per-service table could never take effect there.
+
+The planner now resolves one term per listed service and sums them. A reported
+positive value, at or below that service's documented per-service ceiling, is
+used as reported. A service with no positive value — or a value above its
+ceiling — contributes that service's documented default from
+`CONTROL_PLANE_SERVICE_MEMORY_MIN_DEFAULTS` (the measured table the Debian
+installer writes: ssh 10, docker 210, containerd 92, journald 24, cgprofiled 4,
+psi-guard 5 MiB). A service in `CONTROL_PLANE_SERVICE_OPTIONAL_UNITS`
+(`cgprofiled.service`, `mdt-psi-guard.service` from the installer's own set) whose
+systemd `LoadState` is `not-found` or `masked` contributes 0 — and only that
+case may contribute 0. An unknown or uncollected load state is a missing fact,
+never an absent unit. The total therefore never falls below the sum of what was
+actually reported.
+
+The collector queries each unit's `LoadState` alongside its `MemoryMin`, carries
+both as `host-facts/1` facts (`control_plane.service_memory_min.<unit>`
+gains nullable `load_state` + reason), and emits
+`control_plane.service_memory_min_reason` instead of a table when a facts root
+queries no service. Plans and campaign status expose `reserve_services`, one
+`{unit, source, bytes}` row per service with the provenance value
+(`reported`, `default`, `absent-optional`), beside `reserve_bytes`,
+`reserve_source`, `reserve_missing_services`, and `reserve_reason`. The fixed
+profile constant remains ONLY for the no-per-service-fact case, and
+`reserve_source = "profile-constant"` says so.
+
+Two derived sanity bounds refuse instead of summing: a reported value above
+4 x its own documented default, and a total above twice the documented floors
+(690 MiB). A refusal names the unit or the total and the FD-007b re-measurement,
+and the host is not planned that wave; nothing is clamped. Tests parse
+`scripts/debian-install-v2/debian_install_v2/templates.py` and
+`scripts/debian-install-v2/docs/CONTROL-PLANE-MEMORY.md` and fail on drift
+with fleetd's copy.
+
+## FD-035 `host-facts/1` does not bound a service `MemoryMin`
+
+**State:** OPEN. **Priority:** P3. **Filed:** 2026-11-15.
+
+The contract validator checks the TYPE of `control_plane.service_memory_min.<unit>.memory_min_bytes` (a nullable
+non-negative integer) but not its magnitude, because `host-facts/1` is a
+host-report contract and the sanity bound lives in planning policy. Planning
+refuses what the contract accepts: a value above 4 x that service's documented
+default, or a total above twice the documented floors, refuses the host with
+`reserve_reason`. So an implausible report degrades from "the plan refuses this
+host and says why" instead of "`fleet facts collect` refuses to emit it", which
+is the intended split, but it means a collector run on a misconfigured host
+still produces a document a reader may take as valid.
+
+Either direction is defensible; the open question is whether the bound belongs
+in the contract (with a config or table source) or stays a planning refusal.
+Recorded rather than silently left as an asymmetry, so a reviewer does not
+have to rediscover it. No code change in this package on purpose.
+
+## FD-034 Host-install script for fleetd
+
+**State:** DONE. **Priority:** P2. **Filed:** 2026-11-15. **Completed:**
+`pi-fleetd-followups`.
+
+The docs described a host install but no script existed, and both the README
+and the consumer guide told an operator to `pip install` the two wheels with
+`python3 -m pip`, which Debian 13 refuses for the system Python (PEP 668).
+`scripts/netcup/runner/install-fleetd.sh` verifies both wheel hashes, installs
+offline into `/opt/fleetd/<version>/venv`, links `/usr/local/bin/fleet`, is
+idempotent for the same hashes, and has a `--check` mode that writes nothing.
+`fleetd/README.md`, `fleetd/docs/SPEC.md`, `fleetd/docs/CONSUMERS.md` and both
+netcup guides point at it. The script was exercised only against temp prefixes
+and fake wheels; no host was touched, so live host acceptance remains a
+separate step for the host board.
 
 ## FD-008 Strict whole-lane result merge
 

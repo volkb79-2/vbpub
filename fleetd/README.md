@@ -29,15 +29,27 @@ path. A managed host that runs `fleet facts collect` or `fleet guard validate`
 installs both wheels offline; the host needs neither the repository nor an
 `hx` wrapper.
 
+On a managed vbpub host, install it with the runner's script, which verifies
+both wheel hashes and installs into `/opt/fleetd/<version>/venv` (never the
+system Python, which Debian 13 refuses):
+
 ```sh
-python3 -m pip install --no-index --no-deps cli_extended-0.5.0-py3-none-any.whl
-python3 -m pip install --no-index --no-deps fleetd-<version>-py3-none-any.whl
+wheel_dir=/var/cache/host-wheels
+fleetd_sha256=$(awk 'NR == 1 { print $1 }' "$wheel_dir/fleetd-<version>-py3-none-any.whl.sha256")
+cli_extended_sha256=$(awk 'NR == 1 { print $1 }' "$wheel_dir/cli_extended-0.5.0-py3-none-any.whl.sha256")
+sudo bash "$HOME/runner-scripts/install-fleetd.sh" \
+  --wheel-dir "$wheel_dir" \
+  --fleetd-version <version> --fleetd-sha256 "$fleetd_sha256" \
+  --cli-extended-version 0.5.0 --cli-extended-sha256 "$cli_extended_sha256"
 fleet --version
 ```
 
-`cli-extended` is published on GitHub Releases only, so the two wheels come from
-the same directory (a wheelhouse with both files lets you use one `pip install
---find-links` instead). The console script is `fleetd.entry:main`: it imports only
+The same two wheels can be installed by hand into a venv of your own
+(`--no-index --no-deps`, cli-extended first):
+`cli_extended-0.5.0-py3-none-any.whl`, then
+`fleetd-<version>-py3-none-any.whl`. `cli-extended` is published on GitHub
+Releases only, so the two wheels come from the same directory (a wheelhouse
+with both files lets you use one `pip install --find-links` instead). The console script is `fleetd.entry:main`: it imports only
 the standard library first, so a host missing the dependency gets one install
 instruction and exit 3 rather than a traceback. `python -m fleetd` keeps working
 for a source checkout. See [the CLI contract and host install steps](docs/SPEC.md#host-install-and-the-wheel-layout).
@@ -174,8 +186,11 @@ through `systemctl show`. Its required policy and source paths come from
 `/etc/fleetd/facts.toml`; `--root DIR` maps those absolute paths beneath a
 fixture root for reproducible collection without querying systemd. The host
 role comes from the configured `HOST_ROLE` source. Fleetd never invokes
-Geekbench. The planner reserves the sum of all positive service `MemoryMin`
-values, or the host profile's fixed constant when any are missing; see the
+Geekbench. The planner reserves one term per listed control-plane service —
+that service's reported `MemoryMin`, its documented default when the fact is
+missing, or zero when a declared-optional unit is absent — and falls back to
+the host profile's fixed constant only when no per-service fact exists at all;
+each host plan carries `reserve_services` provenance. See the
 [facts and planning contract](docs/SPEC.md#facts-collection).
 
 Serialized campaign inputs use `host-facts/1`, `work-request/1`,

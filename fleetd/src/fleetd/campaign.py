@@ -1123,6 +1123,8 @@ class CampaignManager:
                 "reserve_bytes": host_plan.get("reserve_bytes"),
                 "reserve_source": host_plan.get("reserve_source"),
                 "reserve_missing_services": host_plan.get("reserve_missing_services", []),
+                "reserve_services": host_plan.get("reserve_services", []),
+                "reserve_reason": host_plan.get("reserve_reason"),
                 "done": len({candidate_id for job in host_jobs for candidate_id in job.get("finished_ids", [])}),
                 "total": len(host_plan.get("assigned", [])),
                 "batches": rows,

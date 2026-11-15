@@ -159,12 +159,60 @@ def test_host_facts_accepts_profile_reserve_and_reasoned_per_service_memory_min(
         (lambda data: data["control_plane"].update(service_memory_min={"unknown.service": {"memory_min_bytes": 1}}), "service_memory_min: unknown field.*unknown.service"),
         (lambda data: data["control_plane"].update(service_memory_min={unit: {"memory_min_bytes": None} for unit in CONTROL_PLANE_SERVICE_UNITS}), "null requires memory_min_bytes_reason"),
         (lambda data: data["control_plane"].update(service_memory_min={unit: {"memory_min_bytes": True} for unit in CONTROL_PLANE_SERVICE_UNITS}), "memory_min_bytes: expected integer"),
+        (
+            lambda data: data["control_plane"].update(service_memory_min={
+                unit: {"memory_min_bytes": 1, "load_state": None}
+                for unit in CONTROL_PLANE_SERVICE_UNITS
+            }),
+            "load_state: null requires load_state_reason",
+        ),
+        (
+            lambda data: data["control_plane"].update(service_memory_min={
+                unit: {"memory_min_bytes": 1, "load_state": 7}
+                for unit in CONTROL_PLANE_SERVICE_UNITS
+            }),
+            "load_state: expected string",
+        ),
     ],
 )
 def test_host_facts_rejects_invalid_service_memory_min_maps(mutation, message):
     data = _fixture("host-facts.valid.json")
     mutation(data)
     _fails(lambda: validate_host_facts(data), message)
+
+
+def test_host_facts_accepts_an_absent_service_table_with_a_reason():
+    data = _fixture("host-facts.valid.json")
+    data["control_plane"]["service_memory_min_reason"] = "systemd was not queried for this root"
+    validated = validate_host_facts(data).to_dict()
+    assert validated["control_plane"]["service_memory_min_reason"] == (
+        "systemd was not queried for this root"
+    )
+
+
+def test_host_facts_rejects_an_absent_table_reason_beside_a_table_or_without_one():
+    for mutate in (
+        lambda data: data["control_plane"].update(
+            service_memory_min_reason="both",
+            service_memory_min={unit: {"memory_min_bytes": 1} for unit in CONTROL_PLANE_SERVICE_UNITS},
+        ),
+        lambda data: data["control_plane"].update(service_memory_min_reason="  "),
+        lambda data: data["control_plane"].update(service_memory_min_reason=None),
+        lambda data: data["control_plane"].update(service_memory_min_reason=1),
+    ):
+        data = _fixture("host-facts.valid.json")
+        mutate(data)
+        _fails(lambda: validate_host_facts(data), "service_memory_min_reason")
+
+
+def test_host_facts_accepts_nullable_load_state_with_a_reason():
+    data = _fixture("host-facts.valid.json")
+    data["control_plane"]["service_memory_min"] = {
+        unit: {"memory_min_bytes": 1024, "load_state": None, "load_state_reason": "not queried"}
+        for unit in CONTROL_PLANE_SERVICE_UNITS
+    }
+    validated = validate_host_facts(data).to_dict()
+    assert validated["control_plane"]["service_memory_min"]["ssh.service"]["load_state"] is None
 
 
 def test_host_facts_accepts_null_cgroup_controllers_with_reason():

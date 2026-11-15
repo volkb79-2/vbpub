@@ -69,6 +69,7 @@ The full reboot acceptance still requires a test-host reboot and a queue launch 
 | --- | --- | --- |
 | `provision-runner.sh` | root, detached | writes `/etc/vbpub/server-id`, creates the runner account (uid `RUNNER_UID`, default 1003), formats and mounts the Btrfs CoW partition, installs `run-job` and `sync-from-devcontainer` and the runner scripts with `runner.env` into `~/runner-scripts` (the path the `run-job ... -- bash ~/runner-scripts/<script>` invocations use), creates the tools venv and `uv` |
 | `install-augeaswrap.sh` | root on host | verifies the supplied Augeaswrap and cli-extended wheel hashes, installs them offline into `/opt/augeaswrap/<version>/venv`, and links `/usr/local/bin/augeaswrap` |
+| `install-fleetd.sh` | root on host | verifies the supplied fleetd and cli-extended wheel hashes, installs them offline into `/opt/fleetd/<version>/venv`, and links `/usr/local/bin/fleet`; `--check` reports whether that exact wheel hash is already installed without writing |
 | `sync-from-devcontainer` | runner | imports a controller-made Git bundle into `~/checkouts/<commit>`; default calls update `~/src/vbpub-current`, while `--no-current-link` preserves it for T3 imports |
 | `run-job` | runner | runs a named command detached with `~/jobs/<name>/job.log` and an `EXIT` marker |
 | `setup-assay-venvs.sh`, `setup-gate-tools.sh` | runner, via `run-job` | Assay venvs (3.13, 3.14) and the tools venv (cmru, cli-extended, the published Run-Gate wheel) from the synced checkout |
@@ -295,6 +296,41 @@ either host has switched. No host hosts-file was changed for this note.
 
 `build-tester-unified.sh` sets `BUILDX_BUILDER=default MDT_BUILDX_PASSTHROUGH=1`: the managed rootless BuildKit cannot see the locally
 loaded `tester-base:local` (mdt-cockpit MDT-049).
+
+## Install fleetd for host facts
+
+`fleetd` owns the read-only `fleet facts collect` and `fleet guard validate`
+commands a managed host runs, and its wheel declares `cli-extended` as a real
+dependency, so both wheels are installed together. Debian 13 refuses
+`pip install` into the system Python (PEP 668), so `install-fleetd.sh` installs
+into a versioned venv, verifies both wheel hashes first, and publishes
+`/usr/local/bin/fleet`. It contacts no host and downloads nothing.
+
+```bash
+wheel_dir=/var/cache/host-wheels
+fleetd_sha256=$(awk 'NR == 1 { print $1 }' "$wheel_dir/fleetd-0.3.0-py3-none-any.whl.sha256")
+cli_extended_sha256=$(awk 'NR == 1 { print $1 }' "$wheel_dir/cli_extended-0.5.0-py3-none-any.whl.sha256")
+sudo bash "$HOME/runner-scripts/install-fleetd.sh" \
+  --wheel-dir "$wheel_dir" \
+  --fleetd-version 0.3.0 --fleetd-sha256 "$fleetd_sha256" \
+  --cli-extended-version 0.5.0 --cli-extended-sha256 "$cli_extended_sha256" \
+  --check
+sudo bash "$HOME/runner-scripts/install-fleetd.sh" \
+  --wheel-dir "$wheel_dir" \
+  --fleetd-version 0.3.0 --fleetd-sha256 "$fleetd_sha256" \
+  --cli-extended-version 0.5.0 --cli-extended-sha256 "$cli_extended_sha256"
+command -v fleet
+```
+
+`--check` exits 0 when `/opt/fleetd/<version>/venv` already holds the exact
+fleetd and cli-extended hashes you pass, exits 1 with "NOT installed" otherwise,
+and writes nothing either way, so it is safe to run before an apply and safe to
+run as root. The apply run is idempotent for the same hashes and reinstalls when
+a hash changes; it refuses a symlinked install path, an incomplete existing venv,
+and a non-symlink file at the command path rather than overwriting it. The
+version strings are explicit inputs; the script invents no default. The
+per-host `facts.toml` at `/etc/fleetd/facts.toml` remains host-owned and is not
+written by this script.
 
 ## Install augeaswrap for host-setup
 

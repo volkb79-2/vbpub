@@ -18,9 +18,11 @@ from fleetd.facts import (
     _meminfo_values,
     _object,
     _online_cpu_count,
+    _parse_systemd_load_state,
     _parse_systemd_memory_min,
     _psi_value,
     _read_integer,
+    _read_systemd_load_state,
     _read_systemd_memory_min,
     _rooted,
     _slice_path,
@@ -81,13 +83,11 @@ def test_facts_collector_reads_only_injected_root_and_emits_design_facts():
         "slice": "ctl.slice", "present": True,
         "cpu_weight": 10000,
         "profile_reserve_bytes": DEFAULT_CONTROL_PLANE_PROFILE_RESERVE_BYTES,
-        "service_memory_min": {
-            unit: {
-                "memory_min_bytes": None,
-                "memory_min_bytes_reason": "systemd MemoryMin was not queried for the injected facts root",
-            }
-            for unit in CONTROL_PLANE_SERVICE_UNITS
-        },
+        # An injected facts root queries no service, so the table is absent and
+        # carries the reason instead of six invented null facts.
+        "service_memory_min_reason": (
+            "systemd service MemoryMin/load-state facts were not queried for this facts root"
+        ),
     }
     assert facts["guard"]["enabled"] is True
     assert facts["guard"]["config_digest"].startswith("sha256:")
@@ -485,33 +485,62 @@ def test_control_plane_slice_path_supports_nested_systemd_slices(tmp_path):
     assert "memory_min_bytes" not in facts["control_plane"]
 
 
-def test_service_memory_min_facts_use_the_bounded_unit_list_and_injected_reader(tmp_path):
+def test_service_memory_min_facts_use_the_bounded_unit_list_and_injected_readers(tmp_path):
     root = _root(tmp_path)
     raw_values = {unit: str(index * 1024**2) for index, unit in enumerate(CONTROL_PLANE_SERVICE_UNITS, 1)}
     queried = []
+    queried_states = []
 
     def reader(unit):
         queried.append(unit)
         return _parse_systemd_memory_min(raw_values[unit], unit)
 
-    facts = collect_host_facts(root, service_memory_min_reader=reader)
+    def load_state_reader(unit):
+        queried_states.append(unit)
+        return "masked" if unit == CONTROL_PLANE_SERVICE_UNITS[-1] else "loaded", None
+
+    facts = collect_host_facts(
+        root, service_memory_min_reader=reader, service_load_state_reader=load_state_reader,
+    )
     assert queried == list(CONTROL_PLANE_SERVICE_UNITS)
+    assert queried_states == list(CONTROL_PLANE_SERVICE_UNITS)
     assert facts["control_plane"]["service_memory_min"] == {
-        unit: {"memory_min_bytes": index * 1024**2}
+        unit: {
+            "memory_min_bytes": index * 1024**2,
+            "load_state": "masked" if unit == CONTROL_PLANE_SERVICE_UNITS[-1] else "loaded",
+        }
         for index, unit in enumerate(CONTROL_PLANE_SERVICE_UNITS, 1)
     }
+    assert "service_memory_min_reason" not in facts["control_plane"]
 
 
-def test_service_memory_min_fact_reason_uses_a_fallback_when_reader_has_none(tmp_path):
+def test_service_memory_min_fact_reasons_survive_a_reader_with_no_reason(tmp_path):
     root = _root(tmp_path)
-    facts = collect_host_facts(root, service_memory_min_reader=lambda _unit: (None, None))
+    facts = collect_host_facts(
+        root,
+        service_memory_min_reader=lambda _unit: (None, None),
+        service_load_state_reader=lambda _unit: (None, None),
+    )
     assert facts["control_plane"]["service_memory_min"] == {
         unit: {
             "memory_min_bytes": None,
             "memory_min_bytes_reason": f"{unit} MemoryMin is not reported",
+            "load_state": None,
+            "load_state_reason": f"{unit} LoadState is not reported",
         }
         for unit in CONTROL_PLANE_SERVICE_UNITS
     }
+
+
+def test_service_load_state_is_absent_when_only_the_memory_min_reader_is_injected(tmp_path):
+    """A MemoryMin-only reader cannot prove an optional unit absent, so it says so."""
+    root = _root(tmp_path)
+    facts = collect_host_facts(root, service_memory_min_reader=lambda _unit: (1024, None))
+    for unit in CONTROL_PLANE_SERVICE_UNITS:
+        row = facts["control_plane"]["service_memory_min"][unit]
+        assert row["memory_min_bytes"] == 1024
+        assert row["load_state"] is None
+        assert "LoadState was not queried" in row["load_state_reason"]
 
 
 def test_default_facts_root_uses_systemd_reader_without_touching_a_host(monkeypatch):
@@ -525,8 +554,14 @@ def test_default_facts_root_uses_systemd_reader_without_touching_a_host(monkeypa
         return CONTROL_PLANE_SERVICE_UNITS.index(unit) + 1, None
 
     monkeypatch.setattr(facts_module, "_read_systemd_memory_min", fake_reader)
+
+    def fake_load_state(unit):
+        return ("not-found" if unit == CONTROL_PLANE_SERVICE_UNITS[-1] else "loaded"), None
+
+    monkeypatch.setattr(facts_module, "_read_systemd_load_state", fake_load_state)
     facts = collect_host_facts(FIXTURE_ROOT)
     assert queried == list(CONTROL_PLANE_SERVICE_UNITS)
+    assert facts["control_plane"]["service_memory_min"][CONTROL_PLANE_SERVICE_UNITS[-1]]["load_state"] == "not-found"
     assert [
         facts["control_plane"]["service_memory_min"][unit]["memory_min_bytes"]
         for unit in CONTROL_PLANE_SERVICE_UNITS
@@ -548,6 +583,28 @@ def test_default_facts_root_uses_systemd_reader_without_touching_a_host(monkeypa
 )
 def test_systemd_memory_min_parser_marks_zero_infinity_and_unset_as_not_reported(raw, expected, reason):
     value, error = _parse_systemd_memory_min(raw, "ssh.service")
+    assert value == expected
+    if reason is None:
+        assert error is None
+    else:
+        assert reason in error
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected", "reason"),
+    [
+        ("", None, "LoadState is unset"),
+        (" =Loaded", None, "not a LoadState property"),
+        ("LoadState=", None, "LoadState is unset"),
+        ("loadstate masked", None, "not one value"),
+        ("loaded\rnot-found", None, "not one value"),
+        ("LoadState=masked", "masked", None),
+        ("not-found", "not-found", None),
+        ("LoadState=not-found", "not-found", None),
+    ],
+)
+def test_systemd_load_state_parser_rejects_foreign_properties_and_empty_values(raw, expected, reason):
+    value, error = _parse_systemd_load_state(raw, "mdt-psi-guard.service")
     assert value == expected
     if reason is None:
         assert error is None
@@ -588,6 +645,42 @@ def test_systemd_memory_min_reader_uses_systemctl_show_and_reports_failures(monk
 
     monkeypatch.setattr(facts_module.subprocess, "run", unavailable)
     value, reason = _read_systemd_memory_min("ssh.service")
+    assert value is None and "unavailable" in reason
+
+
+def test_systemd_load_state_reader_uses_systemctl_show_and_reports_failures(monkeypatch):
+    from fleetd import facts as facts_module
+
+    calls = []
+
+    def successful(command, **kwargs):
+        calls.append((command, kwargs))
+        return type("Completed", (), {"returncode": 0, "stdout": "loaded\n"})()
+
+    monkeypatch.setattr(facts_module.subprocess, "run", successful)
+    assert _read_systemd_load_state("ssh.service") == ("loaded", None)
+    assert calls[0][0] == ["systemctl", "show", "-p", "LoadState", "--value", "--no-pager", "ssh.service"]
+    assert calls[0][1]["timeout"] == 5
+
+    monkeypatch.setattr(
+        facts_module.subprocess, "run",
+        lambda *_args, **_kwargs: type("Completed", (), {"returncode": 3, "stdout": ""})(),
+    )
+    value, reason = _read_systemd_load_state("ssh.service")
+    assert value is None and "exited 3" in reason
+
+    def timeout(*_args, **_kwargs):
+        raise facts_module.subprocess.TimeoutExpired("systemctl", 5)
+
+    monkeypatch.setattr(facts_module.subprocess, "run", timeout)
+    value, reason = _read_systemd_load_state("ssh.service")
+    assert value is None and "timed out" in reason
+
+    def unavailable(*_args, **_kwargs):
+        raise FileNotFoundError("systemctl")
+
+    monkeypatch.setattr(facts_module.subprocess, "run", unavailable)
+    value, reason = _read_systemd_load_state("ssh.service")
     assert value is None and "unavailable" in reason
 
 

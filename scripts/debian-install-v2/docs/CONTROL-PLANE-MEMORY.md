@@ -126,12 +126,13 @@ loaded unit with a missing, zero, or wrong `MemoryMin` still fails verification.
 verified unconditionally.
 
 The fact collector must treat an absent optional unit as a missing fact, never
-invent a zero-valued or configured value. fleetd's current reserve rule sums
-the per-service `MemoryMin` facts only when all six listed services report a
-positive value, and otherwise uses its fixed profile constant. v1001 has no
-psi-guard unit, so with this table it still uses that profile constant until
-the per-service fallback (FD-007c) lands in fleetd. That fallback is fleetd
-work and was not changed here.
+invent a zero-valued or configured value. fleetd's reserve rule now resolves
+one term per listed service (FD-007c, landed): an absent optional unit is
+declared absent from that host's facts and contributes 0, every other service
+contributes its reported floor or this table's documented default, and the
+fixed profile constant is used only when no per-service fact exists at all.
+v1001 has no psi-guard unit, so it now contributes 0 for that service plus the
+five measured floors, rather than the 768 MiB constant.
 
 What remains open:
 

@@ -358,35 +358,73 @@ def _parse_systemd_memory_min(text: str, unit: str) -> tuple[int | None, str | N
     return number, None
 
 
-def _read_systemd_memory_min(unit: str) -> tuple[int | None, str | None]:
-    """Read one service's MemoryMin without allowing an unbounded systemctl call."""
+def _parse_systemd_load_state(text: str, unit: str) -> tuple[str | None, str | None]:
+    """Parse one `systemctl show -p LoadState --value` result."""
+    value = text.strip()
+    if not value:
+        return None, f"{unit} LoadState is unset"
+    if "\n" in value or "\r" in value or " " in value:
+        return None, f"{unit} LoadState output is not one value"
+    if "=" in value:
+        key, separator, raw_value = value.partition("=")
+        if not separator or key != "LoadState":
+            return None, f"{unit} systemctl output is not a LoadState property"
+        value = raw_value.strip()
+    if not value:
+        return None, f"{unit} LoadState is unset"
+    return value, None
+
+
+def _read_systemd_property(unit: str, prop: str) -> tuple[str | None, str | None]:
+    """Read one bounded `systemctl show` property without an unbounded call."""
     try:
         result = subprocess.run(
-            ["systemctl", "show", "-p", "MemoryMin", "--value", "--no-pager", unit],
+            ["systemctl", "show", "-p", prop, "--value", "--no-pager", unit],
             check=False, capture_output=True, text=True, timeout=5,
         )
     except subprocess.TimeoutExpired:
-        return None, f"systemctl show MemoryMin for {unit} timed out"
+        return None, f"systemctl show {prop} for {unit} timed out"
     except OSError as exc:
-        return None, f"systemctl show MemoryMin for {unit} unavailable ({exc.strerror or 'I/O error'})"
+        return None, f"systemctl show {prop} for {unit} unavailable ({exc.strerror or 'I/O error'})"
     if result.returncode != 0:
-        return None, f"systemctl show MemoryMin for {unit} exited {result.returncode}"
-    return _parse_systemd_memory_min(result.stdout, unit)
+        return None, f"systemctl show {prop} for {unit} exited {result.returncode}"
+    return result.stdout, None
+
+
+def _read_systemd_memory_min(unit: str) -> tuple[int | None, str | None]:
+    """Read one service's MemoryMin without allowing an unbounded systemctl call."""
+    output, reason = _read_systemd_property(unit, "MemoryMin")
+    if reason is not None:
+        return None, reason
+    return _parse_systemd_memory_min(output or "", unit)
+
+
+def _read_systemd_load_state(unit: str) -> tuple[str | None, str | None]:
+    """Read one service's LoadState without allowing an unbounded systemctl call."""
+    output, reason = _read_systemd_property(unit, "LoadState")
+    if reason is not None:
+        return None, reason
+    return _parse_systemd_load_state(output or "", unit)
 
 
 def _service_memory_min_facts(
-    reader: Callable[[str], tuple[int | None, str | None]] | None,
+    reader: Callable[[str], tuple[int | None, str | None]],
+    load_state_reader: Callable[[str], tuple[str | None, str | None]] | None,
 ) -> dict[str, dict[str, Any]]:
-    """Collect the fixed-size service list; injected roots never query the host."""
+    """Collect the fixed-size service list from a required query reader."""
     result: dict[str, dict[str, Any]] = {}
     for unit in CONTROL_PLANE_SERVICE_UNITS:
-        if reader is None:
-            value, reason = None, "systemd MemoryMin was not queried for the injected facts root"
+        value, reason = reader(unit)
+        if load_state_reader is None:
+            load_state, load_state_reason = None, "systemd LoadState was not queried for this collection"
         else:
-            value, reason = reader(unit)
+            load_state, load_state_reason = load_state_reader(unit)
         row: dict[str, Any] = {"memory_min_bytes": value}
         if value is None:
             row["memory_min_bytes_reason"] = reason or f"{unit} MemoryMin is not reported"
+        row["load_state"] = load_state
+        if load_state is None:
+            row["load_state_reason"] = load_state_reason or f"{unit} LoadState is not reported"
         result[unit] = row
     return result
 
@@ -529,6 +567,7 @@ def collect_host_facts(
     root: Path = DEFAULT_ROOT,
     *,
     service_memory_min_reader: Callable[[str], tuple[int | None, str | None]] | None = None,
+    service_load_state_reader: Callable[[str], tuple[str | None, str | None]] | None = None,
 ) -> dict[str, Any]:
     """Collect ``host-facts/1`` from read-only host inputs and service properties."""
     root = Path(root)
@@ -610,13 +649,24 @@ def collect_host_facts(
     cpu_weight, cpu_weight_reason = _read_integer(control_path / "cpu.weight", "control-plane cpu.weight", minimum=1) if control_present else (None, "control-plane slice is absent")
     if service_memory_min_reader is None and root == DEFAULT_ROOT:
         service_memory_min_reader = _read_systemd_memory_min
+        service_load_state_reader = _read_systemd_load_state
     control: dict[str, Any] = {
         "slice": config.control_plane_slice,
         "present": control_present,
         "cpu_weight": cpu_weight,
         "profile_reserve_bytes": config.control_plane_profile_reserve_bytes,
-        "service_memory_min": _service_memory_min_facts(service_memory_min_reader),
     }
+    if service_memory_min_reader is None:
+        # No per-service fact was collected (an injected facts root never queries
+        # systemd), so the table is absent rather than six invented null facts;
+        # the plan then states the profile-constant reserve and why.
+        control["service_memory_min_reason"] = (
+            "systemd service MemoryMin/load-state facts were not queried for this facts root"
+        )
+    else:
+        control["service_memory_min"] = _service_memory_min_facts(
+            service_memory_min_reader, service_load_state_reader,
+        )
     if cpu_weight is None:
         control["cpu_weight_reason"] = cpu_weight_reason
 

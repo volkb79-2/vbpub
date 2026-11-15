@@ -13,6 +13,11 @@ from pathlib import Path
 import pytest
 
 from fleetd.contracts import (
+    CONTROL_PLANE_SERVICE_MEMORY_MIN_CEILING_FACTOR,
+    CONTROL_PLANE_SERVICE_MEMORY_MIN_CEILINGS,
+    CONTROL_PLANE_SERVICE_MEMORY_MIN_DEFAULTS,
+    CONTROL_PLANE_SERVICE_MEMORY_MIN_TOTAL_CEILING_BYTES,
+    CONTROL_PLANE_SERVICE_OPTIONAL_UNITS,
     CONTROL_PLANE_SERVICE_UNITS,
     DEFAULT_CONTROL_PLANE_PROFILE_RESERVE_BYTES,
     ContractError,
@@ -67,13 +72,20 @@ def _facts(host_set, host_id):
     return next(host["facts"] for host in host_set["hosts"] if host["id"] == host_id)
 
 
-def _set_service_memory_mins(control_plane, values):
+def _set_service_memory_mins(control_plane, values, load_states=None):
     control_plane["service_memory_min"] = {}
-    for unit, value in zip(CONTROL_PLANE_SERVICE_UNITS, values, strict=True):
-        row = {"memory_min_bytes": value}
+    load_states = load_states or ["loaded"] * len(CONTROL_PLANE_SERVICE_UNITS)
+    for unit, value, load_state in zip(CONTROL_PLANE_SERVICE_UNITS, values, load_states, strict=True):
+        row = {"memory_min_bytes": value, "load_state": load_state}
         if value is None:
             row["memory_min_bytes_reason"] = "systemd did not report a positive MemoryMin"
+        if load_state is None:
+            row["load_state_reason"] = "systemd did not report a load state"
         control_plane["service_memory_min"][unit] = row
+
+
+# The documented per-service floors, in MiB, in CONTROL_PLANE_SERVICE_UNITS order.
+FLOOR_MIB = [10, 210, 92, 24, 4, 5]
 
 
 def _host(host_set, host_id):
@@ -424,10 +436,17 @@ def test_input_derived_budgets_hold_for_varied_hosts_and_output_ignores_input_or
             control = facts["control_plane"]
             control["memory_min_bytes"] = generator.choice([0, 768, 1024, 2048]) * 1024**2
             control["profile_reserve_bytes"] = generator.choice([768, 896, 1024]) * 1024**2
+            # Per-service facts stay inside each unit's documented ceiling, so
+            # every generated host is plannable; the recomputation below still
+            # derives the reserve from the INPUT facts, never from the plan.
             service_values = [
-                generator.choice([0, 64, 128, 256, 512]) * 1024**2
-                if generator.random() < 0.75 else None
-                for _unit in CONTROL_PLANE_SERVICE_UNITS
+                generator.choice([
+                    None,
+                    CONTROL_PLANE_SERVICE_MEMORY_MIN_DEFAULTS[unit] // 2,
+                    CONTROL_PLANE_SERVICE_MEMORY_MIN_DEFAULTS[unit],
+                    CONTROL_PLANE_SERVICE_MEMORY_MIN_CEILINGS[unit],
+                ])
+                for unit in CONTROL_PLANE_SERVICE_UNITS
             ]
             _set_service_memory_mins(control, service_values)
             facts["cpu"].update(
@@ -442,10 +461,12 @@ def test_input_derived_budgets_hold_for_varied_hosts_and_output_ignores_input_or
                     "workers": generator.choice([0, 1, 2]), "containers": 1,
                 }]
             other = host["other_running"]
-            reserve = (
-                sum(value for value in service_values if value is not None)
-                if all(isinstance(value, int) and value > 0 for value in service_values)
-                else control["profile_reserve_bytes"]
+            # Every row is positive-or-missing and within its ceiling, and every
+            # load state is "loaded", so a missing value means that unit's
+            # documented default; the profile constant is never used here.
+            reserve = sum(
+                value if value is not None else CONTROL_PLANE_SERVICE_MEMORY_MIN_DEFAULTS[unit]
+                for value, unit in zip(service_values, CONTROL_PLANE_SERVICE_UNITS, strict=True)
             )
             physical = total - reserve
             overhead = sum(job["expected_memory_bytes"] for job in other) + instance
@@ -776,26 +797,52 @@ def test_host_refusals_have_explicit_reasons_and_null_eta_reasons():
 
 
 @pytest.mark.parametrize(
-    ("values_mib", "profile_mib", "expected_mib", "source", "missing_indices"),
+    ("values_mib", "load_states", "expected_mib", "source", "missing_units", "sources"),
     [
-        ([32, 64, 128, 256, 512, 1024], 3072, 2016, "service-memory-min", []),
-        ([100, 100, 100, 100, 100, None], 896, 896, "profile-constant", [5]),
-        ([None, None, None, None, None, None], 768, 768, "profile-constant", list(range(6))),
-        ([100, 100, 100, 100, 100, 0], 896, 896, "profile-constant", [5]),
-        (None, 768, 768, "profile-constant", list(range(6))),
+        # Every service reports a real (bounded) floor: their sum, nothing added.
+        ([20, 300, 150, 40, 10, 12], None, 532, "service-memory-min", [], ["reported"] * 6),
+
+        # A declared optional unit is absent: it promises nothing, so it adds 0.
+        (
+            [FLOOR_MIB[0], FLOOR_MIB[1], FLOOR_MIB[2], FLOOR_MIB[3], FLOOR_MIB[4], None],
+            ["loaded", "loaded", "loaded", "loaded", "loaded", "not-found"],
+            sum(FLOOR_MIB[:5]), "per-service-default", [CONTROL_PLANE_SERVICE_UNITS[5]],
+            ["reported"] * 5 + ["absent-optional"],
+        ),
+        # A masked optional unit is absent too.
+        (
+            [None] * 5 + [None], ["loaded"] * 5 + ["masked"],
+            sum(FLOOR_MIB[:5]), "per-service-default", list(CONTROL_PLANE_SERVICE_UNITS),
+            ["default"] * 5 + ["absent-optional"],
+        ),
+        # A mandatory service with no value uses its documented default, not 0.
+        (
+            [20, None, 92, 24, 4, 5], None,
+            20 + 210 + 92 + 24 + 4 + 5, "per-service-default", [CONTROL_PLANE_SERVICE_UNITS[1]],
+            ["reported", "default"] + ["reported"] * 4,
+        ),
+        # An optional unit with an UNKNOWN load state is not assumed absent.
+        (
+            [10, 210, 92, 24, 4, None], ["loaded"] * 5 + [None],
+            sum(FLOOR_MIB), "per-service-default", [CONTROL_PLANE_SERVICE_UNITS[5]],
+            ["reported"] * 5 + ["default"],
+        ),
+        # No per-service fact at all: the only remaining use of the constant.
+        (None, None, 768, "profile-constant", list(CONTROL_PLANE_SERVICE_UNITS), []),
     ],
 )
-def test_control_plane_reserve_sums_every_service_or_uses_the_profile_constant(
-    values_mib, profile_mib, expected_mib, source, missing_indices
+def test_control_plane_reserve_resolves_one_term_per_service_with_provenance(
+    values_mib, load_states, expected_mib, source, missing_units, sources
 ):
     host_set = _hosts()
     facts = _facts(host_set, "host-small")
     control = facts["control_plane"]
-    control["profile_reserve_bytes"] = profile_mib * 1024**2
+    control["profile_reserve_bytes"] = 768 * 1024**2
     if values_mib is not None:
         _set_service_memory_mins(
             control,
             [None if value is None else value * 1024**2 for value in values_mib],
+            load_states,
         )
 
     plan = _plan([_candidate("reserve", 120_000_000)], hosts=host_set)
@@ -803,8 +850,36 @@ def test_control_plane_reserve_sums_every_service_or_uses_the_profile_constant(
     assert host["status"] == "available"
     assert host["reserve_bytes"] == expected_mib * 1024**2
     assert host["reserve_source"] == source
-    assert host["reserve_missing_services"] == [
-        CONTROL_PLANE_SERVICE_UNITS[index] for index in missing_indices
+    assert host["reserve_missing_services"] == missing_units
+    assert [row["source"] for row in host.get("reserve_services", [])] == sources
+    if sources:
+        assert [row["unit"] for row in host["reserve_services"]] == list(CONTROL_PLANE_SERVICE_UNITS)
+        assert sum(row["bytes"] for row in host["reserve_services"]) == host["reserve_bytes"]
+
+
+def test_the_reserve_never_drops_below_what_was_actually_reported():
+    """The per-service fallback replaces a missing fact; it never shrinks a reported one."""
+    facts = _facts(_hosts(), "host-small")
+    control = facts["control_plane"]
+    reported = {unit: floor * 1024**2 for unit, floor in zip(CONTROL_PLANE_SERVICE_UNITS, FLOOR_MIB, strict=True)}
+    _set_service_memory_mins(control, list(reported.values()))
+    reserve = _control_plane_reserve(facts)
+    assert reserve.bytes == sum(reported.values())
+    assert reserve.source == "service-memory-min"
+    assert all(row["source"] == "reported" for row in reserve.services)
+
+    # An absent optional unit is the only way a term may become zero, and it is
+    # named as absent rather than silently dropped.
+    control["service_memory_min"]["mdt-psi-guard.service"] = {
+        "memory_min_bytes": None,
+        "memory_min_bytes_reason": "unit is absent",
+        "load_state": "not-found",
+    }
+    absent = _control_plane_reserve(facts)
+    assert absent.bytes == sum(reported.values()) - reported["mdt-psi-guard.service"]
+    assert absent.source == "per-service-default"
+    assert [row for row in absent.services if row["source"] == "absent-optional"] == [
+        {"unit": "mdt-psi-guard.service", "source": "absent-optional", "bytes": 0}
     ]
 
 
@@ -814,10 +889,18 @@ def test_reserve_does_not_change_with_tiny_or_huge_ram(total_bytes):
     facts["memory"]["total_bytes"] = total_bytes
     control = facts["control_plane"]
     control["profile_reserve_bytes"] = 900 * 1024**2
+    # Per-service facts are present but none reports a value: every term is that
+    # service's documented floor, and the total still ignores installed RAM.
     _set_service_memory_mins(control, [None] * len(CONTROL_PLANE_SERVICE_UNITS))
-    assert _control_plane_reserve(facts) == (
-        900 * 1024**2, "profile-constant", list(CONTROL_PLANE_SERVICE_UNITS),
-    )
+    reserve = _control_plane_reserve(facts)
+    assert reserve.bytes == sum(FLOOR_MIB) * 1024**2
+    assert reserve.source == "per-service-default"
+    assert reserve.missing == CONTROL_PLANE_SERVICE_UNITS
+
+    # With no per-service fact at all, the fixed profile constant still does not
+    # move with installed RAM.
+    del control["service_memory_min"]
+    assert _control_plane_reserve(facts).bytes == 900 * 1024**2
 
 
 def test_legacy_parent_slice_memory_min_is_ignored_by_service_sum():
@@ -826,27 +909,27 @@ def test_legacy_parent_slice_memory_min_is_ignored_by_service_sum():
     control = facts["control_plane"]
     control["present"] = False
     control["memory_min_bytes"] = 7 * 1024**3
-    _set_service_memory_mins(control, [128 * 1024**2] * len(CONTROL_PLANE_SERVICE_UNITS))
+    _set_service_memory_mins(control, [floor * 1024**2 for floor in FLOOR_MIB])
     plan = _plan([_candidate("reserve", 120_000_000)], hosts=host_set)
     host = _host_plan(plan, "host-small")
-    assert host["reserve_bytes"] == 6 * 128 * 1024**2
+    assert host["reserve_bytes"] == sum(FLOOR_MIB) * 1024**2
     assert host["reserve_source"] == "service-memory-min"
     assert host["reserve_missing_services"] == []
 
 
-def test_infinity_memory_min_is_not_reported_and_selects_profile_fallback():
+def test_infinity_memory_min_is_not_reported_and_uses_that_service_default():
     host_set = _hosts()
     control = _facts(host_set, "host-small")["control_plane"]
     parsed_value, reason = _parse_systemd_memory_min("infinity", CONTROL_PLANE_SERVICE_UNITS[0])
     assert parsed_value is None and "infinity" in reason
-    values = [128 * 1024**2] * len(CONTROL_PLANE_SERVICE_UNITS)
+    values = [floor * 1024**2 for floor in FLOOR_MIB]
     values[0] = None
     _set_service_memory_mins(control, values)
     control["service_memory_min"][CONTROL_PLANE_SERVICE_UNITS[0]]["memory_min_bytes_reason"] = reason
     plan = _plan([_candidate("infinity", 120_000_000)], hosts=host_set)
     host = _host_plan(plan, "host-small")
-    assert host["reserve_bytes"] == DEFAULT_CONTROL_PLANE_PROFILE_RESERVE_BYTES
-    assert host["reserve_source"] == "profile-constant"
+    assert host["reserve_bytes"] == sum(FLOOR_MIB) * 1024**2
+    assert host["reserve_source"] == "per-service-default"
     assert host["reserve_missing_services"] == [CONTROL_PLANE_SERVICE_UNITS[0]]
 
 
@@ -867,7 +950,14 @@ def test_placement_caps_and_refusal_move_by_the_reserve_difference_only():
     large["policy"]["host_role"] = "shared-prod"
     small["memory"].update(total_bytes=8 * 1024**3, for_lanes_bytes=8 * 1024**3)
     small["control_plane"]["profile_reserve_bytes"] = 768 * 1024**2
-    _set_service_memory_mins(small["control_plane"], [100 * 1024**2] * len(CONTROL_PLANE_SERVICE_UNITS))
+    # Real reported floors (each within its documented ceiling) that sum to
+    # 600 MiB, so this host's reserve differs from the 768 MiB constant by 168 MiB.
+    reported_mib = [40, 300, 200, 50, 8, 2]
+    assert sum(reported_mib) == 600
+    _set_service_memory_mins(
+        small["control_plane"], [value * 1024**2 for value in reported_mib],
+    )
+
     demand = {**DEMAND, "efficient_upper_bound": 1}
     edge_candidate = _candidate("edge", 7300 * 1024**2)
     service_plan = _plan([edge_candidate], hosts=host_set, demand=demand)
@@ -875,18 +965,16 @@ def test_placement_caps_and_refusal_move_by_the_reserve_difference_only():
 
     fallback_set = copy.deepcopy(host_set)
     fallback_facts = _facts(fallback_set, "host-small")
-    fallback_facts["control_plane"]["service_memory_min"] = {
-        unit: {
-            "memory_min_bytes": None,
-            "memory_min_bytes_reason": "not reported",
-        }
-        for unit in CONTROL_PLANE_SERVICE_UNITS
-    }
+    # No per-service fact at all is the only remaining use of the constant, so
+    # the fallback direction of this difference is still exercised.
+    del fallback_facts["control_plane"]["service_memory_min"]
     fallback_plan = _plan([edge_candidate], hosts=fallback_set, demand=demand)
     fallback_host = _host_plan(fallback_plan, "host-small")
     reserve_delta = 768 * 1024**2 - 600 * 1024**2
     assert service_host["reserve_bytes"] == 600 * 1024**2
+    assert service_host["reserve_source"] == "service-memory-min"
     assert fallback_host["reserve_bytes"] == 768 * 1024**2
+    assert fallback_host["reserve_source"] == "profile-constant"
     assert service_host["physical_bytes"] - fallback_host["physical_bytes"] == reserve_delta
     assert service_host["budget_bytes"] - fallback_host["budget_bytes"] == reserve_delta * 1.5
     assert service_host["cap_alone_bytes"] - fallback_host["cap_alone_bytes"] == reserve_delta
@@ -898,13 +986,13 @@ def test_placement_caps_and_refusal_move_by_the_reserve_difference_only():
     refusal_facts = _facts(refusal_set, "host-small")
     refusal_facts["memory"]["for_lanes_bytes"] = 600 * 1024**2
     refusal_control = refusal_facts["control_plane"]
-    _set_service_memory_mins(refusal_control, [80 * 1024**2] * len(CONTROL_PLANE_SERVICE_UNITS))
+    refusal_mib = [10, 210, 92, 24, 4, 5]
+    assert sum(refusal_mib) == 345
+    _set_service_memory_mins(refusal_control, [value * 1024**2 for value in refusal_mib])
     service_input = next(host for host in parse_host_set(refusal_set) if host.host_id == "host-small")
     assert _refusal(service_input, 0, 0, 0) is None
-    refusal_control["service_memory_min"] = {
-        unit: {"memory_min_bytes": None, "memory_min_bytes_reason": "not reported"}
-        for unit in CONTROL_PLANE_SERVICE_UNITS
-    }
+    # Only the no-per-service-fact case still uses the 768 MiB constant.
+    del refusal_control["service_memory_min"]
     fallback_input = next(host for host in parse_host_set(refusal_set) if host.host_id == "host-small")
     assert "reserve leaves no physical RAM" in _refusal(fallback_input, 0, 0, 0)
 
@@ -1461,20 +1549,160 @@ def test_reserve_treats_every_non_positive_integer_service_value_as_not_reported
     # positive integer (bool is an int subclass and must not count as 1 byte).
     facts = _facts(_hosts(), "host-small")
     control = facts["control_plane"]
-    _set_service_memory_mins(control, [128 * 1024**2] * len(CONTROL_PLANE_SERVICE_UNITS))
+    _set_service_memory_mins(control, [floor * 1024**2 for floor in FLOOR_MIB])
     control["service_memory_min"][CONTROL_PLANE_SERVICE_UNITS[2]]["memory_min_bytes"] = bad
     control["profile_reserve_bytes"] = 900 * 1024**2
-    assert _control_plane_reserve(facts) == (
-        900 * 1024**2, "profile-constant", [CONTROL_PLANE_SERVICE_UNITS[2]],
+    reserve = _control_plane_reserve(facts)
+    assert reserve.source == "per-service-default"
+    assert reserve.missing == (CONTROL_PLANE_SERVICE_UNITS[2],)
+    # The unusable row contributes that service's documented default, never zero.
+    assert reserve.bytes == sum(FLOOR_MIB) * 1024**2
+    assert reserve.services[2] == {
+        "unit": CONTROL_PLANE_SERVICE_UNITS[2], "source": "default",
+        "bytes": CONTROL_PLANE_SERVICE_MEMORY_MIN_DEFAULTS[CONTROL_PLANE_SERVICE_UNITS[2]],
+    }
+
+
+@pytest.mark.parametrize("table", [None, [], "x", {}])
+def test_reserve_uses_the_profile_constant_only_when_no_per_service_fact_exists(table):
+    facts = _facts(_hosts(), "host-small")
+    control = facts["control_plane"]
+    control["service_memory_min"] = table
+    control["profile_reserve_bytes"] = 800 * 1024**2
+    reserve = _control_plane_reserve(facts)
+    assert (reserve.bytes, reserve.source, reserve.missing, reserve.services) == (
+        800 * 1024**2, "profile-constant", CONTROL_PLANE_SERVICE_UNITS, (),
     )
 
 
-def test_reserve_ignores_a_missing_or_malformed_service_table():
-    for table in (None, [], "x", {}, {unit: "x" for unit in CONTROL_PLANE_SERVICE_UNITS}):
+def test_reserve_refuses_an_implausible_reported_value_instead_of_summing_it():
+    """A reported value above its documented sane ceiling is refused with a reason."""
+    host_set = _hosts()
+    control = _facts(host_set, "host-small")["control_plane"]
+    _set_service_memory_mins(control, [floor * 1024**2 for floor in FLOOR_MIB])
+    unit = "docker.service"
+    over = CONTROL_PLANE_SERVICE_MEMORY_MIN_CEILINGS[unit] + 1
+    control["service_memory_min"][unit]["memory_min_bytes"] = over
+    plan = _plan([_candidate("x", 120_000_000)], hosts=host_set)
+    refused = _host_plan(plan, "host-small")
+    assert refused["status"] == "refused"
+    assert unit in refused["reason"] and str(over) in refused["reason"]
+    assert "per-service ceiling" in refused["reason"]
+    # The refused plan still reports the reserve and names the reason, so the
+    # evidence says what was refused rather than silently clamping.
+    assert refused["reserve_reason"] == refused["reason"]
+    # The term is named as a default (the reported value is not trusted), the
+    # source no longer claims every term was reported, and the total therefore
+    # says 345 MiB, not the 975 MiB the bad report would imply.
+    assert refused["reserve_source"] == "per-service-default"
+    assert refused["reserve_missing_services"] == [unit]
+    assert {row["unit"]: row["source"] for row in refused["reserve_services"]}[unit] == "default"
+    assert refused["reserve_bytes"] == sum(FLOOR_MIB) * 1024**2
+
+
+def test_reserve_refuses_a_total_above_twice_the_documented_floors():
+    """Every value individually plausible, the sum still absurd: refuse, do not sum."""
+    facts = _facts(_hosts(), "host-small")
+    control = facts["control_plane"]
+    at_bound = [
+        CONTROL_PLANE_SERVICE_MEMORY_MIN_DEFAULTS[unit] * 2
+        for unit in CONTROL_PLANE_SERVICE_UNITS
+    ]
+    assert sum(at_bound) == CONTROL_PLANE_SERVICE_MEMORY_MIN_TOTAL_CEILING_BYTES
+    _set_service_memory_mins(control, at_bound)
+    reserve = _control_plane_reserve(facts)
+    # At exactly the bound the sum is still accepted and every term is the report.
+    assert reserve.reason is None
+    assert reserve.bytes == CONTROL_PLANE_SERVICE_MEMORY_MIN_TOTAL_CEILING_BYTES
+    assert all(row["source"] == "reported" for row in reserve.services)
+
+    # One byte more, each value still inside its own per-service ceiling: the
+    # aggregate bound refuses instead of summing a drifted table.
+    over = list(at_bound)
+    over[0] += 1
+    assert over[0] <= CONTROL_PLANE_SERVICE_MEMORY_MIN_CEILINGS[CONTROL_PLANE_SERVICE_UNITS[0]]
+    _set_service_memory_mins(control, over)
+    refused = _control_plane_reserve(facts)
+    assert refused.reason is not None
+    assert "twice the documented" in refused.reason and "FD-007b" in refused.reason
+    assert refused.bytes == sum(over)
+
+
+def test_a_partial_per_service_table_still_resolves_per_service_terms():
+    """Any per-service fact means per-service terms; only NO fact uses the constant."""
+    for kept in ("ssh.service", "docker.service"):
         facts = _facts(_hosts(), "host-small")
         control = facts["control_plane"]
-        control["service_memory_min"] = table
         control["profile_reserve_bytes"] = 800 * 1024**2
-        assert _control_plane_reserve(facts) == (
-            800 * 1024**2, "profile-constant", list(CONTROL_PLANE_SERVICE_UNITS),
+        control["service_memory_min"] = {
+            kept: {"memory_min_bytes": CONTROL_PLANE_SERVICE_MEMORY_MIN_DEFAULTS[kept], "load_state": "loaded"},
+        }
+        reserve = _control_plane_reserve(facts)
+        assert reserve.source == "per-service-default"
+        # The one present unit reports its floor; the five absent rows are
+        # missing facts and contribute their documented defaults.
+        assert reserve.bytes == sum(FLOOR_MIB) * 1024**2
+        assert reserve.missing == tuple(
+            unit for unit in CONTROL_PLANE_SERVICE_UNITS if unit != kept
         )
+        assert {row["unit"]: row["source"] for row in reserve.services}[kept] == "reported"
+        assert all(
+            row["source"] == "default"
+            for row in reserve.services
+            if row["unit"] != kept
+        )
+
+
+def test_reserve_falls_back_per_service_when_the_table_has_rows_with_a_load_state_only():
+    """A queried load state is a fact: the host answered, so defaults are per service."""
+    facts = _facts(_hosts(), "host-small")
+    control = facts["control_plane"]
+    control["service_memory_min"] = {
+        unit: {"memory_min_bytes": None, "load_state": "loaded"}
+        for unit in CONTROL_PLANE_SERVICE_UNITS
+    }
+    control["profile_reserve_bytes"] = 800 * 1024**2
+    reserve = _control_plane_reserve(facts)
+    assert reserve.source == "per-service-default"
+    assert reserve.bytes == sum(FLOOR_MIB) * 1024**2
+    assert reserve.missing == CONTROL_PLANE_SERVICE_UNITS
+    assert [row["source"] for row in reserve.services] == ["default"] * 6
+
+
+@pytest.mark.parametrize(
+    "row",
+    [
+        "x",
+        {"memory_min_bytes": None},
+        {"memory_min_bytes": None, "load_state": None},
+        {"memory_min_bytes": 0, "load_state": None},
+        {"memory_min_bytes": -1, "load_state": 7},
+        {"memory_min_bytes": True},
+    ],
+)
+def test_reserve_keeps_the_profile_constant_when_every_row_is_a_failed_query(row):
+    """The dangerous direction: systemd could not be asked, so six defaults
+    (345 MiB) must not silently replace the 768 MiB constant."""
+    facts = _facts(_hosts(), "host-small")
+    control = facts["control_plane"]
+    control["service_memory_min"] = {unit: row for unit in CONTROL_PLANE_SERVICE_UNITS}
+    control["profile_reserve_bytes"] = 800 * 1024**2
+    reserve = _control_plane_reserve(facts)
+    assert (reserve.bytes, reserve.source, reserve.services) == (
+        800 * 1024**2, "profile-constant", (),
+    )
+    assert reserve.bytes > sum(FLOOR_MIB) * 1024**2
+
+
+def test_one_answering_service_makes_the_other_failed_rows_per_service_defaults():
+    facts = _facts(_hosts(), "host-small")
+    control = facts["control_plane"]
+    control["service_memory_min"] = {
+        unit: {"memory_min_bytes": None} for unit in CONTROL_PLANE_SERVICE_UNITS
+    }
+    control["service_memory_min"]["docker.service"] = {
+        "memory_min_bytes": None, "load_state": "loaded",
+    }
+    reserve = _control_plane_reserve(facts)
+    assert reserve.source == "per-service-default"
+    assert reserve.bytes == sum(FLOOR_MIB) * 1024**2

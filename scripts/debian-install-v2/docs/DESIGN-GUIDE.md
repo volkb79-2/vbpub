@@ -151,11 +151,13 @@ when systemd reports `LoadState=not-found` or `masked`; mandatory units missing
 from systemd still fail verification. `system.slice` is built in and always
 loads, so its derived floor is checked unconditionally.
 
-For fleetd-reserve, an absent optional unit is a missing fact, not a zero or
-synthetic `MemoryMin`. Its current all-six-positive rule therefore uses the
-profile constant until all six facts are present; v1001 has no psi-guard unit,
-so it still uses the profile constant until fleetd's per-service fallback
-(FD-007c) lands. That fallback is fleetd work and was not changed here.
+For fleetd-reserve, an absent optional unit is now a stated fact, not a missing
+one (FD-007c, landed): fleetd collects the unit's `LoadState`, and only a
+declared-optional unit reporting `not-found` or `masked` contributes 0. A
+mandatory unit with no positive value contributes this table's documented
+default, so v1001 (no psi-guard unit) plans with the five measured floors it
+does run plus zero for psi-guard, rather than with the profile constant. An
+unknown load state is a missing fact, not an absent unit.
 The Debian image provides SSH and journald; the installer configures them but
 does not install their base packages. cgprofile's `cgprofiled.service` base
 unit has its own `MemoryHigh`/`MemoryMax`; DI2's drop-in adds only `MemoryMin`.
