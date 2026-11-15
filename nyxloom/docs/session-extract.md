@@ -1,5 +1,22 @@
 # Notes on extracting information of JSONL
 
+## Presets (`nyxloom-harness extract --preset NAME`)
+
+The readback preset is the compaction recovery document. Its layout, in
+document order: an OPT-IN goal anchor (`--goal-prompt`, the session's first
+genuine user prompt, or `--goal-file`; harness framing and slash-command
+wrappers excluded; included once per read-back and never truncated; use it
+for a spawned or targeted session, a controller session omits it because its
+anchor is its plan file), the most recent user/assistant prose from before
+the `--since` cut (`--tail-prose-tokens 10000`; prose between the anchor and
+the tail is dropped on purpose), then the delta after the previous read-back's
+marker. The declared budget (`--budget-tokens`, 30000 for a controller session)
+covers the whole document; truncation order is tail prose first, then the
+delta, and the goal anchor never shrinks. The document ends with a `[readback marker: ...]`
+line: pass that marker as the next run's `--since` (or use `--since-file`).
+Agent communication and the protected operator/interview material keep the
+behaviour the preset already had.
+
 ## CODEX
 
 ### Example: with `jq`

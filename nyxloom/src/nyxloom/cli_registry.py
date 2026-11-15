@@ -350,7 +350,8 @@ def _extract_guard(args: Any) -> None:
             "max_compactions", "max_lifecycle_markers", "max_time_minutes",
             "follow", "interval", "bell", "on_attention", "notify_project",
             "attention_min_chars", "profile", "answer_length", "max_checkpoints",
-            "checkpoints", "max_words", "budget_tokens", "include_thinking", "show_api_errors",
+            "checkpoints", "max_words", "budget_tokens", "goal_prompt", "goal_file",
+            "tail_prose_tokens", "include_thinking", "show_api_errors",
             "show_compaction_content", "tool_calls", "tool_errors",
             "agent_comms", "agent_launch_pattern",
             "show_tool_calls", "show_tool_call_intent", "prose_only", "no_prose",
@@ -437,6 +438,21 @@ def _extract_guard(args: Any) -> None:
         )
     if budget_tokens is not None and budget_tokens < 1:
         raise CliFailure("--budget-tokens must be positive", exit_code=2, show_help=True)
+    tail_prose = eff("tail_prose_tokens")
+    layout_knobs = any(
+        getattr(args, attr, None) not in (None, False)
+        for attr in ("goal_prompt", "goal_file", "tail_prose_tokens")
+    )
+    if layout_knobs and pname != "readback":
+        raise CliFailure(
+            "--goal-prompt/--goal-file/--tail-prose-tokens shape the readback layout "
+            "and require --preset readback",
+            exit_code=2,
+            show_help=True,
+        )
+    if tail_prose is not None and tail_prose < 0:
+        raise CliFailure("--tail-prose-tokens must be non-negative", exit_code=2,
+                         show_help=True)
     if pname == "readback" and getattr(args, "max_words", None) is not None:
         raise CliFailure(
             "--preset readback uses --budget-tokens as its primary control; "
@@ -938,6 +954,26 @@ With --follow, Nyxloom prints a one-shot prefix and then reads only appended pay
                 "--budget-tokens",
                 "Readback's primary limit: estimated rendered characters divided by four; "
                 "requires --preset readback (whose default is 50000)",
+                group=_G_CONTENT, type=int, default=None,
+            ),
+            _opt(
+                "--goal-prompt",
+                "Readback layout: prepend the session's first genuine user prompt as the "
+                "goal anchor (harness framing and slash-command wrappers excluded); "
+                "requires --preset readback",
+                group=_G_CONTENT, action="store_true",
+            ),
+            _opt(
+                "--goal-file",
+                "Readback layout: pin the goal anchor from this file instead of the "
+                "session's first prompt; requires --preset readback",
+                group=_G_CONTENT, default=None,
+            ),
+            _opt(
+                "--tail-prose-tokens",
+                "Readback layout: estimated tokens of the most recent user/assistant prose "
+                "BEFORE the --since cut (complete records; 0 disables the tail); "
+                "requires --preset readback (whose default is 10000)",
                 group=_G_CONTENT, type=int, default=None,
             ),
             _opt(

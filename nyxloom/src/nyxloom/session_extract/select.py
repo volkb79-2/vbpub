@@ -172,6 +172,12 @@ def _parse_timestamp(raw: str) -> datetime | None:
     return value.astimezone(UTC)
 
 
+def parse_timestamp(raw: str) -> datetime | None:
+    """The one timestamp parser the readback path uses (public since the
+    layout needs the exact complement of filter_since_time)."""
+    return _parse_timestamp(raw)
+
+
 def filter_since_time(events: list[NormalizedEvent], config: ExtractConfig) -> list[NormalizedEvent]:
     """Apply a resolved timestamp cutoff uniformly to normalized events."""
     if config.since_time is None:
@@ -215,9 +221,16 @@ def _event_tokens(event: NormalizedEvent, config: ExtractConfig) -> int:
 
 
 def readback_select(
-    events: list[NormalizedEvent], config: ExtractConfig,
+    events: list[NormalizedEvent], config: ExtractConfig, *,
+    exclude_keys: set[tuple[int, str]] | None = None,
+    content_limit_tokens: int | None = None,
 ) -> tuple[list[NormalizedEvent], ReadbackReport]:
-    """Priority-fill complete records under the configured token estimate."""
+    """Priority-fill complete records under the configured token estimate.
+
+    `exclude_keys` are (seq, kind) identities a caller already carries
+    elsewhere (the readback layout's goal anchor), so this fill cannot repeat
+    them; `content_limit_tokens` overrides the content budget when the caller
+    has already spent part of it on other sections (the layout's tail)."""
     if config.budget_tokens is None or config.budget_tokens < 1:
         raise ValueError("readback needs a positive --budget-tokens value")
     report = ReadbackReport(
@@ -232,14 +245,18 @@ def readback_select(
     by_seq = sorted(events, key=lambda event: event.seq)
     for event in by_seq:
         category = _readback_category(event, config)
-        if category is not None:
-            candidates[category].append(event)
+        if category is None:
+            continue
+        if exclude_keys is not None and (event.seq, event.kind.value) in exclude_keys:
+            continue
+        candidates[category].append(event)
     timestamps = [event.timestamp for event in by_seq if event.timestamp]
     report.source_first = timestamps[0] if timestamps else ""
     report.source_last = timestamps[-1] if timestamps else ""
 
-    available_content_tokens = max(
-        0, config.budget_tokens - READBACK_FOOTER_RESERVE_TOKENS,
+    available_content_tokens = (
+        max(0, content_limit_tokens) if content_limit_tokens is not None
+        else max(0, config.budget_tokens - READBACK_FOOTER_RESERVE_TOKENS)
     )
     remaining = available_content_tokens
     kept: list[NormalizedEvent] = []

@@ -1207,7 +1207,14 @@ def parse_record(
             return events
         if not cleaned:
             return events
-        events.append(NormalizedEvent(seq, uuid, ts, EventKind.OPERATOR_TEXT, cleaned))
+        event = NormalizedEvent(seq, uuid, ts, EventKind.OPERATOR_TEXT, cleaned)
+        if cmd is not None:
+            # A slash-command invocation (e.g. a controller's
+            # `/resume-usage-limited` or a review command) is operator input
+            # but NOT the session's goal: the readback layout's goal anchor
+            # (layout.py) skips records carrying this tag.
+            event.meta["slash_command"] = cmd
+        events.append(event)
 
     return events
 

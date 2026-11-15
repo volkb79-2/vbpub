@@ -221,16 +221,25 @@ Saved extracts carry source cursors for `--since-file`; Codex prompts in
 ordinal-less rollouts use a `response_item-<position>` cursor while legacy
 event cursors keep their numeric form. See the
 [worked resume examples](docs/CONSUMERS.md#extract-a-session-log).
-`--preset readback` is the bounded controller handoff: operator turns and
-answered interviews first, then assistant prose, agent communication, intent
-lines, and external run results. `--budget-tokens N` (default 50,000) is
-estimated as rendered characters divided by four. Complete records are
-selected newest-first within each priority class. Operator turns and
-interview answers are protected: they are emitted in full even when that class
-alone exceeds the requested budget, while lower-priority classes yield first.
-The footer reports the limit, reserve, kept/dropped counts, estimated dropped
-cost and dropped time span per class, source time span, and any protected
-overrun in full.
+`--preset readback` is the bounded compaction handoff: the most recent
+user/assistant prose from before the `--since` cut (`--tail-prose-tokens`,
+10,000 by default), then the delta after the previous read-back's marker. Add
+`--goal-prompt` (the session's first genuine user prompt; harness framing and
+slash-command wrappers excluded) or `--goal-file` to prepend a goal anchor,
+which is included once per read-back and never truncated; a spawned or
+targeted session needs one, while a controller session's anchor is its
+plan file. Prose between the anchor and the tail is dropped on purpose. The delta fills by class: operator turns and answered
+interviews, assistant prose, agent communication, intent lines, and external
+run results. `--budget-tokens N` (default 50,000) is estimated as rendered
+characters divided by four and covers the whole document; the tail prose
+shrinks first, then the delta. Complete records are selected newest-first
+within each priority class. Operator turns and interview answers are
+protected: they are emitted in full even when that class alone exceeds the
+requested content budget, while lower-priority classes yield first. The
+footer reports the limit, reserve, layout accounting, kept/dropped counts,
+estimated dropped cost and dropped time span per class, source time span, any
+protected overrun in full, and the `[readback marker: ...]` line the next
+read-back must pass as `--since`.
 
 For example, when a session was created in a separate Codex home, pass the
 same home while locating it, or pass the full rollout path if the UUID is

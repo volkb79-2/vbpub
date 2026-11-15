@@ -14,7 +14,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, replace
 from pathlib import Path
 
-from . import classifier, compress, mangle, render, select
+from . import classifier, compress, layout, mangle, render, select
 from .adapters import DetectionError, detect, get_adapter
 from .config import ExtractConfig
 from .events import NormalizedEvent
@@ -59,6 +59,16 @@ class ExtractResult:
             )
         elif self._since_note is not None:
             trailer_blocks.append(render.resolved_since_footer(self._since_note))
+        extra_footer: list[str] = []
+        leading_blocks: list[str] = []
+        if self._readback_layout is not None:
+            leading_blocks = list(self._readback_layout.sections)
+            extra_footer = list(self._readback_layout.footer_lines)
+        if extra_footer:
+            # Before the closing cursor comment and after the accounting
+            # footer, as ONE block (the layout's own lines are related
+            # accounting, not separate sections).
+            trailer_blocks.append("\n".join(extra_footer))
         return render.render_text(
             self.events, self.format, self.last_marker, self._min_gap_to_annotate, self._gap_note_show_marker,
             ledger=self._ledger,
@@ -72,6 +82,7 @@ class ExtractResult:
             metadata_position=self._metadata_position,
             source_metadata=self._source_metadata,
             trailer_blocks=trailer_blocks,
+            leading_blocks=leading_blocks,
         )
 
     # set by extract() below; not part of the public dataclass contract
@@ -95,6 +106,7 @@ class ExtractResult:
     # trailer_blocks). Empty = nothing requested.
     _trailer_blocks: list[str] | None = None
     _readback_report: select.ReadbackReport | None = None
+    _readback_layout: layout.LayoutPlan | None = None
     _since_note: str | None = None
     # Per-block prose render hook (render.py's own block_render param) --
     # attached by cli.py for --render-markdown/--highlight. A rendering
@@ -181,11 +193,48 @@ def extract(
 
     events = adapter.parse(path, session_id, config)
     original_last_marker = events[-1].marker if events else None
-    if config.since_time is not None:
-        events = select.filter_since_time(events, config)
     _assign_default_epochs(events)
     classifier.score_events(events)
     last_marker = original_last_marker
+    # The readback layout reads the WHOLE session for its goal anchor and for
+    # the prose region before the delta cut; the epoch/since filters below
+    # only shape the delta itself (the delta keeps its unchanged `--since`
+    # behaviour). Adapters apply the cut while parsing, so a run WITH a cut
+    # makes one extra cut-free parse of the same file rather than reimplement
+    # each adapter's own slicing rule here.
+    readback_plan = None
+    whole_events = events
+    cut_config = any(
+        value is not None
+        for value in (config.since_marker, config.since_time, config.until_marker)
+    )
+    if layout.enabled(config) and cut_config:
+        whole_events = adapter.parse(
+            path, session_id, replace(config, since_marker=None, since_time=None,
+                                      until_marker=None),
+        )
+        _assign_default_epochs(whole_events)
+        classifier.score_events(whole_events)
+    if layout.enabled(config):
+        if config.since_time is not None:
+            cut_seq = None
+            tail_region = layout.prose_before_time(whole_events, config)
+        elif config.since_marker is not None:
+            cut_seq = layout.cut_index(whole_events, config.since_marker)
+            tail_region = layout.prose_events(
+                [ev for ev in whole_events if cut_seq is not None and ev.seq <= cut_seq],
+                config,
+            )
+        else:
+            tail_region = []
+        readback_plan = layout.build(
+            full_events=whole_events,
+            tail_region=tail_region,
+            config=config,
+            last_marker=last_marker,
+        )
+    if config.since_time is not None:
+        events = select.filter_since_time(events, config)
     selected_events = _select_epochs(events, config.epochs)
     # Selection returns references into `events`. The post-selection redactor
     # edits event.text in place, so detach the selected view first: all_events
@@ -193,7 +242,14 @@ def extract(
     # extract-debug's independent explanation of what selection kept/dropped.
     readback_report = None
     if config.budget_tokens is not None:
-        selected, readback_report = select.readback_select(selected_events, config)
+        if readback_plan is not None:
+            selected, readback_report = select.readback_select(
+                selected_events, config,
+                exclude_keys=readback_plan.exclude_keys,
+                content_limit_tokens=readback_plan.content_limit_tokens,
+            )
+        else:
+            selected, readback_report = select.readback_select(selected_events, config)
     else:
         selected = select.select(selected_events, config)
     kept = [replace(ev, meta=dict(ev.meta)) for ev in selected]
@@ -225,6 +281,7 @@ def extract(
     result._timestamp_gap_minutes = config.timestamp_gap_minutes
     result._metadata_position = config.extract_metadata
     result._readback_report = readback_report
+    result._readback_layout = readback_plan
     return result
 
 

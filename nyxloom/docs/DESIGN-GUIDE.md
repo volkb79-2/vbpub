@@ -540,21 +540,46 @@ where the named run's `<run>.last.txt` or last `agent_message` JSONL result is
 read. No arbitrary filesystem search or model call is involved.
 
 `readback` is intentionally a budget contract rather than another name for
-word-window selection. `--budget-tokens N` defaults to 50,000 for the preset
-and uses the documented `rendered characters / 4` estimate. It reserves a
-bounded footer allowance, then fills complete records by class: operator
-turns and answered interviews, assistant prose, agent communication, explicit
-intent lines, and external run results. Operator/interview material is
-protected rather than budgeted: it is emitted in full even when that class
-alone exceeds the content budget, lower-priority classes yield first, and the
-footer reports the protected-class overrun plainly. Within each lower-priority
-class it starts at the newest item and continues toward older records; a
-record that does not fit is skipped whole rather than truncated, and the next
-complete record is tried. The footer names every class's kept/dropped counts,
-dropped character/token cost and dropped timestamp span, the source time span,
-and whether agent communication was disabled or budget-dropped. The preset is
-Claude Code-only because its intent and communication surface currently
-depends on that adapter.
+word-window selection, and since the operator decision of 2026-11-15 it is a
+LAYOUT contract too: a compaction-resume artifact, not a delta alone. It can
+open with a goal anchor (`--goal-prompt`: the first genuine user prompt, or a
+pinned `--goal-file`; included once per read-back by design and never
+truncated), then the most recent user/assistant prose from before the
+`--since` cut (`--tail-prose-tokens`, 10,000 in the preset), then the delta
+after the previous read-back's marker. Prose between the anchor and the tail
+is dropped on purpose (the operator's own words: losing it is acceptable and
+intended). The last line is a `[readback marker: ...]` cursor, so the next
+read-back never repeats what this one carried. `--budget-tokens N` defaults to
+50,000 for the preset and uses the documented `rendered characters / 4`
+estimate. It reserves a bounded footer allowance plus the layout's own fixed
+scaffolding, then truncates in a fixed order: the tail prose first (newest
+records kept whole), then the delta, with the goal anchor last and never. It
+then fills complete delta records by class: operator turns and answered
+interviews, assistant prose, agent communication, explicit intent lines, and
+external run results. Operator/interview material is protected rather than
+budgeted: it is emitted in full even when that class alone exceeds the content
+budget, lower-priority classes yield first, and the footer reports the
+protected-class overrun plainly. A budget below the anchor-plus-scaffolding
+floor is likewise disclosed, never silently satisfied by cutting the anchor.
+Within each lower-priority class it starts at the newest item and continues
+toward older records; a record that does not fit is skipped whole rather than
+truncated, and the next complete record is tried. The footer names every
+class's kept/dropped counts, dropped character/token cost and dropped timestamp
+span, the source time span, the layout accounting (anchor source and cost, tail
+budget/kept/dropped, the delta's remaining content budget), and whether agent
+communication was disabled or budget-dropped. The preset is Claude Code-only
+because its intent and communication surface currently depends on that
+adapter.
+
+The anchor is OPT-IN for a reason the preset cannot guess: the operator
+refinement of 2026-11-15 distinguishes two session kinds (root `AGENTS.md`).
+A CONTROLLER session's anchor is its `plan.yaml` and its goal shifts over
+time, so its readback carries recent prose plus the delta and would be
+MISLED by its first prompt; a SPAWNED or targeted session's anchor is the goal
+it started with, so it passes `--goal-prompt` (or `--goal-file`). Making the
+flag a preset default served the second kind by breaking the first, which
+would be the "silent-invention default" anti-pattern in the other direction:
+the preset cannot know the session kind, so it does not decide.
 `successor` also enables full agent communication; `--prose-only` continues to
 exclude it.
 
