@@ -244,11 +244,18 @@ def parse_memory_bytes(value: object, where: str) -> int:
 
 
 def validate_lane_demand(value: object, where: str = "demand") -> dict[str, Any]:
-    """Validate the public ``[lanes.<lane>.demand]`` table."""
+    """Validate the public ``[lanes.<lane>.demand]`` table.
+
+    ``worker_memory``/``worker_cpu`` declare the per-WORKER unit (one pytest
+    run per worker) and ``instance_cpu`` the fixed per-instance charge beside
+    the workers (judge, container, workspace). They are optional here so
+    every pre-existing demand table keeps validating unchanged; sizing
+    refuses a plan whose demand does not declare them, by name.
+    """
     obj = _object(
         value, where,
         {"unit", "instance_memory", "unit_memory", "unit_seconds_ref", "efficient_upper_bound"},
-        {"unit_memory_high", "baseline_seconds"},
+        {"unit_memory_high", "baseline_seconds", "worker_memory", "worker_cpu", "instance_cpu"},
     )
     unit = _string(obj["unit"], f"{where}.unit")
     if unit not in {"candidate", "worker", "run"}:
@@ -266,6 +273,16 @@ def validate_lane_demand(value: object, where: str = "demand") -> dict[str, Any]
             raise ContractError(f"{where}.unit_memory_high: must be at least unit_memory")
     if "baseline_seconds" in obj:
         result["baseline_seconds"] = _number(obj["baseline_seconds"], f"{where}.baseline_seconds", minimum=0)
+    if "worker_memory" in obj:
+        result["worker_memory_bytes"] = parse_memory_bytes(obj["worker_memory"], f"{where}.worker_memory")
+    if "worker_cpu" in obj:
+        result["worker_cpu"] = _number(obj["worker_cpu"], f"{where}.worker_cpu", minimum=0.000001)
+    if "instance_cpu" in obj:
+        result["instance_cpu"] = _number(obj["instance_cpu"], f"{where}.instance_cpu", minimum=0)
+    if "worker_memory_bytes" in result and result["worker_memory_bytes"] > result["unit_memory_bytes"]:
+        # One worker's own charge cannot exceed the lane's median unit charge:
+        # that would make the per-worker derivation always refuse its own host.
+        raise ContractError(f"{where}.worker_memory: must not exceed unit_memory")
     return result
 
 

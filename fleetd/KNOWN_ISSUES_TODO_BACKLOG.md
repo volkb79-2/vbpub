@@ -31,6 +31,10 @@
 | FD-024 | Deferred re-queue de-duplication is not pinned for three or more hosts | P3 | DONE | 2026-11-14 |
 | FD-025 | The first stall window uses unscaled reference seconds when no comparable host speed reference exists | P3 | OPEN | 2026-11-14 |
 | FD-026 | A host that stays in ERROR has no loss timer | P3 | OPEN | 2026-11-14 |
+| FD-029 | Nothing wires `fleet scope`/`fleet sizing`/`fleet merge-check` into a release or campaign workflow | P2 | OPEN | 2026-11-15 |
+| FD-030 | The new per-worker demand keys are not accepted inside `run-gate.toml` | P2 | OPEN | 2026-11-15 |
+| FD-031 | Sizing budgets come from medians and a fixed margin, not a measured tail | P2 | OPEN | 2026-11-15 |
+| FD-032 | `fleet scope` reads a checkout it never checks for uncommitted or untracked work | P3 | OPEN | 2026-11-15 |
 
 ## FD-001 Lite campaign lifecycle
 
@@ -490,3 +494,82 @@ lost host; contract faults mean its batches may in fact be alive). **Close when.
 Tests show a host in `ERROR` beyond the threshold is reported (and, if LOST is
 chosen, has its unfinished candidates re-queued) and that a recovery before the
 threshold keeps its batches; SPEC and design guide state the rule.
+
+## FD-029 Nothing wires the default R2 commands into a workflow
+
+**State:** OPEN. **Priority:** P2. **Filed:** 2026-11-15.
+
+`fleet scope`, `fleet sizing`, `fleet measurement` and `fleet merge-check` are
+committed, tested producers, but nothing calls them yet: a release step does
+not regenerate the candidate-id file, a campaign does not size its shards from
+the plan, and a shard does not write its `fleet-shard-identity/1` document.
+Today an operator runs each command by hand and passes the results on. The
+intended callers are the Run-Gate campaign client (RG-276) and the Assay
+supervisor (`--shard`, `--instances`), and neither has the wiring yet.
+
+**Wanted.** Decide which owner calls each producer and at which step: the
+changed-lines id file at the release step (cmru release), the sizing document
+at campaign start, the measurement recorder after collection, and the identity
+document at shard start with the merge check before any merged verdict. **Close
+when.** One end-to-end invocation of a real campaign runs all four without an
+operator retyping a path, and a test pins that a stale id file or a mismatched
+shard stops the flow instead of being noticed later.
+
+## FD-030 The per-worker demand keys are not accepted inside `run-gate.toml`
+
+**State:** OPEN. **Priority:** P2. **Filed:** 2026-11-15.
+
+`worker_memory`, `worker_cpu` and `instance_cpu` are fleetd demand keys. Run-Gate
+25.6.0 refuses `demand` inside `run-gate.toml` altogether (RG-275/RG-276), so a
+project keeps its demand in a separate TOML file and passes it to
+`fleet plan --demand`. Until Run-Gate owns the table, the declaration that
+sizing reads and the declaration the lane runs under are two files that can
+drift, and `efficient_upper_bound` still cannot be joined to Assay's
+`judge.mutation.jobs_max` (FD-002).
+
+**Wanted.** When RG-276 lands, accept the three new keys in the same table the
+lane declares, so one declaration feeds plan, sizing and Run-Gate. **Close
+when.** A `run-gate.toml` declaring `demand` with the per-worker unit plans and
+sizes the campaign with no separate TOML file, and Run-Gate refuses a
+`worker_memory` above `unit_memory` the same way fleetd does.
+
+## FD-031 Sizing budgets use medians and a fixed margin, not a measured tail
+
+**State:** OPEN. **Priority:** P2. **Filed:** 2026-11-15.
+
+`fleet sizing` computes each shard's budget from `candidates x
+per_candidate_seconds / workers + baseline`, multiplied by a fixed `--margin`
+(1.10 by default), and the per-candidate seconds are the campaign MEDIAN over
+killed and survived candidates. A heavy-tailed lane therefore gets a budget
+derived from its typical candidate: if a shard meets several candidates far
+above the median, its sum exceeds the estimate and the derived budget stops it
+part way. The measurement document already records `elapsed_seconds_max`, so
+the tail is observable; sizing does not use it.
+
+**Wanted.** Either derive the budget from a measured tail (for example the p95
+of the per-candidate sum, or median plus a measured dispersion term) with the
+margin as an explicit override, or document plainly that a heavy-tailed lane is
+expected to hit its budget and be continued by a later instance. **Close
+when.** A test with a dispersed measurement shows the derived budget covering
+the measured tail, or the limitation is stated in the SPEC and design guide
+with a reason and the backup path.
+
+## FD-032 The scope producer does not check the checkout it reads
+
+**State:** OPEN. **Priority:** P3. **Filed:** 2026-11-15.
+
+`fleet scope` computes the diff between a release tag and the commit it is told
+to judge, and reads the candidate list from an `assay plan --json` file. It
+never checks that the working tree is clean, so a scope computed in a checkout
+with uncommitted work is a valid-looking document about a tree that is not the
+commit it names: the plan may list candidates from the dirty tree while the
+diff describes the committed one. The result is internally inconsistent without
+saying so. `assay plan` itself reads the working tree; nothing here decides
+whether that is the intended behaviour.
+
+**Wanted.** Decide whether the producer should refuse a dirty checkout (the
+safe default, since the diff and the plan would otherwise describe two trees)
+or record the dirty state in the document as a distinct fact that a consumer
+must acknowledge. **Close when.** A scope generated from a dirty checkout is
+either refused with a reason or carries a field that says so, with a test for
+each path, and the SPEC states the rule.

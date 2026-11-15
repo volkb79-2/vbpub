@@ -29,6 +29,42 @@ All notable changes to this project are recorded here.
   scripts with the checked-in `run-job` and `run-r2-campaign.sh` under a
   temporary HOME, while stubbing only the lane command.
 
+- Add `fleet scope`, the committed R2 candidate-scope producer: the default
+  `changed-lines` mode selects candidates on lines added since the previous
+  release tag (`git diff -U0`, renamed files judged whole), an empty scope is
+  an explicit `nothing-to-judge` result (exit 4) that refuses to write an id
+  file, and the opt-in `rolling-whole-target` mode walks a persisted cursor
+  whose list digest and length are validated (stale cursors exit 3 unless
+  `--rebaseline`).
+- Add a committed `r2-scope.toml` (`schema_version = 1`, `[r2]` with `mode`,
+  optional `slice_size`, `cursor`, `note`) so a project declares its scope
+  instead of passing a hand-prepared id file; no file keeps the default.
+- Add `fleet sizing`, which derives instances per host, shard count, each
+  shard's budget and the outer bound from the plan's host budgets, a per-worker
+  unit and a fixed per-instance charge, and records whether the numbers are
+  `measured` or `declared`.
+- Accept optional `worker_memory`, `worker_cpu` and `instance_cpu` in the lane
+  demand table, refusing a worker charge above `unit_memory`; sizing names the
+  missing keys instead of guessing a unit.
+- Add `fleet measurement`, which writes `fleet-r2-measurement/1` per-candidate
+  elapsed seconds and observer memory peaks plus medians over killed and
+  survived candidates; a missing number stays `null`, never zero, and the
+  collector now carries the cgprofile `resource-profile/1` peak per candidate.
+- Add `fleet merge-check`, which refuses shard sets whose lane, commit, tester
+  image, plan digest or shard count differ, refuses a duplicated shard index,
+  and reports a missing index as incomplete (`--require-complete` refuses it).
+- Accept an optional `execution.image_digest` in plans so a shard can state the
+  tester image it judged under; a campaign without one runs but cannot be
+  merged.
+- Add `docs/R2-DEFAULT.md` and consumer, README, SPEC and design-guide sections
+  for the four commands, plus a docs test that every closed value a consumer
+  types (`changed-lines`, `rolling-whole-target`, the four document schemas and
+  the scope exit statuses) appears, every TOML example parses with the shipped
+  loader, and every cross-document anchor resolves.
+- File FD-029 (no workflow wires the producers), FD-030 (Run-Gate refuses the
+  per-worker demand keys), FD-031 (budgets from medians, not a measured tail)
+  and FD-032 (the scope producer does not check for a dirty checkout).
+
 ### Changed
 
 - Read the host role from the existing host-setup source, ignore refused hosts

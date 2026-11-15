@@ -105,6 +105,31 @@ stores with `--merge-manifest`; strict store ownership, the baseline cache,
 forced-command host entry, always-on daemon, and active guard remain follow-up
 work (see the [backlog](KNOWN_ISSUES_TODO_BACKLOG.md)).
 
+## The default R2 campaign
+
+Multi-host, multi-instance R2 is the default way mutation judging runs, and
+fleetd supplies the four pieces that make it a mechanism rather than per-tool
+scripts. None of them contacts a host.
+
+- `fleet scope` produces the campaign's candidate-id set. The default scope
+  judges only the lines added since the tool's previous release tag; a
+  committed `r2-scope.toml` opts a project into a rolling whole-target
+  baseline instead. An empty scope is an explicit `nothing-to-judge` result
+  (exit 4), never an id file that judged nothing.
+- `fleet sizing` derives instances per host, shards, each per-instance budget
+  and Run-Gate's outer bound from the plan's own host budgets, a per-worker
+  resource unit, and measured per-candidate seconds and memory — instead of a
+  fixed `cpus = "3"` container and a hand-written `11h`/`12h` pair.
+- `fleet collect` then `fleet measurement` record what each candidate actually
+  cost in the campaign evidence, so the next campaign's sizing has a `measured`
+  basis instead of a guess.
+- `fleet merge-check` refuses a shard set whose shards judged a different
+  commit, tester image or plan, or left an index missing.
+
+See [the default R2 campaign](docs/R2-DEFAULT.md) for the mechanism and
+[docs/CONSUMERS.md](docs/CONSUMERS.md#declare-the-campaign-scope) for commands
+you can paste.
+
 ## Existing planning and facts commands
 
 `fleet plan` writes no files except for stdout. `--commands` prints one serial

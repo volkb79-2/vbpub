@@ -222,6 +222,7 @@ class FakeTransport:
         *,
         elapsed_seconds: float = 1.0,
         emitted_at: str | None = None,
+        memory_peak_bytes: int | None = None,
     ) -> None:
         host = self.host(alias)
         job = host.jobs[job_name]
@@ -232,6 +233,10 @@ class FakeTransport:
             "elapsed_seconds": elapsed_seconds,
             "emitted_at": emitted_at or f"2030-01-01T00:00:{len(job.progress_records):02d}+00:00",
         }
+        if memory_peak_bytes is not None:
+            # The same ``resource-profile/1`` shape Assay writes beside a
+            # candidate event; the observer is the only source of a peak.
+            event["profile"] = {"metrics": {"memory_peak_bytes": memory_peak_bytes}}
         job.progress_records.append(event)
         job.progress_mtime = self.clock()
         host.files[job.progress_path] = host.files.get(job.progress_path, b"") + (
@@ -336,11 +341,17 @@ class FakeTransport:
                 except json.JSONDecodeError:
                     continue
                 if isinstance(event, dict) and event.get("event") == "candidate" and event.get("candidate_id") in planned:
-                    progress_records.append({
+                    record = {
                         key: event[key] for key in (
                             "candidate_id", "outcome_bucket", "elapsed_seconds", "emitted_at"
                         ) if key in event
-                    })
+                    }
+                    profile = event.get("profile")
+                    metrics = profile.get("metrics") if isinstance(profile, dict) else None
+                    peak = metrics.get("memory_peak_bytes") if isinstance(metrics, dict) else None
+                    if isinstance(peak, int) and not isinstance(peak, bool):
+                        record["memory_peak_bytes"] = peak
+                    progress_records.append(record)
             finished = {}
             for event in progress_records:
                 candidate_id = event.get("candidate_id")

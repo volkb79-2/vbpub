@@ -286,6 +286,52 @@ which delays a detector; a forward UTC step counts as downtime and can advance
 detection after reboot. A restarted controller reconstructs remote state by
 probing deterministic job names.
 
+## The default R2 campaign
+
+Multi-host, multi-instance R2 is the default: one lane, several worker
+instances per host, shards sized from measured units, a declared scope, and a
+merge check. Four commands implement it; each reads and writes versioned
+documents and none contacts a host. See [the R2 default page](R2-DEFAULT.md)
+for the worked examples.
+
+`fleet scope` produces the candidate-id set. Its default mode
+(`changed-lines`) selects candidates whose start line is an added line of
+`git diff -U0 <previous release tag>..<commit>`; a renamed file is judged
+whole because candidate identity folds in its path. An empty selection is
+`nothing-to-judge` with a reason, exit 4, and `--out` refuses to write an empty
+file. The opt-in `rolling-whole-target` mode takes the next slice of the
+whole-target list from a `fleet-r2-scope-cursor/1` file recording the list
+digest and length; a list that no longer matches is `stale-cursor` (exit 3)
+unless `--rebaseline` accepts it. A project declares its mode in a committed
+`r2-scope.toml` (`schema_version = 1`, `[r2]` with `mode`, optional
+`slice_size`, `cursor`, `note`). No scope file means the default, so an
+uncommitted project keeps its current behaviour.
+
+`fleet sizing` derives instances per host, shard count, each shard's budget and
+the outer bound from the plan's own host budgets, the plan demand's per-worker
+unit (`worker_memory`, `worker_cpu`) and fixed per-instance charge
+(`instance_cpu`, `instance_memory`), and the per-candidate seconds and memory.
+Those units are optional in the demand contract so existing files keep
+validating; sizing refuses a plan that does not declare them, by name. Every
+number records its `basis` (`measured` or `declared`).
+
+`fleet measurement ID` writes `fleet-r2-measurement/1` from the same
+owner-attributed records `collect` selected: one row per planned candidate with
+its `outcome_bucket`, `elapsed_seconds` and `memory_peak_bytes`, and a summary
+of medians over `killed` and `survived` candidates. A missing number is `null`,
+never zero. `memory_peak_bytes` is the cgprofile observer's
+`resource-profile/1` metric; Assay 12 removed its own sampled
+`peak_rss_bytes`.
+
+`fleet merge-check IDENTITY...` compares `fleet-shard-identity/1` documents
+(lane, full commit, tester image digest, plan digest, `shard.index`/`count`) and
+emits `fleet-shard-identity-set/1`. A differing compared field is `mismatched`;
+a duplicated index is also refused; a missing index is `incomplete` and
+refused only with `--require-complete`. A refusal exits 3. The executor takes
+an optional `execution.image_digest` (`sha256:` plus 64 hex digits) from the
+plan; a campaign without one can run but its shards cannot be merged, because
+the check never guesses an image identity.
+
 ## Collection
 
 `fleet collect ID` fetches known host progress streams and per-batch verdicts,

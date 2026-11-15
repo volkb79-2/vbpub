@@ -494,6 +494,26 @@ class RunnerJobs:
         return isinstance(actual, str) and actual == spec.list_digest
 
 
+def _progress_memory_peak(event: Mapping[str, object]) -> int | None:
+    """Read one ``resource-profile/1`` memory peak, or ``None``.
+
+    Assay 12 removed its sampled ``peak_rss_bytes``; the cgprofile observer's
+    ``profile.metrics.memory_peak_bytes`` is the only per-candidate memory
+    number a progress event carries. A profile that is absent, of another
+    status, or has a null/non-positive peak yields ``None`` -- never zero.
+    """
+    profile = event.get("profile")
+    if not isinstance(profile, Mapping):
+        return None
+    metrics = profile.get("metrics")
+    if not isinstance(metrics, Mapping):
+        return None
+    value = metrics.get("memory_peak_bytes")
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        return None
+    return value
+
+
 def parse_progress(
     content: bytes,
     expected_ids: set[str],
@@ -544,6 +564,7 @@ def parse_progress(
             "outcome_bucket": outcome,
             "elapsed_seconds": elapsed,
             "emitted_at": emitted if isinstance(emitted, str) else None,
+            "memory_peak_bytes": _progress_memory_peak(event),
         })
     return records
 

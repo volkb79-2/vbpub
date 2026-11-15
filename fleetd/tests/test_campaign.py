@@ -640,7 +640,7 @@ def test_progress_parser_filters_noise_and_normalizes_optional_fields():
     records = parse_progress(content.encode(), {expected})
     assert records == [{
         "candidate_id": expected, "outcome_bucket": "killed",
-        "elapsed_seconds": None, "emitted_at": None,
+        "elapsed_seconds": None, "emitted_at": None, "memory_peak_bytes": None,
     }]
     prefix = b'{"event":"candidate","candidate_id":"' + ("b" * 64).encode() + b'","outcome_bucket":"killed"}\n'
     bounded = prefix + content.encode()
@@ -1632,6 +1632,7 @@ def test_refresh_normalizes_probe_records_and_rejects_bad_probe_tables(tmp_path)
     assert refreshed["records"] == [{
         "candidate_id": candidate_id, "outcome_bucket": "killed",
         "elapsed_seconds": None, "emitted_at": None,
+        "memory_peak_bytes": None,
     }]
     assert refreshed["progress_path"] is None and refreshed["verdict_path"] == job["verdict_path"]
     manager.status("campaign")
@@ -2971,3 +2972,109 @@ def test_collect_never_attributes_a_foreign_candidate_found_in_a_jobs_progress_w
     row = next(row for row in result["candidates"] if row["candidate_id"] == foreign)
     assert row["outcome"] == "missing"
     assert result["totals"]["killed"] == 0
+
+
+# ------------------------------------------------- measurement evidence
+def test_measurement_writes_per_candidate_evidence_from_owner_records(tmp_path):
+    plan, first_id, second_id = _two_host_one_candidate_plan()
+    plan["execution"] = {**EXECUTION, "image_digest": "sha256:" + "c" * 64}
+    clock = FakeClock()
+    transport = FakeTransport(clock=clock)
+    manager = CampaignManager(tmp_path, transport, clock=clock)
+    manager.run("campaign", plan)
+    state = _state(tmp_path)
+    jobs = [_first_running(state, host_id) for host_id in ("host-a", "host-b")]
+    first_job = next(job for job in jobs if first_id in job["candidate_ids"])
+    second_job = next(job for job in jobs if second_id in job["candidate_ids"])
+    transport.add_progress(
+        first_job["host"], first_job["name"], first_id, "killed",
+        elapsed_seconds=12.5, memory_peak_bytes=200 * 1024**2,
+    )
+    transport.finish(first_job["host"], first_job["name"])
+    transport.add_progress(
+        second_job["host"], second_job["name"], second_id, "survived", elapsed_seconds=30.0
+    )
+    transport.finish(second_job["host"], second_job["name"])
+    manager.tick("campaign")
+    document = manager.measurement("campaign")
+    assert document["schema"] == "fleet-r2-measurement/1"
+    assert document["lane"] == "r2"
+    assert document["image_digest"] == "sha256:" + "c" * 64
+    rows = {row["candidate_id"]: row for row in document["candidates"]}
+    assert rows[first_id]["outcome_bucket"] == "killed"
+    assert rows[first_id]["elapsed_seconds"] == 12.5
+    assert rows[first_id]["memory_peak_bytes"] == 200 * 1024**2
+    assert rows[second_id]["outcome_bucket"] == "survived"
+    summary = document["summary"]
+    assert summary["measured_candidates"] == 2
+    assert summary["elapsed_seconds_median"] == 21.25
+    assert summary["memory_peak_bytes_median"] == 200 * 1024**2
+    assert summary["memory_measured_candidates"] == 1
+    assert (tmp_path / "campaign.measurement.json").is_file()
+
+    # A campaign that never recorded a profile peak records null, never zero.
+    clean = CampaignManager(tmp_path / "clean", FakeTransport(clock=FakeClock()), clock=FakeClock())
+    clean.run("campaign", _plan(2))
+    empty = clean.measurement("campaign")
+    assert empty["summary"]["memory_peak_bytes_median"] is None
+    assert empty["baseline_seconds"] is None
+
+
+def test_measurement_cli_reports_the_document(tmp_path, capsys, monkeypatch):
+    manager = CampaignManager(tmp_path, FakeTransport())
+    manager.run("campaign", _plan(2))
+    from fleetd import cli
+
+    monkeypatch.setattr("fleetd.cli._manager", lambda _args: manager)
+    from argparse import Namespace
+
+    assert cli._measurement_campaign(Namespace(campaign="campaign", transport="hx", state_dir=tmp_path)) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["schema"] == "fleet-r2-measurement/1"
+    assert payload["campaign"] == "campaign"
+
+
+def test_campaign_baseline_is_the_largest_reported_baseline_across_its_jobs():
+    state = {"jobs": {
+        "a": {"baseline_seconds": 400},
+        "b": {"baseline_seconds": 900},
+        "c": {"baseline_seconds": True},
+        "d": {"baseline_seconds": -1},
+        "e": {},
+    }}
+    assert CampaignManager._campaign_baseline(state) == 900.0
+    assert CampaignManager._campaign_baseline({"jobs": {"a": {}}}) is None
+
+
+def test_progress_profile_memory_peak_is_read_only_from_a_measured_profile():
+    from fleetd.runner import _progress_memory_peak
+
+    candidate = "a" * 64
+    assert _progress_memory_peak({"profile": None}) is None
+    assert _progress_memory_peak({"profile": {"metrics": None}}) is None
+    assert _progress_memory_peak({"profile": {"metrics": {"memory_peak_bytes": 0}}}) is None
+    assert _progress_memory_peak({"profile": {"metrics": {"memory_peak_bytes": True}}}) is None
+    assert _progress_memory_peak({"profile": {"metrics": {"memory_peak_bytes": 42}}}) == 42
+    content = (
+        json.dumps({
+            "event": "candidate", "candidate_id": candidate, "outcome_bucket": "killed",
+            "elapsed_seconds": 3.0, "profile": {"metrics": {"memory_peak_bytes": 1024}},
+        }) + "\n"
+    ).encode()
+    record = parse_progress(content, {candidate})[0]
+    assert record["memory_peak_bytes"] == 1024
+
+
+def test_execution_context_carries_an_optional_image_digest(tmp_path):
+    plan = _plan(1)
+    manager = CampaignManager(tmp_path, FakeTransport())
+    manager.run("campaign", plan)
+    # ``_execution`` stores only the resolution it checked: commit and project.
+    assert _state(tmp_path)["execution"] == {"commit": "a" * 40, "project": "."}
+    bad = copy.deepcopy(plan)
+    bad["execution"] = {**EXECUTION, "image_digest": "runner:latest"}
+    with pytest.raises(ContractError, match="image_digest"):
+        manager.run("other", bad)
+    bad["execution"] = {**EXECUTION, "image_digest": "sha256:" + "c" * 63}
+    with pytest.raises(ContractError, match="image_digest"):
+        manager.run("other", bad)
