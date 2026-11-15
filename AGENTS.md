@@ -731,9 +731,13 @@ Build it with:
 
 ```
 nyxloom-harness extract <session.jsonl> --preset readback --budget-tokens N --since <marker of the previous read-back>
+                                    [--goal-prompt | --goal-file GOAL.md]   # spawned/targeted sessions only
 ```
 
-`N` is the controller's choice (the window and the amount of agent communication decide).
+`N` is the controller's choice (the window and the amount of agent communication decide);
+the recent-prose tail is `--tail-prose-tokens` (10000 by the preset), and the anchor is the
+opt-in flag, exactly because a controller session must not inherit its first prompt as a
+goal.
 The preset includes agent prompts and results and never drops operator turns or interview
 answers. The `readback` preset exists for Claude Code transcripts only; a controller on
 another harness uses `extract` with `--profile all --agent-comms full` and its own budget
@@ -741,6 +745,8 @@ until [NL-65](nyxloom/nyxloom-trove/backlog/NL-65-readback-weights-older-agent-c
 extends it. This supersedes the older character-budget builder
 (`scripts/controller/build-readback.py`) for the operator-mandated recipe; the builder
 remains for Codex run finals.
+
+Per-harness situations (interactive, headless, opencode, pi, Codex) with what builds a readback, what makes a session ingest it, whether each row is tested, and the command lines: [docs/design/ctlstat/HARNESS-COMPACTION-CHECKLIST.md](docs/design/ctlstat/HARNESS-COMPACTION-CHECKLIST.md).
 
 The compaction prompt, and the recovery hook after a compaction, name this read order and
 nothing else: (0) `plan.yaml`, (1) `operator-decisions.md`, (2) the newest `readback-N.md`

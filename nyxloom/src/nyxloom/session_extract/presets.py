@@ -26,8 +26,11 @@ review     audit what an agent actually did at full fidelity: every call, the
            timestamp, no collapsing, the ledger.
 ledger     only the external effects, touched files and stop state, no prose,
            for incident triage or cleanup.
-readback   bounded controller context: operator/interview first, then prose,
-           agent communication and intent lines, using --budget-tokens.
+readback   bounded controller context: the most recent prose
+           (--tail-prose-tokens, 10000 by default) plus operator turns, prose,
+           agent communication and intent lines after the previous read-back's
+           marker (--budget-tokens). Add --goal-prompt (or --goal-file) for a
+           spawned/targeted session, which anchors on its original goal.
 """
 
 from __future__ import annotations
@@ -104,7 +107,7 @@ PRESETS: dict[str, Preset] = {
     ),
     "readback": Preset(
         "readback",
-        "bounded controller context: operator turns, prose, agent communication, intent",
+        "bounded controller context: recent prose, then operator turns, prose, agent communication, intent",
         values=(
             ("profile", "all"),
             ("tool_calls", "intent"),
@@ -112,7 +115,12 @@ PRESETS: dict[str, Preset] = {
             ("timestamps", "gaps"),
             ("gap_marker", "none"),
             ("budget_tokens", 50_000),
+            ("tail_prose_tokens", 10_000),
         ),
+        # NO flag here on purpose: a CONTROLLER session's anchor is its plan file
+        # and its goal shifts, so its readback carries recent prose + delta and
+        # NOT the first prompt (AGENTS.md, operator refinement 2026-11-15). A
+        # spawned/targeted session adds --goal-prompt (or --goal-file).
         flags=(),
         claude_only=True,
         fixed_span=True,

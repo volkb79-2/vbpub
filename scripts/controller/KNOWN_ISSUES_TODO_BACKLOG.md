@@ -22,6 +22,7 @@ together.
 | CTL-08 | Experiment harnesses overwrite their own logs; no per-run log directory and no teed driver output | P3 | OPEN 2026-11-15 |
 | CTL-09 | The Codex compaction retest records no per-run compaction setting and reads no app-server compaction item | P3 | OPEN 2026-11-15 |
 | CTL-10 | Worker briefs do not state the measured harness environment limits, so workers rediscover them | P3 | OPEN 2026-11-15 |
+| CTL-11 | A readback built by a non-Claude controller has no layout (no recent-prose tail, no marker) until NL-65 | P3 | OPEN 2026-11-15 |
 
 ---
 
@@ -330,3 +331,49 @@ here.
 measurement date, and a small per-harness probe (read-only Codex sandbox, Claude
 Bash tool, pi Bash tool) records which limits still apply, so a stale limit is
 dropped rather than carried forever.
+
+## CTL-11 — a non-Claude controller's readback has no layout until NL-65
+
+**Status:** OPEN (filed 2026-11-15); priority P3. Filed from the readback
+layout work of `pi-readback-auto-20261115`, which is Claude Code only by
+construction.
+
+**Problem.** `nyxloom-harness extract --preset readback` now emits a three-part
+layout (opt-in goal anchor, the newest user/assistant prose of the session, delta)
+and ends with a `[readback marker: …]` line. The preset is `claude_only`: its
+intent and agent-communication surface, and now its `--since marker` resolution
+and goal discovery, are all Claude Code-specific. A controller running on
+Codex, opencode or pi therefore falls back to
+`extract --profile all --agent-comms full`, which emits no recent-prose tail
+and no marker line. That fallback also cannot pass `--tail-prose-tokens` or
+`--goal-file` (the CLI refuses the layout knobs without the readback preset),
+so a non-Claude controller must record the source marker itself and keep a
+spawned session's goal prompt in its own state files.
+
+`scripts/controller/hooks/ctx-hooks.py` inherits the same limit: its
+`pre-compact` runs the preset, so it only produces a laid-out readback where a
+Claude Code transcript exists. Its marker parsing degrades to "keep the
+previous marker" when the extract emits none, which is honest but meaningless
+on those harnesses.
+
+**Where.** `nyxloom/src/nyxloom/session_extract/` (the `readback` preset,
+`layout.py`, and each adapter's `--since` marker rule);
+`nyxloom/docs/session-extract.md`; `scripts/controller/hooks/ctx-hooks.py`;
+`docs/design/ctlstat/HARNESS-COMPACTION-CHECKLIST.md` (the rows that name the
+fallback).
+
+**Wanted.** Either extend the layout to the Codex, opencode and pi adapters
+(NL-65 is the open entry for the weighting half of this), or make the fallback
+explicit and mechanical: a documented profile that emits a marker line and a
+prose tail without the Claude-only selection classes, so one recipe works on
+every harness. Whichever is chosen, the checklist rows must stop describing a
+capability that only one harness has.
+
+**Priority.** P3 — the Claude Code controller is the only one currently running
+this recipe; a second harness makes it P1.
+
+**Close when.** A readback with a recent-prose tail and a `[readback marker: …]`
+line exists for at least the Codex and opencode adapters (fixture-tested, with
+the no-duplication property), or the checklist and the hook docs say plainly
+which harnesses have no layout and name the substitute the controller uses
+instead.

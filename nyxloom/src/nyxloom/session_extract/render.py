@@ -332,10 +332,16 @@ def render_text(
     trailer_blocks: list[str] | None = None,
     timestamps: str = "all",
     timestamp_gap_minutes: int = 5,
+    leading_blocks: list[str] | None = None,
 ) -> str:
     """`trailer_blocks`: extra blocks (the whole-session ledger, the stop
     state) appended after the last event and BEFORE the closing cursor
-    comment, so the cursor stays the last thing in the output."""
+    comment, so the cursor stays the last thing in the output.
+
+    `leading_blocks`: extra blocks placed BEFORE the first kept event -- the
+    readback layout's goal anchor, prose tail and delta header (layout.py).
+    They are joined with the same separator and are outside the event walk
+    entirely, so no gap or stop-reason note can attach to them."""
     plain_sep = separator(insert_blank_lines)
     parts: list[str] = []
     seps: list[str] = []
@@ -349,6 +355,9 @@ def render_text(
             seps.append(pending_sep if pending_sep is not None else plain_sep)
         pending_sep = None
         parts.append(text)
+
+    for block in leading_blocks or ():
+        _add(block)
 
     if events:
         stop_reason = events[0].meta.get("walk_stopped_because")

@@ -10,7 +10,7 @@ the MDT capacity boundary.
 
 | Topic | Design record |
 |---|---|
-| Controller status | [ctlstat requirements](ctlstat/REQUIREMENTS.md), [harness research](ctlstat/RESEARCH-harnesses.md), [compaction endpoints](ctlstat/RESEARCH-compaction-endpoints.md), [compaction experiment](ctlstat/EXPERIMENT-compaction-hooks.md), [OpenCode PoC](ctlstat/POC-opencode.md), [pi PoC](ctlstat/POC-pi.md) |
+| Controller status | [ctlstat requirements](ctlstat/REQUIREMENTS.md), [harness research](ctlstat/RESEARCH-harnesses.md), [compaction endpoints](ctlstat/RESEARCH-compaction-endpoints.md), [compaction experiment](ctlstat/EXPERIMENT-compaction-hooks.md), [OpenCode PoC](ctlstat/POC-opencode.md), [pi PoC](ctlstat/POC-pi.md), [compaction-steering experiment](ctlstat/EXPERIMENT-compaction-steering-2026-11.md), [harness × situation checklist](ctlstat/HARNESS-COMPACTION-CHECKLIST.md) |
 | dstdns adoption | [benefit analysis](dstdns/BENEFIT-ANALYSIS-2026-11-04.md), [development plan](dstdns/DEVELOPMENT-PLAN-2026-11-04.md), [CMRU adoption memo](dstdns/CMRU-ADOPTION-MEMO-2026-11-05.md), [R2 pilot](dstdns/R2-PILOT-2026-11-04.md), [0.1.0 release plan](dstdns/RELEASE-PLAN-0.1.0-2026-11-05.md) |
 | Host endpoints | [phase-2 fast path](host-endpoints/DESIGN-phase2-fastpath-2026-11-07.md) |
 | Host service sockets | [phase-1 release plan](host-service-sockets/RELEASE-PLAN-phase1-2026-11-07.md) |
