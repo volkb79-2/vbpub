@@ -375,6 +375,13 @@ fn refusal_of(error: &ProtoError) -> BTreeMap<&'static str, String> {
             map.insert("declared", declared.to_string());
             map.insert("dictionary", dictionary.to_string());
         }
+        ProtoError::NotABlock { frame_type } => {
+            map.insert("frame_type", frame_type.to_string());
+        }
+        ProtoError::SectionOrder { index, kind } => {
+            map.insert("index", index.to_string());
+            map.insert("kind_code", kind.to_string());
+        }
         _ => {}
     }
     map
@@ -401,7 +408,7 @@ fn declared_refusal(spec: &Json) -> BTreeMap<String, String> {
 fn every_fixture_is_decoded_by_the_rust_codec() {
     let names = fixture_names();
     assert!(
-        names.len() >= 23,
+        names.len() >= 26,
         "the fixture set is the §B.5 case list: {}",
         names.len()
     );
@@ -474,7 +481,7 @@ fn every_fixture_is_decoded_by_the_rust_codec() {
     }
     assert_eq!(valid, 7, "the valid fixture count is part of the case list");
     assert_eq!(
-        refused, 16,
+        refused, 19,
         "the refusal fixture count is part of the case list"
     );
 }

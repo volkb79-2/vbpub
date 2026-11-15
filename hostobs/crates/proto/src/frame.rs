@@ -808,14 +808,63 @@ fn decode_time_body(body: &[u8], n_buckets: usize) -> Result<Vec<TimeBucket>, Pr
         .collect())
 }
 
+/// The canonical position of a section kind in a block directory (§B.2).
+///
+/// `encode_block` emits exactly one order — header, dictionary, rows *or* time, then
+/// columns — and both the encoder and the decoder require it. Without that requirement
+/// two different byte strings (a directory reordering with its bodies moved along) would
+/// decode to one value, which contradicts §B.5's byte-identity goal. An unknown optional
+/// section is exempt: it is outside this version's layout by definition, and a decoder
+/// that skips it cannot re-encode it byte-identically anyway.
+fn canonical_rank(kind: SectionKind) -> u8 {
+    match kind {
+        SectionKind::Header => 0,
+        SectionKind::Dictionary => 1,
+        SectionKind::Rows | SectionKind::Time => 2,
+        SectionKind::Column => 3,
+    }
+}
+
+/// Check that every **known** section appears in the canonical order.
+fn check_canonical_order(sections: &[Section]) -> Result<(), ProtoError> {
+    let mut last: Option<u8> = None;
+    for (index, section) in sections.iter().enumerate() {
+        let Some(kind) = SectionKind::from_code(section.kind_code()) else {
+            continue;
+        };
+        let rank = canonical_rank(kind);
+        if let Some(previous) = last {
+            if rank < previous {
+                return Err(ProtoError::SectionOrder {
+                    index,
+                    kind: section.kind_code(),
+                });
+            }
+        }
+        last = Some(rank);
+    }
+    Ok(())
+}
+
 /// Encode a block (with its frame) as canonical bytes.
 ///
 /// # Errors
 ///
-/// [`ProtoError::OversizedFrame`], [`ProtoError::RowsAndTime`],
-/// [`ProtoError::DuplicateSection`], [`ProtoError::SectionLength`] (a column whose row
-/// count differs from `header.n_rows`) and every dictionary-encoding refusal.
+/// [`ProtoError::NotABlock`] when `block.frame_type` is not [`FrameType::Block`],
+/// [`ProtoError::SectionOrder`], [`ProtoError::OversizedFrame`],
+/// [`ProtoError::RowsAndTime`], [`ProtoError::DuplicateSection`],
+/// [`ProtoError::SectionLength`] (a column whose row count differs from `header.n_rows`)
+/// and every dictionary-encoding refusal.
 pub fn encode_block(block: &Block) -> Result<Vec<u8>, ProtoError> {
+    // §B.1 gives each frame type one payload shape. A `REQ`/`REP`/`EVT` carries a small
+    // JSON control object and a `DICT` a dictionary, so a block section list under any
+    // other type is a producer defect: refuse it here rather than let a caller write
+    // measurements under the wrong envelope.
+    if block.frame_type != FrameType::Block {
+        return Err(ProtoError::NotABlock {
+            frame_type: block.frame_type.code(),
+        });
+    }
     if !block.rows.is_empty() && !block.time.is_empty() {
         return Err(ProtoError::RowsAndTime {
             rows: block.rows.len(),
@@ -885,6 +934,7 @@ pub fn encode_block(block: &Block) -> Result<Vec<u8>, ProtoError> {
 /// # Errors
 ///
 /// [`ProtoError::MissingSection`] when the required header section is absent,
+/// [`ProtoError::SectionOrder`] for known sections in a non-canonical order,
 /// [`ProtoError::DuplicateSection`] for a repeated single-instance kind,
 /// [`ProtoError::SectionLength`] for a body whose length is not eight-aligned, and
 /// [`ProtoError::OversizedFrame`] beyond [`MAX_FRAME_BYTES`].
@@ -901,6 +951,10 @@ pub fn encode_frame(
             kind: SectionKind::Header.code(),
         });
     }
+    // The producer contract is the decoder's rule: one canonical order, regardless of
+    // which frame type is being written. A caller that wants an out-of-order fixture
+    // patches the canonical bytes instead (that is what a hostile sender does).
+    check_canonical_order(sections)?;
     let mut seen: Vec<UnknownSectionKind> = Vec::with_capacity(sections.len());
     for section in sections {
         if let Some(kind) = SectionKind::from_code(section.kind_code()) {
@@ -976,6 +1030,14 @@ pub fn encode_frame(
 /// unknown **optional** section, which is reported in [`Block::skipped_sections`].
 pub fn decode_block(bytes: &[u8]) -> Result<Block, ProtoError> {
     let header_frame = FrameHeader::parse(bytes)?;
+    // §B.1: only `BLOCK` carries block sections. A `REQ`/`REP`/`EVT` payload is a small
+    // JSON control object and a `DICT` payload is a dictionary, so a block-shaped frame
+    // under another type is type/payload confusion, refused before any section is read.
+    if header_frame.frame_type != FrameType::Block {
+        return Err(ProtoError::NotABlock {
+            frame_type: header_frame.frame_type.code(),
+        });
+    }
     let declared = usize::try_from(header_frame.len).map_err(|_| ProtoError::LengthOverflow)?;
     if declared > MAX_FRAME_BYTES {
         return Err(ProtoError::OversizedFrame {
@@ -1043,6 +1105,24 @@ pub fn decode_block(bytes: &[u8]) -> Result<Block, ProtoError> {
         return Err(ProtoError::TrailingBytes {
             extra: bytes.len() - body_pos,
         });
+    }
+
+    // The canonical order is the encoder's, checked before any body is decoded: a
+    // directory reordering of otherwise valid sections would produce a second byte string
+    // for one value (§B.5). An unknown optional section is exempt — it is outside this
+    // version's layout and is skipped by its declared length.
+    let mut last_rank: Option<u8> = None;
+    for (index, (kind, _version, _flags, _len)) in directory.iter().enumerate() {
+        let Some(section) = SectionKind::from_code(*kind) else {
+            continue;
+        };
+        let rank = canonical_rank(section);
+        if let Some(previous) = last_rank {
+            if rank < previous {
+                return Err(ProtoError::SectionOrder { index, kind: *kind });
+            }
+        }
+        last_rank = Some(rank);
     }
 
     // Pass one: the header, and the directory's own validity. A block's other sections
@@ -1813,7 +1893,7 @@ mod tests {
         let bytes = encode_frame(
             FrameType::Block,
             1,
-            &[header.clone(), rows.clone(), dictionary],
+            &[header.clone(), dictionary, rows.clone()],
         )
         .expect("encode");
         assert!(decode_block(&bytes).is_ok(), "one of each is fine");
@@ -1882,6 +1962,150 @@ mod tests {
             decode_block(&bytes),
             Err(ProtoError::MissingSection {
                 kind: SectionKind::Header.code()
+            })
+        );
+    }
+
+    #[test]
+    fn a_block_shape_is_refused_under_any_other_frame_type() {
+        // §B.1 gives every frame type one payload shape. Without this guard a caller that
+        // trusted the codec would read a control envelope's bytes as measurements.
+        for frame_type in [
+            FrameType::Req,
+            FrameType::Rep,
+            FrameType::Evt,
+            FrameType::Dict,
+            FrameType::End,
+        ] {
+            let mut block = live_block();
+            block.frame_type = frame_type;
+            assert_eq!(
+                encode_block(&block),
+                Err(ProtoError::NotABlock {
+                    frame_type: frame_type.code()
+                }),
+                "the encoder refuses to write a block under {frame_type:?}"
+            );
+        }
+        // And on the read path: the same canonical bytes with the type byte changed.
+        let bytes = encode_block(&live_block()).expect("encode");
+        for frame_type in [FrameType::Req, FrameType::Dict, FrameType::End] {
+            let mut corrupt = bytes.clone();
+            corrupt[4] = frame_type.code();
+            assert_eq!(
+                decode_block(&corrupt),
+                Err(ProtoError::NotABlock {
+                    frame_type: frame_type.code()
+                }),
+                "a block-shaped payload under {frame_type:?} is refused"
+            );
+        }
+    }
+
+    #[test]
+    fn sections_must_be_in_the_canonical_order() {
+        // One order exists (header, dictionary, rows-or-time, then columns), so two byte
+        // strings never decode to one value (§B.5). The encoder refuses to build a
+        // non-canonical directory and the decoder refuses to accept one.
+        let block = live_block();
+        let header = Section::new(
+            SectionKind::Header,
+            super::encode_header_body(&block.header),
+        );
+        let dictionary = Section::new(
+            SectionKind::Dictionary,
+            block
+                .dictionary
+                .as_ref()
+                .expect("dict")
+                .encode()
+                .expect("dict"),
+        );
+        let rows = Section::new(SectionKind::Rows, super::encode_rows_body(&block.rows));
+        let column = Section::new(
+            SectionKind::Column,
+            super::encode_column_body(&block.columns[0]).expect("column"),
+        );
+        assert_eq!(
+            encode_frame(
+                FrameType::Block,
+                1,
+                &[dictionary.clone(), header.clone(), rows.clone()],
+            ),
+            Err(ProtoError::SectionOrder {
+                index: 1,
+                kind: SectionKind::Header.code(),
+            }),
+            "a dictionary before its header is not a canonical block"
+        );
+        assert_eq!(
+            encode_frame(
+                FrameType::Block,
+                1,
+                &[header.clone(), column.clone(), rows.clone()],
+            ),
+            Err(ProtoError::SectionOrder {
+                index: 2,
+                kind: SectionKind::Rows.code(),
+            }),
+            "a column before the rows it addresses is not a canonical block"
+        );
+        // The canonical order decodes and re-encodes byte-identically, which is the whole
+        // point of the rule.
+        let bytes = encode_frame(FrameType::Block, 1, &[header, dictionary, rows, column])
+            .expect("canonical order encodes");
+        let decoded = decode_block(&bytes).expect("canonical order decodes");
+        assert_eq!(decoded.rows.len(), 2);
+        assert_eq!(encode_block(&decoded).expect("re-encode"), bytes);
+    }
+
+    #[test]
+    fn a_reordered_directory_is_refused_on_the_read_path() {
+        // Hand-built bytes: header and dictionary directory entries and bodies swapped. Every
+        // declared length still matches the body beside it, so only the order rule can
+        // refuse this frame — and it must, or the same block would have two spellings.
+        let block = live_block();
+        let header_body = super::encode_header_body(&block.header);
+        let dictionary_body = block
+            .dictionary
+            .as_ref()
+            .expect("dict")
+            .encode()
+            .expect("dict");
+        let mut writer = crate::write::Writer::new();
+        writer.u16(2);
+        writer.u16(0);
+        for (kind, version, flags, body) in [
+            (
+                SectionKind::Dictionary.code(),
+                1u8,
+                0u8,
+                dictionary_body.as_slice(),
+            ),
+            (SectionKind::Header.code(), 1, 1, header_body.as_slice()),
+        ] {
+            writer.u16(kind);
+            writer.u8(version);
+            writer.u8(flags);
+            writer.u32(u32::try_from(body.len()).expect("body length"));
+        }
+        let bodies_len = header_body.len() + dictionary_body.len();
+        let total = FRAME_HEADER_LEN + 4 + 2 * super::SECTION_DIR_ENTRY_LEN + bodies_len;
+        let mut frame = Vec::with_capacity(total);
+        frame.extend_from_slice(&u32::try_from(total).expect("total").to_le_bytes());
+        frame.push(FrameType::Block.code());
+        frame.push(super::FLAG_SECTIONED);
+        frame.extend_from_slice(&0u16.to_le_bytes());
+        frame.extend_from_slice(&1u32.to_le_bytes());
+        frame.extend_from_slice(writer.as_bytes());
+        frame.extend_from_slice(&dictionary_body);
+        frame.extend_from_slice(&header_body);
+        assert_eq!(frame.len(), total);
+        assert_eq!(
+            decode_block(&frame),
+            Err(ProtoError::SectionOrder {
+                index: 1,
+                kind: SectionKind::Header.code(),
             })
         );
     }

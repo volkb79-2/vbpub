@@ -94,6 +94,28 @@ AGGREGATION_MASKS = {
 
 FRAME_SECTIONED = 0b0000_0001
 
+# The one order the encoder emits and the decoder requires (plan v4 B.2): header,
+# dictionary, rows-or-time, then columns. An unknown section kind is outside this
+# version's layout and is exempt (it is skipped by its declared length).
+CANONICAL_RANK = {"header": 0, "dictionary": 1, "rows": 2, "time": 2, "columns": 3}
+
+
+def _check_canonical_order(sections: list[tuple]) -> None:
+    """Refuse a known section sequence that is not the canonical order.
+
+    Two byte strings must never decode to one value (plan v4 B.5), so an unordered
+    directory is a corrupt frame rather than an alternative spelling of a valid one.
+    """
+    last = None
+    for index, (kind, *_rest) in enumerate(sections):
+        name = SECTION_KINDS_BY_CODE.get(kind)
+        if name is None:
+            continue
+        rank = CANONICAL_RANK[name]
+        if last is not None and rank < last:
+            raise WireError("section-order", index=index, kind_code=kind)
+        last = rank
+
 
 class WireError(ValueError):
     """A decode refusal. ``kind`` and ``fields`` match the fixture vocabulary."""
@@ -423,6 +445,12 @@ def encode_frame(frame: dict) -> bytes:
         if len(body) % 8:
             raise WireError("section-length", section=extra["kind_code"], declared=len(body), expected=_align8(len(body)))
         sections.append((extra["kind_code"], extra["version"], extra["flags"], body))
+    # The producer contract is the decoder's rule: one canonical order, and only the
+    # `block` frame type carries these sections (plan v4 B.1). A fixture that needs the
+    # refusal patches canonical bytes instead, which is what a hostile sender does.
+    if frame["type"] != "block":
+        raise WireError("not-a-block", frame_type=FRAME_TYPES[frame["type"]])
+    _check_canonical_order(sections)
     directory = b"".join(
         struct.pack("<HBB I".replace(" ", ""), kind, version, flags, len(body))
         for kind, version, flags, body in sections
@@ -459,15 +487,25 @@ def decode_frame(data: bytes) -> dict:
         raise WireError("trailing-bytes", extra=len(data) - length)
     if not flags & FRAME_SECTIONED:
         raise WireError("missing-section", section="header")
+    # Plan v4 B.1: only `block` carries column sections. A block-shaped payload under
+    # another frame type is type/payload confusion, refused before any section is read.
+    if type_code != FRAME_TYPES["block"]:
+        raise WireError("not-a-block", frame_type=type_code)
     n_sec, dir_reserved = struct.unpack_from("<HH", data, FRAME_HEADER_LEN)
     if dir_reserved != 0:
         raise WireError("section-reserved", value=dir_reserved)
     offset = FRAME_HEADER_LEN + 4
     directory = []
     for _ in range(n_sec):
+        # A directory shorter than its own declared entry count is a truncation, not a
+        # struct.error: the reference decoder refuses untrusted bytes with WireError
+        # exactly the way the Rust decoder does.
+        if offset + SECTION_DIR_ENTRY_LEN > len(data):
+            raise WireError("truncated", context="block directory", need=offset + SECTION_DIR_ENTRY_LEN, have=len(data))
         kind, version, section_flags, body_len = struct.unpack_from("<HBBI", data, offset)
         offset += 8
         directory.append((kind, version, section_flags, body_len))
+    _check_canonical_order(directory)
     bodies = []
     for kind, _version, _flags, body_len in directory:
         end = offset + body_len

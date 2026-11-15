@@ -4,6 +4,80 @@
 
 ### Added
 
+- **`kernel` crate (M1 part 2):** the read-only collectors — cgroupfs (`cpu.stat`,
+  `cpu.max`/`weight`, `memory.current`/`.stat`/`.events`/`.max` and the other limits,
+  `io.stat` with iocost, `pids.current`/`.max`, `memory.swap.current`, the three PSI files)
+  and `/proc` (`stat`, `meminfo`, `vmstat`, `loadavg`, one process's
+  `stat`/`statm`/`status`/`cmdline`, the boot id, the host `/proc/pressure/*` files), plus
+  the identity inputs (`CgroupIdentity` from `(device, inode)`, `ProcessIdentity` from
+  `(boot id, pid, starttime ticks)`) and an injectable clock (`Clock`, `ManualClock`,
+  `SystemClock`, `Timeline`, `interval_between`). Every file access goes through one
+  root-anchored, read-only `Fs` trait (`RealFs`, and `MemFs` for fixtures) with a byte
+  bound, a line bound and an entry bound; every parse failure is a typed error carrying a
+  quality code, never a zero. `#![forbid(unsafe_code)]`, no I/O beyond `File::open`/`read_dir`/
+  `symlink_metadata`, no threads, no writes (`HOB-22`).
+- **Committed kernel fixtures:** `crates/kernel/tests/fixtures/cgroupfs/` (the sampler's own
+  cgroupfs tree, `gstammtisch`'s contents and `transient-footgun`) and
+  `crates/kernel/tests/fixtures/proc/` (a hand-built `/proc` tree whose `stat` fields follow
+  the kernel's own numbering). The readers are driven by those trees only, never by a live
+  host, so the suite cannot depend on host load or version.
+- **SP-2 evidence as tests** (`crates/kernel/tests/sp2_evidence.rs`): incarnation reuse (a
+  cgroup recreated at one path, a recycled pid after exit, a reboot repeating pid and start
+  tick), wall-clock jumps versus a monotonic interval (with the wall-based rate computed and
+  shown negative), a pair from two boots/epochs refused rather than subtracted, a
+  zero-length interval refusing a rate, and late discovery (an age since discovery and none
+  since boot). Every expectation is hand-computed.
+- **Hand-mutation record for M1 part 2** (`docs/HAND-MUTANTS-M1B.md`,
+  `docs/hand-mutants/m1b-mutants.py`): twenty-six stored patches over the proto/Python
+  refusals, the kernel collectors, the parse/value/identity guards and the clocks. All
+  killed, each restore SHA-256-verified; a patch that does not compile is reported as
+  `NOT-BUILT` instead of counted as a kill.
+- **Backlog** grows from `HOB-13` to `HOB-22` (the three luna findings as fixed entries, the
+  kernel's own value/quality types and its consequences, `st_dev` versus a `statx` mount id,
+  the missing `/sys` topology source, and the fixture-only reader evidence).
+
+### Fixed
+
+- **A block shape is refused under any other frame type** (`not-a-block`, `HOB-14`).
+  `decode_block` read the directory and bodies of whatever frame it was handed, so a `REQ`,
+  `DICT` or `END` frame carrying block sections decoded as a block; `encode_block` had the
+  same hole on the write side. Both now refuse, the Python decoder refuses with the same
+  kind, and the `block-as-req` fixture pins it.
+- **The canonical section order is enforced on decode** (`section-order`, `HOB-15`). The
+  encoder checked it and the decoder did not, so a reordered directory decoded and then
+  re-encoded to different bytes. `check_canonical_order` now runs before any body is read, a
+  `direction`-free `canonical_rank` table is shared with the encoder, and the
+  `section-order` fixture moves entries and bodies together.
+- **A truncated section directory is a `WireError`, not a `struct.error`** (`HOB-16`). The
+  Python decoder unpacked each entry after checking only the count, so a frame declaring
+  more sections than it carried raised `struct.error`. The read is now bounded with context
+  `block directory` and `need`/`have`; the `truncated-directory` fixture pins it and a
+  Python test asserts the refusal for declared counts 1..4.
+- **An unknown device topology is a state, not a bottom device** (`HOB-20`). The sampler
+  treated an unclassified device as bottom
+  (`collect.rs::is_bottom`, `last.get(dev).copied().unwrap_or(true)`), so a failed `/sys`
+  read summed a stacked device's counters into the cgroup aggregate. `cgroup::TopologySource`
+  makes the answer explicit and an `Unknown` device makes every `io.*` aggregate
+  `unknown-topology` with no values at all.
+- **An unparsable field no longer becomes a zero or a vanished metric.** A `cpu.stat`,
+  `memory.stat`, `memory.events`, PSI, `statm` or `status` field that does not parse is
+  published under its own name with the `unreadable` code; one bad `io.stat` counter makes
+  the whole sum unavailable (a partial total would be a wrong number that looks right); a
+  `max` limit is a `unsupported` state with the kernel's own text kept, not `-1`.
+
+### Changed
+
+- `coverage-floors.toml`: `crates/kernel` raised from the M0 bootstrap 90%/85% to 92% line /
+  93% region after its own tests reached 92.19% line / 93.50% region. No floor was lowered
+  and no code is excluded from coverage.
+- The `proto` refusal vocabulary grows from 40 to 42 names (`not-a-block`, `section-order`);
+  the count test, the display test, the fixture comparison in both languages and the crate
+  docs were updated together. `fixtures/wire` grows from 23 to 26 cases (7 valid, 19 refusals).
+
+## [M1]
+
+### Added
+
 - **`model` crate (M1):** incarnation identity (`BootId`, `Epoch`, `CgroupKey` keyed by
   `(mount id, inode)`, `ProcessKey`, `IncarnationRegistry` with two-absent-scan retirement
   and rename-preserving relabel), the closed eight-code quality vocabulary, good/bad-quality
@@ -16,9 +90,9 @@
   live rows, history buckets, and bounded per-segment dictionaries with generation
   retirement. Every decode failure is one typed `ProtoError`; nothing panics, nothing
   returns a partial block, and unknown or future section versions are refused.
-- **Shared golden fixtures:** `fixtures/wire/` (23 cases: u64 boundaries, `-0.0`/NaN
+- **Shared golden fixtures:** `fixtures/wire/` (26 cases: u64 boundaries, `-0.0`/NaN
   placeholder, Unicode dictionary, every quality code, empty selection, unknown optional
-  section, and sixteen refusal cases) and `fixtures/rates/rates.json` (18 hand-computed
+  section, and nineteen refusal cases) and `fixtures/rates/rates.json` (18 hand-computed
   classifier and rate cases). Bind the Rust tests and an independent stdlib-only Python
   reference codec (`python/reference/`, `python/tests/`) to one contract.
 - **SP-4 measurement** (`crates/proto/examples/sp4_wire_size.rs`, deterministic,
