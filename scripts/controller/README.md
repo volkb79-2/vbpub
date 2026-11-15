@@ -448,3 +448,36 @@ the running Bash loop can still be reading the script file.
 Use direct file-existence and PID checks in drain loops. Do not build a wait
 condition from a pipeline whose status can be changed by `pipefail`, and do
 not use a fixed number of sleeps as proof that a marker or process is gone.
+
+## Install the tool skills into the harness skill directories
+
+Each tool carries its agent skill next to itself, so the text versions with the
+code: cmru, ciu, pwmcp and fleetd PACKAGE theirs and install with
+`cmru skills install` / `ciu skills install` / `pwmcp skills install` /
+`fleet skills install` (they stamp their own directory — `.cli-extended-stamp.json`
+— and answer `skills check`). assay and run-gate have no `skills` verb, so their
+repo-level sources — `run-gate-cli` and `assay-cli`
+(`<tool>/.claude/skills/<name>/SKILL.md`) — are copied by this kit instead:
+
+```bash
+scripts/controller/skills-sync.sh check      # exit 1 unless every owned skill is current
+scripts/controller/skills-sync.sh install    # copy them into ~/.agents/skills and ~/.claude/skills
+scripts/controller/skills-sync.sh list       # report state only
+```
+
+It is idempotent, prints what it changed, and refuses to overwrite a directory
+that does not carry its own `.controller-skills-stamp.json` (an edited copy needs
+`--overwrite-modified`, and a source change is reported as `stale`, not as a
+local edit). It never touches `~/.claude/skills/synced` or any skill owned by
+another tool. `--dest DIR` installs into one directory instead of both, and
+`--dry-run` says what it would do. The copy script's own tests are
+`tests/test-skills-sync.sh`, part of the controller `suite` lane.
+
+After changing either of those two skill sources, re-run `install` (a stale copy
+is what an agent will otherwise read) and run `cmru skills check` and
+`ciu skills check` if you also touched their packaged texts.
+
+Why the kit owns a copy step instead of each tool owning a `skills` verb is in
+[the design guide](docs/DESIGN-GUIDE.md#copy-hand-written-skills-instead-of-giving-them-a-skills-verb);
+the paste-ready procedure is in
+[the consumer guide](docs/CONSUMERS.md#install-the-tool-skills-an-agent-will-read).

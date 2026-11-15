@@ -240,3 +240,23 @@ paths from controller configuration; copy their names from
 wrapper polls both every 5 seconds and prints progress every 300 seconds, so a
 gate uses the first freed slot instead of waiting only for the first path. The
 suite is a validation lane, not a release lane.
+
+## Install the tool skills an agent will read
+
+Skills a tool packages install themselves:
+`cmru skills install`, `ciu skills install`, `pwmcp skills install`,
+`fleet skills install` (each stamps its own directory and answers
+`skills check`). assay and run-gate ship hand-written, repo-level skills with no
+`skills` verb; install those from this kit:
+
+```bash
+scripts/controller/skills-sync.sh check     # exit 1 unless every owned skill is current
+scripts/controller/skills-sync.sh install   # ~/.claude/skills and ~/.agents/skills
+```
+
+Run `install` after pulling, and after editing either source: a stale
+installed copy is what the next agent reads, and `check` is the only thing that
+notices. For a single destination (a test tree, a container home), use
+`--dest DIR`; `--dry-run` prints the actions without taking them. An edited copy
+is refused by design — `--overwrite-modified` is a deliberate discard of those
+edits, not a routine step.

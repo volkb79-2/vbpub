@@ -84,6 +84,46 @@ mutant("scripts/controller/release-from-wt.sh", "release-clean.sh",
 mutant("scripts/controller/push-image.sh", "push-image-status.sh",
        'for rc in "${statuses[@]}"; do (( rc == 0 )) || exit 1; done', ': # deliberately ignore pipeline exit statuses')
 
+# skills-sync.sh: five ways the ownership/staleness contract can be weakened.
+# Each turns a state the script must tell apart into its neighbour: a foreign
+# stamp becomes ours, a local edit is clobbered, a stale source reads as
+# current, a dangling link is adopted as absent, and `check` stops being able to
+# fail.
+mutant("scripts/controller/skills-sync.sh", "skills-stamp-ownership.sh",
+       '[[ $tool == "$OWNER" ]] || { printf \'unmanaged\\n\'; return 0; }',
+       '[[ -n $tool ]] || { printf \'unmanaged\\n\'; return 0; }')
+mutant("scripts/controller/skills-sync.sh", "skills-modified-clobber.sh",
+       'if ((overwrite_modified)); then', 'if true; then')
+mutant("scripts/controller/skills-sync.sh", "skills-stale-detection.sh",
+       '[[ $stamped == "$want" ]] || { printf \'stale\\n\'; return 0; }',
+       ': # a moved source reads as current')
+# A DANGLING symlink must not read as `absent`: that branch is the one that
+# calls install_one, which rm -rf's and recreates the directory. Losing the
+# `-L` half turns "refuse an unmanaged link" into "replace it".
+mutant("scripts/controller/skills-sync.sh", "skills-dangling-symlink.sh",
+       'if [[ ! -e $dest && ! -L $dest ]]; then', 'if [[ ! -e $dest ]]; then')
+# `--help` dropping the header's own facts: a fixed `sed -n '3,14p'` range lost
+# the first description line (and would lose more as the header grows).
+mutant("scripts/controller/skills-sync.sh", "skills-usage-range.sh",
+       'usage() { awk \'NR>1 && /^#/ { sub(/^# ?/, ""); print; next } NR>1 { exit }\' "${BASH_SOURCE[0]}"; }',
+       'usage() { sed -n \'3,14p\' "${BASH_SOURCE[0]}" | sed \'s/^# \\{0,1\\}//\'; }')
+# Reviewer additions: `--dest` arity (the test helper puts it last, which hid
+# `--dest DIR --dry-run` being rejected), a failed copy reported as success, and
+# a write below a `synced` directory.
+mutant("scripts/controller/skills-sync.sh", "skills-dest-arity.sh",
+       '[[ $# -ge 1 && $1 != -* ]] ||', '[[ $# == 1 ]] ||')
+mutant("scripts/controller/skills-sync.sh", "skills-install-failure.sh",
+       'echo "ERROR cannot stage $name in $base" >&2; failed=1; return 1',
+       'echo "ERROR cannot stage $name in $base" >&2; return 1')
+mutant("scripts/controller/skills-sync.sh", "skills-synced-guard.sh",
+       '      */synced/*)', '      */synced-never/*)')
+# `--dry-run` that writes anyway (only visible on a tree that needs work).
+mutant("scripts/controller/skills-sync.sh", "skills-dry-run-writes.sh",
+       '  if ((dry_run)); then\n    printf \'would', '  if ((dry_run > 5)); then\n    printf \'would')
+mutant("scripts/controller/skills-sync.sh", "skills-check-exit.sh",
+       '  check) ((failed)) && { echo "FAIL $failed target(s) are not current" >&2; exit 1; }; exit 0 ;;',
+       '  check) exit 0 ;;')
+
 shutil.copy2(repo / "scripts/controller/lib.sh", root / "mutants/scripts/controller/lib.sh")
 mutant("scripts/netcup/runner/host-sat-queue.sh", "queue-threshold.sh",
        'if (( consec_infra >= MAX_CONSEC_INFRA )); then',

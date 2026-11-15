@@ -155,6 +155,14 @@ container start. Tests: `scripts/test_finalize_agent_skills.py` (fake CLIs on a
 temporary `PATH`) and the home assertions in `tests/runtime/test_fresh_home.py`,
 which allow exactly these trees.
 
+This step can only reach a CLI that PACKAGES its skill behind a `skills` verb.
+Two estate skills are hand-written and repo-level — `assay-cli`, `run-gate-cli`
+— and their tools ship no `skills` verb, so a fresh home starts without them; a
+checkout can install them with
+`scripts/controller/skills-sync.sh install`. Adding them to `SKILLS_CLIS`
+without that verb would silently do nothing, so the gap is tracked rather than
+papered over: see MDT-103.
+
 ## The `mdt` group
 
 Image-managed trees must be updatable by the runtime user without `sudo` -

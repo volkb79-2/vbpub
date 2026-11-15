@@ -230,3 +230,40 @@ The `suite` lane runs in `tester-unified` and covers fake-root behavior,
 `bash -n`, available ShellCheck, and hand-mutated guard checks. It is not
 registered for release. New behavior therefore gets reproducible test
 evidence without adding a controller release lifecycle.
+
+## Copy hand-written skills instead of giving them a `skills` verb
+
+cli-extended's `skills` verb is the right owner for a tool whose skill is
+package data: it stamps the installed copy and `skills check` exits 1 when the
+source moved on, so staleness is a check that can fail. Two of this estate's
+skills have no such owner — assay and run-gate carry hand-written, repo-level
+`SKILL.md` trees and ship no `skills` verb — and a consumer that copies one by
+hand reads it forever, which is exactly how the 2026-11 refresh found a
+run-gate skill describing "rev 49, unreleased" for a released 25.6.0. (fleetd
+was the third; it adopted the verb while this refresh was in flight, which is
+the intended way for an entry to leave this list.)
+
+The alternative, giving each of those tools a `skills` verb, is the better
+long-run answer and is filed as backlog entries against each tool. This script
+exists because that answer is not available today and an agent that installs
+skills by hand today still deserves a check that can go red. It is deliberately
+narrow:
+
+- **Ownership, not adoption.** It writes only the directories named in its
+  `SOURCES` list, and only into a directory carrying its own
+  `.controller-skills-stamp.json`. A directory without that stamp is somebody
+  else's (`~/.claude/skills/synced`, a tool-installed skill, a hand copy) and is
+  refused rather than replaced. A directory with the stamp whose bytes no longer
+  match the stamp is a *local edit*, refused unless `--overwrite-modified`; a
+  directory whose bytes match but whose source digest moved is *stale*, which
+  install does repair. Conflating those two would either clobber an operator's
+  edit or leave a stale copy in place, and both are failures this estate has
+  already paid for.
+- **Digest of the tree, not the file.** A skill directory may grow a reference
+  file; the stamp covers relative path plus bytes, so adding one is a source
+  change and not an invisible no-op.
+- **Two destinations, same as cli-extended.** `$CLAUDE_CONFIG_DIR` (default
+  `~/.claude`) and `~/.agents`, because an agent harness may read either.
+- **No lifecycle, no release.** The controller kit is validation tooling, not a
+  release lane (see "Keep validation in the registered gate"), so the script is
+  a script with a shell test and no packaging.

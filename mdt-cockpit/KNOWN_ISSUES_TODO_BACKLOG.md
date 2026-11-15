@@ -1864,3 +1864,32 @@ the sampling interface cgprofile needs is available.
 available and DAMON_STAT absent passes; a reachable kernel missing the
 required interface fails; and an inaccessible probe is UNKNOWN. The manifest
 contract and estate-doctor lanes pass.
+
+## MDT-103 - a fresh container home has no assay, run-gate or fleetd skill
+
+**Status:** OPEN (filed 2026-11-15, estate-wide skills refresh); minor,
+documentation/adoption gap in a fresh home.
+
+**Problem.** `install_agent_skills()` (`scripts/finalize_container_environment.py`)
+walks `SKILLS_CLIS` and calls `<cli> skills check` / `skills install`. That is
+exactly the right contract for a CLI that PACKAGES its skill behind a
+`skills` verb, and it covers cmru, ciu, pwmcp, topos and cgprofile. It cannot
+cover assay or run-gate: neither ships a `skills` verb
+(filed as assay B548, run-gate RG-281), so a fresh home has no
+`assay-cli` or `run-gate-cli` skill and an agent working in a
+container starts from nothing.
+
+The interim answer is `scripts/controller/skills-sync.sh install` in the repo,
+which copies those stamped skill trees into `~/.claude/skills` and
+`~/.agents/skills`. The cockpit image does not ship `scripts/controller`
+(a repo tree, not image content), so the finalizer step cannot call it without
+a coupling this issue deliberately does not propose: the image should not
+depend on a checkout layout.
+
+**Close when.** either (a) both tools adopt cli-extended's `skills` verb
+and join `SKILLS_CLIS` (the backlog entries above), or (b) an image-shipped
+copy of the hand-written skills plus an install path exists, with a
+fresh-home assertion in `tests/runtime/test_fresh_home.py` covering the extra
+skill directories and `skills check` (not an existence test) deciding
+staleness. Record which one, and why, in the design guide's "Agent skills of
+the first-party CLIs" section.

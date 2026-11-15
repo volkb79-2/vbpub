@@ -197,6 +197,7 @@ items:
   - {id: B544, title: "Merge candidate-scoped Assay stores from an explicit owner manifest and refuse incomplete or conflicting ownership", type: feature, component: mutation, context_estimate: medium}
   - {id: B545, title: "Resolve progress/verdict disagreement for a timeout-killed R2 candidate", type: bugfix, component: mutation, context_estimate: medium}
   - {id: B546, title: "Assay's own T3 R2 had no native kind-assay lane for changed-line campaigns", type: bugfix, component: gate, context_estimate: small}
+  - {id: B548, title: "assay ships a hand-written repo-level skill with no `skills` verb, so `skills check` cannot tell a consumer its installed copy is stale", type: feature, component: distribution, context_estimate: small}
 ---
 
 # assay — backlog
@@ -15177,3 +15178,26 @@ endpoint. The B105 `self-qualification` and
 prior commands and rigor. No R2 campaign was run in this package; B535 owns the
 next latest-release T3 result. The layout refusal itself remains under B541,
 and the selected-set second-attempt repro remains under netcup NC-36.
+
+## B548 — assay's skill has no install/check path, so a consumer's copy silently rots
+
+**Status:** OPEN (filed 2026-11-15 during the estate-wide skills refresh);
+distribution/documentation; severity: minor.
+
+**Problem.** `assay/.claude/skills/assay-cli/SKILL.md` is hand-written and
+repo-level. cmru, ciu and pwmcp PACKAGE theirs and install them through
+cli-extended's `skills` verb, which stamps `.cli-extended-stamp.json` and makes
+`skills check` exit 1 on a stale copy. assay has no such verb, so the only
+thing keeping a consumer's installed copy true is a human remembering to
+re-copy it: the 2026-09-17 copy described assay 6.3.0, verdict schema v11 and
+"four subcommands" while the repository was at 12.2.0 / v19 / six subcommands.
+
+**Wanted.** Adopt the cli-extended `skills` verb (the same library cmru, ciu
+and pwmcp use), move the skill under `assay/src/assay/skills/assay-cli/` as
+package data, and keep the repo-level `.claude/skills` path as a pointer only.
+`assay skills check` must then fail whenever the installed copy is stale.
+
+**Close when.** `assay skills install|check|list|uninstall` exist, the packaged
+SKILL passes `validate_skill_source`, `skills check` catches a stale install in
+a tmp destination, and the docs-sync test that currently reads
+`.claude/skills/assay-cli/SKILL.md` reads the packaged path instead.
