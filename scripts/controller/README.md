@@ -271,7 +271,7 @@ line keeps its historical shape `EXIT=<n> OUTCOME=<word>`, where the word is:
 | `NO-REPORT` | exit zero but the expected report file is missing. |
 | `USAGE-LIMIT` | a provider 402 `insufficient_balance` stop; the account is blocked until its reset. |
 | `ERROR` | a provider error stop, or a nonzero pi exit. |
-| `INCOMPLETE` | a settled stream that is not a `stop` (for example `length`). |
+| `INCOMPLETE` | a settled stream that is not a `stop` (for example `length`), or a finish whose worktree status cannot be read (never read as clean). |
 
 Name the expected report with `--report <absolute-path>` or `PI_REPORT`;
 leaving it unset skips the report check rather than passing it. Every other

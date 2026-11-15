@@ -131,6 +131,7 @@ for pi_case in \
   pi-empty-completion-class:outcome-empty pi-thinking-only-class:outcome-empty \
   pi-uncommitted-class:outcome-uncommitted pi-no-report-class:outcome-no-report \
   pi-worktree-git-fact:repo-not-a-worktree \
+  pi-status-fail-closed:git-unreadable pi-continue-live-stream:retry-stream \
   pi-continue-bound:retry-bound pi-continue-class:no-retry-classes \
   pi-continue-exhausted:outcome-empty pi-continue-prompt-file:prompt-file \
   pi-continue-bound-validation:retry-validation \
@@ -145,6 +146,7 @@ for pi_live_case in \
   pi-live-atomic:live-atomic pi-live-tool-in-flight:live-snapshot \
   pi-live-missing-fact:live-snapshot pi-live-usage-trend:live-usage-trend \
   job-status-stall-threshold:status-states job-status-hung-tool:status-states \
+  job-status-default-stall:status-defaults job-status-default-hung:status-defaults \
   job-status-wrapper-dead:status-states job-status-finished:status-states \
   job-status-no-live:status-states; do
   pi_live_mutant=${pi_live_case%%:*}

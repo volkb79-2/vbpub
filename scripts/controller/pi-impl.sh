@@ -19,7 +19,8 @@
 #   NO-REPORT        the expected report file is missing.
 #   USAGE-LIMIT      a provider 402 `insufficient_balance` stop.
 #   ERROR            a provider error stop, or a nonzero pi exit.
-#   INCOMPLETE       a settled or unreadable stream that is not a stop.
+#   INCOMPLETE       a settled or unreadable stream that is not a stop, or a
+#                    finish whose worktree status cannot be read.
 #
 # The expected report is `--report <path>` or `PI_REPORT`; unset means no
 # report check. Every active run also gets <run>.live (liveness/progress,
@@ -234,18 +235,20 @@ base_pi_args=(-p --mode json --model "$provider/$model" --thinking "$thinking" -
 resume_target=''
 [[ $mode != resume ]] || resume_target=$session_id
 
-# One pi invocation. $3 is 1 for the first run (truncate stderr) and 0 for a
-# continuation that appends to the run's stream and stderr.
+# One pi invocation. $3 is 1 for the first run (truncate stream and stderr) and
+# 0 for a continuation that APPENDS to the run's stream and stderr directly, so
+# the liveness sidecar and every stream reader see the continuation's events as
+# they happen (a continuation continues the whole task and can run for hours).
 invoke_pi() {
-  local prompt_text=$1 stream=$2 stderr_mode=$3
+  local prompt_text=$1 stream=$2 first_run=$3
   local -a argv=("${base_pi_args[@]}")
   [[ -z $resume_target ]] || argv+=(--session "$resume_target")
-  if [[ $stderr_mode == 1 ]]; then
+  if [[ $first_run == 1 ]]; then
     (cd -- "$worktree" && nice pi "${argv[@]}" -- "$prompt_text" \
       < /dev/null > "$stream" 2> "$out/$name.err")
   else
     (cd -- "$worktree" && nice pi "${argv[@]}" -- "$prompt_text" \
-      < /dev/null > "$stream" 2>> "$out/$name.err")
+      < /dev/null >> "$stream" 2>> "$out/$name.err")
   fi
 }
 
@@ -355,7 +358,10 @@ classify_run() {
     # No text and no tool call: pi treats that as the end of the run, so a
     # provider/model anomaly shows up as an exit-0 stop with nothing said.
     echo EMPTY-COMPLETION
-  elif [[ -n $(git -C "$worktree" status --porcelain 2>/dev/null) ]]; then
+  elif ! worktree_state=$(git -C "$worktree" --no-optional-locks status --porcelain 2>/dev/null); then
+    # A worktree that cannot answer must not read as clean (fail closed).
+    echo INCOMPLETE
+  elif [[ -n $worktree_state ]]; then
     echo UNCOMMITTED
   elif [[ -n $report_path && ! -f $report_path ]]; then
     echo NO-REPORT
@@ -379,7 +385,8 @@ if [[ ${PI_LIVE:-1} == 1 ]]; then
   live_pid=$!
 fi
 
-: > "$out/$name.events"
+# A resumed run keeps the retry history of its earlier invocations.
+if [[ $mode == new ]]; then : > "$out/$name.events"; else : >> "$out/$name.events"; fi
 if invoke_pi "$prompt_text" "$out/$name.jsonl" 1; then
   rc=0
 else
@@ -415,17 +422,12 @@ while (( attempt < retry_limit )) && [[ $outcome == EMPTY-COMPLETION ]]; do
     break
   fi
   attempt=$((attempt + 1))
-  attempt_stream=$(mktemp "$out/.$name.retry.XXXXXX") || {
-    printf 'could not create a continuation stream for run %s\n' "$name" >&2
-    break
-  }
-  if invoke_pi "$continue_prompt" "$attempt_stream" 0; then
+  printf '{"ev":"empty-completion-retry-start","attempt":%s}\n' "$attempt" >> "$out/$name.events"
+  if invoke_pi "$continue_prompt" "$out/$name.jsonl" 0; then
     attempt_rc=0
   else
     attempt_rc=$?
   fi
-  cat -- "$attempt_stream" >> "$out/$name.jsonl"
-  rm -f -- "$attempt_stream"
   rc=$attempt_rc
   inspection=$(inspect_run)
   IFS=$'\t' read -r stream_session stop_reason usage_limited settled aborted \

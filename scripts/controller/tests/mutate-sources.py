@@ -401,8 +401,16 @@ mutant("scripts/controller/pi-impl.sh", "pi-thinking-only-class.sh",
        '    "1" if last_text else "0", "1" if has_tool_call else "0",')
 # Uncommitted work must not read as SUCCESS.
 mutant("scripts/controller/pi-impl.sh", "pi-uncommitted-class.sh",
-       'elif [[ -n $(git -C "$worktree" status --porcelain 2>/dev/null) ]]; then',
+       'elif [[ -n $worktree_state ]]; then',
        'elif false; then')
+# An unreadable worktree status must fail closed, not read as a clean tree.
+mutant("scripts/controller/pi-impl.sh", "pi-status-fail-closed.sh",
+       'elif ! worktree_state=$(git -C "$worktree" --no-optional-locks status --porcelain 2>/dev/null); then',
+       'elif worktree_state=$(git -C "$worktree" --no-optional-locks status --porcelain 2>/dev/null) && false; then')
+# A continuation must write into the run's own stream while it runs.
+mutant("scripts/controller/pi-impl.sh", "pi-continue-live-stream.sh",
+       'if invoke_pi "$continue_prompt" "$out/$name.jsonl" 0; then',
+       'if invoke_pi "$continue_prompt" "$out/.$name.continue.tmp" 0; then')
 # A named report that is missing must not read as SUCCESS.
 mutant("scripts/controller/pi-impl.sh", "pi-no-report-class.sh",
        'elif [[ -n $report_path && ! -f $report_path ]]; then',
@@ -474,6 +482,14 @@ mutant("scripts/controller/job-status.sh", "job-status-finished.sh",
 mutant("scripts/controller/job-status.sh", "job-status-no-live.sh",
        '    if not live_path.is_file():',
        '    if False:')
+# The documented defaults (600 s quiet, 1800 s in one tool call) must hold when
+# no environment override is given.
+mutant("scripts/controller/job-status.sh", "job-status-default-stall.sh",
+       'stall_seconds=${JOB_STATUS_STALL_SECONDS:-600}',
+       'stall_seconds=${JOB_STATUS_STALL_SECONDS:-6000}')
+mutant("scripts/controller/job-status.sh", "job-status-default-hung.sh",
+       'hung_tool_seconds=${JOB_STATUS_HUNG_TOOL_SECONDS:-1800}',
+       'hung_tool_seconds=${JOB_STATUS_HUNG_TOOL_SECONDS:-18000}')
 
 mutant("scripts/controller/README.md", "README-pi-route-table.md",
        '| `deepseek-pi` | `pi-impl.sh` | Favored Open Design route; alternates available accounts. |',

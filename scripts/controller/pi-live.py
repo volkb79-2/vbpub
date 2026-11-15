@@ -71,6 +71,15 @@ class Snapshot:
     def read_new(self) -> None:
         try:
             with self.stream.open("rb") as source:
+                if os.fstat(source.fileno()).st_size < self.offset:
+                    # The stream was truncated and rewritten (a new first run):
+                    # start over rather than wait to outgrow the old offset.
+                    self.offset = 0
+                    self.incomplete = b""
+                    self.turns = 0
+                    self.tool_calls = 0
+                    self.total_tokens = None
+                    self.in_flight = None
                 source.seek(self.offset)
                 chunk = source.read()
                 self.offset = source.tell()
@@ -126,7 +135,9 @@ def payload(run: str, stream: Path, worktree: str, wrapper_pid: int, state: Snap
         last_event = None
     base = os.environ.get("CONTROLLER_BASE_REF") or "origin/main"
     ahead = git(worktree, ["rev-list", "--count", f"{base}..HEAD"])
-    porcelain = git(worktree, ["status", "--porcelain"])
+    # --no-optional-locks: a 30 s poll must never take the index lock the agent's
+    # own git add/commit needs.
+    porcelain = git(worktree, ["--no-optional-locks", "status", "--porcelain"])
     commit_epoch_text = git(worktree, ["log", "-1", "--format=%ct", "HEAD"])
     commit_epoch: int | None = None
     if commit_epoch_text is not None and commit_epoch_text.strip().isdigit():

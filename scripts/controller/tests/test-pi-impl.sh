@@ -60,6 +60,12 @@ printf '%s\n' "$*" >> "$PI_ARGV_LOG"
 printf '%s' "${!#}" > "$PI_PROMPT_LOG"
 printf 'VOLKER_PRESENT=%s GITHUB2_PRESENT=%s\n' \
   "${OPENDESIGN_API_KEY_VOLKER:+yes}" "${OPENDESIGN_API_KEY_GITHUB2:+yes}" >> "$PI_ENV_LOG"
+# Probe: where this invocation's stdout points and whether the run's .done
+# marker exists yet (a marker before the continuations finish is a false verdict).
+if [[ -n ${FAKE_PI_PROBE_LOG:-} ]]; then
+  printf 'STDOUT=%s DONE=%s\n' "$(readlink "/proc/$$/fd/1")" \
+    "$([[ -e ${FAKE_PI_DONE_PROBE:-/nonexistent} ]] && echo present || echo absent)" >> "$FAKE_PI_PROBE_LOG"
+fi
 # This blocks while stdin remains open. The wrapper must give pi /dev/null.
 if [[ -p /dev/stdin && -n ${FAKE_PI_STDIN_OPEN_MARKER:-} ]]; then
   : > "$FAKE_PI_STDIN_OPEN_MARKER"
@@ -302,6 +308,27 @@ check_outcome_uncommitted() {
   clean_worktree
 }
 
+# A worktree whose status cannot be read must not read as clean.
+check_outcome_git_unreadable() {
+  local shim=$ROOT/git-shim real_git
+  real_git=$(command -v git)
+  mkdir -p "$shim"
+  cat > "$shim/git" <<SH
+#!/usr/bin/env bash
+for a in "\$@"; do [[ \$a == status ]] && exit 128; done
+exec $real_git "\$@"
+SH
+  chmod +x "$shim/git"
+  PATH="$shim:$ROOT/bin:$PATH" HOME="$HOME_ROOT" PI_ROUTE=deepseek-pi-volker \
+    CONTROLLER_OD_STATE="$ROOT/outcome-git-state.json" \
+    FAKE_PI_STREAM="$SCRIPT_DIR/fixtures/pi-success.jsonl" FAKE_PI_SESSION_ID=outcome-git-session \
+    FAKE_PI_RC=0 PI_LIVE=0 \
+    "$SRC" "$WORKTREE" "$PROMPT" outcome-git-unreadable > "$ROOT/outcome-git.launch.log" 2>&1 < /dev/null \
+    || { cat "$ROOT/outcome-git.launch.log" >&2; fail 'wrapper failed on an unreadable worktree status'; }
+  [[ $(cat "$CONTROLLER_ROOT/runs/outcome-git-unreadable.done") == 'EXIT=0 OUTCOME=INCOMPLETE' ]] \
+    || fail 'an unreadable worktree status was classified as clean'
+}
+
 check_outcome_no_report() {
   local before after
   before=$(pi_invocations)
@@ -320,6 +347,23 @@ check_outcome_empty_retry_bounded() {
   [[ $(( after - before )) == 3 ]] || fail "an unbounded empty-completion loop used $(( after - before )) pi invocations, expected 3 (the run plus two continuations)"
   contains "$CONTROLLER_ROOT/runs/bounded-empty.done" 'OUTCOME=EMPTY-COMPLETION-RETRIES-EXHAUSTED' \
     'the exhausted retry count is the final outcome'
+}
+
+# Every continuation writes straight into the run's own stream (so the liveness
+# sidecar and any stream reader see it while it runs) and no .done marker exists
+# until the last continuation has finished.
+check_retry_streams_into_run() {
+  local probe=$ROOT/retry-probe.log run=retry-probe
+  rm -f "$probe"
+  FAKE_PI_PROBE_LOG=$probe FAKE_PI_DONE_PROBE=$CONTROLLER_ROOT/runs/$run.done \
+    wait_launch_sequence "$run" deepseek-pi-volker "pi-empty-completion pi-empty-completion pi-success"
+  [[ $(wc -l < "$probe") == 3 ]] || fail "expected 3 pi invocations, saw $(wc -l < "$probe")"
+  [[ $(grep -cF "STDOUT=$CONTROLLER_ROOT/runs/$run.jsonl DONE=absent" "$probe") == 3 ]] \
+    || { cat "$probe" >&2; fail 'a continuation did not write into the run stream, or a .done marker existed before the last continuation finished'; }
+  [[ $(head -n 1 "$CONTROLLER_ROOT/runs/$run.done") == 'EXIT=0 OUTCOME=SUCCESS' ]] \
+    || fail 'a run that recovers on the second continuation is not SUCCESS'
+  [[ -z $(find "$CONTROLLER_ROOT/runs" -maxdepth 1 -name ".$run.retry.*") ]] \
+    || fail 'a continuation left a temporary stream behind'
 }
 
 check_live_snapshot() {
@@ -457,6 +501,43 @@ PY
   grep -qF 'orphan: WRAPPER-DEAD' "$ROOT/job-status-states.out" || fail 'a run whose wrapper pid is gone is not WRAPPER-DEAD'
   grep -qE 'hung: (ACTIVE|STALLED)' "$ROOT/job-status-states.out" \
     && fail 'HUNG-TOOL did not take precedence over STALLED'
+}
+
+# The documented default thresholds (600 s quiet, 1800 s in one tool call), and
+# the healthy side of each: a run inside its threshold, or in a long thinking turn
+# with no tool in flight, is ACTIVE.
+check_job_status_defaults() {
+  local runs=$ROOT/status-default-runs
+  mkdir -p "$runs" "$ROOT/status-home"
+  python3 - "$runs" <<'PY'
+import json, sys, time
+from pathlib import Path
+now = int(time.time())
+runs = Path(sys.argv[1])
+def write(name, tool=None, tool_started=None, last_event=None):
+    body = {
+        "run": name, "wrapper_pid": 1, "updated_epoch": now,
+        "last_event_epoch": last_event, "tool_in_flight": tool,
+        "tool_in_flight_started_epoch": tool_started,
+        "assistant_turns": 1, "tool_calls": 1, "latest_total_tokens": 10,
+        "commits_ahead": 0, "uncommitted_files": 0, "last_commit_epoch": now,
+    }
+    (runs / f"{name}.live").write_text(json.dumps(body), encoding="utf-8")
+write("quiet500", last_event=now - 500)
+write("quiet700", last_event=now - 700)
+write("thinking", last_event=now - 100)
+write("tool1700", tool="bash", tool_started=now - 1700, last_event=now - 20)
+write("tool1900", tool="bash", tool_started=now - 1900, last_event=now - 20)
+PY
+  env -u JOB_STATUS_STALL_SECONDS -u JOB_STATUS_HUNG_TOOL_SECONDS \
+    CONTROLLER_HOME="$ROOT/status-home" CONTROLLER_RUNS_DIR="$runs" CONTROLLER_REPO="$WORKTREE" \
+    "$JOB_STATUS" quiet500 quiet700 thinking tool1700 tool1900 > "$ROOT/job-status-defaults.out" 2>&1 \
+    || { cat "$ROOT/job-status-defaults.out" >&2; fail 'job-status failed on default-threshold states'; }
+  local expectation
+  for expectation in 'quiet500: ACTIVE' 'quiet700: STALLED' 'thinking: ACTIVE' 'tool1700: ACTIVE' 'tool1900: HUNG-TOOL'; do
+    grep -qF -- "$expectation" "$ROOT/job-status-defaults.out" \
+      || { cat "$ROOT/job-status-defaults.out" >&2; fail "default thresholds: expected $expectation"; }
+  done
 }
 
 check_job_status_readonly() {
@@ -599,6 +680,9 @@ if [[ -n ${PI_TEST_FOCUS:-} ]]; then
     outcome-error) check_outcome_error ;;
     outcome-length) check_outcome_length ;;
     outcome-rc) check_outcome_rc ;;
+    git-unreadable) clean_worktree; check_outcome_git_unreadable ;;
+    retry-stream) clean_worktree; check_retry_streams_into_run ;;
+    status-defaults) check_job_status_defaults ;;
     # One overwatch case per focused name, so a hand mutant is judged against
     # the single check that covers the guard it weakened.
     outcome-success|outcome-empty|outcome-recovered|outcome-uncommitted|outcome-no-report|report-unset|retry-bound)
@@ -1279,12 +1363,15 @@ check_outcome_empty
 check_outcome_empty_recovered
 check_outcome_no_retry_other_classes
 check_outcome_uncommitted
+check_outcome_git_unreadable
 check_outcome_no_report
 check_outcome_empty_retry_bounded
+check_retry_streams_into_run
 check_live_snapshot
 check_live_atomic
 check_job_status
 check_job_status_states
+check_job_status_defaults
 check_job_status_readonly
 check_live_usage_trend
 check_live_atomic_partial
