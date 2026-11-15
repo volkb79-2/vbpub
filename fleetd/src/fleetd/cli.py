@@ -38,6 +38,7 @@ from cli_extended import (
     VerbGroup,
     VerbSpec,
     VersionLookupError,
+    register_skills_verbs,
 )
 
 from .contracts import ContractError, dump_json, load_json, validate_host_facts
@@ -89,7 +90,13 @@ def _domain(handler: Callable[[argparse.Namespace, CliRuntime], None]) -> Callab
 
 
 def identity() -> CliIdentity:
-    """The one identity: installed ``fleetd`` metadata, with no literal fallback."""
+    """The one identity: the installed ``fleetd`` distribution, no literal fallback.
+
+    A source checkout that was never installed therefore refuses to run (exit 3
+    with one actionable line) instead of reporting an invented version. The
+    project version itself is derived at build time from the ``fleetd-v*`` tag
+    (``tool.setuptools_scm``), so a literal in the source could only go stale.
+    """
 
     return CliIdentity.resolve(
         name="FLEET",
@@ -430,6 +437,9 @@ def build_cli(cli_identity: CliIdentity | None = None) -> RegisteredCli:
             options=_campaign_options(),
             handler=_domain(handler),
         ))
+    # Package data: fleetd/skills/fleetd-campaigns/SKILL.md. The library owns the
+    # install/check/list/uninstall verbs, their stamp and their integrity sidecar.
+    register_skills_verbs(registry, package="fleetd")
     return registry.build()
 
 
@@ -447,7 +457,3 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         return EXIT_NOT_INSTALLED
     return cli.run(argv=list(argv) if argv is not None else None)
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())

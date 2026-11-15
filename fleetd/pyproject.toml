@@ -9,17 +9,55 @@ readme = "README.md"
 requires-python = ">=3.11"
 license = "MIT"
 authors = [{ name = "Volker Badziong" }]
-dependencies = []
+# cli-extended is a REAL wheel dependency (unified-adoption CX-D1, operator
+# decision D-2 of the 2026-11-15 pi-fleet-cli package): the `fleet` CLI is
+# registered with it, never vendored and never put on a path.
+# Floor 0.5.0: the released cli_extended-0.5.0-py3-none-any.whl is the exact
+# wheel tester-unified installs into /opt/tester-venv (its pinned, sha256-
+# verified asset), so the gate and a managed host run the same library revision
+# this adoption was tested against. It carries the whole surface this CLI uses:
+# CliIdentity.resolve, CliRegistry/CliRuntime/CliFailure, register_skills_verbs,
+# and the cli_extended.testing helpers. It is published to GitHub Releases only
+# (the bare name is unclaimed on PyPI), so every install of fleetd installs
+# cli-extended first (`--no-index --no-deps`, or `--find-links <wheelhouse>`);
+# see README "Install" and docs/SPEC.md "Host install and the wheel layout".
+dependencies = ["cli-extended>=0.5.0"]
+
 dynamic = ["version"]
 
 [project.scripts]
-fleet = "fleetd.cli:main"
+# The console script body is fleetd.entry, not fleetd.cli: it imports only the
+# standard library, so a missing cli-extended is reported as one actionable line
+# (exit 3) instead of a ModuleNotFoundError traceback on a managed host.
+fleet = "fleetd.entry:main"
 
 [project.optional-dependencies]
 test = ["pytest>=8", "pytest-cov>=6"]
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+# `skills/**` (the packaged agent skill) and the review rubric are read at run
+# time through importlib.resources: `fleet skills install` must ship inside the
+# wheel, not only in the checkout.
+[tool.setuptools.package-data]
+fleetd = ["skills/**/*"]
+
+# Surface lifecycle (cli-extended AC-16..AC-18). ONE entry covers every route:
+# the root registry mounts `facts` and `guard` as delegated groups and `skills`
+# from the library, so a second entry would be a duplicate. Paths are relative
+# to this file; run `cli-extended surface check` from fleetd/ with the package
+# importable (PYTHONPATH=src or an installed wheel).
+[tool.cli-extended]
+schema_version = 1
+
+[[tool.cli-extended.clis]]
+id = "fleet"
+factory = "fleetd.cli:build_cli"
+review = "docs/cli-review.toml"
+manifest = "docs/cli-surface.json"
+spec = "docs/SPEC.md"
+findings = "docs/cli-review-findings.toml"
 
 [tool.setuptools_scm]
 root = ".."

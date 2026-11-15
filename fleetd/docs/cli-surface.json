@@ -1,0 +1,3770 @@
+{
+  "candidates": [
+    {
+      "id": "case:route:entrypoint:fleet/collect/argument-shape/argument:route:entrypoint:fleet/collect/campaign",
+      "kind": "argument-shape",
+      "members": [
+        "argument:route:entrypoint:fleet/collect/campaign"
+      ],
+      "route_id": "route:entrypoint:fleet/collect",
+      "shape": {
+        "argument_id": "argument:route:entrypoint:fleet/collect/campaign"
+      },
+      "signature": "sha256:9d0413f493ee080c666c1ee63b63e7e154882e687158a42f418d6fd9ae66a44d"
+    },
+    {
+      "id": "case:route:entrypoint:fleet/collect/minimum",
+      "kind": "minimum",
+      "members": [
+        "argument:route:entrypoint:fleet/collect/campaign",
+        "option:route:entrypoint:fleet/collect/--transport",
+        "option:route:entrypoint:fleet/collect/--state-dir"
+      ],
+      "route_id": "route:entrypoint:fleet/collect",
+      "shape": {
+        "defaulted_options": [
+          "option:route:entrypoint:fleet/collect/--transport",
+          "option:route:entrypoint:fleet/collect/--state-dir"
+        ],
+        "required_argument_values": {
+          "argument:route:entrypoint:fleet/collect/campaign": 1
+        },
+        "required_arguments": [
+          "argument:route:entrypoint:fleet/collect/campaign"
+        ],
+        "required_exclusive_groups": {},
+        "required_options": []
+      },
+      "signature": "sha256:974862780f84ed9b4d7150dc944b86bf1bdbcc4b2131ff1fb3c80b559fe4e075"
+    },
+    {
+      "id": "case:route:entrypoint:fleet/collect/option-choice/option:route:entrypoint:fleet/collect/--transport/ad3632c423",
+      "kind": "option-choice",
+      "members": [
+        "option:route:entrypoint:fleet/collect/--transport"
+      ],
+      "route_id": "route:entrypoint:fleet/collect",
+      "shape": {
+        "choice": "hx",
+        "option_id": "option:route:entrypoint:fleet/collect/--transport"
+      },
+      "signature": "sha256:2e5632b7685d834cb5587518a09cffb0d8ef6992c192b746b0282326a6069e77"
+    },
+    {
+      "id": "case:route:entrypoint:fleet/collect/option-spelling/option:route:entrypoint:fleet/collect/--debug-raw/--debug-raw",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:fleet/collect/--debug-raw"
+      ],
+      "route_id": "route:entrypoint:fleet/collect",
+      "shape": {
+        "option_id": "option:route:entrypoint:fleet/collect/--debug-raw",
+        "spelling": "--debug-raw"
+      },
+      "signature": "sha256:6d14d2e168f238487ab0016271ead397bae2a601eb065682a5802c419132af94"
+    },
+    {
+      "id": "case:route:entrypoint:fleet/collect/option-spelling/option:route:entrypoint:fleet/collect/--json/--json",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:fleet/collect/--json"
+      ],
+      "route_id": "route:entrypoint:fleet/collect",
+      "shape": {
+        "option_id": "option:route:entrypoint:fleet/collect/--json",
+        "spelling": "--json"
+      },
+      "signature": "sha256:feb9b94475912b6069b52cdc04ce9c8b01d0dede86035cca917906624ac4b37b"
+    },
+    {
+      "id": "case:route:entrypoint:fleet/collect/option-spelling/option:route:entrypoint:fleet/collect/--state-dir/--state-dir",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:fleet/collect/--state-dir"
+      ],
+      "route_id": "route:entrypoint:fleet/collect",
+      "shape": {
+        "option_id": "option:route:entrypoint:fleet/collect/--state-dir",
+        "spelling": "--state-dir"
+      },
+      "signature": "sha256:714749118fb727b6002d6580f4df5fe9834d1652a91fc0c8b2b7d20abe8ab288"
+    },
+    {
+      "id": "case:route:entrypoint:fleet/collect/option-spelling/option:route:entrypoint:fleet/collect/--transport/--transport",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:fleet/collect/--transport"
+      ],
+      "route_id": "route:entrypoint:fleet/collect",
+      "shape": {
+        "option_id": "option:route:entrypoint:fleet/collect/--transport",
+        "spelling": "--transport"
+      },
+      "signature": "sha256:caba3f954ec78e85c7043dd3f6c9cf4f00f59f63c1228b47986fc358ab01c707"
+    },
+    {
+      "id": "case:route:entrypoint:fleet/facts/collect/minimum",
+      "kind": "minimum",
+      "members": [
+        "option:route:entrypoint:fleet/facts/collect/--root"
+      ],
+      "route_id": "route:entrypoint:fleet/facts/collect",
+      "shape": {
+        "defaulted_options": [
+          "option:route:entrypoint:fleet/facts/collect/--root"
+        ],
+        "required_argument_values": {},
+        "required_arguments": [],
+        "required_exclusive_groups": {},
+        "required_options": []
+      },
+      "signature": "sha256:a4351fc35bbc33f4f8ac72ee7baa4727cb534b43d866ef2b475b34c7c73ae2f5"
+    },
+    {
+      "id": "case:route:entrypoint:fleet/facts/collect/option-spelling/option:route:entrypoint:fleet/facts/collect/--debug-raw/--debug-raw",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:fleet/facts/collect/--debug-raw"
+      ],
+      "route_id": "route:entrypoint:fleet/facts/collect",
+      "shape": {
+        "option_id": "option:route:entrypoint:fleet/facts/collect/--debug-raw",
+        "spelling": "--debug-raw"
+      },
+      "signature": "sha256:199b49d31ae91e8f02728ddeb76e422e0e953a7456767dda11d57ed7fa1f41a2"
+    },
+    {
+      "id": "case:route:entrypoint:fleet/facts/collect/option-spelling/option:route:entrypoint:fleet/facts/collect/--json/--json",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:fleet/facts/collect/--json"
+      ],
+      "route_id": "route:entrypoint:fleet/facts/collect",
+      "shape": {
+        "option_id": "option:route:entrypoint:fleet/facts/collect/--json",
+        "spelling": "--json"
+      },
+      "signature": "sha256:22ad648561c625d0bcab61b0a3ffe98034689b4639581b332c280180ceec856a"
+    },
+    {
+      "id": "case:route:entrypoint:fleet/facts/collect/option-spelling/option:route:entrypoint:fleet/facts/collect/--root/--root",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:fleet/facts/collect/--root"
+      ],
+      "route_id": "route:entrypoint:fleet/facts/collect",
+      "shape": {
+        "option_id": "option:route:entrypoint:fleet/facts/collect/--root",
+        "spelling": "--root"
+      },
+      "signature": "sha256:f3940b764abcc91421a40b3e3743f5707286986d40486f5ec92f6cafbd1b1c81"
+    },
+    {
+      "id": "case:route:entrypoint:fleet/facts/validate/argument-shape/argument:route:entrypoint:fleet/facts/validate/file",
+      "kind": "argument-shape",
+      "members": [
+        "argument:route:entrypoint:fleet/facts/validate/file"
+      ],
+      "route_id": "route:entrypoint:fleet/facts/validate",
+      "shape": {
+        "argument_id": "argument:route:entrypoint:fleet/facts/validate/file"
+      },
+      "signature": "sha256:f3acca0d249332562184dc785622b088d55397ea39486b6b0a825b7e63e108c2"
+    },
+    {
+      "id": "case:route:entrypoint:fleet/facts/validate/minimum",
+      "kind": "minimum",
+      "members": [
+        "argument:route:entrypoint:fleet/facts/validate/file"
+      ],
+      "route_id": "route:entrypoint:fleet/facts/validate",
+      "shape": {
+        "defaulted_options": [],
+        "required_argument_values": {
+          "argument:route:entrypoint:fleet/facts/validate/file": 1
+        },
+        "required_arguments": [
+          "argument:route:entrypoint:fleet/facts/validate/file"
+        ],
+        "required_exclusive_groups": {},
+        "required_options": []
+      },
+      "signature": "sha256:e453d8567e8b3e4fca405512ccadbe2fab41f85701c6ed052c38692409987d47"
+    },
+    {
+      "id": "case:route:entrypoint:fleet/facts/validate/option-spelling/option:route:entrypoint:fleet/facts/validate/--debug-raw/--debug-raw",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:fleet/facts/validate/--debug-raw"
+      ],
+      "route_id": "route:entrypoint:fleet/facts/validate",
+      "shape": {
+        "option_id": "option:route:entrypoint:fleet/facts/validate/--debug-raw",
+        "spelling": "--debug-raw"
+      },
+      "signature": "sha256:336ba48a37bc8f25ec8e4717b628f784e82c948f975f840299c48a442fd102d8"
+    },
+    {
+      "id": "case:route:entrypoint:fleet/guard/validate/argument-shape/argument:route:entrypoint:fleet/guard/validate/file",
+      "kind": "argument-shape",
+      "members": [
+        "argument:route:entrypoint:fleet/guard/validate/file"
+      ],
+      "route_id": "route:entrypoint:fleet/guard/validate",
+      "shape": {
+        "argument_id": "argument:route:entrypoint:fleet/guard/validate/file"
+      },
+      "signature": "sha256:9f864afcdce0d68fff8b5470957e7ba6c8463550dc7734349223cd2729f3830e"
+    },
+    {
+      "id": "case:route:entrypoint:fleet/guard/validate/minimum",
+      "kind": "minimum",
+      "members": [
+        "argument:route:entrypoint:fleet/guard/validate/file"
+      ],
+      "route_id": "route:entrypoint:fleet/guard/validate",
+      "shape": {
+        "defaulted_options": [],
+        "required_argument_values": {
+          "argument:route:entrypoint:fleet/guard/validate/file": 1
+        },
+        "required_arguments": [
+          "argument:route:entrypoint:fleet/guard/validate/file"
+        ],
+        "required_exclusive_groups": {},
+        "required_options": []
+      },
+      "signature": "sha256:d1065ea9a064562781f5e24c1fa1c6d4e3120c80f364fd8e756c5f028214ce5b"
+    },
+    {
+      "id": "case:route:entrypoint:fleet/guard/validate/option-spelling/option:route:entrypoint:fleet/guard/validate/--debug-raw/--debug-raw",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:fleet/guard/validate/--debug-raw"
+      ],
+      "route_id": "route:entrypoint:fleet/guard/validate",
+      "shape": {
+        "option_id": "option:route:entrypoint:fleet/guard/validate/--debug-raw",
+        "spelling": "--debug-raw"
+      },
+      "signature": "sha256:5300eed950d08198b3b0b58ef183649e513bc84a67e9abc7a9f7f1b4cf00ba3c"
+    },
+    {
+      "id": "case:route:entrypoint:fleet/plan/argument-shape/argument:route:entrypoint:fleet/plan/lane",
+      "kind": "argument-shape",
+      "members": [
+        "argument:route:entrypoint:fleet/plan/lane"
+      ],
+      "route_id": "route:entrypoint:fleet/plan",
+      "shape": {
+        "argument_id": "argument:route:entrypoint:fleet/plan/lane"
+      },
+      "signature": "sha256:e3460e2ba93d7a0e25cd38641cfb0515244d01bc70b84ef58b1fea19faa394fa"
+    },
+    {
+      "id": "case:route:entrypoint:fleet/plan/minimum",
+      "kind": "minimum",
+      "members": [
+        "argument:route:entrypoint:fleet/plan/lane",
+        "option:route:entrypoint:fleet/plan/--candidates",
+        "option:route:entrypoint:fleet/plan/--hosts",
+        "option:route:entrypoint:fleet/plan/--demand",
+        "option:route:entrypoint:fleet/plan/--commands",
+        "option:route:entrypoint:fleet/plan/--batch-multiplier"
+      ],
+      "route_id": "route:entrypoint:fleet/plan",
+      "shape": {
+        "defaulted_options": [
+          "option:route:entrypoint:fleet/plan/--commands",
+          "option:route:entrypoint:fleet/plan/--batch-multiplier"
+        ],
+        "required_argument_values": {
+          "argument:route:entrypoint:fleet/plan/lane": 1
+        },
+        "required_arguments": [
+          "argument:route:entrypoint:fleet/plan/lane"
+        ],
+        "required_exclusive_groups": {},
+        "required_options": [
+          "option:route:entrypoint:fleet/plan/--candidates",
+          "option:route:entrypoint:fleet/plan/--hosts",
+          "option:route:entrypoint:fleet/plan/--demand"
+        ]
+      },
+      "signature": "sha256:e2627f996c62334e5818f61309b7e9eb6ecdb73cc534f4b92c43484e778bef63"
+    },
+    {
+      "id": "case:route:entrypoint:fleet/plan/option-spelling/option:route:entrypoint:fleet/plan/--batch-multiplier/--batch-multiplier",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:fleet/plan/--batch-multiplier"
+      ],
+      "route_id": "route:entrypoint:fleet/plan",
+      "shape": {
+        "option_id": "option:route:entrypoint:fleet/plan/--batch-multiplier",
+        "spelling": "--batch-multiplier"
+      },
+      "signature": "sha256:a5b0547bab49f42de1edbd652fee21ec1926074c301f88f69daefe46746a13f0"
+    },
+    {
+      "id": "case:route:entrypoint:fleet/plan/option-spelling/option:route:entrypoint:fleet/plan/--candidates/--candidates",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:fleet/plan/--candidates"
+      ],
+      "route_id": "route:entrypoint:fleet/plan",
+      "shape": {
+        "option_id": "option:route:entrypoint:fleet/plan/--candidates",
+        "spelling": "--candidates"
+      },
+      "signature": "sha256:3547e7c8c2451eff0f169338d622a62313f9d5a951f8bfda320f6e57427ae5d4"
+    },
+    {
+      "id": "case:route:entrypoint:fleet/plan/option-spelling/option:route:entrypoint:fleet/plan/--commands/--commands",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:fleet/plan/--commands"
+      ],
+      "route_id": "route:entrypoint:fleet/plan",
+      "shape": {
+        "option_id": "option:route:entrypoint:fleet/plan/--commands",
+        "spelling": "--commands"
+      },
+      "signature": "sha256:7e4fc378f465b03e0464eb41fda545d9a6bb9804812e81f20fc0cdb5e3de11b6"
+    },
+    {
+      "id": "case:route:entrypoint:fleet/plan/option-spelling/option:route:entrypoint:fleet/plan/--debug-raw/--debug-raw",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:fleet/plan/--debug-raw"
+      ],
+      "route_id": "route:entrypoint:fleet/plan",
+      "shape": {
+        "option_id": "option:route:entrypoint:fleet/plan/--debug-raw",
+        "spelling": "--debug-raw"
+      },
+      "signature": "sha256:2ac195f700cc90534da0d118884adba6f8eb876953693badaf2f77fa00012f2e"
+    },
+    {
+      "id": "case:route:entrypoint:fleet/plan/option-spelling/option:route:entrypoint:fleet/plan/--demand/--demand",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:fleet/plan/--demand"
+      ],
+      "route_id": "route:entrypoint:fleet/plan",
+      "shape": {
+        "option_id": "option:route:entrypoint:fleet/plan/--demand",
+        "spelling": "--demand"
+      },
+      "signature": "sha256:68f7e82249e76f04231dc558994a07b01c78e4fb6a1798463c90828372bf4d16"
+    },
+    {
+      "id": "case:route:entrypoint:fleet/plan/option-spelling/option:route:entrypoint:fleet/plan/--hosts/--hosts",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:fleet/plan/--hosts"
+      ],
+      "route_id": "route:entrypoint:fleet/plan",
+      "shape": {
+        "option_id": "option:route:entrypoint:fleet/plan/--hosts",
+        "spelling": "--hosts"
+      },
+      "signature": "sha256:39d1713c8b50ee30ba36b85ff4bcb39e9c922eb1ebc2316fd10482b82843655a"
+    },
+    {
+      "id": "case:route:entrypoint:fleet/plan/option-spelling/option:route:entrypoint:fleet/plan/--json/--json",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:fleet/plan/--json"
+      ],
+      "route_id": "route:entrypoint:fleet/plan",
+      "shape": {
+        "option_id": "option:route:entrypoint:fleet/plan/--json",
+        "spelling": "--json"
+      },
+      "signature": "sha256:97063c85fc549fefbd489b8e044e8fb5fd77f64854744f9eb48431e2ff970785"
+    },
+    {
+      "id": "case:route:entrypoint:fleet/run/argument-shape/argument:route:entrypoint:fleet/run/plan",
+      "kind": "argument-shape",
+      "members": [
+        "argument:route:entrypoint:fleet/run/plan"
+      ],
+      "route_id": "route:entrypoint:fleet/run",
+      "shape": {
+        "argument_id": "argument:route:entrypoint:fleet/run/plan"
+      },
+      "signature": "sha256:84f937f5510016106566293f34505df2ea1fbbca8ba2654ecb656767966817a3"
+    },
+    {
+      "id": "case:route:entrypoint:fleet/run/minimum",
+      "kind": "minimum",
+      "members": [
+        "argument:route:entrypoint:fleet/run/plan",
+        "option:route:entrypoint:fleet/run/--campaign",
+        "option:route:entrypoint:fleet/run/--transport",
+        "option:route:entrypoint:fleet/run/--state-dir"
+      ],
+      "route_id": "route:entrypoint:fleet/run",
+      "shape": {
+        "defaulted_options": [
+          "option:route:entrypoint:fleet/run/--transport",
+          "option:route:entrypoint:fleet/run/--state-dir"
+        ],
+        "required_argument_values": {
+          "argument:route:entrypoint:fleet/run/plan": 1
+        },
+        "required_arguments": [
+          "argument:route:entrypoint:fleet/run/plan"
+        ],
+        "required_exclusive_groups": {},
+        "required_options": [
+          "option:route:entrypoint:fleet/run/--campaign"
+        ]
+      },
+      "signature": "sha256:0a43e1520cc166207914def87af0e7e3bb66f2b36c949c7483aab4690b269b69"
+    },
+    {
+      "id": "case:route:entrypoint:fleet/run/option-choice/option:route:entrypoint:fleet/run/--transport/ad3632c423",
+      "kind": "option-choice",
+      "members": [
+        "option:route:entrypoint:fleet/run/--transport"
+      ],
+      "route_id": "route:entrypoint:fleet/run",
+      "shape": {
+        "choice": "hx",
+        "option_id": "option:route:entrypoint:fleet/run/--transport"
+      },
+      "signature": "sha256:0548dcedd17d4ca9d06195a779215f9e9b64e398c90b09a71f31bfe35bc71cbc"
+    },
+    {
+      "id": "case:route:entrypoint:fleet/run/option-spelling/option:route:entrypoint:fleet/run/--campaign/--campaign",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:fleet/run/--campaign"
+      ],
+      "route_id": "route:entrypoint:fleet/run",
+      "shape": {
+        "option_id": "option:route:entrypoint:fleet/run/--campaign",
+        "spelling": "--campaign"
+      },
+      "signature": "sha256:7db862190e009bf6c28c5fb35f5a41ada549aaf12a6584c710b4e91c27033198"
+    },
+    {
+      "id": "case:route:entrypoint:fleet/run/option-spelling/option:route:entrypoint:fleet/run/--debug-raw/--debug-raw",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:fleet/run/--debug-raw"
+      ],
+      "route_id": "route:entrypoint:fleet/run",
+      "shape": {
+        "option_id": "option:route:entrypoint:fleet/run/--debug-raw",
+        "spelling": "--debug-raw"
+      },
+      "signature": "sha256:efdb275ce1b822b1fcf5b6d2916b0c0b28b9e1a6de793bbbbba1b61f29fe7731"
+    },
+    {
+      "id": "case:route:entrypoint:fleet/run/option-spelling/option:route:entrypoint:fleet/run/--json/--json",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:fleet/run/--json"
+      ],
+      "route_id": "route:entrypoint:fleet/run",
+      "shape": {
+        "option_id": "option:route:entrypoint:fleet/run/--json",
+        "spelling": "--json"
+      },
+      "signature": "sha256:471e057b2de1547efeef09abd556a3db7b542ffd3e7adc24f5f0a515f8d881a0"
+    },
+    {
+      "id": "case:route:entrypoint:fleet/run/option-spelling/option:route:entrypoint:fleet/run/--state-dir/--state-dir",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:fleet/run/--state-dir"
+      ],
+      "route_id": "route:entrypoint:fleet/run",
+      "shape": {
+        "option_id": "option:route:entrypoint:fleet/run/--state-dir",
+        "spelling": "--state-dir"
+      },
+      "signature": "sha256:0b992128dd50c8b541983e8db1521d0acf373b9b4094ea30bbe84b627e304cf2"
+    },
+    {
+      "id": "case:route:entrypoint:fleet/run/option-spelling/option:route:entrypoint:fleet/run/--transport/--transport",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:fleet/run/--transport"
+      ],
+      "route_id": "route:entrypoint:fleet/run",
+      "shape": {
+        "option_id": "option:route:entrypoint:fleet/run/--transport",
+        "spelling": "--transport"
+      },
+      "signature": "sha256:c22a66f0ddf265e8e38e7cf4e66747598489969748b4b8fdfac177804a8204a0"
+    },
+    {
+      "id": "case:route:entrypoint:fleet/skills/check/exclusive-conflict/target/option:route:entrypoint:fleet/skills/check/--dest/option:route:entrypoint:fleet/skills/check/--harness",
+      "kind": "exclusive-conflict",
+      "members": [
+        "option:route:entrypoint:fleet/skills/check/--dest",
+        "option:route:entrypoint:fleet/skills/check/--harness"
+      ],
+      "route_id": "route:entrypoint:fleet/skills/check",
+      "shape": {
+        "group_id": "target",
+        "options": [
+          "option:route:entrypoint:fleet/skills/check/--dest",
+          "option:route:entrypoint:fleet/skills/check/--harness"
+        ]
+      },
+      "signature": "sha256:1ec8ea63addd347d1d575fcc302f6a42066e62dd51f99278e1dadefb95a2fde7"
+    },
+    {
+      "id": "case:route:entrypoint:fleet/skills/check/exclusive-member/target/option:route:entrypoint:fleet/skills/check/--dest",
+      "kind": "exclusive-member",
+      "members": [
+        "option:route:entrypoint:fleet/skills/check/--dest"
+      ],
+      "route_id": "route:entrypoint:fleet/skills/check",
+      "shape": {
+        "group_id": "target",
+        "required": false,
+        "selected_option": "option:route:entrypoint:fleet/skills/check/--dest"
+      },
+      "signature": "sha256:e11b0e0b397cd5a9e40c24eff9751a35e8e5ae02efc5c9b69b589f1786c703dd"
+    },
+    {
+      "id": "case:route:entrypoint:fleet/skills/check/exclusive-member/target/option:route:entrypoint:fleet/skills/check/--harness",
+      "kind": "exclusive-member",
+      "members": [
+        "option:route:entrypoint:fleet/skills/check/--harness"
+      ],
+      "route_id": "route:entrypoint:fleet/skills/check",
+      "shape": {
+        "group_id": "target",
+        "required": false,
+        "selected_option": "option:route:entrypoint:fleet/skills/check/--harness"
+      },
+      "signature": "sha256:25e91fa9d0f710def3dd6b134f47e5ae93ccb8d23d9c0a20a1445e6576403c74"
+    },
+    {
+      "id": "case:route:entrypoint:fleet/skills/check/minimum",
+      "kind": "minimum",
+      "members": [],
+      "route_id": "route:entrypoint:fleet/skills/check",
+      "shape": {
+        "defaulted_options": [],
+        "required_argument_values": {},
+        "required_arguments": [],
+        "required_exclusive_groups": {},
+        "required_options": []
+      },
+      "signature": "sha256:59e57b30ded5a511c3fcc6857e7c6155d08047bc55765a9c9458271fe08f11a6"
+    },
+    {
+      "id": "case:route:entrypoint:fleet/skills/check/option-choice/option:route:entrypoint:fleet/skills/check/--harness/389432cbf8",
+      "kind": "option-choice",
+      "members": [
+        "option:route:entrypoint:fleet/skills/check/--harness"
+      ],
+      "route_id": "route:entrypoint:fleet/skills/check",
+      "shape": {
+        "choice": "claude",
+        "option_id": "option:route:entrypoint:fleet/skills/check/--harness"
+      },
+      "signature": "sha256:b9d8ab22891f183e4035eae59c341c9cf32f2cd3a059c1ea5155b52c4a80619e"
+    },
+    {
+      "id": "case:route:entrypoint:fleet/skills/check/option-choice/option:route:entrypoint:fleet/skills/check/--harness/5cf7504d97",
+      "kind": "option-choice",
+      "members": [
+        "option:route:entrypoint:fleet/skills/check/--harness"
+      ],
+      "route_id": "route:entrypoint:fleet/skills/check",
+      "shape": {
+        "choice": "all",
+        "option_id": "option:route:entrypoint:fleet/skills/check/--harness"
+      },
+      "signature": "sha256:1561bfe14775ba8dee7a5286e52ed86dcd0d96a817ed4e87dbc4bd5cfd273eb7"
+    },
+    {
+      "id": "case:route:entrypoint:fleet/skills/check/option-choice/option:route:entrypoint:fleet/skills/check/--harness/bc42532430",
+      "kind": "option-choice",
+      "members": [
+        "option:route:entrypoint:fleet/skills/check/--harness"
+      ],
+      "route_id": "route:entrypoint:fleet/skills/check",
+      "shape": {
+        "choice": "agents",
+        "option_id": "option:route:entrypoint:fleet/skills/check/--harness"
+      },
+      "signature": "sha256:7d2b3b152bbb8c571212f4d5deafbdf141949807525bed29b8a4aaa4477b385c"
+    },
+    {
+      "id": "case:route:entrypoint:fleet/skills/check/option-spelling/option:route:entrypoint:fleet/skills/check/--debug-raw/--debug-raw",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:fleet/skills/check/--debug-raw"
+      ],
+      "route_id": "route:entrypoint:fleet/skills/check",
+      "shape": {
+        "option_id": "option:route:entrypoint:fleet/skills/check/--debug-raw",
+        "spelling": "--debug-raw"
+      },
+      "signature": "sha256:c683f6268a8b236a7f30d43b11dc1465d7c639ea4f6643397241375055cc5e78"
+    },
+    {
+      "id": "case:route:entrypoint:fleet/skills/check/option-spelling/option:route:entrypoint:fleet/skills/check/--dest/--dest",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:fleet/skills/check/--dest"
+      ],
+      "route_id": "route:entrypoint:fleet/skills/check",
+      "shape": {
+        "option_id": "option:route:entrypoint:fleet/skills/check/--dest",
+        "spelling": "--dest"
+      },
+      "signature": "sha256:eb7c7e4893909ee59984a9c8cfd15cb0890fd16939ba0a8feb8aa53cfbbb704e"
+    },
+    {
+      "id": "case:route:entrypoint:fleet/skills/check/option-spelling/option:route:entrypoint:fleet/skills/check/--harness/--harness",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:fleet/skills/check/--harness"
+      ],
+      "route_id": "route:entrypoint:fleet/skills/check",
+      "shape": {
+        "option_id": "option:route:entrypoint:fleet/skills/check/--harness",
+        "spelling": "--harness"
+      },
+      "signature": "sha256:3f8a493e7de57ab791170ab728f1036e3effe61b3a36daf10c9cdced498a22ce"
+    },
+    {
+      "id": "case:route:entrypoint:fleet/skills/check/option-spelling/option:route:entrypoint:fleet/skills/check/--json/--json",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:fleet/skills/check/--json"
+      ],
+      "route_id": "route:entrypoint:fleet/skills/check",
+      "shape": {
+        "option_id": "option:route:entrypoint:fleet/skills/check/--json",
+        "spelling": "--json"
+      },
+      "signature": "sha256:f55e8c39cc91f5a0f98e489a5bdf3f4f075c9ef3a731154a25c7641b302fd447"
+    },
+    {
+      "id": "case:route:entrypoint:fleet/skills/install/exclusive-conflict/target/option:route:entrypoint:fleet/skills/install/--dest/option:route:entrypoint:fleet/skills/install/--harness",
+      "kind": "exclusive-conflict",
+      "members": [
+        "option:route:entrypoint:fleet/skills/install/--dest",
+        "option:route:entrypoint:fleet/skills/install/--harness"
+      ],
+      "route_id": "route:entrypoint:fleet/skills/install",
+      "shape": {
+        "group_id": "target",
+        "options": [
+          "option:route:entrypoint:fleet/skills/install/--dest",
+          "option:route:entrypoint:fleet/skills/install/--harness"
+        ]
+      },
+      "signature": "sha256:e257b5dbcf3a6327ea25b728ad4e39b3cc7a5bc2fa3505b71dd0a3e846a121ee"
+    },
+    {
+      "id": "case:route:entrypoint:fleet/skills/install/exclusive-member/target/option:route:entrypoint:fleet/skills/install/--dest",
+      "kind": "exclusive-member",
+      "members": [
+        "option:route:entrypoint:fleet/skills/install/--dest"
+      ],
+      "route_id": "route:entrypoint:fleet/skills/install",
+      "shape": {
+        "group_id": "target",
+        "required": false,
+        "selected_option": "option:route:entrypoint:fleet/skills/install/--dest"
+      },
+      "signature": "sha256:5d893067a4362fa95aa3075091edab41803b44fd07a442e0d5abf190d547abcf"
+    },
+    {
+      "id": "case:route:entrypoint:fleet/skills/install/exclusive-member/target/option:route:entrypoint:fleet/skills/install/--harness",
+      "kind": "exclusive-member",
+      "members": [
+        "option:route:entrypoint:fleet/skills/install/--harness"
+      ],
+      "route_id": "route:entrypoint:fleet/skills/install",
+      "shape": {
+        "group_id": "target",
+        "required": false,
+        "selected_option": "option:route:entrypoint:fleet/skills/install/--harness"
+      },
+      "signature": "sha256:692f69a87b933e9ac1c871c799f6028f282600a04531ff6586bfd2b5d2ba421e"
+    },
+    {
+      "id": "case:route:entrypoint:fleet/skills/install/minimum",
+      "kind": "minimum",
+      "members": [
+        "option:route:entrypoint:fleet/skills/install/--overwrite-modified"
+      ],
+      "route_id": "route:entrypoint:fleet/skills/install",
+      "shape": {
+        "defaulted_options": [
+          "option:route:entrypoint:fleet/skills/install/--overwrite-modified"
+        ],
+        "required_argument_values": {},
+        "required_arguments": [],
+        "required_exclusive_groups": {},
+        "required_options": []
+      },
+      "signature": "sha256:e3491011cb3ad6f955554bc0c80e6ff10fa16dd6389c23df19e7e522c4d23548"
+    },
+    {
+      "id": "case:route:entrypoint:fleet/skills/install/option-choice/option:route:entrypoint:fleet/skills/install/--harness/389432cbf8",
+      "kind": "option-choice",
+      "members": [
+        "option:route:entrypoint:fleet/skills/install/--harness"
+      ],
+      "route_id": "route:entrypoint:fleet/skills/install",
+      "shape": {
+        "choice": "claude",
+        "option_id": "option:route:entrypoint:fleet/skills/install/--harness"
+      },
+      "signature": "sha256:5c90b858423e4689ad6149dcc8766ea620369baf31a197a0b60336db3ed294e9"
+    },
+    {
+      "id": "case:route:entrypoint:fleet/skills/install/option-choice/option:route:entrypoint:fleet/skills/install/--harness/5cf7504d97",
+      "kind": "option-choice",
+      "members": [
+        "option:route:entrypoint:fleet/skills/install/--harness"
+      ],
+      "route_id": "route:entrypoint:fleet/skills/install",
+      "shape": {
+        "choice": "all",
+        "option_id": "option:route:entrypoint:fleet/skills/install/--harness"
+      },
+      "signature": "sha256:a12106c911d7b271b394226a2b5afc01d6b721ae56f060247058fbfd2b709f11"
+    },
+    {
+      "id": "case:route:entrypoint:fleet/skills/install/option-choice/option:route:entrypoint:fleet/skills/install/--harness/bc42532430",
+      "kind": "option-choice",
+      "members": [
+        "option:route:entrypoint:fleet/skills/install/--harness"
+      ],
+      "route_id": "route:entrypoint:fleet/skills/install",
+      "shape": {
+        "choice": "agents",
+        "option_id": "option:route:entrypoint:fleet/skills/install/--harness"
+      },
+      "signature": "sha256:ab41218c495b0e994c998dc734d4e9f32fe60e0dfed7e616bf7b4980c39cc51f"
+    },
+    {
+      "id": "case:route:entrypoint:fleet/skills/install/option-spelling/option:route:entrypoint:fleet/skills/install/--debug-raw/--debug-raw",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:fleet/skills/install/--debug-raw"
+      ],
+      "route_id": "route:entrypoint:fleet/skills/install",
+      "shape": {
+        "option_id": "option:route:entrypoint:fleet/skills/install/--debug-raw",
+        "spelling": "--debug-raw"
+      },
+      "signature": "sha256:63d323894353b7d37e22293462b2e0715b15ffd9d1caba6956bacabb05072275"
+    },
+    {
+      "id": "case:route:entrypoint:fleet/skills/install/option-spelling/option:route:entrypoint:fleet/skills/install/--dest/--dest",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:fleet/skills/install/--dest"
+      ],
+      "route_id": "route:entrypoint:fleet/skills/install",
+      "shape": {
+        "option_id": "option:route:entrypoint:fleet/skills/install/--dest",
+        "spelling": "--dest"
+      },
+      "signature": "sha256:43e6a258912e0cecc828657f9c604b801dcb87376d58d29b362983ee78aeea47"
+    },
+    {
+      "id": "case:route:entrypoint:fleet/skills/install/option-spelling/option:route:entrypoint:fleet/skills/install/--dry-run/--dry-run",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:fleet/skills/install/--dry-run"
+      ],
+      "route_id": "route:entrypoint:fleet/skills/install",
+      "shape": {
+        "option_id": "option:route:entrypoint:fleet/skills/install/--dry-run",
+        "spelling": "--dry-run"
+      },
+      "signature": "sha256:15ff9b9205ce5d1c28455f021e47db001761874fbf6ef17bed62eee9a744315a"
+    },
+    {
+      "id": "case:route:entrypoint:fleet/skills/install/option-spelling/option:route:entrypoint:fleet/skills/install/--harness/--harness",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:fleet/skills/install/--harness"
+      ],
+      "route_id": "route:entrypoint:fleet/skills/install",
+      "shape": {
+        "option_id": "option:route:entrypoint:fleet/skills/install/--harness",
+        "spelling": "--harness"
+      },
+      "signature": "sha256:83d7fcc5a3740827ea2df34386b456e2fae234ce1360294b7d7d6e6e44d25630"
+    },
+    {
+      "id": "case:route:entrypoint:fleet/skills/install/option-spelling/option:route:entrypoint:fleet/skills/install/--overwrite-modified/--overwrite-modified",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:fleet/skills/install/--overwrite-modified"
+      ],
+      "route_id": "route:entrypoint:fleet/skills/install",
+      "shape": {
+        "option_id": "option:route:entrypoint:fleet/skills/install/--overwrite-modified",
+        "spelling": "--overwrite-modified"
+      },
+      "signature": "sha256:13584bd225bbb757c8ecc80f51699f7acd9e5afabbebd55179e42fef3418f878"
+    },
+    {
+      "id": "case:route:entrypoint:fleet/skills/list/exclusive-conflict/target/option:route:entrypoint:fleet/skills/list/--dest/option:route:entrypoint:fleet/skills/list/--harness",
+      "kind": "exclusive-conflict",
+      "members": [
+        "option:route:entrypoint:fleet/skills/list/--dest",
+        "option:route:entrypoint:fleet/skills/list/--harness"
+      ],
+      "route_id": "route:entrypoint:fleet/skills/list",
+      "shape": {
+        "group_id": "target",
+        "options": [
+          "option:route:entrypoint:fleet/skills/list/--dest",
+          "option:route:entrypoint:fleet/skills/list/--harness"
+        ]
+      },
+      "signature": "sha256:a5a299fffd3614fd0c2959ef17ef72c986390ac24b08346e9a44a4f995d23f71"
+    },
+    {
+      "id": "case:route:entrypoint:fleet/skills/list/exclusive-member/target/option:route:entrypoint:fleet/skills/list/--dest",
+      "kind": "exclusive-member",
+      "members": [
+        "option:route:entrypoint:fleet/skills/list/--dest"
+      ],
+      "route_id": "route:entrypoint:fleet/skills/list",
+      "shape": {
+        "group_id": "target",
+        "required": false,
+        "selected_option": "option:route:entrypoint:fleet/skills/list/--dest"
+      },
+      "signature": "sha256:627f529da29f3cb86239d1ec90e118a4fda0f7c59700a8b342e99f972b5d772f"
+    },
+    {
+      "id": "case:route:entrypoint:fleet/skills/list/exclusive-member/target/option:route:entrypoint:fleet/skills/list/--harness",
+      "kind": "exclusive-member",
+      "members": [
+        "option:route:entrypoint:fleet/skills/list/--harness"
+      ],
+      "route_id": "route:entrypoint:fleet/skills/list",
+      "shape": {
+        "group_id": "target",
+        "required": false,
+        "selected_option": "option:route:entrypoint:fleet/skills/list/--harness"
+      },
+      "signature": "sha256:4619bd3c473e7b852d49bb9ad9d74858fab6dd04bec07b227d3862455620142c"
+    },
+    {
+      "id": "case:route:entrypoint:fleet/skills/list/minimum",
+      "kind": "minimum",
+      "members": [],
+      "route_id": "route:entrypoint:fleet/skills/list",
+      "shape": {
+        "defaulted_options": [],
+        "required_argument_values": {},
+        "required_arguments": [],
+        "required_exclusive_groups": {},
+        "required_options": []
+      },
+      "signature": "sha256:c34f15686ebdb531359ad1d919522c475f5e1962181d81055af48b98fcad91aa"
+    },
+    {
+      "id": "case:route:entrypoint:fleet/skills/list/option-choice/option:route:entrypoint:fleet/skills/list/--harness/389432cbf8",
+      "kind": "option-choice",
+      "members": [
+        "option:route:entrypoint:fleet/skills/list/--harness"
+      ],
+      "route_id": "route:entrypoint:fleet/skills/list",
+      "shape": {
+        "choice": "claude",
+        "option_id": "option:route:entrypoint:fleet/skills/list/--harness"
+      },
+      "signature": "sha256:76e267e89abf8cb8cab7573cdb5ce476847691d3594f589abd59910190e08754"
+    },
+    {
+      "id": "case:route:entrypoint:fleet/skills/list/option-choice/option:route:entrypoint:fleet/skills/list/--harness/5cf7504d97",
+      "kind": "option-choice",
+      "members": [
+        "option:route:entrypoint:fleet/skills/list/--harness"
+      ],
+      "route_id": "route:entrypoint:fleet/skills/list",
+      "shape": {
+        "choice": "all",
+        "option_id": "option:route:entrypoint:fleet/skills/list/--harness"
+      },
+      "signature": "sha256:dddfddcb7f461d12db2ad1427deb1e27d789e3ce1965e03089f8300abf4337cb"
+    },
+    {
+      "id": "case:route:entrypoint:fleet/skills/list/option-choice/option:route:entrypoint:fleet/skills/list/--harness/bc42532430",
+      "kind": "option-choice",
+      "members": [
+        "option:route:entrypoint:fleet/skills/list/--harness"
+      ],
+      "route_id": "route:entrypoint:fleet/skills/list",
+      "shape": {
+        "choice": "agents",
+        "option_id": "option:route:entrypoint:fleet/skills/list/--harness"
+      },
+      "signature": "sha256:f1a445170d46313457d8e55a25044ef39d0fca0b19061fbf6210a6a8c013feb1"
+    },
+    {
+      "id": "case:route:entrypoint:fleet/skills/list/option-spelling/option:route:entrypoint:fleet/skills/list/--debug-raw/--debug-raw",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:fleet/skills/list/--debug-raw"
+      ],
+      "route_id": "route:entrypoint:fleet/skills/list",
+      "shape": {
+        "option_id": "option:route:entrypoint:fleet/skills/list/--debug-raw",
+        "spelling": "--debug-raw"
+      },
+      "signature": "sha256:b9d34d17f75a2ff79cd7787e0eea61695e55dfc73a46de205279d77235e2e92f"
+    },
+    {
+      "id": "case:route:entrypoint:fleet/skills/list/option-spelling/option:route:entrypoint:fleet/skills/list/--dest/--dest",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:fleet/skills/list/--dest"
+      ],
+      "route_id": "route:entrypoint:fleet/skills/list",
+      "shape": {
+        "option_id": "option:route:entrypoint:fleet/skills/list/--dest",
+        "spelling": "--dest"
+      },
+      "signature": "sha256:1bd683651fd69ceb8f13960458e6408d00c1f654186ae39715975cbd50074a52"
+    },
+    {
+      "id": "case:route:entrypoint:fleet/skills/list/option-spelling/option:route:entrypoint:fleet/skills/list/--harness/--harness",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:fleet/skills/list/--harness"
+      ],
+      "route_id": "route:entrypoint:fleet/skills/list",
+      "shape": {
+        "option_id": "option:route:entrypoint:fleet/skills/list/--harness",
+        "spelling": "--harness"
+      },
+      "signature": "sha256:dc6bd4804aeb428e1c25abae98008fa0f17516adf42cef32c58b16e48aeb8edd"
+    },
+    {
+      "id": "case:route:entrypoint:fleet/skills/list/option-spelling/option:route:entrypoint:fleet/skills/list/--json/--json",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:fleet/skills/list/--json"
+      ],
+      "route_id": "route:entrypoint:fleet/skills/list",
+      "shape": {
+        "option_id": "option:route:entrypoint:fleet/skills/list/--json",
+        "spelling": "--json"
+      },
+      "signature": "sha256:89cc2a9c6031b96f462b1dcc40e66c0e4ea1d524a52a7d51f8cf23d603d7f37d"
+    },
+    {
+      "id": "case:route:entrypoint:fleet/skills/uninstall/exclusive-conflict/target/option:route:entrypoint:fleet/skills/uninstall/--dest/option:route:entrypoint:fleet/skills/uninstall/--harness",
+      "kind": "exclusive-conflict",
+      "members": [
+        "option:route:entrypoint:fleet/skills/uninstall/--dest",
+        "option:route:entrypoint:fleet/skills/uninstall/--harness"
+      ],
+      "route_id": "route:entrypoint:fleet/skills/uninstall",
+      "shape": {
+        "group_id": "target",
+        "options": [
+          "option:route:entrypoint:fleet/skills/uninstall/--dest",
+          "option:route:entrypoint:fleet/skills/uninstall/--harness"
+        ]
+      },
+      "signature": "sha256:170879a1c3e528020d0f73ee0b56215714ff389464648c0caaf3660e089f298e"
+    },
+    {
+      "id": "case:route:entrypoint:fleet/skills/uninstall/exclusive-member/target/option:route:entrypoint:fleet/skills/uninstall/--dest",
+      "kind": "exclusive-member",
+      "members": [
+        "option:route:entrypoint:fleet/skills/uninstall/--dest"
+      ],
+      "route_id": "route:entrypoint:fleet/skills/uninstall",
+      "shape": {
+        "group_id": "target",
+        "required": false,
+        "selected_option": "option:route:entrypoint:fleet/skills/uninstall/--dest"
+      },
+      "signature": "sha256:84b6426677b183fcc0d77a8b7576c954131053f9cd37d8faf89d7859052bdff4"
+    },
+    {
+      "id": "case:route:entrypoint:fleet/skills/uninstall/exclusive-member/target/option:route:entrypoint:fleet/skills/uninstall/--harness",
+      "kind": "exclusive-member",
+      "members": [
+        "option:route:entrypoint:fleet/skills/uninstall/--harness"
+      ],
+      "route_id": "route:entrypoint:fleet/skills/uninstall",
+      "shape": {
+        "group_id": "target",
+        "required": false,
+        "selected_option": "option:route:entrypoint:fleet/skills/uninstall/--harness"
+      },
+      "signature": "sha256:f5b79ff39cd999d7917aa18e347b5ceee837ad7721c245f6b0acf3f0ec5e3acd"
+    },
+    {
+      "id": "case:route:entrypoint:fleet/skills/uninstall/minimum",
+      "kind": "minimum",
+      "members": [
+        "option:route:entrypoint:fleet/skills/uninstall/--overwrite-modified"
+      ],
+      "route_id": "route:entrypoint:fleet/skills/uninstall",
+      "shape": {
+        "defaulted_options": [
+          "option:route:entrypoint:fleet/skills/uninstall/--overwrite-modified"
+        ],
+        "required_argument_values": {},
+        "required_arguments": [],
+        "required_exclusive_groups": {},
+        "required_options": []
+      },
+      "signature": "sha256:e2e1324e9e2b627c09c838a4e3a443fb5d2cb58a01ea0f45193d41fc382b4aee"
+    },
+    {
+      "id": "case:route:entrypoint:fleet/skills/uninstall/option-choice/option:route:entrypoint:fleet/skills/uninstall/--harness/389432cbf8",
+      "kind": "option-choice",
+      "members": [
+        "option:route:entrypoint:fleet/skills/uninstall/--harness"
+      ],
+      "route_id": "route:entrypoint:fleet/skills/uninstall",
+      "shape": {
+        "choice": "claude",
+        "option_id": "option:route:entrypoint:fleet/skills/uninstall/--harness"
+      },
+      "signature": "sha256:353fefca5acbc0456f4c2c39c78a2e78b8bc7e0d824716bc601df84901c71442"
+    },
+    {
+      "id": "case:route:entrypoint:fleet/skills/uninstall/option-choice/option:route:entrypoint:fleet/skills/uninstall/--harness/5cf7504d97",
+      "kind": "option-choice",
+      "members": [
+        "option:route:entrypoint:fleet/skills/uninstall/--harness"
+      ],
+      "route_id": "route:entrypoint:fleet/skills/uninstall",
+      "shape": {
+        "choice": "all",
+        "option_id": "option:route:entrypoint:fleet/skills/uninstall/--harness"
+      },
+      "signature": "sha256:842d7d2c7072265e5d6eb6df881c20b0a71c2d84d257d93be3ba6113573e4d96"
+    },
+    {
+      "id": "case:route:entrypoint:fleet/skills/uninstall/option-choice/option:route:entrypoint:fleet/skills/uninstall/--harness/bc42532430",
+      "kind": "option-choice",
+      "members": [
+        "option:route:entrypoint:fleet/skills/uninstall/--harness"
+      ],
+      "route_id": "route:entrypoint:fleet/skills/uninstall",
+      "shape": {
+        "choice": "agents",
+        "option_id": "option:route:entrypoint:fleet/skills/uninstall/--harness"
+      },
+      "signature": "sha256:fe0c8b39a9429a167e3d52aa75712bc6d93be671c7ddaac3b75e0f73c89f36bf"
+    },
+    {
+      "id": "case:route:entrypoint:fleet/skills/uninstall/option-spelling/option:route:entrypoint:fleet/skills/uninstall/--debug-raw/--debug-raw",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:fleet/skills/uninstall/--debug-raw"
+      ],
+      "route_id": "route:entrypoint:fleet/skills/uninstall",
+      "shape": {
+        "option_id": "option:route:entrypoint:fleet/skills/uninstall/--debug-raw",
+        "spelling": "--debug-raw"
+      },
+      "signature": "sha256:2aab26210b4f0b55e8ac052e49a186d6a455797cae1ab5a725a31d82b83bf16e"
+    },
+    {
+      "id": "case:route:entrypoint:fleet/skills/uninstall/option-spelling/option:route:entrypoint:fleet/skills/uninstall/--dest/--dest",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:fleet/skills/uninstall/--dest"
+      ],
+      "route_id": "route:entrypoint:fleet/skills/uninstall",
+      "shape": {
+        "option_id": "option:route:entrypoint:fleet/skills/uninstall/--dest",
+        "spelling": "--dest"
+      },
+      "signature": "sha256:feac358fe7bb01a425f193704d481e0bcd464d7e7a9f09a406f7d9bd3693e03d"
+    },
+    {
+      "id": "case:route:entrypoint:fleet/skills/uninstall/option-spelling/option:route:entrypoint:fleet/skills/uninstall/--dry-run/--dry-run",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:fleet/skills/uninstall/--dry-run"
+      ],
+      "route_id": "route:entrypoint:fleet/skills/uninstall",
+      "shape": {
+        "option_id": "option:route:entrypoint:fleet/skills/uninstall/--dry-run",
+        "spelling": "--dry-run"
+      },
+      "signature": "sha256:6c508bc985584843bbf2a9a3a40c4be94a6a4015322780603c9b01f09f4f40c7"
+    },
+    {
+      "id": "case:route:entrypoint:fleet/skills/uninstall/option-spelling/option:route:entrypoint:fleet/skills/uninstall/--harness/--harness",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:fleet/skills/uninstall/--harness"
+      ],
+      "route_id": "route:entrypoint:fleet/skills/uninstall",
+      "shape": {
+        "option_id": "option:route:entrypoint:fleet/skills/uninstall/--harness",
+        "spelling": "--harness"
+      },
+      "signature": "sha256:02d9dc95351db03161422c48931223b3be8b91659d0cadf0d85280a1094302c1"
+    },
+    {
+      "id": "case:route:entrypoint:fleet/skills/uninstall/option-spelling/option:route:entrypoint:fleet/skills/uninstall/--overwrite-modified/--overwrite-modified",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:fleet/skills/uninstall/--overwrite-modified"
+      ],
+      "route_id": "route:entrypoint:fleet/skills/uninstall",
+      "shape": {
+        "option_id": "option:route:entrypoint:fleet/skills/uninstall/--overwrite-modified",
+        "spelling": "--overwrite-modified"
+      },
+      "signature": "sha256:b101a0415c65706f10db6cc94b2b859fae4ed376affa44792edc98ba59cb9cb8"
+    },
+    {
+      "id": "case:route:entrypoint:fleet/status/argument-shape/argument:route:entrypoint:fleet/status/campaign",
+      "kind": "argument-shape",
+      "members": [
+        "argument:route:entrypoint:fleet/status/campaign"
+      ],
+      "route_id": "route:entrypoint:fleet/status",
+      "shape": {
+        "argument_id": "argument:route:entrypoint:fleet/status/campaign"
+      },
+      "signature": "sha256:20b24002dc51bd290dd36d419c538b0a63228687a10db025255f23520fbf0dee"
+    },
+    {
+      "id": "case:route:entrypoint:fleet/status/minimum",
+      "kind": "minimum",
+      "members": [
+        "argument:route:entrypoint:fleet/status/campaign",
+        "option:route:entrypoint:fleet/status/--transport",
+        "option:route:entrypoint:fleet/status/--state-dir"
+      ],
+      "route_id": "route:entrypoint:fleet/status",
+      "shape": {
+        "defaulted_options": [
+          "option:route:entrypoint:fleet/status/--transport",
+          "option:route:entrypoint:fleet/status/--state-dir"
+        ],
+        "required_argument_values": {
+          "argument:route:entrypoint:fleet/status/campaign": 1
+        },
+        "required_arguments": [
+          "argument:route:entrypoint:fleet/status/campaign"
+        ],
+        "required_exclusive_groups": {},
+        "required_options": []
+      },
+      "signature": "sha256:82e1fa2f3f0e514cc4c2950181ba058d672a6dfeb55f0af4ac4f7ef9281fc987"
+    },
+    {
+      "id": "case:route:entrypoint:fleet/status/option-choice/option:route:entrypoint:fleet/status/--transport/ad3632c423",
+      "kind": "option-choice",
+      "members": [
+        "option:route:entrypoint:fleet/status/--transport"
+      ],
+      "route_id": "route:entrypoint:fleet/status",
+      "shape": {
+        "choice": "hx",
+        "option_id": "option:route:entrypoint:fleet/status/--transport"
+      },
+      "signature": "sha256:b5fbaf352c6b9c2eb1b8b2e91c7dac02ac9e222ed2722826f2bf2752c14bf5a3"
+    },
+    {
+      "id": "case:route:entrypoint:fleet/status/option-spelling/option:route:entrypoint:fleet/status/--debug-raw/--debug-raw",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:fleet/status/--debug-raw"
+      ],
+      "route_id": "route:entrypoint:fleet/status",
+      "shape": {
+        "option_id": "option:route:entrypoint:fleet/status/--debug-raw",
+        "spelling": "--debug-raw"
+      },
+      "signature": "sha256:eff70ade71d0e6d48a0c1b4ff8ad059fc7e94185ee4ad7fb041ad77b624f96a2"
+    },
+    {
+      "id": "case:route:entrypoint:fleet/status/option-spelling/option:route:entrypoint:fleet/status/--json/--json",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:fleet/status/--json"
+      ],
+      "route_id": "route:entrypoint:fleet/status",
+      "shape": {
+        "option_id": "option:route:entrypoint:fleet/status/--json",
+        "spelling": "--json"
+      },
+      "signature": "sha256:2e0528770009774574bbb37960439b5d3e8f39a5dd21d980cde78e6166c05509"
+    },
+    {
+      "id": "case:route:entrypoint:fleet/status/option-spelling/option:route:entrypoint:fleet/status/--state-dir/--state-dir",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:fleet/status/--state-dir"
+      ],
+      "route_id": "route:entrypoint:fleet/status",
+      "shape": {
+        "option_id": "option:route:entrypoint:fleet/status/--state-dir",
+        "spelling": "--state-dir"
+      },
+      "signature": "sha256:1416e2043b83a2eedec40dbccfa2504fe805ee7a85f59da597ad74308c478d9a"
+    },
+    {
+      "id": "case:route:entrypoint:fleet/status/option-spelling/option:route:entrypoint:fleet/status/--transport/--transport",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:fleet/status/--transport"
+      ],
+      "route_id": "route:entrypoint:fleet/status",
+      "shape": {
+        "option_id": "option:route:entrypoint:fleet/status/--transport",
+        "spelling": "--transport"
+      },
+      "signature": "sha256:c2ff8c31387e8d524dae5db65fe88b902613613ff6b57cefb1af46ae44de23a8"
+    },
+    {
+      "id": "case:route:entrypoint:fleet/tick/argument-shape/argument:route:entrypoint:fleet/tick/campaign",
+      "kind": "argument-shape",
+      "members": [
+        "argument:route:entrypoint:fleet/tick/campaign"
+      ],
+      "route_id": "route:entrypoint:fleet/tick",
+      "shape": {
+        "argument_id": "argument:route:entrypoint:fleet/tick/campaign"
+      },
+      "signature": "sha256:cd997d3e39f82ad7e51310f820acde9d4b39004963ce4722feeec2f40166dc5f"
+    },
+    {
+      "id": "case:route:entrypoint:fleet/tick/minimum",
+      "kind": "minimum",
+      "members": [
+        "argument:route:entrypoint:fleet/tick/campaign",
+        "option:route:entrypoint:fleet/tick/--transport",
+        "option:route:entrypoint:fleet/tick/--state-dir"
+      ],
+      "route_id": "route:entrypoint:fleet/tick",
+      "shape": {
+        "defaulted_options": [
+          "option:route:entrypoint:fleet/tick/--transport",
+          "option:route:entrypoint:fleet/tick/--state-dir"
+        ],
+        "required_argument_values": {
+          "argument:route:entrypoint:fleet/tick/campaign": 1
+        },
+        "required_arguments": [
+          "argument:route:entrypoint:fleet/tick/campaign"
+        ],
+        "required_exclusive_groups": {},
+        "required_options": []
+      },
+      "signature": "sha256:367d19f35f0cdbcbb98c6762dbf487e041c10475176238b4f2f061783ec4e595"
+    },
+    {
+      "id": "case:route:entrypoint:fleet/tick/option-choice/option:route:entrypoint:fleet/tick/--transport/ad3632c423",
+      "kind": "option-choice",
+      "members": [
+        "option:route:entrypoint:fleet/tick/--transport"
+      ],
+      "route_id": "route:entrypoint:fleet/tick",
+      "shape": {
+        "choice": "hx",
+        "option_id": "option:route:entrypoint:fleet/tick/--transport"
+      },
+      "signature": "sha256:0a777d9b88401e0b16cda0fe13134bb79a615a70f464599f84bbc89f817a9149"
+    },
+    {
+      "id": "case:route:entrypoint:fleet/tick/option-spelling/option:route:entrypoint:fleet/tick/--debug-raw/--debug-raw",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:fleet/tick/--debug-raw"
+      ],
+      "route_id": "route:entrypoint:fleet/tick",
+      "shape": {
+        "option_id": "option:route:entrypoint:fleet/tick/--debug-raw",
+        "spelling": "--debug-raw"
+      },
+      "signature": "sha256:fbe98a760752990e8f900ccaf7dac8a292433b38e8c31f4639cab3f8d286a9b6"
+    },
+    {
+      "id": "case:route:entrypoint:fleet/tick/option-spelling/option:route:entrypoint:fleet/tick/--json/--json",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:fleet/tick/--json"
+      ],
+      "route_id": "route:entrypoint:fleet/tick",
+      "shape": {
+        "option_id": "option:route:entrypoint:fleet/tick/--json",
+        "spelling": "--json"
+      },
+      "signature": "sha256:8ea84c688824ac03388872db38e89d8436b17f4dc1fa2c561ad5533db6296bf0"
+    },
+    {
+      "id": "case:route:entrypoint:fleet/tick/option-spelling/option:route:entrypoint:fleet/tick/--state-dir/--state-dir",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:fleet/tick/--state-dir"
+      ],
+      "route_id": "route:entrypoint:fleet/tick",
+      "shape": {
+        "option_id": "option:route:entrypoint:fleet/tick/--state-dir",
+        "spelling": "--state-dir"
+      },
+      "signature": "sha256:7a5b5de7ac6e4dcc8671f49c95d54f701a73dae8f75a6a0d4b801727c34da527"
+    },
+    {
+      "id": "case:route:entrypoint:fleet/tick/option-spelling/option:route:entrypoint:fleet/tick/--transport/--transport",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:fleet/tick/--transport"
+      ],
+      "route_id": "route:entrypoint:fleet/tick",
+      "shape": {
+        "option_id": "option:route:entrypoint:fleet/tick/--transport",
+        "spelling": "--transport"
+      },
+      "signature": "sha256:c38a90a4270d2fc2077c69b520120e5db01734ee7e028dee2f74300277fe7962"
+    }
+  ],
+  "entrypoint": {
+    "allow_abbrev": false,
+    "builtins": [
+      "help",
+      "help <verb>",
+      "version",
+      "--help",
+      "--version"
+    ],
+    "command": "fleet",
+    "display_name": "FLEET",
+    "fromfile_prefix_chars": null,
+    "id": "entrypoint:fleet",
+    "long_name": "RAM-first fleet facts and campaign plans",
+    "no_args_action": false,
+    "prefix_chars": "-",
+    "prog": "fleet",
+    "single_command": false
+  },
+  "incomplete": [],
+  "interaction_issues": [],
+  "library_contract": {
+    "name": "cli-extended",
+    "version": 1
+  },
+  "routes": [
+    {
+      "actions": [
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "choices": null,
+          "const": null,
+          "default": null,
+          "description": "campaign ID",
+          "help_group": "positional arguments",
+          "hidden": false,
+          "id": "argument:route:entrypoint:fleet/collect/campaign",
+          "kind": "argument",
+          "metavar": "ID",
+          "minimum_values": 1,
+          "name": "campaign",
+          "nargs": null,
+          "parser_kwargs": {},
+          "parser_path": [
+            "collect"
+          ],
+          "required": true,
+          "scope": "positional",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--transport",
+          "choices": [
+            "hx"
+          ],
+          "const": null,
+          "default": "hx",
+          "default_present": true,
+          "description": "host transport; only the identity-checked hx wrapper is supported",
+          "dest": "transport",
+          "effective_default": "hx",
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--transport"
+          ],
+          "help_group": "TRANSPORT",
+          "hidden": false,
+          "id": "option:route:entrypoint:fleet/collect/--transport",
+          "kind": "option",
+          "metavar": "NAME",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "choices": [
+              "hx"
+            ],
+            "default": "hx"
+          },
+          "parser_path": [
+            "collect"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--state-dir",
+          "choices": null,
+          "const": null,
+          "default": "/home/vscode/.local/state/fleetd/campaigns",
+          "default_present": true,
+          "description": "campaign state directory (default: $XDG_STATE_HOME/fleetd/campaigns)",
+          "dest": "state_dir",
+          "effective_default": "/home/vscode/.local/state/fleetd/campaigns",
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--state-dir"
+          ],
+          "help_group": "STATE",
+          "hidden": false,
+          "id": "option:route:entrypoint:fleet/collect/--state-dir",
+          "kind": "option",
+          "metavar": "DIR",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": "/home/vscode/.local/state/fleetd/campaigns",
+            "type": {
+              "callable": "pathlib.Path"
+            }
+          },
+          "parser_path": [
+            "collect"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": {
+            "callable": "pathlib.Path"
+          }
+        }
+      ],
+      "aliases": [],
+      "behavior": [],
+      "common_controls": [
+        "--color",
+        "--debug",
+        "--debug-raw",
+        "--help",
+        "--json",
+        "--log-level",
+        "--no-color",
+        "--quiet",
+        "--traceback",
+        "--version"
+      ],
+      "confirmation": false,
+      "constraints": [],
+      "delegated_metadata": [],
+      "description": "fetch available progress streams and per-batch verdicts and write fleet-campaign-result/1 JSON plus a Markdown report",
+      "group": "MIXED OPERATIONS",
+      "id": "route:entrypoint:fleet/collect",
+      "kind": "invocation",
+      "no_args_action": false,
+      "opaque_fields": [
+        "option:route:entrypoint:fleet/collect/--state-dir.type"
+      ],
+      "parser_configured_by_callback": false,
+      "parser_settings": [
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [],
+          "prefix_chars": "-"
+        },
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [
+            "collect"
+          ],
+          "prefix_chars": "-"
+        }
+      ],
+      "path": [
+        "collect"
+      ],
+      "single_command": false,
+      "subcommand_groups": [],
+      "subcommands": [],
+      "subcommands_required": false,
+      "summary": "fetch available progress streams and per-batch verdicts and write fleet-campaign-result/1 JSON plus a Markdown report",
+      "synopsis_override": null,
+      "syntax_complete": true,
+      "usage_override": null
+    },
+    {
+      "actions": [],
+      "aliases": [],
+      "behavior": [],
+      "common_controls": [],
+      "confirmation": false,
+      "constraints": [],
+      "delegated_metadata": [],
+      "description": "collect or validate host facts",
+      "group": "EXPLORATION",
+      "id": "route:entrypoint:fleet/facts",
+      "kind": "delegate-group",
+      "no_args_action": false,
+      "opaque_fields": [],
+      "parser_configured_by_callback": false,
+      "parser_settings": [
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [],
+          "prefix_chars": "-"
+        }
+      ],
+      "path": [
+        "facts"
+      ],
+      "single_command": false,
+      "subcommands": [
+        "route:entrypoint:fleet/facts/collect",
+        "route:entrypoint:fleet/facts/validate"
+      ],
+      "summary": "collect or validate host facts",
+      "synopsis_override": null,
+      "syntax_complete": true,
+      "usage_override": null
+    },
+    {
+      "actions": [
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--root",
+          "choices": null,
+          "const": null,
+          "default": "/",
+          "default_present": true,
+          "description": "prefix for the host's absolute config and fact paths (a fixture root queries no systemd)",
+          "dest": "root",
+          "effective_default": "/",
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--root"
+          ],
+          "help_group": "INPUT",
+          "hidden": false,
+          "id": "option:route:entrypoint:fleet/facts/collect/--root",
+          "kind": "option",
+          "metavar": "DIR",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": "/",
+            "type": {
+              "callable": "pathlib.Path"
+            }
+          },
+          "parser_path": [
+            "facts",
+            "collect"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": {
+            "callable": "pathlib.Path"
+          }
+        }
+      ],
+      "aliases": [],
+      "behavior": [],
+      "common_controls": [
+        "--color",
+        "--debug",
+        "--debug-raw",
+        "--help",
+        "--json",
+        "--log-level",
+        "--no-color",
+        "--quiet",
+        "--traceback",
+        "--version"
+      ],
+      "confirmation": false,
+      "constraints": [],
+      "delegated_metadata": [
+        {
+          "behavior": [],
+          "confirmation": false,
+          "description": "collect or validate host facts",
+          "group": "EXPLORATION",
+          "id": null,
+          "name": "facts",
+          "summary": "collect or validate host facts",
+          "synopsis": null
+        }
+      ],
+      "description": "collect host-facts/1 from /proc, /sys, the configured control-plane service MemoryMin properties and the Geekbench record; --root maps the host's absolute config and source paths beneath a fixture root",
+      "group": "EXPLORATION",
+      "id": "route:entrypoint:fleet/facts/collect",
+      "kind": "invocation",
+      "no_args_action": false,
+      "opaque_fields": [
+        "option:route:entrypoint:fleet/facts/collect/--root.type"
+      ],
+      "parser_configured_by_callback": false,
+      "parser_settings": [
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [],
+          "prefix_chars": "-"
+        },
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [
+            "facts"
+          ],
+          "prefix_chars": "-"
+        },
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [
+            "facts",
+            "collect"
+          ],
+          "prefix_chars": "-"
+        }
+      ],
+      "path": [
+        "facts",
+        "collect"
+      ],
+      "single_command": false,
+      "subcommand_groups": [],
+      "subcommands": [],
+      "subcommands_required": false,
+      "summary": "collect host-facts/1 from /proc, /sys, the configured control-plane service MemoryMin properties and the Geekbench record; --root maps the host's absolute config and source paths beneath a fixture root",
+      "synopsis_override": null,
+      "syntax_complete": true,
+      "usage_override": null
+    },
+    {
+      "actions": [
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "choices": null,
+          "const": null,
+          "default": null,
+          "description": "host-facts/1 JSON file to validate",
+          "help_group": "positional arguments",
+          "hidden": false,
+          "id": "argument:route:entrypoint:fleet/facts/validate/file",
+          "kind": "argument",
+          "metavar": "FILE",
+          "minimum_values": 1,
+          "name": "file",
+          "nargs": null,
+          "parser_kwargs": {
+            "type": {
+              "callable": "pathlib.Path"
+            }
+          },
+          "parser_path": [
+            "facts",
+            "validate"
+          ],
+          "required": true,
+          "scope": "positional",
+          "type": {
+            "callable": "pathlib.Path"
+          }
+        }
+      ],
+      "aliases": [],
+      "behavior": [],
+      "common_controls": [
+        "--color",
+        "--debug",
+        "--debug-raw",
+        "--help",
+        "--log-level",
+        "--no-color",
+        "--quiet",
+        "--traceback",
+        "--version"
+      ],
+      "confirmation": false,
+      "constraints": [],
+      "delegated_metadata": [
+        {
+          "behavior": [],
+          "confirmation": false,
+          "description": "collect or validate host facts",
+          "group": "EXPLORATION",
+          "id": null,
+          "name": "facts",
+          "summary": "collect or validate host facts",
+          "synopsis": null
+        }
+      ],
+      "description": "validate a serialized host-facts/1 JSON file without contacting the host",
+      "group": "EXPLORATION",
+      "id": "route:entrypoint:fleet/facts/validate",
+      "kind": "invocation",
+      "no_args_action": false,
+      "opaque_fields": [
+        "argument:route:entrypoint:fleet/facts/validate/file.type"
+      ],
+      "parser_configured_by_callback": false,
+      "parser_settings": [
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [],
+          "prefix_chars": "-"
+        },
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [
+            "facts"
+          ],
+          "prefix_chars": "-"
+        },
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [
+            "facts",
+            "validate"
+          ],
+          "prefix_chars": "-"
+        }
+      ],
+      "path": [
+        "facts",
+        "validate"
+      ],
+      "single_command": false,
+      "subcommand_groups": [],
+      "subcommands": [],
+      "subcommands_required": false,
+      "summary": "validate a serialized host-facts/1 JSON file without contacting the host",
+      "synopsis_override": null,
+      "syntax_complete": true,
+      "usage_override": null
+    },
+    {
+      "actions": [],
+      "aliases": [],
+      "behavior": [],
+      "common_controls": [],
+      "confirmation": false,
+      "constraints": [],
+      "delegated_metadata": [],
+      "description": "validate host-owned guard rules",
+      "group": "EXPLORATION",
+      "id": "route:entrypoint:fleet/guard",
+      "kind": "delegate-group",
+      "no_args_action": false,
+      "opaque_fields": [],
+      "parser_configured_by_callback": false,
+      "parser_settings": [
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [],
+          "prefix_chars": "-"
+        }
+      ],
+      "path": [
+        "guard"
+      ],
+      "single_command": false,
+      "subcommands": [
+        "route:entrypoint:fleet/guard/validate"
+      ],
+      "summary": "validate host-owned guard rules",
+      "synopsis_override": null,
+      "syntax_complete": true,
+      "usage_override": null
+    },
+    {
+      "actions": [
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "choices": null,
+          "const": null,
+          "default": null,
+          "description": "guard TOML file to validate",
+          "help_group": "positional arguments",
+          "hidden": false,
+          "id": "argument:route:entrypoint:fleet/guard/validate/file",
+          "kind": "argument",
+          "metavar": "FILE",
+          "minimum_values": 1,
+          "name": "file",
+          "nargs": null,
+          "parser_kwargs": {
+            "type": {
+              "callable": "pathlib.Path"
+            }
+          },
+          "parser_path": [
+            "guard",
+            "validate"
+          ],
+          "required": true,
+          "scope": "positional",
+          "type": {
+            "callable": "pathlib.Path"
+          }
+        }
+      ],
+      "aliases": [],
+      "behavior": [],
+      "common_controls": [
+        "--color",
+        "--debug",
+        "--debug-raw",
+        "--help",
+        "--log-level",
+        "--no-color",
+        "--quiet",
+        "--traceback",
+        "--version"
+      ],
+      "confirmation": false,
+      "constraints": [],
+      "delegated_metadata": [
+        {
+          "behavior": [],
+          "confirmation": false,
+          "description": "validate host-owned guard rules",
+          "group": "EXPLORATION",
+          "id": null,
+          "name": "guard",
+          "summary": "validate host-owned guard rules",
+          "synopsis": null
+        }
+      ],
+      "description": "parse and validate one guard TOML file (including its drop-ins)",
+      "group": "EXPLORATION",
+      "id": "route:entrypoint:fleet/guard/validate",
+      "kind": "invocation",
+      "no_args_action": false,
+      "opaque_fields": [
+        "argument:route:entrypoint:fleet/guard/validate/file.type"
+      ],
+      "parser_configured_by_callback": false,
+      "parser_settings": [
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [],
+          "prefix_chars": "-"
+        },
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [
+            "guard"
+          ],
+          "prefix_chars": "-"
+        },
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [
+            "guard",
+            "validate"
+          ],
+          "prefix_chars": "-"
+        }
+      ],
+      "path": [
+        "guard",
+        "validate"
+      ],
+      "single_command": false,
+      "subcommand_groups": [],
+      "subcommands": [],
+      "subcommands_required": false,
+      "summary": "parse and validate one guard TOML file (including its drop-ins)",
+      "synopsis_override": null,
+      "syntax_complete": true,
+      "usage_override": null
+    },
+    {
+      "actions": [
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "choices": null,
+          "const": null,
+          "default": null,
+          "description": "Run-Gate lane name",
+          "help_group": "positional arguments",
+          "hidden": false,
+          "id": "argument:route:entrypoint:fleet/plan/lane",
+          "kind": "argument",
+          "metavar": "LANE",
+          "minimum_values": 1,
+          "name": "lane",
+          "nargs": null,
+          "parser_kwargs": {},
+          "parser_path": [
+            "plan"
+          ],
+          "required": true,
+          "scope": "positional",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--candidates",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "candidate-table/1 JSON file",
+          "dest": "candidates",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--candidates"
+          ],
+          "help_group": "INPUT",
+          "hidden": false,
+          "id": "option:route:entrypoint:fleet/plan/--candidates",
+          "kind": "option",
+          "metavar": "FILE",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "required": true,
+            "type": {
+              "callable": "pathlib.Path"
+            }
+          },
+          "parser_path": [
+            "plan"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": true,
+          "scope": "verb-local",
+          "type": {
+            "callable": "pathlib.Path"
+          }
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--hosts",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "fleet-host-set/1 JSON file",
+          "dest": "hosts",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--hosts"
+          ],
+          "help_group": "INPUT",
+          "hidden": false,
+          "id": "option:route:entrypoint:fleet/plan/--hosts",
+          "kind": "option",
+          "metavar": "FILE",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "required": true,
+            "type": {
+              "callable": "pathlib.Path"
+            }
+          },
+          "parser_path": [
+            "plan"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": true,
+          "scope": "verb-local",
+          "type": {
+            "callable": "pathlib.Path"
+          }
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--demand",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "TOML file containing [lanes.<lane>.demand] (release Run-Gate does not accept that key yet; see RG-276)",
+          "dest": "demand",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--demand"
+          ],
+          "help_group": "INPUT",
+          "hidden": false,
+          "id": "option:route:entrypoint:fleet/plan/--demand",
+          "kind": "option",
+          "metavar": "FILE",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "required": true,
+            "type": {
+              "callable": "pathlib.Path"
+            }
+          },
+          "parser_path": [
+            "plan"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": true,
+          "scope": "verb-local",
+          "type": {
+            "callable": "pathlib.Path"
+          }
+        },
+        {
+          "action": "argparse._StoreTrueAction",
+          "before_nested_subcommand": false,
+          "canonical": "--commands",
+          "choices": null,
+          "const": true,
+          "default": false,
+          "default_present": true,
+          "description": "print Run-Gate --only-candidates commands instead of plan JSON",
+          "dest": "commands",
+          "effective_default": false,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--commands"
+          ],
+          "help_group": "OUTPUT",
+          "hidden": false,
+          "id": "option:route:entrypoint:fleet/plan/--commands",
+          "kind": "option",
+          "metavar": null,
+          "minimum_values": 0,
+          "nargs": 0,
+          "parser_kwargs": {
+            "action": "store_true",
+            "default": false
+          },
+          "parser_path": [
+            "plan"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--batch-multiplier",
+          "choices": null,
+          "const": null,
+          "default": 4.0,
+          "default_present": true,
+          "description": "candidate count per batch as a multiple of host worker slots (default: 4)",
+          "dest": "batch_multiplier",
+          "effective_default": 4.0,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--batch-multiplier"
+          ],
+          "help_group": "PLANNING",
+          "hidden": false,
+          "id": "option:route:entrypoint:fleet/plan/--batch-multiplier",
+          "kind": "option",
+          "metavar": "FACTOR",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": 4.0,
+            "type": {
+              "callable": "builtins.float"
+            }
+          },
+          "parser_path": [
+            "plan"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": {
+            "callable": "builtins.float"
+          }
+        }
+      ],
+      "aliases": [],
+      "behavior": [],
+      "common_controls": [
+        "--color",
+        "--debug",
+        "--debug-raw",
+        "--help",
+        "--json",
+        "--log-level",
+        "--no-color",
+        "--quiet",
+        "--traceback",
+        "--version"
+      ],
+      "confirmation": false,
+      "constraints": [],
+      "delegated_metadata": [],
+      "description": "create a deterministic RAM-first campaign plan; from a clean Git project the plan also pins the commit and project path that `fleet run` requires",
+      "group": "EXPLORATION",
+      "id": "route:entrypoint:fleet/plan",
+      "kind": "invocation",
+      "no_args_action": false,
+      "opaque_fields": [
+        "option:route:entrypoint:fleet/plan/--candidates.type",
+        "option:route:entrypoint:fleet/plan/--demand.type",
+        "option:route:entrypoint:fleet/plan/--hosts.type"
+      ],
+      "parser_configured_by_callback": false,
+      "parser_settings": [
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [],
+          "prefix_chars": "-"
+        },
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [
+            "plan"
+          ],
+          "prefix_chars": "-"
+        }
+      ],
+      "path": [
+        "plan"
+      ],
+      "single_command": false,
+      "subcommand_groups": [],
+      "subcommands": [],
+      "subcommands_required": false,
+      "summary": "create a deterministic RAM-first campaign plan; from a clean Git project the plan also pins the commit and project path that `fleet run` requires",
+      "synopsis_override": null,
+      "syntax_complete": true,
+      "usage_override": null
+    },
+    {
+      "actions": [
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "choices": null,
+          "const": null,
+          "default": null,
+          "description": "fleet-plan/1 JSON file with an execution object",
+          "help_group": "positional arguments",
+          "hidden": false,
+          "id": "argument:route:entrypoint:fleet/run/plan",
+          "kind": "argument",
+          "metavar": "PLAN",
+          "minimum_values": 1,
+          "name": "plan",
+          "nargs": null,
+          "parser_kwargs": {
+            "type": {
+              "callable": "pathlib.Path"
+            }
+          },
+          "parser_path": [
+            "run"
+          ],
+          "required": true,
+          "scope": "positional",
+          "type": {
+            "callable": "pathlib.Path"
+          }
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--campaign",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "campaign ID; the same ID re-adopts existing jobs by their deterministic names",
+          "dest": "campaign",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--campaign"
+          ],
+          "help_group": "CAMPAIGN",
+          "hidden": false,
+          "id": "option:route:entrypoint:fleet/run/--campaign",
+          "kind": "option",
+          "metavar": "ID",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "required": true
+          },
+          "parser_path": [
+            "run"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": true,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--transport",
+          "choices": [
+            "hx"
+          ],
+          "const": null,
+          "default": "hx",
+          "default_present": true,
+          "description": "host transport; only the identity-checked hx wrapper is supported",
+          "dest": "transport",
+          "effective_default": "hx",
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--transport"
+          ],
+          "help_group": "TRANSPORT",
+          "hidden": false,
+          "id": "option:route:entrypoint:fleet/run/--transport",
+          "kind": "option",
+          "metavar": "NAME",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "choices": [
+              "hx"
+            ],
+            "default": "hx"
+          },
+          "parser_path": [
+            "run"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--state-dir",
+          "choices": null,
+          "const": null,
+          "default": "/home/vscode/.local/state/fleetd/campaigns",
+          "default_present": true,
+          "description": "campaign state directory (default: $XDG_STATE_HOME/fleetd/campaigns)",
+          "dest": "state_dir",
+          "effective_default": "/home/vscode/.local/state/fleetd/campaigns",
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--state-dir"
+          ],
+          "help_group": "STATE",
+          "hidden": false,
+          "id": "option:route:entrypoint:fleet/run/--state-dir",
+          "kind": "option",
+          "metavar": "DIR",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": "/home/vscode/.local/state/fleetd/campaigns",
+            "type": {
+              "callable": "pathlib.Path"
+            }
+          },
+          "parser_path": [
+            "run"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": {
+            "callable": "pathlib.Path"
+          }
+        }
+      ],
+      "aliases": [],
+      "behavior": [
+        "mutating",
+        "potentially expensive"
+      ],
+      "common_controls": [
+        "--color",
+        "--debug",
+        "--debug-raw",
+        "--help",
+        "--json",
+        "--log-level",
+        "--no-color",
+        "--progress",
+        "--quiet",
+        "--traceback",
+        "--version"
+      ],
+      "confirmation": false,
+      "constraints": [],
+      "delegated_metadata": [],
+      "description": "start or re-adopt the named jobs in a fleet plan",
+      "group": "MODIFICATION",
+      "id": "route:entrypoint:fleet/run",
+      "kind": "invocation",
+      "no_args_action": false,
+      "opaque_fields": [
+        "argument:route:entrypoint:fleet/run/plan.type",
+        "option:route:entrypoint:fleet/run/--state-dir.type"
+      ],
+      "parser_configured_by_callback": false,
+      "parser_settings": [
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [],
+          "prefix_chars": "-"
+        },
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [
+            "run"
+          ],
+          "prefix_chars": "-"
+        }
+      ],
+      "path": [
+        "run"
+      ],
+      "single_command": false,
+      "subcommand_groups": [],
+      "subcommands": [],
+      "subcommands_required": false,
+      "summary": "start or re-adopt the named jobs in a fleet plan [mutating; potentially expensive]",
+      "synopsis_override": null,
+      "syntax_complete": true,
+      "usage_override": null
+    },
+    {
+      "actions": [],
+      "aliases": [],
+      "behavior": [],
+      "common_controls": [],
+      "confirmation": false,
+      "constraints": [],
+      "delegated_metadata": [],
+      "description": "install, check, or remove this tool's packaged agent skills",
+      "group": "MAINTENANCE",
+      "id": "route:entrypoint:fleet/skills",
+      "kind": "delegate-group",
+      "no_args_action": false,
+      "opaque_fields": [],
+      "parser_configured_by_callback": false,
+      "parser_settings": [
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [],
+          "prefix_chars": "-"
+        }
+      ],
+      "path": [
+        "skills"
+      ],
+      "single_command": false,
+      "subcommands": [
+        "route:entrypoint:fleet/skills/install",
+        "route:entrypoint:fleet/skills/uninstall",
+        "route:entrypoint:fleet/skills/check",
+        "route:entrypoint:fleet/skills/list"
+      ],
+      "summary": "install, check, or remove this tool's packaged agent skills",
+      "synopsis_override": null,
+      "syntax_complete": true,
+      "usage_override": null
+    },
+    {
+      "actions": [
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--harness",
+          "choices": [
+            "claude",
+            "agents",
+            "all"
+          ],
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "target harness: claude, agents or all (default: all)",
+          "dest": "harness",
+          "effective_default": null,
+          "exclusive_group": "target",
+          "exclusive_required": false,
+          "flags": [
+            "--harness"
+          ],
+          "help_group": "TARGET",
+          "hidden": false,
+          "id": "option:route:entrypoint:fleet/skills/check/--harness",
+          "kind": "option",
+          "metavar": "HARNESS",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "choices": [
+              "claude",
+              "agents",
+              "all"
+            ],
+            "default": null
+          },
+          "parser_path": [
+            "skills",
+            "check"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--dest",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "use exactly this directory instead of a harness directory",
+          "dest": "dest",
+          "effective_default": null,
+          "exclusive_group": "target",
+          "exclusive_required": false,
+          "flags": [
+            "--dest"
+          ],
+          "help_group": "TARGET",
+          "hidden": false,
+          "id": "option:route:entrypoint:fleet/skills/check/--dest",
+          "kind": "option",
+          "metavar": "DIR",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": null
+          },
+          "parser_path": [
+            "skills",
+            "check"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        }
+      ],
+      "aliases": [],
+      "behavior": [],
+      "common_controls": [
+        "--color",
+        "--debug",
+        "--debug-raw",
+        "--help",
+        "--json",
+        "--log-level",
+        "--no-color",
+        "--progress",
+        "--quiet",
+        "--traceback",
+        "--version"
+      ],
+      "confirmation": false,
+      "constraints": [],
+      "delegated_metadata": [
+        {
+          "behavior": [],
+          "confirmation": false,
+          "description": "install, check, or remove this tool's packaged agent skills",
+          "group": "MAINTENANCE",
+          "id": null,
+          "name": "skills",
+          "summary": "install, check, or remove this tool's packaged agent skills",
+          "synopsis": null
+        }
+      ],
+      "description": "exit 1 unless every packaged skill is current",
+      "group": "EXPLORATION",
+      "id": "route:entrypoint:fleet/skills/check",
+      "kind": "invocation",
+      "no_args_action": false,
+      "opaque_fields": [],
+      "parser_configured_by_callback": false,
+      "parser_settings": [
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [],
+          "prefix_chars": "-"
+        },
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [
+            "skills"
+          ],
+          "prefix_chars": "-"
+        },
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [
+            "skills",
+            "check"
+          ],
+          "prefix_chars": "-"
+        }
+      ],
+      "path": [
+        "skills",
+        "check"
+      ],
+      "single_command": false,
+      "subcommand_groups": [],
+      "subcommands": [],
+      "subcommands_required": false,
+      "summary": "exit 1 unless every packaged skill is current",
+      "synopsis_override": null,
+      "syntax_complete": true,
+      "usage_override": null
+    },
+    {
+      "actions": [
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--harness",
+          "choices": [
+            "claude",
+            "agents",
+            "all"
+          ],
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "target harness: claude, agents or all (default: all)",
+          "dest": "harness",
+          "effective_default": null,
+          "exclusive_group": "target",
+          "exclusive_required": false,
+          "flags": [
+            "--harness"
+          ],
+          "help_group": "TARGET",
+          "hidden": false,
+          "id": "option:route:entrypoint:fleet/skills/install/--harness",
+          "kind": "option",
+          "metavar": "HARNESS",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "choices": [
+              "claude",
+              "agents",
+              "all"
+            ],
+            "default": null
+          },
+          "parser_path": [
+            "skills",
+            "install"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--dest",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "use exactly this directory instead of a harness directory",
+          "dest": "dest",
+          "effective_default": null,
+          "exclusive_group": "target",
+          "exclusive_required": false,
+          "flags": [
+            "--dest"
+          ],
+          "help_group": "TARGET",
+          "hidden": false,
+          "id": "option:route:entrypoint:fleet/skills/install/--dest",
+          "kind": "option",
+          "metavar": "DIR",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": null
+          },
+          "parser_path": [
+            "skills",
+            "install"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreTrueAction",
+          "before_nested_subcommand": false,
+          "canonical": "--overwrite-modified",
+          "choices": null,
+          "const": true,
+          "default": false,
+          "default_present": true,
+          "description": "replace skills you modified locally",
+          "dest": "overwrite_modified",
+          "effective_default": false,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--overwrite-modified"
+          ],
+          "help_group": "TARGET",
+          "hidden": false,
+          "id": "option:route:entrypoint:fleet/skills/install/--overwrite-modified",
+          "kind": "option",
+          "metavar": null,
+          "minimum_values": 0,
+          "nargs": 0,
+          "parser_kwargs": {
+            "action": "store_true",
+            "default": false
+          },
+          "parser_path": [
+            "skills",
+            "install"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        }
+      ],
+      "aliases": [],
+      "behavior": [
+        "mutating",
+        "dry-run"
+      ],
+      "common_controls": [
+        "--color",
+        "--debug",
+        "--debug-raw",
+        "--dry-run",
+        "--help",
+        "--log-level",
+        "--no-color",
+        "--progress",
+        "--quiet",
+        "--traceback",
+        "--version"
+      ],
+      "confirmation": false,
+      "constraints": [],
+      "delegated_metadata": [
+        {
+          "behavior": [],
+          "confirmation": false,
+          "description": "install, check, or remove this tool's packaged agent skills",
+          "group": "MAINTENANCE",
+          "id": null,
+          "name": "skills",
+          "summary": "install, check, or remove this tool's packaged agent skills",
+          "synopsis": null
+        }
+      ],
+      "description": "install or update the packaged skills, removing orphans",
+      "group": "MODIFICATION",
+      "id": "route:entrypoint:fleet/skills/install",
+      "kind": "invocation",
+      "no_args_action": false,
+      "opaque_fields": [],
+      "parser_configured_by_callback": false,
+      "parser_settings": [
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [],
+          "prefix_chars": "-"
+        },
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [
+            "skills"
+          ],
+          "prefix_chars": "-"
+        },
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [
+            "skills",
+            "install"
+          ],
+          "prefix_chars": "-"
+        }
+      ],
+      "path": [
+        "skills",
+        "install"
+      ],
+      "single_command": false,
+      "subcommand_groups": [],
+      "subcommands": [],
+      "subcommands_required": false,
+      "summary": "install or update the packaged skills, removing orphans [mutating; dry-run]",
+      "synopsis_override": null,
+      "syntax_complete": true,
+      "usage_override": null
+    },
+    {
+      "actions": [
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--harness",
+          "choices": [
+            "claude",
+            "agents",
+            "all"
+          ],
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "target harness: claude, agents or all (default: all)",
+          "dest": "harness",
+          "effective_default": null,
+          "exclusive_group": "target",
+          "exclusive_required": false,
+          "flags": [
+            "--harness"
+          ],
+          "help_group": "TARGET",
+          "hidden": false,
+          "id": "option:route:entrypoint:fleet/skills/list/--harness",
+          "kind": "option",
+          "metavar": "HARNESS",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "choices": [
+              "claude",
+              "agents",
+              "all"
+            ],
+            "default": null
+          },
+          "parser_path": [
+            "skills",
+            "list"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--dest",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "use exactly this directory instead of a harness directory",
+          "dest": "dest",
+          "effective_default": null,
+          "exclusive_group": "target",
+          "exclusive_required": false,
+          "flags": [
+            "--dest"
+          ],
+          "help_group": "TARGET",
+          "hidden": false,
+          "id": "option:route:entrypoint:fleet/skills/list/--dest",
+          "kind": "option",
+          "metavar": "DIR",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": null
+          },
+          "parser_path": [
+            "skills",
+            "list"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        }
+      ],
+      "aliases": [],
+      "behavior": [],
+      "common_controls": [
+        "--color",
+        "--debug",
+        "--debug-raw",
+        "--help",
+        "--json",
+        "--log-level",
+        "--no-color",
+        "--progress",
+        "--quiet",
+        "--traceback",
+        "--version"
+      ],
+      "confirmation": false,
+      "constraints": [],
+      "delegated_metadata": [
+        {
+          "behavior": [],
+          "confirmation": false,
+          "description": "install, check, or remove this tool's packaged agent skills",
+          "group": "MAINTENANCE",
+          "id": null,
+          "name": "skills",
+          "summary": "install, check, or remove this tool's packaged agent skills",
+          "synopsis": null
+        }
+      ],
+      "description": "list packaged skills and their installed state",
+      "group": "EXPLORATION",
+      "id": "route:entrypoint:fleet/skills/list",
+      "kind": "invocation",
+      "no_args_action": false,
+      "opaque_fields": [],
+      "parser_configured_by_callback": false,
+      "parser_settings": [
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [],
+          "prefix_chars": "-"
+        },
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [
+            "skills"
+          ],
+          "prefix_chars": "-"
+        },
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [
+            "skills",
+            "list"
+          ],
+          "prefix_chars": "-"
+        }
+      ],
+      "path": [
+        "skills",
+        "list"
+      ],
+      "single_command": false,
+      "subcommand_groups": [],
+      "subcommands": [],
+      "subcommands_required": false,
+      "summary": "list packaged skills and their installed state",
+      "synopsis_override": null,
+      "syntax_complete": true,
+      "usage_override": null
+    },
+    {
+      "actions": [
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--harness",
+          "choices": [
+            "claude",
+            "agents",
+            "all"
+          ],
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "target harness: claude, agents or all (default: all)",
+          "dest": "harness",
+          "effective_default": null,
+          "exclusive_group": "target",
+          "exclusive_required": false,
+          "flags": [
+            "--harness"
+          ],
+          "help_group": "TARGET",
+          "hidden": false,
+          "id": "option:route:entrypoint:fleet/skills/uninstall/--harness",
+          "kind": "option",
+          "metavar": "HARNESS",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "choices": [
+              "claude",
+              "agents",
+              "all"
+            ],
+            "default": null
+          },
+          "parser_path": [
+            "skills",
+            "uninstall"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--dest",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "use exactly this directory instead of a harness directory",
+          "dest": "dest",
+          "effective_default": null,
+          "exclusive_group": "target",
+          "exclusive_required": false,
+          "flags": [
+            "--dest"
+          ],
+          "help_group": "TARGET",
+          "hidden": false,
+          "id": "option:route:entrypoint:fleet/skills/uninstall/--dest",
+          "kind": "option",
+          "metavar": "DIR",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": null
+          },
+          "parser_path": [
+            "skills",
+            "uninstall"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreTrueAction",
+          "before_nested_subcommand": false,
+          "canonical": "--overwrite-modified",
+          "choices": null,
+          "const": true,
+          "default": false,
+          "default_present": true,
+          "description": "replace skills you modified locally",
+          "dest": "overwrite_modified",
+          "effective_default": false,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--overwrite-modified"
+          ],
+          "help_group": "TARGET",
+          "hidden": false,
+          "id": "option:route:entrypoint:fleet/skills/uninstall/--overwrite-modified",
+          "kind": "option",
+          "metavar": null,
+          "minimum_values": 0,
+          "nargs": 0,
+          "parser_kwargs": {
+            "action": "store_true",
+            "default": false
+          },
+          "parser_path": [
+            "skills",
+            "uninstall"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        }
+      ],
+      "aliases": [],
+      "behavior": [
+        "mutating",
+        "dry-run"
+      ],
+      "common_controls": [
+        "--color",
+        "--debug",
+        "--debug-raw",
+        "--dry-run",
+        "--help",
+        "--log-level",
+        "--no-color",
+        "--progress",
+        "--quiet",
+        "--traceback",
+        "--version"
+      ],
+      "confirmation": false,
+      "constraints": [],
+      "delegated_metadata": [
+        {
+          "behavior": [],
+          "confirmation": false,
+          "description": "install, check, or remove this tool's packaged agent skills",
+          "group": "MAINTENANCE",
+          "id": null,
+          "name": "skills",
+          "summary": "install, check, or remove this tool's packaged agent skills",
+          "synopsis": null
+        }
+      ],
+      "description": "remove the skills this tool installed",
+      "group": "MODIFICATION",
+      "id": "route:entrypoint:fleet/skills/uninstall",
+      "kind": "invocation",
+      "no_args_action": false,
+      "opaque_fields": [],
+      "parser_configured_by_callback": false,
+      "parser_settings": [
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [],
+          "prefix_chars": "-"
+        },
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [
+            "skills"
+          ],
+          "prefix_chars": "-"
+        },
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [
+            "skills",
+            "uninstall"
+          ],
+          "prefix_chars": "-"
+        }
+      ],
+      "path": [
+        "skills",
+        "uninstall"
+      ],
+      "single_command": false,
+      "subcommand_groups": [],
+      "subcommands": [],
+      "subcommands_required": false,
+      "summary": "remove the skills this tool installed [mutating; dry-run]",
+      "synopsis_override": null,
+      "syntax_complete": true,
+      "usage_override": null
+    },
+    {
+      "actions": [
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "choices": null,
+          "const": null,
+          "default": null,
+          "description": "campaign ID",
+          "help_group": "positional arguments",
+          "hidden": false,
+          "id": "argument:route:entrypoint:fleet/status/campaign",
+          "kind": "argument",
+          "metavar": "ID",
+          "minimum_values": 1,
+          "name": "campaign",
+          "nargs": null,
+          "parser_kwargs": {},
+          "parser_path": [
+            "status"
+          ],
+          "required": true,
+          "scope": "positional",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--transport",
+          "choices": [
+            "hx"
+          ],
+          "const": null,
+          "default": "hx",
+          "default_present": true,
+          "description": "host transport; only the identity-checked hx wrapper is supported",
+          "dest": "transport",
+          "effective_default": "hx",
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--transport"
+          ],
+          "help_group": "TRANSPORT",
+          "hidden": false,
+          "id": "option:route:entrypoint:fleet/status/--transport",
+          "kind": "option",
+          "metavar": "NAME",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "choices": [
+              "hx"
+            ],
+            "default": "hx"
+          },
+          "parser_path": [
+            "status"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--state-dir",
+          "choices": null,
+          "const": null,
+          "default": "/home/vscode/.local/state/fleetd/campaigns",
+          "default_present": true,
+          "description": "campaign state directory (default: $XDG_STATE_HOME/fleetd/campaigns)",
+          "dest": "state_dir",
+          "effective_default": "/home/vscode/.local/state/fleetd/campaigns",
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--state-dir"
+          ],
+          "help_group": "STATE",
+          "hidden": false,
+          "id": "option:route:entrypoint:fleet/status/--state-dir",
+          "kind": "option",
+          "metavar": "DIR",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": "/home/vscode/.local/state/fleetd/campaigns",
+            "type": {
+              "callable": "pathlib.Path"
+            }
+          },
+          "parser_path": [
+            "status"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": {
+            "callable": "pathlib.Path"
+          }
+        }
+      ],
+      "aliases": [],
+      "behavior": [],
+      "common_controls": [
+        "--color",
+        "--debug",
+        "--debug-raw",
+        "--help",
+        "--json",
+        "--log-level",
+        "--no-color",
+        "--quiet",
+        "--traceback",
+        "--version"
+      ],
+      "confirmation": false,
+      "constraints": [],
+      "delegated_metadata": [],
+      "description": "probe each planned host, refresh the local state and report per-host progress and ETA",
+      "group": "EXPLORATION",
+      "id": "route:entrypoint:fleet/status",
+      "kind": "invocation",
+      "no_args_action": false,
+      "opaque_fields": [
+        "option:route:entrypoint:fleet/status/--state-dir.type"
+      ],
+      "parser_configured_by_callback": false,
+      "parser_settings": [
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [],
+          "prefix_chars": "-"
+        },
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [
+            "status"
+          ],
+          "prefix_chars": "-"
+        }
+      ],
+      "path": [
+        "status"
+      ],
+      "single_command": false,
+      "subcommand_groups": [],
+      "subcommands": [],
+      "subcommands_required": false,
+      "summary": "probe each planned host, refresh the local state and report per-host progress and ETA",
+      "synopsis_override": null,
+      "syntax_complete": true,
+      "usage_override": null
+    },
+    {
+      "actions": [
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "choices": null,
+          "const": null,
+          "default": null,
+          "description": "campaign ID",
+          "help_group": "positional arguments",
+          "hidden": false,
+          "id": "argument:route:entrypoint:fleet/tick/campaign",
+          "kind": "argument",
+          "metavar": "ID",
+          "minimum_values": 1,
+          "name": "campaign",
+          "nargs": null,
+          "parser_kwargs": {},
+          "parser_path": [
+            "tick"
+          ],
+          "required": true,
+          "scope": "positional",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--transport",
+          "choices": [
+            "hx"
+          ],
+          "const": null,
+          "default": "hx",
+          "default_present": true,
+          "description": "host transport; only the identity-checked hx wrapper is supported",
+          "dest": "transport",
+          "effective_default": "hx",
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--transport"
+          ],
+          "help_group": "TRANSPORT",
+          "hidden": false,
+          "id": "option:route:entrypoint:fleet/tick/--transport",
+          "kind": "option",
+          "metavar": "NAME",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "choices": [
+              "hx"
+            ],
+            "default": "hx"
+          },
+          "parser_path": [
+            "tick"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--state-dir",
+          "choices": null,
+          "const": null,
+          "default": "/home/vscode/.local/state/fleetd/campaigns",
+          "default_present": true,
+          "description": "campaign state directory (default: $XDG_STATE_HOME/fleetd/campaigns)",
+          "dest": "state_dir",
+          "effective_default": "/home/vscode/.local/state/fleetd/campaigns",
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--state-dir"
+          ],
+          "help_group": "STATE",
+          "hidden": false,
+          "id": "option:route:entrypoint:fleet/tick/--state-dir",
+          "kind": "option",
+          "metavar": "DIR",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": "/home/vscode/.local/state/fleetd/campaigns",
+            "type": {
+              "callable": "pathlib.Path"
+            }
+          },
+          "parser_path": [
+            "tick"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": {
+            "callable": "pathlib.Path"
+          }
+        }
+      ],
+      "aliases": [],
+      "behavior": [],
+      "common_controls": [
+        "--color",
+        "--debug",
+        "--debug-raw",
+        "--help",
+        "--json",
+        "--log-level",
+        "--no-color",
+        "--quiet",
+        "--traceback",
+        "--version"
+      ],
+      "confirmation": false,
+      "constraints": [],
+      "delegated_metadata": [],
+      "description": "perform one scheduling step: adopt jobs, detect lost or stalled hosts, re-queue work and return",
+      "group": "MIXED OPERATIONS",
+      "id": "route:entrypoint:fleet/tick",
+      "kind": "invocation",
+      "no_args_action": false,
+      "opaque_fields": [
+        "option:route:entrypoint:fleet/tick/--state-dir.type"
+      ],
+      "parser_configured_by_callback": false,
+      "parser_settings": [
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [],
+          "prefix_chars": "-"
+        },
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [
+            "tick"
+          ],
+          "prefix_chars": "-"
+        }
+      ],
+      "path": [
+        "tick"
+      ],
+      "single_command": false,
+      "subcommand_groups": [],
+      "subcommands": [],
+      "subcommands_required": false,
+      "summary": "perform one scheduling step: adopt jobs, detect lost or stalled hosts, re-queue work and return",
+      "synopsis_override": null,
+      "syntax_complete": true,
+      "usage_override": null
+    }
+  ],
+  "schema_version": 7,
+  "syntax_complete": true
+}

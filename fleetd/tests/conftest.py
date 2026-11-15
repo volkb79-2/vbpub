@@ -1,21 +1,16 @@
-"""Test-run environment for fleetd: give a source-mode run the metadata the CLI resolves its version from.
+"""Test-run environment for fleetd: the CLI's own distribution metadata and the review plugin.
 
-``fleetd.cli`` resolves the CLI identity with ``CliIdentity.resolve``, which
-reads the installed ``fleetd`` distribution (and by design never invents a
-literal fallback). The registered gate runs the tests from ``src`` without
-installing fleetd (the wheel would need its own cli-extended dependency), so
-without this the CLI refuses to start with exit 3 and every command test fails
-for an environment reason instead of a product one.
+Two things a source-mode gate run needs and a real install provides:
 
-A minimal ``.dist-info`` in a throwaway directory on ``sys.path`` -- and on
-``PYTHONPATH``, so a ``fleet`` subprocess a test spawns resolves the same
-version -- stands in for the install. A real install (or an editable one) is
-left alone: this must never shadow an authoritative version source.
-
-The stand-in version is the package's own ``0.1.0`` working version, so a
-source-run reports exactly what the installed wheel would for an unreleased
-tree. It is deliberately NOT read from a git tag: the gate's checkout may have
-none.
+* ``CliIdentity.resolve`` (``fleetd.cli.identity``) reads the installed ``fleetd``
+  distribution and, by design, never invents a literal version. The registered
+  gate runs the tests from ``src`` without installing the wheel, so this module
+  publishes a minimal ``.dist-info`` — on ``sys.path`` and on ``PYTHONPATH``, so
+  a ``fleet`` subprocess a test spawns resolves it too — as the stand-in for the
+  install. A real install is never shadowed, and the package stores no literal:
+  ``fleetd.__version__`` and the CLI both read the same resolver.
+* The cli-extended pytest plugin links every reviewed catalog row
+  (``docs/cli-review.toml``) to a collected, correctly marked test.
 """
 
 from __future__ import annotations
@@ -28,6 +23,9 @@ import tempfile
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 
+# The working version of an unreleased tree. Metadata and the CLI identity agree by
+# construction because both read this same value; it is deliberately NOT derived from a
+# git tag, because the gate's checkout may carry none.
 WORKING_VERSION = "0.1.0"
 
 
@@ -56,3 +54,8 @@ def _publish_fleetd_metadata() -> None:
 
 
 _publish_fleetd_metadata()
+
+# AC-22: with a review catalog configured, the cli-extended plugin fails collection unless
+# every active reviewed case links a collected, correctly marked test. A focused local run of
+# one test file needs `--cli-case-partial`; the gate runs the whole suite and stays strict.
+pytest_plugins = ["cli_extended.pytest_plugin"]
