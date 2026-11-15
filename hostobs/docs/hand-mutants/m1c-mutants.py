@@ -17,13 +17,16 @@ The nine failures the brief names, each with the test that kills it:
 |---|---|---|
 | M1c-1 | cap check off by one (`>` becomes `>=`) | `a_tier_exactly_at_its_byte_cap_keeps_every_segment` |
 | M1c-2 | `keep_s` ignored (the expiry test always false) | `keep_s_evicts_a_segment_whose_whole_span_is_older_than_the_window` |
-| M1c-3 | evict newest instead of oldest | `keep_s_…`, `a_byte_cap_evicts_the_oldest_whole_segment_first_and_holds_strictly` |
-| M1c-4 | torn tail accepted (no truncation, no report) | `a_restart_repairs_a_torn_tail_before_appending_and_counts_it` |
+| M1c-3 | evict newest instead of oldest (two patches: the ring's order, then its tail) | `eviction_takes_the_oldest_segment_and_the_ring_is_ordered_by_start_not_by_arrival`, `a_byte_cap_evicts_the_oldest_whole_segment_first_and_holds_strictly` |
+| M1c-4 | torn tail accepted (no truncation, no report), in the tier and in the reader | `a_restart_repairs_a_torn_tail_before_appending_and_counts_it`, `a_torn_tail_is_reported_and_truncated_to_the_last_good_record` |
 | M1c-5 | seal without the rename (copy straight onto the final name) | `sealing_copies_the_open_segment_appends_the_footer_and_removes_the_open_name` |
-| M1c-6 | a live incarnation retired | `reachability_is_what_a_tier_holds_and_retirement_respects_the_other_tiers` |
+| M1c-6 | a live incarnation retired | `retirement_removes_only_ids_no_segment_still_names` |
 | M1c-7 | a dropped job not counted | `the_queue_drops_the_oldest_job_first_and_counts_every_drop` |
-| M1c-8 | a foreign file deleted | `a_foreign_file_a_link_and_a_directory_are_left_alone_and_reported` |
+| M1c-8 | a foreign file deleted, and a foreign corpus adopted (two patches) | `a_foreign_file_a_link_and_a_directory_are_left_alone_and_reported`, `a_segment_of_another_corpus_in_this_directory_is_reported_and_never_touched` |
 | M1c-9 | a symlink followed | `a_link_is_never_read_written_truncated_or_removed` |
+
+The verdicts — including the one patch that survived the first pass (the ring's order) and the
+test that killed it — are recorded in [`../HAND-MUTANTS-M1C.md`](../HAND-MUTANTS-M1C.md).
 
 Python-side patches (the independent reference decoder) are included because the segment
 format's correctness is shared: a reference that accepts a torn or corrupt file would certify

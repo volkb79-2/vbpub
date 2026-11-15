@@ -1,7 +1,7 @@
 # Using the hostobs Rust lanes
 
-`model`, `proto` and `kernel` are functional; the remaining four library crates and two
-binaries are still the M0 scaffold. From `hostobs/`, run the registered lanes:
+`model`, `proto`, `kernel` and `store` are functional; the remaining three library crates and
+two binaries are still the M0 scaffold. From `hostobs/`, run the registered lanes:
 
 ```sh
 run-gate lint
@@ -20,16 +20,20 @@ The fixtures in `fixtures/` are the contract between two implementations written
 same specification. Regenerate and check them with:
 
 ```sh
-python3 python/reference/make_fixtures.py /tmp/fixtures-expected   # from the descriptions
-diff -r fixtures/wire /tmp/fixtures-expected                       # committed bytes are current
-python3 -m unittest discover -s python/tests -v                    # decoder + rate reference
+python3 python/reference/make_fixtures.py /tmp/fixtures-expected     # wire cases
+python3 python/reference/make_segment_fixtures.py /tmp/segment-expected  # segment files
+diff -r fixtures/wire /tmp/fixtures-expected                         # committed bytes are current
+diff -r fixtures/segment /tmp/segment-expected                       # ditto, whole files
+python3 -I -m unittest discover -s python/tests -v                   # decoders + rate reference
 ```
 
 `python/tests` needs only the standard library and never imports the Rust code. The
-regeneration must reproduce the committed `.bin` files byte for byte: the Python encoder
-is independent, so a re-encoded difference is a real divergence rather than a cache
-artefact. Do not edit `.bin` files by hand — change the case description in
-`python/reference/make_fixtures.py` and regenerate.
+regeneration must reproduce the committed bytes exactly: the Python encoders are
+independent of the Rust ones, so a difference is a real divergence rather than a cache
+artefact. Do not edit a `.bin` or a `.seg` by hand — change the case description in the
+matching `make_*.py` and regenerate. The segment layout they implement is specified in
+[`SEGMENT-FORMAT.md`](SEGMENT-FORMAT.md), and the Rust side asserts the same files in
+`crates/store/tests/golden_segment.rs`.
 
 **This run is not yet a registered lane.** It is a documented manual check
 (`HOB-4`), so its result is developer feedback, not gate evidence. Adding it as a
@@ -123,6 +127,66 @@ A dictionary body is reproduced position for position: `Dictionary::decode` refu
 repeated identity instead of merging it, because merging would shift every later index away
 from the sender's numbering. Use `Dictionary::encode_with` to write an exact list of entries
 when a test needs to express a wire list a live table would never build.
+
+## Writing and reading history through the store
+
+A store is configured, opened, fed from the writer queue, and queried by time. The layout it
+writes is specified in [`SEGMENT-FORMAT.md`](SEGMENT-FORMAT.md); nothing below writes a file
+directly, because `fsio` is the only module that may.
+
+```rust
+use hostobs_store::queue::Job;
+use hostobs_store::store::{Store, StoreConfig};
+
+// plan v4's hot/warm/cold/events set, with every bound set explicitly (no defaults).
+let config = StoreConfig::plan_v4(Path::new("/run/hostobs"), 7, 1)?; // epoch, dict generation
+let mut store = Store::open(config)?;         // rescans the directories and repairs tails
+
+// Submit is bounded. An oversize job is refused as `job-too-large`; a full queue drops the
+// oldest job and *says* which bytes it lost.
+let report = store.submit(Job::new(payload, real_ns, vec![incarnation]))?;
+if report.dropped_anything() {
+    // lost records are a report, never silence
+}
+
+store.write_pending(now_ns, 64)?;   // bounded drain; a write failure is counted, not fatal
+store.evict(now_ns)?;               // keep_s first, then cap_bytes, whole segments oldest first
+store.seal_all()?;                   // temp name -> write -> fsync -> rename -> fsync dir
+
+// A range query is bounded in records and bytes across the whole store.
+let answer = store.range(from_ns, to_ns, 4096, 1 << 20)?;
+for routed in &answer.records {      // payload bytes exactly as written, per tier
+    // decode with `hostobs-proto`, or by hand: the payload carries its own quality bytes
+}
+```
+
+Every refusal a caller will meet, with its `kind()` name:
+
+| Condition | Refusal |
+|---|---|
+| a tier directory the config requires to be tmpfs is not (`require_tmpfs`) | `not-tmpfs` |
+| the mount table cannot be read while such a tier is required | `mount-table-unreadable` |
+| a write fails with `ENOSPC` | `no-space` |
+| a job is larger than the whole queue bound | `job-too-large` |
+| a segment's header declares a payload its tier kind does not carry | `tier-kind-mismatch` |
+| a record's envelope kind is not the segment's corpus | `record-corpus` |
+| a record's payload is not the frame type its corpus requires | `payload-frame-type` |
+| the dictionary is at `dict_active_max` | `dictionary-full` |
+| a segment still names an incarnation the retirement pass was about to free | (not retired; `retired` count) |
+| a range asks for zero rows or zero bytes | `query-limit` |
+
+The four failures that must never be silent have their own answers, and a test each:
+
+| failure | what a caller sees |
+|---|---|
+| disk fill | `no-space` from the write, counted in `StoreStats::write_failures`; nothing is lost silently because the job is still queued |
+| RAM growth | a full queue drops the **oldest** job and returns it; the dictionary and the query limits are refusals |
+| torn file | `torn_repaired` (truncated back to the last good record) or `quarantined` (renamed `.corrupt`), both counted and both reported by `notes()` |
+| silent loss | `Submit::dropped_jobs`/`dropped_records`/`dropped_bytes` and the matching `StoreStats` counters; `StoreStats::lossless()` is true only when every one is zero |
+
+A store only ever deletes a file that is its own by name **and** header kind. A file that
+looks like a segment but holds another corpus (or a link, or a subdirectory) is reported in
+`notes()` and left in place — which is what lets hot and warm share a directory.
 
 ## Changing a Rust dependency
 
