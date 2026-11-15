@@ -219,6 +219,12 @@ budget_per_attempt = "30m"
 # every candidate pays the full suite, not a per-candidate measurement. Keep
 # candidate_fail_fast enabled: after the full passing baseline, the first
 # failing assertion proves a kill, so the remaining suite adds no kill evidence.
+# jobs_max = 3 follows the container's three CPUs (the command lane's 1 predates
+# native sharding); whether the suite's timing-sensitive tests hold with three
+# concurrent mutant runs is unmeasured, so judge the first shard's baseline and
+# any contention-driven kills before trusting its survivors. A scope other than
+# whole-target (changed lines) is not declared here: it is the --only-candidates
+# file, so there is no per-lane switch for a rolling whole-target baseline yet.
 [lanes.assay-r2]
 scope = "S1"
 rigor = ["R0", "R1", "R2"]
@@ -285,6 +291,7 @@ targets = [
   "src/assay/coverage_parsers/go_cover.py",
   "src/assay/coverage_parsers/lcov.py",
   "src/assay/coverage_parsers/model.py",
+  "src/assay/coverage_parsers/rust_lcov.py",
   "src/assay/diff.py",
   "src/assay/errors.py",
   "src/assay/evaluate.py",

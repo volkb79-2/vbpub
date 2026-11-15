@@ -15128,13 +15128,15 @@ would take about 10h at three workers if every candidate ran the full suite.
 Per-candidate duration and RSS are not measured; the lane does not claim either
 as a fact.
 
-The permitted Run-Gate dry-run parsed `--only-candidates`, `--shard` and
-`--jobs`, and resolved the lane as `assay-r2.shard0of2`; it then stopped in
-cgprofile preflight because the controller has no `CGPROFILE_OBSERVER_SOCKET`
-endpoint record. It emitted no plan, and ran no tests or mutants. The
-declaration oracle checks the parsed Assay lane and its native R2 settings;
-an end-to-end dry-run remains to be repeated when the controller has the
-required observer endpoint. The B105 `self-qualification` and
+A Run-Gate `--dry-run` of `assay-r2 --only-candidates <file under .run-gate/>
+--shard 0/2 --jobs 3` resolves the lane as `assay-r2.shard0of2` with three
+explicit workers and plans the container, but it stops at the cgprofile
+observer check on a host without a `CGPROFILE_OBSERVER_SOCKET` endpoint. With
+the observer line removed in a scratch copy the same dry-run ends PASS and
+only prints Run-Gate's warning that the 11h Assay budget is below the 12h outer
+budget. The declaration oracle checks the parsed Assay lane and its native R2
+settings; the observer-backed dry-run is repeated on a host that has the
+endpoint. The B105 `self-qualification` and
 `self-qualification-provisional` declarations remain command lanes with their
 prior commands and rigor. No R2 campaign was run in this package; B535 owns the
 next latest-release T3 result. The layout refusal itself remains under B541,

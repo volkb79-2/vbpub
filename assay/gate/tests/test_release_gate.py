@@ -268,6 +268,12 @@ def test_pre_merge_tooling_lane_binds_the_release_attempt_failure_groups() -> No
         assert trigger in workflow
 
 
+def _hours(budget: str) -> int:
+    match = re.fullmatch(r"([1-9][0-9]*)h", budget)
+    assert match, f"budget {budget!r} is not a whole-hour value"
+    return int(match.group(1))
+
+
 def test_native_assay_r2_lane_matches_b535_scope_without_changing_b105_lanes() -> None:
     run_gate = tomllib.loads(RUN_GATE_FILE.read_text(encoding="utf-8"))["lanes"]
     assay_lanes = tomllib.loads(ASSAY_FILE.read_text(encoding="utf-8"))["lanes"]
@@ -305,6 +311,37 @@ def test_native_assay_r2_lane_matches_b535_scope_without_changing_b105_lanes() -
     assert native_lane["isolation"] == full_lane["isolation"]
     assert parsed_native_lane.isolation == parsed_lanes.lane("self-qualification").isolation
     assert native_lane["argv"][:-1] == full_lane["argv"][:-1]
+    # The R1 floor and the R2 target set cover every shipped module: a new
+    # src/assay file must be added to the lane, not silently left out.
+    shipped = sorted(
+        path.relative_to(PROJECT_ROOT).as_posix()
+        for path in (PROJECT_ROOT / "src" / "assay").rglob("*.py")
+    )
+    assert native_lane["judge"]["targets"] == shipped
+    # Same mutation operators and cap as the full lane; only jobs and fail-fast
+    # (and no canary: R3 stays with the qualification lanes) differ.
+    full_mutation = full_lane["judge"]["mutation"]
+    native_mutation = native_lane["judge"]["mutation"]
+    assert native_mutation["operators"] == full_mutation["operators"]
+    assert native_mutation["max_mutants"] == full_mutation["max_mutants"]
+    assert native_mutation["liveness"] is True
+    assert "canary" not in native_lane["judge"]
+    assert native_lane["allow_argv_append"] is False
+    assert native_lane["env_passthrough"] == ["PATH"]
+    assert native_lane["infrastructure"] == full_lane["infrastructure"]
+    artifact = native_lane["judge"]["coverage"]["artifact"]
+    assert artifact == ".assay/coverage-assay-r2.json"
+    assert artifact in native_lane["argv"][-1]
+    assert artifact not in {
+        lane["judge"]["coverage"]["artifact"]
+        for name, lane in assay_lanes.items()
+        if name != "assay-r2" and "coverage" in lane.get("judge", {})
+    }
+    # The campaign must bind one immutable tree and use the cgroup observer;
+    # the Assay per-attempt bound must fit inside the Run-Gate outer bound.
+    assert gate_lane["clean_tree"] is True
+    assert gate_lane["resource_observer"] == "cgprofile"
+    assert _hours(gate_lane["budget"]) >= _hours(native_lane["budget"]) > 0
     assert native_lane["judge"]["mutation"]["candidate_fail_fast"] is True
     assert native_lane["judge"]["mutation"]["budget_per_candidate"] == "auto"
     assert parsed_native_lane.judge is not None
