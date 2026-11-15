@@ -137,3 +137,20 @@ def test_the_skill_ships_and_the_cli_registers_the_library_verbs():
     skill = PROJECT / "src" / "fleetd" / "skills" / "fleetd-campaigns" / "SKILL.md"
     assert skill.is_file()
     assert build_cli().skills_package == ("fleetd", "skills")
+
+
+def test_gate_lanes_use_the_review_plugin_mode_their_scope_needs():
+    """The full-suite lane stays strict; a lane that collects one file must be partial.
+
+    Getting this backwards is not cosmetic: strict collection in a focused lane fails the
+    whole lane with "references uncollected test", which looks like a product defect.
+    """
+
+    lanes = tomllib.loads((PROJECT / "run-gate.toml").read_text(encoding="utf-8"))["lanes"]
+    full = " ".join(lanes["r0-r1"]["argv"])
+    focused = " ".join(lanes["campaign-contract"]["argv"])
+    assert "pytest tests -q" in full
+    assert "--cli-case-partial" not in full, "the whole-suite lane must stay strict"
+    assert "pytest tests/test_campaign.py" in focused
+    assert "--cli-case-partial" in focused
+    assert "tests/test_cli_review_cases.py" not in focused

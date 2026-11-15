@@ -92,7 +92,7 @@ audit is mechanical; the two `manual` rows are judgements recorded here.
 | AC-19 skills packaged | pass | `fleetd/skills/fleetd-campaigns` as package data, no checkout install tree (`tests/test_cli_skills.py`) |
 | AC-20 doctor | **manual, deferred** | needs a doctor only when it has an environment to verify. `facts collect` already *is* the environment report for a host (it emits `host-facts/1` with a reason for every unavailable leaf), and the controller's environment is the runner checkout it already refuses to guess. A separate `fleet doctor` would duplicate both; revisit if a third environment appears. |
 | AC-21 contract tests | pass | `tests/test_cli_characterization.py` pins the pre-migration contract; `tests/test_cli_review_cases.py` replays the reviewed catalog |
-| AC-22 pytest plugin | pass | `pytest_plugins = ["cli_extended.pytest_plugin"]` in `tests/conftest.py`; a focused run needs `--cli-case-partial` |
+| AC-22 pytest plugin | pass | `pytest_plugins = ["cli_extended.pytest_plugin"]` in `tests/conftest.py`. A focused run — a single test file, or the `campaign-contract` lane, which collects only `tests/test_campaign.py` — passes `--cli-case-partial`; `r0-r1` collects the whole suite and stays strict. |
 | AC-23 invoker helpers | not applicable | fleetd's tests do not wrap `subprocess` for the CLI; they call `main()` and, where a real process matters, the library's helpers |
 | AC-24 dependency declared | pass | `dependencies = ["cli-extended>=0.5.0"]`, no `package-dir` mapping |
 | AC-25 no path hacks | pass | no `sys.path`/`PYTHONPATH` insertion in project sources |
