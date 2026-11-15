@@ -36,9 +36,10 @@
 | FD-030 | The new per-worker demand keys are not accepted inside `run-gate.toml` | P2 | OPEN | 2026-11-15 |
 | FD-031 | Sizing budgets come from medians and a fixed margin, not a measured tail | P2 | OPEN | 2026-11-15 |
 | FD-032 | `fleet scope` reads a checkout it never checks for uncommitted or untracked work | P3 | DONE | 2026-11-15 |
-| FD-033 | The rolling cursor goes stale on every release that changes a target file | P2 | OPEN | 2026-11-15 |
+| FD-033 | The rolling cursor goes stale on every release that changes a target file | P2 | DONE | 2026-11-15 |
 | FD-034 | No host-install script for fleetd; the docs prescribed a system-Python pip install that Debian 13 refuses | P2 | DONE | 2026-11-15 |
 | FD-035 | `host-facts/1` validation does not bound a service `MemoryMin`, so an implausible fact is first refused at plan time, not at collect or validate time | P3 | OPEN | 2026-11-15 |
+| FD-037 | Rolling mode keys a candidate by its file's content, so a partial edit re-judges the whole file | P3 | OPEN | 2026-11-15 |
 
 ## FD-001 Lite campaign lifecycle
 
@@ -678,21 +679,95 @@ each path, and the SPEC states the rule.
 
 ## FD-033 The rolling cursor goes stale on every release that changes a target file
 
-**State:** OPEN. **Priority:** P2. **Filed:** 2026-11-15 (review of the R2-default package).
+**State:** DONE (`pi-fd033-20261115`). **Priority:** P2. **Filed:** 2026-11-15
+(review of the R2-default package). **Completed:** 2026-11-15.
 
 A candidate id folds in the SHA-256 of its source file and of the mutated file
 (`assay/src/assay/candidate_identity.py`), so the whole-target list digest the
-rolling cursor is validated against changes whenever any target file changes.
-`fleet scope` then refuses with `stale-cursor`, and `--rebaseline` restarts at
-offset 0 of the new, id-sorted list. The refusal itself is correct (the cursor
-never resumes at an offset that points at another candidate) but the mode does
-not do what its name promises: every release that touches a target needs a
-manual `--rebaseline`, and a rebaselined slice is the first slice of a freshly
-shuffled list, so coverage is a random sample, not a sweep of the target.
+`fleet-r2-scope-cursor/1` cursor was validated against changed whenever any target
+file changed. `fleet scope` then refused with `stale-cursor`, and `--rebaseline`
+restarted at offset 0 of the new, id-sorted list: the refusal was fail-closed,
+but rolling mode was a sample of the first slice, not a sweep of the target.
 
-**Wanted.** A cursor keyed by something that survives a source edit (for
-example `(path, lineno)` order, with the digest kept as evidence rather than as
-the resume key), and a decision whether a rolling release also judges its
-changed lines. **Close when.** Two consecutive releases that edit different
-files continue the same pass without `--rebaseline`, and a test pins that no
-candidate present in both lists is skipped or judged twice within a pass.
+**What changed.** The sweep state is now a `fleet-r2-scope-cursor/2` document
+keyed by **file content** and by a location-stable candidate key, not by the
+candidate-id list:
+
+- per path, the cursor records the **git blob id** of the content its marks
+  belong to, the planned candidate **count**, the **candidate keys** judged at
+  that content, and the **pass** in which the path was last judged;
+- a candidate key is `sha256(path, operator, ordinal)` where the ordinal counts
+  within one `(path, operator)` group in line order. It is derived in fleetd
+  from what `assay plan --json` already emits; `assay/src` is untouched and no
+  assay change is required;
+- a path whose current blob differs from its mark is **due again immediately**
+  and judged whole (a changed site identity shifts when anything before it
+  moves); a path whose blob still matches keeps its marks, so an edit to
+  another file never invalidates the cursor;
+- a mark that cannot be confirmed against the current plan (a different
+  planned count for the path, or a judged key the plan no longer contains) makes
+  that path due again and is reported as `changed`; a path with no planned
+  candidate is `retired` with a reason. Nothing is dropped silently, and a
+  candidate is never marked judged while its file changed since the mark;
+- the slice is a **prefix** of the deterministic order (changed files first,
+  least recently judged first, then never-/not-yet-judged candidates in
+  path/line order), and `slice_size` is a budget that re-slices the same sweep;
+- a **finished sweep** starts a recorded new pass (`new_pass: true`) instead of
+  reporting an empty `nothing-to-judge`; in rolling mode that status now means
+  only "the plan is empty";
+- the document carries the accounting (`changed_files`, `changed_candidates`,
+  `never_judged_candidates`, `pending_candidates`, `judged_candidates`,
+  `retired`) and a whole-document `state_digest`, so a hand-edited cursor is
+  refused rather than trusted;
+- the cursor is resumed only for its own lane (`stale-cursor`, exit 3, otherwise).
+  A `fleet-r2-scope-cursor/1` cursor is refused with its migration: `--rebaseline`
+  is that migration (one new pass from the current content) and reports the
+  schema it migrated from in `slice.legacy_cursor`.
+
+Rolling therefore means: **the changed-lines findings of the release** (a
+changed file is judged whole) **plus the next slice of never-/least-recently
+judged candidates**. `--rebaseline` is now rare and explicit rather than a
+per-release ritual.
+
+**Evidence.** `tests/test_scope.py` covers a synthetic target of 60 candidates
+across five releases (full coverage in `ceil(N / slice_size)` releases, then a
+recorded new pass), an edit between releases (edited file judged whole, others
+resume, no candidate skipped, no re-judge of untouched files), file adds/
+deletes/plan-shape changes (`changed`/`retired` accounting), determinism
+(identical input sequences produce identical slices), corrupt/stale/hand-edited/
+other-lane/legacy cursors refused, and the CLI round trip. Documentation: `docs/
+R2-DEFAULT.md` ("Scope: what an R2 campaign judges"), `docs/DESIGN-GUIDE.md`
+("Why the sweep is keyed by file content"), `docs/SPEC.md`, `docs/CONSUMERS.md`
+and `CHANGES.md`.
+
+**Not covered, by decision.** A release that edits part of a file re-judges that
+whole file (FD-037); the key assumes `assay plan` reports a stable `operator`
+for a site; cross-worktree/other-origin id collisions are assay's problem, not
+the cursor's, because the cursor keys on content rather than on ids.
+
+## FD-037 Rolling keys a candidate by its file's content, so a partial edit re-judges the whole file
+
+**State:** OPEN. **Priority:** P3. **Filed:** 2026-11-15 (with FD-033).
+
+Rolling whole-target mode (FD-033) keys a candidate to its file's **content**
+(the git blob id) rather than to a line span, because Assay's candidate id folds in the
+source file's SHA-256 and a line number shifts whenever anything above a site
+moves. The consequence, deliberately accepted for FD-033: a release that edits
+one line of a 2000-line target file marks every candidate of that file due
+again, so the release re-judges the whole file even though the changed-lines
+scope would have judged only the sites on the added lines. That is a superset
+of the changed-lines scope — coverage is never lost — but it is extra
+mutation work on big files.
+
+**Wanted.** A refinement that keeps the fail-closed property without the
+whole-file cost, for example keeping per-site marks with a content digest of
+the site's own neighbourhood (the enclosing block/scope text, or the file span
+between two unchanged sites) so a local edit re-judges the local sites and an
+insertion invalidates only the marks below it. Any such key must still make a
+site due again whenever its content changed and must never re-point a mark at
+another site.
+
+**Close when.** A synthetic target with a partial edit shows the release judging
+only the edited region's candidates while every unedited region keeps its
+marks, and the accounting names the sites that were re-judged and the sites that
+were kept.

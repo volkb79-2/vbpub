@@ -354,17 +354,26 @@ for the worked examples.
 `git diff -U0 <previous release tag>..<commit>`; a renamed file is judged
 whole because candidate identity folds in its path. An empty selection is
 `nothing-to-judge` with a reason, exit 4, and `--out` refuses to write an empty
-file. The opt-in `rolling-whole-target` mode takes the next slice of the
-whole-target list from a `fleet-r2-scope-cursor/1` file recording the list
-digest and length; a list that no longer matches is `stale-cursor` (exit 3)
-unless `--rebaseline` accepts it. A project declares its mode in a committed
+file. The opt-in `rolling-whole-target` mode judges the release's own changed
+candidates plus the next slice of a persisted sweep whose state document is
+`fleet-r2-scope-cursor/2`; it is keyed by **file content** (git blob id) and by
+a location-stable candidate key `(path, operator, ordinal)`, never by Assay's
+candidate id. A release that edits a target file judges that file whole and
+leaves every other file's marks intact, so the sweep covers the target across
+releases instead of restarting per edit; an unrecorded plan shape for a path,
+abandoned marks and left paths are accounted as due again or retired, never
+dropped. A cursor for another lane is `stale-cursor` (exit 3), a hand-edited
+cursor fails its `state_digest`, and a `fleet-r2-scope-cursor/1` cursor is
+refused with its migration (`--rebaseline`, one new pass from the current
+content). A project declares its mode in a committed
 `r2-scope.toml` (`schema_version = 1`, `[r2]` with `mode`, optional
 `slice_size`, `cursor`, `note`). No scope file means the default, so an
 uncommitted project keeps its current behaviour. The producer refuses (exit 2)
 a checkout whose HEAD is not the named commit or whose tracked files carry
 uncommitted changes, because the plan describes the working tree and the diff
-the committed one. Candidate ids fold in the source file hash, so a cursor goes
-stale after a release that edits a target file (FD-033).
+the committed one. A rolling plan row whose path the judged commit does not
+describe is refused (exit 2) rather than keyed to content the producer cannot
+read (FD-033).
 
 `fleet sizing` derives instances per host, shard count, each shard's budget and
 the outer bound from the plan's own host budgets, the plan demand's per-worker
@@ -611,7 +620,7 @@ The manifest records registered syntax. The review catalog owns expected behavio
 | option:route:entrypoint:fleet/scope/--slice-size | option | --slice-size | rolling-whole-target slice size | {"metavar": "N", "minimum_values": 1} | {"action": "argparse._StoreAction", "const": null, "type": {"callable": "builtins.int"}} | false | {"choices": null, "declared_default": null, "default": null, "exclusive_group": null, "exclusive_required": false} | {"parser_path": ["scope"], "placement": {"after_verb": true, "before_verb": false, "single_command_invocation": false}, "scope": "verb-local"} | {"help_group": "SCOPE", "hidden": false} |
 | option:route:entrypoint:fleet/scope/--cursor | option | --cursor | rolling cursor file to resume from | {"metavar": "FILE", "minimum_values": 1} | {"action": "argparse._StoreAction", "const": null, "type": {"callable": "pathlib.Path"}} | false | {"choices": null, "declared_default": null, "default": null, "exclusive_group": null, "exclusive_required": false} | {"parser_path": ["scope"], "placement": {"after_verb": true, "before_verb": false, "single_command_invocation": false}, "scope": "verb-local"} | {"help_group": "SCOPE", "hidden": false} |
 | option:route:entrypoint:fleet/scope/--write-cursor | option | --write-cursor | write the advanced rolling cursor here | {"metavar": "FILE", "minimum_values": 1} | {"action": "argparse._StoreAction", "const": null, "type": {"callable": "pathlib.Path"}} | false | {"choices": null, "declared_default": null, "default": null, "exclusive_group": null, "exclusive_required": false} | {"parser_path": ["scope"], "placement": {"after_verb": true, "before_verb": false, "single_command_invocation": false}, "scope": "verb-local"} | {"help_group": "OUTPUT", "hidden": false} |
-| option:route:entrypoint:fleet/scope/--rebaseline | option | --rebaseline | accept a stale rolling cursor and extend its list, recording a new pass | {"metavar": null, "minimum_values": 0, "nargs": 0} | {"action": "argparse._StoreTrueAction", "const": true, "type": null} | false | {"choices": null, "declared_default": false, "default": false, "exclusive_group": null, "exclusive_required": false} | {"parser_path": ["scope"], "placement": {"after_verb": true, "before_verb": false, "single_command_invocation": false}, "scope": "verb-local"} | {"help_group": "SCOPE", "hidden": false} |
+| option:route:entrypoint:fleet/scope/--rebaseline | option | --rebaseline | start one fresh sweep pass from the current file content, discarding the cursor's marks (the explicit migration for an older cursor schema) | {"metavar": null, "minimum_values": 0, "nargs": 0} | {"action": "argparse._StoreTrueAction", "const": true, "type": null} | false | {"choices": null, "declared_default": false, "default": false, "exclusive_group": null, "exclusive_required": false} | {"parser_path": ["scope"], "placement": {"after_verb": true, "before_verb": false, "single_command_invocation": false}, "scope": "verb-local"} | {"help_group": "SCOPE", "hidden": false} |
 | option:route:entrypoint:fleet/scope/--out | option | --out | write the candidate-id file here (refused for an empty scope) | {"metavar": "FILE", "minimum_values": 1} | {"action": "argparse._StoreAction", "const": null, "type": {"callable": "pathlib.Path"}} | false | {"choices": null, "declared_default": null, "default": null, "exclusive_group": null, "exclusive_required": false} | {"parser_path": ["scope"], "placement": {"after_verb": true, "before_verb": false, "single_command_invocation": false}, "scope": "verb-local"} | {"help_group": "OUTPUT", "hidden": false} |
 | argument:route:entrypoint:fleet/sizing/plan | argument | plan | fleet-plan/1 JSON file | {"metavar": "PLAN", "minimum_values": 1} | {"action": "argparse._StoreAction", "const": null, "type": {"callable": "pathlib.Path"}} | true | {"choices": null, "declared_default": null, "default": null, "exclusive_group": null, "exclusive_required": false} | {"parser_path": ["sizing"], "scope": "positional"} | {"help_group": "positional arguments", "hidden": false} |
 | option:route:entrypoint:fleet/sizing/--measurement | option | --measurement | fleet-r2-measurement/1 from a finished campaign | {"metavar": "FILE", "minimum_values": 1} | {"action": "argparse._StoreAction", "const": null, "type": {"callable": "pathlib.Path"}} | false | {"choices": null, "declared_default": null, "default": null, "exclusive_group": null, "exclusive_required": false} | {"parser_path": ["sizing"], "placement": {"after_verb": true, "before_verb": false, "single_command_invocation": false}, "scope": "verb-local"} | {"help_group": "INPUT", "hidden": false} |

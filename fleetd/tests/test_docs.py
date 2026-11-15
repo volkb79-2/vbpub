@@ -27,6 +27,7 @@ from fleetd.scope import (
     DEFAULT_SCOPE_MODE,
     EXIT_NOTHING_TO_JUDGE,
     EXIT_STALE_CURSOR,
+    LEGACY_CURSOR_SCHEMAS,
     SCOPE_MODES,
     SCOPE_SCHEMA,
     load_scope_file,
@@ -124,6 +125,20 @@ def test_docs_name_every_default_r2_capability_and_value_a_consumer_types():
     for command in ("fleet scope", "fleet sizing", "fleet measurement", "fleet merge-check"):
         assert command in combined, command
     for key in ("worker_memory", "worker_cpu", "instance_cpu", "image_digest", "slice_size"):
+        assert key in combined, key
+    # The rolling sweep's own vocabulary: every value a consumer reads out of a
+    # scope document or must pass on the command line is documented (FD-033).
+    for value in LEGACY_CURSOR_SCHEMAS:
+        assert value in combined, value
+    for key in (
+        "new_pass",
+        "state_digest",
+        "retired",
+        "changed_candidates",
+        "never_judged_candidates",
+        "pending_candidates",
+        "judged_candidates",
+    ):
         assert key in combined, key
 
 

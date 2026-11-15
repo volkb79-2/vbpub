@@ -6,6 +6,26 @@ All notable changes to this project are recorded here.
 
 ### Changed
 
+- Rewrite the rolling whole-target sweep so an edit no longer restarts it
+  (FD-033). The `fleet-r2-scope-cursor/1` cursor resumed at an offset into a
+  candidate-id list whose ids fold in the source-file hash, so nearly every
+  release that changed a target file went `stale-cursor` and `--rebaseline`
+  restarted at slice 0: rolling was a sample, not a sweep. The cursor is now
+  `fleet-r2-scope-cursor/2`, keyed by **file content** (the git blob id at the
+  judged commit) and by a location-stable candidate key
+  `(path, operator, ordinal)`, never by an Assay candidate id; a path whose
+  content changed is due again and judged whole, every other path keeps its
+  marks, a plan shape that no longer matches a mark is reported as `changed`,
+  and a path that left the plan is `retired` with its reason. The slice is a
+  prefix of a deterministic order (changed files first, least recently judged
+  first, then never/not-yet-judged candidates in path/line order), `slice_size`
+  is a budget that re-slices the same sweep, a finished sweep starts a recorded
+  new pass (`new_pass`) instead of an empty `nothing-to-judge`, the scope document
+  carries the accounting and the cursor a whole-document `state_digest`, and a
+  `fleet-r2-scope-cursor/1` cursor is refused with its migration
+  (`--rebaseline`, reported as `slice.legacy_cursor`). `--rebaseline` is now
+  rare instead of per-release. Rolling mode re-judges a changed file whole (a
+  superset of the changed-lines scope); the remaining per-file cost is FD-037.
 - Replace the all-or-nothing control-plane reserve with a per-service fallback
   (FD-007c). Each listed service contributes its reported `MemoryMin`, its
   documented default when the fact is missing or implausible, or `0` when a
@@ -94,9 +114,9 @@ All notable changes to this project are recorded here.
   `changed-lines` mode selects candidates on lines added since the previous
   release tag (`git diff -U0`, renamed files judged whole), an empty scope is
   an explicit `nothing-to-judge` result (exit 4) that refuses to write an id
-  file, and the opt-in `rolling-whole-target` mode walks a persisted cursor
-  whose list digest and length are validated (stale cursors exit 3 unless
-  `--rebaseline`).
+  file, and the opt-in `rolling-whole-target` mode walks a persisted sweep
+  cursor keyed by file content (see the FD-033 entry above; a cursor for
+  another lane or an older schema is refused, exit 3 / with its migration).
 - Add a committed `r2-scope.toml` (`schema_version = 1`, `[r2]` with `mode`,
   optional `slice_size`, `cursor`, `note`) so a project declares its scope
   instead of passing a hand-prepared id file; no file keeps the default.

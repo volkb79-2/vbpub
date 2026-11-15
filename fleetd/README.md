@@ -156,8 +156,10 @@ scripts. None of them contacts a host.
 - `fleet scope` produces the campaign's candidate-id set. The default scope
   judges only the lines added since the tool's previous release tag; a
   committed `r2-scope.toml` opts a project into a rolling whole-target
-  baseline instead. An empty scope is an explicit `nothing-to-judge` result
-  (exit 4), never an id file that judged nothing.
+  baseline instead, whose persisted sweep is keyed by file content, so an edit
+  re-judges that file whole and never restarts the rest of the sweep. An
+  empty scope is an explicit `nothing-to-judge` result (exit 4), never an id
+  file that judged nothing.
 - `fleet sizing` derives instances per host, shards, each per-instance budget
   and Run-Gate's outer bound from the plan's own host budgets, a per-worker
   resource unit, and measured per-candidate seconds and memory — instead of a
