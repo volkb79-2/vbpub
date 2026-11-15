@@ -1,6 +1,10 @@
-# Every workspace package has an executable crate marker and a test that
-# checks its Cargo identity. These are bootstrap floors for the M0 skeleton;
-# functional hostobs code replaces them with behavioral coverage in later work.
+# Per-package line and region floors, checked by tools/crate-floors.py from one
+# llvm-cov summary. The first seven packages still carry the M0 bootstrap scaffold
+# floor; `model` and `proto` carry M1 behavioral floors measured on their own tests
+# (model: 98.06% line / 97.90% region, proto: 99.43% line / 97.77% region measured in
+# the image on the M1 fix-round head). Floors are never lowered: a crate whose coverage drops raises
+# its own floor instead of hiding code, and a floor may only be returned to the
+# bootstrap value by deleting the crate.
 [crates."crates/act"]
 line = 90.0
 region = 85.0
@@ -18,12 +22,12 @@ line = 90.0
 region = 85.0
 
 [crates."crates/model"]
-line = 90.0
-region = 85.0
+line = 97.0
+region = 96.0
 
 [crates."crates/proto"]
-line = 90.0
-region = 85.0
+line = 98.0
+region = 96.0
 
 [crates."crates/store"]
 line = 90.0

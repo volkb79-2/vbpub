@@ -1,0 +1,88 @@
+{
+  "case": "unicode-dictionary",
+  "doc": "Unicode dictionary text on all four entry kinds, plus a second boot id.",
+  "frame": {
+    "type": "block",
+    "corr": 12,
+    "sections": [
+      "header",
+      "dictionary",
+      "rows",
+      "columns"
+    ],
+    "header": {
+      "boot_id": "ffeeddcc-bbaa-9988-7766-554433221100",
+      "epoch": 2,
+      "seq": 5,
+      "mono_start_ns": 1000000000,
+      "mono_end_ns": 2000000000,
+      "boot_ns": 500,
+      "real_ns": 1700000000000000000,
+      "dict_gen": 1,
+      "n_rows": 1,
+      "dropped": 1,
+      "flags": 0
+    },
+    "dictionary": {
+      "generation": 1,
+      "entries": [
+        {
+          "kind": "entity",
+          "inc": 4,
+          "text": "/café/naïve"
+        },
+        {
+          "kind": "label",
+          "label_kind": 1,
+          "label_source": 1,
+          "text": "web-é"
+        },
+        {
+          "kind": "free",
+          "text": "lane: run-ü"
+        },
+        {
+          "kind": "metric",
+          "text": "mem.current",
+          "facts": {
+            "unit": "bytes",
+            "kind": "gauge",
+            "scope": "cgroup",
+            "source": "cgroupfs"
+          }
+        },
+        {
+          "kind": "metric",
+          "text": "ksm.run",
+          "facts": {
+            "unit": "none",
+            "kind": "state",
+            "scope": "host",
+            "source": "sysfs"
+          }
+        }
+      ]
+    },
+    "rows": [
+      {
+        "ent": 0,
+        "t_off_us": 0
+      }
+    ],
+    "time": [],
+    "columns": [
+      {
+        "metric": 3,
+        "type": "f64",
+        "kind": "gauge",
+        "value_bits": [
+          "0x40091eb851eb851f"
+        ],
+        "quality": [
+          "ok"
+        ]
+      }
+    ],
+    "skipped": []
+  }
+}
