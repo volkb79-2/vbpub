@@ -97,6 +97,7 @@ for tester_gate_assignment in "${tester_gate_values[@]}"; do
     printf 'malformed CMRU tester-gate default: %s\n' "$tester_gate_assignment" >&2
     exit 2
   }
+  # shellcheck disable=SC2163 # the variable holds a whole NAME=value assignment on purpose
   export "$tester_gate_assignment"
 done
 
