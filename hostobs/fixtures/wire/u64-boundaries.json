@@ -1,0 +1,115 @@
+{
+  "case": "u64-boundaries",
+  "doc": "The u64/i64 boundaries of plan v4 B.5 in one block: 0, 2^53+1, 2^64-1, and i64 -2^63, -1, 2^63-1.",
+  "frame": {
+    "type": "block",
+    "corr": 7,
+    "sections": [
+      "header",
+      "dictionary",
+      "rows",
+      "columns"
+    ],
+    "header": {
+      "boot_id": "00112233-4455-6677-8899-aabbccddeeff",
+      "epoch": 7,
+      "seq": 42,
+      "mono_start_ns": 1000000000,
+      "mono_end_ns": 2000000000,
+      "boot_ns": 500,
+      "real_ns": 1700000000000000000,
+      "dict_gen": 1,
+      "n_rows": 3,
+      "dropped": 1,
+      "flags": 0
+    },
+    "dictionary": {
+      "generation": 1,
+      "entries": [
+        {
+          "kind": "entity",
+          "inc": 1,
+          "text": "/a"
+        },
+        {
+          "kind": "entity",
+          "inc": 2,
+          "text": "/b"
+        },
+        {
+          "kind": "entity",
+          "inc": 3,
+          "text": "/c"
+        },
+        {
+          "kind": "metric",
+          "text": "cpu.usage_usec",
+          "facts": {
+            "unit": "usec",
+            "kind": "counter",
+            "scope": "cgroup",
+            "source": "cgroupfs"
+          }
+        },
+        {
+          "kind": "metric",
+          "text": "signed.value",
+          "facts": {
+            "unit": "none",
+            "kind": "gauge",
+            "scope": "daemon",
+            "source": "probe"
+          }
+        }
+      ]
+    },
+    "rows": [
+      {
+        "ent": 0,
+        "t_off_us": 0
+      },
+      {
+        "ent": 1,
+        "t_off_us": 1
+      },
+      {
+        "ent": 2,
+        "t_off_us": 2
+      }
+    ],
+    "time": [],
+    "columns": [
+      {
+        "metric": 3,
+        "type": "u64",
+        "kind": "counter",
+        "values": [
+          "0",
+          "9007199254740993",
+          "18446744073709551615"
+        ],
+        "quality": [
+          "ok",
+          "ok",
+          "ok"
+        ]
+      },
+      {
+        "metric": 4,
+        "type": "i64",
+        "kind": "gauge",
+        "values": [
+          "-9223372036854775808",
+          "-1",
+          "9223372036854775807"
+        ],
+        "quality": [
+          "ok",
+          "reset",
+          "ok"
+        ]
+      }
+    ],
+    "skipped": []
+  }
+}
