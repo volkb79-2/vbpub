@@ -1625,6 +1625,31 @@ def test_reserve_refuses_a_total_above_twice_the_documented_floors():
     assert refused.bytes == sum(over)
 
 
+def test_a_partial_per_service_table_still_resolves_per_service_terms():
+    """Any per-service fact means per-service terms; only NO fact uses the constant."""
+    for kept in ("ssh.service", "docker.service"):
+        facts = _facts(_hosts(), "host-small")
+        control = facts["control_plane"]
+        control["profile_reserve_bytes"] = 800 * 1024**2
+        control["service_memory_min"] = {
+            kept: {"memory_min_bytes": CONTROL_PLANE_SERVICE_MEMORY_MIN_DEFAULTS[kept], "load_state": "loaded"},
+        }
+        reserve = _control_plane_reserve(facts)
+        assert reserve.source == "per-service-default"
+        # The one present unit reports its floor; the five absent rows are
+        # missing facts and contribute their documented defaults.
+        assert reserve.bytes == sum(FLOOR_MIB) * 1024**2
+        assert reserve.missing == tuple(
+            unit for unit in CONTROL_PLANE_SERVICE_UNITS if unit != kept
+        )
+        assert {row["unit"]: row["source"] for row in reserve.services}[kept] == "reported"
+        assert all(
+            row["source"] == "default"
+            for row in reserve.services
+            if row["unit"] != kept
+        )
+
+
 def test_reserve_falls_back_per_service_when_the_table_has_rows_without_values():
     facts = _facts(_hosts(), "host-small")
     control = facts["control_plane"]
