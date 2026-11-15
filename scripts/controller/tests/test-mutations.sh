@@ -270,6 +270,10 @@ expect_killed ctx-hooks-pressure-rearm \
   env CTX_HOOKS_SCRIPT="$ROOT/mutants/scripts/controller/ctx-hooks-pressure-rearm.py" bash "$SCRIPT_DIR/test-ctx-hooks.sh"
 expect_killed ctx-hooks-hard-timeout \
   env CTX_HOOKS_SCRIPT="$ROOT/mutants/scripts/controller/ctx-hooks-hard-timeout.py" bash "$SCRIPT_DIR/test-ctx-hooks.sh"
+expect_killed ctx-hooks-kind-wording \
+  env CTX_HOOKS_SCRIPT="$ROOT/mutants/scripts/controller/ctx-hooks-kind-wording.py" bash "$SCRIPT_DIR/test-ctx-hooks.sh"
+expect_killed ctx-hooks-crash-log \
+  env CTX_HOOKS_SCRIPT="$ROOT/mutants/scripts/controller/ctx-hooks-crash-log.py" bash "$SCRIPT_DIR/test-ctx-hooks.sh"
 expect_killed push-pipeline-exit-propagation \
   env PUSH_IMAGE_SCRIPT="$ROOT/mutants/scripts/controller/push-image-status.sh" bash "$SCRIPT_DIR/test-wrappers.sh"
 expect_killed queue-auto-pause-threshold \

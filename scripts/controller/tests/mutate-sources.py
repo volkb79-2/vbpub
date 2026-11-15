@@ -228,6 +228,10 @@ mutant("scripts/controller/hooks/ctx-hooks.py", "ctx-hooks-pressure-rearm.py",
        '    if False:\n        # The context shrank')
 mutant("scripts/controller/hooks/ctx-hooks.py", "ctx-hooks-hard-timeout.py",
        'HARD_TIMEOUT = 20.0', 'HARD_TIMEOUT = 600.0')
+mutant("scripts/controller/hooks/ctx-hooks.py", "ctx-hooks-kind-wording.py",
+       '    controller = kind != "spawned"', '    controller = False')
+mutant("scripts/controller/hooks/ctx-hooks.py", "ctx-hooks-crash-log.py",
+       'log(ACTIVE_LOG, {"ev": "hook-error"', 'log(None, {"ev": "hook-error"')
 mutant("scripts/controller/release-from-wt.sh", "release-psi-validation.sh",
        "[[ $psi_limit =~ ^[0-9]+([.][0-9]+)?$ && $poll_seconds =~ ^[0-9]+$ ]] || {\n  echo 'RELEASE_PSI_LIMIT must be numeric and RELEASE_PSI_POLL_SECONDS must be integer seconds' >&2; exit 2;\n}",
        ': # removed PSI input validation')

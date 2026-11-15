@@ -117,6 +117,83 @@ def test_tail_keeps_the_newest_prose_before_the_cut_as_complete_records():
     result = extract(LAYOUT, _layout_config(since_marker="g6", tail_prose_tokens=20))
     assert result._readback_layout.tail.kept == 1
     assert result._readback_layout.tail.dropped >= 1
+    # Under pressure the NEWEST record survives, never the oldest.
+    squeezed = result.render()
+    assert "This is the newest prose BEFORE the cut" in squeezed
+    assert "This middle prose sits between the goal anchor" not in squeezed
+
+
+def test_tail_yields_to_the_protected_operator_material_of_the_delta(tmp_path):
+    """Truncation order: the tail shrinks BEFORE the delta, and the delta's
+    operator turns are never dropped, so a large operator turn after the cut
+    must squeeze the tail rather than let the document overshoot the budget
+    by a whole tail (review finding)."""
+    records = []
+    previous = None
+
+    def add(kind, uuid, text):
+        nonlocal previous
+        body = (
+            {"role": "user", "content": text} if kind == "user"
+            else {"role": "assistant", "id": "m" + uuid,
+                  "content": [{"type": "text", "text": text}]}
+        )
+        records.append({
+            "isSidechain": False, "sessionId": "s", "parentUuid": previous, "cwd": "/w",
+            "type": kind, "uuid": uuid,
+            "timestamp": f"2026-11-15T09:{len(records):02d}:00Z", "message": body,
+        })
+        previous = uuid
+
+    for index in range(30):
+        add("assistant", f"p{index}", f"PRIOR{index} " + "word " * 80)
+    add("user", "cut", "the cut record")
+    add("user", "big", "OPERATORBIG " + "instruction " * 300)
+    source = tmp_path / "session.jsonl"
+    source.write_text("\n".join(json.dumps(r) for r in records) + "\n", encoding="utf-8")
+
+    config = _layout_config(since_marker="cut", goal_prompt=False, budget_tokens=1800)
+    result = extract(source, config)
+    plan = result._readback_layout
+    protected = select.protected_readback_tokens(
+        [ev for ev in result.all_events if ev.marker == "big"], config, set(),
+    )
+    assert protected > 700
+    out = result.render()
+    assert "OPERATORBIG" in out                     # never dropped
+    assert plan.tail.kept_tokens <= max(0, 1800 - 512 - protected)
+    assert select.estimate_tokens(out) <= 1800      # the whole document fits
+    # With the protected turn absent the same budget keeps a real tail.
+    short = tmp_path / "short.jsonl"
+    short.write_text(
+        "\n".join(json.dumps(r) for r in records[:-1]) + "\n", encoding="utf-8",
+    )
+    assert extract(short, config)._readback_layout.tail.kept_tokens > plan.tail.kept_tokens
+
+
+def test_redact_pattern_also_hides_the_tail_prose_and_is_counted(capsys):
+    """The tail is rendered before the delta's own redaction step, so it must
+    apply --redact-pattern itself (review finding: it used to leak what the
+    delta hid)."""
+    pattern = "newest prose BEFORE"
+    result = extract(
+        LAYOUT, _layout_config(since_marker="g6", redact_patterns=(pattern,)),
+    )
+    out = result.render()
+    tail = out[out.index("## Recent prose before the cut"):out.index(layout.DELTA_HEADER)]
+    assert "belongs in the recent-prose tail" not in out
+    assert "[redacted paragraph -- matched --redact-pattern" in tail
+    # The unmatched tail record survives, and the count includes the tail.
+    assert "This middle prose sits between the goal anchor and the recent tail" in tail
+    assert result.redacted_paragraphs >= 1
+
+    code, cli_out, err = _run(
+        capsys, LAYOUT, "--preset", "readback", "--since", "g6",
+        "--redact-pattern", pattern, "--no-color",
+    )
+    assert code == 0
+    assert "belongs in the recent-prose tail" not in cli_out
+    assert "redacted 1 paragraph(s)" in err
 
 
 def test_the_preset_omits_the_anchor_unless_asked(capsys):

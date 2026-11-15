@@ -37,7 +37,7 @@ comment carries, so `--since-file` keeps working).
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 from . import classifier, mangle, render, select
@@ -162,6 +162,7 @@ class LayoutPlan:
     goal_tokens: int = 0
     tail: TailReport | None = None
     goal_source: str = "none"
+    redacted_paragraphs: int = 0
 
 
 def _tail_block(event: NormalizedEvent, config: ExtractConfig) -> str:
@@ -248,12 +249,15 @@ def build(
     tail_region: list[NormalizedEvent],
     config: ExtractConfig,
     last_marker: str | None,
+    delta_events: list[NormalizedEvent] | None = None,
 ) -> LayoutPlan:
     """Assemble the three parts and the accounting for one read-back.
 
     `tail_region` is the source region strictly BEFORE the delta cut (empty
     when the run has no cut, because the delta then already covers it);
-    `full_events` is the whole session parse, used only to find the anchor."""
+    `full_events` is the whole session parse, used only to find the anchor;
+    `delta_events` is the delta's selected source events, whose protected
+    operator/interview material the tail must yield to."""
     if config.budget_tokens is None:
         raise ValueError(
             "the readback layout needs --preset readback (its --budget-tokens)"
@@ -307,11 +311,29 @@ def build(
             "tokens; the anchor is never truncated]"
         )
 
-    tail_budget = min(config.tail_prose_tokens, max(0, content_budget - plan.goal_tokens))
+    # The delta's operator/interview material is protected (never dropped), so
+    # the tail yields to it: truncation order is tail, then the delta's other
+    # classes, and never the anchor or the protected material.
+    protected_tokens = select.protected_readback_tokens(
+        delta_events or [], config, plan.exclude_keys,
+    )
+    tail_budget = min(
+        config.tail_prose_tokens,
+        max(0, content_budget - plan.goal_tokens - protected_tokens),
+    )
     if config.tail_prose_tokens:
+        # Detached copies: the tail is rendered here, BEFORE extract()'s own
+        # post-selection redaction runs on the delta, so --redact-pattern has
+        # to be applied to the tail records here or the tail would leak what
+        # the delta hides.
         candidates = [
-            event for event in tail_region if key_of(event) not in plan.exclude_keys
+            replace(event, meta=dict(event.meta))
+            for event in tail_region if key_of(event) not in plan.exclude_keys
         ]
+        if config.redact_patterns:
+            _, plan.redacted_paragraphs = mangle.redact_paragraphs(
+                candidates, list(config.redact_patterns),
+            )
         kept_events, plan.tail = select_tail(candidates, tail_budget, config)
         plan.exclude_keys |= {key_of(event) for event in kept_events}
         blocks = [_tail_block(event, config) for event in kept_events]

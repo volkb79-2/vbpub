@@ -185,11 +185,17 @@ printf '%s' '<hook JSON>' | scripts/controller/hooks/ctx-hooks.py post-tool-use 
 
 Everything is a flag or an environment variable (`CTX_STATE_DIR`,
 `CTX_EXTRACT_CMD`, `CTX_READBACK_BUDGET_TOKENS` (30000), `CTX_READBACK_TAIL_PROSE_TOKENS`
-(10000), `CTX_READBACK_GOAL_FILE`, `CTX_READBACK_TIMEOUT`, `CTX_HOOK_LOG`). Without
+(10000), `CTX_READBACK_GOAL_FILE`, `CTX_READBACK_TIMEOUT`, `CTX_HOOK_LOG`,
+`CTX_SESSION_KIND`). Without
 `--state-dir` the state directory is the hook input's own `cwd/.controller-state`,
 so nothing depends on a fixed checkout path. The pressure ladder is a note every
-50000 tokens from 100000 on, with finishing wording below 200000 and
-stop-at-a-boundary wording from 200000 on. A failed build never fails the
+50000 tokens from 100000 on, with finishing wording below 200000. From 200000 on
+the wording follows the session kind (`--session-kind` / `CTX_SESSION_KIND`;
+default: the main session is a `controller`, a hook fired inside an Agent-tool
+subagent is `spawned`): a controller is told to persist its working state at the
+next semantic boundary and CONTINUE (it cannot terminate itself and must never wait
+for a compaction), a spawned session is told to stop at the boundary with a brief.
+A failed build never fails the
 session: `session-start` then prints the exact manual command, and
 `readback-state.json` carries the failure so the next session sees it. Which
 harness/situation rows are tested is in

@@ -11,8 +11,10 @@ anchor is its plan file), the most recent user/assistant prose from before
 the `--since` cut (`--tail-prose-tokens 10000`; prose between the anchor and
 the tail is dropped on purpose), then the delta after the previous read-back's
 marker. The declared budget (`--budget-tokens`, 30000 for a controller session)
-covers the whole document; truncation order is tail prose first, then the
-delta, and the goal anchor never shrinks. The document ends with a `[readback marker: ...]`
+covers the whole document; truncation order is tail prose first (it also yields
+to the delta's protected operator/interview material, which is never dropped),
+then the delta's other classes, and the goal anchor never shrinks. The tail honours
+`--redact-pattern` exactly like the delta. The document ends with a `[readback marker: ...]`
 line: pass that marker as the next run's `--since` (or use `--since-file`).
 Agent communication and the protected operator/interview material keep the
 behaviour the preset already had.

@@ -13,8 +13,12 @@ Subcommands (the Claude Code hook events they serve):
   statusline     status line text: local time and the context fill.
   post-tool-use  the pressure ladder: a note every 50k estimated tokens from
                  100k on, delivered as PostToolUse `additionalContext`
-                 (below 200k: finish the current unit of work; from 200k:
-                 stop at the next semantic boundary).
+                 (below 200k: finish the current unit of work). From 200k the
+                 wording depends on the session kind: an interactive
+                 CONTROLLER is told to persist its state at the next semantic
+                 boundary and CONTINUE (it cannot terminate itself and must
+                 never wait for a compaction); a SPAWNED session is told to
+                 stop at the boundary with a brief.
   pre-compact    builds the readback into `<state dir>/readback-N.md` and
                  prints a short note for the SUMMARISER: keep the session's
                  goal and the in-flight list, then the read order is
@@ -38,6 +42,11 @@ Configuration (flags or environment; nothing is hard-coded):
                                    10000.
   --goal-file / CTX_READBACK_GOAL_FILE
                                    pin the readback's goal anchor from this file.
+  --session-kind / CTX_SESSION_KIND
+                                   controller | spawned. Default: a hook fired
+                                   inside an Agent-tool subagent (`agent_id` in
+                                   the input) is spawned, the main session is
+                                   the controller.
   --timeout / CTX_READBACK_TIMEOUT 15 seconds (capped at 20).
   --log / CTX_HOOK_LOG             default `<state dir>/hooks/hook-log.jsonl`.
 
@@ -61,6 +70,7 @@ ARM_AT = 100_000       # first note from this fill on
 STOP_AT = 200_000      # from here the wording says stop at the next boundary
 HARD_TIMEOUT = 20.0    # a compaction must never wait longer than this
 READ_ORDER_LIMIT = 9_000  # hook stdout/additionalContext cap is 10,000 chars
+ACTIVE_LOG: Path | None = None  # the resolved log, so main() can log an unexpected crash
 
 # The read order of the controller's own state files, in order. `{state}` is
 # the resolved state directory (never a fixed checkout path).
@@ -107,6 +117,7 @@ def options(argv: list[str]) -> tuple[str, argparse.Namespace]:
     parser.add_argument("--budget-tokens", type=int)
     parser.add_argument("--tail-prose-tokens", type=int)
     parser.add_argument("--goal-file")
+    parser.add_argument("--session-kind")
     parser.add_argument("--timeout", type=float)
     parser.add_argument("--log")
     args = parser.parse_args(argv)
@@ -157,7 +168,7 @@ def transcript_of(hook: dict) -> str:
     subagent stop early, so the subagent's own file is used whenever it exists.
     """
     path = hook.get("transcript_path") or ""
-    if not path:
+    if not path or not isinstance(path, str):
         return ""
     agent_id = hook.get("agent_id")
     if agent_id:
@@ -221,8 +232,23 @@ def write_state(path: Path, payload: dict) -> None:
 # ---------------------------------------------------------------- modes
 
 
-def pressure_note(fill: int | None, state: Path | None, who: str) -> str | None:
-    """The pressure ladder: note every STEP from ARM_AT on, wording by band."""
+def session_kind(args: argparse.Namespace, hook: dict) -> str:
+    """`controller` (an interactive session: persist and continue) or
+    `spawned` (a worker: self-terminate at a boundary). Explicit flag/env
+    first; otherwise a hook fired inside an Agent-tool subagent (`agent_id`
+    present) is spawned and the main session is the controller."""
+    explicit = (args.session_kind or os.environ.get("CTX_SESSION_KIND") or "").strip().lower()
+    if explicit in ("controller", "spawned"):
+        return explicit
+    return "spawned" if hook.get("agent_id") else "controller"
+
+
+def pressure_note(
+    fill: int | None, state: Path | None, who: str, kind: str = "controller",
+) -> str | None:
+    """The pressure ladder: note every STEP from ARM_AT on, wording by band
+    and by session kind (the same fill means persist-and-continue to an
+    interactive controller and stop-at-a-boundary to a spawned session)."""
     if fill is None:
         return None
     step = fill // STEP
@@ -242,16 +268,32 @@ def pressure_note(fill: int | None, state: Path | None, who: str) -> str | None:
     if key is not None:
         write_state(key, {"step": step, "at": fill})
     k = fill // 1000
+    controller = kind != "spawned"
+    if fill >= STOP_AT and controller:
+        # An interactive controller cannot terminate itself and must not stand
+        # still waiting for a compaction (AGENTS.md, "Interactive controller
+        # session"): persist and CONTINUE.
+        return (
+            f"[context {k}k] Past {STOP_AT // 1000}k: at the next semantic boundary (a unit of "
+            "work is finished and its outcome is durably recorded; nothing half-edited) persist "
+            "your working state (plan, decision log, handoff) and then CONTINUE working. Do not "
+            "stop and do not wait for a compaction: it happens when the harness or the operator "
+            "triggers it, and the recovery files plus the readback carry you across it."
+        )
     if fill >= STOP_AT:
         return (
             f"[context {k}k] Past {STOP_AT // 1000}k: stop at the next semantic boundary (a unit of "
             "work is finished and its outcome is durably recorded; nothing half-edited), write "
             "your continuation brief, then end."
         )
+    after = (
+        f"from {STOP_AT // 1000}k on, persist your working state at the next semantic boundary "
+        "and continue." if controller else
+        f"from {STOP_AT // 1000}k on, stop at the next semantic boundary."
+    )
     return (
         f"[context {k}k] Context pressure is rising: prefer to finish the current unit of work "
-        f"and record its outcome before starting a new one; from {STOP_AT // 1000}k on, stop at "
-        "the next semantic boundary."
+        f"and record its outcome before starting a new one; {after}"
     )
 
 
@@ -465,6 +507,8 @@ def run(mode: str, args: argparse.Namespace) -> int:
         hook = {}
     state = resolve_state_dir(args, hook)
     log_path = resolve_log(args, state)
+    global ACTIVE_LOG
+    ACTIVE_LOG = log_path
     transcript = transcript_of(hook)
     fill = ctx_size(transcript)
     budget = args.budget_tokens or env_int("CTX_READBACK_BUDGET_TOKENS", 30_000)
@@ -494,7 +538,7 @@ def run(mode: str, args: argparse.Namespace) -> int:
     if mode == "post-tool-use":
         who = str(hook.get("agent_id") or "main")
         must_keep_note(hook, state, "PostToolUse", log_path)
-        note = pressure_note(fill, state, who)
+        note = pressure_note(fill, state, who, session_kind(args, hook))
         if note is None:
             return 0
         print(json.dumps({
@@ -552,7 +596,14 @@ def main(argv: list[str]) -> int:
         return run(mode, args)
     except Exception as exc:  # never disturb the session
         try:
-            log(None, {"ev": "hook-error", "err": repr(exc)[:200]})
+            log(ACTIVE_LOG, {"ev": "hook-error", "mode": mode, "err": repr(exc)[:200]})
+            if mode == "session-start":
+                # The recovery read must never go silent: say how to build it.
+                print(
+                    "The controller hook failed unexpectedly; build the readback by hand: "
+                    "nyxloom-harness extract <session.jsonl> --preset readback "
+                    "--budget-tokens 30000 --tail-prose-tokens 10000 > readback-N.md"
+                )
         except Exception:
             pass
         return 0

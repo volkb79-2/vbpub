@@ -220,6 +220,21 @@ def _event_tokens(event: NormalizedEvent, config: ExtractConfig) -> int:
     return estimate_tokens(block + (render.separator(config.insert_blank_lines)))
 
 
+def protected_readback_tokens(
+    events: list[NormalizedEvent], config: ExtractConfig,
+    exclude_keys: set[tuple[int, str]],
+) -> int:
+    """Estimated tokens of the operator/interview material readback_select
+    will keep no matter the budget (minus records the caller already carries),
+    so the layout can let the recent-prose tail yield to it first."""
+    return sum(
+        _event_tokens(event, config)
+        for event in events
+        if _readback_category(event, config) == READBACK_PROTECTED_CATEGORY
+        and (event.seq, event.kind.value) not in exclude_keys
+    )
+
+
 def readback_select(
     events: list[NormalizedEvent], config: ExtractConfig, *,
     exclude_keys: set[tuple[int, str]] | None = None,

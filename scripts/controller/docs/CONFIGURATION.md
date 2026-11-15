@@ -47,6 +47,7 @@ Useful settings:
 | `CTX_READBACK_GOAL_FILE` | Optional file pinning the readback's goal anchor instead of the session's first prompt. |
 | `CTX_READBACK_TIMEOUT` | Seconds allowed for the readback build; defaults to `15` and is capped at the hard 20 s limit. |
 | `CTX_HOOK_LOG` | Hook log path; defaults to `<state dir>/hooks/hook-log.jsonl`. |
+| `CTX_SESSION_KIND` | `controller` or `spawned`; selects the pressure-note wording from 200k on (persist and continue vs stop at the boundary). Default: `spawned` inside an Agent-tool subagent (hook input has `agent_id`), otherwise `controller`. |
 
 ## `hosts.local.json`
 

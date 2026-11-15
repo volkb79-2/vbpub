@@ -553,7 +553,10 @@ read-back never repeats what this one carried. `--budget-tokens N` defaults to
 50,000 for the preset and uses the documented `rendered characters / 4`
 estimate. It reserves a bounded footer allowance plus the layout's own fixed
 scaffolding, then truncates in a fixed order: the tail prose first (newest
-records kept whole), then the delta, with the goal anchor last and never. It
+records kept whole; it also yields to the delta's protected operator/interview
+material, so the tail cannot push the document past the budget by a whole tail),
+then the delta, with the goal anchor last and never. The tail applies
+`--redact-pattern` itself, because it is rendered before the delta's own redaction. It
 then fills complete delta records by class: operator turns and answered
 interviews, assistant prose, agent communication, explicit intent lines, and
 external run results. Operator/interview material is protected rather than

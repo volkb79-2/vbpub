@@ -215,9 +215,9 @@ def extract(
         )
         _assign_default_epochs(whole_events)
         classifier.score_events(whole_events)
+    tail_region: list[NormalizedEvent] = []
     if layout.enabled(config):
         if config.since_time is not None:
-            cut_seq = None
             tail_region = layout.prose_before_time(whole_events, config)
         elif config.since_marker is not None:
             cut_seq = layout.cut_index(whole_events, config.since_marker)
@@ -225,17 +225,21 @@ def extract(
                 [ev for ev in whole_events if cut_seq is not None and ev.seq <= cut_seq],
                 config,
             )
-        else:
-            tail_region = []
+    if config.since_time is not None:
+        events = select.filter_since_time(events, config)
+    selected_events = _select_epochs(events, config.epochs)
+    if layout.enabled(config):
+        # Built AFTER the delta selection: the protected operator/interview
+        # material of the delta is never dropped, so the recent-prose tail
+        # has to yield to it (truncation order: tail first, then the delta's
+        # droppable classes, never the anchor).
         readback_plan = layout.build(
             full_events=whole_events,
             tail_region=tail_region,
             config=config,
             last_marker=last_marker,
+            delta_events=selected_events,
         )
-    if config.since_time is not None:
-        events = select.filter_since_time(events, config)
-    selected_events = _select_epochs(events, config.epochs)
     # Selection returns references into `events`. The post-selection redactor
     # edits event.text in place, so detach the selected view first: all_events
     # is the promised full, pre-selection parse and must remain suitable for
@@ -282,6 +286,8 @@ def extract(
     result._metadata_position = config.extract_metadata
     result._readback_report = readback_report
     result._readback_layout = readback_plan
+    if readback_plan is not None:
+        result.redacted_paragraphs += readback_plan.redacted_paragraphs
     return result
 
 

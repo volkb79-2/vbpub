@@ -57,6 +57,7 @@ fake light+darkness: secret-token-fixture must never appear
 <!-- nyxloom-extract: format=claude-code marker=fake-marker-7 placement=both -->
 TX
 )
+payload=${payload//fake-marker-7/${FAKE_MARKER:-fake-marker-7}}
 printf '%s\n' "$payload"
 exit "${FAKE_EXTRACT_RC:-0}"
 SH
@@ -225,6 +226,85 @@ with tempfile.TemporaryDirectory() as tmp:
     assert again is not None, again
 PY
 
+# 10b. the wording differs by SESSION KIND: an interactive controller is told to
+#      persist and CONTINUE (never to stop or wait for a compaction); a spawned
+#      session is told to stop at the boundary with a brief.
+python3 - "$HOOKS" <<'PY' || fail 'the pressure wording does not differ by session kind'
+import importlib.util, sys, tempfile, argparse
+spec = importlib.util.spec_from_file_location("ctx_hooks", sys.argv[1])
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+from pathlib import Path
+with tempfile.TemporaryDirectory() as tmp:
+    state = Path(tmp)
+    ctl_low = module.pressure_note(105_000, state, "c", "controller")
+    ctl_high = module.pressure_note(210_000, state, "c", "controller")
+    spw_low = module.pressure_note(105_000, state, "s", "spawned")
+    spw_high = module.pressure_note(210_000, state, "s", "spawned")
+for note in (ctl_low, ctl_high):
+    assert "CONTINUE" in note or "continue" in note, note
+    assert "then end" not in note, note
+assert "Do not stop and do not wait for a compaction" in ctl_high, ctl_high
+assert "then end" not in ctl_low and "stop at the next semantic boundary" not in ctl_low, ctl_low
+assert "stop at the next semantic boundary" in spw_low and "continue" not in spw_low.lower(), spw_low
+assert "write your continuation brief, then end" in spw_high, spw_high
+assert "CONTINUE" not in spw_high, spw_high
+assert ctl_high != spw_high and ctl_low != spw_low
+
+def kind(argv, hook):
+    _, args = module.options(["post-tool-use", *argv])
+    return module.session_kind(args, hook)
+
+assert kind([], {}) == "controller"
+assert kind([], {"agent_id": "x"}) == "spawned"          # a subagent is spawned
+assert kind(["--session-kind", "spawned"], {}) == "spawned"
+assert kind(["--session-kind", "controller"], {"agent_id": "x"}) == "controller"
+assert kind(["--session-kind", "bogus"], {"agent_id": "x"}) == "spawned"
+PY
+# 10c. end to end: a controller past 200k gets persist-and-continue; the same
+#      fill with --session-kind spawned gets the self-terminate wording.
+python3 - "$ROOT/transcripts/big.jsonl" <<'PY'
+import json, sys
+with open(sys.argv[1], "w", encoding="utf-8") as handle:
+    handle.write(json.dumps({"type": "assistant", "uuid": "a1", "timestamp": "2026-11-15T09:00:00Z",
+                             "message": {"role": "assistant", "id": "m1",
+                                         "content": [{"type": "text", "text": "x"}],
+                                         "usage": {"input_tokens": 230_000}}}) + "\n")
+PY
+BIG_JSON='{"session_id":"sess-big","transcript_path":"'"$ROOT/transcripts/big.jsonl"'","cwd":"'"$ROOT"'","tool_name":"Bash"}'
+run "$ROOT/ptu-ctl.out" post-tool-use "$BIG_JSON" --state-dir "$ROOT/state-kind-ctl"
+contains "$ROOT/ptu-ctl.out" 'CONTINUE working' 'a controller is told to continue past 200k'
+not_contains 'then end' 'a controller is never told to end' "$ROOT/ptu-ctl.out"
+run "$ROOT/ptu-spw.out" post-tool-use "$BIG_JSON" --state-dir "$ROOT/state-kind-spw" \
+  --session-kind spawned
+contains "$ROOT/ptu-spw.out" 'then end' 'a spawned session is told to end at the boundary'
+not_contains 'CONTINUE' 'a spawned session is not told to continue' "$ROOT/ptu-spw.out"
+
+# 10d. an unexpected crash inside run() is logged, exits 0, and a session-start
+#      crash still tells the session how to build the readback by hand.
+python3 - "$HOOKS" "$ROOT/crash.log" <<'PY' || fail 'a crash inside run() escaped or went unlogged'
+import importlib.util, io, sys, contextlib, json
+spec = importlib.util.spec_from_file_location("ctx_hooks", sys.argv[1])
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+from pathlib import Path
+def boom(mode, args):
+    module.ACTIVE_LOG = Path(sys.argv[2])
+    raise RuntimeError("boom")
+module.run = boom
+out = io.StringIO()
+with contextlib.redirect_stdout(out):
+    assert module.main(["session-start"]) == 0
+assert "build the readback by hand" in out.getvalue(), out.getvalue()
+assert module.main(["pre-compact"]) == 0
+lines = [json.loads(x) for x in open(sys.argv[2], encoding="utf-8")]
+assert lines and lines[-1]["ev"] == "hook-error" and "boom" in lines[-1]["err"], lines
+PY
+# a non-string transcript_path is ignored rather than crashing the hook.
+run "$ROOT/badtype.out" session-start '{"transcript_path":123,"cwd":["a"],"agent_id":{"x":1},"source":5}' \
+  --state-dir "$ROOT/state-badtype"
+contains "$ROOT/badtype.out" 'CONTROLLER RESUME' 'a malformed hook input still prints the read order'
+
 # 11. the pressure note is delivered as PostToolUse additionalContext JSON.
 run "$ROOT/ptu.out" post-tool-use \
   '{"session_id":"sess-1","transcript_path":"'"$TRANSCRIPT"'","cwd":"'"$ROOT"'","tool_name":"Bash"}' \
@@ -272,6 +352,37 @@ unset FAKE_EXTRACT_RC
 run "$ROOT/ss-goalfail.out" session-start "$MAIN_JSON" --state-dir "$ROOT/state-goalfail" \
   --extract "$BIN/fake-extract" --goal-file "$GOAL"
 contains "$ROOT/ss-goalfail.out" "--goal-file $GOAL" 'the manual command keeps the pinned goal'
+
+# 14b. an extract that reports `none` (an empty delta) must NOT overwrite the
+#      stored marker: the next readback would otherwise restart from scratch.
+export FAKE_MARKER=none
+run "$ROOT/pc-nonemarker.out" pre-compact \
+  '{"session_id":"sess-1","transcript_path":"'"$TRANSCRIPT"'","cwd":"'"$ROOT"'","trigger":"auto"}' \
+  --state-dir "$ROOT/state-goal" --extract "$BIN/fake-extract"
+unset FAKE_MARKER
+python3 - "$ROOT/state-goal/readback-state.json" <<'PY' || fail 'a `none` marker replaced the stored marker'
+import json, sys
+state = json.load(open(sys.argv[1], encoding="utf-8"))
+assert state["marker"] == "fake-marker-7", state
+assert state["ok"] is True and state["n"] == 2, state
+PY
+
+# 14c. the SessionStart output is capped under the harness's 10,000 characters
+#      even when the stored failure reason is enormous.
+mkdir -p "$ROOT/state-huge"
+python3 - "$ROOT/state-huge/readback-state.json" <<'PY'
+import json, sys
+with open(sys.argv[1], "w", encoding="utf-8") as handle:
+    json.dump({"ok": False, "reason": "x" * 30_000, "marker": "m1"}, handle)
+PY
+run "$ROOT/ss-huge.out" session-start "$MAIN_JSON" --state-dir "$ROOT/state-huge" \
+  --extract "$BIN/fake-extract"
+python3 - "$ROOT/ss-huge.out" <<'PY' || fail 'an enormous failure reason overflowed the SessionStart cap'
+import sys
+text = open(sys.argv[1], encoding="utf-8").read()
+assert len(text) <= 10000, len(text)
+assert text.startswith("CONTROLLER RESUME"), text[:80]
+PY
 
 # 15. the hook never writes a secret into its log or its output.
 not_contains 'secret-token-fixture' 'the hook must not leak extract output into the log' \
