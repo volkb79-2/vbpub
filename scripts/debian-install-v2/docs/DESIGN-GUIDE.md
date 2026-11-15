@@ -76,6 +76,59 @@ installer step, or update the entries manually and apply them with
 `systemd-tmpfiles --create --boot /etc/tmpfiles.d/vbpub-ksm.conf` as root. The
 `--boot` option is required to execute these `w!` rules.
 
+## Control-plane memory protection
+
+fleetd (FD-007) uses the sum of reported per-service `MemoryMin` values as the
+control-plane reservation only when every unit of its six-unit list reports a
+positive value; otherwise it uses a fixed profile constant. The two 8 GiB
+hosts measured read-only on 2026-11-14 had about 450–500 MB of hot control-plane
+RSS. This installer uses six fixed service floors that total 640 MiB
+(671,088,640 bytes), above that aggregate measurement and well below 8 GiB.
+The total is over-reserved by design relative to measured whole-plane RSS. The
+operator considers it too large: the floors should cover only each service's
+hot working set. The current values are policy placeholders pending the
+per-service hot-set measurement and will be replaced by a follow-up; the
+mechanism (six units, drop-ins, readback) is what this change delivers. The
+values do not vary with installed RAM.
+
+The service-by-service RSS was not measured in the available installer
+evidence, so each floor is explicitly marked unmeasured in the
+[control-plane value table](CONTROL-PLANE-MEMORY.md). The floors are a
+documented conservative policy, not a claim about measured per-service use.
+`MemoryMin` is written only in `/etc/systemd/system/<unit>.d/` drop-ins and is
+a reclaim-protection floor; debian-install-v2 emits no `MemoryMax`,
+`MemoryHigh`, or `MemoryLow` for these units. Its post-install check compares
+`systemctl show -p MemoryMin <unit>` with the exact expected byte value.
+
+The exact six-unit list is `ssh.service`, `docker.service`,
+`containerd.service`, `systemd-journald.service`, `cgprofiled.service`, and
+`mdt-psi-guard.service`. The mandatory units in the default DI2 profile are
+SSH, journald, Docker, and containerd; the Docker pair is omitted when
+`run_docker_install=false`. `cgprofiled.service` and `mdt-psi-guard.service`
+are optional units installed by cgprofile and mdt-cockpit host-setup
+respectively. DI2 writes each system-level drop-in whether or not an optional
+unit is installed. Readback checks a loaded optional unit and skips it only
+when systemd reports `LoadState=not-found` or `masked`; mandatory units missing
+from systemd still fail verification.
+
+For fleetd-reserve, an absent optional unit is a missing fact, not a zero or
+synthetic `MemoryMin`. Its current all-six-positive rule therefore uses the
+profile constant until all six facts are present. The Debian image provides SSH
+and journald; the installer configures them but does not install their base
+packages. cgprofile's `cgprofiled.service` base unit has its own
+`MemoryHigh`/`MemoryMax`; DI2's drop-in adds only `MemoryMin`. The psi-guard
+unit has no other memory directives.
+
+`MemoryMin` on a service is limited by every ancestor cgroup's own protection in
+the kernel's hierarchical accounting. This installer sets no `MemoryMin` on
+`system.slice`, so whether the floors above also protect pages from reclaim
+(rather than only being reported) has to be confirmed on a live host
+(DIV2-BL-09); the fleetd reserve uses the reported number either way.
+
+An already completed installation needs a separately scheduled,
+operator-approved in-place drop-in application or reinstall. This change does
+not run against hosts or add a retrofit operation.
+
 ## Cloud-init cache cleanup policy
 
 `cloud_init_cleanup_mode` is part of the shared validated `Config`, not a

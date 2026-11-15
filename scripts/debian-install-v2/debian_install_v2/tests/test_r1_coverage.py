@@ -13,6 +13,7 @@ from debian_install_v2.bootstrap import build_cli, main
 from debian_install_v2.config import Config, ConfigError, load_config
 from debian_install_v2.installer import Installer
 from debian_install_v2.state import StateError, StateStore
+from debian_install_v2.templates import CONTROL_PLANE_MEMORY_MIN
 
 
 BASE_CONFIG = {
@@ -154,7 +155,24 @@ def test_cli_verify_after_manifest_is_read_only(tmp_path, monkeypatch):
     StateStore(config.state_dir).save_new(StateStore.new(config))
     before_state = state_path.read_bytes()
     monkeypatch.setattr(Installer, "_health_gate_swap_devices", lambda self, **kwargs: None)
+
+    expected_memory_min = {
+        unit: str(value[1]) for unit, value in CONTROL_PLANE_MEMORY_MIN.items()
+    }
+    observed_units = []
+
+    def systemctl_show(self, argv, description=""):
+        assert argv[:3] == ["/usr/bin/systemctl", "show", "-p"]
+        prop, unit = argv[3:5]
+        if prop == "LoadState":
+            return "LoadState=loaded\n"
+        assert prop == "MemoryMin"
+        observed_units.append(unit)
+        return f"MemoryMin={expected_memory_min[unit]}\n"
+
+    monkeypatch.setattr(Installer, "_run", systemctl_show)
     assert main(["verify", "--config", write_config(tmp_path)]) == 0
+    assert observed_units == list(expected_memory_min)
     assert state_path.read_bytes() == before_state
 
 

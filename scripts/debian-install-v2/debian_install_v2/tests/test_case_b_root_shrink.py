@@ -503,6 +503,8 @@ def test_stage2_skips_apply_known_swap_shape_when_root_shrink_already_wrote_swap
     installer, actions = make_case_a_installer(tmp_path)
     calls = []
     monkeypatch.setattr(installer, "_packages", lambda *a, **k: None)
+    monkeypatch.setattr(installer, "_configure_control_plane_memory_min", lambda: None)
+    monkeypatch.setattr(installer, "_verify_control_plane_memory_min", lambda: None)
     monkeypatch.setattr(installer, "_verify_and_apply_root_shrink", lambda: True)
     monkeypatch.setattr(installer, "_grow_root_to_plan", lambda: calls.append("grow_root"))
     monkeypatch.setattr(installer, "_configure_zswap", lambda: None)
@@ -522,6 +524,8 @@ def test_stage2_still_calls_apply_known_swap_shape_for_case_a(tmp_path, monkeypa
     installer, actions = make_case_a_installer(tmp_path)
     calls = []
     monkeypatch.setattr(installer, "_packages", lambda *a, **k: None)
+    monkeypatch.setattr(installer, "_configure_control_plane_memory_min", lambda: None)
+    monkeypatch.setattr(installer, "_verify_control_plane_memory_min", lambda: None)
     monkeypatch.setattr(installer, "_verify_and_apply_root_shrink", lambda: False)
     monkeypatch.setattr(installer, "_grow_root_to_plan", lambda: calls.append("grow_root"))
     monkeypatch.setattr(installer, "_configure_zswap", lambda: None)
