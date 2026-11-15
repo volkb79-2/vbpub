@@ -139,6 +139,49 @@ installer therefore refuses a derived `system.slice` floor above 460 MiB, so a
 future table change cannot silently cross into the unexplained range
 (DIV2-BL-10). The current derived value, 373 MiB, stays inside it.
 
+### The installed-RAM bound: 10% of `MemTotal`, refuse rather than cap
+
+The second bound on the same floors is installed RAM (DIV2-BL-12). They were
+measured on 8 GiB hosts; on a much smaller host the 373 MiB slice floor would
+claim a large share of memory and the kernel would clamp it silently, so the
+configuration would look applied while protecting nothing that matters.
+
+- **What is charged.** The derived `system.slice` floor already contains its
+  children's floors, so they are not counted twice; only the floors of units
+  *outside* that slice are added. Today that is 373 MiB + `cgprofiled.service`
+  4 MiB = 377 MiB (4.6% of an 8 GiB host).
+- **The fraction.** 10% of `MemTotal`, twice the measured ratio. It accepts
+  both 8 GiB test hosts even though they report a `MemTotal` below the nominal
+  8 GiB (firmware/kernel reservations): 10% of that is 780–819 MiB. The
+  smallest accepted host is 377 × 10 = 3,770 MiB of `MemTotal`.
+- **Refuse, not cap.** Scaling measured floors down to fit a smaller host would
+  produce numbers the measurement never supported — a floor below about 1.0 ×
+  the measured hot set is the configuration the 2026-11-15 measurement showed
+  failing. A refusal is loud and recoverable; a silent scale-down is neither.
+- **Where it is enforced.** The configure step checks the bound *before* writing
+  any drop-in, so a refusal leaves no partial set behind; verification checks the
+  same bound against the host's real `MemTotal`, so a completed install that was
+  restored onto a smaller machine does not read back as healthy. The charge is
+  recorded in the `control_plane_memory_min` step detail.
+- **The one documented escape hatch.** A genuine test guest (1–2 GiB VM) sets
+  `VBPUB_ALLOW_CONTROL_PLANE_MEMORY_MIN_OVER_RAM_BOUND=yes`. It has no default,
+  no other spelling is accepted, the refusal message names it, and it is written
+  to `/etc/vbpub/bootstrap.env` only when set, so a resumed stage-two unit run
+  re-checks the bound the same way instead of behaving differently from stage
+  one.
+- **Dry run.** `--dry-run` has no host to measure and keeps the 8 GiB planning
+  assumption swap sizing already uses off-host, so planning on the cockpit's
+  own 8 GiB container never refuses.
+
+`MemTotal` comes from the installer's existing single reader
+(`_memory_total_bytes()`, shared with automatic swap sizing); an unreadable
+`/proc/meminfo` is an error, never a guessed host size.
+
+What the bound cannot say: the measurement itself is an 8 GiB-host measurement,
+so “fits under 10% of RAM” is the property this change can check. It is a sanity
+bound against silent mis-configuration, not a validated support matrix for small
+hosts.
+
 The exact six-unit list is `ssh.service`, `docker.service`,
 `containerd.service`, `systemd-journald.service`, `cgprofiled.service`, and
 `mdt-psi-guard.service`. The mandatory units in the default DI2 profile are
@@ -165,7 +208,10 @@ The psi-guard unit has no other memory directives.
 
 Still open: the per-container increment for docker/containerd floors
 (DIV2-BL-11), the large-floor anomaly (DIV2-BL-10), r1002's inferred
-confidence, and the retrofit for already completed installs. An already
+confidence, and the retrofit for already completed installs. The installed-RAM
+bound closed DIV2-BL-12; what it leaves open is whether a host that passes the
+bound (for example a 4 GiB host) protects its control plane as well as an 8 GiB
+host does — the floors were measured on 8 GiB only. An already
 completed installation needs a separately scheduled, operator-approved in-place
 drop-in application or reinstall (DIV2-BL-08). This change does not run against
 hosts or add a retrofit operation.

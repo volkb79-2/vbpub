@@ -508,8 +508,11 @@ cgprofiled and psi-guard are optional; a missing optional unit is skipped by
 verification and is a missing fact for fleetd-reserve. The floors are measured
 from each service's hot working set (1.25 × the measured hot set of the
 2026-11-15 measurement), do not scale with installed RAM, and are a base rather
-than a bound under many containers. The exact service list, values, evidence,
-and the measured-versus-inferred split are in the
+than a bound under many containers. Two documented bounds keep them honest: a
+derived `system.slice` floor above 460 MiB is refused, and floors claiming more
+than 10% of `MemTotal` are refused rather than silently scaled down (a
+test-guest override exists for throw-away VMs). The exact service list, values,
+evidence, and the measured-versus-inferred split are in the
 [control-plane memory design](docs/DESIGN-GUIDE.md#control-plane-memory-protection)
 and [value table](docs/CONTROL-PLANE-MEMORY.md).
 

@@ -159,6 +159,9 @@ def test_cli_verify_after_manifest_is_read_only(tmp_path, monkeypatch):
     StateStore(config.state_dir).save_new(StateStore.new(config))
     before_state = state_path.read_bytes()
     monkeypatch.setattr(Installer, "_health_gate_swap_devices", lambda self, **kwargs: None)
+    # A fixed MemTotal: this test proves the readback sequence, and its result
+    # must not depend on how much RAM the machine running the gate has.
+    monkeypatch.setattr(Installer, "_memory_total_bytes", lambda self: 8 * 1024 ** 3)
 
     expected_memory_min = {
         unit: str(value[1]) for unit, value in CONTROL_PLANE_MEMORY_MIN.items()

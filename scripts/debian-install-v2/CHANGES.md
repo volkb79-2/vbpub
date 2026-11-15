@@ -4,6 +4,32 @@ All notable changes to debian-install-v2 are recorded here.
 
 ## [Unreleased]
 
+### Changed (div2-memorymin-rambound)
+- Bound the control-plane `MemoryMin` floors against installed RAM (DIV2-BL-12).
+  The floors were measured on 8 GiB hosts; on a much smaller host a 373 MiB
+  `system.slice` floor claims a large share of memory and the kernel clamps it
+  silently, so the configuration would look applied while protecting nothing
+  that matters. The installer now charges the floors that actually claim RAM —
+  the derived `system.slice` floor (whose children's floors are already inside
+  it) plus the floors outside that slice, 377 MiB on the default profile — and
+  REFUSES when they exceed 10% of `MemTotal`. 10% is twice the measured 4.6%
+  ratio, so every 8 GiB host passes with room to spare (their real `MemTotal`
+  is slightly below the nominal 8 GiB) and the smallest accepted host is about
+  3.7 GiB. It refuses rather than scales measured floors down: a floor below
+  about 1.0 × the measured hot set is exactly the configuration the 2026-11-15
+  measurement showed failing. The check runs in the configure step before any
+  drop-in is written and again in `verify`, so a completed install whose host
+  shrank fails verification instead of reading back healthy. An explicit, documented
+  test-guest override (`VBPUB_ALLOW_CONTROL_PLANE_MEMORY_MIN_OVER_RAM_BOUND=yes`)
+  is the only way past the bound; it has no default and is forwarded to
+  `/etc/vbpub/bootstrap.env` only when set, so a resumed stage-two run decides
+  the same way. `MemTotal` comes from the installer's existing
+  `_memory_total_bytes()` reader (shared with automatic swap sizing); a dry run
+  keeps the 8 GiB planning assumption. The measured charge is recorded in the
+  `control_plane_memory_min` step detail. Documented in
+  `docs/CONTROL-PLANE-MEMORY.md`, `docs/DESIGN-GUIDE.md`, the README and
+  `docs/CONSUMERS.md`.
+
 ### Changed (div2-memorymin measured)
 - Replace the unmeasured control-plane `MemoryMin` placeholders with the measured
   hot-set floors from the 2026-11-15 per-service measurement (evidence

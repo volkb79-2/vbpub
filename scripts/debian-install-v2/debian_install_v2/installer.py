@@ -41,8 +41,13 @@ from .templates import (
     CONTROL_PLANE_MEMORY_MIN,
     CONTROL_PLANE_MEMORY_MIN_DROPIN,
     CONTROL_PLANE_MEMORY_MIN_OPTIONAL_UNITS,
+    CONTROL_PLANE_MEMORY_MIN_RAM_BOUND_OVERRIDE_ENV,
+    CONTROL_PLANE_MEMORY_MIN_RAM_BOUND_OVERRIDE_VALUE,
+    CONTROL_PLANE_MEMORY_MIN_RAM_BOUND_PERCENT,
     CONTROL_PLANE_SYSTEM_SLICE_MEMORY_MIN_CEILING_MIB,
     CONTROL_PLANE_SYSTEM_SLICE_UNIT,
+    control_plane_ram_bound_bytes,
+    control_plane_ram_charged_bytes,
     control_plane_system_slice_memory_min_bytes,
     format_memory_mib_token,
     render_control_plane_memory_min_slice_dropin,
@@ -1043,13 +1048,56 @@ MaxFileSec=1month
             )
         return expected
 
+    def _control_plane_memory_min_ram_bound_ignored(self) -> bool:
+        """Whether the documented test-guest override turns the RAM bound off."""
+        return (
+            os.environ.get(CONTROL_PLANE_MEMORY_MIN_RAM_BOUND_OVERRIDE_ENV, "").strip().lower()
+            == CONTROL_PLANE_MEMORY_MIN_RAM_BOUND_OVERRIDE_VALUE
+        )
+
+    def _check_control_plane_memory_min_ram_bound(
+        self, entries: dict[str, tuple[str, int]]
+    ) -> int:
+        """Refuse floors that claim more than the documented share of MemTotal.
+
+        `MemTotal` is read through `_memory_total_bytes()` (the same host fact
+        swap sizing uses), so a test can move it. The floors are MEASURED values;
+        silently scaling them down would make them meaningless, so a host too
+        small for the table is refused with what it measured and what it needs.
+        Returns the charged byte count so callers can report it.
+        """
+        charged = control_plane_ram_charged_bytes(entries)
+        if self._control_plane_memory_min_ram_bound_ignored():
+            return charged
+        mem_total = self._memory_total_bytes()
+        bound = control_plane_ram_bound_bytes(mem_total)
+        if charged > bound:
+            minimum = charged * 100 // CONTROL_PLANE_MEMORY_MIN_RAM_BOUND_PERCENT
+            raise InstallerError(
+                "control-plane MemoryMin floors claim "
+                f"{charged} bytes ({format_memory_mib_token(charged)}), above "
+                f"{CONTROL_PLANE_MEMORY_MIN_RAM_BOUND_PERCENT}% of this host's "
+                f"MemTotal ({mem_total} bytes, bound {bound} bytes): these are "
+                "measured reclaim-protection floors, not values scaled to "
+                "installed RAM, so they are refused instead of silently "
+                f"shrunk. The table needs MemTotal of at least {minimum} bytes; "
+                "install the table on a host that size or larger, or set "
+                f"{CONTROL_PLANE_MEMORY_MIN_RAM_BOUND_OVERRIDE_ENV}="
+                f"{CONTROL_PLANE_MEMORY_MIN_RAM_BOUND_OVERRIDE_VALUE} for a "
+                "test guest (documented in docs/CONTROL-PLANE-MEMORY.md)"
+            )
+        return charged
+
     def _configure_control_plane_memory_min(self) -> None:
         """Write per-unit MemoryMin drop-ins plus the derived system.slice floor."""
         entries = self._control_plane_memory_min_entries()
         # Derive (and ceiling-check) the ancestor floor BEFORE writing anything:
         # a table that trips the ceiling must refuse without leaving a partial
-        # set of unit drop-ins behind.
+        # set of unit drop-ins behind. The installed-RAM bound is checked here
+        # too, so a host too small for the table also refuses before a single
+        # drop-in is written.
         slice_bytes = self._control_plane_system_slice_memory_min_bytes(entries)
+        charged_bytes = self._check_control_plane_memory_min_ram_bound(entries)
         slice_token = format_memory_mib_token(slice_bytes)
         for unit, (memory_min, _expected_bytes) in entries.items():
             path = f"/etc/systemd/system/{unit}.d/{CONTROL_PLANE_MEMORY_MIN_DROPIN}"
@@ -1063,7 +1111,10 @@ MaxFileSec=1month
             "control_plane_memory_min",
             "planned" if self.actions.dry_run else "success",
             ", ".join(f"{unit}={memory_min}" for unit, (memory_min, _bytes) in entries.items())
-            + f", {CONTROL_PLANE_SYSTEM_SLICE_UNIT}={slice_token} (derived)",
+            + f", {CONTROL_PLANE_SYSTEM_SLICE_UNIT}={slice_token} (derived); "
+            "floors claim "
+            f"{charged_bytes} bytes within the "
+            f"{CONTROL_PLANE_MEMORY_MIN_RAM_BOUND_PERCENT}% of MemTotal RAM bound",
         )
 
     def _read_control_plane_memory_min(self, unit: str) -> list[str]:
@@ -1084,6 +1135,10 @@ MaxFileSec=1month
             return
         entries = self._control_plane_memory_min_entries()
         slice_bytes = self._control_plane_system_slice_memory_min_bytes(entries)
+        # Verify re-checks the installed-RAM bound against the configured values
+        # and this host's real MemTotal: the readback below cannot show that a
+        # floor is a sane share of RAM, only that systemd stored it.
+        charged_bytes = self._check_control_plane_memory_min_ram_bound(entries)
         verified_units = []
         absent_optional_units = []
         for unit, (_memory_min, expected_bytes) in entries.items():
@@ -1137,6 +1192,8 @@ MaxFileSec=1month
                 + ", ".join(verified_units)
                 + f", and {CONTROL_PLANE_SYSTEM_SLICE_UNIT}={slice_token} "
                 "for its derived ancestor floor"
+                + f"; floors claim {charged_bytes} bytes within the "
+                f"{CONTROL_PLANE_MEMORY_MIN_RAM_BOUND_PERCENT}% of MemTotal RAM bound"
             )
             if absent_optional_units:
                 detail += (
@@ -2327,12 +2384,26 @@ MaxFileSec=1month
         return self._disk_spec().root.kind != "star"
 
     def _memory_total_bytes(self) -> int:
+        """MemTotal for swap sizing AND the control-plane MemoryMin RAM bound.
+
+        One reader for both consumers: a dry run has no host to measure, so it
+        keeps the same 8 GiB planning assumption swap sizing already uses; a
+        live run reads the real /proc/meminfo and refuses if it is unreadable
+        rather than inventing a host size.
+        """
         if self.actions.dry_run:
             return 8 * GIB
-        text = Path("/proc/meminfo").read_text(encoding="utf-8")
+        unreadable = (
+            "cannot determine MemTotal from /proc/meminfo (needed for automatic "
+            "swap sizing and for the control-plane MemoryMin RAM bound)"
+        )
+        try:
+            text = Path("/proc/meminfo").read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError) as exc:
+            raise InstallerError(f"{unreadable}: {exc}") from exc
         match = re.search(r"^MemTotal:\s+(\d+)\s+kB$", text, re.MULTILINE)
         if not match:
-            raise InstallerError("cannot determine guest RAM from /proc/meminfo for automatic swap sizing")
+            raise InstallerError(unreadable)
         return int(match.group(1)) * 1024
 
     def _effective_swap_total_gb(self, disk_bytes: int | None = None) -> int:
@@ -4176,12 +4247,19 @@ MaxFileSec=1month
                 credential_note = "systemd LoadCredential Telegram credentials configured"
         else:
             credential_note = "notifications disabled"
-        env = "\n".join([
+        env_lines = [
             f"VBPUB_STATE_DIR={self.config.state_dir}",
             f"VBPUB_STAGE2_OUTPUT={self.config.stage2_output}",
             f"PYTHONUNBUFFERED=1",
-            "",
-        ])
+        ]
+        # Forward the documented test-guest override to stage two only when the
+        # operator actually set it (no default): stage two is a systemd unit and
+        # inherits nothing from the stage-one shell, and a resumed stage-two run
+        # re-checks the bound through _configure_control_plane_memory_min().
+        override = os.environ.get(CONTROL_PLANE_MEMORY_MIN_RAM_BOUND_OVERRIDE_ENV, "")
+        if override:
+            env_lines.append(f"{CONTROL_PLANE_MEMORY_MIN_RAM_BOUND_OVERRIDE_ENV}={override}")
+        env = "\n".join([*env_lines, ""])
         self.actions.write_file(env_file, env, 0o600)
         service = STAGE2_SERVICE.format(
             state_dir=self.config.state_dir,
