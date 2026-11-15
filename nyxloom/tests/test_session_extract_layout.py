@@ -86,7 +86,7 @@ def test_goal_file_pins_the_anchor_and_a_missing_goal_is_stated(tmp_path, capsys
     assert "goal=file" in out
 
     with_goal = layout.build(
-        full_events=[], tail_region=[], config=_layout_config(), last_marker="m",
+        full_events=[], delta_events=[], config=_layout_config(), last_marker="m",
     )
     assert "goal=none" in with_goal.footer_lines[0]
     assert layout.GOAL_MISSING in with_goal.sections[0]
@@ -105,22 +105,93 @@ def test_goal_anchor_is_redacted_like_every_kept_paragraph():
 
 # --- recent prose tail -------------------------------------------------------
 
-def test_tail_keeps_the_newest_prose_before_the_cut_as_complete_records():
-    out = _render(since_marker="g6", tail_prose_tokens=100)
-    tail_start = out.index("## Recent prose before the cut")
-    tail_end = out.index("## Delta since the previous read-back")
-    tail = out[tail_start:tail_end]
-    assert "This is the newest prose BEFORE the cut and belongs in the recent-prose tail." in tail
-    assert "This middle prose sits between the goal anchor and the recent tail" in tail
-    assert "Second half: the layout is now the rule" not in tail
-    # A 100-token tail cannot also carry the whole older prose.
-    result = extract(LAYOUT, _layout_config(since_marker="g6", tail_prose_tokens=20))
+TAIL = "## Recent prose"
+NEWEST = "The delta for this read-back starts here and must not repeat the first half."
+SECOND = "Second half: the layout is now the rule"
+MIDDLE = "This middle prose sits between the goal anchor and the recent tail"
+PRE_CUT = "This is the newest prose BEFORE the cut"
+
+
+def _sections(out):
+    """(tail section, delta section) of one rendered readback."""
+    tail_start = out.index(TAIL)
+    delta_start = out.index(layout.DELTA_HEADER)
+    assert tail_start < delta_start
+    return out[tail_start:delta_start], out[delta_start:]
+
+
+def test_tail_is_the_newest_prose_of_the_session_end_not_prose_before_the_marker():
+    """Operator ruling 2026-11-15: the tail is the newest prose at the moment the
+    readback is built (the END of the transcript), limited to what is after the
+    previous marker."""
+    out = _render(since_marker="g3", tail_prose_tokens=30)
+    tail, delta = _sections(out)
+    assert NEWEST in tail                      # the very last prose record
+    assert SECOND not in tail and MIDDLE not in tail
+    # The records the tail does not carry are in the delta, once; the tail's
+    # own record is NOT repeated there.
+    assert SECOND in delta and MIDDLE in delta and PRE_CUT in delta
+    assert NEWEST not in delta
+    # A wider tail takes the next-newest record too (newest-first, complete).
+    out = _render(since_marker="g3", tail_prose_tokens=50)
+    tail, delta = _sections(out)
+    assert NEWEST in tail and SECOND in tail and MIDDLE not in tail
+    assert SECOND not in delta and NEWEST not in delta
+    # Prose BEFORE the marker is never in the tail (it belongs to the previous
+    # readback): with the marker at g6 only post-marker prose can be there.
+    out = _render(since_marker="g6", tail_prose_tokens=10_000)
+    assert MIDDLE not in out and PRE_CUT not in out
+
+
+def test_tail_squeezed_by_the_budget_keeps_the_newest_record():
+    result = extract(LAYOUT, _layout_config(since_marker="g3", tail_prose_tokens=30))
     assert result._readback_layout.tail.kept == 1
     assert result._readback_layout.tail.dropped >= 1
-    # Under pressure the NEWEST record survives, never the oldest.
-    squeezed = result.render()
-    assert "This is the newest prose BEFORE the cut" in squeezed
-    assert "This middle prose sits between the goal anchor" not in squeezed
+    out = result.render()
+    assert NEWEST in out and SECOND in out
+    assert out.count(NEWEST) == 1 and out.count(SECOND) == 1
+
+
+def test_no_record_is_emitted_twice_inside_one_readback():
+    for tail_tokens in (0, 15, 30, 50, 100, 10_000):
+        for marker in (None, "g1", "g3", "g6"):
+            kw = {} if marker is None else {"since_marker": marker}
+            out = _render(tail_prose_tokens=tail_tokens, goal_prompt=False, **kw)
+            for text in (NEWEST, SECOND, MIDDLE, PRE_CUT):
+                assert out.count(text) <= 1, (tail_tokens, marker, text)
+
+
+def test_a_tail_that_covers_the_whole_delta_says_so():
+    out = _render(since_marker="g6", tail_prose_tokens=10_000)
+    tail, delta = _sections(out)
+    assert SECOND in tail and NEWEST in tail
+    assert layout.DELTA_COVERED_NOTE in delta
+    # With the tail disabled the same cut has a real delta and no note.
+    plain = _render(since_marker="g6", tail_prose_tokens=0)
+    assert layout.DELTA_COVERED_NOTE not in plain
+    # Nothing after the marker at all: the delta is empty, not "covered".
+    empty = _render(since_marker="h2", tail_prose_tokens=10_000)
+    assert layout.DELTA_EMPTY_NOTE in empty
+    assert layout.TAIL_EMPTY_NOTE in empty
+    assert "[readback marker: none]" in empty
+
+
+def test_first_readback_has_the_tail_plus_the_session_before_it():
+    """No marker: tail = newest prose of the session, delta = the part before
+    it, bounded by the budget; the marker at the end is the end of the session."""
+    out = _render(tail_prose_tokens=30, goal_prompt=False)
+    tail, delta = _sections(out)
+    assert NEWEST in tail
+    assert "no previous read-back marker was given" in delta
+    for earlier in (SECOND, MIDDLE, PRE_CUT, "Before you compact"):
+        assert earlier in delta
+    assert NEWEST not in delta
+    assert "[readback marker: h2]" in out
+    # A tight budget drops the tail first, then the delta's droppable classes,
+    # never the protected operator turns.
+    tight = _render(tail_prose_tokens=10_000, goal_prompt=False, budget_tokens=900)
+    assert "Before you compact" in tight and SECOND in tight
+    assert select.estimate_tokens(tight) <= 900
 
 
 def test_tail_yields_to_the_protected_operator_material_of_the_delta(tmp_path):
@@ -145,10 +216,10 @@ def test_tail_yields_to_the_protected_operator_material_of_the_delta(tmp_path):
         })
         previous = uuid
 
-    for index in range(30):
-        add("assistant", f"p{index}", f"PRIOR{index} " + "word " * 80)
     add("user", "cut", "the cut record")
     add("user", "big", "OPERATORBIG " + "instruction " * 300)
+    for index in range(30):
+        add("assistant", f"p{index}", f"PRIOR{index} " + "word " * 80)
     source = tmp_path / "session.jsonl"
     source.write_text("\n".join(json.dumps(r) for r in records) + "\n", encoding="utf-8")
 
@@ -166,7 +237,8 @@ def test_tail_yields_to_the_protected_operator_material_of_the_delta(tmp_path):
     # With the protected turn absent the same budget keeps a real tail.
     short = tmp_path / "short.jsonl"
     short.write_text(
-        "\n".join(json.dumps(r) for r in records[:-1]) + "\n", encoding="utf-8",
+        "\n".join(json.dumps(r) for r in records if r["uuid"] != "big") + "\n",
+        encoding="utf-8",
     )
     assert extract(short, config)._readback_layout.tail.kept_tokens > plan.tail.kept_tokens
 
@@ -175,24 +247,25 @@ def test_redact_pattern_also_hides_the_tail_prose_and_is_counted(capsys):
     """The tail is rendered before the delta's own redaction step, so it must
     apply --redact-pattern itself (review finding: it used to leak what the
     delta hid)."""
-    pattern = "newest prose BEFORE"
+    pattern = "must not repeat"
     result = extract(
-        LAYOUT, _layout_config(since_marker="g6", redact_patterns=(pattern,)),
+        LAYOUT, _layout_config(since_marker="g3", redact_patterns=(pattern,),
+                               tail_prose_tokens=50),
     )
     out = result.render()
-    tail = out[out.index("## Recent prose before the cut"):out.index(layout.DELTA_HEADER)]
-    assert "belongs in the recent-prose tail" not in out
+    tail, delta = _sections(out)
+    assert "starts here" not in out
     assert "[redacted paragraph -- matched --redact-pattern" in tail
     # The unmatched tail record survives, and the count includes the tail.
-    assert "This middle prose sits between the goal anchor and the recent tail" in tail
+    assert SECOND in tail
     assert result.redacted_paragraphs >= 1
 
     code, cli_out, err = _run(
-        capsys, LAYOUT, "--preset", "readback", "--since", "g6",
+        capsys, LAYOUT, "--preset", "readback", "--since", "g3",
         "--redact-pattern", pattern, "--no-color",
     )
     assert code == 0
-    assert "belongs in the recent-prose tail" not in cli_out
+    assert "starts here" not in cli_out
     assert "redacted 1 paragraph(s)" in err
 
 
@@ -205,7 +278,7 @@ def test_the_preset_omits_the_anchor_unless_asked(capsys):
     assert code == 0, err
     assert layout.GOAL_HEADER not in out
     assert "goal=none" in out
-    assert "## Recent prose before the cut" in out
+    assert TAIL in out
     code, out, err = _run(capsys, LAYOUT, "--preset", "readback", "--goal-prompt",
                           "--budget-tokens", "30000", "--no-color")
     assert code == 0, err
@@ -213,17 +286,14 @@ def test_the_preset_omits_the_anchor_unless_asked(capsys):
     assert "goal=session" in out
 
 
-def test_tail_is_empty_without_a_cut_and_says_why():
-    out = _render()
-    assert "[readback tail: no cut was given" in out
-    assert "[no user/assistant prose record exists before the cut" in out
+def test_the_tail_is_empty_when_there_is_no_prose_after_the_cut():
+    out = _render(since_marker="h2")
+    assert layout.TAIL_EMPTY_NOTE in out
 
 
 def test_tail_never_carries_tool_output():
-    out = _render(since_marker="g6")
-    tail_start = out.index("## Recent prose before the cut")
-    tail_end = out.index("## Delta since the previous read-back")
-    tail = out[tail_start:tail_end]
+    out = _render(since_marker="g3", tail_prose_tokens=10_000)
+    tail, _ = _sections(out)
     for tool_text in ("tool call", "List the repository root", "/work/repo/plan.yaml"):
         assert tool_text not in tail
 
@@ -231,28 +301,34 @@ def test_tail_never_carries_tool_output():
 # --- no duplication across two consecutive read-backs ------------------------
 
 def test_two_consecutive_readbacks_never_repeat_the_previous_one(tmp_path, capsys):
+    """The session grows between two read-backs (the real use): readback 2 is
+    built from the same file after more records were appended, with readback
+    1's marker."""
+    lines = LAYOUT.read_text(encoding="utf-8").splitlines()
+    grown = tmp_path / "session.jsonl"
+    grown.write_text("\n".join(lines[:7]) + "\n", encoding="utf-8")   # g0..g6
     code, first, err = _run(
-        capsys, LAYOUT, "--preset", "readback", "--budget-tokens", "30000",
+        capsys, grown, "--preset", "readback", "--budget-tokens", "30000", "--no-color",
+    )
+    assert code == 0, err
+    assert "[readback marker: g6]" in first
+    assert PRE_CUT in first and MIDDLE in first       # first readback: tail + the part before
+    grown.write_text("\n".join(lines) + "\n", encoding="utf-8")        # + h1, h2
+    code, second, err = _run(
+        capsys, grown, "--preset", "readback", "--budget-tokens", "30000",
         "--since", "g6", "--no-color",
     )
     assert code == 0, err
-    assert "[readback marker: h2]" in first
-    marker = first.split("[readback marker: ")[1].split("]")[0]
-    code, second, err = _run(
-        capsys, LAYOUT, "--preset", "readback", "--budget-tokens", "30000",
-        "--since", marker, "--no-color",
-    )
-    assert code == 0, err
-    # The delta of the second read-back repeats NOTHING from the first one's
-    # delta. (This run asks for the goal anchor, so the anchor is the one
-    # deliberate repetition.)
-    for record in (
-        "Second half: the layout is now the rule",
-        "The delta for this read-back starts here and must not repeat the first half.",
-    ):
-        assert first.count(record) == 1
-        assert record not in second.split("## Delta since the previous read-back")[1]
-        assert second.count(record) <= 1
+    assert "[readback marker: h2]" in second
+    # The second read-back carries ONLY what happened after the first one.
+    for record in (PRE_CUT, MIDDLE, "Before you compact"):
+        assert record not in second
+    for record in (SECOND, NEWEST):
+        assert second.count(record) == 1 and record not in first
+    # ... and each is the exact complement of the other, so together nothing is
+    # emitted twice and nothing is lost.
+    for record in (PRE_CUT, MIDDLE, SECOND, NEWEST):
+        assert (record in first) != (record in second)
 
 
 def test_since_file_reads_the_previous_readbacks_marker(tmp_path, capsys):
@@ -288,22 +364,27 @@ def test_below_the_anchor_floor_the_anchor_survives_and_the_overrun_is_named():
 
 
 def test_tail_shrinks_first_then_the_delta_while_the_anchor_never_changes():
-    full = _render(since_marker="g6", budget_tokens=30_000)
-    tight = _render(since_marker="g6", budget_tokens=1_100)
     anchor_line = "OPERATOR: Run the whole controller job to the end and keep the state files current."
+    full_result = extract(LAYOUT, _layout_config(since_marker="g1"))
+    tight_result = extract(LAYOUT, _layout_config(since_marker="g1", budget_tokens=800))
+    full, tight = full_result.render(), tight_result.render()
     assert anchor_line in full and anchor_line in tight
     assert full.count(anchor_line) == 1 and tight.count(anchor_line) == 1
-    full_tail = layout.build(
-        full_events=extract(LAYOUT, _layout_config()).all_events, tail_region=[],
-        config=_layout_config(), last_marker="h2",
-    )
-    assert full_tail.goal_source == "session"
-    tight_result = extract(LAYOUT, _layout_config(since_marker="g6", budget_tokens=1_100))
-    assert tight_result._readback_layout.tail.kept_tokens <= (
-        extract(LAYOUT, _layout_config(since_marker="g6"))
-        ._readback_layout.tail.kept_tokens
-    )
-    assert tight_result.events  # the delta still has its protected operator turn
+    assert full_result._readback_layout.goal_source == "session"
+    # Order: the tail loses records first ...
+    full_plan, tight_plan = full_result._readback_layout, tight_result._readback_layout
+    assert tight_plan.tail.kept_tokens < full_plan.tail.kept_tokens
+    # ... and the delta's protected operator turns survive the squeeze.
+    assert "Before you compact" in tight and SECOND in tight
+    assert select.estimate_tokens(tight) <= 800
+    # A budget with room for the whole tail leaves the tail whole; below it the
+    # delta's droppable material goes (limit 0) before any protected turn.
+    roomy = extract(LAYOUT, _layout_config(since_marker="g1", budget_tokens=900))
+    assert roomy._readback_layout.tail.kept_tokens == full_plan.tail.kept_tokens
+    assert select.estimate_tokens(roomy.render()) <= 900
+    assert tight_plan.tail.kept < full_plan.tail.kept
+    assert extract(LAYOUT, _layout_config(since_marker="g1", budget_tokens=700)
+                   )._readback_layout.tail.kept == 0
 
 
 def test_estimate_and_marker_line_end_the_document():
@@ -406,36 +487,24 @@ def test_prose_events_keeps_operator_and_qa_prose_and_drops_noise():
     assert len(layout.prose_events(events, _layout_config(hide_api_errors=False))) == 4
 
 
-def test_prose_before_time_complements_the_time_cut_exactly():
-    events = [
-        _event(1, EventKind.ASSISTANT_TEXT, "before", timestamp="2026-11-15T09:00:00Z"),
-        _event(2, EventKind.ASSISTANT_TEXT, "at the cut", timestamp="2026-11-15T09:05:00Z"),
-        _event(3, EventKind.ASSISTANT_TEXT, "after", timestamp="2026-11-15T09:10:00Z"),
-        _event(4, EventKind.ASSISTANT_TEXT, "undated"),
-    ]
-    # Strictly after the stamp goes in the delta; the stamp itself does NOT
-    # (filter_since_time is exclusive by default), so the tail keeps it -- a
-    # record is carried by exactly one of the two sections.
-    strict = layout.prose_before_time(
-        events, _layout_config(since_time="2026-11-15T09:05:00Z"),
-    )
-    assert [ev.text for ev in strict] == ["before", "at the cut"]
-    # With --since-time-inclusive the stamp belongs to the DELTA, so the
-    # exact complement drops it from the tail.
-    inclusive = layout.prose_before_time(
-        events,
-        _layout_config(since_time="2026-11-15T09:05:00Z", since_time_inclusive=True),
-    )
-    assert [ev.text for ev in inclusive] == ["before"]
+def test_a_time_cut_takes_the_tail_from_the_records_after_the_cut():
+    # since_time narrows the delta region exactly like --since marker does, and
+    # the tail comes from that region only.
+    out = _render(since_time="2026-11-15T09:10:00Z", tail_prose_tokens=10_000,
+                  goal_prompt=False)
+    tail, delta = _sections(out)
+    assert SECOND in tail and NEWEST in tail
+    assert MIDDLE not in out and PRE_CUT not in out
+    assert "(after 2026-11-15T09:10:00Z)" in delta
 
 
 def test_build_requires_a_budget_and_skips_the_tail_when_it_is_zero():
     with pytest.raises(ValueError, match="--budget-tokens"):
         layout.build(
-            full_events=[], tail_region=[], config=ExtractConfig(), last_marker=None,
+            full_events=[], delta_events=[], config=ExtractConfig(), last_marker=None,
         )
     plan = layout.build(
-        full_events=[], tail_region=[],
+        full_events=[], delta_events=[],
         config=_layout_config(tail_prose_tokens=0, goal_prompt=False),
         last_marker="abc",
     )
@@ -463,13 +532,20 @@ def test_readback_without_the_layout_uses_the_plain_selection(capsys):
     )
     assert code == 0, err
     assert layout.GOAL_HEADER not in out
-    assert "## Recent prose before the cut" not in out
+    assert TAIL not in out
     assert "[readback marker:" not in out
     assert "[readback budget: limit=30000" in out
 
 
-def test_cut_index_resolves_the_marker_and_reports_absence():
-    result = extract(LAYOUT, _layout_config())
-    markers = [(ev.marker, ev.seq) for ev in result.all_events]
-    assert layout.cut_index(result.all_events, "g6") == dict(markers)["g6"]
-    assert layout.cut_index(result.all_events, "no-such-marker") is None
+def test_a_goal_only_run_still_builds_the_layout_without_a_tail():
+    out = _render(tail_prose_tokens=0, since_marker="g3")
+    assert layout.GOAL_HEADER in out and TAIL not in out
+    assert "[readback marker: h2]" in out
+
+
+def test_the_goal_prompt_is_found_even_when_it_precedes_the_cut():
+    """The anchor needs the whole session; the tail and delta do not."""
+    out = _render(since_marker="g3", tail_prose_tokens=30)
+    assert "OPERATOR: Run the whole controller job to the end" in out
+    tail, delta = _sections(out)
+    assert "Run the whole controller job" not in tail + delta

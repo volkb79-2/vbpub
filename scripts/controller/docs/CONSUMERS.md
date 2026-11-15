@@ -185,7 +185,9 @@ printf '%s' '<hook JSON>' | scripts/controller/hooks/ctx-hooks.py post-tool-use 
 
 Everything is a flag or an environment variable (`CTX_STATE_DIR`,
 `CTX_EXTRACT_CMD`, `CTX_READBACK_BUDGET_TOKENS` (30000), `CTX_READBACK_TAIL_PROSE_TOKENS`
-(10000), `CTX_READBACK_GOAL_FILE`, `CTX_READBACK_TIMEOUT`, `CTX_HOOK_LOG`,
+(10000), `CTX_READBACK_GOAL_FILE`, `CTX_READBACK_GOAL_PROMPT`,
+`CTX_READBACK_REDACT_PATTERNS` (one regex per line, forwarded as `--redact-pattern`),
+`CTX_READBACK_TIMEOUT`, `CTX_HOOK_LOG`,
 `CTX_SESSION_KIND`). Without
 `--state-dir` the state directory is the hook input's own `cwd/.controller-state`,
 so nothing depends on a fixed checkout path. The pressure ladder is a note every

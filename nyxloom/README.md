@@ -228,7 +228,9 @@ user/assistant prose from before the `--since` cut (`--tail-prose-tokens`,
 slash-command wrappers excluded) or `--goal-file` to prepend a goal anchor,
 which is included once per read-back and never truncated; a spawned or
 targeted session needs one, while a controller session's anchor is its
-plan file. Prose between the anchor and the tail is dropped on purpose. The delta fills by class: operator turns and answered
+plan file. The tail is the newest user/assistant prose of the session at build time
+(the end of the transcript, after the previous marker); the delta excludes what the
+tail carries. The delta fills by class: operator turns and answered
 interviews, assistant prose, agent communication, intent lines, and external
 run results. `--budget-tokens N` (default 50,000) is estimated as rendered
 characters divided by four and covers the whole document; the tail prose

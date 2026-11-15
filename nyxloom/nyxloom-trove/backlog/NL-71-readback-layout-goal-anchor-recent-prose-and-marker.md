@@ -20,9 +20,9 @@ The shipped `readback` preset (NL-59, NL-65) emits the DELTA only: whatever
 came after the previous read-back's `--since` marker. A session that survives
 an automatic compaction needs up to three parts, in this order: a goal anchor
 (the session's ORIGINAL goal prompt, so the resumed session knows what the work
-is for), the most recent user/assistant prose from before the cut (about 10k
-tokens; prose between the anchor and the tail may be lost on purpose), and the
-delta since the previous read-back's marker. Without a tail a resumed session
+is for), the newest user/assistant prose of the session at build time (about
+10k tokens, from the end of the transcript), and the delta since the previous
+read-back's marker minus that prose. Without a tail a resumed session
 cannot read its own last turns; without any anchor a spawned session that
 inherits only state files and a delta cannot say why any of it matters.
 

@@ -168,10 +168,14 @@ readback by hand. A failure is also recorded durably in
 `readback-state.json`, because the next session reads that state, not the log.
 - **The whole session is the goal anchor's source, but the anchor is opt-in.**
 `pre-compact` runs the preset WITHOUT `--goal-prompt`: a controller session's
-anchor is its `plan.yaml`, and its goal shifts (AGENTS.md). `--goal-file` is
-forwarded when the controller pins one for a spawned or targeted session, and
-the same flag is repeated in the manual fallback command, so a hand-built
-readback keeps the same anchor.
+anchor is its `plan.yaml`, and its goal shifts (AGENTS.md). A SPAWNED session
+(`--session-kind spawned`, or `--goal-prompt`) asks for its first prompt; a
+`--goal-file` pin wins over both. The same flags are repeated in the manual
+fallback command, so a hand-built readback keeps the same anchor. A PreCompact
+fired inside a subagent builds nothing unless a kind is named (it would renumber
+and re-mark the controller's state). `--redact-pattern` /
+`CTX_READBACK_REDACT_PATTERNS` reach the extract, but a pattern can itself be a
+secret, so the hook logs, stores and prints only a `<REGEX>` placeholder.
 - **State, not a checkout path.** The state directory comes from a flag, then
 `CTX_STATE_DIR`, then the hook input's own `cwd/.controller-state`. No
 repository path, transcript path or 30000/10000 budget is compiled in; the

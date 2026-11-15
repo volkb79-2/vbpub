@@ -196,46 +196,34 @@ def extract(
     _assign_default_epochs(events)
     classifier.score_events(events)
     last_marker = original_last_marker
-    # The readback layout reads the WHOLE session for its goal anchor and for
-    # the prose region before the delta cut; the epoch/since filters below
-    # only shape the delta itself (the delta keeps its unchanged `--since`
-    # behaviour). Adapters apply the cut while parsing, so a run WITH a cut
-    # makes one extra cut-free parse of the same file rather than reimplement
-    # each adapter's own slicing rule here.
+    # The readback layout's recent-prose tail is the newest prose of the delta
+    # region itself (the end of the session); only the goal anchor needs the
+    # WHOLE session. Adapters apply the cut while parsing, so a run that asks
+    # for the session's first prompt AND has a cut makes one extra cut-free
+    # parse of the same file rather than reimplement each adapter's own
+    # slicing rule here.
     readback_plan = None
     whole_events = events
     cut_config = any(
         value is not None
         for value in (config.since_marker, config.since_time, config.until_marker)
     )
-    if layout.enabled(config) and cut_config:
+    if config.goal_prompt and config.goal_file is None and cut_config:
         whole_events = adapter.parse(
             path, session_id, replace(config, since_marker=None, since_time=None,
                                       until_marker=None),
         )
         _assign_default_epochs(whole_events)
         classifier.score_events(whole_events)
-    tail_region: list[NormalizedEvent] = []
-    if layout.enabled(config):
-        if config.since_time is not None:
-            tail_region = layout.prose_before_time(whole_events, config)
-        elif config.since_marker is not None:
-            cut_seq = layout.cut_index(whole_events, config.since_marker)
-            tail_region = layout.prose_events(
-                [ev for ev in whole_events if cut_seq is not None and ev.seq <= cut_seq],
-                config,
-            )
     if config.since_time is not None:
         events = select.filter_since_time(events, config)
     selected_events = _select_epochs(events, config.epochs)
     if layout.enabled(config):
-        # Built AFTER the delta selection: the protected operator/interview
-        # material of the delta is never dropped, so the recent-prose tail
-        # has to yield to it (truncation order: tail first, then the delta's
-        # droppable classes, never the anchor).
+        # Built AFTER the delta selection: the tail is taken from it and the
+        # delta then excludes what the tail carries (truncation order: tail
+        # first, then the delta's droppable classes, never the anchor).
         readback_plan = layout.build(
             full_events=whole_events,
-            tail_region=tail_region,
             config=config,
             last_marker=last_marker,
             delta_events=selected_events,

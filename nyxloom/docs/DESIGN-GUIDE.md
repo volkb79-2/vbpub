@@ -544,11 +544,14 @@ word-window selection, and since the operator decision of 2026-11-15 it is a
 LAYOUT contract too: a compaction-resume artifact, not a delta alone. It can
 open with a goal anchor (`--goal-prompt`: the first genuine user prompt, or a
 pinned `--goal-file`; included once per read-back by design and never
-truncated), then the most recent user/assistant prose from before the
-`--since` cut (`--tail-prose-tokens`, 10,000 in the preset), then the delta
-after the previous read-back's marker. Prose between the anchor and the tail
-is dropped on purpose (the operator's own words: losing it is acceptable and
-intended). The last line is a `[readback marker: ...]` cursor, so the next
+truncated), then the NEWEST user/assistant prose of the session at the moment
+the read-back is built (`--tail-prose-tokens`, 10,000 in the preset; taken from
+the end of the transcript and limited to what follows the previous marker, per
+the operator's ruling of 2026-11-15: "the most recent prose of maybe 10k tokens
+... plus the delta"), then the delta since the previous read-back's marker minus
+every record the anchor and the tail already carry. The rejected alternative is
+the prose BEFORE the marker: it repeats the end of the previous read-back and is
+empty on the first one. The last line is a `[readback marker: ...]` cursor, so the next
 read-back never repeats what this one carried. `--budget-tokens N` defaults to
 50,000 for the preset and uses the documented `rendered characters / 4`
 estimate. It reserves a bounded footer allowance plus the layout's own fixed

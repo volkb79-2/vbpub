@@ -172,12 +172,6 @@ def _parse_timestamp(raw: str) -> datetime | None:
     return value.astimezone(UTC)
 
 
-def parse_timestamp(raw: str) -> datetime | None:
-    """The one timestamp parser the readback path uses (public since the
-    layout needs the exact complement of filter_since_time)."""
-    return _parse_timestamp(raw)
-
-
 def filter_since_time(events: list[NormalizedEvent], config: ExtractConfig) -> list[NormalizedEvent]:
     """Apply a resolved timestamp cutoff uniformly to normalized events."""
     if config.since_time is None:
@@ -218,6 +212,19 @@ def _event_tokens(event: NormalizedEvent, config: ExtractConfig) -> int:
     )
     # The fixed separator is part of every rendered item envelope.
     return estimate_tokens(block + (render.separator(config.insert_blank_lines)))
+
+
+def readback_candidate_count(
+    events: list[NormalizedEvent], config: ExtractConfig,
+    exclude_keys: set[tuple[int, str]],
+) -> int:
+    """How many records readback_select could still emit (any class) once the
+    caller's own records are excluded; 0 means the delta section is empty."""
+    return sum(
+        1 for event in events
+        if _readback_category(event, config) is not None
+        and (event.seq, event.kind.value) not in exclude_keys
+    )
 
 
 def protected_readback_tokens(

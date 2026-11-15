@@ -610,8 +610,9 @@ prose only, timestamped, coloured on a terminal, interviews kept compactly; `--j
 fresh agent, `review` audits what an agent did at full fidelity, and `ledger`
 prints only external effects, touched files and stop state. `successor` and
 `readback` include full agent communication. `readback` is a bounded Claude Code
-controller handoff. It carries the most recent prose from before the cut, then
-the delta after the previous read-back's marker:
+controller handoff. It carries the newest prose of the session (the end of the
+transcript, after the previous read-back's marker), then the delta since that
+marker minus the prose already shown:
 
 ```bash
 nyxloom-harness extract SESSION_LOG --preset watch --follow

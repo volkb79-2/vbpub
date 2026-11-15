@@ -339,7 +339,7 @@ layout work of `pi-readback-auto-20261115`, which is Claude Code only by
 construction.
 
 **Problem.** `nyxloom-harness extract --preset readback` now emits a three-part
-layout (opt-in goal anchor, recent user/assistant prose before the cut, delta)
+layout (opt-in goal anchor, the newest user/assistant prose of the session, delta)
 and ends with a `[readback marker: …]` line. The preset is `claude_only`: its
 intent and agent-communication surface, and now its `--since marker` resolution
 and goal discovery, are all Claude Code-specific. A controller running on

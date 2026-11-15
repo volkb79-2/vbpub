@@ -366,7 +366,8 @@ Subcommands: `statusline`, `post-tool-use`, `pre-compact`, `session-start`,
 `stop`. Configuration is flags or environment (`CTX_STATE_DIR`,
 `CTX_EXTRACT_CMD`,
 `CTX_READBACK_BUDGET_TOKENS` = 30000, `CTX_READBACK_TAIL_PROSE_TOKENS` =
-10000, `CTX_READBACK_GOAL_FILE`, `CTX_READBACK_TIMEOUT`, `CTX_HOOK_LOG`); the
+10000, `CTX_READBACK_GOAL_FILE`, `CTX_READBACK_GOAL_PROMPT`,
+`CTX_READBACK_REDACT_PATTERNS`, `CTX_SESSION_KIND`, `CTX_READBACK_TIMEOUT`, `CTX_HOOK_LOG`); the
 state directory defaults to the hook input's own `cwd/.controller-state`, so no
 checkout path is hard-coded. Which harness/situation rows are tested is in
 [`docs/design/ctlstat/HARNESS-COMPACTION-CHECKLIST.md`](../../../docs/design/ctlstat/HARNESS-COMPACTION-CHECKLIST.md);

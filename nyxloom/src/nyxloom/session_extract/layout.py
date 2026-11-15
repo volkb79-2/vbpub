@@ -17,17 +17,23 @@ three parts, in this order:
    slash-command invocations (`meta["slash_command"]`) which this module
    skips, and any remaining `<system-reminder>` block is stripped here.
 2. **the recent prose tail** (`--tail-prose-tokens N`) -- the NEWEST
-   user/assistant prose from BEFORE the delta cut, complete records only.
-   Prose between the anchor and this tail is dropped on purpose (the
-   operator's words: losing prose between the two is acceptable and intended).
-3. **the delta** -- exactly today's `--since <marker>` selection, never
-   duplicating an earlier read-back.
+   user/assistant prose of the session AT THE MOMENT THE READ-BACK IS BUILT
+   (the end of the transcript, the PreCompact point), complete records only,
+   limited to what comes after the previous read-back's marker so it never
+   repeats an earlier read-back. (Operator ruling 2026-11-15: "the most recent
+   prose of maybe 10k tokens ... plus the delta".)
+3. **the delta** -- the `--since <marker>` selection (the whole session when
+   there is no marker) MINUS every record the anchor or the tail already carries,
+   so nothing is emitted twice inside one read-back either. When the tail covers
+   the whole delta the section says so. On the first read-back (no marker) the
+   delta is the part of the session before the tail, bounded by the budget.
 
 Budget and truncation order (`--budget-tokens N`, controller profile 30000):
-the goal anchor (when asked for) never shrinks; the tail prose shrinks first;
-the delta then fills whatever is left (its own priorities and protected
-operator material are unchanged -- select.readback_select still never drops
-an operator turn, and discloses a protected overrun instead).
+the goal anchor (when asked for) never shrinks; the tail prose shrinks first
+(it also yields to the delta's protected operator material, which is never
+dropped); the delta then fills whatever is left (its own priorities are
+unchanged -- select.readback_select still never drops an operator turn, and
+discloses a protected overrun instead).
 
 The document ends with a `[readback marker: ...]` line naming the source
 marker the NEXT read-back must use as `--since` (the same marker the cursor
@@ -53,6 +59,11 @@ GOAL_MISSING = (
     "pass --goal-file to pin one]"
 )
 DELTA_HEADER = "## Delta since the previous read-back"
+TAIL_EMPTY_NOTE = (
+    "[no user/assistant prose record after the cut fitted the tail budget or exists]"
+)
+DELTA_COVERED_NOTE = "[the recent prose above covers the whole delta]"
+DELTA_EMPTY_NOTE = "[the delta is empty: no record qualifies after the cut]"
 
 # Harness injected framing that is NOT operator intent. The Claude Code
 # adapter strips the other tags it knows (command wrappers, local-command
@@ -120,26 +131,6 @@ def prose_events(
     return out
 
 
-def prose_before_time(
-    events: list[NormalizedEvent], config: ExtractConfig,
-) -> list[NormalizedEvent]:
-    """The exact complement of select.filter_since_time for a time-based
-    --since: every timestamped event older than the resolved cutoff."""
-    # ExtractConfig validates `since_time` as a timezone-bearing ISO-8601
-    # stamp, and select.parse_timestamp is the same parser, so this cannot
-    # return None here.
-    cutoff = select.parse_timestamp(config.since_time)
-    out: list[NormalizedEvent] = []
-    for event in events:
-        timestamp = select.parse_timestamp(event.timestamp)
-        if timestamp is None:
-            continue
-        if timestamp > cutoff or (config.since_time_inclusive and timestamp == cutoff):
-            continue
-        out.append(event)
-    return out
-
-
 @dataclass
 class TailReport:
     budget_tokens: int = 0
@@ -195,21 +186,10 @@ def select_tail(
     return kept, report
 
 
-def cut_index(events: list[NormalizedEvent], marker: str) -> int | None:
-    """The source position of the record `marker` names, or None when this
-    session has no such record. Adapters skip every record at or before that
-    position, so its seq is exactly the delta cut."""
-    for event in events:
-        if event.marker == marker:
-            return event.seq
-    return None
-
-
 def tail_header(config: ExtractConfig) -> str:
     return (
-        "## Recent prose before the cut "
-        f"({config.tail_prose_tokens} tokens requested; prose between this and the "
-        "delta is dropped on purpose)"
+        "## Recent prose (the newest user/assistant prose of the session, "
+        f"{config.tail_prose_tokens} tokens requested; the delta below does not repeat it)"
     )
 
 
@@ -218,7 +198,10 @@ def cut_header(config: ExtractConfig) -> str:
         return f"{DELTA_HEADER} (strictly after marker {config.since_marker})"
     if config.since_time is not None:
         return f"{DELTA_HEADER} (after {config.since_time})"
-    return f"{DELTA_HEADER} (none: no previous read-back marker was given, so this is the whole session)"
+    return (
+        f"{DELTA_HEADER} (none: no previous read-back marker was given, so this is the "
+        "part of the session before the recent prose)"
+    )
 
 
 def _goal_section(
@@ -246,18 +229,16 @@ def _goal_section(
 def build(
     *,
     full_events: list[NormalizedEvent],
-    tail_region: list[NormalizedEvent],
+    delta_events: list[NormalizedEvent],
     config: ExtractConfig,
     last_marker: str | None,
-    delta_events: list[NormalizedEvent] | None = None,
 ) -> LayoutPlan:
     """Assemble the three parts and the accounting for one read-back.
 
-    `tail_region` is the source region strictly BEFORE the delta cut (empty
-    when the run has no cut, because the delta then already covers it);
-    `full_events` is the whole session parse, used only to find the anchor;
-    `delta_events` is the delta's selected source events, whose protected
-    operator/interview material the tail must yield to."""
+    `delta_events` is the delta's selected source events (everything after the
+    previous marker, the whole session when there is none): the tail is the
+    newest prose among them and the delta is the rest; `full_events` is the
+    whole-session parse, used only to find the goal anchor."""
     if config.budget_tokens is None:
         raise ValueError(
             "the readback layout needs --preset readback (its --budget-tokens)"
@@ -282,7 +263,10 @@ def build(
     # so the promised bound covers the whole document, not just its records.
     overhead = estimate_tokens(
         separator.join(
-            [goal_section, tail_section, cut_header(config)] + [""]
+            [
+                goal_section, tail_section, TAIL_EMPTY_NOTE if tail_section else "",
+                cut_header(config), DELTA_EMPTY_NOTE, "",
+            ]
         ) + separator
     )
     marker_line = f"[readback marker: {last_marker or 'none'}]"
@@ -311,54 +295,50 @@ def build(
             "tokens; the anchor is never truncated]"
         )
 
-    # The delta's operator/interview material is protected (never dropped), so
-    # the tail yields to it: truncation order is tail, then the delta's other
-    # classes, and never the anchor or the protected material.
-    protected_tokens = select.protected_readback_tokens(
-        delta_events or [], config, plan.exclude_keys,
-    )
-    tail_budget = min(
-        config.tail_prose_tokens,
-        max(0, content_budget - plan.goal_tokens - protected_tokens),
-    )
+    available = max(0, content_budget - plan.goal_tokens)
     if config.tail_prose_tokens:
-        # Detached copies: the tail is rendered here, BEFORE extract()'s own
+        # The tail is the NEWEST prose of the delta region (the end of the
+        # session), so it is taken from the delta's own selected events.
+        # Detached copies: it is rendered here, BEFORE extract()'s own
         # post-selection redaction runs on the delta, so --redact-pattern has
         # to be applied to the tail records here or the tail would leak what
         # the delta hides.
         candidates = [
             replace(event, meta=dict(event.meta))
-            for event in tail_region if key_of(event) not in plan.exclude_keys
+            for event in prose_events(delta_events, config)
+            if key_of(event) not in plan.exclude_keys
         ]
         if config.redact_patterns:
             _, plan.redacted_paragraphs = mangle.redact_paragraphs(
                 candidates, list(config.redact_patterns),
             )
-        kept_events, plan.tail = select_tail(candidates, tail_budget, config)
-        plan.exclude_keys |= {key_of(event) for event in kept_events}
+        # Truncation order: the tail shrinks first. It also yields to the
+        # delta's protected operator/interview material that it does NOT carry
+        # (never dropped, so otherwise the document would overshoot by a whole
+        # tail); an operator turn cut from the tail falls back into the delta,
+        # hence the loop. Each pass strictly lowers the budget, so it ends.
+        budget = config.tail_prose_tokens
+        while True:
+            kept_events, plan.tail = select_tail(candidates, budget, config)
+            taken = plan.exclude_keys | {key_of(event) for event in kept_events}
+            protected = select.protected_readback_tokens(delta_events, config, taken)
+            excess = plan.tail.kept_tokens + protected - available
+            if excess <= 0 or plan.tail.kept_tokens == 0:
+                break
+            budget = max(0, plan.tail.kept_tokens - excess)
+        plan.exclude_keys = taken
         blocks = [_tail_block(event, config) for event in kept_events]
-        if blocks:
-            plan.sections.append("\n\n".join([tail_section, *blocks]))
-        elif candidates:
-            plan.sections.append(
-                tail_section + "\n[no prose record before the cut fitted the tail budget]"
-            )
-        else:
-            plan.sections.append(
-                tail_section
-                + "\n[no user/assistant prose record exists before the cut; the delta "
-                "below covers everything after it]"
-            )
-        if not config.since_marker and config.since_time is None:
-            plan.footer_lines.append(
-                "[readback tail: no cut was given, so the delta below covers the whole session]"
-            )
+        plan.sections.append(
+            "\n\n".join([tail_section, *blocks]) if blocks
+            else tail_section + "\n" + TAIL_EMPTY_NOTE
+        )
 
-    delta_limit = max(
-        0, content_budget - plan.goal_tokens - (plan.tail.kept_tokens if plan.tail else 0),
-    )
+    delta_limit = max(0, available - (plan.tail.kept_tokens if plan.tail else 0))
     plan.content_limit_tokens = delta_limit
-    plan.sections.append(cut_header(config))
+    delta_section = cut_header(config)
+    if not select.readback_candidate_count(delta_events, config, plan.exclude_keys):
+        delta_section += "\n" + (DELTA_COVERED_NOTE if plan.tail and plan.tail.kept else DELTA_EMPTY_NOTE)
+    plan.sections.append(delta_section)
     plan.footer_lines[:0] = [
         (
             "[readback layout: "

@@ -971,8 +971,9 @@ With --follow, Nyxloom prints a one-shot prefix and then reads only appended pay
             ),
             _opt(
                 "--tail-prose-tokens",
-                "Readback layout: estimated tokens of the most recent user/assistant prose "
-                "BEFORE the --since cut (complete records; 0 disables the tail); "
+                "Readback layout: estimated tokens of the NEWEST user/assistant prose of the "
+                "session at build time, after the --since marker (complete records; 0 "
+                "disables the tail); "
                 "requires --preset readback (whose default is 10000)",
                 group=_G_CONTENT, type=int, default=None,
             ),

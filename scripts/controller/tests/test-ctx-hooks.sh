@@ -353,6 +353,69 @@ run "$ROOT/ss-goalfail.out" session-start "$MAIN_JSON" --state-dir "$ROOT/state-
   --extract "$BIN/fake-extract" --goal-file "$GOAL"
 contains "$ROOT/ss-goalfail.out" "--goal-file $GOAL" 'the manual command keeps the pinned goal'
 
+# 14a. the goal anchor: only a SPAWNED session (kind) or an explicit flag/env
+#      asks for it; --goal-file wins over it.
+PC_JSON='{"session_id":"sess-1","transcript_path":"'"$TRANSCRIPT"'","cwd":"'"$ROOT"'","trigger":"auto"}'
+: > "$FAKE_EXTRACT_LOG"
+run "$ROOT/pc-spawned.out" pre-compact "$PC_JSON" --state-dir "$ROOT/state-k1" \
+  --extract "$BIN/fake-extract" --session-kind spawned
+contains "$FAKE_EXTRACT_LOG" '--goal-prompt' 'a spawned session asks for its goal prompt'
+: > "$FAKE_EXTRACT_LOG"
+run "$ROOT/pc-flag.out" pre-compact "$PC_JSON" --state-dir "$ROOT/state-k2" \
+  --extract "$BIN/fake-extract" --goal-prompt
+contains "$FAKE_EXTRACT_LOG" '--goal-prompt' 'an explicit flag asks for the goal prompt'
+: > "$FAKE_EXTRACT_LOG"
+CTX_READBACK_GOAL_PROMPT=1 run "$ROOT/pc-env.out" pre-compact "$PC_JSON" \
+  --state-dir "$ROOT/state-k3" --extract "$BIN/fake-extract"
+contains "$FAKE_EXTRACT_LOG" '--goal-prompt' 'the env switch asks for the goal prompt'
+: > "$FAKE_EXTRACT_LOG"
+run "$ROOT/pc-both.out" pre-compact "$PC_JSON" --state-dir "$ROOT/state-k4" \
+  --extract "$BIN/fake-extract" --goal-prompt --goal-file "$GOAL"
+not_contains '--goal-prompt' 'a pinned goal file wins over the first prompt' "$FAKE_EXTRACT_LOG"
+contains "$FAKE_EXTRACT_LOG" "--goal-file $GOAL" 'the pinned goal file is forwarded'
+: > "$FAKE_EXTRACT_LOG"
+run "$ROOT/pc-ctl.out" pre-compact "$PC_JSON" --state-dir "$ROOT/state-k5" \
+  --extract "$BIN/fake-extract" --session-kind controller
+not_contains '--goal-prompt' 'an explicit controller never gets the first prompt' "$FAKE_EXTRACT_LOG"
+
+# 14d. a PreCompact fired inside a subagent builds nothing into the controller's
+#      state (unless a kind is named explicitly); it still exits 0.
+: > "$FAKE_EXTRACT_LOG"
+SUB_PC='{"session_id":"sess-1","transcript_path":"'"$TRANSCRIPT"'","cwd":"'"$ROOT"'","trigger":"auto","agent_id":"child9"}'
+run "$ROOT/pc-sub.out" pre-compact "$SUB_PC" --state-dir "$ROOT/state-sub" \
+  --extract "$BIN/fake-extract"
+[[ ! -s $FAKE_EXTRACT_LOG ]] || fail 'a subagent compaction ran the extract'
+[[ ! -e $ROOT/state-sub/readback-state.json ]] || fail 'a subagent compaction touched the readback state'
+contains "$ROOT/state-sub/hooks/hook-log.jsonl" 'subagent compaction' 'the skipped subagent compaction is logged'
+SUB_OWN='{"session_id":"sess","transcript_path":"'"$ROOT/transcripts/parent-session.jsonl"'","cwd":"'"$ROOT"'","trigger":"auto","agent_id":"child1"}'
+run "$ROOT/pc-sub2.out" pre-compact "$SUB_OWN" --state-dir "$ROOT/state-sub2" \
+  --extract "$BIN/fake-extract" --session-kind spawned
+contains "$FAKE_EXTRACT_LOG" "agent-child1.jsonl" 'an explicit kind builds from the subagent own transcript'
+contains "$FAKE_EXTRACT_LOG" '--goal-prompt' 'an explicit spawned kind asks for the goal prompt'
+
+# 14e. redaction patterns reach the extract (flag and env), and a pattern -- which
+#      can itself be a secret -- is never logged, stored or printed.
+: > "$FAKE_EXTRACT_LOG"
+CTX_READBACK_REDACT_PATTERNS=$'env-pattern-secret-1\n\nenv-pattern-secret-2' \
+  run "$ROOT/pc-redact.out" pre-compact "$PC_JSON" --state-dir "$ROOT/state-redact" \
+  --extract "$BIN/fake-extract" --redact-pattern flag-pattern-secret
+contains "$FAKE_EXTRACT_LOG" '--redact-pattern flag-pattern-secret' 'the flag pattern reaches the extract'
+contains "$FAKE_EXTRACT_LOG" '--redact-pattern env-pattern-secret-1' 'the first env pattern reaches the extract'
+contains "$FAKE_EXTRACT_LOG" '--redact-pattern env-pattern-secret-2' 'the second env pattern reaches the extract'
+[[ $(grep -o -- '--redact-pattern' "$FAKE_EXTRACT_LOG" | wc -l) == 3 ]] || fail 'a blank env line became a pattern'
+not_contains 'pattern-secret' 'a redaction pattern must never be stored or logged' \
+  "$ROOT/state-redact/readback-state.json" "$ROOT/state-redact/hooks/hook-log.jsonl" \
+  "$ROOT/pc-redact.out"
+contains "$ROOT/state-redact/readback-state.json" '<REGEX>' 'the stored command shows a placeholder'
+export FAKE_EXTRACT_RC=2
+CTX_READBACK_REDACT_PATTERNS='env-pattern-secret-1' run "$ROOT/pc-redact-fail.out" pre-compact "$PC_JSON" \
+  --state-dir "$ROOT/state-redact-fail" --extract "$BIN/fake-extract"
+unset FAKE_EXTRACT_RC
+CTX_READBACK_REDACT_PATTERNS='env-pattern-secret-1' run "$ROOT/ss-redact.out" session-start "$MAIN_JSON" \
+  --state-dir "$ROOT/state-redact-fail" --extract "$BIN/fake-extract"
+contains "$ROOT/ss-redact.out" '--redact-pattern <REGEX>' 'the manual command names the redaction flag'
+not_contains 'pattern-secret' 'the manual command must not print a pattern' "$ROOT/ss-redact.out"
+
 # 14b. an extract that reports `none` (an empty delta) must NOT overwrite the
 #      stored marker: the next readback would otherwise restart from scratch.
 export FAKE_MARKER=none

@@ -230,6 +230,12 @@ mutant("scripts/controller/hooks/ctx-hooks.py", "ctx-hooks-hard-timeout.py",
        'HARD_TIMEOUT = 20.0', 'HARD_TIMEOUT = 600.0')
 mutant("scripts/controller/hooks/ctx-hooks.py", "ctx-hooks-kind-wording.py",
        '    controller = kind != "spawned"', '    controller = False')
+mutant("scripts/controller/hooks/ctx-hooks.py", "ctx-hooks-pattern-leak.py",
+       'shown += ["--redact-pattern", "<REGEX>"]', 'shown += ["--redact-pattern", pattern]')
+mutant("scripts/controller/hooks/ctx-hooks.py", "ctx-hooks-spawned-goal.py",
+       '        or kind == "spawned"\n', '        or False\n')
+mutant("scripts/controller/hooks/ctx-hooks.py", "ctx-hooks-subagent-skip.py",
+       '        if hook.get("agent_id") and not explicit:', '        if False:')
 mutant("scripts/controller/hooks/ctx-hooks.py", "ctx-hooks-crash-log.py",
        'log(ACTIVE_LOG, {"ev": "hook-error"', 'log(None, {"ev": "hook-error"')
 mutant("scripts/controller/release-from-wt.sh", "release-psi-validation.sh",

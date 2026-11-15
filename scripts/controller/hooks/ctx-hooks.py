@@ -46,7 +46,21 @@ Configuration (flags or environment; nothing is hard-coded):
                                    controller | spawned. Default: a hook fired
                                    inside an Agent-tool subagent (`agent_id` in
                                    the input) is spawned, the main session is
-                                   the controller.
+                                   the controller. A pre-compact fired inside a
+                                   subagent (and no explicit kind) builds nothing.
+  --goal-prompt / CTX_READBACK_GOAL_PROMPT
+                                   add the session's first prompt as the goal
+                                   anchor. Implied by session kind `spawned`;
+                                   a controller (anchor: plan.yaml) never gets it
+                                   unless asked. --goal-file wins over it.
+  --redact-pattern / CTX_READBACK_REDACT_PATTERNS
+                                   regex forwarded to the extract as
+                                   `--redact-pattern` (flag: repeatable; env: one
+                                   per line). Matching paragraphs are replaced in
+                                   the whole readback. Patterns are never logged,
+                                   stored or printed (a pattern can be a secret);
+                                   an invalid one makes the extract refuse, so
+                                   the build fails closed.
   --timeout / CTX_READBACK_TIMEOUT 15 seconds (capped at 20).
   --log / CTX_HOOK_LOG             default `<state dir>/hooks/hook-log.jsonl`.
 
@@ -118,6 +132,8 @@ def options(argv: list[str]) -> tuple[str, argparse.Namespace]:
     parser.add_argument("--tail-prose-tokens", type=int)
     parser.add_argument("--goal-file")
     parser.add_argument("--session-kind")
+    parser.add_argument("--goal-prompt", action="store_true")
+    parser.add_argument("--redact-pattern", action="append", default=[])
     parser.add_argument("--timeout", type=float)
     parser.add_argument("--log")
     args = parser.parse_args(argv)
@@ -317,7 +333,7 @@ def readback_command(
     budget: int,
     tail: int,
     marker: str | None,
-    goal_file: str | None,
+    flags: list[str],
 ) -> list[str]:
     command = [
         *extract, "extract", transcript,
@@ -328,9 +344,31 @@ def readback_command(
     ]
     if marker:
         command += ["--since", marker]
+    return command + flags
+
+
+def extra_flags(
+    goal_file: str | None, goal_prompt: bool, patterns: list[str],
+) -> tuple[list[str], list[str]]:
+    """The optional extract flags: (real, shown). `shown` is what is logged,
+    stored and printed -- a redaction pattern can itself be a secret (a literal
+    token), so only a placeholder ever leaves this process."""
+    real: list[str] = []
+    shown: list[str] = []
     if goal_file:
-        command += ["--goal-file", goal_file]
-    return command
+        real += ["--goal-file", goal_file]
+        shown += ["--goal-file", goal_file]
+    elif goal_prompt:
+        real.append("--goal-prompt")
+        shown.append("--goal-prompt")
+    for pattern in patterns:
+        real += ["--redact-pattern", pattern]
+        shown += ["--redact-pattern", "<REGEX>"]
+    return real, shown
+
+
+def truthy(raw: str | None) -> bool:
+    return (raw or "").strip().lower() in ("1", "true", "yes", "on")
 
 
 def build_readback(
@@ -341,19 +379,21 @@ def build_readback(
     tail: int,
     timeout: float,
     log_path: Path | None,
-    goal_file: str | None,
+    flags: tuple[list[str], list[str]],
 ) -> dict:
-    """Build `<state>/readback-N.md` and record its marker. Never raises."""
+    """Build `<state>/readback-N.md` and record its marker. Never raises.
+    `flags` is `extra_flags(...)`: the real optional flags and their shown form."""
     stored = read_state(state / "readback-state.json")
     marker = stored.get("marker") or None
     if isinstance(marker, str) and marker in ("", "none"):
         marker = None
     number = readback_number(state, int(stored.get("n") or 0))
     target = state / f"readback-{number}.md"
-    command = readback_command(extract, transcript, budget, tail, marker, goal_file)
+    command = readback_command(extract, transcript, budget, tail, marker, flags[0])
+    shown = readback_command(extract, transcript, budget, tail, marker, flags[1])
     result = {
         "ok": False, "n": number, "path": str(target), "marker": marker,
-        "command": command, "reason": "",
+        "command": shown, "reason": "",
     }
     if not os.path.isfile(transcript):
         result["reason"] = f"no readable transcript at {transcript}"
@@ -397,7 +437,7 @@ def build_readback(
                   estimated_tokens=max(1, len(text) // 4))
     write_state(state / "readback-state.json", {
         "n": number, "path": str(target), "marker": new_marker,
-        "bytes": len(text), "ok": True, "command": command,
+        "bytes": len(text), "ok": True, "command": shown,
     })
     log(log_path, {"ev": "readback", **result, "rc": 0})
     return result
@@ -439,7 +479,7 @@ def summariser_note(result: dict, state: Path) -> str:
 
 def session_start_text(
     state: Path, log_path: Path | None, extract: list[str], transcript: str,
-    budget: int, tail: int, goal_file: str | None, session_name: str,
+    budget: int, tail: int, flags: tuple[list[str], list[str]], session_name: str,
 ) -> str:
     """The read order, the newest readback, and -- on failure -- the manual
     command. Capped so the harness's 10,000-character hook cap never truncates
@@ -472,7 +512,7 @@ def session_start_text(
         manual = MANUAL.format(
             extract=" ".join(extract), session=transcript or "<session.jsonl>",
             budget=budget, tail=tail, since=since, state=state,
-            goal=f" --goal-file {goal_file}" if goal_file else "",
+            goal=(" " + " ".join(flags[1])) if flags[1] else "",
         )
         reason = stored.get("ok") is False and stored.get("reason")
         if reason:
@@ -516,6 +556,18 @@ def run(mode: str, args: argparse.Namespace) -> int:
     if tail is None:
         tail = env_int("CTX_READBACK_TAIL_PROSE_TOKENS", 10_000)
     goal_file = args.goal_file or os.environ.get("CTX_READBACK_GOAL_FILE") or None
+    kind = session_kind(args, hook)
+    # The goal anchor (the session's first prompt) is for SPAWNED/targeted
+    # sessions or an explicit flag; a controller's anchor is its plan.yaml.
+    goal_prompt = (
+        args.goal_prompt or truthy(os.environ.get("CTX_READBACK_GOAL_PROMPT"))
+        or kind == "spawned"
+    )
+    patterns = [p for p in (
+        *args.redact_pattern,
+        *(os.environ.get("CTX_READBACK_REDACT_PATTERNS") or "").splitlines(),
+    ) if p.strip()]
+    flags = extra_flags(goal_file, goal_prompt, patterns)
     timeout = args.timeout
     if timeout is None:
         timeout = float(env_int("CTX_READBACK_TIMEOUT", 15)) if os.environ.get(
@@ -555,19 +607,26 @@ def run(mode: str, args: argparse.Namespace) -> int:
             return 0
         if source == "compact":
             print(session_start_text(
-                state, log_path, extract, transcript, budget, tail, goal_file, source,
+                state, log_path, extract, transcript, budget, tail, flags, source,
             ))
         else:
             # resume/startup: the same read order, because a resumed session
             # (a manual compaction, an external one, or a different harness)
             # needs the artifact just as much as an automatic compaction does.
             print(session_start_text(
-                state, log_path, extract, transcript, budget, tail, goal_file, source,
+                state, log_path, extract, transcript, budget, tail, flags, source,
             ))
         return 0
 
     if mode == "pre-compact":
         must_keep_note(hook, state, "PreCompact", log_path)
+        explicit = args.session_kind or os.environ.get("CTX_SESSION_KIND")
+        if hook.get("agent_id") and not explicit:
+            # A compaction inside an Agent-tool subagent must not build into
+            # (and renumber/re-mark) the controller's readback state.
+            log(log_path, {"ev": "readback", "skipped": "subagent compaction",
+                           "agent_id": str(hook.get("agent_id"))})
+            return 0
         if state is None or not transcript:
             result = {"ok": False, "path": "", "reason": "no transcript or state directory",
                       "command": [], "n": 0, "estimated_tokens": 0}
@@ -575,7 +634,7 @@ def run(mode: str, args: argparse.Namespace) -> int:
             print(summariser_note(result, state or Path(".")))
             return 0
         print(summariser_note(
-            build_readback(extract, transcript, state, budget, tail, timeout, log_path, goal_file),
+            build_readback(extract, transcript, state, budget, tail, timeout, log_path, flags),
             state,
         ))
         return 0

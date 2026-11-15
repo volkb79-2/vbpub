@@ -146,10 +146,10 @@ class ExtractConfig:
     #                        adapter) as the goal anchor.
     #   goal_file         -- pin the goal text from this file instead of the
     #                        session's first prompt. Implied goal section.
-    #   tail_prose_tokens -- the most recent user/assistant prose before the
-    #                        delta cut, in estimated tokens; 0 = no tail
-    #                        section. Prose between the anchor and the tail is
-    #                        dropped on purpose.
+    #   tail_prose_tokens -- the NEWEST user/assistant prose of the session
+    #                        (the end of the transcript, after the previous
+    #                        marker), in estimated tokens; 0 = no tail
+    #                        section. The delta excludes what the tail carries.
     goal_prompt: bool = False
     goal_file: str | None = None
     tail_prose_tokens: int = 0
