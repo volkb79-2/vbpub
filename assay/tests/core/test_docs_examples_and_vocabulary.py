@@ -211,6 +211,85 @@ def test_readme_documents_current_native_r2_parallel_worker_contract():
     assert "Existing v2 lane files still load" not in text
 
 
+def test_rust_baseline_docs_match_the_available_assay_surface():
+    readme = README.read_text(encoding="utf-8")
+    design = (REPO_ROOT / "docs/DESIGN-GUIDE.md").read_text(encoding="utf-8")
+    consumers = CONSUMERS.read_text(encoding="utf-8")
+    methodology = (REPO_ROOT / "docs/RUST-METHODOLOGY.md").read_text(encoding="utf-8")
+    changes = (REPO_ROOT / "CHANGES.md").read_text(encoding="utf-8")
+    unreleased = changes.split("## [Unreleased]", 1)[1].split("<!-- cmru: release history -->", 1)[0]
+
+    assert "no registered Rust adapter" in readme
+    assert "hostobs baseline lanes" in readme
+    assert "90% line / 85% region" in readme
+    assert "Rust lanes" in readme and "CONSUMERS.md#rust-lanes-planned-not-implemented" in readme
+    assert "tester-unified-rust" in design and "do not judge changed lines through" in design
+    assert "BRF:0" in design and "generic LCOV parser keeps its branch evidence rules" in design
+    assert "Rust R2 is not adopted yet" in consumers
+    assert "not a per-release waiver" in consumers
+    assert "## Rust lanes (planned, not implemented)" in consumers
+    assert "run-gate lint" in consumers and "run-gate selftest" in consumers
+    assert "Status: R-1 baseline available; Assay adapter not registered." in methodology
+    assert "do not make Assay judgments" in methodology
+    assert "R-1 `tester-unified-rust` image" in unreleased
+    assert "Rust R2 is a known issue, not a per-release waiver." in unreleased
+
+
+def test_hostobs_changelog_passes_cmru_history_validation():
+    repo_root = REPO_ROOT.parent
+    cmru_source = repo_root / "cmru" / "src"
+    sys.path.insert(0, str(cmru_source))
+    from cmru.changelog import _validate_history_structure
+
+    path = repo_root / "hostobs" / "CHANGES.md"
+    markdown = path.read_text(encoding="utf-8")
+    markers, span = _validate_history_structure(
+        SimpleNamespace(name="hostobs"), path, markdown
+    )
+
+    assert len(markers) == 0
+    assert span is not None
+    for entry in (
+        "minimal hostobs Cargo workspace skeleton",
+        "offline Cargo settings",
+        "zero-retry nextest configuration",
+        "cargo-deny policy",
+        "source lint tooling",
+        "coverage-floor checks",
+        "`lint` and `selftest` Run-Gate lanes",
+    ):
+        assert entry in markdown
+
+
+def test_rust_r0_spike_names_the_producer_specific_normalizer():
+    spikes = (REPO_ROOT / "docs/RUST-R0-SPIKES.md").read_text(encoding="utf-8")
+
+    assert (
+        "producer-specific helper `assay/src/assay/coverage_parsers/rust_lcov.py`"
+        in spikes
+    )
+    assert "generic LCOV parser keeps its branch evidence rules" in spikes
+
+
+def test_b242_close_record_is_bound_and_self_contained():
+    backlog = (REPO_ROOT / "nyxloom-trove/4-backlog.md").read_text(encoding="utf-8")
+    b242 = backlog.split("## B242", 1)[1].split("## B243", 1)[0]
+
+    assert "a6d65a8d0c6162be11c46ec01a81954212f7ab46" in b242
+    assert (
+        "sha256:6b97a2ac7e201652e5729ac87dfdf01e8ed47aecd463638032a3404684b5f027"
+        in b242
+    )
+    assert (
+        "rust@sha256:e97df055c54a05160e7c67ba3b2963de6ddb95903911baf8922dbcd1b394f698"
+        in b242
+    )
+    assert "595 tests with 104 skipped" in b242
+    assert "3,210 tests with 1 skipped" in b242
+    assert "reports/rust-r1-REPORT.md" not in b242
+    assert not re.search(r"/home/[^\s`]+", b242)
+
+
 def test_current_verdict_schema_check_rejects_a_stale_note_in_the_latest_section():
     changes = (
         "## [Unreleased]\n\n"

@@ -14447,7 +14447,7 @@ The spike run closes the no-toolchain-in-the-cockpit unknowns needed by R-1: S2 
 
 ## B242 — R-1: `tester-unified-rust` and the hostobs Rust baseline
 
-**Status:** OPEN — planned; depends on B241. **Design:** `assay/docs/DESIGN-RUST-ADAPTER.md` §E/§G R-1 and `assay/docs/RUST-METHODOLOGY.md`.
+**Status:** CLOSED — R-1 acceptance evidence is bound to the final implementation head `a6d65a8d0c6162be11c46ec01a81954212f7ab46` (2026-11-11). **Design:** `assay/docs/DESIGN-RUST-ADAPTER.md` §E/§G R-1 and `assay/docs/RUST-METHODOLOGY.md`.
 
 Build the sibling `tester-unified-rust` image from a digest-pinned stable Rust slim image. It carries Clippy, rustfmt, llvm tools, a musl target, nextest, llvm-cov, cargo-mutants, and cargo-deny; cmru supplies their versions and builds the image with `cargo fetch --locked`. Include an image-cache/lock precheck that fails by naming the missing crate; gates use `--offline --locked`.
 
@@ -14455,7 +14455,9 @@ Import the sampler work into the hostobs workspace skeleton with the planned cra
 
 The T2 `gate` is sequence [`lint`, `assay-r3`, `conformance`]; `assay-r1` is T1 only and is not a T2 member. The T2 Assay lane carries the release-time whole-project R1 floor.
 
-**Close when.** The sibling image, workspace, lock/cache precheck, and both lanes pass the real gate, including an offline locked run and no committed `vendor/` tree.
+**Close evidence (2026-11-11, final implementation head `a6d65a8d0c6162be11c46ec01a81954212f7ab46`).** The local `tester-unified-rust:local` image ID is `sha256:6b97a2ac7e201652e5729ac87dfdf01e8ed47aecd463638032a3404684b5f027`, size 1,712,941,891 bytes, built in 549 seconds; its pinned base is `rust@sha256:e97df055c54a05160e7c67ba3b2963de6ddb95903911baf8922dbcd1b394f698` and its hostobs lock identity is `2582f8a92017a09ce5836d9e9f2652983326ca7e54591731b21dd6c5f94925d9`. On that head, the real `tester-unified-rust selftest` passed 45 tests with Docker network `none`; `hostobs lint` passed with 23 locked archives verified, 9 workspace packages, and 10 Rust sources checked; `hostobs selftest` passed 10 nextest tests and doctests offline/locked, and all nine packages reached 100% line and region coverage against the 90%/85% floors; `assay tooling-tests` passed 595 tests with 104 skipped, including the Rust LCOV normalizer and consumer-doc checks; `run-gate-project selftest` passed 3,210 tests with 1 skipped and covered 268/268 changed lines and 138/138 branches. Repository-relative implementation evidence is in `tester-unified-rust/`, `hostobs/`, and `assay/docs/` plus the Rust LCOV tests. No `hostobs/vendor/` tree is committed.
+
+**Close when.** The sibling image, workspace, lock/cache precheck, and both lanes pass the real gate, including an offline locked run and no committed `vendor/` tree. The recorded close evidence meets each condition.
 
 **Source.** `assay/docs/DESIGN-RUST-ADAPTER.md` §E/§G R-1; `assay/docs/RUST-METHODOLOGY.md`; and R-0 cache behavior in `assay/docs/RUST-R0-SPIKES.md` plus `assay/docs/rust-r0/evidence/s1-raw-probes.md`.
 
@@ -14596,7 +14598,7 @@ describe the same contract.
 
 ## B523 — marker-only cargo-llvm-cov output is read as available-but-empty branch coverage on stable Rust
 
-**Status:** OPEN (filed 2026-11-10); severity: high (anti-vacuity/correctness gap in the planned Rust R1 path); no implementation in this documentation-only filing.
+**Status:** OPEN (filed 2026-11-10; R-1 preparatory normalization added 2026-11-11); severity: high (anti-vacuity/correctness gap in the planned Rust R1 path). The helper and measured fixture tests exist, but no registered Rust adapter consumes the helper yet.
 
 **Problem.** Stable `cargo llvm-cov` emits no `BRDA:` records because stable Rust has no usable branch instrumentation, but it still emits the total markers `BRF:0` and `BRH:0`. Assay's LCOV parser defines branch capability as artifact-level "any `BRDA`/`BRF`/`BRH` line exists". Those zero-valued markers therefore make every file carry an empty real `BranchCoverage`, derive branch capability as `reported`, and leave a lane with `require_branch` able to pass vacuously over zero branches. "No branch producer" and "branch producer found zero branches" must not be the same state.
 
@@ -14622,6 +14624,8 @@ If B243 chooses an adapter-specific LCOV entry point instead of text preprocessi
 - `assay/tests/parsers/coverage/test_coverage_branch_real_fixtures.py`, `test_coverage_parsers_lcov_branches.py`, and the Rust adapter fixture tests added by B243.
 
 **Acceptance test idea.** Commit the real stable-Rust fixture summarized in S2 (or a bounded slice retaining its 13 `SF:` records). Assert it parses successfully, every file has `branches is None`, `derive_branch_capability` is `unavailable`, and an `require_branch` judge refuses `NO_MEASUREMENT` rather than passing zero-of-zero. A control fixture with one real `BRDA:` record remains `reported`; a marker-only fixture with `BRF:1` remains `UNREADABLE_ARTIFACT`. Re-applying the current marker scan makes the first oracle fail.
+
+**R-1 evidence.** `assay/src/assay/coverage_parsers/rust_lcov.py` and `assay/tests/parsers/coverage/test_coverage_rust_lcov_normalization.py` normalize only complete zero-valued pairs from the real R-0 marker-only artifact and preserve real `BRDA` and malformed controls. The Assay `tooling-tests` lane executes these tests. This helper is preparatory: until B243 wires it into a registered adapter, no Rust lane disclosure or `require_branch` refusal is claimed.
 
 **Close when.** The real stable-Rust marker-only fixture, real-`BRDA` control, malformed non-zero-marker case, and `require_branch` refusal cases pass in the registered Rust adapter/lane on a clean final commit; the lane/run disclosure names the normalized no-branch producer fact; and the adapter/consumer documentation states the distinction between unavailable and an available-but-empty branch map. A recorded decision to defer Rust R1 adoption also closes this item when the measured artifact and the anti-vacuity refusal are documented as known constraints of the deferred path.
 
@@ -14785,6 +14789,8 @@ Related: a `--only-candidates`/`--exclude-candidates` remainder is reported like
 **Proposed minimal solution.** Enqueue the existing `self-qualification-provisional` lane automatically when a candidate changes `assay/src/**`, using the controller's host queue rather than a new in-container coverage judge. The queue entry must carry the exact candidate commit and lane identity, and the merge decision must accept only a PASS result whose collected metadata binds that same full commit. A failed, missing, stale, or unbound result blocks merge; there is no fallback to `tooling-tests` and no inferred latest result. Keep the expensive lane out of the synchronous local quick-gate path. Structure the trigger so `assay/analysis/src/**` continues to use the already-required `tester-unified` lane from B534.
 
 **Where.** `assay/nyxloom-trove/WORKFLOW.md` path-trigger rules; `assay/gate/tests/test_release_gate.py` checklist/pin tests; controller host-queue job submission and result collection; the merge-job policy that reads the collected result; focused queue fixtures under `scripts/controller` or `scripts/netcup/runner` as selected by the existing queue implementation.
+
+**Evidence (2026-11-15, Rust R-1 merged-branch host qualification).** Four registered local gates (`tooling-tests`, hostobs `lint` and `selftest`, run-gate-project `selftest`) passed on the merged head, but `self-qualification-provisional` on a host failed R0 with exactly one failure of 10,332 tests: `tests/core/test_import_contracts.py::test_every_test_file_is_in_its_component_folder`, because the branch's new `tests/parsers/coverage/test_rust_lcov_normalization.py` is placed by the layout rule in `tests/core`. The file was renamed `test_coverage_rust_lcov_normalization.py` and the layout rule joined the `tooling-tests` list (pinned in `gate/tests/test_release_gate.py`). The remaining blind spot is every other whole-tree contract test, which only the host lane runs; this entry still owns the automatic enforcement.
 
 **Acceptance test idea.** A fake candidate whose diff touches `assay/src/**` queues exactly one `self-qualification-provisional` job with the full HEAD; a result for that HEAD admits merge only when PASS. A FAIL, absent result, older-head result, or result with missing commit metadata blocks merge with the exact remedy named. An `assay/docs/**` only candidate queues neither host lane. Removing `assay/analysis/src/**` from the existing tester-unified trigger, or silently substituting `tooling-tests`, fails the policy oracle.
 

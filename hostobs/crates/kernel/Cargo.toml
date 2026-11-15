@@ -1,0 +1,8 @@
+[package]
+name = "hostobs-kernel"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[lints.rust]
+unsafe_code = "allow"

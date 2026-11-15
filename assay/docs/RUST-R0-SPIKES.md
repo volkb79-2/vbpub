@@ -55,7 +55,7 @@ The exact detached command, cargo stdout/stderr, summary report, parser invocati
 
 The parser accepted 13 files with absolute keys and `excluded = None` for all files. The probe's executed lines were 21–26 and 35–41; its missing lines were 17–19 and 28–30. The summary was 9,347 regions (1,457 missed; 84.41%), 468 functions (94 missed; 79.91%), and 4,535 lines (734 missed; 83.81%). The tracefile contains 13 `SF:` records and 13 each of `BRF:0` and `BRH:0`; there are no `BRDA:` records.
 
-**R-1 branch decision:** implement marker handling in `assay/src/assay/coverage_parsers/lcov.py`. If the artifact has no `BRDA:` records and contains only zero-valued `BRF:`/`BRH:` markers, report branch capability as unavailable (`branches = None`), not as measured empty branch coverage. Stable Rust lanes keep `require_branch = false`.
+**R-1 branch decision:** implement marker handling in the producer-specific helper `assay/src/assay/coverage_parsers/rust_lcov.py`; the generic LCOV parser keeps its branch evidence rules. If the artifact has no `BRDA:` records and contains only zero-valued `BRF:`/`BRH:` markers, report branch capability as unavailable (`branches = None`), not as measured empty branch coverage. Stable Rust lanes keep `require_branch = false`.
 
 ## S5 — image size, contents, and build time
 

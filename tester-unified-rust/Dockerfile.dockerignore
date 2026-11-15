@@ -1,0 +1,13 @@
+*
+!Cargo.toml
+!Cargo.lock
+!deny.toml
+!coverage-floors.toml
+!.cargo
+!.cargo/**
+!tools
+!tools/**
+!crates
+!crates/**
+!bins
+!bins/**

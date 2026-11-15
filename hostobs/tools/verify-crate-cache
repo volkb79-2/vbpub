@@ -1,0 +1,13 @@
+#!/bin/sh
+set -eu
+
+if [ "$#" -ne 1 ]; then
+    printf 'usage: verify-crate-cache CARGO-LOCK\n' >&2
+    exit 2
+fi
+
+exec python3 /usr/local/lib/hostobs/verify-crate-cache.py \
+    --lock "$1" \
+    --manifest /usr/local/share/rust-crate-cache.sha256 \
+    --baked-lock-sha256 /usr/local/share/hostobs-Cargo.lock.sha256 \
+    --cargo-home /usr/local/cargo

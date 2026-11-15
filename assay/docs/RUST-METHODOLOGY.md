@@ -1,7 +1,9 @@
 # Rust methodology
 
-**Status: planning only.** Assay has no registered Rust adapter. A lane that
+**Status: R-1 baseline available; Assay adapter not registered.** A lane that
 declares `judge.language = "rust"` is still refused as an unknown language.
+The `tester-unified-rust` image and hostobs `lint`/`selftest` lanes provide the
+offline Rust baseline and per-crate floors, but do not make Assay judgments.
 This document preserves the binding operator decisions for the planned Rust
 adapter and the Rust projects that will consume it.
 
@@ -49,7 +51,9 @@ tripwire is cache/lock agreement at the start of a Rust lane.
   doctests in the baseline command. There is no Rust result-report override:
   nextest's documented exit statuses are the R0 witness.
 - R1 is planned through `cargo llvm-cov` LCOV output and assay's existing LCOV
-  parser. It judges changed lines at **100%**.
+  parser. The R-1 hostobs `selftest` lane now generates LCOV and checks the
+  per-crate floors; changed-line judgment at **100%** waits for the R-2
+  adapter.
 - Every crate separately carries an initial floor of **90% line coverage and
   85% region coverage**, in addition to Assay's **100% changed-line rule**.
   The region floor is a lane step over `cargo llvm-cov report --json`; Assay
@@ -57,6 +61,10 @@ tripwire is cache/lock agreement at the start of a Rust lane.
 - Stable Rust produces no LCOV branch records. Branch coverage on stable is a
   documented known issue, not a hidden requirement; `require_branch` stays
   false.
+- R-1 includes a producer-specific helper tested against the measured R-0
+  artifact: it removes only complete zero `BRF`/`BRH` pairs when no `BRDA`
+  records exist. The helper is not consumed by an adapter yet; B523 stays open
+  until R-2 wires the behavior and tests `require_branch` refusal.
 - R2 is planned as ingested evidence from `cargo-mutants` `outcomes.json`, not
   as an Assay-native Rust mutator.
 - R3 is planned through the existing canary mechanism. The import-break

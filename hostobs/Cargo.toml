@@ -1,0 +1,36 @@
+[workspace]
+members = [
+    "crates/act",
+    "crates/client",
+    "crates/eval",
+    "crates/kernel",
+    "crates/model",
+    "crates/proto",
+    "crates/store",
+    "bins/act",
+    "bins/probe",
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[workspace.dependencies]
+# These are caret floors carried forward from the sampler's lock and 14-day
+# policy, measured on 2026-11-05. Cargo.lock remains the resolved authority.
+ruzstd = "0.9.1"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+toml = "0.9.8"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "unwind"
+strip = true

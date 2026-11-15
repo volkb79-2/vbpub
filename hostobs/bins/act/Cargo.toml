@@ -1,0 +1,11 @@
+[package]
+name = "hostobs-act-bin"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+hostobs-act = { path = "../../crates/act" }

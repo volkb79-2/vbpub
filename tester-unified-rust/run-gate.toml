@@ -1,0 +1,19 @@
+schema_version = 1
+
+[lanes.selftest]
+kind = "command"
+environment = "tester-unified-rust"
+network = "none"
+description = "Verify the image cache precheck and Rust workspace guard tests offline."
+argv = [
+  "bash", "-c",
+  '''set -eu
+cd {worktree}/tester-unified-rust
+export PYTHONDONTWRITEBYTECODE=1
+export HOSTOBS_ROOT={worktree}/hostobs
+/usr/local/bin/verify-crate-cache "$HOSTOBS_ROOT/Cargo.lock"
+for script in build-image.sh "$HOSTOBS_ROOT/tools/check-lints.sh" "$HOSTOBS_ROOT/tools/cargo-offline.sh"; do bash -n "$script"; done
+python3 -m unittest discover -s tests -v''',
+]
+clean_tree = true
+budget = "20m"
