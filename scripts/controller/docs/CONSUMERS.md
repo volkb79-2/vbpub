@@ -166,6 +166,37 @@ The builder fails on an unknown marker or a failing `nyxloom-harness extract`
 command. Set `--harness` when the executable is not named `nyxloom-harness` on
 `PATH`.
 
+## Install the compaction recovery hooks
+
+The controller's Claude Code settings point at the repository's hook script; the
+repository ships the script and its documentation, never the controller's own
+`settings.local.json` or `.controller-state/` contents. A hook block looks like
+this (`PreCompact` builds the readback, `SessionStart compact` republishes the
+read order, `PostToolUse` delivers the pressure note):
+
+```bash
+printf '%s' '<hook JSON>' | scripts/controller/hooks/ctx-hooks.py pre-compact \
+  --state-dir "$PWD/.controller-state" --extract nyxloom-harness
+printf '%s' '<hook JSON>' | scripts/controller/hooks/ctx-hooks.py session-start \
+  --state-dir "$PWD/.controller-state"
+printf '%s' '<hook JSON>' | scripts/controller/hooks/ctx-hooks.py post-tool-use \
+  --state-dir "$PWD/.controller-state"
+```
+
+Everything is a flag or an environment variable (`CTX_STATE_DIR`,
+`CTX_EXTRACT_CMD`, `CTX_READBACK_BUDGET_TOKENS` (30000), `CTX_READBACK_TAIL_PROSE_TOKENS`
+(10000), `CTX_READBACK_GOAL_FILE`, `CTX_READBACK_TIMEOUT`, `CTX_HOOK_LOG`). Without
+`--state-dir` the state directory is the hook input's own `cwd/.controller-state`,
+so nothing depends on a fixed checkout path. The pressure ladder is a note every
+50000 tokens from 100000 on, with finishing wording below 200000 and
+stop-at-a-boundary wording from 200000 on. A failed build never fails the
+session: `session-start` then prints the exact manual command, and
+`readback-state.json` carries the failure so the next session sees it. Which
+harness/situation rows are tested is in
+[the compaction checklist](../../../docs/design/ctlstat/HARNESS-COMPACTION-CHECKLIST.md);
+the reasoning is in the
+[hook design](../DESIGN-GUIDE.md#compaction-recovery-hooks).
+
 ## Operate the host queue
 
 After configuring `hosts.local.json`, these commands use only configured

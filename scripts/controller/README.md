@@ -347,6 +347,31 @@ scripts/controller/build-readback.py \
 The builder invokes `nyxloom-harness extract` from `PATH` and fails if the
 marker or harness command is unavailable. See the
 [read-back design](docs/DESIGN-GUIDE.md#bounded-session-read-back).
+## Compaction recovery hooks
+
+`hooks/ctx-hooks.py` is the controller's Claude Code hook script: it delivers the
+context-pressure note, builds the readback from the session transcript before a
+compaction, and republishes the read order after one. It never fails the
+session: every error, timeout (20 s hard cap) or missing transcript exits 0,
+logs one line, and (on SessionStart) prints the exact manual build command
+instead.
+
+```bash
+# the controller points its own settings at the script; nothing is baked in
+printf '%s' '<hook JSON>' | scripts/controller/hooks/ctx-hooks.py pre-compact \
+  --state-dir /path/to/.controller-state
+```
+
+Subcommands: `statusline`, `post-tool-use`, `pre-compact`, `session-start`,
+`stop`. Configuration is flags or environment (`CTX_STATE_DIR`,
+`CTX_EXTRACT_CMD`,
+`CTX_READBACK_BUDGET_TOKENS` = 30000, `CTX_READBACK_TAIL_PROSE_TOKENS` =
+10000, `CTX_READBACK_GOAL_FILE`, `CTX_READBACK_TIMEOUT`, `CTX_HOOK_LOG`); the
+state directory defaults to the hook input's own `cwd/.controller-state`, so no
+checkout path is hard-coded. Which harness/situation rows are tested is in
+[`docs/design/ctlstat/HARNESS-COMPACTION-CHECKLIST.md`](../../../docs/design/ctlstat/HARNESS-COMPACTION-CHECKLIST.md);
+the reason each choice was made is in the
+[read-back design](docs/DESIGN-GUIDE.md#compaction-recovery-hooks).
 
 ## Installing a queue update
 

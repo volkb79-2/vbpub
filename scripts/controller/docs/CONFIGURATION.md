@@ -40,6 +40,13 @@ Useful settings:
 | `OPENCODE_MODEL` | Full OpenCode provider/model identifier; overrides `OPENCODE_PROVIDER`. |
 | `NETCUP_TOKEN_FILE` | Local provider token-file location for the configured `api_check` command. |
 | `REMOTE_GATE_HOSTS` | Host table used by `remote-gate.py`; defaults to `hosts.local.json`. |
+| `CTX_STATE_DIR` | Optional controller state directory for `hooks/ctx-hooks.py`; defaults to the hook input's own `cwd/.controller-state`. |
+| `CTX_EXTRACT_CMD` | The extract command `hooks/ctx-hooks.py` runs; defaults to `nyxloom-harness` on `PATH`. |
+| `CTX_READBACK_BUDGET_TOKENS` | Readback budget for a controller session; defaults to `30000` (a spawned session's controller passes a smaller flag or this variable). |
+| `CTX_READBACK_TAIL_PROSE_TOKENS` | Recent-prose tail of the readback; defaults to `10000`. |
+| `CTX_READBACK_GOAL_FILE` | Optional file pinning the readback's goal anchor instead of the session's first prompt. |
+| `CTX_READBACK_TIMEOUT` | Seconds allowed for the readback build; defaults to `15` and is capped at the hard 20 s limit. |
+| `CTX_HOOK_LOG` | Hook log path; defaults to `<state dir>/hooks/hook-log.jsonl`. |
 
 ## `hosts.local.json`
 

@@ -153,6 +153,46 @@ the sections and marks the result as trimmed. Missing markers and a failing
 `nyxloom-harness extract` command fail instead of producing a partial
 read-back.
 
+## Compaction recovery hooks
+
+`hooks/ctx-hooks.py` exists because a compaction is the one moment a long
+controller session cannot recover from alone. The decisions below follow from
+the documented harness facts (measured in `docs/design/ctlstat/`):
+
+- **The hook never fails the session.** A hook that raises, hangs or exits
+towards the harness does not merely lose the readback, it can block the
+compaction itself. So every path exits 0, the extract runs under a 15 s
+default / **20 s hard cap**, and a failure is made visible in two safe places
+instead: one log line, and (on `session-start`) the exact command to build the
+readback by hand. A failure is also recorded durably in
+`readback-state.json`, because the next session reads that state, not the log.
+- **The whole session is the goal anchor's source, but the anchor is opt-in.**
+`pre-compact` runs the preset WITHOUT `--goal-prompt`: a controller session's
+anchor is its `plan.yaml`, and its goal shifts (AGENTS.md). `--goal-file` is
+forwarded when the controller pins one for a spawned or targeted session, and
+the same flag is repeated in the manual fallback command, so a hand-built
+readback keeps the same anchor.
+- **State, not a checkout path.** The state directory comes from a flag, then
+`CTX_STATE_DIR`, then the hook input's own `cwd/.controller-state`. No
+repository path, transcript path or 30000/10000 budget is compiled in; the
+budgets are flags/env with those documented defaults.
+- **The numbering is crash-safe.** `readback-N.md` takes one past the highest
+number ON DISK, not one past a counter in a state file, so a state file lost to
+a crash cannot make a later readback overwrite an earlier one. The previous
+readback's marker is read from state and passed as `--since`, which is what
+makes two consecutive readbacks never duplicate each other.
+- **A subagent's own transcript is used.** Inside a subagent the hook input's
+`transcript_path` is the PARENT's transcript (measured 2026-11-14); reporting
+the parent's fill caused a false "past 200k" note that made a subagent stop
+early. The hook resolves
+`<parent dir>/<session_id>/subagents/agent-<agent_id>.jsonl` and reports nothing
+when that file is absent, rather than substituting the parent's size.
+
+None of this replaces the harness's own compaction: on a harness with no
+PreCompact hook the session builds its own readback on resume with the same
+command (see
+[`docs/design/ctlstat/HARNESS-COMPACTION-CHECKLIST.md`](../../../docs/design/ctlstat/HARNESS-COMPACTION-CHECKLIST.md)).
+
 ## Queue lane validation
 
 Each `queue_lanes` value is one non-empty `project|lane` pair. The shared
