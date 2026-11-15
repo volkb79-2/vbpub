@@ -60,6 +60,8 @@ docs landed together.
 | NC-52 | Campaign supervision logic (attempts, fleet, memory guard, merge) lives in the netcup runner scripts although it is provider-neutral; it should move out of the netcup script | Should-fix | OPEN 2026-11-12 (design) |
 | NC-53 | the Run-Gate 25.6.0 image rollout did not synchronize runner scripts or verify the selected private Run-Gate profile | Should-fix | OPEN 2026-11-12 |
 | NC-54 | Pre-reinstall helpers use a fixed release-program root; remote-gate's output root is configurable | Minor | OPEN 2026-11-13 |
+| NC-55 | A deterministic budget-exceeded candidate is reported as stalled | Should-fix | OPEN 2026-11-13 |
+| NC-56 | T3 bundle import can omit release tags needed to derive the required Assay version | Should-fix | OPEN 2026-11-14 |
 
 ---
 
@@ -1346,3 +1348,15 @@ and exit-status tests.
 candidate finishes with that outcome reported and does not take the stalled
 exit-4 path. A genuinely non-progressing campaign still reports stalled with
 exit 4, and the saved candidate evidence is retained in both cases.
+
+## NC-56 — T3 bundle import can omit release tags needed to derive the required Assay version
+
+**Status:** OPEN (filed 2026-11-14); first observed on both test-host campaign launches.
+
+**Problem.** `sync-from-devcontainer` clones a bundle with `--single-branch`. If the bundle contains only the branch and a small subset of tag refs, the imported checkout lacks the `assay-v*` tags used by setuptools-scm. The CMRU R2 launch required Assay 12.2.0 or newer but derived `0.1.1.dev12052` from the tag-incomplete checkout and refused in four seconds on both hosts. The version guard was correct and remained enabled; the wasted launch came from the sync recipe not carrying all tags.
+
+**Needed.** Bundle the reviewed branch together with all release tags, and fetch `refs/tags/*` from that bundle into the imported checkout. Add a preflight with a clear missing-tags diagnosis before a campaign is launched. Do not weaken the Assay version floor.
+
+**Where.** `scripts/netcup/runner/sync-from-devcontainer`, its focused tests, and the P4 import instructions in `scripts/netcup/runner/README.md`. The Run-Gate project also documents this import at `run-gate-project/docs/DESIGN-lane-rework-2026-11.md` §3.6; keep that consumer guidance synchronized when this entry is implemented. This issue is filed here because the netcup project owns the sync script.
+
+**Close when.** A branch-plus-all-tags bundle imports with the required release tags present, an incomplete bundle is diagnosed before the lane starts, and the runner README and the referenced Run-Gate consumer instructions describe the same tag-complete recipe.
