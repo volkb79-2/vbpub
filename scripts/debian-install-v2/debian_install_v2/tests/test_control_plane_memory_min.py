@@ -98,7 +98,7 @@ def test_control_plane_memory_min_drop_ins_are_reloaded_after_the_last_write(tmp
 def test_control_plane_memory_min_sum_is_in_the_measured_profile_band():
     total_bytes = sum(value[1] for value in CONTROL_PLANE_MEMORY_MIN.values())
     assert 450_000_000 <= total_bytes <= 1_500_000_000
-    assert total_bytes == 544 * 1024 * 1024
+    assert total_bytes == 640 * 1024 * 1024
 
 
 def test_control_plane_memory_min_readback_accepts_exact_systemd_values(tmp_path):
@@ -109,8 +109,11 @@ def test_control_plane_memory_min_readback_accepts_exact_systemd_values(tmp_path
     observed_units = []
 
     def systemctl_show(argv, description=""):
-        assert argv[:4] == ["/usr/bin/systemctl", "show", "-p", "MemoryMin"]
-        unit = argv[4]
+        assert argv[:3] == ["/usr/bin/systemctl", "show", "-p"]
+        prop, unit = argv[3:5]
+        if prop == "LoadState":
+            return "LoadState=loaded\n"
+        assert prop == "MemoryMin"
         observed_units.append(unit)
         return f"MemoryMin={expected[unit]}\n"
 
@@ -126,7 +129,10 @@ def test_control_plane_memory_min_readback_rejects_missing_zero_or_wrong_values(
     installer = make_installer(tmp_path, dry_run=False)
 
     def systemctl_show(argv, description=""):
-        unit = argv[4]
+        prop, unit = argv[3:5]
+        if prop == "LoadState":
+            return "LoadState=loaded\n"
+        assert prop == "MemoryMin"
         value = reported if unit == "docker.service" else str(
             CONTROL_PLANE_MEMORY_MIN[unit][1]
         )
@@ -141,7 +147,10 @@ def test_disabled_docker_omits_units_from_dropins_and_readback(tmp_path):
     installer = make_installer(tmp_path, run_docker_install=False)
     installer._configure_control_plane_memory_min()
 
-    expected_units = ("ssh.service", "systemd-journald.service")
+    expected_units = (
+        "ssh.service", "systemd-journald.service",
+        "cgprofiled.service", "mdt-psi-guard.service",
+    )
     assert set(installer.actions.dry_run_writes) == {
         f"/etc/systemd/system/{unit}.d/{CONTROL_PLANE_MEMORY_MIN_DROPIN}"
         for unit in expected_units
@@ -151,13 +160,108 @@ def test_disabled_docker_omits_units_from_dropins_and_readback(tmp_path):
     observed_units = []
 
     def systemctl_show(argv, description=""):
-        unit = argv[4]
+        prop, unit = argv[3:5]
+        if prop == "LoadState":
+            return "LoadState=loaded\n"
+        assert prop == "MemoryMin"
         observed_units.append(unit)
         return f"MemoryMin={CONTROL_PLANE_MEMORY_MIN[unit][1]}\n"
 
     installer._run = systemctl_show
     installer._verify_control_plane_memory_min()
     assert observed_units == list(expected_units)
+
+
+def test_optional_control_plane_units_may_be_absent(tmp_path):
+    installer = make_installer(tmp_path, dry_run=False)
+    optional_states = {
+        "cgprofiled.service": "not-found",
+        "mdt-psi-guard.service": "masked",
+    }
+    memory_readbacks = []
+
+    def systemctl_show(argv, description=""):
+        prop, unit = argv[3:5]
+        if prop == "LoadState":
+            state = optional_states.get(unit, "loaded")
+            return f"LoadState={state}\n"
+        assert prop == "MemoryMin"
+        memory_readbacks.append(unit)
+        return f"MemoryMin={CONTROL_PLANE_MEMORY_MIN[unit][1]}\n"
+
+    installer._run = systemctl_show
+    installer._verify_control_plane_memory_min()
+    assert memory_readbacks == [
+        "ssh.service", "docker.service", "containerd.service", "systemd-journald.service",
+    ]
+
+
+@pytest.mark.parametrize("load_output", ["", "LoadState=activating\n"])
+def test_profile_verification_rejects_a_unit_without_loaded_state(tmp_path, load_output):
+    installer = make_installer(tmp_path, dry_run=False)
+    queries = []
+
+    def systemctl_show(argv, description=""):
+        prop, unit = argv[3:5]
+        queries.append((prop, unit))
+        if prop == "LoadState":
+            return load_output if unit == "ssh.service" else "LoadState=loaded\n"
+        return f"MemoryMin={CONTROL_PLANE_MEMORY_MIN[unit][1]}\n"
+
+    installer._run = systemctl_show
+    with pytest.raises(InstallerError, match=r"ssh\.service LoadState readback"):
+        installer._verify_control_plane_memory_min()
+    assert queries == [("LoadState", "ssh.service")]
+
+
+@pytest.mark.parametrize("missing_state", ["not-found", "masked"])
+def test_profile_verification_rejects_a_missing_mandatory_unit(tmp_path, missing_state):
+    installer = make_installer(tmp_path, dry_run=False)
+    queries = []
+
+    def systemctl_show(argv, description=""):
+        prop, unit = argv[3:5]
+        queries.append((prop, unit))
+        if prop == "LoadState":
+            state = missing_state if unit == "ssh.service" else "loaded"
+            return f"LoadState={state}\n"
+        return f"MemoryMin={CONTROL_PLANE_MEMORY_MIN[unit][1]}\n"
+
+    installer._run = systemctl_show
+    with pytest.raises(
+        InstallerError,
+        match=rf"ssh\.service is mandatory.*LoadState={re.escape(missing_state)}",
+    ):
+        installer._verify_control_plane_memory_min()
+    assert queries == [("LoadState", "ssh.service")]
+
+
+@pytest.mark.parametrize(
+    ("unit", "reported"),
+    [
+        ("cgprofiled.service", "0"),
+        (
+            "mdt-psi-guard.service",
+            str(CONTROL_PLANE_MEMORY_MIN["mdt-psi-guard.service"][1] + 1),
+        ),
+    ],
+)
+def test_loaded_optional_units_still_require_their_exact_memory_min(
+    tmp_path, unit, reported
+):
+    installer = make_installer(tmp_path, dry_run=False)
+
+    def systemctl_show(argv, description=""):
+        prop, current_unit = argv[3:5]
+        if prop == "LoadState":
+            return "LoadState=loaded\n"
+        expected = CONTROL_PLANE_MEMORY_MIN[current_unit][1]
+        value = reported if current_unit == unit else str(expected)
+        return f"MemoryMin={value}\n"
+
+    installer._run = systemctl_show
+    with pytest.raises(InstallerError, match=rf"{re.escape(unit)} MemoryMin readback"):
+        installer._verify_control_plane_memory_min()
 
 
 def test_memory_min_is_installed_and_checked_by_both_install_phases_and_verify():
@@ -193,7 +297,10 @@ def test_three_user_documents_explain_what_why_and_how():
     assert "control-plane service memory protection" in readme
     assert "docs/design-guide.md#control-plane-memory-protection" in readme
     assert "450–500 mb" in design and "unmeasured" in design
+    assert "640 mib" in design and "over-reserved by design" in design
     assert "control-plane-memory.md" in design
     assert "cgprofiled.service" in design and "mdt-psi-guard.service" in design
-    assert "systemctl show -p memorymin \"$unit\"" in consumers
+    assert "mandatory" in design and "optional" in design
+    assert "loadstate=not-found" in consumers
+    assert "systemctl show -p loadstate -p memorymin \"$unit\"" in consumers
     assert "operator-approved in-place drop-in application" in consumers

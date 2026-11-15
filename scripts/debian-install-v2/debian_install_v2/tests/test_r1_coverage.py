@@ -162,9 +162,13 @@ def test_cli_verify_after_manifest_is_read_only(tmp_path, monkeypatch):
     observed_units = []
 
     def systemctl_show(self, argv, description=""):
-        assert argv[:4] == ["/usr/bin/systemctl", "show", "-p", "MemoryMin"]
-        observed_units.append(argv[4])
-        return f"MemoryMin={expected_memory_min[argv[4]]}\n"
+        assert argv[:3] == ["/usr/bin/systemctl", "show", "-p"]
+        prop, unit = argv[3:5]
+        if prop == "LoadState":
+            return "LoadState=loaded\n"
+        assert prop == "MemoryMin"
+        observed_units.append(unit)
+        return f"MemoryMin={expected_memory_min[unit]}\n"
 
     monkeypatch.setattr(Installer, "_run", systemctl_show)
     assert main(["verify", "--config", write_config(tmp_path)]) == 0

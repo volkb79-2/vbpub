@@ -40,6 +40,7 @@ from .templates import (
     CGROUP2_FLAGS_SERVICE,
     CONTROL_PLANE_MEMORY_MIN,
     CONTROL_PLANE_MEMORY_MIN_DROPIN,
+    CONTROL_PLANE_MEMORY_MIN_OPTIONAL_UNITS,
     DOCKER_CLEANUP_SERVICE,
     DOCKER_CLEANUP_TIMER,
     FSTRIM_OVERRIDE,
@@ -1011,7 +1012,7 @@ MaxFileSec=1month
         self._mark_step("journald_config", "success", "persistent 1G/60d journal")
 
     def _control_plane_memory_min_entries(self) -> dict[str, tuple[str, int]]:
-        """Return the units this install owns, omitting Docker when it is disabled."""
+        """Return profile units, omitting Docker when this profile disables it."""
         entries = dict(CONTROL_PLANE_MEMORY_MIN)
         if not self.config.run_docker_install:
             entries.pop("docker.service")
@@ -1032,11 +1033,35 @@ MaxFileSec=1month
         )
 
     def _verify_control_plane_memory_min(self, *, mark_step: bool = True) -> None:
-        """Require systemd to report each install-owned service's exact MemoryMin."""
+        """Check exact floors for mandatory units and any installed optional units."""
         if self.actions.dry_run:
             return
         entries = self._control_plane_memory_min_entries()
+        verified_units = []
+        absent_optional_units = []
         for unit, (_memory_min, expected_bytes) in entries.items():
+            load_output = self._run(
+                ["/usr/bin/systemctl", "show", "-p", "LoadState", unit],
+                f"verify {unit} load state",
+            ) or ""
+            load_states = [
+                line.partition("=")[2].strip()
+                for line in load_output.splitlines()
+                if line.startswith("LoadState=")
+            ]
+            if load_states == ["not-found"] or load_states == ["masked"]:
+                if unit in CONTROL_PLANE_MEMORY_MIN_OPTIONAL_UNITS:
+                    absent_optional_units.append(unit)
+                    continue
+                raise InstallerError(
+                    f"{unit} is mandatory in this profile but systemd reports "
+                    f"LoadState={load_states[0]}"
+                )
+            if load_states != ["loaded"]:
+                reported = ", ".join(load_states) if load_states else "missing"
+                raise InstallerError(
+                    f"{unit} LoadState readback is {reported}; expected loaded"
+                )
             output = self._run(
                 ["/usr/bin/systemctl", "show", "-p", "MemoryMin", unit],
                 f"verify {unit} MemoryMin",
@@ -1052,11 +1077,21 @@ MaxFileSec=1month
                 raise InstallerError(
                     f"{unit} MemoryMin readback is {reported}; expected {expected} bytes"
                 )
+            verified_units.append(unit)
         if mark_step:
+            detail = (
+                "systemctl read back the expected MemoryMin for "
+                + ", ".join(verified_units)
+            )
+            if absent_optional_units:
+                detail += (
+                    "; optional units absent or masked: "
+                    + ", ".join(absent_optional_units)
+                )
             self._mark_step(
                 "control_plane_memory_min",
                 "success",
-                "systemctl read back the expected MemoryMin for " + ", ".join(entries),
+                detail,
             )
 
     def _install_docker(self) -> None:

@@ -41,31 +41,42 @@ injection cases remain rejected; and the registered `r0-r1` lane passes.
 
 ## OPEN (DIV2-BL-08, 2026-11-15): apply control-plane MemoryMin to completed installations
 
-The `div2-memorymin` installer change writes fixed `MemoryMin` drop-ins on a
-fresh install or an incomplete stage-two resume. It does not retrofit hosts
-whose install-complete marker is already present. The two 8 GiB hosts in the
-2026-11-14 read-only measurement therefore still need either an in-place
-application of the documented drop-ins or a reinstall. This is operator-
-approved host work to schedule separately; do not run the installer or edit
-hosts as part of this backlog item. Keep fleetd-reserve's per-service list
-aligned with `docs/CONTROL-PLANE-MEMORY.md`.
+The `div2-memorymin` installer change writes fixed `MemoryMin` drop-ins for all
+six fleetd units on the default profile (four when Docker installation is
+disabled), including on an incomplete stage-two resume. It does not retrofit
+hosts whose install-complete marker is already present. The two
+8 GiB hosts in the 2026-11-14 read-only measurement therefore still need either
+an in-place application of the documented drop-ins or a reinstall. This is
+operator-approved host work to schedule separately; do not run the installer
+or edit hosts as part of this backlog item. Verification permits absent or
+masked cgprofile/psi-guard optional units; fleetd treats either as a missing
+fact and keeps its profile-constant fallback until all six facts are positive.
+Keep fleetd-reserve's per-service list aligned with
+`docs/CONTROL-PLANE-MEMORY.md`.
 
-## OPEN (DIV2-BL-09, 2026-11-15): control-plane MemoryMin is incomplete and its effect is unconfirmed
+## OPEN (DIV2-BL-09, 2026-11-15): effective ancestor protection is unconfirmed
 
-Found in review of `div2-memorymin`. (1) fleetd's reserve uses the per-service
-sum only when all six units (`ssh`, `docker`, `containerd`, `systemd-journald`,
-`cgprofiled`, `mdt-psi-guard`) report a positive `MemoryMin`; this installer
-supplies four, and neither cgprofile (`MemoryMin` on `cgprofile.slice` only) nor
-mdt-cockpit host-setup (no unit-level value for `mdt-psi-guard.service`) sets
-the other two, so fleetd keeps using its profile constant. The owning backlogs
-(cgprofile, mdt-cockpit) need an entry each; the alternative is for fleetd to
-sum reported values and add the constant only for the missing units. (2) The
-installer sets no `MemoryMin` on `system.slice`; the kernel caps a service's
-effective protection by its ancestors, so on a live test VM compare
-`systemctl show -p MemoryMin` with the cgroup's `memory.min` and the effective
-protection before claiming reclaim protection. (3) `debian-install-v2 verify`
-now fails on every host installed before this change until the drop-ins are
-applied (see DIV2-BL-08). Not done here: no host work.
+The follow-up writes drop-ins for all six fleetd units. The canonical units
+`cgprofiled.service` (installed by `cgprofiled install`) and
+`mdt-psi-guard.service` (installed by mdt-cockpit host-setup) are optional in
+the DI2 profile; an absent or masked optional unit is skipped by verification.
+The six fixed floors total 640 MiB (671,088,640 bytes) on the default profile,
+deliberately above the measured whole-plane RSS to reserve conservatively for
+fleetd. The fact collector must report each absent optional unit as missing,
+not zero, so fleetd's current all-six-positive rule falls back to its profile
+constant until all six units are present and report positive values. Mandatory
+in the default DI2 profile:
+`ssh.service`, `systemd-journald.service`, `docker.service`, and
+`containerd.service`; the Docker pair is omitted when Docker installation is
+disabled.
+
+The remaining caveat is effective reclaim protection. DI2 sets no
+`MemoryMin` on `system.slice`, and the kernel limits a child service's effective
+protection by ancestor cgroups. On a live test VM, compare
+`systemctl show -p MemoryMin` with the unit cgroup's `memory.min` and effective
+protection before claiming the values protect pages from reclaim. No host work
+was done here. Existing completed installs still need the separate,
+operator-approved retrofit or reinstall recorded in DIV2-BL-08.
 
 ## DONE in code, OPEN live (div2-data-area-v2, 2026-11-05): explicit `partitioning` plan
 

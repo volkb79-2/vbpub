@@ -15,7 +15,13 @@ CONTROL_PLANE_MEMORY_MIN = {
     "docker.service": ("256M", 256 * 1024 * 1024),
     "containerd.service": ("128M", 128 * 1024 * 1024),
     "systemd-journald.service": ("128M", 128 * 1024 * 1024),
+    "cgprofiled.service": ("64M", 64 * 1024 * 1024),
+    "mdt-psi-guard.service": ("32M", 32 * 1024 * 1024),
 }
+CONTROL_PLANE_MEMORY_MIN_OPTIONAL_UNITS = frozenset({
+    "cgprofiled.service",
+    "mdt-psi-guard.service",
+})
 CONTROL_PLANE_MEMORY_MIN_DROPIN = "90-vbpub-memory-min.conf"
 
 

@@ -500,10 +500,12 @@ sysctl file carries a one-line "why" per value:
 
 ### Control-plane service memory protection
 
-The default install writes fixed `MemoryMin` drop-ins for the SSH, Docker,
-containerd, and journald services, then checks the values with systemd. These
-are reclaim-protection floors, not usage limits, and do not scale with installed
-RAM. The exact service list, values, and evidence are in the
+The default install writes fixed `MemoryMin` drop-ins for SSH, Docker,
+containerd, journald, cgprofiled, and psi-guard, then checks installed units
+with systemd. cgprofiled and psi-guard are optional; a missing optional unit is
+skipped by verification and is a missing fact for fleetd-reserve. These fixed
+values do not scale with installed RAM. The exact service list, values, and
+evidence are in the
 [control-plane memory design](docs/DESIGN-GUIDE.md#control-plane-memory-protection)
 and [value table](docs/CONTROL-PLANE-MEMORY.md).
 
