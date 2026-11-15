@@ -1,0 +1,1 @@
+test integration::forced_failure ... FAILED

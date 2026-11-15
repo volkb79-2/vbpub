@@ -73,6 +73,9 @@ class _BindingAdapter:
             return key[len(prefix) + 1 :]
         return key
 
+    def normalize_coverage_text(self, text: str) -> str:
+        return text
+
     def statement_spans(self, text: str):
         return None
 

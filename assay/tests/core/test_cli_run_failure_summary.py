@@ -300,6 +300,17 @@ PYTEST_OUTPUT = (
         ("[1, 2]\n", None),
         (" FAIL  src/a.test.ts > suite > does a thing\n", "src/a.test.ts > suite > does a thing"),
         ("  ● Suite › case one\n  ● Suite › case two\n", "Suite › case one"),
+        (
+            "    FAIL [  0.013s] hostobs::coverage::reject_empty\n",
+            "hostobs::coverage::reject_empty",
+        ),
+        (
+            "        FAIL [   0.010s] (2/2) assay-rust-fixture integration::reject_empty\n",
+            "assay-rust-fixture integration::reject_empty",
+        ),
+        ("test coverage::reject_empty ... FAILED\n", "coverage::reject_empty"),
+        ("test coverage::ok ... ok\n", None),
+        (" FAIL [not-a-duration] ambiguous\n", None),
         ("  FAIL  src/a.test.ts\n", None),
         ("all good\n", None),
         ("", None),

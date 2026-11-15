@@ -91,6 +91,12 @@ export PYTHONPATH="analysis/src:{worktree}/libraries/cowtree/src"
   tests/core/test_trust_boundary.py \
   tests/core/test_dataclass_contract.py \
   tests/core/test_b105_source_coverage_controls.py \
+  tests/core/test_cli_run_failure_summary.py \
+  tests/core/test_runner_evaluate_r1_wave1.py \
+  tests/adapters/rust/test_adapters_rust_has_executable_code.py \
+  tests/adapters/rust/test_adapters_rust_registration.py \
+  tests/adapters/rust/test_adapters_rust_output_fixtures.py \
+  tests/adapters/rust/test_adapters_rust_coverage_text.py \
   tests/core/test_import_contracts.py "$@"''',
   "tooling-tests",
 ]
@@ -99,6 +105,31 @@ clean_tree = false
 budget = "30m"
 
 [lanes.tooling-tests.resources]
+memory = "1g"
+
+# B243: exercise nextest, libtest and cargo-llvm-cov in the offline Rust image.
+# The lane captures real producer output under .assay/rust-r1-real; committed
+# failure-line fixtures are checked by the tester-unified unit lane above.
+[lanes.rust-r1-qualification]
+kind = "command"
+environment = "tester-unified-rust"
+network = "none"
+description = "Qualify Assay Rust R1 against real offline Cargo tool output."
+argv = [
+  "bash", "-c",
+  '''set -eu
+cd {worktree}/assay
+export PYTHONDONTWRITEBYTECODE=1
+export PYTHONPATH="src"
+python3 tools/qualify_rust_r1_real.py "$@"''',
+  "rust-r1-qualification",
+]
+accepts_args = true
+clean_tree = false
+budget = "20m"
+artifacts = [".assay/rust-r1-real"]
+
+[lanes.rust-r1-qualification.resources]
 memory = "1g"
 
 # Re-run only the contention-sensitive hung Docker client test while a sibling

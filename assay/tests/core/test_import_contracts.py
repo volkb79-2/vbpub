@@ -1,7 +1,7 @@
 """Component import contracts and test-directory layout (B130, A-478).
 
 Part 1 - import contracts.  The judge (``src/assay``) is one package with named
-components: the core, the four language adapters, three parser families and
+components: the core, the five language adapters, three parser families and
 the CLI composition root (the analysis package is outside it, A-478).  This test walks
 every module's imports with ``ast`` (module level, function level and
 ``TYPE_CHECKING``) and refuses any edge that crosses a component boundary the
@@ -31,7 +31,7 @@ PACKAGE_DIR = SRC_ROOT / "assay"
 def component(m: str) -> str:
     if m in ("assay.adapters", "assay.adapters.base"):
         return "core"
-    for lang in ("python", "javascript", "go", "sql"):
+    for lang in ("python", "javascript", "go", "sql", "rust"):
         if m.startswith(f"assay.adapters.{lang}"):
             return f"adapter.{lang}"
     for pkg, name in (
@@ -73,6 +73,11 @@ def allowed(importer: str, imported: str) -> bool:
     if ci == ct:
         return True
     if ci.startswith("adapter."):
+        if (
+            importer == "assay.adapters.rust"
+            and imported == "assay.coverage_parsers.rust_lcov"
+        ):
+            return True
         return imported in ADAPTER_DEPS
     if ci.startswith("parsers."):
         return imported in PARSER_DEPS
@@ -148,6 +153,7 @@ def test_allowed_refuses_and_accepts_the_documented_edges():
     accepted = [
         ("assay.coverage", "assay.coverage_parsers.lcov"),
         ("assay.adapters.go", "assay.adapters.go_modfile"),
+        ("assay.adapters.rust", "assay.coverage_parsers.rust_lcov"),
         ("assay.adapters.go", "assay.records"),
         ("assay.adapters.go_stmtpos", "assay.redaction"),
         ("assay.coverage_parsers.lcov", "assay.guards"),
@@ -192,16 +198,18 @@ def unmapped_modules(paths: dict[str, Path]) -> list[str]:
 
 def test_no_adapter_or_parser_module_falls_into_core_by_default():
     assert unmapped_modules(_module_paths()) == []
-    synthetic = {"assay.adapters.rust": PACKAGE_DIR / "adapters" / "rust.py"}
-    assert unmapped_modules(synthetic) == ["assay.adapters.rust"]
+    synthetic = {"assay.adapters.ruby": PACKAGE_DIR / "adapters" / "ruby.py"}
+    assert unmapped_modules(synthetic) == ["assay.adapters.ruby"]
 
 
 # --------------------------------------------------------------------------
 # Part 2: test-directory layout
 # --------------------------------------------------------------------------
 
-EXCEPTIONS = {"test_evaluate_javascript_end_to_end.py": "parsers/coverage"}  # imports test_coverage_istanbul_default_arg_signature
-LANGS = ("python", "javascript", "go", "sql")
+EXCEPTIONS = {
+    "test_evaluate_javascript_end_to_end.py": "parsers/coverage",
+}  # this test imports the Istanbul parser signature
+LANGS = ("python", "javascript", "go", "sql", "rust")
 
 
 def expected_dir(name: str) -> str:

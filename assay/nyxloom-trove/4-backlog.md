@@ -14463,13 +14463,23 @@ The T2 `gate` is sequence [`lint`, `assay-r3`, `conformance`]; `assay-r1` is T1 
 
 ## B243 — R-2: Rust R1 adapter
 
-**Status:** OPEN — planned; depends on B242. **Design:** `assay/docs/DESIGN-RUST-ADAPTER.md` §A-B, §G R-2, and `assay/docs/RUST-METHODOLOGY.md`.
+**Status:** PARTIAL (2026-11-15) — Assay R1 adapter and qualification are implemented; hostobs consumer integration remains open. **Design:** `assay/docs/DESIGN-RUST-ADAPTER.md` §A-B, §G R-2, and `assay/docs/RUST-METHODOLOGY.md`.
 
 Register a pure-Python `RustAdapter` at R1 with `*.rs` source globs and cargo-llvm-cov's documented `vendor`/`target` and test-path exclusions. Use `requires_span_attribution = false`, no external tools in the adapter, a conservative mask-and-lex executable-code check, and identity coverage-key normalization. R1 declares LCOV, changed-line mode at 100%, and a line-granularity known issue; every crate has 90% line / 85% region floors as lane steps. Add nextest/libtest first-failure recognizers and real-toolchain fixtures generated in the Rust image. Replace hostobs `selftest` with `assay-r1` and document the still-unregistered R2/R3 path. Milestone 2 is 100% changed-line coverage judged by Assay.
 
 The `assay-r1` lane is T1 only. T2 `gate` is sequence [`lint`, `assay-r3`, `conformance`], without `assay-r1`; the `assay-r3` lane carries the release-time whole-project R1 floor.
 
 **Close when.** Real-toolchain fixtures, failure recognizers, adapter checks, T1 `assay-r1`, and the T2 sequence pass their registered lanes on the supported Rust image.
+
+**R-2 Assay-side evidence (2026-11-15).** The built-in registry now reaches
+Rust R1 only; the Rust-image qualification runs real nextest, libtest, and
+cargo-llvm-cov commands offline, including `--no-tests=fail`. The Rust LCOV
+normalizer is consumed before the shared parser, and the measured R-0 artifact
+plus an R1 `require_branch` refusal are covered. The consumer-side hostobs
+`assay-r1` lane and T1/T2 sequence were not changed because this worktree's
+authorized file boundary is `assay/`; the item remains partial until those
+registered hostobs lanes adopt the adapter. Assay's own B105 target inventories
+include the new module, preserving its existing full-source R0/R1 floor.
 
 **Source.** `assay/docs/DESIGN-RUST-ADAPTER.md` §A-B/§G R-2 and `assay/docs/RUST-METHODOLOGY.md`.
 
@@ -14598,7 +14608,7 @@ describe the same contract.
 
 ## B523 — marker-only cargo-llvm-cov output is read as available-but-empty branch coverage on stable Rust
 
-**Status:** OPEN (filed 2026-11-10; R-1 preparatory normalization added 2026-11-11); severity: high (anti-vacuity/correctness gap in the planned Rust R1 path). The helper and measured fixture tests exist, but no registered Rust adapter consumes the helper yet.
+**Status:** PARTIAL (2026-11-15; filed 2026-11-10, normalization added 2026-11-11); severity: high (anti-vacuity/correctness gap in the Rust R1 path). The registered adapter consumes the helper, with measured-fixture and `require_branch` tests; hostobs consumer-lane disclosure remains to be integrated.
 
 **Problem.** Stable `cargo llvm-cov` emits no `BRDA:` records because stable Rust has no usable branch instrumentation, but it still emits the total markers `BRF:0` and `BRH:0`. Assay's LCOV parser defines branch capability as artifact-level "any `BRDA`/`BRF`/`BRH` line exists". Those zero-valued markers therefore make every file carry an empty real `BranchCoverage`, derive branch capability as `reported`, and leave a lane with `require_branch` able to pass vacuously over zero branches. "No branch producer" and "branch producer found zero branches" must not be the same state.
 
@@ -14625,7 +14635,7 @@ If B243 chooses an adapter-specific LCOV entry point instead of text preprocessi
 
 **Acceptance test idea.** Commit the real stable-Rust fixture summarized in S2 (or a bounded slice retaining its 13 `SF:` records). Assert it parses successfully, every file has `branches is None`, `derive_branch_capability` is `unavailable`, and an `require_branch` judge refuses `NO_MEASUREMENT` rather than passing zero-of-zero. A control fixture with one real `BRDA:` record remains `reported`; a marker-only fixture with `BRF:1` remains `UNREADABLE_ARTIFACT`. Re-applying the current marker scan makes the first oracle fail.
 
-**R-1 evidence.** `assay/src/assay/coverage_parsers/rust_lcov.py` and `assay/tests/parsers/coverage/test_coverage_rust_lcov_normalization.py` normalize only complete zero-valued pairs from the real R-0 marker-only artifact and preserve real `BRDA` and malformed controls. The Assay `tooling-tests` lane executes these tests. This helper is preparatory: until B243 wires it into a registered adapter, no Rust lane disclosure or `require_branch` refusal is claimed.
+**R-1/R-2 evidence.** `assay/src/assay/coverage_parsers/rust_lcov.py` and `assay/tests/parsers/coverage/test_coverage_rust_lcov_normalization.py` normalize only complete zero-valued pairs from the real R-0 marker-only artifact and preserve real `BRDA` and malformed controls. B243 wires this helper through the registered Rust adapter before the shared parser. The Rust-image qualification runs real `cargo llvm-cov` output; Assay R1 tests confirm branch capability is unavailable and `require_branch` refuses `NO_MEASUREMENT/BRANCH_UNAVAILABLE`. Hostobs' consumer lane disclosure is still pending.
 
 **Close when.** The real stable-Rust marker-only fixture, real-`BRDA` control, malformed non-zero-marker case, and `require_branch` refusal cases pass in the registered Rust adapter/lane on a clean final commit; the lane/run disclosure names the normalized no-branch producer fact; and the adapter/consumer documentation states the distinction between unavailable and an available-but-empty branch map. A recorded decision to defer Rust R1 adoption also closes this item when the measured artifact and the anti-vacuity refusal are documented as known constraints of the deferred path.
 

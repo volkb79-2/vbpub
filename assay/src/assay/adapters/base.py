@@ -198,9 +198,10 @@ class LanguageAdapter(Protocol):
     """A language's contribution to changed-line coverage evaluation, plus
     (P09) to R3 canaries and (P11) to mutant construction.
 
-    SIX attributes and NINE methods after the P27 re-carve
+    SIX attributes and TEN methods after the P27 re-carve
     (A-097/A-101/A-105/A-114/A-397/A-404) — reached only because each of the
-    FIVE post-P05 extensions (:meth:`statement_spans`, the ``inject_*`` pair,
+    SIX post-P05 extensions (:meth:`statement_spans`, the coverage-text
+    normalizer, the ``inject_*`` pair,
     :meth:`generate_mutation_sites`, :attr:`requires_statement_attribution` +
     :meth:`statement_blocks`, and now :meth:`for_project`) was added by the
     package that first proved the need for it (A-084), never spec'd in ahead
@@ -356,6 +357,19 @@ class LanguageAdapter(Protocol):
         evaluation core; the language-specific prefix STRIP (Go's module
         path, srdm's ``stripModulePrefix``) is what this method exists to
         do. An adapter with nothing to strip returns *key* unchanged.
+        """
+        ...
+
+    def normalize_coverage_text(self, text: str) -> str:
+        """Apply a producer-specific, format-preserving normalization before
+        the shared coverage-format parser sees *text*.
+
+        Most adapters return the text unchanged. Rust removes only stable
+        ``cargo-llvm-cov``'s measured zero-only ``BRF``/``BRH`` marker pairs
+        so the generic LCOV parser can keep its format-wide evidence rules.
+        This hook is intentionally separate from :meth:`normalize_coverage_key`:
+        one transforms producer metadata before parsing, the other maps parsed
+        file keys into the source tree.
         """
         ...
 

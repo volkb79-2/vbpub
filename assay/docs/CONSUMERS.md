@@ -2701,53 +2701,79 @@ bounded integer columns. Fixed-length
   temporary table is temporary too. Use `pg_catalog.text` or `pg_catalog.int4`
   when the catalog type is intended.
 
-## Rust lanes (planned, not implemented)
+## Rust lanes (R1)
 
-**Assay has no Rust lane to adopt.** It ships no Rust `LanguageAdapter`, so
-`judge.language = "rust"` is refused as an unknown language. This vbpub
-worktree now has a `tester-unified-rust` image and hostobs `lint` and `selftest`
-Run-Gate lanes. They run the Rust baseline and per-crate floors; they do not
-judge changed lines through Assay and are not a generic Rust consumer template.
+`judge.language = "rust"` is registered at R1 for changed-line LCOV judgment.
+The adapter maps `.rs` files and normalizes stable `cargo-llvm-cov`'s complete
+zero `BRF`/`BRH` markers when the artifact has no `BRDA` records. That result
+has branch capability `unavailable`; a lane that sets `require_branch = true`
+is refused as `NO_MEASUREMENT/BRANCH_UNAVAILABLE`. R2 and R3 are not registered.
 
-To run the hostobs baseline from this checkout, build the local image from the
-repository root, then invoke the registered lanes from the hostobs project:
+A Rust R1 lane runs the real Cargo tools itself. A consumer's `assay.toml`
+judge section can be declared as follows:
+
+```toml
+schema_version = 2
+
+[lanes.assay-r1]
+scope = "S1"
+rigor = ["R0", "R1"]
+enforcement = "gate"
+argv = [
+  "bash", "-c",
+  "set -eu; cargo llvm-cov nextest --workspace --offline --locked --no-tests=fail --retries 0 --lcov --output-path coverage.info; cargo test --doc --workspace --offline --locked",
+]
+env = {}
+env_passthrough = ["PATH"]
+budget = "20m"
+allow_argv_append = false
+
+[lanes.assay-r1.judge]
+language = "rust"
+source_roots = ["crates", "bins"]
+mode = "changed_lines"
+fail_under = 100.0
+allow_excluded = false
+require_branch = false
+base_source = "request"
+
+[lanes.assay-r1.judge.coverage]
+format = "lcov"
+artifact = "coverage.info"
+
+[lanes.assay-r1.isolation]
+snapshot_selection = "repository"
+```
+
+Run-Gate should execute this command in `tester-unified-rust` (or a pinned
+equivalent) with `network = "none"`. `--no-tests=fail` prevents an empty test
+selection from passing, and retries stay at zero. Keep the coverage output at
+the declared artifact path. Assay judges the 100% changed-line floor; a
+project-specific step still enforces its own per-crate line and region floors
+because those summaries are not part of the Assay R1 claim.
+
+The vbpub Rust image carries stable Rust, cargo-nextest, cargo-llvm-cov,
+cargo-mutants, cargo-deny, and its lock-keyed crate cache built with
+`cargo fetch --locked`. Consumer lanes run Cargo with `--offline --locked`;
+they do not vendor dependencies in Git. The current hostobs baseline remains
+on `lint`/`selftest` until its separate consumer integration changes it to an
+Assay `assay-r1` lane. Its current baseline command is:
 
 ```sh
-nice -n 19 ./tester-unified-rust/build-image.sh
 cd hostobs
 run-gate lint
 run-gate selftest
 ```
 
-Both lanes use `network = "none"`, check the image-baked cache against
-`Cargo.lock`, and run Cargo offline and locked. Rebuild the image after a
-reviewed lock change. Do not set `judge.language = "rust"` until R-2 registers
-the adapter and replaces this M0 selftest path with `assay-r1`.
-
-The planned path uses `cargo llvm-cov` LCOV for R1 and ingests
-`cargo-mutants` `outcomes.json` for R2. The binding operator decisions are:
-
-- no dependency vendoring in Git; a sibling `tester-unified-rust` image carries
-  stable Rust, the cargo tools, and a crate cache built with
-  `cargo fetch --locked`; every lane runs `--offline --locked`, and a
-  cache/lock mismatch fails loudly naming the missing crate;
-- R1 is 100% changed-line coverage plus per-crate floors of 90% line and 85%
-  region for every crate; stable Rust branch coverage is a documented known
-  issue;
-- Rust R2 is not adopted yet; this is a known issue, not a per-release waiver.
-  Its target is a diff-scoped, 100%-killed cargo-mutants campaign at T3, run asynchronously against the latest release with
-  `--base <previous release tag>`. It never gates a merge or release, and
-  survivors become backlog items. Exclusions live only in
-  `.cargo/mutants.toml`, and `#[mutants::skip]` is forbidden; whole-crate
-  campaigns are advisory T3 lanes, sharded on test hosts;
-- the target remains the full R1-R3 contract;
-- T1 is sequence [`lint`, `assay-r1`]. T2 `gate` is sequence [`lint`,
-  `assay-r3`, `conformance`] without `assay-r1`; the release-time whole-project
-  R1 floor is enforced by Assay. Each Assay lane declares one canary
-  `mechanism`: T2 uses the test-break (import-break) canary, while the
-  uncovered-line probe is a separate T3 lane;
-- every commit's baseline runs fmt, Clippy with warnings denied, nextest,
-  doctests, coverage floors, and cargo-deny.
+Rust R2 is not adopted yet; this is a known issue, not a per-release waiver. Its
+target is a diff-scoped, 100%-killed cargo-mutants campaign at T3, run
+asynchronously against the latest release with `--base <previous release
+tag>`. It never gates a merge or release, and survivors become backlog items.
+The target remains the full R1-R3 contract. The planned T1 sequence is
+[`lint`, `assay-r1`]; T2 `gate` is [`lint`, `assay-r3`, `conformance`] without
+`assay-r1`, and the release-time whole-project floor is enforced by Assay.
+T2 declares one test-break/import-break canary; the uncovered-line probe stays
+a separate T3 lane.
 
 The detailed, binding record is
 [Rust methodology](RUST-METHODOLOGY.md). Package order and deferred work are in
