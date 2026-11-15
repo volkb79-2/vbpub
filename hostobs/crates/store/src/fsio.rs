@@ -127,15 +127,6 @@ pub struct FileMeta {
     pub kind: EntryKind,
 }
 
-/// A write failure carrying the file it happened to.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct WriteReport {
-    /// The name written.
-    pub name: String,
-    /// The bytes that reached the file before the failure (`0` when the open failed).
-    pub written: u64,
-}
-
 /// One store directory (a tier's own state dir), opened once and used by relative name only.
 #[derive(Clone, Debug)]
 pub struct StoreDir {
@@ -845,15 +836,11 @@ fn write_all(file: &mut File, name: &str, bytes: &[u8]) -> Result<usize, StoreEr
     match file.write_all(bytes) {
         Ok(()) => Ok(bytes.len()),
         Err(error) => {
-            // `write_all` does not say how much it wrote, so the file's own length is the
-            // measured fact; a caller that must roll back uses `set_len` with its own
-            // remembered length, never this estimate.
-            let written = file.metadata().map(|meta| meta.len()).unwrap_or(0);
-            let report = WriteReport {
-                name: name.to_string(),
-                written,
-            };
-            let _ = report;
+            // `write_all` does not say how much it wrote, so **nothing here estimates it**. A
+            // file's own length after the failure is the measured fact, and that is what a
+            // caller uses (`Opened::truncate_to` with a length it remembered before the
+            // attempt); a number computed by `unwrap_or(0)` here and thrown away would be a
+            // guessed zero with a report's reputation.
             Err(StoreError::io("append", name, &error))
         }
     }

@@ -39,6 +39,8 @@ The nine failures the brief names, each with the test that kills it:
 | M1c-20 | an unreadable header aborts the whole tier scan | `a_rescan_keeps_going_when_one_store_file_cannot_be_read` |
 | M1c-21 | a refused seal is not restored | `a_failed_seal_puts_the_ring_entry_and_the_handle_back_and_leads_no_temp_behind` |
 | M1c-22 | a created segment or directory is world readable (two patches) | `files_and_directories_the_store_creates_are_owner_only` |
+| M1c-23 | `StoreStats::written` reports the queue's hand-offs instead of the appends | `a_store_routes_writes_enforces_bounds_and_retires_by_reachability` |
+| M1c-24 | `QueueStats::stats` reports a guessed zero job count | `a_queue_that_never_overflows_is_lossless` |
 
 The verdicts — including the one patch that survived the first pass (the ring's order) and the
 test that killed it — are recorded in [`../HAND-MUTANTS-M1C.md`](../HAND-MUTANTS-M1C.md).
@@ -238,6 +240,22 @@ MUTANTS: tuple[Mutant, ...] = (
         "crates/store/src/fsio.rs",
         "pub const DIR_MODE: u32 = 0o700;",
         "pub const DIR_MODE: u32 = 0o777;",
+        "store",
+    ),
+    Mutant(
+        "M1c-23",
+        "StoreStats::written reports the queue's hand-offs instead of the appends (MINOR)",
+        "crates/store/src/store.rs",
+        "        stats.queued = accepted;",
+        "        stats.queued = accepted;\n        stats.written = self.queue.full_stats().written;",
+        "store",
+    ),
+    Mutant(
+        "M1c-24",
+        "QueueStats::stats reports a guessed zero job count (MINOR)",
+        "crates/store/src/queue.rs",
+        "            jobs: u64::try_from(self.jobs.len()).unwrap_or(u64::MAX),\n            bytes: self.bytes,",
+        "            jobs: 0,\n            bytes: self.bytes,",
         "store",
     ),
     Mutant(

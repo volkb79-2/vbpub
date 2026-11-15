@@ -85,6 +85,12 @@ FOOTER (64)
 `footer_crc` covers the 56 bytes before it. A checksum that covered the field it lives in could
 never be checked.
 
+A sealed segment with **no records** has nothing to report for `first_real_ns`/`last_real_ns`,
+so the footer writes `0`/`0` there. That is a *sentinel on an empty file*, and it is why a reader
+never takes the footer's time fields as a fact: the record count being `0` is what tells a reader
+the times are not data. (A time of `0` on a segment that *has* records would be a real value, so
+no reader may use the sentinel as "no time" when the count is non-zero.)
+
 **What the checksums are for.** CRC-32 detects an *accident* — a torn write, a truncated copy, a
 bit that flipped in a sector — and it does not detect tampering: it is not a keyed hash, so anyone
 who can write a byte can write a matching checksum. The threat model is a directory the probe owns
@@ -228,6 +234,20 @@ removes what it can prove it wrote. "Could not determine what this file is" is n
 | `open-second-generation` | a later epoch and dictionary generation, four ids |
 
 Regenerate with `python3 python/reference/make_segment_fixtures.py` from `hostobs/`.
+
+**What the fixtures do not pin.** Every committed fixture's record bodies happen to be multiples
+of 8, so no fixture has a non-zero `pad` byte. The padding rule is therefore pinned by the Rust
+unit tests (`format::tests::padding_is_what_makes_the_next_record_aligned`, which walks every
+body length from 0 to 63 and asserts both the alignment and the `MAX_RECORD_PAD` bound) and by
+the Python encoder's own round trip, not by a cross-language golden file. A fixture whose body
+length is not a multiple of 8 is the case that would catch a cross-language disagreement, and it
+is not committed yet (HOB-41).
+
+A segment the scan stops reading at `SCAN_RECORD_BOUND` (2^20 records) reports
+`record_bound_reached = true`; the walk ends there and the tail state is what the last walked
+record left. Today no writer can reach the bound (`segment_file_bound` × 4096 names is far below
+2^20 records), so the flag is a state a reader must *handle* rather than one a fixture can
+show.
 
 ## Version byte
 

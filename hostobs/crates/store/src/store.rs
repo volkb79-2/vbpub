@@ -493,17 +493,25 @@ impl Store {
     pub fn stats(&self) -> StoreStats {
         let QueueStats {
             accepted,
-            written: queue_written,
             dropped,
             dropped_records,
             dropped_bytes,
             ..
         } = self.queue.full_stats();
-        let events = self.events.stats();
         let mut stats = self.stats.clone();
         stats.queued = accepted;
-        stats.written = queue_written;
-        stats.dropped = dropped.max(events.dropped);
+        // `written` stays the store's own count of **successful appends** (`write_one`), not the
+        // queue's count of jobs *handed* to a writer: those two numbers differ by exactly the
+        // failed appends, and a caller reading "3 written" from a store whose third append was
+        // refused would be reading a false success. The queue's own hand-off count is not the
+        // store's `written` for that reason.
+        //
+        // `dropped` is the queue's own count, and the events store's `dropped` is the same
+        // number by construction (`submit` mirrors every queue drop into it) — so this is one
+        // fact with one source, not a `max` of two counters that would hide a future
+        // disagreement behind a plausible-looking total. The events *ring's* displacement is a
+        // different loss and stays in `EventsStats::displaced`, where a caller can see it.
+        stats.dropped = dropped;
         stats.dropped_records = dropped_records;
         stats.dropped_bytes = dropped_bytes;
         stats.dictionary_entries = u64::try_from(self.dictionary.len()).unwrap_or(u64::MAX);
@@ -1382,6 +1390,16 @@ mod tests {
         let refused = store.write_pending(now, 1);
         assert!(matches!(refused, Err(StoreError::UnknownTier { .. })));
         assert_eq!(store.stats().write_failures, 1);
+        // The queue handed that job to the writer and the writer refused it: the store's
+        // `written` counts appends that happened, so it stays 3 and the queue's own counter is
+        // the one that moved. Reporting the hand-off as a write would certify a record that is
+        // not on disk (review, MINOR `stats.written`).
+        assert_eq!(store.stats().written, 3, "a refused append is not a write");
+        assert_eq!(
+            store.queue().full_stats().written,
+            4,
+            "the queue handed four"
+        );
         assert!(!store.stats().lossless());
         // The sealed store answers a bounded range across its tiers.
         let sealed = store.seal_all().expect("seal");

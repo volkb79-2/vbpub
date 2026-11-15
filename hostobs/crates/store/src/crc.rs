@@ -107,11 +107,11 @@ pub fn crc32_region(bytes: &[u8], start: usize, end: usize) -> Result<u32, Store
     Ok(crc32(region))
 }
 
-/// A checked region length, exported so a caller can reuse the store's one arithmetic rule.
+/// A region length, exported so a caller can reuse the store's one arithmetic rule.
 ///
-/// # Errors
-///
-/// [`StoreError::LengthOverflow`] when `start > end`.
+/// A `start > end` region is **zero bytes**, not an error: this is the "nothing to checksum"
+/// case. A caller that must refuse it uses [`checked_region_len`], and nothing in this crate
+/// calls this one.
 #[must_use]
 pub fn region_len(start: usize, end: usize) -> usize {
     end.saturating_sub(start)

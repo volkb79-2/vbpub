@@ -399,11 +399,11 @@ the two first-pass survivors converted into tests) is in
 [`HAND-MUTANTS-M1.md`](HAND-MUTANTS-M1.md); the M1 part-2 campaign (thirty-one mutations
 covering the proto/Python refusals, the kernel collectors, the clocks, and the fix round's
 `stat` field mapping, iocost overflow and unbounded read — all killed) is
-[`HAND-MUTANTS-M1B.md`](HAND-MUTANTS-M1B.md), and the M1 part-3 campaign (twenty-eight
-mutations over the store's bounds, eviction order, torn-tail handling, seal order, retirement,
-drop accounting, foreign-file refusal, symlink refusal and the fix round's nine findings — all
-killed, one of the first round only after a test that pinned the ring's oldest-first order)
-is [`HAND-MUTANTS-M1C.md`](HAND-MUTANTS-M1C.md).
+[`HAND-MUTANTS-M1B.md`](HAND-MUTANTS-M1B.md), and the M1 part-3 campaign (thirty mutations
+over the store's bounds, eviction order, torn-tail handling, seal order, retirement, drop
+accounting, foreign-file refusal, symlink refusal, the two MINOR counter fixes and the fix
+round's nine findings — all killed, one of the first round only after a test that pinned the
+ring's oldest-first order) is [`HAND-MUTANTS-M1C.md`](HAND-MUTANTS-M1C.md).
 A mutation that does not compile is reported
 as `NOT-BUILT` rather than counted as a kill, because it proves nothing about the tests; a
 patch whose stored fragment no longer matches the source is `NOT APPLIED`, which is also

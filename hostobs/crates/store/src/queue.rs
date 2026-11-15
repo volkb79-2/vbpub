@@ -283,10 +283,14 @@ impl WriterQueue {
     }
 
     /// The counters, as of now.
+    ///
+    /// The job count is the queue's own length rather than a placeholder: a counter that
+    /// reports a guessed zero and is "fixed up" by one caller is a silent wrong answer for
+    /// every other caller, which is the failure mode this estate calls a shadowing default.
     #[must_use]
-    pub const fn stats(&self) -> QueueStats {
+    pub fn stats(&self) -> QueueStats {
         QueueStats {
-            jobs: 0,
+            jobs: u64::try_from(self.jobs.len()).unwrap_or(u64::MAX),
             bytes: self.bytes,
             capacity: self.capacity,
             accepted: self.accepted,
@@ -297,21 +301,13 @@ impl WriterQueue {
         }
     }
 
-    /// The counters with the queue length filled in.
+    /// The counters, as of now (the same reading as [`WriterQueue::stats`]).
     ///
-    /// `QueueStats` is `const fn`-friendly above, so the job count is reported separately: it
-    /// is the one field that needs the allocation's own length.
+    /// Kept as the name the store's own `stats()` calls, so a reader never has to know which
+    /// of two spellings carries the job count.
     #[must_use]
     pub fn full_stats(&self) -> QueueStats {
-        QueueStats {
-            jobs: u64::try_from(self.jobs.len()).unwrap_or(u64::MAX),
-            accepted: self.accepted,
-            written: self.written,
-            dropped: self.dropped,
-            dropped_records: self.dropped_records,
-            dropped_bytes: self.dropped_bytes,
-            ..self.stats()
-        }
+        self.stats()
     }
 
     /// Queue one job, dropping the **oldest** queued jobs to stay inside the bound.
@@ -552,7 +548,10 @@ mod tests {
         assert_eq!(stats.dropped, 0);
         assert_eq!(stats.jobs, 100);
         assert_eq!(QueueStats::default().fill(), 0.0);
-        let _ = queue.stats();
+        // Both readings carry the queue's own length: a "const-friendly" reading that reports
+        // a guessed zero is not a cheaper answer, it is a wrong one.
+        assert_eq!(queue.stats().jobs, 100);
+        assert_eq!(queue.stats(), queue.full_stats());
     }
 
     #[test]

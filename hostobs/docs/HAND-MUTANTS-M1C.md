@@ -60,8 +60,9 @@ them anyway. The answer was a test that pins the *order* rather than the *outcom
 — `eviction_takes_the_oldest_segment_and_the_ring_is_ordered_by_start_not_by_arrival` asserts
 `oldest()`/`newest()` by name, then evicts at one segment over the cap and asserts that the
 bucket-0 segment and never the bucket-60 one is gone. The campaign was re-run from scratch
-after the new test landed. The fix round added thirteen patches (rows M1c-13 … M1c-22 below);
-all twenty-eight now run in one campaign, and the fix-round run killed all of them.
+after the new test landed. The fix round added fifteen patches (rows M1c-13 … M1c-24 below);
+all thirty now run in one campaign, and the two definitive runs killed all of them, the second
+covering the two MINOR fixes as well.
 
 | # | patch | mutation | verdict | tests that failed |
 |---|---|---|---|---|
@@ -96,10 +97,10 @@ save the other, and the row that survived would have been the one nobody looked 
 
 The Sonnet review of the first round (`reports/pi-hostobs-m1c-REVIEW.md`) left four blockers
 and six major findings. B3 was fixed in the review's own commit; the other nine are rows here,
-replayed on the fix-round head. **All twenty-eight stored patches were killed**, each restore
-verified by SHA-256, and the two patches that had gone stale while the code moved (`M1c-5`'s
-seal copy and the first `M1c-20` fragment) were repaired before the definitive run rather than
-counted as survivors:
+replayed on the fix-round head. **All thirty stored patches were killed**, each restore verified
+by SHA-256, and the two patches that had gone stale while the code moved (`M1c-5`'s seal copy and
+the first `M1c-20` fragment) were repaired before the definitive run rather than counted as
+survivors:
 
 | # | finding | patch | verdict | the test that failed |
 |---|---|---|---|---|
@@ -116,6 +117,8 @@ counted as survivors:
 | M1c-21 | M2 | a refused seal is not restored | killed | `tier::tests::a_failed_seal_puts_the_ring_entry_and_the_handle_back_and_leads_no_temp_behind` |
 | M1c-22 | M3 | `FILE_MODE` is 0666 | killed | `tier::tests::files_and_directories_the_store_creates_are_owner_only` |
 | M1c-22 | M3 | `DIR_MODE` is 0777 | killed | `tier::tests::files_and_directories_the_store_creates_are_owner_only` |
+| M1c-23 | MINOR | `StoreStats::written` reports the queue's hand-offs | killed | `store::tests::a_store_routes_writes_enforces_bounds_and_retires_by_reachability` |
+| M1c-24 | MINOR | `QueueStats::stats` reports a guessed zero | killed | `queue::tests::a_queue_that_never_overflows_is_lossless`, `the_bound_holds_after_every_single_operation`, `the_queue_drops_the_oldest_job_first_and_counts_every_drop` |
 
 Two rows of the original fifteen also changed their killing test: `M1c-4`'s tier patch now
 kills on two tests (the repaired tail test and the new zero-tail one, because the repair branch
