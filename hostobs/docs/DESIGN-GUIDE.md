@@ -249,6 +249,132 @@ half lives in `model` with `fixtures/rates/rates.json`; the two are joined by ha
 numbers and the shared quality fixture, not by a call. Stating that is part of the evidence,
 not a footnote to it.
 
+## Storing the history: one write module, four bounds, and a named tail
+
+The `store` crate is where plan v4 §A.3/§A.4/§C.5 stop being intentions. Five decisions
+carry the shape of it.
+
+**One module performs every filesystem mutation.** `crates/store/src/fsio.rs` is the only
+place in this crate (and, by extension, in the non-`act` part of the workspace) that opens
+anything for writing, creates, truncates, renames, removes or lists a directory. Every other
+module holds a `StoreDir` and can only call it. That is not a convention anyone has to
+remember: `tools/check-lints.py` refuses the write tokens (`.write(true)`, `O_WRONLY`,
+`O_RDWR`, `create_dir(`, `create_dir_all(`, `remove_dir(`, `remove_dir_all(`,
+`Command::new`) in every Rust source outside `crates/act` and this one file, **tests
+included**, which is why the test temp-directory helper is `fsio::testdir::TempDir` and
+nothing else. `tools/check-lints-mutation.py` (a `lint` lane step) proves the guard bites: it
+plants a `.write(true)` in `queue.rs`, a `create_dir(` in `tier.rs`, a `Command::new` in
+`bins/probe`, a whole new `.rs` file containing a write, and a `#[mutants::skip]` inside
+`fsio.rs`, and asserts each is reported — then asserts the baseline and `fsio.rs` are not.
+A lint that cannot go red on a planted write is a lint that certifies nothing (plan v4 §A.3
+asks for exactly this mutation check).
+
+**Four failures, four typed answers, and a counter for each.** Plan v4 §C.5 names the four
+ways a store can fail quietly, and none of them is allowed to be quiet here.
+
+| failure | answer |
+|---|---|
+| disk fill | `StoreError::NoSpace` from `ENOSPC`, counted as a write failure; a submit that cannot be queued is a *reported* drop |
+| RAM growth | `writer_queue_bytes`, `dict_active_max`, the query's own row/byte limits and the events ring's byte cap — all refusals, never a growing collection |
+| torn file | the tail is *detected* at open: `TailState::Incomplete` is truncated back to the last good record and counted (`torn_repaired`), `TailState::Corrupt` is renamed `<name>.corrupt` and counted (`quarantined`) |
+| silent loss | a drop is returned by `submit` and accumulated in `QueueStats`/`StoreStats`; loss and ``lossless()`` are opposites by construction, so an uncounted drop has no representation |
+
+A corollary that cost a fix round: a segment may only be removed when it is *this* store's
+file by both name **and** header kind. A right-looking name holding another corpus's
+segment, a symbolic link, a subdirectory, and an unrelated file are all reported as notes and
+left untouched (`tier::tests::a_segment_of_another_corpus_in_this_directory_is_reported_and_never_touched`).
+A store that deleted a file it merely recognized would be one `rename` away from destroying a
+boundary's worth of a neighbouring tier.
+
+**A segment's payload kind is its corpus, not a parameter.** `TierKind` owns
+`payload_kind()`, `record_kind()` and `frame_type()`; the header refuses to encode a payload
+that disagrees with its kind (`TierKindMismatch`), a record's own envelope kind is checked
+against the segment it lives in (`RecordCorpus`), and the reader refuses either mismatch
+rather than decoding one corpus's bytes with the other's rules. `store` cannot call
+`hostobs_proto` to do this (`HOB-27`: a path or dev dependency rewrites the locked
+`Cargo.lock`, which the lane image bakes), so it carries its own four frame-header checks and
+its own eight-entry quality table, the latter asserted against `fixtures/wire/quality.json`
+by `crates/store/tests/quality_table.rs` — the same device `kernel` uses under `HOB-17`.
+
+**Eviction is by whole segment, oldest first, and `next_seq` is a water mark.** A tier's
+ring is ordered by `(start_s, seq)` and evicts from the front while the segment's entire span
+is older than `keep_s`, then while the total bytes exceed `cap_bytes` — `keep_s` first, the
+byte cap second, whichever bites first. Sequences only move forward: `seq_water` remembers
+the highest sequence the directory has ever shown, so a quarantined or evicted `hot-0-0.seg`
+is never reused and a restarted store cannot silently inherit a name whose bytes it did not
+write. Re-opening a tier rescans the directory and raises the water mark from what is there.
+The cap is strict: exactly at the cap keeps every segment (the bound is `<=`), one byte over
+evicts, and a cap below a single segment's size drops the open one too — it is still the
+oldest.
+
+**A torn tail is a state, not an exception.** The reader returns `TailState`
+(`Complete`/`Incomplete{offset}`/`Corrupt{offset, reason}`) with the good end, the footer
+facts and the last good record index, so the caller decides: truncate and continue (an open
+segment after a crash) or quarantine (bytes that are not a record at all). A tail of *pure
+zeros* is `Incomplete`, not `Corrupt`: it is the shape a power cut leaves on a size-extending
+filesystem, so only the unwritten part is cut and the completed records stay in service —
+quarantining a whole durable segment for a fault that damaged no record would cost history for
+the commonest crash shape. A tail of any other bytes is still `Corrupt`. The seal is atomic
+in the only order that survives a crash — write the whole segment to a temporary name, append
+the footer, `fsync`, rename onto the final name, `fsync` the directory, unlink the open
+name — and `docs/SEGMENT-FORMAT.md` specifies that order because the seal's correctness is a
+property of the *sequence*, not of any single call. A test kills each step of it
+(`M1c-5`: "the seal copies onto the final name, with no temp name and no rename" survives no
+test); a seal that *refuses* before the rename puts the handle and the ring entry back and
+leaves no `.tmp` behind (`M1c-21`), because a tier that lost its open handle to a failed seal
+would append the next record behind a file nobody owns.
+
+**The crash window a seal creates is repaired at the next open.** Between the seal's rename and
+its unlink both `<n>.seg` and `<n>.seg.open` exist with the same `(tier, start_s, seq)`. The
+rescan verifies the sealed file first and removes the open twin (reported in
+`stale_open_removed`), instead of adopting both: a reader that took both would count the bytes
+twice, serve every record twice, and `reopen_open_segment` would append behind a file whose
+records had already left (`M1c-14`). The twin is removable because it is provably the store's
+own — the same name parse and header check every other removal takes.
+
+**One damaged or unreadable file never makes a tier unopenable.** A header that is *not this
+format's* is a foreign file (reported, untouched); a header that *cannot be read* (EACCES, EIO,
+a race) is a different fact and is counted in `unreadable`, also untouched, because a store only
+removes what it can prove it wrote. A repair or quarantine that itself fails is reported rather
+than propagated (`M1c-20`); the two facts stay in two fields so "could not determine" is never
+reported as "there is nothing there".
+
+**A file past the read bound is taken out of service, never skipped.** Skipping was the original
+shape and it was wrong: a file outside the ring is outside the byte total, so eviction never
+reaches it and the disk grows past the configured cap. The bound itself is tied to what the
+writer may produce — `StoreConfig::check` refuses a `max_file_bytes` below any tier's own
+`segment_file_bound`, which is what makes "a file bigger than the bound is not ours" a fact
+rather than an assumption (`M1c-15`).
+
+**The store's own files are owner-only.** Every segment is created `0600` and every directory
+`0700`, set at creation through `fsio` rather than left to the caller's umask: a segment carries
+the probe's sampled history, and the `lint` boundary means there is exactly one place that can
+set this (`M1c-22`).
+
+**A tier's tmpfs check resolves the path before it compares.** The mount table lists what the
+kernel resolved, so a configured path that still carries `..` or crosses an intermediate link
+is a typed refusal; two mounts at the same point resolve to the **last** line, which is the one
+the kernel exposes (the earlier one is shadowed, and treating it as live is exactly the
+tmpfs-that-is-really-a-disk case the check exists to catch). `tmpfs_only()`/`all_of()` are
+`#[cfg(test)]`, because a production caller that could build its own table would hold a bypass
+(`M1c-18`, `M1c-19`).
+
+**Reads are bounded and never panic.** `Tier::range` and `Store::range` skip whole segments
+on their recorded `first`/`last` timestamps before reading any record, take a row bound and a
+byte bound, and stop at either; a corrupt segment inside the window is a typed decoder error for
+that segment, not an abort of the query. Nothing in the crate indexes a slice without a
+checked length (`crc::checked_region_len` is the only arithmetic that can wrap, and it refuses)
+and nothing panics on fixture-shaped corruption — the golden fixture suite decodes each file
+and the Python reference decodes the same bytes independently.
+
+**What an answer is, and is not (`HOB-39`).** A range answer is the stored payload — the whole
+`proto` BLOCK frame, byte-identical to what was written — plus the record's own time and
+incarnation list. The quality bytes are inside that payload, so nothing is lost, but decoding
+is the caller's step: the store cannot carry a column codec while `HOB-27` bans the dependency,
+and copying the entire wire decoder here would be a second implementation of the format rather
+than a join. `quality::Reading`/`QualityCode` are the store's own vocabulary, bound to
+`fixtures/wire/quality.json`, and ready for the join that `HOB-27`'s rebuild will allow.
+
 ## Gates and coverage
 
 `lint` runs formatting, Clippy with `-D warnings`, rustdoc with `-D warnings`, cargo-deny
@@ -256,14 +382,14 @@ and the source lints; `selftest` runs nextest, doctests, llvm-cov and the per-cr
 line/region floors from `coverage-floors.toml`. Both are offline and locked, in the
 `tester-unified-rust` image, with Docker networking disabled.
 
-`model`, `proto` and now `kernel` carry behavioral floors (97% line/96% region, 98%/96%,
-and 92%/93%): the first two were raised from the M0 bootstrap 90%/85% after their own tests
-reached 98.06%/97.90% and 99.45%/97.88%, and `kernel` was raised after its own tests
-reached 92.19% line/93.50% region — a crate whose floor starts at the bootstrap value is
-treated as scaffold, and one with real tests raises its own floor instead of hiding code.
-The other six packages keep the bootstrap floor because they are still the compilable
-scaffold; their identity test is not a product-coverage claim. Floors are never lowered and
-code is never excluded from coverage.
+`model`, `proto`, `kernel` and now `store` carry behavioral floors (97% line/96% region,
+98%/96%, 92%/93% and 94%/93%): the first two were raised from the M0 bootstrap 90%/85% after
+their own tests reached 98.06%/97.90% and 99.45%/97.88%, `kernel` after its own tests reached
+92.19% line/93.50% region, and `store` after its own tests reached 94.87% line/93.90% region —
+a crate whose floor starts at the bootstrap value is treated as scaffold, and one with real
+tests raises its own floor instead of hiding code. The other five packages keep the bootstrap
+floor because they are still the compilable scaffold; their identity test is not a
+product-coverage claim. Floors are never lowered and code is never excluded from coverage.
 
 Rust R2 (`cargo-mutants` judged by assay) is not adopted yet (R-3b in
 [`assay/docs/RUST-METHODOLOGY.md`](../../assay/docs/RUST-METHODOLOGY.md)), so the test-quality
@@ -273,7 +399,12 @@ the two first-pass survivors converted into tests) is in
 [`HAND-MUTANTS-M1.md`](HAND-MUTANTS-M1.md); the M1 part-2 campaign (thirty-one mutations
 covering the proto/Python refusals, the kernel collectors, the clocks, and the fix round's
 `stat` field mapping, iocost overflow and unbounded read — all killed) is
-[`HAND-MUTANTS-M1B.md`](HAND-MUTANTS-M1B.md). A mutation that does not compile is reported
+[`HAND-MUTANTS-M1B.md`](HAND-MUTANTS-M1B.md), and the M1 part-3 campaign (thirty mutations
+over the store's bounds, eviction order, torn-tail handling, seal order, retirement, drop
+accounting, foreign-file refusal, symlink refusal, the two MINOR counter fixes and the fix
+round's nine findings — all killed, one of the first round only after a test that pinned the
+ring's oldest-first order) is [`HAND-MUTANTS-M1C.md`](HAND-MUTANTS-M1C.md).
+A mutation that does not compile is reported
 as `NOT-BUILT` rather than counted as a kill, because it proves nothing about the tests; a
 patch whose stored fragment no longer matches the source is `NOT APPLIED`, which is also
 not a survivor.

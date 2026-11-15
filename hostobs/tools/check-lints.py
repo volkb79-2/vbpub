@@ -16,7 +16,25 @@ _EXPECTED_UNSAFE_OVERRIDES = {
     "crates/act": "allow",
     "crates/kernel": "allow",
 }
-_WRITE_BOUNDARIES = {"crates/act", "crates/store"}
+# The **only** places a Rust source may open a file for writing, create a directory, or
+# start a child process. The store's rule (plan v4 §A.4, milestone M1 part 3) is stronger than
+# the M0 rule: the whole store crate used to be a boundary, and now exactly one module is —
+# `crates/store/src/fsio.rs`, the single write path every segment append, seal, truncate,
+# quarantine and rename goes through. A write added anywhere else in the store is a lint
+# failure, which `tools/check-lints-mutation.py` proves by inserting one.
+_WRITE_ALLOWED_DIRS = {"crates/act"}
+_WRITE_ALLOWED_FILES = {"crates/store/src/fsio.rs"}
+_EXPECTED_PACKAGES = {
+    "crates/act",
+    "crates/client",
+    "crates/eval",
+    "crates/kernel",
+    "crates/model",
+    "crates/proto",
+    "crates/store",
+    "bins/act",
+    "bins/probe",
+}
 _FORBIDDEN_SOURCE_TOKENS = (
     "#[mutants::skip]",
     ".write(true)",
@@ -27,6 +45,22 @@ _FORBIDDEN_SOURCE_TOKENS = (
     "create_dir_all(",
     "remove_dir(",
     "remove_dir_all(",
+    # The other ways to mutate the filesystem without `.write(true)` (review of pi-hostobs-m1c:
+    # the M0 token set accepted `std::fs::write`, `File::create`, `remove_file`, `fs::rename`,
+    # `set_len`, `set_permissions`, `.append(true)` and `.create_new(true)` anywhere).
+    "fs::write(",
+    "File::create(",
+    "File::create_new(",
+    ".create_new(true)",
+    ".append(true)",
+    ".truncate(true)",
+    "remove_file(",
+    "fs::rename(",
+    "fs::copy(",
+    "fs::hard_link(",
+    "fs::symlink(",
+    ".set_len(",
+    "set_permissions(",
 )
 
 
@@ -60,6 +94,18 @@ def _source_files(root: Path):
         yield path
 
 
+def write_boundary(relative: str) -> bool:
+    """True when `relative` (a repo-relative Rust source) may write, spawn, or mkdir.
+
+    Both the tokens and the *location* decide: a source is a write path only if it is inside
+    one of the allowed directories or is one of the allowed files. Everything else is refused,
+    including another module of the same crate.
+    """
+    if relative in _WRITE_ALLOWED_FILES:
+        return True
+    return any(relative == boundary or relative.startswith(boundary + "/") for boundary in _WRITE_ALLOWED_DIRS)
+
+
 def check(root: Path) -> list[str]:
     try:
         workspace = tomllib.loads((root / "Cargo.toml").read_text(encoding="utf-8"))["workspace"]
@@ -71,7 +117,7 @@ def check(root: Path) -> list[str]:
 
     members = _workspace_members(root)
     paths = {member[0] for member in members}
-    if paths != {"crates/act", "crates/client", "crates/eval", "crates/kernel", "crates/model", "crates/proto", "crates/store", "bins/act", "bins/probe"}:
+    if paths != _EXPECTED_PACKAGES:
         raise LintError(f"workspace package paths differ from the M0 layout: {sorted(paths)}")
 
     for relative, _path, manifest in members:
@@ -95,16 +141,20 @@ def check(root: Path) -> list[str]:
 
     for source in _source_files(root):
         relative = source.relative_to(root).as_posix()
-        boundary = "/".join(relative.split("/")[:2])
         try:
             text = source.read_text(encoding="utf-8")
         except (OSError, UnicodeError) as exc:
             raise LintError(f"cannot read Rust source {relative}: {exc}") from exc
         if "#[mutants::skip]" in text:
             raise LintError(f"{relative} uses forbidden #[mutants::skip]")
+        if write_boundary(relative):
+            continue
         for token in _FORBIDDEN_SOURCE_TOKENS[1:]:
-            if token in text and boundary not in _WRITE_BOUNDARIES:
-                raise LintError(f"{relative} uses {token!r} outside crates/act or crates/store")
+            if token in text:
+                raise LintError(
+                    f"{relative} uses {token!r}; writes belong in "
+                    f"{sorted(_WRITE_ALLOWED_FILES)} or {sorted(_WRITE_ALLOWED_DIRS)}"
+                )
 
     mutants_path = root / ".cargo" / "mutants.toml"
     if mutants_path.exists():

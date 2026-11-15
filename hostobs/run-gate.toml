@@ -13,7 +13,8 @@ tools/cargo-offline.sh fmt --all --check
 tools/cargo-offline.sh clippy --workspace --all-targets --locked --offline -- -D warnings
 RUSTDOCFLAGS="-D warnings" tools/cargo-offline.sh doc --workspace --no-deps --locked --offline
 tools/cargo-offline.sh deny --locked --offline check licenses bans sources
-tools/check-lints.sh''',
+tools/check-lints.sh
+python3 -I tools/check-lints-mutation.py .''',
 ]
 clean_tree = true
 budget = "20m"

@@ -1,0 +1,24 @@
+{
+  "case": "sealed-empty",
+  "doc": "a sealed history segment with no records: count 0, offsets at the header",
+  "footer": {
+    "dict_generation": 1,
+    "end_offset": 64,
+    "first_real_ns": 0,
+    "last_real_ns": 0,
+    "record_count": 0,
+    "seq": 5
+  },
+  "header": {
+    "dict_generation": 1,
+    "epoch": 7,
+    "kind": "history",
+    "max_incarnations": 16,
+    "max_payload": 4096,
+    "payload": "block",
+    "seq": 5,
+    "start_real_ns": 1700000120000000000
+  },
+  "records": [],
+  "sealed": true
+}

@@ -39,6 +39,23 @@ A `FIXED` entry means code, tests, and docs landed together.
 | HOB-24 | `RealFs::read` refused a file by its *reported* length (a sysfs attribute reports one page) and `max_bytes + 1` overflowed at `usize::MAX` | Minor | FIXED (M1b fix round) |
 | HOB-25 | `io.stat`'s iocost sums used `saturating_add` (silently clamping at `u64::MAX`) where the counters use `checked_add` | Minor | FIXED (M1b fix round) |
 | HOB-26 | The SP-2 rate arithmetic is a test-local helper, not `model::derive_rate`, because the crates cannot depend on each other | Minor | OPEN (documented limit) |
+| HOB-27 | `store` cannot depend on `proto`/`model`: a path or dev dependency rewrites the locked `Cargo.lock`, so the crate re-implements four frame-header checks and carries its own quality table | Major | OPEN (needs an image rebuild) |
+| HOB-28 | A segment's records are found by scanning every record body, not from a footer index; a range query re-reads each candidate file from the start | Minor | OPEN (M2 query surface) |
+| HOB-29 | The `require_tmpfs` check reads `/proc/self/mounts` and matches path prefixes; it does not ask `statfs` what filesystem the directory is actually on | Major | OPEN |
+| HOB-30 | No session spools: a crashed probe's rate/span continuation (`§C.4`'s spool) has no store at all | Major | OPEN (out of this package's scope) |
+| HOB-31 | `StoreDir`'s symlink refusal is a `symlink_metadata` check followed by a separately-named open, so a swap between the two is not prevented (`O_NOFOLLOW`/`openat` need `unsafe` or a dependency) | Minor | OPEN (needs `HOB-27`'s image rebuild or an `unsafe` decision) |
+| HOB-32 | No fault injection: a partial `write`, a failed `fsync` or `ENOSPC` mid-seal is exercised only as the typed `no-space` mapping, not as a real short write | Minor | OPEN |
+| HOB-33 | The single writer is a design property (one `Store` owns the queue), not something a test can observe: no lane starts two writers on one directory | Minor | OPEN (daemon package) |
+| HOB-34 | Retirement only knows the incarnations this store's own segments name, so a consumer holding an incarnation outside the store (a spool, a reply in flight) cannot prevent `retire` from freeing it | Minor | OPEN (documented limit) |
+| HOB-35 | The events ring is RAM-only: its displacement is counted but not persisted, so a consumer that restarts knows how many events it lost, not which | Minor | OPEN |
+| HOB-36 | Events are keyed by `(issuer, key)` strings rather than dictionary incarnations, so an event's cgroup identity is a label a caller supplies, not an identity the store can validate | Minor | OPEN (probe package) |
+| HOB-37 | Span abandonment is a caller call (`abandon_issuer`); nothing in the store ties it to an incarnation disappearing, so `inferred: true` closes only happen when the caller loops over them | Minor | OPEN (probe package) |
+| HOB-38 | A full writer queue always drops the oldest job; there is no blocking or sample-shedding policy, which is a product choice to revisit with the probe's own loop | Minor | OPEN (probe package) |
+| HOB-39 | A range answer is the stored payload bytes (a whole `proto` BLOCK) plus the record's time and incarnations, not decoded `model` values with quality codes: the join needs `proto`/`model`, which `HOB-27` forbids | Major | OPEN (needs an image rebuild) |
+| HOB-40 | No focus tier is configured by `plan_v4`; the tier machinery accepts one, but the plan does not yet say what a focus tier keeps | Minor | OPEN (plan decision) |
+| HOB-41 | No golden fixture has a non-zero record pad, so the padding rule is pinned by unit tests on each side, not by a cross-language file | Minor | OPEN |
+| HOB-42 | A `.seg` name is trusted as sealed without a footer, and the header's `seq`/`start_real_ns` are never compared with the name | Minor | OPEN |
+| HOB-43 | Quarantined `.corrupt` files (corrupt, oversized) are kept for an operator but are never counted in `bytes`, never evicted and never bounded in number, so repeated damage can fill the directory beyond `cap_bytes` | Major | OPEN |
 
 ---
 
@@ -486,3 +503,281 @@ than deleted.
 **Exit criteria.** Either the probe emits a standalone `DICT` frame before a first block
 of a generation (and the fixtures grow that case), or the type is retired with a note in
 the crate docs.
+
+## HOB-27 — `store` cannot depend on `proto` or `model`
+
+**Where:** `crates/store/Cargo.toml`, `crates/store/src/{format,quality}.rs`, `docs/SEGMENT-FORMAT.md`.
+
+The documented option was a path or dev dependency on `hostobs-proto` (for the frame header) and
+`hostobs-model` (for the quality vocabulary). It was tried and refused: a path dependency makes
+`cargo --locked` want to rewrite `Cargo.lock`, and the Rust lane image bakes one lock's crate
+closure, so the lane refuses before building (`HOB-17` has the same shape for `kernel`). The
+store therefore carries its own four frame-header checks (`format::check_payload` plus the
+header checks in `format`) and its own eight-entry quality table (`quality::QualityCode`), and
+the two are bound to shared fixtures rather than to shared types: a header fact is asserted
+against the real `fixtures/wire/*.bin` payloads in `crates/store/tests/golden_segment.rs`, and
+the quality table against `fixtures/wire/quality.json` in `crates/store/tests/quality_table.rs`.
+
+**Exit criteria.** An image rebuild taken from a lock that admits the workspace's own crates,
+after which `store` calls `proto`'s `FrameHeader::parse` and `model`'s `Quality` and the two
+duplicated modules are deleted (their tests move with them). Until then every change to the
+frame header or the quality vocabulary has to be made in two places, and the fixture tests are
+what force that.
+
+## HOB-28 — A range query scans whole records, not a footer index
+
+**Where:** `crates/store/src/segment.rs` (`scan_bytes`), `crates/store/src/tier.rs` (`range`).
+
+A sealed segment's footer states its record count but carries no per-record index, so
+`Tier::range` reads each candidate file from its header to its footer and filters by each
+record's recorded `real_ns`. Whole-segment skipping by the ring's `first`/`last` timestamps
+keeps an unrelated segment from being opened at all, and both a row bound and a byte bound stop
+the walk, so a query's *answer* is bounded — its *work* is proportional to the records in the
+window's segments. The footer has room for a small index (`docs/SEGMENT-FORMAT.md` reserves the
+body for exactly this), so this is a deliberate M1 cut rather than a missing guard.
+
+**Exit criteria.** A footer record index (or a per-record time summary) once M2's history query
+shape is known, with the fixture generator and the Python reference extended together, and a
+measurement showing the query cost before and after.
+
+## HOB-29 — The tmpfs requirement is decided from the mount table, not from `statfs`
+
+**Where:** `crates/store/src/tmpfs.rs` (`check_tmpfs`, `MountTable::covers`).
+
+`require_tmpfs` for the hot and warm tiers reads `/proc/self/mounts` and asks whether the
+longest component-wise matching mount is `tmpfs`. That is the kernel's own record of what an
+administrator mounted, and it is readable without `unsafe`, which `statfs` is not. What it does
+*not* catch is a directory reached through a bind mount into a tmpfs (the table shows the
+source's mount, not the reachable path's), or a mount whose type a kernel reports under another
+name (`ramfs`, an overlay on tmpfs). The reader also refuses to guess: a mount whose arc cannot
+be found is `mount-not-found`, not "therefore not tmpfs".
+
+**Exit criteria.** A `statfs`-based check (`f_type == TMPFS_MAGIC`) behind the same decision
+point, chosen together with whatever `unsafe`/dependency policy `HOB-27`'s rebuild settles, and a
+test tree with a bind-mounted directory.
+
+## HOB-30 — No session spools
+
+**Where:** the whole crate; plan v4 §C.4.
+
+§C.4 wants a crashed probe's counters and open spans to continue across a restart: a session
+spool that remembers the last raw reading per metric and the open spans per issuer, so a restart
+neither invents a rate from a fresh baseline nor leaves spans unsealed. This package explicitly
+does not build it (the brief puts session spools out of scope alongside the daemon, socket,
+probe, act and installer). The store is the machinery the spool will use — a tier is a segment
+directory with bounds, and spans are a RAM table with a documented bound — but the spool's own
+policy (what to persist, when, and what a restart does with it) has no implementation and no
+test.
+
+**Exit criteria.** A spool crate or module with its own file format and bounds, a restart test
+(record, kill the writer, reopen, continue) and a statement of the guaranteed window.
+
+## HOB-31 — The symlink refusal is a check, not an atomic open
+
+**Where:** `crates/store/src/fsio.rs` (`StoreDir::symlink_metadata`, every operation).
+
+Every operation refuses a path whose `symlink_metadata` says it is a link, which is what plan
+v4 §C.5 requires and what the brief's "never follow a symlink out of the store directory"
+mutation pins. Between that `symlink_metadata` and the separately-named `open`/`create_new`, a
+concurrent actor that can write the directory could swap a regular file for a link and win the
+race. Closing it needs `O_NOFOLLOW` (an `unsafe` `libc` call) or `openat`/`fstatat` relative
+opens (also `unsafe`, or a dependency), and both are blocked by the same constraints as
+`HOB-27`; `fsio` records the limit in its module docs rather than implying an atomicity it does
+not have. The threat model bounds it: the store directory is the probe's own (`/run/hostobs`,
+`/var/lib/hostobs`), not a shared or attacker-writable path.
+
+**Exit criteria.** `openat`-relative opens with `O_NOFOLLOW` behind one `fsio` function, chosen
+with the same `unsafe`/dependency decision as `HOB-27`, plus a test that a link planted between
+the check and the open is still refused.
+
+## HOB-32 — No filesystem fault injection
+
+**Where:** `crates/store/src/fsio.rs`, `crates/store/src/error.rs`.
+
+`ENOSPC` is mapped to a typed `no-space` and counted, and that mapping is tested. What is not
+tested is a *short write*, a failed `fsync`, a rename that succeeds on one machine and not on
+another, or `ENOSPC` arriving in the middle of the seal's streamed copy. The seal is written so
+that any of those leaves the open name intact and the final name absent (temp name, footer,
+`fsync`, rename, `fsync` the directory, unlink the open name), but the *order's* correctness
+rests on the sequence being what `docs/SEGMENT-FORMAT.md` says rather than on an injected
+failure. A fake directory handle would need either a trait in `fsio` (which the write-boundary
+lint makes affordable, since the only writer is one module) or a real filesystem that can be
+made full.
+
+**Exit criteria.** A `fsio` seam a test can fail at a named step, with tests that assert the
+observable state after each failure (which names exist, and what the next open reports).
+
+## HOB-33 — The single writer is a property, not an observable
+
+**Where:** `crates/store/src/queue.rs` (`WriterQueue`), `crates/store/src/store.rs`.
+
+Plan v4 §A.4 asks for a single writer; the implementation gets it structurally — one `Store`
+owns the queue and `write_pending`/`write_one` take `&mut self`, so the type system refuses two
+concurrent drains of one store. Nothing tests the property *across processes*, and no lane
+starts two writers on one directory. Two probes (or a probe and a restarted probe whose
+predecessor has not exited) on the same `hot`/`warm` directory would each hold a water mark and
+each append to a `*.seg.open` name; the second would refuse at `StoreDir`'s `create_new`, which
+is the intended outcome, but that outcome is not asserted anywhere.
+
+**Exit criteria.** A documented directory-lock (a `*.lock` file created with `create_new`, held
+for the store's lifetime, refused with a typed error) plus a test that a second `Store::open` on
+a live directory is refused, and a statement of what a probe crash leaves behind.
+
+## HOB-34 — Retirement cannot see incarnations held outside the store
+
+**Where:** `crates/store/src/store.rs` (`retire`, `reachable`), `crates/store/src/dictionary.rs`.
+
+`retire` computes reachability as the union of what this store's own history tiers and events
+tier still name, then frees every ephemeral dictionary entry nobody names. A consumer that
+holds an incarnation *outside* those segments — a session spool (`HOB-30`), a reply in flight
+over the socket, a record already handed to a client but not yet written — has no way to keep
+it alive. The store's reachability is correct for its own bytes and is not a global claim, which
+is what the module docs say; the risk is a caller that assumes otherwise.
+
+**Exit criteria.** `retire` takes a caller-supplied extra reachability set (or a registry
+handle), with a test that an externally-held incarnation survives a retirement pass.
+
+## HOB-35 — The events ring's displacement is counted but not persisted
+
+**Where:** `crates/store/src/events.rs` (`EventRing`, `EventStore::stats`).
+
+The RAM ring keeps the most recent events under a byte cap and reports how many it displaced
+(`displaced`, `displaced_bytes`), which satisfies "a drop is counted". It does not say *which*
+ones, and the counter does not survive a restart: after a reopen a consumer knows the ring is
+at its cap, not what it lost before the restart. The persisted events tier is the durable
+record, so nothing is lost from the store — but the RAM view's own loss history is only
+in-process.
+
+**Exit criteria.** Either a displacement journal (bounded, appended to the events tier) or a
+consumer contract that states the count is per-process, plus a test that pins whichever is
+decided for a restart.
+
+## HOB-36 — Events are keyed by strings, not by validated incarnations
+
+**Where:** `crates/store/src/events.rs` (`Event::new`, `SpanTable`).
+
+An event's `issuer` is a caller-supplied string bounded to 128 bytes, and spans are keyed by
+`(issuer, key)`. §C.4's issuer is a cgroup incarnation, and the store cannot validate one
+(it must not depend on `model`'s registry, `HOB-27`), so an issuer string that names a
+different incarnation than the caller meant — or that two issuers happen to share — merges
+their spans. A consumer that derives the issuer string from the identity (`<boot>-<pid>-
+<starttime>`, say) gets the right behaviour; the store cannot check that it did.
+
+**Exit criteria.** An issuer identity the store can validate (a dictionary id, once the probe
+owns the join between `model`'s incarnations and the store's dictionary), with a test that two
+incarnations reusing one path never merge their spans.
+
+## HOB-37 — Span abandonment is a caller's loop
+
+**Where:** `crates/store/src/events.rs` (`SpanTable::abandon_issuer`), `crates/store/src/store.rs`.
+
+`abandon_issuer` produces the inferred `abandoned` end events for one issuer's open spans, and
+`Store` exposes the table, but nothing ties abandonment to an incarnation disappearing: the
+probe's scan round has to notice the disappearance and call it. If it does not, spans stay open
+until the per-issuer bound refuses new ones, which is a visible refusal rather than silent loss
+— but the `inferred: true` record the plan requires then never exists.
+
+**Exit criteria.** A round-taking entry point (`Store::end_round(disappeared: &[issuer])`) that
+abandons automatically, with a test that a vanished issuer's spans are closed as inferred and
+that a *live* issuer's are not (`HOB-7`'s one-absent-scan rule).
+
+## HOB-38 — A full writer queue drops the oldest job, always
+
+**Where:** `crates/store/src/queue.rs` (`WriterQueue::submit`).
+
+When the queue is at `writer_queue_bytes`, `submit` drops the oldest job, returns it and counts
+it; a job larger than the whole bound is refused. That is one policy, chosen because it keeps
+the bound after every operation and because the newest record is the more useful one to keep.
+Alternatives the plan leaves open — blocking the producer, dropping the *newest*, or shedding
+at a lower rate (decimation with a `NOT_SAMPLED` count) — are not implemented, so a probe whose
+writer falls behind always loses the oldest measurements rather than the newest.
+
+**Exit criteria.** A policy code in the store's config (`drop_oldest | drop_newest | block`) with
+a bounded block timeout and a decimation counter reported as `NOT_SAMPLED` values, decided with
+the probe's own scheduling observation.
+
+## HOB-39 — A range answer is payload bytes, not decoded `model` values
+
+**Where:** `crates/store/src/segment.rs` (`ScannedRecord`), `crates/store/src/store.rs` (`StoreRange`).
+
+The brief asks a range query to return "`model` values with quality codes intact". The store
+returns the **payload** it was given — a complete `proto` BLOCK frame, byte-identical to what
+the writer wrote — plus the record's own time and incarnation list. The quality bytes are
+inside that payload, so nothing is lost, but a caller must decode it: the store has no
+`build_dispatch`-shaped join to `model`, because it may not depend on `proto` or `model`
+(`HOB-27`). `quality::Reading`/`QualityCode` exist as the store's own vocabulary (used by
+nothing yet, asserted against `fixtures/wire/quality.json`), so the types are ready for that
+join to land on top of them.
+
+Doing the join inside the store would mean a decoder and a value model in this crate — the
+duplication `HOB-27` already forces on four header facts, multiplied by the whole column codec,
+which is the wrong trade while the lock is pinned.
+
+**Exit criteria.** After the image rebuild that `HOB-27` needs, `Store::range` (or a layer above
+it) returns `model` rows with their quality codes and the payload form becomes an internal
+detail; `quality::Reading` is then replaced by `model`'s type.
+
+## HOB-40 — No focus tier is configured by `plan_v4`
+
+**Where:** `crates/store/src/store.rs` (`StoreConfig::plan_v4`), `crates/store/src/tier.rs`.
+
+Plan v4 §A.4 and the brief name "focus tiers" among the per-tier directories. The machinery is
+general — `TierConfig::new(name, kind, segment_s, keep_s, cap_bytes, require_tmpfs)` plus
+`StoreDirs` accepts any tier set — but `plan_v4` configures exactly hot, warm, cold and events,
+because the plan does not yet say which focus tiers exist, what they keep or where they live;
+inventing that here would be a default standing in for a product decision. A caller that wants
+one adds it to `StoreConfig::tiers` and points `dirs` at a directory (the `tmpfs` field covers
+the shared hot/warm directory, so a focus tier outside it needs a `StoreDirs` extension).
+
+**Exit criteria.** The plan states the focus tier's trigger (a queried cgroup, an operator flag,
+a window), its `segment_s`/`keep_s`/`cap_bytes` and its directory; `plan_v4` configures it and a
+test asserts a record for that cgroup lands there and is retained past `hot`'s window.
+
+## HOB-41 — No golden fixture has a non-zero record pad
+
+**Where:** `fixtures/segment/`, `python/reference/make_segment_fixtures.py`.
+
+Every committed fixture's record bodies are multiples of 8 bytes, so every `pad` byte in the
+corpus is `0`. The padding rule (`pad = (8 - body % 8) % 8`, zero bytes, inside the record's
+total length) is therefore pinned only by the Rust unit test that walks body lengths 0–63 and by
+the Python encoder's own round trip — the two implementations agree on what they each generate,
+but no committed pair of files proves they agree with each other on a padded record. A real
+cross-language case needs a body (an id table plus a payload) whose length is not a multiple of
+8, which the shared `fixtures/wire/*.bin` payloads are not.
+
+**Exit criteria.** One committed fixture with a non-zero `pad`, generated by the Python encoder
+and decoded by `golden_segment.rs`, plus the Python decoder reading the Rust writer's padded
+output.
+
+## HOB-42 — A sealed name is trusted without its footer, and header identity is not checked against the name
+
+**Where:** `crates/store/src/tier.rs` (`ring_segment`), `crates/store/src/segment.rs` (`scan`).
+
+Two "sealed" semantics are weaker than the word suggests. (a) `ring_segment` never requires a
+footer for a non-`.seg.open` name, so a `.seg` that lost its footer — or a truncated sealed file,
+whose remainder is a torn tail — is served as a sealed segment rather than refused; the repair
+path only covers the open name. (b) The header's `seq` and `start_real_ns` are never compared
+with the numbers in the file's name, so a file renamed by hand keeps serving the identity of its
+header. Neither is a safety defect (a reader still validates every byte it uses, and the store
+only removes what a name parse plus a header kind check proves is its own), but "sealed" should
+mean "the footer that closes these records is present and agrees", not "the name does not end in
+`.seg.open`".
+
+**Exit criteria.** A sealed name without a verifiable footer is reported and quarantined instead
+of served, a name/header identity disagreement is a typed refusal, and both have a test and a
+mutant.
+
+## HOB-43 — Quarantined files sit outside the cap
+
+**Where:** `crates/store/src/tier.rs` (`rescan`: corrupt and oversized branches), `crates/store/src/segment.rs` (`quarantine_name`).
+
+A corrupt or oversized segment is renamed `<name>.corrupt` so an operator can inspect it. That
+name does not parse as a segment, so the ring ignores it: it is not in `bytes`, `cap_bytes` and
+`keep_s` never evict it, and nothing limits how many exist. One quarantined file is the right
+answer; a source of repeated damage (a failing disk, a writer bug) turns "never silently dropped"
+into unbounded disk use, the failure the cap exists to prevent. Found in the delta review of the
+fix round; the first review round missed it too.
+
+**Exit criteria.** Either quarantined bytes count against the tier's cap (oldest `.corrupt`
+removed first, reported) or a hard count/bytes bound refuses further quarantine with a typed,
+counted report; a test fills the bound; a mutant removes it.
