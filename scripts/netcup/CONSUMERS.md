@@ -814,6 +814,35 @@ rerun validates an existing record, and cockpit startup checks that the
 published GID still matches the local group. See the [design rationale](DESIGN-GUIDE.md#runner-cockpit-uses-the-host-endpoint-record)
 and [`runner/README.md`](runner/README.md).
 
+### Install fleetd for host facts
+
+`fleet facts collect` and `fleet guard validate` run on the host, so the wheel
+(not a checkout) is what a host needs. `install-fleetd.sh` verifies both wheel
+hashes, installs into `/opt/fleetd/<version>/venv`, and links
+`/usr/local/bin/fleet`; it never installs into the system Python, which Debian
+13 refuses.
+
+```bash
+wheel_dir=/var/cache/host-wheels
+fleetd_sha256=$(awk 'NR == 1 { print $1 }' "$wheel_dir/fleetd-0.3.0-py3-none-any.whl.sha256")
+cli_extended_sha256=$(awk 'NR == 1 { print $1 }' "$wheel_dir/cli_extended-0.5.0-py3-none-any.whl.sha256")
+sudo bash "$HOME/runner-scripts/install-fleetd.sh" \
+  --wheel-dir "$wheel_dir" \
+  --fleetd-version 0.3.0 --fleetd-sha256 "$fleetd_sha256" \
+  --cli-extended-version 0.5.0 --cli-extended-sha256 "$cli_extended_sha256" \
+  --check
+sudo bash "$HOME/runner-scripts/install-fleetd.sh" \
+  --wheel-dir "$wheel_dir" \
+  --fleetd-version 0.3.0 --fleetd-sha256 "$fleetd_sha256" \
+  --cli-extended-version 0.5.0 --cli-extended-sha256 "$cli_extended_sha256"
+command -v fleet
+```
+
+`--check` verifies the inputs and reports whether the exact hashes are
+installed without writing anything; it exits 1 when they are not. See the
+[runner host sequence](runner/README.md#install-fleetd-for-host-facts) for the
+surrounding steps and `fleetd/docs/SPEC.md` for what the installed wheel needs.
+
 ### Install augeaswrap for host-setup
 
 Copy the release wheels and their trusted SHA-256 sidecars into a host-local

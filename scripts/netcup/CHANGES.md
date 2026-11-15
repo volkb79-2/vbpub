@@ -5,6 +5,19 @@ All notable changes to scripts/netcup are recorded here.
 ## [Unreleased]
 
 ### Added
+- `runner/install-fleetd.sh` installs the fleetd and cli-extended wheels a
+  managed host needs for `fleet facts collect` and `fleet guard validate`. It
+  verifies both SHA-256 inputs before writing, installs offline into
+  `/opt/fleetd/<version>/venv` (`--no-index --no-deps`), links
+  `/usr/local/bin/fleet`, is idempotent for the same hashes and reinstalls when a
+  hash changes, and never uses the system Python, which Debian 13 refuses
+  (PEP 668). `--check` verifies the inputs and reports whether that exact wheel
+  hash is already installed without writing, exiting 1 when it is not. It
+  refuses a symlinked install path, an incomplete existing venv and a
+  non-symlink file at the command path, and it touches nothing outside its
+  prefix. `runner/README.md` and `CONSUMERS.md` carry the host sequence;
+  `tests/test_install_fleetd.py` covers every refusal in a temp prefix only
+  (`NC-57`).
 - NC-42: `run-r2-campaign.sh ... --instances K` supervises K shard instances
   of one lane at once (Run-Gate `--shard`, one child campaign each with its own
   lock, container, stall counter and evidence), then one `--merge-shards` run
