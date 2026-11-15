@@ -2393,13 +2393,17 @@ MaxFileSec=1month
         """
         if self.actions.dry_run:
             return 8 * GIB
-        text = Path("/proc/meminfo").read_text(encoding="utf-8")
+        unreadable = (
+            "cannot determine MemTotal from /proc/meminfo (needed for automatic "
+            "swap sizing and for the control-plane MemoryMin RAM bound)"
+        )
+        try:
+            text = Path("/proc/meminfo").read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError) as exc:
+            raise InstallerError(f"{unreadable}: {exc}") from exc
         match = re.search(r"^MemTotal:\s+(\d+)\s+kB$", text, re.MULTILINE)
         if not match:
-            raise InstallerError(
-                "cannot determine MemTotal from /proc/meminfo (needed for automatic "
-                "swap sizing and for the control-plane MemoryMin RAM bound)"
-            )
+            raise InstallerError(unreadable)
         return int(match.group(1)) * 1024
 
     def _effective_swap_total_gb(self, disk_bytes: int | None = None) -> int:

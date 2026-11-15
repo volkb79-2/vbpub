@@ -895,6 +895,43 @@ def test_mem_total_reader_names_both_of_its_consumers_and_refuses_a_bad_meminfo(
         installer._memory_total_bytes()
 
 
+def test_mem_total_reader_converts_kib_to_bytes_and_fails_closed_when_unreadable(
+    tmp_path, monkeypatch
+):
+    # The reader's unit contract: /proc/meminfo reports kB (really KiB), and the
+    # bound compares BYTES. A missing factor would make every host look 1024x
+    # smaller, so it is pinned with a realistic '8 GB VM' value (7.5 GiB).
+    monkeypatch.setattr(Installer, "_memory_total_bytes", _REAL_MEMORY_TOTAL_BYTES)
+    installer = make_installer(tmp_path, dry_run=False)
+    seven_and_a_half_gib_kib = 7 * 1024 * 1024 + 512 * 1024
+    state = {"text": f"MemTotal:       {seven_and_a_half_gib_kib} kB\nMemFree: 1 kB\n"}
+
+    class _FakePath:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        @staticmethod
+        def read_text(**_kwargs):
+            if isinstance(state["text"], Exception):
+                raise state["text"]
+            return state["text"]
+
+    monkeypatch.setattr("debian_install_v2.installer.Path", _FakePath)
+    assert installer._memory_total_bytes() == seven_and_a_half_gib_kib * 1024
+    assert installer._memory_total_bytes() == 7.5 * 1024 ** 3
+    # A real 7.5 GiB and 7.0 GiB host are accepted at the full table; the
+    # reader's value feeds the bound directly.
+    charged = control_plane_ram_charged_bytes(CONTROL_PLANE_MEMORY_MIN)
+    assert charged <= control_plane_ram_bound_bytes(installer._memory_total_bytes())
+    assert charged <= control_plane_ram_bound_bytes(7 * 1024 ** 3)
+
+    # An unreadable file is an InstallerError that says why, not a traceback and
+    # not a guessed host size.
+    state["text"] = PermissionError("denied")
+    with pytest.raises(InstallerError, match=r"cannot determine MemTotal.*denied"):
+        installer._memory_total_bytes()
+
+
 def test_stage2_unit_forwards_the_override_only_when_it_is_set(tmp_path):
     # Stage two is a systemd unit: it inherits nothing from the stage-one shell,
     # so the documented test-guest override has to travel in bootstrap.env.
