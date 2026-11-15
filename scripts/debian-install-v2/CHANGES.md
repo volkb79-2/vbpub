@@ -10,6 +10,8 @@ All notable changes to debian-install-v2 are recorded here.
   installation is disabled. The installer verifies each value through `systemctl show`.
   Values and measurement status are recorded in `docs/CONTROL-PLANE-MEMORY.md`; existing
   hosts still need a separately scheduled in-place application or reinstall.
+  `verify` now also reads these values back, so it fails on a host installed
+  before this change until the drop-ins are applied (DIV2-BL-08, DIV2-BL-09).
 
 ### Changed
 - KSM defaults to `advisor_max_cpu=10` (percent of one CPU), a 300-second target scan, and

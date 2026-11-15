@@ -37,8 +37,15 @@ installer. Its repository unit has separate `MemoryHigh`/`MemoryMax` settings,
 and its host containment is `cgprofile.slice`; neither is a
 debian-install-v2 service-level fact. `mdt-psi-guard.service` is installed by
 mdt-cockpit host-setup. Both are therefore omitted from this installer's sum
-and drop-ins; their owning packages provide their own service-level facts for
-the six-unit fleetd-reserve list.
+and drop-ins. Neither owning package currently sets a service-level `MemoryMin`
+(cgprofile sets it on `cgprofile.slice` only; the psi-guard unit sets none), so
+until they do, a host reports an incomplete six-unit set and fleetd falls back
+to its profile constant (DIV2-BL-09).
+
+The kernel caps a service's effective `memory.min` by its ancestors' protection;
+this installer sets no `MemoryMin` on `system.slice`, so reclaim protection (as
+distinct from the reported number) is unconfirmed until checked on a live host
+(DIV2-BL-09).
 
 These drop-ins contain only `MemoryMin`; debian-install-v2 does not emit
 `MemoryMax`, `MemoryHigh`, or `MemoryLow` for the listed services. Existing

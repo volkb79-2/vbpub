@@ -68,6 +68,33 @@ def test_control_plane_memory_min_dropins_match_the_documented_table_and_rerende
         assert not re.search(r"(?m)^Memory(?:Max|High|Low)=", content)
 
 
+def test_control_plane_memory_min_tokens_equal_their_byte_counts():
+    # The rendered token (what systemd reads) and the byte count (what the
+    # readback compares) are stored separately; a drift between them would
+    # only surface on a live host as a failed install.
+    for unit, (token, expected_bytes) in CONTROL_PLANE_MEMORY_MIN.items():
+        match = re.fullmatch(r"([1-9][0-9]*)M", token)
+        assert match, f"{unit}: unexpected MemoryMin token {token!r}"
+        assert int(match.group(1)) * 1024 * 1024 == expected_bytes, unit
+
+
+def test_control_plane_memory_min_drop_ins_are_reloaded_after_the_last_write(tmp_path):
+    installer = make_installer(tmp_path)
+    installer._configure_control_plane_memory_min()
+
+    argvs = [action.argv for action in installer.actions.planned]
+    writes = [
+        index for index, argv in enumerate(argvs)
+        if argv[0] == "/usr/bin/tee" and CONTROL_PLANE_MEMORY_MIN_DROPIN in argv[1]
+    ]
+    reloads = [
+        index for index, argv in enumerate(argvs)
+        if argv == ("/usr/bin/systemctl", "daemon-reload")
+    ]
+    assert len(writes) == len(CONTROL_PLANE_MEMORY_MIN)
+    assert reloads and reloads[-1] > writes[-1]
+
+
 def test_control_plane_memory_min_sum_is_in_the_measured_profile_band():
     total_bytes = sum(value[1] for value in CONTROL_PLANE_MEMORY_MIN.values())
     assert 450_000_000 <= total_bytes <= 1_500_000_000

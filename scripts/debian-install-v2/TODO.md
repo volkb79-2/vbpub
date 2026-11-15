@@ -50,6 +50,23 @@ approved host work to schedule separately; do not run the installer or edit
 hosts as part of this backlog item. Keep fleetd-reserve's per-service list
 aligned with `docs/CONTROL-PLANE-MEMORY.md`.
 
+## OPEN (DIV2-BL-09, 2026-11-15): control-plane MemoryMin is incomplete and its effect is unconfirmed
+
+Found in review of `div2-memorymin`. (1) fleetd's reserve uses the per-service
+sum only when all six units (`ssh`, `docker`, `containerd`, `systemd-journald`,
+`cgprofiled`, `mdt-psi-guard`) report a positive `MemoryMin`; this installer
+supplies four, and neither cgprofile (`MemoryMin` on `cgprofile.slice` only) nor
+mdt-cockpit host-setup (no unit-level value for `mdt-psi-guard.service`) sets
+the other two, so fleetd keeps using its profile constant. The owning backlogs
+(cgprofile, mdt-cockpit) need an entry each; the alternative is for fleetd to
+sum reported values and add the constant only for the missing units. (2) The
+installer sets no `MemoryMin` on `system.slice`; the kernel caps a service's
+effective protection by its ancestors, so on a live test VM compare
+`systemctl show -p MemoryMin` with the cgroup's `memory.min` and the effective
+protection before claiming reclaim protection. (3) `debian-install-v2 verify`
+now fails on every host installed before this change until the drop-ins are
+applied (see DIV2-BL-08). Not done here: no host work.
+
 ## DONE in code, OPEN live (div2-data-area-v2, 2026-11-05): explicit `partitioning` plan
 
 Replaces the predecessor rule-sized layout and separate root-cap setting with

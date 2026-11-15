@@ -78,9 +78,9 @@ installer step, or update the entries manually and apply them with
 
 ## Control-plane memory protection
 
-fleetd uses the sum of reported per-service `MemoryMin` values as the control-
-plane reservation, with a fixed profile constant only when a host reports no
-service values. The two 8 GiB hosts measured read-only on 2026-11-14 had about
+fleetd (FD-007) uses the sum of reported per-service `MemoryMin` values as the
+control-plane reservation only when every unit of its six-unit list reports a
+positive value; otherwise it uses a fixed profile constant. The two 8 GiB hosts measured read-only on 2026-11-14 had about
 450–500 MB of hot control-plane RSS. This installer uses fixed service floors
 that total 544 MiB (570,425,344 bytes), above that aggregate measurement and
 well below 8 GiB. The values do not vary with installed RAM.
@@ -104,8 +104,17 @@ debian-install-v2, so neither belongs in its table or drop-ins. FD-007's
 fleetd-reserve list uses the six actual systemd units
 `ssh.service`, `docker.service`, `containerd.service`,
 `systemd-journald.service`, `cgprofiled.service`, and
-`mdt-psi-guard.service`; this installer supplies the first four values and the
-owning packages supply the other two.
+`mdt-psi-guard.service`; this installer supplies the first four values. At the
+time of writing neither owning package sets a service-level `MemoryMin` for the
+other two (cgprofile sets `MemoryMin` only on `cgprofile.slice`; the psi-guard
+unit sets none), so a host installed by this installer alone still reports an
+incomplete set and fleetd uses its profile constant (DIV2-BL-09).
+
+`MemoryMin` on a service is limited by every ancestor cgroup's own protection in
+the kernel's hierarchical accounting. This installer sets no `MemoryMin` on
+`system.slice`, so whether the floors above also protect pages from reclaim
+(rather than only being reported) has to be confirmed on a live host
+(DIV2-BL-09); the fleetd reserve uses the reported number either way.
 
 An already completed installation needs a separately scheduled,
 operator-approved in-place drop-in application or reinstall. This change does
