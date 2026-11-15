@@ -1,0 +1,11 @@
+anon 700000000
+file 800000000
+shmem 50000000
+zswapped 256000000
+swapcached 6000000
+workingset_refault_anon 500
+workingset_refault_file 25
+workingset_restore_anon 2
+zswpin 480
+pgscan 700
+pgsteal 650

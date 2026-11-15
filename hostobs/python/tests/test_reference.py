@@ -47,7 +47,7 @@ MEM_CURRENT_FACTS = {
 class WireFixtures(unittest.TestCase):
     def test_every_fixture_round_trips_in_the_reference_codec(self):
         cases = hostobs_wire_ref.load_cases(FIXTURES)
-        self.assertEqual(len(cases), 23, "the fixture case list is part of the contract")
+        self.assertEqual(len(cases), 26, "the fixture case list is part of the contract")
         for spec_path, spec, data in cases:
             with self.subTest(case=spec_path.stem):
                 hostobs_wire_ref.check_case(spec, data)
@@ -139,6 +139,9 @@ class WireFixtures(unittest.TestCase):
             "column-kind-mismatch": "column-kind-mismatch",
             "no-rows-or-time": "no-rows-or-time",
             "empty-rows-and-time": "rows-and-time",
+            "block-as-req": "not-a-block",
+            "section-order": "section-order",
+            "truncated-directory": "truncated",
         }
         for case, refusal in expected.items():
             with self.subTest(case=case):
@@ -147,6 +150,55 @@ class WireFixtures(unittest.TestCase):
                 with self.assertRaises(hostobs_wire_ref.WireError) as caught:
                     hostobs_wire_ref.decode_frame((FIXTURES / f"{case}.bin").read_bytes())
                 self.assertEqual(caught.exception.as_dict()["kind"], refusal)
+
+    def test_a_truncated_directory_is_a_typed_refusal_and_never_a_struct_error(self):
+        # A 16-byte frame declares one section and carries no directory entry. The Rust
+        # decoder reports a truncation of the block directory; the reference decoder must
+        # raise its own WireError with the same context instead of struct.error.
+        data = struct.pack("<IBBHIHH", 16, hostobs_wire_ref.FRAME_TYPES["block"], hostobs_wire_ref.FRAME_SECTIONED, 0, 39, 1, 0)
+        with self.assertRaises(hostobs_wire_ref.WireError) as caught:
+            hostobs_wire_ref.decode_frame(data)
+        self.assertEqual(caught.exception.as_dict()["kind"], "truncated")
+        self.assertEqual(caught.exception.as_dict()["context"], "block directory")
+        # Every other short directory prefix is a WireError too, never a struct.error: an
+        # entry count larger than the bytes present is a hostile frame, not a Python bug.
+        for declared in range(1, 5):
+            data = struct.pack(
+                "<IBBHIHH",
+                16,
+                hostobs_wire_ref.FRAME_TYPES["block"],
+                hostobs_wire_ref.FRAME_SECTIONED,
+                0,
+                39,
+                declared,
+                0,
+            )
+            with self.subTest(declared=declared), self.assertRaises(hostobs_wire_ref.WireError) as caught:
+                hostobs_wire_ref.decode_frame(data)
+            self.assertEqual(caught.exception.as_dict()["kind"], "truncated")
+
+    def test_the_encoder_refuses_a_block_shape_under_another_frame_type(self):
+        spec = json.loads((FIXTURES / "live-block.json").read_text(encoding="utf-8"))
+        for frame_type in ("req", "rep", "evt", "dict", "end"):
+            frame = json.loads(json.dumps(spec["frame"]))
+            frame["type"] = frame_type
+            with self.subTest(frame_type=frame_type), self.assertRaises(hostobs_wire_ref.WireError) as caught:
+                hostobs_wire_ref.encode_frame(frame)
+            self.assertEqual(
+                caught.exception.as_dict(),
+                {"kind": "not-a-block", "frame_type": hostobs_wire_ref.FRAME_TYPES[frame_type]},
+            )
+
+    def test_the_encoder_refuses_a_non_canonical_section_order(self):
+        spec = json.loads((FIXTURES / "live-block.json").read_text(encoding="utf-8"))
+        frame = json.loads(json.dumps(spec["frame"]))
+        frame["sections"] = ["dictionary", "header", "rows", "columns"]
+        with self.assertRaises(hostobs_wire_ref.WireError) as caught:
+            hostobs_wire_ref.encode_frame(frame)
+        self.assertEqual(
+            caught.exception.as_dict(),
+            {"kind": "section-order", "index": 1, "kind_code": hostobs_wire_ref.SECTION_KINDS["header"]},
+        )
 
     def test_the_quality_vocabulary_is_the_one_the_rust_side_declares(self):
         vocabulary = json.loads((FIXTURES / "quality.json").read_text(encoding="utf-8"))

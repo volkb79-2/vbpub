@@ -1,0 +1,6 @@
+cpu  100 0 50 800 10 5 5 0 0 0
+cpu0 50 0 25 400 5 2 3 0 0 0
+ctxt 1000
+processes 500
+procs_running 2
+procs_blocked 1

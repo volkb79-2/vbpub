@@ -432,6 +432,56 @@ def empty_rows_and_time_frame() -> dict:
     return frame
 
 
+def block_as_req_frame() -> dict:
+    """A canonical block whose header declares the REQ frame type."""
+    frame = live_frame()
+    frame["corr"] = 37
+    return frame
+
+
+def section_order_frame() -> dict:
+    """A canonical block whose header and dictionary sections are swapped."""
+    frame = live_frame()
+    frame["corr"] = 38
+    return frame
+
+
+def truncated_directory() -> bytes:
+    """A 16-byte frame that declares one section but carries no directory entry.
+
+    Both decoders must report a truncation of the directory, never a struct.error: the
+    Python reference used to raise struct.error where Rust returns a typed refusal.
+    """
+    return struct.pack("<IBBHIHH", 16, wire.FRAME_TYPES["block"], wire.FRAME_SECTIONED, 0, 39, 1, 0)
+
+
+def reorder(data: bytes, order: list[int]) -> bytes:
+    """Re-emit `data` with its directory entries and bodies in `order`.
+
+    Every other byte is unchanged, so this is exactly the swap a hostile or buggy sender
+    would produce: each declared length still matches the body it sits next to.
+    """
+    n_sec = struct.unpack_from("<H", data, wire.FRAME_HEADER_LEN)[0]
+    entries = [
+        data[
+            directory_offset(data, index) : directory_offset(data, index) + wire.SECTION_DIR_ENTRY_LEN
+        ]
+        for index in range(n_sec)
+    ]
+    bodies = [
+        data[
+            body_offset(data, index) : body_offset(data, index)
+            + struct.unpack_from("<I", entries[index], 4)[0]
+        ]
+        for index in range(n_sec)
+    ]
+    out = bytearray(data[: wire.FRAME_HEADER_LEN + 4])
+    out += b"".join(entries[index] for index in order)
+    out += b"".join(bodies[index] for index in order)
+    assert len(out) == len(data), "reordering preserves every byte count"
+    return bytes(out)
+
+
 def patch(data: bytes, offset: int, replacement: bytes) -> bytes:
     return data[:offset] + replacement + data[offset + len(replacement) :]
 
@@ -572,12 +622,45 @@ CASES: list[tuple[str, dict, list[tuple[int, bytes]] | None, dict | None]] = [
         None,
         {"kind": "rows-and-time", "rows": 0, "buckets": 0},
     ),
+    (
+        "block-as-req",
+        block_as_req_frame(),
+        "not-a-block",
+        {"kind": "not-a-block", "frame_type": 1},
+    ),
+    (
+        "section-order",
+        section_order_frame(),
+        "section-order",
+        {"kind": "section-order", "index": 1, "kind_code": 1},
+    ),
+    (
+        "truncated-directory",
+        block_as_req_frame(),
+        "truncated-directory",
+        {"kind": "truncated", "context": "block directory"},
+    ),
 ]
 
 
 def build(name: str, frame: dict, edits: object) -> tuple[bytes, dict | None]:
     """Return the committed bytes and the expected refusal (if any)."""
+    if edits == "truncated-directory":
+        return truncated_directory(), {"kind": "truncated", "context": "block directory"}
     data = wire.encode_frame(frame)
+    if edits == "not-a-block":
+        # A canonical block with the header's type byte changed to REQ (frame type 1).
+        return patch(data, 4, bytes([wire.FRAME_TYPES["req"]])), {"kind": "not-a-block", "frame_type": 1}
+    if edits == "section-order":
+        # Header and dictionary swap places, bodies included: every length still matches.
+        n_sec = struct.unpack_from("<H", data, wire.FRAME_HEADER_LEN)[0]
+        order = list(range(n_sec))
+        order[0], order[1] = order[1], order[0]
+        return reorder(data, order), {
+            "kind": "section-order",
+            "index": 1,
+            "kind_code": wire.SECTION_KINDS["header"],
+        }
     if edits == "bad-quality":
         columns = section_index(data, "columns")
         # The first column's quality byte 0 is at header(8) + n_rows * 8.

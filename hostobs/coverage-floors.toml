@@ -1,10 +1,12 @@
 # Per-package line and region floors, checked by tools/crate-floors.py from one
-# llvm-cov summary. The first seven packages still carry the M0 bootstrap scaffold
-# floor; `model` and `proto` carry M1 behavioral floors measured on their own tests
+# llvm-cov summary. Six packages still carry the M0 bootstrap scaffold floor; `model`,
+# `proto` and `kernel` carry behavioral floors measured on their own tests
 # (model: 98.06% line / 97.90% region, proto: 99.43% line / 97.77% region measured in
-# the image on the M1 fix-round head). Floors are never lowered: a crate whose coverage drops raises
-# its own floor instead of hiding code, and a floor may only be returned to the
-# bootstrap value by deleting the crate.
+# the image on the M1 fix-round head). `kernel` carries the M1 part-2 behavioral floor
+# measured on its own tests (92.19% line / 93.50% region), because it is no longer
+# scaffold. Floors are never lowered: a crate whose coverage drops raises its own floor
+# instead of hiding code, and a floor may only be returned to the bootstrap value by
+# deleting the crate.
 [crates."crates/act"]
 line = 90.0
 region = 85.0
@@ -18,8 +20,8 @@ line = 90.0
 region = 85.0
 
 [crates."crates/kernel"]
-line = 90.0
-region = 85.0
+line = 92.0
+region = 93.0
 
 [crates."crates/model"]
 line = 97.0

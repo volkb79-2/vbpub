@@ -16,7 +16,13 @@ tests deterministic and what keeps a wire bug from hiding inside a filesystem ca
 The workspace denies unsafe Rust by default. Only `kernel` and `act` declare the planned
 unsafe-code allowance. Cargo rejects combining a workspace-lint inheritance stanza with a
 package-level override, so those two manifests declare their allowance directly while the
-other seven inherit the workspace lint.
+other seven inherit the workspace lint. The allowance is nominally there for `kernel`
+(`statx`, a `procfs` read) but **nothing uses it**: the crate carries its own
+`#![forbid(unsafe_code)]`, which a package lint override cannot raise, and every host read
+is `File::open`, `read_dir` and `symlink_metadata`. The allowance stays declared because
+`tools/check-lints.py` pins the workspace's expected override table, and because the first
+thing that genuinely needs a syscall (a `statx` mount id, `HOB-18`) should be a one-line
+manifest change reviewed on its own, not a crate-wide relaxation.
 
 ## Wire: why fixed-width typed columns (D4)
 
@@ -150,6 +156,99 @@ together with the decision point that would remove it (the next image rebuild).
 The same constraint is why the tiny test-only JSON reader lives in `test-support/json.rs`
 (outside the workspace members) instead of pulling `serde_json` in as a dev-dependency.
 
+## Collecting the host: what was ported from the sampler, and what was changed
+
+The `kernel` crate is the port of the topos sampler's collectors
+(`topos-sampler-poc-20261105`, `topos/sampler/src/{collect,procs,util,fsafe,cmdline}.rs`),
+under four decisions.
+
+**One `Fs` trait, one root, no ambient filesystem.** Every reader takes a [`Fs`] and a root;
+`RealFs` is the only implementation that touches the host and it offers exactly `read`,
+`read_prefix`, `list` and `meta` — no write, create, remove, rename or spawn operation
+exists to misuse, and `tools/check-lints.py` additionally refuses the write tokens in this
+crate's sources. The sampler read paths directly, which is why its fixture tests had to
+build real trees and why a path typo was a runtime surprise. Here the whole cgroupfs and
+`/proc` fixture trees are committed files, so the tests are host-independent by
+construction (this estate's rule that no test result may depend on host load).
+
+**Bounds are arguments, not literals.** Every read takes a byte bound, every listing an
+entry bound and every parse a line bound; `Bounds::POLICY` is the probe's policy value and
+a test passes a tiny value to force the refusal. The sampler had `SLURP_MAX = 64 MiB`
+inline and truncated a too-long directory listing; a truncated listing is a *wrong* answer
+(the tasks past the bound look absent), so here an over-long listing is `not-sampled`, and
+a file past its byte bound is refused rather than read into memory.
+
+**A parse failure is a code, never a zero.** The sampler stored `0.0` with a state code
+beside it, so a consumer that read only the value got a fabricated measurement; several
+collectors also skipped a line they could not parse, which made the metric silently
+disappear. Here each metric keeps its name and carries a quality code: an unparseable
+value is `unreadable` for that metric only, one bad field of `io.stat` makes the whole
+counter sum `unreadable` (a partial total is a wrong number that looks right), and a
+missing optional file is `absent` or `unsupported` according to a code the caller declares
+(`Absence::Controller` versus `Absence::Feature`). Nothing in a reader writes a zero for a
+failure.
+
+**Unknown device topology is a state, not a bottom device.** The sampler asked each device
+whether its `/sys/dev/block/<dev>/slaves` listing was non-empty and reused the last answer
+on failure, treating an unclassified device as bottom (`last.get(dev).copied().unwrap_or(true)`);
+a failed read therefore summed a stacked device's counters into the cgroup aggregate, and
+the aggregate double-counted. `cgroup::TopologySource` makes the answer an explicit
+three-valued input and an `Unknown` device makes the aggregate
+`QualityCode::UNKNOWN_TOPOLOGY` with **no** values at all. `HOB-20` records the fix, `HOB-21`
+the still-missing `/sys` implementation (so every production `io.*` aggregate is
+`unknown-topology` until the probe supplies one — an honest state rather than the bug
+again).
+
+**No path-keyed identity.** The cgroup key is `(device, inode)` and the process key is
+`(boot id, pid, starttime ticks)` (`identity.rs`); a path is a label. `st_dev` stands in for
+`statx`'s mount id because `unsafe` is forbidden here (`HOB-18`), and `CLK_TCK` is a
+caller-supplied fact (`ClockTicks`) rather than an assumed 100.
+
+**The sampler's scheduling was deliberately not ported.** Reading `/proc/<pid>/cmdline`
+takes the target's `mmap` lock, so for a task stuck in `D` state the read blocks; the sampler
+hid that behind a three-worker pool, a 64-slot queue, one in-flight read per pid and a 2 s
+deadline. `kernel` owns no threads: it exposes a bounded, blocking read plus the privacy
+contract (`cut_to_word` + `redact`, with the sampler's own test cases), and the caller that
+wants a pool implements one. What *was* ported is the part that can leak a password: a long
+line is cut at a word boundary so redaction never sees half a secret, and a vanished
+process is a typed `Missing` rather than an empty string.
+
+**Clock injection instead of the host clock.** `ManualClock` makes every assertion about a
+wall jump, a monotonic interval or a reboot deterministic; `SystemClock` is the only
+non-test clock and reads `Instant`/`SystemTime` without `unsafe`.
+
+**A field is named by the kernel's own field number, and the index is derived.** `/proc`
+files are positional: `/proc/<pid>/stat` has no names at all, and `statm`, `loadavg` and
+the `cpu` rows of `/proc/stat` are the same shape. An index written beside a field number
+is a second copy of the same fact, and the two copies can disagree — which is exactly what
+happened: `parse_stat` declared `(9, field 12)` for `minflt` and then matched `9 => minflt`,
+so it read field 12 (`majflt`) and field 13 (`cmajflt`), the process's *children's* faults
+(`HOB-23`). The helper, the fixture and the SP-2 assertions had been written from the same
+wrong table, so nothing went red. The rule the fix applies: a reader declares **field
+numbers** and derives an index through one `STAT_FIELD_OFFSET` (field 3 is index 0 after
+`comm`), the fixture and the test helper are generated from field numbers too, and one test
+gives field `n` the value `n` so every assertion proves its own field (a slip of one is a
+different number). Keyed files (`cpu.stat`, `memory.*`, `statm`'s sibling `status`, the
+PSI files, the limits) cannot slip this way because the name travels with the value; their
+tests now use distinct per-position values anyway.
+
+**A read bound applies to bytes read, never to a reported length.** Refusing by `metadata.len()`
+looks stricter and is wrong in both directions: a sysfs attribute reports one page (4096)
+whatever its content, so a 20-byte attribute under a 256-byte policy cap was refused, while
+a `/proc` pseudo-file reports 0 and still answers with text. The bound is therefore a
+`take(max_bytes + 1)` on the read, with `saturating_add` so `usize::MAX` ("no bound") means
+the whole file rather than a wrapped limit of 0 (`HOB-24`). A sum has the same rule: a total
+that overflows is `unreadable`, never clamped at `u64::MAX` — `saturating_add` is for a
+budget, `checked_add` for a reading (`HOB-25`).
+
+**What SP-2 does *not* join (`HOB-26`).** The SP-2 tests compute a rate in a local helper
+rather than through `model::derive_rate`, because `kernel` cannot depend on `model` while the
+lane image pins a `Cargo.lock` that any path or dev dependency rewrites. The clock and
+identity half of SP-2 is evidenced here against hand-computed arithmetic, and the classifier
+half lives in `model` with `fixtures/rates/rates.json`; the two are joined by hand-checked
+numbers and the shared quality fixture, not by a call. Stating that is part of the evidence,
+not a footnote to it.
+
 ## Gates and coverage
 
 `lint` runs formatting, Clippy with `-D warnings`, rustdoc with `-D warnings`, cargo-deny
@@ -157,18 +256,27 @@ and the source lints; `selftest` runs nextest, doctests, llvm-cov and the per-cr
 line/region floors from `coverage-floors.toml`. Both are offline and locked, in the
 `tester-unified-rust` image, with Docker networking disabled.
 
-`model` and `proto` now carry behavioral floors (97% line/96% region and 98%/96%) raised
-from the M0 bootstrap 90%/85% after their own tests reached 98.06%/97.90% and
-99.43%/97.69%. The other seven packages keep the bootstrap floor because they are still
-the compilable scaffold; their identity test is not a product-coverage claim. Floors are
-never lowered and code is never excluded from coverage.
+`model`, `proto` and now `kernel` carry behavioral floors (97% line/96% region, 98%/96%,
+and 92%/93%): the first two were raised from the M0 bootstrap 90%/85% after their own tests
+reached 98.06%/97.90% and 99.45%/97.88%, and `kernel` was raised after its own tests
+reached 92.19% line/93.50% region — a crate whose floor starts at the bootstrap value is
+treated as scaffold, and one with real tests raises its own floor instead of hiding code.
+The other six packages keep the bootstrap floor because they are still the compilable
+scaffold; their identity test is not a product-coverage claim. Floors are never lowered and
+code is never excluded from coverage.
 
 Rust R2 (`cargo-mutants` judged by assay) is not adopted yet (R-3b in
 [`assay/docs/RUST-METHODOLOGY.md`](../../assay/docs/RUST-METHODOLOGY.md)), so the test-quality
-claim for this package rests on a hand mutation campaign: one mutation at a time, in the lane
-image, each restored and digest-verified. Twenty-one mutations, all killed, with the two
-first-pass survivors converted into tests, are recorded in
-[`HAND-MUTANTS-M1.md`](HAND-MUTANTS-M1.md).
+claim for this package rests on hand mutation campaigns: one mutation at a time, in the lane
+image, each restored and digest-verified. The M1 campaign (twenty-one mutations, all killed,
+the two first-pass survivors converted into tests) is in
+[`HAND-MUTANTS-M1.md`](HAND-MUTANTS-M1.md); the M1 part-2 campaign (thirty-one mutations
+covering the proto/Python refusals, the kernel collectors, the clocks, and the fix round's
+`stat` field mapping, iocost overflow and unbounded read — all killed) is
+[`HAND-MUTANTS-M1B.md`](HAND-MUTANTS-M1B.md). A mutation that does not compile is reported
+as `NOT-BUILT` rather than counted as a kill, because it proves nothing about the tests; a
+patch whose stored fragment no longer matches the source is `NOT APPLIED`, which is also
+not a survivor.
 
 `cargo deny` keeps duplicate-version and external wildcard checks strict. Its single
 `winnow@0.7.15` skip is tied to the imported sampler lock: `toml 0.9.8` and its

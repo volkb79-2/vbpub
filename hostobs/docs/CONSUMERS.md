@@ -1,7 +1,7 @@
 # Using the hostobs Rust lanes
 
-`model` and `proto` are functional; the other five library crates and two binaries are
-still the M0 scaffold. From `hostobs/`, run the registered lanes:
+`model`, `proto` and `kernel` are functional; the remaining four library crates and two
+binaries are still the M0 scaffold. From `hostobs/`, run the registered lanes:
 
 ```sh
 run-gate lint

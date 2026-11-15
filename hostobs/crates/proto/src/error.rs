@@ -244,6 +244,29 @@ pub enum ProtoError {
         /// The kind code the dictionary declares.
         dictionary: u8,
     },
+    /// A block-shaped frame whose type is not `BLOCK`.
+    ///
+    /// Plan v4 §B.1 gives each frame type one payload shape: `REQ`/`REP`/`EVT` carry a
+    /// small JSON control object, `DICT` a dictionary, `BLOCK` the column block. A
+    /// decoder that accepted block sections under any type would let a caller read a
+    /// control envelope as measurements (and an encoder emit one), so the shape is
+    /// checked against the declared type in both directions.
+    NotABlock {
+        /// The frame type the frame declared (its stored code).
+        frame_type: u8,
+    },
+    /// Sections appear in an order the encoder never emits.
+    ///
+    /// The encoder has exactly one order — header, dictionary, rows-or-time, then
+    /// columns — and two byte strings must never decode to one value (§B.5's
+    /// byte-identity goal). An unordered directory would let a reordering of the same
+    /// content pass as a different frame, so the decoder requires the canonical order.
+    SectionOrder {
+        /// The directory position of the section that broke the order.
+        index: usize,
+        /// The section kind found at that position.
+        kind: u16,
+    },
 }
 
 impl fmt::Display for ProtoError {
@@ -429,6 +452,15 @@ impl fmt::Display for ProtoError {
                     "column for metric {index} declares kind {declared}, the dictionary declares {dictionary}"
                 )
             }
+            ProtoError::NotABlock { frame_type } => {
+                write!(f, "frame type {frame_type} does not carry a column block")
+            }
+            ProtoError::SectionOrder { index, kind } => {
+                write!(
+                    f,
+                    "section {index} (kind {kind}) is out of the canonical order"
+                )
+            }
         }
     }
 }
@@ -485,6 +517,8 @@ impl ProtoError {
             ProtoError::RowReferenceNotEntity { .. } => "row-reference-not-entity",
             ProtoError::ColumnReferenceNotMetric { .. } => "column-reference-not-metric",
             ProtoError::ColumnKindMismatch { .. } => "column-kind-mismatch",
+            ProtoError::NotABlock { .. } => "not-a-block",
+            ProtoError::SectionOrder { .. } => "section-order",
         }
     }
 }
@@ -569,6 +603,8 @@ mod tests {
                 declared: 0,
                 dictionary: 1,
             },
+            ProtoError::NotABlock { frame_type: 1 },
+            ProtoError::SectionOrder { index: 2, kind: 1 },
         ];
         for case in cases {
             let rendered = case.to_string();
@@ -727,6 +763,11 @@ mod tests {
                     dictionary: 1,
                 },
             ),
+            ("not-a-block", ProtoError::NotABlock { frame_type: 1 }),
+            (
+                "section-order",
+                ProtoError::SectionOrder { index: 2, kind: 1 },
+            ),
         ];
         let mut names = Vec::new();
         for (expected, error) in cases {
@@ -739,7 +780,7 @@ mod tests {
         }
         assert_eq!(
             names.len(),
-            40,
+            42,
             "the refused-variant count is part of the contract"
         );
     }

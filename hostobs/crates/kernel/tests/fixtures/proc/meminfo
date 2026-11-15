@@ -1,0 +1,14 @@
+MemTotal:       1000000 kB
+MemFree:         100000 kB
+MemAvailable:    500000 kB
+Buffers:          10000 kB
+Cached:          300000 kB
+Shmem:            50000 kB
+AnonPages:       400000 kB
+SReclaimable:     20000 kB
+SUnreclaim:       10000 kB
+KernelStack:       5000 kB
+PageTables:        8000 kB
+Percpu:            2000 kB
+Zswap:             1000 kB
+Zswapped:          3000 kB

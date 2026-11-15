@@ -1,0 +1,8 @@
+pgmajfault 10
+pgfault 100
+pgpgin 5
+pgpgout 7
+oom_kill 0
+pswpin 0
+pswpout 0
+unrelated 5
