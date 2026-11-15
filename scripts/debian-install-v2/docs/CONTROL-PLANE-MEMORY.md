@@ -80,11 +80,69 @@ that `systemctl show -p MemoryMin` reports; it does not read the cgroup's
 effective protection. The kernel silently clamps effective protection (to the
 ancestors' floors and to what the cgroup actually uses), so a matching readback
 does not by itself prove that pages are protected. The effect was measured on
-v1001 only (see above). The floors are fixed values with no check against
-installed RAM (DIV2-BL-12); they protect at most the pages the cgroups really
+v1001 only (see above). The floors are fixed values, and they are checked
+against installed RAM ([DIV2-BL-12](#the-installed-ram-bound-and-why-it-refuses-div2-bl-12))
+rather than silently clamped; they protect at most the pages the cgroups really
 use. The derived slice value counts `mdt-psi-guard.service` (5 MiB) even on a
 host where that optional unit is absent (v1001), a deliberate small
 over-reservation so the value does not depend on host state.
+
+## The installed-RAM bound, and why it refuses (DIV2-BL-12)
+
+The floors are measured against 8 GiB hosts. On a much smaller host -- a 1–2 GiB
+VM or a test guest -- a 373 MiB `system.slice` floor would claim a large share
+of installed RAM, and the kernel clamps effective protection silently, so the
+configuration would look applied while meaning nothing. The installer therefore
+compares the floors it is about to write with `MemTotal` and **refuses** when
+they claim more than a documented fraction of it.
+
+**The fraction is 10% of `MemTotal`** (`CONTROL_PLANE_MEMORY_MIN_RAM_BOUND_PERCENT`).
+The floors that claim RAM are the derived `system.slice` floor (373 MiB, whose
+children's floors are already inside it) plus the floors of units **outside**
+that slice (`cgprofiled.service`, 4 MiB under `cgprofile.slice`) = **377 MiB
+(395,313,152 bytes)**. That is 4.6 % of an 8 GiB host, so 10%
+- leaves more than twice the measured ratio as headroom, and
+- accepts every host of the size the values were measured on: both r1002 and
+  v1001 report a `MemTotal` slightly *below* the nominal 8 GiB (firmware and
+  kernel reservations), and 10% of that is 780–819 MiB.
+
+The smallest accepted host is therefore 377 × 10 = **3,770 MiB ≈ 3.7 GiB of
+`MemTotal`**. A 2 GiB test guest (bound 204 MiB) is refused; the full measured
+table needs a host at least that large. With `run_docker_install=false` the
+Docker pair drops out, the charge falls to 75 MiB, and the smallest accepted
+host falls to 750 MiB. The check runs in the configuration step *before* any
+drop-in is written (so a refusal leaves nothing partial behind) and again in
+verification, where it compares the configured floors with this host's real
+`MemTotal`.
+
+**Why refuse rather than cap.** Scaling measured floors down to fit a smaller
+host would turn measured values into invented ones: a floor at 0.6 × the
+measured hot set is exactly the configuration the 2026-11-15 measurement showed
+failing (docker and containerd refaulted as if unprotected). A refused install
+is loud and recoverable; a silently scaled one is neither.
+
+**The test-guest override.** A host that genuinely cannot be that large (a
+throw-away VM exercising the installer, or a 1–2 GiB test guest) sets
+`VBPUB_ALLOW_CONTROL_PLANE_MEMORY_MIN_OVER_RAM_BOUND=yes` in the installer's
+environment. This is an explicit opt-in with no default: the refusal message
+names the variable, no other value is accepted, and the setting is forwarded to
+`/etc/vbpub/bootstrap.env` only when it is set, so a resumed stage-two unit run
+re-checks the bound the same way. A dry run (`--dry-run`) has no host to measure
+and keeps the installer's 8 GiB planning assumption (the same figure swap
+sizing already uses off-host), so planning never refuses on the cockpit's own
+memory size.
+
+`MemTotal` is read by the installer's single `_memory_total_bytes()` reader,
+the same one automatic swap sizing uses; an unreadable `/proc/meminfo` is an
+`InstallerError`, never a guessed host size. The measured charge is written into
+the `control_plane_memory_min` step detail, so a completed install records the
+floors AND what share of RAM they claim.
+
+**Known limit.** The measurement that produced the floors was taken on 8 GiB
+hosts only, so "fits under 10% of `MemTotal`" is the property this change can
+check; it says nothing about whether a 4 GiB host protects its control plane as
+well as an 8 GiB host does. The bound is a sanity bound against a silent
+mis-configuration, not a validated support matrix.
 
 ## Known limit: floors above about 460 MiB were not explained
 
@@ -141,8 +199,10 @@ What remains open:
   not been measured.
 - **Large-floor anomaly** (DIV2-BL-10): explained above, enforced as a ceiling
   until it is understood.
-- **No RAM sanity bound** (DIV2-BL-12): the floors are not compared with
-  installed RAM; measured only on 8 GiB hosts.
+- **RAM bound scope** (DIV2-BL-12, closed): the floors are now checked against
+  installed RAM and refused above 10% of `MemTotal`. What remains measured on
+  8 GiB hosts is whether that share protects as well on a smaller host; the
+  bound cannot answer that.
 - **r1002 confidence**: the 1.25 × `H` figure on that host flavor is inferred
   between measured 1.0 × and 1.5 × `H`; only a re-measurement on that flavor
   can raise the confidence.

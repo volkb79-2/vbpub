@@ -15,10 +15,15 @@ from debian_install_v2.state import StateStore
 from debian_install_v2.templates import (
     CONTROL_PLANE_MEMORY_MIN,
     CONTROL_PLANE_MEMORY_MIN_DROPIN,
+    CONTROL_PLANE_MEMORY_MIN_RAM_BOUND_OVERRIDE_ENV,
+    CONTROL_PLANE_MEMORY_MIN_RAM_BOUND_OVERRIDE_VALUE,
+    CONTROL_PLANE_MEMORY_MIN_RAM_BOUND_PERCENT,
     CONTROL_PLANE_SYSTEM_SLICE_CHILD_UNITS,
     CONTROL_PLANE_SYSTEM_SLICE_HEADROOM_MIB,
     CONTROL_PLANE_SYSTEM_SLICE_MEMORY_MIN_CEILING_MIB,
     CONTROL_PLANE_SYSTEM_SLICE_UNIT,
+    control_plane_ram_bound_bytes,
+    control_plane_ram_charged_bytes,
     control_plane_system_slice_memory_min_bytes,
     format_memory_mib_token,
     render_control_plane_memory_min_dropin,
@@ -28,6 +33,8 @@ from debian_install_v2.templates import (
 
 PROJECT = Path(__file__).resolve().parents[2]
 VALUE_TABLE = PROJECT / "docs" / "CONTROL-PLANE-MEMORY.md"
+# The real reader, so a test can restore it after the module-wide MemTotal pin.
+_REAL_MEMORY_TOTAL_BYTES = Installer._memory_total_bytes
 
 
 def make_installer(tmp_path, *, dry_run=True, **overrides) -> Installer:
@@ -43,6 +50,21 @@ def make_installer(tmp_path, *, dry_run=True, **overrides) -> Installer:
     installer.state.dry_run = False
     StateStore(config.state_dir).save_new(StateStore.new(config))
     return installer
+
+
+@pytest.fixture(autouse=True)
+def _pin_mem_total(monkeypatch):
+    """Pin MemTotal for every test in this module.
+
+    The RAM bound reads the real /proc/meminfo on a live (non-dry-run) path, and
+    a test result must not depend on the size of whatever host runs it (an 8
+    GiB gate container and a 16 GiB cockpit would behave differently). Tests
+    that exercise the bound install their own per-instance value, which shadows
+    this class-level default.
+    """
+    monkeypatch.setattr(
+        Installer, "_memory_total_bytes", lambda self: 8 * 1024 ** 3
+    )
 
 
 def documented_table_bytes() -> dict[str, int]:
@@ -158,6 +180,9 @@ def test_configure_records_the_derived_slice_floor_in_its_step_detail(tmp_path):
     assert "(derived)" in detail
     for unit, (memory_min, _bytes) in CONTROL_PLANE_MEMORY_MIN.items():
         assert f"{unit}={memory_min}" in detail, unit
+    # The RAM bound is part of the recorded evidence, not only of the refusal.
+    assert str(control_plane_ram_charged_bytes(CONTROL_PLANE_MEMORY_MIN)) in detail
+    assert f"{CONTROL_PLANE_MEMORY_MIN_RAM_BOUND_PERCENT}% of MemTotal" in detail
 
 
 def test_system_slice_floor_follows_a_child_floor_change():
@@ -604,3 +629,296 @@ def test_three_user_documents_explain_what_why_and_how():
     assert "what is measured and what is inferred" in table
     assert "system.slice" in table and "derived" in table
     assert "div2-bl-10" in table and "div2-bl-11" in table and "fd-007c" in table
+    # The installed-RAM bound is documented where an adopter looks for it,
+    # including the fraction and the test-guest override name.
+    assert f"{CONTROL_PLANE_MEMORY_MIN_RAM_BOUND_PERCENT}%" in table
+    assert CONTROL_PLANE_MEMORY_MIN_RAM_BOUND_OVERRIDE_ENV.lower() in table
+    assert "div2-bl-12" in table
+    assert f"{CONTROL_PLANE_MEMORY_MIN_RAM_BOUND_PERCENT}% of `memtotal`" in design
+    assert CONTROL_PLANE_MEMORY_MIN_RAM_BOUND_OVERRIDE_ENV.lower() in design
+    assert CONTROL_PLANE_MEMORY_MIN_RAM_BOUND_OVERRIDE_ENV.lower() in consumers
+    assert f"{CONTROL_PLANE_MEMORY_MIN_RAM_BOUND_PERCENT}%" in consumers
+
+
+def charged_mib() -> int:
+    return control_plane_ram_charged_bytes(CONTROL_PLANE_MEMORY_MIN) // (1024 * 1024)
+
+
+def test_ram_charged_bytes_count_the_slice_once_and_its_outside_floors_on_top():
+    # The derived `system.slice` floor already contains its children's floors,
+    # so charging the whole six-unit table again would double-count 341 MiB of
+    # protection configured once. Only floors OUTSIDE that slice are additive.
+    slice_bytes = control_plane_system_slice_memory_min_bytes(CONTROL_PLANE_MEMORY_MIN)
+    outside_bytes = sum(
+        value[1] for unit, value in CONTROL_PLANE_MEMORY_MIN.items()
+        if unit not in CONTROL_PLANE_SYSTEM_SLICE_CHILD_UNITS
+    )
+    assert control_plane_ram_charged_bytes(CONTROL_PLANE_MEMORY_MIN) == (
+        slice_bytes + outside_bytes
+    )
+    # A child floor change moves the charge exactly once (through the slice).
+    grown = dict(CONTROL_PLANE_MEMORY_MIN)
+    grown["docker.service"] = (
+        format_memory_mib_token(CONTROL_PLANE_MEMORY_MIN["docker.service"][1] + 8 * 1024 * 1024),
+        CONTROL_PLANE_MEMORY_MIN["docker.service"][1] + 8 * 1024 * 1024,
+    )
+    assert (
+        control_plane_ram_charged_bytes(grown)
+        - control_plane_ram_charged_bytes(CONTROL_PLANE_MEMORY_MIN)
+        == 8 * 1024 * 1024
+    )
+    # Only the floors outside system.slice (cgprofiled) are added on top.
+    assert outside_bytes == CONTROL_PLANE_MEMORY_MIN["cgprofiled.service"][1]
+    assert charged_mib() == slice_bytes // (1024 * 1024) + 4
+
+
+def test_ram_bound_is_the_documented_fraction_and_accepts_the_8_gib_hosts():
+    # r1002 and v1001 have 8 GiB. MemTotal there is below the nominal 8 GiB
+    # (firmware/kernel reservations), so the accepted size is pinned from
+    # BELOW that nominal value, not from it: the merged table must install on
+    # both real hosts, and this test would fail if a table change or a tighter
+    # fraction pushed the bound under what those hosts really report.
+    charged = control_plane_ram_charged_bytes(CONTROL_PLANE_MEMORY_MIN)
+    assert control_plane_ram_bound_bytes(8 * 1024 ** 3) == 8 * 1024 ** 3 * 10 // 100
+    assert charged <= control_plane_ram_bound_bytes(8 * 1024 ** 3)
+    # Real hosts report a bit less than the nominal 8 GiB; the bound still holds
+    # with generous margin (about 4.6% used against a 10% bound).
+    for mem_total_gib in (7990, 7800, 7500):
+        assert charged <= control_plane_ram_bound_bytes(mem_total_gib * 1024 * 1024)
+    # The smallest accepted host is the fraction crossing point, so a 2 GiB
+    # test guest is refused and an 8 GiB production host is accepted.
+    minimum = charged * 100 // CONTROL_PLANE_MEMORY_MIN_RAM_BOUND_PERCENT
+    assert charged <= control_plane_ram_bound_bytes(minimum)
+    assert charged > control_plane_ram_bound_bytes(minimum - 1)
+    assert charged > control_plane_ram_bound_bytes(2 * 1024 ** 3)
+
+
+def test_dry_run_still_accepts_the_table_on_the_planning_ram_assumption(tmp_path, monkeypatch):
+    # `--dry-run` has no host to measure and keeps the same 8 GiB planning
+    # assumption swap sizing uses, so a dry run on ANY host plans the table
+    # instead of refusing on the cockpit's own memory size.
+    installer = make_installer(tmp_path)
+    monkeypatch.setattr(installer, "_memory_total_bytes", lambda: 8 * 1024 ** 3)
+    installer._configure_control_plane_memory_min()
+    assert installer.actions.dry_run_writes
+
+
+def test_configure_refuses_a_host_too_small_for_the_measured_floors(tmp_path, monkeypatch):
+    # THE GUARD: a 2 GiB host must refuse rather than ship floors that claim
+    # ~19% of its RAM, and it must refuse before writing any drop-in.
+    installer = make_installer(tmp_path)
+    monkeypatch.setattr(installer, "_memory_total_bytes", lambda: 2 * 1024 ** 3)
+    charged = control_plane_ram_charged_bytes(installer._control_plane_memory_min_entries())
+    with pytest.raises(InstallerError) as caught:
+        installer._configure_control_plane_memory_min()
+    message = str(caught.value)
+    # The message must name all four facts the operator needs to act on.
+    assert str(charged) in message
+    assert str(2 * 1024 ** 3) in message
+    assert str(control_plane_ram_bound_bytes(2 * 1024 ** 3)) in message
+    assert CONTROL_PLANE_MEMORY_MIN_RAM_BOUND_OVERRIDE_ENV in message
+    # Assignment form, so an operator can copy it: a message naming the variable
+    # without the value it must be set to is not an escape hatch.
+    assert (
+        f"{CONTROL_PLANE_MEMORY_MIN_RAM_BOUND_OVERRIDE_ENV}="
+        f"{CONTROL_PLANE_MEMORY_MIN_RAM_BOUND_OVERRIDE_VALUE}" in message
+    )
+    # The "you need a host at least this large" figure is the exact crossing
+    # point (the smallest MemTotal whose bound covers the floors), so the number
+    # printed is actionable and matches what the boundary test proves.
+    minimum = charged * 100 // CONTROL_PLANE_MEMORY_MIN_RAM_BOUND_PERCENT
+    assert charged <= control_plane_ram_bound_bytes(minimum)
+    assert charged > control_plane_ram_bound_bytes(minimum - 1)
+    assert f"at least {minimum} bytes" in message
+    assert f"{format_memory_mib_token(charged)}" in message
+    assert f"{CONTROL_PLANE_MEMORY_MIN_RAM_BOUND_PERCENT}%" in message
+    assert installer.actions.dry_run_writes == {}
+
+
+def test_the_ram_bound_boundary_is_inclusive(tmp_path, monkeypatch):
+    # At exactly the bound the table installs; one byte less refuses. This is
+    # the difference between a bound and a suggestion.
+    installer = make_installer(tmp_path)
+    charged = control_plane_ram_charged_bytes(installer._control_plane_memory_min_entries())
+    exact_total = charged * 100 // CONTROL_PLANE_MEMORY_MIN_RAM_BOUND_PERCENT
+    assert control_plane_ram_bound_bytes(exact_total) >= charged
+
+    monkeypatch.setattr(installer, "_memory_total_bytes", lambda: exact_total)
+    installer._configure_control_plane_memory_min()
+    assert installer.actions.dry_run_writes
+
+    installer = make_installer(tmp_path / "tight")
+    monkeypatch.setattr(installer, "_memory_total_bytes", lambda: exact_total - 1)
+    with pytest.raises(InstallerError, match=r"above .*MemTotal"):
+        installer._configure_control_plane_memory_min()
+
+
+def test_the_ram_bound_uses_the_floors_this_profile_installs(tmp_path, monkeypatch):
+    # With Docker disabled the floors drop by 302 MiB and the charged value (and
+    # therefore the smallest accepted host) must drop with them.
+    installer = make_installer(tmp_path, run_docker_install=False)
+    entries = installer._control_plane_memory_min_entries()
+    without_docker = control_plane_ram_charged_bytes(entries)
+    assert without_docker < control_plane_ram_charged_bytes(CONTROL_PLANE_MEMORY_MIN)
+    monkeypatch.setattr(installer, "_memory_total_bytes", lambda: 2 * 1024 ** 3)
+    installer._configure_control_plane_memory_min()
+    assert installer.actions.dry_run_writes
+
+
+def test_the_documented_override_is_the_only_way_past_the_bound(tmp_path, monkeypatch):
+    # A test guest (1-2 GiB VM) cannot honour measured floors. Silently scaling
+    # them would make them meaningless, so the only way past the bound is the
+    # documented, explicit override -- and nothing else.
+    monkeypatch.delenv(CONTROL_PLANE_MEMORY_MIN_RAM_BOUND_OVERRIDE_ENV, raising=False)
+    installer = make_installer(tmp_path)
+    monkeypatch.setattr(installer, "_memory_total_bytes", lambda: 2 * 1024 ** 3)
+    with pytest.raises(InstallerError, match=r"MemTotal"):
+        installer._configure_control_plane_memory_min()
+
+    # An unrelated value is not an override (no fuzzy truthiness).
+    for value in ("no", "1", "true", ""):
+        monkeypatch.setenv(CONTROL_PLANE_MEMORY_MIN_RAM_BOUND_OVERRIDE_ENV, value)
+        with pytest.raises(InstallerError, match=r"MemTotal"):
+            installer._configure_control_plane_memory_min()
+
+    monkeypatch.setenv(
+        CONTROL_PLANE_MEMORY_MIN_RAM_BOUND_OVERRIDE_ENV,
+        CONTROL_PLANE_MEMORY_MIN_RAM_BOUND_OVERRIDE_VALUE,
+    )
+    installer._configure_control_plane_memory_min()
+    step = installer.state.load()["steps"]["control_plane_memory_min"]
+    assert step["status"] == "planned"
+    assert str(control_plane_ram_charged_bytes(installer._control_plane_memory_min_entries())) in (
+        step["detail"]
+    )
+
+
+@pytest.mark.parametrize(
+    "value",
+    ["YES", "Yes", " yes ", " yes\n"],
+)
+def test_the_override_value_is_compared_case_and_whitespace_insensitively(
+    tmp_path, monkeypatch, value
+):
+    # The documented value is `yes`, but an operator writing YES in an env file
+    # (or pasting it with trailing whitespace) means the same thing; the parsing
+    # must not silently ignore a stated intent, and it must not widen the
+    # accepted vocabulary either (see the per-value refusal test above).
+    installer = make_installer(tmp_path)
+    monkeypatch.setattr(installer, "_memory_total_bytes", lambda: 2 * 1024 ** 3)
+    monkeypatch.setenv(CONTROL_PLANE_MEMORY_MIN_RAM_BOUND_OVERRIDE_ENV, value)
+    installer._configure_control_plane_memory_min()
+    assert installer.actions.dry_run_writes
+
+
+def test_verify_re_checks_the_ram_bound_without_failing_on_an_8_gib_host(tmp_path, monkeypatch):
+    # `verify` compares the CONFIGURED floors with MemTotal; it cannot see that
+    # a floor is a sane share of RAM by reading systemd back alone.
+    installer = make_installer(tmp_path, dry_run=False)
+    monkeypatch.setattr(installer, "_memory_total_bytes", lambda: 8 * 1024 ** 3)
+    entries = installer._control_plane_memory_min_entries()
+    slice_value = str(control_plane_system_slice_memory_min_bytes(entries))
+
+    def systemctl_show(argv, description=""):
+        prop, unit = argv[3:5]
+        if unit == CONTROL_PLANE_SYSTEM_SLICE_UNIT:
+            return f"MemoryMin={slice_value}\n"
+        if prop == "LoadState":
+            return "LoadState=loaded\n"
+        return f"MemoryMin={entries[unit][1]}\n"
+
+    installer._run = systemctl_show
+    installer._verify_control_plane_memory_min()
+    detail = installer.state.load()["steps"]["control_plane_memory_min"]["detail"]
+    assert f"{CONTROL_PLANE_MEMORY_MIN_RAM_BOUND_PERCENT}% of MemTotal RAM bound" in detail
+
+
+def test_verify_refuses_when_the_host_ram_is_below_the_bound(tmp_path, monkeypatch):
+    # The same guard in verify: a host that shrank (or was restored from a
+    # larger machine's state) must not read back as a healthy install.
+    installer = make_installer(tmp_path, dry_run=False)
+    monkeypatch.setattr(installer, "_memory_total_bytes", lambda: 1 * 1024 ** 3)
+    queries = []
+
+    def systemctl_show(argv, description=""):
+        queries.append(argv)
+        prop, unit = argv[3:5]
+        if unit == CONTROL_PLANE_SYSTEM_SLICE_UNIT:
+            return f"MemoryMin={control_plane_system_slice_memory_min_bytes(CONTROL_PLANE_MEMORY_MIN)}\n"
+        if prop == "LoadState":
+            return "LoadState=loaded\n"
+        return f"MemoryMin={CONTROL_PLANE_MEMORY_MIN[unit][1]}\n"
+
+    installer._run = systemctl_show
+    with pytest.raises(InstallerError, match=r"MemTotal"):
+        installer._verify_control_plane_memory_min()
+    # The refusal comes before any readback query, so it is the bound that fails.
+    assert queries == []
+
+
+def test_mem_total_reader_never_reads_a_host_file_on_a_dry_run(tmp_path, monkeypatch):
+    # A dry run has no host to measure and must plan against the documented
+    # 8 GiB assumption, not the cockpit's own memory (which is a different
+    # machine's fact and would make planning depend on where it ran).
+    monkeypatch.setattr(Installer, "_memory_total_bytes", _REAL_MEMORY_TOTAL_BYTES)
+    installer = make_installer(tmp_path)
+    touched = []
+
+    class _FakePath:
+        def __init__(self, *args, **_kwargs):
+            touched.append(args)
+
+        @staticmethod
+        def read_text(**_kwargs):
+            raise AssertionError("a dry run must not read /proc/meminfo")
+
+    monkeypatch.setattr("debian_install_v2.installer.Path", _FakePath)
+    assert installer._memory_total_bytes() == 8 * 1024 ** 3
+    assert touched == []
+
+
+def test_mem_total_reader_names_both_of_its_consumers_and_refuses_a_bad_meminfo(tmp_path, monkeypatch):
+    # This is the reader's own contract, so it runs against the real method
+    # rather than the module-wide MemTotal pin.
+    monkeypatch.setattr(Installer, "_memory_total_bytes", _REAL_MEMORY_TOTAL_BYTES)
+    installer = make_installer(tmp_path, dry_run=False)
+    class _FakePath:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        @staticmethod
+        def read_text(**_kwargs):
+            return "MemFree: 1 kB\n"
+
+    monkeypatch.setattr("debian_install_v2.installer.Path", _FakePath)
+    with pytest.raises(InstallerError, match=r"MemTotal.*automatic swap sizing.*RAM bound"):
+        installer._memory_total_bytes()
+
+
+def test_stage2_unit_forwards_the_override_only_when_it_is_set(tmp_path):
+    # Stage two is a systemd unit: it inherits nothing from the stage-one shell,
+    # so the documented test-guest override has to travel in bootstrap.env.
+    import os as _os
+
+    installer = make_installer(tmp_path)
+    installer._install_stage2()
+    env = installer.actions.dry_run_writes["/etc/vbpub/bootstrap.env"]
+    assert CONTROL_PLANE_MEMORY_MIN_RAM_BOUND_OVERRIDE_ENV not in env
+
+    installer = make_installer(tmp_path / "with-override")
+    previous = _os.environ.get(CONTROL_PLANE_MEMORY_MIN_RAM_BOUND_OVERRIDE_ENV)
+    _os.environ[CONTROL_PLANE_MEMORY_MIN_RAM_BOUND_OVERRIDE_ENV] = (
+        CONTROL_PLANE_MEMORY_MIN_RAM_BOUND_OVERRIDE_VALUE
+    )
+    try:
+        installer._install_stage2()
+    finally:
+        if previous is None:
+            del _os.environ[CONTROL_PLANE_MEMORY_MIN_RAM_BOUND_OVERRIDE_ENV]
+        else:
+            _os.environ[CONTROL_PLANE_MEMORY_MIN_RAM_BOUND_OVERRIDE_ENV] = previous
+    env = installer.actions.dry_run_writes["/etc/vbpub/bootstrap.env"]
+    assert (
+        f"{CONTROL_PLANE_MEMORY_MIN_RAM_BOUND_OVERRIDE_ENV}="
+        f"{CONTROL_PLANE_MEMORY_MIN_RAM_BOUND_OVERRIDE_VALUE}" in env
+    )

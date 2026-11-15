@@ -138,6 +138,30 @@ mounted with `memory_recursiveprot`. A completed installation does not have a
 standalone retrofit verb, so existing hosts need a separately scheduled,
 operator-approved in-place drop-in application or reinstall.
 
+### The installed-RAM bound and the test-guest override
+
+The floors were measured on 8 GiB hosts and are installed only on a host
+large enough to carry them: the installer refuses when the floors (the
+derived `system.slice` floor plus the floors outside that slice, 377 MiB on
+the default profile) claim more than 10% of `MemTotal`. That accepts the 8 GiB
+hosts with room to spare and refuses, for example, a 2 GiB guest, instead of
+silently shrinking measured values. The refusal message names `MemTotal`, the
+floors, the 10% bound and the override below.
+
+For a throw-away test guest that cannot be that large, opt in explicitly:
+
+```bash
+VBPUB_ALLOW_CONTROL_PLANE_MEMORY_MIN_OVER_RAM_BOUND=yes \
+  ./debian-install-v2.py install --config install.json --yes
+```
+
+The variable has no default and accepts only `yes`; DI2 forwards it to
+`/etc/vbpub/bootstrap.env` when it is set, so a resumed stage-two unit run
+re-checks the bound with the same decision. Do not use it on a production
+host: the floors are then a larger share of RAM than this design supports.
+`verify` applies the same bound, so a host whose `MemTotal` no longer fits
+the configured floors fails verification rather than reporting healthy.
+
 ## Disk plan and offline preview
 
 The one `partitioning` plan describes root, optional data, reserve, and the

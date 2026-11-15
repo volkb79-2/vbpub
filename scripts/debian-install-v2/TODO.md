@@ -136,21 +136,62 @@ documented container-count limit with a measured justification. Until then, do
 not treat the documented floors as sufficient on a host that carries many
 containers.
 
-## OPEN (DIV2-BL-12, 2026-11-15): no RAM sanity bound on the control-plane floors
+## DONE in code (DIV2-BL-12, closed 2026-11-15): installed-RAM bound on the control-plane floors
+
+**State:** closed by the `div2-memorymin-rambound` change. **Filed:**
+2026-11-15 (reviewer finding F1 of `pi-memorymin-measured`).
 
 The per-service floors and the derived `system.slice` floor (373 MiB) are fixed
-values; the installer does not compare them with installed RAM, so on a host
-far smaller than the 8 GiB test hosts it would still configure the same floors.
-`MemoryMin` only protects pages the cgroup actually uses, so the practical
-exposure is bounded by real `system.slice` usage, but a floor that is a large
-fraction of RAM is no longer a "hot set" floor. Not measured, not tested.
+measured values, and the installer previously did not compare them with
+installed RAM: on a host far smaller than the 8 GiB test hosts it would still
+configure the same floors, and the kernel clamps them silently. `MemoryMin`
+only protects pages the cgroup actually uses, so the practical exposure is
+bounded by real `system.slice` usage, but a floor that is a large fraction of
+RAM is no longer a "hot set" floor.
 
-**Close when.** The installer either refuses or caps the derived `system.slice`
-floor at a documented fraction of `MemTotal` (with a clear message and a test
-that mutates the RAM figure), or the supported minimum RAM is documented with a
-measured reason that makes the bound unnecessary.
+**What closed it.** The installer now charges the floors that actually claim
+RAM — the derived `system.slice` floor plus the floors of units outside that
+slice (`cgprofiled.service`) = 377 MiB (395,313,152 bytes) on the default
+profile — and refuses when they exceed **10% of `MemTotal`**
+(`CONTROL_PLANE_MEMORY_MIN_RAM_BOUND_PERCENT`). 4.6% is the measured ratio on
+an 8 GiB host, so 10% accepts both 8 GiB test hosts with headroom while the
+smallest accepted host is about 3.7 GiB. It refuses rather than scales: a
+floor below about 1.0 × the measured hot set is the configuration the
+2026-11-15 measurement showed failing, so a silently scaled table would be
+meaningless. The refusal names `MemTotal`, the charged floors, the 10% bound and
+the override; the check runs in configure before any drop-in is written and
+again in `verify`. The documented test-guest override is
+`VBPUB_ALLOW_CONTROL_PLANE_MEMORY_MIN_OVER_RAM_BOUND=yes` (explicit, no
+default, forwarded to `bootstrap.env` only when set so a resumed stage-two run
+agrees with stage one). `MemTotal` comes from the installer's existing
+`_memory_total_bytes()` reader; a dry run keeps the 8 GiB planning assumption.
+Full rationale and the boundary arithmetic: `docs/CONTROL-PLANE-MEMORY.md`
+"The installed-RAM bound, and why it refuses" and `docs/DESIGN-GUIDE.md`.
 
-## DONE in code, OPEN live (div2-data-area-v2, 2026-11-05): explicit `partitioning` plan
+Tests: `test_control_plane_memory_min.py` pins the charged-byte accounting,
+accepts the real 8 GiB hosts' `MemTotal` (including values below the nominal
+8 GiB), refuses a 2 GiB guest before writing anything, pins the inclusive
+boundary (exact bound accepted, one byte less refused), proves the override is
+the only way past it (other values are not overrides), proves the override
+travels to `bootstrap.env` only when set, and proves `verify` re-checks the
+bound without failing an 8 GiB host.
+
+**What remains open.** The measurement itself was taken on 8 GiB hosts, so the
+bound can only check the arithmetic share, not whether a 4 GiB host that passes
+it protects its control plane as well as an 8 GiB host does; a re-measurement
+on a smaller host would have to justify any change to the fraction.
+
+## OPEN (div2-memorymin-inflated-slice-not-bound-checked, 2026-11-15, DIV2-BL-13): optional units inflate the derived floor on hosts that do not run them
+
+The derived `system.slice` floor counts every child floor in the table
+always, including `mdt-psi-guard.service` (5 MiB) on hosts where that optional
+unit is not installed (v1001). The RAM bound therefore charges protection that
+host cannot use, and the derived value is deliberately host-state independent
+today. Closing it needs a decision between a host-independent value and a
+host-accurate one; the current over-reservation (5 MiB) is inside the bound, so
+this is not urgent.
+
+## OPEN (div2-data-area-v2, 2026-11-05): explicit `partitioning` plan
 
 Replaces the predecessor rule-sized layout and separate root-cap setting with
 one whole-disk `partitioning` plan. It reserves an 8 GiB raw `iobench-raw`

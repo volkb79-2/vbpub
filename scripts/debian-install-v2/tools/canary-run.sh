@@ -125,6 +125,23 @@ canary system-slice-ceiling-dropped debian_install_v2/installer.py \
   '        if False:' \
   debian_install_v2/tests/test_control_plane_memory_min.py::test_system_slice_floor_above_the_measured_ceiling_refuses
 
+# 6. The installed-RAM bound is the guard DIV2-BL-12 was filed for: a host too
+#    small for the measured floors must refuse, not ship a floor the kernel
+#    silently clamps.
+canary ram-bound-dropped debian_install_v2/installer.py \
+  '        if charged > bound:' \
+  '        if False:' \
+  debian_install_v2/tests/test_control_plane_memory_min.py::test_configure_refuses_a_host_too_small_for_the_measured_floors
+
+# 7. Verify must apply that same bound. Without it a host that shrank reads
+#    back as a healthy install because systemd stored the configured floors.
+canary verify-ram-bound-dropped debian_install_v2/installer.py \
+  '        charged_bytes = self._check_control_plane_memory_min_ram_bound(entries)
+        verified_units = []' \
+  '        charged_bytes = 0
+        verified_units = []' \
+  debian_install_v2/tests/test_control_plane_memory_min.py::test_verify_refuses_when_the_host_ram_is_below_the_bound
+
 echo
 if [ "$fail" -gt 0 ]; then
   echo "canaries: $pass rejected, $fail SURVIVED — the gate is not discriminating"

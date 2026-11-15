@@ -55,6 +55,22 @@ CONTROL_PLANE_SYSTEM_SLICE_HEADROOM_MIB = 32
 # journald/docker refaults at the largest floors and never explained them
 # (open anomaly), so the derived value is checked against this bound.
 CONTROL_PLANE_SYSTEM_SLICE_MEMORY_MIN_CEILING_MIB = 460
+# Installed-RAM bound (DIV2-BL-12). The table above protects 377 MiB -- the
+# derived `system.slice` floor plus `cgprofiled.service`, which is the only
+# floor that lives outside that slice -- which is 4.6% of an 8 GiB host. A
+# reclaim-protection floor that claims a large share of installed memory is no
+# longer a hot-set floor, and the kernel clamps it silently, so the installer
+# compares the floors with MemTotal instead of trusting the host size. 10%
+# leaves over twice the measured ratio as headroom, so the merged table
+# installs on every 8 GiB host with room to spare and still installs down to a
+# MemTotal of about 3.7 GiB; below that the measured floors cannot be honoured
+# and the installer REFUSES (it never scales measured floors down silently).
+CONTROL_PLANE_MEMORY_MIN_RAM_BOUND_PERCENT = 10
+# The documented, explicit escape hatch for test guests (a 1-2 GiB VM cannot
+# honour measured floors). It is a deliberate opt-in, never a silent fallback:
+# the refusal message names it, and it is forwarded to stage two only when set.
+CONTROL_PLANE_MEMORY_MIN_RAM_BOUND_OVERRIDE_ENV = "VBPUB_ALLOW_CONTROL_PLANE_MEMORY_MIN_OVER_RAM_BOUND"
+CONTROL_PLANE_MEMORY_MIN_RAM_BOUND_OVERRIDE_VALUE = "yes"
 
 
 def control_plane_system_slice_memory_min_bytes(
@@ -67,6 +83,30 @@ def control_plane_system_slice_memory_min_bytes(
         if unit in CONTROL_PLANE_SYSTEM_SLICE_CHILD_UNITS
     )
     return child_bytes + CONTROL_PLANE_SYSTEM_SLICE_HEADROOM_MIB * 1024 * 1024
+
+
+def control_plane_ram_charged_bytes(
+    entries: dict[str, tuple[str, int]],
+) -> int:
+    """The floors that actually claim installed RAM, counted once.
+
+    The derived `system.slice` floor already contains the floors of its own
+    children, so only the unit floors OUTSIDE that slice are added on top;
+    adding the children again would demand RAM for protection that is
+    configured once (373 + 345 MiB instead of the real 373 + 4 MiB).
+    """
+    slice_bytes = control_plane_system_slice_memory_min_bytes(entries)
+    outside_slice_bytes = sum(
+        expected_bytes
+        for unit, (_token, expected_bytes) in entries.items()
+        if unit not in CONTROL_PLANE_SYSTEM_SLICE_CHILD_UNITS
+    )
+    return slice_bytes + outside_slice_bytes
+
+
+def control_plane_ram_bound_bytes(mem_total_bytes: int) -> int:
+    """The documented fraction of MemTotal the floors may claim."""
+    return mem_total_bytes * CONTROL_PLANE_MEMORY_MIN_RAM_BOUND_PERCENT // 100
 
 
 def format_memory_mib_token(nbytes: int) -> str:
