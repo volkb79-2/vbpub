@@ -255,7 +255,56 @@ def test_a_missing_prompt_driver_hint_names_the_cmru_extra(monkeypatch, tmp_path
 
 # --- A6: every estate contract's cmru argv parses against the registry --------
 
-_SKIP_PARTS = {".worktrees", ".git", "node_modules", "artifacts", ".venv", "__pycache__"}
+# ``.run-gate`` holds the leftovers of earlier gate runs (whole pytest tmp trees, copied
+# worktrees); none of it is estate content.
+_SKIP_PARTS = {".worktrees", ".git", "node_modules", "artifacts", ".venv", "__pycache__", ".run-gate"}
+
+
+def _git_tracked_paths(root: Path) -> list[str] | None:
+    """Every path git tracks below ``root``, or None when ``root`` is not a work-tree root.
+
+    The estate is the COMMITTED tree. Walking the disk instead reads whatever a shared
+    checkout also holds: nested ``.worktrees/*`` copies, ``.run-gate`` leftovers and
+    untracked scratch trees (minutes of AST parsing and unparseable fixture TOML in the
+    shared main checkout, the exact failure that made this suite look hung).
+    """
+    try:
+        top = subprocess.run(
+            ["git", "rev-parse", "--show-toplevel"], cwd=root,
+            capture_output=True, text=True, check=True,
+        ).stdout.strip()
+        if Path(top).resolve() != root.resolve():
+            return None  # a fixture tree inside some other repository: git knows nothing of it
+        listing = subprocess.run(
+            ["git", "ls-files", "-z"], cwd=root, capture_output=True, check=True,
+        ).stdout
+    except (OSError, subprocess.CalledProcessError):
+        return None
+    return [name for name in listing.decode("utf-8", "surrogateescape").split("\0") if name]
+
+
+def _estate_files(suffix: str, root: Path = REPO_ROOT) -> list[Path]:
+    """Every regular ``*<suffix>`` file of the estate under ``root``, sorted.
+
+    Tracked files when ``root`` is a git work tree; otherwise (the sparse mutation fixture,
+    a plain copy) a walk that PRUNES ``_SKIP_PARTS`` instead of listing them and filtering
+    afterwards, so nested trees are never descended into.
+    """
+    tracked = _git_tracked_paths(root)
+    if tracked is not None:
+        candidates = [root / name for name in tracked if name.endswith(suffix)]
+    else:
+        candidates = []
+        for directory, names, files in os.walk(root):
+            names[:] = [name for name in names if name not in _SKIP_PARTS]
+            candidates += [Path(directory) / name for name in files if name.endswith(suffix)]
+    # is_file(): a tracked symlink dangles in the canary's sparse snapshot.
+    return sorted(
+        path for path in candidates
+        if path.is_file() and not _SKIP_PARTS & set(path.relative_to(root).parts)
+    )
+
+
 _REMOVED_SPELLINGS = re.compile(
     r"\bcmru\s+run-step\b|\brun-step\b"
     r"|--forward-cgroup-parent-var|--forward-cgroup-parent-gates-var"
@@ -266,10 +315,8 @@ _REMOVED_SPELLINGS = re.compile(
 
 def _estate_contracts() -> list[Path]:
     found = []
-    for path in sorted(REPO_ROOT.rglob("*.toml")):
+    for path in _estate_files(".toml"):
         relative = path.relative_to(REPO_ROOT)
-        if _SKIP_PARTS & set(relative.parts) or not path.is_file():
-            continue
         if path.name.startswith(("cmru", "run-gate", "assay")) or "templates" in relative.parts:
             found.append(path)
     return found
@@ -349,10 +396,7 @@ def _cmru_from_text(text: str) -> list[list[str]]:
 
 
 def _estate_shell_scripts() -> list[Path]:
-    return sorted(
-        path for path in REPO_ROOT.rglob("*.sh")
-        if path.is_file() and not _SKIP_PARTS & set(path.relative_to(REPO_ROOT).parts)
-    )
+    return _estate_files(".sh")
 
 
 def _shell_text(path: Path) -> str:
@@ -456,6 +500,93 @@ def test_the_shell_script_reader_drops_comments_and_joins_continuations(tmp_path
     assert _cmru_from_text(_shell_text(script)) == [
         ["cmru", "build", "ciu", "--config", "x"], ["cmru", "publish", "ciu"],
     ]
+
+
+def _git(root: Path, *args: str) -> None:
+    subprocess.run(["git", *args], cwd=root, check=True, capture_output=True)
+
+
+def _touch_tree(root: Path, *relative: str) -> None:
+    for name in relative:
+        target = root / name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("x\n", encoding="utf-8")
+
+
+def test_the_estate_scan_of_a_git_tree_is_the_tracked_files_only(tmp_path):
+    _git(tmp_path, "init", "-q")
+    (tmp_path / ".gitignore").write_text(".run-gate/\n.worktrees/\n", encoding="utf-8")
+    _touch_tree(
+        tmp_path,
+        "a/tracked.sh", "tracked.sh",
+        ".run-gate/pytest/b.sh", ".worktrees/w/c.sh",  # ignored copies of whole trees
+        "scratch/untracked.sh",                        # untracked scratch
+        "a/tracked.toml",
+    )
+    _git(tmp_path, "add", "a/tracked.sh", "tracked.sh", "a/tracked.toml")
+    (tmp_path / "dangling.sh").symlink_to(tmp_path / "missing-target")
+    _git(tmp_path, "add", "dangling.sh")
+    assert [p.relative_to(tmp_path).as_posix() for p in _estate_files(".sh", tmp_path)] == [
+        "a/tracked.sh", "tracked.sh",
+    ]
+    assert [p.name for p in _estate_files(".toml", tmp_path)] == ["tracked.toml"]
+    assert _git_tracked_paths(tmp_path) == [
+        "a/tracked.sh", "a/tracked.toml", "dangling.sh", "tracked.sh",
+    ]
+
+
+def test_a_tracked_file_under_a_skipped_directory_name_is_still_not_estate(tmp_path):
+    _git(tmp_path, "init", "-q")
+    _touch_tree(tmp_path, "node_modules/p/x.sh", "keep.sh")
+    _git(tmp_path, "add", "-f", "node_modules/p/x.sh", "keep.sh")
+    assert [p.name for p in _estate_files(".sh", tmp_path)] == ["keep.sh"]
+
+
+def test_the_estate_scan_without_git_prunes_instead_of_descending(tmp_path, monkeypatch):
+    _touch_tree(
+        tmp_path, "keep/a.sh", "b.sh", ".run-gate/deep/x/y.sh", ".worktrees/w/z.sh",
+        "node_modules/m/q.sh", "keep/node_modules/r.sh",
+    )
+    visited: list[str] = []
+    real_walk = os.walk
+
+    def spying_walk(top, *args, **kwargs):
+        for directory, names, files in real_walk(top, *args, **kwargs):
+            visited.append(Path(directory).relative_to(top).as_posix())
+            yield directory, names, files
+
+    monkeypatch.setattr(os, "walk", spying_walk)
+    assert _git_tracked_paths(tmp_path) is None  # no repository here
+    assert [p.relative_to(tmp_path).as_posix() for p in _estate_files(".sh", tmp_path)] == [
+        "b.sh", "keep/a.sh",
+    ]
+    # Pruned, never entered: a filter applied after the walk would still have paid for these.
+    assert not [name for name in visited if name.split("/")[0] in {".run-gate", ".worktrees", "node_modules"}]
+    assert "keep/node_modules" not in visited
+
+
+def test_a_fixture_tree_inside_another_repository_is_walked_not_listed(tmp_path):
+    outer = tmp_path / "outer"
+    outer.mkdir()
+    _git(outer, "init", "-q")
+    inner = outer / "inner"
+    _touch_tree(inner, "f.sh")  # untracked by the OUTER repository
+    assert _git_tracked_paths(inner) is None
+    assert [p.name for p in _estate_files(".sh", inner)] == ["f.sh"]
+
+
+def test_an_unusable_git_degrades_to_the_walk(tmp_path, monkeypatch):
+    _git(tmp_path, "init", "-q")
+    _touch_tree(tmp_path, "u.sh")
+    monkeypatch.setenv("PATH", str(tmp_path / "no-git-here"))
+    assert _git_tracked_paths(tmp_path) is None  # OSError: git itself is missing
+    assert [p.name for p in _estate_files(".sh", tmp_path)] == ["u.sh"]
+
+
+def test_the_estate_scan_skips_gate_leftovers_in_the_real_checkout():
+    assert ".run-gate" in _SKIP_PARTS
+    for path in (*_estate_contracts(), *_estate_shell_scripts(), *_estate_python_outside_cmru()):
+        assert not _SKIP_PARTS & set(path.relative_to(REPO_ROOT).parts)
 
 
 def _on_disk_project_contracts() -> set[str]:
@@ -593,12 +724,10 @@ def _estate_cmru_import_problems(files) -> list[str]:
 
 def _estate_python_outside_cmru() -> list[Path]:
     return sorted(
-        path for path in REPO_ROOT.rglob("*.py")
-        # is_file(): a tracked symlink dangles in the canary's sparse snapshot
+        # _estate_files drops a tracked symlink that dangles in the canary's sparse snapshot
         # (libraries/worktree/run-gate.py -> ../../run-gate-project/run-gate.py).
-        if path.is_file()
-        and not (_SKIP_PARTS | {"cmru"}) & set(path.relative_to(REPO_ROOT).parts[:1])
-        and not _SKIP_PARTS & set(path.relative_to(REPO_ROOT).parts)
+        path for path in _estate_files(".py")
+        if path.relative_to(REPO_ROOT).parts[0] != "cmru"
     )
 
 

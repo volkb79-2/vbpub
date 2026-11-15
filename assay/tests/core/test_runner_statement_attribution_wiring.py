@@ -77,6 +77,9 @@ class _OracleAdapter:
             return key[len(self.key_prefix) :]
         return key
 
+    def normalize_coverage_text(self, text: str) -> str:
+        return text
+
     def statement_spans(self, text: str):
         return None
 

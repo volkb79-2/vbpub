@@ -28,7 +28,13 @@ parser, because llvm-cov already reports line truth and cargo-mutants already di
 The core stays language-free; the registry gets `rust` at R1, then R2, then R3 (`registry.py` keys by
 (language, rigor), [V]).
 
-## A. Adapter mapping (`assay/src/assay/adapters/rust.py`, new)
+**Implementation update (2026-11-15).** R-2 now registers R1, adds nextest and
+libtest failure-name witnesses, and exercises actual `cargo nextest`,
+`cargo test`, and `cargo llvm-cov` output in the offline Rust image. R2 and R3
+remain future work. The hostobs consumer lane replacement is still open; the
+Assay-only worktree does not change `hostobs/`.
+
+## A. Adapter mapping (`assay/src/assay/adapters/rust.py`)
 
 | Protocol member ([V] `adapters/base.py`) | Rust implementation | Notes |
 |---|---|---|
@@ -42,6 +48,7 @@ The core stays language-free; the registry gets `rust` at R1, then R2, then R3 (
 | `is_test_path` | mirror cargo-llvm-cov's default report exclusion exactly: a `tests/`, `examples/` or `benches/` segment, or basename `tests.rs`, `*_tests.rs`, `*-tests.rs` [V README] | Mirroring both ways matters: if assay calls a file source but llvm-cov excluded it, the file has no lcov record and `has_executable_code` makes it a loud failure; never a silent excuse. Pin with a real-toolchain fixture. Convention for hostobs: unit tests live in `src/<mod>/tests.rs` (`#[cfg(test)] mod tests;`), as the sampler already does (`src/tests.rs` [V]). |
 | `has_executable_code` | pure-Python masking lexer (Go's `go.py` lexer is the template [V]): mask `//`, NESTED `/* */`, `"..."`, raw `r#".."#` (n hashes), byte/C strings, char literals vs lifetimes (`'a'` vs `'a`); then True iff an `fn` token's signature reaches `{` before `;` at paren/bracket depth 0. Any lexing doubt returns True. | Consulted only for a changed file with NO lcov record. Trait method declarations (`fn f(&self);`) and type/const/use-only files return False. A file with fns that are cfg'd out on the gate platform or not in the module tree returns True, so it fails loudly (correct). |
 | `normalize_coverage_key` | identity | llvm-cov's `SF:` paths are absolute snapshot paths [K, S2]; the core already maps an absolute key under `repo_top` to its repo-relative form (`evaluate.py` `_to_repo_relative_key`, [V]). |
+| `normalize_coverage_text` | call the Rust LCOV normalizer before the shared parser | remove only complete zero `BRF`/`BRH` pairs when no `BRDA` record exists; malformed or nonzero markers are left for the LCOV parser to refuse. |
 | `statement_spans` / `statement_blocks` | return `None` | both attribution flags are False. |
 | `inject_uncovered_line` | insert, after leading inner attributes / `//!` docs, `#[allow(dead_code)] fn assay_canary_unreached(value: u64) -> u64 { let doubled = value.wrapping_mul(2); doubled.rotate_left(1) }` (rustfmt layout, 4 lines) | `#[allow(dead_code)]` is required: rustc warns on an unused private fn [K] and gate lanes run with warnings denied. Inserted at the top, not appended, so clippy's `items_after_test_module` cannot fire [K]. No `let x = ..; x` (clippy `let_and_return`) [K]. rustc emits zero-count coverage for unused non-generic fns [K, S2]: the body lines are executable and uncovered, the R1 axis. |
 | `inject_import_break` | insert at the same point `#[cfg(test)] #[test] fn assay_canary_import_break() { if let Some(p) = std::env::var_os("ASSAY_CANARY_RECEIPT") { let _ = std::fs::write(p, "<nonce>"); } panic!("assay-canary-import-break:<nonce>"); }` | Rust has no executable module top level (like Go). A panicking unit test in the module is the honest equivalent: it runs whenever the gate runs that module's unit-test binary, and it writes the per-attempt receipt before failing, so the existing receipt attribution ([V] DESIGN-GUIDE "R3 import-break receipt attribution") works unchanged. Rejected: `compile_error!` (fails at compile time, cannot write a receipt). Document the semantic as "test-break" in the description string. |
@@ -73,8 +80,12 @@ needs a Rust AST; tree-sitter adds a native dependency to a stdlib-only tool [V 
 - **Doctests:** nextest does not run them [V nexte.st]. They run in R0 via `cargo test --doc` and count for R0
   only; doctest coverage needs nightly in cargo-llvm-cov [V README] (known issue K4). Policy: doctests are
   examples, not the coverage carrier.
-- **First failing test (B146):** add two recognizers to `failure_summary.py` ([V] it knows pytest/go/vitest/jest):
-  nextest `FAIL [ 0.012s] crate::bin path::test`, libtest `test path ... FAILED`. Small, part of WP R-2.
+- **First failing test (B146):** `failure_summary.py` recognizes nextest
+  `FAIL [ 0.012s] crate::bin path::test` rows (including the current image's
+  `(i/n) package test-name` form) and libtest `test path ... FAILED` rows.
+  The captured name is diagnostic only: an unrecognized failing output still
+  has the command's nonzero R0 exit status, while the empty-selection guard is
+  `--no-tests=fail`.
 - **Flake policy:** retries are zero, everywhere. `.config/nextest.toml` `[profile.ci] retries = 0`, the argv also
   passes `--retries 0`, and `NEXTEST_RETRIES` is never in `env_passthrough`. Nextest otherwise treats a pass on
   retry as success (exit 0) [V nexte.st retries]. Slow tests get `slow-timeout` warnings only, never
@@ -86,7 +97,7 @@ needs a Rust AST; tree-sitter adds a native dependency to a stdlib-only tool [V 
 | Topic | Decision |
 |---|---|
 | Format | `judge.coverage.format = "lcov"`, existing parser [V `coverage_parsers/lcov.py`, which already names Rust as an lcov producer]. Producer vocabulary for lcov is closed and empty [V]; nothing to declare. |
-| Branch | Stable writes no `BRDA`, but R-0 proved it still writes `BRF:0`/`BRH:0`. In R-1, if the artifact has no `BRDA:` records and contains only zero-valued `BRF:`/`BRH:` markers, report branch capability as unavailable (`branches = None`), not as measured empty branch coverage. `require_branch` stays false. Known issue K2. |
+| Branch | Stable writes no `BRDA`, but R-0 proved it still writes `BRF:0`/`BRH:0`. If the artifact has no `BRDA:` records and contains only zero-valued `BRF:`/`BRH:` markers, report branch capability as unavailable (`branches = None`), not as measured empty branch coverage. The R1 adapter removes those markers only when there is no `BRDA:` anywhere and every record has a complete zero-valued pair. Consumers should keep `require_branch = false`; if set true, Assay refuses `NO_MEASUREMENT/BRANCH_UNAVAILABLE`. Known issue K2. |
 | Diff rule | `mode = "changed_lines"`, `fail_under = 100.0`, `allow_excluded = false` (lcov has no exclusion field; `excluded` is `None` [V]). `base_source = "request"` like run-gate-project [V `assay.toml`]. |
 | Crate floor (line + region) | assay judges diff lines only. The floor is a lane step, not an assay claim: `cargo llvm-cov report --json --summary-only --output-path cov-summary.json` (re-uses the profile data, no second test run [V README `report`]) then `tools/crate-floors.py` (stdlib, ~60 lines) aggregates per-file line and region summaries by crate directory against committed `coverage-floors.toml`. Fails R0 with the crate named. cargo-llvm-cov's own `--fail-under-*` flags are workspace totals [V README], hence the script. |
 | Test code | files excluded by convention (§A `is_test_path`). Inline `#[cfg(test)] mod tests { }` blocks inside a source file ARE measured; their lines run when tests run, so they rarely hurt; an unused test helper there fails loudly (K5). Convention: test modules in their own `tests.rs`. |
@@ -284,7 +295,7 @@ S < 300 changed lines, M < 900, L more.
 | R-0 | Spikes S1', S2, S5, S6 in disposable containers: image-baked lock cache and negative checks; llvm-cov facts and real lcov parser; image contents/size/python/build time; Run-Gate environment and offline network boundary | S | Codex, Opus reads | `assay/docs/RUST-R0-SPIKES.md` measurements | — |
 | R-1 | `tester-unified-rust/` image; Run-Gate lane key `network = "none"` (emits `--network=none`); hostobs workspace skeleton from the sampler; `.cargo/config.toml`, `.config/nextest.toml`, `deny.toml`, `coverage-floors.toml`, `tools/crate-floors.py`, `tools/check-lints.sh`; lock-cache image build; `lint` + `selftest` lanes | M | Codex / Sonnet | both lanes green on the real gate; `--network=none` passes | R-0 |
 | **MILESTONE 1** | **hostobs M0/M1 run on the real gate: fmt, clippy, deny, nextest, doctests, crate line+region floors.** Not yet assay-judged. | | | | R-1 |
-| R-2 | assay `RustAdapter` registered at R1; nextest/libtest first-failure recognizers; real-toolchain fixtures (`tests/fixtures/rust/`, generated in the image, A-234 discipline [V go.py header]); `tests/qualification/test_rust_r1_real.py` run inside the image; CONSUMERS "Rust lanes" + DESIGN-GUIDE §11 row; hostobs `assay-r1` replaces `selftest` | M | Codex / Fable once, then Sonnet | assay's own lanes + qualification in the image | R-1 |
+| R-2 | assay `RustAdapter` registered at R1; nextest/libtest first-failure recognizers; real-toolchain fixtures (`tests/fixtures/rust/`, generated in the image, A-234 discipline [V go.py header]); `tools/qualify_rust_r1_real.py` run inside the image; CONSUMERS "Rust lanes" + DESIGN-GUIDE §11 row; hostobs `assay-r1` replaces `selftest` | M | Codex / Fable once, then Sonnet | assay's own lanes + qualification in the image | R-1 |
 | **MILESTONE 2** | **100% diff-line coverage judged by assay on hostobs.** | | | | R-2 |
 | R-3a | DEFERRED until R2 adoption: S3/S4/S7 spikes (span units, zero-mutant `--in-diff`, baseline-failure report, directory artifact reservation, schema impact) | S | Codex | measurements | R-1, R2 adoption decision |
 | R-3b | DEFERRED until R2 adoption: `cargo-mutants-outcomes` format + diff content check; result_report; `ASSAY_CHANGED_DIFF`; namespace; Rust R2 registration; real-run fixtures | L | Codex / Sonnet | assay lanes + qualification | R-2, R-3a |
@@ -292,6 +303,12 @@ S < 300 changed lines, M < 900, L more.
 | R-4 | test-break/import-break canary injector and real-toolchain `COMMAND_FAILED` oracle with receipt in T2 `assay-r3`; uncovered-line injector and `UNCOVERED_LINES` oracle in a separate T3 lane | S-M | Codex / Sonnet | qualification in the image | R-2 |
 | R-5 | cmru `.crates` source, Cargo.lock writer, image cache rebuild, advisories in `check` | M-L | Codex / Sonnet (Fable once) | cmru own gate; a dry resolve against hostobs | R-1 (parallel to R-2..R-4) |
 | R-6 | DEFERRED until R2 adoption: advisory whole-crate mutation lanes; host sharding on designated mutation hosts | S | Codex / Sonnet | one complete campaign per core crate, timings recorded | R-3b |
+
+**R-2 worktree status (2026-11-15):** the Assay adapter, registry entry, unit
+and real-toolchain qualification, and Assay documentation are implemented.
+Hostobs `assay-r1` replacement and T1/T2 sequencing are not included because
+this package is restricted to `assay/`; B243 remains partial until the
+consumer integration is completed.
 
 R-5 runs in parallel; until it lands, dependency bumps follow its documented manual commands. Every WP updates
 the README/DESIGN-GUIDE/CONSUMERS of the tool it touches in the same change.

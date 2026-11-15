@@ -145,14 +145,16 @@ for re-running the lane when correctness itself is in question.
 
 ## What this build evaluates
 
-R0, Python R1, Python R2, Python R3, JavaScript R1, JavaScript R2 (ingested Stryker report; B046), JavaScript R3, Go R1, SQL R2.
+R0, Python R1, Python R2, Python R3, JavaScript R1, JavaScript R2 (ingested Stryker report; B046), JavaScript R3, Go R1, Rust R1, SQL R2.
 
 If a lane's declared rigor tier isn't in this list for its language, that is a
 real capability gap to check `assay lanes --json` for, not something to route
-around silently. **Rust is planned, not implemented:** no Rust adapter is
-registered, so a Rust lane is a declaration without a judge. See
-`docs/RUST-METHODOLOGY.md` and "Rust adapter status and tier design" in
-`docs/DESIGN-GUIDE.md`; the per-language matrix is in `docs/CONSUMERS.md`.
+around silently. **Rust is R1 only:** the `RustAdapter` judges line coverage
+(`cargo llvm-cov` LCOV, branch totals unavailable on stable Rust, so a lane that
+requires branches refuses with `BRANCH_UNAVAILABLE`); there is no Rust R2
+(mutation) or R3 canary yet (B243 is PARTIAL). See `docs/RUST-METHODOLOGY.md`
+and "Rust adapter status and tier design" in `docs/DESIGN-GUIDE.md`; the
+per-language matrix is in `docs/CONSUMERS.md`.
 
 JavaScript R3 is registered and locally exercised. B087's current uncovered-line
 transform still needs retained dstdns qualification; the archived first attempt

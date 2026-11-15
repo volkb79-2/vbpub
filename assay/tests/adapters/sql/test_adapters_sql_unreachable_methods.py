@@ -48,6 +48,11 @@ def test_normalize_coverage_key_raises_not_implemented_naming_r2_only_reachabili
         ADAPTER.normalize_coverage_key("some/key")
 
 
+def test_normalize_coverage_text_raises_not_implemented_naming_r2_only_reachability():
+    with pytest.raises(NotImplementedError, match="normalize_coverage_text"):
+        ADAPTER.normalize_coverage_text("x")
+
+
 def test_statement_spans_raises_not_implemented_naming_r2_only_reachability():
     with pytest.raises(NotImplementedError, match="statement_spans"):
         ADAPTER.statement_spans("CREATE TABLE t (a INT);")
@@ -67,13 +72,14 @@ def test_inject_uncovered_line_raises_not_implemented_naming_r2_only_reachabilit
 
 def test_every_raise_names_the_r2_only_rigor_fact_not_just_the_method():
     """Not merely "raises" -- each message states WHY: SQL's registered
-    rigor is R2-only, so the CLI never reaches any of these six."""
+    rigor is R2-only, so the CLI never reaches any of these seven."""
     for call in (
         lambda: ADAPTER.for_project(
             repo_top=Path("/repo"), project_root=Path("/repo")
         ),
         lambda: ADAPTER.has_executable_code("x.sql", "x"),
         lambda: ADAPTER.normalize_coverage_key("x"),
+        lambda: ADAPTER.normalize_coverage_text("x"),
         lambda: ADAPTER.statement_spans("x"),
         lambda: ADAPTER.inject_import_break(
             "x", nonce="0123456789abcdef0123456789abcdef"

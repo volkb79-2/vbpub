@@ -890,6 +890,10 @@ class PythonAdapter:
             return key
         return key[len(prefix) + 1 :]
 
+    def normalize_coverage_text(self, text: str) -> str:
+        """Python coverage formats have no producer-specific text rewrite."""
+        return text
+
     def statement_spans(self, text: str) -> tuple[StatementSpan, ...] | None:
         return _statement_spans(text)
 

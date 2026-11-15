@@ -41,6 +41,11 @@ from .templates import (
     CONTROL_PLANE_MEMORY_MIN,
     CONTROL_PLANE_MEMORY_MIN_DROPIN,
     CONTROL_PLANE_MEMORY_MIN_OPTIONAL_UNITS,
+    CONTROL_PLANE_SYSTEM_SLICE_MEMORY_MIN_CEILING_MIB,
+    CONTROL_PLANE_SYSTEM_SLICE_UNIT,
+    control_plane_system_slice_memory_min_bytes,
+    format_memory_mib_token,
+    render_control_plane_memory_min_slice_dropin,
     DOCKER_CLEANUP_SERVICE,
     DOCKER_CLEANUP_TIMER,
     FSTRIM_OVERRIDE,
@@ -1019,24 +1024,66 @@ MaxFileSec=1month
             entries.pop("containerd.service")
         return entries
 
+    def _control_plane_system_slice_memory_min_bytes(
+        self, entries: dict[str, tuple[str, int]]
+    ) -> int:
+        """Derive the `system.slice` floor from the units this profile installs.
+
+        Single source: the per-service table above, never a second hand-written
+        number. Above `CONTROL_PLANE_SYSTEM_SLICE_MEMORY_MIN_CEILING_MIB` the
+        2026-11-15 measurement saw unexplained journald/docker refaults, so a
+        table change that trips the ceiling refuses instead of shipping.
+        """
+        expected = control_plane_system_slice_memory_min_bytes(entries)
+        ceiling = CONTROL_PLANE_SYSTEM_SLICE_MEMORY_MIN_CEILING_MIB * 1024 * 1024
+        if expected > ceiling:
+            raise InstallerError(
+                f"derived {CONTROL_PLANE_SYSTEM_SLICE_UNIT} MemoryMin is "
+                f"{expected} bytes, above the measured ceiling of {ceiling} bytes"
+            )
+        return expected
+
     def _configure_control_plane_memory_min(self) -> None:
-        """Write fixed per-unit MemoryMin drop-ins and reload systemd."""
+        """Write per-unit MemoryMin drop-ins plus the derived system.slice floor."""
         entries = self._control_plane_memory_min_entries()
+        # Derive (and ceiling-check) the ancestor floor BEFORE writing anything:
+        # a table that trips the ceiling must refuse without leaving a partial
+        # set of unit drop-ins behind.
+        slice_bytes = self._control_plane_system_slice_memory_min_bytes(entries)
+        slice_token = format_memory_mib_token(slice_bytes)
         for unit, (memory_min, _expected_bytes) in entries.items():
             path = f"/etc/systemd/system/{unit}.d/{CONTROL_PLANE_MEMORY_MIN_DROPIN}"
             self.actions.write_file(path, render_control_plane_memory_min_dropin(memory_min))
+        self.actions.write_file(
+            f"/etc/systemd/system/{CONTROL_PLANE_SYSTEM_SLICE_UNIT}.d/{CONTROL_PLANE_MEMORY_MIN_DROPIN}",
+            render_control_plane_memory_min_slice_dropin(slice_token),
+        )
         self._run(["/usr/bin/systemctl", "daemon-reload"], "reload control-plane MemoryMin drop-ins")
         self._mark_step(
             "control_plane_memory_min",
             "planned" if self.actions.dry_run else "success",
-            ", ".join(f"{unit}={memory_min}" for unit, (memory_min, _bytes) in entries.items()),
+            ", ".join(f"{unit}={memory_min}" for unit, (memory_min, _bytes) in entries.items())
+            + f", {CONTROL_PLANE_SYSTEM_SLICE_UNIT}={slice_token} (derived)",
         )
 
+    def _read_control_plane_memory_min(self, unit: str) -> list[str]:
+        """Read back one unit's (or slice's) MemoryMin as systemd reports it."""
+        output = self._run(
+            ["/usr/bin/systemctl", "show", "-p", "MemoryMin", unit],
+            f"verify {unit} MemoryMin",
+        ) or ""
+        return [
+            line.partition("=")[2].strip()
+            for line in output.splitlines()
+            if line.startswith("MemoryMin=")
+        ]
+
     def _verify_control_plane_memory_min(self, *, mark_step: bool = True) -> None:
-        """Check exact floors for mandatory units and any installed optional units."""
+        """Check exact floors for mandatory units, optional units, and system.slice."""
         if self.actions.dry_run:
             return
         entries = self._control_plane_memory_min_entries()
+        slice_bytes = self._control_plane_system_slice_memory_min_bytes(entries)
         verified_units = []
         absent_optional_units = []
         for unit, (_memory_min, expected_bytes) in entries.items():
@@ -1062,15 +1109,7 @@ MaxFileSec=1month
                 raise InstallerError(
                     f"{unit} LoadState readback is {reported}; expected loaded"
                 )
-            output = self._run(
-                ["/usr/bin/systemctl", "show", "-p", "MemoryMin", unit],
-                f"verify {unit} MemoryMin",
-            ) or ""
-            observed = [
-                line.partition("=")[2].strip()
-                for line in output.splitlines()
-                if line.startswith("MemoryMin=")
-            ]
+            observed = self._read_control_plane_memory_min(unit)
             expected = str(expected_bytes)
             if observed != [expected]:
                 reported = ", ".join(observed) if observed else "missing"
@@ -1078,10 +1117,26 @@ MaxFileSec=1month
                     f"{unit} MemoryMin readback is {reported}; expected {expected} bytes"
                 )
             verified_units.append(unit)
+        # `system.slice` always exists (it is a built-in slice), so it has no
+        # optional handling: a missing value fails like a mandatory unit's.
+        slice_observed = self._read_control_plane_memory_min(
+            CONTROL_PLANE_SYSTEM_SLICE_UNIT
+        )
+        slice_expected = str(slice_bytes)
+        if slice_observed != [slice_expected]:
+            reported = ", ".join(slice_observed) if slice_observed else "missing"
+            raise InstallerError(
+                f"{CONTROL_PLANE_SYSTEM_SLICE_UNIT} MemoryMin readback is "
+                f"{reported}; expected {slice_expected} bytes (derived from the "
+                "per-service floor table)"
+            )
         if mark_step:
+            slice_token = format_memory_mib_token(slice_bytes)
             detail = (
                 "systemctl read back the expected MemoryMin for "
                 + ", ".join(verified_units)
+                + f", and {CONTROL_PLANE_SYSTEM_SLICE_UNIT}={slice_token} "
+                "for its derived ancestor floor"
             )
             if absent_optional_units:
                 detail += (

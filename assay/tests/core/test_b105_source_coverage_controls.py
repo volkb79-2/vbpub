@@ -100,6 +100,7 @@ def test_every_language_adapter_protocol_stub_is_executed(tmp_path):
     assert adapter.is_test_path("tests/test_sample.py") is None
     assert adapter.has_executable_code("src/sample.py", "pass\n") is None
     assert adapter.normalize_coverage_key("src/sample.py") is None
+    assert adapter.normalize_coverage_text("x") is None
     assert adapter.statement_spans("pass\n") is None
     assert adapter.statement_blocks(tmp_path, ("src/sample.py",)) is None
     assert adapter.inject_import_break("pass\n", nonce="test") is None

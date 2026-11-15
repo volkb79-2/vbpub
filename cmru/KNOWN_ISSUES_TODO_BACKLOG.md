@@ -3737,3 +3737,43 @@ Call: `SOURCE_DATE_EPOCH=1700000000 DEMO_VERSION=1.0.0 cmru handler bundle-build
 **Wanted.** A coverage oracle next to the existing grammar guard: every registered leaf verb appears in the SKILL at least once, and every verb-level option the CLPC grammar catalog (SPEC S-CLI.9) marks as public appears in the SKILL or in a declared exception list with a reason. The exception list must itself be checked, so it cannot silently absorb a later capability.
 
 **Close when.** The oracle goes red when a newly registered verb (or a newly public verb-level option) is added without a SKILL mention, the two `cmru skills` install/check tests still pass, and the refreshed 7.3.1 text passes unchanged.
+
+## KI-172 - the estate scan in `tests/test_w2_integ.py` walked the whole disk, so it hung and failed in a shared checkout
+
+**Status:** FIXED in this branch (filed 2026-11-15); severity: high for developer and controller runs (a 400 s timeout and three spurious failures in the shared `main` checkout; no effect on a clean gate worktree, which is why no gate saw it).
+
+**Observed (run).** `python3 -m pytest tests/test_w2_integ.py tests/test_cli_review_cases.py` took 33 s in a clean worktree but ran for minutes at 100% CPU in the shared checkout, and `test_the_estate_scan_actually_finds_the_project_contracts`, `test_no_estate_contract_uses_a_removed_cmru_spelling` and `test_every_estate_cmru_argv_parses_against_the_registry` failed with `TOMLDecodeError`. Nothing waits on a network, daemon or lock: the process is CPU-bound.
+
+**Root cause.** The estate helpers used `REPO_ROOT.rglob("*.toml" / "*.sh" / "*.py")` and filtered `_SKIP_PARTS` afterwards. `rglob` descends into every nested tree first: all `.worktrees/*` copies (about 9,000 files each), the gitignored `.run-gate/` leftovers of earlier gate runs (whole pytest tmp trees, including deliberately malformed `cmru.secret.toml` and `run-gate.toml` fixtures), and untracked scratch such as `scripts/cgroup-profiler/`. `.run-gate` was not in `_SKIP_PARTS`, so those fixtures were parsed as estate contracts (the `TOMLDecodeError`), and about 70,000 Python files were read and AST-parsed (the apparent hang: `rglob` alone costs 44 s there).
+
+**Fix.** The estate is the committed tree. `_estate_files` lists `git ls-files` when `REPO_ROOT` is itself a work-tree root and otherwise (the sparse mutation fixture, a plain copy, a fixture inside another repository) walks with `os.walk` and prunes `_SKIP_PARTS` (now including `.run-gate`) instead of filtering afterwards. The scan of the shared checkout takes 0.2 s. Tests cover tracked-only listing, a dangling tracked symlink, a skipped directory name, pruning without descending, a tree inside another repository, and missing git; the hand-mutants (no top-level check, filter instead of prune, no `is_file`, `--others` listing, `.run-gate` removed from the skip set) are each killed.
+
+**Still open (same class).** `tests/test_bootstrap_from_zero_sequence.py` reads `(REPO_ROOT / "run-gate-project").rglob("*.py")`, which also descends into `run-gate-project/.run-gate/` (224 MB in the shared checkout) and can match a stale copy; `tests/test_credential_handoff.py` globs `cmru.secret.toml` under the child's cwd. Move the first onto `_estate_files` (extract it to a shared test helper) when next touched.
+
+**Close when.** The remaining `rglob` over `REPO_ROOT` subtrees is replaced by the shared helper, and a run in the shared checkout finishes in the time of a clean worktree.
+
+## KI-173 - `tester-unified-rust/build-image.sh` passed typed `cmru tester-gate` options as unexpanded shell words, so the estate argv check could not parse it
+
+**Status:** FIXED in this branch (filed 2026-11-15); severity: medium (the cmru lane `assay-r0-r1` failed on `main` because the Rust R-1 package, merged without that lane, added the script).
+
+**Observed (run).** `test_every_estate_cmru_argv_parses_against_the_registry` reported `tester-unified-rust/build-image.sh: cmru tester-gate --cwd run-gate-project --image ${tester_gate_values[0]} ... -> argument --cpus: CPU limit must be a finite decimal Docker can enforce`.
+
+**Root cause.** The estate check tokenizes shell text and parses each `cmru` argv with the real registry, so a typed option (`--cpus`) given a `${...}` word fails its type validator. The script resolved the six bounds from `cmru.orchestration.toml` in a Python helper and passed them as `--image/--memory/--memory-swap/--cpus/--pids-limit/--cgroup-probe-image "${tester_gate_values[n]}"`.
+
+**Fix.** Not a checker change: a value that exists only at run time cannot be validated statically, and skipping or opaque-ing it would silently stop checking exactly the options a script computes. The helper now emits `CMRU_TESTER_*=value` lines and the script exports them; `cmru tester-gate` resolves every bound from those variables when the option is absent (its documented explicit-then-environment precedence, the same path `cmru release` uses), so the literal invocation is `cmru tester-gate --cwd run-gate-project --cgroup-parent "$cgroup_parent" /bin/true`, which the registry parses, and `tester-gate` validates the real values at run time. `tester-unified-rust/tests/test_image_contract.py` pins the contract (no typed option and no `$` word other than the cgroup parent inside the invocation); restoring the old script fails it.
+
+**Wanted (open).** The checker's failure for a shell-expanded value of a typed option names only the type error; a message that says "shell-expanded value for a typed option, pass it through the environment" would save the next author a diagnosis.
+
+**Close when.** The wanted message exists with a test, or is recorded as intentionally not built.
+
+## KI-174 - packages that add `cmru` invocations or touch estate files merge without the cmru lane (gate-coverage gap)
+
+**Status:** OPEN (filed 2026-11-15); severity: high (two packages merged green and left `main` failing the cmru `assay-r0-r1` lane; the failure was found only by a later run).
+
+**Observed (run).** `main` at b9e2b7d66 fails the cmru lane because of KI-173 (new `cmru` call in `tester-unified-rust/build-image.sh`) and the estate-scan fragility in KI-172 shows only outside a clean worktree; the merged packages' own gates (assay, hostobs, tester-unified-rust, debian-install-v2) did not include the cmru lane.
+
+**Root cause.** The cmru test suite contains estate-wide guards (`test_w2_integ.py` argv, removed-spelling and import checks; the project-contract scans; the fixture-closure test) that read every project's `cmru.toml`, `cmru.orchestration.toml`, shell scripts and Python callers, but no lane selection ties a change to those files to the cmru lane. Each project's gate judges only its own tree.
+
+**Wanted.** A rule, enforced mechanically rather than by reviewer memory, that a change which adds or edits a `cmru ...` invocation in any tracked `*.sh`/`*.toml`/`*.py`, or edits `cmru.orchestration.toml`, `cmru.toml`, `run-gate.root.toml` or any `LEVELS` block, includes the cmru `assay-r0-r1` lane in its gate set. The cheapest form is a path-triggered lane requirement in the package-gate selection (run-gate or the nyxloom merge step), with the trigger list generated from what `test_w2_integ.py` scans so the two cannot drift; the fallback is a documented checklist line in the package brief template. Coordinate the selection mechanism with the run-gate backlog.
+
+**Close when.** A change that adds a `cmru` call to a shell script is refused or auto-extended with the cmru lane, shown by a test of the selection rule, and the trigger list is derived from the scanner's own file selection.

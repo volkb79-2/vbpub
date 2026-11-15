@@ -4,14 +4,19 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 ## [Unreleased]
 
+### Added
+- Registered the pure-Python Rust adapter at R1 for `.rs` changed-line LCOV judgments. Stable Rust's zero-only branch markers normalize to branch-unavailable, and R2/R3 remain unregistered. Added a Rust-image qualification lane that captures real nextest, libtest, and cargo-llvm-cov output offline.
+
 ### Fixed
 - `tools/self-qualification-container.sh` (FL-03 / TP-02): a cancellation (SIGTERM) that arrived while the launcher blocked on `docker wait` could leave its cleanup hanging forever, so the registered lane failed `test_runner_cancellation_stops_and_removes_its_owned_container` with a 60 s timeout and the owned container was never stopped. Cleanup waited for the already-ended log follower before it had killed the still-running docker-wait client; bash cannot always reap an ended child by a blocking `wait <pid>` when its status was consumed while the cancelled `wait` was interrupted, and the only child that could wake that wait was the one cleanup had not yet killed. Cleanup now signals every live background client (group and the client itself) before reaping any of them. Each launch records the child's parent PID and immutable `/proc` start time, and every group or direct signal revalidates that identity through a live group and a fresh process check, so a reaped and reused PID/PGID is never signalled. The normal completion path uses the same guarded helpers to stop and reap an unfinished log follower. Regression tests cover the cleanup order, mismatched process identities, and a FIFO-driven completed-log follower that must be stopped and reaped before the final log collection.
 - Added the Rust LCOV normalizer to the self-qualification whole-source target inventories so the B105 lanes continue to measure every tracked Assay source file.
+- Added the Rust adapter to those same whole-source inventories so the B105 R0/R1 gates measure it at the existing 100% floor.
 - The Rust LCOV normalization test is named `test_coverage_rust_lcov_normalization.py` so the test-layout rule (`tests/core/test_import_contracts.py`) keeps it in `tests/parsers/coverage`; the host R1 lane found the old name misplaced. `tooling-tests` now runs that layout rule as well, so a misplaced new test file fails before merge instead of at the release gate.
 
 ### Documentation
 
-- Added the R-1 `tester-unified-rust` image and hostobs `lint`/`selftest` baseline with an image-bound crate cache, offline locked lanes, and per-crate 90% line / 85% region floors. The Assay Rust adapter remains unregistered; the docs define the T2 sequence and single canary, asynchronous diff-scoped T3 R2 policy, and `tester-unified-rust` image cache with `cargo fetch --locked` and offline locked lanes. Rust R2 is a known issue, not a per-release waiver.
+- Updated the Rust adapter matrix, consumer instructions, methodology status, and B243/B523 evidence. Hostobs has not yet switched its baseline `selftest` lane to an `assay-r1` consumer lane in this assay-only worktree.
+- R-1 `tester-unified-rust` image and hostobs `lint`/`selftest` baseline use an image-bound crate cache, offline locked lanes, and per-crate 90% line / 85% region floors. R-2 now adds Assay's changed-line R1 judgment. Rust R2 is a known issue, not a per-release waiver. The T2 sequence and single canary stay the target design.
 
 <!-- cmru: release history -->
 

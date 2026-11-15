@@ -5476,6 +5476,9 @@ class SqlAdapter:
     def normalize_coverage_key(self, key: str) -> str:
         raise NotImplementedError(_UNREACHABLE.format(name="normalize_coverage_key"))
 
+    def normalize_coverage_text(self, text: str) -> str:
+        raise NotImplementedError(_UNREACHABLE.format(name="normalize_coverage_text"))
+
     def statement_spans(self, text: str) -> tuple[StatementSpan, ...] | None:
         raise NotImplementedError(_UNREACHABLE.format(name="statement_spans"))
 

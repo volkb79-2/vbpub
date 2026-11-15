@@ -19,9 +19,12 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from conftest import FakeAdapter, GitRepo, make_lane, make_r1_judge, write_coverage_json
 
 from assay import runner
+from assay.adapters.rust import RustAdapter
 from assay.errors import Outcome, ReasonCode
 
 ADAPTER = FakeAdapter()
@@ -162,6 +165,34 @@ def test_require_branch_false_is_unaffected_by_an_unavailable_artifact(
     assert claim.status is Outcome.PASS
     assert claim.coverage is not None
     assert claim.coverage.branch_capability == "unavailable"
+
+
+def test_rust_require_branch_refuses_the_real_stable_lcov_artifact(git_repo: GitRepo):
+    base_rev = _seed_one_commit(git_repo)
+    git_repo.write("pkg/mod.rs", "pub fn changed() {}\n")
+    git_repo.commit_all("add Rust source")
+    fixture = Path(__file__).resolve().parents[2] / "docs/rust-r0/evidence/s2-sampler-lcov.info"
+    (git_repo.path / "cov.info").write_bytes(fixture.read_bytes())
+    judge = make_r1_judge(
+        language="rust",
+        source_root_paths=(git_repo.path / "pkg",),
+        coverage_format="lcov",
+        coverage_artifact="cov.info",
+        require_branch=True,
+    )
+    lane = make_lane(rigor=("R0", "R1"), judge=judge)
+
+    claim = runner.evaluate_r1(
+        lane,
+        repo=git_repo.path,
+        project_root=git_repo.path,
+        base=base_rev,
+        adapter=RustAdapter(),
+    )
+
+    assert claim.status is Outcome.NO_MEASUREMENT
+    assert claim.reason_code is ReasonCode.BRANCH_UNAVAILABLE
+    assert claim.coverage is None
 
 
 # --- TARGET_NOT_MEASURED propagates through the same except AssayError ------

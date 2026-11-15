@@ -2512,6 +2512,7 @@ def evaluate_r1(
                 judge.coverage.artifact,
                 declared_format=judge.coverage.format,
                 producer=judge.coverage.producer,
+                normalizer=adapter.normalize_coverage_text,
             )
         coverage.check_empty_coverage(profile)
         _announce_contradictory_branch_records(profile, diagnostics=diagnostics)
@@ -3508,6 +3509,7 @@ def _execute_snapshot_unit(
     coverage_producer: str | None,
     process_runner: ProcessRunner,
     clock: Clock,
+    coverage_normalizer: Callable[[str], str] | None = None,
     create_missing_parents: bool = False,
     #: (B078, round-1 blocker 1) The lane's opt-in structured-report
     #: declaration, or ``None`` -- and ``None`` is the default precisely
@@ -3815,6 +3817,7 @@ def _execute_snapshot_unit(
                 raw,
                 declared_format=coverage_format,
                 producer=coverage_producer,
+                normalizer=coverage_normalizer,
             )
         except AssayError as exc:
             profile_error = exc
@@ -4631,6 +4634,9 @@ def _run_prepared_lane(
             coverage_artifact=coverage_artifact,
             coverage_format=coverage_format,
             coverage_producer=coverage_producer,
+            coverage_normalizer=(
+                adapter.normalize_coverage_text if r1_declared and adapter is not None else None
+            ),
             process_runner=lane_process_runner,
             clock=clock,
             create_missing_parents=True,

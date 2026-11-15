@@ -1477,7 +1477,7 @@ def test_run_refuses_sql_at_r1_the_language_is_registered_r2_only(
     written and false from A-394 onward -- `go` IS registered, at R1. The
     genuinely-unknown-language control is
     `test_run_refuses_a_language_this_registry_does_not_know_at_all`
-    (`rust`); the neighbour one test up is now Go's own
+    (`fortran`); the neighbour one test up is now Go's own
     registered-at-another-rigor case, which is the same shape as this one
     rather than its opposite."""
     marker = tmp_path / "the-command-ran"
@@ -1740,8 +1740,8 @@ target = "pkg/mod.py"
 def test_run_refuses_a_language_this_registry_does_not_know_at_all(
     git_repo: GitRepo, tmp_path: Path, validator: Draft202012Validator
 ):
-    """**The unknown-language branch, at CLI level -- re-pointed at ``rust``
-    in the round-1 fix round, and the re-pointing is the point.**
+    """The unknown-language branch, at CLI level, stays bound to an
+    actually unknown language as adapters are added.
 
     This was ``test_run_refuses_an_unregistered_language_at_r3_with_a_real_
     artifact`` and it declared ``language = "go"``. When A-394 registered
@@ -1755,11 +1755,9 @@ def test_run_refuses_a_language_this_registry_does_not_know_at_all(
     R2 cousin; the round-1 reviewer found both, and the consequence was that
     NO CLI-level test exercised an entirely-unknown language any more.
 
-    ``rust`` is chosen because assay ships no Rust adapter at all -- not a
-    stub, not an unregistered one -- so the day someone adds one this test
-    breaks loudly instead of drifting into a decoy again. The R2 sibling
-    (``test_run_refuses_go_at_r2_the_language_is_registered_r1_only``) keeps
-    ``go`` deliberately and says so in its own name: the two now cover
+    ``fortran`` is chosen because it is not a built-in adapter. The R2
+    sibling (``test_run_refuses_go_at_r2_the_language_is_registered_r1_only``)
+    keeps ``go`` deliberately and says so in its own name: the two cover
     different branches instead of the same one twice."""
     marker = tmp_path / "the-command-ran"
     (git_repo.path / "src").mkdir(exist_ok=True)
@@ -1770,7 +1768,7 @@ def test_run_refuses_a_language_this_registry_does_not_know_at_all(
         "\n[lanes.package.isolation]\n"
         'snapshot_selection = "repository"\n'
         "\n[lanes.package.judge]\n"
-        'language = "rust"\nsource_roots = ["src"]\n'
+        'language = "fortran"\nsource_roots = ["src"]\n'
         '\n[lanes.package.judge.canary]\n'
         'mechanism = "import-break"\ntarget = "src/mod.rs"\n'
     )
@@ -1789,10 +1787,10 @@ def test_run_refuses_a_language_this_registry_does_not_know_at_all(
         ("R3", "ERROR"),
     ]
     assert document.get("judgment") is None
-    assert "rust" in err
-    # The anti-vacuity half: `rust` really is absent from the registry, so
-    # this test cannot be passing for the sibling's reason.
-    assert "rust" not in _built_in_registry().entries
+    assert "fortran" in err
+    # The anti-vacuity half: the chosen name really is absent, so this test
+    # cannot pass through the registered-at-another-rigor branch.
+    assert "fortran" not in _built_in_registry().entries
 
 
 def test_run_refuses_sql_at_r3_the_language_is_registered_r2_only(
@@ -1801,7 +1799,7 @@ def test_run_refuses_sql_at_r3_the_language_is_registered_r2_only(
     """(P34/W6) The R3-level mirror of
     ``test_run_refuses_sql_at_r1_the_language_is_registered_r2_only``: SQL
     is registered R2 only, so R3 is refused too, the same
-    ``BAD_LANE_CONFIG`` shape ``rust``'s genuinely-unknown language gets two
+    ``BAD_LANE_CONFIG`` shape ``fortran``'s genuinely-unknown language gets two
     tests up -- proving the registry gate still guards R3 even though this
     build's OWN `SqlAdapter` now reaches R2.
 

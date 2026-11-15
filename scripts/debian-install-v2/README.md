@@ -500,12 +500,16 @@ sysctl file carries a one-line "why" per value:
 
 ### Control-plane service memory protection
 
-The default install writes fixed `MemoryMin` drop-ins for SSH, Docker,
-containerd, journald, cgprofiled, and psi-guard, then checks installed units
-with systemd. cgprofiled and psi-guard are optional; a missing optional unit is
-skipped by verification and is a missing fact for fleetd-reserve. These fixed
-values do not scale with installed RAM. The exact service list, values, and
-evidence are in the
+The default install writes `MemoryMin` drop-ins for SSH, Docker,
+containerd, journald, cgprofiled, and psi-guard, plus a derived `MemoryMin`
+floor on `system.slice` (without which the per-unit floors protect nothing on
+hosts with `memory_recursiveprot`), then checks installed units with systemd.
+cgprofiled and psi-guard are optional; a missing optional unit is skipped by
+verification and is a missing fact for fleetd-reserve. The floors are measured
+from each service's hot working set (1.25 × the measured hot set of the
+2026-11-15 measurement), do not scale with installed RAM, and are a base rather
+than a bound under many containers. The exact service list, values, evidence,
+and the measured-versus-inferred split are in the
 [control-plane memory design](docs/DESIGN-GUIDE.md#control-plane-memory-protection)
 and [value table](docs/CONTROL-PLANE-MEMORY.md).
 

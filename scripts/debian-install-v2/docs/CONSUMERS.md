@@ -105,34 +105,38 @@ The `--boot` option is required for the drop-in's `w!` entries.
 
 ## Control-plane service MemoryMin floors
 
-The default install writes fixed systemd drop-ins for
+The default install writes systemd drop-ins for
 `ssh.service`, `docker.service`, `containerd.service`,
 `systemd-journald.service`, `cgprofiled.service`, and
-`mdt-psi-guard.service`. Docker and containerd are included when
+`mdt-psi-guard.service`, plus a derived `MemoryMin` floor on `system.slice`.
+Docker and containerd are included when
 `run_docker_install=true` (the default). The latter two units are optional on
 hosts where cgprofile or mdt-cockpit host-setup is not installed. The values
-are fixed across host RAM sizes; see the
+are measured hot-set floors (1.25 × the measured hot working set of the
+2026-11-15 measurement) and are fixed across host RAM sizes; see the
 [control-plane value table](CONTROL-PLANE-MEMORY.md) and
 [design rationale](DESIGN-GUIDE.md#control-plane-memory-protection).
 
 After the installer completes, inspect the values systemd reports:
 
 ```bash
-for unit in ssh.service docker.service containerd.service systemd-journald.service cgprofiled.service mdt-psi-guard.service; do
+for unit in ssh.service docker.service containerd.service systemd-journald.service cgprofiled.service mdt-psi-guard.service system.slice; do
   systemctl show -p LoadState -p MemoryMin "$unit"
 done
 ```
 
-Each loaded unit should report its positive byte value from the table. A
-`LoadState=not-found` or `masked` result is allowed only for the optional
-cgprofile and psi-guard units; fleetd-reserve treats that as a missing fact, so
-its all-six check uses the profile constant until every unit is reported. If
-Docker installation was disabled, the Docker and containerd units are omitted.
-`MemoryMin` requests reclaim protection; effective protection also depends on
-ancestor cgroups. It is not a usage cap. A completed
-installation does not have a standalone retrofit verb, so existing hosts need a
-separately scheduled, operator-approved in-place drop-in application or
-reinstall.
+Each loaded unit should report its positive byte value from the table, and
+`system.slice` its derived value (the sum of the floors of the units under it
+plus headroom). A `LoadState=not-found` or `masked` result is allowed only for
+the optional cgprofile and psi-guard units; fleetd-reserve treats that as a
+missing fact, so its all-six check uses the profile constant until every unit is
+reported. If Docker installation was disabled, the Docker and containerd units
+are omitted and the derived `system.slice` floor shrinks with them.
+`MemoryMin` requests reclaim protection and is not a usage cap; the
+`system.slice` floor is what makes the per-unit floors effective when cgroup2 is
+mounted with `memory_recursiveprot`. A completed installation does not have a
+standalone retrofit verb, so existing hosts need a separately scheduled,
+operator-approved in-place drop-in application or reinstall.
 
 ## Disk plan and offline preview
 

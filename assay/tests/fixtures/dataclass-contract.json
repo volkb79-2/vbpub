@@ -261,6 +261,28 @@
         "weakref_slot": false
       }
     },
+    "assay.adapters.rust.RustAdapter": {
+      "fields": {
+        "requires_span_attribution": {
+          "default": false
+        },
+        "requires_statement_attribution": {
+          "default": false
+        }
+      },
+      "params": {
+        "eq": true,
+        "frozen": true,
+        "init": true,
+        "kw_only": true,
+        "match_args": true,
+        "order": false,
+        "repr": true,
+        "slots": false,
+        "unsafe_hash": false,
+        "weakref_slot": false
+      }
+    },
     "assay.adapters.python._Worst": {
       "fields": {},
       "params": {
