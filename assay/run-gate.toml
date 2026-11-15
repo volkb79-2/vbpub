@@ -111,6 +111,11 @@ memory = "1g"
 # B243: exercise nextest, libtest and cargo-llvm-cov in the offline Rust image.
 # The lane captures real producer output under .assay/rust-r1-real; committed
 # failure-line fixtures are checked by the tester-unified unit lane above.
+# The script imports source Assay (src), whose lazy copy-on-write workspace
+# importer is a Cowtree importer; the estate guard in run-gate-project
+# (TestEstateSourceAssayPythonPathGuard) therefore requires the Cowtree source
+# on the lane's effective PYTHONPATH, as every sibling Python lane declares.
+# The Rust R1 path never opens a workspace, so the entry is inert at run time.
 [lanes.rust-r1-qualification]
 kind = "command"
 environment = "tester-unified-rust"
@@ -121,7 +126,7 @@ argv = [
   '''set -eu
 cd {worktree}/assay
 export PYTHONDONTWRITEBYTECODE=1
-export PYTHONPATH="src"
+export PYTHONPATH="src:{worktree}/libraries/cowtree/src"
 python3 tools/qualify_rust_r1_real.py "$@"''',
   "rust-r1-qualification",
 ]
