@@ -220,3 +220,32 @@ def test_a_missing_campaign_state_is_an_input_error(capsys, tmp_path):
     captured = capsys.readouterr()
     assert captured.out == ""
     assert "campaign state does not exist" in captured.err
+
+
+def test_help_lists_every_document_command_and_the_library_controls(capsys):
+    """The help screen is the one place a caller learns the spelling; it must be complete."""
+
+    assert run(["help"]) == 0
+    text = capsys.readouterr().out
+    for verb in ("facts", "guard", "plan", "run", "status", "tick", "collect", "skills"):
+        assert verb in text, verb
+    assert "fleet" in text
+    assert "--version" in text
+    assert "--json" in text or "JSON" in text
+
+
+def test_an_unknown_verb_names_the_verbs_and_exits_two(capsys):
+    assert run(["nonesuch"]) == 2
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "invalid choice" in captured.err
+    for verb in ("facts", "plan", "run", "skills"):
+        assert verb in captured.err, verb
+
+
+def test_help_for_one_verb_shows_its_own_options(capsys):
+    assert run(["help", "plan"]) == 0
+    text = capsys.readouterr().out
+    for flag in ("--candidates", "--hosts", "--demand", "--commands", "--batch-multiplier"):
+        assert flag in text, flag
+    assert "--campaign" not in text

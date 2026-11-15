@@ -65,3 +65,29 @@ def test_case_ids_are_unique_so_node_ids_are_stable() -> None:
     assert len(ids) == len(set(ids))
     node_ids = [f"{TEST_FILE}::test_reviewed_case[{harness.short_id(case_id)}]" for case_id in ids]
     assert len(node_ids) == len(set(node_ids))
+
+
+def test_the_catalog_is_current_against_the_real_registry():
+    """A grammar change without a regenerated catalog fails here, not in review.
+
+    ``surface check`` compares the manifest, the generated SPEC region, the catalog and
+    the findings file with the built registry; running it in-process keeps that check
+    inside the gate that collects the catalog's own tests.
+    """
+
+    from cli_extended import check_cli_surface
+    from cli_extended.config import load_project_config
+
+    from fleetd.cli import build_cli
+
+    project = load_project_config(PROJECT / "pyproject.toml")
+    assert [cli.id for cli in project.clis] == ["fleet"]
+    cli = project.clis[0]
+    report = check_cli_surface(
+        build_cli(),
+        review_path=cli.review,
+        manifest_path=cli.manifest,
+        spec_path=cli.spec,
+        findings_path=cli.findings,
+    )
+    assert list(report.findings) == [], report.render()

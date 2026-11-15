@@ -185,3 +185,22 @@ class _CLI_STATUS:
     def run(self, argv=None) -> int:
         type(self).seen = argv
         return self.status
+
+
+def test_a_failure_that_is_both_a_domain_error_and_a_cli_failure_keeps_its_own_status():
+    """`CliFailure` wins over the domain mapping, in that order, on purpose.
+
+    A library or consumer exception can inherit both (``CliFailure`` plus a contract error
+    type); the raise site's own status is the more specific decision, so the mapping must
+    re-raise it instead of re-wrapping it with the generic exit 2.
+    """
+
+    class Both(CliFailure, ContractError):
+        pass
+
+    def handler(args, runtime):
+        raise Both("already classified", exit_code=1)
+
+    with pytest.raises(CliFailure) as failure:
+        _call(handler)
+    assert failure.value.exit_code == 1
