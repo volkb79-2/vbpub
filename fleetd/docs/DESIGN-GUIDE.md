@@ -339,3 +339,20 @@ missing runner checkout or `hx` wrapper. A `doctor` would duplicate those two
 and add a third place to drift. The row is recorded as a judgement in
 [the consumer guide](CONSUMERS.md#adoption-checklist-status), with the trigger
 to revisit: a third environment that nothing else reports.
+
+### Why `--state-dir` has no declarative default
+
+`--state-dir` falls back to `$XDG_STATE_HOME/fleetd/campaigns`, or
+`~/.local/state/fleetd/campaigns` when that variable is unset. That value belongs
+to the *invocation's* environment, so it is derived in `fleetd.cli._manager` when
+a campaign command runs, not declared as an `OptionSpec` default.
+
+A declared default is resolved once, while the registry is built, which put one
+machine's home directory into the exported surface manifest, the generated SPEC
+region and therefore into every reviewed-case signature. Two hosts would then
+report different signatures for the same CLI (each one *self-consistent*, so no
+check would fail), and the generated documents would carry a path from whichever
+machine happened to run `surface sync` first. The spec-export test therefore
+asserts the surface carries no environment-specific default, and the outcome —
+which directory a command reads — is pinned by a behavioural test in two different
+`XDG_STATE_HOME` environments.

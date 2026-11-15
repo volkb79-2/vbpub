@@ -138,3 +138,49 @@ def test_a_domain_refusal_writes_nothing_to_stdout_in_either_mode(tmp_path, monk
         assert status == 2
         assert stdout == ""
         assert stderr.startswith("[ERROR] ")
+
+
+def test_the_state_directory_default_is_derived_per_invocation(tmp_path, monkeypatch):
+    """One default, two environments: the surface must not bake in one machine's home.
+
+    A default resolved while the registry was built would freeze the builder's
+    ``$HOME`` into the exported surface, the generated SPEC region and every reviewed
+    signature, so two hosts would disagree about the same CLI.
+    """
+
+    from cli_extended.surface import export_cli_surface
+
+    app = build_cli()
+    surface = export_cli_surface(app)
+    recorded = [
+        action
+        for route in surface["routes"]
+        for action in route["actions"]
+        if action.get("canonical") == "--state-dir"
+    ]
+    assert recorded, "the campaign verbs declare --state-dir"
+    for action in recorded:
+        assert action.get("default") is None, "no environment-specific default in the surface"
+
+    first = tmp_path / "one"
+    second = tmp_path / "two"
+    for root, expected in ((first, first), (second, second)):
+        monkeypatch.setenv("XDG_STATE_HOME", str(root))
+        assert build_cli().identity.command_name == "fleet"
+        from fleetd.cli import _default_state_dir
+
+        assert _default_state_dir() == expected / "fleetd" / "campaigns"
+    monkeypatch.delenv("XDG_STATE_HOME", raising=False)
+    from fleetd.cli import _default_state_dir as fresh
+
+    assert fresh() == Path.home() / ".local" / "state" / "fleetd" / "campaigns"
+
+
+def test_a_command_without_state_dir_uses_the_invocation_default(tmp_path, monkeypatch):
+    """The behavioural half: `status` with no --state-dir reads the derived directory."""
+
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state-home"))
+    status, stdout, stderr = _run(["status", "absent-campaign"], monkeypatch)
+    assert status == 2
+    assert stdout == ""
+    assert "campaign state does not exist" in stderr

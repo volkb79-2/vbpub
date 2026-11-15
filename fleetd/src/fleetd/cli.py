@@ -107,6 +107,8 @@ def identity() -> CliIdentity:
 
 
 def _default_state_dir() -> Path:
+    """The documented default, derived at RUN time from the caller's own environment."""
+
     root = Path(os.environ.get("XDG_STATE_HOME") or Path.home() / ".local" / "state")
     return root / "fleetd" / "campaigns"
 
@@ -174,7 +176,12 @@ def _execution_context() -> dict[str, str] | None:
 def _manager(args: argparse.Namespace) -> CampaignManager:
     if args.transport != "hx":
         raise ContractError("transport: only the identity-checked hx wrapper is supported")
-    return CampaignManager(args.state_dir, HxTransport())
+    # `--state-dir` has no declarative default on purpose: the documented default
+    # ($XDG_STATE_HOME/fleetd/campaigns, or ~/.local/state/fleetd/campaigns) belongs to
+    # the INVOCATION's environment. A default resolved at registration time would bake
+    # one machine's home directory into the exported surface, the generated SPEC region
+    # and every reviewed signature, so two hosts would disagree about the same CLI.
+    return CampaignManager(args.state_dir or _default_state_dir(), HxTransport())
 
 
 def _run_campaign(args: argparse.Namespace, runtime: CliRuntime) -> None:
@@ -226,12 +233,12 @@ def _campaign_options() -> tuple[OptionSpec, ...]:
         ),
         OptionSpec(
             ("--state-dir",),
-            "campaign state directory (default: $XDG_STATE_HOME/fleetd/campaigns)",
+            "campaign state directory (default: $XDG_STATE_HOME/fleetd/campaigns, "
+            "or ~/.local/state/fleetd/campaigns when unset)",
             group="STATE",
             metavar="DIR",
-            # A documented path string; argparse converts it with `type=Path`, and
-            # the exported surface can enumerate the default.
-            parser_kwargs={"type": Path, "default": str(_default_state_dir())},
+            # No declarative default: the default is derived per invocation (see `_manager`).
+            parser_kwargs={"type": Path},
         ),
     )
 

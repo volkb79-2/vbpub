@@ -17,14 +17,12 @@
       "kind": "minimum",
       "members": [
         "argument:route:entrypoint:fleet/collect/campaign",
-        "option:route:entrypoint:fleet/collect/--transport",
-        "option:route:entrypoint:fleet/collect/--state-dir"
+        "option:route:entrypoint:fleet/collect/--transport"
       ],
       "route_id": "route:entrypoint:fleet/collect",
       "shape": {
         "defaulted_options": [
-          "option:route:entrypoint:fleet/collect/--transport",
-          "option:route:entrypoint:fleet/collect/--state-dir"
+          "option:route:entrypoint:fleet/collect/--transport"
         ],
         "required_argument_values": {
           "argument:route:entrypoint:fleet/collect/campaign": 1
@@ -35,7 +33,7 @@
         "required_exclusive_groups": {},
         "required_options": []
       },
-      "signature": "sha256:974862780f84ed9b4d7150dc944b86bf1bdbcc4b2131ff1fb3c80b559fe4e075"
+      "signature": "sha256:601a3193fad871de3cadd3ffd17e78b2f46b37c7daa125e5e79c0c6e2395c2bd"
     },
     {
       "id": "case:route:entrypoint:fleet/collect/option-choice/option:route:entrypoint:fleet/collect/--transport/ad3632c423",
@@ -87,7 +85,7 @@
         "option_id": "option:route:entrypoint:fleet/collect/--state-dir",
         "spelling": "--state-dir"
       },
-      "signature": "sha256:714749118fb727b6002d6580f4df5fe9834d1652a91fc0c8b2b7d20abe8ab288"
+      "signature": "sha256:ee056e84e195e2970b6e0f30781b08b73652371903a179455b38f107de5fc053"
     },
     {
       "id": "case:route:entrypoint:fleet/collect/option-spelling/option:route:entrypoint:fleet/collect/--transport/--transport",
@@ -402,14 +400,12 @@
       "members": [
         "argument:route:entrypoint:fleet/run/plan",
         "option:route:entrypoint:fleet/run/--campaign",
-        "option:route:entrypoint:fleet/run/--transport",
-        "option:route:entrypoint:fleet/run/--state-dir"
+        "option:route:entrypoint:fleet/run/--transport"
       ],
       "route_id": "route:entrypoint:fleet/run",
       "shape": {
         "defaulted_options": [
-          "option:route:entrypoint:fleet/run/--transport",
-          "option:route:entrypoint:fleet/run/--state-dir"
+          "option:route:entrypoint:fleet/run/--transport"
         ],
         "required_argument_values": {
           "argument:route:entrypoint:fleet/run/plan": 1
@@ -422,7 +418,7 @@
           "option:route:entrypoint:fleet/run/--campaign"
         ]
       },
-      "signature": "sha256:0a43e1520cc166207914def87af0e7e3bb66f2b36c949c7483aab4690b269b69"
+      "signature": "sha256:630f032d2bb90fa8c7a979ffc137639f51c1dee0ac381ac7e2affec2914f4d73"
     },
     {
       "id": "case:route:entrypoint:fleet/run/option-choice/option:route:entrypoint:fleet/run/--transport/ad3632c423",
@@ -487,7 +483,7 @@
         "option_id": "option:route:entrypoint:fleet/run/--state-dir",
         "spelling": "--state-dir"
       },
-      "signature": "sha256:0b992128dd50c8b541983e8db1521d0acf373b9b4094ea30bbe84b627e304cf2"
+      "signature": "sha256:f60319b59535334b28809baea120a7e3f56c0e18800dcffe2ed4e873d6e471c8"
     },
     {
       "id": "case:route:entrypoint:fleet/run/option-spelling/option:route:entrypoint:fleet/run/--transport/--transport",
@@ -1153,14 +1149,12 @@
       "kind": "minimum",
       "members": [
         "argument:route:entrypoint:fleet/status/campaign",
-        "option:route:entrypoint:fleet/status/--transport",
-        "option:route:entrypoint:fleet/status/--state-dir"
+        "option:route:entrypoint:fleet/status/--transport"
       ],
       "route_id": "route:entrypoint:fleet/status",
       "shape": {
         "defaulted_options": [
-          "option:route:entrypoint:fleet/status/--transport",
-          "option:route:entrypoint:fleet/status/--state-dir"
+          "option:route:entrypoint:fleet/status/--transport"
         ],
         "required_argument_values": {
           "argument:route:entrypoint:fleet/status/campaign": 1
@@ -1171,7 +1165,7 @@
         "required_exclusive_groups": {},
         "required_options": []
       },
-      "signature": "sha256:82e1fa2f3f0e514cc4c2950181ba058d672a6dfeb55f0af4ac4f7ef9281fc987"
+      "signature": "sha256:31b90840c935346ae8f3b461b3c73f9002b4b23836c0db081fe53a151c691fd2"
     },
     {
       "id": "case:route:entrypoint:fleet/status/option-choice/option:route:entrypoint:fleet/status/--transport/ad3632c423",
@@ -1223,7 +1217,7 @@
         "option_id": "option:route:entrypoint:fleet/status/--state-dir",
         "spelling": "--state-dir"
       },
-      "signature": "sha256:1416e2043b83a2eedec40dbccfa2504fe805ee7a85f59da597ad74308c478d9a"
+      "signature": "sha256:0f7f6342db024955a2d6f3ced078bdebc1c8569c70b1d94ff896081d77d14c6f"
     },
     {
       "id": "case:route:entrypoint:fleet/status/option-spelling/option:route:entrypoint:fleet/status/--transport/--transport",
@@ -1255,14 +1249,12 @@
       "kind": "minimum",
       "members": [
         "argument:route:entrypoint:fleet/tick/campaign",
-        "option:route:entrypoint:fleet/tick/--transport",
-        "option:route:entrypoint:fleet/tick/--state-dir"
+        "option:route:entrypoint:fleet/tick/--transport"
       ],
       "route_id": "route:entrypoint:fleet/tick",
       "shape": {
         "defaulted_options": [
-          "option:route:entrypoint:fleet/tick/--transport",
-          "option:route:entrypoint:fleet/tick/--state-dir"
+          "option:route:entrypoint:fleet/tick/--transport"
         ],
         "required_argument_values": {
           "argument:route:entrypoint:fleet/tick/campaign": 1
@@ -1273,7 +1265,7 @@
         "required_exclusive_groups": {},
         "required_options": []
       },
-      "signature": "sha256:367d19f35f0cdbcbb98c6762dbf487e041c10475176238b4f2f061783ec4e595"
+      "signature": "sha256:a3dcea25ce70f8121c54e9068b1cc9403a482727c88cecf1e2a66a7b2ab4d020"
     },
     {
       "id": "case:route:entrypoint:fleet/tick/option-choice/option:route:entrypoint:fleet/tick/--transport/ad3632c423",
@@ -1325,7 +1317,7 @@
         "option_id": "option:route:entrypoint:fleet/tick/--state-dir",
         "spelling": "--state-dir"
       },
-      "signature": "sha256:7a5b5de7ac6e4dcc8671f49c95d54f701a73dae8f75a6a0d4b801727c34da527"
+      "signature": "sha256:d4dec66c532ef874a4e9a06a786f3bc95e8abbc491af0b20290f6df731f4c6f3"
     },
     {
       "id": "case:route:entrypoint:fleet/tick/option-spelling/option:route:entrypoint:fleet/tick/--transport/--transport",
@@ -1441,11 +1433,11 @@
           "canonical": "--state-dir",
           "choices": null,
           "const": null,
-          "default": "/home/vscode/.local/state/fleetd/campaigns",
+          "default": null,
           "default_present": true,
-          "description": "campaign state directory (default: $XDG_STATE_HOME/fleetd/campaigns)",
+          "description": "campaign state directory (default: $XDG_STATE_HOME/fleetd/campaigns, or ~/.local/state/fleetd/campaigns when unset)",
           "dest": "state_dir",
-          "effective_default": "/home/vscode/.local/state/fleetd/campaigns",
+          "effective_default": null,
           "exclusive_group": null,
           "exclusive_required": false,
           "flags": [
@@ -1459,7 +1451,6 @@
           "minimum_values": 1,
           "nargs": null,
           "parser_kwargs": {
-            "default": "/home/vscode/.local/state/fleetd/campaigns",
             "type": {
               "callable": "pathlib.Path"
             }
@@ -2441,11 +2432,11 @@
           "canonical": "--state-dir",
           "choices": null,
           "const": null,
-          "default": "/home/vscode/.local/state/fleetd/campaigns",
+          "default": null,
           "default_present": true,
-          "description": "campaign state directory (default: $XDG_STATE_HOME/fleetd/campaigns)",
+          "description": "campaign state directory (default: $XDG_STATE_HOME/fleetd/campaigns, or ~/.local/state/fleetd/campaigns when unset)",
           "dest": "state_dir",
-          "effective_default": "/home/vscode/.local/state/fleetd/campaigns",
+          "effective_default": null,
           "exclusive_group": null,
           "exclusive_required": false,
           "flags": [
@@ -2459,7 +2450,6 @@
           "minimum_values": 1,
           "nargs": null,
           "parser_kwargs": {
-            "default": "/home/vscode/.local/state/fleetd/campaigns",
             "type": {
               "callable": "pathlib.Path"
             }
@@ -3482,11 +3472,11 @@
           "canonical": "--state-dir",
           "choices": null,
           "const": null,
-          "default": "/home/vscode/.local/state/fleetd/campaigns",
+          "default": null,
           "default_present": true,
-          "description": "campaign state directory (default: $XDG_STATE_HOME/fleetd/campaigns)",
+          "description": "campaign state directory (default: $XDG_STATE_HOME/fleetd/campaigns, or ~/.local/state/fleetd/campaigns when unset)",
           "dest": "state_dir",
-          "effective_default": "/home/vscode/.local/state/fleetd/campaigns",
+          "effective_default": null,
           "exclusive_group": null,
           "exclusive_required": false,
           "flags": [
@@ -3500,7 +3490,6 @@
           "minimum_values": 1,
           "nargs": null,
           "parser_kwargs": {
-            "default": "/home/vscode/.local/state/fleetd/campaigns",
             "type": {
               "callable": "pathlib.Path"
             }
@@ -3660,11 +3649,11 @@
           "canonical": "--state-dir",
           "choices": null,
           "const": null,
-          "default": "/home/vscode/.local/state/fleetd/campaigns",
+          "default": null,
           "default_present": true,
-          "description": "campaign state directory (default: $XDG_STATE_HOME/fleetd/campaigns)",
+          "description": "campaign state directory (default: $XDG_STATE_HOME/fleetd/campaigns, or ~/.local/state/fleetd/campaigns when unset)",
           "dest": "state_dir",
-          "effective_default": "/home/vscode/.local/state/fleetd/campaigns",
+          "effective_default": null,
           "exclusive_group": null,
           "exclusive_required": false,
           "flags": [
@@ -3678,7 +3667,6 @@
           "minimum_values": 1,
           "nargs": null,
           "parser_kwargs": {
-            "default": "/home/vscode/.local/state/fleetd/campaigns",
             "type": {
               "callable": "pathlib.Path"
             }
