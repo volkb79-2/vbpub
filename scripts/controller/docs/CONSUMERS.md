@@ -104,8 +104,16 @@ selected, then inspect current run/stall status:
 
 ```bash
 scripts/controller/job-check.sh pi-run /path/to/worktree deepseek-pi
+scripts/controller/job-status.sh pi-run
 scripts/controller/ctl-status.sh
 ```
+
+`job-status.sh` is the liveness read for an ACTIVE run (the controller's
+Monitor polls it instead of watching for `.done`). One line per run, with
+`STALLED` when the wrapper is alive but no pi event arrived within
+`JOB_STATUS_STALL_SECONDS` (default 600) and `HUNG-TOOL` when one tool call has
+been in flight past `JOB_STATUS_HUNG_TOOL_SECONDS` (default 1800). Long tool
+calls are reported, never killed; the thresholds only choose the word.
 
 An `EMPTY-COMPLETION` run is continued by the wrapper without the controller
 doing anything: it resumes the same pi session with the canonical prompt in

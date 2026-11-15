@@ -22,8 +22,8 @@
 #   INCOMPLETE       a settled or unreadable stream that is not a stop.
 #
 # The expected report is `--report <path>` or `PI_REPORT`; unset means no
-# report check. Every run also gets <run>.events (JSON lines, one per
-# recorded continue).
+# report check. Every active run also gets <run>.live (liveness/progress,
+# read by job-status.sh) and <run>.events (JSON lines, one per continue).
 set -uo pipefail
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 caller_pi_route=${PI_ROUTE-}
@@ -101,10 +101,16 @@ if [[ ! -r $continue_prompt_file ]]; then
   echo "continue prompt file is not readable: $continue_prompt_file" >&2
   exit 2
 fi
+live_interval=${PI_LIVE_INTERVAL_SECONDS:-30}
+if [[ ! $live_interval =~ ^[0-9]+$ ]] || (( live_interval == 0 )); then
+  echo 'PI_LIVE_INTERVAL_SECONDS must be a positive integer' >&2
+  exit 2
+fi
+
 out=$CONTROLLER_RUNS_DIR
 if [[ $mode == new ]]; then
   existing=()
-  for extension in 'done' 'jsonl' 'err' 'events'; do
+  for extension in 'done' 'jsonl' 'err' 'events' 'live'; do
     [[ -e $out/$name.$extension ]] && existing+=("$out/$name.$extension")
   done
   if [[ ${CONTROLLER_RUN_FORCE:-0} != 1 ]] && (( ${#existing[@]} > 0 )); then
@@ -245,7 +251,8 @@ invoke_pi() {
 
 # Classify the last assistant message of the (possibly appended) run stream.
 # Fields, tab separated: session id, stop reason, usage-limited flag, settled
-# flag, aborted flag, has-text flag, has-tool-call flag.
+# flag, aborted flag, has-text flag, has-tool-call flag. The turn count, tool
+# call count and token total are the live sidecar's job (pi-live.py).
 inspect_run() {
   python3 - "$out/$name.jsonl" "$out/$name.last.txt" <<'PY'
 import json
@@ -357,6 +364,21 @@ classify_run() {
   fi
 }
 
+live_pid=''
+live_stop() {
+  [[ -n $live_pid ]] || return 0
+  kill -- "$live_pid" 2>/dev/null || true
+  wait "$live_pid" 2>/dev/null || true
+  live_pid=''
+}
+trap live_stop EXIT
+if [[ ${PI_LIVE:-1} == 1 ]]; then
+  python3 "$SCRIPT_DIR/pi-live.py" --stream "$out/$name.jsonl" --worktree "$worktree" \
+    --out "$out/$name.live" --run "$name" --wrapper-pid $$ --interval "$live_interval" \
+    >/dev/null 2>>"$out/$name.err" &
+  live_pid=$!
+fi
+
 : > "$out/$name.events"
 if invoke_pi "$prompt_text" "$out/$name.jsonl" 1; then
   rc=0
@@ -430,4 +452,5 @@ printf '{"ev":"outcome","exit":%s,"outcome":"%s","retries":%s}\n' \
   "$rc" "$outcome" "$attempt" >> "$out/$name.events"
 printf 'EXIT=%s OUTCOME=%s\n' "$rc" "$outcome" > "$out/$name.done"
 if (( attempt > 0 )); then printf 'RETRIES=%s\n' "$attempt" >> "$out/$name.done"; fi
+live_stop
 exit "$rc"

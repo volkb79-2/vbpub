@@ -307,12 +307,24 @@ reason Pi runs are classified from the event stream and how its session id
 joins the shared account map. The [consumer guide](docs/CONSUMERS.md#run-pi-on-open-design)
 has a copyable launch and resume example.
 
-Check a completed Pi run with its route name:
+Check a completed Pi run with its route name, and watch an active one from
+its liveness sidecar while it runs:
 
 ```bash
 scripts/controller/job-check.sh pi-run /path/to/worktree deepseek-pi
+scripts/controller/job-status.sh pi-run
 scripts/controller/ctl-status.sh
 ```
+
+While a run is active the wrapper also keeps `<run>.live` current (default
+every 30 s, `PI_LIVE_INTERVAL_SECONDS`): pid liveness, seconds since the last
+pi event, the tool call in flight and its age, assistant turns, tool calls,
+latest `usage.totalTokens`, commits ahead of the base ref, uncommitted files,
+and seconds since the last commit. `job-status.sh` reads those files and prints
+one line per run with `ACTIVE`, `STALLED` (no pi event for longer than
+`JOB_STATUS_STALL_SECONDS`, default 600, while the pid is alive), `HUNG-TOOL`
+(one tool call in flight longer than `JOB_STATUS_HUNG_TOOL_SECONDS`, default
+1800), `WRAPPER-DEAD`, `FINISHED`, or `NO-LIVE`. It never writes.
 
 OpenCode defaults to `opendesign_github2/deepseek-v4.1-flash-eco`. Set
 `OPENCODE_PROVIDER=opendesign_volker` to choose the other provider, or set

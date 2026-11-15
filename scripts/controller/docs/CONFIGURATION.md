@@ -34,6 +34,10 @@ Useful settings:
 | `PI_EMPTY_RETRY_LIMIT` | Non-negative continuation count for a pi run whose final assistant message is empty (no text, no tool call); defaults to `2`, `0` disables continuation. |
 | `PI_CONTINUE_PROMPT_FILE` | Canonical continuation prompt; defaults to `scripts/controller/continue-empty-completion.md`. |
 | `PI_REPORT` | Optional absolute expected report path for `pi-impl.sh`; equivalent to `--report`, unset skips the report check. |
+| `PI_LIVE_INTERVAL_SECONDS` | Snapshot interval for a run's `.live` liveness file; defaults to `30`, must be a positive integer. |
+| `PI_LIVE` | `0` starts no liveness sidecar at all (tests and inspection runs); defaults to `1`. |
+| `JOB_STATUS_STALL_SECONDS` | `job-status.sh`: no pi-event age that reads as `STALLED`; defaults to `600`. |
+| `JOB_STATUS_HUNG_TOOL_SECONDS` | `job-status.sh`: one tool call in flight longer than this reads as `HUNG-TOOL`; defaults to `1800`. |
 | `RESUME_SKIP` | Space-separated run names excluded by `resume-usage-limited.sh`. |
 | `RESUME_EXCLUDE_PREFIXES` | Space-separated run-name prefixes owned by another controller; defaults to `naf-`. |
 | `RESUME_MAX_AGE_MINUTES` | Recent-run scan window for `resume-usage-limited.sh`; defaults to `180`. |

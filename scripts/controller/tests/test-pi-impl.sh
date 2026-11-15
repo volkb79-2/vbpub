@@ -6,6 +6,8 @@ unset PI_ROUTE PI_MODEL PI_THINKING PI_SESSION_DIR OPENDESIGN_API_KEY_VOLKER OPE
 unset CONTROLLER_RUNS_DIR CONTROLLER_LOGS_DIR
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 SRC=${PI_IMPL_SCRIPT:-$SCRIPT_DIR/../pi-impl.sh}
+JOB_STATUS=${JOB_STATUS_SCRIPT:-$SCRIPT_DIR/../job-status.sh}
+PILIVE=${PI_LIVE_SCRIPT:-$SCRIPT_DIR/../pi-live.py}
 ROOT=$(mktemp -d "${TMPDIR:-/tmp}/controller-pi-test.XXXXXX")
 cleanup() { [[ -n ${KEEP_TEST_ROOT:-} ]] || rm -rf -- "$ROOT"; }
 trap cleanup EXIT
@@ -235,7 +237,7 @@ check_outcome_success_report() {
     CONTROLLER_OD_STATE="$ROOT/outcome-success-state.json" \
     FAKE_FIXTURE_DIR="$SCRIPT_DIR/fixtures" \
     FAKE_PI_STREAM="$SCRIPT_DIR/fixtures/pi-success.jsonl" FAKE_PI_SESSION_ID=outcome-success-session \
-    FAKE_PI_RC=0 \
+    FAKE_PI_RC=0 PI_LIVE=0 \
     "$SRC" "$WORKTREE" "$PROMPT" outcome-success --report "$report" \
     > "$ROOT/outcome-success.launch.log" 2>&1 < /dev/null || {
       cat "$ROOT/outcome-success.launch.log" >&2
@@ -320,12 +322,183 @@ check_outcome_empty_retry_bounded() {
     'the exhausted retry count is the final outcome'
 }
 
+check_live_snapshot() {
+  local live=$CONTROLLER_ROOT/runs/live-run.live
+  rm -f "$CONTROLLER_ROOT/runs/live-run.done"
+  PATH="$ROOT/bin:$PATH" HOME="$HOME_ROOT" PI_ROUTE=deepseek-pi-volker \
+    CONTROLLER_OD_STATE="$ROOT/live-state.json" \
+    FAKE_FIXTURE_DIR="$SCRIPT_DIR/fixtures" \
+    FAKE_PI_SEQUENCE='pi-tool-in-flight' FAKE_PI_COUNTER="$ROOT/live-run.counter" \
+    FAKE_PI_SLEEP_AFTER=4 FAKE_PI_SESSION_ID=live-run-session FAKE_PI_RC=0 \
+    PI_LIVE_INTERVAL_SECONDS=1 PI_EMPTY_RETRY_LIMIT=0 \
+    "$SRC" "$WORKTREE" "$PROMPT" live-run > "$ROOT/live-run.launch.log" 2>&1 < /dev/null &
+  local wrapper=$!
+  local waited=0
+  while (( waited < 100 )) && ! grep -qF '"tool_in_flight": "bash"' "$live" 2>/dev/null; do
+    sleep 0.1
+    waited=$(( waited + 1 ))
+  done
+  if (( waited >= 100 )); then
+    kill -- "$wrapper" 2>/dev/null || true
+    wait "$wrapper" 2>/dev/null || true
+    cat "$ROOT/live-run.launch.log" >&2
+    fail 'the live sidecar never reported the tool call in flight'
+  fi
+  kill -- "$wrapper" 2>/dev/null || true
+  wait "$wrapper" 2>/dev/null || true
+  python3 - "$live" "$wrapper" <<'PY' || fail 'the live snapshot is missing facts'
+import json, sys
+body = json.load(open(sys.argv[1], encoding="utf-8"))
+assert body["run"] == "live-run", body
+assert isinstance(body["last_event_epoch"], int), body
+assert body["tool_in_flight"] == "bash", body
+assert isinstance(body["tool_in_flight_started_epoch"], int), body
+assert body["assistant_turns"] >= 1, body
+assert body["tool_calls"] >= 1, body
+assert body["latest_total_tokens"] == 12220, body
+assert body["commits_ahead"] == 1, body
+assert body["uncommitted_files"] == 0, body
+assert isinstance(body["last_commit_epoch"], int), body
+PY
+}
 
+check_live_atomic() {
+  local partial
+  partial=$(ls "$CONTROLLER_ROOT/runs"/.live-run.live.* 2>/dev/null || true)
+  [[ -z $partial ]] || fail "live snapshot left a temporary file behind: $partial"
+  python3 - "$CONTROLLER_ROOT/runs/live-run.live" <<'PY' || fail 'the live snapshot is not one complete JSON object'
+import json, sys
+json.load(open(sys.argv[1], encoding="utf-8"))
+PY
+}
 
+check_job_status() {
+  local json=$ROOT/job-status.json
+  "$JOB_STATUS" outcome-success > "$ROOT/job-status.out" 2>&1 || {
+    cat "$ROOT/job-status.out" >&2
+    fail 'job-status failed on a finished run'
+  }
+  grep -qF 'outcome-success: FINISHED EXIT=0 OUTCOME=SUCCESS' "$ROOT/job-status.out" \
+    || { cat "$ROOT/job-status.out" >&2; fail 'job-status did not report the finished run'; }
+  python3 - "$json" <<'PY'
+import json, sys
+now = 1_800_000_000
+body = {
+    "run": "synthetic",
+    "wrapper_pid": 1,
+    "updated_epoch": now - 5,
+    "last_event_epoch": now - 700,
+    "tool_in_flight": None,
+    "tool_in_flight_started_epoch": None,
+    "assistant_turns": 4,
+    "tool_calls": 9,
+    "latest_total_tokens": 1200,
+    "commits_ahead": 2,
+    "uncommitted_files": 1,
+    "last_commit_epoch": now - 60,
+}
+json.dump(body, open(sys.argv[1], "w", encoding="utf-8"))
+PY
+}
 
+check_job_status_states() {
+  local runs=$ROOT/status-runs
+  mkdir -p "$runs" "$ROOT/status-home"
+  python3 - "$runs" <<'PY'
+import json, sys, time
+from pathlib import Path
+now = int(time.time())
+runs = Path(sys.argv[1])
+def write(name, tool=None, tool_started=None, last_event=None):
+    body = {
+        "run": name, "wrapper_pid": 1, "updated_epoch": now,
+        "last_event_epoch": last_event, "tool_in_flight": tool,
+        "tool_in_flight_started_epoch": tool_started,
+        "assistant_turns": 1, "tool_calls": 1, "latest_total_tokens": 10,
+        "commits_ahead": 0, "uncommitted_files": 0, "last_commit_epoch": now,
+    }
+    (runs / f"{name}.live").write_text(json.dumps(body), encoding="utf-8")
+write("stale", last_event=now - 900)
+write("hung", tool="bash", tool_started=now - 2400, last_event=now - 10)
+(runs / "finished.done").write_text("EXIT=0 OUTCOME=SUCCESS\n", encoding="utf-8")
+PY
+  CONTROLLER_HOME="$ROOT/status-home" CONTROLLER_RUNS_DIR="$runs" CONTROLLER_REPO="$WORKTREE" \
+    JOB_STATUS_STALL_SECONDS=600 JOB_STATUS_HUNG_TOOL_SECONDS=1800 \
+    "$JOB_STATUS" stale hung finished absent > "$ROOT/job-status-states.out" 2>&1 || {
+      cat "$ROOT/job-status-states.out" >&2
+      fail 'job-status failed on synthetic run states'
+    }
+  grep -qF 'stale: STALLED' "$ROOT/job-status-states.out" || { cat "$ROOT/job-status-states.out" >&2; fail 'a quiet run is not STALLED'; }
+  grep -qF 'hung: HUNG-TOOL' "$ROOT/job-status-states.out" || { cat "$ROOT/job-status-states.out" >&2; fail 'a long tool call is not HUNG-TOOL'; }
+  grep -qF 'finished: FINISHED EXIT=0 OUTCOME=SUCCESS' "$ROOT/job-status-states.out" || fail 'a finished run is not reported as finished'
+  grep -qF 'absent: NO-LIVE' "$ROOT/job-status-states.out" || fail 'a run without a snapshot is not NO-LIVE'
+  grep -qE 'hung: (ACTIVE|STALLED)' "$ROOT/job-status-states.out" \
+    && fail 'HUNG-TOOL did not take precedence over STALLED'
+}
 
+check_job_status_readonly() {
+  local runs=$ROOT/status-runs
+  python3 - "$runs" <<'PY' > "$ROOT/status-before.txt"
+import hashlib, sys
+from pathlib import Path
+for item in sorted(Path(sys.argv[1]).iterdir()):
+    print(item.name, hashlib.sha256(item.read_bytes()).hexdigest())
+PY
+  CONTROLLER_HOME="$ROOT/status-home" CONTROLLER_RUNS_DIR="$runs" CONTROLLER_REPO="$WORKTREE" \
+    "$JOB_STATUS" > /dev/null 2>&1 || fail 'job-status failed on a second call'
+  python3 - "$runs" <<'PY' > "$ROOT/status-after.txt"
+import hashlib, sys
+from pathlib import Path
+for item in sorted(Path(sys.argv[1]).iterdir()):
+    print(item.name, hashlib.sha256(item.read_bytes()).hexdigest())
+PY
+  cmp -s "$ROOT/status-before.txt" "$ROOT/status-after.txt" || fail 'job-status modified the run sidecars it reads'
+}
 
+check_live_usage_trend() {
+  # Usage on message_update is the only token figure available before a
+  # message completes; the snapshot must read it rather than wait.
+  rm -f "$CONTROLLER_ROOT/runs/trend.live"
+  python3 "$PILIVE" --stream "$SCRIPT_DIR/fixtures/pi-empty-usage.jsonl" \
+    --worktree "$WORKTREE" --out "$CONTROLLER_ROOT/runs/trend.live" --run trend \
+    --wrapper-pid $$ --interval 1 --once > /dev/null 2>&1 \
+    || fail 'pi-live could not snapshot a usage-only stream'
+  python3 - "$CONTROLLER_ROOT/runs/trend.live" <<'PY' || fail 'the usage trend was not read'
+import json, sys
+body = json.load(open(sys.argv[1], encoding="utf-8"))
+assert body["latest_total_tokens"] == 129, body
+assert body["assistant_turns"] == 1, body
+assert body["tool_calls"] == 1, body
+assert body["tool_in_flight"] is None, body
+PY
+}
 
+check_live_atomic_partial() {
+  # A reader must never see a half-written snapshot: pi-live.py renames one
+  # complete file into place, so a torn read is a hard failure.
+  local live=$CONTROLLER_ROOT/runs/atomic.live
+  rm -f "$live"
+  printf '{"type":"session","id":"atomic"}\n' > "$ROOT/atomic-stream.jsonl"
+  python3 "$PILIVE" --stream "$ROOT/atomic-stream.jsonl" --worktree "$WORKTREE" \
+    --out "$live" --run atomic --wrapper-pid $$ --interval 1 --once > /dev/null 2>&1 \
+    || fail 'pi-live could not write one snapshot'
+  python3 - "$live" <<'PY' || fail 'the written snapshot is not one complete JSON object'
+import json, sys
+json.load(open(sys.argv[1], encoding="utf-8"))
+PY
+  [[ -z $(ls "$CONTROLLER_ROOT/runs"/.atomic.live.* 2>/dev/null || true) ]] \
+    || fail 'pi-live left its temporary snapshot file behind'
+  local alive_pid_json
+  alive_pid_json=$ROOT/atomic-dead.live
+  python3 "$PILIVE" --stream "$ROOT/atomic-stream.jsonl" --worktree "$WORKTREE" \
+    --out "$alive_pid_json" --run atomic-dead --wrapper-pid 2147483646 --interval 1 --once > /dev/null 2>&1 \
+    || fail 'pi-live could not snapshot a run whose wrapper pid is gone'
+  python3 - "$alive_pid_json" <<'PY' || fail 'a missing wrapper pid was invented'
+import json, sys
+body = json.load(open(sys.argv[1], encoding="utf-8"))
+assert body["wrapper_pid"] == 2147483646, body
+PY
+}
 
 check_continue_prompt_file() {
   local prompt_file=$SCRIPT_DIR/../continue-empty-completion.md
@@ -345,7 +518,7 @@ check_retry_count_config() {
     CONTROLLER_OD_STATE="$ROOT/retry-limit-state.json" PI_EMPTY_RETRY_LIMIT=1 \
     FAKE_FIXTURE_DIR="$SCRIPT_DIR/fixtures" \
     FAKE_PI_SEQUENCE='pi-empty-completion' FAKE_PI_COUNTER="$ROOT/retry-limit.counter" \
-    FAKE_PI_SESSION_ID=retry-limit-session FAKE_PI_RC=0 \
+    FAKE_PI_SESSION_ID=retry-limit-session FAKE_PI_RC=0 PI_LIVE=0 \
     "$SRC" "$WORKTREE" "$PROMPT" retry-limit > "$ROOT/retry-limit.launch.log" 2>&1 < /dev/null \
     || fail 'a run configured for one continuation failed'
   after=$(pi_invocations)
@@ -366,6 +539,10 @@ check_retry_limit_validation() {
     PI_EMPTY_RETRY_LIMIT=unbounded "$SRC" "$WORKTREE" "$PROMPT" retry-validation
   contains "$ROOT/focused-command.out" 'PI_EMPTY_RETRY_LIMIT must be a non-negative integer' \
     'an unparsable continuation count is refused'
+  expect_rc 2 env PATH="$ROOT/bin:$PATH" HOME="$HOME_ROOT" PI_ROUTE=deepseek-pi-volker \
+    PI_LIVE_INTERVAL_SECONDS=0 "$SRC" "$WORKTREE" "$PROMPT" live-validation
+  contains "$ROOT/focused-command.out" 'PI_LIVE_INTERVAL_SECONDS must be a positive integer' \
+    'a zero live interval is refused'
 }
 
 check_repo_not_a_worktree() {
@@ -376,6 +553,14 @@ check_repo_not_a_worktree() {
     'a directory that cannot answer the clean-worktree question is refused'
 }
 
+check_job_status_validation() {
+  expect_rc 2 env CONTROLLER_HOME="$ROOT/status-home" CONTROLLER_RUNS_DIR="$ROOT/status-runs" \
+    JOB_STATUS_STALL_SECONDS=soon "$JOB_STATUS"
+  contains "$ROOT/focused-command.out" 'must be integer seconds' 'a non-integer stall threshold is refused'
+  expect_rc 2 env CONTROLLER_HOME="$ROOT/status-home" CONTROLLER_RUNS_DIR="$ROOT/status-runs" \
+    "$JOB_STATUS" ../escape
+  contains "$ROOT/focused-command.out" 'invalid run name' 'a traversing run name is refused by job-status'
+}
 
 
 if [[ -n ${PI_TEST_FOCUS:-} ]]; then
@@ -428,7 +613,75 @@ if [[ -n ${PI_TEST_FOCUS:-} ]]; then
       [[ $(pi_invocations) == 1 ]] || fail 'a usage limit was continued'
       contains "$CONTROLLER_ROOT/runs/focus-no-retry.done" 'OUTCOME=USAGE-LIMIT' 'the usage limit class is preserved'
       ;;
-
+    live-snapshot)
+      live=$CONTROLLER_ROOT/runs/focus-live.live
+      PATH="$ROOT/bin:$PATH" HOME="$HOME_ROOT" PI_ROUTE=deepseek-pi-volker \
+        CONTROLLER_OD_STATE="$ROOT/focus-live-state.json" \
+        FAKE_FIXTURE_DIR="$SCRIPT_DIR/fixtures" FAKE_PI_SEQUENCE='pi-tool-in-flight' \
+        FAKE_PI_COUNTER="$ROOT/focus-live.counter" FAKE_PI_SLEEP_AFTER=4 \
+        FAKE_PI_SESSION_ID=focus-live-session FAKE_PI_RC=0 PI_LIVE_INTERVAL_SECONDS=1 \
+        PI_EMPTY_RETRY_LIMIT=0 \
+        "$SRC" "$WORKTREE" "$PROMPT" focus-live > "$ROOT/focus-live.launch.log" 2>&1 < /dev/null &
+      wrapper=$!
+      waited=0
+      while (( waited < 100 )) && ! grep -qF '"tool_in_flight": "bash"' "$live" 2>/dev/null; do
+        sleep 0.1
+        waited=$(( waited + 1 ))
+      done
+      kill -- "$wrapper" 2>/dev/null || true
+      wait "$wrapper" 2>/dev/null || true
+      (( waited < 100 )) || fail 'the live sidecar never reported a tool call in flight'
+      python3 - "$live" <<'PY' || fail 'the live snapshot lacks a fact'
+import json, sys
+body = json.load(open(sys.argv[1], encoding="utf-8"))
+assert body["tool_in_flight"] == "bash", body
+assert isinstance(body["tool_in_flight_started_epoch"], int), body
+assert isinstance(body["last_event_epoch"], int), body
+PY
+      ;;
+    live-atomic)
+      printf '{"type":"session","id":"atomic"}\n' > "$ROOT/focus-atomic.jsonl"
+      python3 "$PILIVE" --stream "$ROOT/focus-atomic.jsonl" --worktree "$WORKTREE" \
+        --out "$CONTROLLER_ROOT/runs/focus-atomic.live" --run focus-atomic \
+        --wrapper-pid $$ --interval 1 --once > /dev/null 2>&1 \
+        || fail 'pi-live could not write a snapshot'
+      python3 - "$CONTROLLER_ROOT/runs/focus-atomic.live" <<'PY' || fail 'the snapshot is not one JSON object'
+import json, sys
+json.load(open(sys.argv[1], encoding="utf-8"))
+PY
+      [[ -z $(ls "$CONTROLLER_ROOT/runs"/.focus-atomic.live.* 2>/dev/null || true) ]] \
+        || fail 'the snapshot left a temporary file behind'
+      ;;
+    status-states)
+      runs=$ROOT/focus-status-runs
+      mkdir -p "$runs" "$ROOT/focus-status-home"
+      python3 - "$runs" <<'PY'
+import json, sys, time
+from pathlib import Path
+now = int(time.time())
+runs = Path(sys.argv[1])
+def write(name, tool=None, tool_started=None, last_event=None):
+    body = {
+        "run": name, "wrapper_pid": 1, "updated_epoch": now,
+        "last_event_epoch": last_event, "tool_in_flight": tool,
+        "tool_in_flight_started_epoch": tool_started,
+        "assistant_turns": 1, "tool_calls": 1, "latest_total_tokens": 10,
+        "commits_ahead": 0, "uncommitted_files": 0, "last_commit_epoch": now,
+    }
+    (runs / f"{name}.live").write_text(json.dumps(body), encoding="utf-8")
+write("stale", last_event=now - 900)
+write("hung", tool="bash", tool_started=now - 2400, last_event=now - 10)
+(runs / "finished.done").write_text("EXIT=0 OUTCOME=SUCCESS\n", encoding="utf-8")
+PY
+      CONTROLLER_HOME="$ROOT/focus-status-home" CONTROLLER_RUNS_DIR="$runs" \
+        CONTROLLER_REPO="$WORKTREE" JOB_STATUS_STALL_SECONDS=600 JOB_STATUS_HUNG_TOOL_SECONDS=1800 \
+        "$JOB_STATUS" stale hung finished absent > "$ROOT/focus-status.out" 2>&1 \
+        || fail 'job-status failed on synthetic run states'
+      contains "$ROOT/focus-status.out" 'stale: STALLED' 'a quiet run is STALLED'
+      contains "$ROOT/focus-status.out" 'hung: HUNG-TOOL' 'a long tool call is HUNG-TOOL'
+      contains "$ROOT/focus-status.out" 'finished: FINISHED EXIT=0 OUTCOME=SUCCESS' 'a finished run is FINISHED'
+      contains "$ROOT/focus-status.out" 'absent: NO-LIVE' 'a run without a snapshot is NO-LIVE'
+      ;;
     prompt-absolute)
       expect_rc 2 env PATH="$ROOT/bin:$PATH" HOME="$HOME_ROOT" PI_ROUTE=deepseek-pi \
         "$SRC" "$WORKTREE" relative-prompt focused-relative
@@ -682,10 +935,9 @@ PY
       contains "$README_SOURCE" 'EMPTY-COMPLETION-RETRIES-EXHAUSTED' 'README names the exhausted continuation class'
       contains "$README_SOURCE" 'PI_EMPTY_RETRY_LIMIT' 'README names the continuation bound'
       contains "$DESIGN_SOURCE" 'Continuation is bounded and class-specific' 'design guide explains the continuation bound'
-      contains "$CONSUMER_SOURCE" 'EMPTY-COMPLETION-RETRIES-EXHAUSTED' 'consumer guide names the exhausted continuation class'
-      contains "$README_SOURCE" 'EMPTY-COMPLETION-RETRIES-EXHAUSTED' 'README names the exhausted continuation class'
-      contains "$README_SOURCE" 'PI_EMPTY_RETRY_LIMIT' 'README names the continuation bound'
-      contains "$DESIGN_SOURCE" 'Continuation is bounded and class-specific' 'design guide explains the continuation bound'
+      contains "$DESIGN_SOURCE" 'Why liveness is a file, not a poll of the process' 'design guide explains the liveness sidecar'
+      contains "$README_SOURCE" 'job-status.sh' 'README documents the liveness read'
+      contains "$CONSUMER_SOURCE" 'JOB_STATUS_STALL_SECONDS' 'consumer guide documents the stall threshold'
       ;;
     *) fail "unknown PI_TEST_FOCUS=$PI_TEST_FOCUS" ;;
   esac
@@ -938,11 +1190,19 @@ check_outcome_no_retry_other_classes
 check_outcome_uncommitted
 check_outcome_no_report
 check_outcome_empty_retry_bounded
+check_live_snapshot
+check_live_atomic
+check_job_status
+check_job_status_states
+check_job_status_readonly
+check_live_usage_trend
+check_live_atomic_partial
 check_continue_prompt_file
 check_retry_count_config
 check_input_validation
 check_retry_limit_validation
 check_repo_not_a_worktree
+check_job_status_validation
 
 not_contains test-key 'run evidence contains no key material' "$CONTROLLER_ROOT/runs"
 not_contains test-key 'account state contains no key material' "$STATE"
