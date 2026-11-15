@@ -114,6 +114,22 @@ def test_entry_module_imports_only_the_standard_library():
     assert result.stdout.strip() == "[]"
 
 
+def test_the_module_entry_point_gets_the_same_guard_as_the_console_script(monkeypatch, capsys):
+    """`python -m fleetd` on a host without cli-extended must not end in a traceback either."""
+
+    import runpy
+
+    monkeypatch.setitem(sys.modules, "cli_extended", None)
+    monkeypatch.delitem(sys.modules, "fleetd.cli", raising=False)
+    monkeypatch.setattr(sys, "argv", ["fleetd", "--version"])
+    with pytest.raises(SystemExit) as exit_info:
+        runpy.run_module("fleetd.__main__", run_name="__main__")
+    assert exit_info.value.code == entry.EXIT_MISSING_DEPENDENCY
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "cli-extended is not installed" in captured.err
+
+
 def test_the_console_script_body_is_the_entry_point_not_the_cli_module():
     """A console script pointing at ``fleetd.cli:main`` would defeat the guard."""
 

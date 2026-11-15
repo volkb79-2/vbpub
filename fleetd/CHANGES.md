@@ -8,8 +8,18 @@ All notable changes to this project are recorded here.
 
 - Migrate the `fleet` CLI from a hand-built `argparse` parser to a registered
   `cli-extended` CLI. Every subcommand, flag spelling, default, output document
-  and exit status is unchanged; the shared library now owns help, the identity
-  banner, the output controls and the exception boundary. The pre-migration
+  and success or domain-error exit status is unchanged; the shared library now
+  owns help, the identity banner, the output controls and the exception
+  boundary. What the library changes, on purpose: the error line on stderr is
+  `[ERROR] <message>` (was `fleet: ERROR <message>`) and a parse error is one
+  such line without the argparse usage block (exit 2 as before); `-h` is gone
+  (use `--help` or `fleet help [verb]`); option names must be spelled in full
+  (argparse prefix abbreviations such as `--cand` are refused); a group without a
+  verb (`fleet`, `fleet facts`) prints its help and exits 0 instead of 2; and
+  every verb gains `--quiet`, `--debug` and the other shared controls (and
+  `--json` where it emits a document).
+  Callers that matched the old stderr prefix or relied on `-h` must be updated.
+  The pre-migration
   contract is pinned by `tests/test_cli_characterization.py`, written before the
   change and green on both implementations.
 - Declare `cli-extended>=0.5.0` as a real wheel dependency (unified-adoption

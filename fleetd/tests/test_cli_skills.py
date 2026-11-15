@@ -154,3 +154,34 @@ def test_skills_list_reports_absent_before_and_after_install(tmp_path, monkeypat
     assert app.run(argv=["skills", "list"], stdout=stdout, stderr=io.StringIO()) == 0
     assert "absent" in stdout.getvalue()
     assert not os.path.exists(home / ".agents" / "skills" / "fleetd-campaigns")
+
+
+# Flags the skill names that belong to Run-Gate (the commands a plan renders), not to `fleet`.
+_RUN_GATE_FLAGS = {"--jobs", "--only-candidates"}
+
+
+def test_every_flag_and_command_the_skill_names_exists_on_the_real_cli():
+    """The skill is generated knowledge for agents: an invented flag or verb must fail here.
+
+    The flag set is the committed surface (kept current by the catalog check against the real
+    registry), so a flag the skill mentions that `fleet` does not accept is refused.
+    """
+
+    import re
+
+    surface = (PROJECT / "docs" / "cli-surface.json").read_text(encoding="utf-8")
+    real_flags = set(re.findall(r'"(--[a-z][a-z-]*)"', surface))
+    text = SKILL.read_text(encoding="utf-8")
+    named = set(re.findall(r"(?<![\w-])(--[a-z][a-z-]*)", text))
+    assert named - _RUN_GATE_FLAGS <= real_flags, sorted(named - _RUN_GATE_FLAGS - real_flags)
+
+    verbs = {"facts": {"collect", "validate"}, "guard": {"validate"}, "plan": None, "run": None,
+             "status": None, "tick": None, "collect": None, "skills": {"install", "check", "list", "uninstall"}}
+    commands = [line.split() for line in text.splitlines() if line.startswith("fleet ")]
+    assert commands, "the skill shows no runnable `fleet` command"
+    for words in commands:
+        if words[1].startswith("-"):
+            continue  # `fleet --version`
+        assert words[1] in verbs, words
+        if verbs[words[1]] is not None:
+            assert words[2] in verbs[words[1]], words

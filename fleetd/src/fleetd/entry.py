@@ -17,8 +17,8 @@ from typing import Callable, Sequence
 
 MISSING_DEPENDENCY = (
     "cli-extended is not installed and the fleet CLI is registered with it; "
-    "install the fleetd wheel, which declares cli-extended as a dependency "
-    "(fleetd docs/SPEC.md, 'Host install')"
+    "install the cli-extended wheel (GitHub Releases only, not PyPI) next to the fleetd wheel "
+    "(fleetd docs/SPEC.md, 'Host install and the wheel layout')"
 )
 
 EXIT_MISSING_DEPENDENCY = 3

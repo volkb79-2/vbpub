@@ -22,7 +22,9 @@ Facts this skill assumes, all of them product invariants:
   Geekbench single-core scores inform ETA, never eligibility.
 - Some hosts are **refused**: a shared-prod role, a PSI reading above the
   configured threshold, an unknown role, or unknown physical facts. A refused
-  host is never contacted by any command.
+  host is never contacted by any command. The production game host and the
+  controller machine itself are never campaign targets: do not list them in a
+  hosts file and do not point a runner job at them by hand.
 - fleetd contains no host address, provider credential or key. Host IDs in a
   plan are aliases of the operator's local transport configuration; the
   transport is the identity-checked `hx` wrapper only.
