@@ -1,0 +1,1300 @@
+//! The [`Store`]: the tiers, the active dictionary and the bounded writer queue, tied together
+//! under one configuration and one set of counters.
+//!
+//! Plan v4 §A.4 lists the stores as one table and §C.5 states the failure each bound exists
+//! for. This module is that table as code: one place that opens every tier, refuses a
+//! configuration that cannot be enforced (a hot tier that is not on tmpfs, two tiers with the
+//! same name, a cap of zero bytes), routes a record to the tier its step belongs to, retires
+//! dictionary entries from the union of what the tiers still reference, and reports every
+//! loss.
+//!
+//! # Contracts
+//!
+//! * **The configuration is a policy choice, and a missing key is an error.** The plan's rule
+//!   is "every key required", and this module's [`StoreConfig::check`] is where that is
+//!   enforced: there is no default cap, no default step and no "tmpfs if you happen to be on
+//!   it". A key that is absent is [`StoreError::Config`], never a guess (the estate's
+//!   "defaults are hazards" rule).
+//! * **A tier's directory may be shared by focus tiers, and its name must not be.** Focus
+//!   tiers live inside the cold directory (§A.4: "focus tiers (`[[focus]]`) | cold dir | own
+//!   `step_s/keep_s/cap_bytes`"), so one [`StoreDir`] can hold several tiers. Each tier
+//!   therefore only ever claims names whose *tier prefix* is its own, and the scan's
+//!   `names another tier` note is what proves a shared directory is not a collision.
+//! * **`require_tmpfs` is checked before a single byte is written.**
+//!   [`MountTable`](crate::tmpfs::MountTable) answers "is this path on tmpfs", and a tier that
+//!   requires tmpfs and is not on it refuses to open ([`StoreError::NotTmpfs`]). An unreadable
+//!   mount table refuses too, rather than assuming disk: "could not determine" is never
+//!   reported as "is not tmpfs" or as "is tmpfs".
+//! * **One writer.** [`Store::submit`] puts a job on the bounded queue; [`Store::write_pending`]
+//!   is the only way a job reaches a segment, and it writes at most `max_jobs` per call, so a
+//!   caller cannot accidentally drain an unbounded amount in one loop.
+//! * **Retirement is by reachability, from all tiers at once.** §A.4: "inactive incs retire
+//!   with their segments". [`Store::retire`] unions every tier's reachable set before retiring
+//!   anything, so an id that moved from hot to cold by re-sealing is never retired between the
+//!   two.
+//! * **A store's loss counters are cumulative and typed.** Every dropped job, every torn tail,
+//!   every quarantine and every disk-full is in [`StoreStats`]; nothing is a log line only.
+
+use std::collections::BTreeMap;
+use std::collections::BTreeSet;
+use std::path::{Path, PathBuf};
+
+use crate::dictionary::{ActiveDictionary, Retired, DEFAULT_ACTIVE_MAX};
+use crate::error::StoreError;
+use crate::events::{Event, EventsStore};
+use crate::format::TierKind;
+use crate::fsio::StoreDir;
+use crate::queue::{Job, QueueStats, Submit, WriterQueue};
+use crate::tier::{AppendOutcome, Evicted, Tier, TierConfig, TierNote};
+
+/// The default read bound of one segment file (a segment is bounded by its tier's own
+/// `segment_bytes`, which this comfortably exceeds).
+pub const DEFAULT_MAX_FILE_BYTES: usize = 16 << 20;
+
+/// The tier names the store always has, in the order the plan lists them.
+pub const HOT: &str = "hot";
+/// The tier name of the 5 s rollup history.
+pub const WARM: &str = "warm";
+/// The tier name of the on-disk history.
+pub const COLD: &str = "cold";
+/// The events corpus' tier name.
+pub const EVENTS: &str = "events";
+
+/// Where each corpus lives: one directory for the tmpfs tiers, one for cold, one for focus, one
+/// for events.
+///
+/// The directories are *declared*, not derived: the plan gives each of them its own path
+/// (`/run/hostobs/tiers`, `/var/lib/hostobs/probe/cold`, `/var/lib/hostobs/probe/events`), and a
+/// store that guessed a layout from the first tier's name would put a caller's focus tier
+/// somewhere nobody configured.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct StoreDirs {
+    /// The tmpfs directory hot and warm share (`/run/hostobs/tiers`), or `None` when the
+    /// caller keeps them elsewhere.
+    pub tmpfs: Option<PathBuf>,
+    /// The durable cold history directory (`/var/lib/hostobs/probe/cold`).
+    pub cold: PathBuf,
+    /// The events directory (`/var/lib/hostobs/probe/events`).
+    pub events: PathBuf,
+}
+
+impl StoreDirs {
+    /// The plan's paths, rooted at `root` so a test or a probe restart can use a temp dir.
+    #[must_use]
+    pub fn under(root: &Path) -> StoreDirs {
+        StoreDirs {
+            tmpfs: Some(root.join("tiers")),
+            cold: root.join("cold"),
+            events: root.join("events"),
+        }
+    }
+
+    /// The directory one tier's segments go in.
+    ///
+    /// # Errors
+    ///
+    /// [`StoreError::Config`] when a tmpfs tier is configured without a tmpfs directory.
+    pub fn for_tier(&self, config: &TierConfig) -> Result<&Path, StoreError> {
+        match config.kind {
+            TierKind::Events => Ok(&self.events),
+            TierKind::History => {
+                if config.require_tmpfs {
+                    match &self.tmpfs {
+                        Some(path) => Ok(path),
+                        None => Err(StoreError::Config {
+                            key: "tmpfs_dir",
+                            reason: "a tmpfs tier needs a tmpfs directory",
+                        }),
+                    }
+                } else {
+                    Ok(&self.cold)
+                }
+            }
+        }
+    }
+}
+
+/// The store's configuration: every key the plan requires, and no default for any of them.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct StoreConfig {
+    /// The history tiers, in the order the store routes records.
+    pub tiers: Vec<TierConfig>,
+    /// The events tier's configuration (its own cap, §A.4).
+    pub events: TierConfig,
+    /// The writer queue's byte bound (§A.4's `writer_queue_bytes`).
+    pub writer_queue_bytes: u64,
+    /// The active dictionary's entry bound (§A.4's `dict_active_max`).
+    pub dict_active_max: usize,
+    /// The events RAM ring's byte bound (§A.4).
+    pub events_ring_bytes: u64,
+    /// The epoch the probe is in (§C.1: the store never reuses an id across epochs).
+    pub epoch: u64,
+    /// The dictionary generation the writer is currently emitting (§B.3).
+    pub dict_generation: u32,
+    /// Where the tiers live.
+    pub dirs: StoreDirs,
+    /// The largest segment file a reader will hold in memory.
+    pub max_file_bytes: usize,
+}
+
+impl StoreConfig {
+    /// The plan's proposal for §A.4 as one configuration: hot 1 s × 60 s and warm 5 s × 300 s
+    /// on tmpfs, cold 60 s steps with a 1 GiB cap and 14 days, a 8 MiB writer queue, a 64 MiB
+    /// events cap with a 4 MiB ring, and `dict_active_max` 65,536.
+    ///
+    /// This is *the plan's* numbers, not a default: it is built only when a caller asks for it
+    /// by name, and every field is set here rather than inherited from an absent key.
+    ///
+    /// # Errors
+    ///
+    /// Every [`TierConfig`] refusal (`segment_s`/`keep_s` of zero, a name that cannot be a
+    /// file prefix).
+    pub fn plan_v4(
+        root: &Path,
+        epoch: u64,
+        dict_generation: u32,
+    ) -> Result<StoreConfig, StoreError> {
+        let hot = TierConfig::history(HOT, 1, 60, 64 << 20, true)?;
+        let warm = TierConfig::history(WARM, 5, 300, 128 << 20, true)?;
+        let cold = TierConfig::history(COLD, 60, 14 * 24 * 3600, 1 << 30, false)?;
+        let events = TierConfig::new(
+            EVENTS,
+            TierKind::Events,
+            60,
+            14 * 24 * 3600,
+            64 << 20,
+            false,
+        )?;
+        Ok(StoreConfig {
+            tiers: vec![hot, warm, cold],
+            events,
+            writer_queue_bytes: 8 << 20,
+            dict_active_max: DEFAULT_ACTIVE_MAX,
+            events_ring_bytes: 4 << 20,
+            epoch,
+            dict_generation,
+            dirs: StoreDirs::under(root),
+            max_file_bytes: DEFAULT_MAX_FILE_BYTES,
+        })
+    }
+
+    /// Check everything that can be checked without touching the filesystem.
+    ///
+    /// # Errors
+    ///
+    /// [`StoreError::DuplicateTier`] for a repeated name, [`StoreError::Config`] for a
+    /// meaningless bound, and the `events` tier's own checks.
+    pub fn check(&self) -> Result<(), StoreError> {
+        if self.tiers.is_empty() {
+            return Err(StoreError::Config {
+                key: "tiers",
+                reason: "a store needs at least one history tier",
+            });
+        }
+        let mut seen: BTreeSet<&str> = BTreeSet::new();
+        for tier in &self.tiers {
+            if !seen.insert(tier.name.as_str()) {
+                return Err(StoreError::DuplicateTier {
+                    name: tier.name.clone(),
+                });
+            }
+            if tier.kind != TierKind::History {
+                return Err(StoreError::TierKindMismatch {
+                    tier: "history tiers",
+                    payload: tier.kind.name(),
+                });
+            }
+        }
+        if self.events.kind != TierKind::Events {
+            return Err(StoreError::TierKindMismatch {
+                tier: "the events tier",
+                payload: self.events.kind.name(),
+            });
+        }
+        if seen.contains(self.events.name.as_str()) {
+            return Err(StoreError::DuplicateTier {
+                name: self.events.name.clone(),
+            });
+        }
+        if self.writer_queue_bytes == 0 {
+            return Err(StoreError::Config {
+                key: "writer_queue_bytes",
+                reason: "must be at least one byte",
+            });
+        }
+        if self.dict_active_max == 0 {
+            return Err(StoreError::Config {
+                key: "dict_active_max",
+                reason: "must hold at least one incarnation",
+            });
+        }
+        if self.max_file_bytes < crate::format::HEADER_LEN {
+            return Err(StoreError::Config {
+                key: "max_file_bytes",
+                reason: "cannot hold a segment header",
+            });
+        }
+        Ok(())
+    }
+
+    /// The tier a record at `real_ns` belongs to: the **finest** tier whose step the time falls
+    /// in.
+    ///
+    /// The rule is the plan's ladder, not a calendar: a record is first offered to the tier
+    /// with the smallest `segment_s`, and the first tier whose retention covers the record's
+    /// age keeps it. A record older than every tier's `keep_s` is refused
+    /// ([`StoreError::UnknownTier`] carries the name it could not be placed under — a store
+    /// does not silently drop a record it was handed).
+    ///
+    /// # Errors
+    ///
+    /// [`StoreError::NegativeTime`] for a time before the Unix epoch.
+    pub fn route(&self, real_ns: i64, now_ns: i64) -> Result<&TierConfig, StoreError> {
+        if real_ns < 0 {
+            return Err(StoreError::NegativeTime { ns: real_ns });
+        }
+        if now_ns < real_ns {
+            return Err(StoreError::NegativeTime {
+                ns: now_ns - real_ns,
+            });
+        }
+        let age_s = u64::try_from((now_ns - real_ns) / 1_000_000_000).unwrap_or(u64::MAX);
+        let mut candidates: Vec<&TierConfig> = self
+            .tiers
+            .iter()
+            .filter(|tier| age_s <= tier.keep_s)
+            .collect();
+        // The finest step wins, then the smallest cap: a record the store was just handed
+        // belongs in the most detailed tier that will keep it.
+        candidates.sort_by(|left, right| {
+            left.segment_s
+                .cmp(&right.segment_s)
+                .then(left.cap_bytes.cmp(&right.cap_bytes))
+                .then(left.name.cmp(&right.name))
+        });
+        candidates.first().copied().ok_or(StoreError::UnknownTier {
+            name: format!("a record {age_s} s old"),
+        })
+    }
+
+    /// The tier named `name`, when the configuration has one.
+    #[must_use]
+    pub fn tier(&self, name: &str) -> Option<&TierConfig> {
+        self.tiers.iter().find(|tier| tier.name == name)
+    }
+}
+
+/// What the store as a whole has done and lost.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct StoreStats {
+    /// Jobs accepted by the writer queue since the store was built.
+    pub queued: u64,
+    /// Jobs written to a segment.
+    pub written: u64,
+    /// Jobs dropped because the queue was at its byte bound.
+    pub dropped: u64,
+    /// Records lost with those dropped jobs.
+    pub dropped_records: u64,
+    /// Bytes lost with those dropped jobs.
+    pub dropped_bytes: u64,
+    /// Records that reached a segment.
+    pub records: u64,
+    /// Segment bytes on disk (all tiers, including the events store).
+    pub bytes: u64,
+    /// Whole segments evicted by a bound, all tiers.
+    pub evicted_segments: u64,
+    /// Bytes those evicted segments held.
+    pub evicted_bytes: u64,
+    /// Torn tails repaired at open, all tiers.
+    pub torn_repaired: u64,
+    /// Segments quarantined because they were corrupt.
+    pub quarantined: u64,
+    /// Dictionary entries retired (ids no stored segment references).
+    pub retired: u64,
+    /// Incarnations the active index holds now.
+    pub dictionary_entries: u64,
+    /// Append-level failures (a full disk, an IO error, a refused payload).
+    pub write_failures: u64,
+}
+
+impl StoreStats {
+    /// True when the store lost nothing: no dropped job, no quarantine, no write failure.
+    ///
+    /// A torn tail is a *repair*, not a loss: the record it cut back to was never completed, so
+    /// the store is honest rather than lossless there.
+    #[must_use]
+    pub const fn lossless(&self) -> bool {
+        self.dropped == 0 && self.quarantined == 0 && self.write_failures == 0
+    }
+}
+
+/// One tier's living state inside the store.
+#[derive(Debug)]
+struct TierState {
+    tier: Tier,
+}
+
+/// The whole store: tiers, the dictionary, the queue, and the counters.
+#[derive(Debug)]
+pub struct Store {
+    config: StoreConfig,
+    tiers: BTreeMap<String, TierState>,
+    events: EventsStore,
+    dictionary: ActiveDictionary,
+    queue: WriterQueue,
+    stats: StoreStats,
+}
+
+impl Store {
+    /// Open the store: check the configuration, prove the tmpfs tiers are on tmpfs, then open
+    /// every tier and the events store.
+    ///
+    /// The tmpfs check happens **before** the directories are created, so a misconfigured hot
+    /// tier does not first write to a disk it will then refuse.
+    ///
+    /// # Errors
+    ///
+    /// [`StoreError::Config`]/[`StoreError::DuplicateTier`] for the configuration,
+    /// [`StoreError::NotTmpfs`]/[`StoreError::MountTableUnreadable`] for a `require_tmpfs`
+    /// tier, and every tier/dictionary/queue refusal.
+    pub fn open(config: StoreConfig) -> Result<Store, StoreError> {
+        Store::open_with_mounts(config, None)
+    }
+
+    /// Open the store against a mount table a caller supplies (the tests' entry point, and a
+    /// probe that has already read `/proc/self/mounts`).
+    ///
+    /// Passing `None` reads `/proc/self/mounts` here, and only when a tier requires tmpfs.
+    ///
+    /// # Errors
+    ///
+    /// As [`Store::open`], plus [`StoreError::MountTableUnreadable`] when the table cannot be
+    /// read.
+    pub fn open_with_mounts(
+        config: StoreConfig,
+        mounts: Option<crate::tmpfs::MountTable>,
+    ) -> Result<Store, StoreError> {
+        config.check()?;
+        // Read the table at most once, and only when a tier actually requires tmpfs. The table
+        // is passed to the later tiers rather than re-read per tier.
+        let mut table = mounts;
+        for tier in config.tiers.iter().chain(std::iter::once(&config.events)) {
+            if !tier.require_tmpfs {
+                continue;
+            }
+            if table.is_none() {
+                table = Some(crate::tmpfs::read_self()?);
+            }
+            let path = config.dirs.for_tier(tier)?;
+            let Some(current) = table.as_ref() else {
+                return Err(StoreError::MountTableUnreadable {
+                    reason: "no mount table was available".to_string(),
+                });
+            };
+            // A required tier whose filesystem cannot be determined is a refusal, never a pass:
+            // "could not determine" is not "is tmpfs".
+            current.check_tmpfs(path, true)?;
+        }
+        Store::open_inner(config)
+    }
+
+    fn open_inner(config: StoreConfig) -> Result<Store, StoreError> {
+        let mut tiers: BTreeMap<String, TierState> = BTreeMap::new();
+        for tier_config in &config.tiers {
+            let path = config.dirs.for_tier(tier_config)?;
+            let dir = StoreDir::open(path, true)?;
+            let tier = Tier::open(tier_config.clone(), dir, config.max_file_bytes)?;
+            tiers.insert(tier_config.name.clone(), TierState { tier });
+        }
+        let events_path = config.dirs.for_tier(&config.events)?;
+        let events = EventsStore::open(
+            config.events.clone(),
+            config.events_ring_bytes,
+            StoreDir::open(events_path, true)?,
+            config.max_file_bytes,
+        )?;
+        let dictionary = ActiveDictionary::new(config.epoch, config.dict_active_max)?;
+        let queue = WriterQueue::new(config.writer_queue_bytes)?;
+        let mut store = Store {
+            config,
+            tiers,
+            events,
+            dictionary,
+            queue,
+            stats: StoreStats::default(),
+        };
+        store.recount();
+        Ok(store)
+    }
+
+    /// The configuration.
+    #[must_use]
+    pub const fn config(&self) -> &StoreConfig {
+        &self.config
+    }
+
+    /// The tier named `name`.
+    #[must_use]
+    pub fn tier(&self, name: &str) -> Option<&Tier> {
+        self.tiers.get(name).map(|state| &state.tier)
+    }
+
+    /// The events store.
+    #[must_use]
+    pub const fn events(&self) -> &EventsStore {
+        &self.events
+    }
+
+    /// The active dictionary.
+    #[must_use]
+    pub const fn dictionary(&self) -> &ActiveDictionary {
+        &self.dictionary
+    }
+
+    /// The writer queue.
+    #[must_use]
+    pub const fn queue(&self) -> &WriterQueue {
+        &self.queue
+    }
+
+    /// The store's counters, as they now stand.
+    #[must_use]
+    pub fn stats(&self) -> StoreStats {
+        let QueueStats {
+            accepted,
+            written: queue_written,
+            dropped,
+            dropped_records,
+            dropped_bytes,
+            ..
+        } = self.queue.full_stats();
+        let events = self.events.stats();
+        let mut stats = self.stats.clone();
+        stats.queued = accepted;
+        stats.written = queue_written;
+        stats.dropped = dropped.max(events.dropped);
+        stats.dropped_records = dropped_records;
+        stats.dropped_bytes = dropped_bytes;
+        stats.dictionary_entries = u64::try_from(self.dictionary.len()).unwrap_or(u64::MAX);
+        stats
+    }
+
+    /// Recount what the tiers actually hold (after an open or an eviction pass).
+    fn recount(&mut self) {
+        let mut bytes = self.events.tier().bytes();
+        let mut records = 0u64;
+        let mut evicted = 0u64;
+        let mut evicted_bytes = 0u64;
+        let mut torn = self
+            .events
+            .tier()
+            .scan()
+            .torn_repaired
+            .len()
+            .try_into()
+            .unwrap_or(u64::MAX);
+        let mut quarantined: u64 = self
+            .events
+            .tier()
+            .scan()
+            .quarantined
+            .len()
+            .try_into()
+            .unwrap_or(u64::MAX);
+        for state in self.tiers.values() {
+            bytes = bytes.saturating_add(state.tier.bytes());
+            records = records.saturating_add(
+                state
+                    .tier
+                    .scan()
+                    .segments
+                    .iter()
+                    .map(|segment| segment.records)
+                    .sum::<u64>(),
+            );
+            torn = torn.saturating_add(
+                u64::try_from(state.tier.scan().torn_repaired.len()).unwrap_or(u64::MAX),
+            );
+            quarantined = quarantined.saturating_add(
+                u64::try_from(state.tier.scan().quarantined.len()).unwrap_or(u64::MAX),
+            );
+        }
+        let _ = (&mut evicted, &mut evicted_bytes);
+        self.stats.bytes = bytes;
+        self.stats.records = records;
+        self.stats.torn_repaired = torn;
+        self.stats.quarantined = quarantined;
+    }
+
+    /// The names a tier left untouched, with why (a foreign file is reported, never removed).
+    ///
+    /// A tier that shares its directory with another tier of this store sees the other's
+    /// segments and reports each as "names another tier". Those are *expected*: one directory
+    /// holding hot and warm is the plan's own layout, so a note about a name this store owns
+    /// is not reported as foreign. What remains is a name **no** tier of this store claims —
+    /// which is exactly what an operator needs to see.
+    #[must_use]
+    pub fn notes(&self) -> Vec<TierNote> {
+        let owned: Vec<&str> = self
+            .tiers
+            .keys()
+            .map(String::as_str)
+            .chain(std::iter::once(self.config.events.name.as_str()))
+            .collect();
+        let mut notes: Vec<TierNote> = Vec::new();
+        for state in self.tiers.values() {
+            notes.extend(state.tier.scan().notes.iter().cloned());
+        }
+        notes.extend(self.events.tier().scan().notes.iter().cloned());
+        notes.retain(
+            |note| match crate::format::SegmentFileName::parse(&note.name) {
+                Ok(parsed) => !owned.contains(&parsed.tier.as_str()),
+                Err(_) => true,
+            },
+        );
+        notes
+    }
+
+    /// Mint or adopt an incarnation in the active index.
+    ///
+    /// # Errors
+    ///
+    /// [`StoreError::DictionaryFull`] at the bound, [`StoreError::IncarnationReused`] for an
+    /// id the index retired, and every [`ActiveDictionary::adopt`] refusal.
+    pub fn adopt(&mut self, inc: u64, label: &str) -> Result<u64, StoreError> {
+        if inc == 0 {
+            return self.dictionary.mint(label);
+        }
+        self.dictionary.adopt(inc, label)?;
+        Ok(inc)
+    }
+
+    /// Put a job on the writer queue, reporting exactly what it displaced.
+    ///
+    /// # Errors
+    ///
+    /// [`StoreError::JobTooLarge`] when the job alone is larger than the whole queue.
+    pub fn submit(&mut self, job: Job) -> Result<Submit, StoreError> {
+        let report = self.queue.submit(job)?;
+        if report.dropped_anything() {
+            // The queue counts its own drops; the store mirrors them so one counter answers
+            // "did this store lose anything", and the *events* store's drop count is not
+            // silently separate from the history's.
+            self.events.count_dropped(report.dropped_jobs);
+        }
+        Ok(report)
+    }
+
+    /// Write up to `max_jobs` queued jobs, routing each to the tier its time belongs to.
+    ///
+    /// `now_ns` decides which tier a record belongs to **and** which bounds are enforced; it is
+    /// the caller's clock, so a test never depends on host time.
+    ///
+    /// # Errors
+    ///
+    /// The first refusal is returned and the job stays out of the queue (it was already taken,
+    /// so it is counted as a write failure rather than silently lost).
+    pub fn write_pending(
+        &mut self,
+        now_ns: i64,
+        max_jobs: usize,
+    ) -> Result<Vec<WriteOutcome>, StoreError> {
+        if max_jobs == 0 {
+            return Err(StoreError::QueryLimit { asked: 0, max: 0 });
+        }
+        let mut done = Vec::new();
+        for _ in 0..max_jobs {
+            let Some(job) = self.queue.take_next() else {
+                break;
+            };
+            match self.write_one(&job, now_ns) {
+                Ok(outcome) => done.push(outcome),
+                Err(error) => {
+                    self.stats.write_failures = self.stats.write_failures.saturating_add(1);
+                    return Err(error);
+                }
+            }
+        }
+        Ok(done)
+    }
+
+    /// Write one job into the tier `route` names.
+    ///
+    /// # Errors
+    ///
+    /// [`StoreError::UnknownTier`] when no tier's retention covers the record, and every
+    /// append refusal.
+    pub fn write_one(&mut self, job: &Job, now_ns: i64) -> Result<WriteOutcome, StoreError> {
+        let route = self.config.route(job.real_ns, now_ns)?;
+        let name = route.name.clone();
+        let epoch = self.config.epoch;
+        let generation = self.config.dict_generation;
+        let state = self
+            .tiers
+            .get_mut(&name)
+            .ok_or(StoreError::UnknownTier { name: name.clone() })?;
+        let outcome = state.tier.append(job, epoch, generation)?;
+        self.stats.written = self.stats.written.saturating_add(1);
+        self.stats.records = self.stats.records.saturating_add(1);
+        self.stats.bytes = self.stats.bytes.saturating_add(outcome.bytes_written);
+        self.stats.evicted_segments = self
+            .stats
+            .evicted_segments
+            .saturating_add(u64::try_from(outcome.evicted.len()).unwrap_or(u64::MAX));
+        self.stats.evicted_bytes = self
+            .stats
+            .evicted_bytes
+            .saturating_add(outcome.evicted.bytes);
+        Ok(WriteOutcome {
+            tier: name,
+            outcome,
+        })
+    }
+
+    /// Append one event to the events store (its own cap and ring, §A.4).
+    ///
+    /// # Errors
+    ///
+    /// [`StoreError::PayloadFrameType`] for a payload that is not an EVT frame, and every
+    /// append refusal.
+    pub fn record_event(
+        &mut self,
+        event: &Event,
+        payload: &[u8],
+        now_ns: i64,
+    ) -> Result<AppendOutcome, StoreError> {
+        let outcome = self.events.record(
+            event,
+            payload,
+            self.config.epoch,
+            self.config.dict_generation,
+        )?;
+        self.stats.records = self.stats.records.saturating_add(1);
+        self.stats.bytes = self.stats.bytes.saturating_add(outcome.bytes_written);
+        self.stats.evicted_segments = self
+            .stats
+            .evicted_segments
+            .saturating_add(u64::try_from(outcome.evicted.len()).unwrap_or(u64::MAX));
+        self.stats.evicted_bytes = self
+            .stats
+            .evicted_bytes
+            .saturating_add(outcome.evicted.bytes);
+        let _ = now_ns;
+        Ok(outcome)
+    }
+
+    /// Seal every tier's open segment and the events store's.
+    ///
+    /// # Errors
+    ///
+    /// The first seal refusal (each seal is atomic, so a refusal leaves the segment open and
+    /// recoverable rather than half-renamed).
+    pub fn seal_all(&mut self) -> Result<Vec<String>, StoreError> {
+        let mut sealed = Vec::new();
+        if let Some(name) = self.events.seal()? {
+            sealed.push(name);
+        }
+        for state in self.tiers.values_mut() {
+            if let Some(name) = state.tier.seal_open_segment()? {
+                sealed.push(name);
+            }
+        }
+        Ok(sealed)
+    }
+
+    /// Enforce every tier's bounds (and the events store's) for `now_ns`.
+    ///
+    /// # Errors
+    ///
+    /// The first eviction refusal.
+    pub fn evict(&mut self, now_ns: i64) -> Result<BTreeMap<String, Evicted>, StoreError> {
+        let mut evicted: BTreeMap<String, Evicted> = BTreeMap::new();
+        for (name, state) in &mut self.tiers {
+            let done = state.tier.evict(now_ns)?;
+            if !done.is_empty() {
+                self.stats.evicted_segments = self
+                    .stats
+                    .evicted_segments
+                    .saturating_add(u64::try_from(done.len()).unwrap_or(u64::MAX));
+                self.stats.evicted_bytes = self.stats.evicted_bytes.saturating_add(done.bytes);
+                self.stats.bytes = self.stats.bytes.saturating_sub(done.bytes);
+                evicted.insert(name.clone(), done);
+            }
+        }
+        let done = self.events.evict(now_ns)?;
+        if !done.is_empty() {
+            self.stats.evicted_segments = self
+                .stats
+                .evicted_segments
+                .saturating_add(u64::try_from(done.len()).unwrap_or(u64::MAX));
+            self.stats.evicted_bytes = self.stats.evicted_bytes.saturating_add(done.bytes);
+            self.stats.bytes = self.stats.bytes.saturating_sub(done.bytes);
+            evicted.insert(EVENTS.to_string(), done);
+        }
+        Ok(evicted)
+    }
+
+    /// Retire dictionary entries no tier references (from the **union** of every tier's
+    /// reachability, §A.4's "GC by segment reachability").
+    #[must_use]
+    pub fn retire(&mut self) -> Retired {
+        let mut reach: BTreeSet<u64> = BTreeSet::new();
+        for state in self.tiers.values() {
+            for inc in state.tier.reachable() {
+                reach.insert(inc);
+            }
+        }
+        for inc in self.events.tier().reachable() {
+            reach.insert(inc);
+        }
+        let retired = self.dictionary.retire_with_set(&reach);
+        self.stats.retired = self.stats.retired.saturating_add(retired.len() as u64);
+        self.stats.dictionary_entries = u64::try_from(self.dictionary.len()).unwrap_or(u64::MAX);
+        retired
+    }
+
+    /// The ids any stored segment still references, across every tier.
+    #[must_use]
+    pub fn reachable(&self) -> BTreeSet<u64> {
+        let mut reach = BTreeSet::new();
+        for state in self.tiers.values() {
+            reach.extend(state.tier.reachable());
+        }
+        reach.extend(self.events.tier().reachable());
+        reach
+    }
+
+    /// A range query over every history tier, oldest tier first, bounded by the caller.
+    ///
+    /// The tiers are consulted in the configuration's order (hot, then warm, then cold), and a
+    /// bound stops the whole answer rather than each tier separately.
+    ///
+    /// # Errors
+    ///
+    /// [`StoreError::RangeInverted`], [`StoreError::QueryLimit`], and every tier refusal.
+    pub fn range(
+        &self,
+        from: i64,
+        to: i64,
+        max_records: usize,
+        max_bytes: usize,
+    ) -> Result<StoreRange, StoreError> {
+        if to < from {
+            return Err(StoreError::RangeInverted { from, to });
+        }
+        if max_records == 0 {
+            return Err(StoreError::QueryLimit { asked: 0, max: 0 });
+        }
+        let mut answer = StoreRange::default();
+        let mut bytes = 0usize;
+        for tier_config in &self.config.tiers {
+            let Some(state) = self.tiers.get(&tier_config.name) else {
+                continue;
+            };
+            let part = state.tier.range(
+                from,
+                to,
+                max_records.saturating_sub(answer.records.len()),
+                max_bytes.saturating_sub(bytes),
+            )?;
+            for record in &part.records {
+                bytes = bytes.saturating_add(record.payload.len().saturating_add(64));
+            }
+            answer.truncated |= part.truncated;
+            answer
+                .records
+                .extend(part.records.into_iter().map(|record| RoutedRecord {
+                    tier: tier_config.name.clone(),
+                    record,
+                }));
+            if answer.records.len() >= max_records {
+                answer.truncated = true;
+                break;
+            }
+        }
+        Ok(answer)
+    }
+}
+
+/// One written record and where it landed.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WriteOutcome {
+    /// The tier the record went to.
+    pub tier: String,
+    /// What the append did.
+    pub outcome: AppendOutcome,
+}
+
+/// One record in a store-wide range answer, with its tier.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RoutedRecord {
+    /// The tier it was stored in.
+    pub tier: String,
+    /// The record itself.
+    pub record: crate::segment::ScannedRecord,
+}
+
+/// A store-wide range answer.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct StoreRange {
+    /// The records in the window, tier by tier (hot, warm, cold).
+    pub records: Vec<RoutedRecord>,
+    /// True when a bound stopped the answer.
+    pub truncated: bool,
+}
+
+impl StoreRange {
+    /// How many records the answer holds.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.records.len()
+    }
+
+    /// True when the window held nothing.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.records.is_empty()
+    }
+
+    /// The tiers the answer touched, in order.
+    #[must_use]
+    pub fn tiers(&self) -> Vec<&str> {
+        let mut seen: Vec<&str> = Vec::new();
+        for record in &self.records {
+            if !seen.contains(&record.tier.as_str()) {
+                seen.push(record.tier.as_str());
+            }
+        }
+        seen
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{StoreConfig, StoreDirs, StoreStats, COLD, DEFAULT_ACTIVE_MAX, EVENTS, HOT, WARM};
+    use crate::error::StoreError;
+    use crate::events::{EventKind, Outcome};
+    use crate::format::{TierKind, BLOCK_FRAME_TYPE, FRAME_FLAG_SECTIONED};
+    use crate::fsio::testdir::TempDir;
+    use crate::queue::Job;
+    use crate::store::Store;
+    use crate::tmpfs::{Mount, MountTable};
+
+    fn block(len: usize) -> Vec<u8> {
+        let mut frame = vec![0u8; len.max(16)];
+        let declared = u32::try_from(frame.len()).expect("fits");
+        frame[0..4].copy_from_slice(&declared.to_le_bytes());
+        frame[4] = BLOCK_FRAME_TYPE;
+        frame[5] = FRAME_FLAG_SECTIONED;
+        frame[8..12].copy_from_slice(&9u32.to_le_bytes());
+        frame
+    }
+
+    fn evt(extra: usize) -> Vec<u8> {
+        let mut frame = block(16 + extra);
+        frame[4] = crate::format::EVT_FRAME_TYPE;
+        frame
+    }
+
+    /// A store configuration whose every field is set by the test, never defaulted.
+    fn config(temp: &TempDir) -> StoreConfig {
+        let mut store = StoreConfig::plan_v4(temp.path(), 4242, 7).expect("plan v4");
+        store.tiers = vec![
+            store.tiers[0].clone(),
+            store.tiers[1].clone(),
+            store.tiers[2].clone(),
+        ];
+        store.writer_queue_bytes = 1 << 16;
+        store.dict_active_max = 16;
+        store.events_ring_bytes = 1 << 12;
+        store.max_file_bytes = 1 << 22;
+        store
+    }
+
+    /// A mount table that says `/tmp` (where the tests live) is tmpfs, plus the store's own
+    /// directories — so a test of the tmpfs *policy* never depends on the host's real mounts.
+    fn tmpfs_everywhere() -> MountTable {
+        MountTable::from_mounts(vec![Mount {
+            point: "/".to_string(),
+            fstype: "tmpfs".to_string(),
+            options: "rw".to_string(),
+        }])
+    }
+
+    fn disk_everywhere() -> MountTable {
+        MountTable::from_mounts(vec![Mount {
+            point: "/".to_string(),
+            fstype: "ext4".to_string(),
+            options: "rw".to_string(),
+        }])
+    }
+
+    #[test]
+    fn a_configuration_is_checked_key_by_key_and_a_duplicate_tier_is_refused() {
+        let temp = TempDir::new("config");
+        let store = config(&temp);
+        assert_eq!(store.check(), Ok(()));
+        assert_eq!(store.tiers.len(), 3);
+        assert_eq!(store.dict_active_max, 16);
+        assert_eq!(store.writer_queue_bytes, 1 << 16);
+        assert_eq!(store.epoch, 4242);
+        assert_eq!(store.dict_generation, 7);
+        assert_eq!(store.dirs.tmpfs, Some(temp.path().join("tiers")));
+        assert_eq!(store.dirs.cold, temp.path().join("cold"));
+        assert_eq!(store.dirs.events, temp.path().join("events"));
+        assert_eq!(store.tier(HOT).map(|tier| tier.segment_s), Some(1));
+        assert_eq!(store.tier(WARM).map(|tier| tier.keep_s), Some(300));
+        assert_eq!(store.tier(COLD).map(|tier| tier.cap_bytes), Some(1 << 30));
+        assert_eq!(store.tier("nope"), None);
+        let mut duplicate = store.clone();
+        duplicate.tiers.push(duplicate.tiers[0].clone());
+        assert_eq!(
+            duplicate.check(),
+            Err(StoreError::DuplicateTier {
+                name: HOT.to_string()
+            })
+        );
+        let mut no_tiers = store.clone();
+        no_tiers.tiers.clear();
+        assert_eq!(
+            no_tiers.check(),
+            Err(StoreError::Config {
+                key: "tiers",
+                reason: "a store needs at least one history tier"
+            })
+        );
+        let mut bad_events = store.clone();
+        bad_events.events = store.tiers[0].clone();
+        assert_eq!(
+            bad_events.check(),
+            Err(StoreError::TierKindMismatch {
+                tier: "the events tier",
+                payload: "history"
+            })
+        );
+        let mut events_name_collides = store.clone();
+        events_name_collides.tiers.push(
+            crate::tier::TierConfig::new(EVENTS, TierKind::History, 60, 60, 1, false)
+                .expect("config"),
+        );
+        assert_eq!(
+            events_name_collides.check(),
+            Err(StoreError::DuplicateTier {
+                name: EVENTS.to_string()
+            })
+        );
+        let mut no_queue = store.clone();
+        no_queue.writer_queue_bytes = 0;
+        assert_eq!(
+            no_queue.check(),
+            Err(StoreError::Config {
+                key: "writer_queue_bytes",
+                reason: "must be at least one byte"
+            })
+        );
+        let mut no_dict = store.clone();
+        no_dict.dict_active_max = 0;
+        assert_eq!(
+            no_dict.check(),
+            Err(StoreError::Config {
+                key: "dict_active_max",
+                reason: "must hold at least one incarnation"
+            })
+        );
+        let mut tiny_files = store;
+        tiny_files.max_file_bytes = 8;
+        assert_eq!(
+            tiny_files.check(),
+            Err(StoreError::Config {
+                key: "max_file_bytes",
+                reason: "cannot hold a segment header"
+            })
+        );
+    }
+
+    #[test]
+    fn the_plan_configuration_states_every_bound_the_plan_states() {
+        let temp = TempDir::new("plan");
+        let store = StoreConfig::plan_v4(temp.path(), 1, 1).expect("plan v4");
+        assert_eq!(store.tiers[0].segment_s, 1);
+        assert_eq!(store.tiers[0].keep_s, 60);
+        assert!(store.tiers[0].require_tmpfs);
+        assert_eq!(store.tiers[1].segment_s, 5);
+        assert_eq!(store.tiers[1].keep_s, 300);
+        assert!(store.tiers[1].require_tmpfs);
+        assert_eq!(store.tiers[2].segment_s, 60);
+        assert_eq!(store.tiers[2].keep_s, 14 * 24 * 3600);
+        assert_eq!(store.tiers[2].cap_bytes, 1 << 30);
+        assert!(!store.tiers[2].require_tmpfs);
+        assert_eq!(store.events.kind, TierKind::Events);
+        assert_eq!(store.events.cap_bytes, 64 << 20);
+        assert_eq!(store.writer_queue_bytes, 8 << 20);
+        assert_eq!(store.events_ring_bytes, 4 << 20);
+        assert_eq!(store.dict_active_max, DEFAULT_ACTIVE_MAX);
+        assert_eq!(store.dirs, StoreDirs::under(temp.path()));
+    }
+
+    #[test]
+    fn a_record_is_routed_to_the_finest_tier_whose_retention_keeps_it() {
+        let temp = TempDir::new("route");
+        let store = config(&temp);
+        let now = 1_000_000_000_000i64;
+        assert_eq!(
+            store.route(now, now).map(|tier| tier.name.as_str()),
+            Ok(HOT)
+        );
+        assert_eq!(
+            store
+                .route(now - 30_000_000_000, now)
+                .map(|tier| tier.name.as_str()),
+            Ok(HOT),
+            "a 30 s old record is still inside hot's 60 s window"
+        );
+        assert_eq!(
+            store
+                .route(now - 120_000_000_000, now)
+                .map(|tier| tier.name.as_str()),
+            Ok(WARM),
+            "past hot's window, warm's 300 s keeps it"
+        );
+        assert_eq!(
+            store
+                .route(now - 600_000_000_000, now)
+                .map(|tier| tier.name.as_str()),
+            Ok(COLD)
+        );
+        // A record older than every retention is refused, never silently dropped. `now` is
+        // far enough past the epoch that the record itself is still a positive time.
+        let later = 2_000_000_000_000_000_000i64;
+        assert_eq!(
+            store.route(later - 20 * 24 * 3600 * 1_000_000_000, later),
+            Err(StoreError::UnknownTier {
+                name: "a record 1728000 s old".to_string()
+            }),
+            "older than every retention: refused, never silently dropped"
+        );
+        assert_eq!(
+            store.route(-1, now),
+            Err(StoreError::NegativeTime { ns: -1 })
+        );
+        assert_eq!(
+            store.route(now, now - 1),
+            Err(StoreError::NegativeTime { ns: -1 }),
+            "a record from the future is a caller error"
+        );
+    }
+
+    #[test]
+    fn a_required_tmpfs_tier_is_refused_on_disk_and_a_determinate_one_on_unknown_filesystems() {
+        let temp = TempDir::new("tmpfs");
+        let store = config(&temp);
+        assert_eq!(
+            Store::open_with_mounts(store.clone(), Some(disk_everywhere())).map(|_| ()),
+            Err(StoreError::NotTmpfs {
+                tier: temp.path().join("tiers").display().to_string(),
+                fstype: "ext4".to_string()
+            })
+        );
+        // The refusal happened before any directory was created.
+        assert!(!temp.path().join("tiers").exists());
+        assert!(!temp.path().join("cold").exists());
+        // An empty table cannot cover the path: "unknown" never passes a required check.
+        assert_eq!(
+            Store::open_with_mounts(store.clone(), Some(MountTable::default())).map(|_| ()),
+            Err(StoreError::MountNotFound {
+                path: temp.path().join("tiers").display().to_string()
+            })
+        );
+        let ok = Store::open_with_mounts(store, Some(tmpfs_everywhere())).expect("opens");
+        assert_eq!(ok.tier(HOT).map(|tier| tier.bytes()), Some(0));
+        assert!(temp.path().join("tiers").is_dir());
+        assert!(temp.path().join("cold").is_dir());
+        assert!(temp.path().join("events").is_dir());
+    }
+
+    #[test]
+    fn a_store_routes_writes_enforces_bounds_and_retires_by_reachability() {
+        let temp = TempDir::new("write");
+        let mut store = config(&temp);
+        // Keep every tier's retention small so one clock moves records between them.
+        store.tiers[0].cap_bytes = 0;
+        store.tiers[1].cap_bytes = 0;
+        store.tiers[2].cap_bytes = 0;
+        let mut store = Store::open_with_mounts(store, Some(tmpfs_everywhere())).expect("open");
+        let inc = store.adopt(0, "/system.slice/probe.service").expect("mint");
+        assert_eq!(inc, 1, "the first minted id is 1, never 0");
+        // A clock far enough past the epoch that even a 20-day-old record is still positive.
+        let now = 2_000_000_000_000_000_000i64;
+        let fresh = Job::new(block(24), now, vec![inc]);
+        store.submit(fresh).expect("submit");
+        let done = store.write_pending(now, 8).expect("write");
+        assert_eq!(done.len(), 1);
+        assert_eq!(done[0].tier, HOT);
+        assert_eq!(done[0].outcome.records, 1);
+        let stats = store.stats();
+        assert_eq!(stats.written, 1);
+        assert_eq!(stats.records, 1);
+        assert!(stats.bytes > 0);
+        assert!(stats.lossless());
+        assert_eq!(stats.dictionary_entries, 1);
+        // An older record goes to warm, an older one still to cold.
+        let warm_job = Job::new(block(24), now - 120_000_000_000, vec![inc]);
+        store.submit(warm_job).expect("submit");
+        let written = store.write_pending(now, 8).expect("write");
+        assert_eq!(written[0].tier, WARM);
+        let cold_job = Job::new(block(24), now - 600_000_000_000, vec![inc]);
+        store.submit(cold_job).expect("submit");
+        let written = store.write_pending(now, 8).expect("write");
+        assert_eq!(written[0].tier, COLD);
+        assert_eq!(store.stats().written, 3);
+        assert_eq!(
+            store.write_pending(now, 0),
+            Err(StoreError::QueryLimit { asked: 0, max: 0 })
+        );
+        // A record older than every tier is refused and counted as a write failure.
+        let ancient = Job::new(block(24), now - 20 * 24 * 3600 * 1_000_000_000, vec![inc]);
+        store.submit(ancient).expect("submit");
+        let refused = store.write_pending(now, 1);
+        assert!(matches!(refused, Err(StoreError::UnknownTier { .. })));
+        assert_eq!(store.stats().write_failures, 1);
+        assert!(!store.stats().lossless());
+        // The sealed store answers a bounded range across its tiers.
+        let sealed = store.seal_all().expect("seal");
+        assert_eq!(sealed.len(), 3, "one segment per tier that held a record");
+        let range = store
+            .range(now - 700_000_000_000, now, 16, 1 << 20)
+            .expect("range");
+        assert_eq!(range.len(), 3);
+        assert_eq!(range.tiers(), vec![HOT, WARM, COLD]);
+        assert!(!range.is_empty());
+        assert!(!range.truncated);
+        let one = store
+            .range(now - 700_000_000_000, now, 1, 1 << 20)
+            .expect("range");
+        assert_eq!(one.len(), 1);
+        assert!(one.truncated);
+        assert_eq!(
+            store.range(5, 1, 4, 1 << 20),
+            Err(StoreError::RangeInverted { from: 5, to: 1 })
+        );
+        // Every tier still references the id, so nothing retires yet.
+        let retired = store.retire();
+        assert!(retired.is_empty());
+        assert!(store.retire().is_empty());
+        assert_eq!(store.dictionary().len(), 1);
+        // Evicting every tier retires the id that only those segments referenced.
+        let evicted = store.evict(i64::MAX / 2).expect("evict");
+        assert_eq!(evicted.len(), 3);
+        assert!(store.reachable().is_empty());
+        let retired = store.retire();
+        assert_eq!(retired.ids, vec![inc]);
+        assert_eq!(store.stats().retired, 1);
+        assert!(store.dictionary().is_empty());
+        assert!(store.notes().is_empty(), "no foreign file was ever created");
+    }
+
+    #[test]
+    fn dropping_a_job_is_counted_by_the_store_and_never_silent() {
+        let temp = TempDir::new("drops");
+        let mut store = config(&temp);
+        // A queue that holds exactly one job of this size.
+        let one = Job::new(block(16), 0, Vec::new()).bytes();
+        store.writer_queue_bytes = one;
+        let store = Store::open_with_mounts(store, Some(tmpfs_everywhere())).expect("open");
+        let mut store = store;
+        store
+            .submit(Job::new(block(16), 0, Vec::new()))
+            .expect("first");
+        let report = store
+            .submit(Job::new(block(16), 0, Vec::new()))
+            .expect("second");
+        assert_eq!(report.dropped_jobs, 1);
+        assert_eq!(report.dropped_records, 1);
+        let stats = store.stats();
+        assert_eq!(stats.dropped, 1);
+        assert_eq!(stats.dropped_records, 1, "the store reports the same loss");
+        assert!(!stats.lossless());
+        assert!(
+            StoreStats::default().lossless(),
+            "an untouched store has lost nothing"
+        );
+    }
+
+    #[test]
+    fn an_event_is_recorded_in_its_own_corpus_and_its_ring_is_bounded() {
+        let temp = TempDir::new("events");
+        let mut store = config(&temp);
+        store.events_ring_bytes = 4 * (crate::events::EVENT_OVERHEAD + 4);
+        let mut store = Store::open_with_mounts(store, Some(tmpfs_everywhere())).expect("open");
+        let event =
+            crate::events::Event::new(EventKind::Point, "run", Some("run-1"), "u1", 10, None)
+                .expect("point");
+        let outcome = store.record_event(&event, &evt(8), 10).expect("record");
+        assert_eq!(outcome.segment, "events-0-0.seg.open");
+        assert_eq!(store.stats().records, 1);
+        // A BLOCK frame is refused by the events corpus, and nothing is written.
+        let mut wrong = evt(0);
+        wrong[4] = BLOCK_FRAME_TYPE;
+        assert_eq!(
+            store.record_event(&event, &wrong, 10),
+            Err(StoreError::PayloadFrameType {
+                expected: crate::format::EVT_FRAME_TYPE,
+                found: BLOCK_FRAME_TYPE
+            })
+        );
+        assert_eq!(store.stats().records, 1);
+        for index in 1..8 {
+            let more = crate::events::Event::new(
+                EventKind::Point,
+                "lane",
+                Some(&format!("lane-{index}")),
+                "u1",
+                10,
+                None,
+            )
+            .expect("point");
+            store.record_event(&more, &evt(8), 10).expect("record");
+        }
+        // The ring displaced the oldest events: the count is available from the events store.
+        assert!(store.events().stats().displaced >= 1);
+        assert_eq!(store.events().stats().stored, 8);
+        // A span's end is inferred when its issuer disappears.
+        let mut spans = crate::events::SpanTable::new();
+        let begin = crate::events::Event::new(EventKind::Begin, "run", Some("run"), "u1", 5, None)
+            .expect("begin");
+        spans.begin(&begin).expect("open");
+        let inferred = spans.abandon_issuer("u1", 50);
+        assert_eq!(inferred.len(), 1);
+        assert_eq!(inferred[0].outcome, Some(Outcome::Abandoned));
+        assert!(inferred[0].inferred);
+    }
+
+    #[test]
+    fn a_stored_record_survives_a_reopen_and_the_store_adopts_its_open_segment() {
+        let temp = TempDir::new("reopen");
+        let mut store = config(&temp);
+        store.tiers[0].keep_s = 3600;
+        let store_config = store.clone();
+        let now = 1_000_000_000i64;
+        {
+            let mut store = Store::open_with_mounts(store_config.clone(), Some(tmpfs_everywhere()))
+                .expect("open");
+            let inc = store.adopt(0, "/probe").expect("mint");
+            store
+                .submit(Job::new(block(24), now, vec![inc]))
+                .expect("submit");
+            store.write_pending(now, 1).expect("write");
+            assert!(store.tier(HOT).expect("hot").has_open());
+        }
+        // A second handle on the same directories adopts the open segment and its records.
+        let reopened =
+            Store::open_with_mounts(store_config, Some(tmpfs_everywhere())).expect("reopen");
+        assert_eq!(reopened.stats().records, 1, "the record is still there");
+        let tier = reopened.tier(HOT).expect("hot");
+        assert!(tier.has_open());
+        assert_eq!(tier.scan().segments.len(), 1);
+        assert_eq!(tier.scan().segments[0].records, 1);
+        assert!(reopened.stats().torn_repaired == 0, "nothing was torn");
+        assert_eq!(reopened.notes(), Vec::new());
+    }
+}
