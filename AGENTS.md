@@ -684,6 +684,16 @@ and cadence.
 - **Below 200k**: the wording prefers finishing the current unit of work.
 - **From 200k on**: the wording says stop at the next semantic boundary.
 
+"Stop" is the spawned session's instruction: it ends the session there (see above). The
+same note read by an interactive controller means persist state at that boundary and
+CONTINUE; it never means stand still or wait for a compaction.
+
+Measure the fill from the session's OWN transcript. Inside an Agent-tool subagent the
+hook input's `transcript_path` is the PARENT session's file (its own is
+`<parent dir>/<session_id>/subagents/agent-<agent_id>.jsonl`); reading the parent's size
+once produced a false "past 200k" note that made a subagent stop early (live-session
+observations 1-2 in `EXPERIMENT-compaction-steering-2026-11.md`).
+
 A **semantic boundary** is a point where a unit of work is finished, its outcome is
 durably recorded and nothing is half-edited. It is **not** necessarily a commit or a green
 gate — either of those is one way to reach such a point, not the definition.
@@ -695,16 +705,27 @@ sessions actually reach has not been measured yet (a later study).
 ### Readback after a compaction or resume
 
 A readback is built from the session transcript before a compaction, or on resume after
-one, and it contains:
+one. Its content depends on the session kind (operator refinement of 2026-11-15):
 
-1. **the session's original goal prompt** — what the work is for, in the words it began with;
-2. **the most recent prose**, about 10k tokens (the controller chooses the size); prose
-   between (1) and (2) may be lost on purpose;
-3. **the delta since the previous readback's marker**, never duplicating an earlier readback.
+- **Controller session** (about 30k tokens in total): **the most recent prose** (about 10k
+  tokens) **plus the delta since the previous readback's marker**. It does NOT carry the
+  original goal prompt: a controller's anchor is its plan file, and its goal shifts over
+  time, so the first prompt would mislead.
+- **Spawned or targeted session**: **the original goal prompt** (what the work is for, in
+  the words it began with) **plus the most recent prose** (about 10k tokens) **plus the
+  delta since the previous marker**.
 
-Budget: the controller's own readbacks run about 17-25k tokens. `plan.yaml`, the operator
-decision log (verbatim turns and interview answers) and the `HANDOFF.md` resume section are
-read FIRST and are not part of that budget.
+The controller chooses the sizes. Prose between the original prompt and the recent prose
+may be lost on purpose, and a readback never duplicates an earlier one (that is what the
+marker is for). `plan.yaml`, the operator decision log (verbatim turns and interview
+answers) and the `HANDOFF.md` resume section are read FIRST and are not part of the
+readback budget.
+
+Mechanics on a harness with the hooks: the `PreCompact` hook builds the readback file
+(its stdout also reaches the summarizer: E2, X2), and the `SessionStart[compact]` output,
+which lands after the summary and the kept messages (X2), points to that file; the session
+ingests it as its FIRST action. For a spawned session the controller compacts externally,
+the resume prompt carries the same pointer.
 
 Build it with:
 
@@ -714,8 +735,7 @@ nyxloom-harness extract <session.jsonl> --preset readback --budget-tokens N --si
 
 `N` is the controller's choice (the window and the amount of agent communication decide).
 The preset includes agent prompts and results and never drops operator turns or interview
-answers — the original goal prompt is an operator turn, so it is protected from the budget.
-The `readback` preset exists for Claude Code transcripts only; a controller on
+answers. The `readback` preset exists for Claude Code transcripts only; a controller on
 another harness uses `extract` with `--profile all --agent-comms full` and its own budget
 until [NL-65](nyxloom/nyxloom-trove/backlog/NL-65-readback-weights-older-agent-comms.md)
 extends it. This supersedes the older character-budget builder
@@ -732,10 +752,10 @@ campaigns) and re-arm the watches.
 
 | Harness (version measured) | Steered compaction and resume | UNTESTED |
 |---|---|---|
-| Claude Code (2.1.319 in E1-E6, 2.1.325 in X1/X2) | the interactive steering channel is hooks: `PreCompact` stdout reaches the summarizer, so a handover file becomes part of the compaction instructions, and `SessionStart[compact]` output lands after the summary and the kept messages, so the recovery read order is republished into a compacted context; headless: `claude -p --resume <id> "/compact <instr>"` per message, and one long-lived `-p --input-format stream-json` process where `/compact` is a stream message (E1, E2, X1, X2) | auto-compaction inside the stream-json process; whether an external process can compact a RUNNING interactive session; `claude --bg` (E6 refuses to start without an interactive trust acceptance) |
+| Claude Code (2.1.319 in E1-E6, 2.1.325 in X1/X2) | the interactive steering channel is hooks: `PreCompact` stdout reaches the summarizer, so a handover file becomes part of the compaction instructions, and `SessionStart[compact]` output lands after the summary and the kept messages, so the recovery read order is republished into a compacted context (both measured headless in X2, one observation each; the experiment doc still lists the live interactive observation as pending); headless: `claude -p --resume <id> "/compact <instr>"` per message, and one long-lived `-p --input-format stream-json` process where `/compact` is a stream message (E1, E2, X1, X2) | auto-compaction inside the stream-json process; whether a non-zero `PreCompact` exit blocks compaction; whether an external process can compact a RUNNING interactive session; `claude --bg` (E6 refuses to start without an interactive trust acceptance) |
 | opencode 2.2.6 | `POST /api/session/:id/compact` compacts with a real model and streams the SSE compaction events; the endpoint has no instruction field, so steering is the plugin `compaction` hook plus a handover file (X4, `POC-opencode.md`) | the `compaction` config block with a real model; `opencode run` as a compaction trigger |
 | pi 1.5.0 | rpc `compact` with `customInstructions` obeyed by a real model; `session_before_compact` fires for auto (`threshold`) and manual compactions and can read a handover file, and in supply mode returns that handover as the summary with zero model calls (X5) | the json-mode (`-p`) compaction event |
-| Codex 0.167.0 | `exec resume <thread_id>` works (3 resumes in X3); the app-server trigger `thread/compact/start` works and reports the compaction as a `contextCompaction` item pair, and `compact_prompt` steers the summary, both at launch (`-c`) and per thread on `thread/resume` (X6); a spawned Codex session may equally continue as a successor seeded with its brief | the AUTOMATIC threshold compaction (X3: no event under four `model_auto_compact_token_limit` settings); that a per-thread `compact_prompt` persists into later automatic compactions (X6); `exec resume <id> "/compact"` is measured NOT to compact (X6), so it is not a trigger |
+| Codex 0.167.0 | `exec resume <thread_id>` works (3 resumes in X3). Triggers: the app-server `thread/compact/start` works 4 of 4 (returns `{}` before the work ends; wait for the `contextCompaction` item pair; the summary is not in any event, only in the rollout file) and the TUI `/compact` works (tmux); `exec resume <id> "/compact"` does NOT compact (the text is sent as a plain prompt), so it is not a trigger (X6). Steering: `thread/compact/start` has no instruction field and the default summary is not steered by instructions, but the config key `compact_prompt` steers it, at launch (`-c`) and per thread on `thread/resume` (X6). Compaction keeps the user messages verbatim and drops the assistant messages (X6). A spawned Codex session may equally continue as a successor seeded with its brief | the AUTOMATIC threshold compaction (X3: no event under four `model_auto_compact_token_limit` settings; `..._scope=total` untried); that a per-thread `compact_prompt` persists into later automatic compactions (X6); `thread/goal/set` and a goal as a brief carrier across compaction (X6); retention of very long user messages; TUI and app-server combined on one thread |
 
 An interactive controller is steered by hooks where its harness has them, and is
 otherwise left to the harness's own compaction, with the recovery files as what it can rely
