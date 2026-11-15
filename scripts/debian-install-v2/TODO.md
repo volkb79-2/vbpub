@@ -136,7 +136,19 @@ documented container-count limit with a measured justification. Until then, do
 not treat the documented floors as sufficient on a host that carries many
 containers.
 
-## DONE in code, OPEN live (div2-data-area-v2, 2026-11-05): explicit `partitioning` plan
+## OPEN (DIV2-BL-12, 2026-11-15): no RAM sanity bound on the control-plane floors
+
+The per-service floors and the derived `system.slice` floor (373 MiB) are fixed
+values; the installer does not compare them with installed RAM, so on a host
+far smaller than the 8 GiB test hosts it would still configure the same floors.
+`MemoryMin` only protects pages the cgroup actually uses, so the practical
+exposure is bounded by real `system.slice` usage, but a floor that is a large
+fraction of RAM is no longer a "hot set" floor. Not measured, not tested.
+
+**Close when.** The installer either refuses or caps the derived `system.slice`
+floor at a documented fraction of `MemTotal` (with a clear message and a test
+that mutates the RAM figure), or the supported minimum RAM is documented with a
+measured reason that makes the bound unnecessary.
 
 ## DONE in code, OPEN live (div2-data-area-v2, 2026-11-05): explicit `partitioning` plan
 

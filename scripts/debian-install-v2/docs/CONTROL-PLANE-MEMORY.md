@@ -75,6 +75,17 @@ already have set on `system.slice` — for example mdt-cockpit host-setup's
 `system.slice.d/50-mdt-dedicated-dev.conf` `MemoryLow=1G` on r1002, which stays
 as it is.
 
+**Configured versus effective.** Verification compares the *configured* value
+that `systemctl show -p MemoryMin` reports; it does not read the cgroup's
+effective protection. The kernel silently clamps effective protection (to the
+ancestors' floors and to what the cgroup actually uses), so a matching readback
+does not by itself prove that pages are protected. The effect was measured on
+v1001 only (see above). The floors are fixed values with no check against
+installed RAM (DIV2-BL-12); they protect at most the pages the cgroups really
+use. The derived slice value counts `mdt-psi-guard.service` (5 MiB) even on a
+host where that optional unit is absent (v1001), a deliberate small
+over-reservation so the value does not depend on host state.
+
 ## Known limit: floors above about 460 MiB were not explained
 
 In the same measurement, the steps with the largest `system.slice` floors
@@ -129,6 +140,8 @@ What remains open:
   not been measured.
 - **Large-floor anomaly** (DIV2-BL-10): explained above, enforced as a ceiling
   until it is understood.
+- **No RAM sanity bound** (DIV2-BL-12): the floors are not compared with
+  installed RAM; measured only on 8 GiB hosts.
 - **r1002 confidence**: the 1.25 × `H` figure on that host flavor is inferred
   between measured 1.0 × and 1.5 × `H`; only a re-measurement on that flavor
   can raise the confidence.

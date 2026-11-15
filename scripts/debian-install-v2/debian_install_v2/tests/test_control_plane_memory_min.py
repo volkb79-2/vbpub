@@ -444,6 +444,60 @@ def test_profile_verification_rejects_a_unit_without_loaded_state(tmp_path, load
     assert queries == [("LoadState", "ssh.service")]
 
 
+@pytest.mark.parametrize("optional_unit", ["cgprofiled.service", "mdt-psi-guard.service"])
+@pytest.mark.parametrize("load_output", ["", "LoadState=activating\n", "LoadState=error\n"])
+def test_optional_units_are_skipped_only_for_not_found_or_masked(
+    tmp_path, optional_unit, load_output
+):
+    # Narrow skip: an optional unit with a missing or non-loaded state that is
+    # not not-found/masked must still fail, not be silently skipped.
+    installer = make_installer(tmp_path, dry_run=False)
+
+    def systemctl_show(argv, description=""):
+        prop, unit = argv[3:5]
+        if prop == "LoadState":
+            return load_output if unit == optional_unit else "LoadState=loaded\n"
+        return f"MemoryMin={CONTROL_PLANE_MEMORY_MIN.get(unit, ('', 0))[1]}\n"
+
+    installer._run = systemctl_show
+    with pytest.raises(
+        InstallerError, match=rf"{re.escape(optional_unit)} LoadState readback"
+    ):
+        installer._verify_control_plane_memory_min()
+
+
+def test_system_slice_floor_exactly_at_the_ceiling_is_accepted(tmp_path, monkeypatch):
+    # Boundary of the documented "above 460 MiB refuses" rule: a derived value
+    # of exactly the ceiling is allowed, one MiB more is refused.
+    installer = make_installer(tmp_path)
+    ceiling = CONTROL_PLANE_SYSTEM_SLICE_MEMORY_MIN_CEILING_MIB * 1024 * 1024
+    others = sum(
+        value[1] for unit, value in CONTROL_PLANE_MEMORY_MIN.items()
+        if unit in CONTROL_PLANE_SYSTEM_SLICE_CHILD_UNITS and unit != "docker.service"
+    )
+    headroom = CONTROL_PLANE_SYSTEM_SLICE_HEADROOM_MIB * 1024 * 1024
+
+    def with_docker(nbytes):
+        table = dict(CONTROL_PLANE_MEMORY_MIN)
+        table["docker.service"] = (format_memory_mib_token(nbytes), nbytes)
+        return table
+
+    monkeypatch.setattr(
+        "debian_install_v2.installer.CONTROL_PLANE_MEMORY_MIN",
+        with_docker(ceiling - others - headroom),
+    )
+    entries = installer._control_plane_memory_min_entries()
+    assert installer._control_plane_system_slice_memory_min_bytes(entries) == ceiling
+
+    monkeypatch.setattr(
+        "debian_install_v2.installer.CONTROL_PLANE_MEMORY_MIN",
+        with_docker(ceiling - others - headroom + 1024 * 1024),
+    )
+    entries = installer._control_plane_memory_min_entries()
+    with pytest.raises(InstallerError, match=r"above the measured ceiling"):
+        installer._control_plane_system_slice_memory_min_bytes(entries)
+
+
 @pytest.mark.parametrize("missing_state", ["not-found", "masked"])
 def test_profile_verification_rejects_a_missing_mandatory_unit(tmp_path, missing_state):
     installer = make_installer(tmp_path, dry_run=False)
