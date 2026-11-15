@@ -114,9 +114,12 @@ def _control_plane_reserve(facts: Mapping[str, Any]) -> ControlPlaneReserve:
         "profile_reserve_bytes", DEFAULT_CONTROL_PLANE_PROFILE_RESERVE_BYTES,
     )
     units = list(CONTROL_PLANE_SERVICE_UNITS)
-    if not isinstance(service_facts, Mapping) or not any(unit in service_facts for unit in units):
-        # No per-service fact at all: collection did not run or the table did not
-        # arrive. This is the ONE case that still uses the fixed profile constant.
+    if not _has_per_service_fact(service_facts, units):
+        # No per-service fact at all: collection did not run, the table did not
+        # arrive, or every query failed (a table of rows that carry neither a
+        # positive MemoryMin nor a load state). This is the ONE case that still
+        # uses the fixed profile constant; six defaults would silently lower the
+        # reserve on exactly the host whose systemd could not be asked.
         return ControlPlaneReserve(
             bytes=profile_reserve,
             source="profile-constant",
@@ -145,7 +148,9 @@ def _control_plane_reserve(facts: Mapping[str, Any]) -> ControlPlaneReserve:
             # documented floor; never to zero, which would silently lower the
             # reserve.
             source, contribution = "default", CONTROL_PLANE_SERVICE_MEMORY_MIN_DEFAULTS[unit]
-        if not reported:
+        if source != "reported":
+            # Includes a reported value that was refused as above its ceiling: the
+            # term is a default, so reserve_source must not say "all reported".
             missing.append(unit)
         total += contribution
         services.append({"unit": unit, "source": source, "bytes": contribution})
@@ -153,6 +158,25 @@ def _control_plane_reserve(facts: Mapping[str, Any]) -> ControlPlaneReserve:
     refusal = _reserve_refusal(service_facts, units, total)
     source_name = "service-memory-min" if not missing else "per-service-default"
     return ControlPlaneReserve(total, source_name, tuple(missing), tuple(services), refusal)
+
+
+def _has_per_service_fact(service_facts: object, units: list[str]) -> bool:
+    """True when at least one listed unit row carries a usable fact.
+
+    A usable fact is a positive integer ``MemoryMin`` or a string ``load_state``.
+    Rows holding only nulls with reasons say the query failed, not what the unit
+    protects; a table made only of those is the failed-collection case.
+    """
+    if not isinstance(service_facts, Mapping):
+        return False
+    for unit in units:
+        service = service_facts.get(unit)
+        if not isinstance(service, Mapping):
+            continue
+        value = service.get("memory_min_bytes")
+        if (type(value) is int and value > 0) or isinstance(service.get("load_state"), str):
+            return True
+    return False
 
 
 def _reserve_refusal(

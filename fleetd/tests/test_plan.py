@@ -1591,9 +1591,12 @@ def test_reserve_refuses_an_implausible_reported_value_instead_of_summing_it():
     # The refused plan still reports the reserve and names the reason, so the
     # evidence says what was refused rather than silently clamping.
     assert refused["reserve_reason"] == refused["reason"]
-    # The term is named as a default (the reported value is not trusted), and the
-    # total therefore says 345 MiB, not the 975 MiB the bad report would imply.
-    assert refused["reserve_source"] == "service-memory-min"
+    # The term is named as a default (the reported value is not trusted), the
+    # source no longer claims every term was reported, and the total therefore
+    # says 345 MiB, not the 975 MiB the bad report would imply.
+    assert refused["reserve_source"] == "per-service-default"
+    assert refused["reserve_missing_services"] == [unit]
+    assert {row["unit"]: row["source"] for row in refused["reserve_services"]}[unit] == "default"
     assert refused["reserve_bytes"] == sum(FLOOR_MIB) * 1024**2
 
 
@@ -1650,13 +1653,56 @@ def test_a_partial_per_service_table_still_resolves_per_service_terms():
         )
 
 
-def test_reserve_falls_back_per_service_when_the_table_has_rows_without_values():
+def test_reserve_falls_back_per_service_when_the_table_has_rows_with_a_load_state_only():
+    """A queried load state is a fact: the host answered, so defaults are per service."""
     facts = _facts(_hosts(), "host-small")
     control = facts["control_plane"]
-    control["service_memory_min"] = {unit: "x" for unit in CONTROL_PLANE_SERVICE_UNITS}
+    control["service_memory_min"] = {
+        unit: {"memory_min_bytes": None, "load_state": "loaded"}
+        for unit in CONTROL_PLANE_SERVICE_UNITS
+    }
     control["profile_reserve_bytes"] = 800 * 1024**2
     reserve = _control_plane_reserve(facts)
     assert reserve.source == "per-service-default"
     assert reserve.bytes == sum(FLOOR_MIB) * 1024**2
     assert reserve.missing == CONTROL_PLANE_SERVICE_UNITS
     assert [row["source"] for row in reserve.services] == ["default"] * 6
+
+
+@pytest.mark.parametrize(
+    "row",
+    [
+        "x",
+        {"memory_min_bytes": None},
+        {"memory_min_bytes": None, "load_state": None},
+        {"memory_min_bytes": 0, "load_state": None},
+        {"memory_min_bytes": -1, "load_state": 7},
+        {"memory_min_bytes": True},
+    ],
+)
+def test_reserve_keeps_the_profile_constant_when_every_row_is_a_failed_query(row):
+    """The dangerous direction: systemd could not be asked, so six defaults
+    (345 MiB) must not silently replace the 768 MiB constant."""
+    facts = _facts(_hosts(), "host-small")
+    control = facts["control_plane"]
+    control["service_memory_min"] = {unit: row for unit in CONTROL_PLANE_SERVICE_UNITS}
+    control["profile_reserve_bytes"] = 800 * 1024**2
+    reserve = _control_plane_reserve(facts)
+    assert (reserve.bytes, reserve.source, reserve.services) == (
+        800 * 1024**2, "profile-constant", (),
+    )
+    assert reserve.bytes > sum(FLOOR_MIB) * 1024**2
+
+
+def test_one_answering_service_makes_the_other_failed_rows_per_service_defaults():
+    facts = _facts(_hosts(), "host-small")
+    control = facts["control_plane"]
+    control["service_memory_min"] = {
+        unit: {"memory_min_bytes": None} for unit in CONTROL_PLANE_SERVICE_UNITS
+    }
+    control["service_memory_min"]["docker.service"] = {
+        "memory_min_bytes": None, "load_state": "loaded",
+    }
+    reserve = _control_plane_reserve(facts)
+    assert reserve.source == "per-service-default"
+    assert reserve.bytes == sum(FLOOR_MIB) * 1024**2

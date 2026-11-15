@@ -95,8 +95,8 @@ accepted capacity limit is tracked under
 [FD-006](../KNOWN_ISSUES_TODO_BACKLOG.md#fd-006-lift-the-manual-one-slot-per-host-and-j-cap).
 The fallback is a per-host profile constant from
 `control_plane.profile_reserve_bytes`, or 768 MiB when not configured. Host
-plans record `reserve_bytes`, `reserve_source` (`service-memory-min` or
-`profile-constant`), and `reserve_missing_services`. Reserve selection does
+plans record `reserve_bytes`, `reserve_source` (`service-memory-min`,
+`per-service-default` or `profile-constant`), and `reserve_missing_services`. Reserve selection does
 not depend on RAM size, available RAM, or measured RSS. Physical lane RAM is
 still required for placement. Calibration of the profile constant from
 measured p95 under load remains open as

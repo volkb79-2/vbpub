@@ -119,9 +119,13 @@ service's documented floor rather than by zero.
 `per-service-default` otherwise (with `reserve_missing_services` naming the
 units that were not reported). The fixed profile constant
 (`profile_reserve_bytes`, 768 MiB when the config has no override) is used
-**only** when no per-service fact exists at all — the table is absent or holds
-no listed unit, which is the failed-collection case — and `reserve_source` then
-says `profile-constant`. A per-host plan carries `reserve_services`: one
+**only** when no per-service fact exists at all — the table is absent, holds
+no listed unit, or every row is a failed query (no positive `memory_min_bytes`
+and no `load_state` in any row), which is the failed-collection case — and
+`reserve_source` then says `profile-constant`. One answering service (a positive
+value or a load state) is enough for per-service terms, so the other rows
+contribute their defaults. A reported value refused above its ceiling counts as
+`default` and is listed in `reserve_missing_services`. A per-host plan carries `reserve_services`: one
 `{unit, source, bytes}` row per listed service, in the fixed unit order, so the
 plan evidence shows exactly which term was used for which service. It is
 omitted in the `profile-constant` case, where no per-service term exists.

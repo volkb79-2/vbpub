@@ -185,7 +185,7 @@ unit is absent (`LoadState` `not-found` or `masked`). `reserve_source` is
 otherwise, with `reserve_missing_services` naming the units that were not
 reported. The per-profile fixed constant
 (`reserve_source = "profile-constant"`) is used only when no per-service fact
-exists at all. The collector does not read the parent slice's
+exists at all (no table, or a table whose every row is a failed query). The collector does not read the parent slice's
 `memory.min`; older host facts may carry `control_plane.memory_min_bytes`, which
 the contract accepts for compatibility and the planner ignores. KSM
 swappiness-argument support is unknown because the collector makes no write

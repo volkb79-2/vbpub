@@ -68,9 +68,10 @@ verify_sha256() {
 verify_sha256 "$cli_extended_wheel" "$cli_extended_sha256"
 verify_sha256 "$fleetd_wheel" "$fleetd_sha256"
 
+[[ -n $root_dir ]] || { echo '--root must not be empty (an unset variable would otherwise mean the real root)' >&2; exit 2; }
+[[ $root_dir == /* ]] || { echo '--root must be an absolute path' >&2; exit 2; }
 root_dir=${root_dir%/}
 [[ -n $root_dir ]] || root_dir=/
-[[ $root_dir == /* ]] || { echo '--root must be an absolute path' >&2; exit 2; }
 rooted() {
   if [[ $root_dir == / ]]; then printf '/%s' "$1"; else printf '%s/%s' "$root_dir" "$1"; fi
 }
