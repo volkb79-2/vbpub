@@ -1,7 +1,13 @@
 from __future__ import annotations
 
+import hashlib
+import json
+import os
 import re
+import shutil
 import stat
+import subprocess
+import tempfile
 import tomllib
 import unittest
 from pathlib import Path
@@ -59,6 +65,15 @@ class ImageContractTests(unittest.TestCase):
         self.assertIn('refusing an ungoverned image build', build)
         self.assertIn('[[ -f "$repo_root/hostobs/Cargo.lock" ]] || {', build)
         self.assertIn("cmru tester-gate \\\n  --cwd run-gate-project", build)
+        # The bounds travel in CMRU_TESTER_* variables, never as shell-expanded option values:
+        # cmru's estate argv check parses this invocation literally and a typed option
+        # (--cpus) cannot take an unexpanded ${...} word.
+        self.assertIn('values.append(f"{key}={value}")', build)
+        self.assertIn('export "$tester_gate_assignment"', build)
+        invocation = build.split("cmru tester-gate \\\n", 1)[1].split("/bin/true", 1)[0]
+        self.assertNotIn("$", invocation.replace('"$cgroup_parent"', ""))
+        for option in ("--image", "--memory", "--memory-swap", "--cpus", "--pids-limit", "--cgroup-probe-image"):
+            self.assertNotRegex(invocation, rf"(?m)^\s*{option}\b")
         self.assertIn('"$repo_root/cmru.orchestration.toml"', build)
         self.assertIn('document["orchestration"]["defaults"]["env"]', build)
         self.assertIn('--cgroup-parent "$cgroup_parent"', build)
@@ -69,6 +84,70 @@ class ImageContractTests(unittest.TestCase):
         self.assertNotIn('--resource cpu-quota=', build)
         self.assertIn('--build-arg "RUST_IMAGE=$expected_base"', build)
         self.assertNotIn('    --build-arg)\n', build)
+
+    def test_build_image_hands_exactly_the_six_tester_bounds_to_tester_gate_by_environment(self) -> None:
+        # Behavioural pin with stub `cmru`/`docker` on PATH: the bounds must arrive as the
+        # exact CMRU_TESTER_* variables tester-gate reads (a renamed or dropped key passes
+        # the text assertions above and fails only on a real host), and the argv stays literal.
+        bounds = {
+            "CMRU_TESTER_UNIFIED_IMAGE", "CMRU_TESTER_MEMORY", "CMRU_TESTER_MEMORY_SWAP",
+            "CMRU_TESTER_CPUS", "CMRU_TESTER_PIDS_LIMIT", "CMRU_TESTER_CGROUP_PROBE_IMAGE",
+        }
+        defaults = tomllib.loads(
+            (REPO_ROOT / "cmru.orchestration.toml").read_text(encoding="utf-8")
+        )["orchestration"]["defaults"]["env"]
+        dockerfile = (PROJECT_ROOT / "Dockerfile").read_text(encoding="utf-8")
+        base = re.search(r"(?m)^ARG RUST_IMAGE=(.+)$", dockerfile).group(1)
+        lock = (HOSTOBS_ROOT / "Cargo.lock").read_bytes()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "tester-unified-rust").mkdir()
+            (root / "hostobs").mkdir()
+            (root / "bin").mkdir()
+            shutil.copy(PROJECT_ROOT / "build-image.sh", root / "tester-unified-rust" / "build-image.sh")
+            shutil.copy(PROJECT_ROOT / "Dockerfile", root / "tester-unified-rust" / "Dockerfile")
+            shutil.copy(REPO_ROOT / "cmru.orchestration.toml", root / "cmru.orchestration.toml")
+            (root / "hostobs" / "Cargo.lock").write_bytes(lock)
+            (root / "bin" / "cmru").write_text(
+                "#!/usr/bin/env python3\n"
+                "import json, os, sys\n"
+                "with open(os.environ['STUB_OUT'], 'w', encoding='utf-8') as out:\n"
+                "    json.dump({'argv': sys.argv[1:], 'env': {k: v for k, v in os.environ.items()"
+                " if k.startswith('CMRU_TESTER_')}}, out)\n",
+                encoding="utf-8",
+            )
+            (root / "bin" / "docker").write_text(
+                "#!/bin/sh\n"
+                'case "$*" in\n'
+                f"  *hostobs-lock-sha256*) echo {hashlib.sha256(lock).hexdigest()} ;;\n"
+                f"  *base-image*) echo {base} ;;\n"
+                "esac\n",
+                encoding="utf-8",
+            )
+            for stub in ("cmru", "docker"):
+                (root / "bin" / stub).chmod(0o755)
+            environment = {
+                name: value for name, value in os.environ.items()
+                if not name.startswith("CMRU_TESTER_") and name != "CGROUP_PARENT_DEV_GATES"
+            }
+            environment["PATH"] = f"{root / 'bin'}:{environment.get('PATH', '/usr/bin:/bin')}"
+            environment["STUB_OUT"] = str(root / "seen.json")
+            result = subprocess.run(
+                ["bash", str(root / "tester-unified-rust" / "build-image.sh"),
+                 "--cgroup-parent", "dev-gates.slice"],
+                env=environment, capture_output=True, text=True, check=False,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            seen = json.loads((root / "seen.json").read_text(encoding="utf-8"))
+        self.assertEqual(
+            seen["argv"],
+            ["tester-gate", "--cwd", "run-gate-project", "--cgroup-parent", "dev-gates.slice", "/bin/true"],
+        )
+        self.assertEqual(set(seen["env"]), bounds)
+        for name in bounds:
+            self.assertTrue(seen["env"][name], name)
+            if not defaults[name].startswith("${"):
+                self.assertEqual(seen["env"][name], defaults[name], name)
 
     def test_lanes_are_network_none_and_cargo_is_locked_offline(self) -> None:
         hostobs_lanes = tomllib.loads((HOSTOBS_ROOT / "run-gate.toml").read_text(encoding="utf-8"))["lanes"]
