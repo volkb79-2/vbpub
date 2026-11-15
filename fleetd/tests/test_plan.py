@@ -12,11 +12,18 @@ from pathlib import Path
 
 import pytest
 
-from fleetd.contracts import ContractError, dump_json
+from fleetd.contracts import (
+    CONTROL_PLANE_SERVICE_UNITS,
+    DEFAULT_CONTROL_PLANE_PROFILE_RESERVE_BYTES,
+    ContractError,
+    dump_json,
+)
 from fleetd.cli import main
+from fleetd.facts import _parse_systemd_memory_min
 from fleetd.plan import (
     _assign_candidates,
     _capacity,
+    _control_plane_reserve,
     _host_eta,
     _host_time,
     _number,
@@ -58,6 +65,15 @@ def _hosts():
 
 def _facts(host_set, host_id):
     return next(host["facts"] for host in host_set["hosts"] if host["id"] == host_id)
+
+
+def _set_service_memory_mins(control_plane, values):
+    control_plane["service_memory_min"] = {}
+    for unit, value in zip(CONTROL_PLANE_SERVICE_UNITS, values, strict=True):
+        row = {"memory_min_bytes": value}
+        if value is None:
+            row["memory_min_bytes_reason"] = "systemd did not report a positive MemoryMin"
+        control_plane["service_memory_min"][unit] = row
 
 
 def _host(host_set, host_id):
@@ -405,7 +421,15 @@ def test_input_derived_budgets_hold_for_varied_hosts_and_output_ignores_input_or
                 total_bytes=total, for_lanes_bytes=total, available_bytes=total // 2,
                 overcommit=generator.choice([1.0, 1.25, 1.5, 2.0]),
             )
-            facts["control_plane"]["memory_min_bytes"] = generator.choice([768, 1024, 2048]) * 1024**2
+            control = facts["control_plane"]
+            control["memory_min_bytes"] = generator.choice([0, 768, 1024, 2048]) * 1024**2
+            control["profile_reserve_bytes"] = generator.choice([768, 896, 1024]) * 1024**2
+            service_values = [
+                generator.choice([0, 64, 128, 256, 512]) * 1024**2
+                if generator.random() < 0.75 else None
+                for _unit in CONTROL_PLANE_SERVICE_UNITS
+            ]
+            _set_service_memory_mins(control, service_values)
             facts["cpu"].update(
                 online=generator.choice([2, 4, 8]), oversubscribe_max=generator.choice([1.0, 1.25, 1.5]),
             )
@@ -418,14 +442,11 @@ def test_input_derived_budgets_hold_for_varied_hosts_and_output_ignores_input_or
                     "workers": generator.choice([0, 1, 2]), "containers": 1,
                 }]
             other = host["other_running"]
-            reserve_default = min(
-                2 * 1024**3,
-                max(
-                    768 * 1024**2,
-                    256 * 1024**2 + (total * 6 + 99) // 100,
-                ),
+            reserve = (
+                sum(value for value in service_values if value is not None)
+                if all(isinstance(value, int) and value > 0 for value in service_values)
+                else control["profile_reserve_bytes"]
             )
-            reserve = max(facts["control_plane"]["memory_min_bytes"], reserve_default)
             physical = total - reserve
             overhead = sum(job["expected_memory_bytes"] for job in other) + instance
             slots = min(
@@ -726,11 +747,12 @@ def test_host_refusals_have_explicit_reasons_and_null_eta_reasons():
     memory["for_lanes_bytes_reason"] = "not readable"
     variants.append((host_set, "physical lane memory is unknown"))
 
+    # The reserve is independent of MemTotal, so this remains a valid host.
     host_set = _hosts()
-    memory = _facts(host_set, "host-small")["memory"]
-    memory["total_bytes"] = None
-    memory["total_bytes_reason"] = "not readable"
-    variants.append((host_set, "MemTotal is unknown for the control-plane memory reserve"))
+    _facts(host_set, "host-small")["memory"]["total_bytes"] = None
+    _facts(host_set, "host-small")["memory"]["total_bytes_reason"] = "not readable"
+    plan = _plan([_candidate("candidate", 120_000_000)], hosts=host_set)
+    assert _host_plan(plan, "host-small")["status"] == "available"
 
     host_set = _hosts()
     cpu = _facts(host_set, "host-small")["cpu"]
@@ -754,44 +776,135 @@ def test_host_refusals_have_explicit_reasons_and_null_eta_reasons():
 
 
 @pytest.mark.parametrize(
-    ("total_gib", "reported_mib", "slice_present", "expected_mib", "source"),
+    ("values_mib", "profile_mib", "expected_mib", "source", "missing_indices"),
     [
-        (8, None, False, 768, "design-default"),
-        (8, None, True, 768, "design-default"),
-        (8, 0, True, 768, "design-default"),
-        (16, 1536, True, 1536, "reported"),
-        (64, None, False, 2048, "design-default"),
-        (64, 3072, True, 3072, "reported"),
-        (64, 3072, False, 2048, "design-default"),
+        ([32, 64, 128, 256, 512, 1024], 3072, 2016, "service-memory-min", []),
+        ([100, 100, 100, 100, 100, None], 896, 896, "profile-constant", [5]),
+        ([None, None, None, None, None, None], 768, 768, "profile-constant", list(range(6))),
+        ([100, 100, 100, 100, 100, 0], 896, 896, "profile-constant", [5]),
+        (None, 768, 768, "profile-constant", list(range(6))),
     ],
 )
-def test_control_plane_reserve_uses_the_design_clamp_and_honors_larger_reports(
-    total_gib, reported_mib, slice_present, expected_mib, source
+def test_control_plane_reserve_sums_every_service_or_uses_the_profile_constant(
+    values_mib, profile_mib, expected_mib, source, missing_indices
 ):
     host_set = _hosts()
     facts = _facts(host_set, "host-small")
-    total_bytes = total_gib * 1024**3
-    facts["memory"].update(total_bytes=total_bytes, for_lanes_bytes=total_bytes)
     control = facts["control_plane"]
-    control["present"] = slice_present
-    control["memory_min_bytes"] = None if reported_mib is None else reported_mib * 1024**2
-    if reported_mib is None:
-        control["memory_min_bytes_reason"] = "ctl.slice is absent"
-    else:
-        control.pop("memory_min_bytes_reason", None)
-    if slice_present:
-        control["cpu_weight"] = 10000
-        control.pop("cpu_weight_reason", None)
-    else:
-        control["cpu_weight"] = None
-        control["cpu_weight_reason"] = "ctl.slice is absent"
+    control["profile_reserve_bytes"] = profile_mib * 1024**2
+    if values_mib is not None:
+        _set_service_memory_mins(
+            control,
+            [None if value is None else value * 1024**2 for value in values_mib],
+        )
 
     plan = _plan([_candidate("reserve", 120_000_000)], hosts=host_set)
     host = _host_plan(plan, "host-small")
     assert host["status"] == "available"
     assert host["reserve_bytes"] == expected_mib * 1024**2
     assert host["reserve_source"] == source
-    assert host["physical_bytes"] == total_bytes - expected_mib * 1024**2
+    assert host["reserve_missing_services"] == [
+        CONTROL_PLANE_SERVICE_UNITS[index] for index in missing_indices
+    ]
+
+
+@pytest.mark.parametrize("total_bytes", [1, 2**60])
+def test_reserve_does_not_change_with_tiny_or_huge_ram(total_bytes):
+    facts = _facts(_hosts(), "host-small")
+    facts["memory"]["total_bytes"] = total_bytes
+    control = facts["control_plane"]
+    control["profile_reserve_bytes"] = 900 * 1024**2
+    _set_service_memory_mins(control, [None] * len(CONTROL_PLANE_SERVICE_UNITS))
+    assert _control_plane_reserve(facts) == (
+        900 * 1024**2, "profile-constant", list(CONTROL_PLANE_SERVICE_UNITS),
+    )
+
+
+def test_parent_slice_memory_min_is_reported_but_never_floors_service_sum():
+    host_set = _hosts()
+    facts = _facts(host_set, "host-small")
+    control = facts["control_plane"]
+    control["present"] = False
+    control["memory_min_bytes"] = 7 * 1024**3
+    _set_service_memory_mins(control, [128 * 1024**2] * len(CONTROL_PLANE_SERVICE_UNITS))
+    plan = _plan([_candidate("reserve", 120_000_000)], hosts=host_set)
+    host = _host_plan(plan, "host-small")
+    assert host["reserve_bytes"] == 6 * 128 * 1024**2
+    assert host["reserve_source"] == "service-memory-min"
+    assert host["reserve_missing_services"] == []
+
+
+def test_infinity_memory_min_is_not_reported_and_selects_profile_fallback():
+    host_set = _hosts()
+    control = _facts(host_set, "host-small")["control_plane"]
+    parsed_value, reason = _parse_systemd_memory_min("infinity", CONTROL_PLANE_SERVICE_UNITS[0])
+    assert parsed_value is None and "infinity" in reason
+    values = [128 * 1024**2] * len(CONTROL_PLANE_SERVICE_UNITS)
+    values[0] = None
+    _set_service_memory_mins(control, values)
+    control["service_memory_min"][CONTROL_PLANE_SERVICE_UNITS[0]]["memory_min_bytes_reason"] = reason
+    plan = _plan([_candidate("infinity", 120_000_000)], hosts=host_set)
+    host = _host_plan(plan, "host-small")
+    assert host["reserve_bytes"] == DEFAULT_CONTROL_PLANE_PROFILE_RESERVE_BYTES
+    assert host["reserve_source"] == "profile-constant"
+    assert host["reserve_missing_services"] == [CONTROL_PLANE_SERVICE_UNITS[0]]
+
+
+def test_profile_fallback_varies_by_host_profile_without_cross_host_pooling():
+    host_set = _hosts()
+    _facts(host_set, "host-small")["control_plane"]["profile_reserve_bytes"] = 768 * 1024**2
+    _facts(host_set, "host-large")["control_plane"]["profile_reserve_bytes"] = 1024 * 1024**2
+    plan = _plan([_candidate("reserve", 120_000_000)], hosts=host_set)
+    assert _host_plan(plan, "host-small")["reserve_bytes"] == 768 * 1024**2
+    assert _host_plan(plan, "host-large")["reserve_bytes"] == 1024 * 1024**2
+    assert all(host["reserve_source"] == "profile-constant" for host in plan["hosts"])
+
+
+def test_placement_caps_and_refusal_move_by_the_reserve_difference_only():
+    host_set = _hosts()
+    small = _facts(host_set, "host-small")
+    large = _facts(host_set, "host-large")
+    large["policy"]["host_role"] = "shared-prod"
+    small["memory"].update(total_bytes=8 * 1024**3, for_lanes_bytes=8 * 1024**3)
+    small["control_plane"]["profile_reserve_bytes"] = 768 * 1024**2
+    _set_service_memory_mins(small["control_plane"], [100 * 1024**2] * len(CONTROL_PLANE_SERVICE_UNITS))
+    service_plan = _plan([_candidate("edge", 120_000_000)], hosts=host_set)
+    service_host = _host_plan(service_plan, "host-small")
+
+    fallback_set = copy.deepcopy(host_set)
+    fallback_facts = _facts(fallback_set, "host-small")
+    fallback_facts["control_plane"]["service_memory_min"] = {
+        unit: {
+            "memory_min_bytes": None,
+            "memory_min_bytes_reason": "not reported",
+        }
+        for unit in CONTROL_PLANE_SERVICE_UNITS
+    }
+    fallback_plan = _plan([_candidate("edge", service_host["cap_bytes"] + 1)], hosts=fallback_set)
+    fallback_host = _host_plan(fallback_plan, "host-small")
+    reserve_delta = 768 * 1024**2 - 600 * 1024**2
+    assert service_host["reserve_bytes"] == 600 * 1024**2
+    assert fallback_host["reserve_bytes"] == 768 * 1024**2
+    assert service_host["physical_bytes"] - fallback_host["physical_bytes"] == reserve_delta
+    assert service_host["budget_bytes"] - fallback_host["budget_bytes"] == reserve_delta * 1.5
+    assert service_host["cap_alone_bytes"] - fallback_host["cap_alone_bytes"] == reserve_delta
+    assert service_host["cap_bytes"] - fallback_host["cap_bytes"] == reserve_delta
+    assert [item["id"] for item in service_host["assigned"]] == [_cid("edge")]
+    assert _host_plan(fallback_plan, "host-small")["assigned"] == []
+
+    refusal_set = _hosts()
+    refusal_facts = _facts(refusal_set, "host-small")
+    refusal_facts["memory"]["for_lanes_bytes"] = 600 * 1024**2
+    refusal_control = refusal_facts["control_plane"]
+    _set_service_memory_mins(refusal_control, [80 * 1024**2] * len(CONTROL_PLANE_SERVICE_UNITS))
+    service_input = next(host for host in parse_host_set(refusal_set) if host.host_id == "host-small")
+    assert _refusal(service_input, 0, 0, 0) is None
+    refusal_control["service_memory_min"] = {
+        unit: {"memory_min_bytes": None, "memory_min_bytes_reason": "not reported"}
+        for unit in CONTROL_PLANE_SERVICE_UNITS
+    }
+    fallback_input = next(host for host in parse_host_set(refusal_set) if host.host_id == "host-small")
+    assert "reserve leaves no physical RAM" in _refusal(fallback_input, 0, 0, 0)
 
 
 def test_golden_cli_plan_for_two_eight_gib_four_core_hosts_and_230_candidates(tmp_path, capsys):
@@ -833,7 +946,8 @@ def test_golden_cli_plan_for_two_eight_gib_four_core_hosts_and_230_candidates(tm
     assert all(host["status"] == "available" for host in plan["hosts"])
     assert all(host["worker_slots"] == 3 for host in plan["hosts"])
     assert all(host["reserve_bytes"] == 768 * 1024**2 for host in plan["hosts"])
-    assert all(host["reserve_source"] == "design-default" for host in plan["hosts"])
+    assert all(host["reserve_source"] == "profile-constant" for host in plan["hosts"])
+    assert all(host["reserve_missing_services"] == list(CONTROL_PLANE_SERVICE_UNITS) for host in plan["hosts"])
     assert plan["hosts"][0]["speed"]["single_core"] != plan["hosts"][1]["speed"]["single_core"]
 
     assigned = [item["id"] for host in plan["hosts"] for item in host["assigned"]]

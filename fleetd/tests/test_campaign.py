@@ -17,7 +17,7 @@ from pathlib import Path
 import pytest
 
 from fleetd.campaign import CampaignManager, LOST_AFTER_SECONDS, STALL_FLOOR_SECONDS, _atomic_write, _event_key, _system_boot_id
-from fleetd.contracts import ContractError
+from fleetd.contracts import CONTROL_PLANE_SERVICE_UNITS, ContractError
 from fleetd.plan import plan_campaign
 from fleetd.runner import (
     JobSpec,
@@ -93,8 +93,8 @@ def test_restart_rebase_leaves_a_monotonic_value_without_utc_partner(tmp_path):
     assert state["clock_boot_id"] == "boot-after"
 
 
-def _plan(count: int = 12) -> dict:
-    hosts = _golden_8g_host_set()
+def _plan(count: int = 12, *, host_set: dict | None = None) -> dict:
+    hosts = host_set or _golden_8g_host_set()
     for index, host in enumerate(hosts["hosts"]):
         host["id"] = f"host-{chr(ord('a') + index)}"
     candidates = [
@@ -1041,38 +1041,57 @@ def test_prior_campaign_progress_does_not_count_for_a_new_batch_on_same_commit(t
 
 
 def test_lost_host_requeues_only_unfinished_candidates_and_uses_largest_cap(tmp_path):
-    plan = _plan(40)
+    hosts = _golden_8g_host_set()
+    for index, host in enumerate(hosts["hosts"]):
+        host["id"] = f"host-{chr(ord('a') + index)}"
+    host_a = next(host for host in hosts["hosts"] if host["id"] == "host-a")
+    host_b = next(host for host in hosts["hosts"] if host["id"] == "host-b")
+    host_a["facts"]["control_plane"]["profile_reserve_bytes"] = 768 * 1024**2
+    host_b["facts"]["control_plane"]["service_memory_min"] = {
+        unit: {"memory_min_bytes": 80 * 1024**2}
+        for unit in CONTROL_PLANE_SERVICE_UNITS
+    }
+    plan = _plan(40, host_set=hosts)
     clock = FakeClock()
     transport = FakeTransport(clock=clock)
     manager = CampaignManager(tmp_path, transport, clock=clock)
-    manager.run("campaign", plan)
+    status = manager.run("campaign", plan)
+    status_hosts = {row["host"]: row for row in status["hosts"]}
+    for planned_host in plan["hosts"]:
+        status_host = status_hosts[planned_host["id"]]
+        assert status_host["reserve_bytes"] == planned_host["reserve_bytes"]
+        assert status_host["reserve_source"] == planned_host["reserve_source"]
+        assert status_host["reserve_missing_services"] == planned_host["reserve_missing_services"]
+    assert plan["hosts"][0]["reserve_bytes"] == 768 * 1024**2
+    assert plan["hosts"][1]["reserve_bytes"] == 480 * 1024**2
     before = _state(tmp_path)
-    lost_job = _first_running(before, "host-b")
+    lost_job = _first_running(before, "host-a")
     lost_candidates = {
         candidate
         for row in before["jobs"].values()
-        if row["host"] == "host-b"
+        if row["host"] == "host-a"
         for candidate in row["candidate_ids"]
     }
     completed = lost_job["candidate_ids"][0]
-    transport.add_progress("host-b", lost_job["name"], completed, "survived", emitted_at="2026-11-13T00:00:00+00:00")
+    transport.add_progress("host-a", lost_job["name"], completed, "survived", emitted_at="2026-11-13T00:00:00+00:00")
     manager.status("campaign")
-    transport.set_unreachable("host-b")
+    transport.set_unreachable("host-a")
     clock.advance(LOST_AFTER_SECONDS + 1)
     manager.tick("campaign")
     after = _state(tmp_path)
     requeued = [
         job for job in after["jobs"].values()
-        if job.get("requeue_reason") == "host-lost" and job["host"] != "host-b"
+        if job.get("requeue_reason") == "host-lost" and job["host"] != "host-a"
     ]
-    assert after["hosts"]["host-b"]["status"] == "LOST"
+    assert after["hosts"]["host-a"]["status"] == "LOST"
     assert requeued
     assert all(completed not in job["candidate_ids"] for job in requeued)
     assert set(candidate for job in requeued for candidate in job["candidate_ids"]) == lost_candidates - {completed}
     expected_target = max(
         (host["cap_alone_bytes"], host["id"])
-        for host in plan["hosts"] if host["id"] != "host-b" and host["status"] == "available"
+        for host in plan["hosts"] if host["id"] != "host-a" and host["status"] == "available"
     )[1]
+    assert expected_target == "host-b"
     assert all(job["host"] == expected_target for job in requeued)
 
 

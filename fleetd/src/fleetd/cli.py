@@ -25,7 +25,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     facts = commands.add_parser("facts", help="collect or validate host facts")
     facts_commands = facts.add_subparsers(dest="action", required=True)
-    facts_collect = facts_commands.add_parser("collect", help="collect host-facts/1 from /proc and /sys")
+    facts_collect = facts_commands.add_parser("collect", help="collect host-facts/1 from /proc, /sys, and control-plane service properties")
     facts_collect.add_argument("--root", type=Path, default=DEFAULT_ROOT)
     facts_collect.set_defaults(handler=_collect_facts)
     facts_validate = facts_commands.add_parser("validate", help="validate a host-facts/1 JSON file")

@@ -54,11 +54,14 @@ is an error.
 ## Facts collection
 
 `fleet facts collect [--root DIR]` reads `/proc` and `/sys` beneath the
-selected root, reads required versioned configuration at
+selected root, reads the fixed control-plane unit list's `MemoryMin` properties
+with `systemctl show -p MemoryMin`, reads required versioned configuration at
 `/etc/fleetd/facts.toml`, reads the Geekbench record from its configured
 host-owned path, and emits `host-facts/1` JSON. The config declares
 `overcommit`, `oversubscribe_max`, PSI refusal threshold, control-plane slice,
-and host source paths; missing required policy fails. `HOST_ROLE` is read from
+optional per-profile `profile_reserve_bytes`, and host source paths; missing
+required policy fails. Older config without `profile_reserve_bytes` uses the
+768 MiB compatibility profile constant. `HOST_ROLE` is read from
 the configured host-setup environment file, an existing host-owned source, and
 is not shadowed in fleetd policy. `host-facts/1` accepts `dedicated-dev` and
 `shared-prod` as host roles; missing, duplicate, empty, or unknown values are
@@ -71,16 +74,20 @@ count. It accepts measured Geekbench 6/7 records with their matching reference
 score, and never uses a table fallback. Guard config is validated after
 lexically merging TOML drop-ins; its digest covers the main file and drop-ins.
 The guard runtime state and KSM opt-in shim are nullable unless their paths are
-configured. `memory.for_lanes_bytes` is raw `MemTotal`; the planner applies a
-control-plane reserve once per §4.3:
-`reserve_h = max(reported memory_min_bytes, clamp(256 MiB + ceil(6% × MemTotal), 768 MiB, 2 GiB))`.
-If the slice or `memory.min` is absent, the clamped design default is used.
-The 2 GiB cap applies to that default, not to a larger reported value. Host
-plans expose `reserve_bytes` and `reserve_source` (`reported` or
-`design-default`). A missing MemTotal still refuses planning because the
-default cannot be derived. The later measured-p95 replacement is not part of
-this package and is tracked under
-[FD-007](../KNOWN_ISSUES_TODO_BACKLOG.md#fd-007-calibrate-the-control-plane-reserve-from-measured-p95).
+configured. `memory.for_lanes_bytes` is raw `MemTotal`. The bounded
+`CONTROL_PLANE_SERVICE_UNITS` list in `fleetd.contracts` supplies one
+`service_memory_min` entry per service. `0`, `infinity`, unset, and failed
+queries are not reported positive values. The planner uses the sum only when
+all listed services report positive values; otherwise it uses that host's
+`profile_reserve_bytes` (768 MiB when the config has no profile override).
+Thus reserve selection does not depend on `MemTotal`, `MemAvailable`, measured
+RSS, or the parent slice's `memory_min_bytes`. The parent slice value remains
+available as a reported protection fact. Plans expose `reserve_bytes`,
+`reserve_source` (`service-memory-min` or `profile-constant`), and
+`reserve_missing_services`. Missing `memory.for_lanes_bytes` still refuses
+planning because physical capacity cannot be derived. Calibration of the
+profile constant from measured p95 under load remains open as
+[FD-007b](../KNOWN_ISSUES_TODO_BACKLOG.md#fd-007b-calibrate-profile-reserve-from-measured-p95-under-load).
 `fleet facts validate FILE`
 validates a serialized record without contacting the host.
 The collector and planner do not read `dev-gates.slice/memory.max`; the
@@ -111,9 +118,10 @@ case where eligible hosts have no Geekbench records.
 
 The planner's host-set input requires explicit other-running rows and rejects
 hosts with unknown role, shared-prod role, PSI above its configured threshold,
-or unknown MemTotal, physical lane memory, CPU, or PSI facts. A missing
-control-plane slice or unreadable `memory.min` uses the design default reserve
-instead of refusing the host. Worker capacity is the CPU-derived worker count
+or unknown physical lane memory, CPU, or PSI facts. Missing or partial service
+`MemoryMin` facts use the profile constant and list the services that were not
+reported; an absent control-plane slice does not refuse the host. Worker
+capacity is the CPU-derived worker count
 after other work, bounded by the lane's efficient upper bound. MVP-B-lite uses
 one campaign slot per host because concurrent selected runs would share a
 Run-Gate lane instance and Assay store; lifting this accepted capacity limit is
@@ -121,8 +129,8 @@ tracked under
 [FD-006](../KNOWN_ISSUES_TODO_BACKLOG.md#fd-006-lift-the-manual-one-slot-per-host-and-j-cap).
 It computes:
 
-- reserve_h = max(reported control_plane.memory_min_bytes, design default);
-- design default = clamp(256 MiB + ceil(6% × MemTotal), 768 MiB, 2 GiB);
+- reserve_h = sum(service memory_min_bytes) when all fixed service facts are positive;
+- otherwise reserve_h = control_plane.profile_reserve_bytes (768 MiB when absent);
 - P = memory.for_lanes_bytes - reserve_h;
 - O = other running expected charges + campaign_slots × instance_memory;
 - B = P × overcommit - O;
@@ -212,9 +220,10 @@ with no new progress event. Probe returns running/EXIT/missing state, list
 digest, candidate progress count, progress file modification time, per-job
 progress bounds, verdict outcomes, and artifact paths.
 
-`fleet status ID` refreshes state and reports per-host and per-batch state,
-done/total counts, candidates per second, blended ETA, and `STALLED`/`LOST`
-markers. ETA blends the planner's Geekbench estimate with the observed rate
+`fleet status ID` refreshes state and reports per-host reserve bytes, reserve
+source, any services without a positive `MemoryMin`, per-batch state, done/total
+counts, candidates per second, blended ETA, and `STALLED`/`LOST` markers. ETA
+blends the planner's Geekbench estimate with the observed rate
 when both exist. `fleet tick ID` performs one scheduling step: adopt current
 jobs, detect exits and stalls, handle host loss, and start the next available
 batch. Neither command runs a polling loop.

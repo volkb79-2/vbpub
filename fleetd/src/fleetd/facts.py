@@ -7,12 +7,18 @@ import json
 import math
 import re
 import shlex
+import subprocess
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
-from typing import Any
+from typing import Any, Callable
 
-from .contracts import ContractError, validate_host_facts
+from .contracts import (
+    CONTROL_PLANE_SERVICE_UNITS,
+    DEFAULT_CONTROL_PLANE_PROFILE_RESERVE_BYTES,
+    ContractError,
+    validate_host_facts,
+)
 from .guard import validate_guard
 
 
@@ -30,6 +36,7 @@ class FactsConfig:
     guard_state: str | None
     ksm_optin_shim: str | None
     control_plane_slice: str
+    control_plane_profile_reserve_bytes: int
     overcommit: float
     oversubscribe_max: float
     psi_refuse_some_avg10: float
@@ -63,6 +70,12 @@ def _positive_number(value: object, where: str, *, maximum: float | None = None)
     if maximum is not None and number > maximum:
         raise ContractError(f"{where}: must be at most {maximum}")
     return number
+
+
+def _positive_integer(value: object, where: str) -> int:
+    if type(value) is not int or value <= 0:
+        raise ContractError(f"{where}: expected positive integer bytes")
+    return value
 
 
 def _config_path(value: object, where: str) -> str:
@@ -108,8 +121,15 @@ def load_facts_config(root: Path = DEFAULT_ROOT) -> FactsConfig:
     guard_state = None if "guard_state" not in paths else _config_path(paths["guard_state"], "facts.toml.paths.guard_state")
     ksm_optin_shim = None if "ksm_optin_shim" not in paths else _config_path(paths["ksm_optin_shim"], "facts.toml.paths.ksm_optin_shim")
 
-    control = _object(top["control_plane"], "facts.toml.control_plane", {"slice"})
+    control = _object(
+        top["control_plane"], "facts.toml.control_plane", {"slice"},
+        {"profile_reserve_bytes"},
+    )
     control_slice = _slice_name(control["slice"], "facts.toml.control_plane.slice")
+    profile_reserve_bytes = _positive_integer(
+        control.get("profile_reserve_bytes", DEFAULT_CONTROL_PLANE_PROFILE_RESERVE_BYTES),
+        "facts.toml.control_plane.profile_reserve_bytes",
+    )
 
     policy = _object(
         top["policy"], "facts.toml.policy",
@@ -131,7 +151,8 @@ def load_facts_config(root: Path = DEFAULT_ROOT) -> FactsConfig:
 
     return FactsConfig(
         geekbench_record, host_setup_env, guard_config, guard_state, ksm_optin_shim,
-        control_slice, overcommit, oversubscribe_max, psi_refuse_number, max_lane,
+        control_slice, profile_reserve_bytes, overcommit, oversubscribe_max,
+        psi_refuse_number, max_lane,
     )
 
 
@@ -315,6 +336,61 @@ def _read_integer(path: Path, description: str, *, minimum: int = 0) -> tuple[in
     return number, None
 
 
+def _parse_systemd_memory_min(text: str, unit: str) -> tuple[int | None, str | None]:
+    """Parse one `systemctl show -p MemoryMin --value` result."""
+    value = text.strip()
+    if not value:
+        return None, f"{unit} MemoryMin is unset"
+    if "\n" in value or "\r" in value:
+        return None, f"{unit} MemoryMin output is not one value"
+    if "=" in value:
+        key, separator, raw_value = value.partition("=")
+        if not separator or key != "MemoryMin":
+            return None, f"{unit} systemctl output is not a MemoryMin property"
+        value = raw_value.strip()
+    if value.lower() == "infinity":
+        return None, f"{unit} MemoryMin is infinity"
+    if not value.isdecimal():
+        return None, f"{unit} MemoryMin is not a non-negative integer"
+    number = int(value)
+    if number == 0:
+        return None, f"{unit} MemoryMin is zero or unset"
+    return number, None
+
+
+def _read_systemd_memory_min(unit: str) -> tuple[int | None, str | None]:
+    """Read one service's MemoryMin without allowing an unbounded systemctl call."""
+    try:
+        result = subprocess.run(
+            ["systemctl", "show", "-p", "MemoryMin", "--value", "--no-pager", unit],
+            check=False, capture_output=True, text=True, timeout=5,
+        )
+    except subprocess.TimeoutExpired:
+        return None, f"systemctl show MemoryMin for {unit} timed out"
+    except OSError as exc:
+        return None, f"systemctl show MemoryMin for {unit} unavailable ({exc.strerror or 'I/O error'})"
+    if result.returncode != 0:
+        return None, f"systemctl show MemoryMin for {unit} exited {result.returncode}"
+    return _parse_systemd_memory_min(result.stdout, unit)
+
+
+def _service_memory_min_facts(
+    reader: Callable[[str], tuple[int | None, str | None]] | None,
+) -> dict[str, dict[str, Any]]:
+    """Collect the fixed-size service list; injected roots never query the host."""
+    result: dict[str, dict[str, Any]] = {}
+    for unit in CONTROL_PLANE_SERVICE_UNITS:
+        if reader is None:
+            value, reason = None, "systemd MemoryMin was not queried for the injected facts root"
+        else:
+            value, reason = reader(unit)
+        row: dict[str, Any] = {"memory_min_bytes": value}
+        if value is None:
+            row["memory_min_bytes_reason"] = reason or f"{unit} MemoryMin is not reported"
+        result[unit] = row
+    return result
+
+
 def _slice_path(name: str) -> Path:
     """Translate systemd's hyphen-nested slice name to its cgroup path."""
     if name == "-.slice":
@@ -449,8 +525,12 @@ def _benchmark_speed(root: Path, config: FactsConfig, model: str | None, online:
     }, None
 
 
-def collect_host_facts(root: Path = DEFAULT_ROOT) -> dict[str, Any]:
-    """Collect one ``host-facts/1`` document without writes or subprocesses."""
+def collect_host_facts(
+    root: Path = DEFAULT_ROOT,
+    *,
+    service_memory_min_reader: Callable[[str], tuple[int | None, str | None]] | None = None,
+) -> dict[str, Any]:
+    """Collect ``host-facts/1`` from read-only host inputs and service properties."""
     root = Path(root)
     config = load_facts_config(root)
     proc_root = root / "proc"
@@ -529,11 +609,15 @@ def collect_host_facts(root: Path = DEFAULT_ROOT) -> dict[str, Any]:
     control_present = control_path.is_dir()
     memory_min, memory_min_reason = _read_integer(control_path / "memory.min", "control-plane memory.min") if control_present else (None, "control-plane slice is absent")
     cpu_weight, cpu_weight_reason = _read_integer(control_path / "cpu.weight", "control-plane cpu.weight", minimum=1) if control_present else (None, "control-plane slice is absent")
+    if service_memory_min_reader is None and root == DEFAULT_ROOT:
+        service_memory_min_reader = _read_systemd_memory_min
     control: dict[str, Any] = {
         "slice": config.control_plane_slice,
         "present": control_present,
         "memory_min_bytes": memory_min,
         "cpu_weight": cpu_weight,
+        "profile_reserve_bytes": config.control_plane_profile_reserve_bytes,
+        "service_memory_min": _service_memory_min_facts(service_memory_min_reader),
     }
     if memory_min is None:
         control["memory_min_bytes_reason"] = memory_min_reason

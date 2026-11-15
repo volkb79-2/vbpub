@@ -11,20 +11,17 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
 
-from .contracts import ContractError, is_candidate_id, validate_host_facts, validate_lane_demand
+from .contracts import (
+    CONTROL_PLANE_SERVICE_UNITS,
+    DEFAULT_CONTROL_PLANE_PROFILE_RESERVE_BYTES,
+    ContractError,
+    is_candidate_id,
+    validate_host_facts,
+    validate_lane_demand,
+)
 
 
 _HOST_ID = re.compile(r"(?:\.{1,2}|[A-Za-z0-9][A-Za-z0-9_.-]{0,63})\Z")
-
-# Design §3.6, control-plane MemoryMin default. The clamp is policy-owned and
-# deliberately not an operator override in this first-week planner.
-_MIB = 1024**2
-_CONTROL_PLANE_MIN_BASE_BYTES = 256 * _MIB
-_CONTROL_PLANE_MIN_FRACTION_NUMERATOR = 6
-_CONTROL_PLANE_MIN_FRACTION_DENOMINATOR = 100
-_CONTROL_PLANE_MIN_FLOOR_BYTES = 768 * _MIB
-_CONTROL_PLANE_MIN_CAP_BYTES = 2 * 1024**3
-
 
 @dataclass(frozen=True)
 class CandidateInput:
@@ -73,29 +70,25 @@ def _host_id(value: object, where: str) -> str:
     return value
 
 
-def _control_plane_reserve(facts: Mapping[str, Any]) -> tuple[int | None, str]:
-    """Return the reported or design-default control-plane memory reserve."""
-    total_bytes = facts["memory"]["total_bytes"]
-    if total_bytes is None:
-        return None, "unknown"
-    # Round 6% upward to a whole byte so the default never falls below policy.
-    percentage_bytes = (
-        total_bytes * _CONTROL_PLANE_MIN_FRACTION_NUMERATOR
-        + _CONTROL_PLANE_MIN_FRACTION_DENOMINATOR - 1
-    ) // _CONTROL_PLANE_MIN_FRACTION_DENOMINATOR
-    design_default = min(
-        _CONTROL_PLANE_MIN_CAP_BYTES,
-        max(_CONTROL_PLANE_MIN_FLOOR_BYTES, _CONTROL_PLANE_MIN_BASE_BYTES + percentage_bytes),
-    )
+def _control_plane_reserve(facts: Mapping[str, Any]) -> tuple[int, str, list[str]]:
+    """Return the complete service floor, or this host profile's fixed reserve."""
     control_plane = facts["control_plane"]
-    reported = control_plane["memory_min_bytes"]
-    if (
-        control_plane["present"] is not False
-        and reported is not None
-        and reported >= design_default
-    ):
-        return reported, "reported"
-    return design_default, "design-default"
+    service_facts = control_plane.get("service_memory_min")
+    reported: list[int] = []
+    missing: list[str] = []
+    for unit in CONTROL_PLANE_SERVICE_UNITS:
+        service = service_facts.get(unit) if isinstance(service_facts, Mapping) else None
+        value = service.get("memory_min_bytes") if isinstance(service, Mapping) else None
+        if type(value) is int and value > 0:
+            reported.append(value)
+        else:
+            missing.append(unit)
+    if not missing:
+        return sum(reported), "service-memory-min", []
+    profile_reserve = control_plane.get(
+        "profile_reserve_bytes", DEFAULT_CONTROL_PLANE_PROFILE_RESERVE_BYTES,
+    )
+    return profile_reserve, "profile-constant", missing
 
 
 def _integer(value: object, where: str, *, minimum: int = 0) -> int:
@@ -389,9 +382,7 @@ def _refusal(host: HostInput, other_memory: int, other_workers: int, other_conta
         return "cgroup v2 controller list is unknown"
     if facts["memory"]["for_lanes_bytes"] is None:
         return "physical lane memory is unknown"
-    reserve_bytes, _reserve_source = _control_plane_reserve(facts)
-    if reserve_bytes is None:
-        return "MemTotal is unknown for the control-plane memory reserve"
+    reserve_bytes, _reserve_source, _missing_services = _control_plane_reserve(facts)
     physical = facts["memory"]["for_lanes_bytes"] - reserve_bytes
     if physical <= 0:
         return "control-plane memory reserve leaves no physical RAM for lanes"
@@ -415,7 +406,7 @@ def _refusal(host: HostInput, other_memory: int, other_workers: int, other_conta
 
 def _capacity(host: HostInput, demand: dict[str, Any]) -> dict[str, Any]:
     facts = host.facts
-    reserve_bytes, reserve_source = _control_plane_reserve(facts)
+    reserve_bytes, reserve_source, missing_services = _control_plane_reserve(facts)
     other_memory = sum(job["expected_memory_bytes"] for job in host.other_running)
     other_workers = sum(job["workers"] for job in host.other_running)
     other_containers = sum(job["containers"] for job in host.other_running)
@@ -429,6 +420,7 @@ def _capacity(host: HostInput, demand: dict[str, Any]) -> dict[str, Any]:
         "other_running_containers": other_containers,
         "reserve_bytes": reserve_bytes,
         "reserve_source": reserve_source,
+        "reserve_missing_services": missing_services,
     }
     if refusal is not None:
         result["reason"] = refusal

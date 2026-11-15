@@ -4,7 +4,12 @@ from pathlib import Path
 
 import pytest
 
-from fleetd.contracts import ContractError, dump_json
+from fleetd.contracts import (
+    CONTROL_PLANE_SERVICE_UNITS,
+    DEFAULT_CONTROL_PLANE_PROFILE_RESERVE_BYTES,
+    ContractError,
+    dump_json,
+)
 from fleetd.cli import main
 from fleetd.facts import (
     _config_path as _validate_config_path,
@@ -13,8 +18,10 @@ from fleetd.facts import (
     _meminfo_values,
     _object,
     _online_cpu_count,
+    _parse_systemd_memory_min,
     _psi_value,
     _read_integer,
+    _read_systemd_memory_min,
     _rooted,
     _slice_path,
     collect_host_facts,
@@ -73,6 +80,14 @@ def test_facts_collector_reads_only_injected_root_and_emits_design_facts():
     assert facts["control_plane"] == {
         "slice": "ctl.slice", "present": True,
         "memory_min_bytes": 805306368, "cpu_weight": 10000,
+        "profile_reserve_bytes": DEFAULT_CONTROL_PLANE_PROFILE_RESERVE_BYTES,
+        "service_memory_min": {
+            unit: {
+                "memory_min_bytes": None,
+                "memory_min_bytes_reason": "systemd MemoryMin was not queried for the injected facts root",
+            }
+            for unit in CONTROL_PLANE_SERVICE_UNITS
+        },
     }
     assert facts["guard"]["enabled"] is True
     assert facts["guard"]["config_digest"].startswith("sha256:")
@@ -93,6 +108,21 @@ def test_facts_collect_cli_emits_valid_json_and_config_errors_are_user_facing(ca
     assert output.err == ""
     assert main(["facts", "collect", "--root", str(tmp_path / "missing")]) == 2
     assert "required config" in capsys.readouterr().err
+
+
+def test_profile_reserve_is_host_configured_with_a_fixed_backward_compatible_default(tmp_path):
+    root = _root(tmp_path)
+    config_path = _config_path(root)
+    assert load_facts_config(root).control_plane_profile_reserve_bytes == 768 * 1024**2
+    config_path.write_text(
+        config_path.read_text(encoding="utf-8").replace(
+            'slice = "ctl.slice"',
+            'slice = "ctl.slice"\nprofile_reserve_bytes = 943718400',
+        ),
+        encoding="utf-8",
+    )
+    facts = collect_host_facts(root)
+    assert facts["control_plane"]["profile_reserve_bytes"] == 900 * 1024**2
 
 
 def test_facts_config_is_required_closed_and_versioned(tmp_path):
@@ -129,6 +159,8 @@ def test_facts_config_is_required_closed_and_versioned(tmp_path):
         ('geekbench_record = "/var/lib/mdt/host-facts/cpu-benchmark.json"', 'geekbench_record = "/var/../escape"', "without '..'"),
         ('host_setup_env = "/etc/mdt/host-setup.env"', 'host_setup_env = "relative.env"', "absolute path"),
         ('slice = "ctl.slice"', 'slice = "../ctl.slice"', "systemd .slice"),
+        ('slice = "ctl.slice"', 'slice = "ctl.slice"\nprofile_reserve_bytes = 0', "positive integer bytes"),
+        ('slice = "ctl.slice"', 'slice = "ctl.slice"\nprofile_reserve_bytes = true', "positive integer bytes"),
         ('overcommit = 1.5', 'overcommit = 0', "greater than zero"),
         ('oversubscribe_max = 1.25', 'oversubscribe_max = 11', "at most 10"),
         ('psi_refuse_some_avg10 = 25', 'psi_refuse_some_avg10 = 101', "from 0 through 100"),
@@ -452,6 +484,112 @@ def test_control_plane_slice_path_supports_nested_systemd_slices(tmp_path):
     assert facts["control_plane"]["present"] is True
     assert facts["control_plane"]["memory_min_bytes"] == 1048576
     assert facts["control_plane"]["cpu_weight"] == 200
+
+
+def test_service_memory_min_facts_use_the_bounded_unit_list_and_injected_reader(tmp_path):
+    root = _root(tmp_path)
+    raw_values = {unit: str(index * 1024**2) for index, unit in enumerate(CONTROL_PLANE_SERVICE_UNITS, 1)}
+    queried = []
+
+    def reader(unit):
+        queried.append(unit)
+        return _parse_systemd_memory_min(raw_values[unit], unit)
+
+    facts = collect_host_facts(root, service_memory_min_reader=reader)
+    assert queried == list(CONTROL_PLANE_SERVICE_UNITS)
+    assert facts["control_plane"]["service_memory_min"] == {
+        unit: {"memory_min_bytes": index * 1024**2}
+        for index, unit in enumerate(CONTROL_PLANE_SERVICE_UNITS, 1)
+    }
+
+
+def test_service_memory_min_fact_reason_uses_a_fallback_when_reader_has_none(tmp_path):
+    root = _root(tmp_path)
+    facts = collect_host_facts(root, service_memory_min_reader=lambda _unit: (None, None))
+    assert facts["control_plane"]["service_memory_min"] == {
+        unit: {
+            "memory_min_bytes": None,
+            "memory_min_bytes_reason": f"{unit} MemoryMin is not reported",
+        }
+        for unit in CONTROL_PLANE_SERVICE_UNITS
+    }
+
+
+def test_default_facts_root_uses_systemd_reader_without_touching_a_host(monkeypatch):
+    from fleetd import facts as facts_module
+
+    monkeypatch.setattr(facts_module, "DEFAULT_ROOT", FIXTURE_ROOT)
+    queried = []
+
+    def fake_reader(unit):
+        queried.append(unit)
+        return CONTROL_PLANE_SERVICE_UNITS.index(unit) + 1, None
+
+    monkeypatch.setattr(facts_module, "_read_systemd_memory_min", fake_reader)
+    facts = collect_host_facts(FIXTURE_ROOT)
+    assert queried == list(CONTROL_PLANE_SERVICE_UNITS)
+    assert [
+        facts["control_plane"]["service_memory_min"][unit]["memory_min_bytes"]
+        for unit in CONTROL_PLANE_SERVICE_UNITS
+    ] == list(range(1, len(CONTROL_PLANE_SERVICE_UNITS) + 1))
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected", "reason"),
+    [
+        ("12345", 12345, None),
+        ("MemoryMin=67890", 67890, None),
+        ("0", None, "zero or unset"),
+        ("infinity", None, "infinity"),
+        ("", None, "unset"),
+        ("MemoryLow=10", None, "not a MemoryMin property"),
+        ("12\n13", None, "not one value"),
+        ("not-bytes", None, "non-negative integer"),
+    ],
+)
+def test_systemd_memory_min_parser_marks_zero_infinity_and_unset_as_not_reported(raw, expected, reason):
+    value, error = _parse_systemd_memory_min(raw, "ssh.service")
+    assert value == expected
+    if reason is None:
+        assert error is None
+    else:
+        assert reason in error
+
+
+def test_systemd_memory_min_reader_uses_systemctl_show_and_reports_failures(monkeypatch):
+    from fleetd import facts as facts_module
+
+    calls = []
+
+    def successful(command, **kwargs):
+        calls.append((command, kwargs))
+        return type("Completed", (), {"returncode": 0, "stdout": "1048576\n"})()
+
+    monkeypatch.setattr(facts_module.subprocess, "run", successful)
+    assert _read_systemd_memory_min("ssh.service") == (1048576, None)
+    assert calls[0][0] == ["systemctl", "show", "-p", "MemoryMin", "--value", "--no-pager", "ssh.service"]
+    assert calls[0][1]["timeout"] == 5
+
+    monkeypatch.setattr(
+        facts_module.subprocess, "run",
+        lambda *_args, **_kwargs: type("Completed", (), {"returncode": 1, "stdout": ""})(),
+    )
+    value, reason = _read_systemd_memory_min("ssh.service")
+    assert value is None and "exited 1" in reason
+
+    def timeout(*_args, **_kwargs):
+        raise facts_module.subprocess.TimeoutExpired("systemctl", 5)
+
+    monkeypatch.setattr(facts_module.subprocess, "run", timeout)
+    value, reason = _read_systemd_memory_min("ssh.service")
+    assert value is None and "timed out" in reason
+
+    def unavailable(*_args, **_kwargs):
+        raise FileNotFoundError("systemctl")
+
+    monkeypatch.setattr(facts_module.subprocess, "run", unavailable)
+    value, reason = _read_systemd_memory_min("ssh.service")
+    assert value is None and "unavailable" in reason
 
 
 def test_guard_dropins_override_rules_and_change_digest(tmp_path):

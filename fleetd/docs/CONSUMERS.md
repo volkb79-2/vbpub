@@ -2,8 +2,8 @@
 
 ## Collect and validate host facts
 
-The facts command is read-only. A fixture root gives the same parser and
-collector behavior without reading the calling machine:
+The facts command is read-only. A fixture root reads only the supplied files
+and does not query the calling machine's systemd:
 
 ```sh
 fleet facts collect --root ./host-root > host-facts.json
@@ -12,7 +12,9 @@ fleet facts validate host-facts.json
 
 On a host, `fleet facts collect` requires `/etc/fleetd/facts.toml`. The file is
 host-owned and must declare schema version 1, the control-plane slice, policy
-limits, and source paths. `--root DIR` maps both this config path and the
+limits, and source paths. It may set `control_plane.profile_reserve_bytes` to
+the fixed fallback for that host profile; if omitted, fleetd uses the 768 MiB
+compatibility profile constant. `--root DIR` maps both this config path and the
 config's absolute source paths beneath `DIR`; tests can collect facts without
 reading the calling machine. The Geekbench JSON path is host-owned config;
 fleetd reads the record and never invokes Geekbench. It exports only the
@@ -29,6 +31,7 @@ guard_config = "/etc/cgprofile/guard.toml"
 
 [control_plane]
 slice = "ctl.slice"
+profile_reserve_bytes = 805306368
 
 [policy]
 overcommit = 1.5
@@ -45,12 +48,19 @@ host-owned `HOST_ROLE` setting. `max_lane_containers`, `guard_state`, and
 collector reads guard config plus lexically ordered `.toml` drop-ins for its
 digest and effective `enabled` value. It reports but does not apply guard
 rules. It reads cgroup v2 controllers, the configured slice's `memory.min` and
-`cpu.weight`, PSI avg10, swap counters, and KSM sysfs values.
-`memory.for_lanes` is raw `MemTotal`. Planning computes the control-plane
-reserve as the larger of the reported `memory.min` and the design default
-`clamp(256 MiB + ceil(6% × MemTotal), 768 MiB, 2 GiB)`; if the slice or
-`memory.min` is absent, the default is used. KSM swappiness-argument support
-is unknown because the collector makes no write probe.
+`cpu.weight`, PSI avg10, swap counters, and KSM sysfs values. It also reads
+`MemoryMin` for the fixed, bounded `CONTROL_PLANE_SERVICE_UNITS` list in
+`fleetd.contracts` with `systemctl show -p MemoryMin`. A fixture root does not
+invoke systemctl; its service entries remain null with reasons. `0`,
+`infinity`, unset, and failed queries are not reported values. `memory.for_lanes`
+is raw `MemTotal`. Planning sums the service values only if every listed unit
+reports a positive value; otherwise it uses the per-profile fixed constant and
+reports `reserve_source = "profile-constant"` plus `reserve_missing_services`.
+When every unit reports, `reserve_source = "service-memory-min"` and the
+reserve is their sum. The parent slice's `memory.min` remains visible as a
+protection fact, but is never a floor under the reserve. KSM
+swappiness-argument support is unknown because the collector makes no write
+probe.
 
 ## Plan a candidate set
 
@@ -97,14 +107,15 @@ and [fleet-host-set.valid.json](../tests/fixtures/fleet-host-set.valid.json)
 show the exact input shapes.
 
 The planner refuses a host whose role is shared-prod or unknown, as well as
-hosts with unknown MemTotal/physical lane memory, CPU, or PSI admission facts.
-A missing control-plane slice or unreadable `memory.min` does not refuse the
-host: the design default reserve is applied and the plan reports
-`reserve_source = "design-default"`. A reported value at or above the default
-is used with `reserve_source = "reported"`; a smaller value is raised to the
-default. A reported value above 2 GiB remains honored; the cap applies to the
-computed default. The later 1.25 × measured-p95 policy is not implemented or
-inferred by this planner.
+hosts with unknown physical lane memory, CPU, or PSI admission facts. Missing
+or partial service values, including an absent control-plane slice, do not
+refuse the host: the host profile's fixed reserve is applied, and the plan
+lists each service without a positive value. The default profile constant is
+768 MiB, the former lower bound and above the measured 450–500 MB near-idle hot
+RSS on the two 8 GiB hosts. A host profile can provide its own fixed value;
+reserve selection does not use `MemTotal`, `MemAvailable`, or measured RSS.
+Calibration of profile constants from measured p95 under load remains open as
+[FD-007b](../KNOWN_ISSUES_TODO_BACKLOG.md#fd-007b-calibrate-profile-reserve-from-measured-p95-under-load).
 
 ```sh
 fleet plan r2 \
@@ -273,15 +284,16 @@ from a different commit or image are ignored and those candidates run again at
 closeout. Compare the closeout's candidate counts with the planned list before
 using its elapsed time as the campaign ETA.
 
-The host arithmetic uses
-`reserve_h = max(reported control_plane.memory_min_bytes, design default)` for
-a present control-plane slice; if it is absent or has no readable report, the
-default alone applies. The
+The host arithmetic uses the sum of all positive service `memory_min_bytes`
+values when the complete fixed service list is present. If a service is
+missing, zero, or `infinity`, it uses that host's fixed profile constant
+(768 MiB when the host config has no override); partial sums are never used.
+The parent `control_plane.memory_min_bytes` remains a reported fact and is not
+a reserve floor. The
 `P = memory.for_lanes_bytes - reserve_h`, O = other running charges + one
-campaign instance's `instance_memory`, and B = P × overcommit - O. The
-default is `clamp(256 MiB + ceil(6% × MemTotal), 768 MiB, 2 GiB)`, from design
-§3.6; a missing report uses the default. Each host plan records `reserve_bytes`
-and `reserve_source` so the input to P is visible. Worker slots are the
+campaign instance's `instance_memory`, and B = P × overcommit - O. Each host
+plan and campaign status record `reserve_bytes`, `reserve_source`, and
+`reserve_missing_services` so the input to P is visible. Worker slots are the
 CPU-based count after other workers, bounded by the lane's
 `efficient_upper_bound`. The manual planner reserves one campaign slot per
 host; parallel slots need the future supervisor (FD-006). Shared placement
