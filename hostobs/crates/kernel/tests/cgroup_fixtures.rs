@@ -230,6 +230,44 @@ fn an_unparsable_io_counter_makes_the_sum_unavailable_and_a_cost_gauge_is_separa
 }
 
 #[test]
+fn an_overflowing_io_sum_is_unreadable_instead_of_clamped() {
+    // A sum that does not fit the type is a corrupt file, not a saturated reading.
+    // `saturating_add` would report `u64::MAX` as a measured total: a number the kernel
+    // never wrote, which is precisely the invented value this crate refuses. The counters
+    // (`checked_add` + `bad`) and the iocost sums use the same rule.
+    let mut topology = FixedTopology::with_default(DeviceTopology::Bottom);
+    topology.set("8:0", DeviceTopology::Bottom);
+    topology.set("8:16", DeviceTopology::Bottom);
+
+    let counters = b"8:0 rbytes=18446744073709551615\n8:16 rbytes=1\n";
+    let readings = parse_io_stat(counters, Bounds::POLICY, &topology).expect("io.stat");
+    assert_eq!(
+        readings.quality("io.rbytes"),
+        Some(QualityCode::UNREADABLE),
+        "an overflowing total is refused, not clamped at u64::MAX"
+    );
+    assert_eq!(readings.u64("io.rbytes"), None);
+    // The whole counter set is refused together, which is the module's stated rule: a
+    // partial total is a wrong number that looks right, and `io.rbytes`/`io.wbytes` are
+    // read as one aggregate. So nobody can read `wbytes` as a total while `rbytes` failed.
+    assert_eq!(readings.quality("io.wbytes"), Some(QualityCode::UNREADABLE));
+
+    let cost = b"8:0 cost.usage=18446744073709551615\n8:16 cost.usage=1 cost.wait=2\n";
+    let readings = parse_io_stat(cost, Bounds::POLICY, &topology).expect("io.stat");
+    assert_eq!(
+        readings.quality("io.cost.usage"),
+        Some(QualityCode::UNREADABLE),
+        "the iocost sum refuses an overflow too (checked_add, not saturating_add)"
+    );
+    assert_eq!(readings.u64("io.cost.usage"), None);
+    assert_eq!(
+        readings.quality("io.cost.wait"),
+        Some(QualityCode::UNREADABLE),
+        "one bad iocost field makes the iocost sums unavailable as a set"
+    );
+}
+
+#[test]
 fn pressure_files_carry_gauges_and_counters_and_a_missing_full_row() {
     let readings = parse_pressure(PressureResource::Cpu, &read("cpu.pressure"), Bounds::POLICY)
         .expect("cpu.pressure");

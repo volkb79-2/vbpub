@@ -53,16 +53,18 @@ from the sampler's own fixtures), never by a live host. SP-4's wire-size measure
 numbers that confirm decision D4 are in [`docs/SP-4-WIRE-SIZES.md`](docs/SP-4-WIRE-SIZES.md).
 
 The test-quality claim for these crates is a hand mutation campaign (Rust R2 is not adopted
-yet), recorded in [`docs/HAND-MUTANTS-M1.md`](docs/HAND-MUTANTS-M1.md): twenty-one
-mutations, all killed.
+yet), recorded in [`docs/HAND-MUTANTS-M1.md`](docs/HAND-MUTANTS-M1.md) (twenty-one mutations,
+all killed) and [`docs/HAND-MUTANTS-M1B.md`](docs/HAND-MUTANTS-M1B.md) (thirty-one mutations,
+all killed).
 
 Open items found while building these packages are in
-[`KNOWN_ISSUES_TODO_BACKLOG.md`](KNOWN_ISSUES_TODO_BACKLOG.md) (`HOB-1` … `HOB-22`): the
+[`KNOWN_ISSUES_TODO_BACKLOG.md`](KNOWN_ISSUES_TODO_BACKLOG.md) (`HOB-1` … `HOB-26`): the
 sharpest still-open ones are `HOB-17` (the `kernel` crate carries its own value and quality
 types until the Rust lane image can be rebuilt against a new `Cargo.lock`), `HOB-21` (no
 `/sys` device-topology source, so a production `io.*` aggregate is `unknown-topology` until
 the probe supplies one) and `HOB-4` (the Python conformance run is still a manual check, not
-a registered lane).
+a registered lane). `HOB-26` states the SP-2 limit plainly: the kernel-side rate arithmetic
+is a test-local helper, because `kernel` cannot depend on `model` (`HOB-17`).
 
 ## Gates
 

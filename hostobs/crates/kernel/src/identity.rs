@@ -371,7 +371,11 @@ impl ClockTicks {
 ///
 /// The `comm` field may contain spaces and parentheses, so the line is split at its last
 /// `)`: everything before it is `pid (comm`, and the fields after it are numbered from 3
-/// (state) as the kernel's own field numbers do.
+/// (state) as the kernel's own field numbers do (proc(5), `Documentation/filesystems/`
+/// `proc.rst`). Every field below is named by its **proc(5) field number**, and the index
+/// into the split line is derived from it ([`STAT_FIELD_OFFSET`]) rather than written
+/// twice: a hand-written `(index, field)` pair that disagreed with itself is exactly the
+/// defect `HOB-23` fixed (minflt read from field 12 instead of field 10).
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct StatLine {
     /// The pid the line names (field 1).
@@ -381,9 +385,13 @@ pub struct StatLine {
     pub comm: Vec<u8>,
     /// Field 3: the state letter.
     pub state: u8,
-    /// Field 12: minor faults.
+    /// Field 10 (`minflt`): minor faults this process has had since it started.
+    ///
+    /// Fields 11 (`cminflt`) and 13 (`cmajflt`) are the faults its waited-for children had;
+    /// they are deliberately not published here, because they are not this process's faults
+    /// and folding them into `minflt`/`majflt` would overstate them.
     pub minflt: u64,
-    /// Field 13: major faults since the process started.
+    /// Field 12 (`majflt`): major faults this process has had since it started.
     pub majflt: u64,
     /// Field 14: user time, clock ticks.
     pub utime: u64,
@@ -397,6 +405,25 @@ pub struct StatLine {
     pub rss_pages: u64,
     /// Field 42 (`delayacct_blkio_ticks`), when the kernel writes it.
     pub delayacct_blkio_ticks: Option<u64>,
+}
+
+/// The offset between a proc(5) field number and an index into the fields after `)`.
+///
+/// `pid` is field 1 and `comm` is field 2 (and `comm` is consumed with its parentheses), so
+/// the first field after `)` is the kernel's field 3 and index `i` is field `i + 3`.
+/// Every field lookup in [`parse_stat`] goes through this one constant, so a field can be
+/// named exactly once.
+pub const STAT_FIELD_OFFSET: usize = 3;
+
+/// The index into the fields after `)` of a kernel field number.
+///
+/// A field number below [`STAT_FIELD_OFFSET`] names one of the two fields that come *before*
+/// `)`, so it has no index here; this crate only calls it with the field numbers it declares
+/// (10, 12, 14, 15, 20, 22, 24, 42), all above the offset. `wrapping_sub` keeps the function
+/// total and infallible for those inputs instead of introducing an unwrap.
+#[must_use]
+const fn field_index(field_number: usize) -> usize {
+    field_number.wrapping_sub(STAT_FIELD_OFFSET)
 }
 
 /// Parse one `/proc/<pid>/stat` line.
@@ -429,7 +456,8 @@ pub fn parse_stat(line: &[u8]) -> Result<StatLine, IdentityError> {
         .ok_or(IdentityError::StatComm)?
         .to_vec();
     // Fields after `)`: index 0 is field 3 (state). The kernel's own numbering starts at 1
-    // (pid) and 2 (comm), so index `i` is field `i + 3`.
+    // (pid) and 2 (comm), so `field_index` derives an index from a field number and no
+    // index is written by hand beside a field number anywhere in this reader.
     let rest = line.get(close + 1..).ok_or(IdentityError::StatComm)?;
     let fields: Vec<&[u8]> = crate::parse::fields(rest);
     // Field 3 is the state letter (`R`, `S`, `D`, …), not a number: it is the one field
@@ -440,15 +468,11 @@ pub fn parse_stat(line: &[u8]) -> Result<StatLine, IdentityError> {
         .first()
         .copied()
         .ok_or(IdentityError::StatShape { field: 3 })?;
-    let required = [
-        (9usize, 12usize),
-        (10usize, 13usize),
-        (11usize, 14usize),
-        (12usize, 15usize),
-        (17usize, 20usize),
-        (19usize, 22usize),
-        (21usize, 24usize),
-    ];
+    // The fields this reader needs, named by their proc(5) field numbers only. The index
+    // into the split line is derived, never written beside the number: an index/field pair
+    // written by hand is what let minflt (field 10) and majflt (field 12) be read from
+    // fields 12 and 13 in the first place.
+    let required = [10usize, 12, 14, 15, 20, 22, 24];
     let mut minflt = 0u64;
     let mut majflt = 0u64;
     let mut utime = 0u64;
@@ -457,25 +481,30 @@ pub fn parse_stat(line: &[u8]) -> Result<StatLine, IdentityError> {
     let mut start_ticks = 0u64;
     let mut rss_pages = 0u64;
     let mut delayacct = None;
-    for (index, field_number) in required {
-        let field = fields.get(index).ok_or(IdentityError::StatShape {
-            field: field_number,
-        })?;
+    for field_number in required {
+        let field = fields
+            .get(field_index(field_number))
+            .ok_or(IdentityError::StatShape {
+                field: field_number,
+            })?;
         let parsed = parse_u64(field).map_err(IdentityError::Parse)?;
-        match index {
-            9 => minflt = parsed,
-            10 => majflt = parsed,
-            11 => utime = parsed,
-            12 => stime = parsed,
-            17 => num_threads = parsed,
-            19 => start_ticks = parsed,
-            21 => rss_pages = parsed,
+        match field_number {
+            // `minflt` (field 10) and `majflt` (field 12) are this process's own fault
+            // counters; field 11 (`cminflt`) and field 13 (`cmajflt`) are its children's
+            // and are deliberately not read.
+            10 => minflt = parsed,
+            12 => majflt = parsed,
+            14 => utime = parsed,
+            15 => stime = parsed,
+            20 => num_threads = parsed,
+            22 => start_ticks = parsed,
+            24 => rss_pages = parsed,
             _ => {}
         }
     }
-    // delayacct_blkio_ticks is field 42, i.e. index 39. It exists only when the kernel
-    // builds with delay accounting; its absence is not an error, just no reading.
-    if let Some(field) = fields.get(39) {
+    // delayacct_blkio_ticks is field 42. It exists only when the kernel is built with
+    // delay accounting; its absence is not an error, just no reading.
+    if let Some(field) = fields.get(field_index(42)) {
         delayacct = Some(parse_u64(field).map_err(IdentityError::Parse)?);
     }
     Ok(StatLine {
@@ -508,7 +537,7 @@ pub fn read_boot_id<F: Fs>(fs: &F, path: &Path, max_bytes: usize) -> Result<Boot
 mod tests {
     use super::{
         cgroup_identity, parse_stat, read_boot_id, BootId, CgroupIdentity, ClockTicks,
-        IdentityError, ProcessIdentity, StatLine,
+        IdentityError, ProcessIdentity, StatLine, STAT_FIELD_OFFSET,
     };
     use crate::fs::MemFs;
     use crate::parse::ParseError;
@@ -517,27 +546,50 @@ mod tests {
     const BOOT: &str = "00112233-4455-6677-8899-aabbccddeeff";
     const BARE: &str = "00112233445566778899aabbccddeeff";
 
+    /// A `/proc/<pid>/stat` line built from proc(5) field numbers.
+    ///
+    /// `value(field)` supplies field `field`'s text; the state (field 3) is always `S`, and
+    /// the line ends at field `last`. The array is filled by **field number** and the index
+    /// is derived once, so a helper cannot re-introduce the index/field disagreement that
+    /// `HOB-23` fixed.
+    fn stat_line_with(
+        pid: u32,
+        comm: &str,
+        last: usize,
+        value: impl Fn(usize) -> String,
+    ) -> Vec<u8> {
+        let tokens: Vec<String> = (STAT_FIELD_OFFSET..=last)
+            .map(|field| {
+                if field == STAT_FIELD_OFFSET {
+                    "S".to_string()
+                } else {
+                    value(field)
+                }
+            })
+            .collect();
+        format!("{pid} ({comm}) {}\n", tokens.join(" ")).into_bytes()
+    }
+
+    /// A realistic stat line whose fields are distinct from their neighbours.
+    ///
+    /// Every field carries a value that differs from the value of the fields beside it, so
+    /// an index that slips by one reads a different number and the assertion fails by name
+    /// (the tautological helper of the M1b package carried `7` and `3` at the wrong
+    /// indexes, and its own comments repeated the same wrong table).
     fn stat_line(pid: u32, comm: &str, start: u64, threads: u64, delayacct: bool) -> Vec<u8> {
-        // The kernel's field order: 1 pid, 2 comm, 3 state, ... 12 minflt, 13 majflt,
-        // 14 utime, 15 stime, 20 num_threads, 22 starttime, 24 rss, 42 delayacct.
-        let mut fields: Vec<String> = vec!["0".to_string(); 44];
-        fields[0] = "S".to_string();
-        fields[9] = "7".to_string(); // minflt (field 12)
-        fields[10] = "3".to_string(); // majflt (field 13)
-        fields[11] = "5".to_string(); // utime
-        fields[12] = "2".to_string(); // stime
-        fields[17] = threads.to_string(); // num_threads
-        fields[19] = start.to_string(); // starttime
-        fields[21] = "100".to_string(); // rss pages
-        if delayacct {
-            fields[39] = "11".to_string();
-        }
-        let tail = if delayacct {
-            fields.join(" ")
-        } else {
-            fields[..39].join(" ")
-        };
-        format!("{pid} ({comm}) {tail}\n").into_bytes()
+        let last = if delayacct { 46 } else { 40 };
+        stat_line_with(pid, comm, last, |field| match field {
+            10 => "7".to_string(),      // minflt (field 10)
+            11 | 13 => "0".to_string(), // cminflt, cmajflt: the children's faults
+            12 => "3".to_string(),      // majflt (field 12)
+            14 => "5".to_string(),      // utime
+            15 => "2".to_string(),      // stime
+            20 => threads.to_string(),  // num_threads
+            22 => start.to_string(),    // starttime
+            24 => "100".to_string(),    // rss
+            42 => "11".to_string(),     // delayacct_blkio_ticks
+            other => other.to_string(), // a harmless distinct value
+        })
     }
 
     #[test]
@@ -627,16 +679,19 @@ mod tests {
 
     #[test]
     fn a_stat_line_is_read_at_its_kernel_field_numbers_including_a_parenthesis_in_comm() {
-        let line = stat_line(4242, "worker (2)", 500, 3, true);
+        let line = stat_line(4242, "worker (2)", 500, 4, true);
         let parsed: StatLine = parse_stat(&line).expect("stat");
         assert_eq!(parsed.pid, 4242);
         assert_eq!(parsed.comm, b"worker (2)", "spaces and parentheses survive");
         assert_eq!(parsed.state, b'S');
-        assert_eq!(parsed.minflt, 7);
-        assert_eq!(parsed.majflt, 3);
+        // proc(5): 10 minflt, 11 cminflt, 12 majflt, 13 cmajflt. The two children's
+        // counters are zero in this fixture, so reading either of them as this process's
+        // faults does not produce 7 or 3.
+        assert_eq!(parsed.minflt, 7, "field 10 is minflt");
+        assert_eq!(parsed.majflt, 3, "field 12 is majflt");
         assert_eq!(parsed.utime, 5);
         assert_eq!(parsed.stime, 2);
-        assert_eq!(parsed.num_threads, 3);
+        assert_eq!(parsed.num_threads, 4);
         assert_eq!(parsed.start_ticks, 500);
         assert_eq!(parsed.rss_pages, 100);
         assert_eq!(parsed.delayacct_blkio_ticks, Some(11));
@@ -645,6 +700,35 @@ mod tests {
         let parsed = parse_stat(&stat_line(7, "plain", 9, 1, false)).expect("stat");
         assert_eq!(parsed.delayacct_blkio_ticks, None);
         assert_eq!(parsed.start_ticks, 9);
+    }
+
+    #[test]
+    fn every_stat_field_this_reader_reads_arrives_at_its_proc5_field_number() {
+        // Field `n` carries the value `n`, so a reading can only equal its own field
+        // number: every assertion below therefore says "this value came from field N" and
+        // an index that slipped by even one reads a different number and fails by name.
+        // This is the test K1 (`HOB-23`) asked for: the earlier helper put `7` and `3` at
+        // the wrong indexes and asserted the same wrong table back to itself.
+        let line = stat_line_with(4242, "by-number", 46, |field| field.to_string());
+        let parsed = parse_stat(&line).expect("stat");
+        assert_eq!(parsed.minflt, 10, "minflt is field 10, not 11 (cminflt)");
+        assert_eq!(parsed.majflt, 12, "majflt is field 12, not 13 (cmajflt)");
+        assert_eq!(parsed.utime, 14, "utime is field 14");
+        assert_eq!(parsed.stime, 15, "stime is field 15");
+        assert_eq!(parsed.num_threads, 20, "num_threads is field 20");
+        assert_eq!(parsed.start_ticks, 22, "starttime is field 22");
+        assert_eq!(parsed.rss_pages, 24, "rss is field 24");
+        assert_eq!(
+            parsed.delayacct_blkio_ticks,
+            Some(42),
+            "delayacct_blkio_ticks is field 42"
+        );
+        // The two fault counters are this process's own faults: field 11 and field 13 are
+        // the faults its waited-for children had and must not be folded in (a value of 11
+        // or 13 would prove one was).
+        assert_eq!((parsed.minflt, parsed.majflt), (10, 12));
+        assert_eq!(parsed.comm, b"by-number");
+        assert_eq!(parsed.state, b'S');
     }
 
     #[test]
@@ -660,30 +744,44 @@ mod tests {
             Err(IdentityError::PidZero),
             "pid 0 is not a process"
         );
-        // Field 3 exists but field 12 does not: name the field the identity needed.
+        // Field 3 exists but field 10 does not: name the field the identity needed.
         assert_eq!(
             parse_stat(b"1 (a) S"),
-            Err(IdentityError::StatShape { field: 12 }),
+            Err(IdentityError::StatShape { field: 10 }),
             "a line with only the state has no minflt field"
         );
+        // Nine numbers after the state reach field 12 and stop before field 14.
         let short = b"1 (a) S 1 2 3 4 5 6 7 8 9";
         assert_eq!(
             parse_stat(short),
-            Err(IdentityError::StatShape { field: 13 }),
-            "ten fields after `)` reach field 12 and stop before field 13"
+            Err(IdentityError::StatShape { field: 14 }),
+            "the first field the line does not have is named"
         );
-        let bad = b"1 (a) S 1 2 3 4 5 6 7 8 9 x";
+        let bad = stat_line_with(1, "a", 24, |field| {
+            if field == 12 {
+                "x".to_string()
+            } else {
+                field.to_string()
+            }
+        });
         assert_eq!(
-            parse_stat(bad),
+            parse_stat(&bad),
             Err(IdentityError::Parse(ParseError::NotANumber {
                 byte: b'x',
                 offset: 0
-            }))
+            })),
+            "field 12 (majflt) does not parse"
         );
         // A negative field is refused, never wrapped.
-        let negative = b"1 (a) S 1 2 3 4 5 6 7 8 9 -1 0 0 0 0 0 0 0 0 0";
+        let negative = stat_line_with(1, "a", 24, |field| {
+            if field == 10 {
+                "-1".to_string()
+            } else {
+                field.to_string()
+            }
+        });
         assert_eq!(
-            parse_stat(negative),
+            parse_stat(&negative),
             Err(IdentityError::Parse(ParseError::Negative)),
             "a negative minflt is corrupt, not u64::MAX"
         );

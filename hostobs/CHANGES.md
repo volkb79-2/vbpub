@@ -28,13 +28,16 @@
   zero-length interval refusing a rate, and late discovery (an age since discovery and none
   since boot). Every expectation is hand-computed.
 - **Hand-mutation record for M1 part 2** (`docs/HAND-MUTANTS-M1B.md`,
-  `docs/hand-mutants/m1b-mutants.py`): twenty-six stored patches over the proto/Python
-  refusals, the kernel collectors, the parse/value/identity guards and the clocks. All
-  killed, each restore SHA-256-verified; a patch that does not compile is reported as
-  `NOT-BUILT` instead of counted as a kill.
-- **Backlog** grows from `HOB-13` to `HOB-22` (the three luna findings as fixed entries, the
-  kernel's own value/quality types and its consequences, `st_dev` versus a `statx` mount id,
-  the missing `/sys` topology source, and the fixture-only reader evidence).
+  `docs/hand-mutants/m1b-mutants.py`): thirty-one stored patches over the proto/Python
+  refusals, the kernel collectors, the parse/value/identity guards, the clocks and the fix
+  round's stat mapping. All killed, each restore SHA-256-verified; a patch that does not
+  compile is reported as `NOT-BUILT` instead of counted as a kill, and a patch whose stored
+  fragment no longer matches the source is `NOT APPLIED` rather than a survivor.
+- **Backlog** grows from `HOB-13` to `HOB-26`: the three luna findings as fixed entries, the
+  kernel's own value/quality types and their consequences, `st_dev` versus a `statx` mount
+  id, the missing `/sys` topology source, the fixture-only reader evidence, and (from the
+  fix round) the `stat` field mapping, the reported-length read, the iocost overflow rule and
+  the SP-2 rate-helper limit.
 
 ### Fixed
 
@@ -53,6 +56,22 @@
   more sections than it carried raised `struct.error`. The read is now bounded with context
   `block directory` and `need`/`have`; the `truncated-directory` fixture pins it and a
   Python test asserts the refusal for declared counts 1..4.
+- **A `/proc/<pid>/stat` field is named by its proc(5) number, not by a hand-written index**
+  (`HOB-23`). `parse_stat` read `minflt` from field 12 (which is `majflt`) and `majflt` from
+  field 13 (`cmajflt`), and the unit-test helper, the committed fixture and the SP-2
+  assertions carried the same wrong table, so the tests pinned the defect. The reader now
+  declares field numbers 10/12/14/15/20/22/24/42 and derives every index through one
+  `STAT_FIELD_OFFSET`, children's faults (11/13) are deliberately unread, the fixture and
+  helper are generated from field numbers, and a new test gives field `n` the value `n` so
+  every assertion proves its own field.
+- **A read is bounded by the bytes it actually reads** (`HOB-24`). `RealFs::read` refused a
+  file by its *reported* length (a sysfs attribute reports one page whatever its size) and
+  computed `max_bytes + 1` unsaturating, so `usize::MAX` (“no bound”) wrapped the limit to 0
+  and returned an empty file. It now applies the bound to the bytes read and saturates the
+  `+ 1`.
+- **An overflowing iocost sum is unreadable, not clamped** (`HOB-25`). `io.stat`'s counter
+  sums used `checked_add` while its iocost sums used `saturating_add`, publishing
+  `u64::MAX` as a measured cost. Both refuse now.
 - **An unknown device topology is a state, not a bottom device** (`HOB-20`). The sampler
   treated an unclassified device as bottom
   (`collect.rs::is_bottom`, `last.get(dev).copied().unwrap_or(true)`), so a failed `/sys`
@@ -67,9 +86,13 @@
 
 ### Changed
 
+- `docs/HAND-MUTANTS-M1B.md` and `docs/hand-mutants/m1b-mutants.py`: twenty-six patches
+  became thirty-one (the fix round adds the `stat` mapping's three patches, the iocost
+  overflow and the unbounded read).
 - `coverage-floors.toml`: `crates/kernel` raised from the M0 bootstrap 90%/85% to 92% line /
   93% region after its own tests reached 92.19% line / 93.50% region. No floor was lowered
-  and no code is excluded from coverage.
+  and no code is excluded from coverage. The fix round adds tests without changing the
+  floor: a raised floor is re-measured, never lowered to fit.
 - The `proto` refusal vocabulary grows from 40 to 42 names (`not-a-block`, `section-order`);
   the count test, the display test, the fixture comparison in both languages and the crate
   docs were updated together. `fixtures/wire` grows from 23 to 26 cases (7 valid, 19 refusals).

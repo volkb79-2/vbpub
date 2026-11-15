@@ -276,21 +276,31 @@ fn to_fs_error(error: &std::io::Error) -> FsError {
 
 impl Fs for RealFs {
     fn read(&self, path: &Path, max_bytes: usize) -> Result<Vec<u8>, FsError> {
-        // Bounded by the caller's byte allowance, and the file is checked for size first so
-        // a huge pseudo-file is refused without reading it at all.
         let metadata = std::fs::metadata(path).map_err(|error| to_fs_error(&error))?;
         if !metadata.is_file() {
             return Err(FsError::NotAFile);
         }
-        let len = usize::try_from(metadata.len()).unwrap_or(usize::MAX);
-        if len > max_bytes {
-            return Err(FsError::TooLarge { max_bytes });
-        }
         let mut file = std::fs::File::open(path).map_err(|error| to_fs_error(&error))?;
-        // A pseudo-file reports length 0 and still answers with content, so read with the
-        // bound: `take` stops at `max_bytes + 1` and one byte past the bound is a refusal.
-        let mut bytes = Vec::with_capacity(len.min(max_bytes));
-        let read = std::io::Read::take(&mut file, u64::try_from(max_bytes).unwrap_or(u64::MAX) + 1);
+        // The bound is applied to the bytes **actually read**, never to a file's reported
+        // length, because that length is a hint and not the fact: a sysfs attribute reports
+        // one page (4096) whatever its content, and a `/proc` pseudo-file reports 0 while
+        // answering with text. Refusing by reported length would reject a 20-byte sysfs
+        // attribute under a 256-byte cap (a refusal about a file that is small enough), and
+        // trusting it the other way would read past the bound. `take(max_bytes + 1)` stops
+        // one byte past the allowance, so a real file that *is* too large costs at most
+        // `max_bytes + 1` bytes read and then gets [`FsError::TooLarge`].
+        //
+        // `saturating_add` is not decoration: `usize::MAX` means "no bound", and an
+        // unsaturating `+ 1` wraps that limit to 0 (an empty `Ok`, which is a wrong answer
+        // that looks like an empty file) or panics in a debug build.
+        let limit = u64::try_from(max_bytes)
+            .unwrap_or(u64::MAX)
+            .saturating_add(1);
+        // No `with_capacity(metadata.len())`: the hint of a pseudo-file is 0 and of a huge
+        // file is huge, so neither is a good allocation size. `read_to_end` grows into the
+        // `take` bound, which is already bounded.
+        let mut bytes = Vec::new();
+        let read = std::io::Read::take(&mut file, limit);
         std::io::Read::read_to_end(&mut std::io::BufReader::new(read), &mut bytes)
             .map_err(|error| to_fs_error(&error))?;
         if bytes.len() > max_bytes {
@@ -504,6 +514,16 @@ mod tests {
             Err(FsError::NotAFile),
             "a directory is not a file, so a reader cannot get a listing by accident"
         );
+        // `usize::MAX` is "no bound", and it must mean *read the whole file*: the bound is
+        // `max_bytes + 1` so one byte past it can be detected, and an unsaturating `+ 1`
+        // wraps that limit to 0 (an empty `Ok`, which is a wrong answer) or panics in a
+        // debug build.
+        assert_eq!(
+            fs.read(&large, usize::MAX),
+            Ok(std::fs::read(&large).expect("the fixture itself")),
+            "an unbounded read returns the whole file"
+        );
+        assert_eq!(fs.read(&small, usize::MAX), Ok(b"12 34\n".to_vec()));
     }
 
     #[test]

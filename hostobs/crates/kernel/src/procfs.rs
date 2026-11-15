@@ -640,27 +640,21 @@ pub fn parse_status(text: &[u8], bounds: Bounds) -> Result<Readings, ProcError> 
             _ => (&parts[..], "count"),
         };
         if name == "Name" || name == "State" {
-            // Text fields are recorded as their text; a value is a number, and the reading
-            // type has no text variant, so they are kept as their first byte's state
-            // classification through a stable numeric code instead of a fabricated number.
-            let reading = if name == "State" {
+            // Text fields are recorded as their first byte's value through a stable numeric
+            // code, because a reading has no text variant and a fabricated number (0, say)
+            // would be a measurement the file never wrote. `Name:\tdemo` and `State:\tS …`
+            // are read this way; anything else with text in it (a unit word, a mis-split
+            // line) stays as the numeric fields below, which refuse per field.
+            readings.push(
+                format!("proc.status.text.{name}"),
                 Reading::measured(Value::U64(u64::from(
                     parts
                         .first()
                         .and_then(|part| part.first())
                         .copied()
                         .unwrap_or(0),
-                )))
-            } else {
-                Reading::measured(Value::U64(u64::from(
-                    parts
-                        .first()
-                        .and_then(|part| part.first())
-                        .copied()
-                        .unwrap_or(0),
-                )))
-            };
-            readings.push(format!("proc.status.text.{name}"), reading);
+                ))),
+            );
             continue;
         }
         for (index, part) in numbers.iter().enumerate() {
@@ -683,7 +677,11 @@ pub fn parse_status(text: &[u8], bounds: Bounds) -> Result<Readings, ProcError> 
     Ok(readings)
 }
 
-/// Parse one process's `statm` file: six page counts.
+/// Parse one process's `statm` file: seven page counts.
+///
+/// proc(5): `size resident shared text lib data dt`, in that order and in pages. The
+/// positions are the file's, so they are asserted by name in a test whose seven values are
+/// all distinct.
 ///
 /// Metrics: `proc.statm.size`, `.resident`, `.shared`, `.text`, `.lib`, `.data`, `.dt`.
 ///
@@ -853,13 +851,15 @@ mod tests {
         fs.directory("/proc/self", 8);
         fs.directory("/proc/pressure", 9);
         fs.directory("/proc/bus", 10);
-        fs.file("/proc/1/statm", "10 5 2 1 1 3 0\n", 11);
+        fs.file("/proc/1/statm", "8192 100 40 256 2048 1024 0\n", 11);
         fs.file(
             "/proc/1/status",
             "Name:\tdemo\nState:\tS (sleeping)\nPid:\t1\nThreads:\t3\nVmRSS:\t 4096 kB\n",
             12,
         );
-        fs.file("/proc/1/stat", "1 (demo) S 0 7 3 5 2 0 0 0 0 0 0 0 0 0 0 0 3 0 500 100 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 11 0 0\n", 13);
+        // Every field carries its own proc(5) number, so an index slip in `read_stat`
+        // changes the value and the test below fails by name.
+        fs.file("/proc/1/stat", "1 (demo) S 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46\n", 13);
         fs.file("/proc/1/cmdline", b"demo\0--serve\0".to_vec(), 14);
         fs.file(
             "/proc/sys/kernel/random/boot_id",
@@ -871,10 +871,32 @@ mod tests {
 
     #[test]
     fn a_cpu_row_keeps_every_column_the_kernel_writes() {
+        // proc(5) `/proc/stat`: user, nice, system, idle, iowait, irq, softirq, steal,
+        // guest, guest_nice. The columns are positional, so each carries its own number and
+        // every column is asserted by name: a table that slipped by one column fails.
         let text = b"cpu  1 2 3 4 5 6 7 8 9 10\ncpu0 1 1 1 1 1 1 1 1 1 1\nctxt 42\nbtime 1000\n";
         let readings = parse_proc_stat(text, Bounds::POLICY).expect("stat");
-        assert_eq!(readings.u64("proc.cpu.user"), Some(1));
-        assert_eq!(readings.u64("proc.cpu.guest_nice"), Some(10));
+        for (column, field) in [
+            "user",
+            "nice",
+            "system",
+            "idle",
+            "iowait",
+            "irq",
+            "softirq",
+            "steal",
+            "guest",
+            "guest_nice",
+        ]
+        .iter()
+        .zip(1..=10u64)
+        {
+            assert_eq!(
+                readings.u64(&format!("proc.cpu.{column}")),
+                Some(field),
+                "column {column} is position {field} in the cpu row"
+            );
+        }
         assert_eq!(readings.u64("proc.cpu.cpu0.guest"), Some(1));
         assert_eq!(readings.u64("proc.ctxt"), Some(42));
         assert_eq!(readings.u64("proc.btime"), Some(1000));
@@ -895,11 +917,15 @@ mod tests {
     }
 
     #[test]
-    fn loadavg_refuses_a_shape_it_does_not_have() {
-        let load = parse_loadavg(b"0.50 0.40 0.30 1/100 999\n").expect("loadavg");
+    fn loadavg_reads_its_five_proc5_fields_by_position() {
+        // proc(5) `/proc/loadavg`: load1, load5, load15, runnable/total, last_pid. The
+        // values differ from each other so a field read one position over fails by name.
+        let load = parse_loadavg(b"0.50 0.40 0.30 4/120 999\n").expect("loadavg");
         assert_eq!(load.one, 0.50);
-        assert_eq!(load.runnable, 1);
-        assert_eq!(load.entities, 100);
+        assert_eq!(load.five, 0.40);
+        assert_eq!(load.fifteen, 0.30);
+        assert_eq!(load.runnable, 4, "runnable is the left half of `4/120`");
+        assert_eq!(load.entities, 120, "the total is the right half");
         assert_eq!(load.last_pid, 999);
         assert!(parse_loadavg(b"0.5 0.4\n").is_err());
         assert!(
@@ -914,10 +940,23 @@ mod tests {
         let proc = Proc::new("/proc");
         let files = read_process(&fs, &proc, 1, Bounds::POLICY, CmdlineBound::SAMPLER);
         let stat = files.stat.expect("stat");
-        assert_eq!(stat.start_ticks, 500);
+        assert_eq!(stat.start_ticks, 22, "starttime is proc(5) field 22");
+        assert_eq!(stat.minflt, 10, "minflt is field 10");
+        assert_eq!(stat.majflt, 12, "majflt is field 12");
+        assert_eq!((stat.utime, stat.stime), (14, 15));
+        assert_eq!(stat.num_threads, 20);
+        assert_eq!(stat.rss_pages, 24);
+        assert_eq!(stat.delayacct_blkio_ticks, Some(42));
         assert_eq!(stat.comm, b"demo");
         let statm = files.statm.expect("statm");
-        assert_eq!(statm.u64("proc.statm.resident"), Some(5));
+        // proc(5) `statm`: size, resident, shared, text, lib, data, dt — each field carries
+        // its own distinct number, so a column read one place over fails by name.
+        assert_eq!(statm.u64("proc.statm.size"), Some(8192));
+        assert_eq!(statm.u64("proc.statm.resident"), Some(100));
+        assert_eq!(statm.u64("proc.statm.shared"), Some(40));
+        assert_eq!(statm.u64("proc.statm.text"), Some(256));
+        assert_eq!(statm.u64("proc.statm.lib"), Some(2048));
+        assert_eq!(statm.u64("proc.statm.data"), Some(1024));
         assert_eq!(statm.u64("proc.statm.dt"), Some(0));
         let status = files.status.expect("status");
         assert_eq!(status.u64("proc.status.count.Threads.0"), Some(3));
@@ -948,14 +987,19 @@ mod tests {
     }
 
     #[test]
-    fn statm_is_six_page_counts_and_a_short_line_is_refused() {
-        let readings = parse_statm(b"10 5 2 1 1 3 0\n").expect("statm");
+    fn statm_is_seven_page_counts_and_a_short_line_is_refused() {
+        // proc(5): size, resident, shared, text, lib, data, dt. The values are distinct so a
+        // column read one position over cannot pass.
+        let readings = parse_statm(b"10 5 2 7 9 3 0\n").expect("statm");
         assert_eq!(readings.u64("proc.statm.size"), Some(10));
         assert_eq!(readings.u64("proc.statm.resident"), Some(5));
+        assert_eq!(readings.u64("proc.statm.shared"), Some(2));
+        assert_eq!(readings.u64("proc.statm.text"), Some(7));
+        assert_eq!(readings.u64("proc.statm.lib"), Some(9));
         assert_eq!(readings.u64("proc.statm.data"), Some(3));
         assert_eq!(readings.u64("proc.statm.dt"), Some(0));
         assert_eq!(
-            parse_statm(b"10 5 2 1 1\n"),
+            parse_statm(b"10 5 2 1 1 3"),
             Err(ProcError::Parse {
                 file: "statm",
                 line: None
@@ -963,7 +1007,7 @@ mod tests {
             "a truncated statm is refused, never padded with zeros"
         );
         // One bad field is that field's refusal and the others still read.
-        let readings = parse_statm(b"10 5 x 1 1 3 0\n").expect("statm");
+        let readings = parse_statm(b"10 5 x 7 9 3 0\n").expect("statm");
         assert_eq!(readings.u64("proc.statm.size"), Some(10));
         assert_eq!(
             readings.quality("proc.statm.shared"),

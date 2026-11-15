@@ -535,7 +535,15 @@ pub fn parse_io_stat(
                         _ => 2,
                     };
                     match parse_u64(value) {
-                        Ok(raw) => cost[index] = cost[index].saturating_add(raw),
+                        // Same rule as the counters below: a sum that overflows is a
+                        // corrupt file, not a clamped total. `saturating_add` would
+                        // silently cap at `u64::MAX` and report a wrong number as a
+                        // measurement, which is exactly what a saturating sum must not do
+                        // here (it is fine for a bound or a budget, not for a reading).
+                        Ok(raw) => match cost[index].checked_add(raw) {
+                            Some(total) => cost[index] = total,
+                            None => bad_cost = true,
+                        },
                         Err(_) => bad_cost = true,
                     }
                     continue;

@@ -32,8 +32,14 @@ shape this estate's rules warn about; the script fixes it here.)
 
 ## Verdicts
 
-Twenty-six patches were applied; all twenty-six are killed, and no patch was left in the
-tree (every restore is SHA-256-verified).
+The package's campaign ran twenty-six patches; the fix round then added five more (the
+stat field mapping, the iocost overflow, and the unbounded-read limit), for **thirty-one
+patches, all thirty-one killed**, and no patch was left in the tree (every restore is
+SHA-256-verified). Rows 1–26 are the package's original set, rows 27–31 the fix round's
+(`D`). The `D3` patch first reported `NOT APPLIED` because the formatted source had split
+the statement over three lines: the stored patch is matched against the *shipped* text, so
+it is a not-applied patch rather than a survivor, and the fix was to store the fragment the
+source actually has (`--dry-run` prints every patch for exactly this check).
 
 | # | Finding | Mutation | Verdict | Tests that failed |
 |---|---|---|---|---|
@@ -63,6 +69,11 @@ tree (every restore is SHA-256-verified).
 | 24 | C2 | clock: an interval across a reboot/epoch boundary is subtracted anyway | killed | clock::tests::readings_across_a_restart_are_refused_and_never_subtracted |
 | 25 | C2 | clock: a wall jump forwards is the exact tolerance test (>= instead of >) | killed | a_zero_length_interval_refuses_a_rate_instead_of_reporting_infinity |
 | 26 | C1 | SP-2: a recreated cgroup at one path keeps the earlier identity | killed | a_cgroup_recreated_at_one_path_is_two_incarnations_and_the_path_says_nothing |
+| 27 | D1 (K1) | identity: minflt read from field 11 (cminflt) instead of field 10 | killed | identity::tests::a_stat_line_is_read_at_its_kernel_field_numbers_including_a_parenthesis_in_comm; identity::tests::every_stat_field_this_reader_reads_arrives_at_its_proc5_field_number; procfs::tests::a_process_is_read_with_each_file_carrying_its_own_refusal |
+| 28 | D1 (K1) | identity: majflt read from field 13 (cmajflt) instead of field 12 | killed | identity::tests::a_stat_line_is_read_at_its_kernel_field_numbers_including_a_parenthesis_in_comm; identity::tests::every_stat_field_this_reader_reads_arrives_at_its_proc5_field_number; procfs::tests::a_process_is_read_with_each_file_carrying_its_own_refusal |
+| 29 | D1 (K1) | identity: the proc(5) field offset shifted by one (every field reads its neighbour) | killed | identity::tests::a_short_or_malformed_stat_line_is_a_typed_refusal; procfs::tests::a_process_is_read_with_each_file_carrying_its_own_refusal |
+| 30 | D2 | io cost sums saturate at u64::MAX instead of refusing an overflow | killed | an_overflowing_io_sum_is_unreadable_instead_of_clamped |
+| 31 | D3 | RealFs::read's `max_bytes + 1` wraps (an unbounded read returns an empty file) | killed | fs::tests::a_file_is_read_within_its_bound_and_a_larger_one_is_refused_unread |
 
 Every row names at least one failing test. The earlier draft of this campaign ran with a
 test-name extractor that only understood libtest's `---- name stdout ----` header, so six
@@ -93,9 +104,16 @@ the negative-unsigned parse, and the two `Reading` guards.
 **C — SP-2.** A cross-boot/epoch interval subtracted anyway, the forward-jump tolerance
 boundary moved to `>=`, and the recycled-inode fixture mutated to keep the old identity.
 
+**D — the fix round.** The `/proc/<pid>/stat` mapping (minflt at field 10, majflt at field
+12, and the field offset itself) — the one blocker K1 raised, mutated three ways because its
+two fault counters and its whole offset are separate claims; the iocost sum's overflow rule;
+and the unbounded-read limit. The first patch in this class is the *exact* mutation that
+shipped in the reviewed head (minflt from field 11), so the class is not hypothetical: it is
+the defect, replayed against the test that now names it.
+
 ## What this does *not* claim
 
 Not every line of `kernel` is mutation-covered: the campaign mutates the guards this
-package argues are load-bearing, not every branch. Twenty-six is a sample of the behaviour
-the plan changes, chosen per finding, and the real mechanism stays `cargo-mutants` judged by
-assay once R-3b lands.
+package argues are load-bearing, not every branch. Thirty-one is a sample of the behaviour
+the package changes and the fix round repairs, chosen per finding, and the real mechanism
+stays `cargo-mutants` judged by assay once R-3b lands.

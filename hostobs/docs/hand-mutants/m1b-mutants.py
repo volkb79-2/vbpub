@@ -5,7 +5,9 @@
 Rust R2 (`cargo-mutants`, R-3b) is still not available in the lane image, so the guards this
 package adds are checked by hand mutation: one stored patch at a time, applied, measured,
 restored, and the restored file's SHA-256 compared with the original. A `SURVIVED` row is a
-test gap and must be answered with a test before the campaign is reported as all-killed.
+test gap and must be answered with a test before the campaign is reported as all-killed; a
+`NOT APPLIED` row means the stored fragment no longer matches the source (it is a stale
+patch, not a survivor, and `--dry-run` lists every patch so it can be spotted by inspection).
 
     python3 docs/hand-mutants/m1b-mutants.py            # full campaign
     python3 docs/hand-mutants/m1b-mutants.py --dry-run  # print the patches and exit
@@ -25,6 +27,9 @@ Three classes of guard are covered, in the order the package's items are lettere
   zero-field refusals, and the refusal to turn a wall jump into an interval.
 * **C** — the SP-2 evidence: an interval across a reboot/epoch boundary refused, a recycled
   inode/pid distinguished.
+* **D** — the fix round after the M1b review: the `/proc/<pid>/stat` field mapping (K1, three
+  patches: minflt's field, majflt's field, and the offset itself), the iocost overflow rule,
+  and the unbounded-read limit.
 """
 
 from __future__ import annotations
@@ -262,6 +267,47 @@ MUTANTS: tuple[Mutant, ...] = (
         "crates/kernel/tests/sp2_evidence.rs",
         "    fs.directory(\"/cg/demo\", 101);",
         "    fs.directory(\"/cg/demo\", 100);",
+        "kernel",
+    ),
+    # -------------------------------------- D: the fix round (K1 and the smaller notes)
+    Mutant(
+        "D1",
+        "identity: minflt read from field 11 (cminflt) instead of field 10",
+        "crates/kernel/src/identity.rs",
+        "            10 => minflt = parsed,",
+        "            11 => minflt = parsed,",
+        "kernel",
+    ),
+    Mutant(
+        "D1",
+        "identity: majflt read from field 13 (cmajflt) instead of field 12",
+        "crates/kernel/src/identity.rs",
+        "            12 => majflt = parsed,",
+        "            13 => majflt = parsed,",
+        "kernel",
+    ),
+    Mutant(
+        "D1",
+        "identity: the proc(5) field offset shifted by one (every field reads its neighbour)",
+        "crates/kernel/src/identity.rs",
+        "pub const STAT_FIELD_OFFSET: usize = 3;",
+        "pub const STAT_FIELD_OFFSET: usize = 2;",
+        "kernel",
+    ),
+    Mutant(
+        "D2",
+        "io cost sums saturate at u64::MAX instead of refusing an overflow",
+        "crates/kernel/src/cgroup.rs",
+        "                        Ok(raw) => match cost[index].checked_add(raw) {\n                            Some(total) => cost[index] = total,\n                            None => bad_cost = true,\n                        },",
+        "                        Ok(raw) => cost[index] = cost[index].saturating_add(raw),",
+        "kernel",
+    ),
+    Mutant(
+        "D3",
+        "RealFs::read's `max_bytes + 1` wraps (an unbounded read returns an empty file)",
+        "crates/kernel/src/fs.rs",
+        "        let limit = u64::try_from(max_bytes)\n            .unwrap_or(u64::MAX)\n            .saturating_add(1);",
+        "        let limit = u64::try_from(max_bytes).unwrap_or(u64::MAX) + 1;",
         "kernel",
     ),
 )

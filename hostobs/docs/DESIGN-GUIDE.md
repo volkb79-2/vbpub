@@ -217,6 +217,38 @@ process is a typed `Missing` rather than an empty string.
 wall jump, a monotonic interval or a reboot deterministic; `SystemClock` is the only
 non-test clock and reads `Instant`/`SystemTime` without `unsafe`.
 
+**A field is named by the kernel's own field number, and the index is derived.** `/proc`
+files are positional: `/proc/<pid>/stat` has no names at all, and `statm`, `loadavg` and
+the `cpu` rows of `/proc/stat` are the same shape. An index written beside a field number
+is a second copy of the same fact, and the two copies can disagree — which is exactly what
+happened: `parse_stat` declared `(9, field 12)` for `minflt` and then matched `9 => minflt`,
+so it read field 12 (`majflt`) and field 13 (`cmajflt`), the process's *children's* faults
+(`HOB-23`). The helper, the fixture and the SP-2 assertions had been written from the same
+wrong table, so nothing went red. The rule the fix applies: a reader declares **field
+numbers** and derives an index through one `STAT_FIELD_OFFSET` (field 3 is index 0 after
+`comm`), the fixture and the test helper are generated from field numbers too, and one test
+gives field `n` the value `n` so every assertion proves its own field (a slip of one is a
+different number). Keyed files (`cpu.stat`, `memory.*`, `statm`'s sibling `status`, the
+PSI files, the limits) cannot slip this way because the name travels with the value; their
+tests now use distinct per-position values anyway.
+
+**A read bound applies to bytes read, never to a reported length.** Refusing by `metadata.len()`
+looks stricter and is wrong in both directions: a sysfs attribute reports one page (4096)
+whatever its content, so a 20-byte attribute under a 256-byte policy cap was refused, while
+a `/proc` pseudo-file reports 0 and still answers with text. The bound is therefore a
+`take(max_bytes + 1)` on the read, with `saturating_add` so `usize::MAX` ("no bound") means
+the whole file rather than a wrapped limit of 0 (`HOB-24`). A sum has the same rule: a total
+that overflows is `unreadable`, never clamped at `u64::MAX` — `saturating_add` is for a
+budget, `checked_add` for a reading (`HOB-25`).
+
+**What SP-2 does *not* join (`HOB-26`).** The SP-2 tests compute a rate in a local helper
+rather than through `model::derive_rate`, because `kernel` cannot depend on `model` while the
+lane image pins a `Cargo.lock` that any path or dev dependency rewrites. The clock and
+identity half of SP-2 is evidenced here against hand-computed arithmetic, and the classifier
+half lives in `model` with `fixtures/rates/rates.json`; the two are joined by hand-checked
+numbers and the shared quality fixture, not by a call. Stating that is part of the evidence,
+not a footnote to it.
+
 ## Gates and coverage
 
 `lint` runs formatting, Clippy with `-D warnings`, rustdoc with `-D warnings`, cargo-deny
@@ -238,10 +270,13 @@ Rust R2 (`cargo-mutants` judged by assay) is not adopted yet (R-3b in
 claim for this package rests on hand mutation campaigns: one mutation at a time, in the lane
 image, each restored and digest-verified. The M1 campaign (twenty-one mutations, all killed,
 the two first-pass survivors converted into tests) is in
-[`HAND-MUTANTS-M1.md`](HAND-MUTANTS-M1.md); the M1 part-2 campaign (twenty-six mutations
-covering the proto/Python refusals and the kernel collectors and clocks, all killed) is
+[`HAND-MUTANTS-M1.md`](HAND-MUTANTS-M1.md); the M1 part-2 campaign (thirty-one mutations
+covering the proto/Python refusals, the kernel collectors, the clocks, and the fix round's
+`stat` field mapping, iocost overflow and unbounded read — all killed) is
 [`HAND-MUTANTS-M1B.md`](HAND-MUTANTS-M1B.md). A mutation that does not compile is reported
-as `NOT-BUILT` rather than counted as a kill, because it proves nothing about the tests.
+as `NOT-BUILT` rather than counted as a kill, because it proves nothing about the tests; a
+patch whose stored fragment no longer matches the source is `NOT APPLIED`, which is also
+not a survivor.
 
 `cargo deny` keeps duplicate-version and external wildcard checks strict. Its single
 `winnow@0.7.15` skip is tied to the imported sampler lock: `toml 0.9.8` and its

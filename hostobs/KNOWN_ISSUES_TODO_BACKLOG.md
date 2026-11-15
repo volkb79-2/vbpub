@@ -35,6 +35,78 @@ A `FIXED` entry means code, tests, and docs landed together.
 | HOB-20 | The sampler treated an unknown device topology as a bottom device, double-counting stacked I/O; `kernel` refuses instead | Major | FIXED in `kernel`, sampler worktree unchanged |
 | HOB-21 | `kernel`'s `TopologySource` has no `/sys/dev/block/<dev>/slaves` implementation; the caller supplies one | Minor | OPEN (probe package) |
 | HOB-22 | The kernel readers are exercised against fixture trees only: no lane runs them against a live host, and the sampler's worker-pool scheduling is not ported | Minor | OPEN (deliberate) |
+| HOB-23 | `parse_stat` read `minflt`/`majflt` from proc(5) fields 12/13 instead of 10/12, and the test helper and fixture carried the same wrong table | Major | FIXED (M1b fix round) |
+| HOB-24 | `RealFs::read` refused a file by its *reported* length (a sysfs attribute reports one page) and `max_bytes + 1` overflowed at `usize::MAX` | Minor | FIXED (M1b fix round) |
+| HOB-25 | `io.stat`'s iocost sums used `saturating_add` (silently clamping at `u64::MAX`) where the counters use `checked_add` | Minor | FIXED (M1b fix round) |
+| HOB-26 | The SP-2 rate arithmetic is a test-local helper, not `model::derive_rate`, because the crates cannot depend on each other | Minor | OPEN (documented limit) |
+
+---
+
+## HOB-23 — `minflt`/`majflt` read from the wrong proc(5) fields
+
+**Where:** `crates/kernel/src/identity.rs` (`parse_stat`, `StatLine`), `crates/kernel/tests/fixtures/proc/1/stat`, `crates/kernel/tests/sp2_evidence.rs`.
+
+The reader derived the index correctly (index `i` after `)` is field `i + 3`) and then assigned
+`9 => minflt`, `10 => majflt`. Index 9 is field 12 (`majflt`) and index 10 is field 13
+(`cmajflt`); the process's own minor faults are field 10 (index 7). A consumer therefore read
+the process's major faults as its minor faults and its children's major faults as its major
+faults — two wrong numbers that look like measurements. The ported sampler said so explicitly
+(`topos/sampler/src/procs.rs:312`, "majflt = field 12"), and the wrong table was reproduced in
+the unit-test helper's comments, the committed fixture and the SP-2 assertions, so the tests
+pinned the defect rather than catching it.
+
+The fix names fields, not indexes: `parse_stat` reads `10, 12, 14, 15, 20, 22, 24, 42` and
+derives every index through `field_index(field)`/`STAT_FIELD_OFFSET` (proc(5) field 3 is index
+0), fields 11 (`cminflt`) and 13 (`cmajflt`) are deliberately not read and the doc comments say
+so, the fixture and the helper are generated from field numbers, and
+`every_stat_field_this_reader_reads_arrives_at_its_proc5_field_number` builds a line where
+field `n` carries the value `n`, so every assertion proves its own field. `statm`, `status`,
+`loadavg`, `/proc/stat`, `meminfo`, `vmstat`, the PSI files, `io.stat`, `cpu.stat`,
+`cpu.max`/`weight`, `memory.stat`/`events` and the limit files were re-audited the same way
+(the result is in the fix-round report): the rest are `key value` or `key=value` files whose
+field names travel with the value, so a position cannot slip silently, and their tests now use
+distinct per-position values as well.
+
+## HOB-24 — A read refused by reported length, and an overflow in the bound
+
+**Where:** `crates/kernel/src/fs.rs` (`RealFs::read`).
+
+The reader checked `metadata.len()` first and refused a file larger than the bound without
+reading it. That is a *reported* length, not the fact: a sysfs attribute reports one page
+(4096 bytes) whatever its content, so a 20-byte attribute under a 256-byte policy cap was
+refused as too large. The same statement computed `max_bytes + 1` unsaturating, so a caller
+passing `usize::MAX` (“no bound”) wrapped the read limit to 0 — an empty `Ok`, exactly the
+wrong answer that looks like an empty file — or panicked in a debug build.
+
+The fix applies the bound to the bytes actually read (`take(max_bytes + 1)`, then one byte
+past the allowance is `TooLarge`) and uses `saturating_add`. `fs::tests::a_file_is_read_within_its_bound_and_a_larger_one_is_refused_unread`
+now reads a fixture file with `usize::MAX` and asserts the whole content, and the hand-mutants
+campaign replays the wrapping version (`D3`).
+
+## HOB-25 — iocost sums clamped instead of refusing an overflow
+
+**Where:** `crates/kernel/src/cgroup.rs` (`parse_io_stat`).
+
+The device counters summed with `checked_add` and set `bad` on overflow, but the three iocost
+sums used `saturating_add`, so an overflowing `cost.usage` was published as `u64::MAX` — a
+number the kernel never wrote. Both now use `checked_add` and the same `unreadable` outcome;
+`an_overflowing_io_sum_is_unreadable_instead_of_clamped` pins both paths (a counter overflow
+and an iocost overflow) and the mutant `D2` replays the clamping.
+
+## HOB-26 — SP-2's rate arithmetic is a test-local helper
+
+**Where:** `crates/kernel/tests/sp2_evidence.rs` (`rate`), `docs/DESIGN-GUIDE.md`.
+
+The SP-2 tests compute a rate as `delta / (mono_ns / 1e9)` in a local helper. They cannot call
+`model::derive_rate`: `kernel` has no dependency on `model` (and cannot gain one while the lane
+image's `Cargo.lock` is pinned, `HOB-17`), and a dev-dependency would rewrite the lock. So SP-2's
+identity and clock claims are evidenced against the kernel's own types and hand-computed
+arithmetic, while `model`'s classifier keeps its own `fixtures/rates/rates.json` cases; the two
+sides are not joined by a test. The limit is stated in the SP-2 record rather than papered over.
+
+**Exit criteria.** A package that owns both crates (the probe, or a reborn image with a new lock)
+derives a rate from a `kernel::Reading` pair through `model::derive_rate` and asserts that the
+hand-computed SP-2 values agree with it.
 
 ---
 
