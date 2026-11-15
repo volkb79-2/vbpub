@@ -55,6 +55,7 @@ A `FIXED` entry means code, tests, and docs landed together.
 | HOB-40 | No focus tier is configured by `plan_v4`; the tier machinery accepts one, but the plan does not yet say what a focus tier keeps | Minor | OPEN (plan decision) |
 | HOB-41 | No golden fixture has a non-zero record pad, so the padding rule is pinned by unit tests on each side, not by a cross-language file | Minor | OPEN |
 | HOB-42 | A `.seg` name is trusted as sealed without a footer, and the header's `seq`/`start_real_ns` are never compared with the name | Minor | OPEN |
+| HOB-43 | Quarantined `.corrupt` files (corrupt, oversized) are kept for an operator but are never counted in `bytes`, never evicted and never bounded in number, so repeated damage can fill the directory beyond `cap_bytes` | Major | OPEN |
 
 ---
 
@@ -765,3 +766,18 @@ mean "the footer that closes these records is present and agrees", not "the name
 **Exit criteria.** A sealed name without a verifiable footer is reported and quarantined instead
 of served, a name/header identity disagreement is a typed refusal, and both have a test and a
 mutant.
+
+## HOB-43 — Quarantined files sit outside the cap
+
+**Where:** `crates/store/src/tier.rs` (`rescan`: corrupt and oversized branches), `crates/store/src/segment.rs` (`quarantine_name`).
+
+A corrupt or oversized segment is renamed `<name>.corrupt` so an operator can inspect it. That
+name does not parse as a segment, so the ring ignores it: it is not in `bytes`, `cap_bytes` and
+`keep_s` never evict it, and nothing limits how many exist. One quarantined file is the right
+answer; a source of repeated damage (a failing disk, a writer bug) turns "never silently dropped"
+into unbounded disk use, the failure the cap exists to prevent. Found in the delta review of the
+fix round; the first review round missed it too.
+
+**Exit criteria.** Either quarantined bytes count against the tier's cap (oldest `.corrupt`
+removed first, reported) or a hard count/bytes bound refuses further quarantine with a typed,
+counted report; a test fills the bound; a mutant removes it.
