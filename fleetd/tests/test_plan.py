@@ -868,7 +868,9 @@ def test_placement_caps_and_refusal_move_by_the_reserve_difference_only():
     small["memory"].update(total_bytes=8 * 1024**3, for_lanes_bytes=8 * 1024**3)
     small["control_plane"]["profile_reserve_bytes"] = 768 * 1024**2
     _set_service_memory_mins(small["control_plane"], [100 * 1024**2] * len(CONTROL_PLANE_SERVICE_UNITS))
-    service_plan = _plan([_candidate("edge", 120_000_000)], hosts=host_set)
+    demand = {**DEMAND, "efficient_upper_bound": 1}
+    edge_candidate = _candidate("edge", 7300 * 1024**2)
+    service_plan = _plan([edge_candidate], hosts=host_set, demand=demand)
     service_host = _host_plan(service_plan, "host-small")
 
     fallback_set = copy.deepcopy(host_set)
@@ -880,7 +882,7 @@ def test_placement_caps_and_refusal_move_by_the_reserve_difference_only():
         }
         for unit in CONTROL_PLANE_SERVICE_UNITS
     }
-    fallback_plan = _plan([_candidate("edge", int(service_host["cap_bytes"]) + 1)], hosts=fallback_set)
+    fallback_plan = _plan([edge_candidate], hosts=fallback_set, demand=demand)
     fallback_host = _host_plan(fallback_plan, "host-small")
     reserve_delta = 768 * 1024**2 - 600 * 1024**2
     assert service_host["reserve_bytes"] == 600 * 1024**2
