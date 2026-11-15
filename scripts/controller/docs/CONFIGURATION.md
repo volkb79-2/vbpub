@@ -31,6 +31,9 @@ Useful settings:
 | `CONTROLLER_OD_STATE` | Optional absolute path for key-free Open Design account state; defaults to `$CONTROLLER_RUNS_DIR/opendesign-accounts.json`. |
 | `CONTROLLER_OD_PREFER_EXPIRING` | Set to `1` to prefer the available Open Design account with the soonest recorded `window_end_epoch`; defaults to `0`. |
 | `CONTROLLER_OD_UNKNOWN_BLOCK_SECONDS` | Positive integer seconds to block an account when a 402 has no parseable reset time; defaults to `21600` (6 hours). |
+| `PI_EMPTY_RETRY_LIMIT` | Non-negative continuation count for a pi run whose final assistant message is empty (no text, no tool call); defaults to `2`, `0` disables continuation. |
+| `PI_CONTINUE_PROMPT_FILE` | Canonical continuation prompt; defaults to `scripts/controller/continue-empty-completion.md`. |
+| `PI_REPORT` | Optional absolute expected report path for `pi-impl.sh`; equivalent to `--report`, unset skips the report check. |
 | `RESUME_SKIP` | Space-separated run names excluded by `resume-usage-limited.sh`. |
 | `RESUME_EXCLUDE_PREFIXES` | Space-separated run-name prefixes owned by another controller; defaults to `naf-`. |
 | `RESUME_MAX_AGE_MINUTES` | Recent-run scan window for `resume-usage-limited.sh`; defaults to `180`. |

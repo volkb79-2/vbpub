@@ -9,8 +9,12 @@
 #   SUCCESS          settled `stop` with assistant text, a clean worktree, and
 #                    the expected report present when a report path is known.
 #   EMPTY-COMPLETION the final assistant message carried no text (empty or
-#                    thinking-only) and no tool call: a provider/model
-#                    anomaly, not a limit, and not a success.
+#                    thinking-only) and no tool call. This is a provider/model
+#                    anomaly, not a limit: the wrapper continues the same
+#                    session (see <run>.events) before giving up.
+#   EMPTY-COMPLETION-RETRIES-EXHAUSTED
+#                    still empty after the bounded continues; the controller
+#                    decides to restart or abandon.
 #   UNCOMMITTED      exit 0 and the worktree has uncommitted changes.
 #   NO-REPORT        the expected report file is missing.
 #   USAGE-LIMIT      a provider 402 `insufficient_balance` stop.
@@ -18,7 +22,8 @@
 #   INCOMPLETE       a settled or unreadable stream that is not a stop.
 #
 # The expected report is `--report <path>` or `PI_REPORT`; unset means no
-# report check.
+# report check. Every run also gets <run>.events (JSON lines, one per
+# recorded continue).
 set -uo pipefail
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 caller_pi_route=${PI_ROUTE-}
@@ -86,10 +91,20 @@ if ! git -C "$worktree" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
   exit 2
 fi
 
+retry_limit=${PI_EMPTY_RETRY_LIMIT:-2}
+[[ $retry_limit =~ ^[0-9]+$ ]] || {
+  echo 'PI_EMPTY_RETRY_LIMIT must be a non-negative integer' >&2
+  exit 2
+}
+continue_prompt_file=${PI_CONTINUE_PROMPT_FILE:-"$SCRIPT_DIR/continue-empty-completion.md"}
+if [[ ! -r $continue_prompt_file ]]; then
+  echo "continue prompt file is not readable: $continue_prompt_file" >&2
+  exit 2
+fi
 out=$CONTROLLER_RUNS_DIR
 if [[ $mode == new ]]; then
   existing=()
-  for extension in 'done' 'jsonl' 'err'; do
+  for extension in 'done' 'jsonl' 'err' 'events'; do
     [[ -e $out/$name.$extension ]] && existing+=("$out/$name.$extension")
   done
   if [[ ${CONTROLLER_RUN_FORCE:-0} != 1 ]] && (( ${#existing[@]} > 0 )); then
@@ -207,17 +222,25 @@ esac
 
 prompt_text=''
 IFS= read -r -d '' prompt_text < "$prompt" || :
+continue_prompt=''
+IFS= read -r -d '' continue_prompt < "$continue_prompt_file" || :
 base_pi_args=(-p --mode json --model "$provider/$model" --thinking "$thinking" --session-dir "$session_dir")
 resume_target=''
 [[ $mode != resume ]] || resume_target=$session_id
 
-# One pi invocation: the run's prompt, its stream, its own stderr file.
+# One pi invocation. $3 is 1 for the first run (truncate stderr) and 0 for a
+# continuation that appends to the run's stream and stderr.
 invoke_pi() {
-  local prompt_text=$1 stream=$2
+  local prompt_text=$1 stream=$2 stderr_mode=$3
   local -a argv=("${base_pi_args[@]}")
   [[ -z $resume_target ]] || argv+=(--session "$resume_target")
-  (cd -- "$worktree" && nice pi "${argv[@]}" -- "$prompt_text" \
-    < /dev/null > "$stream" 2> "$out/$name.err")
+  if [[ $stderr_mode == 1 ]]; then
+    (cd -- "$worktree" && nice pi "${argv[@]}" -- "$prompt_text" \
+      < /dev/null > "$stream" 2> "$out/$name.err")
+  else
+    (cd -- "$worktree" && nice pi "${argv[@]}" -- "$prompt_text" \
+      < /dev/null > "$stream" 2>> "$out/$name.err")
+  fi
 }
 
 # Classify the last assistant message of the (possibly appended) run stream.
@@ -334,7 +357,8 @@ classify_run() {
   fi
 }
 
-if invoke_pi "$prompt_text" "$out/$name.jsonl"; then
+: > "$out/$name.events"
+if invoke_pi "$prompt_text" "$out/$name.jsonl" 1; then
   rc=0
 else
   rc=$?
@@ -357,6 +381,42 @@ if [[ -n $thread_id ]]; then
 fi
 outcome=$(classify_run "$rc")
 
+# Continue the SAME session only for the EMPTY-COMPLETION class, which is a
+# provider/model anomaly. Every other class is a real state the controller must
+# see; nothing is retried on a count of turns, tokens or tool calls.
+attempt=0
+resume_target=$thread_id
+while (( attempt < retry_limit )) && [[ $outcome == EMPTY-COMPLETION ]]; do
+  if [[ -z $thread_id ]]; then
+    printf '{"ev":"continue-skipped","reason":"no pi session id in the stream"}\n' \
+      >> "$out/$name.events"
+    break
+  fi
+  attempt=$((attempt + 1))
+  attempt_stream=$(mktemp "$out/.$name.retry.XXXXXX") || {
+    printf 'could not create a continuation stream for run %s\n' "$name" >&2
+    break
+  }
+  if invoke_pi "$continue_prompt" "$attempt_stream" 0; then
+    attempt_rc=0
+  else
+    attempt_rc=$?
+  fi
+  cat -- "$attempt_stream" >> "$out/$name.jsonl"
+  rm -f -- "$attempt_stream"
+  rc=$attempt_rc
+  inspection=$(inspect_run)
+  IFS=$'\t' read -r stream_session stop_reason usage_limited settled aborted \
+    has_text has_tool_call <<< "$inspection"
+  thread_id=${stream_session:-$thread_id}
+  outcome=$(classify_run "$rc")
+  printf '{"ev":"empty-completion-retry","attempt":%s,"exit":%s,"outcome":"%s"}\n' \
+    "$attempt" "$rc" "$outcome" >> "$out/$name.events"
+done
+if (( attempt > 0 )) && [[ $outcome == EMPTY-COMPLETION ]]; then
+  outcome=EMPTY-COMPLETION-RETRIES-EXHAUSTED
+fi
+
 if CONTROLLER_RUNS_DIR="$out" python3 "$SCRIPT_DIR/opendesign-accounts.py" block-run "$od_account" \
   "$out/$name.err" "$out/$name.jsonl"; then
   :
@@ -366,5 +426,8 @@ else
     "$name" "$bookkeeping_rc" "$rc" >&2
 fi
 
+printf '{"ev":"outcome","exit":%s,"outcome":"%s","retries":%s}\n' \
+  "$rc" "$outcome" "$attempt" >> "$out/$name.events"
 printf 'EXIT=%s OUTCOME=%s\n' "$rc" "$outcome" > "$out/$name.done"
+if (( attempt > 0 )); then printf 'RETRIES=%s\n' "$attempt" >> "$out/$name.done"; fi
 exit "$rc"

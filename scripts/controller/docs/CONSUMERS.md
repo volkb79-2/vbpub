@@ -92,7 +92,8 @@ deciding what to do next:
 | `.done` outcome | What to do |
 |---|---|
 | `SUCCESS` | Read the report, then review on another route. |
-| `EMPTY-COMPLETION` | pi stopped with no text and no tool call: a provider/model anomaly, so the run did not finish the task. Resume the same session rather than starting a fresh one. |
+| `EMPTY-COMPLETION` | An intermediate word: pi stopped with no text and no tool call, so the wrapper continues the same session itself and records the next outcome. It stays in the marker only when `PI_EMPTY_RETRY_LIMIT=0`. |
+| `EMPTY-COMPLETION-RETRIES-EXHAUSTED` | Two continuations of the same session also ended empty. Read `<run>.events`, then decide: resume again with a concrete instruction, or restart deliberately (a fresh session costs about an hour of re-orientation). |
 | `UNCOMMITTED` | The work is real but not committed. Inspect the worktree and commit, or resume for the finish. |
 | `NO-REPORT` | The work may be done but the report is missing. Resume and ask for the report, or write it from the review. |
 | `USAGE-LIMIT` | Wait for the reset recorded in the account state, then `resume-usage-limited.sh`. |
@@ -105,6 +106,13 @@ selected, then inspect current run/stall status:
 scripts/controller/job-check.sh pi-run /path/to/worktree deepseek-pi
 scripts/controller/ctl-status.sh
 ```
+
+An `EMPTY-COMPLETION` run is continued by the wrapper without the controller
+doing anything: it resumes the same pi session with the canonical prompt in
+`continue-empty-completion.md`, appends each continuation to `<run>.jsonl`, and
+records one JSON line per attempt in `<run>.events`. The default is two
+attempts; set `PI_EMPTY_RETRY_LIMIT` to change it, or to `0` to see the raw
+class without a continuation. No other outcome is continued automatically.
 
 A pi 402 may exit zero; the `.done` record uses `OUTCOME=USAGE-LIMIT` and the
 shared account state stores the reset. Resume by the saved pi session id; the

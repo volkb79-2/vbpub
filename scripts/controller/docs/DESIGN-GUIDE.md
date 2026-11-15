@@ -77,6 +77,18 @@ gets the wrong answer. The classes are additive: the first `.done` line keeps
 its historical `EXIT=<n> OUTCOME=<word>` shape, so `job-check.sh` and every
 consumer that matches on `EXIT=0` keep working.
 
+Continuation is bounded and class-specific on purpose. Only `EMPTY-COMPLETION`
+is continued, because only that class is a provider/model anomaly: the session
+is intact and the same conversation can finish the work. `UNCOMMITTED`,
+`NO-REPORT`, `ERROR` and `INCOMPLETE` describe real states of the worktree or
+the provider, and a blind resume would either loop or mask them. The limit is
+two attempts (measured: two store-crate stalls needed one continuation, a
+second was unused), it is set by `PI_EMPTY_RETRY_LIMIT`, and the prompt lives in
+one file (`continue-empty-completion.md`) so a wrapper revision cannot drift
+from the text a hand resume uses. A restart is never automatic: a fresh session
+needed about an hour and over 100 tool calls to re-orient, which is a
+controller decision, not a wrapper reflex.
+
 ### Job-check compatibility
 
 `job-check.sh` keeps the prototype's `any` route as an explicit allowed-set

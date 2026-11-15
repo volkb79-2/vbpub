@@ -265,7 +265,8 @@ line keeps its historical shape `EXIT=<n> OUTCOME=<word>`, where the word is:
 | Outcome | Meaning |
 |---|---|
 | `SUCCESS` | settled stream, session id, final `stopReason` of `stop`, assistant text present, worktree clean, and the expected report present when one was named. |
-| `EMPTY-COMPLETION` | exit zero and the final assistant message carried no text (empty or thinking-only) and no tool call: a provider/model anomaly, not a limit, and not a success. |
+| `EMPTY-COMPLETION` | exit zero and the final assistant message carried no text (empty or thinking-only) and no tool call: a provider/model anomaly, not a limit, and not a success. The wrapper continues the same session first (see below), so this word is only the intermediate state. |
+| `EMPTY-COMPLETION-RETRIES-EXHAUSTED` | still empty after two recorded continuations; the controller decides whether to restart or abandon. |
 | `UNCOMMITTED` | exit zero with uncommitted changes in the worktree. |
 | `NO-REPORT` | exit zero but the expected report file is missing. |
 | `USAGE-LIMIT` | a provider 402 `insufficient_balance` stop; the account is blocked until its reset. |
@@ -277,6 +278,14 @@ leaving it unset skips the report check rather than passing it. Every other
 class is a fact read from the stream, `git`, or that path, and a worktree that
 cannot answer `git rev-parse` is refused before pi starts. Non-interactive pi
 requires closed stdin; the wrapper always redirects it from `/dev/null`.
+
+An `EMPTY-COMPLETION` is the one class the wrapper continues by itself: it
+resumes the same pi session with the canonical continuation prompt in
+`continue-empty-completion.md`, appends the continuation stream to `<run>.jsonl`
+and records one JSON line per attempt in `<run>.events`. The count defaults to
+two and is set by `PI_EMPTY_RETRY_LIMIT`; the `.done` marker then adds a
+`RETRIES=<n>` line. No other class is ever continued, and nothing is retried on
+a tool-call, turn or token count.
 
 Resume with the recorded session id and automatic route:
 

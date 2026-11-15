@@ -245,8 +245,47 @@ check_outcome_success_report() {
     || fail 'a clean finished run with text and its report is not SUCCESS'
 }
 
+check_outcome_empty() {
+  wait_launch_sequence outcome-empty deepseek-pi-volker "pi-empty-completion pi-thinking-only"
+  [[ $(head -n 1 "$CONTROLLER_ROOT/runs/outcome-empty.done") == 'EXIT=0 OUTCOME=EMPTY-COMPLETION-RETRIES-EXHAUSTED' ]] \
+    || fail 'an empty final message with an empty continuation is not reported as exhausted'
+  contains "$CONTROLLER_ROOT/runs/outcome-empty.done" 'RETRIES=2' 'the exhausted class records its attempt count'
+  contains "$CONTROLLER_ROOT/runs/outcome-empty.events" '"ev":"empty-completion-retry"' 'each continuation is recorded in the run events'
+  contains "$CONTROLLER_ROOT/runs/outcome-empty.events" '"attempt":2' 'the second continuation is recorded'
+  local sessions
+  sessions=$(grep -c -- '--session outcome-empty-session' "$PI_ARGV_LOG" 2>/dev/null || true)
+  [[ $sessions == 2 ]] || fail "continuations did not resume the same pi session (seen $sessions)"
+  contains "$PI_PROMPT_LOG" 'Your last turn ended without a tool call or a message' \
+    'the continuation uses the canonical prompt file'
+  # The run plus its two recorded continuations are all appended to one stream.
+  [[ $(grep -cF '"type":"agent_settled"' "$CONTROLLER_ROOT/runs/outcome-empty.jsonl") == 3 ]] \
+    || fail 'the appended stream does not hold the run and both continuations'
+}
 
+check_outcome_empty_recovered() {
+  local before after
+  before=$(pi_invocations)
+  wait_launch_sequence outcome-recovered deepseek-pi-github2 "pi-empty-completion pi-success"
+  [[ $(head -n 1 "$CONTROLLER_ROOT/runs/outcome-recovered.done") == 'EXIT=0 OUTCOME=SUCCESS' ]] \
+    || fail 'a run that recovers on the first continuation is not SUCCESS'
+  after=$(pi_invocations)
+  [[ $(( after - before )) == 2 ]] || fail "a recovered empty completion used $(( after - before )) pi invocations, expected 2"
+  contains "$CONTROLLER_ROOT/runs/outcome-recovered.events" '"attempt":1' 'the recovering continuation is recorded'
+}
 
+check_outcome_no_retry_other_classes() {
+  local before after
+  before=$(pi_invocations)
+  wait_launch_sequence no-retry-usage deepseek-pi-volker pi-402
+  after=$(pi_invocations)
+  [[ $(( after - before )) == 1 ]] || fail 'a usage limit was continued instead of reported'
+  [[ $(head -n 1 "$CONTROLLER_ROOT/runs/no-retry-usage.done") == 'EXIT=0 OUTCOME=USAGE-LIMIT' ]] \
+    || fail 'a usage limit outcome was not preserved'
+  [[ ! -s $CONTROLLER_ROOT/runs/no-retry-usage.events ]] || {
+    grep -qF 'empty-completion-retry' "$CONTROLLER_ROOT/runs/no-retry-usage.events" \
+      && fail 'a usage limit recorded a continuation'
+  }
+}
 
 check_outcome_uncommitted() {
   local before after
@@ -271,6 +310,15 @@ check_outcome_no_report() {
     || fail 'a finish without the expected report is not NO-REPORT'
 }
 
+check_outcome_empty_retry_bounded() {
+  local before after
+  before=$(pi_invocations)
+  wait_launch_sequence bounded-empty deepseek-pi-volker pi-empty-completion
+  after=$(pi_invocations)
+  [[ $(( after - before )) == 3 ]] || fail "an unbounded empty-completion loop used $(( after - before )) pi invocations, expected 3 (the run plus two continuations)"
+  contains "$CONTROLLER_ROOT/runs/bounded-empty.done" 'OUTCOME=EMPTY-COMPLETION-RETRIES-EXHAUSTED' \
+    'the exhausted retry count is the final outcome'
+}
 
 
 
@@ -279,7 +327,31 @@ check_outcome_no_report() {
 
 
 
+check_continue_prompt_file() {
+  local prompt_file=$SCRIPT_DIR/../continue-empty-completion.md
+  [[ -r $prompt_file ]] || fail 'the canonical continuation prompt file is missing'
+  [[ $(wc -l < "$prompt_file") == 1 ]] || fail 'the continuation prompt must be one line'
+  contains "$prompt_file" 'Your last turn ended without a tool call or a message.' 'the canonical prompt text'
+  # It lives in exactly one file: no other controller source repeats it.
+  ! grep -R -qF -- 'ended without a tool call or a message' \
+    "$SCRIPT_DIR/../pi-impl.sh" "$SCRIPT_DIR/../lib.sh" "$SCRIPT_DIR/../codex-impl.sh" \
+    || fail 'the continuation prompt text is duplicated outside its one file'
+}
 
+check_retry_count_config() {
+  local before after
+  before=$(pi_invocations)
+  PATH="$ROOT/bin:$PATH" HOME="$HOME_ROOT" PI_ROUTE=deepseek-pi-volker \
+    CONTROLLER_OD_STATE="$ROOT/retry-limit-state.json" PI_EMPTY_RETRY_LIMIT=1 \
+    FAKE_FIXTURE_DIR="$SCRIPT_DIR/fixtures" \
+    FAKE_PI_SEQUENCE='pi-empty-completion' FAKE_PI_COUNTER="$ROOT/retry-limit.counter" \
+    FAKE_PI_SESSION_ID=retry-limit-session FAKE_PI_RC=0 \
+    "$SRC" "$WORKTREE" "$PROMPT" retry-limit > "$ROOT/retry-limit.launch.log" 2>&1 < /dev/null \
+    || fail 'a run configured for one continuation failed'
+  after=$(pi_invocations)
+  [[ $(( after - before )) == 2 ]] || fail "PI_EMPTY_RETRY_LIMIT=1 used $(( after - before )) pi invocations, expected 2"
+  contains "$CONTROLLER_ROOT/runs/retry-limit.done" 'RETRIES=1' 'the configured continuation count is recorded'
+}
 
 check_input_validation() {
   expect_rc 2 env PATH="$ROOT/bin:$PATH" HOME="$HOME_ROOT" PI_ROUTE=deepseek-pi-volker \
@@ -289,6 +361,12 @@ check_input_validation() {
     "$SRC" "$ROOT/not-a-worktree" "$PROMPT" worktree-validation
 }
 
+check_retry_limit_validation() {
+  expect_rc 2 env PATH="$ROOT/bin:$PATH" HOME="$HOME_ROOT" PI_ROUTE=deepseek-pi-volker \
+    PI_EMPTY_RETRY_LIMIT=unbounded "$SRC" "$WORKTREE" "$PROMPT" retry-validation
+  contains "$ROOT/focused-command.out" 'PI_EMPTY_RETRY_LIMIT must be a non-negative integer' \
+    'an unparsable continuation count is refused'
+}
 
 check_repo_not_a_worktree() {
   mkdir -p "$ROOT/plain-dir"
@@ -308,15 +386,21 @@ if [[ -n ${PI_TEST_FOCUS:-} ]]; then
     outcome-rc) check_outcome_rc ;;
     # One overwatch case per focused name, so a hand mutant is judged against
     # the single check that covers the guard it weakened.
-    outcome-success|outcome-empty|outcome-uncommitted|outcome-no-report)
+    outcome-success|outcome-empty|outcome-recovered|outcome-uncommitted|outcome-no-report|retry-bound)
       clean_worktree
       case $PI_TEST_FOCUS in
         outcome-success) check_outcome_success_report ;;
         outcome-empty)
-          wait_launch_sequence focus-empty deepseek-pi-volker pi-empty-completion
-          [[ $(head -n 1 "$CONTROLLER_ROOT/runs/focus-empty.done") == 'EXIT=0 OUTCOME=EMPTY-COMPLETION' ]] \
-            || fail 'an empty final message is its own class, not a success'
-          [[ $(pi_invocations) == 1 ]] || fail 'an empty final message was continued'
+          wait_launch_sequence focus-empty deepseek-pi-volker "pi-empty-completion pi-thinking-only"
+          contains "$CONTROLLER_ROOT/runs/focus-empty.done" 'OUTCOME=EMPTY-COMPLETION-RETRIES-EXHAUSTED' \
+            'a still-empty continuation run is reported as exhausted'
+          contains "$CONTROLLER_ROOT/runs/focus-empty.events" '"ev":"empty-completion-retry"' \
+            'the continuation is recorded in the run events'
+          ;;
+        outcome-recovered)
+          wait_launch_sequence focus-recovered deepseek-pi-github2 "pi-empty-completion pi-success"
+          contains "$CONTROLLER_ROOT/runs/focus-recovered.done" 'OUTCOME=SUCCESS' \
+            'a recovered empty completion is a success'
           ;;
         outcome-uncommitted)
           printf 'working change\n' > "$WORKTREE/working.txt"
@@ -331,7 +415,18 @@ if [[ -n ${PI_TEST_FOCUS:-} ]]; then
           contains "$CONTROLLER_ROOT/runs/focus-no-report.done" 'OUTCOME=NO-REPORT' \
             'a missing report is its own class'
           ;;
+        retry-bound)
+          wait_launch_sequence focus-retry-bound deepseek-pi-volker pi-empty-completion
+          # The run plus exactly two continuations, never more.
+          [[ $(pi_invocations) == 3 ]] \
+            || fail 'the empty-completion continue loop is not bounded at one run plus two continuations'
+          ;;
       esac
+      ;;
+    no-retry-classes)
+      wait_launch_sequence focus-no-retry deepseek-pi-volker pi-402
+      [[ $(pi_invocations) == 1 ]] || fail 'a usage limit was continued'
+      contains "$CONTROLLER_ROOT/runs/focus-no-retry.done" 'OUTCOME=USAGE-LIMIT' 'the usage limit class is preserved'
       ;;
 
     prompt-absolute)
@@ -583,6 +678,14 @@ PY
       contains "$README_SOURCE" "\`EMPTY-COMPLETION\`" 'README documents the empty-completion outcome'
       contains "$DESIGN_SOURCE" 'Why the terminal outcome is classified' 'design guide explains the outcome classification'
       contains "$CONSUMER_SOURCE" "\`.done\` outcome" 'consumer guide gives the outcome vocabulary'
+      contains "$CONSUMER_SOURCE" 'EMPTY-COMPLETION-RETRIES-EXHAUSTED' 'consumer guide names the exhausted continuation class'
+      contains "$README_SOURCE" 'EMPTY-COMPLETION-RETRIES-EXHAUSTED' 'README names the exhausted continuation class'
+      contains "$README_SOURCE" 'PI_EMPTY_RETRY_LIMIT' 'README names the continuation bound'
+      contains "$DESIGN_SOURCE" 'Continuation is bounded and class-specific' 'design guide explains the continuation bound'
+      contains "$CONSUMER_SOURCE" 'EMPTY-COMPLETION-RETRIES-EXHAUSTED' 'consumer guide names the exhausted continuation class'
+      contains "$README_SOURCE" 'EMPTY-COMPLETION-RETRIES-EXHAUSTED' 'README names the exhausted continuation class'
+      contains "$README_SOURCE" 'PI_EMPTY_RETRY_LIMIT' 'README names the continuation bound'
+      contains "$DESIGN_SOURCE" 'Continuation is bounded and class-specific' 'design guide explains the continuation bound'
       ;;
     *) fail "unknown PI_TEST_FOCUS=$PI_TEST_FOCUS" ;;
   esac
@@ -829,9 +932,16 @@ check_outcome_length
 check_outcome_rc
 
 check_outcome_success_report
+check_outcome_empty
+check_outcome_empty_recovered
+check_outcome_no_retry_other_classes
 check_outcome_uncommitted
 check_outcome_no_report
+check_outcome_empty_retry_bounded
+check_continue_prompt_file
+check_retry_count_config
 check_input_validation
+check_retry_limit_validation
 check_repo_not_a_worktree
 
 not_contains test-key 'run evidence contains no key material' "$CONTROLLER_ROOT/runs"
