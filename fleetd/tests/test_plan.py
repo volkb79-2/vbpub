@@ -1452,3 +1452,29 @@ def test_plan_cli_json_commands_and_errors(tmp_path, capsys):
     )
     assert main(args + ["--batch-multiplier", "0"]) == 2
     assert "batch_multiplier: must be at least 0.1" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("bad", [True, False, 0, -5, 1.5e9, float("inf"), float("nan"), "512", None, [1], {"x": 1}])
+def test_reserve_treats_every_non_positive_integer_service_value_as_not_reported(bad):
+    # The contract validator already rejects most of these; the planner must not
+    # depend on that, because a service value is a promise only when it is a real
+    # positive integer (bool is an int subclass and must not count as 1 byte).
+    facts = _facts(_hosts(), "host-small")
+    control = facts["control_plane"]
+    _set_service_memory_mins(control, [128 * 1024**2] * len(CONTROL_PLANE_SERVICE_UNITS))
+    control["service_memory_min"][CONTROL_PLANE_SERVICE_UNITS[2]]["memory_min_bytes"] = bad
+    control["profile_reserve_bytes"] = 900 * 1024**2
+    assert _control_plane_reserve(facts) == (
+        900 * 1024**2, "profile-constant", [CONTROL_PLANE_SERVICE_UNITS[2]],
+    )
+
+
+def test_reserve_ignores_a_missing_or_malformed_service_table():
+    for table in (None, [], "x", {}, {unit: "x" for unit in CONTROL_PLANE_SERVICE_UNITS}):
+        facts = _facts(_hosts(), "host-small")
+        control = facts["control_plane"]
+        control["service_memory_min"] = table
+        control["profile_reserve_bytes"] = 800 * 1024**2
+        assert _control_plane_reserve(facts) == (
+            800 * 1024**2, "profile-constant", list(CONTROL_PLANE_SERVICE_UNITS),
+        )
