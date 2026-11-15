@@ -18,7 +18,6 @@ from .contracts import ContractError, is_candidate_id
 from .measurement import measurement_document
 from .plan import replan_pending
 from .runner import JobSpec, RunnerJobs, parse_progress, validate_job_spec
-from .scope import candidate_list_digest
 from .transport import HostUnavailable, Transport, TransportError
 
 

@@ -547,6 +547,14 @@ above the median, its sum exceeds the estimate and the derived budget stops it
 part way. The measurement document already records `elapsed_seconds_max`, so
 the tail is observable; sizing does not use it.
 
+Review addition: a shard's wall time is the SUM of its candidates, so the
+estimator that matches the budget is the MEAN, not the median, and a
+right-skewed distribution has mean above median. The median is also taken over
+`killed` and `survived` only: candidates that ended `budget_exceeded` or `hung`
+are excluded from it yet still occupy their workers for their full per-candidate
+bound, so a lane with a few percent of those is under-budgeted by exactly that
+share. The measurement document has no sum or mean field yet.
+
 **Wanted.** Either derive the budget from a measured tail (for example the p95
 of the per-candidate sum, or median plus a measured dispersion term) with the
 margin as an explicit override, or document plainly that a heavy-tailed lane is
