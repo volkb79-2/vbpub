@@ -6,6 +6,12 @@ They are written as per-service drop-ins under
 `/etc/systemd/system/<unit>.d/90-vbpub-memory-min.conf` and are checked against
 `systemctl show -p MemoryMin <unit>` after installation.
 
+**The values below are policy placeholders, not measurements.** The operator
+wants the floors to cover only each service's hot working set (so the host stays
+responsive under thrashing); the total below is considered too large and the
+values will be replaced by a follow-up from a per-service hot-set measurement.
+Tests pin the table-versus-rendered equality, not these numbers.
+
 | Unit | MemoryMin | Evidence and scope |
 |---|---:|---|
 | `ssh.service` | 32 MiB | Unmeasured per service; Debian base unit used and configured by the installer. |

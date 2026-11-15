@@ -11,6 +11,8 @@ All notable changes to debian-install-v2 are recorded here.
   The latter two are optional: verification skips them only when systemd reports
   `LoadState=not-found` or `masked`, and fails if a loaded unit has a missing or
   wrong value.
+  The values are unmeasured policy placeholders (the total is considered too
+  large) pending a per-service hot-set measurement and a follow-up that replaces them.
   Values and measurement status are recorded in `docs/CONTROL-PLANE-MEMORY.md`; existing
   hosts still need a separately scheduled in-place application or reinstall.
   `verify` now reads these values back, so it fails on a host installed before

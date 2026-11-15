@@ -95,10 +95,19 @@ def test_control_plane_memory_min_drop_ins_are_reloaded_after_the_last_write(tmp
     assert reloads and reloads[-1] > writes[-1]
 
 
-def test_control_plane_memory_min_sum_is_in_the_measured_profile_band():
-    total_bytes = sum(value[1] for value in CONTROL_PLANE_MEMORY_MIN.values())
-    assert 450_000_000 <= total_bytes <= 1_500_000_000
-    assert total_bytes == 640 * 1024 * 1024
+def test_control_plane_memory_min_sum_matches_the_documented_total_and_stays_under_the_ceiling():
+    # The per-service values are placeholders pending the hot-set measurement,
+    # so neither a specific total nor a lower bound is pinned: a smaller,
+    # measured table must pass. The documented Total row must equal the table.
+    values = [value[1] for value in CONTROL_PLANE_MEMORY_MIN.values()]
+    assert all(value > 0 for value in values)
+    total_bytes = sum(values)
+    assert total_bytes <= 1_500_000_000
+    text = VALUE_TABLE.read_text(encoding="utf-8")
+    match = re.search(r"(?m)^\| \*\*Total\*\* \| \*\*([0-9]+) MiB \(([0-9,]+) bytes\)\*\*", text)
+    assert match, "documented Total row is missing"
+    assert int(match.group(1)) * 1024 * 1024 == total_bytes
+    assert int(match.group(2).replace(",", "")) == total_bytes
 
 
 def test_control_plane_memory_min_readback_accepts_exact_systemd_values(tmp_path):
@@ -297,7 +306,7 @@ def test_three_user_documents_explain_what_why_and_how():
     assert "control-plane service memory protection" in readme
     assert "docs/design-guide.md#control-plane-memory-protection" in readme
     assert "450–500 mb" in design and "unmeasured" in design
-    assert "640 mib" in design and "over-reserved by design" in design
+    assert "placeholder" in design and "over-reserved by design" in design
     assert "control-plane-memory.md" in design
     assert "cgprofiled.service" in design and "mdt-psi-guard.service" in design
     assert "mandatory" in design and "optional" in design

@@ -84,8 +84,12 @@ positive value; otherwise it uses a fixed profile constant. The two 8 GiB
 hosts measured read-only on 2026-11-14 had about 450–500 MB of hot control-plane
 RSS. This installer uses six fixed service floors that total 640 MiB
 (671,088,640 bytes), above that aggregate measurement and well below 8 GiB.
-The 640 MiB total is over-reserved by design relative to measured whole-plane
-RSS; the values do not vary with installed RAM.
+The total is over-reserved by design relative to measured whole-plane RSS. The
+operator considers it too large: the floors should cover only each service's
+hot working set. The current values are policy placeholders pending the
+per-service hot-set measurement and will be replaced by a follow-up; the
+mechanism (six units, drop-ins, readback) is what this change delivers. The
+values do not vary with installed RAM.
 
 The service-by-service RSS was not measured in the available installer
 evidence, so each floor is explicitly marked unmeasured in the
