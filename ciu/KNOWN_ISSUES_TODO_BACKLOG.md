@@ -672,6 +672,7 @@ entries.
 | CIU-216 | `ciu worktree create` renders no `ciu.global.toml` when `DOCKER_HOST` is unset and the socket is at a non-default path | Minor | OPEN 2026-11-13 |
 | CIU-217 | The KSM ELF verifier accepts a program-header table whose declared entry size is zero (`e_phentsize = 0`) | Minor | OPEN 2026-11-13 (strict xfail `test_zero_program_header_entry_size_is_refused` records it) |
 | CIU-218 | `ciu host enroll` cannot install an opt-in forced-command key for the fleet campaign runner | Major | OPEN 2026-11-13 |
+| CIU-219 | The packaged ciu skills have no grammar or coverage oracle, so a released verb can be absent from the text a consumer's agent reads | Minor | OPEN 2026-11-15 |
 
 
 The approved milestone decisions and serial package order are in
@@ -7017,3 +7018,32 @@ bytes and a general enrollment. A fake hx transport reaches every allowed
 runner operation and no other operation. The registered CIU enrollment gate,
 SPEC, and consumer documentation pass; no live host is needed for the unit
 contract.
+
+## CIU-219 — the packaged ciu skills have no grammar or coverage oracle
+
+**Status:** OPEN (filed 2026-11-15 during the estate-wide skills refresh);
+severity: minor (documentation drift, no product behaviour). Contrast CMRU
+KI-171, which has the grammar half of this oracle and lacks the coverage half.
+
+**Observed.** `ciu skills install|check` bind the INSTALLED copy to the packaged
+one (`cli_extended.skills`), and that is all that is verified. No test parses the
+`ciu ...` lines in `ciu/src/ciu/skills/ciu-cli/SKILL.md` against the registered
+grammar, and none asserts that a registered verb appears at all. The 2026-11-15
+refresh measured the consequence: the text was written against 7.18-era usage and
+never described `ciu run`/`ciu run reap`, `ciu exec`, `ciu resolve`, `--layout`
+/`--thin` / `--bootstrap` / `--rollback`, `governance iops-baseline`, the
+`ASK_HOST` directive, `[ciu.selection_record]`, or the CIU-193 `down` ownership
+filter. The stack skill additionally told an operator to cap a stack with
+`[<stack>.governance].cpus` alone, which is parsed but NOT emitted unless
+`enabled = true`.
+
+**Wanted.** A test in `ciu/tests` that (1) parses every `ciu ...` command in both
+packaged SKILLs against `cli_registry.build_cli()` with the same helper style
+CMRU uses, and (2) asserts every registered leaf verb appears at least once in
+`ciu-cli` or in a declared exemption list naming `ciu-stack` (worktree verbs).
+Both directions matter: one catches a removed flag, the other catches a new verb
+nobody documented.
+
+**Close when.** Mutating a documented flag and deleting a documented verb each
+turn the test red, the refreshed 7.25.1 text passes unchanged, and
+`ciu skills check` still reports the installed copies current.

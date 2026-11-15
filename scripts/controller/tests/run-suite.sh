@@ -17,6 +17,7 @@ files=(
   "$SCRIPT_DIR/../gate-run.sh"
   "$SCRIPT_DIR/../release-from-wt.sh"
   "$SCRIPT_DIR/../push-image.sh"
+  "$SCRIPT_DIR/../skills-sync.sh"
   "$REPO_ROOT/scripts/netcup/runner/host-sat-queue.sh"
   "$SCRIPT_DIR/test-ctl-status.sh"
   "$SCRIPT_DIR/test-job-check.sh"
@@ -25,6 +26,7 @@ files=(
   "$SCRIPT_DIR/test-hardening-tools.sh"
   "$SCRIPT_DIR/test-ctx-hooks.sh"
   "$SCRIPT_DIR/test-mutations.sh"
+  "$SCRIPT_DIR/test-skills-sync.sh"
   "$SCRIPT_DIR/run-suite.sh"
   "$queue_test"
 )
@@ -40,6 +42,7 @@ bash "$SCRIPT_DIR/test-wrappers.sh" || exit $?
 bash "$SCRIPT_DIR/test-pi-impl.sh" || exit $?
 bash "$SCRIPT_DIR/test-hardening-tools.sh" || exit $?
 bash "$SCRIPT_DIR/test-ctx-hooks.sh" || exit $?
+bash "$SCRIPT_DIR/test-skills-sync.sh" || exit $?
 bash "$queue_test" || exit $?
 bash "$SCRIPT_DIR/test-mutations.sh" || exit $?
 echo 'PASS controller suite'

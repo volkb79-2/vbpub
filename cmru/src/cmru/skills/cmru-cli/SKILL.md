@@ -7,6 +7,12 @@ description: The cmru (Configurable Multi Release Utility) CLI — status, relea
 > verb's `--help`; the installed `cmru` is the authority. When a flag below
 > disagrees with `cmru release --help` (or the verb's own help), trust the help and report the drift.
 > Install this skill with `cmru skills install`; check it with `cmru skills check`.
+>
+> **Checked against cmru 7.3.1** (`cmru --version`) on 2026-11-15. `skills check`
+> compares the installed copy with the packaged one and names the drift, so a
+> released flag that lands after this date is caught there — and a consumer whose
+> wheel is OLDER than 7.3.1 must expect verbs and flags this text describes to
+> be absent (the `handler` and `installer` verbs are recent additions).
 
 > **MANDATE.** cmru is the canonical release tool for CIU-family monorepos, also
 > for a project that has not cut a release yet. Never hand-tag a release commit
@@ -36,13 +42,19 @@ cmru worktrees --json                # retained build/release worktrees
 cmru gate-snapshots --json           # retained release-gate snapshots, removable or retained (read-only without --remove)
 cmru dependencies --json             # the dependency graph and preflight
 cmru versions check                  # recorded vs currently eligible versions
-cmru resolve ciu --format url        # latest published artifact of a project
+cmru resolve ciu --format url        # latest published artifact of a project (json|env|url; no --dry-run)
 cmru standards                       # check CMRU framework markers (--update writes)
 cmru doctor                          # environment checks: git, docker, config, credentials, images
+cmru skills check                    # exit 1 unless the installed skills match this cmru
 ```
 
 `cmru tool-deps` verifies declared tool dependencies over the network (never run
-it during tests); without `--refresh` it only reports.
+it during tests); without `--refresh` it only reports. `--allow-stale-tool-deps`
+relaxes freshness for one verification and is also accepted on `release`.
+
+`--json` is NOT universal: `resolve`, `cleanup`, `abandon`, `changelog`, `init`,
+`build`, `publish`, `run`, `tester-gate` refuse it by name. Adding `--json` to any
+verb you have not checked is a usage error (exit 2), not a silent plain-text run.
 
 ## Release
 
@@ -55,7 +67,9 @@ cmru release ciu --from-worktree --secret-file /path/to/main/cmru.secret.toml
 cmru release --no-build              # tag and push only
 cmru release ciu --skip-gates "operator: re-publish after release cleanup"   # ONLY on the operator's explicit say-so
 cmru release --resume cmru-release-20261006_101500-ciu-ab12cd
-cmru release --discard logs --discard artifacts
+cmru release --discard logs --discard artifacts   # also: --discard evidence (repeatable)
+cmru release --allow-tag-ahead-of-head            # a tag strictly ahead of the snapshot
+cmru release --show-run-details --log-append      # stream subprocess output; keep per-step logs
 ```
 
 `--skip-gates REASON` skips only running `run-tests`: it is for an explicit operator decision
@@ -90,6 +104,14 @@ continue. A resume keeps the version the first attempt recorded (D-001): do not
 repeat `--minor`/`--major`/`--set-version`; one that selects a different version
 is refused (exit 4) before anything changes. There is no `release --abandon`:
 discarding is the `abandon` verb below.
+
+Version is resolved BEFORE the tag, never after it. `--dry-run` checks the planned
+CMRU release version, the Run-Gate image identity, and the version named in the
+bootstrap guide (KI-109/KI-111) before it allocates a candidate worktree, so a
+stale bootstrap or a wrong image tag fails there rather than after the gate. A
+real release runs the external version's prepare step inside the candidate before
+`cmru.vars` is read, and an already-tagged target is still refused before build,
+push, gates or publish (KI-142).
 
 ## Credentials (`[github] token_source`, mandatory since 7.0)
 
@@ -149,6 +171,7 @@ cmru dependencies --write --dry-run  # preview the generated block; without --wr
 cmru standards --update --dry-run    # refresh CMRU-owned revision markers
 cmru tool-deps --refresh ciu --dry-run   # re-vendor a provider's latest artifact
 cmru installer render ciu --output-dir dist --dry-run  # emit a standalone get.py installer (get-py is a deprecated alias)
+cmru installer check ciu --installer dist/get.py   # byte-for-byte drift guard, exit 1 on drift
 cmru versions init --dry-run         # derive version targets from manifests
 cmru versions resolve --dry-run      # resolve and write version records
 cmru init --root . --layout single --dry-run # guided adoption; never overwrites an existing config
@@ -156,6 +179,39 @@ cmru init --root . --layout single --dry-run # guided adoption; never overwrites
 
 `dependencies --dry-run` is accepted only together with `--write`. `cmru init`
 validates its contracts with the real loaders before writing anything.
+
+## Project-step handlers
+
+The handler verb runs one declared project step. `cmru handler --help` is the closed list:
+`wheel-build`, `wheel-publish`, `tarball-publish`, `bundle-manifest`, `bundle-build`,
+`oci-image-build`, `oci-image-push`, `oci-image-release`, `wheel-validate`,
+`tarball-validate`.
+
+```bash
+cmru handler wheel-build --cwd ciu            # needs a git worktree and CMRU_WHEEL_BUILDER_IMAGE
+cmru handler bundle-build --bundle-config bundle.toml --cmru-config cmru.toml --name myproj --variant all
+cmru handler tarball-publish --prefix myproj --cwd . --glob '*.tar.xz' --version-env MYPROJ_VERSION \
+  --variant py311=cp311 --variant py312=cp312
+```
+
+`bundle-build` is the per-interpreter bundle producer (KI-126). The variant list lives in the
+project's `[[project.variants]]` in `cmru.toml` (each `build_arg` is the interpreter version);
+`bundle.toml` declares `[archive]` and `[copy]`, plus optional `[vendor]`, `[stage]`, `[exec]`,
+`[manifest]`. Build order is clean, wheel, copy, vendor, stage, manifest, archive. A failing
+vendor or stage command exits 1 and writes no archive, and the archive name is validated before
+either runs.
+
+**Bundle membership is fail-closed — the one rule that bites.** `[archive].keep` is an exact
+list of bundle-relative paths: no globs, no absolute paths, no traversal, no backslashes, no
+control characters, duplicates refused. A file whose name ends in `.toml`, `.env`, `.pem`,
+`.crt`, `.key`, `.p12`, `.pfx` or `.log` is excluded unless its exact path is in `keep`;
+no suffix class has an implicit exception, so a bundle that needs `pyproject.toml` must spell
+`keep = ["pyproject.toml"]`. If `[stage]` leaves an unlisted suffix-class file the build fails
+and names it. Suffix matching is case-sensitive and a `.env.theme`-style name is NOT covered
+yet (KI-167), so never depend on a prefix class. `.pyc`, `.git`, `.ciu`, `ciu.env`,
+`minisign.key`, cache dirs and `node_modules` are never keepable, and included source or
+stage-created symlinks are refused. After a successful archive and manifest both staging trees
+are removed unless `keep_tree = true`; a failure after staging keeps them for diagnosis.
 
 ## Gating (tester-unified)
 
@@ -176,7 +232,8 @@ resume target that does not match the retained scope), `3` prerequisite missing 
 required tool, a credential such as `GITHUB_PUSH_PAT`, a declared step or a derived
 working directory is absent, or cmru is not installed as a distribution), `4`
 refused by policy or verification with nothing changed (an unsafe or incomplete
-retained build record, no release gate declared, local `main` ahead of origin).
+retained build record, no release gate declared, local `main` ahead of origin), `5`
+a registry rate limit stopped a `versions` verb (partial progress is saved; rerun later).
 
 A deliberate refusal prints one `[ERROR] <message>` line with its exit code; it is
 never labelled "unexpected" and `--traceback` adds no stack for it. A failing

@@ -14,6 +14,7 @@
 
 | ID | Status | Fix commit |
 | --- | --- | --- |
+| KI-171 | OPEN (the packaged cmru-cli SKILL is grammar-checked but not coverage-checked: a verb or flag a release adds can be missing from it with every existing test green) | — |
 | KI-170 | OPEN (bundle validator outcomes pinned; SPEC wording and R2 lane-cost policy remain) | — |
 | KI-169 | OPEN (`bundle_dir` set to `"."` makes the success cleanup delete the whole `dist_dir`; no containment check on `bundle_dir`/`client_dir`) | — |
 | KI-168 | OPEN (`cmru release` does not preflight the digest-pinned cgroup probe image; a missing one fails late in the wheel-build step, after the gate) | — |
@@ -3726,3 +3727,13 @@ Call: `SOURCE_DATE_EPOCH=1700000000 DEMO_VERSION=1.0.0 cmru handler bundle-build
 **Assay lane cost.** The `assay-first-release-r2` Run-Gate lane does not set `candidate_fail_fast`; each candidate runs the full 6,678-test suite, measured at about 500 seconds on one host flavor and 575 seconds on the other. The measured 4,890-candidate target projects to about 202 hours across two hosts; the campaign report projects about 60–70 hours with candidate fail-fast. Recommend enabling `candidate_fail_fast` after confirming test ordering preserves the required evidence, and update the stale `assay.toml` comment that currently says candidates fail fast. This entry records the decision and performance follow-up; no lane policy was changed here.
 
 **Close when.** S9.4 explicitly defines the tested keep-entry grammar, and the lane's fail-fast policy is either enabled with its comment and acceptance evidence updated or recorded as an intentional cost with a reason. The selected-subset verdict follow-up is tracked in KI-134; the missing-tag sync failure is tracked by netcup NC-56.
+
+## KI-171 — the packaged skill is grammar-checked, never coverage-checked
+
+**Status:** OPEN (filed 2026-11-15 during the estate-wide skills refresh); severity: minor (documentation drift, no product behaviour).
+
+**Problem.** `cmru skills install`/`check` bind the INSTALLED copy to the packaged source, and `tests/test_w2_pkg5_skills_doctor.py` parses every `cmru ...` line in the SKILL against the real registry, so a flag the CLI never had cannot appear. Nothing asserts the other direction: a verb or a public option that a release ADDS can be absent from the skill while every existing test stays green. The 7.1.3 → 7.3.1 drift measured in the 2026-11-15 refresh is exactly that shape — `handler` (including `bundle-build` and its variant grammar), `installer check`, `--allow-tag-ahead-of-head`, `--allow-stale-tool-deps`, `--discard evidence`, `versions` exit 5 (`RATE_LIMITED`), and the fail-closed `[archive].keep` rule were all shipped and all undocumented in the skill.
+
+**Wanted.** A coverage oracle next to the existing grammar guard: every registered leaf verb appears in the SKILL at least once, and every verb-level option the CLPC grammar catalog (SPEC S-CLI.9) marks as public appears in the SKILL or in a declared exception list with a reason. The exception list must itself be checked, so it cannot silently absorb a later capability.
+
+**Close when.** The oracle goes red when a newly registered verb (or a newly public verb-level option) is added without a SKILL mention, the two `cmru skills` install/check tests still pass, and the refreshed 7.3.1 text passes unchanged.

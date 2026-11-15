@@ -171,6 +171,7 @@ SPEC §9.
 | RG-276 | Run-Gate has no campaign-plan client to assemble candidate and host inputs for fleetd | Enhancement | OPEN 2026-11-13; fleetd MVP-A exposes a standalone fleet plan CLI |
 | RG-277 | Run-Gate cannot forward fleetd's explicit candidate-owner manifest to Assay's strict store merge | Enhancement | OPEN 2026-11-13; fleetd MVP-B-lite collects candidate files only |
 | RG-278 | Run-Gate 25.6.0 KSM R2 survivor test debt | Major | CLOSED 2026-11-14; behavioral tests kill all 17 non-equivalent survivors and document the six equivalents |
+| RG-281 | the repo-level run-gate skill has no install or check path, so an installed copy silently rots | Enhancement | OPEN 2026-11-15 |
 ---
 
 ## RG-1 — conjunction lanes silently drop `--worktree` and `--allow-dirty`
@@ -8627,3 +8628,29 @@ causes its owning oracle to fail.
 Run-Gate: `--instances` is a `scripts/netcup/runner/run-r2-campaign.sh`
 option and the supervisor lives there. They are recorded as confirmations
 under netcup NC-36 and NC-49.
+
+## RG-281 — the repo-level run-gate skill has no install or check path
+
+**Status:** OPEN (filed 2026-11-15 during the estate-wide skills refresh);
+severity: minor (documentation drift, no gate behaviour).
+
+**Problem.** `run-gate-project/.claude/skills/run-gate-cli/SKILL.md` is
+hand-written and versioned with the tool, but nothing installs it: cmru, ciu and
+pwmcp ship a cli-extended `skills` verb that stamps the installed copy and makes
+`skills check` exit 1 when it is stale, and run-gate has none. The refresh
+measured the drift this permits — the 2026-10 text said "rev 49, unreleased" for
+a released 25.6.0, never named `--jobs`/`--workers`, RG-265's shard/carry-over/
+targeted-candidate set, `--allow-main-checkout`, KSM opt-in, `network` policy
+or `io_sync`, and did not describe the worktree base derivation. A consumer that
+copied it once has been reading a skill three releases behind.
+
+**Wanted.** Adopt the cli-extended `skills` verb (as cmru/ciu/pwmcp do), package
+the SKILL as data under the run-gate distribution, and either retire the
+repo-level `.claude/skills` copy to a pointer or keep it as the source both the
+package and `skills install` read. `run-gate skills check` then fails on a stale
+install, which is the only mechanism that cannot be forgotten.
+
+**Close when.** `run-gate skills install|check|list|uninstall` exist and work
+against a tmp destination; `check` goes red on a stale copy and green after
+install; the existing `test_assay_resume_state_contract_is_documented_in_spec_and_skill`
+still passes against the packaged path; and the docs name the install step.

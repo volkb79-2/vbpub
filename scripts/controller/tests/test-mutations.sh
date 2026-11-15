@@ -282,6 +282,12 @@ expect_killed ctx-hooks-crash-log \
   env CTX_HOOKS_SCRIPT="$ROOT/mutants/scripts/controller/ctx-hooks-crash-log.py" bash "$SCRIPT_DIR/test-ctx-hooks.sh"
 expect_killed push-pipeline-exit-propagation \
   env PUSH_IMAGE_SCRIPT="$ROOT/mutants/scripts/controller/push-image-status.sh" bash "$SCRIPT_DIR/test-wrappers.sh"
+for skills_mutant in skills-stamp-ownership skills-modified-clobber skills-stale-detection \
+                     skills-dangling-symlink skills-check-exit skills-usage-range \
+                     skills-dest-arity skills-install-failure skills-synced-guard skills-dry-run-writes; do
+  expect_killed "$skills_mutant" \
+    env SKILLS_SYNC_SCRIPT="$ROOT/mutants/scripts/controller/$skills_mutant.sh" bash "$SCRIPT_DIR/test-skills-sync.sh"
+done
 expect_killed queue-auto-pause-threshold \
   env QUEUE_SCRIPT="$ROOT/mutants/scripts/netcup/runner/queue-threshold.sh" bash "$REPO_ROOT/scripts/netcup/runner/tests/test-queue.sh"
 expect_killed queue-pause-write-failure-fallback \

@@ -130,12 +130,31 @@ _INLINE = re.compile(r"`(cmru [^`]+)`")  # a bare `cmru` names the tool, not a c
 
 
 def _skill_cmru_lines(text: str) -> list[str]:
-    """Every ``cmru ...`` command the skill shows: fenced lines and inline spans."""
+    """Every ``cmru ...`` command the skill shows: fenced lines and inline spans.
+
+    A fenced command may be wrapped with a trailing backslash; the continuation
+    lines are joined so the guard parses the whole invocation instead of the
+    truncated first half (a raw trailing ``\\`` makes ``shlex.split`` raise
+    ``ValueError``, which would report the line as unparseable rather than
+    checking it).
+    """
     lines: list[str] = []
     for block in _FENCE.findall(text):
+        pending: str | None = None
         for raw in block.splitlines():
-            if raw.startswith("cmru "):
-                lines.append(raw)
+            if pending is None:
+                if not raw.startswith("cmru "):
+                    continue
+                pending = raw
+            else:
+                pending = f"{pending} {raw.strip()}"
+            if pending.endswith("\\"):
+                pending = pending[:-1].rstrip()
+                continue
+            lines.append(pending)
+            pending = None
+        if pending is not None:  # a block that ends mid-continuation
+            lines.append(pending)
     stripped = _FENCE.sub("", text)
     lines += [match.group(1) for match in _INLINE.finditer(stripped)]
     return lines

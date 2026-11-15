@@ -3,11 +3,21 @@ name: pwmcp-fetch
 description: Read JavaScript-rendered pages when raw fetch returns empty, skeletal, or truncated content, using PWMCP's managed browser through its client CLI or MCP endpoint.
 ---
 
-> **Tool versions last checked (2026-11-07):** pwmcp bundles
-> `@playwright/mcp` `0.0.80` behind an MCP HTTP/SSE server (port 8931).
+> **Tool versions last checked (2026-11-15):** pwmcp bundles
+> `@playwright/mcp` `0.0.80` behind an MCP HTTP/SSE server (port 8931) and pins
+> Playwright `1.64.1`. This text matches the repo's released skill at
+> `pwmcp-v1.64.1-r9`. **Check what the running client actually is** —
+> `pwmcp --version` prints the client build (for example `1.64.1.post5`), and the
+> content formats (`--format markdown|links`), `--main`, `--allow-http-error` and
+> exit **5** exist only from release r6 onward, while the hidden-content and
+> CSS-recovery filtering landed in r7/r8. An older client refuses an unknown
+> `--format` by name (exit 2), which is a runtime-skew fact, not a reason to guess.
+> `pwmcp versions` reports the client release, the reachable server release and
+> their skew verdict; `pwmcp contract` prints the server contract as JSON.
 > The Python recipe was checked with `mcp` SDK `2.3.0`; its
 > `streamable_http_client` API still yields the 2-tuple `(read, write)`.
-> The server's `browser_click` tool requires a `target` argument.
+> The server's `browser_click` tool requires a `target` argument — a snapshot
+> reference or a locator, never a free-text label.
 
 # Reading JavaScript-rendered pages with PWMCP
 
@@ -33,7 +43,9 @@ the service, or configure an MCP connection. Check discovery with:
 
 ```bash
 command -v pwmcp
-pwmcp --version
+pwmcp --version     # the client build; compare with the repo's released skill version
+pwmcp versions      # client vs reachable server release, with a skew verdict
+pwmcp doctor        # contract reachable, installed Playwright matches it
 ```
 
 If the command is missing, ask the environment owner to expose the installed
@@ -158,8 +170,14 @@ A main-document HTTP 4xx/5xx returns the page body but exits **5** in every
 inspect format and in `eval`. Use `--allow-http-error` when the error response
 is expected (for example, when checking a 404 body); the body and JSON status
 fields are still returned, and the exit becomes 0. Bot-protection detection
-still takes precedence and exits **4**. See the PWMCP consumer guide for the
-closed client exit-code table.
+still takes precedence and exits **4**. The client's exit codes are closed and
+worth knowing before you retry anything blindly: **0** completed (including an
+expected HTTP error under `--allow-http-error`), **1** runtime failure
+(unreachable service, browser error, output failure), **2** invalid usage (a
+`--format` this build does not have, a missing `--output` for a screenshot),
+**3** the client command is not installed, **4** recognised bot protection,
+**5** the main document returned HTTP 4xx/5xx. `eval` does not classify
+bot-protection pages; it uses the HTTP status.
 
 ## Blocked by bot protection: report it, do not work around it
 
