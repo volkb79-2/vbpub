@@ -100,8 +100,11 @@ intact account state. The wrapper mutation lane switches that block off for
 speed (`CONTROLLER_TEST_PARALLEL_OD_STARTS=0` in `tests/test-mutations.sh`), and
 no mutant depends on it. With the exclusive state lock replaced by a no-op, the
 test failed in only 2 of 3 runs, so in its present form it is not a discriminator
-for a lost lock and cannot be counted as coverage of the state-serialization
-guard.
+for a lost lock. The lock is not unguarded: the `od-exclusive-state-flock`
+mutant (`LOCK_EX` downgraded to `LOCK_SH`) is killed by `tests/test-hardening-tools.sh`,
+which asserts that the exclusive lock operation is requested. That test checks
+the call, not the serialization it provides, and no mutant removes the lock
+entirely, so the race itself is covered only by the weak parallel-start test.
 
 **Where.** `scripts/controller/tests/test-wrappers.sh` (the parallel-start block
 and its `CONTROLLER_TEST_PARALLEL_OD_STARTS` gate);
@@ -112,17 +115,19 @@ mutant that downgrades the lock).
 **Wanted.** Make the race reliable rather than incidental: raise the number of
 simultaneous starts, or add a test-only delay hook between the state read and
 the state write so a no-op lock loses the split deterministically, and make at
-least one mutant depend on the test (the lock mutant is judged with the
-parallel-start block enabled, and the lane declares the runtime cost of that
-mode).
+least one mutant depend on the test (add a mutant that removes the lock
+entirely and judge it against `test-wrappers.sh` with the parallel-start block
+enabled, and the lane declares the runtime cost of that mode).
 
-**Priority.** P2 — an unkilled mutant in the account-state bookkeeping, which is
-the guard behind the account-blocking and 402 accounting.
+**Priority.** P2 — the only test of the account-state serialization race is
+unreliable and outside the mutation lane; that state is the guard behind the
+account-blocking and 402 accounting.
 
 **Close when.** With the lock replaced by a no-op, a repeated campaign of the
-parallel-start test fails every time; the mutant that removes or downgrades the
-lock is killed by that test; and the mutation lane and the test's own comments
-state the start count, the enabled-in-mutation mode, and its runtime cost.
+parallel-start test fails every time; a mutant that removes the lock is killed
+by that test inside the mutation lane; and the mutation lane and the test's own
+comments state the start count, the enabled-in-mutation mode, and its runtime
+cost.
 
 ---
 
@@ -132,15 +137,16 @@ state the start count, the enabled-in-mutation mode, and its runtime cost.
 review of the controller kit (merged).
 
 **Problem.** The account state records one `threads` entry (thread id to account)
-for every started or resumed run and never removes any. Nothing ages an entry,
+for every start or resume that supplies a thread id and never removes any. Nothing ages an entry,
 and nothing drops one whose run evidence is gone, so the state file grows by one
 entry per thread for the life of the runs directory and carries stale ids
 indefinitely. Entries also carry no timestamp today, so an age rule cannot be
 applied to the existing file as it stands.
 
-**Where.** `scripts/controller/opendesign-accounts.py` (`bootstrap_state`,
-`load_state`/`save_state`, `record_start`, `record-thread`), and the same file's
-schema validation, which must keep accepting a pruned state file.
+**Where.** `scripts/controller/opendesign-accounts.py` (`fresh_state`,
+`locked_state`, `save_state`, `record_start`, the `record-thread` and start
+actions), and the same file's schema validation (`normalize_state`), which must
+keep accepting a pruned state file.
 
 **Wanted.** Prune entries older than a documented retention window or whose run
 files (`.jsonl`, `.route`, `.thread`) are gone; record a timestamp with each
@@ -178,8 +184,11 @@ it on every resume.
 
 **Wanted.** Bound the fallback: use an index (the map, or a small thread-id index
 derived from run metadata) as the primary lookup, and keep the directory scan as
-a last resort — for example match the recorded `.thread` file before reading any
-run stream, and stop the stream scan early once the id is found.
+a last resort. The scan already compares a run's `.thread` file before parsing
+that run's stream; what is still unbounded is that the stream of every run whose
+`.thread` file does not match is read in full (`Path.read_text`), so for example
+make a first pass over all `.thread` files only, and parse streams only when
+that pass finds nothing.
 
 **Priority.** P3 — a cost and latency issue, not an incorrect answer.
 
@@ -202,9 +211,11 @@ correct automatic answer existed. Pinned routes must keep their current
 behaviour and must not fail over: a pinned route names an account deliberately.
 
 **Where.** `scripts/controller/opendesign-accounts.py` (`pick_available`,
-`ensure_catalog_safe`, the `start`, `start-pi`, and `start-resume` actions) and
-`scripts/controller/codex-impl.sh`, `scripts/controller/pi-impl.sh` where the
-selected account is used after the call.
+`ensure_catalog_safe`, the automatic form of the `start` action) and
+`scripts/controller/codex-impl.sh` where the selected account is used after the
+call. The `start-pi` action performs no catalog check (pi owns its provider
+catalog), and `start-resume` checks the catalog of a recorded account, so
+neither is the case described here.
 
 **Wanted.** Decide and implement one of two outcomes: (a) an automatic pick tries
 the other available account when the first one's catalog is unsafe, printing one
@@ -227,8 +238,8 @@ case applies.
 **Status:** OPEN (filed 2026-11-15); priority P3. Filed from the compaction-steering
 (`ctx-steer`) research review of `docs/design/ctlstat` (merged).
 
-**Problem.** The X1-X5 experiment runs shared one scratch subdirectory and reused
-driver and agent log filenames, so later runs overwrote earlier raw logs (the
+**Problem.** The X1-X5 experiment runs kept one scratch subdirectory per experiment
+and reused driver and agent log filenames within it, so later runs overwrote earlier raw logs (the
 passive hook log of the basic run, the pi extension log and RPC outputs of the
 earlier runs, and the driver console output with the SIGINT exit codes). Those
 claims now rest on the author's run notes, and the experiment document had to
