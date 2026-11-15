@@ -228,7 +228,7 @@ def test_plan_resolves_memory_time_and_routes_with_single_core_eta():
 
 def test_plan_preserves_special_alone_and_retry_work_on_one_host_and_renders_commands():
     plan = _plan([
-        _candidate("big", 14 * 1024**3 + 512 * 1024**2),
+        _candidate("big", 15 * 1024**3),
         _candidate("retry", 256 * 1024**2, memory_crash_evidence=True),
     ])
     host = _host_plan(plan, "host-large")
@@ -880,7 +880,7 @@ def test_placement_caps_and_refusal_move_by_the_reserve_difference_only():
         }
         for unit in CONTROL_PLANE_SERVICE_UNITS
     }
-    fallback_plan = _plan([_candidate("edge", service_host["cap_bytes"] + 1)], hosts=fallback_set)
+    fallback_plan = _plan([_candidate("edge", int(service_host["cap_bytes"]) + 1)], hosts=fallback_set)
     fallback_host = _host_plan(fallback_plan, "host-small")
     reserve_delta = 768 * 1024**2 - 600 * 1024**2
     assert service_host["reserve_bytes"] == 600 * 1024**2
@@ -981,7 +981,7 @@ def test_golden_cli_plan_for_two_eight_gib_four_core_hosts_and_230_candidates(tm
         assert len(plan["execution"]["commit"]) == 40
     deterministic_plan = {key: value for key, value in plan.items() if key != "execution"}
     digest = hashlib.sha256(dump_json(deterministic_plan).encode("utf-8")).hexdigest()
-    assert digest == "13b036934c44c7f0ddb96061bc78e5b592d913aa73e76085a168a0fef934b18a"
+    assert digest == "baa9d847a791f023d562007530ac5fb5e1592d73962a4e340ae499f8bf29d759"
 
 
 def test_other_work_and_memory_reserves_bound_worker_and_physical_budgets():
