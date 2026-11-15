@@ -193,6 +193,24 @@ impl TierConfig {
     pub fn segment_bytes(&self) -> u64 {
         u64::from(self.max_payload).saturating_mul(64).max(1 << 16)
     }
+
+    /// The largest a segment file can legitimately be: its byte budget plus the one record
+    /// that crossed it.
+    ///
+    /// A writer seals *after* appending the record that reaches the budget, so a segment may
+    /// exceed `segment_bytes` by exactly one record. The seal's copy bound is therefore this
+    /// value, and a file larger than it is one the store did not write (or one that grew after
+    /// it was closed) and is refused rather than duplicated into a trusted name.
+    #[must_use]
+    pub fn segment_file_bound(&self) -> u64 {
+        let record = u64::from(self.max_payload)
+            .saturating_add(u64::from(self.max_incarnations).saturating_mul(8))
+            .saturating_add(crate::format::RECORD_HEADER_LEN as u64)
+            .saturating_add(crate::format::MAX_RECORD_PAD as u64);
+        self.segment_bytes()
+            .saturating_add(record)
+            .saturating_add(1)
+    }
 }
 
 /// The note a scan leaves about a name it refused to touch.
@@ -809,7 +827,7 @@ impl Tier {
         let open_name = open.name().to_string();
         let sealed = self.name_for(start_s, seq, false);
         let temp = format!("{sealed}.tmp");
-        let report = open.seal(&self.dir, &sealed, &temp, self.config.segment_bytes())?;
+        let report = open.seal(&self.dir, &sealed, &temp, self.config.segment_file_bound())?;
         let file_len = self.dir.size_of(&sealed)?.unwrap_or(0);
         // The open name is gone and the sealed one took its place: recompute both entries from
         // what is on disk rather than from an assumption about the copy's size.
@@ -1048,6 +1066,17 @@ mod tests {
         u64::try_from(48 + body + pad).unwrap_or(0)
     }
 
+    /// Reopen the *same* directory with a smaller cap, which is how a bound change and a
+    /// restart are modelled: the scan rebuilds the ring from what is on disk.
+    fn tier_with_cap(temp: &TempDir, keep_s: u64, cap_bytes: u64) -> Tier {
+        Tier::open(
+            TierConfig::history("hot", 60, keep_s, cap_bytes, false).expect("config"),
+            StoreDir::open(temp.path(), false).expect("dir"),
+            1 << 22,
+        )
+        .expect("tier")
+    }
+
     fn tier(temp: &TempDir, keep_s: u64, cap_bytes: u64) -> Tier {
         let config = TierConfig::history("hot", 60, keep_s, cap_bytes, false).expect("config");
         Tier::open(
@@ -1169,6 +1198,160 @@ mod tests {
         assert_eq!(on_time.len(), 1);
         assert!(tier.scan().segments.is_empty());
         assert_eq!(tier.bytes(), 0);
+    }
+
+    #[test]
+    fn eviction_takes_the_oldest_segment_and_the_ring_is_ordered_by_start_not_by_arrival() {
+        // A tier over its cap by exactly one segment must lose the *oldest* one. The ring's
+        // order is (start_s, seq), so a segment appended later in a later bucket is never
+        // mistaken for the oldest, and a clock step that repeats a start second is broken by
+        // the sequence rather than by the order the files were listed in.
+        let temp = TempDir::new("ordering");
+        let one = sealed_len(16);
+        let mut tier = tier(&temp, 3600, 2 * one + 1);
+        tier.append(&job(0, 16), 1, 1).expect("append bucket 0");
+        tier.seal_open_segment().expect("seal bucket 0");
+        tier.append(&job(60_000_000_000, 16), 1, 1)
+            .expect("append bucket 60");
+        tier.seal_open_segment().expect("seal bucket 60");
+        assert_eq!(tier.scan().segments.len(), 2);
+        assert_eq!(
+            tier.oldest().map(|segment| segment.name.as_str()),
+            Some("hot-0-0.seg")
+        );
+        assert_eq!(
+            tier.newest().map(|segment| segment.name.as_str()),
+            Some("hot-60-1.seg")
+        );
+        // Bring the total over the cap, so exactly one segment has to go.
+        let mut capped = tier_with_cap(&temp, 3600, one);
+        let evicted = capped.evict(70_000_000_000).expect("evict");
+        assert_eq!(
+            evicted.segments,
+            vec!["hot-0-0.seg".to_string()],
+            "the oldest goes, never the newest"
+        );
+        assert_eq!(capped.scan().segments.len(), 1);
+        assert_eq!(
+            capped.scan().segments[0].name,
+            "hot-60-1.seg",
+            "the newest survives"
+        );
+        assert_eq!(capped.bytes(), one);
+    }
+
+    #[test]
+    fn a_segment_of_another_corpus_in_this_directory_is_reported_and_never_touched() {
+        // A right-looking name holding an events segment is not a history segment: the
+        // header's kind decides, and a tier that adopted it would later delete a file whose
+        // records it cannot serve. The committed events fixture is exactly such a file.
+        let temp = TempDir::new("corpus");
+        temp.write_file("hot-0-0.seg", EVENTS_FIXTURE);
+        let mut tier = Tier::open(
+            TierConfig::history("hot", 60, 3600, 0, false).expect("config"),
+            StoreDir::open(temp.path(), false).expect("dir"),
+            1 << 22,
+        )
+        .expect("tier");
+        assert!(tier.scan().is_empty());
+        assert_eq!(tier.scan().notes.len(), 1);
+        assert_eq!(tier.scan().notes[0].name, "hot-0-0.seg");
+        assert!(
+            tier.scan().notes[0].reason.contains("another tier kind"),
+            "the note names the corpus: {}",
+            tier.scan().notes[0].reason
+        );
+        assert_eq!(tier.bytes(), 0);
+        // Eviction past every bound must not remove it.
+        let evicted = tier.evict(i64::MAX / 2).expect("evict");
+        assert!(evicted.is_empty());
+        assert_eq!(temp.read_file("hot-0-0.seg"), EVENTS_FIXTURE.to_vec());
+    }
+
+    /// The committed events segment, used as a "right name, wrong corpus" file.
+    const EVENTS_FIXTURE: &[u8] = include_bytes!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../fixtures/segment/open-events.seg"
+    ));
+
+    #[test]
+    fn a_segment_rolls_to_a_new_file_when_its_byte_budget_is_reached() {
+        // A segment has a byte budget of its own, derived from the payload bound. When it is
+        // reached the open segment seals and a new one starts in the same bucket, so a tier
+        // cannot grow one unbounded file while its `keep_s` window is still open.
+        let temp = TempDir::new("roll");
+        let config = TierConfig::history("hot", 60, 3600, 0, false)
+            .expect("config")
+            .with_max_payload(16)
+            .expect("payload bound");
+        assert_eq!(config.segment_bytes(), 1 << 16);
+        let mut tier = Tier::open(
+            config,
+            StoreDir::open(temp.path(), false).expect("dir"),
+            1 << 22,
+        )
+        .expect("tier");
+        let mut rolls = 0usize;
+        let mut previous = String::new();
+        for index in 0..1_200 {
+            // Every record is 72 bytes here (48 header + 8 id + 16 payload), so the 64 KiB
+            // budget is first crossed around record 911 and the loop stops before a second.
+            let outcome = tier
+                .append(&job(index as i64 * 1_000_000, 16), 1, 1)
+                .expect("append");
+            if outcome.segment != previous {
+                if index > 0 {
+                    rolls += 1;
+                }
+                previous = outcome.segment;
+            }
+        }
+        assert_eq!(
+            rolls, 1,
+            "one roll in 1,200 records at a 64 KiB budget: {rolls}"
+        );
+        assert_eq!(tier.scan().segments.len(), 2);
+        assert!(
+            tier.scan().segments[0].file_len <= tier.config().segment_file_bound(),
+            "a sealed segment is at most its budget plus the record that crossed it and the footer"
+        );
+        assert!(
+            !tier.scan().segments[0].open,
+            "the segment that reached its budget is sealed"
+        );
+        assert!(tier.scan().segments[1].open);
+        assert_eq!(tier.scan().segments[0].parsed.start_s, 0);
+        assert_eq!(
+            tier.scan().segments[1].parsed.start_s,
+            0,
+            "same bucket, new file"
+        );
+    }
+
+    #[test]
+    fn a_tier_exactly_at_its_byte_cap_keeps_every_segment() {
+        // The cap is a *strict* bound: a tier whose bytes equal the cap is inside it, so an
+        // eviction at equality would delete a segment the configuration said to keep.
+        let temp = TempDir::new("cap-exact");
+        let one_segment = sealed_len(16);
+        let mut exact = tier(&temp, 3600, one_segment);
+        exact.append(&job(0, 16), 1, 1).expect("append");
+        exact.seal_open_segment().expect("seal");
+        assert_eq!(exact.bytes(), exact.config().cap_bytes);
+        let nothing = exact.evict(1_000_000_000).expect("evict");
+        assert!(
+            nothing.is_empty(),
+            "equality is inside the cap: {nothing:?}"
+        );
+        assert_eq!(exact.scan().segments.len(), 1);
+        // One byte over and the oldest segment leaves.
+        let over_dir = TempDir::new("cap-exact-over");
+        let mut over = tier(&over_dir, 3600, one_segment - 1);
+        over.append(&job(0, 16), 1, 1).expect("append");
+        over.seal_open_segment().expect("seal");
+        let evicted = over.evict(1_000_000_000).expect("evict");
+        assert_eq!(evicted.segments, vec!["hot-0-0.seg".to_string()]);
+        assert_eq!(over.bytes(), 0);
     }
 
     #[test]

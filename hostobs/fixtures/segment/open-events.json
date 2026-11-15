@@ -1,0 +1,27 @@
+{
+  "case": "open-events",
+  "doc": "an open events segment: one EVT record, tier kind events",
+  "footer": null,
+  "header": {
+    "dict_generation": 2,
+    "epoch": 7,
+    "kind": "events",
+    "max_incarnations": 16,
+    "max_payload": 4096,
+    "payload": "evt",
+    "seq": 1,
+    "start_real_ns": 1700000000000000000
+  },
+  "records": [
+    {
+      "body_len": 104,
+      "incarnations": [],
+      "kind": "evt",
+      "pad": 0,
+      "payload_hex": "6800000003010000010000000100000001000101500000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+      "real_ns": 1700000000000000000,
+      "seq": 0
+    }
+  ],
+  "sealed": false
+}

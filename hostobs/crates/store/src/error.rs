@@ -92,6 +92,19 @@ pub enum StoreError {
         /// The stored byte.
         found: u8,
     },
+    /// A record's kind is not this segment's corpus kind: a history segment holding an
+    /// event record, or the reverse. Distinct from [`StoreError::RecordKind`], which is a
+    /// kind outside the vocabulary altogether.
+    RecordCorpus {
+        /// The record's index.
+        index: usize,
+        /// The corpus the segment header declares.
+        tier: &'static str,
+        /// The kind the corpus requires.
+        expected: u8,
+        /// The kind the record carries.
+        found: u8,
+    },
     /// A record's magic is not a record's.
     RecordMagic {
         /// The record's zero-based index in the segment.
@@ -479,6 +492,7 @@ impl StoreError {
             StoreError::HeaderLength { .. } => "header-length",
             StoreError::PayloadKind { .. } => "payload-kind",
             StoreError::RecordMagic { .. } => "record-magic",
+            StoreError::RecordCorpus { .. } => "record-corpus",
             StoreError::RecordHeaderCrc { .. } => "record-header-crc",
             StoreError::RecordCrc { .. } => "record-crc",
             StoreError::RecordSequence { .. } => "record-sequence",
@@ -555,6 +569,7 @@ impl StoreError {
                 | StoreError::HeaderLength { .. }
                 | StoreError::PayloadKind { .. }
                 | StoreError::RecordMagic { .. }
+                | StoreError::RecordCorpus { .. }
                 | StoreError::RecordHeaderCrc { .. }
                 | StoreError::RecordCrc { .. }
                 | StoreError::RecordSequence { .. }
@@ -682,6 +697,15 @@ impl fmt::Display for StoreError {
             StoreError::RecordKind { index, found } => {
                 write!(f, "record {index} carries kind {found}, which is not defined")
             }
+            StoreError::RecordCorpus {
+                index,
+                tier,
+                expected,
+                found,
+            } => write!(
+                f,
+                "record {index} carries kind {found}, but a {tier} segment holds only {expected}"
+            ),
             StoreError::RecordIncarnations { index, count, max } => write!(
                 f,
                 "record {index} declares {count} incarnation ids, the bound is {max}"

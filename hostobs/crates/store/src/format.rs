@@ -393,7 +393,10 @@ impl SegmentHeader {
 pub struct RecordHeader {
     /// The record's sequence number within the segment (0-based, monotone).
     pub seq: u64,
-    /// The record kind; version 1 defines [`RECORD_BLOCK`] only.
+    /// The record kind; version 1 defines [`RECORD_BLOCK`] (history) and [`RECORD_EVT`]
+    /// (events). Which of the two a segment holds is the segment header's corpus, checked by
+    /// the reader that knows it — this header check only refuses a kind outside the
+    /// vocabulary.
     pub kind: u8,
     /// Real time of the block's end, nanoseconds since the Unix epoch.
     pub real_ns: i64,
@@ -599,7 +602,7 @@ impl RecordHeader {
         let body_crc = read_u32(header, 36)?;
         let pad = usize::from(read_u8(header, 40)?);
         check_zero(header, 41, 3, "record reserved")?;
-        if kind != RECORD_BLOCK {
+        if kind != RECORD_BLOCK && kind != RECORD_EVT {
             return Err(StoreError::RecordKind { index, found: kind });
         }
         let implied = pad_for(usize::try_from(body_len).map_err(|_| StoreError::LengthOverflow)?)?;
@@ -1186,7 +1189,7 @@ mod tests {
     use super::{
         check_payload, check_tier_name, pad_for, read_u32, record_crc, Footer, FrameFacts,
         RecordHeader, SegmentFileName, SegmentHeader, TierKind, BLOCK_FRAME_TYPE, FOOTER_LEN,
-        FRAME_HEADER_LEN, HEADER_LEN, MAX_RECORD_PAD, PAYLOAD_BLOCK, RECORD_BLOCK,
+        FRAME_HEADER_LEN, HEADER_LEN, MAX_RECORD_PAD, PAYLOAD_BLOCK, RECORD_BLOCK, RECORD_EVT,
         RECORD_HEADER_LEN, SEGMENT_MAGIC, SEGMENT_VERSION,
     };
     use crate::crc::crc32;
@@ -1455,10 +1458,19 @@ mod tests {
                 found: *b"XOBR"
             })
         );
-        let bad_kind = patch(encoded, 16, &[2]);
+        // A kind outside the closed vocabulary is refused by the record reader; which of the
+        // two defined kinds a segment may hold is its header's corpus, checked by the
+        // segment reader that knows it (see `an_events_segment_refuses_a_block_record`).
+        let bad_kind = patch(encoded, 16, &[9]);
         assert_eq!(
             RecordHeader::check_bytes(&bad_kind, 1, 64),
-            Err(StoreError::RecordKind { index: 1, found: 2 })
+            Err(StoreError::RecordKind { index: 1, found: 9 })
+        );
+        let event_kind = patch(encoded, 16, &[RECORD_EVT]);
+        assert_eq!(
+            RecordHeader::check_bytes(&event_kind, 1, 64).map(|header| header.kind),
+            Ok(RECORD_EVT),
+            "the record header itself admits both defined kinds"
         );
         let bad_flags = patch(encoded, 17, &[1]);
         assert_eq!(

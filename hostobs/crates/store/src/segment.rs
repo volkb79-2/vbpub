@@ -338,10 +338,11 @@ impl OpenSegment {
         self.last_real_ns
     }
 
-    /// Append one block payload, with the incarnation ids its block names.
+    /// Append one payload, with the incarnation ids its block names.
     ///
-    /// The payload is checked as a `proto` BLOCK frame before anything is written, so a
-    /// non-block can never reach the file. A failure rolls the file back to the length it had
+    /// The payload is checked as the `proto` frame its corpus requires before anything is
+    /// written, so a frame of the other kind can never reach the file; the record kind written
+    /// is the segment header's own, so a history segment cannot hold event records. A failure rolls the file back to the length it had
     /// before this call, so a failed append never leaves a half record behind — the caller
     /// counts the loss and moves on.
     ///
@@ -359,7 +360,7 @@ impl OpenSegment {
         check_payload(payload, self.header.kind, self.header.max_payload)?;
         let record = RecordHeader::encode_record(
             self.record_count,
-            crate::format::RECORD_BLOCK,
+            self.header.kind.record_kind(),
             real_ns,
             incarnations,
             payload,
@@ -479,6 +480,26 @@ pub fn scan(
     max_incarnations: u32,
 ) -> Result<SegmentScan, StoreError> {
     let bytes = dir.read(name, max_bytes)?;
+    scan_bytes(name, &bytes, max_incarnations)
+}
+
+/// Scan one segment's bytes, without a directory: the entry point a fixture test, an
+/// importer or an evidence tool uses.
+///
+/// [`scan`] is this function plus the bounded read, so a scan of a fixture and a scan of a
+/// store take the identical path through the format. Nothing here allocates beyond what the
+/// file already holds, and nothing panics on what it finds.
+///
+/// # Errors
+///
+/// [`StoreError::Truncated`] (no header), every header refusal, and
+/// [`StoreError::LengthOverflow`]. A damaged *tail* is not an error: it is the returned
+/// scan's [`SegmentScan::tail`].
+pub fn scan_bytes(
+    name: &str,
+    bytes: &[u8],
+    max_incarnations: u32,
+) -> Result<SegmentScan, StoreError> {
     let file_len = u64::try_from(bytes.len()).map_err(|_| StoreError::LengthOverflow)?;
     let header_bytes = bytes.get(..HEADER_LEN).ok_or(StoreError::Truncated {
         context: "segment header",
@@ -530,6 +551,20 @@ pub fn scan(
         let offset = u64::try_from(position).map_err(|_| StoreError::LengthOverflow)?;
         match RecordHeader::check_bytes(at, index, max_incarnations) {
             Ok(record_header) => {
+                // The record's kind must be the one this segment's corpus carries: a header
+                // that says "history" may not hold an event record, and vice versa.
+                if record_header.kind != header.kind.record_kind() {
+                    tail = TailState::Corrupt {
+                        offset,
+                        reason: StoreError::RecordCorpus {
+                            index,
+                            tier: header.kind.name(),
+                            expected: header.kind.record_kind(),
+                            found: record_header.kind,
+                        },
+                    };
+                    break;
+                }
                 let record_len = record_header.record_len()?;
                 if record_len > remaining {
                     tail = TailState::Incomplete { offset };
@@ -648,7 +683,7 @@ pub fn payload_crc(payload: &[u8]) -> u32 {
 
 #[cfg(test)]
 mod tests {
-    use super::{quarantine_name, scan, OpenSegment, TailState};
+    use super::{quarantine_name, scan, scan_bytes, OpenSegment, TailState};
     use crate::error::StoreError;
     use crate::format::{
         TierKind, BLOCK_FRAME_TYPE, FOOTER_LEN, HEADER_LEN, PAYLOAD_BLOCK, RECORD_HEADER_LEN,
@@ -973,6 +1008,38 @@ mod tests {
         );
         too_many_ids.truncate(64);
         assert_eq!(open.append(10, &too_many_ids, &block(1, 0x11)), Ok(1));
+    }
+
+    #[test]
+    fn a_segment_refuses_a_record_of_the_other_corpus() {
+        // The segment header names the corpus, and the record kind must follow it: a history
+        // segment may not hold an event record even though the record envelope alone would
+        // accept that kind. Without this check a reader would hand a consumer an event where
+        // it expects a column block.
+        let temp = TempDir::new("corpus");
+        let dir = StoreDir::open(temp.path(), false).expect("open");
+        let mut open = segment(&dir, "t-1-1.seg.open");
+        open.append(10, &[1], &block(1, 0x11)).expect("append");
+        drop(open);
+        let mut bytes = dir.read("t-1-1.seg.open", 1 << 20).expect("read");
+        // Rewrite the first record's kind byte to the events kind and re-checksum its header.
+        let second = HEADER_LEN;
+        bytes[second + 16] = crate::format::RECORD_EVT;
+        let crc = crate::crc::crc32(&bytes[second..second + 44]);
+        bytes[second + 44..second + 48].copy_from_slice(&crc.to_le_bytes());
+        let scanned = scan_bytes("t-1-1.seg.open", &bytes, 64).expect("scan");
+        assert!(scanned.records.is_empty());
+        match &scanned.tail {
+            TailState::Corrupt { offset, reason } => {
+                assert_eq!(*offset, HEADER_LEN as u64);
+                assert_eq!(reason.kind(), "record-corpus");
+                assert_eq!(
+                    reason.to_string(),
+                    "record 0 carries kind 2, but a history segment holds only 1"
+                );
+            }
+            other => panic!("expected a corrupt tail, got {other:?}"),
+        }
     }
 
     #[test]
