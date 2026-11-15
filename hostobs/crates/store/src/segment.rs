@@ -423,11 +423,32 @@ impl OpenSegment {
     ///
     /// [`StoreError::Io`], [`StoreError::ForeignEntry`] and [`StoreError::FileTooLarge`].
     pub fn seal(
+        self,
+        dir: &StoreDir,
+        sealed_name: &str,
+        temp_name: &str,
+        max_bytes: u64,
+    ) -> Result<SealReport, StoreError> {
+        self.seal_until(dir, sealed_name, temp_name, max_bytes, crate::fsio::SealStop::Complete)
+    }
+
+    /// As [`OpenSegment::seal`], but able to stop at a named point of the seal's order.
+    ///
+    /// [`crate::fsio::SealStop::AfterRename`] is the crash window the seal's order creates:
+    /// the sealed name is durable and the open name still exists. A test uses it to reproduce
+    /// that state without a fault-injecting filesystem; the tier's own open path is what has
+    /// to cope with it, and [`crate::tier::Tier::rescan`] removes the stale open name it finds.
+    ///
+    /// # Errors
+    ///
+    /// [`StoreError::Io`], [`StoreError::ForeignEntry`], [`StoreError::FileTooLarge`].
+    pub fn seal_until(
         mut self,
         dir: &StoreDir,
         sealed_name: &str,
         temp_name: &str,
         max_bytes: u64,
+        stop: crate::fsio::SealStop,
     ) -> Result<SealReport, StoreError> {
         self.appender.sync()?;
         let footer = Footer {
@@ -439,7 +460,14 @@ impl OpenSegment {
             last_real_ns: self.last_real_ns.unwrap_or(0),
         };
         let footer_bytes = footer.encode();
-        dir.seal_open_segment(&self.name, sealed_name, temp_name, &footer_bytes, max_bytes)?;
+        dir.seal_open_segment_until(
+            &self.name,
+            sealed_name,
+            temp_name,
+            &footer_bytes,
+            max_bytes,
+            stop,
+        )?;
         Ok(SealReport {
             sealed: sealed_name.to_string(),
             records: self.record_count,
@@ -620,16 +648,29 @@ pub fn scan_bytes(
                     }
                 }
             }
-            Err(StoreError::RecordMagic { .. }) => {
+            Err(StoreError::RecordMagic { found, .. }) => {
                 // A record that is not a record: either a tear that lost the record's first
-                // bytes, or something else entirely. Both are damage, and both are reported
-                // by their offset rather than by a guess about what was meant.
-                tail = TailState::Corrupt {
-                    offset,
-                    reason: StoreError::RecordMagic {
-                        index,
-                        found: [0u8; 4],
-                    },
+                // bytes, or something else entirely. Both are reported by their offset, and
+                // both carry the bytes that were actually there rather than a guessed zero
+                // (an operator needs the real bytes to tell the two apart).
+                //
+                // The one shape that is *not* damage is the tail a power cut leaves on a
+                // size-extending filesystem (ext4, xfs): the file's length was extended and
+                // the record bytes were never written, so everything from the last good
+                // record to the end is zero. That is an unwritten tail, not a corrupt record,
+                // so it is reported as `Incomplete` and the tier repairs it by truncating back
+                // to the last good record — the segment keeps every complete record it had
+                // instead of being quarantined whole.
+                let unwritten = bytes
+                    .get(position..)
+                    .is_some_and(|rest| rest.iter().all(|byte| *byte == 0));
+                tail = if unwritten {
+                    TailState::Incomplete { offset }
+                } else {
+                    TailState::Corrupt {
+                        offset,
+                        reason: StoreError::RecordMagic { index, found },
+                    }
                 };
                 break;
             }
@@ -932,6 +973,63 @@ mod tests {
             crate::format::SegmentFileName::parse(&name).map(|_| ()),
             Err(StoreError::SegmentName { name })
         );
+    }
+
+    #[test]
+    fn a_zero_filled_tail_is_an_unwritten_tail_and_the_valid_prefix_stays_readable() {
+        // A power cut on a size-extending filesystem leaves the file's length extended and the
+        // record bytes never written: everything after the last good record is zero. That is
+        // an *unwritten* tail, not a corrupt record, so it is reported as incomplete (the
+        // record it was going to hold is simply absent) and the prefix survives (review, M6).
+        let temp = TempDir::new("zero-tail");
+        let dir = StoreDir::open(temp.path(), false).expect("open");
+        let mut open = segment(&dir, "t-1-1.seg.open");
+        open.append(10, &[1], &block(1, 0x11)).expect("append");
+        let good = open.len();
+        drop(open);
+        let mut bytes = dir.read("t-1-1.seg.open", 1 << 20).expect("read");
+        bytes.resize(usize::try_from(good).expect("fits") + 4096, 0);
+        dir.create("t-1-2.seg.open", &bytes)
+            .expect("plant the extended file");
+        let scanned = scan(&dir, "t-1-2.seg.open", 1 << 20, 64).expect("scan");
+        assert_eq!(scanned.records.len(), 1, "the completed record still reads");
+        assert_eq!(
+            scanned.tail,
+            TailState::Incomplete {
+                offset: good
+            },
+            "an all-zero tail is unwritten, not corrupt"
+        );
+        assert_eq!(scanned.truncate_to_good_end(&dir), Ok(good));
+        assert_eq!(
+            dir.size_of("t-1-2.seg.open"),
+            Ok(Some(good)),
+            "the repair cut only the unwritten tail"
+        );
+    }
+
+    #[test]
+    fn a_tail_of_bytes_that_are_not_a_record_is_still_corrupt() {
+        // The unwritten-tail rule is about *zero* bytes only: a tail holding anything else is
+        // damage and stays a corrupt state, so the relaxation cannot swallow a real refusal.
+        let temp = TempDir::new("non-zero-tail");
+        let dir = StoreDir::open(temp.path(), false).expect("open");
+        let mut open = segment(&dir, "t-1-1.seg.open");
+        open.append(10, &[1], &block(1, 0x11)).expect("append");
+        let good = open.len();
+        drop(open);
+        let mut bytes = dir.read("t-1-1.seg.open", 1 << 20).expect("read");
+        bytes.resize(usize::try_from(good).expect("fits") + 4096, 0x5A);
+        dir.create("t-1-2.seg.open", &bytes)
+            .expect("plant the damaged file");
+        let scanned = scan(&dir, "t-1-2.seg.open", 1 << 20, 64).expect("scan");
+        match &scanned.tail {
+            TailState::Corrupt { offset, reason } => {
+                assert_eq!(*offset, good);
+                assert_eq!(reason.kind(), "record-magic");
+            }
+            other => panic!("a non-zero tail must stay corrupt, got {other:?}"),
+        }
     }
 
     #[test]

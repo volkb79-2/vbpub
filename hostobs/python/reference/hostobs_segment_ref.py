@@ -262,6 +262,13 @@ def decode_segment(data: bytes) -> dict:
             if error.refusal in ("truncated", "payload-length"):
                 tail = {"state": "incomplete", "offset": position}
                 break
+            # A tail that is all zero is not damage: it is the shape a power cut leaves on a
+            # size-extending filesystem, where the file's length was extended and the record
+            # bytes were never written. It is reported as an unwritten (incomplete) tail, so
+            # the valid prefix survives and only the tail is cut back.
+            if error.refusal == "record-magic" and data[position:] == b"\x00" * (len(data) - position):
+                tail = {"state": "incomplete", "offset": position, "unwritten": True}
+                break
             tail = {"state": "corrupt", "offset": position, "refusal": error.refusal, **error.fields}
             break
         records.append(record["record"])

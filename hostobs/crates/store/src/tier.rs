@@ -486,8 +486,10 @@ impl Tier {
                     }
                 };
                 // Only quarantine what is provably ours: a look-alike name holding someone
-                // else's bytes is reported and left alone.
-                match self.header_of(&entry.name) {
+                // else's bytes is reported and left alone. The header is read as a **window**
+                // here: this branch exists because the file is past the whole-file bound, so
+                // the whole-file read is exactly the refusal that must not stop the check.
+                match self.header_of_window(&entry.name) {
                     Ok(header) if header.kind == self.config.kind => {}
                     Ok(_) => {
                         notes.push(TierNote {
@@ -523,11 +525,24 @@ impl Tier {
             // name that looks right and holds something else is reported and left alone.
             let header = match self.header_of(&entry.name) {
                 Ok(header) => header,
-                Err(reason) => {
+                Err(error) if error.is_format() => {
+                    // Bytes that are not this format's header at all: a foreign file holding
+                    // the right name. Reported, never counted as damage this tier suffered.
+                    notes.push(TierNote {
+                        name: entry.name.clone(),
+                        reason: format!("holds no header this tier can read: {}", error.kind()),
+                    });
+                    continue;
+                }
+                Err(error) => {
+                    // A header that could not be *read* (EACCES, EIO, a race, a file that grew
+                    // past the bound between the listing and the read) is a different fact:
+                    // the store cannot determine what this file is, it is not an absence of
+                    // anything, and it is counted as unreadable and left in place.
                     unreadable.push(entry.name.clone());
                     notes.push(TierNote {
                         name: entry.name.clone(),
-                        reason: format!("holds no header this tier can read: {}", reason.kind()),
+                        reason: format!("header could not be read: {}", error.kind()),
                     });
                     continue;
                 }
@@ -560,14 +575,50 @@ impl Tier {
             };
             match &scan.tail {
                 TailState::Complete => {}
-                TailState::Incomplete { .. } => {
-                    scan.truncate_to_good_end(&self.dir)?;
-                    torn_repaired.push(entry.name.clone());
-                }
+                TailState::Incomplete { .. } => match scan.truncate_to_good_end(&self.dir) {
+                    Ok(_) => torn_repaired.push(entry.name.clone()),
+                    Err(error) => {
+                        // The repair itself was refused (a read-only file, a full disk, a race).
+                        // The file stays where it is and is reported: a tier that aborted here
+                        // would be unopenable because of one file somebody else broke.
+                        unreadable.push(entry.name.clone());
+                        notes.push(TierNote {
+                            name: entry.name.clone(),
+                            reason: format!("torn tail could not be repaired: {}", error.kind()),
+                        });
+                        continue;
+                    }
+                },
                 TailState::Corrupt { .. } => {
-                    let quarantine = crate::segment::quarantine_name(&entry.name)?;
-                    scan.quarantine(&self.dir, &quarantine)?;
-                    quarantined.push(entry.name.clone());
+                    let quarantine = match crate::segment::quarantine_name(&entry.name) {
+                        Ok(name) => name,
+                        Err(error) => {
+                            unreadable.push(entry.name.clone());
+                            notes.push(TierNote {
+                                name: entry.name.clone(),
+                                reason: format!("corrupt and unnamed: {}", error.kind()),
+                            });
+                            continue;
+                        }
+                    };
+                    match scan.quarantine(&self.dir, &quarantine) {
+                        Ok(()) => {
+                            quarantined.push(entry.name.clone());
+                        }
+                        Err(error) => {
+                            // A corrupt file that cannot be renamed out of the way stays in
+                            // the ring's reach only as a report: it is not adopted, and the
+                            // tier keeps serving the rest.
+                            unreadable.push(entry.name.clone());
+                            notes.push(TierNote {
+                                name: entry.name.clone(),
+                                reason: format!(
+                                    "corrupt and could not be quarantined: {}",
+                                    error.kind()
+                                ),
+                            });
+                        }
+                    }
                     continue;
                 }
             }
@@ -673,6 +724,16 @@ impl Tier {
         )?)
     }
 
+    /// The header one name holds, read as a fixed window rather than under the file bound.
+    ///
+    /// The oversized branch of [`Tier::rescan`] must answer "is this file mine?" for a file
+    /// that is *past* the whole-file bound, so [`StoreDir::read_at`] — which refuses by the
+    /// file's size — would refuse before reading a byte. The window is the same 64 bytes and
+    /// is bounded by its own length, so nothing is allocated beyond a header.
+    fn header_of_window(&self, name: &str) -> Result<SegmentHeader, StoreError> {
+        SegmentHeader::check_bytes(&self.dir.read_window(name, 0, HEADER_LEN)?)
+    }
+
     /// The oldest segment this tier owns.
     #[must_use]
     pub fn oldest(&self) -> Option<&RingSegment> {
@@ -738,21 +799,33 @@ impl Tier {
         };
         let open = OpenSegment::create(&self.dir, &name, header)?;
         self.bytes = self.bytes.saturating_add(open.len());
-        self.scan.segments.push(RingSegment {
+        let parsed = SegmentFileName {
+            tier: self.config.name.clone(),
+            start_s,
+            seq,
+            open: true,
+        };
+        // The ring is ordered at every insertion, not only by the next restart's scan: the
+        // bounds loop below stops at the first segment that is still inside its window, so an
+        // out-of-order entry would let an expired segment survive until a restart. A clock
+        // step backwards is the case that produces one: bucket 60 open, then bucket 0.
+        let entry = RingSegment {
             name: name.clone(),
-            parsed: SegmentFileName {
-                tier: self.config.name.clone(),
-                start_s,
-                seq,
-                open: true,
-            },
+            parsed: parsed.clone(),
             open: true,
             file_len: open.len(),
             records: 0,
             first_real_ns: None,
             last_real_ns: None,
             incarnations: BTreeSet::new(),
-        });
+        };
+        let at = self
+            .scan
+            .segments
+            .iter()
+            .position(|existing| (existing.parsed.start_s, existing.parsed.seq) > (start_s, seq))
+            .unwrap_or(self.scan.segments.len());
+        self.scan.segments.insert(at, entry);
         self.scan.bytes = self.bytes;
         self.open = Some(open);
         Ok(())
@@ -854,8 +927,19 @@ impl Tier {
         let added = after.saturating_sub(before);
         self.bytes = self.bytes.saturating_add(added);
         // Keep the ring's entry for the open segment current: eviction and reachability read
-        // those facts, and a stale entry would understate the tier's own bytes.
-        if let Some(entry) = self.scan.segments.iter_mut().find(|segment| segment.open) {
+        // those facts, and a stale entry would understate the tier's own bytes. The entry is
+        // found by the handle's own name, never by `find(|s| s.open)`: a tier that failed a
+        // seal could hold an entry still marked open for a name that is no longer the handle's.
+        let handle_name = self
+            .open
+            .as_ref()
+            .map_or_else(String::new, |open| open.name().to_string());
+        if let Some(entry) = self
+            .scan
+            .segments
+            .iter_mut()
+            .find(|segment| segment.name == handle_name)
+        {
             entry.file_len = after;
             entry.records = records;
             entry.last_real_ns = Some(job.real_ns);
@@ -961,6 +1045,14 @@ impl Tier {
     /// Seal the open segment: footer, fsync, rename to the sealed name, and the open name
     /// disappears atomically.
     ///
+    /// A refusal is rolled back to a consistent tier: the open handle is put back (a seal that
+    /// failed before the rename left the open file exactly as it was), the ring entry is found
+    /// by its name rather than by "whichever entry says open" (the failed entry is the one the
+    /// next append would otherwise update), and the temporary file the seal created is removed
+    /// through [`StoreDir::seal_open_segment`]'s own error path. When even the handle cannot be
+    /// restored, the entry is reported in [`TierScan::notes`] rather than left claiming to be
+    /// open.
+    ///
     /// # Errors
     ///
     /// [`StoreError::Config`] when nothing is open, and every seal refusal.
@@ -968,12 +1060,30 @@ impl Tier {
         let Some(open) = self.open.take() else {
             return Ok(None);
         };
-        let start_s = self.start_for(open.header().start_real_ns.max(0))?;
+        let start_s = match self.start_for(open.header().start_real_ns.max(0)) {
+            Ok(start_s) => start_s,
+            Err(error) => {
+                self.open = Some(open);
+                return Err(error);
+            }
+        };
         let seq = open.header().seq;
         let open_name = open.name().to_string();
         let sealed = self.name_for(start_s, seq, false);
         let temp = format!("{sealed}.tmp");
-        let report = open.seal(&self.dir, &sealed, &temp, self.config.segment_file_bound())?;
+        let sealed_report = open.seal(&self.dir, &sealed, &temp, self.config.segment_file_bound());
+        let report = match sealed_report {
+            Ok(report) => report,
+            Err(error) => {
+                // The seal's order is temp, footer, fsync, rename, fsync, unlink, and
+                // `seal_open_segment` removes its own temporary file on every failure before
+                // the rename. What is left for this caller is the handle and the ring entry.
+                // The handle itself was consumed by `OpenSegment::seal`, so restoring it means
+                // reopening the open file the refused seal left untouched.
+                self.restore_after_failed_seal(&open_name, &error);
+                return Err(error);
+            }
+        };
         let file_len = self.dir.size_of(&sealed)?.unwrap_or(0);
         // The open name is gone and the sealed one took its place: recompute both entries from
         // what is on disk rather than from an assumption about the copy's size.
@@ -1002,6 +1112,69 @@ impl Tier {
         // (start, seq), so the entry stays where it is.
         self.scan.bytes = self.bytes;
         Ok(Some(sealed))
+    }
+
+    /// Put the tier back together after a seal refused.
+    ///
+    /// What has to hold again is: the ring's entry describes the file that exists, and the
+    /// tier's handle is that file's. The entry is found by `open_name`, never by
+    /// `find(|s| s.open)`, so a stale claim cannot be updated instead. When the open file
+    /// cannot be reopened the entry is dropped from the ring and reported, because an entry
+    /// claiming to be open with no handle behind it is the shape that made the next append
+    /// update the wrong file (`pi-hostobs-m1c` review, M2).
+    ///
+    /// The temporary file of a failed seal is **not** this function's business: it is created
+    /// by [`StoreDir::seal_open_segment_until`], which removes its own copy on every failure
+    /// before the rename, and a `.tmp` this call did not create is not a file it may delete.
+    fn restore_after_failed_seal(&mut self, open_name: &str, error: &StoreError) {
+        let reopened = OpenSegment::open(
+            &self.dir,
+            open_name,
+            self.config.kind,
+            self.max_file_bytes,
+            self.config.max_incarnations,
+        );
+        match reopened {
+            Ok(handle) => {
+                let len = handle.len();
+                if let Some(entry) = self
+                    .scan
+                    .segments
+                    .iter_mut()
+                    .find(|segment| segment.name == open_name)
+                {
+                    entry.open = true;
+                    entry.file_len = len;
+                    entry.records = handle.record_count();
+                    entry.incarnations = handle.incarnations().clone();
+                }
+                self.open = Some(handle);
+            }
+            Err(_) => {
+                // The file this handle wrote cannot be reopened (it was removed, or its tail
+                // changed under us). The ring must not keep claiming it is open: drop the
+                // entry, recompute the total from what the ring still holds, and report it.
+                if let Some(position) = self
+                    .scan
+                    .segments
+                    .iter()
+                    .position(|segment| segment.name == open_name)
+                {
+                    let len = self.scan.segments[position].file_len;
+                    self.scan.segments.remove(position);
+                    self.bytes = self.bytes.saturating_sub(len);
+                }
+                self.open = None;
+                self.scan.notes.push(TierNote {
+                    name: open_name.to_string(),
+                    reason: format!(
+                        "seal refused ({}) and the open segment could not be reopened; its ring entry is dropped",
+                        error.kind()
+                    ),
+                });
+            }
+        }
+        self.scan.bytes = self.bytes;
     }
 
     /// The ids every segment in this tier still names.
@@ -1177,6 +1350,7 @@ mod tests {
     use crate::fsio::testdir::TempDir;
     use crate::fsio::StoreDir;
     use crate::queue::Job;
+    use crate::segment::OpenSegment;
     use std::collections::BTreeSet;
 
     /// A minimal `proto` BLOCK frame: a 12-byte header plus `data` zero bytes.
@@ -1550,6 +1724,233 @@ mod tests {
     }
 
     #[test]
+    fn a_failed_seal_puts_the_ring_entry_and_the_handle_back_and_leads_no_temp_behind() {
+        // The seal's order is temp, footer, fsync, rename, fsync, unlink. A seal that refuses
+        // *before* the rename leaves the open file untouched, and the tier must be exactly as
+        // it was: its handle, its ring entry, and no temporary name (review, M2).
+        let temp = TempDir::new("seal-fail");
+        let mut tier = tier(&temp, 3600, 0);
+        tier.append(&job(0, 16), 1, 1).expect("append");
+        let open_name = tier
+            .open_handle()
+            .map(|open| open.name().to_string())
+            .expect("open");
+        // A sealed name that already exists makes the seal refuse after it has copied nothing
+        // (the check runs before the temp file is created).
+        temp.write_file("hot-0-0.seg", b"a planted sealed name");
+        let refused = tier.seal_open_segment();
+        assert!(matches!(refused, Err(StoreError::ForeignEntry { .. })));
+        assert!(
+            tier.has_open(),
+            "the handle is back: a refused seal leaves the segment openable"
+        );
+        let entry = tier
+            .scan()
+            .segments
+            .iter()
+            .find(|segment| segment.name == open_name)
+            .expect("the ring still holds the open entry");
+        assert!(entry.open, "the entry says open, and now it is true");
+        assert_eq!(entry.records, 1);
+        assert!(
+            !temp.exists(&format!("hot-0-0.seg.tmp")),
+            "a refused seal leaves no temporary file behind"
+        );
+        // A second record lands in the same open segment: the failed seal did not detach it.
+        let next = tier.append(&job(1_000_000_000, 16), 1, 1).expect("append");
+        assert_eq!(next.segment, open_name);
+        assert_eq!(next.records, 2);
+    }
+
+    #[test]
+    fn a_file_past_the_bound_is_quarantined_and_counted_not_skipped() {
+        // A store-written segment can never be past its tier's own file bound; a file that is
+        // is not this store's segment. It must not be *skipped* either: a skipped file sits
+        // outside the ring and outside the byte total, so eviction would never reach it and the
+        // disk would grow past the cap the configuration declared (review, B4).
+        let temp = TempDir::new("oversized");
+        let mut tier = tier(&temp, 3600, 0);
+        tier.append(&job(0, 16), 1, 1).expect("append");
+        tier.seal_open_segment().expect("seal");
+        let mut bytes = temp.read_file("hot-0-0.seg");
+        // Grow the file past the bound without touching its header: the header still says this
+        // is this tier's corpus, so it is provably the store's own file.
+        let bound = tier.config().segment_file_bound();
+        let grow = usize::try_from(bound).expect("fits") + 1;
+        bytes.resize(grow, 0xA5);
+        temp.write_file("hot-0-0.seg", &bytes);
+        let reopened = Tier::open(
+            TierConfig::history("hot", 60, 3600, 0, false).expect("config"),
+            StoreDir::open(temp.path(), false).expect("dir"),
+            1 << 22,
+        )
+        .expect("tier");
+        assert_eq!(reopened.scan().oversized, vec!["hot-0-0.seg".to_string()]);
+        assert_eq!(reopened.scan().quarantined, vec!["hot-0-0.seg".to_string()]);
+        assert!(reopened.scan().segments.is_empty());
+        assert_eq!(
+            reopened.bytes(),
+            0,
+            "the oversized file is out of the ring, not silently inside the directory"
+        );
+        assert!(!temp.exists("hot-0-0.seg"));
+        assert!(
+            temp.exists("hot-0-0.seg.corrupt"),
+            "the bytes are kept for an operator under the quarantine name"
+        );
+        assert!(
+            reopened
+                .scan()
+                .notes
+                .iter()
+                .all(|note| !note.reason.contains("no header")),
+            "the header was read, so the file was recognised as this tier's own"
+        );
+    }
+
+    #[test]
+    fn a_rescan_keeps_going_when_one_store_file_cannot_be_read() {
+        // One unreadable segment must not brick the tier's open: the file is reported and left
+        // where it is, and every other segment is still in the ring (review, M5).
+        //
+        // The lane runs the suite as an unprivileged uid, so `chmod 000` really does make the
+        // open fail; a process with CAP_DAC_OVERRIDE could not reproduce it, which is a limit of
+        // this test's environment and not of the behaviour it checks.
+        let temp = TempDir::new("unreadable");
+        let mut tier = tier(&temp, 3600, 0);
+        tier.append(&job(0, 16), 1, 1).expect("append");
+        tier.seal_open_segment().expect("seal");
+        tier.append(&job(60_000_000_000, 16), 1, 1).expect("append");
+        let open_name = tier
+            .open_handle()
+            .map(|open| open.name().to_string())
+            .expect("open");
+        drop(tier);
+        temp.chmod("hot-0-0.seg", 0o000);
+        let reopened = Tier::open(
+            TierConfig::history("hot", 60, 3600, 0, false).expect("config"),
+            StoreDir::open(temp.path(), false).expect("dir"),
+            1 << 22,
+        )
+        .expect("one unreadable file must not make the tier unopenable");
+        assert_eq!(reopened.scan().unreadable, vec!["hot-0-0.seg".to_string()]);
+        assert!(
+            reopened
+                .scan()
+                .notes
+                .iter()
+                .any(|note| note.name == "hot-0-0.seg" && note.reason.contains("could not")),
+            "the name is reported, never silently dropped"
+        );
+        assert_eq!(
+            reopened.scan().segments.len(),
+            1,
+            "the readable open segment is still adopted"
+        );
+        assert_eq!(reopened.scan().segments[0].name, open_name);
+        assert!(reopened.has_open());
+        // The unreadable name is untouched, not quarantined and not deleted.
+        assert!(temp.exists("hot-0-0.seg"));
+    }
+
+    #[test]
+    fn a_zero_filled_tail_is_an_unwritten_tail_not_a_corrupt_segment() {
+        // A power cut on a size-extending filesystem extends the file and never writes the
+        // record: everything after the last good record is zero. Treating that as corruption
+        // quarantines a whole durable segment for the commonest crash shape, so it is reported
+        // as an incomplete (unwritten) tail and repaired by truncation (review, M6).
+        let temp = TempDir::new("zero-tail");
+        let mut tier = tier(&temp, 3600, 0);
+        tier.append(&job(0, 16), 1, 1).expect("append");
+        let name = tier
+            .open_handle()
+            .map(|open| open.name().to_string())
+            .expect("open");
+        let good = tier.open_handle().map(OpenSegment::len).expect("len");
+        drop(tier);
+        // Extend the file with zeros, exactly as a size extension leaves it.
+        let mut bytes = temp.read_file(&name);
+        bytes.resize(usize::try_from(good).expect("fits") + 4096, 0);
+        temp.write_file(&name, &bytes);
+        let mut reopened = Tier::open(
+            TierConfig::history("hot", 60, 3600, 0, false).expect("config"),
+            StoreDir::open(temp.path(), false).expect("dir"),
+            1 << 22,
+        )
+        .expect("tier");
+        assert_eq!(reopened.scan().torn_repaired, vec![name.clone()]);
+        assert!(
+            reopened.scan().quarantined.is_empty(),
+            "an unwritten tail is not corruption: the segment stays in service"
+        );
+        assert_eq!(reopened.scan().segments.len(), 1);
+        assert_eq!(
+            reopened.scan().segments[0].records, 1,
+            "the record the store completed is still there"
+        );
+        assert_eq!(temp.read_file(&name).len(), usize::try_from(good).expect("fits"));
+        assert!(reopened.has_open(), "and the repaired segment is adopted");
+        let next = reopened
+            .append(&job(1_000_000_000, 16), 1, 1)
+            .expect("append after repair");
+        assert_eq!(next.records, 2);
+    }
+
+    #[test]
+    fn a_clock_step_backwards_still_leaves_the_ring_oldest_first() {
+        // `open_segment` used to push at the end of the ring, so a new segment whose bucket is
+        // earlier than the last one's (a clock step) landed after it and the `keep_s` sweep —
+        // which stops at the first segment still inside its window — would leave an expired
+        // one alive until a restart sorted it (review, M1).
+        let temp = TempDir::new("ring-order");
+        let mut tier = tier(&temp, 300, 0);
+        tier.append(&job(60_000_000_000, 16), 1, 1)
+            .expect("append bucket 60");
+        tier.append(&job(0, 16), 1, 1).expect("append bucket 0");
+        assert_eq!(tier.scan().segments.len(), 2);
+        assert_eq!(
+            tier.oldest().map(|segment| segment.name.as_str()),
+            Some("hot-0-1.seg.open"),
+            "the ring is ordered at insertion, not only by the next restart"
+        );
+        assert_eq!(
+            tier.newest().map(|segment| segment.name.as_str()),
+            Some("hot-60-0.seg")
+        );
+        // And the sweep reaches the expired one without a restart: bucket 0's span ends at 60 s
+        // and 300 s of retention closes at 360 s.
+        let evicted = tier.evict(361_000_000_000).expect("evict");
+        assert_eq!(evicted.segments, vec!["hot-0-1.seg.open".to_string()]);
+        assert_eq!(tier.scan().segments.len(), 1);
+    }
+
+    #[test]
+    fn files_and_directories_the_store_creates_are_owner_only() {
+        // The store's own state is not world-readable: an open segment carries the probe's
+        // sampled history, so it is 0600 and its directory 0700 rather than whatever the
+        // caller's umask happens to be (review, M3).
+        let temp = TempDir::new("modes");
+        let root = temp.path().join("tier");
+        let dir = StoreDir::open(&root, true).expect("create the tier directory");
+        let mode_of = |path: &std::path::Path| {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::metadata(path)
+                .expect("stat")
+                .permissions()
+                .mode()
+                & 0o777
+        };
+        assert_eq!(mode_of(&root), 0o700, "the tier directory is owner-only");
+        dir.create("hot-0-0.seg.open", b"header")
+            .expect("create a segment");
+        assert_eq!(
+            mode_of(&dir.path_of("hot-0-0.seg.open")),
+            0o600,
+            "a segment the store creates is owner read/write only"
+        );
+    }
+
+    #[test]
     fn a_foreign_file_a_link_and_a_directory_are_left_alone_and_reported() {
         let temp = TempDir::new("foreign");
         temp.write_file("notes.txt", b"keep me");
@@ -1613,6 +2014,86 @@ mod tests {
         assert!(std::fs::symlink_metadata(temp.at("hot-0-7.seg"))
             .map(|meta| meta.file_type().is_symlink())
             .unwrap_or(false));
+    }
+
+    #[test]
+    fn a_stale_open_twin_of_a_sealed_segment_is_removed_never_counted_or_reopened() {
+        // The seal's order is rename, fsync, unlink. A crash between the last two leaves the
+        // sealed name and its `.seg.open` twin with the same (tier, start_s, seq). A scan that
+        // adopted both would count the bytes twice, serve every record twice and append behind
+        // a copy — so the sealed name wins and the twin is removed (review, B2).
+        //
+        // The state is produced by the seal's own fault-injection point rather than by hand:
+        // `SealStop::AfterRename` stops exactly there, on a real directory.
+        let temp = TempDir::new("stale-open");
+        let dir = StoreDir::open(&temp.path().join("tier"), true).expect("open dir");
+        let config = TierConfig::history("hot", 60, 3600, 0, false).expect("config");
+        let header = crate::format::SegmentHeader {
+            seq: 0,
+            epoch: 7,
+            dict_generation: 3,
+            kind: TierKind::History,
+            payload: crate::format::PAYLOAD_BLOCK,
+            start_real_ns: 0,
+            max_payload: config.max_payload,
+            max_incarnations: config.max_incarnations,
+        };
+        let mut open = OpenSegment::create(&dir, "hot-0-0.seg.open", header).expect("create");
+        open.append(0, &[1], &block(16)).expect("append");
+        open.seal_until(
+            &dir,
+            "hot-0-0.seg",
+            "hot-0-0.seg.tmp",
+            config.segment_file_bound(),
+            crate::fsio::SealStop::AfterRename,
+        )
+        .expect("the injected crash: sealed name durable, open name still present");
+        assert!(temp.at("tier/hot-0-0.seg").exists());
+        assert!(temp.at("tier/hot-0-0.seg.open").exists());
+        let reopened = Tier::open(
+            config,
+            StoreDir::open(temp.path().join("tier").as_path(), false).expect("dir"),
+            1 << 22,
+        )
+        .expect("tier");
+        assert_eq!(
+            reopened.scan().stale_open_removed,
+            vec!["hot-0-0.seg.open".to_string()]
+        );
+        assert_eq!(
+            reopened.scan().segments.len(),
+            1,
+            "the pair is one segment, never two"
+        );
+        assert_eq!(reopened.scan().segments[0].name, "hot-0-0.seg");
+        assert!(!reopened.scan().segments[0].open);
+        assert_eq!(
+            reopened.bytes(),
+            reopened.scan().segments[0].file_len,
+            "the twin's bytes are not counted twice"
+        );
+        assert!(
+            !reopened.has_open(),
+            "the stale open name is never reopened for appending"
+        );
+        assert_eq!(
+            reopened
+                .range(0, 1_000_000_000, 8, 1 << 20)
+                .expect("range")
+                .len(),
+            1,
+            "and every record is served once, not twice"
+        );
+        assert!(!temp.at("tier/hot-0-0.seg.open").exists());
+        // The sealed file holds the record plus the footer the seal appended: its head is the
+        // record's payload, exactly the bytes the range answer returned.
+        let sealed_bytes = temp.read_file("tier/hot-0-0.seg");
+        let payload = reopened
+            .range(0, 1_000_000_000, 8, 1 << 20)
+            .expect("range")
+            .payloads()[0]
+            .to_vec();
+        assert!(sealed_bytes.windows(payload.len()).any(|window| window == payload));
     }
 
     #[test]

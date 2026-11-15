@@ -98,6 +98,11 @@ impl MountTable {
     }
 
     /// Build a table from mount entries (test and fixture convenience).
+    ///
+    /// The entries are sorted by mount point so the longest-prefix walk is easy to read; the
+    /// **stability** of that sort is what preserves the table's own line order, which is what
+    /// [`MountTable::covering`] needs for two mounts at the same point: the kernel exposes the
+    /// last one, so the last line wins.
     #[must_use]
     pub fn from_mounts(mut mounts: Vec<Mount>) -> MountTable {
         mounts.sort_by(|left, right| left.point.cmp(&right.point));
@@ -126,6 +131,16 @@ impl MountTable {
     /// The comparison is on whole components, so `/run/hostobs` is not covered by a mount at
     /// `/run/host`: a prefix that ends inside a component is not a mount for this path.
     ///
+    /// Two mounts at the same point are a real state (`mount` over an existing mount shadows
+    /// it), and the kernel exposes the **last** one. The table keeps its line order for equal
+    /// points and the later line wins here — taking the first would report the shadowed
+    /// filesystem, which is exactly the overmount that a `require_tmpfs` check must not be
+    /// fooled by.
+    ///
+    /// The path is compared as the caller spelled it: [`MountTable::check_tmpfs`] is what
+    /// resolves it first, because a lexical comparison alone accepts `..` and an intermediate
+    /// link that the kernel resolves elsewhere.
+    ///
     /// # Errors
     ///
     /// [`StoreError::MountNotFound`] when no entry covers the path.
@@ -138,7 +153,8 @@ impl MountTable {
             }
             let better = match best {
                 None => true,
-                Some(current) => mount.point.len() > current.point.len(),
+                // `>=`, not `>`: an equal point is the overmount, and its line is the later one.
+                Some(current) => mount.point.len() >= current.point.len(),
             };
             if better {
                 best = Some(mount);
@@ -158,13 +174,22 @@ impl MountTable {
 
     /// Check the `require_tmpfs` policy for one directory.
     ///
+    /// The configured path is **resolved first** ([`MountTable::resolve`]): the mount table
+    /// lists the paths the kernel resolved, so matching a path that still carries `..` or an
+    /// intermediate link compares the caller's spelling with the kernel's fact. That is how
+    /// an overmount is missed — `/run/x` linked to `/var/disk` would be checked as `/run/x`
+    /// and pass a tmpfs test while its bytes land on a disk.
+    ///
     /// # Errors
     ///
-    /// [`StoreError::NotTmpfs`] when `required` and the filesystem is something else, and
-    /// [`StoreError::MountNotFound`] when no mount covers the path — an unknown filesystem
-    /// never passes a required check.
+    /// [`StoreError::NotTmpfs`] when `required` and the filesystem is something else,
+    /// [`StoreError::MountNotFound`] when no mount covers the resolved path — an unknown
+    /// filesystem never passes a required check — and [`StoreError::Config`]/
+    /// [`StoreError::Symlink`] for a path that cannot be resolved as a directory *inside* the
+    /// configured tree.
     pub fn check_tmpfs(&self, path: &Path, required: bool) -> Result<bool, StoreError> {
-        let mount = self.covering(path)?;
+        let resolved = self.resolve(path)?;
+        let mount = self.covering(&resolved)?;
         let is_tmpfs = mount.fstype == TMPFS;
         if required && !is_tmpfs {
             return Err(StoreError::NotTmpfs {
@@ -173,6 +198,81 @@ impl MountTable {
             });
         }
         Ok(is_tmpfs)
+    }
+
+    /// Resolve one configured path to the spelling the kernel's mount table uses.
+    ///
+    /// Three refusals, each its own fact:
+    ///
+    /// * a relative path ([`StoreError::Config`]): a mount point is absolute, so a relative
+    ///   configured path can never be compared with one;
+    /// * a `..` component ([`StoreError::Config`]): it names a directory outside the configured
+    ///   tree, which is the opposite of what a tier's own state directory is;
+    /// * a component that is a symbolic link ([`StoreError::Symlink`]): the kernel would
+    ///   resolve it elsewhere, so the mount this table finds for the link's own path is not the
+    ///   mount the store's bytes land on.
+    ///
+    /// `.` components are dropped (they name nothing new). A component that does not exist yet
+    /// is not a link and cannot be one, so the walk stops there: the store creates its
+    /// directories after this check, and a path that does not exist is exactly that state.
+    ///
+    /// # Errors
+    ///
+    /// As above, plus [`StoreError::Io`] when a component cannot be inspected at all —
+    /// "could not determine" is a refusal, never a pass.
+    pub fn resolve(&self, path: &Path) -> Result<std::path::PathBuf, StoreError> {
+        use std::path::Component;
+        let mut resolved = std::path::PathBuf::new();
+        for component in path.components() {
+            match component {
+                Component::RootDir => resolved.push("/"),
+                Component::CurDir => {}
+                Component::ParentDir => {
+                    return Err(StoreError::Config {
+                        key: "tmpfs_dir",
+                        reason: "must not contain a `..` component",
+                    });
+                }
+                Component::Prefix(_) => {
+                    return Err(StoreError::Config {
+                        key: "tmpfs_dir",
+                        reason: "must be an absolute Unix path",
+                    });
+                }
+                Component::Normal(part) => resolved.push(part),
+            }
+        }
+        if !resolved.is_absolute() {
+            return Err(StoreError::Config {
+                key: "tmpfs_dir",
+                reason: "must be an absolute path",
+            });
+        }
+        // Walk the resolved path one component at a time: the link that matters is an
+        // *intermediate* one, which a check of the last component alone never sees.
+        let mut walked = std::path::PathBuf::from("/");
+        let mut components = resolved.components();
+        let _ = components.next();
+        for part in components {
+            walked.push(part);
+            match std::fs::symlink_metadata(&walked) {
+                Ok(meta) if meta.file_type().is_symlink() => {
+                    return Err(StoreError::Symlink {
+                        name: walked.display().to_string(),
+                    });
+                }
+                Ok(_) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    // The store creates its directories after this check, so a missing
+                    // component is the ordinary case; nothing below it can be a link either.
+                    break;
+                }
+                Err(error) => {
+                    return Err(StoreError::io("stat", &walked.display().to_string(), &error))
+                }
+            }
+        }
+        Ok(resolved)
     }
 }
 
@@ -253,6 +353,11 @@ pub fn read_mounts(path: &Path) -> Result<String, StoreError> {
 }
 
 /// A deterministic table for a test: one tmpfs at `/`, never the host's.
+///
+/// Test-only by construction (`#[cfg(test)]`): a production caller that could build its own
+/// table would have a bypass for the `require_tmpfs` policy, and the honest production table
+/// is the kernel's own (`read_self`).
+#[cfg(test)]
 #[must_use]
 pub fn tmpfs_only() -> MountTable {
     MountTable::from_mounts(vec![Mount {
@@ -262,7 +367,9 @@ pub fn tmpfs_only() -> MountTable {
     }])
 }
 
-/// A deterministic table naming every path as `fstype`, mounted at `/`.
+/// A deterministic table naming every path as `fstype`, mounted at `/` (test-only, as
+/// [`tmpfs_only`]).
+#[cfg(test)]
 #[must_use]
 pub fn all_of(fstype: &str) -> MountTable {
     MountTable::from_mounts(vec![Mount {
@@ -290,6 +397,7 @@ mod tests {
         MAX_TABLE_BYTES, TMPFS,
     };
     use crate::error::StoreError;
+    use crate::fsio::testdir::TempDir;
     use std::collections::BTreeMap;
     use std::path::Path;
 
@@ -381,6 +489,100 @@ one two three
         assert_eq!(
             on_disk.check_tmpfs(Path::new("/var/lib/hostobs"), false),
             Ok(false)
+        );
+    }
+
+    #[test]
+    fn the_last_mount_at_a_point_is_the_one_the_kernel_exposes() {
+        // Two mounts at the same point are a real state — `mount` over an existing mount — and
+        // the kernel exposes the **last** one. Reporting the first would pass a `require_tmpfs`
+        // check on a tmpfs that a disk filesystem shadows, so the later line must win
+        // (review, M4).
+        let table = super::MountTable::from_mounts(vec![
+            super::Mount {
+                point: "/run".to_string(),
+                fstype: TMPFS.to_string(),
+                options: "rw".to_string(),
+            },
+            super::Mount {
+                point: "/run".to_string(),
+                fstype: "ext4".to_string(),
+                options: "rw".to_string(),
+            },
+        ]);
+        assert_eq!(
+            table.fstype_of(Path::new("/run/hostobs/tiers")),
+            Ok("ext4".to_string()),
+            "the overmount shadows the tmpfs"
+        );
+        assert_eq!(
+            table.check_tmpfs(Path::new("/run/hostobs/tiers"), true),
+            Err(StoreError::NotTmpfs {
+                tier: "/run/hostobs/tiers".to_string(),
+                fstype: "ext4".to_string()
+            })
+        );
+        // A *longer* point still beats a shorter later one: only equal points are ordered by
+        // line.
+        let nested = super::MountTable::from_mounts(vec![
+            super::Mount {
+                point: "/run/hostobs/tiers".to_string(),
+                fstype: TMPFS.to_string(),
+                options: "rw".to_string(),
+            },
+            super::Mount {
+                point: "/run".to_string(),
+                fstype: "ext4".to_string(),
+                options: "rw".to_string(),
+            },
+        ]);
+        assert_eq!(
+            nested.fstype_of(Path::new("/run/hostobs/tiers/hot")),
+            Ok(TMPFS.to_string())
+        );
+    }
+
+    #[test]
+    fn a_path_that_is_relative_contains_a_parent_or_crosses_a_link_is_refused() {
+        // A lexical comparison accepts `..` and an intermediate link, both of which the kernel
+        // resolves elsewhere: the check would then be about a path that is not the one the
+        // bytes land on (review, M4).
+        let table = super::tmpfs_only();
+        assert_eq!(
+            table
+                .check_tmpfs(Path::new("relative/tiers"), true)
+                .map(|_| ()),
+            Err(StoreError::Config {
+                key: "tmpfs_dir",
+                reason: "must be an absolute path"
+            })
+        );
+        assert_eq!(
+            table
+                .check_tmpfs(Path::new("/run/../var/lib/hostobs"), true)
+                .map(|_| ()),
+            Err(StoreError::Config {
+                key: "tmpfs_dir",
+                reason: "must not contain a `..` component"
+            })
+        );
+        // The intermediate link: `/run/x` is a link to a disk directory outside `/run`.
+        let outside = TempDir::new("tmpfs-link-target");
+        let base = TempDir::new("tmpfs-link");
+        base.mkdir("run");
+        base.symlink_to("run/x", &outside.path());
+        let linked = base.path().join("run").join("x");
+        assert_eq!(
+            table.check_tmpfs(&linked, true).map(|_| ()),
+            Err(StoreError::Symlink {
+                name: linked.display().to_string()
+            }),
+            "an intermediate link is refused, never resolved into a pass"
+        );
+        // An ordinary absolute path is accepted, and `.` names nothing new.
+        assert_eq!(
+            table.check_tmpfs(Path::new("/run/./hostobs/tiers"), true),
+            Ok(true)
         );
     }
 

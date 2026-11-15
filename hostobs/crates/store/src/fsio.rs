@@ -951,6 +951,25 @@ pub mod testdir {
             file.sync_all().expect("sync a truncated scratch file");
         }
 
+        /// Remove `name` from this directory (a scratch file a test planted).
+        pub fn remove(&self, name: &str) {
+            std::fs::remove_file(self.path.join(name)).expect("remove a scratch file");
+        }
+
+        /// Set `name`'s permission bits (a test that needs an unreadable file).
+        ///
+        /// This lives here for the same reason every other scratch helper does: the lint
+        /// allows filesystem mutation in `fsio.rs` only, and a test is not an exemption.
+        pub fn chmod(&self, name: &str, mode: u32) {
+            use std::os::unix::fs::PermissionsExt;
+            let path = self.path.join(name);
+            let mut permissions = std::fs::metadata(&path)
+                .expect("stat a scratch file")
+                .permissions();
+            permissions.set_mode(mode);
+            std::fs::set_permissions(&path, permissions).expect("chmod a scratch file");
+        }
+
         /// Point `name` at `target`, which may live outside this directory.
         pub fn symlink_to(&self, name: &str, target: &Path) {
             std::os::unix::fs::symlink(target, self.path.join(name)).expect("create a symlink");

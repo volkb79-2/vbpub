@@ -162,8 +162,8 @@ def main() -> int:
         insert(
             case,
             "crates/store/src/fsio.rs",
-            "use std::fs::{self, File, OpenOptions};",
-            "use std::fs::{self, File, OpenOptions};\n"
+            "use std::fs::{self, DirBuilder, File, OpenOptions};",
+            "use std::fs::{self, DirBuilder, File, OpenOptions};\n"
             "// a mutants::skip attribute is refused even here\n#[allow(dead_code)] fn _skip_marker() {}\n"
             "// #[mutants::skip]\n",
         )
