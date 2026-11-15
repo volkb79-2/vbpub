@@ -2,11 +2,11 @@
 <!-- relation: ctlstat steering experiment (follows EXPERIMENT-compaction-hooks.md, RESEARCH-harnesses.md, POC-pi.md, POC-opencode.md) -->
 <!-- Evidence scrub 2026-11-14: scratch directories, session and thread ids, gateway provider names, hosts and credentials were replaced by placeholders; command output and verdict text are otherwise unchanged. -->
 
-**Status: PARTIAL (X1, X2, X4, X5 measured with real models; X3 compaction event UNTESTED: not triggered under four settings; every result is a single observation unless stated)**
+**Status: PARTIAL (X1, X2, X4, X5, X6 measured with real models; X3 automatic-threshold compaction event UNTESTED: not triggered under four settings, but the explicit app-server trigger and the event shape are measured in X6; every result is a single observation unless stated)**
 
 # ctlstat experiment: steering compaction from outside, headless controller, other harnesses
 
-Date 2026-11-14. Claude Code `2.1.325` (model `haiku`, resolves to `claude-haiku-5-5`), Codex CLI `0.167.0`, opencode `2.2.6`, pi `1.5.0`. Everything ran in a throwaway scratch tree (`$X`, one subdirectory per experiment), no estate files, no global settings edited (hooks attached with `--settings`; pi and opencode used a scratch config/data directory; opencode ran its own private server on a loopback port that was stopped afterwards). Claude spend about USD 0.03 in total; the gateway requests for X3 and X4 were about 15 (cap given for X3+X4), X5 a few dozen (not counted exactly) because a deliberately tiny compaction threshold made pi compact after every turn (see X5).
+Date 2026-11-14 (X6: 2026-11-15). Claude Code `2.1.325` (model `haiku`, resolves to `claude-haiku-5-5`), Codex CLI `0.167.0`, opencode `2.2.6`, pi `1.5.0`. Everything ran in a throwaway scratch tree (`$X`, one subdirectory per experiment), no estate files, no global settings edited (hooks attached with `--settings`; pi and opencode used a scratch config/data directory; opencode ran its own private server on a loopback port that was stopped afterwards). Claude spend about USD 0.03 in total; the gateway requests for X3 and X4 were about 15 (cap given for X3+X4), X5 a few dozen (not counted exactly) because a deliberately tiny compaction threshold made pi compact after every turn (see X5).
 
 Purpose: decide whether the controller can run headless under our own supervisor with compaction steered from outside, or must stay in the interactive TUI with hooks. Builds on `EXPERIMENT-compaction-hooks.md` (E1-E6), `RESEARCH-harnesses.md`, `POC-pi.md`, `POC-opencode.md`, `REQUIREMENTS.md` 12.
 
@@ -33,6 +33,7 @@ Purpose: decide whether the controller can run headless under our own supervisor
 | X3 | Codex `exec --json` with a small auto-compact limit; compaction event shape; `exec resume` | **PARTIAL**: key found (`model_auto_compact_token_limit`), `exec resume` PASS (3 resumes); compaction event **UNTESTED** (no compaction item observed with limits 4000, 12000, 2000 and `model_post_turn_compact_threshold_percent=1`) |
 | X4 | opencode: compaction triggered and observed | **PASS** (real model: `POST /api/session/:id/compact` produced a compaction in about 4 s, SSE `session.compaction.started/delta/ended` plus `session.usage.updated`, next prompt answered from the summary); the config key `compaction` and `opencode run` itself have no trigger (UNTESTED for `run`) |
 | X5 | pi: json and rpc compaction events, `session_before_compact` reading a handover file | **PASS in rpc mode** (events `compaction_start`/`compaction_end`, manual `customInstructions` obeyed by a real model, auto `threshold` compaction fires `session_before_compact` without instructions, extension supplied a summary from a file with zero model calls and the next answer used it); **json (`-p`) compaction event UNTESTED** (session was too small to compact at that point) |
+| X6 | Codex app-server: `thread/compact/start` on a thread with history, events and items, what a resume sees, `/compact` via `exec resume` and via the TUI, `thread/goal/*` | **PASS** for the app-server trigger (works on the DeepSeek route; item `contextCompaction` started/completed, no summary text in any event; deprecated `ContextCompactedNotification` NOT seen; the summary is the model's own via Codex's handoff prompt and is readable only in the rollout file; a resumed thread answered task, last decision and an assistant-only fact correctly after compaction); **`compact_prompt` steers it** (launch `-c` and `thread/resume` `config`, both measured); **`exec resume ... "/compact"` does NOT compact** (plain user message); the TUI `/compact` works (measured in tmux); `thread/goal/get` measured, `thread/goal/set` and goal-as-brief-carrier UNTESTED |
 
 ## Hook behaviour in the live controller session (2026-11-14, Claude Code 2.1.325)
 
@@ -148,13 +149,84 @@ Observations:
 
 Verdict: **PASS in rpc mode**; json-mode compaction event UNTESTED.
 
+## X6 Codex compaction from outside (app-server)
+
+Date 2026-11-15, Codex CLI `0.167.0`, model `deepseek-v4.1-flash-eco` on the DeepSeek route of the second gateway account (`<route-home>` = its Codex home, API key from the user env file sourced without printing; nothing credential-like was read). Driver: a small Python script (`$X/x6/driver.py`) that starts `codex app-server` over stdio, speaks JSON-RPC, refuses every server-initiated request (none arrived) and logs every raw line with a timestamp. One log directory per run under `$X/x6/` (`rpc.jsonl`, `driver.out`; run4 `out.jsonl`/`err.txt`; run5 the pane captures). Threads ran with `approvalPolicy never`, sandbox `danger-full-access`, cwd in the scratch tree, and the prompts said "do not run any tools" (no tool call happened). 13 gateway requests in total (list below); the first request returned no 402 (this account is not the blocked one).
+
+Requests: run1 5 (3 turns, 1 compaction, 1 restate), run2 3 (2 turns, 1 compaction), run3 1 (restate after resume), run4 1 (`exec resume "/compact"`), run5 1 (TUI `/compact`), run7 1 (compaction with a `compact_prompt` override at launch), run8 1 (compaction with a per-thread `compact_prompt`); run6 (`thread/goal/get`) made none. Each compaction costs exactly one model request (the usage records show one request per compaction).
+
+### (a) Does `thread/compact/start` work on a real thread? **PASS (measured)**
+
+Sequence in run1 (a thread with three short turns, about 10.3k input tokens per request including Codex's own base instructions): `thread/compact/start {threadId}` returns `{}` at once, and the compaction runs as its own turn:
+```
+thread/status/changed active
+turn/started                       (new turn, items: [])
+item/started   {type: contextCompaction, id, startedAtMs, completedAtMs: null}
+thread/tokenUsage/updated  x3       (see below)
+item/completed {type: contextCompaction, id, startedAtMs, completedAtMs}
+thread/status/changed idle
+turn/completed                     (turn.items is [] in the notification)
+```
+The same sequence appeared in all four app-server compactions (run1, run2, run7, run8); wall time from `item/started` to `item/completed` was 7.6 s, 5.3 s, 2.5 s and 2.0 s. `thread/compact/start` returns before the compaction ends, so a controller must wait for `item/completed` (or `turn/completed`) itself. The `contextCompaction` item carries only `{id, type, startedAtMs, completedAtMs}`: no summary, no token numbers, no "before/after".
+
+### (b) Events, items, token counts (measured)
+
+- The deprecated `ContextCompactedNotification` (schema: "Deprecated: use `ContextCompaction` item type instead") was NOT emitted in any of the four compactions; the `contextCompaction` item pair is the signal. The compaction turn appears in `thread/read` (`includeTurns: true`, itself flagged deprecated by a `deprecationNotice`) as an extra turn whose only item is `contextCompaction`.
+- Token numbers (run1 / run2): the last normal request before compaction had input 10341 / 9245 tokens. The compaction request shows up as a `thread/tokenUsage/updated` whose `last` is input 6014 / 4918 and output 416 / 323 (the summary length in tokens). A final update has `last` with input 0 and output 0 and `totalTokens` 7148 / 6078; this is most likely Codex's estimate of the new context, but the field is not documented, so treat it as an interpretation. The numbers before and after are not on one basis (the 10.3k request includes about 4k of base instructions and tools that the compaction request and the estimate may not count), so no "percent saved" is claimed. `total` is cumulative per thread and does not drop after compaction. A post-compaction normal request (run1 restate) had input 10878, i.e. about the same size as before on this tiny thread; compaction does not pay off below a few thousand tokens of history.
+- `thread/resume` in a fresh process emits one `thread/tokenUsage/updated` carrying the persisted cumulative `total` (run3: 23689) before any turn; `modelContextWindow` is 311600 in these records.
+- Nothing about the compaction reaches `item/*` as text: the summary is not in the event stream. It exists only in the rollout file (next section).
+
+### (c) Whose summary, and what a resume sees (measured)
+
+The rollout file of the thread (under the Codex home's session store; our own test thread, read after the run) gets a `compacted` record with these keys: `message`, `replacement_history`, `replacement_history_metadata`, `retained_context`, `window_number`, `window_id`, `previous_window_id`, `compaction_response_id`, `latest_token_usage_record`, `resume_metadata`.
+- The `message` is the model's own text produced by Codex's default compaction prompt (a "## Handoff Summary" with sections such as Original task, Decisions received, Current progress, Remaining work, Critical reminder), prefixed by a fixed Codex sentence ("Another language model started to solve this problem and produced a summary of its thinking process ... "). Unsteered, the structure differed between runs (run1: Original task / Decisions received / User preferences / Remaining work; run2: Current progress / Key decisions / Important context / What remains / Critical reference values).
+- `replacement_history` (what the next request is built from) was: the retained USER messages verbatim (both prompts of the thread, in order), the developer block (skills list) and the environment-context message, and the summary as one user message. ASSISTANT messages are not retained (the "ok" and the "SERIAL: ..." replies are gone from the history). Second compaction of the same thread: the previous summary is not kept as its own message, the new summary subsumes it (the serial survived four chained compactions of the same thread, the last two with a one-line custom prompt; one tiny case, so no statement about drift on long threads).
+- Consequence for the test design: run1's restate ("original task, last decision") was CONFOUNDED, because both facts were user messages that Codex retains verbatim; it passed (answer: task, constraints, codeword, last decision, tag held) but proves little about the summary. run2 therefore put a fact only in an assistant reply (an invented 8-character serial), then compacted, then resumed in a NEW process (`thread/resume`, run3) and asked for task, serial and last decision: all three correct. Because assistant replies are dropped by compaction, this is evidence that the summary carried the serial (confirmed by reading it in the `compacted` record). One observation per case; the retention rule for long user messages (a size cap on retained user text) was not tested (UNTESTED: a thread with more than a few tens of thousands of user tokens).
+- The `thread/resume` response lists the thread with its turns and `thread/read` shows the compaction as one item; neither shows the summary text.
+
+### Steering the summary: `compact_prompt` (measured)
+
+`thread/compact/start` has no instructions field, but the config key `compact_prompt` replaces the compaction prompt, and it works in two ways, both measured on the same thread with a one-line format prompt:
+1. At launch: `codex -c compact_prompt="<text>" app-server` (run7). The summary became exactly `BRIEF-V1 | serial=... | task=... | last decision=...`.
+2. Per thread without a restart: `config: {"compact_prompt": "<text>"}` in the `thread/resume` params (run8). The summary became exactly `BRIEF-V2 | serial=... | last decision=...`.
+The fixed prefix sentence is still prepended, and the retained user messages are still kept. Whether the per-thread value persists in the thread for later automatic compactions or only for the resumed session: UNTESTED. This is the supervisor's steering lever for Codex: the controller writes the continuation brief instructions into the prompt before it triggers the compaction (a different prompt per compaction needs a `thread/resume` with new `config` first, or a relaunch).
+
+### (d) Other triggers
+
+- `codex exec resume <id> "/compact"` (run4): **no compaction (measured)**. Exec mode stored `/compact` as an ordinary user message (the text appears in the rollout as user input, and no new `compacted` record was written), the model answered "No tools were run. The conversation is ready to continue." and one request was spent. Exec does not process slash commands.
+- TUI in a tmux pane (run5): **PASS (measured)**. `codex resume <thread-id>` with the route's home and a `-c projects."<scratch cwd>".trust_level="trusted"` override (so the trust prompt did not appear), typed `/compact` (the pane shows the popup line "/compact  summarize conversation to prevent hitting the context limit"), Enter, and within 11 s the pane showed `Context compacted · 5s` with `Worked for 5s`; the rollout gained a second `compacted` record. The TUI also shows `Context compacted` in the history for an earlier compaction when a thread is resumed. The TUI status line showed `Context 0% used` right after resume of a compacted thread (observation, not explained). Only `/compact` was sent; the session was then ended by killing the tmux session. Combined TUI use with an app-server on the same thread was not tried (UNTESTED).
+- The automatic path (X3, `model_auto_compact_token_limit`) is still not observed. New schema-only lead: the config schema has `AutoCompactTokenLimitScope` = `total` (full active context counted against the limit) or `body_after_prefix` (sampled output and later growth after the carried window prefix); X3 did not know the accepted values. If the default scope is `body_after_prefix`, the base instructions and carried prefix would not count against the limit, which could explain why four small limits never fired. UNTESTED (it needs a run with `model_auto_compact_token_limit` and the scope set to `total`; not done within the request cap).
+
+### (e) `thread/goal/*` (schema, one read-only call)
+
+- Schema-only: `thread/goal/set {threadId, objective?, status?, tokenBudget?, origin?}` (`origin` is `user` or `automatic`; the schema notes that missing provenance does not supply user authorization), `thread/goal/get`, `thread/goal/clear`, notifications `thread/goal/updated` and `thread/goal/cleared`. A `ThreadGoal` is `{threadId, objective, status, tokenBudget, tokensUsed, timeUsedSeconds, createdAt, updatedAt}` with status `active | paused | blocked | usageLimited | budgetLimited | complete`. `codex features list` shows `goals` as stable and enabled. So it is a persistent per-thread objective with a token budget and a lifecycle, i.e. a thread-level state that lives outside the message history.
+- Measured: `thread/goal/get` on a test thread returned `{"goal": null}` with no model request.
+- UNTESTED: `thread/goal/set` (not trivially safe: an `active` goal very probably makes Codex keep working on its own, which would spend requests and could loop, and the 13-request cap leaves no room) and whether a goal objective is injected into the context after a compaction. It is a candidate carrier for a short continuation brief (it lives outside the history, so compaction cannot drop it), but until measured the established carriers are `compact_prompt` (steers the summary) and the retained user messages (a brief sent as a user message before the compaction is kept verbatim, measured by the two retained prompts). `thread/inject_items` and `developerInstructions` (thread start/resume params) also exist in the schema: schema-only.
+
+### X6 verdict table
+
+| Question | Result |
+|---|---|
+| a. `thread/compact/start` works on the DeepSeek route with real history | **PASS** (4 of 4 app-server compactions; one request each, 2-8 s, returns `{}` before the work ends) |
+| b. Events and items | **measured**: `turn/started`, `item/started` and `item/completed` of `contextCompaction` (no payload beyond id and times), 3 `thread/tokenUsage/updated`, `turn/completed` with empty items; deprecated `ContextCompactedNotification` not emitted; summary not in any event |
+| b. Token counts before/after | **partial**: compaction request usage (input/output) and a zero-input estimate record (about 7.1k / 6.1k) are present; not comparable with the previous request's input; no explicit before/after fields |
+| c. Summary is the model's own with Codex's unsteered prompt | **measured** (readable in the rollout `compacted.message` only) |
+| c. Resume sees the task, last decision, and an assistant-only fact | **PASS** in a new process (`thread/resume` + prompt); run1's same-process restate is confounded by retained user messages |
+| Steering via `compact_prompt` | **PASS** at launch (`-c`) and per thread (`thread/resume` `config`); persistence of the per-thread value UNTESTED |
+| d. `codex exec resume <id> "/compact"` | **FAIL** (not processed, plain prompt, 1 request wasted) |
+| d. TUI `/compact` in tmux | **PASS** |
+| Automatic threshold event | **UNTESTED** (X3 stands; new `_scope` lead is schema-only) |
+| e. `thread/goal/get` | **measured** (`goal: null`) |
+| e. `thread/goal/set` and goal as a brief carrier across compaction | **UNTESTED** (schema-only) |
+
 ## Surprises
 
 1. A message sent into a running stream-json turn is merged into the turn at the next tool boundary and gets no separate `result`; a supervisor that counts `result` events per message will be off by one.
 2. SIGINT mid-tool ends the whole headless process (rc 0), so "interrupt, then send the next message" needs resume-by-session-id, not the same process.
 3. `SubagentStop` fires for the internal compaction agent; hook consumers that treat it as "a user subagent finished" will misfire on every `/compact`.
 4. `Stop` `decision:block` is a working "do one more thing before ending" lever, and `systemMessage` is a stream event in headless mode: both are candidates for the ctlstat status channel.
-5. Codex `--json` shows no compaction, and a very small `model_auto_compact_token_limit` had no visible effect; this is the one harness where the compaction trigger and event remain unproven.
+5. Codex `--json` shows no compaction, and a very small `model_auto_compact_token_limit` had no visible effect; the automatic trigger remains unproven (X3), but the explicit app-server trigger, its events and a `compact_prompt` steering lever are measured (X6). `exec resume "/compact"` silently sends `/compact` as a normal prompt.
+8. Codex compaction drops assistant messages and keeps user messages verbatim; a restate test whose facts all came from user messages passes without any summary (X6 run1). Put the discriminating fact in an assistant reply.
 6. pi's small-session guard (`Nothing to compact`, `Already compacted`) and its tiny-threshold loop (X5) mean thresholds must be sized against the system prompt plus tools (about 1.7k tokens here), and `keepRecentTokens` against the session.
 7. `codex -s read-only` fails inside this devcontainer (nested bwrap); worker runs here need an explicit sandbox choice.
 
@@ -179,7 +251,7 @@ What the headless controller loses compared with the TUI:
 Other routes, one line each with the measured facts:
 - pi (`--mode rpc`, one client over stdin/stdout): the whole steering loop works with a real DeepSeek model (manual `customInstructions` obeyed, threshold compactions steerable through a handover file read by an extension, supplied summaries with zero model calls, usage per compaction in the response). Trade-offs: no Claude models without API-key billing (subscription use by a third-party harness is not settled by the docs), pi summaries do not reuse the warm prompt cache, no server and no attach UI, the extension API moves between minors, and thresholds need sizing (loop hazard, X5).
 - opencode server (HTTP): compaction trigger and SSE events proven on a real model; no instruction field, so steering goes through the plugin hook and a file; the server keeps sessions when a client dies, which is the only route that gives the operator an attach UI without our own build.
-- Codex: stays the worker harness; trigger key found but no compaction event observed yet (X3).
+- Codex: stays the worker harness; explicit trigger via app-server `thread/compact/start` measured on the DeepSeek route (`contextCompaction` item events, summary only in the rollout file), steerable through `compact_prompt` (launch `-c` or `thread/resume` `config`), TUI `/compact` works, `exec resume "/compact"` does not (X6); the automatic threshold event is still unobserved (X3).
 
 Net: a headless Claude Code controller under our supervisor is feasible on measured facts for drive, compaction steering, injection and status; the open items are an operator decision on subscription use and the missing UI. The TUI-with-hooks route keeps the operator's direct control and loses only the automatic supervisor-triggered compaction (needs an external `claude -p --resume ... /compact`, which E1 proved for an idle session; whether it can run on a session the TUI still holds open is untested).
 
@@ -188,7 +260,7 @@ Net: a headless Claude Code controller under our supervisor is feasible on measu
 - Evidence retention (reviewer note 2026-11-14): the scratch trees keep the stream logs, transcripts, SSE capture and pi session file, so the stream events, queue entries, hook ordering, `compact_boundary` numbers, opencode SSE events and pi compaction entries can be re-read. Not retained: the passive hook log of the `basic` run (later runs overwrote it), so the `SubagentStop`/`PostCompact` field lists and the `SubagentStop` per-compaction observation rest on the author's run notes only; the pi `ext.log` and RPC outputs of the earlier runs (the `Nothing to compact` / `Already compacted` texts and the threshold-event shapes rest on the author's notes, with `POC-pi.md` corroborating the threshold event with a fake model); the driver console output (exit codes of the SIGINT runs); and the opencode `GET .../context` response.
 
 - Everything listed under 'Not proven' above; item 7 of the live-session section.
-- Codex compaction event and trigger (X3), pi json-mode compaction event, opencode `compaction` config with a real model, `opencode run` slash commands.
+- Codex automatic-threshold compaction event (X3; with `model_auto_compact_token_limit_scope=total` untried), persistence of a per-thread `compact_prompt`, retention of very long user messages in compaction, `thread/goal/set` and goal-as-brief-carrier (X6), pi json-mode compaction event, opencode `compaction` config with a real model, `opencode run` slash commands.
 - Whether queued mid-turn messages are delivered when no tool call follows; the behaviour with several queued messages.
 - Cost of repeated injection and of the queue path in cache terms (not isolated).
 - Hook behaviour of the Agent SDK (TypeScript/Python) clients versus the CLI flags used here.
