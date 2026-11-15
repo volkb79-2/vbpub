@@ -173,11 +173,9 @@ impl StoreDir {
                 // than left at whatever the caller's umask allows.
                 let mut builder = DirBuilder::new();
                 builder.recursive(true).mode(DIR_MODE);
-                builder
-                    .create(root)
-                    .map_err(|error| {
-                        StoreError::io("create-dir", &root.display().to_string(), &error)
-                    })?;
+                builder.create(root).map_err(|error| {
+                    StoreError::io("create-dir", &root.display().to_string(), &error)
+                })?;
                 let meta = fs::symlink_metadata(root)
                     .map_err(|error| StoreError::io("stat", &root.display().to_string(), &error))?;
                 if meta.file_type().is_symlink() || !meta.is_dir() {

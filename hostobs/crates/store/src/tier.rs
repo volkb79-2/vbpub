@@ -1753,7 +1753,7 @@ mod tests {
         assert!(entry.open, "the entry says open, and now it is true");
         assert_eq!(entry.records, 1);
         assert!(
-            !temp.exists(&format!("hot-0-0.seg.tmp")),
+            !temp.exists("hot-0-0.seg.tmp"),
             "a refused seal leaves no temporary file behind"
         );
         // A second record lands in the same open segment: the failed seal did not detach it.
@@ -1885,10 +1885,14 @@ mod tests {
         );
         assert_eq!(reopened.scan().segments.len(), 1);
         assert_eq!(
-            reopened.scan().segments[0].records, 1,
+            reopened.scan().segments[0].records,
+            1,
             "the record the store completed is still there"
         );
-        assert_eq!(temp.read_file(&name).len(), usize::try_from(good).expect("fits"));
+        assert_eq!(
+            temp.read_file(&name).len(),
+            usize::try_from(good).expect("fits")
+        );
         assert!(reopened.has_open(), "and the repaired segment is adopted");
         let next = reopened
             .append(&job(1_000_000_000, 16), 1, 1)
@@ -1934,11 +1938,7 @@ mod tests {
         let dir = StoreDir::open(&root, true).expect("create the tier directory");
         let mode_of = |path: &std::path::Path| {
             use std::os::unix::fs::PermissionsExt;
-            std::fs::metadata(path)
-                .expect("stat")
-                .permissions()
-                .mode()
-                & 0o777
+            std::fs::metadata(path).expect("stat").permissions().mode() & 0o777
         };
         assert_eq!(mode_of(&root), 0o700, "the tier directory is owner-only");
         dir.create("hot-0-0.seg.open", b"header")
@@ -2093,7 +2093,9 @@ mod tests {
             .expect("range")
             .payloads()[0]
             .to_vec();
-        assert!(sealed_bytes.windows(payload.len()).any(|window| window == payload));
+        assert!(sealed_bytes
+            .windows(payload.len())
+            .any(|window| window == payload));
     }
 
     #[test]

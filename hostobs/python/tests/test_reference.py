@@ -285,6 +285,24 @@ class SegmentFixtures(unittest.TestCase):
                 self.assertEqual(footer["seq"], spec["header"]["seq"])
                 self.assertEqual(footer["dict_generation"], spec["header"]["dict_generation"])
 
+    def test_a_zero_filled_tail_is_an_unwritten_tail_and_an_other_tail_is_corrupt(self):
+        # The Rust scan reports a tail of pure zeros as an *unwritten* (incomplete) tail: it is
+        # what a power cut leaves on a size-extending filesystem, so only the tail is cut and
+        # the valid prefix stays in service. Any other bytes at the same offset remain corrupt.
+        # The two implementations must agree on both halves of that rule.
+        spec_path, spec, data = hostobs_segment_ref.load_cases(SEGMENTS)[0]
+        unwritten = data + b"\x00" * 4096
+        decoded = hostobs_segment_ref.decode_segment(unwritten)
+        self.assertEqual(decoded["tail"]["state"], "incomplete")
+        self.assertTrue(decoded["tail"].get("unwritten"), "the tail is reported as unwritten")
+        self.assertEqual(len(decoded["records"]), len(spec["records"]), "the prefix survives")
+        self.assertEqual(decoded["good_end"], len(data))
+        damaged = data + b"\x5a" * 4096
+        decoded = hostobs_segment_ref.decode_segment(damaged)
+        self.assertEqual(decoded["tail"]["state"], "corrupt")
+        self.assertEqual(decoded["tail"]["refusal"], "record-magic")
+        self.assertEqual(decoded["tail"]["offset"], len(data))
+
     def test_a_torn_tail_is_a_state_and_a_corrupt_record_is_a_named_refusal(self):
         # A torn file is the M1 acceptance criterion: the bytes stop inside a record and the
         # reader must say so by offset rather than serve a short record as data.

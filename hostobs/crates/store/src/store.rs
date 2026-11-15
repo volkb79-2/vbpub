@@ -933,8 +933,8 @@ impl StoreRange {
 #[cfg(test)]
 mod tests {
     use super::{
-        StoreConfig, StoreDirs, StoreStats, COLD, DEFAULT_ACTIVE_MAX, DEFAULT_MAX_FILE_BYTES, EVENTS,
-        HOT, WARM,
+        StoreConfig, StoreDirs, StoreStats, COLD, DEFAULT_ACTIVE_MAX, DEFAULT_MAX_FILE_BYTES,
+        EVENTS, HOT, WARM,
     };
     use crate::error::StoreError;
     use crate::events::{EventKind, Outcome};
@@ -1220,7 +1220,10 @@ mod tests {
         assert_eq!(store.unwritten(), &BTreeSet::from([inc]));
         // A retirement pass with no segment and no job holding it still keeps it: the store
         // owes its first record.
-        assert!(store.retire().is_empty(), "a minted id is live before its record");
+        assert!(
+            store.retire().is_empty(),
+            "a minted id is live before its record"
+        );
         assert!(store.dictionary().holds(inc));
         assert!(store.reachable().is_empty(), "nothing on disk names it yet");
         store
@@ -1229,7 +1232,9 @@ mod tests {
         // A queued job is a record in flight; its ids are live too.
         assert!(store.retire().is_empty(), "a queued job keeps its ids live");
         assert_eq!(
-            store.adopt(inc, "/probe").expect("an id the index holds is adopted again"),
+            store
+                .adopt(inc, "/probe")
+                .expect("an id the index holds is adopted again"),
             inc
         );
         store.write_pending(20_000_000_000, 1).expect("write");
@@ -1288,7 +1293,9 @@ mod tests {
             BTreeSet::from([inc]),
             "the queued job names the id"
         );
-        store.evict(i64::MAX / 2).expect("evict every sealed segment");
+        store
+            .evict(i64::MAX / 2)
+            .expect("evict every sealed segment");
         assert!(store.reachable().is_empty(), "nothing on disk names it");
         assert!(
             store.unwritten().is_empty(),
@@ -1300,7 +1307,9 @@ mod tests {
         );
         assert!(store.dictionary().holds(inc));
         // And the write it was owed succeeds, naming an id the index still holds.
-        store.write_pending(now, 1).expect("the owed record is written");
+        store
+            .write_pending(now, 1)
+            .expect("the owed record is written");
         assert!(store.retire().is_empty(), "the new segment proves it");
     }
 
@@ -1310,8 +1319,8 @@ mod tests {
         // on a refusal would make the next retirement pass free the id the caller is about to
         // resubmit — the same hole as B1, one step later.
         let temp = TempDir::new("failed-pin");
-        let mut store = Store::open_with_mounts(config(&temp), Some(tmpfs_everywhere()))
-            .expect("open");
+        let mut store =
+            Store::open_with_mounts(config(&temp), Some(tmpfs_everywhere())).expect("open");
         let inc = store.adopt(0, "/probe").expect("mint");
         // A record older than every tier is refused by `route`, before any append.
         store

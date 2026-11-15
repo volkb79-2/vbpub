@@ -268,7 +268,11 @@ impl MountTable {
                     break;
                 }
                 Err(error) => {
-                    return Err(StoreError::io("stat", &walked.display().to_string(), &error))
+                    return Err(StoreError::io(
+                        "stat",
+                        &walked.display().to_string(),
+                        &error,
+                    ))
                 }
             }
         }
@@ -570,7 +574,7 @@ one two three
         let outside = TempDir::new("tmpfs-link-target");
         let base = TempDir::new("tmpfs-link");
         base.mkdir("run");
-        base.symlink_to("run/x", &outside.path());
+        base.symlink_to("run/x", outside.path());
         let linked = base.path().join("run").join("x");
         assert_eq!(
             table.check_tmpfs(&linked, true).map(|_| ()),

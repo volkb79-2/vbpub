@@ -429,7 +429,13 @@ impl OpenSegment {
         temp_name: &str,
         max_bytes: u64,
     ) -> Result<SealReport, StoreError> {
-        self.seal_until(dir, sealed_name, temp_name, max_bytes, crate::fsio::SealStop::Complete)
+        self.seal_until(
+            dir,
+            sealed_name,
+            temp_name,
+            max_bytes,
+            crate::fsio::SealStop::Complete,
+        )
     }
 
     /// As [`OpenSegment::seal`], but able to stop at a named point of the seal's order.
@@ -995,9 +1001,7 @@ mod tests {
         assert_eq!(scanned.records.len(), 1, "the completed record still reads");
         assert_eq!(
             scanned.tail,
-            TailState::Incomplete {
-                offset: good
-            },
+            TailState::Incomplete { offset: good },
             "an all-zero tail is unwritten, not corrupt"
         );
         assert_eq!(scanned.truncate_to_good_end(&dir), Ok(good));

@@ -85,6 +85,13 @@ FOOTER (64)
 `footer_crc` covers the 56 bytes before it. A checksum that covered the field it lives in could
 never be checked.
 
+**What the checksums are for.** CRC-32 detects an *accident* — a torn write, a truncated copy, a
+bit that flipped in a sector — and it does not detect tampering: it is not a keyed hash, so anyone
+who can write a byte can write a matching checksum. The threat model is a directory the probe owns
+(the store refuses a link, a foreign name and a non-regular file, and it is the only writer), not
+an attacker with write access to the store's own files. Integrity against such an attacker is out
+of scope and is not claimed by this format.
+
 ### The id table lives inside the record
 
 The store must answer "which incarnations can any stored block still reference?" from the files
@@ -124,11 +131,17 @@ Reading a segment yields a *state*, not just facts:
 |---|---|---|
 | `complete` | the bytes end exactly after the last record (or after a verified footer) | serve it |
 | `incomplete` | a record starts and the file ends before its declared length | truncate back to the last good record, report it, then append behind the repaired tail |
+| `incomplete (unwritten)` | the file's length was extended and the bytes after the last good record are **all zero** — what a power cut leaves on ext4/xfs | the same repair: cut back to the last good record and keep the segment in service |
 | `corrupt` | the bytes at an offset are not a valid record: magic, header CRC, body CRC, sequence, padding or payload facts | quarantine the whole file as `.corrupt`, report it, keep the file for an operator |
 
-An incomplete tail is a *repair*, not a loss: nothing that was completed is discarded. A corrupt
-segment is quarantined rather than deleted, because its bytes are the only evidence of what went
-wrong, and a truncated one would hide the corrupt records that precede the damage.
+An incomplete tail is a *repair*, not a loss: nothing that was completed is discarded. The all-zero
+tail is the commonest crash shape on a size-extending filesystem, and treating it as corruption
+would take a whole durable segment out of service for a fault that damaged no record — so it is an
+`incomplete` tail and only the unwritten part is cut. A tail holding *any* other bytes stays
+`corrupt`: the relaxation is about zero bytes specifically, not about shortening the walk.
+
+A corrupt segment is quarantined rather than deleted, because its bytes are the only evidence of what
+went wrong, and a truncated one would hide the corrupt records that precede the damage.
 
 Nothing in a reader panics on what it finds. Every refusal is a typed error with a stable machine
 name (`StoreError::kind`), and the Python reference uses the same names, so a disagreement between
@@ -148,9 +161,14 @@ half-copied file look sealed. The order is fixed:
 
 A crash before step 4 leaves either the open file with its records (repaired and continued at the
 next open) or a `.tmp` orphan, which is reported and left alone. A crash after step 4 leaves a
-complete sealed segment and possibly a stale `.seg.open`; the scan prefers the sealed name it
-verified. The `.tmp` name exists because a partially written copy of a file under its *final* name
-would be a segment whose header and footer disagree.
+complete sealed segment and possibly a stale `.seg.open`; the scan verifies the sealed name first
+and **removes** the open twin whose `(tier, start_s, seq)` matches it (reported in
+`TierScan::stale_open_removed`), because a reader that adopted both would count the bytes twice,
+serve every record twice, and append behind a copy. The `.tmp` name exists because a partially
+written copy of a file under its *final* name would be a segment whose header and footer disagree.
+
+Every file the store creates is mode `0600` and every directory it creates is `0700`, set at
+creation rather than left to the caller's umask: a segment carries the probe's sampled history.
 
 ## Eviction: whole segments, oldest first
 
@@ -164,6 +182,12 @@ is still inside it. `cap_bytes` is strict, and if the only remaining segment is 
 alone exceeds the cap, it goes too — with its handle closed first, so nothing is ever appended
 behind a name that no longer exists.
 
+A segment that fails to seal leaves the tier exactly as it was: the open handle is reopened, the
+ring entry is looked up **by name** (never by "whichever entry claims to be open"), and the
+temporary copy is removed by the seal itself on every failure before the rename. If the open file
+cannot be reopened the entry leaves the ring and is reported — an entry claiming to be open with
+no handle behind it is precisely the state that made the next append update the wrong file.
+
 ## Bounds and where they come from
 
 | fact | source | bound |
@@ -171,13 +195,27 @@ behind a name that no longer exists.
 | one record's payload | `proto` §B.1 | the tier's `max_payload` (1 MiB default, 16 MiB is the frame maximum) |
 | ids in one record | the tier's `max_incarnations` | 1024 default |
 | one segment file | `TierConfig::segment_bytes` | `max_payload × 64`, at least 64 KiB |
-| a scan of one file | the reader's `max_file_bytes` | 16 MiB default; a file larger is `file-too-large` |
+| a scan of one file | the reader's `max_file_bytes` | 96 MiB default; a file larger is quarantined as `.corrupt` and counted (`TierScan::oversized`), not skipped |
 | records one scan walks | `segment::SCAN_RECORD_BOUND` | 2^20 |
 | names one directory is scanned for | `tier::MAX_SEGMENTS` | 4096 |
 | a range answer | the caller's `max_records` and `max_bytes` | refused when `max_records` is zero |
 
 A reader never allocates more than the file it was given, a tier's memory is proportional to its
 number of segments (never to their bytes), and a query's memory is the caller's two bounds.
+
+The read bound is not a free parameter: `StoreConfig::check` refuses a `max_file_bytes` smaller
+than any tier's own `segment_file_bound` (its `max_payload × 64` budget plus the one record that
+crossed it plus its footer margin). A writer seals *after* appending the record that reached the
+budget, so a legitimate segment may hold exactly that much; a smaller read bound would make a
+segment the store itself wrote unreadable, and a file the rescan could not read is a file it could
+not put in the ring, count or evict. Plan v4's numbers are 1 MiB payloads and 64 MiB segments, so
+the default bound is 96 MiB (64 MiB budget + a 1 MiB record + the incarnation table and slack).
+
+One unreadable file never makes a tier unopenable: a per-file read refusal (EACCES, EIO) is
+reported in `TierScan::unreadable` and the file is left exactly where it is, because a store only
+removes what it can prove it wrote. "Could not determine what this file is" is never folded into
+"there is nothing there" — the two are different fields (`unreadable` versus a header refusal in
+`notes`, which is a file that is *not* this store's).
 
 ## Fixtures
 
