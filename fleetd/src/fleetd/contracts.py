@@ -26,6 +26,66 @@ CONTROL_PLANE_SERVICE_UNITS = (
     "mdt-psi-guard.service",
 )
 
+# Debian-install-v2 declares two of those units optional: it writes their
+# drop-in and verification allows them to be absent (`LoadState=not-found` or
+# `masked`), while every other listed unit must load. This set is the same
+# optional set as `CONTROL_PLANE_MEMORY_MIN_OPTIONAL_UNITS` in
+# scripts/debian-install-v2; a test parses that installer table and fails on
+# drift, so this is a checked copy rather than a second hand-written truth.
+CONTROL_PLANE_SERVICE_OPTIONAL_UNITS = frozenset({
+    "cgprofiled.service",
+    "mdt-psi-guard.service",
+})
+
+# Load states that mean the unit is not on this host at all. Every other state
+# (including a state this collector has never seen) is NOT treated as absent: an
+# unknown state must not silently contribute zero to the reserve.
+CONTROL_PLANE_ABSENT_LOAD_STATES = frozenset({"not-found", "masked"})
+
+# Documented per-service reserve defaults, in bytes. They are the measured
+# floors debian-install-v2 writes as each unit's `MemoryMin` (the 2026-11-15
+# hot-set measurement, 1.25 x the measured hot working set, larger value of the
+# two hardware flavors) and are used only for one service whose own fact is
+# unavailable. A test parses the installer's table and the documented table and
+# fails when either drifts from this one.
+CONTROL_PLANE_SERVICE_MEMORY_MIN_DEFAULTS = {
+    "ssh.service": 10 * _MIB,
+    "docker.service": 210 * _MIB,
+    "containerd.service": 92 * _MIB,
+    "systemd-journald.service": 24 * _MIB,
+    "cgprofiled.service": 4 * _MIB,
+    "mdt-psi-guard.service": 5 * _MIB,
+}
+
+# DERIVED sanity bound for one service, not a second hand-written table: a
+# reported floor above this factor of that service's documented default is
+# refused instead of summed. The defaults are 1.25 x a measured hot set, so 4 x
+# allows that service's hot set to triple (docker/containerd are documented to
+# grow with the running container count) before the value is treated as a
+# misconfigured or misread unit rather than a promise. A refusal is evidence
+# (the host is refused with the reason), never a clamp.
+CONTROL_PLANE_SERVICE_MEMORY_MIN_CEILING_FACTOR = 4
+CONTROL_PLANE_SERVICE_MEMORY_MIN_CEILINGS = {
+    unit: value * CONTROL_PLANE_SERVICE_MEMORY_MIN_CEILING_FACTOR
+    for unit, value in CONTROL_PLANE_SERVICE_MEMORY_MIN_DEFAULTS.items()
+}
+
+# The total's sanity bound is DERIVED from the same table: twice the documented
+# floors (345 MiB x 2 = 690 MiB). Docker's and containerd's hot sets are
+# documented to grow with the running container count, so a host above the
+# installer's floors is legitimate; twice the floors is the point where the
+# per-service drop-ins have plainly drifted away from the measured table, which
+# needs a re-measurement (FD-007b), not a bigger sum. It is deliberately NOT
+# the installer's 460 MiB `system.slice` ceiling: that bounds one derived
+# ancestor slice, while this reserve is the sum of what each service protects,
+# including `cgprofiled.service`, which lives outside `system.slice`.
+# An over-bound total is refused with the reason; it is never clamped.
+CONTROL_PLANE_SERVICE_MEMORY_MIN_TOTAL_CEILING_FACTOR = 2
+CONTROL_PLANE_SERVICE_MEMORY_MIN_TOTAL_CEILING_BYTES = (
+    sum(CONTROL_PLANE_SERVICE_MEMORY_MIN_DEFAULTS.values())
+    * CONTROL_PLANE_SERVICE_MEMORY_MIN_TOTAL_CEILING_FACTOR
+)
+
 
 class ContractError(ValueError):
     """Input does not match a versioned fleetd contract."""
@@ -430,7 +490,7 @@ def validate_host_facts(value: object) -> HostFacts:
         {"slice", "present", "cpu_weight"},
         {
             "memory_min_bytes", "memory_min_bytes_reason", "cpu_weight_reason",
-            "profile_reserve_bytes", "service_memory_min",
+            "profile_reserve_bytes", "service_memory_min", "service_memory_min_reason",
         },
     )
     _string(control["slice"], "host-facts/1.control_plane.slice")
@@ -449,6 +509,10 @@ def validate_host_facts(value: object) -> HostFacts:
             minimum=1,
         )
     if "service_memory_min" in control:
+        if "service_memory_min_reason" in control:
+            raise ContractError(
+                "host-facts/1.control_plane.service_memory_min_reason: only allowed when service_memory_min is absent"
+            )
         service_facts = _object(
             control["service_memory_min"],
             "host-facts/1.control_plane.service_memory_min",
@@ -458,9 +522,13 @@ def validate_host_facts(value: object) -> HostFacts:
             path = f"host-facts/1.control_plane.service_memory_min.{unit}"
             service = _object(
                 service_facts[unit], path,
-                {"memory_min_bytes"}, {"memory_min_bytes_reason"},
+                {"memory_min_bytes"}, {"memory_min_bytes_reason", "load_state", "load_state_reason"},
             )
             _nullable_int(service, "memory_min_bytes", path, minimum=0)
+            if "load_state" in service:
+                _nullable_str(service, "load_state", path)
+    elif "service_memory_min_reason" in control:
+        _string(control["service_memory_min_reason"], "host-facts/1.control_plane.service_memory_min_reason")
     _validate_group(root["guard"], "host-facts/1.guard", {
         "enabled": ("bool", None, None), "config_digest": ("str", None, None), "state": ("str", None, None),
     })

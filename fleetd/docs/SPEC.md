@@ -80,15 +80,63 @@ slice's `memory.min`. Older host-facts/1 inputs may include
 `control_plane.memory_min_bytes`; the validator accepts that legacy field and
 planning ignores it. The bounded
 `CONTROL_PLANE_SERVICE_UNITS` list in `fleetd.contracts` supplies one
-`service_memory_min` entry per service. `0`, `infinity`, unset, and failed
-queries are not reported positive values. The planner uses the sum only when
-all listed services report positive values; otherwise it uses that host's
-`profile_reserve_bytes` (768 MiB when the config has no profile override).
-Thus reserve selection does not depend on `MemTotal`, `MemAvailable`, measured
-RSS, or any legacy parent-slice `memory_min_bytes` value. Plans expose
-`reserve_bytes`, `reserve_source` (`service-memory-min` or `profile-constant`), and
-`reserve_missing_services`. Missing `memory.for_lanes_bytes` still refuses
-planning because physical capacity cannot be derived. Calibration of the
+`service_memory_min` entry per service, and each entry may carry the unit's
+systemd `load_state` (`null` with a reason when it was not queried). `0`,
+`infinity`, unset, and failed queries are not reported positive values. A
+fixture root queries no unit, so the table is absent and
+`control_plane.service_memory_min_reason` says why.
+
+The planner resolves ONE term per listed service and sums those terms:
+
+- `reported` — the service's own positive `MemoryMin`, at or below its
+  documented per-service sanity ceiling;
+- `default` — that service's documented floor from
+  `CONTROL_PLANE_SERVICE_MEMORY_MIN_DEFAULTS` (the measured table the Debian
+  installer writes, see below), used when the service reports no positive value
+  or a value above its ceiling;
+- `absent-optional` — `0`, only for a service in
+  `CONTROL_PLANE_SERVICE_OPTIONAL_UNITS` whose `load_state` is `not-found` or
+  `masked`. An unknown or unqueried load state is never treated as absent.
+
+The fixed list, with the documented default each service falls back to and
+whether the Debian installer declares the unit optional:
+
+| Unit | Default | Optional |
+|---|---:|---|
+| `ssh.service` | 10 MiB | no |
+| `docker.service` | 210 MiB | no |
+| `containerd.service` | 92 MiB | no |
+| `systemd-journald.service` | 24 MiB | no |
+| `cgprofiled.service` | 4 MiB | yes |
+| `mdt-psi-guard.service` | 5 MiB | yes |
+
+`cgprofiled.service` and `mdt-psi-guard.service` are the optional units; the
+other four are mandatory. The total therefore never falls below the sum of the
+values actually reported, and a missing mandatory fact is replaced by that
+service's documented floor rather than by zero.
+
+`reserve_source` is `service-memory-min` when every term was reported and
+`per-service-default` otherwise (with `reserve_missing_services` naming the
+units that were not reported). The fixed profile constant
+(`profile_reserve_bytes`, 768 MiB when the config has no override) is used
+**only** when no per-service fact exists at all — the table is absent or holds
+no listed unit, which is the failed-collection case — and `reserve_source` then
+says `profile-constant`. A per-host plan carries `reserve_services`: one
+`{unit, source, bytes}` row per listed service, in the fixed unit order, so the
+plan evidence shows exactly which term was used for which service. It is
+omitted in the `profile-constant` case, where no per-service term exists.
+
+A reported value above its per-service ceiling (4 x that service's documented
+default) or a total above twice the documented floors is refused, with the
+reason on the host plan (`reserve_reason` and `reason`); it is never clamped,
+quietly replaced, or summed. The documented floors total 345 MiB. A test parses
+the installer's source and its documented table and fails when either drifts
+from fleetd's copy.
+
+Reserve selection does not depend on `MemTotal`, `MemAvailable`, measured RSS,
+or any legacy parent-slice `memory_min_bytes` value. Missing
+`memory.for_lanes_bytes` still refuses planning because physical capacity
+cannot be derived. Calibration of the
 profile constant from measured p95 under load remains open as
 [FD-007b](../KNOWN_ISSUES_TODO_BACKLOG.md#fd-007b-calibrate-profile-reserve-from-measured-p95-under-load).
 `fleet facts validate FILE`
@@ -121,9 +169,10 @@ case where eligible hosts have no Geekbench records.
 
 The planner's host-set input requires explicit other-running rows and rejects
 hosts with unknown role, shared-prod role, PSI above its configured threshold,
-or unknown physical lane memory, CPU, or PSI facts. Missing or partial service
-`MemoryMin` facts use the profile constant and list the services that were not
-reported; an absent control-plane slice does not refuse the host. Worker
+or unknown physical lane memory, CPU, or PSI facts. Each service's reserve term
+is resolved per service (reported, documented default, or zero for an absent
+optional unit), so a partial fact set names the units and still plans; an
+absent control-plane slice does not refuse the host. Worker
 capacity is the CPU-derived worker count
 after other work, bounded by the lane's efficient upper bound. MVP-B-lite uses
 one campaign slot per host because concurrent selected runs would share a
@@ -132,8 +181,10 @@ tracked under
 [FD-006](../KNOWN_ISSUES_TODO_BACKLOG.md#fd-006-lift-the-manual-one-slot-per-host-and-j-cap).
 It computes:
 
-- reserve_h = sum(service memory_min_bytes) when all fixed service facts are positive;
-- otherwise reserve_h = control_plane.profile_reserve_bytes (768 MiB when absent);
+- reserve_h = sum of one term per listed service (reported value, that service's
+  documented default, or 0 for an absent optional unit);
+- reserve_h = control_plane.profile_reserve_bytes (768 MiB when absent) only when
+  no per-service fact exists at all;
 - P = memory.for_lanes_bytes - reserve_h;
 - O = other running expected charges + campaign_slots × instance_memory;
 - B = P × overcommit - O;
@@ -413,18 +464,51 @@ put on `sys.path`); 0.5.0 is the library revision the registered gate image
 installs, so the host and the gate run the same contract.
 
 `cli-extended` is published on GitHub Releases only (the bare name is unclaimed
-on PyPI), and the fleetd wheel does not vendor it. Install the two wheels from
-the same directory in one offline command, cli-extended first:
+on PyPI), and the fleetd wheel does not vendor it, so both wheels come from the
+same directory.
+
+On a managed vbpub host, use the runner's install script, which does this in a
+venv under a documented prefix and never touches the system Python:
 
 ```sh
-python3 -m pip install --no-index --no-deps cli_extended-0.5.0-py3-none-any.whl
-python3 -m pip install --no-index --no-deps fleetd-<version>-py3-none-any.whl
+wheel_dir=/var/cache/host-wheels
+fleetd_sha256=$(awk 'NR == 1 { print $1 }' "$wheel_dir/fleetd-<version>-py3-none-any.whl.sha256")
+cli_extended_sha256=$(awk 'NR == 1 { print $1 }' "$wheel_dir/cli_extended-0.5.0-py3-none-any.whl.sha256")
+sudo bash "$HOME/runner-scripts/install-fleetd.sh" \
+  --wheel-dir "$wheel_dir" \
+  --fleetd-version <version> --fleetd-sha256 "$fleetd_sha256" \
+  --cli-extended-version 0.5.0 --cli-extended-sha256 "$cli_extended_sha256" \
+  --check
+sudo bash "$HOME/runner-scripts/install-fleetd.sh" \
+  --wheel-dir "$wheel_dir" \
+  --fleetd-version <version> --fleetd-sha256 "$fleetd_sha256" \
+  --cli-extended-version 0.5.0 --cli-extended-sha256 "$cli_extended_sha256"
 fleet --version
 fleet facts collect > host-facts.json
 ```
 
+Both wheels are verified against the SHA-256 values you pass before anything is
+written, the venv lives at `/opt/fleetd/<version>/venv`, and
+`/usr/local/bin/fleet` is a symlink to that venv's console script. `--check`
+verifies the inputs and reports whether the install is already current without
+writing (exit 0 current, exit 1 not), so it is safe to run first. A rerun with
+the same wheel hashes is idempotent. The script refuses a symlinked install
+path, an incomplete existing venv, and a non-symlink file at the command path,
+and it never installs into the system Python.
+
+The same wheels can be installed by hand into a venv of your own:
+
+```sh
+python3 -m venv /some/venv
+/some/venv/bin/python -m pip install --no-index --no-deps cli_extended-0.5.0-py3-none-any.whl
+/some/venv/bin/python -m pip install --no-index --no-deps fleetd-<version>-py3-none-any.whl
+/some/venv/bin/fleet --version
+```
+
 A single `pip install --find-links <wheelhouse> fleetd-<version>-py3-none-any.whl`
-gives the same result when the wheelhouse holds both files. The host does not
+gives the same result when the wheelhouse holds both files. Debian 13 refuses
+`pip install` into the system Python (PEP 668), which is why the script and the
+manual recipe both install into a venv. The host does not
 need the repository: the packaged `facts.toml` remains host-owned config at
 `/etc/fleetd/facts.toml` (see [the consumer guide](CONSUMERS.md#collect-and-validate-host-facts)),
 and every host path the collector reads is absolute.

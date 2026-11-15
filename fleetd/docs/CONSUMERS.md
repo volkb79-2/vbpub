@@ -8,16 +8,42 @@ never put on `sys.path`. `cli-extended` is published on GitHub Releases only
 (the bare name is unclaimed on PyPI), so install both wheels from the same
 directory:
 
+A managed vbpub host installs it with the runner script, which verifies both
+wheel hashes, installs into `/opt/fleetd/<version>/venv` and links
+`/usr/local/bin/fleet`:
+
 ```sh
-python3 -m pip install --no-index --no-deps cli_extended-0.5.0-py3-none-any.whl
-python3 -m pip install --no-index --no-deps fleetd-<version>-py3-none-any.whl
+wheel_dir=/var/cache/host-wheels
+fleetd_sha256=$(awk 'NR == 1 { print $1 }' "$wheel_dir/fleetd-<version>-py3-none-any.whl.sha256")
+cli_extended_sha256=$(awk 'NR == 1 { print $1 }' "$wheel_dir/cli_extended-0.5.0-py3-none-any.whl.sha256")
+sudo bash "$HOME/runner-scripts/install-fleetd.sh" \
+  --wheel-dir "$wheel_dir" \
+  --fleetd-version <version> --fleetd-sha256 "$fleetd_sha256" \
+  --cli-extended-version 0.5.0 --cli-extended-sha256 "$cli_extended_sha256" \
+  --check
+sudo bash "$HOME/runner-scripts/install-fleetd.sh" \
+  --wheel-dir "$wheel_dir" \
+  --fleetd-version <version> --fleetd-sha256 "$fleetd_sha256" \
+  --cli-extended-version 0.5.0 --cli-extended-sha256 "$cli_extended_sha256"
 fleet --version
+```
+
+It never installs into the system Python, which Debian 13 refuses (PEP 668);
+`--check` writes nothing and exits 1 when that exact wheel hash is not installed.
+
+Without the runner scripts, install both wheels by hand into a venv of your own:
+
+```sh
+python3 -m venv ./venv
+./venv/bin/python -m pip install --no-index --no-deps cli_extended-0.5.0-py3-none-any.whl
+./venv/bin/python -m pip install --no-index --no-deps fleetd-<version>-py3-none-any.whl
+./venv/bin/fleet --version
 ```
 
 With a wheelhouse that holds both files, one command does the same work:
 
 ```sh
-python3 -m pip install --no-index --find-links ./wheelhouse fleetd-<version>-py3-none-any.whl
+./venv/bin/python -m pip install --no-index --find-links ./wheelhouse fleetd-<version>-py3-none-any.whl
 ```
 
 The console script is `fleetd.entry:main`. It imports only the standard library
@@ -150,11 +176,16 @@ rules. It reads cgroup v2 controllers, configured slice presence and
 `fleetd.contracts` with `systemctl show -p MemoryMin`. A fixture root does not
 invoke systemctl; its service entries remain null with reasons. `0`,
 `infinity`, unset, and failed queries are not reported values. `memory.for_lanes`
-is raw `MemTotal`. Planning sums the service values only if every listed unit
-reports a positive value; otherwise it uses the per-profile fixed constant and
-reports `reserve_source = "profile-constant"` plus `reserve_missing_services`.
-When every unit reports, `reserve_source = "service-memory-min"` and the
-reserve is their sum. The collector does not read the parent slice's
+is raw `MemTotal`. Each listed unit's row also carries its systemd `load_state`
+(`null` with a reason when it was not queried). Planning resolves one term per
+listed unit: the reported positive value, that unit's documented per-service
+default when the fact is missing or implausible, or `0` when a declared-optional
+unit is absent (`LoadState` `not-found` or `masked`). `reserve_source` is
+`service-memory-min` when every term was reported and `per-service-default`
+otherwise, with `reserve_missing_services` naming the units that were not
+reported. The per-profile fixed constant
+(`reserve_source = "profile-constant"`) is used only when no per-service fact
+exists at all. The collector does not read the parent slice's
 `memory.min`; older host facts may carry `control_plane.memory_min_bytes`, which
 the contract accepts for compatibility and the planner ignores. KSM
 swappiness-argument support is unknown because the collector makes no write
@@ -382,10 +413,15 @@ from a different commit or image are ignored and those candidates run again at
 closeout. Compare the closeout's candidate counts with the planned list before
 using its elapsed time as the campaign ETA.
 
-The host arithmetic uses the sum of all positive service `memory_min_bytes`
-values when the complete fixed service list is present. If a service is
-missing, zero, or `infinity`, it uses that host's fixed profile constant
-(768 MiB when the host config has no override); partial sums are never used.
+The host arithmetic uses one term per service in the fixed list: the reported
+positive `memory_min_bytes`, that service's documented default when it reports
+none (or a value above its documented sane ceiling), or `0` when a
+declared-optional unit is absent from the host. A missing mandatory fact is
+therefore replaced by its documented floor, not by zero, and the reserve never
+falls below the sum of what was actually reported. The fixed profile constant
+(768 MiB when the host config has no override) applies only when no per-service
+fact exists at all. An implausible report is refused with a reason instead of
+being summed, and the per-service provenance appears as `reserve_services`.
 The legacy parent `control_plane.memory_min_bytes` is accepted but ignored.
 `P = memory.for_lanes_bytes - reserve_h`, O = other running charges + one
 campaign instance's `instance_memory`, and B = P × overcommit - O. Each host

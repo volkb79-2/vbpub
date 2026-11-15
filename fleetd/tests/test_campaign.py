@@ -1047,9 +1047,13 @@ def test_lost_host_requeues_only_unfinished_candidates_and_uses_largest_cap(tmp_
     host_a = next(host for host in hosts["hosts"] if host["id"] == "host-a")
     host_b = next(host for host in hosts["hosts"] if host["id"] == "host-b")
     host_a["facts"]["control_plane"]["profile_reserve_bytes"] = 768 * 1024**2
+    # Real reported floors (each within its documented ceiling) that sum to
+    # 480 MiB, so host-b's reserve is 320 MiB below host-a's constant.
+    service_mib = [20, 400, 40, 10, 5, 5]
+    assert sum(service_mib) == 480
     host_b["facts"]["control_plane"]["service_memory_min"] = {
-        unit: {"memory_min_bytes": 80 * 1024**2}
-        for unit in CONTROL_PLANE_SERVICE_UNITS
+        unit: {"memory_min_bytes": value * 1024**2, "load_state": "loaded"}
+        for unit, value in zip(CONTROL_PLANE_SERVICE_UNITS, service_mib, strict=True)
     }
     plan = _plan(40, host_set=hosts)
     clock = FakeClock()

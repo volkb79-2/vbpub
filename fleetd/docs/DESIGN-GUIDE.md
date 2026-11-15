@@ -43,13 +43,48 @@ normalized reference work per worker as a deterministic tie-break. This is not
 a speed comparison or ETA. A candidate time record from a host absent in the
 current host set falls back to the next timing source and carries a reason.
 
-The planner computes `reserve_h` as the sum of all positive per-service
-`MemoryMin` values when the complete fixed unit list is reported. If any
-service is absent, zero, or `infinity`, it uses that host's fixed profile
-constant (768 MiB when the host has no override) and reports the missing
-services. The collector does not read parent `ctl.slice/memory.min`. Older
-facts may include `control_plane.memory_min_bytes`, which is accepted for
-compatibility and ignored. Then `P = memory.for_lanes_bytes - reserve_h`, O = other
+The planner resolves one reserve term per listed control-plane service and
+sums them, instead of treating the whole list as all-or-nothing. The three
+sources are deliberately different because three different situations are:
+
+- **reported** — the service's own positive `MemoryMin`, within its documented
+  per-service ceiling. This is what the host actually promises.
+- **default** — that service's documented floor, used when its own fact is
+  missing or implausible. A missing MANDATORY fact must not become zero: zero
+  silently lowers the reserve below what the control plane needs, and the
+  failure would only appear under load. The documented floor is the measured
+  value the installer writes, so it is the best available statement of what
+  that service needs.
+- **absent-optional** — `0`, used ONLY for a service the installer declares
+  optional whose systemd `LoadState` is `not-found` or `masked`. A host without
+  an optional unit legitimately has no such service, so it promises nothing.
+  An unknown or uncollected load state is not absent: it is a missing fact and
+  falls back to the service's default.
+
+The old all-six-positive rule was wrong in exactly one way that mattered:
+v1001 has no `mdt-psi-guard.service`, so every plan on that host used the 768
+MiB constant forever and the measured table could never take effect. A
+per-service fallback removes that dead end while keeping the "never invent a
+reserve below what was reported" property: the total always includes every
+reported value, and only a *missing* fact is replaced.
+
+`reserve_source` names the aggregate mode (`service-memory-min` when all terms
+were reported, `per-service-default` otherwise), while `reserve_services`
+carries the per-unit provenance (`reported` / `default` / `absent-optional`)
+so the plan evidence shows exactly which term produced each service's
+contribution. The fixed profile constant survives only for the
+no-per-service-fact case (a facts root that queried no service, or a table that
+never arrived), and the collector now emits `service_memory_min_reason` there
+rather than six null rows, so "collection failed" is a stated fact rather than
+an inference from an empty-looking table.
+
+Two sanity bounds are DERIVED from the same table rather than hand-tuned
+beside it: one service above 4 x its own documented floor, or a total above
+twice the documented floors, is refused with a reason (the host is not planned
+this wave) rather than clamped or summed. A clamped reserve would hide a bad
+drop-in; a refused one puts it in the plan evidence. The collector does not
+read parent `ctl.slice/memory.min`. Older facts may include
+`control_plane.memory_min_bytes`, which is accepted for compatibility and ignored. Then `P = memory.for_lanes_bytes - reserve_h`, O = other
 running expected charges + campaign_slots × instance_memory, and B = P ×
 overcommit - O. It derives worker slots from CPU capacity after other running
 workers and bounds them by
@@ -187,9 +222,10 @@ unknown image identities is precisely the mixed-image merge to refuse.
 The collector accepts a root directory so tests use synthetic `/proc` and
 `/sys` trees. Production collection reads the host-owned Geekbench record; it
 does not run the benchmark. Missing facts stay `null` with reasons. Planning
-uses the host profile's control-plane reserve constant when service
-`MemoryMin` facts are incomplete; other required capacity facts still fail
-closed.
+resolves each service's reserve term separately (reported, documented default,
+or zero for an absent optional unit) and keeps the host profile's constant only
+for the case where no per-service fact exists at all; other required capacity
+facts still fail closed.
 
 Collection requires versioned `/etc/fleetd/facts.toml` policy and source-path
 configuration. `HOST_ROLE` is read from the configured host-setup environment
@@ -197,13 +233,14 @@ file, not duplicated in fleetd policy; unknown or invalid roles remain null
 with a reason and cannot receive work. The CPU lane count comes from the
 online CPU list, and `memory.for_lanes_bytes` is raw `MemTotal`. Fleetd probes
 the fixed `CONTROL_PLANE_SERVICE_UNITS` list with `systemctl show -p MemoryMin`.
-WP2 sums all positive service values, or uses the host's fixed profile constant
-when any service value is absent, zero, or `infinity`. Legacy parent-slice
-`memory_min_bytes` is accepted and ignored. Host plans and
-campaign status show `reserve_bytes`, `reserve_source`, and
-`reserve_missing_services`. Reserve selection never scales with `MemTotal` or
-uses measured RSS. Old facts without service values use the profile constant,
-so host setup can roll out service drop-ins without a flag day. Calibration of
+Each service is one of three terms: its reported value, its documented
+default when the fact is missing or implausible, or zero when a
+declared-optional unit is absent. Legacy parent-slice `memory_min_bytes` is
+accepted and ignored. Host plans and campaign status show `reserve_bytes`,
+`reserve_source`, `reserve_missing_services`, and the per-unit
+`reserve_services` provenance. Reserve selection never scales with `MemTotal`
+or uses measured RSS. Old facts without per-service values use the profile
+constant, so host setup can roll out service drop-ins without a flag day. Calibration of
 the profile constant from measured p95 under load remains open as
 [FD-007b](../KNOWN_ISSUES_TODO_BACKLOG.md#fd-007b-calibrate-profile-reserve-from-measured-p95-under-load).
 

@@ -12,7 +12,13 @@ from pathlib import Path
 import pytest
 
 from fleetd.cli import build_cli
-from fleetd.contracts import validate_lane_demand
+from fleetd.contracts import (
+    CONTROL_PLANE_SERVICE_MEMORY_MIN_DEFAULTS,
+    CONTROL_PLANE_SERVICE_OPTIONAL_UNITS,
+    CONTROL_PLANE_SERVICE_UNITS,
+    validate_lane_demand,
+)
+from fleetd.plan import RESERVE_SOURCES
 from fleetd.facts import load_facts_config
 from fleetd.merge import IDENTITY_SCHEMA, IDENTITY_SET_SCHEMA
 from fleetd.measurement import MEASUREMENT_SCHEMA
@@ -119,6 +125,41 @@ def test_docs_name_every_default_r2_capability_and_value_a_consumer_types():
         assert command in combined, command
     for key in ("worker_memory", "worker_cpu", "instance_cpu", "image_digest", "slice_size"):
         assert key in combined, key
+
+
+def test_every_reserve_source_value_a_reader_will_see_is_documented():
+    """Each closed value in the plan's reserve evidence must appear in a public doc."""
+
+    combined = "\n".join(path.read_text(encoding="utf-8") for path in PUBLIC_DOCS)
+    for value in RESERVE_SOURCES:
+        assert value in combined, value
+    assert "reserve_services" in combined and "reserve_missing_services" in combined
+    assert "reserve_source" in combined
+    for unit in CONTROL_PLANE_SERVICE_UNITS:
+        assert unit in combined, unit
+    assert "345 MiB" in combined or "345" in combined
+
+
+def test_the_optional_units_and_their_documented_floors_are_stated():
+    combined = "\n".join(path.read_text(encoding="utf-8") for path in PUBLIC_DOCS)
+    for unit in CONTROL_PLANE_SERVICE_OPTIONAL_UNITS:
+        assert unit in combined, unit
+    for unit, value in CONTROL_PLANE_SERVICE_MEMORY_MIN_DEFAULTS.items():
+        assert str(value // 1024**2) in combined, (unit, value)
+
+
+def test_the_host_install_points_at_the_runner_script_and_never_system_pip():
+    """A host install that says ``pip install`` into the system Python is a wrong remedy."""
+
+    for path in (PROJECT / "README.md", PROJECT / "docs" / "SPEC.md", PROJECT / "docs" / "CONSUMERS.md"):
+        text = path.read_text(encoding="utf-8")
+        assert "install-fleetd.sh" in text, path
+        assert "--fleetd-sha256" in text, path
+        assert "/opt/fleetd/" in text, path
+    for path in PUBLIC_DOCS:
+        text = path.read_text(encoding="utf-8")
+        # No instruction may tell a reader to pip-install into the system Python.
+        assert "sudo pip install" not in text and "sudo python3 -m pip install" not in text, path
 
 
 # --- the cli-extended adoption, as a documentation obligation ---------------------------
