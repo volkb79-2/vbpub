@@ -4,8 +4,51 @@ All notable changes to this project are recorded here.
 
 ## [Unreleased]
 
+### Changed
+
+- Migrate the `fleet` CLI from a hand-built `argparse` parser to a registered
+  `cli-extended` CLI. Every subcommand, flag spelling, default, output document
+  and success or domain-error exit status is unchanged; the shared library now
+  owns help, the identity banner, the output controls and the exception
+  boundary. What the library changes, on purpose: the error line on stderr is
+  `[ERROR] <message>` (was `fleet: ERROR <message>`) and a parse error is one
+  such line without the argparse usage block (exit 2 as before); `-h` is gone
+  (use `--help` or `fleet help [verb]`); option names must be spelled in full
+  (argparse prefix abbreviations such as `--cand` are refused); a group without a
+  verb (`fleet`, `fleet facts`) prints its help and exits 0 instead of 2; and
+  every verb gains `--quiet`, `--debug` and the other shared controls (and
+  `--json` where it emits a document).
+  Callers that matched the old stderr prefix or relied on `-h` must be updated.
+  The pre-migration
+  contract is pinned by `tests/test_cli_characterization.py`, written before the
+  change and green on both implementations.
+- Declare `cli-extended>=0.5.0` as a real wheel dependency (unified-adoption
+  CX-D1). It is never vendored and never put on `sys.path`; 0.5.0 is the
+  revision the registered gate image installs, so a managed host and the gate
+  run the same contract. `cmru`'s release graph gains the matching
+  `fleetd -> cli-extended` edge, which moves fleetd from L0 to L1.
+- The console script is now `fleetd.entry:main`: it imports only the standard
+  library first, so a host without the declared dependency gets one actionable
+  install line and exit 3 instead of a `ModuleNotFoundError` traceback. Any
+  other missing module still raises. `python -m fleetd` keeps working.
+- The package version comes from `CliIdentity.resolve(distribution="fleetd")`
+  instead of a literal. An uninstalled source checkout refuses (exit 3) rather
+  than inventing a version.
+
 ### Added
 
+- Surface lifecycle for the registered CLI: `docs/cli-surface.json`, the
+  generated region in `docs/SPEC.md`, the reviewed catalog
+  `docs/cli-review.toml` (94 characterized cases), `docs/cli-review-findings.toml`,
+  and the `cli_extended.pytest_plugin` link between a catalog row and its test.
+  `tools/gen-cli-review-catalog.py` regenerates the catalog from the exported
+  surface.
+- `fleet skills install|check|list|uninstall` from the library, backed by the
+  packaged skill source `fleetd/skills/fleetd-campaigns/SKILL.md` (package data,
+  one source of truth inside the wheel).
+- Exit-code and entry-point boundary tests (`tests/test_cli_boundary.py`,
+  `tests/test_cli_entry.py`) and packaging/skill tests
+  (`tests/test_cli_skills.py`).
 - Scaffold the standalone `fleetd` project and its R0/R1 gate.
 - Add versioned host facts, work request, Assay merge manifest, and guard TOML
   contracts with strict validators and fixtures.

@@ -246,3 +246,113 @@ RG-275 lands; the missing client verb is tracked as RG-276. `efficient_upper_bou
 must match Assay's authoritative `judge.mutation.jobs_max`, tracked as
 [FD-002](../KNOWN_ISSUES_TODO_BACKLOG.md#fd-002-demand-upper-bound-is-not-joined-to-assay-inventory). See
 [FD-001](../KNOWN_ISSUES_TODO_BACKLOG.md#fd-001-lite-campaign-lifecycle).
+
+## One grammar, owned by cli-extended
+
+`fleet` is registered with the shared `cli-extended` library rather than a
+hand-written `argparse` builder, for the same reason cmru, ciu and the pwmcp
+client are: the estate already pays for that grammar once, and every hand-built
+copy of it drifts. What the library owns and what fleetd owns is the whole
+decision, so it is written down here instead of being re-argued per verb.
+
+Library-owned (fleetd must not re-implement it):
+
+- the help screens, the identity banner and the `version`/`--version`/`help`
+  built-ins, the shared output controls (`--json`, `--log-level`, `--quiet`,
+  `--debug*`, `--traceback`, the colour policy) and the JSON-mode result stream;
+- the exception boundary: domain refusals become one `[ERROR]` line with the
+  status a `CliFailure` carries, unexpected exceptions stay visible as a bug;
+- the surface lifecycle: the manifest, the generated SPEC region, the reviewed
+  catalog and the pytest link between a catalog row and its test (`surface
+  sync`/`check`, the `cli_case` marker) — so an unreviewed grammar change fails
+  a check instead of passing review by silence;
+- the `skills` verbs and the stamp/integrity sidecar behind them.
+
+Fleetd-owned: every verb, argument, option and constraint of the product
+interface, the handlers behind them, and the skill *content*. A grammar change
+therefore lands in `fleetd.cli.build_cli`, and the library delivers the rest.
+
+### Why the version comes from installed metadata
+
+The package version is derived by `setuptools_scm` from the `fleetd-v*` tag, so
+a literal `__version__` in the source could only go stale between a tag and the
+next commit — and it would be read by `--version` and by anything that imports
+`fleetd`. The CLI therefore resolves the version from the installed
+distribution and refuses (exit 3, one actionable line) when it cannot. That
+refusal is deliberate: a silent fallback would report a plausible number for a
+wheel that is not installed, which is the "defaults and fallbacks are hazards"
+failure this estate already paid for elsewhere.
+
+### Why the console script is a separate module
+
+`fleet`'s console script is `fleetd.entry:main`, not `fleetd.cli:main`. The
+entry module imports only the standard library, so on a managed host without
+`cli-extended` the user sees one install instruction and exit 3 instead of a
+`ModuleNotFoundError` traceback that names no remedy. The check is narrow on
+purpose: only the declared dependency is reported that way. Any *other* missing
+module still raises, because swallowing it would hide a broken installation —
+one status must not stand for two different conditions.
+
+### Why the reviewed catalog is a characterization, not a wish list
+
+`docs/cli-review.toml` is generated from the exported surface by
+`tools/gen-cli-review-catalog.py`: each row records the invocation *and* the
+outcome the real registry produced in `tests/cli_review_harness.py` (a
+throw-away HOME, a private non-repository working directory, fixture inputs).
+Two consequences are deliberate:
+
+- the catalog pins the grammar and the early refusals (spellings, accepted
+  value shapes, exclusive groups, declared constraints, and the refusals that
+  precede any host contact). It is not a behavioural specification: the
+  behaviour behind a verb is pinned by that verb's own tests, listed in
+  [SPEC "Verb semantics beyond the catalog"](SPEC.md#verb-semantics-beyond-the-catalog);
+- a row must be machine-independent. Where a command's outcome would otherwise
+  depend on the generating machine — `facts collect` reading a real
+  `/etc/fleetd/facts.toml`, a campaign command contacting a host — the
+  generator supplies a fixture root or an input that cannot exist in the
+  sandbox, so the recorded status is a property of the grammar, not of a host.
+
+A stale row, a changed signature or a catalog row with no linked test fails
+`cli-extended surface check` (and the pytest plugin at collection), which is the
+mechanical part of the review. The judgement — is this spelling, this default,
+this refusal the right product decision? — stays a reviewed row with its
+`rationale`, `effects` and `decision`.
+
+### Why `run` and `tick` need no confirmation prompt
+
+AC-12 asks every mutating verb for `--yes` or `--dry-run` unless there is a
+recorded reason. These two are idempotent supervisors over one campaign's own
+versioned state file: `run` re-adopts jobs by their deterministic names, and
+`tick` performs one scheduling step whose only effect is that state file. A
+repeated call cannot do what a first call would not have done, and a prompt
+would break the controller loop that calls `tick` unattended. The destructive
+case in this CLI — overwriting a locally *modified* skill copy — is guarded by
+the library's `--overwrite-modified`, not by this package.
+
+### Why there is no `fleet doctor`
+
+A doctor earns its place when there is an environment to verify and no other
+verb reports it. Here both environments already are reported: `fleet facts
+collect` *is* the host-environment report (`host-facts/1` carries a reason for
+every unavailable leaf), and the controller side refuses rather than guesses a
+missing runner checkout or `hx` wrapper. A `doctor` would duplicate those two
+and add a third place to drift. The row is recorded as a judgement in
+[the consumer guide](CONSUMERS.md#adoption-checklist-status), with the trigger
+to revisit: a third environment that nothing else reports.
+
+### Why `--state-dir` has no declarative default
+
+`--state-dir` falls back to `$XDG_STATE_HOME/fleetd/campaigns`, or
+`~/.local/state/fleetd/campaigns` when that variable is unset. That value belongs
+to the *invocation's* environment, so it is derived in `fleetd.cli._manager` when
+a campaign command runs, not declared as an `OptionSpec` default.
+
+A declared default is resolved once, while the registry is built, which put one
+machine's home directory into the exported surface manifest, the generated SPEC
+region and therefore into every reviewed-case signature. Two hosts would then
+report different signatures for the same CLI (each one *self-consistent*, so no
+check would fail), and the generated documents would carry a path from whichever
+machine happened to run `surface sync` first. The spec-export test therefore
+asserts the surface carries no environment-specific default, and the outcome —
+which directory a command reads — is pinned by a behavioural test in two different
+`XDG_STATE_HOME` environments.
