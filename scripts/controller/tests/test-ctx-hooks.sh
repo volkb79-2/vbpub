@@ -423,7 +423,7 @@ run "$ROOT/pc-nonemarker.out" pre-compact \
   '{"session_id":"sess-1","transcript_path":"'"$TRANSCRIPT"'","cwd":"'"$ROOT"'","trigger":"auto"}' \
   --state-dir "$ROOT/state-goal" --extract "$BIN/fake-extract"
 unset FAKE_MARKER
-python3 - "$ROOT/state-goal/readback-state.json" <<'PY' || fail 'a `none` marker replaced the stored marker'
+python3 - "$ROOT/state-goal/readback-state.json" <<'PY' || fail 'a none marker replaced the stored marker'
 import json, sys
 state = json.load(open(sys.argv[1], encoding="utf-8"))
 assert state["marker"] == "fake-marker-7", state
