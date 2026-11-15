@@ -80,25 +80,64 @@ installer step, or update the entries manually and apply them with
 
 fleetd (FD-007) uses the sum of reported per-service `MemoryMin` values as the
 control-plane reservation only when every unit of its six-unit list reports a
-positive value; otherwise it uses a fixed profile constant. The two 8 GiB
-hosts measured read-only on 2026-11-14 had about 450–500 MB of hot control-plane
-RSS. This installer uses six fixed service floors that total 640 MiB
-(671,088,640 bytes), above that aggregate measurement and well below 8 GiB.
-The total is over-reserved by design relative to measured whole-plane RSS. The
-operator considers it too large: the floors should cover only each service's
-hot working set. The current values are policy placeholders pending the
-per-service hot-set measurement and will be replaced by a follow-up; the
-mechanism (six units, drop-ins, readback) is what this change delivers. The
-values do not vary with installed RAM.
+positive value; otherwise it uses a fixed profile constant. This installer
+writes six per-service floors and one derived `system.slice` floor. The floors
+are **measured**, not policy placeholders: the 2026-11-15 per-service hot-set
+measurement on the two 8 GiB test hosts (report `control-plane-hotset-REPORT.md`;
+evidence directory `control-plane-hotset`, outside this repository) derived each
+floor as 1.25 × the service's measured hot working set, taking the max of the
+two hardware flavors so one table serves both. The six floors total 345 MiB
+(361,758,720 bytes), replacing the earlier 640 MiB placeholder table; the saving
+comes almost entirely from journald (128 → 24 MiB) and ssh (32 → 10 MiB), while
+docker and containerd stay close to their old values because the measurement
+found they really do hot about that much. Values do not vary with installed RAM.
 
-The service-by-service RSS was not measured in the available installer
-evidence, so each floor is explicitly marked unmeasured in the
-[control-plane value table](CONTROL-PLANE-MEMORY.md). The floors are a
-documented conservative policy, not a claim about measured per-service use.
-`MemoryMin` is written only in `/etc/systemd/system/<unit>.d/` drop-ins and is
-a reclaim-protection floor; debian-install-v2 emits no `MemoryMax`,
-`MemoryHigh`, or `MemoryLow` for these units. Its post-install check compares
-`systemctl show -p MemoryMin <unit>` with the exact expected byte value.
+What is measured and what is inferred, per claim, is tabulated in the
+[control-plane value table](CONTROL-PLANE-MEMORY.md#what-is-measured-and-what-is-inferred).
+In short: the per-service hot sets and the v1001 floor ladder are measured (high
+confidence); the r1002 1.25 × floor is inferred between measured 1.0 × and
+1.5 × (r1002 carries a pre-existing `MemoryLow=1G` on `system.slice`, so the later
+steps could not discriminate); the 32 MiB slice headroom is inferred, because
+the other `system.slice` children were not measured individually; and the
+containers-count effect is inferred, so the floors are a base, not a bound —
+docker and containerd hot sets grow with the number of running containers.
+Re-measure when the Docker or containerd version changes.
+
+`MemoryMin` is written only in systemd drop-ins: `/etc/systemd/system/<unit>.d/`
+for the six services and `/etc/systemd/system/system.slice.d/` for the ancestor
+floor. It is a reclaim-protection floor; debian-install-v2 emits no `MemoryMax`,
+`MemoryHigh`, or `MemoryLow` for these units or for `system.slice`. Its
+post-install check compares `systemctl show -p MemoryMin <unit>` (and
+`system.slice`) with the exact expected byte value.
+
+### Why the ancestor slice has to carry a floor
+
+`MemoryMin` on a service is limited by the protection its ancestors hand out.
+Both measured hosts mount cgroup2 with `memory_recursiveprot` (restored by this
+installer's `cgroup2-flags.service` if a remount strips it), so while
+`system.slice.memory.min` is 0 the per-unit floors are inert: on v1001, docker
+refaulted 231–251 MiB with 1.5 × hot-set unit floors and no slice floor, and 0–4
+MiB with the same unit floors plus a slice floor. The installer therefore derives
+the slice floor in code from the same per-service table — the sum of the floors
+of the units that live under `system.slice` (`ssh`, `docker`, `containerd`,
+`journald`, `psi-guard` = 341 MiB) plus 32 MiB headroom for the slice's other
+children (`logind`, `dbus`, `udevd`, about 1–3 MiB hot each) = 373 MiB. It is
+never a second hand-written number, and it follows the Docker pair's omission
+when `run_docker_install=false`. `cgprofiled.service` runs under
+`cgprofile.slice`, which already has `MemoryMin=128M`, so its floor does not
+enter that sum (it is kept anyway, because fleetd's reserve rule needs a
+positive per-service fact from every listed service). The slice drop-in sets
+`MemoryMin` only; it leaves any pre-existing `MemoryLow` on `system.slice`
+(for example mdt-cockpit host-setup's `MemoryLow=1G` on r1002) untouched.
+
+### The documented ceiling above about 460 MiB
+
+The same measurement found that the largest `system.slice` floors (608 and
+585 MiB) produced journald/docker refaults that the 430–455 MiB steps did not,
+with `memory.current` far below the floors, and could not explain them. The
+installer therefore refuses a derived `system.slice` floor above 460 MiB, so a
+future table change cannot silently cross into the unexplained range
+(DIV2-BL-10). The current derived value, 373 MiB, stays inside it.
 
 The exact six-unit list is `ssh.service`, `docker.service`,
 `containerd.service`, `systemd-journald.service`, `cgprofiled.service`, and
@@ -109,25 +148,25 @@ are optional units installed by cgprofile and mdt-cockpit host-setup
 respectively. DI2 writes each system-level drop-in whether or not an optional
 unit is installed. Readback checks a loaded optional unit and skips it only
 when systemd reports `LoadState=not-found` or `masked`; mandatory units missing
-from systemd still fail verification.
+from systemd still fail verification. `system.slice` is built in and always
+loads, so its derived floor is checked unconditionally.
 
 For fleetd-reserve, an absent optional unit is a missing fact, not a zero or
 synthetic `MemoryMin`. Its current all-six-positive rule therefore uses the
-profile constant until all six facts are present. The Debian image provides SSH
-and journald; the installer configures them but does not install their base
-packages. cgprofile's `cgprofiled.service` base unit has its own
-`MemoryHigh`/`MemoryMax`; DI2's drop-in adds only `MemoryMin`. The psi-guard
-unit has no other memory directives.
+profile constant until all six facts are present; v1001 has no psi-guard unit,
+so it still uses the profile constant until fleetd's per-service fallback
+(FD-007c) lands. That fallback is fleetd work and was not changed here.
+The Debian image provides SSH and journald; the installer configures them but
+does not install their base packages. cgprofile's `cgprofiled.service` base
+unit has its own `MemoryHigh`/`MemoryMax`; DI2's drop-in adds only `MemoryMin`.
+The psi-guard unit has no other memory directives.
 
-`MemoryMin` on a service is limited by every ancestor cgroup's own protection in
-the kernel's hierarchical accounting. This installer sets no `MemoryMin` on
-`system.slice`, so whether the floors above also protect pages from reclaim
-(rather than only being reported) has to be confirmed on a live host
-(DIV2-BL-09); the fleetd reserve uses the reported number either way.
-
-An already completed installation needs a separately scheduled,
-operator-approved in-place drop-in application or reinstall. This change does
-not run against hosts or add a retrofit operation.
+Still open: the per-container increment for docker/containerd floors
+(DIV2-BL-11), the large-floor anomaly (DIV2-BL-10), r1002's inferred
+confidence, and the retrofit for already completed installs. An already
+completed installation needs a separately scheduled, operator-approved in-place
+drop-in application or reinstall (DIV2-BL-08). This change does not run against
+hosts or add a retrofit operation.
 
 ## Cloud-init cache cleanup policy
 

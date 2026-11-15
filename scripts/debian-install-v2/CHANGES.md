@@ -4,20 +4,47 @@ All notable changes to debian-install-v2 are recorded here.
 
 ## [Unreleased]
 
-### Added (div2-memorymin)
+### Changed (div2-memorymin measured)
+- Replace the unmeasured control-plane `MemoryMin` placeholders with the measured
+  hot-set floors from the 2026-11-15 per-service measurement (evidence
+  `control-plane-hotset`, report `control-plane-hotset-REPORT.md`): ssh 10,
+  docker 210, containerd 92, journald 24, cgprofiled 4, psi-guard 5 MiB (345 MiB
+  total, down from 640 MiB). Each floor is 1.25 × the service's measured hot
+  working set, taking the per-service max of the two test-host flavors so one
+  table serves both. The docs now say what is measured (hot sets, the v1001
+  floor ladder), what is inferred (r1002's 1.25 ×, the slice headroom, the
+  per-container effect), and that a re-measurement is due when the Docker or
+  containerd version changes.
+- Add a mandatory `system.slice` `MemoryMin` drop-in, derived in code from the
+  per-service table (floors of the units under `system.slice` + 32 MiB headroom
+  = 373 MiB). Measured on v1001: per-unit floors are inert while
+  `system.slice.memory.min` is 0, because cgroup2 is mounted with
+  `memory_recursiveprot`. The installer refuses a derived value above the
+  documented 460 MiB ceiling, the point beyond which the same measurement saw
+  unexplained journald/docker refaults. The slice drop-in sets `MemoryMin` only
+  and leaves an existing `system.slice` `MemoryLow` untouched. Post-install
+  verification reads this derived value back like a unit floor.
+  Open: DIV2-BL-10 (the large-floor anomaly), DIV2-BL-11 (per-container
+  increment), FD-007c (fleetd's per-service fallback, which v1001 still needs
+  because it has no psi-guard unit).
+
+### Added (div2-memorymin placeholder round)
 - Install fixed per-service `MemoryMin` drop-ins for `ssh.service`, `docker.service`,
   `containerd.service`, `systemd-journald.service`, `cgprofiled.service`, and
   `mdt-psi-guard.service`; omit the Docker pair when Docker installation is disabled.
   The latter two are optional: verification skips them only when systemd reports
   `LoadState=not-found` or `masked`, and fails if a loaded unit has a missing or
   wrong value.
-  The values are unmeasured policy placeholders (the total is considered too
-  large) pending a per-service hot-set measurement and a follow-up that replaces them.
+  The values were unmeasured policy placeholders at that time (the total was
+  considered too large); the measured table replaced them in the same wave (see
+  "Changed (div2-memorymin measured)").
   Values and measurement status are recorded in `docs/CONTROL-PLANE-MEMORY.md`; existing
   hosts still need a separately scheduled in-place application or reinstall.
   `verify` now reads these values back, so it fails on a host installed before
   this change until mandatory and installed-unit drop-ins are applied
-  (DIV2-BL-08, DIV2-BL-09).
+  (DIV2-BL-08). The placeholder round's recorded caveat about the unset
+  `system.slice` floor (DIV2-BL-09) is now closed: the installer writes a
+  derived `system.slice` floor and verifies it.
 
 ### Changed
 - KSM defaults to `advisor_max_cpu=10` (percent of one CPU), a 300-second target scan, and
