@@ -15091,3 +15091,29 @@ candidate ID, progress state, verdict state, and termination evidence.
 **Close when.** The schema/analysis policy, adversarial fixtures, and tests
 land together; the registered Assay lane passes; and a real campaign closeout
 demonstrates the agreed classification without discarding candidate evidence.
+
+## B547 — Rust `has_executable_code` classifies closure-only and macro-only files as non-executable
+
+**Status:** OPEN (filed 2026-11-15 from the B243 review); severity: low. The
+adapter's mask-and-lex check (`assay/src/assay/adapters/rust.py`) answers True
+only when an `fn` token's signature reaches `{` before `;`. It is consulted
+only for a changed file with no LCOV record. A file whose only executable
+code is a closure or a macro expansion (for example
+`static X: LazyLock<u8> = LazyLock::new(|| compute());`, or an item-level
+`gen_fns!(a, b);`) contains no `fn` token and so classifies as having no
+executable code. If such a file is not in the compiled module tree (cfg'd out,
+unlisted `mod`), it is silently excused instead of failing loudly. Files that
+are compiled normally have a record, so the usual path is unaffected.
+
+**Contract to decide.** Either treat any changed `.rs` file with no record as
+executable unless it is provably declaration-only (`use`/`const` literal/
+`struct`/`trait` with bodyless methods), or add `|`-closure and item-position
+macro-invocation detection to the lexer. The design table (§A) states the
+current `fn`-only rule; update it with the decision.
+
+**Oracles.** The two shapes above classify as executable; declaration-only
+files (traits with bodyless methods, type/const/use-only) stay non-executable;
+the existing hand-mutant table gains one mutant per new guard.
+
+**Close when.** Lexer change plus tests land, the registered Assay lanes pass,
+and the host self-qualification run passes on the final head.

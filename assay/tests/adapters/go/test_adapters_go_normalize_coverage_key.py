@@ -60,3 +60,10 @@ def test_a_key_with_an_unrelated_module_path_is_left_unchanged():
         adapter.normalize_coverage_key("otherpkg/internal/x.go")
         == "otherpkg/internal/x.go"
     )
+
+
+def test_coverage_text_is_returned_unchanged():
+    """The text hook added with Rust's producer normalizer is the identity
+    for Go: ``go tool cover`` text needs no rewrite before its parser."""
+    text = "mode: set\nsrdm/a.go:1.1,2.2 1 1\n"
+    assert GoAdapter().normalize_coverage_text(text) is text

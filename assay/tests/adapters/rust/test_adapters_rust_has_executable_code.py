@@ -34,6 +34,27 @@ HAND_MUTANT_CASES = [
     ("unterminated-string-fails-closed", 'const TEXT: &str = "unterminated', True),
     ("unterminated-comment-fails-closed", "/* unterminated comment", True),
     ("ambiguous-apostrophe-fails-closed", "' maybe", True),
+    # Char-literal escapes: each valid form is masked (declaration-only file
+    # stays non-executable), each malformed form fails closed.
+    ("simple-escape-char-is-masked", "const N: char = '\\n';\ntrait T { fn a(&self); }\n", False),
+    ("hex-escape-char-is-masked", "const N: char = '\\x41';\ntrait T { fn a(&self); }\n", False),
+    ("unicode-escape-char-is-masked", "const N: char = '\\u{1F600}';\ntrait T { fn a(&self); }\n", False),
+    ("bad-hex-escape-fails-closed", "const N: char = '\\xZZ';\ntrait T { fn a(&self); }\n", True),
+    ("short-hex-escape-at-end-fails-closed", "const N: char = '\\x4", True),
+    ("unicode-escape-without-brace-fails-closed", "const N: char = '\\u41';\ntrait T { fn a(&self); }\n", True),
+    ("unicode-escape-unterminated-fails-closed", "const N: char = '\\u{41';\ntrait T { fn a(&self); }\n", True),
+    ("unicode-escape-empty-fails-closed", "const N: char = '\\u{}';\ntrait T { fn a(&self); }\n", True),
+    ("unicode-escape-at-end-fails-closed", "const N: char = '\\u", True),
+    ("escape-at-end-fails-closed", "const N: char = '\\", True),
+    ("trailing-backslash-in-string-fails-closed", 'const S: &str = "abc\\', True),
+    # Signature scanning: closers without openers and a closing brace before
+    # any body are ambiguous, never declarations.
+    ("stray-close-paren-fails-closed", "fn f) {}\n", True),
+    ("stray-close-bracket-fails-closed", "fn f] {}\n", True),
+    ("close-brace-before-body-fails-closed", "trait T { fn f(&self) }\n", True),
+    # Masking keeps line structure and does not mistake identifiers for prefixes.
+    ("multiline-block-comment-hides-fn", "/* a\nfn hidden() {}\nb */\ntrait T { fn a(&self); }\n", False),
+    ("identifier-b-is-not-a-byte-prefix", "let b = 1;\ntrait T { fn a(&self); }\n", False),
 ]
 
 
@@ -89,6 +110,13 @@ HAND_MUTANTS = [
         "if lifetime_end is None:\n                return None",
         "if lifetime_end is None:\n                cursor += 1\n                continue",
         "' maybe",
+        True,
+    ),
+    (
+        "empty-or-newline-char-literal-fails-closed",
+        'if cursor >= len(text) or text[cursor] in "\\r\\n\'":\n        return None',
+        'if cursor >= len(text) or text[cursor] in "\\r\\n\'":\n        return quote + 1',
+        "'\ntrait Work { fn call(&self); }\n",
         True,
     ),
     (

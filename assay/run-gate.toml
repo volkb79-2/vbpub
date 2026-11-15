@@ -97,6 +97,7 @@ export PYTHONPATH="analysis/src:{worktree}/libraries/cowtree/src"
   tests/adapters/rust/test_adapters_rust_registration.py \
   tests/adapters/rust/test_adapters_rust_output_fixtures.py \
   tests/adapters/rust/test_adapters_rust_coverage_text.py \
+  tests/adapters/rust/test_adapters_rust_native_lane.py \
   tests/core/test_import_contracts.py "$@"''',
   "tooling-tests",
 ]

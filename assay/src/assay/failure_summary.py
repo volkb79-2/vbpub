@@ -47,8 +47,11 @@ _GO_TEXT = re.compile(r"^\s*--- FAIL: (\S+)", re.MULTILINE)
 _VITEST = re.compile(r"^\s*FAIL +(\S.* > \S.*)$", re.MULTILINE)
 _JEST = re.compile(r"^\s*● (\S.* › \S.*)$", re.MULTILINE)
 _NEXTEST = re.compile(
-    r"^\s*FAIL \[\s*\d+(?:\.\d+)?s\]\s+(?:\(\d+/\d+\)\s+)?"
-    r"(\S+(?:\s+\S+)?)\s*$",
+    # Horizontal whitespace only: ``\s`` would let a one-token line after the
+    # FAIL row be read as part of the name. nextest right-aligns the counter
+    # (``( 2/10)``), so the counter may carry inner padding.
+    r"^[ \t]*FAIL \[[ \t]*\d+(?:\.\d+)?s\][ \t]+(?:\([ \t]*\d+/\d+\)[ \t]+)?"
+    r"(\S+(?:[ \t]+\S+)?)[ \t]*$",
     re.MULTILINE,
 )
 _LIBTEST = re.compile(r"^\s*test (\S+) \.\.\. FAILED\s*$", re.MULTILINE)

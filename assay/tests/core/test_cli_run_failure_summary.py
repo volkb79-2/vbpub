@@ -308,6 +308,13 @@ PYTEST_OUTPUT = (
             "        FAIL [   0.010s] (2/2) assay-rust-fixture integration::reject_empty\n",
             "assay-rust-fixture integration::reject_empty",
         ),
+        # nextest right-aligns the counter once a run has 10+ tests.
+        (
+            "        FAIL [   0.010s] ( 2/10) hostobs-eval tests::reject_empty\n",
+            "hostobs-eval tests::reject_empty",
+        ),
+        # A one-token line after the FAIL row is not part of the test name.
+        ("    FAIL [  0.013s] hostobs::coverage::reject_empty\nstdout\n", "hostobs::coverage::reject_empty"),
         ("test coverage::reject_empty ... FAILED\n", "coverage::reject_empty"),
         ("test coverage::ok ... ok\n", None),
         (" FAIL [not-a-duration] ambiguous\n", None),

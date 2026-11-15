@@ -24,7 +24,7 @@ WORKSPACE = PROJECT_ROOT / "tests/fixtures/rust/r1-workspace"
 EXPECTED_NEXTTEST = "assay-rust-fixture integration::forced_failure"
 EXPECTED_LIBTEST = "integration::forced_failure"
 NEXTEST_LINE = re.compile(
-    r"^\s*FAIL \[\s*\d+(?:\.\d+)?s\]\s+(?:\(\d+/\d+\)\s+)?"
+    r"^\s*FAIL \[\s*\d+(?:\.\d+)?s\]\s+(?:\(\s*\d+/\d+\)\s+)?"
     r"\S+(?:\s+\S+)?\s*$"
 )
 LIBTEST_LINE = re.compile(r"^\s*test \S+ \.\.\. FAILED\s*$")
