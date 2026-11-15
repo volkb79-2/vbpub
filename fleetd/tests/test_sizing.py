@@ -245,6 +245,25 @@ def test_sizing_budget_applies_the_margin_above_the_minimum():
     assert shard["outer_budget_seconds"] == 2700
 
 
+def test_sizing_budget_divides_the_candidate_time_by_the_worker_count():
+    document = derive_sizing(
+        _sizing(
+            candidate_count=90, baseline_seconds=100.0, per_candidate_seconds=60.0,
+            max_workers_per_instance=3, instance_cpu=1.0,
+            hosts=(HostSizingInput("a", cpu_slots=4, memory_budget_bytes=700 * _MIB, assigned_candidates=90),),
+        ),
+        margin=1.0,
+        minimum_budget_seconds=60,
+    )
+    shard = document["shards"][0]
+    assert document["hosts"][0]["workers_per_instance"] == 3
+    assert shard["jobs"] == 3
+    # 90 candidates x 60 s over THREE workers = 1800 s, plus the 100 s baseline.
+    # Multiplying by the worker count would give 16300 s; ignoring it, 5500 s.
+    assert shard["estimate_seconds"] == 1900.0
+    assert shard["budget_seconds"] == 1920
+
+
 def test_sizing_budget_rounds_up_to_whole_minutes_with_the_margin():
     document = derive_sizing(
         _sizing(

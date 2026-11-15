@@ -205,10 +205,13 @@ def validate_shard_set(
     commit, image digest, plan digest and shard count; a differing value is a
     ``mismatched`` problem naming both values, never a silent pick of one. Two
     shards claiming the same index, or a count that leaves indices missing,
-    make the set ``incomplete``; with *require_complete* an incomplete set is
-    a refusal too, because a merge over a missing shard silently reports the
-    missing candidates as absent work.
+    make the set ``incomplete``. An incomplete set is ALWAYS a refusal (the CLI
+    exits 3): a merge over a missing shard silently reports the missing
+    candidates as absent work. *require_complete* is accepted so the documented
+    command line keeps working; it changes nothing, because there is no
+    permissive mode to opt out of.
     """
+    del require_complete
     if not identities:
         raise ContractError("shard identity set: at least one shard is required")
     validated = [validate_shard_identity(item) for item in identities]
@@ -257,7 +260,6 @@ def validate_shard_set(
             "shard": reference["host"],
             "reason": (
                 f"shard(s) missing from the set: {', '.join(str(index) for index in missing)}"
-                + ("" if require_complete else "; pass --require-complete to refuse this set")
             ),
         })
         # One status expression below decides every case: a missing shard is

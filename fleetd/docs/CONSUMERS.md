@@ -467,8 +467,8 @@ fleet merge-check shard-0.json shard-1.json --require-complete
 
 Exit `0` means every shard agrees on lane, commit, image, plan and shard
 count, and every index is present. `mismatched` and a duplicated index exit
-`3`; a missing index is reported as `incomplete` and exits `3` only with
-`--require-complete`. Name the tester image in the plan
+`3`; a missing index is reported as `incomplete` and also exits `3`
+(`--require-complete` is accepted and changes nothing). Name the tester image in the plan
 (`execution.image_digest`) to have one: a campaign without it can run, but
 its shards cannot be merged, and the check never invents an image identity.
 

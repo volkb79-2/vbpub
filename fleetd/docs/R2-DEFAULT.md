@@ -135,9 +135,9 @@ host, full commit, tester image digest, plan digest and its `index`/`count`.
 The merge check compares every shard against the first: a differing commit,
 image, lane or plan is `mismatched` and the set is refused (exit 3). A
 duplicated index is a disagreement about which slice a store holds — also a
-refusal. A missing index is reported as `incomplete`, and refused with
-`--require-complete`, because a merge over a missing shard silently reports
-its candidates as absent work.
+refusal. A missing index is reported as `incomplete` and is refused too
+(exit 3; `--require-complete` is accepted and changes nothing), because a
+merge over a missing shard silently reports its candidates as absent work.
 
 The image digest is optional in `fleet-plan-execution/1`
 (`execution.image_digest`): a campaign may run without naming its tester
@@ -167,7 +167,14 @@ one.
 - Budgets are derived from medians and a fixed margin, not from a measured
   tail, so a heavy-tailed lane can exceed its derived budget: see
   [FD-031](../KNOWN_ISSUES_TODO_BACKLOG.md#fd-031-sizing-budgets-use-medians-and-a-fixed-margin-not-a-measured-tail).
-- `fleet scope` does not check the checkout it reads for uncommitted work, so a
-  plan from a dirty tree and a diff of its commit can describe two different
-  trees: see
+- `fleet scope` refuses a checkout whose HEAD is not the named commit or whose
+  tracked files have uncommitted changes (untracked files are ignored), because
+  the plan describes the working tree and the diff the committed one: see
   [FD-032](../KNOWN_ISSUES_TODO_BACKLOG.md#fd-032-the-scope-producer-does-not-check-the-checkout-it-reads).
+- The rolling cursor goes stale on almost every release that changes a target
+  file: candidate ids fold in the source file's hash, so the whole-target list
+  digest changes, `fleet scope` refuses with `stale-cursor`, and `--rebaseline`
+  restarts at offset 0. Rolling mode is therefore a sampling baseline that needs
+  an explicit `--rebaseline` per changed release, not a guaranteed sweep of the
+  whole target: see
+  [FD-033](../KNOWN_ISSUES_TODO_BACKLOG.md#fd-033-the-rolling-cursor-goes-stale-on-every-release-that-changes-a-target-file).

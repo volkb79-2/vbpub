@@ -305,7 +305,11 @@ digest and length; a list that no longer matches is `stale-cursor` (exit 3)
 unless `--rebaseline` accepts it. A project declares its mode in a committed
 `r2-scope.toml` (`schema_version = 1`, `[r2]` with `mode`, optional
 `slice_size`, `cursor`, `note`). No scope file means the default, so an
-uncommitted project keeps its current behaviour.
+uncommitted project keeps its current behaviour. The producer refuses (exit 2)
+a checkout whose HEAD is not the named commit or whose tracked files carry
+uncommitted changes, because the plan describes the working tree and the diff
+the committed one. Candidate ids fold in the source file hash, so a cursor goes
+stale after a release that edits a target file (FD-033).
 
 `fleet sizing` derives instances per host, shard count, each shard's budget and
 the outer bound from the plan's own host budgets, the plan demand's per-worker
@@ -326,8 +330,9 @@ never zero. `memory_peak_bytes` is the cgprofile observer's
 `fleet merge-check IDENTITY...` compares `fleet-shard-identity/1` documents
 (lane, full commit, tester image digest, plan digest, `shard.index`/`count`) and
 emits `fleet-shard-identity-set/1`. A differing compared field is `mismatched`;
-a duplicated index is also refused; a missing index is `incomplete` and
-refused only with `--require-complete`. A refusal exits 3. The executor takes
+a duplicated index is also refused; a missing index is `incomplete` and is
+also refused (`--require-complete` is accepted and changes nothing). A
+refusal exits 3. The executor takes
 an optional `execution.image_digest` (`sha256:` plus 64 hex digits) from the
 plan; a campaign without one can run but its shards cannot be merged, because
 the check never guesses an image identity.

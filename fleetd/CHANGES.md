@@ -52,7 +52,7 @@ All notable changes to this project are recorded here.
   collector now carries the cgprofile `resource-profile/1` peak per candidate.
 - Add `fleet merge-check`, which refuses shard sets whose lane, commit, tester
   image, plan digest or shard count differ, refuses a duplicated shard index,
-  and reports a missing index as incomplete (`--require-complete` refuses it).
+  and reports a missing index as incomplete and refuses it (`--require-complete` is accepted and changes nothing).
 - Accept an optional `execution.image_digest` in plans so a shard can state the
   tester image it judged under; a campaign without one runs but cannot be
   merged.
@@ -63,7 +63,12 @@ All notable changes to this project are recorded here.
   loader, and every cross-document anchor resolves.
 - File FD-029 (no workflow wires the producers), FD-030 (Run-Gate refuses the
   per-worker demand keys), FD-031 (budgets from medians, not a measured tail)
-  and FD-032 (the scope producer does not check for a dirty checkout).
+  and FD-033 (the rolling cursor goes stale when a target file changes).
+- `fleet scope` refuses a checkout that is not exactly the named commit
+  (different HEAD, or uncommitted changes to tracked files): FD-032 is done.
+- The diff reader no longer drops or shifts files for a form feed, U+2028 or lone
+  carriage return inside a source line, a path containing a space, or a changed
+  file that is not UTF-8.
 
 ### Changed
 

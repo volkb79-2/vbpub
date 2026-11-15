@@ -102,7 +102,12 @@ def parse_added_lines(text: str) -> dict[str, AddedLines]:
     old_remaining = 0
     new_remaining = 0
     new_line = 0
-    for line in text.splitlines():
+    # Split on "\n" ONLY. ``str.splitlines`` also splits on form feed, vertical
+    # tab, U+2028/U+2029, U+0085 and the \x1c-\x1e separators, any of which can
+    # sit inside one added source line: every extra piece would be counted
+    # against the hunk's line budget, shift every later line number and
+    # desynchronise the state machine, silently dropping later files.
+    for line in text.split("\n"):
         if old_remaining or new_remaining:
             if line.startswith("\\"):
                 # `` No newline at end of file`` is a marker, not a body line.
@@ -127,6 +132,9 @@ def parse_added_lines(text: str) -> dict[str, AddedLines]:
             continue
         if line.startswith("+++ "):
             target = line[4:]
+            # Git appends a TAB to the file name of a path that contains a
+            # space; a TAB cannot be part of a name that is printed unquoted.
+            target = target.rstrip("\t")
             current = "" if target == "/dev/null" else (
                 target[2:] if target.startswith("b/") else target
             )
@@ -147,19 +155,49 @@ def _git(repo: Path, *args: str) -> str:
     try:
         result = subprocess.run(
             ["git", "-C", str(repo), "-c", "core.quotePath=false", *args],
-            check=False, capture_output=True, text=True,
+            # Bytes, decoded below: ``text=True`` would fail on a changed file
+            # that is not UTF-8 and would translate a lone carriage return in
+            # a source line into an extra line.
+            check=False, capture_output=True,
         )
     except OSError as exc:
         raise ContractError(f"git {args[0]}: cannot be started: {exc}") from exc
+    stdout = result.stdout.decode("utf-8", errors="replace")
     if result.returncode != 0:
-        detail = (result.stderr or result.stdout or "no diagnostic output").strip()
+        stderr = result.stderr.decode("utf-8", errors="replace")
+        detail = (stderr or stdout or "no diagnostic output").strip()
         raise ContractError(f"git {args[0]} failed with {result.returncode}: {detail[:300]}")
-    return result.stdout.strip()
+    return stdout.strip("\n") if args[0] == "diff" else stdout.strip()
 
 
 def resolve_commit(repo: Path) -> str:
     """Return the repository's current commit id."""
     return _git(repo, "rev-parse", "HEAD")
+
+
+def refuse_unpinned_checkout(repo: Path, commit: str) -> None:
+    """Refuse a checkout that is not exactly the commit the scope names.
+
+    The candidate list comes from ``assay plan --json``, which reads the
+    WORKING TREE, while the diff describes the COMMITTED tree. With uncommitted
+    changes to tracked files, or with a checkout at another commit, the two
+    describe different trees and every candidate line number can be wrong; the
+    result would be a valid-looking scope about a tree nobody judges.
+    Untracked files do not move a tracked line and are not counted.
+    """
+    head = resolve_commit(repo)
+    if head != commit:
+        raise ContractError(
+            f"--commit {commit[:12]} is not the checkout's HEAD {head[:12]}: the "
+            "candidate plan describes the working tree, so check the commit out first"
+        )
+    changed = _git(repo, "status", "--porcelain=v1", "--untracked-files=no")
+    if changed:
+        raise ContractError(
+            "the checkout has uncommitted changes to tracked files "
+            f"({len(changed.splitlines())} path(s)); the candidate plan and the "
+            "release diff would describe different trees. Commit or stash first"
+        )
 
 
 def release_diff(repo: Path, from_tag: str, commit: str) -> str:

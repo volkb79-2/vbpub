@@ -34,7 +34,8 @@
 | FD-029 | Nothing wires `fleet scope`/`fleet sizing`/`fleet merge-check` into a release or campaign workflow | P2 | OPEN | 2026-11-15 |
 | FD-030 | The new per-worker demand keys are not accepted inside `run-gate.toml` | P2 | OPEN | 2026-11-15 |
 | FD-031 | Sizing budgets come from medians and a fixed margin, not a measured tail | P2 | OPEN | 2026-11-15 |
-| FD-032 | `fleet scope` reads a checkout it never checks for uncommitted or untracked work | P3 | OPEN | 2026-11-15 |
+| FD-032 | `fleet scope` reads a checkout it never checks for uncommitted or untracked work | P3 | DONE | 2026-11-15 |
+| FD-033 | The rolling cursor goes stale on every release that changes a target file | P2 | OPEN | 2026-11-15 |
 
 ## FD-001 Lite campaign lifecycle
 
@@ -556,9 +557,12 @@ with a reason and the backup path.
 
 ## FD-032 The scope producer does not check the checkout it reads
 
-**State:** OPEN. **Priority:** P3. **Filed:** 2026-11-15.
+**State:** DONE (review, 2026-11-15): `fleet scope` now refuses a checkout whose
+HEAD is not the named commit or whose tracked files have uncommitted changes,
+with a test for each path; untracked files are ignored. **Priority:** P3.
+**Filed:** 2026-11-15.
 
-`fleet scope` computes the diff between a release tag and the commit it is told
+Original finding: `fleet scope` computes the diff between a release tag and the commit it is told
 to judge, and reads the candidate list from an `assay plan --json` file. It
 never checks that the working tree is clean, so a scope computed in a checkout
 with uncommitted work is a valid-looking document about a tree that is not the
@@ -573,3 +577,24 @@ or record the dirty state in the document as a distinct fact that a consumer
 must acknowledge. **Close when.** A scope generated from a dirty checkout is
 either refused with a reason or carries a field that says so, with a test for
 each path, and the SPEC states the rule.
+
+## FD-033 The rolling cursor goes stale on every release that changes a target file
+
+**State:** OPEN. **Priority:** P2. **Filed:** 2026-11-15 (review of the R2-default package).
+
+A candidate id folds in the SHA-256 of its source file and of the mutated file
+(`assay/src/assay/candidate_identity.py`), so the whole-target list digest the
+rolling cursor is validated against changes whenever any target file changes.
+`fleet scope` then refuses with `stale-cursor`, and `--rebaseline` restarts at
+offset 0 of the new, id-sorted list. The refusal itself is correct (the cursor
+never resumes at an offset that points at another candidate) but the mode does
+not do what its name promises: every release that touches a target needs a
+manual `--rebaseline`, and a rebaselined slice is the first slice of a freshly
+shuffled list, so coverage is a random sample, not a sweep of the target.
+
+**Wanted.** A cursor keyed by something that survives a source edit (for
+example `(path, lineno)` order, with the digest kept as evidence rather than as
+the resume key), and a decision whether a rolling release also judges its
+changed lines. **Close when.** Two consecutive releases that edit different
+files continue the same pass without `--rebaseline`, and a test pins that no
+candidate present in both lists is skipped or judged twice within a pass.

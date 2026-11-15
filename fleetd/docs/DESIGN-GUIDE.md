@@ -172,9 +172,9 @@ shapes are kept distinct:
 
 - a **duplicated index** is a disagreement about which slice a store holds — a
   refusal, never an "incomplete" report;
-- a **missing index** is a genuinely incomplete set: reported always, refused
-  with `--require-complete`, because a merge over a missing shard reports its
-  candidates as absent work;
+- a **missing index** is a genuinely incomplete set: reported as `incomplete`
+  and refused (`--require-complete` is accepted and changes nothing), because a
+  merge over a missing shard reports its candidates as absent work;
 - a **differing field** is `mismatched` regardless of completeness.
 
 The image digest is optional in the plan executor and required by the merge

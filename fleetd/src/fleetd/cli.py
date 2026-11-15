@@ -32,6 +32,7 @@ from .scope import (
     SCOPE_MODES,
     load_scope_file,
     read_cursor,
+    refuse_unpinned_checkout,
     release_diff,
     resolve_commit,
     scope_document,
@@ -243,6 +244,7 @@ def _collect_campaign(args: argparse.Namespace) -> int:
 def _scope_campaign(args: argparse.Namespace) -> int:
     repo = Path(os.path.abspath(os.path.expanduser(str(args.repo))))
     commit = args.commit or resolve_commit(repo)
+    refuse_unpinned_checkout(repo, commit)
     scope_file = args.scope_file
     if scope_file is None:
         default = repo / "r2-scope.toml"

@@ -166,16 +166,14 @@ def test_shard_set_refuses_a_count_mismatch_and_a_duplicate_index():
     assert problem["shard"] == "runner-a,runner-b"
 
 
-def test_shard_set_reports_a_missing_shard_and_only_refuses_with_require_complete():
+def test_shard_set_reports_a_missing_shard_with_or_without_require_complete():
     incomplete = validate_shard_set([_identity(shard_count=3)])
     assert incomplete["status"] == "incomplete"
     problem = incomplete["problems"][0]
     assert problem["field"] == "shard.index"
     assert "missing from the set: 1, 2" in problem["reason"]
-    assert "--require-complete" in problem["reason"]
-    refused = validate_shard_set([_identity(shard_count=3)], require_complete=True)
-    assert refused["status"] == "incomplete"
-    assert "--require-complete" not in refused["problems"][0]["reason"]
+    # The flag changes nothing: an incomplete set is always an incomplete set.
+    assert validate_shard_set([_identity(shard_count=3)], require_complete=True) == incomplete
     # A mismatch still wins over an incompleteness report.
     mixed = validate_shard_set([
         _identity(shard_count=3),
@@ -233,8 +231,11 @@ def test_merge_check_cli_refuses_a_mixed_image_or_a_missing_shard(tmp_path, caps
     assert payload["status"] == "mismatched"
 
     single = tmp_path / "single.json"
-    single.write_text(json.dumps(_identity()), encoding="utf-8")
+    single.write_text(json.dumps(_identity(shard_count=2)), encoding="utf-8")
+    # A missing shard is refused (exit 3) with and without --require-complete.
     assert main(["merge-check", str(single), "--require-complete"]) == EXIT_STALE_CURSOR
+    assert json.loads(capsys.readouterr().out)["status"] == "incomplete"
+    assert main(["merge-check", str(single)]) == EXIT_STALE_CURSOR
     assert json.loads(capsys.readouterr().out)["status"] == "incomplete"
 
 

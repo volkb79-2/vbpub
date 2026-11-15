@@ -25,6 +25,7 @@ from fleetd.scope import (
     parse_added_lines,
     plan_candidates,
     read_cursor,
+    refuse_unpinned_checkout,
     release_diff,
     resolve_commit,
     rolling_slice,
@@ -670,3 +671,76 @@ def test_scope_cli_reads_the_cursor_from_the_scope_file(tmp_path, capsys):
     assert document["mode_source"] == f"scope file {repo / 'r2-scope.toml'}"
     assert document["candidate_ids"] == [_cid(1)]
     assert SCOPE_MODES == ("changed-lines", "rolling-whole-target")
+
+
+# --------------------------------------------- hostile real-git inputs (review)
+def _run_git(repo, *args):
+    subprocess.run(
+        ["git", "-C", str(repo), "-c", "user.email=t@example.invalid", "-c", "user.name=t", *args],
+        check=True, capture_output=True,
+    )
+
+
+def _hostile_repo(tmp_path):
+    repo = tmp_path / "hostile"
+    repo.mkdir()
+    _run_git(repo, "init", "-q", ".")
+    (repo / "a_ff.py").write_bytes(b"q=1\n")
+    (repo / "b_space name.py").write_bytes(b"x=1\ny=2\n")
+    (repo / "c_latin1.py").write_bytes(b"caf\xe9 = 1\n")
+    (repo / "d_cr.py").write_bytes(b"k = 1\n")
+    (repo / "e_u2028.py").write_bytes(b"z = 1\n")
+    (repo / "f_last.py").write_bytes(b"a = 1\nb = 2\n")
+    _run_git(repo, "add", "-A")
+    _run_git(repo, "commit", "-q", "-m", "base")
+    _run_git(repo, "tag", "tool-v1.0.0")
+    # A form feed inside an added line, a path with a space, a non-UTF-8
+    # changed file, a lone carriage return and U+2028 inside source lines.
+    (repo / "a_ff.py").write_bytes(b"q=1\nA\x0cB = 2\nC = 3\n")
+    (repo / "b_space name.py").write_bytes(b"x=1\ny=22\n")
+    (repo / "c_latin1.py").write_bytes(b"caf\xe9 = 2\n")
+    (repo / "d_cr.py").write_bytes(b"k = 1\nS = 'a\rb'\nT = 2\n")
+    (repo / "e_u2028.py").write_bytes(b"z = 1\nS = '\xe2\x80\xa8'\nT = 2\n")
+    (repo / "f_last.py").write_bytes(b"a = 1\nb = 22\n")
+    _run_git(repo, "add", "-A")
+    _run_git(repo, "commit", "-q", "-m", "second")
+    return repo
+
+
+def test_scope_exit_statuses_are_the_published_numbers():
+    # CONSUMERS.md and SPEC.md publish these literals; a test that compares the
+    # constants with themselves would pass if one were changed to 0.
+    assert (EXIT_OK, EXIT_STALE_CURSOR, EXIT_NOTHING_TO_JUDGE) == (0, 3, 4)
+
+
+def test_dirty_or_moved_checkout_is_refused_and_untracked_files_are_not(tmp_path, capsys):
+    repo = _git_repo(tmp_path / "repo")
+    head = resolve_commit(repo)
+    refuse_unpinned_checkout(repo, head)  # clean: accepted
+    (repo / "scratch.txt").write_text("untracked\n", encoding="utf-8")
+    refuse_unpinned_checkout(repo, head)  # untracked files move no tracked line
+    (repo / "src" / "a.py").write_text("edited\n", encoding="utf-8")
+    with pytest.raises(ContractError, match="uncommitted changes to tracked files"):
+        refuse_unpinned_checkout(repo, head)
+    plan_path = tmp_path / "plan.json"
+    plan_path.write_text(json.dumps(_plan(("src/a.py", 2))), encoding="utf-8")
+    assert main([
+        "scope", "r2", "--plan", str(plan_path), "--repo", str(repo),
+        "--from-tag", "tool-v1.0.0",
+    ]) == 2
+    assert "uncommitted changes" in capsys.readouterr().err
+    with pytest.raises(ContractError, match="is not the checkout's HEAD"):
+        refuse_unpinned_checkout(repo, "0" * 40)
+
+
+def test_hostile_source_bytes_never_shift_or_drop_a_later_file(tmp_path):
+    repo = _hostile_repo(tmp_path)
+    parsed = parse_added_lines(release_diff(repo, "tool-v1.0.0", resolve_commit(repo)))
+    assert {path: sorted(entry.lines) for path, entry in parsed.items()} == {
+        "a_ff.py": [2, 3],
+        "b_space name.py": [2],
+        "c_latin1.py": [1],
+        "d_cr.py": [2, 3],
+        "e_u2028.py": [2, 3],
+        "f_last.py": [2],
+    }
