@@ -19,7 +19,8 @@ fleetd campaign can all call the same committed code. The fleetd CLI is the
 reference caller; none of these commands contacts a host.
 
 The documents these commands read and write are `fleet-r2-scope/1`,
-`fleet-r2-scope-cursor/1`, `fleet-r2-sizing/1`, `fleet-r2-measurement/1`,
+`fleet-r2-scope-cursor/2` (`fleet-r2-scope-cursor/1` is refused with its
+migration), `fleet-r2-sizing/1`, `fleet-r2-measurement/1`,
 `fleet-shard-identity/1` and `fleet-shard-identity-set/1`. `fleet scope` exits
 `0` for a scope, `3` for a stale cursor and a refused merge, and `4` for
 `nothing-to-judge`; those non-zero exits still print their document on stdout,
@@ -54,13 +55,67 @@ cursor = ".assay/r2-scope-cursor.json"
 note = "every release judges the next 40 candidates of the whole-target list"
 ```
 
-With that mode each release judges the next slice of the whole-target list,
-taken from a persisted `fleet-r2-scope-cursor/1` file. The cursor records the
-digest and length of the list it was taken from; a list that no longer matches
-is refused (`stale-cursor`, exit 3) rather than resumed at an offset that now
-points at a different candidate. `--rebaseline` accepts the change explicitly
-and records a new pass. A tool that commits no scope file keeps the
-`changed-lines` default, so no existing lane changes behaviour.
+With that mode each release judges, within ONE `slice_size` budget, first the
+candidates of files that changed since they were last judged and then the next
+slice of a persisted sweep over the whole target, so successive releases
+cover the target without re-judging the whole list at once. The sweep state is a
+`fleet-r2-scope-cursor/2` file, and it is keyed by **file content**: each path
+records the git blob id of the content its marks belong to, the planned
+candidate count, the candidate keys judged at that content, and the pass in
+which each path was last judged. The candidate key is a digest of
+`(repo-relative path, mutation operator, ordinal within that path's operator
+group)` — deliberately NOT Assay's candidate id, which folds in the source file's
+SHA-256 and therefore changes on every edit to the file.
+
+The rules, which are what make rolling a sweep instead of a sample:
+
+- A file whose content changed since its mark is **due again immediately**, and
+  judged whole. A site identity moves when anything before it in the file moves,
+  so a changed file's whole candidate set is re-judged; that is a superset of
+  the changed-lines scope, and like a rename it may re-judge unchanged lines.
+- A file whose content did not change keeps its marks. An edit to *one* file does
+  not restart the sweep: the other files stay judged and the cursor is not stale.
+- A mark that cannot be confirmed against the current plan — a different planned
+  candidate count for the path, or a judged key the plan no longer contains (an
+  operator-selection change looks like this) — makes that path due again and is
+  reported as `changed`; it never marks an unjudged candidate as judged.
+- A path with no planned candidate any more is **retired**, listed in `retired`
+  with its key count and the pass that last judged it. Nothing is dropped
+  silently.
+- The slice is a prefix of the deterministic order: files whose content changed
+  first (least recently judged first), then never-judged and
+  not-yet-judged-in-this-content candidates in path/line order. `slice_size` is
+  the budget, and changing it re-slices the same sweep rather than refusing.
+- A finished sweep does not idle and is not reported as `nothing-to-judge`:
+  the next release starts a new pass, least recently judged first, and the
+  document says `"new_pass": true`. A mark counts only for the pass it was
+  written in, so every later pass sweeps the whole target again (a path judged
+  in an earlier pass is due again, least recently judged first).
+- The changed files and the sweep share ONE budget, `slice_size`. Rolling is not
+  "all changed candidates plus a slice": a release that changes more candidates
+  than `slice_size` judges only the first `slice_size` of them (least recently
+  judged first), and the rest of a half-judged changed file continues in path
+  order with the other pending candidates, not first. A target whose files are
+  edited every release by more than `slice_size` candidates can therefore starve
+  the never-judged remainder. Size `slice_size` above the expected per-release
+  churn, or use `changed-lines` for a release gate and `rolling-whole-target` for
+  the background sweep.
+
+The cursor is versioned and digest-protected (`state_digest` covers the whole
+document), so a hand-edited cursor is refused rather than trusted, and a cursor
+written for another lane is refused (`stale-cursor`, exit 3). A cursor from
+`fleet-r2-scope-cursor/1` is refused with its migration: `--rebaseline` is that
+migration, discarding the marks and starting one new pass from the current
+content. A tool that commits no scope file keeps the `changed-lines` default,
+so no existing lane changes behaviour.
+
+The only inputs a rolling release cannot derive are refused rather than guessed:
+a plan row whose path the judged commit does not describe (an untracked target
+file, or a plan produced in another checkout) exits 2, because the sweep keys
+that candidate to content it cannot read. The cursor path declared in a
+committed `r2-scope.toml` may be absent on the first release — that is
+configuration, not a typo; a cursor path typed as `--cursor` may not, because a
+typo there would silently restart the sweep on every release.
 
 ## Sizing: how many shards and how long
 
@@ -173,10 +228,13 @@ one.
   tracked files have uncommitted changes (untracked files are ignored), because
   the plan describes the working tree and the diff the committed one: see
   [FD-032](../KNOWN_ISSUES_TODO_BACKLOG.md#fd-032-the-scope-producer-does-not-check-the-checkout-it-reads).
-- The rolling cursor goes stale on almost every release that changes a target
-  file: candidate ids fold in the source file's hash, so the whole-target list
-  digest changes, `fleet scope` refuses with `stale-cursor`, and `--rebaseline`
-  restarts at offset 0. Rolling mode is therefore a sampling baseline that needs
-  an explicit `--rebaseline` per changed release, not a guaranteed sweep of the
-  whole target: see
-  [FD-033](../KNOWN_ISSUES_TODO_BACKLOG.md#fd-033-the-rolling-cursor-goes-stale-on-every-release-that-changes-a-target-file).
+- Rolling mode sweeps by **file content**, so its coverage guarantee is
+  per-content, not per-revision: the whole target is judged within
+  `ceil(candidates / slice_size)` releases for a target nobody edits, and every
+  edit re-judges the edited file whole (a superset of its changed lines). What
+  it does NOT do: pick up another checkout's plan, key a candidate whose file
+  the commit does not describe, or keep a mark across an edit of that file's
+  own content. Those are [rolled into the mode by FD-033](../KNOWN_ISSUES_TODO_BACKLOG.md#fd-033-the-rolling-cursor-goes-stale-on-every-release-that-changes-a-target-file), with the remaining
+  limits filed as
+  [FD-037](../KNOWN_ISSUES_TODO_BACKLOG.md#fd-037-rolling-keys-a-candidate-by-its-files-content-so-a-partial-edit-re-judges-the-whole-file):
+  a release that edits part of a large file re-judges that whole file.

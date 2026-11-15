@@ -144,10 +144,59 @@ mistaken for a file header. A test pins exactly that.
 covering the whole target is what a project wants when its candidate list is
 larger than one campaign should judge; it is also what makes a cursor
 necessary. A cursor that resumes at a raw offset can silently skip candidates
-when the list changes underneath it, so the cursor stores the list's digest and
-length and a mismatch is a refusal (exit 3), never a resume. `--rebaseline`
-exists because "the list legitimately changed" is a real state that must be
-expressible without hand-editing the cursor file.
+when the list changes underneath it, so this producer does not resume at an
+offset at all.
+
+**Why the sweep is keyed by file content, not by a candidate id (FD-033).**
+Assay's candidate id folds in the source file's SHA-256
+(`assay/candidate_identity.py`), so almost every release that edits a target
+file rotates the ids of that file's candidates — and a cursor keyed by the id
+list (the original `fleet-r2-scope-cursor/1`) therefore went stale on nearly
+every release and restarted at slice 0 after `--rebaseline`. Rolling mode was a
+sample of the first slice, not a sweep. The state is keyed by facts an edit
+cannot rotate:
+
+- the **file's content** (its git blob id at the judged commit) decides whether
+  a mark still applies, and
+- a **location-stable candidate key** `(path, operator, ordinal within that
+  path's operator group)` identifies a site inside that content. It is derived
+  in fleetd from what `assay plan --json` already emits (`path`, `operator`,
+  `lineno`, `id`); no assay change is needed, and `assay/src` is untouched.
+
+This gives the behaviour the mode's name promises: an edit makes exactly that
+file due again (judged whole, because a site identity — byte span, replacement,
+description — shifts when anything before it moves), every other file keeps its
+marks, and the sweep continues. An edit re-judges a changed file WHOLE rather
+than only its changed lines: that is a superset of the changed-lines scope and
+it is the price of a key that cannot drift out from under a mark. The remaining
+limit is FD-037.
+
+Three things are accounted instead of dropped, because each is a way a cursor
+could silently claim coverage:
+
+- a mark whose **planned count** for the path changed, or whose **judged key**
+  the plan no longer contains (an operator-selection change reuses the same path
+  and blob), makes the path due again and is reported as `changed` — it is never
+  carried into a new content;
+- a mark for a path with **no planned candidate any more** is `retired`, named
+  with its count and the pass that last judged it;
+- a **finished sweep** is a recorded new pass (`new_pass: true`), not an empty
+  `nothing-to-judge`, because "all candidates were judged at this content" is a
+  pass boundary, not an absence of work. In rolling mode `nothing-to-judge`
+  means the plan itself is empty.
+
+The cursor is versioned (`fleet-r2-scope-cursor/2`), digest-protected over the
+whole document (`state_digest`), and resumed only for its own lane; a cursor
+for another lane is a refusal (exit 3), never a resume. `--rebaseline` is kept
+as the explicit migration from schema 1 and as the deliberate "start over";
+since the sweep resumes across edits by itself, it should now be rare.
+
+The alternative rejected: keying the sweep by `(path, lineno)` alone. Line
+numbers shift whenever anything above a site changes, so a shift would silently
+re-point a mark at another site — exactly the silent skip this producer exists
+to prevent — and a rename would lose the whole file's history. Content plus a
+site ordinal fails closed instead: a content change is visible (the blob id),
+and a plan change is visible (the count and the key set).
 
 ## Why sizing is a derivation, not a declaration
 

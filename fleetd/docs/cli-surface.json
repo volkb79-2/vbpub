@@ -3810,7 +3810,7 @@
           "const": true,
           "default": false,
           "default_present": true,
-          "description": "accept a stale rolling cursor and extend its list, recording a new pass",
+          "description": "start one fresh sweep pass from the current file content, discarding the cursor's marks (the explicit migration for an older cursor schema)",
           "dest": "rebaseline",
           "effective_default": false,
           "exclusive_group": null,

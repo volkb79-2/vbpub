@@ -54,9 +54,12 @@ from .scope import (
     EXIT_NOTHING_TO_JUDGE,
     EXIT_OK,
     EXIT_STALE_CURSOR,
+    ROLLING_MODE,
     SCOPE_MODES,
+    load_cursor,
     load_scope_file,
-    read_cursor,
+    plan_candidates,
+    planned_file_blobs,
     refuse_unpinned_checkout,
     release_diff,
     resolve_commit,
@@ -257,11 +260,25 @@ def _scope_campaign(args: argparse.Namespace, runtime: CliRuntime) -> None:
         )
     slice_size = args.slice_size if args.slice_size is not None else declared["slice_size"]
     cursor_path = args.cursor
+    declared_cursor = False
     if cursor_path is None and declared["cursor"] is not None:
         cursor_path = (repo if Path(declared["cursor"]).is_absolute() else repo / declared["cursor"])
-    cursor = read_cursor(cursor_path) if cursor_path is not None else None
+        declared_cursor = True
+    cursor, legacy_cursor = (
+        load_cursor(cursor_path, rebaseline=args.rebaseline, allow_absent=declared_cursor)
+        if cursor_path is not None
+        else (None, None)
+    )
     plan = load_json(args.plan)
     diff_text = release_diff(repo, args.from_tag, commit) if mode == DEFAULT_SCOPE_MODE else ""
+    # The rolling sweep keys every candidate to its file's content at the judged
+    # commit, so the planned paths' blob ids are an input, not a lookup the
+    # producer may skip: a planned path the commit cannot describe is refused.
+    blobs = (
+        planned_file_blobs(repo, commit, [row.path for row in plan_candidates(plan, require_site_identity=True)])
+        if mode == ROLLING_MODE
+        else None
+    )
     document = scope_document(
         mode=mode,
         mode_source=mode_source,
@@ -273,6 +290,8 @@ def _scope_campaign(args: argparse.Namespace, runtime: CliRuntime) -> None:
         slice_size=slice_size,
         cursor=cursor,
         rebaseline=args.rebaseline,
+        blobs=blobs,
+        legacy_cursor=legacy_cursor,
     )
     if args.write_cursor is not None:
         if document["cursor"] is None:
@@ -558,7 +577,7 @@ def build_cli(cli_identity: CliIdentity | None = None) -> RegisteredCli:
                        parser_kwargs={"type": Path}),
             OptionSpec(("--write-cursor",), "write the advanced rolling cursor here", group="OUTPUT", metavar="FILE",
                        parser_kwargs={"type": Path}),
-            OptionSpec(("--rebaseline",), "accept a stale rolling cursor and extend its list, recording a new pass",
+            OptionSpec(("--rebaseline",), "start one fresh sweep pass from the current file content, discarding the cursor's marks (the explicit migration for an older cursor schema)",
                        group="SCOPE", parser_kwargs={"action": "store_true", "default": False}),
             OptionSpec(("--out",), "write the candidate-id file here (refused for an empty scope)", group="OUTPUT",
                        metavar="FILE", parser_kwargs={"type": Path}),

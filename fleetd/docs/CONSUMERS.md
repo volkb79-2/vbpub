@@ -513,9 +513,12 @@ cursor = ".assay/r2-scope-cursor.json"
 note = "each release judges the next 40 candidates"
 ```
 
-Then pass the cursor through. The cursor records the digest and length of the
-list it was taken from, so a changed list is refused rather than resumed at
-an offset that now points at a different candidate:
+Then pass the cursor through. The cursor is keyed by **file content**, not by
+candidate id: each marked path records the git blob id of the content it was
+judged at plus the candidate keys judged there, so an edit to another file
+never invalidates the sweep. A release that edits a target file judges that
+file **whole** (its candidates are due again), and a file whose content did not
+move keeps its marks:
 
 ```sh
 fleet scope r2 --plan plan.json --repo . --from-tag tool-v1.4.0 \
@@ -524,9 +527,22 @@ fleet scope r2 --plan plan.json --repo . --from-tag tool-v1.4.0 \
   --out .run-gate/r2-candidates.txt > scope.json
 ```
 
-`--mode changed-lines|rolling-whole-target` overrides the declared mode, and
-`--rebaseline` accepts a changed whole-target list explicitly (recording a new
-pass) instead of refusing it.
+The scope's `slice` object is the accounting: `changed_files`/`changed_candidates`
+(candidates due again because their file content moved), `never_judged_candidates`,
+`pending_candidates` (not yet judged in this content), `judged_candidates`,
+`retired` (paths whose candidates left the plan, with their reason), and
+`new_pass` (a finished sweep restarting). Nothing is dropped silently.
+
+`--mode changed-lines|rolling-whole-target` overrides the declared mode. A
+cursor written by an older producer (`fleet-r2-scope-cursor/1`) is refused with
+its migration; `--rebaseline` is that migration: it discards the marks and
+starts one new pass from the current content. Reach for it when you *intend*
+to restart the sweep, not to make a changed list fit.
+
+An empty rolling scope is `nothing-to-judge` with its reason (exit 4): either
+the lane plans no candidate at all, or — the one normal case — the whole target
+is empty because nothing was planned. A finished sweep is never reported as
+empty: it starts a recorded new pass.
 
 ## Size the campaign from measured units
 
