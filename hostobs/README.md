@@ -27,10 +27,16 @@ binary packages.
   `proto` payloads inside a checksummed record envelope (64-byte header, records with their
   own lengths and body CRCs, a 64-byte footer), with tier directories bounded by `keep_s`
   **and** `cap_bytes` (whichever first) evicting whole segments oldest first, a bounded
-  active dictionary that retires incarnations only when no stored segment still names them,
-  a byte-bounded writer queue whose drops are **counted**, torn-tail repair and quarantine at
-  open, atomic seal by temp-name + fsync + rename, bounded range reads that never panic on a
-  corrupt segment, and the events/spans store with its own cap, RAM ring and open-span table.
+  active dictionary that retires incarnations only when no stored segment, queued job or
+  unwritten record still names them, a byte-bounded writer queue whose drops are **counted**,
+  torn-tail repair and quarantine at open (a zero-filled tail is the unwritten part of a
+  crash, a tail of other bytes is corrupt), atomic seal by temp-name + fsync + rename with a
+  failed seal leaving neither a temp file nor a lost open handle, repair of the crash window
+  where a sealed segment and its stale `.seg.open` twin coexist, bounded range reads that
+  never panic on a corrupt segment, and the events/spans store with its own cap, RAM ring and
+  open-span table. Files it creates are `0600` and directories `0700`; a file past the read
+  bound is quarantined and counted rather than skipped, and an unreadable one is reported and
+  left in place rather than bricking the tier.
   **Every write goes through one module**, `crates/store/src/fsio.rs`, and the `lint` lane
   refuses a write anywhere else (plan v4 §A.3). The byte layout is specified in
   [`docs/SEGMENT-FORMAT.md`](docs/SEGMENT-FORMAT.md).

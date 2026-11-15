@@ -174,8 +174,9 @@ Every refusal a caller will meet, with its `kind()` name:
 | a record's envelope kind is not the segment's corpus | `record-corpus` |
 | a record's payload is not the frame type its corpus requires | `payload-frame-type` |
 | the dictionary is at `dict_active_max` | `dictionary-full` |
-| a segment still names an incarnation the retirement pass was about to free | (not retired; `retired` count) |
+| a segment still names an incarnation the retirement pass was about to free, a queued job's payload names it, or a minted record has not yet reached a segment | (not retired; `retired` count) |
 | a range asks for zero rows or zero bytes | `query-limit` |
+| a tier directory the config requires to be tmpfs is spelled with `..`, is relative, or crosses a link | `not-tmpfs` (the check resolves first; the mount table lists what the kernel resolved) |
 
 The four failures that must never be silent have their own answers, and a test each:
 
@@ -183,12 +184,19 @@ The four failures that must never be silent have their own answers, and a test e
 |---|---|
 | disk fill | `no-space` from the write, counted in `StoreStats::write_failures`; nothing is lost silently because the job is still queued |
 | RAM growth | a full queue drops the **oldest** job and returns it; the dictionary and the query limits are refusals |
-| torn file | `torn_repaired` (truncated back to the last good record) or `quarantined` (renamed `.corrupt`), both counted and both reported by `notes()` |
+| torn file | `torn_repaired` (truncated back to the last good record) or `quarantined` (renamed `.corrupt`), both counted and both reported by `notes()`. A tail of pure zeros is the unwritten part of a crash and is truncated, not quarantined; a tail of any other bytes is corrupt. |
+| a file bigger than the read bound | quarantined `.corrupt` and counted in `TierScan::oversized`; never skipped, because a file outside the ring is outside the byte total and eviction would never reach it |
+| a segment whose header cannot be read (EACCES, EIO, a race) | counted in `TierScan::unreadable`, reported in `notes()`, left in place; the rest of the tier still opens |
+| a seal that fails before its rename | the open handle and the ring entry come back, no `.tmp` is left behind, and the next write goes to the same open segment |
 | silent loss | `Submit::dropped_jobs`/`dropped_records`/`dropped_bytes` and the matching `StoreStats` counters; `StoreStats::lossless()` is true only when every one is zero |
 
 A store only ever deletes a file that is its own by name **and** header kind. A file that
 looks like a segment but holds another corpus (or a link, or a subdirectory) is reported in
-`notes()` and left in place — which is what lets hot and warm share a directory.
+`notes()` and left in place — which is what lets hot and warm share a directory. The one file
+it removes without reading it is its own stale `<n>.seg.open` twin beside an already-sealed
+`<n>.seg`: the crash window between the seal's rename and its unlink. Removing the twin is
+safe only because the name parse and the sealed file's header both prove it is the store's,
+and keeping it would count its bytes twice and reopen a file whose records already left.
 
 ## Changing a Rust dependency
 

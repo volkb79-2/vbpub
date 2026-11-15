@@ -310,13 +310,54 @@ oldest.
 **A torn tail is a state, not an exception.** The reader returns `TailState`
 (`Complete`/`Incomplete{offset}`/`Corrupt{offset, reason}`) with the good end, the footer
 facts and the last good record index, so the caller decides: truncate and continue (an open
-segment after a crash) or quarantine (bytes that are not a record at all). The seal is atomic
+segment after a crash) or quarantine (bytes that are not a record at all). A tail of *pure
+zeros* is `Incomplete`, not `Corrupt`: it is the shape a power cut leaves on a size-extending
+filesystem, so only the unwritten part is cut and the completed records stay in service —
+quarantining a whole durable segment for a fault that damaged no record would cost history for
+the commonest crash shape. A tail of any other bytes is still `Corrupt`. The seal is atomic
 in the only order that survives a crash — write the whole segment to a temporary name, append
 the footer, `fsync`, rename onto the final name, `fsync` the directory, unlink the open
 name — and `docs/SEGMENT-FORMAT.md` specifies that order because the seal's correctness is a
 property of the *sequence*, not of any single call. A test kills each step of it
 (`M1c-5`: "the seal copies onto the final name, with no temp name and no rename" survives no
-test).
+test); a seal that *refuses* before the rename puts the handle and the ring entry back and
+leaves no `.tmp` behind (`M1c-21`), because a tier that lost its open handle to a failed seal
+would append the next record behind a file nobody owns.
+
+**The crash window a seal creates is repaired at the next open.** Between the seal's rename and
+its unlink both `<n>.seg` and `<n>.seg.open` exist with the same `(tier, start_s, seq)`. The
+rescan verifies the sealed file first and removes the open twin (reported in
+`stale_open_removed`), instead of adopting both: a reader that took both would count the bytes
+twice, serve every record twice, and `reopen_open_segment` would append behind a file whose
+records had already left (`M1c-14`). The twin is removable because it is provably the store's
+own — the same name parse and header check every other removal takes.
+
+**One damaged or unreadable file never makes a tier unopenable.** A header that is *not this
+format's* is a foreign file (reported, untouched); a header that *cannot be read* (EACCES, EIO,
+a race) is a different fact and is counted in `unreadable`, also untouched, because a store only
+removes what it can prove it wrote. A repair or quarantine that itself fails is reported rather
+than propagated (`M1c-20`); the two facts stay in two fields so "could not determine" is never
+reported as "there is nothing there".
+
+**A file past the read bound is taken out of service, never skipped.** Skipping was the original
+shape and it was wrong: a file outside the ring is outside the byte total, so eviction never
+reaches it and the disk grows past the configured cap. The bound itself is tied to what the
+writer may produce — `StoreConfig::check` refuses a `max_file_bytes` below any tier's own
+`segment_file_bound`, which is what makes "a file bigger than the bound is not ours" a fact
+rather than an assumption (`M1c-15`).
+
+**The store's own files are owner-only.** Every segment is created `0600` and every directory
+`0700`, set at creation through `fsio` rather than left to the caller's umask: a segment carries
+the probe's sampled history, and the `lint` boundary means there is exactly one place that can
+set this (`M1c-22`).
+
+**A tier's tmpfs check resolves the path before it compares.** The mount table lists what the
+kernel resolved, so a configured path that still carries `..` or crosses an intermediate link
+is a typed refusal; two mounts at the same point resolve to the **last** line, which is the one
+the kernel exposes (the earlier one is shadowed, and treating it as live is exactly the
+tmpfs-that-is-really-a-disk case the check exists to catch). `tmpfs_only()`/`all_of()` are
+`#[cfg(test)]`, because a production caller that could build its own table would hold a bypass
+(`M1c-18`, `M1c-19`).
 
 **Reads are bounded and never panic.** `Tier::range` and `Store::range` skip whole segments
 on their recorded `first`/`last` timestamps before reading any record, take a row bound and a
@@ -358,10 +399,11 @@ the two first-pass survivors converted into tests) is in
 [`HAND-MUTANTS-M1.md`](HAND-MUTANTS-M1.md); the M1 part-2 campaign (thirty-one mutations
 covering the proto/Python refusals, the kernel collectors, the clocks, and the fix round's
 `stat` field mapping, iocost overflow and unbounded read — all killed) is
-[`HAND-MUTANTS-M1B.md`](HAND-MUTANTS-M1B.md), and the M1 part-3 campaign (fifteen mutations
-over the store's bounds, eviction order, torn-tail handling, seal order, retirement, drop
-accounting, foreign-file refusal and symlink refusal — all killed, one of them only after a
-test that pinned the ring's oldest-first order) is [`HAND-MUTANTS-M1C.md`](HAND-MUTANTS-M1C.md).
+[`HAND-MUTANTS-M1B.md`](HAND-MUTANTS-M1B.md), and the M1 part-3 campaign (twenty-eight
+mutations over the store's bounds, eviction order, torn-tail handling, seal order, retirement,
+drop accounting, foreign-file refusal, symlink refusal and the fix round's nine findings — all
+killed, one of the first round only after a test that pinned the ring's oldest-first order)
+is [`HAND-MUTANTS-M1C.md`](HAND-MUTANTS-M1C.md).
 A mutation that does not compile is reported
 as `NOT-BUILT` rather than counted as a kill, because it proves nothing about the tests; a
 patch whose stored fragment no longer matches the source is `NOT APPLIED`, which is also
