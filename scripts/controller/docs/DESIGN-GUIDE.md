@@ -50,6 +50,33 @@ available account or exits 3 when neither can run. The controller starts
 closes pi's stdin to prevent the non-interactive process from waiting for
 input.
 
+### Why the terminal outcome is classified, not just the exit code
+
+An exit code cannot carry what went wrong with pi. Two measured store-crate
+stalls ended with `stopReason: stop`, exit zero and NO tool call, while the work
+was uncommitted and no report existed: one final assistant message had
+`content: []` at 211k context, the other carried only a `thinking` block at
+177k. pi treats a turn with no tool call as the end of the run, so the wrapper
+must read the stream to tell those apart from a finished job.
+
+The classification compares facts the run itself left behind, in this order: the final
+assistant `stopReason` and 402 code (`USAGE-LIMIT`, `ERROR`), the pi exit status
+(`ERROR`), the stream's settling and `stopReason` (`INCOMPLETE`), the final
+message's text and tool calls (`EMPTY-COMPLETION`), the worktree's own porcelain
+(`UNCOMMITTED`), and the expected report file (`NO-REPORT`). `SUCCESS` is what
+survives all of them. Every check is a fact with an authoritative source
+(the stream, `git`, the report path the caller named), never an inference: a
+worktree that cannot answer `git rev-parse` is refused before pi starts rather
+than read as clean, and an unset report path means the report check is
+*skipped*, not passed.
+
+The alternative - keep `SUCCESS` for exit zero and let `job-check.sh` explain
+it - was rejected: the wrapper already holds the stream, `job-check.sh` runs on
+demand and only after someone remembers, and a caller who reads only `.done`
+gets the wrong answer. The classes are additive: the first `.done` line keeps
+its historical `EXIT=<n> OUTCOME=<word>` shape, so `job-check.sh` and every
+consumer that matches on `EXIT=0` keep working.
+
 ### Job-check compatibility
 
 `job-check.sh` keeps the prototype's `any` route as an explicit allowed-set

@@ -50,12 +50,16 @@ Use this order for each implementation task.
    ```bash
    nohup env CONTROLLER_HOME="$HOME/controller" PI_ROUTE=deepseek-pi \
      scripts/controller/pi-impl.sh /path/to/worktree /absolute/path/brief.md pi-run \
+     --report /absolute/path/to/report.md \
      > "$HOME/controller/logs/pi-run.launch.log" 2>&1 < /dev/null &
    ```
 
    Pi may exit zero after a provider 402. The wrapper classifies the final
    assistant event and records `OUTCOME=USAGE-LIMIT` in `.done` while blocking
-   the selected account until its reset.
+   the selected account until its reset. Pass the brief's report path with
+   `--report` (or `PI_REPORT`): the wrapper can then tell `OUTCOME=NO-REPORT`
+   from `OUTCOME=SUCCESS`. The full vocabulary is in the
+   [Pi section](#pi-on-open-design).
 
    Use `CODEX_ROUTE=deepseek` to select an Open Design account automatically,
    or pin one with `CODEX_ROUTE=deepseek-volker` or
@@ -255,13 +259,24 @@ environment example or run files. The session directory defaults to
 
 The pi event stream is saved as `<run>.jsonl`, stderr as `<run>.err`, the last
 assistant text as `<run>.last.txt`, and the worktree, selected route, and pi
-session id as `<run>.wt`, `<run>.route`, and `<run>.thread`. The `.done` marker
-includes the pi exit code and `OUTCOME=SUCCESS`, `OUTCOME=USAGE-LIMIT`,
-`OUTCOME=ERROR`, or `OUTCOME=INCOMPLETE`; `SUCCESS` needs a settled stream, a
-session id and a final assistant `stopReason` of `stop` (a stream ending on
-`length` is `INCOMPLETE`, any other error is `ERROR` and blocks nothing).
-Non-interactive pi requires closed
-stdin; the wrapper always redirects it from `/dev/null`.
+session id as `<run>.wt`, `<run>.route`, and `<run>.thread`. The first `.done`
+line keeps its historical shape `EXIT=<n> OUTCOME=<word>`, where the word is:
+
+| Outcome | Meaning |
+|---|---|
+| `SUCCESS` | settled stream, session id, final `stopReason` of `stop`, assistant text present, worktree clean, and the expected report present when one was named. |
+| `EMPTY-COMPLETION` | exit zero and the final assistant message carried no text (empty or thinking-only) and no tool call: a provider/model anomaly, not a limit, and not a success. |
+| `UNCOMMITTED` | exit zero with uncommitted changes in the worktree. |
+| `NO-REPORT` | exit zero but the expected report file is missing. |
+| `USAGE-LIMIT` | a provider 402 `insufficient_balance` stop; the account is blocked until its reset. |
+| `ERROR` | a provider error stop, or a nonzero pi exit. |
+| `INCOMPLETE` | a settled stream that is not a `stop` (for example `length`). |
+
+Name the expected report with `--report <absolute-path>` or `PI_REPORT`;
+leaving it unset skips the report check rather than passing it. Every other
+class is a fact read from the stream, `git`, or that path, and a worktree that
+cannot answer `git rev-parse` is refused before pi starts. Non-interactive pi
+requires closed stdin; the wrapper always redirects it from `/dev/null`.
 
 Resume with the recorded session id and automatic route:
 

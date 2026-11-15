@@ -1,6 +1,24 @@
 #!/usr/bin/env bash
-# Launch one pi Open Design job and persist its event stream and completion outcome.
-# Usage: pi-impl.sh <worktree> <absolute-prompt-file> <run-name> [resume <session-id>]
+# Launch one pi Open Design job and persist its event stream, overwatch state
+# and completion outcome.
+# Usage: pi-impl.sh <worktree> <absolute-prompt-file> <run-name> [resume <session-id>] [--report <absolute-path>]
+#
+# Outcome vocabulary written to <run>.done as `EXIT=<n> OUTCOME=<class>`
+# (the first line keeps its historical shape; extra lines are additive):
+#
+#   SUCCESS          settled `stop` with assistant text, a clean worktree, and
+#                    the expected report present when a report path is known.
+#   EMPTY-COMPLETION the final assistant message carried no text (empty or
+#                    thinking-only) and no tool call: a provider/model
+#                    anomaly, not a limit, and not a success.
+#   UNCOMMITTED      exit 0 and the worktree has uncommitted changes.
+#   NO-REPORT        the expected report file is missing.
+#   USAGE-LIMIT      a provider 402 `insufficient_balance` stop.
+#   ERROR            a provider error stop, or a nonzero pi exit.
+#   INCOMPLETE       a settled or unreadable stream that is not a stop.
+#
+# The expected report is `--report <path>` or `PI_REPORT`; unset means no
+# report check.
 set -uo pipefail
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 caller_pi_route=${PI_ROUTE-}
@@ -16,11 +34,35 @@ controller_init
 [[ -z $caller_pi_session_dir ]] || PI_SESSION_DIR=$caller_pi_session_dir
 
 usage() {
-  echo "usage: $0 <worktree> <absolute-prompt-file> <run-name> [resume <session-id>]" >&2
+  echo "usage: $0 <worktree> <absolute-prompt-file> <run-name> [resume <session-id>] [--report <absolute-path>]" >&2
   exit 2
 }
 
+report_path=''
+positional=()
+while (( $# > 0 )); do
+  case $1 in
+    --report)
+      (( $# >= 2 )) || usage
+      report_path=$2
+      shift 2
+      ;;
+    --report=*)
+      report_path=${1#--report=}
+      shift
+      ;;
+    *)
+      positional+=("$1")
+      shift
+      ;;
+  esac
+done
+[[ -z ${PI_REPORT-} ]] || report_path=${report_path:-$PI_REPORT}
+set -- "${positional[@]}"
 [[ $# -ge 3 && $# -le 5 ]] || usage
+if [[ -n $report_path ]]; then
+  [[ $report_path == /* ]] || { echo 'report path must be absolute' >&2; exit 2; }
+fi
 [[ $2 == /* ]] || { echo 'prompt path must be absolute' >&2; exit 2; }
 worktree=$(realpath -e -- "$1") || usage
 prompt=$(realpath -e -- "$2") || usage
@@ -35,6 +77,13 @@ if [[ $mode == resume ]]; then
   [[ -n $session_id && $session_id =~ ^[A-Za-z0-9._-]+$ && $session_id != *..* ]] || usage
 elif [[ $mode != new || $# -gt 4 ]]; then
   usage
+fi
+
+# The clean/committed classification below is a fact read from git, not a
+# guess: a worktree that is not a git worktree cannot answer it, so refuse.
+if ! git -C "$worktree" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+  echo "worktree is not a git worktree: $worktree" >&2
+  exit 2
 fi
 
 out=$CONTROLLER_RUNS_DIR
@@ -158,16 +207,24 @@ esac
 
 prompt_text=''
 IFS= read -r -d '' prompt_text < "$prompt" || :
-pi_args=(-p --mode json --model "$provider/$model" --thinking "$thinking" --session-dir "$session_dir")
-if [[ $mode == resume ]]; then pi_args+=(--session "$session_id"); fi
-if (cd -- "$worktree" && nice pi "${pi_args[@]}" -- "$prompt_text" \
-  < /dev/null > "$out/$name.jsonl" 2> "$out/$name.err"); then
-  rc=0
-else
-  rc=$?
-fi
+base_pi_args=(-p --mode json --model "$provider/$model" --thinking "$thinking" --session-dir "$session_dir")
+resume_target=''
+[[ $mode != resume ]] || resume_target=$session_id
 
-inspection=$(python3 - "$out/$name.jsonl" "$out/$name.last.txt" <<'PY'
+# One pi invocation: the run's prompt, its stream, its own stderr file.
+invoke_pi() {
+  local prompt_text=$1 stream=$2
+  local -a argv=("${base_pi_args[@]}")
+  [[ -z $resume_target ]] || argv+=(--session "$resume_target")
+  (cd -- "$worktree" && nice pi "${argv[@]}" -- "$prompt_text" \
+    < /dev/null > "$stream" 2> "$out/$name.err")
+}
+
+# Classify the last assistant message of the (possibly appended) run stream.
+# Fields, tab separated: session id, stop reason, usage-limited flag, settled
+# flag, aborted flag, has-text flag, has-tool-call flag.
+inspect_run() {
+  python3 - "$out/$name.jsonl" "$out/$name.last.txt" <<'PY'
 import json
 import sys
 from pathlib import Path
@@ -179,6 +236,7 @@ stop_reason = ""
 usage_limited = False
 settled = False
 aborted = False
+has_tool_call = False
 
 def coding_plan(value):
     pending = [value]
@@ -204,6 +262,14 @@ def message_text(message):
         return "".join(chunks)
     return message.get("text", "") if isinstance(message.get("text"), str) else ""
 
+def has_tool_calls(message):
+    value = message.get("content")
+    if isinstance(value, list):
+        for part in value:
+            if isinstance(part, dict) and part.get("type") == "toolCall":
+                return True
+    return False
+
 with stream.open(encoding="utf-8", errors="replace") as source:
     for line in source:
         try:
@@ -221,6 +287,7 @@ with stream.open(encoding="utf-8", errors="replace") as source:
             if isinstance(message, dict) and message.get("role") == "assistant":
                 stop_reason = str(message.get("stopReason") or "")
                 last_text = message_text(message)
+                has_tool_call = has_tool_calls(message)
                 error_message = message.get("errorMessage")
                 if stop_reason == "error" and isinstance(error_message, str):
                     prefix, separator, encoded = error_message.partition(":")
@@ -234,11 +301,48 @@ with stream.open(encoding="utf-8", errors="replace") as source:
             aborted = event.get("aborted") is True
 
 Path(sys.argv[2]).write_text(last_text + "\n", encoding="utf-8")
-print("\t".join((session_id, stop_reason, "1" if usage_limited else "0",
-                 "1" if settled else "0", "1" if aborted else "0")))
+print("\t".join((
+    session_id, stop_reason, "1" if usage_limited else "0",
+    "1" if settled else "0", "1" if aborted else "0",
+    "1" if last_text.strip() else "0", "1" if has_tool_call else "0",
+)))
 PY
-)
-IFS=$'\t' read -r stream_session stop_reason usage_limited settled aborted <<< "$inspection"
+}
+
+# Report the last outcome class. $1 is the pi exit status; the remaining
+# classification facts come from inspect_run.
+classify_run() {
+  local rc=$1
+  if [[ $stop_reason == error && $usage_limited == 1 ]]; then
+    echo USAGE-LIMIT
+  elif [[ $stop_reason == error ]]; then
+    echo ERROR
+  elif [[ $rc != 0 ]]; then
+    echo ERROR
+  elif [[ $settled != 1 || $aborted != 0 || -z $thread_id || $stop_reason != stop ]]; then
+    echo INCOMPLETE
+  elif [[ $has_text != 1 && $has_tool_call != 1 ]]; then
+    # No text and no tool call: pi treats that as the end of the run, so a
+    # provider/model anomaly shows up as an exit-0 stop with nothing said.
+    echo EMPTY-COMPLETION
+  elif [[ -n $(git -C "$worktree" status --porcelain 2>/dev/null) ]]; then
+    echo UNCOMMITTED
+  elif [[ -n $report_path && ! -f $report_path ]]; then
+    echo NO-REPORT
+  else
+    echo SUCCESS
+  fi
+}
+
+if invoke_pi "$prompt_text" "$out/$name.jsonl"; then
+  rc=0
+else
+  rc=$?
+fi
+
+inspection=$(inspect_run)
+IFS=$'\t' read -r stream_session stop_reason usage_limited settled aborted \
+  has_text has_tool_call <<< "$inspection"
 thread_id=${stream_session:-$session_id}
 if [[ -n $thread_id ]]; then
   printf '%s\n' "$thread_id" > "$out/$name.thread"
@@ -251,6 +355,7 @@ if [[ -n $thread_id ]]; then
       "$name" "$thread_state_rc" "$rc" >&2
   fi
 fi
+outcome=$(classify_run "$rc")
 
 if CONTROLLER_RUNS_DIR="$out" python3 "$SCRIPT_DIR/opendesign-accounts.py" block-run "$od_account" \
   "$out/$name.err" "$out/$name.jsonl"; then
@@ -261,16 +366,5 @@ else
     "$name" "$bookkeeping_rc" "$rc" >&2
 fi
 
-if [[ $stop_reason == error && $usage_limited == 1 ]]; then
-  outcome=USAGE-LIMIT
-elif [[ $stop_reason == error ]]; then
-  outcome=ERROR
-elif [[ $rc != 0 ]]; then
-  outcome=ERROR
-elif [[ $settled == 1 && $aborted == 0 && -n $thread_id && $stop_reason == stop ]]; then
-  outcome=SUCCESS
-else
-  outcome=INCOMPLETE
-fi
 printf 'EXIT=%s OUTCOME=%s\n' "$rc" "$outcome" > "$out/$name.done"
 exit "$rc"

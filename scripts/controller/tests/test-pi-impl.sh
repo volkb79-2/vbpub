@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 set -uo pipefail
 unset PI_ROUTE PI_MODEL PI_THINKING PI_SESSION_DIR OPENDESIGN_API_KEY_VOLKER OPENDESIGN_API_KEY_GITHUB2
+# A cockpit export of these would send the fake runs into the real run
+# directory; the checks read their own temporary controller root.
+unset CONTROLLER_RUNS_DIR CONTROLLER_LOGS_DIR
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 SRC=${PI_IMPL_SCRIPT:-$SCRIPT_DIR/../pi-impl.sh}
 ROOT=$(mktemp -d "${TMPDIR:-/tmp}/controller-pi-test.XXXXXX")
@@ -24,6 +27,19 @@ PI_ENV_LOG=$ROOT/pi-env.log
 PI_PROMPT_LOG=$ROOT/pi-prompt.log
 mkdir -p "$HOME_ROOT" "$ROOT/bin" "$CONTROLLER_ROOT" "$WORKTREE"
 printf 'brief\n' > "$PROMPT"
+# The outcome classifier reads a committed fact from git (a clean worktree and
+# the commits ahead of the base), so the fixture worktree is a real repository
+# with one commit ahead of its base ref. Each check commits or dirties it.
+git -C "$WORKTREE" init -q
+git -C "$WORKTREE" config user.name test
+git -C "$WORKTREE" config user.email test@example.invalid
+printf 'baseline\n' > "$WORKTREE/baseline.txt"
+git -C "$WORKTREE" add baseline.txt
+git -C "$WORKTREE" commit -qm baseline
+git -C "$WORKTREE" update-ref refs/remotes/origin/main HEAD
+printf 'task\n' > "$WORKTREE/task.txt"
+git -C "$WORKTREE" add task.txt
+git -C "$WORKTREE" commit -qm task
 cat > "$CONTROLLER_ROOT/controller.local.env" <<'ENV'
 PI_ROUTE="deepseek-pi"
 PI_MODEL="deepseek-v4.1-flash-eco"
@@ -48,7 +64,20 @@ if [[ -p /dev/stdin && -n ${FAKE_PI_STDIN_OPEN_MARKER:-} ]]; then
 fi
 while IFS= read -r _line; do :; done
 printf 'STDIN_EOF=1\n' >> "$PI_ENV_LOG"
-python3 - "$FAKE_PI_STREAM" "${FAKE_PI_SESSION_ID:-}" <<'PY'
+# A per-invocation fixture sequence: each line of FAKE_PI_SEQUENCE names the
+# fixture this invocation emits. The last element repeats, so an exhausted
+# sequence keeps producing the same ending.
+stream=${FAKE_PI_STREAM:-}
+if [[ -n ${FAKE_PI_SEQUENCE:-} ]]; then
+  read -r -a sequence <<< "$FAKE_PI_SEQUENCE"
+  index=0
+  if [[ -n ${FAKE_PI_COUNTER:-} && -f $FAKE_PI_COUNTER ]]; then index=$(cat "$FAKE_PI_COUNTER"); fi
+  last=$(( ${#sequence[@]} - 1 ))
+  (( index > last )) && index=$last
+  [[ -z ${FAKE_PI_COUNTER:-} ]] || printf '%s' "$((index + 1))" > "$FAKE_PI_COUNTER"
+  stream=${FAKE_FIXTURE_DIR:?}/"${sequence[$index]}".jsonl
+fi
+python3 - "$stream" "${FAKE_PI_SESSION_ID:-}" <<'PY'
 import json
 import sys
 
@@ -58,6 +87,7 @@ for line in open(sys.argv[1], encoding="utf-8"):
         event["id"] = sys.argv[2]
     print(json.dumps(event, separators=(",", ":")))
 PY
+[[ -z ${FAKE_PI_SLEEP_AFTER:-} ]] || sleep "$FAKE_PI_SLEEP_AFTER"
 exit "${FAKE_PI_RC:-0}"
 SH
 chmod +x "$ROOT/bin/pi"
@@ -72,9 +102,48 @@ launch() {
   local fake_session_id="${run}-session"
   if [[ ${1:-} == resume && -n ${2:-} ]]; then fake_session_id=$2; fi
   PATH="$ROOT/bin:$PATH" HOME="$HOME_ROOT" PI_ROUTE="$route" \
+    FAKE_FIXTURE_DIR="$SCRIPT_DIR/fixtures" \
     FAKE_PI_STREAM="$SCRIPT_DIR/fixtures/$fixture.jsonl" FAKE_PI_SESSION_ID="$fake_session_id" FAKE_PI_RC=0 \
     "$SRC" "$WORKTREE" "$PROMPT" "$run" "$@" \
     > "$ROOT/$run.launch.log" 2>&1 < "$input"
+}
+
+# Same launch driven by a per-invocation fixture sequence. The run's .live
+# snapshot interval is one second so a liveness check never waits on the
+# default tick.
+launch_sequence() {
+  local run=$1 route=$2 sequence=$3
+  shift 3
+  PATH="$ROOT/bin:$PATH" HOME="$HOME_ROOT" PI_ROUTE="$route" \
+    CONTROLLER_OD_STATE="${SEQUENCE_OD_STATE:-$STATE}" \
+    FAKE_FIXTURE_DIR="$SCRIPT_DIR/fixtures" FAKE_PI_SEQUENCE="$sequence" \
+    FAKE_PI_COUNTER="$ROOT/$run.counter" FAKE_PI_SESSION_ID="${run}-session" FAKE_PI_RC=0 \
+    ${SEQUENCE_EXTRA_ENV:-} \
+    "$SRC" "$WORKTREE" "$PROMPT" "$run" "$@" \
+    > "$ROOT/$run.launch.log" 2>&1 < /dev/null
+}
+
+wait_launch_sequence() {
+  local run=$1 route=$2 sequence=$3
+  shift 3
+  launch_sequence "$run" "$route" "$sequence" "$@" &
+  local pid=$!
+  if ! wait "$pid"; then
+    cat "$ROOT/$run.launch.log" >&2
+    fail "pi wrapper failed for $run"
+  fi
+}
+
+# Each invocation starts an argv line; a prompt may itself contain a
+# newline, so count the invocations rather than the file's lines.
+pi_invocations() {
+  local count=0
+  [[ -f $PI_ARGV_LOG ]] && count=$(grep -c -- '^-p ' "$PI_ARGV_LOG" || true)
+  echo "${count:-0}"
+}
+
+clean_worktree() {
+  git -C "$WORKTREE" checkout -q -- . 2>/dev/null || :
 }
 
 wait_launch() {
@@ -154,12 +223,117 @@ check_outcome_rc() {
     || fail 'a nonzero pi exit with a clean stream is recorded as an error'
 }
 
+# --- overwatch: outcome classification, bounded continue, liveness ----------
+
+# A clean worktree with one commit ahead of its base is what SUCCESS requires.
+clean_worktree
+
+check_outcome_success_report() {
+  local report=$ROOT/report-final.md
+  printf 'final report\n' > "$report"
+  PATH="$ROOT/bin:$PATH" HOME="$HOME_ROOT" PI_ROUTE=deepseek-pi-volker \
+    CONTROLLER_OD_STATE="$ROOT/outcome-success-state.json" \
+    FAKE_FIXTURE_DIR="$SCRIPT_DIR/fixtures" \
+    FAKE_PI_STREAM="$SCRIPT_DIR/fixtures/pi-success.jsonl" FAKE_PI_SESSION_ID=outcome-success-session \
+    FAKE_PI_RC=0 \
+    "$SRC" "$WORKTREE" "$PROMPT" outcome-success --report "$report" \
+    > "$ROOT/outcome-success.launch.log" 2>&1 < /dev/null || {
+      cat "$ROOT/outcome-success.launch.log" >&2
+      fail 'a clean finished run with its report was not accepted'
+    }
+  [[ $(cat "$CONTROLLER_ROOT/runs/outcome-success.done") == 'EXIT=0 OUTCOME=SUCCESS' ]] \
+    || fail 'a clean finished run with text and its report is not SUCCESS'
+}
+
+
+
+
+check_outcome_uncommitted() {
+  local before after
+  printf 'working change\n' > "$WORKTREE/working.txt"
+  before=$(pi_invocations)
+  wait_launch_sequence outcome-uncommitted deepseek-pi-github2 pi-success
+  after=$(pi_invocations)
+  [[ $(( after - before )) == 1 ]] || fail 'an uncommitted finish was continued instead of reported'
+  [[ $(cat "$CONTROLLER_ROOT/runs/outcome-uncommitted.done") == 'EXIT=0 OUTCOME=UNCOMMITTED' ]] \
+    || fail 'an exit-zero finish with uncommitted work is not UNCOMMITTED'
+  rm -f "$WORKTREE/working.txt"
+  clean_worktree
+}
+
+check_outcome_no_report() {
+  local before after
+  before=$(pi_invocations)
+  wait_launch_sequence outcome-no-report deepseek-pi-volker pi-success --report "$ROOT/missing-report.md"
+  after=$(pi_invocations)
+  [[ $(( after - before )) == 1 ]] || fail 'a missing report was continued instead of reported'
+  [[ $(cat "$CONTROLLER_ROOT/runs/outcome-no-report.done") == 'EXIT=0 OUTCOME=NO-REPORT' ]] \
+    || fail 'a finish without the expected report is not NO-REPORT'
+}
+
+
+
+
+
+
+
+
+
+
+
+check_input_validation() {
+  expect_rc 2 env PATH="$ROOT/bin:$PATH" HOME="$HOME_ROOT" PI_ROUTE=deepseek-pi-volker \
+    "$SRC" "$WORKTREE" "$PROMPT" report-validation --report relative-report.md
+  contains "$ROOT/focused-command.out" 'report path must be absolute' 'a relative report path is refused'
+  expect_rc 2 env PATH="$ROOT/bin:$PATH" HOME="$HOME_ROOT" PI_ROUTE=deepseek-pi-volker \
+    "$SRC" "$ROOT/not-a-worktree" "$PROMPT" worktree-validation
+}
+
+
+check_repo_not_a_worktree() {
+  mkdir -p "$ROOT/plain-dir"
+  expect_rc 2 env PATH="$ROOT/bin:$PATH" HOME="$HOME_ROOT" PI_ROUTE=deepseek-pi-volker \
+    "$SRC" "$ROOT/plain-dir" "$PROMPT" plain-dir-run
+  contains "$ROOT/focused-command.out" 'worktree is not a git worktree' \
+    'a directory that cannot answer the clean-worktree question is refused'
+}
+
+
+
 if [[ -n ${PI_TEST_FOCUS:-} ]]; then
   case $PI_TEST_FOCUS in
     xtrace-key) check_xtrace_key ;;
     outcome-error) check_outcome_error ;;
     outcome-length) check_outcome_length ;;
     outcome-rc) check_outcome_rc ;;
+    # One overwatch case per focused name, so a hand mutant is judged against
+    # the single check that covers the guard it weakened.
+    outcome-success|outcome-empty|outcome-uncommitted|outcome-no-report)
+      clean_worktree
+      case $PI_TEST_FOCUS in
+        outcome-success) check_outcome_success_report ;;
+        outcome-empty)
+          wait_launch_sequence focus-empty deepseek-pi-volker pi-empty-completion
+          [[ $(head -n 1 "$CONTROLLER_ROOT/runs/focus-empty.done") == 'EXIT=0 OUTCOME=EMPTY-COMPLETION' ]] \
+            || fail 'an empty final message is its own class, not a success'
+          [[ $(pi_invocations) == 1 ]] || fail 'an empty final message was continued'
+          ;;
+        outcome-uncommitted)
+          printf 'working change\n' > "$WORKTREE/working.txt"
+          wait_launch_sequence focus-uncommitted deepseek-pi-github2 pi-success
+          contains "$CONTROLLER_ROOT/runs/focus-uncommitted.done" 'OUTCOME=UNCOMMITTED' \
+            'uncommitted work is its own class'
+          rm -f "$WORKTREE/working.txt"
+          clean_worktree
+          ;;
+        outcome-no-report)
+          wait_launch_sequence focus-no-report deepseek-pi-volker pi-success --report "$ROOT/focus-missing.md"
+          contains "$CONTROLLER_ROOT/runs/focus-no-report.done" 'OUTCOME=NO-REPORT' \
+            'a missing report is its own class'
+          ;;
+      esac
+      ;;
+
     prompt-absolute)
       expect_rc 2 env PATH="$ROOT/bin:$PATH" HOME="$HOME_ROOT" PI_ROUTE=deepseek-pi \
         "$SRC" "$WORKTREE" relative-prompt focused-relative
@@ -405,6 +579,10 @@ PY
       contains "$CONSUMER_SOURCE" 'PI_ROUTE=deepseek-pi' 'consumer guide gives a Pi launch example'
       contains "$RULES_SOURCE" 'deepseek-pi-volker' 'rules list the pinned Pi routes'
       contains "$ENV_SOURCE" 'PI_THINKING="high"' 'environment example documents Pi thinking'
+      contains "$README_SOURCE" 'OUTCOME=NO-REPORT' 'README documents the report outcome'
+      contains "$README_SOURCE" "\`EMPTY-COMPLETION\`" 'README documents the empty-completion outcome'
+      contains "$DESIGN_SOURCE" 'Why the terminal outcome is classified' 'design guide explains the outcome classification'
+      contains "$CONSUMER_SOURCE" "\`.done\` outcome" 'consumer guide gives the outcome vocabulary'
       ;;
     *) fail "unknown PI_TEST_FOCUS=$PI_TEST_FOCUS" ;;
   esac
@@ -649,6 +827,12 @@ check_xtrace_key
 check_outcome_error
 check_outcome_length
 check_outcome_rc
+
+check_outcome_success_report
+check_outcome_uncommitted
+check_outcome_no_report
+check_input_validation
+check_repo_not_a_worktree
 
 not_contains test-key 'run evidence contains no key material' "$CONTROLLER_ROOT/runs"
 not_contains test-key 'account state contains no key material' "$STATE"

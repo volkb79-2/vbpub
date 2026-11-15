@@ -80,8 +80,23 @@ Start the wrapper detached with an absolute prompt path:
 nohup env CONTROLLER_HOME="$HOME/controller" PI_ROUTE=deepseek-pi \
   scripts/controller/pi-impl.sh \
   /path/to/worktree /absolute/path/to/brief.md pi-run \
+  --report /absolute/path/to/report.md \
   > "$HOME/controller/logs/pi-run.launch.log" 2>&1 < /dev/null &
 ```
+
+The `--report` path (or `PI_REPORT`) is the brief's report file. Naming it lets
+the wrapper tell `OUTCOME=NO-REPORT` from a real `OUTCOME=SUCCESS`; leaving it
+out skips that one check. Read the `.done` marker's outcome word before
+deciding what to do next:
+
+| `.done` outcome | What to do |
+|---|---|
+| `SUCCESS` | Read the report, then review on another route. |
+| `EMPTY-COMPLETION` | pi stopped with no text and no tool call: a provider/model anomaly, so the run did not finish the task. Resume the same session rather than starting a fresh one. |
+| `UNCOMMITTED` | The work is real but not committed. Inspect the worktree and commit, or resume for the finish. |
+| `NO-REPORT` | The work may be done but the report is missing. Resume and ask for the report, or write it from the review. |
+| `USAGE-LIMIT` | Wait for the reset recorded in the account state, then `resume-usage-limited.sh`. |
+| `ERROR` / `INCOMPLETE` | Read `<run>.err` and the stream's last events before deciding. |
 
 Check the stream, exit code, and account outcome with the route that was
 selected, then inspect current run/stall status:
