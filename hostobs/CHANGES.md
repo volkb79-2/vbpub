@@ -141,7 +141,7 @@
   and no code is excluded from coverage. The fix round adds tests without changing the
   floor: a raised floor is re-measured, never lowered to fit.
 - `coverage-floors.toml`: `crates/store` raised from the M0 bootstrap 90%/85% to 94% line /
-  93% region after its own tests reached 94.87% line / 93.90% region (111 unit tests plus the
+  93% region after its own tests reached 94.87% line / 93.90% region (108 unit tests plus the
   segment-fixture and quality-table integration tests). Five packages carry the bootstrap
   floor now, because the remaining crates are still the compilable scaffold.
 - `docs/CONSUMERS.md` gains a worked `Store` adoption section (configure, open, submit,
