@@ -40,14 +40,17 @@ def test_guard_validate_cli_reports_valid_file(capsys):
 )
 def test_cli_validation_errors_are_reported_with_nonzero_status(argv, capsys):
     assert main(argv) == 2
-    assert capsys.readouterr().err.startswith("fleet: ERROR ")
+    # ADOPTION (cli-extended): the shared boundary prints one "[ERROR] ..." line
+    # followed by the identity headline; the old hand-written prefix was
+    # "fleet: ERROR ". The status and the stdout/stderr split are unchanged.
+    assert capsys.readouterr().err.startswith("[ERROR] ")
 
 
 def test_non_utf8_guard_file_and_oversized_integers_are_input_errors_not_tracebacks(tmp_path, capsys):
     binary = tmp_path / "guard.toml"
     binary.write_bytes(b"\xff\xfe")
     assert main(["guard", "validate", str(binary)]) == 2
-    assert capsys.readouterr().err.startswith("fleet: ERROR ")
+    assert capsys.readouterr().err.startswith("[ERROR] ")
 
     # A candidate memory figure too large for float arithmetic is refused with exit 2.
     candidates = tmp_path / "candidates.json"
@@ -67,12 +70,13 @@ def test_non_utf8_guard_file_and_oversized_integers_are_input_errors_not_traceba
         "--demand", str(demand),
     ])
     assert status == 2
-    assert capsys.readouterr().err.startswith("fleet: ERROR ")
+    assert capsys.readouterr().err.startswith("[ERROR] ")
 
 
 def test_version_exit_and_module_entrypoint(monkeypatch):
-    with pytest.raises(SystemExit, match="0"):
-        main(["--version"])
+    # ADOPTION (cli-extended): the registered CLI returns 0 from --version instead
+    # of raising SystemExit; the module entry point still exits 0.
+    assert main(["--version"]) == 0
     monkeypatch.setattr(sys, "argv", ["fleet", "--version"])
     with pytest.raises(SystemExit, match="0"):
         runpy.run_module("fleetd.__main__", run_name="__main__")
