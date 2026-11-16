@@ -14617,7 +14617,15 @@ describe the same contract.
 `assay/src/assay/verdict.py`.
 ## B524 — the mutation `end` event conflates genuinely budget-exceeded candidates with pending candidates that never started
 
-**Status:** OPEN (filed 2026-11-10); priority minor reporting/diagnosis defect. Source: the 2026-11-10 session audit's omitted s4 anomalies and `reports/shard-s4-FINAL-REPORT.md`.
+**Status: FIXED (2026-11-16, pi-assay-burn).** The terminal progress record carried one ambiguous count. `buckets.budget_exceeded` is one closed-vocabulary bucket standing for two situations: a candidate that got a worker and hit its own or the lane's deadline, and a candidate the sweep never reached (campaign deadline, fatal worker error, or a `--only-candidates`/`--exclude-candidates` selection). CMRu's s4 attempt A reported `budget_exceeded = 23` for ONE started candidate and 22 pending.
+
+**Fix.** `_execute_mutation_jobs` counts `budget_exceeded_dispatched` (incremented only where a worker reported `BUDGET_EXCEEDED/LANE_TIMEOUT`, never for a leftover queued position) and carries it as `budget_exceeded_not_started` in the run telemetry; `run_mutation`'s `_end` reads it back — plus the selection remainder it alone can see — and emits two additive keys on the terminal record, `budget_exceeded_dispatched` and `budget_exceeded_unstarted`, which always sum to `buckets.budget_exceeded`. `_budget_exceeded_split` refuses an inverted split (more unstarted than recorded) rather than clamping it. Nothing else changes: the verdict bucket, `judge_mutation`, `assay verify` and the schema are untouched.
+
+**Deliberate wording.** `dispatched`, not `attempted`: a candidate killed by the LANE deadline is deliberately unclassified (it re-executes on resume) and its verdict entry still carries not-started process-tree evidence, so "attempted" would contradict the candidate's own record.
+
+**Evidence.** `tests/core/test_mutation_progress_budget_plan.py` (`test_end_event_splits_dispatched_budget_failures_from_never_started` — one dispatched of three, and `test_end_event_reports_every_dispatched_candidate_as_dispatched` — three of three, the opposite direction) and `tests/core/test_flex_r2_campaigns.py` (`test_exclude_candidates_is_partial_and_the_rest_completes_on_resume` now asserts 0 dispatched / 1 unstarted for a selection remainder). Hand mutants measured: zeroing the read-back, never incrementing the dispatched counter, and counting every masked position as unstarted each fail the first test or the selection assertion.
+
+**Previous status.** OPEN (filed 2026-11-10); priority minor reporting/diagnosis defect. Source: the 2026-11-10 session audit's omitted s4 anomalies and `reports/shard-s4-FINAL-REPORT.md`.
 
 **Problem.** In attempt A of the CMRu s4 campaign, the terminal progress record reported `buckets.budget_exceeded = 23`. Only one candidate genuinely exceeded its budget; the other 22 were pending candidates that had not started before the campaign deadline. The current terminal event gives a consumer only one ambiguous bucket, so an operator reading progress cannot distinguish candidate-level time exhaustion from an unattempted remainder. The verdict and resume machinery correctly later resolved the pending work, but the progress stream itself overstates actual budget failures.
 
@@ -14635,7 +14643,7 @@ describe the same contract.
 
 **Priority.** Minor. The verdict is not wrong, but the progress record's only bucket count misleads triage and campaign reporting.
 
-**Close when.** The terminal progress event distinguishes started budget failures from unattempted candidates, both fixture shapes pass, and the consumer documentation explains the additive fields.
+**Close when.** The terminal progress event distinguishes started budget failures from unattempted candidates, both fixture shapes pass, and the consumer documentation explains the additive fields. — MET (both shapes tested; `docs/CONSUMERS.md` documents the split, its wording and why. The earlier draft's acceptance wording said "one started budget failure and 22 pending"; the shipped names are `budget_exceeded_dispatched` / `budget_exceeded_unstarted`, and the test uses 1 and 2.)
 
 ## B523 — marker-only cargo-llvm-cov output is read as available-but-empty branch coverage on stable Rust
 

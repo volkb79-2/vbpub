@@ -4239,6 +4239,13 @@ def _fold_resumed_telemetry(
             "modes": sorted(modes),
         },
         "worker_counts": dict(worker_counts),
+        # (B524) Carried through unchanged: only killed/survived records are
+        # resumed or carried over (a budget/hung/crashed record re-executes),
+        # so a resumed candidate is never one of the masked budget positions
+        # the sweep itself left unattempted.
+        "budget_exceeded_not_started": (
+            executed.get("budget_exceeded_not_started") or 0
+        ),
         "schedule": executed.get("schedule"),
     }
 
@@ -4719,6 +4726,32 @@ def _native_r2_parallel_checked(function):
         return function(*args, **kwargs)
 
     return checked
+
+
+def _budget_exceeded_split(counted: int, unstarted: int) -> tuple[int, int]:
+    """(B524) ``(dispatched, never started)`` for the ``end`` progress record.
+
+    ``buckets.budget_exceeded`` counts ONE closed-vocabulary bucket that stands
+    for two different situations, and only ``_execute_mutation_jobs`` (plus the
+    selection frame in :func:`run_mutation`) can tell them apart. This is the
+    one place the two halves are checked against the bucket's own count, so a
+    producer bug fails loud instead of publishing an inverted split: more
+    never-started candidates than the bucket holds would claim work the
+    verdict never recorded, and a negative remainder would claim candidates
+    that do not exist.
+    """
+    for name, value in (("counted", counted), ("unstarted", unstarted)):
+        if not is_strict_int(value) or value < 0:
+            raise MutationStateError(
+                f"the end record's budget_exceeded split has an invalid "
+                f"{name} count {value!r}"
+            )
+    if unstarted > counted:
+        raise MutationStateError(
+            "the end record's budget_exceeded split is inconsistent: "
+            f"{unstarted} never started of {counted} recorded"
+        )
+    return counted - unstarted, unstarted
 
 
 @_native_r2_parallel_checked
@@ -5282,7 +5315,34 @@ def run_mutation(
             reason: str | None,
             total: int,
             extra: Mapping[str, Any] | None = None,
+            budget_exceeded_unstarted: int = 0,
         ) -> None:
+            """The sweep's terminal record.
+
+            **(B524) `buckets.budget_exceeded` is NOT one fact.** The bucket
+            holds two different situations -- a candidate that got a worker
+            and then hit its own or the lane's deadline, and a candidate the
+            sweep never reached because submission had already stopped -- and
+            the remedy differs: one is a measurement that ran out of time,
+            the other is work that was never attempted. CMRu's s4 attempt A
+            read `budget_exceeded = 23` off the terminal record with ONE
+            candidate that had started; the other 22 had not. The bucket
+            keeps its closed verdict vocabulary (the schema,
+            `judge_mutation` and `verify` are unchanged); only this diagnostic
+            record gains the split, as two ADDITIVE keys a reader that does
+            not know them can ignore.
+
+            **`dispatched` is the honest word, not `attempted`.** A
+            candidate killed by the lane deadline is dispatched but
+            deliberately UNCLASSIFIED (`_run_attempt` raises rather than
+            record an outcome, so it is retried on resume) and its verdict
+            record therefore still carries not-started process-tree
+            evidence. "Dispatched" is the fact both statements agree on;
+            "attempted" would be a claim the candidate's own record denies.
+            """
+            dispatched, unstarted = _budget_exceeded_split(
+                buckets.get("budget_exceeded", 0), budget_exceeded_unstarted
+            )
             if write_progress is not None:
                 write_progress(
                     {
@@ -5290,6 +5350,8 @@ def run_mutation(
                         "candidate_total": total,
                         "buckets": dict(buckets),
                         "reason": reason,
+                        "budget_exceeded_dispatched": dispatched,
+                        "budget_exceeded_unstarted": unstarted,
                         **(dict(extra) if extra else {}),
                     }
                 )
@@ -5904,6 +5966,26 @@ def run_mutation(
                     {"unselected_total": len(unselected_jobs)}
                     if flex is not None and flex.selection_active
                     else None
+                ),
+                # (B524) Read back from the sweep's own telemetry rather than
+                # recomputed here: `_execute_mutation_jobs` is the only place
+                # that can distinguish "dispatched, then hit the deadline"
+                # from "still in the queue when submission stopped". A
+                # candidate left out by `--only-candidates`/`--exclude` was
+                # never dispatched either, so it counts as unstarted here
+                # too -- the same sentence, two causes.
+                budget_exceeded_unstarted=(
+                    int(
+                        (result_payload.r2_telemetry or {}).get(
+                            "budget_exceeded_not_started"
+                        )
+                        or 0
+                    )
+                    # (B531) A candidate left out by a selection was never
+                    # dispatched either, so it is the same sentence as a
+                    # campaign-deadline remainder -- counted here, not in the
+                    # engine, because only this frame knows the selection.
+                    + len(unselected_jobs)
                 ),
             )
             if complete_campaign:
@@ -7192,6 +7274,16 @@ def _execute_mutation_jobs(
     results: list[_MutantRun | None] = [None] * total
     executed_runs: dict[int, _MutantRun] = {}
     budget_exceeded_mask = [False] * total
+    #: (B524) How many of the MASKED positions a worker was actually
+    #: DISPATCHED for, rather than left in the queue when submission stopped.
+    #: The two are different sentences -- "this candidate got a worker and
+    #: hit the lane deadline" versus "the sweep never reached this one" --
+    #: and the mask alone cannot tell them apart, which is exactly what the
+    #: `end` progress record used to get wrong (CMRu's s4 attempt A reported
+    #: 23 budget failures for 1 started candidate and 22 pending). Read back
+    #: by `run_mutation`'s terminal event; a leftover position never
+    #: increments it.
+    budget_exceeded_dispatched = 0
     fatals: dict[int, AssayError] = {}
     stop_submitting = False
     event_buffer = _CandidateEventBuffer(total)
@@ -7314,6 +7406,7 @@ def _execute_mutation_jobs(
                                 and exc.reason_code is ReasonCode.LANE_TIMEOUT
                             ):
                                 budget_exceeded_mask[position] = True
+                                budget_exceeded_dispatched += 1
                             else:
                                 fatals[position] = exc
                             stop_submitting = True
@@ -7475,6 +7568,17 @@ def _execute_mutation_jobs(
             "modes": sorted(modes),
         },
         "worker_counts": {str(jobs): len(executed_runs)} if executed_runs else {},
+        # (B524) Internal run fact, not wire state: how many of the masked
+        # `budget_exceeded` positions the sweep never even dispatched. The
+        # rest of the mask was dispatched -- a worker started, and the
+        # candidate hit the lane deadline. `run_mutation`'s terminal `end`
+        # event reads this back to split the bucket's count into dispatched
+        # and never-started, rather than recomputing a second, independent
+        # way.
+        "budget_exceeded_not_started": (
+            sum(1 for flagged in budget_exceeded_mask if flagged)
+            - budget_exceeded_dispatched
+        ),
         "schedule": (
             scheduler.verdict_summary(errors=schedule_errors)
             if scheduler is not None

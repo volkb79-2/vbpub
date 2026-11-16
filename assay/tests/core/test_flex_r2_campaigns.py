@@ -577,6 +577,12 @@ def test_exclude_candidates_is_partial_and_the_rest_completes_on_resume(
     assert (selection["executing_total"], selection["unselected_total"]) == (1, 1)
     assert _executed(first) == ["killed"]
     assert _event(first, "end")["unselected_total"] == 1
+    # (B524) The one candidate left out by the selection was never dispatched,
+    # so it is reported as UNSTARTED work, not as a candidate that ran and
+    # ran out of time -- the same sentence a campaign-deadline remainder gets.
+    end = _event(first, "end")
+    assert end["buckets"]["budget_exceeded"] == 1
+    assert (end["budget_exceeded_dispatched"], end["budget_exceeded_unstarted"]) == (0, 1)
     verdict = json.loads(verdict_path.read_text())
     (r2,) = [claim for claim in verdict["claims"] if claim["rigor"] == "R2"]
     assert r2["status"] != "PASS"
