@@ -9,7 +9,8 @@ verdict.
 Every oracle here is behavioral, not a construction pin where it can be:
 
 * the declaration oracles drive the REAL loader (`load_config`/`_validate_lane`);
-* the mount oracle drives a real lane run through the fake docker argv;
+* the mount oracles feed a real lane run through the fake docker argv, and a
+  refusal the daemon would otherwise answer with its own message;
 * the preflight oracles drive `preflight_judge_provider` with real directories;
 * the end-to-end oracle runs a lane in an image that carries NO assay and NO
   install path -- the fixture's fake docker EXECUTES the assembled inner script
@@ -19,12 +20,26 @@ Every oracle here is behavioral, not a construction pin where it can be:
   with: the judge's own totals are read from the verdict artifact, and a judge
   whose lane loses a test FAILS.
 
+WHAT THE FIXTURE'S JUDGE IS, AND IS NOT (round-1 review). `_minimal_judge`
+writes a small `assay` package and a `assay.cli` runner into the fixture
+repository. It is NOT Assay: it reads the lane file, runs the lane's command and
+writes a verdict-shaped artifact. What that PROVES is the mechanism this
+package actually adds -- the mount destination/PYTHONPATH wiring, the
+`find_spec` origin guard, the reserved exit code and its verdict mapping, and
+that the lane image's own `PATH` contains no way to reach a judge. What it does
+NOT prove, and no oracle here claims: that the REAL Assay source imports and
+runs under a REAL image, or that Docker's own read-only enforcement holds
+(`fake_docker_running_lane` runs the inner script on the host, where `:ro` is an
+argv string, not a kernel mount). Those two are filed as RG-286 and must be
+proven by a real-image smoke before `hostobs` migrates.
+
 Design: docs/DESIGN-judge-provider-2026-11.md.
 """
 
 from __future__ import annotations
 
 import atexit
+import copy
 import json
 import os
 import shutil
@@ -41,8 +56,8 @@ import pytest
 import _testdeps  # noqa: F401
 
 from test_run_gate import (RUN_GATE_DIR, commit_all, docker_runs, fake_docker,
-                           make_project, make_repo, make_worktree, run_gate,
-                           run_tool, shim_dir_of)
+                           lane_runs, make_project, make_repo, make_worktree,
+                           run_gate, run_tool, shim_dir_of)
 
 # The suite-wide ambient contracts test_run_gate.py installs for its OWN
 # module (a declared cgroup slice, profiling off, and a host profiler endpoint
@@ -99,11 +114,16 @@ exit "$rc"''',
 
 
 def _minimal_judge(repo: Path) -> None:
-    """A tiny, REAL importable judge under `repo/assay` (no install step).
+    """Write a small, source-only, importable STAND-IN judge under `repo/assay`.
 
-    `python -m assay.cli run r1` below reads a real `assay.toml`, runs a real
-    command and writes a real verdict artifact -- so the end-to-end oracle
-    measures the JUDGE, not a stub that prints "PASS".
+    It is a stand-in, not Assay: it reads a lane file, runs the lane's command
+    and writes a verdict-shaped artifact with the closed outcome vocabulary.
+    Its purpose is to make the MECHANISM observable -- `python -m assay.cli`
+    can only resolve because `PYTHONPATH` carried the mounted tree, and the
+    artifact it writes is what the negative probe turns red -- so no oracle
+    here needs (or claims) the real judge's own semantics. What this cannot
+    show is that REAL Assay imports and runs in a real image, or that Docker
+    enforces the read-only mount (see the module docstring; filed as RG-286).
     """
     package = repo / "assay" / "src" / "assay"
     analysis = repo / "assay" / "analysis" / "src" / "assay_analysis"
@@ -281,7 +301,8 @@ class TestJudgeDeclaration:
             argv = ["true"]
             """)
         proj = make_project(repo, config)
-        with pytest.raises(run_gate.GateError, match=r"mode = \"ephemeral\""):
+        with pytest.raises(run_gate.GateError,
+                           match=r"requires an ephemeral container"):
             run_gate.load_config(proj)
 
     def test_judge_on_a_bare_host_environment_is_refused_at_load(self, tmp_path):
@@ -297,14 +318,111 @@ class TestJudgeDeclaration:
             argv = ["true"]
             """)
         proj = make_project(repo, config)
-        with pytest.raises(run_gate.GateError, match=r"mode = \"ephemeral\""):
+        with pytest.raises(run_gate.GateError,
+                           match=r"host mode, which starts no container"):
             run_gate.load_config(proj)
 
-    def test_a_project_inside_the_judge_tree_cannot_be_judged_by_it(self, tmp_path):
-        """The read-only overlay would make the judged project read-only."""
+    # -- the resolution paths the load-time refusal used to MISS (review 1) --
+
+    def test_an_undeclared_environment_name_is_refused_at_load(
+            self, tmp_path, monkeypatch):
+        """Before the fix a lane whose `environment` did not resolve to a dict
+        at load slipped through to the RUNTIME preflight, so `run-gate lanes`
+        and every load-only reader saw a lane that could never run."""
+        repo = make_repo(tmp_path)
+        proj = make_project(
+            repo, JUDGE_CONFIG.replace('{image}', 'rust:local').replace(
+                'environment = "rust"', 'environment = "typo"'))
+        with pytest.raises(run_gate.GateError,
+                           match=r"environment 'typo' is not defined"):
+            run_gate.load_config(proj)
+
+    def test_a_legacy_host_name_is_refused_at_load_with_its_remedy(
+            self, tmp_path):
+        """An undeclared legacy `host`/`bare-host` name is a real config
+        state (RG-101's migration window). The loader answers with the resolver
+        that names the migration, not with a generic 'not ephemeral'.
+
+        `upgrade_modes=False` on purpose: the shared fixture helper would
+        MATERIALIZE a `[environments.bare-host]` table, which is the state this
+        test is not about."""
+        repo = make_repo(tmp_path)
+        proj = make_project(
+            repo, JUDGE_CONFIG.replace('{image}', 'rust:local').replace(
+                'environment = "rust"', 'environment = "bare-host"'),
+            upgrade_modes=False)
+        with pytest.raises(run_gate.GateError,
+                           match=r"Legacy 'bare-host'"):
+            run_gate.load_config(proj)
+
+    def test_an_inherited_central_exec_environment_is_refused_at_load(
+            self, tmp_path):
+        """A lane declared in the project but resolving through the CENTRAL
+        config's environments table -- the case the old load check could not
+        see, because it only looked at this project's own table."""
+        repo = make_repo(tmp_path)
+        (repo / run_gate.ROOT_CONFIG_NAME).write_text(textwrap.dedent("""\
+            schema_version = 1
+            [environments.shared-runner]
+            mode = "exec"
+            image = "runner:local"
+            """))
+        proj = make_project(repo, JUDGE_CONFIG.replace(
+            '{image}', 'rust:local').replace('environment = "rust"',
+                                            'environment = "shared-runner"'))
+        with pytest.raises(run_gate.GateError,
+                           match=r"in central"):
+            run_gate.load_config(proj)
+
+    def test_an_inherited_central_ephemeral_environment_loads(self, tmp_path):
+        """The same inheritance path must NOT refuse a healthy lane: the
+        refusal is about the resolved mode, not about where it was declared."""
+        repo = make_repo(tmp_path)
+        (repo / run_gate.ROOT_CONFIG_NAME).write_text(textwrap.dedent("""\
+            schema_version = 1
+            [environments.shared-rust]
+            mode = "ephemeral"
+            image = "rust:local"
+            """))
+        proj = make_project(repo, JUDGE_CONFIG.replace(
+            '{image}', 'rust:local').replace('environment = "rust"',
+                                            'environment = "shared-rust"'))
+        assert run_gate.load_config(proj)[0]["lanes"]["rust-r1"]["judge"] \
+            == "assay"
+
+    @pytest.mark.parametrize("tree", run_gate.JUDGE_SOURCE_TREES)
+    def test_a_project_that_IS_a_judge_tree_cannot_be_judged_by_it(
+            self, tmp_path, tree):
+        """Both trees, at their EXACT paths, not only a subdirectory of one:
+        the judged project would BE the read-only mount, so there is nothing
+        left to write. (The earlier fixture only nested a project under
+        `assay/`, which left the `libraries/cowtree` half of the loop
+        unexercised and the equality branch unproven.)"""
         repo = make_repo(tmp_path)
         _minimal_judge(repo)
-        proj = repo / "assay" / "consumer"
+        proj = repo / tree
+        (proj / "run-gate.toml").write_text(textwrap.dedent("""\
+            schema_version = 1
+            [environments.rust]
+            mode = "ephemeral"
+            image = "rust:local"
+            [lanes.rust-r1]
+            kind = "command"
+            environment = "rust"
+            judge = "assay"
+            argv = ["true"]
+            """))
+        commit_all(repo, "self-judging project")
+        with pytest.raises(run_gate.GateError, match=r"READ-ONLY"):
+            run_gate.load_config(proj)
+
+    @pytest.mark.parametrize("tree", run_gate.JUDGE_SOURCE_TREES)
+    def test_a_project_INSIDE_a_judge_tree_cannot_be_judged_by_it(
+            self, tmp_path, tree):
+        """…and one level down, in both trees (the nesting branch)."""
+        repo = make_repo(tmp_path)
+        _minimal_judge(repo)
+        proj = repo / tree / "consumer"
         proj.mkdir(parents=True)
         (proj / "run-gate.toml").write_text(textwrap.dedent("""\
             schema_version = 1
@@ -321,13 +439,14 @@ class TestJudgeDeclaration:
         with pytest.raises(run_gate.GateError, match=r"READ-ONLY"):
             run_gate.load_config(proj)
 
+
     def test_a_project_outside_the_judge_tree_is_untouched(self, tmp_path):
         repo, proj = _judge_repo(tmp_path)
         assert "judge" in run_gate.load_config(proj)[0]["lanes"]["rust-r1"]
 
 
 # ---------------------------------------------------------------------------
-# 2. Mounts: read-only, at their own path, dual, and LAST
+# 2. Mounts: read-only, at their own path, dual, and never shadowed
 # ---------------------------------------------------------------------------
 
 class TestJudgeMounts:
@@ -356,14 +475,22 @@ class TestJudgeMounts:
             "-v", f"/phys/tree/libraries/cowtree:"
                   f"{worktree / 'libraries/cowtree'}:ro",
         ]
-        # …and EVERY flag is read-only: the judged worktree stays writable
-        # only for the lane's own files, never for the judge it runs.
+        # …and EVERY flag is read-only, and binds the PHYSICAL source it claims:
+        # the destination may be the physical path or the judged worktree's
+        # namespace view of it, and in both cases the source is that same
+        # derived physical path (an assertion that can FAIL, unlike the
+        # `... or True` placeholder this test used to carry).
         specs = [flags[index + 1] for index, item in enumerate(flags)
                  if item == "-v"]
-        assert all(spec.endswith(":ro") and spec.split(":")[0] == "/phys/tree/"
-                   + spec.split(":")[1].split("/tree/")[1].split(":")[0]
-                   .lstrip("/") or True for spec in specs)
         assert len(specs) == 4
+        for spec in specs:
+            source, destination = spec.split(":")[:2]
+            assert spec.endswith(":ro"), spec
+            assert source == "/phys/tree/assay" \
+                or source == "/phys/tree/libraries/cowtree", spec
+            assert destination in (
+                source, str(worktree / "assay"),
+                str(worktree / "libraries" / "cowtree")), spec
 
     def test_the_namespace_view_follows_the_judged_worktree_alias(
             self, tmp_path, monkeypatch):
@@ -394,10 +521,17 @@ class TestJudgeMounts:
             {"kind": "command", "environment": "rust", "argv": ["true"]},
             tmp_path) == []
 
-    def test_the_container_argv_carries_the_overlay_after_every_other_mount(
+    def test_the_container_mount_set_is_the_judge_overlay_plus_the_worktree(
             self, tmp_path, monkeypatch):
-        """Order is the mechanism: a later bind mount wins for its subtree, so
-        the read-only overlay must come AFTER the worktree/extra mounts."""
+        """The lane really runs with the overlay in its argv AND with no
+        competing mount on a judge tree -- and the judge is disclosed first.
+
+        This replaces the earlier "the overlay comes last, so it wins" oracle.
+        That claim was wrong about Docker (it orders binds by destination
+        depth, and refuses a same-path pair as a duplicate), so ORDER proves
+        nothing; what the gate must guarantee is that no OTHER mount lands
+        at/under a judge tree, which the refusal oracles below drive directly.
+        """
         repo, proj = _judge_repo(tmp_path, image="tester-unified:run-gate-2560")
         log = fake_docker(tmp_path, monkeypatch)
         monkeypatch.setenv("RUN_GATE_ALLOW_MAIN_CHECKOUT", "1")
@@ -406,20 +540,119 @@ class TestJudgeMounts:
         assert proc.returncode == 0, proc.stdout + proc.stderr
         call = [run for run in docker_runs(log) if "-d" in run][0]
         mounts = docker_mounts(call)
-        overlay = [index for index, item in enumerate(mounts)
-                   if item.endswith(":ro")
+        overlay = [item for item in mounts if item.endswith(":ro")
                    and (item.split(":")[0].endswith("/assay")
                         or item.split(":")[0].endswith("/libraries/cowtree"))]
         assert overlay, mounts
-        assert overlay[-1] == len(mounts) - 1, mounts
-        # The worktree's own (read-write) mount precedes every overlay entry:
-        # that is what makes the overlay the winner for its subtree.
-        worktree_at = next(index for index, item in enumerate(mounts)
-                           if item.split(":")[1] == str(wt))
-        assert worktree_at < overlay[0]
+        # The judged worktree itself is mounted read-write (the lane writes
+        # evidence and may commit), and the judge trees are read-only inside
+        # it: that is the whole shape.
+        assert any(item.split(":")[1] == str(wt) and not item.endswith(":ro")
+                   for item in mounts), mounts
+        # …and no destination appears twice: a duplicate pair is refused by
+        # Docker as `Duplicate mount point`, so the gate could not even start
+        # the lane. (The collision RULE itself is driven in
+        # TestJudgeMountCollisions below, where it can be made to fail.)
+        destinations = [item.split(":")[1] for item in mounts
+                        if ":" in item and not item.startswith("type=")]
+        assert destinations, mounts
+        assert len(set(destinations)) == len(destinations), mounts
         # …and the judge line is disclosed BEFORE the lane starts.
         assert "run-gate: judge: assay" in proc.stdout
         assert "mounted read-only from" in proc.stdout
+
+
+# ---------------------------------------------------------------------------
+# 2b. No other mount may land on a judge tree (round-1 review)
+# ---------------------------------------------------------------------------
+
+class TestJudgeMountCollisions:
+    """Measured on a real daemon: Docker orders binds by DESTINATION DEPTH,
+    not by argv order; two mounts at ONE destination are refused as
+    `Duplicate mount point`; and a DEEPER destination inside a read-only tree
+    wins for its subtree (or fails the container with
+    `mkdirat ... read-only file system`). An argv-order claim therefore protects
+    nothing -- the gate must refuse the collision itself."""
+
+    def _lane(self):
+        return {"kind": "command", "environment": "rust", "judge": "assay",
+                "argv": ["true"]}
+
+    @pytest.fixture(autouse=True)
+    def _bare_host_mounts(self, monkeypatch):
+        # A bare host: the derived physical path EQUALS the namespace path, so
+        # the second destination comes from the declared alias — the same
+        # declaration RG-3 requires of any container lane here.
+        monkeypatch.setattr(run_gate, "physical_path", lambda path, **kw: path)
+
+    def _worktree(self, tmp_path, monkeypatch):
+        """A fixture worktree WITH RG-3's namespace alias declared: a bare host
+        derives no second view, so the alias is the only way the judge gets
+        both of its destinations (and the only way `_dual` answers at all)."""
+        worktree = tmp_path / "tree"
+        (worktree / "assay").mkdir(parents=True)
+        (worktree / "libraries" / "cowtree").mkdir(parents=True)
+        monkeypatch.setenv(run_gate.MOUNT_ALIAS_ENV_VAR,
+                           f"{worktree}=/workspaces/estate")
+        return worktree
+
+    def test_a_second_mount_at_the_judge_path_is_refused(
+            self, tmp_path, monkeypatch):
+        worktree = self._worktree(tmp_path, monkeypatch)
+        with pytest.raises(run_gate.GateError, match=r"Duplicate mount point"):
+            run_gate.refuse_mounts_over_the_judge(
+                self._lane(), "rust-r1", worktree,
+                ["-v", f"/tmp/other:{worktree / 'assay'}:ro"],
+                f"${run_gate.EXTRA_MOUNT_ENV_VAR}")
+
+    def test_a_mount_inside_a_judge_tree_is_refused(
+            self, tmp_path, monkeypatch):
+        """Deeper wins for its subtree, which is exactly the read-only claim
+        a deeper mount would break."""
+        worktree = self._worktree(tmp_path, monkeypatch)
+        with pytest.raises(run_gate.GateError, match=r"INSIDE the judge tree"):
+            run_gate.refuse_mounts_over_the_judge(
+                self._lane(), "rust-r1", worktree,
+                ["-v", f"/tmp/other:{worktree / 'libraries/cowtree/sub' }"],
+                f"${run_gate.EXTRA_MOUNT_ENV_VAR}")
+
+    def test_a_shallow_mount_of_the_judged_worktree_is_accepted(
+            self, tmp_path, monkeypatch):
+        """The worktree mount is the judge tree's PARENT and is necessary:
+        a refusal that also matched it would refuse every healthy judge lane
+        (the superset-refusal hazard)."""
+        worktree = self._worktree(tmp_path, monkeypatch)
+        run_gate.refuse_mounts_over_the_judge(
+            self._lane(), "rust-r1", worktree,
+            ["-v", f"{worktree}:{worktree}",
+             "--mount", "type=bind,source=/cow,target=/cow"],
+            "this lane's mount set")
+
+    def test_the_alias_view_of_a_judge_tree_is_also_refused(
+            self, tmp_path, monkeypatch):
+        """The judge is dual-mounted, so the namespace destination is a
+        real second way to collide with it."""
+        worktree = self._worktree(tmp_path, monkeypatch)
+        with pytest.raises(run_gate.GateError, match=r"Duplicate mount point"):
+            run_gate.refuse_mounts_over_the_judge(
+                self._lane(), "rust-r1", worktree,
+                ["-v", "/tmp/other:/workspaces/estate/assay"],
+                f"${run_gate.EXTRA_MOUNT_ENV_VAR}")
+
+    def test_the_live_run_refuses_an_extra_mount_over_the_judge(
+            self, tmp_path, monkeypatch):
+        """End to end through the runner: $RUN_GATE_EXTRA_MOUNTS is the
+        operator's own knob and it must not be able to re-open the judge.
+        Nothing is started (no `docker run` in the log)."""
+        repo, proj = _judge_repo(tmp_path, image="tester-unified:run-gate-2560")
+        log = fake_docker(tmp_path, monkeypatch)
+        monkeypatch.setenv("RUN_GATE_ALLOW_MAIN_CHECKOUT", "1")
+        monkeypatch.setenv(run_gate.EXTRA_MOUNT_ENV_VAR,
+                           f"/tmp/other={repo / 'assay'}/sub")
+        proc = run_tool(proj, "rust-r1")
+        assert proc.returncode == 2, proc.stdout + proc.stderr
+        assert "INSIDE the judge tree" in proc.stderr
+        assert [run for run in docker_runs(log) if "-d" in run] == []
 
 
 # ---------------------------------------------------------------------------
@@ -459,6 +692,74 @@ class TestJudgeIdentity:
             repo)
         assert identity["dirty"] is True
         assert "DIRTY" in run_gate.judge_identity_line(identity)
+
+    def test_dirt_ELSEWHERE_in_the_repo_leaves_the_judge_clean(self, tmp_path):
+        """`dirty` is SCOPED to the judge trees: an edit to the project under
+        judgment is not an edit to the judge (round-1 review item 4c)."""
+        repo, _proj = _judge_repo(tmp_path)
+        (repo / "unrelated.txt").write_text("x\n")
+        (repo / "proj" / "edited.txt").write_text("y\n")
+        identity = run_gate.judge_identity(
+            {"kind": "command", "environment": "rust", "judge": "assay"},
+            repo)
+        assert identity["dirty"] is False, identity["dirty_source"]
+
+    def test_an_IGNORED_file_under_the_judge_tree_makes_it_dirty(
+            self, tmp_path):
+        """`git status --porcelain` alone never reports an ignored file, so a
+        judge tree whose only change was a build artifact read as clean -- a
+        false certification about exactly the bytes the mount contains
+        (round-1 review item 5). The flags below were verified against git's
+        own behaviour in a scratch repository (`--ignored=matching` shows it,
+        and it stays hidden without it)."""
+        repo, _proj = _judge_repo(tmp_path)
+        (repo / "assay" / "src" / ".gitignore").write_text("artifact.txt\n")
+        commit_all(repo, "ignore a build artifact")
+        (repo / "assay" / "src" / "artifact.txt").write_text("built\n")
+        identity = run_gate.judge_identity(
+            {"kind": "command", "environment": "rust", "judge": "assay"},
+            repo)
+        assert identity["dirty"] is True
+        # The scoped command is the reason, and it names the flags that make
+        # this answer honest rather than merely conventional.
+        assert "--ignored=matching" in identity["dirty_source"]
+
+    def test_a_repository_that_HIDES_untracked_files_still_reports_them(
+            self, tmp_path):
+        """The plain command inherits the repository's own
+        `status.showUntrackedFiles` setting, and a consumer config can set it
+        to `no`. Forcing `all` per invocation is what makes the answer a fact
+        about the tree instead of about somebody's `.git/config`."""
+        repo, _proj = _judge_repo(tmp_path)
+        subprocess.run(["git", "-C", str(repo), "config",
+                        "status.showUntrackedFiles", "no"], check=True)
+        (repo / "assay" / "src" / "assay" / "untracked.py").write_text("x\n")
+        identity = run_gate.judge_identity(
+            {"kind": "command", "environment": "rust", "judge": "assay"},
+            repo)
+        assert identity["dirty"] is True
+
+    def test_git_status_FAILING_is_unknown_with_its_own_reason(
+            self, tmp_path, monkeypatch):
+        """A non-zero status is not "clean": it is an answer that never came
+        (round-1 review item 4b). Distinct from the git-absent case, and the
+        record says which."""
+        repo, _proj = _judge_repo(tmp_path)
+        original_run = run_gate.subprocess.run
+
+        def run(argv, **kw):
+            if "status" in argv:
+                # Every OTHER git call (describe, rev-parse) still answers.
+                return SimpleNamespace(returncode=128, stdout="",
+                                       stderr="fatal: bad repo")
+            return original_run(argv, **kw)
+        monkeypatch.setattr(run_gate.subprocess, "run", run, raising=False)
+        identity = run_gate.judge_identity(
+            {"kind": "command", "environment": "rust", "judge": "assay"},
+            repo)
+        assert identity["dirty"] is None
+        assert "answered 128" in identity["dirty_source"]
+        assert "dirty state unknown" in run_gate.judge_identity_line(identity)
 
     def test_no_release_tag_is_stated_not_guessed(self, tmp_path):
         repo, _proj = _judge_repo(tmp_path)
@@ -611,9 +912,11 @@ class TestJudgeCellEnvironment:
         for name, _rel in run_gate.JUDGE_IMPORT_NAMES:
             assert name in joined
         # The guard runs before the command and is fatal: an image's own
-        # assay must not judge silently.
+        # assay must not judge silently. The code it ends on is the RESERVED
+        # one, not a lane-remappable 2 (see TestJudgeExitCodeBoundary).
         assert "was NOT provided to this lane" in joined
-        assert "exit 2" in joined
+        assert f"exit {run_gate.JUDGE_REFUSAL_EXIT_CODE}" in joined
+        assert "exit 2" not in joined
 
     def test_a_lane_without_the_key_gets_no_setup(self, tmp_path):
         assert run_gate.judge_source_setup(
@@ -644,6 +947,10 @@ class TestJudgeCellEnvironment:
              "assay_analysis", "assay_analysis/__init__.py",
              "cowtree", "cowtree/__init__.py"],
             capture_output=True, text=True, env=elsewhere, cwd=str(tmp_path))
+        # The GUARD's own status is 2 -- it is a probe run by the lane's
+        # shell, which is what translates it into the RESERVED lane code
+        # (JUDGE_REFUSAL_EXIT_CODE) so the lane's `exit_map` cannot remap a
+        # refusal into a verdict.
         assert refused.returncode == 2, refused.stdout
 
     def test_the_command_inner_carries_the_setup_before_the_lane_argv(self):
@@ -855,7 +1162,7 @@ class TestJudgeEndToEnd:
             self, tmp_path, monkeypatch):
         """The guard's whole content is the CONDITION it evaluates, not the
         code text: a judge tree that provides `assay` and `cowtree` but not
-        `assay_analysis` must fail the lane (exit 2, naming what was not
+        `assay_analysis` must fail the lane (ERROR, naming what was not
         provided) instead of running a partially importable judge. This is the
         oracle a construction-only pin of the guard string cannot supply."""
         repo, proj = _judge_repo(tmp_path)
@@ -866,6 +1173,8 @@ class TestJudgeEndToEnd:
                            restricted_path(*self.LANE_PATH_TOOLS))
         proc = run_tool(proj, "rust-r1")
         assert proc.returncode == 2, proc.stdout + proc.stderr
+        assert "verdict ERROR" in proc.stdout
+        assert f"reason {run_gate.JUDGE_REFUSAL_REASON}" in proc.stdout
         assert "was NOT provided" in proc.stdout
         assert "assay_analysis" in proc.stdout
         # …and the lane's own command never ran.
@@ -882,9 +1191,91 @@ class TestJudgeEndToEnd:
         _repo, _proj, _log, proc = self._run(
             tmp_path, monkeypatch, judge_prefix=prefix)
         assert proc.returncode == 2, proc.stdout + proc.stderr
+        assert "verdict ERROR" in proc.stdout
+        assert f"reason {run_gate.JUDGE_REFUSAL_REASON}" in proc.stdout
         assert "does not install an interpreter" in proc.stdout
         # …and the refusal names the declaration that needs it.
         assert "judge" in proc.stdout
+
+
+# ---------------------------------------------------------------------------
+# 5b. The refusal's exit code belongs to RUN-GATE, not to `exit_map`
+# ---------------------------------------------------------------------------
+
+class TestJudgeExitCodeBoundary:
+    """Round-1 review: an in-lane refusal that ends on an ordinary code
+    passes through the lane's own `exit_map`, so "the judge was not provided"
+    arrived as a FAILED LANE (no mapping), or as a PASS (`2 = "PASS"`).
+    Run-gate owns the mapping for the refusal IT emits: the same refusal must
+    read ERROR in all three configurations, and a lane that tries to remap the
+    reserved code is refused at load rather than trusted to report honestly."""
+
+    def _run_with_map(self, tmp_path, monkeypatch, exit_map):
+        config = JUDGE_CONFIG
+        if exit_map is None:
+            config = config.replace(
+                'exit_map = { "0" = "PASS", "2" = "ERROR" }\n', "")
+        else:
+            config = config.replace(
+                'exit_map = { "0" = "PASS", "2" = "ERROR" }',
+                "exit_map = { " + ", ".join(
+                    f'"{code}" = "{verdict}"'
+                    for code, verdict in exit_map.items()) + " }")
+        repo = make_repo(tmp_path)
+        _minimal_judge(repo)
+        proj = make_project(repo, config.replace("{image}",
+                                                 "tester-unified-rust:local"))
+        (proj / "assay.toml").write_text(
+            _lanes_toml(["/bin/sh", "-c", "true"]))
+        commit_all(repo, "fixture")
+        # A judge tree that cannot serve every module: the guard MUST refuse.
+        shutil.rmtree(repo / "assay" / "analysis")
+        commit_all(repo, "drop the analysis sibling")
+        fake_docker_running_lane(tmp_path, monkeypatch)
+        monkeypatch.setenv("RUN_GATE_TEST_LANE_PATH",
+                           restricted_path(*TestJudgeEndToEnd.LANE_PATH_TOOLS))
+        return proj, run_tool(proj, "rust-r1")
+
+    @pytest.mark.parametrize("exit_map", [None, {"2": "FAIL"},
+                                          {"2": "PASS"}])
+    def test_a_judge_refusal_is_error_whatever_exit_map_says(
+            self, tmp_path, monkeypatch, exit_map):
+        _proj, proc = self._run_with_map(tmp_path, monkeypatch, exit_map)
+        assert proc.returncode == 2, proc.stdout + proc.stderr
+        assert "verdict ERROR" in proc.stdout, proc.stdout
+        assert "verdict FAIL" not in proc.stdout, proc.stdout
+        assert "verdict PASS" not in proc.stdout, proc.stdout
+        assert f"reason {run_gate.JUDGE_REFUSAL_REASON}" in proc.stdout
+
+    def test_the_mapping_is_owned_before_the_lane_table(self):
+        """The boundary is a ORDERING fact, driven directly: the reserved
+        code is answered before `exit_map` is even read."""
+        lane = {"kind": "command", "environment": "rust", "judge": "assay",
+                "exit_map": {"2": "PASS"}}
+        result = run_gate.command_lane_result(
+            run_gate.JUDGE_REFUSAL_EXIT_CODE, lane)
+        assert result.verdict == "ERROR"
+        assert result.reason == run_gate.JUDGE_REFUSAL_REASON
+        # …and a NON-judge lane's own 63 still maps as its author wrote it,
+        # so the reservation is scoped to the lane the refusal belongs to.
+        assert run_gate.command_lane_result(
+            run_gate.JUDGE_REFUSAL_EXIT_CODE, {"argv": ["true"]}).verdict \
+            == "FAIL"
+
+    def test_a_judge_lane_may_not_remap_the_reserved_code(self):
+        with pytest.raises(run_gate.GateError, match=r"RESERVED"):
+            run_gate._validate_lane(
+                "rust-r1", {"kind": "command", "environment": "rust",
+                            "argv": ["true"], "judge": "assay",
+                            "exit_map": {
+                                str(run_gate.JUDGE_REFUSAL_EXIT_CODE): "PASS"}},
+                "fixture")
+        # Every other code maps as usual: the reservation is one code, not
+        # the table.
+        run_gate._validate_lane(
+            "rust-r1", {"kind": "command", "environment": "rust",
+                        "argv": ["true"], "judge": "assay",
+                        "exit_map": {"2": "ERROR"}}, "fixture")
 
 
 
@@ -1030,12 +1421,277 @@ class TestJudgeProviderWiring:
         )["lanes"]["rust-r1"]["latest"]
         assert latest["judge"]["dirty"] is True
 
+    def test_a_clean_judge_prints_no_warning(
+            self, tmp_path, monkeypatch, capsys):
+        """The three states of `dirty` must read differently (round-1 review
+        item 4d): clean says nothing, True says DIRTY, None says UNKNOWN with
+        the reason -- a ternary collapsed the last two into one sentence."""
+        _repo, _proj, code, streams = self._run(
+            tmp_path, monkeypatch, capsys, "rust-r1")
+        assert code == 0, streams.err
+        assert "(clean;" in streams.out
+        assert "WARNING: judge source" not in streams.out
+
+    def test_an_UNDETERMINED_cleanliness_is_disclosed_as_unknown(
+            self, tmp_path, monkeypatch, capsys):
+        """`dirty: null` is the third state, and it may not borrow the dirty
+        warning's wording: the record already carries the reason."""
+        repo, proj = _judge_repo(tmp_path)
+        original_run = run_gate.subprocess.run
+
+        def run(argv, **kw):
+            if "status" in argv:
+                return SimpleNamespace(returncode=128, stdout="",
+                                       stderr="fatal: bad repo")
+            return original_run(argv, **kw)
+        monkeypatch.setattr(run_gate.subprocess, "run", run, raising=False)
+        fake_docker(tmp_path, monkeypatch)
+        monkeypatch.chdir(proj)
+        assert run_gate.main(["rust-r1"]) == 0
+        streams = capsys.readouterr()
+        assert "dirty state unknown" in streams.out
+        assert "cleanliness is UNKNOWN" in streams.out
+        assert "WARNING: judge source is dirty" not in streams.out
+        latest = json.loads(
+            (proj / ".run-gate/history.json").read_text()
+        )["lanes"]["rust-r1"]["latest"]
+        assert latest["judge"]["dirty"] is None
+        assert "answered 128" in latest["judge"]["dirty_source"]
+
+    def test_the_identity_is_RE_DERIVED_at_the_container_start(
+            self, tmp_path, monkeypatch, capsys):
+        """Round-1 review item 5, second half: the preflight derives the
+        identity before admission and the container starts later, so a commit
+        landing in between would be recorded under the wrong bytes. The
+        refresh names the change and records what the mount actually holds."""
+        repo, proj = _judge_repo(tmp_path)
+        stale = dict(run_gate.judge_identity(
+            {"kind": "command", "environment": "rust", "judge": "assay"},
+            repo))
+        stale["commit"] = "0" * 40
+        lane = {"kind": "command", "environment": "rust",
+                "judge": "assay", "_judge_identity": stale}
+        record = {"commit": "0" * 40}
+        monkeypatched = run_gate.refresh_judge_identity(
+            lane, "rust-r1", repo, record)
+        assert record["judge"]["commit"] != "0" * 40
+        head = subprocess.run(["git", "-C", str(repo), "rev-parse", "HEAD"],
+                             capture_output=True, text=True).stdout.strip()
+        assert record["judge"]["commit"] == head
+        assert lane["_judge_identity"]["commit"] == head
+        assert monkeypatched["commit"] == head
+        captured = capsys.readouterr()
+        assert "changed between the preflight and this container's start" \
+            in captured.err
+
+    def test_the_runner_re_derives_a_STALE_preflight_snapshot(
+            self, tmp_path, monkeypatch, capsys):
+        """Driven through `run_gate.main`, not by calling the helper: an oracle
+        that only calls `refresh_judge_identity` itself would stay green if the
+        runner stopped calling it (round-1 mutant M10)."""
+        stale = dict(run_gate.judge_identity(
+            {"kind": "command", "environment": "rust", "judge": "assay"},
+            tmp_path / "elsewhere"))
+        stale["commit"] = "0" * 40
+        real_preflight = run_gate.preflight_judge_provider
+
+        def preflight(lane, lane_name, worktree, env, source):
+            identity = real_preflight(lane, lane_name, worktree, env, source)
+            return {**identity, "commit": stale["commit"]} \
+                if identity is not None else None
+        monkeypatch.setattr(run_gate, "preflight_judge_provider", preflight)
+        _repo, proj, code, streams = self._run(
+            tmp_path, monkeypatch, capsys, "rust-r1")
+        assert code == 0, streams.err
+        head = subprocess.run(
+            ["git", "-C", str(proj.parent), "rev-parse", "HEAD"],
+            capture_output=True, text=True).stdout.strip()
+        latest = json.loads(
+            (proj / ".run-gate/history.json").read_text()
+        )["lanes"]["rust-r1"]["latest"]
+        assert latest["judge"]["commit"] == head
+        assert latest["judge"]["commit"] != "0" * 40
+        assert "changed between the preflight and this container's start" \
+            in streams.err
+
+    def test_the_inflight_record_carries_the_judge_it_started_with(
+            self, tmp_path, monkeypatch, capsys):
+        """A re-attach can only adopt what was WRITTEN. The payload is spied
+        on rather than read back, because the record is cleared when the run
+        finishes -- the fact under test is what a client that DIES would have
+        left behind (round-1 mutant M11)."""
+        written = {}
+        real_write = run_gate.write_inflight_record
+
+        def spy(project_dir, worktree, lane_name, payload):
+            written[lane_name] = copy.deepcopy(payload)
+            return real_write(project_dir, worktree, lane_name, payload)
+        monkeypatch.setattr(run_gate, "write_inflight_record", spy)
+        repo, _proj, code, streams = self._run(
+            tmp_path, monkeypatch, capsys, "rust-r1")
+        assert code == 0, streams.err
+        payload = written["rust-r1"]
+        head = subprocess.run(["git", "-C", str(repo), "rev-parse", "HEAD"],
+                              capture_output=True, text=True).stdout.strip()
+        assert isinstance(payload["judge"], dict), payload["judge"]
+        assert payload["judge"]["name"] == "assay"
+        assert payload["judge"]["commit"] == head
+
+    def test_an_unchanged_identity_is_not_re_announced(
+            self, tmp_path, monkeypatch, capsys):
+        """The refresh is silent when nothing moved -- a warning on every run
+        would be the noise that teaches readers to ignore it."""
+        repo, _proj = _judge_repo(tmp_path)
+        lane = {"kind": "command", "environment": "rust",
+                "judge": "assay"}
+        current = run_gate.judge_identity(lane, repo)
+        lane["_judge_identity"] = dict(current)
+        record: dict = {}
+        run_gate.refresh_judge_identity(lane, "rust-r1", repo, record)
+        assert record["judge"]["commit"] == current["commit"]
+        assert "changed between" not in capsys.readouterr().err
+
     def test_help_states_which_judge_run_gate_will_mount(
             self, tmp_path, monkeypatch, capsys):
         _repo, _proj, code, streams = self._run(
             tmp_path, monkeypatch, capsys, "--help")
         assert code == 0
         assert "judge=assay (provided by run-gate)" in streams.out
+
+    def test_a_re_attached_run_records_the_judge_it_started_with(
+            self, tmp_path):
+        """Round-1 review item 5, first half: adopting a prior run must not
+        record the CURRENT worktree's judge as the original run's. The inflight
+        record carries the identity, and adopting it wins over a fresh
+        derivation; a pre-feature record (no `judge` key) records none at all.
+        Driven at the boundary itself, so no container fixture is involved."""
+        repo, _proj = _judge_repo(tmp_path)
+        started_with = {"provided_by": "run-gate", "name": "assay",
+                        "commit": "1" * 40, "version": None,
+                        "version_source": "recorded by the starting client",
+                        "dirty": None, "dirty_source": "not re-checked",
+                        "source": f"{repo}/assay", "pythonpath": [],
+                        "mounts": ["assay"]}
+        record: dict = {}
+        run_gate.adopt_inflight_start(
+            record, {"started_at": "2026-09-02T11:00:00Z",
+                     "judge": started_with})
+        assert record["judge"] == started_with
+        # A legacy record (no judge at all) adopts NONE: today's derivation is
+        # not evidence about a run that started without one.
+        legacy: dict = {"judge": {"commit": "2" * 40}}
+        run_gate.adopt_inflight_start(
+            legacy, {"started_at": "2026-09-02T11:00:00Z"})
+        assert "judge" not in legacy
+        # …and the inflight payload a fresh container writes carries it, so a
+        # later re-attach HAS something to adopt.
+        fresh = run_gate.judge_identity(
+            {"kind": "command", "environment": "rust", "judge": "assay"},
+            repo)
+        assert fresh["commit"] == subprocess.run(
+            ["git", "-C", str(repo), "rev-parse", "HEAD"],
+            capture_output=True, text=True).stdout.strip()
+
+
+# ---------------------------------------------------------------------------
+# 6b. A SEQUENCE preflights its judge members before its first member runs
+# ---------------------------------------------------------------------------
+
+class TestJudgeSequencePreflight:
+    """Round-1 review item 8: every member is its own invocation, so a judge
+    member's `external-missing` used to surface only AFTER the members ahead
+    of it had run -- a sequence that spent work and then reported a
+    precondition. The precondition now belongs at the sequence's own start."""
+
+    def test_a_judge_member_is_preflighted_BEFORE_the_first_member_runs(
+            self, tmp_path, monkeypatch, capsys):
+        config = textwrap.dedent("""\
+            schema_version = 1
+
+            [environments.rust]
+            mode = "ephemeral"
+            image = "tester-unified:run-gate-2560"
+
+            [lanes.first]
+            kind = "command"
+            environment = "rust"
+            argv = ["bash", "-c", "echo first-marker"]
+            clean_tree = false
+
+            [lanes.judged]
+            kind = "command"
+            environment = "rust"
+            judge = "assay"
+            argv = ["bash", "-c", "echo judged-marker"]
+            clean_tree = false
+
+            [lanes.gate]
+            kind = "sequence"
+            lanes = ["first", "judged"]
+            """)
+        repo = make_repo(tmp_path)
+        _minimal_judge(repo)
+        proj = make_project(repo, config)
+        monkeypatch.chdir(proj)
+        # …and the judge tree the LATER member needs is gone: the sequence must
+        # refuse before its FIRST member starts.
+        shutil.rmtree(repo / "assay")
+        commit_all(repo, "drop the judge the second member needs")
+        fake_docker(tmp_path, monkeypatch)
+        monkeypatch.setenv("RUN_GATE_ALLOW_MAIN_CHECKOUT", "1")
+        code = run_gate.main(["gate"])
+        streams = capsys.readouterr()
+        assert code == 3, streams.out + streams.err
+        assert "reason external-missing" in streams.out, streams.out
+        assert "judged" in streams.err, streams.err
+        assert "first-marker" not in streams.out
+        # …and nothing at all was started, so the members' own preflights
+        # never had a container to refuse into.
+        assert [call for call in lane_runs(
+            tmp_path / "docker-calls.log")] == []
+
+    def test_a_healthy_sequence_discloses_each_judge_member_up_front(
+            self, tmp_path, monkeypatch, capsys):
+        """The positive side: the preflight runs on the healthy path too and
+        SAYS which judge each judge member will get, before member one."""
+        config = textwrap.dedent("""\
+            schema_version = 1
+
+            [environments.rust]
+            mode = "ephemeral"
+            image = "tester-unified:run-gate-2560"
+
+            [lanes.first]
+            kind = "command"
+            environment = "rust"
+            argv = ["bash", "-c", "echo first-marker"]
+            clean_tree = false
+
+            [lanes.judged]
+            kind = "command"
+            environment = "rust"
+            judge = "assay"
+            argv = ["bash", "-c", "echo judged-marker"]
+            clean_tree = false
+
+            [lanes.gate]
+            kind = "sequence"
+            lanes = ["first", "judged"]
+            """)
+        repo = make_repo(tmp_path)
+        _minimal_judge(repo)
+        proj = make_project(repo, config)
+        monkeypatch.chdir(proj)
+        fake_docker(tmp_path, monkeypatch)
+        monkeypatch.setenv("RUN_GATE_ALLOW_MAIN_CHECKOUT", "1")
+        assert run_gate.main(["gate"]) == 0
+        streams = capsys.readouterr()
+        line = ("sequence 'gate' preflight: member 'judged' provides its "
+                "judge")
+        assert line in streams.out, streams.out
+        # …and it was said before ANY member produced a line of its own.
+        assert streams.out.index(line) < streams.out.index(
+            "run-gate: lane 'first'"), streams.out
 
 
 # ---------------------------------------------------------------------------
@@ -1080,6 +1736,42 @@ class TestJudgeProviderDocs:
         assert any("judge = \"assay\"" in piece for piece in block), consumers
         assert "RUN_GATE_JUDGE_PYTHON" in consumers
         assert "external-missing" in consumers
+
+    def test_the_mount_mechanism_is_documented_as_the_destination(self):
+        """The retracted claim must not come back.
+
+        The first cut documented (and pinned) "the overlay is appended after
+        every other mount, so it wins". Docker orders binds by DESTINATION
+        DEPTH and refuses two at one path, so that claim was false and the
+        protection is the refusal of a colliding destination. A document that
+        still sells argv order would tell a lane author the opposite of the
+        rule the code enforces, so it goes red here.
+        """
+        for relative in ("README.md", "CONSUMERS.md", "SPEC.md",
+                         "docs/DESIGN-GUIDE.md",
+                         "docs/DESIGN-judge-provider-2026-11.md"):
+            text = self._read(relative).lower()
+            # The retracted claim, in the shape each document carried it.
+            assert "after every other mount" not in text, relative
+            assert "appended after every other mount" not in text, relative
+            # …and the rule that replaced it, so a document cannot lose the
+            # fact AND the retraction in one careless edit.
+            assert "destination" in text, relative
+
+    def test_the_non_vbpub_limit_and_its_alternative_are_documented(self):
+        """A standalone consumer (no `assay/` of its own) must be able to read
+        what happens to it and what to do instead — otherwise the feature's
+        own refusal is the only place that fact exists."""
+        consumers = self._read("CONSUMERS.md")
+        assert "RG-287" in consumers
+        assert "assay_command" in consumers.split("RG-287")[0][-2500:], (
+            "the non-vbpub section must name the external-judge alternative")
+        backlog = self._read("KNOWN_ISSUES_TODO_BACKLOG.md")
+        assert backlog.count("## RG-287 —") == 1
+        assert backlog.count("## RG-286 —") == 1
+        body = backlog.split("## RG-285 —")[1].split("\n## RG-2", 1)[0]
+        assert "RG-286" in body, (
+            "RG-285's own entry must name the real-image gap it leaves")
 
     def test_the_spec_states_the_rule_and_the_record(self):
         spec = self._read("SPEC.md")
