@@ -396,7 +396,7 @@ with an empty home.
 | nano | content appended to `/etc/nanorc` (not `include`: nano rejects `set` in included files) | none | `/etc/nanorc`, then `~/.nanorc`/`~/.config/nano/nanorc` (per-setting override) |
 | htop | `/etc/htoprc` | none (htop writes its own file when you save settings) | `~/.config/htop/htoprc`, `~/.htoprc`, then `/etc/htoprc` |
 | mc | `/etc/mc/mc.ini` | none | `~/.config/mc/ini`, then `/etc/mc/mc.ini`, then `/usr/share/mc/mc.ini` |
-| tmux | `/etc/tmux.conf` | none (tmux is opt-in) | `/etc/tmux.conf`, then `~/.tmux.conf` or `~/.config/tmux/tmux.conf` (later settings win) |
+| tmux | `/etc/tmux.conf` | none | `/etc/tmux.conf`, then `~/.tmux.conf` or `~/.config/tmux/tmux.conf` (later settings win); the VS Code templates start one named session per terminal |
 | git | appended to `/etc/gitconfig` | none | system, then `~/.gitconfig`, then the repository's config (later wins) |
 | readline (bash) | appended to `/etc/inputrc` | none | `~/.inputrc` REPLACES `/etc/inputrc`; start it with `$include /etc/inputrc` to keep the defaults. zsh gets the same keys from `zshrc`, not from inputrc |
 | vim | `/etc/vim/vimrc.local`, sourced by Debian's `/etc/vim/vimrc` | none | `/etc/vim/vimrc`, then `~/.vimrc` (later wins) |
@@ -417,6 +417,31 @@ a fixture tree with a `configs/lazy` module gets its lockfile redirected - not a
 working NvChad. Neovim's own fallback to `$XDG_CONFIG_DIRS/nvim/init.lua` starts the
 tree; an earlier `sysinit.vim` also `dofile`d it and so ran it twice per start, which
 the fixture's run counter now catches.
+
+## VS Code terminal sessions
+
+The VS Code server owns integrated-terminal processes. The MDT templates start each terminal in a
+separate tmux session, so two VS Code terminals keep independent shells and input. A shared `main`
+session would attach both terminals to the same pane. The template's Linux terminal profile creates
+a timestamp-and-PID session name and starts zsh inside it; `docker exec`, SSH and tasks still use
+their own commands.
+
+The tmux server is separate from the VS Code server. It keeps its panes when VS Code reloads or
+restarts while the container stays up. A container restart, rebuild or OOM kill ends those
+processes. `shutdownAction: "none"` covers a VS Code disconnect; it does not turn tmux into a
+container service.
+
+For an existing terminal, `reptyr -T` uses experimental TTY stealing to move processes on that
+terminal. It avoids changing the target processes, but uses `ptrace` to access the terminal-emulator
+process; the host's ptrace policy must allow that. The templates grant `SYS_PTRACE` for this access;
+the live migration worked with `ptrace_scope=0` before the capability was added. The host policy still
+applies after a rebuild. The ordinary `reptyr PID` mode ptraces the target and does not reliably move a
+process's children. Detached children with their own session or `TTY ?` are outside the terminal
+session being stolen and need separate inspection. The Claude Code VS Code extension
+has no terminal; its conversation may reopen automatically or can be restored from Session history,
+while its process is restarted. See the [consumer procedure](CONSUMERS.md#persistent-vs-code-terminals), the
+[migration guide](move-running-VSC-terminal-session-to-tmux-reptyr.md), and Anthropic's
+[reload behavior](https://code.claude.com/docs/en/vs-code#continue-conversations-after-a-reload).
 
 ## OCI names keep runtime paths stable
 

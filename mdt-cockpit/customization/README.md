@@ -25,7 +25,7 @@ What ships here and where it is wired:
 | `htoprc` | `/etc/htoprc` | htop reads it when the user has no `~/.config/htop/htoprc` |
 | `mc.ini` | `/etc/mc/mc.ini` | mc reads it when the user has no `~/.config/mc/ini` |
 | `nanorc` | appended to `/etc/nanorc` (an `include` would be refused: nano rejects `set` in included files) | nano reads `~/.nanorc` after it |
-| `tmux.conf` | `/etc/tmux.conf` | tmux reads `~/.tmux.conf` after it; tmux is opt-in and nothing starts it. Prefix Ctrl+Space (Ctrl+B and Ctrl+O collide with Claude Code, mc and vim) |
+| `tmux.conf` | `/etc/tmux.conf` | tmux reads `~/.tmux.conf` after it; MDT's VS Code templates start one tmux session per integrated terminal. Prefix Ctrl+Space (Ctrl+B and Ctrl+O collide with Claude Code, mc and vim) |
 | `gitconfig` | appended to `/etc/gitconfig` | `core.pager=delta` (terminal output only; `interactive.diffFilter`, `delta.navigate`, `delta.line-numbers`), `merge.conflictStyle=zdiff3`, `diff.colorMoved=default`, `push.autoSetupRemote=true`, `init.defaultBranch=main`; `~/.gitconfig` and repository config override |
 | `inputrc` | appended to `/etc/inputrc` | readline defaults. A user `~/.inputrc` REPLACES `/etc/inputrc`: start it with `$include /etc/inputrc` |
 | `vimrc.local` | `/etc/vim/vimrc.local` | sourced by Debian's `/etc/vim/vimrc`: `syntax on`, `hidden`, 4-space `expandtab`, `ignorecase smartcase incsearch hlsearch`, `wildmenu`, `scrolloff=5`, `ttimeoutlen=50`, `nomodeline`; `~/.vimrc` overrides |

@@ -153,8 +153,8 @@ see:
   environment for the server. It runs the login **and** interactive startup files, so a slow or
   noisy rc file affects every VS Code start.
 - **`customizations.vscode.settings` and `extensions`** come from the `devcontainer.json`.
-  The template sets `python.defaultInterpreterPath`, the zsh terminal profile, scrollback, persistent
-  sessions and the watcher/Git excludes (see [Shell selection](#shell-selection)).
+  The template sets `python.defaultInterpreterPath`, the tmux terminal profile with zsh inside,
+  scrollback, persistent sessions and the watcher/Git excludes (see [Shell selection](#shell-selection)).
 - **`shutdownAction: "none"`** keeps the container running when the VS Code window closes.
 
 ## 6. `postCreateCommand`: finalizer (phase 4)
@@ -211,9 +211,10 @@ VS Code picks the terminal shell in this order:
    remote-machine settings).
 2. Otherwise the login shell in `/etc/passwd`. The image creates `vscode` with `/bin/bash`.
 
-The templates set `terminal.integrated.defaultProfile.linux` to `zsh`, so a VS Code terminal opens **zsh**.
-Remove or override that setting (any settings layer) to get bash. Opt-in key, tmux and font files for the
-integrated terminal are in [`../templates/vscode/`](../templates/vscode/README.md).
+The templates set `terminal.integrated.defaultProfile.linux` to `tmux`. That profile starts a separate,
+named tmux session for each VS Code terminal and runs **zsh** inside it. Override the profile in a higher
+settings layer to open bash directly. Key passthrough and font files for the integrated terminal are in
+[`../templates/vscode/`](../templates/vscode/README.md); the tmux profile is also shown there.
 
 This changes the VS Code terminal only. `docker exec`, `ssh`, tasks and `$SHELL` still use bash. To
 change them as well, change the login shell (`chsh -s /usr/bin/zsh vscode`, or in the image).

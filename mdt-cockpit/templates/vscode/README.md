@@ -1,12 +1,14 @@
-# Opt-in VS Code files for the SSH + devcontainer + integrated terminal setup
+# VS Code files for the SSH + devcontainer + integrated terminal setup
 
-Nothing here is applied by the template. Each file is a copy-in snippet; pick what you want.
+The devcontainer template already starts each VS Code integrated terminal in its own tmux session.
+The settings file below is a reference for another settings layer or for overriding that profile.
+The remaining files are copy-in snippets; pick what you want.
 
 | File | Where it applies | What it does |
 |---|---|---|
 | `terminal-keys-terminal-first.settings.jsonc` | settings (container or user) | Sends most keys to the terminal while it has focus. |
 | `terminal-keys-balanced.settings.jsonc` | settings (container or user) | Keeps most VS Code shortcuts; releases a listed set (Ctrl+J, Ctrl+P/E, F1, F2, Ctrl+F, F3-F11 family) to the terminal. The file lists what each removal costs. |
-| `terminal-tmux.settings.jsonc` | settings (container or user) | Adds a "tmux" terminal profile (attach-or-create session `main`). |
+| `terminal-tmux.settings.jsonc` | settings (container or user) | Defines the template's default tmux terminal profile, with a unique session per terminal. |
 | `keybindings.client.jsonc` | **client** `keybindings.json` | Shift+Backspace as delete-word, an editor-focus key, optional Shift+Enter. |
 
 Use ONE of the two key profiles, not both.
@@ -21,7 +23,8 @@ setting is read from the layer that owns it:
 - The devcontainer's `customizations.vscode.settings`: written into the remote/machine settings file
   below, which a rebuild does not rewrite (see next section).
 - Remote/machine settings (`~/.vscode-server/data/Machine/settings.json` in the container): every
-  workspace opened in this container, kept in the persisted home.
+  workspace opened in this container, kept in the persisted home. These settings control the remote
+  Linux terminal; Windows user settings can override them.
 - User settings on Windows: every window of yours.
 - Keybindings and fonts are client-side: `keybindings.json`, and `terminal.integrated.fontFamily` (the
   font must be installed on Windows; for an icon-heavy prompt use a Nerd Font family name exactly as
@@ -35,7 +38,7 @@ The home, including `~/.vscode-server`, survives a rebuild. A rebuild does not r
 2026-11-03 carried `files.watcherExclude` in its `devcontainer.metadata` label while its machine
 settings, written 2026-10-23, did not (MDT-076). Two ways to apply a changed block:
 
-- Merge it into `~/.vscode-server/data/Machine/settings.json` by hand, then run `Developer: Reload Window`.
+- Merge the changed keys into `~/.vscode-server/data/Machine/settings.json` by hand, then run `Developer: Reload Window`.
 - Move the file away (`mv ~/.vscode-server/data/Machine/settings.json{,.bak}`), rebuild, then copy back
   any keys of your own from the `.bak` file.
 
@@ -86,14 +89,24 @@ Windows reports AltGr as Ctrl+Alt. No file here binds a Ctrl+Alt combination, fo
 
 ## Terminal sessions: what survives
 
-Terminal processes are children of the VS Code server in the container. A window reload or a dropped
-SSH connection reconnects to the same shells (`terminal.integrated.enablePersistentSessions`). They end
-when the server ends: container restart or rebuild, an OOM kill by the cgroup limit, a VS Code update that
-replaces the server, or "Kill VS Code Server". For work that must outlive that, start it detached (`nohup`,
-a service) or inside tmux in a container that stays up (`shutdownAction: "none"` is set).
+The template starts each new VS Code terminal in a separate tmux session named `vscode-<UTC time>-<PID>`.
+The profile starts zsh inside that session. The unique name keeps separate VS Code terminals from sharing
+one pane. A VS Code window/server restart or dropped connection does not stop the tmux server while the
+container stays up (`shutdownAction: "none"` is set). A container restart, rebuild or OOM kill does stop
+it. To list sessions, run `tmux ls`. From a shell outside tmux, attach with `tmux attach -t <session>`;
+from inside tmux, switch with `tmux switch-client -t <session>`. After the work is finished, remove
+its session with `tmux kill-session -t <session>`.
+
+Before restarting the VS Code server, move any already-running integrated-terminal processes with
+`reptyr -T`; the recipe has the process list, tree view, and guarded command:
+[`move-running-VSC-terminal-session-to-tmux-reptyr.md`](../../docs/move-running-VSC-terminal-session-to-tmux-reptyr.md).
+The `-T` mode transfers the processes attached to that PTY. A process with `TTY ?` is detached from it
+and needs separate inspection. The Claude Code extension-host process has no terminal and cannot be
+moved to tmux; after reload, restore its conversation from the extension's Session history if it did not
+reopen automatically.
 
 ## Entering the container without VS Code
 
 On the Docker host: `docker exec -it -u vscode <container> zsh`, where the container is `mdt-cockpit-<USER>-<folder>` (per-repo template) or `mdt-cockpit-<USER>` (host-folder template); `docker ps --format '{{.Names}}'` lists it. That shell lacks
-VS Code's environment (`SSH_AUTH_SOCK`, `BROWSER`, the git credential helper). A tmux session started in a
-VS Code terminal can be attached from there with `tmux attach -t main`.
+VS Code's environment (`SSH_AUTH_SOCK`, `BROWSER`, the git credential helper). List sessions with
+`tmux ls`, then attach from there with `tmux attach -t <session>`.

@@ -229,6 +229,10 @@
     "--cap-add", "SYS_ADMIN",
     "--device", "/dev/fuse",
 
+    // reptyr -T must ptrace the terminal emulator to take over its PTY master.
+    // This create-time capability is picked up after the container is rebuilt.
+    "--cap-add", "SYS_PTRACE",
+
     "--security-opt", "apparmor=unconfined",
 
     "--security-opt", "seccomp=unconfined",
@@ -258,18 +262,28 @@
     "vscode": {
       "settings": {
         "python.defaultInterpreterPath": "python3",
-        // Terminal: zsh is installed in the image (completion menus, fzf, autosuggestions); $SHELL,
-        // `docker exec` and ssh stay bash. Scrollback is held in the VS Code client, so it is cheap.
-        "terminal.integrated.defaultProfile.linux": "zsh",
+        // Each VS Code terminal starts its own tmux session, with zsh inside. The timestamp and
+        // launcher PID make session names unique; tmux sessions survive a VS Code server restart
+        // while this container stays up. Use `tmux ls` and `tmux attach -t <name>` after reconnecting.
+        // `docker exec`, ssh, tasks and $SHELL stay bash. Scrollback is held in the VS Code client.
+        "terminal.integrated.profiles.linux": {
+          "tmux": {
+            "path": "bash",
+            "args": ["-lc", "exec tmux new-session -s \"vscode-$(date -u +%Y%m%dT%H%M%SZ)-$$\" /usr/bin/zsh"],
+            "icon": "terminal-tmux"
+          }
+        },
+        "terminal.integrated.defaultProfile.linux": "tmux",
         "terminal.integrated.scrollback": 10000,
-        // The VS Code server keeps terminal processes alive across a window reload or a dropped SSH
-        // connection (not across a server restart: container restart/rebuild, OOM kill, server update).
+        // VS Code persistent sessions handle window reloads and dropped SSH connections. tmux keeps
+        // the terminal processes across a server restart or update while this container stays up.
+        // A container restart/rebuild or OOM kill ends them.
         "terminal.integrated.enablePersistentSessions": true,
         // Do not scan these generated trees for nested Git repositories (hundreds of worktrees; gate
         // and assay scratch trees hold throwaway repositories).
         "git.repositoryScanIgnoredFolders": ["node_modules", ".worktrees", ".run-gate", ".assay"],
-        // Opt-in terminal key and tmux settings, and the client-side font/keybindings, are shipped as
-        // copy-in files: templates/vscode/README.md.
+        // Optional key passthrough and client-side keybindings are shipped as copy-in files.
+        // The tmux default is defined here and documented in templates/vscode/README.md.
         // Keep VS Code's inotify watcher off generated trees. Each watched directory costs one
         // fs.inotify.max_user_watches slot, shared by every process of the host user; git worktrees
         // and run/test output dwarf the real source tree. Without these, the watcher exhausts the

@@ -671,13 +671,35 @@ entries plus the Debian default. See [One PATH order](DESIGN-GUIDE.md#one-path-o
 ## Shell selection and configuration
 
 A VS Code terminal opens **bash** unless the devcontainer sets
-`terminal.integrated.defaultProfile.linux` (the templates set it to `zsh`). To set it yourself:
+`terminal.integrated.defaultProfile.linux` (the templates set it to `tmux`, which starts zsh inside a
+unique session per terminal). This is a remote Linux terminal setting; Windows user settings can
+override it. To choose a different shell profile yourself:
 
 ```jsonc
 "customizations": { "vscode": { "settings": {
   "terminal.integrated.defaultProfile.linux": "zsh"
 } } }
 ```
+
+### Persistent VS Code terminals
+
+The templates enable persistent VS Code terminals and set `shutdownAction` to `none`. New terminals
+start separate tmux sessions. The tmux server survives a VS Code server/window restart while the
+container stays running; a container restart, rebuild or OOM kill ends those processes. List sessions
+with `tmux ls`. From a shell outside tmux, attach with `tmux attach -t <session>`; from inside tmux,
+use `tmux switch-client -t <session>`.
+
+Before a planned VS Code server restart, move already-running terminal sessions with `reptyr -T`. Run
+the process inventory first and confirm each Claude PID and terminal before moving it:
+[the migration recipe](move-running-VSC-terminal-session-to-tmux-reptyr.md) has the list, process tree,
+per-terminal command and verification steps. Processes with `TTY ?` are not attached to that terminal;
+inspect those children separately. Claude Code's VS Code extension runs under the extension host and
+has no terminal to move. After reload, restore its conversation from Session history if it does not
+reopen automatically. `reptyr -T` needs ptrace access to the terminal-emulator process. The templates
+add `SYS_PTRACE` for this; an existing container receives the capability only after it is recreated
+or rebuilt. The host's ptrace policy still applies. The live migration worked with the current host's
+`ptrace_scope=0`, without the container capability. Check the host policy if migration is refused. See
+[Anthropic's reload behavior](https://code.claude.com/docs/en/vs-code#continue-conversations-after-a-reload).
 
 Put settings that must apply in both shells in `~/.config/mdt-cockpit/shell.env` (exports),
 `ai.env` (keys) and `aliases.sh` (aliases, interactive only); `profile.sh` sources them in bash

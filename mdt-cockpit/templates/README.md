@@ -32,11 +32,12 @@ the MDT host setup before starting: the initializer checks the declared cgroup
 slices and creates missing bind sources. See the
 [host cgroup preflight](../docs/CONSUMERS.md#host-cgroup-preflight).
 
-## Integrated terminal (opt-in)
+## Integrated terminal
 
-The template sets zsh as the VS Code terminal shell, a 10000-line scrollback and persistent terminal
-sessions. Key passthrough for `mc`/vim/agent CLIs, a tmux terminal profile and client-side keybindings
-are copy-in files: see [`vscode/README.md`](vscode/README.md).
+The template starts each VS Code integrated terminal in its own named tmux session, with zsh inside,
+and keeps a 10000-line scrollback with persistent terminal sessions. The tmux session survives a
+VS Code server/window restart while the container stays up. Key passthrough for `mc`/vim/agent CLIs
+and client-side keybindings remain copy-in files: see [`vscode/README.md`](vscode/README.md).
 
 ## Persistent paths
 

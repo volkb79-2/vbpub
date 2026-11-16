@@ -74,6 +74,18 @@ identity. See the [directory bind-mount design](docs/DESIGN-GUIDE.md#directory-b
 Both families create the `vscode` user when the base does not, so consumers can use
 `remoteUser: "vscode"` with either.
 
+## VS Code terminal sessions
+
+The devcontainer templates start each new VS Code integrated terminal in its own named tmux
+session, with zsh inside. Those sessions survive a VS Code server/window restart while the
+container stays running; they do not survive a container restart or rebuild. The image includes
+`tmux` and `reptyr` for sessions already running when an update is planned. The templates grant
+`SYS_PTRACE` for `reptyr -T` to take over an existing terminal's PTY; this applies after container
+creation, and host ptrace policy still applies. Claude Code's VS Code
+extension may reopen its conversation automatically or restore it from Session history; it is managed
+by the extension host, not by tmux. See the [design](docs/DESIGN-GUIDE.md#vs-code-terminal-sessions) and
+[consumer steps](docs/CONSUMERS.md#persistent-vs-code-terminals).
+
 ## PWMCP browser service
 
 MDT images include a PWMCP instance installed at `/srv/pwmcp-instance` and the
@@ -306,7 +318,8 @@ Container and system inspection, in-image:
 | `htop` | GitHub-sourced build with a shipped default config |
 | `zswap-status` | prints kernel zswap counters directly from sysfs/debugfs |
 | `lnav` | ncurses log/JSONL viewer with SQL queries over parsed fields — see below |
-| `tmux` | terminal multiplexer, **opt-in** (nothing starts it); `/etc/tmux.conf` ships the defaults, prefix Ctrl+Space — see [`templates/vscode/`](templates/vscode/README.md) |
+| `tmux` | terminal multiplexer; each VS Code terminal gets a separate named session; `/etc/tmux.conf` sets prefix Ctrl+Space — see [`templates/vscode/`](templates/vscode/README.md) |
+| `reptyr` | move a running process or whole terminal session into tmux before a VS Code server restart |
 | `broot` | interactive directory tree navigator (Debian package) |
 
 Everyday search, data and cloud tools (staged tools are resolved at build time, checksum-verified, newest release at least 14 days old):
@@ -894,8 +907,8 @@ production-quality. Support windows as of June 2026:
 | [docs/CONSUMER-AI-GUIDANCE.md](docs/CONSUMER-AI-GUIDANCE.md) | What to put in a consumer repo's AI instruction files |
 | [docs/AI-AGENT-TOOL-DISCOVERY.md](docs/AI-AGENT-TOOL-DISCOVERY.md) | Cross-CLI adapter pattern; why exact versions stay in the generated inventory |
 | [docs/BUILD-ARCHITECTURE.md](docs/BUILD-ARCHITECTURE.md) | Build/repack/publication flow, cgroup boundaries, load attribution |
-| [docs/DESIGN-GUIDE.md](docs/DESIGN-GUIDE.md) | Why the Python, tester-unified, and QEMU lanes are separate; managed socket access and host namespace access |
-| [docs/CONSUMERS.md](docs/CONSUMERS.md) | Pasteable host governance, host escape, managed BuildKit, release adoption, the fresh-home template, and local-dev builds |
+| [docs/DESIGN-GUIDE.md](docs/DESIGN-GUIDE.md) | Why the Python, tester-unified, and QEMU lanes are separate; terminal session boundaries; managed socket access and host namespace access |
+| [docs/CONSUMERS.md](docs/CONSUMERS.md) | Pasteable host governance, terminal migration and reattachment, host escape, managed BuildKit, release adoption, the fresh-home template, and local-dev builds |
 | [docs/HOME-PERSISTENCE.md](docs/HOME-PERSISTENCE.md) | The fresh-home design, the home path inventory, and moving from the original project |
 | [docs/BTRFS-COW.md](docs/BTRFS-COW.md) | Optional btrfs copy-on-write area for the cockpit: concepts, filesystem setup, per-user layout, tool contract, devcontainer mount, self-check |
 | [docs/OCI-IMAGE-TOOLING.md](docs/OCI-IMAGE-TOOLING.md) | Human-manifest vs OCI-manifest, registry clients, layer trade-offs, CMRU reuse boundary |
