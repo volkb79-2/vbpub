@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
-from conftest import timeout_expired
+from conftest import PROJECT_ROOT, timeout_expired
 
 import errno
 import math
 import os
+import signal
+import subprocess
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -1231,4 +1234,121 @@ def test_p22_accepts_a_promisor_key_whose_value_is_false(tmp_path, monkeypatch):
 
     git._p22_reject_external_topology(
         source, SimpleNamespace(remaining=lambda _what: 5.0)
+    )
+
+
+#: (B226) The linked-worktree half, end to end. Run in a CHILD process: the
+#: hazard's only observable failure is "the bootstrap never returns", so an
+#: in-process assertion would hang the suite instead of failing it.
+_P22_LINKED_WORKTREE_SCRIPT = r'''
+import os, subprocess, sys, time
+from pathlib import Path
+
+sys.path.insert(0, sys.argv[1])
+from assay import git as gitmod
+from assay.errors import AssayError
+
+root = Path(sys.argv[2])
+repo = root / "repo"
+repo.mkdir()
+env = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
+env.update(
+    {
+        "GIT_AUTHOR_NAME": "t",
+        "GIT_AUTHOR_EMAIL": "t@assay.invalid",
+        "GIT_COMMITTER_NAME": "t",
+        "GIT_COMMITTER_EMAIL": "t@assay.invalid",
+        "GIT_CONFIG_NOSYSTEM": "1",
+        "GIT_CONFIG_GLOBAL": os.devnull,
+        "GIT_TERMINAL_PROMPT": "0",
+    }
+)
+
+
+def git(*args):
+    done = subprocess.run(["git", *args], env=env, capture_output=True)
+    if done.returncode != 0:
+        raise SystemExit("fixture git failed: " + done.stderr.decode(errors="replace"))
+
+
+git("init", "-q", str(repo))
+git("-C", str(repo), "commit", "-q", "--allow-empty", "-m", "base")
+worktree = root / "worktree"
+git("-C", str(repo), "worktree", "add", "-q", str(worktree))
+marker = (worktree / ".git").read_text(encoding="ascii").strip()
+if not marker.startswith("gitdir: "):
+    raise SystemExit(f"expected a gitfile redirect, found {marker!r}")
+os.mkfifo(repo / ".git" / "objects" / "info" / "alternates")
+
+started = time.monotonic()
+try:
+    gitmod._p22_open_source(worktree, gitmod._P22Deadline(2.0))
+except AssayError as exc:
+    print("refused", exc.outcome.name, exc.reason_code.name, f"{time.monotonic() - started:.2f}s")
+    raise SystemExit(0)
+print("no-refusal", f"{time.monotonic() - started:.2f}s")
+raise SystemExit(3)
+'''
+
+
+def test_p22_open_source_bounds_the_bootstrap_of_a_linked_worktree_fifo(tmp_path):
+    """(B226) The DEADLINE half, on a REAL linked worktree.
+
+    A linked worktree's `.git` is a gitfile, so the common directory holding
+    `objects/info/alternates` is only knowable by asking git; the prompt
+    filesystem refusal therefore cannot fire, and a writer-less FIFO there is
+    exactly what blocks `rev-parse --absolute-git-dir` in `wait_for_partner`.
+    Handing the caller's deadline to `_resolve_repo` is what bounds it (measured
+    on this host: refused after 2.01 s with a 2.0 s deadline; with the deadline
+    removed the child blocked indefinitely).
+
+    The body runs in a child process, and the child runs in its OWN session,
+    because the hazard's only observable failure is "never returns" and an
+    orphaned `git` blocked on a FIFO open is precisely the leak this item
+    documents: the test must not create one while proving the product no
+    longer does. On timeout the whole session is killed and the failure is
+    raised as an ordinary assertion.
+    """
+    process = subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            _P22_LINKED_WORKTREE_SCRIPT,
+            str(PROJECT_ROOT / "src"),
+            str(tmp_path),
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        start_new_session=True,
+    )
+    # 45 s, not 120: the passing path is bounded by the 2 s policy deadline
+    # (measured 2.4 s for the whole child), so this window is more than an
+    # order of magnitude of headroom under load, while a mutant that blocks
+    # forever is killed promptly instead of spending two minutes per run.
+    try:
+        stdout, stderr = process.communicate(timeout=45)
+    except subprocess.TimeoutExpired:
+        os.killpg(os.getpgid(process.pid), signal.SIGKILL)
+        stdout, stderr = process.communicate(timeout=30)
+        pytest.fail(
+            "the bootstrap of a linked worktree with a FIFO alternates file "
+            "never returned: `_p22_open_source` did not hand its deadline to "
+            f"`_resolve_repo`. Partial output: {stdout!r} {stderr!r}"
+        )
+
+    assert process.returncode == 0, (
+        "a FIFO alternates file in a linked worktree's common directory blocked "
+        f"the bootstrap past its deadline, or the child failed ({process.returncode}): "
+        f"{stdout}{stderr}"
+    )
+    fields = stdout.split()
+    assert fields[:3] == ["refused", "BUDGET_EXCEEDED", "LANE_TIMEOUT"] and len(fields) == 4, (
+        "the bootstrap must refuse as the lane's own BUDGET_EXCEEDED/LANE_TIMEOUT, "
+        f"not as GIT_FAILED and not as another outcome: {stdout!r}"
+    )
+    seconds = float(fields[3].rstrip("s"))
+    assert seconds < 60, (
+        "the deadline is a POLICY bound (2 s here), so a load-tolerant check must "
+        f"still not approach the suite's own budget: measured {seconds:.2f}s"
     )
