@@ -1,0 +1,5 @@
+{"type":"session","id":"pi-session-empty"}
+{"type":"agent_start"}
+{"type":"message_end","message":{"role":"assistant","content":[],"usage":{"input":171,"output":173,"cacheRead":210688,"cacheWrite":0,"reasoning":0,"totalTokens":211032},"stopReason":"stop","durationMs":4209}}
+{"type":"agent_end"}
+{"type":"agent_settled","aborted":false}

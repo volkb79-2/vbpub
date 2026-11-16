@@ -21,6 +21,11 @@ content are redacted where needed.
 | `pi-error-other.jsonl` | Sanitized pi 1.5.0 error events | A final `stopReason=error` whose `errorMessage` is not a 402; a plain failure that must not block an account. |
 | `pi-402-other-code.jsonl` | Sanitized pi 1.5.0 error events | A 402 `errorMessage` whose JSON `code` is not `insufficient_balance`; a plain failure, not a quota block. |
 | `pi-length.jsonl` | Sanitized pi 1.5.0 event stream | A settled run whose final assistant `stopReason` is `length`; not a success. |
+| `pi-empty-completion.jsonl` | Sanitized pi 1.5.0 event stream (a store-crate stall) | A settled run whose final assistant message is `stopReason=stop`, `content: []`, 173 output tokens at 211k context; the provider anomaly that ended the task mid-edit. |
+| `pi-thinking-only.jsonl` | Sanitized pi 1.5.0 event stream (a store-crate stall) | The same class with a `thinking` block instead of an empty content list, at 177k context. |
+| `pi-tool-in-flight.jsonl` | Sanitized pi 1.5.0 event stream (a hung tool call) | A `tool_execution_start` with no matching end: the liveness snapshot must name the tool and when it started. |
+| `pi-empty-usage.jsonl` | Sanitized pi 1.5.0 event stream (a store-crate stall) | One turn carrying `usage` on both `message_update` and `message_end`, so a snapshot can read tokens during the turn and after it. |
+| `pi-usage-only.jsonl` | Truncated tail of the same stall | `usage` on `message_update` and nothing after it: the only token figure available mid-turn, before any `message_end`. |
 
 The fixtures are intentionally minimal: classification uses the real event
 types and messages that distinguish each terminal state, while the tests

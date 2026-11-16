@@ -127,12 +127,41 @@ for pi_case in \
   pi-key-volker-export:volker-key-export pi-key-unselected-unset:unselected-key-unset \
   pi-volker-key-xtrace:xtrace-key pi-github2-key-xtrace:xtrace-key \
   pi-error-outcome:outcome-error pi-nonzero-exit-outcome:outcome-rc \
-  pi-success-stop-only:outcome-length; do
+  pi-success-stop-only:outcome-length \
+  pi-empty-completion-class:outcome-empty pi-thinking-only-class:outcome-empty \
+  pi-uncommitted-class:outcome-uncommitted pi-no-report-class:outcome-no-report \
+  pi-worktree-git-fact:repo-not-a-worktree \
+  pi-status-fail-closed:git-unreadable pi-continue-live-stream:retry-stream \
+  pi-continue-bound:retry-bound pi-continue-class:no-retry-classes \
+  pi-continue-exhausted:outcome-empty pi-continue-prompt-file:prompt-file \
+  pi-continue-bound-validation:retry-validation \
+  pi-report-unset-skips:report-unset; do
   pi_mutant=${pi_case%%:*}
   pi_focus=${pi_case#*:}
   expect_killed "$pi_mutant" \
     env PI_TEST_FOCUS="$pi_focus" PI_IMPL_SCRIPT="$ROOT/mutants/scripts/controller/$pi_mutant.sh" \
       bash "$SCRIPT_DIR/test-pi-impl.sh"
+done
+for pi_live_case in \
+  pi-live-atomic:live-atomic pi-live-tool-in-flight:live-snapshot \
+  pi-live-missing-fact:live-snapshot pi-live-usage-trend:live-usage-trend \
+  job-status-stall-threshold:status-states job-status-hung-tool:status-states \
+  job-status-default-stall:status-defaults job-status-default-hung:status-defaults \
+  job-status-wrapper-dead:status-states job-status-finished:status-states \
+  job-status-no-live:status-states; do
+  pi_live_mutant=${pi_live_case%%:*}
+  pi_live_focus=${pi_live_case#*:}
+  if [[ $pi_live_mutant == job-status* ]]; then
+    expect_killed "$pi_live_mutant" \
+      env PI_TEST_FOCUS="$pi_live_focus" \
+        JOB_STATUS_SCRIPT="$ROOT/mutants/scripts/controller/$pi_live_mutant.sh" \
+        bash "$SCRIPT_DIR/test-pi-impl.sh"
+  else
+    expect_killed "$pi_live_mutant" \
+      env PI_TEST_FOCUS="$pi_live_focus" \
+        PI_LIVE_SCRIPT="$ROOT/mutants/scripts/controller/$pi_live_mutant.py" \
+        bash "$SCRIPT_DIR/test-pi-impl.sh"
+  fi
 done
 for pi_doc_mutant in README-pi-route-table DESIGN-pi-402-classification CONSUMER-pi-launch-route; do
   case $pi_doc_mutant in

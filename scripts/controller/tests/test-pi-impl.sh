@@ -1,8 +1,13 @@
 #!/usr/bin/env bash
 set -uo pipefail
 unset PI_ROUTE PI_MODEL PI_THINKING PI_SESSION_DIR OPENDESIGN_API_KEY_VOLKER OPENDESIGN_API_KEY_GITHUB2
+# A cockpit export of these would send the fake runs into the real run
+# directory; the checks read their own temporary controller root.
+unset CONTROLLER_RUNS_DIR CONTROLLER_LOGS_DIR
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 SRC=${PI_IMPL_SCRIPT:-$SCRIPT_DIR/../pi-impl.sh}
+JOB_STATUS=${JOB_STATUS_SCRIPT:-$SCRIPT_DIR/../job-status.sh}
+PILIVE=${PI_LIVE_SCRIPT:-$SCRIPT_DIR/../pi-live.py}
 ROOT=$(mktemp -d "${TMPDIR:-/tmp}/controller-pi-test.XXXXXX")
 cleanup() { [[ -n ${KEEP_TEST_ROOT:-} ]] || rm -rf -- "$ROOT"; }
 trap cleanup EXIT
@@ -24,6 +29,19 @@ PI_ENV_LOG=$ROOT/pi-env.log
 PI_PROMPT_LOG=$ROOT/pi-prompt.log
 mkdir -p "$HOME_ROOT" "$ROOT/bin" "$CONTROLLER_ROOT" "$WORKTREE"
 printf 'brief\n' > "$PROMPT"
+# The outcome classifier reads a committed fact from git (a clean worktree and
+# the commits ahead of the base), so the fixture worktree is a real repository
+# with one commit ahead of its base ref. Each check commits or dirties it.
+git -C "$WORKTREE" init -q
+git -C "$WORKTREE" config user.name test
+git -C "$WORKTREE" config user.email test@example.invalid
+printf 'baseline\n' > "$WORKTREE/baseline.txt"
+git -C "$WORKTREE" add baseline.txt
+git -C "$WORKTREE" commit -qm baseline
+git -C "$WORKTREE" update-ref refs/remotes/origin/main HEAD
+printf 'task\n' > "$WORKTREE/task.txt"
+git -C "$WORKTREE" add task.txt
+git -C "$WORKTREE" commit -qm task
 cat > "$CONTROLLER_ROOT/controller.local.env" <<'ENV'
 PI_ROUTE="deepseek-pi"
 PI_MODEL="deepseek-v4.1-flash-eco"
@@ -42,13 +60,32 @@ printf '%s\n' "$*" >> "$PI_ARGV_LOG"
 printf '%s' "${!#}" > "$PI_PROMPT_LOG"
 printf 'VOLKER_PRESENT=%s GITHUB2_PRESENT=%s\n' \
   "${OPENDESIGN_API_KEY_VOLKER:+yes}" "${OPENDESIGN_API_KEY_GITHUB2:+yes}" >> "$PI_ENV_LOG"
+# Probe: where this invocation's stdout points and whether the run's .done
+# marker exists yet (a marker before the continuations finish is a false verdict).
+if [[ -n ${FAKE_PI_PROBE_LOG:-} ]]; then
+  printf 'STDOUT=%s DONE=%s\n' "$(readlink "/proc/$$/fd/1")" \
+    "$([[ -e ${FAKE_PI_DONE_PROBE:-/nonexistent} ]] && echo present || echo absent)" >> "$FAKE_PI_PROBE_LOG"
+fi
 # This blocks while stdin remains open. The wrapper must give pi /dev/null.
 if [[ -p /dev/stdin && -n ${FAKE_PI_STDIN_OPEN_MARKER:-} ]]; then
   : > "$FAKE_PI_STDIN_OPEN_MARKER"
 fi
 while IFS= read -r _line; do :; done
 printf 'STDIN_EOF=1\n' >> "$PI_ENV_LOG"
-python3 - "$FAKE_PI_STREAM" "${FAKE_PI_SESSION_ID:-}" <<'PY'
+# A per-invocation fixture sequence: each line of FAKE_PI_SEQUENCE names the
+# fixture this invocation emits. The last element repeats, so an exhausted
+# sequence keeps producing the same ending.
+stream=${FAKE_PI_STREAM:-}
+if [[ -n ${FAKE_PI_SEQUENCE:-} ]]; then
+  read -r -a sequence <<< "$FAKE_PI_SEQUENCE"
+  index=0
+  if [[ -n ${FAKE_PI_COUNTER:-} && -f $FAKE_PI_COUNTER ]]; then index=$(cat "$FAKE_PI_COUNTER"); fi
+  last=$(( ${#sequence[@]} - 1 ))
+  (( index > last )) && index=$last
+  [[ -z ${FAKE_PI_COUNTER:-} ]] || printf '%s' "$((index + 1))" > "$FAKE_PI_COUNTER"
+  stream=${FAKE_FIXTURE_DIR:?}/"${sequence[$index]}".jsonl
+fi
+python3 - "$stream" "${FAKE_PI_SESSION_ID:-}" <<'PY'
 import json
 import sys
 
@@ -58,6 +95,7 @@ for line in open(sys.argv[1], encoding="utf-8"):
         event["id"] = sys.argv[2]
     print(json.dumps(event, separators=(",", ":")))
 PY
+[[ -z ${FAKE_PI_SLEEP_AFTER:-} ]] || sleep "$FAKE_PI_SLEEP_AFTER"
 exit "${FAKE_PI_RC:-0}"
 SH
 chmod +x "$ROOT/bin/pi"
@@ -72,9 +110,48 @@ launch() {
   local fake_session_id="${run}-session"
   if [[ ${1:-} == resume && -n ${2:-} ]]; then fake_session_id=$2; fi
   PATH="$ROOT/bin:$PATH" HOME="$HOME_ROOT" PI_ROUTE="$route" \
+    FAKE_FIXTURE_DIR="$SCRIPT_DIR/fixtures" \
     FAKE_PI_STREAM="$SCRIPT_DIR/fixtures/$fixture.jsonl" FAKE_PI_SESSION_ID="$fake_session_id" FAKE_PI_RC=0 \
     "$SRC" "$WORKTREE" "$PROMPT" "$run" "$@" \
     > "$ROOT/$run.launch.log" 2>&1 < "$input"
+}
+
+# Same launch driven by a per-invocation fixture sequence. The run's .live
+# snapshot interval is one second so a liveness check never waits on the
+# default tick.
+launch_sequence() {
+  local run=$1 route=$2 sequence=$3
+  shift 3
+  PATH="$ROOT/bin:$PATH" HOME="$HOME_ROOT" PI_ROUTE="$route" \
+    CONTROLLER_OD_STATE="${SEQUENCE_OD_STATE:-$STATE}" \
+    FAKE_FIXTURE_DIR="$SCRIPT_DIR/fixtures" FAKE_PI_SEQUENCE="$sequence" \
+    FAKE_PI_COUNTER="$ROOT/$run.counter" FAKE_PI_SESSION_ID="${run}-session" FAKE_PI_RC=0 \
+    ${SEQUENCE_EXTRA_ENV:-} \
+    "$SRC" "$WORKTREE" "$PROMPT" "$run" "$@" \
+    > "$ROOT/$run.launch.log" 2>&1 < /dev/null
+}
+
+wait_launch_sequence() {
+  local run=$1 route=$2 sequence=$3
+  shift 3
+  launch_sequence "$run" "$route" "$sequence" "$@" &
+  local pid=$!
+  if ! wait "$pid"; then
+    cat "$ROOT/$run.launch.log" >&2
+    fail "pi wrapper failed for $run"
+  fi
+}
+
+# Each invocation starts an argv line; a prompt may itself contain a
+# newline, so count the invocations rather than the file's lines.
+pi_invocations() {
+  local count=0
+  [[ -f $PI_ARGV_LOG ]] && count=$(grep -c -- '^-p ' "$PI_ARGV_LOG" || true)
+  echo "${count:-0}"
+}
+
+clean_worktree() {
+  git -C "$WORKTREE" checkout -q -- . 2>/dev/null || :
 }
 
 wait_launch() {
@@ -154,12 +231,632 @@ check_outcome_rc() {
     || fail 'a nonzero pi exit with a clean stream is recorded as an error'
 }
 
+# --- overwatch: outcome classification, bounded continue, liveness ----------
+
+# A clean worktree with one commit ahead of its base is what SUCCESS requires.
+clean_worktree
+
+check_outcome_success_report() {
+  local report=$ROOT/report-final.md
+  printf 'final report\n' > "$report"
+  PATH="$ROOT/bin:$PATH" HOME="$HOME_ROOT" PI_ROUTE=deepseek-pi-volker \
+    CONTROLLER_OD_STATE="$ROOT/outcome-success-state.json" \
+    FAKE_FIXTURE_DIR="$SCRIPT_DIR/fixtures" \
+    FAKE_PI_STREAM="$SCRIPT_DIR/fixtures/pi-success.jsonl" FAKE_PI_SESSION_ID=outcome-success-session \
+    FAKE_PI_RC=0 PI_LIVE=0 \
+    "$SRC" "$WORKTREE" "$PROMPT" outcome-success --report "$report" \
+    > "$ROOT/outcome-success.launch.log" 2>&1 < /dev/null || {
+      cat "$ROOT/outcome-success.launch.log" >&2
+      fail 'a clean finished run with its report was not accepted'
+    }
+  [[ $(cat "$CONTROLLER_ROOT/runs/outcome-success.done") == 'EXIT=0 OUTCOME=SUCCESS' ]] \
+    || fail 'a clean finished run with text and its report is not SUCCESS'
+}
+
+check_outcome_empty() {
+  wait_launch_sequence outcome-empty deepseek-pi-volker "pi-empty-completion pi-thinking-only"
+  [[ $(head -n 1 "$CONTROLLER_ROOT/runs/outcome-empty.done") == 'EXIT=0 OUTCOME=EMPTY-COMPLETION-RETRIES-EXHAUSTED' ]] \
+    || fail 'an empty final message with an empty continuation is not reported as exhausted'
+  contains "$CONTROLLER_ROOT/runs/outcome-empty.done" 'RETRIES=2' 'the exhausted class records its attempt count'
+  contains "$CONTROLLER_ROOT/runs/outcome-empty.events" '"ev":"empty-completion-retry"' 'each continuation is recorded in the run events'
+  contains "$CONTROLLER_ROOT/runs/outcome-empty.events" '"attempt":2' 'the second continuation is recorded'
+  local sessions
+  sessions=$(grep -c -- '--session outcome-empty-session' "$PI_ARGV_LOG" 2>/dev/null || true)
+  [[ $sessions == 2 ]] || fail "continuations did not resume the same pi session (seen $sessions)"
+  contains "$PI_PROMPT_LOG" 'Your last turn ended without a tool call or a message' \
+    'the continuation uses the canonical prompt file'
+  # The run plus its two recorded continuations are all appended to one stream.
+  [[ $(grep -cF '"type":"agent_settled"' "$CONTROLLER_ROOT/runs/outcome-empty.jsonl") == 3 ]] \
+    || fail 'the appended stream does not hold the run and both continuations'
+}
+
+check_outcome_empty_recovered() {
+  local before after
+  before=$(pi_invocations)
+  wait_launch_sequence outcome-recovered deepseek-pi-github2 "pi-empty-completion pi-success"
+  [[ $(head -n 1 "$CONTROLLER_ROOT/runs/outcome-recovered.done") == 'EXIT=0 OUTCOME=SUCCESS' ]] \
+    || fail 'a run that recovers on the first continuation is not SUCCESS'
+  after=$(pi_invocations)
+  [[ $(( after - before )) == 2 ]] || fail "a recovered empty completion used $(( after - before )) pi invocations, expected 2"
+  contains "$CONTROLLER_ROOT/runs/outcome-recovered.events" '"attempt":1' 'the recovering continuation is recorded'
+}
+
+check_outcome_no_retry_other_classes() {
+  local before after
+  before=$(pi_invocations)
+  wait_launch_sequence no-retry-usage deepseek-pi-volker pi-402
+  after=$(pi_invocations)
+  [[ $(( after - before )) == 1 ]] || fail 'a usage limit was continued instead of reported'
+  [[ $(head -n 1 "$CONTROLLER_ROOT/runs/no-retry-usage.done") == 'EXIT=0 OUTCOME=USAGE-LIMIT' ]] \
+    || fail 'a usage limit outcome was not preserved'
+  [[ ! -s $CONTROLLER_ROOT/runs/no-retry-usage.events ]] || {
+    grep -qF 'empty-completion-retry' "$CONTROLLER_ROOT/runs/no-retry-usage.events" \
+      && fail 'a usage limit recorded a continuation'
+  }
+}
+
+check_outcome_uncommitted() {
+  local before after
+  printf 'working change\n' > "$WORKTREE/working.txt"
+  before=$(pi_invocations)
+  wait_launch_sequence outcome-uncommitted deepseek-pi-github2 pi-success
+  after=$(pi_invocations)
+  [[ $(( after - before )) == 1 ]] || fail 'an uncommitted finish was continued instead of reported'
+  [[ $(cat "$CONTROLLER_ROOT/runs/outcome-uncommitted.done") == 'EXIT=0 OUTCOME=UNCOMMITTED' ]] \
+    || fail 'an exit-zero finish with uncommitted work is not UNCOMMITTED'
+  rm -f "$WORKTREE/working.txt"
+  clean_worktree
+}
+
+# A worktree whose status cannot be read must not read as clean.
+check_outcome_git_unreadable() {
+  local shim=$ROOT/git-shim real_git
+  real_git=$(command -v git)
+  mkdir -p "$shim"
+  cat > "$shim/git" <<SH
+#!/usr/bin/env bash
+for a in "\$@"; do [[ \$a == status ]] && exit 128; done
+exec $real_git "\$@"
+SH
+  chmod +x "$shim/git"
+  PATH="$shim:$ROOT/bin:$PATH" HOME="$HOME_ROOT" PI_ROUTE=deepseek-pi-volker \
+    CONTROLLER_OD_STATE="$ROOT/outcome-git-state.json" \
+    FAKE_PI_STREAM="$SCRIPT_DIR/fixtures/pi-success.jsonl" FAKE_PI_SESSION_ID=outcome-git-session \
+    FAKE_PI_RC=0 PI_LIVE=0 \
+    "$SRC" "$WORKTREE" "$PROMPT" outcome-git-unreadable > "$ROOT/outcome-git.launch.log" 2>&1 < /dev/null \
+    || { cat "$ROOT/outcome-git.launch.log" >&2; fail 'wrapper failed on an unreadable worktree status'; }
+  [[ $(cat "$CONTROLLER_ROOT/runs/outcome-git-unreadable.done") == 'EXIT=0 OUTCOME=INCOMPLETE' ]] \
+    || fail 'an unreadable worktree status was classified as clean'
+}
+
+check_outcome_no_report() {
+  local before after
+  before=$(pi_invocations)
+  wait_launch_sequence outcome-no-report deepseek-pi-volker pi-success --report "$ROOT/missing-report.md"
+  after=$(pi_invocations)
+  [[ $(( after - before )) == 1 ]] || fail 'a missing report was continued instead of reported'
+  [[ $(cat "$CONTROLLER_ROOT/runs/outcome-no-report.done") == 'EXIT=0 OUTCOME=NO-REPORT' ]] \
+    || fail 'a finish without the expected report is not NO-REPORT'
+}
+
+check_outcome_empty_retry_bounded() {
+  local before after
+  before=$(pi_invocations)
+  wait_launch_sequence bounded-empty deepseek-pi-volker pi-empty-completion
+  after=$(pi_invocations)
+  [[ $(( after - before )) == 3 ]] || fail "an unbounded empty-completion loop used $(( after - before )) pi invocations, expected 3 (the run plus two continuations)"
+  contains "$CONTROLLER_ROOT/runs/bounded-empty.done" 'OUTCOME=EMPTY-COMPLETION-RETRIES-EXHAUSTED' \
+    'the exhausted retry count is the final outcome'
+}
+
+# Every continuation writes straight into the run's own stream (so the liveness
+# sidecar and any stream reader see it while it runs) and no .done marker exists
+# until the last continuation has finished.
+check_retry_streams_into_run() {
+  local probe=$ROOT/retry-probe.log run=retry-probe
+  rm -f "$probe"
+  FAKE_PI_PROBE_LOG=$probe FAKE_PI_DONE_PROBE=$CONTROLLER_ROOT/runs/$run.done \
+    wait_launch_sequence "$run" deepseek-pi-volker "pi-empty-completion pi-empty-completion pi-success"
+  [[ $(wc -l < "$probe") == 3 ]] || fail "expected 3 pi invocations, saw $(wc -l < "$probe")"
+  [[ $(grep -cF "STDOUT=$CONTROLLER_ROOT/runs/$run.jsonl DONE=absent" "$probe") == 3 ]] \
+    || { cat "$probe" >&2; fail 'a continuation did not write into the run stream, or a .done marker existed before the last continuation finished'; }
+  [[ $(head -n 1 "$CONTROLLER_ROOT/runs/$run.done") == 'EXIT=0 OUTCOME=SUCCESS' ]] \
+    || fail 'a run that recovers on the second continuation is not SUCCESS'
+  [[ -z $(find "$CONTROLLER_ROOT/runs" -maxdepth 1 -name ".$run.retry.*") ]] \
+    || fail 'a continuation left a temporary stream behind'
+}
+
+check_live_snapshot() {
+  local live=$CONTROLLER_ROOT/runs/live-run.live
+  rm -f "$CONTROLLER_ROOT/runs/live-run.done"
+  PATH="$ROOT/bin:$PATH" HOME="$HOME_ROOT" PI_ROUTE=deepseek-pi-volker \
+    CONTROLLER_OD_STATE="$ROOT/live-state.json" \
+    FAKE_FIXTURE_DIR="$SCRIPT_DIR/fixtures" \
+    FAKE_PI_SEQUENCE='pi-tool-in-flight' FAKE_PI_COUNTER="$ROOT/live-run.counter" \
+    FAKE_PI_SLEEP_AFTER=4 FAKE_PI_SESSION_ID=live-run-session FAKE_PI_RC=0 \
+    PI_LIVE_INTERVAL_SECONDS=1 PI_EMPTY_RETRY_LIMIT=0 \
+    "$SRC" "$WORKTREE" "$PROMPT" live-run > "$ROOT/live-run.launch.log" 2>&1 < /dev/null &
+  local wrapper=$!
+  local waited=0
+  while (( waited < 100 )) && ! grep -qF '"tool_in_flight": "bash"' "$live" 2>/dev/null; do
+    sleep 0.1
+    waited=$(( waited + 1 ))
+  done
+  if (( waited >= 100 )); then
+    kill -- "$wrapper" 2>/dev/null || true
+    wait "$wrapper" 2>/dev/null || true
+    cat "$ROOT/live-run.launch.log" >&2
+    fail 'the live sidecar never reported the tool call in flight'
+  fi
+  kill -- "$wrapper" 2>/dev/null || true
+  wait "$wrapper" 2>/dev/null || true
+  python3 - "$live" "$wrapper" <<'PY' || fail 'the live snapshot is missing facts'
+import json, sys
+body = json.load(open(sys.argv[1], encoding="utf-8"))
+assert body["run"] == "live-run", body
+assert isinstance(body["last_event_epoch"], int), body
+assert body["tool_in_flight"] == "bash", body
+assert isinstance(body["tool_in_flight_started_epoch"], int), body
+assert body["assistant_turns"] >= 1, body
+assert body["tool_calls"] >= 1, body
+assert body["latest_total_tokens"] == 12220, body
+assert body["commits_ahead"] == 1, body
+assert body["uncommitted_files"] == 0, body
+assert isinstance(body["last_commit_epoch"], int), body
+PY
+}
+
+check_live_atomic() {
+  local partial anchor twin
+  anchor=$ROOT/atomic-anchor.live
+  twin="$CONTROLLER_ROOT/runs/atomic-twin.live"
+  mkdir -p "$CONTROLLER_ROOT/runs"
+  printf '{"run": "before"}\n' > "$anchor"
+  ln -f "$anchor" "$twin" || fail 'the atomic-write check could not create its hard link'
+  python3 "$PILIVE" --stream "$SCRIPT_DIR/fixtures/pi-success.jsonl" --worktree "$WORKTREE" \
+    --out "$twin" --run atomic-twin --wrapper-pid $$ --interval 1 --once > /dev/null 2>&1 \
+    || fail 'pi-live could not write an atomic snapshot'
+  # A rename leaves the other name on the old inode with the old content; an
+  # in-place rewrite would show the new bytes through both names.
+  grep -qF '"run": "before"' "$anchor" \
+    || fail 'the snapshot was written in place instead of replaced by rename'
+  python3 - "$twin" <<'PY' || fail 'the replaced snapshot is not one JSON object'
+import json, sys
+body = json.load(open(sys.argv[1], encoding="utf-8"))
+assert body["run"] == "atomic-twin", body
+PY
+  rm -f -- "$anchor" "$twin"
+  partial=$(ls "$CONTROLLER_ROOT/runs"/.live-run.live.* 2>/dev/null || true)
+  [[ -z $partial ]] || fail "live snapshot left a temporary file behind: $partial"
+  python3 - "$CONTROLLER_ROOT/runs/live-run.live" <<'PY' || fail 'the live snapshot is not one complete JSON object'
+import json, sys
+json.load(open(sys.argv[1], encoding="utf-8"))
+PY
+}
+
+check_job_status() {
+  local json=$ROOT/job-status.json
+  "$JOB_STATUS" outcome-success > "$ROOT/job-status.out" 2>&1 || {
+    cat "$ROOT/job-status.out" >&2
+    fail 'job-status failed on a finished run'
+  }
+  grep -qF 'outcome-success: FINISHED EXIT=0 OUTCOME=SUCCESS' "$ROOT/job-status.out" \
+    || { cat "$ROOT/job-status.out" >&2; fail 'job-status did not report the finished run'; }
+  python3 - "$json" <<'PY'
+import json, sys
+now = 1_800_000_000
+body = {
+    "run": "synthetic",
+    "wrapper_pid": 1,
+    "updated_epoch": now - 5,
+    "last_event_epoch": now - 700,
+    "tool_in_flight": None,
+    "tool_in_flight_started_epoch": None,
+    "assistant_turns": 4,
+    "tool_calls": 9,
+    "latest_total_tokens": 1200,
+    "commits_ahead": 2,
+    "uncommitted_files": 1,
+    "last_commit_epoch": now - 60,
+}
+json.dump(body, open(sys.argv[1], "w", encoding="utf-8"))
+PY
+}
+
+check_job_status_states() {
+  local runs=$ROOT/status-runs
+  mkdir -p "$runs" "$ROOT/status-home"
+  python3 - "$runs" <<'PY'
+import json, sys, time
+from pathlib import Path
+now = int(time.time())
+runs = Path(sys.argv[1])
+def write(name, tool=None, tool_started=None, last_event=None):
+    body = {
+        "run": name, "wrapper_pid": 1, "updated_epoch": now,
+        "last_event_epoch": last_event, "tool_in_flight": tool,
+        "tool_in_flight_started_epoch": tool_started,
+        "assistant_turns": 1, "tool_calls": 1, "latest_total_tokens": 10,
+        "commits_ahead": 0, "uncommitted_files": 0, "last_commit_epoch": now,
+    }
+    (runs / f"{name}.live").write_text(json.dumps(body), encoding="utf-8")
+write("stale", last_event=now - 900)
+write("hung", tool="bash", tool_started=now - 2400, last_event=now - 10)
+write("orphan", last_event=now - 10)
+body = json.loads((runs / "orphan.live").read_text(encoding="utf-8"))
+body["wrapper_pid"] = 2147483646
+(runs / "orphan.live").write_text(json.dumps(body), encoding="utf-8")
+(runs / "finished.done").write_text("EXIT=0 OUTCOME=SUCCESS\n", encoding="utf-8")
+PY
+  CONTROLLER_HOME="$ROOT/status-home" CONTROLLER_RUNS_DIR="$runs" CONTROLLER_REPO="$WORKTREE" \
+    JOB_STATUS_STALL_SECONDS=600 JOB_STATUS_HUNG_TOOL_SECONDS=1800 \
+    "$JOB_STATUS" stale hung orphan finished absent > "$ROOT/job-status-states.out" 2>&1 || {
+      cat "$ROOT/job-status-states.out" >&2
+      fail 'job-status failed on synthetic run states'
+    }
+  grep -qF 'stale: STALLED' "$ROOT/job-status-states.out" || { cat "$ROOT/job-status-states.out" >&2; fail 'a quiet run is not STALLED'; }
+  grep -qF 'hung: HUNG-TOOL' "$ROOT/job-status-states.out" || { cat "$ROOT/job-status-states.out" >&2; fail 'a long tool call is not HUNG-TOOL'; }
+  grep -qF 'finished: FINISHED EXIT=0 OUTCOME=SUCCESS' "$ROOT/job-status-states.out" || fail 'a finished run is not reported as finished'
+  grep -qF 'absent: NO-LIVE (no absent.live sidecar)' "$ROOT/job-status-states.out" || fail 'a run without a snapshot is not NO-LIVE'
+  grep -qF 'orphan: WRAPPER-DEAD' "$ROOT/job-status-states.out" || fail 'a run whose wrapper pid is gone is not WRAPPER-DEAD'
+  grep -qE 'hung: (ACTIVE|STALLED)' "$ROOT/job-status-states.out" \
+    && fail 'HUNG-TOOL did not take precedence over STALLED'
+}
+
+# The documented default thresholds (600 s quiet, 1800 s in one tool call), and
+# the healthy side of each: a run inside its threshold, or in a long thinking turn
+# with no tool in flight, is ACTIVE.
+check_job_status_defaults() {
+  local runs=$ROOT/status-default-runs
+  mkdir -p "$runs" "$ROOT/status-home"
+  python3 - "$runs" <<'PY'
+import json, sys, time
+from pathlib import Path
+now = int(time.time())
+runs = Path(sys.argv[1])
+def write(name, tool=None, tool_started=None, last_event=None):
+    body = {
+        "run": name, "wrapper_pid": 1, "updated_epoch": now,
+        "last_event_epoch": last_event, "tool_in_flight": tool,
+        "tool_in_flight_started_epoch": tool_started,
+        "assistant_turns": 1, "tool_calls": 1, "latest_total_tokens": 10,
+        "commits_ahead": 0, "uncommitted_files": 0, "last_commit_epoch": now,
+    }
+    (runs / f"{name}.live").write_text(json.dumps(body), encoding="utf-8")
+write("quiet500", last_event=now - 500)
+write("quiet700", last_event=now - 700)
+write("thinking", last_event=now - 100)
+write("tool1700", tool="bash", tool_started=now - 1700, last_event=now - 20)
+write("tool1900", tool="bash", tool_started=now - 1900, last_event=now - 20)
+PY
+  env -u JOB_STATUS_STALL_SECONDS -u JOB_STATUS_HUNG_TOOL_SECONDS \
+    CONTROLLER_HOME="$ROOT/status-home" CONTROLLER_RUNS_DIR="$runs" CONTROLLER_REPO="$WORKTREE" \
+    "$JOB_STATUS" quiet500 quiet700 thinking tool1700 tool1900 > "$ROOT/job-status-defaults.out" 2>&1 \
+    || { cat "$ROOT/job-status-defaults.out" >&2; fail 'job-status failed on default-threshold states'; }
+  local expectation
+  for expectation in 'quiet500: ACTIVE' 'quiet700: STALLED' 'thinking: ACTIVE' 'tool1700: ACTIVE' 'tool1900: HUNG-TOOL'; do
+    grep -qF -- "$expectation" "$ROOT/job-status-defaults.out" \
+      || { cat "$ROOT/job-status-defaults.out" >&2; fail "default thresholds: expected $expectation"; }
+  done
+}
+
+check_job_status_readonly() {
+  local runs=$ROOT/status-runs
+  python3 - "$runs" <<'PY' > "$ROOT/status-before.txt"
+import hashlib, sys
+from pathlib import Path
+for item in sorted(Path(sys.argv[1]).iterdir()):
+    print(item.name, hashlib.sha256(item.read_bytes()).hexdigest())
+PY
+  CONTROLLER_HOME="$ROOT/status-home" CONTROLLER_RUNS_DIR="$runs" CONTROLLER_REPO="$WORKTREE" \
+    "$JOB_STATUS" > /dev/null 2>&1 || fail 'job-status failed on a second call'
+  python3 - "$runs" <<'PY' > "$ROOT/status-after.txt"
+import hashlib, sys
+from pathlib import Path
+for item in sorted(Path(sys.argv[1]).iterdir()):
+    print(item.name, hashlib.sha256(item.read_bytes()).hexdigest())
+PY
+  cmp -s "$ROOT/status-before.txt" "$ROOT/status-after.txt" || fail 'job-status modified the run sidecars it reads'
+}
+
+check_live_usage_trend() {
+  # Usage on message_update is the only token figure available before a
+  # message completes; the snapshot must read it rather than wait.
+  rm -f "$CONTROLLER_ROOT/runs/trend.live"
+  python3 "$PILIVE" --stream "$SCRIPT_DIR/fixtures/pi-empty-usage.jsonl" \
+    --worktree "$WORKTREE" --out "$CONTROLLER_ROOT/runs/trend.live" --run trend \
+    --wrapper-pid $$ --interval 1 --once > /dev/null 2>&1 \
+    || fail 'pi-live could not snapshot a usage-only stream'
+  python3 - "$CONTROLLER_ROOT/runs/trend.live" <<'PY' || fail 'the usage trend was not read'
+import json, sys
+body = json.load(open(sys.argv[1], encoding="utf-8"))
+assert body["latest_total_tokens"] == 129, body
+assert body["assistant_turns"] == 1, body
+assert body["tool_calls"] == 1, body
+assert body["tool_in_flight"] is None, body
+PY
+}
+
+check_live_atomic_partial() {
+  # A reader must never see a half-written snapshot: pi-live.py renames one
+  # complete file into place, so a torn read is a hard failure.
+  local live=$CONTROLLER_ROOT/runs/atomic.live
+  rm -f "$live"
+  printf '{"type":"session","id":"atomic"}\n' > "$ROOT/atomic-stream.jsonl"
+  python3 "$PILIVE" --stream "$ROOT/atomic-stream.jsonl" --worktree "$WORKTREE" \
+    --out "$live" --run atomic --wrapper-pid $$ --interval 1 --once > /dev/null 2>&1 \
+    || fail 'pi-live could not write one snapshot'
+  python3 - "$live" <<'PY' || fail 'the written snapshot is not one complete JSON object'
+import json, sys
+json.load(open(sys.argv[1], encoding="utf-8"))
+PY
+  [[ -z $(ls "$CONTROLLER_ROOT/runs"/.atomic.live.* 2>/dev/null || true) ]] \
+    || fail 'pi-live left its temporary snapshot file behind'
+  local alive_pid_json
+  alive_pid_json=$ROOT/atomic-dead.live
+  python3 "$PILIVE" --stream "$ROOT/atomic-stream.jsonl" --worktree "$WORKTREE" \
+    --out "$alive_pid_json" --run atomic-dead --wrapper-pid 2147483646 --interval 1 --once > /dev/null 2>&1 \
+    || fail 'pi-live could not snapshot a run whose wrapper pid is gone'
+  python3 - "$alive_pid_json" <<'PY' || fail 'a missing wrapper pid was invented'
+import json, sys
+body = json.load(open(sys.argv[1], encoding="utf-8"))
+assert body["wrapper_pid"] == 2147483646, body
+PY
+}
+
+check_continue_prompt_file() {
+  local prompt_file=$SCRIPT_DIR/../continue-empty-completion.md
+  [[ -r $prompt_file ]] || fail 'the canonical continuation prompt file is missing'
+  [[ $(wc -l < "$prompt_file") == 1 ]] || fail 'the continuation prompt must be one line'
+  contains "$prompt_file" 'Your last turn ended without a tool call or a message.' 'the canonical prompt text'
+  # It lives in exactly one file: no other controller source repeats it.
+  ! grep -R -qF -- 'ended without a tool call or a message' \
+    "$SCRIPT_DIR/../pi-impl.sh" "$SCRIPT_DIR/../lib.sh" "$SCRIPT_DIR/../codex-impl.sh" \
+    || fail 'the continuation prompt text is duplicated outside its one file'
+  # The wrapper refuses to run when that one file is unreadable, instead of
+  # silently continuing with an empty prompt or skipping the continuation.
+  expect_rc 2 env PATH="$ROOT/bin:$PATH" HOME="$HOME_ROOT" PI_ROUTE=deepseek-pi-volker \
+    PI_CONTINUE_PROMPT_FILE="$ROOT/no-such-prompt.md" \
+    "$SRC" "$WORKTREE" "$PROMPT" prompt-file-validation
+  contains "$ROOT/focused-command.out" 'continue prompt file is not readable' \
+    'a missing continuation prompt file is refused'
+}
+
+check_retry_count_config() {
+  local before after
+  before=$(pi_invocations)
+  PATH="$ROOT/bin:$PATH" HOME="$HOME_ROOT" PI_ROUTE=deepseek-pi-volker \
+    CONTROLLER_OD_STATE="$ROOT/retry-limit-state.json" PI_EMPTY_RETRY_LIMIT=1 \
+    FAKE_FIXTURE_DIR="$SCRIPT_DIR/fixtures" \
+    FAKE_PI_SEQUENCE='pi-empty-completion' FAKE_PI_COUNTER="$ROOT/retry-limit.counter" \
+    FAKE_PI_SESSION_ID=retry-limit-session FAKE_PI_RC=0 PI_LIVE=0 \
+    "$SRC" "$WORKTREE" "$PROMPT" retry-limit > "$ROOT/retry-limit.launch.log" 2>&1 < /dev/null \
+    || fail 'a run configured for one continuation failed'
+  after=$(pi_invocations)
+  [[ $(( after - before )) == 2 ]] || fail "PI_EMPTY_RETRY_LIMIT=1 used $(( after - before )) pi invocations, expected 2"
+  contains "$CONTROLLER_ROOT/runs/retry-limit.done" 'RETRIES=1' 'the configured continuation count is recorded'
+}
+
+check_input_validation() {
+  expect_rc 2 env PATH="$ROOT/bin:$PATH" HOME="$HOME_ROOT" PI_ROUTE=deepseek-pi-volker \
+    "$SRC" "$WORKTREE" "$PROMPT" report-validation --report relative-report.md
+  contains "$ROOT/focused-command.out" 'report path must be absolute' 'a relative report path is refused'
+  expect_rc 2 env PATH="$ROOT/bin:$PATH" HOME="$HOME_ROOT" PI_ROUTE=deepseek-pi-volker \
+    "$SRC" "$ROOT/not-a-worktree" "$PROMPT" worktree-validation
+}
+
+check_retry_limit_validation() {
+  expect_rc 2 env PATH="$ROOT/bin:$PATH" HOME="$HOME_ROOT" PI_ROUTE=deepseek-pi-volker \
+    PI_EMPTY_RETRY_LIMIT=unbounded "$SRC" "$WORKTREE" "$PROMPT" retry-validation
+  contains "$ROOT/focused-command.out" 'PI_EMPTY_RETRY_LIMIT must be a non-negative integer' \
+    'an unparsable continuation count is refused'
+  expect_rc 2 env PATH="$ROOT/bin:$PATH" HOME="$HOME_ROOT" PI_ROUTE=deepseek-pi-volker \
+    PI_LIVE_INTERVAL_SECONDS=0 "$SRC" "$WORKTREE" "$PROMPT" live-validation
+  contains "$ROOT/focused-command.out" 'PI_LIVE_INTERVAL_SECONDS must be a positive integer' \
+    'a zero live interval is refused'
+}
+
+check_repo_not_a_worktree() {
+  mkdir -p "$ROOT/plain-dir"
+  expect_rc 2 env PATH="$ROOT/bin:$PATH" HOME="$HOME_ROOT" PI_ROUTE=deepseek-pi-volker \
+    "$SRC" "$ROOT/plain-dir" "$PROMPT" plain-dir-run
+  contains "$ROOT/focused-command.out" 'worktree is not a git worktree' \
+    'a directory that cannot answer the clean-worktree question is refused'
+}
+
+check_job_status_validation() {
+  expect_rc 2 env CONTROLLER_HOME="$ROOT/status-home" CONTROLLER_RUNS_DIR="$ROOT/status-runs" \
+    JOB_STATUS_STALL_SECONDS=soon "$JOB_STATUS"
+  contains "$ROOT/focused-command.out" 'must be integer seconds' 'a non-integer stall threshold is refused'
+  expect_rc 2 env CONTROLLER_HOME="$ROOT/status-home" CONTROLLER_RUNS_DIR="$ROOT/status-runs" \
+    "$JOB_STATUS" ../escape
+  contains "$ROOT/focused-command.out" 'invalid run name' 'a traversing run name is refused by job-status'
+}
+
+
 if [[ -n ${PI_TEST_FOCUS:-} ]]; then
   case $PI_TEST_FOCUS in
     xtrace-key) check_xtrace_key ;;
     outcome-error) check_outcome_error ;;
     outcome-length) check_outcome_length ;;
     outcome-rc) check_outcome_rc ;;
+    git-unreadable) clean_worktree; check_outcome_git_unreadable ;;
+    retry-stream) clean_worktree; check_retry_streams_into_run ;;
+    status-defaults) check_job_status_defaults ;;
+    # One overwatch case per focused name, so a hand mutant is judged against
+    # the single check that covers the guard it weakened.
+    outcome-success|outcome-empty|outcome-recovered|outcome-uncommitted|outcome-no-report|report-unset|retry-bound)
+      clean_worktree
+      case $PI_TEST_FOCUS in
+        outcome-success) check_outcome_success_report ;;
+        outcome-empty)
+          wait_launch_sequence focus-empty deepseek-pi-volker "pi-empty-completion pi-thinking-only"
+          contains "$CONTROLLER_ROOT/runs/focus-empty.done" 'OUTCOME=EMPTY-COMPLETION-RETRIES-EXHAUSTED' \
+            'a still-empty continuation run is reported as exhausted'
+          contains "$CONTROLLER_ROOT/runs/focus-empty.events" '"ev":"empty-completion-retry"' \
+            'the continuation is recorded in the run events'
+          ;;
+        outcome-recovered)
+          wait_launch_sequence focus-recovered deepseek-pi-github2 "pi-empty-completion pi-success"
+          contains "$CONTROLLER_ROOT/runs/focus-recovered.done" 'OUTCOME=SUCCESS' \
+            'a recovered empty completion is a success'
+          ;;
+        outcome-uncommitted)
+          printf 'working change\n' > "$WORKTREE/working.txt"
+          wait_launch_sequence focus-uncommitted deepseek-pi-github2 pi-success
+          contains "$CONTROLLER_ROOT/runs/focus-uncommitted.done" 'OUTCOME=UNCOMMITTED' \
+            'uncommitted work is its own class'
+          rm -f "$WORKTREE/working.txt"
+          clean_worktree
+          ;;
+        outcome-no-report)
+          wait_launch_sequence focus-no-report deepseek-pi-volker pi-success --report "$ROOT/focus-missing.md"
+          contains "$CONTROLLER_ROOT/runs/focus-no-report.done" 'OUTCOME=NO-REPORT' \
+            'a missing report is its own class'
+          ;;
+        report-unset)
+          # No report path named: the check is skipped, not failed.
+          wait_launch_sequence focus-report-unset deepseek-pi-volker pi-success
+          [[ $(cat "$CONTROLLER_ROOT/runs/focus-report-unset.done") == 'EXIT=0 OUTCOME=SUCCESS' ]] \
+            || fail 'an unset report path was treated as a missing report'
+          ;;
+        retry-bound)
+          # A stream that stays empty forever: the bound must stop at one run
+          # plus two continuations, never a fourth invocation.
+          wait_launch_sequence focus-retry-bound deepseek-pi-volker pi-empty-completion
+          contains "$CONTROLLER_ROOT/runs/focus-retry-bound.done" \
+            'OUTCOME=EMPTY-COMPLETION-RETRIES-EXHAUSTED' \
+            'the empty-completion continue loop is bounded at two attempts'
+          [[ $(pi_invocations) == 3 ]] \
+            || fail 'the empty-completion continue loop ran more than one run plus two continuations'
+          ;;
+      esac
+      ;;
+    no-retry-classes)
+      wait_launch_sequence focus-no-retry deepseek-pi-volker pi-402
+      [[ $(pi_invocations) == 1 ]] || fail 'a usage limit was continued'
+      contains "$CONTROLLER_ROOT/runs/focus-no-retry.done" 'OUTCOME=USAGE-LIMIT' 'the usage limit class is preserved'
+      ;;
+    retry-validation)
+      expect_rc 2 env PATH="$ROOT/bin:$PATH" HOME="$HOME_ROOT" PI_ROUTE=deepseek-pi-volker \
+        PI_EMPTY_RETRY_LIMIT=unbounded "$SRC" "$WORKTREE" "$PROMPT" focus-retry-validation
+      contains "$ROOT/focused-command.out" 'PI_EMPTY_RETRY_LIMIT must be a non-negative integer' \
+        'an unparsable continuation count is refused'
+      ;;
+    prompt-file)
+      check_continue_prompt_file
+      ;;
+    repo-not-a-worktree)
+      mkdir -p "$ROOT/focus-plain-dir"
+      expect_rc 2 env PATH="$ROOT/bin:$PATH" HOME="$HOME_ROOT" PI_ROUTE=deepseek-pi-volker \
+        "$SRC" "$ROOT/focus-plain-dir" "$PROMPT" focus-plain-dir-run
+      contains "$ROOT/focused-command.out" 'worktree is not a git worktree' \
+        'a directory that cannot answer the clean-worktree question is refused'
+      ;;
+    live-usage-trend)
+      rm -f "$CONTROLLER_ROOT/runs/focus-trend.live"
+      python3 "$PILIVE" --stream "$SCRIPT_DIR/fixtures/pi-usage-only.jsonl" \
+        --worktree "$WORKTREE" --out "$CONTROLLER_ROOT/runs/focus-trend.live" --run focus-trend \
+        --wrapper-pid $$ --interval 1 --once > /dev/null 2>&1 \
+        || fail 'pi-live could not snapshot a usage-only stream'
+      python3 - "$CONTROLLER_ROOT/runs/focus-trend.live" <<'PY' || fail 'the usage trend was not read'
+import json, sys
+body = json.load(open(sys.argv[1], encoding="utf-8"))
+assert body["latest_total_tokens"] == 101, body
+assert body["assistant_turns"] == 0, body
+assert body["tool_in_flight"] is None, body
+PY
+      ;;
+    live-snapshot)
+      # The sidecar itself is under test here, on the fixture stream a hung
+      # tool call leaves behind.
+      live=$CONTROLLER_ROOT/runs/focus-live.live
+      rm -f "$live"
+      python3 "$PILIVE" --stream "$SCRIPT_DIR/fixtures/pi-tool-in-flight.jsonl" \
+        --worktree "$WORKTREE" --out "$live" --run focus-live \
+        --wrapper-pid $$ --interval 1 --once > /dev/null 2>&1 \
+        || fail 'pi-live could not snapshot a tool call in flight'
+      python3 - "$live" <<'PY' || fail 'the live snapshot lacks a fact'
+import json, sys
+body = json.load(open(sys.argv[1], encoding="utf-8"))
+assert body["tool_in_flight"] == "bash", body
+assert isinstance(body["tool_in_flight_started_epoch"], int), body
+assert isinstance(body["last_event_epoch"], int), body
+assert body["tool_calls"] == 1, body
+PY
+      # A git fact that cannot be read stays null; it is never invented as 0.
+      orphan_live=$CONTROLLER_ROOT/runs/focus-live-nogit.live
+      rm -f "$orphan_live"
+      mkdir -p "$ROOT/focus-no-git"
+      python3 "$PILIVE" --stream "$SCRIPT_DIR/fixtures/pi-tool-in-flight.jsonl" \
+        --worktree "$ROOT/focus-no-git" --out "$orphan_live" --run focus-live-nogit \
+        --wrapper-pid $$ --interval 1 --once > /dev/null 2>&1 \
+        || fail 'pi-live could not snapshot a worktree outside git'
+      python3 - "$orphan_live" <<'PY' || fail 'an unreadable git fact was invented'
+import json, sys
+body = json.load(open(sys.argv[1], encoding="utf-8"))
+assert body["commits_ahead"] is None, body
+assert body["uncommitted_files"] is None, body
+assert body["last_commit_epoch"] is None, body
+PY
+      ;;
+    live-atomic)
+      printf '{"type":"session","id":"atomic"}\n' > "$ROOT/focus-atomic.jsonl"
+      atomic_anchor=$ROOT/focus-atomic-anchor.live
+      mkdir -p "$CONTROLLER_ROOT/runs"
+      printf '{"run": "before"}\n' > "$atomic_anchor"
+      ln -f "$atomic_anchor" "$CONTROLLER_ROOT/runs/focus-atomic.live" \
+        || fail 'the atomic-write check could not create its hard link'
+      python3 "$PILIVE" --stream "$ROOT/focus-atomic.jsonl" --worktree "$WORKTREE" \
+        --out "$CONTROLLER_ROOT/runs/focus-atomic.live" --run focus-atomic \
+        --wrapper-pid $$ --interval 1 --once > /dev/null 2>&1 \
+        || fail 'pi-live could not write a snapshot'
+      grep -qF '"run": "before"' "$atomic_anchor" \
+        || fail 'the snapshot was written in place instead of replaced by rename'
+      rm -f -- "$atomic_anchor"
+      python3 - "$CONTROLLER_ROOT/runs/focus-atomic.live" <<'PY' || fail 'the snapshot is not one JSON object'
+import json, sys
+json.load(open(sys.argv[1], encoding="utf-8"))
+PY
+      [[ -z $(ls "$CONTROLLER_ROOT/runs"/.focus-atomic.live.* 2>/dev/null || true) ]] \
+        || fail 'the snapshot left a temporary file behind'
+      ;;
+    status-states)
+      runs=$ROOT/focus-status-runs
+      mkdir -p "$runs" "$ROOT/focus-status-home"
+      python3 - "$runs" <<'PY'
+import json, sys, time
+from pathlib import Path
+now = int(time.time())
+runs = Path(sys.argv[1])
+def write(name, tool=None, tool_started=None, last_event=None):
+    body = {
+        "run": name, "wrapper_pid": 1, "updated_epoch": now,
+        "last_event_epoch": last_event, "tool_in_flight": tool,
+        "tool_in_flight_started_epoch": tool_started,
+        "assistant_turns": 1, "tool_calls": 1, "latest_total_tokens": 10,
+        "commits_ahead": 0, "uncommitted_files": 0, "last_commit_epoch": now,
+    }
+    (runs / f"{name}.live").write_text(json.dumps(body), encoding="utf-8")
+write("stale", last_event=now - 900)
+write("hung", tool="bash", tool_started=now - 2400, last_event=now - 10)
+write("orphan", last_event=now - 10)
+body = json.loads((runs / "orphan.live").read_text(encoding="utf-8"))
+body["wrapper_pid"] = 2147483646
+(runs / "orphan.live").write_text(json.dumps(body), encoding="utf-8")
+(runs / "finished.done").write_text("EXIT=0 OUTCOME=SUCCESS\n", encoding="utf-8")
+PY
+      CONTROLLER_HOME="$ROOT/focus-status-home" CONTROLLER_RUNS_DIR="$runs" \
+        CONTROLLER_REPO="$WORKTREE" JOB_STATUS_STALL_SECONDS=600 JOB_STATUS_HUNG_TOOL_SECONDS=1800 \
+        "$JOB_STATUS" stale hung orphan finished absent > "$ROOT/focus-status.out" 2>&1 \
+        || fail 'job-status failed on synthetic run states'
+      contains "$ROOT/focus-status.out" 'stale: STALLED' 'a quiet run is STALLED'
+      contains "$ROOT/focus-status.out" 'hung: HUNG-TOOL' 'a long tool call is HUNG-TOOL'
+      contains "$ROOT/focus-status.out" 'finished: FINISHED EXIT=0 OUTCOME=SUCCESS' 'a finished run is FINISHED'
+      contains "$ROOT/focus-status.out" 'absent: NO-LIVE (no absent.live sidecar)' \
+        'a run without a snapshot is NO-LIVE for that reason'
+      contains "$ROOT/focus-status.out" 'orphan: WRAPPER-DEAD' 'a run whose wrapper pid is gone is not ACTIVE'
+      ;;
     prompt-absolute)
       expect_rc 2 env PATH="$ROOT/bin:$PATH" HOME="$HOME_ROOT" PI_ROUTE=deepseek-pi \
         "$SRC" "$WORKTREE" relative-prompt focused-relative
@@ -405,6 +1102,17 @@ PY
       contains "$CONSUMER_SOURCE" 'PI_ROUTE=deepseek-pi' 'consumer guide gives a Pi launch example'
       contains "$RULES_SOURCE" 'deepseek-pi-volker' 'rules list the pinned Pi routes'
       contains "$ENV_SOURCE" 'PI_THINKING="high"' 'environment example documents Pi thinking'
+      contains "$README_SOURCE" 'OUTCOME=NO-REPORT' 'README documents the report outcome'
+      contains "$README_SOURCE" "\`EMPTY-COMPLETION\`" 'README documents the empty-completion outcome'
+      contains "$DESIGN_SOURCE" 'Why the terminal outcome is classified' 'design guide explains the outcome classification'
+      contains "$CONSUMER_SOURCE" "\`.done\` outcome" 'consumer guide gives the outcome vocabulary'
+      contains "$CONSUMER_SOURCE" 'EMPTY-COMPLETION-RETRIES-EXHAUSTED' 'consumer guide names the exhausted continuation class'
+      contains "$README_SOURCE" 'EMPTY-COMPLETION-RETRIES-EXHAUSTED' 'README names the exhausted continuation class'
+      contains "$README_SOURCE" 'PI_EMPTY_RETRY_LIMIT' 'README names the continuation bound'
+      contains "$DESIGN_SOURCE" 'Continuation is bounded and class-specific' 'design guide explains the continuation bound'
+      contains "$DESIGN_SOURCE" 'Why liveness is a file, not a poll of the process' 'design guide explains the liveness sidecar'
+      contains "$README_SOURCE" 'job-status.sh' 'README documents the liveness read'
+      contains "$CONSUMER_SOURCE" 'JOB_STATUS_STALL_SECONDS' 'consumer guide documents the stall threshold'
       ;;
     *) fail "unknown PI_TEST_FOCUS=$PI_TEST_FOCUS" ;;
   esac
@@ -649,6 +1357,30 @@ check_xtrace_key
 check_outcome_error
 check_outcome_length
 check_outcome_rc
+
+check_outcome_success_report
+check_outcome_empty
+check_outcome_empty_recovered
+check_outcome_no_retry_other_classes
+check_outcome_uncommitted
+check_outcome_git_unreadable
+check_outcome_no_report
+check_outcome_empty_retry_bounded
+check_retry_streams_into_run
+check_live_snapshot
+check_live_atomic
+check_job_status
+check_job_status_states
+check_job_status_defaults
+check_job_status_readonly
+check_live_usage_trend
+check_live_atomic_partial
+check_continue_prompt_file
+check_retry_count_config
+check_input_validation
+check_retry_limit_validation
+check_repo_not_a_worktree
+check_job_status_validation
 
 not_contains test-key 'run evidence contains no key material' "$CONTROLLER_ROOT/runs"
 not_contains test-key 'account state contains no key material' "$STATE"

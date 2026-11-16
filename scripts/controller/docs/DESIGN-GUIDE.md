@@ -50,6 +50,71 @@ available account or exits 3 when neither can run. The controller starts
 closes pi's stdin to prevent the non-interactive process from waiting for
 input.
 
+### Why the terminal outcome is classified, not just the exit code
+
+An exit code cannot carry what went wrong with pi. Two measured store-crate
+stalls ended with `stopReason: stop`, exit zero and NO tool call, while the work
+was uncommitted and no report existed: one final assistant message had
+`content: []` at 211k context, the other carried only a `thinking` block at
+177k. pi treats a turn with no tool call as the end of the run, so the wrapper
+must read the stream to tell those apart from a finished job.
+
+The classification compares facts the run itself left behind, in this order: the final
+assistant `stopReason` and 402 code (`USAGE-LIMIT`, `ERROR`), the pi exit status
+(`ERROR`), the stream's settling and `stopReason` (`INCOMPLETE`), the final
+message's text and tool calls (`EMPTY-COMPLETION`), the worktree's own porcelain
+(`UNCOMMITTED`), and the expected report file (`NO-REPORT`). `SUCCESS` is what
+survives all of them. Every check is a fact with an authoritative source
+(the stream, `git`, the report path the caller named), never an inference: a
+worktree that cannot answer `git rev-parse` is refused before pi starts rather
+than read as clean, and an unset report path means the report check is
+*skipped*, not passed.
+
+The alternative - keep `SUCCESS` for exit zero and let `job-check.sh` explain
+it - was rejected: the wrapper already holds the stream, `job-check.sh` runs on
+demand and only after someone remembers, and a caller who reads only `.done`
+gets the wrong answer. The classes are additive: the first `.done` line keeps
+its historical `EXIT=<n> OUTCOME=<word>` shape, so `job-check.sh` and every
+consumer that matches on `EXIT=0` keep working.
+
+### Why liveness is a file, not a poll of the process
+
+The controller needs to see a stalled run within seconds, not when a `.done`
+marker happens to appear, and it must not learn that by killing or probing a
+running agent. While a run is active the wrapper starts one small sidecar
+(`pi-live.py`) as a child and kills it on exit; the sidecar appends nothing to
+the run's evidence but rewrites `<run>.live` every `PI_LIVE_INTERVAL_SECONDS`
+(30 s default) by reading only the bytes its stream gained since the previous
+tick. That keeps a 400 MB stream at one incremental parse per tick.
+
+The file holds facts only, as absolute epochs and counts, and is replaced by
+temp-file + rename, so a reader never sees a half-written object; every age
+(seconds since the last event, tool-call age, since-last-commit) is derived by
+the reader, which is why a stale snapshot still describes exactly what it last
+saw. A value that cannot be read - git unreachable, a stream not yet created -
+is `null` rather than an invented zero.
+
+`job-status.sh` is the read side: one line per run, `STALLED` when the wrapper
+is alive and no pi event arrived within `JOB_STATUS_STALL_SECONDS` (600 s),
+`HUNG-TOOL` when a single tool call has been in flight past
+`JOB_STATUS_HUNG_TOOL_SECONDS` (1800 s), and `NO-LIVE`/`WRAPPER-DEAD` kept
+distinct from `ACTIVE` so a missing snapshot cannot read as health. It is
+read-only by construction: `kill -0` on the recorded pid and file reads, nothing
+else. A long tool call is therefore *reported* long before it is judged a
+failure, and no threshold on this path stops an agent: the controller decides.
+
+Continuation is bounded and class-specific on purpose. Only `EMPTY-COMPLETION`
+is continued, because only that class is a provider/model anomaly: the session
+is intact and the same conversation can finish the work. `UNCOMMITTED`,
+`NO-REPORT`, `ERROR` and `INCOMPLETE` describe real states of the worktree or
+the provider, and a blind resume would either loop or mask them. The limit is
+two attempts (measured: two store-crate stalls needed one continuation, a
+second was unused), it is set by `PI_EMPTY_RETRY_LIMIT`, and the prompt lives in
+one file (`continue-empty-completion.md`) so a wrapper revision cannot drift
+from the text a hand resume uses. A restart is never automatic: a fresh session
+needed about an hour and over 100 tool calls to re-orient, which is a
+controller decision, not a wrapper reflex.
+
 ### Job-check compatibility
 
 `job-check.sh` keeps the prototype's `any` route as an explicit allowed-set

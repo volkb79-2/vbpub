@@ -68,7 +68,7 @@ PY
     route=$(cat "$CONTROLLER_HOME/runs/$name.route" 2>/dev/null || echo unknown)
     if [[ -f $CONTROLLER_HOME/runs/$name.done ]]; then
       printf '  %s route=%s %s age=%s\n' "$name" "$route" \
-        "$(head -c 40 "$CONTROLLER_HOME/runs/$name.done")" "$(age "$mtime")"
+        "$(head -n 1 "$CONTROLLER_HOME/runs/$name.done" | head -c 70)" "$(age "$mtime")"
     else
       size=$(stat -c %s "$file" 2>/dev/null || echo '?')
       state="RUNNING (last write $(age "$mtime") ago, ${size} bytes)"

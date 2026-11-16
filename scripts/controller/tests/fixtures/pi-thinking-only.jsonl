@@ -1,0 +1,5 @@
+{"type":"session","id":"pi-session-thinking"}
+{"type":"agent_start"}
+{"type":"message_end","message":{"role":"assistant","content":[{"type":"thinking","thinking":"The remaining edits are minor; no tool call was emitted."}],"usage":{"input":201,"output":64,"cacheRead":176300,"cacheWrite":0,"reasoning":0,"totalTokens":176565},"stopReason":"stop","durationMs":3800}}
+{"type":"agent_end"}
+{"type":"agent_settled","aborted":false}

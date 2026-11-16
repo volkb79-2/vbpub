@@ -202,3 +202,82 @@ Operator 2026-11-13: "reflect on ctlstat again, new experiences what it should b
 - **Verdict binding.** The verdict parser of section 6 item 4 is extended to accept `**Verdict: MERGE** (bound to head <sha>)` and the older forms, extract the head, and compare it with the branch head: equal = green, different = `STALE`, no head stated = `none` for merge purposes.
 - **Build order.** `wait` is cheap (file mtimes plus the existing derivations) and removes the largest daily friction (about 50 Monitor calls on 2026-11-12 alone), so it moves to stage 3, next to the package pipeline; reservations, peers and slots stay in stage 4, `compaction-check` and `stats` in stage 5.
 - **Remote rows.** The per-host rows of the STACK ALIGNMENT matrix (versions on each compute host, runner-script age) need `--remote` (one identity-checked ssh per host, section 9 item 9) so the default run keeps its 3 s budget; the default shows the controller-side rows only.
+
+## 15. Overwatch requirements (2026-11-15; requirements only, nothing built here)
+
+Origin: the controller had to notice a stalled long-running agent by chance. Two
+pi store-crate stalls ended with `stopReason: stop`, exit zero and no tool call
+while the work was uncommitted and no report existed (`content: []` with 173
+output tokens at 211k context; a `thinking`-only message at 177k). The wrapper
+that launched them recorded `OUTCOME=SUCCESS`, and the controller only
+understood what had happened when it read the session log by hand. This section
+states what ctlstat must eventually show for every job; the *immediate* fix
+(wrapper-side classification, a bounded same-session continuation, and a
+`job-status.sh` reading a per-run liveness file) is shipped in the controller
+kit, not in ctlstat, and ctlstat must consume that evidence rather than
+re-derive it.
+
+### 15.1 What ctlstat must show per job (extends sections 3D/3E, not replaces)
+
+1. **Liveness** — process alive (`kill -0` on the recorded pid, never a pattern
+   kill), age of the last event in the run's own stream, and whether the
+   snapshot itself is fresh (a stale liveness file is `UNREACHABLE`, not
+   healthy). Liveness and progress are two columns, never one word.
+2. **Progress** — the state word a `STALLED`/`HUNG-TOOL` read produces, plus
+   `seconds since the last commit`, `uncommitted file count`, `commits ahead of
+   the base`, and the artefact age (report written? gate evidence bound?).
+   "Alive but not progressing" is the failure class this repo keeps hitting;
+   the word must be derivable from files and git, not from the agent's own claim.
+3. **Turn and tool accounting** — assistant turns, tool calls, the tool call in
+   flight and its age. These are *display and threshold inputs*; none of them is
+   a stop rule. ctlstat never suggests restarting an agent because a count is
+   high: the measured facts are that median turn time is flat from 50k to 350k
+   context, and that a fresh session needed about an hour and over 100 tool
+   calls to re-orient.
+4. **Token trend** — `usage.totalTokens` (context fill) per turn, the cached vs
+   uncached split, and the derived per-turn latency by context size. Needed to
+   tell "a long run" from "a slow turn", and to price a restart.
+5. **Anomaly classes** — one closed vocabulary shared by the wrapper, the
+   liveness file and ctlstat, so a stall is named the same way everywhere:
+   `EMPTY-COMPLETION`, `EMPTY-COMPLETION-RETRIES-EXHAUSTED`, `UNCOMMITTED`,
+   `NO-REPORT`, `USAGE-LIMIT`, `ERROR`, `INCOMPLETE`, plus the read-side states
+   `STALLED`, `HUNG-TOOL`, `WRAPPER-DEAD`, `NO-LIVE`. An unknown value reads as
+   "unknown", never as `SUCCESS`.
+6. **Restart-vs-continue decision inputs** — in one row: the anomaly class, the
+   session id (resume handle), whether the worktree has commits and whether it
+   is clean, the report state, and the measured cost of each option (the
+   continue cost from the run's own recent turn latency; the restart cost from
+   the recorded time-to-first-commit of comparable fresh sessions). ctlstat
+   prints the decision inputs and the exact resume command; it does not decide.
+7. **Cost model inputs** — cached vs uncached input tokens, output tokens,
+   turn count, turn latency by context band, and time-to-first-commit after a
+   restart, kept per route/model so the numbers are comparable and a change in
+   the gateway or the model is visible in the trend rather than averaged away.
+8. **Attribution** — the anomaly class must be bound to the run (its `.done`
+   marker and event stream), not inferred from the report text. A verdict that
+   cannot be bound to a head is `STALE`, never green (the existing rule in
+   section 14.1 item 1, applied to run outcomes as well as review verdicts).
+
+### 15.2 Sources, in order of authority
+
+The run's own `.done` marker and `EXIT=<n> OUTCOME=<word>` line; the per-run
+liveness file (absolute epochs and counts, replaced atomically) and its sidecar
+events; the run's event stream (incremental parse only, never re-read whole);
+`git` for trees and commits; the report path the caller named. ctlstat must
+consume the kit's `job-status.sh` output or the same files directly — not a
+probe of the process, not an ssh, and never a pattern match over `ps`.
+
+### 15.3 Notes from the measurements this section rests on
+
+- A turn without a tool call ends the run in pi, so a provider anomaly and a
+  finished job are identical from the exit status alone; the stream carries the
+  distinction (`content` empty or thinking-only, no `toolCall`).
+- A context-size or tool-call-count trigger is not the right stall detector: the
+  first measured session ran past 300k tokens with flat turn latency and
+  uncached input around 1k tokens per turn, and the pi arguments set no turn or
+  tool-call limit.
+- Continuation of the *same* session is the cheap recovery (it worked repeatedly
+  with a short prompt); a fresh session is the expensive one.
+- Anything ctlstat needs about a running job must therefore already exist on
+  disk while the job runs. A sidecar that only writes at exit cannot report a
+  stall, which is why the liveness file is written while the run is active.

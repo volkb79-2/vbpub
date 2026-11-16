@@ -80,16 +80,47 @@ Start the wrapper detached with an absolute prompt path:
 nohup env CONTROLLER_HOME="$HOME/controller" PI_ROUTE=deepseek-pi \
   scripts/controller/pi-impl.sh \
   /path/to/worktree /absolute/path/to/brief.md pi-run \
+  --report /absolute/path/to/report.md \
   > "$HOME/controller/logs/pi-run.launch.log" 2>&1 < /dev/null &
 ```
+
+The `--report` path (or `PI_REPORT`) is the brief's report file. Naming it lets
+the wrapper tell `OUTCOME=NO-REPORT` from a real `OUTCOME=SUCCESS`; leaving it
+out skips that one check. Read the `.done` marker's outcome word before
+deciding what to do next:
+
+| `.done` outcome | What to do |
+|---|---|
+| `SUCCESS` | Read the report, then review on another route. |
+| `EMPTY-COMPLETION` | An intermediate word: pi stopped with no text and no tool call, so the wrapper continues the same session itself and records the next outcome. It stays in the marker only when `PI_EMPTY_RETRY_LIMIT=0`. |
+| `EMPTY-COMPLETION-RETRIES-EXHAUSTED` | Two continuations of the same session also ended empty. Read `<run>.events`, then decide: resume again with a concrete instruction, or restart deliberately (a fresh session costs about an hour of re-orientation). |
+| `UNCOMMITTED` | The work is real but not committed. Inspect the worktree and commit, or resume for the finish. |
+| `NO-REPORT` | The work may be done but the report is missing. Resume and ask for the report, or write it from the review. |
+| `USAGE-LIMIT` | Wait for the reset recorded in the account state, then `resume-usage-limited.sh`. |
+| `ERROR` / `INCOMPLETE` | Read `<run>.err` and the stream's last events before deciding. |
 
 Check the stream, exit code, and account outcome with the route that was
 selected, then inspect current run/stall status:
 
 ```bash
 scripts/controller/job-check.sh pi-run /path/to/worktree deepseek-pi
+scripts/controller/job-status.sh pi-run
 scripts/controller/ctl-status.sh
 ```
+
+`job-status.sh` is the liveness read for an ACTIVE run (the controller's
+Monitor polls it instead of watching for `.done`). One line per run, with
+`STALLED` when the wrapper is alive but no pi event arrived within
+`JOB_STATUS_STALL_SECONDS` (default 600) and `HUNG-TOOL` when one tool call has
+been in flight past `JOB_STATUS_HUNG_TOOL_SECONDS` (default 1800). Long tool
+calls are reported, never killed; the thresholds only choose the word.
+
+An `EMPTY-COMPLETION` run is continued by the wrapper without the controller
+doing anything: it resumes the same pi session with the canonical prompt in
+`continue-empty-completion.md`, appends each continuation to `<run>.jsonl`, and
+records one JSON line per attempt in `<run>.events`. The default is two
+attempts; set `PI_EMPTY_RETRY_LIMIT` to change it, or to `0` to see the raw
+class without a continuation. No other outcome is continued automatically.
 
 A pi 402 may exit zero; the `.done` record uses `OUTCOME=USAGE-LIMIT` and the
 shared account state stores the reset. Resume by the saved pi session id; the

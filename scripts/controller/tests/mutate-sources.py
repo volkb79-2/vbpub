@@ -13,6 +13,8 @@ controller.mkdir(parents=True)
 runner.mkdir(parents=True)
 shutil.copy2(repo / "scripts/controller/lib.sh", controller / "lib.sh")
 shutil.copy2(repo / "scripts/controller/opendesign-accounts.py", controller / "opendesign-accounts.py")
+shutil.copy2(repo / "scripts/controller/pi-live.py", controller / "pi-live.py")
+shutil.copy2(repo / "scripts/controller/job-status.sh", controller / "job-status.sh")
 
 
 def account_helper_mutant(name: str, before: str, after: str) -> Path:
@@ -362,16 +364,20 @@ mutant("scripts/controller/pi-impl.sh", "pi-session-sidecar.sh",
        '  printf \'%s\\n\' "$thread_id" > "$out/$name.thread"',
        '  : # omit the pi session sidecar')
 mutant("scripts/controller/pi-impl.sh", "pi-stdin-closed.sh",
-       '  < /dev/null > "$out/$name.jsonl" 2> "$out/$name.err"); then',
-       '  > "$out/$name.jsonl" 2> "$out/$name.err"); then')
+       '    < /dev/null > "$stream" 2> "$out/$name.err")',
+       '    > "$stream" 2> "$out/$name.err")')
 mutant("scripts/controller/pi-impl.sh", "pi-402-outcome.sh",
-       'if [[ $stop_reason == error && $usage_limited == 1 ]]; then', 'if False; then')
+       'if [[ $stop_reason == error && $usage_limited == 1 ]]; then',
+       'if false; then')
 mutant("scripts/controller/pi-impl.sh", "pi-error-outcome.sh",
-       'elif [[ $stop_reason == error ]]; then\n  outcome=ERROR', 'elif False; then\n  outcome=ERROR')
+       'elif [[ $stop_reason == error ]]; then\n    echo ERROR',
+       'elif false; then\n    echo ERROR')
 mutant("scripts/controller/pi-impl.sh", "pi-nonzero-exit-outcome.sh",
-       'elif [[ $rc != 0 ]]; then\n  outcome=ERROR', 'elif False; then\n  outcome=ERROR')
+       'elif [[ $rc != 0 ]]; then\n    echo ERROR',
+       'elif false; then\n    echo ERROR')
 mutant("scripts/controller/pi-impl.sh", "pi-success-stop-only.sh",
-       '&& -n $thread_id && $stop_reason == stop ]]; then', '&& -n $thread_id && -n $stop_reason ]]; then')
+       '|| -z $thread_id || $stop_reason != stop ]]; then',
+       '|| -z $thread_id || -z $stop_reason ]]; then')
 mutant("scripts/controller/pi-impl.sh", "pi-account-block-run.sh",
        'block-run "$od_account"', 'record-thread "$thread_id"')
 mutant("scripts/controller/pi-impl.sh", "pi-key-selected-export.sh",
@@ -380,6 +386,111 @@ mutant("scripts/controller/pi-impl.sh", "pi-key-volker-export.sh",
        '    export OPENDESIGN_API_KEY_VOLKER', '    : # selected key not exported')
 mutant("scripts/controller/pi-impl.sh", "pi-key-unselected-unset.sh",
        '    unset OPENDESIGN_API_KEY_VOLKER', '    : # unselected key not removed')
+# pi-overwatch: the wrapper's outcome classification, the bounded
+# continuation, the liveness sidecar and the read-only liveness report. Each
+# mutation turns a state the code must distinguish into its nearest neighbour.
+
+# Classification: an empty final message must not fall through to SUCCESS.
+mutant("scripts/controller/pi-impl.sh", "pi-empty-completion-class.sh",
+       'elif [[ $has_text != 1 && $has_tool_call != 1 ]]; then',
+       'elif false; then')
+# A thinking-only message is the same class as an empty one: the check must
+# look for text, not for content at all.
+mutant("scripts/controller/pi-impl.sh", "pi-thinking-only-class.sh",
+       '    "1" if last_text.strip() else "0", "1" if has_tool_call else "0",',
+       '    "1" if last_text else "0", "1" if has_tool_call else "0",')
+# Uncommitted work must not read as SUCCESS.
+mutant("scripts/controller/pi-impl.sh", "pi-uncommitted-class.sh",
+       'elif [[ -n $worktree_state ]]; then',
+       'elif false; then')
+# An unreadable worktree status must fail closed, not read as a clean tree.
+mutant("scripts/controller/pi-impl.sh", "pi-status-fail-closed.sh",
+       'elif ! worktree_state=$(git -C "$worktree" --no-optional-locks status --porcelain 2>/dev/null); then',
+       'elif worktree_state=$(git -C "$worktree" --no-optional-locks status --porcelain 2>/dev/null) && false; then')
+# A continuation must write into the run's own stream while it runs.
+mutant("scripts/controller/pi-impl.sh", "pi-continue-live-stream.sh",
+       'if invoke_pi "$continue_prompt" "$out/$name.jsonl" 0; then',
+       'if invoke_pi "$continue_prompt" "$out/.$name.continue.tmp" 0; then')
+# A named report that is missing must not read as SUCCESS.
+mutant("scripts/controller/pi-impl.sh", "pi-no-report-class.sh",
+       'elif [[ -n $report_path && ! -f $report_path ]]; then',
+       'elif false; then')
+# An unset report path skips the check; it must not be treated as a report that
+# exists (the reverse mistake: refusing every run without a report).
+mutant("scripts/controller/pi-impl.sh", "pi-report-unset-skips.sh",
+       'if [[ -n $report_path ]]; then\n  [[ $report_path == /* ]]',
+       'if [[ -z $report_path ]]; then\n  [[ $report_path == /* ]]')
+# A worktree that cannot answer git is refused; it must never be read as clean.
+mutant("scripts/controller/pi-impl.sh", "pi-worktree-git-fact.sh",
+       'if ! git -C "$worktree" rev-parse --is-inside-work-tree >/dev/null 2>&1; then',
+       'if false; then')
+# The continuation bound: one extra attempt survives a two-attempt bound.
+mutant("scripts/controller/pi-impl.sh", "pi-continue-bound.sh",
+       'while (( attempt < retry_limit )) && [[ $outcome == EMPTY-COMPLETION ]]; do',
+       'while (( attempt <= retry_limit )) && [[ $outcome == EMPTY-COMPLETION ]]; do')
+# The continuation is class-specific: no other outcome may be continued.
+mutant("scripts/controller/pi-impl.sh", "pi-continue-class.sh",
+       'while (( attempt < retry_limit )) && [[ $outcome == EMPTY-COMPLETION ]]; do',
+       'while (( attempt < retry_limit )) && [[ $outcome != SUCCESS ]]; do')
+# An unparsable bound must be refused, not used.
+mutant("scripts/controller/pi-impl.sh", "pi-continue-bound-validation.sh",
+       "[[ $retry_limit =~ ^[0-9]+$ ]] || {",
+       "true || {")
+# The canonical continuation prompt is one file the wrapper must read.
+mutant("scripts/controller/pi-impl.sh", "pi-continue-prompt-file.sh",
+       'if [[ ! -r $continue_prompt_file ]]; then',
+       'if false; then')
+# Exhaustion is a distinct word, not the silent intermediate one.
+mutant("scripts/controller/pi-impl.sh", "pi-continue-exhausted.sh",
+       'if (( attempt > 0 )) && [[ $outcome == EMPTY-COMPLETION ]]; then',
+       'if false; then')
+# The liveness sidecar must be replaced by rename, never rewritten in place.
+mutant("scripts/controller/pi-live.py", "pi-live-atomic.py",
+       '        os.replace(temporary, target)',
+       '        with target.open("wb") as sink, open(temporary, "rb") as source:\n'
+       '            sink.write(source.read())\n'
+       '        os.unlink(temporary)')
+# A tool call that never ends must still be visible in the snapshot.
+mutant("scripts/controller/pi-live.py", "pi-live-tool-in-flight.py",
+       '        elif event_type == "tool_execution_start":',
+       '        elif event_type == "tool_execution_started":')
+# A value that cannot be read stays null rather than being invented.
+mutant("scripts/controller/pi-live.py", "pi-live-missing-fact.py",
+       '        "uncommitted_files": None if porcelain is None else len(',
+       '        "uncommitted_files": 0 if porcelain is None else len(')
+# Usage reported before a message completes is the only live token figure.
+mutant("scripts/controller/pi-live.py", "pi-live-usage-trend.py",
+       '        elif event_type == "message_update":',
+       '        elif event_type == "message_update_disabled":')
+# A quiet run must read as STALLED at the configured threshold.
+mutant("scripts/controller/job-status.sh", "job-status-stall-threshold.sh",
+       '    elif since_event is not None and since_event > stall_limit:',
+       '    elif since_event is not None and since_event > stall_limit * 10:')
+# A long tool call must read as HUNG-TOOL, and before STALLED.
+mutant("scripts/controller/job-status.sh", "job-status-hung-tool.sh",
+       '    elif tool_seconds is not None and tool_seconds > hung_limit:',
+       '    elif False:')
+# A dead wrapper with no .done must not read as ACTIVE.
+mutant("scripts/controller/job-status.sh", "job-status-wrapper-dead.sh",
+       '    wrapper_dead = not pid_alive(wrapper_pid)',
+       '    wrapper_dead = False')
+# A finished run must be read from its marker, never from a live snapshot.
+mutant("scripts/controller/job-status.sh", "job-status-finished.sh",
+       '    if (runs_dir / f"{name}.done").is_file():',
+       '    if False:')
+# A run without a snapshot must say so instead of reading as healthy.
+mutant("scripts/controller/job-status.sh", "job-status-no-live.sh",
+       '    if not live_path.is_file():',
+       '    if False:')
+# The documented defaults (600 s quiet, 1800 s in one tool call) must hold when
+# no environment override is given.
+mutant("scripts/controller/job-status.sh", "job-status-default-stall.sh",
+       'stall_seconds=${JOB_STATUS_STALL_SECONDS:-600}',
+       'stall_seconds=${JOB_STATUS_STALL_SECONDS:-6000}')
+mutant("scripts/controller/job-status.sh", "job-status-default-hung.sh",
+       'hung_tool_seconds=${JOB_STATUS_HUNG_TOOL_SECONDS:-1800}',
+       'hung_tool_seconds=${JOB_STATUS_HUNG_TOOL_SECONDS:-18000}')
+
 mutant("scripts/controller/README.md", "README-pi-route-table.md",
        '| `deepseek-pi` | `pi-impl.sh` | Favored Open Design route; alternates available accounts. |',
        '| `deepseek-pi` | `pi-impl.sh` | Route. |')
