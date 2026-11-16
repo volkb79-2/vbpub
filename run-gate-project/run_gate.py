@@ -17,7 +17,7 @@ See run-gate-project/README.md (design authority) and CONSUMERS.md (adoption).
 # Public CLI distribution: the installed wheel's metadata supplies its version.
 # __revision__ is retained only for persisted-record provenance.
 # rev 65: send single-line JSON over the newline-framed cgprofile control socket
-__revision__ = 68  # rev 68: pin worktree Git pointers and harden host Git readers
+__revision__ = 70  # rev 70: RG-150 one-uid preflight (R-56); rev 69 refused a written-null ciu schema_version and documented the usage text
 # rev 66: preflight observer contract before private R2 lanes
 # rev 64: refuse failed ctl carriers and foreign watch verdicts
 # Rev 63 holds requested exec/bare-host children behind a ready/continue
@@ -532,6 +532,15 @@ HOST_IMAGE_ENV_VAR = "RUN_GATE_HOST_IMAGE"
 # uid).
 ENV_USER_INVOKER = "invoker"
 DEFAULT_HOST_IMAGE = "ghcr.io/volkb79-2/mdt-cockpit-devcontainer:trixie-py3.14-php8.5-latest"
+# RG-119 item 7: DEFAULT_HOST_IMAGE is NOT the `host` fallback at run time
+# any more. Since RG-101 the name `host` selects no behaviour at all — a lane
+# naming it without declaring `[environments.host]` is REFUSED, with the exact
+# declaration as the remedy — so the only remaining reader is
+# `migrate_environment_modes`, which materializes a `mode = "ephemeral"` table
+# for a legacy config and needs SOME image reference to write. It is therefore
+# a migration seed, never a silently chosen runtime image (the default-razor
+# this estate's rules name): a config that still relies on it gets a written
+# declaration the operator reviews and commits, not an inherited image.
 EXTRA_MOUNT_ENV_VAR = "RUN_GATE_EXTRA_MOUNTS"
 HOST_DOCKER_GID_ENV_VAR = "RUN_GATE_HOST_DOCKER_GID"
 MDT_HOST_DOCKER_GID_ENV_VAR = "MDT_HOST_DOCKER_GID"
@@ -2549,7 +2558,13 @@ def load_config_snapshot(project_dir: Path
 
 
 def load_config(project_dir: Path) -> tuple[dict, Path, dict, Path | None]:
-    """Compatibility wrapper for callers that do not need provenance."""
+    """TEST-ONLY compatibility wrapper (RG-119 item 8).
+
+    Production code calls `load_config_snapshot` exclusively: a run must record
+    the exact bytes it parsed (`R-36l`), and this wrapper discards both digests.
+    It survives because ~50 unit tests want the four-tuple; keeping it labelled
+    is the alternative the item offered to rewriting all of them. Nothing in
+    `run_gate.py` may call it."""
     project, project_path, central, central_path, _project_sha, _central_sha = \
         load_config_snapshot(project_dir)
     return project, project_path, central, central_path
@@ -2881,6 +2896,137 @@ def disclose_image_selection(selection: dict | None) -> None:
         f"declared {selection.get('declared_image')}{identity}{unavailable}",
         flush=True,
     )
+
+
+def lane_container_uid(env: dict, docker: str | None) -> tuple[int | None, str]:
+    """The numeric uid an ephemeral lane's container process runs as.
+
+    RG-150 needs the lane user as a NUMBER to compare with the checkout and
+    CoW-root owners. Faces: a declared `[environments.<n>] user` (already
+    validated as numeric, and `"invoker"` is resolved to `uid:gid` before
+    this call), else the selected image's own `Config.User`.
+
+    Returns `(None, why)` whenever no uid can be ESTABLISHED. Root is the
+    important face and it is ONE rule for both sources: a declared
+    `user = "0"`, `"0:0"` (or an `invoker` that resolves to root) and an
+    image whose `Config.User` is root both mean the container runs as uid 0,
+    and in a CI-as-root / rootless-userns lane uid 0 maps onto the HOST
+    owner — so "the lane uid disagrees with the tree owner" is not a defect
+    there, it is the normal shape. The image branch always said so (RG-106);
+    comparing a DECLARED root would contradict it and refuse a healthy
+    estate. The remaining no-fact faces are an absent/uninspectable image,
+    an image that needs a pull, no docker, and a named (non-numeric) user,
+    because guessing a uid would either invent a refusal for a healthy
+    estate or invent agreement for a broken one. This is a READ: the caller
+    never turns `None` into a pass/fail claim.
+    """
+    declared = env.get("user")
+    # The config parser guarantees that a PRESENT `user` is a non-empty
+    # string naming `invoker` or a numeric `uid[:gid]` (see
+    # `_validate_environment`); this helper still refuses to assume the schema
+    # held, because it is a READ that callers and tests may hand a raw
+    # environment table. A non-string truthy value (an int, a list) must fall
+    # through to the image rather than reach `declared.split`, and an empty
+    # string must fall through rather than be reported as a named user.
+    if isinstance(declared, str) and declared:
+        head = declared.split(":", 1)[0]
+        if not head.isdigit():
+            return None, f"declared user {declared!r} names no numeric uid"
+        if int(head) == 0:
+            return None, ""
+        return int(head), f"declared user {declared!r}"
+    image = env.get("image")
+    if not image:
+        return None, "the environment declares no image"
+    if docker is None:
+        return None, "docker is unavailable to ask the image"
+    # A probe that cannot even run (the binary vanished between `which()` and
+    # this call) is NOT a mismatch: this preflight must never become a new
+    # failure source of its own.
+    try:
+        result = subprocess.run(
+            [docker, "image", "inspect", "--format", "{{.Config.User}}",
+             image],
+            capture_output=True, text=True)
+    except OSError as exc:
+        return None, f"docker could not be run ({exc})"
+    if result.returncode != 0:
+        return None, (f"image {image!r} is not inspectable locally (it may "
+                      "need a pull)")
+    raw = result.stdout.strip()
+    if not raw:
+        return None, ""
+    head = raw.split(":", 1)[0]
+    if head == "root":
+        return None, ""
+    if not head.isdigit():
+        return None, f"image {image!r} names a non-numeric user {raw!r}"
+    if int(head) == 0:
+        # A root lane raises RG-106's ownership questions, not a uid
+        # MISMATCH: there is no lane uid to disagree with the tree owner.
+        return None, ""
+    return int(head), f"image {image!r} user {raw!r}"
+
+
+def path_owner_uid(path: Path) -> int | None:
+    """Owner uid of a checkout or CoW root, read from the path itself.
+
+    `None` when the path cannot be stat'd (it may not exist yet, or the
+    invoking user may not be allowed to see it). An unreadable owner is a
+    fact this preflight does not have, never a mismatch.
+    """
+    try:
+        return Path(path).lstat().st_uid
+    except OSError:
+        return None
+
+
+def preflight_lane_uid_ownership(
+        lane_name: str, env: dict, env_source: str, worktree: Path,
+        resource_settings: dict, docker: str | None) -> None:
+    """RG-150: one uid for the checkout, the CoW root and the lane user.
+
+    A mismatch does not surface as its cause; it surfaces as three unrelated
+    errors (an in-lane git `dubious ownership` inside the editable Assay
+    install, a host-side `Permission denied` on `.run-gate`, and Assay's own
+    `MDT_COW_ROOT must be owned by the non-root caller uid`) — measured over
+    six failed lane attempts. Refuse ONCE, naming every owner, before the
+    lane starts.
+
+    Every clause is DERIVED, never defaulted: the lane uid from a declared
+    `user` or the image's own `Config.User`, the tree owner from a stat, the
+    CoW root owner from a stat of `$MDT_COW_ROOT` and ONLY when the lane
+    would actually use it (`[resources.cowtree] mode = "auto"` on an
+    ephemeral lane). When any of those facts cannot be established the check
+    says nothing at all rather than refusing a healthy estate on a guess,
+    which is the superset-refusal failure this class of check exists to
+    avoid.
+    """
+    if not env or env.get("mode") != "ephemeral":
+        return
+    lane_uid, lane_source = lane_container_uid(env, docker)
+    if lane_uid is None:
+        return
+    tree_uid = path_owner_uid(worktree)
+    owners = [f"checkout {worktree} by uid {tree_uid}"] \
+        if tree_uid is not None and tree_uid != lane_uid else []
+    cowtree = (resource_settings or {}).get("cowtree", {})
+    cow_root = os.environ.get(MDT_COW_ROOT_ENV_VAR)
+    if (cow_root and isinstance(cowtree, dict)
+            and cowtree.get("mode", "auto") == "auto"):
+        cow_uid = path_owner_uid(Path(cow_root))
+        if cow_uid is not None and cow_uid != lane_uid:
+            owners.append(f"CoW root {cow_root} by uid {cow_uid}")
+    if not owners:
+        return
+    raise GateNotRunError(
+        "environment-mismatch",
+        f"lane {lane_name!r} not run: {', and '.join(owners)}, but the lane "
+        f"runs as uid {lane_uid} ({lane_source}) from {env_source} — one uid "
+        f"must own the checkout, the CoW root and the lane user (CONSUMERS.md"
+        f" 'Runner uid: one owner for checkout, cockpit and lane'); chowning a "
+        f"checkout to a second uid per run does not work, because Assay "
+        f"replaces Git's configuration and no safe.directory can be granted")
 
 
 def refuse_serialized_shard(lane: dict, lane_name: str, env: dict,
@@ -10124,10 +10270,18 @@ def usable_recorded_base(worktree: Path, doc: dict) -> tuple[str | None, str]:
     """
     # Schema dispatch. ciu schema v6 records the symbolic base separately
     # (`base_branch_ref`) because `base_ref` became the pinned SHA; v1-v5 keep
-    # the symbolic-`base_ref` reading below, byte for byte. A record with no
-    # `schema_version` at all is read as legacy, as it always was.
-    version = doc.get("schema_version")
-    if version is not None:
+    # the symbolic-`base_ref` reading below, byte for byte. A record with NO
+    # `schema_version` key at all is read as legacy, as it always was.
+    #
+    # RG-119 item 9: a PRESENT key whose value is `null` is NOT that case. An
+    # absence means the writer predates the key; a written null means the
+    # writer had a version slot and did not fill it, and folding the two
+    # together is the "absence for emptiness" read that lets a malformed
+    # record be interpreted under a grammar it never declared. It is refused
+    # by name instead, with the same explicit-`--base` way out as any other
+    # unusable record (this path never raises: it degrades).
+    if "schema_version" in doc:
+        version = doc["schema_version"]
         if type(version) is not int or version < 1:
             return None, (f"its 'schema_version' {version!r} is not a "
                           f"positive integer")
@@ -18427,6 +18581,12 @@ def usage(lanes: dict, inherited: set[str] | None = None) -> str:
         "       run-gate --list   (machine-readable: name<TAB>kind<TAB>environment)",
         "       run-gate --list --json   (R-55: kind, environments, members and"
         " derived rigor)",
+        "       run-gate --version   (RG-94: the installed wheel's SemVer, read",
+        "                           from distribution metadata; the public",
+        "                           compatibility identity)",
+        "       run-gate migrate-modes CONFIG  (RG-101: materialize the",
+        "         environments a legacy `host`/`bare-host` lane names, so the",
+        "         loader accepts a declaration it refuses with a remedy)",
         "       run-gate validate-pointers CONSUMER.toml [--root DIR]",
         "         (RG-2: certify every run-gate pointer in a consumer document —",
         "          trove gates, release steps — against the SSOT lanes they name)",
@@ -18535,6 +18695,10 @@ def usage(lanes: dict, inherited: set[str] | None = None) -> str:
         "                    else the judged tree's merge-base with its",
         "                    upstream; neither refuses (a guessed base is not a",
         "                    base). A lane that does NOT delegate refuses --base",
+        "  --lock-wait D     how long a lane WAITS for its RG-20/R-41",
+        "                    coordination locks before refusing (the `budget`",
+        "                    grammar, default 10m; never a hold — a lane that",
+        "                    cannot get its lock inside that window is ERROR)",
         "  --admission-wait D  RG-80: wait for a daemon-wide gate slot (default 10m)",
         "  --override-admission  RG-80: run past the published count cap, disclosed",
         "  -- ARGS...        append literal argv values to an opted-in command lane",
@@ -18649,6 +18813,11 @@ def usage(lanes: dict, inherited: set[str] | None = None) -> str:
         "  CGROUP_PARENT_DEV_GATES      container lanes take their cgroup slice",
         "                                from cgroup_slice, then cgroup_slice_env,",
         "                                then THIS variable; absent = hard error",
+        "  RUN_GATE_HOST_IMAGE           overrides the image of the DECLARED",
+        "                                `host` environment (that name alone selects",
+        "                                no behaviour; its required mode does);",
+        "                                absent = the environment's own",
+        "                                `image` / `image_env`",
         "  RUN_GATE_EXTRA_MOUNTS         colon-separated host=container pairs appended",
         "                                to EPHEMERAL container lanes (e.g. docker.sock)",
         "  RUN_GATE_MOUNT_ALIAS          'host=namespace' declaring the repo's second",
@@ -18686,6 +18855,12 @@ def usage(lanes: dict, inherited: set[str] | None = None) -> str:
         "                                it will never have); 'on' force-enables even over",
         "                                a lane's own profile = false. Any other value",
         "                                refuses at load, by name",
+        f"  {PROFILE_REMOVED_ENV_VAR} removed with cgprofile 2.0 (RG-156): the",
+        "                                socket is the only carrier, so this variable",
+        "                                and the `transport`/`daemon`/`socket_path`",
+        "                                keys are refused by name at load. Unset it; a",
+        "                                reachable profiler comes from",
+        f"                                ${CGPROFILE_CONTROL_SOCKET_ENV_VAR} alone",
         "",
         "Lane declarations: run-gate.toml in the current project directory; shared environment",
         "facts may live in an enclosing run-gate.root.toml. Judgment policy",
@@ -19767,6 +19942,27 @@ def _dispatch(argv: list[str] | None = None, *,
         # failures. Verify the selected tree's pinned judge before recording
         # an invocation, taking locks or starting a runner/container.
         preflight_assay_pins(lane, args.lane, eff_proj)
+        # RG-150: one uid owns the checkout, the CoW root and the lane user.
+        # Ahead of any admission, lock or container: a mismatch used to reach
+        # the operator as three unrelated errors (an in-lane git "dubious
+        # ownership" during assay's editable install, a host-side
+        # `Permission denied` on .run-gate, and Assay's own CoW-root refusal).
+        # Guarded by the mode so a host or exec lane starts nothing and asks
+        # docker nothing: the preflight is a container-lane fact.
+        #
+        # The `and`/`or` mutation of this condition is observable, and the
+        # oracle for it is a spy on the CALL rather than on an exception: an
+        # `or` mutant returns the TRUTHY environment dict itself, so every
+        # non-ephemeral environment that carries data (`exec` here) asks a
+        # container-only preflight. An absent env cannot demonstrate it, and
+        # `{}` cannot either (`x or y` with `{}` still evaluates `y` and
+        # answers False), which is why those cases alone would let the mutant
+        # live. The test drives all three faces so the reason is auditable,
+        # and the `exec` face is the one that actually dies under the mutant.
+        if env and env.get("mode") == "ephemeral":
+            preflight_lane_uid_ownership(
+                args.lane, env, env_source, worktree, resource_settings,
+                shutil.which("docker"))
         # RG-26: resolve the comparison base BEFORE any admission or lock —
         # a refusal here is a configuration error, and making a caller wait
         # on a shared-infra lock to receive one is the fast-fail mistake

@@ -21,10 +21,11 @@
 # The installed wheel's SemVer is the public identity and compatibility
 # floor. Internal revision fields remain only in persisted record provenance.
 #
-# The next release deliberately crosses from the former revision-era 23.x
-# identity to the wheel-only SemVer 24.0.0 contract. Its breaking Conventional
-# Commit in the pending source history makes the configured conventional bump
-# choose 24.0.0; inspect the release plan and refuse the release if it does not.
+# The wheel-only SemVer contract was crossed at 24.0.0 (its breaking
+# Conventional Commit is in the released history). Since then the version
+# comes from the conventional bump over the released tag, so inspect the
+# release plan and refuse a release whose computed version is not
+# `run-gate-v25.6.0`-or-later (RG-119 item 10 reconciled this stale header).
 # Release notes come from CHANGES.md, so the published body uses the same
 # versioned notes as the tagged changelog.
 # =============================================================================

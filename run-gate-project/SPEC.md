@@ -112,6 +112,22 @@ console command and its wheel SemVer are the only supported CLI identity;
 copied scripts and consumer symlinks are retired. Project discovery is from
 the current working directory, and persisted `revision` values remain only
 record-format provenance, never an upgrade floor.
+Rev 24 (Run-Gate 25.6.x, this wave): documentation reconciliation with no
+behaviour change except two refusals — RG-150 refuses an ephemeral lane before
+it starts when the lane user, the checkout owner and the CoW-root owner are not
+one uid (R-56), so a three-error ownership mismatch now arrives as ONE line —
+and RG-119 closed the docs-vs-code drift
+(backlog rows and LANE-AUTHORING TODO states reconciled against CHANGES.md; the
+usage text documents `--version`, `migrate-modes` and `--lock-wait`; the
+environment contract names `RUN_GATE_HOST_IMAGE` and the removed
+`RUN_GATE_PROFILE_TRANSPORT`; `exit_map` and `--list --json`'s `members` are in
+CONSUMERS; the CONSUMERS history example is regenerated from a real history
+schema-2 run with host-agnostic paths; the R-36 record field list gains
+`closeout`; R-36e names the interruption exception) and a written-null ciu
+`schema_version` is now refused by name instead of being read as a legacy
+record. The em-dash anchor slug forms GitHub actually renders remain
+UNVERIFIED offline; the anchors agree with the repository's own slug oracle
+(`tests/test_run_gate.py`), and RG-119's entry records the open question.
 Rev 23 (WP-E3): Run-Gate resolves cgprofile endpoints from
 `CGPROFILE_CONTROL_SOCKET` and `CGPROFILE_OBSERVER_SOCKET` in its process
 environment only. `[profile] socket_path` is refused by name; there is no
@@ -198,6 +214,16 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   `--rejudge`, and `--rejudge-outcome` are selective request controls (RG-66).
   `footprint --include-failed` admits completed profiled FAIL measurements;
   repeatable `footprint --write --lane NAME` merges selected entries (RG-68/69).
+  The usage text documents every verb the CLI accepts, including `--version`
+  (the installed SemVer, read from distribution metadata — never a source
+  revision), `migrate-modes CONFIG`, `validate-pointers`, and `--lock-wait D`
+  (the `budget` grammar, default `10m`: how long a lane WAITS for its RG-20/R-41
+  coordination locks before refusing; it bounds a WAIT, never a hold). The
+  ENVIRONMENT CONTRACT section names `RUN_GATE_HOST_IMAGE` (the override of
+  the DECLARED `host` environment's image; the name alone selects no
+  behaviour) and the removed `RUN_GATE_PROFILE_TRANSPORT`, which — like the
+  `transport`/`daemon`/`socket_path` keys — is refused by name rather than
+  silently ignored (RG-156, RG-119).
   `admission set|show`, `--admission-wait`, and `--override-admission` are
   the RG-80 daemon-wide count-cap interface. `status [--worktree PATH]
   [--json]` reports selected-tree inflight records plus host-wide internal
@@ -1582,7 +1608,12 @@ disagree, §8 amendments win, then README, then CONSUMERS.
     a configuration error naming no invocation, and is not recorded at all.
     `--dry-run` records NOTHING (no lane started, so nothing was measured).
     Aborts and infrastructure failures inside the window still update
-    `latest` and re-raise unchanged.
+    `latest`; RG-119 item 6 records the one exception the code already made:
+    a caught interruption (`SIGTERM`/`SIGINT`, or a `SystemExit` raised while
+    the cleanup runs) has no lane name and no record, so `main()` converts it
+    to `ERROR` exit 2 with one `interrupted before a closed result` line —
+    nothing at all is recorded, rather than a record pretending the lane ran.
+    Every other abort path re-raises unchanged.
   - **`R-36l` Config provenance (RG-47/RG-65).** Every run record stores
     `config_path` and `config_sha256` for the selected project's
     `run-gate.toml`. The digest is over the exact bytes that were parsed.
@@ -1666,7 +1697,12 @@ disagree, §8 amendments win, then README, then CONSUMERS.
     `history` element) gains three fields: `resources` (the contract's
     Summary object, or `null` — unprofiled, disabled, or a profile error),
     `profile_error` (string | null), `profile_ref` (`{daemon, session,
-    session_dir}` | null). A schema-1 store loads and reads AS-IS
+    session_dir}` | null), and — RG-119 item 6, recording what the B108 phase 2
+    closeout had been writing since 24.1.0 without appearing here —
+    `closeout` (the campaign-closeout block, or `null` for every lane that is
+    not a live `kind = "assay"` lane; its closed statuses are `complete`,
+    `incomplete`, `evidence_error`, `unavailable`, `invalid`,
+    `retention_error` and `not_applicable`). A schema-1 store loads and reads AS-IS
     (`.get("resources")` everywhere an entry is read, never a bare
     subscript, so an old entry with none of the three keys reads as
     `resources: null` rather than raising) and is written back as schema 2
@@ -2990,6 +3026,26 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   needs the judge reachable for assay lanes and imports. `--worktree` selects
   the tree the judge is asked about. Every other verb still refuses `--json`
   by name.
+- `R-56` **One uid owns the checkout, the CoW root and the lane user
+  (RG-150).** Before an ephemeral lane starts — ahead of admission, locks and
+  the runner — Run-Gate compares the lane user's numeric uid with the owner
+  of the checkout and, when the lane's `[resources.cowtree] mode` is `auto`
+  and `MDT_COW_ROOT` is set, the owner of that root. A disagreement is
+  NOT_RUN 3 with the closed reason `environment-mismatch` and ONE line naming
+  every disagreeing owner, the uid the lane would run as, and the
+  CONSUMERS.md section that explains the one-uid layout. The lane uid is
+  READ, never assumed: a declared `[environments.<n>] user`'s numeric head,
+  else the selected image's own `Config.User` from `docker image inspect`.
+  A uid of 0 is NOT a lane fact to compare, whether it is declared
+  (`user = "0"`, `"0:0"`, or an `invoker` that resolves to root) or read
+  from the image: a CI-as-root or rootless-userns lane runs as uid 0, which
+  maps onto the HOST owner, so "the lane uid disagrees with the tree owner"
+  is the normal shape there rather than a defect. When no numeric
+  non-root uid can be established — root, a named user, an image that is
+  not inspectable locally, no docker — the check asserts nothing, because
+  an invented uid would either refuse a healthy estate or certify a broken
+  one. `mode = "host"` and `mode = "exec"` lanes declare no lane user and
+  are unaffected.
 
 ## 6. Non-goals (unchanged from CONSUMERS)
 

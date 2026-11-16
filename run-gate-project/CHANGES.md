@@ -11,13 +11,76 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
 
 ### Fixed
 - run-gate: observer preflight refusals explain required endpoints and profiling opt-out behavior (RG-250).
+- run-gate: an ephemeral lane is refused BEFORE it starts when the lane user,
+  the checkout owner and the `MDT_COW_ROOT` owner are not one uid — NOT_RUN 3
+  with `environment-mismatch` and one line naming every disagreeing owner and
+  the uid the lane would run as, replacing the three unrelated errors (an
+  in-lane git `dubious ownership` inside the editable Assay install, a
+  host-side `Permission denied` on `.run-gate`, Assay's own CoW-root refusal)
+  a mismatch used to surface as. The lane uid is read (a declared `user`, else
+  the image's `Config.User`) and the check stays silent when it cannot be
+  established. A uid of 0 — declared (`user = "0"`, `"0:0"`, or an `invoker`
+  that resolves to root) or read from the image — is never compared: a
+  CI-as-root / rootless-userns lane runs as container root, which maps onto
+  the HOST owner, so that is not a mismatch (RG-150, SPEC `R-56`).
+- run-gate: `--help` renders one line per entry again. Five usage entries had
+  lost their trailing comma, so Python joined adjacent literals and printed
+  single 185-296 character lines with runs of spaces where the newline
+  belonged; the source still read line by line, which is why review did not
+  catch it. A new oracle asserts the RENDERED output instead (none of these
+  can go red on a missing comma otherwise) (RG-119).
+- run-gate: a ciu worktree record whose `schema_version` key is present but
+  `null` is refused by name with the explicit-`--base` remedy instead of being
+  read under the v1-v5 legacy grammar; an ABSENT key keeps the legacy reading
+  (RG-119 item 9).
+
+### Changed
+- run-gate: `--help` now documents every verb and fact it accepts or refuses —
+  `--version`, `migrate-modes`, `--lock-wait` (waits, never holds) — and the
+  environment contract names the `RUN_GATE_HOST_IMAGE` override and the
+  removed `RUN_GATE_PROFILE_TRANSPORT` refused by name (RG-119 item 5).
+- run-gate: `load_config` is labelled a TEST-ONLY compatibility wrapper; every
+  production path uses `load_config_snapshot` so a run records the digests it
+  parsed (RG-119 item 8).
 
 ### Documentation
 - run-gate: document the source-backed Assay upgrade and carry-over procedure for old campaign checkouts (RG-270).
 - backlog: close RG-251, RG-257, RG-268 and RG-269 against fixes already released in 25.4.1, 25.5.0 and 25.6.0.
+- docs: reconcile the backlog index rows and section statuses for RG-95..RG-98,
+  RG-100, RG-101, RG-106 and RG-109 to the releases they shipped in, and pin the
+  reconciliation with two doc oracles that fail on a stale row (RG-119 items 1-2).
+- docs: correct `LANE-AUTHORING.md` §7's two swapped item ids (the stall item is
+  RG-41, the coverage-offset item RG-40) and mark the shipped rows SHIPPED (RG-119 item 2).
+- docs: regenerate CONSUMERS' history `--json` example from a real history
+  schema-2 run (with `closeout`, `resources`, `profile_*`, `watch`, `placement`
+  and placeholder paths), refresh both install lines to the released
+  `run-gate-v25.6.0` wheel, and name Assay 8.0.0 as the floor for the automatic
+  campaign closeout (RG-119 items 4 and 10).
+- docs: put `exit_map` into the CONSUMERS lane schema, `--list --json`'s `members`
+  where consumers read it, the RG-109 interruption exception into SPEC `R-36e`,
+  `closeout` into the `R-36j`/`R-36` record field list, and a Rev 24 log line for
+  this wave; correct `DEFAULT_HOST_IMAGE`'s own comment to say it is a
+  `migrate-modes` seed, never a runtime fallback; fix `cmru.toml`'s stale
+  "next release is 24.0.0" header (RG-119 items 6, 7, 10).
+- docs: RG-119 item 3's GitHub-rendered em-dash anchor form is recorded as an
+  UNVERIFIED open question rather than "fixed": the anchors agree with the
+  repository's own slug oracle, and no offline renderer can settle GitHub's.
 
 ### Testing
 - run-gate: assert scoped `fstat` fakes delegate unrelated descriptors (RG-269).
+- run-gate: `TestUsageEnvironmentContract` asserts `--help` names `--version`,
+  `migrate-modes`, `--lock-wait`, `RUN_GATE_HOST_IMAGE` and the refused
+  `RUN_GATE_PROFILE_TRANSPORT` (RG-119 item 5).
+- run-gate: two doc oracles fail on a stale backlog index row or an
+  LANE-AUTHORING §7 row that still says OPEN for a shipped id (RG-119 items 1-2).
+- run-gate: `test_a_written_null_schema_version_is_refused_not_read_as_legacy`
+  pins the new refusal (RG-119 item 9).
+- run-gate: the two `And->Or` survivors R2 reported in the RG-150 code are
+  pinned. A non-string truthy or empty declared `user` must fall through to the
+  image rather than reach `declared.split` or be read as a named user, and the
+  dispatch guard's mutant is caught by spying on the CALL — the `exec` face is
+  the only environment shape that witnesses it (`mode = "host"` resolves to `{}`,
+  which answers the same on both sides of the mutant) (RG-150).
 
 <!-- cmru: release history -->
 

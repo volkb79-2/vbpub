@@ -491,12 +491,12 @@ Filed items carry their id; unfiled ones say where they would go.
 
 | item | where | state |
 |---|---|---|
-| RG-55/P5 transport/watch/placement/admission seam | run-gate `KNOWN_ISSUES_TODO_BACKLOG.md` | P5 implementation and documentation in review; RG-56 atomic admission remains open |
-| `stall_timeout` for container COMMAND lanes, judged from log-stream silence | run-gate RG-40 | OPEN, E-3 candidate (23.5.0) |
-| `coverage_gate.py` line offsets under `--allow-dirty` | run-gate RG-39 | OPEN, first item of E-3 |
-| Re-attach / follow a running lane after the client dies | run-gate RG-35 → 23.4.0 | in review |
-| Timestamps and outcome buckets in assay's progress events | assay B065 | OPEN, E-2 (assay 5.1.0) |
-| Durable state directory for resume across worktrees | assay B066 → run-gate RG-38 | OPEN, E-2 then E-3 |
+| RG-55/P5 transport/watch/placement/admission seam | run-gate `KNOWN_ISSUES_TODO_BACKLOG.md` | SHIPPED in 24.0.0 (transport, watch consumer, placement and admission seams; the carrier later became the cgprofile control socket, RG-156); RG-56 atomic profiler-registry admission remains OPEN |
+| `stall_timeout` for container COMMAND lanes, judged from log-stream silence | run-gate **RG-41** | SHIPPED 2026-09-08 (rev 38, released in 23.6.1) |
+| `coverage_gate.py` line offsets under `--allow-dirty` | run-gate **RG-40** | SHIPPED 2026-09-08 (rev 37, released in 23.6.0) |
+| Re-attach / follow a running lane after the client dies | run-gate RG-35 | SHIPPED in 23.4.0 |
+| Timestamps and outcome buckets in assay's progress events | assay B065 | SHIPPED in assay 5.2.0; run-gate's `ProgressWatch` consumes both |
+| Durable state directory for resume across worktrees | assay B066 → run-gate RG-38 | SHIPPED: assay 5.2.0 supplies `--state-dir`, run-gate 23.6.0 passes it (rev 37) |
 | `budget = "unbounded"` when every unit is bounded | assay B067 | OPEN, E-4 |
 | JS coverage via istanbul/lcov at R1 | assay A-O03 | half shipped, consumer wave |
 | Security scanners as assay Tier 2 with a threshold vocabulary | assay A-O10 | deferred until a real integration |

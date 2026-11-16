@@ -6065,6 +6065,25 @@ class TestUsageEnvironmentContract:
     """RG-7: usage() exposes the environment contract, flag semantics, and
     per-lane metadata; --list stays 3-column machine-readable."""
 
+    def test_help_documents_every_verb_flag_and_env_it_refuses_or_reads(
+            self, tmp_path):
+        """RG-119: the four surfaces that were documented NOWHERE — the
+        `--version` verb, `migrate-modes`, `--lock-wait` and the
+        `RUN_GATE_HOST_IMAGE` override — plus the removed transport variable
+        the environment contract must still name (refused by name, never
+        silently ignored). Measured before the fix against the installed
+        wheel: `run-gate --help` contained none of the four strings."""
+        repo = make_repo(tmp_path)
+        proj = make_project(repo, SIMPLE_LANE)
+        out = run_tool(proj, "--help").stdout
+        for token in ("run-gate --version", "run-gate migrate-modes",
+                      "--lock-wait D", "RUN_GATE_HOST_IMAGE"):
+            assert token in out, token
+        # The removed transport variable is named in the contract so an
+        # operator who still exports it learns it is refused, not ignored.
+        assert "RUN_GATE_PROFILE_TRANSPORT" in out
+        assert "refused by name" in out
+
     def test_help_documents_env_contract_and_flag_caveat(self, tmp_path):
         repo = make_repo(tmp_path)
         proj = make_project(repo, SIMPLE_LANE)
@@ -6074,6 +6093,33 @@ class TestUsageEnvironmentContract:
                     "RUN_GATE_MOUNT_ALIAS"):
             assert var in proc.stdout
         assert "still enforce assay's own clean-tree rule" in proc.stdout
+
+    def test_every_help_line_is_its_own_rendered_line(self):
+        """RG-119 fix round 1: five usage entries lost their trailing comma, so
+        Python joined adjacent string literals and `--help` rendered single
+        185-296 character lines with runs of spaces where the newline should
+        have been. A missing comma is INVISIBLE in review (the source still
+        reads line by line), so the only reliable oracle is the RENDERED
+        output: bounded line width, and no run of 3+ spaces inside a flag
+        description (the join's fingerprint)."""
+        text = run_gate.usage({"suite": {"kind": "command",
+                                        "environment": "x",
+                                        "argv": ["true"]}})
+        long_lines = [(index, len(line)) for index, line in
+                     enumerate(text.splitlines(), 1) if len(line) > 120]
+        assert not long_lines, (
+            "a joined usage entry renders as one over-long line (a missing "
+            f"comma between adjacent literals): {long_lines}")
+        for index, line in enumerate(text.splitlines(), 1):
+            body = line.lstrip()
+            # `<key>  <description>`: the description half must not contain the
+            # double-space runs a literal join would introduce.
+            parts = re.match(r"([^ ]+(?: [^ ]+)*)  +(.+)$", body)
+            if parts and "   " in parts.group(2):
+                raise AssertionError(
+                    f"usage line {index} has a run of 3+ spaces inside its "
+                    f"description (a lost comma joins the next entry into "
+                    f"it): {line!r}")
 
     def test_table_shows_budget_memory_clean_tree_and_description(self, tmp_path):
         repo = make_repo(tmp_path)
@@ -13073,6 +13119,21 @@ class TestRecordedWorktreeBaseLegacySchemas:
         path.write_text(json.dumps(doc))
         assert run_gate.recorded_worktree_base(repo, repo) == (
             git_head(repo, "main"), path, "")
+
+    def test_a_written_null_schema_version_is_refused_not_read_as_legacy(
+            self, tmp_path):
+        """RG-119 item 9: a PRESENT `schema_version: null` was folded into
+        the legacy reading by `is not None`. An absent key and a written null
+        are different facts — the second is a malformed record, and reading it
+        under the v1-v5 grammar is reading a shape nobody declared."""
+        repo = make_feature_repo(tmp_path)
+        path = write_instance_record(repo, base_ref="main")
+        doc = json.loads(path.read_text())
+        doc["schema_version"] = None
+        path.write_text(json.dumps(doc))
+        ref, _record, why = run_gate.recorded_worktree_base(repo, repo)
+        assert ref is None
+        assert "'schema_version' None is not a positive integer" in why
 
     @pytest.mark.parametrize("version", [1, 5])
     def test_a_pinned_sha_base_ref_is_refused_with_the_base_remedy(
@@ -33743,6 +33804,421 @@ class TestRG78AndRG76DirectOracles:
             run_gate.migrate_environment_modes(path)
 
 
+class TestRunGatesLaneUidOwnershipPreflight:
+    """RG-150: the lane user, the checkout owner and the CoW-root owner must be
+    one uid, and a mismatch refuses ONCE before the lane starts.
+
+    Every oracle below drives DERIVED facts (a declared `user`, an
+    image-inspect answer, a stat) rather than a literal, because the whole
+    point of the check is that a fallback here would either invent a refusal
+    for a healthy estate or invent agreement for a broken one.
+    """
+
+    @staticmethod
+    def _image_reports(monkeypatch, answer):
+        calls = []
+
+        def fake_run(argv, **_kwargs):
+            calls.append(argv)
+            if answer is None:
+                return SimpleNamespace(
+                    returncode=1, stdout="",
+                    stderr="Error response from daemon: No such image")
+            return SimpleNamespace(returncode=0, stdout=answer + "\n",
+                                   stderr="")
+
+        monkeypatch.setattr(run_gate.subprocess, "run", fake_run)
+        return calls
+
+    def test_a_declared_numeric_user_is_the_lane_uid(self):
+        assert run_gate.lane_container_uid(
+            {"mode": "ephemeral", "image": "i:1", "user": "1003:1003"},
+            None) == (1003, "declared user '1003:1003'")
+        assert run_gate.lane_container_uid(
+            {"mode": "ephemeral", "image": "i:1", "user": "7"}, None) == (
+                7, "declared user '7'")
+
+    def test_a_named_declared_user_yields_no_uid(self):
+        uid, why = run_gate.lane_container_uid(
+            {"mode": "ephemeral", "image": "i:1", "user": "app"}, None)
+        assert uid is None and "numeric uid" in why
+
+    @pytest.mark.parametrize("declared", [1003, 1003.0, ["1003"], {"uid": 1003}])
+    def test_a_non_string_declared_user_falls_through_to_the_image(
+            self, monkeypatch, declared):
+        """Mutation round 2 (`and` -> `or` on `isinstance(...) and declared`).
+
+        `_validate_environment` refuses a non-string `user`, so a PARSED config
+        cannot carry one — but this helper is a READ that callers and tests may
+        hand a raw environment table, and the code must not assume the schema
+        held. Under the `or` mutant a truthy non-string enters `declared.split`
+        and raises `AttributeError`; the real condition falls through to the
+        image, which is the only other source of a lane uid. Both observable
+        faces are pinned here: with an image answer it returns the IMAGE's
+        fact, with no image it reports the image is absent rather than raising.
+        """
+        self._image_reports(monkeypatch, "1003:1003")
+        uid, why = run_gate.lane_container_uid(
+            {"mode": "ephemeral", "image": "tester:local", "user": declared},
+            "/usr/bin/docker")
+        assert uid == 1003 and "user '1003:1003'" in why, why
+        uid, why = run_gate.lane_container_uid(
+            {"mode": "ephemeral", "user": declared}, "/usr/bin/docker")
+        assert uid is None and "no image" in why
+
+    def test_an_empty_declared_user_falls_through_to_the_image(
+            self, monkeypatch):
+        """The other half of the same mutation: `""` is falsy, so the real
+        condition skips the declared branch entirely. The `or` mutant keeps it
+        (because `isinstance("", str)` is True), splits the empty string and
+        reports "names no numeric uid", turning a blank declaration into a
+        refusal reason instead of reading the image."""
+        self._image_reports(monkeypatch, "1003")
+        uid, why = run_gate.lane_container_uid(
+            {"mode": "ephemeral", "image": "tester:local", "user": ""},
+            "/usr/bin/docker")
+        assert uid == 1003 and "user '1003'" in why, why
+
+    @pytest.mark.parametrize("declared", ["0", "0:0", "0:1234"])
+    def test_a_declared_root_user_establishes_nothing(self, declared):
+        """RG-150 review round 1 blocker: a CI-as-root or rootless-userns
+        lane runs as uid 0, which maps onto the HOST owner — so "the lane uid
+        disagrees with the tree owner" is the normal shape there, not a
+        defect. The image branch always refused to compare a root user
+        (RG-106); a DECLARED root must not contradict it."""
+        uid, _why = run_gate.lane_container_uid(
+            {"mode": "ephemeral", "image": "i:1", "user": declared}, None)
+        assert uid is None
+
+    def test_the_images_own_numeric_user_is_read_by_inspection(self, monkeypatch):
+        calls = self._image_reports(monkeypatch, "1003:1003")
+        uid, why = run_gate.lane_container_uid(
+            {"mode": "ephemeral", "image": "tester:local"}, "/usr/bin/docker")
+        assert uid == 1003 and "tester:local" in why
+        assert calls[0][1:3] == ["image", "inspect"]
+
+    @pytest.mark.parametrize("answer", ["", "root", "0", "0:0"])
+    def test_a_root_or_unset_image_user_establishes_nothing(
+            self, monkeypatch, answer):
+        self._image_reports(monkeypatch, answer)
+        uid, why = run_gate.lane_container_uid(
+            {"mode": "ephemeral", "image": "tester:local"},
+            "/usr/bin/docker")
+        assert uid is None and why == ""
+
+    def test_a_named_image_user_and_an_uninspectable_image_both_stay_silent(
+            self, monkeypatch):
+        self._image_reports(monkeypatch, "app")
+        uid, why = run_gate.lane_container_uid(
+            {"mode": "ephemeral", "image": "tester:local"},
+            "/usr/bin/docker")
+        assert uid is None and "non-numeric" in why
+        self._image_reports(monkeypatch, None)
+        uid, why = run_gate.lane_container_uid(
+            {"mode": "ephemeral", "image": "absent:1"}, "/usr/bin/docker")
+        assert uid is None and "not inspectable" in why
+        uid, why = run_gate.lane_container_uid(
+            {"mode": "ephemeral", "image": "absent:1"}, None)
+        assert uid is None and "docker is unavailable" in why
+        uid, why = run_gate.lane_container_uid({"mode": "ephemeral"}, None)
+        assert uid is None and "no image" in why
+
+    def test_a_probe_that_cannot_run_or_stat_establishes_nothing(
+            self, tmp_path, monkeypatch):
+        def raising_run(*_args, **_kwargs):
+            raise OSError("docker binary vanished between which() and this call")
+
+        monkeypatch.setattr(run_gate.subprocess, "run", raising_run)
+        uid, why = run_gate.lane_container_uid(
+            {"mode": "ephemeral", "image": "tester:local"},
+            "/usr/bin/docker")
+        assert uid is None and "could not be run" in why
+        # A path whose owner cannot be read is a missing fact, not a mismatch.
+        assert run_gate.path_owner_uid(tmp_path / "absent") is None
+        assert run_gate.path_owner_uid(tmp_path) == os.stat(tmp_path).st_uid
+
+    def test_a_mismatched_checkout_owner_refuses_with_one_line(
+            self, tmp_path, monkeypatch):
+        repo = make_repo(tmp_path)
+        target = repo / "proj"
+        target.mkdir()
+        self._image_reports(monkeypatch, "1003")
+        monkeypatch.setattr(run_gate, "path_owner_uid", lambda _path: 1000)
+        with pytest.raises(run_gate.GateNotRunError) as exc:
+            run_gate.preflight_lane_uid_ownership(
+                "suite", {"mode": "ephemeral", "image": "tester:local"},
+                "[environments.tester-unified] in fixture", target, {},
+                "/usr/bin/docker")
+        assert exc.value.reason == "environment-mismatch"
+        message = str(exc.value)
+        assert message.count("\n") == 0            # ONE line, not a report
+        assert "checkout" in message and "uid 1000" in message
+        assert "runs as uid 1003" in message
+        assert "CONSUMERS.md" in message
+
+    def test_agreeing_owners_and_unknown_uids_both_stay_silent(
+            self, tmp_path, monkeypatch):
+        repo = make_repo(tmp_path)
+        target = repo / "proj"
+        target.mkdir()
+        self._image_reports(monkeypatch, "1003")
+        monkeypatch.setattr(run_gate, "path_owner_uid", lambda _path: 1003)
+        monkeypatch.delenv(run_gate.MDT_COW_ROOT_ENV_VAR, raising=False)
+        run_gate.preflight_lane_uid_ownership(
+            "suite", {"mode": "ephemeral", "image": "tester:local"},
+            "fixture", target, {}, "/usr/bin/docker")
+        # An unknown lane uid (a root image) must NOT turn into a claim.
+        self._image_reports(monkeypatch, "")
+        run_gate.preflight_lane_uid_ownership(
+            "suite", {"mode": "ephemeral", "image": "tester:local"},
+            "fixture", target, {}, "/usr/bin/docker")
+        # A host environment starts no container, so it has no lane user.
+        run_gate.preflight_lane_uid_ownership(
+            "suite", {"mode": "host"}, "fixture", target, {},
+            "/usr/bin/docker")
+
+    def test_the_cow_root_owner_is_named_only_when_the_lane_would_use_it(
+            self, tmp_path, monkeypatch):
+        repo = make_repo(tmp_path)
+        target = repo / "proj"
+        target.mkdir()
+        cow = tmp_path / "cow"
+        cow.mkdir()
+        self._image_reports(monkeypatch, "1003")
+        monkeypatch.setattr(run_gate, "path_owner_uid",
+                            lambda path: 1000 if Path(path) == cow else 1003)
+        monkeypatch.setenv(run_gate.MDT_COW_ROOT_ENV_VAR, str(cow))
+        with pytest.raises(run_gate.GateNotRunError) as exc:
+            run_gate.preflight_lane_uid_ownership(
+                "suite", {"mode": "ephemeral", "image": "tester:local"},
+                "fixture", target, {"cowtree": {"mode": "auto"}},
+                "/usr/bin/docker")
+        assert f"CoW root {cow} by uid 1000" in str(exc.value)
+        # the checkout AGREES, so it is not named as a disagreement
+        assert f"checkout {target} by uid" not in str(exc.value)
+        # `mode = "off"` means the lane never touches the root: no claim.
+        run_gate.preflight_lane_uid_ownership(
+            "suite", {"mode": "ephemeral", "image": "tester:local"},
+            "fixture", target, {"cowtree": {"mode": "off"}},
+            "/usr/bin/docker")
+
+    def test_an_agreeing_or_unreadable_cow_root_makes_no_claim(
+            self, tmp_path, monkeypatch):
+        repo = make_repo(tmp_path)
+        target = repo / "proj"
+        target.mkdir()
+        cow = tmp_path / "cow"
+        self._image_reports(monkeypatch, "1003")
+        monkeypatch.setattr(run_gate, "path_owner_uid", lambda _path: 1003)
+        monkeypatch.setenv(run_gate.MDT_COW_ROOT_ENV_VAR, str(cow))
+        # The lane's uid owns the root too: agreement is not a refusal.
+        run_gate.preflight_lane_uid_ownership(
+            "suite", {"mode": "ephemeral", "image": "tester:local"},
+            "fixture", target, {"cowtree": {"mode": "auto"}},
+            "/usr/bin/docker")
+        # A root that cannot be stat'd is a missing fact, not a mismatch.
+        cow.mkdir()
+        monkeypatch.setattr(run_gate, "path_owner_uid",
+                            lambda path: None if Path(path) == cow else 1003)
+        run_gate.preflight_lane_uid_ownership(
+            "suite", {"mode": "ephemeral", "image": "tester:local"},
+            "fixture", target, {"cowtree": {"mode": "auto"}},
+            "/usr/bin/docker")
+
+
+    def test_main_refuses_with_a_closed_not_run_result_before_the_lane(
+            self, tmp_path, monkeypatch, capsys):
+        """The contract the item asks for is a REFUSAL the operator can act on,
+        not a different error later: closed NOT_RUN, one line, exit 3, and no
+        container started."""
+        repo = make_repo(tmp_path)
+        proj = make_project(repo, """\
+            schema_version = 1
+            [environments.tester-unified]
+            mode = "ephemeral"
+            image = "tester-unified:local"
+            [lanes.suite]
+            kind = "command"
+            environment = "tester-unified"
+            argv = ["true"]
+            """)
+        log = fake_docker(tmp_path, monkeypatch)
+        monkeypatch.setattr(run_gate, "lane_container_uid",
+                            lambda *_a: (1003, "fixture user"))
+        monkeypatch.setattr(run_gate, "path_owner_uid", lambda _path: 1000)
+        monkeypatch.delenv(run_gate.MDT_COW_ROOT_ENV_VAR, raising=False)
+        monkeypatch.chdir(proj)
+        monkeypatch.setattr(sys, "argv", ['run-gate'])
+        assert run_gate.main(["suite"]) == 3
+        err = capsys.readouterr().err
+        assert err.count("must own the checkout") == 1
+        assert "uid 1000" in err and "runs as uid 1003" in err
+        assert docker_runs(log) == []
+
+    def _config(self, environment_body: str) -> str:
+        return """\
+            schema_version = 1
+            [environments.tester-unified]
+            """ + environment_body + """\
+            [lanes.suite]
+            kind = "command"
+            environment = "tester-unified"
+            argv = ["true"]
+            clean_tree = false
+            """
+
+    def test_a_lane_with_no_resolved_environment_never_reaches_the_preflight(
+            self, tmp_path, monkeypatch, capsys):
+        """The `env` half of the same guard, pinned at the reachability level.
+
+        A run whose environment resolves to `None` cannot reach the preflight
+        line at all: an EARLIER stage dereferences `env`
+        (`resolve_resource_settings(mode=env.get(...))`), so it ends as ERROR 2
+        with the AttributeError. That earlier stage already existed before
+        RG-150, so this oracle documents the boundary rather than claiming a
+        guarantee: RG-150 adds no new crash surface for an absent environment.
+        """
+        repo = make_repo(tmp_path)
+        proj = make_project(repo, self._config(
+            'mode = "ephemeral"\nimage = "tester:local"\n'), name="no-env")
+        calls: list[str] = []
+        monkeypatch.setattr(run_gate, "preflight_lane_uid_ownership",
+                            lambda lane, *_a, **_k: calls.append(lane))
+        monkeypatch.setattr(run_gate, "resolve_environment",
+                            lambda *_args: (None, "fixture: no environment"))
+        monkeypatch.chdir(proj)
+        monkeypatch.setattr(sys, "argv", ['run-gate'])
+        assert run_gate.main(["suite", "--dry-run"]) == 2
+        err = capsys.readouterr().err
+        assert "NoneType' object has no attribute 'get'" in err
+        assert "must own the checkout" not in err
+        assert calls == [], "a None environment must not reach the preflight"
+
+    def test_a_missing_or_non_ephemeral_environment_never_asks_the_preflight(
+            self, tmp_path, monkeypatch):
+        """Mutation round 2 (`if env and env.get("mode") == "ephemeral"` ->
+        `or`). Python binds `==` tighter than `or`, so the mutant returns the
+        ENVIRONMENT DICT itself whenever that dict is truthy, and calls the
+        preflight for every non-ephemeral mode that carries data; the real
+        condition asks only for `ephemeral`.
+
+        Which of the three faces is the OBSERVABLE one is measured, not
+        assumed (a first draft of this docstring claimed all three, which is
+        false — the mutant survived when only the first two were present):
+
+        - `mode = "host"` resolves to an EMPTY dict. `{}` is falsy, so both
+          sides evaluate the right operand and both answer False: this face
+          CANNOT witness the mutant, and it is here as the "silent" case;
+        - `mode = "exec"` resolves to a NON-EMPTY dict, which is the face that
+          witnesses it — `x or y` returns `x` and the preflight runs;
+        - `mode = "ephemeral"` is the positive control that the call still
+          happens where it should.
+
+        A spy makes the CALL itself the observation, because the preflight's
+        own `mode` guard would otherwise swallow a wrongly-issued call silently
+        and an exit status alone would look unchanged.
+        """
+        repo = make_repo(tmp_path)
+        calls: list[str] = []
+        monkeypatch.setattr(
+            run_gate, "preflight_lane_uid_ownership",
+            lambda lane, *_a, **_k: calls.append(lane))
+        monkeypatch.setenv(run_gate.PROFILE_AMBIENT_ENV_VAR, "off")
+        monkeypatch.chdir(repo)
+        monkeypatch.setattr(sys, "argv", ['run-gate'])
+        for mode, body in (
+                ("host", 'mode = "host"'),
+                ("exec", 'mode = "exec"\nimage = "runner:1"\n'
+                         'container_name = "spy-runner"'),
+                ("ephemeral", 'mode = "ephemeral"\nimage = "tester:local"')):
+            proj = make_project(repo, self._config(body + '\n'),
+                                name=f"guard-{mode}")
+            monkeypatch.chdir(proj)
+            before = len(calls)
+            run_gate.main(["suite", "--dry-run"])
+            asked = len(calls) - before
+            assert asked == (1 if mode == "ephemeral" else 0), (
+                mode, asked, "the preflight is a container-lane fact")
+
+    def test_the_ephemeral_guard_is_independent_of_uid_facts(
+            self, tmp_path, monkeypatch, capsys):
+        """Review round 1: the guard is its OWN rule. Two runs over the SAME
+        disagreeing uid facts — checkout 1000, lane 1003 — where only the
+        environment MODE differs. With `mode` deleted the host run would refuse
+        too (and the host run alone cannot catch that, because a host
+        environment never yields a lane uid in the first place)."""
+        repo = make_repo(tmp_path)
+        # A host environment declares no image (mode = "host" refuses one),
+        # which is exactly why this pair needs BOTH runs: the ephemeral run
+        # proves the refusal still fires, the host run proves the guard, not
+        # an absence of uid facts, is what keeps it away.
+        bodies = {"host": 'mode = "host"\n',
+                  "ephemeral": 'mode = "ephemeral"\nimage = "tester:local"\n'}
+        for mode, expected in (("host", 0), ("ephemeral", 3)):
+            proj = make_project(
+                repo, self._config(bodies[mode]), name=f"proj-{mode}")
+            log = fake_docker(proj, monkeypatch)
+            monkeypatch.setattr(run_gate, "lane_container_uid",
+                                lambda *_a: (1003, "fixture user"))
+            monkeypatch.setattr(run_gate, "path_owner_uid",
+                                lambda _path: 1000)
+            monkeypatch.delenv(run_gate.MDT_COW_ROOT_ENV_VAR, raising=False)
+            monkeypatch.chdir(proj)
+            monkeypatch.setattr(sys, "argv", ['run-gate'])
+            code = run_gate.main(["suite"])
+            err = capsys.readouterr().err
+            assert code == expected, (mode, code, err)
+            assert ("must own the checkout" in err) is (expected == 3)
+
+        # And the SAME disagreement at the preflight's own entry point, so the
+        # function's guard is pinned on its own: `main()`'s guard would hide
+        # the function's absence (both would need deleting to notice).
+        project = repo / "proj-host"
+        monkeypatch.setattr(run_gate, "lane_container_uid",
+                            lambda *_a: (1003, "fixture user"))
+        monkeypatch.setattr(run_gate, "path_owner_uid", lambda _path: 1000)
+        monkeypatch.delenv(run_gate.MDT_COW_ROOT_ENV_VAR, raising=False)
+        run_gate.preflight_lane_uid_ownership(
+            "suite", {"mode": "host"}, "fixture", project, {},
+            "/usr/bin/docker")
+        with pytest.raises(run_gate.GateNotRunError):
+            run_gate.preflight_lane_uid_ownership(
+                "suite", {"mode": "ephemeral", "image": "tester:local"},
+                "fixture", project, {}, "/usr/bin/docker")
+
+    def test_declared_and_invoker_root_lanes_are_not_refused(
+            self, tmp_path, monkeypatch, capsys):
+        """CI-as-root / rootless-userns: `user = "0"`, `user = "0:0"` and
+        `user = "invoker"` resolving to root all mean a uid-0 lane, which maps
+        onto the HOST owner — a checkout owned by 1000 is not a mismatch there.
+        """
+        repo = make_repo(tmp_path)
+        cases = {"zero": "user = \"0\"", "zero-gid": "user = \"0:0\"",
+                 "invoker-root": 'user = "invoker"'}
+        for name, user_line in cases.items():
+            proj = make_project(
+                repo,
+                self._config('mode = "ephemeral"\nimage = "tester:local"\n'
+                             f'{user_line}\n'),
+                name=f"proj-{name}")
+            log = fake_docker(proj, monkeypatch)
+            # The checkout belongs to some OTHER uid; only the lane uid
+            # decides here, and `invoker` becomes THIS process's uid:gid.
+            monkeypatch.setattr(run_gate, "path_owner_uid", lambda _path: 1000)
+            monkeypatch.delenv(run_gate.MDT_COW_ROOT_ENV_VAR, raising=False)
+            monkeypatch.chdir(proj)
+            monkeypatch.setattr(sys, "argv", ['run-gate'])
+            # `invoker` resolves to the invoking process's uid:gid inside
+            # resolve_environment; running this main() as "root" is what makes
+            # that case a uid-0 lane. monkeypatch restores both afterwards.
+            monkeypatch.setattr(run_gate.os, "getuid", lambda: 0)
+            code = run_gate.main(["suite"])
+            err = capsys.readouterr().err
+            assert "must own the checkout" not in err, (name, err)
+            assert code != 3, (name, code, err)
+            assert lane_runs(log), (name, "the lane must actually start")
+
+
 class TestAssayPinAndRequestPathOracles:
     def test_checksum_manifest_reads_escaped_names_and_rejects_bad_bytes(
             self, tmp_path):
@@ -34886,6 +35362,154 @@ class TestUserDocumentationOracles:
     def test_ram_target_docs_name_the_supported_toml_surface(self):
         consumer_docs = (RUN_GATE_DIR / "CONSUMERS.md").read_text()
         assert "There is no `--ram-target` option" in consumer_docs
+
+    @staticmethod
+    def _released_ids() -> dict[str, str]:
+        """Backlog ids named inside a DATED changelog section, with that
+        release. Nothing else counts: an id mentioned only in `[Unreleased]`
+        has not shipped."""
+        released: dict[str, str] = {}
+        release = None
+        for line in (RUN_GATE_DIR / "CHANGES.md").read_text().splitlines():
+            match = re.match(r"^## \[([0-9]+\.[0-9]+\.[0-9]+)\] - ", line)
+            if match:
+                release = match.group(1)
+                continue
+            if line.startswith("## "):
+                release = None
+                continue
+            if release is None:
+                continue
+            for found in re.finditer(r"\bRG-([0-9]{1,3})\b", line):
+                released.setdefault(f"RG-{found.group(1)}", release)
+        return released
+
+    def test_a_released_backlog_row_never_still_reads_in_flight(self):
+        """RG-119 item 1. The index row asserted work was pending (`... in the
+        integrated candidate`, `pending release`, `full gate pending`) for
+        items CHANGES.md had already released — a stale row that reads as
+        "unverified" forever. This is the check that can go red: name an RG id
+        in a dated release section and leave its row describing a candidate.
+        """
+        released = self._released_ids()
+        assert released, "CHANGES.md has no dated release sections"
+        stale_phrases = ("in the integrated candidate", "pending release",
+                         "in the SemVer candidate", "FIXED IN CANDIDATE",
+                         "registered gate remains", "full gate pending")
+        backlog = (RUN_GATE_DIR / "KNOWN_ISSUES_TODO_BACKLOG.md").read_text()
+        stale = []
+        for line in backlog.splitlines():
+            match = re.match(r"^\|\s*(RG-[0-9]+)\s*\|", line)
+            if not match:
+                continue
+            identifier = match.group(1)
+            if identifier not in released:
+                continue
+            if any(phrase in line for phrase in stale_phrases):
+                stale.append(f"{identifier} (released {released[identifier]})")
+        assert not stale, (
+            "backlog rows still describe released items as in flight: "
+            + ", ".join(stale))
+
+    def test_lane_authoring_todos_do_not_cite_shipped_items_as_open(self):
+        """RG-119 item 2. LANE-AUTHORING §7's TODO table carried two SWAPPED
+        ids (the stall item is RG-41, the coverage-offset item is RG-40) and
+        listed shipped items as OPEN — so an author following the guide
+        re-litigates settled work. A row naming an id whose index row says
+        shipped, and still marked OPEN, fails here."""
+        shipped_marks = ("FIXED", "CLOSED", "SHIPPED", "MERGED",
+                         "SUPERSEDED", "BY DESIGN")
+        backlog = (RUN_GATE_DIR / "KNOWN_ISSUES_TODO_BACKLOG.md").read_text()
+        index_rows: dict[str, str] = {}
+        for line in backlog.splitlines():
+            match = re.match(r"^\|\s*(RG-[0-9]+)\s*\|.*\|\s*([^|]*)\|", line)
+            if match:
+                index_rows[match.group(1)] = match.group(2)
+        authoring = (RUN_GATE_DIR / "LANE-AUTHORING.md").read_text()
+        section = authoring[authoring.index("## 7. TODOs"):]
+        contradictions = []
+        for row in section.splitlines():
+            if not row.startswith("|"):
+                continue
+            cells = [cell.strip() for cell in row.strip("|").split("|")]
+            if len(cells) < 3 or not cells[-1].startswith("OPEN"):
+                continue
+            for identifier in re.findall(r"RG-[0-9]+", row):
+                state = index_rows.get(identifier, "")
+                if any(mark in state for mark in shipped_marks):
+                    contradictions.append(f"{identifier}: {state.strip()[:40]}")
+        assert not contradictions, (
+            "LANE-AUTHORING §7 lists shipped items as OPEN: "
+            + "; ".join(contradictions))
+
+    def test_lane_authoring_release_numbers_name_the_release_that_shipped_it(
+            self):
+        """RG-119 fix round 1. §7 cited the WRONG releases twice: RG-41 as
+        "released in 23.6.2" (its code is 8055e4e6, in 23.6.1's own section —
+        23.6.2 only carried the RG-51/RG-52 detail) and RG-38 as "run-gate
+        23.10.0" (6075a645 landed in 23.6.0). Both read perfectly. So this
+        compares the DOCUMENT to CHANGES.md: for a row naming an id AND a
+        release number, that dated section must itself name the id. HTML
+        comments are stripped first — 23.6.2 carries a "cleared … the RG-41
+        write-up that was here" tombstone that would otherwise count as
+        evidence, which is exactly the shape that made the wrong number look
+        right."""
+        sections = self._dated_section_bodies()
+        assert sections, "CHANGES.md has no dated release sections"
+        # Rows also cite SIBLING projects' releases (`assay 5.2.0`). Those are
+        # checked where they live (assay CHANGES.md); this oracle covers the
+        # run-gate numbers it can read, and the prefix rule keeps an
+        # `assay 5.2.0` citation from being silently compared against run-gate.
+        authoring = (RUN_GATE_DIR / "LANE-AUTHORING.md").read_text()
+        section = authoring[authoring.index("## 7. TODOs"):]
+        wrong = []
+        for row in section.splitlines():
+            if not row.startswith("|"):
+                continue
+            identifiers = re.findall(r"RG-[0-9]+", row)
+            stripped = re.sub(r"assay\s+[0-9]+\.[0-9]+\.[0-9]+", "", row)
+            versions = re.findall(r"([0-9]+\.[0-9]+\.[0-9]+)", stripped)
+            if not identifiers or not versions:
+                continue
+            for version in versions:
+                body = sections.get(version)
+                if body is None:
+                    wrong.append(f"{row[:60]!r}: {version} is not a release")
+                elif identifiers[0] not in body:
+                    wrong.append(
+                        f"{identifiers[0]} is cited with {version}, but that "
+                        f"release's section never names it")
+        assert not wrong, "; ".join(wrong)
+
+    @staticmethod
+    def _dated_section_bodies() -> dict[str, str]:
+        """Dated release section → its body, with HTML comments removed and
+        documentation-only changelog lines dropped (a `docs: RG-41 -- …` line
+        records that somebody wrote about the item, not that it shipped)."""
+        kept: list[str] = []
+        in_comment = False
+        for line in (RUN_GATE_DIR / "CHANGES.md").read_text().splitlines():
+            if line.lstrip().startswith("<!--"):
+                in_comment = "-->" not in line
+                continue
+            if in_comment:
+                in_comment = "-->" not in line
+                continue
+            kept.append(line)
+        heads = [(index, line) for index, line in enumerate(kept)
+                 if line.startswith("## [")]
+        sections: dict[str, str] = {}
+        for position, (index, line) in enumerate(heads):
+            end = (heads[position + 1][0] - 1
+                   if position + 1 < len(heads) else len(kept))
+            match = re.match(r"## \[([0-9]+\.[0-9]+\.[0-9]+)\] - ", line)
+            if not match:
+                continue
+            body = [entry for entry in kept[index:end]
+                    if not re.match(r"\s*-\s*(docs?|backlog|plan|controller|log|"
+                                    r"review|chore)(\(|\s|:|-)", entry)]
+            sections[match.group(1)] = "\n".join(body)
+        return sections
 
     def test_worktree_runner_remedy_documents_ciu_version_floor(self):
         documents = (*self.DOCS, RUN_GATE_DIR / "SPEC.md",
@@ -36076,8 +36700,16 @@ class TestFinalChangedLineCoverageOracles:
                             lambda _project: repo)
         monkeypatch.setattr(run_gate, "resolve_repo_and_worktree",
                             lambda _project, _override: (repo, repo, repo))
+        # The RG-150 preflight asks the image for its user; this fixture's
+        # image is not one of the doubles under test, so its probe answers
+        # like a real docker (exit 1, no such image) instead of None. A stub
+        # shaped like the real command keeps production code free of
+        # tolerances for stub-shaped answers.
         monkeypatch.setattr(run_gate, "subprocess",
-                            SimpleNamespace(run=lambda *_args, **_kwargs: None))
+                            SimpleNamespace(run=lambda *_args, **_kwargs:
+                                            SimpleNamespace(
+                                                returncode=1, stdout="",
+                                                stderr="no such image")))
         monkeypatch.setattr(run_gate, "resolve_slice",
                             lambda *_args: ("run-gates.slice", "fixture"))
         monkeypatch.setattr(run_gate, "verify_slice_loaded", lambda _slice: None)
@@ -36131,8 +36763,12 @@ class TestFinalChangedLineCoverageOracles:
                             lambda _project: repo)
         monkeypatch.setattr(run_gate, "resolve_repo_and_worktree",
                             lambda _project, _override: (repo, repo, repo))
+        # As in the sibling above: the image probe answers like real docker.
         monkeypatch.setattr(run_gate, "subprocess",
-                            SimpleNamespace(run=lambda *_args, **_kwargs: None))
+                            SimpleNamespace(run=lambda *_args, **_kwargs:
+                                            SimpleNamespace(
+                                                returncode=1, stdout="",
+                                                stderr="no such image")))
         monkeypatch.setattr(run_gate, "resolve_slice",
                             lambda *_args: ("run-gates.slice", "fixture"))
         monkeypatch.setattr(run_gate, "verify_slice_loaded", lambda _slice: None)
