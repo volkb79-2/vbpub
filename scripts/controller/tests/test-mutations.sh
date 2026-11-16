@@ -1,5 +1,11 @@
 #!/usr/bin/env bash
 set -uo pipefail
+# The caller's ambient controller configuration is not this check's business:
+# every check here builds its own temporary controller root, so an exported
+# CONTROLLER_HOME / RUNS_DIR / LOGS_DIR / REPO / HOSTS_FILE must not decide where
+# a check reads or writes. Relying on the caller ("run it with env -u") moved the
+# same defect into the operator's shell, where it read as a product bug.
+unset CONTROLLER_HOME CONTROLLER_RUNS_DIR CONTROLLER_LOGS_DIR CONTROLLER_REPO CONTROLLER_HOSTS_FILE
 unset CODEX_ROUTE CODEX_HOME_OVERRIDE CODEX_HOME_LUNA CODEX_HOME_DEEPSEEK_VOLKER CODEX_HOME_DEEPSEEK_GITHUB2 CODEX_HOME_REVIEW CODEX_MODEL CODEX_EFFORT
 unset CODEX_REVIEW_MODEL CODEX_REVIEW_EFFORT CODEX_SQLITE_HOME
 unset PI_TEST_FOCUS
@@ -67,8 +73,23 @@ expect_killed job-mid-wait-resolution \
   env JOB_CHECK_SCRIPT="$ROOT/mutants/scripts/controller/job-check-mid-wait-resolution.sh" bash "$SCRIPT_DIR/test-job-check.sh"
 expect_killed job-run-name-traversal-guard \
   env JOB_CHECK_SCRIPT="$ROOT/mutants/scripts/controller/job-check-run-traversal.sh" bash "$SCRIPT_DIR/test-job-check.sh"
-expect_killed job-prototype-missing-done-success \
-  env JOB_CHECK_SCRIPT="$ROOT/mutants/scripts/controller/job-check-missing-done-success.sh" bash "$SCRIPT_DIR/test-job-check.sh"
+expect_killed job-dead-owner-running \
+  env JOB_CHECK_SCRIPT="$ROOT/mutants/scripts/controller/job-check-dead-owner-running.sh" bash "$SCRIPT_DIR/test-job-check.sh"
+expect_killed job-owner-pid-reuse \
+  env JOB_CHECK_SCRIPT="$ROOT/mutants/scripts/controller/job-check-owner-pid-alive-only.sh" bash "$SCRIPT_DIR/test-job-check.sh"
+expect_killed job-owner-boot-id \
+  env JOB_CHECK_SCRIPT="$ROOT/mutants/scripts/controller/job-check-owner-boot.sh" bash "$SCRIPT_DIR/test-job-check.sh"
+expect_killed job-owner-liveness \
+  env JOB_CHECK_SCRIPT="$ROOT/mutants/scripts/controller/job-check-owner-liveness.sh" bash "$SCRIPT_DIR/test-job-check.sh"
+expect_killed codex-run-name-claim \
+  env CODEX_IMPL_SCRIPT="$ROOT/mutants/scripts/controller/codex-run-name-claim.sh" bash "$SCRIPT_DIR/test-wrappers.sh"
+expect_killed codex-resume-stale-marker \
+  env CODEX_IMPL_SCRIPT="$ROOT/mutants/scripts/controller/codex-resume-stale-marker.sh" bash "$SCRIPT_DIR/test-wrappers.sh"
+expect_killed codex-run-name-child-close \
+  env CODEX_IMPL_SCRIPT="$ROOT/mutants/scripts/controller/codex-run-name-child-close/codex-impl.sh" \
+    bash "$SCRIPT_DIR/test-wrappers.sh"
+expect_killed job-prototype-missing-done-owner-record \
+  env JOB_CHECK_SCRIPT="$ROOT/mutants/scripts/controller/job-check-missing-done-owner-record.sh" bash "$SCRIPT_DIR/test-job-check.sh"
 expect_killed job-report-litter-detector \
   env JOB_CHECK_SCRIPT="$ROOT/mutants/scripts/controller/job-check-report-litter.sh" bash "$SCRIPT_DIR/test-job-check.sh"
 expect_killed job-merge-trailer-audit \
@@ -81,6 +102,12 @@ expect_killed job-check-pi-route \
   env JOB_CHECK_SCRIPT="$ROOT/mutants/scripts/controller/job-check-pi-route.sh" bash "$SCRIPT_DIR/test-job-check.sh"
 expect_killed job-check-pi-message-end \
   env JOB_CHECK_SCRIPT="$ROOT/mutants/scripts/controller/job-check-pi-message-end.sh" bash "$SCRIPT_DIR/test-job-check.sh"
+expect_killed job-check-context-full-class \
+  env JOB_CHECK_SCRIPT="$ROOT/mutants/scripts/controller/job-check-context-full-class.sh" bash "$SCRIPT_DIR/test-job-check.sh"
+expect_killed job-check-tool-call-no-text-class \
+  env JOB_CHECK_SCRIPT="$ROOT/mutants/scripts/controller/job-check-tool-call-no-text-class.sh" bash "$SCRIPT_DIR/test-job-check.sh"
+expect_killed job-check-tool-call-part-detection \
+  env JOB_CHECK_SCRIPT="$ROOT/mutants/scripts/controller/job-check-tool-call-part-detection.sh" bash "$SCRIPT_DIR/test-job-check.sh"
 expect_killed job-check-pi-402-error-code \
   env JOB_CHECK_SCRIPT="$ROOT/mutants/scripts/controller/job-check-pi-402-error-code.sh" bash "$SCRIPT_DIR/test-job-check.sh"
 expect_killed usage-retry-pi-error-message \
@@ -127,7 +154,9 @@ for pi_case in \
   pi-key-volker-export:volker-key-export pi-key-unselected-unset:unselected-key-unset \
   pi-volker-key-xtrace:xtrace-key pi-github2-key-xtrace:xtrace-key \
   pi-error-outcome:outcome-error pi-nonzero-exit-outcome:outcome-rc \
-  pi-success-stop-only:outcome-length \
+  pi-success-stop-only:outcome-stop-other pi-context-full-missing:outcome-length \
+  pi-context-full-order:outcome-length pi-context-full-continued:outcome-length \
+  pi-tool-call-no-text-success:outcome-tool-call \
   pi-empty-completion-class:outcome-empty pi-thinking-only-class:outcome-empty \
   pi-uncommitted-class:outcome-uncommitted pi-no-report-class:outcome-no-report \
   pi-worktree-git-fact:repo-not-a-worktree \
@@ -135,7 +164,8 @@ for pi_case in \
   pi-continue-bound:retry-bound pi-continue-class:no-retry-classes \
   pi-continue-exhausted:outcome-empty pi-continue-prompt-file:prompt-file \
   pi-continue-bound-validation:retry-validation \
-  pi-report-unset-skips:report-unset; do
+  pi-report-unset-skips:report-unset \
+  pi-run-name-refusal-overwrites:refusal-own-record; do
   pi_mutant=${pi_case%%:*}
   pi_focus=${pi_case#*:}
   expect_killed "$pi_mutant" \
@@ -145,7 +175,22 @@ done
 for pi_live_case in \
   pi-live-atomic:live-atomic pi-live-tool-in-flight:live-snapshot \
   pi-live-missing-fact:live-snapshot pi-live-usage-trend:live-usage-trend \
+  pi-live-tokens-zero-as-measurement:live-usage-trend \
+  pi-live-progress-stream-only:live-progress \
+  pi-live-progress-counts-agent:live-progress \
+  pi-live-progress-counts-sidecar:live-progress \
+  pi-live-progress-any-change:live-progress \
+  pi-live-progress-null-clamped:live-progress \
+  pi-live-progress-tool-start:live-progress \
+  pi-live-progress-silent-cap:live-progress \
+  pi-live-tool-output-progress:live-snapshot \
+  pi-live-steering-includes-wrapper:live-progress \
   job-status-stall-threshold:status-states job-status-hung-tool:status-states \
+  job-status-hung-without-progress:status-states \
+  job-status-progress-unknown-as-hung:status-states \
+  job-status-hung-tool-command:status-states job-status-steer-target:status-states \
+  job-status-since-commit-unqualified:status-states \
+  job-status-tokens-last-report:status-states \
   job-status-default-stall:status-defaults job-status-default-hung:status-defaults \
   job-status-wrapper-dead:status-states job-status-finished:status-states \
   job-status-no-live:status-states; do
@@ -163,17 +208,15 @@ for pi_live_case in \
         bash "$SCRIPT_DIR/test-pi-impl.sh"
   fi
 done
-for pi_doc_mutant in README-pi-route-table DESIGN-pi-402-classification CONSUMER-pi-launch-route; do
+for pi_doc_mutant in README-pi-route-table DESIGN-pi-402-classification CONSUMER-pi-launch-route \
+                     README-long-tool-state README-steering-action README-died-state \
+                     DESIGN-long-tool-rationale CONSUMER-steering-target CONSUMER-codex-marker-shape; do
   case $pi_doc_mutant in
-    README-pi-route-table) doc_env=README_SOURCE ;;
-    DESIGN-pi-402-classification) doc_env=DESIGN_SOURCE ;;
-    CONSUMER-pi-launch-route) doc_env=CONSUMER_SOURCE ;;
+    README-pi-route-table|README-long-tool-state|README-steering-action|README-died-state) doc_env=README_SOURCE ;;
+    DESIGN-pi-402-classification|DESIGN-long-tool-rationale) doc_env=DESIGN_SOURCE ;;
+    CONSUMER-*) doc_env=CONSUMER_SOURCE ;;
   esac
-  case $pi_doc_mutant in
-    README-pi-route-table) doc_path="$ROOT/mutants/scripts/controller/$pi_doc_mutant.md" ;;
-    DESIGN-pi-402-classification) doc_path="$ROOT/mutants/scripts/controller/$pi_doc_mutant.md" ;;
-    CONSUMER-pi-launch-route) doc_path="$ROOT/mutants/scripts/controller/$pi_doc_mutant.md" ;;
-  esac
+  doc_path="$ROOT/mutants/scripts/controller/$pi_doc_mutant.md"
   expect_killed "$pi_doc_mutant" env PI_TEST_FOCUS=docs "$doc_env=$doc_path" bash "$SCRIPT_DIR/test-pi-impl.sh"
 done
 for od_pi_case in \
@@ -316,6 +359,13 @@ for skills_mutant in skills-stamp-ownership skills-modified-clobber skills-stale
                      skills-dest-arity skills-install-failure skills-synced-guard skills-dry-run-writes; do
   expect_killed "$skills_mutant" \
     env SKILLS_SYNC_SCRIPT="$ROOT/mutants/scripts/controller/$skills_mutant.sh" bash "$SCRIPT_DIR/test-skills-sync.sh"
+done
+for cache_mutant in remote-gate-cache-inplace-publish remote-gate-cache-name-only-validity \
+                    remote-gate-cache-lock-ignored remote-gate-cache-absent-as-refresh \
+                    remote-gate-cache-identity-missing remote-gate-cache-stray-repo; do
+  expect_killed "$cache_mutant" \
+    env REMOTE_GATE_CACHE_SCRIPT="$ROOT/mutants/scripts/netcup/runner/$cache_mutant.sh" \
+      bash "$REPO_ROOT/scripts/netcup/runner/tests/test_remote_gate_cache.sh"
 done
 expect_killed queue-auto-pause-threshold \
   env QUEUE_SCRIPT="$ROOT/mutants/scripts/netcup/runner/queue-threshold.sh" bash "$REPO_ROOT/scripts/netcup/runner/tests/test-queue.sh"

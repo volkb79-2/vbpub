@@ -1,0 +1,5 @@
+{"type":"session","id":"pi-session-progress"}
+{"type":"agent_start"}
+{"type":"message_end","message":{"role":"assistant","content":[{"type":"toolCall","id":"call_progress","name":"bash","arguments":{"command":"pytest -q"}}],"usage":{"input":180,"output":40,"cacheRead":12000,"cacheWrite":0,"reasoning":0,"totalTokens":12220},"stopReason":"toolUse","durationMs":2000}}
+{"type":"tool_execution_start","toolCallId":"call_progress","toolName":"bash","args":{"command":"pytest -q"}}
+{"type":"tool_execution_update","toolCallId":"call_progress","toolName":"bash","args":{"command":"pytest -q"},"partialResult":{"content":[{"type":"text","text":"................................"}],"details":{}}}

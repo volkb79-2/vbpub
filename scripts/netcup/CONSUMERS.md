@@ -538,6 +538,24 @@ cockpit. The argv regression is in `tests/test_runner_scripts.py`.
 - **Limits.** R2 campaigns keep using `run-r2-campaign.sh`. dstdns lanes that need the whole release gate (bake/up/clean of the dstdns
   stack, `release-gate`) are out of scope here: this helper runs one registered lane in the cockpit, exactly like vbpub lanes.
 
+## Run a cached copy of remote-gate.py from a ref (CTL-12)
+
+A controller helper that runs this repository's runner tool from a cached copy of a ref should use the
+repository-owned script rather than `git show ... > <cache>.new && mv`:
+
+```bash
+# prints cache=, ref=, commit=, identity=blob:<id> — append these to your run record
+cache_identity=$(scripts/netcup/runner/remote-gate-cache.sh origin/main --cache-dir "$HOME/controller/remote-gate-cache")
+cache_path=$(printf '%s\n' "$cache_identity" | sed -n 's/^cache=//p')
+python3 "$cache_path" run auto /path/to/worktree suite
+```
+
+`identity=` is the tool's blob id and `commit=` the resolved commit, so the record names which revision actually ran.
+Concurrent launches are safe by construction: each stages under its own name and publishes one content-addressed
+copy by rename. A held refresh lock refuses with `could not refresh the cache` (exit 3), a ref that lacks the tool
+refuses with `the tool is absent from ref <ref>` (exit 4), and an unresolvable ref exits 5 — never as absence.
+`REMOTE_GATE_CACHE_DIR` and `REMOTE_GATE_CACHE_LOCK_WAIT` set the cache location and the bounded lock wait.
+
 ## Schedule and pause light host lanes
 
 The controller-side queue runs the configured `queue_lanes` serially for each

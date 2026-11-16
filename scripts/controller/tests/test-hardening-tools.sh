@@ -1,5 +1,11 @@
 #!/usr/bin/env bash
 set -uo pipefail
+# The caller's ambient controller configuration is not this check's business:
+# every check here builds its own temporary controller root, so an exported
+# CONTROLLER_HOME / RUNS_DIR / LOGS_DIR / REPO / HOSTS_FILE must not decide where
+# a check reads or writes. Relying on the caller ("run it with env -u") moved the
+# same defect into the operator's shell, where it read as a product bug.
+unset CONTROLLER_HOME CONTROLLER_RUNS_DIR CONTROLLER_LOGS_DIR CONTROLLER_REPO CONTROLLER_HOSTS_FILE
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 CODEX_IMPL=${CODEX_IMPL_SCRIPT:-$SCRIPT_DIR/../codex-impl.sh}
 RESUME_SRC=${RESUME_USAGE_LIMITED_SCRIPT:-$SCRIPT_DIR/../resume-usage-limited.sh}
@@ -170,7 +176,7 @@ PATH="$ROOT/bin:$PATH" HOME="$ROOT/home" CONTROLLER_HOME="$ROOT/controller" \
 [[ $(grep -c 'thread-for-test' "$CODEX_CALL_LOG") == 2 ]] || fail 'auto-resume did not reuse the original thread id'
 [[ $(wc -l < "$CODEX_RESUME_PROMPTS") == 2 ]] || fail 'auto-resume prompt was not sent on each continuation'
 contains "$CODEX_RESUME_PROMPTS" 'You stopped after thinking without acting: continue the task from where you are now, call tools for real' 'auto-resume uses the requested continuation prompt'
-contains "$ROOT/controller/runs/deepseek-bound.done" 'EXIT=0 AUTORESUME=2' 'final done marker records bounded resumes'
+contains "$ROOT/controller/runs/deepseek-bound.done" 'EXIT=0 OUTCOME=CODE-EXIT AUTORESUME=2' 'final done marker records bounded resumes'
 contains "$ROOT/controller/runs/deepseek-bound.autoresume.log" 'attempt=2 EXIT=0 THREAD=thread-for-test' 'auto-resume log records its second attempt'
 contains "$ROOT/controller/runs/deepseek-bound.wt" "$ROOT/worktree" 'Codex run stores its explicit worktree map for later recovery'
 contains "$ROOT/controller/runs/deepseek-bound.route" 'deepseek-volker' 'Codex records the automatically selected pinned account route'
@@ -181,7 +187,7 @@ PATH="$ROOT/bin:$PATH" HOME="$ROOT/home" CONTROLLER_HOME="$ROOT/controller" \
   "$CODEX_IMPL" "$ROOT/worktree" "$ROOT/prompt.md" luna-reasoning > "$ROOT/luna.out" 2>&1 \
   || fail 'Luna reasoning-end run failed'
 [[ $(wc -l < "$CODEX_CALL_LOG") == 1 ]] || fail 'Luna default must not auto-continue'
-contains "$ROOT/controller/runs/luna-reasoning.done" 'EXIT=0 AUTORESUME=0' 'Luna done marker records zero resumes'
+contains "$ROOT/controller/runs/luna-reasoning.done" 'EXIT=0 OUTCOME=CODE-EXIT AUTORESUME=0' 'Luna done marker records zero resumes'
 
 rm -f -- "$CODEX_CALL_LOG" "$CODEX_CALL_COUNT"
 PATH="$ROOT/bin:$PATH" HOME="$ROOT/home" CONTROLLER_HOME="$ROOT/controller" \
@@ -228,7 +234,7 @@ PATH="$ROOT/bin:$PATH" HOME="$ROOT/home" CONTROLLER_HOME="$ROOT/controller" \
   || fail 'Codex resume mode refused a crashed run with existing stream and error output'
 [[ $(wc -l < "$CODEX_CALL_LOG") == 1 ]] || fail 'Codex resume mode did not start exactly once'
 contains "$CODEX_CALL_LOG" 'exec resume' 'existing crashed run was continued with exec resume'
-contains "$ROOT/controller/runs/resume-existing.done" 'EXIT=0 AUTORESUME=0' 'resumed run wrote a fresh completion marker'
+contains "$ROOT/controller/runs/resume-existing.done" 'EXIT=0 OUTCOME=CODE-EXIT AUTORESUME=0' 'resumed run wrote a fresh completion marker'
 
 NEW_EXISTING=$ROOT/controller/runs/new-existing
 printf 'old stream without completion\n' > "$NEW_EXISTING.jsonl"
@@ -252,7 +258,7 @@ PATH="$ROOT/bin:$PATH" HOME="$ROOT/home" CONTROLLER_HOME="$ROOT/controller" \
   CONTROLLER_RUNS_DIR="$CUSTOM_WRAPPER_RUNS" CODEX_HOME_LUNA="$ROOT/luna" CODEX_ROUTE=luna \
   FAKE_CODEX_MODE=clean "$CODEX_IMPL" "$ROOT/worktree" "$ROOT/prompt.md" custom-run-dir \
   > "$ROOT/custom-run-dir.out" 2>&1 || fail 'Codex wrapper rejected a configured run-record directory'
-contains "$CUSTOM_WRAPPER_RUNS/custom-run-dir.done" 'EXIT=0 AUTORESUME=0' 'Codex wrapper writes into its configured runs directory'
+contains "$CUSTOM_WRAPPER_RUNS/custom-run-dir.done" 'EXIT=0 OUTCOME=CODE-EXIT AUTORESUME=0' 'Codex wrapper writes into its configured runs directory'
 
 rm -f -- "$CODEX_CALL_LOG" "$CODEX_CALL_COUNT"
 if PATH="$ROOT/bin:$PATH" HOME="$ROOT/home" CONTROLLER_HOME="$ROOT/controller" \

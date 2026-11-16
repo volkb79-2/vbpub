@@ -1,10 +1,16 @@
 #!/usr/bin/env bash
 set -uo pipefail
+# The caller's ambient controller configuration is not this check's business:
+# every check here builds its own temporary controller root, so an exported
+# CONTROLLER_HOME / RUNS_DIR / LOGS_DIR / REPO / HOSTS_FILE must not decide where
+# a check reads or writes. Relying on the caller ("run it with env -u") moved the
+# same defect into the operator's shell, where it read as a product bug.
+unset CONTROLLER_HOME CONTROLLER_RUNS_DIR CONTROLLER_LOGS_DIR CONTROLLER_REPO CONTROLLER_HOSTS_FILE
 unset CODEX_ROUTE CODEX_HOME_OVERRIDE CODEX_HOME_LUNA CODEX_HOME_DEEPSEEK_VOLKER CODEX_HOME_DEEPSEEK_GITHUB2 CODEX_HOME_REVIEW CODEX_MODEL CODEX_EFFORT
 unset CODEX_REVIEW_MODEL CODEX_REVIEW_EFFORT CODEX_SQLITE_HOME
 unset CONTROLLER_OD_STATE CONTROLLER_OD_PREFER_EXPIRING CONTROLLER_OD_UNKNOWN_BLOCK_SECONDS OPENDESIGN_API_KEY_VOLKER OPENDESIGN_API_KEY_GITHUB2
 unset OPENCODE_COMMAND OPENCODE_MODEL OPENCODE_PROVIDER
-unset FAKE_CODEX_402 FAKE_CODEX_402_UNKNOWN FAKE_CODEX_THREAD_ID FAKE_CODEX_CORRUPT_STATE CODEX_RC
+unset FAKE_CODEX_402 FAKE_CODEX_402_UNKNOWN FAKE_CODEX_THREAD_ID FAKE_CODEX_CORRUPT_STATE CODEX_RC FAKE_CODEX_DAEMON
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 ROOT=$(mktemp -d "${TMPDIR:-/tmp}/controller-wrapper-test.XXXXXX")
 cleanup() { [[ -n ${KEEP_TEST_ROOT:-} ]] || rm -rf -- "$ROOT"; }
@@ -44,6 +50,32 @@ elif [[ ${FAKE_CODEX_402_UNKNOWN:-} == invalid ]]; then
 fi
 if [[ -n ${FAKE_CODEX_THREAD_ID:-} ]]; then
   printf '{"type":"thread.started","thread_id":"%s"}\n' "$FAKE_CODEX_THREAD_ID"
+fi
+if [[ -n ${FAKE_CODEX_DAEMON:-} ]]; then
+  # A process the agent LEAVES BEHIND: it inherits whatever descriptors the
+  # agent had, survives the agent and the wrapper, and is exactly the shape that
+  # made a killed wrapper strand its run name.
+  setsid sleep 300 >/dev/null 2>&1 &
+  printf '%s\n' "$!" > "$FAKE_CODEX_DAEMON"
+fi
+if [[ -n ${FAKE_CODEX_HOLD_UNTIL:-} ]]; then
+  # A child that keeps working until the CHECK creates this file: "the agent is
+  # still running" becomes a state the check chooses instead of a duration it
+  # hopes the host will respect. A `sleep N` made every such case a race.
+  printf '{"type":"thread.started","thread_id":"slow-thread"}\n'
+  waited=0
+  while [[ ! -e $FAKE_CODEX_HOLD_UNTIL ]]; do
+    sleep 0.05
+    waited=$(( waited + 1 ))
+    (( waited < 6000 )) || break
+  done
+  exit "${CODEX_RC:-0}"
+fi
+if [[ -n ${FAKE_CODEX_SLEEP:-} ]]; then
+  # A slow child, so a test can observe a run that is still working.
+  printf '{"type":"thread.started","thread_id":"slow-thread"}\n'
+  sleep "$FAKE_CODEX_SLEEP"
+  exit "${CODEX_RC:-0}"
 fi
 printf '{"type":"item.completed","item":{"type":"agent_message","text":"complete"}}\n'
 if [[ -n ${FAKE_CODEX_CORRUPT_STATE:-} ]]; then printf '{' > "$FAKE_CODEX_CORRUPT_STATE"; fi
@@ -476,6 +508,146 @@ contains "$ROOT/od-bookkeeping-failure.out" 'block-run bookkeeping failed for ru
   'block-run bookkeeping errors are logged without replacing the Codex status'
 contains "$ROOT/controller/runs/od-bookkeeping-failure.done" 'EXIT=0' \
   'successful Codex status remains in the done marker after bookkeeping failure'
+
+# A resume is a second invocation of one run name: it must replace the
+# previous invocation's marker (otherwise a reader could report the previous
+# resume's exit while this child works) and state its own outcome.
+[[ -s $ROOT/controller/runs/manual-resume.done ]] || fail 'the resumed run has no marker before the resume test'
+contains "$ROOT/controller/runs/manual-resume.done" 'OUTCOME=CODE-EXIT' \
+  'a resumed Codex invocation states its own outcome'
+contains "$ROOT/controller/runs/manual-resume-unmapped.done" 'OUTCOME=CODE-EXIT' \
+  'a resume that picked a fresh account still wrote its marker'
+
+# A resume REMOVES the previous invocation's marker before its child starts: a
+# reader polling the name must not report the older resume's exit while the new
+# one works.
+FAKE_CODEX_HOLD_UNTIL="$ROOT/manual-resume-again.release" PATH="$ROOT/bin:$PATH" HOME="$ROOT/home" CONTROLLER_HOME="$ROOT/controller" CONTROLLER_REPO="$ROOT/repo" \
+  CONTROLLER_OD_STATE="$MANUAL_STATE" CODEX_HOME_DEEPSEEK_VOLKER="$VOLKER_HOME" CODEX_HOME_DEEPSEEK_GITHUB2="$GITHUB2_HOME" \
+  CODEX_SQLITE_HOME="$ROOT/sqlite" CODEX_LOG="$ROOT/manual-resume-again.log" CODEX_ROUTE=deepseek CODEX_AUTO_CONTINUE=0 \
+  "$CODEX_IMPL_SCRIPT" "$ROOT/worktree" "$ROOT/brief.md" manual-resume resume manual-resume-thread \
+  > "$ROOT/manual-resume-again.out" 2>&1 &
+resume_pid=$!
+# Wait for EVIDENCE that this invocation owns the name (its own pid is in the
+# owner record), then for the marker to be gone while its child still works.
+saw_owner=0
+for _ in {1..200}; do
+  recorded=$(sed -n 's/^pid=\([0-9][0-9]*\).*/\1/p' "$ROOT/controller/runs/manual-resume.lock" 2>/dev/null | head -n 1)
+  if [[ $recorded == "$resume_pid" ]]; then saw_owner=1; break; fi
+  sleep 0.05
+done
+(( saw_owner == 1 )) || fail 'the resumed invocation never recorded itself as the run owner'
+saw_absence=0
+for _ in {1..200}; do
+  if [[ ! -e $ROOT/controller/runs/manual-resume.done ]]; then saw_absence=1; break; fi
+  sleep 0.05
+done
+(( saw_absence == 1 )) \
+  || fail 'a resumed run left the previous invocation marker readable while its child worked'
+: > "$ROOT/manual-resume-again.release"
+wait "$resume_pid" || fail 'the second resume of one name failed'
+contains "$ROOT/controller/runs/manual-resume.done" 'OUTCOME=CODE-EXIT' \
+  'the second resume wrote its own marker'
+
+# Every Codex exit path states an OUTCOME and its continuation count, in the
+# documented additive shape (the historical EXIT= first line is unchanged).
+contains "$ROOT/controller/runs/codex-fail.done" 'OUTCOME=CODE-EXIT' \
+  'a Codex run states its outcome class'
+contains "$ROOT/controller/runs/codex-fail.done" 'AUTORESUME=0' \
+  'a Codex run states how many continuations it took'
+[[ ! -e $ROOT/controller/runs/bad-route.done ]] \
+  || fail 'a run refused before the child launch wrote a child-exit marker'
+
+# A second wrapper on one run name is refused, and the refusal names the live
+# owner: two jobs on one name would share `.done`, `.jsonl` and the resume
+# bookkeeping.
+FAKE_CODEX_HOLD_UNTIL="$ROOT/owned-codex-run.release" PATH="$ROOT/bin:$PATH" HOME="$ROOT/home" \
+  CONTROLLER_HOME="$ROOT/controller" CONTROLLER_REPO="$ROOT/repo" \
+  CODEX_ROUTE=luna CODEX_HOME_LUNA="$ROOT/codex-luna" CODEX_SQLITE_HOME="$ROOT/sqlite" CODEX_LOG="$ROOT/owned.log" \
+  "$CODEX_IMPL_SCRIPT" "$ROOT/worktree" "$ROOT/brief.md" owned-codex-run \
+  > "$ROOT/owned-codex-run.out" 2>&1 &
+owned_pid=$!
+for _ in {1..100}; do [[ -e $ROOT/controller/runs/owned-codex-run.lock ]] && break; sleep 0.1; done
+if PATH="$ROOT/bin:$PATH" HOME="$ROOT/home" CONTROLLER_HOME="$ROOT/controller" CONTROLLER_REPO="$ROOT/repo" \
+  CODEX_ROUTE=luna CODEX_HOME_LUNA="$ROOT/codex-luna" CODEX_SQLITE_HOME="$ROOT/sqlite" CODEX_LOG="$ROOT/owned2.log" \
+  "$CODEX_IMPL_SCRIPT" "$ROOT/worktree" "$ROOT/brief.md" owned-codex-run \
+  > "$ROOT/owned-codex-run-2.out" 2>&1; then
+  fail 'a second Codex wrapper on one run name was allowed'
+else
+  rc=$?
+  [[ $rc == 2 ]] || fail "the second Codex wrapper exited $rc, expected 2"
+fi
+contains "$ROOT/owned-codex-run-2.out" "run name 'owned-codex-run' is already owned by pid" \
+  'the refusal names the live owner of the run name'
+# The owner was HELD while the second wrapper was refused: release it now.
+: > "$ROOT/owned-codex-run.release"
+wait "$owned_pid" || fail 'the owning Codex wrapper failed'
+contains "$ROOT/controller/runs/owned-codex-run.done" 'OUTCOME=CODE-EXIT' \
+  'the owning wrapper still wrote its own marker'
+
+# --- CTL-14 for Codex: the AGENT closes the ownership descriptor -------------
+#
+# The lock is a flock on the wrapper's open descriptor, and a forked child
+# inherits it. So a Codex agent (or a daemon the agent leaves behind) holds the
+# run name after the wrapper is gone, and the wrapper is the one process whose
+# death must free it. Both hands are killed here for real (SIGKILL to the
+# wrapper), and the name must be claimable immediately - while the agent is
+# still working and while its daemon is still alive.
+
+codex_run_is_free() {
+  # Read the lock from OUTSIDE the wrapper: the check itself must not depend on
+  # the code under test being able to claim it.
+  local fds
+  exec {fds}>>"$ROOT/controller/runs/$1.lock" || return 2
+  if flock -n "$fds"; then exec {fds}>&-; return 0; fi
+  exec {fds}>&-
+  return 1
+}
+
+# (1) A killed wrapper behind a LIVE agent: the name is free at once, the agent
+#     is still running, and a forced relaunch is accepted by the evidence rule.
+FAKE_CODEX_DAEMON="$ROOT/codex-daemon.pid" \
+FAKE_CODEX_HOLD_UNTIL="$ROOT/killed-codex-run.release" PATH="$ROOT/bin:$PATH" HOME="$ROOT/home" CONTROLLER_HOME="$ROOT/controller" \
+  CONTROLLER_REPO="$ROOT/repo" CODEX_ROUTE=luna CODEX_HOME_LUNA="$ROOT/codex-luna" \
+  CODEX_SQLITE_HOME="$ROOT/sqlite" CODEX_LOG="$ROOT/killed-codex.log" \
+  "$CODEX_IMPL_SCRIPT" "$ROOT/worktree" "$ROOT/brief.md" killed-codex-run \
+  > "$ROOT/killed-codex-run.out" 2>&1 &
+killed_pid=$!
+# Sync on EVIDENCE, not on a clock: the fake agent publishes its thread id into
+# the run stream once it is running (and starts its daemon first).
+saw_agent=0
+for _ in {1..2000}; do
+  if grep -qF 'slow-thread' "$ROOT/controller/runs/killed-codex-run.jsonl" 2>/dev/null \
+    && [[ -s $ROOT/codex-daemon.pid ]]; then
+    saw_agent=1; break
+  fi
+  kill -0 "$killed_pid" 2>/dev/null || break
+  sleep 0.05
+done
+(( saw_agent == 1 )) || { cat "$ROOT/killed-codex-run.out" >&2; fail 'the killed Codex agent never started'; }
+kill -9 "$killed_pid" 2>/dev/null || true
+wait "$killed_pid" 2>/dev/null || true
+codex_run_is_free killed-codex-run \
+  || fail 'a SIGKILLed Codex wrapper stranded its run name while its agent lived'
+# A relaunch is accepted: nothing refuses on the dead owner, and the evidence
+# rule is the only gate left.
+CONTROLLER_RUN_FORCE=1 PATH="$ROOT/bin:$PATH" HOME="$ROOT/home" CONTROLLER_HOME="$ROOT/controller" \
+  CONTROLLER_REPO="$ROOT/repo" CODEX_ROUTE=luna CODEX_HOME_LUNA="$ROOT/codex-luna" \
+  CODEX_SQLITE_HOME="$ROOT/sqlite" CODEX_LOG="$ROOT/killed-codex-reclaim.log" \
+  "$CODEX_IMPL_SCRIPT" "$ROOT/worktree" "$ROOT/brief.md" killed-codex-run \
+  > "$ROOT/killed-codex-reclaim.out" 2>&1 \
+  || { cat "$ROOT/killed-codex-reclaim.out" >&2; fail 'a SIGKILLed Codex name could not be reclaimed'; }
+contains "$ROOT/killed-codex-reclaim.out" 'retired' \
+  'the forced reclaim reports what it retired'
+# The left-behind daemon does NOT hold the name: it is alive, it inherited the
+# descriptor, and it is killed only after this check has read the lock.
+if [[ -s $ROOT/codex-daemon.pid ]]; then
+  codex_run_is_free killed-codex-run \
+    || fail 'a daemon left behind by the agent held the run name'
+  kill -9 "$(cat "$ROOT/codex-daemon.pid")" 2>/dev/null || true
+fi
+# The stranded agent holds until this file exists; release it so the check
+# cannot leave a process behind.
+: > "$ROOT/killed-codex-run.release"
 
 if [[ ${CONTROLLER_TEST_PARALLEL_OD_STARTS:-1} == 1 ]]; then
   PARALLEL_DIR=$ROOT/parallel-codex-logs

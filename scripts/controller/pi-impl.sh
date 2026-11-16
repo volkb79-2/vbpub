@@ -8,6 +8,17 @@
 #
 #   SUCCESS          settled `stop` with assistant text, a clean worktree, and
 #                    the expected report present when a report path is known.
+#   TOOL-CALL-NO-TEXT a settled `stop` whose final assistant message carried a
+#                    tool call and no text. Not a success: the run ended on a
+#                    call, so the work it was about to do is not evidenced. Not
+#                    an EMPTY-COMPLETION either (that class is "no text AND no
+#                    tool call") and therefore never continued.
+#   CONTEXT-FULL     a settled run whose final `stopReason` is `length`: the
+#                    context window filled and the harness stopped the model.
+#                    The work is intact; the controller starts a FRESH successor
+#                    from the run's forward-oriented state file. The wrapper
+#                    never continues it (continuing a full context is the one
+#                    continuation that cannot succeed).
 #   EMPTY-COMPLETION the final assistant message carried no text (empty or
 #                    thinking-only) and no tool call. This is a provider/model
 #                    anomaly, not a limit: the wrapper continues the same
@@ -19,12 +30,24 @@
 #   NO-REPORT        the expected report file is missing.
 #   USAGE-LIMIT      a provider 402 `insufficient_balance` stop.
 #   ERROR            a provider error stop, or a nonzero pi exit.
-#   INCOMPLETE       a settled or unreadable stream that is not a stop, or a
-#                    finish whose worktree status cannot be read.
+#   INCOMPLETE       a settled or unreadable stream that is not a stop and not
+#                    a named limit (an aborted or unsettled stream, a stop the
+#                    classifier cannot attribute), or a finish whose worktree
+#                    status cannot be read.
 #
 # The expected report is `--report <path>` or `PI_REPORT`; unset means no
 # report check. Every active run also gets <run>.live (liveness/progress,
 # read by job-status.sh) and <run>.events (JSON lines, one per continue).
+#
+# A run NAME is owned by one live wrapper: the wrapper takes an exclusive
+# flock on <runs-dir>/<name>.lock before it writes anything (lib.sh
+# controller_run_claim) and releases it on every exit path, so two wrappers on
+# one name can never interleave on the name-owned records. A second invocation
+# is refused with exit 2 and the live owner's pid; the kernel releases the
+# lock when the owner dies, so a TERMed or KILLed wrapper cannot strand a name.
+# CONTROLLER_RUN_FORCE=1 retires the previous owner's records into
+# <runs-dir>/retired/<name>/<utc-stamp>/ (never deletes them) and is refused
+# while an owner is still alive.
 set -uo pipefail
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 caller_pi_route=${PI_ROUTE-}
@@ -109,18 +132,40 @@ if [[ ! $live_interval =~ ^[0-9]+$ ]] || (( live_interval == 0 )); then
 fi
 
 out=$CONTROLLER_RUNS_DIR
+# Ownership first: nothing below may write a name-owned record until this
+# invocation holds the name. A refusal here names the live owner and exits 2.
+controller_run_claim "$name" || exit 2
+
 if [[ $mode == new ]]; then
   existing=()
-  for extension in 'done' 'jsonl' 'err' 'events' 'live'; do
+  for extension in 'done' 'jsonl' 'err' 'events' 'live' 'last.txt' 'wt' 'route' 'thread' 'autoresume.log'; do
     [[ -e $out/$name.$extension ]] && existing+=("$out/$name.$extension")
   done
-  if [[ ${CONTROLLER_RUN_FORCE:-0} != 1 ]] && (( ${#existing[@]} > 0 )); then
-    echo "controller run name already has evidence: $name" >&2
-    printf '  %s\n' "${existing[@]}" >&2
-    echo 'set CONTROLLER_RUN_FORCE=1 only to replace an intentionally abandoned or failed run' >&2
-    exit 2
+  if (( ${#existing[@]} > 0 )); then
+    if [[ ${CONTROLLER_RUN_FORCE:-0} != 1 ]]; then
+      echo "controller run name already has evidence: $name" >&2
+      printf '  %s\n' "${existing[@]}" >&2
+      echo 'set CONTROLLER_RUN_FORCE=1 only to replace an intentionally abandoned or failed run' >&2
+      # This invocation REFUSED, so it must not have overwritten the identity of
+      # the owner it refused on: the owner record is written only after this
+      # preflight passes (lib.sh controller_run_record_owner).
+      exit 2
+    fi
+    # Force means RETIRE: the previous identity moves aside instead of being
+    # overwritten, and the caller is told what was retired and why.
+    if retired=$(controller_run_retire_records "$name"); then
+      printf 'pi-impl: CONTROLLER_RUN_FORCE=1 retired %s records into %s\n' "$name" "$retired" >&2
+      printf '  retired: %s\n' "${existing[@]}" >&2
+    else
+      echo "controller: could not retire the records of $name; refusing to overwrite them" >&2
+      exit 2
+    fi
   fi
 fi
+
+# The name is held, and this invocation passed its own preflight: only now may
+# it write its identity into the name's owner record.
+controller_run_record_owner
 
 route=${PI_ROUTE:-deepseek-pi}
 route_record=$route
@@ -244,10 +289,10 @@ invoke_pi() {
   local -a argv=("${base_pi_args[@]}")
   [[ -z $resume_target ]] || argv+=(--session "$resume_target")
   if [[ $first_run == 1 ]]; then
-    (cd -- "$worktree" && nice pi "${argv[@]}" -- "$prompt_text" \
+    (cd -- "$worktree" && controller_close_ownership_fds && exec nice pi "${argv[@]}" -- "$prompt_text" \
       < /dev/null > "$stream" 2> "$out/$name.err")
   else
-    (cd -- "$worktree" && nice pi "${argv[@]}" -- "$prompt_text" \
+    (cd -- "$worktree" && controller_close_ownership_fds && exec nice pi "${argv[@]}" -- "$prompt_text" \
       < /dev/null >> "$stream" 2>> "$out/$name.err")
   fi
 }
@@ -352,9 +397,21 @@ classify_run() {
     echo ERROR
   elif [[ $rc != 0 ]]; then
     echo ERROR
-  elif [[ $settled != 1 || $aborted != 0 || -z $thread_id || $stop_reason != stop ]]; then
+  elif [[ $settled != 1 || $aborted != 0 || -z $thread_id ]]; then
     echo INCOMPLETE
-  elif [[ $has_text != 1 && $has_tool_call != 1 ]]; then
+  elif [[ $stop_reason == length ]]; then
+    # The context window filled: a real end state of a long run, with a DIFFERENT
+    # remedy from an unattributable stream. Decided before the generic
+    # not-a-stop branch, and never continued.
+    echo CONTEXT-FULL
+  elif [[ $stop_reason != stop ]]; then
+    echo INCOMPLETE
+  elif [[ $has_text != 1 && $has_tool_call == 1 ]]; then
+    # A settled message that ends on a tool call and says nothing: the run
+    # stopped mid-work. Not a success (the contract requires text), and not an
+    # EMPTY-COMPLETION (that class is the one the wrapper continues).
+    echo TOOL-CALL-NO-TEXT
+  elif [[ $has_text != 1 ]]; then
     # No text and no tool call: pi treats that as the end of the run, so a
     # provider/model anomaly shows up as an exit-0 stop with nothing said.
     echo EMPTY-COMPLETION
@@ -377,11 +434,17 @@ live_stop() {
   wait "$live_pid" 2>/dev/null || true
   live_pid=''
 }
-trap live_stop EXIT
+# Every exit path drops the name: the EXIT trap covers success, an error path
+# and SIGTERM (bash runs it for TERM), and a SIGKILL leaves it to the kernel,
+# which releases the flock when the last holder dies.
+trap 'live_stop; controller_run_release' EXIT
 if [[ ${PI_LIVE:-1} == 1 ]]; then
-  python3 "$SCRIPT_DIR/pi-live.py" --stream "$out/$name.jsonl" --worktree "$worktree" \
-    --out "$out/$name.live" --run "$name" --wrapper-pid $$ --interval "$live_interval" \
-    >/dev/null 2>>"$out/$name.err" &
+  # The sidecar must not inherit the name lock: it can outlive a killed wrapper
+  # by one interval, and it holds no ownership of the run name.
+  ( controller_close_ownership_fds
+    exec python3 "$SCRIPT_DIR/pi-live.py" --stream "$out/$name.jsonl" --worktree "$worktree" \
+      --out "$out/$name.live" --run "$name" --wrapper-pid $$ --interval "$live_interval" \
+      >/dev/null 2>>"$out/$name.err" ) &
   live_pid=$!
 fi
 

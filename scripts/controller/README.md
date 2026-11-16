@@ -71,20 +71,22 @@ Use this order for each implementation task.
    status. Codex resumes a run on the same
    thread up to `CODEX_AUTO_CONTINUE` times after a reasoning-only completed
    turn; the default is two for DeepSeek and zero for Luna. The `.done` marker
-   records `EXIT=<n> AUTORESUME=<k>`, and the attempt log is
+   records `EXIT=<n> OUTCOME=CODE-EXIT AUTORESUME=<k>`, and the attempt log is
    `<run>.autoresume.log`. A new run name with an existing `<run>.done`,
    `<run>.jsonl`, or `<run>.err` record is refused before the child starts and
    all existing paths are printed. `CONTROLLER_RUN_FORCE=1` permits replacing
    evidence for a new run that was intentionally abandoned or failed. Resume
    mode does not take that new-run guard: it continues the same thread over an
-   existing stream and writes a fresh completion marker when it finishes.
-3. **Check the result.** Run `scripts/controller/job-check.sh` with the run
+   existing stream and writes a fresh completion marker when it finishes.3. **Check the result.** Run `scripts/controller/job-check.sh` with the run
    name, exact worktree path, route, and absolute report paths. It reports runs
    without `.done` as running; for completed runs it checks intent-only
    endings, reasoning-end, usage-limit retry text, missing turn completion,
    tool-call text, report completeness and HEAD binding, worktree cleanliness,
    final-head gate evidence, and the route trailer on every commit, including
-   merges. The last lane verdict in a bound gate log must be
+   merges. For a pi stream it also names `CONTEXT-FULL` (assistant
+   `stopReason=length`) and `TOOL-CALL-NO-TEXT` (a settled stop ending on a tool
+   call with no text), so neither reads as an ordinary running or finished
+   job. The last lane verdict in a bound gate log must be
    `run-gate: lane ... verdict PASS`; an earlier PASS line cannot override a
    final FAIL. The prototype's `any`
    route remains supported for the accepted Codex and Claude trailers;
@@ -94,8 +96,20 @@ Use this order for each implementation task.
    when its name contains the current eight-character head prefix, an earlier
    log has the matching full `run-gate.commit` label on a line naming that
    container, and a supplied report names the same container. Without
-   `.done`, it prints `RUNNING (no .done)` and exits 0 even if the event stream
-   is absent. That status does not mean the child completed. See the
+   `.done`, it reads the run name's own owner record (`<run>.lock`, written by
+   every wrapper when it claims the name, CTL-14): a live owner prints
+   `RUNNING (no .done)` with its pid, a recorded owner that is gone (or whose
+   kernel start time no longer matches, or that was recorded under a previous
+   boot) prints `DIED (wrapper pid <pid> gone, no .done)` as a red flag, and a
+   run that no wrapper ever owned prints `RUNNING (no .done)` plus
+   `owner record: none`, stating that a live and a dead wrapper cannot be told
+   apart there. A `DIED` row is never evidence that the child completed — it is
+   evidence that the wrapper is gone, so the controller can relaunch. A killed
+   wrapper often leaves no `<run>.thread`; the reader recovers the session/thread
+   id from the run's own stream (pi's first `session` event, Codex's
+   `thread.started`), prints `thread: <id> (recovered …)` as a fact, and prints
+   the exact `resume:` command it enables — or `thread: none` when the stream
+   carries no id, rather than an invented one. See the
    [job-check design](docs/DESIGN-GUIDE.md#job-check-compatibility) for the
    accepted forms and completion rules. Usage-limit detection accepts a
    gateway `insufficient_balance` reset timestamp, a time-only retry, and a
@@ -259,7 +273,16 @@ environment example or run files. The session directory defaults to
 
 The pi event stream is saved as `<run>.jsonl`, stderr as `<run>.err`, the last
 assistant text as `<run>.last.txt`, and the worktree, selected route, and pi
-session id as `<run>.wt`, `<run>.route`, and `<run>.thread`. The first `.done`
+session id as `<run>.wt`, `<run>.route`, and `<run>.thread`. A run NAME is
+owned by one live wrapper at a time: `<run>.lock` is an exclusive `flock` the
+wrapper takes before it writes any record and releases on every exit path
+(the kernel releases it when the owner dies, so a killed wrapper cannot strand
+it). A second invocation — a relaunch while the first is alive, or a `resume`
+of the same run — is refused with exit 2 and names the live owner pid. A
+`CODEOWNER`-style force is not offered: `CONTROLLER_RUN_FORCE=1` only retires a
+DEAD owner's records, moving the whole record set into
+`retired/<run>/<utc-stamp>/` (never deleting it) and reporting the retired
+owner, so the name can be reused deliberately. The first `.done`
 line keeps its historical shape `EXIT=<n> OUTCOME=<word>`, where the word is:
 
 | Outcome | Meaning |
@@ -270,8 +293,10 @@ line keeps its historical shape `EXIT=<n> OUTCOME=<word>`, where the word is:
 | `UNCOMMITTED` | exit zero with uncommitted changes in the worktree. |
 | `NO-REPORT` | exit zero but the expected report file is missing. |
 | `USAGE-LIMIT` | a provider 402 `insufficient_balance` stop; the account is blocked until its reset. |
+| `TOOL-CALL-NO-TEXT` | a settled `stop` whose final assistant message is a tool call with no text: the run ended mid-work. Not a success, and not the continued `EMPTY-COMPLETION` class. A message carrying TEXT **and** a trailing tool call is `SUCCESS` instead: the text is the run's final message and the call is bookkeeping pi emits in the same message. |
+| `CONTEXT-FULL` | a settled `stopReason` of `length`: the context window filled. The work is intact; start a FRESH successor from the run's forward-oriented state file. The wrapper never continues it. |
 | `ERROR` | a provider error stop, or a nonzero pi exit. |
-| `INCOMPLETE` | a settled stream that is not a `stop` (for example `length`), or a finish whose worktree status cannot be read (never read as clean). |
+| `INCOMPLETE` | a stream the classifier cannot attribute (unsettled, aborted, a `stopReason` it does not know), or a finish whose worktree status cannot be read (never read as clean). |
 
 Name the expected report with `--report <absolute-path>` or `PI_REPORT`;
 leaving it unset skips the report check rather than passing it. Every other
@@ -318,13 +343,50 @@ scripts/controller/ctl-status.sh
 
 While a run is active the wrapper also keeps `<run>.live` current (default
 every 30 s, `PI_LIVE_INTERVAL_SECONDS`): pid liveness, seconds since the last
-pi event, the tool call in flight and its age, assistant turns, tool calls,
-latest `usage.totalTokens`, commits ahead of the base ref, uncommitted files,
-and seconds since the last commit. `job-status.sh` reads those files and prints
-one line per run with `ACTIVE`, `STALLED` (no pi event for longer than
-`JOB_STATUS_STALL_SECONDS`, default 600, while the pid is alive), `HUNG-TOOL`
+pi event, the tool call in flight with its age, command and the child pid to
+steer, assistant turns, tool calls, the last non-zero `usage.totalTokens`
+measurement (with the last usage report beside it as its own fact), progress
+evidence, commits ahead of the base ref, uncommitted files, and the age of the
+run's own last commit. `job-status.sh` reads those files and prints one line per
+run with `ACTIVE`, `STALLED` (no pi event for longer than
+`JOB_STATUS_STALL_SECONDS`, default 600, while the pid is alive), `LONG-TOOL`
 (one tool call in flight longer than `JOB_STATUS_HUNG_TOOL_SECONDS`, default
-1800), `WRAPPER-DEAD`, `FINISHED`, or `NO-LIVE`. It never writes.
+1800, while the run still shows progress evidence), `HUNG-TOOL` (the same age
+with no progress evidence), `WRAPPER-DEAD`, `FINISHED`, or `NO-LIVE`. It never
+writes.
+
+`WRAPPER-DEAD` is decided from the run name's owner record — the same
+`<run>.lock` `job-check.sh` reads — never from `kill -0` on the pid a snapshot
+happened to carry: a recycled pid answers "alive" for a stranger, and a record
+written before a reboot cannot name a live process at all. When the wrapper is
+gone the row also says whether the AGENT it started is still working
+(`wrapper-dead-agent-alive agent=<pid>(<command>) tool=<pid>`): that is a
+different state from "nothing is running", and it is the only one where the
+controller can still name a process to stop. The reader finds it structurally
+(the process whose cwd IS the run's worktree and whose argv[0] is `pi` or
+`codex`), never by guessing a name. `last-event` then comes from the run
+stream's own mtime and says so (`last-event=42s(stream)`), because a dead
+wrapper's sidecar is stale by definition.
+
+**`LONG-TOOL` and `HUNG-TOOL` are different words on purpose**: age is not
+progress. Progress evidence is read, not inferred: bytes appended to the run's
+event stream, or a strictly positive growth of the CPU-time and IO counters over
+the same processes of the IN-FLIGHT TOOL CALL's own subtree — never the
+wrapper's whole tree, which also holds the agent (a model loop) and the
+snapshotter (its own `/proc` scans and git calls) and would therefore keep any
+tool looking busy, so a slow `grep` or a long `pytest` reads as a working job
+instead of a hung one while a tool blocked on the agent's FIFO still reads as
+not progressing. To steer a stuck tool, kill the exact child pid the row
+prints as `steer=` — never the wrapper, which would discard the run's
+classification, its `.done` marker and its continuation history. A tool blocked
+by the agent's own experiment (a `git` command waiting on a FIFO the agent
+created) also shows no progress, and its command and child pids are on the row
+so the controller can decide which one to kill.
+
+`since-commit` names whose commit the age belongs to: a run with no commit of
+its own prints `since-commit=no-commits-yet`, a run with `ahead=` commits prints
+`since-commit=123s(ahead=2)`, and an unreadable `commits_ahead` prints
+`since-commit=null` rather than someone else's commit age.
 
 OpenCode defaults to `opendesign_github2/deepseek-v4.1-flash-eco`. Set
 `OPENCODE_PROVIDER=opendesign_volker` to choose the other provider, or set

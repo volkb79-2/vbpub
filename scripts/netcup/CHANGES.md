@@ -5,6 +5,18 @@ All notable changes to scripts/netcup are recorded here.
 ## [Unreleased]
 
 ### Added
+- `runner/remote-gate-cache.sh` (CTL-12) resolves a ref and publishes a cached copy of `runner/remote-gate.py` for a
+  controller helper to run, under a per-invocation staging name and one atomic rename to a content-addressed
+  `remote-gate-<blob>.py`, with the refresh serialised by `flock` on `<cache-dir>/.refresh.lock`. It replaces a
+  controller-local helper that staged through one shared `<cache>.new` path, so concurrent launches collided (`mv:
+  cannot move ... .new`) and the collision was reported as "cannot read the tool from origin/main" — a write failure
+  published as a missing file. Three refusals are distinct: `could not refresh the cache` (exit 3), `the tool is absent
+  from ref <ref>` (exit 4), and an unresolvable ref (exit 5); each names the ref, the tool path and the cache directory,
+  and success prints `cache=`, `ref=`, `commit=`, `identity=blob:<id>` so a run record names the revision that actually
+  ran. A copy already published for a blob is verified with `git hash-object` rather than trusted by name. Tests:
+  `runner/tests/test_remote_gate_cache.sh` (8 concurrent starts report one identity, a seeded copy is replaced by rename
+  not rewritten in place, a left-over staging file is invisible, a held lock refuses as a refresh failure, an absent tool
+  and an unresolvable ref each get their own refusal).
 - `runner/provision-gates-limits.sh` renders and applies the gates-tier memory policy of a pure test host (operator
   decision 2026-11-16) and `provision-runner.sh` runs it: drop-ins only, no unit-file edits. From the host's own
   `MemTotal`/`SwapTotal` it derives `MemoryMax = NOMINAL MemTotal - 1024 MiB floor - 512 MiB slack` and

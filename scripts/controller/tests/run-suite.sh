@@ -1,5 +1,11 @@
 #!/usr/bin/env bash
 set -uo pipefail
+# The caller's ambient controller configuration is not this check's business:
+# every check here builds its own temporary controller root, so an exported
+# CONTROLLER_HOME / RUNS_DIR / LOGS_DIR / REPO / HOSTS_FILE must not decide where
+# a check reads or writes. Relying on the caller ("run it with env -u") moved the
+# same defect into the operator's shell, where it read as a product bug.
+unset CONTROLLER_HOME CONTROLLER_RUNS_DIR CONTROLLER_LOGS_DIR CONTROLLER_REPO CONTROLLER_HOSTS_FILE
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 REPO_ROOT=$(cd -- "$SCRIPT_DIR/../../.." && pwd -P)
 queue_test=$REPO_ROOT/scripts/netcup/runner/tests/test-queue.sh
@@ -19,6 +25,8 @@ files=(
   "$SCRIPT_DIR/../push-image.sh"
   "$SCRIPT_DIR/../skills-sync.sh"
   "$REPO_ROOT/scripts/netcup/runner/host-sat-queue.sh"
+  "$REPO_ROOT/scripts/netcup/runner/remote-gate-cache.sh"
+  "$REPO_ROOT/scripts/netcup/runner/tests/test_remote_gate_cache.sh"
   "$SCRIPT_DIR/test-ctl-status.sh"
   "$SCRIPT_DIR/test-job-check.sh"
   "$SCRIPT_DIR/test-wrappers.sh"
@@ -44,5 +52,6 @@ bash "$SCRIPT_DIR/test-hardening-tools.sh" || exit $?
 bash "$SCRIPT_DIR/test-ctx-hooks.sh" || exit $?
 bash "$SCRIPT_DIR/test-skills-sync.sh" || exit $?
 bash "$queue_test" || exit $?
+bash "$REPO_ROOT/scripts/netcup/runner/tests/test_remote_gate_cache.sh" || exit $?
 bash "$SCRIPT_DIR/test-mutations.sh" || exit $?
 echo 'PASS controller suite'

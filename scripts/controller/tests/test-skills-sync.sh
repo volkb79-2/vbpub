@@ -4,6 +4,12 @@
 # edit. Runs against a COPY of the repository's two owned skill sources so a
 # test can change the source without touching the checkout.
 set -uo pipefail
+# The caller's ambient controller configuration is not this check's business:
+# every check here builds its own temporary controller root, so an exported
+# CONTROLLER_HOME / RUNS_DIR / LOGS_DIR / REPO / HOSTS_FILE must not decide where
+# a check reads or writes. Relying on the caller ("run it with env -u") moved the
+# same defect into the operator's shell, where it read as a product bug.
+unset CONTROLLER_HOME CONTROLLER_RUNS_DIR CONTROLLER_LOGS_DIR CONTROLLER_REPO CONTROLLER_HOSTS_FILE
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 REAL_SCRIPT=${SKILLS_SYNC_SCRIPT:-$SCRIPT_DIR/../skills-sync.sh}
 ROOT=$(mktemp -d "${TMPDIR:-/tmp}/skills-sync-test.XXXXXX")

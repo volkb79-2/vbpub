@@ -15,6 +15,9 @@ shutil.copy2(repo / "scripts/controller/lib.sh", controller / "lib.sh")
 shutil.copy2(repo / "scripts/controller/opendesign-accounts.py", controller / "opendesign-accounts.py")
 shutil.copy2(repo / "scripts/controller/pi-live.py", controller / "pi-live.py")
 shutil.copy2(repo / "scripts/controller/job-status.sh", controller / "job-status.sh")
+# A mutant wrapper must be judged on the change it carries, not on a missing
+# sibling file: the continuation prompt is read from SCRIPT_DIR.
+shutil.copy2(repo / "scripts/controller/continue-empty-completion.md", controller / "continue-empty-completion.md")
 
 
 def account_helper_mutant(name: str, before: str, after: str) -> Path:
@@ -50,7 +53,7 @@ mutant("scripts/controller/ctl-status.sh", "ctl-status-infra.sh",
 mutant("scripts/controller/ctl-status.sh", "ctl-status-flag.sh",
        "${flag_mtime:-0} -gt $pass_epoch", "${flag_mtime:-0} -lt $pass_epoch")
 mutant("scripts/controller/job-check.sh", "job-check-empty-final.sh",
-       '    if not text:', '    if False:')
+       '    elif not text:', '    elif False:')
 mutant("scripts/controller/job-check.sh", "job-check-tool-call-case.sh",
        "text[-600:], re.M | re.I", "text[-600:], re.M")
 mutant("scripts/controller/job-check.sh", "job-check-report-path.sh",
@@ -139,6 +142,36 @@ mutant("scripts/netcup/runner/host-sat-queue.sh", "queue-probe.sh",
 mutant("scripts/netcup/runner/host-sat-queue.sh", "queue-stop-alias.sh",
        'if ! controller_host_scalar "$host" guard >/dev/null; then',
        'if false; then', runner)
+# CTL-12: the remote-gate cache. The observable defects: a publish that rewrites
+# the cache file in place (a reader can see a half-written tool), a copy trusted
+# by name instead of verified by content, a refresh lock that is not held, an
+# ABSENCE reported as a refresh failure (the two refusals collapse again), and an
+# unrecorded identity (a reader cannot know which revision ran).
+#
+# The per-invocation staging NAME is deliberately not mutated into a shared name:
+# the serialised refresh lock already makes two stagers mutually exclusive inside
+# one cache dir, so such a mutant is equivalent on observable behaviour and could
+# not be killed honestly. The unique name is still required (a crashed invocation
+# must not leave a file another one publishes), which the leftover-staging case
+# checks.
+mutant("scripts/netcup/runner/remote-gate-cache.sh", "remote-gate-cache-inplace-publish.sh",
+       'if ! mv -f -T -- "$stage" "$published" 2>/dev/null; then',
+       'if ! cp -- "$stage" "$published" 2>/dev/null; then', runner)
+mutant("scripts/netcup/runner/remote-gate-cache.sh", "remote-gate-cache-name-only-validity.sh",
+       'published_is_valid() {',
+       'published_is_valid() {\n  [[ -s $1 ]] && return 0', runner)
+mutant("scripts/netcup/runner/remote-gate-cache.sh", "remote-gate-cache-stray-repo.sh",
+       'repo=${REMOTE_GATE_REPO:-}',
+       'repo=${repo:-${REMOTE_GATE_REPO:-}}', runner)
+mutant("scripts/netcup/runner/remote-gate-cache.sh", "remote-gate-cache-lock-ignored.sh",
+       'if ! flock -w "$lock_wait" "$refresh_fd"; then',
+       'if false; then', runner)
+mutant("scripts/netcup/runner/remote-gate-cache.sh", "remote-gate-cache-absent-as-refresh.sh",
+       '  absent_refusal "$commit"',
+       '  refresh_refusal "cannot read blob $commit:$tool from $repo"', runner)
+mutant("scripts/netcup/runner/remote-gate-cache.sh", "remote-gate-cache-identity-missing.sh",
+       "  printf 'cache=%s\\nref=%s\\ncommit=%s\\nidentity=blob:%s\\n' \\\n    \"$published\" \"$ref\" \"$commit\" \"$blob\"",
+       "  printf 'cache=%s\\nref=%s\\ncommit=%s\\n' \\\n    \"$published\" \"$ref\" \"$commit\"", runner)
 mutant("scripts/netcup/runner/host-sat-queue.sh", "queue-start-config.sh",
        'host_text=$(queue_hosts) || exit 2', "host_text=$(queue_hosts) || host_text=''", runner)
 mutant("scripts/netcup/runner/host-sat-queue.sh", "queue-stop-config.sh",
@@ -146,12 +179,58 @@ mutant("scripts/netcup/runner/host-sat-queue.sh", "queue-stop-config.sh",
 mutant("scripts/netcup/runner/host-sat-queue.sh", "queue-controller-lib.sh",
        'if [[ -f $REPO_ROOT/scripts/controller/lib.sh ]]; then', 'if [[ -f $SCRIPT_DIR/lib.sh ]]; then', runner)
 
+# CTL-19: a name with no `.done` is only RUNNING when the owner record says so.
+mutant("scripts/controller/job-check.sh", "job-check-dead-owner-running.sh",
+       '  if [[ -n $dead_reason ]]; then',
+       '  if false; then')
+mutant("scripts/controller/job-check.sh", "job-check-owner-pid-alive-only.sh",
+       '      if [[ $owner_ticks =~ ^[0-9]+$ && $live_ticks =~ ^[0-9]+$ && $owner_ticks != "$live_ticks" ]]; then',
+       '      if false; then')
+mutant("scripts/controller/job-check.sh", "job-check-owner-boot.sh",
+       '    if [[ -n $owner_boot && -n $current_boot && $owner_boot != "$current_boot" ]]; then',
+       '    if false; then')
+mutant("scripts/controller/job-check.sh", "job-check-owner-liveness.sh",
+       '    elif ! kill -0 "$owner_pid" 2>/dev/null; then',
+       '    elif false; then')
 mutant("scripts/controller/job-check.sh", "job-check-run-traversal.sh",
        '[[ $run =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ && $run != *..* ]] || { echo "invalid run name" >&2; exit 2; }',
        ': # removed run-name traversal guard')
-mutant("scripts/controller/job-check.sh", "job-check-missing-done-success.sh",
-       '  echo "RUNNING (no .done)"\n  exit 0',
-       '  if [[ ! -f $run_file ]]; then echo "RUN FILE MISSING: $run_file"; exit 1; fi\n  echo "RUNNING (no .done)"\n  exit 0')
+# A name that no wrapper ever owned is a distinct state, and the line says so
+# instead of borrowing RUNNING's claim about a process.
+mutant("scripts/controller/job-check.sh", "job-check-missing-done-owner-record.sh",
+       "    printf 'owner record: none",
+       "    : printf 'owner record: none")
+# CTL-19: the Codex wrapper owns its run name and states its outcome on every
+# exit path, including a resume whose child fails.
+mutant("scripts/controller/codex-impl.sh", "codex-run-name-claim.sh",
+       'controller_run_claim "$name" || exit 2',
+       ': # name ownership not claimed')
+mutant("scripts/controller/codex-impl.sh", "codex-resume-stale-marker.sh",
+       '  rm -f -- "$out/$name.done"\n  codex_launched=1',
+       '  codex_launched=1')
+# CTL-14 (blocker 2): the Codex child inherits the wrapper's ownership
+# descriptor, and a SIGKILLed wrapper then strands its run name while the agent
+# (or a daemon the agent left) keeps the flock. Both launch paths must close it.
+def codex_wrapper_with_lib_mutant(name: str, before: str, after: str) -> Path:
+    """A codex-impl.sh mutant with its own lib.sh copy: the wrapper sources
+    lib.sh from its own directory, so a lib mutation must ship beside it or the
+    real library is loaded and the mutation is never exercised."""
+    variant = controller / name
+    variant.mkdir(parents=True, exist_ok=True)
+    for sibling in ("codex-impl.sh", "opendesign-accounts.py", "opendesign-models.py"):
+        source = repo / "scripts/controller" / sibling
+        if source.is_file():
+            shutil.copy2(source, variant / sibling)
+    shutil.copy2(repo / "scripts/controller/continue-empty-completion.md", variant / "continue-empty-completion.md")
+    mutant("scripts/controller/lib.sh", "lib.sh", before, after, variant)
+    return variant / "codex-impl.sh"
+
+
+codex_wrapper_with_lib_mutant(
+    "codex-run-name-child-close",
+    '  eval "exec $fd>&-" 2>/dev/null || :\n  return 0\n}\n\ncontroller_run_owner_pid',
+    '  :\n  return 0\n}\n\ncontroller_run_owner_pid',
+)
 mutant("scripts/controller/job-check.sh", "job-check-report-litter.sh",
        "stray=$(git -C \"$worktree\" status --short --ignored 2>/dev/null | grep -E '^\\?\\? (reports|scripts/.*/reports)/' | head -2 || true)",
        "stray='' ")
@@ -191,8 +270,8 @@ mutant("scripts/controller/codex-impl.sh", "codex-autoresume-bound.sh",
 mutant("scripts/controller/codex-impl.sh", "codex-autoresume-limit-validation.sh",
        'raise SystemExit(0 if value <= 2147483647 else 1)', 'raise SystemExit(0)')
 mutant("scripts/controller/codex-impl.sh", "codex-stale-run-markers.sh",
-       'if [[ ${CONTROLLER_RUN_FORCE:-0} != 1 ]] && (( ${#existing[@]} > 0 )); then',
-       'if false; then')
+       '  if (( ${#existing[@]} > 0 )); then\n    if [[ ${CONTROLLER_RUN_FORCE:-0} != 1 ]]; then',
+       '  if (( ${#existing[@]} > 0 )); then\n    if false; then')
 mutant("scripts/controller/codex-impl.sh", "codex-stale-run-resume-mode.sh",
        'if [[ $mode == new ]]; then\n  existing=()',
        'if true; then\n  existing=()')
@@ -310,6 +389,17 @@ mutant("scripts/controller/job-check.sh", "job-check-pi-message-end.sh",
        'elif event_type == "message_end":', 'elif event_type == "pi_message_end":')
 mutant("scripts/controller/job-check.sh", "job-check-pi-402-error-code.sh",
        'pi_usage_limited = pi_402_error(message.get("errorMessage"))', 'pi_usage_limited = False')
+# A context-full run is a real end state with its own remedy, and a final
+# message that is a tool call with no text ended mid-work: neither may read as
+# an ordinary finished/unfinished job.
+mutant("scripts/controller/job-check.sh", "job-check-context-full-class.sh",
+       '    if pi_detected and pi_stop_reason == "length":', '    if False:')
+mutant("scripts/controller/job-check.sh", "job-check-tool-call-no-text-class.sh",
+       '    elif pi_detected and pi_stop_reason == "stop" and pi_has_tool_call and not text:',
+       '    elif False:')
+mutant("scripts/controller/job-check.sh", "job-check-tool-call-part-detection.sh",
+       '                isinstance(part, dict) and part.get("type") == "toolCall" for part in content',
+       '                isinstance(part, dict) and part.get("type") == "tool_call" for part in content')
 mutant("scripts/controller/lib.sh", "usage-retry-pi-error-message.sh",
        'gateway_text_reset(event) or coding_plan_reset(event) or pi_error_reset(event)',
        'gateway_text_reset(event) or coding_plan_reset(event)')
@@ -327,8 +417,56 @@ mutant("scripts/controller/pi-impl.sh", "pi-run-name-guard.sh",
        '[[ $name =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ && $name != *..* ]] || {',
        '[[ -n $name ]] || {')
 mutant("scripts/controller/pi-impl.sh", "pi-run-collision-guard.sh",
-       'if [[ ${CONTROLLER_RUN_FORCE:-0} != 1 ]] && (( ${#existing[@]} > 0 )); then',
-       'if false; then')
+       '    if [[ ${CONTROLLER_RUN_FORCE:-0} != 1 ]]; then',
+       '    if false; then')
+# CTL-14: the run-name ownership guard. Three ways it can be lost: no claim at
+# all (two wrappers interleave), a claim taken but never released (a killed
+# wrapper strands the name), and a claim that can be bypassed by force (a live
+# owner's records get overwritten under it).
+mutant("scripts/controller/pi-impl.sh", "pi-run-name-claim.sh",
+       'controller_run_claim "$name" || exit 2', ': # name ownership not claimed')
+# The lock lives in lib.sh, and pi-impl.sh sources lib.sh from its own
+# directory, so a lib mutant judged against test-pi-impl.sh needs its own wrapper
+# copy beside the mutated library (otherwise the wrapper would load the real
+# lib.sh and the mutation would never be exercised).
+#
+# child-close: the lock is held by the wrapper's open file description, which a
+# child that forked from it inherits; the agent and its sidecar must close their
+# copy, so a killed wrapper's name is free even while the agent it started still
+# runs.
+# live-owner-bypass: an exclusive lock that is not obtained reads as obtained,
+# so a second invocation interleaves with a live owner.
+# retire-deletes: a forced reuse deletes the previous owner's records instead of
+# archiving them.
+def pi_wrapper_with_lib_mutant(name: str, before: str, after: str) -> Path:
+    variant = controller / name
+    variant.mkdir(parents=True, exist_ok=True)
+    for sibling in ("pi-impl.sh", "continue-empty-completion.md", "opendesign-accounts.py", "pi-live.py"):
+        shutil.copy2(repo / "scripts/controller" / sibling, variant / sibling)
+    mutant("scripts/controller/lib.sh", "lib.sh", before, after, variant)
+    return variant / "pi-impl.sh"
+
+
+pi_wrapper_with_lib_mutant(
+    "pi-run-name-child-close",
+    '  eval "exec $fd>&-" 2>/dev/null || :\n  return 0\n}\n\ncontroller_run_owner_pid',
+    '  :\n  return 0\n}\n\ncontroller_run_owner_pid',
+)
+pi_wrapper_with_lib_mutant(
+    "pi-run-name-live-owner-bypass",
+    '  flock -n "$CONTROLLER_RUN_LOCK_FD"\n  rc=$?',
+    '  flock -n "$CONTROLLER_RUN_LOCK_FD" || true\n  rc=0',
+)
+# The owner record is written after the caller's own preflight, so a REFUSED
+# invocation cannot overwrite the identity of the owner it refused on.
+mutant("scripts/controller/pi-impl.sh", "pi-run-name-refusal-overwrites.sh",
+       'controller_run_claim "$name" || exit 2',
+       'controller_run_claim "$name" || exit 2\ncontroller_run_record_owner')
+pi_wrapper_with_lib_mutant(
+    "pi-run-name-retire-deletes",
+    '    mv -- "$runs/$name.$extension" "$archive/" || return 2',
+    '    rm -f -- "$runs/$name.$extension" || return 2',
+)
 mutant("scripts/controller/pi-impl.sh", "pi-prompt-preserve-newlines.sh",
        'IFS= read -r -d \'\' prompt_text < "$prompt" || :',
        'prompt_text=$(<"$prompt")')
@@ -375,9 +513,28 @@ mutant("scripts/controller/pi-impl.sh", "pi-error-outcome.sh",
 mutant("scripts/controller/pi-impl.sh", "pi-nonzero-exit-outcome.sh",
        'elif [[ $rc != 0 ]]; then\n    echo ERROR',
        'elif false; then\n    echo ERROR')
+# A settled stopReason that is not `stop` must not read as a success.
 mutant("scripts/controller/pi-impl.sh", "pi-success-stop-only.sh",
-       '|| -z $thread_id || $stop_reason != stop ]]; then',
-       '|| -z $thread_id || -z $stop_reason ]]; then')
+       'elif [[ $stop_reason != stop ]]; then\n    echo INCOMPLETE',
+       'elif false; then\n    echo INCOMPLETE')
+# A full context window is its own class, decided BEFORE the generic
+# not-a-stop branch: dropping the branch folds it back into INCOMPLETE, and
+# moving it after the generic branch makes it unreachable.
+mutant("scripts/controller/pi-impl.sh", "pi-context-full-missing.sh",
+       'elif [[ $stop_reason == length ]]; then', 'elif false; then')
+mutant("scripts/controller/pi-impl.sh", "pi-context-full-order.sh",
+       '  elif [[ $stop_reason == length ]]; then\n'
+       '    # The context window filled: a real end state of a long run, with a DIFFERENT\n'
+       '    # remedy from an unattributable stream. Decided before the generic\n'
+       '    # not-a-stop branch, and never continued.\n'
+       '    echo CONTEXT-FULL\n', '')
+# The retry loop must ignore every class but EMPTY-COMPLETION.
+mutant("scripts/controller/pi-impl.sh", "pi-context-full-continued.sh",
+       "while (( attempt < retry_limit )) && [[ $outcome == EMPTY-COMPLETION ]]; do",
+       "while (( attempt < retry_limit )) && [[ $outcome == EMPTY-COMPLETION || $outcome == CONTEXT-FULL ]]; do")
+# A final message with a tool call and no text is not a success.
+mutant("scripts/controller/pi-impl.sh", "pi-tool-call-no-text-success.sh",
+       'elif [[ $has_text != 1 && $has_tool_call == 1 ]]; then', 'elif false; then')
 mutant("scripts/controller/pi-impl.sh", "pi-account-block-run.sh",
        'block-run "$od_account"', 'record-thread "$thread_id"')
 mutant("scripts/controller/pi-impl.sh", "pi-key-selected-export.sh",
@@ -392,7 +549,7 @@ mutant("scripts/controller/pi-impl.sh", "pi-key-unselected-unset.sh",
 
 # Classification: an empty final message must not fall through to SUCCESS.
 mutant("scripts/controller/pi-impl.sh", "pi-empty-completion-class.sh",
-       'elif [[ $has_text != 1 && $has_tool_call != 1 ]]; then',
+       'elif [[ $has_text != 1 ]]; then',
        'elif false; then')
 # A thinking-only message is the same class as an empty one: the check must
 # look for text, not for content at all.
@@ -462,6 +619,55 @@ mutant("scripts/controller/pi-live.py", "pi-live-missing-fact.py",
 mutant("scripts/controller/pi-live.py", "pi-live-usage-trend.py",
        '        elif event_type == "message_update":',
        '        elif event_type == "message_update_disabled":')
+# CTL-15: a 0 usage report is a report, never a measurement. Publishing it as the
+# context size is the defect (a 200k run reads as an empty context).
+mutant("scripts/controller/pi-live.py", "pi-live-tokens-zero-as-measurement.py",
+       '        if total > 0:', '        if True:')
+# CTL-18: progress evidence is stream growth OR kernel counter growth. Without
+# the counters a long tool that keeps working but prints nothing reads as hung.
+mutant("scripts/controller/pi-live.py", "pi-live-progress-stream-only.py",
+       '                and (sample.cpu > previous.cpu or sample.io > previous.io)',
+       '                and False')
+# CTL-18 (blocker 1): the summed set is the in-flight TOOL's subtree. The agent
+# (a direct child of the wrapper) and the sidecar grow on their own every tick,
+# so counting them makes a blocked tool read as working forever.
+mutant("scripts/controller/pi-live.py", "pi-live-progress-counts-agent.py",
+       '        found, cut = descendants(root, children, limit - len(pids))',
+       '        found, cut = descendants(root, children, limit - len(pids))\n        pids.append(root)')
+mutant("scripts/controller/pi-live.py", "pi-live-progress-counts-sidecar.py",
+       '    pids: list[int] = []\n    truncated = False',
+       '    pids: list[int] = [self_pid] if self_pid in table else []\n    truncated = False')
+# Any difference is not progress: a decrease and a changed process set are
+# baselines. Deciding on "it differs" reintroduces exactly the wrong direction.
+mutant("scripts/controller/pi-live.py", "pi-live-progress-any-change.py",
+       '                and (sample.cpu > previous.cpu or sample.io > previous.io)',
+       '                and (sample.cpu != previous.cpu or sample.io != previous.io)')
+# An unreadable /proc must not license the stronger word: clamping a null
+# progress fact up to the tool's start restores a wall-clock-only rule exactly
+# where the counters cannot be read.
+mutant("scripts/controller/pi-live.py", "pi-live-progress-null-clamped.py",
+       '    if tool_started is not None and progress_epoch is not None:\n'
+       '        if progress_epoch < tool_started:\n'
+       '            progress_epoch = tool_started',
+       '    if tool_started is not None:\n'
+       '        if progress_epoch is None or progress_epoch < tool_started:\n'
+       '            progress_epoch = tool_started')
+# A tool call's own announcement is a boundary, not evidence.
+mutant("scripts/controller/pi-live.py", "pi-live-progress-tool-start.py",
+       '        if tool_started:\n            # A tool call',
+       '        if False:\n            # A tool call')
+# The node cap must be stated, not silent.
+mutant("scripts/controller/pi-live.py", "pi-live-progress-silent-cap.py",
+       '        truncated = truncated or cut',
+       '        truncated = False')
+# A tool's own partial output is progress evidence.
+mutant("scripts/controller/pi-live.py", "pi-live-tool-output-progress.py",
+       '        elif event_type == "tool_execution_update":',
+       '        elif event_type == "tool_execution_update_disabled":')
+# The wrapper and this sidecar are never steering targets.
+mutant("scripts/controller/pi-live.py", "pi-live-steering-includes-wrapper.py",
+       '    steering_pids = [] if located is None else located[0]',
+       '    steering_pids = [pid for pid in process_table() if pid > 0]')
 # A quiet run must read as STALLED at the configured threshold.
 mutant("scripts/controller/job-status.sh", "job-status-stall-threshold.sh",
        '    elif since_event is not None and since_event > stall_limit:',
@@ -470,9 +676,34 @@ mutant("scripts/controller/job-status.sh", "job-status-stall-threshold.sh",
 mutant("scripts/controller/job-status.sh", "job-status-hung-tool.sh",
        '    elif tool_seconds is not None and tool_seconds > hung_limit:',
        '    elif False:')
+# CTL-18: HUNG-TOOL is age AND absence of progress evidence. Deciding it on the
+# tool age alone is exactly the defect (a heavy-but-working tool reads as hung).
+mutant("scripts/controller/job-status.sh", "job-status-hung-without-progress.sh",
+       '        if progress_measured is not None and progress_measured > hung_limit:',
+       '        if True:')
+# An unknown progress fact must not license the stronger word either.
+mutant("scripts/controller/job-status.sh", "job-status-progress-unknown-as-hung.sh",
+       '        if progress_measured is not None and progress_measured > hung_limit:',
+       '        if progress_measured is None or progress_measured > hung_limit:')
+# The row must name the tool's command and the exact child pid to steer.
+mutant("scripts/controller/job-status.sh", "job-status-hung-tool-command.sh",
+       '        tool_text += f" cmd={tool_command[:80]}"',
+       '        tool_text += ""')
+mutant("scripts/controller/job-status.sh", "job-status-steer-target.sh",
+       '        tool_text += f" steer={steer}"',
+       '        tool_text += ""')
+# CTL-16: before the run's own first commit the age belongs to the base commit,
+# so it must not be printed as this run's.
+mutant("scripts/controller/job-status.sh", "job-status-since-commit-unqualified.sh",
+       '    elif ahead == 0:\n        commit_text = "no-commits-yet"',
+       '    elif ahead == 0:\n        commit_text = f"{show(age(payload.get(\'last_commit_epoch\')))}s"')
+# CTL-15: the last zero usage report must never stand in for the context size.
+mutant("scripts/controller/job-status.sh", "job-status-tokens-last-report.sh",
+       "        f\"tokens-last-report={show(payload.get('latest_total_tokens_last_report'))} \"",
+       "        f\"tokens-last-report={show(payload.get('latest_total_tokens'))} \"")
 # A dead wrapper with no .done must not read as ACTIVE.
 mutant("scripts/controller/job-status.sh", "job-status-wrapper-dead.sh",
-       '    wrapper_dead = not pid_alive(wrapper_pid)',
+       '    wrapper_dead = verdict == "dead"',
        '    wrapper_dead = False')
 # A finished run must be read from its marker, never from a live snapshot.
 mutant("scripts/controller/job-status.sh", "job-status-finished.sh",
@@ -490,13 +721,52 @@ mutant("scripts/controller/job-status.sh", "job-status-default-stall.sh",
 mutant("scripts/controller/job-status.sh", "job-status-default-hung.sh",
        'hung_tool_seconds=${JOB_STATUS_HUNG_TOOL_SECONDS:-1800}',
        'hung_tool_seconds=${JOB_STATUS_HUNG_TOOL_SECONDS:-18000}')
+# Liveness is the OWNER RECORD's verdict, not `kill -0` on the payload's pid:
+# a recycled pid answers "alive" for a stranger.
+mutant("scripts/controller/job-status.sh", "job-status-owner-record-ignored.sh",
+       '    verdict, detail = owner_verdict(owner, wrapper_pid)', 
+       '    verdict, detail = ("alive", None) if pid_alive(wrapper_pid) else ("dead", "gone")')
+# A dead wrapper with a LIVE agent is its own state and must be named.
+mutant("scripts/controller/job-status.sh", "job-status-orphan-agent-unnamed.sh",
+       '        pid_text += " wrapper-dead-agent-alive"',
+       '        pid_text += ""')
+mutant("scripts/controller/job-status.sh", "job-status-orphan-agent-scan.sh",
+       '        ancestors = agent_processes(worktree_of(name))',
+       '        ancestors = []')
+# The stale dead sidecar must not be the newest event: the stream's mtime is.
+mutant("scripts/controller/job-status.sh", "job-status-dead-sidecar-event.sh",
+       '            since_event = stream_age',
+       '            since_event = since_event')
+mutant("scripts/controller/job-check.sh", "job-check-thread-recovery.sh",
+       '      thread_id=$(recover_thread_from_stream "$CONTROLLER_RUNS_DIR/$run.jsonl") || thread_id=\'\'',
+       '      thread_id=\'\'')
 
+# The states list and the steering action are user-facing facts, so a document
+# that lost them must fail its own content check.
+mutant("scripts/controller/README.md", "README-long-tool-state.md",
+       '**`LONG-TOOL` and `HUNG-TOOL` are different words on purpose**',
+       '**One age threshold covers every slow tool call**')
+mutant("scripts/controller/README.md", "README-steering-action.md",
+       'prints as `steer=` — never the wrapper',
+       'prints as `steer=` — and the wrapper once it also looks idle')
+mutant("scripts/controller/README.md", "README-died-state.md",
+       '`DIED (wrapper pid <pid> gone, no .done)` as a red flag',
+       '`RUNNING (no .done)` as a red flag')
 mutant("scripts/controller/README.md", "README-pi-route-table.md",
        '| `deepseek-pi` | `pi-impl.sh` | Favored Open Design route; alternates available accounts. |',
        '| `deepseek-pi` | `pi-impl.sh` | Route. |')
+mutant("scripts/controller/docs/DESIGN-GUIDE.md", "DESIGN-long-tool-rationale.md",
+       '**Why `LONG-TOOL` exists as its own word.**',
+       '**Why one word covers every slow tool call.**')
 mutant("scripts/controller/docs/DESIGN-GUIDE.md", "DESIGN-pi-402-classification.md",
        'Pi 1.5.0 can report a provider 402 in the final assistant `message_end` event',
        'Pi 1.5.0 reports provider errors outside the final assistant `message_end` event')
+mutant("scripts/controller/docs/CONSUMERS.md", "CONSUMER-steering-target.md",
+       'Kill `8451`, not `8123`.',
+       'Kill the wrapper `8123` to stop the tool.')
+mutant("scripts/controller/docs/CONSUMERS.md", "CONSUMER-codex-marker-shape.md",
+       '`EXIT=<n> OUTCOME=CODE-EXIT AUTORESUME=<k>`',
+       '`EXIT=<n> AUTORESUME=<k>`')
 mutant("scripts/controller/docs/CONSUMERS.md", "CONSUMER-pi-launch-route.md",
        '`deepseek-pi` is the favored Pi route',
        '`deepseek-pi` is unavailable in the Pi route selector.')
