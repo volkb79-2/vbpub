@@ -764,7 +764,11 @@ left out, separating DELIBERATE skips (lifecycle records that carry no
 conversation content, an image block a text extract cannot carry) from UNKNOWN
 ones (a record type, message role or content block pi's declarations do not
 explain). Two flattenings are stated there rather than implied: pi sessions are
-trees (`parentId`) and the adapter follows file order, and a `context_edit`
+trees (`parentId`) and the adapter follows file order -- a real FORK (one entry
+with two children) or a `parentId` naming an entry the file does not contain
+is counted and reported, while a linear session that merely interleaves
+`compaction`/`context_edit` entries into the `parentId` chain is linear and
+stays silent -- and a `context_edit`
 with `replacement: null` removes its target from model context while the
 extract still shows the original content. If you need the exact model context
 pi saw, read the session file itself; if that `context_edit` semantics becomes

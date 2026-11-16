@@ -478,7 +478,12 @@ def test_a_context_edit_is_marked_and_counted_because_it_masked_content(tmp_path
 
 
 def test_a_tree_break_is_counted_not_implied(tmp_path):
-    """pi sessions are trees (`parentId`); this adapter follows FILE ORDER."""
+    """pi sessions are TREES (`parentId`); this adapter follows FILE ORDER.
+
+    The count is a claim about the file's SHAPE, so it counts the two things
+    that make a file a tree -- a fork (one parent with two children) and a
+    dangling parent (an entry the file does not contain) -- and nothing else.
+    """
     path = _stored(tmp_path / "tree.jsonl", [
         _session_header(),
         {"type": "message", "id": "a", "parentId": None,
@@ -486,13 +491,49 @@ def test_a_tree_break_is_counted_not_implied(tmp_path):
         {"type": "message", "id": "b", "parentId": "a",
          "message": {"role": "assistant", "content": [_text("Synthetic prose.")],
                      "stopReason": "stop"}},
-        {"type": "message", "id": "c", "parentId": "",
+        # A FORK: two children of `a`. One branch, counted ONCE.
+        {"type": "message", "id": "c", "parentId": "a",
          "message": {"role": "assistant", "content": [_text("Another synthetic fork.")],
+                     "stopReason": "stop"}},
+        {"type": "message", "id": "d", "parentId": "elsewhere",
+         "message": {"role": "assistant", "content": [_text("Dangling parent.")],
                      "stopReason": "stop"}},
     ])
     _, report = pi.parse_with_stats(path, str(path), ExtractConfig())
-    assert report.tree_breaks == 1
+    assert report.tree_breaks == 2  # one fork + one dangling parent
     assert any("parentId breaks the linear" in line for line in report.lines())
+
+
+def test_a_LINEAR_pi_session_is_not_reported_as_a_tree(tmp_path):
+    """A compaction sits between two messages in the `parentId` chain.
+
+    Real pi files do this: the compaction's `parentId` is the last message and
+    the next message's `parentId` is the compaction's own id. Comparing a
+    record's parent with the PREVIOUS record's id therefore fired on a
+    perfectly linear session and printed a false "parentId breaks the linear
+    chain" line into a primer. Observed in the real stored sessions on this
+    machine (every session with a compaction, all of them linear).
+    """
+    path = _stored(tmp_path / "linear.jsonl", [
+        _session_header(),
+        {"type": "message", "id": "m1", "parentId": None,
+         "message": {"role": "user", "content": [_text("Synthetic prompt.")]}},
+        {"type": "message", "id": "m2", "parentId": "m1",
+         "message": {"role": "assistant", "content": [_text("Synthetic prose.")],
+                     "stopReason": "toolUse"}},
+        {"type": "compaction", "id": "k1", "parentId": "m2",
+         "summary": "Synthetic summary."},
+        {"type": "message", "id": "m3", "parentId": "k1",
+         "message": {"role": "user", "content": [_text("Synthetic continuation.")]}},
+        {"type": "context_edit", "id": "e1", "parentId": "m3",
+         "targetId": "m2", "replacement": None},
+        {"type": "message", "id": "m4", "parentId": "e1",
+         "message": {"role": "assistant", "content": [_text("Synthetic finish.")],
+                     "stopReason": "stop"}},
+    ])
+    _, report = pi.parse_with_stats(path, str(path), ExtractConfig())
+    assert report.tree_breaks == 0
+    assert not any("parentId breaks" in line for line in report.lines())
 
 
 # --- stop state ----------------------------------------------------------------
@@ -1041,6 +1082,12 @@ def test_a_custom_message_carries_a_STRING_content_and_an_unlisted_source(tmp_pa
         "[custom message: unknown] Synthetic injected note.",
         "[custom message: unknown] Synthetic role note.",
     ]
+    # An empty `custom` message is context pi DID inject and this extract
+    # cannot carry: it is counted as a deliberate skip, never a silence. The
+    # `custom_message` record above whose content is neither a string nor a
+    # list is counted too, under its own spelling.
+    _, report = pi.parse_with_stats(path, str(path), ExtractConfig())
+    assert report.blocks == {"custom (no text)": 1, "custom_message (no text)": 1}
 
 
 def test_an_assistant_message_with_no_role_is_counted_as_MISSING(tmp_path):

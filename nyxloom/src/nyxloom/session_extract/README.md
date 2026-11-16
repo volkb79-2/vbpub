@@ -488,10 +488,15 @@ constrained the interface or turned up a real bug:
 
   Two flattenings are a deliberate simplification, and both are counted in the
   footer rather than implied: pi sessions are TREES (`parentId`), and this
-  adapter follows FILE ORDER, so a `parentId` that breaks the linear chain is
-  reported; and a `context_edit` with `replacement: null` REMOVES its target
-  from model context while the extract still shows the original content, which
-  the footer states. `tests/fixtures/pi_stop_parity.json` pins the same
+  adapter follows FILE ORDER, so a file that really diverges from one line is
+  reported (a fork -- one parent with two children, counted once -- or a
+  `parentId` naming an entry the file does not contain); a file that merely
+  interleaves non-message entries (`compaction`, `context_edit`,
+  `model_change`) into a straight `parentId` chain is LINEAR and is not
+  reported, because it is one line, not a tree; and a `context_edit` with
+  `replacement: null` REMOVES its target from model context while the extract
+  still shows the original content, which the footer states.
+  `tests/fixtures/pi_stop_parity.json` pins the same
   synthetic records through both this stop-state classifier and the documented
   predicate of `scripts/controller/pi-impl.sh`, so the two consumers of "how
   did this run end" cannot drift apart silently.

@@ -53,6 +53,21 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
   the agent, not to a CLI's storage format.
 
 ### Fixed
+- The pi adapter's `parentId` "tree break" count no longer compares a
+  record's parent with the PREVIOUS record's id. pi's own session files
+  interleave `compaction`/`context_edit`/`model_change` entries into that
+  chain, so a perfectly LINEAR session printed a "parentId breaks the linear
+  chain" line into a successor primer. It now counts only real divergence: a
+  fork (one parent with two or more children, counted once) or a `parentId`
+  naming an entry the file does not contain (NL-77).
+- A pi `custom` message with no renderable text is counted as a deliberate
+  skip (`custom (no text)`) instead of vanishing; extension context pi really
+  injected must not disappear from both the events and the skip disclosure
+  (NL-78).
+- `nyxloom/assay.toml`'s `session-extract` lane now runs
+  `tests/test_session_extract_pi.py`: the lane enumerates its test files, and
+  the pi adapter's tests were not in that list, so the lane judged the adapter
+  at ~0% coverage and re-judged its mutants with no test able to see them.
 - `--redact-pattern`'s placeholder names the matched rule by its ordinal
   (`#1`, `#2`, ...) instead of echoing the regular expression, which could
   itself be the sensitive string the pattern was written to remove (NL-72);

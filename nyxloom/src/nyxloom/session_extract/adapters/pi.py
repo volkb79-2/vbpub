@@ -654,6 +654,11 @@ def message_events(
         source = message.get("customType")
         text = custom_message_text(message.get("content"))
         if not text:
+            # A `custom` message with no renderable text (an image-only or
+            # empty extension message) is a deliberate skip, not a silence:
+            # pi DOES put this message in front of the model, so an extract
+            # that shows nothing must say it showed nothing.
+            report.bump(report.blocks, "custom (no text)")
             return []
         return [custom_message_event(
             text, source if isinstance(source, str) and source else "unknown",
@@ -763,6 +768,44 @@ def parse(path: Path, session_id: str, config: ExtractConfig) -> list[Normalized
     return parse_with_stats(path, session_id, config)[0]
 
 
+def count_tree_breaks(records_: list[tuple[int, dict[str, Any]]]) -> int:
+    """Records that make this file a TREE rather than one straight line.
+
+    Two shapes are genuinely a tree, and only these count:
+
+    * a record whose ``parentId`` names an entry the file does not contain
+      (a dangling branch: the parent lives in another session file), and
+    * a parent with more than one child -- the fork itself, counted ONCE at
+      the parent, because one fork produces two children and counting each
+      child would report a single branch as two breaks.
+
+    It deliberately does NOT compare a record's ``parentId`` with the previous
+    record's ``id``. pi's own session files interleave non-message entries
+    (``compaction``, ``model_change``, ``context_edit``) into the ``parentId``
+    chain -- a compaction's ``parentId`` is the last message and the next
+    message's ``parentId`` is the compaction's own id -- so that comparison
+    fired on a perfectly LINEAR session and printed a "parentId breaks the
+    linear chain" line into a primer that was in fact one straight line.
+    """
+    ids: set[Any] = set()
+    for _, rec in records_:
+        record_id = rec.get("id")
+        if isinstance(record_id, str) and record_id:
+            ids.add(record_id)
+    children: dict[Any, int] = {}
+    dangling = 0
+    for _, rec in records_:
+        parent = rec.get("parentId")
+        if parent is None:
+            # The file's own root entry: no parent, by definition not a break.
+            continue
+        children[parent] = children.get(parent, 0) + 1
+        if parent not in ids:
+            dangling += 1
+    forks = sum(1 for parent, count in children.items() if count > 1)
+    return dangling + forks
+
+
 def parse_with_stats(
     path: Path, session_id: str, config: ExtractConfig,
 ) -> tuple[list[NormalizedEvent], PiSkipReport]:
@@ -775,18 +818,14 @@ def parse_with_stats(
     records_, unparseable = records_and_skips(path)
     since_line = _resolve_bound(records_, config.since_marker, "--since", path)
     until_line = _resolve_bound(records_, config.until_marker, "--until", path)
+    # How the FILE is shaped is a fact about the file, not about which records
+    # this run shows, so the tree is counted before any window slice.
+    tree_breaks = count_tree_breaks(records_)
 
     calls: dict[str, str] = {}
     events: list[NormalizedEvent] = []
-    report = PiSkipReport(unparseable_lines=unparseable)
-    previous_id: Any = None
+    report = PiSkipReport(unparseable_lines=unparseable, tree_breaks=tree_breaks)
     for index, rec in records_:
-        # The tree is counted BEFORE the window slice: how the file is shaped
-        # is a fact about the file, not about which records this run shows.
-        if record_type(rec) in MESSAGE_RECORD_TYPES:
-            if previous_id is not None and rec.get("parentId") != previous_id:
-                report.tree_breaks += 1
-            previous_id = rec.get("id")
         if since_line is not None and index <= since_line:
             continue
         if until_line is not None and index > until_line:
