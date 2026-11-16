@@ -344,6 +344,13 @@ for skills_mutant in skills-stamp-ownership skills-modified-clobber skills-stale
   expect_killed "$skills_mutant" \
     env SKILLS_SYNC_SCRIPT="$ROOT/mutants/scripts/controller/$skills_mutant.sh" bash "$SCRIPT_DIR/test-skills-sync.sh"
 done
+for cache_mutant in remote-gate-cache-inplace-publish remote-gate-cache-name-only-validity \
+                    remote-gate-cache-lock-ignored remote-gate-cache-absent-as-refresh \
+                    remote-gate-cache-identity-missing; do
+  expect_killed "$cache_mutant" \
+    env REMOTE_GATE_CACHE_SCRIPT="$ROOT/mutants/scripts/netcup/runner/$cache_mutant.sh" \
+      bash "$REPO_ROOT/scripts/netcup/runner/tests/test_remote_gate_cache.sh"
+done
 expect_killed queue-auto-pause-threshold \
   env QUEUE_SCRIPT="$ROOT/mutants/scripts/netcup/runner/queue-threshold.sh" bash "$REPO_ROOT/scripts/netcup/runner/tests/test-queue.sh"
 expect_killed queue-pause-write-failure-fallback \

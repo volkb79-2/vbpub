@@ -23,7 +23,7 @@ together.
 | CTL-09 | The Codex compaction retest records no per-run compaction setting and reads no app-server compaction item | P3 | OPEN 2026-11-15 |
 | CTL-10 | Worker briefs do not state the measured harness environment limits, so workers rediscover them | P3 | OPEN 2026-11-15 |
 | CTL-11 | A readback built by a non-Claude controller has no layout (no recent-prose tail, no marker) until NL-65 | P3 | OPEN 2026-11-15 |
-| CTL-12 | The remote-gate helper refreshes its cached `remote-gate.py` through a shared `.new` temp name, so concurrent launches collide before anything reaches the host | P2 | OPEN 2026-11-16 (requires a repo-side successor) |
+| CTL-12 | The remote-gate helper refreshes its cached `remote-gate.py` through a shared `.new` temp name, so concurrent launches collide before anything reaches the host | P2 | FIXED 2026-11-16 (repository successor `scripts/netcup/runner/remote-gate-cache.sh`) |
 | CTL-13 | A final assistant message with `stopReason=stop`, a tool call and no text classifies `SUCCESS` although the documented contract requires text | Minor | FIXED 2026-11-16 |
 | CTL-14 | Nothing stops two wrappers from running the same run name (or session) at once; both write the same `.done`, `.events` and retry counter | Should-fix | FIXED 2026-11-16 |
 | CTL-15 | `.live`'s `latest_total_tokens` reads `0`: a zero usage report stands in for the measured context size | Should-fix | FIXED 2026-11-16 |
@@ -388,10 +388,31 @@ instead.
 
 ## CTL-12 — the remote-gate helper refreshes its cached copy through a shared `.new` name, and concurrent launches collide
 
-**Status:** OPEN (filed 2026-11-16); priority P2 for the controller's own
-tooling. The helper (`codex/remote-gate.sh` in the controller's program
-directory) is deliberately OUTSIDE the repository, so this entry states the
-REQUIREMENT for a repository-side successor rather than pointing at a file here.
+**Status:** FIXED 2026-11-16 (code, test, mutants and the documents in one
+change); priority P2. The controller-local helper (`codex/remote-gate.sh` in the
+controller's program directory) is deliberately OUTSIDE the repository, so the
+fix landed as the repository-side successor the entry asked for:
+`scripts/netcup/runner/remote-gate-cache.sh` with
+`scripts/netcup/runner/tests/test_remote_gate_cache.sh`. It stages under a
+per-invocation name (`.remote-gate-<blob>.stage.<pid>.<rand>`), publishes by one
+atomic `rename` to the content-addressed `remote-gate-<blob>.py`, verifies an
+already published copy with `git hash-object` instead of trusting its name,
+serialises the refresh with `flock` on `<cache-dir>/.refresh.lock` (bounded by
+`REMOTE_GATE_CACHE_LOCK_WAIT`, default 60 s), and keeps three distinct refusals:
+`could not refresh the cache` (exit 3), `the tool is absent from ref <ref>`
+(exit 4), and an unresolvable ref (exit 5), each naming the ref, the tool path
+and the cache directory. Success prints `cache=`, `ref=`, `commit=` and
+`identity=blob:<id>` so a caller records the revision that actually ran. Mutants
+`remote-gate-cache-inplace-publish`, `remote-gate-cache-name-only-validity`,
+`remote-gate-cache-lock-ignored`, `remote-gate-cache-absent-as-refresh` and
+`remote-gate-cache-identity-missing` are killed. Docs: `scripts/netcup/CHANGES.md`
+[Unreleased], `DESIGN-GUIDE.md` ("Why a cached tool copy is content-addressed"),
+`CONSUMERS.md` (a copyable call) and `runner/README.md`. The per-invocation
+staging NAME is deliberately not mutated into a shared name: the serialised
+refresh makes two stagers mutually exclusive inside one cache directory, so such
+a mutant would be equivalent on observable behaviour; the unique name is still
+required, and the left-over-staging check covers the property that matters (a
+crashed invocation's file is never published by another one).
 
 **Problem.** The helper runs the repository's
 `scripts/netcup/runner/remote-gate.py` from a cached copy of `origin/main`,

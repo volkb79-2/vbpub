@@ -19,6 +19,8 @@ files=(
   "$SCRIPT_DIR/../push-image.sh"
   "$SCRIPT_DIR/../skills-sync.sh"
   "$REPO_ROOT/scripts/netcup/runner/host-sat-queue.sh"
+  "$REPO_ROOT/scripts/netcup/runner/remote-gate-cache.sh"
+  "$REPO_ROOT/scripts/netcup/runner/tests/test_remote_gate_cache.sh"
   "$SCRIPT_DIR/test-ctl-status.sh"
   "$SCRIPT_DIR/test-job-check.sh"
   "$SCRIPT_DIR/test-wrappers.sh"
@@ -44,5 +46,6 @@ bash "$SCRIPT_DIR/test-hardening-tools.sh" || exit $?
 bash "$SCRIPT_DIR/test-ctx-hooks.sh" || exit $?
 bash "$SCRIPT_DIR/test-skills-sync.sh" || exit $?
 bash "$queue_test" || exit $?
+bash "$REPO_ROOT/scripts/netcup/runner/tests/test_remote_gate_cache.sh" || exit $?
 bash "$SCRIPT_DIR/test-mutations.sh" || exit $?
 echo 'PASS controller suite'

@@ -142,6 +142,33 @@ mutant("scripts/netcup/runner/host-sat-queue.sh", "queue-probe.sh",
 mutant("scripts/netcup/runner/host-sat-queue.sh", "queue-stop-alias.sh",
        'if ! controller_host_scalar "$host" guard >/dev/null; then',
        'if false; then', runner)
+# CTL-12: the remote-gate cache. The observable defects: a publish that rewrites
+# the cache file in place (a reader can see a half-written tool), a copy trusted
+# by name instead of verified by content, a refresh lock that is not held, an
+# ABSENCE reported as a refresh failure (the two refusals collapse again), and an
+# unrecorded identity (a reader cannot know which revision ran).
+#
+# The per-invocation staging NAME is deliberately not mutated into a shared name:
+# the serialised refresh lock already makes two stagers mutually exclusive inside
+# one cache dir, so such a mutant is equivalent on observable behaviour and could
+# not be killed honestly. The unique name is still required (a crashed invocation
+# must not leave a file another one publishes), which the leftover-staging case
+# checks.
+mutant("scripts/netcup/runner/remote-gate-cache.sh", "remote-gate-cache-inplace-publish.sh",
+       'if ! mv -f -T -- "$stage" "$published" 2>/dev/null; then',
+       'if ! cp -- "$stage" "$published" 2>/dev/null; then', runner)
+mutant("scripts/netcup/runner/remote-gate-cache.sh", "remote-gate-cache-name-only-validity.sh",
+       'published_is_valid() {',
+       'published_is_valid() {\n  [[ -s $1 ]] && return 0', runner)
+mutant("scripts/netcup/runner/remote-gate-cache.sh", "remote-gate-cache-lock-ignored.sh",
+       'if ! flock -w "$lock_wait" "$refresh_fd"; then',
+       'if false; then', runner)
+mutant("scripts/netcup/runner/remote-gate-cache.sh", "remote-gate-cache-absent-as-refresh.sh",
+       '  absent_refusal "$commit"',
+       '  refresh_refusal "cannot read blob $commit:$tool from $repo"', runner)
+mutant("scripts/netcup/runner/remote-gate-cache.sh", "remote-gate-cache-identity-missing.sh",
+       "  printf 'cache=%s\\nref=%s\\ncommit=%s\\nidentity=blob:%s\\n' \\\n    \"$published\" \"$ref\" \"$commit\" \"$blob\"",
+       "  printf 'cache=%s\\nref=%s\\ncommit=%s\\n' \\\n    \"$published\" \"$ref\" \"$commit\"", runner)
 mutant("scripts/netcup/runner/host-sat-queue.sh", "queue-start-config.sh",
        'host_text=$(queue_hosts) || exit 2', "host_text=$(queue_hosts) || host_text=''", runner)
 mutant("scripts/netcup/runner/host-sat-queue.sh", "queue-stop-config.sh",

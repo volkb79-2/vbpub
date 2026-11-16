@@ -993,6 +993,29 @@ not from the phrase "memory admission" appearing anywhere: a lane that was admit
 reason is not a memory refusal either. Neither refusal started the lane, so nothing was cleaned up and no container
 exists.
 
+## Cached tool copies and concurrent launches (CTL-12)
+
+`runner/remote-gate-cache.sh` is the repository-owned way for a controller helper to run this repository's
+`remote-gate.py` from a cached copy of a ref. It exists because the previous controller-local helper refreshed
+`<cache>.new` and `mv`-ed it into place: one shared staging name meant two launches in the same second collided (`mv:
+cannot move ... .new`), and that failure was reported as "cannot read the tool from origin/main" — a cache write
+failure published as a missing file, so the batch lost lanes and nobody could tell which revision ran.
+
+```bash
+# prints cache=, ref=, commit= and identity=blob:<id>, which a caller appends to its run record
+scripts/netcup/runner/remote-gate-cache.sh origin/main
+```
+
+Its four guarantees are the acceptance contract: a **per-invocation staging file** (`.remote-gate-<blob>.stage.<pid>.<rand>`,
+never a shared name), a **content-addressed publish** by one atomic `rename` to `remote-gate-<blob>.py` (an already
+published copy is verified by `git hash-object`, so a truncated or foreign file is replaced instead of trusted by
+name, and a reader never sees a half-written file), **one refresh at a time** (`flock` on `<cache-dir>/.refresh.lock`,
+released by the kernel if the process dies, bounded by `REMOTE_GATE_CACHE_LOCK_WAIT`, default 60 s), and **two
+refusals that cannot be confused**: `could not refresh the cache` (exit 3) versus `the tool is absent from ref <ref>`
+(exit 4), plus its own refusal for a ref that does not resolve (exit 5). Each names the ref, the tool path and the
+cache directory it tried. Two copies of different revisions stay addressable side by side, so a run record's
+`identity=` still points at the bytes that ran after a later refresh.
+
 ## Host-sat queue pause flags
 
 The host-satellite queue is checked in at `scripts/netcup/runner/host-sat-queue.sh`.

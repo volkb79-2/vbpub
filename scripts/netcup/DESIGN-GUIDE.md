@@ -751,6 +751,41 @@ commit tests remain in `debian-install-v2`'s explicit QEMU/TCG VM lane. The
 Netcup merge must not resurrect the historical privileged-container harness,
 because Docker shares the host kernel and cannot isolate host-global swap.
 
+## Why a cached tool copy is content-addressed (CTL-12)
+
+A controller helper that runs `runner/remote-gate.py` out of `origin/main` needs a local copy of the file, and
+`runner/remote-gate-cache.sh` is the repository-owned way to make one. The design choice is the interesting part, because
+the obvious implementation is the defective one.
+
+The old helper refreshed `<cache>.new` and `mv`-ed it into place. **The staging name was shared**, so two launches
+started in the same second wrote one file: one `mv` failed, and the failure was printed as "cannot read the tool from
+origin/main". That is the estate's "a check is only as strong as what it actually compares" defect on top of a race: a
+write failure and a genuinely missing file are two different facts, and the helper published the alarming one as the
+benign one. The workaround was a human timing rule nobody wrote down.
+
+Three properties follow from that, and each is a rejection of a plausible alternative:
+
+1. **Content-addressed publish, not a fixed cache path.** The published name is `remote-gate-<blob>.py`, the git blob id
+   of the file at the resolved commit. Two invocations racing on the same ref therefore publish identical bytes under
+   one name, so a rename onto an existing path is *idempotent* rather than destructive; and two different revisions stay
+   addressable side by side, which is what lets a run record's `identity=` still name the bytes that ran after a later
+   refresh overwrote nothing. A fixed `remote-gate-main.py` cannot do either: it makes concurrent publishers mutate one
+   reader's file, and it loses the identity the moment the ref moves.
+2. **Unique staging, plus verification of what is already there.** Every invocation stages into
+   `.remote-gate-<blob>.stage.<pid>.<rand>` and publishes with one `rename`. The serialised refresh already makes two
+   stagers mutually exclusive inside one cache directory, so the unique name is not the race fix — it is what makes a
+   crashed invocation's leftover invisible to every later one (nothing ever publishes another's staging file). And a
+   copy already present is not trusted *by name*: it is re-hashed with `git hash-object` and must equal the blob, so a
+   truncated file left by an interrupted write is replaced instead of being run.
+3. **Three refusals, never two.** `could not refresh the cache` (exit 3) is the write/rename/git-read failure, `the
+   tool is absent from ref <ref>` (exit 4) is decided only after the ref resolved and the path did not, and an
+   unresolvable ref gets its own (exit 5). Folding the first into the second — which the old message did — destroys the
+   only information a caller needs to decide between "retry" and "this ref has no tool".
+
+The serialised refresh (`flock` on `<cache-dir>/.refresh.lock`, released by the kernel on death, bounded by
+`REMOTE_GATE_CACHE_LOCK_WAIT`) is bounded for a reason: an unbounded wait turns one stuck holder into a stalled lane
+batch, and a holder that lost its lock without the kernel noticing does not exist.
+
 ## Controller-side host-satellite queue
 
 `scripts/netcup/runner/host-sat-queue.sh` schedules light Run-Gate lanes on
