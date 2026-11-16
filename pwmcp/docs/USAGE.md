@@ -7,27 +7,31 @@ must exactly match the Playwright version baked into the running `pwmcp` image.
 A version mismatch causes protocol errors at connect time.
 
 **Preferred GitHub-only client installation:** verify the release bundle using
-`pwmcp-latest/latest.json`, extract `bundle/client` and
-`bundle/pwmcp.contract.json`, then install the bundled source and exact
-contract version:
-
-The client depends on the **`cli-extended`** wheel (`cli-extended>=0.3.0`, the shared CLI
-layer under the `pwmcp` command). It is published to GitHub Releases only, never PyPI: the
-bare name is unclaimed there, so install it first from its release (URL and sha256 from
-`cli-extended-latest/latest.json`, verified like the bundle), then the client. pip finds the
-requirement already satisfied and never queries an index for it:
+`pwmcp-latest/latest.json`, extract `bundle/client`, `bundle/pwmcp.contract.json`
+and `bundle/wheels/`, then install the bundled source from its own wheelhouse
+with no index:
 
 ```bash
-# 1. the released cli-extended wheel, sha256-verified, installed without any index
-python -m pip install --no-index --no-deps ./cli_extended-<version>-py3-none-any.whl
-# 2. the bundled client and the exact Playwright version from the contract
+# 0. unpack the release bundle (it carries client/, the contract and wheels/)
+tar -xJf pwmcp-v<release>.tar.xz
+cd bundle
+# 1. the bundled client and every pinned dependency (cli-extended, Playwright,
+#    greenlet, pyee, typing_extensions) from the bundle's own wheelhouse: no
+#    index, no network, and a missing wheel fails by name instead of reaching PyPI
 PW_VER=$(python -c 'import json; print(json.load(open("pwmcp.contract.json"))["playwright"]["python"])')
-pip install "playwright==$PW_VER" ./client
+python -m pip install --no-index --find-links ./wheels \
+  "playwright==$PW_VER" "cli-extended>=0.3.0" ./client
 ```
 
-A wheelhouse works too: `pip install --no-index --find-links ./wheelhouse ./client` (the
-wheelhouse then holds the cli-extended wheel and Playwright's own dependencies). Without the
-library the client install fails with `cli-extended` named as the missing requirement.
+The bundle's `wheels/` is the complete closure for one interpreter and platform
+(the same wheels `get.py` and `pwmcp-client-install.py` install), so the same command
+works without any other download. Installing `cli-extended` by itself first, from its
+own `cli-extended-latest` release, also works; pip then finds that requirement
+already satisfied and never queries an index for it. Without either source the client
+install fails with `cli-extended` named as the missing requirement.
+
+A hand-built wheelhouse works too: `pip install --no-index --find-links ./wheelhouse ./client`
+(the wheelhouse then holds the cli-extended wheel and Playwright's own dependencies).
 
 Do **not** run `playwright install` — browser binaries belong in the pwmcp container,
 not in your project.

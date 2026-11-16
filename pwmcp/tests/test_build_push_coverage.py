@@ -46,7 +46,10 @@ def _config() -> build_push.BuilderConfig:
 
 def test_log_and_fail_flush_diagnostics(monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[dict[str, object]] = []
-    monkeypatch.setattr("builtins.print", lambda *args, **kwargs: calls.append(kwargs))
+    # Patch the MODULE's namespace, not process-wide `builtins.print`: `log`/`fail` resolve `print`
+    # through their own globals, so this observes exactly their calls and answers for nobody
+    # else in the process (PWMCP-60's rule, enforced by tests/test_storage_state_fakes.py).
+    monkeypatch.setattr(build_push, "print", lambda *args, **kwargs: calls.append(kwargs), raising=False)
     build_push.log("message")
     with pytest.raises(SystemExit):
         build_push.fail("failure")

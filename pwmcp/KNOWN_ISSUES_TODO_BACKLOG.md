@@ -5,7 +5,13 @@
 This file records consumer-facing product gaps for later triage. Normative
 behavior remains in the product specification and consumer documentation.
 
-Last updated: 2026-11-14 (PWMCP-63..69 implemented in their respective branches, unreleased; PWMCP-70 documents R9 equivalent survivors; PWMCP-71 tracks the release-scoped R2 recipe; PWMCP-62's separate R2 follow-up remains open).
+Last updated: 2026-11-16 (review round 1: PWMCP-71 path forms settled explicitly with real-shape fixtures,
+PWMCP-60 extended to the string-target and mock patch spellings, PWMCP-31/PWMCP-61 statuses corrected to PARTIAL. Earlier the same
+day: PWMCP-09 part 2 closed (Anubis deny-page signature), PWMCP-21 corpus `package --out` default,
+PWMCP-31 bundle client install recipe, PWMCP-58 Obscura re-evaluation triggers, PWMCP-59 r2 `max_mutants`,
+PWMCP-60 storage-state fake scoping, PWMCP-61 r2 swap ceiling and PWMCP-71 R2 candidate recipe; PWMCP-63..69
+implemented in their respective branches, unreleased; PWMCP-70 documents R9 equivalent survivors; PWMCP-62's
+separate R2 follow-up remains open).
 
 ## PWMCP-01 — Provide a rendered-page inspection command
 
@@ -237,8 +243,19 @@ No existing release works with `get.py`; only a release published after A does.
 
 ## PWMCP-09 — pages protected by Anubis answer "Access Denied" to the managed browser; a human sees them fine
 
-**Status: IN PROGRESS, FIXED-ON-BRANCH for the configurable user agent (option 3); acceptance part 2 (`blocked-by-site` detection) still OPEN.**
-**Decision (operator, 2026-10-27): option 3, with selectable presets**, as an explicit, recorded, opt-in
+**Status: FIXED 2026-11-16 (unreleased, branch `pi-pwmcp-burn-20261116`): acceptance part 2 closed. The `blocked-by-site`
+classification now has an Anubis row (`TEXT_SIGNATURES` `"protected by\s*anubis"` -> provider `Anubis`, kind
+`deny page`), a synthetic `client/tests/fixtures/blocked/anubis-access-denied.html` fixture modelled on the
+reported page (its `4d1dbaddfcc0f385` deny code is in the fixture body), README "Bot protection" "Anubis"
+paragraph and signature table, and the `pwmcp-fetch` skill's blocked section. `inspect` exits 4 with
+`blocked: true`, `provider: Anubis`, `kind: deny page` and the deny code visible in the content, so an agent
+cannot read the denial as page content; a bare `Access Denied` title stays unclassified on purpose (Akamai,
+nginx and any site's own 403 use it). Oracles: `test_anubis_deny_page_is_definitive_without_any_header_or_status`,
+`test_a_bare_access_denied_page_is_not_anubis`, and the `POSITIVE` fixture table. Hand mutant recorded in the
+package report. The user-agent half stays FIXED-ON-BRANCH and UNVERIFIED against a live Anubis deployment
+(no live probe was made here; the presets are an identity string, not a bypass).**
+
+**Original decision (operator, 2026-10-27): option 3, with selectable presets**, as an explicit, recorded, opt-in
 feature (off by default): config key `user_agent` / `PWMCP_USER_AGENT` with presets `edge-windows`,
 `chrome-windows`, `firefox-windows`, or a custom string; the UA string and its matching client-hint
 brands only (no navigator.webdriver, plugin or canvas changes); every `pwmcp inspect` result carries
@@ -564,14 +581,19 @@ rows and remaining survivors, then record the final verdict and any accepted sur
 
 ## PWMCP-21 — corpus tooling should consume the per-project VM layout
 
-**Status:** PARTLY FIXED 2026-11-04 (6be337905): `eval_glyphgrid.py` defaults derive from the script location and the docs name `pwmcp/artifacts/console-corpus` as the place to point `PWMCP_CONSOLE_CORPUS_DIR` at (unset still raises `CorpusMissing`). Still open: `console_corpus.py run --out`/verifier defaults (explicit paths) (filed 2026-11-03). Console recording moved to the VM tool: its `console record --out` and `--state-dir` both take explicit paths, and `--readonly-media` takes an explicit ISO path. The corpus side
-does not yet follow: capture output and the verifier still take explicit paths, and `tools/glyphgrid/eval_glyphgrid.py` hardcodes `DEFAULT_SERIES` under a home directory.
+**Status:** FIXED 2026-11-16 (unreleased, branch `pi-pwmcp-burn-20261116`): `console_corpus.py` derives `ARTIFACTS_DIR =
+<pwmcp>/artifacts/console-corpus` from its own file location, `package --out` and `verify [DIR]` take an explicit path with
+that directory as their DEFAULT (the pin's archive name is the default output file), and `package` creates the
+git-ignored folder when it is missing. The corpus SOURCE stays explicit: `locate` and both real-corpus tests still read
+only `PWMCP_CONSOLE_CORPUS_DIR`, and an unset variable still raises `CorpusMissing` (no fallback); an explicitly supplied
+path always wins. Docs: `docs/CONSUMERS.md#local-console-corpus` (pasteable default form plus the explicit form) and the
+`PWMCP-21` note in `docs/DESIGN-OCR-PHASE2-3.md`. Oracles:
+`test_package_defaults_to_the_artifacts_folder_derived_from_the_script` (loads the tool from a copied path and proves the
+constant follows the file, not a home directory), `test_verify_defaults_to_the_artifacts_folder_derived_from_the_script`,
+`test_package_creates_the_derived_artifacts_folder`, and the existing `test_eval_glyphgrid_defaults_derive_from_the_script_location`.
 
-**Proposed fix.** Keep captured frames in `pwmcp/artifacts/console-corpus/` (`frames/`, `manifest.jsonl`), derived from the script
-location, and make that the documented place to point `PWMCP_CONSOLE_CORPUS_DIR` at. Do not turn it into an implicit default:
-the corpus design (`docs/DESIGN-OCR-PHASE2-3.md`) deliberately has no fallback, so an unset variable must keep raising
-`CorpusMissing`; any change there is a design decision, not a path derivation. Replace the `eval_glyphgrid.py` home-directory default with a
-location derived from the same folder, and update the corpus README, `docs/CONSUMERS.md#local-console-corpus` and this tool's README.
+**Original (partly fixed 2026-11-04, 6be337905):** `eval_glyphgrid.py` defaults already derived from the script location and the docs
+named `pwmcp/artifacts/console-corpus`; still open then were `console_corpus.py`'s `package --out`/verifier defaults (explicit paths only).
 
 ## PWMCP-22 — unported groundwork from the 2026-10-27 canvas-capture session: xterm.js buffer reader, password-only login helper, intrinsic-bitmap canvas capture
 
@@ -650,13 +672,33 @@ fail-closed shim (mdt-cockpit MDT-056); on the host the shim may even remap `BUI
 
 ## PWMCP-31 — the released bundle's client cannot be installed by a consumer without a cli-extended source (dstdns test-runner rebuild fails)
 
-**Status:** OPEN. Filed 2026-11-04 from dstdns (P220 image build; dstdns@ed07ca19 base). Severity: P2 (blocks every consumer image rebuild that tracks `pwmcp-latest`).
+**Status: PARTIAL 2026-11-16 (unreleased, branch `pi-pwmcp-burn-20261116`) — the pwmcp DOCUMENTATION half and its
+oracle are done; the acceptance (a clean `python:3.14-slim` install of the released bundle) has NOT been run.** The
+bundle's recipe is now the offline wheelhouse one. The released bundle already carried the complete closure in `bundle/wheels/` (cli-extended, playwright,
+greenlet, pyee, typing_extensions and the `pwmcp_client` wheel; `[project.installer.wheels]` in `cmru.toml` stages it, and
+`scripts/build-bundle.py` refuses a wheel outside that list), but NO documented command used it: README "Client install and
+upgrade" and `docs/USAGE.md` named only a separate cli-extended download or a hand-built wheelhouse, and the item's own
+sentence "the bundle ships no wheelhouse" was wrong about the files while right about the recipe. Both surfaces now document
+ONE pasteable command — `pip install --no-index --find-links ./wheels "cli-extended>=0.3.0" "playwright==$PW_VER" ./client`
+on the unpacked bundle — and `tests/test_client_bundle_install.py` keeps it honest: it compares the client's declared runtime
+dependencies with the wheels `cmru.toml` stages (so the installed wheelhouse cannot leave a dependency unresolved), pins that
+the wheel is built from the same `client/` tree, asserts both documents carry that exact recipe, and FAILS any remaining
+`pip install ... ./client` line that does not set `--no-index` (the pre-fix instruction, which reaches a public index for a
+GitHub-only distribution).
+
+Not done here (other halves): the dstdns consumer script `tools/test-runner/install-pwmcp-client.py` must pass the same
+find-links; that change belongs to dstdns (already reported in its P220 report) and no other project's file was touched. The
+"clean `python:3.14-slim` image + release gate" acceptance needs a network-enabled image build, which this offline package
+cannot run; the offline oracle above stands in for it and the live check remains for the first post-fix release.
+
+**Original filing 2026-11-04 from dstdns (P220 image build; dstdns@ed07ca19 base). Severity: P2 (blocks every consumer image
+rebuild that tracks `pwmcp-latest`).**
 
 **Observed.** dstdns `tools/test-runner/Dockerfile` installs the client with `tools/test-runner/install-pwmcp-client.py`, which runs `pip install playwright==<contract pin> <bundle>/client`. With `pwmcp-v1.64.0-r4` (the current `pwmcp-latest`) that fails: `ERROR: Could not find a version that satisfies the requirement cli-extended>=0.3.0 (from pwmcp-client) (from versions: none)`. `cli-extended` is published on GitHub Releases only (`cli-extended-latest` -> `cli_extended-0.5.1-py3-none-any.whl`), the bundle ships no wheelhouse, and `bundle/client/requirements-runtime.txt` only repeats the floor. The previous release (1.63.0-r2, still inside dstdns's running runner) had no such dependency, so the break appeared with PWMCP-02 and is invisible until a consumer image is rebuilt.
 
 **Fix direction.** Make the consumer install recipe part of the bundle: either ship the cli-extended wheel (and its checksum) inside the bundle and have the documented install command use `--find-links <bundle>/wheels`, or document the exact `--find-links`/release URL a consumer must add, with a consumer-side test in the release gate that installs the bundle into a clean image with no index access beyond PyPI. The dstdns side (`install-pwmcp-client.py` passes no find-links) is the consumer half and is reported separately in the dstdns P220 report.
 
-**Acceptance.** A clean `python:3.14-slim` image can install the released bundle's client with the command the bundle README documents, and the release gate fails when it cannot.
+**Acceptance (as filed, kept for the record).** A clean `python:3.14-slim` image can install the released bundle's client with the command the bundle README documents, and the release gate fails when it cannot.
 
 ## PWMCP-32 — `inspect` returned a Cloudflare challenge page as if it were the target
 
@@ -869,7 +911,19 @@ covered by a CLI review case.
 
 ## PWMCP-58 — record Obscura re-evaluation triggers and the anti-detection non-goal
 
-**Status:** OPEN, watch item only; do not adopt or spike without evidence. Severity: P3.
+**Status:** FIXED 2026-11-16 (unreleased, branch `pi-pwmcp-burn-20261116`). DONE as filed: the
+`docs/DESIGN-GUIDE.md` "Competitors and alternatives" section now carries a dated **Obscura
+(checked 2026-11-09)** entry with the five re-evaluation triggers as a closed set (with the
+explicit "even then, never replace the official Playwright image / non-stealth profile only"
+qualification), the anti-detection non-goal spelled out term by term, and a pointer to the
+comparison. `docs/SECURITY.md` gained a "Bot-protection and anti-detection stance" section that
+states the boundary as a product decision rather than a missing feature. The acceptance idea is
+implemented as `tests/test_competitor_decision.py`: it extracts that dated entry, requires every
+trigger and every non-goal term, requires the same five triggers in
+`docs/COMPARISON-obscura-2026-11-09.md`, requires the stance in README, SECURITY and the packaged
+`pwmcp-fetch` skill, and requires the README link to the comparison. Popularity, a lower claimed
+memory footprint or a lighter archive are asserted to be NOT sufficient, so a future proposal
+cannot reopen adoption on one of them. Nothing was adopted and no engine code was touched.
 
 **Problem.** The 2026-11-09 comparison recommends rejecting Obscura as a backend now and borrowing a few operational ideas. Without an explicit watch entry, a later "lightweight browser" request could reopen adoption without rechecking protocol fit, maintenance, supply-chain, crash, and policy risks.
 
@@ -885,26 +939,112 @@ covered by a CLI review case.
 
 ## PWMCP-60 — tests must scope process-wide `os.*` syscall fakes
 
-**Status:** OPEN (filed 2026-11-12); the observed PWMCP hazard is fixed in the
-pytest 9.2 audit branch. Pytest 9.2 calls `os.fstat` during capture and
-teardown. The storage-state test now scopes `fdopen`, `open`, and its
-descriptor spy to the JSON file under test and delegates every unrelated call
-to the saved real function.
+**Status:** FIXED 2026-11-16 (unreleased, branch `pi-pwmcp-burn-20261116`); filed
+2026-11-12. The observed PWMCP hazard was fixed in the pytest 9.2 audit branch;
+this item makes the contract MECHANICAL so it cannot regress silently.
 
-**Contract.** A process-wide `os.*` patch must identify the fd/path under test
-and delegate every other call to the real function. It must preserve the
-original read-failure, checked-descriptor, and no-secret-in-error oracles.
-Future `builtins.open` or `io.open` patches follow the same rule.
+**Fix.** `tests/test_storage_state_fakes.py` walks the syntax tree of every module in
+`tests/` and `client/tests/` and refuses EVERY spelling of a process-wide
+`os|builtins|io` patch that (a) does not first bind the real function, (b) installs a
+replacement that never calls that saved real, or (c) receives arguments and never examines
+them (so it cannot tell the fd/path under test from pytest's own capture/teardown calls).
+Direct aliases of the real function are allowed. The spellings covered are
+`setattr(<module>, "<symbol>", ...)` (`monkeypatch.setattr`), its string-addressed forms
+`setattr("os", "fstat", ...)` and `setattr("os.fstat", ...)`, and the mock forms
+`mock.patch("os.fstat")` / `.patch.object(os, "fstat")` — where an auto-generated mock is
+refused unless `wraps=<the real>` names the function it delegates to. A module outside
+`PROCESS_WIDE`, or a nested path such as `os.path.join`, is deliberately outside the
+vocabulary (the reason is stated at `_patch_target`). The same module pins the
+storage-state fakes by name (the saved `real_fdopen`/`real_open`/`real_geteuid` and the
+`opened != target` / `opened_path == target` comparisons), so PWMCP's original fakes
+cannot drift back.
 
-**Close when.** No non-delegating exact-symbol test patch remains in PWMCP's
-storage-state tests and the registered unit lane passes on a clean final
-commit.
+**Contract.** A process-wide `os.*` patch must identify the fd/path under test and delegate
+every other call to the real function. It must preserve the original read-failure,
+checked-descriptor and no-secret-in-error oracles. Future `builtins.open` or `io.open`
+patches follow the same rule.
+
+**Evidence.** The AST oracle was exercised with three hand mutants made from the original
+file: removing `real_open = os.open`, deleting the `if Path(target) != path:
+return real_open(...)` delegation, and deleting the `if opened_path == target` comparison.
+Each trips the oracle with a message naming the file, line and fake. The one non-delegating
+`geteuid` fake (`lambda: other`, which invented an uid instead of deriving from the real
+function) now derives from `real_geteuid()`; no behavioural oracle changed. Review round 1
+extended the oracle to the string-target and mock spellings and killed six more hand
+mutants with it: dropping the string `setattr` branch, dropping the `.patch` branch,
+ignoring `wraps=`, dropping the `.patch.object` branch, not resolving a string module owner,
+and accepting a nested `os.path` target. The extension also surfaced one real
+non-delegating patch in `tests/test_build_push_coverage.py`
+(`monkeypatch.setattr("builtins.print", ...)`), which now patches the module's own
+`build_push` namespace instead of process-wide `builtins`.
+
+**Section 3 (the string-target form).** The first version read only
+`setattr(<module>, "<symbol>", <replacement>)`, so `monkeypatch.setattr("os", "fstat", fake)`,
+`monkeypatch.setattr("os.fstat", fake)` and `mock.patch("os.fstat")` were a way AROUND the
+rule rather than a variant of it; the oracle now covers them and refuses an auto-generated
+mock unless `wraps=` names the real function.
+
+**Close when.** No non-delegating exact-symbol test patch remains in PWMCP's storage-state
+tests and the registered unit lane passes on a clean final commit. (The lane run on the
+final batch head is recorded in the run report; this entry states the contract, the lane
+proves it.)
 
 ## PWMCP-59 — `r2` has `max_mutants = 1000` while the latest planned inventory is 1293
 
-**Status:** OPEN (filed 2026-11-11; updated 2026-11-14); priority major (the exact release tag cannot complete an unmodified R2 campaign); source: host-campaign records 2026-11-11 and 2026-11-14.
+**Status:** FIXED 2026-11-16 (unreleased, branch `pi-pwmcp-burn-20261116`); priority
+major (the exact release tag cannot complete an unmodified R2 campaign); source:
+host-campaign records 2026-11-11 and 2026-11-14.
 
-**Problem.** `pwmcp/assay.toml` declares `max_mutants = 1000`, below both the 1165 candidates measured for `pwmcp-v1.64.1-r7` and the 1293-candidate plan for `pwmcp-v1.64.1-r9`. Assay refuses over-cap discovery before executing a partial sample, so an unmodified R2 run against the latest inventory would report `BUDGET_EXCEEDED/MUTANT_LIMIT_EXCEEDED` with exit 4 after paying for the baseline. The cap therefore makes the release lane unusable rather than bounding an unexpectedly large run, and there is no documented rule for choosing the next cap from candidate inventory and expected runtime.
+**Fix.** `pwmcp/assay.toml` now declares `max_mutants = 1500` with the cap-choice rule
+beside it, `docs/CONSUMERS.md` "Release gates" publishes that rule (refresh the
+inventory, `ceil(largest recorded candidate inventory * 1.10)`, review it together with
+`budget`/`jobs`/`budget_per_candidate`), and `tests/fixtures/r2-inventory/` holds the
+RECORDS the rule is applied to: the 2026-11-11 r7 measurement (1165), the 2026-11-14
+r9 plan (1293) and a 2026-11-16 measurement on this batch's base commit (1293 candidates,
+taken with the cap raised to 1600 — see the preflight note below for why a plan at the
+shipped cap cannot measure an inventory). Required by the rule: `ceil(1293 * 1.10) = 1423`, so 1500
+clears it with room for ordinary growth. `tests/test_r2_lane_contract.py` fails a cap
+at or below any recorded inventory, a cap below the 10% headroom, and a cap absurdly
+far above the largest inventory (a ceiling that never binds is not a bound); it also
+requires the published rule to name the refusal it prevents
+(`BUDGET_EXCEEDED`/`MUTANT_LIMIT_EXCEEDED`). Verified by hand mutants: 1000 and 1422
+fail the oracle, 1423 and 1500 pass, 1000000 fails the upper bound.
+
+**Preflight (and a measurement trap worth recording).** A plan run at a lane's own cap
+does not measure the inventory: Assay stops discovery at `max_mutants` and reports
+`max_mutants + 1` candidates. The first reading taken here — 1001 at the old cap of 1000 —
+was that sentinel, not this commit's inventory; a `status: ok` beside `1001`/`1000` is the
+cap talking. Measuring with the cap raised (1600, in a scratch worktree, since a plan
+refuses an uncommitted lane file) gives **1293 candidates** at commit `ce6b8eeb8`, the same
+number the r9 plan reports, and 1293 again on the batch head with the shipped cap of 1500
+(there the plan is complete, not truncated). Recorded as
+`tests/fixtures/r2-inventory/pb-r9-target-measured.json` with
+`measured_with_max_mutants: 1600`; the oracle rejects any record whose cap equals or sits
+below its own count, and `docs/CONSUMERS.md` tells a reader to measure above the expected
+count. `ceil(1293 * 1.10) = 1423 <= 1500`, so the shipped cap clears the rule. The tool
+side of the trap is Assay's own filed item **B526** (bounded discovery retains at most
+`max_mutants + 1` descriptors and reports that count as the total); PWMCP records it here
+rather than re-filing it, and the fixture README plus the consumer rule are how a PWMCP
+operator avoids it today.
+
+The registered lane's `run-gate r2 --dry-run` rehearsal was attempted in this cockpit and
+stopped at the HOST's cgprofile preflight (`CGPROFILE_OBSERVER_SOCKET` unset in this
+session, and `/run/cgprofile/observer` is not the root:root group-searchable directory
+run-gate requires for a `resource_observer = "cgprofile"` lane) — an environment fact of
+this devcontainer, not a lane or cap defect. The campaign remains a host job (PWMCP-20).
+
+**Still outstanding (not this item's):** PWMCP-20 owns the campaign itself, and the full
+1000+-candidate R2 run is a host campaign (4 h budget) that is not started in this
+offline package.
+
+**Problem.** `pwmcp/assay.toml` declared `max_mutants = 1000`, below both the 1165
+candidates measured for `pwmcp-v1.64.1-r7` and the 1293-candidate plan for
+`pwmcp-v1.64.1-r9`. Assay refuses over-cap discovery before executing a partial sample,
+so an unmodified R2 run against the latest inventory would report
+`BUDGET_EXCEEDED/MUTANT_LIMIT_EXCEEDED` with exit 4 after paying for the baseline. The
+cap therefore made the release lane unusable rather than bounding an unexpectedly large
+run, and there was no documented rule for choosing the next cap from candidate
+inventory and expected runtime.
 
 **Evidence.** The 2026-11-11 host-campaign record tested the r7 tag with `max_mutants = 1000`, 1165 selected candidates, `over_candidate_cap`, and `BUDGET_EXCEEDED/MUTANT_LIMIT_EXCEEDED` after the 400-second baseline. The 2026-11-14 R9 plan reports 1293 total candidates; the main configuration is still `max_mutants = 1000`. The R9 campaign used a temporary campaign-checkout cap of 1400 to run its explicitly selected changed-line set; that does not change the main configuration or make a full-target campaign fit on main. This is distinct from PWMCP-20, which tracks completion of the waived campaign; this item is the configuration defect that prevents it from starting.
 
@@ -918,8 +1058,25 @@ commit.
 
 ## PWMCP-61 — the R2 lane lets memory-runaway mutants swap instead of dying
 
-**Status:** OPEN (filed 2026-11-12); priority should-fix; resource-only change
-under Assay B529. Source: 2026-11-12 host R2 restart record.
+**Status: PARTIAL 2026-11-16 (unreleased, branch `pi-pwmcp-burn-20261116`) — the lane CONFIGURATION is done; the
+campaign that closes it (the five runaway candidates re-executed under the swap ceiling) is PENDING and has not been
+started, so the observed behaviour change is not yet measured.** Filed 2026-11-12; priority should-fix; resource-only change under Assay B529.
+Source: 2026-11-12 host R2 restart record.
+
+**Fix.** `pwmcp/run-gate.toml` `[lanes.r2.resources]` now declares
+`memory_swap = "3g"` beside `memory = "3g"`, with the reason in a comment: Docker's
+`--memory-swap` is the COMBINED memory-plus-swap limit and its default leaves swap
+UNBOUNDED, so equal values keep the combined ceiling at the same 3 GiB while a runaway
+mutant is OOM-killed instead of swapping on the host. A larger swap value (16g) would
+re-open exactly the behaviour this item reported; a smaller one is refused by Docker.
+`tests/test_r2_resources.py` parses both keys and requires them to be equal, pins that
+the observer-backed lane keeps `pids` and `memory` (RG-20 counters need them), and pins
+the resource-only identity: the mutation judge's `operators`, `fail_under`,
+`require_branch` and coverage artifact are unchanged, no resource key leaks into the
+judge block, and therefore B529 record reuse for earlier killed/survived records still
+applies. `docs/CONSUMERS.md` "Release gates" documents the ceiling. Hand mutants: no
+`memory_swap`, `memory_swap = "16g"`, `memory_swap = "20g"`, no `memory`, and no `pids`
+each trip the oracle.
 
 **Problem.** `pwmcp/run-gate.toml:30-34` declares a 3 GiB lane memory limit but
 no `memory_swap`, so Docker leaves swap unbounded for the lane. Re-executing
@@ -1060,12 +1217,63 @@ No helper-internal assertion was added for these cases because their claimed equ
 
 ## PWMCP-71 — document the release-scoped R2 candidate recipe
 
-**Status:** OPEN (filed 2026-11-14); priority P2 (campaign reproducibility).
+**Status:** FIXED 2026-11-16 (unreleased, branch `pi-pwmcp-burn-20261116`); filed
+2026-11-14; priority P2 (campaign reproducibility).
 
-The registered `r2` lane plans the whole target. A release-to-release campaign can instead select candidates on changed source lines, but the recipe must preserve the exact release diff and candidate IDs and must not be described as a whole-target R2 PASS.
+**Fix.** The recipe is documented three times for three jobs, each linking the others:
+README "Testing" (one paragraph, with the PARTIAL warning), `docs/CONSUMERS.md`
+"Release-scoped R2 campaigns (changed-line candidate selection)" (the pasteable steps) and
+`docs/DESIGN-GUIDE.md` "Release-scoped R2 campaigns" (why a subset is `selective`/PARTIAL
+and why the step is a tool). The documented step 3 is
+`tools/r2/select_changed_candidates.py`: it turns `git diff -U0` hunk headers into
+NEW-file line ranges (bare `+c` = one line, `+c,0` = none, `a/`/`b/` prefixes stripped),
+selects the `assay plan r2 --json` candidates whose `path`/`lineno` fall inside them,
+writes one id per line to `.run-gate/only-candidates-<scope>.txt`, prints
+`selected N of M candidates`, and REFUSES to write an empty list (a campaign that starts
+nothing is not a campaign). `tests/test_r2_candidate_recipe.py` runs the tool on synthetic
+plan/diff fixtures, checks the hunk-header edge cases, the empty-selection refusal, the
+malformed-plan refusal, that the documented flags exist in the installed `run-gate` and
+`assay` (`--only-candidates`, `--json`, `--file`), that the three documents carry the
+recipe and the PARTIAL/`selective` language, and that every cross-document anchor in
+README/CONSUMERS/DESIGN-GUIDE resolves. Hand mutants of the selection code (no `b/`
+prefix strip, a `+c,0` hunk treated as one line, off-by-one on the range end) are each
+killed; the empty-selection guard is covered by its own CLI test.
+
+**Path forms (review round 1).** A review claimed the plan and the documented diff never
+match, because `[lanes.r2.judge] source_roots = ["."]` would make the plan carry
+project-relative `client/src/...` paths. MEASURED, that is the opposite of the truth: a
+real `assay plan r2 --json` from `pwmcp/` carries REPOSITORY-ROOT-relative paths
+(`pwmcp/client/src/...`, 1293 of 1293 on this head), because assay anchors on the git
+repository top; and the documented `git diff -U0 <base>..<release> -- <source-path>` from
+the project directory produces that same form (probe: 51 of 1293 selected). The ORTHOGONAL
+hazard the review pointed at is real, though: `git diff --relative` emits `client/src/...`,
+which the as-given comparison cannot match, and the pre-fix tool then exited 1 with a
+message whose only honest reading was "the release touched no mutated line". The tool now
+settles the path form EXPLICITLY instead of heuristically: `--project-prefix P` states the
+fact (canonicalised to one trailing slash, and idempotent when the diff already carries it);
+the as-given repository-root form is tried first; a project prefix is DERIVED only when the
+plan makes it unambiguous (every diff path suffix-matches exactly one plan path and all such
+matches share one prefix) and is then PRINTED on stderr, so a wrong derivation is visible
+in the campaign record; otherwise the tool refuses and lists every form it tried plus the two
+remedies. An ambiguous match (two plan paths ending with the same diff path) is a refusal, not
+a guess. `tests/fixtures/r2-plan/` now carries a VERBATIM 261-candidate slice of the real
+plan (repository-root paths, `_provenance` recording the command, cwd, commit and the full
+1293 count) and two real diffs of one commit pair in both forms; the tests require both to
+select the SAME 51 candidates, the derivation to be disclosed and absent when the form is
+as-given, a stated prefix to be honoured/idempotent/normalised, and the refusal to list the
+forms and remedies. Hand mutants killed: derivation disabled, ambiguity ignored, prefix not
+idempotent, refusal not listing forms, disclosure dropped, `--project-prefix` ignored, an
+unjudged diff path forcing a prefix, prefix not normalised. README, `docs/CONSUMERS.md`,
+`docs/DESIGN-GUIDE.md` and `tools/r2/README.md` all state the path-form rule.
+
+The registered-lane obligations are stated rather than changed: `run-gate` keeps its
+`--resume --progress .assay/progress-r2.jsonl` handling, and the selection file must stay
+inside the checkout under the git-ignored `.run-gate/`.
+
+**Original filing.** The registered `r2` lane plans the whole target. A release-to-release campaign can instead select candidates on changed source lines, but the recipe must preserve the exact release diff and candidate IDs and must not be described as a whole-target R2 PASS.
 
 **Recipe to document.** On the release checkout, run `assay plan r2 --json`; obtain changed source line ranges from `git diff -U0 <base>..<release> -- <source-path>`; select the plan's candidate IDs whose source locations fall within those changed ranges; write one ID per line to `<checkout>/.run-gate/only-candidates-<scope>.txt`; and pass that file through the supported campaign invocation's `--only-candidates` option. The file stays inside the checkout so the campaign can read it. Registered Assay lanes must retain Run-Gate's `--resume --progress .assay/progress-r2.jsonl` handling. Record the selection file, diff base, and candidate counts with the campaign evidence. A selected subset is partial by construction and leaves unselected candidates unevaluated. `assay plan --file` accepts an Assay TOML config, not a source-file filter.
 
 **Where.** PWMCP's R2 lane-authoring documentation and the operator campaign recipe.
 
-**Close when.** A reader can reproduce the changed-line candidate list from the release diff and plan, run it through the supported campaign workflow, and distinguish its partial result from whole-target R2 completion.
+**Close when.** A reader can reproduce the changed-line candidate list from the release diff and plan, run it through the supported campaign workflow, and distinguish its partial result from whole-target R2 completion. — The reproduction is `tools/r2/select_changed_candidates.py` (tested above), the campaign workflow is `run-gate r2 --only-candidates FILE` (its `--only-candidates FILE` flag is asserted present in the shipped CLI by the same test module), and the distinction is stated in all three documents as `selective`/PARTIAL. A host campaign is not part of this documentation item.

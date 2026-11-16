@@ -41,6 +41,9 @@ TITLE_SIGNATURES: tuple[tuple[str, str, str], ...] = (
     ("PerimeterX", "block page", r"^\s*access to this page has been denied"),
     ("Akamai", "bot check", r"^\s*robot or human\??\s*$"),
 )
+# A bare "Access Denied" title is deliberately NOT a row: Akamai, nginx and the proxy in front of
+# any site answer a 403 that way. Anubis brands its own page instead; see TEXT_SIGNATURES
+# (PWMCP-09).
 
 # (provider, kind, regex over the body text) - definitive on a short page.
 TEXT_SIGNATURES: tuple[tuple[str, str, str], ...] = (
@@ -51,6 +54,9 @@ TEXT_SIGNATURES: tuple[tuple[str, str, str], ...] = (
     ("Cloudflare", "block page", r"ddos protection by cloudflare"),
     ("Cloudflare", "block page", r"sorry, you have been blocked"),
     ("Akamai", "block page", r"errors\.edgesuite\.net"),
+    # Anubis ("Oh noes! Access Denied: error code ..." / "Protected by Anubis from Techaro") denies
+    # the managed browser's HeadlessChrome identity while a human reads the page fine (PWMCP-09).
+    ("Anubis", "deny page", r"protected by\s*anubis"),
     ("PerimeterX", "bot check", r"press\s*(?:&|and)\s*hold to confirm you are (?:a )?human"),
     ("Imperva", "interstitial", r"incapsula incident id"),
     ("Generic CAPTCHA", "bot check", r"unusual traffic from your computer network"),

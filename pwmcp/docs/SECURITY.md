@@ -252,3 +252,20 @@ from a sibling container fails to connect (`curl: (7) Failed to connect`),
 while the MCP ports and the admin port on the same network succeed. CDP
 binds `127.0.0.1` only inside the container; the compose template does not
 publish it and does not route it through Traefik.
+
+## Bot-protection and anti-detection stance
+
+PWMCP reports recognised bot-protection pages (Cloudflare, Anubis, Akamai and
+similar interstitials) and exits 4; it does not try to get past them. There is
+no challenge solver, no CAPTCHA-solving service, no stealth or anti-detection
+patch, no fingerprint randomisation or TLS impersonation, no `navigator.webdriver`/`isTrusted`
+masking, no profile or proxy rotation for evasion, and no dependency that does
+any of that. The overridable user agent is an explicit, opt-in identity string
+only and is recorded in every result that uses it; it does not solve interactive
+challenges. The human-in-the-loop route is a session a person exported from their
+own browser, scoped to one host and never logged.
+
+This is a product boundary, not a missing feature: see the README's "Bot
+protection" section, the [design rationale](DESIGN-GUIDE.md#competitors-and-alternatives)
+for why the Obscura comparison's evasion features are refused, and
+[the comparison](COMPARISON-obscura-2026-11-09.md).

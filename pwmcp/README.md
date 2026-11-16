@@ -337,6 +337,25 @@ Upgrade = run it again with the new release (releases live side by side under
 `~/.local/share/pwmcp-client/releases/`; `current` and the launcher switch atomically), then
 `pwmcp skills install`. `--bundle FILE` installs from a local bundle (offline).
 
+**Install from the bundle with plain pip, no index (PWMCP-31).** The release bundle carries the
+complete wheel closure for its interpreter and platform in `bundle/wheels/`, so a consumer does
+not need the cli-extended release URL, a PyPI index, or any other download:
+
+```bash
+rel=1.64.1-r5
+curl -fsSL -o pwmcp.tar.xz "https://github.com/volkb79-2/vbpub/releases/download/pwmcp-v$rel/pwmcp-v$rel.tar.xz"
+tar -xJf pwmcp.tar.xz && cd bundle
+PW_VER=$(python3 -c 'import json; print(json.load(open("pwmcp.contract.json"))["playwright"]["python"])')
+python3 -m pip install --no-index --find-links ./wheels \
+  "cli-extended>=0.3.0" "playwright==$PW_VER" ./client
+```
+
+Both surfaces must be named: pip builds `./client` from source, so build requirements
+(`setuptools`) must already be installed (use a venv), and the two dependencies are pinned from
+the bundle's own wheelhouse. `--no-index` keeps a typo or an unavailable wheel a loud failure
+naming the requirement instead of an index lookup that may resolve an estate-internal name from
+a public index. The same wheels are those `pwmcp-client-install.py` and `get.py` install.
+
 Release assets per `pwmcp-v<release>` (all published with every release): `pwmcp-v<release>.tar.xz`
 (+ `.sha256`; the stack bundle, which also contains `wheels/`), `get.py` (+ `.sha256`; full stack installer),
 `pwmcp-client-install.py` (+ `.sha256`), `pwmcp_client-<version>-py3-none-any.whl` (+ `.sha256`; the client
@@ -638,7 +657,7 @@ embeds against a small signature table (`client/src/pwmcp_client/blocked.py`). O
 
 | Kind | Signals | Counts as blocked |
 |---|---|---|
-| Definitive | `cf-mitigated: challenge`; a challenge title (`Just a moment...`, `Attention Required! \| Cloudflare`, `Pardon Our Interruption`, ...); challenge text (`Performing security verification`, `Checking your browser before accessing`, `Sorry, you have been blocked`, `DDoS protection by Cloudflare`, `Press & Hold to confirm you are human`, `verify you are human`, ...) on a page of at most 6000 characters of text | on its own |
+| Definitive | `cf-mitigated: challenge`; a challenge title (`Just a moment...`, `Attention Required! \| Cloudflare`, `Pardon Our Interruption`, ...); challenge text (`Performing security verification`, `Checking your browser before accessing`, `Sorry, you have been blocked`, `DDoS protection by Cloudflare`, `Press & Hold to confirm you are human`, `Protected by Anubis`, `verify you are human`, ...) on a page of at most 6000 characters of text | on its own |
 | Hint | provider headers (`server: cloudflare`, `cf-ray`, `server: AkamaiGHost`, `x-datadome`, `x-iinfo`, ...) | only with HTTP 403, 429 or 503 |
 | Hint | a captcha/challenge frame (`challenges.cloudflare.com`, `captcha-delivery.com`, `captcha.px-cdn.net`, `arkoselabs.com`, reCAPTCHA, hCaptcha) | with HTTP 403/429/503, or on a near-empty page (600 characters or less) |
 
@@ -646,6 +665,17 @@ A plain 403 with no provider marker is not called bot protection (the existing
 `page diagnostics` line still reports the status), and neither is a normal login page that
 embeds a reCAPTCHA or an article that quotes "Just a moment...". Providers are detected
 only as DETECTION signatures: nothing here solves, bypasses or hides from them.
+
+**Anubis (PWMCP-09).** Anubis answers an automated client with either a proof-of-work
+challenge or, when a deny rule matches, a page saying `Oh noes! Access Denied: error code
+... Protected by Anubis from Techaro` (a human reads the same URL fine). That wording is a
+definitive signature: `inspect` reports `Anubis deny page` and exits 4, so the deny code
+travels with the verdict instead of being read as content. A bare `Access Denied` title is
+deliberately NOT a signature — Akamai, nginx and any site's own 403 say that too — and the
+tables do not classify the Anubis challenge page any differently from the other
+interstitials above. Whether any `--user-agent` preset gets past an Anubis deny rule stays
+UNVERIFIED; the user agent is an identity string, not a bypass (README "Overridable User
+Agent").
 
 **Limits.** Detection is a heuristic. A page that is not recognised is "not detected as
 blocked", not proof that it is the complete target. `inspect` reports the state when it
@@ -1033,6 +1063,9 @@ ciu-build -d . push-images
 - [docs/CONSUMERS.md](docs/CONSUMERS.md) — installation, updates, CLI inspection, MCP, and release gates
 - [docs/COMPARISON-obscura-2026-11-09.md](docs/COMPARISON-obscura-2026-11-09.md) — the build-versus-no-fork comparison and decision
 - [docs/RELEASE-PLAN-R4-2026-11-02.md](docs/RELEASE-PLAN-R4-2026-11-02.md) — the retained R4 release plan
+- [R2 campaign tooling](tools/r2/README.md) — the changed-line candidate selector for a
+  release-scoped mutation campaign (PARTIAL by construction); recipe in
+  [docs/CONSUMERS.md](docs/CONSUMERS.md#release-scoped-r2-campaigns-changed-line-candidate-selection)
 - [GlyphGrid development tools](tools/glyphgrid/README.md) — local font atlases,
   reference-checked reads, and deterministic synthetic images; offline tooling
   only, with the service engine still HTTP 501. See the [design rationale](docs/DESIGN-GUIDE.md#glyphgrid-development-tooling)
@@ -1047,7 +1080,15 @@ See [`../run-gate-project/CONSUMERS.md`](../run-gate-project/CONSUMERS.md).
 The release gate is `run-gate r1`. It runs the resolver, image-builder
 contract, and client tests through source-backed Assay in `tester-unified`,
 with branch coverage recorded in `coverage.json`. The slower mutation lane is
-`run-gate r2`; it is resumable and may be run separately before a release.
+`run-gate r2`; it is resumable and may be run separately before a release. A
+release-to-release campaign can scope R2 to the lines that release changed
+(`run-gate r2 --only-candidates FILE`, produced by
+`tools/r2/select_changed_candidates.py`) — that result is PARTIAL by construction, never a
+whole-target R2 PASS. The plan's candidate paths are repository-root-relative, so the recipe
+says which `git diff` form matches (`--project-prefix` for a `--relative` diff); the recipe
+is in
+[docs/CONSUMERS.md](docs/CONSUMERS.md#release-scoped-r2-campaigns-changed-line-candidate-selection)
+and the reasoning in the [design guide](docs/DESIGN-GUIDE.md#release-scoped-r2-campaigns).
 PWMCP has no HTTP/OpenAPI contract, so Hypothesis is used for the pure upstream
 version-intersection invariant and Schemathesis is not applicable.
 
@@ -1059,7 +1100,9 @@ never published. Set `PWMCP_CONSOLE_CORPUS_DIR` to an absolute path containing
 `frames/` to let the two full-corpus checks verify each frame and the pinned,
 deterministic tar digest. With no path, those checks skip with an explicit
 reason; `PWMCP_REQUIRE_CONSOLE_CORPUS=1` makes a missing corpus fail during a
-focused run. The registered gate lanes do not include or require the full
+focused run. `tools/corpus/console_corpus.py package` and `verify` default to
+`artifacts/console-corpus` (derived from the script's location) and accept an
+explicit path instead. The registered gate lanes do not include or require the full
 capture. See the [design rationale](docs/DESIGN-GUIDE.md#local-console-corpus)
 and [local verification example](docs/CONSUMERS.md#local-console-corpus).
 
