@@ -56,7 +56,7 @@ What it writes, and why:
 | --- | --- | --- |
 | `<gates slice>.d/20-memory-policy.conf` (the slice name is `GATES_SLICE`, default `dev-gates.slice`) | `MemoryHigh=infinity`, `MemoryMax` = nominal `MemTotal` − 1536 MiB, `MemorySwapMax` = nominal `SwapTotal` − 8192 MiB | no throttling mark (a `MemoryHigh` throttles the tier before the control plane is ever at risk); the RAM cap keeps the control plane's measured floor (anon ≈ 0.1 GiB + hot file ≈ 0.5 + kernel ≈ 0.3 + cockpit/run-gate ≈ 0.3 = ≈ 1.2 GiB, rounded down to a 1024 MiB floor plus a 512 MiB slack); the swap cap leaves the host its own share so an oversized lane pages instead of ending the whole tier |
 | `docker-.scope.d/20-oom-group.conf` | `[Scope] OOMPolicy=kill` | gives **every** transient `docker-<id>.scope` `memory.oom.group=1`: an OOM inside one container kills that container's own process tree, not an arbitrary process of it. Deliberately NOT on the slice: a slice-level group would kill every lane when one runaway exhausts the tier |
-| `ssh.service.d`, `systemd-logind.service.d`, `systemd-journald.service.d`, `docker.service.d`, `cgprofiled.service.d` `30-oom-protect.conf` | `[Service] OOMScoreAdjust=-900` | the global OOM victim ranking scores processes by their own size and score, and a cgroup floor never enters it; on the measured kernel an adj-0 2 MiB service and an adj-0 lane process score about alike, so a lane made of many small processes would tie with, or win against, the host's own services. **Only units whose own unit file sets nothing, or something weaker, get this drop-in**: `systemd-journald.service` ships `-250` (weaker, raised to `-900`), while a unit file that already sets `-999`/`-1000` keeps its value — see “protection is never reduced” below |
+| `ssh.service.d`, `systemd-logind.service.d`, `systemd-journald.service.d`, `docker.service.d`, `cgprofiled.service.d` `30-oom-protect.conf` | `[Service] OOMScoreAdjust=-900` | the global OOM victim ranking scores processes by their own size and score, and a cgroup floor never enters it; on the measured kernel an adj-0 2 MiB service and an adj-0 lane process score about alike, so a lane made of many small processes would tie with, or win against, the host's own services. **Only units whose own unit file sets nothing, or something weaker, get this drop-in**: Debian 13's packaged `systemd-journald.service` sets `OOMScoreAdjust=-250` (weaker, so the policy raises it to `-900`; verify on the host with `grep -H OOMScoreAdjust /usr/lib/systemd/system/{systemd-journald,ssh,systemd-logind,docker}.service`), while a unit whose own file already sets `-999`/`-1000` keeps its value — see “protection is never reduced” below |
 
 **The ceiling is derived from the NOMINAL size, not the raw kB.** A kernel reserves a little, so an 8 GiB host reports
 7935 MiB — and raw arithmetic then produced one MiB less than the figure the operator had measured and chosen for it.
@@ -109,22 +109,32 @@ Consequences to know before changing it:
     something less protective)**. A drop-in is merged after the unit file, so `-900` on a unit whose file says `-1000`
     REPLACES that value at the next start: a downgrade invisible to `--dry-run` and to any cgroup read. Such a unit is
     reported and left with no drop-in; a less protective own value is still converged (the policy strengthens it, e.g.
-    `systemd-journald.service`'s packaged `-250`), and an unreadable own value is exit 3. A drop-in this tool rendered
-    on an EARLIER run is removed if the unit now protects itself better, because that file would otherwise keep winning.
+    Debian 13's packaged `systemd-journald.service`, whose file sets `OOMScoreAdjust=-250` — read it on the host with
+    `grep OOMScoreAdjust /usr/lib/systemd/system/systemd-journald.service`), and an unreadable own value is exit 3. A
+    drop-in this tool rendered on an EARLIER run is **retired** (`<file>.retired-<UTC stamp>`, never deleted) if the unit
+    now protects itself better, because that file would otherwise keep winning at the next start.
   Each half compares only its own fact: the live rule reads `/proc/<MainPID>/oom_score_adj` and is independent of the
   unit file (a main process that is unprotected NOW is brought to `-900` even when the unit file is stronger, because
   that write raises protection); the persistent rule reads the unit's OWN fragment (`systemctl show -p FragmentPath`),
-  never the effective property, which would already include a drop-in this tool rendered on an earlier run. This is the
-  same rule mdt host-setup's dedicated-dev protection follows (`never weaken a unit that is already protected harder`).
+  never the effective property as its answer to "does this unit protect itself" — the effective value already includes a
+  drop-in this tool rendered on an earlier run. It is read for ONE decision: when the policy would be RENDERED, the
+  effective score is compared too, because a **vendor drop-in this tool cannot see** (a packaged one under
+  `/usr/lib/systemd/system/<unit>.d/`, which this tool never writes to) may already protect the unit more strongly. An
+  equal-or-more protective effective value means nothing is rendered and the message names the directory to inspect; an
+  empty or unreadable one is exit 3, never an assumed `0`. This is the same rule mdt host-setup's dedicated-dev
+  protection follows (`never weaken a unit that is already protected harder`).
 - **A foreign drop-in is refused, not overridden — and refused before anything is written.** A file under the slice's `.d/`
   from another owner (for example the hand `10-remote-gate-limits.conf` a 2026-11-08 cut-over left with `MemoryHigh=5G`)
   that sets one of the memory keys is named and refused with exit 5, so a refused run leaves no half-written policy behind.
   **Every** competing file is named before the refusal (a plain `--dry-run` lists them all, instead of stopping at the
-  first one and letting the operator discover the next on a later run).
+  first one and letting the operator discover the next on a later run), and that one list covers the slice's `.d/`, the
+  `docker-.scope.d/` scope policy and every protected unit's `.d/`.
   CPU-only drop-ins (`CPUQuota`, `TasksMax`) are tolerated: CPU quota stays a host-owned input this script does not invent.
   The same check covers `OOMPolicy` under `docker-.scope.d/` and `OOMScoreAdjust` under each protected unit: a
   *less protective* value is refused (a later fragment wins) while an *equal or more protective* one is kept and reported
   (the same policy twice, for example the dedicated-dev host protection mdt host-setup renders, or a packaged `-1000`).
+  A file at this tool's OWN path is judged the same way: its value is read, so an equal-or-more protective one there is
+  kept and reported, and only a file that would LOWER the unit's protection is refused.
 - **The docker prefix drop-in covers every container**, the cockpit and any buildkitd scope included: an OOM in one of
   them kills that whole container (backlog NC-63).
 - **The slice's own fragment is mentioned only when it really differs.** A fragment carrying a memory key is overridden
@@ -158,6 +168,10 @@ that policy. **The values are not compared**: a hand file legitimately writes `M
 is kept aside. Anything else — `CPUQuota`, `MemoryLow`, a second section, a typo in the key, no directive at all — stays
 foreign and is refused even with the flag. Every file at one of those paths is inspected before anything is written, so
 one `--dry-run` reports **all** foreign and adoptable files at once instead of stopping at the first.
+A recognised hand drop-in that sits at a protected unit's own `30-oom-protect.conf` while that unit's unit file sets a
+**stronger** value (the v1001 migration shape: hand `-900` over a packaged `-1000`) is adopted too — and then NOT
+replaced. The never-reduce rule outranks the policy value, so the hand file is retired and the unit keeps its own
+protection; a run without `--adopt` refuses it and names the flag.
 The adopted content is **copied, never deleted**, to `<file>.retired-<UTC stamp>` — a name systemd does not load — so
 what was superseded stays readable and can be restored by hand. On a host that already matches, `--adopt` adopts nothing.
 Provisioning passes the flag only when the operator sets `GATES_MEMORY_ADOPT=1`, so a migration is an explicit act.

@@ -422,8 +422,14 @@ default:
   anything already stronger is reported and left alone. The own value is read
   from the unit's fragment (`FragmentPath`), never from the effective property,
   which would already include this tool's earlier drop-in and could make a
-  second run believe the unit protects itself. An unreadable value of either
-  kind is an error, not a `0`: the read is what gates the write.
+  second run believe the unit protects itself; the EFFECTIVE value is read for
+  one decision only, when a render would otherwise happen, because a vendor
+  drop-in this tool cannot see (`/usr/lib/systemd/system/<unit>.d/`) may already
+  protect the unit more strongly than the policy. An unreadable value of either
+  kind is an error, not a `0`: the read is what gates the write. A drop-in this
+  tool rendered earlier is retired to `<file>.retired-<UTC stamp>`, never
+  deleted: the superseded content stays readable for the operator who has to
+  decide whether the unit really protects itself.
 
 Consequences the tooling encodes rather than hides: **a slice restart is required**
 to apply limits to an already-active slice (`daemon-reload` alone does not), and a

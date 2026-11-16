@@ -88,8 +88,9 @@ oom_score_number() {  # $1 a score token; prints its value in base 10, 1 when th
   printf '%s\n' "$(( 10#$digits * sign ))"
 }
 usable_oom_score() { local n; n=$(oom_score_number "${1-}") || return 1; (( n >= -1000 && n <= 1000 )); }
-# True when $1 protects at least as strongly as $2 (equal or lower), and never for an unusable value.
-more_protective() { local a b; a=$(oom_score_number "${1-}") || return 1; b=$(oom_score_number "${2-}") || return 1; (( a <= b )); }
+# True when $1 protects at least as strongly as $2 (equal or lower), and never for a token outside the kernel's range:
+# an unusable value is not "protected", because the caller's refusal is the safe answer to a value it cannot rank.
+more_protective() { usable_oom_score "${1-}" && usable_oom_score "${2-}" && (( $(oom_score_number "$1") <= $(oom_score_number "$2") )); }
 
 # FACT_VALUE is set by read_fact; its status is the answer (0 read, 1 absent or unreadable). "Cannot read" is never
 # folded into "there is none": a host fact that exists elsewhere must not be replaced by an invented number.
@@ -480,6 +481,7 @@ protected_units='ssh.service systemd-logind.service systemd-journald.service doc
 oom_protect_units=()   # units that get the rendered drop-in
 retire_paths=()        # `path|reason` for files this run withdraws (decided here, mutated at the end of the pre-flight)
 refusal_paths=()       # own paths this run refuses to touch; every one is named before the single exit
+competing_paths=()     # another owner's files that compete with this policy; every one is named before the single exit
 autoadopt=0            # own paths whose recognised hand content is adopted by the render below
 
 # ---- host facts ------------------------------------------------------------
@@ -532,20 +534,17 @@ printf 'gates memory policy: MemoryHigh=infinity MemoryMax=%sM MemorySwapMax=%sM
 
 # ---- foreign files: named before anything is written ------------------------
 # A drop-in from another owner that sets a key this file owns would silently compete with it: a memory key is refused
-# outright (its policy must be retired consciously), while a scope/service key is only refused when it disagrees.
+# outright (its policy must be retired consciously), while a scope/service key is only refused when it disagrees. Every
+# such file is RECORDED (never exited on where it is found), so one run names them all - the same promise the own paths
+# get below. (`competing_paths` is declared with the other accumulators, above the pre-flights.)
 if [[ -d $systemd_dir/$slice.d ]]; then
   # Every competing FILE is named before the refusal: an operator who is told about one of five hand files fixes one and
   # meets the next on the following run. The loop completes before the exit, so a plain --dry-run lists them all too.
-  foreign_slice=()
   while IFS=$'\t' read -r other value; do
     [[ -n $other ]] || continue
     echo "refusing: $other also sets the gates-slice memory policy ($value); delete that file deliberately (for example the hand drop-in the 2026-11-16 decision supersedes, or adopt it with --adopt when it is at this tool's own path) and re-run" >&2
-    [[ " ${foreign_slice[*]-} " == *" $other "* ]] || foreign_slice+=("$other")
+    [[ " ${competing_paths[*]-} " == *" $other "* ]] || competing_paths+=("$other")
   done < <(other_dropins_setting "$systemd_dir/$slice.d" "$slice_dropin" 'MemoryHigh|MemoryMax|MemorySwapMax|MemoryOOMGroup|ManagedOOMMemoryPressure')
-  if (( ${#foreign_slice[@]} )); then
-    echo "gates memory policy: ${#foreign_slice[@]} competing file(s) named above; nothing was written. Run --adopt --dry-run to see every recognised hand drop-in at once" >&2
-    exit 5
-  fi
 fi
 # docker-.scope.d holds a fragment-rendered backstop (50-default-limits.conf) that sets memory but not OOMPolicy: only a
 # file setting OOMPolicy to something ELSE competes with this drop-in. Equal values coexist and are reported.
@@ -553,7 +552,8 @@ while IFS=$'\t' read -r other value; do
   [[ -n $other ]] || continue
   if [[ $value != kill ]]; then
     echo "refusing: $other sets OOMPolicy=$value for transient docker scopes, which contradicts OOMPolicy=kill; delete that file deliberately and re-run" >&2
-    exit 5
+    [[ " ${competing_paths[*]-} " == *" $other "* ]] || competing_paths+=("$other")
+    continue
   fi
   echo "gates memory policy: $other also sets OOMPolicy=kill; kept as a duplicate of the same policy" >&2
 done < <(other_dropins_setting "$systemd_dir/docker-.scope.d" "$scope_dropin" 'OOMPolicy')
@@ -566,7 +566,8 @@ for unit in $protected_units; do
     [[ -n $other ]] || continue
     if [[ $value != "$oom_score_adjust" ]] && ! more_protective "$value" "$oom_score_adjust"; then
       echo "refusing: $other sets OOMScoreAdjust=$value on $unit, which contradicts OOMScoreAdjust=$oom_score_adjust; delete that file deliberately and re-run" >&2
-      exit 5
+      [[ " ${competing_paths[*]-} " == *" $other "* ]] || competing_paths+=("$other")
+      continue
     fi
     if more_protective "$value" "$oom_score_adjust" && [[ $value != "$oom_score_adjust" ]]; then
       echo "gates memory policy: $other keeps $unit more protected (OOMScoreAdjust=$value) than the policy value $oom_score_adjust; kept, never lowered" >&2
@@ -678,17 +679,30 @@ gates memory policy: if this is the hand-configured 2026-11-16 drop-in of this h
       continue
     fi
   fi
-  # The policy STRENGTHENS the unit, so the drop-in is rendered - but only over a file this tool already
-  # owns, or one --adopt may legitimately retire (a recognised hand drop-in: its value is weaker than the policy, so
-  # adopting it loses no protection). Anyone else's file at that path is a competing policy and is refused.
+  # The policy STRENGTHENS the unit, so the drop-in is rendered - but only over a file this tool already owns, or one
+  # --adopt may legitimately retire (a recognised hand drop-in: its value is weaker than the policy, so adopting it
+  # loses no protection). Another owner's file at that path is read first: when it already protects AT LEAST as strongly
+  # as the policy, rendering -900 over it would replace a stronger value, so it is kept and reported; only a weaker one
+  # is a competing policy, and that is refused.
   if [[ -e $ours ]] && ! owned_file "$ours"; then
     if ((adopt_requested)) && recognised_hand_dropin "$ours" Service OOMScoreAdjust; then
       oom_protect_units+=("$unit")  # the render retires the adopted hand file and writes the rendered policy there
       continue
     fi
-    plan_refusal "$ours" "refusing: $unit's own unit file sets OOMScoreAdjust=$own, which is less protective than the policy value $oom_score_adjust, and another owner's drop-in at $ours is in the way; adopt it once with --adopt when it is the hand-configured 2026-11-16 file, otherwise resolve it deliberately and re-run"
+    if ! foreign=$(unit_section_value "$ours" Service OOMScoreAdjust); then
+      echo "cannot read $ours, another owner's drop-in at this tool's own path for $unit: refusing to decide whether a drop-in" >&2
+      echo "of this tool would replace it. Repair or retire that file and re-run; nothing was written." >&2
+      exit 3
+    fi
+    if [[ -n $foreign ]] && more_protective "$foreign" "$oom_score_adjust"; then
+      echo "gates memory policy: $ours keeps $unit at OOMScoreAdjust=$foreign, at least as protective as the policy value" >&2
+      echo "gates memory policy: $oom_score_adjust; kept, never lowered, and no drop-in of this tool is rendered over it" >&2
+      continue
+    fi
+    plan_refusal "$ours" "refusing: $unit's own unit file sets OOMScoreAdjust=$own, which is less protective than the policy value $oom_score_adjust, and another owner's drop-in at $ours (setting '${foreign}') is weaker than that policy; adopt it once with --adopt when it is the hand-configured 2026-11-16 file, otherwise resolve it deliberately and re-run"
     continue
   fi
+  # own > target, no foreign file in the way: the policy STRENGTHENS the unit.
   oom_protect_units+=("$unit")
 done
 
@@ -719,9 +733,13 @@ for entry in "${own_paths[@]}"; do
   plan_refusal "$path" "refusing to override $path: its first line is not this tool's marker '$marker' and its content is not the policy this tool renders.
 gates memory policy: if this is the hand-configured 2026-11-16 drop-in of this host, adopt it once with --adopt (its content is kept as $path.retired-<stamp>); otherwise retire or relocate that file deliberately and re-run"
 done
-# One refusal for every own path, after every pre-flight: nothing was written yet, and an operator sees the whole list.
-if (( ${#refusal_paths[@]} )); then
-  echo "gates memory policy: ${#refusal_paths[@]} file(s) at this tool's own paths cannot be adopted, and nothing was written; run --adopt --dry-run to review every recognised hand drop-in at once" >&2
+# One refusal for every file the run cannot touch - another owner's competing files and this tool's own paths alike -
+# emitted after every pre-flight: nothing has been written yet, and an operator sees the whole list in one run.
+if (( ${#competing_paths[@]} + ${#refusal_paths[@]} )); then
+  echo "gates memory policy: ${#competing_paths[@]} competing file(s) named above; nothing was written. Run --adopt --dry-run to see every recognised hand drop-in at once" >&2
+  if (( ${#refusal_paths[@]} )); then
+    echo "gates memory policy: ${#refusal_paths[@]} file(s) at this tool's own paths cannot be adopted either (named above)" >&2
+  fi
   exit 5
 fi
 

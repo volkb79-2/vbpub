@@ -67,9 +67,9 @@ docs landed together.
 | NC-59 | `provision-runner.sh` installs no slice limits, so the gates tier's CPU and memory policy (and the 2026-11-16 overcommit/paging decision) reaches a host only by hand-editing a drop-in | Should-fix | FIXED in repository 2026-11-16 (`provision-gates-limits.sh` + live-memory admission); live fresh-host acceptance NC-62 |
 | NC-60 | Provisioning installs no pinned image set, so a host cannot run assay's SQL qualification until someone pulls the digest-pinned PostgreSQL reference by hand | Should-fix | OPEN 2026-11-16 |
 | NC-61 | The runner guide's fresh-host replay is still unverified and its checked-in facts drift after a reinstall with no test or date binding them | Minor | OPEN 2026-11-16 |
-| NC-62 | The rendered gates memory policy has no live fresh-host acceptance: it is proven only against fakes, while the measured policy it reproduces came from one hand-configured host (also carries the `--adopt` one-time step and the 6655-vs-6656 nominal-size finding of review round 1) | Should-fix | LIVE HALF CLOSED for v1001 2026-11-16 (adoption accepted, evidence below); r1002 OPEN (blocked on its iogovmon acceptance until 2026-11-17T14:38Z) |
-| NC-64 | `provision-gates-limits.sh` LOWERED sshd's own OOM protection: it wrote `-900` over the `-1000` live score sshd keeps on its listener, and would have replaced a packaged stronger value with a drop-in | Major | FIXED 2026-11-16 (never-reduce rule for the live score and the drop-in; sshd finding from the v1001 adoption) |
+| NC-62 | The rendered gates memory policy has no live fresh-host acceptance: it is proven only against fakes, while the measured policy it reproduces came from one hand-configured host (also carries the `--adopt` one-time step and the 6655-vs-6656 nominal-size finding of review round 1) | Should-fix | LIVE HALF CLOSED for v1001 2026-11-16 (adoption accepted; its run also LOWERED sshd's live `-1000` listener score to `-900`, now fixed as NC-64 — evidence below); r1002 OPEN (blocked on its iogovmon acceptance until 2026-11-17T14:38Z) |
 | NC-63 | The `docker-.scope.d` `OOMPolicy=kill` drop-in covers every Docker container on the host, so an OOM in the cockpit or a buildkitd scope kills that container whole | Minor | OPEN 2026-11-16 (by design for lane scopes; restriction open) |
+| NC-64 | `provision-gates-limits.sh` LOWERED sshd's own OOM protection: it wrote `-900` over the `-1000` live score sshd keeps on its listener, and would have replaced a packaged stronger value with a drop-in | Major | FIXED 2026-11-16 (never-reduce rule for the live score and the drop-in; sshd finding from the v1001 adoption; round-1 review fixed a swallowed `command not found` that refused MORE protective foreign files) |
 
 ---
 
@@ -1887,32 +1887,56 @@ rule is stated where an operator reads it:
   includes a drop-in this tool rendered on an earlier run and would make a second
   run believe the unit protects itself. A unit already at least as protected is
   reported and gets no drop-in (and, if this tool had rendered one earlier, that
-  owned file is removed, because it would otherwise keep winning; another owner's
-  file that would lower the value is refused with exit 5). An unreadable or
-  unusable own value is exit 3.
+  owned file is RETIRED to `<file>.retired-<UTC stamp>`, because it would otherwise
+  keep winning; another owner's file that would lower the value is refused with
+  exit 5, and one that is equal-or-more protective there is KEPT and reported). An
+  unreadable or unusable own value is exit 3.
+- the EFFECTIVE score (`systemctl show -p OOMScoreAdjust`) is read for one
+  decision only: when the policy would be rendered, a vendor drop-in this tool
+  cannot see (a packaged one under `/usr/lib/systemd/system/<unit>.d/`) may already
+  protect the unit more strongly. An equal-or-more protective effective value means
+  nothing is rendered (and the message names the directory to inspect); an empty or
+  unusable one is exit 3, never an assumed `0`.
 - a foreign drop-in that sets a MORE protective value is now kept and reported
   instead of refused as a contradiction (`more_protective` is used for the same
   comparison there).
+- review round 1 found the blocking half of this rule itself broken: the helper that
+  reads another owner's drop-in was DEFINED BELOW ITS FIRST CALL, so bash answered
+  `command not found`, a `|| true` swallowed it, and every equal-or-more protective
+  file at this tool's own path was REFUSED (exit 5) as unreadable. Every helper now
+  lives above the main flow, the decision is recorded before any mutation
+  (`plan_retire`/`plan_refusal`/`apply_retires`), and a test asserts that no function
+  is used before its definition anywhere in the file.
 
 No special case names sshd: the rule is about the VALUE and applies to every
 protected unit, so `containerd`-style packaged scores and future units are covered
 without a list to maintain.
 
 **Tests.** `tests/test_provision_gates_limits.py`: `-1000`, `-999`, `-900`, `-899`,
-`-500` and `0` live scores (only the two less-protective values are written, and
-the exact `current -> target` transition is in the output); unreadable live values
-(empty, garbage, `+900`, `-2000`, `1001`) are exit 8 and leave the file byte for
-byte; a unit whose own file sets `-1000`/`-999` gets no drop-in; an own file with
-nothing, `0` or `-500` still gets the policy drop-in; an unreadable own file is
-exit 3 and writes nothing; a previously rendered owned drop-in is removed (and
-announced in `--dry-run` without writing) when the unit now protects itself;
-another owner's lowering drop-in at that path is refused. Mutants: flipping
-`more_protective` (`<=` -> `>=`) makes the `-1000`/`-899` cases fail, dropping the
-`usable_oom_score` gate makes the unreadable cases write, and taking the effective
-`OOMScoreAdjust` instead of the fragment makes the earlier-drop-in case fail.
+`-500` and `0` live scores (only the less-protective values are written, and the
+exact `current -> target` transition is in the output); an EQUAL value with a
+read-only score file proves by consequence that no write is even attempted; the
+`oom_score_number`/`usable_oom_score` boundaries (`-1000`/`1000` accepted,
+`-1001`/`1001` refused) and the base-10 rule (`010`, `0900` decimal;
+`0000000900` refused before arithmetic); unreadable live values (empty, garbage,
+`+900`, `-2000`, `1001`) are exit 8 and leave the file byte for byte; a unit whose
+own file sets `-1000`/`-999` gets no drop-in; an own file with nothing, `0` or
+`-500` still gets the policy drop-in (unless a vendor drop-in the tool cannot see
+already protects more, which is reported instead); an unreadable own file is exit
+3 and writes nothing; another owner's drop-in at this tool's own path is judged by
+its VALUE (equal-or-more protective kept and reported, weaker refused, unreadable
+exit 3); a previously rendered owned drop-in is RETIRED (announced in `--dry-run`
+without writing, and only after every pre-flight passed) and the adoption of a hand
+`-900` file over a unit's own `-1000` retires it and renders nothing. Mutants that
+were killed: a function defined below its first call (12 failures), flipping
+`more_protective` to `<` (the equal-value tests fail, including the read-only-score
+one), taking the effective `OOMScoreAdjust` instead of the fragment (the
+earlier-drop-in case), dropping the readability gates, a plain `rm` instead of a
+retirement, and a rival-file listing that exits at the first file.
 
 **Where.** `scripts/netcup/runner/provision-gates-limits.sh`
-(`more_protective`, `usable_oom_score`, `own_oom_score`, `apply_live_score`),
+(`oom_score_number`, `more_protective`, `usable_oom_score`, `own_oom_score`,
+`effective_oom_score`, `apply_live_score`, `plan_retire`/`apply_retires`),
 `runner/README.md` ("protection is never reduced"), `CONSUMERS.md`,
 `DESIGN-GUIDE.md` (the rejected alternatives), `CHANGES.md`.
 

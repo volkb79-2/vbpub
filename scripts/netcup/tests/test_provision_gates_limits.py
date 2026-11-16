@@ -422,6 +422,8 @@ def test_a_second_run_with_the_same_facts_changes_nothing(tmp_path):
     after = {p: p.stat().st_mtime_ns for p in systemd_dir.rglob("*.conf")}
     assert before == after  # nothing rewritten
     assert second.stdout.count("unchanged ") == 7  # one slice policy, one docker scope, five protected units
+    assert "wrote " not in second.stdout and "would write" not in second.stdout  # every file already IS the rendering
+    assert "removed " not in second.stderr and "retired " not in second.stderr  # nothing withdrawn on a converged host
     calls_after = (tmp_path / "systemctl.log").read_text()
     second_calls = calls_after[len(calls_before):]
     assert "restart" not in second_calls and "daemon-reload" not in second_calls  # a converged host is only read
@@ -585,6 +587,35 @@ def test_every_competing_file_is_named_before_the_refusal(tmp_path):
         assert f"{len(names)} competing file(s) named above" in r.stderr
         assert "--adopt --dry-run to see every recognised hand drop-in at once" in r.stderr
         assert sorted(p.name for p in systemd_dir.rglob("*.conf")) == sorted(names)  # nothing of ours, nothing rewritten
+
+
+def test_every_competing_file_is_named_across_the_slice_the_scope_and_the_unit_paths(tmp_path):
+    """The round-0 listing covered the slice's `.d/` only: a foreign `OOMPolicy` under `docker-.scope.d/` or a foreign
+    `OOMScoreAdjust` under a unit's `.d/` exited at the first one found, so an operator fixed that file and met the next
+    on the following run. Every competing file is now recorded and named before the single refusal, and the paths the
+    tool owns are named in the same run."""
+    script, env, _, systemd_dir, _, meminfo, procfs = _fixture(tmp_path, units=("ssh.service",))
+    slice_foreign = systemd_dir / f"{SLICE}.d" / "10-hand-memory.conf"
+    slice_foreign.parent.mkdir(parents=True)
+    slice_foreign.write_text("[Slice]\nMemoryMax=6G\n")
+    scope_foreign = systemd_dir / "docker-.scope.d" / "50-hand-scope.conf"
+    scope_foreign.parent.mkdir(parents=True)
+    scope_foreign.write_text("[Scope]\nOOMPolicy=continue\n")
+    unit_foreign = systemd_dir / "ssh.service.d" / "50-hand-score.conf"
+    unit_foreign.parent.mkdir(parents=True)
+    unit_foreign.write_text("[Service]\nOOMScoreAdjust=-500\n")
+    own_foreign = systemd_dir / "docker.service.d" / "30-oom-protect.conf"
+    own_foreign.parent.mkdir(parents=True)
+    own_foreign.write_text("[Service]\nOOMScoreAdjust=-900\n")  # at this tool's OWN path for a unit it protects
+    r = _run(script, env, _args(meminfo, systemd_dir, tmp_path / "cgroupfs", procfs))
+    assert r.returncode == 5, r.stdout + r.stderr
+    for path in (slice_foreign, scope_foreign, unit_foreign, own_foreign):
+        assert str(path) in r.stderr, (path, r.stderr)
+    assert "competing file(s) named above" in r.stderr  # one count, emitted after every pre-flight
+    assert "file(s) at this tool's own paths cannot be adopted" in r.stderr
+    for path in (slice_foreign, scope_foreign, unit_foreign, own_foreign):
+        assert path.read_text() == path.read_text()  # untouched (each is exactly what was written above)
+    assert sorted(p.name for p in systemd_dir.rglob("20-*.conf")) == []
 
 
 def test_the_fragment_override_note_is_printed_only_when_a_value_really_differs(tmp_path):
@@ -783,6 +814,140 @@ def test_an_owned_file_whose_content_is_not_rendered_is_not_overwritten(tmp_path
     assert owned.read_text() == "[Slice]\nMemoryMax=1G\n"
 
 
+def _helper_block() -> str:
+    """The script's helper definitions, extracted between its own markers, so a helper test calls the SHIPPED text."""
+    text = SCRIPT.read_text()
+    start = text.index("# ==== helper definitions")
+    end = text.index("# ==== end of helper definitions")
+    return text[start:end]
+
+
+def test_the_helper_region_holds_every_definition_and_runs_no_code():
+    """Review round 1's blocker, structurally: bash resolves a function name at CALL time, so a helper that sits below
+    its first call is `command not found` at run time - and a `|| true` around it turns that into an empty value. This
+    asserts the shape that makes such a defect impossible: every definition lives in the marked helper region, and that
+    region contains nothing but definitions (a stray statement there would run before the pre-flights)."""
+    text = SCRIPT.read_text()
+    block = _helper_block()
+    assert re.findall(r"^([A-Za-z_][A-Za-z0-9_]*)\(\)\s*\{", block, re.M), "no definitions: the marker layout changed"
+    assert not re.search(r"^[A-Za-z_][A-Za-z0-9_]*\(\)\s*\{", text.replace(block, ""), re.M), \
+        "a function is defined outside the helper region, where it can sit below its first call"
+    depth = 0
+    for line in block.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        if depth == 0:
+            assert re.match(r"^[A-Za-z_][A-Za-z0-9_]*\(\)\s*\{", line), \
+                f"the helper region runs code at definition level: {stripped[:60]!r}"
+        depth += _brace_delta(stripped)
+        assert depth >= 0, f"unbalanced braces at: {stripped[:60]!r}"
+    assert depth == 0, "the helper region's braces do not balance"
+
+
+def _brace_delta(line: str) -> int:
+    """The brace balance of a shell line, ignoring quotes and `${...}` (both appear inside conditions and messages)."""
+    body = line.split(" #")[0] if " #" in line and not line.lstrip().startswith("#") else line
+    body = re.sub(r'\$\{[^}]*\}', "", body)
+    body = re.sub(r'"[^"]*"', '""', body)
+    body = re.sub(r"'[^']*'", "''", body)
+    return body.count("{") - body.count("}")
+
+
+def test_a_function_is_never_used_before_its_definition_anywhere_in_the_file():
+    """The ordered check: for every function, its first USE (in a body or in the flow) must not precede its definition."""
+    text = SCRIPT.read_text().splitlines()
+    definitions = {}
+    for index, line in enumerate(text, 1):
+        match = re.match(r"^([A-Za-z_][A-Za-z0-9_]*)\(\)\s*\{", line)
+        if match:
+            definitions[match.group(1)] = index
+    offenders = []
+    for name, definition in definitions.items():
+        use = re.compile(r"(?:^|[\s;|&(])" + re.escape(name) + r"(?:[\s;|)&]|$)")
+        for index, line in enumerate(text, 1):
+            stripped = line.strip()
+            if index >= definition and stripped.startswith("#"):
+                continue
+            if stripped.startswith("#") or re.match(r"^" + re.escape(name) + r"\(\)\s*\{", line):
+                continue
+            body = re.sub(r'"[^"]*"', '""', stripped)
+            if use.search(body):
+                if index < definition:
+                    offenders.append((name, index, definition, stripped[:80]))
+                break
+    assert offenders == [], offenders
+
+
+@pytest.mark.parametrize(("token", "usable"), [
+    ("-1000", True), ("1000", True), ("-900", True), ("0", True),
+    ("-1001", False), ("1001", False),
+    ("010", True), ("0900", True), ("0100", True),  # base 10, never octal: `0900` has no octal spelling at all
+    ("0000000900", False), ("-0000000900", False),  # an over-long digit string can wrap into the valid range
+    ("10000", False), ("", False), ("+1000", False), (" 900", False), ("-", False), ("abc", False),
+])
+def test_the_score_parser_is_one_place_with_the_kernels_range(tmp_path, token, usable):
+    """`oom_score_adj` is the kernel's -1000..1000. One helper turns the token into a number: forced base 10 (a leading
+    zero would reach bash arithmetic as OCTAL and `0900` aborts the comparison), at most four digits (a longer string
+    can wrap a 64-bit integer back into the valid range), and the range checked against the real bounds."""
+    harness = ("set -Eeuo pipefail\n" + _helper_block() + """
+if usable_oom_score "$1"; then printf 'usable\n'; else printf 'unusable\n'; fi
+""")
+    run = subprocess.run(["bash", "-c", harness, "helper", token], capture_output=True, text=True)
+    assert run.returncode == 0, run.stderr
+    assert run.stdout.strip() == ("usable" if usable else "unusable"), (token, run.stdout, run.stderr)
+
+
+@pytest.mark.parametrize(("current", "target", "protected"), [
+    ("-1000", "-900", True), ("-999", "-900", True), ("-900", "-900", True),  # equal is at least as protective
+    ("-899", "-900", False), ("0", "-900", False), ("1000", "-900", False),
+    ("-1000", "-1000", True), ("1000", "1000", True), ("-1001", "-900", False), ("garbage", "-900", False),
+])
+def test_more_protective_compares_numbers_and_never_mistakes_equality_for_a_change(tmp_path, current, target, protected):
+    """The ranking, not the magnitude: lower wins, equal is kept, and an unusable token is never "protected"."""
+    harness = ("set -Eeuo pipefail\n" + _helper_block() + """
+if more_protective "$1" "$2"; then printf 'protected\n'; else printf 'weaker\n'; fi
+""")
+    run = subprocess.run(["bash", "-c", harness, "helper", current, target], capture_output=True, text=True)
+    assert run.returncode == 0, run.stderr
+    assert run.stdout.strip() == ("protected" if protected else "weaker"), (current, target, run.stdout, run.stderr)
+
+
+def test_a_vendor_drop_in_this_tool_cannot_see_is_not_replaced_by_a_weaker_rendering(tmp_path):
+    """A packaged drop-in under /usr/lib/systemd/system/<unit>.d/ is invisible from the directory this tool writes to, and
+    a drop-in this tool renders there would REPLACE it whenever its own file sorts later. The unit's own fragment says
+    -500 (weaker than the policy), but the EFFECTIVE score systemd would apply is -1000: nothing is rendered, and the
+    message names the directory to inspect. The same host WITHOUT the vendor drop-in gets the policy drop-in, so the
+    test cannot pass by refusing every unit."""
+    script, env, systemd_dir, meminfo, procfs = _protected_host(
+        tmp_path, units=("docker.service",), fragments={"docker.service": "[Service]\nOOMScoreAdjust=-500\n"})
+    env["UNIT_OOM"] = "docker.service=-1000"  # the effective value: a vendor drop-in the tool never sees
+    _fake_limits(env, HOST_V1001)
+    r = _run(script, env, _args(meminfo, systemd_dir, tmp_path / "cgroupfs", procfs))
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert not (systemd_dir / "docker.service.d/30-oom-protect.conf").exists(), "the vendor -1000 would have been replaced"
+    assert "effective OOMScoreAdjust=-1000" in r.stderr
+    assert "/usr/lib/systemd/system/docker.service.d" in r.stderr
+
+    env["UNIT_OOM"] = ""  # no vendor drop-in: the policy legitimately strengthens the unit's own -500
+    again = _run(script, env, _args(meminfo, systemd_dir, tmp_path / "cgroupfs", procfs))
+    assert again.returncode == 0, again.stdout + again.stderr
+    assert (systemd_dir / "docker.service.d/30-oom-protect.conf").exists()
+
+
+def test_an_unreadable_effective_score_is_an_error_never_a_rendering(tmp_path):
+    """The effective read gates a write: a token outside the kernel's range is not "unprotected", it is a value nobody
+    could rank, so the run refuses (exit 3) and writes nothing."""
+    script, env, systemd_dir, meminfo, procfs = _protected_host(
+        tmp_path, units=("docker.service",), fragments={"docker.service": "[Service]\nOOMScoreAdjust=-500\n"})
+    env["UNIT_OOM"] = "docker.service=garbage"
+    _fake_limits(env, HOST_V1001)
+    r = _run(script, env, _args(meminfo, systemd_dir, tmp_path / "cgroupfs", procfs))
+    assert r.returncode == 3, r.stdout + r.stderr
+    assert "effective OOMScoreAdjust of docker.service is not a usable score" in r.stderr
+    assert not (systemd_dir / "docker.service.d/30-oom-protect.conf").exists()
+
+
 PROTECTED = ("ssh.service", "systemd-logind.service", "systemd-journald.service", "docker.service", "cgprofiled.service")
 
 
@@ -908,6 +1073,140 @@ def test_another_owners_drop_in_that_would_lower_a_self_protected_unit_is_refuse
     assert sorted(p.name for p in systemd_dir.rglob("*.conf")) == [foreign.name]  # nothing of ours was written
 
 
+def _own_path(tmp_path, unit: str) -> Path:
+    """The drop-in path this tool owns for a unit (the fixture's systemd root, not the real one)."""
+    return tmp_path / "systemd" / f"{unit}.d" / "30-oom-protect.conf"
+
+
+@pytest.mark.parametrize(("foreign_value", "kept"), [
+    ("-1000", True),   # equal to sshd's own listener: the same protection twice, kept
+    ("-999", False),   # weaker than the unit's own -1000: it would replace it at the next start
+    ("-900", False),   # equal to the POLICY value but weaker than the unit's own -1000: refused for the same reason
+])
+def test_a_foreign_drop_in_at_this_tools_own_path_is_read_and_judged_by_its_value(tmp_path, foreign_value, kept):
+    """Review round 1's blocker: `unit_section_value` was called before its definition, so bash answered `command not
+    found`, `|| true` swallowed it, and the file at this tool's own path was read as "sets nothing". Every equal-or-more
+    protective file was then REFUSED with exit 5 - the tool reported that a file it cannot read was a contradiction.
+    The value is now read, and only a file that would LOWER the unit's own protection is refused."""
+    script, env, systemd_dir, meminfo, procfs = _protected_host(
+        tmp_path, units=("ssh.service",), fragments={"ssh.service": "[Service]\nOOMScoreAdjust=-1000\n"})
+    foreign = _own_path(tmp_path, "ssh.service")
+    foreign.parent.mkdir(parents=True)
+    content = f"[Service]\nOOMScoreAdjust={foreign_value}\n"
+    foreign.write_text(content)  # no marker: another owner wrote it
+    _fake_limits(env, HOST_V1001)
+    r = _run(script, env, _args(meminfo, systemd_dir, tmp_path / "cgroupfs", procfs))
+    assert foreign.read_text() == content  # never rewritten, whatever the decision
+    if kept:
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert "kept, never lowered" in r.stderr
+        assert f"OOMScoreAdjust={foreign_value}" in r.stderr
+        assert "unreadable" not in r.stderr, "the value was not read, so the tool refused a file it should keep"
+        assert [p.name for p in foreign.parent.iterdir()] == [foreign.name]  # nothing weaker was rendered beside it
+    else:
+        assert r.returncode == 5, r.stdout + r.stderr
+        assert f"sets OOMScoreAdjust={foreign_value}, which is less protective than ssh.service's own -1000" in r.stderr
+        assert [p.name for p in foreign.parent.iterdir()] == [foreign.name]  # nothing weaker was rendered beside it
+
+
+def test_another_owners_equal_drop_in_over_a_weaker_unit_file_is_kept_not_refused(tmp_path):
+    """The other half of the same read: the unit's own file says -500 (weaker than the policy), so a rendered -900
+    STRENGTHENS it - but another owner already put -900 there. That is the policy value itself, so it is kept and
+    reported instead of being refused as "weaker than the policy"."""
+    script, env, systemd_dir, meminfo, procfs = _protected_host(
+        tmp_path, units=("docker.service",), fragments={"docker.service": "[Service]\nOOMScoreAdjust=-500\n"})
+    foreign = _own_path(tmp_path, "docker.service")
+    foreign.parent.mkdir(parents=True)
+    content = "[Service]\nOOMScoreAdjust=-900\n"
+    foreign.write_text(content)
+    _fake_limits(env, HOST_V1001)
+    r = _run(script, env, _args(meminfo, systemd_dir, tmp_path / "cgroupfs", procfs))
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert foreign.read_text() == content
+    assert "at least as protective as the policy value" in r.stderr
+
+
+@pytest.mark.parametrize("foreign_value", ["-500", "0", "+1000".replace("+", "")])
+def test_another_owners_weaker_drop_in_is_refused_and_names_the_value(tmp_path, foreign_value):
+    """A file that would REPLACE a stronger unit value with a weaker one is a competing policy: refused, by name, with
+    the value it actually sets (never "unreadable")."""
+    script, env, systemd_dir, meminfo, procfs = _protected_host(
+        tmp_path, units=("ssh.service",), fragments={"ssh.service": "[Service]\nOOMScoreAdjust=-1000\n"})
+    foreign = _own_path(tmp_path, "ssh.service")
+    foreign.parent.mkdir(parents=True)
+    content = f"[Service]\nOOMScoreAdjust={foreign_value}\n"
+    foreign.write_text(content)
+    _fake_limits(env, HOST_V1001)
+    r = _run(script, env, _args(meminfo, systemd_dir, tmp_path / "cgroupfs", procfs))
+    assert r.returncode == 5, r.stdout + r.stderr
+    assert f"sets OOMScoreAdjust={foreign_value}" in r.stderr
+    assert "less protective" in r.stderr
+    assert foreign.read_text() == content
+
+
+def test_adopting_a_hand_drop_in_over_a_stronger_unit_file_retires_it_and_renders_nothing(tmp_path):
+    """The v1001 migration shape: a hand `30-oom-protect.conf` at -900 over a unit whose own file sets -1000. The
+    never-reduce rule outranks the policy value, so --adopt retires the hand file (kept, never deleted) and NO drop-in
+    replaces it; without --adopt the same host is refused, naming the flag."""
+    script, env, systemd_dir, meminfo, procfs = _protected_host(
+        tmp_path, units=("ssh.service",), fragments={"ssh.service": "[Service]\nOOMScoreAdjust=-1000\n"})
+    ours = _own_path(tmp_path, "ssh.service")
+    ours.parent.mkdir(parents=True)
+    hand = "[Service]\nOOMScoreAdjust=-900\n"
+    ours.write_text(hand)
+    _fake_limits(env, HOST_V1001)
+    args = _args(meminfo, systemd_dir, tmp_path / "cgroupfs", procfs)
+    refused = _run(script, env, args)
+    assert refused.returncode == 5, refused.stdout + refused.stderr
+    assert ours.read_text() == hand
+    assert list(ours.parent.glob("*.retired-*")) == []
+    adopted = _run(script, env, [*args, "--adopt"])
+    assert adopted.returncode == 0, adopted.stdout + adopted.stderr
+    assert not ours.exists(), "a rendered drop-in would have replaced sshd's -1000 with -900"
+    retired = list(ours.parent.glob("30-oom-protect.conf.retired-*"))
+    assert len(retired) == 1 and retired[0].read_text() == hand  # kept, never deleted
+    assert "NOT replacing it" in adopted.stderr
+    second = _run(script, env, [*args, "--adopt"])
+    assert second.returncode == 0, second.stdout + second.stderr
+    assert not ours.exists() and len(list(ours.parent.glob("*.retired-*"))) == 1
+
+
+def test_a_drop_in_this_tool_rendered_is_retired_never_deleted_and_only_after_the_pre_flight(tmp_path):
+    """The tool's own earlier drop-in is withdrawn when the unit protects itself, but the withdrawal is a RETIREMENT
+    (the content is copied to a name systemd does not load) and it happens AFTER every pre-flight: a run that refuses
+    on another file must leave that drop-in in place. The second pass is the state the real hosts reach - a rendered
+    -900 drop-in, then a unit fragment that grew to -1000."""
+    script, env, systemd_dir, meminfo, procfs = _protected_host(
+        tmp_path, units=("ssh.service",), fragments={"ssh.service": "[Service]\nOOMScoreAdjust=-500\n"})
+    _fake_limits(env, HOST_V1001)
+    args = _args(meminfo, systemd_dir, tmp_path / "cgroupfs", procfs)
+    first = _run(script, env, args)
+    assert first.returncode == 0, first.stdout + first.stderr
+    ours = _own_path(tmp_path, "ssh.service")
+    assert "OOMScoreAdjust=-900" in ours.read_text()
+    rendered = ours.read_text()
+
+    # the unit now protects itself, AND a competing slice file appears: the run refuses and must not touch its own file
+    env["UNIT_FRAGMENT_DIR"] = str(tmp_path / "units2")
+    units2 = tmp_path / "units2"
+    units2.mkdir()
+    (units2 / "ssh.service").write_text("[Service]\nOOMScoreAdjust=-1000\n")
+    (systemd_dir / f"{SLICE}.d").mkdir(parents=True, exist_ok=True)
+    (systemd_dir / f"{SLICE}.d" / "10-hand.conf").write_text("[Slice]\nMemoryMax=6G\n")
+    refused = _run(script, env, args)
+    assert refused.returncode == 5, refused.stdout + refused.stderr
+    assert ours.exists() and ours.read_text() == rendered, "the pre-flight refused but its own file was already mutated"
+    assert list(ours.parent.glob("*.retired-*")) == []
+
+    (systemd_dir / f"{SLICE}.d" / "10-hand.conf").unlink()
+    second = _run(script, env, args)
+    assert second.returncode == 0, second.stdout + second.stderr
+    assert not ours.exists()
+    retired = list(ours.parent.glob("30-oom-protect.conf.retired-*"))
+    assert len(retired) == 1 and retired[0].read_text() == rendered
+    assert "protects itself at -1000" in second.stderr
+
+
 @pytest.mark.parametrize(("own", "rendered"), [
     ("\n", True),        # the unit sets nothing: the policy is an addition, not a downgrade
     ("[Service]\nOOMScoreAdjust=0\n", True),     # 0 is explicitly unprotected
@@ -950,6 +1249,30 @@ def test_the_units_own_fragment_is_read_not_the_effective_property(tmp_path):
     log = (tmp_path / "systemctl.log").read_text()
     assert "show docker.service -p FragmentPath" in log  # the unit's OWN file was asked for
     assert (systemd_dir / "docker.service.d/30-oom-protect.conf").read_text().endswith("OOMScoreAdjust=-900\n")
+
+
+def test_an_equal_live_score_is_left_alone_even_when_a_write_would_have_failed(tmp_path):
+    """The `<=` boundary of the never-reduce rule, proved by CONSEQUENCE and not by a message alone: the score file is
+    read-only (`0444`), so the write path fails where the comparison says there is nothing to write. A current value
+    equal to the target is already at least as protected, so the run succeeds and prints no write line at all
+    (`set`, `would set`, or a `-900 -> -900` arrow) - and an ATTEMPTED write also fails a non-root run with exit 8.
+    A `<` comparison takes the write path and prints the arrow whatever the file mode allows, so the mutant dies for
+    every uid."""
+    script, env, systemd_dir, meminfo, procfs = _protected_host(tmp_path, units=("docker.service",))
+    env["UNIT_MAINPIDS"] = "docker.service=412"
+    proc = tmp_path / "procfs"
+    (proc / "412").mkdir()
+    score = proc / "412" / "oom_score_adj"
+    score.write_text("-900\n")
+    score.chmod(0o444)  # readable, not writable: the write the mutant would perform cannot succeed
+    _fake_limits(env, HOST_V1001)
+    r = _run(script, env, _args(meminfo, systemd_dir, tmp_path / "cgroupfs", procfs))
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "-> -900" not in r.stdout  # no "-900 -> -900" arrow: equal is not a change
+    assert "would set" not in r.stdout and "set docker.service" not in r.stdout
+    assert "cannot set the live OOM score" not in r.stderr  # the write path was never entered
+    if os.geteuid() != 0:  # as root the mode does not stop the write; the message assertions above still bite
+        assert score.read_text() == "-900\n"
 
 
 def test_the_live_control_plane_scores_are_set_in_place_without_a_restart(tmp_path):

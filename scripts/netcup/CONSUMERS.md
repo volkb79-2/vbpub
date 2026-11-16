@@ -938,8 +938,12 @@ renders its `30-oom-protect.conf` drop-in **only when the unit's own unit file s
 sets its own listener to `-1000` at runtime (stronger than `-900`, so it is left alone), and a packaged unit file that
 already sets a stronger value keeps it: a drop-in is merged after the unit file, so `-900` there would REPLACE the
 stronger value at the next start. Such a unit is reported as “already at least as protected”; a weaker own value
-(`systemd-journald.service` ships `-250`) is converged to `-900`. An unreadable live score is exit `8` and an unreadable
-own unit file is exit `3`; neither is treated as `0`.
+(Debian 13's packaged `systemd-journald.service` sets `-250`, verified in the devcontainer:
+`grep -H OOMScoreAdjust /usr/lib/systemd/system/systemd-journald.service`) is converged to `-900`, unless a vendor
+drop-in this tool cannot see (`/usr/lib/systemd/system/<unit>.d/`) already protects the unit more strongly — the
+effective score is read for that decision, and nothing is rendered then. An unreadable live score is exit `8` and an
+unreadable own unit file is exit `3`; neither is treated as `0`. A drop-in this tool rendered on an earlier run is retired
+to `<file>.retired-<UTC stamp>` (never deleted), not removed silently.
 
 Host-side check (read-only):
 
