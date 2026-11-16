@@ -286,7 +286,10 @@ check_outcome_success_report() {
 }
 
 check_outcome_empty() {
-  wait_launch_sequence outcome-empty deepseek-pi-volker "pi-empty-completion pi-thinking-only"
+  # The third attempt's message carries text that is only WHITESPACE: "has text"
+  # must mean text after stripping, or a blank message reads as a completion.
+  wait_launch_sequence outcome-empty deepseek-pi-volker \
+    "pi-empty-completion pi-thinking-only pi-whitespace-only"
   [[ $(head -n 1 "$CONTROLLER_ROOT/runs/outcome-empty.done") == 'EXIT=0 OUTCOME=EMPTY-COMPLETION-RETRIES-EXHAUSTED' ]] \
     || fail 'an empty final message with an empty continuation is not reported as exhausted'
   contains "$CONTROLLER_ROOT/runs/outcome-empty.done" 'RETRIES=2' 'the exhausted class records its attempt count'
@@ -927,7 +930,8 @@ if [[ -n ${PI_TEST_FOCUS:-} ]]; then
       case $PI_TEST_FOCUS in
         outcome-success) check_outcome_success_report ;;
         outcome-empty)
-          wait_launch_sequence focus-empty deepseek-pi-volker "pi-empty-completion pi-thinking-only"
+          wait_launch_sequence focus-empty deepseek-pi-volker \
+            "pi-empty-completion pi-whitespace-only"
           contains "$CONTROLLER_ROOT/runs/focus-empty.done" 'OUTCOME=EMPTY-COMPLETION-RETRIES-EXHAUSTED' \
             'a still-empty continuation run is reported as exhausted'
           contains "$CONTROLLER_ROOT/runs/focus-empty.events" '"ev":"empty-completion-retry"' \
