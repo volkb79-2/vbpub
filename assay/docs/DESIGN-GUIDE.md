@@ -4527,16 +4527,22 @@ adopted the consumer lane this design asks for: `hostobs/assay.toml
 functional crates at a 95.0% line floor (measured 96.0377% at head `3b46df06`,
 floored one full point down; the per-crate floors stay stricter and are checked
 in the lane's own argv). `selftest` is kept rather than replaced, deliberately:
-it is the enforced baseline that runs in the Rust image, and the judge lane
-needs an image change first. A registered Rust `kind = "assay"` lane cannot run
-in `tester-unified-rust` today because Run-Gate source-installs assay with `pip`
-and that image ships `python3` alone — filed as B549 (hostobs `HOB-44`), with the
-smallest fix being `python3-pip python3-venv`. The hostobs lane was therefore
-judged end to end in throwaway copies of the workspace: the same 33 targets
-return `PASS` at 15100/15723 with branch capability `unavailable`, and
-`FAIL/UNCOVERED_LINES` at 14777/15723 when one kernel test file is deleted while
-nextest stays green. This keeps the shared parser reusable for every language
-that emits LCOV.
+it is the enforced baseline that runs in the Rust image, and two lanes judging
+the same measured command is redundancy the estate can afford.
+
+hostobs's lane is a `kind = "command"` lane, so it needs no image change: assay is
+stdlib-only, the judge runs from the mounted worktree's own `assay/src` with
+`PYTHONPATH`, and nothing is installed. The rejected shape, `kind = "assay"`,
+and the reason it fails there (Run-Gate source-installs assay with `pip`, and
+`tester-unified-rust` ships `python3` alone) are filed as B549, with the smallest
+fix being `python3-pip python3-venv`; the Rust image stays offline and locked,
+so B549's image change remains the answer only for consumers that insist on the
+install shape. The hostobs lane was proven through Run-Gate, not in throwaway
+copies: the same 33 targets return `PASS` at 15100/15723 with branch capability
+`unavailable`, and `FAIL/UNCOVERED_LINES` at 14777/15723 when one kernel test
+file is deleted (committed in a temporary worktree, because the lane requires a
+clean tree) while nextest stays green. This keeps the shared parser reusable for
+every language that emits LCOV.
 
 The lane tiers separate the expensive evidence by event. T1 uses sequence
 [`lint`, `assay-r1`]. T2 `gate` uses [`lint`, `assay-r3`, `conformance`] and

@@ -6,9 +6,11 @@ run Cargo: a lane supplies the pinned Rust tools, normally through
 `tester-unified-rust`. Stable Rust branch totals are unavailable after the
 producer-specific LCOV normalization; R2 and R3 remain unregistered. The
 hostobs baseline keeps `lint`/`selftest` AND declares the consumer
-`assay-r1` lane (see below); the judge lane cannot yet run in the Rust gate
-image, which carries no `pip` for Run-Gate's assay install (B549, hostobs
-`HOB-44`).
+`assay-r1` lane (see below) as a `kind = "command"` lane that runs the judge from
+the worktree's own `assay/src` with `PYTHONPATH`, so the locked offline Rust gate
+image needs no change. The rejected `kind = "assay"` shape is what B549 records:
+Run-Gate then source-installs assay with `pip`, which that image does not carry
+(B549, hostobs `HOB-44`, closed on the consumer side by the command lane).
 
 The decisions came from the 2026-11-07 and 2026-11-08 operator interviews
 recorded in [`hostobs-DECISIONS-20261107.md`](../../docs/design/hostobs/DECISIONS-2026-11-07.md). The second

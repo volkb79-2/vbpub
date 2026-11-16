@@ -198,7 +198,7 @@ items:
   - {id: B545, title: "Resolve progress/verdict disagreement for a timeout-killed R2 candidate", type: bugfix, component: mutation, context_estimate: medium}
   - {id: B546, title: "Assay's own T3 R2 had no native kind-assay lane for changed-line campaigns", type: bugfix, component: gate, context_estimate: small}
   - {id: B548, title: "assay ships a hand-written repo-level skill with no `skills` verb, so `skills check` cannot tell a consumer its installed copy is stale", type: feature, component: distribution, context_estimate: small}
-  - {id: B549, title: "The Rust consumer guide recommends tester-unified-rust for an assay lane, but a source-mode assay lane cannot be installed in that image (no pip/ensurepip/venv); the guide states no requirement the consumer can check, so the run fails at the install step naming nothing about the image", type: bugfix, component: distribution, context_estimate: small}
+  - {id: B549, title: "The Rust consumer guide recommends tester-unified-rust for a kind=assay lane, but a source-mode assay install cannot run in that image (no pip/ensurepip/venv). PARTIAL (2026-11-16): hostobs proves the command-lane route (judge from the worktree's own assay/src, no install), and the guide now states both routes; what remains is the install shape itself, which still fails there without an image change or a refusal that names the missing package", type: bugfix, component: distribution, context_estimate: small}
   - {id: B550, title: "The lcov coverage format has no producer vocabulary, so a Rust lane cannot declare `cargo-llvm-cov` and the verdict omits `judgment.r1.coverage_producer` — the one artifact field that would name the producer whose zero branch markers were normalized", type: feature, component: adapters, context_estimate: small}
 ---
 
@@ -14472,7 +14472,7 @@ The T2 `gate` is sequence [`lint`, `assay-r3`, `conformance`]; `assay-r1` is T1 
 
 ## B243 — R-2: Rust R1 adapter
 
-**Status:** PARTIAL (2026-11-15) — Assay R1 adapter and qualification are implemented, and hostobs's consumer lane is now DECLARED and judged end to end; what remains is that a registered source-backed assay lane cannot run in `tester-unified-rust` at all, because that image has no `pip` (B549). **Design:** `assay/docs/DESIGN-RUST-ADAPTER.md` §A-B, §G R-2, and `assay/docs/RUST-METHODOLOGY.md`.
+**Status:** PARTIAL (2026-11-16) — Assay R1 adapter and qualification are implemented, and hostobs's consumer lane is DECLARED and now judged END TO END IN ITS REGISTERED LANE through Run-Gate (PASS with the measured totals in the lane log; a committed-deletion negative logs `FAIL/UNCOVERED_LINES`). The consumer reaches the judge through a `kind = "command"` lane, so no install and no image change is needed; what remains open is the `kind = "assay"` install shape in `tester-unified-rust` (B549) and the unregistered R2/R3 path (B245/B246). **Design:** `assay/docs/DESIGN-RUST-ADAPTER.md` §A-B, §G R-2, and `assay/docs/RUST-METHODOLOGY.md`.
 
 Register a pure-Python `RustAdapter` at R1 with `*.rs` source globs and cargo-llvm-cov's documented `vendor`/`target` and test-path exclusions. Use `requires_span_attribution = false`, no external tools in the adapter, a conservative mask-and-lex executable-code check, and identity coverage-key normalization. R1 declares LCOV, changed-line mode at 100%, and a line-granularity known issue; every crate has 90% line / 85% region floors as lane steps. Add nextest/libtest first-failure recognizers and real-toolchain fixtures generated in the Rust image. Replace hostobs `selftest` with `assay-r1` and document the still-unregistered R2/R3 path. Milestone 2 is 100% changed-line coverage judged by Assay.
 
@@ -14494,16 +14494,20 @@ include the new module, preserving its existing full-source R0/R1 floor.
 the consumer lane this item asks for: `hostobs/assay.toml [lanes.assay-r1]`
 (`language = "rust"`, `mode = "whole_target"`, 33 declared `src` files of
 `model`/`proto`/`kernel`/`store`, `fail_under = 95.0`) plus
-`hostobs/run-gate.toml [lanes.assay-r1]` (`kind = "assay"`, environment
-`tester-unified-rust`, `network = "none"`), with `selftest` retained as the
-enforced baseline. Judged in throwaway copies of that workspace (the lane
-environment cannot host a source-backed assay lane yet — B549), the same 33
+`hostobs/run-gate.toml [lanes.assay-r1]` (`kind = "command"`, environment
+`tester-unified-rust`, `network = "none"`; the command lane runs the judge from
+the worktree's own `assay/src` with `PYTHONPATH`, so the image needs no `pip`),
+with `selftest` retained as the
+enforced baseline. Judged in the REGISTERED lane through Run-Gate, the same 33
 targets return `PASS` with `covered=15100 / executable=15723` (96.0377 %) and
 24 files of `missing_lines` findings, `branch_capability=unavailable`, and
 `FAIL/UNCOVERED_LINES` at 14777/15723 (93.9833 %) when one kernel test file is
-deleted while nextest stays green (322 tests). The remaining close condition is
-narrower than "consumer integration": `assay-r1` must PASS *in its registered
-lane* on the supported Rust image, which B549 blocks.
+deleted while nextest stays green (322 tests); the deletion had to be committed
+in a temporary worktree because the lane requires a clean tree. The registered
+lane path is therefore PROVEN end to end (declaration -> Run-Gate -> judge ->
+verdict artifact -> gate verdict); what B549 still blocks is the `kind =
+"assay"` shape of that adoption, where Run-Gate installs the worktree's assay
+first.
 
 **Source.** `assay/docs/DESIGN-RUST-ADAPTER.md` §A-B/§G R-2 and `assay/docs/RUST-METHODOLOGY.md`.
 
@@ -15242,9 +15246,15 @@ a tmp destination, and the docs-sync test that currently reads
 
 ## B549 — the documented Rust lane environment cannot host a source-mode assay lane
 
-**Status:** OPEN (filed 2026-11-15 by the hostobs `assay-r1` adoption); severity:
-major for any Rust consumer of `kind = "assay"` lanes; verified live, not
-inferred.
+**Status:** PARTIAL (2026-11-16; filed 2026-11-15 by the hostobs `assay-r1`
+adoption); severity: major for any Rust consumer that declares a
+`kind = "assay"` lane; verified live, not inferred. The command-lane route is
+proven (hostobs `docs/CONSUMERS.md` §"`HOB-44` (closed)": the judge runs from the
+worktree's own `assay/src` with `PYTHONPATH`, no install, and Run-Gate logs a
+PASS with the measured totals plus a `FAIL/UNCOVERED_LINES` negative). What
+remains is the install shape: a `kind = "assay"` lane in this image still dies
+at the install step, so either the image gains the two packages or
+`assay_source_setup` refuses with the missing package named.
 
 **Problem.** CONSUMERS.md §"Rust lanes (R1)" tells a consumer to run the Rust
 lane "in `tester-unified-rust` (or a pinned equivalent)" and to declare an
