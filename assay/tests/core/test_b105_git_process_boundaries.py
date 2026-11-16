@@ -6,6 +6,7 @@ from conftest import timeout_expired
 
 import errno
 import math
+import os
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -977,12 +978,192 @@ def test_p22_rejects_partial_clone_and_promisor_configuration(
         )
 
 
+def test_p22_open_source_bounds_the_bootstrap_resolution_with_its_deadline(
+    tmp_path, monkeypatch
+):
+    """(B226) `_p22_open_source` must HAND THE DEADLINE to `_resolve_repo`.
+
+    The measured defect: it called `_resolve_repo(repo_top, executable)` with
+    no `remaining=`, so `_run_bounded` ran the bootstrap `rev-parse
+    --absolute-git-dir` with NO deadline and a repository whose
+    `objects/info/alternates` is a writer-less FIFO blocked that child
+    forever (nine such children were found, 15-28 hours old). Handing the
+    deadline over is the half that bounds every topology the filesystem alone
+    cannot classify (a gitfile/linked-worktree learn their common directory
+    only from git).
+    """
+    seen: list[object] = []
+    resolved = SimpleNamespace(git_dir=tmp_path / ".git", repo_top=tmp_path)
+
+    def resolve(repo, executable, **kwargs):
+        seen.append((repo, executable, kwargs.get("remaining")))
+        return resolved
+
+    monkeypatch.setattr(git, "_resolve_git_executable", lambda: Path("/git"))
+    monkeypatch.setattr(git, "_resolve_repo", resolve)
+    monkeypatch.setattr(git, "_p22_git", lambda *_args, **_kwargs: b"relative.git\n")
+    with pytest.raises(AssayError, match="not an absolute, existing directory"):
+        git._p22_open_source(tmp_path, SimpleNamespace(remaining=lambda _what: 5.0))
+
+    assert len(seen) == 1
+    remaining = seen[0][2]
+    assert remaining is not None, "the bootstrap resolution got no deadline"
+    # It must be the CALLER's deadline sampled through the P22 spelling, not a
+    # fresh value invented here: the lane's own remaining budget is the bound.
+    assert remaining() == 5.0
+
+
+def test_p22_open_source_refuses_a_plain_repository_topology_before_any_git_child(
+    tmp_path, monkeypatch
+):
+    """(B226) The prompt half: a PLAIN repository is classified from the
+    filesystem, so its unsafe topology is refused before a git child exists.
+
+    `_nearest_git_marker` never asks git, and for `<repo_top>/.git` being a
+    DIRECTORY the common dir is exactly that directory. A writer-less FIFO
+    alternates file is a topology check that needs no git at all, so the
+    refusal must arrive without spawning the very child that would block on
+    it. Measured live before the fix: that child blocked 18 minutes.
+    """
+    repo = tmp_path / "consumer"
+    (repo / ".git" / "objects" / "info").mkdir(parents=True)
+    os.mkfifo(repo / ".git" / "objects" / "info" / "alternates")
+
+    spawned: list[object] = []
+
+    def resolve(*args, **kwargs):
+        spawned.append(args)
+        return SimpleNamespace(git_dir=repo / ".git", repo_top=repo)
+
+    monkeypatch.setattr(git, "_resolve_git_executable", lambda: Path("/git"))
+    monkeypatch.setattr(git, "_resolve_repo", resolve)
+    monkeypatch.setattr(git, "_p22_git", lambda *_args, **_kwargs: b"sha1\n")
+    with pytest.raises(AssayError, match="is not a regular file"):
+        git._p22_open_source(repo, SimpleNamespace(remaining=lambda _what: 5.0))
+
+    assert spawned == [], "a git child was spawned for a filesystem-answerable topology"
+
+
+def test_p22_open_source_refuses_an_expired_deadline_before_spawning_anything(
+    tmp_path, monkeypatch
+):
+    """(B226) An ALREADY-expired lane deadline must not start a git child.
+
+    This is the ordering half of the fix: `_resolve_repo` samples its
+    `remaining` before it spawns (`_run_bounded`'s first statement). An
+    expired budget therefore has to surface as the lane's own
+    BUDGET_EXCEEDED/LANE_TIMEOUT here, with no child started -- the same
+    exception object, never a fresh one invented at this layer.
+    """
+    expired = AssayError(
+        "the remaining lane budget expired while resolving the consumer repository",
+        outcome=Outcome.BUDGET_EXCEEDED,
+        reason_code=ReasonCode.LANE_TIMEOUT,
+    )
+    sampled: list[str] = []
+
+    def resolve(repo, executable, *, remaining=None):
+        # `_run_bounded` samples its `remaining` as its FIRST statement, before
+        # it spawns anything, so a fake that samples and then has nothing to
+        # return is exactly the pre-spawn window.
+        assert remaining is not None, "the bootstrap resolution got no deadline"
+        remaining()
+
+    monkeypatch.setattr(git, "_resolve_git_executable", lambda: Path("/git"))
+    monkeypatch.setattr(git, "_resolve_repo", resolve)
+    monkeypatch.setattr(
+        git, "_p22_git", lambda *_args, **_kwargs: sampled.append("child") or b""
+    )
+    with pytest.raises(AssayError) as caught:
+        git._p22_open_source(
+            tmp_path,
+            SimpleNamespace(
+                remaining=lambda what: (_ for _ in ()).throw(expired)
+            ),
+        )
+    assert caught.value is expired
+    assert sampled == [], "a git child was spawned past an expired deadline"
+
+
+def test_p22_precheck_defers_when_no_marker_exists(tmp_path, monkeypatch):
+    """(B226) "No repository here" is the RESOLUTION's refusal, not the
+    pre-check's.
+
+    The pre-check runs before `_resolve_repo` and must not answer a question
+    the walk cannot answer usefully: `_nearest_git_marker` raises
+    GIT_FAILED for an absent marker, and letting that escape here would replace
+    the resolution's measured diagnostics (the B068 linked-worktree/missing
+    gitfile-target sentences) with a bare "no .git marker" from a layer whose
+    only job is to inspect a topology that already exists.
+    """
+    examined: list[object] = []
+    monkeypatch.setattr(
+        git, "_p22_reject_local_topology", lambda common: examined.append(common)
+    )
+    git._p22_precheck_plain_topology(tmp_path / "nowhere")
+    assert examined == []
+
+
+def test_p22_precheck_leaves_a_gitfile_layout_to_the_bounded_path(
+    tmp_path, monkeypatch
+):
+    """(B226) The pre-check must not GUESS a common directory it cannot know.
+
+    A `.git` FILE is a gitfile redirect (linked worktree, submodule,
+    `core.worktree`); its real git dir is only knowable by asking git, so the
+    pre-check returns without deciding and the bounded bootstrap path decides.
+    Applying the topology rules to a gitfile PATH would be the "validate a
+    namespace-translated path with a local filesystem call" hazard: it would
+    `lstat` `<gitfile>/objects/info/alternates`, a path that cannot exist, and
+    report a clean topology for a repository it never inspected. Hence the
+    assertion is on WHICH directory was examined, not merely that nothing was
+    refused.
+    """
+    examined: list[Path] = []
+    monkeypatch.setattr(
+        git, "_p22_reject_local_topology", lambda common: examined.append(common)
+    )
+
+    linked = tmp_path / "linked"
+    linked.mkdir()
+    (linked / ".git").write_text("gitdir: /nonexistent/elsewhere\n", encoding="ascii")
+    git._p22_precheck_plain_topology(linked)
+
+    plain = tmp_path / "plain"
+    (plain / ".git" / "objects" / "info").mkdir(parents=True)
+    git._p22_precheck_plain_topology(plain)
+
+    assert examined == [plain / ".git"], (
+        "the pre-check must examine exactly the plain repository's own git "
+        "directory, and nothing for a gitfile redirect"
+    )
+
+
+@pytest.mark.parametrize(
+    ("name", "message"),
+    [
+        ("info/grafts", "refusing a grafted or shallow"),
+        ("shallow", "refusing a grafted or shallow"),
+    ],
+)
+def test_p22_local_topology_refuses_grafts_and_shallow_without_a_child(
+    tmp_path, name, message
+):
+    """(B226) `_p22_reject_local_topology` is the one place these checks live."""
+    common = tmp_path / "common.git"
+    (common / name).parent.mkdir(parents=True, exist_ok=True)
+    (common / name).write_text("x\n", encoding="ascii")
+
+    with pytest.raises(AssayError, match=message):
+        git._p22_reject_local_topology(common)
+
+
 def test_p22_open_source_rejects_a_relative_common_git_directory(
     tmp_path, monkeypatch
 ):
     resolved = SimpleNamespace(git_dir=tmp_path / ".git", repo_top=tmp_path)
     monkeypatch.setattr(git, "_resolve_git_executable", lambda: Path("/git"))
-    monkeypatch.setattr(git, "_resolve_repo", lambda *_args: resolved)
+    monkeypatch.setattr(git, "_resolve_repo", lambda *_args, **_kwargs: resolved)
     monkeypatch.setattr(git, "_p22_git", lambda *_args, **_kwargs: b"relative.git\n")
     with pytest.raises(AssayError, match="not an absolute, existing directory"):
         git._p22_open_source(
