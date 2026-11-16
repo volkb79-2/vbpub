@@ -184,3 +184,106 @@ environment variables, and `iogovmon.slice` keep their existing names.
 **Acceptance.** A fake disk that is all zero except a few blocks yields a bench with `status: "ok"` and `r_seq.valid == false`; the budget numbers in `plan` still hold (a probe is charged per attempt).
 
 **Priority.** Minor; it makes the r_seq series sparse on thin disks and holds back the weekly escalation (it follows an `ok` run only).
+
+## IGM-18 - the bench's own write load aborts the bench, so a thin disk never reaches the read lane and the lane windows never fill
+
+**Status:** OPEN. Filed 2026-11-16 from the r1002 0.1.0 acceptance (+12 h check).
+
+**Problem.** The safety gate and the bench's own load are in conflict on a
+slow/thin disk. Two limits govern a bench run:
+
+- the pre-run gate (`Gate.check("bench")`, `gating.py:104-112`) requires
+  system `io.pressure some avg10 <= cfg.bench_pressure_some_max` — default
+  **1.0** (`config.py`, the dataclass field; `HARD_MAX` clamps it to 5.0);
+- the MID-run guard (`RunGuard.check()`, `gating.py:143`) allows up to
+  `bench_pressure_some_max * 5` in strict mode — default **5.0** — and raises
+  `StopRequested(f"io_pressure_rose:{some}>{limit}")` when a recheck crosses
+  that.
+
+So a bench may legitimately start at `some avg10 <= 1.0`, and then abort as
+soon as ITS OWN writes drive the system-wide `some avg10` above 5.0. Measured
+on r1002 (512 GiB thin virtio disk, host idle, pre-run context quiet: io PSI
+`some avg10` 0.0, load 0.05/0.26, 0 inflight, protected harm none):
+
+| bench | result | what it wrote before it stopped |
+|---|---|---|
+| install-time | `aborted no_nonzero_offset_found` (IGM-17) | 3 write lanes valid (16 + 48 + 1 MiB) |
+| scheduled 20:37Z | `aborted io_pressure_rose:5.25>5.0` after 2.06 s | lane `w_fresh_qd4`: 28 of 144 MiB |
+| scheduled 02:37Z | `aborted io_pressure_rose:7.66>5.0` after 3.9 s | lane `w_over_4k`: 0.25 of 1 MiB |
+
+2 of 2 scheduled benches stopped themselves; nobody else was hurt, so this is
+the gate working as designed, not an unsafe event. The consequences are the
+finding:
+
+1. **The read lane is starved.** `run_bench` runs the write lanes first and
+   raises `LaneAbort` on the first aborted write lane (`bench.py:263-300`), so
+   `r_seq` never runs in an aborted bench. With this disk the `r_seq` series
+   gets samples only from a bench that survives all three write lanes.
+2. **The lane windows stay effectively empty.** Every lane is `LEARNING(1/5)`
+   after three benches (only the install-time bench produced the full write
+   set), so `recognize` produces no qualifying window and the weekly
+   escalation (which follows an `ok` run only, `_bench_bookkeeping`) never
+   triggers. The acceptance then cannot reach "full benches as designed".
+3. **Nothing corrects it, by design of the abort path.** A PSI stop is
+   `status: "aborted"` with `crashed: false`, so `bench_fail` stays 0: cadence
+   stays ~6 h and the same abort repeats on the same disk indefinitely.
+
+Two things make the disagreement sharper than they look. The knob that
+governs it is clamped (`HARD_MAX["bench_pressure_some_max"] = 5.0`), so the
+strict limit's own ceiling is 25 — an operator could already raise the field
+to 5.0 and get 25; nothing documents that, and a value that only exists
+through a 5x multiplier inside `RunGuard` is not discoverable. And the two
+numbers measure different things: the pre-run gate asks "is the system calm
+now", the mid-run guard asks "is `some` still under 5x the bench limit" —
+an absolute threshold on a quantity the bench itself is responsible for
+raising on a slow device.
+
+**Do (choose one disposition; the item is the decision, not a specific
+mechanism).**
+1. **Delta rather than absolute (preferred).** Sample `some avg10` immediately
+   before the bench's first IO, and run the mid-run guard against
+   `max(cfg.bench_pressure_some_max, baseline_some + allowance)` — the bench is
+   then judged on the pressure IT adds, not on a level it inherits. Record the
+   baseline and the allowance in the bench record so the decision is auditable.
+2. **Separate the write-phase limit from others.** A per-lane limit
+   (`bench_pressure_some_max_write`) that admits the bench's own write
+   concurrency, with the strict global limit reserved for the read lane and
+   the 4 KiB sync lane (which is what "another workload is being hurt" is
+   about).
+3. **Accept partial benches, disclosed.** Treat a self-caused PSI stop as a
+   lane disposition rather than a run abort: journal `status: "ok"` with
+   `r_seq.valid: false` and a `pressure_self` reason (the shape IGM-17
+   recommends for the read lane), so the write-lane windows fill and
+   `recognize` can proceed, while the missing read lane stays visible.
+   Whichever is chosen: keep the real aborts (`budget:*`, `unsafe_path`,
+   the kill switch, a stop flag) as run aborts, and do not raise any HARD_MAX
+   silently.
+
+**Where.** `iogovmon/src/iogovmon/gating.py` (`RunGuard.check`,
+`Gate.check("bench")`), `iogovmon/src/iogovmon/config.py` (the dataclass fields
+and `HARD_MAX`), `iogovmon/src/iogovmon/bench.py` (`run_bench`'s lane order and
+`LaneAbort` handling) and `iogovmon/src/iogovmon/runner.py` (the bench record
+and `_bench_bookkeeping`), `iogovmon/docs/DESIGN-GUIDE.md` §6 ("Mid-run abort:
+... pressure rising to 5x the bench limit") and `iogovmon/README.md`'s gate
+description. Tests live with the existing gating/bench tests.
+
+**Acceptance.** With a simulated thin disk (real `io.pressure` files injected
+through the collector's root, as the existing fixtures do) whose write lanes
+raise `some avg10` above the strict limit mid-lane: option 1 completes the
+bench, records the baseline and the allowance, and reaches `r_seq`; option 3
+journals `status: "ok"` with `r_seq.valid == false` and `pressure_self`, and
+the write-lane windows are eligible. A real abort (`budget:write`,
+`unsafe_path`, kill switch) still journals `status: "aborted"` and still
+counts toward `bench_max_failures`. A mutation that reverts the disposition
+makes the thin-disk fixture red.
+
+**Priority.** Should-fix for the acceptance: as measured, a thin disk never
+reaches a full bench, so the bench lane's windows and the weekly escalation
+cannot be reached at all, and IGM-01's 48 h evidence can only ever show
+`aborted` benches on this hardware.
+
+**Close when.** A simulated thin disk produces either a complete bench that
+reaches `r_seq` or a disclosed partial bench with an eligible write-lane window;
+the chosen disposition, its knob (and any changed clamp) is documented in the
+DESIGN-GUIDE and README; the real-abort cases are unchanged; and the r1002
+bench record after the fix shows at least one completed window per write lane.
