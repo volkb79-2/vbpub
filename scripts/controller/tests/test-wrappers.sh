@@ -52,6 +52,19 @@ if [[ -n ${FAKE_CODEX_DAEMON:-} ]]; then
   setsid sleep 300 >/dev/null 2>&1 &
   printf '%s\n' "$!" > "$FAKE_CODEX_DAEMON"
 fi
+if [[ -n ${FAKE_CODEX_HOLD_UNTIL:-} ]]; then
+  # A child that keeps working until the CHECK creates this file: "the agent is
+  # still running" becomes a state the check chooses instead of a duration it
+  # hopes the host will respect. A `sleep N` made every such case a race.
+  printf '{"type":"thread.started","thread_id":"slow-thread"}\n'
+  waited=0
+  while [[ ! -e $FAKE_CODEX_HOLD_UNTIL ]]; do
+    sleep 0.05
+    waited=$(( waited + 1 ))
+    (( waited < 6000 )) || break
+  done
+  exit "${CODEX_RC:-0}"
+fi
 if [[ -n ${FAKE_CODEX_SLEEP:-} ]]; then
   # A slow child, so a test can observe a run that is still working.
   printf '{"type":"thread.started","thread_id":"slow-thread"}\n'
@@ -502,7 +515,7 @@ contains "$ROOT/controller/runs/manual-resume-unmapped.done" 'OUTCOME=CODE-EXIT'
 # A resume REMOVES the previous invocation's marker before its child starts: a
 # reader polling the name must not report the older resume's exit while the new
 # one works.
-FAKE_CODEX_SLEEP=4 PATH="$ROOT/bin:$PATH" HOME="$ROOT/home" CONTROLLER_HOME="$ROOT/controller" CONTROLLER_REPO="$ROOT/repo" \
+FAKE_CODEX_HOLD_UNTIL="$ROOT/manual-resume-again.release" PATH="$ROOT/bin:$PATH" HOME="$ROOT/home" CONTROLLER_HOME="$ROOT/controller" CONTROLLER_REPO="$ROOT/repo" \
   CONTROLLER_OD_STATE="$MANUAL_STATE" CODEX_HOME_DEEPSEEK_VOLKER="$VOLKER_HOME" CODEX_HOME_DEEPSEEK_GITHUB2="$GITHUB2_HOME" \
   CODEX_SQLITE_HOME="$ROOT/sqlite" CODEX_LOG="$ROOT/manual-resume-again.log" CODEX_ROUTE=deepseek CODEX_AUTO_CONTINUE=0 \
   "$CODEX_IMPL_SCRIPT" "$ROOT/worktree" "$ROOT/brief.md" manual-resume resume manual-resume-thread \
@@ -524,6 +537,7 @@ for _ in {1..200}; do
 done
 (( saw_absence == 1 )) \
   || fail 'a resumed run left the previous invocation marker readable while its child worked'
+: > "$ROOT/manual-resume-again.release"
 wait "$resume_pid" || fail 'the second resume of one name failed'
 contains "$ROOT/controller/runs/manual-resume.done" 'OUTCOME=CODE-EXIT' \
   'the second resume wrote its own marker'
@@ -540,7 +554,8 @@ contains "$ROOT/controller/runs/codex-fail.done" 'AUTORESUME=0' \
 # A second wrapper on one run name is refused, and the refusal names the live
 # owner: two jobs on one name would share `.done`, `.jsonl` and the resume
 # bookkeeping.
-FAKE_CODEX_SLEEP=5 PATH="$ROOT/bin:$PATH" HOME="$ROOT/home" CONTROLLER_HOME="$ROOT/controller" CONTROLLER_REPO="$ROOT/repo" \
+FAKE_CODEX_HOLD_UNTIL="$ROOT/owned-codex-run.release" PATH="$ROOT/bin:$PATH" HOME="$ROOT/home" \
+  CONTROLLER_HOME="$ROOT/controller" CONTROLLER_REPO="$ROOT/repo" \
   CODEX_ROUTE=luna CODEX_HOME_LUNA="$ROOT/codex-luna" CODEX_SQLITE_HOME="$ROOT/sqlite" CODEX_LOG="$ROOT/owned.log" \
   "$CODEX_IMPL_SCRIPT" "$ROOT/worktree" "$ROOT/brief.md" owned-codex-run \
   > "$ROOT/owned-codex-run.out" 2>&1 &
@@ -557,6 +572,8 @@ else
 fi
 contains "$ROOT/owned-codex-run-2.out" "run name 'owned-codex-run' is already owned by pid" \
   'the refusal names the live owner of the run name'
+# The owner was HELD while the second wrapper was refused: release it now.
+: > "$ROOT/owned-codex-run.release"
 wait "$owned_pid" || fail 'the owning Codex wrapper failed'
 contains "$ROOT/controller/runs/owned-codex-run.done" 'OUTCOME=CODE-EXIT' \
   'the owning wrapper still wrote its own marker'
@@ -583,7 +600,7 @@ codex_run_is_free() {
 # (1) A killed wrapper behind a LIVE agent: the name is free at once, the agent
 #     is still running, and a forced relaunch is accepted by the evidence rule.
 FAKE_CODEX_DAEMON="$ROOT/codex-daemon.pid" \
-FAKE_CODEX_SLEEP=30 PATH="$ROOT/bin:$PATH" HOME="$ROOT/home" CONTROLLER_HOME="$ROOT/controller" \
+FAKE_CODEX_HOLD_UNTIL="$ROOT/killed-codex-run.release" PATH="$ROOT/bin:$PATH" HOME="$ROOT/home" CONTROLLER_HOME="$ROOT/controller" \
   CONTROLLER_REPO="$ROOT/repo" CODEX_ROUTE=luna CODEX_HOME_LUNA="$ROOT/codex-luna" \
   CODEX_SQLITE_HOME="$ROOT/sqlite" CODEX_LOG="$ROOT/killed-codex.log" \
   "$CODEX_IMPL_SCRIPT" "$ROOT/worktree" "$ROOT/brief.md" killed-codex-run \
@@ -622,6 +639,9 @@ if [[ -s $ROOT/codex-daemon.pid ]]; then
     || fail 'a daemon left behind by the agent held the run name'
   kill -9 "$(cat "$ROOT/codex-daemon.pid")" 2>/dev/null || true
 fi
+# The stranded agent holds until this file exists; release it so the check
+# cannot leave a process behind.
+: > "$ROOT/killed-codex-run.release"
 
 if [[ ${CONTROLLER_TEST_PARALLEL_OD_STARTS:-1} == 1 ]]; then
   PARALLEL_DIR=$ROOT/parallel-codex-logs

@@ -95,6 +95,16 @@ for line in open(sys.argv[1], encoding="utf-8"):
         event["id"] = sys.argv[2]
     print(json.dumps(event, separators=(",", ":")))
 PY
+# A deterministic hold: the fake agent keeps working until the CHECK creates
+# this file. A `sleep N` would make every case that needs "the agent is still
+# running" a race against how loaded the host is.
+if [[ -n ${FAKE_PI_HOLD_UNTIL:-} ]]; then
+  waited=0
+  while [[ ! -e $FAKE_PI_HOLD_UNTIL ]]; do
+    sleep 0.05
+    waited=$(( waited + 1 ))
+  done
+fi
 [[ -z ${FAKE_PI_SLEEP_AFTER:-} ]] || sleep "$FAKE_PI_SLEEP_AFTER"
 exit "${FAKE_PI_RC:-0}"
 SH
@@ -408,7 +418,7 @@ check_live_snapshot() {
     CONTROLLER_OD_STATE="$ROOT/live-state.json" \
     FAKE_FIXTURE_DIR="$SCRIPT_DIR/fixtures" \
     FAKE_PI_SEQUENCE='pi-tool-in-flight' FAKE_PI_COUNTER="$ROOT/live-run.counter" \
-    FAKE_PI_SLEEP_AFTER=4 FAKE_PI_SESSION_ID=live-run-session FAKE_PI_RC=0 \
+    FAKE_PI_SESSION_ID=live-run-session FAKE_PI_RC=0 \
     PI_LIVE_INTERVAL_SECONDS=1 PI_EMPTY_RETRY_LIMIT=0 \
     "$SRC" "$WORKTREE" "$PROMPT" live-run > "$ROOT/live-run.launch.log" 2>&1 < /dev/null &
   local wrapper=$!
@@ -1186,6 +1196,8 @@ check_repo_not_a_worktree() {
 # --- run-name ownership (CTL-14) -------------------------------------------
 
 # Start one wrapper in the background and wait until it has claimed the name.
+# The agent HOLDS until the check releases it (a marker file), so "the owner is
+# still alive" is a state the check chooses, never a duration it hopes for.
 start_owned_run() {
   local run=$1 sleep_after=$2
   shift 2
@@ -1193,7 +1205,7 @@ start_owned_run() {
     CONTROLLER_OD_STATE="$ROOT/ownership-$run-state.json" PI_LIVE=0 \
     FAKE_FIXTURE_DIR="$SCRIPT_DIR/fixtures" \
     FAKE_PI_STREAM="$SCRIPT_DIR/fixtures/pi-success.jsonl" \
-    FAKE_PI_SESSION_ID="$run-session" FAKE_PI_RC=0 FAKE_PI_SLEEP_AFTER="$sleep_after" \
+    FAKE_PI_SESSION_ID="$run-session" FAKE_PI_RC=0 FAKE_PI_HOLD_UNTIL="$ROOT/$run.release" \
     "$SRC" "$WORKTREE" "$PROMPT" "$run" "$@" \
     > "$ROOT/$run.launch.log" 2>&1 < /dev/null &
   OWNED_PID=$!
@@ -1201,6 +1213,9 @@ start_owned_run() {
   # under test must not need the guard's file to exist to observe a running run.
   wait_for_stream "$run" || { cat "$ROOT/$run.launch.log" >&2; fail "wrapper for $run exited before it started its agent"; }
 }
+
+# Release a held agent; without it the wrapper never finishes.
+release_owned_run() { : > "$ROOT/$1.release"; }
 
 # Wait until the fake agent has started: its first event is already in the run
 # stream, so a kill at this point happens while the agent works.
@@ -1298,9 +1313,14 @@ check_run_name_ownership() {
     fail 'a resume interleaved with a live wrapper on the same run name'
   fi
   contains "$ROOT/owned-run-resume.log" 'is already owned by pid' 'a resume of a live run is refused by name'
-  # (3) A different run name proceeds while the first is still working.
+  # (3) A different run name proceeds while the first is still working: the owner
+  # is HELD (its release file is not created), so this is not a race.
   wait_launch other-run deepseek-pi-volker pi-success /dev/null
   [[ -e $CONTROLLER_ROOT/runs/other-run.done ]] || { stop_owned_run TERM; fail 'a different run name was blocked by the first'; }
+  # The owner has been held through every case above; release it so its own
+  # wrapper exits normally and its `.done` exists for the retirement below.
+  release_owned_run owned-run
+  wait "$OWNED_PID" 2>/dev/null || true
   # (4) SIGTERM releases the name; force retires (never overwrites) the records
   #     and names the identity it retired.
   stop_owned_run TERM
@@ -1317,16 +1337,23 @@ check_run_name_ownership() {
   #     until the fake agent is running (its first event is in the stream) so the
   #     case is "wrapper killed while the agent works", not "wrapper killed before
   #     it reached the agent".
-  start_owned_run killed-run 8
+  start_owned_run killed-run 0
   wait_for_stream killed-run || { stop_owned_run KILL; fail 'the killed-run agent never started'; }
+  # The agent's own pid, so the claim below can be judged on EVIDENCE: the
+  # reclaim must not have waited for it, so it is still alive afterwards.
+  agent_pid=$(pgrep -P "$OWNED_PID" -f 'bash' 2>/dev/null | head -n 1 || true)
   stop_owned_run KILL
   name_lock_is_free killed-run || fail 'a SIGKILLed wrapper left its run-name lock held'
-  started_at=$SECONDS
   CONTROLLER_RUN_FORCE=1 wait_launch killed-run deepseek-pi-volker pi-success /dev/null \
     || fail 'a SIGKILLed name could not be reclaimed'
-  (( SECONDS - started_at < 6 )) \
-    || fail 'reclaiming a SIGKILLed name waited for the killed wrapper agent child to exit'
+  # Still held (its release file was never created), so this is the fact that
+  # matters: the name was reclaimed WHILE the agent still ran. No clock involved.
+  [[ -n ${agent_pid:-} ]] || fail 'the killed run had no agent process to judge the reclaim against'
+  kill -0 "$agent_pid" 2>/dev/null \
+    || fail 'the reclaim waited for the killed wrapper agent child to exit'
   contains "$ROOT/killed-run.launch.log" 'retired' 'the forced reclaim reports what it retired'
+  # Release the stranded agent so it cannot outlive the check.
+  release_owned_run killed-run
 }
 
 check_job_status_validation() {

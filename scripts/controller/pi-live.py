@@ -309,10 +309,15 @@ class Snapshot:
         # growth is the tool's own START event, and a start is a boundary, never
         # progress evidence for the tool it begins (see Progress).
         self.new_tool_started = False
+        # Set while the bytes of a tick carry a `tool_execution_update`: the
+        # tool's OWN output, produced after its call started. That is real
+        # evidence even on the tick that also announced the call.
+        self.new_tool_output = False
 
     def read_new(self) -> int:
         """Read newly appended bytes; returns how many were consumed."""
         self.new_tool_started = False
+        self.new_tool_output = False
         try:
             with self.stream.open("rb") as source:
                 if os.fstat(source.fileno()).st_size < self.offset:
@@ -379,6 +384,7 @@ class Snapshot:
             call_id = event.get("toolCallId")
             if self.in_flight is not None and self.in_flight.get("call_id") == call_id:
                 self.in_flight["output_epoch"] = self.epoch_now()
+                self.new_tool_output = True
         elif event_type == "tool_execution_end":
             call_id = event.get("toolCallId")
             if self.in_flight is None or self.in_flight.get("call_id") == call_id:
@@ -465,6 +471,7 @@ class Progress:
     def observe(
         self, now: int, grew: bool, sample: Sample | None, nodes: int | None = None,
         truncated: bool = False, tool_started: bool = False,
+        tool_output: bool = False,
     ) -> int | None:
         self.tree_nodes = nodes
         self.tree_truncated = truncated
@@ -480,8 +487,10 @@ class Progress:
             # A tool call's start is a boundary, not evidence: the stream grew
             # because the call was announced, and the counters that just became
             # readable belong to a process the previous tick never measured.
-            changed = False
-            reason = "tool-start"
+            # The tool's OWN output in the same bytes is evidence though: it was
+            # produced after the call started.
+            changed = bool(tool_output)
+            reason = "tool-output" if tool_output else "tool-start"
         if not self.tool_in_flight:
             # No tool in flight: the tool-process counters are a baseline, and
             # saying they grew would be evidence about processes no tool owns.
@@ -709,6 +718,7 @@ def main(argv: list[str]) -> int:
         progress.observe(
             now, grew, sample, nodes, truncated,
             tool_started=state.new_tool_started,
+            tool_output=state.new_tool_output,
         )
         body = payload(
             arguments.run, Path(arguments.stream), arguments.worktree,
