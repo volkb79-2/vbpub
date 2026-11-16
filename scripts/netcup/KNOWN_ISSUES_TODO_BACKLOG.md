@@ -67,7 +67,7 @@ docs landed together.
 | NC-59 | `provision-runner.sh` installs no slice limits, so the gates tier's CPU and memory policy (and the 2026-11-16 overcommit/paging decision) reaches a host only by hand-editing a drop-in | Should-fix | FIXED in repository 2026-11-16 (`provision-gates-limits.sh` + live-memory admission); live fresh-host acceptance NC-62 |
 | NC-60 | Provisioning installs no pinned image set, so a host cannot run assay's SQL qualification until someone pulls the digest-pinned PostgreSQL reference by hand | Should-fix | OPEN 2026-11-16 |
 | NC-61 | The runner guide's fresh-host replay is still unverified and its checked-in facts drift after a reinstall with no test or date binding them | Minor | OPEN 2026-11-16 |
-| NC-62 | The rendered gates memory policy has no live fresh-host acceptance: it is proven only against fakes, while the measured policy it reproduces came from one hand-configured host | Should-fix | OPEN 2026-11-16 |
+| NC-62 | The rendered gates memory policy has no live fresh-host acceptance: it is proven only against fakes, while the measured policy it reproduces came from one hand-configured host (also carries the `--adopt` one-time step and the 6655-vs-6656 nominal-size finding of review round 1) | Should-fix | OPEN 2026-11-16 |
 | NC-63 | The `docker-.scope.d` `OOMPolicy=kill` drop-in covers every Docker container on the host, so an OOM in the cockpit or a buildkitd scope kills that container whole | Minor | OPEN 2026-11-16 (by design for lane scopes; restriction open) |
 
 ---
@@ -1563,20 +1563,42 @@ policies.
 - Convergence without a restart: the live OOM scores are written through
   `/proc/<MainPID>/oom_score_adj`, so ssh, logind, journald and docker keep running;
   a second run with matching values rewrites nothing and reloads nothing.
+- The ceiling is derived from the host's NOMINAL size: each total is rounded UP to
+  `GATES_NOMINAL_STEP_MIB` (default 1024 MiB) before the reserve is subtracted, so
+  an 8 GiB host whose kernel reports 7935 MiB derives `6656M` and `57344M`
+  (`NC-62` records how the raw-kB form came out one MiB low). The rule is exercised
+  on 4, 8 and 16 GiB fixtures, with the step and the reserve as killed mutants.
+- A host an operator configured by hand is migrated once and explicitly:
+  `--adopt` (or `GATES_MEMORY_ADOPT=1` through provisioning) recognises a file only
+  at this tool's own path, only when every section and directive belongs to the
+  rendered policy and the value is the one this host derives; its content is copied
+  to `<file>.retired-<UTC stamp>` and never deleted. Without the flag it is refused
+  with a message naming `--adopt`, so a re-run on the measured host cannot silently
+  change the policy.
+- A loaded-but-INACTIVE slice (a fresh host) is a no-op (`exit 0`): no live limit to
+  compare, no counter to reset; an unreadable process list is never an idle slice
+  (`exit 3`), because the only thing it gates is the restart that resets counters.
 - Live admission replaced the static high-water budget: `remote-gate.py` takes
   `--mem-need-mb` (the lane's expected peak, passed by the controller's weight),
   `--mem-floor-mb` (default 1024) and `--wait-mem` (default 900), caps the expected
   peak at `MemTotal - 2 x floor` so one oversized lane always runs alone and pages,
   serialises callers through one host-wide ticket, and refuses (exit 75, verdict
-  `MEM_REFUSED`) when meminfo cannot be read.
+  `MEM_REFUSED`) when meminfo cannot be read. The default `--mem-need-mb 0` declares
+  no peak and keeps the previous behaviour exactly (no ticket, no floor, no wait),
+  because the controller wrapper does not pass a peak yet; the verdict is decided
+  from the job log's refusal LINE, so an admitted lane that failed later is not
+  mislabelled.
 - The cockpit launcher passes `--oom-score-adj` (`COCKPIT_OOM_SCORE_ADJ`, default
   `-500`), which was the one control-plane member the measurement found unprotected
   (NC-63 tracks the breadth of the docker-scope drop-in).
-- Tests: `tests/test_provision_gates_limits.py` (two RAM sizes, idempotence,
-  idle-only restart, every refusal code, dry-run, in-place scores, foreign
-  drop-ins) and `tests/test_remote_gate_memory.py` (the job's own `mem_admit_ok`
-  against meminfo fixtures, the inclusive floor boundary, the larger-than-RAM cap,
-  unreadable facts, the real `flock` ticket, the `MEM_REFUSED` verdict).
+- Tests: `tests/test_provision_gates_limits.py` (three RAM sizes including the
+  measured v1001 fixture, idempotence, idle-only restart, an unreadable process list,
+  every refusal code, dry-run, in-place scores, foreign/agreeing drop-ins, the
+  `--adopt` migration, the provisioning exit contract) and
+  `tests/test_remote_gate_memory.py` (the job's own `mem_admit_ok` against meminfo
+  fixtures, the inclusive floor boundary, the larger-than-RAM cap, unreadable facts,
+  the real `flock` ticket, the no-peak default, the `MEM_REFUSED` verdict and its two
+  negative cases).
 
 **Close when.** A freshly reinstalled host without host-setup has the gates
 slice properties from provisioning alone, derived from that host's own facts and
@@ -1702,25 +1724,40 @@ host. Source: this repository's NC-59 implementation (`provision-gates-limits.sh
 on an 8 GiB box, `MemorySwapMax=56G`, `OOMPolicy=kill` on docker scopes,
 `OOMScoreAdjust=-900` on five units) and the repository now derives the same shape
 from `MemTotal`/`SwapTotal`. Everything about the derivation is proven against
-fakes: two RAM sizes produce two different ceilings, the live restart is refused
+fakes: three RAM sizes produce three different ceilings, the live restart is refused
 while the tier has tasks, an unreadable fact refuses by name, a foreign drop-in is
-refused, and a second run changes nothing. What is NOT proven is that the rendered
-drop-ins and the one idle restart produce the measured cgroup state on a real
-reinstalled host — the fake `systemctl`/`cgroupfs` cannot show that systemd accepts
-the drop-in syntax in `/etc/systemd/system/docker-.scope.d/`, that a prefix drop-in
-really reaches a transient `docker-<id>.scope`, or that a slice restart applies
-`MemorySwapMax` on that kernel. In other words: "the tool renders the policy" is
-certified; "a fresh host comes up with the policy" is not.
+refused, a hand-configured host is adopted only on request, and a second run changes
+nothing. What is NOT proven is that the rendered drop-ins and the one idle restart
+produce the measured cgroup state on a real reinstalled host — the fake
+`systemctl`/`cgroupfs` cannot show that systemd accepts the drop-in syntax in
+`/etc/systemd/system/docker-.scope.d/`, that a prefix drop-in really reaches a
+transient `docker-<id>.scope`, or that a slice restart applies `MemorySwapMax` on
+that kernel. In other words: "the tool renders the policy" is certified; "a fresh
+host comes up with the policy" is not.
+
+**Measured-host adoption step (review round 1, 2026-11-16).** On the already
+hand-configured host the tool must be a NO-OP after one explicit adoption, not a
+one-MiB change that restarts the slice and resets `memory.events`. The one-time step
+is `sudo ~/runner-scripts/provision-gates-limits.sh --adopt --dry-run` (review the
+list), then `--adopt`, then a plain run that reports every drop-in unchanged and
+runs neither `daemon-reload` nor `restart`. The hand content is kept as
+`20-memory-policy.conf.retired-<stamp>`. The same finding that round produced: the
+raw-kB derivation rendered `6655M` (and `57343M` of swap) for this host instead of
+the measured `6656M`/`57344M`, because `MemTotal` reads 7935 MiB for an 8 GiB box —
+the nominal-size rule (`GATES_NOMINAL_STEP_MIB`) now reproduces both measured
+values exactly, and the acceptance run must show those exact numbers.
 
 **Minimal solution.** One acceptance run on a freshly reinstalled host, no manual
 edits, comparing the rendered values against the live ones and against the
 measured reference: `systemctl show <slice> -p MemoryHigh,MemoryMax,MemorySwapMax`,
 `cat /sys/fs/cgroup/.../memory.{high,max,swap.max}`, `ps -eo pid,comm,oom_score_adj`
-for the five units, a started lane container's `memory.oom.group` reading `1`, and
-one second run of the script that changes nothing (`systemctl` argv shows no
-`daemon-reload` and no `restart`). Record the host's `MemTotal`/`SwapTotal` and the
-derived numbers in the acceptance record (not in the repository: they are host
-facts).
+for the five units, a started lane container's `memory.oom.group` reading `1` (probe
+started with `--cgroup-parent <slice>`, read from the host's own cgroup files, never
+through a `--cgroupns=host` container), and one second run of the script that changes
+nothing (`systemctl` argv shows no `daemon-reload` and no `restart`). On the host that
+was configured by hand, the same run verifies the adoption step above (one `--adopt`,
+then a no-op). Record the host's `MemTotal`/`SwapTotal` and the derived numbers in
+the acceptance record (not in the repository: they are host facts).
 
 **Where.** No code expected; `scripts/netcup/runner/README.md` (the acceptance
 subsection next to the policy section, marked with the run's date) and this file.

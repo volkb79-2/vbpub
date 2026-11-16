@@ -489,12 +489,17 @@ cockpit. The argv regression is in `tests/test_runner_scripts.py`.
   The caller follows it, or `--detach` returns at once; the job survives the caller (`status`, `logs -f`, `collect` later).
 - **Memory admission (live, no static ceiling).** After the PSI wait the job reads this host's own `/proc/meminfo` and starts the
   lane only when `MemAvailable - expected peak >= --mem-floor-mb` (default 1024 MiB of headroom for the control plane).
-  `--mem-need-mb` is the lane's expected peak in MiB (the controller's admission weight; the default `0` checks only the
-  floor). The expected peak is capped at `MemTotal - 2 x floor`, so one lane larger than RAM always runs ALONE and pages
-  (paging overcommit is this host tier's design), while a smaller lane waits when the host is occupied. `--wait-mem`
-  (default 900 s) bounds the wait. One host-wide ticket (`~/rg/.mem-admit.lock`, held 20 s after a lane starts so its
-  memory is already visible) keeps two callers from reading the same figure. An unreadable meminfo is indeterminate and
-  refuses: exit 75, verdict `MEM_REFUSED` (never `PSI_REFUSED`, which would name a cause nobody observed).
+  `--mem-need-mb` is the lane's expected peak in MiB (the controller's admission weight). **Its default `0` declares no
+  peak, and then nothing changes: no ticket, no floor check, no wait — the lane starts immediately.** That is the
+  behaviour every existing caller keeps while the controller wrapper does not pass a peak; pass `--mem-need-mb <MiB>` to
+  opt into admission. The expected peak is capped at `MemTotal - 2 x floor`, so one lane larger than RAM always runs
+  ALONE and pages (paging overcommit is this host tier's design), while a smaller lane waits when the host is occupied.
+  `--wait-mem` (default 900 s) bounds the wait. One host-wide ticket (`~/rg/.mem-admit.lock`, held 20 s after a lane
+  starts so its memory is already visible) keeps two callers from reading the same figure. An unreadable meminfo is
+  indeterminate and refuses: exit 75, verdict `MEM_REFUSED` (never `PSI_REFUSED`, which would name a cause nobody
+  observed). The verdict is read from the job log's refusal line, so a lane that WAS admitted and then exited 75 for its
+  own reason is not reported as a memory refusal. The memory fact is the kernel's own `/proc/meminfo`; there is no
+  environment override on the production path.
   A PSI refusal keeps its own verdict (`PSI_REFUSED`); the two never share one word.
 - **What runs.** A cockpit `run-gate` (default `<home>/.local/bin/run-gate`, or the repo's newer venv) and the host's tester image; the
   repo name, the chosen run-gate version and the image are printed as `header:` lines in `job.log`. Refresh: <host> `docker load` of a built
@@ -893,10 +898,36 @@ sudo ~/runner-scripts/provision-gates-limits.sh           # derive, write, apply
 sudo ~/runner-scripts/provision-gates-limits.sh --dry-run # print the plan only
 ```
 
-The exit status tells you what happened: `0` converged (or already converged), `3` a host fact is unreadable or the
-host has no swap above its reserve, `4` the tier has tasks so the live slice was left alone (the drop-ins are installed;
-re-run when it is idle), `5` another owner's drop-in or file competes with the policy, `7` the live cgroup still
-disagrees after a restart, `8` a live OOM score could not be set.
+The ceiling comes from the host's **nominal** size: `MemTotal` is rounded UP to the install plan's step
+(`GATES_NOMINAL_STEP_MIB`, default 1024 MiB) before the 1536 MiB reserve (1024 floor + 512 slack) is subtracted, and
+`SwapTotal` likewise before the host's 8192 MiB swap share is subtracted. A kernel reserves a little, so an 8 GiB host
+reports 7935 MiB; subtracting the raw figure produced one MiB less than the value the operator had measured and chosen,
+so the derivation uses the size that was bought. An 8 GiB / 64 GiB-swap host therefore renders `MemoryMax=6656M` and
+`MemorySwapMax=57344M`.
+
+The exit status tells you what happened: `0` converged, already converged, or a loaded-but-INACTIVE slice (a fresh host:
+no live limit to compare, no counter to reset, the drop-ins apply at the first start), `3` a host fact is unreadable, the
+slice is active but its cgroup cannot be resolved, the tier's process list cannot be read, or the host has no swap above
+its reserve (by design: this policy pages an oversized lane instead of killing it), `4` the tier has tasks so the live
+slice was left alone (the drop-ins are installed; re-run when it is idle), `5` another owner's drop-in or file competes
+with the policy (nothing of ours was written), `7` the live cgroup still disagrees after a restart, `8` a live OOM score
+could not be set.
+
+**Adopting a hand-configured host, once.** A host that a person configured by hand (the 2026-11-16 measurement itself,
+and r1002 if it gets the same policy) is refused with exit 5 until the migration is an explicit act:
+
+```bash
+sudo ~/runner-scripts/provision-gates-limits.sh --adopt --dry-run   # list what would be adopted
+sudo ~/runner-scripts/provision-gates-limits.sh --adopt             # adopt: retire the hand file, render ours
+sudo ~/runner-scripts/provision-gates-limits.sh                     # afterwards a NO-OP: nothing rewritten, no restart
+```
+
+`--adopt` recognises a file only at this tool's own path, only when every non-comment line is a section header naming
+exactly the section that file owns or a directive whose key belongs to the rendered policy (the VALUES are not compared:
+a hand file may write `56G` where the tool renders `57344M` — the same amount, a different spelling); anything else stays
+foreign and is refused even with the flag. The adopted content is copied to `<file>.retired-<UTC stamp>` (a name systemd
+does not load) and never deleted. Provisioning passes the flag only when `GATES_MEMORY_ADOPT=1` is set, so the migration
+is the operator's act.
 
 Host-side check (read-only):
 
@@ -909,7 +940,8 @@ docker inspect -f '{{.HostConfig.OomScoreAdj}}' "$COCKPIT_NAME"   # 0 means the 
 
 Expected: `MemoryHigh=infinity`, `MemoryMax` below `MemTotal` (it was `6656M` on an 8 GiB host), `MemorySwapMax`
 large but not the whole swap, `-900` on the five protected units, and a negative cockpit score. A started lane's
-`memory.oom.group` must read `1`. Why these values, and what never to change (`MemoryHigh`, slice-level
+`memory.oom.group` must read `1`: check it by starting the probe with `--cgroup-parent dev-gates.slice` and reading
+`/sys/fs/cgroup/dev.slice/dev-gates.slice/docker-*/memory.oom.group` on the host — never from a `--cgroupns=host` container. Why these values, and what never to change (`MemoryHigh`, slice-level
 `oom.group`, systemd-oomd, io limits): [runner guide](runner/README.md#gates-tier-memory-policy) and the
 [design rationale](DESIGN-GUIDE.md#pure-test-host-memory-policy).
 
