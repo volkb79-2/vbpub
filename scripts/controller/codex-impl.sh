@@ -38,6 +38,7 @@ out=$CONTROLLER_RUNS_DIR
 controller_run_claim "$name" || exit 2
 auto_count=0
 codex_launched=0
+# shellcheck disable=SC2329 # installed as the EXIT trap below
 codex_finish() {
   # Every exit path (normal, child failure, bookkeeping failure, an error path
   # after the claim) states the run's outcome and drops the name. The marker is

@@ -1121,7 +1121,7 @@ assert any(row["pid"] == churn_pid for row in after["steering_children"]), after
 assert pids, after
 assert all(row.get("command") for row in after["steering_children"] if row["pid"] == steer_pid), after
 PY
-      [[ $(python3 -c "import json,sys; print(json.load(open(sys.argv[1]))['wrapper_pid'])" "$ROOT/focus-progress-after.json") == $$ ]] \
+      [[ $(python3 -c "import json,sys; print(json.load(open(sys.argv[1]))['wrapper_pid'])" "$ROOT/focus-progress-after.json") == "$$" ]] \
         || fail 'the snapshot did not keep the wrapper pid'
       python3 - "$ROOT/focus-progress-after.json" "$sidecar_pid" <<'PY' \
         || fail 'the sidecar or wrapper was published as a steering target'
@@ -1405,13 +1405,13 @@ PY
       contains "$RULES_SOURCE" 'deepseek-pi-volker' 'rules list the pinned Pi routes'
       contains "$ENV_SOURCE" 'PI_THINKING="high"' 'environment example documents Pi thinking'
       contains "$README_SOURCE" 'OUTCOME=NO-REPORT' 'README documents the report outcome'
-      contains "$README_SOURCE" '`CONTEXT-FULL`' 'README documents the context-full class'
-      contains "$README_SOURCE" '`TOOL-CALL-NO-TEXT`' 'README documents the tool-call-no-text class'
-      contains "$DESIGN_SOURCE" '`CONTEXT-FULL` is the real end state of' \
+      contains "$README_SOURCE" "\`CONTEXT-FULL\`" 'README documents the context-full class'
+      contains "$README_SOURCE" "\`TOOL-CALL-NO-TEXT\`" 'README documents the tool-call-no-text class'
+      contains "$DESIGN_SOURCE" "\`CONTEXT-FULL\` is the real end state of" \
         'design guide explains why context-full is its own class'
-      contains "$DESIGN_SOURCE" '`TOOL-CALL-NO-TEXT` is' 'design guide explains the tool-call-no-text class'
-      contains "$CONSUMER_SOURCE" '| `CONTEXT-FULL` |' 'consumer guide gives the context-full action'
-      contains "$CONSUMER_SOURCE" '| `TOOL-CALL-NO-TEXT` |' 'consumer guide gives the tool-call-no-text action'
+      contains "$DESIGN_SOURCE" "\`TOOL-CALL-NO-TEXT\` is" 'design guide explains the tool-call-no-text class'
+      contains "$CONSUMER_SOURCE" "| \`CONTEXT-FULL\` |" 'consumer guide gives the context-full action'
+      contains "$CONSUMER_SOURCE" "| \`TOOL-CALL-NO-TEXT\` |" 'consumer guide gives the tool-call-no-text action'
       contains "$README_SOURCE" "\`EMPTY-COMPLETION\`" 'README documents the empty-completion outcome'
       contains "$DESIGN_SOURCE" 'Why the terminal outcome is classified' 'design guide explains the outcome classification'
       contains "$CONSUMER_SOURCE" "\`.done\` outcome" 'consumer guide gives the outcome vocabulary'
@@ -1422,21 +1422,22 @@ PY
       contains "$DESIGN_SOURCE" 'Why liveness is a file, not a poll of the process' 'design guide explains the liveness sidecar'
       contains "$README_SOURCE" 'job-status.sh' 'README documents the liveness read'
       contains "$CONSUMER_SOURCE" 'JOB_STATUS_STALL_SECONDS' 'consumer guide documents the stall threshold'
-      contains "$README_SOURCE" '**`LONG-TOOL` and `HUNG-TOOL` are different words on purpose**' \
+      contains "$README_SOURCE" "**\`LONG-TOOL\` and \`HUNG-TOOL\` are different words on purpose**" \
         'README states that the two words are separate'
-      contains "$README_SOURCE" '`HUNG-TOOL` (the same age' 'README separates long-tool from hung-tool'
+      contains "$README_SOURCE" "\`HUNG-TOOL\` (the same age" 'README separates long-tool from hung-tool'
       contains "$README_SOURCE" 'progress evidence' 'README names the progress fact'
       contains "$README_SOURCE" 'To steer a stuck tool, kill the exact child pid' \
         'README states the steering action'
-      contains "$README_SOURCE" '`steer=` — never the wrapper' \
+      contains "$README_SOURCE" "\`steer=\` — never the wrapper" \
         'README forbids killing the wrapper to steer a tool'
-      contains "$README_SOURCE" '`since-commit=no-commits-yet`' 'README qualifies the since-commit age'
-      contains "$README_SOURCE" '`DIED (wrapper pid <pid> gone, no .done)`' 'README documents the died state'
-      contains "$DESIGN_SOURCE" 'Why `LONG-TOOL` exists as its own word' \
+      contains "$README_SOURCE" "\`since-commit=no-commits-yet\`" 'README qualifies the since-commit age'
+      contains "$README_SOURCE" "\`DIED (wrapper pid <pid> gone, no .done)\`" 'README documents the died state'
+      contains "$DESIGN_SOURCE" "Why \`LONG-TOOL\` exists as its own word" \
         'design guide explains why long-tool is separate'
-      contains "$DESIGN_SOURCE" '`DIED (wrapper pid' 'design guide documents the died classification'
+      contains "$DESIGN_SOURCE" "\`DIED (wrapper pid" 'design guide documents the died classification'
       contains "$CONSUMER_SOURCE" 'steer=' 'consumer guide shows the steering column'
-      contains "$CONSUMER_SOURCE" 'Kill `8451`, not `8123`' 'consumer guide says which process to kill'
+      contains "$CONSUMER_SOURCE" "Kill \`8451\`, not \`8123\`" 'consumer guide says which process to kill'
+      contains "$CONSUMER_SOURCE" 'OUTCOME=CODE-EXIT' 'consumer guide documents the Codex marker shape'
       contains "$CONSUMER_SOURCE" 'OUTCOME=CODE-EXIT' 'consumer guide documents the Codex marker shape'
       ;;
     *) fail "unknown PI_TEST_FOCUS=$PI_TEST_FOCUS" ;;
