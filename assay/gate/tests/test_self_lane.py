@@ -2455,10 +2455,10 @@ def _require_writable_fixture_root(fixture_root: Path) -> None:
     if not os.access(probe, os.W_OK | os.X_OK):
         pytest.skip(
             f"unwritable fixture root {fixture_root} (nearest existing ancestor "
-            f"{probe} is not writable by uid {os.getuid()}); the "
-            f"[{fixture_root}] fixture cannot be created in this environment. "
-            "Run this parameter from a checkout whose .worktrees directory the "
-            "test user owns, or point the lane at a writable project."
+            f"{probe} is not writable by uid {os.getuid()}): this parameter's fixture "
+            "repository cannot be created in this environment. Run it from a "
+            "checkout whose .worktrees directory the test user owns, or point the "
+            "lane at a writable project."
         )
 
 
