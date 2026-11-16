@@ -1435,13 +1435,13 @@ collection truncated to a tail with no arguments of its own,
 leaves no binding at all.
 
 The practical consequence was measured live: the out-of-repo controller
-wrapper had to re-derive the binding by moving the host log for the `checkout
-... at <sha>` line and emitting its own
-`remote-gate: bound run-gate.commit=<sha>` line, i.e. the evidence authority
-lived in a tool outside this repository and would silently disappear with
-it. The host already knows the answer — the job script asserts `git rev-parse
-HEAD == SHA` and prints `checkout <dir> at <sha>` (`remote-gate.py:553-556`) —
-so this is a disclosure gap, not a missing fact.
+wrapper had to re-derive the binding by relocating (copying aside) the host
+log so it could extract the `checkout ... at <sha>` line, and then emitted its
+own `remote-gate: bound run-gate.commit=<sha>` line — i.e. the evidence
+authority lived in a tool outside this repository and would silently disappear
+with it. The host already knows the answer — the job script asserts `git
+rev-parse HEAD == SHA` and prints `checkout <dir> at <sha>`
+(`remote-gate.py:553-556`) — so this is a disclosure gap, not a missing fact.
 
 **Minimal solution.** Emit the binding where the fact is already certain: the
 job script writes the resolved `HEAD` into a small committed-to-run file (or
