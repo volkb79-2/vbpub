@@ -89,6 +89,40 @@ All notable changes to scripts/netcup are recorded here.
   KSM sysfs is reported as unavailable. It does not enable KSM or change
   Run-Gate's per-container cap.
 
+### Fixed
+- **`provision-gates-limits.sh` never lowers a unit's OOM protection** (`NC-64`, found
+  by the v1001 adoption): `oom_score_adj` is a ranking, so a LOWER value is MORE protective. The live fix-up now
+  writes `/proc/<MainPID>/oom_score_adj` only when the current value is HIGHER (less protective) than `-900` —
+  sshd's own `-1000` listener score, `-999` and an already conforming `-900` are left alone and reported — and an
+  unreadable live score is exit 8 instead of being treated as `0`. The persistent `30-oom-protect.conf` is rendered
+  only for a unit whose OWN unit file sets nothing or something weaker (read from `FragmentPath`, never from the
+  effective property, which already includes an earlier drop-in of this tool); a packaged stronger value keeps its
+  protection, and a drop-in this tool rendered earlier is RETIRED to `<file>.retired-<stamp>` when the unit now
+  protects itself, because it would otherwise keep winning at the next start. When a render would happen the
+  EFFECTIVE score is compared too, so a vendor drop-in this tool cannot see under
+  `/usr/lib/systemd/system/<unit>.d/` that already protects the unit more strongly is never replaced by a weaker
+  `-900`. A foreign drop-in that sets a MORE protective value is kept and reported instead of refused as a
+  contradiction — including one at this tool's own path, whose VALUE is read rather than assumed
+  (`unit_section_value` was defined below its first call, so the decision used to see "unreadable" and refuse it).
+  Every helper is now defined above the main flow, refusals are recorded and mutated only after all pre-flights
+  (`plan_retire`/`plan_refusal`/`apply_retires`), the score parser is one base-10 helper with the kernel's
+  `-1000..1000` bounds, and another owner's competing files are all named in one run across the slice, scope and unit
+  paths. Tests: `tests/test_provision_gates_limits.py` grew from 96 to 138 cases: the parser boundaries (`010`/`0900` decimal,
+  `0000000900` refused, `-1001`/`1001` outside the range), the foreign-file cases at `-1000`/`-999`/`-900`/`-500`/`0`,
+  the `--adopt` migration shape (a hand `-900` over a unit's own `-1000` is retired and NOT replaced), a second pass
+  after the unit fragment grew, and a whole-file test that no function is used before its definition. Mutants that
+  were killed: the flipped comparison (`<=` -> `<`, caught by a read-only score file so no write can be attempted),
+  the missing readability gates, the effective-property answer for the own value, a plain `rm` instead of a
+  retirement, a rival listing that exits at the first file, and a helper defined below its first call.
+- **The runner guide's `memory.oom.group` probe uses an image every runner already has**: `tester-base:local` (the tag
+  `build-tester-base.sh` leaves behind) with `--pull=never`, instead of an `alpine` the host did not have, which made
+  the documented check silently `docker pull` on a host that may have no network.
+- **The gates-policy messages say what actually differs.** A plain `--dry-run` on a hand-configured host now names
+  EVERY foreign file at the tool's own paths before refusing (it used to stop at the first, so an operator fixed one
+  and met the next on the following run), and the "has a fragment … this drop-in deliberately overrides it" note is
+  printed only for a fragment that really sets one of the memory keys to a DIFFERENT amount (same size in another
+  spelling, `6G` against `6144M`, and a CPU-only fragment stay silent).
+
 <!-- cmru: release history -->
 
 ### Fixed (WP-T3 persistent R2 supervisor)
