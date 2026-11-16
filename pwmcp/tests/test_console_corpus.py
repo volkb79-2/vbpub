@@ -107,20 +107,24 @@ def test_package_defaults_to_the_artifacts_folder_derived_from_the_script(
     assert cc.ARTIFACTS_DIR == PWMCP / "artifacts" / "console-corpus"
     copy = tmp_path / "console_corpus.py"
     copy.write_text((PWMCP / "tools" / "corpus" / "console_corpus.py").read_text(encoding="utf-8"), encoding="utf-8")
-    # The module is loaded BY PATH, so the derived constant follows this file, not a home directory.
+    # The module is loaded BY PATH, so the derived constant follows this file: it equals
+    # <file's checkout>/artifacts/console-corpus and is NOT the real checkout's constant
+    # (a hardcoded path, a home directory or a worktree literal would make the two equal).
     spec = importlib.util.spec_from_file_location("cc_elsewhere", copy)
     assert spec and spec.loader
     elsewhere = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = elsewhere
     spec.loader.exec_module(elsewhere)
-    assert elsewhere.PWMCP == tmp_path.parents[2]
-    assert elsewhere.ARTIFACTS_DIR == tmp_path.parents[2] / "artifacts" / "console-corpus"
-    assert "HOME" not in str(elsewhere.ARTIFACTS_DIR) and "~" not in str(elsewhere.ARTIFACTS_DIR)
+    assert elsewhere.ARTIFACTS_DIR == Path(elsewhere.__file__).resolve().parents[2] / "artifacts" / "console-corpus"
+    assert elsewhere.PWMCP == Path(elsewhere.__file__).resolve().parents[2]
+    assert elsewhere.ARTIFACTS_DIR != cc.ARTIFACTS_DIR
+    assert str(Path.home()) not in str(elsewhere.ARTIFACTS_DIR) and "~" not in str(elsewhere.ARTIFACTS_DIR)
 
     # The parsed default is the artifacts directory plus the pin's archive name, and an
     # explicit --out still wins (the documented, explicit form is unchanged).
     written = tmp_path / "explicit.tar"
     monkeypatch.setattr(cc, "ASSETS_FILE", mini["assets"])
+    monkeypatch.setattr(cc, "CORPUS_ROOT", mini["corpus_root"])
     assert cc.main(["package", str(mini["frames"]), "--out", str(written)]) == 0
     assert written.read_bytes() == mini["archive"].read_bytes()
     assert "out" in capsys.readouterr().out
@@ -133,6 +137,7 @@ def test_verify_defaults_to_the_artifacts_folder_derived_from_the_script(
 
     # The fallback used is the constant parsed at CALL time, so a fixture directory proves it.
     monkeypatch.setattr(cc, "ASSETS_FILE", mini["assets"])
+    monkeypatch.setattr(cc, "CORPUS_ROOT", mini["corpus_root"])
     monkeypatch.setattr(cc, "ARTIFACTS_DIR", mini["directory"])
     assert cc.main(["verify"]) == 0
     assert str(mini["frames"]) in capsys.readouterr().out
@@ -147,6 +152,7 @@ def test_package_creates_the_derived_artifacts_folder(
     """The default destination is git-ignored and may not exist yet: package creates it."""
 
     monkeypatch.setattr(cc, "ASSETS_FILE", mini["assets"])
+    monkeypatch.setattr(cc, "CORPUS_ROOT", mini["corpus_root"])
     missing = tmp_path / "fresh" / "console-corpus"
     monkeypatch.setattr(cc, "ARTIFACTS_DIR", missing)
     assert cc.main(["package", str(mini["frames"])]) == 0
