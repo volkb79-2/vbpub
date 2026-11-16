@@ -1296,7 +1296,12 @@ def test_extract_redact_pattern_rejects_an_invalid_regex(tmp_path, capsys):
     fp = _write_claude_code_fixture(tmp_path)
     exit_code = harness_main(["extract", str(fp), "--redact-pattern", "(unclosed"])
     assert exit_code == 1
-    assert "invalid regex" in capsys.readouterr().err
+    err = capsys.readouterr().err
+    assert "invalid regex" in err
+    # The MESSAGE must not echo the pattern: it is the sensitive string the
+    # flag exists to remove, and an error message is a log line (NL-72).
+    assert "(unclosed" not in err
+    assert "--redact-pattern #1" in err
 
 
 def test_extract_follow_redacts_live_phase_two_output_like_phase_one(

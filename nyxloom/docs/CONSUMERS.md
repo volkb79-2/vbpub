@@ -632,9 +632,13 @@ started with. When the session keeps a living state file for its own
 continuation (done, decisions and why, next steps, open questions, exact
 commands), pass it as `--state-file PATH`: it becomes the `STATE
 (forward-oriented, written by the agent)` section AFTER the anchor and BEFORE
-the recent prose, rendered verbatim, bounded by the same budget, truncated
-only at a paragraph boundary with a marker naming what was left out and the
-file to read, and redacted by `--redact-pattern` like every other paragraph.
+the recent prose, rendered verbatim, bounded by the same budget, truncated at
+a paragraph boundary when one fits (then at a line boundary, then with a hard
+character cut -- a state file with no blank lines must still show its
+CONTENT, never the marker alone) with a marker naming what was left out and
+the file to read, and redacted by `--redact-pattern` like every other
+paragraph. The footer's `state_truncated=`/`state_chars=` accounting repeats
+the fact, so a cut primer is visible to a reader who only skims the trailers.
 `--state-file` is harness-independent; it is what a pi or Claude Code worker
 writes for itself. The last line of the output is `[readback marker: <marker>]`:
 pass that marker (or the file as `--since-file`) to the NEXT read-back so it
@@ -750,6 +754,22 @@ for content-based detection:
 nyxloom-harness extract 019f0890-43a2-75c2-9143-3f8d10ad4484
 nyxloom-harness extract ses_04bd4e9b4ffeBJm48T6v130DS6
 ```
+
+For pi, a bare session uuid resolves through pi's own store order
+(`$PI_CODING_AGENT_SESSION_DIR`, else `$PI_CODING_AGENT_DIR/sessions`, else
+`~/.pi/agent/sessions`), matched as a `<time>_<uuid>.jsonl` filename suffix.
+A pi extract is never silently shorter than its file: a `[pi skipped ...]`
+trailer block (and an `adapter_notes` key in `--json`) counts every record it
+left out, separating DELIBERATE skips (lifecycle records that carry no
+conversation content, an image block a text extract cannot carry) from UNKNOWN
+ones (a record type, message role or content block pi's declarations do not
+explain). Two flattenings are stated there rather than implied: pi sessions are
+trees (`parentId`) and the adapter follows file order, and a `context_edit`
+with `replacement: null` removes its target from model context while the
+extract still shows the original content. If you need the exact model context
+pi saw, read the session file itself; if that `context_edit` semantics becomes
+load-bearing for your use case, file a backlog entry rather than assuming the
+extract reproduces it.
 
 Codex stores rollouts under `CODEX_HOME` (`~/.codex` by default). Bare UUID
 lookup also checks local `~/.codex*` profiles, so a UUID copied between

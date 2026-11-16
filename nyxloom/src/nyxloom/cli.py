@@ -1046,11 +1046,17 @@ def cmd_extract(args) -> int:
 
     if args.redact_pattern:
         import re as re_mod
-        for pattern in args.redact_pattern:
+        for ordinal, pattern in enumerate(args.redact_pattern, start=1):
             try:
                 re_mod.compile(pattern)
             except re_mod.error as e:
-                print(f"error: --redact-pattern {pattern!r}: invalid regex: {e}", file=sys.stderr)
+                # The PATTERN is never echoed: it is exactly the sensitive
+                # string --redact-pattern exists to remove, so printing it in an
+                # error message would leak it into a log or a transcript. The
+                # ORDINAL identifies which one to fix (NL-72's rule, applied to
+                # this message too).
+                print(f"error: --redact-pattern #{ordinal}: invalid regex: {e}",
+                      file=sys.stderr)
                 return 1
 
     config = _extract_config_from_args(

@@ -20,24 +20,44 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
   session uuid resolves through `locate.py` (`$PI_CODING_AGENT_SESSION_DIR`,
   `$PI_CODING_AGENT_DIR/sessions`, `~/.pi/agent/sessions`, matched as a
   `<time>_<uuid>.jsonl` filename suffix).
+- Every record and message shape pi DECLARES now has a defined disposition,
+  and nothing is dropped silently: `custom_message`/`custom` become labelled
+  operator-channel context events, `branch_summary`/`branchSummary` and
+  `compactionSummary` become lifecycle boundaries carrying their summary
+  (under `--show-compaction-content`), `bashExecution` becomes a tool-like
+  line carrying the command, its exit code and whether pi excluded it from
+  model context, and `context_edit` becomes a marker naming the target it
+  masks. A `[pi skipped ...]` footer block (and an `adapter_notes` key in
+  `--json`) counts the DELIBERATE skips separately from UNKNOWN ones, plus
+  unparseable lines and `parentId` tree breaks, so a reader of a saved
+  read-back can see what the adapter left out instead of discovering it by
+  accident. The record-type and message-role inventories are read from pi's
+  own declarations (`dist/core/session-manager.d.ts`, `dist/core/messages.d.ts`),
+  not guessed.
 - `--stop-state` supports pi: its own `stopReason` vocabulary becomes a cause
   (`length` = CONTEXT-FULL, `error`/`aborted`/`deferred`/`pending`, an
-  assistant message with `stopReason: "stop"` and no prose = EMPTY-COMPLETION,
-  an end on `toolUse` with no later assistant message = TOOL-USE, and an
-  unresolved `tool_execution_*`/`toolResult` pair = killed mid-call).
+  assistant message with `stopReason: "stop"` carrying no text and no tool
+  call = EMPTY-COMPLETION (thinking-only counts as empty), an end on `toolUse`
+  with no later assistant message = TOOL-USE, and an unresolved
+  `tool_execution_*`/`toolResult` pair = killed mid-call).
 - `nyxloom-harness extract --preset readback --state-file PATH` embeds the
   agent's own living state file VERBATIM as a `STATE (forward-oriented, written
   by the agent)` section placed after the goal anchor and BEFORE the recent
   prose. It is bounded by `--budget-tokens`, truncated only at a paragraph
-  boundary with a marker naming the omitted size and the file to read, redacted
-  by `--redact-pattern`, and takes priority over the delta while the
-  recent-prose tail keeps a reserve. Harness-independent: the file belongs to
+  boundary (then a line boundary, then a hard character cut -- never to the
+  marker alone) with a marker naming the omitted size and the file to read,
+  redacted by `--redact-pattern`, and takes priority over the delta while the
+  recent-prose tail keeps a reserve. The footer's `state_truncated=`/
+  `state_chars=` accounting repeats the fact, so a cut primer is visible to a
+  reader who only skims the trailers. Harness-independent: the file belongs to
   the agent, not to a CLI's storage format.
 
 ### Fixed
 - `--redact-pattern`'s placeholder names the matched rule by its ordinal
   (`#1`, `#2`, ...) instead of echoing the regular expression, which could
-  itself be the sensitive string the pattern was written to remove (NL-72).
+  itself be the sensitive string the pattern was written to remove (NL-72);
+  an INVALID `--redact-pattern` is reported by the same ordinal, so the error
+  message does not leak the pattern either.
 
 <!-- cmru: release history -->
 

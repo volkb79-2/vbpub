@@ -468,6 +468,33 @@ constrained the interface or turned up a real bug:
   Verified against real stored sessions and real controller run streams on
   this machine; the committed fixtures are synthetic (`tests/
   test_session_extract_pi.py`) because real ones carry private prompts.
+
+  **Nothing the file contains is dropped silently.** Every record type and
+  message role pi's own declarations define (`dist/core/session-manager.d.ts`,
+  `dist/core/messages.d.ts`) has a deliberate disposition, and the adapter
+  reports both kinds of skip in a `[pi skipped ...]` footer block (and as
+  `adapter_notes` in `--json`): DELIBERATE (a lifecycle record that adds no
+  content, an `image` block a text extract cannot carry) and UNKNOWN (a record
+  type, role or block the declarations do not explain -- a shape this adapter
+  does not yet know, which must be VISIBLE rather than swallowed). The
+  content-bearing shapes are MAPPED, not skipped: `custom_message`/`custom`
+  become labelled extension-context events carrying a `pi_context_source`
+  marker, `branch_summary`/`branchSummary` and `compactionSummary` become
+  lifecycle boundaries carrying their summary, `bashExecution` (pi's `!` and
+  `!!` prefixes) becomes a tool-like line naming the command, its exit code and
+  whether pi excluded it from model context, and `context_edit` becomes a
+  marker naming the target it masks. Unparseable lines (a run killed
+  mid-write) are counted too.
+
+  Two flattenings are a deliberate simplification, and both are counted in the
+  footer rather than implied: pi sessions are TREES (`parentId`), and this
+  adapter follows FILE ORDER, so a `parentId` that breaks the linear chain is
+  reported; and a `context_edit` with `replacement: null` REMOVES its target
+  from model context while the extract still shows the original content, which
+  the footer states. `tests/fixtures/pi_stop_parity.json` pins the same
+  synthetic records through both this stop-state classifier and the documented
+  predicate of `scripts/controller/pi-impl.sh`, so the two consumers of "how
+  did this run end" cannot drift apart silently.
 - **opencode** (`adapters/opencode.py`) — the odd one out: a relational
   SQLite store (`session`/`message`/`part` tables), not flat JSONL. This
   is why `SessionAdapter.parse()` takes a path and a `config`, not a

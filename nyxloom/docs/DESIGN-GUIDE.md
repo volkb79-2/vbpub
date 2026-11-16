@@ -557,8 +557,11 @@ read-back never repeats what this one carried. `--budget-tokens N` defaults to
 estimate. It reserves a bounded footer allowance plus the layout's own fixed
 scaffolding, then truncates in a fixed order: the `--state-file` STATE section
 is bounded first -- it outranks the delta, because a successor ACTS on it, and
-it is cut only at a paragraph boundary with a marker naming the omitted size
-and the file to read -- while the tail keeps a reserve so the session's own
+it is cut at a paragraph boundary, then at a line boundary, then at a hard
+character cut (never to the marker alone: a primer that shows a state file's
+existence but none of its content is the worst of both), with a marker naming
+the omitted size and the file to read, and the footer's `state_truncated=` /
+`state_chars=` accounting repeating that fact -- while the tail keeps a reserve so the session's own
 last words cannot be pushed out entirely; then the tail prose (newest
 records kept whole; it also yields to the delta's protected operator/interview
 material, so the tail cannot push the document past the budget by a whole tail);

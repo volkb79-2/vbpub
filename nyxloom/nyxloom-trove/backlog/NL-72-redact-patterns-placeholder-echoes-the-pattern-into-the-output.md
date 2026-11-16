@@ -11,7 +11,7 @@ provenance: "controller review of the pi-readback-auto package, 2026-11-15 (CTX_
 filed_by: "controller"
 filed_date: "2026-11-15"
 closed_date: "2026-11-16"
-closed_reason: "FIXED 2026-11-16 (pi-extract-pi-20261116): the placeholder now names the matched rule by its ORDINAL (#1, #2, ...) instead of echoing the regular expression, which could itself be the sensitive string the pattern was written to remove. Pinned by tests/test_session_extract_mangle.py (the ordinal placeholder and its monotonic counter) and tests/test_cli_extract.py's #1 assertion, so an extract can no longer reproduce any part of a pattern it redacted."
+closed_reason: "FIXED 2026-11-16 (pi-extract-pi-20261116): the placeholder now names the matched rule by its ORDINAL (#1, #2, ...) instead of echoing the regular expression, which could itself be the sensitive string the pattern was written to remove. Pinned by tests/test_session_extract_mangle.py (the ordinal placeholder and its monotonic counter) and tests/test_cli_extract.py's #1 assertion, so an extract can no longer reproduce any part of a pattern it redacted. NOTE: the entry was FILED on main (ac5c/1cbb627ae); the fix itself landed here, not on main."
 ---
 
 ## Problem
