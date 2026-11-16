@@ -2921,6 +2921,13 @@ def lane_container_uid(env: dict, docker: str | None) -> tuple[int | None, str]:
     never turns `None` into a pass/fail claim.
     """
     declared = env.get("user")
+    # The config parser guarantees that a PRESENT `user` is a non-empty
+    # string naming `invoker` or a numeric `uid[:gid]` (see
+    # `_validate_environment`); this helper still refuses to assume the schema
+    # held, because it is a READ that callers and tests may hand a raw
+    # environment table. A non-string truthy value (an int, a list) must fall
+    # through to the image rather than reach `declared.split`, and an empty
+    # string must fall through rather than be reported as a named user.
     if isinstance(declared, str) and declared:
         head = declared.split(":", 1)[0]
         if not head.isdigit():
@@ -19940,8 +19947,18 @@ def _dispatch(argv: list[str] | None = None, *,
         # the operator as three unrelated errors (an in-lane git "dubious
         # ownership" during assay's editable install, a host-side
         # `Permission denied` on .run-gate, and Assay's own CoW-root refusal).
-        # Guarded by the mode so a host lane touches neither docker nor
-        # shutil.which: the preflight is a container-lane fact.
+        # Guarded by the mode so a host or exec lane starts nothing and asks
+        # docker nothing: the preflight is a container-lane fact.
+        #
+        # The `and`/`or` mutation of this condition is observable, and the
+        # oracle for it is a spy on the CALL rather than on an exception: an
+        # `or` mutant returns the TRUTHY environment dict itself, so every
+        # non-ephemeral environment that carries data (`exec` here) asks a
+        # container-only preflight. An absent env cannot demonstrate it, and
+        # `{}` cannot either (`x or y` with `{}` still evaluates `y` and
+        # answers False), which is why those cases alone would let the mutant
+        # live. The test drives all three faces so the reason is auditable,
+        # and the `exec` face is the one that actually dies under the mutant.
         if env and env.get("mode") == "ephemeral":
             preflight_lane_uid_ownership(
                 args.lane, env, env_source, worktree, resource_settings,

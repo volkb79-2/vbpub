@@ -33843,6 +33843,42 @@ class TestRunGatesLaneUidOwnershipPreflight:
             {"mode": "ephemeral", "image": "i:1", "user": "app"}, None)
         assert uid is None and "numeric uid" in why
 
+    @pytest.mark.parametrize("declared", [1003, 1003.0, ["1003"], {"uid": 1003}])
+    def test_a_non_string_declared_user_falls_through_to_the_image(
+            self, monkeypatch, declared):
+        """Mutation round 2 (`and` -> `or` on `isinstance(...) and declared`).
+
+        `_validate_environment` refuses a non-string `user`, so a PARSED config
+        cannot carry one — but this helper is a READ that callers and tests may
+        hand a raw environment table, and the code must not assume the schema
+        held. Under the `or` mutant a truthy non-string enters `declared.split`
+        and raises `AttributeError`; the real condition falls through to the
+        image, which is the only other source of a lane uid. Both observable
+        faces are pinned here: with an image answer it returns the IMAGE's
+        fact, with no image it reports the image is absent rather than raising.
+        """
+        self._image_reports(monkeypatch, "1003:1003")
+        uid, why = run_gate.lane_container_uid(
+            {"mode": "ephemeral", "image": "tester:local", "user": declared},
+            "/usr/bin/docker")
+        assert uid == 1003 and "user '1003:1003'" in why, why
+        uid, why = run_gate.lane_container_uid(
+            {"mode": "ephemeral", "user": declared}, "/usr/bin/docker")
+        assert uid is None and "no image" in why
+
+    def test_an_empty_declared_user_falls_through_to_the_image(
+            self, monkeypatch):
+        """The other half of the same mutation: `""` is falsy, so the real
+        condition skips the declared branch entirely. The `or` mutant keeps it
+        (because `isinstance("", str)` is True), splits the empty string and
+        reports "names no numeric uid", turning a blank declaration into a
+        refusal reason instead of reading the image."""
+        self._image_reports(monkeypatch, "1003")
+        uid, why = run_gate.lane_container_uid(
+            {"mode": "ephemeral", "image": "tester:local", "user": ""},
+            "/usr/bin/docker")
+        assert uid == 1003 and "user '1003'" in why, why
+
     @pytest.mark.parametrize("declared", ["0", "0:0", "0:1234"])
     def test_a_declared_root_user_establishes_nothing(self, declared):
         """RG-150 review round 1 blocker: a CI-as-root or rootless-userns
@@ -34030,6 +34066,79 @@ class TestRunGatesLaneUidOwnershipPreflight:
             argv = ["true"]
             clean_tree = false
             """
+
+    def test_a_lane_with_no_resolved_environment_never_reaches_the_preflight(
+            self, tmp_path, monkeypatch, capsys):
+        """The `env` half of the same guard, pinned at the reachability level.
+
+        A run whose environment resolves to `None` cannot reach the preflight
+        line at all: an EARLIER stage dereferences `env`
+        (`resolve_resource_settings(mode=env.get(...))`), so it ends as ERROR 2
+        with the AttributeError. That earlier stage already existed before
+        RG-150, so this oracle documents the boundary rather than claiming a
+        guarantee: RG-150 adds no new crash surface for an absent environment.
+        """
+        repo = make_repo(tmp_path)
+        proj = make_project(repo, self._config(
+            'mode = "ephemeral"\nimage = "tester:local"\n'), name="no-env")
+        calls: list[str] = []
+        monkeypatch.setattr(run_gate, "preflight_lane_uid_ownership",
+                            lambda lane, *_a, **_k: calls.append(lane))
+        monkeypatch.setattr(run_gate, "resolve_environment",
+                            lambda *_args: (None, "fixture: no environment"))
+        monkeypatch.chdir(proj)
+        monkeypatch.setattr(sys, "argv", ['run-gate'])
+        assert run_gate.main(["suite", "--dry-run"]) == 2
+        err = capsys.readouterr().err
+        assert "NoneType' object has no attribute 'get'" in err
+        assert "must own the checkout" not in err
+        assert calls == [], "a None environment must not reach the preflight"
+
+    def test_a_missing_or_non_ephemeral_environment_never_asks_the_preflight(
+            self, tmp_path, monkeypatch):
+        """Mutation round 2 (`if env and env.get("mode") == "ephemeral"` ->
+        `or`). Python binds `==` tighter than `or`, so the mutant returns the
+        ENVIRONMENT DICT itself whenever that dict is truthy, and calls the
+        preflight for every non-ephemeral mode that carries data; the real
+        condition asks only for `ephemeral`.
+
+        Which of the three faces is the OBSERVABLE one is measured, not
+        assumed (a first draft of this docstring claimed all three, which is
+        false — the mutant survived when only the first two were present):
+
+        - `mode = "host"` resolves to an EMPTY dict. `{}` is falsy, so both
+          sides evaluate the right operand and both answer False: this face
+          CANNOT witness the mutant, and it is here as the "silent" case;
+        - `mode = "exec"` resolves to a NON-EMPTY dict, which is the face that
+          witnesses it — `x or y` returns `x` and the preflight runs;
+        - `mode = "ephemeral"` is the positive control that the call still
+          happens where it should.
+
+        A spy makes the CALL itself the observation, because the preflight's
+        own `mode` guard would otherwise swallow a wrongly-issued call silently
+        and an exit status alone would look unchanged.
+        """
+        repo = make_repo(tmp_path)
+        calls: list[str] = []
+        monkeypatch.setattr(
+            run_gate, "preflight_lane_uid_ownership",
+            lambda lane, *_a, **_k: calls.append(lane))
+        monkeypatch.setenv(run_gate.PROFILE_AMBIENT_ENV_VAR, "off")
+        monkeypatch.chdir(repo)
+        monkeypatch.setattr(sys, "argv", ['run-gate'])
+        for mode, body in (
+                ("host", 'mode = "host"'),
+                ("exec", 'mode = "exec"\nimage = "runner:1"\n'
+                         'container_name = "spy-runner"'),
+                ("ephemeral", 'mode = "ephemeral"\nimage = "tester:local"')):
+            proj = make_project(repo, self._config(body + '\n'),
+                                name=f"guard-{mode}")
+            monkeypatch.chdir(proj)
+            before = len(calls)
+            run_gate.main(["suite", "--dry-run"])
+            asked = len(calls) - before
+            assert asked == (1 if mode == "ephemeral" else 0), (
+                mode, asked, "the preflight is a container-lane fact")
 
     def test_the_ephemeral_guard_is_independent_of_uid_facts(
             self, tmp_path, monkeypatch, capsys):

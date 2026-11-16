@@ -7541,13 +7541,40 @@ lesson: an invented uid would either refuse a healthy estate (the refusal gets s
 nothing) or certify a mismatch as agreement. `mode = "host"` and `mode = "exec"` lanes declare no lane user and are
 untouched.
 
+*Two `And->Or` survivors, closed by oracles (review round 2).* R2 on `5e73ea11d` reported the only two survivors in this
+item's new code: `isinstance(declared, str) and declared` (2924) and the dispatch guard `if env and env.get("mode") ==
+"ephemeral"` (19945).
+
+- `isinstance(declared, str) and declared` -> `or`: the mutant lets a truthy NON-STRING user into `declared.split`
+ (`AttributeError`) and treats `""` as a declared name (a false "names no numeric uid" refusal). `_validate_environment`
+ already refuses a non-string `user`, so a PARSED config cannot carry one — but `lane_container_uid` is a READ that tests
+ and callers may hand a raw environment table, so the code must not assume the schema held. Oracles
+ `test_a_non_string_declared_user_falls_through_to_the_image[1003|1003.0|["1003"]|{"uid": 1003}]` (both faces: image answer
+ is returned, no-image answer is the absent-image reason, never a raise) and
+ `test_an_empty_declared_user_falls_through_to_the_image`. The rule is also stated at the condition so the next reader
+ knows WHY it is written defensively.
+- dispatch `and` -> `or`: the mutant returns the truthy ENVIRONMENT DICT itself, so every non-ephemeral mode that carries
+ data (`exec`) asks a container-only preflight. Measured faces, one of which is silent by nature: an `exec` env witnesses
+ it, `mode = "host"` (empty dict) does NOT (`{} or {}.get(...)` still evaluates the right operand and answers False), and
+ `ephemeral` is the positive control; an ABSENT env cannot reach this line at all (an earlier `env.get` dereference ends
+ the run as ERROR 2, pinned by its own oracle). `test_a_missing_or_non_ephemeral_environment_never_asks_the_preflight`
+ spies on the CALL (the preflight's own `mode` guard would swallow a wrongly-issued call silently) and asserts 0 calls for
+ host and exec, 1 for ephemeral. The guard therefore needs no unobservable `(env or {}).get(...)` spelling: plain
+ `env and env.get(...)` is kept, and the reason it is mutation-observable in that form is written above it.
+- Re-swept by hand while fixing: every condition line this branch adds — `usable_recorded_base`'s written-null dispatch
+ and its schema clauses, every `lane_container_uid` face, every `preflight_lane_uid_ownership` clause, `path_owner_uid`'s
+ `except OSError`, and the dispatch guard — 29 mutants in all, each with a named oracle. 28 die; the one survivor
+ (`version > CIU_BASE_BRANCH_SCHEMA_VERSION` -> `>=`) is EQUIVALENT because the `==` branch above it absorbs the only
+ differing value, and that is recorded rather than "fetched" by reshaping an unreachable clause. The table with the mutant
+ and the killing test is in the wave report (`reports/pi-rg-wave2-REPORT.md` §9.3).
+
 *A uid of 0 is never compared (review round 1).* A declared `user = "0"`, `"0:0"` or an `invoker` resolving to root and
 an image whose `Config.User` is root all mean the container runs as container root, and in a CI-as-root or rootless-userns
 lane uid 0 maps onto the HOST owner — so "the lane uid disagrees with the tree owner" is the normal shape there, not a
 defect. The image branch always said so (RG-106); the first cut of this preflight compared a DECLARED root anyway and
 would have refused a healthy deployment. Both sources now normalize 0 to "no fact".
 
-*Oracles* (19, `TestRunGatesLaneUidOwnershipPreflight`): each derivation face; a mismatch naming the checkout; a CoW-root
+*Oracles* (26, `TestRunGatesLaneUidOwnershipPreflight`): each derivation face; a mismatch naming the checkout; a CoW-root
 mismatch naming ONLY the CoW root when the checkout agrees; `mode = "auto"` vs `off`; declared `"0"`/`"0:0"`/`"0:<gid>` and root-capable `invoker` lanes that are NOT refused (ending in a real lane start); and the `mode == "ephemeral"`
 guard pinned BOTH ways — the same disagreeing uid facts under `mode = "host"` (no refusal) and under `mode = "ephemeral"`
 (refusal), asserted at `main()` and again at the preflight's own entry point (a host run alone cannot catch a deleted

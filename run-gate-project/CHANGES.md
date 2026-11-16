@@ -75,6 +75,12 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
   LANE-AUTHORING §7 row that still says OPEN for a shipped id (RG-119 items 1-2).
 - run-gate: `test_a_written_null_schema_version_is_refused_not_read_as_legacy`
   pins the new refusal (RG-119 item 9).
+- run-gate: the two `And->Or` survivors R2 reported in the RG-150 code are
+  pinned. A non-string truthy or empty declared `user` must fall through to the
+  image rather than reach `declared.split` or be read as a named user, and the
+  dispatch guard's mutant is caught by spying on the CALL — the `exec` face is
+  the only environment shape that witnesses it (`mode = "host"` resolves to `{}`,
+  which answers the same on both sides of the mutant) (RG-150).
 
 <!-- cmru: release history -->
 
