@@ -29,6 +29,8 @@ together.
 | CTL-15 | `.live`'s `latest_total_tokens` reads `0` for a stream whose usage is only carried on delta events, which is exactly the long run it exists for | Should-fix | OPEN 2026-11-16 |
 | CTL-16 | `since-commit` shows the branch's last-commit age unqualified, so before the run's first commit it reports the base commit's age (the `ahead=` field on the same line is the qualifier the fix needs) | Minor | OPEN 2026-11-16 |
 | CTL-17 | `stopReason=length` (the context window filled) is classified `INCOMPLETE`, so the controller cannot tell a truncated run from a broken stream | Should-fix | OPEN 2026-11-16 |
+| CTL-18 | `HUNG-TOOL` is decided on wall-clock alone: the sidecar carries no progress evidence, no tool command and no child identity, so a heavy-but-progressing tool (or one blocked by the agent's own FIFO) reads as hung | Should-fix | OPEN 2026-11-16 |
+| CTL-19 | A wrapper that dies without writing `.done` is indistinguishable from a running one in `job-check` (`RUNNING (no .done)`), and `codex-impl.sh ... resume` never writes `.done` at all | Should-fix | OPEN 2026-11-16 |
 
 ---
 
@@ -790,3 +792,157 @@ tooling exists for, and today it costs a controller the decision input.
 **Close when.** The classifier, the closed anomaly vocabulary, the four
 documents above and the retry rule agree, the length fixture yields
 `CONTEXT-FULL`, the retry loop provably ignores it, and the mutants are killed.
+
+## CTL-18 — `HUNG-TOOL` is decided on wall-clock alone, and the row cannot show what the tool is or what to kill
+
+**Status:** OPEN (filed 2026-11-16); severity Should-fix. Filed from the
+controller's own overwatch experience of 2026-11-16 (a slow `grep` over a large
+tree, an agent's own blocking experiment, and a long `pytest` all read as
+`HUNG-TOOL` while they were working) and verified against the merged code.
+
+**Problem.** `job-status.sh` derives `HUNG-TOOL` from one quantity: the age of
+`tool_in_flight_started_epoch` past `JOB_STATUS_HUNG_TOOL_SECONDS`
+(`job-status.sh:...`, "elif tool_seconds is not None and tool_seconds > hung_limit").
+The sidecar publishes nothing that says whether the tool is still doing
+anything: `pi-live.py` counts `tool_execution_start`/`tool_execution_end` and
+publishes the tool's NAME and start epoch only. It does not read
+`tool_execution_update` (whose `partialResult` is the tool's own output growth),
+it does not read the tool's `args` (so the row cannot say `command: git diff`),
+and it does not name the process doing the work (so the only steering action
+available to a controller reading that row is to kill the wrapper, which the
+estate forbids). The result is a word (`HUNG-TOOL`) that asserts a stronger
+thing (the tool is stuck) than what was checked (the tool has been running for
+N seconds), which is the same false-certification shape the estate's
+"a check is only as strong as what it actually compares" rule names.
+
+Two separable conditions collapse into that one word:
+
+1. a tool that is heavy but progressing (a slow `grep`, a long `pytest`, a
+   build): the right answer is `ACTIVE`/`LONG-TOOL` with the age visible, not
+   `HUNG-TOOL`;
+2. a tool blocked by the agent's own experiment (a `git` command waiting on a
+   FIFO the agent created, a read of a file nothing writes): no progress
+   evidence of that kind is available, and a human has to decide, so the row
+   must show the tool's COMMAND and AGE and the exact child pid to steer.
+
+**Minimal solution.** Publish evidence of progress and identity, and let the
+reader decide on it:
+
+- `pi-live.py` keeps `tool_progress_epoch`: the last tick at which the run
+  showed progress, derived from observable growth only (bytes appended to the
+  run's event stream, or the CPU and IO counters of the wrapper's own process
+  subtree from `/proc/<pid>/stat` fields 14/15 and `/proc/<pid>/io`
+  `read_bytes`/`write_bytes`). A fact that cannot be read stays `null`.
+- The sidecar also publishes `tool_in_flight_command` (the tool's own
+  `args.command`, bounded) and `tool_process_tree` (the wrapper's live
+  descendants as `[pid, short command line]`, bounded), so the row can name the
+  work and the controller can kill the exact child pid, never the wrapper.
+- `job-status.sh` splits the word: `HUNG-TOOL` only when the tool is past the
+  threshold AND its progress age is past the threshold too; a tool past the
+  threshold WITH recent progress is `LONG-TOOL`. Both print the command, the
+  tool age, the progress age and the child pids.
+- The steering rule is documented where the state word is defined: kill the
+  exact child pid shown in the row, never the wrapper (a wrapper kill discards
+  the run's classification and its `.done` marker).
+
+**Where.** `scripts/controller/pi-live.py` (`Snapshot.consume` for
+`tool_execution_update` and `tool_execution_start.args`, `payload`, the
+`/proc` progress probe); `scripts/controller/job-status.sh` (the state decision
+and the row); `scripts/controller/tests/test-pi-impl.sh` (a progressing tool and
+a genuinely stuck one, both synthetic, plus a real-fixture sidecar case);
+`scripts/controller/tests/fixtures/` (a `tool_execution_update`-carrying stream,
+from the captured `/tmp` run in the CTL-15 work); `README.md` and
+`docs/DESIGN-GUIDE.md`/`docs/CONSUMERS.md` (the states list and the steering
+action); `docs/design/ctlstat/REQUIREMENTS.md` §15 item 2 (progress is a
+separate column from liveness, which this entry now makes true in the kit's
+read side).
+
+**Acceptance test idea.** A sidecar fixture with a tool age past the threshold
+and a progress age inside it prints `LONG-TOOL` (never `HUNG-TOOL`) and names
+the tool's command; one with both ages past the threshold prints `HUNG-TOOL`
+and names the command and the child pids; a stream that only gained
+`tool_execution_update` lines keeps the progress age fresh; a `/proc` that
+cannot be read leaves the progress fact `null` and does not invent progress.
+Mutants: `HUNG-TOOL` decided on the tool age alone; `LONG-TOOL` never produced;
+the progress age not refreshed by tool output; the command and pids dropped
+from the row.
+
+**Priority.** Should-fix — it is the word that makes a controller kill a
+working job, and the row cannot name what to do instead.
+
+**Close when.** `HUNG-TOOL` requires absent progress evidence as well as age,
+a progressing tool reads `LONG-TOOL` with its command, the row shows the
+command and child pids, the steering rule is in the state-word documentation,
+and the focused cases and mutants behave as described.
+
+## CTL-19 — a wrapper that died without `.done` reads as a running job, and the Codex resume writes no marker at all
+
+**Status:** OPEN (filed 2026-11-16); severity Should-fix. Filed from the
+controller's own experience of 2026-11-16 (a Luna `codex-impl.sh ... resume`
+that was killed mid-run left no `.done`, so every later `job-check` said
+`RUNNING (no .done)` and the job looked active for hours) and verified against
+the merged code: `codex-impl.sh` writes `<run>.done` only on its normal exit
+path, and `job-check.sh` prints `RUNNING (no .done)` and exits 0 whenever the
+marker is absent, without any evidence that a process still exists.
+
+**Problem.** `job-check.sh`'s no-marker branch is `echo "RUNNING (no .done)";
+exit 0`. The word `RUNNING` asserts a stronger thing than it checked: it did not
+look at any process, at any sidecar, or at any lock record. A wrapper killed by
+`TERM`/`KILL`, an OOM kill, or a container restart therefore reads as a live
+job forever, and the controller's only other signal for that run
+(`job-status.sh`) requires a `.live` sidecar that the Codex wrapper never
+writes at all. The narrower claim ("no completion marker was found") is mixed
+with the stronger one ("the job is running") in the same word, which is exactly
+the collapse the estate's comparison rule forbids.
+
+The Codex half is worse in one respect: `codex-impl.sh` writes `.done` on its
+normal path, and a resume that is killed between the state call and the marker
+leaves the name with a stream, an `.err` and no completion fact; the caller
+then cannot distinguish "still working" from "died", and the automatic
+continuation (`CODEX_AUTO_CONTINUE`) has its own loop that can exit through a
+`break` with a stale `rc`.
+
+**Minimal solution.** Give every wrapper the same name-owned liveness record
+it already has to take for CTL-14 (`<runs-dir>/<name>.lock`: owner pid, start
+epoch, the pid's kernel start ticks, boot id), keep it on every exit path, and
+make the readers use it:
+
+- `codex-impl.sh` claims the run name (the same `lib.sh` helper as
+  `pi-impl.sh`), releases it on every exit path, and writes the marker in the
+already-documented shape with an outcome word: `EXIT=<n> OUTCOME=<word>
+AUTORESUME=<k>` (additive to the existing `EXIT=`/`AUTORESUME=` first-line
+  contract).
+- `job-check.sh` reads `<run>.lock`: pid gone (or the recorded kernel start
+ticks no longer match that pid) AND no `.done` is `DIED (wrapper pid <pid> gone,
+  no .done)` and a red flag, never `RUNNING`; a live recorded owner keeps
+  `RUNNING`; no record at all keeps the prototype's `RUNNING (no .done)` with
+  exit 0, and the line says that no owner record exists.
+
+**Where.** `scripts/controller/lib.sh` (`controller_run_claim`,
+`controller_pid_start_ticks`, `controller_run_owner_pid`);
+`scripts/controller/codex-impl.sh` (claim, trap, `.done` with `OUTCOME`);
+`scripts/controller/job-check.sh` (the no-marker branch and its pid/start-time
+check); `scripts/controller/tests/test-job-check.sh` (a dead wrapper, a live
+wrapper, and no record) and `scripts/controller/tests/test-wrappers.sh` (a
+Codex run and a Codex resume marker); `scripts/controller/tests/test-mutations.sh`
+and `tests/mutate-sources.py` (mutants); `README.md` and
+`docs/DESIGN-GUIDE.md`/`docs/CONSUMERS.md` (the `DIED` word and the
+`.done`/lock-record contract).
+
+**Acceptance test idea.** A run with a lock record whose pid is gone and no
+`.done` prints `DIED` and a red flag; the same record with a live pid prints
+`RUNNING`; a record whose pid exists but whose kernel start ticks differ (a
+recycled pid) is `DIED`, not `RUNNING`; no record at all keeps `RUNNING` with
+exit 0 and says so. The Codex wrapper's normal exit and its resumed invocation
+both write `EXIT=<n> OUTCOME=<word>AUTORESUME=<k>`. Mutants: the pid test
+replaced by `true`; the start-ticks comparison dropped; the marker not written
+on the resume path; the lock released before the child exits.
+
+**Priority.** Should-fix — a dead job that reads as running stops the
+controller from relaunching it, which is the same class of hour-cost the other
+entries in this file describe.
+
+**Close when.** `.done` is written on every wrapper exit path (including
+Codex resume), `job-check` reports a dead owner without a marker as `DIED` and
+keeps a live owner and an unrecorded run distinct, the focused cases pass, and
+the documents state the lock record and the `DIED` word.
