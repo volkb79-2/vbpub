@@ -14956,8 +14956,13 @@ not retro-run.
 
 ## B540 — the tester-unified release-manifest test fails at every assay release tag
 
-**Status:** OPEN (filed 2026-11-12); severity: blocks same-commit qualification
-receipts for released assay tags. Source: 2026-11-12 host R2 restart record.
+**Status: CLOSED (2026-11-16, pi-assay-burn) — fixed by `866ce0999` (2026-11-12), verified and pinned here.** `866ce0999` ("fix(assay-tests): unblock R2 from ambient tags and leaked test children") replaced the ambient `REPO_ROOT` build with `_release_repository()`, which clones the reviewed commit into a temporary repository and then makes the HEAD tag state an explicit input: it deletes the `assay-v*` tags pointing at that commit and adds one only for the tagged case. No machinery was needed in this package; the item had simply never been closed after the fix landed.
+
+**Verification (measured 2026-11-16, run-gate 25.6.0, `tester-unified:run-gate-2560`).** In a throwaway clone of this worktree's HEAD (`0816fc1e7`) with a linked worktree as the judged checkout: `gate/tests/test_distribution_build_release.py -k 'release_tag_state or untagged_build or tagged_build or release_manifest or scm_identity'` PASSes both untagged (`assay-v*` tags on HEAD deleted → `head_release_tag` is `None`, no manifest) and tagged (`assay-v99.99.99` on the same commit → manifest written), from the same checkout, in one run. The hand mutant that removes the fixture's tag control (`for existing in points_at_head: pass`) makes BOTH the untagged assertion and the new regression test fail, so the control is load-bearing rather than decorative.
+
+**Regression added here.** `test_the_release_tag_state_is_the_FIXTURE_s_not_the_ambient_checkout_s` states the property as an outcome read through the SHIPPED reader (`build_release.head_release_tag`): the untagged fixture reports no tag, the tagged fixture reports `assay-v99.99.99`, both are the SAME commit (so the pair is a differential measurement of A-200's rule), and the untagged fixture is not the ambient checkout. `866ce0999` fixed the behaviour but left B540 itself in the untagged case untested as a property — a future edit could have reintroduced ambient-tag dependence with only the build outcome to go red on a release-tag host, which is the configuration the defect was measured in.
+
+**Close when.** The registered `tester-unified` lane is green at an assay release tag and at an untagged development commit, the receipt binds that tagged commit, and a focused regression proves the test no longer depends on ambient tag state. — MET for the test-level property and both tag states; the full-lane green at a real release tag is the controller's heavy-lane run on the final head (this package runs `tooling-tests` personally).
 
 **Problem.** The module fixture builds twice from the ambient `REPO_ROOT`
 (`assay/gate/tests/test_distribution_build_release.py:391-411`), while
