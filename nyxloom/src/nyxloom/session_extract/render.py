@@ -411,8 +411,11 @@ def render_text(
 def render_json(
     events: list[NormalizedEvent], checkpoint_threshold: float, fmt: str,
     last_marker: str | None, source_metadata: dict[str, str] | None = None,
-    resolved_since: str | None = None,
+    resolved_since: str | None = None, adapter_notes: list[str] | None = None,
 ) -> str:
+    """`adapter_notes`: the adapter's own skip disclosure (what it deliberately
+    or unknowingly left out of the parse), carried as its own key so a JSON
+    consumer sees exactly what a text reader sees."""
     payload = {
         "format": fmt,
         "stop_reason": events[0].meta.get("walk_stopped_because") if events else None,
@@ -435,4 +438,6 @@ def render_json(
     }
     if resolved_since is not None:
         payload["resolved_since"] = resolved_since
+    if adapter_notes:
+        payload["adapter_notes"] = list(adapter_notes)
     return json.dumps(payload, indent=2)

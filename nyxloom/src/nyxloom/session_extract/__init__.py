@@ -51,6 +51,7 @@ class ExtractResult:
             return render.render_json(
                 self.events, self._checkpoint_threshold, self.format, self.last_marker,
                 source_metadata=self._source_metadata, resolved_since=self._since_note,
+                adapter_notes=self._adapter_notes,
             )
         trailer_blocks = list(self._trailer_blocks or ())
         if self._readback_report is not None:
@@ -69,6 +70,12 @@ class ExtractResult:
             # footer, as ONE block (the layout's own lines are related
             # accounting, not separate sections).
             trailer_blocks.append("\n".join(extra_footer))
+        # The ADAPTER's own disclosure (an adapter that deliberately or
+        # unknowingly skipped source records). It belongs with the document,
+        # not on stderr: a reader of a saved read-back must be able to see
+        # what the adapter left out.
+        if self._adapter_notes:
+            trailer_blocks.append("\n".join(self._adapter_notes))
         return render.render_text(
             self.events, self.format, self.last_marker, self._min_gap_to_annotate, self._gap_note_show_marker,
             ledger=self._ledger,
@@ -108,6 +115,11 @@ class ExtractResult:
     _readback_report: select.ReadbackReport | None = None
     _readback_layout: layout.LayoutPlan | None = None
     _since_note: str | None = None
+    # The adapter's own disclosure lines (what it skipped and why): an adapter
+    # that can report them returns them beside its events (pi's
+    # parse_with_stats), and they are rendered as a footer block so a saved
+    # read-back states them instead of hiding them on stderr.
+    _adapter_notes: list[str] | None = None
     # Per-block prose render hook (render.py's own block_render param) --
     # attached by cli.py for --render-markdown/--highlight. A rendering
     # concern, not a selection one, so it lives here rather than in
@@ -191,7 +203,7 @@ def extract(
     elif session_id not in sessions:
         raise DetectionError(f"session {session_id!r} not found at {path}")
 
-    events = adapter.parse(path, session_id, config)
+    events, adapter_notes = _adapter_parse(adapter, path, session_id, config)
     original_last_marker = events[-1].marker if events else None
     _assign_default_epochs(events)
     classifier.score_events(events)
@@ -209,10 +221,10 @@ def extract(
         for value in (config.since_marker, config.since_time, config.until_marker)
     )
     if config.goal_prompt and config.goal_file is None and cut_config:
-        whole_events = adapter.parse(
-            path, session_id, replace(config, since_marker=None, since_time=None,
-                                      until_marker=None),
-        )
+        whole_events = _adapter_parse(
+            adapter, path, session_id,
+            replace(config, since_marker=None, since_time=None, until_marker=None),
+        )[0]
         _assign_default_epochs(whole_events)
         classifier.score_events(whole_events)
     if config.since_time is not None:
@@ -274,9 +286,28 @@ def extract(
     result._metadata_position = config.extract_metadata
     result._readback_report = readback_report
     result._readback_layout = readback_plan
+    result._adapter_notes = adapter_notes
     if readback_plan is not None:
         result.redacted_paragraphs += readback_plan.redacted_paragraphs
     return result
+
+
+def _adapter_parse(
+    adapter, path: Path, session_id: str, config: ExtractConfig,
+) -> tuple[list[NormalizedEvent], list[str] | None]:
+    """One adapter parse, plus the adapter's own skip disclosure when it has one.
+
+    The SessionAdapter contract is ``parse`` (events only). An adapter that can
+    also report what it deliberately or unknowingly skipped exposes
+    ``parse_with_stats`` returning ``(events, report)`` and a report with
+    ``lines()``; anything else keeps working unchanged.
+    """
+    with_stats = getattr(adapter, "parse_with_stats", None)
+    if with_stats is None:
+        return adapter.parse(path, session_id, config), None
+    events, report = with_stats(path, session_id, config)
+    lines = report.lines()
+    return events, (lines or None)
 
 
 def _assign_default_epochs(events: list[NormalizedEvent]) -> None:

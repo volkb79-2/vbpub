@@ -118,6 +118,10 @@ def _events(path: Path, **config) -> list:
     return pi.parse(path, str(path), ExtractConfig(**config))
 
 
+def _events_and_report(path: Path, **config):
+    return pi.parse_with_stats(path, str(path), ExtractConfig(**config))
+
+
 # --- detection and discovery -------------------------------------------------
 
 def test_sniff_recognizes_both_real_shapes(tmp_path):
@@ -314,17 +318,181 @@ def test_malformed_and_non_utf8_records_are_skipped_not_fatal(tmp_path):
     assert [event.text for event in events] == ["Synthetic operator prompt.", "non\ufffdutf8"]
 
 
-def test_a_non_message_record_contributes_no_events(tmp_path):
+def test_lifecycle_records_contribute_no_events_but_are_COUNTED(tmp_path):
+    """Metadata records render nothing -- and every one of them is counted.
+
+    Before this, they vanished with no trace. A readback is only lossless if
+    the extractor says what it left out, so the deliberate skips are named in
+    the report instead of disappearing.
+    """
     path = _stored(tmp_path / "lifecycle.jsonl", [
         _session_header(),
         {"type": "agent_start"},
         {"type": "turn_start"},
         {"type": "message_start", "message": {"role": "assistant", "content": []}},
         {"type": "model_change", "id": "m1"},
-        {"type": "context_edit", "id": "e1", "targetId": "e0", "replacement": None},
         {"type": "agent_settled"},
     ])
     assert _events(path) == []
+    _, report = pi.parse_with_stats(path, str(path), ExtractConfig())
+    assert report.records == {
+        "agent_settled": 1, "agent_start": 1, "message_start": 1,
+        "model_change": 1, "session": 1, "turn_start": 1,
+    }
+    assert report.unknown_records == {}
+    assert any("skipped 6 record(s)" in line for line in report.lines())
+
+
+def test_an_unknown_record_type_is_reported_as_UNKNOWN_not_swallowed(tmp_path):
+    """Anything pi's declarations do not explain must be VISIBLE."""
+    path = _stored(tmp_path / "unknown.jsonl", [
+        _session_header(),
+        {"type": "brand_new_record", "id": "x1"},
+        {"type": "another_new_one", "id": "x2"},
+    ])
+    _, report = pi.parse_with_stats(path, str(path), ExtractConfig())
+    assert report.unknown_records == {"another_new_one": 1, "brand_new_record": 1}
+    assert report.unknown_total() == 2
+    unknown_line = next(line for line in report.lines() if "unknown" in line)
+    assert "unknown another_new_one=1 brand_new_record=1" in unknown_line
+
+
+def test_a_custom_message_is_context_the_model_saw_and_it_cannot_vanish(tmp_path):
+    """pi converts `custom_message` into a USER message (session-manager.d.ts)."""
+    path = _stored(tmp_path / "custom-message.jsonl", [
+        _session_header(),
+        {"type": "custom_message", "id": "c1", "parentId": None,
+         "timestamp": "2026-01-01T09:00:00.000Z", "customType": "synthetic-extension",
+         "content": [{"type": "text", "text": "Synthetic injected note."}],
+         "display": True},
+        _stored_message("user", [_text("Synthetic operator prompt.")]),
+    ])
+    events = _events(path)
+    assert [event.text for event in events] == [
+        "[custom message: synthetic-extension] Synthetic injected note.",
+        "Synthetic operator prompt.",
+    ]
+    injected = events[0]
+    assert injected.kind is EventKind.OPERATOR_TEXT
+    assert injected.meta["pi_context_source"] == "extension"
+    assert injected.meta["pi_custom_type"] == "synthetic-extension"
+    assert injected.timestamp == "2026-01-01T09:00:00.000Z"
+
+
+def test_a_bash_execution_message_becomes_a_tool_line(tmp_path):
+    """`!` inside pi persists as role `bashExecution` (messages.d.ts)."""
+    # The stored shape puts BashExecutionMessage FIELDS on the message itself.
+    record = {"type": "message", "id": "b1", "parentId": None,
+              "timestamp": "2026-01-01T09:00:00.000Z",
+              "message": {"role": "bashExecution", "command": "print synthetic",
+                          "output": "synthetic", "exitCode": 0, "cancelled": False,
+                          "truncated": False,
+                          "timestamp": 1790000000000}}
+    path = _stored(tmp_path / "bash-execution.jsonl", [
+        _session_header(),
+        record,
+        {"type": "message", "id": "b2", "parentId": "b1",
+         "timestamp": "2026-01-01T09:00:01.000Z",
+         "message": {"role": "bashExecution", "command": "print hidden",
+                     "output": "", "exitCode": None, "cancelled": True,
+                     "truncated": False,
+                     "excludeFromContext": True,
+                     "timestamp": 1790000001000}},
+    ])
+    calls = [event for event in _events(path, tool_calls="call")
+             if event.kind is EventKind.TOOL_CALL]
+    assert calls[0].text == "[bash execution: $ print synthetic] exit=0"
+    assert calls[0].meta["pi_bash_execution"] == "1"
+    assert calls[0].meta["tool_kind"] == "other"
+    # pi's `!!` prefix excludes a command from model context -- said, not hidden.
+    assert calls[1].text == (
+        "[bash execution: $ print hidden] excluded from model context cancelled"
+    )
+
+
+def test_branch_summaries_are_context_the_model_saw(tmp_path):
+    """branch_summary / branchSummary reach the model as a user message."""
+    record = {"type": "message", "id": "s2", "parentId": "s1",
+              "timestamp": "2026-01-01T09:00:01.000Z",
+              "message": {"role": "branchSummary", "summary": "Synthetic message summary.",
+                          "fromId": None, "timestamp": 1790000001000}}
+    path = _stored(tmp_path / "branch.jsonl", [
+        _session_header(),
+        {"type": "branch_summary", "id": "s1", "parentId": None,
+         "timestamp": "2026-01-01T09:00:00.000Z", "fromId": "e0",
+         "summary": "Synthetic branch summary."},
+        record,
+    ])
+    markers = [event for event in _events(path) if event.kind is EventKind.LIFECYCLE_MARKER]
+    assert [event.text for event in markers] == [
+        "[branch boundary]", "[branch boundary]",
+    ]
+    assert markers[0].meta["boundary_type"] == "branch_summary"
+    shown = [event.text for event in _events(path, hide_compaction_content=False)
+             if event.kind is EventKind.LIFECYCLE_MARKER]
+    assert shown == [
+        "[branch summary] Synthetic branch summary.",
+        "[branch summary] Synthetic message summary.",
+    ]
+
+
+def test_compaction_summary_message_role_is_a_boundary_with_its_summary(tmp_path):
+    record = {"type": "message", "id": "p1", "parentId": None,
+              "timestamp": "2026-01-01T09:00:00.000Z",
+              "message": {"role": "compactionSummary", "summary": "Synthetic compacted context.",
+                          "tokensBefore": 42, "timestamp": 1790000000000}}
+    path = _stored(tmp_path / "compaction-message.jsonl", [_session_header(), record])
+    assert [event.text for event in _events(path) if event.kind is EventKind.LIFECYCLE_MARKER] == \
+        ["[compact boundary]"]
+    shown = [event.text for event in _events(path, hide_compaction_content=False)
+             if event.kind is EventKind.LIFECYCLE_MARKER]
+    assert shown == ["[compact summary] Synthetic compacted context."]
+    marker = next(event for event in _events(path)
+                  if event.kind is EventKind.LIFECYCLE_MARKER)
+    assert marker.meta["boundary_type"] == "compaction_summary"
+
+
+def test_a_context_edit_is_marked_and_counted_because_it_masked_content(tmp_path):
+    """`replacement: null` REMOVES the target from model context; the extract
+    still reads the file, so the difference is stated, never implied."""
+    path = _stored(tmp_path / "context-edit.jsonl", [
+        _session_header(),
+        _stored_message("user", [_text("Synthetic operator prompt.")]),
+        {"type": "context_edit", "id": "e1", "parentId": None,
+         "timestamp": "2026-01-01T09:00:00.000Z", "targetId": "line2",
+         "replacement": None},
+        {"type": "context_edit", "id": "e2", "parentId": "e1",
+         "timestamp": "2026-01-01T09:00:01.000Z", "targetId": "line3",
+         "replacement": {"content": "Synthetic replacement."}},
+    ])
+    markers = [event.text for event in _events(path)
+               if event.kind is EventKind.LIFECYCLE_MARKER]
+    assert markers == [
+        "[context edit] target=line2 removed from model context",
+        "[context edit] target=line3 content replaced",
+    ]
+    _, report = pi.parse_with_stats(path, str(path), ExtractConfig())
+    assert report.context_edits == 2 and report.context_edits_masked == 1
+    counted = next(line for line in report.lines() if "context_edit" in line)
+    assert "1 of which REMOVED" in counted
+
+
+def test_a_tree_break_is_counted_not_implied(tmp_path):
+    """pi sessions are trees (`parentId`); this adapter follows FILE ORDER."""
+    path = _stored(tmp_path / "tree.jsonl", [
+        _session_header(),
+        {"type": "message", "id": "a", "parentId": None,
+         "message": {"role": "user", "content": [_text("Synthetic operator prompt.")]}},
+        {"type": "message", "id": "b", "parentId": "a",
+         "message": {"role": "assistant", "content": [_text("Synthetic prose.")],
+                     "stopReason": "stop"}},
+        {"type": "message", "id": "c", "parentId": "",
+         "message": {"role": "assistant", "content": [_text("Another synthetic fork.")],
+                     "stopReason": "stop"}},
+    ])
+    _, report = pi.parse_with_stats(path, str(path), ExtractConfig())
+    assert report.tree_breaks == 1
+    assert any("parentId breaks the linear" in line for line in report.lines())
 
 
 # --- stop state ----------------------------------------------------------------
@@ -714,4 +882,174 @@ def test_stop_state_steps_over_a_closed_message_call_before_the_open_one(tmp_pat
         {"type": "tool_execution_start", "toolName": "read", "args": {"path": "a.py"}},
     ])
     assert build_stop_state(path, fmt="pi").in_flight == "bash: $ print open"
+
+
+# --- parity with the controller wrapper that classifies the same runs ----------
+
+PARITY = Path(__file__).parent / "fixtures" / "pi_stop_parity.json"
+
+
+def _parity_records(case) -> list[dict]:
+    """The synthetic session a parity case describes."""
+    records = [_session_header()]
+    for index, item in enumerate(case["records"]):
+        content = []
+        if item.get("text"):
+            content.append(_text(item["text"]))
+        if item.get("tool_call"):
+            content.append(_call(f"parity_{index}", item["tool_call"], command="print x"))
+        message = {"role": item["role"], "content": content,
+                   "stopReason": item["stopReason"]}
+        if item.get("error"):
+            message["errorMessage"] = item["error"]
+        records.append({"type": "message", "id": f"p{index}", "parentId": None,
+                        "message": message})
+        if item.get("tool_result"):
+            records.append({"type": "message", "id": f"r{index}", "parentId": f"p{index}",
+                            "message": {"role": "toolResult",
+                                        "toolCallId": f"parity_{index}",
+                                        "content": [_text("synthetic result")]}})
+    return records
+
+
+def test_the_python_and_shell_consumers_agree_on_how_a_pi_run_ended(tmp_path):
+    """`stopstate.py` and `scripts/controller/pi-impl.sh` must not drift.
+
+    pi-impl.sh cannot be sourced from a Python test (it runs a job), so its
+    DOCUMENTED predicate is pinned in `tests/fixtures/pi_stop_parity.json`
+    and this test feeds the SAME synthetic records through the extractor's
+    stop-state classifier: the label the ledger gives must match the outcome
+    class the wrapper would write, case by case.
+    """
+    cases = json.loads(PARITY.read_text(encoding="utf-8"))["cases"]
+    assert cases, "the parity fixture must carry cases"
+    for case in cases:
+        path = _stored(
+            (tmp_path / f"{case['name'].replace(' ', '-').replace('/', '-')}.jsonl"),
+            _parity_records(case),
+        )
+        cause = build_stop_state(path, fmt="pi").cause
+        assert case["expected_cause"] in cause, (case["name"], cause)
+        # The shell side's own classification of the SAME facts, restated:
+        # an `error` stop is USAGE-LIMIT/ERROR, a non-stop reason is
+        # INCOMPLETE, and an empty settled stop is EMPTY-COMPLETION.
+        shell = case["pi_impl"]
+        if shell["stop_reason"] == "error":
+            assert "error" in cause
+        elif shell["stop_reason"] != "stop" or shell["aborted"] == 1:
+            assert "INCOMPLETE" == case["outcome"]
+            assert any(word in cause for word in
+                       ("context-full", "aborted", "deferred", "incomplete")), cause
+        elif shell["has_text"] != 1 and shell["has_tool_call"] != 1:
+            assert case["outcome"] == "EMPTY-COMPLETION"
+            assert cause.startswith("empty-completion")
+
+
+def test_the_readback_discloses_what_the_adapter_skipped(tmp_path, capsys):
+    """The disclosure must reach the DOCUMENT, not only stderr."""
+    from nyxloom.cli_harness import main as harness_main
+
+    path = _stored(tmp_path / "disclosed.jsonl", [
+        _session_header(),
+        {"type": "brand_new_record", "id": "x1"},
+        {"type": "model_change", "id": "m1"},
+        {"type": "context_edit", "id": "e1", "parentId": None,
+         "timestamp": "2026-01-01T09:00:00.000Z", "targetId": "line2",
+         "replacement": None},
+        _stored_message("user", [_text("Synthetic operator prompt.")]),
+    ])
+    code = harness_main(["extract", str(path), "--preset", "readback",
+                         "--budget-tokens", "4000"])
+    out = capsys.readouterr().out
+    assert code == 0
+    assert "[pi skipped 3 record(s): deliberate model_change=1 session=1; " \
+        "unknown brand_new_record=1]" in out
+    assert "context_edit record(s), 1 of which REMOVED" in out
+    # JSON consumers see exactly the same disclosure.
+    code = harness_main(["extract", str(path), "--json"])
+    payload = json.loads(capsys.readouterr().out)
+    assert code == 0
+    assert any("unknown brand_new_record=1" in note
+               for note in payload["adapter_notes"])
+
+
+def test_the_skip_report_names_buckets_that_are_the_ONLY_thing_it_has(tmp_path):
+    """Each bucket is reported even when every OTHER bucket is empty."""
+    # Only messages: no counted record, but roles are recorded (a successful
+    # toolResult is noise this tool discards, so it is counted).
+    path = _stored(tmp_path / "roles-only.jsonl", [
+        _stored_message("toolResult", [_text("synthetic result")]),
+        _stored_message("brand_new_role", [_text("synthetic content")]),
+        _stored_message("assistant", [{"type": "brand_new_block", "data": "x"}],
+                        stop_reason="stop"),
+    ])
+    _, report = pi.parse_with_stats(path, str(path), ExtractConfig())
+    assert report.records == {}
+    lines = report.lines()
+    role_line = next(line for line in lines if "by role" in line)
+    assert "toolResult (result not rendered)=1" in role_line
+    assert "unknown brand_new_role=1" in role_line
+    block_line = next(line for line in lines if "content block" in line)
+    assert "unknown brand_new_block=1" in block_line
+
+
+def test_an_unparseable_line_is_named_in_the_report_that_a_reader_sees(tmp_path):
+    """A truncated run must say so where the SKIP block is read, not only in
+    a counter nobody prints."""
+    path = tmp_path / "truncated.jsonl"
+    path.write_text(
+        json.dumps(_session_header()) + "\n"
+        + '{"type": "message", "id": "k"\n', encoding="utf-8",
+    )
+    _, report = pi.parse_with_stats(path, str(path), ExtractConfig())
+    assert report.unparseable_lines == 1
+    assert any("unparseable" in line for line in report.lines())
+    # `records()` is the Protocol-facing entry point: same tolerant read.
+    assert [record["type"] for _, record in pi.records(path)] == ["session"]
+
+
+def test_a_custom_message_without_renderable_text_is_COUNTED(tmp_path):
+    """An image-only extension message cannot be carried by a text extract."""
+    path = _stored(tmp_path / "image-custom.jsonl", [
+        _session_header(),
+        {"type": "custom_message", "id": "c1", "parentId": None,
+         "customType": "synthetic-extension",
+         "content": [{"type": "image", "data": "synthetic"}]},
+    ])
+    assert _events(path) == []
+    _, report = pi.parse_with_stats(path, str(path), ExtractConfig())
+    assert report.blocks == {"custom_message (no text)": 1}
+
+
+def test_a_custom_message_carries_a_STRING_content_and_an_unlisted_source(tmp_path):
+    """`custom_message.content` is a string OR a block list; a record with
+    neither is empty, and a missing `customType` is named `unknown` rather
+    than rendering an empty bracket."""
+    path = _stored(tmp_path / "custom-shapes.jsonl", [
+        _session_header(),
+        {"type": "custom_message", "id": "c1", "parentId": None,
+         "content": "Synthetic injected note."},
+        {"type": "custom_message", "id": "c2", "parentId": "c1",
+         "content": {"unexpected": "shape"}},
+        {"type": "message", "id": "u1", "parentId": "c2",
+         "message": {"role": "custom", "content": "Synthetic role note."}},
+        {"type": "message", "id": "u2", "parentId": "u1",
+         "message": {"role": "custom", "content": []}},
+    ])
+    texts = [event.text for event in _events(path)]
+    assert texts == [
+        "[custom message: unknown] Synthetic injected note.",
+        "[custom message: unknown] Synthetic role note.",
+    ]
+
+
+def test_an_assistant_message_with_no_role_is_counted_as_MISSING(tmp_path):
+    """A message without a role is not silently treated as prose."""
+    path = _stored(tmp_path / "no-role.jsonl", [
+        _session_header(),
+        {"type": "message", "id": "n1", "parentId": None, "message": {}},
+    ])
+    assert _events(path) == []
+    _, report = pi.parse_with_stats(path, str(path), ExtractConfig())
+    assert report.unknown_roles == {"missing": 1}
 
