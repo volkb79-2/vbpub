@@ -1133,6 +1133,38 @@ def test_b162_refusals(bucket, entry, message):
                 )
             },
         ),
+        # B234: the state letter is optional and additive, on its own and
+        # alongside B233's cmdline.
+        (
+            "crashed",
+            {
+                "process_tree_evidence": _tree(
+                    leader_status="signaled",
+                    outliving_descendants=1,
+                    descendants_signalled=1,
+                    descendants=[{"pid": 5, "ppid": 1, "comm": "c", "state": "Z"}],
+                )
+            },
+        ),
+        (
+            "crashed",
+            {
+                "process_tree_evidence": _tree(
+                    leader_status="signaled",
+                    outliving_descendants=1,
+                    descendants_signalled=1,
+                    descendants=[
+                        {
+                            "pid": 5,
+                            "ppid": 1,
+                            "comm": "c",
+                            "state": "S",
+                            "cmdline": ["sleep", "5"],
+                        }
+                    ],
+                )
+            },
+        ),
     ],
 )
 def test_b162_accepts_clean_or_classified_trees(bucket, entry):
@@ -1155,6 +1187,30 @@ def test_b162_accepts_clean_or_classified_trees(bucket, entry):
         (
             _tree(descendants=[{"pid": 1, "ppid": 1, "comm": "c", "cmdline": ["a", 2]}]),
             "malformed descendant identity",
+        ),
+        # B234: `state` is one character from the CLOSED kernel set or absent.
+        (
+            _tree(descendants=[{"pid": 1, "ppid": 1, "comm": "c", "state": "Q"}]),
+            "malformed descendant identity",
+        ),
+        (
+            _tree(descendants=[{"pid": 1, "ppid": 1, "comm": "c", "state": "ZZ"}]),
+            "malformed descendant identity",
+        ),
+        (
+            _tree(descendants=[{"pid": 1, "ppid": 1, "comm": "c", "state": 7}]),
+            "malformed descendant identity",
+        ),
+        (
+            _tree(descendants=[{"pid": 1, "ppid": 1, "comm": "c", "state": None}]),
+            "malformed descendant identity",
+        ),
+        # A state observed about a process the observer NEVER identified
+        # contradicts itself: it would claim knowledge of an identity the
+        # same record declares unavailable.
+        (
+            _tree(descendants=[{"pid": 1, "ppid": None, "comm": None, "state": "Z"}]),
+            "descendant state without a complete identity",
         ),
         (
             _tree(

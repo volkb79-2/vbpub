@@ -30,6 +30,7 @@ from . import observer_windows
 from .records import record
 
 __all__ = [
+    "PROCESS_STATE_LETTERS",
     "ProcessTreeDescendant",
     "ProcessTreeError",
     "ProcessTreeEvidence",
@@ -48,6 +49,10 @@ _MAX_RECORDED_DESCENDANTS = 10_000
 # so a hostile or enormous argv cannot bloat the verdict.
 _MAX_CMDLINE_ARGS = 16
 _MAX_CMDLINE_ARG_CHARS = 200
+#: (B234) The closed set of ``/proc/<pid>/stat`` field-3 state letters. Closed
+#: rather than free text: the field is a one-character kernel fact, and a
+#: verdict carrying anything else is not evidence about a process.
+PROCESS_STATE_LETTERS = frozenset({"R", "S", "D", "T", "t", "Z", "X", "x", "I", "K", "W", "P"})
 _SECRET_WORDS = r"(?:token|secret|passw(?:or)?d|passwd|api[-_]?key|credential|authorization)"
 _SECRET_NAME = re.compile(r"(?i)" + _SECRET_WORDS)
 # NAME=value / NAME: value / --flag=value for a secret-like NAME anywhere in an item.
@@ -120,16 +125,40 @@ class ProcessTreeDescendant:
 
     A procfs race keeps the PID that was observed in the child list and marks
     the unavailable identity explicitly with null ``ppid`` and ``comm``.
+
+    **(B234)** ``state`` is the ``/proc/<pid>/stat`` state letter (field 3,
+    already parsed next to ``ppid`` and ``comm``) when the observer recorded
+    it. It exists because a ZOMBIE and a live process whose ``cmdline``
+    could not be read render identically -- ``pid=N ppid=M comm=C`` with no
+    argv -- while the remedy differs: a zombie needs its PARENT to reap it,
+    a live process needs a kill. Optional and additive: an older observer, or
+    a record written before this field existed, carries no ``state`` at all,
+    and a verdict carrying one fails the key-set check of an older verifier
+    exactly as B233's ``cmdline`` does.
     """
 
     pid: int
     ppid: int | None
     comm: str | None
     cmdline: tuple[str, ...] | None = None
+    state: str | None = None
 
     def __post_init__(self) -> None:
         if type(self.pid) is not int or self.pid < 1:
             raise ValueError("process-tree descendant pid must be a positive integer")
+        if self.state is not None and (
+            not isinstance(self.state, str)
+            or len(self.state) != 1
+            or self.state not in PROCESS_STATE_LETTERS
+        ):
+            raise ValueError(
+                "process-tree descendant state must be one /proc/<pid>/stat "
+                "state letter or null"
+            )
+        if self.state is not None and self.comm is None:
+            raise ValueError(
+                "process-tree descendant state requires a complete identity"
+            )
         if self.cmdline is not None and (
             not isinstance(self.cmdline, tuple)
             or len(self.cmdline) > _MAX_CMDLINE_ARGS + 1
@@ -149,7 +178,9 @@ class ProcessTreeDescendant:
 
     @classmethod
     def from_dict(cls, value: Mapping[str, object]) -> "ProcessTreeDescendant":
-        if set(value) not in ({"pid", "ppid", "comm"}, {"pid", "ppid", "comm", "cmdline"}):
+        required = {"pid", "ppid", "comm"}
+        allowed = required | {"cmdline", "state"}
+        if not required <= set(value) or not set(value) <= allowed:
             raise ValueError("process-tree descendant has an invalid field set")
         raw = value.get("cmdline")
         if raw is not None and (
@@ -162,12 +193,15 @@ class ProcessTreeDescendant:
             ppid=value["ppid"],  # type: ignore[arg-type]
             comm=value["comm"],  # type: ignore[arg-type]
             cmdline=None if raw is None else tuple(raw),
+            state=value.get("state"),  # type: ignore[arg-type]
         )
 
     def to_dict(self) -> dict[str, object]:
         out: dict[str, object] = {"pid": self.pid, "ppid": self.ppid, "comm": self.comm}
         if self.cmdline is not None:
             out["cmdline"] = list(self.cmdline)
+        if self.state is not None:
+            out["state"] = self.state
         return out
 
     def describe(self) -> str:
@@ -175,6 +209,8 @@ class ProcessTreeDescendant:
         if self.ppid is None:
             return f"pid={self.pid} (identity unavailable)"
         text = f"pid={self.pid} ppid={self.ppid} comm={self.comm}"
+        if self.state is not None:
+            text += f" state={self.state}"
         if self.cmdline:
             text += " argv=" + " ".join(self.cmdline)
         return text
@@ -303,6 +339,12 @@ def _process_identity(pid: int) -> ProcessTreeDescendant:
             ppid=int(fields[1]),
             comm=raw[opening + 1 : closing],
             cmdline=_read_cmdline(pid),
+            # (B234) `stat`'s field 3 -- the state letter -- is `fields[0]`
+            # once the `(comm)` parenthesised field has been cut away. A
+            # letter outside the closed set is not a fact this record may
+            # publish, so it stays absent while the rest of the identity is
+            # kept; only a missing/malformed letter means no `state`.
+            state=fields[0] if fields and fields[0] in PROCESS_STATE_LETTERS else None,
         )
     except (IndexError, ValueError):
         return ProcessTreeDescendant(pid=pid, ppid=None, comm=None)

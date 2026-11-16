@@ -730,7 +730,43 @@ resume revalidation. See the
 
 WP8 also removes the host-varying `cleanup_seconds` from process-tree evidence,
 records the leader signal and identities of outliving descendants, and carries
-the completed suite's underlying outcome when cleanup discovers a leak. The
+the completed suite's underlying outcome when cleanup discovers a leak.
+
+### Why a leaked descendant carries its `state` letter and its `cmdline` (B233/B234)
+
+A leaked-descendant record answers one question: what is still running, and
+what should be done about it. `pid`, `ppid` and `comm` do not answer the
+second half. B233 added the bounded, redacted `cmdline`, because a comm-only
+record could not say WHICH invocation leaked. B234 added the `/proc/<pid>/stat`
+state letter, because a zombie and a live process whose `cmdline` could not be
+read render identically — `pid=N ppid=M comm=C` with no argv — while the remedy
+differs: a zombie needs its PARENT to reap it, and only its parent can; a live
+process needs a kill. Two rejected alternatives: (a) infer the state from the
+absence of a `cmdline`, which conflates "a zombie" with "still running but
+`/proc/<pid>/cmdline` was unreadable or empty", sending the reader to the wrong
+remedy exactly in the case the field exists for; (b) publish the whole `stat`
+line, which mixes kernel bookkeeping (CPU ticks, page counts, session ids) into
+a diagnostic whose only job is identity plus remedy, and would make the verdict
+schema track a kernel-internal layout. The letter is a CLOSED set
+(`R S D T t Z X x I K W P`) at BOTH the writer and the verifier: an unexpected
+letter is not evidence about a process, so the writer omits it and the verifier
+refuses it, rather than letting free text into a verdict. It is published only
+alongside a complete `pid`/`ppid`/`comm` identity, because an observation about
+a process cannot ride an identity the observer never read. Both keys are
+optional and additive under v19 (no schema-version bump), following B233's
+precedent: an older observer's verdict stays valid, and a newer one fails the
+key-set check of a verifier that predates it. Additive is the only
+schema-version-free direction — a version bump is required the moment an
+existing key's MEANING changes.
+
+While adding `state` it was measured that B233's `cmdline` had never been
+schema-valid at all: the descendant object was `additionalProperties: false`
+with no `cmdline` property, so every verdict carrying a real leaked argv was
+invalid against the schema Assay ships. The producer and `CONSUMERS.md` both
+had it; no test built such a verdict, so nothing went red. Both keys are
+declared in the schema now, with a cross-key `allOf` branch refusing `state`
+on a null-`comm` identity — the JSON-Schema-shaped half of the same rule the
+verifier states in prose. The
 candidate remains `crashed`: retaining the diagnostic outcome must not turn an
 unclean process tree into mutation credit. `canary_attempt.cause` records
 `receipt`, `absent`, or null, so verification can re-derive the R3 attempt.

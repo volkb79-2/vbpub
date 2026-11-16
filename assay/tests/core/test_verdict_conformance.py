@@ -1445,7 +1445,7 @@ def test_v17_verdict_is_refused_with_exactly_one_diagnostic():
 #: cannot drift. v19 (B251) replaces the v18 entry: only the current version's
 #: schema ships.
 _VERDICT_SCHEMA_SHA256 = {
-    19: "a76467aea133522919464bfdf44ea70fa641fc0f45d82c8ae5d081edcfe69010",
+    19: "980a35c6f9f94358ddd7ff21deafab631a8d4a26d7f06f5c93b72dd80547927e",
 }
 
 
@@ -1484,6 +1484,51 @@ def test_b171_leak_retains_underlying_suite_result_without_mutation_credit():
         for failure in verify_document(broken)
     )
 
+
+def _leaked_descendant(document: dict) -> dict:
+    """The one recorded leaked descendant of the R2 crash fixture."""
+    claim = next(c for c in document["claims"] if c.get("rigor") == "R2")
+    return claim["mutation"]["crashed"][0]["process_tree_evidence"]["descendants"][0]
+
+
+def test_b234_descendant_state_and_cmdline_survive_the_shipped_schema(
+    validator: Draft202012Validator,
+):
+    """The shipped schema must ACCEPT the fields the shipped observer WRITES.
+
+    Measured defect closed here: B233's ``cmdline`` reached the producer and
+    ``docs/CONSUMERS.md`` but the schema's descendant object had
+    ``additionalProperties: false`` and no ``cmdline`` property, so EVERY
+    verdict carrying a real leaked-descendant argv was invalid against the
+    schema assay ships. Neither B233's tests nor the fixture matrix built a
+    verdict with ``cmdline`` and validated it, so nothing went red.
+    """
+    document = _load("r2_crashed_descendant_leak.json")
+    descendant = _leaked_descendant(document)
+    descendant["cmdline"] = ["pytest", "-x", "tests/"]
+    descendant["state"] = "Z"
+
+    assert why_invalid(validator, document) == [], (
+        "the schema must accept the descendant fields the observer emits"
+    )
+    assert verify_document(document) == []
+
+
+@pytest.mark.parametrize(
+    "state",
+    ["Q", "ZZ", "", 7, None],
+    ids=["unknown-letter", "two-letters", "empty", "non-string", "null"],
+)
+def test_b234_descendant_state_outside_the_closed_set_is_schema_invalid(
+    validator: Draft202012Validator, state
+):
+    document = _load("r2_crashed_descendant_leak.json")
+    descendant = _leaked_descendant(document)
+    descendant["state"] = state
+
+    assert why_invalid(validator, document) != [], (
+        "the schema must refuse a state the kernel never reports"
+    )
 
 # ============================================================================
 # O2 (P16 review) -- the rest of work item 6's named contradictory negatives:

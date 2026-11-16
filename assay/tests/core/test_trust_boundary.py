@@ -74,9 +74,17 @@ _VERDICT_NAMES = (
 )
 
 #: The committed base: every assay-internal name ``verify.py`` imported before W10.
+#:
+#: One addition since: ``PROCESS_STATE_LETTERS`` (B234), the closed
+#: ``/proc/<pid>/stat`` state letter set. The boundary this file guards is
+#: about shared JUDGE LOGIC, and a verdict-relevant vocabulary is DATA: the
+#: verifier must refuse a letter outside the set the producer publishes, and a
+#: second literal copy of that set is exactly the drift this file exists to
+#: prevent. It is defined beside the record that carries it, not beside the
+#: guard predicates ``assay.guards`` owns.
 VERIFY_IMPORT_BASE = frozenset(
     {("assay.candidate_identity", "candidate_id_from_fields"), ("assay.mutation", "judge_mutation")}
-    | {("assay.process_tree", "ProcessTreeEvidence")}
+    | {("assay.process_tree", "ProcessTreeEvidence"), ("assay.process_tree", "PROCESS_STATE_LETTERS")}
     | {
         ("assay.r2_command", name)
         for name in (
