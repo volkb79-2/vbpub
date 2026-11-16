@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 import shutil
 import subprocess
 import tempfile
@@ -3091,6 +3092,116 @@ def test_sync_local_main_reports_failure_to_update_non_current_main(monkeypatch)
         assert "left untouched" in result.reason
         assert ["git", "branch", "-f", "main", "origin/main"] in calls
         assert _git("rev-parse", "main", cwd=h.repo_root) == stale_main
+
+
+def test_sync_local_main_names_the_worktree_that_owns_main(monkeypatch):
+    with _OriginAndClone() as h:
+        _git("checkout", "-q", "-b", "release-caller", cwd=h.repo_root)
+        main_worktree = h.tmp / "main owner"
+        _git("worktree", "add", "-q", str(main_worktree), "main", cwd=h.repo_root)
+        stale_main = _git("rev-parse", "main", cwd=h.repo_root)
+
+        other = h.clone_workspace("scratch", path_name="other")
+        (other / "new.txt").write_text("remote main\n")
+        _git("add", "new.txt", cwd=other)
+        _git("commit", "-q", "-m", "advance origin main", cwd=other)
+        _git("push", "-q", "origin", "HEAD:refs/heads/main", cwd=other)
+
+        local_calls: list[tuple[str, ...]] = []
+        run_local_git = transaction.run_local_git
+
+        def record_local_git(repo_root, *args, **kwargs):
+            local_calls.append(tuple(args))
+            return run_local_git(repo_root, *args, **kwargs)
+
+        monkeypatch.setattr(transaction, "run_local_git", record_local_git)
+        result = transaction._sync_local_main_result(h.repo_root)
+
+        remedy = f"git -C {shlex.quote(str(main_worktree))} pull --ff-only"
+        assert result.ok is False
+        assert f"`main` is checked out in another worktree at {main_worktree}" in result.reason
+        assert remedy in result.reason
+        assert ("branch", "-f", "main", "origin/main") not in local_calls
+        assert _git("rev-parse", "main", cwd=h.repo_root) == stale_main
+        assert _git("rev-parse", "origin/main", cwd=h.repo_root) != stale_main
+
+
+def test_sync_local_main_reports_worktree_inventory_failure(monkeypatch, tmp_path):
+    monkeypatch.setattr(transaction, "run_remote_git", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        transaction, "_git",
+        lambda _root, *args, **_kwargs: "feature" if args == ("branch", "--show-current") else "",
+    )
+
+    def fail_inventory(_root):
+        raise OSError("inventory unavailable")
+
+    monkeypatch.setattr(
+        transaction, "_shared_worktree",
+        lambda: SimpleNamespace(list_git_worktrees=fail_inventory),
+    )
+    monkeypatch.setattr(
+        transaction, "run_local_git",
+        lambda *_args, **_kwargs: pytest.fail("no local ref update is safe without inventory"),
+    )
+
+    result = transaction._sync_local_main_result(tmp_path)
+
+    assert result.ok is False
+    assert "Git's worktree inventory could not be read (inventory unavailable)" in result.reason
+    assert "git worktree list --porcelain" in result.reason
+
+
+def test_sync_local_main_refuses_multiple_main_worktrees(monkeypatch, tmp_path):
+    paths = (tmp_path / "main one", tmp_path / "main two")
+    worktrees = [
+        SimpleNamespace(branch="main", path=path, is_prunable=False)
+        for path in paths
+    ]
+    monkeypatch.setattr(transaction, "run_remote_git", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        transaction, "_git",
+        lambda _root, *args, **_kwargs: "feature" if args == ("branch", "--show-current") else "",
+    )
+    monkeypatch.setattr(
+        transaction, "_shared_worktree",
+        lambda: SimpleNamespace(list_git_worktrees=lambda _root: worktrees),
+    )
+    monkeypatch.setattr(
+        transaction, "run_local_git",
+        lambda *_args, **_kwargs: pytest.fail("duplicate main checkouts must not move refs"),
+    )
+
+    result = transaction._sync_local_main_result(tmp_path)
+
+    assert result.ok is False
+    assert "multiple worktrees" in result.reason
+    assert shlex.quote(str(paths[0])) in result.reason
+    assert shlex.quote(str(paths[1])) in result.reason
+
+
+def test_sync_local_main_refuses_prunable_main_worktree(monkeypatch, tmp_path):
+    main_path = tmp_path / "stale main"
+    worktrees = [SimpleNamespace(branch="main", path=main_path, is_prunable=True)]
+    monkeypatch.setattr(transaction, "run_remote_git", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        transaction, "_git",
+        lambda _root, *args, **_kwargs: "feature" if args == ("branch", "--show-current") else "",
+    )
+    monkeypatch.setattr(
+        transaction, "_shared_worktree",
+        lambda: SimpleNamespace(list_git_worktrees=lambda _root: worktrees),
+    )
+    monkeypatch.setattr(
+        transaction, "run_local_git",
+        lambda *_args, **_kwargs: pytest.fail("a prunable registration must not move refs"),
+    )
+
+    result = transaction._sync_local_main_result(tmp_path)
+
+    assert result.ok is False
+    assert "Git marks the worktree registered for `main` as prunable" in result.reason
+    assert str(main_path) in result.reason
 
 
 # ---------------------------------------------------------------------------

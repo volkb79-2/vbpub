@@ -14,10 +14,12 @@
 
 | ID | Status | Fix commit |
 | --- | --- | --- |
+| KI-175 | OPEN (dist_dir containment gap can delete project or parent paths) | `126b2170b0fbcad444c6c7c0f8c9906b68f55f69` |
+| KI-173 | FIXED 2026-11-16 (estate argv failures explain shell-expanded values for typed options and their environment fallback) | `f20d3ae566e60f591638f9bc5e66e9bfd7e38a39` |
 | KI-171 | OPEN (the packaged cmru-cli SKILL is grammar-checked but not coverage-checked: a verb or flag a release adds can be missing from it with every existing test green) | — |
 | KI-170 | OPEN (bundle validator outcomes pinned; SPEC wording and R2 lane-cost policy remain) | — |
-| KI-169 | OPEN (`bundle_dir` set to `"."` makes the success cleanup delete the whole `dist_dir`; no containment check on `bundle_dir`/`client_dir`) | — |
-| KI-168 | OPEN (`cmru release` does not preflight the digest-pinned cgroup probe image; a missing one fails late in the wheel-build step, after the gate) | — |
+| KI-169 | FIXED 2026-11-16 (bundle/client staging paths are resolved, disjoint descendants of `dist_dir`, and rechecked before cleanup) | `493ecc6a2ba9a885d748de350210ee06a85af66b` |
+| KI-168 | FIXED 2026-11-16 (configured wheel-builder and cgroup-probe images are checked before release dispatch) | `953e3668e` |
 | KI-167 | OPEN (case-sensitive suffix checks, no `.env` / `.env.*` prefix class and an incomplete name list can miss secret-class paths) | — |
 | KI-166 | FIXED (included bundle source symlinks could dereference and ship their targets) | `f2b56b12743f6a764bbadefa8b937c1bd642b32f` |
 | KI-165 | OPEN (item 2 fixed; items 1, 3, 4, 5 and 6 remain) | `f2b56b12743f6a764bbadefa8b937c1bd642b32f` |
@@ -27,7 +29,7 @@
 | KI-161 | OPEN (`cmru versions resolve` and `init` rewrite `cmru.toml` and drop comments; a document-wide blank-line collapse can change multi-line string values) | — |
 | KI-160 | OPEN (post-promotion evidence retention can exit 1 after a successful release) | — |
 | KI-158 | OPEN (retained release outputs can disappear with an outer release worktree) | — |
-| KI-157 | OPEN (local-main sync failure message names the wrong condition) | — |
+| KI-157 | FIXED 2026-11-16 (checked-out main worktree is derived and given its owner-scoped remedy) | `4d36980b8d6f3ed7533da2f900b955c06075cb1f` |
 | KI-155 | FIXED (2026-11-12; tuple resource evidence) | `152ba5c9a5181b128ebf1364a9d57d2524ce4415` |
 | KI-154 | FIXED (2026-11-12; sibling Assay package roots) | `a25c265373e2d010033203ea10dedfb8915aba4c` |
 | KI-153 | FIXED (2026-11-12; process-tree fixture schema) | `152ba5c9a5181b128ebf1364a9d57d2524ce4415` |
@@ -3166,7 +3168,7 @@ not implementable as the brief's "small" follow-on.
 
 ## KI-137 - SIGPIPE race in the source-binding refusal of `build-initial-standalone.sh` fails a lane baseline at random
 
-**Status:** OPEN (filed 2026-11-08); severity: minor (flaky test, no product effect). **Finding.** `cmru/build-initial-standalone.sh:206` prints the refusal path list with `printf '%s\n' "$2" | head -n 20 | sed ...` under `set -o pipefail`. When more than 20 paths are listed, `head` can close the pipe before `printf` finishes, `printf` gets SIGPIPE, and the script exits 141 instead of the refusal's 2. `tests/test_installed_wheel_subprocess.py::test_the_refusal_names_at_most_twenty_paths_and_the_remedy` (line 1067) then fails with returncode 141. Seen once on 2026-11-08 (shard s13 try 1, the R0 baseline failed 1 of 6371 tests; the same test passed in the <host> baseline at 12:59Z and in try 2), so a campaign baseline can fail on it at random.
+**Status:** FIXED 2026-11-16; severity: minor (flaky test, no product effect). The refusal now uses `sed -n` to print at most twenty paths while consuming the complete input, so `pipefail` preserves the intended exit 2. The regression emits 4096 paths (well beyond a pipe buffer): it failed before the fix with exit 141 and passes on this branch with exit 2.
 **Fix.** Make the listing independent of pipe timing: `printf '%s\n' "$2" | sed -n '1,20p'` (sed reads all input) or build the list with `mapfile` and a bounded loop, and keep the exit code 2 explicit. Add a test with a path list large enough to make `head` close early.
 **Close when.** The new large-list test passes repeatedly, and the old pipeline re-applied fails it.
 **Source.** [shard-s13-REPORT.md](docs/evidence/shard-s13-REPORT.md) (Anomaly).
@@ -3397,7 +3399,7 @@ test.
 
 ## KI-150 - temporary Git repository creation in the full suite is not the bottleneck
 
-**Status:** OPEN (filed 2026-11-11); severity: low (measurement says the proposed optimisation cannot recover enough time to justify a new repository template and clone lifecycle); no implementation in this documentation-only filing.
+**Status:** CLOSED BY DESIGN 2026-11-16; severity: low. The measured suite used 40,571 Git processes (56.8 s wall / 12.6% of the lane; 21.9 s CPU / 4.9%), of which repository setup was 21.4 s wall / 4.8%. A template is estimated to save only 15–20 s, while 30 of the 40 slowest tests do not use repositories. Keep the current isolated per-test repositories; let the W3 duration survey select the next optimization target, and reopen only if new measurements show repository setup is material. No implementation is justified by this evidence.
 
 **Finding.** CMRU's full suite creates many temporary Git repositories, but repository setup is not the main cause of the roughly 450-second coverage lane. A host study measured 40,571 Git executables in the lane. They consumed 56.8 seconds of wall time (12.6% of the lane) and 21.9 seconds of CPU (4.9%). The repository-setup subset alone was 21.4 seconds wall (4.8%): 1,200 `init`, 397 `clone`, 835 `worktree`, 1,709 `add`, 1,708 `commit`, and 2,055 `config` invocations. The suite also created 221,512 files, about 34 per test.
 
@@ -3450,7 +3452,7 @@ Only 10 of the 40 slowest tests use repositories (`test_release_end_to_end_real_
 
 ## KI-157 — automatic local-main synchronization reports a non-current ref failure when `main` is checked out elsewhere
 
-**Status:** OPEN (filed 2026-11-12); severity: minor (the release itself succeeds, but the final synchronization diagnostic and remedy are misleading).
+**Status:** FIXED 2026-11-16; severity: minor. Focused real-Git coverage verifies the linked-worktree refusal, derived path, exact fast-forward remedy, no `branch -f`, and unchanged local main ref. The full R0/R1 suite exposed three existing `subprocess.run` test doubles that also intercepted the new shared-worktree inventory call without captured output; those tests now stub the inventory boundary directly. Additional registered coverage exercises inventory errors, duplicate `main` worktrees, and prunable entries; the focused selectors passed 407 tests with `run-gate survivor-regressions --allow-dirty -- tests/test_noncli_final_branches.py tests/test_remaining_core_adversarial.py tests/test_version_transaction_remaining.py`. No real remote was contacted.
 
 **Problem.** After a successful non-feature-source release, `_sync_local_main_result` tries `git branch -f main origin/main` when local main is not checked out in the transaction checkout. When local `main` is checked out in the shared main worktree, Git refuses to update that checked-out ref. CMRU currently reports `Could not sync local main automatically: updating the non-current local main ref failed; local main was left untouched. Inspect the ref and synchronize it manually.` The "non-current" wording is false in the reported case, and "inspect the ref" does not tell the operator the safe remedy: fast-forward the main worktree from the controller command line.
 
@@ -3464,7 +3466,7 @@ Only 10 of the 40 slowest tests use repositories (`test_release_end_to_end_real_
 
 **Priority.** Minor and cosmetic, but the command currently tells an operator to inspect when the correct fast-forward remedy is already derivable.
 
-**Close when.** A checked-out local-main worktree is detected and named, the final diagnostic gives the correct owner-scoped `git pull --ff-only` remedy, no force-update is attempted against a checked-out branch, and focused real-Git tests plus synchronized release documentation pass on a clean final commit.
+**Close when.** A checked-out local-main worktree is detected and named, the final diagnostic gives the correct owner-scoped `git pull --ff-only` remedy, no force-update is attempted against a checked-out branch, and focused real-Git tests plus synchronized release documentation pass on a clean final commit. Closed by the linked-worktree inventory guard and documentation updates in `4d36980b8d6f3ed7533da2f900b955c06075cb1f`.
 
 ## KI-158 — release outputs retained inside their caller's `rel-*` worktree disappear when that outer worktree is removed
 
@@ -3696,25 +3698,35 @@ Call: `SOURCE_DATE_EPOCH=1700000000 DEMO_VERSION=1.0.0 cmru handler bundle-build
 
 ## KI-168 - `cmru release` fails late when the digest-pinned cgroup probe image is missing on the Docker host
 
-**Status:** OPEN (filed 2026-11-14); severity: medium (a full provisional gate of about 27 minutes is spent before the failure, and the rollback must be repeated).
+**Status:** FIXED 2026-11-16; severity: medium (a full provisional gate of about 27 minutes was spent before the failure, and the rollback had to be repeated).
 
 **Observed (run).** The first cmru 7.3.1 release attempt passed its provisional gate (1648.7 s) and then failed in `cmru handler wheel-build`: `wheel-build refuses to launch: CMRU_TESTER_CGROUP_PARENT=... is not a verified host slice ... (probe stderr: docker: Error response from daemon: No such image: debian@sha256:...)`. The digest-pinned `CMRU_TESTER_CGROUP_PROBE_IMAGE` was not present on the Docker host; the cause of its absence is unknown. The release rolled back the local and remote tag, so nothing was published. `docker pull` of the same digest and a restart of the release fixed it.
 
 **Problem.** The probe image runs with `--pull=never` (`tester_gate._run_probe`), so a missing image surfaces only at the first probe, which for a release is the slice check in `handlers.py` before the wheel-builder `docker run`, after the gate. Existing image checks do not cover it: `cmru doctor`'s `images` check (`doctor.IMAGE_VARIABLES`) inspects only `CMRU_TESTER_UNIFIED_IMAGE` and `CMRU_WHEEL_BUILDER_IMAGE`, and is operator-invoked, not part of `cmru release`; the release precondition "Run-Gate image identity" (`release_preconditions.py`, dry-run) inspects only the selected tester-unified image and is SKIPPED without Docker. Neither names `CMRU_TESTER_CGROUP_PROBE_IMAGE` (or the nested-Docker image).
 
-**Wanted.** Before the release transaction creates its tag or starts the gate, `cmru release` checks that every image the gate and the wheel-build step will run, including the cgroup probe image, is present locally and fails fast with the variable name, the reference and the exact remedy (`docker pull <ref>`). The check is read-only; the simplest form adds the probe image to `doctor.IMAGE_VARIABLES` and runs the same check as a release precondition.
+**Wanted.** Before dispatch or worktree allocation, `cmru release` resolves each image with the same shared resolver as the handlers, using release context: the effective configured value from the exact source revision wins when the key is present and not `None`, including an empty string; only an absent or `None` config value falls back to the captured caller environment. A direct handler call uses direct-handler context, where the process environment wins and the enclosing config is the fallback. The preflight must check the exact value the build step will receive. It checks the cgroup probe locally because `tester-gate` starts it with `--pull=never`. The wheel-builder `docker run` has no `--pull=never`, so the actual-release preflight pulls a missing builder with a bounded timeout and passes only if that succeeds; a dry-run reports pullability as `SKIPPED` without pulling.
 
-**Close when.** A test with a fake Docker client shows a missing probe image is reported at preflight with the variable, reference and remedy, before any tag, worktree or gate step, and a present image passes; SPEC and the release docs name the preflight.
+**Close when.** Fake-Docker tests show each context's precedence with different config and process values, the release preflight checks the source-snapshot value the build step will receive, empty config masks ambient values, missing/`None` config falls back to the caller snapshot, a missing pullable builder passes after a successful bounded preflight pull, a failed or timed-out builder pull fails, a dry-run reports unverified pullability without pulling, and a missing local probe fails before dispatch; SPEC and user docs describe the resolution and image pull rules.
+
+**Resolution/evidence (2026-11-16, review round 1).** `build_images.resolve_environment_value` is shared by handlers and release preflight; the launcher supplies the original invocation image variables plus project and orchestration values read from the exact release-source revision, with project values over estate defaults. A real release preflight pulls a missing builder because the handler's Docker run uses default pull-if-missing behavior; dry-run reports `SKIPPED` and says registry availability was not checked. The cgroup probe remains local-only because its handler command uses `--pull=never`. Regressions include `test_release_build_image_precondition_uses_process_environment_over_config`, `test_release_precondition_uses_source_snapshot_image_not_stale_caller_config`, `test_release_build_image_precondition_pulls_a_missing_builder_but_keeps_probe_local`, `test_release_build_image_precondition_fails_when_missing_builder_cannot_be_pulled`, `test_release_build_image_precondition_dry_run_reports_unverified_builder_pullability`, and `test_actual_release_stops_before_dispatch_when_probe_image_is_missing`. The registered focused command `run-gate survivor-regressions --allow-dirty -- tests/test_release_gate_preconditions.py tests/test_wheel_build_placement.py` passed 123 tests. The hand-mutant that made config win over the process environment was killed by `test_release_build_image_precondition_uses_process_environment_over_config`. No real release, publish, Docker image, or remote operation was used.
+
+**Review round 2 correction (2026-11-16).** The round 1 precedence statement was wrong for actual releases. `cli.apply_release_env` skips only `None` and writes declared empty strings into `os.environ`; `runner.execute_step` applies project `extra_env` before calling a handler and also writes empty strings. Therefore actual release build steps see the effective source-config value when present and not `None`, with the snapshotted caller environment as fallback. Direct handler calls still see process environment before config. `EnvironmentResolutionContext` makes callers select the shared resolver's context explicitly; build handlers use direct-handler context and release preflight uses release context. The updated `test_release_build_image_precondition_uses_config_over_snapshotted_process_environment`, `test_release_build_image_precondition_falls_back_to_snapshotted_environment`, `test_release_build_image_precondition_empty_config_masks_snapshotted_environment`, `test_release_precondition_uses_source_snapshot_image_not_stale_caller_config`, and `test_direct_wheel_build_uses_process_image_over_enclosing_config` distinguish these paths. The release pulls a missing builder with a 600-second timeout; `test_release_builder_pull_times_out_with_a_clear_refusal` verifies timeout refusal through fake Docker. Hand-mutants that made release context process-first and direct-handler context config-first were each killed by their differing-value oracles. The registered focused selector passed on the final head; see the round 2 report for the command, counts, and gate transcripts. No real release, publish, Docker image, or remote operation was used.
+
+**Coverage follow-up.** The first final R1 verdict on `779df3d9a99457b76099188e38242fae68edc337` reported the invalid-context refusal line and its branch uncovered in `build_images.resolve_environment_value`. `test_shared_build_image_resolver_rejects_an_unknown_context` now verifies the resolver fails closed for an unsupported context; the coverage-only test was added without changing the 100% line/branch floor.
 
 ## KI-169 - `bundle_dir` set to `"."` makes the success cleanup delete the whole `dist_dir`
 
-**Status:** OPEN (filed 2026-11-14, found in the 2026-11 bundle-fix review); severity: medium (data loss inside `dist_dir` after an otherwise successful build; trusted-configuration misuse).
+**Status:** FIXED 2026-11-16 (filed 2026-11-14, found in the 2026-11 bundle-fix review); severity: medium (data loss inside `dist_dir` after an otherwise successful build; trusted-configuration misuse).
 
 **Problem.** `bundle_dir` and `client_dir` are resolved by `parse_config` with `resolve_path(dist_dir, raw)` in `cmru/src/cmru/bundle.py`, with no check that the result is a strict descendant of `dist_dir` (an absolute value is accepted unchanged). `"."` resolves to `dist_dir` itself. At the end of `run_bundle`, `[archive].keep_tree = false` runs `shutil.rmtree` on `bundle_dir` and `client_dir` after the archive and manifest succeed, and the archive is written inside `dist_dir`. Measured on this head with a scratch project: `bundle_dir = "."` with `format = "xztar"` returns the archive path with exit 0, but `dist_dir` no longer exists, so the archive and any sibling files are gone. With `format = "gztar"` the archive step instead fails (`shutil.Error`, recursive copy into its own temporary directory) and the trees are kept. `client_dir = "."` fails earlier in the client copy with `RecursionError`, so it does not reach the cleanup today; it is guarded only by that crash. In a variant build the pre-build cleanup of `bundle_dir` and `client_dir` removes `dist_dir` the same way, including sibling variant archives.
 
 **Wanted.** Configuration validation rejects `bundle_dir` and `client_dir` values that resolve to `dist_dir` itself, to its parent, or outside it, and rejects the two being equal or nested in each other. The pre-build and success cleanups refuse to remove any path that is not a strict descendant of `dist_dir`.
 
 **Close when.** Tests show `"."`, `".."`, an absolute path outside `dist_dir`, equal and nested values are rejected with a named error before any file is touched (for `gztar`, `xztar` and a variant build), and a normal configuration still cleans only its own trees; SPEC documents the rule (it currently says only "relative to `dist_dir`").
+
+**Adjacent gap.** `dist_dir` itself can point outside the project and the legacy cleanup removes it recursively; [KI-175](#ki-175-dist-dir-escape-can-delete-the-project-or-its-parent) records that separate deletion risk.
+
+**Resolution/evidence (2026-11-16).** `parse_config` resolves both staging paths and rejects either path unless it is a strict descendant of `dist_dir`; it also rejects equal or nested bundle/client trees. Variant pre-build cleanup and successful-build cleanup recheck resolved containment and refuse a path changed to a symlink. `test_bundle_dir_equal_to_dist_is_rejected_before_cleanup` reproduces the former deletion of a sentinel during an `xztar` success cleanup. The registered selector `run-gate survivor-regressions --allow-dirty -- tests/test_bundle_variants.py` covers `.`, `..`, outside absolute paths, equal/nested paths, both archive formats, legacy/variant builds, no-touch sentinels, ordinary cleanup, and injected resolution failures. The hand-mutant that removes strict-descendant checks is killed by the outside-path cases. README, DESIGN-GUIDE, CONSUMERS, SPEC, and CHANGES were updated in the item commit.
 
 ## KI-170 — cmru-v7.3.1 R2 bundle-survivor closeout and lane cost
 
@@ -3754,7 +3766,7 @@ Call: `SOURCE_DATE_EPOCH=1700000000 DEMO_VERSION=1.0.0 cmru handler bundle-build
 
 ## KI-173 - `tester-unified-rust/build-image.sh` passed typed `cmru tester-gate` options as unexpanded shell words, so the estate argv check could not parse it
 
-**Status:** FIXED in this branch (filed 2026-11-15); severity: medium (the cmru lane `assay-r0-r1` failed on `main` because the Rust R-1 package, merged without that lane, added the script).
+**Status:** FIXED 2026-11-16 (filed 2026-11-15); severity: medium (the cmru lane `assay-r0-r1` failed on `main` because the Rust R-1 package, merged without that lane, added the script).
 
 **Observed (run).** `test_every_estate_cmru_argv_parses_against_the_registry` reported `tester-unified-rust/build-image.sh: cmru tester-gate --cwd run-gate-project --image ${tester_gate_values[0]} ... -> argument --cpus: CPU limit must be a finite decimal Docker can enforce`.
 
@@ -3765,6 +3777,8 @@ Call: `SOURCE_DATE_EPOCH=1700000000 DEMO_VERSION=1.0.0 cmru handler bundle-build
 **Wanted (open).** The checker's failure for a shell-expanded value of a typed option names only the type error; a message that says "shell-expanded value for a typed option, pass it through the environment" would save the next author a diagnosis.
 
 **Close when.** The wanted message exists with a test, or is recorded as intentionally not built.
+
+**Resolution/evidence (2026-11-16).** The CMRU estate argv checker now appends targeted advice when a parser rejects a shell-expanded value for a typed option: the static scan cannot validate the runtime value, so the script author should pass it through that option's documented environment variable. Literal typed-value errors and unrelated parser errors retain their existing diagnostic. `test_shell_expanded_value_for_typed_option_names_the_environment_fallback` is the regression; the registered command `run-gate survivor-regressions --allow-dirty -- tests/test_w2_integ.py` passed the complete file. Disabling shell-expansion detection is killed by the same oracle. The fix is limited to CMRU's test helper; no other project was edited.
 
 ## KI-174 - packages that add `cmru` invocations or touch estate files merge without the cmru lane (gate-coverage gap)
 
@@ -3777,3 +3791,17 @@ Call: `SOURCE_DATE_EPOCH=1700000000 DEMO_VERSION=1.0.0 cmru handler bundle-build
 **Wanted.** A rule, enforced mechanically rather than by reviewer memory, that a change which adds or edits a `cmru ...` invocation in any tracked `*.sh`/`*.toml`/`*.py`, or edits `cmru.orchestration.toml`, `cmru.toml`, `run-gate.root.toml` or any `LEVELS` block, includes the cmru `assay-r0-r1` lane in its gate set. The cheapest form is a path-triggered lane requirement in the package-gate selection (run-gate or the nyxloom merge step), with the trigger list generated from what `test_w2_integ.py` scans so the two cannot drift; the fallback is a documented checklist line in the package brief template. Coordinate the selection mechanism with the run-gate backlog.
 
 **Close when.** A change that adds a `cmru` call to a shell script is refused or auto-extended with the cmru lane, shown by a test of the selection rule, and the trigger list is derived from the scanner's own file selection.
+
+## KI-175 dist-dir escape can delete the project or its parent
+
+**Status:** OPEN (filed 2026-11-16 during review round 1); severity: high (configuration can recursively delete the project checkout or another writable directory before a build).
+
+**Problem.** `parse_config` resolves `project_root` and `dist_dir` but does not require the resolved `dist_dir` to be a strict descendant of `project_root` (`cmru/src/cmru/bundle.py`, `parse_config`). In the legacy non-variant `run_bundle` path, `shutil.rmtree(config.dist_dir)` runs before staging begins (`bundle.py`, legacy cleanup near line 1122). `dist_dir = "."` can therefore remove the whole project root; `dist_dir = ".."` can remove its parent; an absolute `dist_dir` can target any directory writable by the process.
+
+**Failure scenario.** An otherwise valid legacy `bundle.toml` sets `project_root` to the checkout and `dist_dir = ".."`. Running `cmru handler bundle-build` reaches the no-variant cleanup, recursively deletes the parent of the checkout, and then fails or continues against a missing tree. With `dist_dir = "."`, the checkout itself is removed before the build starts.
+
+**Wanted.** Configuration validation must reject `dist_dir` unless its resolved path is a strict descendant of `project_root`. Cleanup must recheck that containment before recursive removal so a changed or redirected path cannot escape the project.
+
+**Proposed acceptance test.** Use a scratch project with sentinels in `project_root`, its parent, and an absolute sibling directory. For the legacy non-variant build, try `dist_dir = "."`, `".."`, and an absolute path outside `project_root`; each must fail before cleanup and preserve every sentinel. A normal `dist_dir = "dist"` must still build and clean only its own output. Add a symlink or path-swap case if the cleanup recheck is implemented separately from parse-time validation.
+
+**Close when.** The path constraints and cleanup recheck are documented in SPEC; the acceptance cases prove every escaping path fails before any file is touched and the ordinary in-project path remains supported.

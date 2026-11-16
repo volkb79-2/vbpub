@@ -438,6 +438,8 @@ checkout (tracked or untracked changes; ordinary ignored files only matter when 
 would overwrite one) is left untouched before any rebase attempt,
 including when `--allow-uncommitted` was used; see the [caller-main cleanup guidance](docs/RELEASE-TRANSACTIONS.md#caller-main-cleanup)
 and normative [S-CLI.5a](docs/SPEC.md#s-cli5a--default-originmain-projects-release-one-after-another-not-in-a-shared-batch).
+When another linked worktree owns local `main`, CMRU leaves it untouched and prints its path
+with `git -C <main-worktree> pull --ff-only` as the owner-scoped fast-forward command.
 
 `cleanup --delete-unmanaged-release-tag TAG` is deliberately narrow migration maintenance:
 it selects one project, accepts only that project's namespace, displays the exact GitHub
@@ -933,7 +935,9 @@ by default;
 set `[archive].keep_tree = true` to retain both. Failures after staging starts
 retain both trees for diagnosis, including any unkept protected-suffix file left
 in the staged tree; that file is not packaged, but remains on disk until the
-failed output is removed.
+failed output is removed. `bundle_dir` and `client_dir` must resolve to distinct,
+non-overlapping subdirectories of `dist_dir`; invalid or changed paths are
+refused before CMRU removes staging data.
 Client metadata such as `client/pyproject.toml` needs its exact path in
 `[archive].keep`; `.toml` files have no implicit exception. If the bundle-relative
 path is `pyproject.toml`, put `keep = ["pyproject.toml"]` under `[archive]`.
@@ -1043,14 +1047,31 @@ branch floor. See the [T1 lane design](docs/DESIGN-GUIDE.md#cmru-t1-r0-r1-lane).
 The R2 campaign's known-good control and mutant runs use a tracked fixture that
 includes test inputs read during module import, even when the test module will
 later be skipped. See the [fixture design](docs/DESIGN-GUIDE.md#mutation-fixture-includes-import-time-inputs).
-For a CMRU release, `cmru release --dry-run` checks the planned version against
-the KI-79 postponement window, checks the selected tester image's Run-Gate
-version and wheel digest, and compares the zero-release guide with the latest
-Run-Gate release before creating a candidate worktree. A failure exits 4 with
-the remedy; if Docker is unavailable, image identity is reported as `SKIPPED`.
-The image identity check requires a non-empty Run-Gate version and a valid
-wheel SHA-256 from the preflight; an incomplete identity response fails closed
-instead of inventing an `unknown` value.
+For a new CMRU release, the launcher checks the configured wheel-builder and
+cgroup-probe images on the Docker host before dispatch, candidate worktree,
+tag, or gate setup. Image selection uses the same resolver as the build
+handlers, with precedence matching the caller. During a release, the effective
+`[env]` value in the selected source config wins when its key is present and
+not `None` (including an empty string); an absent or `None` value falls back to
+the caller's environment snapshot. The release runner applies those same
+declared values before invoking handlers. For a direct handler invocation, the
+process environment wins and the enclosing config is the fallback. An empty
+effective image value fails preflight. The wheel-builder's Docker run
+pulls a missing image by default, so an actual release preflight pulls and
+verifies a builder image that is not local, with a 600-second timeout; a timed
+out pull refuses before release dispatch. A dry-run does not pull it and
+reports that pullability is unverified. The cgroup probe uses `--pull=never`,
+so its image must already be local; a missing probe reports the exact
+`docker pull <ref>` remedy. This also runs for `--skip-gates`, because the
+wheel-build step still uses those images. `cmru release --dry-run` reports the
+same preflight checks; with gates enabled, an actual release and its dry-run
+also check the planned version's KI-79 window, selected tester image's Run-Gate
+version and wheel digest, and zero-release guide version.
+During an actual release, a missing Docker CLI or daemon fails preflight; a
+dry-run may report image inspection as `SKIPPED` only when Docker is positively
+unavailable. The image identity check requires a non-empty Run-Gate version
+and a valid wheel SHA-256; an incomplete identity response fails closed rather
+than inventing an `unknown` value.
 See the [dry-run precondition design](docs/DESIGN-GUIDE.md#release-dry-run-checks-gate-preconditions).
 The native-R2 `mutation` lane requests contract-2 `cgprofile` resource-event
 observation. Other tester lanes declare memory and PID ceilings but do not yet

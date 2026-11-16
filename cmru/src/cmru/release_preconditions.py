@@ -13,6 +13,13 @@ from pathlib import Path
 from types import ModuleType
 from typing import Mapping
 
+from cmru.build_images import (
+    CGROUP_PROBE_IMAGE_ENV,
+    EnvironmentResolutionContext,
+    WHEEL_BUILDER_IMAGE_ENV,
+    resolve_environment_value,
+)
+
 
 _BOOTSTRAP_RUN_GATE_VERSION_SEQUENCE = r'''RUN_GATE_VERSION="$(
   git describe --tags --abbrev=0 --match 'run-gate-v*' 2>/dev/null ||
@@ -38,6 +45,7 @@ _DOCKER_UNAVAILABLE = (
     "permission denied while trying to connect to the docker daemon",
     "context not found",
 )
+_BUILDER_IMAGE_PULL_TIMEOUT_SECONDS = 600
 
 
 @dataclass(frozen=True)
@@ -234,15 +242,155 @@ def _run_gate_release_identity_preflight(
 
 
 def check_run_gate_image_precondition(
-    repo_root: Path, source_git_root: Path, revision: str,
+    repo_root: Path, source_git_root: Path, revision: str, *, require_docker: bool = False,
 ) -> GatePrecondition:
     """Inspect the selected image through the exact release-gate identity check."""
     if shutil.which("docker") is None:
         return GatePrecondition(
-            "cmru", "Run-Gate image identity", "SKIPPED",
+            "cmru", "Run-Gate image identity", "FAIL" if require_docker else "SKIPPED",
             "Docker CLI is unavailable; the selected tester image was not inspected.",
+            "Run the release where the Docker CLI and daemon are available, then retry."
+            if require_docker else "",
         )
-    return _run_gate_release_identity_preflight(repo_root, source_git_root, revision)
+    result = _run_gate_release_identity_preflight(repo_root, source_git_root, revision)
+    if require_docker and result.status == "SKIPPED":
+        return GatePrecondition(
+            result.project, result.check, "FAIL", result.detail,
+            "Restore Docker daemon access on this host, then retry the release.",
+        )
+    return result
+
+
+def check_release_build_images_precondition(
+    configured_env: Mapping[str, object], *, process_env: Mapping[str, object] | None = None,
+    require_docker: bool = False,
+) -> list[GatePrecondition]:
+    """Check the image refs the selected release config will pass to build handlers."""
+    builder = resolve_environment_value(
+        WHEEL_BUILDER_IMAGE_ENV,
+        context=EnvironmentResolutionContext.RELEASE,
+        configured_env=configured_env,
+        process_env=process_env,
+    )
+    probe = resolve_environment_value(
+        CGROUP_PROBE_IMAGE_ENV,
+        context=EnvironmentResolutionContext.RELEASE,
+        configured_env=configured_env,
+        process_env=process_env,
+    )
+    return [
+        _check_local_image_precondition(
+            WHEEL_BUILDER_IMAGE_ENV, builder, "Wheel-builder image",
+            require_docker=require_docker, pull_if_missing=True,
+        ),
+        _check_local_image_precondition(
+            CGROUP_PROBE_IMAGE_ENV, probe, "Cgroup probe image",
+            require_docker=require_docker, pull_if_missing=False,
+        ),
+    ]
+
+
+def _check_local_image_precondition(
+    variable: str, image_value: object, label: str, *, require_docker: bool,
+    pull_if_missing: bool = False,
+) -> GatePrecondition:
+    image = image_value.strip() if isinstance(image_value, str) else ""
+    if not image:
+        return GatePrecondition(
+            "cmru", label, "FAIL",
+            f"{variable} has no non-empty value in the process environment or selected source config.",
+            f"Set a non-empty {variable} in the process environment or selected source config, then retry.",
+        )
+    if shutil.which("docker") is None:
+        return GatePrecondition(
+            "cmru", label, "FAIL" if require_docker else "SKIPPED",
+            f"Docker CLI is unavailable; {variable} image {image!r} was not inspected.",
+            "Run the release where the Docker CLI and daemon are available, then retry."
+            if require_docker else "",
+        )
+    try:
+        result = subprocess.run(
+            ["docker", "image", "inspect", image],
+            capture_output=True, text=True, timeout=10, check=False,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        detail = str(exc).strip() or type(exc).__name__
+        if not require_docker and _is_docker_unavailable(detail):
+            return GatePrecondition(
+                "cmru", label, "SKIPPED",
+                f"Docker is unavailable; {variable} image {image!r} was not inspected ({detail}).",
+            )
+        return GatePrecondition(
+            "cmru", label, "FAIL",
+            f"Could not inspect {variable} image {image!r}: {detail}.",
+            "Restore Docker daemon access on this host, then retry the release.",
+        )
+    if result.returncode == 0:
+        return GatePrecondition(
+            "cmru", label, "PASS", f"{variable} image {image!r} is present locally.",
+        )
+    detail = (result.stderr or result.stdout or f"docker exited {result.returncode}").strip()
+    if not require_docker and _is_docker_unavailable(detail):
+        return GatePrecondition(
+            "cmru", label, "SKIPPED",
+            f"Docker is unavailable; {variable} image {image!r} was not inspected ({detail}).",
+        )
+    image_missing = "no such image" in detail.lower() or "no such object" in detail.lower()
+    if image_missing and pull_if_missing and not require_docker:
+        return GatePrecondition(
+            "cmru", label, "SKIPPED",
+            f"{variable} image {image!r} is not local. The wheel-build Docker run pulls a missing builder image by default; this dry-run did not verify registry availability.",
+            f"Run `docker pull {image}` on this host to verify availability before release.",
+        )
+    if image_missing and pull_if_missing:
+        try:
+            pulled = subprocess.run(
+                ["docker", "pull", image],
+                capture_output=True, text=True, check=False,
+                timeout=_BUILDER_IMAGE_PULL_TIMEOUT_SECONDS,
+            )
+        except subprocess.TimeoutExpired:
+            return GatePrecondition(
+                "cmru", label, "FAIL",
+                f"{variable} image {image!r} was not local and `docker pull` timed out after "
+                f"{_BUILDER_IMAGE_PULL_TIMEOUT_SECONDS} seconds.",
+                f"Run `docker pull {image}` on this host, then retry the release.",
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            pull_detail = str(exc).strip() or type(exc).__name__
+            return GatePrecondition(
+                "cmru", label, "FAIL",
+                f"{variable} image {image!r} is not local and Docker could not pull it: {pull_detail}.",
+                f"Run `docker pull {image}` on this host, then retry the release.",
+            )
+        if pulled.returncode == 0:
+            return GatePrecondition(
+                "cmru", label, "PASS",
+                f"{variable} image {image!r} was not local; `docker pull` succeeded. The wheel-build Docker run also pulls a missing builder image by default.",
+            )
+        pull_detail = (
+            pulled.stderr or pulled.stdout or f"docker exited {pulled.returncode}"
+        ).strip()
+        return GatePrecondition(
+            "cmru", label, "FAIL",
+            f"{variable} image {image!r} is not local and its pull failed: {pull_detail}.",
+            f"Run `docker pull {image}` on this host, then retry the release.",
+        )
+    if image_missing:
+        pull_note = (
+            " The cgroup probe uses `--pull=never`, so this reference must already be local."
+            if variable == CGROUP_PROBE_IMAGE_ENV else ""
+        )
+        return GatePrecondition(
+            "cmru", label, "FAIL",
+            f"{variable} image {image!r} is not present on this Docker host.{pull_note}",
+            f"Run `docker pull {image}` on this host, then retry the release.",
+        )
+    return GatePrecondition(
+        "cmru", label, "FAIL",
+        f"Could not inspect {variable} image {image!r}: {detail}.",
+        "Restore Docker daemon access on this host, then retry the release.",
+    )
 
 
 def _normalise_documented_code(text: str) -> str:
@@ -325,6 +473,7 @@ def evaluate_release_gate_preconditions(
     planned_versions: Mapping[str, str],
     *,
     gate_provisional: bool = True,
+    require_docker: bool = False,
 ) -> list[GatePrecondition]:
     """Evaluate CMRU's three release-gate preconditions for the planned release.
 
@@ -341,7 +490,9 @@ def evaluate_release_gate_preconditions(
                 "cmru.toml's run-tests step does not run `gate-provisional`; the full "
                 "gate is configured, so no R2 postponement is used.",
             ),
-            check_run_gate_image_precondition(repo_root, source_git_root, revision),
+            check_run_gate_image_precondition(
+                repo_root, source_git_root, revision, require_docker=require_docker,
+            ),
             _bootstrap_version_precondition(source_git_root, revision),
         ]
     try:
@@ -366,7 +517,9 @@ def evaluate_release_gate_preconditions(
         )
     return [
         waiver,
-        check_run_gate_image_precondition(repo_root, source_git_root, revision),
+        check_run_gate_image_precondition(
+            repo_root, source_git_root, revision, require_docker=require_docker,
+        ),
         _bootstrap_version_precondition(source_git_root, revision),
     ]
 

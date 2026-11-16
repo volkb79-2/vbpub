@@ -1105,15 +1105,17 @@ in KI-74; their original incidents remain in the backlog for history.
 
 ## Release dry-run checks gate preconditions
 
-Three gate failures were knowable before the release candidate worktree was
-created: the planned version could be outside KI-79's R2 postponement window,
-the selected tester image could carry a different Run-Gate wheel than the gate
-requires, or the zero-release guide could name an older Run-Gate release than
-its changelog. Letting a dry-run report only tags and versions sent each case
-through worktree setup and the start of a long gate before it refused.
+Several release failures were knowable before the release candidate worktree
+was created: the planned version could be outside KI-79's R2 postponement
+window, a tester image could carry a different Run-Gate wheel than the gate
+requires, the zero-release guide could name an older Run-Gate release than its
+changelog, or the Docker host could lack the wheel-builder or digest-pinned
+cgroup-probe image. Letting a preview or release report only tags and versions
+sent these cases through worktree setup and, for a missing probe image, the
+start of a long gate before it refused.
 
-The launcher checks those facts against the release source snapshot before
-allocating a worktree. The KI-79 check makes a temporary prepared changelog and
+The launcher checks those facts before dispatch or worktree allocation. The
+KI-79 check makes a temporary prepared changelog and
 calls the gate's `_validate_postponement`, so the bounds and authorization
 remain defined in one place. It runs only when the source revision's
 `cmru.toml` run-tests step runs `gate-provisional`, the one lane that uses the
@@ -1121,7 +1123,23 @@ postponement; otherwise the row is `SKIPPED`. The image check uses the gate's in
 published-wheel, and image-label identity preflight; it inspects the selected
 image without starting a tester container, and downloads the published
 Run-Gate wheel from GitHub to compare digests, so it needs network access. If Docker is unavailable, it says
-`SKIPPED` instead of treating an unreachable image as empty or as a match. The
+`SKIPPED` instead of treating an unreachable image as empty or as a match in a
+dry-run; an actual release fails closed when Docker cannot inspect its required
+images. The wheel-builder and probe references use the handlers' shared image
+resolver with an explicit context. In release context, the effective image
+value declared by the selected source config wins when its key is present and
+not `None` (including an empty value); otherwise the captured invocation
+environment is the fallback. The release runner applies those declared values
+before invoking handlers. In direct-handler context, the current process
+environment wins and the enclosing config is the fallback. The cgroup probe
+runs with `--pull=never`, so it must already be present locally and a missing
+probe gets the exact `docker pull <ref>` remedy. The wheel-builder runs without
+`--pull=never`; Docker pulls it when it is absent. An actual release preflight
+therefore pulls and verifies a missing builder, with a 600-second timeout that
+refuses a timed-out preflight, while a dry-run reports `SKIPPED` because it
+does not pull and cannot establish registry availability.
+These build-image checks still run when gates are explicitly skipped, because
+CMRU must still build the wheel. The
 identity check also requires the inspected result to report a non-empty Run-Gate
 version and a valid wheel SHA-256. A missing value is a failed precondition:
 substituting `unknown` would turn an incomplete check into a success-shaped result. The
@@ -1130,7 +1148,7 @@ test, so the preflight and test reject the same stale or conflicting version
 references.
 
 Any failed check prints the observed fact and an actionable remedy, then exits
-4 before a candidate worktree is created. The launcher compares the checked
+4 before a candidate worktree, tag, or gate is created. The launcher compares the checked
 source revision again before allocation, so the plan cannot drift between the
 check and the candidate. When every check passes, one summary line preserves
 the existing dry-run output. KI-79 remains a bounded allowlist so mutation
@@ -1512,6 +1530,12 @@ when the new commits leave the project's own paths untouched, otherwise it stops
 success deletes the now-redundant branch. A version strategy that creates a mechanical version
 commit receives a second gate on that exact commit before publication.
 
+Caller-main cleanup follows the same ownership boundary. If a different linked worktree owns
+local `main`, CMRU does not force-move that checked-out branch or mutate another checkout's
+state. It derives the owner path from Git's worktree inventory and prints the exact
+`git -C <path> pull --ff-only` command for the owner to run. An unreadable or ambiguous
+inventory, or a prunable `main` registration, is a closed refusal.
+
 ### Release from an origin-backed feature worktree (KI-82)
 
 The default release source remains `origin/main`. `cmru release --from-worktree` is the
@@ -1666,6 +1690,10 @@ diagnosis, including an unkept suffix-class file that caused validation to fail.
 present, CMRU checks archive-eligible path membership against it immediately before archiving
 and refuses added or missing paths. A concurrent writer can still change paths or contents after that check
 and before archive reading, so the build tree must remain private for the duration of the build.
+The two staging paths must resolve to distinct, non-overlapping strict descendants of `dist_dir`.
+This prevents a successful or variant pre-build cleanup from treating `dist_dir` or a parent as a
+staging tree. CMRU validates the paths before building and rechecks containment immediately before
+each staging-tree removal.
 
 ## The bundle asset name is one contract, and producers conform to it (KI-89 / PWMCP-07)
 

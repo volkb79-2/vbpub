@@ -408,7 +408,11 @@ def test_images_skip_when_nothing_declared_or_docker_is_down_ok_and_fail(monkeyp
     assert doctor.check_images().summary == "no cmru config here"
     (isolated / "cmru.toml").write_text(CONFIG.format(env=""), encoding="utf-8")
     assert doctor.check_images().status == "skip"
-    env = 'CMRU_TESTER_UNIFIED_IMAGE = "t:1"\nCMRU_WHEEL_BUILDER_IMAGE = "w:1"'
+    env = (
+        'CMRU_TESTER_UNIFIED_IMAGE = "t:1"\n'
+        'CMRU_WHEEL_BUILDER_IMAGE = "w:1"\n'
+        'CMRU_TESTER_CGROUP_PROBE_IMAGE = "probe@sha256:' + "a" * 64 + '"'
+    )
     (isolated / "cmru.toml").write_text(CONFIG.format(env=env), encoding="utf-8")
     monkeypatch.setattr(doctor, "_which", lambda name: None)
     assert doctor.check_images().status == "skip"  # no docker CLI
@@ -418,10 +422,13 @@ def test_images_skip_when_nothing_declared_or_docker_is_down_ok_and_fail(monkeyp
     calls = _fake_run(monkeypatch, {("docker", "image", "inspect"): _Done(0, "[]")})
     ok = doctor.check_images()
     assert ok.status == "ok"
-    assert sorted(call[-1] for call in calls) == ["t:1", "w:1"]
+    assert sorted(call[-1] for call in calls) == [
+        "probe@sha256:" + "a" * 64, "t:1", "w:1",
+    ]
     _fake_run(monkeypatch, {
         ("docker", "image", "inspect", "t:1"): _Done(0, "[]"),
         ("docker", "image", "inspect", "w:1"): _Done(1, "", "Error: No such image: w:1"),
+        ("docker", "image", "inspect", "probe@sha256:" + "a" * 64): _Done(0, "[]"),
     })
     absent = doctor.check_images()
     assert absent.status == "fail" and "CMRU_WHEEL_BUILDER_IMAGE=w:1" in absent.summary and absent.remedy

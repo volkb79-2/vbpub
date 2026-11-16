@@ -586,6 +586,9 @@ Rules worth knowing: the archive for variant `py311` is `myproj-v1.2.3-py311.tar
 a failing vendor or stage command exits 1 and writes no archive; with `[exec].prefix` the runner must see the
 same tree at `{root}` (paths are passed project-root-relative) and the stage command runs from `{root}`,
 otherwise from the staged bundle directory; `[wheel].find_links` makes the vendor step `--no-index`.
+`bundle_dir` and `client_dir` must resolve to distinct, non-overlapping subdirectories of `dist_dir`.
+CMRU rejects a path that resolves to `dist_dir`, its parent, or outside it before any output cleanup,
+and rechecks containment before removing either staging tree.
 If `MYPROJ_VERSION` is set, it names the archive version. When it is unset,
 `bundle-build` derives the planned release version (or the latest tag when the
 project is unchanged) from CMRU and adds `.devN+g<short-hash>` from Git, so the
@@ -1021,25 +1024,43 @@ includes the mutation campaign. If cleanup fails after the lanes pass, the gate 
 leaves `"state": "failed"` with an empty `deferred_lanes` and no marker; an invocation refused
 before a new gate starts leaves the previous run's marker and manifest untouched.
 
-Before creating a release candidate worktree, the dry-run checks the plan and
-the three gate preconditions that can be checked before a worktree exists. Run it with the same
-version flags you intend to release:
+Before dispatching a new CMRU release, CMRU resolves the wheel-builder and
+digest-pinned cgroup-probe images with the same resolver used by the build
+handlers, using the environment that the build step will receive. In a release,
+the effective image value declared by the selected source config wins when its
+key is present and not `None`, including an empty string; an absent or `None`
+value falls back to the caller's environment snapshot. The runner applies those
+declared values before invoking the handler. A direct handler invocation uses
+the opposite order: its process environment wins, then the enclosing config.
+An empty effective image value fails preflight. The cgroup probe uses `--pull=never`,
+so it must already be local; if missing, preflight exits 4 with the exact
+`docker pull <ref>` remedy. The wheel-builder's Docker run uses Docker's default
+pull-if-missing behavior. For an actual release, preflight pulls and verifies a
+builder image that is not local, with a 600-second timeout and a refusal if
+that pull times out; for a dry-run, it reports `SKIPPED` because it does not
+pull and cannot verify registry availability. These checks happen
+before a candidate worktree, tag, or gate starts, and still run with
+`--skip-gates` because the wheel-build step needs both images. If Docker is
+unavailable, an actual release fails preflight; a dry-run may report the image
+checks as `SKIPPED`. Run the dry-run with the same version flags you intend to
+release:
 
 ```sh
 cmru release cmru --minor --dry-run
 ```
 
-The check compares the planned version with the gate's KI-79 window (only when
+With gates enabled, preflight compares the planned version with the gate's KI-79 window (only when
 `cmru/cmru.toml`'s run-tests step runs `gate-provisional`; with the full `gate`
 configured that row is `SKIPPED`), inspects the selected tester image's
 Run-Gate version, downloads the published Run-Gate wheel from GitHub to compare
-its digest (so the dry-run needs network access), and requires
+its digest (so preflight needs network access), and requires
 `docs/BOOTSTRAP-FROM-ZERO.md` to name the latest stable Run-Gate version in
-`run-gate-project/CHANGES.md`. When all checks pass, the existing preview gains
-one `Release gate preconditions: PASS` line. If Docker is unavailable, the
-image row says `SKIPPED` and the dry-run continues; that row does not certify
-the image. A failure prints its remedy and exits 4 before a worktree is
-created. For a version outside the KI-79 window, change the run-tests command to the
+`run-gate-project/CHANGES.md`. The dry-run reports these checks in its preview;
+an actual release refuses a failure before dispatch. When all checks pass, the
+existing preview gains one `Release gate preconditions: PASS` line. If Docker
+is unavailable, an image row says `SKIPPED` and the dry-run continues; that row
+does not certify the image. A failure prints its remedy and exits 4 before a
+worktree is created. For a version outside the KI-79 window, change the run-tests command to the
 full `gate` lane (the row then reads `SKIPPED`) or obtain an explicit operator decision to widen the window. For
 an image mismatch, rebuild the selected image with the exact published
 Run-Gate wheel named in the remedy. For a stale bootstrap guide, update every
@@ -2132,6 +2153,9 @@ The same diagnostic is printed after a successful release, a plan refusal, or a 
 the primary release result and retained-worktree behavior remain unchanged. See the normative
 [`S-CLI.5a`](SPEC.md#s-cli5a--default-originmain-projects-release-one-after-another-not-in-a-shared-batch) contract
 and the [caller-main cleanup operations](RELEASE-TRANSACTIONS.md#caller-main-cleanup).
+If the warning says another linked worktree owns `main`, run the printed
+`git -C <main-worktree> pull --ff-only` command from that worktree's environment. CMRU leaves
+its ref untouched so that its owner controls the fast-forward.
 
 ### Retaining gate evidence
 

@@ -334,6 +334,11 @@ undetermined rather than guessed to be a conflict. When `main` is not checked ou
 safe behavior remains: a clean checkout may fast-forward its local `main`, while a diverged
 local `main` is left untouched rather than force-moved. A false cleanup result is reported on
 the success, plan-refusal, and child-failure paths, so no path claims that the caller was synced.
+When another linked worktree owns `main`, CMRU leaves that checkout and ref untouched and prints
+the owner's path with `git -C <main-worktree> pull --ff-only`. Run that command in the main
+worktree's environment to fast-forward it. If Git's worktree inventory is unreadable, ambiguous,
+or marks the owner prunable, inspect `git worktree list --porcelain` and resolve that condition
+before synchronizing.
 
 `cmru build` uses the same transaction mechanics but stops before source release actions. Its
 source is the commit the invoking checkout or worktree is on (`git rev-parse HEAD`, pushed or
@@ -366,6 +371,14 @@ same commit requires explicit deletion of the existing output record with
 > [KI-06](../KNOWN_ISSUES_TODO_BACKLOG.md#ki-06--durable-post-tag-publication-resume--open-scoped-deliberately).
 
 ## Transaction order
+
+For a new CMRU release, the launcher first inspects the selected CMRU
+configuration's wheel-builder and digest-pinned cgroup-probe images on the
+Docker host. A missing image is reported with its configured reference and
+`docker pull <ref>` remedy before dispatch, candidate worktree, tag, or gate
+setup. The same check applies when gates are skipped because the wheel-build
+step still needs both images. A dry-run may report image checks as `SKIPPED`
+when Docker is unavailable; an actual release fails closed in that condition.
 
 Every changed project releases **one after another** — its own prepare, gate,
 tag, build, publish, and promote all finish before the next project's cycle

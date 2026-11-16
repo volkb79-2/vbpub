@@ -29,6 +29,7 @@ from cmru.runner import StepConfig, execute_step, parse_step as _runner_parse_st
 from cmru import record_step
 from cmru import transaction
 from cmru import exit_codes
+from cmru.build_images import BUILD_IMAGE_ENV_NAMES
 from cmru.git_auth import GitHubGitAuth, run_local_git, run_remote_git
 from cmru.config import (
     _RESERVED_CMRU_INTERNAL_ENV,
@@ -6778,6 +6779,8 @@ def _release_or_status(verb: str, args, rest: List[str], runtime=None) -> None:
     # must not truncate cmru.release.log or redirect the caller's stderr.
     if verb == "release" and not transaction_child:
         _configure_native_release_logging(repo_root, append=vargs.log_append)
+    if verb == "release" and not transaction_child:
+        vargs._cmru_process_build_image_env = _release_process_build_image_env()
     apply_release_env(github_config, env_config)
     # Restrict versioning verbs to the orchestrated set so un-migrated projects
     # with their own pipelines (tls-edge, empyrion) are never auto-tagged.
@@ -7152,16 +7155,17 @@ def _release_gate_preconditions_before_dispatch(
     repo_root: Path, config_path: Path, configs, project_names: Sequence[str], vargs, *,
     git_auth: GitHubGitAuth | None, report: bool,
 ) -> str | None:
-    """Check CMRU's dry-run gate inputs before dispatch or workspace creation."""
+    """Check CMRU's gate and wheel-build inputs before dispatch or workspace creation."""
     if (
-        not getattr(vargs, "dry_run", False)
-        or getattr(vargs, "resume", None)
+        getattr(vargs, "resume", None)
         or "cmru" not in project_names
     ):
         return None
+    dry_run = bool(getattr(vargs, "dry_run", False))
 
     from cmru.release_preconditions import (
         GatePrecondition,
+        check_release_build_images_precondition,
         evaluate_release_gate_preconditions,
         format_gate_precondition_report,
         run_tests_uses_provisional_gate,
@@ -7202,6 +7206,23 @@ def _release_gate_preconditions_before_dispatch(
         if record["changed"] and isinstance(next_tag, str) and next_tag.startswith(prefix)
         else None
     )
+    build_image_rows = []
+    if planned_version is not None:
+        configured_image_env = _orchestration_env_for_release_snapshot(
+            source_git_root, revision, config_path,
+        )
+        configured_image_env.update(dict(getattr(cmru_project, "env", {}) or {}))
+        process_image_env = getattr(vargs, "_cmru_process_build_image_env", None)
+        build_image_rows = check_release_build_images_precondition(
+            configured_image_env,
+            process_env=process_image_env,
+            require_docker=not dry_run,
+        )
+        image_failures = [row for row in build_image_rows if row.status == "FAIL"]
+        if image_failures:
+            print(format_gate_precondition_report(image_failures), file=sys.stderr)
+            log_error("release image preconditions failed; no release workspace was created")
+            raise SystemExit(exit_codes.REFUSED)
     if getattr(vargs, "skip_gates", None) is not None:
         rows = [GatePrecondition(
             "cmru", "Release gate", "SKIPPED",
@@ -7219,7 +7240,9 @@ def _release_gate_preconditions_before_dispatch(
         rows = evaluate_release_gate_preconditions(
             repo_root, source_git_root, revision, {"cmru": planned_version},
             gate_provisional=run_tests_uses_provisional_gate(config_text),
+            require_docker=not dry_run,
         )
+    rows.extend(build_image_rows)
 
     if any(row.status == "FAIL" for row in rows):
         print(format_gate_precondition_report(rows), file=sys.stderr)
@@ -7233,6 +7256,56 @@ def _release_gate_preconditions_before_dispatch(
         else:
             print(format_gate_precondition_report(rows))
     return revision
+
+
+def _orchestration_env_for_release_snapshot(
+    source_git_root: Path, revision: str, config_path: Path,
+) -> dict[str, str]:
+    """Read orchestration defaults from the exact source revision being preflighted."""
+    if config_path.name != ORCHESTRATION_CONFIG_FILENAME:
+        return {}
+    try:
+        config_rel = config_path.resolve().relative_to(source_git_root.resolve())
+    except ValueError as exc:
+        raise RuntimeError(
+            "the selected CMRU orchestration config is outside the release source; "
+            "cannot resolve its image defaults from the checked revision"
+        ) from exc
+    content = _read_git_path_at_commit(
+        source_git_root, revision, config_rel,
+        source_label=f"release source ({revision[:12]}:{config_rel.as_posix()})",
+    )
+    try:
+        document = tomllib.loads(content)
+        orchestration = document["orchestration"]
+        defaults = orchestration.get("defaults", {})
+        raw_env = defaults.get("env", {})
+    except (KeyError, TypeError, tomllib.TOMLDecodeError) as exc:
+        raise RuntimeError(
+            "cannot resolve image defaults from the selected CMRU orchestration config"
+        ) from exc
+    from cmru.config import _scalar_env
+
+    return _scalar_env(
+        raw_env, "orchestration.defaults.env", reject_credentials=True,
+    )
+
+
+def _release_process_build_image_env() -> dict[str, str]:
+    """Snapshot caller overrides before configured release env mutates os.environ."""
+    return {
+        name: os.environ[name]
+        for name in BUILD_IMAGE_ENV_NAMES
+        if name in os.environ
+    }
+
+
+def _release_source_changed_retry_message(*, dry_run: bool) -> str:
+    action = "dry-run" if dry_run else "release"
+    return (
+        "the release source changed after CMRU's gate precondition check; "
+        f"rerun the {action} against one consistent source snapshot"
+    )
 
 
 def _cmru_snapshot_config_text(
@@ -7335,7 +7408,7 @@ def _release_launcher(
             log_error(str(exc))
             sys.exit(1)
 
-    if vargs.dry_run and not getattr(vargs, "resume", None) and "cmru" in release_scope:
+    if not getattr(vargs, "resume", None) and "cmru" in release_scope:
         try:
             selected_families = transaction.project_git_family_groups(
                 repo_root, [configs[name] for name in release_scope],
@@ -7555,8 +7628,7 @@ def _release_launcher(
                     and base != cmru_precondition_base
                 ):
                     raise RefusedBeforeChange(
-                        "the release source changed after CMRU's gate precondition check; "
-                        "rerun the dry-run against one consistent source snapshot"
+                        _release_source_changed_retry_message(dry_run=vargs.dry_run)
                     )
                 snapshot_config_paths = _project_config_paths_at_snapshot(
                     transaction_root, base, cfg_path, configs, release_scope,

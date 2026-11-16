@@ -25,6 +25,7 @@ import json
 import os
 import re
 import secrets
+import shlex
 import shutil
 import stat
 import subprocess
@@ -4092,6 +4093,43 @@ def _sync_local_main_result(
             "no rebase-abort was needed. The cause is undetermined, and local main was "
             "not claimed to be synchronized. Inspect the caller checkout before retrying.",
         )
+    try:
+        worktrees = _shared_worktree().list_git_worktrees(repo_root)
+    except _DOMAIN_ERRORS as exc:
+        return _SyncLocalMainResult(
+            False,
+            "Could not sync local main automatically: Git's worktree inventory could "
+            f"not be read ({exc}); local main was left untouched. Inspect "
+            "`git worktree list --porcelain` from the caller checkout, then retry "
+            "synchronization.",
+        )
+    main_worktrees = [item for item in worktrees if item.branch == "main"]
+    if len(main_worktrees) > 1:
+        paths = ", ".join(shlex.quote(str(item.path)) for item in main_worktrees)
+        return _SyncLocalMainResult(
+            False,
+            "Could not sync local main automatically: Git reports `main` checked out "
+            f"in multiple worktrees ({paths}); local main was left untouched. "
+            "Resolve the duplicate worktree checkouts before synchronizing.",
+        )
+    if main_worktrees:
+        main_worktree = main_worktrees[0]
+        if main_worktree.is_prunable:
+            return _SyncLocalMainResult(
+                False,
+                "Could not sync local main automatically: Git marks the worktree "
+                f"registered for `main` as prunable ({main_worktree.path}); local main "
+                "was left untouched. Inspect `git worktree list --porcelain` and clear "
+                "the stale registration before retrying synchronization.",
+            )
+        remedy = f"git -C {shlex.quote(str(main_worktree.path))} pull --ff-only"
+        return _SyncLocalMainResult(
+            False,
+            "Could not sync local main automatically: `main` is checked out in another "
+            f"worktree at {main_worktree.path}; local main was left untouched. Run "
+            f"`{remedy}` from the main worktree's environment to fast-forward it.",
+        )
+
     local_main = _git(repo_root, "rev-parse", "main", check=False)
     if local_main:
         merge_base = _git(repo_root, "merge-base", "main", "origin/main", check=False)

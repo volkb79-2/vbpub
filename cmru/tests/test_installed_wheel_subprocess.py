@@ -1081,7 +1081,9 @@ def test_the_refusal_names_at_most_twenty_paths_and_the_remedy(tmp_path):
     tree = _bootstrap_tree(tmp_path)
     _with_packaged_sources(tree)
     _released_cli_extended(tree, tmp_path)
-    for index in range(30):
+    # Make the producer emit well beyond a pipe buffer. The refusal formatter
+    # must still return its documented status when the output is truncated.
+    for index in range(4096):
         (tree["repo_root"] / "cmru" / "src" / "cmru" / f"m{index:02d}.py").write_text("", encoding="utf-8")
 
     result = _run_bootstrap(tree)

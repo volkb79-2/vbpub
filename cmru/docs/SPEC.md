@@ -299,6 +299,13 @@ not as a conflict; any active rebase state is aborted only when Git shows that s
 A false cleanup result does not change the primary release outcome, but it MUST be reported
 rather than ignored.
 
+When the caller is on another branch and Git reports local `main` checked out in a different
+linked worktree, cmru MUST leave that worktree and ref untouched rather than force-update the
+checked-out branch. It reports the derived worktree path and the owner-scoped remedy
+`git -C <main-worktree> pull --ff-only`; the worktree owner performs that fast-forward.
+If the worktree inventory is unreadable, ambiguous, or marks the `main` entry prunable, cmru
+fails closed with the local ref untouched and reports the inventory condition.
+
 ```
 Before the release:
   origin/main:     ──●(base)
@@ -1667,14 +1674,37 @@ enforced by refusing every incomplete input before the first upload and by movin
 leaves an incomplete versioned release that the idempotent re-run (same-named assets are
 replaced) completes.
 
-**S-REL.7 — Release dry-run preconditions.** Before allocating a candidate worktree,
-`cmru release --dry-run` MUST run the declared version-window, selected tester-image
-identity, and bootstrap-version checks against the exact source revision. The selected
-tester-image identity check MUST report a non-empty Run-Gate version and a valid 64-digit
-lowercase SHA-256 for the published wheel. An omitted or malformed identity field is a
-failed precondition (exit 4); CMRU MUST NOT substitute `unknown` or another invented value.
-A Docker-unavailable result MAY be `SKIPPED` only when the preflight positively identifies
-that unavailable condition.
+**S-REL.7 — Release preconditions.** Before dispatching a new tagged CMRU release or
+allocating its candidate worktree, CMRU MUST resolve the wheel-builder image
+(`CMRU_WHEEL_BUILDER_IMAGE`) and digest-pinned cgroup-probe image
+(`CMRU_TESTER_CGROUP_PROBE_IMAGE`) with the same shared resolver used by the build handlers:
+the resolver MUST receive an explicit context. In release context, the effective configured
+value from the exact release-source revision takes precedence over the caller's captured
+process-environment value when the config key is present and not `None`; an empty configured
+string is present and MUST NOT fall through to the caller's value. If the key is absent or
+`None`, the captured caller environment is the fallback. This matches the release runner, which
+applies declared config values before invoking build handlers. In direct-handler context, a
+present process-environment value takes precedence over the enclosing config, which is the
+fallback. An empty effective image value MUST fail preflight naming the variable and directing
+the operator to set a non-empty value in the selected source config or process environment.
+The preflight MUST inspect the selected refs on the local Docker host. The cgroup-probe image
+MUST already be local because its Docker run uses
+`--pull=never`; if absent, preflight MUST fail with exit 4 naming the reference and exact
+`docker pull <ref>` remedy. The wheel-builder Docker run does not use `--pull=never` and pulls
+an absent image by default. On an actual release, if the builder is absent locally, preflight
+MUST run `docker pull <ref>` with a 600-second timeout and PASS only if that succeeds; a failed
+or timed-out pull MUST fail preflight with the exact remedy and, on timeout, name the timeout.
+A dry-run MUST NOT pull a missing builder and MUST report its pullability as `SKIPPED`, with a
+message that registry availability was not verified. The image checks
+MUST also run when `--skip-gates` is selected because the wheel-build step still uses these
+images. When gates are enabled, the preflight MUST run the declared version-window, selected
+tester-image identity, and bootstrap-version checks against the exact source revision. The
+selected tester-image identity check MUST report a non-empty Run-Gate version and a valid
+64-digit lowercase SHA-256 for the published wheel. An omitted or malformed identity field is
+a failed precondition; CMRU MUST NOT substitute `unknown` or another invented value. A
+Docker-unavailable result MAY be `SKIPPED` only for `--dry-run` and only when the preflight
+positively identifies that unavailable condition; an actual release MUST fail closed.
+`cmru release --dry-run` MUST report these checks before any candidate worktree is allocated.
 
 ---
 
@@ -2983,8 +3013,8 @@ covered by the existing subtree mount.
 |---|---|---|
 | `project_root` | path | Required. Relative to the directory containing the config. It is the base for copied source paths and for the default wheel project root. |
 | `dist_dir` | path | Optional; defaults to `dist`. Relative to `project_root`. A legacy no-variant build removes this whole tree before assembly. A variant build removes only `bundle_dir`, `client_dir` and that variant's archive, preserving sibling variant archives. |
-| `bundle_dir` | path | Optional; defaults to `bundle`. Relative to `dist_dir`; this is the assembled archive root. |
-| `client_dir` | path | Optional; defaults to `client`. Relative to `dist_dir`; enabled wheel builds place client wheels here. |
+| `bundle_dir` | path | Optional; defaults to `bundle`. Relative to `dist_dir`; this is the assembled archive root. It MUST resolve to a strict descendant of `dist_dir` and MUST NOT equal, contain, or be contained by `client_dir`. |
+| `client_dir` | path | Optional; defaults to `client`. Relative to `dist_dir`; enabled wheel builds place client wheels here. It MUST resolve to a strict descendant of `dist_dir` and MUST NOT equal, contain, or be contained by `bundle_dir`. |
 | `[wheel].enabled` | boolean | Optional; defaults to `false`. Enables `python -m pip wheel`. |
 | `[wheel].python_bin` | string | Optional; defaults to `python3`. Executable used for the wheel build. |
 | `[wheel].project_root` | path | Optional; defaults to `project_root`. A relative value is based on the config directory. |
@@ -3062,6 +3092,11 @@ configuration boundary (KI-33).
   rules apply to regular files, so a directory named `certs.pem/` is traversed.
 - The name-class exclusions and `.pyc`/`__pycache__` remain non-keepable. A suffix-class file
   left by stage without a keep entry fails closed before the manifest or archive is written.
+- `bundle_dir` and `client_dir` MUST resolve to distinct, non-overlapping strict descendants of
+  `dist_dir`. Equal paths, nested staging paths, `dist_dir` itself, its parent, and paths outside it
+  are refused during configuration parsing before any output file is changed. Variant pre-build
+  cleanup and successful-build cleanup MUST recheck containment immediately before removing either
+  staging path; an unsafe or changed path is refused.
 - `bundle-build` uses the version from its named environment variable when set. If it is absent,
   CMRU derives a PEP 440 `.devN+g<short-hash>` version from the selected project's release plan
   and Git history; immutable release publication rejects that version.
