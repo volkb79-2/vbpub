@@ -52,7 +52,7 @@ def _gate_preconditions(tmp_path: Path, monkeypatch, *, image_status="PASS", ima
     monkeypatch.setattr(
         release_preconditions,
         "check_run_gate_image_precondition",
-        lambda _root, _source_root, _revision: release_preconditions.GatePrecondition(
+        lambda _root, _source_root, _revision, **_kwargs: release_preconditions.GatePrecondition(
             "cmru", "Run-Gate image identity", image_status, image_detail,
             "Rebuild tester-unified:local from the published Run-Gate wheel.",
         ),
@@ -112,6 +112,24 @@ def test_image_precondition_is_skipped_when_docker_is_unavailable(tmp_path, monk
 
     assert row.status == "SKIPPED"
     assert "Docker" in row.detail
+
+
+def test_required_run_gate_image_precondition_turns_skip_into_failure(tmp_path, monkeypatch):
+    monkeypatch.setattr(release_preconditions.shutil, "which", lambda _command: "/usr/bin/docker")
+    monkeypatch.setattr(
+        release_preconditions, "_run_gate_release_identity_preflight",
+        lambda *_args: release_preconditions.GatePrecondition(
+            "cmru", "Run-Gate image identity", "SKIPPED", "Docker daemon is unavailable.",
+        ),
+    )
+
+    row = release_preconditions.check_run_gate_image_precondition(
+        tmp_path, tmp_path, "HEAD", require_docker=True,
+    )
+
+    assert row.status == "FAIL"
+    assert row.detail == "Docker daemon is unavailable."
+    assert row.remedy == "Restore Docker daemon access on this host, then retry the release."
 
 
 def test_bootstrap_version_check_passes_with_the_single_derivation():
@@ -763,6 +781,10 @@ def _mock_cli_release_preconditions(monkeypatch, tmp_path, *, changed=True):
     project = SimpleNamespace(
         name="cmru", project_root=tmp_path / "cmru", prefix="cmru-v",
         paths=["cmru"], cwd="cmru",
+        env={
+            "CMRU_WHEEL_BUILDER_IMAGE": "wheel-builder:test",
+            "CMRU_TESTER_CGROUP_PROBE_IMAGE": "probe@sha256:" + "a" * 64,
+        },
     )
     configs = {"cmru": project}
     monkeypatch.setattr(
@@ -793,13 +815,169 @@ def _mock_cli_release_preconditions(monkeypatch, tmp_path, *, changed=True):
     monkeypatch.setattr(
         cli.transaction, "fetch_origin_main", lambda *_args, **_kwargs: "b" * 40,
     )
+    monkeypatch.setattr(
+        release_preconditions, "check_release_build_images_precondition",
+        lambda _env, *, require_docker: [
+            release_preconditions.GatePrecondition("cmru", "Wheel-builder image", "PASS", "present"),
+            release_preconditions.GatePrecondition("cmru", "Cgroup probe image", "PASS", "present"),
+        ],
+    )
     return configs
+
+
+@pytest.mark.parametrize("missing_probe", [False, True])
+def test_release_build_image_precondition_uses_fake_docker_and_exact_pull_remedy(
+    monkeypatch, missing_probe,
+):
+    builder = "wheel-builder:test"
+    probe = "probe@sha256:" + "a" * 64
+    monkeypatch.setattr(release_preconditions.shutil, "which", lambda _command: "/usr/bin/docker")
+    calls = []
+
+    def fake_run(argv, **_kwargs):
+        calls.append(argv)
+        if missing_probe and argv[-1] == probe:
+            return SimpleNamespace(returncode=1, stdout="", stderr=f"Error: No such image: {probe}")
+        return SimpleNamespace(returncode=0, stdout="[]", stderr="")
+
+    monkeypatch.setattr(release_preconditions.subprocess, "run", fake_run)
+    rows = release_preconditions.check_release_build_images_precondition(
+        {
+            "CMRU_WHEEL_BUILDER_IMAGE": builder,
+            "CMRU_TESTER_CGROUP_PROBE_IMAGE": probe,
+        },
+        require_docker=True,
+    )
+
+    assert calls == [
+        ["docker", "image", "inspect", builder],
+        ["docker", "image", "inspect", probe],
+    ]
+    assert next(row for row in rows if row.check == "Wheel-builder image").status == "PASS"
+    probe_row = next(row for row in rows if row.check == "Cgroup probe image")
+    if missing_probe:
+        assert probe_row.status == "FAIL"
+        assert "CMRU_TESTER_CGROUP_PROBE_IMAGE" in probe_row.detail
+        assert probe in probe_row.detail
+        assert probe_row.remedy == f"Run `docker pull {probe}` on this host, then retry the release."
+    else:
+        assert probe_row.status == "PASS"
+
+
+@pytest.mark.parametrize(
+    "require_docker, expected",
+    [(False, "SKIPPED"), (True, "FAIL")],
+)
+def test_release_build_image_precondition_handles_unavailable_docker(
+    monkeypatch, require_docker, expected,
+):
+    monkeypatch.setattr(release_preconditions.shutil, "which", lambda _command: None)
+    rows = release_preconditions.check_release_build_images_precondition(
+        {
+            "CMRU_WHEEL_BUILDER_IMAGE": "wheel-builder:test",
+            "CMRU_TESTER_CGROUP_PROBE_IMAGE": "probe@sha256:" + "a" * 64,
+        },
+        require_docker=require_docker,
+    )
+
+    assert [row.status for row in rows] == [expected, expected]
+
+
+def test_release_build_image_precondition_refuses_missing_declared_values():
+    rows = release_preconditions.check_release_build_images_precondition({})
+
+    assert [row.status for row in rows] == ["FAIL", "FAIL"]
+    assert "CMRU_WHEEL_BUILDER_IMAGE is not declared" in rows[0].detail
+    assert "CMRU_TESTER_CGROUP_PROBE_IMAGE is not declared" in rows[1].detail
+    assert "Read the selected CMRU config" in rows[0].remedy
+
+
+def test_release_build_image_precondition_skips_daemon_exception_when_optional(
+    monkeypatch,
+):
+    monkeypatch.setattr(release_preconditions.shutil, "which", lambda _command: "/usr/bin/docker")
+
+    def daemon_unavailable(*_args, **_kwargs):
+        raise OSError("Cannot connect to the Docker daemon")
+
+    monkeypatch.setattr(release_preconditions.subprocess, "run", daemon_unavailable)
+    rows = release_preconditions.check_release_build_images_precondition(
+        {
+            "CMRU_WHEEL_BUILDER_IMAGE": "builder:test",
+            "CMRU_TESTER_CGROUP_PROBE_IMAGE": "probe:test",
+        },
+    )
+
+    assert [row.status for row in rows] == ["SKIPPED", "SKIPPED"]
+    assert all("Docker is unavailable" in row.detail for row in rows)
+
+
+def test_release_build_image_precondition_skips_nonzero_daemon_response_when_optional(
+    monkeypatch,
+):
+    monkeypatch.setattr(release_preconditions.shutil, "which", lambda _command: "/usr/bin/docker")
+    monkeypatch.setattr(
+        release_preconditions.subprocess, "run",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            returncode=1, stdout="", stderr="Cannot connect to the Docker daemon",
+        ),
+    )
+
+    rows = release_preconditions.check_release_build_images_precondition(
+        {
+            "CMRU_WHEEL_BUILDER_IMAGE": "builder:test",
+            "CMRU_TESTER_CGROUP_PROBE_IMAGE": "probe:test",
+        },
+    )
+
+    assert [row.status for row in rows] == ["SKIPPED", "SKIPPED"]
+    assert all("Docker is unavailable" in row.detail for row in rows)
+
+
+def test_release_build_image_precondition_fails_on_generic_inspect_exceptions(
+    monkeypatch,
+):
+    monkeypatch.setattr(release_preconditions.shutil, "which", lambda _command: "/usr/bin/docker")
+
+    def docker_cannot_start(*_args, **_kwargs):
+        raise OSError("permission denied starting docker")
+
+    monkeypatch.setattr(release_preconditions.subprocess, "run", docker_cannot_start)
+    rows = release_preconditions.check_release_build_images_precondition(
+        {
+            "CMRU_WHEEL_BUILDER_IMAGE": "builder:test",
+            "CMRU_TESTER_CGROUP_PROBE_IMAGE": "probe:test",
+        },
+    )
+
+    assert [row.status for row in rows] == ["FAIL", "FAIL"]
+    assert "permission denied starting docker" in rows[0].detail
+    assert "Restore Docker daemon access" in rows[0].remedy
+
+
+def test_release_build_image_precondition_fails_on_generic_inspect_results(monkeypatch):
+    monkeypatch.setattr(release_preconditions.shutil, "which", lambda _command: "/usr/bin/docker")
+    monkeypatch.setattr(
+        release_preconditions.subprocess, "run",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            returncode=1, stdout="", stderr="permission denied while reading image metadata",
+        ),
+    )
+    rows = release_preconditions.check_release_build_images_precondition(
+        {
+            "CMRU_WHEEL_BUILDER_IMAGE": "builder:test",
+            "CMRU_TESTER_CGROUP_PROBE_IMAGE": "probe:test",
+        },
+    )
+
+    assert [row.status for row in rows] == ["FAIL", "FAIL"]
+    assert "permission denied while reading image metadata" in rows[0].detail
+    assert "Restore Docker daemon access" in rows[0].remedy
 
 
 @pytest.mark.parametrize(
     "args, project_names",
     [
-        (_release_precondition_args(dry_run=False), ["cmru"]),
         (_release_precondition_args(resume=Path("retained")), ["cmru"]),
         (_release_precondition_args(), ["other"]),
     ],
@@ -996,6 +1174,76 @@ def test_release_launcher_stops_before_dispatch_on_gate_precondition_failure(
         )
 
     assert caught.value.code == 4
+
+
+def test_actual_release_stops_before_dispatch_when_probe_image_is_missing(
+    tmp_path, monkeypatch, capsys,
+):
+    probe = "debian@sha256:" + "a" * 64
+    builder = "wheel-builder:test"
+    docker_calls = []
+    project = SimpleNamespace(
+        name="cmru", prefix="cmru-v", env={
+            "CMRU_WHEEL_BUILDER_IMAGE": builder,
+            "CMRU_TESTER_CGROUP_PROBE_IMAGE": probe,
+        },
+    )
+    configs = {"cmru": project}
+    monkeypatch.setattr(
+        cli.transaction, "project_git_family_groups",
+        lambda *_args: {tmp_path: [project]},
+    )
+    monkeypatch.setattr(
+        cli, "_preflight_multi_family_release_tag_support",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(cli.transaction, "fetch_origin_main", lambda *_args, **_kwargs: "b" * 40)
+    monkeypatch.setattr(cli, "_project_config_for_release_snapshot", lambda *_args: project)
+    monkeypatch.setattr(cli, "_configs_for_git_family", lambda *_args: configs)
+    monkeypatch.setattr(cli, "_known_project_scope_names", lambda _configs: frozenset({"cmru"}))
+    monkeypatch.setattr(
+        "cmru.version.status_records",
+        lambda *_args, **_kwargs: [{"changed": True, "next_version": "cmru-v7.1.4"}],
+    )
+    monkeypatch.setattr(
+        release_preconditions.shutil, "which", lambda _command: "/usr/bin/docker",
+    )
+
+    def fake_docker(argv, **_kwargs):
+        docker_calls.append(argv)
+        if argv[-1] == probe:
+            return SimpleNamespace(returncode=1, stdout="", stderr=f"Error: No such image: {probe}")
+        return SimpleNamespace(returncode=0, stdout="[]", stderr="")
+
+    monkeypatch.setattr(release_preconditions.subprocess, "run", fake_docker)
+    monkeypatch.setattr(
+        cli, "_dispatch_independent_git_families",
+        lambda *_args, **_kwargs: pytest.fail("dispatch must not run after image refusal"),
+    )
+    monkeypatch.setattr(
+        cli.transaction, "create_workspace",
+        lambda *_args, **_kwargs: pytest.fail("no release workspace may be created"),
+    )
+
+    with pytest.raises(SystemExit) as caught:
+        cli._release_launcher(
+            [], _release_precondition_args(
+                dry_run=False, target="cmru", allow_uncommitted=False,
+                ahead_check_ref=None,
+            ),
+            tmp_path / "cmru.orchestration.toml", tmp_path, configs, {}, ["cmru"],
+            ["cmru"], ["cmru"], None, None, github_config=None,
+        )
+
+    assert caught.value.code == 4
+    error = capsys.readouterr().err
+    assert "CMRU_TESTER_CGROUP_PROBE_IMAGE" in error
+    assert probe in error
+    assert f"docker pull {probe}" in error
+    assert docker_calls == [
+        ["docker", "image", "inspect", builder],
+        ["docker", "image", "inspect", probe],
+    ]
 
 
 def test_release_launcher_dispatches_after_gate_preconditions_pass(tmp_path, monkeypatch):
@@ -1232,7 +1480,7 @@ def test_release_precondition_helper_passes_the_full_gate_choice_through(
         _release_precondition_args(), git_auth=None, report=False,
     )
 
-    assert observed == {"gate_provisional": False}
+    assert observed == {"gate_provisional": False, "require_docker": False}
 
 
 @pytest.mark.parametrize(

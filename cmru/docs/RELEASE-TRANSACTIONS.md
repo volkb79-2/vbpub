@@ -372,6 +372,14 @@ same commit requires explicit deletion of the existing output record with
 
 ## Transaction order
 
+For a new CMRU release, the launcher first inspects the selected CMRU
+configuration's wheel-builder and digest-pinned cgroup-probe images on the
+Docker host. A missing image is reported with its configured reference and
+`docker pull <ref>` remedy before dispatch, candidate worktree, tag, or gate
+setup. The same check applies when gates are skipped because the wheel-build
+step still needs both images. A dry-run may report image checks as `SKIPPED`
+when Docker is unavailable; an actual release fails closed in that condition.
+
 Every changed project releases **one after another** — its own prepare, gate,
 tag, build, publish, and promote all finish before the next project's cycle
 begins. This is what lets a later project resolve an earlier project's

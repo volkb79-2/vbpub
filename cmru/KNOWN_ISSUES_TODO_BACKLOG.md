@@ -17,7 +17,7 @@
 | KI-171 | OPEN (the packaged cmru-cli SKILL is grammar-checked but not coverage-checked: a verb or flag a release adds can be missing from it with every existing test green) | — |
 | KI-170 | OPEN (bundle validator outcomes pinned; SPEC wording and R2 lane-cost policy remain) | — |
 | KI-169 | OPEN (`bundle_dir` set to `"."` makes the success cleanup delete the whole `dist_dir`; no containment check on `bundle_dir`/`client_dir`) | — |
-| KI-168 | OPEN (`cmru release` does not preflight the digest-pinned cgroup probe image; a missing one fails late in the wheel-build step, after the gate) | — |
+| KI-168 | FIXED 2026-11-16 (configured wheel-builder and cgroup-probe images are checked before release dispatch) | this batch |
 | KI-167 | OPEN (case-sensitive suffix checks, no `.env` / `.env.*` prefix class and an incomplete name list can miss secret-class paths) | — |
 | KI-166 | FIXED (included bundle source symlinks could dereference and ship their targets) | `f2b56b12743f6a764bbadefa8b937c1bd642b32f` |
 | KI-165 | OPEN (item 2 fixed; items 1, 3, 4, 5 and 6 remain) | `f2b56b12743f6a764bbadefa8b937c1bd642b32f` |
@@ -3696,7 +3696,7 @@ Call: `SOURCE_DATE_EPOCH=1700000000 DEMO_VERSION=1.0.0 cmru handler bundle-build
 
 ## KI-168 - `cmru release` fails late when the digest-pinned cgroup probe image is missing on the Docker host
 
-**Status:** OPEN (filed 2026-11-14); severity: medium (a full provisional gate of about 27 minutes is spent before the failure, and the rollback must be repeated).
+**Status:** FIXED 2026-11-16; severity: medium (a full provisional gate of about 27 minutes was spent before the failure, and the rollback had to be repeated).
 
 **Observed (run).** The first cmru 7.3.1 release attempt passed its provisional gate (1648.7 s) and then failed in `cmru handler wheel-build`: `wheel-build refuses to launch: CMRU_TESTER_CGROUP_PARENT=... is not a verified host slice ... (probe stderr: docker: Error response from daemon: No such image: debian@sha256:...)`. The digest-pinned `CMRU_TESTER_CGROUP_PROBE_IMAGE` was not present on the Docker host; the cause of its absence is unknown. The release rolled back the local and remote tag, so nothing was published. `docker pull` of the same digest and a restart of the release fixed it.
 
@@ -3705,6 +3705,8 @@ Call: `SOURCE_DATE_EPOCH=1700000000 DEMO_VERSION=1.0.0 cmru handler bundle-build
 **Wanted.** Before the release transaction creates its tag or starts the gate, `cmru release` checks that every image the gate and the wheel-build step will run, including the cgroup probe image, is present locally and fails fast with the variable name, the reference and the exact remedy (`docker pull <ref>`). The check is read-only; the simplest form adds the probe image to `doctor.IMAGE_VARIABLES` and runs the same check as a release precondition.
 
 **Close when.** A test with a fake Docker client shows a missing probe image is reported at preflight with the variable, reference and remedy, before any tag, worktree or gate step, and a present image passes; SPEC and the release docs name the preflight.
+
+**Resolution/evidence (2026-11-16).** Before dispatching a new tagged CMRU release, the launcher inspects the effective wheel-builder and digest-pinned cgroup-probe references on the local Docker host; missing images fail with the exact `docker pull <ref>` remedy, before workspace creation, even when gates are skipped. Actual releases fail closed when Docker cannot inspect these required images; dry-runs may report Docker as unavailable. The fake-Docker regression `test_actual_release_stops_before_dispatch_when_probe_image_is_missing` asserts the variable, reference, remedy, and that dispatch/workspace creation do not occur. `test_release_build_image_precondition_uses_fake_docker_and_exact_pull_remedy` covers present and missing probe images and both exact inspect argv. Missing config, required-versus-optional Docker availability, daemon exceptions, non-zero daemon responses (`test_release_build_image_precondition_skips_nonzero_daemon_response_when_optional`), and generic inspect failures are covered. The precondition-file selector passed 93 tests in `/tmp/run-gate/lanes/survivor-regressions/6950e394a8c79215f91836ec0d0d981c.log`; the combined selector passed 407 tests before this final branch case in `/tmp/run-gate/lanes/survivor-regressions/8453b5e685c420ffd889e55db1072320.log`. No real release, publish, Docker image, or remote operation was used. Hand-mutant: treating Docker's `No such image` response as PASS was killed by the missing-image parameter (1 failed, 1 passed) in `/tmp/run-gate/lanes/survivor-regressions/983923db65288b78240121a828f5e454.log`.
 
 ## KI-169 - `bundle_dir` set to `"."` makes the success cleanup delete the whole `dist_dir`
 

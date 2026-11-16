@@ -1674,14 +1674,21 @@ enforced by refusing every incomplete input before the first upload and by movin
 leaves an incomplete versioned release that the idempotent re-run (same-named assets are
 replaced) completes.
 
-**S-REL.7 — Release dry-run preconditions.** Before allocating a candidate worktree,
-`cmru release --dry-run` MUST run the declared version-window, selected tester-image
-identity, and bootstrap-version checks against the exact source revision. The selected
-tester-image identity check MUST report a non-empty Run-Gate version and a valid 64-digit
-lowercase SHA-256 for the published wheel. An omitted or malformed identity field is a
-failed precondition (exit 4); CMRU MUST NOT substitute `unknown` or another invented value.
-A Docker-unavailable result MAY be `SKIPPED` only when the preflight positively identifies
-that unavailable condition.
+**S-REL.7 — Release preconditions.** Before dispatching a new tagged CMRU release or
+allocating its candidate worktree, CMRU MUST inspect the selected
+configuration's wheel-builder image
+(`CMRU_WHEEL_BUILDER_IMAGE`) and digest-pinned cgroup-probe image
+(`CMRU_TESTER_CGROUP_PROBE_IMAGE`) on the local Docker host. A missing image MUST be a failed
+precondition (exit 4) naming the variable, configured reference, and exact `docker pull <ref>`
+remedy. The check MUST also run when `--skip-gates` is selected because the wheel-build step
+still uses these images. When gates are enabled, the preflight MUST run the declared
+version-window, selected tester-image identity, and bootstrap-version checks against the exact
+source revision. The selected tester-image identity check MUST report a non-empty Run-Gate
+version and a valid 64-digit lowercase SHA-256 for the published wheel. An omitted or malformed
+identity field is a failed precondition; CMRU MUST NOT substitute `unknown` or another invented
+value. A Docker-unavailable result MAY be `SKIPPED` only for `--dry-run` and only when the
+preflight positively identifies that unavailable condition; an actual release MUST fail closed.
+`cmru release --dry-run` MUST report these checks before any candidate worktree is allocated.
 
 ---
 

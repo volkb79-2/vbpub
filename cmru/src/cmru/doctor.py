@@ -19,7 +19,11 @@ from pathlib import Path
 from cli_extended import CheckResult, DoctorCheck
 
 CREDENTIAL_VARIABLES = ("GITHUB_PUSH_PAT", "GITHUB_TOKEN")
-IMAGE_VARIABLES = ("CMRU_TESTER_UNIFIED_IMAGE", "CMRU_WHEEL_BUILDER_IMAGE")
+IMAGE_VARIABLES = (
+    "CMRU_TESTER_UNIFIED_IMAGE",
+    "CMRU_WHEEL_BUILDER_IMAGE",
+    "CMRU_TESTER_CGROUP_PROBE_IMAGE",
+)
 _PROBE_TIMEOUT_SECONDS = 10
 
 
@@ -224,7 +228,7 @@ def check_credentials(runtime=None, args=None) -> CheckResult:
 
 
 def _declared_images(forge) -> dict[str, str]:
-    """The tester/wheel-builder image values the loaded config declares."""
+    """The tester, wheel-builder and cgroup-probe image values in the loaded config."""
     declared: dict[str, str] = {}
     scopes = [forge.env, *(project.env for project in forge.projects.values())]
     for scope in scopes:
@@ -236,7 +240,7 @@ def _declared_images(forge) -> dict[str, str]:
 
 
 def check_images(runtime=None, args=None) -> CheckResult:
-    """The declared tester-unified / wheel-builder images exist locally."""
+    """The declared tester, wheel-builder and cgroup-probe images exist locally."""
     try:
         loaded = _load_nearest_config()
     except ValueError:
@@ -245,7 +249,7 @@ def check_images(runtime=None, args=None) -> CheckResult:
         return CheckResult("skip", "no cmru config here")
     declared = _declared_images(loaded[1])
     if not declared:
-        return CheckResult("skip", "the config declares no tester or builder image")
+        return CheckResult("skip", "the config declares no tester, builder or probe image")
     if _which("docker") is None:
         return CheckResult("skip", "docker is unavailable; cannot inspect images")
     missing: list[str] = []

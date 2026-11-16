@@ -1021,25 +1021,30 @@ includes the mutation campaign. If cleanup fails after the lanes pass, the gate 
 leaves `"state": "failed"` with an empty `deferred_lanes` and no marker; an invocation refused
 before a new gate starts leaves the previous run's marker and manifest untouched.
 
-Before creating a release candidate worktree, the dry-run checks the plan and
-the three gate preconditions that can be checked before a worktree exists. Run it with the same
-version flags you intend to release:
+Before dispatching a new CMRU release, CMRU inspects the configured wheel-builder
+and digest-pinned cgroup-probe images on the Docker host. A missing image fails
+with exit 4 and the exact `docker pull <ref>` remedy, before a candidate
+worktree, tag, or gate starts. The check also runs with `--skip-gates`, because
+the wheel-build step still needs both images. If Docker is unavailable, an
+actual release fails preflight; a dry-run may report the image checks as
+`SKIPPED`. Run the dry-run with the same version flags you intend to release:
 
 ```sh
 cmru release cmru --minor --dry-run
 ```
 
-The check compares the planned version with the gate's KI-79 window (only when
+With gates enabled, preflight compares the planned version with the gate's KI-79 window (only when
 `cmru/cmru.toml`'s run-tests step runs `gate-provisional`; with the full `gate`
 configured that row is `SKIPPED`), inspects the selected tester image's
 Run-Gate version, downloads the published Run-Gate wheel from GitHub to compare
-its digest (so the dry-run needs network access), and requires
+its digest (so preflight needs network access), and requires
 `docs/BOOTSTRAP-FROM-ZERO.md` to name the latest stable Run-Gate version in
-`run-gate-project/CHANGES.md`. When all checks pass, the existing preview gains
-one `Release gate preconditions: PASS` line. If Docker is unavailable, the
-image row says `SKIPPED` and the dry-run continues; that row does not certify
-the image. A failure prints its remedy and exits 4 before a worktree is
-created. For a version outside the KI-79 window, change the run-tests command to the
+`run-gate-project/CHANGES.md`. The dry-run reports these checks in its preview;
+an actual release refuses a failure before dispatch. When all checks pass, the
+existing preview gains one `Release gate preconditions: PASS` line. If Docker
+is unavailable, an image row says `SKIPPED` and the dry-run continues; that row
+does not certify the image. A failure prints its remedy and exits 4 before a
+worktree is created. For a version outside the KI-79 window, change the run-tests command to the
 full `gate` lane (the row then reads `SKIPPED`) or obtain an explicit operator decision to widen the window. For
 an image mismatch, rebuild the selected image with the exact published
 Run-Gate wheel named in the remedy. For a stale bootstrap guide, update every

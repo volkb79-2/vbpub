@@ -32,6 +32,7 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
      the `fix(cmru): ...` commit subject. -->
 
 <!-- cmru: pending release notes begin -->
+- fix(cmru): preflight the wheel-builder and cgroup-probe images before release dispatch (KI-168).
 
 <!-- cmru: pending release notes end -->
 

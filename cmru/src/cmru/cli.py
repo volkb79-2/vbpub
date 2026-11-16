@@ -7152,16 +7152,17 @@ def _release_gate_preconditions_before_dispatch(
     repo_root: Path, config_path: Path, configs, project_names: Sequence[str], vargs, *,
     git_auth: GitHubGitAuth | None, report: bool,
 ) -> str | None:
-    """Check CMRU's dry-run gate inputs before dispatch or workspace creation."""
+    """Check CMRU's gate and wheel-build inputs before dispatch or workspace creation."""
     if (
-        not getattr(vargs, "dry_run", False)
-        or getattr(vargs, "resume", None)
+        getattr(vargs, "resume", None)
         or "cmru" not in project_names
     ):
         return None
+    dry_run = bool(getattr(vargs, "dry_run", False))
 
     from cmru.release_preconditions import (
         GatePrecondition,
+        check_release_build_images_precondition,
         evaluate_release_gate_preconditions,
         format_gate_precondition_report,
         run_tests_uses_provisional_gate,
@@ -7202,6 +7203,16 @@ def _release_gate_preconditions_before_dispatch(
         if record["changed"] and isinstance(next_tag, str) and next_tag.startswith(prefix)
         else None
     )
+    build_image_rows = []
+    if planned_version is not None:
+        build_image_rows = check_release_build_images_precondition(
+            getattr(configs["cmru"], "env", {}) or {}, require_docker=not dry_run,
+        )
+        image_failures = [row for row in build_image_rows if row.status == "FAIL"]
+        if image_failures:
+            print(format_gate_precondition_report(image_failures), file=sys.stderr)
+            log_error("release image preconditions failed; no release workspace was created")
+            raise SystemExit(exit_codes.REFUSED)
     if getattr(vargs, "skip_gates", None) is not None:
         rows = [GatePrecondition(
             "cmru", "Release gate", "SKIPPED",
@@ -7219,7 +7230,9 @@ def _release_gate_preconditions_before_dispatch(
         rows = evaluate_release_gate_preconditions(
             repo_root, source_git_root, revision, {"cmru": planned_version},
             gate_provisional=run_tests_uses_provisional_gate(config_text),
+            require_docker=not dry_run,
         )
+    rows.extend(build_image_rows)
 
     if any(row.status == "FAIL" for row in rows):
         print(format_gate_precondition_report(rows), file=sys.stderr)
@@ -7335,7 +7348,7 @@ def _release_launcher(
             log_error(str(exc))
             sys.exit(1)
 
-    if vargs.dry_run and not getattr(vargs, "resume", None) and "cmru" in release_scope:
+    if not getattr(vargs, "resume", None) and "cmru" in release_scope:
         try:
             selected_families = transaction.project_git_family_groups(
                 repo_root, [configs[name] for name in release_scope],
