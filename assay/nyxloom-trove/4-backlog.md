@@ -14826,7 +14826,13 @@ Related: a `--only-candidates`/`--exclude-candidates` remainder is reported like
 
 ## B536 — the self-lane refusal test writes a fixture into the real checkout's worktree directory and cannot run as the gate user
 
-**Status:** OPEN (filed 2026-11-12); severity: should-fix (a registered gate test currently cannot execute in the environment that is intended to run it).
+**Status: FIXED (2026-11-16, pi-assay-burn).** `gate/tests/test_self_lane.py::test_outer_wrapper_clears_a_prior_postponement_before_dirty_tree_refusal[main-checkout]` called `tempfile.mkdtemp(dir=<shared main checkout>/.worktrees)` and died with `PermissionError: [Errno 13] ... '/workspaces/vbpub/.worktrees/wrapper-refusal-…'` under the `tooling-tests` container user, so `test_self_lane.py` could never be in the lane that is built to run it.
+
+**Fix.** The fixture root is now derived by `_fixture_root_for(checkout)` (selected checkout's own `.worktrees`, or the shared main checkout's, chosen for what it IS — a different checkout beside the judged one — never for a writability guess), and `_require_writable_fixture_root` performs an explicit `os.access` probe of the nearest existing ancestor and SKIPS with a reason naming the directory, the uid and the remedy. The skip is narrow: a writable checkout runs the same assertions unchanged, asserted by a paired must-not-skip test with an injected writable probe. `gate/tests/test_self_lane.py` is now in `run-gate.toml`'s `tooling-tests` fixed file list, and `gate/tests/test_release_gate.py`'s binding pin carries it (removing it fails that oracle).
+
+**Evidence (measured in `tester-unified:run-gate-2560`, run-gate 25.6.0).** Before: `test_outer_wrapper_clears_a_prior_postponement_before_dirty_tree_refusal[main-checkout]` FAILED with `PermissionError` and the lane reported FAIL. After: the same focused selection PASSES with `SKIPPED [1] gate/tests/test_self_lane.py:… unwritable fixture root /workspaces/vbpub/.worktrees … (nearest existing ancestor /workspaces/vbpub/.worktrees is not writable by uid 1003)`, and the `[selected-worktree]` parameter executes its assertions. On a writable checkout the whole file passes (108 tests, bare cockpit). Two hand mutants: removing the skip helper reproduces the container failure, and removing `gate/tests/test_self_lane.py` from the lane list fails `test_pre_merge_tooling_lane_binds_the_release_attempt_failure_groups`.
+
+**Previous status.** OPEN (filed 2026-11-12); severity: should-fix (a registered gate test currently cannot execute in the environment that is intended to run it).
 
 **Problem.** `gate/tests/test_self_lane.py::test_outer_wrapper_clears_a_prior_postponement_before_dirty_tree_refusal[main-checkout]` derives the real checkout's common Git directory and creates its scratch repository below that checkout's `.worktrees` directory. The `tooling-tests` lane runs as the tester-unified container user, which cannot write the bind-mounted shared checkout's `.worktrees` directory. The test therefore fails with `PermissionError` before reaching its dirty-tree assertion. As a consequence, `gate/tests/test_self_lane.py` is not in the `tooling-tests` fixed file list, so the container lane never exercises this file's important release-wrapper assertions.
 
@@ -14838,7 +14844,7 @@ Related: a `--only-candidates`/`--exclude-candidates` remainder is reported like
 
 **Priority.** Should-fix. The test protects release-wrapper cleanup and refusal behavior, and excluding it turns that protection into local-only evidence.
 
-**Close when.** `gate/tests/test_self_lane.py` passes or skips for the documented environment limitation inside `tooling-tests`, writes no fixture under an unwritable shared-checkout directory, covers the dirty-tree/prior-marker assertion wherever the environment permits it, and the lane list plus its binding test include the file on a clean final commit.
+**Close when.** `gate/tests/test_self_lane.py` passes or skips for the documented environment limitation inside `tooling-tests`, writes no fixture under an unwritable shared-checkout directory, covers the dirty-tree/prior-marker assertion wherever the environment permits it, and the lane list plus its binding test include the file on a clean final commit. — MET: the file runs inside `tooling-tests`, the `[main-checkout]` parameter skips with the named directory while `[selected-worktree]` still asserts, no fixture is created under the unwritable directory, and the lane list plus its pin now include the file.
 
 ## B537 — path-triggered R1 coverage for assay source remains a manual merge check instead of an automatic pre-merge host-queue job
 

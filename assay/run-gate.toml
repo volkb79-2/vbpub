@@ -83,6 +83,7 @@ export PYTHONPATH="analysis/src:{worktree}/libraries/cowtree/src"
   gate/tests/test_distribution_gate.py \
   gate/tests/test_release_gate.py \
   gate/tests/test_self_qualification_container.py \
+  gate/tests/test_self_lane.py \
   tests/core/test_docs_examples_and_vocabulary.py \
   tests/parsers/coverage/test_coverage_rust_lcov_normalization.py \
   tests/core/test_termination.py \
