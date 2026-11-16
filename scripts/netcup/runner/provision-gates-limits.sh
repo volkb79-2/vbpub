@@ -13,26 +13,29 @@
 #   - OOMScoreAdjust=-900 on ssh, systemd-logind, systemd-journald, docker and cgprofiled: a cgroup floor never enters
 #     the global OOM victim ranking, and this kernel scores an adj-0 2 MiB service and an adj-0 lane process alike.
 #     PROTECTION IS NEVER REDUCED. oom_score_adj is a ranking, so a LOWER number is MORE protective: -1000 (what sshd
-#     keeps on its own listener) is stronger than the unit's -900, and -900 is stronger than journald's packaged
-#     -250. The live fix-up therefore writes a MainPID score only when the current value is HIGHER (less protective)
-#     than the target, and the persistent drop-in is written only when the unit's own fragment sets nothing or a less
-#     protective value; a unit that is already at least as protected is reported and left alone.
+#     keeps on its own listener) is stronger than the unit's -900, and -900 is stronger than a packaged -250. The live
+#     fix-up therefore writes a MainPID score only when the current value is HIGHER (less protective) than the target,
+#     and the persistent drop-in is written only when the unit's own fragment sets nothing or a less protective value; a
+#     unit that is already at least as protected is reported and left alone, and a drop-in this tool rendered EARLIER is
+#     retired and removed when the unit now protects itself (leaving it would keep the downgrade alive).
 # Nominal, not raw: see the derivation below (a host whose MemTotal reads 7935 MiB is an 8 GiB host).
 # Idempotent: an unchanged drop-in is reported and left alone; a second run with a matching live cgroup changes nothing.
 # The derivation, the overrides and their consequences are documented in runner/README.md ("Gates-tier memory policy").
 #
 # --adopt is the explicit one-time migration from a host an operator configured by hand (the 2026-11-16 measurement
 # itself): a file at this tool's own path is recognised only when every non-comment line is a section header this file
-# owns or a directive whose key belongs to the policy it renders. Its VALUES are not compared — a hand file legitimately
-# writes `56G` where this tool renders `57344M` (the same amount, another spelling) — so the adopted file is rewritten as
+# owns or a directive whose key belongs to the policy it renders. Its VALUES are not compared - a hand file legitimately
+# writes `56G` where this tool renders `57344M` (the same amount, another spelling) - so the adopted file is rewritten as
 # this tool's own rendering. Its content is COPIED to <file>.retired-<date> (a name systemd does not load) and never
-# deleted. Without --adopt such a file is refused with exit 5, naming --adopt.
+# deleted. Without --adopt such a file is refused with exit 5, naming --adopt. A recognised hand drop-in that would
+# LOWER a unit's own stronger value is adopted too - retired, and then NOT replaced, because the never-reduce rule
+# outranks the policy value (that is exactly the v1001 migration shape: a hand -900 drop-in over a unit file at -1000).
 #
 # Exit codes: 0 applied, already converged, or a loaded-but-inactive slice (nothing live to compare or restart);
 #             2 usage or an invalid override;
-#             3 a required host fact is unreadable (MemTotal, SwapTotal, the slice's cgroup, its process lists, or a
-#               protected unit's own fragment) or there is no swap to page with (a swapless host refuses by design: this
-#               policy pages lanes instead of killing them);
+#             3 a required host fact is unreadable (MemTotal, SwapTotal, the slice's cgroup, its process lists, a
+#               protected unit's own fragment, or a foreign drop-in whose value this tool cannot read) or there is no
+#               swap to page with (a swapless host refuses by design: this policy pages lanes instead of killing them);
 #             4 refused: the slice has tasks, so a restart would reset the memory.events counters INCONCLUSIVE-OOM reads;
 #             5 refused: a file or drop-in this tool does not own carries the key it would set (or is not a recognised
 #               hand drop-in even with --adopt), or a protected unit's own fragment is already MORE protective than the
@@ -50,6 +53,10 @@ slice=${GATES_SLICE:-}
 : "${slice:?GATES_SLICE is not set (runner.env: the gates tier slice name)}"
 [[ $slice =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*\.slice$ ]] || { echo "GATES_SLICE is not a slice unit name: $slice" >&2; exit 2; }
 
+# ==== helper definitions: every function this file calls, defined before the main flow runs ====
+# Bash runs a script top to bottom, so a function called before its definition is `command not found` at run time - a
+# defect a fake-root test cannot see when the failure is swallowed. Every definition therefore lives above the main
+# flow, and tests/test_provision_gates_limits.py asserts that ordering (and that this region runs no code at all).
 usage() {
   cat >&2 <<'EOF'
 usage: provision-gates-limits.sh [--adopt] [--dry-run] [--meminfo FILE] [--systemd-dir DIR] [--cgroupfs DIR] [--procfs DIR]
@@ -62,6 +69,343 @@ usage: provision-gates-limits.sh [--adopt] [--dry-run] [--meminfo FILE] [--syste
   --procfs DIR       the procfs where a running unit's live OOM score is set in place (default /proc)
 EOF
 }
+
+is_positive_integer() { [[ $1 =~ ^[1-9][0-9]*$ ]]; }
+
+# oom_score_adj is a RANKING, not a magnitude: a LOWER value is MORE protective (-1000 strongest, +1000 weakest).
+# `oom_score_number` is the ONE place a score token becomes a number: the kernel's own range is -1000..1000, so at most
+# four digits, forced to base 10. A leading zero would otherwise reach bash arithmetic as OCTAL (`0900` has no octal
+# spelling and aborts the comparison), and a longer digit string can wrap a 64-bit integer back INTO the valid range;
+# both are refused by the pattern, before any arithmetic runs. An unusable score is never folded into "not protected":
+# that fold's only consequence is a write, the one operation that can LOWER a unit's protection.
+oom_score_number() {  # $1 a score token; prints its value in base 10, 1 when the token is not a usable score at all
+  local sign=1 digits
+  case ${1-} in
+    -*) sign=-1; digits=${1#-} ;;
+    *) digits=${1-} ;;
+  esac
+  [[ $digits =~ ^[0-9]{1,4}$ ]] || return 1
+  printf '%s\n' "$(( 10#$digits * sign ))"
+}
+usable_oom_score() { local n; n=$(oom_score_number "${1-}") || return 1; (( n >= -1000 && n <= 1000 )); }
+# True when $1 protects at least as strongly as $2 (equal or lower), and never for an unusable value.
+more_protective() { local a b; a=$(oom_score_number "${1-}") || return 1; b=$(oom_score_number "${2-}") || return 1; (( a <= b )); }
+
+# FACT_VALUE is set by read_fact; its status is the answer (0 read, 1 absent or unreadable). "Cannot read" is never
+# folded into "there is none": a host fact that exists elsewhere must not be replaced by an invented number.
+read_fact() {
+  local key=$1 value
+  FACT_VALUE=
+  [[ -r $meminfo ]] || return 1
+  value=$(awk -v k="$key" '$1 == k { print $2; exit }' "$meminfo" 2>/dev/null) || return 1
+  [[ -n $value && $value =~ ^[0-9]+$ ]] || return 1
+  FACT_VALUE=$value
+}
+
+nominal_mib() { printf '%s\n' "$(( ($1 + $2 - 1) / $2 * $2 ))"; }
+
+# Own each drop-in exactly: rewrite it when its bytes differ, report an unchanged file so a second run is visibly a no-op.
+# Ownership is the marker as a PREFIX of the first line: a file that merely mentions this script's path is not ours.
+owned_file() { case $(head -n 1 "$1" 2>/dev/null) in "$marker"*) return 0 ;; *) return 1 ;; esac; }
+
+# A hand-configured drop-in is recognised, never assumed: every non-blank, non-comment line must be a section header
+# naming EXACTLY the one section this file owns, or a directive whose key belongs to the policy this tool renders. An
+# unknown section or key (CPUQuota, MemoryLow, a typo, a stray line) makes it foreign, so --adopt cannot overwrite a
+# file whose meaning was never established.
+recognised_hand_dropin() {  # $1 path, $2 expected section, $3 space-separated allowed keys
+  awk -v want="$2" -v allowed=" $3 " '
+    { line = $0; sub(/\r$/, "", line); sub(/^[ \t]+/, "", line); sub(/[ \t]+$/, "", line) }
+    line == "" || line ~ /^#/ { next }
+    line ~ /^\[[A-Za-z][A-Za-z0-9]*\]$/ {
+      section = line
+      if (line != "[" want "]") bad = 1
+      next
+    }
+    {
+      if (section == "") { bad = 1; next }
+      eq = index(line, "=")
+      if (eq < 2) { bad = 1; next }
+      key = substr(line, 1, eq - 1); gsub(/[ \t]/, "", key)
+      if (index(allowed, " " key " ") == 0) bad = 1
+      seen = seen " " key
+    }
+    END { exit ((bad || seen == "") ? 1 : 0) }
+  ' "$1"
+}
+
+# The content of a file this tool replaces or withdraws is never deleted: it is copied to a name systemd does not load
+# (`<name>.retired-<stamp>`), so an operator can still read what was superseded and restore it by hand.
+retire_file() {  # $1 path
+  local stamp target
+  stamp=$(date -u +%Y%m%dT%H%M%SZ)
+  target="$1.retired-$stamp"
+  cp -p -- "$1" "$target"
+  echo "gates memory policy: retired $1 -> $target (kept, not deleted; systemd does not load a .conf-less name)" >&2
+  retired=1
+}
+
+# A path this run has decided to take away is RECORDED during the decision phase and mutated only afterwards, once every
+# own-path pre-flight has passed: a run that refuses must leave the host exactly as it found it.
+plan_retire() { retire_paths+=("$1|$2"); }
+# A refusal is RECORDED, never raised where it is discovered: a run names every file at this tool's own paths that it
+# cannot touch and exits once at the end of the pre-flight, so an operator sees the whole list in one run.
+plan_refusal() {  # $1 path, $2 the reason (each line echoed exactly as it is)
+  refusal_paths+=("$1")
+  local line
+  while IFS= read -r line; do
+    echo "$line" >&2
+  done <<< "$2"
+}
+scheduled_for_retire() {  # $1 path; true when the decision phase already planned to take that file away
+  local entry
+  for entry in "${retire_paths[@]}"; do
+    [[ ${entry%%|*} == "$1" ]] && return 0
+  done
+  return 1
+}
+apply_retires() {
+  local entry path reason
+  for entry in "${retire_paths[@]}"; do
+    path=${entry%%|*}
+    reason=${entry#*|}
+    if ((dry_run)); then
+      echo "gates memory policy: would remove $path (retiring its content to $path.retired-<stamp>; $reason)"
+    else
+      retire_file "$path"
+      rm -f -- "$path"
+      rmdir --ignore-fail-on-non-empty "$(dirname -- "$path")" 2>/dev/null || true
+      echo "gates memory policy: removed $path (retiring its content; $reason)" >&2
+    fi
+    changed=1
+  done
+}
+
+render_file() {  # $1 path, $2 section, $3 allowed keys, $4 content
+  local path=$1 section=$2 keys=$3 content=$4 tmp
+  if [[ -e $path ]]; then
+    if ! owned_file "$path"; then
+      if ((adopt_requested)) && recognised_hand_dropin "$path" "$section" "$keys"; then
+        if ((dry_run)); then
+          : # announced by the pre-flight check, which names every adoptable file before anything is written
+        else
+          retire_file "$path"
+        fi
+      else
+        # Defence in depth: the pre-flight above already refused this exact condition before anything was written. It
+        # is kept here so the write path itself can never overwrite a file whose meaning was not established.
+        echo "refusing to override $path: its first line is not this tool's marker '$marker' and its content is not the policy this tool renders." >&2
+        echo "gates memory policy: if this is the hand-configured 2026-11-16 drop-in of this host, adopt it once with --adopt (its content is kept as $path.retired-<stamp>); otherwise retire or relocate that file deliberately and re-run" >&2
+        exit 5
+      fi
+    elif cmp -s -- "$path" <(printf '%s' "$content"); then
+      echo "gates memory policy: unchanged $path"
+      return 0
+    fi
+  fi
+  if ((dry_run)); then
+    echo "gates memory policy: would write $path"
+    changed=1  # the plan changes something, so the reload it implies is printed too
+    return 0
+  fi
+  install -d -m 0755 "$(dirname -- "$path")"
+  tmp="$path.tmp.$$"
+  printf '%s' "$content" > "$tmp"
+  chmod 0644 "$tmp"
+  mv -f -- "$tmp" "$path"
+  echo "gates memory policy: wrote $path"
+  changed=1
+}
+
+other_dropins_setting() {  # $1 dir, $2 our file, $3 key regex; prints `path<TAB>value` for every other file setting it
+  local dir=$1 ours=$2 pattern=$3 other
+  [[ -d $dir ]] || return 0
+  for other in "$dir"/*.conf; do
+    [[ -e $other ]] || continue
+    [[ $other == "$ours" ]] && continue
+    owned_file "$other" && continue
+    awk -v pat="^($pattern)=(.*)$" -v path="$other" '
+      { line = $0; sub(/\r$/, "", line); sub(/^[ \t]+/, "", line); sub(/[ \t]+$/, "", line) }
+      line ~ pat { value = line; sub(/^[^=]*=/, "", value); printf "%s\t%s\n", path, value }
+    ' "$other"
+  done
+}
+
+# The value the named SECTION of a file sets for one key (the last one wins, as systemd reads it). Status 1 means the
+# file itself could not be read - which is NOT the same answer as "the section sets no such key" (that printed nothing),
+# because only the second one lets a caller conclude there is no competing policy there.
+unit_section_value() {  # $1 file, $2 section, $3 key; prints the value (empty when absent), 1 when the file is unreadable
+  local file=$1 value
+  [[ -r $file ]] || return 1
+  value=$(awk -v want="$2" -v key="$3" '
+    { line = $0; sub(/\r$/, "", line); sub(/^[ \t]+/, "", line); sub(/[ \t]+$/, "", line) }
+    line == "" || line ~ /^#/ || line ~ /^;/ { next }
+    line ~ /^\[[A-Za-z][A-Za-z0-9]*\]$/ { inside = (line == "[" want "]"); next }
+    inside && index(line, key "=") == 1 { value = substr(line, length(key) + 2) }
+    END { if (value != "") printf "%s\n", value }
+  ' "$file") || return 1
+  printf '%s\n' "$value"
+}
+
+# The OOMScoreAdjust a unit's OWN unit file sets, empty when it sets none.
+unit_oom_own_fragment() {  # $1 file
+  awk '
+    { line = $0; sub(/\r$/, "", line); sub(/^[ \t]+/, "", line); sub(/[ \t]+$/, "", line) }
+    line == "" || line ~ /^#/ || line ~ /^;/ { next }
+    line ~ /^\[[A-Za-z][A-Za-z0-9]*\]$/ { service = (line == "[Service]"); next }
+    service && line ~ /^OOMScoreAdjust=/ { value = line; sub(/^OOMScoreAdjust=/, "", value) }
+    END { if (value != "") printf "%s\n", value }
+  ' "$1" 2>/dev/null
+}
+# The OWN value only: `systemctl show -p FragmentPath` names the unit file itself, so a drop-in this tool rendered for
+# an earlier run is not mistaken for the unit's own protection. Only a unit without a readable fragment (which is how a
+# not-installed unit answers) falls back to the effective property, and that fallback can only make this tool write
+# less, never more.
+own_oom_score() {  # $1 unit; prints the value its own fragment sets (may be empty), 1 when it is unreadable
+  local unit=$1 fragment
+  fragment=$(systemctl show "$unit" -p FragmentPath --value 2>/dev/null) || return 1
+  if [[ -n $fragment ]]; then
+    [[ -r $fragment ]] || return 1
+    unit_oom_own_fragment "$fragment" || return 1
+    return 0
+  fi
+  systemctl show "$unit" -p OOMScoreAdjust --value 2>/dev/null || return 1
+}
+
+# A drop-in takes effect at the unit's next start; writing /proc/<MainPID>/oom_score_adj reproduces the measured state
+# now WITHOUT restarting ssh/logind/journald/docker (a restart drops live sessions and, for docker, every cockpit).
+apply_live_score() {
+  local unit=$1 pid adj_file current
+  pid=$(systemctl show "$unit" -p MainPID --value 2>/dev/null || true)
+  if ! is_positive_integer "$pid"; then
+    echo "gates memory policy: $unit has no running main process; its drop-in applies at its next start"
+    return 0
+  fi
+  adj_file="$procfs/$pid/oom_score_adj"
+  if [[ ! -e $adj_file ]]; then
+    echo "gates memory policy: cannot read $adj_file; $unit's drop-in applies at its next start"
+    return 0
+  fi
+  # The status of this read is kept only so `set -e` does not abort on it: the VALUE is validated below, and an
+  # unreadable one is an error (exit 8), never an assumed 0.
+  current=$(<"$adj_file") || true
+  # An unreadable score is not "unprotected 0": the only thing this comparison gates is a WRITE, and a write on an
+  # assumed 0 is exactly how a value nobody read gets replaced by a weaker one. Refuse instead.
+  if ! usable_oom_score "$current"; then
+    echo "cannot read the live oom_score_adj of $unit (pid $pid, $adj_file said '${current}'): refusing to overwrite a score" >&2
+    echo "this tool could not read. Its drop-in is installed and applies at its next start." >&2
+    exit 8
+  fi
+  if more_protective "$current" "$oom_score_adjust"; then
+    # Already at least as protected as the policy: sshd keeps its own listener at -1000 (it protects itself), containerd
+    # at -999, and an equal -900 needs no write either (writing the value it already holds would be a pointless write on
+    # a live process). Not one of them is "converged" down to -900: a re-run leaves a stronger value alone and SAYS so.
+    if [[ $current != "$oom_score_adjust" ]]; then
+      echo "gates memory policy: $unit (pid $pid) is already at least as protected as the policy: oom_score_adj $current"
+      echo "gates memory policy: (>= $oom_score_adjust protection; left alone, never raised)"
+    fi
+    return 0
+  fi
+  if ((dry_run)); then
+    echo "gates memory policy: would set $unit (pid $pid) oom_score_adj $current -> $oom_score_adjust"
+    return 0
+  fi
+  if ! printf '%s\n' "$oom_score_adjust" > "$adj_file" 2>/dev/null; then
+    echo "cannot set the live OOM score of $unit (pid $pid, $adj_file); its drop-in is installed and applies at its next start" >&2
+    exit 8
+  fi
+  echo "gates memory policy: set $unit (pid $pid) oom_score_adj $current -> $oom_score_adjust in place (no restart)"
+}
+
+# daemon-reload alone does NOT re-apply cgroup limits to an active slice (measured 2026-11-16), and a slice restart
+# resets its memory.events counters - the ones remote-gate's INCONCLUSIVE-OOM check reads as a delta. So the restart
+# happens only while the tier has no tasks, and only when the live values disagree with the rendered policy.
+slice_cgroup() {
+  local cg
+  cg=$(systemctl show "$slice" -p ControlGroup --value 2>/dev/null || true)
+  [[ $cg == /* ]] || return 1
+  printf '%s\n' "$cgroupfs$cg"
+}
+# Three outcomes, because "cannot tell whether it is idle" is not "it is idle": 0 has tasks (a restart is refused),
+# 1 provably idle (every cgroup.procs under it reports no pid), 2 undeterminable (a directory is missing, unreadable, or a
+# process list could not be read). A restart is the only operation that needs 1, so an unknown state fails closed.
+slice_procs_state() {
+  local cgdir=$1 file pid
+  [[ -d $cgdir ]] || return 2
+  local -a files=()
+  mapfile -d '' -t files < <(find "$cgdir" -type f -name cgroup.procs -print0 2>/dev/null)
+  (( ${#files[@]} > 0 )) || return 2
+  for file in "${files[@]}"; do
+    pid=
+    IFS= read -r pid < "$file" || { [[ -e $file ]] || return 2; }
+    [[ -n $pid ]] && return 0
+  done
+  return 1
+}
+# An unreadable limit is not a missing limit: it is reported as unreadable and never compared as equal.
+read_limit() { cat -- "$1" 2>/dev/null || echo unreadable; }
+live_limits_ok() {
+  local cgdir=$1
+  [[ -d $cgdir ]] || return 1
+  [[ $(read_limit "$cgdir/memory.high") == max ]] || return 1
+  [[ $(read_limit "$cgdir/memory.max") == "$memory_max_bytes" ]] || return 1
+  [[ $(read_limit "$cgdir/memory.swap.max") == "$memory_swap_max_bytes" ]] || return 1
+}
+report_live() {
+  local cgdir=$1 file
+  for file in memory.high memory.max memory.swap.max; do
+    printf '  %s=%s\n' "$file" "$(read_limit "$cgdir/$file")" >&2
+  done
+  printf '  expected memory.high=%s memory.max=%s memory.swap.max=%s\n' max "$memory_max_bytes" "$memory_swap_max_bytes" >&2
+}
+
+# A value systemd understands is compared in BYTES; anything this tool cannot convert (a percentage, a typo) is reported,
+# because the tool cannot show it is harmless.
+memory_bytes() {  # $1 systemd memory value; prints bytes, 1 when the value is not a plain size this tool can convert
+  local value=$1 number unit multiplier
+  if [[ $value =~ ^([0-9]+)([KMGTkmgt])$ ]]; then
+    number=${BASH_REMATCH[1]}
+    unit=${BASH_REMATCH[2]^^}
+    case $unit in
+      K) multiplier=1024 ;;
+      M) multiplier=$(( 1024 * 1024 )) ;;
+      G) multiplier=$(( 1024 * 1024 * 1024 )) ;;
+      T) multiplier=$(( 1024 * 1024 * 1024 * 1024 )) ;;
+    esac
+    printf '%s' $(( number * multiplier ))
+    return 0
+  fi
+  [[ $value =~ ^[0-9]+$ ]] || return 1
+  printf '%s' "$value"
+}
+same_memory_amount() {  # $1, $2; true when both are the same number of bytes (or the same non-size token)
+  [[ $1 == "$2" ]] && return 0
+  local a b
+  a=$(memory_bytes "$1") || return 1
+  b=$(memory_bytes "$2") || return 1
+  [[ $a == "$b" ]]
+}
+# A fragment that carries a memory key would be OVERRIDDEN by this drop-in (a drop-in is merged after the unit file), so
+# an operator deserves to read that. But a note printed on every run of a converged host is noise nobody reads, and
+# "differs" is a VALUE comparison, not the existence of the file: a fragment may spell the same amount another way
+# (`6G` vs `6144M`) and a hand-drawn fragment may carry only CPU keys.
+slice_fragment_override_note() {
+  local fragment key want own
+  fragment=$(systemctl show "$slice" -p FragmentPath --value 2>/dev/null || true)
+  [[ -n $fragment ]] || return 0
+  for spec in "MemoryHigh:infinity" "MemoryMax:${memory_max_mib}M" "MemorySwapMax:${memory_swap_max_mib}M"; do
+    key=${spec%%:*}
+    want=${spec#*:}
+    [[ -r $fragment ]] || return 0
+    own=$(unit_section_value "$fragment" Slice "$key") || return 0
+    [[ -n $own ]] || continue
+    same_memory_amount "$own" "$want" && continue
+    echo "gates memory policy: $slice has a fragment ($fragment) that sets $key=$own; this drop-in deliberately overrides it"
+    echo "gates memory policy: with the 2026-11-16 pure-test-host policy value $key=$want (a foreign drop-in that sets it is refused above)"
+    return 0
+  done
+  return 0
+}
+# ==== end of helper definitions =============================================================
 
 meminfo=/proc/meminfo
 systemd_dir=/etc/systemd/system
@@ -105,13 +449,6 @@ swap_reserve_mib=${GATES_SWAP_RESERVE_MIB:-8192}
 memory_max_pin=${GATES_MEMORY_MAX_MIB:-}
 memory_swap_max_pin=${GATES_MEMORY_SWAP_MAX_MIB:-}
 oom_score_adjust=-900
-is_positive_integer() { [[ $1 =~ ^[1-9][0-9]*$ ]]; }
-# oom_score_adj is a RANKING, not a magnitude: a LOWER value is MORE protective (-1000 strongest, +1000 weakest).
-# `usable` is the readability gate: an unreadable score must never be folded into "not protected", because the only
-# consequence of that fold is a write — the one operation that can LOWER a unit's protection.
-usable_oom_score() { local digits=${1#-}; [[ $digits =~ ^[0-9]+$ ]] && (( $1 >= -1000 && $1 <= 1000 )); }
-# True when $1 protects at least as strongly as $2 (equal or lower), and never for an unusable value.
-more_protective() { usable_oom_score "$1" && (( $1 <= $2 )); }
 for value in "$control_floor_mib" "$memory_slack_mib" "$nominal_step_mib" "$swap_reserve_mib"; do
   is_positive_integer "$value" || {
     echo "GATES_CONTROL_FLOOR_MIB/GATES_MEMORY_SLACK_MIB/GATES_NOMINAL_STEP_MIB/GATES_SWAP_RESERVE_MIB must be positive integers (MiB), got '$value'" >&2
@@ -125,18 +462,19 @@ for value in "$memory_max_pin" "$memory_swap_max_pin"; do
   }
 done
 
+# ---- rendering: what this tool owns ----------------------------------------
+marker='# RENDERED by scripts/netcup/runner/provision-gates-limits.sh'
+changed=0
+retired=0
+slice_dropin="$systemd_dir/$slice.d/20-memory-policy.conf"
+scope_dropin="$systemd_dir/docker-.scope.d/20-oom-group.conf"
+protected_units='ssh.service systemd-logind.service systemd-journald.service docker.service cgprofiled.service'
+oom_protect_units=()   # units that get the rendered drop-in
+retire_paths=()        # `path|reason` for files this run withdraws (decided here, mutated at the end of the pre-flight)
+refusal_paths=()       # own paths this run refuses to touch; every one is named before the single exit
+autoadopt=0            # own paths whose recognised hand content is adopted by the render below
+
 # ---- host facts ------------------------------------------------------------
-# FACT_VALUE is set by read_fact; its status is the answer (0 read, 1 absent or unreadable). "Cannot read" is never
-# folded into "there is none": a host fact that exists elsewhere must not be replaced by an invented number.
-FACT_VALUE=
-read_fact() {
-  local key=$1 value
-  FACT_VALUE=
-  [[ -r $meminfo ]] || return 1
-  value=$(awk -v k="$key" '$1 == k { print $2; exit }' "$meminfo" 2>/dev/null) || return 1
-  [[ -n $value && $value =~ ^[0-9]+$ ]] || return 1
-  FACT_VALUE=$value
-}
 read_fact 'MemTotal:' || { echo "cannot read MemTotal: from $meminfo; refusing to invent a memory policy" >&2; exit 3; }
 mem_total_kb=$FACT_VALUE
 read_fact 'SwapTotal:' || { echo "cannot read SwapTotal: from $meminfo; refusing to invent a swap ceiling (a host fact that could not be read is not a host with no swap)" >&2; exit 3; }
@@ -148,7 +486,6 @@ is_positive_integer "$mem_total_kb" || { echo "MemTotal: in $meminfo is not a us
 # for it, because the raw total is a sampling artifact of that kernel. So each total is rounded UP to the next multiple
 # of the nominal step (one GiB by default) and the reserve subtracted: a 7935 MiB report and a 7936 MiB report both
 # derive the 8 GiB host's ceiling.
-nominal_mib() { printf '%s\n' "$(( ($1 + $2 - 1) / $2 * $2 ))"; }
 total_mib=$(( mem_total_kb / 1024 ))
 swap_mib=$(( swap_total_kb / 1024 ))
 nominal_total_mib=$(nominal_mib "$total_mib" "$nominal_step_mib")
@@ -185,108 +522,9 @@ printf 'gates memory policy: MemTotal %s MiB (nominal %s MiB, step %s MiB), Swap
 printf 'gates memory policy: MemoryHigh=infinity MemoryMax=%sM MemorySwapMax=%sM OOMScoreAdjust=%s\n' \
   "$memory_max_mib" "$memory_swap_max_mib" "$oom_score_adjust"
 
-# ---- rendering -------------------------------------------------------------
-marker='# RENDERED by scripts/netcup/runner/provision-gates-limits.sh'
-changed=0
-retired=0
-
-# Own each drop-in exactly: rewrite it when its bytes differ, report an unchanged file so a second run is visibly a no-op.
-# Ownership is the marker as a PREFIX of the first line: a file that merely mentions this script's path is not ours.
-owned_file() { case $(head -n 1 "$1" 2>/dev/null) in "$marker"*) return 0 ;; *) return 1 ;; esac; }
-
-# A hand-configured drop-in is recognised, never assumed: every non-blank, non-comment line must be a section header
-# naming EXACTLY the one section this file owns, or a directive whose key belongs to the policy this tool renders. An
-# unknown section or key (CPUQuota, MemoryLow, a typo, a stray line) makes it foreign, so --adopt cannot overwrite a
-# file whose meaning was never established.
-recognised_hand_dropin() {  # $1 path, $2 expected section, $3 space-separated allowed keys
-  awk -v want="$2" -v allowed=" $3 " '
-    { line = $0; sub(/\r$/, "", line); sub(/^[ \t]+/, "", line); sub(/[ \t]+$/, "", line) }
-    line == "" || line ~ /^#/ { next }
-    line ~ /^\[[A-Za-z][A-Za-z0-9]*\]$/ {
-      section = line
-      if (line != "[" want "]") bad = 1
-      next
-    }
-    {
-      if (section == "") { bad = 1; next }
-      eq = index(line, "=")
-      if (eq < 2) { bad = 1; next }
-      key = substr(line, 1, eq - 1); gsub(/[ \t]/, "", key)
-      if (index(allowed, " " key " ") == 0) bad = 1
-      seen = seen " " key
-    }
-    END { exit ((bad || seen == "") ? 1 : 0) }
-  ' "$1"
-}
-
-# The content of a file this tool replaces is never deleted: it is copied to a name systemd does not load
-# (`<name>.retired-<stamp>`), so an operator can still read what was superseded and restore it by hand.
-retire_file() {  # $1 path
-  local stamp target
-  stamp=$(date -u +%Y%m%dT%H%M%SZ)
-  target="$1.retired-$stamp"
-  cp -p -- "$1" "$target"
-  echo "gates memory policy: retired $1 -> $target (kept, not deleted; systemd does not load a .conf-less name)" >&2
-  retired=1
-}
-
-render_file() {  # $1 path, $2 section, $3 allowed keys, $4 content
-  local path=$1 section=$2 keys=$3 content=$4 tmp
-  if [[ -e $path ]]; then
-    if ! owned_file "$path"; then
-      if ((adopt_requested)) && recognised_hand_dropin "$path" "$section" "$keys"; then
-        if ((dry_run)); then
-          : # announced by the pre-flight check, which names every adoptable file before anything is written
-        else
-          retire_file "$path"
-        fi
-      else
-        # Defence in depth: the pre-flight above already refused this exact condition before anything was written. It
-        # is kept here so the write path itself can never overwrite a file whose meaning was not established.
-        echo "refusing to override $path: its first line is not this tool's marker '$marker' and its content is not the policy this tool renders." >&2
-        echo "gates memory policy: if this is the hand-configured 2026-11-16 drop-in of this host, adopt it once with --adopt (its content is kept as $path.retired-<stamp>); otherwise retire or relocate that file deliberately and re-run" >&2
-        exit 5
-      fi
-    elif cmp -s -- "$path" <(printf '%s' "$content"); then
-      echo "gates memory policy: unchanged $path"
-      return 0
-    fi
-  fi
-  if ((dry_run)); then
-    echo "gates memory policy: would write $path"
-    changed=1  # the plan changes something, so the reload it implies is printed too
-    return 0
-  fi
-  install -d -m 0755 "$(dirname -- "$path")"
-  tmp="$path.tmp.$$"
-  printf '%s' "$content" > "$tmp"
-  chmod 0644 "$tmp"
-  mv -f -- "$tmp" "$path"
-  echo "gates memory policy: wrote $path"
-  changed=1
-}
-
-slice_dropin="$systemd_dir/$slice.d/20-memory-policy.conf"
-scope_dropin="$systemd_dir/docker-.scope.d/20-oom-group.conf"
-protected_units='ssh.service systemd-logind.service systemd-journald.service docker.service cgprofiled.service'
-
-# Foreign files are checked BEFORE anything is written, so a refused run leaves no drop-in of ours behind (and no
-# half-written policy an operator would have to notice in order to undo).
+# ---- foreign files: named before anything is written ------------------------
 # A drop-in from another owner that sets a key this file owns would silently compete with it: a memory key is refused
 # outright (its policy must be retired consciously), while a scope/service key is only refused when it disagrees.
-other_dropins_setting() {  # $1 dir, $2 our file, $3 key regex; prints `path<TAB>value` for every other file setting it
-  local dir=$1 ours=$2 pattern=$3 other
-  [[ -d $dir ]] || return 0
-  for other in "$dir"/*.conf; do
-    [[ -e $other ]] || continue
-    [[ $other == "$ours" ]] && continue
-    owned_file "$other" && continue
-    awk -v pat="^($pattern)=(.*)$" -v path="$other" '
-      { line = $0; sub(/\r$/, "", line); sub(/^[ \t]+/, "", line); sub(/[ \t]+$/, "", line) }
-      line ~ pat { value = line; sub(/^[^=]*=/, "", value); printf "%s\t%s\n", path, value }
-    ' "$other"
-  done
-}
 if [[ -d $systemd_dir/$slice.d ]]; then
   # Every competing FILE is named before the refusal: an operator who is told about one of five hand files fixes one and
   # meets the next on the following run. The loop completes before the exit, so a plain --dry-run lists them all too.
@@ -338,37 +576,19 @@ done
 # includes a drop-in this tool may have written earlier):
 #   own value unset/0    -> render the policy (nothing is being weakened);
 #   own value <= target  -> render NOTHING and say so, because -1000 (sshd protects its own listener) and -999
-#                           (containerd's) must survive a re-run instead of being "converged" down to -900;
+#                           (containerd's) must survive a re-run instead of being "converged" down to -900. A file at
+#                           this tool's own path is then either WITHDRAWN (this tool rendered it earlier, so it would
+#                           otherwise keep the downgrade alive) or, with --adopt, an adopted hand file is retired and
+#                           withdrawn too; another owner's equal-or-more-protective file is kept, and a less protective
+#                           one is refused (it would replace the unit's stronger value at the next start);
 #   own value > target   -> render the path only when this tool already owns a drop-in there (the value then came from
-#                           an earlier run of this tool); another owner's drop-in at that path competes and is refused;
+#                           an earlier run of this tool) or --adopt retires a recognised hand file; another owner's drop-in
+#                           at that path competes and is refused;
 #   not installed        -> stage the drop-in anyway (it is inert until the unit appears, so no bring-up loses it);
 #   installed, unreadable-> exit 3: a value that exists somewhere else is never replaced by an invented one.
 # Every decision is taken BEFORE any file is written, so a refusal still leaves no half-written policy behind.
-oom_protect_units=()
-unit_oom_own_fragment() {  # $1 file; the OOMScoreAdjust its own unit file sets, empty when it sets none
-  awk '
-    { line = $0; sub(/\r$/, "", line); sub(/^[ \t]+/, "", line); sub(/[ \t]+$/, "", line) }
-    line == "" || line ~ /^#/ || line ~ /^;/ { next }
-    line ~ /^\[[A-Za-z][A-Za-z0-9]*\]$/ { service = (line == "[Service]"); next }
-    service && line ~ /^OOMScoreAdjust=/ { value = line; sub(/^OOMScoreAdjust=/, "", value) }
-    END { if (value != "") printf "%s\n", value }
-  ' "$1" 2>/dev/null
-}
-# The OWN value only: `systemctl show -p FragmentPath` names the unit file itself, so a drop-in this tool rendered for
-# an earlier run is not mistaken for the unit's own protection. Only a unit without a readable fragment (which is how a
-# not-installed unit answers) falls back to the effective property, and that fallback can only make this tool write
-# less, never more.
-own_oom_score() {  # $1 unit; prints the value its own fragment sets (may be empty), 1 when it is unreadable
-  local unit=$1 fragment value
-  fragment=$(systemctl show "$unit" -p FragmentPath --value 2>/dev/null) || return 1
-  if [[ -n $fragment ]]; then
-    [[ -r $fragment ]] || return 1
-    unit_oom_own_fragment "$fragment" || return 1
-    return 0
-  fi
-  systemctl show "$unit" -p OOMScoreAdjust --value 2>/dev/null || return 1
-}
 for unit in $protected_units; do
+  ours="$systemd_dir/$unit.d/30-oom-protect.conf"
   if ! systemctl cat "$unit" >/dev/null 2>&1; then
     oom_protect_units+=("$unit")  # not installed: the drop-in is inert until the unit appears
     continue
@@ -390,50 +610,63 @@ for unit in $protected_units; do
       echo "gates memory policy: $oom_score_adjust; no drop-in is rendered for it (a drop-in would REPLACE that value and lower its" >&2
       echo "gates memory policy: protection). The live score still follows its own rule: written only when it is less protective." >&2
     fi
-    # A drop-in THIS TOOL rendered on an earlier run would still win over the unit's own stronger value at the next start:
-    # an owned file at our own path is ours to remove, and leaving it there would keep the very downgrade this decision
-    # refuses. Another owner's file is not ours to delete: when it would lower the value, that is a competing policy and
-    # the operator is asked to resolve it (an equal-or-more-protective one was already reported above).
-    ours="$systemd_dir/$unit.d/30-oom-protect.conf"
-    if [[ -e $ours ]] && owned_file "$ours"; then
-      if ((dry_run)); then
-        echo "gates memory policy: would remove $ours (this tool rendered it earlier; $unit now protects itself at $own)"
-      else
-        rm -f -- "$ours"
-        rmdir --ignore-fail-on-non-empty "$(dirname -- "$ours")" 2>/dev/null || true
-        echo "gates memory policy: removed $ours (this tool rendered it earlier; $unit now protects itself at $own)" >&2
-      fi
-      changed=1
-    elif [[ -e $ours ]]; then
-      foreign_value=$([[ -r $ours ]] && unit_section_value "$ours" Service OOMScoreAdjust || true)
-      if ! more_protective "${foreign_value:-9999}" "$own"; then
-        echo "refusing: $ours (another owner's drop-in) sets OOMScoreAdjust=${foreign_value:-unreadable}, which is less protective" >&2
-        echo "than $unit's own $own and would replace it at the next start; resolve that file deliberately and re-run" >&2
-        exit 5
-      fi
+    if [[ ! -e $ours ]]; then
+      continue
     fi
+    if owned_file "$ours"; then
+      # Our own file from an earlier run would still win over the unit's own stronger value at the next start: leaving it
+      # there would keep the very downgrade this decision refuses. It is WITHDRAWN (its content retired, never deleted).
+      plan_retire "$ours" "this tool rendered it earlier; $unit now protects itself at $own"
+      continue
+    fi
+    if ((adopt_requested)) && recognised_hand_dropin "$ours" Service OOMScoreAdjust; then
+      # The v1001 migration shape: a hand -900 drop-in at this tool's own path over a unit file that sets -1000. The
+      # never-reduce rule outranks the policy value, so the hand file is adopted (retired) and then NOT replaced.
+      echo "gates memory policy: adopting the hand drop-in $ours (its content is retired), and NOT replacing it: $unit's own" >&2
+      echo "gates memory policy: unit file sets OOMScoreAdjust=$own, which a rendered $oom_score_adjust would weaken." >&2
+      plan_retire "$ours" "adopted hand drop-in; $unit's own $own is stronger, so no drop-in replaces it"
+      continue
+    fi
+    if ! foreign=$(unit_section_value "$ours" Service OOMScoreAdjust); then
+      echo "cannot read $ours, the drop-in at this tool's own path for $unit: refusing to decide whether it would lower that" >&2
+      echo "unit's own OOMScoreAdjust=$own. Repair or retire that file and re-run." >&2
+      exit 3
+    fi
+    if [[ -z $foreign ]]; then
+      plan_refusal "$ours" "refusing to override $ours: its first line is not this tool's marker '$marker' and its content is not the policy this tool renders.
+gates memory policy: if this is the hand-configured 2026-11-16 drop-in of this host, adopt it once with --adopt (its content is kept as $ours.retired-<stamp>); otherwise retire or relocate that file deliberately and re-run"
+      continue
+    fi
+    if more_protective "$foreign" "$own"; then
+      echo "gates memory policy: $ours keeps $unit at OOMScoreAdjust=$foreign, equal to or more protective than the unit's own $own; kept, never lowered" >&2
+      continue
+    fi
+    plan_refusal "$ours" "refusing: $ours (another owner's drop-in) sets OOMScoreAdjust=$foreign, which is less protective than $unit's own $own and would replace it at the next start; resolve that file deliberately and re-run"
     continue
   fi
-  # own > target: only an earlier rendering of THIS tool may sit at the path; anyone else's file is a competing policy.
-  existing="$systemd_dir/$unit.d/30-oom-protect.conf"
-  if [[ -e $existing ]] && ! owned_file "$existing"; then
-    echo "refusing: $unit's own unit file sets OOMScoreAdjust=$own, which is less protective than the policy value $oom_score_adjust," >&2
-    echo "and another owner's drop-in at $existing is in the way; resolve that file deliberately and re-run" >&2
-    exit 5
+  # own > target: the policy STRENGTHENS the unit, so the drop-in is rendered - but only over a file this tool already
+  # owns, or one --adopt may legitimately retire (a recognised hand drop-in: its value is weaker than the policy, so
+  # adopting it loses no protection). Anyone else's file at that path is a competing policy and is refused.
+  if [[ -e $ours ]] && ! owned_file "$ours"; then
+    if ((adopt_requested)) && recognised_hand_dropin "$ours" Service OOMScoreAdjust; then
+      oom_protect_units+=("$unit")  # the render retires the adopted hand file and writes the rendered policy there
+      continue
+    fi
+    plan_refusal "$ours" "refusing: $unit's own unit file sets OOMScoreAdjust=$own, which is less protective than the policy value $oom_score_adjust, and another owner's drop-in at $ours is in the way; adopt it once with --adopt when it is the hand-configured 2026-11-16 file, otherwise resolve it deliberately and re-run"
+    continue
   fi
   oom_protect_units+=("$unit")
 done
 
 # Own paths are inspected ONCE, before anything is written: a plain --dry-run names every foreign file at this tool's
-# own paths instead of stopping at the first one (an operator who fixes one file and meets the next on the following run
-# learns nothing about the rest), and an adoptable hand drop-in is announced in the plan. The render below then either
-# retires the adopted file or writes the rendered one; the pre-flight is what reports the plan.
+# own paths (the slice policy, the docker-scope policy and every protected unit) instead of stopping at the first one (an
+# operator who fixes one file and meets the next on the following run learns nothing about the rest), and an adoptable
+# hand drop-in is announced in the plan. The render below then either retires the adopted file or writes the rendered
+# one; the pre-flight is what reports the plan.
 own_paths=("$slice_dropin|Slice|MemoryHigh MemoryMax MemorySwapMax" "$scope_dropin|Scope|OOMPolicy")
 for unit in "${oom_protect_units[@]}"; do
   own_paths+=("$systemd_dir/$unit.d/30-oom-protect.conf|Service|OOMScoreAdjust")
 done
-unadoptable=0
-autoadopt=0
 for entry in "${own_paths[@]}"; do
   path=${entry%%|*}
   rest=${entry#*|}
@@ -441,6 +674,7 @@ for entry in "${own_paths[@]}"; do
   keys=${rest#*|}
   [[ -e $path ]] || continue
   owned_file "$path" && continue
+  scheduled_for_retire "$path" && continue
   if ((adopt_requested)) && recognised_hand_dropin "$path" "$section" "$keys"; then
     autoadopt=$(( autoadopt + 1 ))
     if ((dry_run)); then
@@ -448,14 +682,17 @@ for entry in "${own_paths[@]}"; do
     fi
     continue
   fi
-  unadoptable=$(( unadoptable + 1 ))
-  echo "refusing to override $path: its first line is not this tool's marker '$marker' and its content is not the policy this tool renders." >&2
-  echo "gates memory policy: if this is the hand-configured 2026-11-16 drop-in of this host, adopt it once with --adopt (its content is kept as $path.retired-<stamp>); otherwise retire or relocate that file deliberately and re-run" >&2
+  plan_refusal "$path" "refusing to override $path: its first line is not this tool's marker '$marker' and its content is not the policy this tool renders.
+gates memory policy: if this is the hand-configured 2026-11-16 drop-in of this host, adopt it once with --adopt (its content is kept as $path.retired-<stamp>); otherwise retire or relocate that file deliberately and re-run"
 done
-if ((unadoptable)); then
-  echo "gates memory policy: $unadoptable file(s) at this tool's own paths cannot be adopted, and nothing was written; run --adopt --dry-run to review every recognised hand drop-in at once" >&2
+# One refusal for every own path, after every pre-flight: nothing was written yet, and an operator sees the whole list.
+if (( ${#refusal_paths[@]} )); then
+  echo "gates memory policy: ${#refusal_paths[@]} file(s) at this tool's own paths cannot be adopted, and nothing was written; run --adopt --dry-run to review every recognised hand drop-in at once" >&2
   exit 5
 fi
+
+# ---- the mutations the decisions asked for ---------------------------------
+apply_retires
 if ((autoadopt)) && ((!dry_run)); then
   echo "gates memory policy: adopting $autoadopt recognised hand drop-in(s); their content is retired, never deleted" >&2
 fi
@@ -512,47 +749,6 @@ if ((retired)) && ((!dry_run)); then
 fi
 
 # ---- control-plane OOM scores, in place -----------------------------------
-# A drop-in takes effect at the unit's next start; writing /proc/<MainPID>/oom_score_adj reproduces the measured state
-# now WITHOUT restarting ssh/logind/journald/docker (a restart drops live sessions and, for docker, every cockpit).
-apply_live_score() {
-  local unit=$1 pid adj_file current
-  pid=$(systemctl show "$unit" -p MainPID --value 2>/dev/null || true)
-  if ! is_positive_integer "$pid"; then
-    echo "gates memory policy: $unit has no running main process; its drop-in applies at its next start"
-    return 0
-  fi
-  adj_file="$procfs/$pid/oom_score_adj"
-  if [[ ! -e $adj_file ]]; then
-    echo "gates memory policy: cannot read $adj_file; $unit's drop-in applies at its next start"
-    return 0
-  fi
-  current=$(<"$adj_file") || true
-  # An unreadable score is not "unprotected 0": the only thing this comparison gates is a WRITE, and a write on an
-  # assumed 0 is exactly how a value nobody read gets replaced by a weaker one. Refuse instead.
-  if ! usable_oom_score "$current"; then
-    echo "cannot read the live oom_score_adj of $unit (pid $pid, $adj_file said '${current}'): refusing to overwrite a score" >&2
-    echo "this tool could not read. Its drop-in is installed and applies at its next start." >&2
-    exit 8
-  fi
-  if more_protective "$current" "$oom_score_adjust"; then
-    # Already at least as protected as the policy: sshd keeps its own listener at -1000 (it protects itself), containerd
-    # at -999. Neither is "converged" down to -900: a re-run must leave a stronger value alone and SAY so.
-    if [[ $current != "$oom_score_adjust" ]]; then
-      echo "gates memory policy: $unit (pid $pid) is already at least as protected as the policy: oom_score_adj $current"
-      echo "gates memory policy: (>= $oom_score_adjust protection; left alone, never raised)"
-    fi
-    return 0
-  fi
-  if ((dry_run)); then
-    echo "gates memory policy: would set $unit (pid $pid) oom_score_adj $current -> $oom_score_adjust"
-    return 0
-  fi
-  if ! printf '%s\n' "$oom_score_adjust" > "$adj_file" 2>/dev/null; then
-    echo "cannot set the live OOM score of $unit (pid $pid, $adj_file); its drop-in is installed and applies at its next start" >&2
-    exit 8
-  fi
-  echo "gates memory policy: set $unit (pid $pid) oom_score_adj $current -> $oom_score_adjust in place (no restart)"
-}
 # Every protected unit, not only the ones due a drop-in: a main process that is unprotected NOW is brought to the policy
 # value even when the unit's own file protects it stronger (that write RAISES protection), while apply_live_score itself
 # refuses to lower anything already at least as protected.
@@ -567,105 +763,6 @@ for unit in $protected_units; do
 done
 
 # ---- live slice limits -----------------------------------------------------
-# daemon-reload alone does NOT re-apply cgroup limits to an active slice (measured 2026-11-16), and a slice restart
-# resets its memory.events counters — the ones remote-gate's INCONCLUSIVE-OOM check reads as a delta. So the restart
-# happens only while the tier has no tasks, and only when the live values disagree with the rendered policy.
-slice_cgroup() {
-  local cg
-  cg=$(systemctl show "$slice" -p ControlGroup --value 2>/dev/null || true)
-  [[ $cg == /* ]] || return 1
-  printf '%s\n' "$cgroupfs$cg"
-}
-# Three outcomes, because "cannot tell whether it is idle" is not "it is idle": 0 has tasks (a restart is refused),
-# 1 provably idle (every cgroup.procs under it reports no pid), 2 undeterminable (a directory is missing, unreadable, or a
-# process list could not be read). A restart is the only operation that needs 1, so an unknown state fails closed.
-slice_procs_state() {
-  local cgdir=$1 file pid
-  [[ -d $cgdir ]] || return 2
-  local -a files=()
-  mapfile -d '' -t files < <(find "$cgdir" -type f -name cgroup.procs -print0 2>/dev/null)
-  (( ${#files[@]} > 0 )) || return 2
-  for file in "${files[@]}"; do
-    pid=
-    IFS= read -r pid < "$file" || { [[ -e $file ]] || return 2; }
-    [[ -n $pid ]] && return 0
-  done
-  return 1
-}
-# An unreadable limit is not a missing limit: it is reported as unreadable and never compared as equal.
-read_limit() { cat -- "$1" 2>/dev/null || echo unreadable; }
-live_limits_ok() {
-  local cgdir=$1
-  [[ -d $cgdir ]] || return 1
-  [[ $(read_limit "$cgdir/memory.high") == max ]] || return 1
-  [[ $(read_limit "$cgdir/memory.max") == "$memory_max_bytes" ]] || return 1
-  [[ $(read_limit "$cgdir/memory.swap.max") == "$memory_swap_max_bytes" ]] || return 1
-}
-report_live() {
-  local cgdir=$1 file
-  for file in memory.high memory.max memory.swap.max; do
-    printf '  %s=%s\n' "$file" "$(read_limit "$cgdir/$file")" >&2
-  done
-  printf '  expected memory.high=%s memory.max=%s memory.swap.max=%s\n' max "$memory_max_bytes" "$memory_swap_max_bytes" >&2
-}
-
-# ---- the slice's own fragment: say it only when something really differs --
-# A fragment that carries a memory key would be OVERRIDDEN by this drop-in (a drop-in is merged after the unit file), so
-# an operator deserves to read that. But a note printed on every run of a converged host is noise nobody reads, and
-# "differs" is a VALUE comparison, not the existence of the file: a fragment may spell the same amount another way
-# (`6G` vs `6144M`) and a hand-drawn fragment may carry only CPU keys.
-# A value systemd understands is compared in BYTES; anything this tool cannot convert (a percentage, a typo) is reported,
-# because the tool cannot show it is harmless.
-memory_bytes() {  # $1 systemd memory value; prints bytes, 1 when the value is not a plain size this tool can convert
-  local value=$1 number unit multiplier
-  if [[ $value =~ ^([0-9]+)([KMGTkmgt])$ ]]; then
-    number=${BASH_REMATCH[1]}
-    unit=${BASH_REMATCH[2]^^}
-    case $unit in
-      K) multiplier=1024 ;;
-      M) multiplier=$(( 1024 * 1024 )) ;;
-      G) multiplier=$(( 1024 * 1024 * 1024 )) ;;
-      T) multiplier=$(( 1024 * 1024 * 1024 * 1024 )) ;;
-    esac
-    printf '%s' $(( number * multiplier ))
-    return 0
-  fi
-  [[ $value =~ ^[0-9]+$ ]] || return 1
-  printf '%s' "$value"
-}
-unit_section_value() {  # $1 file, $2 section, $3 key; the value that section sets (last one wins, as systemd reads it)
-  awk -v want="$2" -v key="$3" '
-    { line = $0; sub(/\r$/, "", line); sub(/^[ \t]+/, "", line); sub(/[ \t]+$/, "", line) }
-    line == "" || line ~ /^#/ || line ~ /^;/ { next }
-    line ~ /^\[[A-Za-z][A-Za-z0-9]*\]$/ { inside = (line == "[" want "]"); next }
-    inside && index(line, key "=") == 1 { value = substr(line, length(key) + 2) }
-    END { if (value != "") printf "%s\n", value }
-  ' "$1" 2>/dev/null
-}
-same_memory_amount() {  # $1, $2; true when both are the same number of bytes (or the same non-size token)
-  [[ $1 == "$2" ]] && return 0
-  local a b
-  a=$(memory_bytes "$1") || return 1
-  b=$(memory_bytes "$2") || return 1
-  [[ $a == "$b" ]]
-}
-slice_fragment_override_note() {
-  local fragment key want own
-  fragment=$(systemctl show "$slice" -p FragmentPath --value 2>/dev/null || true)
-  [[ -n $fragment ]] || return 0
-  for spec in "MemoryHigh:infinity" "MemoryMax:${memory_max_mib}M" "MemorySwapMax:${memory_swap_max_mib}M"; do
-    key=${spec%%:*}
-    want=${spec#*:}
-    own=$(unit_section_value "$fragment" Slice "$key") || own=''
-    [[ -n $own ]] || continue
-    same_memory_amount "$own" "$want" && continue
-    echo "gates memory policy: $slice has a fragment ($fragment) that sets $key=$own; this drop-in deliberately overrides it"
-    echo "gates memory policy: with the 2026-11-16 pure-test-host policy value $key=$want (a foreign drop-in that sets it is refused above)"
-    return 0
-  done
-  return 0
-}
-
 load_state=$(systemctl show "$slice" -p LoadState --value 2>/dev/null || true)
 if [[ $load_state != loaded ]]; then
   echo "gates memory policy: $slice is not installed on this host (LoadState '${load_state:-unknown}'), so nothing was applied to a"
