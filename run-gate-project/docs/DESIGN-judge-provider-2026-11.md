@@ -162,7 +162,7 @@ Derived on the host, from the judged tree, before the lane starts:
 |---|---|---|
 | `commit` | `git rev-parse HEAD` of the judged worktree (the commit the verdict describes) | refused — a lane cannot run without a commit anyway |
 | `version` | `git describe --tags --long --match 'assay-v*'` (assay's own tag grammar) | `null`, plus `version_source: "no assay-v* tag is reachable from this commit"` — *stated*, never guessed at |
-| `dirty` | `git -c status.showUntrackedFiles=all status --porcelain --ignored=matching -- assay libraries/cowtree`, scoped to the judge trees | `null` + `dirty_source` = could not determine (never folded into "clean") |
+| `dirty` | `git -c status.showUntrackedFiles=all status --porcelain --ignored=matching -- assay libraries/cowtree`, scoped to the judge trees, read as BYTES | `null` + `dirty_source` = could not determine (never folded into "clean") |
 | `source`, `pythonpath` | the mounted roots, verbatim | — |
 | `provided_by` | `"run-gate"` | — |
 
@@ -172,7 +172,22 @@ commit and the duration — the auditable place for "which judge produced this
 verdict, on which commit, from clean code or not". It is disclosed on stdout
 before the lane runs (`run-gate: judge: assay <version> at <commit> (clean;
 provided by run-gate, mounted read-only from <path>)`), so it is visible in the
-lane log too. It rides in the inflight record, so a re-attached or collected run
+lane log too. Every one of those lines is FLUSHED as it is written, and that
+is stated here because it is a contract rather than a habit: Run-Gate's stdout
+is a pipe whenever a caller consumes it live, a pipe is block buffered, and an
+unflushed line can therefore arrive AFTER the container output it is meant to
+precede. The oracles pin the `write`/`flush` ORDER, not the text.
+
+Two decode decisions belong with the derivation itself: the `dirty` answer is
+read from `git status`'s BYTES (only "did it report anything" is asked, so a
+`core.quotepath=false` repository with a non-UTF-8 path inside a judge tree
+still yields a stated answer instead of a `UnicodeDecodeError` no
+`except OSError` would catch), while `git describe` is decoded STRICTLY and its
+failure is STATED (`version: null`, reason "a release tag whose name is not
+valid UTF-8") — a `replace`d character would let a non-UTF-8 tag satisfy the
+release grammar and record a version whose bytes are not the tag's.
+
+It rides in the inflight record, so a re-attached or collected run
 reports the judge it was *started* with rather than today's config.
 
 `kind = "assay"` lanes are untouched: they keep their own `judge_provenance`

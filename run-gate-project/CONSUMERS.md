@@ -2085,7 +2085,13 @@ What the recorded identity means, and its one honest limitation:
   files (`--ignored=matching` and `status.showUntrackedFiles=all` per
   invocation, so a repository that hides untracked files cannot make a judge
   look clean). `null` is "Git could not answer", and `dirty_source` states
-  which branch that was — it is never folded into "clean".
+  which branch that was — it is never folded into "clean". The answer is read
+  from the BYTES of `git status`, so a filename that is not valid UTF-8 in the
+  judge tree still produces a stated answer instead of a decode error.
+- The disclosure line naming the judge is **flushed where it is written**,
+  together with its warnings and a sequence's per-member line: run-gate's
+  stdout is a pipe whenever you consume it live, and a pipe is block buffered,
+  so an unflushed line could arrive after the container output it describes.
 - The record is re-derived at the container's own start and the difference is
   disclosed (`the judge source changed between the preflight and this
   container's start`), because the mount holds the working tree as it is NOW.

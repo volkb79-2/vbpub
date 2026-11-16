@@ -32,6 +32,25 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
   at load. `kind = "assay"` lanes are byte-identical.
 
 ### Fixed
+- run-gate: the judge provider's `git status`-based dirt question now reads
+  `git status`'s BYTES instead of its decoded text: with `text=True` a
+  `core.quotepath=false` repository containing a non-UTF-8 path inside a judge
+  tree raised `UnicodeDecodeError` (a `ValueError`, so not caught by the
+  `except OSError` there) and crashed the whole identity derivation, where the
+  only question asked is "did git report anything". `git describe` keeps a
+  STRICT decode and states its failure — `version: null` with "a release tag
+  whose name is not valid UTF-8" — because a `replace`d character could
+  otherwise satisfy the release grammar and record a version whose bytes are
+  not the tag's (RG-285 round 2).
+- run-gate: every judge-identity disclosure line — the judge line, its DIRTY
+  and UNKNOWN warnings, the re-derivation warning, and the sequence's
+  per-member line — is flushed as it is written, and that is now PINNED by
+  oracles that record `write`/`flush` ORDER on a stream (the three `flush=
+  True -> False` mutants an R2 campaign found alive survived because every
+  oracle compared TEXT, which is identical either way). Run-Gate's stdout is a
+  pipe whenever a caller consumes it live, and a pipe is block buffered, so an
+  unflushed line can arrive after the container output it precedes (RG-285
+  round 2).
 - run-gate: the judge provider's in-lane refusals (no `python3` in the image,
   or an `assay` that resolves elsewhere) now end on a code Run-Gate RESERVES and
   maps to ERROR (`judge-not-provided`) BEFORE it reads the lane's `exit_map`,

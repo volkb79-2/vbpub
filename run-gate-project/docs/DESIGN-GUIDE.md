@@ -771,6 +771,24 @@ does the four things the shell used to guess at:
    the difference, because the mount holds the working tree as it is then; the
    inflight record carries it, so a re-attach reports the judge the run STARTED
    with rather than today's checkout.
+5. **Disclosure, and why its `flush` is a contract.** The identity line and
+   its warnings are written with `flush=True`. That is not a habit: Run-Gate's
+   stdout is a PIPE whenever a caller consumes it live (a controller, a gate
+   wrapper, CI), and a pipe is block buffered — unflushed, the line naming the
+   judge can arrive after the container output it is supposed to precede, and
+   a lane that then hangs shows none of it at all. The oracle therefore
+   records `write`/`flush` ORDER on a stream rather than the text, because
+   text is identical either way: `flush=True` is pinned, not assumed. The same
+   rule covers both warnings and a sequence's per-member line.
+   **Bytes, not decoded text, where a decode could fail.** The dirt question
+   is answered from `git status`'s BYTES (only "did it report anything" is
+   asked), so a `core.quotepath=false` repository with a non-UTF-8 path inside
+   a judge tree still yields a stated answer instead of a `UnicodeDecodeError`
+   that no `except OSError` would catch. `git describe` is the one place a
+   decode is unavoidable, so there it is STRICT and its failure is STATED
+   (`version: null`, reason "a release tag whose name is not valid UTF-8") —
+   a `replace`d character would instead let a non-UTF-8 tag satisfy the
+   release grammar and record a version string whose bytes are not the tag's.
 
 **Why no install step.** The source-mode path for `kind = "assay"` lanes
 installs the package with pip and needs a writable tree; that is why such

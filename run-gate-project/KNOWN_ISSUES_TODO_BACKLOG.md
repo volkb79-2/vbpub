@@ -9187,7 +9187,7 @@ consumers follow `assay/docs/INTERNAL-CONSUMERS.md` (source, no pinned copy) and
 the external boundary already exists as `kind = "assay"` + `assay_command` +
 `pins`.
 
-**Evidence.** `tests/test_judge_provider.py` (93 parametrized oracles):
+**Evidence.** `tests/test_judge_provider.py` (104 parametrized oracles):
 declaration validation (including every ENVIRONMENT-RESOLUTION path — an
 inherited central declaration, an undeclared name, a legacy `host`/`bare-host`
 name — refused at load, the case the first cut left to the runtime preflight),
@@ -9196,7 +9196,12 @@ path, a path under a judge tree to
 `Duplicate mount point`/`INSIDE the judge tree`), identity derivation (no tag
 → stated `null`, dirtiness scoped to the judge trees with IGNORED and
 untracked files reported, a failing `git status` → `null` + `dirty_source`, a
-lookalike tag rejected, re-derivation at container start), the reserved
+lookalike tag rejected, re-derivation at container start, a REAL `git status`
+over a real repository for both the clean and the modified answer, and a
+non-UTF-8 path/tag name that must still be ANSWERED rather than raise),
+disclosure ORDER (every judge line flushed immediately after its own write,
+recorded as `write`/`flush` events because text alone is identical either way),
+the reserved
 refusal code's verdict mapping under three `exit_map` configurations, the
 closed refusals, a SEQUENCE refusing a missing judge before its first member,
 and an END-TO-END lane whose `PATH` carries no `pip` and no console-script

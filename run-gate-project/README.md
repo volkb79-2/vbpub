@@ -532,9 +532,10 @@ missing interpreter or a resolved `assay` that is not the provided one
 the read-only tree unmodified); those two refusals end on the code Run-Gate
 reserves and maps to ERROR itself, so a lane cannot declare its way to a PASS;
 - records the judge's identity — commit, `assay-v*` version, and whether the
-judge trees were dirty (ignored and untracked files included) — in the run
-record and in `history`, and prints it before the lane starts; a re-attached
-run keeps the judge it was started with.
+judge trees were dirty (ignored and untracked files included, read from
+`git status`'s bytes so an odd filename cannot break the answer) — in the run
+record and in `history`, and prints it, flushed as it is written, before the
+lane starts; a re-attached run keeps the judge it was started with.
 
 The judge's source is derived from the judged tree, never declared: in-repo
 consumers take their own checkout's source (no pip, no install step, nothing to

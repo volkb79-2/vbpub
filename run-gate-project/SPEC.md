@@ -3107,7 +3107,17 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   failure produced `null`), `source`, `pythonpath` and `mounts`. The same
   identity is disclosed on stdout before the lane starts, and the lane's own
   script repeats it, so a dry run, a live run and a re-attached run cannot
-  describe two different judges. It is re-derived at the CONTAINER's own start
+  describe two different judges. Every disclosure line of this identity —
+  the judge line, each of its two warnings, and the SEQUENCE's per-member
+  line — is FLUSHED as it is written, because Run-Gate's stdout is a pipe
+  whenever a caller consumes it live and a pipe is block buffered: unflushed,
+  the line naming the judge can reach the operator after the container output
+  it is supposed to precede. The dirt question is answered from the BYTES of
+  `git status` (only "did it report anything" is asked), so a repository with
+  `core.quotepath=false` and a non-UTF-8 path inside a judge tree still yields
+  a stated answer instead of a decode error, and a `git describe` whose tag
+  name is not valid UTF-8 yields `version: null` with that reason rather than
+  an exception. It is re-derived at the CONTAINER's own start
   and the difference is disclosed when the preflight's snapshot no longer
   matches what the mount will hold; the inflight record carries the identity,
   so a re-attached or collected run reports the judge it was STARTED with and
