@@ -23,6 +23,12 @@ together.
 | CTL-09 | The Codex compaction retest records no per-run compaction setting and reads no app-server compaction item | P3 | OPEN 2026-11-15 |
 | CTL-10 | Worker briefs do not state the measured harness environment limits, so workers rediscover them | P3 | OPEN 2026-11-15 |
 | CTL-11 | A readback built by a non-Claude controller has no layout (no recent-prose tail, no marker) until NL-65 | P3 | OPEN 2026-11-15 |
+| CTL-12 | The remote-gate helper refreshes its cached `remote-gate.py` through a shared `.new` temp name, so concurrent launches collide before anything reaches the host | P2 | OPEN 2026-11-16 (requires a repo-side successor) |
+| CTL-13 | A final assistant message with `stopReason=stop`, a tool call and no text classifies `SUCCESS` although the documented contract requires text | Minor | OPEN 2026-11-16 |
+| CTL-14 | Nothing stops two wrappers from running the same run name (or session) at once; both write the same `.done`, `.events` and retry counter | Should-fix | OPEN 2026-11-16 |
+| CTL-15 | `.live`'s `latest_total_tokens` reads `0` for a stream whose usage is only carried on delta events, which is exactly the long run it exists for | Should-fix | OPEN 2026-11-16 |
+| CTL-16 | `since-commit` reports the age of the branch's last commit, not the time since this run committed, with nothing saying which commit the age belongs to | Minor | OPEN 2026-11-16 |
+| CTL-17 | `stopReason=length` (the context window filled) is classified `INCOMPLETE`, so the controller cannot tell a truncated run from a broken stream | Should-fix | OPEN 2026-11-16 |
 
 ---
 
@@ -377,3 +383,367 @@ line exists for at least the Codex and opencode adapters (fixture-tested, with
 the no-duplication property), or the checklist and the hook docs say plainly
 which harnesses have no layout and name the substitute the controller uses
 instead.
+
+## CTL-12 — the remote-gate helper refreshes its cached copy through a shared `.new` name, and concurrent launches collide
+
+**Status:** OPEN (filed 2026-11-16); priority P2 for the controller's own
+tooling. The helper (`codex/remote-gate.sh` in the controller's program
+directory) is deliberately OUTSIDE the repository, so this entry states the
+REQUIREMENT for a repository-side successor rather than pointing at a file here.
+
+**Problem.** The helper runs the repository's
+`scripts/netcup/runner/remote-gate.py` from a cached copy of `origin/main`,
+which it refreshes by writing `<cache>.new` and `mv`-ing it into place. The
+`.new` name is shared, not per-invocation, so two launches that start in the
+same second race on it: the observed instance was three calls started together,
+of which one failed with `mv: cannot move ... remote-gate-main.py.new` and
+another with `cannot read remote-gate.py from origin/main`, both exiting 3
+before anything was sent to the host (so no host time was lost, but the batch
+lost two lanes). A stagger of a few seconds avoids it, which is exactly the
+unsafe state: the fix is a human remembering a timing rule nobody documented.
+
+The failure shape is the interesting part. The helper's contract is "run the
+current origin/main tool"; the race publishes a cache write failure AS a
+"cannot read the tool from origin/main" refusal, so a reader cannot tell a
+concurrent refresh from a genuinely missing file. Two invocations disagree
+about what they are running, and nothing in the run record names which copy
+was used.
+
+**Why this belongs in this repository.** The requirement is that the
+capability the helper provides (resolve a ref, take a slot, write a run log and
+a commit binding, run the repository tool, collect evidence) is owned by
+code inside the repository, where it can be tested and reviewed. The `.new`
+race is one symptom of a tool that exists only as a controller-local script.
+
+**What a repository-side successor needs.** (a) A per-invocation unique temp
+name plus an atomic rename, so two starts never share a staging file. (b) A
+lock (or a per-process staging directory) around the cache refresh itself, so
+one invocation's refresh cannot invalidate another's in-flight read. (c) A
+distinct refusal for "could not refresh the cache" versus "the tool is absent
+from the resolved ref", each naming the ref it tried. (d) The refreshed copy's
+identity (resolved commit of the tool file) recorded in the run's own evidence,
+so a reader knows which revision ran.
+
+**Where.** No file in this repository today. The successor belongs beside the
+runner tooling this repository already owns
+(`scripts/netcup/runner/`), with its tests in `scripts/netcup/tests/`; this
+entry is the requirement, and it should be closed by that successor plus a test
+that starts several refreshes concurrently.
+
+**Acceptance test idea.** N concurrent starts against one cache, each with a
+different staging name, all complete and all report the same resolved tool
+identity; a deliberately held staging file makes one invocation wait or refuse
+BY NAME (refresh failure, not absence); a missing tool at the resolved ref
+produces the other refusal. No invocation ever moves another's staging file.
+
+**Priority.** P2 — it costs whole lane launches per batch and the workaround is
+undocumented timing.
+
+**Close when.** A repository-owned helper (or an unambiguous documented
+successor) provides the same capability with unique staging, a serialised
+refresh, two distinct refusals, and the refreshed tool's identity in the run
+evidence, and a concurrency test covers it.
+
+## CTL-13 — `stop` with a tool call and no text classifies `SUCCESS`, against the wrapper's own documented contract
+
+**Status:** OPEN (filed 2026-11-16); severity Minor. Found by the independent
+review of the overwatch package (`pi-overwatch-REVIEW.md`, finding F7: "not
+fixed, noted") and re-verified against the merged code.
+
+**Problem.** The wrapper's contract, stated in `pi-impl.sh`'s own header, the
+`docs/DESIGN-GUIDE.md` classification section and the `.done` vocabulary, is
+that `SUCCESS` requires the final assistant message to carry text. The decision
+order in `classify_run()` gets there differently: it checks
+`has_text != 1 && has_tool_call != 1` for `EMPTY-COMPLETION` and then falls
+through to `SUCCESS`, so a final message with `stopReason: stop`, a tool call
+and NO text is certified successful. That is the same false-certification class
+the package exists to remove (a status word asserting a stronger thing than it
+checked), just one branch further down.
+
+The measured risk is low for the pi harness as it runs today: real pi streams
+emit `toolUse`/`toolCall` parts for tool-calling turns and the review's edge
+matrix never produced that shape from real data. That is why the review fixed
+nothing and noted it. It is still a defect of the *check*: the guard's message
+("SUCCESS means the run said what it did") is stronger than its comparison
+("the run either said something or called a tool").
+
+**Minimal solution.** Decide the contract explicitly rather than by fall-through:
+either tighten the classifier so a final message with no text can never be
+`SUCCESS` (adding a distinct word, because `EMPTY-COMPLETION` is defined as
+"no text AND no tool call" and the auto-continue is bound to that class), or
+state in the header/guides that a tool call counts as completion evidence and
+make the check assert it. Tightening is preferred: a resumed or truncated turn
+that ends on a tool call is exactly the shape a caller must not read as done.
+A new word must keep the `EXIT=<n> OUTCOME=<word>` first line and must be
+additive (every consumer matching `EXIT=0` keeps working), and the harness
+documentation for any new class belongs in the same change.
+
+**Where.** `scripts/controller/pi-impl.sh` (`classify_run`, and the header
+vocabulary), `scripts/controller/tests/test-pi-impl.sh` (a focused case and one
+hand mutant), `scripts/controller/tests/fixtures/` (a new fixture shaped like a
+real stream: `message_end` with `content: [{type: toolCall}]`, `stopReason:
+stop`), and `scripts/controller/docs/DESIGN-GUIDE.md` plus
+`docs/design/ctlstat/REQUIREMENTS.md` §15's closed anomaly vocabulary if the
+word set changes.
+
+**Acceptance test idea.** A fixture whose last assistant message holds one
+`toolCall` part, no text, `stopReason: stop`, a settled stream and a clean
+worktree produces the tightened outcome, and a mutant that reintroduces
+`has_tool_call` into the success path makes the focused case fail. A real-text
+`SUCCESS` case and the `EMPTY-COMPLETION` case stay green, and the `.done`
+first line keeps its shape.
+
+**Priority.** Minor — not reproducible from real pi streams today, but it is a
+silent false-positive path in the one function whose job is to prevent those.
+
+**Close when.** The classifier's behaviour and the documented contract agree
+(one of them changed with a test that goes red on the old behaviour), the new
+or clarified rule has a focused case and a killing mutant, and the vocabulary
+documentation is in sync.
+
+## CTL-14 — two wrappers can run the same run name at once and silently share its records
+
+**Status:** OPEN (filed 2026-11-16); severity Should-fix. Found by the same
+review (`pi-overwatch-REVIEW.md`, finding F8: "no cross-invocation guard"), and
+re-verified: `pi-impl.sh` takes no lock on the run name.
+
+**Problem.** Everything a run owns is keyed by its NAME: `<run>.done`,
+`<run>.events`, `<run>.jsonl`, `<run>.err`, `<run>.last.txt`, `<run>.thread`,
+`<run>.live`, and the retry counter, which lives in the invocation itself. Two
+wrappers started for the same run name — a manual relaunch while a background
+launch is still alive, or two schedulers racing — therefore interleave on the
+same files with no error: the second truncates `.events` (`: > "$out/$name.events"`
+on a new run), both append to the same stream, the pid in `.live` is whichever
+wrote last, and each writes its own `.done`. A reader (`.done` or
+`job-status.sh`) then sees a completion from one invocation while the other is
+still working, which is precisely the "stale completion read as the new job's
+result" class the backlog already tracks across launchers (CTL-01) — here for
+pi, and with the additional hazard that the account bookkeeping (`block-run`)
+is also name-scoped.
+
+The review's own assessment is that this is a pre-existing property of the
+launcher, bounded per invocation, and that a pid-file lock is "a separate
+package". This entry is that package's requirement.
+
+**Minimal solution.** One ownership guard, in the shared library so every pi
+launcher path (new run, `resume`, auto-continue) gets it: take an exclusive
+lock keyed on the run name (the kit's `gate-run.sh`/queue already use `flock`
+and `O_NOFOLLOW`-style discipline; `lib.sh` is where a reusable helper
+belongs), write the owning pid + start-time into the lock's own record, and
+refuse a second invocation BY NAME, naming the live owner and the supported
+ways forward (wait, a different run name, or an explicit force that first
+retires the previous owner's records). A dead owner's lock must be recoverable
+(the same recycled-pid/start-time conjunction the review asked for in the
+other direction), and the guard must not strand a lock when the wrapper exits
+by `TERM`/`KILL` or on an error path. `resume` of the SAME session keeps
+working: it is a different invocation of an owned run, so it takes the same
+lock rather than a second dimension.
+
+**Where.** `scripts/controller/lib.sh` (shared lock helper),
+`scripts/controller/pi-impl.sh` (acquire before anything writes, release on
+every exit path including the trap), `scripts/controller/tests/test-pi-impl.sh`
+(a two-invocation case), and `scripts/controller/README.md` /
+`docs/CONSUMERS.md` for the refusal's wording and the force path.
+
+**Acceptance test idea.** A first fake run holds the lock; a second invocation
+with the same name refuses with exit 2 before truncating anything, naming the
+owner and the run's records; a different run name proceeds concurrently; killing
+the first wrapper (-TERM and -KILL cases) leaves the run name usable again;
+`resume` of the same session while the same run is live refuses rather than
+interleaves. Mutants: removing the acquire, acquiring after the `.events`
+truncate, and dropping the release on the error path are each killed.
+
+**Priority.** Should-fix — the failure mode reports a completion that belongs to
+another process, and the estate's rule about narrowed checks applies: a
+completion check that reads a name-shared file certifies one job with another
+job's evidence.
+
+**Close when.** Two invocations of one run name can never interleave (each
+refusal names the owner), every exit path releases the lock, a dead owner is
+recoverable safely, and the two-invocation, resume and kill cases pass with
+killing mutants.
+
+## CTL-15 — `.live` reports `latest_total_tokens: 0` for the long runs it exists to describe
+
+**Status:** OPEN (filed 2026-11-16); severity Should-fix. Observed in live
+`job-status` output during the 2026-11-16 controller work: a run at 568
+assistant turns and 619 tool calls published `"latest_total_tokens": 0`, while a
+neighbouring run of the same day published `258492`.
+
+**Problem.** `pi-live.py`'s incremental reader keeps the LAST integer
+`usage.totalTokens` it saw, whether that value is the real context figure or a
+placeholder. On a real pi stream the model's usage arrives on
+`message_update` events that carry a completed assistant block
+(`thinking_end`, `text_end`, `toolcall_end`) and on `message_end`, while every
+STREAMING delta event (`thinking_delta`, `text_delta`, `toolcall_start`,
+`toolcall_delta`) carries a `usage` object whose every counter — including
+`totalTokens` — is `0`. A delta tail far outnumbers the completions (measured
+on a live 288k-line run: 201 zero-valued usage reports arrived after the last
+non-zero one, and the zero-valued delta reports outnumbered the non-zero
+completions by two orders of magnitude). So the snapshot's "latest" token total
+is very often 0 precisely while the agent is writing — the exact moment a
+reader wants the context figure.
+
+The consequence is a status line that looks measured and is wrong: the value is
+not `null` (which the design says an unreadable fact must be), it is a false 0,
+which reads as "the context is empty" on a run that may be at 200k. The token
+figure is also the input to the restart-vs-continue decision the ctlstat
+requirements call for (`docs/design/ctlstat/REQUIREMENTS.md` §15 items 4 and 6),
+so a 0 there is worse than an absent value.
+
+**Minimal solution.** Do not accept a usage record that is structurally a
+placeholder as the latest measurement: keep the last NON-ZERO reading (or
+distinguish "reported 0" from "reported" and prefer the last completion event's
+usage), and keep `null` for "never read one" so the distinction the design
+requires survives. Because 0 is also a legitimate value for a fresh stream
+before the model reports anything, the rule must be stated: either ignore
+zero-valued usage on delta events specifically (identified by the event's own
+`assistantMessageEvent.type`), or carry both the last completion figure and a
+`reported_zero` fact. Record the chosen semantics in the `pi-live.py` docstring,
+`docs/DESIGN-GUIDE.md`'s liveness section, and `job-status.sh`'s header.
+
+**Where.** `scripts/controller/pi-live.py` (`Snapshot.consume` and `payload`),
+`scripts/controller/job-status.sh` (the printed field's label if the semantics
+become two facts), `scripts/controller/tests/fixtures/` (a new fixture whose
+stream ends in delta events carrying zero usage after a real completion),
+`scripts/controller/tests/test-pi-impl.sh` (the focused case plus a mutant),
+and the three documents named above.
+
+**Acceptance test idea.** A fixture built from the measured shape — one
+completion event with a non-zero `totalTokens` followed by several delta events
+with zero usage — publishes that non-zero figure, never 0. A stream with NO
+usage at all publishes `null`, not 0. A stream whose only usage is already 0
+(the legitimate fresh case) publishes 0 (or the chosen second field says so),
+and the difference between the three fixtures is asserted. A mutant that takes
+the last usage record unconditionally makes the first case fail.
+
+**Priority.** Should-fix — a wrong number in the only live read of a run, on the
+runs the tool was built for.
+
+**Close when.** The three fixtures above distinguish absent, zero and real
+values, the chosen semantics are documented in the code and the guides, and the
+mutant is killed.
+
+## CTL-16 — `since-commit` reports the AGE of the branch's last commit, not the time since this run committed
+
+**Status:** OPEN (filed 2026-11-16); severity Minor. Observed in live
+`job-status` output on 2026-11-16 (several runs printed `since-commit=...s`
+immediately after starting) and re-verified against `pi-live.py`.
+
+**Problem.** The field that `job-status.sh` prints as `since-commit` is derived
+from `payload["last_commit_epoch"]`, which `pi-live.py` fills from
+`git log -1 --format=%ct HEAD`. That is the timestamp of the branch's newest
+commit — which, for a run started on an existing branch (the normal case: a
+worktree created from `main` whose tip commit IS the base), is the base commit's
+age, possibly weeks. A reader asked "how long since this run last committed"
+therefore gets a number that describes somebody else's commit, from the very
+first tick, and the number only becomes meaningful after the agent's first
+commit. Nothing in the field name, the `job-status.sh` header ("seconds since
+the last commit") or the DESIGN-GUIDE liveness paragraph says which commit it
+is.
+
+**Correction to the original report, recorded because it changes the fix.** The
+field is NOT a counter that "counts from worktree creation instead of from the
+last commit": it is computed fresh on every tick from `git log -1`, so it does
+track new commits. The defect is narrower and real: the value conflates the
+BASE commit with a commit of this run, so before the run's first commit it
+reports a true age of the WRONG commit, and after it reports the right one with
+no marker saying the source changed. That is a fact-without-provenance, not an
+arithmetic error — and it is unfixable by arithmetic alone, because the
+information needed ("did this run commit at all") is not in the current payload.
+
+**Minimal solution.** Make the fact honest without inventing a counter:
+`pi-live.py` records the run's own baseline commit at start (the `HEAD` it saw
+on its first tick, or the wrapper's start commit passed in), reads
+`git log -1 --format=%ct HEAD` and `git rev-parse HEAD` per tick, and publishes
+either (a) the epoch of the last commit ONLY when `HEAD` differs from the run's
+baseline, with an explicit `commits_of_this_run: 0` fact otherwise, or (b) both
+`last_commit_epoch` and `run_commits` (count of commits whose committer time is
+after the run's start). Choose (a) if the additional git call is unwanted and
+(b) if the reader needs a count; whichever is chosen, `job-status.sh` must
+print the value together with the fact that qualifies it, and the header must
+stop calling it "seconds since the last commit" if it can be the base's age.
+A value that cannot be read stays `null` (the existing rule), never 0.
+
+**Where.** `scripts/controller/pi-live.py` (`payload`, plus whatever the
+wrapper must pass for the baseline), `scripts/controller/pi-impl.sh` (the
+baseline argument, if the chosen shape needs one),
+`scripts/controller/job-status.sh` (label + the qualifying fact),
+`scripts/controller/tests/fixtures`/`test-pi-impl.sh` (a run-shaped case with a
+two-commit history where the base is older than the run), and
+`docs/DESIGN-GUIDE.md`'s liveness paragraph.
+
+**Acceptance test idea.** A fixture worktree whose base commit is days old,
+with a run that has not committed: the printed row says the run has no commit
+of its own (or reports `run_commits: 0` with the base age labelled as the base's
+age), never an unqualified "since-commit" age. After one commit made by the
+fake agent, the field names that commit and its age. A worktree where git
+cannot answer publishes `null`.
+
+**Priority.** Minor — it misleads a controller reading a status line, and it is
+cheap to record honestly; it costs nothing on the lane path.
+
+**Close when.** The published fact names whose commit it describes, the reader
+line shows that qualification, both fixtures (no commit of its own / one
+commit) pass, and the guides say which commit the age belongs to.
+
+## CTL-17 — a run stopped by `stopReason=length` (context window full) reads as `INCOMPLETE`, which hides the one class the controller acts on
+
+**Status:** OPEN (filed 2026-11-16); severity Should-fix. Filed from the
+controller's own live experience of long pi runs and from the operator decision
+of 2026-11-16 recorded in the controller state (classify `stopReason=length` as
+`CONTEXT-FULL` so the overwatch can start a successor). Verified against the
+merged classifier: `classify_run()` sends every `stopReason != stop` to
+`INCOMPLETE`.
+
+**Problem.** `INCOMPLETE` is documented as "a settled or unreadable stream that
+is not a stop" — a catch-all for states the controller cannot attribute. A run
+whose final `stopReason` is `length` is not unattributable: the harness stopped
+the model because the context window filled, the work is intact, the session can
+be continued or succeeded by a fresh session seeded from the state file, and the
+controller's restart decision is exactly what it exists to make. Folded into
+`INCOMPLETE` it is indistinguishable from a broken/absent stream, from a run
+that never settled, and from an empty thread; the three have different remedies
+(continue the session, restart from a brief, investigate the harness), and the
+closed anomaly vocabulary in `docs/design/ctlstat/REQUIREMENTS.md` §15 does not
+contain the class at all, so ctlstat cannot report it either. The current
+gate test pins the collapse (`check_outcome_length` expects
+`EXIT=0 OUTCOME=INCOMPLETE` for the `pi-length` fixture), so this is a deliberate
+decision made once, not an oversight — but it is a decision made before the
+overwatch needed the distinction, and it now costs the distinction.
+
+**Minimal solution.** Add `CONTEXT-FULL` to the outcome vocabulary for a settled
+run whose final `stopReason` is `length`, decided BEFORE the generic
+`stopReason != stop` branch, and (per the operator decision) treat it as the
+class where the controller starts a successor from the forward-oriented brief
+rather than auto-continuing: the wrapper itself must NOT continue it
+(`EMPTY-COMPLETION` remains the only continued class, because continuing a
+full context window is the one continuation that cannot succeed). Keep the
+`.done` first line's shape, keep the exit status as pi's own, extend
+`docs/design/ctlstat/REQUIREMENTS.md` §15's closed vocabulary with the new word
+(and with the successor-start requirement it implies), state the distinction in
+the wrapper header and DESIGN-GUIDE, and update the existing
+`check_outcome_length` expectation in the same change — that is a behavioural
+change to a documented contract, so the documents are part of the same commit.
+
+**Where.** `scripts/controller/pi-impl.sh` (`classify_run`, header vocabulary),
+`scripts/controller/tests/test-pi-impl.sh` (`check_outcome_length` plus a
+killing mutant), `scripts/controller/tests/fixtures/pi-length.jsonl` (fixture
+already exists and is right), `scripts/controller/docs/DESIGN-GUIDE.md`,
+`scripts/controller/docs/CONSUMERS.md`, `scripts/controller/README.md`, and
+`docs/design/ctlstat/REQUIREMENTS.md` §15 (anomaly vocabulary + the
+successor-start rule).
+
+**Acceptance test idea.** The `pi-length` fixture produces
+`EXIT=0 OUTCOME=CONTEXT-FULL`; the retry loop does not continue it (no
+`empty-completion-retry` event appears); a `stopReason=error`/`aborted`/unsettled
+stream still produces `ERROR`/`INCOMPLETE`; `EXIT=0` consumers still see the
+first line unchanged. Mutants: removing the new branch, placing it after the
+generic branch, and letting the retry loop catch it are each killed.
+
+**Priority.** Should-fix — it is a real, common end state of the long runs this
+tooling exists for, and today it costs a controller the decision input.
+
+**Close when.** The classifier, the closed anomaly vocabulary, the four
+documents above and the retry rule agree, the length fixture yields
+`CONTEXT-FULL`, the retry loop provably ignores it, and the mutants are killed.
