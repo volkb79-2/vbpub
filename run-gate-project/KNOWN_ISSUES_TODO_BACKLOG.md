@@ -8314,7 +8314,7 @@ ownership behavior was changed to accommodate the fake.
 
 ## RG-270 — restarting an old-checkout campaign with carry-over needs the source-backed judge documented
 
-**Status:** OPEN (filed 2026-11-12); priority should-fix for T3 restart
+**Status:** FIXED 2026-11-16; priority should-fix for T3 restart
 operability. Source: 2026-11-12 host R2 restart record; cross-reference
 assay B529-B531, B535 and NC-42.
 
@@ -8355,6 +8355,21 @@ the recipe remains unavailable for an older judge.
 restart recipe, its documentation test passes, and the recipe is exercised
 successfully against an old-tag checkout whose project sources remain
 byte-identical.
+
+**Resolution.** CONSUMERS now explains that the selected worktree supplies the
+judge, gives the judge-only `assay/` update and review procedure, sets the
+Run-Gate 25.5.0 and Assay 12.2.0 floors, and requires a carry-over reason that
+names the judge-only change. It links the persistent T3 runner procedure rather
+than reproducing its commands. README and DESIGN-GUIDE explain the fact and
+rationale; a docs contract pins all three.
+
+**Evidence.** `test_old_source_backed_checkout_restart_recipe_is_complete`
+checks the recipe and docs links. In a throwaway Git worktree at
+`run-gate-v25.4.1`, checking out `assay-v12.2.0` changed 126 paths, all under
+`assay/`, and no project source or lane declaration. Existing flex-floor tests
+cover refusal below Assay 12.2.0. The full registered selftest previously
+passed this documentation contract; final clean-head gates are recorded in the
+run report.
 
 ## RG-272 — a valid request base on a non-tag checkout produces zero mutation candidates despite changed source
 

@@ -599,6 +599,36 @@ def test_consumers_state_the_resource_identity_split():
     assert "not judge identity since Assay 12.2.0 (B529)" in _doc("CONSUMERS.md")
 
 
+def test_old_source_backed_checkout_restart_recipe_is_complete():
+    consumers = _doc("CONSUMERS.md")
+    assert (
+        "Restart an old source-backed checkout after a judge upgrade"
+        in consumers
+    )
+    assert "selected worktree's `assay/` source at lane runtime" in consumers
+    assert "updates only `assay/`" in consumers
+    assert "Run-Gate 25.5.0 or newer" in consumers
+    assert "Assay 12.2.0 or newer" in consumers
+    assert "--carry-over-reason TEXT" in consumers
+    assert "why it cannot change candidate outcomes" in consumers
+    assert "persistent T3 R2 campaign procedure" in consumers
+    assert (
+        "../scripts/netcup/runner/README.md#persistent-t3-r2-campaigns"
+        in consumers
+    )
+
+    readme = _doc("README.md")
+    assert "old-checkout restart recipe" in readme
+    assert "tester image or Run-Gate wheel is newer" in readme
+
+    design = _doc("docs/DESIGN-GUIDE.md")
+    assert (
+        "new tester image or Run-Gate wheel cannot replace an old checkout's judge"
+        in design
+    )
+    assert "reviewable commit that changes only `assay/`" in design
+
+
 def test_lane_authoring_no_longer_says_candidate_ram_does_not_select_workers():
     assert "do not currently select workers" not in _doc("LANE-AUTHORING.md")
 

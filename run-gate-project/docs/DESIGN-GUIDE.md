@@ -1103,6 +1103,13 @@ invalidates finished-candidate state. Assay >= 12.2.0 keeps reusable finished
 records when only resource settings change; changes to tests, sources, `argv`,
 `env`, or Assay version still invalidate. See the [versioned identity rule](../CONSUMERS.md#native-r2-worker-selection).
 
+Internal source-backed lanes install Assay from the selected worktree, so a
+new tester image or Run-Gate wheel cannot replace an old checkout's judge.
+The supported restart preserves the project's declarations and tests in a
+reviewable commit that changes only `assay/`; explicit carry-over then records
+why the judge-only upgrade cannot change outcomes. See the
+[old-checkout restart recipe](../CONSUMERS.md#restart-an-old-source-backed-checkout-after-a-judge-upgrade-rg-270).
+
 Choose the ceiling from available CPU and measured per-candidate memory. On a
 four-core host, cap at three to reserve one core for the host and sampler; use
 candidate RSS p95 and the lane memory budget to bound the workers. If RSS

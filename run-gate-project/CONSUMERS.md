@@ -922,6 +922,23 @@ ceiling and the memory before the campaign's tree is produced, and treat a
 later change like any other judge change (re-plan, or carry over once the
 lane runs Assay 12.2.0).
 
+### Restart an old source-backed checkout after a judge upgrade (RG-270)
+
+Internal Assay lanes install the selected worktree's `assay/` source at lane
+runtime. Upgrading the tester image or the installed Run-Gate wheel does not
+upgrade that judge. For a persistent campaign checkout, follow the runner's
+[persistent T3 R2 campaign procedure](../scripts/netcup/runner/README.md#persistent-t3-r2-campaigns)
+and make a reviewable checkout commit that updates only `assay/` to the
+intended Assay source. Preserve the project's sources, tests, and lane
+configuration; inspect the commit to confirm the only changed path is
+`assay/`.
+
+Then use Run-Gate 25.5.0 or newer with `--carry-over DIR
+--carry-over-reason TEXT`. The selected judge must be Assay 12.2.0 or newer.
+Make the reason identify the judge-only Assay source upgrade and why it cannot
+change candidate outcomes. A container image update alone does not satisfy the
+judge floor for a source-backed lane.
+
 ### Native R2 resource observer
 
 Native Assay R2 must inspect the candidate cgroup and every enforcing

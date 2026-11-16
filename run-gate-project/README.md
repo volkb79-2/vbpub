@@ -233,7 +233,10 @@ be complete for the current judge and plan), resumed across a judge change
 [shard, merge, carry over and target](CONSUMERS.md#shard-merge-carry-over-and-target-a-native-r2-lane-rg-265). See the
 [consumer example](CONSUMERS.md#native-r2-worker-selection) and
 [design rationale](docs/DESIGN-GUIDE.md#native-r2-worker-selection). A
-mixed-mode sequence is stored per
+source-backed lane uses the selected worktree's `assay/` even when its tester
+image or Run-Gate wheel is newer; see the
+[old-checkout restart recipe](CONSUMERS.md#restart-an-old-source-backed-checkout-after-a-judge-upgrade-rg-270).
+A mixed-mode sequence is stored per
 member and excluded as an aggregate history measurement. See the [resource settings design](docs/DESIGN-GUIDE.md#combined-resource-settings)
 and [consumer examples](CONSUMERS.md#combined-resource-settings). Resource
 RAM targets are configured in TOML; there is no `--ram-target` command-line
