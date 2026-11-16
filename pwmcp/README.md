@@ -337,6 +337,25 @@ Upgrade = run it again with the new release (releases live side by side under
 `~/.local/share/pwmcp-client/releases/`; `current` and the launcher switch atomically), then
 `pwmcp skills install`. `--bundle FILE` installs from a local bundle (offline).
 
+**Install from the bundle with plain pip, no index (PWMCP-31).** The release bundle carries the
+complete wheel closure for its interpreter and platform in `bundle/wheels/`, so a consumer does
+not need the cli-extended release URL, a PyPI index, or any other download:
+
+```bash
+rel=1.64.1-r5
+curl -fsSL -o pwmcp.tar.xz "https://github.com/volkb79-2/vbpub/releases/download/pwmcp-v$rel/pwmcp-v$rel.tar.xz"
+tar -xJf pwmcp.tar.xz && cd bundle
+PW_VER=$(python3 -c 'import json; print(json.load(open("pwmcp.contract.json"))["playwright"]["python"])')
+python3 -m pip install --no-index --find-links ./wheels \
+  "cli-extended>=0.3.0" "playwright==$PW_VER" ./client
+```
+
+Both surfaces must be named: pip builds `./client` from source, so build requirements
+(`setuptools`) must already be installed (use a venv), and the two dependencies are pinned from
+the bundle's own wheelhouse. `--no-index` keeps a typo or an unavailable wheel a loud failure
+naming the requirement instead of an index lookup that may resolve an estate-internal name from
+a public index. The same wheels are those `pwmcp-client-install.py` and `get.py` install.
+
 Release assets per `pwmcp-v<release>` (all published with every release): `pwmcp-v<release>.tar.xz`
 (+ `.sha256`; the stack bundle, which also contains `wheels/`), `get.py` (+ `.sha256`; full stack installer),
 `pwmcp-client-install.py` (+ `.sha256`), `pwmcp_client-<version>-py3-none-any.whl` (+ `.sha256`; the client

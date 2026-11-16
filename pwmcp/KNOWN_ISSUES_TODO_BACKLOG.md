@@ -670,13 +670,32 @@ fail-closed shim (mdt-cockpit MDT-056); on the host the shim may even remap `BUI
 
 ## PWMCP-31 — the released bundle's client cannot be installed by a consumer without a cli-extended source (dstdns test-runner rebuild fails)
 
-**Status:** OPEN. Filed 2026-11-04 from dstdns (P220 image build; dstdns@ed07ca19 base). Severity: P2 (blocks every consumer image rebuild that tracks `pwmcp-latest`).
+**Status:** FIXED 2026-11-16 (unreleased, branch `pi-pwmcp-burn-20261116`) for the pwmcp half: the bundle's recipe is now the offline
+wheelhouse one. The released bundle already carried the complete closure in `bundle/wheels/` (cli-extended, playwright,
+greenlet, pyee, typing_extensions and the `pwmcp_client` wheel; `[project.installer.wheels]` in `cmru.toml` stages it, and
+`scripts/build-bundle.py` refuses a wheel outside that list), but NO documented command used it: README "Client install and
+upgrade" and `docs/USAGE.md` named only a separate cli-extended download or a hand-built wheelhouse, and the item's own
+sentence "the bundle ships no wheelhouse" was wrong about the files while right about the recipe. Both surfaces now document
+ONE pasteable command — `pip install --no-index --find-links ./wheels "cli-extended>=0.3.0" "playwright==$PW_VER" ./client`
+on the unpacked bundle — and `tests/test_client_bundle_install.py` keeps it honest: it compares the client's declared runtime
+dependencies with the wheels `cmru.toml` stages (so the installed wheelhouse cannot leave a dependency unresolved), pins that
+the wheel is built from the same `client/` tree, asserts both documents carry that exact recipe, and FAILS any remaining
+`pip install ... ./client` line that does not set `--no-index` (the pre-fix instruction, which reaches a public index for a
+GitHub-only distribution).
+
+Not done here (other halves): the dstdns consumer script `tools/test-runner/install-pwmcp-client.py` must pass the same
+find-links; that change belongs to dstdns (already reported in its P220 report) and no other project's file was touched. The
+"clean `python:3.14-slim` image + release gate" acceptance needs a network-enabled image build, which this offline package
+cannot run; the offline oracle above stands in for it and the live check remains for the first post-fix release.
+
+**Original filing 2026-11-04 from dstdns (P220 image build; dstdns@ed07ca19 base). Severity: P2 (blocks every consumer image
+rebuild that tracks `pwmcp-latest`).**
 
 **Observed.** dstdns `tools/test-runner/Dockerfile` installs the client with `tools/test-runner/install-pwmcp-client.py`, which runs `pip install playwright==<contract pin> <bundle>/client`. With `pwmcp-v1.64.0-r4` (the current `pwmcp-latest`) that fails: `ERROR: Could not find a version that satisfies the requirement cli-extended>=0.3.0 (from pwmcp-client) (from versions: none)`. `cli-extended` is published on GitHub Releases only (`cli-extended-latest` -> `cli_extended-0.5.1-py3-none-any.whl`), the bundle ships no wheelhouse, and `bundle/client/requirements-runtime.txt` only repeats the floor. The previous release (1.63.0-r2, still inside dstdns's running runner) had no such dependency, so the break appeared with PWMCP-02 and is invisible until a consumer image is rebuilt.
 
 **Fix direction.** Make the consumer install recipe part of the bundle: either ship the cli-extended wheel (and its checksum) inside the bundle and have the documented install command use `--find-links <bundle>/wheels`, or document the exact `--find-links`/release URL a consumer must add, with a consumer-side test in the release gate that installs the bundle into a clean image with no index access beyond PyPI. The dstdns side (`install-pwmcp-client.py` passes no find-links) is the consumer half and is reported separately in the dstdns P220 report.
 
-**Acceptance.** A clean `python:3.14-slim` image can install the released bundle's client with the command the bundle README documents, and the release gate fails when it cannot.
+**Acceptance (as filed, kept for the record).** A clean `python:3.14-slim` image can install the released bundle's client with the command the bundle README documents, and the release gate fails when it cannot.
 
 ## PWMCP-32 — `inspect` returned a Cloudflare challenge page as if it were the target
 
