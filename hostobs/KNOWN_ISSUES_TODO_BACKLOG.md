@@ -56,7 +56,7 @@ A `FIXED` entry means code, tests, and docs landed together.
 | HOB-41 | No golden fixture has a non-zero record pad, so the padding rule is pinned by unit tests on each side, not by a cross-language file | Minor | OPEN |
 | HOB-42 | A `.seg` name is trusted as sealed without a footer, and the header's `seq`/`start_real_ns` are never compared with the name | Minor | OPEN |
 | HOB-43 | Quarantined `.corrupt` files (corrupt, oversized) are kept for an operator but are never counted in `bytes`, never evicted and never bounded in number, so repeated damage can fill the directory beyond `cap_bytes` | Major | OPEN |
-| HOB-44 | CLOSED — `tester-unified-rust` carries no `pip`/`ensurepip`/`python3-venv`, so the original `kind = "assay"` `assay-r1` lane died at Run-Gate's editable install before judging. Fixed by re-declaring the lane as a `kind = "command"` lane that runs the judge from the worktree's own `assay/src` (`PYTHONPATH`, no install); the image is unchanged. Proven through Run-Gate (PASS at `631a721a1`, FAIL/UNCOVERED_LINES with one test file deleted) | Major | CLOSED (2026-11-16) |
+| HOB-44 | CLOSED — `tester-unified-rust` carries no `pip`/`ensurepip`/`python3-venv`, so the original `kind = "assay"` `assay-r1` lane died at Run-Gate's editable install before judging. Fixed by re-declaring the lane as a `kind = "command"` lane that runs the judge from the worktree's own `assay/src` (`PYTHONPATH`, no install); the image is unchanged. Proven through Run-Gate: PASS with the measured totals in the lane log, and FAIL/UNCOVERED_LINES when one kernel test file is deleted | Major | CLOSED (2026-11-16) |
 | HOB-45 | Rust R2/R3 remain unregistered for hostobs: no `assay-r2` (cargo-mutants ingestion) or `assay-r3` (canary) lane exists, so test quality rests on the hand-mutation campaigns | Major | OPEN (assay R-3b/R-4) |
 
 ---
@@ -787,7 +787,8 @@ counted report; a test fills the bound; a mutant removes it.
 ## HOB-44 — CLOSED: the lane needed no `pip`, because it needed no install
 
 **Closed 2026-11-16** by re-declaring the lane (commit `09771f638`) and proving it
-through Run-Gate at head `631a721a1`. Original text kept below, then the resolution.
+through Run-Gate in this branch after `09771f638` (the re-declaration). Original text kept
+below, then the resolution.
 
 **Where:** `tester-unified-rust/Dockerfile` (the `apt-get install` line);
 `hostobs/run-gate.toml` `[lanes.assay-r1]`; `run-gate-project/run_gate.py`
@@ -846,8 +847,9 @@ below is NOT needed and should not be applied for this lane.
 
 | run | head | verdict |
 |---|---|---|
-| `run-gate assay-r1` | `631a721a1` | `PASS`, `.assay/verdict-assay-r1.json` written, R0 PASS + R1 PASS |
-| the same lane, one kernel test file deleted and committed in a temporary worktree | `e5247610` | `FAIL`, R1 `UNCOVERED_LINES` |
+| `run-gate assay-r1` | fix round | `PASS`, `.assay/verdict-assay-r1.json` written, R0 PASS + R1 PASS |
+| the same lane, one kernel test file deleted
+  and committed in a temporary worktree | fix round + that deletion | `FAIL`, R1 `UNCOVERED_LINES` |
 
 The PASS log binds the artifact to the head (`assay analyze verdict --expected-commit`)
 and prints the measured totals from it: `lines 15100/15723 = 96.0377% over 33 targets;

@@ -20,9 +20,10 @@
   runs from the mounted worktree's own source (`PYTHONPATH={worktree}/assay/src`) with no
   install, which is why it needs no `pip` in the Rust gate image (`HOB-44` was the
   `kind = "assay"` declaration's install step, and is closed by this re-declaration; the
-  image is unchanged). Proven through Run-Gate at head `631a721a1`: the lane log carries
+  image is unchanged). Proven through Run-Gate in this branch: the lane log carries
   `verdict PASS` and the measured totals, and a lane-run negative (one kernel test file
-  deleted) logs `FAIL/UNCOVERED_LINES`. `selftest` stays as the enforced baseline.
+  deleted and committed in a temporary worktree) logs `FAIL/UNCOVERED_LINES`. `selftest`
+  stays as the enforced baseline.
 - **`store` crate (M1 part 3):** the on-disk history and events store. A segment is a
   sequence of `proto` payloads inside a checksummed record envelope (64-byte header, records
   carrying their own total length, sequence number, body CRC and incarnation list, a 64-byte

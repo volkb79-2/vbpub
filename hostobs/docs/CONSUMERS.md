@@ -68,7 +68,7 @@ targets returned:
 
 | run | nextest | assay R1 |
 |---|---|---|
-| `run-gate assay-r1` at head `631a721a1` | 333 tests pass | `PASS`, 15100/15723 = 96.0377 % |
+| `run-gate assay-r1` in this workspace's registered lane | 333 tests pass | `PASS`, 15100/15723 = 96.0377 % |
 | the same lane, one kernel test file deleted, committed in a temporary worktree | 322 tests pass (all green) | `FAIL/UNCOVERED_LINES`, 14777/15723 = 93.9833 % |
 
 So the verdict is the measured number and the failure is the coverage claim itself; the

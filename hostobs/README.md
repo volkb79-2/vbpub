@@ -127,5 +127,6 @@ are pinned this way. The lane is a **command lane**, not `kind = "assay"`: it ru
 straight from the mounted worktree's own source (`PYTHONPATH={worktree}/assay/src`), so it
 needs no install and therefore no `pip` in the Rust gate image (`HOB-44`, closed by exactly
 that re-declaration). `selftest` stays as the enforced baseline alongside it. The lane was
-proven through Run-Gate at head `631a721a1`: `PASS` 15100/15723 = 96.0377 % in the lane's own
-log, and `FAIL/UNCOVERED_LINES` 14777/15723 = 93.9833 % when one kernel test file is deleted.
+proven through Run-Gate in this branch: `PASS` 15100/15723 = 96.0377 % in the lane's own log,
+and `FAIL/UNCOVERED_LINES` 14777/15723 = 93.9833 % when one kernel test file is deleted and
+that deletion is committed in a temporary worktree.
