@@ -19,7 +19,7 @@
 | KI-171 | OPEN (the packaged cmru-cli SKILL is grammar-checked but not coverage-checked: a verb or flag a release adds can be missing from it with every existing test green) | — |
 | KI-170 | OPEN (bundle validator outcomes pinned; SPEC wording and R2 lane-cost policy remain) | — |
 | KI-169 | FIXED 2026-11-16 (bundle/client staging paths are resolved, disjoint descendants of `dist_dir`, and rechecked before cleanup) | `493ecc6a2ba9a885d748de350210ee06a85af66b` |
-| KI-168 | FIXED 2026-11-16 (configured wheel-builder and cgroup-probe images are checked before release dispatch) | `9a5d4ab93c7c6c064a040344f64f43bd214ab0ac` |
+| KI-168 | FIXED 2026-11-16 (configured wheel-builder and cgroup-probe images are checked before release dispatch) | `9a5d4ab938181173e18cf6ece092ba84ba039125` |
 | KI-167 | OPEN (case-sensitive suffix checks, no `.env` / `.env.*` prefix class and an incomplete name list can miss secret-class paths) | — |
 | KI-166 | FIXED (included bundle source symlinks could dereference and ship their targets) | `f2b56b12743f6a764bbadefa8b937c1bd642b32f` |
 | KI-165 | OPEN (item 2 fixed; items 1, 3, 4, 5 and 6 remain) | `f2b56b12743f6a764bbadefa8b937c1bd642b32f` |
