@@ -2799,14 +2799,50 @@ because those summaries are not part of the Assay R1 claim.
 The vbpub Rust image carries stable Rust, cargo-nextest, cargo-llvm-cov,
 cargo-mutants, cargo-deny, and its lock-keyed crate cache built with
 `cargo fetch --locked`. Consumer lanes run Cargo with `--offline --locked`;
-they do not vendor dependencies in Git. The current hostobs baseline remains
-on `lint`/`selftest` until its separate consumer integration changes it to an
-Assay `assay-r1` lane. Its current baseline command is:
+they do not vendor dependencies in Git.
+
+**A Rust assay lane needs an image that also carries `pip` — OR must be a command lane.**
+Run-Gate installs
+an internal consumer's assay from the selected worktree with `python3 -m pip
+--editable` before the judge starts, and `tester-unified-rust` ships `python3`
+with no pip, no `ensurepip` and no venv module: a registered `kind = "assay"`
+Rust lane stops at `run-gate: editable assay install failed` (`No module named
+pip`) and reports `ERROR` with no verdict artifact. Two honest routes, and the
+second is what hostobs proved:
+
+1. Add `python3-pip python3-venv` to that image (measured: seven packages, no
+   new base image, no lock change, no run-time network) — filed as B549 and, on
+   the consumer side, as hostobs `HOB-44`.
+2. Declare the lane as `kind = "command"` and run the judge from the mounted
+   worktree's own source — `PYTHONPATH={worktree}/assay/src python3 -m
+   assay.cli run <lane> --file assay.toml --verdict-json …` — which is exactly
+   how assay is consumed inside this monorepo and installs nothing, so the
+   locked offline Rust image needs no change. The cost is that the consumer owns
+   the argv reaching the judge, so it must add its own post-checks: `assay
+   verify`, `assay analyze verdict --expected-commit $(git rev-parse HEAD)`
+   (the commit binding `verify` does not compare), a printout of the measured
+   totals read from the artifact, and `exit_map` so the judge's status is the
+   lane's verdict.
+
+hostobs took route 2 and proved it through Run-Gate (PASS with the measured
+totals in the lane log; `FAIL/UNCOVERED_LINES` when one kernel test file is
+deleted and that deletion is committed in a temporary worktree). Its
+`docs/CONSUMERS.md` is the worked example.
+
+hostobs adopted the lane this section describes: `hostobs/assay.toml
+[lanes.assay-r1]` declares `mode = "whole_target"` over the 33 `src` files of
+its four functional crates at a 95.0 % line floor (measured 96.0377 %), and
+`hostobs/run-gate.toml` reaches it through a `kind = "command"` lane while keeping
+`selftest`. Its verdict records `branch_capability: "unavailable"`,
+`branches_total: 0` and lists every uncovered executable line as a finding;
+nothing about branches is asserted, because stable `cargo-llvm-cov` writes no
+branch arcs (B523).
 
 ```sh
 cd hostobs
 run-gate lint
 run-gate selftest
+run-gate assay-r1      # command lane: no install, no pip needed (B549 / HOB-44)
 ```
 
 Rust R2 is not adopted yet; this is a known issue, not a per-release waiver. Its

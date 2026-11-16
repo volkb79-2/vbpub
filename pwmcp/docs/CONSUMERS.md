@@ -406,15 +406,23 @@ subdirectory with the indexed frames:
 
 ```bash
 cd pwmcp
-export PWMCP_CONSOLE_CORPUS_DIR="$PWD/artifacts/console-corpus"   # the conventional, gitignored place
-python3 tools/corpus/console_corpus.py verify "$PWMCP_CONSOLE_CORPUS_DIR"
+python3 tools/corpus/console_corpus.py verify        # defaults to artifacts/console-corpus (derived from the script)
+# equivalent explicit form, which always wins:
+python3 tools/corpus/console_corpus.py verify artifacts/console-corpus
+# rebuild the deterministic tar the pin describes (default output: artifacts/console-corpus/<pin archive>)
+python3 tools/corpus/console_corpus.py package artifacts/console-corpus/frames
 ```
 
 The verifier checks the exact frame set, each frame's SHA256 and dimensions,
 and the SHA256 and size of the deterministic tar described by
 `tests/corpus/console/CORPUS-ASSETS.json`. It reads only that local directory;
-it has no download or cache path. If the variable is unset, the two tests that
-need the complete capture skip with a reason. Set
+it has no download or cache path. The `verify` argument and `package --out` are
+explicit paths: only their DEFAULT (`artifacts/console-corpus`, the conventional
+git-ignored place) is derived from the script's own location, so it is neither a
+home-directory constant nor an override of a path you pass. The corpus SOURCE
+stays explicit: `locate` and the tests read only `PWMCP_CONSOLE_CORPUS_DIR`, and
+an unset variable still raises `CorpusMissing` (no fallback). If the variable is
+unset, the two tests that need the complete capture skip with a reason. Set
 `PWMCP_REQUIRE_CONSOLE_CORPUS=1` when running those tests in an environment
 with the local directory available to make an absent corpus fail. The release
 gate lanes remain corpus-free. See the [design rationale](DESIGN-GUIDE.md#local-console-corpus).
@@ -437,6 +445,123 @@ run-gate r2
 It writes progress and verdict state below the git-ignored `.assay/` directory.
 Use the R1 lane for the normal CMRU release gate; run R2 separately when the
 long mutation campaign is useful.
+
+### The R2 candidate cap (`max_mutants`)
+
+`max_mutants` does not bound a run that is already executing: Assay discovers every
+candidate first and REFUSES an inventory larger than the cap before executing a
+single one (`BUDGET_EXCEEDED` / `MUTANT_LIMIT_EXCEEDED`, exit 4, after paying for the
+baseline). A cap below the current inventory therefore does not make a campaign
+cheap — it makes the release lane unable to complete, so it is checked, not guessed.
+
+**Cap-choice rule.**
+
+1. Refresh the recorded inventory: run `assay plan r2 --json` on the final release
+   commit and add its `candidate_count` as a new file in
+   `tests/fixtures/r2-inventory/` (a record is never edited, only added).
+   **Measure with a cap ABOVE the expected count.** Assay stops discovery at
+   `max_mutants` and reports `max_mutants + 1` candidates in that case, so a plan run at
+   the shipped cap returns `1001` at a cap of `1000` — that number is the CAP talking,
+   not the code, and recording it as an inventory is how a cap gets "justified" by its
+   own sentinel. (The tool side of this is Assay's own filed item **B526**: bounded
+   discovery retains at most `max_mutants + 1` descriptors and reports that count, so the
+   reported total is the CAP's, not the inventory's.) Since a plan refuses an uncommitted lane file, measure in a scratch
+   checkout (a temporary worktree): raise `max_mutants` there, commit, plan, record the
+   count with `measured_with_max_mutants` set to the raised value, and throw the
+   worktree away. On this project's numbers a raised-cap reading is 1293, the same
+   inventory the r9 plan reports.
+2. Set `max_mutants` to `ceil(largest recorded candidate inventory * 1.10)` or
+   higher. 10% headroom leaves room for ordinary inventory growth from unrelated
+   work landing before the campaign runs.
+3. Check the number against the lane's `budget`, `judge.mutation.jobs_max` and
+   `budget_per_candidate`: `candidate_count * per-candidate budget` divided by the
+   worker count is the wall-clock floor, and a cap that cannot finish inside `budget`
+   bounds nothing useful — shrink the campaign scope (or the per-candidate budget)
+   rather than the cap.
+4. Review the cap together with `budget`, `jobs` and per-candidate cost whenever one
+   of them changes, and never edit a host-local copy of the judged checkout as a
+   remedy.
+
+`tests/test_r2_lane_contract.py` enforces the rule: the declared cap must clear every
+recorded inventory by the 10% headroom, and must not sit absurdly far above it (the
+cap bounds an unexpectedly large run; it is not a free pass).
+
+### The R2 lane's memory-plus-swap ceiling
+
+`run-gate.toml` `[lanes.r2.resources]` declares `memory = "3g"` AND
+`memory_swap = "3g"`. The second key is not redundant: without it Docker leaves swap
+unbounded for the container, so a runaway mutant swaps on the host instead of dying at
+its cap. Docker's `--memory-swap` is the COMBINED memory-plus-swap limit, so equal
+values keep the combined ceiling at the same 3 GiB the memory cap already declares —
+a larger swap value would re-open exactly that swapping. `tests/test_r2_resources.py`
+parses both keys, requires them to be equal, and pins that the observer-backed lane
+keeps `pids` and `memory` (its local counters need them) and that the swap key is a
+RESOURCE-only change: the mutation judge identity (`operators`, `fail_under`,
+`require_branch`, coverage artifact) is unchanged, so Assay's record reuse across
+campaigns still applies.
+
+### Release-scoped R2 campaigns (changed-line candidate selection)
+
+The `r2` lane plans the WHOLE target (see the cap section above). A release-to-release
+campaign often needs only the code that release changed. That is a supported subset run,
+not a smaller whole-target run, and the two must never be conflated in evidence.
+
+**Recipe.** On the release checkout (the exact commit whose diff you are selecting from):
+
+1. Plan the lane and keep the JSON: `assay plan r2 --json > plan.json`.
+2. Take the changed source line ranges from the release diff:
+   `git diff -U0 <base>..<release> -- <source-path>`.
+3. Select the candidates and write the list with the tool that implements steps 2-3:
+   `python3 tools/r2/select_changed_candidates.py --plan plan.json --diff release.diff
+   --out .run-gate/only-candidates-<scope>.txt`. It reads each hunk header's NEW-file range
+   (`@@ -a,b +c,d @@` covers lines `c .. c+d-1`, a bare `+c` is one line, and a
+   pure-deletion hunk `+c,0` covers none), strips the diff's `a/`/`b/` prefixes, writes
+   one candidate id per line in plan order, refuses to write an empty list, and prints
+   `selected N of M candidates` for the campaign record. The file must stay inside the
+   checkout and under the git-ignored `.run-gate/`, because the lane mounts only the
+   checkout.
+
+**The path form is the one thing to get right, and it is stated, not guessed.**
+`assay plan r2 --json` carries **repository-root-relative** paths — `pwmcp/client/src/...`,
+not `client/src/...` — because assay anchors every path on the git repository top, never
+on the project directory it was invoked from (measured on this lane, and pinned by
+`tests/fixtures/r2-plan/real-plan-slice.json`). The `git diff` in step 2, run from the
+project directory, produces that SAME repository-root form, so the plain recipe works.
+Two other forms do not match by themselves:
+
+* `git diff --relative` (or a diff captured while working inside the project directory
+  with `--relative`) emits `client/src/...`. Pass `--project-prefix pwmcp/` to say so.
+* If neither form matches anything, the tool derives a single project prefix **only when
+  the plan makes it unambiguous** (every diff path suffix-matches exactly one plan path
+  and all of those share one prefix), uses it, and **prints the derived prefix on stderr**
+  (`diff paths are project-relative: prefixed them with 'pwmcp/' (derived from the plan,
+  not stated …)`). It never strips a prefix silently, and an ambiguous match is a refusal.
+* When nothing is selected it now names **which forms it tried** (as given / project-relative
+  and what each matched) plus the two remedies, instead of the older bare "check the diff
+  base and the paths" message whose only honest reading was "the release touched no
+  mutated line".
+4. Pass that file through the supported campaign invocation:
+   `run-gate r2 --only-candidates .run-gate/only-candidates-<scope>.txt`. Run-gate keeps
+   its own `--resume --progress .assay/progress-r2.jsonl` handling for the lane; do not
+   replace that with a hand-rolled `assay run`.
+
+**What the result means.** A selected subset is PARTIAL by construction: the candidates
+left out are reported not started, and run-gate records the run as `selective`, so a
+release-scoped campaign is never a whole-target R2 PASS and never stands in for one in
+lane history. Record the selection file, the diff base, the release commit and the
+selected/planned candidate counts with the campaign evidence, so the claim can be
+re-derived later.
+
+**Traps.** `assay plan --file` takes an Assay TOML config, not a source-file filter — it
+plans the whole target. A host-local edit of `assay.toml` to shrink the target is not a
+supported way to scope a campaign (and it changes the lane's judged declaration).
+Candidates whose mutation sites sit in an UNCHANGED file are not selected by this recipe
+even when the release changed their neighbourhood indirectly; that is the accepted cost
+of a changed-line scope.
+
+`tests/test_r2_candidate_recipe.py` runs the selection step on synthetic `plan` and
+`git diff -U0` fixtures, so the algorithm above is a tested entry point and the document
+cannot drift into a recipe no tool implements.
 
 ## Maintainer refresh of Playwright
 

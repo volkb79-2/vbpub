@@ -26,7 +26,13 @@ linking against assay itself.
   Rust is supported at **R1 only** — changed-line LCOV judgment for `.rs`
   files; the lane must supply a real Rust toolchain. Stable Rust branch totals
   are reported as unavailable, and R2/R3 remain unregistered. Hostobs keeps
-  separate 90% line / 85% region crate floors. See [Rust lanes](docs/CONSUMERS.md#rust-lanes-r1)
+  separate 90% line / 85% region crate floors, and has also adopted the
+  `assay-r1` consumer lane (33 whole-target `src` files at a 95.0% line floor,
+  declared alongside its own `selftest`) as a `kind = "command"` lane that runs
+  the judge from the worktree's own `assay/src`, so no install and therefore no
+  `pip` is needed in the locked Rust image (the `kind = "assay"` install shape
+  is B549).
+  See [Rust lanes](docs/CONSUMERS.md#rust-lanes-r1)
   for the consumer contract and [Rust methodology](docs/RUST-METHODOLOGY.md)
   for binding dependency, coverage, mutation, release-policy, and deferred-work decisions.
   See also [the tier design](docs/DESIGN-GUIDE.md#rust-adapter-status-and-tier-design).
@@ -571,7 +577,7 @@ on this module" is `mode = "whole_target"` + `require_branch = true` +
 | **JavaScript/TypeScript** | ✅ | ✅ registered, both scope modes | ✅ **available** — real Istanbul/nyc branch arcs (declare `producer = "istanbul"`; `@vitest/coverage-v8`/`c8` report ranges, not per-arm arcs, and stay `"unavailable"` without it) | ✅ registered, **ingested path only** — an external producer such as Stryker owns candidate execution/retry; Assay scores the completed report, with no Assay candidate-state resume/rejudge or per-candidate resource-event checks | ✅ **registered and locally exercised** — R3 runs import-break and uncovered-line canaries (B087); import-break requires a matching execution receipt, so lanes that lint or type-check before tests should use uncovered-line; a pre-test static failure is inconclusive. See the [receipt rationale](docs/DESIGN-GUIDE.md#r3-import-break-receipt-attribution) and [host-load verdict rules](docs/DESIGN-GUIDE.md#host-load-and-verdicts). Both dstdns canaries were qualified under Assay 9.0.0/schema v15, with retained verdicts and verifier transcripts for that release |
 | **Go** | ✅ | ✅ registered, both scope modes — needs a real `go` toolchain on the judge (`external_tools = ("go",)`); statement positions are re-derived from source, never trusted from the profile alone (A-217) | ❌ **structurally impossible** — `go-cover`'s own format has no branch concept; no engineering investment inside assay changes this without Go's own coverage instrumentation gaining one | ❌ **not implemented** — `generate_mutation_sites` is unconditionally `UNSUPPORTED`; other Go-ecosystem tools (e.g. `go-mutesting`) prove this is possible in principle, assay just hasn't built it | ❌ not registered |
 | **SQL/DDL** | ✅ | ❌ **not registered** — SQL's only rigor entry is R2 | — (moot) | ✅ registered, native; uses the same Assay candidate state, resume/rejudge, one serial tail retry for current-run `crashed`, per-candidate `budget_exceeded` and `hung` results, progress and resource-event path as Python | ❌ not registered |
-| **Rust** | ✅ | ✅ **registered at R1** — changed-line LCOV judgment; the lane must run Cargo in `tester-unified-rust` or an equivalent pinned environment | ❌ **unavailable on stable Rust** — marker-only `BRF:0` / `BRH:0` records normalize to `branches = None`; `require_branch = true` refuses `NO_MEASUREMENT/BRANCH_UNAVAILABLE` | ❌ **not implemented** — planned ingestion of `cargo-mutants` `outcomes.json`; Rust R2 is not adopted and remains a known issue, not a per-release waiver | ❌ **not registered** — the design target has one test-break/import-break canary per lane; uncovered-line remains a separate T3 probe |
+| **Rust** | ✅ | ✅ **registered at R1** — changed-line LCOV judgment; the lane must run Cargo in `tester-unified-rust` or an equivalent pinned environment; if it is declared `kind = "assay"`, Run-Gate source-installs assay there and the environment must ALSO carry `pip`, which that image ships none of (B549). Declaring it `kind = "command"` and running the judge from the worktree's own `assay/src` needs no install and no `pip`, which is what hostobs does | ❌ **unavailable on stable Rust** — marker-only `BRF:0` / `BRH:0` records normalize to `branches = None`; `require_branch = true` refuses `NO_MEASUREMENT/BRANCH_UNAVAILABLE` | ❌ **not implemented** — planned ingestion of `cargo-mutants` `outcomes.json`; Rust R2 is not adopted and remains a known issue, not a per-release waiver | ❌ **not registered** — the design target has one test-break/import-break canary per lane; uncovered-line remains a separate T3 probe |
 
 #### Cross-cutting capabilities beyond language adapters
 

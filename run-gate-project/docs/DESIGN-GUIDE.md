@@ -388,7 +388,9 @@ it. The observer endpoint is required only for observer lanes. An unset or
 empty value names the variable and directs the operator to `cgprofiled doctor` and
 the host endpoints record. `RUN_GATE_PROFILE=off` explicitly disables
 profiling, but an observer lane still requires both endpoint variables for
-its capability checks.
+its capability checks. An endpoint or daemon-capability refusal names the
+observer declaration and says `RUN_GATE_PROFILE=off does not waive this
+preflight`, because the read-only observer mount is independent of sampling.
 
 An observer lane bind-mounts the directory containing
 `CGPROFILE_OBSERVER_SOCKET` read-only onto itself at that identical path.
@@ -1100,6 +1102,13 @@ Assay <= 12.1.1 includes `jobs_max` in judge identity, so changing it
 invalidates finished-candidate state. Assay >= 12.2.0 keeps reusable finished
 records when only resource settings change; changes to tests, sources, `argv`,
 `env`, or Assay version still invalidate. See the [versioned identity rule](../CONSUMERS.md#native-r2-worker-selection).
+
+Internal source-backed lanes install Assay from the selected worktree, so a
+new tester image or Run-Gate wheel cannot replace an old checkout's judge.
+The supported restart preserves the project's declarations and tests in a
+reviewable commit that changes only `assay/`; explicit carry-over then records
+why the judge-only upgrade cannot change outcomes. See the
+[old-checkout restart recipe](../CONSUMERS.md#restart-an-old-source-backed-checkout-after-a-judge-upgrade-rg-270).
 
 Choose the ceiling from available CPU and measured per-candidate memory. On a
 four-core host, cap at three to reserve one core for the host and sampler; use

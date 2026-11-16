@@ -9,6 +9,16 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
 
 ## [Unreleased]
 
+### Fixed
+- run-gate: observer preflight refusals explain required endpoints and profiling opt-out behavior (RG-250).
+
+### Documentation
+- run-gate: document the source-backed Assay upgrade and carry-over procedure for old campaign checkouts (RG-270).
+- backlog: close RG-251, RG-257, RG-268 and RG-269 against fixes already released in 25.4.1, 25.5.0 and 25.6.0.
+
+### Testing
+- run-gate: assert scoped `fstat` fakes delegate unrelated descriptors (RG-269).
+
 <!-- cmru: release history -->
 
 ## [25.6.0] - 2026-11-12

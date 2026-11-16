@@ -1,0 +1,159 @@
+# hostobs's judged lane declarations (Assay R1, Rust).
+#
+# `assay-r1` judges the FOUR functional crates' `src/` trees with Assay's
+# registered Rust R1 adapter (assay R-2 / B243, merged): the lane's argv is the
+# workspace test-and-coverage command (cargo-llvm-cov over nextest, doctests,
+# per-crate line/region floors), and Assay judges the LCOV artifact that command
+# wrote. `run-gate.toml` reaches this lane through a `kind = "command"` lane that runs
+# the judge from the worktree's own `assay/src` (no install, so the Rust image needs no
+# `pip`: HOB-44, closed by that declaration shape), and keeps the existing `selftest`
+# lane as the enforced R0/R1 baseline underneath it.
+#
+# ## Floors and their derivation
+#
+# Measured in the registered `selftest` lane on this workspace at worktree head
+# `3b46df06` (image `tester-unified:run-gate-2560`, Docker network `none`):
+#
+#   judged set: 33 `src/*.rs` files of crates/model, proto, kernel and store
+#   coverage:   15100 / 15723 executable lines = 96.0377 %
+#               model 98.09 % (2004/2043), proto 99.71 % (3454/3464),
+#               kernel 93.52 % (2627/2809), store 94.71 % (7015/7407)
+#
+#   judge.fail_under = 95.0 -- the measured value rounded DOWN by one full
+#   point (629 lines of headroom on 15723). The margin is a documented policy,
+#   not a measured-to-the-edge number: the per-crate floors in
+#   `coverage-floors.toml` (checked by `tools/crate-floors.py` inside this
+#   lane's argv) remain the tighter bound and are never lowered to accommodate
+#   this lane, and a floor is never lowered for a crate whose coverage drops.
+#
+# Three of the four `crates/*/src/lib.rs` files are NOT judged targets:
+# `model`, `proto` and `store` are module declarations and `//!` documentation
+# only, so cargo-llvm-cov emits no `SF:` record for them. `kernel`'s `lib.rs`
+# carries `Bounds`, so it IS declared (7 executable lines, all covered).
+# Assay's whole-target mode refuses a declared target with
+# no artifact entry (`NO_MEASUREMENT/TARGET_NOT_MEASURED`) rather than excusing
+# it, which is the correct behaviour and the reason they are excluded HERE, in
+# a declared list, instead of being silently absorbed.
+#
+# ## What R1 does not cover (by design, documented limit)
+#
+# - **Branches.** Stable Rust's cargo-llvm-cov writes no `BRDA:` records; it
+#   still writes the zero-valued `BRF:`/`BRH:` totals. Assay's Rust normalizer
+#   classifies that shape as branch capability `unavailable` (B523) instead of
+#   "reported, zero branches", so the verdict records
+#   `branch_capability: unavailable` and `branches_total: 0`. `require_branch`
+#   stays `false`: `true` would refuse every run with
+#   `NO_MEASUREMENT/BRANCH_UNAVAILABLE`, which is a refusal, not a measurement.
+#   Branch coverage is never faked to satisfy this lane.
+# - **Inline `#[cfg(test)] mod tests` blocks in a judged `src` file ARE
+#   measured** (LCOV has no per-region exclusion; assay known issue K5). That
+#   is not a small effect: roughly a third of these crates' source lines are
+#   inline test code (about 10.5k of 28.7k, counted from each file's
+#   `#[cfg(test)]` line), whose executable lines are covered whenever the tests
+#   run. The measured percentage therefore overstates product-code coverage and
+#   the 95.0 floor is looser on product code than it reads.
+# - **Region coverage is not an Assay claim.** `tools/crate-floors.py` checks
+#   the per-crate line AND region floors from `cov-summary.json` inside this
+#   lane's R0 half; Assay's R1 claim itself is line-granularity only (K1/K3).
+# - **Mutation (R2) and canaries (R3) are not registered for Rust.** There is no
+#   `assay-r2`/`assay-r3` in this file; Rust R2 needs cargo-mutants ingestion
+#   (assay B245/R-3b) and R3 needs a test-break canary (B246/R-4). They remain
+#   open work, reported as such rather than approximated.
+#
+# ## The environment fact this lane depends on
+#
+# `tools/cargo-offline.sh` execs `cargo`, which in `tester-unified-rust` is the
+# rustup proxy: without `CARGO_HOME`/`RUSTUP_HOME` on the child's environment
+# rustup cannot select a toolchain and the lane's command fails before writing
+# any artifact (measured: `NO_MEASUREMENT/EMPTY_COVERAGE`). Both names are
+# therefore declared passthroughs, beside `PATH`.
+schema_version = 2
+
+[lanes.assay-r1]
+scope = "S1"
+rigor = ["R0", "R1"]
+enforcement = "gate"
+# Paths are PROJECT-relative: Assay runs this argv inside its own snapshot with
+# `cwd` at the project root (`hostobs/`), and `{worktree}` is not substituted
+# here -- that token belongs to Run-Gate COMMAND lanes (the `lint` and
+# `selftest` lanes in run-gate.toml), not to an assay lane's argv.
+argv = [
+  "bash", "-c",
+  '''set -eu
+tools/cargo-offline.sh llvm-cov nextest --workspace --locked --offline --profile ci --no-tests=fail --lcov --output-path lcov.info
+tools/cargo-offline.sh test --doc --workspace --locked --offline
+tools/cargo-offline.sh llvm-cov report --json --summary-only --output-path cov-summary.json
+python3 tools/crate-floors.py cov-summary.json coverage-floors.toml''',
+]
+env = {}
+# `PATH` finds the tools; the two cargo homes are what the rustup proxy needs.
+env_passthrough = ["PATH", "CARGO_HOME", "RUSTUP_HOME"]
+budget = "20m"
+allow_argv_append = false
+
+# Assay snapshots the whole vbpub repository, not just hostobs/, so a tracked
+# hostile symlink elsewhere in the monorepo would refuse this lane. Same three
+# topos fixture omissions as run-gate-project/assay.toml, cmru/assay.toml and
+# cgprofile/assay.toml -- one repository, one list.
+[lanes.assay-r1.isolation]
+snapshot_selection = "repository-minus-unsafe-symlinks"
+snapshot_history = "shallow"
+unsafe_symlink_omissions = [
+  "topos/tests/fixtures/inspect_files/_danger/passwd_link",
+  "topos/tests/fixtures/inspect_files/cgroup_escape/system.slice/ssh.service/dangerous_link/passwd_escape",
+  "topos/tests/fixtures/inspect_files/cgroup_nonreg/system.slice/ssh.service/memory.current",
+]
+
+[lanes.assay-r1.judge]
+language = "rust"
+source_roots = ["crates/model/src", "crates/proto/src", "crates/kernel/src", "crates/store/src"]
+# whole_target: every executable line of every declared target is judged, not
+# only the lines a commit changed. That is what makes this lane a whole-project
+# floor rather than a diff gate; `judge.targets` is required and honoured in
+# this mode, and `judge.base`/`base_source` are forbidden (there is no diff).
+mode = "whole_target"
+targets = [
+  "crates/kernel/src/cgroup.rs",
+  "crates/kernel/src/clock.rs",
+  "crates/kernel/src/cmdline.rs",
+  "crates/kernel/src/fs.rs",
+  "crates/kernel/src/identity.rs",
+  "crates/kernel/src/lib.rs",
+  "crates/kernel/src/parse.rs",
+  "crates/kernel/src/procfs.rs",
+  "crates/kernel/src/quality.rs",
+  "crates/kernel/src/value.rs",
+  "crates/model/src/identity.rs",
+  "crates/model/src/metric.rs",
+  "crates/model/src/quality.rs",
+  "crates/model/src/rate.rs",
+  "crates/model/src/value.rs",
+  "crates/proto/src/dict.rs",
+  "crates/proto/src/error.rs",
+  "crates/proto/src/frame.rs",
+  "crates/proto/src/quality.rs",
+  "crates/proto/src/read.rs",
+  "crates/proto/src/write.rs",
+  "crates/store/src/crc.rs",
+  "crates/store/src/dictionary.rs",
+  "crates/store/src/error.rs",
+  "crates/store/src/events.rs",
+  "crates/store/src/format.rs",
+  "crates/store/src/fsio.rs",
+  "crates/store/src/quality.rs",
+  "crates/store/src/queue.rs",
+  "crates/store/src/segment.rs",
+  "crates/store/src/store.rs",
+  "crates/store/src/tier.rs",
+  "crates/store/src/tmpfs.rs",
+]
+fail_under = 95.0
+# LCOV carries no exclusion field, so `allow_excluded` has nothing to permit.
+# Declaring it `false` means an artifact that ever starts excluding lines is a
+# loud refusal instead of a quietly reduced denominator.
+allow_excluded = false
+require_branch = false
+
+[lanes.assay-r1.judge.coverage]
+format = "lcov"
+artifact = "lcov.info"

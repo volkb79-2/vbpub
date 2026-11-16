@@ -94,6 +94,9 @@ than the prose predicted (full rationale in `SPEC.md` §8 and the LOG):
    naming the variable and pointing to `cgprofiled doctor` and the host endpoints
    record. `RUN_GATE_PROFILE=off` explicitly opts out of profiling, while an
    observer lane still needs both endpoints for its version preflight and mount.
+   If an endpoint or daemon capability check fails, the refusal names the
+   observer declaration and explains that RUN_GATE_PROFILE=off does not waive
+   this preflight.
    Before launch, Run-Gate requires the daemon to advertise observer contract 2
    at the observer environment value and `listening = true`, and checks the
    observer directory before mounting it read-only at the same path. The
@@ -230,7 +233,10 @@ be complete for the current judge and plan), resumed across a judge change
 [shard, merge, carry over and target](CONSUMERS.md#shard-merge-carry-over-and-target-a-native-r2-lane-rg-265). See the
 [consumer example](CONSUMERS.md#native-r2-worker-selection) and
 [design rationale](docs/DESIGN-GUIDE.md#native-r2-worker-selection). A
-mixed-mode sequence is stored per
+source-backed lane uses the selected worktree's `assay/` even when its tester
+image or Run-Gate wheel is newer; see the
+[old-checkout restart recipe](CONSUMERS.md#restart-an-old-source-backed-checkout-after-a-judge-upgrade-rg-270).
+A mixed-mode sequence is stored per
 member and excluded as an aggregate history measurement. See the [resource settings design](docs/DESIGN-GUIDE.md#combined-resource-settings)
 and [consumer examples](CONSUMERS.md#combined-resource-settings). Resource
 RAM targets are configured in TOML; there is no `--ram-target` command-line

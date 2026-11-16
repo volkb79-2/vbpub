@@ -20,6 +20,7 @@ Mechanism (`tools/corpus/console_corpus.py`, stdlib only, tests in `tests/test_c
 | Pin | `CORPUS-ASSETS.json` records `source`, the deterministic tar name, SHA256 `38b287087c42b45e47d25083363490e7853fd043d2a5f8be26dffec4bd480eb2`, size `5365760`, frame count, and index path. No release tag or URL is stored. |
 | Integrity | The verifier requires exactly the indexed regular files, checks each frame SHA256 and PNG dimensions, then rebuilds the sorted ustar (uid/gid 0, mtime 0, mode 0644) and compares its size and SHA256 with the pin. The package command writes the same deterministic tar for independent comparison. |
 | Missing data | If the variable is unset, `locate()` raises `CorpusMissing`. The two real-corpus tests skip with that reason; `PWMCP_REQUIRE_CONSOLE_CORPUS=1` makes the absence a failure. An explicitly supplied but invalid path always fails. |
+| Tool paths (PWMCP-21) | `package --out` and `verify [DIR]` are explicit arguments; only their DEFAULT (`<pwmcp>/artifacts/console-corpus`, and the pin's archive name under it) is derived from the script location. The default is never a corpus source and never overrides an explicitly supplied path; `locate` keeps the no-fallback rule above. |
 | Gates | The registered gate lanes do not include or require the 242-frame capture. Nothing is added to tester-unified. |
 | Tests | `test_real_corpus_is_complete_and_verified` checks the complete local series; `test_curated_frames_are_byte_identical_members_of_the_full_series` verifies committed curated frames against it. Both need the explicit local path. |
 

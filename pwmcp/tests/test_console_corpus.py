@@ -99,6 +99,66 @@ def _write_index_records(mini: dict, records: list[dict]) -> None:
     )
 
 
+def test_package_defaults_to_the_artifacts_folder_derived_from_the_script(
+    mini: dict, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """PWMCP-21: `--out` takes an explicit path, but its DEFAULT is derived from the script location."""
+
+    assert cc.ARTIFACTS_DIR == PWMCP / "artifacts" / "console-corpus"
+    copy = tmp_path / "console_corpus.py"
+    copy.write_text((PWMCP / "tools" / "corpus" / "console_corpus.py").read_text(encoding="utf-8"), encoding="utf-8")
+    # The module is loaded BY PATH, so the derived constant follows this file: it equals
+    # <file's checkout>/artifacts/console-corpus and is NOT the real checkout's constant
+    # (a hardcoded path, a home directory or a worktree literal would make the two equal).
+    spec = importlib.util.spec_from_file_location("cc_elsewhere", copy)
+    assert spec and spec.loader
+    elsewhere = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = elsewhere
+    spec.loader.exec_module(elsewhere)
+    assert elsewhere.ARTIFACTS_DIR == Path(elsewhere.__file__).resolve().parents[2] / "artifacts" / "console-corpus"
+    assert elsewhere.PWMCP == Path(elsewhere.__file__).resolve().parents[2]
+    assert elsewhere.ARTIFACTS_DIR != cc.ARTIFACTS_DIR
+    assert str(Path.home()) not in str(elsewhere.ARTIFACTS_DIR) and "~" not in str(elsewhere.ARTIFACTS_DIR)
+
+    # The parsed default is the artifacts directory plus the pin's archive name, and an
+    # explicit --out still wins (the documented, explicit form is unchanged).
+    written = tmp_path / "explicit.tar"
+    monkeypatch.setattr(cc, "ASSETS_FILE", mini["assets"])
+    monkeypatch.setattr(cc, "CORPUS_ROOT", mini["corpus_root"])
+    assert cc.main(["package", str(mini["frames"]), "--out", str(written)]) == 0
+    assert written.read_bytes() == mini["archive"].read_bytes()
+    assert "out" in capsys.readouterr().out
+
+
+def test_verify_defaults_to_the_artifacts_folder_derived_from_the_script(
+    mini: dict, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """PWMCP-21: `verify` without an argument checks the documented artifacts folder."""
+
+    # The fallback used is the constant parsed at CALL time, so a fixture directory proves it.
+    monkeypatch.setattr(cc, "ASSETS_FILE", mini["assets"])
+    monkeypatch.setattr(cc, "CORPUS_ROOT", mini["corpus_root"])
+    monkeypatch.setattr(cc, "ARTIFACTS_DIR", mini["directory"])
+    assert cc.main(["verify"]) == 0
+    assert str(mini["frames"]) in capsys.readouterr().out
+    # An explicitly named directory still wins and is judged on its own.
+    assert cc.main(["verify", str(mini["directory"])]) == 0
+    assert cc.main(["verify", "/nonexistent"]) == 1
+
+
+def test_package_creates_the_derived_artifacts_folder(
+    mini: dict, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The default destination is git-ignored and may not exist yet: package creates it."""
+
+    monkeypatch.setattr(cc, "ASSETS_FILE", mini["assets"])
+    monkeypatch.setattr(cc, "CORPUS_ROOT", mini["corpus_root"])
+    missing = tmp_path / "fresh" / "console-corpus"
+    monkeypatch.setattr(cc, "ARTIFACTS_DIR", missing)
+    assert cc.main(["package", str(mini["frames"])]) == 0
+    assert (missing / "mini.tar").read_bytes() == mini["archive"].read_bytes()
+
+
 def test_package_is_deterministic_and_checks_the_series_index_first(mini: dict, tmp_path: Path) -> None:
     again = tmp_path / "again.tar"
     assert cc.package(mini["frames"], again, mini["pin"], mini["corpus_root"]) == {

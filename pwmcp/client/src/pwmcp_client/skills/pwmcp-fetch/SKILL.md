@@ -182,7 +182,8 @@ bot-protection pages; it uses the HTTP status.
 ## Blocked by bot protection: report it, do not work around it
 
 `pwmcp inspect` recognises Cloudflare challenges ("Just a moment...", "Performing security
-verification"), CAPTCHA walls and similar interstitials. When it does, it exits **4**, prints
+verification"), Anubis deny pages ("Oh noes! Access Denied ... Protected by Anubis"),
+CAPTCHA walls and similar interstitials. When it does, it exits **4**, prints
 `blocked by bot protection (<provider> <kind>); page content below is the challenge page, not the
 target`, and with `--json` returns `blocked: true`, `provider`, `signals`, `status`, `final_url`
 and `waited_ms`. A wait that ends on a challenge page is reported the same way (not as a
@@ -192,7 +193,9 @@ When you get exit 4 or `blocked: true`:
 
 - **Tell the user the page was BLOCKED**, naming the provider and URL. The text it printed is
   the challenge page, not the target: never summarise it, quote it, or extract numbers from it
-  as if it were the page the user asked for, and never fill gaps from memory.
+  as if it were the page the user asked for, and never fill gaps from memory. An Anubis deny
+  page (kind `deny page`) means an allow/deny rule in front of the site refused this client;
+  the `error code` it shows is Anubis's, not an answer from the site.
 - Do not retry in a loop, rotate user agents, look for solver services or stealth tooling, or
   otherwise try to defeat the protection. That is not in scope for this tool or for you.
 - Offer the human-in-the-loop route: a person opens the page once in their own browser, passes

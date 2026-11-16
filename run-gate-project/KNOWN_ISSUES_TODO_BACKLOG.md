@@ -162,8 +162,8 @@ SPEC §9.
 | RG-265 | native R2 cannot be sharded across containers, merged, carried over a judge change or restricted to a candidate list from Run-Gate | Enhancement | FIXED IN THIS BRANCH (run-gate-r2-flex-20261111) |
 | RG-266 | `jobs = "auto"` places one R2 worker per CPU, so I/O phases leave CPUs idle | Enhancement | FIXED IN THIS BRANCH (run-gate-r2-flex-20261111) |
 | RG-267 | `r2_oversubscribe = "1.5"` has no two-slot host measurement, so the default cannot be decided from evidence | Enhancement | OPEN 2026-11-12 |
-| RG-268 | the save-container-logs foreign-owner test's fake `fstat` result lacks fields required by Python 3.14, so a rebuilt tester image makes selftest fail | Minor | OPEN 2026-11-12 |
-| RG-269 | tests replace shared `os.*` syscalls process-wide and depend on Pytest's private filesystem usage | Medium | OPEN 2026-11-12; observed hazards fixed in the pytest 9.2 audit branch |
+| RG-268 | the save-container-logs foreign-owner test's fake `fstat` result lacks fields required by Python 3.14, so a rebuilt tester image makes selftest fail | Minor | FIXED 2026-11-16; delegates complete `stat_result` shape |
+| RG-269 | tests replace shared `os.*` syscalls process-wide and depend on Pytest's private filesystem usage | Medium | FIXED 2026-11-16; scoped fakes plus unrelated-fd delegation oracle |
 | RG-271 | Decide whether tester-base should pin or float pytest | Medium | OPEN 2026-11-12; estate-level runner-policy question from the pytest 9.2 audit |
 | RG-272 | a valid request base on a non-tag checkout produces zero mutation candidates despite changed source | Should-fix | OPEN 2026-11-12 |
 | RG-273 | ephemeral Run-Gate lanes opt in to the image-advertised KSM shim by default | Enhancement | IMPLEMENTED and released in Run-Gate 25.6.0; tester images rebuilt/deployed 2026-11-12; host lane smoke open |
@@ -7804,7 +7804,7 @@ The cgprofile watch contract includes `unknown` when the monitor cannot support 
 
 ## RG-250 — a lane with `resource_observer` needs the observer socket even with `RUN_GATE_PROFILE=off` (25.0.2 wrapper contract)
 
-**Status:** OPEN (filed 2026-11-08). Severity: minor, documentation or contract.
+**Status:** FIXED 2026-11-16. Severity: minor, documentation or contract.
 
 **Finding.** `preflight_profile_endpoints` (`run_gate.py:1036-1042`) requires the control socket when profiling is enabled or the lane declares `resource_observer`, and the observer socket for every observer lane. `RUN_GATE_PROFILE=off` therefore waives profiling but not the observer preflight. On 2026-11-08 the reinstalled <host> refused `assay-r2-s13` ("cgprofile control socket /run/cgprofile/ctl.sock unreachable ... socket-not-mounted") although the campaign wrapper sets `RUN_GATE_PROFILE=off`; the same lane ran on the controller only because the controller has the socket. The log line "in-process watch - profiling disabled" appears for either host and does not tell the two cases apart.
 
@@ -7812,17 +7812,46 @@ The cgprofile watch contract includes `unknown` when the monitor cannot support 
 
 **Close when.** The refusal text names the cause and SPEC states the rule; if a waiver is added, a test covers both the flag and the refusal.
 
+**Resolution.** No waiver was added: `resource_observer` declares a lane
+capability whose endpoint and daemon preflight remain required when sampling
+is disabled. Endpoint resolution and daemon capability refusals now retain
+their cause, name both required environment variables, and state that
+`RUN_GATE_PROFILE=off` does not waive the preflight. README, CONSUMERS,
+DESIGN-GUIDE, and SPEC state the same behavior. Tests cover both missing
+endpoints, an unavailable daemon response, and the documentation contract.
+
+**Evidence.** Registered `selftest --allow-dirty` PASS: 3,274 passed, one
+container-only test skipped, and 21/21 changed executable lines covered with
+both changed branches taken. The pre-fix hand mutant was killed by the two
+profile-off endpoint-refusal cases (2 failed; 3,270 passed).
+
 **Source.** [shard-s13-REPORT.md](../cmru/docs/evidence/shard-s13-REPORT.md) (why <host> refused), [host-reinstall-EXEC-LOG.md](../scripts/debian-install-v2/docs/evidence/host-reinstall-EXEC-LOG.md) (s13 resume refusal).
 
 ## RG-251 — three in-repo r2 lanes run `assay.cli` from source without `libraries/cowtree/src` on PYTHONPATH and die with `ModuleNotFoundError: cowtree` in 4 seconds
 
-**Status:** OPEN (filed 2026-11-09). Severity: should-fix (the lanes cannot run on a host or image whose tester venv has no cowtree wheel; they only worked while it was installed). Found by the <host> cockpit agent after the cut-over (2026-11-08): `scripts/gstammtisch-guide` r2, `scripts/damon-analysis` r2 and `scripts/debian-install-v2` r2 each failed in about 4 s.
+**Status:** FIXED 2026-11-16 (route guard and lane declarations landed in `2e443acf9`, `fb221e05a`, `26a203e2b`). Severity: should-fix (the lanes cannot run on a host or image whose tester venv has no cowtree wheel; they only worked while it was installed). Found by the <host> cockpit agent after the cut-over (2026-11-08): `scripts/gstammtisch-guide` r2, `scripts/damon-analysis` r2 and `scripts/debian-install-v2` r2 each failed in about 4 s.
 
 **Finding.** The three lanes run the in-repo assay straight from source and set only `PYTHONPATH={worktree}/assay/src` (debian-install-v2 adds `libraries/cli-extended/src`), but assay loads `cowtree` (`assay/src/assay/_cow_workspace.py:22`, lazily, when copy-on-write candidate trees are requested) and the lanes do request them. The lines: `scripts/gstammtisch-guide/run-gate.toml:50`, `scripts/damon-analysis/run-gate.toml:50`, `scripts/debian-install-v2/run-gate.toml:78`. `assay/run-gate.toml:59` and `:84` already carry `{worktree}/libraries/cowtree/src`; these three were not updated when cowtree became an assay import. No other `run-gate.toml` in the tree uses the source-PYTHONPATH form without it (checked with `git grep` on origin/main at `2f7f386cc`).
 
 **Fix.** Add `:{worktree}/libraries/cowtree/src` to the `export PYTHONPATH=...` of the three r2 lanes (the lane env, not a venv install, so a clean tester image works), and add a guard so it cannot recur: a docs/lane test that every lane argv containing `{worktree}/assay/src` also contains `{worktree}/libraries/cowtree/src` (or a smoke lane `python -c "import assay.cli"` with that PYTHONPATH). Decide whether assay should instead vendor the path itself (a `sys.path` entry resolved relative to the assay source tree) so source-run consumers need no PYTHONPATH knowledge; the lane-level fix is the minimum.
 
 **Close when.** Each of the three r2 lanes starts its assay run on a host without a cowtree wheel in the tester venv (at least `python -c "import assay.cli"` under the lane env passes), and the guard test fails if the path is removed again.
+
+**Resolution.** The three source-run R2 lanes now include
+`{worktree}/libraries/cowtree/src` in their effective `PYTHONPATH`. The
+Run-Gate estate guard enumerates source-Assay lane contexts and requires the
+Cowtree route, including nested importers; its real-file oracle also proves a
+hand-removed route is rejected. The changes are already in the current tree;
+this wave adds no other-project edits.
+
+**Evidence.** `TestEstateSourceAssayPythonPathGuard::test_real_files_and_hand_mutations_are_guarded`
+audits every real source-Assay lane declaration in the checkout (including the
+three R2 lanes below) and kills the missing-route mutations;
+`test_real_rust_r1_lane_declares_its_cowtree_route` pins Assay's Rust R1 lane
+the same way. The fix was released in run-gate 25.4.1. Current `scripts/{gstammtisch-guide,damon-analysis,
+debian-install-v2}/run-gate.toml` entries all declare the Cowtree source on
+their source-Assay R2 `PYTHONPATH`. Both guard tests pass in the registered
+Run-Gate selftest.
 
 **Source.** `HANDOFF-STATE-20261107.md` (22:25Z entry, "Backlog to file"); [host-cockpit-EXEC-LOG.md](../scripts/netcup/docs/evidence/host-cockpit-EXEC-LOG.md).
 
@@ -7958,7 +7987,7 @@ report, Gate item 10).
 
 ## RG-257 — `io_sync = "relaxed"` exists but no checked-in gate environment uses it; enable it per environment and measure the A/B
 
-**Status:** OPEN (filed 2026-11-10); severity: performance enhancement with a host-safety qualification; no implementation in this documentation-only filing.
+**Status:** FIXED 2026-11-16 by measured environment-scoped adoption in `aed77bf92`; severity: performance enhancement with a host-safety qualification.
 
 **Problem.** Run-Gate supports `resources.io_sync = "relaxed"` and the eatmydata preload mount, but no lane/environment in the checked-in configs selects it. The obvious alternative, one central default, is wrong: a non-container host lane cannot receive the container-side `/etc/ld.so.preload` mount and would refuse or misreport. The performance benefit therefore remains unmeasured and unusable in the intended tester environments.
 
@@ -7979,6 +8008,25 @@ Run an A/B on representative heavy lanes (the CMRU mutation lane plus the run-ga
 **Acceptance test idea.** Config tests assert relaxed resolves only for the two named ephemeral environments and that a bare-host lane remains strict. A dry run shows the preload mount and `RUN_GATE_IO_SYNC=relaxed`. The A/B report records comparable PASS verdicts and times, and a deliberately mismatched verdict blocks adoption. Hand-removing the environment-level setting makes the focused config test fail; moving it to a global default makes the non-container-control test fail.
 
 **Close when.** The A/B records comparable PASS verdicts and resource/time evidence for the named heavy lanes, the per-environment selection is implemented only where the durability boundary is proven, a mismatched verdict blocks adoption, and config/dry-run tests plus the user documentation pass on a clean final commit. A recorded decision to retain strict mode also closes the item when it records the measured comparison or why measurement was deferred and leaves all environments explicitly strict.
+
+**Resolution.** W0 measured strict versus relaxed on the CMRU coverage and
+cli-extended R0-R1 shapes, then adopted `io_sync = "relaxed"` only on the
+ephemeral central `tester-unified` and CMRU's separate `cmru-mutation`
+environments. The general default remains strict and IO-measurement lanes
+remain durable. A different test verdict would invalidate the measurement;
+both recorded comparisons had the same PASS/skipped counts.
+
+**Evidence.** `docs/DESIGN-lane-rework-2026-11.md` records the r1002 A/B:
+CMRU device flushes fell from 10,518 to 330 and lane fsyncs from 4,617 to 0,
+with 6,486 passed and 6 skipped in both runs; wall time was +3.4%, inside the
+7.6-17.6% noise band. cli-extended flushes fell 74% and fsyncs from 156 to 0;
+wall time was +8.8%, also inside noise. Current central and CMRU configs retain
+the environment-scoped settings. Run-Gate config, dry-run, and docs oracles
+cover the selection. Deviation: the A/B measured CMRU `coverage` and
+cli-extended `r0-r1` rather than the CMRU mutation lane and the run-gate
+selftest named above, and relaxed gave no wall-time gain (only less shared
+flush/fsync I/O); strict remains the default and I/O-measurement lanes stay
+`durable`.
 
 **Priority.** Medium. This is a measured performance opportunity with no unmeasured global change to host lanes.
 
@@ -8183,8 +8231,9 @@ commit.
 
 ## RG-269 — tests replace shared `os.*` syscalls process-wide and depend on Pytest's private filesystem usage
 
-**Status:** OPEN (filed 2026-11-12); observed hazards are fixed in the pytest
-9.2 audit branch. Pytest 9.2 calls `os.fstat` during capture and teardown. The
+**Status:** FIXED 2026-11-16; syscall fakes were scoped in the pytest 9.2
+audit, with an explicit delegation oracle added here. Pytest 9.2 calls
+`os.fstat` during capture and teardown. The
 closeout reader, Docker-socket preflight, control-socket preflight,
 namespace-inode, migration, lane-log, and progress-reader tests originally
 replaced shared `os.fstat`, `os.stat`, `os.lstat`, `os.open`, `os.fdopen`, or
@@ -8200,6 +8249,18 @@ process-wide scope.
 **Close when.** No non-delegating exact-symbol test patch remains in the
 Run-Gate selftest, the focused image gate passes the touched tests, and a
 deliberate removal of an unrelated-call fallback fails the owning test.
+
+**Resolution.** The pytest 9.2 audit (`0d9de342f`) scopes the Run-Gate
+`fstat`, `stat`, `lstat`, `open`, and `fdopen` fakes to the descriptor or path
+under test and delegates every unrelated call to its saved implementation.
+This wave adds a direct assertion that the foreign-owner `fstat` fake returns
+the real result for a separate descriptor.
+
+**Evidence.** The registered `selftest --allow-dirty` hand-mutant removed the
+unrelated-descriptor fallback and was killed by
+`test_a_file_owned_by_someone_else_is_refused_untouched` (1 failed, 3,273
+passed, 1 skipped). The fallback was restored. The registered selftest on the
+branch head passed (3,274 passed, 1 skipped).
 
 ## RG-271 — decide whether tester-base should pin or float pytest
 
@@ -8257,7 +8318,7 @@ deliberate removal of an unrelated-call fallback fails the owning test.
 
 ## RG-268 — the save-container-logs foreign-owner test fake lacks `st_size`, so a rebuilt tester image makes selftest fail
 
-**Status:** OPEN (filed 2026-11-12); priority minor for product behavior, major for clean selftest evidence on
+**Status:** FIXED 2026-11-16; priority minor for product behavior, major for clean selftest evidence on
 rebuilt images. Source: r1002 reinstall execution record 2026-11-12.
 
 **Problem.**
@@ -8299,9 +8360,19 @@ every image rebuild.
 tester-unified Python, the full registered selftest passes on a clean final commit, and no production
 ownership behavior was changed to accommodate the fake.
 
+**Resolution.** The test fake wraps the real `os.stat_result`, overrides only
+`st_uid`, and delegates every other attribute. The owning test asserts the
+mode, size, and timestamp fields while preserving the actual refusal and
+untouched-byte oracle. `save_container_logs` production behavior was not
+changed.
+
+**Evidence.** Commit `3c9e9840f` records a clean Run-Gate selftest PASS on
+`925afcab3` after the shape fix. The registered selftest on this branch head also passed (3,274 passed,
+1 skipped); the fix was released in run-gate 25.5.0.
+
 ## RG-270 — restarting an old-checkout campaign with carry-over needs the source-backed judge documented
 
-**Status:** OPEN (filed 2026-11-12); priority should-fix for T3 restart
+**Status:** FIXED 2026-11-16; priority should-fix for T3 restart
 operability. Source: 2026-11-12 host R2 restart record; cross-reference
 assay B529-B531, B535 and NC-42.
 
@@ -8342,6 +8413,21 @@ the recipe remains unavailable for an older judge.
 restart recipe, its documentation test passes, and the recipe is exercised
 successfully against an old-tag checkout whose project sources remain
 byte-identical.
+
+**Resolution.** CONSUMERS now explains that the selected worktree supplies the
+judge, gives the judge-only `assay/` update and review procedure, sets the
+Run-Gate 25.5.0 and Assay 12.2.0 floors, and requires a carry-over reason that
+names the judge-only change. It links the persistent T3 runner procedure rather
+than reproducing its commands. README and DESIGN-GUIDE explain the fact and
+rationale; a docs contract pins all three.
+
+**Evidence.** `test_old_source_backed_checkout_restart_recipe_is_complete`
+checks the recipe and docs links. In a throwaway Git worktree at
+`run-gate-v25.4.1`, checking out `assay-v12.2.0` changed 126 paths, all under
+`assay/`, and no project source or lane declaration. Existing flex-floor tests
+cover refusal below Assay 12.2.0. The full registered selftest previously
+passed this documentation contract, as does the registered selftest on the
+branch head.
 
 ## RG-272 — a valid request base on a non-tag checkout produces zero mutation candidates despite changed source
 

@@ -21,7 +21,7 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 ### Documentation
 
-- Updated the Rust adapter matrix, consumer instructions, methodology status, and B243/B523 evidence. Hostobs has not yet switched its baseline `selftest` lane to an `assay-r1` consumer lane in this assay-only worktree.
+- Updated the Rust adapter matrix, consumer instructions, methodology status, and B243/B523 evidence. Hostobs has now adopted the `assay-r1` consumer lane (whole-target R1, 33 `src` files, 95.0% line floor) alongside its `selftest`; its verdict reports branch capability `unavailable` (B523). The lane is a `kind = "command"` lane that runs the judge from the mounted worktree's own `assay/src` with `PYTHONPATH`, so it installs nothing and the locked offline `tester-unified-rust` image needs no `pip` (B549 stays open only for the `kind = "assay"` shape). The lane was proven through Run-Gate, not in throwaway copies: PASS with the measured totals in the lane log, and `FAIL/UNCOVERED_LINES` when one kernel test file is deleted and that deletion is committed in a temporary worktree. CONSUMERS.md now states both routes (add pip to the image, or declare a command lane) and the post-checks a command lane must own.
 - R-1 `tester-unified-rust` image and hostobs `lint`/`selftest` baseline use an image-bound crate cache, offline locked lanes, and per-crate 90% line / 85% region floors. R-2 now adds Assay's changed-line R1 judgment. Rust R2 is a known issue, not a per-release waiver. The T2 sequence and single canary stay the target design.
 
 ### Known issues

@@ -1,0 +1,8 @@
+{
+  "candidate_count": 1165,
+  "commit": null,
+  "kind": "measured",
+  "recorded": "2026-11-11",
+  "release": "pwmcp-v1.64.1-r7",
+  "source": "KNOWN_ISSUES_TODO_BACKLOG.md PWMCP-59: host-campaign record 2026-11-11, `max_mutants = 1000`, 1165 selected candidates, over_candidate_cap"
+}
