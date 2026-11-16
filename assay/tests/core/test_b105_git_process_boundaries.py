@@ -1142,6 +1142,79 @@ def test_p22_precheck_leaves_a_gitfile_layout_to_the_bounded_path(
     )
 
 
+def test_p22_precheck_defers_when_the_marker_vanishes_before_its_own_lstat(
+    tmp_path, monkeypatch
+):
+    """(B226, coverage fix) The pre-check's `lstat` can fail on a marker the WALK
+    just accepted, and then it must DEFER, not refuse.
+
+    Two separate syscalls see two separate worlds. `_nearest_git_marker`
+    `lstat`s `<candidate>/.git` and returns that candidate only when the call
+    SUCCEEDED with a directory or gitfile mode; the pre-check then `lstat`s the
+    SAME path again to learn the mode it needs. Between the two a repository
+    can be removed (ENOENT), an ancestor's search permission can be revoked
+    (EACCES), a network/overlay mount can answer ESTALE, or a symlink loop can
+    appear (ELOOP) -- so this branch is reachable in production, not dead
+    code, and deleting it would turn a transient filesystem state into a
+    refusal invented by a layer whose only job is to inspect a topology that
+    already exists.
+
+    The double is scoped to the ONE path under test (B539): every other
+    `lstat` in the process is the real one. It fails the SECOND call, which is
+    exactly the race -- the walk's call must succeed, or the scenario would be
+    the already-covered "no marker" deferral instead.
+    """
+    marker = tmp_path / "repo"
+    marker.mkdir()
+    (marker / ".git").mkdir()
+    target = marker / ".git"
+
+    real_lstat = os.lstat
+    calls: list[str] = []
+
+    def racing_lstat(path, *args, **kwargs):
+        if str(path) == str(target):
+            calls.append(str(path))
+            if len(calls) == 2:
+                raise FileNotFoundError(errno.ENOENT, "marker vanished", str(path))
+        return real_lstat(path, *args, **kwargs)
+
+    examined: list[Path] = []
+    monkeypatch.setattr(os, "lstat", racing_lstat)
+    monkeypatch.setattr(
+        git, "_p22_reject_local_topology", lambda common: examined.append(common)
+    )
+
+    # Oracle 1: the pre-check DEFERS. A refusal here would replace the
+    # resolution's own measured diagnostics with a guess from this layer.
+    git._p22_precheck_plain_topology(marker)
+    assert calls == [str(target), str(target)], (
+        "the fixture must model the race: the walk's lstat has to SUCCEED and "
+        f"only the pre-check's second one may fail (calls: {calls})"
+    )
+    assert examined == [], "the pre-check refused/examined a topology it could not stat"
+
+    # Oracle 2: deferral is not swallowing. The AUTHORITATIVE resolution is the
+    # one that answers, and its exception is what a caller sees -- unchanged.
+    diagnostic = AssayError(
+        "resolving the consumer repository failed after the marker vanished",
+        outcome=Outcome.ERROR,
+        reason_code=ReasonCode.GIT_FAILED,
+    )
+
+    def resolve(*_args, **_kwargs):
+        raise diagnostic
+
+    monkeypatch.setattr(git, "_resolve_git_executable", lambda: Path("/git"))
+    monkeypatch.setattr(git, "_resolve_repo", resolve)
+    with pytest.raises(AssayError) as caught:
+        git._p22_open_source(marker, SimpleNamespace(remaining=lambda _what: 5.0))
+    assert caught.value is diagnostic, (
+        "the pre-check replaced the resolution's own refusal: the deferral must "
+        "forward the question, not answer it"
+    )
+
+
 @pytest.mark.parametrize(
     ("name", "message"),
     [
