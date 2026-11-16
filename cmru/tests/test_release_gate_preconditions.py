@@ -1001,6 +1001,18 @@ def test_release_build_image_precondition_uses_fake_docker_and_exact_pull_remedy
         assert probe_row.status == "PASS"
 
 
+def test_shared_build_image_resolver_rejects_an_unknown_context():
+    from cmru.build_images import resolve_environment_value
+
+    with pytest.raises(ValueError, match="unsupported environment resolution context"):
+        resolve_environment_value(
+            "CMRU_WHEEL_BUILDER_IMAGE",
+            context="unknown",
+            configured_env={},
+            process_env={},
+        )
+
+
 def test_release_build_image_precondition_uses_config_over_snapshotted_process_environment(
     monkeypatch,
 ):

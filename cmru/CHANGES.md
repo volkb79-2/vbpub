@@ -33,6 +33,7 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 <!-- cmru: pending release notes begin -->
 - test(cmru): explain shell-expanded values for typed options in estate argv failures (KI-173).
+- test(cmru): cover unsupported image resolver context for the coverage floor (KI-168).
 - fix(cmru): reject bundle staging paths that can escape or overlap dist_dir (KI-169).
 - fix(cmru): match release image preflight to the build environment and bound builder pulls (KI-168).
 - fix(cmru): identify the linked worktree that owns local main and give its fast-forward command (KI-157).
