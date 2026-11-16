@@ -6616,10 +6616,25 @@ Remaining items, each with what was done and the oracle that keeps it done:
    "FIXED IN CANDIDATE", "registered gate remains" or "full gate pending".
 2. **Reconciled** `LANE-AUTHORING.md` §7: the two swapped ids are corrected
    (the stall item is RG-41, the coverage-offset item RG-40) and RG-35/RG-38/
-   RG-40/RG-41/RG-55-P5/B065 now read SHIPPED with their release. Guard:
+   RG-40/RG-41/RG-55-P5/B065 now read SHIPPED with their release. Guards:
    `test_lane_authoring_todos_do_not_cite_shipped_items_as_open` reads the
    table's own STATE column and fails when a row still says OPEN while the
-   backlog index marks that id FIXED/CLOSED/SHIPPED/MERGED/SUPERSEDED/`BY DESIGN`.
+   backlog index marks that id FIXED/CLOSED/SHIPPED/MERGED/SUPERSEDED/`BY DESIGN`;
+   `test_lane_authoring_release_numbers_name_the_release_that_shipped_it`
+   compares each row's cited run-gate version against the dated `CHANGES.md`
+   section, which is what caught the fix-round errors below (an HTML-comment
+   tombstone in one section is stripped first — it would otherwise count as
+   evidence for the wrong version).
+   **Fix round 1 corrections:** RG-41's entry said "released in 23.6.2" but its
+   code (`8055e4e6`) is in **23.6.1's** own changelog section (23.6.2 carried the
+   RG-51/RG-52 detail and only a tombstone comment naming RG-41); RG-38 said
+   "run-gate 23.10.0 passes `--state-dir`" but `6075a645` landed in **23.6.0**
+   (rev 37), and 23.10.0's section never names RG-38; the RG-55/P5 row cited
+   **24.1.0** although the transport/watch/placement/admission seams are in
+   **24.0.0** (`4d12c430b`, + `ae0ff0979`); assay B065 shipped in **5.2.0**, not
+   5.1.0. Each was re-derived from `CHANGES.md` plus `git tag --contains` on the
+   implementing commit; the seven index rows the first pass touched (RG-94/95/
+   98/100/101/106/109) were re-checked the same way and hold.
 3. **Anchors: decided, no change, and NOT a defect that can be closed by
    guessing.** The three em-dash anchors (`README.md` →
    `CONSUMERS.md#assay-lanes-…`, `docs/DESIGN-GUIDE.md:21-22`) resolve under
@@ -7519,16 +7534,26 @@ raises `GateNotRunError("environment-mismatch", ...)`: NOT_RUN 3, ONE line namin
 the uid the lane would run as and where that uid came from, and the CONSUMERS.md section. Both symptoms the entry
 measured are quoted in that line as the thing the refusal replaces.
 
-*Every clause is DERIVED.* An absent declared user, a root or unset image user (`""`, `root`, `0`, `0:0`), a non-numeric
-image user, an image that is not inspectable locally (needs a pull), a missing `docker` on PATH, and no `MDT_COW_ROOT` all
-yield `(None, why)` and the check says nothing at all. That is deliberate and is the superset-refusal lesson: an invented
-uid would either refuse a healthy estate (the refusal gets switched off, and then it protects nothing) or certify a
-mismatch as agreement. `mode = "host"` and `mode = "exec"` lanes declare no lane user and are untouched.
+*Every clause is DERIVED.* An absent declared user, a non-numeric declared or image user, an image that is not
+inspectable locally (needs a pull), a missing `docker` on PATH, an `OSError` from the probe, and a path whose owner cannot
+be `lstat`ed all yield `(None, why)` and the check says nothing at all. That is deliberate and is the superset-refusal
+lesson: an invented uid would either refuse a healthy estate (the refusal gets switched off, and then it protects
+nothing) or certify a mismatch as agreement. `mode = "host"` and `mode = "exec"` lanes declare no lane user and are
+untouched.
 
-*Oracles* (12, `TestRunGatesLaneUidOwnershipPreflight`): each derivation face; a mismatch naming the checkout; a CoW-root
-mismatch naming ONLY the CoW root when the checkout agrees; `mode = "auto"` vs `off`; and an end-to-end `main()` run that
-exits 3 with the one-line refusal and starts NO container (`docker_runs(log) == []`). Red-first: replacing the `main()`
-call with `pass` makes the end-to-end oracle fail (the lane runs and exits 0); restored, it passes.
+*A uid of 0 is never compared (review round 1).* A declared `user = "0"`, `"0:0"` or an `invoker` resolving to root and
+an image whose `Config.User` is root all mean the container runs as container root, and in a CI-as-root or rootless-userns
+lane uid 0 maps onto the HOST owner — so "the lane uid disagrees with the tree owner" is the normal shape there, not a
+defect. The image branch always said so (RG-106); the first cut of this preflight compared a DECLARED root anyway and
+would have refused a healthy deployment. Both sources now normalize 0 to "no fact".
+
+*Oracles* (19, `TestRunGatesLaneUidOwnershipPreflight`): each derivation face; a mismatch naming the checkout; a CoW-root
+mismatch naming ONLY the CoW root when the checkout agrees; `mode = "auto"` vs `off`; declared `"0"`/`"0:0"`/`"0:<gid>` and root-capable `invoker` lanes that are NOT refused (ending in a real lane start); and the `mode == "ephemeral"`
+guard pinned BOTH ways — the same disagreeing uid facts under `mode = "host"` (no refusal) and under `mode = "ephemeral"`
+(refusal), asserted at `main()` and again at the preflight's own entry point (a host run alone cannot catch a deleted
+function-level guard, because a host environment yields no lane uid at all). Red-first: dropping the declared-root clause
+fails 4 oracles; deleting the function-level `mode` guard fails the pair; replacing the `main()` call with `pass` makes the
+end-to-end oracle fail (the lane runs and exits 0). All restored.
 
 Spec: new `R-56` (SPEC.md §5) and Rev 24's log line. Docs: CONSUMERS.md's "Runner uid" section now states the refusal and
 its silence conditions instead of listing the three symptoms as the outcome. Still open here: surfacing the Git line

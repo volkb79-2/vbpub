@@ -6094,6 +6094,33 @@ class TestUsageEnvironmentContract:
             assert var in proc.stdout
         assert "still enforce assay's own clean-tree rule" in proc.stdout
 
+    def test_every_help_line_is_its_own_rendered_line(self):
+        """RG-119 fix round 1: five usage entries lost their trailing comma, so
+        Python joined adjacent string literals and `--help` rendered single
+        185-296 character lines with runs of spaces where the newline should
+        have been. A missing comma is INVISIBLE in review (the source still
+        reads line by line), so the only reliable oracle is the RENDERED
+        output: bounded line width, and no run of 3+ spaces inside a flag
+        description (the join's fingerprint)."""
+        text = run_gate.usage({"suite": {"kind": "command",
+                                        "environment": "x",
+                                        "argv": ["true"]}})
+        long_lines = [(index, len(line)) for index, line in
+                     enumerate(text.splitlines(), 1) if len(line) > 120]
+        assert not long_lines, (
+            "a joined usage entry renders as one over-long line (a missing "
+            f"comma between adjacent literals): {long_lines}")
+        for index, line in enumerate(text.splitlines(), 1):
+            body = line.lstrip()
+            # `<key>  <description>`: the description half must not contain the
+            # double-space runs a literal join would introduce.
+            parts = re.match(r"([^ ]+(?: [^ ]+)*)  +(.+)$", body)
+            if parts and "   " in parts.group(2):
+                raise AssertionError(
+                    f"usage line {index} has a run of 3+ spaces inside its "
+                    f"description (a lost comma joins the next entry into "
+                    f"it): {line!r}")
+
     def test_table_shows_budget_memory_clean_tree_and_description(self, tmp_path):
         repo = make_repo(tmp_path)
         proj = make_project(repo, """\
@@ -33816,6 +33843,17 @@ class TestRunGatesLaneUidOwnershipPreflight:
             {"mode": "ephemeral", "image": "i:1", "user": "app"}, None)
         assert uid is None and "numeric uid" in why
 
+    @pytest.mark.parametrize("declared", ["0", "0:0", "0:1234"])
+    def test_a_declared_root_user_establishes_nothing(self, declared):
+        """RG-150 review round 1 blocker: a CI-as-root or rootless-userns
+        lane runs as uid 0, which maps onto the HOST owner — so "the lane uid
+        disagrees with the tree owner" is the normal shape there, not a
+        defect. The image branch always refused to compare a root user
+        (RG-106); a DECLARED root must not contradict it."""
+        uid, _why = run_gate.lane_container_uid(
+            {"mode": "ephemeral", "image": "i:1", "user": declared}, None)
+        assert uid is None
+
     def test_the_images_own_numeric_user_is_read_by_inspection(self, monkeypatch):
         calls = self._image_reports(monkeypatch, "1003:1003")
         uid, why = run_gate.lane_container_uid(
@@ -33862,12 +33900,6 @@ class TestRunGatesLaneUidOwnershipPreflight:
         # A path whose owner cannot be read is a missing fact, not a mismatch.
         assert run_gate.path_owner_uid(tmp_path / "absent") is None
         assert run_gate.path_owner_uid(tmp_path) == os.stat(tmp_path).st_uid
-        # A stub that answers nothing at all is also "no answer".
-        monkeypatch.setattr(run_gate.subprocess, "run", lambda *_a, **_k: None)
-        uid, why = run_gate.lane_container_uid(
-            {"mode": "ephemeral", "image": "tester:local"},
-            "/usr/bin/docker")
-        assert uid is None and "produced no answer" in why
 
     def test_a_mismatched_checkout_owner_refuses_with_one_line(
             self, tmp_path, monkeypatch):
@@ -33986,6 +34018,96 @@ class TestRunGatesLaneUidOwnershipPreflight:
         assert err.count("must own the checkout") == 1
         assert "uid 1000" in err and "runs as uid 1003" in err
         assert docker_runs(log) == []
+
+    def _config(self, environment_body: str) -> str:
+        return """\
+            schema_version = 1
+            [environments.tester-unified]
+            """ + environment_body + """\
+            [lanes.suite]
+            kind = "command"
+            environment = "tester-unified"
+            argv = ["true"]
+            clean_tree = false
+            """
+
+    def test_the_ephemeral_guard_is_independent_of_uid_facts(
+            self, tmp_path, monkeypatch, capsys):
+        """Review round 1: the guard is its OWN rule. Two runs over the SAME
+        disagreeing uid facts — checkout 1000, lane 1003 — where only the
+        environment MODE differs. With `mode` deleted the host run would refuse
+        too (and the host run alone cannot catch that, because a host
+        environment never yields a lane uid in the first place)."""
+        repo = make_repo(tmp_path)
+        # A host environment declares no image (mode = "host" refuses one),
+        # which is exactly why this pair needs BOTH runs: the ephemeral run
+        # proves the refusal still fires, the host run proves the guard, not
+        # an absence of uid facts, is what keeps it away.
+        bodies = {"host": 'mode = "host"\n',
+                  "ephemeral": 'mode = "ephemeral"\nimage = "tester:local"\n'}
+        for mode, expected in (("host", 0), ("ephemeral", 3)):
+            proj = make_project(
+                repo, self._config(bodies[mode]), name=f"proj-{mode}")
+            log = fake_docker(proj, monkeypatch)
+            monkeypatch.setattr(run_gate, "lane_container_uid",
+                                lambda *_a: (1003, "fixture user"))
+            monkeypatch.setattr(run_gate, "path_owner_uid",
+                                lambda _path: 1000)
+            monkeypatch.delenv(run_gate.MDT_COW_ROOT_ENV_VAR, raising=False)
+            monkeypatch.chdir(proj)
+            monkeypatch.setattr(sys, "argv", ['run-gate'])
+            code = run_gate.main(["suite"])
+            err = capsys.readouterr().err
+            assert code == expected, (mode, code, err)
+            assert ("must own the checkout" in err) is (expected == 3)
+
+        # And the SAME disagreement at the preflight's own entry point, so the
+        # function's guard is pinned on its own: `main()`'s guard would hide
+        # the function's absence (both would need deleting to notice).
+        project = repo / "proj-host"
+        monkeypatch.setattr(run_gate, "lane_container_uid",
+                            lambda *_a: (1003, "fixture user"))
+        monkeypatch.setattr(run_gate, "path_owner_uid", lambda _path: 1000)
+        monkeypatch.delenv(run_gate.MDT_COW_ROOT_ENV_VAR, raising=False)
+        run_gate.preflight_lane_uid_ownership(
+            "suite", {"mode": "host"}, "fixture", project, {},
+            "/usr/bin/docker")
+        with pytest.raises(run_gate.GateNotRunError):
+            run_gate.preflight_lane_uid_ownership(
+                "suite", {"mode": "ephemeral", "image": "tester:local"},
+                "fixture", project, {}, "/usr/bin/docker")
+
+    def test_declared_and_invoker_root_lanes_are_not_refused(
+            self, tmp_path, monkeypatch, capsys):
+        """CI-as-root / rootless-userns: `user = "0"`, `user = "0:0"` and
+        `user = "invoker"` resolving to root all mean a uid-0 lane, which maps
+        onto the HOST owner — a checkout owned by 1000 is not a mismatch there.
+        """
+        repo = make_repo(tmp_path)
+        cases = {"zero": "user = \"0\"", "zero-gid": "user = \"0:0\"",
+                 "invoker-root": 'user = "invoker"'}
+        for name, user_line in cases.items():
+            proj = make_project(
+                repo,
+                self._config('mode = "ephemeral"\nimage = "tester:local"\n'
+                             f'{user_line}\n'),
+                name=f"proj-{name}")
+            log = fake_docker(proj, monkeypatch)
+            # The checkout belongs to some OTHER uid; only the lane uid
+            # decides here, and `invoker` becomes THIS process's uid:gid.
+            monkeypatch.setattr(run_gate, "path_owner_uid", lambda _path: 1000)
+            monkeypatch.delenv(run_gate.MDT_COW_ROOT_ENV_VAR, raising=False)
+            monkeypatch.chdir(proj)
+            monkeypatch.setattr(sys, "argv", ['run-gate'])
+            # `invoker` resolves to the invoking process's uid:gid inside
+            # resolve_environment; running this main() as "root" is what makes
+            # that case a uid-0 lane. monkeypatch restores both afterwards.
+            monkeypatch.setattr(run_gate.os, "getuid", lambda: 0)
+            code = run_gate.main(["suite"])
+            err = capsys.readouterr().err
+            assert "must own the checkout" not in err, (name, err)
+            assert code != 3, (name, code, err)
+            assert lane_runs(log), (name, "the lane must actually start")
 
 
 class TestAssayPinAndRequestPathOracles:
@@ -35211,6 +35333,75 @@ class TestUserDocumentationOracles:
             "LANE-AUTHORING §7 lists shipped items as OPEN: "
             + "; ".join(contradictions))
 
+    def test_lane_authoring_release_numbers_name_the_release_that_shipped_it(
+            self):
+        """RG-119 fix round 1. §7 cited the WRONG releases twice: RG-41 as
+        "released in 23.6.2" (its code is 8055e4e6, in 23.6.1's own section —
+        23.6.2 only carried the RG-51/RG-52 detail) and RG-38 as "run-gate
+        23.10.0" (6075a645 landed in 23.6.0). Both read perfectly. So this
+        compares the DOCUMENT to CHANGES.md: for a row naming an id AND a
+        release number, that dated section must itself name the id. HTML
+        comments are stripped first — 23.6.2 carries a "cleared … the RG-41
+        write-up that was here" tombstone that would otherwise count as
+        evidence, which is exactly the shape that made the wrong number look
+        right."""
+        sections = self._dated_section_bodies()
+        assert sections, "CHANGES.md has no dated release sections"
+        # Rows also cite SIBLING projects' releases (`assay 5.2.0`). Those are
+        # checked where they live (assay CHANGES.md); this oracle covers the
+        # run-gate numbers it can read, and the prefix rule keeps an
+        # `assay 5.2.0` citation from being silently compared against run-gate.
+        authoring = (RUN_GATE_DIR / "LANE-AUTHORING.md").read_text()
+        section = authoring[authoring.index("## 7. TODOs"):]
+        wrong = []
+        for row in section.splitlines():
+            if not row.startswith("|"):
+                continue
+            identifiers = re.findall(r"RG-[0-9]+", row)
+            stripped = re.sub(r"assay\s+[0-9]+\.[0-9]+\.[0-9]+", "", row)
+            versions = re.findall(r"([0-9]+\.[0-9]+\.[0-9]+)", stripped)
+            if not identifiers or not versions:
+                continue
+            for version in versions:
+                body = sections.get(version)
+                if body is None:
+                    wrong.append(f"{row[:60]!r}: {version} is not a release")
+                elif identifiers[0] not in body:
+                    wrong.append(
+                        f"{identifiers[0]} is cited with {version}, but that "
+                        f"release's section never names it")
+        assert not wrong, "; ".join(wrong)
+
+    @staticmethod
+    def _dated_section_bodies() -> dict[str, str]:
+        """Dated release section → its body, with HTML comments removed and
+        documentation-only changelog lines dropped (a `docs: RG-41 -- …` line
+        records that somebody wrote about the item, not that it shipped)."""
+        kept: list[str] = []
+        in_comment = False
+        for line in (RUN_GATE_DIR / "CHANGES.md").read_text().splitlines():
+            if line.lstrip().startswith("<!--"):
+                in_comment = "-->" not in line
+                continue
+            if in_comment:
+                in_comment = "-->" not in line
+                continue
+            kept.append(line)
+        heads = [(index, line) for index, line in enumerate(kept)
+                 if line.startswith("## [")]
+        sections: dict[str, str] = {}
+        for position, (index, line) in enumerate(heads):
+            end = (heads[position + 1][0] - 1
+                   if position + 1 < len(heads) else len(kept))
+            match = re.match(r"## \[([0-9]+\.[0-9]+\.[0-9]+)\] - ", line)
+            if not match:
+                continue
+            body = [entry for entry in kept[index:end]
+                    if not re.match(r"\s*-\s*(docs?|backlog|plan|controller|log|"
+                                    r"review|chore)(\(|\s|:|-)", entry)]
+            sections[match.group(1)] = "\n".join(body)
+        return sections
+
     def test_worktree_runner_remedy_documents_ciu_version_floor(self):
         documents = (*self.DOCS, RUN_GATE_DIR / "SPEC.md",
                      RUN_GATE_DIR / "CHANGES.md")
@@ -36400,8 +36591,16 @@ class TestFinalChangedLineCoverageOracles:
                             lambda _project: repo)
         monkeypatch.setattr(run_gate, "resolve_repo_and_worktree",
                             lambda _project, _override: (repo, repo, repo))
+        # The RG-150 preflight asks the image for its user; this fixture's
+        # image is not one of the doubles under test, so its probe answers
+        # like a real docker (exit 1, no such image) instead of None. A stub
+        # shaped like the real command keeps production code free of
+        # tolerances for stub-shaped answers.
         monkeypatch.setattr(run_gate, "subprocess",
-                            SimpleNamespace(run=lambda *_args, **_kwargs: None))
+                            SimpleNamespace(run=lambda *_args, **_kwargs:
+                                            SimpleNamespace(
+                                                returncode=1, stdout="",
+                                                stderr="no such image")))
         monkeypatch.setattr(run_gate, "resolve_slice",
                             lambda *_args: ("run-gates.slice", "fixture"))
         monkeypatch.setattr(run_gate, "verify_slice_loaded", lambda _slice: None)
@@ -36455,8 +36654,12 @@ class TestFinalChangedLineCoverageOracles:
                             lambda _project: repo)
         monkeypatch.setattr(run_gate, "resolve_repo_and_worktree",
                             lambda _project, _override: (repo, repo, repo))
+        # As in the sibling above: the image probe answers like real docker.
         monkeypatch.setattr(run_gate, "subprocess",
-                            SimpleNamespace(run=lambda *_args, **_kwargs: None))
+                            SimpleNamespace(run=lambda *_args, **_kwargs:
+                                            SimpleNamespace(
+                                                returncode=1, stdout="",
+                                                stderr="no such image")))
         monkeypatch.setattr(run_gate, "resolve_slice",
                             lambda *_args: ("run-gates.slice", "fixture"))
         monkeypatch.setattr(run_gate, "verify_slice_loaded", lambda _slice: None)

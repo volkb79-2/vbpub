@@ -587,12 +587,20 @@ lane uid is READ instead: a declared `[environments.<n>] user`'s numeric head,
 else the image's own `Config.User` from `docker image inspect`.
 
 The harder design question is what to do when no uid can be established — a
-root or unset image user, a named user, an image not pulled locally, no
-docker on PATH. There the check **says nothing**. A guessed uid would either
+named user, an image not pulled locally, no docker on PATH. There the check
+**says nothing**. A guessed uid would either
 refuse a healthy estate (and a gate that cries wolf gets switched off, after
 which it protects nothing) or, worse, certify a mismatch as agreement. Silence
 is the same choice `--check-env` makes for unreadable source: an inconclusive
 probe must never be reported as a clean result.
+
+Root is the case that decides the rule, and it decides it for BOTH sources at
+once. uid 0 is not a lane fact to compare: a CI-as-root or rootless-userns
+lane runs as container root, which maps onto the HOST owner, so "the lane uid
+differs from the tree owner" is the normal shape there and refusing it would
+break a supported deployment. The image branch always said so (RG-106);
+comparing a DECLARED `user = "0"` (or an `invoker` that resolves to root)
+would contradict it, so the boundary normalizes both: a uid of 0 is "no fact".
 
 The refusal itself is `R-04`'s closed vocabulary, not a new error class:
 NOT_RUN 3 with `environment-mismatch`, one line, and no invocation recorded

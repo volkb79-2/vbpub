@@ -2903,19 +2903,31 @@ def lane_container_uid(env: dict, docker: str | None) -> tuple[int | None, str]:
 
     RG-150 needs the lane user as a NUMBER to compare with the checkout and
     CoW-root owners. Faces: a declared `[environments.<n>] user` (already
-    validated as numeric or derived from `invoker`), else the selected
-    image's own `Config.User`. Returns `(None, why)` whenever no uid can be
-    ESTABLISHED — an absent/uninspectable image, a root image, and a named
-    (non-numeric) image user all land here, because guessing one would either
-    invent a refusal for a healthy estate or invent agreement for a broken
-    one. This is a READ: the caller never turns `None` into a pass/fail claim.
+    validated as numeric, and `"invoker"` is resolved to `uid:gid` before
+    this call), else the selected image's own `Config.User`.
+
+    Returns `(None, why)` whenever no uid can be ESTABLISHED. Root is the
+    important face and it is ONE rule for both sources: a declared
+    `user = "0"`, `"0:0"` (or an `invoker` that resolves to root) and an
+    image whose `Config.User` is root both mean the container runs as uid 0,
+    and in a CI-as-root / rootless-userns lane uid 0 maps onto the HOST
+    owner — so "the lane uid disagrees with the tree owner" is not a defect
+    there, it is the normal shape. The image branch always said so (RG-106);
+    comparing a DECLARED root would contradict it and refuse a healthy
+    estate. The remaining no-fact faces are an absent/uninspectable image,
+    an image that needs a pull, no docker, and a named (non-numeric) user,
+    because guessing a uid would either invent a refusal for a healthy
+    estate or invent agreement for a broken one. This is a READ: the caller
+    never turns `None` into a pass/fail claim.
     """
     declared = env.get("user")
     if isinstance(declared, str) and declared:
         head = declared.split(":", 1)[0]
-        if head.isdigit():
-            return int(head), f"declared user {declared!r}"
-        return None, f"declared user {declared!r} names no numeric uid"
+        if not head.isdigit():
+            return None, f"declared user {declared!r} names no numeric uid"
+        if int(head) == 0:
+            return None, ""
+        return int(head), f"declared user {declared!r}"
     image = env.get("image")
     if not image:
         return None, "the environment declares no image"
@@ -2931,21 +2943,21 @@ def lane_container_uid(env: dict, docker: str | None) -> tuple[int | None, str]:
             capture_output=True, text=True)
     except OSError as exc:
         return None, f"docker could not be run ({exc})"
-    if result is None or not hasattr(result, "returncode"):
-        # A caller-controlled `subprocess` stub can yield nothing at all. That
-        # is still "no answer", not a disagreement.
-        return None, "the image inspect probe produced no answer"
     if result.returncode != 0:
         return None, (f"image {image!r} is not inspectable locally (it may "
                       "need a pull)")
     raw = result.stdout.strip()
-    if not raw or raw in ("root", "0", "0:0"):
+    if not raw:
+        return None, ""
+    head = raw.split(":", 1)[0]
+    if head == "root":
+        return None, ""
+    if not head.isdigit():
+        return None, f"image {image!r} names a non-numeric user {raw!r}"
+    if int(head) == 0:
         # A root lane raises RG-106's ownership questions, not a uid
         # MISMATCH: there is no lane uid to disagree with the tree owner.
         return None, ""
-    head = raw.split(":", 1)[0]
-    if not head.isdigit():
-        return None, f"image {image!r} names a non-numeric user {raw!r}"
     return int(head), f"image {image!r} user {raw!r}"
 
 
@@ -18562,11 +18574,11 @@ def usage(lanes: dict, inherited: set[str] | None = None) -> str:
         "       run-gate --list   (machine-readable: name<TAB>kind<TAB>environment)",
         "       run-gate --list --json   (R-55: kind, environments, members and"
         " derived rigor)",
-        "       run-gate --version   (RG-94: the installed wheel's SemVer, read"
-        "                           from distribution metadata; the public"
+        "       run-gate --version   (RG-94: the installed wheel's SemVer, read",
+        "                           from distribution metadata; the public",
         "                           compatibility identity)",
-        "       run-gate migrate-modes CONFIG  (RG-101: materialize the"
-        "         environments a legacy `host`/`bare-host` lane names, so the"
+        "       run-gate migrate-modes CONFIG  (RG-101: materialize the",
+        "         environments a legacy `host`/`bare-host` lane names, so the",
         "         loader accepts a declaration it refuses with a remedy)",
         "       run-gate validate-pointers CONSUMER.toml [--root DIR]",
         "         (RG-2: certify every run-gate pointer in a consumer document —",
@@ -18676,9 +18688,9 @@ def usage(lanes: dict, inherited: set[str] | None = None) -> str:
         "                    else the judged tree's merge-base with its",
         "                    upstream; neither refuses (a guessed base is not a",
         "                    base). A lane that does NOT delegate refuses --base",
-        "  --lock-wait D     how long a lane WAITS for its RG-20/R-41"
-        "                    coordination locks before refusing (the `budget`"
-        "                    grammar, default 10m; never a hold — a lane that"
+        "  --lock-wait D     how long a lane WAITS for its RG-20/R-41",
+        "                    coordination locks before refusing (the `budget`",
+        "                    grammar, default 10m; never a hold — a lane that",
         "                    cannot get its lock inside that window is ERROR)",
         "  --admission-wait D  RG-80: wait for a daemon-wide gate slot (default 10m)",
         "  --override-admission  RG-80: run past the published count cap, disclosed",
@@ -18794,9 +18806,9 @@ def usage(lanes: dict, inherited: set[str] | None = None) -> str:
         "  CGROUP_PARENT_DEV_GATES      container lanes take their cgroup slice",
         "                                from cgroup_slice, then cgroup_slice_env,",
         "                                then THIS variable; absent = hard error",
-        "  RUN_GATE_HOST_IMAGE           overrides the image of the DECLARED"
-        "                                `host` environment (that name alone selects"
-        "                                no behaviour; its required mode does);"
+        "  RUN_GATE_HOST_IMAGE           overrides the image of the DECLARED",
+        "                                `host` environment (that name alone selects",
+        "                                no behaviour; its required mode does);",
         "                                absent = the environment's own",
         "                                `image` / `image_env`",
         "  RUN_GATE_EXTRA_MOUNTS         colon-separated host=container pairs appended",
@@ -18836,9 +18848,9 @@ def usage(lanes: dict, inherited: set[str] | None = None) -> str:
         "                                it will never have); 'on' force-enables even over",
         "                                a lane's own profile = false. Any other value",
         "                                refuses at load, by name",
-        f"  {PROFILE_REMOVED_ENV_VAR} removed with cgprofile 2.0 (RG-156): the"
-        "                                socket is the only carrier, so this variable"
-        "                                and the `transport`/`daemon`/`socket_path`"
+        f"  {PROFILE_REMOVED_ENV_VAR} removed with cgprofile 2.0 (RG-156): the",
+        "                                socket is the only carrier, so this variable",
+        "                                and the `transport`/`daemon`/`socket_path`",
         "                                keys are refused by name at load. Unset it; a",
         "                                reachable profiler comes from",
         f"                                ${CGPROFILE_CONTROL_SOCKET_ENV_VAR} alone",

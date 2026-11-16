@@ -2892,8 +2892,10 @@ names the checkout or CoW root whose uid disagrees and the uid the lane would ru
 errors it used to surface as — `run-gate: editable assay install failed` with `dubious ownership` in the build log,
 `Permission denied` on `<project>/.run-gate/...`, or `MDT_COW_ROOT must be owned by the non-root caller uid`.
 The refusal needs the lane uid as a number: a declared `user`, or the image's own `Config.User`; when neither yields
-a numeric uid (a root image, an image that needs a pull, a named user) the check says nothing at all rather than
-guessing. See RG-150.
+a numeric non-root uid (root or unset, an image that needs a pull, a named user) the check says nothing at all rather
+than guessing. A uid of 0 — declared (`user = "0"`, `"0:0"`, or `invoker` resolving to root) or from the image — is
+never compared: a CI-as-root or rootless-userns lane runs as uid 0, which maps onto the HOST owner, so "the lane uid
+differs from the tree owner" is the normal shape there, not a defect. See RG-150.
 
 ## Distribution — installed wheel and SemVer
 

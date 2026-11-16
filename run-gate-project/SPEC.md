@@ -3036,11 +3036,16 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   CONSUMERS.md section that explains the one-uid layout. The lane uid is
   READ, never assumed: a declared `[environments.<n>] user`'s numeric head,
   else the selected image's own `Config.User` from `docker image inspect`.
-  When neither yields a numeric uid — a root or unset image user, a named
-  user, an image that is not inspectable locally, or no docker — the check
-  asserts nothing, because an invented uid would either refuse a healthy
-  estate or certify a broken one. `mode = "host"` and `mode = "exec"` lanes
-  declare no lane user and are unaffected.
+  A uid of 0 is NOT a lane fact to compare, whether it is declared
+  (`user = "0"`, `"0:0"`, or an `invoker` that resolves to root) or read
+  from the image: a CI-as-root or rootless-userns lane runs as uid 0, which
+  maps onto the HOST owner, so "the lane uid disagrees with the tree owner"
+  is the normal shape there rather than a defect. When no numeric
+  non-root uid can be established — root, a named user, an image that is
+  not inspectable locally, no docker — the check asserts nothing, because
+  an invented uid would either refuse a healthy estate or certify a broken
+  one. `mode = "host"` and `mode = "exec"` lanes declare no lane user and
+  are unaffected.
 
 ## 6. Non-goals (unchanged from CONSUMERS)
 

@@ -19,7 +19,16 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
   host-side `Permission denied` on `.run-gate`, Assay's own CoW-root refusal)
   a mismatch used to surface as. The lane uid is read (a declared `user`, else
   the image's `Config.User`) and the check stays silent when it cannot be
-  established (RG-150, SPEC `R-56`).
+  established. A uid of 0 — declared (`user = "0"`, `"0:0"`, or an `invoker`
+  that resolves to root) or read from the image — is never compared: a
+  CI-as-root / rootless-userns lane runs as container root, which maps onto
+  the HOST owner, so that is not a mismatch (RG-150, SPEC `R-56`).
+- run-gate: `--help` renders one line per entry again. Five usage entries had
+  lost their trailing comma, so Python joined adjacent literals and printed
+  single 185-296 character lines with runs of spaces where the newline
+  belonged; the source still read line by line, which is why review did not
+  catch it. A new oracle asserts the RENDERED output instead (none of these
+  can go red on a missing comma otherwise) (RG-119).
 - run-gate: a ciu worktree record whose `schema_version` key is present but
   `null` is refused by name with the explicit-`--base` remedy instead of being
   read under the v1-v5 legacy grammar; an ABSENT key keeps the legacy reading

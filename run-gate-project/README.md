@@ -832,8 +832,11 @@ the tool's reason to exist and MUST be implemented + tested:
   the lane would run as) when the lane user's uid differs from the checkout
   owner or from the `MDT_COW_ROOT` owner the lane would use. The lane uid is
   read — a declared `[environments.<n>] user`'s numeric head, else the image's
-  `Config.User` — and the check stays silent when no numeric uid can be
-  established, rather than refusing a healthy estate on a guess. See the
+  `Config.User` — and the check stays silent when no numeric non-root uid can
+  be established (root, a named user, an image that needs a pull), rather than
+  refusing a healthy estate on a guess. A uid of 0 is never compared: a
+  CI-as-root or rootless-userns lane runs as uid 0, which maps onto the HOST
+  owner, so it is not a mismatch. See the
   [design rationale](docs/DESIGN-GUIDE.md#one-uid-and-a-refusal-only-from-a-fact-rg-150)
   and CONSUMERS.md "Runner uid".
 - **Effective tree:** `--worktree` doesn't just redirect checks — the lane
