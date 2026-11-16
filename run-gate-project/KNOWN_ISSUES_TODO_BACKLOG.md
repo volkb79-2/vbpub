@@ -7804,13 +7804,26 @@ The cgprofile watch contract includes `unknown` when the monitor cannot support 
 
 ## RG-250 — a lane with `resource_observer` needs the observer socket even with `RUN_GATE_PROFILE=off` (25.0.2 wrapper contract)
 
-**Status:** OPEN (filed 2026-11-08). Severity: minor, documentation or contract.
+**Status:** FIXED 2026-11-16. Severity: minor, documentation or contract.
 
 **Finding.** `preflight_profile_endpoints` (`run_gate.py:1036-1042`) requires the control socket when profiling is enabled or the lane declares `resource_observer`, and the observer socket for every observer lane. `RUN_GATE_PROFILE=off` therefore waives profiling but not the observer preflight. On 2026-11-08 the reinstalled <host> refused `assay-r2-s13` ("cgprofile control socket /run/cgprofile/ctl.sock unreachable ... socket-not-mounted") although the campaign wrapper sets `RUN_GATE_PROFILE=off`; the same lane ran on the controller only because the controller has the socket. The log line "in-process watch - profiling disabled" appears for either host and does not tell the two cases apart.
 
 **Fix.** State the rule in SPEC and in the refusal text ("this lane declares resource_observer; `RUN_GATE_PROFILE=off` does not waive it"), and decide whether an explicit flag may waive the observer for a lane whose R2 judgement does not need it (never a silent default; it changes resume identity if done through the lane declaration).
 
 **Close when.** The refusal text names the cause and SPEC states the rule; if a waiver is added, a test covers both the flag and the refusal.
+
+**Resolution.** No waiver was added: `resource_observer` declares a lane
+capability whose endpoint and daemon preflight remain required when sampling
+is disabled. Endpoint resolution and daemon capability refusals now retain
+their cause, name both required environment variables, and state that
+`RUN_GATE_PROFILE=off` does not waive the preflight. README, CONSUMERS,
+DESIGN-GUIDE, and SPEC state the same behavior. Tests cover both missing
+endpoints, an unavailable daemon response, and the documentation contract.
+
+**Evidence.** Registered `selftest --allow-dirty` PASS: 3,274 passed, one
+container-only test skipped, and 21/21 changed executable lines covered with
+both changed branches taken. The pre-fix hand mutant was killed by the two
+profile-off endpoint-refusal cases (2 failed; 3,270 passed).
 
 **Source.** [shard-s13-REPORT.md](../cmru/docs/evidence/shard-s13-REPORT.md) (why <host> refused), [host-reinstall-EXEC-LOG.md](../scripts/debian-install-v2/docs/evidence/host-reinstall-EXEC-LOG.md) (s13 resume refusal).
 

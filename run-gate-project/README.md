@@ -94,6 +94,9 @@ than the prose predicted (full rationale in `SPEC.md` §8 and the LOG):
    naming the variable and pointing to `cgprofiled doctor` and the host endpoints
    record. `RUN_GATE_PROFILE=off` explicitly opts out of profiling, while an
    observer lane still needs both endpoints for its version preflight and mount.
+   If an endpoint or daemon capability check fails, the refusal names the
+   observer declaration and explains that RUN_GATE_PROFILE=off does not waive
+   this preflight.
    Before launch, Run-Gate requires the daemon to advertise observer contract 2
    at the observer environment value and `listening = true`, and checks the
    observer directory before mounting it read-only at the same path. The

@@ -9,6 +9,9 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
 
 ## [Unreleased]
 
+### Fixed
+- run-gate: observer preflight refusals explain required endpoints and profiling opt-out behavior (RG-250).
+
 <!-- cmru: release history -->
 
 ## [25.6.0] - 2026-11-12

@@ -388,7 +388,9 @@ it. The observer endpoint is required only for observer lanes. An unset or
 empty value names the variable and directs the operator to `cgprofiled doctor` and
 the host endpoints record. `RUN_GATE_PROFILE=off` explicitly disables
 profiling, but an observer lane still requires both endpoint variables for
-its capability checks.
+its capability checks. An endpoint or daemon-capability refusal names the
+observer declaration and says `RUN_GATE_PROFILE=off does not waive this
+preflight`, because the read-only observer mount is independent of sampling.
 
 An observer lane bind-mounts the directory containing
 `CGPROFILE_OBSERVER_SOCKET` read-only onto itself at that identical path.

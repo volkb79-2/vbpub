@@ -11106,6 +11106,34 @@ class TestResourceObserverLane:
     def _stat(self, mode, uid=0, gid=994):
         return SimpleNamespace(st_mode=mode, st_uid=uid, st_gid=gid)
 
+    @pytest.mark.parametrize("failed_endpoint", ["control", "observer"])
+    def test_profile_off_observer_refusal_explains_endpoint_requirement(
+            self, monkeypatch, failed_endpoint):
+        monkeypatch.setenv("RUN_GATE_PROFILE", "off")
+
+        def control_endpoint():
+            if failed_endpoint == "control":
+                raise run_gate.GateInfraError("control socket unavailable")
+            return "/tmp/control.sock"
+
+        def observer_endpoint():
+            if failed_endpoint == "observer":
+                raise run_gate.GateInfraError("observer socket unavailable")
+            return "/tmp/observer.sock"
+
+        monkeypatch.setattr(run_gate, "control_socket_from_env",
+                            control_endpoint)
+        monkeypatch.setattr(run_gate, "observer_socket_from_env",
+                            observer_endpoint)
+        with pytest.raises(run_gate.GateInfraError) as caught:
+            run_gate.preflight_profile_endpoints(
+                {"resource_observer": "cgprofile"}, profiling_enabled=False)
+        message = str(caught.value)
+        assert "resource_observer = \"cgprofile\"" in message
+        assert "CGPROFILE_CONTROL_SOCKET" in message
+        assert "CGPROFILE_OBSERVER_SOCKET" in message
+        assert "RUN_GATE_PROFILE=off does not waive" in message
+
     def test_user_docs_describe_environment_endpoints_without_source_paths(self):
         project = Path(__file__).resolve().parents[1]
         doc_paths = ("README.md", "CONSUMERS.md", "SPEC.md",
@@ -11118,6 +11146,10 @@ class TestResourceObserverLane:
             assert "/run/cgprofile-observer" not in content, relative
             assert "owning GID of the Docker API socket" not in content, relative
             assert "default `/var/run/docker.sock`" not in content, relative
+        for relative in ("README.md", "CONSUMERS.md", "SPEC.md",
+                         "docs/DESIGN-GUIDE.md"):
+            content = " ".join((project / relative).read_text().split())
+            assert "RUN_GATE_PROFILE=off does not waive this preflight" in content, relative
         consumers = (project / "CONSUMERS.md").read_text()
         assert ('ASSAY_RESOURCE_OBSERVER_SOCKET = "required-env:'
                 'ASSAY_RESOURCE_OBSERVER_SOCKET"') in consumers
@@ -11722,13 +11754,30 @@ class TestResourceObserverLane:
                     run_gate.control_socket_from_env())
 
     def test_observer_version_preflight_reports_daemon_query_failure(self, monkeypatch):
+        monkeypatch.setenv("RUN_GATE_PROFILE", "off")
         monkeypatch.setattr(
             run_gate.ProfilerClient, "version",
             lambda self: (None, "control socket unavailable"),
         )
-        with pytest.raises(run_gate.GateInfraError, match="control socket unavailable"):
+        with pytest.raises(run_gate.GateInfraError) as caught:
             run_gate.resource_observer_version_preflight(
                 run_gate.control_socket_from_env())
+        message = str(caught.value)
+        assert "control socket unavailable" in message
+        assert 'resource_observer = "cgprofile"' in message
+        assert "CGPROFILE_CONTROL_SOCKET" in message
+        assert "CGPROFILE_OBSERVER_SOCKET" in message
+        assert "RUN_GATE_PROFILE=off does not waive" in message
+
+    def test_observer_version_preflight_explains_missing_observer_endpoint(
+            self, monkeypatch):
+        monkeypatch.delenv("CGPROFILE_OBSERVER_SOCKET", raising=False)
+        with pytest.raises(run_gate.GateInfraError) as caught:
+            run_gate.resource_observer_version_preflight("/tmp/control.sock")
+        message = str(caught.value)
+        assert "CGPROFILE_OBSERVER_SOCKET" in message
+        assert 'resource_observer = "cgprofile"' in message
+        assert "RUN_GATE_PROFILE=off does not waive" in message
 
     def test_live_observer_lane_preflights_before_clearing_or_launching(
             self, tmp_path, monkeypatch):

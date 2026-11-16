@@ -1038,13 +1038,30 @@ def recorded_profile_endpoint(pending: dict) -> tuple[str | None, str | None]:
     return recorded, None
 
 
+def _observer_preflight_refusal(reason: str) -> None:
+    """Keep observer endpoint failures distinct from profiling opt-out."""
+    fail_infra(
+        f"{reason}; this lane declares resource_observer = \"cgprofile\", "
+        "which requires both CGPROFILE_CONTROL_SOCKET and "
+        "CGPROFILE_OBSERVER_SOCKET. RUN_GATE_PROFILE=off does not waive this "
+        "preflight; it disables profiling only")
+
+
 def preflight_profile_endpoints(lane: dict, profiling_enabled: bool) -> None:
     """Require only the host endpoints this lane's selected behavior needs."""
     observer_lane = lane.get("resource_observer") is not None
     if profiling_enabled or observer_lane:
-        control_socket_from_env()
+        try:
+            control_socket_from_env()
+        except GateInfraError as exc:
+            if observer_lane:
+                _observer_preflight_refusal(str(exc))
+            raise
     if observer_lane:
-        observer_socket_from_env()
+        try:
+            observer_socket_from_env()
+        except GateInfraError as exc:
+            _observer_preflight_refusal(str(exc))
 
 
 # ---------------------------------------------------------------------------
@@ -9239,23 +9256,31 @@ def resource_observer_version_preflight(socket_path: str) -> None:
     that cannot establish the exact read-only observer capability Run-Gate
     will mount.
     """
-    observer_endpoint = observer_socket_from_env()
+    try:
+        observer_endpoint = observer_socket_from_env()
+    except GateInfraError as exc:
+        _observer_preflight_refusal(str(exc))
     version, reason = ProfilerClient(socket_path).version()
     if version is None:
-        fail_infra(f"cgprofile resource-observer preflight failed: {reason}")
+        _observer_preflight_refusal(
+            f"cgprofile resource-observer preflight failed: {reason}")
     observer = version.get("resource_observer")
     if not isinstance(observer, dict):
-        fail_infra("cgprofile daemon does not advertise a resource observer")
+        _observer_preflight_refusal(
+            "cgprofile daemon does not advertise a resource observer")
     contract = observer.get("contract")
     if type(contract) is not int or contract != 2:
-        fail_infra("cgprofile resource observer contract must be 2 "
-                   f"(got {contract!r})")
+        _observer_preflight_refusal(
+            "cgprofile resource observer contract must be 2 "
+            f"(got {contract!r})")
     if observer.get("path") != observer_endpoint:
-        fail_infra("cgprofile resource observer advertises an unexpected "
-                   f"socket path for ${CGPROFILE_OBSERVER_SOCKET_ENV_VAR}: "
-                   f"{observer.get('path')!r}")
+        _observer_preflight_refusal(
+            "cgprofile resource observer advertises an unexpected "
+            f"socket path for ${CGPROFILE_OBSERVER_SOCKET_ENV_VAR}: "
+            f"{observer.get('path')!r}")
     if observer.get("listening") is not True:
-        fail_infra("cgprofile resource observer is not listening")
+        _observer_preflight_refusal(
+            "cgprofile resource observer is not listening")
 
 
 def build_env_probe_argv(docker: str, env: dict, env_name: str, repo: Path,

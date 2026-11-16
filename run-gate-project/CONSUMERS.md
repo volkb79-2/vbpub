@@ -799,8 +799,10 @@ endpoint. `CGPROFILE_OBSERVER_SOCKET` is required only for observer lanes.
 An unset or empty value is an infrastructure error naming the variable and
 the `cgprofiled doctor` / host endpoints record remedy. `RUN_GATE_PROFILE=off` is the
 explicit profiling opt-out; an observer lane still needs both endpoint
-variables. These variables are supplied by the host launcher, not declared as
-Run-Gate config keys.
+variables. If either endpoint or the daemon capability check fails, the
+refusal names `resource_observer = "cgprofile"` and says
+`RUN_GATE_PROFILE=off does not waive this preflight`. These variables are
+supplied by the host launcher, not declared as Run-Gate config keys.
 
 The profiling policy remains ordinary project configuration:
 
