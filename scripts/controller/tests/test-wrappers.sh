@@ -492,6 +492,35 @@ contains "$ROOT/controller/runs/manual-resume.done" 'OUTCOME=CODE-EXIT' \
 contains "$ROOT/controller/runs/manual-resume-unmapped.done" 'OUTCOME=CODE-EXIT' \
   'a resume that picked a fresh account still wrote its marker'
 
+# A resume REMOVES the previous invocation's marker before its child starts: a
+# reader polling the name must not report the older resume's exit while the new
+# one works.
+FAKE_CODEX_SLEEP=4 PATH="$ROOT/bin:$PATH" HOME="$ROOT/home" CONTROLLER_HOME="$ROOT/controller" CONTROLLER_REPO="$ROOT/repo" \
+  CONTROLLER_OD_STATE="$MANUAL_STATE" CODEX_HOME_DEEPSEEK_VOLKER="$VOLKER_HOME" CODEX_HOME_DEEPSEEK_GITHUB2="$GITHUB2_HOME" \
+  CODEX_SQLITE_HOME="$ROOT/sqlite" CODEX_LOG="$ROOT/manual-resume-again.log" CODEX_ROUTE=deepseek CODEX_AUTO_CONTINUE=0 \
+  "$CODEX_IMPL_SCRIPT" "$ROOT/worktree" "$ROOT/brief.md" manual-resume resume manual-resume-thread \
+  > "$ROOT/manual-resume-again.out" 2>&1 &
+resume_pid=$!
+# Wait for EVIDENCE that this invocation owns the name (its own pid is in the
+# owner record), then for the marker to be gone while its child still works.
+saw_owner=0
+for _ in {1..200}; do
+  recorded=$(sed -n 's/^pid=\([0-9][0-9]*\).*/\1/p' "$ROOT/controller/runs/manual-resume.lock" 2>/dev/null | head -n 1)
+  if [[ $recorded == "$resume_pid" ]]; then saw_owner=1; break; fi
+  sleep 0.05
+done
+(( saw_owner == 1 )) || fail 'the resumed invocation never recorded itself as the run owner'
+saw_absence=0
+for _ in {1..200}; do
+  if [[ ! -e $ROOT/controller/runs/manual-resume.done ]]; then saw_absence=1; break; fi
+  sleep 0.05
+done
+(( saw_absence == 1 )) \
+  || fail 'a resumed run left the previous invocation marker readable while its child worked'
+wait "$resume_pid" || fail 'the second resume of one name failed'
+contains "$ROOT/controller/runs/manual-resume.done" 'OUTCOME=CODE-EXIT' \
+  'the second resume wrote its own marker'
+
 # Every Codex exit path states an OUTCOME and its continuation count, in the
 # documented additive shape (the historical EXIT= first line is unchanged).
 contains "$ROOT/controller/runs/codex-fail.done" 'OUTCOME=CODE-EXIT' \
