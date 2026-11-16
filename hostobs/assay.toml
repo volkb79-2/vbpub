@@ -4,9 +4,10 @@
 # registered Rust R1 adapter (assay R-2 / B243, merged): the lane's argv is the
 # workspace test-and-coverage command (cargo-llvm-cov over nextest, doctests,
 # per-crate line/region floors), and Assay judges the LCOV artifact that command
-# wrote. `run-gate.toml` binds `[lanes.assay-r1]` to this lane and keeps the
-# existing `selftest` lane, which is still the R0/R1 baseline until the judge
-# lane itself can run in the Rust image (`HOB-44`).
+# wrote. `run-gate.toml` reaches this lane through a `kind = "command"` lane that runs
+# the judge from the worktree's own `assay/src` (no install, so the Rust image needs no
+# `pip`: HOB-44, closed by that declaration shape), and keeps the existing `selftest`
+# lane as the enforced R0/R1 baseline underneath it.
 #
 # ## Floors and their derivation
 #

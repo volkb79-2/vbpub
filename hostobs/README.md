@@ -89,15 +89,14 @@ store's bounds and crash-safety guards, all killed). Each is a stored patch in a
 script, and every restore is SHA-256-verified.
 
 Open items found while building these packages are in
-[`KNOWN_ISSUES_TODO_BACKLOG.md`](KNOWN_ISSUES_TODO_BACKLOG.md) (`HOB-1` … `HOB-44`): the
+[`KNOWN_ISSUES_TODO_BACKLOG.md`](KNOWN_ISSUES_TODO_BACKLOG.md) (`HOB-1` … `HOB-45`): the
 sharpest still-open ones are `HOB-17`/`HOB-27` (the `kernel` and `store` crates carry their
 own value and quality types until the Rust lane image can be rebuilt against a new
 `Cargo.lock`), `HOB-21`/`HOB-29` (no `/sys` device-topology source, and `store`'s tmpfs check
 reads the mount table rather than `statfs`), `HOB-39` (a store range answer is the stored
 payload, not decoded `model` rows — the join waits for the same rebuild), `HOB-4` (the Python
-conformance run is still a manual check, not a registered lane), `HOB-44` (the Rust gate
-image has no `pip`, so the registered `assay-r1` lane cannot install the assay judge yet) and
-`HOB-30` (no session spools, which are out of this package's scope). `HOB-26` states the SP-2 limit plainly: the
+conformance run is still a manual check, not a registered lane), `HOB-45` (Rust R2/R3 are
+unregistered) and `HOB-30` (no session spools, which are out of this package's scope). `HOB-26` states the SP-2 limit plainly: the
 kernel-side rate arithmetic is a test-local helper, because `kernel` cannot depend on `model`
 (`HOB-17`).
 
@@ -124,7 +123,9 @@ branch arcs; assay B523), never as zero-of-zero. R2 (mutation) and R3 (canary) a
 registered for Rust yet. See [`docs/CONSUMERS.md`](docs/CONSUMERS.md) for the lane
 commands, what the verdict says, the floor derivation and the Python conformance run, and
 [`docs/DESIGN-GUIDE.md`](docs/DESIGN-GUIDE.md) §"Gates and coverage" for why the numbers
-are pinned this way. `HOB-44` tracks the one image fact this lane still needs (the Rust
-gate image carries no `pip`, which Run-Gate needs to install the worktree's assay source);
-until it ships, the lane fails `ERROR` at that install step instead of judging — `selftest`
-remains the enforced baseline.
+are pinned this way. The lane is a **command lane**, not `kind = "assay"`: it runs the judge
+straight from the mounted worktree's own source (`PYTHONPATH={worktree}/assay/src`), so it
+needs no install and therefore no `pip` in the Rust gate image (`HOB-44`, closed by exactly
+that re-declaration). `selftest` stays as the enforced baseline alongside it. The lane was
+proven through Run-Gate at head `631a721a1`: `PASS` 15100/15723 = 96.0377 % in the lane's own
+log, and `FAIL/UNCOVERED_LINES` 14777/15723 = 93.9833 % when one kernel test file is deleted.

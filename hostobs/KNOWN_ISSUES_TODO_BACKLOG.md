@@ -56,7 +56,7 @@ A `FIXED` entry means code, tests, and docs landed together.
 | HOB-41 | No golden fixture has a non-zero record pad, so the padding rule is pinned by unit tests on each side, not by a cross-language file | Minor | OPEN |
 | HOB-42 | A `.seg` name is trusted as sealed without a footer, and the header's `seq`/`start_real_ns` are never compared with the name | Minor | OPEN |
 | HOB-43 | Quarantined `.corrupt` files (corrupt, oversized) are kept for an operator but are never counted in `bytes`, never evicted and never bounded in number, so repeated damage can fill the directory beyond `cap_bytes` | Major | OPEN |
-| HOB-44 | `tester-unified-rust` carries no `pip`/`ensurepip`/`python3-venv`, so the registered `assay-r1` lane cannot install the assay judge Run-Gate needs and fails before judging; `selftest` remains the enforced baseline | Major | OPEN (needs one image change) |
+| HOB-44 | CLOSED — `tester-unified-rust` carries no `pip`/`ensurepip`/`python3-venv`, so the original `kind = "assay"` `assay-r1` lane died at Run-Gate's editable install before judging. Fixed by re-declaring the lane as a `kind = "command"` lane that runs the judge from the worktree's own `assay/src` (`PYTHONPATH`, no install); the image is unchanged. Proven through Run-Gate (PASS at `631a721a1`, FAIL/UNCOVERED_LINES with one test file deleted) | Major | CLOSED (2026-11-16) |
 | HOB-45 | Rust R2/R3 remain unregistered for hostobs: no `assay-r2` (cargo-mutants ingestion) or `assay-r3` (canary) lane exists, so test quality rests on the hand-mutation campaigns | Major | OPEN (assay R-3b/R-4) |
 
 ---
@@ -784,7 +784,10 @@ fix round; the first review round missed it too.
 removed first, reported) or a hard count/bytes bound refuses further quarantine with a typed,
 counted report; a test fills the bound; a mutant removes it.
 
-## HOB-44 — the Rust gate image has no `pip`, so `assay-r1` cannot install its judge
+## HOB-44 — CLOSED: the lane needed no `pip`, because it needed no install
+
+**Closed 2026-11-16** by re-declaring the lane (commit `09771f638`) and proving it
+through Run-Gate at head `631a721a1`. Original text kept below, then the resolution.
 
 **Where:** `tester-unified-rust/Dockerfile` (the `apt-get install` line);
 `hostobs/run-gate.toml` `[lanes.assay-r1]`; `run-gate-project/run_gate.py`
@@ -831,8 +834,34 @@ measured artifact, the lane PASSES at head with the floor in `assay.toml`, and t
 FAILS when a test file is deleted (the negative run recorded in
 `docs/CONSUMERS.md` §"Proof it is a real judge").
 
+**Resolved: the declaration was the defect, not the image.** `assay-r1` is now a
+`kind = "command"` lane ([`run-gate.toml`](run-gate.toml): `kind`, `argv`, `exit_map`).
+assay is stdlib-only, so the judge runs straight from the mounted worktree's source —
+`PYTHONPATH={worktree}/assay/src` plus `assay/analysis/src` for the `assay analyze`
+post-checks — exactly how assay is consumed inside this monorepo, and nothing is installed.
+The Rust image is unchanged and stays offline and lock-bound; the image change described
+below is NOT needed and should not be applied for this lane.
+
+**Evidence, all through Run-Gate (no throwaway copies).**
+
+| run | head | verdict |
+|---|---|---|
+| `run-gate assay-r1` | `631a721a1` | `PASS`, `.assay/verdict-assay-r1.json` written, R0 PASS + R1 PASS |
+| the same lane, one kernel test file deleted and committed in a temporary worktree | `e5247610` | `FAIL`, R1 `UNCOVERED_LINES` |
+
+The PASS log binds the artifact to the head (`assay analyze verdict --expected-commit`)
+and prints the measured totals from it: `lines 15100/15723 = 96.0377% over 33 targets;
+branches 0/0 (unavailable)`, 24 files carrying `missing_lines` findings. The negative log
+carries `lines 14777/15723 = 93.9833%` and `R1 FAIL UNCOVERED_LINES` while nextest is still
+322/322 green, so the failure is the coverage claim and not the test command. Logs:
+`logs/pi-hostobs-assay-r1-fix-assay-r1.log` and `…-fix-assay-r1-negative.log` in the release
+program's `logs/`. The registered lane path is therefore PROVEN end to end (declaration →
+Run-Gate → judge → verdict artifact → gate verdict), which the earlier copy-based probes
+could not show.
+
 **Source.** Filed 2026-11-15 by the hostobs assay-r1 adoption; measured at head
-`c14d2cc30` in `tester-unified-rust:local`.
+`c14d2cc30` in `tester-unified-rust:local`. Closed 2026-11-16; assay B549 records the
+same finding from the judge's side.
 
 ## HOB-45 — Rust R2 and R3 are unregistered for hostobs
 

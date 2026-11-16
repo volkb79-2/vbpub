@@ -393,9 +393,28 @@ chain `selftest` runs, so nothing about what was executed can drift between the 
 what differs is that assay parses `lcov.info`, binds the totals to the judged commit, lists
 the uncovered executable lines as findings, and states the branch capability it actually
 has. The alternative — deleting `selftest` and letting one lane do both — was rejected
-because `selftest` is the enforced baseline that still works in the Rust image, while
-`assay-r1` needs a `pip`-carrying image (`HOB-44`); keeping both means the judge lane can
-be proven without removing the guard.
+because `selftest` is the enforced baseline and the judge lane sits on top of it: two lanes
+judging the same measured command is deliberate redundancy, and the crate floors in the
+argv are the tighter bound that must keep firing regardless of which one renders the verdict.
+
+`assay-r1` is a `kind = "command"` lane, not `kind = "assay"`. assay is stdlib-only, so the
+judge runs from the mounted worktree's own source (`PYTHONPATH={worktree}/assay/src`, plus
+`assay/analysis/src` for the `assay analyze` post-checks) with no install — which is also
+how assay is consumed from inside this monorepo. The rejected alternative, `kind = "assay"`,
+was the original declaration: Run-Gate then `pip install`s the worktree's assay first, and
+`tester-unified-rust` ships the offline, lock-bound Cargo toolchain with no
+`pip`/`ensurepip`/`venv` by design, so that lane died at the install step before the judge
+ran (`No module named pip`, verdict `ERROR`, HOB-44). It was the *declaration* that was
+wrong, not the image: changing the image to carry pip would weaken a deliberately closed
+toolchain to fix a shape that never needed installing at all. The cost of the command-lane
+shape is that this project, unlike a `kind = "assay"` consumer, owns the argv that reaches
+the judge, so the post-checks are spelled out in [`run-gate.toml`](../run-gate.toml):
+`assay verify` for schema consistency, `assay analyze verdict --expected-commit $(git
+rev-parse HEAD)` for the commit binding (which `verify` does not compare), and a printout of
+the measured totals and branch capability read from the artifact rather than recomputed.
+The judge's own exit status is the lane's verdict via `exit_map` (0 `PASS`, 2 `ERROR`,
+nonzero otherwise `FAIL`), and the judge's status is captured rather than left to abort the
+script, so a red log still states what was measured.
 
 The floor (95.0% line, measured 96.0377%, 15100/15723 executable lines at head `3b46df06`)
 is derived and argued in [`assay.toml`](../assay.toml)'s header. The rejected alternatives:

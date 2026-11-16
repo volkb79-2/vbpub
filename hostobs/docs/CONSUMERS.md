@@ -17,8 +17,13 @@ baked lock digest, crate set, lock checksums, or cached archive bytes disagree.
 
 ## What `assay-r1` judges, and what it says
 
-`assay-r1` is a `kind = "assay"` lane: Run-Gate installs the worktree's own `assay/` and
-the judge runs the lane declared in [`assay.toml`](../assay.toml) (`[lanes.assay-r1]`). Its
+`assay-r1` is a `kind = "command"` lane: it runs the judge straight from this worktree's
+own source (`PYTHONPATH={worktree}/assay/src`, plus `assay/analysis/src` for the
+post-checks) and the judge runs the lane declared in [`assay.toml`](../assay.toml)
+(`[lanes.assay-r1]`). `assay` is stdlib-only, so nothing is installed and the Rust image
+needs no `pip` — that is the whole reason the lane has this shape instead of
+`kind = "assay"`, which would have Run-Gate `pip install` the worktree first and fail
+here (see [`HOB-44`](#hob-44-closed-the-lanes-own-declaration-shape) below). Its
 own argv is the same offline/locked cargo-llvm-cov + nextest + doctest + crate-floor
 command `selftest` runs, so the two cannot disagree about what was executed; what changes
 is who renders the coverage verdict. The artifacts are `lcov.info` and `cov-summary.json` in
@@ -58,31 +63,39 @@ not part of Assay's R1 claim.
 
 ### Proof it is a real judge, not a renamed floor
 
-Run in throwaway copies of this workspace (not the lane, because of `HOB-44` below), the
-same 33 targets returned:
+Proven through Run-Gate in this workspace's own lane (no throwaway copies), the same 33
+targets returned:
 
-| copy | nextest | assay R1 |
+| run | nextest | assay R1 |
 |---|---|---|
-| this workspace as committed | 333 tests pass | `PASS`, 15100/15723 = 96.0377 % |
-| one kernel test file deleted | 322 tests pass (all green) | `FAIL/UNCOVERED_LINES`, 14777/15723 = 93.9833 % |
+| `run-gate assay-r1` at head `631a721a1` | 333 tests pass | `PASS`, 15100/15723 = 96.0377 % |
+| the same lane, one kernel test file deleted, committed in a temporary worktree | 322 tests pass (all green) | `FAIL/UNCOVERED_LINES`, 14777/15723 = 93.9833 % |
 
 So the verdict is the measured number and the failure is the coverage claim itself; the
 test command stays green in the negative case, which is exactly the difference between a
-coverage verdict and a test result. In the negative copy the lane's own crate-floor step was
-neutralized (`true` in place of `tools/crate-floors.py`), so nothing but the Assay R1 claim
-could have failed it; re-running that same step separately over the negative copy confirms
-it refuses the deletion independently (`ERROR: crate crates/kernel line coverage is 81.24%
-(2364/2910); floor is 92.00%`).
+coverage verdict and a test result. The negative lane logged both its claims and its
+totals (`assay-r1 claim: R1 FAIL UNCOVERED_LINES`, `lines 14777/15723 = 93.9833%`), which
+is why the lane captures the judge's exit status instead of aborting on it. Earlier, the
+same deletion was also measured in throwaway copies with the lane's crate-floor step
+neutralized (`true` in place of `tools/crate-floors.py`), so nothing but the Assay R1
+claim could have failed it; re-running that step over a negative copy confirms it refuses
+the deletion independently (`ERROR: crate crates/kernel line coverage is 81.24%
+(2364/2910); floor is 92.00%`). The registered lane needs no such neutralization to fire:
+R0 FAILs first (`COMMAND_FAILED`) and R1 FAILs on `UNCOVERED_LINES`, both in one log.
 
-### `HOB-44`: the registered lane needs one image change
+### `HOB-44` (closed): the lane's own declaration shape
 
-`tester-unified-rust` carries `python3` but no `pip`, no `ensurepip` and no `python3-venv`,
-and Run-Gate installs `assay` from the bind-mounted worktree before the judge runs. Until the
-image ships those packages, `run-gate assay-r1` stops at
-`run-gate: editable assay install failed` /
-`/usr/bin/python3: No module named pip` and reports `ERROR` with no verdict artifact. That is
-*documented* as `HOB-44` with the smallest image change (`python3-pip python3-venv`), not
-papered over with a weaker lane; `selftest` keeps the enforced baseline in the meantime.
+`tester-unified-rust` carries `python3` but no `pip`, no `ensurepip` and no
+`python3-venv`. Under the original `kind = "assay"` declaration that was fatal: Run-Gate
+installed `assay` from the bind-mounted worktree before the judge ran, so the lane stopped
+at `run-gate: editable assay install failed` / `/usr/bin/python3: No module named pip` and
+reported `ERROR` with no verdict artifact. The fix is a declaration change, not an image
+change: the
+lane is now a **command lane** that runs `python3 -m assay.cli run assay-r1` with
+`PYTHONPATH` pointing at the worktree's own `assay/src` — which is exactly how assay is
+consumed from inside this monorepo — so there is nothing to install. The image is unchanged
+and should stay that way (it is offline and lock-bound by design). `HOB-44` is CLOSED; assay
+B549 records the same finding from the judge's side.
 
 ### What is not covered
 
