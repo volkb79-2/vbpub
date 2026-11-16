@@ -50,6 +50,33 @@ available account or exits 3 when neither can run. The controller starts
 closes pi's stdin to prevent the non-interactive process from waiting for
 input.
 
+### Why a run name is owned by one live wrapper
+
+Everything a run owns is keyed by its NAME: `<run>.done`, `.jsonl`, `.err`,
+`.events`, `.live`, `.last.txt`, `.wt`, `.route` and `.thread`. Two wrappers on
+one name would therefore interleave on those files with no error: the second
+truncates `.events`, both append to one stream, the pid in `.live` is whichever
+wrote last, and each writes its own `.done`. A reader then sees one job's
+completion as the other job's result — the strongest form of the false
+certification the rest of this kit exists to prevent.
+
+The guard is a kernel `flock` on `<runs-dir>/<name>.lock`, taken before any
+record is written and released on every exit path. A kernel lock, not a pid
+test, because the release must not depend on the dying process running: a
+wrapper that is TERMed, KILLed or OOM-killed leaves the name claimable, and a
+recycled pid cannot inherit a stale claim. The lock file also records who holds
+it (pid, start epoch, the pid's own kernel start ticks, boot id), so the refusal
+can name the live owner and `job-check.sh` can tell a dead owner from a live
+one. The agent and the liveness sidecar close their inherited copy of the
+descriptor, so a child that outlives its wrapper never holds the name hostage.
+
+Force is deliberately not a bypass: `CONTROLLER_RUN_FORCE=1` is refused while an
+owner is alive, and for a dead owner it RETIRES the whole record set into
+`retired/<run>/<utc-stamp>/` with the previous owner's identity written beside
+it, instead of deleting or overwriting evidence. `resume` of the same session
+takes the same lock rather than a second ownership dimension — it is another
+invocation of the same owned run.
+
 ### Why the terminal outcome is classified, not just the exit code
 
 An exit code cannot carry what went wrong with pi. Two measured store-crate

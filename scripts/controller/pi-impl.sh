@@ -25,6 +25,16 @@
 # The expected report is `--report <path>` or `PI_REPORT`; unset means no
 # report check. Every active run also gets <run>.live (liveness/progress,
 # read by job-status.sh) and <run>.events (JSON lines, one per continue).
+#
+# A run NAME is owned by one live wrapper: the wrapper takes an exclusive
+# flock on <runs-dir>/<name>.lock before it writes anything (lib.sh
+# controller_run_claim) and releases it on every exit path, so two wrappers on
+# one name can never interleave on the name-owned records. A second invocation
+# is refused with exit 2 and the live owner's pid; the kernel releases the
+# lock when the owner dies, so a TERMed or KILLed wrapper cannot strand a name.
+# CONTROLLER_RUN_FORCE=1 retires the previous owner's records into
+# <runs-dir>/retired/<name>/<utc-stamp>/ (never deletes them) and is refused
+# while an owner is still alive.
 set -uo pipefail
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 caller_pi_route=${PI_ROUTE-}
@@ -109,16 +119,31 @@ if [[ ! $live_interval =~ ^[0-9]+$ ]] || (( live_interval == 0 )); then
 fi
 
 out=$CONTROLLER_RUNS_DIR
+# Ownership first: nothing below may write a name-owned record until this
+# invocation holds the name. A refusal here names the live owner and exits 2.
+controller_run_claim "$name" || exit 2
+
 if [[ $mode == new ]]; then
   existing=()
-  for extension in 'done' 'jsonl' 'err' 'events' 'live'; do
+  for extension in 'done' 'jsonl' 'err' 'events' 'live' 'last.txt' 'wt' 'route' 'thread' 'autoresume.log'; do
     [[ -e $out/$name.$extension ]] && existing+=("$out/$name.$extension")
   done
-  if [[ ${CONTROLLER_RUN_FORCE:-0} != 1 ]] && (( ${#existing[@]} > 0 )); then
-    echo "controller run name already has evidence: $name" >&2
-    printf '  %s\n' "${existing[@]}" >&2
-    echo 'set CONTROLLER_RUN_FORCE=1 only to replace an intentionally abandoned or failed run' >&2
-    exit 2
+  if (( ${#existing[@]} > 0 )); then
+    if [[ ${CONTROLLER_RUN_FORCE:-0} != 1 ]]; then
+      echo "controller run name already has evidence: $name" >&2
+      printf '  %s\n' "${existing[@]}" >&2
+      echo 'set CONTROLLER_RUN_FORCE=1 only to replace an intentionally abandoned or failed run' >&2
+      exit 2
+    fi
+    # Force means RETIRE: the previous identity moves aside instead of being
+    # overwritten, and the caller is told what was retired and why.
+    if retired=$(controller_run_retire_records "$name"); then
+      printf 'pi-impl: CONTROLLER_RUN_FORCE=1 retired %s records into %s\n' "$name" "$retired" >&2
+      printf '  retired: %s\n' "${existing[@]}" >&2
+    else
+      echo "controller: could not retire the records of $name; refusing to overwrite them" >&2
+      exit 2
+    fi
   fi
 fi
 
@@ -244,10 +269,10 @@ invoke_pi() {
   local -a argv=("${base_pi_args[@]}")
   [[ -z $resume_target ]] || argv+=(--session "$resume_target")
   if [[ $first_run == 1 ]]; then
-    (cd -- "$worktree" && nice pi "${argv[@]}" -- "$prompt_text" \
+    (cd -- "$worktree" && controller_close_ownership_fds && exec nice pi "${argv[@]}" -- "$prompt_text" \
       < /dev/null > "$stream" 2> "$out/$name.err")
   else
-    (cd -- "$worktree" && nice pi "${argv[@]}" -- "$prompt_text" \
+    (cd -- "$worktree" && controller_close_ownership_fds && exec nice pi "${argv[@]}" -- "$prompt_text" \
       < /dev/null >> "$stream" 2>> "$out/$name.err")
   fi
 }
@@ -377,11 +402,17 @@ live_stop() {
   wait "$live_pid" 2>/dev/null || true
   live_pid=''
 }
-trap live_stop EXIT
+# Every exit path drops the name: the EXIT trap covers success, an error path
+# and SIGTERM (bash runs it for TERM), and a SIGKILL leaves it to the kernel,
+# which releases the flock when the last holder dies.
+trap 'live_stop; controller_run_release' EXIT
 if [[ ${PI_LIVE:-1} == 1 ]]; then
-  python3 "$SCRIPT_DIR/pi-live.py" --stream "$out/$name.jsonl" --worktree "$worktree" \
-    --out "$out/$name.live" --run "$name" --wrapper-pid $$ --interval "$live_interval" \
-    >/dev/null 2>>"$out/$name.err" &
+  # The sidecar must not inherit the name lock: it can outlive a killed wrapper
+  # by one interval, and it holds no ownership of the run name.
+  ( controller_close_ownership_fds
+    exec python3 "$SCRIPT_DIR/pi-live.py" --stream "$out/$name.jsonl" --worktree "$worktree" \
+      --out "$out/$name.live" --run "$name" --wrapper-pid $$ --interval "$live_interval" \
+      >/dev/null 2>>"$out/$name.err" ) &
   live_pid=$!
 fi
 

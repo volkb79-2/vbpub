@@ -15,6 +15,9 @@ shutil.copy2(repo / "scripts/controller/lib.sh", controller / "lib.sh")
 shutil.copy2(repo / "scripts/controller/opendesign-accounts.py", controller / "opendesign-accounts.py")
 shutil.copy2(repo / "scripts/controller/pi-live.py", controller / "pi-live.py")
 shutil.copy2(repo / "scripts/controller/job-status.sh", controller / "job-status.sh")
+# A mutant wrapper must be judged on the change it carries, not on a missing
+# sibling file: the continuation prompt is read from SCRIPT_DIR.
+shutil.copy2(repo / "scripts/controller/continue-empty-completion.md", controller / "continue-empty-completion.md")
 
 
 def account_helper_mutant(name: str, before: str, after: str) -> Path:
@@ -327,8 +330,51 @@ mutant("scripts/controller/pi-impl.sh", "pi-run-name-guard.sh",
        '[[ $name =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ && $name != *..* ]] || {',
        '[[ -n $name ]] || {')
 mutant("scripts/controller/pi-impl.sh", "pi-run-collision-guard.sh",
-       'if [[ ${CONTROLLER_RUN_FORCE:-0} != 1 ]] && (( ${#existing[@]} > 0 )); then',
-       'if false; then')
+       '    if [[ ${CONTROLLER_RUN_FORCE:-0} != 1 ]]; then',
+       '    if false; then')
+# CTL-14: the run-name ownership guard. Three ways it can be lost: no claim at
+# all (two wrappers interleave), a claim taken but never released (a killed
+# wrapper strands the name), and a claim that can be bypassed by force (a live
+# owner's records get overwritten under it).
+mutant("scripts/controller/pi-impl.sh", "pi-run-name-claim.sh",
+       'controller_run_claim "$name" || exit 2', ': # name ownership not claimed')
+# The lock lives in lib.sh, and pi-impl.sh sources lib.sh from its own
+# directory, so a lib mutant judged against test-pi-impl.sh needs its own wrapper
+# copy beside the mutated library (otherwise the wrapper would load the real
+# lib.sh and the mutation would never be exercised).
+#
+# child-close: the lock is held by the wrapper's open file description, which a
+# child that forked from it inherits; the agent and its sidecar must close their
+# copy, so a killed wrapper's name is free even while the agent it started still
+# runs.
+# live-owner-bypass: an exclusive lock that is not obtained reads as obtained,
+# so a second invocation interleaves with a live owner.
+# retire-deletes: a forced reuse deletes the previous owner's records instead of
+# archiving them.
+def pi_wrapper_with_lib_mutant(name: str, before: str, after: str) -> Path:
+    variant = controller / name
+    variant.mkdir(parents=True, exist_ok=True)
+    for sibling in ("pi-impl.sh", "continue-empty-completion.md", "opendesign-accounts.py", "pi-live.py"):
+        shutil.copy2(repo / "scripts/controller" / sibling, variant / sibling)
+    mutant("scripts/controller/lib.sh", "lib.sh", before, after, variant)
+    return variant / "pi-impl.sh"
+
+
+pi_wrapper_with_lib_mutant(
+    "pi-run-name-child-close",
+    '  eval "exec $fd>&-" 2>/dev/null || :\n  return 0\n}\n\ncontroller_run_owner_pid',
+    '  :\n  return 0\n}\n\ncontroller_run_owner_pid',
+)
+pi_wrapper_with_lib_mutant(
+    "pi-run-name-live-owner-bypass",
+    '  flock -n "$CONTROLLER_RUN_LOCK_FD"\n  rc=$?',
+    '  flock -n "$CONTROLLER_RUN_LOCK_FD" || true\n  rc=0',
+)
+pi_wrapper_with_lib_mutant(
+    "pi-run-name-retire-deletes",
+    '    mv -- "$runs/$name.$extension" "$archive/" || return 2',
+    '    rm -f -- "$runs/$name.$extension" || return 2',
+)
 mutant("scripts/controller/pi-impl.sh", "pi-prompt-preserve-newlines.sh",
        'IFS= read -r -d \'\' prompt_text < "$prompt" || :',
        'prompt_text=$(<"$prompt")')

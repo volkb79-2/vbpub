@@ -77,8 +77,7 @@ Use this order for each implementation task.
    all existing paths are printed. `CONTROLLER_RUN_FORCE=1` permits replacing
    evidence for a new run that was intentionally abandoned or failed. Resume
    mode does not take that new-run guard: it continues the same thread over an
-   existing stream and writes a fresh completion marker when it finishes.
-3. **Check the result.** Run `scripts/controller/job-check.sh` with the run
+   existing stream and writes a fresh completion marker when it finishes.3. **Check the result.** Run `scripts/controller/job-check.sh` with the run
    name, exact worktree path, route, and absolute report paths. It reports runs
    without `.done` as running; for completed runs it checks intent-only
    endings, reasoning-end, usage-limit retry text, missing turn completion,
@@ -259,7 +258,16 @@ environment example or run files. The session directory defaults to
 
 The pi event stream is saved as `<run>.jsonl`, stderr as `<run>.err`, the last
 assistant text as `<run>.last.txt`, and the worktree, selected route, and pi
-session id as `<run>.wt`, `<run>.route`, and `<run>.thread`. The first `.done`
+session id as `<run>.wt`, `<run>.route`, and `<run>.thread`. A run NAME is
+owned by one live wrapper at a time: `<run>.lock` is an exclusive `flock` the
+wrapper takes before it writes any record and releases on every exit path
+(the kernel releases it when the owner dies, so a killed wrapper cannot strand
+it). A second invocation — a relaunch while the first is alive, or a `resume`
+of the same run — is refused with exit 2 and names the live owner pid. A
+`CODEOWNER`-style force is not offered: `CONTROLLER_RUN_FORCE=1` only retires a
+DEAD owner's records, moving the whole record set into
+`retired/<run>/<utc-stamp>/` (never deleting it) and reporting the retired
+owner, so the name can be reused deliberately. The first `.done`
 line keeps its historical shape `EXIT=<n> OUTCOME=<word>`, where the word is:
 
 | Outcome | Meaning |

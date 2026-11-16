@@ -664,6 +664,120 @@ check_repo_not_a_worktree() {
     'a directory that cannot answer the clean-worktree question is refused'
 }
 
+# --- run-name ownership (CTL-14) -------------------------------------------
+
+# Start one wrapper in the background and wait until it has claimed the name.
+start_owned_run() {
+  local run=$1 sleep_after=$2
+  shift 2
+  PATH="$ROOT/bin:$PATH" HOME="$HOME_ROOT" PI_ROUTE=deepseek-pi-volker \
+    CONTROLLER_OD_STATE="$ROOT/ownership-$run-state.json" PI_LIVE=0 \
+    FAKE_FIXTURE_DIR="$SCRIPT_DIR/fixtures" \
+    FAKE_PI_STREAM="$SCRIPT_DIR/fixtures/pi-success.jsonl" \
+    FAKE_PI_SESSION_ID="$run-session" FAKE_PI_RC=0 FAKE_PI_SLEEP_AFTER="$sleep_after" \
+    "$SRC" "$WORKTREE" "$PROMPT" "$run" "$@" \
+    > "$ROOT/$run.launch.log" 2>&1 < /dev/null &
+  OWNED_PID=$!
+  # Readiness is the run's own event stream, not an ownership record: the check
+  # under test must not need the guard's file to exist to observe a running run.
+  wait_for_stream "$run" || { cat "$ROOT/$run.launch.log" >&2; fail "wrapper for $run exited before it started its agent"; }
+}
+
+# Wait until the fake agent has started: its first event is already in the run
+# stream, so a kill at this point happens while the agent works.
+wait_for_stream() {
+  local name=$1 waited=0
+  while (( waited < 200 )); do
+    [[ -s $CONTROLLER_ROOT/runs/$name.jsonl ]] && return 0
+    sleep 0.05
+    waited=$(( waited + 1 ))
+  done
+  return 1
+}
+
+stop_owned_run() {
+  local signal=${1:-TERM}
+  kill -"$signal" "$OWNED_PID" 2>/dev/null || true
+  wait "$OWNED_PID" 2>/dev/null || true
+}
+
+# The name lock is free right now: proven from outside the wrapper, so the check
+# does not depend on the wrapper being able to claim it.
+name_lock_is_free() {
+  local name=$1 fds
+  exec {fds}>>"$CONTROLLER_ROOT/runs/$name.lock" || return 2
+  if flock -n "$fds"; then exec {fds}>&-; return 0; fi
+  exec {fds}>&-
+  return 1
+}
+
+check_run_name_ownership() {
+  local first='' second=0 retired='' started_at=0
+  rm -rf "$CONTROLLER_ROOT/runs"; mkdir -p "$CONTROLLER_ROOT/runs"
+  # (1) A live owner refuses a second wrapper BY NAME, before it writes anything.
+  start_owned_run owned-run 6
+  first=$OWNED_PID
+  if PATH="$ROOT/bin:$PATH" HOME="$HOME_ROOT" PI_ROUTE=deepseek-pi-volker \
+    CONTROLLER_OD_STATE="$ROOT/ownership-second-state.json" PI_LIVE=0 \
+    FAKE_FIXTURE_DIR="$SCRIPT_DIR/fixtures" \
+    FAKE_PI_STREAM="$SCRIPT_DIR/fixtures/pi-success.jsonl" \
+    FAKE_PI_SESSION_ID=owned-run-second FAKE_PI_RC=0 \
+    "$SRC" "$WORKTREE" "$PROMPT" owned-run > "$ROOT/owned-run-second.log" 2>&1 < /dev/null; then
+    stop_owned_run TERM
+    fail 'a second wrapper ran on a run name a live wrapper owns'
+  else
+    second=$?
+  fi
+  [[ $second == 2 ]] || { stop_owned_run TERM; fail "a name-collision refusal exited $second, expected 2"; }
+  contains "$ROOT/owned-run-second.log" "run name 'owned-run' is already owned by pid $first" \
+    'the refusal names the live owner'
+  contains "$ROOT/owned-run-second.log" 'CONTROLLER_RUN_FORCE=1' \
+    'the refusal names the supported way forward'
+  [[ ! -e $CONTROLLER_ROOT/runs/owned-run.done ]] \
+    || { stop_owned_run TERM; fail 'the refused invocation wrote a completion marker'; }
+  # (2) A resume of the same run is the same ownership, not a second dimension.
+  if PATH="$ROOT/bin:$PATH" HOME="$HOME_ROOT" PI_ROUTE=deepseek-pi-volker \
+    CONTROLLER_OD_STATE="$ROOT/ownership-resume-state.json" PI_LIVE=0 \
+    FAKE_FIXTURE_DIR="$SCRIPT_DIR/fixtures" \
+    FAKE_PI_STREAM="$SCRIPT_DIR/fixtures/pi-success.jsonl" \
+    FAKE_PI_SESSION_ID=owned-run-session FAKE_PI_RC=0 \
+    "$SRC" "$WORKTREE" "$PROMPT" owned-run resume owned-run-session \
+    > "$ROOT/owned-run-resume.log" 2>&1 < /dev/null; then
+    stop_owned_run TERM
+    fail 'a resume interleaved with a live wrapper on the same run name'
+  fi
+  contains "$ROOT/owned-run-resume.log" 'is already owned by pid' 'a resume of a live run is refused by name'
+  # (3) A different run name proceeds while the first is still working.
+  wait_launch other-run deepseek-pi-volker pi-success /dev/null
+  [[ -e $CONTROLLER_ROOT/runs/other-run.done ]] || { stop_owned_run TERM; fail 'a different run name was blocked by the first'; }
+  # (4) SIGTERM releases the name; force retires (never overwrites) the records
+  #     and names the identity it retired.
+  stop_owned_run TERM
+  name_lock_is_free owned-run || fail 'a TERMed wrapper stranded its run-name lock'
+  CONTROLLER_RUN_FORCE=1 wait_launch owned-run deepseek-pi-volker pi-success /dev/null \
+    || fail 'a retired name could not be reused'
+  [[ -e $CONTROLLER_ROOT/runs/owned-run.done ]] || fail 'the forced reuse did not run'
+  retired=$(find "$CONTROLLER_ROOT/runs/retired/owned-run" -mindepth 1 -maxdepth 1 -type d -print -quit)
+  [[ -n $retired ]] || fail 'the forced reuse did not archive the previous records'
+  [[ -f $retired/owned-run.jsonl ]] || fail 'the forced reuse deleted the previous run stream'
+  contains "$retired/PREVIOUS-OWNER.txt" "pid=$first" 'the retired archive names the previous owner'
+  # (5) SIGKILL: the name is free immediately, even while the agent the wrapper
+  #     started still runs - a child never holds the wrapper's ownership. Wait
+  #     until the fake agent is running (its first event is in the stream) so the
+  #     case is "wrapper killed while the agent works", not "wrapper killed before
+  #     it reached the agent".
+  start_owned_run killed-run 8
+  wait_for_stream killed-run || { stop_owned_run KILL; fail 'the killed-run agent never started'; }
+  stop_owned_run KILL
+  name_lock_is_free killed-run || fail 'a SIGKILLed wrapper left its run-name lock held'
+  started_at=$SECONDS
+  CONTROLLER_RUN_FORCE=1 wait_launch killed-run deepseek-pi-volker pi-success /dev/null \
+    || fail 'a SIGKILLed name could not be reclaimed'
+  (( SECONDS - started_at < 6 )) \
+    || fail 'reclaiming a SIGKILLed name waited for the killed wrapper agent child to exit'
+  contains "$ROOT/killed-run.launch.log" 'retired' 'the forced reclaim reports what it retired'
+}
+
 check_job_status_validation() {
   expect_rc 2 env CONTROLLER_HOME="$ROOT/status-home" CONTROLLER_RUNS_DIR="$ROOT/status-runs" \
     JOB_STATUS_STALL_SECONDS=soon "$JOB_STATUS"
@@ -889,6 +1003,9 @@ PY
         "$SRC" "$WORKTREE" "$PROMPT" focused-collision
       contains "$ROOT/focused-command.out" 'controller run name already has evidence' 'existing run evidence is refused'
       ;;
+    two-wrappers-one-run) check_run_name_ownership ;;
+    ownership-force) check_run_name_ownership ;;
+    ownership-release) check_run_name_ownership ;;
     auth-file)
       local_home=$ROOT/focused-no-env
       mkdir -p "$local_home"
@@ -1381,6 +1498,7 @@ check_input_validation
 check_retry_limit_validation
 check_repo_not_a_worktree
 check_job_status_validation
+check_run_name_ownership
 
 not_contains test-key 'run evidence contains no key material' "$CONTROLLER_ROOT/runs"
 not_contains test-key 'account state contains no key material' "$STATE"

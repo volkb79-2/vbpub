@@ -86,8 +86,23 @@ nohup env CONTROLLER_HOME="$HOME/controller" PI_ROUTE=deepseek-pi \
 
 The `--report` path (or `PI_REPORT`) is the brief's report file. Naming it lets
 the wrapper tell `OUTCOME=NO-REPORT` from a real `OUTCOME=SUCCESS`; leaving it
-out skips that one check. Read the `.done` marker's outcome word before
-deciding what to do next:
+out skips that one check.
+
+A run name carries one run: the wrapper takes an exclusive lock on
+`<runs-dir>/<name>.lock` before writing anything and refuses a second
+invocation of the same name (or a `resume` of it) with exit 2, naming the live
+owner's pid:
+
+```text
+controller: run name 'pi-run' is already owned by pid 12345 (started 2026-11-16T10:00:00Z)
+  one run name carries one run: wait for that wrapper, use a different run name, or retire the owner's records explicitly (CONTROLLER_RUN_FORCE=1, refused while an owner is alive)
+```
+
+`CONTROLLER_RUN_FORCE=1` only works for a DEAD owner: it moves the whole record
+set to `retired/<run>/<utc-stamp>/` (with `PREVIOUS-OWNER.txt`) and starts
+fresh, so a deliberate restart never destroys the previous run's evidence.
+
+Read the `.done` marker's outcome word before deciding what to do next:
 
 | `.done` outcome | What to do |
 |---|---|

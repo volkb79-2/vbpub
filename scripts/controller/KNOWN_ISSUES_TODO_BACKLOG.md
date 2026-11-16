@@ -25,7 +25,7 @@ together.
 | CTL-11 | A readback built by a non-Claude controller has no layout (no recent-prose tail, no marker) until NL-65 | P3 | OPEN 2026-11-15 |
 | CTL-12 | The remote-gate helper refreshes its cached `remote-gate.py` through a shared `.new` temp name, so concurrent launches collide before anything reaches the host | P2 | OPEN 2026-11-16 (requires a repo-side successor) |
 | CTL-13 | A final assistant message with `stopReason=stop`, a tool call and no text classifies `SUCCESS` although the documented contract requires text | Minor | OPEN 2026-11-16 |
-| CTL-14 | Nothing stops two wrappers from running the same run name (or session) at once; both write the same `.done`, `.events` and retry counter | Should-fix | OPEN 2026-11-16 |
+| CTL-14 | Nothing stops two wrappers from running the same run name (or session) at once; both write the same `.done`, `.events` and retry counter | Should-fix | FIXED 2026-11-16 |
 | CTL-15 | `.live`'s `latest_total_tokens` reads `0` for a stream whose usage is only carried on delta events, which is exactly the long run it exists for | Should-fix | OPEN 2026-11-16 |
 | CTL-16 | `since-commit` shows the branch's last-commit age unqualified, so before the run's first commit it reports the base commit's age (the `ahead=` field on the same line is the qualifier the fix needs) | Minor | OPEN 2026-11-16 |
 | CTL-17 | `stopReason=length` (the context window filled) is classified `INCOMPLETE`, so the controller cannot tell a truncated run from a broken stream | Should-fix | OPEN 2026-11-16 |
@@ -505,7 +505,15 @@ documentation is in sync.
 
 ## CTL-14 — two wrappers can run the same run name at once and silently share its records
 
-**Status:** OPEN (filed 2026-11-16); severity Should-fix. Found by the same
+**Status:** FIXED 2026-11-16 (code, tests and docs in the same change); severity
+Should-fix. Implemented as `lib.sh` `controller_run_claim`/`controller_run_release`/
+`controller_close_ownership_fds`/`controller_run_retire_records` plus the claim,
+trap and forced-retire path in `pi-impl.sh`; tests `two-wrappers-one-run`,
+`ownership-force` and `ownership-release` in `tests/test-pi-impl.sh`; mutants
+`pi-run-name-claim`, `pi-run-name-child-close`, `pi-run-name-live-owner-bypass`,
+`pi-run-name-retire-deletes`; docs `README.md`, `docs/DESIGN-GUIDE.md`,
+`docs/CONSUMERS.md`. The remaining launcher paths of CTL-01 still owe the same
+guard (Codex and OpenCode), tracked there. Found by the same
 review (`pi-overwatch-REVIEW.md`, finding F8: "no cross-invocation guard"), and
 re-verified: `pi-impl.sh` takes no lock on the run name.
 
@@ -546,6 +554,20 @@ lock rather than a second dimension.
 every exit path including the trap), `scripts/controller/tests/test-pi-impl.sh`
 (a two-invocation case), and `scripts/controller/README.md` /
 `docs/CONSUMERS.md` for the refusal's wording and the force path.
+
+**What landed (2026-11-16).** The lock is `<runs-dir>/<name>.lock`, an
+exclusive kernel `flock`, and the lock file itself is the owner record
+(`pid=`, `started_epoch=`, `started_utc=`, `pid_start_ticks=`, `boot_id=`),
+so a reader can name a dead owner as well as a live one (CTL-19 consumes it).
+The wrapper claims before it writes any name-owned record; the trap releases
+on success, on an error path and on SIGTERM, and SIGKILL is covered by the
+kernel because the agent and the sidecar close their inherited copy of the
+descriptor (`controller_close_ownership_fds`). `CONTROLLER_RUN_FORCE=1` is
+refused while an owner is alive; for a dead owner it RETIRES the whole record
+set into `retired/<run>/<utc-stamp>/` with the previous owner written into
+`PREVIOUS-OWNER.txt`. The new-run evidence preflight now covers the full
+record set (`done`, `jsonl`, `err`, `events`, `live`, `last.txt`, `wt`,
+`route`, `thread`, `autoresume.log`).
 
 **Acceptance test idea.** A first fake run holds the lock; a second invocation
 with the same name refuses with exit 2 before truncating anything, naming the
