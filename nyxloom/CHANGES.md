@@ -4,6 +4,41 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 ## [Unreleased]
 
+### Added
+- `nyxloom-harness extract --format pi` reads both pi session shapes with one
+  adapter (`session_extract/adapters/pi.py`): the durable stored session under
+  `~/.pi/agent/sessions/<encoded-cwd>/<time>_<uuid>.jsonl` (including a `resume`
+  that appends further agent cycles to the same file) and a `pi --mode json`
+  run stream (`agent_start`/`turn_start`/`message_start`/`message_update`/
+  `message_end`/`tool_execution_*`/`turn_end`/`compaction_*`/`agent_end`/
+  `agent_settled`). Operator text, assistant prose, opt-in thinking, tool calls
+  with their arguments, truncated failed tool results, compaction boundaries and
+  `stopReason: "error"` API errors all normalize to the shared event model;
+  `message_start`/`message_update` are skipped because `message_end` carries the
+  finished message (one real run stream was 99.2% cumulative partial snapshots).
+  Auto-detection recognizes pi by its `session` header record, and a bare pi
+  session uuid resolves through `locate.py` (`$PI_CODING_AGENT_SESSION_DIR`,
+  `$PI_CODING_AGENT_DIR/sessions`, `~/.pi/agent/sessions`, matched as a
+  `<time>_<uuid>.jsonl` filename suffix).
+- `--stop-state` supports pi: its own `stopReason` vocabulary becomes a cause
+  (`length` = CONTEXT-FULL, `error`/`aborted`/`deferred`/`pending`, an
+  assistant message with `stopReason: "stop"` and no prose = EMPTY-COMPLETION,
+  an end on `toolUse` with no later assistant message = TOOL-USE, and an
+  unresolved `tool_execution_*`/`toolResult` pair = killed mid-call).
+- `nyxloom-harness extract --preset readback --state-file PATH` embeds the
+  agent's own living state file VERBATIM as a `STATE (forward-oriented, written
+  by the agent)` section placed after the goal anchor and BEFORE the recent
+  prose. It is bounded by `--budget-tokens`, truncated only at a paragraph
+  boundary with a marker naming the omitted size and the file to read, redacted
+  by `--redact-pattern`, and takes priority over the delta while the
+  recent-prose tail keeps a reserve. Harness-independent: the file belongs to
+  the agent, not to a CLI's storage format.
+
+### Fixed
+- `--redact-pattern`'s placeholder names the matched rule by its ordinal
+  (`#1`, `#2`, ...) instead of echoing the regular expression, which could
+  itself be the sensitive string the pattern was written to remove (NL-72).
+
 <!-- cmru: release history -->
 
 ## [0.13.0] - 2026-11-11

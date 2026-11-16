@@ -555,10 +555,17 @@ empty on the first one. The last line is a `[readback marker: ...]` cursor, so t
 read-back never repeats what this one carried. `--budget-tokens N` defaults to
 50,000 for the preset and uses the documented `rendered characters / 4`
 estimate. It reserves a bounded footer allowance plus the layout's own fixed
-scaffolding, then truncates in a fixed order: the tail prose first (newest
+scaffolding, then truncates in a fixed order: the `--state-file` STATE section
+is bounded first -- it outranks the delta, because a successor ACTS on it, and
+it is cut only at a paragraph boundary with a marker naming the omitted size
+and the file to read -- while the tail keeps a reserve so the session's own
+last words cannot be pushed out entirely; then the tail prose (newest
 records kept whole; it also yields to the delta's protected operator/interview
-material, so the tail cannot push the document past the budget by a whole tail),
-then the delta, with the goal anchor last and never. The tail applies
+material, so the tail cannot push the document past the budget by a whole tail);
+then the delta, with the goal anchor last and never. The state file is
+rendered verbatim, never summarized (a summary of a state file is exactly the
+second-hand account this section exists to replace), and it applies
+`--redact-pattern` itself. The tail applies
 `--redact-pattern` itself, because it is rendered before the delta's own redaction. It
 then fills complete delta records by class: operator turns and answered
 interviews, assistant prose, agent communication, explicit intent lines, and
@@ -573,9 +580,19 @@ truncated, and the next complete record is tried. The footer names every
 class's kept/dropped counts, dropped character/token cost and dropped timestamp
 span, the source time span, the layout accounting (anchor source and cost, tail
 budget/kept/dropped, the delta's remaining content budget), and whether agent
-communication was disabled or budget-dropped. The preset is Claude Code-only
-because its intent and communication surface currently depends on that
-adapter.
+communication was disabled or budget-dropped. The preset runs on the harnesses
+whose adapter provides the intent and communication surface it needs
+(`presets.py`'s per-preset `formats` tuple): Claude Code and pi. The
+`successor`/`review`/`ledger` presets stay Claude Code-only because their
+whole-session ledger is still Claude-specific.
+
+Sections above the delta are each opt-in, and the STATE file is the one
+addition that serves EVERY harness: it belongs to the agent (a living
+markdown file the agent rewrites as it works), not to a CLI's storage format,
+so `--state-file PATH` is accepted whatever `--format` the session uses. The
+operator decision of 2026-11-16 put the state file BETWEEN the goal anchor
+and the recent prose on purpose: orders first, then the history that explains
+them, then the delta of what happened since the previous read-back.
 
 The anchor is OPT-IN for a reason the preset cannot guess: the operator
 refinement of 2026-11-15 distinguishes two session kinds (root `AGENTS.md`).
