@@ -2013,9 +2013,9 @@ judge = "assay"
 budget = "30m"
 clean_tree = false
 # Run-Gate provides the interpreter path; the lane never names a venv.
-# 2 is ERROR: the judge-provided lane's own refusals (a missing interpreter,
-# or an `assay` that is not the provided one) exit 2.
-exit_map = { "0" = "PASS", "2" = "ERROR" }
+# No exit_map entry is needed for the judge itself: a missing interpreter or a
+# foreign `assay` ends on the code Run-Gate reserves, which Run-Gate maps to
+# ERROR before it ever consults your table.
 argv = [
   "bash", "-c",
   '''set -eu
@@ -2034,18 +2034,21 @@ What Run-Gate does with that, in order:
    (`assay_command` + `pins`), so the key is refused there.
 2. **Mounts it read-only.** `<judged worktree>/assay` and
    `<judged worktree>/libraries/cowtree` are added as `:ro` bind mounts at
-   their own paths, dual-mounted like every other path, **after** every other
-   mount — so the worktree stays writable for the lane's own files while the
-   judge cannot be modified by the code it judges.
+   their own paths, dual-mounted like every other path, so the worktree stays
+   writable for the lane's own files while the judge cannot be modified by the
+   code it judges. What protects that is the destination: Docker orders binds
+   by destination depth and refuses two at one path, so Run-Gate refuses any
+   OTHER mount at or under a judge tree instead of trusting argv order.
 3. **Sets the environment in the lane's own shell:**
    `PYTHONPATH=<w>/assay/src:<w>/assay/analysis/src:<w>/libraries/cowtree/src`
    prepended to whatever the lane declared,
    `PYTHONDONTWRITEBYTECODE=1`, `PYTHONNOUSERSITE=1`, and
    `RUN_GATE_JUDGE_PYTHON` (the `python3` the image actually has).
 4. **Proves it.** A `find_spec` guard runs before the lane's command and
-   refuses (exit 2) unless `assay`, `assay_analysis` and `cowtree` all resolve
-   from the provided trees — an image that happens to carry its own Assay
-   cannot silently judge instead.
+   refuses unless `assay`, `assay_analysis` and `cowtree` all resolve from the
+   provided trees — an image that happens to carry its own Assay cannot
+   silently judge instead. The refusal ends on Run-Gate's reserved code, which
+   Run-Gate maps to ERROR itself.
 5. **Records it.** The run record carries `judge = {name, commit, version,
    version_source, dirty, source, pythonpath, mounts, provided_by}`, so
    `run-gate history --json` answers "which judge, from which commit, clean or
@@ -2058,11 +2061,14 @@ Refusals, all before the judge runs:
 |---|---|
 | `judge = "pytest"` (or any value outside the vocabulary) | ERROR at load, naming the value and the allowed set |
 | `judge` on a `kind = "assay"` or sequence lane | ERROR at load, saying where the setting belongs instead |
-| the resolved environment is `exec`, `host` or `bare-host` | ERROR at load: Run-Gate provides the judge by mounting it, and cannot mount into a runner it did not start or into a host subprocess |
-| the judged checkout has no `assay/` or `libraries/cowtree` (or no `assay/pyproject.toml`) | NOT_RUN 3, reason `external-missing`, naming the missing path — before admission, locks or a container |
-| the project itself lives inside the judge tree | ERROR at load (the read-only overlay would make the judged project read-only) |
-| the image has no `python3` | lane exit 2 with `judge = "assay"` and the image named |
-| the image's own `assay` is what resolves | lane exit 2, naming the module and the origin it really resolved |
+| `judge` together with `pins` | ERROR at load: pins verify an external judge artifact, so the two contradict each other |
+| the resolved environment is `exec`, `host` or `bare-host` | ERROR at LOAD: Run-Gate provides the judge by mounting it, and cannot mount into a runner it did not start or into a host subprocess. The load resolves the environment with the SAME resolver a run uses, so an environment inherited from `run-gate.root.toml`, an undeclared/typo'd name and a legacy `host`/`bare-host` name are all refused there — you do not have to run the lane to find out |
+| another mount targets a judge tree (yours, or `RUN_GATE_EXTRA_MOUNTS`) | ERROR before `docker run`, naming the destination: Docker resolves mounts by DESTINATION depth and rejects a same-path duplicate, so a deeper mount would win for its subtree and the judge would no longer be read-only there |
+| the judged checkout has no `assay/` or `libraries/cowtree` (or no `assay/pyproject.toml`) | NOT_RUN 3, reason `external-missing`, naming the missing path — before admission, locks or a container. A sequence decides this for its judge members at its own start, before its first member runs |
+| the project itself lives inside the judge tree (at its own path or below it) | ERROR at load (the read-only overlay would make the judged project read-only) |
+| the image has no `python3` | lane refusal on the code Run-Gate reserves, which Run-Gate maps to ERROR (`judge-not-provided`) whatever your `exit_map` says — so no `exit_map` entry is required, and `2 = "PASS"` cannot turn a missing judge into a green lane |
+| the image's own `assay` is what resolves | the same reserved-code refusal, naming the module and the origin it really resolved |
+| a `exit_map` entry on the reserved code | ERROR at load: that code is how Run-Gate reports the refusal, and it answers it before your table, so the entry would be inert (the RG-32 shape) |
 
 Two consequences worth planning for:
 
@@ -2072,6 +2078,31 @@ Two consequences worth planning for:
   `assay run` needs the gate's `--base`, take it from `{base}` (see
   [lanes that take their comparison base from the gate](#lanes-that-take-their-comparison-base-from-the-gate-rg-26)).
   The judge provider says nothing about the base.
+
+What the recorded identity means, and its one honest limitation:
+
+- `dirty` is scoped to the judge trees and shows **untracked and ignored**
+  files (`--ignored=matching` and `status.showUntrackedFiles=all` per
+  invocation, so a repository that hides untracked files cannot make a judge
+  look clean). `null` is "Git could not answer", and `dirty_source` states
+  which branch that was — it is never folded into "clean".
+- The record is re-derived at the container's own start and the difference is
+  disclosed (`the judge source changed between the preflight and this
+  container's start`), because the mount holds the working tree as it is NOW.
+  A re-attached or collected run reports the judge the container was STARTED
+  with, from the inflight record, never today's worktree.
+
+**If your project is NOT in this monorepo** (it has no `assay/` directory of
+its own — a standalone consumer such as `dstdns`), `judge = "assay"` is
+refused `external-missing`, by design: Run-Gate provides the judge from the
+JUDGED tree's own source (`assay/docs/INTERNAL-CONSUMERS.md`'s rule for
+same-repository consumers), and it will not invent a source it cannot derive.
+Such a project uses the external-judge path instead: `kind = "assay"` with an
+explicit `assay_command` and `pins` (see
+[Assay lanes — projects that adopt Assay](#assay-lanes-projects-that-adopt-assay-the-quality-partnership)),
+which verifies the artifact it runs. A run-gate-owned judge source for
+external checkouts (a pinned wheel or a pinned checkout) is not built; it is
+filed as RG-287.
 
 The interim shape this replaces — a command lane that sets `PYTHONPATH` to a
 checked-out Assay source itself — keeps working and is deliberately not

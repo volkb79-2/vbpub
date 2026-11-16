@@ -89,7 +89,8 @@ than the prose predicted (full rationale in `SPEC.md` §8 and the LOG):
    host mounts. `judge = "assay"` (RG-285) asks Run-Gate to provide the Assay
    judge to a command lane whose image has no Assay and no pip: the judged
    worktree's `assay/` and `libraries/cowtree` source are mounted read-only
-   after every other mount, the judge's import roots are prepended to
+   at their own paths and any other mount at or under them is refused, the
+   judge's import roots are prepended to
    `PYTHONPATH` beside `RUN_GATE_JUDGE_PYTHON`, an in-lane `find_spec` guard
    refuses any other `assay`, and the judge's commit/version/dirty state is
    recorded with the verdict ([details](#run-gate-provides-the-assay-judge-rg-285)).
@@ -520,22 +521,29 @@ judge = "assay"
 then:
 
 - mounts the judged worktree's `assay/` and `libraries/cowtree` **read-only at
-their own paths**, after every other mount, so neither an extra mount nor a CoW
-layout can re-open them;
+their own paths**, and **refuses** any other mount (`RUN_GATE_EXTRA_MOUNTS`
+included) whose target is at or under a judge tree — Docker resolves mounts by
+DESTINATION depth, not by argv order, so a deeper mount would silently win for
+its subtree;
 - prepends the judge's import roots to the lane's `PYTHONPATH`, sets
 `RUN_GATE_JUDGE_PYTHON` to the interpreter resolved in-lane, and refuses a
 missing interpreter or a resolved `assay` that is not the provided one
 (`PYTHONNOUSERSITE`/`PYTHONDONTWRITEBYTECODE` keep an image's own copy out and
-the read-only tree unmodified);
+the read-only tree unmodified); those two refusals end on the code Run-Gate
+reserves and maps to ERROR itself, so a lane cannot declare its way to a PASS;
 - records the judge's identity — commit, `assay-v*` version, and whether the
-judge trees were dirty — in the run record and in `history`, and prints it
-before the lane starts.
+judge trees were dirty (ignored and untracked files included) — in the run
+record and in `history`, and prints it before the lane starts; a re-attached
+run keeps the judge it was started with.
 
 The judge's source is derived from the judged tree, never declared: in-repo
 consumers take their own checkout's source (no pip, no install step, nothing to
 fetch), so `network = "none"` lanes are unaffected. A checkout without assay
 is NOT_RUN/`external-missing` before admission, locks or a container — never a
-run that silently skipped the judge. `kind = "assay"` lanes are unchanged and
+run that silently skipped the judge, and a SEQUENCE decides that for its judge
+members before its first member starts. A lane whose resolved environment is
+not `ephemeral` is refused at load, whichever config file declared the
+environment. `kind = "assay"` lanes are unchanged and
 keep their own pinned/installed judge. See the
 [adoption recipe](CONSUMERS.md#run-gate-provided-assay-judge-rg-285) and the
 [design rationale](docs/DESIGN-GUIDE.md#the-judge-is-provided-by-the-gate-not-the-image).

@@ -402,7 +402,7 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   observer-only Unix socket read-only, grants its observed GID, and fails
   closed if that host socket or its ownership/mode is not safe), `judge`
   (`R-08f`, RG-285: optional, exactly `"assay"`, on a `kind = "command"`
-  lane only), `network`
+  lane only, with an `ephemeral` resolved environment and no `pins`), `network`
   (optional on command/Assay lanes, exactly `"none"` or `"default"`; a lane
   setting overrides its environment's setting, and any declared setting
   requires the resolved environment to be ephemeral), `description` (optional
@@ -442,30 +442,43 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   else is in the vocabulary, and the key is refused on `kind = "assay"`
   (that kind already owns its judge shape — `assay_command` and `pins`) and
   on sequences (which accept no runner keys). The lane's resolved
-  environment must be `ephemeral`. Run-Gate then MOUNTS the judged worktree's
-  `assay/` and `libraries/cowtree` read-only at their own paths,
-  DUAL-mounted, appended after every other mount — a later bind mount wins
-  for its subtree, so the worktree's own read-write mount,
-  `RUN_GATE_EXTRA_MOUNTS` and any CoW layout cannot re-open the judge. From
-  the lane's own shell it exports `PYTHONPATH` carrying
-  `<worktree>/assay/src`, `<worktree>/assay/analysis/src` and
-  `<worktree>/libraries/cowtree/src` PREPENDED to whatever the lane declared,
-  `PYTHONDONTWRITEBYTECODE=1`, `PYTHONNOUSERSITE=1`, and
-  `RUN_GATE_JUDGE_PYTHON` (the `python3` resolved in-lane — an image with none
-  is refused by name, exit 2, and there is no fallback interpreter). A
-  `find_spec` guard runs before the lane's command and requires `assay`,
-  `assay_analysis` and `cowtree` to resolve to one of the provided entries;
-  any other origin is exit 2 naming the module and its real origin, because
-  an image's own Assay must never judge silently. There is no install step:
-  Assay source is stdlib-only, nothing is fetched, and `network = "none"`
-  lanes are unaffected. A judged checkout without the judge trees, or an
-  `assay/` without `pyproject.toml`, is NOT_RUN 3 with the closed reason
-  `external-missing` BEFORE admission, locks or a container — the feature has
-  no silent-skip mode. A project living inside the judge trees is refused at
-  load, because the read-only overlay would make the judged project
-  read-only. The judge's identity — `commit`, `version`
+  environment must be `ephemeral`, and that answer is taken at LOAD with the
+  same resolver every runner uses (`resolve_environment`), so an inherited
+  (central) environment, an undeclared name and a legacy `host`/`bare-host`
+  name are all refused there rather than only by the runtime preflight. Then
+  `judge` plus `pins` is a contradiction (pins verify an external artifact).
+  Run-Gate MOUNTS the judged worktree's `assay/` and `libraries/cowtree`
+  read-only at their own paths, DUAL-mounted. What makes the overlay effective
+  is the DESTINATION, not the argv order: Docker orders bind mounts by
+  destination depth and refuses a same-path pair as a duplicate mount point
+  (measured), so no OTHER mount — the lane's own set,
+  `RUN_GATE_EXTRA_MOUNTS`, the CoW root, the KSM preload, the observer socket —
+  may target a path at or under a judge tree, and Run-Gate refuses such a mount
+  by name before `docker run`. From the lane's own shell it exports
+  `PYTHONPATH` carrying `<worktree>/assay/src`,
+  `<worktree>/assay/analysis/src` and `<worktree>/libraries/cowtree/src`
+  PREPENDED to whatever the lane declared, `PYTHONDONTWRITEBYTECODE=1`,
+  `PYTHONNOUSERSITE=1`, and `RUN_GATE_JUDGE_PYTHON` (the `python3` resolved
+  in-lane — an image with none is refused by name, and there is no fallback
+  interpreter). A `find_spec` guard runs before the lane's command and requires
+  `assay`, `assay_analysis` and `cowtree` to resolve to one of the provided
+  entries; any other origin is a refusal naming the module and its real
+  origin, because an image's own Assay must never judge silently. Both in-lane
+  refusals end on a code `R-57` reserves, and Run-Gate maps it to ERROR before
+  reading the lane's `exit_map` — so "the judge was not provided" can never be
+  reported as a PASS or as a failed lane, whatever the lane declared. There is
+  no install step: Assay source is stdlib-only, nothing is fetched, and
+  `network = "none"` lanes are unaffected. A judged checkout without the judge
+  trees, or an `assay/` without `pyproject.toml`, is NOT_RUN 3 with the closed
+  reason `external-missing` BEFORE admission, locks or a container — the
+  feature has no silent-skip mode. A SEQUENCE preflights each judge member this
+  way at its own start, so a precondition is never discovered after the members
+  ahead of it have run. A project living inside the judge trees (at their own
+  paths or below them) is refused at load, because the read-only overlay would
+  make the judged project read-only. The judge's identity — `commit`, `version`
   (`git describe --tags --long --match assay-v*`, else `null` with
-  `version_source` stating why), `dirty` (scoped to the judge trees, `null`
+  `version_source` stating why), `dirty` (scoped to the judge trees with
+  untracked and ignored files shown, `null` with `dirty_source` stating why
   when undeterminable), `source`, `pythonpath`, `mounts`, `provided_by` — is
   recorded in the run record and its history, and disclosed on stdout before
   the lane starts (`R-57`).
@@ -3087,14 +3100,24 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   HEAD — what the read-only mount contained), `version`
   (`git describe --tags --long --match 'assay-v*'`, or `null` with
   `version_source` stating that no such tag is reachable), `dirty`
-  (`git status --porcelain` scoped to the judge trees; `null` when Git could
-  not answer, never folded into "clean"), `source`, `pythonpath` and
-  `mounts`. The same identity is disclosed on stdout before the lane starts,
-  and the lane's own script repeats it, so a dry run, a live run and a
-  re-attached run cannot describe two different judges. Lanes without the key
-  record no such field. `kind = "assay"` lanes keep their own
-  `judge_provenance` unchanged; this rule adds no second parser of Assay's
-  verdict.
+  (`git status --porcelain --ignored=matching` scoped to the judge trees, with
+  untracked and ignored files shown regardless of the repository's own
+  `status.showUntrackedFiles` setting; `null` when Git could not answer, never
+  folded into "clean"), `dirty_source` (the command that answered, or which
+  failure produced `null`), `source`, `pythonpath` and `mounts`. The same
+  identity is disclosed on stdout before the lane starts, and the lane's own
+  script repeats it, so a dry run, a live run and a re-attached run cannot
+  describe two different judges. It is re-derived at the CONTAINER's own start
+  and the difference is disclosed when the preflight's snapshot no longer
+  matches what the mount will hold; the inflight record carries the identity,
+  so a re-attached or collected run reports the judge it was STARTED with and
+  never today's worktree. Lanes without the key record no such field.
+  `kind = "assay"` lanes keep their own `judge_provenance` unchanged; this
+  rule adds no second parser of Assay's verdict. The exit code a provided
+  judge's own in-lane refusal ends on is RESERVED: Run-Gate maps it to
+  `ERROR` (reason `judge-not-provided`) BEFORE consulting the lane's
+  `exit_map`, so a refusal can never be reported as PASS or as a lane failure,
+  and a judge lane that tries to remap that code is refused at load.
 
 ## 6. Non-goals (unchanged from CONSUMERS)
 

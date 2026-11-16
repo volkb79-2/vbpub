@@ -13,7 +13,9 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
 - run-gate: a `kind = "command"` lane can declare `judge = "assay"` and Run-Gate
   provides the judge itself (RG-285, SPEC `R-08f`/`R-57`). The judged
   worktree's `assay/` and `libraries/cowtree` are mounted READ-ONLY at their
-  own paths (dual-mounted, after every other mount), the lane's own shell
+  own paths (dual-mounted; what wins is the DESTINATION DEPTH Docker orders by,
+  so any other mount at or under a judge tree is refused before `docker run`),
+  the lane's own shell
   exports `PYTHONPATH` (provided roots PREPENDED) with
   `RUN_GATE_JUDGE_PYTHON`, `PYTHONNOUSERSITE=1` and
   `PYTHONDONTWRITEBYTECODE=1`, and an in-lane `find_spec` guard refuses an
@@ -30,6 +32,44 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
   at load. `kind = "assay"` lanes are byte-identical.
 
 ### Fixed
+- run-gate: the judge provider's in-lane refusals (no `python3` in the image,
+  or an `assay` that resolves elsewhere) now end on a code Run-Gate RESERVES and
+  maps to ERROR (`judge-not-provided`) BEFORE it reads the lane's `exit_map`,
+  instead of an ordinary exit 2 that an unmapped lane reported as a failed LANE
+  and `2 = "PASS"` reported as a green one. A judge lane that declares an
+  `exit_map` entry for the reserved code is refused at load, because Run-Gate
+  answers that code first and the entry would be inert (the RG-32 shape)
+  (RG-285 round 1).
+- run-gate: the judge provider refuses — before `docker run` — any OTHER mount
+  whose destination is at or under a judge tree (the lane's own mounts,
+  `RUN_GATE_EXTRA_MOUNTS`, the CoW root, the KSM preload, the observer socket).
+  The first cut claimed "a later bind mount wins for its subtree" and pinned
+  argv ORDER; measured on a real daemon that is false (binds are ordered by
+  destination DEPTH, and two mounts at one destination are refused with
+  `Duplicate mount point`), so a deeper mount inside a judge tree would have
+  escaped the read-only overlay while an argv-order oracle stayed green
+  (RG-285 round 1).
+- run-gate: `judge` lanes are refused at LOAD by the same
+  `resolve_environment` a run uses, so an environment INHERITED from
+  `run-gate.root.toml`, an undeclared (typo'd) name, and a legacy `host` /
+  `bare-host` name are each refused with the resolver's own source-specific
+  message instead of passing a load-only reader and failing at run time
+  (RG-285 round 1).
+- run-gate: the judge's recorded `dirty` state now shows IGNORED build
+  artifacts and still shows untracked files when a repository sets
+  `status.showUntrackedFiles=no`, by running
+  `git -c status.showUntrackedFiles=all status --porcelain --ignored=matching`
+  scoped to the judge trees; a `git status` that answers nonzero is `null` with
+  `dirty_source` stating the failure instead of being read as clean
+  (RG-285 round 1).
+- run-gate: the judge identity is re-derived at the container's own start
+  (disclosing any change since the preflight) and carried in the inflight
+  record, so a re-attached or collected run reports the judge it was STARTED
+  with rather than today's worktree (RG-285 round 1).
+- run-gate: a native `kind = "sequence"` preflights its judge members at its own
+  start, so a missing judge source is NOT_RUN 3 `external-missing` before the
+  FIRST member runs instead of after the members ahead of it spent their
+  budgets (RG-285 round 1).
 - run-gate: observer preflight refusals explain required endpoints and profiling opt-out behavior (RG-250).
 - run-gate: an ephemeral lane is refused BEFORE it starts when the lane user,
   the checkout owner and the `MDT_COW_ROOT` owner are not one uid — NOT_RUN 3

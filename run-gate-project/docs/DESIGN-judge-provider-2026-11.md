@@ -37,14 +37,17 @@ argv = ["bash", "-c", '''set -eu
   --verdict-json .assay/verdict-assay-r1.json || rc=$?
 ...
 ''']
-exit_map = { "0" = "PASS", "2" = "ERROR" }
 ```
 
-and Run-Gate does the rest: it mounts the judge's source tree **read-only** on
-top of the judged worktree, prepends the judge's import roots to `PYTHONPATH`,
-proves the lane's interpreter can only resolve the judge Run-Gate supplied, and
-records the judge's identity (commit, version, dirt state) in the run record
-the verdict is stored beside.
+`exit_map` is OPTIONAL here — the judge's own refusals do not need one (see §3):
+the lane still maps its own verdict codes for itself, exactly as any command
+lane does.
+
+and Run-Gate does the rest: it mounts the judge's two source trees **read-only**
+at their own paths inside the judged worktree, prepends the judge's import roots
+to `PYTHONPATH`, proves the lane's interpreter can only resolve the judge
+Run-Gate supplied, and records the judge's identity (commit, version, dirt
+state) in the run record the verdict is stored beside.
 
 ## 2. Declaration syntax — one string key, closed vocabulary
 
@@ -80,15 +83,30 @@ mount; `_dual()` is reused, never re-derived):
 -v <phys>/libraries/cowtree:/libraries/cowtree:ro
 ```
 
-Later bind mounts overlay earlier ones for the same subtree, so this lands on
-top of the worktree mount and the judged process (including any test it runs)
-can no longer modify the judge that produces its verdict. That is the whole
-point of mounting at all: without it the overlay would be decorative.
+**What makes the overlay effective is the DESTINATION, not the argv order.**
+An earlier cut of this note (and the code comment it mirrored) claimed "a later
+bind mount wins for its subtree". Measured on a real daemon, that is simply
+false: Docker orders bind mounts by destination DEPTH, and two mounts at ONE
+destination are refused with `Duplicate mount point: <path>`. A deeper
+destination inside a judge tree wins for that subtree — verified both ways:
+with that path present in the judge tree the child's contents replace the
+judge's, and with it absent the container fails
+`mkdirat ... read-only file system`. Appending the overlay last therefore
+proved nothing, and a test pinning argv ORDER would have certified a false
+claim.
 
-The mount set is built in **one** place (`judge_mount_flags`) and appended *after*
-every other mount (`container_mount_flags`, `RUN_GATE_EXTRA_MOUNTS`, the CoW
-root, the KSM preload, the observer socket), so no operator override or CoW
-layout can re-open the judge tree for writing.
+So Run-Gate does not rely on ordering at all. `refuse_mounts_over_the_judge`
+examines every mount the lane could have contributed — `container_mount_flags`,
+`RUN_GATE_EXTRA_MOUNTS`, the CoW root, the KSM preload, the observer socket —
+and refuses (before `docker run`) any OTHER destination that equals a judge
+destination or lies under it. A SHALLOWER destination (the judged worktree
+itself, which is the judge tree's parent) is deliberately accepted: the deeper
+judge mount still wins there, and a refusal that also matched it would refuse
+every healthy judge lane.
+
+The mount set is built in **one** place (`judge_mount_flags`), and the
+collision rule derives its judge destinations from that function's own output,
+so the refusal cannot describe a mount set the caller does not emit.
 
 No wheel, no pip, no install: assay is stdlib-only (A-005), the sources are
 mounted, and the lane's interpreter finds them through `PYTHONPATH`.
@@ -105,11 +123,20 @@ Exported by the lane's own `bash -c` (so it works for every image, and needs no
 | `PYTHONNOUSERSITE` | `1` | a user-site `assay` from the image must not win over the provided one |
 | `RUN_GATE_JUDGE_PYTHON` | absolute path of `python3` resolved in-lane | the lane names the interpreter once instead of guessing, and the guard below uses the very same path |
 
-`python3` missing in the image is refused **inside the lane**, exit 2, naming
+`python3` missing in the image is refused **inside the lane**, naming
 `judge = "assay"` and the image: Run-Gate cannot prove an image's PATH from the
-host, and a silent fallback interpreter would be the masked-default hazard. A
-judge-provided lane should therefore declare `exit_map` mapping 2 to `ERROR`
-(the `hostobs` interim lane already does).
+host, and a silent fallback interpreter would be the masked-default hazard.
+
+Both in-lane refusals end on `JUDGE_REFUSAL_EXIT_CODE` (63), a code Run-Gate
+RESERVES and maps to `ERROR` (reason `judge-not-provided`) BEFORE it consults
+the lane's `exit_map`. That is the fix for a real boundary defect: on the
+ordinary code 2 an unmapped refusal was reported as a FAILED LANE, and
+`exit_map = { "2" = "PASS" }` made it a green one. The entity that emits a
+refusal owns what it means — a lane author must not have to remember a mapping,
+and must not be able to declare one that certifies a lane that never ran. A
+judge lane that tries to remap 63 is refused at load, because that entry would
+otherwise be legal and inert (the RG-32 shape). No `exit_map` entry is required
+of a judge lane.
 
 Immediately after the environment is set, one guard runs (the same technique
 `assay_source_setup` uses for source-mode assay lanes, without importing
@@ -121,10 +148,11 @@ package code):
 
 It resolves `assay`, `assay_analysis` and `cowtree` with `importlib.util.find_spec`
 — no package code is executed — and requires **every** origin to lie under one
-of the entries Run-Gate just exported. A mismatch is exit 2 with the module
-name, the origin it actually resolved and the fact that it is not the judge
-run-gate provided. Without this guard the export is only a *request*: an image
-that already carries an assay would silently judge with its own copy.
+of the entries Run-Gate just exported. A mismatch is a refusal on the RESERVED
+code (§3) carrying the module name, the origin it actually resolved and the
+fact that it is not the judge run-gate provided. Without this guard the export
+is only a *request*: an image that already carries an assay would silently
+judge with its own copy.
 
 ## 5. How the judge's identity is determined, and where it is recorded
 
@@ -134,7 +162,7 @@ Derived on the host, from the judged tree, before the lane starts:
 |---|---|---|
 | `commit` | `git rev-parse HEAD` of the judged worktree (the commit the verdict describes) | refused — a lane cannot run without a commit anyway |
 | `version` | `git describe --tags --long --match 'assay-v*'` (assay's own tag grammar) | `null`, plus `version_source: "no assay-v* tag is reachable from this commit"` — *stated*, never guessed at |
-| `dirty` | `git status --porcelain -- assay libraries/cowtree`, scoped to the judge trees | `null` = could not determine (it is never folded into "clean") |
+| `dirty` | `git -c status.showUntrackedFiles=all status --porcelain --ignored=matching -- assay libraries/cowtree`, scoped to the judge trees | `null` + `dirty_source` = could not determine (never folded into "clean") |
 | `source`, `pythonpath` | the mounted roots, verbatim | — |
 | `provided_by` | `"run-gate"` | — |
 
@@ -158,11 +186,14 @@ lane's verdict (`exit_map`), exactly as for any command lane.
 |---|---|---|
 | unknown `judge` value | `ERROR` at load | the value, the lane, the closed vocabulary |
 | `judge` on an assay/sequence lane | `ERROR` at load | where the setting belongs instead |
-| resolved environment not `ephemeral` (`exec` or `host`) | `ERROR` at load | the mode and the reason: Run-Gate provides the judge by *mounting* it, and it neither starts an exec runner nor mounts anything into a host subprocess |
-| `<w>/assay` or `<w>/libraries/cowtree` absent, or `assay/pyproject.toml` absent | `NOT_RUN 3`, reason `external-missing`, **before** admission, locks or a container | the missing path, the lane, and the remedy (a checkout without assay cannot provide it; declare the lane where assay lives, or use an external judge via `kind = "assay"` + `assay_command`) |
-| the judged project IS the judge tree (`project_dir` inside `<w>/assay` or `<w>/libraries/cowtree`) | `ERROR` at load | both paths: the read-only overlay would make the judged project read-only, so a self-judging lane cannot declare this |
-| no `python3` in the lane image | lane exit 2 (`ERROR` through `exit_map`) | `judge = "assay"` and the image |
-| an `assay`/`assay_analysis`/`cowtree` that is not the provided one | lane exit 2 | the module, its real origin, and the provided entries |
+| `judge` together with `pins` | `ERROR` at load | that pins verify an external judge artifact, so the two contradict each other |
+| another mount targets a judge tree (the lane's own set or `${RUN_GATE_EXTRA_MOUNTS}`) | `ERROR` before `docker run` | the colliding destination and the judge destination it would replace |
+| resolved environment not `ephemeral` (`exec`, `host`, `bare-host`, an inherited central declaration, or an undeclared name) | `ERROR` at load, decided by the same resolver a run uses | the resolver's own source-specific message: the mode and the reason (Run-Gate provides the judge by *mounting* it, and it neither starts an exec runner nor mounts anything into a host subprocess), or the migration remedy for a legacy name |
+| `<w>/assay` or `<w>/libraries/cowtree` absent, or `assay/pyproject.toml` absent | `NOT_RUN 3`, reason `external-missing`, **before** admission, locks or a container; a SEQUENCE decides it before its first member runs | the missing path, the lane, and the remedy (a checkout without assay cannot provide it; declare the lane where assay lives, or use an external judge via `kind = "assay"` + `assay_command`) |
+| the judged project IS a judge tree, or lives inside one | `ERROR` at load | both paths: the read-only overlay would make the judged project read-only, so a self-judging lane cannot declare this |
+| no `python3` in the lane image | lane refusal on the RESERVED code, which Run-Gate maps to `ERROR` (`judge-not-provided`) before `exit_map` | `judge = "assay"` and the image |
+| an `assay`/`assay_analysis`/`cowtree` that is not the provided one | the same reserved-code refusal | the module, its real origin, and the provided entries |
+| a judge lane `exit_map` that remaps the reserved code | `ERROR` at load | that the code belongs to Run-Gate's own refusal, and the entry would be inert (the RG-32 shape) |
 
 Every refusal is *before* the judge runs. None of them degrades to "run without
 the judge".
@@ -175,11 +206,12 @@ the judge".
   install step — `assay_source_setup`'s editable install needs pip, this needs
   nothing but an interpreter.
 - **Cow / Cowtree mounts**: the overlay is two subtrees of the judged worktree,
-  dual-mounted like every other path, and appended after `cowtree_mount_flags`
-  — a CoW root mounted elsewhere is untouched, and the judge trees stay
-  read-only inside it. Assay's own lazy workspace importer finds `cowtree` on
-  the exported `PYTHONPATH` (`<w>/libraries/cowtree/src`), which is the same
-  declaration assay's own Python lanes make.
+  dual-mounted like every other path; a CoW root mounted ELSEWHERE is
+  untouched (`refuse_mounts_over_the_judge` refuses one that would land on a
+  judge tree), and the judge trees stay read-only inside it. Assay's own lazy
+  workspace importer finds `cowtree` on the exported `PYTHONPATH`
+  (`<w>/libraries/cowtree/src`), which is the same declaration assay's own
+  Python lanes make.
 - **Existing assay lanes**: behaviour is byte-identical. `kind = "assay"` lanes
   never enter `judge_mount_flags`, `judge_source_setup` or the preflight
   (each returns early on the lane key), and none of their argv, state, verdict
@@ -189,10 +221,23 @@ the judge".
   provided is not a plan).
 - **`--worktree`**: the judge is taken from the *judged* tree (RG-15's rule),
   never from the invoking checkout.
+- **A native sequence**: each judge member is preflighted at the sequence's own
+  start (`sequence_judge_preflight`), so an `external-missing` precondition is
+  never discovered after the members ahead of it have spent their budgets. The
+  member still preflights itself when run alone; nothing else about a
+  sequence changes.
+- **Re-attach / collect**: the inflight record carries the identity, and
+  `adopt_inflight_start` adopts it, so a surviving container's history entry
+  names the judge it was started with rather than today's worktree. A record
+  written before this field existed records no judge at all.
 - **`hostobs` migration**: deliberately NOT part of this change. Its interim
   route stays byte-identical until the follow-up package moves it, and the two
   routes must reproduce the same totals and the same FAIL on a removed test
-  before that happens.
+  before that happens. **Prerequisite, filed as RG-286:** a REAL-image smoke of
+  `judge = "assay"` (real Assay source, the real `tester-unified-rust` image,
+  and Docker's own `:ro` enforcement) — this change's oracles run a stand-in
+  judge and execute the assembled inner script on the host, where `:ro` is an
+  argv string rather than a kernel mount, so they cannot prove that.
 
 ## 8. Known limits (stated, not hidden)
 
@@ -202,7 +247,16 @@ the judge".
   by luck of the PATH".
 - A wheel/OCI judge artifact is out of scope: in-repo consumers follow
   `assay/docs/INTERNAL-CONSUMERS.md` (source, no pinned copy), external
-  consumers keep the pinned-artifact path.
-- The identity records the *tree-level* `dirty` state scoped to the judge roots.
-  It does not hash the judge's bytes; the commit plus the read-only mount are
-  the boundary (assay's own `judge_provenance` covers the artifact case).
+  consumers keep the pinned-artifact path. Concretely: a project with no `assay/`
+  of its own (a standalone consumer such as `dstdns`) is refused
+  `external-missing` by `judge = "assay"` and must use `kind = "assay"` +
+  `assay_command` + `pins`. A run-gate-owned judge SOURCE for external checkouts
+  (a pinned wheel or pinned checkout) is a separate, unbuilt capability, filed
+  as RG-287.
+- The identity records the *tree-level* `dirty` state scoped to the judge
+  roots. It does not hash the judge's bytes; the commit plus the read-only mount
+  are the boundary (assay's own `judge_provenance` covers the artifact case).
+- The read-only overlay is enforced by Docker's mount rules, not by the gate: a
+  run-gate lane on a host whose daemon ignores a `:ro` bind would silently lose
+  it. Nothing here checks that back, which is exactly why the real-image smoke
+  (RG-286) must exist before `hostobs` migrates.

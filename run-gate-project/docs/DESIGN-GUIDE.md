@@ -725,11 +725,18 @@ does the four things the shell used to guess at:
 
 1. **Mounting.** The judged worktree is mounted read-write; the judge is two
    subtrees of it (`assay`, `libraries/cowtree`), so they are overlaid
-   read-only at their own paths, dual-mounted like every other path and
-   appended after every other mount. Order is the mechanism: a later bind
-   mount wins for its subtree, so neither an operator's
-   `RUN_GATE_EXTRA_MOUNTS` nor a CoW layout can re-open the judge the code
-   under judgment is about to run.
+   read-only at their own paths, dual-mounted like every other path. What
+   makes the overlay effective is the DESTINATION, not the argv order —
+   **measured, not assumed**: Docker orders bind mounts by destination DEPTH,
+   and two mounts at one destination are refused outright as
+   `Duplicate mount point`. A deeper destination inside a judge tree wins for
+   that subtree (or fails container start when the path does not exist there).
+   So Run-Gate does not rely on ordering at all: it refuses, before
+   `docker run`, any other mount — the lane's own set,
+   `RUN_GATE_EXTRA_MOUNTS`, the CoW root, the KSM preload, the observer
+   socket — whose target is at or under a judge tree. (The decision this
+   replaced was a comment claiming "a later bind mount wins"; that claim was
+   wrong, and an oracle that pinned argv ORDER would have certified it.)
 2. **Environment.** `PYTHONPATH` is prepended (never replaced) with the
    judge's three import roots, `RUN_GATE_JUDGE_PYTHON` names the interpreter
    resolved in-lane, `PYTHONNOUSERSITE=1` keeps an image's user-site copy out
@@ -743,14 +750,27 @@ does the four things the shell used to guess at:
    one of the provided entries. Without it the export is a *request*: an
    image that already carries an Assay would silently judge with its own
    copy, and the recorded identity would describe code that never ran.
+   The two in-lane refusals end on a code RUN-GATE RESERVES, and the gate maps
+   that code to ERROR before it reads the lane's `exit_map`: the entity that
+   emits a refusal owns its meaning, so "the judge was not provided" cannot be
+   reported as a PASS or as a failed LANE depending on what a lane author
+   happened to write. A lane that tries to remap the reserved code is refused
+   at load — otherwise that entry would be legal and inert (the RG-32 shape).
 4. **Identity.** `commit` (the judged tree's HEAD, i.e. exactly what the
    read-only mount contained), `version`
    (`git describe --tags --long --match assay-v*` — Assay's own tag grammar —
    or `null` WITH the reason stated, never a guessed number), and `dirty`
-   (`git status --porcelain` scoped to the judge trees, `null` when Git could
-   not answer and never folded into "clean"). Recorded in the run record and
-   therefore in `history`, so a verdict can be audited against the judge that
-   produced it.
+   (`git status --porcelain --ignored=matching` scoped to the judge trees and
+   forced to show untracked files, because the plain command both hides
+   IGNORED build artifacts and obeys a repository's own
+   `status.showUntrackedFiles=no`; `null` — with `dirty_source` stating the
+   failure — when Git could not answer, never folded into "clean"). Recorded
+   in the run record and therefore in `history`, so a verdict can be audited
+   against the judge that produced it. It is derived at the preflight (where
+   a refusal belongs) and RE-DERIVED at the container's own start, disclosing
+   the difference, because the mount holds the working tree as it is then; the
+   inflight record carries it, so a re-attach reports the judge the run STARTED
+   with rather than today's checkout.
 
 **Why no install step.** The source-mode path for `kind = "assay"` lanes
 installs the package with pip and needs a writable tree; that is why such
@@ -769,19 +789,28 @@ image has no consumer and would duplicate that contract.
 
 **Why the refusals are refusals.** A judge that cannot be provided is
 NOT_RUN/`external-missing` BEFORE admission, locks or a container, naming the
-missing path. The temptation is a warning that runs the lane anyway and marks
-the verdict "unjudged"; that is a verdict-shaped artifact whose judge silently
-did not run, which is the exact false-certification class this project exists
-to remove. `python3` missing in-lane is exit 2 with no fallback interpreter,
-and an `assay` resolved elsewhere is exit 2 naming the real origin: the same
-rule as a default without a source (`AGENTS.md`, "Defaults and fallbacks are
-hazards").
+missing path — and a native SEQUENCE asks that question at its own start for
+every judge member, because a member is otherwise its own invocation and the
+precondition would surface only after the members ahead of it had already
+spent their budgets. The temptation is a warning that runs the lane anyway and
+marks the verdict "unjudged"; that is a verdict-shaped artifact whose judge
+silently did not run, which is the exact false-certification class this project
+exists to remove. `python3` missing in-lane and an `assay` resolved elsewhere
+are refusals on Run-Gate's OWN reserved code (never a fallback interpreter, and
+never an exit code the lane's `exit_map` can reinterpret): the same rule as a
+default without a source (`AGENTS.md`, "Defaults and fallbacks are hazards").
 
-**Why `exec`/`host` are refused at load.** Run-Gate can only mount into a
-container it starts. An `exec` runner is someone else's persistent container
-and a bare-host lane has no mount boundary at all, so "supported by luck of
-that environment's PATH" is the alternative — an environment-dependent verdict
-nobody can reproduce.
+**Why `exec`/`host` are refused at LOAD, by the run-time resolver.** Run-Gate
+can only mount into a container it starts. An `exec` runner is someone else's
+persistent container and a bare-host lane has no mount boundary at all, so
+"supported by luck of that environment's PATH" is the alternative — an
+environment-dependent verdict nobody can reproduce. The refusal is decided at
+load with `resolve_environment` — the SAME function every runner calls — not by
+peeking at one config file, precisely so a lane inherited from
+`run-gate.root.toml`, an undeclared name or a legacy `host`/`bare-host` name
+cannot pass a load-only reader and then fail at run time. Two-levels of
+validation remain: the runtime preflight is the belt for a config this client
+did not load.
 
 **Boundaries deliberately kept.** `kind = "assay"` lanes are byte-identical
 (they keep their own installed/pinned judge and their own
