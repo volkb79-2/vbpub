@@ -191,8 +191,16 @@ def test_a_public_suffix_cookie_domain_does_not_match_every_host(tmp_path: Path)
 
 def test_a_file_owned_by_someone_else_is_refused(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     path = _write(tmp_path, STATE)
-    other = os.geteuid() + 1
-    monkeypatch.setattr(ss.os, "geteuid", lambda: other)
+    # PWMCP-60: the fake DERIVES from the real function instead of inventing a uid, so the test
+    # cannot silently pass for the wrong reason (a literal 0 or a stale value). `geteuid` takes no
+    # fd or path and has no ambient caller in pytest's capture/teardown (the PWMCP-60 hazard was
+    # `os.fstat`, which this suite never patches).
+    real_geteuid = ss.os.geteuid
+
+    def another_user() -> int:
+        return real_geteuid() + 1
+
+    monkeypatch.setattr(ss.os, "geteuid", another_user)
     with pytest.raises(ss.StorageStateError, match="not owned by the current user"):
         ss.load_scoped(path, "https://browser.geekbench.com/")
 

@@ -7,8 +7,14 @@ frames. Set ``PWMCP_CONSOLE_CORPUS_DIR`` to an absolute directory containing
 ``frames/`` to opt in to verification. This tool reads local files only.
 
 Commands (``-h`` per command): ``package`` builds the deterministic tar,
-``verify DIR`` verifies a local corpus directory, and ``locate`` verifies and
-prints the directory selected by the environment variable.
+``verify [DIR]`` verifies a local corpus directory, and ``locate`` verifies and
+prints the directory selected by the environment variable. ``DIR`` and
+``package --out`` are explicit paths; only their DEFAULT is derived from this
+file's location (``<pwmcp>/artifacts/console-corpus``, the conventional
+git-ignored place). It is not a home-directory constant and never overrides an
+explicit path. The corpus source itself stays explicit: ``locate`` has no
+fallback and an unset ``PWMCP_CONSOLE_CORPUS_DIR`` still raises
+``CorpusMissing``.
 """
 from __future__ import annotations
 
@@ -25,6 +31,10 @@ from pathlib import Path
 PWMCP = Path(__file__).resolve().parents[2]
 CORPUS_ROOT = PWMCP / "tests" / "corpus" / "console"
 ASSETS_FILE = CORPUS_ROOT / "CORPUS-ASSETS.json"
+# PWMCP-21: the conventional, git-ignored place for the local corpus and the deterministic
+# tar, derived from THIS file's location (the same rule `tools/glyphgrid/eval_glyphgrid.py`
+# follows). It is a default for the two explicit CLI paths below, never a corpus source.
+ARTIFACTS_DIR = PWMCP / "artifacts" / "console-corpus"
 ENV_DIR = "PWMCP_CONSOLE_CORPUS_DIR"
 _SHA256 = re.compile(r"[0-9a-f]{64}")
 _FRAME = re.compile(r"[0-9]{4}_[0-9]+s\.png")
@@ -180,6 +190,8 @@ def package(frames_dir: Path, out: Path, pin: dict, corpus_root: Path = CORPUS_R
     verify_frames(frames_dir, index)
     data = _tar_bytes(frames_dir, index)
     try:
+        # The default destination is git-ignored and may not exist yet.
+        out.parent.mkdir(parents=True, exist_ok=True)
         out.write_bytes(data)
     except OSError as exc:
         raise CorpusError(f"cannot write deterministic archive {out}: {exc}") from exc
@@ -231,25 +243,38 @@ def main(argv: list[str] | None = None) -> int:
     sub = parser.add_subparsers(dest="command", required=True)
     pack = sub.add_parser("package", help="build the deterministic tar from a verified frames directory")
     pack.add_argument("frames_dir", type=Path)
-    pack.add_argument("--out", type=Path, required=True)
+    pack.add_argument(
+        "--out",
+        type=Path,
+        default=None,
+        help=f"archive path; default {ARTIFACTS_DIR}/<pin archive>, derived from this script's location",
+    )
     pack.add_argument("--asset", default=None)
     verify = sub.add_parser("verify", help="verify a local corpus directory containing frames/")
-    verify.add_argument("directory", type=Path)
+    verify.add_argument(
+        "directory",
+        type=Path,
+        nargs="?",
+        default=None,
+        help=f"corpus directory holding frames/; default {ARTIFACTS_DIR}, derived from this script's location",
+    )
     verify.add_argument("--asset", default=None)
     find = sub.add_parser("locate", help="verify the local directory named by PWMCP_CONSOLE_CORPUS_DIR")
     find.add_argument("--asset", default=None)
     args = parser.parse_args(argv)
     try:
         if args.command == "package":
-            pin = load_pin(args.asset)
-            result = package(args.frames_dir, args.out, pin)
-            print(json.dumps({"archive": pin["archive"], **result}, sort_keys=True))
+            pin = load_pin(args.asset, ASSETS_FILE)
+            out = args.out if args.out is not None else ARTIFACTS_DIR / pin["archive"]
+            result = package(args.frames_dir, out, pin, CORPUS_ROOT)
+            print(json.dumps({"archive": pin["archive"], "out": str(out), **result}, sort_keys=True))
         elif args.command == "verify":
-            pin = load_pin(args.asset)
-            verify_directory(args.directory, pin)
-            print(f"OK: {pin['frames']} frames and deterministic tar pin verified")
+            pin = load_pin(args.asset, ASSETS_FILE)
+            directory = args.directory if args.directory is not None else ARTIFACTS_DIR
+            verified = verify_directory(directory, pin, CORPUS_ROOT)
+            print(f"OK: {verified}: {pin['frames']} frames and the deterministic tar pin verified")
         else:
-            print(locate(args.asset))
+            print(locate(args.asset, assets_file=ASSETS_FILE, corpus_root=CORPUS_ROOT))
     except CorpusError as exc:
         print(f"[ERROR] {exc}", file=sys.stderr)
         return 1

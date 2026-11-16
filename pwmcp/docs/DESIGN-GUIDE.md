@@ -355,6 +355,46 @@ and leaves the choice opt-in; a hostname-specific certificate bypass is not
 available through this Playwright context option. See the
 [consumer example](CONSUMERS.md#inspect-a-webpage).
 
+## Release-scoped R2 campaigns
+
+The `r2` lane judges the whole target. A release-to-release campaign usually needs only
+the code that release changed, and a changed-line subset of the whole-target plan
+(`run-gate r2 --only-candidates FILE`, recipe in
+[CONSUMERS.md](CONSUMERS.md#release-scoped-r2-campaigns-changed-line-candidate-selection))
+is the supported way to ask that question.
+
+**Why the claim changes, and why that is not bureaucracy.** A subset that finishes has
+proved something real about the changed lines and nothing at all about the rest: the
+candidates outside the diff were never executed. So the run is reported `selective` and
+PARTIAL, never a whole-target R2 PASS. The alternative — calling a changed-line run "the
+R2 campaign" — is the failure mode this estate pays for repeatedly: a check whose message
+states a conclusion the comparison did not cover (see the review doctrine on narrow
+comparisons). The recipe therefore also requires the selection file, the diff base and
+the selected/planned counts to be recorded with the evidence, so the claim can be
+re-derived rather than trusted.
+
+**Why a tool rather than a shell one-liner.** Two of the steps are mechanical and one is a
+comparison that looks mechanical and is not:
+
+* turning `git diff -U0` hunk headers into NEW-file line ranges (a bare `+c` is one line,
+  `+c,0` is none, `a/`/`b/` prefixes must be stripped);
+* matching them against `assay plan r2 --json` candidates, which carry
+  **repository-root-relative** paths (`pwmcp/client/src/...`) because assay anchors on the
+  git repository top rather than on the project directory — so the same file has two
+  spellings depending on how the diff was produced (`git diff` from the project directory
+  gives the matching form, `git diff --relative` does not);
+* deciding, when nothing matched, whether that means "this release touched no mutated
+  line" (a true, useless answer) or "the paths are in the other form" (a fixable one).
+
+`tools/r2/select_changed_candidates.py` implements all three. The path form is settled by an
+EXPLICIT rule rather than a heuristic: `--project-prefix` states the fact, the as-given form
+is tried first, and a project prefix is derived only when the plan makes it unambiguous —
+and then it is printed, so a wrong derivation is visible in the campaign record rather than
+buried in an empty list. A refusal lists every form tried. The tool also refuses to write an
+empty list (a campaign that starts nothing is not a campaign) and prints the
+selected/planned counts. `assay plan --file` is deliberately not the mechanism: it takes an
+Assay TOML config, not a source filter, so it would silently plan the whole target.
+
 ## GlyphGrid development tooling
 
 GlyphGrid stays unavailable through the OCR service (HTTP 501). The reader,
@@ -398,7 +438,11 @@ means the optional full-corpus checks are unavailable; a bad explicit path is
 an error. The two real-corpus tests use the shared
 `tests/_testdeps.py::optional_local_data` helper: an unselected corpus skips
 with its reason unless `PWMCP_REQUIRE_CONSOLE_CORPUS=1` makes that absence a
-failure, while invalid selected data stays an error. Registered gate lanes
+failure, while invalid selected data stays an error. The tool's two CLI paths are
+explicit arguments whose DEFAULT is the conventional git-ignored
+`artifacts/console-corpus` derived from the script's own location: a default
+carries no information that a caller supplied, so it can never stand in for the
+corpus source above. Registered gate lanes
 remain corpus-free. See the [local verification example](CONSUMERS.md#local-console-corpus)
 and the [OCR phase design](DESIGN-OCR-PHASE2-3.md#1-local-console-corpus).
 
@@ -507,3 +551,50 @@ behavior.
 <https://scrapling.readthedocs.io/en/latest/ai/mcp-server.html>,
 <https://scrapling.readthedocs.io/en/latest/spiders/proxy-blocking.html> and
 <https://scrapling.readthedocs.io/en/latest/migrating-to-v0.5.html>.
+
+### Obscura (checked 2026-11-09; PWMCP-58)
+
+**What it is.** A Rust "headless browser engine" with its own DOM, CSS layout and
+raster renderer and an embedded V8. It speaks the Chrome DevTools Protocol only, so
+it cannot sit behind `ws://pwmcp:3000` (Playwright's own protocol): a backend would
+need its own endpoint and a `connect_over_cdp` client path, not a drop-in swap.
+The full build-versus-no-fork record, the security review and the disposable
+evaluation checklist are in
+[the comparison](COMPARISON-obscura-2026-11-09.md).
+
+**Decision.** Reject adoption now: protocol mismatch, a policy mismatch (its
+`antidetect` direction is evasion), an unstable 0.x API, one prolific committer and
+unsigned binaries, and little benefit on hosts that are not extraction-bound. The
+non-stealth builds are borrowed for ideas only (worker recycling by RSS and age,
+a destination-egress policy, a capability table in the contract); the corresponding
+backlog items are PWMCP-54, PWMCP-55 and PWMCP-57.
+
+**Re-evaluation triggers (closed set).** Re-open the question ONLY when ALL of these
+hold, each backed by recorded evidence cited in the proposal:
+
+1. a consumer need for a very cheap extraction engine is documented (for example
+   many parallel reads on a constrained host);
+2. Obscura reaches a stable API or 1.0 with checksums, signatures or attestations;
+3. it has at least two active maintainers or an organisation owner;
+4. the SIGSEGV and Playwright-compatibility issues in our evaluation corpus are
+   closed;
+5. the operator is comfortable with the project's stealth-feature direction.
+
+Even then, evaluate only the non-stealth build as an isolated optional profile with
+its own contract name, never as a replacement for the official Playwright image.
+Popularity, a lower claimed memory footprint or a lighter archive alone are not
+triggers.
+
+**Explicit non-goal (no anti-detection, ever).** PWMCP adds no stealth or
+anti-detection capability: no fingerprint randomisation, no TLS
+impersonation/passive-fingerprint evasion, no `navigator.webdriver` or `isTrusted`
+masking, no profile or proxy rotation for evasion, and no challenge solver. The
+existing overridable user agent stays a limited opt-in identity string (README
+"Overridable User Agent"); it does not solve interactive challenges, and
+recognised bot protection remains exit 4 (README "Bot protection"). This
+boundary is also stated in the README, `docs/SECURITY.md` and the packaged
+`pwmcp-fetch` skill.
+
+**Sources.** <https://github.com/h4ckf0r0day/obscura> (README, `SECURITY.md`,
+`Cargo.toml` at the tag commit for v0.2.6) and the checked pages recorded in
+[the comparison](COMPARISON-obscura-2026-11-09.md).
