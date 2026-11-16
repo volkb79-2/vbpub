@@ -13607,10 +13607,13 @@ raised on) is proven for every bucket.
 
 ## B185 — product-definition still carries a stale "no Go toolchain" claim
 
-**Status: OPEN.** `nyxloom-trove/2-product-definition.md` (around line 285 in the
-verification ledger) still describes Go behaviour as unavailable in the judge
-environment although `tester-unified-go` runs real Go. Reconcile the claim with the Go R1
-lane that is qualified end to end (A-217).
+**Status: FIXED (2026-11-16, pi-assay-burn).** `nyxloom-trove/2-product-definition.md` F008-A3's opt-in rationale read "...because neither gate image can host them — tester-unified has no Go, and the Python suite does not run in tester-unified-go". Both halves of that sentence were stale: the standard image copies `/usr/local/go` from the Wings toolchain image (`tester-unified/Dockerfile:45,159`, `build-image.sh` passing `WINGS_GO_TOOLCHAIN_IMAGE=$PTERODACTYL_GO_IMAGE`), measured in this checkout's image (`go version go1.27.2`), and `DESIGN-GUIDE.md` §10 already said so.
+
+**Fix.** The criterion now states what is true: no ASSAY-OWNED registered lane hosts the two qualification entries, which is why they stay opt-in. The dedicated Go image carries the Python interpreter only as `golang:1.25`'s inherited `/usr/bin/python3` with no pip and no ensurepip, so those entry points build the shipped ZIPAPP (DA-3, A-402); and the standard image DOES carry Go for downstream consumers. The residual claim is a policy statement ("assay's registered lanes choose not to depend on it") rather than a false environment claim ("there is no toolchain").
+
+**Why the wording, not the tests.** The behaviour was never in doubt — `gate/tests/qualification/test_go_r1_real.py` already skips on `ASSAY_GO_QUALIFICATION`, and no test asserted the stale sentence. That is exactly the documentation-drift shape A-270 names: a product-definition line that a reader would take as the environment contract, contradicted by the image's own Dockerfile.
+
+**No mechanical check added.** A test asserting a sentence of the product definition against the image contents must run inside an image build, and neither `tooling-tests` nor a host-independent lane can do that; a check that can only run where the fact is already visible would be the vacuous kind A-270 forbids. The reconciliation is recorded here with the file-and-line evidence instead.
 
 ## B186 — malformed diagnostic resources make R2 state resume fatal
 
