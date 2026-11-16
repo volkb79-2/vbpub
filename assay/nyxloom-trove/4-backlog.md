@@ -14197,7 +14197,29 @@ phase is fsync (compare `io_sync = relaxed` with an eatmydata image, and `durabl
 **Acceptance.** A measured breakdown of the phase for the three cases and, if per-file work dominates, a design note; the fix is a separate package. Pairs with run-gate RG-154 (pilot).
 ## B215 — `assay plan <lane>` crashes with a TypeError on an ingested-mutation lane (`max_mutants` is None)
 
-**Status:** OPEN. Filed 2026-11-04 from dstdns (P220, `ui_apierror_r2`; assay 9.0.0). Severity: P3 (no verdict affected; blocks plan-based budgeting of ingested lanes).
+**Status:** FIXED (2026-11-16, branch `pi-assay-burn-20261116`). Filed 2026-11-04 from dstdns (P220, `ui_apierror_r2`; assay 9.0.0). Severity: P3 (no verdict affected; blocks plan-based budgeting of ingested lanes).
+
+**Fix.** `cli._discover_plan_jobs` now answers `mutation.UNSUPPORTED` as soon as
+it has the repository-level facts, when the lane's `judge.mutation.is_ingested`
+(the ONE discriminator: `format`'s presence). Discovery therefore never reaches
+the `limit=max_mutants + 1` collection sentinel, whose operand is `None` by
+contract on an ingested lane. Every caller already handled the sentinel: `assay
+plan` renders `status = "unsupported"` / `reason_code = "MUTATION_UNSUPPORTED"`
+with the reason naming ingestion (and now without a traceback), `assay campaign
+init` refuses with "has no supported full mutation plan to bind", and the pilot
+selection refuses by name. The stop sits AFTER the dirty-tree, exact
+untracked-source-root and base-resolution refusals, so an ingested lane is still
+refused for a real repository fault before it is answered "unsupported".
+
+**Evidence.** Reproduced on the base commit with a real ingested lane: `assay
+plan ui_mutation` ended in `TypeError: unsupported operand type(s) for +:
+'NoneType' and 'int'` at `cli.py:4173`. After the fix the same lane answers the
+documented unsupported JSON (exit 0, no stderr hint) and the text form prints
+`Status: unsupported` plus the reason. Tests:
+`tests/core/test_cli_plan_jobs.py::test_o16a_ix_*` (sentinel, JSON shape, text
+rendering, and a native-lane negative control). Hand mutant: deleting the
+`is_ingested` early return reproduces the original `TypeError` and fails three
+of those four oracles (measured, see the run report).
 
 **Observed.** For a lane that ingests a Stryker report (`judge.mutation = {format = "mutation-report-json", artifact, fail_under}`; `max_mutants`, `jobs` and `operators` are refused for ingested lanes) `python3 assay-9.0.0.pyz plan ui_apierror_r2` ends in a traceback instead of a plan or a refusal: `assay/cli.py:3823 _discover_plan_jobs: limit=lane.judge.mutation.max_mutants + 1` -> `TypeError: unsupported operand type(s) for +: 'NoneType' and 'int'`. The lane loads fine (`lanes`, `run-gate --dry-run`).
 

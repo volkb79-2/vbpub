@@ -130,9 +130,9 @@ equivalence_artifact = ".assay/schema-dump.sql"
     return path
 
 
-def _load(toml: Path) -> tuple[LaneFile, object]:
+def _load(toml: Path, name: str = "package") -> tuple[LaneFile, object]:
     lane_file = load_lane_file(toml)
-    return lane_file, lane_file.lane("package")
+    return lane_file, lane_file.lane(name)
 
 
 def _plan_payload(toml: Path, *extra: str) -> dict:
@@ -641,3 +641,118 @@ def test_o16a_viii_the_reuse_command_is_resolved_only_when_reuse_is_requested(
     assert "reuse_from" not in plain
     assert all("reuse" not in row for row in plain["candidates"])
     assert all(set(row) == ROW_KEYS for row in plain["candidates"])
+
+
+_INGESTED_LANE = """\
+schema_version = 2
+
+[lanes.ui_mutation]
+scope = "S1"
+rigor = ["R0", "R2"]
+enforcement = "gate"
+argv = ["/bin/true"]
+env = {{}}
+env_passthrough = ["PATH"]
+budget = "1m"
+allow_argv_append = false
+
+[lanes.ui_mutation.isolation]
+snapshot_selection = "repository"
+
+[lanes.ui_mutation.judge]
+language = "javascript"
+source_roots = ["app/src"]
+base = "{base}"
+
+[lanes.ui_mutation.judge.mutation]
+format = "mutation-report-json"
+artifact = "app/reports/mutation.json"
+fail_under = 100.0
+"""
+
+
+def _seed_ingested(repo: GitRepo) -> Path:
+    """A real ingested-R2 lane over a real repository.
+
+    B215's whole point is that `assay plan` reached the candidate-collection
+    sentinel and raised a bare `TypeError` there. An ingested lane declares
+    `max_mutants = None` by CONTRACT (the loader refuses the key), so the
+    fixture is a lane load accepts, not one this test has to fabricate.
+    """
+    repo.write(".gitignore", "__pycache__/\n.pytest_cache/\n")
+    repo.write("app/src/thing.js", "export function f() { return 1 }\n")
+    base = repo.commit_all("seed the app source")
+    repo.write(
+        "app/src/thing.js", "export function f() { return 2 }\n"
+    )
+    repo.commit_all("change the app source")
+    path = repo.write("assay.toml", _INGESTED_LANE.format(base=base))
+    repo.commit_all("add the ingested lane")
+    return path
+
+
+def test_o16a_ix_an_ingested_lane_plans_as_unsupported_instead_of_raising(
+    git_repo: GitRepo,
+):
+    """(B215) The defect: `_discover_plan_jobs` reached
+    `limit=lane.judge.mutation.max_mutants + 1` with `None` and raised
+    `TypeError: unsupported operand type(s) for +: 'NoneType' and 'int'`, so
+    `assay plan` died with a traceback instead of the plan/refusal answer
+    every other unsupported lane already gets. There is nothing to plan for an
+    ingested lane: its candidates are written by the foreign tool the lane's
+    own argv runs. Assert the SENTINEL, not merely "no exception" -- a fix
+    that kept planning a zero-candidate native inventory would satisfy the
+    weaker check and would be a silent wrong answer."""
+    lane_file, lane = _load(_seed_ingested(git_repo), "ui_mutation")
+    assert lane.judge is not None and lane.judge.mutation is not None
+    assert lane.judge.mutation.is_ingested
+    assert lane.judge.mutation.max_mutants is None
+    assert plan_jobs(lane_file, lane) == mutation.UNSUPPORTED
+
+
+def test_o16a_ix_the_unsupported_plan_names_the_ingestion_and_keeps_the_commit(
+    git_repo: GitRepo,
+):
+    toml = _seed_ingested(git_repo)
+    out, err = io.StringIO(), io.StringIO()
+    code = main(["plan", "--json", "ui_mutation", "--file", str(toml)], stdout=out, stderr=err)
+    assert code == 0
+    payload = json.loads(out.getvalue())
+    assert payload["status"] == "unsupported"
+    assert payload["reason_code"] == "MUTATION_UNSUPPORTED"
+    assert "ingests R2 evidence" in payload["reason"]
+    assert "mutation-report-json" in payload["reason"]
+    assert "cannot enumerate candidates" in payload["reason"]
+    # An unsupported answer carries no measurement, no commit and no hint
+    # (H, CD36): the plan that exists there belongs to a foreign tool, so
+    # naming this repository's commit as the planned source would be a claim
+    # about a plan assay did not make.
+    assert "candidate_count" not in payload
+    assert "estimated_wall_seconds" not in payload
+    assert "commit" not in payload and "tree" not in payload
+    assert err.getvalue() == ""
+
+
+def test_o16a_ix_the_text_plan_renders_the_reason_without_a_traceback(
+    git_repo: GitRepo,
+):
+    toml = _seed_ingested(git_repo)
+    out, err = io.StringIO(), io.StringIO()
+    code = main(["plan", "ui_mutation", "--file", str(toml)], stdout=out, stderr=err)
+    assert code == 0
+    text = out.getvalue()
+    assert text.startswith("Mutation plan for ui_mutation\nStatus: unsupported\n")
+    assert "Reason: lane 'ui_mutation' ingests R2 evidence" in text
+    assert "Candidate" not in text
+    assert "Traceback" not in text
+    assert err.getvalue() == ""
+
+
+def test_o16a_ix_the_native_path_is_untouched(git_repo: GitRepo):
+    """The negative control: a NATIVE lane still plans real candidates, so
+    "stop before the sentinel" cannot be satisfied by refusing every lane."""
+    toml = _seed(git_repo)
+    payload = _plan_payload(toml)
+    assert payload["status"] == "ok"
+    assert payload["candidate_count"] == 4
+
