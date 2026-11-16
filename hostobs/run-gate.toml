@@ -36,3 +36,20 @@ python3 tools/crate-floors.py cov-summary.json coverage-floors.toml''',
 clean_tree = true
 budget = "20m"
 artifacts = ["lcov.info", "cov-summary.json"]
+
+# Assay R1 over the four functional crates (hostobs plan v4, M1 row: "+ assay-r1
+# once R-2 lands"; assay B243/B523 consumer integration). `kind = "assay"`
+# means Run-Gate installs the worktree's own `assay/` source and runs the judge;
+# the lane's argv/rigor/judge live in `assay.toml [lanes.assay-r1]`, which owns
+# the measured-floor derivation (95.0 line over the 36 judged `src/*.rs` files).
+# `network = "none"` matches the Rust environment: cargo runs `--offline
+# --locked` from the image's lock-keyed crate cache, so a network attempt would
+# be a loud failure rather than a download.
+[lanes.assay-r1]
+kind = "assay"
+assay_lane = "assay-r1"           # -> assay/../assay.toml [lanes.assay-r1]
+environment = "tester-unified-rust"
+network = "none"
+clean_tree = true
+budget = "20m"
+artifacts = ["lcov.info", "cov-summary.json"]
