@@ -18,6 +18,9 @@
 | `lib/damon_analysis.py` | Shared library (Classifier, Monitor, etc.) | No — imported by others |
 | `run_analysis.sh` | Thin shell wrapper → `damon_cli.py` | Delegates |
 | `DAMON-GUIDE.md` | Comprehensive DAMON/DAMO reference | Read-only |
+| `KNOWN_ISSUES_TODO_BACKLOG.md` | Known issues, open gaps and gate (`r0`/`r1`/`r2`) failures, `DA-` ids | Read-only |
+
+Known issues and open test gaps: [`KNOWN_ISSUES_TODO_BACKLOG.md`](KNOWN_ISSUES_TODO_BACKLOG.md).
 
 ---
 

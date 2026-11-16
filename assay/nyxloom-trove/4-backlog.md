@@ -200,6 +200,9 @@ items:
   - {id: B548, title: "assay ships a hand-written repo-level skill with no `skills` verb, so `skills check` cannot tell a consumer its installed copy is stale", type: feature, component: distribution, context_estimate: small}
   - {id: B549, title: "The Rust consumer guide recommends tester-unified-rust for a kind=assay lane, but a source-mode assay install cannot run in that image (no pip/ensurepip/venv). PARTIAL (2026-11-16): hostobs proves the command-lane route (judge from the worktree's own assay/src, no install), and the guide now states both routes; what remains is the install shape itself, which still fails there without an image change or a refusal that names the missing package", type: bugfix, component: distribution, context_estimate: small}
   - {id: B550, title: "The lcov coverage format has no producer vocabulary, so a Rust lane cannot declare `cargo-llvm-cov` and the verdict omits `judgment.r1.coverage_producer` — the one artifact field that would name the producer whose zero branch markers were normalized", type: feature, component: adapters, context_estimate: small}
+  - {id: B551, title: "The full `self-qualification` lane needs a same-commit `tester-unified` receipt in the SAME worktree, which a per-lane throwaway remote checkout can never have, so the lane refuses in 11 s with an opaque `container exit 2`", type: bugfix, component: "gate", context_estimate: "small"}
+  - {id: B552, title: "A lane that DELEGATES its comparison base (`judge.base_source = \"request\"`) accepts the requested base and then discards it whenever HEAD is a merge commit, planning zero candidates and recording `base_resolution: \"first-parent\"` as if the request had been honoured", type: bugfix, component: "evaluate", context_estimate: "small"}
+  - {id: B553, title: "An inner `die` refusal from the B105 driver scripts does not reach the lane log, so a precondition refusal is reported as `ASSAY_GATE_INCONCLUSIVE=... (container exit 2)`; the mechanism that loses the line is unverified", type: bugfix, component: "evidence", context_estimate: "small"}
   - {id: B554, title: "A verdict carrying a real leaked-descendant `cmdline` is already invalid against the shipped v19 schema: B233 added the field to the producer and to CONSUMERS.md but never to `src/assay/schemas/verdict.schema.json` (descendant items are `additionalProperties: false` with only pid/ppid/comm). BLOCKED-ON-V20 with B234: fixing it changes a released schema's bytes, which needs an operator D2 exception (`_VERDICT_SCHEMA_SHA256`) that a peer review cannot grant", type: bugfix, component: evidence, context_estimate: small}
 ---
 
@@ -15413,6 +15416,361 @@ or the documentation says by name why it cannot and where the fact lives instead
 **Source.** B523's close condition ("the lane/run disclosure names the
 normalized no-branch producer fact"); measured 2026-11-15 against
 `assay/src/assay/vocabulary.py` and the hostobs `assay-r1` verdict.
+
+## B551 — the full `self-qualification` lane cannot pass through a per-checkout remote gate worker, and refuses with an opaque `container exit 2`
+
+**Status:** OPEN (filed 2026-11-16; evidence framing corrected in review round 1
+the same day); severity: should-fix for release evidence, because the full lane
+is the one carrying R2. Source: the pre-release gate report of 2026-11-16
+(`sonnet-v1001-prerelease-gates-REPORT.md`, finding F2 and the per-lane table).
+
+**What is measured, and what is inferred.** The REFUSAL is measured live: the
+run produced `ERROR`, `exit_code 2` in about 11 s, with
+`B105_PHASE=clone-exact-source` and
+`ASSAY_GATE_INCONCLUSIVE=Assay qualification ended incomplete or infrastructure
+(container exit 2)`, while the R2-excluding `self-qualification-provisional`
+lane (the same driver without the receipt precondition) ran and produced
+evidence in the same wave. The CAUSE — that this refusal is the missing
+same-commit receipt — is NOT measured: the driver's own `die` text never
+reached the lane log, so the cause is inferred by code reading. The source
+report says this itself ("Cause by code reading (the driver's inner stderr is
+not surfaced)"). B553 owns that evidence gap and no longer claims a mechanism
+either, so this entry must not be read as a receipt refusal observed in a log.
+
+**Problem.** `self-qualification` requires a SAME-COMMIT registered
+`tester-unified` receipt written into the SAME worktree it judges:
+
+- the driver pre-checks it with
+  `b105_report_check.py --receipt-only --tester-unified-receipt
+  "$project/.assay/registered-gate/tester-unified.json" --expected-commit …
+  --expected-tree …` and `die`s without it
+  (`assay/tools/self-qualification-gate.sh`, the
+  `require-same-commit-tester-unified-pass` phase);
+- the receipt is written by the host tester-unified script only after a green
+  run at an unchanged HEAD/tree, and is cleared at every launch
+  (`assay/tools/tester-unified-gate.sh`, `write_registered_gate_receipt` /
+  `clear_registered_gate_receipt`);
+- the declared precondition is documented in this backlog (B105/B123) and in
+  the lane text.
+
+A remote gate worker that makes ONE throwaway checkout per LANE and removes it
+afterwards (`scripts/netcup/runner/remote-gate.py`: `cleanup` removes the
+`rg-*` worktree; the `tester-unified` run and the `self-qualification` run are
+separate invocations with separate checkouts) therefore can never satisfy the
+precondition: the receipt would have to exist in the self-qualification
+invocation's own checkout, and no supported way to say "use this receipt from
+elsewhere" exists. **Observed:** `run-gate self-qualification` ended
+`ERROR; exit_code 2` after 11 s with
+`B105_PHASE=clone-exact-source` then
+`ASSAY_GATE_INCONCLUSIVE=Assay qualification ended incomplete or infrastructure
+(container exit 2)`, i.e. the failure was attributed to "incomplete or
+infrastructure" and the actual `die` text was not in the lane log (see B553).
+That the missing receipt is what produced those 11 s is the INFERENCE described
+above, not a logged refusal.
+The R2-excluding fallback (`self-qualification-provisional`) has no such
+precondition and did run, so the practical consequence is precise: the full
+lane — the one with R2 — cannot be evidenced through a remote worker at all.
+This is a different impossibility from B540 (a `tester-unified` receipt
+that cannot exist at a RELEASE TAG for a test's own reason); both end at the
+same refusal, and B540 must be fixed before this one can even be exercised at
+a tagged commit.
+
+**Related entries, deliberately not duplicated here.** Netcup `NC-47` owns the
+runner-side half of the same impossibility: the collector drops a lane's
+DECLARED artifacts, and a receipt written into `.assay/registered-gate/` is an
+artifact like any other — so even where the receipt exists in the judged tree,
+the collected run does not carry it. Netcup `NC-45` is the same layout fact from
+the opposite direction: the persistent `run-r2-campaign.sh` checkout lives
+outside the workspace family the B105 driver accepts, which is why "just use a
+persistent checkout" is not an answer for command-backed qualification either.
+This entry is the assay-side requirement; both runner halves are their own
+entries and are not close conditions here.
+
+**Why it matters.** Qualification evidence is the reason this lane exists, and
+the remote worker is the estate's supported way to run heavy lanes on the
+compute hosts (the cockpit doctrine: gates never run in the devcontainer). Two
+supported facts — "the receipt must be in the same worktree" and "a remote run
+gets a throwaway checkout per lane" — compose into an impossible requirement.
+The current refusal also costs a lane launch and yields no cause in the evidence
+(B553).
+
+**Proposed solutions, in the order this item recommends them.**
+1. **Make the precondition expressible**: a declared, validated way to point the
+   pre-check at a receipt whose commit and tree still must match, with the
+   receipt's location recorded in the verdict and its provenance disclosed. The
+   commitment binding stays exactly as strict (same commit, same tree); only
+   the file's location becomes a declared input. This keeps one lane and one
+   invocation, so a receiving worker needs no new sequencing.
+2. **Or declare a `sequence` lane** (`tester-unified` then `self-qualification`)
+   so both members run in the ONE checkout this invocation already has. Run-Gate
+   already supports `kind = "sequence"` (native, `stop_on`), and the remote
+   worker invokes ONE lane name in ONE checkout, so a sequence lane name needs
+   no runner change: this option is available today and is the cheapest of the
+   three, at the price of one composite budget and one combined verdict.
+3. **Or refuse at the boundary**: when the receipt cannot exist (a checkout
+   outside any supported receipt location), refuse BEFORE the expensive clone
+   and name the missing receipt and the lane that must run first, rather than
+   letting the driver die inside a container.
+
+Whichever is chosen, the driver's own refusal text must reach the lane log
+(B553), because option 3 is only honest if a reader can see which rule fired.
+
+**Where.** `assay/tools/self-qualification-gate.sh` (the receipt pre-check and
+its `die`), `assay/tools/tester-unified-gate.sh` (the receipt writer/clearer),
+`assay/run-gate.toml`'s lane declarations if a sequence or an injected receipt
+path is declared, `assay/gate/tests/test_self_lane.py` and the launcher tests
+that pin the argv, and `assay/docs/CONSUMERS.md` (the release-qualification
+recipe). Option 2 needs no runner-side change (a sequence is one lane name in
+the one checkout the invocation already has), but it does need the sequence
+lane's own budget and `stop_on` to be declared and its composite verdict to be
+accepted as release evidence.
+
+**Acceptance test idea.** A fake worktree with a matching receipt at the
+declared alternative location reaches the next phase; a receipt with a
+different commit or tree is still refused by name; a worktree with no receipt
+and no declared location refuses BEFORE the clone, with the message naming the
+`tester-unified` precondition and its commit. For option 2, a fake sequence run
+proves the two members share one checkout and that the receipt written by the
+first member is consumed by the second.
+
+**Priority.** Should-fix. Release qualification for this project depends on it,
+and today the lane can only be evidenced where the two facts happen to compose
+(a persistent runner checkout), not where the estate runs gates.
+
+**Close when.** Either a same-commit receipt is consumable from a declared
+location (with commit/tree still enforced and the location disclosed in the
+verdict), or a one-checkout sequence runs the pair, or the refusal happens
+before the expensive work and names the rule — and the driver's own `die` text
+is in the lane log in every case (B553).
+
+## B552 — a delegated request base is accepted and then DISCARDED on a merge-commit HEAD, so R2 plans zero candidates and reports first-parent resolution
+
+**Status:** OPEN (filed 2026-11-16); severity: should-fix (it can make an R2
+campaign report `NO_MUTANTS` on source that really changed). Source: the
+pre-release gate report of 2026-11-16
+(`sonnet-v1001-prerelease-gates-REPORT.md`, finding F3), measured live on a
+runner host at a merge-commit HEAD; re-verified against `assay/src/assay/git.py`
+and `assay/src/assay/runner.py` on origin/main.
+
+**Problem.** A lane can declare `judge.base_source = "request"`, and the
+invoking gate then supplies `assay run|plan --request-base REF`.
+`resolve_base_declaration()` returns that string to the runner unchanged
+(`assay/src/assay/runner.py:4276-4323`). The runner then resolves it through
+`git.resolve_base()` (`assay/src/assay/runner.py:_resolve_declared_base`,
+`assay/src/assay/git.py:826`), whose FIRST branch is unconditional on the shape
+of HEAD:
+
+```
+tokens = run(repo, "rev-list", "--parents", "-n", "1", "HEAD").split()
+if len(tokens) >= 3:      # HEAD is a merge commit
+    return tokens[1]      # HEAD's FIRST PARENT — the supplied base is discarded
+resolved_base = _resolve_revision(repo, base, ...)
+return run(repo, "merge-base", ..., resolved_base, "HEAD").strip()
+```
+
+So on a merge-commit HEAD the requested base is accepted, echoed by the gate
+(`run-gate: comparison base <sha> (from --base) -> --request-base`), and then
+never used. The verdict says `judgment.resolved.base_resolution =
+"first-parent"` and records the first parent as `base`; the measured result was
+R0 PASS, R1 PASS with `coverage.executable = 0`, R2 `INCONCLUSIVE/NO_MUTANTS`
+with `planned_total 0`, `sweep_end_reason no_candidates` — on a head whose
+declared source path really had changed (`git diff <requested base> <head> --
+<source root>` non-empty: 7 files, +508/-15 in the observed instance).
+
+This is B008's documented behaviour, and B008 closed by making it AUDITABLE
+(`base_resolution` + a consumer-docs section) rather than by changing
+`resolve_base`. That is a fine decision for a lane whose base is a symbolic
+`judge.base` — the "merge brought in an already-judged upstream" case really is
+best judged as the merge's own payload. It is NOT fine for a lane that
+DELEGATES its base, because there the base is not a hint: it is the exact
+comparison the caller asked for, the lane has already refused to run without it
+(`--request-base` unset => NOT_RUN/no-base), and the caller cannot know that
+supplying it changed nothing. The two policies contradict each other at exactly
+one input shape, and nothing in the verdict distinguishes "the request was
+honoured and found nothing" from "the request was discarded".
+
+**Proposed fix (smallest honest form).** One rule, chosen by declaration
+rather than guessed: when `base_source = "request"` (or `--request-base` is
+supplied), a merge-commit HEAD must resolve `merge-base(request, HEAD)` —
+the requested comparison — NOT HEAD's first parent; a lane that does not
+delegate keeps today's first-parent behaviour unchanged. If that is judged too
+much of a behaviour change for a delegated lane on the trunk, the alternative
+is a REFUSAL: `--request-base` on a merge-commit HEAD refuses with a named
+reason (the input is unresolvable as asked), because silently judging a
+different comparison is the one outcome that must not survive. Either way the
+verdict must stop recording `first-parent` for a request that was dropped
+— in the first option the field needs no new value at all, because the
+comparison really is `merge-base(base, HEAD)` and the existing `"merge-base"`
+vocabulary (`verdict.py:3067`) describes it exactly.
+
+**Where.** `assay/src/assay/git.py` (`resolve_base`,
+`base_resolution_mode`), `assay/src/assay/runner.py`
+(`_resolve_declared_base`, `resolve_base_declaration`), the verdict field
+documentation (`assay/src/assay/verdict.py:3044-3070` and
+`docs/CONSUMERS.md`'s "Check `judgment.resolved.base_resolution` after a
+pre-gate merge" section — which currently teaches the reader to check a field
+that, for a delegated lane, will describe a comparison that never ran), and
+`gate/tests/` or `tests/` fixtures for a merge-HEAD delegated lane. Cross-
+reference B008 (the deliberate first-parent policy and its audit field),
+run-gate RG-54 (the consumer-side boundary), and run-gate RG-272 (the same
+zero-plan symptom measured on another delegated lane, whose cause was explicitly
+NOT diagnosed there — the merge-first-parent rule verified above is the likely
+explanation for it, and RG-272 should be read with this entry rather than
+re-investigated separately). Do not change the non-delegating default in the
+same package.
+
+**Acceptance test idea.** A fake repository whose HEAD is a real two-parent
+merge, with the requested base on the pre-merge feature tip: a delegated lane
+plans candidates from the REQUESTED comparison (positive control: a non-merge
+HEAD yields the same base resolution), and the verdict's `base_resolution`
+names the rule that actually ran. The same fixture with a lane that declares
+`judge.base = "origin/main"` keeps `first-parent` behaviour (the unchanged
+control). A mutant that re-orders the merge branch ahead of the request check
+must fail the delegated case.
+
+**Priority.** Should-fix. A release-gating R2 lane reported "nothing to
+measure" on changed source and the evidence reads as a completed campaign.
+
+**Close when.** A delegated base on a merge-commit HEAD either resolves the
+requested comparison or refuses by name, the verdict can never record
+`first-parent` for a request that was discarded, the non-delegating behaviour
+is covered by an unchanged control, and the consumer doc tells a reader which
+rule applies to which declaration.
+
+## B553 — an inner `die` from the B105 driver scripts does not reach the lane log, so a precondition refusal is reported as `container exit 2`
+
+**Status:** OPEN (filed 2026-11-16; rewritten in review round 1 the same day
+after the first version asserted a mechanism the code contradicts); severity:
+should-fix for diagnosability (the lane classifies a cause it never read).
+Source: the pre-release gate report of 2026-11-16
+(`sonnet-v1001-prerelease-gates-REPORT.md`, finding F2 c: "assay driver: print
+the `die` text of the inner script to the lane log"), which also states that
+its own diagnosis was made "by code reading" because "the driver's inner
+stderr is not surfaced".
+
+**What was OBSERVED.** The collected lane log of the `self-qualification` run
+of 2026-11-16, after the driver's own environment lines, holds:
+`B105_PHASE=clone-exact-source`, then git's `hint:` advice block from the
+private clone, then the generic
+`ASSAY_GATE_INCONCLUSIVE=Assay qualification ended incomplete or infrastructure
+(container exit 2)`. What it does NOT hold is any later inner line. In
+particular the driver echoes `B105_PHASE=require-same-commit-tester-unified-pass`
+(`self-qualification-gate.sh:600`) before it runs the receipt check, and that
+echo — a plain `echo` on the same stream as the phase line that DID arrive — is
+absent too. So the observation is sharper than "the `die` text is missing":
+the stream carried the FIRST inner phase line and the clone's own output, and
+nothing the inner driver printed after them. The loss is therefore a TAIL
+loss (the inner stream stops partway), not a `die`-specific one; whether the
+`die` line itself was ever written depends on how far the run got, which the
+lane log alone cannot say.
+
+**The cause is NOT verified.** Three mechanisms are consistent with the
+observation and the code, and this entry does not pick one:
+
+1. **The stream ends before the last line is emitted.**
+   `self-qualification-container.sh:719-761` starts
+   `docker logs --follow "$container_id" &` (line 721) and stops it
+   (`signal_owned_process_group` on `log_pid`) as soon as `docker wait`
+   returns; the final `die` line is written by the inner script immediately
+   before it exits, so the follower can be reaped between the write and the
+   stream's last flush. The driver's own guard only refuses when the follower
+   was NOT running and exited non-zero (`:759-761`); a follower that was
+   running (or was stopped deliberately) has its status discarded.
+2. **The lane log keeps an earlier copy of the stream, not the collected one.**
+   The same script then runs `docker_bounded logs "$container_id"
+   >"$scratch/container.log" 2>&1` (`:763-764`) and uses that file for its
+   marker checks (`:790-861`), but nothing copies a line from it into the
+   driver's own stderr on the non-zero path (`:765-778`); the lane log shows
+   only what the earlier `--follow` stream emitted.
+3. **Capture ordering or truncation between the container and the collector.**
+   The evidence line the run retained may be whatever the streaming pass had
+   flushed when the follower was stopped, and the collected `lane.log` may be
+   a bounded tail; both are outside the driver's control.
+
+What the first version of this entry additionally claimed — that the inner
+text is lost because the scratch directory is deleted by the EXIT trap
+(`:503-508`) — is **withdrawn as the cause**. The sweep does remove `$scratch`
+on every exit path where cleanup succeeded, including the refusal paths at
+`:765-778` (`preserve_scratch` is set only when cleanup itself failed, `:503`).
+But the lane log is the earlier `--follow` streaming pass, not
+`$scratch/container.log`, so deleting the file cannot explain a line missing
+from a stream that never read the file. The deletion is at most a second,
+independent evidence loss (the complete copy goes with the scratch), and the
+fix below does not depend on which of the two it is.
+
+The sibling driver has the same reporting shape: `tester-unified-gate.sh`
+reports `ASSAY_GATE_INCONCLUSIVE=tester-unified container exited with
+infrastructure status %s` for its own exit-2 path (`:984`) from an exit status
+alone.
+
+**Why it matters.** "Infrastructure" is a diagnosis, and the current message
+asserts it from an exit STATUS alone — a check whose message is stronger than
+what it compared (the estate's recurring defect class). A refusal from a
+precondition (B551's inferred missing receipt, a dirty tree, a changed HEAD, a
+missing cgroup tier) is not infrastructure, and the difference decides whether
+an operator retries, fixes a lane, or files a defect. The inner text does exist
+at the moment of refusal in the driver's own collected copy
+(`:763-764`), and the lane log never quotes it — which of the three mechanisms
+above loses the tail is the open question, not an assumption to build the fix
+on.
+
+**Minimal solution (mechanism-independent).** On the non-zero path, the driver
+must put the inner refusal into its own stderr — and it does not have to
+reason about which mechanism lost it: after
+`docker_bounded logs "$container_id" >"$scratch/container.log"` (`:763-764`)
+completes, the file is a COMPLETE copy (it is an ordinary, non-following
+`docker logs` of a stopped container), so the refusal line is readable there
+regardless of what the streaming pass captured. So on every non-zero path
+(`:765-778` and the `die` at `:777`), read the last N lines of
+`$scratch/container.log` and print them (bounded by bytes and line count,
+secret-scrubbed the way the rest of the evidence is) into the driver's own
+stderr BEFORE the exit, and keep the whole log when the run refuses (extend
+`preserve_scratch` to "every non-zero exit", naming the preserved path in the
+message). Additionally, do not discard the follower's status silently: name
+whether the `--follow` stream was still running when `docker wait` returned,
+so a mechanism-1 loss is visible in the evidence instead of guessed. The
+generic `ASSAY_GATE_INCONCLUSIVE` line should then say what it actually knows:
+the container's exit status plus the first line of the inner refusal, and only
+classify "infrastructure" when the inner text does not name an assay-level
+refusal. Keep exit codes unchanged; this is disclosure only.
+
+**Where.** `assay/tools/self-qualification-container.sh` (the `wait_status`
+branches around `:765-778` and `cleanup`'s `preserve_scratch`),
+`assay/tools/tester-unified-gate.sh` (its own exit-status reporting around
+`:984`), the focused launcher tests (`gate/tests/test_self_qualification_container.py`
+and the tester-unified launcher tests) for a fake container that exits non-zero
+after printing a `die` line, and `docs/CONSUMERS.md` where a non-green
+self-qualification run is described.
+
+**Acceptance test idea.** A deliberately failing inner step whose `die` message
+is distinctive (for example a fake `self-qualification-gate.sh` that prints
+`self-qualification-gate: no registered tester-unified pass at <commit>` and
+exits 2) must make that message appear in the DRIVER's lane log — asserted on
+the driver's own combined stdout/stderr, not on a scratch file — together with
+the preserved scratch path, and the `ASSAY_GATE_INCONCLUSIVE` line must quote
+the inner line rather than classify it as infrastructure. Because the observed
+loss is a TAIL loss, the assertion must cover the LAST inner lines of a longer
+fake run (a fake that prints several phase lines and then refuses), not only a
+single short message — a test that only prints the `die` line would pass a fix
+that still loses the tail. The same fixture run with a short follow window (the
+follower still streaming when the container exits) must also reach the
+assertion, which is what makes mechanism 1 testable rather than assumed. A fake
+container that exits 2 with NO inner text still reports the generic status. A
+passing run leaves no preserved scratch directory, so the rule cannot silently
+retain every run's log. Bounded: a container printing megabytes must not make
+the driver's output unbounded.
+
+**Priority.** Should-fix — every non-green self-qualification run today costs a
+script-reading investigation, and the first classification a reader sees is
+often wrong.
+
+**Close when.** A non-zero B105-family run puts the inner `die` text in the
+driver's lane log (bounded by size) for a deliberately failing inner step,
+the generic line no longer claims "infrastructure" for an assay-level refusal,
+the follower's disposition is named in the evidence, passing runs still clean up,
+and the focused cases above pass. The entry does not close on identifying the
+mechanism, but the fix must be exercised under the mechanism-1 timing, since
+that is the case a passing test would otherwise miss.
 
 ## B554 — a verdict carrying a real leaked-descendant `cmdline` is already invalid against the shipped v19 schema
 
