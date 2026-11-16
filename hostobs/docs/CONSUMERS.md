@@ -30,7 +30,7 @@ The verdict's R1 claim carries measured totals, not a restated floor:
 ```json
 {"covered": 15100, "executable": 15723, "considered": 33,
  "branch_capability": "unavailable", "branches_total": 0,
- "missing_lines": {"crates/kernel/src/cgroup.rs": [270, 319, ...], ...}}
+ "missing_lines": {"hostobs/crates/kernel/src/cgroup.rs": [270, 319, ...], ...}}
 ```
 
 Read it as: 33 declared `src` files of `model`, `proto`, `kernel` and `store` were judged,
@@ -93,8 +93,13 @@ papered over with a weaker lane; `selftest` keeps the enforced baseline in the m
   [`HAND-MUTANTS-M1C.md`](HAND-MUTANTS-M1C.md) remain the test-quality evidence.
 - **Canaries (R3)** — needs a receipt-writing test-break canary (assay B246 / R-4); not registered.
 - **Inline `#[cfg(test)] mod tests` blocks inside a judged file** are measured (LCOV has no
-  per-region exclusion, assay K5). They run when tests run, so they rarely hurt, but they are
-  in the denominator.
+  per-region exclusion, assay K5). They are NOT a small effect here: counting from each file's
+  `#[cfg(test)]` line to its end, roughly a third of the four crates' source lines (about 10.5k
+  of 28.7k) are inline test code, whose executable lines sit in the 15723 denominator and are
+  covered whenever the tests run. The 96.04 % therefore overstates product-code coverage, and
+  a drop of the 629-line headroom lands almost entirely on product code, so 95.0 % is looser
+  on product code than it reads (the sampled uncovered line `store/src/tier.rs:1553` is a test
+  `assert!` message argument). The per-crate floors in the lane's argv carry the same bias.
 - **Three of the four `crates/*/src/lib.rs` files** (`model`, `proto`, `store`) are module
   declarations and `//!` documentation only, so cargo-llvm-cov emits no LCOV record for them and
   they are not declared targets; Assay refuses a declared target it cannot measure rather than

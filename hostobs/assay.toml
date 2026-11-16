@@ -45,9 +45,12 @@
 #   `NO_MEASUREMENT/BRANCH_UNAVAILABLE`, which is a refusal, not a measurement.
 #   Branch coverage is never faked to satisfy this lane.
 # - **Inline `#[cfg(test)] mod tests` blocks in a judged `src` file ARE
-#   measured** (LCOV has no per-region exclusion; assay known issue K5). They
-#   run when tests run, so they rarely hurt, but they are part of the line
-#   denominator rather than a separate claim.
+#   measured** (LCOV has no per-region exclusion; assay known issue K5). That
+#   is not a small effect: roughly a third of these crates' source lines are
+#   inline test code (about 10.5k of 28.7k, counted from each file's
+#   `#[cfg(test)]` line), whose executable lines are covered whenever the tests
+#   run. The measured percentage therefore overstates product-code coverage and
+#   the 95.0 floor is looser on product code than it reads.
 # - **Region coverage is not an Assay claim.** `tools/crate-floors.py` checks
 #   the per-crate line AND region floors from `cov-summary.json` inside this
 #   lane's R0 half; Assay's R1 claim itself is line-granularity only (K1/K3).
