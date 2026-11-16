@@ -3397,7 +3397,7 @@ test.
 
 ## KI-150 - temporary Git repository creation in the full suite is not the bottleneck
 
-**Status:** OPEN (filed 2026-11-11); severity: low (measurement says the proposed optimisation cannot recover enough time to justify a new repository template and clone lifecycle); no implementation in this documentation-only filing.
+**Status:** CLOSED BY DESIGN 2026-11-16; severity: low. The measured suite used 40,571 Git processes (56.8 s wall / 12.6% of the lane; 21.9 s CPU / 4.9%), of which repository setup was 21.4 s wall / 4.8%. A template is estimated to save only 15–20 s, while 30 of the 40 slowest tests do not use repositories. Keep the current isolated per-test repositories; let the W3 duration survey select the next optimization target, and reopen only if new measurements show repository setup is material. No implementation is justified by this evidence.
 
 **Finding.** CMRU's full suite creates many temporary Git repositories, but repository setup is not the main cause of the roughly 450-second coverage lane. A host study measured 40,571 Git executables in the lane. They consumed 56.8 seconds of wall time (12.6% of the lane) and 21.9 seconds of CPU (4.9%). The repository-setup subset alone was 21.4 seconds wall (4.8%): 1,200 `init`, 397 `clone`, 835 `worktree`, 1,709 `add`, 1,708 `commit`, and 2,055 `config` invocations. The suite also created 221,512 files, about 34 per test.
 
