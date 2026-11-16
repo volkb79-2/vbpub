@@ -9,6 +9,26 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
 
 ## [Unreleased]
 
+### Added
+- run-gate: a `kind = "command"` lane can declare `judge = "assay"` and Run-Gate
+  provides the judge itself (RG-285, SPEC `R-08f`/`R-57`). The judged
+  worktree's `assay/` and `libraries/cowtree` are mounted READ-ONLY at their
+  own paths (dual-mounted, after every other mount), the lane's own shell
+  exports `PYTHONPATH` (provided roots PREPENDED) with
+  `RUN_GATE_JUDGE_PYTHON`, `PYTHONNOUSERSITE=1` and
+  `PYTHONDONTWRITEBYTECODE=1`, and an in-lane `find_spec` guard refuses an
+  `assay`/`assay_analysis`/`cowtree` that is not the provided one. No pip, no
+  wheel, no install and nothing fetched: a no-pip language image
+  (`tester-unified-rust`) can run Assay under `network = "none"`, which the
+  interim `PYTHONPATH=<w>/assay/src:...` command lane had to spell out
+  itself. The judge's identity — commit, `assay-v*` version (or `null` with
+  the reason stated), and `dirty` scoped to the judge trees — is recorded in
+  the run record and history and disclosed before the lane starts. A judged
+  checkout without the judge trees is NOT_RUN 3 `external-missing` BEFORE
+  admission/locks/container; an unknown value, `kind = "assay"`/sequence,
+  a non-ephemeral environment, or a project inside the judge trees is ERROR
+  at load. `kind = "assay"` lanes are byte-identical.
+
 ### Fixed
 - run-gate: observer preflight refusals explain required endpoints and profiling opt-out behavior (RG-250).
 - run-gate: an ephemeral lane is refused BEFORE it starts when the lane user,

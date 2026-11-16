@@ -1319,8 +1319,31 @@ LANE_KEYS = {"kind", "environment", "argv", "assay_lane", "assay_command",
              "description", "required_env", "artifacts", "resources",
              "profile", "exit_map", "accepts_args", "lanes", "stop_on",
              "resource_observer", "network", "jobs", "workers", "workers_max",
-             "xdist_safe", "ksm"}
+             "xdist_safe", "ksm", "judge"}
 PIN_KEYS = {"sha256", "version"}
+# RG-285: the closed vocabulary of judges Run-Gate itself provides to a lane.
+# `judge = "assay"` says: this lane wants the Assay judge, and the LANE IMAGE
+# must not carry one -- Run-Gate mounts the selected worktree's assay source
+# read-only and hands the lane the interpreter path and import roots. A
+# language image (tester-unified-rust today) deliberately ships neither pip
+# nor assay, so the alternative is the per-project PYTHONPATH incantation
+# hostobs carried as an INTERIM (and every future language would re-derive).
+JUDGE_PROVIDERS = frozenset({"assay"})
+# The two source trees mounted READ-ONLY at their own paths inside the judged
+# worktree (which is itself mounted read-write), and the import roots exported
+# on PYTHONPATH. `libraries/cowtree` is assay's lazy same-repository importer
+# (B196/_cow_workspace.py), present for exactly the reason every source-Assay
+# lane in this estate declares it.
+JUDGE_SOURCE_TREES = ("assay", "libraries/cowtree")
+JUDGE_IMPORT_ROOTS = ("assay/src", "assay/analysis/src",
+                      "libraries/cowtree/src")
+# (module name, its expected origin RELATIVE TO AN IMPORT ROOT). A package's
+# origin is the `__init__.py` a find_spec resolves to, so the guard compares
+# origins, never directory membership.
+JUDGE_IMPORT_NAMES = (("assay", "assay/__init__.py"),
+                      ("assay_analysis", "assay_analysis/__init__.py"),
+                      ("cowtree", "cowtree/__init__.py"))
+JUDGE_DESCRIBE_MATCH = "assay-v*"
 # RG-146: the declared argv token a lane with `workers` must carry.
 WORKERS_TOKEN = "{workers}"
 WORKERS_DEFAULT_MAX = 8
@@ -1460,6 +1483,40 @@ def _validate_lane(name: str, table: dict, where: str) -> None:
         if kind not in ("assay", "command"):
             fail(f"{where} [lanes.{name}]: 'resource_observer' is supported "
                  "only for assay or command lanes")
+    if "judge" in table:
+        # RG-285: ONE closed vocabulary, and the setting lives on a COMMAND
+        # lane only. `kind = "assay"` already owns its judge shape
+        # (`assay_command` / the source install) and a sequence accepts no
+        # runner keys at all -- accepting `judge` there would be RG-32's
+        # "two levels, the same-looking key" trap one lane kind over: the
+        # key would be legal and inert, which is exactly the shape RG-32
+        # was filed for. Sequence is answered FIRST and in its own words,
+        # because the generic "only on command lanes" message would send its
+        # author looking for a missing kind rather than to the member lane.
+        if kind == "sequence":
+            fail(f"{where} [lanes.{name}]: a sequence does not accept "
+                 f"'judge' -- declare judge = {table['judge']!r} on the "
+                 f"member lane that wants it, where it is load-bearing")
+        # A config error must be ONE line naming the key and the value
+        # (R-04): an unhashable value (a list, a table) raises TypeError out
+        # of `in`, which would surface as a traceback.
+        declared = table["judge"]
+        if not isinstance(declared, str) or declared not in JUDGE_PROVIDERS:
+            fail(f"{where} [lanes.{name}]: 'judge' must be "
+                 f"{', '.join(repr(value) for value in sorted(JUDGE_PROVIDERS))}"
+                 f" (got {declared!r}); it declares which judge "
+                 f"RUN-GATE provides (mounts read-only) to this lane's "
+                 f"image, and that is the whole vocabulary")
+        if kind != "command":
+            fail(f"{where} [lanes.{name}]: 'judge' is supported only on "
+                 f"kind = \"command\" lanes (this lane is {kind!r}); a "
+                 f"kind = \"assay\" lane already declares its own judge "
+                 f"(assay_command / the selected worktree's source install)")
+        if table.get("pins"):
+            fail(f"{where} [lanes.{name}]: 'judge' and 'pins' contradict "
+                 f"each other -- pins verify an external judge artifact "
+                 f"(kind = \"assay\" + assay_command), while 'judge' names the "
+                 f"judge RUN-GATE provides from the judged worktree; pick one")
     if kind == "sequence":
         members = table.get("lanes")
         if not isinstance(members, list) or not members or not all(
@@ -2553,6 +2610,7 @@ def load_config_snapshot(project_dir: Path
     _validate_effective_network_settings(project, central, project_path)
     _validate_effective_assay_pins(project, central, project_path,
                                    central_path)
+    _validate_effective_judge_lanes(project, central, project_path)
     return (project, project_path, central, central_path,
             project_sha256, central_sha256)
 
@@ -2605,6 +2663,62 @@ def _validate_effective_assay_pins(project: dict, central: dict,
                  f"'assay_command' — pins verify an external judge artifact; "
                  f"declare the command on the lane or in [assay], or remove "
                  f"the pins for a source-backed Assay lane")
+
+
+def _validate_effective_judge_lanes(project: dict, central: dict,
+                                   project_path: Path) -> None:
+    """RG-285: a lane that wants Run-Gate's judge must be able to receive it.
+
+    `judge = "assay"` is served by MOUNTING the judge source read-only into
+    the lane's container. Run-Gate neither starts an exec runner nor mounts
+    anything into a bare-host subprocess, so both are refused by name at load
+    instead of "working by luck of that environment's PATH". The second
+    refusal is structural: the read-only overlay would make the JUDGED project
+    itself read-only, so a project living inside the judge tree cannot declare
+    it.
+
+    Both answers are DERIVED (resolved environment, git toplevel); the second
+    is skipped when there is no git toplevel to compare against, which is the
+    honest answer (this project's own config may be read outside a checkout) —
+    the runtime preflight still refuses a missing source.
+    """
+    lanes = dict(central.get("lanes", {}))
+    lanes.update(project.get("lanes", {}))
+    environments = dict(central.get("environments", {}))
+    environments.update(project.get("environments", {}))
+    judge_lanes = {name: lane for name, lane in lanes.items()
+                   if lane.get("judge") is not None}
+    if not judge_lanes:
+        return
+    toplevel = _git_toplevel_if_available(project_path.parent)
+    for name, lane in judge_lanes.items():
+        environment_name = lane.get("environment")
+        environment = (environments.get(environment_name)
+                       if isinstance(environment_name, str) else None)
+        if isinstance(environment, dict) and \
+                environment.get("mode") != "ephemeral":
+            fail(f"{project_path} [lanes.{name}]: 'judge' requires the "
+                 f"resolved environment {environment_name!r} to have "
+                 f"mode = \"ephemeral\" (got "
+                 f"{environment.get('mode')!r}) — Run-Gate provides the "
+                 f"judge by MOUNTING its source read-only into a container it "
+                 f"starts; it cannot add a mount to an exec runner or to a "
+                 f"bare-host subprocess")
+        if toplevel is None:
+            continue
+        judged_project = project_path.parent.resolve()
+        for tree_name in JUDGE_SOURCE_TREES:
+            judge_tree = (toplevel / tree_name).resolve() \
+                if (toplevel / tree_name).is_dir() else None
+            if judge_tree is None:
+                continue
+            if judged_project == judge_tree \
+                    or judge_tree in judged_project.parents:
+                fail(f"{project_path} [lanes.{name}]: this project lives "
+                     f"inside the judge source tree {judge_tree}, but 'judge' "
+                     f"mounts that tree READ-ONLY over the judged worktree — "
+                     f"the judged project would itself become read-only; "
+                     f"declare the lane from a project outside the judge tree")
 
 
 def _validate_effective_resource_observers(project: dict, central: dict,
@@ -8141,6 +8255,30 @@ def redact_forwarded_values(argv: list[str], keys: list[str]) -> list[str]:
             out.append(tok)
             expect_value = tok == "-e"
     return out
+
+
+def print_judge_provider(lane: dict) -> None:
+    """RG-285: WHO judges this lane, disclosed before it runs (R-05).
+
+    A `judge = ...` lane's verdict is produced by a judge the LANE IMAGE does
+    not carry, so "which judge, from which commit, clean or not" is a fact the
+    operator must see in the lane's own log rather than infer from a mount.
+    The identity dict is `preflight_judge_provider`'s and the run record's
+    -- one derivation, disclosed, recorded, and repeated by the lane's script.
+    """
+    identity = lane.get("_judge_identity")
+    if identity is None:
+        return
+    print(judge_identity_line(identity), flush=True)
+    if identity.get("dirty") is not False:
+        # A judge tree with uncommitted work is not the commit the version
+        # names. Never a refusal (a lane may be judged before its judge is
+        # committed, exactly as any worktree is), but never silent either:
+        # the record carries `dirty` for whoever audits the verdict later.
+        print(f"run-gate: WARNING: judge source is "
+              f"{'dirty' if identity.get('dirty') else 'of unknown cleanliness'}"
+              f" -- the verdict's judge version cannot be tied to its bytes",
+              flush=True)
 
 
 def print_lane_artifacts(lane: dict, lane_name: str, project_dir: Path,
@@ -14727,11 +14865,284 @@ def passwd_entry_guard() -> str:
             'one" >&2; exit 2; }; true; }')
 
 
+# ---------------------------------------------------------------------------
+# RG-285 -- Run-Gate provides the assay JUDGE to a language lane.
+#
+# Operator decision 2026-11-16 ("I recommend run-gate providing the judge").
+# A language image (tester-unified-rust today) deliberately ships neither pip
+# nor assay, so until now a Rust lane could only reach the judge through the
+# per-project `PYTHONPATH=<worktree>/assay/src:...` incantation hostobs carries
+# as an INTERIM. The judge belongs with the thing that judges: run-gate owns
+# mounts, images and verdict records, so a lane declares `judge = "assay"`,
+# run-gate mounts the judged worktree's assay source READ-ONLY, exports the
+# interpreter and import roots the judge needs, and records WHICH judge
+# produced each verdict. Design and rejected alternatives:
+# docs/DESIGN-judge-provider-2026-11.md.
+# ---------------------------------------------------------------------------
+
+def judge_mount_flags(lane: dict, worktree: Path) -> list[str]:
+    """The judge source, mounted READ-ONLY at its own path (RG-285).
+
+    The judged worktree is mounted READ-WRITE (a lane commits, writes coverage
+    and evidence); the judge trees are two subtrees of it, so they are
+    overlaid read-only AT THEIR OWN PATHS. A later bind mount wins for its
+    subtree, which is what makes the overlay effective -- and the CALLERS
+    append these flags AFTER every other mount, so neither an operator
+    override ($RUN_GATE_EXTRA_MOUNTS) nor a CoW layout can re-open them.
+
+    Dual-mounted like every other path (RG-3): a path recorded under either
+    the physical host path or the devcontainer namespace path must resolve,
+    and the lane's `PYTHONPATH` carries the same namespace entries.
+
+    Nothing is stat'd here: the missing-source refusal belongs to
+    `preflight_judge_provider`, a NOT_RUN before admission or locks rather
+    than Docker's own "source path does not exist" three layers down.
+    """
+    if lane.get("judge") is None:
+        return []
+    flags: list[str] = []
+    for tree_name in JUDGE_SOURCE_TREES:
+        source = worktree / tree_name
+        # `_dual` yields complete `source:destination` specs (the physical
+        # path is resolved once inside it, so the two views cannot disagree
+        # about which host path they bind). `worktree` is the alias root
+        # because the judge tree is a SUB-PATH of the judged worktree, not a
+        # root of its own (RG-NARROW).
+        for spec in _dual(source, worktree)[1::2]:
+            flags += ["-v", f"{spec}:ro"]
+    return flags
+
+
+def judge_identity(lane: dict, worktree: Path) -> dict | None:
+    """Which judge produced this verdict, and from which commit (RG-285).
+
+    Derived from the JUDGED tree (RG-15's rule), never from the invoking
+    checkout:
+
+      * `commit`  -- `HEAD`, exactly what the read-only mount contained;
+      * `version` -- `git describe --tags --long --match assay-v*`, assay's own
+                     tag grammar (`assay-vX.Y.Z-<n>-g<sha>`: the release the
+                     source is `n` commits ahead of, plus the commit it really
+                     is), and `None` WITH a stated reason when no such tag is
+                     reachable -- a guessed version is a claim the tree never
+                     made (RG-4's lesson);
+      * `dirty`   -- `git status --porcelain` SCOPED to the judge trees:
+                     True/False when Git answered, `None` when it could not
+                     (never folded into "clean").
+
+    Returns `None` for a lane that asks for no provided judge, so no other
+    lane's run record grows a field it never used.
+    """
+    if lane.get("judge") is None:
+        return None
+    commit = head_commit(worktree)
+    version: str | None = None
+    describe_status: object = "(did not run)"
+    try:
+        described = subprocess.run(
+            ["git", "-C", str(worktree), "describe", "--tags", "--long",
+             "--match", JUDGE_DESCRIBE_MATCH],
+            capture_output=True, text=True, env=host_git_environment())
+    except OSError:
+        described = None
+    if described is not None:
+        describe_status = described.returncode
+        if described.returncode == 0:
+            text = described.stdout.strip()
+            if re.fullmatch(r"[^\s]+-[0-9]+-g[0-9a-f]{7,64}", text):
+                version = text
+    if version is not None:
+        version_source = f"git describe --match {JUDGE_DESCRIBE_MATCH}"
+    else:
+        version_source = (f"no {JUDGE_DESCRIBE_MATCH} release tag is reachable "
+                          f"from this commit (git describe answered "
+                          f"{describe_status})")
+    try:
+        status = subprocess.run(
+            ["git", "-C", str(worktree), "status", "--porcelain", "--",
+             *JUDGE_SOURCE_TREES],
+            capture_output=True, text=True, env=host_git_environment())
+    except OSError:
+        status = None
+    dirty = None if status is None or status.returncode != 0 \
+        else bool(status.stdout.strip())
+    return {
+        "provided_by": "run-gate",
+        "name": lane["judge"],
+        "commit": commit,
+        "version": version,
+        "version_source": version_source,
+        "dirty": dirty,
+        "source": str(worktree / JUDGE_SOURCE_TREES[0]),
+        "pythonpath": [str(worktree / root) for root in JUDGE_IMPORT_ROOTS],
+        "mounts": list(JUDGE_SOURCE_TREES),
+    }
+
+
+def judge_identity_line(identity: dict) -> str:
+    """One line for the lane's own log: WHICH judge, from WHICH commit."""
+    dirty = identity.get("dirty")
+    state = "clean" if dirty is False else (
+        "DIRTY" if dirty is True else "dirty state unknown")
+    version = identity.get("version") \
+        or f"(no version: {identity.get('version_source')})"
+    return (f"run-gate: judge: {identity['name']} {version} at "
+            f"{(identity.get('commit') or '(no commit)')[:12]} ({state}; "
+            f"provided by run-gate, mounted read-only from "
+            f"{identity.get('source')})")
+
+
+# RG-285: the in-lane import identity guard. `find_spec` resolves a module
+# WITHOUT executing package code -- the same technique `assay_source_setup`
+# uses for a source-mode assay lane -- so the provided judge is proven by
+# LOCATION, on the origin FILE (`__init__.py`) rather than by testing whether
+# some `assay/` directory is on the path (which a vendored directory shadows
+# without being importable at all).
+_JUDGE_IMPORT_GUARD_CODE = (
+    "import importlib.util, pathlib, sys\n"
+    "roots = [pathlib.Path(value) for value in sys.argv[1].split(':')]\n"
+    "pairs = list(zip(sys.argv[2::2], sys.argv[3::2]))\n"
+    "for name, rel in pairs:\n"
+    "    spec = importlib.util.find_spec(name)\n"
+    "    origin = (pathlib.Path(spec.origin).resolve()\n"
+    "              if spec is not None and spec.origin else None)\n"
+    "    if any(origin == (root / rel).resolve() for root in roots):\n"
+    "        continue\n"
+    "    print(origin)\n"
+    "    raise SystemExit(2)\n"
+)
+
+
+def judge_source_setup(lane: dict, worktree: Path) -> list[str]:
+    """The shell a `judge = ...` lane runs before its own command (RG-285).
+
+    No `docker run -e` shape: this is exported by the lane's own shell, so it
+    reaches every runner that builds a command inner and needs no image
+    knowledge from the host.
+
+      * `RUN_GATE_JUDGE_PYTHON` -- the interpreter the lane will use, resolved
+        IN-LANE (an image's PATH is not readable from the host). A missing
+        `python3` is refused BY NAME; there is no fallback interpreter, because
+        a fallback is exactly the masked default that hides a broken image.
+      * `PYTHONPATH` -- the judge's import roots PREPENDED to whatever the lane
+        declared: the provided judge wins, the lane's own paths keep working
+        after it. `PYTHONNOUSERSITE=1` stops a user-site `assay` from winning;
+        `PYTHONDONTWRITEBYTECODE=1` stops the judge's import from writing
+        `__pycache__` into a tree this mount made read-only.
+      * the guard -- without it the export is only a REQUEST: an image that
+        already carries assay would silently judge with its own copy. One
+        attempt runs quietly; a second run reports the origin it really
+        resolved, and the refusal names both sides.
+    """
+    if lane.get("judge") is None:
+        return []
+    roots = ":".join(str(worktree / root) for root in JUDGE_IMPORT_ROOTS)
+    guard = shlex.quote(_JUDGE_IMPORT_GUARD_CODE.strip())
+    # `roots` FIRST (the guard reads it as `sys.argv[1]`), then the pairs
+    # INTERLEAVED `name rel name rel ...` -- the guard's own
+    # `zip(argv[2::2], argv[3::2])` reads them that way, so every pair must be
+    # adjacent.
+    guard_args = " ".join(
+        [shlex.quote(roots),
+         *(shlex.quote(part)
+           for name, rel in JUDGE_IMPORT_NAMES
+           for part in (name, rel))])
+    # The accepted origins are derived from the SAME two tuples the guard
+    # itself is built from, so a message cannot describe a contract the
+    # guard does not enforce (RG-4's lesson, one level down).
+    expected = "; ".join(
+        f"{name} from one of "
+        + ", ".join(str(worktree / root / rel)
+                    for root in JUDGE_IMPORT_ROOTS)
+        for name, rel in JUDGE_IMPORT_NAMES)
+    probe = f'"$RUN_GATE_JUDGE_PYTHON" -c {guard} {guard_args}'
+    return [
+        'if command -v python3 >/dev/null 2>&1; then '
+        'RUN_GATE_JUDGE_PYTHON=$(command -v python3); '
+        'else echo "run-gate: this lane declares judge = \\"assay\\", but its '
+        'image has no python3 on PATH -- Run-Gate provides the judge and does '
+        'not install an interpreter" >&2; exit 2; fi',
+        f'export RUN_GATE_JUDGE_PYTHON PYTHONNOUSERSITE=1 '
+        f'PYTHONDONTWRITEBYTECODE=1 PYTHONPATH={shlex.quote(roots)}'
+        '"${PYTHONPATH:+:$PYTHONPATH}"',
+        f'{{ if ! {probe} >/dev/null 2>&1; then '
+        f'found=$({probe} 2>&1 || true); '
+        f'echo "run-gate: judge = \\"assay\\" was NOT provided to this lane: '
+        f'the interpreter must resolve assay, assay_analysis and cowtree '
+        f'from {roots} (expected {expected}), but it resolves them '
+        f'instead at: $found" >&2; '
+        f'exit 2; fi; }}',
+    ]
+
+
+def preflight_judge_provider(lane: dict, lane_name: str, worktree: Path,
+                             env: dict | None, env_source: str) -> dict | None:
+    """Refuse BEFORE admission when the judge cannot be provided (RG-285).
+
+    Returns the identity dict (the caller records it in the run record), or
+    `None` for a lane with no `judge` key.
+
+    Two refusals, both by name and both before anything starts:
+
+      * a missing judge source (`<worktree>/assay` or
+        `<worktree>/libraries/cowtree`, or an `assay/` without a pyproject) is
+        `NOT_RUN 3` / `external-missing` -- never a silent skip and never a
+        Docker-side "bind source does not exist" the operator has to decode;
+      * a resolved environment that is not `ephemeral` is refused here too.
+        The load path already refuses it (`_validate_effective_judge_lanes`),
+        so this is the belt to that braces: `resolve_environment` answers for
+        probes and for configs this client did not load.
+    """
+    if lane.get("judge") is None:
+        return None
+    if env is None or env.get("mode") != "ephemeral":
+        mode = "(no environment)" if env is None else repr(env.get("mode"))
+        fail(f"lane {lane_name!r} declares judge = {lane['judge']!r}, which "
+             f"run-gate provides by MOUNTING its source read-only into a "
+             f"container it starts; the resolved environment ({env_source}) "
+             f"has mode {mode}, so nothing can be mounted. Declare an "
+             f"'ephemeral' environment for this lane")
+    for tree_name in JUDGE_SOURCE_TREES:
+        tree = worktree / tree_name
+        if not tree.is_dir():
+            raise GateNotRunError(
+                "external-missing",
+                f"lane {lane_name!r} declares judge = {lane['judge']!r}, but "
+                f"the judged worktree {worktree} has no {tree_name}/ directory "
+                f"to mount ({tree} is missing). Run-Gate provides the judge "
+                f"from the JUDGED tree's own source, so a checkout that does "
+                f"not carry it cannot provide it -- judge this lane in the "
+                f"checkout that does, or declare kind = \"assay\" with an "
+                f"explicit assay_command and pins")
+    if not (worktree / JUDGE_SOURCE_TREES[0] / "pyproject.toml").is_file():
+        raise GateNotRunError(
+            "external-missing",
+            f"lane {lane_name!r} declares judge = {lane['judge']!r}, but "
+            f"{worktree / JUDGE_SOURCE_TREES[0]} carries no pyproject.toml, so "
+            f"it is not the assay source tree")
+    return judge_identity(lane, worktree)
+
+
 def build_command_inner(lane: dict, worktree: Path,
                         base: str | None = None) -> str:
-    return " && ".join(["set -euo pipefail",
-                        *git_safe_directory_setup(),
-                        shlex.join(lane_command_argv(lane, worktree, base))])
+    """A command lane's in-environment script.
+
+    RG-285: a lane with `judge = ...` gets the judge's environment and its
+    import identity guard FIRST, then the one line naming the judge that
+    produced what follows, then its own command -- one construction, so a
+    dry run and a live run cannot disagree about which judge they describe.
+    The identity is the one `preflight_judge_provider` already derived and
+    stashed on the lane; a standalone caller (a test, a probe) falls back to
+    deriving it here rather than inventing a second spelling of the same
+    fields.
+    """
+    parts = ["set -euo pipefail", *git_safe_directory_setup()]
+    if lane.get("judge") is not None:
+        parts += judge_source_setup(lane, worktree)
+        identity = lane.get("_judge_identity") or judge_identity(lane, worktree)
+        parts.append(f"echo {shlex.quote(judge_identity_line(identity))}")
+    parts.append(shlex.join(lane_command_argv(lane, worktree, base)))
+    return " && ".join(parts)
 
 
 def dual_mount_flags(repo: Path, phys: Path,
@@ -17025,7 +17436,12 @@ def run_container_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
         *extra_flags,
         *cowtree_mount_flags(resource_settings, "ephemeral"),
         *preload_flags,
-        *resource_observer_docker_flags(lane, env)]
+        *resource_observer_docker_flags(lane, env),
+        # RG-285 LAST, deliberately: a later bind mount wins for its subtree,
+        # so the judge trees' read-only overlay has to land on top of the
+        # worktree mount, the operator's extra mounts and any CoW layout. A
+        # readable-anywhere judge would be decorative, not evidence.
+        *judge_mount_flags(lane, worktree)]
     verify_slice_loaded(slice_name)
     inner = build_assay_inner(lane, project_dir, repo, request_base,
                               worktree=worktree,
@@ -17110,6 +17526,7 @@ def run_container_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
         refuse_unpulled_shard_image(docker, env["image"])
     log_forwarded_env(env, "ephemeral")  # names only, never values (RG-19)
     log_resource_forwarded_env(resource_env)
+    print_judge_provider(lane)
     print_lane_bounds(lane)
     print(f"run-gate: docker argv: "
           f"{shlex.join(redact_forwarded_values(
@@ -17960,6 +18377,7 @@ def run_bare_host_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
             else lane_command_argv(lane, worktree, request_base))
     print(f"run-gate: {installed_version()} | lane {lane_name} | env {env_source}",
           flush=True)
+    print_judge_provider(lane)
     resource_env = {**resource_forwarded_env(resource_settings or {}, "host"),
                     **lane_workers_env(lane)}
     log_resource_forwarded_env(resource_env)
@@ -18645,6 +19063,10 @@ def usage(lanes: dict, inherited: set[str] | None = None) -> str:
                 f"environment={environment}",
                 "clean_tree=true" if lane.get("clean_tree", True)
                 else "clean_tree=FALSE"]
+        if lane.get("judge") is not None:
+            # RG-285: which judge RUN-GATE will mount for this lane -- the one
+            # fact an operator reading `--help` must not have to infer.
+            bits.append(f"judge={lane['judge']} (provided by run-gate)")
         if lane.get("_imported"):
             bits.append("imported=assay"
                         + (" (unresolved)" if lane.get("_import_unresolved")
@@ -19942,6 +20364,14 @@ def _dispatch(argv: list[str] | None = None, *,
         # failures. Verify the selected tree's pinned judge before recording
         # an invocation, taking locks or starting a runner/container.
         preflight_assay_pins(lane, args.lane, eff_proj)
+        # RG-285: a lane that asks Run-Gate for the judge gets it, or gets a
+        # refusal that names what is missing -- before admission, locks or a
+        # container. The identity derived here is the one the run record
+        # carries and the one the lane's own log line repeats.
+        judge_identity_record = preflight_judge_provider(
+            lane, args.lane, worktree, env, env_source)
+        if judge_identity_record is not None:
+            lane["_judge_identity"] = judge_identity_record
         # RG-150: one uid owns the checkout, the CoW root and the lane user.
         # Ahead of any admission, lock or container: a mismatch used to reach
         # the operator as three unrelated errors (an in-lane git "dubious
@@ -20036,6 +20466,12 @@ def _dispatch(argv: list[str] | None = None, *,
                 record["image_selection"] = image_selection
             if lane.get("kind") == "assay":
                 record["_assay_identity_mode"] = assay_identity_mode(lane)
+            if judge_identity_record is not None:
+                # RG-285: WHICH judge produced this verdict, and from which
+                # commit -- the field that makes a recorded result auditable
+                # and comparable across runs. Public (not a `_` private
+                # channel): it belongs in history beside the outcome.
+                record["judge"] = judge_identity_record
             if _admission_ticket is not None:
                 record["admission"] = _admission_ticket.result()
                 record["admission_deadline"] = _admission_ticket.run_deadline

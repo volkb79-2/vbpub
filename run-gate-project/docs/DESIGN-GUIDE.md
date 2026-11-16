@@ -708,6 +708,89 @@ stderr text.
 See [the normative mapping](../SPEC.md#2-cli-contract) and [migration
 instructions](../CONSUMERS.md#closed-results-and-runner-mode-migration).
 
+## The judge is provided by the gate, not the image
+
+A language image owns a toolchain, not a verdict. `tester-unified-rust`
+deliberately ships neither pip nor Assay, so the first Rust lane could only
+reach the judge through a per-lane `PYTHONPATH=<worktree>/assay/src:...`
+incantation. That route works, and it has two structural defects: every
+language lane would re-derive it, and the LANE's own shell — not the gate —
+decided which Assay judged it, so nothing on disk could answer "which judge
+produced this verdict" except that shell text.
+
+Run-Gate owns mounts, cgroups, images and verdict records, so it owns the
+judge. A lane declares `judge = "assay"` (one string, closed vocabulary, legal
+on a `kind = "command"` lane with an `ephemeral` environment) and the gate
+does the four things the shell used to guess at:
+
+1. **Mounting.** The judged worktree is mounted read-write; the judge is two
+   subtrees of it (`assay`, `libraries/cowtree`), so they are overlaid
+   read-only at their own paths, dual-mounted like every other path and
+   appended after every other mount. Order is the mechanism: a later bind
+   mount wins for its subtree, so neither an operator's
+   `RUN_GATE_EXTRA_MOUNTS` nor a CoW layout can re-open the judge the code
+   under judgment is about to run.
+2. **Environment.** `PYTHONPATH` is prepended (never replaced) with the
+   judge's three import roots, `RUN_GATE_JUDGE_PYTHON` names the interpreter
+   resolved in-lane, `PYTHONNOUSERSITE=1` keeps an image's user-site copy out
+   and `PYTHONDONTWRITEBYTECODE=1` keeps the read-only tree unmodified. The
+   values are exported by the lane's own shell, not by `docker run -e`, so
+   the same construction serves every image and a dry run describes exactly
+   what a live run would do.
+3. **Proof.** `find_spec` (no package code executed — the technique
+   `assay_source_setup` already uses for source-mode Assay lanes) resolves
+   `assay`, `assay_analysis` and `cowtree` and requires every origin to be
+   one of the provided entries. Without it the export is a *request*: an
+   image that already carries an Assay would silently judge with its own
+   copy, and the recorded identity would describe code that never ran.
+4. **Identity.** `commit` (the judged tree's HEAD, i.e. exactly what the
+   read-only mount contained), `version`
+   (`git describe --tags --long --match assay-v*` — Assay's own tag grammar —
+   or `null` WITH the reason stated, never a guessed number), and `dirty`
+   (`git status --porcelain` scoped to the judge trees, `null` when Git could
+   not answer and never folded into "clean"). Recorded in the run record and
+   therefore in `history`, so a verdict can be audited against the judge that
+   produced it.
+
+**Why no install step.** The source-mode path for `kind = "assay"` lanes
+installs the package with pip and needs a writable tree; that is why such
+lanes carry a per-worktree editable install and cannot run under
+`network = "none"` with a no-pip image. Assay source is stdlib-only, so the
+provider mounts it and prepends `PYTHONPATH` instead — no pip, no wheel, no
+fetch, nothing written into the judge. The mount IS the install.
+
+**Why the source is derived, not declared.** In-repo consumers follow
+`assay/docs/INTERNAL-CONSUMERS.md`: the same-repository boundary is the
+judged worktree's own `assay/`, so a `source =` key would be a second spelling
+of an owned fact (the same reason `R-35` forbids a second reading of the
+comparison base). The external boundary already exists as `kind = "assay"`
+with `assay_command` + `pins`; a provider table offering a wheel or an OCI
+image has no consumer and would duplicate that contract.
+
+**Why the refusals are refusals.** A judge that cannot be provided is
+NOT_RUN/`external-missing` BEFORE admission, locks or a container, naming the
+missing path. The temptation is a warning that runs the lane anyway and marks
+the verdict "unjudged"; that is a verdict-shaped artifact whose judge silently
+did not run, which is the exact false-certification class this project exists
+to remove. `python3` missing in-lane is exit 2 with no fallback interpreter,
+and an `assay` resolved elsewhere is exit 2 naming the real origin: the same
+rule as a default without a source (`AGENTS.md`, "Defaults and fallbacks are
+hazards").
+
+**Why `exec`/`host` are refused at load.** Run-Gate can only mount into a
+container it starts. An `exec` runner is someone else's persistent container
+and a bare-host lane has no mount boundary at all, so "supported by luck of
+that environment's PATH" is the alternative — an environment-dependent verdict
+nobody can reproduce.
+
+**Boundaries deliberately kept.** `kind = "assay"` lanes are byte-identical
+(they keep their own installed/pinned judge and their own
+`judge_provenance`); the `hostobs` interim route is NOT migrated by this
+change; and this feature says nothing about the comparison base, which remains
+delegated (`--base` / `{base}`) or derived exactly as before. See the
+[design note](DESIGN-judge-provider-2026-11.md) for the rejected
+alternatives and [consumer recipe](../CONSUMERS.md#run-gate-provided-assay-judge-rg-285).
+
 ## Sequences own the whole composite
 
 A shell `&&` chain returns the wrapper command's status. That flattens a

@@ -175,6 +175,7 @@ SPEC §9.
 | RG-282 | A package that adds or edits a lane declaration in another project's `run-gate.toml` merges without the run-gate-project `selftest` lane (gate-coverage gap) | Major | OPEN 2026-11-15; the instance (assay `rust-r1-qualification`) is fixed, the coverage rule is not built |
 | RG-283 | both host-blindness warnings prescribe a remedy the same message or the estate cannot satisfy (admission names an export that a private cgroup namespace makes useless; the Docker-GID warning asks for a value nothing publishes) | Minor | OPEN 2026-11-16; disclosure only, no verdict change |
 | RG-284 | a remote run cannot keep or reuse its checkout, so a lane pair that must judge one tree (assay `tester-unified` then full `self-qualification`) cannot run through the supported runner | Major | OPEN 2026-11-16; assay B551 names the cheaper sequence-lane alternative |
+| RG-285 | a language lane image carries no Assay and no pip, so every such lane had to spell out the judge's `PYTHONPATH` incantation itself — the LANE, not the gate, decided which judge judged it | Enhancement | FIXED 2026-11-16 — lane key `judge = "assay"` (SPEC `R-08f`/`R-57`): read-only dual-mounted judge trees, PREPENDED import roots + `RUN_GATE_JUDGE_PYTHON`, an in-lane `find_spec` identity guard, judge commit/version/dirty recorded in the run record, `external-missing` refusal instead of a silent skip |
 ---
 
 ## RG-1 — conjunction lanes silently drop `--worktree` and `--allow-dirty`
@@ -9120,3 +9121,72 @@ lifetime because nothing could depend on it.
 second same-commit invocation re-attaches under the HEAD/clean-tree checks
 above, every mismatch refuses by name, the default still removes it, and the
 runner guide and `CONSUMERS.md` describe the same two lifetimes.
+
+## RG-285 — a language lane image carries no judge, so the LANE decided which Assay judged it
+
+**Status:** FIXED 2026-11-16 (rev 60), SPEC `R-08f` / `R-57`. Severity:
+enhancement for the missing capability, but the interim shape was a
+correctness hazard (see "Why it was not merely convenience").
+
+**Found by.** The operator decision of 2026-11-16 ("I recommend run-gate
+providing the judge"), taken while the `hostobs` `assay-r1` lane was being
+proven: `tester-unified-rust` ships python3 and NO pip and NO assay wheel, so
+the lane could only reach the judge by setting
+`PYTHONPATH=<worktree>/assay/src:<worktree>/assay/analysis/src:<worktree>/libraries/cowtree/src`
+inside its own `bash -c` argv. That route works — it produced a real PASS and a
+real negative-probe FAIL on the interim lane — and it was carried as an
+INTERIM, with the migration left to a later package.
+
+**Why it was not merely convenience.** Two defects, both structural rather than
+cosmetic:
+
+1. **The judge identity lived in the lane's shell text.** Nothing on disk could
+   answer "which Assay, from which commit, produced this verdict": the run
+   record carried the *lane's* commit and nothing else. Two projects could
+   (and did) reach the judge through two different spellings, and a lane that
+   forgot one path element silently ran the judge with a partially importable
+   tree — the in-lane failure surfaced as whatever the judge's own import error
+   happened to be. A declaration the loader validates replaces a heuristic the
+   reader has to audit.
+2. **The image decided the route.** A lane whose image happens to carry its own
+   `assay` would have judged with the image's copy while the argv claimed the
+   source: the interchange the operator was trying to escape, one layer down
+   (and the `kind = "assay"` source-mode guard already exists for exactly this
+   reason — `DESIGN-GUIDE.md`, "Source-backed Assay identifies code as source").
+
+**Fixed shape (SPEC `R-08f`/`R-57`, design note
+`docs/DESIGN-judge-provider-2026-11.md`).** One closed-vocabulary lane key,
+`judge = "assay"`, legal on a `kind = "command"` lane with an `ephemeral`
+environment. Run-Gate mounts the judged worktree's `assay/` and
+`libraries/cowtree` read-only at their own paths (dual-mounted, appended after
+every other mount, so neither `RUN_GATE_EXTRA_MOUNTS` nor a CoW layout re-opens
+them), exports `PYTHONPATH` (provided roots PREPENDED) plus
+`PYTHONNOUSERSITE=1`, `PYTHONDONTWRITEBYTECODE=1` and `RUN_GATE_JUDGE_PYTHON`
+from the lane's own shell, proves the interpreter resolves the provided judge
+through a `find_spec` origin guard, and records the judge's `commit`,
+`version` (`git describe --tags --long --match assay-v*`, or `null` with
+`version_source` stating why), and `dirty` (scoped to the judge trees, `null`
+when Git could not answer) in the run record and history. Nothing is installed
+and nothing is fetched, so `network = "none"` lanes are unaffected. A missing
+judge tree is NOT_RUN 3 `external-missing` BEFORE admission, locks or a
+container; there is no silent-skip mode.
+
+**Not fixed here, deliberately.** The `hostobs` interim route is byte-identical
+until its own migration package moves it (the two routes must reproduce the same
+totals and the same negative-probe FAIL first). `kind = "assay"` lanes are
+untouched. `exec` and `host`/`bare-host` environments cannot be served — Run-Gate
+can only mount into a container it starts — and are refused at load rather than
+supported by luck of the PATH. A wheel/OCI judge artifact is out of scope: in-repo
+consumers follow `assay/docs/INTERNAL-CONSUMERS.md` (source, no pinned copy) and
+the external boundary already exists as `kind = "assay"` + `assay_command` +
+`pins`.
+
+**Evidence.** `tests/test_judge_provider.py` (45 oracles): declaration
+validation, mount flags (both namespace views, read-only, ordered last in the
+docker argv), identity derivation (no tag → stated `null`, dirtiness, a
+lookalike tag rejected), the closed refusals, and an END-TO-END lane whose
+`PATH` carries no `pip` and no console-script `assay` — the assembled inner
+script really executes and the judge's own verdict artifact is read back
+(`outcome PASS`, both claims PASS), with the negative probe turning the same
+lane red when the test it runs is removed. The `run-gate-project` `selftest`
+lane is the release gate for this change.

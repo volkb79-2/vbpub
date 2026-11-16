@@ -1990,6 +1990,94 @@ argv = ["pytest", "tests/", "-q"]
 clean_tree = true
 ```
 
+### Run-Gate provided Assay judge (RG-285)
+
+A language image that ships no pip and no Assay (`tester-unified-rust` is the
+estate's first) can still be judged by Assay: ask Run-Gate for the judge and it
+mounts the judged worktree's own Assay source, hands the lane the interpreter
+and import roots, and records which judge produced the verdict.
+
+<!-- run-gate-config -->
+```toml
+schema_version = 1
+
+[environments.rust]
+mode = "ephemeral"
+image = "tester-unified-rust:local"
+network = "none"
+
+[lanes.rust-r1]
+kind = "command"
+environment = "rust"
+judge = "assay"
+budget = "30m"
+clean_tree = false
+# Run-Gate provides the interpreter path; the lane never names a venv.
+# 2 is ERROR: the judge-provided lane's own refusals (a missing interpreter,
+# or an `assay` that is not the provided one) exit 2.
+exit_map = { "0" = "PASS", "2" = "ERROR" }
+argv = [
+  "bash", "-c",
+  '''set -eu
+cd {worktree}/proj
+"$RUN_GATE_JUDGE_PYTHON" -m assay.cli run r1 --file assay.toml \\
+  --verdict-json .assay/verdict-r1.json
+'''
+]
+```
+
+What Run-Gate does with that, in order:
+
+1. **Declares it once.** `judge = "assay"` is a closed vocabulary and is legal
+   only on a `kind = "command"` lane whose resolved environment is
+   `ephemeral`; `kind = "assay"` lanes already own their judge shape
+   (`assay_command` + `pins`), so the key is refused there.
+2. **Mounts it read-only.** `<judged worktree>/assay` and
+   `<judged worktree>/libraries/cowtree` are added as `:ro` bind mounts at
+   their own paths, dual-mounted like every other path, **after** every other
+   mount — so the worktree stays writable for the lane's own files while the
+   judge cannot be modified by the code it judges.
+3. **Sets the environment in the lane's own shell:**
+   `PYTHONPATH=<w>/assay/src:<w>/assay/analysis/src:<w>/libraries/cowtree/src`
+   prepended to whatever the lane declared,
+   `PYTHONDONTWRITEBYTECODE=1`, `PYTHONNOUSERSITE=1`, and
+   `RUN_GATE_JUDGE_PYTHON` (the `python3` the image actually has).
+4. **Proves it.** A `find_spec` guard runs before the lane's command and
+   refuses (exit 2) unless `assay`, `assay_analysis` and `cowtree` all resolve
+   from the provided trees — an image that happens to carry its own Assay
+   cannot silently judge instead.
+5. **Records it.** The run record carries `judge = {name, commit, version,
+   version_source, dirty, source, pythonpath, mounts, provided_by}`, so
+   `run-gate history --json` answers "which judge, from which commit, clean or
+   not" beside the verdict it produced. The same line is printed before the
+   lane starts.
+
+Refusals, all before the judge runs:
+
+| What happened | What you get |
+|---|---|
+| `judge = "pytest"` (or any value outside the vocabulary) | ERROR at load, naming the value and the allowed set |
+| `judge` on a `kind = "assay"` or sequence lane | ERROR at load, saying where the setting belongs instead |
+| the resolved environment is `exec`, `host` or `bare-host` | ERROR at load: Run-Gate provides the judge by mounting it, and cannot mount into a runner it did not start or into a host subprocess |
+| the judged checkout has no `assay/` or `libraries/cowtree` (or no `assay/pyproject.toml`) | NOT_RUN 3, reason `external-missing`, naming the missing path — before admission, locks or a container |
+| the project itself lives inside the judge tree | ERROR at load (the read-only overlay would make the judged project read-only) |
+| the image has no `python3` | lane exit 2 with `judge = "assay"` and the image named |
+| the image's own `assay` is what resolves | lane exit 2, naming the module and the origin it really resolved |
+
+Two consequences worth planning for:
+
+- **Nothing is installed and nothing is fetched**, so `network = "none"` is
+  fine. Assay source is stdlib-only; the judge is mounted, not pip-installed.
+- **Your comparative base still comes from the gate.** If the lane's own
+  `assay run` needs the gate's `--base`, take it from `{base}` (see
+  [lanes that take their comparison base from the gate](#lanes-that-take-their-comparison-base-from-the-gate-rg-26)).
+  The judge provider says nothing about the base.
+
+The interim shape this replaces — a command lane that sets `PYTHONPATH` to a
+checked-out Assay source itself — keeps working and is deliberately not
+migrated by this change; the two routes must reproduce the same verdict totals
+first. See the [design rationale](docs/DESIGN-GUIDE.md#the-judge-is-provided-by-the-gate-not-the-image).
+
 ### Native sequences and trunk bases
 
 Use a native sequence when each step is already a run-gate lane. The member
