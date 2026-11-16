@@ -4189,8 +4189,14 @@ heuristic: treat `cmdline` as possibly containing secrets, as the lane's own
 `argv` already is. A zombie has no `cmdline`. The key is optional, so the field
 set without it is unchanged, but a verdict that contains it fails the key-set
 check of a verifier older than B233: ship the verifier with the assay that
-writes the verdict. For a baseline (R0) leak the same list is rendered into the
-R0 claim detail as `leaked-process-tree: pid=N ppid=M comm=C argv=...`.
+writes the verdict. **Known issue (B551):** the packaged JSON Schema
+(`src/assay/schemas/verdict.schema.json`) still declares only `pid`, `ppid` and
+`comm` for a descendant, so a consumer that validates a verdict against that
+schema refuses a real leaked-descendant argv even though `assay verify` accepts
+it. Declaring the property is an in-version change to a released schema (operator
+decision D2, `_VERDICT_SCHEMA_SHA256`), so it waits for verdict schema v20 with
+B234's `state` letter. For a baseline (R0) leak the same list is rendered into
+the R0 claim detail as `leaked-process-tree: pid=N ppid=M comm=C argv=...`.
 
 #### Native R2's process-tree boundary
 

@@ -198,6 +198,7 @@ items:
   - {id: B545, title: "Resolve progress/verdict disagreement for a timeout-killed R2 candidate", type: bugfix, component: mutation, context_estimate: medium}
   - {id: B546, title: "Assay's own T3 R2 had no native kind-assay lane for changed-line campaigns", type: bugfix, component: gate, context_estimate: small}
   - {id: B548, title: "assay ships a hand-written repo-level skill with no `skills` verb, so `skills check` cannot tell a consumer its installed copy is stale", type: feature, component: distribution, context_estimate: small}
+  - {id: B551, title: "A verdict carrying a real leaked-descendant `cmdline` is already invalid against the shipped v19 schema: B233 added the field to the producer and to CONSUMERS.md but never to `src/assay/schemas/verdict.schema.json` (descendant items are `additionalProperties: false` with only pid/ppid/comm). BLOCKED-ON-V20 with B234: fixing it changes a released schema's bytes, which needs an operator D2 exception (`_VERDICT_SCHEMA_SHA256`) that a peer review cannot grant", type: bugfix, component: evidence, context_estimate: small}
 ---
 
 # assay — backlog
@@ -14374,11 +14375,20 @@ of those four oracles (measured, see the run report).
 
 ## B234 — a zombie leaked descendant is indistinguishable from a live process with an unreadable cmdline in the `leaked-process-tree` diagnostic
 
-**Status:** OPEN (follow-up of B233 review F4).
+**Status: BLOCKED-ON-V20 (2026-11-16, pi-assay-burn review round 1).** The diagnostic defect is real and unchanged. The fix cannot land in v19: the field has to reach the WIRED record (`process_tree_evidence.descendants`) to be usable, and every such key is part of the released v19 verdict schema, whose bytes operator decision D2 freezes. Implemented, reverted, and re-scoped below.
 
-**Why it matters.** A zombie prints `pid=N ppid=M comm=C` with no argv, the same as a live process whose `/proc/<pid>/cmdline` could not be read. The fix action differs (a zombie needs its parent to reap it; a live process needs a kill).
+**Why it matters.** A zombie prints `pid=N ppid=M comm=C` with no argv, the same as a live process whose `/proc/<pid>/cmdline` could not be read. The fix action differs (a zombie needs its parent to reap it; a live process needs a kill), so the current diagnostic sends the reader to the wrong remedy in exactly the case the field exists for.
 
-**Wanted.** Add an optional `state` field (the `/proc/<pid>/stat` state letter, already parsed in `_process_identity`) to the descendant wire record, render ` state=Z` in `ProcessTreeDescendant.describe()`, accept it in `verify.py` as an optional key (a verdict carrying it fails the key-set check of an older verifier, as with B233 `cmdline`), and test the zombie and live cases.
+**Why it blocks on v20 and not on v19.** The first attempt (`27b556943`, reverted by `8c5b5b3cd`) added an optional `state` and also declared B233's previously-undeclared `cmdline` in `src/assay/schemas/verdict.schema.json`, re-pinning `_VERDICT_SCHEMA_SHA256`. That is an in-version change to a RELEASED wire contract. A-477's digest test states D2 (a version's schema bytes are frozen so producer and verifier cannot drift), and the ONE precedent for editing them without a bump -- the v16 `resource_limit_evidence` relaxation -- carried an explicit operator decision, a CHANGES `### Schema compatibility` line and a backlog record. A peer review cannot grant that exception. The attempt also mis-stated its own justification ("the precedent B233 used"): B233 changed no schema bytes at all, which is exactly why the `cmdline` hole existed (now its own finding, B551).
+
+**Two ways forward for the operator, and the consequences of each.**
+
+1. **A D2-style exception for v19** (the v16 precedent). It requires an operator decision recorded in `nyxloom-trove/decisions.md`, a `### Schema compatibility` line in CHANGES.md, and acceptance that a 12.2.0-era VERIFIER refuses a newer verdict that carries the key: `verify.py` checks the descendant key set exactly, and `ProcessTreeDescendant.from_dict` -- whose key-set rule cmru's `tools/mutation_campaign.py` consumes -- refuses the same document, so a consumer that pinned an older verifier cannot read a newer verdict's leaked-descendant detail. Ship-with-the-writer is then a documented release rule, not an assumption. Under this route B551 (declaring `cmdline`) must be decided with it, because shipping `state` while `cmdline` stays refused would keep invalidating every verdict that carries a real leaked argv.
+2. **Land it in v20 with B532** (the cheap, honest route, and the one assumed here). v20 already has to exist for `judgment.r2.carry_over`/`unselected_total` (B532), so both v19 holes are paid for once: `cmdline` and `state` join the descendant object together, with the cross-key rule (a `state` letter requires a complete `pid`/`ppid`/`comm` identity) stated in the schema's `allOf`, in the verifier, and in CONSUMERS' v19-to-v20 migration note. Nothing about this field requires its own version cut.
+
+**Wanted (unchanged, for whoever pays for v20).** An optional `state` -- the `/proc/<pid>/stat` field-3 letter, already parsed in `_process_identity` -- on the descendant wire record, published only from the closed kernel set (`R S D T t Z X x I K W P`; an unexpected letter is absent, never free text), rendered as ` state=Z` between `comm` and `argv` in `ProcessTreeDescendant.describe()`, and accepted by `verify.py` only from that set and only alongside a complete identity. Tests: both producers (`process_tree._process_identity` and `_window_host._process_group_members`), the closed-set refusal, the wire round-trip, and the zombie-vs-live distinguishability case.
+
+**Reusable work from the reverted attempt (do not rebuild it from scratch).** The measurement and the test shapes live in `8c5b5b3cd`'s parent and are recoverable with `git show 27b556943 -- <path>`: the closed-set constant, both producer edits, the `describe()` order, the verifier's two refusal shapes, and the five test files. Only the schema file and the digest re-pin must NOT be reused without the decision above.
 
 ## B235 — a whole-target `judge.targets` entry with zero executable lines (docstring-only `__init__.py`) fails the whole lane at R1 with `TARGET_NOT_MEASURED`, after the baseline has already run
 
@@ -14805,6 +14815,8 @@ Related: a `--only-candidates`/`--exclude-candidates` remainder is reported like
 **Proposed solution.** At the next verdict schema version after v19 (v19 landed with B251 / `assay-ptleak-20261110`; this item targets v20), add `judgment.r2.carry_over` (`imported_total`, per-source judge counts, reasons) and `judgment.r2.unselected_total` with a `SELECTION_PARTIAL` reason, and have verify re-derive both from the payload.
 
 **Close when.** A carry-over verdict states its imported count, a partial selection names itself in its reason code, and verify refuses a document whose counts disagree.
+
+**v20 also carries the two leaked-descendant keys (B234/B551).** B234's `state` letter and B551's `cmdline` are both blocked on this same version cut: neither may change v19's released schema bytes without an operator D2 exception (`_VERDICT_SCHEMA_SHA256`), and v20 is where they cost nothing extra. Decide them WITH this item so the descendant object is extended once, and state the cross-key rule (a `state` letter requires a complete `pid`/`ppid`/`comm` identity) in the schema's `allOf`, in `verify.py`, and in the v19-to-v20 migration note.
 
 ## B533 — the pre-merge tooling-tests lane missed cross-cutting contract tests; the 12.2.0 release attempt found them red
 
@@ -15253,3 +15265,43 @@ package data, and keep the repo-level `.claude/skills` path as a pointer only.
 SKILL passes `validate_skill_source`, `skills check` catches a stale install in
 a tmp destination, and the docs-sync test that currently reads
 `.claude/skills/assay-cli/SKILL.md` reads the packaged path instead.
+
+## B551 — a verdict carrying a real leaked-descendant `cmdline` is already invalid against the shipped v19 schema
+
+**Status: BLOCKED-ON-V20 (filed 2026-11-16, pi-assay-burn review round 1); severity: high (the shipped schema refuses the field the shipped writer emits, so a legal verdict from a real run is rejected by the schema `assay` itself packages).** `cmdline` was shipped by B233 (`pwmcp-leak2-20261105`) on the descendant wire record, in the R0 claim detail, in the `command_finished` progress event and in `docs/CONSUMERS.md`, but never in `src/assay/schemas/verdict.schema.json`: the `process_tree_evidence.descendants` items object is `additionalProperties: false` and declares only `pid`, `ppid`, `comm`. Every mutation-candidate verdict that records a leaked descendant with a readable argv is therefore schema-invalid, and no test built one to notice (B233's tests read the record and the rendered line, never the JSON Schema).
+
+**Reproduction (measured on `origin/main` `1cbb627ae` + this branch's reverts, i.e. v19 as released).** In `assay/`:
+
+```bash
+python3 - <<'PY'
+import json, jsonschema
+from pathlib import Path
+schema = json.loads(Path("src/assay/schemas/verdict.schema.json").read_text())
+doc = json.loads(Path("tests/fixtures/verdicts/r2_crashed_descendant_leak.json").read_text())
+claim = next(c for c in doc["claims"] if c.get("rigor") == "R2")
+descendant = claim["mutation"]["crashed"][0]["process_tree_evidence"]["descendants"][0]
+validator = jsonschema.Draft202012Validator(schema)
+print("clean document valid:", not list(validator.iter_errors(doc)))
+descendant["cmdline"] = ["pytest", "-x", "tests/"]
+errors = sorted(validator.iter_errors(doc), key=lambda e: list(e.path))
+print(len(errors), [(list(e.path)[-3:], e.message) for e in errors])
+PY
+```
+
+Measured output:
+
+```
+clean document valid: True
+1 [(['descendants', 0], "Additional properties are not allowed ('cmdline' was unexpected)")]
+```
+
+The single error is at `descendants[0]`, so the only difference between an accepted and a refused document is the field the producer actually writes. `assay verify` accepts the same document (it is the more permissive of the two), which is why the gap never surfaced in a lane: nothing in the registered suite validates a verdict that carries a real argv against the packaged schema.
+
+**Why this is not fixed here.** Declaring `cmdline` adds a property to a RELEASED version's schema, and operator decision D2 (stated by A-477's digest test, `test_the_shipped_verdict_schema_is_frozen_for_its_version`) freezes a version's installed bytes so producer and verifier cannot drift. The single precedent for editing them without a bump (v16's `resource_limit_evidence`) carried an explicit operator decision, a `### Schema compatibility` line in CHANGES.md and a backlog record; a peer review cannot grant that exception, and the previous attempt in this package (`27b556943`) asserted the wrong precedent ("the same additive key shape B233 used" -- B233 in fact changed no schema bytes).
+
+**Two ways forward, the same pair as B234 (decide them together).**
+
+1. **A D2-style exception for v19.** An operator decision in `nyxloom-trove/decisions.md`, a `### Schema compatibility` line in CHANGES.md, and the documented release rule that a v19-era verifier and cmru's `ProcessTreeEvidence.from_dict` reader refuse a newer verdict carrying the key, so a verdict and its verifier must ship together.
+2. **Land it in v20 with B532.** v20 exists for `judgment.r2.carry_over`/`unselected_total` anyway, so `cmdline` and B234's `state` join the descendant object there. This is the assumed route.
+
+**Close when.** A verdict carrying a real leaked-descendant `cmdline` (built from an actual run or an equivalent fixture) validates against the packaged schema AND passes `verify`, an in-vocabulary `cmdline` bound is enforced on both sides (the producer truncates to 16 arguments of 200 characters plus the `...` marker), the v19-to-v20 migration note states the key, and the frozen digest is re-pinned to the version that actually ships it. **Do not** close it by weakening `test_the_shipped_verdict_schema_is_frozen_for_its_version` or by re-pinning v19's digest to edited bytes.

@@ -24,6 +24,9 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 - Updated the Rust adapter matrix, consumer instructions, methodology status, and B243/B523 evidence. Hostobs has not yet switched its baseline `selftest` lane to an `assay-r1` consumer lane in this assay-only worktree.
 - R-1 `tester-unified-rust` image and hostobs `lint`/`selftest` baseline use an image-bound crate cache, offline locked lanes, and per-crate 90% line / 85% region floors. R-2 now adds Assay's changed-line R1 judgment. Rust R2 is a known issue, not a per-release waiver. The T2 sequence and single canary stay the target design.
 
+### Known issues
+- A verdict that records a leaked descendant's `cmdline` is invalid against the packaged JSON Schema: B233 added the field to the producer, to the R0 claim detail and to `docs/CONSUMERS.md`, but never to `src/assay/schemas/verdict.schema.json`, whose descendant items are `additionalProperties: false` with only `pid`, `ppid` and `comm`. `assay verify` accepts it; a consumer validating against the shipped schema refuses it. Declaring the property changes a RELEASED version's schema bytes, which operator decision D2 (A-477's `_VERDICT_SCHEMA_SHA256` test) freezes, and the only precedent for such an edit (v16's `resource_limit_evidence`) carried an explicit operator decision and a `Schema compatibility` line. Filed as B551 and BLOCKED-ON-V20 together with B234's `/proc` state letter; both land with verdict schema v20 (B532's cut) unless the operator grants a D2 exception for v19 (B551).
+
 <!-- cmru: release history -->
 
 ## [12.2.0] - 2026-11-12
