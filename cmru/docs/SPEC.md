@@ -299,6 +299,13 @@ not as a conflict; any active rebase state is aborted only when Git shows that s
 A false cleanup result does not change the primary release outcome, but it MUST be reported
 rather than ignored.
 
+When the caller is on another branch and Git reports local `main` checked out in a different
+linked worktree, cmru MUST leave that worktree and ref untouched rather than force-update the
+checked-out branch. It reports the derived worktree path and the owner-scoped remedy
+`git -C <main-worktree> pull --ff-only`; the worktree owner performs that fast-forward.
+If the worktree inventory is unreadable, ambiguous, or marks the `main` entry prunable, cmru
+fails closed with the local ref untouched and reports the inventory condition.
+
 ```
 Before the release:
   origin/main:     ──●(base)

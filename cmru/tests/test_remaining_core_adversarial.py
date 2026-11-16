@@ -96,6 +96,10 @@ class TestTransactionRetentionAndPromotion:
     def test_sync_local_main_refuses_local_divergence(self, tmp_path, monkeypatch):
         from cmru.transaction import sync_local_main
         calls = []
+        monkeypatch.setattr(
+            "cmru.transaction._shared_worktree",
+            lambda: SimpleNamespace(list_git_worktrees=lambda _root: []),
+        )
         monkeypatch.setattr("cmru.transaction._git", lambda root, *args, **kw: {("branch", "--show-current"): "feature", ("rev-parse", "main"): "local", ("merge-base", "main", "origin/main"): "base"}.get(tuple(args), ""))
         monkeypatch.setattr("cmru.transaction.subprocess.run", lambda *a, **k: calls.append(a) or SimpleNamespace(returncode=0))
         assert not sync_local_main(tmp_path)

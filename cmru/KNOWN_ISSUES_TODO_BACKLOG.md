@@ -27,7 +27,7 @@
 | KI-161 | OPEN (`cmru versions resolve` and `init` rewrite `cmru.toml` and drop comments; a document-wide blank-line collapse can change multi-line string values) | — |
 | KI-160 | OPEN (post-promotion evidence retention can exit 1 after a successful release) | — |
 | KI-158 | OPEN (retained release outputs can disappear with an outer release worktree) | — |
-| KI-157 | OPEN (local-main sync failure message names the wrong condition) | — |
+| KI-157 | FIXED 2026-11-16 (checked-out main worktree is derived and given its owner-scoped remedy) | this batch |
 | KI-155 | FIXED (2026-11-12; tuple resource evidence) | `152ba5c9a5181b128ebf1364a9d57d2524ce4415` |
 | KI-154 | FIXED (2026-11-12; sibling Assay package roots) | `a25c265373e2d010033203ea10dedfb8915aba4c` |
 | KI-153 | FIXED (2026-11-12; process-tree fixture schema) | `152ba5c9a5181b128ebf1364a9d57d2524ce4415` |
@@ -3450,7 +3450,7 @@ Only 10 of the 40 slowest tests use repositories (`test_release_end_to_end_real_
 
 ## KI-157 — automatic local-main synchronization reports a non-current ref failure when `main` is checked out elsewhere
 
-**Status:** OPEN (filed 2026-11-12); severity: minor (the release itself succeeds, but the final synchronization diagnostic and remedy are misleading).
+**Status:** FIXED 2026-11-16; severity: minor. Focused real-Git coverage verifies the linked-worktree refusal, derived path, exact fast-forward remedy, no `branch -f`, and unchanged local main ref. The full R0/R1 suite exposed three existing `subprocess.run` test doubles that also intercepted the new shared-worktree inventory call without captured output; those tests now stub the inventory boundary directly. Additional registered coverage exercises inventory errors, duplicate `main` worktrees, and prunable entries; the combined focused selectors pass 407 tests (`/tmp/run-gate/lanes/survivor-regressions/8453b5e685c420ffd889e55db1072320.log`). No real remote was contacted.
 
 **Problem.** After a successful non-feature-source release, `_sync_local_main_result` tries `git branch -f main origin/main` when local main is not checked out in the transaction checkout. When local `main` is checked out in the shared main worktree, Git refuses to update that checked-out ref. CMRU currently reports `Could not sync local main automatically: updating the non-current local main ref failed; local main was left untouched. Inspect the ref and synchronize it manually.` The "non-current" wording is false in the reported case, and "inspect the ref" does not tell the operator the safe remedy: fast-forward the main worktree from the controller command line.
 
@@ -3464,7 +3464,7 @@ Only 10 of the 40 slowest tests use repositories (`test_release_end_to_end_real_
 
 **Priority.** Minor and cosmetic, but the command currently tells an operator to inspect when the correct fast-forward remedy is already derivable.
 
-**Close when.** A checked-out local-main worktree is detected and named, the final diagnostic gives the correct owner-scoped `git pull --ff-only` remedy, no force-update is attempted against a checked-out branch, and focused real-Git tests plus synchronized release documentation pass on a clean final commit.
+**Close when.** A checked-out local-main worktree is detected and named, the final diagnostic gives the correct owner-scoped `git pull --ff-only` remedy, no force-update is attempted against a checked-out branch, and focused real-Git tests plus synchronized release documentation pass on a clean final commit. Closed by the linked-worktree inventory guard and documentation updates in this batch.
 
 ## KI-158 — release outputs retained inside their caller's `rel-*` worktree disappear when that outer worktree is removed
 

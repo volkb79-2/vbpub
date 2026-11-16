@@ -1512,6 +1512,12 @@ when the new commits leave the project's own paths untouched, otherwise it stops
 success deletes the now-redundant branch. A version strategy that creates a mechanical version
 commit receives a second gate on that exact commit before publication.
 
+Caller-main cleanup follows the same ownership boundary. If a different linked worktree owns
+local `main`, CMRU does not force-move that checked-out branch or mutate another checkout's
+state. It derives the owner path from Git's worktree inventory and prints the exact
+`git -C <path> pull --ff-only` command for the owner to run. An unreadable or ambiguous
+inventory, or a prunable `main` registration, is a closed refusal.
+
 ### Release from an origin-backed feature worktree (KI-82)
 
 The default release source remains `origin/main`. `cmru release --from-worktree` is the

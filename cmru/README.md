@@ -438,6 +438,8 @@ checkout (tracked or untracked changes; ordinary ignored files only matter when 
 would overwrite one) is left untouched before any rebase attempt,
 including when `--allow-uncommitted` was used; see the [caller-main cleanup guidance](docs/RELEASE-TRANSACTIONS.md#caller-main-cleanup)
 and normative [S-CLI.5a](docs/SPEC.md#s-cli5a--default-originmain-projects-release-one-after-another-not-in-a-shared-batch).
+When another linked worktree owns local `main`, CMRU leaves it untouched and prints its path
+with `git -C <main-worktree> pull --ff-only` as the owner-scoped fast-forward command.
 
 `cleanup --delete-unmanaged-release-tag TAG` is deliberately narrow migration maintenance:
 it selects one project, accepts only that project's namespace, displays the exact GitHub

@@ -334,6 +334,11 @@ undetermined rather than guessed to be a conflict. When `main` is not checked ou
 safe behavior remains: a clean checkout may fast-forward its local `main`, while a diverged
 local `main` is left untouched rather than force-moved. A false cleanup result is reported on
 the success, plan-refusal, and child-failure paths, so no path claims that the caller was synced.
+When another linked worktree owns `main`, CMRU leaves that checkout and ref untouched and prints
+the owner's path with `git -C <main-worktree> pull --ff-only`. Run that command in the main
+worktree's environment to fast-forward it. If Git's worktree inventory is unreadable, ambiguous,
+or marks the owner prunable, inspect `git worktree list --porcelain` and resolve that condition
+before synchronizing.
 
 `cmru build` uses the same transaction mechanics but stops before source release actions. Its
 source is the commit the invoking checkout or worktree is on (`git rev-parse HEAD`, pushed or

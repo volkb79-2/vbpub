@@ -2132,6 +2132,9 @@ The same diagnostic is printed after a successful release, a plan refusal, or a 
 the primary release result and retained-worktree behavior remain unchanged. See the normative
 [`S-CLI.5a`](SPEC.md#s-cli5a--default-originmain-projects-release-one-after-another-not-in-a-shared-batch) contract
 and the [caller-main cleanup operations](RELEASE-TRANSACTIONS.md#caller-main-cleanup).
+If the warning says another linked worktree owns `main`, run the printed
+`git -C <main-worktree> pull --ff-only` command from that worktree's environment. CMRU leaves
+its ref untouched so that its owner controls the fast-forward.
 
 ### Retaining gate evidence
 

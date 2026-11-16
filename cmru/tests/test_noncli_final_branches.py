@@ -146,7 +146,9 @@ def test_sync_local_main_creates_missing_local_main_from_origin(tmp_path):
             return ""
         raise AssertionError(args)
 
-    with patch.object(transaction, "_git", side_effect=fake_git), \
+    empty_worktree_inventory = SimpleNamespace(list_git_worktrees=lambda _root: [])
+    with patch.object(transaction, "_shared_worktree", return_value=empty_worktree_inventory), \
+         patch.object(transaction, "_git", side_effect=fake_git), \
          patch.object(transaction.subprocess, "run", side_effect=lambda argv, **kwargs: commands.append(argv) or SimpleNamespace(returncode=0)):
         assert transaction.sync_local_main(tmp_path) is True
     assert commands == [
