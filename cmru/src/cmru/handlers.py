@@ -29,6 +29,11 @@ from pathlib import Path
 from typing import NoReturn, Optional
 
 from cmru import exit_codes, rigor_publish
+from cmru.build_images import (
+    WHEEL_BUILDER_IMAGE_ENV,
+    configured_environment_value,
+    resolve_environment_value,
+)
 from cmru.release import (
     GitHubReleases,
     build_oci_image_release_body,
@@ -336,7 +341,7 @@ def _verify_staged_build_output_file(
 
 
 # ─── wheel commands ───────────────────────────────────────────────────────────
-_WHEEL_BUILDER_IMAGE_ENV = "CMRU_WHEEL_BUILDER_IMAGE"
+_WHEEL_BUILDER_IMAGE_ENV = WHEEL_BUILDER_IMAGE_ENV
 _DOCKER_CGROUP_PARENT_ENV = "CMRU_DOCKER_CGROUP_PARENT"
 
 
@@ -346,65 +351,12 @@ def _configured_wheel_builder_image(cwd: Path) -> str:
 
 
 def _configured_env_value(cwd: Path, name: str) -> str:
-    """Read one ``[env]`` value from the CMRU config enclosing *cwd*.
-
-    A direct handler invocation does not run through the release-step
-    environment injector. For registered estate projects, the nearest
-    orchestration document is authoritative; for a standalone project, its
-    own ``cmru.toml`` is authoritative. No value is invented here.
-    """
-    from cmru.config import (
-        ORCHESTRATION_CONFIG_FILENAME,
-        PROJECT_CONFIG_FILENAME,
-        load_forge_config,
-    )
-
-    ancestors = (cwd, *cwd.parents)
-    orchestration_path = next(
-        (directory / ORCHESTRATION_CONFIG_FILENAME for directory in ancestors
-         if (directory / ORCHESTRATION_CONFIG_FILENAME).exists()),
-        None,
-    )
-    project_path = next(
-        (directory / PROJECT_CONFIG_FILENAME for directory in ancestors
-         if (directory / PROJECT_CONFIG_FILENAME).exists()),
-        None,
-    )
-    config_path = orchestration_path or project_path
-    if config_path is None:
-        return ""
-
-    forge = load_forge_config(config_path)
-    values = dict(forge.env)
-    if forge.orchestration is None:
-        raise RuntimeError(
-            f"{config_path}: strict CMRU config loader returned no project registry"
-        )
-    matches: list[tuple[int, str]] = []
-    # The loop variable must not be ``name``: that is the env key being looked up, and
-    # shadowing it made the final lookup search for a PROJECT id and return "" for every
-    # declared value (the wheel-build builder image and cgroup-probe inputs).
-    for project_id, path in forge.orchestration.project_configs.items():
-        project_root = path.resolve().parent
-        try:
-            cwd.relative_to(project_root)
-        except ValueError:
-            continue
-        matches.append((len(project_root.parts), project_id))
-    if not matches:
-        raise ValueError(
-            f"{cwd} is not inside a project registered by {config_path}"
-        )
-    project_name = max(matches, key=lambda item: item[0])[1]
-    values.update(forge.projects[project_name].env)
-
-    return str(values.get(name, "") or "").strip()
+    """Read one configured value through the shared image-input resolver."""
+    return configured_environment_value(cwd, name)
 
 
 def _resolve_wheel_builder_image(cwd: Path | None = None) -> str:
-    if _WHEEL_BUILDER_IMAGE_ENV in os.environ:
-        return os.environ[_WHEEL_BUILDER_IMAGE_ENV].strip()
-    return _configured_wheel_builder_image(cwd) if cwd is not None else ""
+    return resolve_environment_value(_WHEEL_BUILDER_IMAGE_ENV, cwd=cwd)
 
 
 def _check_build_prerequisites(cwd: Path | None = None) -> str:
@@ -459,9 +411,7 @@ def _docker_cgroup_parent() -> str:
 
 def _declared_input(cwd: Path, name: str) -> str:
     """An explicit environment value wins; otherwise the enclosing CMRU config."""
-    if name in os.environ:
-        return os.environ[name].strip()
-    return _configured_env_value(cwd, name)
+    return resolve_environment_value(name, cwd=cwd)
 
 
 def require_installed_cgroup_parent(cgroup_parent: str, cwd: Path) -> None:

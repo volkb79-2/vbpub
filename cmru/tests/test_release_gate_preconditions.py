@@ -12,6 +12,7 @@ import pytest
 from cmru import cli, release_preconditions
 
 _REAL_LOAD_GATE = release_preconditions._load_release_gate  # captured before any test patches it
+_REAL_CHECK_RELEASE_BUILD_IMAGES = release_preconditions.check_release_build_images_precondition
 
 RUN_GATE_VERSION_SEQUENCE = r'''RUN_GATE_VERSION="$(
   git describe --tags --abbrev=0 --match 'run-gate-v*' 2>/dev/null ||
@@ -765,6 +766,7 @@ def _release_precondition_args(**updates):
         "major": False,
         "set_version": None,
         "skip_gates": None,
+        "_cmru_process_build_image_env": {},
     }
     values.update(updates)
     return SimpleNamespace(**values)
@@ -799,6 +801,9 @@ def _mock_cli_release_preconditions(monkeypatch, tmp_path, *, changed=True):
         lambda *_args: project,
     )
     monkeypatch.setattr(
+        cli, "_orchestration_env_for_release_snapshot", lambda *_args: {},
+    )
+    monkeypatch.setattr(
         cli, "_cmru_snapshot_config_text",
         lambda *_args: (Path("cmru/cmru.toml"), _CMRU_TOML_PROVISIONAL),
     )
@@ -817,12 +822,136 @@ def _mock_cli_release_preconditions(monkeypatch, tmp_path, *, changed=True):
     )
     monkeypatch.setattr(
         release_preconditions, "check_release_build_images_precondition",
-        lambda _env, *, require_docker: [
+        lambda _env, *, process_env=None, require_docker: [
             release_preconditions.GatePrecondition("cmru", "Wheel-builder image", "PASS", "present"),
             release_preconditions.GatePrecondition("cmru", "Cgroup probe image", "PASS", "present"),
         ],
     )
     return configs
+
+
+def test_orchestration_image_defaults_are_read_from_the_release_source_snapshot(
+    tmp_path, monkeypatch,
+):
+    config_path = tmp_path / "cmru.orchestration.toml"
+    observed = {}
+    content = (
+        "[orchestration.defaults.env]\n"
+        'CMRU_WHEEL_BUILDER_IMAGE = "wheel-builder:source"\n'
+    )
+
+    def read_snapshot(root, revision, relative_path, *, source_label):
+        observed.update(root=root, revision=revision, path=relative_path, label=source_label)
+        return content
+
+    monkeypatch.setattr(cli, "_read_git_path_at_commit", read_snapshot)
+    values = cli._orchestration_env_for_release_snapshot(
+        tmp_path, "a" * 40, config_path,
+    )
+
+    assert values == {"CMRU_WHEEL_BUILDER_IMAGE": "wheel-builder:source"}
+    assert observed["root"] == tmp_path
+    assert observed["revision"] == "a" * 40
+    assert observed["path"] == Path("cmru.orchestration.toml")
+
+
+def test_orchestration_image_defaults_refuse_config_outside_release_source(tmp_path):
+    with pytest.raises(RuntimeError, match="outside the release source"):
+        cli._orchestration_env_for_release_snapshot(
+            tmp_path, "a" * 40, tmp_path.parent / "cmru.orchestration.toml",
+        )
+
+
+def test_orchestration_image_defaults_refuse_malformed_source_config(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        cli, "_read_git_path_at_commit", lambda *_args, **_kwargs: "[broken\n",
+    )
+    with pytest.raises(RuntimeError, match="cannot resolve image defaults"):
+        cli._orchestration_env_for_release_snapshot(
+            tmp_path, "a" * 40, tmp_path / "cmru.orchestration.toml",
+        )
+
+
+def test_project_config_snapshot_has_no_orchestration_image_defaults(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        cli, "_read_git_path_at_commit",
+        lambda *_args, **_kwargs: pytest.fail("standalone config has no orchestration defaults"),
+    )
+    assert cli._orchestration_env_for_release_snapshot(
+        tmp_path, "a" * 40, tmp_path / "cmru.toml",
+    ) == {}
+
+
+def test_release_process_image_overrides_are_captured_before_config_application(monkeypatch):
+    monkeypatch.setenv("CMRU_WHEEL_BUILDER_IMAGE", "wheel-builder:invocation")
+    monkeypatch.delenv("CMRU_TESTER_CGROUP_PROBE_IMAGE", raising=False)
+    monkeypatch.setenv("UNRELATED_SETTING", "ignored")
+
+    assert cli._release_process_build_image_env() == {
+        "CMRU_WHEEL_BUILDER_IMAGE": "wheel-builder:invocation",
+    }
+
+
+@pytest.mark.parametrize(
+    ("dry_run", "action"),
+    [(True, "dry-run"), (False, "release")],
+)
+def test_release_source_change_message_names_the_invocation_to_rerun(dry_run, action):
+    message = cli._release_source_changed_retry_message(dry_run=dry_run)
+
+    assert "release source changed" in message
+    assert f"rerun the {action} against one consistent source snapshot" in message
+
+
+def test_release_precondition_uses_source_snapshot_image_not_stale_caller_config(
+    tmp_path, monkeypatch, capsys,
+):
+    configs = _mock_cli_release_preconditions(monkeypatch, tmp_path)
+    caller_probe = "probe@sha256:" + "a" * 64
+    source_probe = "probe@sha256:" + "b" * 64
+    source_project = SimpleNamespace(
+        name="cmru", env={"CMRU_WHEEL_BUILDER_IMAGE": "wheel-builder:source"},
+    )
+    configs["cmru"].env = {
+        "CMRU_WHEEL_BUILDER_IMAGE": "wheel-builder:caller",
+        "CMRU_TESTER_CGROUP_PROBE_IMAGE": caller_probe,
+    }
+    monkeypatch.setattr(
+        cli, "_project_config_for_release_snapshot", lambda *_args: source_project,
+    )
+    monkeypatch.setattr(
+        cli, "_orchestration_env_for_release_snapshot",
+        lambda *_args: {"CMRU_TESTER_CGROUP_PROBE_IMAGE": source_probe},
+    )
+    monkeypatch.setattr(
+        release_preconditions, "check_release_build_images_precondition",
+        _REAL_CHECK_RELEASE_BUILD_IMAGES,
+    )
+    monkeypatch.setattr(release_preconditions.shutil, "which", lambda _command: "/usr/bin/docker")
+    calls = []
+
+    def fake_docker(argv, **_kwargs):
+        calls.append(argv)
+        if argv[-1] == source_probe:
+            return SimpleNamespace(
+                returncode=1, stdout="", stderr=f"No such image: {source_probe}",
+            )
+        return SimpleNamespace(returncode=0, stdout="[]", stderr="")
+
+    monkeypatch.setattr(release_preconditions.subprocess, "run", fake_docker)
+    with pytest.raises(SystemExit) as caught:
+        cli._release_gate_preconditions_before_dispatch(
+            tmp_path, tmp_path / "cmru.orchestration.toml", configs, ["cmru"],
+            _release_precondition_args(dry_run=False), git_auth=None, report=False,
+        )
+
+    assert caught.value.code == 4
+    assert calls == [
+        ["docker", "image", "inspect", "wheel-builder:source"],
+        ["docker", "image", "inspect", source_probe],
+    ]
+    assert caller_probe not in repr(calls)
+    assert source_probe in capsys.readouterr().err
 
 
 @pytest.mark.parametrize("missing_probe", [False, True])
@@ -846,6 +975,7 @@ def test_release_build_image_precondition_uses_fake_docker_and_exact_pull_remedy
             "CMRU_WHEEL_BUILDER_IMAGE": builder,
             "CMRU_TESTER_CGROUP_PROBE_IMAGE": probe,
         },
+        process_env={},
         require_docker=True,
     )
 
@@ -864,6 +994,139 @@ def test_release_build_image_precondition_uses_fake_docker_and_exact_pull_remedy
         assert probe_row.status == "PASS"
 
 
+def test_release_build_image_precondition_uses_process_environment_over_config(monkeypatch):
+    configured = {
+        "CMRU_WHEEL_BUILDER_IMAGE": "wheel-builder:config",
+        "CMRU_TESTER_CGROUP_PROBE_IMAGE": "probe@sha256:" + "a" * 64,
+    }
+    process = {
+        "CMRU_WHEEL_BUILDER_IMAGE": "wheel-builder:process",
+        "CMRU_TESTER_CGROUP_PROBE_IMAGE": "probe@sha256:" + "b" * 64,
+    }
+    calls = []
+    monkeypatch.setattr(release_preconditions.shutil, "which", lambda _command: "/usr/bin/docker")
+
+    def fake_run(argv, **_kwargs):
+        calls.append(argv)
+        return SimpleNamespace(returncode=0, stdout="[]", stderr="")
+
+    monkeypatch.setattr(release_preconditions.subprocess, "run", fake_run)
+    rows = _REAL_CHECK_RELEASE_BUILD_IMAGES(
+        configured, process_env=process, require_docker=True,
+    )
+
+    assert calls == [
+        ["docker", "image", "inspect", process["CMRU_WHEEL_BUILDER_IMAGE"]],
+        ["docker", "image", "inspect", process["CMRU_TESTER_CGROUP_PROBE_IMAGE"]],
+    ]
+    assert [row.status for row in rows] == ["PASS", "PASS"]
+
+
+def test_release_build_image_precondition_pulls_a_missing_builder_but_keeps_probe_local(
+    monkeypatch,
+):
+    builder = "wheel-builder:pullable"
+    probe = "probe@sha256:" + "c" * 64
+    calls = []
+    monkeypatch.setattr(release_preconditions.shutil, "which", lambda _command: "/usr/bin/docker")
+
+    def fake_run(argv, **_kwargs):
+        calls.append(argv)
+        if argv == ["docker", "image", "inspect", builder]:
+            return SimpleNamespace(returncode=1, stdout="", stderr=f"No such image: {builder}")
+        return SimpleNamespace(returncode=0, stdout="[]", stderr="")
+
+    monkeypatch.setattr(release_preconditions.subprocess, "run", fake_run)
+    rows = _REAL_CHECK_RELEASE_BUILD_IMAGES(
+        {
+            "CMRU_WHEEL_BUILDER_IMAGE": builder,
+            "CMRU_TESTER_CGROUP_PROBE_IMAGE": probe,
+        },
+        process_env={}, require_docker=True,
+    )
+
+    assert calls == [
+        ["docker", "image", "inspect", builder],
+        ["docker", "pull", builder],
+        ["docker", "image", "inspect", probe],
+    ]
+    assert [row.status for row in rows] == ["PASS", "PASS"]
+    assert "docker pull` succeeded" in rows[0].detail
+    assert "pulls a missing builder image by default" in rows[0].detail
+
+
+@pytest.mark.parametrize("pull_failure", ["exit", "exception"])
+def test_release_build_image_precondition_fails_when_missing_builder_cannot_be_pulled(
+    monkeypatch, pull_failure,
+):
+    builder = "wheel-builder:unavailable"
+    probe = "probe@sha256:" + "e" * 64
+    calls = []
+    monkeypatch.setattr(release_preconditions.shutil, "which", lambda _command: "/usr/bin/docker")
+
+    def fake_run(argv, **_kwargs):
+        calls.append(argv)
+        if argv == ["docker", "image", "inspect", builder]:
+            return SimpleNamespace(returncode=1, stdout="", stderr=f"No such image: {builder}")
+        if argv == ["docker", "pull", builder]:
+            if pull_failure == "exception":
+                raise OSError("registry connection refused")
+            return SimpleNamespace(returncode=1, stdout="", stderr="unauthorized")
+        return SimpleNamespace(returncode=0, stdout="[]", stderr="")
+
+    monkeypatch.setattr(release_preconditions.subprocess, "run", fake_run)
+    rows = _REAL_CHECK_RELEASE_BUILD_IMAGES(
+        {
+            "CMRU_WHEEL_BUILDER_IMAGE": builder,
+            "CMRU_TESTER_CGROUP_PROBE_IMAGE": probe,
+        },
+        process_env={}, require_docker=True,
+    )
+
+    assert [row.status for row in rows] == ["FAIL", "PASS"]
+    assert calls[:2] == [
+        ["docker", "image", "inspect", builder],
+        ["docker", "pull", builder],
+    ]
+    assert builder in rows[0].detail
+    assert rows[0].remedy == f"Run `docker pull {builder}` on this host, then retry the release."
+    if pull_failure == "exception":
+        assert "could not pull it" in rows[0].detail
+    else:
+        assert "pull failed" in rows[0].detail
+
+
+def test_release_build_image_precondition_dry_run_reports_unverified_builder_pullability(
+    monkeypatch,
+):
+    builder = "wheel-builder:maybe-pullable"
+    probe = "probe@sha256:" + "d" * 64
+    calls = []
+    monkeypatch.setattr(release_preconditions.shutil, "which", lambda _command: "/usr/bin/docker")
+
+    def fake_run(argv, **_kwargs):
+        calls.append(argv)
+        if argv == ["docker", "image", "inspect", builder]:
+            return SimpleNamespace(returncode=1, stdout="", stderr=f"No such image: {builder}")
+        return SimpleNamespace(returncode=0, stdout="[]", stderr="")
+
+    monkeypatch.setattr(release_preconditions.subprocess, "run", fake_run)
+    rows = _REAL_CHECK_RELEASE_BUILD_IMAGES(
+        {
+            "CMRU_WHEEL_BUILDER_IMAGE": builder,
+            "CMRU_TESTER_CGROUP_PROBE_IMAGE": probe,
+        },
+        process_env={}, require_docker=False,
+    )
+
+    assert calls == [
+        ["docker", "image", "inspect", builder],
+        ["docker", "image", "inspect", probe],
+    ]
+    assert [row.status for row in rows] == ["SKIPPED", "PASS"]
+    assert "did not verify registry availability" in rows[0].detail
+
+
 @pytest.mark.parametrize(
     "require_docker, expected",
     [(False, "SKIPPED"), (True, "FAIL")],
@@ -877,6 +1140,7 @@ def test_release_build_image_precondition_handles_unavailable_docker(
             "CMRU_WHEEL_BUILDER_IMAGE": "wheel-builder:test",
             "CMRU_TESTER_CGROUP_PROBE_IMAGE": "probe@sha256:" + "a" * 64,
         },
+        process_env={},
         require_docker=require_docker,
     )
 
@@ -884,12 +1148,12 @@ def test_release_build_image_precondition_handles_unavailable_docker(
 
 
 def test_release_build_image_precondition_refuses_missing_declared_values():
-    rows = release_preconditions.check_release_build_images_precondition({})
+    rows = _REAL_CHECK_RELEASE_BUILD_IMAGES({}, process_env={})
 
     assert [row.status for row in rows] == ["FAIL", "FAIL"]
     assert "CMRU_WHEEL_BUILDER_IMAGE is not declared" in rows[0].detail
     assert "CMRU_TESTER_CGROUP_PROBE_IMAGE is not declared" in rows[1].detail
-    assert "Read the selected CMRU config" in rows[0].remedy
+    assert "process environment or selected source config" in rows[0].remedy
 
 
 def test_release_build_image_precondition_skips_daemon_exception_when_optional(
@@ -906,6 +1170,7 @@ def test_release_build_image_precondition_skips_daemon_exception_when_optional(
             "CMRU_WHEEL_BUILDER_IMAGE": "builder:test",
             "CMRU_TESTER_CGROUP_PROBE_IMAGE": "probe:test",
         },
+        process_env={},
     )
 
     assert [row.status for row in rows] == ["SKIPPED", "SKIPPED"]
@@ -928,6 +1193,7 @@ def test_release_build_image_precondition_skips_nonzero_daemon_response_when_opt
             "CMRU_WHEEL_BUILDER_IMAGE": "builder:test",
             "CMRU_TESTER_CGROUP_PROBE_IMAGE": "probe:test",
         },
+        process_env={},
     )
 
     assert [row.status for row in rows] == ["SKIPPED", "SKIPPED"]
@@ -948,6 +1214,7 @@ def test_release_build_image_precondition_fails_on_generic_inspect_exceptions(
             "CMRU_WHEEL_BUILDER_IMAGE": "builder:test",
             "CMRU_TESTER_CGROUP_PROBE_IMAGE": "probe:test",
         },
+        process_env={},
     )
 
     assert [row.status for row in rows] == ["FAIL", "FAIL"]
@@ -968,6 +1235,7 @@ def test_release_build_image_precondition_fails_on_generic_inspect_results(monke
             "CMRU_WHEEL_BUILDER_IMAGE": "builder:test",
             "CMRU_TESTER_CGROUP_PROBE_IMAGE": "probe:test",
         },
+        process_env={},
     )
 
     assert [row.status for row in rows] == ["FAIL", "FAIL"]
@@ -1199,6 +1467,9 @@ def test_actual_release_stops_before_dispatch_when_probe_image_is_missing(
     )
     monkeypatch.setattr(cli.transaction, "fetch_origin_main", lambda *_args, **_kwargs: "b" * 40)
     monkeypatch.setattr(cli, "_project_config_for_release_snapshot", lambda *_args: project)
+    monkeypatch.setattr(
+        cli, "_orchestration_env_for_release_snapshot", lambda *_args: {},
+    )
     monkeypatch.setattr(cli, "_configs_for_git_family", lambda *_args: configs)
     monkeypatch.setattr(cli, "_known_project_scope_names", lambda _configs: frozenset({"cmru"}))
     monkeypatch.setattr(

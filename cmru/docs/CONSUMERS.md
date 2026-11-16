@@ -1024,13 +1024,20 @@ includes the mutation campaign. If cleanup fails after the lanes pass, the gate 
 leaves `"state": "failed"` with an empty `deferred_lanes` and no marker; an invocation refused
 before a new gate starts leaves the previous run's marker and manifest untouched.
 
-Before dispatching a new CMRU release, CMRU inspects the configured wheel-builder
-and digest-pinned cgroup-probe images on the Docker host. A missing image fails
-with exit 4 and the exact `docker pull <ref>` remedy, before a candidate
-worktree, tag, or gate starts. The check also runs with `--skip-gates`, because
-the wheel-build step still needs both images. If Docker is unavailable, an
-actual release fails preflight; a dry-run may report the image checks as
-`SKIPPED`. Run the dry-run with the same version flags you intend to release:
+Before dispatching a new CMRU release, CMRU resolves the wheel-builder and
+digest-pinned cgroup-probe images with the same resolver used by the build
+handlers: invocation environment values override project and estate defaults
+from the exact release-source revision. The cgroup probe uses `--pull=never`,
+so it must already be local; if missing, preflight exits 4 with the exact
+`docker pull <ref>` remedy. The wheel-builder's Docker run uses Docker's default
+pull-if-missing behavior. For an actual release, preflight pulls and verifies a
+builder image that is not local; for a dry-run, it reports `SKIPPED` because it
+does not pull and cannot verify registry availability. These checks happen
+before a candidate worktree, tag, or gate starts, and still run with
+`--skip-gates` because the wheel-build step needs both images. If Docker is
+unavailable, an actual release fails preflight; a dry-run may report the image
+checks as `SKIPPED`. Run the dry-run with the same version flags you intend to
+release:
 
 ```sh
 cmru release cmru --minor --dry-run

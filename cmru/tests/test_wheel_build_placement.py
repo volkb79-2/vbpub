@@ -296,6 +296,12 @@ def test_a_declared_input_with_no_environment_value_is_read_from_the_enclosing_c
     assert handlers._declared_input(nested, "CMRU_TESTER_CGROUP_PARENT") == "from-config.slice"
 
 
+def test_shared_build_image_config_resolver_returns_empty_without_a_config(tmp_path):
+    from cmru.build_images import configured_environment
+
+    assert configured_environment(tmp_path) == {}
+
+
 @pytest.mark.parametrize(
     ("environment_value", "expected"),
     [(" from-env.slice ", "from-env.slice"), ("", "")],
@@ -308,7 +314,7 @@ def test_a_declared_input_set_in_the_environment_wins_over_the_config(
     nested = _config_declaring(tmp_path, "from-config.slice")
     monkeypatch.setenv("CMRU_TESTER_CGROUP_PARENT", environment_value)
     monkeypatch.setattr(
-        handlers, "_configured_env_value",
+        "cmru.build_images.configured_environment",
         lambda *_a: pytest.fail("the config must not be read when the environment declares the key"),
     )
 

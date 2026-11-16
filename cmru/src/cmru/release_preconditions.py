@@ -13,6 +13,12 @@ from pathlib import Path
 from types import ModuleType
 from typing import Mapping
 
+from cmru.build_images import (
+    CGROUP_PROBE_IMAGE_ENV,
+    WHEEL_BUILDER_IMAGE_ENV,
+    resolve_environment_value,
+)
+
 
 _BOOTSTRAP_RUN_GATE_VERSION_SEQUENCE = r'''RUN_GATE_VERSION="$(
   git describe --tags --abbrev=0 --match 'run-gate-v*' 2>/dev/null ||
@@ -254,29 +260,42 @@ def check_run_gate_image_precondition(
 
 
 def check_release_build_images_precondition(
-    env: Mapping[str, object], *, require_docker: bool = False,
+    configured_env: Mapping[str, object], *, process_env: Mapping[str, object] | None = None,
+    require_docker: bool = False,
 ) -> list[GatePrecondition]:
-    """Check the local images the CMRU wheel-build step requires."""
+    """Check images using the same environment resolver as the build handlers."""
+    builder = resolve_environment_value(
+        WHEEL_BUILDER_IMAGE_ENV,
+        configured_env=configured_env,
+        process_env=process_env,
+    )
+    probe = resolve_environment_value(
+        CGROUP_PROBE_IMAGE_ENV,
+        configured_env=configured_env,
+        process_env=process_env,
+    )
     return [
         _check_local_image_precondition(
-            "CMRU_WHEEL_BUILDER_IMAGE", env.get("CMRU_WHEEL_BUILDER_IMAGE"),
-            "Wheel-builder image", require_docker=require_docker,
+            WHEEL_BUILDER_IMAGE_ENV, builder, "Wheel-builder image",
+            require_docker=require_docker, pull_if_missing=True,
         ),
         _check_local_image_precondition(
-            "CMRU_TESTER_CGROUP_PROBE_IMAGE", env.get("CMRU_TESTER_CGROUP_PROBE_IMAGE"),
-            "Cgroup probe image", require_docker=require_docker,
+            CGROUP_PROBE_IMAGE_ENV, probe, "Cgroup probe image",
+            require_docker=require_docker, pull_if_missing=False,
         ),
     ]
 
 
 def _check_local_image_precondition(
     variable: str, image_value: object, label: str, *, require_docker: bool,
+    pull_if_missing: bool = False,
 ) -> GatePrecondition:
     image = image_value.strip() if isinstance(image_value, str) else ""
     if not image:
         return GatePrecondition(
-            "cmru", label, "FAIL", f"{variable} is not declared in the selected CMRU config.",
-            f"Read the selected CMRU config, set its required {variable} value, then retry.",
+            "cmru", label, "FAIL",
+            f"{variable} is not declared in the invocation environment or selected source config.",
+            f"Set {variable} in the process environment or selected source config, then retry.",
         )
     if shutil.which("docker") is None:
         return GatePrecondition(
@@ -312,10 +331,47 @@ def _check_local_image_precondition(
             "cmru", label, "SKIPPED",
             f"Docker is unavailable; {variable} image {image!r} was not inspected ({detail}).",
         )
-    if "no such image" in detail.lower() or "no such object" in detail.lower():
+    image_missing = "no such image" in detail.lower() or "no such object" in detail.lower()
+    if image_missing and pull_if_missing and not require_docker:
+        return GatePrecondition(
+            "cmru", label, "SKIPPED",
+            f"{variable} image {image!r} is not local. The wheel-build Docker run pulls a missing builder image by default; this dry-run did not verify registry availability.",
+            f"Run `docker pull {image}` on this host to verify availability before release.",
+        )
+    if image_missing and pull_if_missing:
+        try:
+            pulled = subprocess.run(
+                ["docker", "pull", image],
+                capture_output=True, text=True, check=False,
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            pull_detail = str(exc).strip() or type(exc).__name__
+            return GatePrecondition(
+                "cmru", label, "FAIL",
+                f"{variable} image {image!r} is not local and Docker could not pull it: {pull_detail}.",
+                f"Run `docker pull {image}` on this host, then retry the release.",
+            )
+        if pulled.returncode == 0:
+            return GatePrecondition(
+                "cmru", label, "PASS",
+                f"{variable} image {image!r} was not local; `docker pull` succeeded. The wheel-build Docker run also pulls a missing builder image by default.",
+            )
+        pull_detail = (
+            pulled.stderr or pulled.stdout or f"docker exited {pulled.returncode}"
+        ).strip()
         return GatePrecondition(
             "cmru", label, "FAIL",
-            f"{variable} image {image!r} is not present on this Docker host.",
+            f"{variable} image {image!r} is not local and its pull failed: {pull_detail}.",
+            f"Run `docker pull {image}` on this host, then retry the release.",
+        )
+    if image_missing:
+        pull_note = (
+            " The cgroup probe uses `--pull=never`, so this reference must already be local."
+            if variable == CGROUP_PROBE_IMAGE_ENV else ""
+        )
+        return GatePrecondition(
+            "cmru", label, "FAIL",
+            f"{variable} image {image!r} is not present on this Docker host.{pull_note}",
             f"Run `docker pull {image}` on this host, then retry the release.",
         )
     return GatePrecondition(

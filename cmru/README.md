@@ -1049,13 +1049,18 @@ includes test inputs read during module import, even when the test module will
 later be skipped. See the [fixture design](docs/DESIGN-GUIDE.md#mutation-fixture-includes-import-time-inputs).
 For a new CMRU release, the launcher checks the configured wheel-builder and
 cgroup-probe images on the Docker host before dispatch, candidate worktree,
-tag, or gate setup. It uses the effective values from the selected CMRU config;
-when an image is missing, the preflight reports its variable and reference with
-the exact `docker pull <ref>` remedy. This also runs for `--skip-gates`, because
-the wheel-build step still uses those images. `cmru release --dry-run` reports
-the same preflight checks; with gates enabled, an actual release and its
-dry-run also check the planned version's KI-79 window, selected tester image's
-Run-Gate version and wheel digest, and zero-release guide version.
+tag, or gate setup. Image selection uses the same resolver as the build
+handlers: an invocation environment value overrides the project and estate
+configuration from the exact source revision. The wheel-builder's Docker run
+pulls a missing image by default, so an actual release preflight pulls and
+verifies a builder image that is not local. A dry-run does not pull it and
+reports that pullability is unverified. The cgroup probe uses `--pull=never`,
+so its image must already be local; a missing probe reports the exact
+`docker pull <ref>` remedy. This also runs for `--skip-gates`, because the
+wheel-build step still uses those images. `cmru release --dry-run` reports the
+same preflight checks; with gates enabled, an actual release and its dry-run
+also check the planned version's KI-79 window, selected tester image's Run-Gate
+version and wheel digest, and zero-release guide version.
 During an actual release, a missing Docker CLI or daemon fails preflight; a
 dry-run may report image inspection as `SKIPPED` only when Docker is positively
 unavailable. The image identity check requires a non-empty Run-Gate version
