@@ -12,7 +12,7 @@ states the number), and `measured_with_max_mutants` when the reading was taken w
 than the shipped one.
 
 **A plan run AT the lane's cap is not an inventory.** Assay stops discovery at the cap and reports
-`max_mutants + 1` candidates; that number measures the CAP, not the code. So a refresh either
+`max_mutants + 1` candidates (its own filed item B526); that number measures the CAP, not the code. So a refresh either
 records a reading taken with a cap comfortably above the expected count (a scratch worktree commit
 raising `max_mutants` is the documented way, since a plan refuses an uncommitted lane file), or is
 not recorded at all.

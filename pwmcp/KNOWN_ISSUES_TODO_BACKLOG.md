@@ -998,7 +998,11 @@ number the r9 plan reports, and 1293 again on the batch head with the shipped ca
 `tests/fixtures/r2-inventory/pb-r9-target-measured.json` with
 `measured_with_max_mutants: 1600`; the oracle rejects any record whose cap equals or sits
 below its own count, and `docs/CONSUMERS.md` tells a reader to measure above the expected
-count. `ceil(1293 * 1.10) = 1423 <= 1500`, so the shipped cap clears the rule.
+count. `ceil(1293 * 1.10) = 1423 <= 1500`, so the shipped cap clears the rule. The tool
+side of the trap is Assay's own filed item **B526** (bounded discovery retains at most
+`max_mutants + 1` descriptors and reports that count as the total); PWMCP records it here
+rather than re-filing it, and the fixture README plus the consumer rule are how a PWMCP
+operator avoids it today.
 
 The registered lane's `run-gate r2 --dry-run` rehearsal was attempted in this cockpit and
 stopped at the HOST's cgprofile preflight (`CGPROFILE_OBSERVER_SOCKET` unset in this

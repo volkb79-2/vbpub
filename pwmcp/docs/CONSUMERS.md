@@ -463,7 +463,9 @@ cheap — it makes the release lane unable to complete, so it is checked, not gu
    `max_mutants` and reports `max_mutants + 1` candidates in that case, so a plan run at
    the shipped cap returns `1001` at a cap of `1000` — that number is the CAP talking,
    not the code, and recording it as an inventory is how a cap gets "justified" by its
-   own sentinel. Since a plan refuses an uncommitted lane file, measure in a scratch
+   own sentinel. (The tool side of this is Assay's own filed item **B526**: bounded
+   discovery retains at most `max_mutants + 1` descriptors and reports that count, so the
+   reported total is the CAP's, not the inventory's.) Since a plan refuses an uncommitted lane file, measure in a scratch
    checkout (a temporary worktree): raise `max_mutants` there, commit, plan, record the
    count with `measured_with_max_mutants` set to the raised value, and throw the
    worktree away. On this project's numbers a raised-cap reading is 1293, the same
