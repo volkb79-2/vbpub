@@ -355,6 +355,33 @@ and leaves the choice opt-in; a hostname-specific certificate bypass is not
 available through this Playwright context option. See the
 [consumer example](CONSUMERS.md#inspect-a-webpage).
 
+## Release-scoped R2 campaigns
+
+The `r2` lane judges the whole target. A release-to-release campaign usually needs only
+the code that release changed, and a changed-line subset of the whole-target plan
+(`run-gate r2 --only-candidates FILE`, recipe in
+[CONSUMERS.md](CONSUMERS.md#release-scoped-r2-campaigns-changed-line-candidate-selection))
+is the supported way to ask that question.
+
+**Why the claim changes, and why that is not bureaucracy.** A subset that finishes has
+proved something real about the changed lines and nothing at all about the rest: the
+candidates outside the diff were never executed. So the run is reported `selective` and
+PARTIAL, never a whole-target R2 PASS. The alternative — calling a changed-line run "the
+R2 campaign" — is the failure mode this estate pays for repeatedly: a check whose message
+states a conclusion the comparison did not cover (see the review doctrine on narrow
+comparisons). The recipe therefore also requires the selection file, the diff base and
+the selected/planned counts to be recorded with the evidence, so the claim can be
+re-derived rather than trusted.
+
+**Why a tool rather than a shell one-liner.** The two error-prone steps are mechanical:
+turning `git diff -U0` hunk headers into NEW-file line ranges (a bare `+c` is one line,
+`+c,0` is none, `a/`/`b/` prefixes must be stripped) and matching them against
+`assay plan r2 --json` candidates. `tools/r2/select_changed_candidates.py` implements
+both, refuses to write an empty list (a campaign that starts nothing is not a campaign),
+and prints the selected/planned counts. `assay plan --file` is deliberately not the
+mechanism: it takes an Assay TOML config, not a source filter, so it would silently plan
+the whole target.
+
 ## GlyphGrid development tooling
 
 GlyphGrid stays unavailable through the OCR service (HTTP 501). The reader,

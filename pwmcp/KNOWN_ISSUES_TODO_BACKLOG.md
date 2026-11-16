@@ -1176,12 +1176,36 @@ No helper-internal assertion was added for these cases because their claimed equ
 
 ## PWMCP-71 — document the release-scoped R2 candidate recipe
 
-**Status:** OPEN (filed 2026-11-14); priority P2 (campaign reproducibility).
+**Status:** FIXED 2026-11-16 (unreleased, branch `pi-pwmcp-burn-20261116`); filed
+2026-11-14; priority P2 (campaign reproducibility).
 
-The registered `r2` lane plans the whole target. A release-to-release campaign can instead select candidates on changed source lines, but the recipe must preserve the exact release diff and candidate IDs and must not be described as a whole-target R2 PASS.
+**Fix.** The recipe is documented three times for three jobs, each linking the others:
+README "Testing" (one paragraph, with the PARTIAL warning), `docs/CONSUMERS.md`
+"Release-scoped R2 campaigns (changed-line candidate selection)" (the pasteable steps) and
+`docs/DESIGN-GUIDE.md` "Release-scoped R2 campaigns" (why a subset is `selective`/PARTIAL
+and why the step is a tool). The documented step 3 is
+`tools/r2/select_changed_candidates.py`: it turns `git diff -U0` hunk headers into
+NEW-file line ranges (bare `+c` = one line, `+c,0` = none, `a/`/`b/` prefixes stripped),
+selects the `assay plan r2 --json` candidates whose `path`/`lineno` fall inside them,
+writes one id per line to `.run-gate/only-candidates-<scope>.txt`, prints
+`selected N of M candidates`, and REFUSES to write an empty list (a campaign that starts
+nothing is not a campaign). `tests/test_r2_candidate_recipe.py` runs the tool on synthetic
+plan/diff fixtures, checks the hunk-header edge cases, the empty-selection refusal, the
+malformed-plan refusal, that the documented flags exist in the installed `run-gate` and
+`assay` (`--only-candidates`, `--json`, `--file`), that the three documents carry the
+recipe and the PARTIAL/`selective` language, and that every cross-document anchor in
+README/CONSUMERS/DESIGN-GUIDE resolves. Hand mutants of the selection code (no `b/`
+prefix strip, a `+c,0` hunk treated as one line, off-by-one on the range end) are each
+killed; the empty-selection guard is covered by its own CLI test.
+
+The registered-lane obligations are stated rather than changed: `run-gate` keeps its
+`--resume --progress .assay/progress-r2.jsonl` handling, and the selection file must stay
+inside the checkout under the git-ignored `.run-gate/`.
+
+**Original filing.** The registered `r2` lane plans the whole target. A release-to-release campaign can instead select candidates on changed source lines, but the recipe must preserve the exact release diff and candidate IDs and must not be described as a whole-target R2 PASS.
 
 **Recipe to document.** On the release checkout, run `assay plan r2 --json`; obtain changed source line ranges from `git diff -U0 <base>..<release> -- <source-path>`; select the plan's candidate IDs whose source locations fall within those changed ranges; write one ID per line to `<checkout>/.run-gate/only-candidates-<scope>.txt`; and pass that file through the supported campaign invocation's `--only-candidates` option. The file stays inside the checkout so the campaign can read it. Registered Assay lanes must retain Run-Gate's `--resume --progress .assay/progress-r2.jsonl` handling. Record the selection file, diff base, and candidate counts with the campaign evidence. A selected subset is partial by construction and leaves unselected candidates unevaluated. `assay plan --file` accepts an Assay TOML config, not a source-file filter.
 
 **Where.** PWMCP's R2 lane-authoring documentation and the operator campaign recipe.
 
-**Close when.** A reader can reproduce the changed-line candidate list from the release diff and plan, run it through the supported campaign workflow, and distinguish its partial result from whole-target R2 completion.
+**Close when.** A reader can reproduce the changed-line candidate list from the release diff and plan, run it through the supported campaign workflow, and distinguish its partial result from whole-target R2 completion. — The reproduction is `tools/r2/select_changed_candidates.py` (tested above), the campaign workflow is `run-gate r2 --only-candidates FILE` (its `--only-candidates FILE` flag is asserted present in the shipped CLI by the same test module), and the distinction is stated in all three documents as `selective`/PARTIAL. A host campaign is not part of this documentation item.

@@ -1063,6 +1063,9 @@ ciu-build -d . push-images
 - [docs/CONSUMERS.md](docs/CONSUMERS.md) — installation, updates, CLI inspection, MCP, and release gates
 - [docs/COMPARISON-obscura-2026-11-09.md](docs/COMPARISON-obscura-2026-11-09.md) — the build-versus-no-fork comparison and decision
 - [docs/RELEASE-PLAN-R4-2026-11-02.md](docs/RELEASE-PLAN-R4-2026-11-02.md) — the retained R4 release plan
+- [R2 campaign tooling](tools/r2/README.md) — the changed-line candidate selector for a
+  release-scoped mutation campaign (PARTIAL by construction); recipe in
+  [docs/CONSUMERS.md](docs/CONSUMERS.md#release-scoped-r2-campaigns-changed-line-candidate-selection)
 - [GlyphGrid development tools](tools/glyphgrid/README.md) — local font atlases,
   reference-checked reads, and deterministic synthetic images; offline tooling
   only, with the service engine still HTTP 501. See the [design rationale](docs/DESIGN-GUIDE.md#glyphgrid-development-tooling)
@@ -1077,7 +1080,13 @@ See [`../run-gate-project/CONSUMERS.md`](../run-gate-project/CONSUMERS.md).
 The release gate is `run-gate r1`. It runs the resolver, image-builder
 contract, and client tests through source-backed Assay in `tester-unified`,
 with branch coverage recorded in `coverage.json`. The slower mutation lane is
-`run-gate r2`; it is resumable and may be run separately before a release.
+`run-gate r2`; it is resumable and may be run separately before a release. A
+release-to-release campaign can scope R2 to the lines that release changed
+(`run-gate r2 --only-candidates FILE`, produced by
+`tools/r2/select_changed_candidates.py`) — that result is PARTIAL by construction, never a
+whole-target R2 PASS; the recipe is in
+[docs/CONSUMERS.md](docs/CONSUMERS.md#release-scoped-r2-campaigns-changed-line-candidate-selection)
+and the reasoning in the [design guide](docs/DESIGN-GUIDE.md#release-scoped-r2-campaigns).
 PWMCP has no HTTP/OpenAPI contract, so Hypothesis is used for the pure upstream
 version-intersection invariant and Schemathesis is not applicable.
 

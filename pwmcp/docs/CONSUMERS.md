@@ -489,6 +489,49 @@ RESOURCE-only change: the mutation judge identity (`operators`, `fail_under`,
 `require_branch`, coverage artifact) is unchanged, so Assay's record reuse across
 campaigns still applies.
 
+### Release-scoped R2 campaigns (changed-line candidate selection)
+
+The `r2` lane plans the WHOLE target (see the cap section above). A release-to-release
+campaign often needs only the code that release changed. That is a supported subset run,
+not a smaller whole-target run, and the two must never be conflated in evidence.
+
+**Recipe.** On the release checkout (the exact commit whose diff you are selecting from):
+
+1. Plan the lane and keep the JSON: `assay plan r2 --json > plan.json`.
+2. Take the changed source line ranges from the release diff:
+   `git diff -U0 <base>..<release> -- <source-path>`.
+3. Select the candidates and write the list with the tool that implements steps 2-3:
+   `python3 tools/r2/select_changed_candidates.py --plan plan.json --diff release.diff
+   --out .run-gate/only-candidates-<scope>.txt`. It reads each hunk header's NEW-file range
+   (`@@ -a,b +c,d @@` covers lines `c .. c+d-1`, a bare `+c` is one line, and a
+   pure-deletion hunk `+c,0` covers none), strips the diff's `a/`/`b/` prefixes, writes
+   one candidate id per line in plan order, refuses to write an empty list, and prints
+   `selected N of M candidates` for the campaign record. The file must stay inside the
+   checkout and under the git-ignored `.run-gate/`, because the lane mounts only the
+   checkout.
+4. Pass that file through the supported campaign invocation:
+   `run-gate r2 --only-candidates .run-gate/only-candidates-<scope>.txt`. Run-gate keeps
+   its own `--resume --progress .assay/progress-r2.jsonl` handling for the lane; do not
+   replace that with a hand-rolled `assay run`.
+
+**What the result means.** A selected subset is PARTIAL by construction: the candidates
+left out are reported not started, and run-gate records the run as `selective`, so a
+release-scoped campaign is never a whole-target R2 PASS and never stands in for one in
+lane history. Record the selection file, the diff base, the release commit and the
+selected/planned candidate counts with the campaign evidence, so the claim can be
+re-derived later.
+
+**Traps.** `assay plan --file` takes an Assay TOML config, not a source-file filter — it
+plans the whole target. A host-local edit of `assay.toml` to shrink the target is not a
+supported way to scope a campaign (and it changes the lane's judged declaration).
+Candidates whose mutation sites sit in an UNCHANGED file are not selected by this recipe
+even when the release changed their neighbourhood indirectly; that is the accepted cost
+of a changed-line scope.
+
+`tests/test_r2_candidate_recipe.py` runs the selection step on synthetic `plan` and
+`git diff -U0` fixtures, so the algorithm above is a tested entry point and the document
+cannot drift into a recipe no tool implements.
+
 ## Maintainer refresh of Playwright
 
 To select the newest stable Playwright version available from npm, PyPI, and
