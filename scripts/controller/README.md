@@ -288,7 +288,7 @@ line keeps its historical shape `EXIT=<n> OUTCOME=<word>`, where the word is:
 | `UNCOMMITTED` | exit zero with uncommitted changes in the worktree. |
 | `NO-REPORT` | exit zero but the expected report file is missing. |
 | `USAGE-LIMIT` | a provider 402 `insufficient_balance` stop; the account is blocked until its reset. |
-| `TOOL-CALL-NO-TEXT` | a settled `stop` whose final assistant message is a tool call with no text: the run ended mid-work. Not a success, and not the continued `EMPTY-COMPLETION` class. |
+| `TOOL-CALL-NO-TEXT` | a settled `stop` whose final assistant message is a tool call with no text: the run ended mid-work. Not a success, and not the continued `EMPTY-COMPLETION` class. A message carrying TEXT **and** a trailing tool call is `SUCCESS` instead: the text is the run's final message and the call is bookkeeping pi emits in the same message. |
 | `CONTEXT-FULL` | a settled `stopReason` of `length`: the context window filled. The work is intact; start a FRESH successor from the run's forward-oriented state file. The wrapper never continues it. |
 | `ERROR` | a provider error stop, or a nonzero pi exit. |
 | `INCOMPLETE` | a stream the classifier cannot attribute (unsettled, aborted, a `stopReason` it does not know), or a finish whose worktree status cannot be read (never read as clean). |

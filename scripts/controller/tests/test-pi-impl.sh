@@ -262,6 +262,22 @@ check_outcome_tool_call_no_text() {
     && fail 'a tool-call-no-text run recorded an empty-completion continuation'
 }
 
+# A settled `stop` whose final message carries TEXT AND a tool call is SUCCESS:
+# the text is the run's final message and the tool call is trailing bookkeeping
+# (pi emits it after the narrative in the same message). This is pinned by a
+# test, not left to be re-argued: the class exists for a message with a tool call
+# and NO text, which is a different fact.
+check_outcome_text_and_tool_call() {
+  local before after
+  before=$(pi_invocations)
+  CONTROLLER_OD_STATE=$ROOT/outcome-text-call-state.json PI_LIVE=0 \
+    wait_launch outcome-text-call deepseek-pi-volker pi-stop-text-and-tool-call /dev/null
+  after=$(pi_invocations)
+  [[ $(head -n 1 "$CONTROLLER_ROOT/runs/outcome-text-call.done") == 'EXIT=0 OUTCOME=SUCCESS' ]] \
+    || fail 'a settled stop with text and a trailing tool call is not SUCCESS'
+  [[ $(( after - before )) == 1 ]] || fail 'a successful text-and-tool-call run was continued'
+}
+
 check_outcome_rc() {
   local rc=0
   PATH="$ROOT/bin:$PATH" HOME="$HOME_ROOT" PI_ROUTE=deepseek-pi-volker \
@@ -1372,6 +1388,7 @@ if [[ -n ${PI_TEST_FOCUS:-} ]]; then
     outcome-error) check_outcome_error ;;
     outcome-length) clean_worktree; check_outcome_length ;;
     outcome-tool-call) clean_worktree; check_outcome_tool_call_no_text ;;
+    outcome-text-and-call) clean_worktree; check_outcome_text_and_tool_call ;;
     outcome-stop-other) clean_worktree; check_outcome_stop_other ;;
     outcome-rc) check_outcome_rc ;;
     git-unreadable) clean_worktree; check_outcome_git_unreadable ;;
@@ -1800,6 +1817,12 @@ PY
       contains "$README_SOURCE" 'OUTCOME=NO-REPORT' 'README documents the report outcome'
       contains "$README_SOURCE" "\`CONTEXT-FULL\`" 'README documents the context-full class'
       contains "$README_SOURCE" "\`TOOL-CALL-NO-TEXT\`" 'README documents the tool-call-no-text class'
+      contains "$README_SOURCE" 'TEXT **and** a trailing tool call is `SUCCESS`' \
+        'README states that text plus a trailing tool call is a success'
+      contains "$DESIGN_SOURCE" 'Text **plus** a trailing tool call is `SUCCESS`' \
+        'design guide states that text plus a trailing tool call is a success'
+      contains "$CONSUMER_SOURCE" 'trailing tool call' \
+        'consumer guide covers the text-plus-tool-call shape'
       contains "$DESIGN_SOURCE" "\`CONTEXT-FULL\` is the real end state of" \
         'design guide explains why context-full is its own class'
       contains "$DESIGN_SOURCE" "\`TOOL-CALL-NO-TEXT\` is" 'design guide explains the tool-call-no-text class'

@@ -31,6 +31,8 @@ content are redacted where needed.
 | `pi-whitespace-only.jsonl` | Synthesized from the empty-completion class | A settled `stop` whose assistant message carries text that is only whitespace: "has text" must mean text after stripping, or a blank message would read as a completion. |
 | `pi-tool-progress.jsonl` | Measured shape of a working tool | `tool_execution_start` followed by `tool_execution_update` carrying `partialResult`: the tool's own partial output is progress evidence, so a tool that keeps printing never reads as hung even when the stream is otherwise quiet. |
 
+
+| `pi-stop-text-and-tool-call.jsonl` | Synthesized from the tool-call-no-text shape | A settled `stop` whose assistant message carries TEXT **and** a trailing `toolCall`: the text is the run's final message, so the class is `SUCCESS` and not `TOOL-CALL-NO-TEXT` (which is defined on the absence of text). |
 The fixtures are intentionally minimal: classification uses the real event
 types and messages that distinguish each terminal state, while the tests
 construct git, report, and gate-evidence state independently.

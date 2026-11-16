@@ -1,0 +1,5 @@
+{"type":"session","id":"pi-session-text-and-call"}
+{"type":"agent_start"}
+{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"The task is complete; I recorded the result above."},{"type":"toolCall","id":"call_trailing","name":"bash","arguments":{"command":"git status --porcelain"}}],"usage":{"input":180,"output":40,"cacheRead":12000,"cacheWrite":0,"reasoning":0,"totalTokens":12222},"stopReason":"stop","durationMs":2000}}
+{"type":"agent_end"}
+{"type":"agent_settled","aborted":false}

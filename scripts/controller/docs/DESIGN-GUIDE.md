@@ -108,7 +108,10 @@ would mask the real state. `TOOL-CALL-NO-TEXT` is a settled `stop` whose final
 message is a tool call with no text: the run ended mid-work. It is deliberately
 not `EMPTY-COMPLETION`, because that word is bound to the wrapper's one
 automatic continuation and a tool call is not the anomaly that continuation
-repairs.
+repairs. Text **plus** a trailing tool call is `SUCCESS`, by contrast: the class
+is defined on the ABSENCE of text, the text is what the run was supposed to
+produce, and the trailing call is bookkeeping pi emits in the same message (a
+test pins this so it is never re-argued as the opposite).
 
 Every check is a fact with an authoritative source
 (the stream, `git`, the report path the caller named), never an inference: a

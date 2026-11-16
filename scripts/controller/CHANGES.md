@@ -7,17 +7,23 @@ no separate version number, so entries are grouped by the work that landed.
 ## [Unreleased]
 
 ### Added
-- `LONG-TOOL` / `HUNG-TOOL` (CTL-18): `job-status.sh` now separates a heavy tool
-  that is still working from one that stopped. `HUNG-TOOL` requires the ABSENCE
-  of progress evidence (`progress_epoch` from the new sidecar: bytes appended to
-  the run's stream, or growth of the CPU-time and IO counters of the wrapper's
-  process subtree), so a slow `grep` or a long `pytest` no longer reads as hung
-  and the controller no longer kills working runs. The row also prints the tool's
-  own command (`cmd=`) and the exact child pids to steer (`steer=`), because the
-  only process the earlier row could name was the wrapper — the one process that
-  must not be killed. `pi-live.py` reads `/proc` counters and
-  `tool_execution_update` (a tool's own partial output) for that evidence; an
-  unreadable `/proc` leaves the fact `null` and licenses the weaker word.
+- `LONG-TOOL` / `HUNG-TOOL` (CTL-18): `job-status.sh` separates a heavy tool that
+  is still working from one that stopped. `HUNG-TOOL` requires the ABSENCE of
+  progress evidence, and the evidence set is the IN-FLIGHT TOOL CALL's own
+  process subtree — never the wrapper's whole tree, which also holds the agent
+  (a model loop) and the sidecar (its `/proc` scans and `git` calls), both of
+  which grow every tick and once made a blocked tool read as working forever.
+  Progress is a strictly positive delta in CPU ticks or IO bytes over the SAME
+  processes (`pid` plus the kernel's own start ticks); a decrease, a changed set,
+  a tool call's own START and an unreadable `/proc` are baselines, never
+  evidence, and an unknown fact stays `null` (the row prints
+  `progress=- progress-why=<reason>`). The row also prints the tool's own command
+  (`cmd=`) and the exact child pids to steer (`steer=`), because the only process
+  the earlier row could name was the wrapper — the one process that must not be
+  killed. `pi-live.py` publishes `progress_reason`, `progress_baseline_epoch`
+  (measured-but-never-moved, which is what licenses the stronger word) and
+  `progress_tree_nodes`/`progress_tree_truncated` for the walk's documented cap
+  (`PI_LIVE_TREE_NODE_LIMIT`, default 512).
 - `DIED` (CTL-19): `job-check.sh` reports a run whose `.done` is missing from the
   run name's own owner record (`<run>.lock`: pid, start epoch, kernel start
   ticks, boot id) instead of assuming `RUNNING`. A live owner stays `RUNNING (no
@@ -30,6 +36,10 @@ no separate version number, so entries are grouped by the work that landed.
   live owner's pid. `CONTROLLER_RUN_FORCE=1` never bypasses a live owner; for a
   dead one it retires the whole record set into `retired/<name>/<utc-stamp>/`
   (nothing is deleted) and names the previous owner.
+- A settled `stop` whose final message carries TEXT **and** a trailing tool call
+  is `SUCCESS` (pinned by a test): the text is the run's final message and the
+  call is bookkeeping pi emits in the same message. `TOOL-CALL-NO-TEXT` is
+  defined on the ABSENCE of text, so it never applies to that shape.
 - Run outcome vocabulary (CTL-13, CTL-17): `pi-impl.sh` now classifies
   `CONTEXT-FULL` (a settled `stopReason=length`: the context window filled; the
   work is intact and the controller starts a FRESH successor from the run's
@@ -53,7 +63,14 @@ no separate version number, so entries are grouped by the work that landed.
   releases it on every exit path, and writes `<run>.done` on every exit path after
   the child launches as `EXIT=<n> OUTCOME=CODE-EXIT AUTORESUME=<k>`. A resume
   removes the previous invocation's marker before its child starts, so a reader
-  never reports an older resume's exit while the new one works.
+  never reports an older resume's exit while the new one works. Every launch path
+  (new, resume, autoresume) closes the ownership descriptor before exec
+  (`controller_close_ownership_fds`), so a SIGKILLed wrapper frees the name at
+  once even while the agent it started — or a daemon the agent left behind — is
+  still running; `CONTROLLER_RUN_FORCE=1` retires the previous records into
+  `retired/<name>/<utc>/` and names what it retired. The owner record itself is
+  written only AFTER the invocation's own preflight passes, so a REFUSED
+  invocation never overwrites the identity of the owner it refused on.
 
 ### Fixed
 - A final assistant message with `stopReason=stop`, a tool call and no text no

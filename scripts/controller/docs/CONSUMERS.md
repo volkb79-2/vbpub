@@ -122,7 +122,7 @@ Read the `.done` marker's outcome word before deciding what to do next:
 | `UNCOMMITTED` | The work is real but not committed. Inspect the worktree and commit, or resume for the finish. |
 | `NO-REPORT` | The work may be done but the report is missing. Resume and ask for the report, or write it from the review. |
 | `USAGE-LIMIT` | Wait for the reset recorded in the account state, then `resume-usage-limited.sh`. |
-| `TOOL-CALL-NO-TEXT` | The run ended on a tool call and said nothing: inspect the worktree and the last tool output, then resume with a concrete instruction or restart. |
+| `TOOL-CALL-NO-TEXT` | The run ended on a tool call and said nothing: inspect the worktree and the last tool output, then resume with a concrete instruction or restart. A message with text **and** a trailing tool call is `SUCCESS` instead (see the row above), so this row is never the one to use for it. |
 | `CONTEXT-FULL` | The context window filled; the work is intact. Start a FRESH successor session seeded from the run's forward-oriented state file: continuing a full context cannot succeed, and a fresh session costs about an hour of re-orientation, so this is the controller's decision. |
 | `ERROR` / `INCOMPLETE` | Read `<run>.err` and the stream's last events before deciding. |
 
