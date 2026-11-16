@@ -874,3 +874,63 @@ def test_opencode_probe_cleanup_failure_is_indeterminate(home, monkeypatch):
     assert "indeterminate" in message
     assert "sniff failed" in message
     assert "probe close failed" in message
+
+
+# --- pi session directories ---------------------------------------------------
+
+_PI_UUID = "01a1dcc0-b884-7689-9e1d-32f8a3e1e963"
+
+
+def _pi_session(home: Path, uuid: str, *, root: Path | None = None, project: str = "--workspaces-repo--") -> Path:
+    sessions = (root or (home / ".pi" / "agent" / "sessions")) / project
+    sessions.mkdir(parents=True, exist_ok=True)
+    path = sessions / f"2026-01-01T00-00-00-000Z_{uuid}.jsonl"
+    path.write_text("{}\n", encoding="utf-8")
+    return path
+
+
+def test_a_pi_uuid_resolves_to_its_session_file(home, monkeypatch):
+    monkeypatch.delenv("PI_CODING_AGENT_SESSION_DIR", raising=False)
+    monkeypatch.delenv("PI_CODING_AGENT_DIR", raising=False)
+    path = _pi_session(home, _PI_UUID)
+    assert resolve_session_ref(_PI_UUID, Path("/workspaces/repo")).path == path
+
+
+def test_a_pi_uuid_in_a_nested_project_directory_still_resolves(home, monkeypatch):
+    monkeypatch.delenv("PI_CODING_AGENT_SESSION_DIR", raising=False)
+    monkeypatch.delenv("PI_CODING_AGENT_DIR", raising=False)
+    path = _pi_session(home, _PI_UUID, project="--workspaces-repo--/nested")
+    assert resolve_session_ref(_PI_UUID).path == path
+
+
+def test_pi_session_directory_environment_overrides_are_honoured(home, tmp_path, monkeypatch):
+    session_dir = tmp_path / "custom-sessions"
+    monkeypatch.setenv("PI_CODING_AGENT_SESSION_DIR", str(session_dir))
+    path = _pi_session(home, _PI_UUID, root=session_dir)
+    assert resolve_session_ref(_PI_UUID).path == path
+
+    agent_dir = tmp_path / "custom-agent"
+    monkeypatch.delenv("PI_CODING_AGENT_SESSION_DIR")
+    monkeypatch.setenv("PI_CODING_AGENT_DIR", str(agent_dir))
+    path = _pi_session(home, _PI_UUID, root=agent_dir / "sessions")
+    assert resolve_session_ref(_PI_UUID).path == path
+
+
+def test_the_same_uuid_in_a_claude_project_and_a_pi_session_is_ambiguous(home, monkeypatch):
+    monkeypatch.delenv("PI_CODING_AGENT_SESSION_DIR", raising=False)
+    monkeypatch.delenv("PI_CODING_AGENT_DIR", raising=False)
+    claude = _claude_session(home, "-workspaces-repo", _PI_UUID)
+    pi_path = _pi_session(home, _PI_UUID)
+    with pytest.raises(LocateError) as e:
+        resolve_session_ref(_PI_UUID, Path("/workspaces/repo"))
+    message = str(e.value)
+    assert "matches 2 sessions" in message
+    assert str(claude) in message and str(pi_path) in message
+
+
+def test_an_unknown_pi_uuid_errors_naming_the_pi_root(home, monkeypatch):
+    monkeypatch.delenv("PI_CODING_AGENT_SESSION_DIR", raising=False)
+    monkeypatch.delenv("PI_CODING_AGENT_DIR", raising=False)
+    with pytest.raises(LocateError) as e:
+        resolve_session_ref("04fcd848-15cb-48c2-b8fe-2ff2f6601000")
+    assert "pi's" in str(e.value) and ".pi/agent/sessions" in str(e.value)

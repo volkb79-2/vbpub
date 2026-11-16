@@ -351,7 +351,7 @@ def _extract_guard(args: Any) -> None:
             "follow", "interval", "bell", "on_attention", "notify_project",
             "attention_min_chars", "profile", "answer_length", "max_checkpoints",
             "checkpoints", "max_words", "budget_tokens", "goal_prompt", "goal_file",
-            "tail_prose_tokens", "include_thinking", "show_api_errors",
+            "state_file", "tail_prose_tokens", "include_thinking", "show_api_errors",
             "show_compaction_content", "tool_calls", "tool_errors",
             "agent_comms", "agent_launch_pattern",
             "show_tool_calls", "show_tool_call_intent", "prose_only", "no_prose",
@@ -441,12 +441,12 @@ def _extract_guard(args: Any) -> None:
     tail_prose = eff("tail_prose_tokens")
     layout_knobs = any(
         getattr(args, attr, None) not in (None, False)
-        for attr in ("goal_prompt", "goal_file", "tail_prose_tokens")
+        for attr in ("goal_prompt", "goal_file", "state_file", "tail_prose_tokens")
     )
     if layout_knobs and pname != "readback":
         raise CliFailure(
-            "--goal-prompt/--goal-file/--tail-prose-tokens shape the readback layout "
-            "and require --preset readback",
+            "--goal-prompt/--goal-file/--state-file/--tail-prose-tokens shape the "
+            "readback layout and require --preset readback",
             exit_code=2,
             show_help=True,
         )
@@ -906,7 +906,7 @@ With --follow, Nyxloom prints a one-shot prefix and then reads only appended pay
             ),
             _opt(
                 "--format", "Session source format", group=_G_SOURCE,
-                choices=("claude-code", "codex", "codex-exec", "opencode", "reasonix"),
+                choices=("claude-code", "codex", "codex-exec", "opencode", "pi", "reasonix"),
                 default=None,
             ),
             _opt(
@@ -967,6 +967,14 @@ With --follow, Nyxloom prints a one-shot prefix and then reads only appended pay
                 "--goal-file",
                 "Readback layout: pin the goal anchor from this file instead of the "
                 "session's first prompt; requires --preset readback",
+                group=_G_CONTENT, default=None,
+            ),
+            _opt(
+                "--state-file",
+                "Readback layout: embed this living state file verbatim (bounded by "
+                "--budget-tokens, truncated at a paragraph boundary with a marker) as the "
+                "STATE section after the goal anchor and before the recent prose; "
+                "requires --preset readback",
                 group=_G_CONTENT, default=None,
             ),
             _opt(
@@ -1227,7 +1235,7 @@ With --follow, Nyxloom prints a one-shot prefix and then reads only appended pay
     ))
     lossless_options = (
         _opt("--opencode-session", "Select an OpenCode session id", default=None),
-        _opt("--format", "Session source format", choices=("claude-code", "codex", "opencode", "reasonix"), default=None),
+        _opt("--format", "Session source format", choices=("claude-code", "codex", "opencode", "pi", "reasonix"), default=None),
         _opt("--since", "Start after this source marker", default=None),
         _opt("--since-file", "Read the last marker from a prior extract", default=None),
         _opt("--until", "Stop at this source marker", default=None),
@@ -1241,7 +1249,7 @@ With --follow, Nyxloom prints a one-shot prefix and then reads only appended pay
     registry.register(_leaf("nyxloom-harness", "extract-debug", "Inspect extraction classification and window decisions.", cli.cmd_extract_debug,
         arguments=(extraction_path,), fields={"cmd": "extract-debug"}, options=(
             _opt("--opencode-session", "Select an OpenCode session id", default=None),
-            _opt("--format", "Session source format", choices=("claude-code", "codex", "opencode", "reasonix"), default=None),
+            _opt("--format", "Session source format", choices=("claude-code", "codex", "opencode", "pi", "reasonix"), default=None),
             _opt("--profile", "Extraction profile", choices=("all", "operator-review"), default=None),
             _opt(("--max-checkpoints", "--checkpoints"), "Maximum checkpoints", type=int, default=None),
             _opt(("--answer-length", "--long-threshold"), "Long answer threshold", type=int, default=None),

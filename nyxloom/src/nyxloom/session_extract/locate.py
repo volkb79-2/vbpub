@@ -39,6 +39,15 @@ session history rather than assumed:
     trigger would have rejected every real opencode id there is. opencode
     keeps one machine-wide store, not a per-project tree, so this is a
     short fixed candidate list of DB paths, not a walk.
+  - **pi session uuid** -- a plain uuid again, but under pi's OWN tree: every
+    session is one file `<ISO-time>_<uuid>.jsonl` in a per-cwd directory
+    under `<pi home>/sessions/`, so the uuid is matched as a filename
+    SUFFIX (`_<uuid>.jsonl`) there. The tree is `$PI_CODING_AGENT_SESSION_DIR`
+    when pi was given that, else `$PI_CODING_AGENT_DIR/sessions`, else
+    `~/.pi/agent/sessions` (pi's own resolution, read from the installed
+    package rather than guessed). A controller's `pi --mode json` run
+    streams live elsewhere (the controller's own run directory) and are
+    never discovered here -- pass their path.
   - **Reasonix session id** -- a timestamp/model filename stem such as
     `20260724-001821.579557040-deepseek-v4-flash`, or a `sa_...` subagent
     filename stem. Reasonix keeps primary files directly under
@@ -178,6 +187,69 @@ def _codex_sessions_roots() -> list[Path]:
         if candidate.name.startswith(".codex") and stat.S_ISDIR(_entry_mode(candidate)):
             add(candidate / "sessions")
     return roots
+
+
+def _pi_sessions_roots() -> list[Path]:
+    """pi's session store, resolved the way pi itself resolves it.
+
+    pi reads ``PI_CODING_AGENT_SESSION_DIR`` first, then
+    ``PI_CODING_AGENT_DIR`` + ``sessions``, then ``~/.pi/agent/sessions``
+    (verified against the installed package's ``config.js``/
+    ``main.js``). All three are checked so a session recorded before an
+    environment override still resolves; a genuinely absent root is a
+    negative, not an error.
+    """
+    roots: list[Path] = []
+    configured = os.environ.get("PI_CODING_AGENT_SESSION_DIR")
+    if configured:
+        roots.append(Path(configured).expanduser())
+    agent_dir = os.environ.get("PI_CODING_AGENT_DIR")
+    if agent_dir:
+        roots.append(Path(agent_dir).expanduser() / "sessions")
+    roots.append(Path.home() / ".pi" / "agent" / "sessions")
+    return _unique_physical_paths(roots) if roots else roots
+
+
+def _pi_matches(ref: str) -> list[Path]:
+    """pi session files whose name ends ``_<uuid>.jsonl``.
+
+    One directory level is enough for pi's own layout
+    (``sessions/<encoded-cwd>/<file>.jsonl``), but the walk is recursive
+    because that is the harness's layout, not a promise: a nested
+    subdirectory pi starts writing must not silently become invisible.
+    """
+    suffix = f"_{ref.lower()}.jsonl"
+    matches: list[Path] = []
+    visited: set[tuple[int, int]] = set()
+    seen_files: set[tuple[int, int]] = set()
+
+    def visit(directory: Path) -> None:
+        try:
+            metadata = directory.stat()
+        except FileNotFoundError:
+            return
+        except OSError as exc:
+            raise _scan_indeterminate(directory, "inspect", exc) from exc
+        if not stat.S_ISDIR(metadata.st_mode):
+            return
+        identity = (metadata.st_dev, metadata.st_ino)
+        if identity in visited:
+            return
+        visited.add(identity)
+        for path in _scan_directory(directory, missing_ok=True):
+            mode = _entry_mode(path)
+            if stat.S_ISDIR(mode):
+                visit(path)
+            elif stat.S_ISREG(mode) and path.name.lower().endswith(suffix):
+                file_stat = path.stat()
+                file_identity = (file_stat.st_dev, file_stat.st_ino)
+                if file_identity not in seen_files:
+                    seen_files.add(file_identity)
+                    matches.append(path)
+
+    for root in _pi_sessions_roots():
+        visit(root)
+    return sorted(_unique_physical_paths(matches))
 
 
 def _reasonix_projects_root() -> Path:
@@ -536,22 +608,24 @@ def resolve_session_ref(ref: str, cwd: Path | None = None) -> SessionRef:
             candidates += _claude_matches_in(project_dir, ref)
         if _UUID_RE.match(ref):
             candidates += _codex_matches(ref)
+            candidates += _pi_matches(ref)
 
         unique = _unique_physical_paths(candidates)
         if len(unique) == 1:
             return SessionRef(path=unique[0])
         if not unique:
             codex_roots = ", ".join(str(root) for root in _codex_sessions_roots())
+            pi_roots = ", ".join(str(root) for root in _pi_sessions_roots())
             raise LocateError(
-                f"session {ref!r} not found under {projects_root} or "
-                f"{codex_roots} -- pass the session log's full path, or see "
+                f"session {ref!r} not found under {projects_root}, {codex_roots} or "
+                f"pi's {pi_roots} -- pass the session log's full path, or see "
                 f"`nyxloom extract-sessions <directory>` to list what exists"
             )
         raise _ambiguous(ref, [str(c) for c in unique])
 
     raise LocateError(
         f"{ref!r} is neither an existing path nor a recognized session id "
-        f"(a Claude Code/Codex uuid, a 17-hex-char Claude Code sub-agent agentId, "
+        f"(a Claude Code/Codex/pi uuid, a 17-hex-char Claude Code sub-agent agentId, "
         f"a Reasonix timestamp/model or `sa_...` sub-agent id, or an opencode "
         f"`ses_...` id)"
     )

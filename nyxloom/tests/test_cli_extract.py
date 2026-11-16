@@ -1289,7 +1289,7 @@ def test_extract_redact_pattern_replaces_matching_paragraphs(tmp_path, capsys):
     assert exit_code == 0
     assert "redacted 1 paragraph(s) matching --redact-pattern" in captured.err
     assert "please look into this" not in captured.out
-    assert "redacted paragraph -- matched --redact-pattern" in captured.out
+    assert "redacted paragraph -- matched --redact-pattern #1" in captured.out
 
 
 def test_extract_redact_pattern_rejects_an_invalid_regex(tmp_path, capsys):
@@ -1331,7 +1331,7 @@ def test_extract_follow_redacts_live_phase_two_output_like_phase_one(
     assert "please look into this" not in out
     assert "please look at the phase-two secret" not in out
     assert "safe phase-two detail" in out
-    assert out.count("redacted paragraph -- matched --redact-pattern") == 2
+    assert out.count("redacted paragraph -- matched --redact-pattern #1") == 2
 
 
 def test_extract_lossless_rejects_redaction_instead_of_claiming_verbatim_output(
