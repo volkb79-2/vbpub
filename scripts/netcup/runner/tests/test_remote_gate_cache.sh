@@ -40,6 +40,7 @@ git -C "$REPO" update-ref refs/remotes/old "$v1_commit"
 printf '#!/usr/bin/env python3\nprint("remote-gate fixture two")\n' > "$REPO/scripts/netcup/runner/remote-gate.py"
 git -C "$REPO" commit -qam 'tool v2' -m 'Co-Authored-By: Codex deepseek-v4.1-flash <noreply@openai.com>'
 v2_commit=$(git -C "$REPO" rev-parse HEAD)
+v2_blob=$(git -C "$REPO" rev-parse "$v2_commit:scripts/netcup/runner/remote-gate.py")
 git -C "$REPO" update-ref refs/remotes/origin/main "$v2_commit"
 git -C "$REPO" switch -qc no-tool HEAD
 git -C "$REPO" rm -q scripts/netcup/runner/remote-gate.py
@@ -56,6 +57,29 @@ published=$(sed -n 's/^cache=//p' "$ROOT/one.out")
 [[ -n $published && -s $published ]] || fail 'the refresh did not publish a readable copy'
 grep -qF 'remote-gate fixture' "$published" || fail 'the published copy is not the tool source'
 [[ -x $published ]] || fail 'the published copy is not executable'
+
+# (1a) The DEFAULT repository is the documented $REMOTE_GATE_REPO, and a stray
+# `repo` in the caller's environment is not read at all: reading it would point
+# the refresh at another repository and answer a valid question with another
+# tree's refs. Two repositories with the same ref and DIFFERENT tool content
+# make which one was read observable in the emitted identity.
+STRAY_REPO=$ROOT/stray-repo
+mkdir -p "$STRAY_REPO/scripts/netcup/runner"
+git -C "$STRAY_REPO" init -q
+git -C "$STRAY_REPO" config user.name test
+git -C "$STRAY_REPO" config user.email test@example.invalid
+printf '#!/usr/bin/env python3\nprint("stray repository tool")\n' > "$STRAY_REPO/scripts/netcup/runner/remote-gate.py"
+git -C "$STRAY_REPO" add scripts/netcup/runner/remote-gate.py
+git -C "$STRAY_REPO" commit -qm 'stray tool' -m 'Co-Authored-By: Codex deepseek-v4.1-flash <noreply@openai.com>'
+git -C "$STRAY_REPO" update-ref refs/remotes/origin/main "$(git -C "$STRAY_REPO" rev-parse HEAD)"
+stray_blob=$(git -C "$STRAY_REPO" rev-parse 'origin/main:scripts/netcup/runner/remote-gate.py')
+env -u REMOTE_GATE_CACHE_DIR REMOTE_GATE_REPO="$REPO" repo="$STRAY_REPO" \
+  "$SRC" origin/main --cache-dir "$ROOT/cache-default" > "$ROOT/default-repo.out" 2>&1 \
+  || { cat "$ROOT/default-repo.out" >&2; fail 'the documented REMOTE_GATE_REPO default was refused'; }
+contains "$ROOT/default-repo.out" "identity=blob:$v2_blob" \
+  'the documented REMOTE_GATE_REPO is the default repository'
+not_contains "$ROOT/default-repo.out" "$stray_blob" \
+  'a stray `repo` variable in the environment is not used as the repository'
 
 # (1b) The publish is a RENAME, not an in-place rewrite: an observer that holds
 # the previous copy must still see the previous bytes after the refresh, so no

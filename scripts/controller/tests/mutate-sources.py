@@ -160,6 +160,9 @@ mutant("scripts/netcup/runner/remote-gate-cache.sh", "remote-gate-cache-inplace-
 mutant("scripts/netcup/runner/remote-gate-cache.sh", "remote-gate-cache-name-only-validity.sh",
        'published_is_valid() {',
        'published_is_valid() {\n  [[ -s $1 ]] && return 0', runner)
+mutant("scripts/netcup/runner/remote-gate-cache.sh", "remote-gate-cache-stray-repo.sh",
+       'repo=${REMOTE_GATE_REPO:-}',
+       'repo=${repo:-${REMOTE_GATE_REPO:-}}', runner)
 mutant("scripts/netcup/runner/remote-gate-cache.sh", "remote-gate-cache-lock-ignored.sh",
        'if ! flock -w "$lock_wait" "$refresh_fd"; then',
        'if false; then', runner)

@@ -50,7 +50,12 @@ usage() {
 }
 
 ref=''
-[[ -n ${repo:-} ]] || repo=$(cd -- "$SCRIPT_DIR/../../.." && pwd -P)
+# The documented default is $REMOTE_GATE_REPO. A stray `repo` in the caller's
+# environment must NOT be read: it would silently point the refresh at
+# somebody else's repository, and a wrong repository answers a valid question
+# with another tree's refs.
+repo=${REMOTE_GATE_REPO:-}
+[[ -n $repo ]] || repo=$(cd -- "$SCRIPT_DIR/../../.." && pwd -P)
 tool=scripts/netcup/runner/remote-gate.py
 cache_dir=${REMOTE_GATE_CACHE_DIR:-}
 positional=()

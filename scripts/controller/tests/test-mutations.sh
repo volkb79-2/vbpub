@@ -355,7 +355,7 @@ for skills_mutant in skills-stamp-ownership skills-modified-clobber skills-stale
 done
 for cache_mutant in remote-gate-cache-inplace-publish remote-gate-cache-name-only-validity \
                     remote-gate-cache-lock-ignored remote-gate-cache-absent-as-refresh \
-                    remote-gate-cache-identity-missing; do
+                    remote-gate-cache-identity-missing remote-gate-cache-stray-repo; do
   expect_killed "$cache_mutant" \
     env REMOTE_GATE_CACHE_SCRIPT="$ROOT/mutants/scripts/netcup/runner/$cache_mutant.sh" \
       bash "$REPO_ROOT/scripts/netcup/runner/tests/test_remote_gate_cache.sh"
