@@ -6,6 +6,7 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 <!-- cmru: pending release notes begin -->
 - fix(pwmcp): recognise an Anubis deny page as bot protection (provider `Anubis`, kind `deny page`, exit 4) so an agent reads the denial as BLOCKED and not as page content (PWMCP-09)
+- chore(pwmcp): the console-corpus tool's `package --out` and `verify [DIR]` default to `artifacts/console-corpus` derived from the script location instead of requiring an explicit path; an explicitly supplied path still wins and an unset `PWMCP_CONSOLE_CORPUS_DIR` still raises `CorpusMissing` (PWMCP-21)
 <!-- cmru: pending release notes end -->
 
 <!-- cmru: release history -->

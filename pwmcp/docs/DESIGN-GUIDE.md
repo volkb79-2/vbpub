@@ -398,7 +398,11 @@ means the optional full-corpus checks are unavailable; a bad explicit path is
 an error. The two real-corpus tests use the shared
 `tests/_testdeps.py::optional_local_data` helper: an unselected corpus skips
 with its reason unless `PWMCP_REQUIRE_CONSOLE_CORPUS=1` makes that absence a
-failure, while invalid selected data stays an error. Registered gate lanes
+failure, while invalid selected data stays an error. The tool's two CLI paths are
+explicit arguments whose DEFAULT is the conventional git-ignored
+`artifacts/console-corpus` derived from the script's own location: a default
+carries no information that a caller supplied, so it can never stand in for the
+corpus source above. Registered gate lanes
 remain corpus-free. See the [local verification example](CONSUMERS.md#local-console-corpus)
 and the [OCR phase design](DESIGN-OCR-PHASE2-3.md#1-local-console-corpus).
 

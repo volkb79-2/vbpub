@@ -1070,7 +1070,9 @@ never published. Set `PWMCP_CONSOLE_CORPUS_DIR` to an absolute path containing
 `frames/` to let the two full-corpus checks verify each frame and the pinned,
 deterministic tar digest. With no path, those checks skip with an explicit
 reason; `PWMCP_REQUIRE_CONSOLE_CORPUS=1` makes a missing corpus fail during a
-focused run. The registered gate lanes do not include or require the full
+focused run. `tools/corpus/console_corpus.py package` and `verify` default to
+`artifacts/console-corpus` (derived from the script's location) and accept an
+explicit path instead. The registered gate lanes do not include or require the full
 capture. See the [design rationale](docs/DESIGN-GUIDE.md#local-console-corpus)
 and [local verification example](docs/CONSUMERS.md#local-console-corpus).
 

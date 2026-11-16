@@ -406,15 +406,23 @@ subdirectory with the indexed frames:
 
 ```bash
 cd pwmcp
-export PWMCP_CONSOLE_CORPUS_DIR="$PWD/artifacts/console-corpus"   # the conventional, gitignored place
-python3 tools/corpus/console_corpus.py verify "$PWMCP_CONSOLE_CORPUS_DIR"
+python3 tools/corpus/console_corpus.py verify        # defaults to artifacts/console-corpus (derived from the script)
+# equivalent explicit form, which always wins:
+python3 tools/corpus/console_corpus.py verify artifacts/console-corpus
+# rebuild the deterministic tar the pin describes (default output: artifacts/console-corpus/<pin archive>)
+python3 tools/corpus/console_corpus.py package artifacts/console-corpus/frames
 ```
 
 The verifier checks the exact frame set, each frame's SHA256 and dimensions,
 and the SHA256 and size of the deterministic tar described by
 `tests/corpus/console/CORPUS-ASSETS.json`. It reads only that local directory;
-it has no download or cache path. If the variable is unset, the two tests that
-need the complete capture skip with a reason. Set
+it has no download or cache path. The `verify` argument and `package --out` are
+explicit paths: only their DEFAULT (`artifacts/console-corpus`, the conventional
+git-ignored place) is derived from the script's own location, so it is neither a
+home-directory constant nor an override of a path you pass. The corpus SOURCE
+stays explicit: `locate` and the tests read only `PWMCP_CONSOLE_CORPUS_DIR`, and
+an unset variable still raises `CorpusMissing` (no fallback). If the variable is
+unset, the two tests that need the complete capture skip with a reason. Set
 `PWMCP_REQUIRE_CONSOLE_CORPUS=1` when running those tests in an environment
 with the local directory available to make an absent corpus fail. The release
 gate lanes remain corpus-free. See the [design rationale](DESIGN-GUIDE.md#local-console-corpus).

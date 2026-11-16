@@ -579,14 +579,19 @@ rows and remaining survivors, then record the final verdict and any accepted sur
 
 ## PWMCP-21 — corpus tooling should consume the per-project VM layout
 
-**Status:** PARTLY FIXED 2026-11-04 (6be337905): `eval_glyphgrid.py` defaults derive from the script location and the docs name `pwmcp/artifacts/console-corpus` as the place to point `PWMCP_CONSOLE_CORPUS_DIR` at (unset still raises `CorpusMissing`). Still open: `console_corpus.py run --out`/verifier defaults (explicit paths) (filed 2026-11-03). Console recording moved to the VM tool: its `console record --out` and `--state-dir` both take explicit paths, and `--readonly-media` takes an explicit ISO path. The corpus side
-does not yet follow: capture output and the verifier still take explicit paths, and `tools/glyphgrid/eval_glyphgrid.py` hardcodes `DEFAULT_SERIES` under a home directory.
+**Status:** FIXED 2026-11-16 (unreleased, branch `pi-pwmcp-burn-20261116`): `console_corpus.py` derives `ARTIFACTS_DIR =
+<pwmcp>/artifacts/console-corpus` from its own file location, `package --out` and `verify [DIR]` take an explicit path with
+that directory as their DEFAULT (the pin's archive name is the default output file), and `package` creates the
+git-ignored folder when it is missing. The corpus SOURCE stays explicit: `locate` and both real-corpus tests still read
+only `PWMCP_CONSOLE_CORPUS_DIR`, and an unset variable still raises `CorpusMissing` (no fallback); an explicitly supplied
+path always wins. Docs: `docs/CONSUMERS.md#local-console-corpus` (pasteable default form plus the explicit form) and the
+`PWMCP-21` note in `docs/DESIGN-OCR-PHASE2-3.md`. Oracles:
+`test_package_defaults_to_the_artifacts_folder_derived_from_the_script` (loads the tool from a copied path and proves the
+constant follows the file, not a home directory), `test_verify_defaults_to_the_artifacts_folder_derived_from_the_script`,
+`test_package_creates_the_derived_artifacts_folder`, and the existing `test_eval_glyphgrid_defaults_derive_from_the_script_location`.
 
-**Proposed fix.** Keep captured frames in `pwmcp/artifacts/console-corpus/` (`frames/`, `manifest.jsonl`), derived from the script
-location, and make that the documented place to point `PWMCP_CONSOLE_CORPUS_DIR` at. Do not turn it into an implicit default:
-the corpus design (`docs/DESIGN-OCR-PHASE2-3.md`) deliberately has no fallback, so an unset variable must keep raising
-`CorpusMissing`; any change there is a design decision, not a path derivation. Replace the `eval_glyphgrid.py` home-directory default with a
-location derived from the same folder, and update the corpus README, `docs/CONSUMERS.md#local-console-corpus` and this tool's README.
+**Original (partly fixed 2026-11-04, 6be337905):** `eval_glyphgrid.py` defaults already derived from the script location and the docs
+named `pwmcp/artifacts/console-corpus`; still open then were `console_corpus.py`'s `package --out`/verifier defaults (explicit paths only).
 
 ## PWMCP-22 — unported groundwork from the 2026-10-27 canvas-capture session: xterm.js buffer reader, password-only login helper, intrinsic-bitmap canvas capture
 
