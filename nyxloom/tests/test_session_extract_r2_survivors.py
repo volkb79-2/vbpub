@@ -512,12 +512,24 @@ def test_layout_a_state_file_that_fits_is_not_marked_truncated(tmp_path):
     assert plan.state_kept_chars == plan.state_total_chars
 
 
-# layout.py:295 0->None -- a non-positive limit keeps nothing, as an INTEGER
+# layout.py:295 0->None -- a non-positive limit keeps nothing, as an INTEGER.
+# The guard is `< 1` (not `<= 0`) precisely so its own boundary mutant is NOT
+# equivalent: with `<= 0`, the `<` mutant let the limit 0 fall through to
+# `text[:0] == ""`, `rfind` gave -1 and it still returned 0 -- identical, so no
+# oracle could kill it. At `< 1` the mutant (`<= 1`) returns 0 for a limit of 1,
+# where a newline at the first byte legitimately yields 1.
 def test_layout_line_cut_returns_zero_an_not_None():
     assert layout._line_cut("a\nb", 0) == 0
+    # A NEGATIVE limit must not slice from the END (`text[:-1]` would drop the
+    # last character and report a cut at the text's own end).
+    assert layout._line_cut("a\nb", -1) == 0
+    assert layout._line_cut("a\nb", -3) == 0
     assert isinstance(layout._line_cut("a\nb", -1), int)
     assert layout._line_cut("a\nb", 2) == 2
     assert layout._line_cut("ab", 1) == 0
+    # A newline at the FIRST byte inside a ONE-character window is a cut of 1:
+    # this is the assertion the `< 1` -> `<= 1` mutant fails.
+    assert layout._line_cut("\nx", 1) == 1
 
 
 # layout.py:298 GtE->Gt -- a newline at offset 0 still ends a line (index 0)

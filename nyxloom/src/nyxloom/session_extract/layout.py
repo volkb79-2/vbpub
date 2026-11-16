@@ -290,8 +290,19 @@ def paragraph_cut(text: str, limit_chars: int) -> int:
 
 
 def _line_cut(text: str, limit_chars: int) -> int:
-    """Longest prefix ending at a NEWLINE boundary within `limit_chars`."""
-    if limit_chars <= 0:
+    """Longest prefix ending at a NEWLINE boundary within `limit_chars`.
+
+    The guard is ``< 1``, not ``<= 0``, and that is deliberate: it must reject a
+    NEGATIVE limit (``text[:-1]`` would silently drop the last character and
+    return a cut at the END of the text) and 0 alike, while its OWN boundary
+    mutant (``<= 1``) has to stay DISTINGUISHABLE. ``<= 0`` made that impossible:
+    with ``< 0`` the limit 0 falls through to ``text[:0] == ""``, ``rfind`` yields
+    -1 and the function returns 0 anyway, so the mutant was EQUIVALENT and no
+    oracle could ever kill it. At ``< 1`` the mutant returns 0 for a limit of 1,
+    where a newline at the first byte legitimately yields 1 -- a difference a
+    test CAN see (``tests/test_session_extract_r2_survivors.py``).
+    """
+    if limit_chars < 1:
         return 0
     window = text[:limit_chars]
     index = window.rfind("\n")
