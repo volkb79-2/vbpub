@@ -7473,8 +7473,9 @@ separately. Ships with the `durable` declarations in the same release.
 
 ## RG-150 — lane user, checkout owner and cockpit user must be one uid; a mismatch surfaces as three unrelated errors
 
-**Status:** OPEN (recipe documented in CONSUMERS.md "Runner uid: one owner for checkout, cockpit and lane"; preflight
-open). Severity: usability. Filed 2026-11-04 from the <host> reinstall (six failed `worktree` lane attempts).
+**Status:** CLOSED 2026-11-16 (pi-rg-wave2) for the preflight part; the optional Git-error surfacing and RG-151's
+`user = "owner"` remain open elsewhere. (Recipe documented in CONSUMERS.md "Runner uid: one owner for checkout, cockpit and
+lane".) Severity: usability. Filed 2026-11-04 from the <host> reinstall (six failed `worktree` lane attempts).
 
 **Observed.** The `tester-unified` lane user is uid 1003 (image `USER`, `/opt/tester-venv` and `<home>` owned by
 it). On <host> the runner account and the cockpit `vscode` user were uid 1000, so a checkout had to belong to one of two
@@ -7507,6 +7508,31 @@ cockpit start script remaps `vscode` to the runner uid.
 `MDT_COW_ROOT`) with the lane user's uid (`environments.*.user`, else the image user) and refuses with one actionable line
 ("checkout owned by uid 1000, lane runs as 1003: see CONSUMERS.md runner uid recipe") before the editable install, instead of
 `editable assay install failed`. Optional: surface the Git error line when the editable install fails.
+
+**IMPLEMENTED 2026-11-16 (pi-rg-wave2) — the preflight half; the optional Git-line surfacing stays open.**
+`preflight_lane_uid_ownership` (`run_gate.py`) runs in `main()` immediately after RG-78's `preflight_assay_pins` and
+BEFORE admission, the shared-infra lock and the runner, so it is reached on every ephemeral lane. `lane_container_uid`
+reads the lane uid as a NUMBER: a declared `[environments.<n>] user`'s numeric head, else the selected image's own
+`Config.User` from `docker image inspect --format {{.Config.User}}`. `path_owner_uid` stats the judged tree and, only when
+the lane would actually use it (`[resources.cowtree] mode = "auto"` and `MDT_COW_ROOT` set), the CoW root. A disagreement
+raises `GateNotRunError("environment-mismatch", ...)`: NOT_RUN 3, ONE line naming every disagreeing owner with its uid,
+the uid the lane would run as and where that uid came from, and the CONSUMERS.md section. Both symptoms the entry
+measured are quoted in that line as the thing the refusal replaces.
+
+*Every clause is DERIVED.* An absent declared user, a root or unset image user (`""`, `root`, `0`, `0:0`), a non-numeric
+image user, an image that is not inspectable locally (needs a pull), a missing `docker` on PATH, and no `MDT_COW_ROOT` all
+yield `(None, why)` and the check says nothing at all. That is deliberate and is the superset-refusal lesson: an invented
+uid would either refuse a healthy estate (the refusal gets switched off, and then it protects nothing) or certify a
+mismatch as agreement. `mode = "host"` and `mode = "exec"` lanes declare no lane user and are untouched.
+
+*Oracles* (12, `TestRunGatesLaneUidOwnershipPreflight`): each derivation face; a mismatch naming the checkout; a CoW-root
+mismatch naming ONLY the CoW root when the checkout agrees; `mode = "auto"` vs `off`; and an end-to-end `main()` run that
+exits 3 with the one-line refusal and starts NO container (`docker_runs(log) == []`). Red-first: replacing the `main()`
+call with `pass` makes the end-to-end oracle fail (the lane runs and exits 0); restored, it passes.
+
+Spec: new `R-56` (SPEC.md §5) and Rev 24's log line. Docs: CONSUMERS.md's "Runner uid" section now states the refusal and
+its silence conditions instead of listing the three symptoms as the outcome. Still open here: surfacing the Git line
+inside `editable assay install failed`, and phase 1's `user = "owner"` (RG-151).
 
 <!-- Id note (2026-11-04): RG-150 (lane user, checkout owner and cockpit user must be one uid) exists only on branch
      fix-<host>-gate-ownership-20261104. The ids below start at RG-151; the controller resolves ordering on merge. -->

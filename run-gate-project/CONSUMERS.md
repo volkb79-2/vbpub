@@ -2887,9 +2887,13 @@ On a developer host that is the normal case (the devcontainer maps `vscode` onto
 provisioned by hand (for example the netcup runner scripts) create the runner account as uid/gid 1003 and remap the
 cockpit's `vscode` user to it (`usermod -u 1003`); do not chown a checkout to a second uid per run. A different uid is
 only possible with `[environments.<name>] user = "invoker"` and an image whose venv that uid can write; `tester-unified`
-is not such an image. Symptoms of a mismatch: `run-gate: editable assay install failed` with `dubious ownership` in the
-build log, `Permission denied` on `<project>/.run-gate/...`, or `MDT_COW_ROOT must be owned by the non-root caller uid`.
-See RG-150.
+is not such an image. A mismatch is now refused **before the lane starts** (exit 3, reason `environment-mismatch`): one line
+names the checkout or CoW root whose uid disagrees and the uid the lane would run as, instead of the three unrelated
+errors it used to surface as — `run-gate: editable assay install failed` with `dubious ownership` in the build log,
+`Permission denied` on `<project>/.run-gate/...`, or `MDT_COW_ROOT must be owned by the non-root caller uid`.
+The refusal needs the lane uid as a number: a declared `user`, or the image's own `Config.User`; when neither yields
+a numeric uid (a root image, an image that needs a pull, a named user) the check says nothing at all rather than
+guessing. See RG-150.
 
 ## Distribution — installed wheel and SemVer
 

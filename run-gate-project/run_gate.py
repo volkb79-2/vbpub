@@ -17,7 +17,7 @@ See run-gate-project/README.md (design authority) and CONSUMERS.md (adoption).
 # Public CLI distribution: the installed wheel's metadata supplies its version.
 # __revision__ is retained only for persisted-record provenance.
 # rev 65: send single-line JSON over the newline-framed cgprofile control socket
-__revision__ = 69  # rev 69: refuse a WRITTEN-null ciu `schema_version`; document the verbs/flags/env the usage text had omitted
+__revision__ = 70  # rev 70: RG-150 one-uid preflight (R-56); rev 69 refused a written-null ciu schema_version and documented the usage text
 # rev 66: preflight observer contract before private R2 lanes
 # rev 64: refuse failed ctl carriers and foreign watch verdicts
 # Rev 63 holds requested exec/bare-host children behind a ready/continue
@@ -2896,6 +2896,118 @@ def disclose_image_selection(selection: dict | None) -> None:
         f"declared {selection.get('declared_image')}{identity}{unavailable}",
         flush=True,
     )
+
+
+def lane_container_uid(env: dict, docker: str | None) -> tuple[int | None, str]:
+    """The numeric uid an ephemeral lane's container process runs as.
+
+    RG-150 needs the lane user as a NUMBER to compare with the checkout and
+    CoW-root owners. Faces: a declared `[environments.<n>] user` (already
+    validated as numeric or derived from `invoker`), else the selected
+    image's own `Config.User`. Returns `(None, why)` whenever no uid can be
+    ESTABLISHED — an absent/uninspectable image, a root image, and a named
+    (non-numeric) image user all land here, because guessing one would either
+    invent a refusal for a healthy estate or invent agreement for a broken
+    one. This is a READ: the caller never turns `None` into a pass/fail claim.
+    """
+    declared = env.get("user")
+    if isinstance(declared, str) and declared:
+        head = declared.split(":", 1)[0]
+        if head.isdigit():
+            return int(head), f"declared user {declared!r}"
+        return None, f"declared user {declared!r} names no numeric uid"
+    image = env.get("image")
+    if not image:
+        return None, "the environment declares no image"
+    if docker is None:
+        return None, "docker is unavailable to ask the image"
+    # A probe that cannot even run (the binary vanished between `which()` and
+    # this call) is NOT a mismatch: this preflight must never become a new
+    # failure source of its own.
+    try:
+        result = subprocess.run(
+            [docker, "image", "inspect", "--format", "{{.Config.User}}",
+             image],
+            capture_output=True, text=True)
+    except OSError as exc:
+        return None, f"docker could not be run ({exc})"
+    if result is None or not hasattr(result, "returncode"):
+        # A caller-controlled `subprocess` stub can yield nothing at all. That
+        # is still "no answer", not a disagreement.
+        return None, "the image inspect probe produced no answer"
+    if result.returncode != 0:
+        return None, (f"image {image!r} is not inspectable locally (it may "
+                      "need a pull)")
+    raw = result.stdout.strip()
+    if not raw or raw in ("root", "0", "0:0"):
+        # A root lane raises RG-106's ownership questions, not a uid
+        # MISMATCH: there is no lane uid to disagree with the tree owner.
+        return None, ""
+    head = raw.split(":", 1)[0]
+    if not head.isdigit():
+        return None, f"image {image!r} names a non-numeric user {raw!r}"
+    return int(head), f"image {image!r} user {raw!r}"
+
+
+def path_owner_uid(path: Path) -> int | None:
+    """Owner uid of a checkout or CoW root, read from the path itself.
+
+    `None` when the path cannot be stat'd (it may not exist yet, or the
+    invoking user may not be allowed to see it). An unreadable owner is a
+    fact this preflight does not have, never a mismatch.
+    """
+    try:
+        return Path(path).lstat().st_uid
+    except OSError:
+        return None
+
+
+def preflight_lane_uid_ownership(
+        lane_name: str, env: dict, env_source: str, worktree: Path,
+        resource_settings: dict, docker: str | None) -> None:
+    """RG-150: one uid for the checkout, the CoW root and the lane user.
+
+    A mismatch does not surface as its cause; it surfaces as three unrelated
+    errors (an in-lane git `dubious ownership` inside the editable Assay
+    install, a host-side `Permission denied` on `.run-gate`, and Assay's own
+    `MDT_COW_ROOT must be owned by the non-root caller uid`) — measured over
+    six failed lane attempts. Refuse ONCE, naming every owner, before the
+    lane starts.
+
+    Every clause is DERIVED, never defaulted: the lane uid from a declared
+    `user` or the image's own `Config.User`, the tree owner from a stat, the
+    CoW root owner from a stat of `$MDT_COW_ROOT` and ONLY when the lane
+    would actually use it (`[resources.cowtree] mode = "auto"` on an
+    ephemeral lane). When any of those facts cannot be established the check
+    says nothing at all rather than refusing a healthy estate on a guess,
+    which is the superset-refusal failure this class of check exists to
+    avoid.
+    """
+    if not env or env.get("mode") != "ephemeral":
+        return
+    lane_uid, lane_source = lane_container_uid(env, docker)
+    if lane_uid is None:
+        return
+    tree_uid = path_owner_uid(worktree)
+    owners = [f"checkout {worktree} by uid {tree_uid}"] \
+        if tree_uid is not None and tree_uid != lane_uid else []
+    cowtree = (resource_settings or {}).get("cowtree", {})
+    cow_root = os.environ.get(MDT_COW_ROOT_ENV_VAR)
+    if (cow_root and isinstance(cowtree, dict)
+            and cowtree.get("mode", "auto") == "auto"):
+        cow_uid = path_owner_uid(Path(cow_root))
+        if cow_uid is not None and cow_uid != lane_uid:
+            owners.append(f"CoW root {cow_root} by uid {cow_uid}")
+    if not owners:
+        return
+    raise GateNotRunError(
+        "environment-mismatch",
+        f"lane {lane_name!r} not run: {', and '.join(owners)}, but the lane "
+        f"runs as uid {lane_uid} ({lane_source}) from {env_source} — one uid "
+        f"must own the checkout, the CoW root and the lane user (CONSUMERS.md"
+        f" 'Runner uid: one owner for checkout, cockpit and lane'); chowning a "
+        f"checkout to a second uid per run does not work, because Assay "
+        f"replaces Git's configuration and no safe.directory can be granted")
 
 
 def refuse_serialized_shard(lane: dict, lane_name: str, env: dict,
@@ -19811,6 +19923,17 @@ def _dispatch(argv: list[str] | None = None, *,
         # failures. Verify the selected tree's pinned judge before recording
         # an invocation, taking locks or starting a runner/container.
         preflight_assay_pins(lane, args.lane, eff_proj)
+        # RG-150: one uid owns the checkout, the CoW root and the lane user.
+        # Ahead of any admission, lock or container: a mismatch used to reach
+        # the operator as three unrelated errors (an in-lane git "dubious
+        # ownership" during assay's editable install, a host-side
+        # `Permission denied` on .run-gate, and Assay's own CoW-root refusal).
+        # Guarded by the mode so a host lane touches neither docker nor
+        # shutil.which: the preflight is a container-lane fact.
+        if env and env.get("mode") == "ephemeral":
+            preflight_lane_uid_ownership(
+                args.lane, env, env_source, worktree, resource_settings,
+                shutil.which("docker"))
         # RG-26: resolve the comparison base BEFORE any admission or lock —
         # a refusal here is a configuration error, and making a caller wait
         # on a shared-infra lock to receive one is the fast-fail mistake

@@ -569,6 +569,36 @@ and the same operator extra mounts. Without those, an imported Assay command
 or tool can be unavailable to preflight even though it is present in the
 actual lane, or a probe can pass under permissions the lane does not have.
 
+## One uid, and a refusal only from a fact (RG-150)
+
+A lane container that runs as a uid which does not own the checkout does not
+fail where the problem is. It fails in three unrelated places, each naming
+something else: `dubious ownership` deep inside pip's build log while
+setuptools-scm reads Git during the editable Assay install; `Permission
+denied` on `<project>/.run-gate` from the cockpit side; and Assay's own
+`MDT_COW_ROOT must be owned by the non-root caller uid`. The operator sees a
+product failure; the cause is an ownership fact about the host.
+
+So the preflight compares numbers before the lane starts: the lane user, the
+checkout owner, and — only when the lane would actually use it — the
+`MDT_COW_ROOT` owner. The tempting shortcut is to compare the *declared* user
+string or to assume a lane uid; both are the shadowing-default hazard. The
+lane uid is READ instead: a declared `[environments.<n>] user`'s numeric head,
+else the image's own `Config.User` from `docker image inspect`.
+
+The harder design question is what to do when no uid can be established — a
+root or unset image user, a named user, an image not pulled locally, no
+docker on PATH. There the check **says nothing**. A guessed uid would either
+refuse a healthy estate (and a gate that cries wolf gets switched off, after
+which it protects nothing) or, worse, certify a mismatch as agreement. Silence
+is the same choice `--check-env` makes for unreadable source: an inconclusive
+probe must never be reported as a clean result.
+
+The refusal itself is `R-04`'s closed vocabulary, not a new error class:
+NOT_RUN 3 with `environment-mismatch`, one line, and no invocation recorded
+as a judge result — because nothing was judged. `mode = "host"` and
+`mode = "exec"` lanes declare no lane user at all and are untouched.
+
 ## Imported lanes are resolved only when needed
 
 An inventory import depends on a live Assay judge. Requiring that judge merely

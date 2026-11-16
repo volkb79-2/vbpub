@@ -113,7 +113,10 @@ copied scripts and consumer symlinks are retired. Project discovery is from
 the current working directory, and persisted `revision` values remain only
 record-format provenance, never an upgrade floor.
 Rev 24 (Run-Gate 25.6.x, this wave): documentation reconciliation with no
-behaviour change except one refusal — RG-119 closed the docs-vs-code drift
+behaviour change except two refusals — RG-150 refuses an ephemeral lane before
+it starts when the lane user, the checkout owner and the CoW-root owner are not
+one uid (R-56), so a three-error ownership mismatch now arrives as ONE line —
+and RG-119 closed the docs-vs-code drift
 (backlog rows and LANE-AUTHORING TODO states reconciled against CHANGES.md; the
 usage text documents `--version`, `migrate-modes` and `--lock-wait`; the
 environment contract names `RUN_GATE_HOST_IMAGE` and the removed
@@ -3023,6 +3026,21 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   needs the judge reachable for assay lanes and imports. `--worktree` selects
   the tree the judge is asked about. Every other verb still refuses `--json`
   by name.
+- `R-56` **One uid owns the checkout, the CoW root and the lane user
+  (RG-150).** Before an ephemeral lane starts — ahead of admission, locks and
+  the runner — Run-Gate compares the lane user's numeric uid with the owner
+  of the checkout and, when the lane's `[resources.cowtree] mode` is `auto`
+  and `MDT_COW_ROOT` is set, the owner of that root. A disagreement is
+  NOT_RUN 3 with the closed reason `environment-mismatch` and ONE line naming
+  every disagreeing owner, the uid the lane would run as, and the
+  CONSUMERS.md section that explains the one-uid layout. The lane uid is
+  READ, never assumed: a declared `[environments.<n>] user`'s numeric head,
+  else the selected image's own `Config.User` from `docker image inspect`.
+  When neither yields a numeric uid — a root or unset image user, a named
+  user, an image that is not inspectable locally, or no docker — the check
+  asserts nothing, because an invented uid would either refuse a healthy
+  estate or certify a broken one. `mode = "host"` and `mode = "exec"` lanes
+  declare no lane user and are unaffected.
 
 ## 6. Non-goals (unchanged from CONSUMERS)
 

@@ -11,6 +11,15 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
 
 ### Fixed
 - run-gate: observer preflight refusals explain required endpoints and profiling opt-out behavior (RG-250).
+- run-gate: an ephemeral lane is refused BEFORE it starts when the lane user,
+  the checkout owner and the `MDT_COW_ROOT` owner are not one uid — NOT_RUN 3
+  with `environment-mismatch` and one line naming every disagreeing owner and
+  the uid the lane would run as, replacing the three unrelated errors (an
+  in-lane git `dubious ownership` inside the editable Assay install, a
+  host-side `Permission denied` on `.run-gate`, Assay's own CoW-root refusal)
+  a mismatch used to surface as. The lane uid is read (a declared `user`, else
+  the image's `Config.User`) and the check stays silent when it cannot be
+  established (RG-150, SPEC `R-56`).
 - run-gate: a ciu worktree record whose `schema_version` key is present but
   `null` is refused by name with the explicit-`--base` remedy instead of being
   read under the v1-v5 legacy grammar; an ABSENT key keeps the legacy reading

@@ -33777,6 +33777,188 @@ class TestRG78AndRG76DirectOracles:
             run_gate.migrate_environment_modes(path)
 
 
+class TestRunGatesLaneUidOwnershipPreflight:
+    """RG-150: the lane user, the checkout owner and the CoW-root owner must be
+    one uid, and a mismatch refuses ONCE before the lane starts.
+
+    Every oracle below drives DERIVED facts (a declared `user`, an
+    image-inspect answer, a stat) rather than a literal, because the whole
+    point of the check is that a fallback here would either invent a refusal
+    for a healthy estate or invent agreement for a broken one.
+    """
+
+    @staticmethod
+    def _image_reports(monkeypatch, answer):
+        calls = []
+
+        def fake_run(argv, **_kwargs):
+            calls.append(argv)
+            if answer is None:
+                return SimpleNamespace(
+                    returncode=1, stdout="",
+                    stderr="Error response from daemon: No such image")
+            return SimpleNamespace(returncode=0, stdout=answer + "\n",
+                                   stderr="")
+
+        monkeypatch.setattr(run_gate.subprocess, "run", fake_run)
+        return calls
+
+    def test_a_declared_numeric_user_is_the_lane_uid(self):
+        assert run_gate.lane_container_uid(
+            {"mode": "ephemeral", "image": "i:1", "user": "1003:1003"},
+            None) == (1003, "declared user '1003:1003'")
+        assert run_gate.lane_container_uid(
+            {"mode": "ephemeral", "image": "i:1", "user": "7"}, None) == (
+                7, "declared user '7'")
+
+    def test_a_named_declared_user_yields_no_uid(self):
+        uid, why = run_gate.lane_container_uid(
+            {"mode": "ephemeral", "image": "i:1", "user": "app"}, None)
+        assert uid is None and "numeric uid" in why
+
+    def test_the_images_own_numeric_user_is_read_by_inspection(self, monkeypatch):
+        calls = self._image_reports(monkeypatch, "1003:1003")
+        uid, why = run_gate.lane_container_uid(
+            {"mode": "ephemeral", "image": "tester:local"}, "/usr/bin/docker")
+        assert uid == 1003 and "tester:local" in why
+        assert calls[0][1:3] == ["image", "inspect"]
+
+    @pytest.mark.parametrize("answer", ["", "root", "0", "0:0"])
+    def test_a_root_or_unset_image_user_establishes_nothing(
+            self, monkeypatch, answer):
+        self._image_reports(monkeypatch, answer)
+        uid, why = run_gate.lane_container_uid(
+            {"mode": "ephemeral", "image": "tester:local"},
+            "/usr/bin/docker")
+        assert uid is None and why == ""
+
+    def test_a_named_image_user_and_an_uninspectable_image_both_stay_silent(
+            self, monkeypatch):
+        self._image_reports(monkeypatch, "app")
+        uid, why = run_gate.lane_container_uid(
+            {"mode": "ephemeral", "image": "tester:local"},
+            "/usr/bin/docker")
+        assert uid is None and "non-numeric" in why
+        self._image_reports(monkeypatch, None)
+        uid, why = run_gate.lane_container_uid(
+            {"mode": "ephemeral", "image": "absent:1"}, "/usr/bin/docker")
+        assert uid is None and "not inspectable" in why
+        uid, why = run_gate.lane_container_uid(
+            {"mode": "ephemeral", "image": "absent:1"}, None)
+        assert uid is None and "docker is unavailable" in why
+        uid, why = run_gate.lane_container_uid({"mode": "ephemeral"}, None)
+        assert uid is None and "no image" in why
+
+    def test_a_probe_that_cannot_run_or_stat_establishes_nothing(
+            self, tmp_path, monkeypatch):
+        def raising_run(*_args, **_kwargs):
+            raise OSError("docker binary vanished between which() and this call")
+
+        monkeypatch.setattr(run_gate.subprocess, "run", raising_run)
+        uid, why = run_gate.lane_container_uid(
+            {"mode": "ephemeral", "image": "tester:local"},
+            "/usr/bin/docker")
+        assert uid is None and "could not be run" in why
+        # A path whose owner cannot be read is a missing fact, not a mismatch.
+        assert run_gate.path_owner_uid(tmp_path / "absent") is None
+        assert run_gate.path_owner_uid(tmp_path) == os.stat(tmp_path).st_uid
+
+    def test_a_mismatched_checkout_owner_refuses_with_one_line(
+            self, tmp_path, monkeypatch):
+        repo = make_repo(tmp_path)
+        target = repo / "proj"
+        target.mkdir()
+        self._image_reports(monkeypatch, "1003")
+        monkeypatch.setattr(run_gate, "path_owner_uid", lambda _path: 1000)
+        with pytest.raises(run_gate.GateNotRunError) as exc:
+            run_gate.preflight_lane_uid_ownership(
+                "suite", {"mode": "ephemeral", "image": "tester:local"},
+                "[environments.tester-unified] in fixture", target, {},
+                "/usr/bin/docker")
+        assert exc.value.reason == "environment-mismatch"
+        message = str(exc.value)
+        assert message.count("\n") == 0            # ONE line, not a report
+        assert "checkout" in message and "uid 1000" in message
+        assert "runs as uid 1003" in message
+        assert "CONSUMERS.md" in message
+
+    def test_agreeing_owners_and_unknown_uids_both_stay_silent(
+            self, tmp_path, monkeypatch):
+        repo = make_repo(tmp_path)
+        target = repo / "proj"
+        target.mkdir()
+        self._image_reports(monkeypatch, "1003")
+        monkeypatch.setattr(run_gate, "path_owner_uid", lambda _path: 1003)
+        monkeypatch.delenv(run_gate.MDT_COW_ROOT_ENV_VAR, raising=False)
+        run_gate.preflight_lane_uid_ownership(
+            "suite", {"mode": "ephemeral", "image": "tester:local"},
+            "fixture", target, {}, "/usr/bin/docker")
+        # An unknown lane uid (a root image) must NOT turn into a claim.
+        self._image_reports(monkeypatch, "")
+        run_gate.preflight_lane_uid_ownership(
+            "suite", {"mode": "ephemeral", "image": "tester:local"},
+            "fixture", target, {}, "/usr/bin/docker")
+        # A host environment starts no container, so it has no lane user.
+        run_gate.preflight_lane_uid_ownership(
+            "suite", {"mode": "host"}, "fixture", target, {},
+            "/usr/bin/docker")
+
+    def test_the_cow_root_owner_is_named_only_when_the_lane_would_use_it(
+            self, tmp_path, monkeypatch):
+        repo = make_repo(tmp_path)
+        target = repo / "proj"
+        target.mkdir()
+        cow = tmp_path / "cow"
+        cow.mkdir()
+        self._image_reports(monkeypatch, "1003")
+        monkeypatch.setattr(run_gate, "path_owner_uid",
+                            lambda path: 1000 if Path(path) == cow else 1003)
+        monkeypatch.setenv(run_gate.MDT_COW_ROOT_ENV_VAR, str(cow))
+        with pytest.raises(run_gate.GateNotRunError) as exc:
+            run_gate.preflight_lane_uid_ownership(
+                "suite", {"mode": "ephemeral", "image": "tester:local"},
+                "fixture", target, {"cowtree": {"mode": "auto"}},
+                "/usr/bin/docker")
+        assert f"CoW root {cow} by uid 1000" in str(exc.value)
+        # the checkout AGREES, so it is not named as a disagreement
+        assert f"checkout {target} by uid" not in str(exc.value)
+        # `mode = "off"` means the lane never touches the root: no claim.
+        run_gate.preflight_lane_uid_ownership(
+            "suite", {"mode": "ephemeral", "image": "tester:local"},
+            "fixture", target, {"cowtree": {"mode": "off"}},
+            "/usr/bin/docker")
+
+
+    def test_main_refuses_with_a_closed_not_run_result_before_the_lane(
+            self, tmp_path, monkeypatch, capsys):
+        """The contract the item asks for is a REFUSAL the operator can act on,
+        not a different error later: closed NOT_RUN, one line, exit 3, and no
+        container started."""
+        repo = make_repo(tmp_path)
+        proj = make_project(repo, """\
+            schema_version = 1
+            [environments.tester-unified]
+            mode = "ephemeral"
+            image = "tester-unified:local"
+            [lanes.suite]
+            kind = "command"
+            environment = "tester-unified"
+            argv = ["true"]
+            """)
+        log = fake_docker(tmp_path, monkeypatch)
+        monkeypatch.setattr(run_gate, "lane_container_uid",
+                            lambda *_a: (1003, "fixture user"))
+        monkeypatch.setattr(run_gate, "path_owner_uid", lambda _path: 1000)
+        monkeypatch.delenv(run_gate.MDT_COW_ROOT_ENV_VAR, raising=False)
+        monkeypatch.chdir(proj)
+        monkeypatch.setattr(sys, "argv", ['run-gate'])
+        assert run_gate.main(["suite"]) == 3
+        err = capsys.readouterr().err
+        assert err.count("must own the checkout") == 1
+        assert "uid 1000" in err and "runs as uid 1003" in err
+        assert docker_runs(log) == []
+
+
 class TestAssayPinAndRequestPathOracles:
     def test_checksum_manifest_reads_escaped_names_and_rejects_bad_bytes(
             self, tmp_path):

@@ -438,6 +438,14 @@ class TestPasswdEntryGuard:
                 clean_tree = false
                 """))
             log = fake_docker(tmp_path / f"u{present}", monkeypatch)
+            # A host provisioned for a lane user owns its checkout AND its CoW
+            # root as that user (CONSUMERS "Runner uid"), which is what RG-150
+            # requires and what this fixture cannot create for a foreign uid.
+            # The guard under test is the IN-LANE one, so the ownership
+            # preflight must be given the healthy estate it now demands rather
+            # than stubbed away.
+            owner = 1234 if user else os.stat(repo).st_uid
+            monkeypatch.setattr(run_gate, "path_owner_uid", lambda _path: owner)
             monkeypatch.chdir(proj)
             monkeypatch.setattr(sys, "argv", ["run-gate"])
             run_gate.main(["suite"])
