@@ -53,7 +53,7 @@ def test_the_bundle_wheelhouse_covers_every_client_runtime_dependency() -> None:
     missing = [
         requirement
         for requirement in client
-        if _normalised(re.split(r"[<>=!~; \[ ]", requirement, 1)[0]) not in staged
+        if _normalised(re.split(r"[<>=!~; \[ ]", requirement, maxsplit=1)[0]) not in staged
     ]
     assert missing == [], (
         "the bundle wheelhouse cannot install the client offline: a documented --no-index recipe "

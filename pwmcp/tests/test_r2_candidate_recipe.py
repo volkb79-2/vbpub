@@ -14,8 +14,10 @@ hunks) and this module tests it on synthetic fixtures, plus the documentation co
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import re
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -189,12 +191,21 @@ def test_the_documented_flags_exist_in_the_shipped_tools() -> None:
 
     # run-gate is installed in the gate image at a pinned version; --only-candidates must exist
     # there, otherwise the documented step 4 cannot be run at all.
+    assert shutil.which("run-gate") is not None, (
+        "run-gate is not on PATH, so the documented `run-gate r2 --only-candidates` step cannot be "
+        "checked; run this suite inside the registered tester-unified gate image"
+    )
     code, run_gate = _command_output(["run-gate", "--help"])
     assert code == 0, run_gate[-500:]
     assert "--only-candidates FILE" in run_gate, "run-gate no longer accepts the documented --only-candidates"
 
-    # assay is installed into the lane's venv from the selected worktree; the plan verbs the
-    # recipe uses must be present in THIS interpreter's assay.
+    # The plan verbs the recipe uses must be present in THIS interpreter's assay. An
+    # interpreter without assay is a MISSING DEPENDENCY, not a docs defect: fail with the
+    # remedy instead of letting the assertion read as "the recipe is wrong".
+    assert importlib.util.find_spec("assay") is not None, (
+        "assay is not installed in this interpreter, so the documented `assay plan` step cannot be "
+        "checked; install the judge the lane uses (run-gate installs it from the selected worktree)"
+    )
     code, plan_help = _command_output([sys.executable, "-m", "assay.cli", "plan", "--help"])
     assert code == 0, plan_help[-500:]
     assert "--json" in plan_help
