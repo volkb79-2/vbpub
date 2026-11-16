@@ -78,6 +78,7 @@ env -u REMOTE_GATE_CACHE_DIR REMOTE_GATE_REPO="$REPO" repo="$STRAY_REPO" \
   || { cat "$ROOT/default-repo.out" >&2; fail 'the documented REMOTE_GATE_REPO default was refused'; }
 contains "$ROOT/default-repo.out" "identity=blob:$v2_blob" \
   'the documented REMOTE_GATE_REPO is the default repository'
+# shellcheck disable=SC2016 # the backticks are the check's own description
 not_contains "$ROOT/default-repo.out" "$stray_blob" \
   'a stray `repo` variable in the environment is not used as the repository'
 
