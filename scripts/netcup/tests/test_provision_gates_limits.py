@@ -607,10 +607,11 @@ def test_every_competing_file_is_named_across_the_slice_the_scope_and_the_unit_p
     own_foreign = systemd_dir / "docker.service.d" / "30-oom-protect.conf"
     own_foreign.parent.mkdir(parents=True)
     own_foreign.write_text("[Service]\nOOMScoreAdjust=-900\n")  # at this tool's OWN path for a unit it protects
-    r = _run(script, env, _args(meminfo, systemd_dir, tmp_path / "cgroupfs", procfs))
-    assert r.returncode == 5, r.stdout + r.stderr
-    for path in (slice_foreign, scope_foreign, unit_foreign, own_foreign):
-        assert str(path) in r.stderr, (path, r.stderr)
+    for mode in (("--dry-run",), ()):
+        r = _run(script, env, _args(meminfo, systemd_dir, tmp_path / "cgroupfs", procfs, *mode))
+        assert r.returncode == 5, r.stdout + r.stderr
+        for path in (slice_foreign, scope_foreign, unit_foreign, own_foreign):
+            assert str(path) in r.stderr, (mode, path, r.stderr)
     assert "competing file(s) named above" in r.stderr  # one count, emitted after every pre-flight
     assert "file(s) at this tool's own paths cannot be adopted" in r.stderr
     for path in (slice_foreign, scope_foreign, unit_foreign, own_foreign):

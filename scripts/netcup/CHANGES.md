@@ -107,7 +107,7 @@ All notable changes to scripts/netcup are recorded here.
   Every helper is now defined above the main flow, refusals are recorded and mutated only after all pre-flights
   (`plan_retire`/`plan_refusal`/`apply_retires`), the score parser is one base-10 helper with the kernel's
   `-1000..1000` bounds, and another owner's competing files are all named in one run across the slice, scope and unit
-  paths. Tests: this file grew from 96 to 136 cases (`tests/test_provision_gates_limits.py`): the parser boundaries (`010`/`0900` decimal,
+  paths. Tests: `tests/test_provision_gates_limits.py` grew from 96 to 138 cases: the parser boundaries (`010`/`0900` decimal,
   `0000000900` refused, `-1001`/`1001` outside the range), the foreign-file cases at `-1000`/`-999`/`-900`/`-500`/`0`,
   the `--adopt` migration shape (a hand `-900` over a unit's own `-1000` is retired and NOT replaced), a second pass
   after the unit fragment grew, and a whole-file test that no function is used before its definition. Mutants that
