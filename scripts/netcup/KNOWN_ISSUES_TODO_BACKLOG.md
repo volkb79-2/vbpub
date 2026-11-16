@@ -67,7 +67,8 @@ docs landed together.
 | NC-59 | `provision-runner.sh` installs no slice limits, so the gates tier's CPU and memory policy (and the 2026-11-16 overcommit/paging decision) reaches a host only by hand-editing a drop-in | Should-fix | FIXED in repository 2026-11-16 (`provision-gates-limits.sh` + live-memory admission); live fresh-host acceptance NC-62 |
 | NC-60 | Provisioning installs no pinned image set, so a host cannot run assay's SQL qualification until someone pulls the digest-pinned PostgreSQL reference by hand | Should-fix | OPEN 2026-11-16 |
 | NC-61 | The runner guide's fresh-host replay is still unverified and its checked-in facts drift after a reinstall with no test or date binding them | Minor | OPEN 2026-11-16 |
-| NC-62 | The rendered gates memory policy has no live fresh-host acceptance: it is proven only against fakes, while the measured policy it reproduces came from one hand-configured host (also carries the `--adopt` one-time step and the 6655-vs-6656 nominal-size finding of review round 1) | Should-fix | OPEN 2026-11-16 |
+| NC-62 | The rendered gates memory policy has no live fresh-host acceptance: it is proven only against fakes, while the measured policy it reproduces came from one hand-configured host (also carries the `--adopt` one-time step and the 6655-vs-6656 nominal-size finding of review round 1) | Should-fix | LIVE HALF CLOSED for v1001 2026-11-16 (adoption accepted, evidence below); r1002 OPEN (blocked on its iogovmon acceptance until 2026-11-17T14:38Z) |
+| NC-64 | `provision-gates-limits.sh` LOWERED sshd's own OOM protection: it wrote `-900` over the `-1000` live score sshd keeps on its listener, and would have replaced a packaged stronger value with a drop-in | Major | FIXED 2026-11-16 (never-reduce rule for the live score and the drop-in; sshd finding from the v1001 adoption) |
 | NC-63 | The `docker-.scope.d` `OOMPolicy=kill` drop-in covers every Docker container on the host, so an OOM in the cockpit or a buildkitd scope kills that container whole | Minor | OPEN 2026-11-16 (by design for lane scopes; restriction open) |
 
 ---
@@ -1715,10 +1716,42 @@ host-specific value in it.
 
 ## NC-62 — the rendered gates memory policy has no live fresh-host acceptance
 
-**Status:** OPEN (filed 2026-11-16); Should-fix for the second and every later
-host. Source: this repository's NC-59 implementation (`provision-gates-limits.sh`,
-2026-11-16) and the measured policy report the tool reproduces
-(`sonnet-v1001-slicelimits-REPORT.md`).
+**Status:** LIVE HALF CLOSED for v1001 on 2026-11-16 (the host-configured
+adoption half); r1002 and any future fresh host remain OPEN. Should-fix for the
+second and every later host. Source: this repository's NC-59 implementation
+(`provision-gates-limits.sh`, 2026-11-16) and the measured policy report the tool
+reproduces (`sonnet-v1001-slicelimits-REPORT.md`).
+
+**Acceptance recorded on v1001, 2026-11-16** (host agent run from a `git archive`
+of `origin/main` `f5209b7cd`, script sha256 identical on host and controller; no
+other host touched):
+
+| Check | Observed |
+| --- | --- |
+| Derived policy (dry run) | `MemoryHigh=infinity MemoryMax=6656M MemorySwapMax=57344M OOMScoreAdjust=-900` from `MemTotal` 7935 MiB (nominal 8192) / `SwapTotal` 65535 MiB (nominal 65536) |
+| Live values equalled the hand policy | `systemctl show`: MemoryMax 6979321856 (6656 MiB), MemorySwapMax 60129542144 (57344 MiB, the hand file's `56G`), MemoryHigh infinity; cgroup files the same; CPUQuota/TasksMax untouched; the hand `10-remote-gate-limits.conf` still tolerated |
+| Plain `--dry-run` on the unmarked hand host | rc 5, refused with a message naming `--adopt` |
+| `--adopt --dry-run` | rc 0, listed all seven recognised hand files, the `daemon-reload`, and “live limits already match”; sha256 of every drop-in and of the slice `memory.events` unchanged by either dry run |
+| `--adopt` | rc 0; seven files retired to `<file>.retired-20261116T133214Z` (content kept, never deleted), owned files carry the marker, `daemon-reload` only, `ssh` MainPID score set in place, NO slice restart |
+| Idempotence | re-run without `--adopt`: rc 0, `unchanged` for all seven, live limits already match, sha256 of the whole `*.d` tree identical |
+| No slice restart | `memory.events` (`low 0 high 0 max 16162 oom 0 oom_kill 0 oom_group_kill 0`) and the slice `InvocationID`/`ActiveEnter` identical before the adopt, after it and after a real lane |
+| `memory.oom.group` probe | a container started with `--cgroup-parent dev-gates.slice` read `memory.oom.group=1`, `OOMPolicy=kill`, removed by exact name (no container left) |
+| Real lane afterwards | `lint` lane PASS in 54 s, `run-gate.commit=f5209b7cd9a805cc96a1d9cbfaaf037b258ef7b9`, no `rg-rgw*` container and no `.worktrees` entry left |
+
+The run also FOUND three repository defects, all closed in this package: the
+script lowered sshd's live listener score (`NC-64`), the guide's probe needed an
+`alpine` image the host did not have (it now uses `tester-base:local` with
+`--pull=never`), and the fragment/foreign-file messages printed or stopped
+in the wrong place (both now list or name exactly what differs).
+
+**Remainder (OPEN):** r1002 carries the same rendered policy, and it is the host
+with the closest thing to a fresh acceptance: it is BLOCKED on its iogovmon
+write-mode acceptance window, which must not be disturbed by a host change
+before **2026-11-17T14:38Z** (the +48 h check of the 2026-11-15 installation). A
+slice restart or a provisioner run during that window is exactly the
+host-exclusive operation the window forbids, so the r1002 adoption waits for it.
+The genuinely fresh half (a host that has never had the policy applied by hand)
+is also still unproven: v1001 was ADOPTED, not freshly provisioned.
 
 **Problem.** The policy values were MEASURED by hand on one host (`MemoryMax=6656M`
 on an 8 GiB box, `MemorySwapMax=56G`, `OOMPolicy=kill` on docker scopes,
@@ -1816,3 +1849,74 @@ both lanes and a stack.
 **Close when.** Either the drop-in is scoped to lane containers, or the runner
 guide names the hazard and the provisioning refuses it where it would be unsafe.
 
+
+## NC-64 — `provision-gates-limits.sh` LOWERED sshd's own OOM protection
+
+**Status:** FIXED 2026-11-16 (live rule + persistent rule, tests and mutants in
+the same change). Filed from the v1001 adoption report
+(`sonnet-v1001-adopt-REPORT.md`, finding 1), which also had to restore the value
+by hand. Severity Major: the tool silently weakened a host service's own
+protection, and every later run repeated it.
+
+**Problem.** `oom_score_adj` is a RANKING, not a magnitude: a LOWER value is MORE
+protective (`-1000` strongest, `+1000` weakest). sshd sets its own listener to
+`-1000` at runtime (it protects itself), while the unit carries the policy's
+`-900` for the sessions it starts. The tool's live fix-up compared the current
+value only for EQUALITY with the target, so `-1000` read as "not converged" and
+was overwritten with `-900` — a protection downgrade on a running host service,
+on the very host the policy exists to protect, and one a re-run would repeat. The
+persistent half had the same defect in a different form: the tool rendered
+`30-oom-protect.conf` with `OOMScoreAdjust=-900` for all five protected units
+unconditionally. A drop-in is merged AFTER the unit file, so on a unit whose own
+file sets a stronger value (`containerd.service` ships `-999`; a packaged
+`ssh.service` may set `-1000`) the drop-in would REPLACE it with the weaker
+`-900` at that unit's next start — invisible to `--dry-run`, to a diff and to
+every cgroup read, because the drop-in file is the tool's own and the unit file
+was never consulted.
+
+**Minimal solution (as implemented).** One comparison in both halves, and the
+rule is stated where an operator reads it:
+
+- live: write `/proc/<MainPID>/oom_score_adj` only when the current value is
+  HIGHER (less protective) than `-900`; an equal-or-lower value is left alone and
+  reported ("already at least as protected"). An UNREADABLE value is exit 8, not
+  `0`: the read is what gates the write.
+- persistent: render the drop-in only for a unit whose OWN unit file sets nothing
+  or something weaker. The own value is read from `systemctl show -p FragmentPath`
+  and parsed as INI — never `systemctl show -p OOMScoreAdjust`, which already
+  includes a drop-in this tool rendered on an earlier run and would make a second
+  run believe the unit protects itself. A unit already at least as protected is
+  reported and gets no drop-in (and, if this tool had rendered one earlier, that
+  owned file is removed, because it would otherwise keep winning; another owner's
+  file that would lower the value is refused with exit 5). An unreadable or
+  unusable own value is exit 3.
+- a foreign drop-in that sets a MORE protective value is now kept and reported
+  instead of refused as a contradiction (`more_protective` is used for the same
+  comparison there).
+
+No special case names sshd: the rule is about the VALUE and applies to every
+protected unit, so `containerd`-style packaged scores and future units are covered
+without a list to maintain.
+
+**Tests.** `tests/test_provision_gates_limits.py`: `-1000`, `-999`, `-900`, `-899`,
+`-500` and `0` live scores (only the two less-protective values are written, and
+the exact `current -> target` transition is in the output); unreadable live values
+(empty, garbage, `+900`, `-2000`, `1001`) are exit 8 and leave the file byte for
+byte; a unit whose own file sets `-1000`/`-999` gets no drop-in; an own file with
+nothing, `0` or `-500` still gets the policy drop-in; an unreadable own file is
+exit 3 and writes nothing; a previously rendered owned drop-in is removed (and
+announced in `--dry-run` without writing) when the unit now protects itself;
+another owner's lowering drop-in at that path is refused. Mutants: flipping
+`more_protective` (`<=` -> `>=`) makes the `-1000`/`-899` cases fail, dropping the
+`usable_oom_score` gate makes the unreadable cases write, and taking the effective
+`OOMScoreAdjust` instead of the fragment makes the earlier-drop-in case fail.
+
+**Where.** `scripts/netcup/runner/provision-gates-limits.sh`
+(`more_protective`, `usable_oom_score`, `own_oom_score`, `apply_live_score`),
+`runner/README.md` ("protection is never reduced"), `CONSUMERS.md`,
+`DESIGN-GUIDE.md` (the rejected alternatives), `CHANGES.md`.
+
+**Close when.** (met) the live and persistent comparisons are one rule, the
+readability of both inputs is a hard error, and the runner guide names the
+directional meaning of `oom_score_adj` so nobody reads `-1000 -> -900` as
+"converged".

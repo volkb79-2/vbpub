@@ -406,6 +406,24 @@ default:
   The accepted cost is that ssh sessions inherit `-900`: a heavy process started
   by hand in a login is also hard to pick. Lanes are unaffected (Docker gives
   them their own score).
+- **A protection value is never traded down.** `oom_score_adj` is a ranking: a
+  LOWER number is MORE protective (`-1000` strongest). sshd sets its own
+  listener to `-1000` at runtime (it protects itself), and containerd ships
+  `-999`; both are stronger than this policy's `-900`. Two rejected alternatives were measured
+  as defects on the 2026-11-16 adoption: writing the MainPID score
+  unconditionally (`-1000 -> -900`, undone by hand on the host, and a re-run
+  would repeat it), and rendering `OOMScoreAdjust=-900` for every protected
+  unit regardless of what its own unit file says (a drop-in is merged AFTER the
+  unit file, so it REPLACES `-1000` with `-900` at the next start — invisibly,
+  because no cgroup read and no dry run shows the unit file it overrode). The
+  adopted rule is one comparison in both halves: write the live score only when
+  the current value is higher (less protective) than the target, and render the
+  drop-in only for a unit whose own file sets nothing or something weaker;
+  anything already stronger is reported and left alone. The own value is read
+  from the unit's fragment (`FragmentPath`), never from the effective property,
+  which would already include this tool's earlier drop-in and could make a
+  second run believe the unit protects itself. An unreadable value of either
+  kind is an error, not a `0`: the read is what gates the write.
 
 Consequences the tooling encodes rather than hides: **a slice restart is required**
 to apply limits to an already-active slice (`daemon-reload` alone does not), and a

@@ -89,6 +89,28 @@ All notable changes to scripts/netcup are recorded here.
   KSM sysfs is reported as unavailable. It does not enable KSM or change
   Run-Gate's per-container cap.
 
+### Fixed
+- **`provision-gates-limits.sh` never lowers a unit's OOM protection** (`NC-64`, found
+  by the v1001 adoption): `oom_score_adj` is a ranking, so a LOWER value is MORE protective. The live fix-up now
+  writes `/proc/<MainPID>/oom_score_adj` only when the current value is HIGHER (less protective) than `-900` —
+  sshd's own `-1000` listener score, `-999` and an already conforming `-900` are left alone and reported — and an
+  unreadable live score is exit 8 instead of being treated as `0`. The persistent `30-oom-protect.conf` is rendered
+  only for a unit whose OWN unit file sets nothing or something weaker (read from `FragmentPath`, never from the
+  effective property, which already includes an earlier drop-in of this tool); a packaged stronger value keeps its
+  protection, and a drop-in this tool rendered earlier is removed when the unit now protects itself, because it would
+  otherwise keep winning at the next start. A foreign drop-in that sets a MORE protective value is kept and reported
+  instead of refused as a contradiction. Tests: nine live-score cases including the unreadable ones, the drop-in
+  decisions for `-1000`/`-999`/`0`/unset/`-500`/unreadable, and the removal of an earlier owned drop-in; its mutants
+  are the flipped comparison, the missing readability gate and the effective-property fallback.
+- **The runner guide's `memory.oom.group` probe uses an image every runner already has**: `tester-base:local` (the tag
+  `build-tester-base.sh` leaves behind) with `--pull=never`, instead of an `alpine` the host did not have, which made
+  the documented check silently `docker pull` on a host that may have no network (`NC-64`).
+- **The gates-policy messages say what actually differs.** A plain `--dry-run` on a hand-configured host now names
+  EVERY foreign file at the tool's own paths before refusing (it used to stop at the first, so an operator fixed one
+  and met the next on the following run), and the "has a fragment … this drop-in deliberately overrides it" note is
+  printed only for a fragment that really sets one of the memory keys to a DIFFERENT amount (same size in another
+  spelling, `6G` against `6144M`, and a CPU-only fragment stay silent).
+
 <!-- cmru: release history -->
 
 ### Fixed (WP-T3 persistent R2 supervisor)

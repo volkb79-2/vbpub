@@ -53,15 +53,25 @@ def derived(meminfo_text: str, *, step: int = STEP_MIB, floor: int = FLOOR_MIB, 
     return raw_mem, raw_swap, nominal_mem - (floor + slack), nominal_swap - swap_reserve
 
 
-def _fixture(tmp_path: Path, meminfo: str = HOST_V1001, *, units: tuple = ()):
+def _fixture(tmp_path: Path, meminfo: str = HOST_V1001, *, units: tuple = (), fragments=None):
     """A copy of the script with a stub lib.sh (only the identity guard, which is not under test), a fake-bin with
-    `systemctl` and `id`, a temp systemd root, a temp cgroupfs and a meminfo fixture."""
+    `systemctl` and `id`, a temp systemd root, a temp cgroupfs and a meminfo fixture.
+
+    `units` are the units installed on the fake host; each gets its own fragment file under `units/` (no OOMScoreAdjust
+    unless `fragments` says otherwise), so `systemctl show <u> -p FragmentPath` and the own-value probe read a real file
+    the way they read /usr/lib/systemd/system on a host."""
     tmp_path.mkdir(parents=True, exist_ok=True)
     script_dir = tmp_path / "runner"
     script_dir.mkdir()
     script = script_dir / SCRIPT.name
     shutil.copy2(SCRIPT, script)
     (script_dir / "lib.sh").write_text("identity_check() { :; }\n")
+
+    unit_dir = tmp_path / "units"
+    unit_dir.mkdir()
+    for unit in units:
+        content = (fragments or {}).get(unit, "# a packaged unit file\n[Service]\nExecStart=/bin/true\n")
+        (unit_dir / unit).write_text(content)
 
     fake_bin = tmp_path / "fake-bin"
     fake_bin.mkdir()
@@ -96,11 +106,24 @@ def _fixture(tmp_path: Path, meminfo: str = HOST_V1001, *, units: tuple = ()):
         "    exit 0 ;;\n"
         "  show)\n"
         "    unit=$2; prop=$4\n"
+        "    if [[ $unit == \"$GATES_SLICE\" ]]; then\n"
+        "      case \"$prop\" in\n"
+        "        LoadState) printf '%s\\n' \"${SLICE_LOAD_STATE:-loaded}\" ;;\n"
+        "        ActiveState) printf '%s\\n' \"${SLICE_ACTIVE_STATE:-active}\" ;;\n"
+        "        FragmentPath) printf '%s\\n' \"${SLICE_FRAGMENT:-/etc/systemd/system/dev-gates.slice}\" ;;\n"
+        "        ControlGroup) printf '%s\\n' \"${SLICE_CONTROL_GROUP-/dev.slice/dev-gates.slice}\" ;;\n"
+        "      esac\n"
+        "      exit 0\n"
+        "    fi\n"
         "    case \"$prop\" in\n"
-        "      LoadState) printf '%s\\n' \"${SLICE_LOAD_STATE:-loaded}\" ;;\n"
-        "      ActiveState) printf '%s\\n' \"${SLICE_ACTIVE_STATE:-active}\" ;;\n"
-        "      FragmentPath) printf '%s\\n' \"${SLICE_FRAGMENT:-/etc/systemd/system/dev-gates.slice}\" ;;\n"
-        "      ControlGroup) printf '%s\\n' \"${SLICE_CONTROL_GROUP-/dev.slice/dev-gates.slice}\" ;;\n"
+        "      FragmentPath)\n"
+        "        [[ \" ${UNITS_INSTALLED:-} \" == *\" $unit \"* ]] || exit 1\n"
+        "        printf '%s\\n' \"$UNIT_FRAGMENT_DIR/$unit\" ;;\n"
+        "      OOMScoreAdjust)\n"
+        "        for pair in ${UNIT_OOM:-}; do\n"
+        "          [[ $pair == \"$unit=\"* ]] && printf '%s\\n' \"${pair#*=}\" && exit 0\n"
+        "        done\n"
+        "        exit 1 ;;\n"
         "      MainPID)\n"
         "        for pair in ${UNIT_MAINPIDS:-}; do\n"
         "          [[ $pair == \"$unit=\"* ]] && printf '%s\\n' \"${pair#*=}\" && exit 0\n"
@@ -126,6 +149,7 @@ def _fixture(tmp_path: Path, meminfo: str = HOST_V1001, *, units: tuple = ()):
         "SLICE_CG": str(slice_cg),
         "UNITS_INSTALLED": " ".join(units),
         "UNIT_MAINPIDS": "",
+        "UNIT_FRAGMENT_DIR": str(unit_dir),
     }
     return script, env, tmp_path, systemd_dir, slice_cg, meminfo_path, procfs
 
@@ -536,6 +560,70 @@ def test_a_foreign_dropin_on_this_slice_is_refused_before_anything_is_written(tm
     assert [p.name for p in systemd_dir.rglob("*.conf")] == [foreign.name]
 
 
+def test_every_competing_file_is_named_before_the_refusal(tmp_path):
+    """The measured annoyance (v1001, 2026-11-16): a plain --dry-run on a hand-configured host stopped at the first foreign
+    file, and an operator fixed that one only to meet the next on the following run. The refusal now lists all of them."""
+    script, env, _, systemd_dir, _, meminfo, procfs = _fixture(tmp_path)
+    foreign = systemd_dir / f"{SLICE}.d"
+    foreign.mkdir(parents=True)
+    names = ("10-remote-gate-limits.conf", "15-hand-memory.conf", "16-stale-policy.conf")
+    for index, name in enumerate(names):
+        (foreign / name).write_text(f"[Slice]\nMemoryMax={7 + index}G\n")
+    for dry_run in (("--dry-run",), ()):
+        r = _run(script, env, _args(meminfo, systemd_dir, tmp_path / "cgroupfs", procfs, *dry_run))
+        assert r.returncode == 5, r.stdout + r.stderr
+        for name in names:
+            assert f"{foreign / name} also sets the gates-slice memory policy" in r.stderr, (dry_run, name, r.stderr)
+        assert f"{len(names)} competing file(s) named above" in r.stderr
+        assert "--adopt --dry-run to see every recognised hand drop-in at once" in r.stderr
+        assert sorted(p.name for p in systemd_dir.rglob("*.conf")) == sorted(names)  # nothing of ours, nothing rewritten
+
+
+def test_the_fragment_override_note_is_printed_only_when_a_value_really_differs(tmp_path):
+    """The measured noise (v1001, 2026-11-16): the two-line `has a fragment ... deliberately overrides` note printed on
+    EVERY run, including a converged host where the fragment's memory keys are absent or spell the same amount."""
+    script, env, _, systemd_dir, _, meminfo, procfs = _fixture(tmp_path)
+    maximum, swap = _fake_limits(env, HOST_V1001)
+    fragment = tmp_path / "dev-gates.slice"
+    env["SLICE_FRAGMENT"] = str(fragment)
+    needle = "this drop-in deliberately overrides it"
+
+    # a fragment with CPU keys only (the no-host-setup marker unit): nothing to say
+    fragment.write_text("[Unit]\nDescription=tier\n[Slice]\nCPUWeight=100\nIOWeight=101\n")
+    r = _run(script, env, _args(meminfo, systemd_dir, tmp_path / "cgroupfs", procfs))
+    assert r.returncode == 0, r.stderr
+    assert needle not in r.stdout + r.stderr
+
+    # the same amounts in another spelling: bytes equal, so no note at all. This sub-case is the one a "note whenever the
+    # fragment sets the key" implementation fails, and it is why same_memory_amount is a BYTE comparison, not a string one
+    fragment.write_text(f"[Slice]\nMemoryHigh=infinity\nMemoryMax={maximum * 1024}K\nMemorySwapMax={swap}M\n")
+    r = _run(script, env, _args(meminfo, systemd_dir, tmp_path / "cgroupfs", procfs))
+    assert r.returncode == 0, r.stderr
+    assert needle not in r.stdout + r.stderr, "a fragment that agrees in bytes was reported as disagreeing"
+
+    # `max` and `infinity` are different tokens to this tool (it cannot claim they mean the same to systemd), so that one
+    # key is reported — and the report names THAT key, never the three keys it used to list unconditionally
+    fragment.write_text(f"[Slice]\nMemoryHigh=max\nMemoryMax={maximum * 1024}K\nMemorySwapMax={swap}M\n")
+    r = _run(script, env, _args(meminfo, systemd_dir, tmp_path / "cgroupfs", procfs))
+    assert r.returncode == 0, r.stderr
+    assert "that sets MemoryHigh=max" in r.stdout + r.stderr
+    assert "that sets MemoryMax" not in r.stdout + r.stderr
+
+    # a fragment that really disagrees is named, once, with the value the policy uses
+    fragment.write_text("[Slice]\nMemoryMax=6G\n")
+    r = _run(script, env, _args(meminfo, systemd_dir, tmp_path / "cgroupfs", procfs))
+    assert r.returncode == 0, r.stderr
+    out = r.stdout + r.stderr
+    assert "that sets MemoryMax=6G; this drop-in deliberately overrides it" in out
+    assert f"policy value MemoryMax={maximum}M" in out
+    assert "sets MemoryHigh" not in out  # the keys the fragment does not set are not mentioned
+
+    # and a converged second run repeats nothing: the note describes the fragment, not a change this run makes
+    r = _run(script, env, _args(meminfo, systemd_dir, tmp_path / "cgroupfs", procfs))
+    assert r.returncode == 0, r.stderr
+    assert "this drop-in deliberately overrides it" in r.stdout + r.stderr  # same fragment, still disagrees
+
+
 def test_a_foreign_cpu_only_dropin_is_tolerated(tmp_path):
     script, env, _, systemd_dir, _, meminfo, procfs = _fixture(tmp_path)
     foreign = systemd_dir / f"{SLICE}.d" / "10-remote-gate-limits.conf"
@@ -568,6 +656,8 @@ def test_a_competing_scope_or_service_key_is_refused_but_an_agreeing_duplicate_i
 @pytest.mark.parametrize(("relative", "content", "needle"), [
     ("docker-.scope.d/50-default-limits.conf", "[Scope]\nMemoryMax=12G\nOOMPolicy=kill\n", "also sets OOMPolicy=kill"),
     ("ssh.service.d/50-mdt-dedicated-dev.conf", "[Service]\nOOMScoreAdjust=-900\n", "also protects ssh.service"),
+    # a MORE protective value is not a contradiction, it is already stronger than the policy: kept and reported as such
+    ("docker.service.d/50-containerd-like.conf", "[Service]\nOOMScoreAdjust=-999\n", "more protected"),
 ])
 def test_an_agreeing_dropin_of_another_owner_is_kept_and_reported(tmp_path, relative, content, needle):
     script, env, _, systemd_dir, _, meminfo, procfs = _fixture(tmp_path)
@@ -683,6 +773,175 @@ def test_an_owned_file_whose_content_is_not_rendered_is_not_overwritten(tmp_path
     r = _run(script, env, _args(meminfo, systemd_dir, tmp_path / "cgroupfs", procfs))
     assert r.returncode == 5 and "not the policy this tool renders" in r.stderr
     assert owned.read_text() == "[Slice]\nMemoryMax=1G\n"
+
+
+PROTECTED = ("ssh.service", "systemd-logind.service", "systemd-journald.service", "docker.service", "cgprofiled.service")
+
+
+def _protected_host(tmp_path, *, fragments=None, units=PROTECTED):
+    """A host where every protected unit is installed with its own unit file (OOMScoreAdjust unset unless `fragments`)."""
+    script, env, _, systemd_dir, _, meminfo, procfs = _fixture(tmp_path, units=units, fragments=fragments)
+    env["UNIT_MAINPIDS"] = ""
+    return script, env, systemd_dir, meminfo, procfs
+
+
+def test_a_live_score_that_is_already_more_protective_is_never_raised(tmp_path):
+    """The measured defect (v1001, 2026-11-16): sshd keeps its OWN listener at -1000, and a re-run lowered it to the unit's
+    -900, so the host agent had to restore -1000 by hand and a later run would lower it again. oom_score_adj is a ranking,
+    so -1000 is MORE protective than -900: an equal-or-lower current value is left alone, whatever unit it belongs to."""
+    script, env, systemd_dir, meminfo, procfs = _protected_host(tmp_path, units=("ssh.service",))
+    env["UNIT_MAINPIDS"] = "ssh.service=411"
+    proc = tmp_path / "procfs"
+    (proc / "411").mkdir()
+    (proc / "411" / "oom_score_adj").write_text("-1000\n")
+    _fake_limits(env, HOST_V1001)
+    r = _run(script, env, _args(meminfo, systemd_dir, tmp_path / "cgroupfs", procfs))
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert (proc / "411" / "oom_score_adj").read_text() == "-1000\n", "sshd's own listener protection was lowered"
+    assert "already at least as protected" in r.stdout and "-1000" in r.stdout  # reported, not silently skipped
+    assert "-> -900" not in r.stdout
+
+
+@pytest.mark.parametrize(("current", "write"), [
+    ("0", "-900"),        # unprotected -> protected
+    ("-500", "-900"),     # -500 is LESS protective than -900, so it IS lowered to the policy value
+    ("-899", "-900"),     # one step less protective still converges
+    ("-900", None),       # exactly the target: no write
+    ("-999", None),       # containerd-like: stronger, left alone
+    ("-1000", None),      # sshd's own listener: strongest, left alone
+])
+def test_the_live_score_is_written_only_when_the_current_value_is_less_protective(tmp_path, current, write):
+    """One comparison decides every case: write iff current > target. A flipped comparison (-1000 -> -900 and 0 untoched)
+    is exactly the defect this test was written for."""
+    script, env, systemd_dir, meminfo, procfs = _protected_host(tmp_path, units=("docker.service",))
+    env["UNIT_MAINPIDS"] = "docker.service=412"
+    proc = tmp_path / "procfs"
+    (proc / "412").mkdir()
+    (proc / "412" / "oom_score_adj").write_text(current + "\n")
+    _fake_limits(env, HOST_V1001)
+    r = _run(script, env, _args(meminfo, systemd_dir, tmp_path / "cgroupfs", procfs))
+    assert r.returncode == 0, r.stdout + r.stderr
+    if write is None:
+        assert (proc / "412" / "oom_score_adj").read_text() == current + "\n"
+    else:
+        assert (proc / "412" / "oom_score_adj").read_text() == write + "\n"
+        assert f"{current} -> {write}" in r.stdout
+    assert "restart docker.service" not in (tmp_path / "systemctl.log").read_text()
+
+
+@pytest.mark.parametrize("content", ["\n", "garbage\n", "+900\n", "-2000\n", "1001\n"])
+def test_an_unreadable_live_score_is_an_error_never_a_write(tmp_path, content):
+    """An unreadable value is not "unprotected 0": the read gates a WRITE, and writing on an assumed 0 is how a value
+    nobody read gets replaced. Whatever the file holds, the tool must refuse and leave it exactly as it was."""
+    script, env, systemd_dir, meminfo, procfs = _protected_host(tmp_path, units=("docker.service",))
+    env["UNIT_MAINPIDS"] = "docker.service=412"
+    proc = tmp_path / "procfs"
+    (proc / "412").mkdir()
+    (proc / "412" / "oom_score_adj").write_text(content)
+    _fake_limits(env, HOST_V1001)
+    r = _run(script, env, _args(meminfo, systemd_dir, tmp_path / "cgroupfs", procfs))
+    assert r.returncode == 8, r.stdout + r.stderr
+    assert "refusing to overwrite a score" in r.stderr
+    assert (proc / "412" / "oom_score_adj").read_text() == content
+    assert (systemd_dir / "docker.service.d/30-oom-protect.conf").exists()  # the drop-in is still installed
+
+
+def test_a_unit_whose_own_file_is_already_more_protective_gets_no_drop_in(tmp_path):
+    """The persistent half of the same rule: a drop-in WINS over the unit's own file, so rendering -900 on ssh.service
+    (whose packaged file sets -1000) would REPLACE a stronger value with a weaker one at the next start. Nothing is
+    rendered, and the reason is printed."""
+    script, env, systemd_dir, meminfo, procfs = _protected_host(
+        tmp_path, units=("ssh.service", "docker.service"),
+        fragments={"ssh.service": "[Service]\nOOMScoreAdjust=-1000\n",
+                   "docker.service": "[Service]\nOOMScoreAdjust=-999\n"})
+    _fake_limits(env, HOST_V1001)
+    r = _run(script, env, _args(meminfo, systemd_dir, tmp_path / "cgroupfs", procfs))
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert not (systemd_dir / "ssh.service.d/30-oom-protect.conf").exists(), "a drop-in would have lowered sshd to -900"
+    assert not (systemd_dir / "docker.service.d/30-oom-protect.conf").exists()
+    assert "ssh.service's own unit file sets OOMScoreAdjust=-1000, at least as protective" in r.stderr
+    assert "no drop-in is rendered" in r.stderr
+
+
+def test_a_drop_in_this_tool_rendered_earlier_is_removed_when_the_unit_protects_itself(tmp_path):
+    """The state a host reaches after the old script ran once: ssh.service.d/30-oom-protect.conf exists (with our marker)
+    and the unit's own file says -1000. Leaving the file would keep -900 winning at the next start, so the tool removes
+    its own file (and says so, and says it in a --dry-run without writing) while leaving another owner's file alone."""
+    script, env, systemd_dir, meminfo, procfs = _protected_host(
+        tmp_path, units=("ssh.service",), fragments={"ssh.service": "[Service]\nOOMScoreAdjust=-1000\n"})
+    ours = systemd_dir / "ssh.service.d/30-oom-protect.conf"
+    ours.parent.mkdir(parents=True)
+    ours.write_text("# RENDERED by scripts/netcup/runner/provision-gates-limits.sh - do not edit\n[Service]\nOOMScoreAdjust=-900\n")
+    _fake_limits(env, HOST_V1001)
+    args = _args(meminfo, systemd_dir, tmp_path / "cgroupfs", procfs)
+    dry = _run(script, env, [*args, "--dry-run"])
+    assert dry.returncode == 0, dry.stdout + dry.stderr
+    assert "would remove" in dry.stdout + dry.stderr and ours.exists()
+    r = _run(script, env, args)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert not ours.exists(), "the tool's own weaker drop-in still wins over the unit's -1000"
+    assert "removed" in r.stderr and "protects itself at -1000" in r.stderr
+    assert "daemon-reload" in (tmp_path / "systemctl.log").read_text()  # removing a drop-in needs a reload
+
+
+def test_another_owners_drop_in_that_would_lower_a_self_protected_unit_is_refused(tmp_path):
+    """Not ours to delete: a foreign drop-in at our own path that would replace the unit's stronger own value is a
+    competing policy, so the run refuses and writes nothing."""
+    script, env, systemd_dir, meminfo, procfs = _protected_host(
+        tmp_path, units=("ssh.service",), fragments={"ssh.service": "[Service]\nOOMScoreAdjust=-1000\n"})
+    foreign = systemd_dir / "ssh.service.d/30-oom-protect.conf"
+    foreign.parent.mkdir(parents=True)
+    foreign.write_text("[Service]\nOOMScoreAdjust=-900\n")  # no marker: someone else wrote it
+    _fake_limits(env, HOST_V1001)
+    r = _run(script, env, _args(meminfo, systemd_dir, tmp_path / "cgroupfs", procfs))
+    assert r.returncode == 5, r.stdout + r.stderr
+    assert str(foreign) in r.stderr and "less protective" in r.stderr
+    assert foreign.read_text() == "[Service]\nOOMScoreAdjust=-900\n"
+    assert sorted(p.name for p in systemd_dir.rglob("*.conf")) == [foreign.name]  # nothing of ours was written
+
+
+@pytest.mark.parametrize(("own", "rendered"), [
+    ("\n", True),        # the unit sets nothing: the policy is an addition, not a downgrade
+    ("[Service]\nOOMScoreAdjust=0\n", True),     # 0 is explicitly unprotected
+    ("[Service]\nOOMScoreAdjust=-500\n", True),  # less protective than -900: the policy strengthens it
+])
+def test_a_unit_with_no_or_weaker_protection_gets_the_policy_drop_in(tmp_path, own, rendered):
+    script, env, systemd_dir, meminfo, procfs = _protected_host(
+        tmp_path, units=("docker.service",), fragments={"docker.service": own})
+    _fake_limits(env, HOST_V1001)
+    r = _run(script, env, _args(meminfo, systemd_dir, tmp_path / "cgroupfs", procfs))
+    assert r.returncode == 0, r.stdout + r.stderr
+    path = systemd_dir / "docker.service.d/30-oom-protect.conf"
+    assert path.exists() is rendered
+    if rendered:
+        assert "OOMScoreAdjust=-900" in path.read_text()
+
+
+def test_an_unreadable_own_unit_file_is_an_error_not_a_default(tmp_path):
+    """A unit that is installed but whose fragment cannot be read is not "unprotected": it is a fact this tool could not
+    obtain for the one decision that can lower a unit's protection."""
+    script, env, systemd_dir, meminfo, procfs = _protected_host(
+        tmp_path, units=("docker.service",))
+    (tmp_path / "units" / "docker.service").unlink()  # installed, but the fragment is gone (unreadable)
+    _fake_limits(env, HOST_V1001)
+    r = _run(script, env, _args(meminfo, systemd_dir, tmp_path / "cgroupfs", procfs))
+    assert r.returncode == 3, r.stdout + r.stderr
+    assert "cannot read the OOMScoreAdjust of docker.service" in r.stderr
+    assert not (systemd_dir / "docker.service.d/30-oom-protect.conf").exists()
+
+
+def test_the_units_own_fragment_is_read_not_the_effective_property(tmp_path):
+    """The settled value is the fragment's own, not `systemctl show -p OOMScoreAdjust` (which already includes a drop-in
+    this tool rendered on an earlier run). Otherwise a second run would mistake its own output for the unit's protection,
+    and a hand-set -900 in the unit file would block a policy that has every right to be rendered."""
+    script, env, systemd_dir, meminfo, procfs = _protected_host(
+        tmp_path, units=("docker.service",), fragments={"docker.service": "[Service]\nOOMScoreAdjust=-500\n"})
+    _fake_limits(env, HOST_V1001)
+    r = _run(script, env, _args(meminfo, systemd_dir, tmp_path / "cgroupfs", procfs))
+    assert r.returncode == 0, r.stdout + r.stderr
+    log = (tmp_path / "systemctl.log").read_text()
+    assert "show docker.service -p FragmentPath" in log  # the unit's OWN file was asked for
+    assert (systemd_dir / "docker.service.d/30-oom-protect.conf").read_text().endswith("OOMScoreAdjust=-900\n")
 
 
 def test_the_live_control_plane_scores_are_set_in_place_without_a_restart(tmp_path):

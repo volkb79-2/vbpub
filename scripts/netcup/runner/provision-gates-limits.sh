@@ -12,6 +12,11 @@
 #     process tree (memory.oom.group=1). Deliberately NOT on the slice: one runaway lane would kill every lane;
 #   - OOMScoreAdjust=-900 on ssh, systemd-logind, systemd-journald, docker and cgprofiled: a cgroup floor never enters
 #     the global OOM victim ranking, and this kernel scores an adj-0 2 MiB service and an adj-0 lane process alike.
+#     PROTECTION IS NEVER REDUCED. oom_score_adj is a ranking, so a LOWER number is MORE protective: -1000 (what sshd
+#     keeps on its own listener) is stronger than the unit's -900, and -900 is stronger than journald's packaged
+#     -250. The live fix-up therefore writes a MainPID score only when the current value is HIGHER (less protective)
+#     than the target, and the persistent drop-in is written only when the unit's own fragment sets nothing or a less
+#     protective value; a unit that is already at least as protected is reported and left alone.
 # Nominal, not raw: see the derivation below (a host whose MemTotal reads 7935 MiB is an 8 GiB host).
 # Idempotent: an unchanged drop-in is reported and left alone; a second run with a matching live cgroup changes nothing.
 # The derivation, the overrides and their consequences are documented in runner/README.md ("Gates-tier memory policy").
@@ -25,12 +30,15 @@
 #
 # Exit codes: 0 applied, already converged, or a loaded-but-inactive slice (nothing live to compare or restart);
 #             2 usage or an invalid override;
-#             3 a required host fact is unreadable (MemTotal, SwapTotal, the slice's cgroup, its process lists) or there
-#               is no swap to page with (a swapless host refuses by design: this policy pages lanes instead of killing them);
+#             3 a required host fact is unreadable (MemTotal, SwapTotal, the slice's cgroup, its process lists, or a
+#               protected unit's own fragment) or there is no swap to page with (a swapless host refuses by design: this
+#               policy pages lanes instead of killing them);
 #             4 refused: the slice has tasks, so a restart would reset the memory.events counters INCONCLUSIVE-OOM reads;
 #             5 refused: a file or drop-in this tool does not own carries the key it would set (or is not a recognised
-#               hand drop-in even with --adopt);
-#             6 not root; 7 the live cgroup still disagrees after a restart; 8 a live OOM score could not be set.
+#               hand drop-in even with --adopt), or a protected unit's own fragment is already MORE protective than the
+#               rendered value while this tool's drop-in (which wins over the unit file) is installed there;
+#             6 not root; 7 the live cgroup still disagrees after a restart; 8 a live OOM score could not be read or set
+#               in place (an unreadable live score is not 0: the comparison is what keeps this tool from lowering it).
 set -Eeuo pipefail
 umask 022
 here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
@@ -98,6 +106,12 @@ memory_max_pin=${GATES_MEMORY_MAX_MIB:-}
 memory_swap_max_pin=${GATES_MEMORY_SWAP_MAX_MIB:-}
 oom_score_adjust=-900
 is_positive_integer() { [[ $1 =~ ^[1-9][0-9]*$ ]]; }
+# oom_score_adj is a RANKING, not a magnitude: a LOWER value is MORE protective (-1000 strongest, +1000 weakest).
+# `usable` is the readability gate: an unreadable score must never be folded into "not protected", because the only
+# consequence of that fold is a write — the one operation that can LOWER a unit's protection.
+usable_oom_score() { local digits=${1#-}; [[ $digits =~ ^[0-9]+$ ]] && (( $1 >= -1000 && $1 <= 1000 )); }
+# True when $1 protects at least as strongly as $2 (equal or lower), and never for an unusable value.
+more_protective() { usable_oom_score "$1" && (( $1 <= $2 )); }
 for value in "$control_floor_mib" "$memory_slack_mib" "$nominal_step_mib" "$swap_reserve_mib"; do
   is_positive_integer "$value" || {
     echo "GATES_CONTROL_FLOOR_MIB/GATES_MEMORY_SLACK_MIB/GATES_NOMINAL_STEP_MIB/GATES_SWAP_RESERVE_MIB must be positive integers (MiB), got '$value'" >&2
@@ -222,11 +236,13 @@ render_file() {  # $1 path, $2 section, $3 allowed keys, $4 content
     if ! owned_file "$path"; then
       if ((adopt_requested)) && recognised_hand_dropin "$path" "$section" "$keys"; then
         if ((dry_run)); then
-          echo "gates memory policy: would adopt the recognised hand drop-in $path (its content would be retired to $path.retired-<stamp>)"
+          : # announced by the pre-flight check, which names every adoptable file before anything is written
         else
           retire_file "$path"
         fi
       else
+        # Defence in depth: the pre-flight above already refused this exact condition before anything was written. It
+        # is kept here so the write path itself can never overwrite a file whose meaning was not established.
         echo "refusing to override $path: its first line is not this tool's marker '$marker' and its content is not the policy this tool renders." >&2
         echo "gates memory policy: if this is the hand-configured 2026-11-16 drop-in of this host, adopt it once with --adopt (its content is kept as $path.retired-<stamp>); otherwise retire or relocate that file deliberately and re-run" >&2
         exit 5
@@ -272,11 +288,18 @@ other_dropins_setting() {  # $1 dir, $2 our file, $3 key regex; prints `path<TAB
   done
 }
 if [[ -d $systemd_dir/$slice.d ]]; then
+  # Every competing FILE is named before the refusal: an operator who is told about one of five hand files fixes one and
+  # meets the next on the following run. The loop completes before the exit, so a plain --dry-run lists them all too.
+  foreign_slice=()
   while IFS=$'\t' read -r other value; do
     [[ -n $other ]] || continue
     echo "refusing: $other also sets the gates-slice memory policy ($value); delete that file deliberately (for example the hand drop-in the 2026-11-16 decision supersedes, or adopt it with --adopt when it is at this tool's own path) and re-run" >&2
-    exit 5
+    [[ " ${foreign_slice[*]-} " == *" $other "* ]] || foreign_slice+=("$other")
   done < <(other_dropins_setting "$systemd_dir/$slice.d" "$slice_dropin" 'MemoryHigh|MemoryMax|MemorySwapMax|MemoryOOMGroup|ManagedOOMMemoryPressure')
+  if (( ${#foreign_slice[@]} )); then
+    echo "gates memory policy: ${#foreign_slice[@]} competing file(s) named above; nothing was written. Run --adopt --dry-run to see every recognised hand drop-in at once" >&2
+    exit 5
+  fi
 fi
 # docker-.scope.d holds a fragment-rendered backstop (50-default-limits.conf) that sets memory but not OOMPolicy: only a
 # file setting OOMPolicy to something ELSE competes with this drop-in. Equal values coexist and are reported.
@@ -289,17 +312,153 @@ while IFS=$'\t' read -r other value; do
   echo "gates memory policy: $other also sets OOMPolicy=kill; kept as a duplicate of the same policy" >&2
 done < <(other_dropins_setting "$systemd_dir/docker-.scope.d" "$scope_dropin" 'OOMPolicy')
 # The dedicated-dev host protection of mdt host-setup renders the same -900 into a 50-*.conf of these units; any OTHER
-# score would override this drop-in (a later fragment wins), so only a disagreeing value is refused.
+# score would override this drop-in or be overridden by it (a later fragment wins), so only a disagreeing value is refused.
+# A MORE protective value in another owner's drop-in is already stronger than the policy (for example a packaged unit
+# setting -1000 on its listener): it is reported as protection kept, never "corrected" down to the policy value.
 for unit in $protected_units; do
   while IFS=$'\t' read -r other value; do
     [[ -n $other ]] || continue
-    if [[ $value != "$oom_score_adjust" ]]; then
+    if [[ $value != "$oom_score_adjust" ]] && ! more_protective "$value" "$oom_score_adjust"; then
       echo "refusing: $other sets OOMScoreAdjust=$value on $unit, which contradicts OOMScoreAdjust=$oom_score_adjust; delete that file deliberately and re-run" >&2
       exit 5
     fi
-    echo "gates memory policy: $other also protects $unit with OOMScoreAdjust=$value; kept as a duplicate" >&2
+    if more_protective "$value" "$oom_score_adjust" && [[ $value != "$oom_score_adjust" ]]; then
+      echo "gates memory policy: $other keeps $unit more protected (OOMScoreAdjust=$value) than the policy value $oom_score_adjust; kept, never lowered" >&2
+    else
+      echo "gates memory policy: $other also protects $unit with OOMScoreAdjust=$value; kept as a duplicate" >&2
+    fi
   done < <(other_dropins_setting "$systemd_dir/$unit.d" "$systemd_dir/$unit.d/30-oom-protect.conf" 'OOMScoreAdjust')
 done
+
+# ---- the unit's OWN value: protection is never reduced ----------------------
+# A drop-in WINS over the unit's own fragment (systemd merges the unit file first and the drop-in later), so writing
+# `OOMScoreAdjust=-900` into a unit whose packaged fragment already says -1000 or -999 REPLACES a stronger value with a
+# weaker one. That is a downgrade that neither the convergence report nor a live cgroup read can reveal, so it is
+# decided here, once per unit, from the value the unit's OWN fragment sets (never the effective value, which already
+# includes a drop-in this tool may have written earlier):
+#   own value unset/0    -> render the policy (nothing is being weakened);
+#   own value <= target  -> render NOTHING and say so, because -1000 (sshd protects its own listener) and -999
+#                           (containerd's) must survive a re-run instead of being "converged" down to -900;
+#   own value > target   -> render the path only when this tool already owns a drop-in there (the value then came from
+#                           an earlier run of this tool); another owner's drop-in at that path competes and is refused;
+#   not installed        -> stage the drop-in anyway (it is inert until the unit appears, so no bring-up loses it);
+#   installed, unreadable-> exit 3: a value that exists somewhere else is never replaced by an invented one.
+# Every decision is taken BEFORE any file is written, so a refusal still leaves no half-written policy behind.
+oom_protect_units=()
+unit_oom_own_fragment() {  # $1 file; the OOMScoreAdjust its own unit file sets, empty when it sets none
+  awk '
+    { line = $0; sub(/\r$/, "", line); sub(/^[ \t]+/, "", line); sub(/[ \t]+$/, "", line) }
+    line == "" || line ~ /^#/ || line ~ /^;/ { next }
+    line ~ /^\[[A-Za-z][A-Za-z0-9]*\]$/ { service = (line == "[Service]"); next }
+    service && line ~ /^OOMScoreAdjust=/ { value = line; sub(/^OOMScoreAdjust=/, "", value) }
+    END { if (value != "") printf "%s\n", value }
+  ' "$1" 2>/dev/null
+}
+# The OWN value only: `systemctl show -p FragmentPath` names the unit file itself, so a drop-in this tool rendered for
+# an earlier run is not mistaken for the unit's own protection. Only a unit without a readable fragment (which is how a
+# not-installed unit answers) falls back to the effective property, and that fallback can only make this tool write
+# less, never more.
+own_oom_score() {  # $1 unit; prints the value its own fragment sets (may be empty), 1 when it is unreadable
+  local unit=$1 fragment value
+  fragment=$(systemctl show "$unit" -p FragmentPath --value 2>/dev/null) || return 1
+  if [[ -n $fragment ]]; then
+    [[ -r $fragment ]] || return 1
+    unit_oom_own_fragment "$fragment" || return 1
+    return 0
+  fi
+  systemctl show "$unit" -p OOMScoreAdjust --value 2>/dev/null || return 1
+}
+for unit in $protected_units; do
+  if ! systemctl cat "$unit" >/dev/null 2>&1; then
+    oom_protect_units+=("$unit")  # not installed: the drop-in is inert until the unit appears
+    continue
+  fi
+  if ! own=$(own_oom_score "$unit"); then
+    echo "cannot read the OOMScoreAdjust of $unit's own unit file: refusing to render a drop-in that might replace a" >&2
+    echo "protection this tool never read. Its installed drop-in (if any) is untouched; repair the unit and re-run." >&2
+    exit 3
+  fi
+  [[ -n $own ]] || own=0
+  if ! usable_oom_score "$own"; then
+    echo "the OOMScoreAdjust of $unit's own unit file is not a usable score ('$own'): refusing to render a drop-in that might" >&2
+    echo "replace it. Repair the unit file and re-run." >&2
+    exit 3
+  fi
+  if more_protective "$own" "$oom_score_adjust"; then
+    if [[ $own != 0 ]]; then
+      echo "gates memory policy: $unit's own unit file sets OOMScoreAdjust=$own, at least as protective as the policy value" >&2
+      echo "gates memory policy: $oom_score_adjust; no drop-in is rendered for it (a drop-in would REPLACE that value and lower its" >&2
+      echo "gates memory policy: protection). The live score still follows its own rule: written only when it is less protective." >&2
+    fi
+    # A drop-in THIS TOOL rendered on an earlier run would still win over the unit's own stronger value at the next start:
+    # an owned file at our own path is ours to remove, and leaving it there would keep the very downgrade this decision
+    # refuses. Another owner's file is not ours to delete: when it would lower the value, that is a competing policy and
+    # the operator is asked to resolve it (an equal-or-more-protective one was already reported above).
+    ours="$systemd_dir/$unit.d/30-oom-protect.conf"
+    if [[ -e $ours ]] && owned_file "$ours"; then
+      if ((dry_run)); then
+        echo "gates memory policy: would remove $ours (this tool rendered it earlier; $unit now protects itself at $own)"
+      else
+        rm -f -- "$ours"
+        rmdir --ignore-fail-on-non-empty "$(dirname -- "$ours")" 2>/dev/null || true
+        echo "gates memory policy: removed $ours (this tool rendered it earlier; $unit now protects itself at $own)" >&2
+      fi
+      changed=1
+    elif [[ -e $ours ]]; then
+      foreign_value=$([[ -r $ours ]] && unit_section_value "$ours" Service OOMScoreAdjust || true)
+      if ! more_protective "${foreign_value:-9999}" "$own"; then
+        echo "refusing: $ours (another owner's drop-in) sets OOMScoreAdjust=${foreign_value:-unreadable}, which is less protective" >&2
+        echo "than $unit's own $own and would replace it at the next start; resolve that file deliberately and re-run" >&2
+        exit 5
+      fi
+    fi
+    continue
+  fi
+  # own > target: only an earlier rendering of THIS tool may sit at the path; anyone else's file is a competing policy.
+  existing="$systemd_dir/$unit.d/30-oom-protect.conf"
+  if [[ -e $existing ]] && ! owned_file "$existing"; then
+    echo "refusing: $unit's own unit file sets OOMScoreAdjust=$own, which is less protective than the policy value $oom_score_adjust," >&2
+    echo "and another owner's drop-in at $existing is in the way; resolve that file deliberately and re-run" >&2
+    exit 5
+  fi
+  oom_protect_units+=("$unit")
+done
+
+# Own paths are inspected ONCE, before anything is written: a plain --dry-run names every foreign file at this tool's
+# own paths instead of stopping at the first one (an operator who fixes one file and meets the next on the following run
+# learns nothing about the rest), and an adoptable hand drop-in is announced in the plan. The render below then either
+# retires the adopted file or writes the rendered one; the pre-flight is what reports the plan.
+own_paths=("$slice_dropin|Slice|MemoryHigh MemoryMax MemorySwapMax" "$scope_dropin|Scope|OOMPolicy")
+for unit in "${oom_protect_units[@]}"; do
+  own_paths+=("$systemd_dir/$unit.d/30-oom-protect.conf|Service|OOMScoreAdjust")
+done
+unadoptable=0
+autoadopt=0
+for entry in "${own_paths[@]}"; do
+  path=${entry%%|*}
+  rest=${entry#*|}
+  section=${rest%%|*}
+  keys=${rest#*|}
+  [[ -e $path ]] || continue
+  owned_file "$path" && continue
+  if ((adopt_requested)) && recognised_hand_dropin "$path" "$section" "$keys"; then
+    autoadopt=$(( autoadopt + 1 ))
+    if ((dry_run)); then
+      echo "gates memory policy: would adopt the recognised hand drop-in $path (its content would be retired to $path.retired-<stamp>)"
+    fi
+    continue
+  fi
+  unadoptable=$(( unadoptable + 1 ))
+  echo "refusing to override $path: its first line is not this tool's marker '$marker' and its content is not the policy this tool renders." >&2
+  echo "gates memory policy: if this is the hand-configured 2026-11-16 drop-in of this host, adopt it once with --adopt (its content is kept as $path.retired-<stamp>); otherwise retire or relocate that file deliberately and re-run" >&2
+done
+if ((unadoptable)); then
+  echo "gates memory policy: $unadoptable file(s) at this tool's own paths cannot be adopted, and nothing was written; run --adopt --dry-run to review every recognised hand drop-in at once" >&2
+  exit 5
+fi
+if ((autoadopt)) && ((!dry_run)); then
+  echo "gates memory policy: adopting $autoadopt recognised hand drop-in(s); their content is retired, never deleted" >&2
+fi
 
 render_file "$slice_dropin" 'Slice' 'MemoryHigh MemoryMax MemorySwapMax' "$marker - do not edit; re-run the provisioning step to converge.
 # Operator decision 2026-11-16 for a pure test host: protect only the measured control plane. No finite MemoryHigh
@@ -327,7 +486,7 @@ OOMPolicy=kill
 
 # The control-plane drop-ins are rendered even for a unit that is not installed yet (cgprofiled arrives later in the
 # bring-up): a drop-in for an absent unit is inert and applies when the unit appears, so no reinstall loses it.
-for unit in $protected_units; do
+for unit in "${oom_protect_units[@]}"; do
   render_file "$systemd_dir/$unit.d/30-oom-protect.conf" 'Service' 'OOMScoreAdjust' "$marker - do not edit; re-run the provisioning step to converge.
 # Keep this control-plane unit out of the global OOM victim ranking: a cgroup floor (MemoryLow) never enters that
 # ranking, and this kernel scores every adj-0 process about alike regardless of size, so a lane made of many small
@@ -367,8 +526,23 @@ apply_live_score() {
     echo "gates memory policy: cannot read $adj_file; $unit's drop-in applies at its next start"
     return 0
   fi
-  current=$(<"$adj_file")
-  [[ $current == "$oom_score_adjust" ]] && return 0
+  current=$(<"$adj_file") || true
+  # An unreadable score is not "unprotected 0": the only thing this comparison gates is a WRITE, and a write on an
+  # assumed 0 is exactly how a value nobody read gets replaced by a weaker one. Refuse instead.
+  if ! usable_oom_score "$current"; then
+    echo "cannot read the live oom_score_adj of $unit (pid $pid, $adj_file said '${current}'): refusing to overwrite a score" >&2
+    echo "this tool could not read. Its drop-in is installed and applies at its next start." >&2
+    exit 8
+  fi
+  if more_protective "$current" "$oom_score_adjust"; then
+    # Already at least as protected as the policy: sshd keeps its own listener at -1000 (it protects itself), containerd
+    # at -999. Neither is "converged" down to -900: a re-run must leave a stronger value alone and SAY so.
+    if [[ $current != "$oom_score_adjust" ]]; then
+      echo "gates memory policy: $unit (pid $pid) is already at least as protected as the policy: oom_score_adj $current"
+      echo "gates memory policy: (>= $oom_score_adjust protection; left alone, never raised)"
+    fi
+    return 0
+  fi
   if ((dry_run)); then
     echo "gates memory policy: would set $unit (pid $pid) oom_score_adj $current -> $oom_score_adjust"
     return 0
@@ -377,8 +551,11 @@ apply_live_score() {
     echo "cannot set the live OOM score of $unit (pid $pid, $adj_file); its drop-in is installed and applies at its next start" >&2
     exit 8
   fi
-  echo "gates memory policy: set $unit (pid $pid) oom_score_adj -> $oom_score_adjust in place (no restart)"
+  echo "gates memory policy: set $unit (pid $pid) oom_score_adj $current -> $oom_score_adjust in place (no restart)"
 }
+# Every protected unit, not only the ones due a drop-in: a main process that is unprotected NOW is brought to the policy
+# value even when the unit's own file protects it stronger (that write RAISES protection), while apply_live_score itself
+# refuses to lower anything already at least as protected.
 for unit in $protected_units; do
   if systemctl cat "$unit" >/dev/null 2>&1; then
     apply_live_score "$unit"
@@ -432,17 +609,70 @@ report_live() {
   printf '  expected memory.high=%s memory.max=%s memory.swap.max=%s\n' max "$memory_max_bytes" "$memory_swap_max_bytes" >&2
 }
 
+# ---- the slice's own fragment: say it only when something really differs --
+# A fragment that carries a memory key would be OVERRIDDEN by this drop-in (a drop-in is merged after the unit file), so
+# an operator deserves to read that. But a note printed on every run of a converged host is noise nobody reads, and
+# "differs" is a VALUE comparison, not the existence of the file: a fragment may spell the same amount another way
+# (`6G` vs `6144M`) and a hand-drawn fragment may carry only CPU keys.
+# A value systemd understands is compared in BYTES; anything this tool cannot convert (a percentage, a typo) is reported,
+# because the tool cannot show it is harmless.
+memory_bytes() {  # $1 systemd memory value; prints bytes, 1 when the value is not a plain size this tool can convert
+  local value=$1 number unit multiplier
+  if [[ $value =~ ^([0-9]+)([KMGTkmgt])$ ]]; then
+    number=${BASH_REMATCH[1]}
+    unit=${BASH_REMATCH[2]^^}
+    case $unit in
+      K) multiplier=1024 ;;
+      M) multiplier=$(( 1024 * 1024 )) ;;
+      G) multiplier=$(( 1024 * 1024 * 1024 )) ;;
+      T) multiplier=$(( 1024 * 1024 * 1024 * 1024 )) ;;
+    esac
+    printf '%s' $(( number * multiplier ))
+    return 0
+  fi
+  [[ $value =~ ^[0-9]+$ ]] || return 1
+  printf '%s' "$value"
+}
+unit_section_value() {  # $1 file, $2 section, $3 key; the value that section sets (last one wins, as systemd reads it)
+  awk -v want="$2" -v key="$3" '
+    { line = $0; sub(/\r$/, "", line); sub(/^[ \t]+/, "", line); sub(/[ \t]+$/, "", line) }
+    line == "" || line ~ /^#/ || line ~ /^;/ { next }
+    line ~ /^\[[A-Za-z][A-Za-z0-9]*\]$/ { inside = (line == "[" want "]"); next }
+    inside && index(line, key "=") == 1 { value = substr(line, length(key) + 2) }
+    END { if (value != "") printf "%s\n", value }
+  ' "$1" 2>/dev/null
+}
+same_memory_amount() {  # $1, $2; true when both are the same number of bytes (or the same non-size token)
+  [[ $1 == "$2" ]] && return 0
+  local a b
+  a=$(memory_bytes "$1") || return 1
+  b=$(memory_bytes "$2") || return 1
+  [[ $a == "$b" ]]
+}
+slice_fragment_override_note() {
+  local fragment key want own
+  fragment=$(systemctl show "$slice" -p FragmentPath --value 2>/dev/null || true)
+  [[ -n $fragment ]] || return 0
+  for spec in "MemoryHigh:infinity" "MemoryMax:${memory_max_mib}M" "MemorySwapMax:${memory_swap_max_mib}M"; do
+    key=${spec%%:*}
+    want=${spec#*:}
+    own=$(unit_section_value "$fragment" Slice "$key") || own=''
+    [[ -n $own ]] || continue
+    same_memory_amount "$own" "$want" && continue
+    echo "gates memory policy: $slice has a fragment ($fragment) that sets $key=$own; this drop-in deliberately overrides it"
+    echo "gates memory policy: with the 2026-11-16 pure-test-host policy value $key=$want (a foreign drop-in that sets it is refused above)"
+    return 0
+  done
+  return 0
+}
+
 load_state=$(systemctl show "$slice" -p LoadState --value 2>/dev/null || true)
 if [[ $load_state != loaded ]]; then
   echo "gates memory policy: $slice is not installed on this host (LoadState '${load_state:-unknown}'), so nothing was applied to a"
   echo "gates memory policy: live slice. The drop-ins above take effect when the unit appears: mdt host-setup renders and reloads"
   echo "gates memory policy: it (P5/P6), or the marker-unit step of the no-host-setup path installs it. Then re-run this step."
 else
-  fragment=$(systemctl show "$slice" -p FragmentPath --value 2>/dev/null || true)
-  if [[ -n $fragment ]]; then
-    echo "gates memory policy: $slice has a fragment ($fragment); this drop-in deliberately overrides its MemoryHigh/MemoryMax/"
-    echo "gates memory policy: MemorySwapMax with the 2026-11-16 pure-test-host policy (a foreign drop-in that sets them is refused above)"
-  fi
+  slice_fragment_override_note
   cgdir=$(slice_cgroup) || {
     # A loaded unit without an active cgroup is a slice that has not been started yet (a freshly installed host, or a slice
     # deactivated after a completed run): there is no live limit to disagree with and no counter to reset, so nothing to do.

@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 import stat
 import subprocess
 from pathlib import Path
@@ -21,6 +22,14 @@ def test_every_runner_script_is_valid_bash():
     assert SCRIPTS
     for script in SCRIPTS:
         subprocess.run(["bash", "-n", str(script)], check=True)
+
+
+@pytest.mark.skipif(shutil.which("shellcheck") is None, reason="shellcheck not installed")
+def test_the_gates_policy_script_is_shellcheck_clean():
+    """`bash -n` accepts an unquoted array expansion (SC2068: element `a b` splits into two units) and an assignment
+    nothing reads (SC2034); this script grew both when it learned to decide per unit. The check is scoped to this
+    script on purpose: other runner scripts carry their own older findings, which are not this work item's to churn."""
+    subprocess.run(["shellcheck", "-x", "-P", str(RUNNER), str(RUNNER / "provision-gates-limits.sh")], check=True)
 
 
 def test_tracked_runner_files_are_host_agnostic():
@@ -180,3 +189,35 @@ def test_cockpit_launcher_binds_vbpub_checkout_at_assay_workspace_path(tmp_path)
 
 def test_the_cockpit_launcher_argv_guard_is_not_vacuous():
     assert START_LAUNCHERS
+
+
+def _readme_probe_argv() -> list[str]:
+    """The oom.group probe line of the runner guide, tokenised (the one `docker run` in a fenced block)."""
+    text = (RUNNER / "README.md").read_text()
+    lines = [line.strip() for line in text.splitlines() if line.strip().startswith("docker run ")]
+    assert len(lines) == 1, lines
+    return lines[0].split()
+
+
+def test_the_documented_oom_group_probe_uses_an_image_the_runner_already_has():
+    """Measured on v1001 (2026-11-16): the guide's probe said `alpine`, which the host did not have, so the documented
+    check silently pulled an image — and a runner may have no network at all. It now names `tester-base:local`, the tag
+    `build-tester-base.sh` leaves on every runner, and pins `--pull=never` so a missing image is an error instead of a fetch."""
+    argv = _readme_probe_argv()
+    build = (RUNNER / "build-tester-base.sh").read_text()
+    assert "-t tester-base:local" in build  # the tag really is what provisioning produces
+    assert "tester-base:local" in argv, argv
+    assert "alpine" not in argv
+    assert "--pull=never" in argv
+    # the probe must be placed IN the tier and must not hide the host's view behind a namespace
+    assert "--cgroup-parent" in argv and argv[argv.index("--cgroup-parent") + 1] == '"$s"'
+    assert not [arg for arg in argv if arg.startswith("--cgroupns") or arg.startswith("--pid")]
+
+
+def test_the_probe_is_documented_with_its_exact_removal():
+    """A throwaway container in the gates tier must be removed by its exact name and never left behind, and the guide says
+    when it is safe to run at all."""
+    text = (RUNNER / "README.md").read_text()
+    assert "--name probe-oomgroup" in text
+    assert "docker rm -f probe-oomgroup" in text
+    assert "only while the tier is otherwise quiet" in " ".join(text.split())

@@ -906,12 +906,13 @@ so the derivation uses the size that was bought. An 8 GiB / 64 GiB-swap host the
 `MemorySwapMax=57344M`.
 
 The exit status tells you what happened: `0` converged, already converged, or a loaded-but-INACTIVE slice (a fresh host:
-no live limit to compare, no counter to reset, the drop-ins apply at the first start), `3` a host fact is unreadable, the
-slice is active but its cgroup cannot be resolved, the tier's process list cannot be read, or the host has no swap above
-its reserve (by design: this policy pages an oversized lane instead of killing it), `4` the tier has tasks so the live
-slice was left alone (the drop-ins are installed; re-run when it is idle), `5` another owner's drop-in or file competes
-with the policy (nothing of ours was written), `7` the live cgroup still disagrees after a restart, `8` a live OOM score
-could not be set.
+no live limit to compare, no counter to reset, the drop-ins apply at the first start), `3` a host fact is unreadable (the
+memory totals, the slice's cgroup, the tier's process list, or a protected unit's own unit file), the host has no swap
+above its reserve (by design: this policy pages an oversized lane instead of killing it), or the host's swap total is
+unreadable, `4` the tier has tasks so the live slice was left alone (the drop-ins are installed; re-run when it is idle),
+`5` another owner's drop-in or file competes with the policy (nothing of ours was written), `7` the live cgroup still
+disagrees after a restart, `8` a live OOM score could not be READ or set in place (an unreadable score is never assumed
+to be `0`, because the read decides whether a write would lower a unit's protection).
 
 **Adopting a hand-configured host, once.** A host that a person configured by hand (the 2026-11-16 measurement itself,
 and r1002 if it gets the same policy) is refused with exit 5 until the migration is an explicit act:
@@ -925,9 +926,20 @@ sudo ~/runner-scripts/provision-gates-limits.sh                     # afterwards
 `--adopt` recognises a file only at this tool's own path, only when every non-comment line is a section header naming
 exactly the section that file owns or a directive whose key belongs to the rendered policy (the VALUES are not compared:
 a hand file may write `56G` where the tool renders `57344M` — the same amount, a different spelling); anything else stays
-foreign and is refused even with the flag. The adopted content is copied to `<file>.retired-<UTC stamp>` (a name systemd
+foreign and is refused even with the flag. All of this tool's own paths are inspected before anything is written, so one
+`--dry-run` names every foreign and every adoptable file at once rather than stopping at the first.
+The adopted content is copied to `<file>.retired-<UTC stamp>` (a name systemd
 does not load) and never deleted. Provisioning passes the flag only when `GATES_MEMORY_ADOPT=1` is set, so the migration
 is the operator's act.
+
+**Protection is never reduced.** `oom_score_adj` is a ranking (`-1000` strongest, `+1000` weakest), so the tool writes
+the live score of a protected unit's main process **only when the current value is less protective than `-900`**, and
+renders its `30-oom-protect.conf` drop-in **only when the unit's own unit file sets nothing or something weaker**. sshd
+sets its own listener to `-1000` at runtime (stronger than `-900`, so it is left alone), and a packaged unit file that
+already sets a stronger value keeps it: a drop-in is merged after the unit file, so `-900` there would REPLACE the
+stronger value at the next start. Such a unit is reported as “already at least as protected”; a weaker own value
+(`systemd-journald.service` ships `-250`) is converged to `-900`. An unreadable live score is exit `8` and an unreadable
+own unit file is exit `3`; neither is treated as `0`.
 
 Host-side check (read-only):
 
@@ -939,10 +951,13 @@ docker inspect -f '{{.HostConfig.OomScoreAdj}}' "$COCKPIT_NAME"   # 0 means the 
 ```
 
 Expected: `MemoryHigh=infinity`, `MemoryMax` below `MemTotal` (it was `6656M` on an 8 GiB host), `MemorySwapMax`
-large but not the whole swap, `-900` on the five protected units, and a negative cockpit score. A started lane's
+large but not the whole swap, `-900` on the five protected units (or a stronger value where the unit's own file already
+sets one), and a negative cockpit score. A started lane's
 `memory.oom.group` must read `1`: check it by starting the probe with `--cgroup-parent dev-gates.slice` and reading
-`/sys/fs/cgroup/dev.slice/dev-gates.slice/docker-*/memory.oom.group` on the host — never from a `--cgroupns=host` container. Why these values, and what never to change (`MemoryHigh`, slice-level
-`oom.group`, systemd-oomd, io limits): [runner guide](runner/README.md#gates-tier-memory-policy) and the
+`/sys/fs/cgroup/dev.slice/dev-gates.slice/docker-*/memory.oom.group` on the host — never from a `--cgroupns=host` container.
+The probe image is `tester-base:local`, which `build-tester-base.sh` leaves on every runner, with `--pull=never`: a host
+may have no network, and a bare `alpine` would be an implicit `docker pull`. Why these values, and what never to change
+(`MemoryHigh`, slice-level `oom.group`, systemd-oomd, io limits): [runner guide](runner/README.md#gates-tier-memory-policy) and the
 [design rationale](DESIGN-GUIDE.md#pure-test-host-memory-policy).
 
 ### Runner rollback commands
