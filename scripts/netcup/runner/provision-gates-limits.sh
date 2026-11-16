@@ -270,6 +270,14 @@ own_oom_score() {  # $1 unit; prints the value its own fragment sets (may be emp
   fi
   systemctl show "$unit" -p OOMScoreAdjust --value 2>/dev/null || return 1
 }
+# The EFFECTIVE score systemd would apply: the unit file MERGED with every drop-in, including one under /usr/lib that
+# this tool never writes to and therefore cannot see in `$systemd_dir`. It is used for ONE decision only - whether a
+# rendered drop-in would LOWER a protection that already exists - and never as the answer to "does the unit protect
+# itself?" (that is the own fragment's answer, because the effective value already includes a drop-in this tool
+# rendered on an earlier run). Status 1 means systemd could not answer.
+effective_oom_score() {  # $1 unit; prints the effective value (empty when nothing sets one), 1 when systemd cannot answer
+  systemctl show "$1" -p OOMScoreAdjust --value 2>/dev/null
+}
 
 # A drop-in takes effect at the unit's next start; writing /proc/<MainPID>/oom_score_adj reproduces the measured state
 # now WITHOUT restarting ssh/logind/journald/docker (a restart drops live sessions and, for docker, every cockpit).
@@ -644,7 +652,33 @@ gates memory policy: if this is the hand-configured 2026-11-16 drop-in of this h
     plan_refusal "$ours" "refusing: $ours (another owner's drop-in) sets OOMScoreAdjust=$foreign, which is less protective than $unit's own $own and would replace it at the next start; resolve that file deliberately and re-run"
     continue
   fi
-  # own > target: the policy STRENGTHENS the unit, so the drop-in is rendered - but only over a file this tool already
+  # own > target: the unit's own file does not protect it as strongly as the policy - but a protection may still
+  # exist in a drop-in this tool does not own (a packaged one under /usr/lib/<unit>.d, which this tool never writes to
+  # and cannot enumerate from $systemd_dir). Rendering -900 there would REPLACE that stronger value whenever our file
+  # sorts later, so the effective score systemd would apply is read once, and when it is already at least as protective
+  # as the policy nothing is rendered: the same never-lower rule, applied to a file this tool cannot see.
+  if [[ ! -e $ours ]]; then
+    if ! effective=$(effective_oom_score "$unit"); then
+      echo "cannot read the effective OOMScoreAdjust of $unit, so this tool cannot tell whether a drop-in it does not own" >&2
+      echo "already protects it more strongly than the policy value $oom_score_adjust; refusing to render a drop-in that" >&2
+      echo "might replace that protection. Nothing was written; re-run when 'systemctl show' answers for this unit." >&2
+      exit 3
+    fi
+    # An empty or unusable answer is an UNKNOWN, not "unprotected": the only thing this comparison gates is a write, and
+    # writing here would replace a protection nobody read. systemd always reports this property (0 when nothing sets it).
+    if ! usable_oom_score "$effective"; then
+      echo "the effective OOMScoreAdjust of $unit is not a usable score ('${effective}'): refusing to render a drop-in that" >&2
+      echo "might replace a protection this tool never read. Nothing was written; repair the unit and re-run." >&2
+      exit 3
+    fi
+    if more_protective "$effective" "$oom_score_adjust" && [[ $effective != "$oom_score_adjust" ]]; then
+      echo "gates memory policy: $unit is already more protected than the policy value $oom_score_adjust by a drop-in this" >&2
+      echo "gates memory policy: tool does not own (effective OOMScoreAdjust=$effective); no drop-in is rendered for it, because" >&2
+      echo "gates memory policy: a rendered $oom_score_adjust would replace that stronger value. Check /usr/lib/systemd/system/$unit.d." >&2
+      continue
+    fi
+  fi
+  # The policy STRENGTHENS the unit, so the drop-in is rendered - but only over a file this tool already
   # owns, or one --adopt may legitimately retire (a recognised hand drop-in: its value is weaker than the policy, so
   # adopting it loses no protection). Anyone else's file at that path is a competing policy and is refused.
   if [[ -e $ours ]] && ! owned_file "$ours"; then
