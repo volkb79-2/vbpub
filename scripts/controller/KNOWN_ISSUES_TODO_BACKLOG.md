@@ -27,7 +27,7 @@ together.
 | CTL-13 | A final assistant message with `stopReason=stop`, a tool call and no text classifies `SUCCESS` although the documented contract requires text | Minor | OPEN 2026-11-16 |
 | CTL-14 | Nothing stops two wrappers from running the same run name (or session) at once; both write the same `.done`, `.events` and retry counter | Should-fix | OPEN 2026-11-16 |
 | CTL-15 | `.live`'s `latest_total_tokens` reads `0` for a stream whose usage is only carried on delta events, which is exactly the long run it exists for | Should-fix | OPEN 2026-11-16 |
-| CTL-16 | `since-commit` reports the age of the branch's last commit, not the time since this run committed, with nothing saying which commit the age belongs to | Minor | OPEN 2026-11-16 |
+| CTL-16 | `since-commit` shows the branch's last-commit age unqualified, so before the run's first commit it reports the base commit's age (the `ahead=` field on the same line is the qualifier the fix needs) | Minor | OPEN 2026-11-16 |
 | CTL-17 | `stopReason=length` (the context window filled) is classified `INCOMPLETE`, so the controller cannot tell a truncated run from a broken stream | Should-fix | OPEN 2026-11-16 |
 
 ---
@@ -565,31 +565,49 @@ killing mutants.
 
 ## CTL-15 — `.live` reports `latest_total_tokens: 0` for the long runs it exists to describe
 
-**Status:** OPEN (filed 2026-11-16); severity Should-fix. Observed in live
-`job-status` output during the 2026-11-16 controller work: a run at 568
-assistant turns and 619 tool calls published `"latest_total_tokens": 0`, while a
-neighbouring run of the same day published `258492`.
+**Status:** OPEN (filed 2026-11-16; evidence framing corrected in review round
+1 the same day); severity Should-fix. The zero was OBSERVED in live `job-status`
+output during the 2026-11-16 controller work: a run at 568 assistant turns and
+619 tool calls published `"latest_total_tokens": 0`, while a neighbouring run of
+the same day published `258492`. No capture of that stream was kept, so the
+observing run cannot be re-read — which is itself part of the fix asked for
+below.
 
 **Problem.** `pi-live.py`'s incremental reader keeps the LAST integer
-`usage.totalTokens` it saw, whether that value is the real context figure or a
-placeholder. On a real pi stream the model's usage arrives on
-`message_update` events that carry a completed assistant block
-(`thinking_end`, `text_end`, `toolcall_end`) and on `message_end`, while every
-STREAMING delta event (`thinking_delta`, `text_delta`, `toolcall_start`,
-`toolcall_delta`) carries a `usage` object whose every counter — including
-`totalTokens` — is `0`. A delta tail far outnumbers the completions (measured
-on a live 288k-line run: 201 zero-valued usage reports arrived after the last
-non-zero one, and the zero-valued delta reports outnumbered the non-zero
-completions by two orders of magnitude). So the snapshot's "latest" token total
-is very often 0 precisely while the agent is writing — the exact moment a
-reader wants the context figure.
+`usage.totalTokens` it saw, from either shape, with no test on whether that
+value is a measurement or a placeholder (`pi-live.py:110-116`: `message_end`
+usage and `message_update` usage both assign `self.total_tokens`
+unconditionally). So any event that reports `0` overwrites the real context
+figure, and the sidecar then publishes `0` for a run that is large.
 
-The consequence is a status line that looks measured and is wrong: the value is
-not `null` (which the design says an unreadable fact must be), it is a false 0,
-which reads as "the context is empty" on a run that may be at 200k. The token
-figure is also the input to the restart-vs-continue decision the ctlstat
-requirements call for (`docs/design/ctlstat/REQUIREMENTS.md` §15 items 4 and 6),
-so a 0 there is worse than an absent value.
+**What the repository's own fixtures do and do not show.** They do not show the
+placeholder premise. `tests/fixtures/pi-usage-only.jsonl` and
+`pi-empty-usage.jsonl` both carry a `message_update` whose
+`assistantMessageEvent.type` is `thinking_delta` and whose
+`usage.totalTokens` is **101** — a streaming delta with a NON-ZERO total, which
+is the opposite of "every delta event reports 0". What the fixtures DO show is
+that the unconditional assignment accepts a `0` wherever it appears:
+`pi-402.jsonl`, `pi-402-unknown.jsonl` and `pi-error-other.jsonl` each carry a
+`message_end` with `totalTokens: 0`, and `pi-live.py` would publish that 0 as the
+latest figure (the existing checks assert exactly that behaviour for the delta
+fixtures: `check_live_usage_trend` requires `latest_total_tokens == 129` from
+`pi-empty-usage.jsonl`, and the `live-usage-trend` case requires `101` from
+`pi-usage-only.jsonl` — both figures come from a `thinking_delta`).
+
+So two statements are separable and only the first is established: (a) the code
+publishes whatever integer arrived last, including a 0 that means "not
+measured" [code-verified above]; (b) STREAMING deltas in particular always carry
+0 [NOT established by any captured stream, and contradicted by the two fixtures
+that carry 101 on a delta]. Statement (b) was asserted in the first version of
+this entry as fact; it is now a hypothesis to be measured, not a premise to fix
+against.
+
+**Consequence, established either way.** A status line that looks measured and
+is wrong: the value is not `null` (which the design says an unreadable fact must
+be), it is a false 0, which reads as "the context is empty" on a run that may be
+at 200k. The token figure is also the input to the restart-vs-continue decision
+the ctlstat requirements call for (`docs/design/ctlstat/REQUIREMENTS.md` §15
+items 4 and 6), so a 0 there is worse than an absent value.
 
 **Minimal solution.** Do not accept a usage record that is structurally a
 placeholder as the latest measurement: keep the last NON-ZERO reading (or
@@ -609,83 +627,103 @@ stream ends in delta events carrying zero usage after a real completion),
 `scripts/controller/tests/test-pi-impl.sh` (the focused case plus a mutant),
 and the three documents named above.
 
-**Acceptance test idea.** A fixture built from the measured shape — one
-completion event with a non-zero `totalTokens` followed by several delta events
-with zero usage — publishes that non-zero figure, never 0. A stream with NO
-usage at all publishes `null`, not 0. A stream whose only usage is already 0
-(the legitimate fresh case) publishes 0 (or the chosen second field says so),
-and the difference between the three fixtures is asserted. A mutant that takes
-the last usage record unconditionally makes the first case fail.
+**Acceptance test idea.** TWO things must be asserted, one of each kind.
+Behaviour: a fixture where a real completion with a non-zero `totalTokens` is
+followed by events reporting `0` must publish the non-zero figure (or publish
+both facts, with the zero labelled as a zero report), never a bare 0 that reads
+as the context size; a stream with NO usage publishes `null`, not 0; a stream
+whose only usage is a genuine 0 states that. A mutant that keeps the last usage
+record unconditionally must fail the first case. Evidence: the rule about WHICH
+events report 0 must be established from a captured stream, so the acceptance
+work includes capturing a sanitized fixture from a real long pi run (the shape
+that produced the observed 0) and recording in the fixture README whether a
+delta carries 0 or a real total — because the two delta fixtures already in the
+repository carry 101 and 129, which is why the placeholder hypothesis is not
+assumed here.
 
 **Priority.** Should-fix — a wrong number in the only live read of a run, on the
 runs the tool was built for.
 
-**Close when.** The three fixtures above distinguish absent, zero and real
-values, the chosen semantics are documented in the code and the guides, and the
-mutant is killed.
+**Close when.** A captured, sanitized real stream establishes which events report
+0 and which carry a real total (its shape recorded in the fixtures README, since
+the two delta fixtures already in the repository carry 101 and 129); the sidecar
+distinguishes "no usage read yet" (`null`), "a report arrived saying 0", and a
+real total, and never publishes a placeholder 0 as a context figure; the focused
+cases and the mutant behave as described; and the three documents state the
+semantics.
 
-## CTL-16 — `since-commit` reports the AGE of the branch's last commit, not the time since this run committed
+## CTL-16 — `since-commit` shows the branch's last-commit age with no qualification, so before the run's first commit it reports somebody else's commit
 
-**Status:** OPEN (filed 2026-11-16); severity Minor. Observed in live
-`job-status` output on 2026-11-16 (several runs printed `since-commit=...s`
-immediately after starting) and re-verified against `pi-live.py`.
+**Status:** OPEN (filed 2026-11-16; rewritten in review round 1 the same day:
+the first version claimed the payload cannot tell whether the run committed, which
+is false); severity Minor. Observed in live `job-status` output on 2026-11-16
+(several runs printed a `since-commit=…s` figure immediately after starting) and
+re-verified against `scripts/controller/pi-live.py` and
+`scripts/controller/job-status.sh` on origin/main.
 
-**Problem.** The field that `job-status.sh` prints as `since-commit` is derived
-from `payload["last_commit_epoch"]`, which `pi-live.py` fills from
-`git log -1 --format=%ct HEAD`. That is the timestamp of the branch's newest
-commit — which, for a run started on an existing branch (the normal case: a
-worktree created from `main` whose tip commit IS the base), is the base commit's
-age, possibly weeks. A reader asked "how long since this run last committed"
-therefore gets a number that describes somebody else's commit, from the very
-first tick, and the number only becomes meaningful after the agent's first
-commit. Nothing in the field name, the `job-status.sh` header ("seconds since
-the last commit") or the DESIGN-GUIDE liveness paragraph says which commit it
-is.
+**Problem.** `job-status.sh` prints `since-commit={age}s` from
+`payload["last_commit_epoch"]` (`job-status.sh:125`), and `pi-live.py` fills that
+field from `git log -1 --format=%ct HEAD` (`pi-live.py:141,167`). For a run
+started on an existing branch — the normal case, where the worktree is created
+from `main` and its tip IS the base commit — the value is the BASE commit's age,
+possibly days or weeks, from the very first tick. It is not an arithmetic error
+(the field is recomputed every tick, so a commit the run makes does move it); it
+is a fact without provenance: nothing in the row, and nothing in the field name,
+says whose commit that age belongs to, so a reader asks "how long since this run
+last committed" and is answered about somebody else's commit — and cannot
+tell "this run has not committed yet" from "this run committed long ago".
 
-**Correction to the original report, recorded because it changes the fix.** The
-field is NOT a counter that "counts from worktree creation instead of from the
-last commit": it is computed fresh on every tick from `git log -1`, so it does
-track new commits. The defect is narrower and real: the value conflates the
-BASE commit with a commit of this run, so before the run's first commit it
-reports a true age of the WRONG commit, and after it reports the right one with
-no marker saying the source changed. That is a fact-without-provenance, not an
-arithmetic error — and it is unfixable by arithmetic alone, because the
-information needed ("did this run commit at all") is not in the current payload.
+**What the payload already has, and why that makes the fix cheap.**
+`pi-live.py` publishes `commits_ahead` (`rev-list --count <base>..HEAD`,)
+(`pi-live.py:137,163`) and `job-status.sh` prints it as `ahead=` on the SAME
+line as `since-commit=` (`job-status.sh:123,125`). So the qualifier the reader
+needs is already present one field away: `ahead=0` means the run has no commit
+of its own and the age describes the base commit. The first version of this
+entry asserted that the information "did this run commit at all" was not in
+the payload; that was wrong (and the `commits_ahead` field is the correction).
 
-**Minimal solution.** Make the fact honest without inventing a counter:
-`pi-live.py` records the run's own baseline commit at start (the `HEAD` it saw
-on its first tick, or the wrapper's start commit passed in), reads
-`git log -1 --format=%ct HEAD` and `git rev-parse HEAD` per tick, and publishes
-either (a) the epoch of the last commit ONLY when `HEAD` differs from the run's
-baseline, with an explicit `commits_of_this_run: 0` fact otherwise, or (b) both
-`last_commit_epoch` and `run_commits` (count of commits whose committer time is
-after the run's start). Choose (a) if the additional git call is unwanted and
-(b) if the reader needs a count; whichever is chosen, `job-status.sh` must
-print the value together with the fact that qualifies it, and the header must
-stop calling it "seconds since the last commit" if it can be the base's age.
-A value that cannot be read stays `null` (the existing rule), never 0.
+**Minimal solution.** Qualify or suppress the figure, using the fact already
+published: when `commits_ahead` is 0, print `since-commit=no-commits-yet`
+instead of an age (or, if the reader needs a duration, print the age since the RUN
+started, with its own label and source), and print the commit age only when
+`commits_ahead` is a positive count — at which point the age really is this
+run's last commit. Keep the `ahead=` field as authority for the distinction and
+make `since-commit` cite it in the row (for example `since-commit=…s(ahead=1)`
+versus `since-commit=no-commits-yet(ahead=0)`), so a reader cannot see one
+without the other. `commits_ahead` that cannot be read is `null` (the existing
+rule) and then `since-commit` must print `null`, never a bare age: an unreadable
+qualifier must not silently become a licence to show the number. Update the
+`job-status.sh` header line, which today describes the field as "seconds since
+the last commit" without naming whose.
 
-**Where.** `scripts/controller/pi-live.py` (`payload`, plus whatever the
-wrapper must pass for the baseline), `scripts/controller/pi-impl.sh` (the
-baseline argument, if the chosen shape needs one),
-`scripts/controller/job-status.sh` (label + the qualifying fact),
-`scripts/controller/tests/fixtures`/`test-pi-impl.sh` (a run-shaped case with a
-two-commit history where the base is older than the run), and
-`docs/DESIGN-GUIDE.md`'s liveness paragraph.
+**Where.** `scripts/controller/job-status.sh` (the row and its header line),
+and `scripts/controller/pi-live.py` only if a run-start epoch is added (the
+`commits_ahead` fact needed for the distinction is already published, so no
+new git call is required for the primary fix);
+`scripts/controller/tests/test-pi-impl.sh` plus the fixtures under
+`scripts/controller/tests/fixtures/` (a run-shaped case with a base commit older
+than the run and no commit of its own); and the liveness paragraph of
+`docs/DESIGN-GUIDE.md` / `scripts/controller/docs/DESIGN-GUIDE.md` if it names
+the field.
 
-**Acceptance test idea.** A fixture worktree whose base commit is days old,
-with a run that has not committed: the printed row says the run has no commit
-of its own (or reports `run_commits: 0` with the base age labelled as the base's
-age), never an unqualified "since-commit" age. After one commit made by the
-fake agent, the field names that commit and its age. A worktree where git
-cannot answer publishes `null`.
+**Acceptance test idea.** A fixture run whose base commit is days old and which
+has not committed (`commits_ahead` = 0): the printed row shows no bare
+`since-commit` age — it shows `no-commits-yet` (or a clearly labelled
+since-run-start age) — and it shows that beside `ahead=0`, never an unqualified
+age. After one commit made by the fake agent (`commits_ahead` = 1), the field
+names that commit's age, qualified by `ahead=1`. A fixture whose
+`commits_ahead` is `null` (git cannot answer) prints `null` for `since-commit`
+too, so an unreadable qualifier cannot license an unqualified number. A mutant
+that prints the age whenever `last_commit_epoch` is readable fails the first
+case.
 
 **Priority.** Minor — it misleads a controller reading a status line, and it is
 cheap to record honestly; it costs nothing on the lane path.
 
-**Close when.** The published fact names whose commit it describes, the reader
-line shows that qualification, both fixtures (no commit of its own / one
-commit) pass, and the guides say which commit the age belongs to.
+**Close when.** A run with `ahead=0` never prints an unqualified `since-commit`
+age, a run with `ahead>0` prints its own last commit's age with that qualifier
+visible, an unreadable `commits_ahead` suppresses the age (`null`), both fixtures
+pass, and the reader/guide text says which commit the age belongs to.
 
 ## CTL-17 — a run stopped by `stopReason=length` (context window full) reads as `INCOMPLETE`, which hides the one class the controller acts on
 
