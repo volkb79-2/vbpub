@@ -161,28 +161,6 @@ def test_zombie_descendant_describes_without_argv() -> None:
     )
 
 
-def test_zombie_and_live_unreadable_cmdline_are_now_distinguishable() -> None:
-    """B234: these two render IDENTICALLY without the state letter.
-
-    The remedy differs -- a zombie needs its PARENT to reap it, an
-    unreadable-argv live process needs a kill -- so a diagnostic that
-    cannot say which one it is reading is the defect.
-    """
-    zombie = ProcessTreeDescendant(pid=5, ppid=1, comm="sleep", state="Z")
-    live = ProcessTreeDescendant(pid=5, ppid=1, comm="sleep", state="S")
-    assert zombie.describe() == "pid=5 ppid=1 comm=sleep state=Z"
-    assert live.describe() == "pid=5 ppid=1 comm=sleep state=S"
-    assert zombie.describe() != live.describe()
-    # Round trip keeps the discriminating field, and argv still renders after it.
-    assert ProcessTreeDescendant.from_dict(zombie.to_dict()) == zombie
-    assert (
-        ProcessTreeDescendant(
-            pid=5, ppid=1, comm="sleep", state="S", cmdline=("sleep", "5")
-        ).describe()
-        == "pid=5 ppid=1 comm=sleep state=S argv=sleep 5"
-    )
-
-
 def _argv(*items: str) -> bytes:
     return b"\0".join(item.encode() for item in items) + b"\0"
 

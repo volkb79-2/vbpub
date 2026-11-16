@@ -1493,39 +1493,6 @@ def test_process_group_inspector_keeps_nonstandard_names_as_tolerant_identities(
     assert identity.pid == 123
     assert identity.comm == expected_comm
     assert identity.ppid == (1 if expected_comm is not None else None)
-    # B234: the SECOND producer of `ProcessTreeDescendant` publishes the same
-    # state letter the first one does. This window host already branches on
-    # `fields[0]` in its cleanup loop, so leaving it off the identity kept a
-    # zombie indistinguishable here too. An unavailable identity still carries
-    # no state (there was no process to observe).
-    assert identity.state == ("S" if expected_comm is not None else None)
-
-
-@pytest.mark.parametrize(
-    ("letter", "expected"),
-    [("Z", "Z"), ("S", "S"), ("q", None)],
-    ids=["zombie", "sleeping", "unknown-letter"],
-)
-def test_process_group_inspector_publishes_only_the_closed_state_letters(
-    monkeypatch, letter, expected
-):
-    stat_bytes = f"123 (candidate) {letter} 1 123 0 0".encode("ascii")
-
-    class StatFile:
-        def read_bytes(self):
-            return stat_bytes
-
-    class ProcEntry:
-        name = "123"
-
-        def __truediv__(self, _child):
-            return StatFile()
-
-    monkeypatch.setattr(Path, "iterdir", lambda _path: (ProcEntry(),))
-    identity, _state = _window_host._process_group_members(123)[0]
-
-    assert identity.state == expected
-    assert identity.to_dict().get("state") == expected
 
 
 def test_crash_cleanup_surfaces_kill_errors_and_live_group_timeout(monkeypatch):

@@ -94,7 +94,6 @@ from typing import Any, TextIO
 
 from .candidate_identity import candidate_id_from_fields
 from .mutation import judge_mutation
-from .process_tree import PROCESS_STATE_LETTERS as _PROCESS_STATE_LETTERS
 from .process_tree import ProcessTreeEvidence
 from .r2_command import R2_APPENDED, R2_TRANSFORM_ID, UnrecognizedCoverageOption, transform_argv
 from .verdict import (
@@ -2381,25 +2380,13 @@ def _check_b162_process_tree_evidence(
         descendants = []
     descendant_pids: list[int] = []
     for descendant in descendants:
-        if not isinstance(descendant, dict) or not (
-            {"pid", "ppid", "comm"} <= set(descendant)
-            <= {"pid", "ppid", "comm", "cmdline", "state"}
+        if not isinstance(descendant, dict) or set(descendant) not in (
+            {"pid", "ppid", "comm"}, {"pid", "ppid", "comm", "cmdline"}
         ) or (
             "cmdline" in descendant
             and (
                 not isinstance(descendant["cmdline"], list)
                 or any(not isinstance(item, str) for item in descendant["cmdline"])
-            )
-        ) or (
-            # (B234) `state` is the /proc/<pid>/stat state letter, so it is
-            # one character from the CLOSED kernel set or absent. Free text
-            # here would let a verdict describe a process state the kernel
-            # never reports, and the whole point of the field is that a
-            # reader can tell a zombie from an unreadable live process.
-            "state" in descendant
-            and (
-                not isinstance(descendant["state"], str)
-                or descendant["state"] not in _PROCESS_STATE_LETTERS
             )
         ):
             failures.append(
@@ -2421,15 +2408,6 @@ def _check_b162_process_tree_evidence(
             failures.append(f"native mutation.{bucket} entry has invalid descendant ppid")
         elif comm is not None and (not isinstance(comm, str) or not comm):
             failures.append(f"native mutation.{bucket} entry has invalid descendant comm")
-        # (B234) A state letter is an observation about a KNOWN process, so it
-        # cannot ride an identity that was unavailable (null ppid/comm): the
-        # two fields would then disagree about whether anything was read, and
-        # the model refuses exactly this pair.
-        if "state" in descendant and (ppid is None or comm is None):
-            failures.append(
-                f"native mutation.{bucket} entry has a descendant state "
-                "without a complete identity"
-            )
     if descendant_pids != sorted(descendant_pids) or len(set(descendant_pids)) != len(descendant_pids):
         failures.append(
             f"native mutation.{bucket} entry descendant pids must be unique and sorted"

@@ -4186,22 +4186,11 @@ arguments, `Bearer`/`Basic` tokens, URL userinfo, `-pSECRET`, the argument after
 `-H`/`--header`/`-u`/`--user`/`-p`/`--env` or a secret-named flag, and all but a
 24-character prefix of a string after `-c`/`-e`/`-E`). The redaction is a
 heuristic: treat `cmdline` as possibly containing secrets, as the lane's own
-`argv` already is. A zombie has no `cmdline`.
-
-Since B234 an entry may also carry `state`: the one-character `/proc/<pid>/stat`
-field-3 letter, from the closed kernel set `R S D T t Z X x I K W P` (anything
-else is refused, by both the writer and the verifier). It exists because a
-zombie and a live process whose `cmdline` could not be read render identically —
-`pid=N ppid=M comm=C` with no argv — while the remedy differs: a zombie needs
-its PARENT to reap it, a live process needs a kill. `state` is only published
-alongside a complete `pid`/`ppid`/`comm` identity: an observation about a
-process cannot ride an identity the observer never read. Both keys are optional,
-so a descendant without them is unchanged, but a verdict carrying either fails
-the key-set check of a verifier older than its introducing release: ship the
-verifier with the assay that writes the verdict. For a baseline (R0) leak the
-same list is rendered into the R0 claim detail as
-`leaked-process-tree: pid=N ppid=M comm=C state=S argv=...`, where `state` and
-`argv` each appear only if recorded, in that order.
+`argv` already is. A zombie has no `cmdline`. The key is optional, so the field
+set without it is unchanged, but a verdict that contains it fails the key-set
+check of a verifier older than B233: ship the verifier with the assay that
+writes the verdict. For a baseline (R0) leak the same list is rendered into the
+R0 claim detail as `leaked-process-tree: pid=N ppid=M comm=C argv=...`.
 
 #### Native R2's process-tree boundary
 

@@ -24,7 +24,6 @@ from . import observer_windows
 from . import runner as _runner
 from .errors import AssayError, Outcome, ReasonCode
 from .process_tree import (
-    PROCESS_STATE_LETTERS,
     ProcessTreeDescendant,
     ProcessTreeError,
     ProcessTreeEvidence,
@@ -554,18 +553,10 @@ def _process_group_members(
         if process_group == group_id:
             opening = raw.find("(")
             comm = raw[opening + 1 : close] if opening >= 0 else ""
-            # (B234) The state letter is already in hand (`fields[0]`), and
-            # this function already USES it -- the cleanup loop below skips
-            # `Z`/`X`. Dropping it from the identity made a zombie
-            # indistinguishable, in the diagnostic, from a live process
-            # whose cmdline could not be read. Published only from the
-            # closed kernel set; an unexpected letter stays absent.
-            state = fields[0] if fields[0] in PROCESS_STATE_LETTERS else None
             identity = (
                 ProcessTreeDescendant(
                     pid=pid, ppid=ppid, comm=comm,
                     cmdline=_read_cmdline(pid),
-                    state=state,
                 )
                 if ppid is not None and comm
                 else ProcessTreeDescendant(pid=pid, ppid=None, comm=None)

@@ -700,11 +700,8 @@ cleanup catches descendants that call `setsid()` or double-fork. A candidate
 that otherwise completes with leftover descendants is recorded as `crashed`
 after Assay cleans and reaps them; it cannot count as killed or survived, and
 the campaign can continue. The v17 process-tree evidence records the leader's
-signal and, for each outliving descendant, its pid, ppid and comm (or
-explicitly omits the latter pair when procfs no longer has that pid), plus
-the bounded redacted `cmdline` and the `/proc` state letter when they could be
-read — so a zombie (`state=Z`) is never reported as an unreadable live
-process. If the suite finished
+signal and each outliving descendant's pid, ppid, and comm (or explicitly
+omits the latter pair when procfs no longer has that pid). If the suite finished
 before cleanup found the leak, `underlying_outcome` retains its return code and
 any complete result-report summary while the candidate stays `crashed`.
 Timeout and `hung` classifications remain intact when cleanup succeeds. A

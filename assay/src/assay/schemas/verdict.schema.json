@@ -1697,7 +1697,7 @@
           "minimum": 1
         },
         "descendants": {
-          "description": "Sorted identities for every observed outliving descendant. Null ppid and comm explicitly represent a process that vanished before procfs identity could be read. Two optional, additive keys follow B233/B234: cmdline (bounded, best-effort redacted argv) and state (the /proc/<pid>/stat state letter).",
+          "description": "Sorted identities for every observed outliving descendant. Null ppid and comm explicitly represent a process that vanished before procfs identity could be read.",
           "type": "array",
           "maxItems": 10000,
           "items": {
@@ -1726,32 +1726,6 @@
                 ],
                 "minLength": 1,
                 "maxLength": 128
-              },
-              "cmdline": {
-                "description": "B233: bounded, best-effort-redacted argv read from /proc/<pid>/cmdline. Absent when empty (a zombie has no cmdline).",
-                "type": "array",
-                "maxItems": 17,
-                "items": {
-                  "type": "string",
-                  "maxLength": 203
-                }
-              },
-              "state": {
-                "description": "B234: the /proc/<pid>/stat state letter, from the closed kernel set. Absent when the observer did not record it; a zombie (Z) and a live process with an unreadable cmdline differ ONLY here.",
-                "enum": [
-                  "R",
-                  "S",
-                  "D",
-                  "T",
-                  "t",
-                  "Z",
-                  "X",
-                  "x",
-                  "I",
-                  "K",
-                  "W",
-                  "P"
-                ]
               }
             },
             "allOf": [
@@ -1789,20 +1763,6 @@
                   "properties": {
                     "ppid": {
                       "type": "null"
-                    }
-                  }
-                }
-              },
-              {
-                "if": {
-                  "required": [
-                    "state"
-                  ]
-                },
-                "then": {
-                  "properties": {
-                    "comm": {
-                      "type": "string"
                     }
                   }
                 }
