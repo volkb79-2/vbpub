@@ -6,13 +6,95 @@ two binaries are still the M0 scaffold. From `hostobs/`, run the registered lane
 ```sh
 run-gate lint
 run-gate selftest
+run-gate assay-r1
 ```
 
-Both use `tester-unified-rust` with Docker networking disabled. The image contains the
+All three use `tester-unified-rust` with Docker networking disabled. The image contains the
 stable Rust toolchain, the cargo tools, Python for the cache/floor helpers, and the crate
 archive closure for this exact `Cargo.lock`. Do not run Cargo from the cockpit or use a
 network fallback. The Cargo wrapper refuses before invoking Cargo if the mounted lock,
 baked lock digest, crate set, lock checksums, or cached archive bytes disagree.
+
+## What `assay-r1` judges, and what it says
+
+`assay-r1` is a `kind = "assay"` lane: Run-Gate installs the worktree's own `assay/` and
+the judge runs the lane declared in [`assay.toml`](assay.toml) (`[lanes.assay-r1]`). Its
+own argv is the same offline/locked cargo-llvm-cov + nextest + doctest + crate-floor
+command `selftest` runs, so the two cannot disagree about what was executed; what changes
+is who renders the coverage verdict. The artifacts are `lcov.info` and `cov-summary.json` in
+this directory (git-ignored), and the verdict is
+`hostobs/.assay/verdict-assay-r1.json`.
+
+The verdict's R1 claim carries measured totals, not a restated floor:
+
+```json
+{"covered": 15100, "executable": 15723, "considered": 33,
+ "branch_capability": "unavailable", "branches_total": 0,
+ "missing_lines": {"crates/kernel/src/cgroup.rs": [270, 319, ...], ...}}
+```
+
+Read it as: 33 declared `src` files of `model`, `proto`, `kernel` and `store` were judged,
+15100 of their 15723 executable lines ran (96.04 %), the floor in the lane file is 95.0 %,
+and every uncovered executable line is listed by file as a finding (`missing_lines`).
+`branch_capability: "unavailable"` and `branches_total: 0` are the honest answer for stable
+Rust (cargo-llvm-cov writes no `BRDA:` arcs), not a zero-of-zero pass: the crate's R1 claim
+is line-only, and the lane declares `require_branch = false` rather than pretending.
+
+Fields to look at, in order: `outcome` (`PASS`/`FAIL`/`NO_MEASUREMENT`/`ERROR`),
+`claims[].coverage.missing_lines`, `claims[].coverage.covered/executable`, and
+`commit` (must be the head you meant to judge). `assay verify` and
+`assay analyze report` read the same file independently.
+
+### Floors and where they come from
+
+The floor is `judge.fail_under = 95.0`, one full point BELOW the measured 96.04 % (15100
+/ 15723 executable lines on this workspace at head `3b46df06`). Per crate at that head:
+`model` 98.09 % (2004/2043), `proto` 99.71 % (3454/3464), `kernel` 93.52 % (2627/2809),
+`store` 94.71 % (7015/7407). The derivation, the one-point margin and the rule that a
+floor is never lowered live in [`assay.toml`](assay.toml)'s header. The per-crate line and
+region floors in [`coverage-floors.toml`](coverage-floors.toml) stay in the lane's argv and
+remain the tighter bound; Assay's line claim does not replace them, and region coverage is
+not part of Assay's R1 claim.
+
+### Proof it is a real judge, not a renamed floor
+
+Run in throwaway copies of this workspace (not the lane, because of `HOB-44` below), the
+same 33 targets returned:
+
+| copy | nextest | assay R1 |
+|---|---|---|
+| head as committed | 333 tests pass | `PASS`, 15100/15723 = 96.0377 % |
+| one kernel test file deleted | 322 tests pass (all green) | `FAIL/UNCOVERED_LINES`, 14777/15723 = 93.9833 % |
+
+So the verdict is the measured number and the failure is the coverage claim itself; the
+test command stays green in the negative case, which is exactly the difference between a
+coverage verdict and a test result. `selftest`'s own floor step additionally refuses that
+deletion (`kernel` line 81.24 % < 92.00 %).
+
+### `HOB-44`: the registered lane needs one image change
+
+`tester-unified-rust` carries `python3` but no `pip`, no `ensurepip` and no `python3-venv`,
+and Run-Gate installs `assay` from the bind-mounted worktree before the judge runs. Until the
+image ships those packages, `run-gate assay-r1` stops at
+`run-gate: editable assay install failed` /
+`/usr/bin/python3: No module named pip` and reports `ERROR` with no verdict artifact. That is
+*documented* as `HOB-44` with the smallest image change (`python3-pip python3-venv`), not
+papered over with a weaker lane; `selftest` keeps the enforced baseline in the meantime.
+
+### What is not covered
+
+- **Branches** — unavailable on stable Rust (see above). A branch number here would be invented.
+- **Mutation (R2)** — Rust R2 needs cargo-mutants report ingestion (assay B245 / design R-3b); no
+  `assay-r2` lane exists for Rust. The hand-mutation campaigns in
+  [`HAND-MUTANTS-M1.md`](HAND-MUTANTS-M1.md), [`HAND-MUTANTS-M1B.md`](HAND-MUTANTS-M1B.md) and
+  [`HAND-MUTANTS-M1C.md`](HAND-MUTANTS-M1C.md) remain the test-quality evidence.
+- **Canaries (R3)** — needs a receipt-writing test-break canary (assay B246 / R-4); not registered.
+- **Inline `#[cfg(test)] mod tests` blocks inside a judged file** are measured (LCOV has no
+  per-region exclusion, assay K5). They run when tests run, so they rarely hurt, but they are
+  in the denominator.
+- **The three `crates/*/src/lib.rs` files** are module declarations only and produce no LCOV
+  record, so they are not declared targets; Assay refuses a declared target it cannot measure
+  rather than excusing it.
 
 ## The independent Python cross-check run
 

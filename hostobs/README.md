@@ -89,28 +89,42 @@ store's bounds and crash-safety guards, all killed). Each is a stored patch in a
 script, and every restore is SHA-256-verified.
 
 Open items found while building these packages are in
-[`KNOWN_ISSUES_TODO_BACKLOG.md`](KNOWN_ISSUES_TODO_BACKLOG.md) (`HOB-1` … `HOB-40`): the
+[`KNOWN_ISSUES_TODO_BACKLOG.md`](KNOWN_ISSUES_TODO_BACKLOG.md) (`HOB-1` … `HOB-44`): the
 sharpest still-open ones are `HOB-17`/`HOB-27` (the `kernel` and `store` crates carry their
 own value and quality types until the Rust lane image can be rebuilt against a new
 `Cargo.lock`), `HOB-21`/`HOB-29` (no `/sys` device-topology source, and `store`'s tmpfs check
 reads the mount table rather than `statfs`), `HOB-39` (a store range answer is the stored
 payload, not decoded `model` rows — the join waits for the same rebuild), `HOB-4` (the Python
-conformance run is still a manual check, not a registered lane) and `HOB-30` (no session
-spools, which are out of this package's scope). `HOB-26` states the SP-2 limit plainly: the
+conformance run is still a manual check, not a registered lane), `HOB-44` (the Rust gate
+image has no `pip`, so the registered `assay-r1` lane cannot install the assay judge yet) and
+`HOB-30` (no session spools, which are out of this package's scope). `HOB-26` states the SP-2 limit plainly: the
 kernel-side rate arithmetic is a test-local helper, because `kernel` cannot depend on `model`
 (`HOB-17`).
 
 ## Gates
 
-Use the registered `lint` and `selftest` lanes from this directory:
+Use the registered `lint`, `selftest` and `assay-r1` lanes from this directory:
 
 ```sh
 run-gate lint
 run-gate selftest
+run-gate assay-r1
 ```
 
 Cargo is offline and locked, and each Cargo invocation checks the mounted `Cargo.lock`
-against the image's lock-specific cache manifest first. See
-[`docs/CONSUMERS.md`](docs/CONSUMERS.md) for the lane commands, the Python conformance
-run and the "changing a dependency" path, and
-[`docs/DESIGN-GUIDE.md`](docs/DESIGN-GUIDE.md) for the boundary decisions.
+against the image's lock-specific cache manifest first. `selftest` is the workspace's own
+R0/R1 baseline (nextest, doctests, llvm-cov and the per-crate line/region floors).
+
+**`assay-r1` is the estate-standard coverage verdict**: assay's Rust R1 judge reads the
+same `lcov.info` and judges 33 declared `src` files of the four functional crates against
+a 95.0% line floor (measured 96.04%, floored one point down — derivation in
+[`assay.toml`](assay.toml)). The verdict carries the measured totals, lists the uncovered
+lines as findings, and reports branch coverage as **unavailable** (stable Rust emits no
+branch arcs; assay B523), never as zero-of-zero. R2 (mutation) and R3 (canary) are not
+registered for Rust yet. See [`docs/CONSUMERS.md`](docs/CONSUMERS.md) for the lane
+commands, what the verdict says, the floor derivation and the Python conformance run, and
+[`docs/DESIGN-GUIDE.md`](docs/DESIGN-GUIDE.md) §"Gates and coverage" for why the numbers
+are pinned this way. `HOB-44` tracks the one image fact this lane still needs (the Rust
+gate image carries no `pip`, which Run-Gate needs to install the worktree's assay source);
+until it ships, the lane fails `ERROR` at that install step instead of judging — `selftest`
+remains the enforced baseline.

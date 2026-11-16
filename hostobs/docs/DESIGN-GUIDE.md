@@ -379,10 +379,38 @@ than a join. `quality::Reading`/`QualityCode` are the store's own vocabulary, bo
 
 `lint` runs formatting, Clippy with `-D warnings`, rustdoc with `-D warnings`, cargo-deny
 and the source lints; `selftest` runs nextest, doctests, llvm-cov and the per-crate
-line/region floors from `coverage-floors.toml`. Both are offline and locked, in the
-`tester-unified-rust` image, with Docker networking disabled.
+line/region floors from `coverage-floors.toml`; `assay-r1` runs the same workspace command
+and lets assay's Rust R1 judge render the coverage verdict over 33 declared `src` files
+at a 95.0% line floor. All three are offline and locked, in the `tester-unified-rust`
+image, with Docker networking disabled.
 
-`model`, `proto`, `kernel` and now `store` carry behavioral floors (97% line/96% region,
+### Why the coverage verdict comes from assay, and why from this workspace's own command
+
+The estate rule is that a coverage verdict is assay's, not a number a project's own
+script re-labels. `assay-r1` therefore keeps the *measured* half where it already was: the
+lane's own argv is the identical `cargo llvm-cov nextest` + doctests + `crate-floors.py`
+chain `selftest` runs, so nothing about what was executed can drift between the two lanes;
+what differs is that assay parses `lcov.info`, binds the totals to the judged commit, lists
+the uncovered executable lines as findings, and states the branch capability it actually
+has. The alternative — deleting `selftest` and letting one lane do both — was rejected
+because `selftest` is the enforced baseline that still works in the Rust image, while
+`assay-r1` needs a `pip`-carrying image (`HOB-44`); keeping both means the judge lane can
+be proven without removing the guard.
+
+The floor (95.0% line, measured 96.0377%, 15100/15723 executable lines at head `3b46df06`)
+is derived and argued in [`assay.toml`](assay.toml)'s header. The rejected alternatives:
+- **100% changed-line only** (assay's Rust default mode) — it passes a commit that touches
+  two files while the rest of the workspace decays, which is exactly what the crate floors
+  exist to prevent. This lane is deliberately whole-target.
+- **Measured to the edge (96.04%)** — the value is a property of the current test
+  inventory, not of the code: adding one behavioural test reshuffles instrumented lines,
+  and a floor that fails on that is a floor people lower. One point of headroom, with the
+  per-crate floors still enforced in the argv, keeps the tripwire honest.
+- **`require_branch = true`** — would refuse every run `NO_MEASUREMENT/BRANCH_UNAVAILABLE`,
+  because stable cargo-llvm-cov emits no `BRDA` arcs. A refusal is not a measurement,
+  and asserting a branch number would be inventing one (assay B523's whole point).
+
+`model`, `proto`, `kernel` and `store` carry behavioral floors (97% line/96% region,
 98%/96%, 92%/93% and 94%/93%): the first two were raised from the M0 bootstrap 90%/85% after
 their own tests reached 98.06%/97.90% and 99.45%/97.88%, `kernel` after its own tests reached
 92.19% line/93.50% region, and `store` after its own tests reached 94.87% line/93.90% region —
@@ -390,6 +418,8 @@ a crate whose floor starts at the bootstrap value is treated as scaffold, and on
 tests raises its own floor instead of hiding code. The other five packages keep the bootstrap
 floor because they are still the compilable scaffold; their identity test is not a
 product-coverage claim. Floors are never lowered and code is never excluded from coverage.
+The line-only Assay claim sits ON TOP of these per-crate line/region floors: the floors fire
+in the lane's argv (R0), assay judges the same artifact (R1), and neither replaces the other.
 
 Rust R2 (`cargo-mutants` judged by assay) is not adopted yet (R-3b in
 [`assay/docs/RUST-METHODOLOGY.md`](../../assay/docs/RUST-METHODOLOGY.md)), so the test-quality
