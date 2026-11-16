@@ -986,11 +986,16 @@ requires the published rule to name the refusal it prevents
 (`BUDGET_EXCEEDED`/`MUTANT_LIMIT_EXCEEDED`). Verified by hand mutants: 1000 and 1422
 fail the oracle, 1423 and 1500 pass, 1000000 fails the upper bound.
 
-**Preflight.** On THIS head `assay plan r2 --json` reports `candidate_count` 1001 with
-`max_mutants` 1500, i.e. `status: ok` — the plan is accepted instead of refused at the
-cap. The registered lane's own preflight (`run-gate r2 --dry-run`, which rehearses every
-preflight and starts no judged lane) is run on the final batch head and recorded in the
-run report.
+**Preflight.** `assay plan r2 --json` on the branch head reports the current inventory
+with `max_mutants` 1500 and `status: ok` — the plan is ACCEPTED instead of refused at the
+cap, measured at 1001 candidates on the first baseline commit and 1293 (r9's number)
+after this batch's own changes, both recorded in `tests/fixtures/r2-inventory/`. The
+registered lane's `run-gate r2 --dry-run` rehearsal was attempted in this cockpit and
+stopped at the HOST's cgprofile preflight (`CGPROFILE_OBSERVER_SOCKET` unset in this
+session, and `/run/cgprofile/observer` is not the root:root group-searchable directory
+run-gate requires for an `resource_observer = "cgprofile"` lane) — an environment fact of
+this devcontainer, not a lane or cap defect; the cap itself is verified by the assay plan
+above, and the campaign remains a host job (PWMCP-20).
 
 **Still outstanding (not this item's):** PWMCP-20 owns the campaign itself, and the full
 1000+-candidate R2 run is a host campaign (4 h budget) that is not started in this
