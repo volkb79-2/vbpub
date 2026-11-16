@@ -33862,6 +33862,12 @@ class TestRunGatesLaneUidOwnershipPreflight:
         # A path whose owner cannot be read is a missing fact, not a mismatch.
         assert run_gate.path_owner_uid(tmp_path / "absent") is None
         assert run_gate.path_owner_uid(tmp_path) == os.stat(tmp_path).st_uid
+        # A stub that answers nothing at all is also "no answer".
+        monkeypatch.setattr(run_gate.subprocess, "run", lambda *_a, **_k: None)
+        uid, why = run_gate.lane_container_uid(
+            {"mode": "ephemeral", "image": "tester:local"},
+            "/usr/bin/docker")
+        assert uid is None and "produced no answer" in why
 
     def test_a_mismatched_checkout_owner_refuses_with_one_line(
             self, tmp_path, monkeypatch):
@@ -33926,6 +33932,29 @@ class TestRunGatesLaneUidOwnershipPreflight:
         run_gate.preflight_lane_uid_ownership(
             "suite", {"mode": "ephemeral", "image": "tester:local"},
             "fixture", target, {"cowtree": {"mode": "off"}},
+            "/usr/bin/docker")
+
+    def test_an_agreeing_or_unreadable_cow_root_makes_no_claim(
+            self, tmp_path, monkeypatch):
+        repo = make_repo(tmp_path)
+        target = repo / "proj"
+        target.mkdir()
+        cow = tmp_path / "cow"
+        self._image_reports(monkeypatch, "1003")
+        monkeypatch.setattr(run_gate, "path_owner_uid", lambda _path: 1003)
+        monkeypatch.setenv(run_gate.MDT_COW_ROOT_ENV_VAR, str(cow))
+        # The lane's uid owns the root too: agreement is not a refusal.
+        run_gate.preflight_lane_uid_ownership(
+            "suite", {"mode": "ephemeral", "image": "tester:local"},
+            "fixture", target, {"cowtree": {"mode": "auto"}},
+            "/usr/bin/docker")
+        # A root that cannot be stat'd is a missing fact, not a mismatch.
+        cow.mkdir()
+        monkeypatch.setattr(run_gate, "path_owner_uid",
+                            lambda path: None if Path(path) == cow else 1003)
+        run_gate.preflight_lane_uid_ownership(
+            "suite", {"mode": "ephemeral", "image": "tester:local"},
+            "fixture", target, {"cowtree": {"mode": "auto"}},
             "/usr/bin/docker")
 
 
