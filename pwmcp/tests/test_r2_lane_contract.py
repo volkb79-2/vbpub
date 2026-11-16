@@ -18,7 +18,6 @@ from pathlib import Path
 
 PWMCP = Path(__file__).resolve().parents[1]
 ASSAY = PWMCP / "assay.toml"
-RUN_GATE = PWMCP / "run-gate.toml"
 INVENTORIES = PWMCP / "tests" / "fixtures" / "r2-inventory"
 CONSUMERS = PWMCP / "docs" / "CONSUMERS.md"
 
@@ -26,12 +25,9 @@ CONSUMERS = PWMCP / "docs" / "CONSUMERS.md"
 HEADROOM = 1.10
 
 
-def _lane(path: Path, section: str) -> dict:
-    config = tomllib.loads(path.read_text(encoding="utf-8"))
-    node = config["lanes"]["r2"]
-    for key in section.split(".") if section else ():
-        node = node[key]
-    return node
+def _r2_mutation_config() -> dict:
+    config = tomllib.loads(ASSAY.read_text(encoding="utf-8"))
+    return config["lanes"]["r2"]["judge"]["mutation"]
 
 
 def _recorded_inventories() -> list[dict]:
@@ -49,7 +45,7 @@ def _recorded_inventories() -> list[dict]:
 
 
 def test_the_r2_candidate_cap_clears_every_recorded_inventory_with_the_declared_headroom() -> None:
-    cap = _lane(ASSAY, "judge.mutation")["max_mutants"]
+    cap = _r2_mutation_config()["max_mutants"]
     records = _recorded_inventories()
     largest = max(records, key=lambda record: record["candidate_count"])
     required = math.ceil(largest["candidate_count"] * HEADROOM)
