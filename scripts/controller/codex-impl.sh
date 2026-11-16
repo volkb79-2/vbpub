@@ -9,6 +9,13 @@
 # The lock file also records the owner's identity (pid, start epoch, the pid's
 # kernel start ticks, boot id), which is what lets a reader name a DEAD owner.
 #
+# The Codex child does NOT inherit that lock: every launch path here closes the
+# ownership descriptor (`controller_close_ownership_fds`, lib.sh) immediately
+# before exec, exactly as pi-impl.sh does. A Codex agent can outlive a killed
+# wrapper by hours and a daemon it leaves behind can outlive both, so without
+# that close a SIGKILLed wrapper strands its run name while the child lives -
+# job-check then says DIED and advises a relaunch that refuses with exit 2.
+#
 # Every exit path writes <run>.done as `EXIT=<n> OUTCOME=<class>
 # AUTORESUME=<k>` (the historical first-line shape, additive). The class is
 # `CODE-EXIT`: the Codex stream carries no pi stop reason, so the one fact this
@@ -58,11 +65,23 @@ if [[ $mode == new ]]; then
   for extension in 'done' 'jsonl' 'err'; do
     [[ -e $out/$name.$extension ]] && existing+=("$out/$name.$extension")
   done
-  if [[ ${CONTROLLER_RUN_FORCE:-0} != 1 ]] && (( ${#existing[@]} > 0 )); then
-    echo "controller run name already has evidence: $name" >&2
-    printf '  %s\n' "${existing[@]}" >&2
-    echo 'set CONTROLLER_RUN_FORCE=1 only to replace an intentionally abandoned or failed run' >&2
-    exit 2
+  if (( ${#existing[@]} > 0 )); then
+    if [[ ${CONTROLLER_RUN_FORCE:-0} != 1 ]]; then
+      echo "controller run name already has evidence: $name" >&2
+      printf '  %s\n' "${existing[@]}" >&2
+      echo 'set CONTROLLER_RUN_FORCE=1 only to replace an intentionally abandoned or failed run' >&2
+      exit 2
+    fi
+    # Force means RETIRE, exactly as in pi-impl.sh: the previous identity moves
+    # aside and the caller is told what was retired, so a reused name never
+    # silently discards the evidence of the run it replaced.
+    if retired=$(controller_run_retire_records "$name"); then
+      printf 'codex-impl: CONTROLLER_RUN_FORCE=1 retired %s records into %s\n' "$name" "$retired" >&2
+      printf '  retired: %s\n' "${existing[@]}" >&2
+    else
+      echo "controller: could not retire the records of $name; refusing to overwrite them" >&2
+      exit 2
+    fi
   fi
 fi
 
@@ -177,7 +196,12 @@ if [[ $mode == resume ]]; then
   # removal because the launch below truncates it.
   rm -f -- "$out/$name.done"
   codex_launched=1
-  if (cd -- "$worktree" && nice codex exec resume -m "$model" -c "model_reasoning_effort=\"$effort\"" \
+  # The name lock belongs to THIS wrapper. The child must not inherit its open
+  # descriptor: a Codex agent can outlive a killed wrapper by hours, and that
+  # inherited flock is what made a SIGKILLed wrapper strand its run name
+  # ('owned by pid <dead>' forever, and later resumes refused with exit 2).
+  if (cd -- "$worktree" && controller_close_ownership_fds && \
+    nice codex exec resume -m "$model" -c "model_reasoning_effort=\"$effort\"" \
     --skip-git-repo-check --json "$session_id" - < "$prompt" > "$out/$name.jsonl" 2> "$out/$name.err"); then
     rc=0
   else
@@ -187,9 +211,11 @@ else
   codex_launched=1
   # A new run is refused above when any name-owned record exists (a resume
   # deliberately keeps a recording name alive), so no stream removal is needed.
-  if nice codex exec -C "$worktree" -m "$model" -c "model_reasoning_effort=\"$effort\"" \
+  # Same rule as the resume above: the agent closes the ownership descriptor.
+  if (controller_close_ownership_fds && \
+    nice codex exec -C "$worktree" -m "$model" -c "model_reasoning_effort=\"$effort\"" \
     -s danger-full-access --skip-git-repo-check -o "$out/$name.last.txt" --json - \
-    < "$prompt" > "$out/$name.jsonl" 2> "$out/$name.err"; then
+    < "$prompt" > "$out/$name.jsonl" 2> "$out/$name.err"); then
     rc=0
   else
     rc=$?
@@ -261,7 +287,8 @@ while (( auto_count < auto_limit )) && reasoning_end "$out/$name.jsonl"; do
   fi
   auto_count=$((auto_count + 1))
   attempt_stream=$(mktemp "$out/.${name}.autoresume.XXXXXX") || { echo 'could not create auto-resume stream' >&2; rc=1; break; }
-  if (cd -- "$worktree" && nice codex exec resume -m "$model" -c "model_reasoning_effort=\"$effort\"" \
+  if (cd -- "$worktree" && controller_close_ownership_fds && \
+    nice codex exec resume -m "$model" -c "model_reasoning_effort=\"$effort\"" \
     --skip-git-repo-check --json "$thread_id" - <<< "$continue_prompt" > "$attempt_stream" 2>> "$out/$name.err"); then
     attempt_rc=0
   else

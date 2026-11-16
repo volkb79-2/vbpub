@@ -42,7 +42,13 @@ controller_init() {
 # The lock is a kernel `flock` on `<runs-dir>/<name>.lock`, never a pid test: it
 # is released when the last process holding the descriptor dies, so a wrapper
 # that is TERMed, KILLed or OOM-killed cannot strand it, and a recycled pid
-# cannot inherit it. The lock file itself records who claimed the name last (the
+# cannot inherit it - PROVIDED every child the wrapper starts closes its copy of
+# the descriptor. A child that forked from the wrapper inherits the open file
+# description, and an agent (or a daemon the agent leaves behind) can outlive
+# the wrapper by hours; `controller_close_ownership_fds` is therefore called
+# immediately before every exec of a child (pi-impl.sh, codex-impl.sh), so a
+# killed wrapper leaves the name claimable straight away and a child can never
+# hold a name hostage. The lock file itself records who claimed the name last (the
 # wrapper pid, its start epoch, the pid's own kernel start time and the boot id)
 # so a reader can still name the owner after it died.
 #

@@ -205,6 +205,29 @@ mutant("scripts/controller/codex-impl.sh", "codex-run-name-claim.sh",
 mutant("scripts/controller/codex-impl.sh", "codex-resume-stale-marker.sh",
        '  rm -f -- "$out/$name.done"\n  codex_launched=1',
        '  codex_launched=1')
+# CTL-14 (blocker 2): the Codex child inherits the wrapper's ownership
+# descriptor, and a SIGKILLed wrapper then strands its run name while the agent
+# (or a daemon the agent left) keeps the flock. Both launch paths must close it.
+def codex_wrapper_with_lib_mutant(name: str, before: str, after: str) -> Path:
+    """A codex-impl.sh mutant with its own lib.sh copy: the wrapper sources
+    lib.sh from its own directory, so a lib mutation must ship beside it or the
+    real library is loaded and the mutation is never exercised."""
+    variant = controller / name
+    variant.mkdir(parents=True, exist_ok=True)
+    for sibling in ("codex-impl.sh", "opendesign-accounts.py", "opendesign-models.py"):
+        source = repo / "scripts/controller" / sibling
+        if source.is_file():
+            shutil.copy2(source, variant / sibling)
+    shutil.copy2(repo / "scripts/controller/continue-empty-completion.md", variant / "continue-empty-completion.md")
+    mutant("scripts/controller/lib.sh", "lib.sh", before, after, variant)
+    return variant / "codex-impl.sh"
+
+
+codex_wrapper_with_lib_mutant(
+    "codex-run-name-child-close",
+    '  eval "exec $fd>&-" 2>/dev/null || :\n  return 0\n}\n\ncontroller_run_owner_pid',
+    '  :\n  return 0\n}\n\ncontroller_run_owner_pid',
+)
 mutant("scripts/controller/job-check.sh", "job-check-report-litter.sh",
        "stray=$(git -C \"$worktree\" status --short --ignored 2>/dev/null | grep -E '^\\?\\? (reports|scripts/.*/reports)/' | head -2 || true)",
        "stray='' ")
@@ -244,8 +267,8 @@ mutant("scripts/controller/codex-impl.sh", "codex-autoresume-bound.sh",
 mutant("scripts/controller/codex-impl.sh", "codex-autoresume-limit-validation.sh",
        'raise SystemExit(0 if value <= 2147483647 else 1)', 'raise SystemExit(0)')
 mutant("scripts/controller/codex-impl.sh", "codex-stale-run-markers.sh",
-       'if [[ ${CONTROLLER_RUN_FORCE:-0} != 1 ]] && (( ${#existing[@]} > 0 )); then',
-       'if false; then')
+       '  if (( ${#existing[@]} > 0 )); then\n    if [[ ${CONTROLLER_RUN_FORCE:-0} != 1 ]]; then',
+       '  if (( ${#existing[@]} > 0 )); then\n    if false; then')
 mutant("scripts/controller/codex-impl.sh", "codex-stale-run-resume-mode.sh",
        'if [[ $mode == new ]]; then\n  existing=()',
        'if true; then\n  existing=()')

@@ -4,7 +4,7 @@ unset CODEX_ROUTE CODEX_HOME_OVERRIDE CODEX_HOME_LUNA CODEX_HOME_DEEPSEEK_VOLKER
 unset CODEX_REVIEW_MODEL CODEX_REVIEW_EFFORT CODEX_SQLITE_HOME
 unset CONTROLLER_OD_STATE CONTROLLER_OD_PREFER_EXPIRING CONTROLLER_OD_UNKNOWN_BLOCK_SECONDS OPENDESIGN_API_KEY_VOLKER OPENDESIGN_API_KEY_GITHUB2
 unset OPENCODE_COMMAND OPENCODE_MODEL OPENCODE_PROVIDER
-unset FAKE_CODEX_402 FAKE_CODEX_402_UNKNOWN FAKE_CODEX_THREAD_ID FAKE_CODEX_CORRUPT_STATE CODEX_RC
+unset FAKE_CODEX_402 FAKE_CODEX_402_UNKNOWN FAKE_CODEX_THREAD_ID FAKE_CODEX_CORRUPT_STATE CODEX_RC FAKE_CODEX_DAEMON
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 ROOT=$(mktemp -d "${TMPDIR:-/tmp}/controller-wrapper-test.XXXXXX")
 cleanup() { [[ -n ${KEEP_TEST_ROOT:-} ]] || rm -rf -- "$ROOT"; }
@@ -44,6 +44,13 @@ elif [[ ${FAKE_CODEX_402_UNKNOWN:-} == invalid ]]; then
 fi
 if [[ -n ${FAKE_CODEX_THREAD_ID:-} ]]; then
   printf '{"type":"thread.started","thread_id":"%s"}\n' "$FAKE_CODEX_THREAD_ID"
+fi
+if [[ -n ${FAKE_CODEX_DAEMON:-} ]]; then
+  # A process the agent LEAVES BEHIND: it inherits whatever descriptors the
+  # agent had, survives the agent and the wrapper, and is exactly the shape that
+  # made a killed wrapper strand its run name.
+  setsid sleep 300 >/dev/null 2>&1 &
+  printf '%s\n' "$!" > "$FAKE_CODEX_DAEMON"
 fi
 if [[ -n ${FAKE_CODEX_SLEEP:-} ]]; then
   # A slow child, so a test can observe a run that is still working.
@@ -553,6 +560,68 @@ contains "$ROOT/owned-codex-run-2.out" "run name 'owned-codex-run' is already ow
 wait "$owned_pid" || fail 'the owning Codex wrapper failed'
 contains "$ROOT/controller/runs/owned-codex-run.done" 'OUTCOME=CODE-EXIT' \
   'the owning wrapper still wrote its own marker'
+
+# --- CTL-14 for Codex: the AGENT closes the ownership descriptor -------------
+#
+# The lock is a flock on the wrapper's open descriptor, and a forked child
+# inherits it. So a Codex agent (or a daemon the agent leaves behind) holds the
+# run name after the wrapper is gone, and the wrapper is the one process whose
+# death must free it. Both hands are killed here for real (SIGKILL to the
+# wrapper), and the name must be claimable immediately - while the agent is
+# still working and while its daemon is still alive.
+
+codex_run_is_free() {
+  # Read the lock from OUTSIDE the wrapper: the check itself must not depend on
+  # the code under test being able to claim it.
+  local fds
+  exec {fds}>>"$ROOT/controller/runs/$1.lock" || return 2
+  if flock -n "$fds"; then exec {fds}>&-; return 0; fi
+  exec {fds}>&-
+  return 1
+}
+
+# (1) A killed wrapper behind a LIVE agent: the name is free at once, the agent
+#     is still running, and a forced relaunch is accepted by the evidence rule.
+FAKE_CODEX_DAEMON="$ROOT/codex-daemon.pid" \
+FAKE_CODEX_SLEEP=30 PATH="$ROOT/bin:$PATH" HOME="$ROOT/home" CONTROLLER_HOME="$ROOT/controller" \
+  CONTROLLER_REPO="$ROOT/repo" CODEX_ROUTE=luna CODEX_HOME_LUNA="$ROOT/codex-luna" \
+  CODEX_SQLITE_HOME="$ROOT/sqlite" CODEX_LOG="$ROOT/killed-codex.log" \
+  "$CODEX_IMPL_SCRIPT" "$ROOT/worktree" "$ROOT/brief.md" killed-codex-run \
+  > "$ROOT/killed-codex-run.out" 2>&1 &
+killed_pid=$!
+# Sync on EVIDENCE, not on a clock: the fake agent publishes its thread id into
+# the run stream once it is running (and starts its daemon first).
+saw_agent=0
+for _ in {1..2000}; do
+  if grep -qF 'slow-thread' "$ROOT/controller/runs/killed-codex-run.jsonl" 2>/dev/null \
+    && [[ -s $ROOT/codex-daemon.pid ]]; then
+    saw_agent=1; break
+  fi
+  kill -0 "$killed_pid" 2>/dev/null || break
+  sleep 0.05
+done
+(( saw_agent == 1 )) || { cat "$ROOT/killed-codex-run.out" >&2; fail 'the killed Codex agent never started'; }
+kill -9 "$killed_pid" 2>/dev/null || true
+wait "$killed_pid" 2>/dev/null || true
+codex_run_is_free killed-codex-run \
+  || fail 'a SIGKILLed Codex wrapper stranded its run name while its agent lived'
+# A relaunch is accepted: nothing refuses on the dead owner, and the evidence
+# rule is the only gate left.
+CONTROLLER_RUN_FORCE=1 PATH="$ROOT/bin:$PATH" HOME="$ROOT/home" CONTROLLER_HOME="$ROOT/controller" \
+  CONTROLLER_REPO="$ROOT/repo" CODEX_ROUTE=luna CODEX_HOME_LUNA="$ROOT/codex-luna" \
+  CODEX_SQLITE_HOME="$ROOT/sqlite" CODEX_LOG="$ROOT/killed-codex-reclaim.log" \
+  "$CODEX_IMPL_SCRIPT" "$ROOT/worktree" "$ROOT/brief.md" killed-codex-run \
+  > "$ROOT/killed-codex-reclaim.out" 2>&1 \
+  || { cat "$ROOT/killed-codex-reclaim.out" >&2; fail 'a SIGKILLed Codex name could not be reclaimed'; }
+contains "$ROOT/killed-codex-reclaim.out" 'retired' \
+  'the forced reclaim reports what it retired'
+# The left-behind daemon does NOT hold the name: it is alive, it inherited the
+# descriptor, and it is killed only after this check has read the lock.
+if [[ -s $ROOT/codex-daemon.pid ]]; then
+  codex_run_is_free killed-codex-run \
+    || fail 'a daemon left behind by the agent held the run name'
+  kill -9 "$(cat "$ROOT/codex-daemon.pid")" 2>/dev/null || true
+fi
 
 if [[ ${CONTROLLER_TEST_PARALLEL_OD_STARTS:-1} == 1 ]]; then
   PARALLEL_DIR=$ROOT/parallel-codex-logs
