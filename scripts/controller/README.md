@@ -104,7 +104,12 @@ Use this order for each implementation task.
    run that no wrapper ever owned prints `RUNNING (no .done)` plus
    `owner record: none`, stating that a live and a dead wrapper cannot be told
    apart there. A `DIED` row is never evidence that the child completed — it is
-   evidence that nothing is running, so the controller can relaunch. See the
+   evidence that the wrapper is gone, so the controller can relaunch. A killed
+   wrapper often leaves no `<run>.thread`; the reader recovers the session/thread
+   id from the run's own stream (pi's first `session` event, Codex's
+   `thread.started`), prints `thread: <id> (recovered …)` as a fact, and prints
+   the exact `resume:` command it enables — or `thread: none` when the stream
+   carries no id, rather than an invented one. See the
    [job-check design](docs/DESIGN-GUIDE.md#job-check-compatibility) for the
    accepted forms and completion rules. Usage-limit detection accepts a
    gateway `insufficient_balance` reset timestamp, a time-only retry, and a
@@ -350,11 +355,28 @@ run with `ACTIVE`, `STALLED` (no pi event for longer than
 with no progress evidence), `WRAPPER-DEAD`, `FINISHED`, or `NO-LIVE`. It never
 writes.
 
+`WRAPPER-DEAD` is decided from the run name's owner record — the same
+`<run>.lock` `job-check.sh` reads — never from `kill -0` on the pid a snapshot
+happened to carry: a recycled pid answers "alive" for a stranger, and a record
+written before a reboot cannot name a live process at all. When the wrapper is
+gone the row also says whether the AGENT it started is still working
+(`wrapper-dead-agent-alive agent=<pid>(<command>) tool=<pid>`): that is a
+different state from "nothing is running", and it is the only one where the
+controller can still name a process to stop. The reader finds it structurally
+(the process whose cwd IS the run's worktree and whose argv[0] is `pi` or
+`codex`), never by guessing a name. `last-event` then comes from the run
+stream's own mtime and says so (`last-event=42s(stream)`), because a dead
+wrapper's sidecar is stale by definition.
+
 **`LONG-TOOL` and `HUNG-TOOL` are different words on purpose**: age is not
 progress. Progress evidence is read, not inferred: bytes appended to the run's
-event stream, or growth of the CPU-time and IO counters of the wrapper's
-process subtree, so a slow `grep` or a long `pytest` reads as a working job
-instead of a hung one. To steer a stuck tool, kill the exact child pid the row
+event stream, or a strictly positive growth of the CPU-time and IO counters over
+the same processes of the IN-FLIGHT TOOL CALL's own subtree — never the
+wrapper's whole tree, which also holds the agent (a model loop) and the
+snapshotter (its own `/proc` scans and git calls) and would therefore keep any
+tool looking busy, so a slow `grep` or a long `pytest` reads as a working job
+instead of a hung one while a tool blocked on the agent's FIFO still reads as
+not progressing. To steer a stuck tool, kill the exact child pid the row
 prints as `steer=` — never the wrapper, which would discard the run's
 classification, its `.done` marker and its continuation history. A tool blocked
 by the agent's own experiment (a `git` command waiting on a FIFO the agent

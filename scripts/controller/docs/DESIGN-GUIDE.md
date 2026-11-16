@@ -161,10 +161,17 @@ an agent's own blocking experiment all exceeded 1800 s while three of the four
 were working, and the controller killed runs that were making progress. Age is
 not progress, so the sidecar now publishes an observable progress fact
 (`progress_epoch`): the last tick at which bytes were appended to the run's
-stream or the CPU-time/IO counters of the wrapper's subtree grew. `HUNG-TOOL`
-requires the absence of that evidence within the same threshold, and an
-unreadable `/proc` leaves the fact `null`, which licenses the weaker word
-(`LONG-TOOL`) rather than the stronger one. The diagnostic columns exist for the
+stream, or the CPU-time/IO counters of the in-flight tool call's own subtree
+grew on the same set of processes. The summed set matters as much as the growth:
+an earlier version summed the wrapper's whole tree, which also holds the agent
+(always working) and the snapshotter (scanning `/proc` every tick), so a tool
+that had stopped was still certified as progressing and `HUNG-TOOL` became
+unreachable — the check was narrower than the word it printed. The set is
+located structurally (`os.getpid()` is the snapshotter, the wrapper's other
+direct child is the agent, the agent's descendants are the tool's processes),
+never by matching a command name. `HUNG-TOOL` requires the absence of that
+evidence within the same threshold, and an unreadable `/proc` leaves the fact
+`null`, which licenses the weaker word (`LONG-TOOL`) rather than the stronger one. The diagnostic columns exist for the
 same reason: `cmd=` and `steer=` are the tool's command and the exact child pid,
 because the earlier row named neither and the only actionable process it could
 describe was the wrapper — the one process that must not be killed.
@@ -235,6 +242,22 @@ flag, and a name nobody ever owned keeps the prototype's `RUNNING (no .done)`
 with the explicit `owner record: none`. The comparison is now as strong as the
 message: `RUNNING` is only printed when a recorded owner is alive, and every
 other case either names why the owner is dead or says that no record exists.
+The recovery the reader owes a controller does not stop there: a killed wrapper
+usually dies before writing `<run>.thread`, and a controller without a thread id
+can only restart (about an hour of re-orientation). So the id is READ from the
+run's own stream — pi's first `session` event, Codex's `thread.started` — printed
+as `thread: <id> (recovered …)`, and the exact `resume:` command printed beside
+it. A stream with no id says `thread: none`; the file is never written by this
+read-only check and no id is invented.
+
+`job-status.sh` applies the same rule to a run that still has a `.live`: an
+`ACTIVE`/`WRAPPER-DEAD` verdict comes from the owner record, and the payload's
+own pid is only the fallback when no record exists (the row then says
+`owner-record=none`). A dead wrapper with a live agent is its own state — the
+row says `wrapper-dead-agent-alive` — named with the agent's pid and the pid of
+what that agent is running:
+the wrapper's death does not stop the work, and the only actionable process
+left is the agent's tool.
 
 ## Bounded auto-continue
 

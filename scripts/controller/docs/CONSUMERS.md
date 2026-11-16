@@ -65,7 +65,21 @@ assumed: a live owner prints `RUNNING (no .done)` with its pid, a dead one print
 `DIED (wrapper pid <pid> gone, no .done)` and exits nonzero so the controller can
 relaunch, and a name no wrapper ever owned says `owner record: none`. `RUNNING`
 never means the child completed; read the wrapper's `.done` marker for its exit
-status. See the
+status.
+
+A `DIED` line also prints what a relaunch needs when the wrapper died early:
+
+```text
+DIED (wrapper pid 8451 gone, no .done)
+thread: 8f2c1d04 (recovered from my-run.jsonl; the wrapper died before writing .thread)
+resume: .../codex-impl.sh /path/to/worktree <prompt-file> my-run resume 8f2c1d04
+```
+
+`thread: none` means the stream carried no id — start a fresh run instead of
+inventing one. If a run still has a `.live`, `job-status.sh` says
+`wrapper-dead-agent-alive agent=<pid> tool=<pid>` when the wrapper died but the
+agent it started is still working: that agent (or its tool) is what to stop, not
+the dead wrapper's pid. See the
 [design guide](DESIGN-GUIDE.md#job-check-compatibility) for the checks.
 
 A Codex run states its own outcome in `.done` as

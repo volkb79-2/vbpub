@@ -8,6 +8,7 @@ cleanup() { [[ -n ${KEEP_TEST_ROOT:-} ]] || rm -rf -- "$ROOT"; }
 trap cleanup EXIT
 fail() { echo "FAIL: $*" >&2; exit 1; }
 contains() { grep -qF -- "$2" "$1" || fail "$3 (missing: $2)"; }
+not_contains() { ! grep -qF -- "$2" "$1" || fail "$3 (unexpected: $2)"; }
 
 HOME_ROOT=$ROOT/controller
 REPO=$ROOT/repo
@@ -561,6 +562,45 @@ if CONTROLLER_HOME=$HOME_ROOT CONTROLLER_REPO=$REPO CONTROLLER_BASE_REF=origin/m
 fi
 contains "$ROOT/dead-owner.out" 'DIED (wrapper pid 2147483646 gone, no .done)' \
   'a dead owner without .done is DIED, not RUNNING'
+
+# A killed wrapper often leaves no `.thread`, and a controller with no thread id
+# can only start over. The id is already in the run's own stream, so it is
+# recovered from there, reported as a fact, and the EXACT resume command printed.
+printf '{"type":"session","id":"recovered-thread-abc"}\n' \
+  > "$HOME_ROOT/runs/dead-no-thread.jsonl"
+printf 'pid=%s started_epoch=%s started_utc=%s pid_start_ticks=12345 boot_id=%s\n' \
+  2147483646 1700000000 2023-11-14T22:13:20Z "$boot_id" \
+  > "$HOME_ROOT/runs/dead-no-thread.lock"
+if CONTROLLER_HOME=$HOME_ROOT CONTROLLER_REPO=$REPO CONTROLLER_BASE_REF=origin/main \
+  "$SRC" dead-no-thread "$REPO" deepseek-pi > "$ROOT/dead-no-thread.out" 2>&1; then
+  cat "$ROOT/dead-no-thread.out" >&2
+  fail 'a dead owner whose thread was missing was accepted as running'
+fi
+contains "$ROOT/dead-no-thread.out" 'thread: recovered-thread-abc' \
+  'a missing .thread is recovered from the run stream as a stated fact'
+contains "$ROOT/dead-no-thread.out" 'resume: ' \
+  'a dead owner with a recovered thread prints the exact resume command'
+contains "$ROOT/dead-no-thread.out" 'pi-impl.sh' \
+  'the resume command names the wrapper for this route'
+contains "$ROOT/dead-no-thread.out" 'resume recovered-thread-abc' \
+  'the resume command carries the recovered thread id'
+# The recovery is from the STREAM, not from a file the controller invented: no
+# `.thread` is written by this read-only check.
+[[ ! -e $HOME_ROOT/runs/dead-no-thread.thread ]] \
+  || fail 'job-check wrote a .thread file instead of reporting the recovered id'
+# A dead run whose stream carries no id says so instead of guessing one.
+printf '{"type":"agent_start"}\n' > "$HOME_ROOT/runs/dead-no-id.jsonl"
+printf 'pid=%s started_epoch=%s started_utc=%s pid_start_ticks=12345 boot_id=%s\n' \
+  2147483646 1700000000 2023-11-14T22:13:20Z "$boot_id" \
+  > "$HOME_ROOT/runs/dead-no-id.lock"
+if CONTROLLER_HOME=$HOME_ROOT CONTROLLER_REPO=$REPO CONTROLLER_BASE_REF=origin/main \
+  "$SRC" dead-no-id "$REPO" deepseek-pi > "$ROOT/dead-no-id.out" 2>&1; then
+  fail 'a dead owner with no recoverable id was accepted as running'
+fi
+contains "$ROOT/dead-no-id.out" 'thread: none' \
+  'a run with no recoverable thread id says none instead of inventing one'
+not_contains "$ROOT/dead-no-id.out" 'resume: ' \
+  'no resume command is printed without a thread id'
 
 # A recycled pid: the recorded pid exists NOW but its kernel start time differs,
 # so it is not the owner this record describes.

@@ -23,8 +23,10 @@
 # LONG-TOOL and HUNG-TOOL are separate words on purpose: a slow grep or a long
 # pytest is a working job, and calling it HUNG-TOOL made the controller kill
 # working runs. Progress evidence is the sidecar's `progress_epoch` (stream
-# growth or CPU/IO growth of the wrapper's process subtree), so it is a fact
-# read from the kernel and the stream, never a guess from wall-clock alone.
+# growth, or CPU/IO growth over the same processes of the in-flight TOOL CALL's
+# own subtree - never the wrapper's whole tree, which also holds the agent and
+# the snapshotter and grows every tick), so it is a fact read from the kernel and
+# the stream, never a guess from wall-clock alone.
 #
 # Steering a stuck tool: kill the EXACT child pid printed as `steer=`, never the
 # wrapper. Killing the wrapper discards the run's classification, its `.done`
@@ -98,6 +100,201 @@ def pid_alive(pid):
     return True
 
 
+def pid_start_ticks(pid):
+    """The kernel's own pid-reuse discriminator (field 22 of /proc/<pid>/stat)."""
+    try:
+        with open(f"/proc/{pid}/stat", "rb") as source:
+            line = source.read().decode("utf-8", "replace")
+    except OSError:
+        return None
+    _, _, rest = line.partition(") ")
+    fields = rest.split()
+    return fields[19] if len(fields) >= 20 and fields[19].isdigit() else None
+
+
+def current_boot_id():
+    try:
+        return Path("/proc/sys/kernel/random/boot_id").read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+
+
+def read_owner(name):
+    """The run name's owner RECORD (lib.sh controller_run_claim writes it)."""
+    record = runs_dir / f"{name}.lock"
+    try:
+        line = record.read_text(encoding="utf-8", errors="replace").splitlines()[0]
+    except (OSError, IndexError):
+        return None
+    fields = {}
+    for token in line.split():
+        key, _, value = token.partition("=")
+        if key and value:
+            fields[key] = value
+    return fields or None
+
+
+def owner_verdict(owner, payload_pid):
+    """('alive'|'dead'|'absent', detail).
+
+    The RECORD is what a reader must trust when it exists: a wrapper pid in a
+    `.live` payload can be recycled (`kill -0` says yes, and the process is
+    somebody else's), and a record written before a reboot cannot name a live
+    process at all. This is the same rule job-check.sh applies, against the same
+    record.
+
+    With NO record, the honest answer is the weaker one: the payload's own pid is
+    checked (`kill -0`) and the row says `owner-record=none`, because "the record
+    is missing" is not "the wrapper is dead" - absence is not emptiness.
+    """
+    if not owner:
+        if pid_alive(payload_pid):
+            return ("absent", "alive")
+        return ("dead", f"wrapper pid {payload_pid} gone (no owner record)")
+    pid_text = owner.get("pid", "")
+    if not pid_text.isdigit():
+        return ("absent", None)
+    pid = int(pid_text)
+    boot = owner.get("boot_id")
+    live_boot = current_boot_id()
+    if boot and live_boot and boot != live_boot:
+        return ("dead", f"wrapper pid {pid} is from a previous boot")
+    if not pid_alive(pid):
+        return ("dead", f"wrapper pid {pid} gone")
+    recorded_ticks = owner.get("pid_start_ticks", "")
+    if recorded_ticks.isdigit():
+        live_ticks = pid_start_ticks(pid)
+        if live_ticks and int(live_ticks) != int(recorded_ticks):
+            # The number exists but it is another process now: a relaunch
+            # refusal based on this record would name a stranger.
+            return ("dead", f"wrapper pid {pid} recycled (recorded start {recorded_ticks}, now {live_ticks})")
+    return ("alive", pid)
+
+
+def agent_processes(worktree):
+    """Live agent processes for this run's worktree, as (pid, command) rows.
+
+    Only used when the wrapper is gone: an orphaned agent holds the work, and a
+    controller that cannot name it can only watch the sidecar go stale. The
+    match is structural - the process's own cwd IS this worktree (both wrappers
+    `cd` there) and its argv[0] is `pi` or `codex` - never a name guess, and the
+    scan is bounded to the process table's own entries.
+    """
+    if not worktree:
+        return []
+    rows = []
+    try:
+        entries = os.listdir("/proc")
+    except OSError:
+        return rows
+    for entry in entries:
+        if not entry.isdigit():
+            continue
+        pid = int(entry)
+        try:
+            cwd = os.readlink(f"/proc/{pid}/cwd")
+        except OSError:
+            continue
+        if cwd != worktree:
+            continue
+        try:
+            with open(f"/proc/{pid}/cmdline", "rb") as source:
+                raw = source.read().decode("utf-8", "replace")
+        except OSError:
+            continue
+        parts = [part for part in raw.split("\0") if part]
+        if not parts or os.path.basename(parts[0]) not in ("pi", "codex"):
+            continue
+        rows.append((pid, " ".join(parts)[:80]))
+    return rows
+
+
+def process_children(pid):
+    """The live pids whose parent is pid, from one /proc scan."""
+    found = []
+    try:
+        entries = os.listdir("/proc")
+    except OSError:
+        return found
+    for entry in entries:
+        if not entry.isdigit():
+            continue
+        try:
+            with open(f"/proc/{entry}/stat", "rb") as source:
+                line = source.read().decode("utf-8", "replace")
+        except OSError:
+            continue
+        _, _, rest = line.partition(") ")
+        fields = rest.split()
+        if len(fields) >= 2 and fields[1].isdigit() and int(fields[1]) == pid:
+            found.append(int(entry))
+    return found
+
+
+def tool_of_agent(agent_pid):
+    """The in-flight tool call's processes under an orphaned agent.
+
+    Same structure the sidecar uses: the agent's own descendants are what the
+    tool started (a `bash -lc` shell and its `sleep`), so a controller that must
+    stop one can name it, not guess it.
+    """
+    pids = []
+    pending = process_children(agent_pid)
+    depth = 0
+    while pending and depth < 8:
+        depth += 1
+        next_level = []
+        for pid in pending:
+            pids.append(pid)
+            next_level.extend(process_children(pid))
+        pending = next_level
+    return pids
+
+
+def stream_epoch(name):
+    try:
+        return int((runs_dir / f"{name}.jsonl").stat().st_mtime)
+    except OSError:
+        return None
+
+
+def thread_from_stream(name):
+    """The run's thread/session id, from the run stream's FIRST session record.
+
+    A wrapper writes `<run>.thread` while it works, but a wrapper killed before
+    that leaves the file missing and job-check cannot print a resume command.
+    The stream itself already carries the id - pi puts it on the first `session`
+    event, Codex on `thread.started` - so the fact is READ from the record the
+    run already produced, never invented and never silently ignored.
+    """
+    try:
+        with open(runs_dir / f"{name}.jsonl", encoding="utf-8", errors="replace") as source:
+            for line in source:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    event = json.loads(line)
+                except ValueError:
+                    continue
+                if not isinstance(event, dict):
+                    continue
+                if event.get("type") == "session" and isinstance(event.get("id"), str):
+                    return event["id"]
+                if event.get("type") == "thread.started" and isinstance(event.get("thread_id"), str):
+                    return event["thread_id"]
+    except OSError:
+        return None
+    return None
+
+
+def worktree_of(name):
+    try:
+        return (runs_dir / f"{name}.wt").read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+
+
 def age(epoch):
     if not isinstance(epoch, int):
         return None
@@ -133,10 +330,45 @@ def finished_line(name):
     return f"{name}: FINISHED {status}"
 
 
-def active_line(name, payload):
+def suffix_age_source(source):
+    # Only the fallback needs saying: a sidecar tick is the normal case, and a
+    # reader that assumes "sidecar" for it is right.
+    return "" if source == "sidecar" else f"({source})"
+
+
+def active_line(name, payload, owner):
     wrapper_pid = payload.get("wrapper_pid")
-    wrapper_dead = not pid_alive(wrapper_pid)
+    # Liveness is the OWNER RECORD's verdict, never `kill -0` on the payload's
+    # pid: a recycled pid answers "yes" for somebody else, and a record written
+    # before a reboot cannot name a live process at all.
+    verdict, detail = owner_verdict(owner, wrapper_pid)
+    wrapper_dead = verdict == "dead"
+    ancestors = []
+    if wrapper_dead:
+        # The wrapper may be gone while the agent it started still works. "Dead
+        # wrapper, live agent" is a different fact from "nothing is running",
+        # and the controller needs it: nothing else can name a process to stop.
+        ancestors = agent_processes(worktree_of(name))
+    # The pid the reader names is the RECORDED owner when there is one: the
+    # payload's own pid may be a recycled stranger, and naming that stranger is
+    # exactly the wrong process to steer.
+    recorded_pid = owner.get("pid") if owner else None
+    if isinstance(recorded_pid, str) and recorded_pid.isdigit():
+        wrapper_text = recorded_pid
+    elif isinstance(wrapper_pid, int) and wrapper_pid > 0:
+        wrapper_text = str(wrapper_pid)
+    else:
+        wrapper_text = detail if detail else "unknown"
     since_event = age(payload.get("last_event_epoch"))
+    since_event_source = "sidecar"
+    if wrapper_dead:
+        # When the wrapper died its sidecar is stale by definition, so the
+        # newest event is the run stream's own mtime - not the last tick the
+        # dead sidecar had a chance to write. The row says which one it read.
+        stream_age = age(stream_epoch(name))
+        if stream_age is not None:
+            since_event = stream_age
+            since_event_source = "stream"
     tool = payload.get("tool_in_flight")
     tool_seconds = age(payload.get("tool_in_flight_started_epoch"))
     progress_seconds = age(payload.get("progress_epoch"))
@@ -189,11 +421,36 @@ def active_line(name, payload):
         tool_text += f" cmd={tool_command[:80]}"
     if steer is not None:
         tool_text += f" steer={steer}"
-    pid_text = f"{show(wrapper_pid)}"
+    pid_text = wrapper_text
+    # The distinction a controller must not lose: a dead WRAPPER with a live
+    # AGENT is one state, and "nothing is running" is another. The word is
+    # printed, not implied by the presence of an `agent=` list.
+    if wrapper_dead and ancestors:
+        pid_text += " wrapper-dead-agent-alive"
+    if verdict == "absent":
+        # Say which fact the liveness claim rests on: no owner record was read.
+        pid_text += " owner-record=none"
+    elif detail and verdict == "dead" and "recycled" in detail:
+        # The number is in use, but by a DIFFERENT process: say so on the row,
+        # because "pid" alone would make a reader steer a stranger.
+        pid_text += " recycled"
     if wrapper_dead:
         pid_text += " DEAD"
+        if ancestors:
+            # The word the controller needs: the wrapper is gone but the work
+            # continues. `agent=` names the orphaned agent, `tool=` names what
+            # that agent is running, so either can be stopped by pid.
+            pid_text += " agent=" + ",".join(f"{pid}({command})" for pid, command in ancestors)
+            tool_pids = []
+            for pid, _ in ancestors:
+                tool_pids.extend(tool_of_agent(pid))
+            if tool_pids:
+                pid_text += " tool=" + ",".join(str(pid) for pid in tool_pids)
+        else:
+            pid_text += " agent=none"
     return (
-        f"{name}: {state} pid={pid_text} last-event={show(since_event)}s "
+        f"{name}: {state} pid={pid_text} "
+        f"last-event={show(since_event)}s{suffix_age_source(since_event_source)} "
         f"tool={tool_text} turns={show(payload.get('assistant_turns'))} "
         f"calls={show(payload.get('tool_calls'))} "
         f"tokens={show(payload.get('latest_total_tokens'))} "
@@ -222,5 +479,5 @@ for name in names:
     if not isinstance(payload, dict):
         print(f"{name}: NO-LIVE ({live_path.name} is not a JSON object)")
         continue
-    print(active_line(name, payload))
+    print(active_line(name, payload, read_owner(name)))
 PY

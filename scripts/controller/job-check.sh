@@ -20,6 +20,36 @@ controller_init
 [[ $# -ge 3 ]] || { echo "usage: $0 <run-name> <worktree-path> <luna|sol|deepseek|deepseek-volker|deepseek-github2|deepseek-pi|deepseek-pi-volker|deepseek-pi-github2|opencode|any|none> [absolute-report-path ...]" >&2; exit 2; }
 run=$1 worktree=$2 route=$3; shift 3
 [[ $run =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ && $run != *..* ]] || { echo "invalid run name" >&2; exit 2; }
+recover_thread_from_stream() {
+  # The first session/thread id the run stream carries, or nothing: a fact read
+  # from the record the run already produced, never an invented id.
+  local stream=$1
+  [[ -r $stream ]] || return 1
+  python3 - "$stream" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8", errors="replace") as source:
+    for line in source:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            event = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(event, dict):
+            continue
+        if event.get("type") == "session" and isinstance(event.get("id"), str):
+            print(event["id"])
+            raise SystemExit(0)
+        if event.get("type") == "thread.started" and isinstance(event.get("thread_id"), str):
+            print(event["thread_id"])
+            raise SystemExit(0)
+raise SystemExit(1)
+PY
+}
+
 red=0
 case $route in
   luna)
@@ -94,6 +124,42 @@ else
     # A dead owner is never RUNNING: the controller must be able to relaunch.
     echo "DIED ($dead_reason, no .done)"
     echo "RUN-NAME OWNER DIED: <run>.done is missing and the recorded owner is not alive; relaunch the run or retire its records deliberately"
+    # A killed wrapper often dies before writing `<run>.thread`, and a controller
+    # that then has no thread id cannot resume - it can only start over. The id
+    # is already in the run's own stream (pi: the first `session` event, Codex:
+    # `thread.started`), so it is READ from there and reported as the recovery it
+    # is, with the exact resume command it enables.
+    thread_id=''
+    if [[ -r $CONTROLLER_RUNS_DIR/$run.thread ]]; then
+      thread_id=$(head -n 1 "$CONTROLLER_RUNS_DIR/$run.thread" 2>/dev/null || true)
+    fi
+    if [[ -z $thread_id ]]; then
+      thread_id=$(recover_thread_from_stream "$CONTROLLER_RUNS_DIR/$run.jsonl") || thread_id=''
+      if [[ -n $thread_id ]]; then
+        printf 'thread: %s (recovered from %s.jsonl; the wrapper died before writing .thread)\n' \
+          "$thread_id" "$run"
+      else
+        printf 'thread: none (no .thread file and no session/thread id in %s.jsonl)\n' "$run"
+      fi
+    else
+      printf 'thread: %s\n' "$thread_id"
+    fi
+    if [[ -n $thread_id ]]; then
+      case $route in
+        deepseek-pi|deepseek-pi-volker|deepseek-pi-github2)
+          printf 'resume: %s %s <prompt-file> %s resume %s\n' \
+            "$SCRIPT_DIR/pi-impl.sh" "$worktree" "$run" "$thread_id"
+          ;;
+        luna|sol|deepseek|deepseek-volker|deepseek-github2)
+          printf 'resume: %s %s <prompt-file> %s resume %s\n' \
+            "$SCRIPT_DIR/codex-impl.sh" "$worktree" "$run" "$thread_id"
+          ;;
+        opencode)
+          printf 'resume: %s %s <prompt-file> %s\n' \
+            "$SCRIPT_DIR/opencode-impl.sh" "$worktree" "$run"
+          ;;
+      esac
+    fi
     red=1
   elif [[ $owner_pid =~ ^[0-9]+$ ]]; then
     echo "RUNNING (no .done)"

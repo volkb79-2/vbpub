@@ -73,6 +73,22 @@ no separate version number, so entries are grouped by the work that landed.
   invocation never overwrites the identity of the owner it refused on.
 
 ### Fixed
+- `job-status` liveness and the dead-wrapper/orphan case: `ACTIVE`/`WRAPPER-DEAD`
+  is decided from the run name's owner record (`<run>.lock`), the same rule
+  `job-check.sh` applies, so a recycled wrapper pid no longer reads `ACTIVE` and
+  the row names the RECORDED pid (`recycled` is stated) instead of the stranger
+  the snapshot carried. With no record the payload pid is the fallback and the
+  row says `owner-record=none`. When the wrapper is dead and the agent it started
+  still works, the row says `wrapper-dead-agent-alive` and names the agent
+  (`agent=<pid>(<cmd>)`) and what that agent is running (`tool=<pid>`), found
+  structurally (cwd = the run's worktree, argv[0] = `pi`/`codex`). The
+  `last-event` age of a dead run comes from the run stream's mtime and says so
+  (`last-event=42s(stream)`), because the dead sidecar can never be refreshed.
+- `job-check` thread recovery: a `DIED` run whose `.thread` was never written now
+  has its id READ from the run's own stream (pi's first `session` event, Codex's
+  `thread.started`), printed as `thread: <id> (recovered …)`, with the exact
+  `resume:` command; `thread: none` when the stream carries no id, and the file
+  is never written by this read-only check.
 - A final assistant message with `stopReason=stop`, a tool call and no text no
   longer classifies `SUCCESS` (CTL-13), and `stopReason=length` no longer
   classifies `INCOMPLETE` (CTL-17).

@@ -703,7 +703,7 @@ mutant("scripts/controller/job-status.sh", "job-status-tokens-last-report.sh",
        "        f\"tokens-last-report={show(payload.get('latest_total_tokens'))} \"")
 # A dead wrapper with no .done must not read as ACTIVE.
 mutant("scripts/controller/job-status.sh", "job-status-wrapper-dead.sh",
-       '    wrapper_dead = not pid_alive(wrapper_pid)',
+       '    wrapper_dead = verdict == "dead"',
        '    wrapper_dead = False')
 # A finished run must be read from its marker, never from a live snapshot.
 mutant("scripts/controller/job-status.sh", "job-status-finished.sh",
@@ -721,6 +721,25 @@ mutant("scripts/controller/job-status.sh", "job-status-default-stall.sh",
 mutant("scripts/controller/job-status.sh", "job-status-default-hung.sh",
        'hung_tool_seconds=${JOB_STATUS_HUNG_TOOL_SECONDS:-1800}',
        'hung_tool_seconds=${JOB_STATUS_HUNG_TOOL_SECONDS:-18000}')
+# Liveness is the OWNER RECORD's verdict, not `kill -0` on the payload's pid:
+# a recycled pid answers "alive" for a stranger.
+mutant("scripts/controller/job-status.sh", "job-status-owner-record-ignored.sh",
+       '    verdict, detail = owner_verdict(owner, wrapper_pid)', 
+       '    verdict, detail = ("alive", None) if pid_alive(wrapper_pid) else ("dead", "gone")')
+# A dead wrapper with a LIVE agent is its own state and must be named.
+mutant("scripts/controller/job-status.sh", "job-status-orphan-agent-unnamed.sh",
+       '        pid_text += " wrapper-dead-agent-alive"',
+       '        pid_text += ""')
+mutant("scripts/controller/job-status.sh", "job-status-orphan-agent-scan.sh",
+       '        ancestors = agent_processes(worktree_of(name))',
+       '        ancestors = []')
+# The stale dead sidecar must not be the newest event: the stream's mtime is.
+mutant("scripts/controller/job-status.sh", "job-status-dead-sidecar-event.sh",
+       '            since_event = stream_age',
+       '            since_event = since_event')
+mutant("scripts/controller/job-check.sh", "job-check-thread-recovery.sh",
+       '      thread_id=$(recover_thread_from_stream "$CONTROLLER_RUNS_DIR/$run.jsonl") || thread_id=\'\'',
+       '      thread_id=\'\'')
 
 # The states list and the steering action are user-facing facts, so a document
 # that lost them must fail its own content check.

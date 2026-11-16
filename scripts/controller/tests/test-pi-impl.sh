@@ -619,6 +619,11 @@ PY
   grep -qF 'finished: FINISHED EXIT=0 OUTCOME=SUCCESS' "$ROOT/job-status-states.out" || fail 'a finished run is not reported as finished'
   grep -qF 'absent: NO-LIVE (no absent.live sidecar)' "$ROOT/job-status-states.out" || fail 'a run without a snapshot is not NO-LIVE'
   grep -qF 'orphan: WRAPPER-DEAD' "$ROOT/job-status-states.out" || fail 'a run whose wrapper pid is gone is not WRAPPER-DEAD'
+  # Liveness comes from the OWNER RECORD (the same one job-check reads), and the
+  # payload pid is only a fallback - the row says which. A recycled pid is a
+  # stranger, so it must not read ACTIVE.
+  grep -qF 'owner-record=none' "$ROOT/job-status-states.out" \
+    || { cat "$ROOT/job-status-states.out" >&2; fail 'a run without an owner record does not say which fact its liveness rests on'; }
   grep -qE 'hung: (ACTIVE|STALLED)' "$ROOT/job-status-states.out" \
     && fail 'HUNG-TOOL did not take precedence over STALLED'
 }
@@ -1215,7 +1220,9 @@ check_repo_not_a_worktree() {
 # The agent HOLDS until the check releases it (a marker file), so "the owner is
 # still alive" is a state the check chooses, never a duration it hopes for.
 start_owned_run() {
-  local run=$1 sleep_after=$2
+  # $1 run name; the agent HOLDS until the check creates "$run.release" (the
+  # second argument is retained so a caller's shape is unchanged).
+  local run=$1
   shift 2
   PATH="$ROOT/bin:$PATH" HOME="$HOME_ROOT" PI_ROUTE=deepseek-pi-volker \
     CONTROLLER_OD_STATE="$ROOT/ownership-$run-state.json" PI_LIVE=0 \
@@ -1294,7 +1301,7 @@ check_refusal_keeps_owner_record() {
 }
 
 check_run_name_ownership() {
-  local first='' second=0 retired='' started_at=0
+  local first='' second=0 retired=
   rm -rf "$CONTROLLER_ROOT/runs"; mkdir -p "$CONTROLLER_ROOT/runs"
   # (1) A live owner refuses a second wrapper BY NAME, before it writes anything.
   start_owned_run owned-run 6
@@ -1370,6 +1377,93 @@ check_run_name_ownership() {
   contains "$ROOT/killed-run.launch.log" 'retired' 'the forced reclaim reports what it retired'
   # Release the stranded agent so it cannot outlive the check.
   release_owned_run killed-run
+}
+
+# The owner record decides liveness, and a DEAD wrapper with a LIVE agent is
+# its own state: the controller needs the agent's pid (and the pid of what that
+# agent is running), because nothing else can name what to stop.
+check_job_status_dead_wrapper() {
+  local runs=$ROOT/dead-wrapper-runs spawn_pid
+  rm -rf "$runs"; mkdir -p "$runs" "$ROOT/status-home"
+  # A long-lived "agent" whose cwd IS the run's worktree (that is how the reader
+  # recognises it, structurally) and which starts a "tool" child.
+  ( cd -- "$WORKTREE" && exec -a pi python3 -c 'import subprocess, time
+subprocess.Popen(["sleep", "120"])
+time.sleep(120)' ) &
+  spawn_pid=$!
+  printf '%s\n' "$WORKTREE" > "$runs/dead-wrapper.wt"
+  # The run stream the dead sidecar stopped refreshing: its mtime is the newest
+  # event fact, and it is NEWER than the sidecar's last tick.
+  printf '{"type":"session","id":"dead-wrapper-thread"}\n' > "$runs/dead-wrapper.jsonl"
+  python3 - "$runs/dead-wrapper.live" "$spawn_pid" <<'PY'
+import json, sys, time
+from pathlib import Path
+now = int(time.time())
+body = {
+    "run": "dead-wrapper", "wrapper_pid": 2147483646, "updated_epoch": now,
+    "last_event_epoch": now - 3600, "tool_in_flight": "bash",
+    "tool_in_flight_started_epoch": now - 300, "assistant_turns": 3,
+    "tool_calls": 9, "latest_total_tokens": 100, "latest_total_tokens_last_report": 100,
+    "tool_in_flight_command": "sleep 600", "steering_children": [],
+    "progress_epoch": None, "progress_baseline_epoch": None, "progress_reason": "unread",
+    "commits_ahead": 0, "uncommitted_files": 0, "last_commit_epoch": now - 600,
+}
+Path(sys.argv[1]).write_text(json.dumps(body), encoding="utf-8")
+PY
+  # The wrapper pid is gone, so the record says so - and the agent it started is
+  # alive in the run's worktree.
+  printf 'pid=%s started_epoch=%s started_utc=%s pid_start_ticks=12345 boot_id=%s\n' \
+    2147483646 1700000000 2023-11-14T22:13:20Z \
+    "$(cat /proc/sys/kernel/random/boot_id 2>/dev/null || printf '%s' '-')" \
+    > "$runs/dead-wrapper.lock"
+  CONTROLLER_HOME="$ROOT/status-home" CONTROLLER_RUNS_DIR="$runs" CONTROLLER_REPO="$WORKTREE" \
+    JOB_STATUS_STALL_SECONDS=600 JOB_STATUS_HUNG_TOOL_SECONDS=1800 \
+    "$JOB_STATUS" dead-wrapper > "$ROOT/dead-wrapper.out" 2>&1 \
+    || { kill -9 "$spawn_pid" 2>/dev/null; cat "$ROOT/dead-wrapper.out" >&2; fail 'job-status failed on a dead wrapper with a live agent'; }
+  grep -qF 'dead-wrapper: WRAPPER-DEAD' "$ROOT/dead-wrapper.out" \
+    || { kill -9 "$spawn_pid" 2>/dev/null; cat "$ROOT/dead-wrapper.out" >&2; fail 'a dead wrapper with a live agent is not WRAPPER-DEAD'; }
+  grep -qF 'wrapper-dead-agent-alive' "$ROOT/dead-wrapper.out" \
+    || { kill -9 "$spawn_pid" 2>/dev/null; cat "$ROOT/dead-wrapper.out" >&2; fail 'the row does not say the agent is alive although the wrapper died'; }
+  grep -qF "agent=$spawn_pid(" "$ROOT/dead-wrapper.out" \
+    || { kill -9 "$spawn_pid" 2>/dev/null; cat "$ROOT/dead-wrapper.out" >&2; fail "the row does not name the orphaned agent pid ($spawn_pid)"; }
+  grep -qE 'tool=[0-9]+' "$ROOT/dead-wrapper.out" \
+    || { kill -9 "$spawn_pid" 2>/dev/null; cat "$ROOT/dead-wrapper.out" >&2; fail 'the row does not name what the orphaned agent is running'; }
+  # The stale sidecar's own `last_event_epoch` is one hour old; the dead
+  # wrapper means it can never be refreshed, so the reader falls back to the run
+  # stream's mtime rather than reporting the dead sidecar's last tick forever.
+  python3 - "$ROOT/dead-wrapper.out" <<'PY' || { kill -9 "$spawn_pid" 2>/dev/null; fail 'the dead sidecar stale event age was reported as the newest event'; }
+import re, sys
+text = open(sys.argv[1], encoding="utf-8").read()
+match = re.search(r"last-event=([0-9]+)s\((stream)\)", text)
+assert match, text
+assert int(match.group(1)) != 3600, text
+PY
+  # A RECYCLED wrapper pid: the number exists (it is this test process) but its
+  # kernel start ticks differ from the record, so it is not this run's wrapper.
+  printf 'pid=%s started_epoch=%s started_utc=%s pid_start_ticks=1 boot_id=%s\n' \
+    "$$" "$(date -u +%s)" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    "$(cat /proc/sys/kernel/random/boot_id 2>/dev/null || printf '%s' '-')" \
+    > "$runs/dead-wrapper.lock"
+  python3 - "$runs/dead-wrapper.live" "$$" <<'PY'
+import json, sys
+from pathlib import Path
+body = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+body["wrapper_pid"] = int(sys.argv[2])
+Path(sys.argv[1]).write_text(json.dumps(body), encoding="utf-8")
+PY
+  CONTROLLER_HOME="$ROOT/status-home" CONTROLLER_RUNS_DIR="$runs" CONTROLLER_REPO="$WORKTREE" \
+    JOB_STATUS_STALL_SECONDS=600 JOB_STATUS_HUNG_TOOL_SECONDS=1800 \
+    "$JOB_STATUS" dead-wrapper > "$ROOT/recycled-wrapper.out" 2>&1 \
+    || { kill -9 "$spawn_pid" 2>/dev/null; cat "$ROOT/recycled-wrapper.out" >&2; fail 'job-status failed on a recycled wrapper pid'; }
+  if grep -qF 'recycled-wrapper: ACTIVE' "$ROOT/recycled-wrapper.out"; then
+    kill -9 "$spawn_pid" 2>/dev/null
+    fail 'a recycled wrapper pid read as ACTIVE'
+  fi
+  grep -qF 'recycled' "$ROOT/recycled-wrapper.out" \
+    || { kill -9 "$spawn_pid" 2>/dev/null; cat "$ROOT/recycled-wrapper.out" >&2; fail 'a recycled wrapper pid is not named as recycled'; }
+  kill -9 "$spawn_pid" 2>/dev/null || true
+  wait "$spawn_pid" 2>/dev/null || true
+  pkill -f 'sleep 120' 2>/dev/null || true
 }
 
 check_job_status_validation() {
@@ -1565,6 +1659,7 @@ PY
         || fail 'the snapshot left a temporary file behind'
       ;;
     status-states) check_job_status_states ;;
+    status-dead-wrapper) check_job_status_dead_wrapper ;;
     prompt-absolute)
       expect_rc 2 env PATH="$ROOT/bin:$PATH" HOME="$HOME_ROOT" PI_ROUTE=deepseek-pi \
         "$SRC" "$WORKTREE" relative-prompt focused-relative
@@ -1817,8 +1912,10 @@ PY
       contains "$README_SOURCE" 'OUTCOME=NO-REPORT' 'README documents the report outcome'
       contains "$README_SOURCE" "\`CONTEXT-FULL\`" 'README documents the context-full class'
       contains "$README_SOURCE" "\`TOOL-CALL-NO-TEXT\`" 'README documents the tool-call-no-text class'
+      # shellcheck disable=SC2016 # the backticks are the DOCUMENT's literal text
       contains "$README_SOURCE" 'TEXT **and** a trailing tool call is `SUCCESS`' \
         'README states that text plus a trailing tool call is a success'
+      # shellcheck disable=SC2016 # the backticks are the DOCUMENT's literal text
       contains "$DESIGN_SOURCE" 'Text **plus** a trailing tool call is `SUCCESS`' \
         'design guide states that text plus a trailing tool call is a success'
       contains "$CONSUMER_SOURCE" 'trailing tool call' \
@@ -1848,6 +1945,21 @@ PY
         'README forbids killing the wrapper to steer a tool'
       contains "$README_SOURCE" "\`since-commit=no-commits-yet\`" 'README qualifies the since-commit age'
       contains "$README_SOURCE" "\`DIED (wrapper pid <pid> gone, no .done)\`" 'README documents the died state'
+      contains "$README_SOURCE" 'wrapper-dead-agent-alive' \
+        'README documents the dead-wrapper/live-agent state'
+      contains "$README_SOURCE" 'last-event=42s(stream)' \
+        'README documents which clock the dead-wrapper event age comes from'
+      contains "$README_SOURCE" 'thread: none' \
+        'README documents the no-recoverable-thread case'
+      contains "$DESIGN_SOURCE" 'wrapper-dead-agent-alive' \
+        'design guide explains the dead-wrapper/live-agent state'
+      # shellcheck disable=SC2016 # the backticks are the DOCUMENT's literal text
+      contains "$DESIGN_SOURCE" 'A stream with no id says `thread: none`' \
+        'design guide explains the thread recovery'
+      contains "$CONSUMER_SOURCE" 'wrapper-dead-agent-alive' \
+        'consumer guide shows the dead-wrapper/live-agent row'
+      contains "$CONSUMER_SOURCE" 'thread: none' \
+        'consumer guide shows the no-recoverable-thread case'
       contains "$DESIGN_SOURCE" "Why \`LONG-TOOL\` exists as its own word" \
         'design guide explains why long-tool is separate'
       contains "$DESIGN_SOURCE" "\`DIED (wrapper pid" 'design guide documents the died classification'
