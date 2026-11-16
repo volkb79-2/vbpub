@@ -234,6 +234,10 @@ def test_pre_merge_tooling_lane_binds_the_release_attempt_failure_groups() -> No
         "gate/tests/test_release_gate.py",
         "gate/tests/test_distribution_gate.py",
         "gate/tests/test_self_qualification_container.py",
+        # B536: the release-wrapper refusal/prior-marker assertions, now runnable
+        # in the container lane (its main-checkout fixture skips with a named
+        # reason instead of dying on an unwritable shared .worktrees directory).
+        "gate/tests/test_self_lane.py",
         "tests/core/test_docs_examples_and_vocabulary.py",
         # B533: cross-cutting contracts the 12.2.0 release attempt found red.
         "tests/core/test_termination.py",

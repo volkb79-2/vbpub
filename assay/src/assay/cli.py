@@ -4096,6 +4096,32 @@ def _discover_plan_jobs(
         remaining=deadline.remaining,
     )
 
+    # (B215) An INGESTED lane (one declaring `judge.mutation.format`) has no
+    # native plan for assay to enumerate: its candidates are the mutants the
+    # lane's own argv's foreign mutation tool wrote into the declared report
+    # artifact, which does not exist until that tool has run. Discovery stops
+    # HERE, after every repository-level fact and refusal above -- a dirty
+    # tree, an untracked source root and an unresolvable base still refuse
+    # exactly as they do for a native lane -- and BEFORE the snapshot and
+    # target phases, because such a lane declares `max_mutants = None` by
+    # contract (load refuses the key on an ingested lane) and the
+    # `max_mutants + 1` collection sentinel below raised a bare
+    # `TypeError: unsupported operand type(s) for +: 'NoneType' and 'int'` out
+    # of `assay plan` instead of the documented `status = "unsupported"`
+    # answer. Every caller already handles the sentinel: `assay plan` renders
+    # the reason, `assay campaign init` refuses with "has no supported full
+    # mutation plan to bind", and the pilot selection refuses by name.
+    if lane.judge.mutation.is_ingested:
+        return _PlanDiscovery(
+            commit=commit,
+            tree=tree,
+            jobs=mutation.UNSUPPORTED,
+            worktree_integrity=worktree_integrity,
+            reuse_command_plan=reuse_command_plan,
+            reuse_command_cwd=reuse_command_cwd,
+            deadline=deadline,
+        )
+
     with tempfile.TemporaryDirectory(prefix="assay-plan-seed-") as raw_seed:
         seed_root = Path(raw_seed).resolve()
         spec = isolation.SnapshotSpec(

@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import io
 import sys
+from concurrent.futures import Future
 from datetime import datetime, timezone
 from pathlib import Path
 import pytest
@@ -1324,6 +1325,196 @@ def test_per_candidate_budget_marks_one_mutant_and_continues(tmp_path):
     assert len(result.budget_exceeded) == 1
     assert len(result.survived) == 1
     assert result.total == 2
+
+
+# --- B524: the end record must not call unstarted work a budget failure ----
+
+
+_THREE_TEXT = (
+    "def flags():\n"
+    "    a = True\n"
+    "    b = True\n"
+    "    c = True\n"
+    "    return a, b, c\n"
+)
+_THREE_TARGETS = (
+    MutationTarget(path="pkg/flags.py", text=_THREE_TEXT, lines=frozenset({2, 3, 4})),
+)
+
+
+class _DeadlineExecutor:
+    """Dispatch position 0 (and only it), then report the lane deadline.
+
+    `_execute_mutation_jobs` stops submitting the moment a worker reports
+    BUDGET_EXCEEDED/LANE_TIMEOUT, so positions 1 and 2 are never dispatched --
+    exactly CMRu's s4 attempt A shape (one candidate got a worker, the rest
+    were still in the queue).
+    """
+
+    def __init__(self, error: AssayError) -> None:
+        self.error = error
+        self.submitted: list[int] = []
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args):
+        return False
+
+    def submit(self, _function, position):
+        self.submitted.append(position)
+        future: Future = Future()
+        future.set_exception(self.error)
+        return future
+
+
+def _three_site_repo(tmp_path):
+    repo = GitRepo(path=tmp_path / "repo")
+    repo.path.mkdir()
+    repo.git("init", "-q", "-b", "main")
+    repo.git("config", "user.email", "assay-tests@example.com")
+    repo.git("config", "user.name", "assay tests")
+    repo.write("pkg/flags.py", _THREE_TEXT)
+    repo.commit_all("add flags")
+    return repo
+
+
+def test_end_event_splits_dispatched_budget_failures_from_never_started(tmp_path):
+    """B524: one dispatched candidate hit the deadline; two never started.
+
+    The bucket count alone (3) would report three budget failures. A reader
+    triaging that number would go looking for three slow candidates that do
+    not exist, so the terminal record states the split. Hand-collapsing the
+    two counters (reporting `buckets.budget_exceeded` as the dispatched count,
+    or as the unstarted count) makes this test fail.
+    """
+    repo = _three_site_repo(tmp_path)
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    progress_path = tmp_path / ".assay" / "lane.progress.jsonl"
+
+    def decide(argv, *, env, cwd, timeout):
+        return completed_process(list(argv), returncode=0)
+
+    lane = make_lane(argv=("pytest", "-q"))
+    baseline = execute_command(lane, cwd=repo.path, process_runner=decide)
+    assert baseline.outcome is Outcome.PASS
+    deadline_error = AssayError(
+        "native R2 candidate reached the lane deadline",
+        outcome=Outcome.BUDGET_EXCEEDED,
+        reason_code=ReasonCode.LANE_TIMEOUT,
+    )
+    with prepared_snapshot(repo, scratch_root=scratch) as prepared:
+        result = run_mutation(
+            baseline=baseline,
+            prepared=prepared,
+            plan=make_plan(lane),
+            deadline=make_deadline(),
+            targets=_THREE_TARGETS,
+            adapter=PythonAdapter(),
+            jobs=1,
+            max_mutants=10,
+            operators=("python:bool-const-flip",),
+            process_runner=decide,
+            clock=lambda: datetime.now(timezone.utc),
+            progress_artifact=progress_path,
+            executor_factory=lambda _jobs: _DeadlineExecutor(deadline_error),
+        )
+
+    assert result is not None and not isinstance(result, str)
+    assert len(result.budget_exceeded) == 3
+
+    events = [
+        json.loads(line)
+        for line in progress_path.read_text(encoding="utf-8").splitlines()
+    ]
+    end = events[-1]
+    assert end["event"] == "end"
+    assert end["buckets"]["budget_exceeded"] == 3
+    assert end["budget_exceeded_dispatched"] == 1
+    assert end["budget_exceeded_unstarted"] == 2
+    assert (
+        end["budget_exceeded_dispatched"] + end["budget_exceeded_unstarted"]
+        == end["buckets"]["budget_exceeded"]
+    )
+
+
+@pytest.mark.parametrize(
+    ("counted", "unstarted", "message"),
+    [
+        (3, 4, "inconsistent"),
+        (3, -1, "invalid unstarted count"),
+        (3, True, "invalid unstarted count"),
+        (3, 1.0, "invalid unstarted count"),
+    ],
+)
+def test_budget_exceeded_split_refuses_an_impossible_split(
+    counted, unstarted, message
+):
+    """The split is checked against the bucket's own count, never clamped.
+
+    A diagnostic that silently clamps would publish an inverted split -- more
+    never-started candidates than the bucket records -- which claims work the
+    verdict never recorded.
+    """
+    with pytest.raises(mutation.MutationStateError, match=message):
+        mutation_module._budget_exceeded_split(counted, unstarted)
+
+
+def test_budget_exceeded_split_passes_a_consistent_pair_through():
+    assert mutation_module._budget_exceeded_split(3, 2) == (1, 2)
+    assert mutation_module._budget_exceeded_split(0, 0) == (0, 0)
+    assert mutation_module._budget_exceeded_split(2, 0) == (2, 0)
+
+
+def test_end_event_reports_every_dispatched_candidate_as_dispatched(tmp_path):
+    """The other direction: real per-candidate timeouts are ALL dispatched.
+
+    Three candidates each got a worker and each timed out. Nothing was left
+    in the queue, so the split must say 3 dispatched and 0 unstarted -- a
+    producer that always reports the mask as "unstarted" fails here instead
+    of passing the test above.
+    """
+    repo = _three_site_repo(tmp_path)
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    progress_path = tmp_path / ".assay" / "lane.progress.jsonl"
+
+    def decide(argv, *, env, cwd, timeout):
+        if Path(cwd) == repo.path:
+            return completed_process(list(argv), returncode=0)
+        raise timeout_expired(cmd=list(argv), timeout=timeout)
+
+    lane = make_lane(argv=("pytest", "-q"))
+    baseline = execute_command(lane, cwd=repo.path, process_runner=decide)
+    assert baseline.outcome is Outcome.PASS
+    with prepared_snapshot(repo, scratch_root=scratch) as prepared:
+        result = run_mutation(
+            baseline=baseline,
+            prepared=prepared,
+            plan=make_plan(lane),
+            deadline=make_deadline(),
+            targets=_THREE_TARGETS,
+            adapter=PythonAdapter(),
+            jobs=1,
+            max_mutants=10,
+            operators=("python:bool-const-flip",),
+            process_runner=decide,
+            clock=lambda: datetime.now(timezone.utc),
+            progress_artifact=progress_path,
+            budget_per_candidate_seconds=1.0,
+        )
+
+    assert result is not None and not isinstance(result, str)
+    assert len(result.budget_exceeded) == 3
+    events = [
+        json.loads(line)
+        for line in progress_path.read_text(encoding="utf-8").splitlines()
+    ]
+    end = events[-1]
+    assert end["event"] == "end"
+    assert end["budget_exceeded_dispatched"] == 3
+    assert end["budget_exceeded_unstarted"] == 0
 
 
 # --- B091/D-23: judge candidates by progress, not by time (A1) -------------

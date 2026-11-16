@@ -545,6 +545,35 @@ def test_two_builds_of_one_commit_are_byte_identical(built):
     assert first.zipapp.read_bytes() == second.zipapp.read_bytes(), "zipapp is not reproducible"
 
 
+def test_the_release_tag_state_is_the_FIXTURE_s_not_the_ambient_checkout_s(
+    release_repositories,
+):
+    """(B540) Both manifest outcomes come from a tag state this test CONTROLS.
+
+    The defect this pins: the untagged assertion held only because the ambient
+    checkout happened to carry no ``assay-v*`` tag, so it failed at every assay
+    release tag -- the exact commit a B123 same-commit receipt must be
+    obtainable from. `_release_repository` clones the reviewed commit (which
+    carries every inherited tag), deletes the tags pointing at that HEAD, and
+    then adds one only when asked. Read through the SHIPPED reader
+    (`build_release.head_release_tag`), so this asserts the outcome the
+    builder itself sees, not a test-local imitation of it.
+    """
+    untagged = release_repositories["untagged"]
+    tagged = release_repositories["tagged"]
+    assert build_release.head_release_tag(untagged) is None
+    assert build_release.head_release_tag(tagged) == "assay-v99.99.99"
+    # The two are the SAME commit: only tag state differs, which is what makes
+    # the pair a differential measurement of the manifest rule rather than two
+    # unrelated builds.
+    assert _git(untagged, "rev-parse", "HEAD").stdout.strip() == _git(
+        tagged, "rev-parse", "HEAD"
+    ).stdout.strip()
+    # And the ambient checkout is never the source of that state: whatever it
+    # carries (including a real release tag) is not observable here.
+    assert untagged.resolve() != REPO_ROOT.resolve()
+
+
 def test_an_untagged_build_emits_no_release_manifest(built):
     """A-200's policy, mechanically enforced for the first time. The temporary
     repository deliberately carries no `assay-v*` tag on its HEAD."""

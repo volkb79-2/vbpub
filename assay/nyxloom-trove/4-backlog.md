@@ -203,6 +203,7 @@ items:
   - {id: B551, title: "The full `self-qualification` lane needs a same-commit `tester-unified` receipt in the SAME worktree, which a per-lane throwaway remote checkout can never have, so the lane refuses in 11 s with an opaque `container exit 2`", type: bugfix, component: "gate", context_estimate: "small"}
   - {id: B552, title: "A lane that DELEGATES its comparison base (`judge.base_source = \"request\"`) accepts the requested base and then discards it whenever HEAD is a merge commit, planning zero candidates and recording `base_resolution: \"first-parent\"` as if the request had been honoured", type: bugfix, component: "evaluate", context_estimate: "small"}
   - {id: B553, title: "An inner `die` refusal from the B105 driver scripts does not reach the lane log, so a precondition refusal is reported as `ASSAY_GATE_INCONCLUSIVE=... (container exit 2)`; the mechanism that loses the line is unverified", type: bugfix, component: "evidence", context_estimate: "small"}
+  - {id: B554, title: "A verdict carrying a real leaked-descendant `cmdline` is already invalid against the shipped v19 schema: B233 added the field to the producer and to CONSUMERS.md but never to `src/assay/schemas/verdict.schema.json` (descendant items are `additionalProperties: false` with only pid/ppid/comm). BLOCKED-ON-V20 with B234: fixing it changes a released schema's bytes, which needs an operator D2 exception (`_VERDICT_SCHEMA_SHA256`) that a peer review cannot grant", type: bugfix, component: evidence, context_estimate: small}
 ---
 
 # assay — backlog
@@ -13612,10 +13613,13 @@ raised on) is proven for every bucket.
 
 ## B185 — product-definition still carries a stale "no Go toolchain" claim
 
-**Status: OPEN.** `nyxloom-trove/2-product-definition.md` (around line 285 in the
-verification ledger) still describes Go behaviour as unavailable in the judge
-environment although `tester-unified-go` runs real Go. Reconcile the claim with the Go R1
-lane that is qualified end to end (A-217).
+**Status: FIXED (2026-11-16, pi-assay-burn).** `nyxloom-trove/2-product-definition.md` F008-A3's opt-in rationale read "...because neither gate image can host them — tester-unified has no Go, and the Python suite does not run in tester-unified-go". Both halves of that sentence were stale: the standard image copies `/usr/local/go` from the Wings toolchain image (`tester-unified/Dockerfile:45,159`, `build-image.sh` passing `WINGS_GO_TOOLCHAIN_IMAGE=$PTERODACTYL_GO_IMAGE`), measured in this checkout's image (`go version go1.27.2`), and `DESIGN-GUIDE.md` §10 already said so.
+
+**Fix.** The criterion now states what is true: no ASSAY-OWNED registered lane hosts the two qualification entries, which is why they stay opt-in. The dedicated Go image carries the Python interpreter only as `golang:1.25`'s inherited `/usr/bin/python3` with no pip and no ensurepip, so those entry points build the shipped ZIPAPP (DA-3, A-402); and the standard image DOES carry Go for downstream consumers. The residual claim is a policy statement ("assay's registered lanes choose not to depend on it") rather than a false environment claim ("there is no toolchain").
+
+**Why the wording, not the tests.** The behaviour was never in doubt — `gate/tests/qualification/test_go_r1_real.py` already skips on `ASSAY_GO_QUALIFICATION`, and no test asserted the stale sentence. That is exactly the documentation-drift shape A-270 names: a product-definition line that a reader would take as the environment contract, contradicted by the image's own Dockerfile.
+
+**No mechanical check added.** A test asserting a sentence of the product definition against the image contents must run inside an image build, and neither `tooling-tests` nor a host-independent lane can do that; a check that can only run where the fact is already visible would be the vacuous kind A-270 forbids. The reconciliation is recorded here with the file-and-line evidence instead.
 
 ## B186 — malformed diagnostic resources make R2 state resume fatal
 
@@ -14202,7 +14206,29 @@ phase is fsync (compare `io_sync = relaxed` with an eatmydata image, and `durabl
 **Acceptance.** A measured breakdown of the phase for the three cases and, if per-file work dominates, a design note; the fix is a separate package. Pairs with run-gate RG-154 (pilot).
 ## B215 — `assay plan <lane>` crashes with a TypeError on an ingested-mutation lane (`max_mutants` is None)
 
-**Status:** OPEN. Filed 2026-11-04 from dstdns (P220, `ui_apierror_r2`; assay 9.0.0). Severity: P3 (no verdict affected; blocks plan-based budgeting of ingested lanes).
+**Status:** FIXED (2026-11-16, branch `pi-assay-burn-20261116`). Filed 2026-11-04 from dstdns (P220, `ui_apierror_r2`; assay 9.0.0). Severity: P3 (no verdict affected; blocks plan-based budgeting of ingested lanes).
+
+**Fix.** `cli._discover_plan_jobs` now answers `mutation.UNSUPPORTED` as soon as
+it has the repository-level facts, when the lane's `judge.mutation.is_ingested`
+(the ONE discriminator: `format`'s presence). Discovery therefore never reaches
+the `limit=max_mutants + 1` collection sentinel, whose operand is `None` by
+contract on an ingested lane. Every caller already handled the sentinel: `assay
+plan` renders `status = "unsupported"` / `reason_code = "MUTATION_UNSUPPORTED"`
+with the reason naming ingestion (and now without a traceback), `assay campaign
+init` refuses with "has no supported full mutation plan to bind", and the pilot
+selection refuses by name. The stop sits AFTER the dirty-tree, exact
+untracked-source-root and base-resolution refusals, so an ingested lane is still
+refused for a real repository fault before it is answered "unsupported".
+
+**Evidence.** Reproduced on the base commit with a real ingested lane: `assay
+plan ui_mutation` ended in `TypeError: unsupported operand type(s) for +:
+'NoneType' and 'int'` at `cli.py:4173`. After the fix the same lane answers the
+documented unsupported JSON (exit 0, no stderr hint) and the text form prints
+`Status: unsupported` plus the reason. Tests:
+`tests/core/test_cli_plan_jobs.py::test_o16a_ix_*` (sentinel, JSON shape, text
+rendering, and a native-lane negative control). Hand mutant: deleting the
+`is_ingested` early return reproduces the original `TypeError` and fails three
+of those four oracles (measured, see the run report).
 
 **Observed.** For a lane that ingests a Stryker report (`judge.mutation = {format = "mutation-report-json", artifact, fail_under}`; `max_mutants`, `jobs` and `operators` are refused for ingested lanes) `python3 assay-9.0.0.pyz plan ui_apierror_r2` ends in a traceback instead of a plan or a refusal: `assay/cli.py:3823 _discover_plan_jobs: limit=lane.judge.mutation.max_mutants + 1` -> `TypeError: unsupported operand type(s) for +: 'NoneType' and 'int'`. The lane loads fine (`lanes`, `run-gate --dry-run`).
 
@@ -14320,7 +14346,7 @@ phase is fsync (compare `io_sync = relaxed` with an eatmydata image, and `durabl
 **Acceptance (documentation only).** B219-B223 notes cite this entry as the ZFS comparison; no code change.
 ## B226 — `tests/core/test_isolation.py::test_further_external_or_incomplete_topologies_are_refused` hung ~18 minutes on a blocked `git rev-parse --absolute-git-dir` child outside the lane container
 
-**Status: OPEN, root cause identified (filed 2026-11-05, measured the same day).** Reported by the fix-assay-mat package: a local pytest of `assay/tests/core/test_isolation.py` on the bare devcontainer (not the lane container) stalled at about 43% of the file in this test (parametrized over `alternates-symlink`, `alternates-fifo`, `grafts`, `sha256`, `promisor`, test at line ~1320) with a blocked `git rev-parse --absolute-git-dir` child for about 18 minutes. The registered gate (lane container) was not affected in that run.
+**Status: FIXED (2026-11-16, pi-assay-burn); see the fix record at the end of this entry.** Originally OPEN, root cause identified (filed 2026-11-05, measured the same day). Reported by the fix-assay-mat package: a local pytest of `assay/tests/core/test_isolation.py` on the bare devcontainer (not the lane container) stalled at about 43% of the file in this test (parametrized over `alternates-symlink`, `alternates-fifo`, `grafts`, `sha256`, `promisor`, test at line ~1320) with a blocked `git rev-parse --absolute-git-dir` child for about 18 minutes. The registered gate (lane container) was not affected in that run.
 
 **Measured (devcontainer `mdt-cockpit-vb-vbpub`, 2026-11-05).** Nine `git --no-pager --no-optional-locks … -C <tmp>/pytest-of-vscode/pytest-N/[popen-gwK/]test_further_external_or_incom1/consumer rev-parse --absolute-git-dir` processes, every one in an `alternates-fifo` run (`.git/objects/info/alternates` is a FIFO), every one in `wchan=wait_for_partner` (FIFO `open()` with no writer), every one its own process group (`pgid == pid`). Seven are orphans (`ppid 1`), 15 to 28 hours old; two still block their pytest: `python3 -m pytest tests/core/test_isolation_tmpfs_worker.py tests/core/test_isolation.py tests/core/test_config_snapshot_selection.py …` (27.8 h) and a full `python -m pytest tests … --cov=src/assay` run in the assay-canary worktree (8.7 h). Hypothesis 1 holds: the hang is the hazard itself. Hypothesis 2 (devcontainer git environment) is not needed; the child runs with `_REPLACEMENT_ENV`.
 
@@ -14329,6 +14355,25 @@ phase is fsync (compare `io_sync = relaxed` with an eatmydata image, and `durabl
 **Fix direction (both parts are required).** (1) Hand the P22 deadline to `_resolve_repo` (adapt `_P22Deadline.remaining` to the `Remaining` callable `_run_bounded` samples), so the bootstrap call is bounded like every other P22 git call. This alone does not make the case prompt: the test's `TIMEOUT` is 600 s, so (1) turns the hang into a 600 s timeout, and an unbounded lane (`math.inf`, where `remaining()` returns `None`) still blocks forever. (2) Refuse the topology before any git child can read it. `_p22_reject_external_topology` (`git.py:1682`) already `lstat`s `<common>/objects/info/alternates` and refuses a non-regular file with `GIT_FAILED`, the outcome the test asserts, but it runs at `:1780`, after the bootstrap `rev-parse` and the `--git-common-dir` call. For a plain repository (`<repo_top>/.git` is a directory) hoist that check before the bootstrap, using `<repo_top>/.git` as the common dir. For a gitfile, linked worktree or `core.worktree` layout the common dir is only known from git, so those keep the bounded path of (1) and the existing post-resolution check. The other two `_resolve_repo` callers (lines 712, 803) already pass `remaining=`.
 
 **Acceptance.** The `alternates-fifo` case (a plain repository) completes in seconds on the bare devcontainer with `GIT_FAILED` and leaves no git process behind (the test asserts the spawned process group is gone); a unit test proves `_p22_open_source` passes its deadline to the bootstrap call (an expired deadline raises before or during `rev-parse`); a linked-worktree variant with a FIFO alternates ends within the deadline as an error, not a hang; the remaining parametrized cases are unchanged.
+
+**FIXED (2026-11-16, pi-assay-burn).** Both parts landed, exactly as the fix direction above required.
+
+*Part (1), the deadline.* `_p22_open_source` now passes `remaining=lambda: deadline.remaining("resolving the consumer repository")` to `_resolve_repo`, so the bootstrap `rev-parse --absolute-git-dir` is bounded like every other P22 git call. The adaptor is the one the resolution itself samples before spawning, so an already-expired lane deadline surfaces as the caller's own `BUDGET_EXCEEDED`/`LANE_TIMEOUT` object with no child started — not a fresh exception invented at this layer.
+
+*Part (2), prompt refusal.* The filesystem-only half of `_p22_reject_external_topology` moved into `_p22_reject_local_topology(common)`, and `_p22_open_source` runs it through `_p22_precheck_plain_topology` BEFORE the bootstrap. `_nearest_git_marker` never asks git, so for the ordinary `<repo_top>/.git` DIRECTORY layout the common directory is known before any git child exists and the `alternates`/`grafts`/`shallow` checks refuse in milliseconds. A `.git` FILE (linked worktree, submodule, `core.worktree`) returns without deciding — applying `<gitfile>/objects/info/alternates` would `lstat` a path that cannot exist and certify a repository never inspected — and keeps the bounded path plus the post-resolution check. A missing marker is deferred to the resolution, whose B068 diagnostics are more informative than "no marker" from a topology pre-check.
+
+**Evidence (measured).** `tests/core/test_b105_git_process_boundaries.py`: the deadline is handed over and sampled, an expired deadline spawns nothing, the plain-FIFO topology is refused with `_resolve_repo` never called, a gitfile layout examines exactly nothing, an absent marker examines nothing, and the grafted/shallow rows are exercised through the new helper. `tests/core/test_isolation.py::test_further_external_or_incomplete_topologies_are_refused[alternates-fifo]` went from **hanging past a 90 s bound** to **0.51 s** for all five parametrizations on the bare cockpit (it previously needed the lane container's teardown to clear the orphan). Hand mutants measured: removing the pre-check fails the plain-FIFO test (and the integration case hangs again — measurably, 600 s on the fixture `TIMEOUT`); dropping `remaining=` fails the deadline test; applying the filesystem rules to a gitfile path fails the "examines nothing" test; letting the walk's `AssayError` escape the pre-check replaces the resolution's diagnostics and fails the deferral test.
+
+**Linked-worktree evidence added in review round 1 (and what it does NOT cover).** The acceptance above asked for "a linked-worktree variant with a FIFO alternates ends within the deadline as an error, not a hang"; the first round shipped only unit fakes. `test_p22_open_source_bounds_the_bootstrap_of_a_linked_worktree_fifo` now builds a REAL linked worktree (`git worktree add`), makes `<common>/objects/info/alternates` a writer-less FIFO, and drives `_p22_open_source` with a 2 s deadline in a CHILD PROCESS whose whole session is killed if it does not return. Measured: refused `BUDGET_EXCEEDED`/`LANE_TIMEOUT` after 2.01 s with the fix; with `remaining=` removed the bootstrap never returns and the test fails at its 45 s bound (mutant measured, and the child's process group is killed so no orphan `git` is left behind — the very leak this item documents).
+
+**Round 3: the deadline half is observable only on a git that BLOCKS.** That first version asserted the blocking behaviour itself, which is a property of the git BINARY rather than of the product. The final-head `self-qualification-provisional` lane FAILED that test at R0 with `refused ERROR GIT_FAILED 0.00s`: the `tester-unified` lane image's git returns from `rev-parse --absolute-git-dir` immediately on the FIFO instead of opening it, so the deadline is never reached there. The test now PROBES the hazard itself before asserting anything — a raw `git --no-pager -C <worktree> rev-parse --absolute-git-dir` in its own process group, 3 s bound, deliberately NOT through `assay` so the probe reports what this git does — and then decides which half is observable:
+
+- **probe blocks** (this cockpit, git 2.56.0, the development hosts): the original assertions hold unchanged — the refusal must be exactly `BUDGET_EXCEEDED`/`LANE_TIMEOUT` and the `remaining=` mutant still fails the test at the 45 s bound. Measured on this cockpit: PASS; with `remaining=` dropped: FAIL (53 s, "never returned") on blocking git AND the child's group killed.
+- **probe returns promptly** (the lane image's git): the test first asserts what is true everywhere — the product REFUSED (`ERROR`/`GIT_FAILED` or `BUDGET_EXCEEDED`/`LANE_TIMEOUT`), promptly, and did not accept or hang on the repository — and only then `pytest.skip`s, with the git version and the measured probe result in the reason, stating that the deadline half of B226 is unobservable here. Simulated on this cockpit with a PATH shim whose `git` rejects `--absolute-git-dir`: SKIP with that exact wording, exit 0.
+
+Both branches keep the test able to fail: accepting the repository, an unnamed outcome, a refusal slower than 10 s on fast git, or a non-`LANE_TIMEOUT` refusal on blocking git all fail it.
+
+**Named limits.** (1) An UNBOUNDED lane (`_P22Deadline(math.inf)`) still has no bound for a gitfile/linked-worktree layout: `remaining` correctly returns `None` there (B067's "no timeout"), which the plain-repository pre-check covers but a linked worktree does not, so an unbounded lane pointed at a repository whose `objects/info/alternates` is a blocking device would hang again. That is the intended meaning of an unbounded lane rather than a defect of this fix, but it is an operational limit and it is stated as one. (2) The end-to-end test covers the DEADLINE half only, and only on a git that blocks in `wait_for_partner`; the prompt-refusal half is the plain-repository FIFO rows, which are pinned on every git. (3) A `core.worktree` layout — a third spelling of "the common dir is only knowable by asking git" — is bounded by the same deadline and has no dedicated fixture. (4) The pre-check's own `lstat` of the marker is a SECOND syscall on a path the marker walk already accepted, so a repository removed or made unsearchable between the two is deferred to the resolution rather than refused by this layer. The branch is exercised by `test_p22_precheck_defers_when_the_marker_vanishes_before_its_own_lstat` (added in the coverage fix), whose second oracle pins the other half: the resolution's own exception is still the one a caller sees, so the deferral forwards the question instead of swallowing it. Deleting the branch instead (an earlier option) is wrong because that failure mode is real: ENOENT, EACCES, ESTALE or ELOOP can all arrive between the two calls.
 
 ## B229 — assay 12.0.0 does not import on Python 3.11 (`ValueError: mutable default <class 'mappingproxy'> for field unclassified_lines`), although `requires-python = ">=3.11"`
 
@@ -14346,11 +14391,20 @@ phase is fsync (compare `io_sync = relaxed` with an eatmydata image, and `durabl
 
 ## B234 — a zombie leaked descendant is indistinguishable from a live process with an unreadable cmdline in the `leaked-process-tree` diagnostic
 
-**Status:** OPEN (follow-up of B233 review F4).
+**Status: BLOCKED-ON-V20 (2026-11-16, pi-assay-burn review round 1).** The diagnostic defect is real and unchanged. The fix cannot land in v19: the field has to reach the WIRED record (`process_tree_evidence.descendants`) to be usable, and every such key is part of the released v19 verdict schema, whose bytes operator decision D2 freezes. Implemented, reverted, and re-scoped below.
 
-**Why it matters.** A zombie prints `pid=N ppid=M comm=C` with no argv, the same as a live process whose `/proc/<pid>/cmdline` could not be read. The fix action differs (a zombie needs its parent to reap it; a live process needs a kill).
+**Why it matters.** A zombie prints `pid=N ppid=M comm=C` with no argv, the same as a live process whose `/proc/<pid>/cmdline` could not be read. The fix action differs (a zombie needs its parent to reap it; a live process needs a kill), so the current diagnostic sends the reader to the wrong remedy in exactly the case the field exists for.
 
-**Wanted.** Add an optional `state` field (the `/proc/<pid>/stat` state letter, already parsed in `_process_identity`) to the descendant wire record, render ` state=Z` in `ProcessTreeDescendant.describe()`, accept it in `verify.py` as an optional key (a verdict carrying it fails the key-set check of an older verifier, as with B233 `cmdline`), and test the zombie and live cases.
+**Why it blocks on v20 and not on v19.** The first attempt (`27b556943`, reverted by `8c5b5b3cd`) added an optional `state` and also declared B233's previously-undeclared `cmdline` in `src/assay/schemas/verdict.schema.json`, re-pinning `_VERDICT_SCHEMA_SHA256`. That is an in-version change to a RELEASED wire contract. A-477's digest test states D2 (a version's schema bytes are frozen so producer and verifier cannot drift), and the ONE precedent for editing them without a bump -- the v16 `resource_limit_evidence` relaxation -- carried an explicit operator decision, a CHANGES `### Schema compatibility` line and a backlog record. A peer review cannot grant that exception. The attempt also mis-stated its own justification ("the precedent B233 used"): B233 changed no schema bytes at all, which is exactly why the `cmdline` hole existed (now its own finding, B554).
+
+**Two ways forward for the operator, and the consequences of each.**
+
+1. **A D2-style exception for v19** (the v16 precedent). It requires an operator decision recorded in `nyxloom-trove/decisions.md`, a `### Schema compatibility` line in CHANGES.md, and acceptance that a 12.2.0-era VERIFIER refuses a newer verdict that carries the key: `verify.py` checks the descendant key set exactly, and `ProcessTreeDescendant.from_dict` -- whose key-set rule cmru's `tools/mutation_campaign.py` consumes -- refuses the same document, so a consumer that pinned an older verifier cannot read a newer verdict's leaked-descendant detail. Ship-with-the-writer is then a documented release rule, not an assumption. Under this route B554 (declaring `cmdline`) must be decided with it, because shipping `state` while `cmdline` stays refused would keep invalidating every verdict that carries a real leaked argv.
+2. **Land it in v20 with B532** (the cheap, honest route, and the one assumed here). v20 already has to exist for `judgment.r2.carry_over`/`unselected_total` (B532), so both v19 holes are paid for once: `cmdline` and `state` join the descendant object together, with the cross-key rule (a `state` letter requires a complete `pid`/`ppid`/`comm` identity) stated in the schema's `allOf`, in the verifier, and in CONSUMERS' v19-to-v20 migration note. Nothing about this field requires its own version cut.
+
+**Wanted (unchanged, for whoever pays for v20).** An optional `state` -- the `/proc/<pid>/stat` field-3 letter, already parsed in `_process_identity` -- on the descendant wire record, published only from the closed kernel set (`R S D T t Z X x I K W P`; an unexpected letter is absent, never free text), rendered as ` state=Z` between `comm` and `argv` in `ProcessTreeDescendant.describe()`, and accepted by `verify.py` only from that set and only alongside a complete identity. Tests: both producers (`process_tree._process_identity` and `_window_host._process_group_members`), the closed-set refusal, the wire round-trip, and the zombie-vs-live distinguishability case.
+
+**Reusable work from the reverted attempt (do not rebuild it from scratch).** The measurement and the test shapes live in `8c5b5b3cd`'s parent and are recoverable with `git show 27b556943 -- <path>`: the closed-set constant, both producer edits, the `describe()` order, the verifier's two refusal shapes, and the five test files. Only the schema file and the digest re-pin must NOT be reused without the decision above.
 
 ## B235 — a whole-target `judge.targets` entry with zero executable lines (docstring-only `__init__.py`) fails the whole lane at R1 with `TARGET_NOT_MEASURED`, after the baseline has already run
 
@@ -14617,7 +14671,15 @@ describe the same contract.
 `assay/src/assay/verdict.py`.
 ## B524 — the mutation `end` event conflates genuinely budget-exceeded candidates with pending candidates that never started
 
-**Status:** OPEN (filed 2026-11-10); priority minor reporting/diagnosis defect. Source: the 2026-11-10 session audit's omitted s4 anomalies and `reports/shard-s4-FINAL-REPORT.md`.
+**Status: FIXED (2026-11-16, pi-assay-burn).** The terminal progress record carried one ambiguous count. `buckets.budget_exceeded` is one closed-vocabulary bucket standing for two situations: a candidate that got a worker and hit its own or the lane's deadline, and a candidate the sweep never reached (campaign deadline, fatal worker error, or a `--only-candidates`/`--exclude-candidates` selection). CMRu's s4 attempt A reported `budget_exceeded = 23` for ONE started candidate and 22 pending.
+
+**Fix.** `_execute_mutation_jobs` counts `budget_exceeded_dispatched` (incremented only where a worker reported `BUDGET_EXCEEDED/LANE_TIMEOUT`, never for a leftover queued position) and carries it as `budget_exceeded_not_started` in the run telemetry; `run_mutation`'s `_end` reads it back — plus the selection remainder it alone can see — and emits two additive keys on the terminal record, `budget_exceeded_dispatched` and `budget_exceeded_unstarted`, which always sum to `buckets.budget_exceeded`. `_budget_exceeded_split` refuses an inverted split (more unstarted than recorded) rather than clamping it. Nothing else changes: the verdict bucket, `judge_mutation`, `assay verify` and the schema are untouched.
+
+**Deliberate wording.** `dispatched`, not `attempted`: a candidate killed by the LANE deadline is deliberately unclassified (it re-executes on resume) and its verdict entry still carries not-started process-tree evidence, so "attempted" would contradict the candidate's own record.
+
+**Evidence.** `tests/core/test_mutation_progress_budget_plan.py` (`test_end_event_splits_dispatched_budget_failures_from_never_started` — one dispatched of three, and `test_end_event_reports_every_dispatched_candidate_as_dispatched` — three of three, the opposite direction) and `tests/core/test_flex_r2_campaigns.py` (`test_exclude_candidates_is_partial_and_the_rest_completes_on_resume` now asserts 0 dispatched / 1 unstarted for a selection remainder). Hand mutants measured: zeroing the read-back, never incrementing the dispatched counter, and counting every masked position as unstarted each fail the first test or the selection assertion.
+
+**Previous status.** OPEN (filed 2026-11-10); priority minor reporting/diagnosis defect. Source: the 2026-11-10 session audit's omitted s4 anomalies and `reports/shard-s4-FINAL-REPORT.md`.
 
 **Problem.** In attempt A of the CMRu s4 campaign, the terminal progress record reported `buckets.budget_exceeded = 23`. Only one candidate genuinely exceeded its budget; the other 22 were pending candidates that had not started before the campaign deadline. The current terminal event gives a consumer only one ambiguous bucket, so an operator reading progress cannot distinguish candidate-level time exhaustion from an unattempted remainder. The verdict and resume machinery correctly later resolved the pending work, but the progress stream itself overstates actual budget failures.
 
@@ -14635,7 +14697,7 @@ describe the same contract.
 
 **Priority.** Minor. The verdict is not wrong, but the progress record's only bucket count misleads triage and campaign reporting.
 
-**Close when.** The terminal progress event distinguishes started budget failures from unattempted candidates, both fixture shapes pass, and the consumer documentation explains the additive fields.
+**Close when.** The terminal progress event distinguishes started budget failures from unattempted candidates, both fixture shapes pass, and the consumer documentation explains the additive fields. — MET (both shapes tested; `docs/CONSUMERS.md` documents the split, its wording and why. The earlier draft's acceptance wording said "one started budget failure and 22 pending"; the shipped names are `budget_exceeded_dispatched` / `budget_exceeded_unstarted`, and the test uses 1 and 2.)
 
 ## B523 — marker-only cargo-llvm-cov output is read as available-but-empty branch coverage on stable Rust
 
@@ -14810,6 +14872,8 @@ Related: a `--only-candidates`/`--exclude-candidates` remainder is reported like
 
 **Close when.** A carry-over verdict states its imported count, a partial selection names itself in its reason code, and verify refuses a document whose counts disagree.
 
+**v20 also carries the two leaked-descendant keys (B234/B554).** B234's `state` letter and B554's `cmdline` are both blocked on this same version cut: neither may change v19's released schema bytes without an operator D2 exception (`_VERDICT_SCHEMA_SHA256`), and v20 is where they cost nothing extra. Decide them WITH this item so the descendant object is extended once, and state the cross-key rule (a `state` letter requires a complete `pid`/`ppid`/`comm` identity) in the schema's `allOf`, in `verify.py`, and in the v19-to-v20 migration note.
+
 ## B533 — the pre-merge tooling-tests lane missed cross-cutting contract tests; the 12.2.0 release attempt found them red
 
 **Status:** FIXED on branch `assay-release-fix-20261111` (2026-11-11; merge pending review).
@@ -14828,7 +14892,15 @@ Related: a `--only-candidates`/`--exclude-candidates` remainder is reported like
 
 ## B536 — the self-lane refusal test writes a fixture into the real checkout's worktree directory and cannot run as the gate user
 
-**Status:** OPEN (filed 2026-11-12); severity: should-fix (a registered gate test currently cannot execute in the environment that is intended to run it).
+**Status: FIXED (2026-11-16, pi-assay-burn).** `gate/tests/test_self_lane.py::test_outer_wrapper_clears_a_prior_postponement_before_dirty_tree_refusal[main-checkout]` called `tempfile.mkdtemp(dir=<shared main checkout>/.worktrees)` and died with `PermissionError: [Errno 13] ... '/workspaces/vbpub/.worktrees/wrapper-refusal-…'` under the `tooling-tests` container user, so `test_self_lane.py` could never be in the lane that is built to run it.
+
+**Fix.** The fixture root is now derived by `_fixture_root_for(checkout)` (selected checkout's own `.worktrees`, or the shared main checkout's, chosen for what it IS — a different checkout beside the judged one — never for a writability guess), and `_require_writable_fixture_root` performs an explicit `os.access` probe of the nearest existing ancestor and SKIPS with a reason naming the directory, the uid and the remedy. The skip is narrow: a writable checkout runs the same assertions unchanged, asserted by a paired must-not-skip test with an injected writable probe. `gate/tests/test_self_lane.py` is now in `run-gate.toml`'s `tooling-tests` fixed file list, and `gate/tests/test_release_gate.py`'s binding pin carries it (removing it fails that oracle).
+
+**Evidence (measured in `tester-unified:run-gate-2560`, run-gate 25.6.0).** Before: `test_outer_wrapper_clears_a_prior_postponement_before_dirty_tree_refusal[main-checkout]` FAILED with `PermissionError` and the lane reported FAIL. After: the same focused selection PASSES with `SKIPPED [1] gate/tests/test_self_lane.py:… unwritable fixture root /workspaces/vbpub/.worktrees … (nearest existing ancestor /workspaces/vbpub/.worktrees is not writable by uid 1003)`, and the `[selected-worktree]` parameter executes its assertions. On a writable checkout the whole file passes (108 tests, bare cockpit). Two hand mutants: removing the skip helper reproduces the container failure, and removing `gate/tests/test_self_lane.py` from the lane list fails `test_pre_merge_tooling_lane_binds_the_release_attempt_failure_groups`.
+
+**Previous status.** OPEN (filed 2026-11-12); severity: should-fix (a registered gate test currently cannot execute in the environment that is intended to run it).
+
+**Named limits (review round 1).** Two things this fix does NOT establish. (1) The container lane proves the SKIP and the `[selected-worktree]` parameter; it never EXECUTES `[main-checkout]`'s dirty-tree/prior-marker assertions, because the shared checkout's `.worktrees` belongs to the host user. Those assertions stay HOST-RUN ONLY: `self-qualification-provisional` (and a developer's own checkout) exercise them, so a regression in exactly that parameter passes `tooling-tests` and must be caught by the release lane. (2) The skip is an environment statement, not a product one: no lane without a writable `.worktrees` can ever show the parameter works, so the release-gate pin (`test_pre_merge_tooling_lane_binds_the_release_attempt_failure_groups`) is the only mechanical guard that the file stays in the lane.
 
 **Problem.** `gate/tests/test_self_lane.py::test_outer_wrapper_clears_a_prior_postponement_before_dirty_tree_refusal[main-checkout]` derives the real checkout's common Git directory and creates its scratch repository below that checkout's `.worktrees` directory. The `tooling-tests` lane runs as the tester-unified container user, which cannot write the bind-mounted shared checkout's `.worktrees` directory. The test therefore fails with `PermissionError` before reaching its dirty-tree assertion. As a consequence, `gate/tests/test_self_lane.py` is not in the `tooling-tests` fixed file list, so the container lane never exercises this file's important release-wrapper assertions.
 
@@ -14840,7 +14912,7 @@ Related: a `--only-candidates`/`--exclude-candidates` remainder is reported like
 
 **Priority.** Should-fix. The test protects release-wrapper cleanup and refusal behavior, and excluding it turns that protection into local-only evidence.
 
-**Close when.** `gate/tests/test_self_lane.py` passes or skips for the documented environment limitation inside `tooling-tests`, writes no fixture under an unwritable shared-checkout directory, covers the dirty-tree/prior-marker assertion wherever the environment permits it, and the lane list plus its binding test include the file on a clean final commit.
+**Close when.** `gate/tests/test_self_lane.py` passes or skips for the documented environment limitation inside `tooling-tests`, writes no fixture under an unwritable shared-checkout directory, covers the dirty-tree/prior-marker assertion wherever the environment permits it, and the lane list plus its binding test include the file on a clean final commit. — MET: the file runs inside `tooling-tests`, the `[main-checkout]` parameter skips with the named directory while `[selected-worktree]` still asserts, no fixture is created under the unwritable directory, and the lane list plus its pin now include the file.
 
 ## B537 — path-triggered R1 coverage for assay source remains a manual merge check instead of an automatic pre-merge host-queue job
 
@@ -14969,8 +15041,13 @@ not retro-run.
 
 ## B540 — the tester-unified release-manifest test fails at every assay release tag
 
-**Status:** OPEN (filed 2026-11-12); severity: blocks same-commit qualification
-receipts for released assay tags. Source: 2026-11-12 host R2 restart record.
+**Status: CLOSED (2026-11-16, pi-assay-burn) — fixed by `866ce0999` (2026-11-12), verified and pinned here.** `866ce0999` ("fix(assay-tests): unblock R2 from ambient tags and leaked test children") replaced the ambient `REPO_ROOT` build with `_release_repository()`, which clones the reviewed commit into a temporary repository and then makes the HEAD tag state an explicit input: it deletes the `assay-v*` tags pointing at that commit and adds one only for the tagged case. No machinery was needed in this package; the item had simply never been closed after the fix landed.
+
+**Verification (measured 2026-11-16, run-gate 25.6.0, `tester-unified:run-gate-2560`).** In a throwaway clone of this worktree's HEAD (`0816fc1e7`) with a linked worktree as the judged checkout: `gate/tests/test_distribution_build_release.py -k 'release_tag_state or untagged_build or tagged_build or release_manifest or scm_identity'` PASSes both untagged (`assay-v*` tags on HEAD deleted → `head_release_tag` is `None`, no manifest) and tagged (`assay-v99.99.99` on the same commit → manifest written), from the same checkout, in one run. The hand mutant that removes the fixture's tag control (`for existing in points_at_head: pass`) makes BOTH the untagged assertion and the new regression test fail, so the control is load-bearing rather than decorative.
+
+**Regression added here.** `test_the_release_tag_state_is_the_FIXTURE_s_not_the_ambient_checkout_s` states the property as an outcome read through the SHIPPED reader (`build_release.head_release_tag`): the untagged fixture reports no tag, the tagged fixture reports `assay-v99.99.99`, both are the SAME commit (so the pair is a differential measurement of A-200's rule), and the untagged fixture is not the ambient checkout. `866ce0999` fixed the behaviour but left B540 itself in the untagged case untested as a property — a future edit could have reintroduced ambient-tag dependence with only the build outcome to go red on a release-tag host, which is the configuration the defect was measured in.
+
+**Close when.** The registered `tester-unified` lane is green at an assay release tag and at an untagged development commit, the receipt binds that tagged commit, and a focused regression proves the test no longer depends on ambient tag state. — MET for the test-level property and both tag states; the full-lane green at a real release tag is the controller's heavy-lane run on the final head (this package runs `tooling-tests` personally).
 
 **Problem.** The module fixture builds twice from the ambient `REPO_ROOT`
 (`assay/gate/tests/test_distribution_build_release.py:391-411`), while
@@ -15694,3 +15771,43 @@ the follower's disposition is named in the evidence, passing runs still clean up
 and the focused cases above pass. The entry does not close on identifying the
 mechanism, but the fix must be exercised under the mechanism-1 timing, since
 that is the case a passing test would otherwise miss.
+
+## B554 — a verdict carrying a real leaked-descendant `cmdline` is already invalid against the shipped v19 schema
+
+**Status: BLOCKED-ON-V20 (filed 2026-11-16, pi-assay-burn review round 1); severity: high (the shipped schema refuses the field the shipped writer emits, so a legal verdict from a real run is rejected by the schema `assay` itself packages).** `cmdline` was shipped by B233 (`pwmcp-leak2-20261105`) on the descendant wire record, in the R0 claim detail, in the `command_finished` progress event and in `docs/CONSUMERS.md`, but never in `src/assay/schemas/verdict.schema.json`: the `process_tree_evidence.descendants` items object is `additionalProperties: false` and declares only `pid`, `ppid`, `comm`. Every mutation-candidate verdict that records a leaked descendant with a readable argv is therefore schema-invalid, and no test built one to notice (B233's tests read the record and the rendered line, never the JSON Schema).
+
+**Reproduction (measured on this branch after the revert, i.e. on v19 exactly as released; `origin/main` `1cbb627ae` carries the same schema bytes).** In `assay/`:
+
+```bash
+python3 - <<'PY'
+import json, jsonschema
+from pathlib import Path
+schema = json.loads(Path("src/assay/schemas/verdict.schema.json").read_text())
+doc = json.loads(Path("tests/fixtures/verdicts/r2_crashed_descendant_leak.json").read_text())
+claim = next(c for c in doc["claims"] if c.get("rigor") == "R2")
+descendant = claim["mutation"]["crashed"][0]["process_tree_evidence"]["descendants"][0]
+validator = jsonschema.Draft202012Validator(schema)
+print("clean document valid:", not list(validator.iter_errors(doc)))
+descendant["cmdline"] = ["pytest", "-x", "tests/"]
+errors = sorted(validator.iter_errors(doc), key=lambda e: list(e.path))
+print(len(errors), [(list(e.path), e.message) for e in errors])
+PY
+```
+
+Measured output:
+
+```
+clean document valid: True
+1 [(['claims', 1, 'mutation', 'crashed', 0, 'process_tree_evidence', 'descendants', 0], "Additional properties are not allowed ('cmdline' was unexpected)")]
+```
+
+The single error is at `descendants[0]`, so the only difference between an accepted and a refused document is the field the producer actually writes. `assay verify` accepts the same document (it is the more permissive of the two), which is why the gap never surfaced in a lane: nothing in the registered suite validates a verdict that carries a real argv against the packaged schema.
+
+**Why this is not fixed here.** Declaring `cmdline` adds a property to a RELEASED version's schema, and operator decision D2 (stated by A-477's digest test, `test_the_shipped_verdict_schema_is_frozen_for_its_version`) freezes a version's installed bytes so producer and verifier cannot drift. The single precedent for editing them without a bump (v16's `resource_limit_evidence`) carried an explicit operator decision, a `### Schema compatibility` line in CHANGES.md and a backlog record; a peer review cannot grant that exception, and the previous attempt in this package (`27b556943`) asserted the wrong precedent ("the same additive key shape B233 used" -- B233 in fact changed no schema bytes).
+
+**Two ways forward, the same pair as B234 (decide them together).**
+
+1. **A D2-style exception for v19.** An operator decision in `nyxloom-trove/decisions.md`, a `### Schema compatibility` line in CHANGES.md, and the documented release rule that a v19-era verifier and cmru's `ProcessTreeEvidence.from_dict` reader refuse a newer verdict carrying the key, so a verdict and its verifier must ship together.
+2. **Land it in v20 with B532.** v20 exists for `judgment.r2.carry_over`/`unselected_total` anyway, so `cmdline` and B234's `state` join the descendant object there. This is the assumed route.
+
+**Close when.** A verdict carrying a real leaked-descendant `cmdline` (built from an actual run or an equivalent fixture) validates against the packaged schema AND passes `verify`, an in-vocabulary `cmdline` bound is enforced on both sides (the producer truncates to 16 arguments of 200 characters plus the `...` marker), the v19-to-v20 migration note states the key, and the frozen digest is re-pinned to the version that actually ships it. **Do not** close it by weakening `test_the_shipped_verdict_schema_is_frozen_for_its_version` or by re-pinning v19's digest to edited bytes.

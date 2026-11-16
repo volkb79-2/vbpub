@@ -1679,18 +1679,20 @@ class _P22Source:
     common_dir: Path
 
 
-def _p22_reject_external_topology(source: _P22Source, deadline: _P22Deadline) -> None:
-    """Refuse every source topology whose bytes are not fully local (A-185).
+def _p22_reject_local_topology(common: Path) -> None:
+    """Refuse the source topologies that are answerable from the FILESYSTEM.
 
-    Clearing ambient ``GIT_ALTERNATE_OBJECT_DIRECTORIES`` -- which
-    :data:`_REPLACEMENT_ENV` already does -- is NOT sufficient: a local
-    ``objects/info/alternates`` file is repository CONTENT and still
-    participates, so a "complete" closure could be assembled from bytes that
-    live outside the recorded source identity. Shallow, grafted, and
-    partial/promisor repositories each redefine what "reachable" means, and a
-    non-SHA-1 store cannot satisfy the raw 20-byte tree grammar at all.
+    **(B226)** These checks are split out because they are the only ones that
+    need NO git child, and the bootstrap ``rev-parse --absolute-git-dir`` is
+    itself the hazard: it opens ``objects/info/alternates``, so a writer-less
+    FIFO there blocks that child in ``wait_for_partner`` no matter what
+    deadline the runner carries (measured: nine such children, 15-28 hours old,
+    every one on a FIFO-alternates repository). For a plain repository
+    (``<repo_top>/.git`` is a directory) the common directory is already known
+    from the marker walk -- which never asks git -- so this check runs BEFORE
+    any git child exists. A linked worktree or gitfile layout learns its common
+    directory only from git and keeps the bounded path.
     """
-    common = source.common_dir
     alternates = common / "objects" / "info" / "alternates"
     try:
         marker = alternates.lstat()
@@ -1713,6 +1715,21 @@ def _p22_reject_external_topology(source: _P22Source, deadline: _P22Deadline) ->
                 f"{common / name} exists; refusing a grafted or shallow "
                 f"source whose reachable history is redefined"
             )
+
+
+def _p22_reject_external_topology(source: _P22Source, deadline: _P22Deadline) -> None:
+    """Refuse every source topology whose bytes are not fully local (A-185).
+
+    Clearing ambient ``GIT_ALTERNATE_OBJECT_DIRECTORIES`` -- which
+    :data:`_REPLACEMENT_ENV` already does -- is NOT sufficient: a local
+    ``objects/info/alternates`` file is repository CONTENT and still
+    participates, so a "complete" closure could be assembled from bytes that
+    live outside the recorded source identity. Shallow, grafted, and
+    partial/promisor repositories each redefine what "reachable" means, and a
+    non-SHA-1 store cannot satisfy the raw 20-byte tree grammar at all.
+    """
+    common = source.common_dir
+    _p22_reject_local_topology(common)
     object_format = _p22_git(
         source.git_executable,
         git_dir=source.git_dir,
@@ -1752,10 +1769,49 @@ def _p22_reject_external_topology(source: _P22Source, deadline: _P22Deadline) ->
                 )
 
 
+def _p22_precheck_plain_topology(repo_top: Path) -> None:
+    """(B226) Refuse a PLAIN repository's unsafe topology before any git child.
+
+    ``_nearest_git_marker`` never asks git, so for the ordinary
+    ``<repo_top>/.git`` directory layout the common directory is known before
+    the bootstrap call exists and the filesystem-only topology checks can run
+    first. A ``.git`` FILE (linked worktree, submodule, ``core.worktree``)
+    redirects somewhere only git can name; those keep the bounded bootstrap
+    and the post-resolution check.
+    """
+    try:
+        marker = _nearest_git_marker(Path(repo_top))
+    except AssayError:
+        # No usable marker: the WALK has no opinion here, and the authoritative
+        # resolution below owns that refusal (with its own measured diagnostics
+        # for a missing gitfile target). Deferring, never guessing.
+        return
+    git_dir = marker / ".git"
+    try:
+        marker_stat = git_dir.lstat()
+    except OSError:
+        return
+    if not stat_module.S_ISDIR(marker_stat.st_mode):
+        return
+    _p22_reject_local_topology(git_dir)
+
+
 def _p22_open_source(repo_top: Path, deadline: _P22Deadline) -> _P22Source:
     """Resolve and validate the consumer repository P22 reads objects from."""
     git_executable = _resolve_git_executable()
-    resolved = _resolve_repo(Path(repo_top), git_executable)
+    # (B226) Two independent defences, and BOTH are required. The pre-check
+    # refuses a plain repository whose alternates/grafts/shallow entries make
+    # a git child block on a non-regular file -- promptly, before one exists.
+    # The deadline then bounds the bootstrap for every OTHER layout, where the
+    # common directory is only knowable by asking git. A deadline alone would
+    # turn an 18-minute hang into a `timeout`-length one (600 s in the
+    # measured case) and would not bound an unbounded lane at all.
+    _p22_precheck_plain_topology(Path(repo_top))
+    resolved = _resolve_repo(
+        Path(repo_top),
+        git_executable,
+        remaining=lambda: deadline.remaining("resolving the consumer repository"),
+    )
     raw_common = _p22_git(
         git_executable,
         git_dir=resolved.git_dir,

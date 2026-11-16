@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
-from conftest import timeout_expired
+from conftest import PROJECT_ROOT, timeout_expired
 
 import errno
 import math
+import os
+import signal
+import subprocess
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -977,12 +981,265 @@ def test_p22_rejects_partial_clone_and_promisor_configuration(
         )
 
 
+def test_p22_open_source_bounds_the_bootstrap_resolution_with_its_deadline(
+    tmp_path, monkeypatch
+):
+    """(B226) `_p22_open_source` must HAND THE DEADLINE to `_resolve_repo`.
+
+    The measured defect: it called `_resolve_repo(repo_top, executable)` with
+    no `remaining=`, so `_run_bounded` ran the bootstrap `rev-parse
+    --absolute-git-dir` with NO deadline and a repository whose
+    `objects/info/alternates` is a writer-less FIFO blocked that child
+    forever (nine such children were found, 15-28 hours old). Handing the
+    deadline over is the half that bounds every topology the filesystem alone
+    cannot classify (a gitfile/linked-worktree learn their common directory
+    only from git).
+    """
+    seen: list[object] = []
+    resolved = SimpleNamespace(git_dir=tmp_path / ".git", repo_top=tmp_path)
+
+    def resolve(repo, executable, **kwargs):
+        seen.append((repo, executable, kwargs.get("remaining")))
+        return resolved
+
+    monkeypatch.setattr(git, "_resolve_git_executable", lambda: Path("/git"))
+    monkeypatch.setattr(git, "_resolve_repo", resolve)
+    monkeypatch.setattr(git, "_p22_git", lambda *_args, **_kwargs: b"relative.git\n")
+    with pytest.raises(AssayError, match="not an absolute, existing directory"):
+        git._p22_open_source(tmp_path, SimpleNamespace(remaining=lambda _what: 5.0))
+
+    assert len(seen) == 1
+    remaining = seen[0][2]
+    assert remaining is not None, "the bootstrap resolution got no deadline"
+    # It must be the CALLER's deadline sampled through the P22 spelling, not a
+    # fresh value invented here: the lane's own remaining budget is the bound.
+    assert remaining() == 5.0
+
+
+def test_p22_open_source_refuses_a_plain_repository_topology_before_any_git_child(
+    tmp_path, monkeypatch
+):
+    """(B226) The prompt half: a PLAIN repository is classified from the
+    filesystem, so its unsafe topology is refused before a git child exists.
+
+    `_nearest_git_marker` never asks git, and for `<repo_top>/.git` being a
+    DIRECTORY the common dir is exactly that directory. A writer-less FIFO
+    alternates file is a topology check that needs no git at all, so the
+    refusal must arrive without spawning the very child that would block on
+    it. Measured live before the fix: that child blocked 18 minutes.
+    """
+    repo = tmp_path / "consumer"
+    (repo / ".git" / "objects" / "info").mkdir(parents=True)
+    os.mkfifo(repo / ".git" / "objects" / "info" / "alternates")
+
+    spawned: list[object] = []
+
+    def resolve(*args, **kwargs):
+        spawned.append(args)
+        return SimpleNamespace(git_dir=repo / ".git", repo_top=repo)
+
+    monkeypatch.setattr(git, "_resolve_git_executable", lambda: Path("/git"))
+    monkeypatch.setattr(git, "_resolve_repo", resolve)
+    monkeypatch.setattr(git, "_p22_git", lambda *_args, **_kwargs: b"sha1\n")
+    with pytest.raises(AssayError, match="is not a regular file"):
+        git._p22_open_source(repo, SimpleNamespace(remaining=lambda _what: 5.0))
+
+    assert spawned == [], "a git child was spawned for a filesystem-answerable topology"
+
+
+def test_p22_open_source_refuses_an_expired_deadline_before_spawning_anything(
+    tmp_path, monkeypatch
+):
+    """(B226) An ALREADY-expired lane deadline must not start a git child.
+
+    This is the ordering half of the fix: `_resolve_repo` samples its
+    `remaining` before it spawns (`_run_bounded`'s first statement). An
+    expired budget therefore has to surface as the lane's own
+    BUDGET_EXCEEDED/LANE_TIMEOUT here, with no child started -- the same
+    exception object, never a fresh one invented at this layer.
+    """
+    expired = AssayError(
+        "the remaining lane budget expired while resolving the consumer repository",
+        outcome=Outcome.BUDGET_EXCEEDED,
+        reason_code=ReasonCode.LANE_TIMEOUT,
+    )
+    sampled: list[str] = []
+
+    def resolve(repo, executable, *, remaining=None):
+        # `_run_bounded` samples its `remaining` as its FIRST statement, before
+        # it spawns anything, so a fake that samples and then has nothing to
+        # return is exactly the pre-spawn window.
+        assert remaining is not None, "the bootstrap resolution got no deadline"
+        remaining()
+
+    monkeypatch.setattr(git, "_resolve_git_executable", lambda: Path("/git"))
+    monkeypatch.setattr(git, "_resolve_repo", resolve)
+    monkeypatch.setattr(
+        git, "_p22_git", lambda *_args, **_kwargs: sampled.append("child") or b""
+    )
+    with pytest.raises(AssayError) as caught:
+        git._p22_open_source(
+            tmp_path,
+            SimpleNamespace(
+                remaining=lambda what: (_ for _ in ()).throw(expired)
+            ),
+        )
+    assert caught.value is expired
+    assert sampled == [], "a git child was spawned past an expired deadline"
+
+
+def test_p22_precheck_defers_when_no_marker_exists(tmp_path, monkeypatch):
+    """(B226) "No repository here" is the RESOLUTION's refusal, not the
+    pre-check's.
+
+    The pre-check runs before `_resolve_repo` and must not answer a question
+    the walk cannot answer usefully: `_nearest_git_marker` raises
+    GIT_FAILED for an absent marker, and letting that escape here would replace
+    the resolution's measured diagnostics (the B068 linked-worktree/missing
+    gitfile-target sentences) with a bare "no .git marker" from a layer whose
+    only job is to inspect a topology that already exists.
+    """
+    examined: list[object] = []
+    monkeypatch.setattr(
+        git, "_p22_reject_local_topology", lambda common: examined.append(common)
+    )
+    git._p22_precheck_plain_topology(tmp_path / "nowhere")
+    assert examined == []
+
+
+def test_p22_precheck_leaves_a_gitfile_layout_to_the_bounded_path(
+    tmp_path, monkeypatch
+):
+    """(B226) The pre-check must not GUESS a common directory it cannot know.
+
+    A `.git` FILE is a gitfile redirect (linked worktree, submodule,
+    `core.worktree`); its real git dir is only knowable by asking git, so the
+    pre-check returns without deciding and the bounded bootstrap path decides.
+    Applying the topology rules to a gitfile PATH would be the "validate a
+    namespace-translated path with a local filesystem call" hazard: it would
+    `lstat` `<gitfile>/objects/info/alternates`, a path that cannot exist, and
+    report a clean topology for a repository it never inspected. Hence the
+    assertion is on WHICH directory was examined, not merely that nothing was
+    refused.
+    """
+    examined: list[Path] = []
+    monkeypatch.setattr(
+        git, "_p22_reject_local_topology", lambda common: examined.append(common)
+    )
+
+    linked = tmp_path / "linked"
+    linked.mkdir()
+    (linked / ".git").write_text("gitdir: /nonexistent/elsewhere\n", encoding="ascii")
+    git._p22_precheck_plain_topology(linked)
+
+    plain = tmp_path / "plain"
+    (plain / ".git" / "objects" / "info").mkdir(parents=True)
+    git._p22_precheck_plain_topology(plain)
+
+    assert examined == [plain / ".git"], (
+        "the pre-check must examine exactly the plain repository's own git "
+        "directory, and nothing for a gitfile redirect"
+    )
+
+
+def test_p22_precheck_defers_when_the_marker_vanishes_before_its_own_lstat(
+    tmp_path, monkeypatch
+):
+    """(B226, coverage fix) The pre-check's `lstat` can fail on a marker the WALK
+    just accepted, and then it must DEFER, not refuse.
+
+    Two separate syscalls see two separate worlds. `_nearest_git_marker`
+    `lstat`s `<candidate>/.git` and returns that candidate only when the call
+    SUCCEEDED with a directory or gitfile mode; the pre-check then `lstat`s the
+    SAME path again to learn the mode it needs. Between the two a repository
+    can be removed (ENOENT), an ancestor's search permission can be revoked
+    (EACCES), a network/overlay mount can answer ESTALE, or a symlink loop can
+    appear (ELOOP) -- so this branch is reachable in production, not dead
+    code, and deleting it would turn a transient filesystem state into a
+    refusal invented by a layer whose only job is to inspect a topology that
+    already exists.
+
+    The double is scoped to the ONE path under test (B539): every other
+    `lstat` in the process is the real one. It fails the SECOND call, which is
+    exactly the race -- the walk's call must succeed, or the scenario would be
+    the already-covered "no marker" deferral instead.
+    """
+    marker = tmp_path / "repo"
+    marker.mkdir()
+    (marker / ".git").mkdir()
+    target = marker / ".git"
+
+    real_lstat = os.lstat
+    calls: list[str] = []
+
+    def racing_lstat(path, *args, **kwargs):
+        if str(path) == str(target):
+            calls.append(str(path))
+            if len(calls) == 2:
+                raise FileNotFoundError(errno.ENOENT, "marker vanished", str(path))
+        return real_lstat(path, *args, **kwargs)
+
+    examined: list[Path] = []
+    monkeypatch.setattr(os, "lstat", racing_lstat)
+    monkeypatch.setattr(
+        git, "_p22_reject_local_topology", lambda common: examined.append(common)
+    )
+
+    # Oracle 1: the pre-check DEFERS. A refusal here would replace the
+    # resolution's own measured diagnostics with a guess from this layer.
+    git._p22_precheck_plain_topology(marker)
+    assert calls == [str(target), str(target)], (
+        "the fixture must model the race: the walk's lstat has to SUCCEED and "
+        f"only the pre-check's second one may fail (calls: {calls})"
+    )
+    assert examined == [], "the pre-check refused/examined a topology it could not stat"
+
+    # Oracle 2: deferral is not swallowing. The AUTHORITATIVE resolution is the
+    # one that answers, and its exception is what a caller sees -- unchanged.
+    diagnostic = AssayError(
+        "resolving the consumer repository failed after the marker vanished",
+        outcome=Outcome.ERROR,
+        reason_code=ReasonCode.GIT_FAILED,
+    )
+
+    def resolve(*_args, **_kwargs):
+        raise diagnostic
+
+    monkeypatch.setattr(git, "_resolve_git_executable", lambda: Path("/git"))
+    monkeypatch.setattr(git, "_resolve_repo", resolve)
+    with pytest.raises(AssayError) as caught:
+        git._p22_open_source(marker, SimpleNamespace(remaining=lambda _what: 5.0))
+    assert caught.value is diagnostic, (
+        "the pre-check replaced the resolution's own refusal: the deferral must "
+        "forward the question, not answer it"
+    )
+
+
+@pytest.mark.parametrize(
+    ("name", "message"),
+    [
+        ("info/grafts", "refusing a grafted or shallow"),
+        ("shallow", "refusing a grafted or shallow"),
+    ],
+)
+def test_p22_local_topology_refuses_grafts_and_shallow_without_a_child(
+    tmp_path, name, message
+):
+    """(B226) `_p22_reject_local_topology` is the one place these checks live."""
+    common = tmp_path / "common.git"
+    (common / name).parent.mkdir(parents=True, exist_ok=True)
+    (common / name).write_text("x\n", encoding="ascii")
+
+    with pytest.raises(AssayError, match=message):
+        git._p22_reject_local_topology(common)
+
+
 def test_p22_open_source_rejects_a_relative_common_git_directory(
     tmp_path, monkeypatch
 ):
     resolved = SimpleNamespace(git_dir=tmp_path / ".git", repo_top=tmp_path)
     monkeypatch.setattr(git, "_resolve_git_executable", lambda: Path("/git"))
-    monkeypatch.setattr(git, "_resolve_repo", lambda *_args: resolved)
+    monkeypatch.setattr(git, "_resolve_repo", lambda *_args, **_kwargs: resolved)
     monkeypatch.setattr(git, "_p22_git", lambda *_args, **_kwargs: b"relative.git\n")
     with pytest.raises(AssayError, match="not an absolute, existing directory"):
         git._p22_open_source(
@@ -1050,4 +1307,217 @@ def test_p22_accepts_a_promisor_key_whose_value_is_false(tmp_path, monkeypatch):
 
     git._p22_reject_external_topology(
         source, SimpleNamespace(remaining=lambda _what: 5.0)
+    )
+
+
+#: (B226) The linked-worktree half, end to end. Run in a CHILD process: the
+#: hazard's only observable failure is "the bootstrap never returns", so an
+#: in-process assertion would hang the suite instead of failing it.
+#:
+#: (round 3) This test used to ASSERT that git blocks on a writer-less FIFO
+#: alternates file. That is a property of the GIT BINARY, not of the product,
+#: and it is false in the tester-unified lane image, whose git fails
+#: `rev-parse --absolute-git-dir` immediately instead of opening the FIFO
+#: (`refused ERROR GIT_FAILED 0.00s` in that lane's R0 verdict, where this
+#: suite's host git blocks in `wait_for_partner`). The script therefore PROBES
+#: the hazard first with a RAW bounded git -- deliberately not through assay,
+#: so the probe reports what THIS git does, not what the product does -- and
+#: the test decides from that answer which half is observable here.
+_P22_LINKED_WORKTREE_SCRIPT = r'''
+import os, signal, subprocess, sys, time
+from pathlib import Path
+
+sys.path.insert(0, sys.argv[1])
+from assay import git as gitmod
+from assay.errors import AssayError
+
+root = Path(sys.argv[2])
+repo = root / "repo"
+repo.mkdir()
+env = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
+env.update(
+    {
+        "GIT_AUTHOR_NAME": "t",
+        "GIT_AUTHOR_EMAIL": "t@assay.invalid",
+        "GIT_COMMITTER_NAME": "t",
+        "GIT_COMMITTER_EMAIL": "t@assay.invalid",
+        "GIT_CONFIG_NOSYSTEM": "1",
+        "GIT_CONFIG_GLOBAL": os.devnull,
+        "GIT_TERMINAL_PROMPT": "0",
+    }
+)
+
+
+def git(*args):
+    done = subprocess.run(["git", *args], env=env, capture_output=True)
+    if done.returncode != 0:
+        raise SystemExit("fixture git failed: " + done.stderr.decode(errors="replace"))
+
+
+git("init", "-q", str(repo))
+git("-C", str(repo), "commit", "-q", "--allow-empty", "-m", "base")
+worktree = root / "worktree"
+git("-C", str(repo), "worktree", "add", "-q", str(worktree))
+marker = (worktree / ".git").read_text(encoding="ascii").strip()
+if not marker.startswith("gitdir: "):
+    raise SystemExit(f"expected a gitfile redirect, found {marker!r}")
+os.mkfifo(repo / ".git" / "objects" / "info" / "alternates")
+
+version = subprocess.run(
+    ["git", "--version"], env=env, capture_output=True, text=True
+)
+print("git-version", (version.stdout or version.stderr).strip() or "unknown")
+
+# (round 3) PROBE THE HAZARD, raw and bounded, in its OWN process group: does
+# THIS git block on the FIFO, or does it fail fast? The answer decides which
+# half of B226 is observable here, and it must come from git itself rather
+# than from the code under test.
+probe_seconds_limit = 3.0
+probe = subprocess.Popen(
+    ["git", "--no-pager", "-C", str(worktree), "rev-parse", "--absolute-git-dir"],
+    env=env,
+    stdout=subprocess.DEVNULL,
+    stderr=subprocess.DEVNULL,
+    start_new_session=True,
+)
+probe_started = time.monotonic()
+try:
+    probe_rc = probe.wait(timeout=probe_seconds_limit)
+    print("probe fast", probe_rc, f"{time.monotonic() - probe_started:.2f}s")
+except subprocess.TimeoutExpired:
+    # The probe's own session, so a git blocked on a FIFO open is killed and
+    # reaped here instead of becoming one of the orphans this item documents.
+    os.killpg(os.getpgid(probe.pid), signal.SIGKILL)
+    probe.wait(timeout=30)
+    print("probe blocked -", f"{time.monotonic() - probe_started:.2f}s")
+
+started = time.monotonic()
+try:
+    gitmod._p22_open_source(worktree, gitmod._P22Deadline(2.0))
+except AssayError as exc:
+    print("refused", exc.outcome.name, exc.reason_code.name, f"{time.monotonic() - started:.2f}s")
+    raise SystemExit(0)
+print("no-refusal", f"{time.monotonic() - started:.2f}s")
+raise SystemExit(3)
+'''
+
+
+def test_p22_open_source_bounds_the_bootstrap_of_a_linked_worktree_fifo(tmp_path):
+    """(B226) The DEADLINE half, on a REAL linked worktree -- where observable.
+
+    A linked worktree's `.git` is a gitfile, so the common directory holding
+    `objects/info/alternates` is only knowable by asking git; the prompt
+    filesystem refusal therefore cannot fire, and a writer-less FIFO there is
+    what blocks `rev-parse --absolute-git-dir` in `wait_for_partner`.
+    Handing the caller's deadline to `_resolve_repo` is what bounds it (measured
+    on this host: refused after 2.01 s with a 2.0 s deadline; with the deadline
+    removed the child blocked indefinitely).
+
+    **(round 3) Which half is observable here is a property of the GIT BINARY,
+    not of the product, so this test asks the binary first.** On a git that
+    blocks (the development hosts and this cockpit) the deadline half is
+    observable and is asserted exactly as before, and the hand mutant that
+    drops `remaining=` still fails it at the 45 s bound. In the tester-unified
+    lane image git returns from `rev-parse --absolute-git-dir` in 0.00 s with
+    `ERROR`/`GIT_FAILED` instead of blocking -- measured in that lane's R0
+    verdict -- so the deadline is never reached and the half is UNOBSERVABLE
+    there. That branch SKIPS with the git version and the measured probe
+    result named, AFTER asserting what is still true everywhere: the product
+    REFUSED, promptly, rather than hanging or accepting the repository. A skip
+    chosen by the environment is honest; a widened assertion that both a
+    refusal and a timeout satisfy would have hidden which one happened.
+
+    The body runs in a child process, and the child runs in its OWN session,
+    because the hazard's only observable failure is "never returns" and an
+    orphaned `git` blocked on a FIFO open is precisely the leak this item
+    documents: the test must not create one while proving the product no
+    longer does. On timeout the whole session is killed and the failure is
+    raised as an ordinary assertion.
+    """
+    process = subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            _P22_LINKED_WORKTREE_SCRIPT,
+            str(PROJECT_ROOT / "src"),
+            str(tmp_path),
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        start_new_session=True,
+    )
+    # 45 s, not 120: the passing path is bounded by the 2 s policy deadline
+    # (measured 2.4 s for the whole child), so this window is more than an
+    # order of magnitude of headroom under load, while a mutant that blocks
+    # forever is killed promptly instead of spending two minutes per run.
+    try:
+        stdout, stderr = process.communicate(timeout=45)
+    except subprocess.TimeoutExpired:
+        os.killpg(os.getpgid(process.pid), signal.SIGKILL)
+        stdout, stderr = process.communicate(timeout=30)
+        pytest.fail(
+            "the bootstrap of a linked worktree with a FIFO alternates file "
+            "never returned: `_p22_open_source` did not hand its deadline to "
+            f"`_resolve_repo`. Partial output: {stdout!r} {stderr!r}"
+        )
+
+    assert process.returncode == 0, (
+        "a FIFO alternates file in a linked worktree's common directory blocked "
+        f"the bootstrap past its deadline, or the child failed ({process.returncode}): "
+        f"{stdout}{stderr}"
+    )
+    lines = {}
+    for line in stdout.splitlines():
+        head, _, rest = line.partition(" ")
+        lines[head] = rest
+
+    version = lines["git-version"]
+    probe = lines["probe"].split()
+    refusal = lines.get("refused", "").split()
+    assert "no-refusal" not in lines, (
+        "the product ACCEPTED a linked worktree whose common directory holds a "
+        f"FIFO alternates file: {stdout!r}"
+    )
+    assert len(refusal) == 3 and refusal[0] in {"ERROR", "BUDGET_EXCEEDED"}, (
+        f"the product must refuse this repository, with a named outcome: {stdout!r}"
+    )
+    outcome, reason_code, elapsed_text = refusal
+    seconds = float(elapsed_text.rstrip("s"))
+
+    if probe[0] == "blocked":
+        # This git blocks, so the deadline is the only thing between the lane
+        # and the hang: assert the exact refusal the fix produces.
+        assert (outcome, reason_code) == ("BUDGET_EXCEEDED", "LANE_TIMEOUT"), (
+            "a git that blocks in `wait_for_partner` must be stopped by the lane's "
+            f"own deadline, not by an unrelated outcome ({version}): {stdout!r}"
+        )
+        assert seconds < 60, (
+            "the deadline is a POLICY bound (2 s here), so a load-tolerant check must "
+            f"still not approach the suite's own budget: measured {seconds:.2f}s"
+        )
+        return
+
+    # This git fails fast, so the bootstrap never blocks and the deadline half
+    # cannot be observed. Both refusals are legitimate here (`GIT_FAILED` because
+    # git rejected the alternates file, `LANE_TIMEOUT` if it somehow blocked past
+    # the deadline); what is NOT legitimate is accepting the repository or hanging.
+    assert (outcome, reason_code) in {
+        ("ERROR", "GIT_FAILED"),
+        ("BUDGET_EXCEEDED", "LANE_TIMEOUT"),
+    }, (
+        "the product must still refuse this repository on a git that fails fast, "
+        f"with ERROR/GIT_FAILED or BUDGET_EXCEEDED/LANE_TIMEOUT ({version}): {stdout!r}"
+    )
+    assert seconds < 10, (
+        "the refusal must be prompt on a git that does not block -- the point of "
+        f"the assertion above is 'refused, not hung': measured {seconds:.2f}s"
+    )
+    pytest.skip(
+        f"{version} does not block on a FIFO alternates file (raw "
+        f"`git rev-parse --absolute-git-dir` returned rc={probe[1]} in {probe[2]}); "
+        "the deadline half of B226 is unobservable here. The product still "
+        f"refused this repository ({outcome}/{reason_code} in {elapsed_text}), which "
+        "this test asserted before skipping. Run it on a host whose git blocks in "
+        "`wait_for_partner` to exercise the deadline itself."
     )

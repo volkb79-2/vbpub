@@ -2418,18 +2418,54 @@ def test_the_postponement_accepts_a_valid_first_release_heading_bound_to_cmru(
     assert json.loads(marker.read_text(encoding="utf-8"))["target_version"] == "10.0.1"
 
 
+def _fixture_root_for(checkout: str) -> Path:
+    """The scratch parent for one `fixture_checkout` parameter (B536).
+
+    `selected-worktree` puts the fixture under THIS checkout's own
+    `.worktrees`; `main-checkout` puts it under the shared main checkout's,
+    which is the different checkout a B105 wrapper must not assume anything
+    about. That location is chosen for what it IS -- an independent checkout
+    beside the judged one -- never for a writability guess.
+    """
+    if checkout == "selected-worktree":
+        return REPO_ROOT / ".worktrees"
+    common_dir = subprocess.run(
+        ["git", "-C", str(REPO_ROOT), "rev-parse", "--path-format=absolute", "--git-common-dir"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    return Path(common_dir).parent / ".worktrees"
+
+
+def _require_writable_fixture_root(fixture_root: Path) -> None:
+    """Skip, with the directory NAMED, when this user cannot create the fixture.
+
+    (B536) `tooling-tests` runs as the tester-unified container user, and the
+    bind-mounted shared checkout's `.worktrees` directory belongs to the host
+    user. That is an ENVIRONMENT limitation, not a product failure, so it is
+    reported as an explicit skip naming the directory rather than allowed to
+    surface as a `PermissionError` from `tempfile.mkdtemp`. The skip is narrow
+    on purpose: it asks only whether a directory can be created HERE, so a
+    writable checkout runs the same assertions unchanged instead of skipping.
+    """
+    probe = fixture_root
+    while not probe.exists() and probe != probe.parent:
+        probe = probe.parent
+    if not os.access(probe, os.W_OK | os.X_OK):
+        pytest.skip(
+            f"unwritable fixture root {fixture_root} (nearest existing ancestor "
+            f"{probe} is not writable by uid {os.getuid()}): this parameter's fixture "
+            "repository cannot be created in this environment. Run it from a "
+            "checkout whose .worktrees directory the test user owns, or point the "
+            "lane at a writable project."
+        )
+
+
 @pytest.mark.parametrize("fixture_checkout", ["selected-worktree", "main-checkout"])
 def test_outer_wrapper_clears_a_prior_postponement_before_dirty_tree_refusal(fixture_checkout):
-    fixture_repo_root = REPO_ROOT
-    if fixture_checkout == "main-checkout":
-        common_dir = subprocess.run(
-            ["git", "-C", str(REPO_ROOT), "rev-parse", "--path-format=absolute", "--git-common-dir"],
-            check=True,
-            capture_output=True,
-            text=True,
-        ).stdout.strip()
-        fixture_repo_root = Path(common_dir).parent
-    fixture_root = fixture_repo_root / ".worktrees"
+    fixture_root = _fixture_root_for(fixture_checkout)
+    _require_writable_fixture_root(fixture_root)
     fixture_root_preexisted = fixture_root.exists()
     fixture_root.mkdir(exist_ok=True)
     scratch = Path(tempfile.mkdtemp(prefix="wrapper-refusal-", dir=fixture_root))
@@ -2479,6 +2515,43 @@ def test_outer_wrapper_clears_a_prior_postponement_before_dirty_tree_refusal(fix
                 fixture_root.rmdir()
             except OSError:
                 pass
+
+
+def test_an_unwritable_fixture_root_skips_with_the_directory_named(tmp_path, monkeypatch):
+    """(B536) The environment limitation must be a NAMED skip, not a traceback.
+
+    Measured: inside `tooling-tests` (the tester-unified container user), the
+    `[main-checkout]` parameter died with
+    `PermissionError: [Errno 13] ... '/workspaces/vbpub/.worktrees/wrapper-refusal-...'`
+    from `tempfile.mkdtemp`, so the file's release-wrapper assertions never ran
+    in the lane built to run them. This asserts the outcome a reader needs: a
+    skip whose reason names the directory and the uid, and which says what to
+    do about it.
+    """
+    fixture_root = tmp_path / "shared" / ".worktrees"
+    monkeypatch.setattr(os, "access", lambda *_args: False)
+
+    with pytest.raises(pytest.skip.Exception) as caught:
+        _require_writable_fixture_root(fixture_root)
+
+    reason = str(caught.value)
+    assert str(fixture_root) in reason
+    assert f"uid {os.getuid()}" in reason
+    assert "writable" in reason
+
+
+def test_a_writable_fixture_root_is_not_skipped(tmp_path, monkeypatch):
+    """The other direction: the skip must be narrow.
+
+    A producer that skipped unconditionally would hide this file's assertions
+    everywhere rather than only where the directory is unwritable, which is the
+    "a check that cannot fail" shape one level down.
+    """
+    fixture_root = tmp_path / ".worktrees"
+    monkeypatch.setattr(os, "access", lambda *_args: True)
+
+    _require_writable_fixture_root(fixture_root)  # returns; skips nothing
+    assert not fixture_root.exists()
 
 
 def test_the_postponement_refuses_when_no_stable_assay_tag_is_visible(tmp_path):

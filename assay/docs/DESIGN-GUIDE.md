@@ -2134,6 +2134,24 @@ grafts, shallow, partial-clone/promisor, and non-SHA-1 stores, and adds
 boundary. An *empty* alternates file is ordinary and is not refused: the rule is
 about content, not existence.
 
+**(B226) The filesystem-only half of that refusal runs BEFORE any git child.**
+The bootstrap `rev-parse --absolute-git-dir` is itself the hazard: git opens
+`objects/info/alternates` there, so a writer-less FIFO in that path blocks the
+child in `wait_for_partner` regardless of the deadline the runner carries —
+measured on a bare host as nine such children, 15–28 hours old, every one on a
+FIFO-alternates repository, two still blocking their pytest. So for the
+ordinary `<repo_top>/.git` directory layout, where the common directory is known
+from the marker walk that never asks git, the alternates/grafts/shallow checks
+run first and refuse in milliseconds with the same `ERROR`/`GIT_FAILED`. The
+bootstrap resolution is ALSO bounded by the caller's P22 deadline, which covers
+the layouts (gitfile, linked worktree, `core.worktree`) whose common directory
+is only knowable by asking git. Both halves are needed and neither substitutes
+for the other: prompt refusal handles the plain case, the deadline bounds every
+other case, and an unbounded lane's `math.inf` remainder is correctly "no
+timeout" for the ones the filesystem cannot classify. A `.git` FILE therefore
+never has the filesystem rules applied to it — `<gitfile>/objects/info/alternates`
+cannot exist, so a check there would certify a repository it never inspected.
+
 **Every bound is fixed and refuses its own limit+1** — objects, tree entries,
 per-path bytes, total path bytes, blob bytes, total object bytes, and
 transferred pack bytes — as `BUDGET_EXCEEDED/SNAPSHOT_LIMIT_EXCEEDED`, never a

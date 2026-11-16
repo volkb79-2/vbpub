@@ -4225,8 +4225,14 @@ heuristic: treat `cmdline` as possibly containing secrets, as the lane's own
 `argv` already is. A zombie has no `cmdline`. The key is optional, so the field
 set without it is unchanged, but a verdict that contains it fails the key-set
 check of a verifier older than B233: ship the verifier with the assay that
-writes the verdict. For a baseline (R0) leak the same list is rendered into the
-R0 claim detail as `leaked-process-tree: pid=N ppid=M comm=C argv=...`.
+writes the verdict. **Known issue (B554):** the packaged JSON Schema
+(`src/assay/schemas/verdict.schema.json`) still declares only `pid`, `ppid` and
+`comm` for a descendant, so a consumer that validates a verdict against that
+schema refuses a real leaked-descendant argv even though `assay verify` accepts
+it. Declaring the property is an in-version change to a released schema (operator
+decision D2, `_VERDICT_SCHEMA_SHA256`), so it waits for verdict schema v20 with
+B234's `state` letter. For a baseline (R0) leak the same list is rendered into
+the R0 claim detail as `leaked-process-tree: pid=N ppid=M comm=C argv=...`.
 
 #### Native R2's process-tree boundary
 
@@ -4480,7 +4486,7 @@ never says `coverage_parsed`.
 | `shard` / `resume` | a shard was selected / records were resumed **or refused** (`resume` also gains `rejudged_total`, B091 A5 — records dropped by `--rejudge`/`--rejudge-outcome` so they re-execute; `0` on every run that passed neither flag) | `selected_total` / `resumed_total` + `rejected_total` (+ `rejudged_total`) |
 | `baseline` | the sweep's baseline record | `candidate_total` |
 | `candidate` | one candidate completed | `candidate_id`, `candidate_index`, `path`, `operator`, `outcome_bucket` (including `hung`, B091/RW-33 — see below), `elapsed_seconds`, and `tests_completed` (B091 A4/B097 — owner-process `test` count; `None` when liveness never ran, `0` when it ran and saw no owner event). `phase_seconds` (`materialize`/`command`/`integrity`/`teardown`) and `startup_seconds` (`to_session_start`/`to_first_test`) are Assay's own clock. Assay 12 (B206) removed the sampled `cpu_seconds`, `peak_rss_bytes`, `write_bytes`, `judge_rss_bytes` and the `resources` object: every resource number now comes from the cgprofile observer as `profile` (a `resource-profile/1` object: `status` `MEASURED`/`PARTIAL`/`NO_MEASUREMENT`, one `reason` when there is no measurement, `wall_seconds` from Assay's clock, `metrics`, `missing`, `observer`; see [the v17-to-v18 migration notes](#migration-notes-v17-to-v18)). `worker_count` is the workers of the invocation that ran the candidate (B203), and a `killed` candidate carries `first_failing_test` (B205; null when unknown). Profiles are diagnostic and never classify a candidate; they are also stored in the candidate state record and as one line in `profile-<lane>.jsonl` beside the progress file. A witness replay that did not kill counts only in `elapsed_seconds`. Liveness lanes also write a `<events>.resources.json` sidecar next to each candidate's events file (`format`, `spawned_at`) |
-| `end` | the mutation sweep ended, on every path out | `buckets` (per-bucket counts, now including `hung`), `reason` |
+| `end` | the mutation sweep ended, on every path out | `buckets` (per-bucket counts, now including `hung`), `reason`, `budget_exceeded_dispatched`, `budget_exceeded_unstarted` (B524 — see below; both additive, and both `0` on the three early-return `reason`s, where nothing was attempted) |
 | `verdict_written` | terminal, for every tier | `outcome`, `reason_code`, `exit_code`, `destination` |
 
 **Every record** additionally carries `emitted_at` (UTC ISO 8601) and
@@ -4502,6 +4508,29 @@ read them carefully:
 | `elapsed_s` | every record | seconds since the `run` header — the *run*'s age |
 | `command_elapsed_s` | `command_running` | seconds since *this command* started |
 | `elapsed_seconds` | `candidate` | how long *that one mutant* took |
+
+**`buckets.budget_exceeded` is not one fact** (B524). The bucket is the
+closed verdict vocabulary's single name for two situations a reader has to tell
+apart: a candidate that was DISPATCHED and then hit its own or the lane's
+deadline, and a candidate the sweep never reached because submission had
+already stopped (the campaign deadline, a fatal worker error, or a
+`--only-candidates`/`--exclude-candidates` selection). CMRu's s4 attempt A read
+`budget_exceeded = 23` off the terminal record when exactly one candidate had
+started and 22 were still pending. The `end` record therefore splits the
+bucket:
+
+| field | means |
+| --- | --- |
+| `budget_exceeded_dispatched` | a worker was dispatched for this candidate and it hit the deadline |
+| `budget_exceeded_unstarted` | the sweep stopped before dispatching it (or a selection left it out) |
+
+The two always sum to `buckets.budget_exceeded`. The word is *dispatched*, not
+*attempted*, on purpose: a candidate killed by the LANE deadline is
+deliberately unclassified (it re-executes on resume) and its own verdict entry
+still carries not-started process-tree evidence, so "attempted" would be a
+claim the candidate's record denies. Nothing else changes — the verdict's
+bucket, `judge_mutation`'s reason code and `assay verify` are untouched, and
+the two keys are additive so a reader that does not know them can ignore them.
 
 `end`'s `reason` is `null` for a sweep that actually ran, and otherwise names
 why none did: `"unsupported"` (the adapter has no mutation implementation),
