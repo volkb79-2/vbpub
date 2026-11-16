@@ -56,6 +56,8 @@ A `FIXED` entry means code, tests, and docs landed together.
 | HOB-41 | No golden fixture has a non-zero record pad, so the padding rule is pinned by unit tests on each side, not by a cross-language file | Minor | OPEN |
 | HOB-42 | A `.seg` name is trusted as sealed without a footer, and the header's `seq`/`start_real_ns` are never compared with the name | Minor | OPEN |
 | HOB-43 | Quarantined `.corrupt` files (corrupt, oversized) are kept for an operator but are never counted in `bytes`, never evicted and never bounded in number, so repeated damage can fill the directory beyond `cap_bytes` | Major | OPEN |
+| HOB-44 | CLOSED — `tester-unified-rust` carries no `pip`/`ensurepip`/`python3-venv`, so the original `kind = "assay"` `assay-r1` lane died at Run-Gate's editable install before judging. Fixed by re-declaring the lane as a `kind = "command"` lane that runs the judge from the worktree's own `assay/src` (`PYTHONPATH`, no install); the image is unchanged. Proven through Run-Gate: PASS with the measured totals in the lane log, and FAIL/UNCOVERED_LINES when one kernel test file is deleted | Major | CLOSED (2026-11-16) |
+| HOB-45 | Rust R2/R3 remain unregistered for hostobs: no `assay-r2` (cargo-mutants ingestion) or `assay-r3` (canary) lane exists, so test quality rests on the hand-mutation campaigns | Major | OPEN (assay R-3b/R-4) |
 
 ---
 
@@ -781,3 +783,106 @@ fix round; the first review round missed it too.
 **Exit criteria.** Either quarantined bytes count against the tier's cap (oldest `.corrupt`
 removed first, reported) or a hard count/bytes bound refuses further quarantine with a typed,
 counted report; a test fills the bound; a mutant removes it.
+
+## HOB-44 — CLOSED: the lane needed no `pip`, because it needed no install
+
+**Closed 2026-11-16** by re-declaring the lane (commit `09771f638`) and proving it
+through Run-Gate in this branch after `09771f638` (the re-declaration). Original text kept
+below, then the resolution.
+
+**Where:** `tester-unified-rust/Dockerfile` (the `apt-get install` line);
+`hostobs/run-gate.toml` `[lanes.assay-r1]`; `run-gate-project/run_gate.py`
+`assay_source_setup`.
+
+`assay-r1` is a `kind = "assay"` lane, so Run-Gate installs the selected worktree's own
+`assay/` package into the lane before invoking the judge
+(`"$ASSAY_PYTHON" -I -m pip install ... --editable <worktree>/assay`).
+`tester-unified-rust` installs `python3` (Debian 13, CPython 3.13) but NOT `pip`,
+`ensurepip` or `python3-venv`: measured in the image, `/usr/bin/python3 -m pip --version`
+-> `No module named pip`, `python3 -m venv` -> `ensurepip is not available`, and no
+`pip*` file exists under `/usr`, `/opt` or `/root`. The lane therefore stops with
+
+```
+run-gate: installing assay from the selected worktree source
+/usr/bin/python3: No module named pip
+run-gate: editable assay install failed
+run-gate: lane 'assay-r1' verdict ERROR; exit_code 2
+```
+
+at head `c14d2cc30` (log retained in the program's `logs/pi-hostobs-assay-r1-assay-r1.log`),
+before the judge runs and before any verdict artifact exists. Nothing about the lane's
+declaration is wrong: `assay lanes --json` in that image parses `[lanes.assay-r1]` cleanly
+(inventory `rigor: [R0, R1]`, `language: rust`, `external_tools: []`).
+
+**Smallest image change.** One `apt-get install` addition in the image's toolchain stage
+(and the same for the final stage only if pip is wanted there too):
+
+```dockerfile
+apt-get install -y --no-install-recommends python3-pip python3-venv
+```
+
+Measured with `apt-get install -s` in the image (Debian 13.7): 7 new packages,
+`python3-pip` 25.1.1+dfsg-1, `python3-wheel`, `python3-packaging`, `python3-pip-whl`,
+`python3-setuptools-whl`, `python3.13-venv`, `python3-venv`. No new base image, no
+network at run time, no change to the crate cache or the lock. The editable install needs
+`--no-build-isolation` (already passed by Run-Gate) and assay's zero runtime dependencies,
+so `python3-pip` alone is sufficient; `python3-venv` is included only because
+`ensurepip` is not packaged separately here.
+
+**Exit criteria.** `run-gate assay-r1` in `tester-unified-rust` produces
+`.assay/verdict-assay-r1.json` with an R1 claim whose `covered`/`executable` match the
+measured artifact, the lane PASSES at head with the floor in `assay.toml`, and the same lane
+FAILS when a test file is deleted (the negative run recorded in
+`docs/CONSUMERS.md` §"Proof it is a real judge").
+
+**Resolved: the declaration was the defect, not the image.** `assay-r1` is now a
+`kind = "command"` lane ([`run-gate.toml`](run-gate.toml): `kind`, `argv`, `exit_map`).
+assay is stdlib-only, so the judge runs straight from the mounted worktree's source —
+`PYTHONPATH={worktree}/assay/src` plus `assay/analysis/src` for the `assay analyze`
+post-checks — exactly how assay is consumed inside this monorepo, and nothing is installed.
+The Rust image is unchanged and stays offline and lock-bound; the image change described
+below is NOT needed and should not be applied for this lane.
+
+**Evidence, all through Run-Gate (no throwaway copies).**
+
+| run | head | verdict |
+|---|---|---|
+| `run-gate assay-r1` | fix round | `PASS`, `.assay/verdict-assay-r1.json` written, R0 PASS + R1 PASS |
+| the same lane, one kernel test file deleted
+  and committed in a temporary worktree | fix round + that deletion | `FAIL`, R1 `UNCOVERED_LINES` |
+
+The PASS log binds the artifact to the head (`assay analyze verdict --expected-commit`)
+and prints the measured totals from it: `lines 15100/15723 = 96.0377% over 33 targets;
+branches 0/0 (unavailable)`, 24 files carrying `missing_lines` findings. The negative log
+carries `lines 14777/15723 = 93.9833%` and `R1 FAIL UNCOVERED_LINES` while nextest is still
+322/322 green, so the failure is the coverage claim and not the test command. Logs:
+`logs/pi-hostobs-assay-r1-fix-assay-r1.log` and `…-fix-assay-r1-negative.log` in the release
+program's `logs/`. The registered lane path is therefore PROVEN end to end (declaration →
+Run-Gate → judge → verdict artifact → gate verdict), which the earlier copy-based probes
+could not show.
+
+**Source.** Filed 2026-11-15 by the hostobs assay-r1 adoption; measured at head
+`c14d2cc30` in `tester-unified-rust:local`. Closed 2026-11-16; assay B549 records the
+same finding from the judge's side.
+
+## HOB-45 — Rust R2 and R3 are unregistered for hostobs
+
+**Where:** `hostobs/run-gate.toml` and `hostobs/assay.toml` (no `assay-r2`/`assay-r3`
+lane); assay `nyxloom-trove/4-backlog.md` B245 (R-3b, cargo-mutants ingestion) and B246
+(R-4, Rust canaries).
+
+With `assay-r1` registered the workspace has an assay-judged R1 line verdict. The
+remaining two tiers do not exist for Rust in assay at all: R2 needs
+the `cargo-mutants-outcomes` report parser and the `ASSAY_CHANGED_DIFF` handoff (B245), and
+R3 needs the rustc `UNCOVERED_LINES` injector plus a receipt-writing test-break canary
+(B246). hostobs therefore has no mutation or canary lane, and the test-quality claim is the
+three hand-mutation campaigns in `docs/HAND-MUTANTS-M1*.md` (eighty-two stored, replayable
+mutants). This is recorded once, as a known issue, not as a per-release waiver.
+
+**Exit criteria.** An `assay-r2` lane (diff-scoped cargo-mutants, T3, `--base <previous
+release tag>`) and an `assay-r3` lane (test-break canary with a receipt) exist here, pass
+their registered gates in `tester-unified-rust`, and the hand-mutation scripts are retired or
+reduced to the survivors those lanes cannot express.
+
+**Source.** Filed 2026-11-15 by the hostobs assay-r1 adoption; assay A-501 (Rust R2 not
+adopted is a known issue), `assay/docs/RUST-METHODOLOGY.md`.

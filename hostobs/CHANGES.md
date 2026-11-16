@@ -4,6 +4,26 @@
 
 ### Added
 
+- **`assay-r1`: the coverage verdict is assay's.** A new `assay-r1` lane in
+  `run-gate.toml` binds to `assay.toml [lanes.assay-r1]`, which declares a Rust
+  `whole_target` R1 judge over the 33 `src/*.rs` files of `model`, `proto`, `kernel` and
+  `store` at a 95.0% line floor (measured 96.0377%, 15100/15723 executable lines, floored one
+  point down; derivation in the lane file). The lane keeps the exact workspace command
+  `selftest` runs — offline, locked, nextest, doctests and the per-crate line/region floors
+  from `coverage-floors.toml` — so what was executed cannot drift; assay now renders the
+  coverage claim, prints the measured totals in the verdict, lists every uncovered
+  executable line as a finding, and reports branch capability as `unavailable` (stable
+  `cargo-llvm-cov` emits no `BRDA` arcs; assay B523) rather than as zero-of-zero. R2 (mutation)
+  and R3 (canary) stay unregistered for Rust (`HOB-45`). Proven a real judge, not a
+  relabelled floor: deleting one kernel test file leaves nextest green but drops the R1
+  claim to 93.9833% and FAILs it. The lane is a **command lane**: assay is stdlib-only, so it
+  runs from the mounted worktree's own source (`PYTHONPATH={worktree}/assay/src`) with no
+  install, which is why it needs no `pip` in the Rust gate image (`HOB-44` was the
+  `kind = "assay"` declaration's install step, and is closed by this re-declaration; the
+  image is unchanged). Proven through Run-Gate in this branch: the lane log carries
+  `verdict PASS` and the measured totals, and a lane-run negative (one kernel test file
+  deleted and committed in a temporary worktree) logs `FAIL/UNCOVERED_LINES`. `selftest`
+  stays as the enforced baseline.
 - **`store` crate (M1 part 3):** the on-disk history and events store. A segment is a
   sequence of `proto` payloads inside a checksummed record envelope (64-byte header, records
   carrying their own total length, sequence number, body CRC and incarnation list, a 64-byte

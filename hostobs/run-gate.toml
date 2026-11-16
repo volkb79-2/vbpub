@@ -36,3 +36,96 @@ python3 tools/crate-floors.py cov-summary.json coverage-floors.toml''',
 clean_tree = true
 budget = "20m"
 artifacts = ["lcov.info", "cov-summary.json"]
+
+# Assay R1 over the four functional crates (hostobs plan v4, M1 row: "+ assay-r1
+# once R-2 lands"; assay B243/B523 consumer integration).
+#
+# This is a COMMAND lane, not `kind = "assay"`, and that is a deliberate shape
+# rather than a shortcut: assay is stdlib-only, so the judge runs straight from
+# the mounted worktree's own source (`PYTHONPATH={worktree}/assay/src`) and needs
+# NO install. A `kind = "assay"` lane would make Run-Gate `python3 -m pip install
+# --editable <worktree>/assay` first, and `tester-unified-rust` deliberately
+# ships the offline, lock-bound Cargo toolchain WITHOUT pip/ensurepip/venv
+# (HOB-44, assay B549): that lane died at the install step before the judge ever
+# ran (`No module named pip`, verdict ERROR 2), so its declaration was the defect
+# and not the image.
+#
+# The judged lane itself (rigor, judge, argv, the 95.0 line floor over the 33
+# declared `src/*.rs` files, the floor's derivation) still lives in
+# `assay.toml [lanes.assay-r1]` -- this lane only says how to REACH the judge in
+# this image. Parity with the estate's assay lanes is kept where it is free:
+# `--verdict-json` under the git-ignored `.assay/`, `--resume --progress
+# --state-dir` (no-ops for an R1 lane, load-bearing if this lane ever gains R2).
+#
+# `PYTHONDONTWRITEBYTECODE=1` keeps the judge's own import from writing
+# `__pycache__` into the mounted tree; the Cowtree source is on PYTHONPATH for
+# the same reason every sibling source-Assay lane declares it (assay's lazy
+# workspace importer, inert on the Rust R1 path). `assay/analysis/src` is needed
+# only by `assay analyze` (the post-checks below): assay.cli imports
+# `assay_analysis` lazily, exactly as the assay project's own lanes declare it.
+#
+# The judge's own exit status IS the lane's verdict (0 PASS, 1 FAIL, 2 ERROR),
+# and `exit_map` states that rather than inheriting "nonzero means FAIL": a
+# judge that could not run at all is ERROR, not a coverage failure. Three
+# post-checks bind the artifact to what was judged -- schema/internal
+# consistency (`assay verify`), the judged commit equal to the lane's own HEAD
+# (`assay analyze verdict --expected-commit`, which assay's `verify` does NOT
+# compare), and the measured totals plus branch capability printed into the
+# lane log from the artifact itself -- and each of them failing is ERROR,
+# because an artifact that cannot be bound is not a measurement.
+#
+# `network = "none"` matches the Rust environment: cargo runs `--offline`
+# `--locked` from the image's lock-keyed crate cache, so a network attempt
+# would be a loud failure rather than a download.
+[lanes.assay-r1]
+kind = "command"
+environment = "tester-unified-rust"
+network = "none"
+description = "Judge the four functional crates with Assay Rust R1 (source tree, no install) and bind the verdict to HEAD."
+argv = [
+  "bash", "-c",
+  '''set -eu
+cd {worktree}/hostobs
+export PYTHONDONTWRITEBYTECODE=1
+export PYTHONPATH="{worktree}/assay/src:{worktree}/assay/analysis/src:{worktree}/libraries/cowtree/src"
+mkdir -p .assay .run-gate/assay-state
+rm -f -- .assay/verdict-assay-r1.json .assay/progress-assay-r1.jsonl
+# The judge's status is captured, not left to abort the script: the checks below
+# must run even on FAIL, so a red log still states what was measured and why.
+rc=0
+python3 -m assay.cli run assay-r1 --file assay.toml \
+  --verdict-json .assay/verdict-assay-r1.json \
+  --resume --progress .assay/progress-assay-r1.jsonl \
+  --state-dir .run-gate/assay-state || rc=$?
+python3 -m assay.cli verify .assay/verdict-assay-r1.json \
+  || { echo "run-gate: the Assay verdict is not schema-conformant" >&2; exit 2; }
+if ! python3 -m assay.cli analyze verdict .assay/verdict-assay-r1.json \
+     --expected-commit "$(git rev-parse HEAD)" --format text \
+     > .assay/verdict-assay-r1-summary.txt; then
+  echo "run-gate: the Assay verdict does not describe this lane's HEAD" >&2
+  exit 2
+fi
+cat .assay/verdict-assay-r1-summary.txt
+python3 - .assay/verdict-assay-r1.json <<'PY'
+import json, sys
+with open(sys.argv[1], encoding="utf-8") as handle:
+    claims = json.load(handle)["claims"]
+for claim in claims:
+    print("assay-r1 claim: %s %s %s" % (
+        claim["rigor"], claim["status"], claim.get("reason_code") or ""))
+    coverage = claim.get("coverage")
+    if not coverage:
+        continue
+    print("  lines %d/%d = %.4f%% over %d targets; branches %d/%d (%s)" % (
+        coverage["covered"], coverage["executable"], coverage["pct"],
+        coverage["considered"], coverage["branches_covered"],
+        coverage["branches_total"], coverage["branch_capability"]))
+    print("  uncovered lines listed as findings in %d file(s)"
+          % len(coverage["missing_lines"]))
+PY
+exit "$rc"''',
+]
+exit_map = { "0" = "PASS", "2" = "ERROR" }
+clean_tree = true
+budget = "20m"
+artifacts = ["lcov.info", "cov-summary.json", ".assay/verdict-assay-r1.json"]
