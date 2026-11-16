@@ -16,7 +16,7 @@
 | --- | --- | --- |
 | KI-171 | OPEN (the packaged cmru-cli SKILL is grammar-checked but not coverage-checked: a verb or flag a release adds can be missing from it with every existing test green) | — |
 | KI-170 | OPEN (bundle validator outcomes pinned; SPEC wording and R2 lane-cost policy remain) | — |
-| KI-169 | OPEN (`bundle_dir` set to `"."` makes the success cleanup delete the whole `dist_dir`; no containment check on `bundle_dir`/`client_dir`) | — |
+| KI-169 | FIXED 2026-11-16 (bundle/client staging paths are resolved, disjoint descendants of `dist_dir`, and rechecked before cleanup) | this batch |
 | KI-168 | FIXED 2026-11-16 (configured wheel-builder and cgroup-probe images are checked before release dispatch) | this batch |
 | KI-167 | OPEN (case-sensitive suffix checks, no `.env` / `.env.*` prefix class and an incomplete name list can miss secret-class paths) | — |
 | KI-166 | FIXED (included bundle source symlinks could dereference and ship their targets) | `f2b56b12743f6a764bbadefa8b937c1bd642b32f` |
@@ -3710,13 +3710,15 @@ Call: `SOURCE_DATE_EPOCH=1700000000 DEMO_VERSION=1.0.0 cmru handler bundle-build
 
 ## KI-169 - `bundle_dir` set to `"."` makes the success cleanup delete the whole `dist_dir`
 
-**Status:** OPEN (filed 2026-11-14, found in the 2026-11 bundle-fix review); severity: medium (data loss inside `dist_dir` after an otherwise successful build; trusted-configuration misuse).
+**Status:** FIXED 2026-11-16 (filed 2026-11-14, found in the 2026-11 bundle-fix review); severity: medium (data loss inside `dist_dir` after an otherwise successful build; trusted-configuration misuse).
 
 **Problem.** `bundle_dir` and `client_dir` are resolved by `parse_config` with `resolve_path(dist_dir, raw)` in `cmru/src/cmru/bundle.py`, with no check that the result is a strict descendant of `dist_dir` (an absolute value is accepted unchanged). `"."` resolves to `dist_dir` itself. At the end of `run_bundle`, `[archive].keep_tree = false` runs `shutil.rmtree` on `bundle_dir` and `client_dir` after the archive and manifest succeed, and the archive is written inside `dist_dir`. Measured on this head with a scratch project: `bundle_dir = "."` with `format = "xztar"` returns the archive path with exit 0, but `dist_dir` no longer exists, so the archive and any sibling files are gone. With `format = "gztar"` the archive step instead fails (`shutil.Error`, recursive copy into its own temporary directory) and the trees are kept. `client_dir = "."` fails earlier in the client copy with `RecursionError`, so it does not reach the cleanup today; it is guarded only by that crash. In a variant build the pre-build cleanup of `bundle_dir` and `client_dir` removes `dist_dir` the same way, including sibling variant archives.
 
 **Wanted.** Configuration validation rejects `bundle_dir` and `client_dir` values that resolve to `dist_dir` itself, to its parent, or outside it, and rejects the two being equal or nested in each other. The pre-build and success cleanups refuse to remove any path that is not a strict descendant of `dist_dir`.
 
 **Close when.** Tests show `"."`, `".."`, an absolute path outside `dist_dir`, equal and nested values are rejected with a named error before any file is touched (for `gztar`, `xztar` and a variant build), and a normal configuration still cleans only its own trees; SPEC documents the rule (it currently says only "relative to `dist_dir`").
+
+**Resolution/evidence (2026-11-16).** `parse_config` resolves both staging paths and rejects either path unless it is a strict descendant of `dist_dir`; it also rejects equal or nested bundle/client trees. Variant pre-build cleanup and successful-build cleanup recheck resolved containment and refuse a path changed to a symlink. `test_bundle_dir_equal_to_dist_is_rejected_before_cleanup` failed before the fix because its sentinel in `dist_dir` disappeared after the `xztar` success cleanup (`/tmp/run-gate/lanes/survivor-regressions/db343ea95dd7cd3c0a4d0d8ae0ae552c.log`). The final bundle selector covers `.`, `..`, outside absolute paths, equal/nested paths, `gztar`/`xztar`, legacy/variant builds, no-touch sentinels, ordinary cleanup, and injected resolution failures; the combined registered selector passed 407 tests in `/tmp/run-gate/lanes/survivor-regressions/8453b5e685c420ffd889e55db1072320.log`. Hand-mutant: removing strict-descendant checks was killed by outside-path cases (2 failed) in `/tmp/run-gate/lanes/survivor-regressions/9399bb95ce6a16df8c4dc5d0dc3906e5.log`. README, DESIGN-GUIDE, CONSUMERS, SPEC, and CHANGES were updated in the item commit.
 
 ## KI-170 — cmru-v7.3.1 R2 bundle-survivor closeout and lane cost
 

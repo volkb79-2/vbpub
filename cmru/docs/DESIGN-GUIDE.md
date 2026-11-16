@@ -1680,6 +1680,10 @@ diagnosis, including an unkept suffix-class file that caused validation to fail.
 present, CMRU checks archive-eligible path membership against it immediately before archiving
 and refuses added or missing paths. A concurrent writer can still change paths or contents after that check
 and before archive reading, so the build tree must remain private for the duration of the build.
+The two staging paths must resolve to distinct, non-overlapping strict descendants of `dist_dir`.
+This prevents a successful or variant pre-build cleanup from treating `dist_dir` or a parent as a
+staging tree. CMRU validates the paths before building and rechecks containment immediately before
+each staging-tree removal.
 
 ## The bundle asset name is one contract, and producers conform to it (KI-89 / PWMCP-07)
 

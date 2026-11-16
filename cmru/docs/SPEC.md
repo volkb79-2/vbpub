@@ -2997,8 +2997,8 @@ covered by the existing subtree mount.
 |---|---|---|
 | `project_root` | path | Required. Relative to the directory containing the config. It is the base for copied source paths and for the default wheel project root. |
 | `dist_dir` | path | Optional; defaults to `dist`. Relative to `project_root`. A legacy no-variant build removes this whole tree before assembly. A variant build removes only `bundle_dir`, `client_dir` and that variant's archive, preserving sibling variant archives. |
-| `bundle_dir` | path | Optional; defaults to `bundle`. Relative to `dist_dir`; this is the assembled archive root. |
-| `client_dir` | path | Optional; defaults to `client`. Relative to `dist_dir`; enabled wheel builds place client wheels here. |
+| `bundle_dir` | path | Optional; defaults to `bundle`. Relative to `dist_dir`; this is the assembled archive root. It MUST resolve to a strict descendant of `dist_dir` and MUST NOT equal, contain, or be contained by `client_dir`. |
+| `client_dir` | path | Optional; defaults to `client`. Relative to `dist_dir`; enabled wheel builds place client wheels here. It MUST resolve to a strict descendant of `dist_dir` and MUST NOT equal, contain, or be contained by `bundle_dir`. |
 | `[wheel].enabled` | boolean | Optional; defaults to `false`. Enables `python -m pip wheel`. |
 | `[wheel].python_bin` | string | Optional; defaults to `python3`. Executable used for the wheel build. |
 | `[wheel].project_root` | path | Optional; defaults to `project_root`. A relative value is based on the config directory. |
@@ -3076,6 +3076,11 @@ configuration boundary (KI-33).
   rules apply to regular files, so a directory named `certs.pem/` is traversed.
 - The name-class exclusions and `.pyc`/`__pycache__` remain non-keepable. A suffix-class file
   left by stage without a keep entry fails closed before the manifest or archive is written.
+- `bundle_dir` and `client_dir` MUST resolve to distinct, non-overlapping strict descendants of
+  `dist_dir`. Equal paths, nested staging paths, `dist_dir` itself, its parent, and paths outside it
+  are refused during configuration parsing before any output file is changed. Variant pre-build
+  cleanup and successful-build cleanup MUST recheck containment immediately before removing either
+  staging path; an unsafe or changed path is refused.
 - `bundle-build` uses the version from its named environment variable when set. If it is absent,
   CMRU derives a PEP 440 `.devN+g<short-hash>` version from the selected project's release plan
   and Git history; immutable release publication rejects that version.

@@ -352,6 +352,50 @@ def resolve_path(base: Path, raw: str) -> Path:
     return (base / path).resolve()
 
 
+def _is_strict_descendant(path: Path, parent: Path) -> bool:
+    return path != parent and parent in path.parents
+
+
+def _resolve_staging_path(base: Path, raw: str, name: str) -> Path:
+    try:
+        return resolve_path(base, raw).resolve()
+    except (OSError, RuntimeError) as exc:
+        raise ValueError(f"{name} cannot be resolved safely: {exc}") from exc
+
+
+def _validate_staging_paths(
+    dist_dir: Path, bundle_dir: Path, client_dir: Path, *, require_canonical: bool = False,
+) -> None:
+    """Keep removable staging trees disjoint and contained by the output directory."""
+    paths = {
+        "dist_dir": dist_dir,
+        "bundle_dir": bundle_dir,
+        "client_dir": client_dir,
+    }
+    resolved: dict[str, Path] = {}
+    for name, path in paths.items():
+        try:
+            resolved[name] = path.resolve()
+        except (OSError, RuntimeError) as exc:
+            raise ValueError(f"{name} cannot be resolved safely: {exc}") from exc
+        if require_canonical and resolved[name] != path:
+            raise ValueError(f"{name} changed to a symlink or non-canonical path before cleanup")
+
+    root = resolved["dist_dir"]
+    for name in ("bundle_dir", "client_dir"):
+        if not _is_strict_descendant(resolved[name], root):
+            raise ValueError(f"{name} must resolve to a strict descendant of dist_dir")
+
+    bundle_path = resolved["bundle_dir"]
+    client_path = resolved["client_dir"]
+    if (
+        bundle_path == client_path
+        or _is_strict_descendant(bundle_path, client_path)
+        or _is_strict_descendant(client_path, bundle_path)
+    ):
+        raise ValueError("bundle_dir and client_dir must not be equal or nested")
+
+
 def _copy_path(base: Path, raw: str) -> Path:
     """Resolve a configured copy path lexically so symlink components remain visible."""
     path = Path(raw)
@@ -504,9 +548,16 @@ def parse_config(config_path: Path) -> BundleConfig:
     project_root_raw = _string_value(config, "project_root", "bundle config")
     project_root = resolve_path(config_path.parent, project_root_raw)
 
-    dist_dir = resolve_path(project_root, _string_value(config, "dist_dir", "bundle config", default="dist"))
-    bundle_dir = resolve_path(dist_dir, _string_value(config, "bundle_dir", "bundle config", default="bundle"))
-    client_dir = resolve_path(dist_dir, _string_value(config, "client_dir", "bundle config", default="client"))
+    dist_dir = _resolve_staging_path(
+        project_root, _string_value(config, "dist_dir", "bundle config", default="dist"), "dist_dir",
+    )
+    bundle_dir = _resolve_staging_path(
+        dist_dir, _string_value(config, "bundle_dir", "bundle config", default="bundle"), "bundle_dir",
+    )
+    client_dir = _resolve_staging_path(
+        dist_dir, _string_value(config, "client_dir", "bundle config", default="client"), "client_dir",
+    )
+    _validate_staging_paths(dist_dir, bundle_dir, client_dir)
 
     wheel = config.get("wheel", {})
     if not isinstance(wheel, dict):
@@ -1062,12 +1113,18 @@ def run_bundle(
         environ=environment,
     )
 
+    _validate_staging_paths(
+        config.dist_dir, config.bundle_dir, config.client_dir, require_canonical=True,
+    )
     log_info("Preparing dist directories")
     if variant is None:
         if config.dist_dir.exists():
             shutil.rmtree(config.dist_dir)
     else:
         for stale in (config.bundle_dir, config.client_dir):
+            _validate_staging_paths(
+                config.dist_dir, config.bundle_dir, config.client_dir, require_canonical=True,
+            )
             if stale.exists():
                 shutil.rmtree(stale)
         own_archive.unlink(missing_ok=True)
@@ -1089,8 +1146,14 @@ def run_bundle(
         warned_paths=warned_paths,
     )
     if not config.keep_tree:
+        _validate_staging_paths(
+            config.dist_dir, config.bundle_dir, config.client_dir, require_canonical=True,
+        )
         staged_dirs = {config.bundle_dir, config.client_dir}
         for staged_dir in sorted(staged_dirs, key=lambda path: len(path.parts), reverse=True):
+            _validate_staging_paths(
+                config.dist_dir, config.bundle_dir, config.client_dir, require_canonical=True,
+            )
             if staged_dir.exists():
                 shutil.rmtree(staged_dir)
     return archive

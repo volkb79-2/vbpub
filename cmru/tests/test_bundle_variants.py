@@ -7,6 +7,7 @@ from __future__ import annotations
 import json
 import subprocess
 import tarfile
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -146,6 +147,172 @@ def test_template_variant_field_must_match_build_mode(tmp_path):
     plain = _write(tmp_path, template="demo-v{version}.tar.xz")
     with pytest.raises(ValueError, match="needs a .variant. field"):
         bundle.run_bundle(plain, variant=PY311)
+
+
+def test_bundle_dir_equal_to_dist_is_rejected_before_cleanup(tmp_path):
+    config_path = _write(tmp_path, template="demo-v{version}.tar.xz")
+    config_path.write_text(
+        config_path.read_text(encoding="utf-8").replace(
+            'bundle_dir = "bundle"', 'bundle_dir = "."',
+        ),
+        encoding="utf-8",
+    )
+    dist_dir = tmp_path / "dist"
+    dist_dir.mkdir()
+    sentinel = dist_dir / "keep-me.txt"
+    sentinel.write_text("preserve this output\n", encoding="utf-8")
+
+    error = None
+    try:
+        bundle.run_bundle(config_path)
+    except ValueError as exc:
+        error = exc
+
+    assert sentinel.is_file(), "bundle_dir='.' deleted the entire dist_dir during cleanup"
+    assert error is not None and "bundle_dir" in str(error)
+
+
+@pytest.mark.parametrize("staging_name", ["bundle_dir", "client_dir"])
+def test_variant_prebuild_cleanup_revalidates_staging_paths(tmp_path, monkeypatch, staging_name):
+    config_path = _write(tmp_path)
+    parsed = bundle.parse_config(config_path)
+    unsafe = replace(parsed, **{staging_name: parsed.dist_dir})
+    monkeypatch.setattr(bundle, "parse_config", lambda *_args: unsafe)
+    sentinel = parsed.dist_dir / "preserve.txt"
+    sentinel.parent.mkdir(parents=True)
+    sentinel.write_text("keep\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match=f"{staging_name}.*strict descendant"):
+        bundle.run_bundle(config_path, variant=PY311)
+
+    assert sentinel.read_text(encoding="utf-8") == "keep\n"
+
+
+@pytest.mark.parametrize("staging_name", ["bundle_dir", "client_dir"])
+def test_parse_config_rejects_unresolvable_staging_symlink(tmp_path, monkeypatch, staging_name):
+    config_path = _write(tmp_path)
+    dist_dir = tmp_path / "dist"
+    dist_dir.mkdir()
+    unresolvable = dist_dir / "loop"
+    unresolvable.symlink_to(unresolvable, target_is_directory=True)
+    real_resolve = Path.resolve
+
+    def fail_for_staging_path(path, *args, **kwargs):
+        if path == unresolvable:
+            raise OSError("injected path resolution failure")
+        return real_resolve(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "resolve", fail_for_staging_path)
+    text = config_path.read_text(encoding="utf-8")
+    default = "bundle" if staging_name == "bundle_dir" else "client"
+    text = text.replace(
+        f'{staging_name} = "{default}"', f'{staging_name} = "loop"',
+    )
+    config_path.write_text(text, encoding="utf-8")
+
+    with pytest.raises(ValueError, match=f"{staging_name} cannot be resolved safely"):
+        bundle.parse_config(config_path)
+
+
+def test_cleanup_validation_rejects_unresolvable_output_root(tmp_path, monkeypatch):
+    loop = tmp_path / "dist-loop"
+    loop.symlink_to(loop, target_is_directory=True)
+    real_resolve = Path.resolve
+
+    def fail_for_output_root(path, *args, **kwargs):
+        if path == loop:
+            raise OSError("injected path resolution failure")
+        return real_resolve(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "resolve", fail_for_output_root)
+
+    with pytest.raises(ValueError, match="dist_dir cannot be resolved safely"):
+        bundle._validate_staging_paths(
+            loop, tmp_path / "bundle", tmp_path / "client",
+        )
+
+
+@pytest.mark.parametrize("staging_name", ["bundle_dir", "client_dir"])
+def test_success_cleanup_refuses_staging_path_swapped_to_outside_symlink(
+    tmp_path, monkeypatch, staging_name,
+):
+    config_path = _write(tmp_path, template="demo-v{version}.tar.xz")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    sentinel = outside / "preserve.txt"
+    sentinel.write_text("keep\n", encoding="utf-8")
+    make_archive = bundle.create_archive
+
+    def swap_staging_for_outside_link(*args, **kwargs):
+        archive = make_archive(*args, **kwargs)
+        config = args[0]
+        staging_dir = getattr(config, staging_name)
+        staging_dir.mkdir(parents=True, exist_ok=True)
+        saved_tree = staging_dir.with_name(f"{staging_name}-saved")
+        staging_dir.rename(saved_tree)
+        staging_dir.symlink_to(outside, target_is_directory=True)
+        return archive
+
+    monkeypatch.setattr(bundle, "create_archive", swap_staging_for_outside_link)
+
+    with pytest.raises(ValueError, match=f"{staging_name}.*before cleanup"):
+        bundle.run_bundle(config_path)
+
+    assert sentinel.read_text(encoding="utf-8") == "keep\n"
+
+
+@pytest.mark.parametrize(
+    "bundle_raw,client_raw,archive_format,variant,invalid_name",
+    [
+        (".", "client", "xztar", False, "bundle_dir"),
+        ("bundle", ".", "gztar", False, "client_dir"),
+        ("..", "client", "gztar", False, "bundle_dir"),
+        ("bundle", "..", "xztar", False, "client_dir"),
+        ("@outside", "client", "gztar", False, "bundle_dir"),
+        ("bundle", "@outside", "xztar", True, "client_dir"),
+        ("client", "client", "xztar", True, "bundle_dir"),
+        ("client/nested", "client", "gztar", True, "bundle_dir"),
+        ("bundle", "bundle/nested", "xztar", True, "client_dir"),
+    ],
+)
+def test_invalid_staging_paths_refuse_before_touching_files(
+    tmp_path, bundle_raw, client_raw, archive_format, variant, invalid_name,
+):
+    extension = ".tar.gz" if archive_format == "gztar" else ".tar.xz"
+    template = "demo-v{version}" + ("-{variant}" if variant else "") + extension
+    config_path = _write(tmp_path, template=template)
+    outside = tmp_path / "outside"
+    bundle_value = str(outside) if bundle_raw == "@outside" else bundle_raw
+    client_value = str(outside) if client_raw == "@outside" else client_raw
+    text = config_path.read_text(encoding="utf-8")
+    text = text.replace('bundle_dir = "bundle"', f"bundle_dir = {json.dumps(bundle_value)}")
+    text = text.replace('client_dir = "client"', f"client_dir = {json.dumps(client_value)}")
+    text = text.replace('format = "xztar"', f'format = "{archive_format}"')
+    config_path.write_text(text, encoding="utf-8")
+
+    dist_dir = tmp_path / "dist"
+    bundle_marker = dist_dir / "bundle" / "stale.txt"
+    client_marker = dist_dir / "client" / "stale.txt"
+    dist_marker = dist_dir / "preserve.txt"
+    project_marker = tmp_path / "preserve-project.txt"
+    for marker in (bundle_marker, client_marker, dist_marker, project_marker, outside / "preserve.txt"):
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_text("keep\n", encoding="utf-8")
+    suffix = "-py311" if variant else ""
+    archive = dist_dir / f"demo-v1.2.3{suffix}{extension}"
+    archive.write_bytes(b"existing archive")
+
+    error = None
+    try:
+        bundle.run_bundle(config_path, variant=PY311 if variant else None)
+    except ValueError as exc:
+        error = exc
+
+    assert error is not None and invalid_name in str(error)
+    assert config_path.is_file()
+    for marker in (bundle_marker, client_marker, dist_marker, project_marker, outside / "preserve.txt"):
+        assert marker.read_text(encoding="utf-8") == "keep\n"
+    assert archive.read_bytes() == b"existing archive"
 
 
 # --- argv construction ------------------------------------------------------
@@ -421,6 +588,8 @@ def test_variant_builds_keep_sibling_archives(tmp_path):
     b = bundle.run_bundle(config, variant=PY313)
     assert a.is_file() and b.is_file()
     assert {a.name, b.name} == {"demo-v1.2.3-py311.tar.xz", "demo-v1.2.3-py313.tar.xz"}
+    assert not (tmp_path / "dist" / "bundle").exists()
+    assert not (tmp_path / "dist" / "client").exists()
 
 
 def test_variant_build_cleans_stale_bundle_tree(tmp_path):

@@ -586,6 +586,9 @@ Rules worth knowing: the archive for variant `py311` is `myproj-v1.2.3-py311.tar
 a failing vendor or stage command exits 1 and writes no archive; with `[exec].prefix` the runner must see the
 same tree at `{root}` (paths are passed project-root-relative) and the stage command runs from `{root}`,
 otherwise from the staged bundle directory; `[wheel].find_links` makes the vendor step `--no-index`.
+`bundle_dir` and `client_dir` must resolve to distinct, non-overlapping subdirectories of `dist_dir`.
+CMRU rejects a path that resolves to `dist_dir`, its parent, or outside it before any output cleanup,
+and rechecks containment before removing either staging tree.
 If `MYPROJ_VERSION` is set, it names the archive version. When it is unset,
 `bundle-build` derives the planned release version (or the latest tag when the
 project is unchanged) from CMRU and adds `.devN+g<short-hash>` from Git, so the

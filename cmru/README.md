@@ -935,7 +935,9 @@ by default;
 set `[archive].keep_tree = true` to retain both. Failures after staging starts
 retain both trees for diagnosis, including any unkept protected-suffix file left
 in the staged tree; that file is not packaged, but remains on disk until the
-failed output is removed.
+failed output is removed. `bundle_dir` and `client_dir` must resolve to distinct,
+non-overlapping subdirectories of `dist_dir`; invalid or changed paths are
+refused before CMRU removes staging data.
 Client metadata such as `client/pyproject.toml` needs its exact path in
 `[archive].keep`; `.toml` files have no implicit exception. If the bundle-relative
 path is `pyproject.toml`, put `keep = ["pyproject.toml"]` under `[archive]`.
