@@ -7829,13 +7829,27 @@ profile-off endpoint-refusal cases (2 failed; 3,270 passed).
 
 ## RG-251 — three in-repo r2 lanes run `assay.cli` from source without `libraries/cowtree/src` on PYTHONPATH and die with `ModuleNotFoundError: cowtree` in 4 seconds
 
-**Status:** OPEN (filed 2026-11-09). Severity: should-fix (the lanes cannot run on a host or image whose tester venv has no cowtree wheel; they only worked while it was installed). Found by the <host> cockpit agent after the cut-over (2026-11-08): `scripts/gstammtisch-guide` r2, `scripts/damon-analysis` r2 and `scripts/debian-install-v2` r2 each failed in about 4 s.
+**Status:** FIXED 2026-11-16 (route guard and lane declarations landed in `2e443acf9`, `fb221e05a`, `26a203e2b`). Severity: should-fix (the lanes cannot run on a host or image whose tester venv has no cowtree wheel; they only worked while it was installed). Found by the <host> cockpit agent after the cut-over (2026-11-08): `scripts/gstammtisch-guide` r2, `scripts/damon-analysis` r2 and `scripts/debian-install-v2` r2 each failed in about 4 s.
 
 **Finding.** The three lanes run the in-repo assay straight from source and set only `PYTHONPATH={worktree}/assay/src` (debian-install-v2 adds `libraries/cli-extended/src`), but assay loads `cowtree` (`assay/src/assay/_cow_workspace.py:22`, lazily, when copy-on-write candidate trees are requested) and the lanes do request them. The lines: `scripts/gstammtisch-guide/run-gate.toml:50`, `scripts/damon-analysis/run-gate.toml:50`, `scripts/debian-install-v2/run-gate.toml:78`. `assay/run-gate.toml:59` and `:84` already carry `{worktree}/libraries/cowtree/src`; these three were not updated when cowtree became an assay import. No other `run-gate.toml` in the tree uses the source-PYTHONPATH form without it (checked with `git grep` on origin/main at `2f7f386cc`).
 
 **Fix.** Add `:{worktree}/libraries/cowtree/src` to the `export PYTHONPATH=...` of the three r2 lanes (the lane env, not a venv install, so a clean tester image works), and add a guard so it cannot recur: a docs/lane test that every lane argv containing `{worktree}/assay/src` also contains `{worktree}/libraries/cowtree/src` (or a smoke lane `python -c "import assay.cli"` with that PYTHONPATH). Decide whether assay should instead vendor the path itself (a `sys.path` entry resolved relative to the assay source tree) so source-run consumers need no PYTHONPATH knowledge; the lane-level fix is the minimum.
 
 **Close when.** Each of the three r2 lanes starts its assay run on a host without a cowtree wheel in the tester venv (at least `python -c "import assay.cli"` under the lane env passes), and the guard test fails if the path is removed again.
+
+**Resolution.** The three source-run R2 lanes now include
+`{worktree}/libraries/cowtree/src` in their effective `PYTHONPATH`. The
+Run-Gate estate guard enumerates source-Assay lane contexts and requires the
+Cowtree route, including nested importers; its real-file oracle also proves a
+hand-removed route is rejected. The changes are already in the current tree;
+this wave adds no other-project edits.
+
+**Evidence.** `test_real_rust_r1_lane_declares_its_cowtree_route` and the
+adjacent estate-guard suite check the real lane declarations and kill the
+missing-route mutation. Current `scripts/{gstammtisch-guide,damon-analysis,
+debian-install-v2}/run-gate.toml` entries all declare the Cowtree source on
+their source-Assay R2 `PYTHONPATH`. Registered Run-Gate selftest passed these
+guards; the final clean-head result is in the run report.
 
 **Source.** `HANDOFF-STATE-20261107.md` (22:25Z entry, "Backlog to file"); [host-cockpit-EXEC-LOG.md](../scripts/netcup/docs/evidence/host-cockpit-EXEC-LOG.md).
 
