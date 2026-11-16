@@ -10,6 +10,7 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 - docs(pwmcp): the bundle's client install recipe is the offline one (`pip install --no-index --find-links ./wheels "cli-extended>=0.3.0" "playwright==$PW_VER" ./client` on the unpacked bundle), with a dependency-closure and docs-sync oracle (PWMCP-31)
 - docs(pwmcp): record the Obscura re-evaluation triggers as a closed set and the anti-detection non-goal, in the design guide and the security document, with a docs-sync oracle (PWMCP-58)
 - chore(pwmcp): raise the R2 candidate cap to 1500 (the r9 plan's 1293 candidates need >= 1423 under the published 10% headroom rule), document the cap-choice rule, and check it against recorded inventories (PWMCP-59)
+- test(pwmcp): make the PWMCP-60 contract mechanical — an AST oracle refuses a process-wide `os`/`builtins`/`io` test patch that does not save and delegate to the real function, and the storage-state fakes derive their fake uid from the real `geteuid` (PWMCP-60)
 <!-- cmru: pending release notes end -->
 
 <!-- cmru: release history -->

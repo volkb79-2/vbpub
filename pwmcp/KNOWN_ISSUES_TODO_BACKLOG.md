@@ -936,20 +936,35 @@ cannot reopen adoption on one of them. Nothing was adopted and no engine code wa
 
 ## PWMCP-60 — tests must scope process-wide `os.*` syscall fakes
 
-**Status:** OPEN (filed 2026-11-12); the observed PWMCP hazard is fixed in the
-pytest 9.2 audit branch. Pytest 9.2 calls `os.fstat` during capture and
-teardown. The storage-state test now scopes `fdopen`, `open`, and its
-descriptor spy to the JSON file under test and delegates every unrelated call
-to the saved real function.
+**Status:** FIXED 2026-11-16 (unreleased, branch `pi-pwmcp-burn-20261116`); filed
+2026-11-12. The observed PWMCP hazard was fixed in the pytest 9.2 audit branch;
+this item makes the contract MECHANICAL so it cannot regress silently.
 
-**Contract.** A process-wide `os.*` patch must identify the fd/path under test
-and delegate every other call to the real function. It must preserve the
-original read-failure, checked-descriptor, and no-secret-in-error oracles.
-Future `builtins.open` or `io.open` patches follow the same rule.
+**Fix.** `tests/test_storage_state_fakes.py` walks the syntax tree of every module in
+`tests/` and `client/tests/` and refuses a `setattr(<root>.os|builtins|io, "<symbol>", ...)`
+patch that (a) does not first bind the real function, (b) installs a replacement that never
+calls that saved real, or (c) receives arguments and never examines them (so it cannot tell
+the fd/path under test from pytest's own capture/teardown calls). Direct aliases of the real
+function are allowed. The same module pins the storage-state fakes by name (the saved
+`real_fdopen`/`real_open`/`real_geteuid` and the `opened != target` / `opened_path == target`
+comparisons), so PWMCP's original fakes cannot drift back.
 
-**Close when.** No non-delegating exact-symbol test patch remains in PWMCP's
-storage-state tests and the registered unit lane passes on a clean final
-commit.
+**Contract.** A process-wide `os.*` patch must identify the fd/path under test and delegate
+every other call to the real function. It must preserve the original read-failure,
+checked-descriptor and no-secret-in-error oracles. Future `builtins.open` or `io.open`
+patches follow the same rule.
+
+**Evidence.** The AST oracle was exercised with three hand mutants made from the original
+file: removing `real_open = os.open`, deleting the `if Path(target) != path:
+return real_open(...)` delegation, and deleting the `if opened_path == target` comparison.
+Each trips the oracle with a message naming the file, line and fake. The one non-delegating
+`geteuid` fake (`lambda: other`, which invented an uid instead of deriving from the real
+function) now derives from `real_geteuid()`; no behavioural oracle changed.
+
+**Close when.** No non-delegating exact-symbol test patch remains in PWMCP's storage-state
+tests and the registered unit lane passes on a clean final commit. (The lane run on the
+final batch head is recorded in the run report; this entry states the contract, the lane
+proves it.)
 
 ## PWMCP-59 — `r2` has `max_mutants = 1000` while the latest planned inventory is 1293
 
