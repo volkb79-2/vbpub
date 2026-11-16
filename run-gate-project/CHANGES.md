@@ -19,6 +19,7 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
 - run-gate: assert scoped `fstat` fakes delegate unrelated descriptors (RG-269).
 - run-gate: keep the foreign-owner `fstat` fake transparent to Python's full stat result (RG-268).
 - run-gate: reconcile RG-251 with the existing estate guard for source-Assay Cowtree routes.
+- run-gate: reconcile RG-257 with measured environment-scoped relaxed I/O adoption.
 
 <!-- cmru: release history -->
 

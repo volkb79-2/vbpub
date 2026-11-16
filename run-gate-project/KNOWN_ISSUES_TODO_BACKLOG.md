@@ -7985,7 +7985,7 @@ report, Gate item 10).
 
 ## RG-257 — `io_sync = "relaxed"` exists but no checked-in gate environment uses it; enable it per environment and measure the A/B
 
-**Status:** OPEN (filed 2026-11-10); severity: performance enhancement with a host-safety qualification; no implementation in this documentation-only filing.
+**Status:** FIXED 2026-11-16 by measured environment-scoped adoption in `aed77bf92`; severity: performance enhancement with a host-safety qualification.
 
 **Problem.** Run-Gate supports `resources.io_sync = "relaxed"` and the eatmydata preload mount, but no lane/environment in the checked-in configs selects it. The obvious alternative, one central default, is wrong: a non-container host lane cannot receive the container-side `/etc/ld.so.preload` mount and would refuse or misreport. The performance benefit therefore remains unmeasured and unusable in the intended tester environments.
 
@@ -8006,6 +8006,21 @@ Run an A/B on representative heavy lanes (the CMRU mutation lane plus the run-ga
 **Acceptance test idea.** Config tests assert relaxed resolves only for the two named ephemeral environments and that a bare-host lane remains strict. A dry run shows the preload mount and `RUN_GATE_IO_SYNC=relaxed`. The A/B report records comparable PASS verdicts and times, and a deliberately mismatched verdict blocks adoption. Hand-removing the environment-level setting makes the focused config test fail; moving it to a global default makes the non-container-control test fail.
 
 **Close when.** The A/B records comparable PASS verdicts and resource/time evidence for the named heavy lanes, the per-environment selection is implemented only where the durability boundary is proven, a mismatched verdict blocks adoption, and config/dry-run tests plus the user documentation pass on a clean final commit. A recorded decision to retain strict mode also closes the item when it records the measured comparison or why measurement was deferred and leaves all environments explicitly strict.
+
+**Resolution.** W0 measured strict versus relaxed on the CMRU coverage and
+cli-extended R0-R1 shapes, then adopted `io_sync = "relaxed"` only on the
+ephemeral central `tester-unified` and CMRU's separate `cmru-mutation`
+environments. The general default remains strict and IO-measurement lanes
+remain durable. A different test verdict would invalidate the measurement;
+both recorded comparisons had the same PASS/skipped counts.
+
+**Evidence.** `docs/DESIGN-lane-rework-2026-11.md` records the r1002 A/B:
+CMRU device flushes fell from 10,518 to 330 and lane fsyncs from 4,617 to 0,
+with 6,486 passed and 6 skipped in both runs; wall time was +3.4%, inside the
+7.6-17.6% noise band. cli-extended flushes fell 74% and fsyncs from 156 to 0;
+wall time was +8.8%, also inside noise. Current central and CMRU configs retain
+the environment-scoped settings. Run-Gate config, dry-run, and docs oracles
+cover the selection; the final clean-head selftest is recorded in the report.
 
 **Priority.** Medium. This is a measured performance opportunity with no unmeasured global change to host lanes.
 
