@@ -580,7 +580,10 @@ PY
   fi
   grep -qF 'since-commit=no-commits-yet' "$ROOT/job-status-states.out" \
     || { cat "$ROOT/job-status-states.out" >&2; fail 'a run with no commit of its own does not say no-commits-yet'; }
-  grep -qF 'since-commit=60s(ahead=2)' "$ROOT/job-status-states.out" \
+  # The age is derived from the reader's own clock, so the assertion binds the
+  # QUALIFIER and the magnitude, never a whole-second-exact figure (a suite
+  # that runs a second after the fixture is written must not go red).
+  grep -qE '^own-commit: .*since-commit=[0-9]+s\(ahead=2\)' "$ROOT/job-status-states.out" \
     || { cat "$ROOT/job-status-states.out" >&2; fail 'a run with its own commit does not qualify the age with ahead='; }
   grep -qF 'since-commit=null' "$ROOT/job-status-states.out" \
     || { cat "$ROOT/job-status-states.out" >&2; fail 'an unreadable commits_ahead did not suppress the commit age'; }
