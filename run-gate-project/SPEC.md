@@ -2562,7 +2562,10 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   value is an infrastructure error naming the variable and directing the
   operator to `cgprofiled doctor` and the host endpoints record. `RUN_GATE_PROFILE=off`
   explicitly opts out of profiling, but it does not exempt an observer lane
-  from either endpoint requirement.
+  from either endpoint requirement. If an observer endpoint or daemon
+  capability preflight fails, the refusal names the
+  `resource_observer = "cgprofile"` declaration and states that
+  `RUN_GATE_PROFILE=off does not waive this preflight`.
 - **`R-43k` Streaming watch (RG-55/P5 C5).** After a successful profile
   `start`, run-gate creates one `ctl watch` reader for that session. `reading`
   and `verdict` events update the inflight/history watch field. A daemon
