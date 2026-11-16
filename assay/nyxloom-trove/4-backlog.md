@@ -15627,9 +15627,10 @@ what it compared (the estate's recurring defect class). A refusal from a
 precondition (B551's inferred missing receipt, a dirty tree, a changed HEAD, a
 missing cgroup tier) is not infrastructure, and the difference decides whether
 an operator retries, fixes a lane, or files a defect. The inner text exists at
-the moment of refusal — the collected copy proves it — and does not reach the
-lane log; which of the three mechanisms above loses it is the open question,
-not an assumption to build the fix on.
+the moment of refusal — the collected copy is written for exactly this purpose
+and the lane log never quotes it — and does not reach the lane log; which of the
+three mechanisms above loses it is the open question, not an assumption to build
+the fix on.
 
 **Minimal solution (mechanism-independent).** On the non-zero path, the driver
 must put the inner refusal into its own stderr — and it does not have to
