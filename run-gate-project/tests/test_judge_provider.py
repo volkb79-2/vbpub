@@ -39,6 +39,7 @@ Design: docs/DESIGN-judge-provider-2026-11.md.
 from __future__ import annotations
 
 import atexit
+import contextlib
 import copy
 import json
 import os
@@ -227,14 +228,114 @@ def _judge_repo(tmp_path: Path, image: str = "tester-unified-rust:local",
     return repo, proj
 
 
+def _git(repo: Path, *args: str) -> str:
+    """Run one fixture git command and return its stdout.
+
+    Round-2 review, the `True/False` sweep: EVERY fixture git call goes
+    through this one helper so `check=True`, `capture_output=True` and
+    `text=True` are declared ONCE instead of repeated (and independently
+    flippable) at 10-odd call sites. `check=True` is the meaningful one: a
+    failed fixture command means the fixture did not build the state the
+    oracle thinks it did, and it must fail loudly rather than let a later
+    assertion explain it.
+    """
+    proc = subprocess.run(["git", "-C", str(repo), *args], check=True,
+                          capture_output=True, text=True)
+    return proc.stdout
+
+
 def docker_mounts(call: list[str]) -> list[str]:
     return [call[index + 1] for index, item in enumerate(call)
             if item in ("-v", "--mount")]
 
 
+class FlushRecorder:
+    """A stream that records every `write` and `flush` IN ORDER.
+
+    Round-2 review: `flush=True` on a disclosure line is a CONTRACT, not a
+    habit -- run-gate's stdout is a pipe whenever a caller consumes it live,
+    and a pipe is block buffered, so an unflushed line can reach the operator
+    AFTER the container output it is supposed to precede. A test that only
+    compared the text would stay green with the flush removed, which is
+    exactly the `True -> False` mutant R2 found alive; this records the ORDER
+    instead, so `print(..., flush=True)` (which writes its pieces and then
+    flushes) satisfies `line_is_flushed` and a plain `print` cannot.
+    """
+
+    def __init__(self) -> None:
+        self.events: list[tuple[str, str]] = []
+
+    def write(self, text: str) -> int:
+        self.events.append(("write", text))
+        return len(text)
+
+    def flush(self) -> None:
+        self.events.append(("flush", ""))
+
+    def text(self) -> str:
+        return "".join(piece for kind, piece in self.events
+                       if kind == "write")
+
+    def line_is_flushed(self, needle: str) -> bool:
+        """Whether the PRINT carrying `needle` ends on an immediate flush.
+
+        A `print(..., flush=True)` emits `write(text)`, the newline `write`, and
+        then `flush()` -- in that order, with separator writes in between when
+        the call has several args. A plain `print` emits the same writes and
+        NO flush, so the distinction is exactly "is the terminator followed by
+        a flush", which no text comparison can see.
+        """
+        for index, (kind, piece) in enumerate(self.events):
+            if kind != "write" or needle not in piece:
+                continue
+            cursor = index
+            while cursor < len(self.events):
+                cursor_kind, cursor_text = self.events[cursor]
+                if cursor_kind != "write":
+                    return False        # a flush BEFORE the terminator
+                if "\n" in cursor_text:
+                    # The line just ended here: the very next event decides.
+                    return (cursor + 1 < len(self.events)
+                            and self.events[cursor + 1] == ("flush", ""))
+                cursor += 1
+            return False
+        return False
+
+
 # ---------------------------------------------------------------------------
 # 1. Declaration: one closed key, on a lane kind that can receive it
 # ---------------------------------------------------------------------------
+
+class TestJudgeFixtureContract:
+    """Round-2 review, the `True/False` sweep over the FIXTURE helpers.
+
+    A fixture argument that is never exercised by a mutant is not a fact the
+    suite holds; these two are the ones worth keeping, so each is pinned by
+    asserting the BEHAVIOUR it exists for rather than by leaving the keyword
+    unexamined.
+    """
+
+    def test_git_helper_FAILS_LOUDLY_on_a_command_git_refuses(self, tmp_path):
+        """`_git` carries `check=True`: a fixture command that fails must stop
+        the test, because a silent failure leaves a half-built repository and
+        a later assertion then explains a state the oracle never created."""
+        repo = make_repo(tmp_path)
+        with pytest.raises(subprocess.CalledProcessError):
+            _git(repo, "rev-parse", "--verify", "no-such-ref")
+        # …and the helper really does return stdout for the calls it serves.
+        assert len(_git(repo, "rev-parse", "HEAD").strip()) == 40
+
+    def test_minimal_judge_is_idempotent_on_a_repository_it_already_prepared(
+            self, tmp_path):
+        """`_minimal_judge`'s `parents`/`exist_ok` are what make it callable on
+        a repository that already carries the judge trees (an oracle that adds
+        the judge to an existing fixture), instead of raising FileExistsError
+        on the directory it just confirmed."""
+        repo = make_repo(tmp_path)
+        _minimal_judge(repo)
+        _minimal_judge(repo)
+        assert (repo / "assay" / "pyproject.toml").is_file()
+
 
 class TestJudgeDeclaration:
     def test_assay_is_the_only_provider_in_the_vocabulary(self):
@@ -423,7 +524,9 @@ class TestJudgeDeclaration:
         repo = make_repo(tmp_path)
         _minimal_judge(repo)
         proj = repo / tree / "consumer"
-        proj.mkdir(parents=True)
+        # `parents` is redundant: `repo / tree` exists (the tree is what this
+        # fixture creates), so only the last component is new.
+        proj.mkdir()
         (proj / "run-gate.toml").write_text(textwrap.dedent("""\
             schema_version = 1
             [environments.rust]
@@ -666,22 +769,74 @@ class TestJudgeIdentity:
         # A release tag with assay's own grammar, then a commit on top of it:
         # the recorded version must say BOTH (the version a bare tag would
         # report is not the source that ran).
-        subprocess.run(["git", "-C", str(repo), "tag", "assay-v9.9.9"],
-                       check=True)
+        _git(repo, "tag", "assay-v9.9.9")
         (repo / "assay" / "extra.txt").write_text("x\n")
-        subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True)
-        subprocess.run(["git", "-C", str(repo), "commit", "-qm", "after tag"],
-                       check=True)
+        _git(repo, "add", "-A")
+        _git(repo, "commit", "-qm", "after tag")
         identity = run_gate.judge_identity(
             {"kind": "command", "environment": "rust", "judge": "assay"},
             repo)
-        head = subprocess.run(["git", "-C", str(repo), "rev-parse", "HEAD"],
-                              capture_output=True, text=True).stdout.strip()
+        head = _git(repo, "rev-parse", "HEAD").strip()
         assert identity["commit"] == head
         assert identity["name"] == "assay"
         assert identity["provided_by"] == "run-gate"
         assert identity["version"].startswith("assay-v9.9.9-1-g"), identity
         assert identity["dirty"] is False
+
+    def test_dirty_comes_from_a_REAL_git_status_on_a_real_repository(
+            self, tmp_path):
+        """Round-2 review: R2 killed `capture_output=True` on the status call
+        only because OTHER fixtures noticed; the DIRT case itself must be
+        proven through a real `git status` against a real repository, so the
+        pair (modified judge file -> True, clean tree -> False) is a fact
+        about git rather than about a stub that answers what the test wants.
+        No monkeypatch: the subprocess is real, and a mutant that drops
+        `capture_output` reads an EMPTY stdout and would report `False`. """
+        repo, _proj = _judge_repo(tmp_path)
+        clean = run_gate.judge_identity(
+            {"kind": "command", "environment": "rust", "judge": "assay"},
+            repo)
+        assert clean["dirty"] is False, clean["dirty_source"]
+        tracked = repo / "assay" / "src" / "assay" / "cli.py"
+        assert tracked.is_file()
+        tracked.write_text(tracked.read_text() + "# edited judge source\n")
+        modified = run_gate.judge_identity(
+            {"kind": "command", "environment": "rust", "judge": "assay"},
+            repo)
+        assert modified["dirty"] is True
+        # Both answers came from the same real command, so the value is the
+        # tree's state rather than a default.
+        assert modified["dirty_source"].startswith(
+            "git status --porcelain --ignored=matching --")
+
+    def test_a_non_utf8_path_in_the_judge_tree_is_still_answered(
+            self, tmp_path):
+        """Round-2 review: `text=True` on the status call would raise
+        UnicodeDecodeError (a ValueError, NOT the `except OSError` there) on a
+        `core.quotepath=false` repository containing a non-UTF-8 filename, so
+        the identity would crash instead of stating that the tree is dirty.
+        The BYTES of `git status` answer the only question asked here."""
+        repo, _proj = _judge_repo(tmp_path)
+        _git(repo, "config", "core.quotepath", "false")
+        Path(repo / os.fsdecode(b"assay/src/\xff-odd.txt")).write_bytes(b"x\n")
+        identity = run_gate.judge_identity(
+            {"kind": "command", "environment": "rust", "judge": "assay"},
+            repo)
+        assert identity["dirty"] is True, identity["dirty_source"]
+
+    def test_a_non_utf8_tag_name_cannot_break_the_version_derivation(
+            self, tmp_path):
+        """The same failure mode one call over: `git describe` renders an
+        arbitrary tag name verbatim, and text mode's strict decoding would
+        raise out of a function whose contract is `null` WITH a reason."""
+        repo, _proj = _judge_repo(tmp_path)
+        _git(repo, "tag", os.fsdecode(b"assay-v1.0.0-\xff"))
+        identity = run_gate.judge_identity(
+            {"kind": "command", "environment": "rust", "judge": "assay"},
+            repo)
+        assert identity["dirty"] is False
+        assert identity["version"] is None
+        assert identity["version_source"].startswith("no assay-v*")
 
     def test_an_uncommitted_judge_is_recorded_as_dirty_never_as_clean(
             self, tmp_path):
@@ -731,8 +886,7 @@ class TestJudgeIdentity:
         to `no`. Forcing `all` per invocation is what makes the answer a fact
         about the tree instead of about somebody's `.git/config`."""
         repo, _proj = _judge_repo(tmp_path)
-        subprocess.run(["git", "-C", str(repo), "config",
-                        "status.showUntrackedFiles", "no"], check=True)
+        _git(repo, "config", "status.showUntrackedFiles", "no")
         (repo / "assay" / "src" / "assay" / "untracked.py").write_text("x\n")
         identity = run_gate.judge_identity(
             {"kind": "command", "environment": "rust", "judge": "assay"},
@@ -750,10 +904,15 @@ class TestJudgeIdentity:
         def run(argv, **kw):
             if "status" in argv:
                 # Every OTHER git call (describe, rev-parse) still answers.
-                return SimpleNamespace(returncode=128, stdout="",
+                return SimpleNamespace(returncode=128, stdout=b"",
                                        stderr="fatal: bad repo")
             return original_run(argv, **kw)
-        monkeypatch.setattr(run_gate.subprocess, "run", run, raising=False)
+        # No `raising=False`: `run_gate.subprocess` IS the stdlib module and
+        # `run` exists on it, so the flag only stepped over a hypothetical
+        # absent attribute -- if that ever became true, this stub should fail
+        # loudly at SET time rather than silently patch nothing (round-2
+        # review's bool sweep).
+        monkeypatch.setattr(run_gate.subprocess, "run", run)
         identity = run_gate.judge_identity(
             {"kind": "command", "environment": "rust", "judge": "assay"},
             repo)
@@ -775,8 +934,7 @@ class TestJudgeIdentity:
         """`--match assay-v*` (assay's own grammar) is the filter; a tag from
         another project cannot stand in."""
         repo, _proj = _judge_repo(tmp_path)
-        subprocess.run(["git", "-C", str(repo), "tag", "run-gate-v1.2.3"],
-                       check=True)
+        _git(repo, "tag", "run-gate-v1.2.3")
         identity = run_gate.judge_identity(
             {"kind": "command", "environment": "rust", "judge": "assay"},
             repo)
@@ -865,6 +1023,7 @@ class TestJudgeRefusals:
 
     def test_a_directory_without_a_pyproject_is_not_the_judge(self, tmp_path):
         (tmp_path / "assay").mkdir()
+        # `parents` is required here: `libraries/` does not exist yet.
         (tmp_path / "libraries" / "cowtree").mkdir(parents=True)
         with pytest.raises(run_gate.GateNotRunError) as caught:
             run_gate.preflight_judge_provider(
@@ -933,6 +1092,10 @@ class TestJudgeCellEnvironment:
         command = [sys.executable, "-c", run_gate._JUDGE_IMPORT_GUARD_CODE,
                    roots, *pairs.split()]
         environment = {**os.environ, "PYTHONPATH": roots}
+        # `check` is left at its default (False) DELIBERATELY and the
+        # return codes below are asserted instead: the first probe MUST
+        # succeed and the second MUST fail, and `check=True` would turn the
+        # second into a CalledProcessError the assertions never reach.
         accepted = subprocess.run(command, capture_output=True, text=True,
                                   env=environment, cwd=str(tmp_path))
         assert accepted.returncode == 0, accepted.stdout + accepted.stderr
@@ -952,6 +1115,21 @@ class TestJudgeCellEnvironment:
         # (JUDGE_REFUSAL_EXIT_CODE) so the lane's `exit_map` cannot remap a
         # refusal into a verdict.
         assert refused.returncode == 2, refused.stdout
+        # …and the refusal NAMES the origin it resolved instead. This also
+        # pins `text=True` on BOTH probes: dropped, `stdout` would be bytes
+        # and this `str` assertion could not even be written (a round-2
+        # bool-sweep finding -- the return-code assertion alone never noticed
+        # the flag go away).
+        assert isinstance(refused.stdout, str)
+        assert isinstance(accepted.stdout, str)
+        named = refused.stdout.strip()
+        # The guard PRINTS the origin that is not the provided one; asserting
+        # what that message must CONTAIN (rather than one particular host
+        # path) keeps the oracle true wherever the image's own assay lives,
+        # while still proving it names the real origin instead of saying "no".
+        assert named.endswith("assay/__init__.py"), refused.stdout
+        assert all(named != str(Path(root) / "assay/__init__.py")
+                   for root in roots.split(":")), refused.stdout
 
     def test_the_command_inner_carries_the_setup_before_the_lane_argv(self):
         lane = {"kind": "command", "environment": "rust", "judge": "assay",
@@ -993,7 +1171,11 @@ def fake_docker_running_lane(tmp_path, monkeypatch) -> Path:
     log = tmp_path / "docker-calls.log"
     log.write_text("")
     state = tmp_path / "docker-state"
-    state.mkdir(exist_ok=True)
+    # No `exist_ok`: the directory does NOT exist here (a fresh `tmp_path`),
+    # so the flag was a default standing in for a fact the fixture already
+    # knows. If it ever did exist, that is a fixture bug worth failing on
+    # rather than stepping over (round-2 review's bool sweep).
+    state.mkdir()
     shim = shim_dir / "docker"
     shim.write_text(textwrap.dedent(f"""\
         #!/bin/sh
@@ -1048,6 +1230,21 @@ def fake_docker_running_lane(tmp_path, monkeypatch) -> Path:
     return log
 
 
+def _remove_quietly(path: Path) -> None:
+    """Remove a fixture directory without ever failing the run.
+
+    Registered with `atexit`, so it runs at INTERPRETER EXIT, where an
+    exception cannot be attributed to a test and would only corrupt the
+    session's exit status. That is the behaviour, so it is written as
+    behaviour (a swallowed `OSError`) instead of as `ignore_errors=True` --
+    one fewer unpinned boolean, and the promise is visible at the call.
+    """
+    try:
+        shutil.rmtree(path)
+    except OSError:
+        pass
+
+
 def restricted_path(*names: str) -> str:
     """A `PATH` holding symlinks to exactly the named host tools.
 
@@ -1056,7 +1253,7 @@ def restricted_path(*names: str) -> str:
     of the host running the gate.
     """
     directory = Path(tempfile.mkdtemp(prefix="run-gate-test-restricted-"))
-    atexit.register(shutil.rmtree, directory, ignore_errors=True)
+    atexit.register(_remove_quietly, directory)
     for name in names:
         found = shutil.which(name)
         assert found is not None, f"the fixture needs {name} on the host"
@@ -1168,7 +1365,7 @@ class TestJudgeEndToEnd:
         repo, proj = _judge_repo(tmp_path)
         shutil.rmtree(repo / "assay" / "analysis")
         commit_all(repo, "drop the analysis sibling")
-        log = fake_docker_running_lane(tmp_path, monkeypatch)
+        fake_docker_running_lane(tmp_path, monkeypatch)
         monkeypatch.setenv("RUN_GATE_TEST_LANE_PATH",
                            restricted_path(*self.LANE_PATH_TOOLS))
         proc = run_tool(proj, "rust-r1")
@@ -1314,8 +1511,11 @@ class TestJudgeDerivationEdges:
         like `assay-v-not-a-release`) must not be recorded as a version."""
         shim = SimpleNamespace(
             run=lambda argv, **_kw: SimpleNamespace(
-                returncode=0, stdout="assay-v-not-a-release-0-gdeadbeef\n"
-                if "describe" in argv else ""))
+                returncode=0,
+                # describe answers in BYTES, exactly like the production
+                # call; rev-parse keeps its `text=True` str answer.
+                stdout=(b"assay-v-not-a-release-0-gdeadbeef\n"
+                        if "describe" in argv else f'{"a" * 40}\n')))
         monkeypatch.setattr(run_gate, "subprocess", shim)
         identity = run_gate.judge_identity(self._lane(), tmp_path)
         assert identity["version"] is None
@@ -1328,7 +1528,9 @@ class TestJudgeDerivationEdges:
         evidence about THIS source."""
         shim = SimpleNamespace(
             run=lambda argv, **_kw: SimpleNamespace(
-                returncode=0, stdout="assay-v9.9.9\n"))
+                returncode=0,
+                stdout=(b"assay-v9.9.9\n" if "describe" in argv
+                        else f'{"a" * 40}\n')))
         monkeypatch.setattr(run_gate, "subprocess", shim)
         identity = run_gate.judge_identity(self._lane(), tmp_path)
         assert identity["version"] is None
@@ -1441,10 +1643,10 @@ class TestJudgeProviderWiring:
 
         def run(argv, **kw):
             if "status" in argv:
-                return SimpleNamespace(returncode=128, stdout="",
+                return SimpleNamespace(returncode=128, stdout=b"",
                                        stderr="fatal: bad repo")
             return original_run(argv, **kw)
-        monkeypatch.setattr(run_gate.subprocess, "run", run, raising=False)
+        monkeypatch.setattr(run_gate.subprocess, "run", run)
         fake_docker(tmp_path, monkeypatch)
         monkeypatch.chdir(proj)
         assert run_gate.main(["rust-r1"]) == 0
@@ -1475,8 +1677,7 @@ class TestJudgeProviderWiring:
         monkeypatched = run_gate.refresh_judge_identity(
             lane, "rust-r1", repo, record)
         assert record["judge"]["commit"] != "0" * 40
-        head = subprocess.run(["git", "-C", str(repo), "rev-parse", "HEAD"],
-                             capture_output=True, text=True).stdout.strip()
+        head = _git(repo, "rev-parse", "HEAD").strip()
         assert record["judge"]["commit"] == head
         assert lane["_judge_identity"]["commit"] == head
         assert monkeypatched["commit"] == head
@@ -1503,9 +1704,7 @@ class TestJudgeProviderWiring:
         _repo, proj, code, streams = self._run(
             tmp_path, monkeypatch, capsys, "rust-r1")
         assert code == 0, streams.err
-        head = subprocess.run(
-            ["git", "-C", str(proj.parent), "rev-parse", "HEAD"],
-            capture_output=True, text=True).stdout.strip()
+        head = _git(proj.parent, "rev-parse", "HEAD").strip()
         latest = json.loads(
             (proj / ".run-gate/history.json").read_text()
         )["lanes"]["rust-r1"]["latest"]
@@ -1531,8 +1730,7 @@ class TestJudgeProviderWiring:
             tmp_path, monkeypatch, capsys, "rust-r1")
         assert code == 0, streams.err
         payload = written["rust-r1"]
-        head = subprocess.run(["git", "-C", str(repo), "rev-parse", "HEAD"],
-                              capture_output=True, text=True).stdout.strip()
+        head = _git(repo, "rev-parse", "HEAD").strip()
         assert isinstance(payload["judge"], dict), payload["judge"]
         assert payload["judge"]["name"] == "assay"
         assert payload["judge"]["commit"] == head
@@ -1588,14 +1786,95 @@ class TestJudgeProviderWiring:
         fresh = run_gate.judge_identity(
             {"kind": "command", "environment": "rust", "judge": "assay"},
             repo)
-        assert fresh["commit"] == subprocess.run(
-            ["git", "-C", str(repo), "rev-parse", "HEAD"],
-            capture_output=True, text=True).stdout.strip()
+        assert fresh["commit"] == _git(repo, "rev-parse", "HEAD").strip()
 
 
 # ---------------------------------------------------------------------------
 # 6b. A SEQUENCE preflights its judge members before its first member runs
 # ---------------------------------------------------------------------------
+
+class TestJudgeDisclosureOrdering:
+    """Round-2 review: the three R2 survivors were `flush=True -> False` on
+    the disclosure lines. They survived because every oracle compared TEXT,
+    and text is identical flushed or not. These record the ORDER instead --
+    `FlushRecorder` counts `write` and `flush` as they happen -- so a removed
+    flush is a red test rather than a comment. The property matters for the
+    stated reason: run-gate's stdout is a pipe whenever a caller consumes it
+    live, and a pipe is block buffered."""
+
+    LANE = {"kind": "command", "environment": "rust", "judge": "assay"}
+
+    def _identity(self, dirty, dirty_source="git status ..."):
+        return {"provided_by": "run-gate", "name": "assay", "commit": "0" * 40,
+                "version": None, "version_source": "no assay-v* release tag",
+                "dirty": dirty, "dirty_source": dirty_source,
+                "source": "/tree/assay", "pythonpath": [], "mounts": ["assay"]}
+
+    @pytest.mark.parametrize("dirty", [False, True, None])
+    def test_each_disclosure_line_is_flushed_immediately_after_its_write(
+            self, dirty):
+        lane = {**self.LANE, "_judge_identity": self._identity(dirty)}
+        stream = FlushRecorder()
+        with contextlib.redirect_stdout(stream):
+            run_gate.print_judge_provider(lane)
+        assert stream.line_is_flushed("run-gate: judge: assay"), stream.events
+        if dirty is True:
+            assert stream.line_is_flushed("WARNING: judge source is dirty")
+        elif dirty is None:
+            assert stream.line_is_flushed("cleanliness is UNKNOWN")
+        else:
+            # Clean says nothing beyond the one line, so nothing else may be
+            # flushed either -- a warning would be a false alarm.
+            assert len(stream.events) == 3     # write, newline, flush
+
+    def test_the_re_derivation_warning_is_flushed_on_stderr(
+            self, tmp_path, capsys):
+        """The same contract for the OTHER judge disclosure: a changed
+        identity between preflight and container start."""
+        repo, _proj = _judge_repo(tmp_path)
+        stale = dict(run_gate.judge_identity(self.LANE, repo))
+        stale["commit"] = "0" * 40
+        lane = {**self.LANE, "_judge_identity": stale}
+        stream = FlushRecorder()
+        with contextlib.redirect_stderr(stream):
+            run_gate.refresh_judge_identity(lane, "rust-r1", repo, {})
+        assert stream.line_is_flushed("changed between the preflight"), \
+            stream.events
+
+    def test_the_sequence_member_line_is_flushed(
+            self, tmp_path, monkeypatch, capsys):
+        """And the third: the line the sequence prints before member one, so
+        a piped log cannot show member one's output first."""
+        config = textwrap.dedent("""\
+            schema_version = 1
+
+            [environments.rust]
+            mode = "ephemeral"
+            image = "tester-unified:run-gate-2560"
+
+            [lanes.judged]
+            kind = "command"
+            environment = "rust"
+            judge = "assay"
+            argv = ["bash", "-c", "echo judged-marker"]
+            clean_tree = false
+
+            [lanes.gate]
+            kind = "sequence"
+            lanes = ["judged"]
+            """)
+        repo = make_repo(tmp_path)
+        _minimal_judge(repo)
+        proj = make_project(repo, config)
+        monkeypatch.chdir(proj)
+        fake_docker(tmp_path, monkeypatch)
+        monkeypatch.setenv("RUN_GATE_ALLOW_MAIN_CHECKOUT", "1")
+        stream = FlushRecorder()
+        with contextlib.redirect_stdout(stream):
+            assert run_gate.main(["gate"]) == 0
+        assert stream.line_is_flushed("preflight: member 'judged'"), \
+            stream.events
+
 
 class TestJudgeSequencePreflight:
     """Round-1 review item 8: every member is its own invocation, so a judge
@@ -1801,3 +2080,23 @@ class TestJudgeProviderDocs:
         note = self._read("docs/DESIGN-judge-provider-2026-11.md")
         for pointer in ("../README.md", "../CONSUMERS.md", "../SPEC.md"):
             assert pointer in note, pointer
+
+    def test_the_flush_and_decode_contracts_are_documented(self):
+        """Round-2 review: two facts a reader must be able to find, because
+        each is a CONTRACT rather than a preference -- an unflushed disclosure
+        line can arrive after the output it precedes, and a decode choice
+        decides whether an odd filename/tag crashes or is answered.
+
+        The oracle fails on a document that stops saying either, so the pin
+        lives with the rule instead of only in the code comment."""
+        for relative in ("SPEC.md", "CONSUMERS.md", "docs/DESIGN-GUIDE.md",
+                         "docs/DESIGN-judge-provider-2026-11.md",
+                         "README.md", "CHANGES.md"):
+            text = self._read(relative)
+            assert "flush" in text.lower(), relative
+            assert "BYTES" in text or "bytes" in text, relative
+        # SPEC carries the normative form of both, including the ONE place a
+        # decode failure is stated rather than avoided.
+        spec = self._read("SPEC.md")
+        assert "FLUSHED" in spec
+        assert "not valid UTF-8" in spec or "BYTES" in spec

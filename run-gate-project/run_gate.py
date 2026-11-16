@@ -8328,6 +8328,16 @@ def print_judge_provider(lane: dict) -> None:
     operator must see in the lane's own log rather than infer from a mount.
     The identity dict is `preflight_judge_provider`'s and the run record's
     -- one derivation, disclosed, recorded, and repeated by the lane's script.
+
+    Every line here is FLUSHED, and that is a contract, not a habit
+    (round-2 review): run-gate's stdout is a PIPE whenever a caller -- a
+    controller, a gate wrapper, a CI step -- consumes it live, and a pipe is
+    block buffered. Without the flush the disclosure would wait in the buffer
+    while the container it describes streams its own output through this
+    process, so the log could show the lane's first lines BEFORE the line
+    naming its judge (and a lane that then hangs would show none of it).
+    `flush=True` below is pinned by an oracle that counts `flush` against
+    `write` on a recording stream, so removing it cannot pass silently.
     """
     identity = lane.get("_judge_identity")
     if identity is None:
@@ -15115,6 +15125,10 @@ def refresh_judge_identity(lane: dict, lane_name: str, worktree: Path,
               f"changed between the preflight and this container's start "
               f"({detail}); recording the judge as it is NOW, because that "
               f"is what the read-only mount contains", file=sys.stderr,
+              # Flushed for `print_judge_provider`'s reason: stderr is
+              # unbuffered in CPython but NOT once a caller replaces it with a
+              # pipe or a tee, and this warning is read beside container output
+              # arriving from another process.
               flush=True)
     lane["_judge_identity"] = fresh
     if run_record is not None:
@@ -15155,13 +15169,28 @@ def judge_identity(lane: dict, worktree: Path) -> dict | None:
         described = subprocess.run(
             ["git", "-C", str(worktree), "describe", "--tags", "--long",
              "--match", JUDGE_DESCRIBE_MATCH],
-            capture_output=True, text=True, env=host_git_environment())
+            # BYTES, decoded HERE (round-2 review): a tag name is arbitrary
+            # bytes and `git describe` renders it verbatim, so text mode's
+            # strict decoding raises UnicodeDecodeError -- a ValueError, NOT
+            # caught by the `except OSError` below -- out of a function whose
+            # contract is "`null` WITH a stated reason". Decoding strictly
+            # and stating the failure is what keeps that promise; a
+            # `replace`d character would instead let a non-UTF-8 tag through
+            # the release grammar and record a version string whose bytes are
+            # not the tag's.
+            capture_output=True, env=host_git_environment())
+        described_stdout = described.stdout.decode("utf-8")
     except OSError:
         described = None
+        described_stdout = ""
+    except UnicodeDecodeError:
+        described = None
+        described_stdout = ""
+        describe_status = "a release tag whose name is not valid UTF-8"
     if described is not None:
         describe_status = described.returncode
         if described.returncode == 0:
-            text = described.stdout.strip()
+            text = described_stdout.strip()
             # `--match` is only a GLOB filter: a hand-made tag named
             # `assay-v-not-a-release` passes it and `--long` renders it
             # happily. The recorded version must also be assay's own RELEASE
@@ -15176,6 +15205,15 @@ def judge_identity(lane: dict, worktree: Path) -> dict | None:
         version_source = (f"no {JUDGE_DESCRIBE_MATCH} release tag is reachable "
                           f"from this commit (git describe answered "
                           f"{describe_status})")
+    # BYTES, not text (round-2 review): the only question the status call
+    # answers is "did git report anything", which `bool(status.stdout.strip())`
+    # answers for a byte string exactly as for a str -- so decoding adds
+    # nothing, and a `core.quotepath=false` repository with a non-UTF-8 path
+    # inside a judge tree WOULD make text mode raise UnicodeDecodeError (a
+    # ValueError, NOT caught by the `except OSError` below), killing the
+    # identity derivation over a filename instead of stating a fact about the
+    # tree. An oracle builds exactly that repository through the real
+    # `git status`.
     try:
         status = subprocess.run(
             ["git", "-C", str(worktree),
@@ -15192,7 +15230,7 @@ def judge_identity(lane: dict, worktree: Path) -> dict | None:
              "-c", "status.showUntrackedFiles=all",
              "status", "--porcelain", "--ignored=matching", "--",
              *JUDGE_SOURCE_TREES],
-            capture_output=True, text=True, env=host_git_environment())
+            capture_output=True, env=host_git_environment())
     except OSError:
         status = None
     if status is None:
@@ -19840,6 +19878,9 @@ def sequence_judge_preflight(name: str, lanes: dict, cfg: dict,
                                             member_env, member_source)
         print(f"run-gate: sequence {name!r} preflight: member {leaf_name!r} "
               f"provides its judge ({judge_identity_line(identity)})",
+              # Flushed (round-2 review) for `print_judge_provider`'s reason:
+              # this line must reach a piped log BEFORE the first member's
+              # output, which arrives from a separate process.
               flush=True)
 
 
