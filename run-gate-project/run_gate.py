@@ -17,7 +17,7 @@ See run-gate-project/README.md (design authority) and CONSUMERS.md (adoption).
 # Public CLI distribution: the installed wheel's metadata supplies its version.
 # __revision__ is retained only for persisted-record provenance.
 # rev 65: send single-line JSON over the newline-framed cgprofile control socket
-__revision__ = 68  # rev 68: pin worktree Git pointers and harden host Git readers
+__revision__ = 69  # rev 69: refuse a WRITTEN-null ciu `schema_version`; document the verbs/flags/env the usage text had omitted
 # rev 66: preflight observer contract before private R2 lanes
 # rev 64: refuse failed ctl carriers and foreign watch verdicts
 # Rev 63 holds requested exec/bare-host children behind a ready/continue
@@ -532,6 +532,15 @@ HOST_IMAGE_ENV_VAR = "RUN_GATE_HOST_IMAGE"
 # uid).
 ENV_USER_INVOKER = "invoker"
 DEFAULT_HOST_IMAGE = "ghcr.io/volkb79-2/mdt-cockpit-devcontainer:trixie-py3.14-php8.5-latest"
+# RG-119 item 7: DEFAULT_HOST_IMAGE is NOT the `host` fallback at run time
+# any more. Since RG-101 the name `host` selects no behaviour at all — a lane
+# naming it without declaring `[environments.host]` is REFUSED, with the exact
+# declaration as the remedy — so the only remaining reader is
+# `migrate_environment_modes`, which materializes a `mode = "ephemeral"` table
+# for a legacy config and needs SOME image reference to write. It is therefore
+# a migration seed, never a silently chosen runtime image (the default-razor
+# this estate's rules name): a config that still relies on it gets a written
+# declaration the operator reviews and commits, not an inherited image.
 EXTRA_MOUNT_ENV_VAR = "RUN_GATE_EXTRA_MOUNTS"
 HOST_DOCKER_GID_ENV_VAR = "RUN_GATE_HOST_DOCKER_GID"
 MDT_HOST_DOCKER_GID_ENV_VAR = "MDT_HOST_DOCKER_GID"
@@ -2549,7 +2558,13 @@ def load_config_snapshot(project_dir: Path
 
 
 def load_config(project_dir: Path) -> tuple[dict, Path, dict, Path | None]:
-    """Compatibility wrapper for callers that do not need provenance."""
+    """TEST-ONLY compatibility wrapper (RG-119 item 8).
+
+    Production code calls `load_config_snapshot` exclusively: a run must record
+    the exact bytes it parsed (`R-36l`), and this wrapper discards both digests.
+    It survives because ~50 unit tests want the four-tuple; keeping it labelled
+    is the alternative the item offered to rewriting all of them. Nothing in
+    `run_gate.py` may call it."""
     project, project_path, central, central_path, _project_sha, _central_sha = \
         load_config_snapshot(project_dir)
     return project, project_path, central, central_path
@@ -10124,10 +10139,18 @@ def usable_recorded_base(worktree: Path, doc: dict) -> tuple[str | None, str]:
     """
     # Schema dispatch. ciu schema v6 records the symbolic base separately
     # (`base_branch_ref`) because `base_ref` became the pinned SHA; v1-v5 keep
-    # the symbolic-`base_ref` reading below, byte for byte. A record with no
-    # `schema_version` at all is read as legacy, as it always was.
-    version = doc.get("schema_version")
-    if version is not None:
+    # the symbolic-`base_ref` reading below, byte for byte. A record with NO
+    # `schema_version` key at all is read as legacy, as it always was.
+    #
+    # RG-119 item 9: a PRESENT key whose value is `null` is NOT that case. An
+    # absence means the writer predates the key; a written null means the
+    # writer had a version slot and did not fill it, and folding the two
+    # together is the "absence for emptiness" read that lets a malformed
+    # record be interpreted under a grammar it never declared. It is refused
+    # by name instead, with the same explicit-`--base` way out as any other
+    # unusable record (this path never raises: it degrades).
+    if "schema_version" in doc:
+        version = doc["schema_version"]
         if type(version) is not int or version < 1:
             return None, (f"its 'schema_version' {version!r} is not a "
                           f"positive integer")
@@ -18427,6 +18450,12 @@ def usage(lanes: dict, inherited: set[str] | None = None) -> str:
         "       run-gate --list   (machine-readable: name<TAB>kind<TAB>environment)",
         "       run-gate --list --json   (R-55: kind, environments, members and"
         " derived rigor)",
+        "       run-gate --version   (RG-94: the installed wheel's SemVer, read"
+        "                           from distribution metadata; the public"
+        "                           compatibility identity)",
+        "       run-gate migrate-modes CONFIG  (RG-101: materialize the"
+        "         environments a legacy `host`/`bare-host` lane names, so the"
+        "         loader accepts a declaration it refuses with a remedy)",
         "       run-gate validate-pointers CONSUMER.toml [--root DIR]",
         "         (RG-2: certify every run-gate pointer in a consumer document —",
         "          trove gates, release steps — against the SSOT lanes they name)",
@@ -18535,6 +18564,10 @@ def usage(lanes: dict, inherited: set[str] | None = None) -> str:
         "                    else the judged tree's merge-base with its",
         "                    upstream; neither refuses (a guessed base is not a",
         "                    base). A lane that does NOT delegate refuses --base",
+        "  --lock-wait D     how long a lane WAITS for its RG-20/R-41"
+        "                    coordination locks before refusing (the `budget`"
+        "                    grammar, default 10m; never a hold — a lane that"
+        "                    cannot get its lock inside that window is ERROR)",
         "  --admission-wait D  RG-80: wait for a daemon-wide gate slot (default 10m)",
         "  --override-admission  RG-80: run past the published count cap, disclosed",
         "  -- ARGS...        append literal argv values to an opted-in command lane",
@@ -18649,6 +18682,11 @@ def usage(lanes: dict, inherited: set[str] | None = None) -> str:
         "  CGROUP_PARENT_DEV_GATES      container lanes take their cgroup slice",
         "                                from cgroup_slice, then cgroup_slice_env,",
         "                                then THIS variable; absent = hard error",
+        "  RUN_GATE_HOST_IMAGE           overrides the image of the DECLARED"
+        "                                `host` environment (that name alone selects"
+        "                                no behaviour; its required mode does);"
+        "                                absent = the environment's own",
+        "                                `image` / `image_env`",
         "  RUN_GATE_EXTRA_MOUNTS         colon-separated host=container pairs appended",
         "                                to EPHEMERAL container lanes (e.g. docker.sock)",
         "  RUN_GATE_MOUNT_ALIAS          'host=namespace' declaring the repo's second",
@@ -18686,6 +18724,12 @@ def usage(lanes: dict, inherited: set[str] | None = None) -> str:
         "                                it will never have); 'on' force-enables even over",
         "                                a lane's own profile = false. Any other value",
         "                                refuses at load, by name",
+        f"  {PROFILE_REMOVED_ENV_VAR} removed with cgprofile 2.0 (RG-156): the"
+        "                                socket is the only carrier, so this variable"
+        "                                and the `transport`/`daemon`/`socket_path`"
+        "                                keys are refused by name at load. Unset it; a",
+        "                                reachable profiler comes from",
+        f"                                ${CGPROFILE_CONTROL_SOCKET_ENV_VAR} alone",
         "",
         "Lane declarations: run-gate.toml in the current project directory; shared environment",
         "facts may live in an enclosing run-gate.root.toml. Judgment policy",

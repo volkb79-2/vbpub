@@ -16,7 +16,7 @@ this host, the image on remote hosts, and the ciu/run-gate/assay seams).
 
 1. **Install the wheel.** Install the chosen released SemVer into the
    environment that drives gates. For example:
-   `python -m pip install https://github.com/volkb79-2/vbpub/releases/download/run-gate-v24.0.0/run_gate-24.0.0-py3-none-any.whl`.
+   `python -m pip install https://github.com/volkb79-2/vbpub/releases/download/run-gate-v25.6.0/run_gate-25.6.0-py3-none-any.whl`.
    Confirm it with `run-gate --version`. Do not create or copy a project-local
    script or symlink.
 2. **Declare lanes** in `run-gate.toml` in the project directory (final schema
@@ -378,6 +378,15 @@ clean_tree = true                   # default TRUE; false needs a written reason
 description = "one-line what/why"   # optional; shown by --help (never by --list)
 required_env = ["SCHEMA_GATE_PW"]   # optional; gate refuses to start if unset/empty,
                                     # and (container lanes) if not on the env's forward_env
+# exit_map is the command lane's closed status vocabulary (RG-119): raw
+# integer status -> PASS/FAIL/ERROR, for a tool whose nonzero code is not a
+# failure (a linter reporting findings, a `--check` verb). Absent, a command
+# lane maps 0 to PASS and every nonzero code to FAIL. It is LEGAL ONLY on
+# kind = "command" (a refusal names the kind), must be a non-empty table, and
+# an unmapped code keeps the default mapping. An assay lane's statuses come
+# from the verdict artifact's closed outcome table instead (R-04b).
+# [lanes.suite.exit_map]
+# 5 = "PASS"                          # pytest: "no tests collected" is not a red suite
 artifacts = ["coverage.json"]       # optional; paths printed after EVERY run (success or
                                     # failure); {worktree} substituted; relative entries
                                     # resolve against the effective project dir; assay
@@ -1518,8 +1527,9 @@ the closeout was skipped; the reason names which),
 is printed; a malformed or unverified claim set is analyzed, never assumed
 absent). Every
 status other than `complete`/`incomplete` prints a `WARNING` on stderr saying
-the lane verdict and exit are unchanged. Pin the judge to a version with
-`analyze campaign` (see Assay's README) to avoid a standing `unavailable`.
+the lane verdict and exit are unchanged. Pin the judge to a version that has
+`analyze campaign` — **Assay 8.0.0** is the first release carrying it (B108
+phase 1) — to avoid a standing `unavailable`.
 
 A `kind = "command"` lane that runs `assay run` itself is not analyzed, and
 this release has no key that opts it in (Assay decision A-497); run
@@ -2376,19 +2386,71 @@ $ run-gate history selftest --json
     "selftest": {
       "history": [
         {
-          "commit": "9f1c0aa41b3d…",
+          "closeout": null,
+          "commit": "<sha40>",
+          "config_path": "<checkout>/run-gate-project/run-gate.toml",
+          "config_sha256": "<sha256>",
+          "central_config_path": "<checkout>/run-gate.root.toml",
+          "central_config_sha256": "<sha256>",
+          "contamination": {"flagged": false, "reasons": []},
           "dirty": false,
-          "duration_seconds": 58.9,
+          "duration_seconds": 337.828,
           "excluded_reason": null,
           "exit_code": 0,
           "git_operation": null,
           "history_eligible": true,
+          "image_selection": {
+            "declared_image": "tester-unified:local",
+            "override_env": "RUN_GATE_TESTER_UNIFIED_IMAGE",
+            "override_applied": true,
+            "effective_image": "tester-unified:<candidate-tag>",
+            "image_id": "sha256:<image-id>",
+            "image_id_status": "observed"
+          },
+          "io_sync": "relaxed",
           "lane": "selftest",
+          "log_path": "<evidence-dir>/selftest/<run>.log",
           "outcome": "pass",
-          "repo": "/workspaces/vbpub",
-          "revision": 30,
-          "started_at": "2026-08-30T18:44:02Z",
-          "worktree": "/workspaces/vbpub"
+          "placement": null,
+          "profile_error": null,
+          "profile_ref": null,
+          "profile_summary": {
+            "schema": "lane-profile/1",
+            "status": "MEASURED",
+            "outcome": "pass",
+            "history_eligible": true,
+            "wall_seconds": 337.828,
+            "ancestor_events": "unknown",
+            "workers": null,
+            "contamination": {"flagged": false, "reasons": []},
+            "self_limited": {"flagged": false, "memory_limit_events": 0}
+          },
+          "reason": null,
+          "repo": "<checkout>",
+          "resources": {
+            "schema": "<contract-schema>",
+            "method": "cgroup-v2",
+            "scope": "container",
+            "target": "<container-name>",
+            "samples": 65,
+            "duration_seconds": 337.0,
+            "memory": {"peak_bytes": 828735488},
+            "cpu": {"seconds": 233.883, "cores_avg": 0.694,
+                    "cores_max": 1.036, "nr_throttled": 0},
+            "pressure": {"memory_full_stall_seconds": 16.715},
+            "events": {"oom_kill": 0, "memory_high_breach": 0,
+                       "limit_drift": 0},
+            "host": {"available": true,
+                     "memory_full_stall_seconds": 16.7},
+            "damon": null,
+            "daemon": null
+          },
+          "revision": 68,
+          "run_id": "<hex>",
+          "started_at": "2026-11-16T04:01:08Z",
+          "verdict": "PASS",
+          "watch": null,
+          "worktree": "<checkout>"
         }
       ],
       "latest": { "…": "same shape, ANY outcome" },
@@ -2396,15 +2458,25 @@ $ run-gate history selftest --json
         "completed": {"count": 3, "min_seconds": 7.2,
                       "median_seconds": 58.9, "max_seconds": 61.4},
         "passes":    {"count": 2, "min_seconds": 58.9,
-                      "median_seconds": 60.2, "max_seconds": 61.4}
+                      "median_seconds": 60.2, "max_seconds": 61.4},
+        "series":    { "…": "five series_stats per population (R-36j)" }
       }
     }
   },
-  "revision": 30,
-  "schema": 1,
-  "store": "/workspaces/vbpub/run-gate-project/.run-gate/history.json"
+  "revision": 68,
+  "schema": 2,
+  "store": "<checkout>/run-gate-project/.run-gate/history.json",
+  "worktree_scope": "<checkout> (the invoking checkout)"
 }
 ```
+
+The shape above is regenerated from a real `run-gate history selftest --json`
+run (RG-119 item 4): the store is history **schema 2** (R-36j added
+`resources`, `profile_error`, `profile_ref` and the `series` stats), every
+entry carries `closeout`, `placement` and `watch` in addition to the
+duration slots, and paths are written as `<placeholders>` rather than the
+example host's own directories (this estate's rule that user-facing docs stay
+host-agnostic — substitute your own checkout, evidence and image values).
 
 ```bash
 # "is this lane cheap enough to always run?" — ask the PASS series, not the
@@ -2838,7 +2910,7 @@ for the distinction between package compatibility and saved-record provenance.
 A release artifact can be installed directly, for example:
 
 ```console
-python -m pip install https://github.com/volkb79-2/vbpub/releases/download/run-gate-v24.0.0/run_gate-24.0.0-py3-none-any.whl
+python -m pip install https://github.com/volkb79-2/vbpub/releases/download/run-gate-v25.6.0/run_gate-25.6.0-py3-none-any.whl
 run-gate --version
 ```
 

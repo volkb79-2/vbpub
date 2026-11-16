@@ -6065,6 +6065,25 @@ class TestUsageEnvironmentContract:
     """RG-7: usage() exposes the environment contract, flag semantics, and
     per-lane metadata; --list stays 3-column machine-readable."""
 
+    def test_help_documents_every_verb_flag_and_env_it_refuses_or_reads(
+            self, tmp_path):
+        """RG-119: the four surfaces that were documented NOWHERE — the
+        `--version` verb, `migrate-modes`, `--lock-wait` and the
+        `RUN_GATE_HOST_IMAGE` override — plus the removed transport variable
+        the environment contract must still name (refused by name, never
+        silently ignored). Measured before the fix against the installed
+        wheel: `run-gate --help` contained none of the four strings."""
+        repo = make_repo(tmp_path)
+        proj = make_project(repo, SIMPLE_LANE)
+        out = run_tool(proj, "--help").stdout
+        for token in ("run-gate --version", "run-gate migrate-modes",
+                      "--lock-wait D", "RUN_GATE_HOST_IMAGE"):
+            assert token in out, token
+        # The removed transport variable is named in the contract so an
+        # operator who still exports it learns it is refused, not ignored.
+        assert "RUN_GATE_PROFILE_TRANSPORT" in out
+        assert "refused by name" in out
+
     def test_help_documents_env_contract_and_flag_caveat(self, tmp_path):
         repo = make_repo(tmp_path)
         proj = make_project(repo, SIMPLE_LANE)
@@ -13073,6 +13092,21 @@ class TestRecordedWorktreeBaseLegacySchemas:
         path.write_text(json.dumps(doc))
         assert run_gate.recorded_worktree_base(repo, repo) == (
             git_head(repo, "main"), path, "")
+
+    def test_a_written_null_schema_version_is_refused_not_read_as_legacy(
+            self, tmp_path):
+        """RG-119 item 9: a PRESENT `schema_version: null` was folded into
+        the legacy reading by `is not None`. An absent key and a written null
+        are different facts — the second is a malformed record, and reading it
+        under the v1-v5 grammar is reading a shape nobody declared."""
+        repo = make_feature_repo(tmp_path)
+        path = write_instance_record(repo, base_ref="main")
+        doc = json.loads(path.read_text())
+        doc["schema_version"] = None
+        path.write_text(json.dumps(doc))
+        ref, _record, why = run_gate.recorded_worktree_base(repo, repo)
+        assert ref is None
+        assert "'schema_version' None is not a positive integer" in why
 
     @pytest.mark.parametrize("version", [1, 5])
     def test_a_pinned_sha_base_ref_is_refused_with_the_base_remedy(
@@ -34886,6 +34920,85 @@ class TestUserDocumentationOracles:
     def test_ram_target_docs_name_the_supported_toml_surface(self):
         consumer_docs = (RUN_GATE_DIR / "CONSUMERS.md").read_text()
         assert "There is no `--ram-target` option" in consumer_docs
+
+    @staticmethod
+    def _released_ids() -> dict[str, str]:
+        """Backlog ids named inside a DATED changelog section, with that
+        release. Nothing else counts: an id mentioned only in `[Unreleased]`
+        has not shipped."""
+        released: dict[str, str] = {}
+        release = None
+        for line in (RUN_GATE_DIR / "CHANGES.md").read_text().splitlines():
+            match = re.match(r"^## \[([0-9]+\.[0-9]+\.[0-9]+)\] - ", line)
+            if match:
+                release = match.group(1)
+                continue
+            if line.startswith("## "):
+                release = None
+                continue
+            if release is None:
+                continue
+            for found in re.finditer(r"\bRG-([0-9]{1,3})\b", line):
+                released.setdefault(f"RG-{found.group(1)}", release)
+        return released
+
+    def test_a_released_backlog_row_never_still_reads_in_flight(self):
+        """RG-119 item 1. The index row asserted work was pending (`... in the
+        integrated candidate`, `pending release`, `full gate pending`) for
+        items CHANGES.md had already released — a stale row that reads as
+        "unverified" forever. This is the check that can go red: name an RG id
+        in a dated release section and leave its row describing a candidate.
+        """
+        released = self._released_ids()
+        assert released, "CHANGES.md has no dated release sections"
+        stale_phrases = ("in the integrated candidate", "pending release",
+                         "in the SemVer candidate", "FIXED IN CANDIDATE",
+                         "registered gate remains", "full gate pending")
+        backlog = (RUN_GATE_DIR / "KNOWN_ISSUES_TODO_BACKLOG.md").read_text()
+        stale = []
+        for line in backlog.splitlines():
+            match = re.match(r"^\|\s*(RG-[0-9]+)\s*\|", line)
+            if not match:
+                continue
+            identifier = match.group(1)
+            if identifier not in released:
+                continue
+            if any(phrase in line for phrase in stale_phrases):
+                stale.append(f"{identifier} (released {released[identifier]})")
+        assert not stale, (
+            "backlog rows still describe released items as in flight: "
+            + ", ".join(stale))
+
+    def test_lane_authoring_todos_do_not_cite_shipped_items_as_open(self):
+        """RG-119 item 2. LANE-AUTHORING §7's TODO table carried two SWAPPED
+        ids (the stall item is RG-41, the coverage-offset item is RG-40) and
+        listed shipped items as OPEN — so an author following the guide
+        re-litigates settled work. A row naming an id whose index row says
+        shipped, and still marked OPEN, fails here."""
+        shipped_marks = ("FIXED", "CLOSED", "SHIPPED", "MERGED",
+                         "SUPERSEDED", "BY DESIGN")
+        backlog = (RUN_GATE_DIR / "KNOWN_ISSUES_TODO_BACKLOG.md").read_text()
+        index_rows: dict[str, str] = {}
+        for line in backlog.splitlines():
+            match = re.match(r"^\|\s*(RG-[0-9]+)\s*\|.*\|\s*([^|]*)\|", line)
+            if match:
+                index_rows[match.group(1)] = match.group(2)
+        authoring = (RUN_GATE_DIR / "LANE-AUTHORING.md").read_text()
+        section = authoring[authoring.index("## 7. TODOs"):]
+        contradictions = []
+        for row in section.splitlines():
+            if not row.startswith("|"):
+                continue
+            cells = [cell.strip() for cell in row.strip("|").split("|")]
+            if len(cells) < 3 or not cells[-1].startswith("OPEN"):
+                continue
+            for identifier in re.findall(r"RG-[0-9]+", row):
+                state = index_rows.get(identifier, "")
+                if any(mark in state for mark in shipped_marks):
+                    contradictions.append(f"{identifier}: {state.strip()[:40]}")
+        assert not contradictions, (
+            "LANE-AUTHORING §7 lists shipped items as OPEN: "
+            + "; ".join(contradictions))
 
     def test_worktree_runner_remedy_documents_ciu_version_floor(self):
         documents = (*self.DOCS, RUN_GATE_DIR / "SPEC.md",
