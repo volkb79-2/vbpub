@@ -295,8 +295,8 @@ PI_STOP_CAUSES: dict[str, str] = {
 }
 EMPTY_COMPLETION_CAUSE = (
     "empty-completion: the session ends with an assistant message that reports "
-    "stopReason=stop but carries no prose, thinking or tool call -- the model "
-    "returned nothing, so nothing was done"
+    "stopReason=stop but carries no text and no tool call (thinking-only counts "
+    "as empty) -- the model returned nothing that acts, so nothing was done"
 )
 TOOL_USE_CAUSE = (
     "tool-use: the session ends on tool calls with no later assistant message "
