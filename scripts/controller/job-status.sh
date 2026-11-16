@@ -140,12 +140,22 @@ def active_line(name, payload):
     tool = payload.get("tool_in_flight")
     tool_seconds = age(payload.get("tool_in_flight_started_epoch"))
     progress_seconds = age(payload.get("progress_epoch"))
+    # An epoch is evidence; a BASELINE is a measurement of a tool whose counters
+    # were read and never moved. Only the second may license the stronger word,
+    # and only when the sidecar actually read the counters: a `/proc` it could
+    # not read leaves both null and the row prints `progress=-`.
+    progress_baseline_seconds = age(payload.get("progress_baseline_epoch"))
+    progress_measured = (
+        progress_seconds if progress_seconds is not None else progress_baseline_seconds
+    )
+    progress_reason = payload.get("progress_reason")
+    progress_reason_text = progress_reason if isinstance(progress_reason, str) and progress_reason else "-"
     tool_command = payload.get("tool_in_flight_command")
     steer = command_text(payload.get("steering_children"))
-    if progress_seconds is None:
+    if progress_measured is None:
         progress_text = "-"
     else:
-        progress_text = f"{progress_seconds}s"
+        progress_text = f"{progress_measured}s"
     ahead = payload.get("commits_ahead")
     # `since-commit` names WHOSE commit the age belongs to. Before this run's
     # first commit the newest commit on the branch is the BASE commit, and an
@@ -166,7 +176,7 @@ def active_line(name, payload):
         # Age alone is not a hung tool: it is a hung tool only when the run has
         # ALSO stopped showing progress evidence within the same threshold. An
         # unreadable progress fact (null) cannot license the stronger word.
-        if progress_seconds is not None and progress_seconds > hung_limit:
+        if progress_measured is not None and progress_measured > hung_limit:
             state = "HUNG-TOOL"
         else:
             state = "LONG-TOOL"
@@ -191,7 +201,7 @@ def active_line(name, payload):
         f"uncommitted={show(payload.get('uncommitted_files'))} "
         f"tokens-last-report={show(payload.get('latest_total_tokens_last_report'))} "
         f"since-commit={commit_text} "
-        f"progress={progress_text} "
+        f"progress={progress_text} progress-why={progress_reason_text} "
         f"snapshot-age={show(age(payload.get('updated_epoch')))}s"
     )
 

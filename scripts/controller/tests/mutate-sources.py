@@ -595,16 +595,48 @@ mutant("scripts/controller/pi-live.py", "pi-live-tokens-zero-as-measurement.py",
 # CTL-18: progress evidence is stream growth OR kernel counter growth. Without
 # the counters a long tool that keeps working but prints nothing reads as hung.
 mutant("scripts/controller/pi-live.py", "pi-live-progress-stream-only.py",
-       '            if self.counters is not None and counters != self.counters:\n                changed = True',
-       '            if False:\n                changed = True')
+       '                and (sample.cpu > previous.cpu or sample.io > previous.io)',
+       '                and False')
+# CTL-18 (blocker 1): the summed set is the in-flight TOOL's subtree. The agent
+# (a direct child of the wrapper) and the sidecar grow on their own every tick,
+# so counting them makes a blocked tool read as working forever.
+mutant("scripts/controller/pi-live.py", "pi-live-progress-counts-agent.py",
+       '        found, cut = descendants(root, children, limit - len(pids))',
+       '        found, cut = descendants(root, children, limit - len(pids))\n        pids.append(root)')
+mutant("scripts/controller/pi-live.py", "pi-live-progress-counts-sidecar.py",
+       '    pids: list[int] = []\n    truncated = False',
+       '    pids: list[int] = [self_pid] if self_pid in table else []\n    truncated = False')
+# Any difference is not progress: a decrease and a changed process set are
+# baselines. Deciding on "it differs" reintroduces exactly the wrong direction.
+mutant("scripts/controller/pi-live.py", "pi-live-progress-any-change.py",
+       '                and (sample.cpu > previous.cpu or sample.io > previous.io)',
+       '                and (sample.cpu != previous.cpu or sample.io != previous.io)')
+# An unreadable /proc must not license the stronger word: clamping a null
+# progress fact up to the tool's start restores a wall-clock-only rule exactly
+# where the counters cannot be read.
+mutant("scripts/controller/pi-live.py", "pi-live-progress-null-clamped.py",
+       '    if tool_started is not None and progress_epoch is not None:\n'
+       '        if progress_epoch < tool_started:\n'
+       '            progress_epoch = tool_started',
+       '    if tool_started is not None:\n'
+       '        if progress_epoch is None or progress_epoch < tool_started:\n'
+       '            progress_epoch = tool_started')
+# A tool call's own announcement is a boundary, not evidence.
+mutant("scripts/controller/pi-live.py", "pi-live-progress-tool-start.py",
+       '        if tool_started:\n            # A tool call',
+       '        if False:\n            # A tool call')
+# The node cap must be stated, not silent.
+mutant("scripts/controller/pi-live.py", "pi-live-progress-silent-cap.py",
+       '        truncated = truncated or cut',
+       '        truncated = False')
 # A tool's own partial output is progress evidence.
 mutant("scripts/controller/pi-live.py", "pi-live-tool-output-progress.py",
        '        elif event_type == "tool_execution_update":',
        '        elif event_type == "tool_execution_update_disabled":')
 # The wrapper and this sidecar are never steering targets.
 mutant("scripts/controller/pi-live.py", "pi-live-steering-includes-wrapper.py",
-       '    steering_pids = [pid for pid in process_tree(wrapper_pid) if pid not in (wrapper_pid, os.getpid())]',
-       '    steering_pids = [pid for pid in process_tree(wrapper_pid) if pid not in (os.getpid(),)]')
+       '    steering_pids = [] if located is None else located[0]',
+       '    steering_pids = [pid for pid in process_table() if pid > 0]')
 # A quiet run must read as STALLED at the configured threshold.
 mutant("scripts/controller/job-status.sh", "job-status-stall-threshold.sh",
        '    elif since_event is not None and since_event > stall_limit:',
@@ -616,12 +648,12 @@ mutant("scripts/controller/job-status.sh", "job-status-hung-tool.sh",
 # CTL-18: HUNG-TOOL is age AND absence of progress evidence. Deciding it on the
 # tool age alone is exactly the defect (a heavy-but-working tool reads as hung).
 mutant("scripts/controller/job-status.sh", "job-status-hung-without-progress.sh",
-       '        if progress_seconds is not None and progress_seconds > hung_limit:',
+       '        if progress_measured is not None and progress_measured > hung_limit:',
        '        if True:')
 # An unknown progress fact must not license the stronger word either.
 mutant("scripts/controller/job-status.sh", "job-status-progress-unknown-as-hung.sh",
-       '        if progress_seconds is not None and progress_seconds > hung_limit:',
-       '        if progress_seconds is None or progress_seconds > hung_limit:')
+       '        if progress_measured is not None and progress_measured > hung_limit:',
+       '        if progress_measured is None or progress_measured > hung_limit:')
 # The row must name the tool's command and the exact child pid to steer.
 mutant("scripts/controller/job-status.sh", "job-status-hung-tool-command.sh",
        '        tool_text += f" cmd={tool_command[:80]}"',

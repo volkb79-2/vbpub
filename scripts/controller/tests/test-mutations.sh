@@ -167,6 +167,12 @@ for pi_live_case in \
   pi-live-missing-fact:live-snapshot pi-live-usage-trend:live-usage-trend \
   pi-live-tokens-zero-as-measurement:live-usage-trend \
   pi-live-progress-stream-only:live-progress \
+  pi-live-progress-counts-agent:live-progress \
+  pi-live-progress-counts-sidecar:live-progress \
+  pi-live-progress-any-change:live-progress \
+  pi-live-progress-null-clamped:live-progress \
+  pi-live-progress-tool-start:live-progress \
+  pi-live-progress-silent-cap:live-progress \
   pi-live-tool-output-progress:live-snapshot \
   pi-live-steering-includes-wrapper:live-progress \
   job-status-stall-threshold:status-states job-status-hung-tool:status-states \

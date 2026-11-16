@@ -563,7 +563,10 @@ PY
     fail 'the row does not name the exact child pid to steer'
   fi
   # A progress fact that cannot be read is `null`, and an unknown progress fact
-  # must not license the stronger word.
+  # must not license the stronger word. The `progress-unknown` row here is the
+  # reader's own contract; the producer's side of it (that the sidecar really
+  # emits null for an in-flight tool with unreadable counters) is asserted in
+  # the live-progress check, which reads a payload the sidecar wrote.
   grep -qF 'progress-unknown: LONG-TOOL' "$ROOT/job-status-states.out" \
     || { cat "$ROOT/job-status-states.out" >&2; fail 'an unreadable progress fact was read as a hung tool'; }
   grep -qE '^progress-unknown: .*progress=- ' "$ROOT/job-status-states.out" \
@@ -702,6 +705,395 @@ body = json.load(open(sys.argv[1], encoding="utf-8"))
 assert body["latest_total_tokens"] is None, body
 assert body["latest_total_tokens_last_report"] is None, body
 PY
+}
+
+# --- progress evidence (CTL-18) -------------------------------------------
+#
+# These checks judge the RULE, not the host. pi-live.py is driven with
+# `--tick-stream` (one clock epoch per line, one tick per line) against a fake
+# `/proc` root the check owns (tests/progress-fixture.py), and the check changes
+# that root between ticks. Nothing below waits for a wall clock, sleeps for a
+# child, or counts how fast the host is: every assertion reads a fact this check
+# constructed, through the sidecar's real process-tree code.
+
+progress_start() {
+  # Start ONE sidecar for a whole check, driven by a FIFO of clock epochs.
+  # $1 = fake proc root, $2 = wrapper pid, rest = extra argv.
+  #
+  # One process per check matters: the sidecar reads the stream INCREMENTALLY,
+  # so a fresh process would re-read the tool call's start every time and
+  # classify it as a boundary (which it is). A check that needs N ticks needs
+  # one reader and N clock lines.
+  local root=$1 wrapper=$2
+  shift 2
+  PROGRESS_FIFO=$ROOT/progress-ticks.fifo
+  rm -f "$PROGRESS_FIFO" "$ROOT/progress-ticks.log"
+  mkfifo "$PROGRESS_FIFO"
+  mkdir -p "$CONTROLLER_ROOT/runs"
+  PI_LIVE_PROC_ROOT="$root" \
+    python3 "$PILIVE" --stream "${PROGRESS_STREAM:-$SCRIPT_DIR/fixtures/pi-tool-in-flight.jsonl}" \
+      --worktree "$WORKTREE" --out "$CONTROLLER_ROOT/runs/progress.live" --run progress \
+      --wrapper-pid "$wrapper" --interval 1 --tick-stream "$PROGRESS_FIFO" \
+      --tick-log "$ROOT/progress-ticks.log" "$@" > "$ROOT/progress.err" 2>&1 &
+  PROGRESS_PID=$!
+  # Opening the write end blocks until the reader opens its end; the reader is
+  # the sidecar above, so this is the sync point for "the sidecar is reading".
+  exec {PROGRESS_FD}>"$PROGRESS_FIFO"
+  PROGRESS_TICKS=0
+}
+
+progress_tick() {
+  # $1 = this tick's clock epoch. Returns only after the tick FINISHED, so the
+  # caller may change the fake tree the next tick reads.
+  local epoch=$1 wanted
+  printf '%s\n' "$epoch" >&"$PROGRESS_FD"
+  wanted=$(( PROGRESS_TICKS + 1 ))
+  for _ in {1..2000}; do
+    PROGRESS_TICKS=$(progress_tick_count)
+    (( PROGRESS_TICKS >= wanted )) && return 0
+    # A sidecar that died cannot deliver the tick: say so instead of spinning.
+    kill -0 "$PROGRESS_PID" 2>/dev/null || break
+    sleep 0.01
+  done
+  cat "$ROOT/progress.err" >&2 || true
+  fail "the sidecar did not complete tick $epoch"
+}
+
+progress_finish() {
+  # Close the FIFO: the sidecar finishes the ticks it was given and exits.
+  # `eval` because the close names the DESCRIPTOR NUMBER held in the variable
+  # (the `{name}` form opens a descriptor; it cannot close one, and `exec` with
+  # an invalid redirection kills the shell).
+  eval "exec ${PROGRESS_FD:-1}>&-" 2>/dev/null || true
+  if ! wait "$PROGRESS_PID"; then
+    cat "$ROOT/progress.err" >&2 || true
+    fail 'the sidecar failed on the ticks it was given'
+  fi
+  PROGRESS_PID=''
+  PROGRESS_FD=''
+}
+
+progress_tick_count() {
+  if [[ -s $ROOT/progress-ticks.log ]]; then wc -l < "$ROOT/progress-ticks.log"; else echo 0; fi
+}
+
+progress_reset_ticks() {
+  rm -f "$ROOT/progress-ticks.log" "$CONTROLLER_ROOT/runs/progress.live"
+}
+
+check_live_progress() {
+  local fixture=$SCRIPT_DIR/progress-fixture.py root=$ROOT/progress-proc wrapper=100
+  python3 "$fixture" tree "$root" "$wrapper" || fail 'could not build the fake process tree'
+
+  # (1) QUIESCENCE. One idle tool call (a `sleep 600` with nothing to do) under a
+  # wrapper and an agent that are both alive: exactly the state the reviewer
+  # measured, where `progress_epoch` stayed 0-1 s old while a tool was blocked.
+  # Ten ticks later nothing has been observed, so the fact is still null and the
+  # tool's AGE alone must produce HUNG-TOOL at the threshold.
+  progress_reset_ticks
+  progress_start "$root" "$wrapper"
+  progress_tick 1000
+  progress_tick 1010
+  progress_tick 1020
+  progress_tick 1030
+  progress_tick 1040
+  progress_tick 1050
+  progress_tick 1060
+  progress_tick 1070
+  progress_tick 1080
+  progress_tick 1090
+  progress_finish
+  [[ $(progress_tick_count) == 10 ]] \
+    || fail "a quiescent run wrote $(progress_tick_count) tick rows, expected 10"
+  python3 - "$ROOT/progress-ticks.log" <<'PY' || fail 'quiescence was read as progress'
+import json, sys
+rows = [json.loads(line) for line in open(sys.argv[1], encoding="utf-8") if line.strip()]
+assert len(rows) == 10, rows
+# The tool call's own processes were measured on every tick and none of them
+# moved: the counters were read (a baseline exists) and nothing is evidence.
+assert all(row["progress"] is None for row in rows), rows
+assert all(row["baseline"] is not None for row in rows), rows
+assert rows[-1]["nodes"] == 2, rows
+assert rows[-1]["truncated"] is False, rows
+PY
+  python3 - "$CONTROLLER_ROOT/runs/progress.live" <<'PY' || fail 'a quiescent run published a progress epoch'
+import json, sys
+body = json.load(open(sys.argv[1], encoding="utf-8"))
+assert body["progress_epoch"] is None, body
+assert body["progress_reason"] in ("none", "idle"), body
+assert body["progress_tree_nodes"] == 2, body
+assert body["progress_tree_truncated"] is False, body
+PY
+  # The row a controller reads: the payload the sidecar really wrote for the
+  # quiescent tool, with only the counter epochs rebased onto the reader's clock
+  # (the reader derives every age from its own clock; the probe ticks ran on a
+  # synthetic one).
+  mkdir -p "$ROOT/status-home"
+  python3 - "$CONTROLLER_ROOT/runs/progress.live" <<'PY'
+import json, sys, time
+from pathlib import Path
+now = int(time.time())
+body = json.load(open(sys.argv[1], encoding="utf-8"))
+body["wrapper_pid"] = 1
+body["updated_epoch"] = now
+body["last_event_epoch"] = now - 10
+body["tool_in_flight_started_epoch"] = now - 2400
+body["progress_epoch"] = None
+body["progress_baseline_epoch"] = now - 2400
+body["progress_reason"] = "none"
+body["tool_in_flight_command"] = "sleep 600"
+body["steering_children"] = [{"pid": 102, "command": "bash -lc sleep 600"}]
+Path(sys.argv[1]).with_name("progress-hung.live").write_text(json.dumps(body), encoding="utf-8")
+PY
+  CONTROLLER_HOME="$ROOT/status-home" CONTROLLER_RUNS_DIR="$CONTROLLER_ROOT/runs" \
+    CONTROLLER_REPO="$WORKTREE" JOB_STATUS_STALL_SECONDS=600 JOB_STATUS_HUNG_TOOL_SECONDS=1800 \
+    "$JOB_STATUS" progress-hung > "$ROOT/progress-hung.out" 2>&1 \
+    || { cat "$ROOT/progress-hung.out" >&2; fail 'job-status failed on a quiescent tool call'; }
+  grep -qF 'progress-hung: HUNG-TOOL' "$ROOT/progress-hung.out" \
+    || { cat "$ROOT/progress-hung.out" >&2; fail 'a tool with no progress evidence was not HUNG-TOOL'; }
+  grep -qF 'cmd=sleep 600' "$ROOT/progress-hung.out" \
+    || { cat "$ROOT/progress-hung.out" >&2; fail 'the row does not name the hung tool command'; }
+  grep -qE 'progress=[0-9]+s progress-why=none' "$ROOT/progress-hung.out" \
+    || { cat "$ROOT/progress-hung.out" >&2; fail 'the row does not show the measured absence of progress'; }
+
+  # (2) A WORKING TOOL advances the fact on exactly the tick after its counters
+  # grew. The tool's own child burns CPU and no other process moves.
+  python3 "$fixture" tree "$root" "$wrapper" || fail 'could not build the fake process tree'
+  progress_reset_ticks
+  progress_start "$root" "$wrapper"
+  python3 "$fixture" set "$root" 103 cpu=7 || fail 'could not grow the tool counter'
+  progress_tick 2000
+  progress_tick 2010
+  python3 "$fixture" set "$root" 103 cpu=19 || fail 'could not grow the tool counter'
+  progress_tick 2020
+  progress_tick 2030
+  progress_finish
+  python3 - "$ROOT/progress-ticks.log" <<'PY' || fail 'a working tool produced no progress evidence'
+import json, sys
+rows = [json.loads(line) for line in open(sys.argv[1], encoding="utf-8") if line.strip()]
+assert len(rows) == 4, rows
+# Tick 1 is a baseline (nothing to compare it with), tick 2 the same counters,
+# tick 3 strictly greater on the SAME set, tick 4 unchanged again.
+assert rows[0]["progress"] is None, rows
+assert rows[1]["progress"] is None, rows
+assert rows[2]["progress"] == 2020, rows
+assert rows[2]["reason"] == "counters", rows
+assert rows[3]["progress"] == 2020, rows
+assert rows[3]["reason"] == "none", rows
+PY
+
+  # (3) THE MEMBERS THAT GROW ON THEIR OWN. In a real run the wrapper writes its
+  # records and runs git, and the agent runs a model loop; both grow every tick
+  # and neither is the tool. Their fixtures grow here and the tool's does not,
+  # so the fact must not move - the case a "sum the wrapper's whole subtree"
+  # implementation cannot survive.
+  python3 "$fixture" tree "$root" "$wrapper" || fail 'could not build the fake process tree'
+  progress_reset_ticks
+  progress_start "$root" "$wrapper"
+  python3 "$fixture" set "$root" "$wrapper" cpu=40 io=1000 || fail 'could not grow the wrapper counter'
+  python3 "$fixture" set "$root" "$((wrapper + 1))" cpu=40 io=5000 || fail 'could not grow the agent counter'
+  progress_tick 3000
+  python3 "$fixture" set "$root" "$wrapper" cpu=90 io=4000 || fail 'could not grow the wrapper counter'
+  python3 "$fixture" set "$root" "$((wrapper + 1))" cpu=90 io=9000 || fail 'could not grow the agent counter'
+  progress_tick 3010
+  progress_tick 3020
+  progress_finish
+  python3 - "$ROOT/progress-ticks.log" <<'PY' || fail 'the wrapper or the agent was counted as the tool making progress'
+import json, sys
+rows = [json.loads(line) for line in open(sys.argv[1], encoding="utf-8") if line.strip()]
+assert len(rows) == 3, rows
+assert all(row["progress"] is None for row in rows), rows
+assert rows[-1]["nodes"] == 2, rows
+PY
+
+  # (3b) THE SIDECAR'S OWN COUNTERS. The sidecar is a direct child of the
+  # wrapper and its `/proc` scans and git calls grow every tick. It must be
+  # excluded by IDENTITY (the one pid known exactly), not by name, and it must
+  # not be published as a steering target.
+  python3 "$fixture" tree "$root" "$wrapper" || fail 'could not build the fake process tree'
+  progress_reset_ticks
+  progress_start "$root" "$wrapper" --sidecar-pid 999
+  python3 "$fixture" add "$root" 999 "$wrapper" 'python3 pi-live.py' \
+    || fail 'could not add the sidecar process'
+  progress_tick 4000
+  python3 "$fixture" set "$root" 999 cpu=10 io=10 || fail 'could not grow the sidecar counter'
+  progress_tick 4010
+  python3 "$fixture" set "$root" 999 cpu=80 io=8000 || fail 'could not grow the sidecar counter'
+  progress_tick 4020
+  progress_finish
+  python3 - "$ROOT/progress-ticks.log" <<'PY' || fail "the sidecar's own counters were counted as the tool's progress"
+import json, sys
+rows = [json.loads(line) for line in open(sys.argv[1], encoding="utf-8") if line.strip()]
+assert len(rows) == 3, rows
+assert all(row["progress"] is None for row in rows), rows
+# The sidecar is a direct child of the wrapper, so it is not in the summed set.
+assert rows[-1]["nodes"] == 2, rows
+PY
+  python3 - "$CONTROLLER_ROOT/runs/progress.live" <<'PY' || fail 'the sidecar was published as a steering target'
+import json, sys
+body = json.load(open(sys.argv[1], encoding="utf-8"))
+pids = sorted(row["pid"] for row in body["steering_children"])
+assert 999 not in pids, body["steering_children"]
+assert body["wrapper_pid"] not in pids, body["steering_children"]
+assert pids == [102, 103], body["steering_children"]
+PY
+
+  # (4) A DECREASE AND A SET CHANGE ARE BASELINES. The counter goes down, then
+  # the tool's child is replaced by another process: neither is progress, and
+  # neither is silently ignored either (the baseline moves).
+  python3 "$fixture" tree "$root" "$wrapper" || fail 'could not build the fake process tree'
+  progress_reset_ticks
+  progress_start "$root" "$wrapper"
+  python3 "$fixture" set "$root" 103 cpu=30 io=3000 || fail 'could not grow the tool counter'
+  progress_tick 5000
+  progress_tick 5010
+  python3 "$fixture" set "$root" 103 cpu=5 io=10 || fail 'could not shrink the tool counter'
+  progress_tick 5020
+  python3 "$fixture" rm "$root" 103 || fail 'could not remove the tool child'
+  python3 "$fixture" add "$root" 104 102 'bash -lc sleep 900' \
+    || fail 'could not start a second tool process'
+  progress_tick 5030
+  progress_finish
+  python3 - "$ROOT/progress-ticks.log" <<'PY' || fail 'a counter decrease or a process-set change was read as progress'
+import json, sys
+rows = [json.loads(line) for line in open(sys.argv[1], encoding="utf-8") if line.strip()]
+assert len(rows) == 4, rows
+assert all(row["progress"] is None for row in rows), rows
+assert [row["nodes"] for row in rows] == [2, 2, 2, 2], rows
+PY
+
+  # (5) AN UNREADABLE `/proc` LEAVES THE FACT UNKNOWN. An empty process table
+  # cannot locate the agent's subtree, so no set is summed: no baseline, no
+  # progress, and a reason that says which. The tool's start epoch is still a
+  # fact - it is what the reader may show, and never what it may call progress.
+  rm -rf "$ROOT/progress-empty"
+  mkdir -p "$ROOT/progress-empty"
+  progress_reset_ticks
+  progress_start "$ROOT/progress-empty" "$wrapper"
+  progress_tick 6000
+  progress_tick 6010
+  progress_finish
+  python3 - "$ROOT/progress-ticks.log" <<'PY' || fail 'an unreadable /proc was read as progress'
+import json, sys
+rows = [json.loads(line) for line in open(sys.argv[1], encoding="utf-8") if line.strip()]
+assert len(rows) == 2, rows
+assert all(row["progress"] is None for row in rows), rows
+assert all(row["nodes"] is None for row in rows), rows
+assert all(row["baseline"] is None for row in rows), rows
+assert rows[-1]["reason"] == "unread", rows
+PY
+  python3 - "$CONTROLLER_ROOT/runs/progress.live" <<'PY' || fail 'an unreadable /proc invented a progress fact'
+import json, sys
+body = json.load(open(sys.argv[1], encoding="utf-8"))
+assert body["progress_epoch"] is None, body
+assert body["progress_tree_nodes"] is None, body
+assert body["progress_reason"] == "unread", body
+assert body["tool_in_flight_started_epoch"] is not None, body
+PY
+  # The row built from THAT payload - what the sidecar really writes for an
+  # in-flight tool with unreadable counters, not a hand-written .live - must
+  # license the weaker word only: LONG-TOOL, with `progress=-`. Age is not
+  # progress when nothing could be measured.
+  mkdir -p "$ROOT/status-home"
+  python3 - "$CONTROLLER_ROOT/runs/progress.live" <<'PY'
+import json, sys, time
+from pathlib import Path
+now = int(time.time())
+body = json.load(open(sys.argv[1], encoding="utf-8"))
+body["wrapper_pid"] = 1
+body["updated_epoch"] = now
+body["last_event_epoch"] = now - 10
+body["tool_in_flight_started_epoch"] = now - 2400
+Path(sys.argv[1]).with_name("progress-unreadable.live").write_text(
+    json.dumps(body), encoding="utf-8"
+)
+PY
+  CONTROLLER_HOME="$ROOT/status-home" CONTROLLER_RUNS_DIR="$CONTROLLER_ROOT/runs" \
+    CONTROLLER_REPO="$WORKTREE" JOB_STATUS_STALL_SECONDS=600 JOB_STATUS_HUNG_TOOL_SECONDS=1800 \
+    "$JOB_STATUS" progress-unreadable > "$ROOT/progress-unreadable.out" 2>&1 \
+    || { cat "$ROOT/progress-unreadable.out" >&2; fail 'job-status failed on an unreadable progress fact'; }
+  grep -qF 'progress-unreadable: LONG-TOOL' "$ROOT/progress-unreadable.out" \
+    || { cat "$ROOT/progress-unreadable.out" >&2; fail 'an unreadable progress fact licensed HUNG-TOOL'; }
+  grep -qE 'progress=- progress-why=unread' "$ROOT/progress-unreadable.out" \
+    || { cat "$ROOT/progress-unreadable.out" >&2; fail 'the row did not show the progress fact as unknown'; }
+
+  # (6) A TOOL CALL'S OWN START IS A BOUNDARY, NOT EVIDENCE. The stream grows
+  # because the call was announced; publishing that as the tool's progress puts
+  # the fact at the tool's own start on every fresh call, which is the
+  # wall-clock-only rule in its other form (and it hid the defect: the reviewer
+  # measured `progress_epoch` 0-1 s old on a blocked tool).
+  rm -f "$ROOT/progress-start.jsonl"
+  printf '{"type":"session","id":"start-boundary"}\n' > "$ROOT/progress-start.jsonl"
+  python3 "$fixture" tree "$root" "$wrapper" || fail 'could not build the fake process tree'
+  progress_reset_ticks
+  PROGRESS_STREAM=$ROOT/progress-start.jsonl progress_start "$root" "$wrapper"
+  progress_tick 7000
+  progress_tick 7010
+  printf '{"type":"tool_execution_start","toolCallId":"c1","toolName":"bash","args":{"command":"sleep 600"}}\n' \
+    >> "$ROOT/progress-start.jsonl"
+  progress_tick 7020
+  progress_tick 7030
+  progress_finish
+  python3 - "$ROOT/progress-ticks.log" <<'PY' || fail 'a tool call start was published as progress'
+import json, sys
+rows = [json.loads(line) for line in open(sys.argv[1], encoding="utf-8") if line.strip()]
+assert len(rows) == 4, rows
+# The session line is real stream growth before any tool call exists.
+assert rows[0]["progress"] == 7000, rows
+# The announcement of the call is a boundary, and the tick after it must not
+# invent an epoch out of the newly-readable counters either.
+assert rows[1]["progress"] == 7000, rows
+assert rows[2]["reason"] == "tool-start", rows
+assert rows[2]["progress"] == 7000, rows
+assert rows[3]["progress"] == 7000, rows
+assert rows[3]["baseline"] == 7020, rows
+PY
+
+  # (7) THE CAP IS DOCUMENTED, NOT SILENT. A tree deeper than the cap is summed
+  # as a prefix, and the snapshot says how many processes it summed and that the
+  # walk stopped early, so a reader can see the bound instead of reading an
+  # idle tool out of a truncated set.
+  rm -rf "$ROOT/progress-deep"
+  python3 "$fixture" truncation "$ROOT/progress-deep" "$wrapper" 30 \
+    || fail 'could not build a tree deeper than the cap'
+  progress_reset_ticks
+  PI_LIVE_TREE_NODE_LIMIT=5 progress_start "$ROOT/progress-deep" "$wrapper"
+  progress_tick 8000
+  progress_finish
+  python3 - "$CONTROLLER_ROOT/runs/progress.live" <<'PY' \
+    || fail 'a capped tree walk was truncated silently'
+import json, sys
+body = json.load(open(sys.argv[1], encoding="utf-8"))
+assert body["progress_tree_nodes"] == 5, body
+assert body["progress_tree_truncated"] is True, body
+PY
+  # The default cap is a stated constant in the tool, not an implied one.
+  python3 - "$PILIVE" <<'PY' || fail 'the node cap is not a stated constant'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("pi_live", sys.argv[1])
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+assert module.TREE_NODE_LIMIT >= 256, module.TREE_NODE_LIMIT
+PY
+
+  # (8) The steering row is the tool call's own processes: never the wrapper,
+  # never the agent, each with its command.
+  python3 "$fixture" tree "$root" "$wrapper" || fail 'could not build the fake process tree'
+  progress_reset_ticks
+  progress_start "$root" "$wrapper"
+  progress_tick 9000
+  progress_finish
+  python3 - "$CONTROLLER_ROOT/runs/progress.live" <<'PY' || fail 'the steering row is not the tool processes'
+import json, sys
+body = json.load(open(sys.argv[1], encoding="utf-8"))
+pids = sorted(row["pid"] for row in body["steering_children"])
+assert pids == [102, 103], body["steering_children"]
+for pid in (100, 101):
+    assert pid not in pids, body["steering_children"]
+assert all(row["command"] for row in body["steering_children"]), body
+assert body["wrapper_pid"] == 100, body
+PY
+  rm -rf "$ROOT/progress-empty" "$ROOT/progress-deep" "$root" "$ROOT/progress-start.jsonl"
 }
 
 check_live_atomic_partial() {
@@ -1073,73 +1465,7 @@ assert body["last_commit_epoch"] is None, body
 PY
       ;;
     live-progress)
-      # Progress evidence is read from the kernel, not guessed from the stream: a
-      # tool that keeps working while printing nothing still advances the run's
-      # CPU-time and IO counters, and that is what separates LONG-TOOL from
-      # HUNG-TOOL. The stream here never grows.
-      live=$CONTROLLER_ROOT/runs/focus-progress.live
-      rm -f "$live"
-      python3 -c 'import time
-end = time.time() + 30
-while time.time() < end:
-    pass' &
-      churn_pid=$!
-      sleep 30 &
-      steer_pid=$!
-      python3 "$PILIVE" --stream "$SCRIPT_DIR/fixtures/pi-tool-progress.jsonl" \
-        --worktree "$WORKTREE" --out "$live" --run focus-progress \
-        --wrapper-pid $$ --interval 1 > /dev/null 2>&1 &
-      sidecar_pid=$!
-      row=$ROOT/focus-progress-before.json
-      for _ in {1..60}; do [[ -s $live ]] && break; sleep 0.1; done
-      cp -- "$live" "$row" 2>/dev/null || fail 'pi-live never wrote its first snapshot'
-      # Wait for EVIDENCE, never for a clock: the child above burns CPU, so the
-      # subtree's counters grow however loaded the host is. The loop's bound is a
-      # limit on waiting, not a claim about how fast the host is.
-      for _ in {1..100}; do
-        cp -- "$live" "$ROOT/focus-progress-after.json" 2>/dev/null || :
-        if python3 -c 'import json, sys
-before = json.load(open(sys.argv[1], encoding="utf-8"))["progress_epoch"]
-after = json.load(open(sys.argv[2], encoding="utf-8"))["progress_epoch"]
-sys.exit(0 if isinstance(after, int) and isinstance(before, int) and after > before else 1)' \
-          "$row" "$ROOT/focus-progress-after.json"; then
-          break
-        fi
-        sleep 0.3
-      done
-      kill -- "$sidecar_pid" "$churn_pid" 2>/dev/null || true
-      wait "$sidecar_pid" 2>/dev/null || true
-      python3 - "$row" "$ROOT/focus-progress-after.json" "$steer_pid" "$churn_pid" <<'PY' \
-        || fail 'progress evidence or the steering target is missing from the snapshot'
-import json, sys
-before = json.load(open(sys.argv[1], encoding="utf-8"))
-after = json.load(open(sys.argv[2], encoding="utf-8"))
-steer_pid = int(sys.argv[3])
-churn_pid = int(sys.argv[4])
-assert isinstance(after["progress_epoch"], int), after
-assert isinstance(before["progress_epoch"], int), before
-assert after["progress_epoch"] > before["progress_epoch"], (before, after)
-# A tool's own partial output is progress evidence too.
-assert isinstance(after["tool_in_flight_output_epoch"], int), after
-# The exact child pid is the steering target, and the wrapper never is.
-pids = [row["pid"] for row in after["steering_children"]]
-assert any(row["pid"] == steer_pid for row in after["steering_children"]), after["steering_children"]
-assert any(row["pid"] == churn_pid for row in after["steering_children"]), after["steering_children"]
-assert pids, after
-assert all(row.get("command") for row in after["steering_children"] if row["pid"] == steer_pid), after
-PY
-      [[ $(python3 -c "import json,sys; print(json.load(open(sys.argv[1]))['wrapper_pid'])" "$ROOT/focus-progress-after.json") == "$$" ]] \
-        || fail 'the snapshot did not keep the wrapper pid'
-      python3 - "$ROOT/focus-progress-after.json" "$sidecar_pid" <<'PY' \
-        || fail 'the sidecar or wrapper was published as a steering target'
-import json, sys
-body = json.load(open(sys.argv[1], encoding="utf-8"))
-pids = [row["pid"] for row in body["steering_children"]]
-assert body["wrapper_pid"] not in pids, body["steering_children"]
-PY
-      wait "$steer_pid" 2>/dev/null || true
-      kill -- "$steer_pid" 2>/dev/null || true
-      wait "$steer_pid" 2>/dev/null || true
+      check_live_progress
       ;;
     live-atomic)
       printf '{"type":"session","id":"atomic"}\n' > "$ROOT/focus-atomic.jsonl"
