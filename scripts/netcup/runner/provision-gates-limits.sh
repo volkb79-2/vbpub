@@ -310,7 +310,8 @@ render_file "$slice_dropin" 'Slice' 'MemoryHigh MemoryMax MemorySwapMax' "$marke
 # kernel reports ${total_mib} MiB is the ${nominal_total_mib} MiB host the operator bought) minus the control-plane reserve
 # (floor ${control_floor_mib} MiB + slack ${memory_slack_mib} MiB); and SwapTotal (${swap_mib} MiB, nominal ${nominal_swap_mib} MiB) minus this host's own
 # swap share of ${swap_reserve_mib} MiB. Raw-kB arithmetic would move the ceiling with every kernel revision.
-# CPUQuota/TasksMax are host policy and are NOT rendered here.[Slice]
+# CPUQuota/TasksMax are host policy and are NOT rendered here.
+[Slice]
 MemoryHigh=infinity
 MemoryMax=${memory_max_mib}M
 MemorySwapMax=${memory_swap_max_mib}M

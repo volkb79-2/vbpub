@@ -559,7 +559,8 @@ the controls assay checks. The source does not record an explanation of the obse
 `MemoryMax=6G` is the value recorded on the cut-over host, not a portable default. Do **not** copy it blindly to a
 different host, and do not write it into the unit fragment at all: the limits belong in the drop-ins of
 [Gates-tier memory policy](#gates-tier-memory-policy), which `provision-gates-limits.sh` derives from that host's own
-`MemTotal`/`SwapTotal` (`MemoryMax = MemTotal - control-plane floor - slack`, `MemoryHigh=infinity`). The unit fragment
+`MemTotal`/`SwapTotal` (`MemoryMax` = the host's NOMINAL `MemTotal` rounded up to the step, minus the control-plane
+reserve; `MemoryHigh=infinity`). The unit fragment
 then carries only what makes it a *loaded installed slice* for `cgroup-parent.sh` (`CPUWeight`, `IOWeight`, and the
 finite `MemoryMax` a host-setup render may include, which the drop-in overrides). Installing the two fragments is still
 the manual step tracked as NC-25; the memory values are no longer a hand decision.

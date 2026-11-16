@@ -150,6 +150,98 @@ def _fake_limits(env, meminfo_text, **kwargs):
     return maximum, swap
 
 
+# The class of defect review round 2 found: a token that should have started a new line was fused onto the END of a
+# comment (a missing newline), so systemd reads it as prose. A section header fused onto a comment swallows every key
+# below it; a directive fused onto a comment never becomes a directive. Detected for any text — a rendered drop-in or
+# the script's own heredocs — by one function, so the drop-in checks and the source check cannot drift apart.
+_FUSED_SECTION = re.compile(r"(?<=[.:;,)\]])\[[A-Za-z][A-Za-z0-9]*\]$")
+_FUSED_KEY = re.compile(r"(?<=[.:;,)\]])([A-Z][A-Za-z0-9_]*)=")
+
+
+def _fused_comment_violations(name: str, text: str) -> list[str]:
+    """Every comment line of `text` that swallows a section header or a directive. Two forms are reported: the fused one
+    (`...rendered here.[Slice]`, `...follows.MemorySwapMax=...`) and a comment whose entire body is the token (which is a
+    header nobody can see systemd read). A token preceded by a SPACE is prose, not a lost newline: `#   - OOMPolicy=kill on
+    every scope`, `# memory.oom.group=1 in prose` and `# IOWeight=101 is the non-default control` are text, and are not
+    reported — a directive-shaped comment only counts when its value is a SINGLE token (no spaces), which is what a lost
+    newline leaves. The fused form is recognised by the punctuation a sentence ends with (`.`, `:`, `;`, `,`, `)`, `]`)
+    sitting IMMEDIATELY before the token with no space — exactly the shape a lost newline leaves behind."""
+    violations = []
+    for lineno, raw in enumerate(text.splitlines(), 1):
+        line = raw.strip()
+        if not line.startswith(("#", ";")):
+            continue
+        body = line[1:].strip()
+        fused_section = _FUSED_SECTION.search(body)
+        if fused_section:
+            violations.append(f"{name}:{lineno}: section header {fused_section.group(0)} is fused onto a comment "
+                              f"(a missing newline: no key below it can belong to a section): {line[:100]}")
+        elif re.match(r"^\[[A-Za-z][A-Za-z0-9]*\]$", body):
+            violations.append(f"{name}:{lineno}: section header {body} is a comment, not a section: {line[:100]}")
+        fused_key = _FUSED_KEY.search(body)
+        if fused_key:
+            violations.append(f"{name}:{lineno}: directive {fused_key.group(1)}= is fused onto a comment "
+                              f"(a missing newline): {line[:100]}")
+        elif re.match(r"^[A-Z][A-Za-z0-9_]*=[^\s]+$", body):
+            violations.append(f"{name}:{lineno}: directive {body.split('=')[0]}= is a comment, not a directive: {line[:100]}")
+    return violations
+
+
+def parse_ini(name: str, text: str) -> dict[str, list[tuple[str, str]]]:
+    """Read a file the way systemd reads it: `#`/`;` comment lines and blank lines are dropped, a `[Section]` line opens a
+    section, and every later `Key=Value` belongs to the CURRENT section. Returns {section: [(key, value), ...]}, with
+    the comments discarded. Deliberately an INI reader and not a substring search: `MemoryMax=6656M` appearing anywhere
+    (inside a comment, or before the first section header) is not a directive systemd would apply, so a test that only
+    greps for the text certifies nothing.
+
+    A non-comment line before any section header, a section header on a commented line, a key without `=`, and a key
+    fused onto a comment (a missing newline, so the token can never become a directive) are all collected as violations
+    instead of being silently attributed to a section. "Fused" means the token follows a non-space character on a comment
+    line (`...rendered here.[Slice]`, `...follows.MemorySwapMax=...`); a directive merely MENTIONED inside a sentence
+    (`# memory.oom.group=1 for every scope`, lowercase prose key) is text, not a missing newline, and is ignored."""
+    sections: dict[str, list[tuple[str, str]]] = {}
+    violations: list[str] = _fused_comment_violations(name, text)
+    current = None
+    for lineno, raw in enumerate(text.splitlines(), 1):
+        line = raw.strip()
+        if not line:
+            continue
+        if line.startswith("#") or line.startswith(";"):
+            continue
+        if re.match(r"^\[[A-Za-z][A-Za-z0-9]*\]$", line):
+            current = line[1:-1]
+            sections.setdefault(current, [])
+            continue
+        if "=" not in line:
+            violations.append(f"{name}:{lineno}: non-comment line without '=': {line[:60]}")
+            continue
+        if current is None:
+            violations.append(f"{name}:{lineno}: directive {line.split('=')[0]}= appears before any [section] header")
+            continue
+        key, value = line.split("=", 1)
+        sections[current].append((key.strip(), value.strip()))
+    return {"_sections": sections, "_violations": violations}
+
+
+def assert_dropin_sections(name: str, text: str, expected: str, keys: list[str]) -> dict[str, str]:
+    """The rendered drop-in is a file systemd can actually apply: its first non-comment line is the section header `expected`,
+    it declares no other section, every `keys` entry sits under that header (never inside a comment, never before it),
+    and it sets nothing outside the allowed key set. Returns {key: value}."""
+    parsed = parse_ini(name, text)
+    assert parsed["_violations"] == [], parsed["_violations"]
+    sections = parsed["_sections"]
+    first_non_comment = next(line.strip() for line in text.splitlines() if line.strip())
+    assert first_non_comment.startswith("#"), f"{name}: the marker comment must be the first line, got {first_non_comment!r}"
+    headers = [line.strip() for line in text.splitlines() if line.strip() and not line.strip().startswith(("#", ";"))]
+    assert headers and headers[0] == f"[{expected}]", f"{name}: first non-comment line is {headers[0] if headers else None!r}, not '[{expected}]'"
+    assert list(sections) == [expected], f"{name}: sections {list(sections)} != ['{expected}']"
+    got = dict(sections[expected])
+    for key in keys:
+        assert key in got, f"{name}: '{key}' is not a directive under [{expected}] (keys under it: {sorted(got)})"
+    assert set(got) == set(keys), f"{name}: sets {sorted(got)}, expected exactly {sorted(keys)}"
+    return got
+
+
 def test_the_measured_v1001_host_gets_the_policy_the_operator_chose(tmp_path):
     """The whole point of the derivation: v1001's own numbers, through the rule, reproduce 6656M and 57344M."""
     script, env, _, systemd_dir, _, meminfo, procfs = _fixture(tmp_path)
@@ -158,22 +250,53 @@ def test_the_measured_v1001_host_gets_the_policy_the_operator_chose(tmp_path):
     r = _run(script, env, _args(meminfo, systemd_dir, tmp_path / "cgroupfs", procfs))
     assert r.returncode == 0, r.stderr
     slice_dropin = _dropin(systemd_dir, f"{SLICE}.d/20-memory-policy.conf")
-    assert "MemoryHigh=infinity" in slice_dropin
-    assert "MemoryMax=6656M" in slice_dropin
-    assert "MemorySwapMax=57344M" in slice_dropin
-    assert "MemoryOOMGroup" not in slice_dropin and "ManagedOOMMemoryPressure" not in slice_dropin
+    # read as systemd reads it: the three keys must sit under [Slice], not merely appear somewhere in the file
+    slice_keys = assert_dropin_sections(f"{SLICE}.d/20-memory-policy.conf", slice_dropin, "Slice",
+                                        ["MemoryHigh", "MemoryMax", "MemorySwapMax"])
+    assert slice_keys == {"MemoryHigh": "infinity", "MemoryMax": "6656M", "MemorySwapMax": "57344M"}
+    assert "MemoryOOMGroup" not in slice_keys and "ManagedOOMMemoryPressure" not in slice_keys
     for text in (slice_dropin, _dropin(systemd_dir, "docker-.scope.d/20-oom-group.conf")):
         assert "MemoryOOMGroup" not in text
         assert "oom.group" not in text.replace("# memory.oom.group", "")  # only the comment names it: never a set key
     scope = _dropin(systemd_dir, "docker-.scope.d/20-oom-group.conf")
     assert scope.splitlines()[0].startswith("# RENDERED by scripts/netcup/runner/provision-gates-limits.sh")
-    assert "[Scope]" in scope and "OOMPolicy=kill" in scope
+    assert assert_dropin_sections("docker-.scope.d/20-oom-group.conf", scope, "Scope", ["OOMPolicy"]) == {"OOMPolicy": "kill"}
     for unit in ("ssh.service", "systemd-logind.service", "systemd-journald.service", "docker.service", "cgprofiled.service"):
         text = _dropin(systemd_dir, f"{unit}.d/30-oom-protect.conf")
-        assert "[Service]" in text and "OOMScoreAdjust=-900" in text
+        assert assert_dropin_sections(f"{unit}.d/30-oom-protect.conf", text, "Service", ["OOMScoreAdjust"]) == {
+            "OOMScoreAdjust": "-900"}
     assert not (systemd_dir / "sshd.service.d").exists()
     assert r.stdout.count("GATES_MEMORY_POLICY=") == 1
     assert "MemoryMax=6656M" in r.stdout and "MemorySwapMax=57344M" in r.stdout
+
+
+def test_every_rendered_dropin_parses_the_way_systemd_reads_it(tmp_path):
+    """The whole rendered output of one run, parsed as INI (never grepped): a key that is not under its own section header —
+    for example a comment whose newline was lost so the header became part of the comment — is a drop-in systemd would
+    ignore, and the review's blocker was exactly that defect."""
+    script, env, _, systemd_dir, _, meminfo, procfs = _fixture(tmp_path)
+    _fake_limits(env, HOST_V1001)
+    r = _run(script, env, _args(meminfo, systemd_dir, tmp_path / "cgroupfs", procfs))
+    assert r.returncode == 0, r.stderr
+    rendered = sorted(systemd_dir.rglob("*.conf"))
+    assert len(rendered) == 7  # one slice policy, one docker scope, five protected units
+    expected = {
+        f"{SLICE}.d/20-memory-policy.conf": ("Slice", ["MemoryHigh", "MemoryMax", "MemorySwapMax"]),
+        "docker-.scope.d/20-oom-group.conf": ("Scope", ["OOMPolicy"]),
+    }
+    for unit in ("ssh.service", "systemd-logind.service", "systemd-journald.service", "docker.service", "cgprofiled.service"):
+        expected[f"{unit}.d/30-oom-protect.conf"] = ("Service", ["OOMScoreAdjust"])
+    for path in rendered:
+        relative = str(path.relative_to(systemd_dir))
+        assert relative in expected, f"an unclassified drop-in was rendered: {relative}"
+        section, keys = expected[relative]
+        parsed = parse_ini(relative, path.read_text())
+        assert parsed["_violations"] == [], parsed["_violations"]
+        assert list(parsed["_sections"]) == [section]
+        assert set(dict(parsed["_sections"][section])) == set(keys)
+    # nothing is rendered outside this tool's own paths: exactly these seven directories, no eighth
+    assert {str(p.parent.relative_to(systemd_dir)) for p in rendered} == {
+        f"{SLICE}.d", "docker-.scope.d", *[f"{u}.d" for u in ("ssh.service", "systemd-logind.service", "systemd-journald.service", "docker.service", "cgprofiled.service")]}
 
 
 @pytest.mark.parametrize("meminfo, raw_mem", [(HOST_V1001, 7935), (HOST_8GIB_DRIFT, 7934)])
@@ -628,6 +751,82 @@ def test_the_script_carries_no_hard_coded_host_ceiling():
         assert literal not in code, literal
     assert "6656" not in code and "57344" not in code
     assert not re.search(r"MemoryHigh=\d", text)
+
+
+def test_parse_ini_documentation_of_the_comment_rule():
+    """Text, not a missing newline: a directive merely MENTIONED in prose is fine, so the rule does not fire on every
+    comment that happens to name a key."""
+    prose = "# RENDERED by a tool.\n# memory.oom.group=1 for every transient scope (lowercase: prose, not a directive)\n[Slice]\nMemoryMax=6656M\n"
+    parsed = parse_ini("prose", prose)
+    assert parsed["_violations"] == [], parsed["_violations"]
+    assert dict(parsed["_sections"]["Slice"]) == {"MemoryMax": "6656M"}
+
+
+def test_the_script_never_joins_a_comment_to_a_section_header_or_a_directive():
+    """Review round 2's blocker in its general form: a rendered line ending in a comment, with the newline to the next token
+    lost, swallows that token. It happened to `[Slice]` (so three memory keys landed outside any section). Checked here
+    over the WHOLE script — every line in it, heredoc included — with the SAME detector the drop-in tests use, so the same
+    defect cannot reappear in the scope or service drop-in, in the usage text, or in a future template."""
+    assert _fused_comment_violations(SCRIPT.name, SCRIPT.read_text()) == []
+
+
+def test_no_runner_script_fuses_a_comment_onto_a_section_header_or_a_directive():
+    """The same detector over every tracked runner script, because that block is copied between scripts and templates: any
+    generated INI text in this directory is covered, not just this tool's own."""
+    offenders = {}
+    for path in sorted(RUNNER.iterdir()):
+        if path.suffix != ".sh" and path.name not in {"run-job", "sync-from-devcontainer"}:
+            continue
+        violations = _fused_comment_violations(path.name, path.read_text())
+        if violations:
+            offenders[path.name] = violations
+    assert offenders == {}, offenders
+
+
+# The oracle the tests above rely on must itself be able to go red: these feed it the exact defects round 1 shipped and
+# refuse a file that systemd would silently ignore. (They also pin the mutants below: re-fusing a comment with a header,
+# or moving a key to another section, is what these inputs represent.)
+def test_parse_ini_catches_a_section_header_fused_inside_a_comment():
+    mixed = "# RENDERED by a tool.\n# CPUQuota is host policy.[Slice]\nMemoryHigh=infinity\nMemoryMax=6656M\n"
+    parsed = parse_ini("fused", mixed)
+    assert parsed["_violations"], "a [Slice] header inside a comment was accepted, so every key below it is invisible"
+    assert parsed["_sections"] == {}  # and systemd would apply none of the keys
+
+
+def test_parse_ini_catches_a_directive_fused_inside_a_comment():
+    mixed = "# RENDERED by a tool.\n# the swap cap follows.MemorySwapMax=57344M\n[Slice]\nMemoryHigh=infinity\n"
+    parsed = parse_ini("fused-key", mixed)
+    assert any("MemorySwapMax" in v for v in parsed["_violations"]), parsed["_violations"]
+    assert dict(parsed["_sections"]["Slice"]) == {"MemoryHigh": "infinity"}  # the fused key never arrives
+    # and a comment that IS nothing but the token is refused too: nobody can see systemd read it
+    parsed = parse_ini("bare-key", "# RENDERED by a tool.\n[Slice]\nMemoryHigh=infinity\n#MemoryMax=6656M\n")
+    assert any("MemoryMax" in v and "is a comment" in v for v in parsed["_violations"]), parsed["_violations"]
+
+
+def test_parse_ini_catches_a_key_before_any_section_header():
+    early = "# RENDERED by a tool.\nMemoryMax=6656M\n[Slice]\nMemoryHigh=infinity\n"
+    parsed = parse_ini("early", early)
+    assert any("before any [section] header" in v for v in parsed["_violations"]), parsed["_violations"]
+
+
+def test_assert_dropin_sections_catches_a_key_in_the_wrong_section():
+    wrong = "# RENDERED by a tool.\n[Service]\nMemoryMax=6656M\nMemoryHigh=infinity\nMemorySwapMax=57344M\n"
+    with pytest.raises(AssertionError) as e:
+        assert_dropin_sections("wrong-section", wrong, "Slice", ["MemoryHigh", "MemoryMax", "MemorySwapMax"])
+    assert "[Slice]" in str(e.value)
+
+
+def test_assert_dropin_sections_catches_a_header_that_is_not_first():
+    late = "# RENDERED by a tool.\n# a comment\nMemoryHigh=infinity\n[Slice]\nMemoryMax=6656M\n"
+    with pytest.raises(AssertionError):
+        assert_dropin_sections("late", late, "Slice", ["MemoryHigh", "MemoryMax"])
+
+
+def test_assert_dropin_sections_catches_an_extra_key_the_policy_does_not_own():
+    extra = "# RENDERED by a tool.\n[Slice]\nMemoryHigh=infinity\nMemoryMax=6656M\nMemorySwapMax=57344M\nMemoryLow=1G\n"
+    with pytest.raises(AssertionError) as e:
+        assert_dropin_sections("extra", extra, "Slice", ["MemoryHigh", "MemoryMax", "MemorySwapMax"])
+    assert "MemoryLow" in str(e.value)
 
 
 def _provision_runner_block():
