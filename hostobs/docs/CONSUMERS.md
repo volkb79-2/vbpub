@@ -18,7 +18,7 @@ baked lock digest, crate set, lock checksums, or cached archive bytes disagree.
 ## What `assay-r1` judges, and what it says
 
 `assay-r1` is a `kind = "assay"` lane: Run-Gate installs the worktree's own `assay/` and
-the judge runs the lane declared in [`assay.toml`](assay.toml) (`[lanes.assay-r1]`). Its
+the judge runs the lane declared in [`assay.toml`](../assay.toml) (`[lanes.assay-r1]`). Its
 own argv is the same offline/locked cargo-llvm-cov + nextest + doctest + crate-floor
 command `selftest` runs, so the two cannot disagree about what was executed; what changes
 is who renders the coverage verdict. The artifacts are `lcov.info` and `cov-summary.json` in
@@ -51,8 +51,8 @@ The floor is `judge.fail_under = 95.0`, one full point BELOW the measured 96.04 
 / 15723 executable lines on this workspace at head `3b46df06`). Per crate at that head:
 `model` 98.09 % (2004/2043), `proto` 99.71 % (3454/3464), `kernel` 93.52 % (2627/2809),
 `store` 94.71 % (7015/7407). The derivation, the one-point margin and the rule that a
-floor is never lowered live in [`assay.toml`](assay.toml)'s header. The per-crate line and
-region floors in [`coverage-floors.toml`](coverage-floors.toml) stay in the lane's argv and
+floor is never lowered live in [`assay.toml`](../assay.toml)'s header. The per-crate line and
+region floors in [`coverage-floors.toml`](../coverage-floors.toml) stay in the lane's argv and
 remain the tighter bound; Assay's line claim does not replace them, and region coverage is
 not part of Assay's R1 claim.
 

@@ -398,7 +398,7 @@ because `selftest` is the enforced baseline that still works in the Rust image, 
 be proven without removing the guard.
 
 The floor (95.0% line, measured 96.0377%, 15100/15723 executable lines at head `3b46df06`)
-is derived and argued in [`assay.toml`](assay.toml)'s header. The rejected alternatives:
+is derived and argued in [`assay.toml`](../assay.toml)'s header. The rejected alternatives:
 - **100% changed-line only** (assay's Rust default mode) — it passes a commit that touches
   two files while the rest of the workspace decays, which is exactly what the crate floors
   exist to prevent. This lane is deliberately whole-target.
