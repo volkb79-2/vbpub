@@ -638,7 +638,7 @@ embeds against a small signature table (`client/src/pwmcp_client/blocked.py`). O
 
 | Kind | Signals | Counts as blocked |
 |---|---|---|
-| Definitive | `cf-mitigated: challenge`; a challenge title (`Just a moment...`, `Attention Required! \| Cloudflare`, `Pardon Our Interruption`, ...); challenge text (`Performing security verification`, `Checking your browser before accessing`, `Sorry, you have been blocked`, `DDoS protection by Cloudflare`, `Press & Hold to confirm you are human`, `verify you are human`, ...) on a page of at most 6000 characters of text | on its own |
+| Definitive | `cf-mitigated: challenge`; a challenge title (`Just a moment...`, `Attention Required! \| Cloudflare`, `Pardon Our Interruption`, ...); challenge text (`Performing security verification`, `Checking your browser before accessing`, `Sorry, you have been blocked`, `DDoS protection by Cloudflare`, `Press & Hold to confirm you are human`, `Protected by Anubis`, `verify you are human`, ...) on a page of at most 6000 characters of text | on its own |
 | Hint | provider headers (`server: cloudflare`, `cf-ray`, `server: AkamaiGHost`, `x-datadome`, `x-iinfo`, ...) | only with HTTP 403, 429 or 503 |
 | Hint | a captcha/challenge frame (`challenges.cloudflare.com`, `captcha-delivery.com`, `captcha.px-cdn.net`, `arkoselabs.com`, reCAPTCHA, hCaptcha) | with HTTP 403/429/503, or on a near-empty page (600 characters or less) |
 
@@ -646,6 +646,17 @@ A plain 403 with no provider marker is not called bot protection (the existing
 `page diagnostics` line still reports the status), and neither is a normal login page that
 embeds a reCAPTCHA or an article that quotes "Just a moment...". Providers are detected
 only as DETECTION signatures: nothing here solves, bypasses or hides from them.
+
+**Anubis (PWMCP-09).** Anubis answers an automated client with either a proof-of-work
+challenge or, when a deny rule matches, a page saying `Oh noes! Access Denied: error code
+... Protected by Anubis from Techaro` (a human reads the same URL fine). That wording is a
+definitive signature: `inspect` reports `Anubis deny page` and exits 4, so the deny code
+travels with the verdict instead of being read as content. A bare `Access Denied` title is
+deliberately NOT a signature — Akamai, nginx and any site's own 403 say that too — and the
+tables do not classify the Anubis challenge page any differently from the other
+interstitials above. Whether any `--user-agent` preset gets past an Anubis deny rule stays
+UNVERIFIED; the user agent is an identity string, not a bypass (README "Overridable User
+Agent").
 
 **Limits.** Detection is a heuristic. A page that is not recognised is "not detected as
 blocked", not proof that it is the complete target. `inspect` reports the state when it

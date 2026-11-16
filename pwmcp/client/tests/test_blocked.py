@@ -25,6 +25,9 @@ POSITIVE = [
     ("perimeterx-press-hold.html", 403, {}, "PerimeterX", "block page", "title:'Access to this page has been denied'"),
     ("datadome-captcha.html", 403, {"x-datadome": "protected"}, "DataDome", "captcha", "frame:captcha-delivery.com"),
     ("imperva-pardon.html", 200, {}, "Imperva", "interstitial", "title:'Pardon Our Interruption'"),
+    # PWMCP-09: Anubis answers a deny rule with its own branded page (the reported 4d1d... code);
+    # a human opens the same URL fine, so the agent must be told BLOCKED, not handed the page.
+    ("anubis-access-denied.html", 200, {}, "Anubis", "deny page", "text:'Protected by Anubis'"),
     ("generic-captcha-sorry.html", 429, {}, "Generic CAPTCHA", "bot check", "text:'unusual traffic from your computer network'"),
 ]
 
@@ -54,6 +57,25 @@ def test_a_named_provider_outranks_the_generic_captcha_label() -> None:
     assert verdict.provider == "Cloudflare"
     only_generic = blocked.detect(status=200, headers={}, title="x", text="Please verify you are human")
     assert only_generic.provider == "Generic CAPTCHA"
+
+
+def test_anubis_deny_page_is_definitive_without_any_header_or_status() -> None:
+    """PWMCP-09: the denial is the page's own wording, so no header, status or frame corroborates it."""
+
+    page = load_page("anubis-access-denied.html")
+    verdict = blocked.detect(status=200, headers={}, title=page.title, text=page.text, frames=page.frames)
+    assert verdict is not None
+    assert (verdict.provider, verdict.kind) == ("Anubis", "deny page")
+    assert verdict.signals == ("text:'Protected by Anubis'",)
+    assert "error code 4d1dbaddfcc0f385" in page.text  # the reported deny code stays readable to the caller
+
+
+def test_a_bare_access_denied_page_is_not_anubis() -> None:
+    """A generic 403 says "Access Denied"; only the Anubis-branded wording makes a verdict."""
+
+    assert blocked.detect(status=403, headers={}, title="Access Denied", text="Access Denied") is None
+    branded = blocked.detect(status=403, headers={}, title="Access Denied", text="Protected by Anubis from Techaro")
+    assert branded is not None and branded.provider == "Anubis"
 
 
 @pytest.mark.parametrize(

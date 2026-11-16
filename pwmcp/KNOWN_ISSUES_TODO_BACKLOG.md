@@ -5,7 +5,11 @@
 This file records consumer-facing product gaps for later triage. Normative
 behavior remains in the product specification and consumer documentation.
 
-Last updated: 2026-11-14 (PWMCP-63..69 implemented in their respective branches, unreleased; PWMCP-70 documents R9 equivalent survivors; PWMCP-71 tracks the release-scoped R2 recipe; PWMCP-62's separate R2 follow-up remains open).
+Last updated: 2026-11-16 (PWMCP-09 part 2 closed (Anubis deny-page signature), PWMCP-21 corpus `package --out` default,
+PWMCP-31 bundle client install recipe, PWMCP-58 Obscura re-evaluation triggers, PWMCP-59 r2 `max_mutants`,
+PWMCP-60 storage-state fake scoping, PWMCP-61 r2 swap ceiling and PWMCP-71 R2 candidate recipe; PWMCP-63..69
+implemented in their respective branches, unreleased; PWMCP-70 documents R9 equivalent survivors; PWMCP-62's
+separate R2 follow-up remains open).
 
 ## PWMCP-01 — Provide a rendered-page inspection command
 
@@ -237,8 +241,19 @@ No existing release works with `get.py`; only a release published after A does.
 
 ## PWMCP-09 — pages protected by Anubis answer "Access Denied" to the managed browser; a human sees them fine
 
-**Status: IN PROGRESS, FIXED-ON-BRANCH for the configurable user agent (option 3); acceptance part 2 (`blocked-by-site` detection) still OPEN.**
-**Decision (operator, 2026-10-27): option 3, with selectable presets**, as an explicit, recorded, opt-in
+**Status: FIXED 2026-11-16 (unreleased, branch `pi-pwmcp-burn-20261116`): acceptance part 2 closed. The `blocked-by-site`
+classification now has an Anubis row (`TEXT_SIGNATURES` `"protected by\s*anubis"` -> provider `Anubis`, kind
+`deny page`), a synthetic `client/tests/fixtures/blocked/anubis-access-denied.html` fixture modelled on the
+reported page (its `4d1dbaddfcc0f385` deny code is in the fixture body), README "Bot protection" "Anubis"
+paragraph and signature table, and the `pwmcp-fetch` skill's blocked section. `inspect` exits 4 with
+`blocked: true`, `provider: Anubis`, `kind: deny page` and the deny code visible in the content, so an agent
+cannot read the denial as page content; a bare `Access Denied` title stays unclassified on purpose (Akamai,
+nginx and any site's own 403 use it). Oracles: `test_anubis_deny_page_is_definitive_without_any_header_or_status`,
+`test_a_bare_access_denied_page_is_not_anubis`, and the `POSITIVE` fixture table. Hand mutant recorded in the
+package report. The user-agent half stays FIXED-ON-BRANCH and UNVERIFIED against a live Anubis deployment
+(no live probe was made here; the presets are an identity string, not a bypass).**
+
+**Original decision (operator, 2026-10-27): option 3, with selectable presets**, as an explicit, recorded, opt-in
 feature (off by default): config key `user_agent` / `PWMCP_USER_AGENT` with presets `edge-windows`,
 `chrome-windows`, `firefox-windows`, or a custom string; the UA string and its matching client-hint
 brands only (no navigator.webdriver, plugin or canvas changes); every `pwmcp inspect` result carries
