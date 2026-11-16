@@ -90,11 +90,15 @@ export PYTHONDONTWRITEBYTECODE=1
 export PYTHONPATH="{worktree}/assay/src:{worktree}/assay/analysis/src:{worktree}/libraries/cowtree/src"
 mkdir -p .assay .run-gate/assay-state
 rm -f -- .assay/verdict-assay-r1.json .assay/progress-assay-r1.jsonl
+# The judge's status is captured, not left to abort the script: the checks below
+# must run even on FAIL, so a red log still states what was measured and why.
+rc=0
 python3 -m assay.cli run assay-r1 --file assay.toml \
   --verdict-json .assay/verdict-assay-r1.json \
   --resume --progress .assay/progress-assay-r1.jsonl \
-  --state-dir .run-gate/assay-state
-python3 -m assay.cli verify .assay/verdict-assay-r1.json
+  --state-dir .run-gate/assay-state || rc=$?
+python3 -m assay.cli verify .assay/verdict-assay-r1.json \
+  || { echo "run-gate: the Assay verdict is not schema-conformant" >&2; exit 2; }
 if ! python3 -m assay.cli analyze verdict .assay/verdict-assay-r1.json \
      --expected-commit "$(git rev-parse HEAD)" --format text \
      > .assay/verdict-assay-r1-summary.txt; then
@@ -118,7 +122,8 @@ for claim in claims:
         coverage["branches_total"], coverage["branch_capability"]))
     print("  uncovered lines listed as findings in %d file(s)"
           % len(coverage["missing_lines"]))
-PY''',
+PY
+exit "$rc"''',
 ]
 exit_map = { "0" = "PASS", "2" = "ERROR" }
 clean_tree = true
