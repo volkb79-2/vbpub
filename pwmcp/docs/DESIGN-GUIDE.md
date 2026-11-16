@@ -511,3 +511,50 @@ behavior.
 <https://scrapling.readthedocs.io/en/latest/ai/mcp-server.html>,
 <https://scrapling.readthedocs.io/en/latest/spiders/proxy-blocking.html> and
 <https://scrapling.readthedocs.io/en/latest/migrating-to-v0.5.html>.
+
+### Obscura (checked 2026-11-09; PWMCP-58)
+
+**What it is.** A Rust "headless browser engine" with its own DOM, CSS layout and
+raster renderer and an embedded V8. It speaks the Chrome DevTools Protocol only, so
+it cannot sit behind `ws://pwmcp:3000` (Playwright's own protocol): a backend would
+need its own endpoint and a `connect_over_cdp` client path, not a drop-in swap.
+The full build-versus-no-fork record, the security review and the disposable
+evaluation checklist are in
+[the comparison](COMPARISON-obscura-2026-11-09.md).
+
+**Decision.** Reject adoption now: protocol mismatch, a policy mismatch (its
+`antidetect` direction is evasion), an unstable 0.x API, one prolific committer and
+unsigned binaries, and little benefit on hosts that are not extraction-bound. The
+non-stealth builds are borrowed for ideas only (worker recycling by RSS and age,
+a destination-egress policy, a capability table in the contract); the corresponding
+backlog items are PWMCP-54, PWMCP-55 and PWMCP-57.
+
+**Re-evaluation triggers (closed set).** Re-open the question ONLY when ALL of these
+hold, each backed by recorded evidence cited in the proposal:
+
+1. a consumer need for a very cheap extraction engine is documented (for example
+   many parallel reads on a constrained host);
+2. Obscura reaches a stable API or 1.0 with checksums, signatures or attestations;
+3. it has at least two active maintainers or an organisation owner;
+4. the SIGSEGV and Playwright-compatibility issues in our evaluation corpus are
+   closed;
+5. the operator is comfortable with the project's stealth-feature direction.
+
+Even then, evaluate only the non-stealth build as an isolated optional profile with
+its own contract name, never as a replacement for the official Playwright image.
+Popularity, a lower claimed memory footprint or a lighter archive alone are not
+triggers.
+
+**Explicit non-goal (no anti-detection, ever).** PWMCP adds no stealth or
+anti-detection capability: no fingerprint randomisation, no TLS
+impersonation/passive-fingerprint evasion, no `navigator.webdriver` or `isTrusted`
+masking, no profile or proxy rotation for evasion, and no challenge solver. The
+existing overridable user agent stays a limited opt-in identity string (README
+"Overridable User Agent"); it does not solve interactive challenges, and
+recognised bot protection remains exit 4 (README "Bot protection"). This
+boundary is also stated in the README, `docs/SECURITY.md` and the packaged
+`pwmcp-fetch` skill.
+
+**Sources.** <https://github.com/h4ckf0r0day/obscura> (README, `SECURITY.md`,
+`Cargo.toml` at the tag commit for v0.2.6) and the checked pages recorded in
+[the comparison](COMPARISON-obscura-2026-11-09.md).

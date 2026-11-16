@@ -908,7 +908,19 @@ covered by a CLI review case.
 
 ## PWMCP-58 — record Obscura re-evaluation triggers and the anti-detection non-goal
 
-**Status:** OPEN, watch item only; do not adopt or spike without evidence. Severity: P3.
+**Status:** FIXED 2026-11-16 (unreleased, branch `pi-pwmcp-burn-20261116`). DONE as filed: the
+`docs/DESIGN-GUIDE.md` "Competitors and alternatives" section now carries a dated **Obscura
+(checked 2026-11-09)** entry with the five re-evaluation triggers as a closed set (with the
+explicit "even then, never replace the official Playwright image / non-stealth profile only"
+qualification), the anti-detection non-goal spelled out term by term, and a pointer to the
+comparison. `docs/SECURITY.md` gained a "Bot-protection and anti-detection stance" section that
+states the boundary as a product decision rather than a missing feature. The acceptance idea is
+implemented as `tests/test_competitor_decision.py`: it extracts that dated entry, requires every
+trigger and every non-goal term, requires the same five triggers in
+`docs/COMPARISON-obscura-2026-11-09.md`, requires the stance in README, SECURITY and the packaged
+`pwmcp-fetch` skill, and requires the README link to the comparison. Popularity, a lower claimed
+memory footprint or a lighter archive are asserted to be NOT sufficient, so a future proposal
+cannot reopen adoption on one of them. Nothing was adopted and no engine code was touched.
 
 **Problem.** The 2026-11-09 comparison recommends rejecting Obscura as a backend now and borrowing a few operational ideas. Without an explicit watch entry, a later "lightweight browser" request could reopen adoption without rechecking protocol fit, maintenance, supply-chain, crash, and policy risks.
 
