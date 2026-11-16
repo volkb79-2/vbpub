@@ -60,10 +60,20 @@ eight-character prefix, an earlier log has the full `run-gate.commit` label on
 the same line as that container name, and the report names the container. A
 missing report, missing label, wrong commit label, or container without the
 head prefix leaves the gate evidence red. A
-missing `.done` marker prints `RUNNING (no .done)` and exits 0 even if the event
-stream is absent; this does not mean the child completed. Read the wrapper's
-`.done` marker for its exit status. See the
+missing `.done` marker is read from the run name's owner record rather than
+assumed: a live owner prints `RUNNING (no .done)` with its pid, a dead one prints
+`DIED (wrapper pid <pid> gone, no .done)` and exits nonzero so the controller can
+relaunch, and a name no wrapper ever owned says `owner record: none`. `RUNNING`
+never means the child completed; read the wrapper's `.done` marker for its exit
+status. See the
 [design guide](DESIGN-GUIDE.md#job-check-compatibility) for the checks.
+
+A Codex run states its own outcome in `.done` as
+`EXIT=<n> OUTCOME=CODE-EXIT AUTORESUME=<k>`; the Codex stream carries no pi stop
+reasons, so the child's exit status is the one fact the wrapper can state. A
+resume of an existing run name removes the previous invocation's marker before
+its child starts, so a reader never reports an older resume's exit while the new
+one works, and a wrapper refused before the child launches writes no marker.
 
 ## Run Pi on Open Design
 
@@ -128,9 +138,30 @@ scripts/controller/ctl-status.sh
 `job-status.sh` is the liveness read for an ACTIVE run (the controller's
 Monitor polls it instead of watching for `.done`). One line per run, with
 `STALLED` when the wrapper is alive but no pi event arrived within
-`JOB_STATUS_STALL_SECONDS` (default 600) and `HUNG-TOOL` when one tool call has
-been in flight past `JOB_STATUS_HUNG_TOOL_SECONDS` (default 1800). Long tool
-calls are reported, never killed; the thresholds only choose the word.
+`JOB_STATUS_STALL_SECONDS` (default 600), `LONG-TOOL` when one tool call has been
+in flight past `JOB_STATUS_HUNG_TOOL_SECONDS` (default 1800) while the run still
+shows progress evidence, and `HUNG-TOOL` for the same age with no progress
+evidence. Long tool calls are reported, never killed; the thresholds only
+choose the word.
+
+A `HUNG-TOOL` row carries the tool's command and the exact child pid to steer:
+
+```
+pi-run: HUNG-TOOL pid=8123 last-event=1900s tool=bash/1900s cmd=git show :0
+        steer=8451(git show :0) turns=12 calls=9 tokens=204118 since-commit=...
+```
+
+Kill `8451`, not `8123`. Killing the wrapper throws away the run's
+classification, its `.done` marker and its continuation history, and the tool it
+was waiting on is what actually needs to stop. When the tool is waiting on
+something the agent itself created (a `git` command on a FIFO the agent opened),
+the row shows no progress either, so read the command and decide.
+
+The usage and commit columns are qualified facts, not bare numbers:
+`tokens=204118 tokens-last-report=0` means the last measured context was 204k
+and the most recent usage report said 0 (a streaming delta or an error turn,
+never an empty context), and `since-commit=no-commits-yet` means the age would
+have belonged to the base commit, not to this run.
 
 An `EMPTY-COMPLETION` run is continued by the wrapper without the controller
 doing anything: it resumes the same pi session with the canonical prompt in

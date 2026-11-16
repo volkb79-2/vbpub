@@ -71,7 +71,7 @@ Use this order for each implementation task.
    status. Codex resumes a run on the same
    thread up to `CODEX_AUTO_CONTINUE` times after a reasoning-only completed
    turn; the default is two for DeepSeek and zero for Luna. The `.done` marker
-   records `EXIT=<n> AUTORESUME=<k>`, and the attempt log is
+   records `EXIT=<n> OUTCOME=CODE-EXIT AUTORESUME=<k>`, and the attempt log is
    `<run>.autoresume.log`. A new run name with an existing `<run>.done`,
    `<run>.jsonl`, or `<run>.err` record is refused before the child starts and
    all existing paths are printed. `CONTROLLER_RUN_FORCE=1` permits replacing
@@ -96,8 +96,15 @@ Use this order for each implementation task.
    when its name contains the current eight-character head prefix, an earlier
    log has the matching full `run-gate.commit` label on a line naming that
    container, and a supplied report names the same container. Without
-   `.done`, it prints `RUNNING (no .done)` and exits 0 even if the event stream
-   is absent. That status does not mean the child completed. See the
+   `.done`, it reads the run name's own owner record (`<run>.lock`, written by
+   every wrapper when it claims the name, CTL-14): a live owner prints
+   `RUNNING (no .done)` with its pid, a recorded owner that is gone (or whose
+   kernel start time no longer matches, or that was recorded under a previous
+   boot) prints `DIED (wrapper pid <pid> gone, no .done)` as a red flag, and a
+   run that no wrapper ever owned prints `RUNNING (no .done)` plus
+   `owner record: none`, stating that a live and a dead wrapper cannot be told
+   apart there. A `DIED` row is never evidence that the child completed — it is
+   evidence that nothing is running, so the controller can relaunch. See the
    [job-check design](docs/DESIGN-GUIDE.md#job-check-compatibility) for the
    accepted forms and completion rules. Usage-limit detection accepts a
    gateway `insufficient_balance` reset timestamp, a time-only retry, and a
@@ -331,13 +338,33 @@ scripts/controller/ctl-status.sh
 
 While a run is active the wrapper also keeps `<run>.live` current (default
 every 30 s, `PI_LIVE_INTERVAL_SECONDS`): pid liveness, seconds since the last
-pi event, the tool call in flight and its age, assistant turns, tool calls,
-latest `usage.totalTokens`, commits ahead of the base ref, uncommitted files,
-and seconds since the last commit. `job-status.sh` reads those files and prints
-one line per run with `ACTIVE`, `STALLED` (no pi event for longer than
-`JOB_STATUS_STALL_SECONDS`, default 600, while the pid is alive), `HUNG-TOOL`
+pi event, the tool call in flight with its age, command and the child pid to
+steer, assistant turns, tool calls, the last non-zero `usage.totalTokens`
+measurement (with the last usage report beside it as its own fact), progress
+evidence, commits ahead of the base ref, uncommitted files, and the age of the
+run's own last commit. `job-status.sh` reads those files and prints one line per
+run with `ACTIVE`, `STALLED` (no pi event for longer than
+`JOB_STATUS_STALL_SECONDS`, default 600, while the pid is alive), `LONG-TOOL`
 (one tool call in flight longer than `JOB_STATUS_HUNG_TOOL_SECONDS`, default
-1800), `WRAPPER-DEAD`, `FINISHED`, or `NO-LIVE`. It never writes.
+1800, while the run still shows progress evidence), `HUNG-TOOL` (the same age
+with no progress evidence), `WRAPPER-DEAD`, `FINISHED`, or `NO-LIVE`. It never
+writes.
+
+**`LONG-TOOL` and `HUNG-TOOL` are different words on purpose**: age is not
+progress. Progress evidence is read, not inferred: bytes appended to the run's
+event stream, or growth of the CPU-time and IO counters of the wrapper's
+process subtree, so a slow `grep` or a long `pytest` reads as a working job
+instead of a hung one. To steer a stuck tool, kill the exact child pid the row
+prints as `steer=` — never the wrapper, which would discard the run's
+classification, its `.done` marker and its continuation history. A tool blocked
+by the agent's own experiment (a `git` command waiting on a FIFO the agent
+created) also shows no progress, and its command and child pids are on the row
+so the controller can decide which one to kill.
+
+`since-commit` names whose commit the age belongs to: a run with no commit of
+its own prints `since-commit=no-commits-yet`, a run with `ahead=` commits prints
+`since-commit=123s(ahead=2)`, and an unreadable `commits_ahead` prints
+`since-commit=null` rather than someone else's commit age.
 
 OpenCode defaults to `opendesign_github2/deepseek-v4.1-flash-eco`. Set
 `OPENCODE_PROVIDER=opendesign_volker` to choose the other provider, or set

@@ -432,6 +432,7 @@ assert isinstance(body["tool_in_flight_started_epoch"], int), body
 assert body["assistant_turns"] >= 1, body
 assert body["tool_calls"] >= 1, body
 assert body["latest_total_tokens"] == 12220, body
+assert body["tool_in_flight_command"] == "sleep 600", body
 assert body["commits_ahead"] == 1, body
 assert body["uncommitted_files"] == 0, body
 assert isinstance(body["last_commit_epoch"], int), body
@@ -503,17 +504,35 @@ import json, sys, time
 from pathlib import Path
 now = int(time.time())
 runs = Path(sys.argv[1])
-def write(name, tool=None, tool_started=None, last_event=None):
+def write(name, tool=None, tool_started=None, last_event=None, progress=None,
+          command=None, steer=None, tokens=10, tokens_report=None, ahead=0,
+          commit_epoch=None):
     body = {
         "run": name, "wrapper_pid": 1, "updated_epoch": now,
         "last_event_epoch": last_event, "tool_in_flight": tool,
         "tool_in_flight_started_epoch": tool_started,
-        "assistant_turns": 1, "tool_calls": 1, "latest_total_tokens": 10,
-        "commits_ahead": 0, "uncommitted_files": 0, "last_commit_epoch": now,
+        "assistant_turns": 1, "tool_calls": 1,
+        "latest_total_tokens": tokens,
+        "latest_total_tokens_last_report": tokens if tokens_report is None else tokens_report,
+        "tool_in_flight_command": command, "steering_children": steer,
+        "progress_epoch": progress,
+        "commits_ahead": ahead, "uncommitted_files": 0,
+        "last_commit_epoch": now if commit_epoch is None else commit_epoch,
     }
     (runs / f"{name}.live").write_text(json.dumps(body), encoding="utf-8")
 write("stale", last_event=now - 900)
-write("hung", tool="bash", tool_started=now - 2400, last_event=now - 10)
+write("hung", tool="bash", tool_started=now - 2400, last_event=now - 10,
+      progress=now - 2400, command="sleep 600")
+write("long-tool", tool="bash", tool_started=now - 2400, last_event=now - 10,
+      progress=now - 30, command="grep -r needle /workspace",
+      steer=[{"pid": 4242, "command": "grep -r needle /workspace"}])
+write("progress-unknown", tool="bash", tool_started=now - 2400,
+      last_event=now - 10, progress=None)
+write("tokens-zero-report", last_event=now - 10, tokens=258492,
+      tokens_report=0)
+write("no-commits", last_event=now - 10, ahead=0, commit_epoch=now - 86400)
+write("own-commit", last_event=now - 10, ahead=2, commit_epoch=now - 60)
+write("ahead-unknown", last_event=now - 10, ahead=None, commit_epoch=now - 86400)
 write("orphan", last_event=now - 10)
 body = json.loads((runs / "orphan.live").read_text(encoding="utf-8"))
 body["wrapper_pid"] = 2147483646
@@ -522,12 +541,46 @@ body["wrapper_pid"] = 2147483646
 PY
   CONTROLLER_HOME="$ROOT/status-home" CONTROLLER_RUNS_DIR="$runs" CONTROLLER_REPO="$WORKTREE" \
     JOB_STATUS_STALL_SECONDS=600 JOB_STATUS_HUNG_TOOL_SECONDS=1800 \
-    "$JOB_STATUS" stale hung orphan finished absent > "$ROOT/job-status-states.out" 2>&1 || {
+    "$JOB_STATUS" stale hung long-tool progress-unknown tokens-zero-report \
+      no-commits own-commit ahead-unknown orphan finished absent \
+      > "$ROOT/job-status-states.out" 2>&1 || {
       cat "$ROOT/job-status-states.out" >&2
       fail 'job-status failed on synthetic run states'
     }
   grep -qF 'stale: STALLED' "$ROOT/job-status-states.out" || { cat "$ROOT/job-status-states.out" >&2; fail 'a quiet run is not STALLED'; }
   grep -qF 'hung: HUNG-TOOL' "$ROOT/job-status-states.out" || { cat "$ROOT/job-status-states.out" >&2; fail 'a long tool call is not HUNG-TOOL'; }
+  grep -qF 'long-tool: LONG-TOOL' "$ROOT/job-status-states.out" || { cat "$ROOT/job-status-states.out" >&2; fail 'a heavy tool call that is still progressing is not LONG-TOOL'; }
+  if grep -qF 'long-tool: HUNG-TOOL' "$ROOT/job-status-states.out"; then
+    fail 'a progressing tool call was reported as HUNG-TOOL'
+  fi
+  grep -qF 'cmd=grep -r needle /workspace' "$ROOT/job-status-states.out" \
+    || { cat "$ROOT/job-status-states.out" >&2; fail 'the row does not name the tool command'; }
+  if ! grep -qF 'steer=4242' "$ROOT/job-status-states.out"; then
+    cat "$ROOT/job-status-states.out" >&2
+    fail 'the row does not name the exact child pid to steer'
+  fi
+  # A progress fact that cannot be read is `null`, and an unknown progress fact
+  # must not license the stronger word.
+  grep -qF 'progress-unknown: LONG-TOOL' "$ROOT/job-status-states.out" \
+    || { cat "$ROOT/job-status-states.out" >&2; fail 'an unreadable progress fact was read as a hung tool'; }
+  grep -qE '^progress-unknown: .*progress=- ' "$ROOT/job-status-states.out" \
+    || { cat "$ROOT/job-status-states.out" >&2; fail 'an unreadable progress fact is not shown as unknown'; }
+  # A zero usage report never masquerades as the context size.
+  grep -qE '^tokens-zero-report: .*tokens=258492 .*tokens-last-report=0' \
+    "$ROOT/job-status-states.out" \
+    || { cat "$ROOT/job-status-states.out" >&2; fail 'a zero usage report replaced the measured token figure'; }
+  # since-commit names whose commit the age belongs to.
+  grep -qF 'no-commits: ACTIVE' "$ROOT/job-status-states.out" \
+    || { cat "$ROOT/job-status-states.out" >&2; fail 'the no-commit run is not reported'; }
+  if grep -E '^no-commits: .*since-commit=[0-9]+s' "$ROOT/job-status-states.out"; then
+    fail 'a run with no commit of its own printed an unqualified commit age'
+  fi
+  grep -qF 'since-commit=no-commits-yet' "$ROOT/job-status-states.out" \
+    || { cat "$ROOT/job-status-states.out" >&2; fail 'a run with no commit of its own does not say no-commits-yet'; }
+  grep -qF 'since-commit=60s(ahead=2)' "$ROOT/job-status-states.out" \
+    || { cat "$ROOT/job-status-states.out" >&2; fail 'a run with its own commit does not qualify the age with ahead='; }
+  grep -qF 'since-commit=null' "$ROOT/job-status-states.out" \
+    || { cat "$ROOT/job-status-states.out" >&2; fail 'an unreadable commits_ahead did not suppress the commit age'; }
   grep -qF 'finished: FINISHED EXIT=0 OUTCOME=SUCCESS' "$ROOT/job-status-states.out" || fail 'a finished run is not reported as finished'
   grep -qF 'absent: NO-LIVE (no absent.live sidecar)' "$ROOT/job-status-states.out" || fail 'a run without a snapshot is not NO-LIVE'
   grep -qF 'orphan: WRAPPER-DEAD' "$ROOT/job-status-states.out" || fail 'a run whose wrapper pid is gone is not WRAPPER-DEAD'
@@ -546,11 +599,12 @@ import json, sys, time
 from pathlib import Path
 now = int(time.time())
 runs = Path(sys.argv[1])
-def write(name, tool=None, tool_started=None, last_event=None):
+def write(name, tool=None, tool_started=None, last_event=None, progress=None):
     body = {
         "run": name, "wrapper_pid": 1, "updated_epoch": now,
         "last_event_epoch": last_event, "tool_in_flight": tool,
         "tool_in_flight_started_epoch": tool_started,
+        "progress_epoch": progress,
         "assistant_turns": 1, "tool_calls": 1, "latest_total_tokens": 10,
         "commits_ahead": 0, "uncommitted_files": 0, "last_commit_epoch": now,
     }
@@ -558,15 +612,21 @@ def write(name, tool=None, tool_started=None, last_event=None):
 write("quiet500", last_event=now - 500)
 write("quiet700", last_event=now - 700)
 write("thinking", last_event=now - 100)
-write("tool1700", tool="bash", tool_started=now - 1700, last_event=now - 20)
-write("tool1900", tool="bash", tool_started=now - 1900, last_event=now - 20)
+write("tool1700", tool="bash", tool_started=now - 1700, last_event=now - 20,
+      progress=now - 20)
+write("tool1900fresh", tool="bash", tool_started=now - 1900, last_event=now - 20,
+      progress=now - 20)
+write("tool1900stuck", tool="bash", tool_started=now - 1900, last_event=now - 20,
+      progress=now - 1900)
 PY
   env -u JOB_STATUS_STALL_SECONDS -u JOB_STATUS_HUNG_TOOL_SECONDS \
     CONTROLLER_HOME="$ROOT/status-home" CONTROLLER_RUNS_DIR="$runs" CONTROLLER_REPO="$WORKTREE" \
-    "$JOB_STATUS" quiet500 quiet700 thinking tool1700 tool1900 > "$ROOT/job-status-defaults.out" 2>&1 \
+    "$JOB_STATUS" quiet500 quiet700 thinking tool1700 tool1900fresh tool1900stuck \
+      > "$ROOT/job-status-defaults.out" 2>&1 \
     || { cat "$ROOT/job-status-defaults.out" >&2; fail 'job-status failed on default-threshold states'; }
   local expectation
-  for expectation in 'quiet500: ACTIVE' 'quiet700: STALLED' 'thinking: ACTIVE' 'tool1700: ACTIVE' 'tool1900: HUNG-TOOL'; do
+  for expectation in 'quiet500: ACTIVE' 'quiet700: STALLED' 'thinking: ACTIVE' \
+                     'tool1700: ACTIVE' 'tool1900fresh: LONG-TOOL' 'tool1900stuck: HUNG-TOOL'; do
     grep -qF -- "$expectation" "$ROOT/job-status-defaults.out" \
       || { cat "$ROOT/job-status-defaults.out" >&2; fail "default thresholds: expected $expectation"; }
   done
@@ -603,9 +663,38 @@ check_live_usage_trend() {
 import json, sys
 body = json.load(open(sys.argv[1], encoding="utf-8"))
 assert body["latest_total_tokens"] == 129, body
+assert body["latest_total_tokens_last_report"] == 129, body
 assert body["assistant_turns"] == 1, body
 assert body["tool_calls"] == 1, body
 assert body["tool_in_flight"] is None, body
+PY
+  # A usage report of 0 is a fact, never the context size: the last measured
+  # figure stays published, and the zero report stays visible as its own fact.
+  rm -f "$CONTROLLER_ROOT/runs/zero-report.live"
+  python3 "$PILIVE" --stream "$SCRIPT_DIR/fixtures/pi-long-run-zero-reports.jsonl" \
+    --worktree "$WORKTREE" --out "$CONTROLLER_ROOT/runs/zero-report.live" --run zero-report \
+    --wrapper-pid $$ --interval 1 --once > /dev/null 2>&1 \
+    || fail 'pi-live could not snapshot a stream whose latest usage report is 0'
+  python3 - "$CONTROLLER_ROOT/runs/zero-report.live" <<'PY' || fail 'a zero usage report replaced the measured figure'
+import json, sys
+body = json.load(open(sys.argv[1], encoding="utf-8"))
+assert body["latest_total_tokens"] == 258492, body
+assert body["latest_total_tokens_last_report"] == 0, body
+assert body["tool_in_flight"] == "bash", body
+assert body["tool_in_flight_command"] == "grep -r needle /workspace", body
+PY
+  # A stream that never reported a usage figure publishes null, not 0.
+  rm -f "$CONTROLLER_ROOT/runs/no-usage.live"
+  printf '{"type":"session","id":"no-usage"}\n' > "$ROOT/no-usage.jsonl"
+  python3 "$PILIVE" --stream "$ROOT/no-usage.jsonl" \
+    --worktree "$WORKTREE" --out "$CONTROLLER_ROOT/runs/no-usage.live" --run no-usage \
+    --wrapper-pid $$ --interval 1 --once > /dev/null 2>&1 \
+    || fail 'pi-live could not snapshot a stream with no usage'
+  python3 - "$CONTROLLER_ROOT/runs/no-usage.live" <<'PY' || fail 'a stream with no usage invented a token figure'
+import json, sys
+body = json.load(open(sys.argv[1], encoding="utf-8"))
+assert body["latest_total_tokens"] is None, body
+assert body["latest_total_tokens_last_report"] is None, body
 PY
 }
 
@@ -902,7 +991,7 @@ if [[ -n ${PI_TEST_FOCUS:-} ]]; then
         'a directory that cannot answer the clean-worktree question is refused'
       ;;
     live-usage-trend)
-      rm -f "$CONTROLLER_ROOT/runs/focus-trend.live"
+      rm -f "$CONTROLLER_ROOT/runs/focus-trend.live" "$CONTROLLER_ROOT/runs/focus-zero-report.live"
       python3 "$PILIVE" --stream "$SCRIPT_DIR/fixtures/pi-usage-only.jsonl" \
         --worktree "$WORKTREE" --out "$CONTROLLER_ROOT/runs/focus-trend.live" --run focus-trend \
         --wrapper-pid $$ --interval 1 --once > /dev/null 2>&1 \
@@ -911,8 +1000,19 @@ if [[ -n ${PI_TEST_FOCUS:-} ]]; then
 import json, sys
 body = json.load(open(sys.argv[1], encoding="utf-8"))
 assert body["latest_total_tokens"] == 101, body
+assert body["latest_total_tokens_last_report"] == 101, body
 assert body["assistant_turns"] == 0, body
 assert body["tool_in_flight"] is None, body
+PY
+      python3 "$PILIVE" --stream "$SCRIPT_DIR/fixtures/pi-long-run-zero-reports.jsonl" \
+        --worktree "$WORKTREE" --out "$CONTROLLER_ROOT/runs/focus-zero-report.live" \
+        --run focus-zero-report --wrapper-pid $$ --interval 1 --once > /dev/null 2>&1 \
+        || fail 'pi-live could not snapshot a zero-report stream'
+      python3 - "$CONTROLLER_ROOT/runs/focus-zero-report.live" <<'PY' || fail 'a zero report replaced the measured figure'
+import json, sys
+body = json.load(open(sys.argv[1], encoding="utf-8"))
+assert body["latest_total_tokens"] == 258492, body
+assert body["latest_total_tokens_last_report"] == 0, body
 PY
       ;;
     live-snapshot)
@@ -932,6 +1032,23 @@ assert isinstance(body["tool_in_flight_started_epoch"], int), body
 assert isinstance(body["last_event_epoch"], int), body
 assert body["tool_calls"] == 1, body
 PY
+      # A tool's own partial output is progress evidence: the event is appended
+      # to the stream while the tool runs, so the tool in flight carries the
+      # epoch of its last output even when the run is otherwise quiet.
+      out_live=$CONTROLLER_ROOT/runs/focus-live-output.live
+      rm -f "$out_live"
+      python3 "$PILIVE" --stream "$SCRIPT_DIR/fixtures/pi-tool-progress.jsonl" \
+        --worktree "$WORKTREE" --out "$out_live" --run focus-live-output \
+        --wrapper-pid $$ --interval 1 --once > /dev/null 2>&1 \
+        || fail 'pi-live could not snapshot a tool that is printing output'
+      python3 - "$out_live" <<'PY' || fail 'the tool output evidence is missing from the snapshot'
+import json, sys
+body = json.load(open(sys.argv[1], encoding="utf-8"))
+assert body["tool_in_flight"] == "bash", body
+assert body["tool_in_flight_command"] == "pytest -q", body
+assert isinstance(body["tool_in_flight_output_epoch"], int), body
+assert isinstance(body["progress_epoch"], int), body
+PY
       # A git fact that cannot be read stays null; it is never invented as 0.
       orphan_live=$CONTROLLER_ROOT/runs/focus-live-nogit.live
       rm -f "$orphan_live"
@@ -947,6 +1064,75 @@ assert body["commits_ahead"] is None, body
 assert body["uncommitted_files"] is None, body
 assert body["last_commit_epoch"] is None, body
 PY
+      ;;
+    live-progress)
+      # Progress evidence is read from the kernel, not guessed from the stream: a
+      # tool that keeps working while printing nothing still advances the run's
+      # CPU-time and IO counters, and that is what separates LONG-TOOL from
+      # HUNG-TOOL. The stream here never grows.
+      live=$CONTROLLER_ROOT/runs/focus-progress.live
+      rm -f "$live"
+      python3 -c 'import time
+end = time.time() + 30
+while time.time() < end:
+    pass' &
+      churn_pid=$!
+      sleep 30 &
+      steer_pid=$!
+      python3 "$PILIVE" --stream "$SCRIPT_DIR/fixtures/pi-tool-progress.jsonl" \
+        --worktree "$WORKTREE" --out "$live" --run focus-progress \
+        --wrapper-pid $$ --interval 1 > /dev/null 2>&1 &
+      sidecar_pid=$!
+      row=$ROOT/focus-progress-before.json
+      for _ in {1..60}; do [[ -s $live ]] && break; sleep 0.1; done
+      cp -- "$live" "$row" 2>/dev/null || fail 'pi-live never wrote its first snapshot'
+      # Wait for EVIDENCE, never for a clock: the child above burns CPU, so the
+      # subtree's counters grow however loaded the host is. The loop's bound is a
+      # limit on waiting, not a claim about how fast the host is.
+      for _ in {1..100}; do
+        cp -- "$live" "$ROOT/focus-progress-after.json" 2>/dev/null || :
+        if python3 -c 'import json, sys
+before = json.load(open(sys.argv[1], encoding="utf-8"))["progress_epoch"]
+after = json.load(open(sys.argv[2], encoding="utf-8"))["progress_epoch"]
+sys.exit(0 if isinstance(after, int) and isinstance(before, int) and after > before else 1)' \
+          "$row" "$ROOT/focus-progress-after.json"; then
+          break
+        fi
+        sleep 0.3
+      done
+      kill -- "$sidecar_pid" "$churn_pid" 2>/dev/null || true
+      wait "$sidecar_pid" 2>/dev/null || true
+      python3 - "$row" "$ROOT/focus-progress-after.json" "$steer_pid" "$churn_pid" <<'PY' \
+        || fail 'progress evidence or the steering target is missing from the snapshot'
+import json, sys
+before = json.load(open(sys.argv[1], encoding="utf-8"))
+after = json.load(open(sys.argv[2], encoding="utf-8"))
+steer_pid = int(sys.argv[3])
+churn_pid = int(sys.argv[4])
+assert isinstance(after["progress_epoch"], int), after
+assert isinstance(before["progress_epoch"], int), before
+assert after["progress_epoch"] > before["progress_epoch"], (before, after)
+# A tool's own partial output is progress evidence too.
+assert isinstance(after["tool_in_flight_output_epoch"], int), after
+# The exact child pid is the steering target, and the wrapper never is.
+pids = [row["pid"] for row in after["steering_children"]]
+assert any(row["pid"] == steer_pid for row in after["steering_children"]), after["steering_children"]
+assert any(row["pid"] == churn_pid for row in after["steering_children"]), after["steering_children"]
+assert pids, after
+assert all(row.get("command") for row in after["steering_children"] if row["pid"] == steer_pid), after
+PY
+      [[ $(python3 -c "import json,sys; print(json.load(open(sys.argv[1]))['wrapper_pid'])" "$ROOT/focus-progress-after.json") == $$ ]] \
+        || fail 'the snapshot did not keep the wrapper pid'
+      python3 - "$ROOT/focus-progress-after.json" "$sidecar_pid" <<'PY' \
+        || fail 'the sidecar or wrapper was published as a steering target'
+import json, sys
+body = json.load(open(sys.argv[1], encoding="utf-8"))
+pids = [row["pid"] for row in body["steering_children"]]
+assert body["wrapper_pid"] not in pids, body["steering_children"]
+PY
+      wait "$steer_pid" 2>/dev/null || true
+      kill -- "$steer_pid" 2>/dev/null || true
+      wait "$steer_pid" 2>/dev/null || true
       ;;
     live-atomic)
       printf '{"type":"session","id":"atomic"}\n' > "$ROOT/focus-atomic.jsonl"
@@ -969,42 +1155,7 @@ PY
       [[ -z $(ls "$CONTROLLER_ROOT/runs"/.focus-atomic.live.* 2>/dev/null || true) ]] \
         || fail 'the snapshot left a temporary file behind'
       ;;
-    status-states)
-      runs=$ROOT/focus-status-runs
-      mkdir -p "$runs" "$ROOT/focus-status-home"
-      python3 - "$runs" <<'PY'
-import json, sys, time
-from pathlib import Path
-now = int(time.time())
-runs = Path(sys.argv[1])
-def write(name, tool=None, tool_started=None, last_event=None):
-    body = {
-        "run": name, "wrapper_pid": 1, "updated_epoch": now,
-        "last_event_epoch": last_event, "tool_in_flight": tool,
-        "tool_in_flight_started_epoch": tool_started,
-        "assistant_turns": 1, "tool_calls": 1, "latest_total_tokens": 10,
-        "commits_ahead": 0, "uncommitted_files": 0, "last_commit_epoch": now,
-    }
-    (runs / f"{name}.live").write_text(json.dumps(body), encoding="utf-8")
-write("stale", last_event=now - 900)
-write("hung", tool="bash", tool_started=now - 2400, last_event=now - 10)
-write("orphan", last_event=now - 10)
-body = json.loads((runs / "orphan.live").read_text(encoding="utf-8"))
-body["wrapper_pid"] = 2147483646
-(runs / "orphan.live").write_text(json.dumps(body), encoding="utf-8")
-(runs / "finished.done").write_text("EXIT=0 OUTCOME=SUCCESS\n", encoding="utf-8")
-PY
-      CONTROLLER_HOME="$ROOT/focus-status-home" CONTROLLER_RUNS_DIR="$runs" \
-        CONTROLLER_REPO="$WORKTREE" JOB_STATUS_STALL_SECONDS=600 JOB_STATUS_HUNG_TOOL_SECONDS=1800 \
-        "$JOB_STATUS" stale hung orphan finished absent > "$ROOT/focus-status.out" 2>&1 \
-        || fail 'job-status failed on synthetic run states'
-      contains "$ROOT/focus-status.out" 'stale: STALLED' 'a quiet run is STALLED'
-      contains "$ROOT/focus-status.out" 'hung: HUNG-TOOL' 'a long tool call is HUNG-TOOL'
-      contains "$ROOT/focus-status.out" 'finished: FINISHED EXIT=0 OUTCOME=SUCCESS' 'a finished run is FINISHED'
-      contains "$ROOT/focus-status.out" 'absent: NO-LIVE (no absent.live sidecar)' \
-        'a run without a snapshot is NO-LIVE for that reason'
-      contains "$ROOT/focus-status.out" 'orphan: WRAPPER-DEAD' 'a run whose wrapper pid is gone is not ACTIVE'
-      ;;
+    status-states) check_job_status_states ;;
     prompt-absolute)
       expect_rc 2 env PATH="$ROOT/bin:$PATH" HOME="$HOME_ROOT" PI_ROUTE=deepseek-pi \
         "$SRC" "$WORKTREE" relative-prompt focused-relative
@@ -1271,6 +1422,22 @@ PY
       contains "$DESIGN_SOURCE" 'Why liveness is a file, not a poll of the process' 'design guide explains the liveness sidecar'
       contains "$README_SOURCE" 'job-status.sh' 'README documents the liveness read'
       contains "$CONSUMER_SOURCE" 'JOB_STATUS_STALL_SECONDS' 'consumer guide documents the stall threshold'
+      contains "$README_SOURCE" '**`LONG-TOOL` and `HUNG-TOOL` are different words on purpose**' \
+        'README states that the two words are separate'
+      contains "$README_SOURCE" '`HUNG-TOOL` (the same age' 'README separates long-tool from hung-tool'
+      contains "$README_SOURCE" 'progress evidence' 'README names the progress fact'
+      contains "$README_SOURCE" 'To steer a stuck tool, kill the exact child pid' \
+        'README states the steering action'
+      contains "$README_SOURCE" '`steer=` — never the wrapper' \
+        'README forbids killing the wrapper to steer a tool'
+      contains "$README_SOURCE" '`since-commit=no-commits-yet`' 'README qualifies the since-commit age'
+      contains "$README_SOURCE" '`DIED (wrapper pid <pid> gone, no .done)`' 'README documents the died state'
+      contains "$DESIGN_SOURCE" 'Why `LONG-TOOL` exists as its own word' \
+        'design guide explains why long-tool is separate'
+      contains "$DESIGN_SOURCE" '`DIED (wrapper pid' 'design guide documents the died classification'
+      contains "$CONSUMER_SOURCE" 'steer=' 'consumer guide shows the steering column'
+      contains "$CONSUMER_SOURCE" 'Kill `8451`, not `8123`' 'consumer guide says which process to kill'
+      contains "$CONSUMER_SOURCE" 'OUTCOME=CODE-EXIT' 'consumer guide documents the Codex marker shape'
       ;;
     *) fail "unknown PI_TEST_FOCUS=$PI_TEST_FOCUS" ;;
   esac

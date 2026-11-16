@@ -9,13 +9,31 @@
 # no sidecar is NO-LIVE, not healthy.
 #
 # Per line: run, state, wrapper pid, seconds since the last pi event, the tool
-# call in flight and its age, assistant turns, tool calls, latest usage total,
-# commits ahead of the base ref, uncommitted files, seconds since the last
-# commit, and the snapshot's own age.
+# call in flight with its age, its command and the pid to steer, assistant
+# turns, tool calls, latest usage total, commits ahead of the base ref,
+# uncommitted files, the age of this run's own last commit, and the snapshot's
+# own age.
 #
 # States: ACTIVE, STALLED (wrapper alive, no pi event for longer than the
-# stall threshold), HUNG-TOOL (one tool call in flight longer than its
-# threshold), WRAPPER-DEAD (pid gone while no .done), FINISHED, NO-LIVE.
+# stall threshold), LONG-TOOL (one tool call in flight longer than its threshold
+# WHILE the run is still showing progress evidence), HUNG-TOOL (the same age
+# with NO progress evidence), WRAPPER-DEAD (pid gone while no .done), FINISHED,
+# NO-LIVE.
+#
+# LONG-TOOL and HUNG-TOOL are separate words on purpose: a slow grep or a long
+# pytest is a working job, and calling it HUNG-TOOL made the controller kill
+# working runs. Progress evidence is the sidecar's `progress_epoch` (stream
+# growth or CPU/IO growth of the wrapper's process subtree), so it is a fact
+# read from the kernel and the stream, never a guess from wall-clock alone.
+#
+# Steering a stuck tool: kill the EXACT child pid printed as `steer=`, never the
+# wrapper. Killing the wrapper discards the run's classification, its `.done`
+# marker and its continuation history, and the tool it was waiting on is what
+# actually needs to stop. A tool blocked by the agent's own experiment (a git
+# command waiting on a FIFO the agent created) shows no progress EITHER, so the
+# row prints the command and the pids and the controller decides which one to
+# kill.
+#
 # Thresholds: JOB_STATUS_STALL_SECONDS (default 600) and
 # JOB_STATUS_HUNG_TOOL_SECONDS (default 1800), integer seconds.
 set -uo pipefail
@@ -90,6 +108,25 @@ def show(value):
     return '-' if value is None else value
 
 
+def command_text(children):
+    """A short, bounded rendering of the wrapper's steering children."""
+    if not isinstance(children, list):
+        return None
+    rows = []
+    for entry in children:
+        if not isinstance(entry, dict):
+            continue
+        pid = entry.get("pid")
+        if not isinstance(pid, int) or pid <= 0:
+            continue
+        command = entry.get("command")
+        if isinstance(command, str) and command.strip():
+            rows.append(f"{pid}({command[:60]})")
+        else:
+            rows.append(str(pid))
+    return ",".join(rows) if rows else None
+
+
 def finished_line(name):
     marker = (runs_dir / f"{name}.done").read_text(encoding="utf-8", errors="replace").splitlines()
     status = marker[0] if marker else "EXIT=? OUTCOME=?"
@@ -102,16 +139,46 @@ def active_line(name, payload):
     since_event = age(payload.get("last_event_epoch"))
     tool = payload.get("tool_in_flight")
     tool_seconds = age(payload.get("tool_in_flight_started_epoch"))
+    progress_seconds = age(payload.get("progress_epoch"))
+    tool_command = payload.get("tool_in_flight_command")
+    steer = command_text(payload.get("steering_children"))
+    if progress_seconds is None:
+        progress_text = "-"
+    else:
+        progress_text = f"{progress_seconds}s"
+    ahead = payload.get("commits_ahead")
+    # `since-commit` names WHOSE commit the age belongs to. Before this run's
+    # first commit the newest commit on the branch is the BASE commit, and an
+    # unqualified age would answer "how long since this run committed" with
+    # somebody else's commit age. The qualifier is the commits_ahead fact on the
+    # same row: 0 means no commit of this run's own, null means git could not
+    # answer (and an unreadable qualifier never licenses the number).
+    if not isinstance(ahead, int):
+        commit_text = "null"
+    elif ahead == 0:
+        commit_text = "no-commits-yet"
+    else:
+        commit_text = f"{show(age(payload.get('last_commit_epoch')))}s(ahead={ahead})"
     state = "ACTIVE"
     if wrapper_dead:
         state = "WRAPPER-DEAD"
     elif tool_seconds is not None and tool_seconds > hung_limit:
-        state = "HUNG-TOOL"
+        # Age alone is not a hung tool: it is a hung tool only when the run has
+        # ALSO stopped showing progress evidence within the same threshold. An
+        # unreadable progress fact (null) cannot license the stronger word.
+        if progress_seconds is not None and progress_seconds > hung_limit:
+            state = "HUNG-TOOL"
+        else:
+            state = "LONG-TOOL"
     elif since_event is not None and since_event > stall_limit:
         state = "STALLED"
     tool_text = "-"
     if isinstance(tool, str) and tool:
         tool_text = f"{tool}/{show(tool_seconds)}s"
+    if isinstance(tool_command, str) and tool_command:
+        tool_text += f" cmd={tool_command[:80]}"
+    if steer is not None:
+        tool_text += f" steer={steer}"
     pid_text = f"{show(wrapper_pid)}"
     if wrapper_dead:
         pid_text += " DEAD"
@@ -122,7 +189,9 @@ def active_line(name, payload):
         f"tokens={show(payload.get('latest_total_tokens'))} "
         f"ahead={show(payload.get('commits_ahead'))} "
         f"uncommitted={show(payload.get('uncommitted_files'))} "
-        f"since-commit={show(age(payload.get('last_commit_epoch')))}s "
+        f"tokens-last-report={show(payload.get('latest_total_tokens_last_report'))} "
+        f"since-commit={commit_text} "
+        f"progress={progress_text} "
         f"snapshot-age={show(age(payload.get('updated_epoch')))}s"
     )
 

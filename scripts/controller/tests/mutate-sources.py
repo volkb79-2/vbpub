@@ -149,12 +149,35 @@ mutant("scripts/netcup/runner/host-sat-queue.sh", "queue-stop-config.sh",
 mutant("scripts/netcup/runner/host-sat-queue.sh", "queue-controller-lib.sh",
        'if [[ -f $REPO_ROOT/scripts/controller/lib.sh ]]; then', 'if [[ -f $SCRIPT_DIR/lib.sh ]]; then', runner)
 
+# CTL-19: a name with no `.done` is only RUNNING when the owner record says so.
+mutant("scripts/controller/job-check.sh", "job-check-dead-owner-running.sh",
+       '  if [[ -n $dead_reason ]]; then',
+       '  if false; then')
+mutant("scripts/controller/job-check.sh", "job-check-owner-pid-alive-only.sh",
+       '      if [[ $owner_ticks =~ ^[0-9]+$ && $live_ticks =~ ^[0-9]+$ && $owner_ticks != "$live_ticks" ]]; then',
+       '      if false; then')
+mutant("scripts/controller/job-check.sh", "job-check-owner-boot.sh",
+       '    if [[ -n $owner_boot && -n $current_boot && $owner_boot != "$current_boot" ]]; then',
+       '    if false; then')
+mutant("scripts/controller/job-check.sh", "job-check-owner-liveness.sh",
+       '    elif ! kill -0 "$owner_pid" 2>/dev/null; then',
+       '    elif false; then')
 mutant("scripts/controller/job-check.sh", "job-check-run-traversal.sh",
        '[[ $run =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ && $run != *..* ]] || { echo "invalid run name" >&2; exit 2; }',
        ': # removed run-name traversal guard')
-mutant("scripts/controller/job-check.sh", "job-check-missing-done-success.sh",
-       '  echo "RUNNING (no .done)"\n  exit 0',
-       '  if [[ ! -f $run_file ]]; then echo "RUN FILE MISSING: $run_file"; exit 1; fi\n  echo "RUNNING (no .done)"\n  exit 0')
+# A name that no wrapper ever owned is a distinct state, and the line says so
+# instead of borrowing RUNNING's claim about a process.
+mutant("scripts/controller/job-check.sh", "job-check-missing-done-owner-record.sh",
+       "    printf 'owner record: none",
+       "    : printf 'owner record: none")
+# CTL-19: the Codex wrapper owns its run name and states its outcome on every
+# exit path, including a resume whose child fails.
+mutant("scripts/controller/codex-impl.sh", "codex-run-name-claim.sh",
+       'controller_run_claim "$name" || exit 2',
+       ': # name ownership not claimed')
+mutant("scripts/controller/codex-impl.sh", "codex-resume-stale-marker.sh",
+       '  rm -f -- "$out/$name.done"\n  codex_launched=1',
+       '  codex_launched=1')
 mutant("scripts/controller/job-check.sh", "job-check-report-litter.sh",
        "stray=$(git -C \"$worktree\" status --short --ignored 2>/dev/null | grep -E '^\\?\\? (reports|scripts/.*/reports)/' | head -2 || true)",
        "stray='' ")
@@ -538,6 +561,23 @@ mutant("scripts/controller/pi-live.py", "pi-live-missing-fact.py",
 mutant("scripts/controller/pi-live.py", "pi-live-usage-trend.py",
        '        elif event_type == "message_update":',
        '        elif event_type == "message_update_disabled":')
+# CTL-15: a 0 usage report is a report, never a measurement. Publishing it as the
+# context size is the defect (a 200k run reads as an empty context).
+mutant("scripts/controller/pi-live.py", "pi-live-tokens-zero-as-measurement.py",
+       '        if total > 0:', '        if True:')
+# CTL-18: progress evidence is stream growth OR kernel counter growth. Without
+# the counters a long tool that keeps working but prints nothing reads as hung.
+mutant("scripts/controller/pi-live.py", "pi-live-progress-stream-only.py",
+       '            if self.counters is not None and counters != self.counters:\n                changed = True',
+       '            if False:\n                changed = True')
+# A tool's own partial output is progress evidence.
+mutant("scripts/controller/pi-live.py", "pi-live-tool-output-progress.py",
+       '        elif event_type == "tool_execution_update":',
+       '        elif event_type == "tool_execution_update_disabled":')
+# The wrapper and this sidecar are never steering targets.
+mutant("scripts/controller/pi-live.py", "pi-live-steering-includes-wrapper.py",
+       '    steering_pids = [pid for pid in process_tree(wrapper_pid) if pid not in (wrapper_pid, os.getpid())]',
+       '    steering_pids = [pid for pid in process_tree(wrapper_pid) if pid not in (os.getpid(),)]')
 # A quiet run must read as STALLED at the configured threshold.
 mutant("scripts/controller/job-status.sh", "job-status-stall-threshold.sh",
        '    elif since_event is not None and since_event > stall_limit:',
@@ -546,6 +586,31 @@ mutant("scripts/controller/job-status.sh", "job-status-stall-threshold.sh",
 mutant("scripts/controller/job-status.sh", "job-status-hung-tool.sh",
        '    elif tool_seconds is not None and tool_seconds > hung_limit:',
        '    elif False:')
+# CTL-18: HUNG-TOOL is age AND absence of progress evidence. Deciding it on the
+# tool age alone is exactly the defect (a heavy-but-working tool reads as hung).
+mutant("scripts/controller/job-status.sh", "job-status-hung-without-progress.sh",
+       '        if progress_seconds is not None and progress_seconds > hung_limit:',
+       '        if True:')
+# An unknown progress fact must not license the stronger word either.
+mutant("scripts/controller/job-status.sh", "job-status-progress-unknown-as-hung.sh",
+       '        if progress_seconds is not None and progress_seconds > hung_limit:',
+       '        if progress_seconds is None or progress_seconds > hung_limit:')
+# The row must name the tool's command and the exact child pid to steer.
+mutant("scripts/controller/job-status.sh", "job-status-hung-tool-command.sh",
+       '        tool_text += f" cmd={tool_command[:80]}"',
+       '        tool_text += ""')
+mutant("scripts/controller/job-status.sh", "job-status-steer-target.sh",
+       '        tool_text += f" steer={steer}"',
+       '        tool_text += ""')
+# CTL-16: before the run's own first commit the age belongs to the base commit,
+# so it must not be printed as this run's.
+mutant("scripts/controller/job-status.sh", "job-status-since-commit-unqualified.sh",
+       '    elif ahead == 0:\n        commit_text = "no-commits-yet"',
+       '    elif ahead == 0:\n        commit_text = f"{show(age(payload.get(\'last_commit_epoch\')))}s"')
+# CTL-15: the last zero usage report must never stand in for the context size.
+mutant("scripts/controller/job-status.sh", "job-status-tokens-last-report.sh",
+       "        f\"tokens-last-report={show(payload.get('latest_total_tokens_last_report'))} \"",
+       "        f\"tokens-last-report={show(payload.get('latest_total_tokens'))} \"")
 # A dead wrapper with no .done must not read as ACTIVE.
 mutant("scripts/controller/job-status.sh", "job-status-wrapper-dead.sh",
        '    wrapper_dead = not pid_alive(wrapper_pid)',
@@ -567,12 +632,32 @@ mutant("scripts/controller/job-status.sh", "job-status-default-hung.sh",
        'hung_tool_seconds=${JOB_STATUS_HUNG_TOOL_SECONDS:-1800}',
        'hung_tool_seconds=${JOB_STATUS_HUNG_TOOL_SECONDS:-18000}')
 
+# The states list and the steering action are user-facing facts, so a document
+# that lost them must fail its own content check.
+mutant("scripts/controller/README.md", "README-long-tool-state.md",
+       '**`LONG-TOOL` and `HUNG-TOOL` are different words on purpose**',
+       '**One age threshold covers every slow tool call**')
+mutant("scripts/controller/README.md", "README-steering-action.md",
+       'prints as `steer=` — never the wrapper',
+       'prints as `steer=` — and the wrapper once it also looks idle')
+mutant("scripts/controller/README.md", "README-died-state.md",
+       '`DIED (wrapper pid <pid> gone, no .done)` as a red flag',
+       '`RUNNING (no .done)` as a red flag')
 mutant("scripts/controller/README.md", "README-pi-route-table.md",
        '| `deepseek-pi` | `pi-impl.sh` | Favored Open Design route; alternates available accounts. |',
        '| `deepseek-pi` | `pi-impl.sh` | Route. |')
+mutant("scripts/controller/docs/DESIGN-GUIDE.md", "DESIGN-long-tool-rationale.md",
+       '**Why `LONG-TOOL` exists as its own word.**',
+       '**Why one word covers every slow tool call.**')
 mutant("scripts/controller/docs/DESIGN-GUIDE.md", "DESIGN-pi-402-classification.md",
        'Pi 1.5.0 can report a provider 402 in the final assistant `message_end` event',
        'Pi 1.5.0 reports provider errors outside the final assistant `message_end` event')
+mutant("scripts/controller/docs/CONSUMERS.md", "CONSUMER-steering-target.md",
+       'Kill `8451`, not `8123`.',
+       'Kill the wrapper `8123` to stop the tool.')
+mutant("scripts/controller/docs/CONSUMERS.md", "CONSUMER-codex-marker-shape.md",
+       '`EXIT=<n> OUTCOME=CODE-EXIT AUTORESUME=<k>`',
+       '`EXIT=<n> AUTORESUME=<k>`')
 mutant("scripts/controller/docs/CONSUMERS.md", "CONSUMER-pi-launch-route.md",
        '`deepseek-pi` is the favored Pi route',
        '`deepseek-pi` is unavailable in the Pi route selector.')

@@ -1,6 +1,20 @@
 #!/usr/bin/env bash
 # Launch one Codex implementation or review job and persist its run stream locally.
 # Usage: codex-impl.sh <worktree> <prompt-file> <run-name> [resume <session-id>]
+#
+# A run NAME is owned by one live wrapper: the invocation takes an exclusive
+# flock on <runs-dir>/<name>.lock (lib.sh controller_run_claim) before it writes
+# any name-owned record and releases it on every exit path, so a second
+# invocation on the same name is refused with exit 2 and the live owner's pid.
+# The lock file also records the owner's identity (pid, start epoch, the pid's
+# kernel start ticks, boot id), which is what lets a reader name a DEAD owner.
+#
+# Every exit path writes <run>.done as `EXIT=<n> OUTCOME=<class>
+# AUTORESUME=<k>` (the historical first-line shape, additive). The class is
+# `CODE-EXIT`: the Codex stream carries no pi stop reason, so the one fact this
+# wrapper can state is the child's own exit status. A resume that is killed
+# before it reaches the marker leaves no `.done`, and `job-check.sh` reports
+# that from the owner record as `DIED`, never as `RUNNING`.
 set -uo pipefail
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 # shellcheck source=lib.sh
@@ -19,6 +33,25 @@ if [[ $mode == resume ]]; then [[ -n $session_id ]] || usage
 elif [[ $mode != new || $# -gt 4 ]]; then usage
 fi
 out=$CONTROLLER_RUNS_DIR
+# Ownership first: nothing below may write a name-owned record until this
+# invocation holds the name.
+controller_run_claim "$name" || exit 2
+auto_count=0
+codex_launched=0
+codex_finish() {
+  # Every exit path (normal, child failure, bookkeeping failure, an error path
+  # after the claim) states the run's outcome and drops the name. The marker is
+  # written once: the normal path below writes the full one, and this fills it in
+  # only when the wrapper exits through some other path.
+  local status=$?
+  # Only a launched child can exit: before the launch the wrapper states no
+  # child outcome at all, and an unlaunched name keeps its "no .done" state.
+  if (( codex_launched == 1 )) && [[ ! -e $out/$name.done ]]; then
+    printf 'EXIT=%s OUTCOME=CODE-EXIT AUTORESUME=%s\n' "$status" "$auto_count" > "$out/$name.done"
+  fi
+  controller_run_release
+}
+trap codex_finish EXIT
 if [[ $mode == new ]]; then
   existing=()
   for extension in 'done' 'jsonl' 'err'; do
@@ -137,6 +170,12 @@ printf '%s\n' "$worktree" > "$out/$name.wt"
 printf '%s\n' "$route_record" > "$out/$name.route"
 
 if [[ $mode == resume ]]; then
+  # A resume of a name that already completed must not leave the PREVIOUS
+  # run's `.done` readable while this child works: the marker is this
+  # invocation's evidence, so it starts absent. The stream needs no such
+  # removal because the launch below truncates it.
+  rm -f -- "$out/$name.done"
+  codex_launched=1
   if (cd -- "$worktree" && nice codex exec resume -m "$model" -c "model_reasoning_effort=\"$effort\"" \
     --skip-git-repo-check --json "$session_id" - < "$prompt" > "$out/$name.jsonl" 2> "$out/$name.err"); then
     rc=0
@@ -144,6 +183,9 @@ if [[ $mode == resume ]]; then
     rc=$?
   fi
 else
+  codex_launched=1
+  # A new run is refused above when any name-owned record exists (a resume
+  # deliberately keeps a recording name alive), so no stream removal is needed.
   if nice codex exec -C "$worktree" -m "$model" -c "model_reasoning_effort=\"$effort\"" \
     -s danger-full-access --skip-git-repo-check -o "$out/$name.last.txt" --json - \
     < "$prompt" > "$out/$name.jsonl" 2> "$out/$name.err"; then
@@ -209,7 +251,6 @@ if [[ -n $od_account && -n $thread_id ]]; then
 fi
 
 continue_prompt='You stopped after thinking without acting: continue the task from where you are now, call tools for real'
-auto_count=0
 auto_log=$out/$name.autoresume.log
 printf 'ROUTE=%s LIMIT=%s\n' "$route_record" "$auto_limit" > "$auto_log"
 while (( auto_count < auto_limit )) && reasoning_end "$out/$name.jsonl"; do
@@ -240,5 +281,5 @@ if [[ -n $od_account ]]; then
       "$name" "$bookkeeping_rc" "$rc" >&2
   fi
 fi
-printf 'EXIT=%s AUTORESUME=%s\n' "$rc" "$auto_count" > "$out/$name.done"
+printf 'EXIT=%s OUTCOME=CODE-EXIT AUTORESUME=%s\n' "$rc" "$auto_count" > "$out/$name.done"
 exit "$rc"

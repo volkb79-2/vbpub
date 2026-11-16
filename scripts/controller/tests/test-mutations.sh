@@ -67,8 +67,20 @@ expect_killed job-mid-wait-resolution \
   env JOB_CHECK_SCRIPT="$ROOT/mutants/scripts/controller/job-check-mid-wait-resolution.sh" bash "$SCRIPT_DIR/test-job-check.sh"
 expect_killed job-run-name-traversal-guard \
   env JOB_CHECK_SCRIPT="$ROOT/mutants/scripts/controller/job-check-run-traversal.sh" bash "$SCRIPT_DIR/test-job-check.sh"
-expect_killed job-prototype-missing-done-success \
-  env JOB_CHECK_SCRIPT="$ROOT/mutants/scripts/controller/job-check-missing-done-success.sh" bash "$SCRIPT_DIR/test-job-check.sh"
+expect_killed job-dead-owner-running \
+  env JOB_CHECK_SCRIPT="$ROOT/mutants/scripts/controller/job-check-dead-owner-running.sh" bash "$SCRIPT_DIR/test-job-check.sh"
+expect_killed job-owner-pid-reuse \
+  env JOB_CHECK_SCRIPT="$ROOT/mutants/scripts/controller/job-check-owner-pid-alive-only.sh" bash "$SCRIPT_DIR/test-job-check.sh"
+expect_killed job-owner-boot-id \
+  env JOB_CHECK_SCRIPT="$ROOT/mutants/scripts/controller/job-check-owner-boot.sh" bash "$SCRIPT_DIR/test-job-check.sh"
+expect_killed job-owner-liveness \
+  env JOB_CHECK_SCRIPT="$ROOT/mutants/scripts/controller/job-check-owner-liveness.sh" bash "$SCRIPT_DIR/test-job-check.sh"
+expect_killed codex-run-name-claim \
+  env CODEX_IMPL_SCRIPT="$ROOT/mutants/scripts/controller/codex-run-name-claim.sh" bash "$SCRIPT_DIR/test-wrappers.sh"
+expect_killed codex-resume-stale-marker \
+  env CODEX_IMPL_SCRIPT="$ROOT/mutants/scripts/controller/codex-resume-stale-marker.sh" bash "$SCRIPT_DIR/test-wrappers.sh"
+expect_killed job-prototype-missing-done-owner-record \
+  env JOB_CHECK_SCRIPT="$ROOT/mutants/scripts/controller/job-check-missing-done-owner-record.sh" bash "$SCRIPT_DIR/test-job-check.sh"
 expect_killed job-report-litter-detector \
   env JOB_CHECK_SCRIPT="$ROOT/mutants/scripts/controller/job-check-report-litter.sh" bash "$SCRIPT_DIR/test-job-check.sh"
 expect_killed job-merge-trailer-audit \
@@ -153,7 +165,16 @@ done
 for pi_live_case in \
   pi-live-atomic:live-atomic pi-live-tool-in-flight:live-snapshot \
   pi-live-missing-fact:live-snapshot pi-live-usage-trend:live-usage-trend \
+  pi-live-tokens-zero-as-measurement:live-usage-trend \
+  pi-live-progress-stream-only:live-progress \
+  pi-live-tool-output-progress:live-snapshot \
+  pi-live-steering-includes-wrapper:live-progress \
   job-status-stall-threshold:status-states job-status-hung-tool:status-states \
+  job-status-hung-without-progress:status-states \
+  job-status-progress-unknown-as-hung:status-states \
+  job-status-hung-tool-command:status-states job-status-steer-target:status-states \
+  job-status-since-commit-unqualified:status-states \
+  job-status-tokens-last-report:status-states \
   job-status-default-stall:status-defaults job-status-default-hung:status-defaults \
   job-status-wrapper-dead:status-states job-status-finished:status-states \
   job-status-no-live:status-states; do
@@ -171,17 +192,15 @@ for pi_live_case in \
         bash "$SCRIPT_DIR/test-pi-impl.sh"
   fi
 done
-for pi_doc_mutant in README-pi-route-table DESIGN-pi-402-classification CONSUMER-pi-launch-route; do
+for pi_doc_mutant in README-pi-route-table DESIGN-pi-402-classification CONSUMER-pi-launch-route \
+                     README-long-tool-state README-steering-action README-died-state \
+                     DESIGN-long-tool-rationale CONSUMER-steering-target CONSUMER-codex-marker-shape; do
   case $pi_doc_mutant in
-    README-pi-route-table) doc_env=README_SOURCE ;;
-    DESIGN-pi-402-classification) doc_env=DESIGN_SOURCE ;;
-    CONSUMER-pi-launch-route) doc_env=CONSUMER_SOURCE ;;
+    README-pi-route-table|README-long-tool-state|README-steering-action|README-died-state) doc_env=README_SOURCE ;;
+    DESIGN-pi-402-classification|DESIGN-long-tool-rationale) doc_env=DESIGN_SOURCE ;;
+    CONSUMER-*) doc_env=CONSUMER_SOURCE ;;
   esac
-  case $pi_doc_mutant in
-    README-pi-route-table) doc_path="$ROOT/mutants/scripts/controller/$pi_doc_mutant.md" ;;
-    DESIGN-pi-402-classification) doc_path="$ROOT/mutants/scripts/controller/$pi_doc_mutant.md" ;;
-    CONSUMER-pi-launch-route) doc_path="$ROOT/mutants/scripts/controller/$pi_doc_mutant.md" ;;
-  esac
+  doc_path="$ROOT/mutants/scripts/controller/$pi_doc_mutant.md"
   expect_killed "$pi_doc_mutant" env PI_TEST_FOCUS=docs "$doc_env=$doc_path" bash "$SCRIPT_DIR/test-pi-impl.sh"
 done
 for od_pi_case in \

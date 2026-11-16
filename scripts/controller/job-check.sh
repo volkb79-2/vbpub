@@ -52,7 +52,59 @@ if [[ -e $done_file ]]; then
   printf 'done: %s\n' "$done_status"
   if [[ ! $done_status =~ ^EXIT=0([[:space:]]|$) ]]; then echo "CHILD EXIT IS NOT ZERO: $done_status"; red=1; fi
 else
-  echo "RUNNING (no .done)"
+  # No completion marker. The word RUNNING asserts that a process exists, so it
+  # is read from the run name's own owner record (the same `<name>.lock` every
+  # wrapper writes on a claim, lib.sh controller_run_claim) instead of assumed.
+  # Three distinct real states collapse into "no .done" otherwise: a live
+  # wrapper, a wrapper that died (TERM/KILL/OOM/container restart), and a name
+  # that no wrapper ever owned.
+  owner_record=$CONTROLLER_RUNS_DIR/$run.lock
+  owner_pid='' owner_ticks='' owner_boot='' owner_started=''
+  if [[ -r $owner_record ]]; then
+    owner_line=$(head -n 1 "$owner_record" 2>/dev/null || true)
+    # shellcheck disable=SC2086 # the record is one line of space-separated key=value tokens
+    for token in $owner_line; do
+      case $token in
+        pid=*) owner_pid=${token#pid=} ;;
+        pid_start_ticks=*) owner_ticks=${token#pid_start_ticks=} ;;
+        boot_id=*) owner_boot=${token#boot_id=} ;;
+        started_utc=*) owner_started=${token#started_utc=} ;;
+      esac
+    done
+  fi
+  dead_reason=''
+  if [[ $owner_pid =~ ^[0-9]+$ ]]; then
+    current_boot=$(cat /proc/sys/kernel/random/boot_id 2>/dev/null || true)
+    if [[ -n $owner_boot && -n $current_boot && $owner_boot != "$current_boot" ]]; then
+      # A pid cannot survive a reboot, so the recorded owner is gone even if its
+      # number happens to be in use now.
+      dead_reason="wrapper pid $owner_pid is from a previous boot ($owner_boot)"
+    elif ! kill -0 "$owner_pid" 2>/dev/null; then
+      dead_reason="wrapper pid $owner_pid gone"
+    else
+      live_ticks=$(controller_pid_start_ticks "$owner_pid" 2>/dev/null || printf '%s' '-')
+      if [[ $owner_ticks =~ ^[0-9]+$ && $live_ticks =~ ^[0-9]+$ && $owner_ticks != "$live_ticks" ]]; then
+        # The pid exists but its kernel start time differs: a recycled pid, not
+        # this run's owner.
+        dead_reason="wrapper pid $owner_pid recycled (recorded start $owner_ticks, now $live_ticks)"
+      fi
+    fi
+  fi
+  if [[ -n $dead_reason ]]; then
+    # A dead owner is never RUNNING: the controller must be able to relaunch.
+    echo "DIED ($dead_reason, no .done)"
+    echo "RUN-NAME OWNER DIED: <run>.done is missing and the recorded owner is not alive; relaunch the run or retire its records deliberately"
+    red=1
+  elif [[ $owner_pid =~ ^[0-9]+$ ]]; then
+    echo "RUNNING (no .done)"
+    printf 'owner record: pid %s alive%s (lock %s)\n' "$owner_pid" \
+      "${owner_started:+ since $owner_started}" "$owner_record"
+  else
+    echo "RUNNING (no .done)"
+    printf 'owner record: none (%s absent or unreadable; a live wrapper and a dead one cannot be told apart here)\n' \
+      "$owner_record"
+  fi
+  if (( red != 0 )); then exit 1; fi
   exit 0
 fi
 [[ -f $run_file ]] || { echo "RUN FILE MISSING: $run_file"; exit 1; }

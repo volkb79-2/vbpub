@@ -521,6 +521,74 @@ if ! CONTROLLER_HOME=$HOME_ROOT CONTROLLER_REPO=$REPO CONTROLLER_BASE_REF=origin
   fail 'prototype missing-.done behavior should report RUNNING with exit 0'
 fi
 contains "$ROOT/missing-stream.out" 'RUNNING (no .done)' 'missing stream does not change prototype status'
+contains "$ROOT/missing-stream.out" 'owner record: none' \
+  'a run with no owner record says that a live and a dead wrapper cannot be told apart here'
+
+# A name with no .done is three different real states, and the reader must tell
+# them apart from the owner record every wrapper writes on a claim:
+#   live owner   -> RUNNING (exit 0)
+#   dead owner   -> DIED (red flag; the controller may relaunch)
+#   no record    -> RUNNING (no .done) + "owner record: none" (exit 0)
+pid_start_ticks() {
+  local rest index=0 field
+  rest=$(sed 's/^[^)]*) //' "/proc/$1/stat") || return 1
+  for field in $rest; do
+    index=$((index + 1))
+    if (( index == 20 )); then printf '%s' "$field"; return 0; fi
+  done
+  return 1
+}
+boot_id=$(cat /proc/sys/kernel/random/boot_id 2>/dev/null || printf '%s' '-')
+printf '{"type":"item.completed","item":{"type":"agent_message","text":"working"}}\n' \
+  > "$HOME_ROOT/runs/live-owner.jsonl"
+printf 'pid=%s started_epoch=%s started_utc=%s pid_start_ticks=%s boot_id=%s\n' \
+  "$$" "$(date -u +%s)" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$(pid_start_ticks $$)" "$boot_id" \
+  > "$HOME_ROOT/runs/live-owner.lock"
+CONTROLLER_HOME=$HOME_ROOT CONTROLLER_REPO=$REPO \
+  "$SRC" live-owner "$REPO" luna > "$ROOT/live-owner.out" 2>&1 \
+  || { cat "$ROOT/live-owner.out" >&2; fail 'a live owner was reported as dead'; }
+contains "$ROOT/live-owner.out" "owner record: pid $$ alive" 'a live owner is named as the run owner'
+
+printf '{"type":"item.completed","item":{"type":"agent_message","text":"working"}}\n' \
+  > "$HOME_ROOT/runs/dead-owner.jsonl"
+printf 'pid=%s started_epoch=%s started_utc=%s pid_start_ticks=%s boot_id=%s\n' \
+  2147483646 1700000000 2023-11-14T22:13:20Z 12345 "$boot_id" \
+  > "$HOME_ROOT/runs/dead-owner.lock"
+if CONTROLLER_HOME=$HOME_ROOT CONTROLLER_REPO=$REPO CONTROLLER_BASE_REF=origin/main \
+  "$SRC" dead-owner "$REPO" luna > "$ROOT/dead-owner.out" 2>&1; then
+  cat "$ROOT/dead-owner.out" >&2
+  fail 'a dead owner without .done was accepted as a running job'
+fi
+contains "$ROOT/dead-owner.out" 'DIED (wrapper pid 2147483646 gone, no .done)' \
+  'a dead owner without .done is DIED, not RUNNING'
+
+# A recycled pid: the recorded pid exists NOW but its kernel start time differs,
+# so it is not the owner this record describes.
+printf '{"type":"item.completed","item":{"type":"agent_message","text":"working"}}\n' \
+  > "$HOME_ROOT/runs/recycled-owner.jsonl"
+printf 'pid=%s started_epoch=%s started_utc=%s pid_start_ticks=1 boot_id=%s\n' \
+  "$$" "$(date -u +%s)" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$boot_id" \
+  > "$HOME_ROOT/runs/recycled-owner.lock"
+if CONTROLLER_HOME=$HOME_ROOT CONTROLLER_REPO=$REPO CONTROLLER_BASE_REF=origin/main \
+  "$SRC" recycled-owner "$REPO" luna > "$ROOT/recycled-owner.out" 2>&1; then
+  cat "$ROOT/recycled-owner.out" >&2
+  fail 'a recycled pid was accepted as the run owner'
+fi
+contains "$ROOT/recycled-owner.out" 'DIED (wrapper pid' 'a recycled owner pid is DIED'
+contains "$ROOT/recycled-owner.out" 'recycled' 'the recycled pid is named as recycled'
+
+# A dead owner from a previous boot is dead even when its pid number is in use.
+printf '{"type":"item.completed","item":{"type":"agent_message","text":"working"}}\n' \
+  > "$HOME_ROOT/runs/old-boot-owner.jsonl"
+printf 'pid=%s started_epoch=%s started_utc=%s pid_start_ticks=%s boot_id=00000000-0000-0000-0000-000000000000\n' \
+  "$$" "$(date -u +%s)" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$(pid_start_ticks $$)" \
+  > "$HOME_ROOT/runs/old-boot-owner.lock"
+if CONTROLLER_HOME=$HOME_ROOT CONTROLLER_REPO=$REPO CONTROLLER_BASE_REF=origin/main \
+  "$SRC" old-boot-owner "$REPO" luna > "$ROOT/old-boot-owner.out" 2>&1; then
+  cat "$ROOT/old-boot-owner.out" >&2
+  fail 'an owner recorded under a previous boot was accepted as live'
+fi
+contains "$ROOT/old-boot-owner.out" 'previous boot' 'an owner from a previous boot is DIED'
 
 printf 'dirty\n' > "$REPO/dirty.txt"
 if CONTROLLER_HOME=$HOME_ROOT CONTROLLER_REPO=$REPO CONTROLLER_BASE_REF=origin/main \

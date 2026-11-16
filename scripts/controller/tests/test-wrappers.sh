@@ -45,6 +45,12 @@ fi
 if [[ -n ${FAKE_CODEX_THREAD_ID:-} ]]; then
   printf '{"type":"thread.started","thread_id":"%s"}\n' "$FAKE_CODEX_THREAD_ID"
 fi
+if [[ -n ${FAKE_CODEX_SLEEP:-} ]]; then
+  # A slow child, so a test can observe a run that is still working.
+  printf '{"type":"thread.started","thread_id":"slow-thread"}\n'
+  sleep "$FAKE_CODEX_SLEEP"
+  exit "${CODEX_RC:-0}"
+fi
 printf '{"type":"item.completed","item":{"type":"agent_message","text":"complete"}}\n'
 if [[ -n ${FAKE_CODEX_CORRUPT_STATE:-} ]]; then printf '{' > "$FAKE_CODEX_CORRUPT_STATE"; fi
 exit "${CODEX_RC:-0}"
@@ -476,6 +482,48 @@ contains "$ROOT/od-bookkeeping-failure.out" 'block-run bookkeeping failed for ru
   'block-run bookkeeping errors are logged without replacing the Codex status'
 contains "$ROOT/controller/runs/od-bookkeeping-failure.done" 'EXIT=0' \
   'successful Codex status remains in the done marker after bookkeeping failure'
+
+# A resume is a second invocation of one run name: it must replace the
+# previous invocation's marker (otherwise a reader could report the previous
+# resume's exit while this child works) and state its own outcome.
+[[ -s $ROOT/controller/runs/manual-resume.done ]] || fail 'the resumed run has no marker before the resume test'
+contains "$ROOT/controller/runs/manual-resume.done" 'OUTCOME=CODE-EXIT' \
+  'a resumed Codex invocation states its own outcome'
+contains "$ROOT/controller/runs/manual-resume-unmapped.done" 'OUTCOME=CODE-EXIT' \
+  'a resume that picked a fresh account still wrote its marker'
+
+# Every Codex exit path states an OUTCOME and its continuation count, in the
+# documented additive shape (the historical EXIT= first line is unchanged).
+contains "$ROOT/controller/runs/codex-fail.done" 'OUTCOME=CODE-EXIT' \
+  'a Codex run states its outcome class'
+contains "$ROOT/controller/runs/codex-fail.done" 'AUTORESUME=0' \
+  'a Codex run states how many continuations it took'
+[[ ! -e $ROOT/controller/runs/bad-route.done ]] \
+  || fail 'a run refused before the child launch wrote a child-exit marker'
+
+# A second wrapper on one run name is refused, and the refusal names the live
+# owner: two jobs on one name would share `.done`, `.jsonl` and the resume
+# bookkeeping.
+FAKE_CODEX_SLEEP=5 PATH="$ROOT/bin:$PATH" HOME="$ROOT/home" CONTROLLER_HOME="$ROOT/controller" CONTROLLER_REPO="$ROOT/repo" \
+  CODEX_ROUTE=luna CODEX_HOME_LUNA="$ROOT/codex-luna" CODEX_SQLITE_HOME="$ROOT/sqlite" CODEX_LOG="$ROOT/owned.log" \
+  "$CODEX_IMPL_SCRIPT" "$ROOT/worktree" "$ROOT/brief.md" owned-codex-run \
+  > "$ROOT/owned-codex-run.out" 2>&1 &
+owned_pid=$!
+for _ in {1..100}; do [[ -e $ROOT/controller/runs/owned-codex-run.lock ]] && break; sleep 0.1; done
+if PATH="$ROOT/bin:$PATH" HOME="$ROOT/home" CONTROLLER_HOME="$ROOT/controller" CONTROLLER_REPO="$ROOT/repo" \
+  CODEX_ROUTE=luna CODEX_HOME_LUNA="$ROOT/codex-luna" CODEX_SQLITE_HOME="$ROOT/sqlite" CODEX_LOG="$ROOT/owned2.log" \
+  "$CODEX_IMPL_SCRIPT" "$ROOT/worktree" "$ROOT/brief.md" owned-codex-run \
+  > "$ROOT/owned-codex-run-2.out" 2>&1; then
+  fail 'a second Codex wrapper on one run name was allowed'
+else
+  rc=$?
+  [[ $rc == 2 ]] || fail "the second Codex wrapper exited $rc, expected 2"
+fi
+contains "$ROOT/owned-codex-run-2.out" "run name 'owned-codex-run' is already owned by pid" \
+  'the refusal names the live owner of the run name'
+wait "$owned_pid" || fail 'the owning Codex wrapper failed'
+contains "$ROOT/controller/runs/owned-codex-run.done" 'OUTCOME=CODE-EXIT' \
+  'the owning wrapper still wrote its own marker'
 
 if [[ ${CONTROLLER_TEST_PARALLEL_OD_STARTS:-1} == 1 ]]; then
   PARALLEL_DIR=$ROOT/parallel-codex-logs
