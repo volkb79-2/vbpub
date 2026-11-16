@@ -15,6 +15,9 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
 ### Documentation
 - run-gate: document the source-backed Assay upgrade and carry-over procedure for old campaign checkouts (RG-270).
 
+### Testing
+- run-gate: assert scoped `fstat` fakes delegate unrelated descriptors (RG-269).
+
 <!-- cmru: release history -->
 
 ## [25.6.0] - 2026-11-12

@@ -163,7 +163,7 @@ SPEC §9.
 | RG-266 | `jobs = "auto"` places one R2 worker per CPU, so I/O phases leave CPUs idle | Enhancement | FIXED IN THIS BRANCH (run-gate-r2-flex-20261111) |
 | RG-267 | `r2_oversubscribe = "1.5"` has no two-slot host measurement, so the default cannot be decided from evidence | Enhancement | OPEN 2026-11-12 |
 | RG-268 | the save-container-logs foreign-owner test's fake `fstat` result lacks fields required by Python 3.14, so a rebuilt tester image makes selftest fail | Minor | OPEN 2026-11-12 |
-| RG-269 | tests replace shared `os.*` syscalls process-wide and depend on Pytest's private filesystem usage | Medium | OPEN 2026-11-12; observed hazards fixed in the pytest 9.2 audit branch |
+| RG-269 | tests replace shared `os.*` syscalls process-wide and depend on Pytest's private filesystem usage | Medium | FIXED 2026-11-16; scoped fakes plus unrelated-fd delegation oracle |
 | RG-271 | Decide whether tester-base should pin or float pytest | Medium | OPEN 2026-11-12; estate-level runner-policy question from the pytest 9.2 audit |
 | RG-272 | a valid request base on a non-tag checkout produces zero mutation candidates despite changed source | Should-fix | OPEN 2026-11-12 |
 | RG-273 | ephemeral Run-Gate lanes opt in to the image-advertised KSM shim by default | Enhancement | IMPLEMENTED and released in Run-Gate 25.6.0; tester images rebuilt/deployed 2026-11-12; host lane smoke open |
@@ -8196,8 +8196,9 @@ commit.
 
 ## RG-269 — tests replace shared `os.*` syscalls process-wide and depend on Pytest's private filesystem usage
 
-**Status:** OPEN (filed 2026-11-12); observed hazards are fixed in the pytest
-9.2 audit branch. Pytest 9.2 calls `os.fstat` during capture and teardown. The
+**Status:** FIXED 2026-11-16; syscall fakes were scoped in the pytest 9.2
+audit, with an explicit delegation oracle added here. Pytest 9.2 calls
+`os.fstat` during capture and teardown. The
 closeout reader, Docker-socket preflight, control-socket preflight,
 namespace-inode, migration, lane-log, and progress-reader tests originally
 replaced shared `os.fstat`, `os.stat`, `os.lstat`, `os.open`, `os.fdopen`, or
@@ -8213,6 +8214,18 @@ process-wide scope.
 **Close when.** No non-delegating exact-symbol test patch remains in the
 Run-Gate selftest, the focused image gate passes the touched tests, and a
 deliberate removal of an unrelated-call fallback fails the owning test.
+
+**Resolution.** The pytest 9.2 audit (`0d9de342f`) scopes the Run-Gate
+`fstat`, `stat`, `lstat`, `open`, and `fdopen` fakes to the descriptor or path
+under test and delegates every unrelated call to its saved implementation.
+This wave adds a direct assertion that the foreign-owner `fstat` fake returns
+the real result for a separate descriptor.
+
+**Evidence.** The registered `selftest --allow-dirty` hand-mutant removed the
+unrelated-descriptor fallback and was killed by
+`test_a_file_owned_by_someone_else_is_refused_untouched` (1 failed, 3,273
+passed, 1 skipped). The fallback was restored. The clean final selftest is
+required before the report is complete.
 
 ## RG-271 — decide whether tester-base should pin or float pytest
 

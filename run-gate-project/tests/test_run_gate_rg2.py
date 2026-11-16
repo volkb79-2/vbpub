@@ -266,6 +266,13 @@ class TestSaveContainerLogsCreation:
             return _Foreign(info)
 
         monkeypatch.setattr(run_gate.os, "fstat", foreign_target)
+        unrelated = tmp_path / "unrelated.log"
+        unrelated.write_text("not the target")
+        unrelated_fd = os.open(unrelated, os.O_RDONLY)
+        try:
+            assert run_gate.os.fstat(unrelated_fd) == real_stat(unrelated_fd)
+        finally:
+            os.close(unrelated_fd)
         assert run_gate.save_container_logs("docker", "x", target) is None
         assert target.read_text() == "theirs"
 
