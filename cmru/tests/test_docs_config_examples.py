@@ -482,6 +482,24 @@ def test_cmru_changelog_uses_the_real_canonical_history_validator():
     assert unreleased is not None
 
 
+def test_backlog_batch_notes_stay_in_unreleased_changelog_section():
+    markdown = (ROOT / "CHANGES.md").read_text(encoding="utf-8")
+    unreleased_start = markdown.index("## [Unreleased]")
+    released_start = markdown.index("## [7.3.1] - 2026-11-14")
+    unreleased = markdown[unreleased_start:released_start]
+    released_end = markdown.find("\n## [", released_start + 1)
+    released = markdown[released_start:released_end]
+    batch_notes = (
+        "- fix(cmru): identify the linked worktree that owns local main and give its fast-forward command (KI-157).",
+        "- docs(cmru): close the temporary-repository optimization by design on measured suite cost (KI-150).",
+        "- fix(cmru): keep large bootstrap source-refusal lists from masking exit 2 with SIGPIPE (KI-137).",
+    )
+
+    for note in batch_notes:
+        assert unreleased.count(note) == 1
+        assert note not in released
+
+
 def test_release_gate_credential_boundary_is_documented_in_all_user_guides():
     for document in DOCS:
         text = " ".join(document.read_text(encoding="utf-8").split())
