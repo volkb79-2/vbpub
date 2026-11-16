@@ -14949,7 +14949,13 @@ def judge_identity(lane: dict, worktree: Path) -> dict | None:
         describe_status = described.returncode
         if described.returncode == 0:
             text = described.stdout.strip()
-            if re.fullmatch(r"[^\s]+-[0-9]+-g[0-9a-f]{7,64}", text):
+            # `--match` is only a GLOB filter: a hand-made tag named
+            # `assay-v-not-a-release` passes it and `--long` renders it
+            # happily. The recorded version must also be assay's own RELEASE
+            # grammar (`assay-v<digit>...`), so a tag that merely contains the
+            # prefix is not evidence about which release this source is ahead
+            # of -- it is a `None` WITH the stated reason, like any other.
+            if re.fullmatch(r"assay-v[0-9].*-[0-9]+-g[0-9a-f]{7,64}", text):
                 version = text
     if version is not None:
         version_source = f"git describe --match {JUDGE_DESCRIBE_MATCH}"

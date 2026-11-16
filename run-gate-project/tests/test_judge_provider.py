@@ -34,6 +34,7 @@ import sys
 import tempfile
 import textwrap
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -864,6 +865,157 @@ class TestJudgeEndToEnd:
         assert "does not install an interpreter" in proc.stdout
         # …and the refusal names the declaration that needs it.
         assert "judge" in proc.stdout
+
+
+
+# ---------------------------------------------------------------------------
+# 8. The uncovered corners of the derivation, driven directly
+# ---------------------------------------------------------------------------
+
+class TestJudgeDerivationEdges:
+    """Conditions the happy paths cannot express: Git unavailable, a describe
+    answer that is not a release version, and a checkout whose toplevel has no
+    judge tree. Each is a REAL state of this estate (no git binary in a slim
+    image, an unrelated tag reachable, a consumer that never had assay)."""
+
+    def _lane(self):
+        return {"kind": "command", "environment": "rust", "judge": "assay"}
+
+    def test_git_being_absent_is_unknown_never_clean(self, tmp_path, monkeypatch):
+        """A missing git binary must read as `dirty: None` (unknown) with the
+        version reason stating that describe did not run — never as a clean
+        tree with no version, which would certify bytes nobody compared."""
+        _minimal_judge(tmp_path)
+
+        def unavailable():
+            raise OSError("git: not found")
+        monkeypatch.setattr(run_gate, "host_git_environment", unavailable)
+        identity = run_gate.judge_identity(self._lane(), tmp_path)
+        assert identity["dirty"] is None
+        assert identity["version"] is None
+        assert "(did not run)" in identity["version_source"]
+        assert "dirty state unknown" in run_gate.judge_identity_line(identity)
+
+    def test_a_describe_answer_outside_the_version_grammar_is_no_version(
+            self, tmp_path, monkeypatch):
+        """`--match` is a filter, not a validator: a tag whose name survives
+        the glob but whose describe text is not release text (a hand-made tag
+        like `assay-v-not-a-release`) must not be recorded as a version."""
+        shim = SimpleNamespace(
+            run=lambda argv, **_kw: SimpleNamespace(
+                returncode=0, stdout="assay-v-not-a-release-0-gdeadbeef\n"
+                if "describe" in argv else ""))
+        monkeypatch.setattr(run_gate, "subprocess", shim)
+        identity = run_gate.judge_identity(self._lane(), tmp_path)
+        assert identity["version"] is None
+        assert identity["version_source"].startswith("no assay-v*")
+
+    def test_the_record_also_rejects_a_describe_without_a_commit_suffix(
+            self, tmp_path, monkeypatch):
+        """`--long` always appends `<n>-g<sha>`; an answer without it means
+        something other than `git describe --long` replied, so it is not
+        evidence about THIS source."""
+        shim = SimpleNamespace(
+            run=lambda argv, **_kw: SimpleNamespace(
+                returncode=0, stdout="assay-v9.9.9\n"))
+        monkeypatch.setattr(run_gate, "subprocess", shim)
+        identity = run_gate.judge_identity(self._lane(), tmp_path)
+        assert identity["version"] is None
+
+
+class TestJudgeLoadValidationEdges:
+    """The two "cannot answer" branches of the load-time judge validation."""
+
+    def _project(self, repo: Path, name: str = "proj") -> Path:
+        return make_project(repo, JUDGE_CONFIG.replace(
+            "{image}", "tester-unified:local"), name=name)
+
+    def test_a_judge_lane_in_a_checkout_without_git_still_loads(
+            self, tmp_path, monkeypatch):
+        """The judge-tree nesting refusal is DERIVED from a git toplevel. With
+        no toplevel to compare against there is nothing to refuse, and the
+        runtime preflight still refuses a missing source — so the load must
+        succeed rather than invent a boundary."""
+        repo = make_repo(tmp_path)
+        _minimal_judge(repo)
+        proj = self._project(repo)
+        monkeypatch.setattr(run_gate, "_git_toplevel_if_available",
+                            lambda _path: None)
+        config = run_gate.load_config(proj)[0]
+        assert config["lanes"]["rust-r1"]["judge"] == "assay"
+
+    def test_a_checkout_with_no_judge_tree_is_not_a_self_judging_project(
+            self, tmp_path):
+        """A checkout that carries no `assay/` at all has no judge tree to be
+        inside: the nesting refusal must not fire on it (its lanes fail the
+        RUNTIME preflight instead, with the missing-path message)."""
+        repo = make_repo(tmp_path)          # no assay/, no libraries/
+        proj = self._project(repo)
+        config = run_gate.load_config(proj)[0]
+        assert config["lanes"]["rust-r1"]["judge"] == "assay"
+
+
+# ---------------------------------------------------------------------------
+# 9. The in-process wiring: disclosure, record and `--help`
+# ---------------------------------------------------------------------------
+
+class TestJudgeProviderWiring:
+    """In-process (`run_gate.main`), not through `run_tool`: the disclosure
+    function, the record write and `usage()` are decisions made in THIS
+    interpreter, and an argv log cannot show that they happened."""
+
+    def _run(self, tmp_path, monkeypatch, capsys, *args):
+        repo, proj = _judge_repo(tmp_path)
+        fake_docker(tmp_path, monkeypatch)
+        monkeypatch.chdir(proj)
+        code = run_gate.main(list(args))
+        return repo, proj, code, capsys.readouterr()
+
+    def test_the_judge_is_disclosed_and_recorded_in_process(
+            self, tmp_path, monkeypatch, capsys):
+        _repo, proj, code, streams = self._run(
+            tmp_path, monkeypatch, capsys, "rust-r1")
+        assert code == 0, streams.err
+        # The disclosure names the judge BEFORE the lane's verdict line.
+        assert "run-gate: judge: assay" in streams.out
+        assert "mounted read-only from" in streams.out
+        assert streams.out.index("run-gate: judge:") \
+            < streams.out.index("run-gate: lane 'rust-r1'")
+        latest = json.loads(
+            (proj / ".run-gate/history.json").read_text()
+        )["lanes"]["rust-r1"]["latest"]
+        assert latest["judge"]["name"] == "assay"
+        assert latest["judge"]["commit"] == latest["commit"]
+        assert latest["judge"]["dirty"] is False
+        assert latest["judge"]["version"] is None
+        assert latest["judge"]["mounts"] == ["assay", "libraries/cowtree"]
+
+    def test_a_dirty_judge_is_disclosed_as_dirty(
+            self, tmp_path, monkeypatch, capsys):
+        """Uncommitted judge work is not a refusal (a lane may be judged
+        before its judge is committed) but it is never silent: the record
+        carries `dirty: true` and one WARNING says the version cannot be tied
+        to the bytes."""
+        repo, proj = _judge_repo(tmp_path)
+        (repo / "assay" / "src" / "assay" / "uncommitted.py").write_text("x\n")
+        fake_docker(tmp_path, monkeypatch)
+        monkeypatch.chdir(proj)
+        assert run_gate.main(["rust-r1"]) == 0
+        streams = capsys.readouterr()
+        assert "DIRTY" in streams.out
+        assert "WARNING: judge source is dirty" in streams.out
+        assert "cannot be tied to its bytes" in streams.out
+        latest = json.loads(
+            (proj / ".run-gate/history.json").read_text()
+        )["lanes"]["rust-r1"]["latest"]
+        assert latest["judge"]["dirty"] is True
+
+    def test_help_states_which_judge_run_gate_will_mount(
+            self, tmp_path, monkeypatch, capsys):
+        _repo, _proj, code, streams = self._run(
+            tmp_path, monkeypatch, capsys, "--help")
+        assert code == 0
+        assert "judge=assay (provided by run-gate)" in streams.out
 
 
 # ---------------------------------------------------------------------------
