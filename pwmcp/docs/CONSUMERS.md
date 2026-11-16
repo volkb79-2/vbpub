@@ -520,6 +520,26 @@ not a smaller whole-target run, and the two must never be conflated in evidence.
    `selected N of M candidates` for the campaign record. The file must stay inside the
    checkout and under the git-ignored `.run-gate/`, because the lane mounts only the
    checkout.
+
+**The path form is the one thing to get right, and it is stated, not guessed.**
+`assay plan r2 --json` carries **repository-root-relative** paths — `pwmcp/client/src/...`,
+not `client/src/...` — because assay anchors every path on the git repository top, never
+on the project directory it was invoked from (measured on this lane, and pinned by
+`tests/fixtures/r2-plan/real-plan-slice.json`). The `git diff` in step 2, run from the
+project directory, produces that SAME repository-root form, so the plain recipe works.
+Two other forms do not match by themselves:
+
+* `git diff --relative` (or a diff captured while working inside the project directory
+  with `--relative`) emits `client/src/...`. Pass `--project-prefix pwmcp/` to say so.
+* If neither form matches anything, the tool derives a single project prefix **only when
+  the plan makes it unambiguous** (every diff path suffix-matches exactly one plan path
+  and all of those share one prefix), uses it, and **prints the derived prefix on stderr**
+  (`diff paths are project-relative: prefixed them with 'pwmcp/' (derived from the plan,
+  not stated …)`). It never strips a prefix silently, and an ambiguous match is a refusal.
+* When nothing is selected it now names **which forms it tried** (as given / project-relative
+  and what each matched) plus the two remedies, instead of the older bare "check the diff
+  base and the paths" message whose only honest reading was "the release touched no
+  mutated line".
 4. Pass that file through the supported campaign invocation:
    `run-gate r2 --only-candidates .run-gate/only-candidates-<scope>.txt`. Run-gate keeps
    its own `--resume --progress .assay/progress-r2.jsonl` handling for the lane; do not

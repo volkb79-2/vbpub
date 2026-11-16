@@ -373,14 +373,27 @@ comparisons). The recipe therefore also requires the selection file, the diff ba
 the selected/planned counts to be recorded with the evidence, so the claim can be
 re-derived rather than trusted.
 
-**Why a tool rather than a shell one-liner.** The two error-prone steps are mechanical:
-turning `git diff -U0` hunk headers into NEW-file line ranges (a bare `+c` is one line,
-`+c,0` is none, `a/`/`b/` prefixes must be stripped) and matching them against
-`assay plan r2 --json` candidates. `tools/r2/select_changed_candidates.py` implements
-both, refuses to write an empty list (a campaign that starts nothing is not a campaign),
-and prints the selected/planned counts. `assay plan --file` is deliberately not the
-mechanism: it takes an Assay TOML config, not a source filter, so it would silently plan
-the whole target.
+**Why a tool rather than a shell one-liner.** Two of the steps are mechanical and one is a
+comparison that looks mechanical and is not:
+
+* turning `git diff -U0` hunk headers into NEW-file line ranges (a bare `+c` is one line,
+  `+c,0` is none, `a/`/`b/` prefixes must be stripped);
+* matching them against `assay plan r2 --json` candidates, which carry
+  **repository-root-relative** paths (`pwmcp/client/src/...`) because assay anchors on the
+  git repository top rather than on the project directory — so the same file has two
+  spellings depending on how the diff was produced (`git diff` from the project directory
+  gives the matching form, `git diff --relative` does not);
+* deciding, when nothing matched, whether that means "this release touched no mutated
+  line" (a true, useless answer) or "the paths are in the other form" (a fixable one).
+
+`tools/r2/select_changed_candidates.py` implements all three. The path form is settled by an
+EXPLICIT rule rather than a heuristic: `--project-prefix` states the fact, the as-given form
+is tried first, and a project prefix is derived only when the plan makes it unambiguous —
+and then it is printed, so a wrong derivation is visible in the campaign record rather than
+buried in an empty list. A refusal lists every form tried. The tool also refuses to write an
+empty list (a campaign that starts nothing is not a campaign) and prints the
+selected/planned counts. `assay plan --file` is deliberately not the mechanism: it takes an
+Assay TOML config, not a source filter, so it would silently plan the whole target.
 
 ## GlyphGrid development tooling
 

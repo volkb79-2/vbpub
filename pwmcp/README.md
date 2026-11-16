@@ -1084,7 +1084,9 @@ with branch coverage recorded in `coverage.json`. The slower mutation lane is
 release-to-release campaign can scope R2 to the lines that release changed
 (`run-gate r2 --only-candidates FILE`, produced by
 `tools/r2/select_changed_candidates.py`) — that result is PARTIAL by construction, never a
-whole-target R2 PASS; the recipe is in
+whole-target R2 PASS. The plan's candidate paths are repository-root-relative, so the recipe
+says which `git diff` form matches (`--project-prefix` for a `--relative` diff); the recipe
+is in
 [docs/CONSUMERS.md](docs/CONSUMERS.md#release-scoped-r2-campaigns-changed-line-candidate-selection)
 and the reasoning in the [design guide](docs/DESIGN-GUIDE.md#release-scoped-r2-campaigns).
 PWMCP has no HTTP/OpenAPI contract, so Hypothesis is used for the pure upstream
