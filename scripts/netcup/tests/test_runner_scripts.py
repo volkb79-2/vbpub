@@ -113,8 +113,11 @@ def _docker_run_argv(launcher: Path, tmp_path: Path) -> list[str]:
         "MDT_BUILDKIT_SOCKET": "/run/mdt-buildkitd/buildkit.sock",
         "MDT_BUILDKIT_SOCKET_DIR": "/run/mdt-buildkitd",
     }
+    # The launcher validates its values before `docker rm -f`, so the extracted command needs the same prelude lines
+    # (read from the script itself, never restated here: a mutant in the validation must be observable).
+    validation = text[text.index('oom_adj=${COCKPIT_OOM_SCORE_ADJ:--500}'):text.index('docker rm -f')]
     prelude = ("set -Eeuo pipefail\n"
-               "cfg=$COCKPIT_CONFIG_DIR\nhome=$COCKPIT_HOME_DIR\ntmpd=$COCKPIT_TMP_DIR\n")
+               "cfg=$COCKPIT_CONFIG_DIR\nhome=$COCKPIT_HOME_DIR\ntmpd=$COCKPIT_TMP_DIR\n") + validation
     run = subprocess.run(["bash", "-c", prelude + command], env=env, capture_output=True, text=True)
     assert run.returncode == 0, run.stderr
     return json.loads(argv_log.read_text().strip())
@@ -127,6 +130,45 @@ def test_every_cockpit_launcher_starts_the_container_with_unless_stopped_restart
     assert argv.count("--restart") == 1
     restart = argv.index("--restart")
     assert argv[restart + 1] == "unless-stopped"
+
+
+def test_cockpit_launcher_protects_the_driver_with_a_negative_oom_score(tmp_path):
+    """The cockpit drives the lanes, so the global OOM killer must not prefer it (paper: the 2026-11-16 host keeps its own
+    control plane at -900; the cockpit takes the weaker -500). A score of 0 is the state the paper recorded as unprotected."""
+    argv = _docker_run_argv(RUNNER / "start-cockpit-runner.sh", tmp_path)
+    scores = [arg.split("=", 1)[1] for arg in argv if arg.startswith("--oom-score-adj=")]
+    assert scores == ["-500"]  # 0 is exactly the unprotected state the measurement recorded
+    assert not any(arg == "--oom-score-adj" for arg in argv)  # the value travels with the flag, never as a loose argument
+
+
+def test_cockpit_launcher_oom_score_can_be_overridden_but_not_to_an_unsafe_value(tmp_path):
+    launcher = RUNNER / "start-cockpit-runner.sh"
+    text = launcher.read_text()
+    assert "${COCKPIT_OOM_SCORE_ADJ:--500}" in text  # one measured default, overridable by the runner env
+    assert '--oom-score-adj="$oom_adj"' in text and "oom_adj=${COCKPIT_OOM_SCORE_ADJ:--500}" in text
+    assert "-1000" in text and "1000" in text  # the accepted range is stated and enforced
+
+
+@pytest.mark.parametrize(("value", "rc"), [
+    ("-250", 0),        # a measured weaker score is allowed
+    ("-1000", 0),       # the strongest allowed
+    ("1000", 0),        # the weakest allowed
+    ("-1001", 2),       # below the allowed range
+    ("1001", 2),        # above the allowed range
+    ("abc", 2),         # not an integer
+])
+def test_cockpit_launcher_validates_its_oom_score_override(tmp_path, value, rc):
+    """The check runs on the real script text (extracted, not restated): an override outside -1000..1000 must be refused."""
+    text = (RUNNER / "start-cockpit-runner.sh").read_text()
+    block = text[text.index("oom_adj=${COCKPIT_OOM_SCORE_ADJ:--500}"):text.index("docker rm -f")]
+    log = tmp_path / "score"
+    script = f'set -Eeuo pipefail\n{block}\nprintf "%s\\n" "$oom_adj" > {str(log)}\n'
+    run = subprocess.run(["bash", "-c", script], env={**os.environ, "COCKPIT_OOM_SCORE_ADJ": value}, capture_output=True, text=True)
+    assert run.returncode == rc, (value, run.stdout, run.stderr)
+    if rc == 0:
+        assert log.read_text().strip() == value
+    else:
+        assert "between -1000 and 1000" in run.stderr
 
 
 def test_cockpit_launcher_binds_vbpub_checkout_at_assay_workspace_path(tmp_path):

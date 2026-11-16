@@ -151,6 +151,20 @@ done
 install -o "$RUNNER_USER" -g "$RUNNER_USER" -m 0600 "$runner_env" "$RUNNER_HOME/runner-scripts/runner.env"
 
 identity_check
+# The gates tier's memory policy (operator decision 2026-11-16): drop-ins rendered from this host's own MemTotal/SwapTotal by
+# provision-gates-limits.sh. It is part of provisioning so a reinstalled host comes up with the decided policy instead of
+# whatever the installer left. A slice that has tasks is reported and left alone (a restart would reset the counters
+# remote-gate's INCONCLUSIVE-OOM check reads); the drop-ins are installed either way, so one re-run while idle converges.
+ec_rc=0
+"$here/provision-gates-limits.sh" || ec_rc=$?
+if test "$ec_rc" -eq 4; then
+  echo 'GATES_MEMORY_POLICY_PENDING=drop-ins installed; the live slice was not restarted because it has tasks (re-run provision-gates-limits.sh while the tier is idle)'
+elif test "$ec_rc" -ne 0; then
+  echo "provision-gates-limits.sh refused with exit $ec_rc; the gates memory policy is not converged" >&2
+  exit "$ec_rc"
+fi
+
+identity_check
 # uv searches the cwd's parents for uv.toml; /root is unreadable to the runner.
 cd "$RUNNER_HOME"
 if test ! -x "$RUNNER_HOME/venvs/tools/bin/python"; then
