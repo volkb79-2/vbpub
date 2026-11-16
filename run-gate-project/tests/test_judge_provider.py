@@ -851,6 +851,26 @@ class TestJudgeEndToEnd:
             ["FAIL", "FAIL"]
         assert "claim: R0 FAIL" in red.stdout
 
+    def test_a_judge_tree_that_cannot_serve_every_module_refuses_in_lane(
+            self, tmp_path, monkeypatch):
+        """The guard's whole content is the CONDITION it evaluates, not the
+        code text: a judge tree that provides `assay` and `cowtree` but not
+        `assay_analysis` must fail the lane (exit 2, naming what was not
+        provided) instead of running a partially importable judge. This is the
+        oracle a construction-only pin of the guard string cannot supply."""
+        repo, proj = _judge_repo(tmp_path)
+        shutil.rmtree(repo / "assay" / "analysis")
+        commit_all(repo, "drop the analysis sibling")
+        log = fake_docker_running_lane(tmp_path, monkeypatch)
+        monkeypatch.setenv("RUN_GATE_TEST_LANE_PATH",
+                           restricted_path(*self.LANE_PATH_TOOLS))
+        proc = run_tool(proj, "rust-r1")
+        assert proc.returncode == 2, proc.stdout + proc.stderr
+        assert "was NOT provided" in proc.stdout
+        assert "assay_analysis" in proc.stdout
+        # …and the lane's own command never ran.
+        assert "claim: R0" not in proc.stdout
+
     def test_a_lane_whose_image_has_no_python3_is_refused_by_name(
             self, tmp_path, monkeypatch):
         """No fallback interpreter: the refusal says which declaration needs
