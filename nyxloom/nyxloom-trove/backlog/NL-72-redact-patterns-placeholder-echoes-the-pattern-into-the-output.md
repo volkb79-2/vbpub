@@ -3,13 +3,15 @@ kind: backlog-entry
 schema_version: 1
 id: NL-72
 title: "`--redact-pattern` placeholder echoes the pattern into the extract it redacts, so a sensitive pattern leaks into the output"
-status: open
+status: fixed
 type: "bugfix"
 severity: "low"
 component: "session-extract"
 provenance: "controller review of the pi-readback-auto package, 2026-11-15 (CTX_READBACK_REDACT_PATTERNS added for hook-driven readbacks)"
 filed_by: "controller"
 filed_date: "2026-11-15"
+closed_date: "2026-11-16"
+closed_reason: "FIXED 2026-11-16 (pi-extract-pi-20261116): the placeholder now names the matched rule by its ORDINAL (#1, #2, ...) instead of echoing the regular expression, which could itself be the sensitive string the pattern was written to remove. Pinned by tests/test_session_extract_mangle.py (the ordinal placeholder and its monotonic counter) and tests/test_cli_extract.py's #1 assertion, so an extract can no longer reproduce any part of a pattern it redacted."
 ---
 
 ## Problem
