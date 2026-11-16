@@ -1235,7 +1235,7 @@ With --follow, Nyxloom prints a one-shot prefix and then reads only appended pay
     ))
     lossless_options = (
         _opt("--opencode-session", "Select an OpenCode session id", default=None),
-        _opt("--format", "Session source format", choices=("claude-code", "codex", "opencode", "pi", "reasonix"), default=None),
+        _opt("--format", "Session source format", choices=("claude-code", "codex", "opencode", "reasonix"), default=None),
         _opt("--since", "Start after this source marker", default=None),
         _opt("--since-file", "Read the last marker from a prior extract", default=None),
         _opt("--until", "Stop at this source marker", default=None),
@@ -1249,7 +1249,7 @@ With --follow, Nyxloom prints a one-shot prefix and then reads only appended pay
     registry.register(_leaf("nyxloom-harness", "extract-debug", "Inspect extraction classification and window decisions.", cli.cmd_extract_debug,
         arguments=(extraction_path,), fields={"cmd": "extract-debug"}, options=(
             _opt("--opencode-session", "Select an OpenCode session id", default=None),
-            _opt("--format", "Session source format", choices=("claude-code", "codex", "opencode", "pi", "reasonix"), default=None),
+            _opt("--format", "Session source format", choices=("claude-code", "codex", "opencode", "reasonix"), default=None),
             _opt("--profile", "Extraction profile", choices=("all", "operator-review"), default=None),
             _opt(("--max-checkpoints", "--checkpoints"), "Maximum checkpoints", type=int, default=None),
             _opt(("--answer-length", "--long-threshold"), "Long answer threshold", type=int, default=None),
