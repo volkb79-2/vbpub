@@ -3,7 +3,7 @@
 
 usage:
   remote-gate run <host|auto> <worktree-of-any-git-repo> <lane> [--project-dir DIR] [--repo NAME] [--base REF] [--name N] [--detach]
-              [--wait-psi SECONDS] [--out-dir DIR] [-- extra run-gate args...]
+              [--wait-psi SECONDS] [--mem-need-mb MIB] [--mem-floor-mb MIB] [--wait-mem SECONDS] [--out-dir DIR] [-- extra run-gate args...]
   remote-gate status|logs|collect|cancel <id> [--out-dir DIR]
 
 The host table (ssh argv, provider identity check, guard, cockpit name) lives in a gitignored JSON file
@@ -459,6 +459,12 @@ MAIN_SHA=@@MAIN@@
 SEED=@@SEED@@
 PSI_LIMIT=@@PSI_LIMIT@@
 PSI_WAIT=@@PSI_WAIT@@
+MEM_NEED_MB=@@MEM_NEED_MB@@
+MEM_FLOOR_MB=@@MEM_FLOOR_MB@@
+MEM_WAIT=@@MEM_WAIT@@
+MEM_SETTLE=@@MEM_SETTLE@@
+# the host's memory facts; a test seam only (the same idea as run-r2-campaign.sh's R2_MEMINFO)
+MEMINFO=${MEMINFO:-/proc/meminfo}
 PIDF=/tmp/rg-@@NAME@@.pid
 EXTRA=(@@EXTRA@@)
 ENVX=(@@ENVX@@)
@@ -582,13 +588,32 @@ if (( ADMISSION_CHECK )); then
   log "admission: $(grep -oE 'max_concurrent=[0-9]+' <<<"$adm" | head -n1 || true)"
 fi
 
+# memory admission: one host-wide ticket (fd 9, a fixed path under ~/rg so every caller of this host shares the same inode)
+# so two lanes never read the same MemAvailable; the ticket is held until the new lane's memory shows up in MemAvailable
+# (MEM_SETTLE seconds after the lane started). A single lane on an idle host always passes: this is not a static budget.
+if ! { exec 9>>"$HOME/rg/.mem-admit.lock"; }; then
+  log "cannot open the host-wide memory admission ticket ($HOME/rg/.mem-admit.lock): refusing to start"
+  rc=75; exit 75
+fi
+flock -w "$MEM_WAIT" 9 || { log "memory admission ticket not obtained within ${MEM_WAIT}s: refusing to start"; rc=75; exit 75; }
+waited=0
+until mem_admit_ok; do
+  admitted=$?
+  if (( admitted == 2 )); then log "memory admission: ${MEM_LAST}: refusing to start"; rc=75; exit 75; fi
+  if (( waited >= MEM_WAIT )); then log "memory admission: ${MEM_LAST}: refusing to start after ${waited}s"; rc=75; exit 75; fi
+  (( waited % 60 == 0 && waited > 0 )) && log "memory admission: waiting (${MEM_LAST})"
+  sleep 10; waited=$((waited + 10))
+done
+log "memory admission ok (waited ${waited}s): ${MEM_LAST}"
 args=("$LANE" "${EXTRA[@]}")
 [[ -n $BASE_SHA ]] && args+=(--base "$BASE_SHA")
 log "run-gate ${args[*]} (cwd $CKIN/$PROJ, run-gate $RG_VER)"
 LANE_STARTED=1
 docker exec -u vscode -w "$CKIN/$PROJ" -e RUN_GATE_TESTER_UNIFIED_IMAGE="$IMAGE" -e RUN_GATE_ALLOW_MAIN_CHECKOUT=1 -e ASSAY_GATE_HOST_REPO_ROOT="$HOME/checkouts/$REPO" -e RUN_GATE_PROFILE=off "${ENVX[@]}" \
-  "$COCKPIT" sh -c 'echo $$ > "$1"; b=$2; shift 2; d=${b%/*}; PATH=${d:-/}:$PATH; exec nice -n 19 "$b" "$@"' sh "$PIDF" "$RG_BIN" "${args[@]}" > "$D/lane.log" 2>&1 &
+  "$COCKPIT" sh -c 'echo $$ > "$1"; b=$2; shift 2; d=${b%/*}; PATH=${d:-/}:$PATH; exec nice -n 19 "$b" "$@"' sh "$PIDF" "$RG_BIN" "${args[@]}" > "$D/lane.log" 2>&1 9>&- &
 lanepid=$!
+( sleep "$MEM_SETTLE" ) &   # inherits fd 9: keeps the admission ticket until the lane's memory is visible
+exec 9>&-
 wait "$lanepid"
 rc=$?
 while kill -0 "$lanepid" 2>/dev/null; do wait "$lanepid"; rc=$?; done
@@ -610,6 +635,25 @@ RG_VER=
 COCKPIT_UP=0
 # stop signals: memory some avg10 and io full avg10 only; CPU PSI is a stall measure, not utilisation (operator 2026-11-04b)
 psi_high() { awk -v lim="$PSI_LIMIT" 'FNR==1 {n++} (n==1 && /^some/) || (n==2 && /^full/) {sub("avg10=","",$2); if ($2+0 > lim) f=1} END {exit !f}' /proc/pressure/memory /proc/pressure/io; }
+# Live memory admission (overcommit and paging are by design, so there is no static ceiling): a lane may start when the host's
+# MemAvailable minus the lane's expected peak still leaves the control-plane floor. The expected peak is capped so that one lane
+# bigger than RAM can always run ALONE (MemTotal - 2 x floor); it then pages by design instead of waiting forever.
+# Three outcomes, never two: 0 admitted, 1 wait (memory present, not enough), 2 unreadable (a fact that exists and could not be
+# read is NOT "there is plenty", so the caller refuses instead of admitting).
+MEM_LAST='MemAvailable unreadable'
+mem_admit_ok() {
+  local total avail need
+  total=$(awk '/^MemTotal:/{print int($2/1024); exit}' "$MEMINFO" 2>/dev/null) || total=''
+  avail=$(awk '/^MemAvailable:/{print int($2/1024); exit}' "$MEMINFO" 2>/dev/null) || avail=''
+  if [[ ! $total =~ ^[1-9][0-9]*$ || ! $avail =~ ^[0-9]+$ ]]; then
+    MEM_LAST="cannot read MemTotal/MemAvailable from $MEMINFO (MemTotal '${total:-unreadable}', MemAvailable '${avail:-unreadable}')"
+    return 2
+  fi
+  need=$MEM_NEED_MB; (( need > total - 2 * MEM_FLOOR_MB )) && need=$(( total - 2 * MEM_FLOOR_MB ))
+  (( need < 0 )) && need=0
+  MEM_LAST="MemAvailable ${avail} MiB, lane peak ${need} MiB (declared ${MEM_NEED_MB}), floor ${MEM_FLOOR_MB} MiB, MemTotal ${total} MiB"
+  (( avail - need >= MEM_FLOOR_MB ))
+}
 # PEP 440 ordering: 25.0.1.dev1 < 25.0.1a1 < 25.0.1b1 < 25.0.1rc1 < 25.0.1 < 25.0.1.post1; an unparsable version is never >= anything.
 VERCMP='import re, sys
 def key(v):
@@ -693,11 +737,13 @@ def substitute(template: str, sub: dict) -> str:
 
 
 def render_job(host: Host, name: str, st: dict, lane: str, proj: str, seed: str, psi_wait: int, extra: Sequence[str],
-               repo: str = "vbpub", prof: Optional[RepoProfile] = None) -> str:
+               repo: str = "vbpub", prof: Optional[RepoProfile] = None, mem_need_mb: int = 0, mem_floor_mb: int = 1024,
+               mem_wait: int = 900, mem_settle: int = 20) -> str:
     prof = prof or host.profile(repo)
     sub = {"NAME": name, "SHORT": st["sha"][:12], "PROJ": shlex.quote(proj), "LANE": shlex.quote(lane), "REPO": shlex.quote(repo),
            "SHA": st["sha"], "BASE": st["base"] or "''", "MAIN": st.get("main") or "''", "SEED": shlex.quote(seed), "PSI_LIMIT": f"{PSI_LIMIT:g}",
-           "PSI_WAIT": str(int(psi_wait)), "TAGS": "\n".join(f"{c} {n}" for c, n in st.get("tags", [])),
+           "PSI_WAIT": str(int(psi_wait)), "MEM_NEED_MB": str(int(mem_need_mb)), "MEM_FLOOR_MB": str(int(mem_floor_mb)),
+           "MEM_WAIT": str(int(mem_wait)), "MEM_SETTLE": str(int(mem_settle)), "TAGS": "\n".join(f"{c} {n}" for c, n in st.get("tags", [])),
            "EXTRA": " ".join(shlex.quote(a) for a in extra), **profile_subs(host, prof)}
     return substitute(JOB_TEMPLATE, sub)
 
@@ -735,10 +781,22 @@ def sha256_file(path: str) -> str:
     return h.hexdigest()
 
 
+def check_mem_args(need_mb: int, floor_mb: int, wait_s: int) -> None:
+    """Refuse a nonsensical admission argument by name instead of letting arithmetic turn it into something else: a negative
+    expected peak would admit anything, and a zero floor would let a lane consume the whole control plane's memory."""
+    if not 0 <= need_mb < 10 ** 7:
+        raise GateError(f"--mem-need-mb must be a non-negative number of MiB below 10^7, got {need_mb}", 2)
+    if not 1 <= floor_mb < 10 ** 7:
+        raise GateError(f"--mem-floor-mb must be a positive number of MiB below 10^7, got {floor_mb}", 2)
+    if not 0 <= wait_s < 10 ** 6:
+        raise GateError(f"--wait-mem must be a non-negative number of seconds below 10^6, got {wait_s}", 2)
+
+
 def cmd_run(ctx: Ctx, a: argparse.Namespace) -> int:
     lane = a.lane
     if not re.match(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$", lane):
         raise GateError(f"invalid lane name {lane!r}")
+    check_mem_args(a.mem_need_mb, a.mem_floor_mb, a.wait_mem)
     name = a.name or default_name(ctx, lane)
     if not NAME_RE.match(name):
         raise GateError(f"invalid --name {name!r}")
@@ -779,7 +837,8 @@ def cmd_run(ctx: Ctx, a: argparse.Namespace) -> int:
         got = remote(ctx, host, f"sha256sum {shlex.quote(rgd)}/in.bundle").out.split()[:1]
         if got != [want]:
             raise GateError(f"{host.name}: bundle checksum mismatch after upload", 3)
-    job = render_job(host, name, st, lane, proj, seed or "", a.wait_psi, a.extra, repo, prof)
+    job = render_job(host, name, st, lane, proj, seed or "", a.wait_psi, a.extra, repo, prof,
+                     a.mem_need_mb, a.mem_floor_mb, a.wait_mem)
     job_path = run_dir / "job.sh"
     job_path.write_text(job)
     r = remote(ctx, host, f"cat > {shlex.quote(rgd)}/job.sh", stdin_path=str(job_path))
@@ -852,7 +911,11 @@ def verdict_of(text: str, lane: str) -> str:
 
 
 REASON_RE = re.compile(r"verdict [A-Z_]+;(?: exit_code \d+;)? reason ([^;\n]+)")
-JOB_REASON_RE = re.compile(r"^\S+ (PREREQ MISSING: .*|PSI above .*|terminated by cancel|base \S+ missing on the host)$", re.M)
+JOB_REASON_RE = re.compile(r"^\S+ (PREREQ MISSING: .*|PSI above .*|memory admission.*|terminated by cancel|base \S+ missing on the host)$", re.M)
+# A memory-admission refusal shares exit 75 with the PSI refusal (both mean "the host said not yet, nothing ran"), so the
+# verdict is named from the job's own log rather than folded into PSI_REFUSED: reporting a memory refusal as a PSI refusal
+# would certify a cause that was never observed.
+MEM_REFUSAL_MARKERS = ("memory admission", "memory admission ticket")
 # known failure causes of a host run -> what to do about them (matched against the lane's own reason/diagnostics)
 REASON_HINTS = (
     ("exec-mode environment", "the lane needs the worktree's own started stack, which remote-gate does not start; run it on the controller"),
@@ -906,7 +969,7 @@ def collect(ctx: Ctx, host: Host, meta: dict, run_dir: Path) -> int:
     verdict = verdict_of(lane_log, meta["lane"])
     job_log = (run_dir / "job.log").read_text(errors="replace") if (run_dir / "job.log").exists() else ""
     if rc == 75 and verdict == "UNKNOWN":
-        verdict = "PSI_REFUSED"
+        verdict = "MEM_REFUSED" if any(marker in job_log for marker in MEM_REFUSAL_MARKERS) else "PSI_REFUSED"
     if rc == PREREQ_RC and verdict == "UNKNOWN":
         verdict = "PREREQ_MISSING"
     if rc == 143:
@@ -991,6 +1054,9 @@ def parser() -> argparse.ArgumentParser:
     r.add_argument("--name", default=None)
     r.add_argument("--detach", action="store_true", help="start and return; use status/logs/collect later")
     r.add_argument("--wait-psi", type=int, default=900, help="seconds the host job may wait for memory PSI some / io PSI full <= 25 before refusing (default 900)")
+    r.add_argument("--mem-need-mb", type=int, default=0, help="the lane's expected peak memory in MiB (the controller's weight); the host job starts it only when MemAvailable minus this still leaves --mem-floor-mb (default 0: only the floor is checked)")
+    r.add_argument("--mem-floor-mb", type=int, default=1024, help="MiB of MemAvailable that must remain for the control plane after the lane's expected peak (default 1024; a lane larger than RAM runs alone and pages)")
+    r.add_argument("--wait-mem", type=int, default=900, help="seconds the host job may wait for memory admission before refusing with exit 75 (default 900)")
     r.add_argument("--poll", type=float, default=20)
     r.add_argument("extra", nargs="*", help="after `--`: extra run-gate arguments")
     for n in ("status", "logs", "collect", "cancel"):
