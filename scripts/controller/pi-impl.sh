@@ -146,6 +146,9 @@ if [[ $mode == new ]]; then
       echo "controller run name already has evidence: $name" >&2
       printf '  %s\n' "${existing[@]}" >&2
       echo 'set CONTROLLER_RUN_FORCE=1 only to replace an intentionally abandoned or failed run' >&2
+      # This invocation REFUSED, so it must not have overwritten the identity of
+      # the owner it refused on: the owner record is written only after this
+      # preflight passes (lib.sh controller_run_record_owner).
       exit 2
     fi
     # Force means RETIRE: the previous identity moves aside instead of being
@@ -159,6 +162,10 @@ if [[ $mode == new ]]; then
     fi
   fi
 fi
+
+# The name is held, and this invocation passed its own preflight: only now may
+# it write its identity into the name's owner record.
+controller_run_record_owner
 
 route=${PI_ROUTE:-deepseek-pi}
 route_record=$route

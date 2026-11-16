@@ -457,6 +457,11 @@ pi_wrapper_with_lib_mutant(
     '  flock -n "$CONTROLLER_RUN_LOCK_FD"\n  rc=$?',
     '  flock -n "$CONTROLLER_RUN_LOCK_FD" || true\n  rc=0',
 )
+# The owner record is written after the caller's own preflight, so a REFUSED
+# invocation cannot overwrite the identity of the owner it refused on.
+mutant("scripts/controller/pi-impl.sh", "pi-run-name-refusal-overwrites.sh",
+       'controller_run_claim "$name" || exit 2',
+       'controller_run_claim "$name" || exit 2\ncontroller_run_record_owner')
 pi_wrapper_with_lib_mutant(
     "pi-run-name-retire-deletes",
     '    mv -- "$runs/$name.$extension" "$archive/" || return 2',

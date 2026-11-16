@@ -57,6 +57,7 @@ controller_init() {
 # owner, and it archives them instead of deleting them.
 CONTROLLER_RUN_LOCK_FD=''
 CONTROLLER_RUN_PREVIOUS_OWNER=''
+CONTROLLER_RUN_LOCK_PATH=''
 
 controller_run_record_extensions() {
   printf '%s\n' 'done' 'jsonl' 'err' 'events' 'live' 'last.txt' 'wt' 'route' 'thread' 'autoresume.log'
@@ -83,6 +84,7 @@ controller_run_claim() {
   [[ -n $name && -n $runs ]] || { echo 'controller: controller_run_claim needs a run name and CONTROLLER_RUNS_DIR' >&2; return 2; }
   controller_run_release
   CONTROLLER_RUN_PREVIOUS_OWNER=''
+  CONTROLLER_RUN_LOCK_PATH=''
   lock=$runs/$name.lock
   # Append, never truncate: a truncating open would erase the record of the very
   # owner this claim is about to refuse on.
@@ -111,6 +113,22 @@ controller_run_claim() {
   # Keep the record the previous owner left behind (it is dead: the kernel
   # released its flock) so a forced retirement can archive that identity.
   CONTROLLER_RUN_PREVIOUS_OWNER=$(head -n 1 "$lock" 2>/dev/null || true)
+  # The claim itself does NOT write the owner record: the name is held from here
+  # on, but an invocation that then refuses (a name that already has evidence,
+  # an unreadable prompt, a bad route) must not overwrite the identity of the
+  # owner it refused on - a later forced retire would archive the refuser and
+  # lose the real previous owner. The record is written by the caller once its
+  # own preflight passed (controller_run_record_owner).
+  CONTROLLER_RUN_LOCK_PATH=$lock
+  return 0
+}
+
+controller_run_record_owner() {
+  # Write THIS invocation's identity into the claimed name's lock file. Call it
+  # only after the claim succeeded AND the caller's own preflight passed; a
+  # refusal before this point leaves the previous owner's identity readable.
+  local lock=${CONTROLLER_RUN_LOCK_PATH:-} started started_utc ticks
+  [[ -n $lock ]] || return 1
   started=$(date -u +%s)
   started_utc=$(date -u -d "@$started" +%Y-%m-%dT%H:%M:%SZ)
   ticks=$(controller_pid_start_ticks "$$") || ticks='-'
@@ -124,6 +142,7 @@ controller_run_release() {
   [[ $fd =~ ^[0-9]+$ ]] || return 0
   eval "exec $fd>&-" 2>/dev/null || :
   CONTROLLER_RUN_LOCK_FD=''
+  CONTROLLER_RUN_LOCK_PATH=''
   return 0
 }
 

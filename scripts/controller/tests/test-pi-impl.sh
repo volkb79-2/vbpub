@@ -1230,6 +1230,38 @@ name_lock_is_free() {
   return 1
 }
 
+# A name-lock refusal must NOT overwrite the owner record of the owner it
+# refused on. Two steps: (a) an owner exists and works; (b) a DIFFERENT
+# invocation is refused for EVIDENCE (a `.done` from the first run, so its own
+# preflight - not the live lock - is what refuses it), and the owner record still
+# names the first owner. A later forced retire then archives the FIRST identity,
+# never the refuser's.
+check_refusal_keeps_owner_record() {
+  local runs=$CONTROLLER_ROOT/runs first_pid=''
+  mkdir -p "$runs"
+  rm -f "$runs"/refusal-owner.*
+  wait_launch refusal-owner deepseek-pi-volker pi-success /dev/null \
+    || fail 'the owning run for the refusal check did not complete'
+  first_pid=$(sed -n 's/^pid=\([0-9][0-9]*\).*/\1/p' "$runs/refusal-owner.lock" | head -n 1)
+  [[ -n $first_pid ]] || fail 'the first run wrote no owner record'
+  # The previous owner is dead now (its wrapper exited), so the name is claimable
+  # again; the refusal that follows is the EVIDENCE preflight.
+  PATH="$ROOT/bin:$PATH" HOME="$HOME_ROOT" PI_ROUTE=deepseek-pi-volker \
+    FAKE_FIXTURE_DIR="$SCRIPT_DIR/fixtures" FAKE_PI_STREAM="$SCRIPT_DIR/fixtures/pi-success.jsonl" \
+    FAKE_PI_SESSION_ID=refusal-second FAKE_PI_RC=0 PI_LIVE=0 \
+    "$SRC" "$WORKTREE" "$PROMPT" refusal-owner \
+    > "$ROOT/refusal-owner-second.log" 2>&1 < /dev/null \
+    && fail 'a name with evidence was run without CONTROLLER_RUN_FORCE'
+  contains "$ROOT/refusal-owner-second.log" 'controller run name already has evidence' \
+    'the evidence preflight is what refused the second invocation'
+  # The refuser's pid must NOT be in the record: the file still names the owner
+  # whose evidence refuses the name.
+  local recorded
+  recorded=$(sed -n 's/^pid=\([0-9][0-9]*\).*/\1/p' "$runs/refusal-owner.lock" | head -n 1)
+  [[ $recorded == "$first_pid" ]] \
+    || fail "a refused invocation overwrote the owner record (was $first_pid, now ${recorded:-<none>})"
+}
+
 check_run_name_ownership() {
   local first='' second=0 retired='' started_at=0
   rm -rf "$CONTROLLER_ROOT/runs"; mkdir -p "$CONTROLLER_ROOT/runs"
@@ -1522,6 +1554,7 @@ PY
       contains "$ROOT/focused-command.out" 'controller run name already has evidence' 'existing run evidence is refused'
       ;;
     two-wrappers-one-run) check_run_name_ownership ;;
+    refusal-own-record) check_refusal_keeps_owner_record ;;
     ownership-force) check_run_name_ownership ;;
     ownership-release) check_run_name_ownership ;;
     auth-file)

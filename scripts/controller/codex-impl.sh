@@ -70,6 +70,7 @@ if [[ $mode == new ]]; then
       echo "controller run name already has evidence: $name" >&2
       printf '  %s\n' "${existing[@]}" >&2
       echo 'set CONTROLLER_RUN_FORCE=1 only to replace an intentionally abandoned or failed run' >&2
+      # A refusal must not overwrite the identity of the owner it refused on.
       exit 2
     fi
     # Force means RETIRE, exactly as in pi-impl.sh: the previous identity moves
@@ -84,6 +85,9 @@ if [[ $mode == new ]]; then
     fi
   fi
 fi
+
+# Held and preflighted: only now may this invocation write its owner record.
+controller_run_record_owner
 
 route=${CODEX_ROUTE:-luna}
 route_record=$route

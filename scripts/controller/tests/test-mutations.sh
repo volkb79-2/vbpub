@@ -158,7 +158,8 @@ for pi_case in \
   pi-continue-bound:retry-bound pi-continue-class:no-retry-classes \
   pi-continue-exhausted:outcome-empty pi-continue-prompt-file:prompt-file \
   pi-continue-bound-validation:retry-validation \
-  pi-report-unset-skips:report-unset; do
+  pi-report-unset-skips:report-unset \
+  pi-run-name-refusal-overwrites:refusal-own-record; do
   pi_mutant=${pi_case%%:*}
   pi_focus=${pi_case#*:}
   expect_killed "$pi_mutant" \
