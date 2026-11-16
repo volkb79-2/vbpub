@@ -63,13 +63,16 @@ same 33 targets returned:
 
 | copy | nextest | assay R1 |
 |---|---|---|
-| head as committed | 333 tests pass | `PASS`, 15100/15723 = 96.0377 % |
+| this workspace as committed | 333 tests pass | `PASS`, 15100/15723 = 96.0377 % |
 | one kernel test file deleted | 322 tests pass (all green) | `FAIL/UNCOVERED_LINES`, 14777/15723 = 93.9833 % |
 
 So the verdict is the measured number and the failure is the coverage claim itself; the
 test command stays green in the negative case, which is exactly the difference between a
-coverage verdict and a test result. `selftest`'s own floor step additionally refuses that
-deletion (`kernel` line 81.24 % < 92.00 %).
+coverage verdict and a test result. In the negative copy the lane's own crate-floor step was
+neutralized (`true` in place of `tools/crate-floors.py`), so nothing but the Assay R1 claim
+could have failed it; re-running that same step separately over the negative copy confirms
+it refuses the deletion independently (`ERROR: crate crates/kernel line coverage is 81.24%
+(2364/2910); floor is 92.00%`).
 
 ### `HOB-44`: the registered lane needs one image change
 
