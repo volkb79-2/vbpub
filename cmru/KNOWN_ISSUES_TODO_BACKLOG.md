@@ -3166,7 +3166,7 @@ not implementable as the brief's "small" follow-on.
 
 ## KI-137 - SIGPIPE race in the source-binding refusal of `build-initial-standalone.sh` fails a lane baseline at random
 
-**Status:** OPEN (filed 2026-11-08); severity: minor (flaky test, no product effect). **Finding.** `cmru/build-initial-standalone.sh:206` prints the refusal path list with `printf '%s\n' "$2" | head -n 20 | sed ...` under `set -o pipefail`. When more than 20 paths are listed, `head` can close the pipe before `printf` finishes, `printf` gets SIGPIPE, and the script exits 141 instead of the refusal's 2. `tests/test_installed_wheel_subprocess.py::test_the_refusal_names_at_most_twenty_paths_and_the_remedy` (line 1067) then fails with returncode 141. Seen once on 2026-11-08 (shard s13 try 1, the R0 baseline failed 1 of 6371 tests; the same test passed in the <host> baseline at 12:59Z and in try 2), so a campaign baseline can fail on it at random.
+**Status:** FIXED 2026-11-16; severity: minor (flaky test, no product effect). The refusal now uses `sed -n` to print at most twenty paths while consuming the complete input, so `pipefail` preserves the intended exit 2. The regression emits 4096 paths (well beyond a pipe buffer): it failed before the fix with exit 141 and passes on this branch with exit 2.
 **Fix.** Make the listing independent of pipe timing: `printf '%s\n' "$2" | sed -n '1,20p'` (sed reads all input) or build the list with `mapfile` and a bounded loop, and keep the exit code 2 explicit. Add a test with a path list large enough to make `head` close early.
 **Close when.** The new large-list test passes repeatedly, and the old pipeline re-applied fails it.
 **Source.** [shard-s13-REPORT.md](docs/evidence/shard-s13-REPORT.md) (Anomaly).

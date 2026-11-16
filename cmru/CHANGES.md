@@ -83,6 +83,7 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 - test(cmru): reproduce bundle-build defects (74a58f3cf)
 
 <!-- cmru: pending release notes begin -->
+- fix(cmru): keep large bootstrap source-refusal lists from masking exit 2 with SIGPIPE (KI-137).
 - fix(cmru): retain only Assay evidence present in the project tree (KI-160).
 - fix(cmru): include tester-base's KSM source in generated project fixtures.
 - fix(cmru): align bundle copy, archive, and manifest exclusions; derive dev versions, clean staged trees, and canonicalize manifest tags (KI-162..165).

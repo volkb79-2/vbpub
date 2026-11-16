@@ -203,7 +203,7 @@ source_binding_fail() {
     echo "        This wheel becomes the controller of later releases, so it may not be built from" >&2
     echo "        uncommitted bytes under a committed identity. $1" >&2
     echo "        Commit, stash or remove these paths (nothing was built and no Docker command ran):" >&2
-    printf '%s\n' "$2" | head -n 20 | sed 's/^/          /' >&2
+    printf '%s\n' "$2" | sed -n '1,20s/^/          /p' >&2
     exit 2
 }
 source_binding_changes="$(git -C "${repo_root}" status --porcelain=v1 --untracked-files=all -- "${source_binding_paths[@]}")" || {
