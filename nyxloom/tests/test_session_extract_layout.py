@@ -675,3 +675,67 @@ def test_paragraph_cut_keeps_whole_paragraphs_and_refuses_a_partial_first_one():
     # of emitting half an instruction.
     assert paragraph_cut(text, 5) == 0
 
+
+def test_a_truncated_state_section_is_visible_in_the_ACCOUNTING_too(tmp_path):
+    """A body marker is easy to miss; the footer must say it as well."""
+    paragraphs = [f"## Step {index}\n" + "synthetic instruction " * 12 for index in range(40)]
+    state = _state_file(tmp_path, "\n\n".join(paragraphs))
+    result = extract(LAYOUT, _layout_config(
+        goal_prompt=False, tail_prose_tokens=0, budget_tokens=900,
+        state_file=str(state),
+    ))
+    out = result.render()
+    plan = result._readback_layout
+    assert "state_truncated=1" in out
+    assert f"state_chars={plan.state_kept_chars}/{plan.state_total_chars}" in out
+    assert plan.state_kept_chars < plan.state_total_chars
+    # An untruncated state file reports the same accounting honestly.
+    full = extract(LAYOUT, _layout_config(
+        goal_prompt=False, tail_prose_tokens=0, state_file=str(_state_file(tmp_path)),
+    ))
+    assert "state_truncated=0" in full.render()
+
+
+def test_a_state_file_with_no_blank_lines_is_cut_at_a_LINE_not_to_nothing(tmp_path):
+    """No blank lines / one long block used to collapse to the marker alone."""
+    body = "\n".join(f"- synthetic line {index} " + "filler " * 6 for index in range(60))
+    state = _state_file(tmp_path, body, name="no-blank-lines.md")
+    result = extract(LAYOUT, _layout_config(
+        goal_prompt=False, tail_prose_tokens=0, budget_tokens=900,
+        state_file=str(state),
+    ))
+    out = result.render()
+    plan = result._readback_layout
+    section = out.split(layout.STATE_HEADER)[1].split("[state truncated:")[0]
+    # Real content survived, ending on a WHOLE line, and the marker says the
+    # cut was not at a paragraph boundary (this file has none).
+    assert "- synthetic line 0" in section
+    assert section.strip().splitlines()[-1].startswith("- synthetic line ")
+    marker = out.split("[state truncated:")[1].split("]")[0]
+    assert "line/character boundary" in marker
+    assert plan.state_kept_chars > 0
+
+
+def test_a_state_file_whose_FIRST_block_exceeds_the_budget_still_shows_content(tmp_path):
+    """One long unbroken block: a hard character cut keeps what fits."""
+    state = _state_file(tmp_path, "synthetic " * 5000, name="one-block.md")
+    result = extract(LAYOUT, _layout_config(
+        goal_prompt=False, tail_prose_tokens=0, budget_tokens=800,
+        state_file=str(state),
+    ))
+    out = result.render()
+    section = out.split(layout.STATE_HEADER)[1].split("[state truncated:")[0]
+    assert "synthetic" in section
+    assert result._readback_layout.state_kept_chars > 0
+    assert result._readback_layout.state_truncated is True
+
+
+def test_a_non_utf8_state_file_names_the_flag_and_the_path(tmp_path):
+    state = tmp_path / "latin1.md"
+    state.write_bytes(b"# State\n- a \xff byte that is not UTF-8\n")
+    with pytest.raises(ValueError) as exc:
+        extract(LAYOUT, _layout_config(state_file=str(state)))
+    message = str(exc.value)
+    assert "--state-file" in message and str(state) in message
+    assert "not UTF-8" in message
+

@@ -47,8 +47,14 @@ whatever is left (its own priorities are unchanged -- select.readback_select
 still never drops an operator turn, and discloses a protected overrun instead).
 
 A STATE section cut by the budget ends with an explicit marker naming the
-bytes/tokens it dropped and the file it left behind, cut at a paragraph
-boundary so a successor never acts on half a sentence.
+bytes/tokens it dropped and the file it left behind, and the footer's own
+`state_truncated=`/`state_chars=` accounting reports the cut a SECOND time, so
+a truncated primer is visible even to a reader who only skims the trailers. The
+cut falls at a paragraph boundary when one fits, then at a line boundary, then
+(with a state file that has no blank lines and one long first block) at a hard
+character boundary -- it never collapses to the marker alone, because a primer
+that shows a state file's existence but none of its content is the worst of
+both.
 
 The document ends with a `[readback marker: ...]` line naming the source
 marker the NEXT read-back must use as `--since` (the same marker the cursor
@@ -191,6 +197,11 @@ class LayoutPlan:
     state_source: str = ""
     state_tokens: int = 0
     state_truncated: bool = False
+    #: Chars of the state file the section actually carries, out of the full
+    #: (post-redaction) size: the footer reports both, so a truncated STATE is
+    #: visible in the ACCOUNTING and not only inside the section's own marker.
+    state_kept_chars: int = 0
+    state_total_chars: int = 0
 
 
 def _tail_block(event: NormalizedEvent, config: ExtractConfig) -> str:
@@ -251,21 +262,23 @@ def state_truncation_marker(text: str, kept_chars: int, path: str) -> str:
 
     It names what was dropped and where the rest still lives, so a successor
     reads the file instead of assuming the primer is the whole state, and
-    states that the cut fell at a paragraph boundary -- half an instruction is
-    exactly what a resumed agent misreads.
+    states the boundary the cut fell on -- half an instruction is exactly what
+    a resumed agent misreads.
     """
+    omitted = len(text) - kept_chars
+    boundary = "a paragraph boundary" if "\n\n" in text[:kept_chars] else "a line/character boundary"
     return (
-        f"[state truncated: {len(text) - kept_chars} of {len(text)} chars omitted to fit "
-        f"the budget at a paragraph boundary -- read {path} in full before acting]"
+        f"[state truncated: {omitted} of {len(text)} chars omitted to fit "
+        f"the budget at {boundary} -- read {path} in full before acting]"
     )
 
 
 def paragraph_cut(text: str, limit_chars: int) -> int:
     """Length of the longest paragraph-boundary prefix of `text` fitting
     `limit_chars`: the cut falls after a blank line, never mid-paragraph.
-    Returns 0 when not even the first paragraph fits, so the caller discloses
-    the omission instead of emitting half an instruction, and len(text) when
-    everything fits -- the loop's own normal exit, so there is no
+    Returns 0 when not even the first paragraph fits, so the caller can choose
+    a different boundary instead of emitting half an instruction, and len(text)
+    when everything fits -- the loop's own normal exit, so there is no
     impossible-to-reach branch here."""
     kept = 0
     for block in text.split("\n\n"):
@@ -276,14 +289,44 @@ def paragraph_cut(text: str, limit_chars: int) -> int:
     return kept
 
 
+def _line_cut(text: str, limit_chars: int) -> int:
+    """Longest prefix ending at a NEWLINE boundary within `limit_chars`."""
+    if limit_chars <= 0:
+        return 0
+    window = text[:limit_chars]
+    index = window.rfind("\n")
+    return index + 1 if index >= 0 else 0
+
+
+def paragraph_then_line_cut(text: str, limit_chars: int) -> int:
+    """Truncation position for a bounded STATE section, best boundary first.
+
+    A paragraph boundary is the IDEAL cut (a successor must not act on half an
+    instruction). A state file with no blank lines, or whose FIRST paragraph is
+    longer than the whole budget, used to collapse to the marker alone: the
+    primer then showed the reader a state file's existence but none of its
+    content, which is the worst of both. So the order is paragraph boundary,
+    then line boundary, then a hard character cut -- never zero while any room
+    remains.
+    """
+    kept = paragraph_cut(text, limit_chars)
+    if kept:
+        return kept
+    kept = _line_cut(text, limit_chars)
+    if kept:
+        return kept
+    return max(0, min(limit_chars, len(text)))
+
+
 def _state_render(config: ExtractConfig, text: str) -> str:
     return state_header(config) + "\n" + text
 
 
 def _state_section(
     config: ExtractConfig, budget_tokens: int,
-) -> tuple[str, int, bool, int]:
-    """(rendered section, tokens, truncated, redacted paragraphs).
+) -> tuple[str, int, bool, int, int, int]:
+    """(rendered section, tokens, truncated, redacted paragraphs, kept chars,
+    total chars of the (post-redaction) state text).
 
     Rendered VERBATIM -- the agent's own words are the point of the section --
     with the same paragraph redaction every kept event gets, and bounded by
@@ -293,9 +336,17 @@ def _state_section(
     separator = render.separator(config.insert_blank_lines)
     path = str(config.state_file)
     try:
-        text = Path(path).read_text(encoding="utf-8").strip()
+        text = Path(path).read_text(encoding="utf-8")
     except OSError as exc:
         raise ValueError(f"--state-file {path}: {exc}") from exc
+    except UnicodeDecodeError as exc:
+        # The message names the flag AND the path: "a read failed" and "this
+        # file is not UTF-8 text" are different problems with different fixes.
+        raise ValueError(
+            f"--state-file {path}: not UTF-8 text ({exc.reason} at byte "
+            f"{exc.start}) -- save the state file as UTF-8"
+        ) from exc
+    text = text.strip()
     if not text:
         raise ValueError(f"--state-file {path}: the file is empty")
     redacted = 0
@@ -305,18 +356,18 @@ def _state_section(
         text = holder.text
     full_tokens = estimate_tokens(_state_render(config, text) + separator)
     if full_tokens <= budget_tokens:
-        return _state_render(config, text), full_tokens, False, redacted
+        return _state_render(config, text), full_tokens, False, redacted, len(text), len(text)
     # Bounded: the header and the marker line are the section's own cost and
-    # stay whole; only the state text is cut, at a paragraph boundary.
+    # stay whole; only the state text is cut, best boundary first.
     header_tokens = estimate_tokens(_state_render(config, "") + separator)
     marker_tokens = estimate_tokens(state_truncation_marker(text, 0, path) + separator)
     remaining = max(0, budget_tokens - header_tokens - marker_tokens)
-    kept_chars = paragraph_cut(text, remaining * select.TOKEN_CHARS)
+    kept_chars = paragraph_then_line_cut(text, remaining * select.TOKEN_CHARS)
     kept_text = text[:kept_chars].rstrip()
     marker = state_truncation_marker(text, kept_chars, path)
     body = f"{kept_text}\n\n{marker}" if kept_text else marker
     section = _state_render(config, body)
-    return section, estimate_tokens(section + separator), True, redacted
+    return section, estimate_tokens(section + separator), True, redacted, kept_chars, len(text)
 
 
 def _goal_section(
@@ -393,7 +444,8 @@ def build(
     # about the layout.
     layout_footer = (
         "[readback layout: goal=SOURCE goal_tokens=G "
-        "state=K state_tokens=ST tail=K/T tail_tokens=KT delta_tokens=C]"
+        "state=K state_tokens=ST state_truncated=T state_chars=KC/TC "
+        "tail=K/T tail_tokens=KT delta_tokens=C]"
     )
     fixed_tokens = READBACK_FOOTER_RESERVE_TOKENS + overhead + estimate_tokens(
         marker_line + layout_footer
@@ -428,13 +480,14 @@ def build(
         # A budget too small for anything still yields the section's header
         # and the truncation marker: the disclosure is the point, and the
         # document reports its own overrun below rather than hiding the file.
-        state_section, state_tokens, truncated, state_redacted = _state_section(
-            config, max(state_budget, 1),
-        )
+        (state_section, state_tokens, truncated, state_redacted,
+         state_kept, state_total) = _state_section(config, max(state_budget, 1))
         plan.sections.append(state_section)
         plan.state_tokens = state_tokens
         plan.state_truncated = truncated
         plan.state_source = str(config.state_file)
+        plan.state_kept_chars = state_kept
+        plan.state_total_chars = state_total
         plan.redacted_paragraphs += state_redacted
         available = max(0, available - state_tokens)
 
@@ -486,6 +539,8 @@ def build(
             "[readback layout: "
             f"goal={plan.goal_source} goal_tokens={plan.goal_tokens} "
             f"state={'file' if plan.state_source else 'none'} state_tokens={plan.state_tokens} "
+            f"state_truncated={'1' if plan.state_truncated else '0'} "
+            f"state_chars={plan.state_kept_chars}/{plan.state_total_chars} "
             f"tail={plan.tail.kept if plan.tail else 0}/"
             f"{plan.tail.budget_tokens if plan.tail else 0} "
             f"tail_tokens={plan.tail.kept_tokens if plan.tail else 0} "
