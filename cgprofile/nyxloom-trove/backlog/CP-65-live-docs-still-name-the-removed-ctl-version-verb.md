@@ -10,7 +10,7 @@ component: "docs"
 context_estimate: "small"
 provenance: "remote gate worker report 2026-11-16 (sonnet-v1001-gateworker-REPORT.md, 'Findings for tool backlogs': 'r1002 RUNBOOK and task briefs still cite `cgprofile ctl version --json`; with 3.0.0 the verbs are cgprofilectl status|host|doctor. Verify the repo guide text is updated'); re-checked against origin/main on 2026-11-16"
 filed_by: "vbpub maintenance"
-spec_owner: "docs/CGPCTL-SPEC.md, docs/PROTOCOL.md section 10"
+spec_owner: "docs/CGPROFILECTL-SPEC.md, docs/PROTOCOL.md section 10"
 priority: 3
 filed_date: "2026-11-16"
 ---
@@ -69,58 +69,58 @@ section headings `2.1 cgprofile ctl version --json`, `2.3 cgprofile ctl status`,
 is a numbered controller ruling, not a docs sweep. Any fix here must state that,
 so a future sweep does not "discover" the frozen file and edit it.
 
-## Proposed fix
+## Design
 
-- Rewrite the two `DESIGN-GUIDE.md` passages in the shipped vocabulary: the
-  capability question is answered by `cgprofilectl status --json` (the field is
-  the daemon's own `daemon.damon` value), and the client/daemon contract facts
-  are `cgprofilectl status`'s `contracts`/`skew` fields. Keep the substantive
-  point (that `damon: available` describes interface availability, not a
-  committed kdamond) unchanged; only the command name changes.
-- Extend the guard so the bare form is detectable WITHOUT re-admitting the
-  migration table: either add the `"ctl version"`/`"ctl start"`/`"ctl host"`
-  family to `REMOVED` and exempt the `## Migration table: 1.x command to
-  cgprofilectl verb` section the same way `_consumers_without_migration_table()`
-  already exempts it for CONSUMERS.md, or add a separate rule that a live doc
-  outside the migration table must not contain "`ctl `" followed by a
-  contract-1 verb name. Whichever is chosen, the guard must go RED on the
-  current DESIGN-GUIDE text BEFORE the rewording (a red-first proof), and must
-  stay green on the frozen contract copy and on the migration table.
-- Do not touch the frozen `RG55-INTERFACE-CONTRACT.md` or its byte-identical
-  copy; if those headings should change, that is a controller ruling.
+1. **Rewrite the two passages out of the removed verb.** The capability question
+   is answered by `cgprofilectl status --json`: the field is the daemon's own
+   `daemon.damon` value, and the client/daemon contract facts are
+   `cgprofilectl status`'s `contracts`/`skew` fields. Keep the substantive point
+   (that `damon: available` describes interface availability, not a committed
+   kdamond) unchanged; only the command name changes. Files:
+   `cgprofile/docs/DESIGN-GUIDE.md` (the two "DAMON availability is not session
+   readiness" passages, around lines 516 and 548).
+2. **Extend the guard so the bare form is detectable WITHOUT re-admitting the
+   migration table.** Either add the `"ctl version"`/`"ctl start"`/`"ctl host"`
+   family to `REMOVED` and exempt the `## Migration table: 1.x command to
+   cgprofilectl verb` section the same way `_consumers_without_migration_table()`
+   already exempts it for CONSUMERS.md, or add a separate rule that a live doc
+   outside the migration table must not contain "`ctl `" followed by a
+   contract-1 verb name. Files: `cgprofile/tests/test_docs_sync.py` (`REMOVED`,
+   `LIVE_DOCS`, `_live_texts`/`removed_name_hits`, and the mirror test).
+3. **Cross-reference for the replacement text.** `cgprofile/docs/CGPROFILECTL-SPEC.md`
+   (the shipped verb surface, which lists `status` as the verb that reports
+   versions/contracts) and `cgprofile/docs/PROTOCOL.md` section 10 (ctl
+   contract 2), so the replacement names a verb that actually produces the fact.
+4. **Leave the frozen file alone.** Do not touch `docs/RG55-INTERFACE-CONTRACT.md`
+   or its byte-identical copy; if those headings should change, that is a
+   controller ruling.
 
-## Where
+## Acceptance criteria
 
-- `cgprofile/docs/DESIGN-GUIDE.md` (the two "DAMON availability is not session
-  readiness" passages, around lines 516 and 548).
-- `cgprofile/tests/test_docs_sync.py` (`REMOVED`, `LIVE_DOCS`,
-  `_live_texts`/`removed_name_hits`, and the mirror test).
-- Cross-reference: `cgprofile/docs/CGPROFILECTL-SPEC.md` (the shipped verb
-  surface) and `cgprofile/docs/PROTOCOL.md` section 10 (ctl contract 2), so the
-  replacement text names a verb that actually produces the fact.
+- The guard goes RED on the CURRENT DESIGN-GUIDE text before the rewording (a
+  red-first proof), and `removed_name_hits()` returns a hit for `ctl version`.
+- After the rewording the same test is green, the migration table's 1.x rows
+  are still exempt, and the frozen interface contract still contains its
+  contract-1 headings and is never flagged.
+- `cgprofilectl status --json` is the command named in the guide, and the
+  substantive point about `damon: available` is unchanged.
+- A hand mutation that removes the new detection rule from the guard makes its
+  focused case fail.
+- `nyxloom backlog index` regenerates the trove INDEX in the same change.
 
-## Acceptance test idea
+## Dependencies and order
 
-`removed_name_hits()` returns a hit for the pre-fix DESIGN-GUIDE text
-(`ctl version`), and the test is proven red before the rewording. After the
-rewording the same test is green, the migration table's 1.x rows are still
-exempt, the frozen interface contract still contains its contract-1 headings
-and is never flagged, and `cgprofilectl status --json` is the command named in
-the guide. A hand mutation that removes the new detection rule from the guard
-makes its focused case fail.
+Nothing blocks it: the edits are prose and test-only, and the shipped verb
+surface the replacement names is already released. Land the red-first guard
+proof and the rewording in ONE change, so no branch carries a guard that is red
+for a text it has not yet fixed.
 
-## Priority
+## Updates
 
-3 — documentation and a guard gap; no verdict, no measurement and no daemon
-behaviour changes. Raise it if an operator-facing procedure (a host runbook or
-a task brief) keeps being written from the DESIGN-GUIDE text: the observed
-instance was a host agent repeatedly trying `cgprofile ctl version --json`
-against a 3.0.0 daemon before switching to `cgprofilectl status --json`.
-
-## Close when
-
-The live DESIGN-GUIDE names only shipped verbs, the docs guard detects the bare
-`ctl <verb>` form in a live document (proven red-first and green after),
-the frozen interface contract and the migration table are untouched and
-explicitly documented as out of scope, and the docs-sync test mirrors the
-reasoning in its own comments so a future sweep does not re-open it.
+- **2026-11-16** filed from the remote gate worker and pre-release reports; the
+  live `DESIGN-GUIDE` text was verified against `origin/main` before filing.
+- **2026-11-16 (review round 1)** front-matter corrected to the real spec file
+  (`docs/CGPROFILECTL-SPEC.md`, not the earlier `docs/CGPCTL-SPEC.md`), and the
+  body restructured onto the layout this trove's recent entries use. Severity
+  unchanged at priority 3: documentation and a guard gap, no verdict, no
+  measurement, no daemon behaviour.
