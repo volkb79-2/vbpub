@@ -44,7 +44,14 @@ class Preset:
     summary: str
     values: tuple[tuple[str, object], ...]  # (argparse attr, value), shown in this order
     flags: tuple[str, ...]  # boolean attrs the preset turns on
-    claude_only: bool  # needs Claude Code transcripts (tool calls / ledger)
+    #: Harnesses whose adapter implements this preset's options. An EMPTY
+    #: tuple means every registered adapter can run it. Written down per
+    #: preset rather than as a "Claude-only" boolean, because the set is a
+    #: real capability fact: the readback layout needs tool-call rendering and
+    #: agent-communication records, which pi now provides alongside Claude
+    #: Code, while the successor/review/ledger presets still need the
+    #: Claude-Code ledger and therefore stay Claude-only.
+    formats: tuple[str, ...]
     fixed_span: bool  # emits one finished document: no --follow, no --json
 
     @property
@@ -60,7 +67,7 @@ PRESETS: dict[str, Preset] = {
         "follow a live session: operator messages and assistant prose only, timestamped",
         values=(("profile", "all"), ("timestamps", "all")),
         flags=("prose_only",),
-        claude_only=False,
+        formats=(),
         fixed_span=False,
     ),
     "successor": Preset(
@@ -78,7 +85,7 @@ PRESETS: dict[str, Preset] = {
             ("agent_comms", "full"),
         ),
         flags=("strip_cd_prefix", "ledger", "stop_state"),
-        claude_only=True,
+        formats=("claude-code",),
         fixed_span=True,
     ),
     "review": Preset(
@@ -94,7 +101,7 @@ PRESETS: dict[str, Preset] = {
             ("timestamps", "all"),
         ),
         flags=("ledger",),
-        claude_only=True,
+        formats=("claude-code",),
         fixed_span=True,
     ),
     "ledger": Preset(
@@ -102,7 +109,7 @@ PRESETS: dict[str, Preset] = {
         "only external effects, touched files and stop state, no prose (incident triage)",
         values=(),
         flags=("no_prose", "ledger", "stop_state"),
-        claude_only=True,
+        formats=("claude-code",),
         fixed_span=True,
     ),
     "readback": Preset(
@@ -122,7 +129,7 @@ PRESETS: dict[str, Preset] = {
         # NOT the first prompt (AGENTS.md, operator refinement 2026-11-15). A
         # spawned/targeted session adds --goal-prompt (or --goal-file).
         flags=(),
-        claude_only=True,
+        formats=("claude-code", "pi"),
         fixed_span=True,
     ),
 }

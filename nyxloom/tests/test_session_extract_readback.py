@@ -959,7 +959,7 @@ def test_readback_boundary_values_and_preset_contracts():
     assert config.agent_comms_summary_chars == 1
     assert config.agent_comms_item_max_chars == 1
     assert config.budget_tokens == 1
-    assert presets.PRESETS["readback"].claude_only is True
+    assert presets.PRESETS["readback"].formats == ("claude-code", "pi")
     assert presets.PRESETS["readback"].fixed_span is True
 
 

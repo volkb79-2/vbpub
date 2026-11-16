@@ -96,14 +96,28 @@ def strip_stale_wakeup_tail(events: list[NormalizedEvent]) -> tuple[list[Normali
     return events[: run_start + 1], run_len - 1
 
 
+def redact_placeholder(index: int) -> str:
+    """The one-line replacement for a redacted paragraph.
+
+    It names the RULE BY ITS ORDINAL in the order the patterns were given
+    (`--redact-pattern` is repeatable), never the regex text itself: the
+    pattern can be exactly the sensitive string the caller wanted removed (a
+    token prefix, a host name, a customer name, a literal secret fragment
+    supplied through `CTX_READBACK_REDACT_PATTERNS`), and echoing it would
+    re-publish what the redaction removed into model context and into the
+    stored extract (NL-72).
+    """
+    return f"[redacted paragraph -- matched --redact-pattern #{index}]"
+
+
 def redact_paragraphs(
     events: list[NormalizedEvent], patterns: list[str],
 ) -> tuple[list[NormalizedEvent], int]:
     """For every event's text, replace each blank-line-delimited paragraph
-    matching ANY of `patterns` (case-insensitive) with a one-line
-    placeholder naming which pattern matched. Never drops the whole event --
-    only the matching paragraph(s) -- so unrelated state packed into the
-    same block (a `/compact` boundary's per-package KEEP notes, alongside
+    matching ANY of `patterns` (case-insensitive) with a one-line placeholder
+    naming WHICH pattern matched by its 1-based ordinal. Never drops the whole
+    event -- only the matching paragraph(s) -- so unrelated state packed into
+    the same block (a `/compact` boundary's per-package KEEP notes, alongside
     the one paragraph restating a standing goal) survives untouched.
     Mutates events in place (NormalizedEvent is a plain mutable dataclass)
     and returns the same list, for chaining after strip_stale_wakeup_tail.
@@ -114,9 +128,9 @@ def redact_paragraphs(
         paragraphs = ev.text.split("\n\n")
         changed = False
         for i, para in enumerate(paragraphs):
-            for pattern in compiled:
+            for index, pattern in enumerate(compiled, start=1):
                 if pattern.search(para):
-                    paragraphs[i] = f"[redacted paragraph -- matched --redact-pattern {pattern.pattern!r}]"
+                    paragraphs[i] = redact_placeholder(index)
                     redacted += 1
                     changed = True
                     break
