@@ -173,6 +173,8 @@ SPEC §9.
 | RG-278 | Run-Gate 25.6.0 KSM R2 survivor test debt | Major | CLOSED 2026-11-14; behavioral tests kill all 17 non-equivalent survivors and document the six equivalents |
 | RG-281 | the repo-level run-gate skill has no install or check path, so an installed copy silently rots | Enhancement | OPEN 2026-11-15 |
 | RG-282 | A package that adds or edits a lane declaration in another project's `run-gate.toml` merges without the run-gate-project `selftest` lane (gate-coverage gap) | Major | OPEN 2026-11-15; the instance (assay `rust-r1-qualification`) is fixed, the coverage rule is not built |
+| RG-283 | both host-blindness warnings prescribe a remedy the same message or the estate cannot satisfy (admission names an export that a private cgroup namespace makes useless; the Docker-GID warning asks for a value nothing publishes) | Minor | OPEN 2026-11-16; disclosure only, no verdict change |
+| RG-284 | a remote run cannot keep or reuse its checkout, so a lane pair that must judge one tree (assay `tester-unified` then full `self-qualification`) cannot run through the supported runner | Major | OPEN 2026-11-16; assay B551 names the cheaper sequence-lane alternative |
 ---
 
 ## RG-1 — conjunction lanes silently drop `--worktree` and `--allow-dirty`
@@ -8755,3 +8757,194 @@ still passes against the packaged path; and the docs name the install step.
 **Wanted.** A rule, enforced mechanically rather than by reviewer memory, that a change which adds or edits a lane in any tracked `run-gate.toml`, or edits the files the estate guards scan (`run-gate-project/run_gate.py`, `assay/pyproject.toml`, `assay/src/**/*.py` import statements of `cowtree`), includes the run-gate-project `selftest` lane in its gate set. The cheapest form is a path-triggered lane requirement in package-gate selection (run-gate or the nyxloom merge step) with the trigger list derived from the guards' own scan selection so the two cannot drift; the fallback is a checklist line in the package brief template.
 
 **Close when.** A change that adds a lane to `assay/run-gate.toml` is refused or auto-extended with the run-gate-project `selftest` lane, shown by a test of the selection rule, and the trigger list is derived from the guard's own file selection.
+
+## RG-283 — both host-blindness warnings prescribe a remedy that the same message (or the estate) cannot satisfy
+
+**Status:** OPEN (filed 2026-11-16); severity: minor for each message, should-fix
+for the class (a refusal/warning whose repair instruction is wrong trains
+operators to ignore the warning). Source: the di2 KSM evidence report of
+2026-11-12 (`reports/` outside the repository; the two lines are quoted below
+as measured) and the 2026-11-16 pre-release gate report (finding F4).
+Related, and deliberately NOT re-filed here: RG-252 owns the missing
+publisher for the Docker GID fact itself; SPEC `R-29` owns the documented
+decision that a host-blind admission is a WARNING plus shared-infra-only
+admission rather than a refusal; RG-55/C7 owns the private-cgroup-namespace
+explanation.
+
+**Problem.** Two different "this process cannot see a host fact" warnings are
+printed by two different code paths, and each one's repair instruction is
+either impossible in the environment it is printed in, or asks the operator to
+supply a fact that has no publisher:
+
+1. **Admission (memory ceiling), `check_slice_memory_admission`, printed when
+   the slice's `memory.max` is unreadable**:
+
+   ```
+   run-gate: admission WARNING: no derivable memory ceiling for slice
+   dev-gates.slice (.../memory.max absent; export $RUN_GATE_CGROUPFS_ROOT if
+   the host cgroupfs hides here) — /proc/self/cgroup is '0::/' and no slice
+   directory is visible: cgroupns=private; host-side slice truth is only
+   reachable through the profiler daemon (run-gate doctor's own 'profiler'
+   check, RG-55/C7) — admission by shared-infra rules only
+   ```
+
+   The first clause tells the reader to `export $RUN_GATE_CGROUPFS_ROOT`; the
+   second clause, in the SAME sentence, says the slice directory is not
+   visible at all and that only the profiler daemon can answer — i.e. that the
+   export cannot help. `cgroup_namespace_is_private()` is exactly the test that
+   knows which case this is (`run_gate.py:3957-3972`), so the two remedies
+   (`export` and `run doctor`) are distinguishable at the point the message is
+   built, and today both are offered at once, before the one that applies.
+
+2. **Profiling (Docker GID), `host_docker_gid()`'s `fail_infra` text surfaced
+   through `print_profile_warning` as the per-lane WARNING**:
+
+   ```
+   run-gate: WARNING profiling: host Docker GID is unavailable; set
+   $RUN_GATE_HOST_DOCKER_GID or $MDT_HOST_DOCKER_GID to the host Docker group's
+   numeric GID — basic in-lane sampling only
+   ```
+
+   `host_docker_gid()` deliberately refuses every other source (RG-152: not the
+   socket node's GID, not the group database), so the value is a fact that must
+   be *published* by the host launcher. On a host without mdt host-setup
+   nothing publishes it (RG-252), and the value cannot be derived inside the
+   cockpit: the reporter measured exactly that on a freshly reinstalled host and
+   had to hand-set the variable in the launcher. The message therefore asks an
+   operator to type a number they have no way to read, from inside a container,
+   and the per-lane line repeats it on every lane invocation of every gate run.
+
+**Why it matters.** This is the estate's "an error message that prescribes a fix
+must prescribe a *correct* one" rule, twice. It also confuses the two facts into
+one: the 2026-11-12 report summarised both gate logs as "the host Docker GID was
+unavailable, so profiling used basic in-lane sampling" — accurate about the
+profiling line, but the same runs also printed the admission warning, whose
+cause is the private cgroup namespace and whose remedy is not an export at all.
+A collector that keeps one stream sees only one of the two (see the acceptance
+test).
+
+**Minimal solution.** Name the remedy that actually applies, and only that one:
+in `check_slice_memory_admission`, print the `export $RUN_GATE_CGROUPFS_ROOT`
+clause only when `cgroup_namespace_is_private()` is false (i.e. when the
+cgroupfs root really is the wrong one), and print the `run doctor` /
+profiler-daemon clause only when it is true; in `host_docker_gid()`'s message,
+state that the value must be published by the host launcher, name the record
+that carries it (or say plainly that nothing publishes it on this host yet and
+point at RG-252's decision), and stop presenting "set $VAR" as the whole
+remedy. Do not change either behaviour: both stay warnings (R-29, contract
+Sec 4 obligation 3), and profiling keeps degrading to the basic sampler. Do not
+add a fallback that reads the Docker socket's GID (RG-152 forbids it).
+
+**Where.** `run-gate-project/run_gate.py` (`check_slice_memory_admission`
+starting `:5113`, the warning block `:5144-5161`, `host_docker_gid` at `:9092-9116`, and
+`print_profile_warning` at `:4603-4616`), `run-gate-project/tests/`
+(`test_run_gate.py`'s admission and profiling-warning tests),
+`run-gate-project/SPEC.md` (`R-29`'s warning text and `R-43`'s fallback text)
+and, for the disclosed facts only, `run-gate-project/CONSUMERS.md`.
+Cross-reference RG-252 (the publisher), RG-55/C7 (the namespace check) and
+RG-59 (a *fixed* instance of the same class: the daemon-absent warning already
+names its real cause).
+
+**Acceptance test idea.** Two fixtures distinguish the cases: (a) a
+private-namespace fixture (`/proc/self/cgroup` = `0::/`, `$RUN_GATE_PROC_ROOT`
+injected) must emit a warning that names the profiler daemon and `run-gate
+doctor`, and must NOT contain the `export $RUN_GATE_CGROUPFS_ROOT` instruction;
+(b) a fixture with a readable `/proc/self/cgroup`, a wrong
+`$RUN_GATE_CGROUPFS_ROOT` and an existing slice directory the reader misses
+must emit the export instruction and must NOT claim the namespace is private.
+A third fixture for the GID warning asserts the text names the publisher (or
+says none exists) and does not present "set $VAR" as the only remedy. A
+mutation that swaps the two branches must fail one of the two.
+
+**Priority.** Minor per message, should-fix as a class. Neither message
+changes a verdict, but both are printed on every affected invocation, and the
+wrong instruction is what an operator will follow.
+
+**Close when.** Each of the two warnings names exactly the remedy that applies
+to the case it detected (verified by the case fixtures above), the Docker-GID
+text either names a publisher or says that nothing publishes it yet, and the
+SPEC `R-29`/`R-43` text quotes the same wording the code prints.
+
+## RG-284 — a remote run cannot keep or reuse its checkout, so a lane pair that must judge one tree cannot run through the supported runner
+
+**Status:** OPEN (filed 2026-11-16); severity: major for release qualification
+through the runner (one whole class of lane is unreachable there), minor for
+every other run. Source: the 2026-11-16 pre-release gate report (finding F2)
+and the remote gate worker report of the same day. Related: assay `B551`
+(a lane pair that only works in one checkout), NC-47 and NC-58 (which both
+concern what a collected run *reports*, not the checkout's lifetime).
+
+**Problem.** `scripts/netcup/runner/remote-gate.py` makes ONE throwaway checkout
+per invocation and removes it when the job exits — on success and on failure
+alike:
+
+- the checkout's directory name is already a run identity,
+  `CK=rg-<run name>-<sha12>` under `CKROOT=$HOME/checkouts/$REPO/.worktrees`;
+- the job's `finish()` trap removes it (`rm -rf -- "$CKDIR"` plus the
+  cockpit-side `docker exec ... rm -rf -- "$CKIN"`), after removing this run's
+  lane containers;
+- the run is started as `run-job rg-<name>`, and `run-job` refuses an existing
+  run name.
+
+So the identity that WOULD let a second invocation find the same tree is
+computed and then thrown away; there is no `--keep-checkout`, no way to name a
+checkout to reuse, and no documented way to run two lanes in one tree. Everything
+a lane writes into that tree outside the collected artifact filter (NC-47:
+`.assay/registered-gate/...`, `.run-gate/inflight/...`, a lane's own scratch under
+`.assay/`) is destroyed with it.
+
+That makes a whole class of lane unreachable through the estate's supported
+remote route: assay's full `self-qualification` requires a same-commit
+`tester-unified` receipt written into the SAME worktree by a previous lane
+(`assay/tools/self-qualification-gate.sh`, `b105_report_check.py
+--receipt-only`) — measured live: `ERROR; exit 2` in 11 s with an opaque
+`container exit 2`, i.e. the full lane (the one carrying R2) cannot pass on a
+remote host at all (assay B551). The persistent-checkout sibling
+`run-r2-campaign.sh` has the opposite limitation: it requires
+`$RUNNER_HOME/checkouts/<commit>` to exist, refuses any other commit and
+refuses a dirty tree, and has no option to create it — so it can reuse a tree
+only when a human made one out-of-band (NC-45 documents the neighbouring
+layout constraint).
+
+**Minimal solution.** One supported, explicit lifetime for the remote checkout,
+expressed as a flag rather than inferred: `--checkout-lifetime
+once|keep` (or `--keep-checkout`), where `keep` leaves the checkout at its
+already-derived path, prints that path and its `HEAD`, and lets a LATER
+invocation of the same repo at the same commit+tree re-attach to it — with the
+existing safety checks preserved verbatim and applied to the re-attach: the
+HEAD assertion (`git rev-parse HEAD == SHA`), a CLEAN tracked tree, and the
+project directory present. A re-attach at a different commit/tree, a dirty tree
+or a malformed path must refuse by name (compare `run-r2-campaign.sh`'s
+refusals) rather than silently start a second checkout. Default stays `once`,
+and the collected `result.json` records which lifetime was used and the checkout
+path. Do not make the runner GC a kept checkout implicitly; a kept checkout is
+stated to be operator-owned (NC-38 already asks for retention/disk policy).
+`assay`'s cheaper alternative — a `kind = "sequence"` lane, which needs no
+runner change — stays available and is B551's recommended first option; this
+entry is the generic capability, not a substitute for that decision.
+
+**Where.** `scripts/netcup/runner/remote-gate.py` (`render_job`, its
+`JOB_TEMPLATE` heredoc, `finish()`/`CKROOT` handling, `cmd_run`'s argument
+parsing and `collect`), `scripts/netcup/tests/test_remote_gate.py` and
+`scripts/netcup/runner/README.md` (the remote-gate section, plus the
+checkout-retention paragraph NC-38 owns), and `scripts/netcup/CONSUMERS.md`'s
+remote-gate section.
+
+**Acceptance test idea.** A fake host job with `--checkout-lifetime keep`
+leaves the checkout and reports its path and HEAD; a second invocation of the
+same repo/commit re-attaches (asserted: HEAD equal, tree clean, no second
+directory created, the lane log shows the re-attach and the path). A kept
+checkout at a different commit, or dirty, refuses by name and creates nothing.
+The default invocation still removes its checkout and its lane containers, and
+a `kill -9` of the client leaves no partially removed tree that a later
+re-attach mistakes for a kept one. A `result.json` from each mode records the
+lifetime used and the path.
+
+**Priority.** Major for qualification evidence (a release-gating lane class is
+unreachable), minor otherwise. Nothing in the estate currently tests this
+lifetime because nothing could depend on it.
+
+**Close when.** The documented flag keeps a checkout at a reported path, a
+second same-commit invocation re-attaches under the HEAD/clean-tree checks
+above, every mismatch refuses by name, the default still removes it, and the
+runner guide and `CONSUMERS.md` describe the same two lifetimes.
