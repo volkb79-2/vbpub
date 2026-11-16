@@ -14,12 +14,10 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
 
 ### Documentation
 - run-gate: document the source-backed Assay upgrade and carry-over procedure for old campaign checkouts (RG-270).
+- backlog: close RG-251, RG-257, RG-268 and RG-269 against fixes already released in 25.4.1, 25.5.0 and 25.6.0.
 
 ### Testing
 - run-gate: assert scoped `fstat` fakes delegate unrelated descriptors (RG-269).
-- run-gate: keep the foreign-owner `fstat` fake transparent to Python's full stat result (RG-268).
-- run-gate: reconcile RG-251 with the existing estate guard for source-Assay Cowtree routes.
-- run-gate: reconcile RG-257 with measured environment-scoped relaxed I/O adoption.
 
 <!-- cmru: release history -->
 

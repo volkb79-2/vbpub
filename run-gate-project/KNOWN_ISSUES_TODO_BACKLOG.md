@@ -7844,12 +7844,14 @@ Cowtree route, including nested importers; its real-file oracle also proves a
 hand-removed route is rejected. The changes are already in the current tree;
 this wave adds no other-project edits.
 
-**Evidence.** `test_real_rust_r1_lane_declares_its_cowtree_route` and the
-adjacent estate-guard suite check the real lane declarations and kill the
-missing-route mutation. Current `scripts/{gstammtisch-guide,damon-analysis,
+**Evidence.** `TestEstateSourceAssayPythonPathGuard::test_real_files_and_hand_mutations_are_guarded`
+audits every real source-Assay lane declaration in the checkout (including the
+three R2 lanes below) and kills the missing-route mutations;
+`test_real_rust_r1_lane_declares_its_cowtree_route` pins Assay's Rust R1 lane
+the same way. The fix was released in run-gate 25.4.1. Current `scripts/{gstammtisch-guide,damon-analysis,
 debian-install-v2}/run-gate.toml` entries all declare the Cowtree source on
-their source-Assay R2 `PYTHONPATH`. Registered Run-Gate selftest passed these
-guards; the final clean-head result is in the run report.
+their source-Assay R2 `PYTHONPATH`. Both guard tests pass in the registered
+Run-Gate selftest.
 
 **Source.** `HANDOFF-STATE-20261107.md` (22:25Z entry, "Backlog to file"); [host-cockpit-EXEC-LOG.md](../scripts/netcup/docs/evidence/host-cockpit-EXEC-LOG.md).
 
@@ -8020,7 +8022,11 @@ with 6,486 passed and 6 skipped in both runs; wall time was +3.4%, inside the
 7.6-17.6% noise band. cli-extended flushes fell 74% and fsyncs from 156 to 0;
 wall time was +8.8%, also inside noise. Current central and CMRU configs retain
 the environment-scoped settings. Run-Gate config, dry-run, and docs oracles
-cover the selection; the final clean-head selftest is recorded in the report.
+cover the selection. Deviation: the A/B measured CMRU `coverage` and
+cli-extended `r0-r1` rather than the CMRU mutation lane and the run-gate
+selftest named above, and relaxed gave no wall-time gain (only less shared
+flush/fsync I/O); strict remains the default and I/O-measurement lanes stay
+`durable`.
 
 **Priority.** Medium. This is a measured performance opportunity with no unmeasured global change to host lanes.
 
@@ -8253,8 +8259,8 @@ the real result for a separate descriptor.
 **Evidence.** The registered `selftest --allow-dirty` hand-mutant removed the
 unrelated-descriptor fallback and was killed by
 `test_a_file_owned_by_someone_else_is_refused_untouched` (1 failed, 3,273
-passed, 1 skipped). The fallback was restored. The clean final selftest is
-required before the report is complete.
+passed, 1 skipped). The fallback was restored. The registered selftest on the
+branch head passed (3,274 passed, 1 skipped).
 
 ## RG-271 — decide whether tester-base should pin or float pytest
 
@@ -8361,8 +8367,8 @@ untouched-byte oracle. `save_container_logs` production behavior was not
 changed.
 
 **Evidence.** Commit `3c9e9840f` records a clean Run-Gate selftest PASS on
-`925afcab3` after the shape fix. The current registered selftest is required
-to confirm the merged fix on this run's final clean head.
+`925afcab3` after the shape fix. The registered selftest on this branch head also passed (3,274 passed,
+1 skipped); the fix was released in run-gate 25.5.0.
 
 ## RG-270 — restarting an old-checkout campaign with carry-over needs the source-backed judge documented
 
@@ -8420,8 +8426,8 @@ checks the recipe and docs links. In a throwaway Git worktree at
 `run-gate-v25.4.1`, checking out `assay-v12.2.0` changed 126 paths, all under
 `assay/`, and no project source or lane declaration. Existing flex-floor tests
 cover refusal below Assay 12.2.0. The full registered selftest previously
-passed this documentation contract; final clean-head gates are recorded in the
-run report.
+passed this documentation contract, as does the registered selftest on the
+branch head.
 
 ## RG-272 — a valid request base on a non-tag checkout produces zero mutation candidates despite changed source
 

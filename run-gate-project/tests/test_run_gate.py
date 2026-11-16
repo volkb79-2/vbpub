@@ -11749,9 +11749,11 @@ class TestResourceObserverLane:
             monkeypatch.setattr(
                 run_gate.ProfilerClient, "version", lambda self, bad=bad: (bad, None),
             )
-            with pytest.raises(run_gate.GateInfraError, match=message):
+            with pytest.raises(run_gate.GateInfraError, match=message) as caught:
                 run_gate.resource_observer_version_preflight(
                     run_gate.control_socket_from_env())
+            # Every daemon-capability refusal carries the RG-250 explanation.
+            assert "RUN_GATE_PROFILE=off does not waive" in str(caught.value)
 
     def test_observer_version_preflight_reports_daemon_query_failure(self, monkeypatch):
         monkeypatch.setenv("RUN_GATE_PROFILE", "off")
