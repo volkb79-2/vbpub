@@ -444,7 +444,8 @@ process execution behind an injectable `Runner` (tests: `tests/test_remote_gate.
 
 ```bash
 remote-gate run <<host>|<host>|auto> <worktree-path-of-any-git-repo> <lane> [--project-dir DIR] [--repo NAME] [--base REF]
-            [--name ID] [--detach] [--wait-psi SECONDS] [--out-dir DIR] [-- extra run-gate args]
+            [--name ID] [--detach] [--wait-psi SECONDS] [--mem-need-mb MIB] [--mem-floor-mb MIB] [--wait-mem SECONDS]
+            [--out-dir DIR] [-- extra run-gate args]
 remote-gate status|logs [-f] [--lane-log]|collect|cancel <id>
 ```
 
@@ -478,13 +479,23 @@ cockpit. The argv regression is in `tests/test_runner_scripts.py`.
   Seeds for the thin bundle are any `~/checkouts/<sha>` that already holds a commit of this repository (other repositories' checkouts are
   skipped by `git cat-file`); release tags of the repository (`*-v<digits>`, e.g. `dstdns-v0.1.0`, `run-gate-v25.0.2`) ride along as before.
 - **Run.** A detached host job (`run-job rg-<id>`, `~/rg/<id>/` and `~/jobs/rg-<id>/{job.log,EXIT}`) waits until memory PSI some and io PSI full are <= 25 (CPU PSI is ignored)
-  (`--wait-psi`, default 900 s, else exit 75, verdict `PSI_REFUSED`), then runs `nice -n 19 <run-gate> <lane> [--base SHA] [extra]` in the
+  (`--wait-psi`, default 900 s, else exit 75, verdict `PSI_REFUSED`), then admits the lane against LIVE memory (see below), then runs
+  `nice -n 19 <run-gate> <lane> [--base SHA] [extra]` in the
   `mdt-cockpit-runner` container from the project dir (default: the worktree path's own subdirectory; pass `--project-dir .` for a repo
   whose `run-gate.toml` is at its root) with `RUN_GATE_ALLOW_MAIN_CHECKOUT=1` and `ASSAY_GATE_HOST_REPO_ROOT=~/checkouts/<repo>` (the host
   path behind the cockpit's `/workspaces/<repo>`, which assay's tester-unified lane cannot derive from `docker inspect` here) (the checkout is
   a throwaway clone) and `RUN_GATE_TESTER_UNIFIED_IMAGE` (the host's `image`, default `tester-unified:local`, or the repo profile's `tester_image`).
   `<run-gate>` is the first in-cockpit run-gate that meets the repo's version floor (see "Per-repo prerequisites"); its directory is put first on `PATH`.
   The caller follows it, or `--detach` returns at once; the job survives the caller (`status`, `logs -f`, `collect` later).
+- **Memory admission (live, no static ceiling).** After the PSI wait the job reads this host's own `/proc/meminfo` and starts the
+  lane only when `MemAvailable - expected peak >= --mem-floor-mb` (default 1024 MiB of headroom for the control plane).
+  `--mem-need-mb` is the lane's expected peak in MiB (the controller's admission weight; the default `0` checks only the
+  floor). The expected peak is capped at `MemTotal - 2 x floor`, so one lane larger than RAM always runs ALONE and pages
+  (paging overcommit is this host tier's design), while a smaller lane waits when the host is occupied. `--wait-mem`
+  (default 900 s) bounds the wait. One host-wide ticket (`~/rg/.mem-admit.lock`, held 20 s after a lane starts so its
+  memory is already visible) keeps two callers from reading the same figure. An unreadable meminfo is indeterminate and
+  refuses: exit 75, verdict `MEM_REFUSED` (never `PSI_REFUSED`, which would name a cause nobody observed).
+  A PSI refusal keeps its own verdict (`PSI_REFUSED`); the two never share one word.
 - **What runs.** A cockpit `run-gate` (default `<home>/.local/bin/run-gate`, or the repo's newer venv) and the host's tester image; the
   repo name, the chosen run-gate version and the image are printed as `header:` lines in `job.log`. Refresh: <host> `docker load` of a built
   tester-unified plus a tag `:local`, then `pip install` the wheel in the cockpit (`setup-cockpit-tools.sh`); do not change tools on a host
@@ -871,6 +882,36 @@ are input files, not an independent trust source. The installer uses
 `pip install --no-index --no-deps`, so both required wheels must be present.
 See the [design rationale](DESIGN-GUIDE.md#host-augeaswrap-is-installed-from-verified-offline-wheels)
 and the full [runner host sequence](runner/README.md#install-augeaswrap-for-host-setup).
+
+### Gates-tier memory policy
+
+Provisioning renders the decided pure-test-host policy into drop-ins from the host's own memory facts; you do not
+write the numbers yourself. After P3 (which runs it), or any time the policy needs convergence, run as root:
+
+```bash
+sudo ~/runner-scripts/provision-gates-limits.sh           # derive, write, apply, verify
+sudo ~/runner-scripts/provision-gates-limits.sh --dry-run # print the plan only
+```
+
+The exit status tells you what happened: `0` converged (or already converged), `3` a host fact is unreadable or the
+host has no swap above its reserve, `4` the tier has tasks so the live slice was left alone (the drop-ins are installed;
+re-run when it is idle), `5` another owner's drop-in or file competes with the policy, `7` the live cgroup still
+disagrees after a restart, `8` a live OOM score could not be set.
+
+Host-side check (read-only):
+
+```bash
+systemctl show dev-gates.slice -p MemoryHigh,MemoryMax,MemorySwapMax
+cat /sys/fs/cgroup/dev.slice/dev-gates.slice/memory.{high,max,swap.max}
+ps -eo pid,comm,oom_score_adj | grep -E 'sshd|dockerd|cgprofiled|journald|logind'
+docker inspect -f '{{.HostConfig.OomScoreAdj}}' "$COCKPIT_NAME"   # 0 means the cockpit predates --oom-score-adj: re-create it
+```
+
+Expected: `MemoryHigh=infinity`, `MemoryMax` below `MemTotal` (it was `6656M` on an 8 GiB host), `MemorySwapMax`
+large but not the whole swap, `-900` on the five protected units, and a negative cockpit score. A started lane's
+`memory.oom.group` must read `1`. Why these values, and what never to change (`MemoryHigh`, slice-level
+`oom.group`, systemd-oomd, io limits): [runner guide](runner/README.md#gates-tier-memory-policy) and the
+[design rationale](DESIGN-GUIDE.md#pure-test-host-memory-policy).
 
 ### Runner rollback commands
 

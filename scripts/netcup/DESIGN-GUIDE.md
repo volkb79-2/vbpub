@@ -365,6 +365,51 @@ native Assay R2 lanes, an advisory names
 `floor(nproc / workers per instance)` when that count is greater than one and
 each worker is single-threaded; the advisory never changes the selected jobs.
 
+## Pure test-host memory policy
+
+A dedicated test host exists to run lanes, not to stay responsive. The 2026-11-16
+decision (option 1) therefore protects **only the measured control plane** and lets
+the lane tier overcommit RAM into swap: a lane that needs more RAM than the host
+has finishes slowly instead of failing, which is what a test host is for. The
+rejected alternative — a `MemoryHigh` throttling mark plus a hard `MemoryMax` —
+throttles every lane before the control plane is ever at risk and turns
+overcommit into an admission problem the host cannot solve.
+
+Three choices follow from that, and each one is a trade-off rather than a
+default:
+
+- **No `MemoryHigh`, `MemoryMax = MemTotal - floor - slack`.** The measured
+  control plane needs about 1.2 GiB (anon ≈ 0.1 + hot file ≈ 0.5 + kernel ≈ 0.3 +
+  cockpit/run-gate ≈ 0.3), so the floor is 1024 MiB and the slack 256 MiB. On an
+  8 GiB host that is 6656M; the same host at 7 GiB fell to 107 MiB `MemAvailable`
+  with 5.5 s ssh latency, at 6656M it kept 465-591 MiB with unchanged latency.
+  Every number is derived from the host's own `MemTotal`; a pin exists only for a
+  value the operator measured.
+- **`OOMPolicy=kill` on transient `docker-<id>.scope`, never on the slice.** The
+  drop-in gives each container its own `memory.oom.group=1`, so an OOM ends that
+  container's process tree. A slice-level group was rejected: one runaway lane
+  exhausting the tier would kill every lane with it.
+- **`OOMScoreAdjust=-900` on the control-plane units.** The global OOM killer
+  ranks candidates by process size and score; a cgroup floor never enters that
+  ranking. On the measured kernel every adj-0 process scores about the same
+  regardless of size (a 2 MiB sshd session and a 3 GiB lane process were within
+  ~25 points), so a lane of many small processes ties with the host's services.
+  The accepted cost is that ssh sessions inherit `-900`: a heavy process started
+  by hand in a login is also hard to pick. Lanes are unaffected (Docker gives
+  them their own score).
+
+Consequences the tooling encodes rather than hides: **a slice restart is required**
+to apply limits to an already-active slice (`daemon-reload` alone does not), and a
+restart resets `memory.events` — including the `oom_kill` counter `remote-gate`
+reads as a delta for its `INCONCLUSIVE-OOM` verdict. Provisioning therefore
+restarts only an idle tier and refuses when it finds tasks.
+
+Admission moves from a static high-water budget to live facts: the lane starts
+when `MemAvailable - expected peak` still leaves the floor, the expected peak is
+capped at `MemTotal - 2 x floor` so one oversized lane always runs alone, and a
+single host-wide ticket keeps two callers from reading the same figure. A
+figure that could not be read is indeterminate and refuses, never "plenty".
+
 ## Cockpit mounts vbpub at Assay's declared workspace
 
 The runner binds the checkouts parent at `/workspaces` for generic remote
