@@ -15572,15 +15572,20 @@ its own diagnosis was made "by code reading" because "the driver's inner
 stderr is not surfaced".
 
 **What was OBSERVED.** The collected lane log of the `self-qualification` run
-of 2026-11-16 contains the driver's own phase line
-`B105_PHASE=clone-exact-source`, then git's `hint:` advice lines, then
+of 2026-11-16, after the driver's own environment lines, holds:
+`B105_PHASE=clone-exact-source`, then git's `hint:` advice block from the
+private clone, then the generic
 `ASSAY_GATE_INCONCLUSIVE=Assay qualification ended incomplete or infrastructure
-(container exit 2)`. It contains no line from the inner driver's `die()` — the
-`self-qualification-gate: …` text that names the reason — even though the phase
-that followed `clone-exact-source` is the receipt pre-check whose refusal is a
-`die`. So the inner stderr is NOT fully absent from the lane log (the phase
-lines are streamed through, and the same streaming pass carried git's hints);
-what is absent is the one line that says WHY the run refused.
+(container exit 2)`. What it does NOT hold is any later inner line. In
+particular the driver echoes `B105_PHASE=require-same-commit-tester-unified-pass`
+(`self-qualification-gate.sh:600`) before it runs the receipt check, and that
+echo — a plain `echo` on the same stream as the phase line that DID arrive — is
+absent too. So the observation is sharper than "the `die` text is missing":
+the stream carried the FIRST inner phase line and the clone's own output, and
+nothing the inner driver printed after them. The loss is therefore a TAIL
+loss (the inner stream stops partway), not a `die`-specific one; whether the
+`die` line itself was ever written depends on how far the run got, which the
+lane log alone cannot say.
 
 **The cause is NOT verified.** Three mechanisms are consistent with the
 observation and the code, and this entry does not pick one:
@@ -15626,11 +15631,11 @@ asserts it from an exit STATUS alone — a check whose message is stronger than
 what it compared (the estate's recurring defect class). A refusal from a
 precondition (B551's inferred missing receipt, a dirty tree, a changed HEAD, a
 missing cgroup tier) is not infrastructure, and the difference decides whether
-an operator retries, fixes a lane, or files a defect. The inner text exists at
-the moment of refusal — the collected copy is written for exactly this purpose
-and the lane log never quotes it — and does not reach the lane log; which of the
-three mechanisms above loses it is the open question, not an assumption to build
-the fix on.
+an operator retries, fixes a lane, or files a defect. The inner text does exist
+at the moment of refusal in the driver's own collected copy
+(`:763-764`), and the lane log never quotes it — which of the three mechanisms
+above loses the tail is the open question, not an assumption to build the fix
+on.
 
 **Minimal solution (mechanism-independent).** On the non-zero path, the driver
 must put the inner refusal into its own stderr — and it does not have to
@@ -15666,14 +15671,17 @@ is distinctive (for example a fake `self-qualification-gate.sh` that prints
 exits 2) must make that message appear in the DRIVER's lane log — asserted on
 the driver's own combined stdout/stderr, not on a scratch file — together with
 the preserved scratch path, and the `ASSAY_GATE_INCONCLUSIVE` line must quote
-the inner line rather than classify it as infrastructure. The same fixture run
-with a short `docker wait` follow window (the follower still streaming when the
-container exits) must also reach the assertion, which is what makes the
-mechanism-1 case testable rather than assumed. A fake container that exits 2
-with NO inner text still reports the generic status. A passing run leaves no
-preserved scratch directory, so the rule cannot silently retain every run's
-log. Bounded: a container printing megabytes must not make the driver's output
-unbounded.
+the inner line rather than classify it as infrastructure. Because the observed
+loss is a TAIL loss, the assertion must cover the LAST inner lines of a longer
+fake run (a fake that prints several phase lines and then refuses), not only a
+single short message — a test that only prints the `die` line would pass a fix
+that still loses the tail. The same fixture run with a short follow window (the
+follower still streaming when the container exits) must also reach the
+assertion, which is what makes mechanism 1 testable rather than assumed. A fake
+container that exits 2 with NO inner text still reports the generic status. A
+passing run leaves no preserved scratch directory, so the rule cannot silently
+retain every run's log. Bounded: a container printing megabytes must not make
+the driver's output unbounded.
 
 **Priority.** Should-fix — every non-green self-qualification run today costs a
 script-reading investigation, and the first classification a reader sees is
