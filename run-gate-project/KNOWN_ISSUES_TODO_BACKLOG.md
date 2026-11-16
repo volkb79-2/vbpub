@@ -162,7 +162,7 @@ SPEC §9.
 | RG-265 | native R2 cannot be sharded across containers, merged, carried over a judge change or restricted to a candidate list from Run-Gate | Enhancement | FIXED IN THIS BRANCH (run-gate-r2-flex-20261111) |
 | RG-266 | `jobs = "auto"` places one R2 worker per CPU, so I/O phases leave CPUs idle | Enhancement | FIXED IN THIS BRANCH (run-gate-r2-flex-20261111) |
 | RG-267 | `r2_oversubscribe = "1.5"` has no two-slot host measurement, so the default cannot be decided from evidence | Enhancement | OPEN 2026-11-12 |
-| RG-268 | the save-container-logs foreign-owner test's fake `fstat` result lacks fields required by Python 3.14, so a rebuilt tester image makes selftest fail | Minor | OPEN 2026-11-12 |
+| RG-268 | the save-container-logs foreign-owner test's fake `fstat` result lacks fields required by Python 3.14, so a rebuilt tester image makes selftest fail | Minor | FIXED 2026-11-16; delegates complete `stat_result` shape |
 | RG-269 | tests replace shared `os.*` syscalls process-wide and depend on Pytest's private filesystem usage | Medium | FIXED 2026-11-16; scoped fakes plus unrelated-fd delegation oracle |
 | RG-271 | Decide whether tester-base should pin or float pytest | Medium | OPEN 2026-11-12; estate-level runner-policy question from the pytest 9.2 audit |
 | RG-272 | a valid request base on a non-tag checkout produces zero mutation candidates despite changed source | Should-fix | OPEN 2026-11-12 |
@@ -8283,7 +8283,7 @@ required before the report is complete.
 
 ## RG-268 — the save-container-logs foreign-owner test fake lacks `st_size`, so a rebuilt tester image makes selftest fail
 
-**Status:** OPEN (filed 2026-11-12); priority minor for product behavior, major for clean selftest evidence on
+**Status:** FIXED 2026-11-16; priority minor for product behavior, major for clean selftest evidence on
 rebuilt images. Source: r1002 reinstall execution record 2026-11-12.
 
 **Problem.**
@@ -8324,6 +8324,16 @@ every image rebuild.
 **Close when.** The foreign-owner test delegates a complete stat result and passes under the rebuilt
 tester-unified Python, the full registered selftest passes on a clean final commit, and no production
 ownership behavior was changed to accommodate the fake.
+
+**Resolution.** The test fake wraps the real `os.stat_result`, overrides only
+`st_uid`, and delegates every other attribute. The owning test asserts the
+mode, size, and timestamp fields while preserving the actual refusal and
+untouched-byte oracle. `save_container_logs` production behavior was not
+changed.
+
+**Evidence.** Commit `3c9e9840f` records a clean Run-Gate selftest PASS on
+`925afcab3` after the shape fix. The current registered selftest is required
+to confirm the merged fix on this run's final clean head.
 
 ## RG-270 — restarting an old-checkout campaign with carry-over needs the source-backed judge documented
 
