@@ -29,7 +29,7 @@ together.
 | CTL-15 | `.live`'s `latest_total_tokens` reads `0`: a zero usage report stands in for the measured context size | Should-fix | FIXED 2026-11-16 |
 | CTL-16 | `since-commit` shows the branch's last-commit age unqualified, so before the run's first commit it reports the base commit's age | Minor | FIXED 2026-11-16 |
 | CTL-17 | `stopReason=length` (the context window filled) is classified `INCOMPLETE`, so the controller cannot tell a truncated run from a broken stream | Should-fix | FIXED 2026-11-16 |
-| CTL-18 | `HUNG-TOOL` is decided on wall-clock alone: the sidecar carries no progress evidence, no tool command and no child identity, so a heavy-but-progressing tool (or one blocked by the agent's own FIFO) reads as hung | Should-fix | FIXED 2026-11-16 |
+| CTL-18 | `HUNG-TOOL` is decided on wall-clock alone: the sidecar carries no progress evidence, no tool command and no child identity, so a heavy-but-progressing tool (or one blocked by the agent's own FIFO) reads as hung | Should-fix | FIXED 2026-11-17 (2026-11-16 fix reopened in review round 1: it summed the wrapper's whole subtree) |
 | CTL-19 | A wrapper that dies without writing `.done` is indistinguishable from a running one in `job-check` (`RUNNING (no .done)`), and `codex-impl.sh ... resume` never writes a marker on a kill | Should-fix | FIXED 2026-11-16 |
 
 ---
@@ -537,15 +537,17 @@ documentation is in sync.
 
 ## CTL-14 — two wrappers can run the same run name at once and silently share its records
 
-**Status:** FIXED 2026-11-16 (code, tests and docs in the same change); severity
-Should-fix. Implemented as `lib.sh` `controller_run_claim`/`controller_run_release`/
+**Status:** FIXED 2026-11-16, extended 2026-11-17 in review round 1 (the Codex
+child inherited the lock; see below). Severity Should-fix. Implemented as `lib.sh` `controller_run_claim`/`controller_run_release`/
 `controller_close_ownership_fds`/`controller_run_retire_records` plus the claim,
 trap and forced-retire path in `pi-impl.sh`; tests `two-wrappers-one-run`,
 `ownership-force` and `ownership-release` in `tests/test-pi-impl.sh`; mutants
 `pi-run-name-claim`, `pi-run-name-child-close`, `pi-run-name-live-owner-bypass`,
 `pi-run-name-retire-deletes`; docs `README.md`, `docs/DESIGN-GUIDE.md`,
-`docs/CONSUMERS.md`. The remaining launcher paths of CTL-01 still owe the same
-guard (Codex and OpenCode), tracked there. Found by the same
+`docs/CONSUMERS.md`. Both launch paths close the ownership descriptor before every
+exec (`pi-impl.sh` since the first change, `codex-impl.sh` including its
+resume/new/autoresume paths since review round 1). The remaining launcher path of
+CTL-01 still owes the same guard (OpenCode), tracked there. Found by the same
 review (`pi-overwatch-REVIEW.md`, finding F8: "no cross-invocation guard"), and
 re-verified: `pi-impl.sh` takes no lock on the run name.
 
@@ -621,8 +623,9 @@ killing mutants.
 
 ## CTL-15 — `.live` reports `latest_total_tokens: 0` for the long runs it exists to describe
 
-**Status:** OPEN (filed 2026-11-16; evidence framing corrected in review round
-1 the same day); severity Should-fix. The zero was OBSERVED in live `job-status`
+**Status:** FIXED 2026-11-16 (code, fixtures, tests, mutants and the documents
+in one change); severity Should-fix. Evidence framing below corrected in review
+round 1 the same day. The zero was OBSERVED in live `job-status`
 output during the 2026-11-16 controller work: a run at 568 assistant turns and
 619 tool calls published `"latest_total_tokens": 0`, while a neighbouring run of
 the same day published `258492`. No capture of that stream was kept, so the
@@ -715,9 +718,10 @@ semantics.
 
 ## CTL-16 — `since-commit` shows the branch's last-commit age with no qualification, so before the run's first commit it reports somebody else's commit
 
-**Status:** OPEN (filed 2026-11-16; rewritten in review round 1 the same day:
-the first version claimed the payload cannot tell whether the run committed, which
-is false); severity Minor. Observed in live `job-status` output on 2026-11-16
+**Status:** FIXED 2026-11-16 (code, tests, mutants and the documents in one
+change); severity Minor. The first version of this entry was rewritten in review
+round 1 because it claimed the payload cannot tell whether the run committed,
+which is false. Observed in live `job-status` output on 2026-11-16
 (several runs printed a `since-commit=…s` figure immediately after starting) and
 re-verified against `scripts/controller/pi-live.py` and
 `scripts/controller/job-status.sh` on origin/main.
@@ -860,8 +864,16 @@ documents above and the retry rule agree, the length fixture yields
 
 ## CTL-18 — `HUNG-TOOL` is decided on wall-clock alone, and the row cannot show what the tool is or what to kill
 
-**Status:** OPEN (filed 2026-11-16); severity Should-fix. Filed from the
-controller's own overwatch experience of 2026-11-16 (a slow `grep` over a large
+**Status:** FIXED 2026-11-17 after being REOPENED in review round 1. The
+2026-11-16 fix added the facts (`progress_epoch`, the tool command, the child
+pids) but summed the WRAPPER's whole subtree, which also holds the sidecar and
+the agent: both grow every tick, so a blocked tool still read as working and
+`HUNG-TOOL` was unreachable - the accepted change did not implement the entry's
+own acceptance case. The round-1 change sums only the in-flight tool call's
+subtree, defines progress as a strictly positive delta on the same process set,
+keeps an unreadable `/proc` unknown, and is judged by checks that drive a fake
+`/proc` on a tick clock. Original filing follows. Filed from the controller's
+own overwatch experience of 2026-11-16 (a slow `grep` over a large
 tree, an agent's own blocking experiment, and a long `pytest` all read as
 `HUNG-TOOL` while they were working) and verified against the merged code.
 
@@ -942,7 +954,8 @@ and the focused cases and mutants behave as described.
 
 ## CTL-19 — a wrapper that died without `.done` reads as a running job, and the Codex resume writes no marker at all
 
-**Status:** OPEN (filed 2026-11-16); severity Should-fix. Filed from the
+**Status:** FIXED 2026-11-16 (code, tests and docs in the same change);
+severity Should-fix. Filed from the
 controller's own experience of 2026-11-16 (a Luna `codex-impl.sh ... resume`
 that was killed mid-run left no `.done`, so every later `job-check` said
 `RUNNING (no .done)` and the job looked active for hours) and verified against
