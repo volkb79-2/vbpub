@@ -38,6 +38,15 @@ def _recorded_inventories() -> list[dict]:
             assert key in record, f"{path.name}: missing {key}"
         assert record["kind"] in {"measured", "planned"}, record["kind"]
         assert isinstance(record["candidate_count"], int) and record["candidate_count"] > 0, record
+        # A plan run AT the lane's cap returns `max_mutants + 1` candidates and stops: it measures
+        # the cap, not the inventory, so it can never be recorded as one (the reason the largest
+        # recorded inventory is measured with a raised cap in a scratch worktree).
+        measured_with = record.get("measured_with_max_mutants")
+        if measured_with is not None:
+            assert measured_with > record["candidate_count"], (
+                f"{path.name}: recorded with max_mutants={measured_with}, which discovery hits at "
+                f"{measured_with + 1} candidates -- the reading is a cap sentinel, not an inventory"
+            )
         record["fixture"] = path.name
         records.append(record)
     assert records, "no recorded R2 candidate inventory — the cap has nothing to be checked against"
@@ -78,3 +87,5 @@ def test_the_cap_choice_rule_and_the_refresh_obligation_are_documented() -> None
     assert "BUDGET_EXCEEDED" in text and "MUTANT_LIMIT_EXCEEDED" in text
     # and it says the cap is a ceiling, not a target -- the misreading that produced this defect
     assert "does not bound a run that is already executing" in text
+    # and it warns that a plan AT the cap measures the cap, not the inventory
+    assert "max_mutants + 1` candidates in that case" in text

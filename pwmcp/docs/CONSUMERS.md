@@ -459,6 +459,15 @@ cheap — it makes the release lane unable to complete, so it is checked, not gu
 1. Refresh the recorded inventory: run `assay plan r2 --json` on the final release
    commit and add its `candidate_count` as a new file in
    `tests/fixtures/r2-inventory/` (a record is never edited, only added).
+   **Measure with a cap ABOVE the expected count.** Assay stops discovery at
+   `max_mutants` and reports `max_mutants + 1` candidates in that case, so a plan run at
+   the shipped cap returns `1001` at a cap of `1000` — that number is the CAP talking,
+   not the code, and recording it as an inventory is how a cap gets "justified" by its
+   own sentinel. Since a plan refuses an uncommitted lane file, measure in a scratch
+   checkout (a temporary worktree): raise `max_mutants` there, commit, plan, record the
+   count with `measured_with_max_mutants` set to the raised value, and throw the
+   worktree away. On this project's numbers a raised-cap reading is 1293, the same
+   inventory the r9 plan reports.
 2. Set `max_mutants` to `ceil(largest recorded candidate inventory * 1.10)` or
    higher. 10% headroom leaves room for ordinary inventory growth from unrelated
    work landing before the campaign runs.

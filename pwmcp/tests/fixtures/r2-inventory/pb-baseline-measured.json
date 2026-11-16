@@ -1,8 +1,0 @@
-{
-  "candidate_count": 1001,
-  "commit": "ce6b8eeb8d3389847d5c800f65c1781776b58830",
-  "kind": "measured",
-  "recorded": "2026-11-16",
-  "release": null,
-  "source": "`assay plan r2 --json --allow-dirty` from pwmcp/ at the burn-down baseline (candidate_count field)"
-}

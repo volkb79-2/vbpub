@@ -977,8 +977,9 @@ beside it, `docs/CONSUMERS.md` "Release gates" publishes that rule (refresh the
 inventory, `ceil(largest recorded candidate inventory * 1.10)`, review it together with
 `budget`/`jobs`/`budget_per_candidate`), and `tests/fixtures/r2-inventory/` holds the
 RECORDS the rule is applied to: the 2026-11-11 r7 measurement (1165), the 2026-11-14
-r9 plan (1293) and a 2026-11-16 measurement of this baseline (1001 candidates,
-`assay plan r2 --json`). Required by the rule: `ceil(1293 * 1.10) = 1423`, so 1500
+r9 plan (1293) and a 2026-11-16 measurement on this batch's base commit (1293 candidates,
+taken with the cap raised to 1600 — see the preflight note below for why a plan at the
+shipped cap cannot measure an inventory). Required by the rule: `ceil(1293 * 1.10) = 1423`, so 1500
 clears it with room for ordinary growth. `tests/test_r2_lane_contract.py` fails a cap
 at or below any recorded inventory, a cap below the 10% headroom, and a cap absurdly
 far above the largest inventory (a ceiling that never binds is not a bound); it also
@@ -986,16 +987,24 @@ requires the published rule to name the refusal it prevents
 (`BUDGET_EXCEEDED`/`MUTANT_LIMIT_EXCEEDED`). Verified by hand mutants: 1000 and 1422
 fail the oracle, 1423 and 1500 pass, 1000000 fails the upper bound.
 
-**Preflight.** `assay plan r2 --json` on the branch head reports the current inventory
-with `max_mutants` 1500 and `status: ok` — the plan is ACCEPTED instead of refused at the
-cap, measured at 1001 candidates on the first baseline commit and 1293 (r9's number)
-after this batch's own changes, both recorded in `tests/fixtures/r2-inventory/`. The
-registered lane's `run-gate r2 --dry-run` rehearsal was attempted in this cockpit and
+**Preflight (and a measurement trap worth recording).** A plan run at a lane's own cap
+does not measure the inventory: Assay stops discovery at `max_mutants` and reports
+`max_mutants + 1` candidates. The first reading taken here — 1001 at the old cap of 1000 —
+was that sentinel, not this commit's inventory; a `status: ok` beside `1001`/`1000` is the
+cap talking. Measuring with the cap raised (1600, in a scratch worktree, since a plan
+refuses an uncommitted lane file) gives **1293 candidates** at commit `ce6b8eeb8`, the same
+number the r9 plan reports, and 1293 again on the batch head with the shipped cap of 1500
+(there the plan is complete, not truncated). Recorded as
+`tests/fixtures/r2-inventory/pb-r9-target-measured.json` with
+`measured_with_max_mutants: 1600`; the oracle rejects any record whose cap equals or sits
+below its own count, and `docs/CONSUMERS.md` tells a reader to measure above the expected
+count. `ceil(1293 * 1.10) = 1423 <= 1500`, so the shipped cap clears the rule.
+
+The registered lane's `run-gate r2 --dry-run` rehearsal was attempted in this cockpit and
 stopped at the HOST's cgprofile preflight (`CGPROFILE_OBSERVER_SOCKET` unset in this
 session, and `/run/cgprofile/observer` is not the root:root group-searchable directory
-run-gate requires for an `resource_observer = "cgprofile"` lane) — an environment fact of
-this devcontainer, not a lane or cap defect; the cap itself is verified by the assay plan
-above, and the campaign remains a host job (PWMCP-20).
+run-gate requires for a `resource_observer = "cgprofile"` lane) — an environment fact of
+this devcontainer, not a lane or cap defect. The campaign remains a host job (PWMCP-20).
 
 **Still outstanding (not this item's):** PWMCP-20 owns the campaign itself, and the full
 1000+-candidate R2 run is a host campaign (4 h budget) that is not started in this

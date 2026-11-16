@@ -1,0 +1,9 @@
+{
+  "candidate_count": 1293,
+  "commit": "ce6b8eeb8d3389847d5c800f65c1781776b58830",
+  "kind": "measured",
+  "measured_with_max_mutants": 1600,
+  "recorded": "2026-11-16",
+  "release": "pwmcp-v1.64.1-r9 family",
+  "source": "`assay plan r2 --json` on commit ce6b8eeb8 (this batch's base) with the lane cap raised to 1600 in a SCRATCH worktree, because a plan at the shipped cap returns `max_mutants + 1` (see the truncation note in docs/CONSUMERS.md). The shipped lane's 1293-candidate inventory equals the r9 plan's own number."
+}
