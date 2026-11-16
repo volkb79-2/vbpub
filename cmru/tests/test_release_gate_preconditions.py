@@ -939,10 +939,17 @@ def test_release_precondition_uses_source_snapshot_image_not_stale_caller_config
         return SimpleNamespace(returncode=0, stdout="[]", stderr="")
 
     monkeypatch.setattr(release_preconditions.subprocess, "run", fake_docker)
+    args = _release_precondition_args(
+        dry_run=False,
+        _cmru_process_build_image_env={
+            "CMRU_WHEEL_BUILDER_IMAGE": "wheel-builder:ambient",
+            "CMRU_TESTER_CGROUP_PROBE_IMAGE": caller_probe,
+        },
+    )
     with pytest.raises(SystemExit) as caught:
         cli._release_gate_preconditions_before_dispatch(
             tmp_path, tmp_path / "cmru.orchestration.toml", configs, ["cmru"],
-            _release_precondition_args(dry_run=False), git_auth=None, report=False,
+            args, git_auth=None, report=False,
         )
 
     assert caught.value.code == 4
@@ -994,7 +1001,9 @@ def test_release_build_image_precondition_uses_fake_docker_and_exact_pull_remedy
         assert probe_row.status == "PASS"
 
 
-def test_release_build_image_precondition_uses_process_environment_over_config(monkeypatch):
+def test_release_build_image_precondition_uses_config_over_snapshotted_process_environment(
+    monkeypatch,
+):
     configured = {
         "CMRU_WHEEL_BUILDER_IMAGE": "wheel-builder:config",
         "CMRU_TESTER_CGROUP_PROBE_IMAGE": "probe@sha256:" + "a" * 64,
@@ -1016,10 +1025,72 @@ def test_release_build_image_precondition_uses_process_environment_over_config(m
     )
 
     assert calls == [
-        ["docker", "image", "inspect", process["CMRU_WHEEL_BUILDER_IMAGE"]],
-        ["docker", "image", "inspect", process["CMRU_TESTER_CGROUP_PROBE_IMAGE"]],
+        ["docker", "image", "inspect", configured["CMRU_WHEEL_BUILDER_IMAGE"]],
+        ["docker", "image", "inspect", configured["CMRU_TESTER_CGROUP_PROBE_IMAGE"]],
     ]
     assert [row.status for row in rows] == ["PASS", "PASS"]
+
+
+@pytest.mark.parametrize(
+    "configured_builder",
+    [{}, {"CMRU_WHEEL_BUILDER_IMAGE": None}],
+    ids=["key-absent", "none-value"],
+)
+def test_release_build_image_precondition_falls_back_to_snapshotted_environment(
+    monkeypatch, configured_builder,
+):
+    process_builder = "wheel-builder:ambient"
+    probe = "probe@sha256:" + "f" * 64
+    configured = {**configured_builder, "CMRU_TESTER_CGROUP_PROBE_IMAGE": probe}
+    process = {
+        "CMRU_WHEEL_BUILDER_IMAGE": process_builder,
+        "CMRU_TESTER_CGROUP_PROBE_IMAGE": "probe@sha256:" + "0" * 64,
+    }
+    calls = []
+    monkeypatch.setattr(release_preconditions.shutil, "which", lambda _command: "/usr/bin/docker")
+
+    def fake_run(argv, **_kwargs):
+        calls.append(argv)
+        return SimpleNamespace(returncode=0, stdout="[]", stderr="")
+
+    monkeypatch.setattr(release_preconditions.subprocess, "run", fake_run)
+    rows = _REAL_CHECK_RELEASE_BUILD_IMAGES(configured, process_env=process, require_docker=True)
+
+    assert calls == [
+        ["docker", "image", "inspect", process_builder],
+        ["docker", "image", "inspect", probe],
+    ]
+    assert [row.status for row in rows] == ["PASS", "PASS"]
+
+
+def test_release_build_image_precondition_empty_config_masks_snapshotted_environment(
+    monkeypatch,
+):
+    probe = "probe@sha256:" + "9" * 64
+    calls = []
+    monkeypatch.setattr(release_preconditions.shutil, "which", lambda _command: "/usr/bin/docker")
+
+    def fake_run(argv, **_kwargs):
+        calls.append(argv)
+        return SimpleNamespace(returncode=0, stdout="[]", stderr="")
+
+    monkeypatch.setattr(release_preconditions.subprocess, "run", fake_run)
+    rows = _REAL_CHECK_RELEASE_BUILD_IMAGES(
+        {
+            "CMRU_WHEEL_BUILDER_IMAGE": "",
+            "CMRU_TESTER_CGROUP_PROBE_IMAGE": probe,
+        },
+        process_env={
+            "CMRU_WHEEL_BUILDER_IMAGE": "wheel-builder:ambient",
+            "CMRU_TESTER_CGROUP_PROBE_IMAGE": "probe@sha256:" + "8" * 64,
+        },
+        require_docker=True,
+    )
+
+    assert [row.status for row in rows] == ["FAIL", "PASS"]
+    assert "CMRU_WHEEL_BUILDER_IMAGE" in rows[0].detail
+    assert "wheel-builder:ambient" not in repr(calls)
+    assert calls == [["docker", "image", "inspect", probe]]
 
 
 def test_release_build_image_precondition_pulls_a_missing_builder_but_keeps_probe_local(
@@ -1053,6 +1124,37 @@ def test_release_build_image_precondition_pulls_a_missing_builder_but_keeps_prob
     assert [row.status for row in rows] == ["PASS", "PASS"]
     assert "docker pull` succeeded" in rows[0].detail
     assert "pulls a missing builder image by default" in rows[0].detail
+
+
+def test_release_builder_pull_times_out_with_a_clear_refusal(monkeypatch):
+    builder = "wheel-builder:slow-registry"
+    probe = "probe@sha256:" + "c" * 64
+    calls = []
+    monkeypatch.setattr(release_preconditions.shutil, "which", lambda _command: "/usr/bin/docker")
+
+    def fake_run(argv, **kwargs):
+        calls.append((argv, kwargs))
+        if argv == ["docker", "image", "inspect", builder]:
+            return SimpleNamespace(returncode=1, stdout="", stderr=f"No such image: {builder}")
+        if argv == ["docker", "pull", builder]:
+            raise subprocess.TimeoutExpired(argv, timeout=kwargs["timeout"])
+        return SimpleNamespace(returncode=0, stdout="[]", stderr="")
+
+    monkeypatch.setattr(release_preconditions.subprocess, "run", fake_run)
+    rows = _REAL_CHECK_RELEASE_BUILD_IMAGES(
+        {
+            "CMRU_WHEEL_BUILDER_IMAGE": builder,
+            "CMRU_TESTER_CGROUP_PROBE_IMAGE": probe,
+        },
+        process_env={}, require_docker=True,
+    )
+
+    assert [row.status for row in rows] == ["FAIL", "PASS"]
+    pull_argv, pull_kwargs = calls[1]
+    assert pull_argv == ["docker", "pull", builder]
+    assert pull_kwargs["timeout"] == 600
+    assert "timed out after 600 seconds" in rows[0].detail
+    assert rows[0].remedy == f"Run `docker pull {builder}` on this host, then retry the release."
 
 
 @pytest.mark.parametrize("pull_failure", ["exit", "exception"])
@@ -1151,9 +1253,9 @@ def test_release_build_image_precondition_refuses_missing_declared_values():
     rows = _REAL_CHECK_RELEASE_BUILD_IMAGES({}, process_env={})
 
     assert [row.status for row in rows] == ["FAIL", "FAIL"]
-    assert "CMRU_WHEEL_BUILDER_IMAGE is not declared" in rows[0].detail
-    assert "CMRU_TESTER_CGROUP_PROBE_IMAGE is not declared" in rows[1].detail
-    assert "process environment or selected source config" in rows[0].remedy
+    assert "CMRU_WHEEL_BUILDER_IMAGE has no non-empty value" in rows[0].detail
+    assert "CMRU_TESTER_CGROUP_PROBE_IMAGE has no non-empty value" in rows[1].detail
+    assert "Set a non-empty CMRU_WHEEL_BUILDER_IMAGE" in rows[0].remedy
 
 
 def test_release_build_image_precondition_skips_daemon_exception_when_optional(

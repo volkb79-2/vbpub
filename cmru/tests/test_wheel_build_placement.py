@@ -118,6 +118,24 @@ def test_a_verified_host_slice_probes_first_and_then_builds(project, monkeypatch
     assert not (project / "dist" / "stale-1.0.0-py3-none-any.whl").exists()
 
 
+def test_direct_wheel_build_uses_process_image_over_enclosing_config(project, monkeypatch):
+    process_image = "wheel-builder:direct-invocation"
+    config_image = "wheel-builder:enclosing-config"
+    monkeypatch.setenv(handlers._WHEEL_BUILDER_IMAGE_ENV, process_image)
+    monkeypatch.setattr(
+        "cmru.build_images.configured_environment",
+        lambda _cwd: {handlers._WHEEL_BUILDER_IMAGE_ENV: config_image},
+    )
+    docker = _Docker("LoadState=loaded\nFragmentPath=/etc/systemd/system/dev-background.slice\n")
+    monkeypatch.setattr(subprocess, "run", docker)
+
+    _run(project)
+
+    assert len(docker.builder_runs) == 1
+    assert process_image in docker.builder_runs[0]
+    assert config_image not in docker.builder_runs[0]
+
+
 @pytest.mark.parametrize(
     ("stdout", "named"),
     [
@@ -310,12 +328,12 @@ def test_shared_build_image_config_resolver_returns_empty_without_a_config(tmp_p
 def test_a_declared_input_set_in_the_environment_wins_over_the_config(
     tmp_path, monkeypatch, environment_value, expected,
 ):
-    """Precedence is unchanged: a PRESENT env key answers (stripped), even empty, without reading config."""
+    """A PRESENT process key wins over a different enclosing config value in direct handler context."""
     nested = _config_declaring(tmp_path, "from-config.slice")
     monkeypatch.setenv("CMRU_TESTER_CGROUP_PARENT", environment_value)
     monkeypatch.setattr(
         "cmru.build_images.configured_environment",
-        lambda *_a: pytest.fail("the config must not be read when the environment declares the key"),
+        lambda *_a: {"CMRU_TESTER_CGROUP_PARENT": "from-config.slice"},
     )
 
     assert handlers._declared_input(nested, "CMRU_TESTER_CGROUP_PARENT") == expected

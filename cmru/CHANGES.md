@@ -34,7 +34,7 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 <!-- cmru: pending release notes begin -->
 - test(cmru): explain shell-expanded values for typed options in estate argv failures (KI-173).
 - fix(cmru): reject bundle staging paths that can escape or overlap dist_dir (KI-169).
-- fix(cmru): preflight the wheel-builder and cgroup-probe images before release dispatch (KI-168).
+- fix(cmru): match release image preflight to the build environment and bound builder pulls (KI-168).
 - fix(cmru): identify the linked worktree that owns local main and give its fast-forward command (KI-157).
 - docs(cmru): close the temporary-repository optimization by design on measured suite cost (KI-150).
 - fix(cmru): keep large bootstrap source-refusal lists from masking exit 2 with SIGPIPE (KI-137).

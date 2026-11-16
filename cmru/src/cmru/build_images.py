@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from enum import Enum
 from pathlib import Path
 from typing import Mapping
 
@@ -13,6 +14,11 @@ BUILD_IMAGE_ENV_NAMES = frozenset({
     WHEEL_BUILDER_IMAGE_ENV,
     CGROUP_PROBE_IMAGE_ENV,
 })
+
+
+class EnvironmentResolutionContext(str, Enum):
+    RELEASE = "release"
+    DIRECT_HANDLER = "direct-handler"
 
 
 def configured_environment(cwd: Path) -> dict[str, str]:
@@ -69,17 +75,35 @@ def configured_environment_value(cwd: Path, name: str) -> str:
 def resolve_environment_value(
     name: str,
     *,
+    context: EnvironmentResolutionContext,
     cwd: Path | None = None,
     configured_env: Mapping[str, object] | None = None,
     process_env: Mapping[str, object] | None = None,
 ) -> str:
-    """Resolve one input with process environment taking precedence over config."""
+    """Resolve one input using the precedence of its explicit call context."""
     environment = os.environ if process_env is None else process_env
-    if name in environment:
-        return str(environment[name] or "").strip()
     config = (
         configured_environment(cwd)
         if configured_env is None and cwd is not None
         else configured_env or {}
     )
-    return str(config.get(name, "") or "").strip()
+
+    if context is EnvironmentResolutionContext.RELEASE:
+        # Release steps apply declared env before invoking handlers. A present
+        # non-None config value (including "") is therefore the build-time
+        # value; the caller snapshot is only the fallback.
+        if name in config and config[name] is not None:
+            return str(config[name] or "").strip()
+        if name in environment:
+            return str(environment[name] or "").strip()
+        return ""
+
+    if context is EnvironmentResolutionContext.DIRECT_HANDLER:
+        # Direct handler invocations do not pass through release env injection.
+        if name in environment:
+            return str(environment[name] or "").strip()
+        if name in config and config[name] is not None:
+            return str(config[name] or "").strip()
+        return ""
+
+    raise ValueError(f"unsupported environment resolution context: {context!r}")

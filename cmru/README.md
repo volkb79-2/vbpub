@@ -1050,10 +1050,16 @@ later be skipped. See the [fixture design](docs/DESIGN-GUIDE.md#mutation-fixture
 For a new CMRU release, the launcher checks the configured wheel-builder and
 cgroup-probe images on the Docker host before dispatch, candidate worktree,
 tag, or gate setup. Image selection uses the same resolver as the build
-handlers: an invocation environment value overrides the project and estate
-configuration from the exact source revision. The wheel-builder's Docker run
+handlers, with precedence matching the caller. During a release, the effective
+`[env]` value in the selected source config wins when its key is present and
+not `None` (including an empty string); an absent or `None` value falls back to
+the caller's environment snapshot. The release runner applies those same
+declared values before invoking handlers. For a direct handler invocation, the
+process environment wins and the enclosing config is the fallback. An empty
+effective image value fails preflight. The wheel-builder's Docker run
 pulls a missing image by default, so an actual release preflight pulls and
-verifies a builder image that is not local. A dry-run does not pull it and
+verifies a builder image that is not local, with a 600-second timeout; a timed
+out pull refuses before release dispatch. A dry-run does not pull it and
 reports that pullability is unverified. The cgroup probe uses `--pull=never`,
 so its image must already be local; a missing probe reports the exact
 `docker pull <ref>` remedy. This also runs for `--skip-gates`, because the

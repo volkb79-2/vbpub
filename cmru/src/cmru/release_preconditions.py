@@ -15,6 +15,7 @@ from typing import Mapping
 
 from cmru.build_images import (
     CGROUP_PROBE_IMAGE_ENV,
+    EnvironmentResolutionContext,
     WHEEL_BUILDER_IMAGE_ENV,
     resolve_environment_value,
 )
@@ -44,6 +45,7 @@ _DOCKER_UNAVAILABLE = (
     "permission denied while trying to connect to the docker daemon",
     "context not found",
 )
+_BUILDER_IMAGE_PULL_TIMEOUT_SECONDS = 600
 
 
 @dataclass(frozen=True)
@@ -263,14 +265,16 @@ def check_release_build_images_precondition(
     configured_env: Mapping[str, object], *, process_env: Mapping[str, object] | None = None,
     require_docker: bool = False,
 ) -> list[GatePrecondition]:
-    """Check images using the same environment resolver as the build handlers."""
+    """Check the image refs the selected release config will pass to build handlers."""
     builder = resolve_environment_value(
         WHEEL_BUILDER_IMAGE_ENV,
+        context=EnvironmentResolutionContext.RELEASE,
         configured_env=configured_env,
         process_env=process_env,
     )
     probe = resolve_environment_value(
         CGROUP_PROBE_IMAGE_ENV,
+        context=EnvironmentResolutionContext.RELEASE,
         configured_env=configured_env,
         process_env=process_env,
     )
@@ -294,8 +298,8 @@ def _check_local_image_precondition(
     if not image:
         return GatePrecondition(
             "cmru", label, "FAIL",
-            f"{variable} is not declared in the invocation environment or selected source config.",
-            f"Set {variable} in the process environment or selected source config, then retry.",
+            f"{variable} has no non-empty value in the process environment or selected source config.",
+            f"Set a non-empty {variable} in the process environment or selected source config, then retry.",
         )
     if shutil.which("docker") is None:
         return GatePrecondition(
@@ -343,6 +347,14 @@ def _check_local_image_precondition(
             pulled = subprocess.run(
                 ["docker", "pull", image],
                 capture_output=True, text=True, check=False,
+                timeout=_BUILDER_IMAGE_PULL_TIMEOUT_SECONDS,
+            )
+        except subprocess.TimeoutExpired:
+            return GatePrecondition(
+                "cmru", label, "FAIL",
+                f"{variable} image {image!r} was not local and `docker pull` timed out after "
+                f"{_BUILDER_IMAGE_PULL_TIMEOUT_SECONDS} seconds.",
+                f"Run `docker pull {image}` on this host, then retry the release.",
             )
         except (OSError, subprocess.SubprocessError) as exc:
             pull_detail = str(exc).strip() or type(exc).__name__

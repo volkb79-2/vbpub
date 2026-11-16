@@ -30,6 +30,7 @@ from typing import NoReturn, Optional
 
 from cmru import exit_codes, rigor_publish
 from cmru.build_images import (
+    EnvironmentResolutionContext,
     WHEEL_BUILDER_IMAGE_ENV,
     configured_environment_value,
     resolve_environment_value,
@@ -356,7 +357,11 @@ def _configured_env_value(cwd: Path, name: str) -> str:
 
 
 def _resolve_wheel_builder_image(cwd: Path | None = None) -> str:
-    return resolve_environment_value(_WHEEL_BUILDER_IMAGE_ENV, cwd=cwd)
+    return resolve_environment_value(
+        _WHEEL_BUILDER_IMAGE_ENV,
+        context=EnvironmentResolutionContext.DIRECT_HANDLER,
+        cwd=cwd,
+    )
 
 
 def _check_build_prerequisites(cwd: Path | None = None) -> str:
@@ -411,7 +416,9 @@ def _docker_cgroup_parent() -> str:
 
 def _declared_input(cwd: Path, name: str) -> str:
     """An explicit environment value wins; otherwise the enclosing CMRU config."""
-    return resolve_environment_value(name, cwd=cwd)
+    return resolve_environment_value(
+        name, context=EnvironmentResolutionContext.DIRECT_HANDLER, cwd=cwd,
+    )
 
 
 def require_installed_cgroup_parent(cgroup_parent: str, cwd: Path) -> None:

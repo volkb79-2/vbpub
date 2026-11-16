@@ -1678,17 +1678,24 @@ replaced) completes.
 allocating its candidate worktree, CMRU MUST resolve the wheel-builder image
 (`CMRU_WHEEL_BUILDER_IMAGE`) and digest-pinned cgroup-probe image
 (`CMRU_TESTER_CGROUP_PROBE_IMAGE`) with the same shared resolver used by the build handlers:
-an invocation process-environment value takes precedence over project configuration, which
-takes precedence over orchestration defaults from the exact release-source revision. A missing
-value MUST fail preflight naming the variable and directing the operator to declare it in the
-selected source config or process environment. The preflight MUST inspect the selected refs on
-the local Docker host. The cgroup-probe image MUST already be local because its Docker run uses
+the resolver MUST receive an explicit context. In release context, the effective configured
+value from the exact release-source revision takes precedence over the caller's captured
+process-environment value when the config key is present and not `None`; an empty configured
+string is present and MUST NOT fall through to the caller's value. If the key is absent or
+`None`, the captured caller environment is the fallback. This matches the release runner, which
+applies declared config values before invoking build handlers. In direct-handler context, a
+present process-environment value takes precedence over the enclosing config, which is the
+fallback. An empty effective image value MUST fail preflight naming the variable and directing
+the operator to set a non-empty value in the selected source config or process environment.
+The preflight MUST inspect the selected refs on the local Docker host. The cgroup-probe image
+MUST already be local because its Docker run uses
 `--pull=never`; if absent, preflight MUST fail with exit 4 naming the reference and exact
 `docker pull <ref>` remedy. The wheel-builder Docker run does not use `--pull=never` and pulls
 an absent image by default. On an actual release, if the builder is absent locally, preflight
-MUST run `docker pull <ref>` and PASS only if that succeeds; a failed pull MUST fail preflight
-with the exact remedy. A dry-run MUST NOT pull a missing builder and MUST report its pullability
-as `SKIPPED`, with a message that registry availability was not verified. The image checks
+MUST run `docker pull <ref>` with a 600-second timeout and PASS only if that succeeds; a failed
+or timed-out pull MUST fail preflight with the exact remedy and, on timeout, name the timeout.
+A dry-run MUST NOT pull a missing builder and MUST report its pullability as `SKIPPED`, with a
+message that registry availability was not verified. The image checks
 MUST also run when `--skip-gates` is selected because the wheel-build step still uses these
 images. When gates are enabled, the preflight MUST run the declared version-window, selected
 tester-image identity, and bootstrap-version checks against the exact source revision. The

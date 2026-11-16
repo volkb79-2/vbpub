@@ -1026,13 +1026,19 @@ before a new gate starts leaves the previous run's marker and manifest untouched
 
 Before dispatching a new CMRU release, CMRU resolves the wheel-builder and
 digest-pinned cgroup-probe images with the same resolver used by the build
-handlers: invocation environment values override project and estate defaults
-from the exact release-source revision. The cgroup probe uses `--pull=never`,
+handlers, using the environment that the build step will receive. In a release,
+the effective image value declared by the selected source config wins when its
+key is present and not `None`, including an empty string; an absent or `None`
+value falls back to the caller's environment snapshot. The runner applies those
+declared values before invoking the handler. A direct handler invocation uses
+the opposite order: its process environment wins, then the enclosing config.
+An empty effective image value fails preflight. The cgroup probe uses `--pull=never`,
 so it must already be local; if missing, preflight exits 4 with the exact
 `docker pull <ref>` remedy. The wheel-builder's Docker run uses Docker's default
 pull-if-missing behavior. For an actual release, preflight pulls and verifies a
-builder image that is not local; for a dry-run, it reports `SKIPPED` because it
-does not pull and cannot verify registry availability. These checks happen
+builder image that is not local, with a 600-second timeout and a refusal if
+that pull times out; for a dry-run, it reports `SKIPPED` because it does not
+pull and cannot verify registry availability. These checks happen
 before a candidate worktree, tag, or gate starts, and still run with
 `--skip-gates` because the wheel-build step needs both images. If Docker is
 unavailable, an actual release fails preflight; a dry-run may report the image

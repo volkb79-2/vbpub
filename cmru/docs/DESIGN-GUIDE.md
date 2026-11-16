@@ -1126,13 +1126,18 @@ Run-Gate wheel from GitHub to compare digests, so it needs network access. If Do
 `SKIPPED` instead of treating an unreachable image as empty or as a match in a
 dry-run; an actual release fails closed when Docker cannot inspect its required
 images. The wheel-builder and probe references use the handlers' shared image
-resolver: invocation environment values take precedence over the project and
-estate defaults in the exact release-source snapshot. The cgroup probe runs
-with `--pull=never`, so it must already be present locally and a missing probe
-gets the exact `docker pull <ref>` remedy. The wheel-builder runs without
+resolver with an explicit context. In release context, the effective image
+value declared by the selected source config wins when its key is present and
+not `None` (including an empty value); otherwise the captured invocation
+environment is the fallback. The release runner applies those declared values
+before invoking handlers. In direct-handler context, the current process
+environment wins and the enclosing config is the fallback. The cgroup probe
+runs with `--pull=never`, so it must already be present locally and a missing
+probe gets the exact `docker pull <ref>` remedy. The wheel-builder runs without
 `--pull=never`; Docker pulls it when it is absent. An actual release preflight
-therefore pulls and verifies a missing builder, while a dry-run reports
-`SKIPPED` because it does not pull and cannot establish registry availability.
+therefore pulls and verifies a missing builder, with a 600-second timeout that
+refuses a timed-out preflight, while a dry-run reports `SKIPPED` because it
+does not pull and cannot establish registry availability.
 These build-image checks still run when gates are explicitly skipped, because
 CMRU must still build the wheel. The
 identity check also requires the inspected result to report a non-empty Run-Gate
