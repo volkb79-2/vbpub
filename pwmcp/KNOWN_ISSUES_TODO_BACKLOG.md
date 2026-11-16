@@ -1017,8 +1017,25 @@ inventory and expected runtime.
 
 ## PWMCP-61 — the R2 lane lets memory-runaway mutants swap instead of dying
 
-**Status:** OPEN (filed 2026-11-12); priority should-fix; resource-only change
-under Assay B529. Source: 2026-11-12 host R2 restart record.
+**Status:** FIXED 2026-11-16 (unreleased, branch `pi-pwmcp-burn-20261116`) for the lane
+configuration; the campaign-side close condition needs a host campaign and stays
+pending. Filed 2026-11-12; priority should-fix; resource-only change under Assay B529.
+Source: 2026-11-12 host R2 restart record.
+
+**Fix.** `pwmcp/run-gate.toml` `[lanes.r2.resources]` now declares
+`memory_swap = "3g"` beside `memory = "3g"`, with the reason in a comment: Docker's
+`--memory-swap` is the COMBINED memory-plus-swap limit and its default leaves swap
+UNBOUNDED, so equal values keep the combined ceiling at the same 3 GiB while a runaway
+mutant is OOM-killed instead of swapping on the host. A larger swap value (16g) would
+re-open exactly the behaviour this item reported; a smaller one is refused by Docker.
+`tests/test_r2_resources.py` parses both keys and requires them to be equal, pins that
+the observer-backed lane keeps `pids` and `memory` (RG-20 counters need them), and pins
+the resource-only identity: the mutation judge's `operators`, `fail_under`,
+`require_branch` and coverage artifact are unchanged, no resource key leaks into the
+judge block, and therefore B529 record reuse for earlier killed/survived records still
+applies. `docs/CONSUMERS.md` "Release gates" documents the ceiling. Hand mutants: no
+`memory_swap`, `memory_swap = "16g"`, `memory_swap = "20g"`, no `memory`, and no `pids`
+each trip the oracle.
 
 **Problem.** `pwmcp/run-gate.toml:30-34` declares a 3 GiB lane memory limit but
 no `memory_swap`, so Docker leaves swap unbounded for the lane. Re-executing

@@ -475,6 +475,20 @@ cheap — it makes the release lane unable to complete, so it is checked, not gu
 recorded inventory by the 10% headroom, and must not sit absurdly far above it (the
 cap bounds an unexpectedly large run; it is not a free pass).
 
+### The R2 lane's memory-plus-swap ceiling
+
+`run-gate.toml` `[lanes.r2.resources]` declares `memory = "3g"` AND
+`memory_swap = "3g"`. The second key is not redundant: without it Docker leaves swap
+unbounded for the container, so a runaway mutant swaps on the host instead of dying at
+its cap. Docker's `--memory-swap` is the COMBINED memory-plus-swap limit, so equal
+values keep the combined ceiling at the same 3 GiB the memory cap already declares —
+a larger swap value would re-open exactly that swapping. `tests/test_r2_resources.py`
+parses both keys, requires them to be equal, and pins that the observer-backed lane
+keeps `pids` and `memory` (its local counters need them) and that the swap key is a
+RESOURCE-only change: the mutation judge identity (`operators`, `fail_under`,
+`require_branch`, coverage artifact) is unchanged, so Assay's record reuse across
+campaigns still applies.
+
 ## Maintainer refresh of Playwright
 
 To select the newest stable Playwright version available from npm, PyPI, and

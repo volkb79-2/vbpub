@@ -27,8 +27,13 @@ budget = "4h"
 # a btrfs MDT_COW_ROOT host; otherwise auto clamps to one worker.
 jobs = "auto"
 
+# pids: required by the resource observer (observer-backed lanes need it for attributable counters).
+# memory_swap equals memory on purpose (PWMCP-61): Docker's default leaves swap UNBOUNDED for the
+# container, so a runaway mutant swaps on the host instead of dying at its cap. Equal values make
+# the combined memory-plus-swap ceiling the same 3 GiB the memory cap already declares.
 [lanes.r2.resources]
 memory = "3g"
+memory_swap = "3g"
 pids = 8192
 cpus = "3"
 candidate_ram = "450m"

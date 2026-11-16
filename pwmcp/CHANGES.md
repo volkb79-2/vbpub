@@ -11,6 +11,7 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 - docs(pwmcp): record the Obscura re-evaluation triggers as a closed set and the anti-detection non-goal, in the design guide and the security document, with a docs-sync oracle (PWMCP-58)
 - chore(pwmcp): raise the R2 candidate cap to 1500 (the r9 plan's 1293 candidates need >= 1423 under the published 10% headroom rule), document the cap-choice rule, and check it against recorded inventories (PWMCP-59)
 - test(pwmcp): make the PWMCP-60 contract mechanical — an AST oracle refuses a process-wide `os`/`builtins`/`io` test patch that does not save and delegate to the real function, and the storage-state fakes derive their fake uid from the real `geteuid` (PWMCP-60)
+- fix(pwmcp): cap the R2 lane's memory-plus-swap at the same 3 GiB as its memory limit (`memory_swap = "3g"`) so a runaway mutant is OOM-killed instead of swapping on the host, pinned by a lane-resource contract test (PWMCP-61)
 <!-- cmru: pending release notes end -->
 
 <!-- cmru: release history -->
