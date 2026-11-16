@@ -1,5 +1,11 @@
 #!/usr/bin/env bash
 set -uo pipefail
+# The caller's ambient controller configuration is not this check's business:
+# every check here builds its own temporary controller root, so an exported
+# CONTROLLER_HOME / RUNS_DIR / LOGS_DIR / REPO / HOSTS_FILE must not decide where
+# a check reads or writes. Relying on the caller ("run it with env -u") moved the
+# same defect into the operator's shell, where it read as a product bug.
+unset CONTROLLER_HOME CONTROLLER_RUNS_DIR CONTROLLER_LOGS_DIR CONTROLLER_REPO CONTROLLER_HOSTS_FILE
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 CODEX_IMPL=${CODEX_IMPL_SCRIPT:-$SCRIPT_DIR/../codex-impl.sh}
 RESUME_SRC=${RESUME_USAGE_LIMITED_SCRIPT:-$SCRIPT_DIR/../resume-usage-limited.sh}

@@ -1,9 +1,12 @@
 #!/usr/bin/env bash
 set -uo pipefail
+# The caller's ambient controller configuration is not this check's business:
+# every check here builds its own temporary controller root, so an exported
+# CONTROLLER_HOME / RUNS_DIR / LOGS_DIR / REPO / HOSTS_FILE must not decide where
+# a check reads or writes. Relying on the caller ("run it with env -u") moved the
+# same defect into the operator's shell, where it read as a product bug.
+unset CONTROLLER_HOME CONTROLLER_RUNS_DIR CONTROLLER_LOGS_DIR CONTROLLER_REPO CONTROLLER_HOSTS_FILE
 unset PI_ROUTE PI_MODEL PI_THINKING PI_SESSION_DIR OPENDESIGN_API_KEY_VOLKER OPENDESIGN_API_KEY_GITHUB2
-# A cockpit export of these would send the fake runs into the real run
-# directory; the checks read their own temporary controller root.
-unset CONTROLLER_RUNS_DIR CONTROLLER_LOGS_DIR
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 SRC=${PI_IMPL_SCRIPT:-$SCRIPT_DIR/../pi-impl.sh}
 JOB_STATUS=${JOB_STATUS_SCRIPT:-$SCRIPT_DIR/../job-status.sh}

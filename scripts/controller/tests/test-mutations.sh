@@ -1,5 +1,11 @@
 #!/usr/bin/env bash
 set -uo pipefail
+# The caller's ambient controller configuration is not this check's business:
+# every check here builds its own temporary controller root, so an exported
+# CONTROLLER_HOME / RUNS_DIR / LOGS_DIR / REPO / HOSTS_FILE must not decide where
+# a check reads or writes. Relying on the caller ("run it with env -u") moved the
+# same defect into the operator's shell, where it read as a product bug.
+unset CONTROLLER_HOME CONTROLLER_RUNS_DIR CONTROLLER_LOGS_DIR CONTROLLER_REPO CONTROLLER_HOSTS_FILE
 unset CODEX_ROUTE CODEX_HOME_OVERRIDE CODEX_HOME_LUNA CODEX_HOME_DEEPSEEK_VOLKER CODEX_HOME_DEEPSEEK_GITHUB2 CODEX_HOME_REVIEW CODEX_MODEL CODEX_EFFORT
 unset CODEX_REVIEW_MODEL CODEX_REVIEW_EFFORT CODEX_SQLITE_HOME
 unset PI_TEST_FOCUS
