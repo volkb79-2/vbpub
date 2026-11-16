@@ -1240,8 +1240,18 @@ def test_p22_accepts_a_promisor_key_whose_value_is_false(tmp_path, monkeypatch):
 #: (B226) The linked-worktree half, end to end. Run in a CHILD process: the
 #: hazard's only observable failure is "the bootstrap never returns", so an
 #: in-process assertion would hang the suite instead of failing it.
+#:
+#: (round 3) This test used to ASSERT that git blocks on a writer-less FIFO
+#: alternates file. That is a property of the GIT BINARY, not of the product,
+#: and it is false in the tester-unified lane image, whose git fails
+#: `rev-parse --absolute-git-dir` immediately instead of opening the FIFO
+#: (`refused ERROR GIT_FAILED 0.00s` in that lane's R0 verdict, where this
+#: suite's host git blocks in `wait_for_partner`). The script therefore PROBES
+#: the hazard first with a RAW bounded git -- deliberately not through assay,
+#: so the probe reports what THIS git does, not what the product does -- and
+#: the test decides from that answer which half is observable here.
 _P22_LINKED_WORKTREE_SCRIPT = r'''
-import os, subprocess, sys, time
+import os, signal, subprocess, sys, time
 from pathlib import Path
 
 sys.path.insert(0, sys.argv[1])
@@ -1280,6 +1290,34 @@ if not marker.startswith("gitdir: "):
     raise SystemExit(f"expected a gitfile redirect, found {marker!r}")
 os.mkfifo(repo / ".git" / "objects" / "info" / "alternates")
 
+version = subprocess.run(
+    ["git", "--version"], env=env, capture_output=True, text=True
+)
+print("git-version", (version.stdout or version.stderr).strip() or "unknown")
+
+# (round 3) PROBE THE HAZARD, raw and bounded, in its OWN process group: does
+# THIS git block on the FIFO, or does it fail fast? The answer decides which
+# half of B226 is observable here, and it must come from git itself rather
+# than from the code under test.
+probe_seconds_limit = 3.0
+probe = subprocess.Popen(
+    ["git", "--no-pager", "-C", str(worktree), "rev-parse", "--absolute-git-dir"],
+    env=env,
+    stdout=subprocess.DEVNULL,
+    stderr=subprocess.DEVNULL,
+    start_new_session=True,
+)
+probe_started = time.monotonic()
+try:
+    probe_rc = probe.wait(timeout=probe_seconds_limit)
+    print("probe fast", probe_rc, f"{time.monotonic() - probe_started:.2f}s")
+except subprocess.TimeoutExpired:
+    # The probe's own session, so a git blocked on a FIFO open is killed and
+    # reaped here instead of becoming one of the orphans this item documents.
+    os.killpg(os.getpgid(probe.pid), signal.SIGKILL)
+    probe.wait(timeout=30)
+    print("probe blocked -", f"{time.monotonic() - probe_started:.2f}s")
+
 started = time.monotonic()
 try:
     gitmod._p22_open_source(worktree, gitmod._P22Deadline(2.0))
@@ -1292,15 +1330,29 @@ raise SystemExit(3)
 
 
 def test_p22_open_source_bounds_the_bootstrap_of_a_linked_worktree_fifo(tmp_path):
-    """(B226) The DEADLINE half, on a REAL linked worktree.
+    """(B226) The DEADLINE half, on a REAL linked worktree -- where observable.
 
     A linked worktree's `.git` is a gitfile, so the common directory holding
     `objects/info/alternates` is only knowable by asking git; the prompt
     filesystem refusal therefore cannot fire, and a writer-less FIFO there is
-    exactly what blocks `rev-parse --absolute-git-dir` in `wait_for_partner`.
+    what blocks `rev-parse --absolute-git-dir` in `wait_for_partner`.
     Handing the caller's deadline to `_resolve_repo` is what bounds it (measured
     on this host: refused after 2.01 s with a 2.0 s deadline; with the deadline
     removed the child blocked indefinitely).
+
+    **(round 3) Which half is observable here is a property of the GIT BINARY,
+    not of the product, so this test asks the binary first.** On a git that
+    blocks (the development hosts and this cockpit) the deadline half is
+    observable and is asserted exactly as before, and the hand mutant that
+    drops `remaining=` still fails it at the 45 s bound. In the tester-unified
+    lane image git returns from `rev-parse --absolute-git-dir` in 0.00 s with
+    `ERROR`/`GIT_FAILED` instead of blocking -- measured in that lane's R0
+    verdict -- so the deadline is never reached and the half is UNOBSERVABLE
+    there. That branch SKIPS with the git version and the measured probe
+    result named, AFTER asserting what is still true everywhere: the product
+    REFUSED, promptly, rather than hanging or accepting the repository. A skip
+    chosen by the environment is honest; a widened assertion that both a
+    refusal and a timeout satisfy would have hidden which one happened.
 
     The body runs in a child process, and the child runs in its OWN session,
     because the hazard's only observable failure is "never returns" and an
@@ -1342,13 +1394,57 @@ def test_p22_open_source_bounds_the_bootstrap_of_a_linked_worktree_fifo(tmp_path
         f"the bootstrap past its deadline, or the child failed ({process.returncode}): "
         f"{stdout}{stderr}"
     )
-    fields = stdout.split()
-    assert fields[:3] == ["refused", "BUDGET_EXCEEDED", "LANE_TIMEOUT"] and len(fields) == 4, (
-        "the bootstrap must refuse as the lane's own BUDGET_EXCEEDED/LANE_TIMEOUT, "
-        f"not as GIT_FAILED and not as another outcome: {stdout!r}"
+    lines = {}
+    for line in stdout.splitlines():
+        head, _, rest = line.partition(" ")
+        lines[head] = rest
+
+    version = lines["git-version"]
+    probe = lines["probe"].split()
+    refusal = lines.get("refused", "").split()
+    assert "no-refusal" not in lines, (
+        "the product ACCEPTED a linked worktree whose common directory holds a "
+        f"FIFO alternates file: {stdout!r}"
     )
-    seconds = float(fields[3].rstrip("s"))
-    assert seconds < 60, (
-        "the deadline is a POLICY bound (2 s here), so a load-tolerant check must "
-        f"still not approach the suite's own budget: measured {seconds:.2f}s"
+    assert len(refusal) == 3 and refusal[0] in {"ERROR", "BUDGET_EXCEEDED"}, (
+        f"the product must refuse this repository, with a named outcome: {stdout!r}"
+    )
+    outcome, reason_code, elapsed_text = refusal
+    seconds = float(elapsed_text.rstrip("s"))
+
+    if probe[0] == "blocked":
+        # This git blocks, so the deadline is the only thing between the lane
+        # and the hang: assert the exact refusal the fix produces.
+        assert (outcome, reason_code) == ("BUDGET_EXCEEDED", "LANE_TIMEOUT"), (
+            "a git that blocks in `wait_for_partner` must be stopped by the lane's "
+            f"own deadline, not by an unrelated outcome ({version}): {stdout!r}"
+        )
+        assert seconds < 60, (
+            "the deadline is a POLICY bound (2 s here), so a load-tolerant check must "
+            f"still not approach the suite's own budget: measured {seconds:.2f}s"
+        )
+        return
+
+    # This git fails fast, so the bootstrap never blocks and the deadline half
+    # cannot be observed. Both refusals are legitimate here (`GIT_FAILED` because
+    # git rejected the alternates file, `LANE_TIMEOUT` if it somehow blocked past
+    # the deadline); what is NOT legitimate is accepting the repository or hanging.
+    assert (outcome, reason_code) in {
+        ("ERROR", "GIT_FAILED"),
+        ("BUDGET_EXCEEDED", "LANE_TIMEOUT"),
+    }, (
+        "the product must still refuse this repository on a git that fails fast, "
+        f"with ERROR/GIT_FAILED or BUDGET_EXCEEDED/LANE_TIMEOUT ({version}): {stdout!r}"
+    )
+    assert seconds < 10, (
+        "the refusal must be prompt on a git that does not block -- the point of "
+        f"the assertion above is 'refused, not hung': measured {seconds:.2f}s"
+    )
+    pytest.skip(
+        f"{version} does not block on a FIFO alternates file (raw "
+        f"`git rev-parse --absolute-git-dir` returned rc={probe[1]} in {probe[2]}); "
+        "the deadline half of B226 is unobservable here. The product still "
+        f"refused this repository ({outcome}/{reason_code} in {elapsed_text}), which "
+        "this test asserted before skipping. Run it on a host whose git blocks in "
+        "`wait_for_partner` to exercise the deadline itself."
     )
