@@ -5,7 +5,9 @@
 This file records consumer-facing product gaps for later triage. Normative
 behavior remains in the product specification and consumer documentation.
 
-Last updated: 2026-11-16 (PWMCP-09 part 2 closed (Anubis deny-page signature), PWMCP-21 corpus `package --out` default,
+Last updated: 2026-11-16 (review round 1: PWMCP-71 path forms settled explicitly with real-shape fixtures,
+PWMCP-60 extended to the string-target and mock patch spellings, PWMCP-31/PWMCP-61 statuses corrected to PARTIAL. Earlier the same
+day: PWMCP-09 part 2 closed (Anubis deny-page signature), PWMCP-21 corpus `package --out` default,
 PWMCP-31 bundle client install recipe, PWMCP-58 Obscura re-evaluation triggers, PWMCP-59 r2 `max_mutants`,
 PWMCP-60 storage-state fake scoping, PWMCP-61 r2 swap ceiling and PWMCP-71 R2 candidate recipe; PWMCP-63..69
 implemented in their respective branches, unreleased; PWMCP-70 documents R9 equivalent survivors; PWMCP-62's
@@ -670,8 +672,9 @@ fail-closed shim (mdt-cockpit MDT-056); on the host the shim may even remap `BUI
 
 ## PWMCP-31 — the released bundle's client cannot be installed by a consumer without a cli-extended source (dstdns test-runner rebuild fails)
 
-**Status:** FIXED 2026-11-16 (unreleased, branch `pi-pwmcp-burn-20261116`) for the pwmcp half: the bundle's recipe is now the offline
-wheelhouse one. The released bundle already carried the complete closure in `bundle/wheels/` (cli-extended, playwright,
+**Status: PARTIAL 2026-11-16 (unreleased, branch `pi-pwmcp-burn-20261116`) — the pwmcp DOCUMENTATION half and its
+oracle are done; the acceptance (a clean `python:3.14-slim` install of the released bundle) has NOT been run.** The
+bundle's recipe is now the offline wheelhouse one. The released bundle already carried the complete closure in `bundle/wheels/` (cli-extended, playwright,
 greenlet, pyee, typing_extensions and the `pwmcp_client` wheel; `[project.installer.wheels]` in `cmru.toml` stages it, and
 `scripts/build-bundle.py` refuses a wheel outside that list), but NO documented command used it: README "Client install and
 upgrade" and `docs/USAGE.md` named only a separate cli-extended download or a hand-built wheelhouse, and the item's own
@@ -941,13 +944,20 @@ cannot reopen adoption on one of them. Nothing was adopted and no engine code wa
 this item makes the contract MECHANICAL so it cannot regress silently.
 
 **Fix.** `tests/test_storage_state_fakes.py` walks the syntax tree of every module in
-`tests/` and `client/tests/` and refuses a `setattr(<root>.os|builtins|io, "<symbol>", ...)`
-patch that (a) does not first bind the real function, (b) installs a replacement that never
-calls that saved real, or (c) receives arguments and never examines them (so it cannot tell
-the fd/path under test from pytest's own capture/teardown calls). Direct aliases of the real
-function are allowed. The same module pins the storage-state fakes by name (the saved
-`real_fdopen`/`real_open`/`real_geteuid` and the `opened != target` / `opened_path == target`
-comparisons), so PWMCP's original fakes cannot drift back.
+`tests/` and `client/tests/` and refuses EVERY spelling of a process-wide
+`os|builtins|io` patch that (a) does not first bind the real function, (b) installs a
+replacement that never calls that saved real, or (c) receives arguments and never examines
+them (so it cannot tell the fd/path under test from pytest's own capture/teardown calls).
+Direct aliases of the real function are allowed. The spellings covered are
+`setattr(<module>, "<symbol>", ...)` (`monkeypatch.setattr`), its string-addressed forms
+`setattr("os", "fstat", ...)` and `setattr("os.fstat", ...)`, and the mock forms
+`mock.patch("os.fstat")` / `.patch.object(os, "fstat")` — where an auto-generated mock is
+refused unless `wraps=<the real>` names the function it delegates to. A module outside
+`PROCESS_WIDE`, or a nested path such as `os.path.join`, is deliberately outside the
+vocabulary (the reason is stated at `_patch_target`). The same module pins the
+storage-state fakes by name (the saved `real_fdopen`/`real_open`/`real_geteuid` and the
+`opened != target` / `opened_path == target` comparisons), so PWMCP's original fakes
+cannot drift back.
 
 **Contract.** A process-wide `os.*` patch must identify the fd/path under test and delegate
 every other call to the real function. It must preserve the original read-failure,
@@ -959,7 +969,20 @@ file: removing `real_open = os.open`, deleting the `if Path(target) != path:
 return real_open(...)` delegation, and deleting the `if opened_path == target` comparison.
 Each trips the oracle with a message naming the file, line and fake. The one non-delegating
 `geteuid` fake (`lambda: other`, which invented an uid instead of deriving from the real
-function) now derives from `real_geteuid()`; no behavioural oracle changed.
+function) now derives from `real_geteuid()`; no behavioural oracle changed. Review round 1
+extended the oracle to the string-target and mock spellings and killed six more hand
+mutants with it: dropping the string `setattr` branch, dropping the `.patch` branch,
+ignoring `wraps=`, dropping the `.patch.object` branch, not resolving a string module owner,
+and accepting a nested `os.path` target. The extension also surfaced one real
+non-delegating patch in `tests/test_build_push_coverage.py`
+(`monkeypatch.setattr("builtins.print", ...)`), which now patches the module's own
+`build_push` namespace instead of process-wide `builtins`.
+
+**Section 3 (the string-target form).** The first version read only
+`setattr(<module>, "<symbol>", <replacement>)`, so `monkeypatch.setattr("os", "fstat", fake)`,
+`monkeypatch.setattr("os.fstat", fake)` and `mock.patch("os.fstat")` were a way AROUND the
+rule rather than a variant of it; the oracle now covers them and refuses an auto-generated
+mock unless `wraps=` names the real function.
 
 **Close when.** No non-delegating exact-symbol test patch remains in PWMCP's storage-state
 tests and the registered unit lane passes on a clean final commit. (The lane run on the
@@ -1035,9 +1058,9 @@ inventory and expected runtime.
 
 ## PWMCP-61 — the R2 lane lets memory-runaway mutants swap instead of dying
 
-**Status:** FIXED 2026-11-16 (unreleased, branch `pi-pwmcp-burn-20261116`) for the lane
-configuration; the campaign-side close condition needs a host campaign and stays
-pending. Filed 2026-11-12; priority should-fix; resource-only change under Assay B529.
+**Status: PARTIAL 2026-11-16 (unreleased, branch `pi-pwmcp-burn-20261116`) — the lane CONFIGURATION is done; the
+campaign that closes it (the five runaway candidates re-executed under the swap ceiling) is PENDING and has not been
+started, so the observed behaviour change is not yet measured.** Filed 2026-11-12; priority should-fix; resource-only change under Assay B529.
 Source: 2026-11-12 host R2 restart record.
 
 **Fix.** `pwmcp/run-gate.toml` `[lanes.r2.resources]` now declares
@@ -1215,6 +1238,33 @@ recipe and the PARTIAL/`selective` language, and that every cross-document ancho
 README/CONSUMERS/DESIGN-GUIDE resolves. Hand mutants of the selection code (no `b/`
 prefix strip, a `+c,0` hunk treated as one line, off-by-one on the range end) are each
 killed; the empty-selection guard is covered by its own CLI test.
+
+**Path forms (review round 1).** A review claimed the plan and the documented diff never
+match, because `[lanes.r2.judge] source_roots = ["."]` would make the plan carry
+project-relative `client/src/...` paths. MEASURED, that is the opposite of the truth: a
+real `assay plan r2 --json` from `pwmcp/` carries REPOSITORY-ROOT-relative paths
+(`pwmcp/client/src/...`, 1293 of 1293 on this head), because assay anchors on the git
+repository top; and the documented `git diff -U0 <base>..<release> -- <source-path>` from
+the project directory produces that same form (probe: 51 of 1293 selected). The ORTHOGONAL
+hazard the review pointed at is real, though: `git diff --relative` emits `client/src/...`,
+which the as-given comparison cannot match, and the pre-fix tool then exited 1 with a
+message whose only honest reading was "the release touched no mutated line". The tool now
+settles the path form EXPLICITLY instead of heuristically: `--project-prefix P` states the
+fact (canonicalised to one trailing slash, and idempotent when the diff already carries it);
+the as-given repository-root form is tried first; a project prefix is DERIVED only when the
+plan makes it unambiguous (every diff path suffix-matches exactly one plan path and all such
+matches share one prefix) and is then PRINTED on stderr, so a wrong derivation is visible
+in the campaign record; otherwise the tool refuses and lists every form it tried plus the two
+remedies. An ambiguous match (two plan paths ending with the same diff path) is a refusal, not
+a guess. `tests/fixtures/r2-plan/` now carries a VERBATIM 261-candidate slice of the real
+plan (repository-root paths, `_provenance` recording the command, cwd, commit and the full
+1293 count) and two real diffs of one commit pair in both forms; the tests require both to
+select the SAME 51 candidates, the derivation to be disclosed and absent when the form is
+as-given, a stated prefix to be honoured/idempotent/normalised, and the refusal to list the
+forms and remedies. Hand mutants killed: derivation disabled, ambiguity ignored, prefix not
+idempotent, refusal not listing forms, disclosure dropped, `--project-prefix` ignored, an
+unjudged diff path forcing a prefix, prefix not normalised. README, `docs/CONSUMERS.md`,
+`docs/DESIGN-GUIDE.md` and `tools/r2/README.md` all state the path-form rule.
 
 The registered-lane obligations are stated rather than changed: `run-gate` keeps its
 `--resume --progress .assay/progress-r2.jsonl` handling, and the selection file must stay
