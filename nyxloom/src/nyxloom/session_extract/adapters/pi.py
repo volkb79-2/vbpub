@@ -82,8 +82,9 @@ Deliberately NOT read -- and COUNTED, never silently dropped:
   reads them instead, where the pair IS the in-flight evidence.
 * ``turn_end`` / ``agent_end`` (they repeat the turn's own message) and
   ``agent_settled`` (a scheduling tick, not conversation content).
-* file-entry metadata that carries no conversation content: ``custom`` (pi's
-  own declaration says it does NOT participate in LLM context),
+* file-entry metadata that carries no conversation content: the ``custom``
+  FILE-ENTRY (pi's own declaration says it does not participate in LLM
+  context -- distinct from the ``custom`` MESSAGE ROLE above, which does),
   ``label``, ``session_info``, ``usage``, ``model_change``,
   ``thinking_level_change``, ``compaction_start`` (``compaction_end``/
   ``compaction`` is the record that carries the summary).
@@ -119,8 +120,9 @@ a later run.
 
 Stop-state (``stopstate.py``) is where pi's own ``stopReason`` vocabulary
 becomes a cause: ``length`` is CONTEXT-FULL, ``error`` is ERROR, an
-``assistant`` message with ``stopReason`` ``stop`` and no prose is
-EMPTY-COMPLETION, and a session ending on ``toolUse`` is TOOL-USE.
+``assistant`` message with ``stopReason`` ``stop`` but no text and no tool call
+is EMPTY-COMPLETION (a thinking-only ending counts as empty: thinking is not
+text the run acts on), and a session ending on ``toolUse`` is TOOL-USE.
 """
 
 from __future__ import annotations
