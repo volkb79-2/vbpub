@@ -614,18 +614,23 @@ placeholder as the latest measurement: keep the last NON-ZERO reading (or
 distinguish "reported 0" from "reported" and prefer the last completion event's
 usage), and keep `null` for "never read one" so the distinction the design
 requires survives. Because 0 is also a legitimate value for a fresh stream
-before the model reports anything, the rule must be stated: either ignore
-zero-valued usage on delta events specifically (identified by the event's own
-`assistantMessageEvent.type`), or carry both the last completion figure and a
-`reported_zero` fact. Record the chosen semantics in the `pi-live.py` docstring,
-`docs/DESIGN-GUIDE.md`'s liveness section, and `job-status.sh`'s header.
+before the model reports anything, the rule must be stated. The safest
+mechanism-independent form is the second one — carry BOTH the last non-zero
+figure and a "last report was 0" fact — because it does not depend on the
+placeholder hypothesis above being true; a rule keyed on the event's own
+`assistantMessageEvent.type` is only justified once a captured stream shows that
+only placeholder deltas report 0. Record the chosen semantics in the
+`pi-live.py` docstring, `docs/DESIGN-GUIDE.md`'s liveness section, and
+`job-status.sh`'s header.
 
 **Where.** `scripts/controller/pi-live.py` (`Snapshot.consume` and `payload`),
 `scripts/controller/job-status.sh` (the printed field's label if the semantics
-become two facts), `scripts/controller/tests/fixtures/` (a new fixture whose
-stream ends in delta events carrying zero usage after a real completion),
-`scripts/controller/tests/test-pi-impl.sh` (the focused case plus a mutant),
-and the three documents named above.
+become two facts), `scripts/controller/tests/fixtures/` (a fixture capturing
+which events report 0, built from a real long run — plus, if the capture
+differs from it, a synthetic case where a real completion is followed by
+zero-valued reports), `scripts/controller/tests/test-pi-impl.sh` (the focused
+case plus a mutant), `scripts/controller/tests/fixtures/README.md` (the captured
+stream's shape), and the three documents named above.
 
 **Acceptance test idea.** TWO things must be asserted, one of each kind.
 Behaviour: a fixture where a real completion with a non-zero `totalTokens` is
