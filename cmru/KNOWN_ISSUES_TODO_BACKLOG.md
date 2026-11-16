@@ -14,6 +14,7 @@
 
 | ID | Status | Fix commit |
 | --- | --- | --- |
+| KI-173 | FIXED 2026-11-16 (estate argv failures explain shell-expanded values for typed options and their environment fallback) | this batch |
 | KI-171 | OPEN (the packaged cmru-cli SKILL is grammar-checked but not coverage-checked: a verb or flag a release adds can be missing from it with every existing test green) | — |
 | KI-170 | OPEN (bundle validator outcomes pinned; SPEC wording and R2 lane-cost policy remain) | — |
 | KI-169 | FIXED 2026-11-16 (bundle/client staging paths are resolved, disjoint descendants of `dist_dir`, and rechecked before cleanup) | this batch |
@@ -3758,7 +3759,7 @@ Call: `SOURCE_DATE_EPOCH=1700000000 DEMO_VERSION=1.0.0 cmru handler bundle-build
 
 ## KI-173 - `tester-unified-rust/build-image.sh` passed typed `cmru tester-gate` options as unexpanded shell words, so the estate argv check could not parse it
 
-**Status:** FIXED in this branch (filed 2026-11-15); severity: medium (the cmru lane `assay-r0-r1` failed on `main` because the Rust R-1 package, merged without that lane, added the script).
+**Status:** FIXED 2026-11-16 (filed 2026-11-15); severity: medium (the cmru lane `assay-r0-r1` failed on `main` because the Rust R-1 package, merged without that lane, added the script).
 
 **Observed (run).** `test_every_estate_cmru_argv_parses_against_the_registry` reported `tester-unified-rust/build-image.sh: cmru tester-gate --cwd run-gate-project --image ${tester_gate_values[0]} ... -> argument --cpus: CPU limit must be a finite decimal Docker can enforce`.
 
@@ -3769,6 +3770,8 @@ Call: `SOURCE_DATE_EPOCH=1700000000 DEMO_VERSION=1.0.0 cmru handler bundle-build
 **Wanted (open).** The checker's failure for a shell-expanded value of a typed option names only the type error; a message that says "shell-expanded value for a typed option, pass it through the environment" would save the next author a diagnosis.
 
 **Close when.** The wanted message exists with a test, or is recorded as intentionally not built.
+
+**Resolution/evidence (2026-11-16).** The CMRU estate argv checker now appends targeted advice when a parser rejects a shell-expanded value for a typed option: the static scan cannot validate the runtime value, so the script author should pass it through that option's documented environment variable. Literal typed-value errors and unrelated parser errors retain their existing diagnostic. `test_shell_expanded_value_for_typed_option_names_the_environment_fallback` was red before the change (`/tmp/run-gate/lanes/survivor-regressions/65365eb13a2bd9aae945c6cd7c49d90e.log`); the complete `test_w2_integ.py` file passed all 45 tests after the change (`/tmp/run-gate/lanes/survivor-regressions/587ab9a8e77fc02f55bcfcbf6f49449e.log`). Hand-mutant: disabling shell-expansion detection was killed by the new regression (1 failed) in `/tmp/run-gate/lanes/survivor-regressions/d780d317ee9b722503b61eb1c18ad6dc.log`. The fix is limited to CMRU's test helper; no other project was edited.
 
 ## KI-174 - packages that add `cmru` invocations or touch estate files merge without the cmru lane (gate-coverage gap)
 

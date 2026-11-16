@@ -446,7 +446,34 @@ def _registry_problem(argv: list[str], built) -> str | None:
     try:
         parser.parse_args(arguments)
     except Exception as exc:  # argparse/UsageError: the registry refuses this argv
-        return str(exc)
+        detail = str(exc)
+        option = _shell_expanded_typed_option(parser, arguments)
+        if option is not None and f"argument {option}:" in detail:
+            return (
+                f"{detail}; shell-expanded value for typed option {option} cannot be checked by "
+                "the static argv scan; pass it through the option's documented environment "
+                "variable instead"
+            )
+        return detail
+    return None
+
+
+def _shell_expanded_typed_option(parser, arguments: list[str]) -> str | None:
+    """Find a shell-expanded value supplied to an option with a registered type."""
+    actions = getattr(parser, "_option_string_actions", {})
+    for index, token in enumerate(arguments):
+        option, equals, inline_value = token.partition("=")
+        action = actions.get(option)
+        if action is None or action.type is None:
+            continue
+        if equals:
+            value = inline_value
+        elif action.nargs == 0 or index + 1 >= len(arguments):
+            continue
+        else:
+            value = arguments[index + 1]
+        if "$" in value:
+            return option
     return None
 
 
@@ -470,6 +497,27 @@ def test_the_validator_rejects_each_removed_spelling(registry):
     ) is None
     assert _registry_problem(["cmru", "cleanup", "--discard-build-worktree", "/p"], registry)
     assert _registry_problem(["cmru", "run", "--run-tests"], registry) is not None
+
+
+def test_shell_expanded_value_for_typed_option_names_the_environment_fallback(registry):
+    problem = _registry_problem(
+        [
+            "cmru", "tester-gate", "--cwd", "run-gate-project", "--cpus",
+            "${tester_gate_values[3]}", "--", "true",
+        ],
+        registry,
+    )
+
+    assert problem is not None
+    assert "shell-expanded value for typed option --cpus" in problem
+    assert "documented environment variable" in problem
+
+    literal_problem = _registry_problem(
+        ["cmru", "tester-gate", "--cwd", "run-gate-project", "--cpus", "many", "--", "true"],
+        registry,
+    )
+    assert literal_problem is not None and "CPU limit" in literal_problem
+    assert "shell-expanded value" not in literal_problem
 
 
 def test_the_text_scanner_finds_string_and_bash_c_invocations(registry):

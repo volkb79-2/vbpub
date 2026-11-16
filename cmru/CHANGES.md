@@ -32,6 +32,7 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
      the `fix(cmru): ...` commit subject. -->
 
 <!-- cmru: pending release notes begin -->
+- test(cmru): explain shell-expanded values for typed options in estate argv failures (KI-173).
 - fix(cmru): reject bundle staging paths that can escape or overlap dist_dir (KI-169).
 - fix(cmru): preflight the wheel-builder and cgroup-probe images before release dispatch (KI-168).
 
