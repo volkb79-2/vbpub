@@ -44,7 +44,9 @@ is a documented operator CLI but remains excluded because the project has no
 release or version metadata of its own; the DAMON kernel and `damo` versions
 recorded in its guide are host dependencies, not this CLI's version.
 The DAMON decision and its operator-facing scope are recorded in
-[`scripts/damon-analysis/SCRIPTS.md`](scripts/damon-analysis/SCRIPTS.md).
+[`scripts/damon-analysis/SCRIPTS.md`](scripts/damon-analysis/SCRIPTS.md);
+its known issues, open gaps and gate failures are in
+[`scripts/damon-analysis/KNOWN_ISSUES_TODO_BACKLOG.md`](scripts/damon-analysis/KNOWN_ISSUES_TODO_BACKLOG.md).
 
 Testing is uniform across the projects that adopted the gate entrypoint:
 install the current Run-Gate wheel, then `cd <project> && run-gate --list`
