@@ -424,3 +424,294 @@ def test_stop_state_cli_refuses_unsupported_formats_but_accepts_pi(tmp_path):
     reasonix = _stored(tmp_path / "reasonix.jsonl", [{"role": "user", "content": "x"}])
     with pytest.raises(ValueError, match="stop state does not support"):
         build_stop_state(reasonix, fmt="reasonix")
+
+
+# --- record shapes the real files vary on ---------------------------------------
+
+def test_record_timestamp_follows_the_record_that_carries_it(tmp_path):
+    from nyxloom.session_extract.adapters.pi import record_timestamp
+
+    assert record_timestamp({}, {"timestamp": 1790000000000}) == \
+        "2026-09-21T14:13:20+00:00"
+    # A boolean is an int subclass, so it must not be read as epoch-ms.
+    assert record_timestamp({}, {"timestamp": True}) == ""
+    assert record_timestamp({}, {"timestamp": "2026-01-01T09:00:00.000Z"}) == \
+        "2026-01-01T09:00:00.000Z"
+    # A stored message carries none; its WRAPPER carries the ISO string.
+    assert record_timestamp({"timestamp": "2026-01-01T09:00:00.000Z"}, {}) == \
+        "2026-01-01T09:00:00.000Z"
+    assert record_timestamp({"timestamp": 5}, {}) == ""
+    assert record_timestamp({}, {}) == ""
+
+
+def test_sniff_ignores_blank_lines_and_a_non_numeric_session_version(tmp_path):
+    path = _stored(tmp_path / "blank.jsonl", [
+        {},
+        {"type": "session", "version": True, "id": UUID, "cwd": CWD},
+    ])
+    assert pi.sniff(path) is False
+    # A blank line before the header is skipped rather than ending the scan.
+    path = tmp_path / "blank-then-header.jsonl"
+    path.write_text("\n" + json.dumps(_session_header()) + "\n", encoding="utf-8")
+    assert pi.sniff(path) is True
+
+
+def test_a_compaction_summary_is_read_from_both_shapes(tmp_path):
+    stream = _stored(tmp_path / "compaction-end.jsonl", [
+        _session_header(),
+        {"type": "compaction_start", "reason": "threshold"},
+        {"type": "compaction_end", "result": {"summary": "Synthetic summary."}},
+    ])
+    summaries = [event.text for event in _events(stream, hide_compaction_content=False)
+                 if event.kind is EventKind.LIFECYCLE_MARKER]
+    assert summaries == ["[compact summary] Synthetic summary."]
+    # A record whose result carries no summary still marks the boundary.
+    bare = _stored(tmp_path / "compaction-bare.jsonl", [
+        _session_header(),
+        {"type": "compaction_end", "result": {}},
+    ])
+    assert [event.text for event in _events(bare) if event.kind is EventKind.LIFECYCLE_MARKER] == \
+        ["[compact boundary]"]
+
+
+def test_a_content_block_of_an_unexpected_shape_adds_no_event(tmp_path):
+    path = _stored(tmp_path / "odd-blocks.jsonl", [
+        _session_header(),
+        _stored_message("user", []),
+        _stored_message("assistant", [
+            {"type": "text", "text": 7},
+            {"type": "image", "source": "ignored"},
+            {"type": "toolCall", "name": "bash", "arguments": {"command": "print x"}},
+            {"type": "toolCall", "id": "c3", "arguments": {"command": "print y"}},
+            {"type": "text", "text": "Real prose."},
+        ], stop_reason="stop"),
+    ])
+    events = _events(path, tool_calls="call")
+    assert [event.text for event in events] == ["[tool call: bash] $ print x", "Real prose."]
+
+
+def test_launcher_detection_skips_non_bash_calls_and_a_non_string_command(tmp_path):
+    path = _stored(tmp_path / "launch-odd.jsonl", [
+        _session_header(),
+        _stored_message("assistant", [
+            _call("c4", "read", path="/work/example-repo/a.py"),
+            _call("c5", "bash", command=7),
+            _call("c6", "bash", command="./scripts/controller/codex-impl.sh brief.md run"),
+        ], stop_reason="toolUse"),
+    ])
+    events = _events(path, agent_comms="summary",
+                     agent_launch_patterns=("codex-impl.sh",))
+    out = [event.text for event in events if event.kind is EventKind.AGENT_OUT]
+    assert len(out) == 1 and "brief.md" in out[0]
+
+
+def test_tool_file_meta_comes_from_either_argument_spelling(tmp_path):
+    path = _stored(tmp_path / "file-args.jsonl", [
+        _session_header(),
+        _stored_message("assistant", [
+            _call("c7", "read", file_path="/work/example-repo/b.py"),
+            _call("c8", "bash", command="print hi"),
+        ], stop_reason="toolUse"),
+    ])
+    calls = [event for event in _events(path, tool_calls="call")
+             if event.kind is EventKind.TOOL_CALL]
+    assert calls[0].meta["tool_file"] == "/work/example-repo/b.py"
+    assert "tool_file" not in calls[1].meta
+
+
+def test_parse_skips_blank_lines_and_json_that_is_not_an_object(tmp_path):
+    path = tmp_path / "ragged-records.jsonl"
+    path.write_text(
+        json.dumps(_session_header()) + "\n"
+        + "\n"
+        + json.dumps(["a list, not a record"]) + "\n"
+        + json.dumps(_stored_message("user", [_text("Synthetic operator prompt.")])) + "\n",
+        encoding="utf-8",
+    )
+    assert [event.text for event in _events(path)] == ["Synthetic operator prompt."]
+
+
+def test_stop_state_skips_a_record_whose_message_is_not_an_object(tmp_path):
+    path = tmp_path / "ragged-stop.jsonl"
+    path.write_text(
+        json.dumps(_session_header()) + "\n"
+        + "\n"
+        + json.dumps({"type": "message", "message": "not an object"}) + "\n"
+        + json.dumps(_stored_message("assistant", [_text("Real prose.")], stop_reason="stop")) + "\n",
+        encoding="utf-8",
+    )
+    state = build_stop_state(path, fmt="pi")
+    assert state.last_text == "Real prose."
+    assert "completed message" in state.cause
+
+
+def test_stop_state_appends_the_recorded_error_detail(tmp_path):
+    path = _stored(tmp_path / "error-detail.jsonl", [
+        _session_header(),
+        _stored_message("assistant", [], stop_reason="error",
+                        error="synthetic provider failure"),
+    ])
+    assert build_stop_state(path, fmt="pi").cause.endswith(
+        "-- synthetic provider failure"
+    )
+
+
+def test_sniff_skips_a_line_that_is_not_json(tmp_path):
+    path = tmp_path / "broken-line.jsonl"
+    path.write_text(
+        "not json at all\n" + json.dumps(_session_header()) + "\n", encoding="utf-8"
+    )
+    assert pi.sniff(path) is True
+
+
+def test_a_compaction_result_that_is_not_an_object_carries_no_summary(tmp_path):
+    path = _stored(tmp_path / "compaction-result.jsonl", [
+        _session_header(),
+        {"type": "compaction_end", "result": "a string, not an object"},
+    ])
+    assert [event.text for event in _events(path) if event.kind is EventKind.LIFECYCLE_MARKER] == \
+        ["[compact boundary]"]
+
+
+def test_a_tool_call_without_a_dict_of_arguments_still_renders(tmp_path):
+    path = _stored(tmp_path / "odd-arguments.jsonl", [
+        _session_header(),
+        _stored_message("assistant", [
+            {"type": "toolCall", "id": "c9", "name": "bash", "arguments": "print hi"},
+        ], stop_reason="toolUse"),
+    ])
+    event = next(event for event in _events(path, tool_calls="call")
+                 if event.kind is EventKind.TOOL_CALL)
+    assert event.meta["tool"] == "bash" and "tool_file" not in event.meta
+
+
+def test_stop_state_survives_a_truncated_last_record(tmp_path):
+    path = tmp_path / "truncated-stop.jsonl"
+    path.write_text(
+        json.dumps(_session_header()) + "\n"
+        + "\n"
+        + json.dumps(_stored_message("assistant", [_text("Real prose.")], stop_reason="stop")) + "\n"
+        + '{"type": "message", "message": {"role": "assis',
+        encoding="utf-8",
+    )
+    state = build_stop_state(path, fmt="pi")
+    assert state.last_text == "Real prose."
+
+
+def test_stop_state_ignores_call_records_without_an_id(tmp_path):
+    path = _stored(tmp_path / "no-id.jsonl", [
+        _session_header(),
+        _stored_message("assistant", [
+            _text("Calling."),
+            {"type": "toolCall", "arguments": {"command": "print hi"}},
+        ], stop_reason="toolUse"),
+        {"type": "tool_execution_start", "toolName": "read", "args": {"path": "a.py"}},
+    ])
+    state = build_stop_state(path, fmt="pi")
+    # No id anywhere -> nothing to pair, so nothing is "in flight".
+    assert state.in_flight is None
+    assert read_pi_facts(path).tool_call_count == 1
+
+
+def test_stop_state_reads_an_assistant_record_without_a_stop_reason(tmp_path):
+    path = _stored(tmp_path / "no-reason.jsonl", [
+        _session_header(),
+        _stored_message("assistant", [_text("Real prose.")]),
+    ])
+    state = build_stop_state(path, fmt="pi")
+    assert state.last_text == "Real prose."
+    assert "completed message" in state.cause
+
+
+def test_stop_state_prefers_an_open_execution_and_falls_back_to_an_open_call(tmp_path):
+    # A closed execution plus a later message-level call: the execution loop
+    # finds nothing open and the message-level bookkeeping answers instead.
+    path = _stored(tmp_path / "mixed.jsonl", [
+        _session_header(),
+        {"type": "tool_execution_start", "toolCallId": "ex1", "toolName": "bash",
+         "args": {"command": "print one"}},
+        {"type": "tool_execution_end", "toolCallId": "ex1", "toolName": "bash"},
+        _stored_message("assistant", [_call("c10", "bash", command="print two")],
+                        stop_reason="toolUse"),
+    ])
+    assert build_stop_state(path, fmt="pi").in_flight == "bash: $ print two"
+
+    # A closed call BEFORE an open one: the backward scan must skip the closed
+    # one rather than reporting it as the call that never returned.
+    path = _stored(tmp_path / "ordered.jsonl", [
+        _session_header(),
+        _stored_message("assistant", [_call("c11", "bash", command="print first")],
+                        stop_reason="toolUse"),
+        _stored_message("toolResult", [_text("first")]),
+        _stored_message("assistant", [_call("c12", "bash", command="print second")],
+                        stop_reason="toolUse"),
+    ])
+    assert build_stop_state(path, fmt="pi").in_flight == "bash: $ print second"
+
+
+def test_stop_state_skips_a_line_that_is_json_but_not_an_object(tmp_path):
+    path = tmp_path / "list-record.jsonl"
+    path.write_text(
+        json.dumps(_session_header()) + "\n"
+        + json.dumps(["not a record"]) + "\n"
+        + json.dumps(_stored_message("assistant", [_text("Real prose.")], stop_reason="stop")) + "\n",
+        encoding="utf-8",
+    )
+    assert build_stop_state(path, fmt="pi").last_text == "Real prose."
+
+
+def test_stop_state_scans_past_a_closed_execution_to_the_older_open_one(tmp_path):
+    # A newer execution that already closed must be SKIPPED, not reported as
+    # the call that never returned; the older open one is the answer.
+    path = _stored(tmp_path / "executions-ordered.jsonl", [
+        _session_header(),
+        {"type": "tool_execution_start", "toolCallId": "old", "toolName": "bash",
+         "args": {"command": "print older"}},
+        {"type": "tool_execution_start", "toolCallId": "new", "toolName": "bash",
+         "args": {"command": "print newer"}},
+        {"type": "tool_execution_end", "toolCallId": "new", "toolName": "bash"},
+        _stored_message("assistant", [_call("c14", "bash", command="print third")],
+                        stop_reason="toolUse"),
+    ])
+    assert build_stop_state(path, fmt="pi").in_flight == "bash: $ print older"
+
+
+def test_stop_state_message_level_scan_skips_a_closed_call_too(tmp_path):
+    # calls_in_order = [closed, open, closed]: the backward scan must step
+    # over the newer CLOSED call and reach the open one before it.
+    def recorded(call_id: str, command: str) -> dict:
+        return _stored_message("assistant", [_call(call_id, "bash", command=command)],
+                               stop_reason="toolUse")
+
+    result = {"type": "message", "message": {"role": "toolResult", "toolCallId": "c30",
+                                             "content": [_text("done")]}}
+    later_result = {"type": "message", "message": {"role": "toolResult", "toolCallId": "c32",
+                                                   "content": [_text("done")]}}
+    path = _stored(tmp_path / "message-order.jsonl", [
+        _session_header(),
+        recorded("c30", "print one"),
+        result,
+        recorded("c31", "print two"),
+        recorded("c32", "print three"),
+        later_result,
+        recorded("c31", "print four"),
+    ])
+    assert build_stop_state(path, fmt="pi").in_flight == "bash: $ print four"
+
+
+def test_stop_state_steps_over_a_closed_message_call_before_the_open_one(tmp_path):
+    # The file ENDS on a tool_execution_start with no id (so "call" is the last
+    # kind and no EXECUTION is open), and the newest MESSAGE-level call is
+    # already closed: the loop must skip it and reach the older open call.
+    path = _stored(tmp_path / "closed-newest.jsonl", [
+        _session_header(),
+        _stored_message("assistant", [_call("c70", "bash", command="print open")],
+                        stop_reason="toolUse"),
+        _stored_message("assistant", [_call("c71", "bash", command="print closed")],
+                        stop_reason="toolUse"),
+        {"type": "message", "message": {"role": "toolResult", "toolCallId": "c71",
+                                        "content": [_text("closed")]}},
+        {"type": "tool_execution_start", "toolName": "read", "args": {"path": "a.py"}},
+    ])
+    assert build_stop_state(path, fmt="pi").in_flight == "bash: $ print open"
+

@@ -934,3 +934,75 @@ def test_an_unknown_pi_uuid_errors_naming_the_pi_root(home, monkeypatch):
     with pytest.raises(LocateError) as e:
         resolve_session_ref("04fcd848-15cb-48c2-b8fe-2ff2f6601000")
     assert "pi's" in str(e.value) and ".pi/agent/sessions" in str(e.value)
+
+
+def test_a_pi_store_walk_is_recursive_and_deduplicates_aliased_paths(home, monkeypatch, tmp_path):
+    monkeypatch.delenv("PI_CODING_AGENT_SESSION_DIR", raising=False)
+    monkeypatch.delenv("PI_CODING_AGENT_DIR", raising=False)
+    # A NON-directory entry under the store root, plus a same-file alias, must
+    # neither end the walk nor report the session twice.
+    sessions = home / ".pi" / "agent" / "sessions"
+    sessions.mkdir(parents=True, exist_ok=True)
+    (sessions / "a-file-not-a-directory").write_text("x", encoding="utf-8")
+    real = _pi_session(home, _PI_UUID)
+    alias = tmp_path / f"2026-01-01T00-00-00-000Z_{_PI_UUID}.jsonl"
+    alias.symlink_to(real)
+    matches = locate._pi_matches(_PI_UUID)
+    # ONE file behind two names and a cycle: sorted by name, deduplicated by
+    # inode, so exactly one match -- never two reports of the same session.
+    assert len(matches) == 1
+    assert matches[0].stat().st_ino == real.stat().st_ino
+
+
+def test_a_pi_store_root_that_disappears_mid_walk_is_not_an_error(home, monkeypatch):
+    monkeypatch.delenv("PI_CODING_AGENT_SESSION_DIR", raising=False)
+    monkeypatch.delenv("PI_CODING_AGENT_DIR", raising=False)
+    assert locate._pi_matches(_PI_UUID) == []
+
+
+def test_a_pi_store_that_is_not_a_directory_yields_no_match(home, monkeypatch):
+    monkeypatch.delenv("PI_CODING_AGENT_SESSION_DIR", raising=False)
+    monkeypatch.delenv("PI_CODING_AGENT_DIR", raising=False)
+    not_a_store = home / "not-a-store"
+    not_a_store.write_text("x", encoding="utf-8")
+    monkeypatch.setattr(locate, "_pi_sessions_roots", lambda: [not_a_store])
+    assert locate._pi_matches(_PI_UUID) == []
+
+
+def test_a_pi_store_directory_metadata_failure_is_indeterminate(home, monkeypatch):
+    monkeypatch.delenv("PI_CODING_AGENT_SESSION_DIR", raising=False)
+    monkeypatch.delenv("PI_CODING_AGENT_DIR", raising=False)
+    denied = home / "denied-store"
+    original_stat = locate.Path.stat
+
+    def fail_stat(path, *args, **kwargs):
+        if path == denied:
+            raise PermissionError("metadata denied")
+        return original_stat(path, *args, **kwargs)
+
+    monkeypatch.setattr(locate, "_pi_sessions_roots", lambda: [denied])
+    monkeypatch.setattr(locate.Path, "stat", fail_stat)
+    with pytest.raises(LocateError, match="indeterminate"):
+        locate._pi_matches(_PI_UUID)
+
+
+def test_a_pi_store_symlink_cycle_neither_recurses_forever_nor_double_reports(home, monkeypatch):
+    monkeypatch.delenv("PI_CODING_AGENT_SESSION_DIR", raising=False)
+    monkeypatch.delenv("PI_CODING_AGENT_DIR", raising=False)
+    sessions = home / ".pi" / "agent" / "sessions"
+    project = sessions / "--workspaces-repo--"
+    project.mkdir(parents=True, exist_ok=True)
+    real = project / f"2026-01-01T00-00-00-000Z_{_PI_UUID}.jsonl"
+    real.write_text("{}\n", encoding="utf-8")
+    # A directory cycle: the walk must visit each inode once.
+    (project / "loop").symlink_to(sessions, target_is_directory=True)
+    # A same-file alias in a SECOND project directory: one file, one match.
+    other = sessions / "--other--"
+    other.mkdir()
+    (other / f"2026-01-01T00-00-00-001Z_{_PI_UUID}.jsonl").symlink_to(real)
+    matches = locate._pi_matches(_PI_UUID)
+    # ONE file behind two names and a directory cycle: deduplicated by inode,
+    # so it is reported once and the walk terminates.
+    assert len(matches) == 1
+    assert matches[0].stat().st_ino == real.stat().st_ino
+

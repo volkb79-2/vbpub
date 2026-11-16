@@ -264,9 +264,9 @@ def paragraph_cut(text: str, limit_chars: int) -> int:
     """Length of the longest paragraph-boundary prefix of `text` fitting
     `limit_chars`: the cut falls after a blank line, never mid-paragraph.
     Returns 0 when not even the first paragraph fits, so the caller discloses
-    the omission instead of emitting half an instruction."""
-    if len(text) <= limit_chars:
-        return len(text)
+    the omission instead of emitting half an instruction, and len(text) when
+    everything fits -- the loop's own normal exit, so there is no
+    impossible-to-reach branch here."""
     kept = 0
     for block in text.split("\n\n"):
         needed = 2 if kept else 0

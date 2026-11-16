@@ -662,3 +662,16 @@ def test_state_file_cli_contract(capsys, tmp_path, argv, message):
     code, _, err = _run(capsys, LAYOUT, *argv)
     assert code != 0
     assert message in err
+
+
+def test_paragraph_cut_keeps_whole_paragraphs_and_refuses_a_partial_first_one():
+    from nyxloom.session_extract.layout import paragraph_cut
+
+    text = "first paragraph\n\nsecond paragraph\n\nthird"
+    # The whole text fits: the cut is its own length, not a paragraph prefix.
+    assert paragraph_cut(text, len(text)) == len(text)
+    assert paragraph_cut(text, len(text) - 1) == len("first paragraph\n\nsecond paragraph")
+    # Not even the first paragraph fits -> 0, so the caller discloses instead
+    # of emitting half an instruction.
+    assert paragraph_cut(text, 5) == 0
+
