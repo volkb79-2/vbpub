@@ -8,6 +8,17 @@
 #
 #   SUCCESS          settled `stop` with assistant text, a clean worktree, and
 #                    the expected report present when a report path is known.
+#   TOOL-CALL-NO-TEXT a settled `stop` whose final assistant message carried a
+#                    tool call and no text. Not a success: the run ended on a
+#                    call, so the work it was about to do is not evidenced. Not
+#                    an EMPTY-COMPLETION either (that class is "no text AND no
+#                    tool call") and therefore never continued.
+#   CONTEXT-FULL     a settled run whose final `stopReason` is `length`: the
+#                    context window filled and the harness stopped the model.
+#                    The work is intact; the controller starts a FRESH successor
+#                    from the run's forward-oriented state file. The wrapper
+#                    never continues it (continuing a full context is the one
+#                    continuation that cannot succeed).
 #   EMPTY-COMPLETION the final assistant message carried no text (empty or
 #                    thinking-only) and no tool call. This is a provider/model
 #                    anomaly, not a limit: the wrapper continues the same
@@ -19,8 +30,10 @@
 #   NO-REPORT        the expected report file is missing.
 #   USAGE-LIMIT      a provider 402 `insufficient_balance` stop.
 #   ERROR            a provider error stop, or a nonzero pi exit.
-#   INCOMPLETE       a settled or unreadable stream that is not a stop, or a
-#                    finish whose worktree status cannot be read.
+#   INCOMPLETE       a settled or unreadable stream that is not a stop and not
+#                    a named limit (an aborted or unsettled stream, a stop the
+#                    classifier cannot attribute), or a finish whose worktree
+#                    status cannot be read.
 #
 # The expected report is `--report <path>` or `PI_REPORT`; unset means no
 # report check. Every active run also gets <run>.live (liveness/progress,
@@ -377,9 +390,21 @@ classify_run() {
     echo ERROR
   elif [[ $rc != 0 ]]; then
     echo ERROR
-  elif [[ $settled != 1 || $aborted != 0 || -z $thread_id || $stop_reason != stop ]]; then
+  elif [[ $settled != 1 || $aborted != 0 || -z $thread_id ]]; then
     echo INCOMPLETE
-  elif [[ $has_text != 1 && $has_tool_call != 1 ]]; then
+  elif [[ $stop_reason == length ]]; then
+    # The context window filled: a real end state of a long run, with a DIFFERENT
+    # remedy from an unattributable stream. Decided before the generic
+    # not-a-stop branch, and never continued.
+    echo CONTEXT-FULL
+  elif [[ $stop_reason != stop ]]; then
+    echo INCOMPLETE
+  elif [[ $has_text != 1 && $has_tool_call == 1 ]]; then
+    # A settled message that ends on a tool call and says nothing: the run
+    # stopped mid-work. Not a success (the contract requires text), and not an
+    # EMPTY-COMPLETION (that class is the one the wrapper continues).
+    echo TOOL-CALL-NO-TEXT
+  elif [[ $has_text != 1 ]]; then
     # No text and no tool call: pi treats that as the end of the run, so a
     # provider/model anomaly shows up as an exit-0 stop with nothing said.
     echo EMPTY-COMPLETION

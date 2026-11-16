@@ -81,6 +81,12 @@ expect_killed job-check-pi-route \
   env JOB_CHECK_SCRIPT="$ROOT/mutants/scripts/controller/job-check-pi-route.sh" bash "$SCRIPT_DIR/test-job-check.sh"
 expect_killed job-check-pi-message-end \
   env JOB_CHECK_SCRIPT="$ROOT/mutants/scripts/controller/job-check-pi-message-end.sh" bash "$SCRIPT_DIR/test-job-check.sh"
+expect_killed job-check-context-full-class \
+  env JOB_CHECK_SCRIPT="$ROOT/mutants/scripts/controller/job-check-context-full-class.sh" bash "$SCRIPT_DIR/test-job-check.sh"
+expect_killed job-check-tool-call-no-text-class \
+  env JOB_CHECK_SCRIPT="$ROOT/mutants/scripts/controller/job-check-tool-call-no-text-class.sh" bash "$SCRIPT_DIR/test-job-check.sh"
+expect_killed job-check-tool-call-part-detection \
+  env JOB_CHECK_SCRIPT="$ROOT/mutants/scripts/controller/job-check-tool-call-part-detection.sh" bash "$SCRIPT_DIR/test-job-check.sh"
 expect_killed job-check-pi-402-error-code \
   env JOB_CHECK_SCRIPT="$ROOT/mutants/scripts/controller/job-check-pi-402-error-code.sh" bash "$SCRIPT_DIR/test-job-check.sh"
 expect_killed usage-retry-pi-error-message \
@@ -127,7 +133,9 @@ for pi_case in \
   pi-key-volker-export:volker-key-export pi-key-unselected-unset:unselected-key-unset \
   pi-volker-key-xtrace:xtrace-key pi-github2-key-xtrace:xtrace-key \
   pi-error-outcome:outcome-error pi-nonzero-exit-outcome:outcome-rc \
-  pi-success-stop-only:outcome-length \
+  pi-success-stop-only:outcome-stop-other pi-context-full-missing:outcome-length \
+  pi-context-full-order:outcome-length pi-context-full-continued:outcome-length \
+  pi-tool-call-no-text-success:outcome-tool-call \
   pi-empty-completion-class:outcome-empty pi-thinking-only-class:outcome-empty \
   pi-uncommitted-class:outcome-uncommitted pi-no-report-class:outcome-no-report \
   pi-worktree-git-fact:repo-not-a-worktree \

@@ -130,6 +130,26 @@ CONTROLLER_HOME=$HOME_ROOT CONTROLLER_REPO=$REPO CONTROLLER_BASE_REF=origin/main
 contains "$ROOT/route-pi.out" 'trailers OK (all commits incl. merges: deepseek-pi-volker)' 'pi route is accepted by job-check'
 contains "$ROOT/route-pi.out" 'last: Completed the fixture task.' 'pi assistant message is included in the run summary'
 contains "$ROOT/route-pi.out" 'JOB-CHECK: green' 'completed pi run is recognized as complete'
+cp "$SCRIPT_DIR/fixtures/pi-length.jsonl" "$HOME_ROOT/runs/pi-length.jsonl"
+printf 'EXIT=0 OUTCOME=CONTEXT-FULL\n' > "$HOME_ROOT/runs/pi-length.done"
+if CONTROLLER_HOME=$HOME_ROOT CONTROLLER_REPO=$REPO CONTROLLER_BASE_REF=origin/main \
+  "$SRC" pi-length "$REPO" deepseek-pi-volker > "$ROOT/pi-length-check.out" 2>&1; then
+  fail 'a context-full pi run was accepted as a finished job'
+fi
+contains "$ROOT/pi-length-check.out" 'CONTEXT-FULL (assistant stopReason=length' \
+  'job-check names the context-full class'
+contains "$ROOT/pi-length-check.out" 'OUTCOME=CONTEXT-FULL' 'job-check echoes the recorded class'
+cp "$SCRIPT_DIR/fixtures/pi-stop-tool-call-no-text.jsonl" "$HOME_ROOT/runs/pi-tool-call.jsonl"
+printf 'EXIT=0 OUTCOME=TOOL-CALL-NO-TEXT\n' > "$HOME_ROOT/runs/pi-tool-call.done"
+if CONTROLLER_HOME=$HOME_ROOT CONTROLLER_REPO=$REPO CONTROLLER_BASE_REF=origin/main \
+  "$SRC" pi-tool-call "$REPO" deepseek-pi-volker > "$ROOT/pi-tool-call-check.out" 2>&1; then
+  fail 'a tool-call-with-no-text pi run was accepted as a finished job'
+fi
+contains "$ROOT/pi-tool-call-check.out" 'TOOL-CALL-NO-TEXT (final assistant message is a tool call' \
+  'job-check names the tool-call-no-text class'
+if grep -qF 'EMPTY-RUN' "$ROOT/pi-tool-call-check.out"; then
+  fail 'a tool-call-no-text run was reported as an empty run'
+fi
 cp "$SCRIPT_DIR/fixtures/pi-402.jsonl" "$HOME_ROOT/runs/pi-402.jsonl"
 printf 'EXIT=0 OUTCOME=USAGE-LIMIT\n' > "$HOME_ROOT/runs/pi-402.done"
 if CONTROLLER_HOME=$HOME_ROOT CONTROLLER_REPO=$REPO CONTROLLER_BASE_REF=origin/main \

@@ -240,9 +240,20 @@ re-derive it.
 5. **Anomaly classes** — one closed vocabulary shared by the wrapper, the
    liveness file and ctlstat, so a stall is named the same way everywhere:
    `EMPTY-COMPLETION`, `EMPTY-COMPLETION-RETRIES-EXHAUSTED`, `UNCOMMITTED`,
-   `NO-REPORT`, `USAGE-LIMIT`, `ERROR`, `INCOMPLETE`, plus the read-side states
-   `STALLED`, `HUNG-TOOL`, `WRAPPER-DEAD`, `NO-LIVE`. An unknown value reads as
-   "unknown", never as `SUCCESS`.
+   `NO-REPORT`, `USAGE-LIMIT`, `ERROR`, `INCOMPLETE`, `TOOL-CALL-NO-TEXT`,
+   `CONTEXT-FULL`, plus the read-side states
+   `STALLED`, `HUNG-TOOL`, `LONG-TOOL`, `WRAPPER-DEAD`, `NO-LIVE`, `DIED`. An
+   unknown value reads as "unknown", never as `SUCCESS`. `CONTEXT-FULL`
+   (a settled `stopReason=length`) is the one class whose action is a FRESH
+   successor session seeded from the run's forward-oriented state file: the
+   work is intact, continuing a full context window cannot succeed, and the
+   restart cost is the controller's decision rather than a wrapper reflex.
+   `TOOL-CALL-NO-TEXT` (a settled stop whose final message is a tool call with
+   no text) is not `SUCCESS` and is not continued. `LONG-TOOL` (a tool past
+   its age threshold that is still showing progress evidence) is deliberately
+   distinguished from `HUNG-TOOL` (past the threshold with no progress
+   evidence), because the first is a working job and the second is a job whose
+   tool needs the controller's decision.
 6. **Restart-vs-continue decision inputs** — in one row: the anomaly class, the
    session id (resume handle), whether the worktree has commits and whether it
    is clean, the report state, and the measured cost of each option (the

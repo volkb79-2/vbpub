@@ -1,5 +1,16 @@
 #!/usr/bin/env bash
 # Mechanical run/worktree evidence check. Read-only; exits nonzero on red flags.
+#
+# Completed pi runs carry their terminal class in `.done` and in the stream. Two
+# classes of that vocabulary are named here so the controller cannot miss them:
+#   CONTEXT-FULL       the assistant stopReason is `length` (the context window
+#                      filled). A real end state: start a FRESH successor from
+#                      the run's forward-oriented state file; never continue the
+#                      full context.
+#   TOOL-CALL-NO-TEXT  a settled `stop` whose final message is a tool call with
+#                      no text: the run ended mid-work. Inspect the worktree and
+#                      the last tool output, then resume or restart.
+# Both are red flags here; neither is `SUCCESS` and neither is `EMPTY-RUN`.
 # Usage: job-check.sh <run-name> <worktree-path> <luna|sol|deepseek|deepseek-volker|deepseek-github2|deepseek-pi|deepseek-pi-volker|deepseek-pi-github2|opencode|any|none> [absolute-report-path ...]
 set -uo pipefail
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
@@ -60,6 +71,7 @@ last_error = ""
 pi_detected = False
 pi_stop_reason = None
 pi_usage_limited = False
+pi_has_tool_call = False
 
 def pi_text(message):
     content = message.get("content")
@@ -115,6 +127,10 @@ for line in open(sys.argv[1], encoding="utf-8", errors="replace"):
             last_message = pi_text(message)
             messages += 1
             pi_stop_reason = message.get("stopReason")
+            content = message.get("content")
+            pi_has_tool_call = isinstance(content, list) and any(
+                isinstance(part, dict) and part.get("type") == "toolCall" for part in content
+            )
             if pi_stop_reason == "error":
                 usage_reset = sys.argv[2] or None
                 pi_usage_limited = pi_402_error(message.get("errorMessage"))
@@ -158,7 +174,20 @@ usage_limited = (
 if not usage_limited:
     if pi_detected and pi_stop_reason == "error":
         flags.append("PI-ERROR (assistant stopReason=error)")
-    if not text:
+    if pi_detected and pi_stop_reason == "length":
+        # The context window filled: a real end state with its own remedy, not
+        # an unattributable stream and not a finished job.
+        flags.append(
+            "CONTEXT-FULL (assistant stopReason=length; start a fresh successor "
+            "from the run's state file)"
+        )
+    elif pi_detected and pi_stop_reason == "stop" and pi_has_tool_call and not text:
+        # A final message that is a tool call with no text ended mid-work.
+        flags.append(
+            "TOOL-CALL-NO-TEXT (final assistant message is a tool call with no "
+            "text; inspect the worktree, then resume or restart)"
+        )
+    elif not text:
         flags.append("EMPTY-RUN (no final agent message)")
     else:
         if re.search(r"\b(i.?ll|i will|next,? i|now i.?ll|i.?m (now )?(going to|moving|running|rerunning|checking|writing))\b", low[-400:]) and not re.search(r"(report|head|verdict|pass|fail|complete)", low[-250:]):

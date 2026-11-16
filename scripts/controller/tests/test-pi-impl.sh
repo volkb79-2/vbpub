@@ -214,10 +214,42 @@ PY
 }
 
 check_outcome_length() {
-  CONTROLLER_OD_STATE=$ROOT/outcome-length-state.json \
+  local before after
+  before=$(pi_invocations)
+  CONTROLLER_OD_STATE=$ROOT/outcome-length-state.json PI_LIVE=0 \
     wait_launch outcome-length deepseek-pi-volker pi-length /dev/null
-  [[ $(cat "$CONTROLLER_ROOT/runs/outcome-length.done") == 'EXIT=0 OUTCOME=INCOMPLETE' ]] \
-    || fail 'a settled pi run whose final stopReason is not stop is not a success'
+  after=$(pi_invocations)
+  [[ $(head -n 1 "$CONTROLLER_ROOT/runs/outcome-length.done") == 'EXIT=0 OUTCOME=CONTEXT-FULL' ]] \
+    || fail 'a settled stopReason=length run is not classified CONTEXT-FULL'
+  # CONTEXT-FULL is a real end state: the wrapper must NOT continue it (a full
+  # context is the one class a same-session continuation cannot finish).
+  [[ $(( after - before )) == 1 ]] || fail "a CONTEXT-FULL run was continued ($(( after - before )) pi invocations, expected 1)"
+  grep -qF 'empty-completion-retry' "$CONTROLLER_ROOT/runs/outcome-length.events" 2>/dev/null \
+    && fail 'a CONTEXT-FULL run recorded an empty-completion continuation'
+}
+
+# A settled stream whose stop reason is neither `stop` nor a named limit: the
+# unattributable class, and never a success.
+check_outcome_stop_other() {
+  CONTROLLER_OD_STATE=$ROOT/outcome-other-stop-state.json PI_LIVE=0 \
+    wait_launch outcome-other-stop deepseek-pi-volker pi-settled-other-stop /dev/null
+  [[ $(head -n 1 "$CONTROLLER_ROOT/runs/outcome-other-stop.done") == 'EXIT=0 OUTCOME=INCOMPLETE' ]] \
+    || fail 'a settled stream whose stop reason is not stop or length is not INCOMPLETE'
+}
+
+# A settled stop whose final message is a tool call and no text is not a
+# success, and is not the continued EMPTY-COMPLETION class either.
+check_outcome_tool_call_no_text() {
+  local before after
+  before=$(pi_invocations)
+  CONTROLLER_OD_STATE=$ROOT/outcome-tool-call-state.json PI_LIVE=0 \
+    wait_launch outcome-tool-call deepseek-pi-volker pi-stop-tool-call-no-text /dev/null
+  after=$(pi_invocations)
+  [[ $(head -n 1 "$CONTROLLER_ROOT/runs/outcome-tool-call.done") == 'EXIT=0 OUTCOME=TOOL-CALL-NO-TEXT' ]] \
+    || fail 'a settled stop with a tool call and no text is not TOOL-CALL-NO-TEXT'
+  [[ $(( after - before )) == 1 ]] || fail 'a tool-call-no-text run was continued'
+  grep -qF 'empty-completion-retry' "$CONTROLLER_ROOT/runs/outcome-tool-call.events" 2>/dev/null \
+    && fail 'a tool-call-no-text run recorded an empty-completion continuation'
 }
 
 check_outcome_rc() {
@@ -792,7 +824,9 @@ if [[ -n ${PI_TEST_FOCUS:-} ]]; then
   case $PI_TEST_FOCUS in
     xtrace-key) check_xtrace_key ;;
     outcome-error) check_outcome_error ;;
-    outcome-length) check_outcome_length ;;
+    outcome-length) clean_worktree; check_outcome_length ;;
+    outcome-tool-call) clean_worktree; check_outcome_tool_call_no_text ;;
+    outcome-stop-other) clean_worktree; check_outcome_stop_other ;;
     outcome-rc) check_outcome_rc ;;
     git-unreadable) clean_worktree; check_outcome_git_unreadable ;;
     retry-stream) clean_worktree; check_retry_streams_into_run ;;
@@ -1220,6 +1254,13 @@ PY
       contains "$RULES_SOURCE" 'deepseek-pi-volker' 'rules list the pinned Pi routes'
       contains "$ENV_SOURCE" 'PI_THINKING="high"' 'environment example documents Pi thinking'
       contains "$README_SOURCE" 'OUTCOME=NO-REPORT' 'README documents the report outcome'
+      contains "$README_SOURCE" '`CONTEXT-FULL`' 'README documents the context-full class'
+      contains "$README_SOURCE" '`TOOL-CALL-NO-TEXT`' 'README documents the tool-call-no-text class'
+      contains "$DESIGN_SOURCE" '`CONTEXT-FULL` is the real end state of' \
+        'design guide explains why context-full is its own class'
+      contains "$DESIGN_SOURCE" '`TOOL-CALL-NO-TEXT` is' 'design guide explains the tool-call-no-text class'
+      contains "$CONSUMER_SOURCE" '| `CONTEXT-FULL` |' 'consumer guide gives the context-full action'
+      contains "$CONSUMER_SOURCE" '| `TOOL-CALL-NO-TEXT` |' 'consumer guide gives the tool-call-no-text action'
       contains "$README_SOURCE" "\`EMPTY-COMPLETION\`" 'README documents the empty-completion outcome'
       contains "$DESIGN_SOURCE" 'Why the terminal outcome is classified' 'design guide explains the outcome classification'
       contains "$CONSUMER_SOURCE" "\`.done\` outcome" 'consumer guide gives the outcome vocabulary'
@@ -1473,6 +1514,8 @@ contains "$ROOT/run-traversal.log" 'invalid run name' 'pi run name traversal gua
 check_xtrace_key
 check_outcome_error
 check_outcome_length
+check_outcome_tool_call_no_text
+check_outcome_stop_other
 check_outcome_rc
 
 check_outcome_success_report

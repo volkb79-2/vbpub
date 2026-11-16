@@ -53,7 +53,7 @@ mutant("scripts/controller/ctl-status.sh", "ctl-status-infra.sh",
 mutant("scripts/controller/ctl-status.sh", "ctl-status-flag.sh",
        "${flag_mtime:-0} -gt $pass_epoch", "${flag_mtime:-0} -lt $pass_epoch")
 mutant("scripts/controller/job-check.sh", "job-check-empty-final.sh",
-       '    if not text:', '    if False:')
+       '    elif not text:', '    elif False:')
 mutant("scripts/controller/job-check.sh", "job-check-tool-call-case.sh",
        "text[-600:], re.M | re.I", "text[-600:], re.M")
 mutant("scripts/controller/job-check.sh", "job-check-report-path.sh",
@@ -313,6 +313,17 @@ mutant("scripts/controller/job-check.sh", "job-check-pi-message-end.sh",
        'elif event_type == "message_end":', 'elif event_type == "pi_message_end":')
 mutant("scripts/controller/job-check.sh", "job-check-pi-402-error-code.sh",
        'pi_usage_limited = pi_402_error(message.get("errorMessage"))', 'pi_usage_limited = False')
+# A context-full run is a real end state with its own remedy, and a final
+# message that is a tool call with no text ended mid-work: neither may read as
+# an ordinary finished/unfinished job.
+mutant("scripts/controller/job-check.sh", "job-check-context-full-class.sh",
+       '    if pi_detected and pi_stop_reason == "length":', '    if False:')
+mutant("scripts/controller/job-check.sh", "job-check-tool-call-no-text-class.sh",
+       '    elif pi_detected and pi_stop_reason == "stop" and pi_has_tool_call and not text:',
+       '    elif False:')
+mutant("scripts/controller/job-check.sh", "job-check-tool-call-part-detection.sh",
+       '                isinstance(part, dict) and part.get("type") == "toolCall" for part in content',
+       '                isinstance(part, dict) and part.get("type") == "tool_call" for part in content')
 mutant("scripts/controller/lib.sh", "usage-retry-pi-error-message.sh",
        'gateway_text_reset(event) or coding_plan_reset(event) or pi_error_reset(event)',
        'gateway_text_reset(event) or coding_plan_reset(event)')
@@ -421,9 +432,28 @@ mutant("scripts/controller/pi-impl.sh", "pi-error-outcome.sh",
 mutant("scripts/controller/pi-impl.sh", "pi-nonzero-exit-outcome.sh",
        'elif [[ $rc != 0 ]]; then\n    echo ERROR',
        'elif false; then\n    echo ERROR')
+# A settled stopReason that is not `stop` must not read as a success.
 mutant("scripts/controller/pi-impl.sh", "pi-success-stop-only.sh",
-       '|| -z $thread_id || $stop_reason != stop ]]; then',
-       '|| -z $thread_id || -z $stop_reason ]]; then')
+       'elif [[ $stop_reason != stop ]]; then\n    echo INCOMPLETE',
+       'elif false; then\n    echo INCOMPLETE')
+# A full context window is its own class, decided BEFORE the generic
+# not-a-stop branch: dropping the branch folds it back into INCOMPLETE, and
+# moving it after the generic branch makes it unreachable.
+mutant("scripts/controller/pi-impl.sh", "pi-context-full-missing.sh",
+       'elif [[ $stop_reason == length ]]; then', 'elif false; then')
+mutant("scripts/controller/pi-impl.sh", "pi-context-full-order.sh",
+       '  elif [[ $stop_reason == length ]]; then\n'
+       '    # The context window filled: a real end state of a long run, with a DIFFERENT\n'
+       '    # remedy from an unattributable stream. Decided before the generic\n'
+       '    # not-a-stop branch, and never continued.\n'
+       '    echo CONTEXT-FULL\n', '')
+# The retry loop must ignore every class but EMPTY-COMPLETION.
+mutant("scripts/controller/pi-impl.sh", "pi-context-full-continued.sh",
+       "while (( attempt < retry_limit )) && [[ $outcome == EMPTY-COMPLETION ]]; do",
+       "while (( attempt < retry_limit )) && [[ $outcome == EMPTY-COMPLETION || $outcome == CONTEXT-FULL ]]; do")
+# A final message with a tool call and no text is not a success.
+mutant("scripts/controller/pi-impl.sh", "pi-tool-call-no-text-success.sh",
+       'elif [[ $has_text != 1 && $has_tool_call == 1 ]]; then', 'elif false; then')
 mutant("scripts/controller/pi-impl.sh", "pi-account-block-run.sh",
        'block-run "$od_account"', 'record-thread "$thread_id"')
 mutant("scripts/controller/pi-impl.sh", "pi-key-selected-export.sh",
@@ -438,7 +468,7 @@ mutant("scripts/controller/pi-impl.sh", "pi-key-unselected-unset.sh",
 
 # Classification: an empty final message must not fall through to SUCCESS.
 mutant("scripts/controller/pi-impl.sh", "pi-empty-completion-class.sh",
-       'elif [[ $has_text != 1 && $has_tool_call != 1 ]]; then',
+       'elif [[ $has_text != 1 ]]; then',
        'elif false; then')
 # A thinking-only message is the same class as an empty one: the check must
 # look for text, not for content at all.

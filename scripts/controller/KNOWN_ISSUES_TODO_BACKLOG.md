@@ -24,11 +24,11 @@ together.
 | CTL-10 | Worker briefs do not state the measured harness environment limits, so workers rediscover them | P3 | OPEN 2026-11-15 |
 | CTL-11 | A readback built by a non-Claude controller has no layout (no recent-prose tail, no marker) until NL-65 | P3 | OPEN 2026-11-15 |
 | CTL-12 | The remote-gate helper refreshes its cached `remote-gate.py` through a shared `.new` temp name, so concurrent launches collide before anything reaches the host | P2 | OPEN 2026-11-16 (requires a repo-side successor) |
-| CTL-13 | A final assistant message with `stopReason=stop`, a tool call and no text classifies `SUCCESS` although the documented contract requires text | Minor | OPEN 2026-11-16 |
+| CTL-13 | A final assistant message with `stopReason=stop`, a tool call and no text classifies `SUCCESS` although the documented contract requires text | Minor | FIXED 2026-11-16 |
 | CTL-14 | Nothing stops two wrappers from running the same run name (or session) at once; both write the same `.done`, `.events` and retry counter | Should-fix | FIXED 2026-11-16 |
 | CTL-15 | `.live`'s `latest_total_tokens` reads `0` for a stream whose usage is only carried on delta events, which is exactly the long run it exists for | Should-fix | OPEN 2026-11-16 |
 | CTL-16 | `since-commit` shows the branch's last-commit age unqualified, so before the run's first commit it reports the base commit's age (the `ahead=` field on the same line is the qualifier the fix needs) | Minor | OPEN 2026-11-16 |
-| CTL-17 | `stopReason=length` (the context window filled) is classified `INCOMPLETE`, so the controller cannot tell a truncated run from a broken stream | Should-fix | OPEN 2026-11-16 |
+| CTL-17 | `stopReason=length` (the context window filled) is classified `INCOMPLETE`, so the controller cannot tell a truncated run from a broken stream | Should-fix | FIXED 2026-11-16 |
 | CTL-18 | `HUNG-TOOL` is decided on wall-clock alone: the sidecar carries no progress evidence, no tool command and no child identity, so a heavy-but-progressing tool (or one blocked by the agent's own FIFO) reads as hung | Should-fix | OPEN 2026-11-16 |
 | CTL-19 | A wrapper that dies without writing `.done` is indistinguishable from a running one in `job-check` (`RUNNING (no .done)`), and `codex-impl.sh ... resume` never writes `.done` at all | Should-fix | OPEN 2026-11-16 |
 
@@ -448,7 +448,18 @@ evidence, and a concurrency test covers it.
 
 ## CTL-13 — `stop` with a tool call and no text classifies `SUCCESS`, against the wrapper's own documented contract
 
-**Status:** OPEN (filed 2026-11-16); severity Minor. Found by the independent
+**Status:** FIXED 2026-11-16 (code, fixture, test, mutants and the four
+documents in one change); severity Minor. The classifier now decides
+`TOOL-CALL-NO-TEXT` before either the `EMPTY-COMPLETION` branch or the
+`SUCCESS` fall-through; fixture `tests/fixtures/pi-stop-tool-call-no-text.jsonl`;
+test `check_outcome_tool_call_no_text` (`tests/test-pi-impl.sh`, focus
+`outcome-tool-call`); mutant `pi-tool-call-no-text-success` (killed); docs
+`pi-impl.sh` header, `README.md`, `docs/DESIGN-GUIDE.md`,
+`docs/CONSUMERS.md`, `docs/design/ctlstat/REQUIREMENTS.md` §15.1 item 5.
+The alternative in the entry (declaring a tool call to be completion evidence)
+was not taken: the guard's own message claims the run said what it did, and a
+truncated or resumed turn that ends on a call is exactly the shape a caller
+must not read as done. Found by the independent
 review of the overwatch package (`pi-overwatch-REVIEW.md`, finding F7: "not
 fixed, noted") and re-verified against the merged code.
 
@@ -756,7 +767,18 @@ pass, and the reader/guide text says which commit the age belongs to.
 
 ## CTL-17 — a run stopped by `stopReason=length` (context window full) reads as `INCOMPLETE`, which hides the one class the controller acts on
 
-**Status:** OPEN (filed 2026-11-16); severity Should-fix. Filed from the
+**Status:** FIXED 2026-11-16 (code, fixture, tests, mutants and the five
+documents in one change); severity Should-fix. `classify_run` decides
+`CONTEXT-FULL` after the settling check and BEFORE the generic
+`stopReason != stop` branch; the retry loop still matches only
+`EMPTY-COMPLETION`. The existing `pi-length` fixture now yields
+`EXIT=0 OUTCOME=CONTEXT-FULL` (`check_outcome_length`, focus `outcome-length`),
+and `tests/fixtures/pi-settled-other-stop.jsonl` pins that every OTHER
+unattributable stop stays `INCOMPLETE` (`check_outcome_stop_other`, focus
+`outcome-stop-other`). Mutants `pi-context-full-missing`, `pi-context-full-order`
+and `pi-context-full-continued` are killed. Docs: the wrapper header,
+`README.md`, `docs/DESIGN-GUIDE.md`, `docs/CONSUMERS.md` (the successor action)
+and `docs/design/ctlstat/REQUIREMENTS.md` §15.1 item 5. Filed from the
 controller's own live experience of long pi runs and from the operator decision
 of 2026-11-16 recorded in the controller state (classify `stopReason=length` as
 `CONTEXT-FULL` so the overwatch can start a successor). Verified against the

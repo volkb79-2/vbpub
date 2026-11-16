@@ -88,10 +88,29 @@ must read the stream to tell those apart from a finished job.
 
 The classification compares facts the run itself left behind, in this order: the final
 assistant `stopReason` and 402 code (`USAGE-LIMIT`, `ERROR`), the pi exit status
-(`ERROR`), the stream's settling and `stopReason` (`INCOMPLETE`), the final
-message's text and tool calls (`EMPTY-COMPLETION`), the worktree's own porcelain
-(`UNCOMMITTED`), and the expected report file (`NO-REPORT`). `SUCCESS` is what
-survives all of them. Every check is a fact with an authoritative source
+(`ERROR`), the stream's settling (`INCOMPLETE`), a `length` stop
+(`CONTEXT-FULL`), any other non-`stop` reason (`INCOMPLETE`), the final message's
+text and tool calls (`TOOL-CALL-NO-TEXT`, then `EMPTY-COMPLETION`), the
+worktree's own porcelain (`UNCOMMITTED`), and the expected report file
+(`NO-REPORT`). `SUCCESS` is what survives all of them.
+
+Three of those words exist because their neighbours have a different remedy,
+not because the states differ in detail. `CONTEXT-FULL` is the real end state of
+a long run: the harness stopped the model because the window filled. The work is
+intact, so the action is a FRESH successor seeded from the run's
+forward-oriented state file. The wrapper must not continue it, because
+continuing a full context is the one continuation that cannot succeed, and a
+fresh session pays about an hour of re-orientation that the controller, not the
+wrapper, must decide to spend. `INCOMPLETE` is reserved for a stream the
+classifier cannot attribute (unsettled, aborted, a `stop` reason it does not
+know) and for an unreadable worktree status, where blind continuation or restart
+would mask the real state. `TOOL-CALL-NO-TEXT` is a settled `stop` whose final
+message is a tool call with no text: the run ended mid-work. It is deliberately
+not `EMPTY-COMPLETION`, because that word is bound to the wrapper's one
+automatic continuation and a tool call is not the anomaly that continuation
+repairs.
+
+Every check is a fact with an authoritative source
 (the stream, `git`, the report path the caller named), never an inference: a
 worktree that cannot answer `git rev-parse` is refused before pi starts rather
 than read as clean, and an unset report path means the report check is
@@ -133,8 +152,9 @@ failure, and no threshold on this path stops an agent: the controller decides.
 Continuation is bounded and class-specific on purpose. Only `EMPTY-COMPLETION`
 is continued, because only that class is a provider/model anomaly: the session
 is intact and the same conversation can finish the work. `UNCOMMITTED`,
-`NO-REPORT`, `ERROR` and `INCOMPLETE` describe real states of the worktree or
-the provider, and a blind resume would either loop or mask them. The limit is
+`NO-REPORT`, `ERROR`, `TOOL-CALL-NO-TEXT`, `CONTEXT-FULL` and `INCOMPLETE`
+describe real states of the worktree, the provider or the context window, and a
+blind resume would either loop or mask them. The limit is
 two attempts (measured: two store-crate stalls needed one continuation, a
 second was unused), it is set by `PI_EMPTY_RETRY_LIMIT`, and the prompt lives in
 one file (`continue-empty-completion.md`) so a wrapper revision cannot drift

@@ -83,7 +83,10 @@ Use this order for each implementation task.
    endings, reasoning-end, usage-limit retry text, missing turn completion,
    tool-call text, report completeness and HEAD binding, worktree cleanliness,
    final-head gate evidence, and the route trailer on every commit, including
-   merges. The last lane verdict in a bound gate log must be
+   merges. For a pi stream it also names `CONTEXT-FULL` (assistant
+   `stopReason=length`) and `TOOL-CALL-NO-TEXT` (a settled stop ending on a tool
+   call with no text), so neither reads as an ordinary running or finished
+   job. The last lane verdict in a bound gate log must be
    `run-gate: lane ... verdict PASS`; an earlier PASS line cannot override a
    final FAIL. The prototype's `any`
    route remains supported for the accepted Codex and Claude trailers;
@@ -278,8 +281,10 @@ line keeps its historical shape `EXIT=<n> OUTCOME=<word>`, where the word is:
 | `UNCOMMITTED` | exit zero with uncommitted changes in the worktree. |
 | `NO-REPORT` | exit zero but the expected report file is missing. |
 | `USAGE-LIMIT` | a provider 402 `insufficient_balance` stop; the account is blocked until its reset. |
+| `TOOL-CALL-NO-TEXT` | a settled `stop` whose final assistant message is a tool call with no text: the run ended mid-work. Not a success, and not the continued `EMPTY-COMPLETION` class. |
+| `CONTEXT-FULL` | a settled `stopReason` of `length`: the context window filled. The work is intact; start a FRESH successor from the run's forward-oriented state file. The wrapper never continues it. |
 | `ERROR` | a provider error stop, or a nonzero pi exit. |
-| `INCOMPLETE` | a settled stream that is not a `stop` (for example `length`), or a finish whose worktree status cannot be read (never read as clean). |
+| `INCOMPLETE` | a stream the classifier cannot attribute (unsettled, aborted, a `stopReason` it does not know), or a finish whose worktree status cannot be read (never read as clean). |
 
 Name the expected report with `--report <absolute-path>` or `PI_REPORT`;
 leaving it unset skips the report check rather than passing it. Every other
