@@ -15276,7 +15276,7 @@ a tmp destination, and the docs-sync test that currently reads
 
 **Status: BLOCKED-ON-V20 (filed 2026-11-16, pi-assay-burn review round 1); severity: high (the shipped schema refuses the field the shipped writer emits, so a legal verdict from a real run is rejected by the schema `assay` itself packages).** `cmdline` was shipped by B233 (`pwmcp-leak2-20261105`) on the descendant wire record, in the R0 claim detail, in the `command_finished` progress event and in `docs/CONSUMERS.md`, but never in `src/assay/schemas/verdict.schema.json`: the `process_tree_evidence.descendants` items object is `additionalProperties: false` and declares only `pid`, `ppid`, `comm`. Every mutation-candidate verdict that records a leaked descendant with a readable argv is therefore schema-invalid, and no test built one to notice (B233's tests read the record and the rendered line, never the JSON Schema).
 
-**Reproduction (measured on `origin/main` `1cbb627ae` + this branch's reverts, i.e. v19 as released).** In `assay/`:
+**Reproduction (measured on this branch after the revert, i.e. on v19 exactly as released; `origin/main` `1cbb627ae` carries the same schema bytes).** In `assay/`:
 
 ```bash
 python3 - <<'PY'
@@ -15290,7 +15290,7 @@ validator = jsonschema.Draft202012Validator(schema)
 print("clean document valid:", not list(validator.iter_errors(doc)))
 descendant["cmdline"] = ["pytest", "-x", "tests/"]
 errors = sorted(validator.iter_errors(doc), key=lambda e: list(e.path))
-print(len(errors), [(list(e.path)[-3:], e.message) for e in errors])
+print(len(errors), [(list(e.path), e.message) for e in errors])
 PY
 ```
 
@@ -15298,7 +15298,7 @@ Measured output:
 
 ```
 clean document valid: True
-1 [(['descendants', 0], "Additional properties are not allowed ('cmdline' was unexpected)")]
+1 [(['claims', 1, 'mutation', 'crashed', 0, 'process_tree_evidence', 'descendants', 0], "Additional properties are not allowed ('cmdline' was unexpected)")]
 ```
 
 The single error is at `descendants[0]`, so the only difference between an accepted and a refused document is the field the producer actually writes. `assay verify` accepts the same document (it is the more permissive of the two), which is why the gap never surfaced in a lane: nothing in the registered suite validates a verdict that carries a real argv against the packaged schema.
