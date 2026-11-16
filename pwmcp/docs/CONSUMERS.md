@@ -446,6 +446,35 @@ It writes progress and verdict state below the git-ignored `.assay/` directory.
 Use the R1 lane for the normal CMRU release gate; run R2 separately when the
 long mutation campaign is useful.
 
+### The R2 candidate cap (`max_mutants`)
+
+`max_mutants` does not bound a run that is already executing: Assay discovers every
+candidate first and REFUSES an inventory larger than the cap before executing a
+single one (`BUDGET_EXCEEDED` / `MUTANT_LIMIT_EXCEEDED`, exit 4, after paying for the
+baseline). A cap below the current inventory therefore does not make a campaign
+cheap — it makes the release lane unable to complete, so it is checked, not guessed.
+
+**Cap-choice rule.**
+
+1. Refresh the recorded inventory: run `assay plan r2 --json` on the final release
+   commit and add its `candidate_count` as a new file in
+   `tests/fixtures/r2-inventory/` (a record is never edited, only added).
+2. Set `max_mutants` to `ceil(largest recorded candidate inventory * 1.10)` or
+   higher. 10% headroom leaves room for ordinary inventory growth from unrelated
+   work landing before the campaign runs.
+3. Check the number against the lane's `budget`, `judge.mutation.jobs_max` and
+   `budget_per_candidate`: `candidate_count * per-candidate budget` divided by the
+   worker count is the wall-clock floor, and a cap that cannot finish inside `budget`
+   bounds nothing useful — shrink the campaign scope (or the per-candidate budget)
+   rather than the cap.
+4. Review the cap together with `budget`, `jobs` and per-candidate cost whenever one
+   of them changes, and never edit a host-local copy of the judged checkout as a
+   remedy.
+
+`tests/test_r2_lane_contract.py` enforces the rule: the declared cap must clear every
+recorded inventory by the 10% headroom, and must not sit absurdly far above it (the
+cap bounds an unexpectedly large run; it is not a free pass).
+
 ## Maintainer refresh of Playwright
 
 To select the newest stable Playwright version available from npm, PyPI, and

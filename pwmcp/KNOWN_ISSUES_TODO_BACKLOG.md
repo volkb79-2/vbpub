@@ -953,9 +953,42 @@ commit.
 
 ## PWMCP-59 — `r2` has `max_mutants = 1000` while the latest planned inventory is 1293
 
-**Status:** OPEN (filed 2026-11-11; updated 2026-11-14); priority major (the exact release tag cannot complete an unmodified R2 campaign); source: host-campaign records 2026-11-11 and 2026-11-14.
+**Status:** FIXED 2026-11-16 (unreleased, branch `pi-pwmcp-burn-20261116`); priority
+major (the exact release tag cannot complete an unmodified R2 campaign); source:
+host-campaign records 2026-11-11 and 2026-11-14.
 
-**Problem.** `pwmcp/assay.toml` declares `max_mutants = 1000`, below both the 1165 candidates measured for `pwmcp-v1.64.1-r7` and the 1293-candidate plan for `pwmcp-v1.64.1-r9`. Assay refuses over-cap discovery before executing a partial sample, so an unmodified R2 run against the latest inventory would report `BUDGET_EXCEEDED/MUTANT_LIMIT_EXCEEDED` with exit 4 after paying for the baseline. The cap therefore makes the release lane unusable rather than bounding an unexpectedly large run, and there is no documented rule for choosing the next cap from candidate inventory and expected runtime.
+**Fix.** `pwmcp/assay.toml` now declares `max_mutants = 1500` with the cap-choice rule
+beside it, `docs/CONSUMERS.md` "Release gates" publishes that rule (refresh the
+inventory, `ceil(largest recorded candidate inventory * 1.10)`, review it together with
+`budget`/`jobs`/`budget_per_candidate`), and `tests/fixtures/r2-inventory/` holds the
+RECORDS the rule is applied to: the 2026-11-11 r7 measurement (1165), the 2026-11-14
+r9 plan (1293) and a 2026-11-16 measurement of this baseline (1001 candidates,
+`assay plan r2 --json`). Required by the rule: `ceil(1293 * 1.10) = 1423`, so 1500
+clears it with room for ordinary growth. `tests/test_r2_lane_contract.py` fails a cap
+at or below any recorded inventory, a cap below the 10% headroom, and a cap absurdly
+far above the largest inventory (a ceiling that never binds is not a bound); it also
+requires the published rule to name the refusal it prevents
+(`BUDGET_EXCEEDED`/`MUTANT_LIMIT_EXCEEDED`). Verified by hand mutants: 1000 and 1422
+fail the oracle, 1423 and 1500 pass, 1000000 fails the upper bound.
+
+**Preflight.** On THIS head `assay plan r2 --json` reports `candidate_count` 1001 with
+`max_mutants` 1500, i.e. `status: ok` — the plan is accepted instead of refused at the
+cap. The registered lane's own preflight (`run-gate r2 --dry-run`, which rehearses every
+preflight and starts no judged lane) is run on the final batch head and recorded in the
+run report.
+
+**Still outstanding (not this item's):** PWMCP-20 owns the campaign itself, and the full
+1000+-candidate R2 run is a host campaign (4 h budget) that is not started in this
+offline package.
+
+**Problem.** `pwmcp/assay.toml` declared `max_mutants = 1000`, below both the 1165
+candidates measured for `pwmcp-v1.64.1-r7` and the 1293-candidate plan for
+`pwmcp-v1.64.1-r9`. Assay refuses over-cap discovery before executing a partial sample,
+so an unmodified R2 run against the latest inventory would report
+`BUDGET_EXCEEDED/MUTANT_LIMIT_EXCEEDED` with exit 4 after paying for the baseline. The
+cap therefore made the release lane unusable rather than bounding an unexpectedly large
+run, and there was no documented rule for choosing the next cap from candidate
+inventory and expected runtime.
 
 **Evidence.** The 2026-11-11 host-campaign record tested the r7 tag with `max_mutants = 1000`, 1165 selected candidates, `over_candidate_cap`, and `BUDGET_EXCEEDED/MUTANT_LIMIT_EXCEEDED` after the 400-second baseline. The 2026-11-14 R9 plan reports 1293 total candidates; the main configuration is still `max_mutants = 1000`. The R9 campaign used a temporary campaign-checkout cap of 1400 to run its explicitly selected changed-line set; that does not change the main configuration or make a full-target campaign fit on main. This is distinct from PWMCP-20, which tracks completion of the waived campaign; this item is the configuration defect that prevents it from starting.
 

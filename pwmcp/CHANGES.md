@@ -9,6 +9,7 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 - chore(pwmcp): the console-corpus tool's `package --out` and `verify [DIR]` default to `artifacts/console-corpus` derived from the script location instead of requiring an explicit path; an explicitly supplied path still wins and an unset `PWMCP_CONSOLE_CORPUS_DIR` still raises `CorpusMissing` (PWMCP-21)
 - docs(pwmcp): the bundle's client install recipe is the offline one (`pip install --no-index --find-links ./wheels "cli-extended>=0.3.0" "playwright==$PW_VER" ./client` on the unpacked bundle), with a dependency-closure and docs-sync oracle (PWMCP-31)
 - docs(pwmcp): record the Obscura re-evaluation triggers as a closed set and the anti-detection non-goal, in the design guide and the security document, with a docs-sync oracle (PWMCP-58)
+- chore(pwmcp): raise the R2 candidate cap to 1500 (the r9 plan's 1293 candidates need >= 1423 under the published 10% headroom rule), document the cap-choice rule, and check it against recorded inventories (PWMCP-59)
 <!-- cmru: pending release notes end -->
 
 <!-- cmru: release history -->
