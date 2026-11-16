@@ -5,8 +5,10 @@
 run Cargo: a lane supplies the pinned Rust tools, normally through
 `tester-unified-rust`. Stable Rust branch totals are unavailable after the
 producer-specific LCOV normalization; R2 and R3 remain unregistered. The
-hostobs baseline still uses `lint`/`selftest` until its separate consumer
-integration changes those lanes to `assay-r1`.
+hostobs baseline keeps `lint`/`selftest` AND declares the consumer
+`assay-r1` lane (see below); the judge lane cannot yet run in the Rust gate
+image, which carries no `pip` for Run-Gate's assay install (B549, hostobs
+`HOB-44`).
 
 The decisions came from the 2026-11-07 and 2026-11-08 operator interviews
 recorded in [`hostobs-DECISIONS-20261107.md`](../../docs/design/hostobs/DECISIONS-2026-11-07.md). The second
@@ -52,9 +54,11 @@ tripwire is cache/lock agreement at the start of a Rust lane.
   doctests in the baseline command. There is no Rust result-report override:
   nextest's documented exit statuses are the R0 witness.
 - R1 is registered through `cargo llvm-cov` LCOV output and Assay's existing
-  LCOV parser. The adapter judges changed lines at **100%**. The hostobs
-  `selftest` lane still generates LCOV and checks per-crate floors; its switch
-  to an Assay `assay-r1` consumer lane remains a separate integration step.
+  LCOV parser. The adapter judges changed lines at **100%** in changed-line
+  mode; the hostobs consumer lane declares `mode = "whole_target"` instead, a
+  95.0% line floor over 33 declared `src` files (measured 96.0377% at head
+  `3b46df06`), because a diff-scoped floor cannot see the rest of the workspace
+  decay (derivation in `hostobs/assay.toml`).
 - Every crate separately carries an initial floor of **90% line coverage and
   85% region coverage**, in addition to Assay's **100% changed-line rule**.
   The region floor is a lane step over `cargo llvm-cov report --json`; Assay

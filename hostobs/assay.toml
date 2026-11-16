@@ -25,9 +25,11 @@
 #   lane's argv) remain the tighter bound and are never lowered to accommodate
 #   this lane, and a floor is never lowered for a crate whose coverage drops.
 #
-# The three `crates/*/src/lib.rs` files are NOT judged targets: each one is
-# module declarations and `//!` documentation only, so cargo-llvm-cov emits no
-# `SF:` record for it. Assay's whole-target mode refuses a declared target with
+# Three of the four `crates/*/src/lib.rs` files are NOT judged targets:
+# `model`, `proto` and `store` are module declarations and `//!` documentation
+# only, so cargo-llvm-cov emits no `SF:` record for them. `kernel`'s `lib.rs`
+# carries `Bounds`, so it IS declared (7 executable lines, all covered).
+# Assay's whole-target mode refuses a declared target with
 # no artifact entry (`NO_MEASUREMENT/TARGET_NOT_MEASURED`) rather than excusing
 # it, which is the correct behaviour and the reason they are excluded HERE, in
 # a declared list, instead of being silently absorbed.

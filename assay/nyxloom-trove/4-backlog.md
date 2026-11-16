@@ -184,7 +184,7 @@ items:
   - {id: B200, title: "CoW parity test lacks git status/index and has never run on a real btrfs area in CI", type: improvement, component: tests, context_estimate: small}
   - {id: B201, title: "Optional packed-object reflink path on XFS", type: improvement, component: workspace, context_estimate: small}
   - {id: B522, title: "Use environment-only cgprofile endpoints and delegate Assay release gates", type: feature, component: gate, context_estimate: small}
-  - {id: B523, title: "Normalize marker-only cargo-llvm-cov branch totals so stable Rust reports branch coverage as unavailable rather than available-but-empty", type: bugfix, component: adapters, context_estimate: small}
+  - {id: B523, title: "Normalize marker-only cargo-llvm-cov branch totals so stable Rust reports branch coverage as unavailable rather than available-but-empty. PARTIAL (2026-11-15): the Rust adapter normalizes the marker-only shape before the shared parser and hostobs's assay-r1 verdict reports branch_capability=unavailable with branches_total=0, but the producer NAME cannot be disclosed because lcov has no producer vocabulary (carried as B550). No verdict-schema change.", type: bugfix, component: adapters, context_estimate: small}
   - {id: B525, title: "R2 lane explicit test-file selections silently omit newly added tests that cover the mutated target", type: bugfix, component: mutation, context_estimate: small}
   - {id: B526, title: "Over-cap mutation runs report candidate_total as max_mutants + 1 instead of the real selected inventory", type: bugfix, component: mutation, context_estimate: small}
   - {id: B527, title: "A changed judge identity reuses the same candidate-id state filename and overwrites the prior generation's records", type: bugfix, component: mutation, context_estimate: small}
@@ -198,6 +198,8 @@ items:
   - {id: B545, title: "Resolve progress/verdict disagreement for a timeout-killed R2 candidate", type: bugfix, component: mutation, context_estimate: medium}
   - {id: B546, title: "Assay's own T3 R2 had no native kind-assay lane for changed-line campaigns", type: bugfix, component: gate, context_estimate: small}
   - {id: B548, title: "assay ships a hand-written repo-level skill with no `skills` verb, so `skills check` cannot tell a consumer its installed copy is stale", type: feature, component: distribution, context_estimate: small}
+  - {id: B549, title: "The Rust consumer guide recommends tester-unified-rust for an assay lane, but a source-mode assay lane cannot be installed in that image (no pip/ensurepip/venv); the guide states no requirement the consumer can check, so the run fails at the install step naming nothing about the image", type: bugfix, component: distribution, context_estimate: small}
+  - {id: B550, title: "The lcov coverage format has no producer vocabulary, so a Rust lane cannot declare `cargo-llvm-cov` and the verdict omits `judgment.r1.coverage_producer` — the one artifact field that would name the producer whose zero branch markers were normalized", type: feature, component: adapters, context_estimate: small}
 ---
 
 # assay — backlog
@@ -14470,7 +14472,7 @@ The T2 `gate` is sequence [`lint`, `assay-r3`, `conformance`]; `assay-r1` is T1 
 
 ## B243 — R-2: Rust R1 adapter
 
-**Status:** PARTIAL (2026-11-15) — Assay R1 adapter and qualification are implemented; hostobs consumer integration remains open. **Design:** `assay/docs/DESIGN-RUST-ADAPTER.md` §A-B, §G R-2, and `assay/docs/RUST-METHODOLOGY.md`.
+**Status:** PARTIAL (2026-11-15) — Assay R1 adapter and qualification are implemented, and hostobs's consumer lane is now DECLARED and judged end to end; what remains is that a registered source-backed assay lane cannot run in `tester-unified-rust` at all, because that image has no `pip` (B549). **Design:** `assay/docs/DESIGN-RUST-ADAPTER.md` §A-B, §G R-2, and `assay/docs/RUST-METHODOLOGY.md`.
 
 Register a pure-Python `RustAdapter` at R1 with `*.rs` source globs and cargo-llvm-cov's documented `vendor`/`target` and test-path exclusions. Use `requires_span_attribution = false`, no external tools in the adapter, a conservative mask-and-lex executable-code check, and identity coverage-key normalization. R1 declares LCOV, changed-line mode at 100%, and a line-granularity known issue; every crate has 90% line / 85% region floors as lane steps. Add nextest/libtest first-failure recognizers and real-toolchain fixtures generated in the Rust image. Replace hostobs `selftest` with `assay-r1` and document the still-unregistered R2/R3 path. Milestone 2 is 100% changed-line coverage judged by Assay.
 
@@ -14487,6 +14489,21 @@ plus an R1 `require_branch` refusal are covered. The consumer-side hostobs
 authorized file boundary is `assay/`; the item remains partial until those
 registered hostobs lanes adopt the adapter. Assay's own B105 target inventories
 include the new module, preserving its existing full-source R0/R1 floor.
+
+**Consumer evidence (2026-11-15, `pi-hostobs-assay-r1`).** hostobs now DECLARES
+the consumer lane this item asks for: `hostobs/assay.toml [lanes.assay-r1]`
+(`language = "rust"`, `mode = "whole_target"`, 33 declared `src` files of
+`model`/`proto`/`kernel`/`store`, `fail_under = 95.0`) plus
+`hostobs/run-gate.toml [lanes.assay-r1]` (`kind = "assay"`, environment
+`tester-unified-rust`, `network = "none"`), with `selftest` retained as the
+enforced baseline. Judged in throwaway copies of that workspace (the lane
+environment cannot host a source-backed assay lane yet — B549), the same 33
+targets return `PASS` with `covered=15100 / executable=15723` (96.0377 %) and
+24 files of `missing_lines` findings, `branch_capability=unavailable`, and
+`FAIL/UNCOVERED_LINES` at 14777/15723 (93.9833 %) when one kernel test file is
+deleted while nextest stays green (322 tests). The remaining close condition is
+narrower than "consumer integration": `assay-r1` must PASS *in its registered
+lane* on the supported Rust image, which B549 blocks.
 
 **Source.** `assay/docs/DESIGN-RUST-ADAPTER.md` §A-B/§G R-2 and `assay/docs/RUST-METHODOLOGY.md`.
 
@@ -14615,7 +14632,7 @@ describe the same contract.
 
 ## B523 — marker-only cargo-llvm-cov output is read as available-but-empty branch coverage on stable Rust
 
-**Status:** PARTIAL (2026-11-15; filed 2026-11-10, normalization added 2026-11-11); severity: high (anti-vacuity/correctness gap in the Rust R1 path). The registered adapter consumes the helper, with measured-fixture and `require_branch` tests; hostobs consumer-lane disclosure remains to be integrated.
+**Status:** PARTIAL (2026-11-15; filed 2026-11-10, normalization added 2026-11-11, consumer-lane disclosure added 2026-11-15); severity: high (anti-vacuity/correctness gap in the Rust R1 path). The consumer half landed: hostobs's `assay-r1` verdict reports the normalized no-branch fact and the docs state the distinction. ONE close clause is still open and is filed as B550 — the disclosure cannot NAME the producer, because the `lcov` format has no producer vocabulary, so `judgment.r1.coverage_producer` is absent from every Rust verdict.
 
 **Problem.** Stable `cargo llvm-cov` emits no `BRDA:` records because stable Rust has no usable branch instrumentation, but it still emits the total markers `BRF:0` and `BRH:0`. Assay's LCOV parser defines branch capability as artifact-level "any `BRDA`/`BRF`/`BRH` line exists". Those zero-valued markers therefore make every file carry an empty real `BranchCoverage`, derive branch capability as `reported`, and leave a lane with `require_branch` able to pass vacuously over zero branches. "No branch producer" and "branch producer found zero branches" must not be the same state.
 
@@ -14643,6 +14660,27 @@ If B243 chooses an adapter-specific LCOV entry point instead of text preprocessi
 **Acceptance test idea.** Commit the real stable-Rust fixture summarized in S2 (or a bounded slice retaining its 13 `SF:` records). Assert it parses successfully, every file has `branches is None`, `derive_branch_capability` is `unavailable`, and an `require_branch` judge refuses `NO_MEASUREMENT` rather than passing zero-of-zero. A control fixture with one real `BRDA:` record remains `reported`; a marker-only fixture with `BRF:1` remains `UNREADABLE_ARTIFACT`. Re-applying the current marker scan makes the first oracle fail.
 
 **R-1/R-2 evidence.** `assay/src/assay/coverage_parsers/rust_lcov.py` and `assay/tests/parsers/coverage/test_coverage_rust_lcov_normalization.py` normalize only complete zero-valued pairs from the real R-0 marker-only artifact and preserve real `BRDA` and malformed controls. B243 wires this helper through the registered Rust adapter before the shared parser. The Rust-image qualification runs real `cargo llvm-cov` output; Assay R1 tests confirm branch capability is unavailable and `require_branch` refuses `NO_MEASUREMENT/BRANCH_UNAVAILABLE`. Hostobs' consumer lane disclosure is still pending.
+
+**Close evidence (2026-11-15, `pi-hostobs-assay-r1`).** The consumer-side
+half is now real, not planned. On a throwaway copy of the hostobs workspace
+judged with this source tree, `assay run assay-r1` over the real stable-
+`cargo-llvm-cov` artifact writes a verdict whose R1 claim carries
+`"branch_capability": "unavailable"`, `"branches_covered": 0`,
+`"branches_total": 0`, `"files_with_missing_branch_lines": []` and an empty
+`missing_branch_lines` — i.e. the artifact is accepted as a line-only
+measurement instead of a vacuous branch map, and no branch number is invented.
+`"exclusion_capability": "unavailable"` is the same shape for the excluded-
+line family. `judge.r1.require_branch` is `false` in that lane, and the
+refusal path it deliberately avoids is the one the R-2 qualification already
+covers (`NO_MEASUREMENT`/`BRANCH_UNAVAILABLE` on `require_branch = true`).
+hostobs documents the distinction in three user-facing places — `assay.toml`
+("What R1 does not cover"), `docs/CONSUMERS.md` (`branch_capability:
+"unavailable"` is "the honest answer for stable Rust … not a zero-of-zero
+pass") and `docs/DESIGN-GUIDE.md` §"Gates and coverage" (the rejected
+`require_branch = true` alternative). The one remaining gap is environmental
+and is filed separately (B549): a source-backed assay lane cannot be installed
+in `tester-unified-rust`, so the hostobs lane is judged in a throwaway copy
+rather than in its own registered lane until that image ships `pip`.
 
 **Close when.** The real stable-Rust marker-only fixture, real-`BRDA` control, malformed non-zero-marker case, and `require_branch` refusal cases pass in the registered Rust adapter/lane on a clean final commit; the lane/run disclosure names the normalized no-branch producer fact; and the adapter/consumer documentation states the distinction between unavailable and an available-but-empty branch map. A recorded decision to defer Rust R1 adoption also closes this item when the measured artifact and the anti-vacuity refusal are documented as known constraints of the deferred path.
 
@@ -15201,3 +15239,90 @@ package data, and keep the repo-level `.claude/skills` path as a pointer only.
 SKILL passes `validate_skill_source`, `skills check` catches a stale install in
 a tmp destination, and the docs-sync test that currently reads
 `.claude/skills/assay-cli/SKILL.md` reads the packaged path instead.
+
+## B549 — the documented Rust lane environment cannot host a source-mode assay lane
+
+**Status:** OPEN (filed 2026-11-15 by the hostobs `assay-r1` adoption); severity:
+major for any Rust consumer of `kind = "assay"` lanes; verified live, not
+inferred.
+
+**Problem.** CONSUMERS.md §"Rust lanes (R1)" tells a consumer to run the Rust
+lane "in `tester-unified-rust` (or a pinned equivalent)" and to declare an
+`[lanes.assay-r1]` judge. That image is the correct environment for the Cargo
+side, and the wrong one for assay's OWN installation: Run-Gate installs the
+selected worktree's assay with
+`"$ASSAY_PYTHON" -I -m pip install --no-editable …` before invoking the judge
+(`run-gate-project/run_gate.py` `assay_source_setup`), and
+`tester-unified-rust` ships `python3` with **no pip, no ensurepip and no
+venv module**. Measured inside the image on 2026-11-15:
+
+```
+$ python3 -m pip --version    -> No module named pip
+$ python3 -c 'import ensurepip' -> ModuleNotFoundError
+$ python3 -m venv /tmp/v       -> the virtual environment was not created…
+                                  ensurepip is not available
+```
+
+A registered `kind = "assay"` lane therefore stops at
+`run-gate: editable assay install failed` and reports `ERROR` with no verdict
+artifact — for EVERY Rust consumer, not only hostobs, and without naming the
+missing package. hostobs hit exactly this at head `c14d2cc30` (`run-gate
+assay-r1` -> exit 2, `/usr/bin/python3: No module named pip`), and that failure
+is recorded on the consumer side as `HOB-44` with the smallest image change
+(`apt-get install -y --no-install-recommends python3-pip python3-venv`, measured
+7 new packages in Debian 13.7).
+
+**Where.** `tester-unified-rust/Dockerfile` (both `apt-get install` stages);
+`assay/docs/CONSUMERS.md` §"Rust lanes (R1)" (the paragraph that names the
+image); optionally `run-gate-project/run_gate.py`'s `assay_source_setup`, if the
+intended answer is a probe that refuses with the missing package instead of the
+`pip` traceback.
+
+**Options, in the order this item recommends them.** (1) Add the two packages
+to the Rust image — one line, no new base image, no network at run time, no
+change to the crate cache or lock; this is `HOB-44` and is the smallest change
+that makes the recommended environment actually work. (2) Say plainly in
+CONSUMERS.md that a Rust assay lane needs an image carrying both the Cargo tools
+AND pip, so a consumer can check that fact before adopting the lane. (3) Make
+`assay_source_setup` detect the absence and refuse with the package name.
+
+**Exit criteria.** A registered `kind = "assay"` lane in `tester-unified-rust`
+(or in the image the docs actually name) reaches the judge and writes a verdict
+artifact; the docs name the pip requirement a consumer can verify; the image's
+own contract test pins the packages.
+
+**Source.** hostobs `HOB-44`; measured 2026-11-15 in
+`tester-unified-rust:local` at `pi-hostobs-assay-r1` head `c14d2cc30`.
+
+## B550 — the `lcov` format has no producer vocabulary, so no Rust verdict can name its producer
+
+**Status:** OPEN (filed 2026-11-15 while closing B523); severity: low (disclosure
+gap, no false verdict).
+
+**Problem.** B523 asks that "the lane/run disclosure names the normalized
+no-branch producer fact". Half of that is delivered: the verdict's R1 claim
+carries `branch_capability: "unavailable"`, `branches_total: 0` and empty
+branch detail maps, so the ABSENCE of branch measurement is unambiguous. The
+producer's NAME cannot be recorded, because `judge.coverage.producer` is a
+closed per-format vocabulary (`assay/vocabulary.py`
+`COVERAGE_PRODUCERS_BY_FORMAT`) and `lcov` has no entry at all; assay refuses
+`producer = "cargo-llvm-cov"` at config load with "format 'lcov' … has no open
+producer vocabulary". Every other format that matters records its producer in
+`judgment.r1.coverage_producer` (B045), so a Rust lane's verdict cannot say WHICH
+tool wrote the artifact whose zero markers were normalized. With one producer in
+practice this is disclosure, not correctness — the artifact itself could say
+otherwise in a future Rust toolchain, and no verdict field would show it.
+
+**Wanted.** Decide whether `lcov` gains a producer vocabulary (`cargo-llvm-cov`,
+and whatever consumers' Cargo wrappers are), which then requires the Rust
+adapter's normalizer to be keyed on the DECLARED producer rather than on the
+language, or state in the Rust docs that the producer is derivable from the lane
+command and is not a verdict field. Do not add a speculative name set: the
+closed-vocabulary rule (DESIGN-GUIDE §5) applies to this decision too.
+
+**Close when.** Either a Rust verdict carries `judgment.r1.coverage_producer`,
+or the documentation says by name why it cannot and where the fact lives instead.
+
+**Source.** B523's close condition ("the lane/run disclosure names the
+normalized no-branch producer fact"); measured 2026-11-15 against
+`assay/src/assay/vocabulary.py` and the hostobs `assay-r1` verdict.

@@ -4521,10 +4521,22 @@ zero `BRF`/`BRH` pairs when no `BRDA` exists, so branch capability is
 available-but-empty result. R1 qualification uses real nextest, libtest, and
 cargo-llvm-cov output from an offline fixture crate.
 
-Hostobs still owns its 90% line / 85% region per-crate floors. Its current
-`selftest` consumer lane has not yet been replaced with `assay-r1`; that
-consumer adoption is outside B243's Assay source boundary and remains open.
-This keeps the shared parser reusable for every language that emits LCOV.
+Hostobs still owns its 90% line / 85% region per-crate floors, and it has ALSO
+adopted the consumer lane this design asks for: `hostobs/assay.toml
+[lanes.assay-r1]` declares whole-target R1 over the 33 `src` files of its four
+functional crates at a 95.0% line floor (measured 96.0377% at head `3b46df06`,
+floored one full point down; the per-crate floors stay stricter and are checked
+in the lane's own argv). `selftest` is kept rather than replaced, deliberately:
+it is the enforced baseline that runs in the Rust image, and the judge lane
+needs an image change first. A registered Rust `kind = "assay"` lane cannot run
+in `tester-unified-rust` today because Run-Gate source-installs assay with `pip`
+and that image ships `python3` alone — filed as B549 (hostobs `HOB-44`), with the
+smallest fix being `python3-pip python3-venv`. The hostobs lane was therefore
+judged end to end in throwaway copies of the workspace: the same 33 targets
+return `PASS` at 15100/15723 with branch capability `unavailable`, and
+`FAIL/UNCOVERED_LINES` at 14777/15723 when one kernel test file is deleted while
+nextest stays green. This keeps the shared parser reusable for every language
+that emits LCOV.
 
 The lane tiers separate the expensive evidence by event. T1 uses sequence
 [`lint`, `assay-r1`]. T2 `gate` uses [`lint`, `assay-r3`, `conformance`] and

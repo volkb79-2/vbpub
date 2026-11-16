@@ -92,9 +92,11 @@ papered over with a weaker lane; `selftest` keeps the enforced baseline in the m
 - **Inline `#[cfg(test)] mod tests` blocks inside a judged file** are measured (LCOV has no
   per-region exclusion, assay K5). They run when tests run, so they rarely hurt, but they are
   in the denominator.
-- **The three `crates/*/src/lib.rs` files** are module declarations only and produce no LCOV
-  record, so they are not declared targets; Assay refuses a declared target it cannot measure
-  rather than excusing it.
+- **Three of the four `crates/*/src/lib.rs` files** (`model`, `proto`, `store`) are module
+  declarations and `//!` documentation only, so cargo-llvm-cov emits no LCOV record for them and
+  they are not declared targets; Assay refuses a declared target it cannot measure rather than
+  excusing it. `crates/kernel/src/lib.rs` does carry `Bounds` (7 executable lines, all covered),
+  so it is one of the 33 targets.
 
 ## The independent Python cross-check run
 
