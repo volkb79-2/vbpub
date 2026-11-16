@@ -63,6 +63,10 @@ docs landed together.
 | NC-55 | A deterministic budget-exceeded candidate is reported as stalled | Should-fix | OPEN 2026-11-13 |
 | NC-56 | T3 bundle import can omit release tags needed to derive the required Assay version | Should-fix | OPEN 2026-11-14 |
 | NC-57 | fleetd had no host-install script, and the docs prescribed a system-Python pip install that Debian 13 refuses | Should-fix | FIXED 2026-11-15 (install-fleetd.sh; live host acceptance OPEN) |
+| NC-58 | `remote-gate.py` never emits the `run-gate.commit=` binding it depends on for evidence, so a non-container lane's binding exists only in an out-of-repo wrapper | Should-fix | OPEN 2026-11-16 |
+| NC-59 | `provision-runner.sh` installs no slice limits, so the gates tier's CPU and memory policy (and the 2026-11-16 overcommit/paging decision) reaches a host only by hand-editing a drop-in | Should-fix | OPEN 2026-11-16 |
+| NC-60 | Provisioning installs no pinned image set, so a host cannot run assay's SQL qualification until someone pulls the digest-pinned PostgreSQL reference by hand | Should-fix | OPEN 2026-11-16 |
+| NC-61 | The runner guide's fresh-host replay is still unverified and its checked-in facts drift after a reinstall with no test or date binding them | Minor | OPEN 2026-11-16 |
 
 ---
 
@@ -1000,6 +1004,19 @@ same-commit receipt in collected artifacts, B535 can consume it without a
 runner-side side channel, and focused exact-path and exclusion tests pass on a
 clean final commit.
 
+**Second observed instance (2026-11-16).** The same filter discards a lane's
+OTHER declared artifacts, not only the receipt: assay's
+`rust-r1-qualification` declares `artifacts = [".assay/rust-r1-real"]`
+(`assay/run-gate.toml:136`) and PASSED in about 4 s on a remote host with an
+EMPTY collected `artifacts/` directory, so the lane's real cargo/lcov evidence
+could not be inspected afterwards (pre-release gate report of 2026-11-16,
+item F5). No new id is filed for it: the fix above — archive exactly the
+artifacts a lane declares, with safe path validation and a reported outcome
+even when the archive is empty — covers this case, and this entry now carries
+it as a second reproduction. The acceptance test for it is the same test with
+a declared-directory fixture (a directory holding two files survives with its
+path identity preserved) alongside the receipt-path case above.
+
 ## NC-48 — R2 fleet admission multiplies the full lane ceiling and hides host capacity signals
 
 **Status:** IMPLEMENTED unreleased in `r2-guard-20261112`; suite and final
@@ -1394,3 +1411,239 @@ touches nothing outside its prefix. It mirrors the accepted
 `scripts/netcup/tests/test_install_fleetd.py` (hermetic: fake wheels, fake venv,
 temp prefix only), `scripts/netcup/runner/README.md`, `scripts/netcup/CONSUMERS.md`,
 and the three fleetd documents that carry the install steps.
+
+## NC-58 — remote-gate never emits the `run-gate.commit=` line that its own evidence binding relies on
+
+**Status:** OPEN (filed 2026-11-16); Should-fix. Source: the remote gate
+worker report of 2026-11-16 (`sonnet-v1001-gateworker-REPORT.md`, section
+"Findings for tool backlogs (NOT fixed locally)"; the pre-release gate
+report of the same day names the same symptom in its counter row).
+
+**Problem.** The only mechanical binding between a collected run and the
+commit it judged is the `run-gate.commit=<full sha>` label run-gate puts on
+the container it starts. `remote-gate.py` neither writes that line into
+`result.json` nor into a collected file: `collect()` builds
+`{"lane", "verdict", "exit_code", "reason"}` and nothing else
+(`scripts/netcup/runner/remote-gate.py:915-918`). A reader of a collected run
+therefore has the commit only when the lane's own log happens to carry it,
+which depends on the lane shape:
+
+- a container lane leaves the docker-argv label line in the lane log, so the
+binding is recoverable;
+- a native/assay lane that renders no such argv line, or a lane whose log the
+collection truncated to a tail with no arguments of its own,
+leaves no binding at all.
+
+The practical consequence was measured live: the out-of-repo controller
+wrapper had to re-derive the binding by moving the host log for the `checkout
+... at <sha>` line and emitting its own
+`remote-gate: bound run-gate.commit=<sha>` line, i.e. the evidence authority
+lived in a tool outside this repository and would silently disappear with
+it. The host already knows the answer — the job script asserts `git rev-parse
+HEAD == SHA` and prints `checkout <dir> at <sha>` (`remote-gate.py:553-556`) —
+so this is a disclosure gap, not a missing fact.
+
+**Minimal solution.** Emit the binding where the fact is already certain: the
+job script writes the resolved `HEAD` into a small committed-to-run file (or
+`remote-gate.py` renders `SHA` into the run directory from `meta.json`, which
+already carries `sha`), and `collect()` adds `commit` to `result.json` plus one
+`run-gate.commit=<full sha>` line to the collected log. Keep it a
+DISCLOSURE of the host-asserted value, never a claim: the line must be written
+only after the host's HEAD assertion passed, and it must name the assertion it
+rests on (for example `run-gate.commit=<sha> (host HEAD asserted)`), so a
+missing assertion cannot masquerade as a verified binding. Absent, wrong-shape
+or contradictory values must be reported by name instead of omitted.
+
+**Where.** `scripts/netcup/runner/remote-gate.py` (`render_job`, `collect`),
+`scripts/netcup/runner/tests/test_remote_gate.py`, and the runner guide's
+remote-gate section (`scripts/netcup/runner/README.md`) plus
+`scripts/netcup/CONSUMERS.md` where a collected run is described.
+
+**Acceptance test idea.** A fake host job that asserts HEAD writes the binding
+into `result.json` and into the collected log; a fake job whose assertion is
+absent writes NO binding and says so; a job whose HEAD assertion failed still
+produces a refused run rather than a binding. A lane log with no docker-argv
+line at all still collects the same binding, and two runs of the same lane at
+two different commits never share a value.
+
+**Priority.** Should-fix. Release and merge evidence is bound to a commit by
+this line; a run whose commit can only be recovered from a host log outside
+the repository is not reviewable evidence (see the false-certification rule on
+narrower checks).
+
+**Close when.** A collected run of a non-container lane names its
+host-asserted commit in `result.json` and in the collected log, the value has
+its assertion disclosed beside it, and the fake-host cases above pass on a
+clean final commit.
+
+## NC-59 — provisioning installs no slice limits, so the gates tier's resource policy is hand-maintained per host
+
+**Status:** OPEN (filed 2026-11-16); Should-fix for a host without mdt
+host-setup. Source: the remote gate worker report of 2026-11-16
+(`sonnet-v1001-gateworker-REPORT.md`, "Findings for tool backlogs", the
+provisioning row) and the 2026-11-16 host slice-limit decision recorded by the
+controller. Related: NC-25 (the marker-unit template install and its
+2 GiB-reserve derivation) and NC-30 (cgprofile/Run-Gate compatibility).
+
+**Problem.** `provision-runner.sh` prepares the runner account, the CoW
+volume and the local job helpers, and it does not touch the gates tier at all
+(`scripts/netcup/runner/provision-runner.sh`, 165 lines, contains no
+`systemctl`, no unit fragment and no `dev-gates.slice` reference). A host
+reinstalled without mdt host-setup therefore gets whatever slice state the
+installer left, and the whole gates budget arrives by hand: on the observed
+host the missing CPU/memory controls were added as a local
+`/etc/systemd/system/dev-gates.slice.d/10-remote-gate-limits.conf` drop-in
+(`CPUQuota=300%`, `MemoryHigh=5G`, `MemoryMax=6G`, `TasksMax=8192`). Nothing in
+the repository records that drop-in, so a second host, or the same host after
+another reinstall, reproduces the same manual step and silently loses it.
+
+The values also encode a policy that has since been decided the other way. The
+2026-11-16 decision for the gates tier is: no `MemoryHigh`; `MemoryMax = RAM
+minus the control-plane floors minus a small slack`; deliberate swap
+overcommit with paging by design; `memory.oom.group` on the slice and a
+negative `OOMScoreAdjust` for the control-plane units so any kill stays inside
+the slice; admission then budgets against live memory pressure rather than a
+static high-water mark. The hand drop-in (a fixed `MemoryHigh=5G` with a hard
+`MemoryMax=6G`) is the previous shape, so the one host that has limits has
+them in the form the decision retires, and no scripts document the transition.
+
+**Minimal solution.** Give provisioning an explicit, idempotent slice step for
+a host without host-setup, in the NC-25 shape: ship the unit template under
+`scripts/netcup/runner/`, DERIVE the values from the host's own `MemTotal`
+(never a hard-coded `6G`), refuse to overwrite a unit a host-setup owns, and
+render the current policy (no `MemoryHigh`; `MemoryMax` from RAM minus the
+control-plane floors, with the floors read from the host rather than assumed;
+`memory.oom.group`; the CPU quota as a host-owned input with its source named).
+Record in the runner guide which numbers are derived, which are host policy
+the provisioning does not invent, and how an already-provisioned host converges
+(single documented re-run, no hand editing).
+
+**Where.** `scripts/netcup/runner/provision-runner.sh` and a new unit template
+beside it; `scripts/netcup/runner/README.md` (the marker-unit and slice sections);
+`scripts/netcup/tests/test_runner_scripts.py` if the existing argv/literal
+checks can carry the rendering cases.
+
+**Acceptance test idea.** A hermetic render test: two fake host facts (a small
+and a large `MemTotal`) produce two different `MemoryMax` values and no
+`MemoryHigh`; a pre-existing host-setup-owned fragment makes the step refuse by
+name; a host whose control-plane floors are unreadable refuses rather than
+defaulting to a number. A live acceptance on a freshly reinstalled host without
+host-setup shows the rendered slice properties from `systemctl show` and the
+same values derived twice (idempotence).
+
+**Priority.** Should-fix. Until this lands, every reinstall of a
+host-setup-less host costs a hand step whose absence is invisible until a lane
+thrashes or is killed, and the estate keeps two contradictory gates-tier
+policies.
+
+**Close when.** A freshly reinstalled host without host-setup has the gates
+slice properties from provisioning alone, derived from that host's own facts and
+in the decided policy shape, and a second run changes nothing.
+
+## NC-60 — provisioning installs no pinned image set, so an SQL-qualification lane cannot run on a fresh host
+
+**Status:** OPEN (filed 2026-11-16); Should-fix. Source: the pre-release gate
+report of 2026-11-16 (`sonnet-v1001-prerelease-gates-REPORT.md`, finding F1 and
+the host-change section) and the remote gate worker report of the same day.
+
+**Problem.** Assay's SQL qualification checks the pinned reference with
+`docker image inspect` and REFUSES to pull it (the SQL runner then uses
+`--pull=never --network none`), so the image must already be on the host. The
+reference is immutable and lives in `assay/gate/python/qualify_sql.py`:
+`postgres:18-alpine@sha256:d3e1620b530c944afa6e887d22eb899824da68e19c52024bf98f5220c88a65b2`.
+On the observed host it was absent, and the full `tester-unified` lane ended
+`ERROR; exit_code 2` with `ASSAY_SQL_INCONCLUSIVE=image absent: docker pull ...`
+after 19m42s; the pull was done by hand on the host and the re-run passed in
+23m10s. Nothing in provisioning, in the runner guide's ordered bring-up, or in
+the remote-gate host profile's `required_images`
+(`scripts/netcup/runner/remote-gate.py:86,139-142`; the profile is a
+out-of-repo hosts file) names that reference, so the same 20-minute waste recurs
+on every fresh or reinstalled host, and the failure is only discovered at the
+end of a full lane.
+
+The related measurement in the same report is worth keeping: the controller's
+own `postgres:18-alpine` tag resolved to a DIFFERENT digest
+(`10a5c69a...`), so an operator who pulls by tag will appear to have the image
+present while `docker image inspect` on the pinned digest still fails.
+
+**Minimal solution.** Provisioning installs the digest-pinned image set the
+repository's own lanes need — at minimum this exact reference, taken from the
+one source of truth rather than retyped — either by pulling it or by loading a
+saved archive, and verifying it with `docker image inspect` on the immutable
+reference afterwards. The set must be DERIVED from the repository (one
+constant, or a generated list per project) and never a hand-maintained list in
+a private hosts file; a missing image then fails at provisioning time with the
+pinned reference in the message, not at the end of a 20-minute lane.
+
+**Where.** `scripts/netcup/runner/provision-runner.sh` (or a small helper it
+calls), `scripts/netcup/runner/README.md` step 2 (which today documents the
+pull as an operator action), `scripts/netcup/tests/test_runner_scripts.py`, and
+`assay/gate/python/qualify_sql.py` as the constant's owner (read only; no
+change there).
+
+**Acceptance test idea.** A fake `docker` records the exact `pull`/`load` argv
+and the following `image inspect` argv, and the test asserts the reference
+string equals the constant assay uses (a single-source assertion, so a digest
+bump in assay cannot leave provisioning behind). A `inspect` that fails after
+the pull refuses the provisioning step by name. A host already holding the
+reference performs no pull.
+
+**Priority.** Should-fix. The failure is environmental and loud but late, it
+costs a full lane, and the fix is one derived constant.
+
+**Close when.** Provisioning a fresh host ends with the pinned reference
+inspectable, the runner guide's step no longer instructs a manual pull, and a
+digest bump in assay breaks the provisioning test rather than a lane.
+
+## NC-61 — the runner guide's fresh-host replay is unverified and its checked-in facts are not bound to a host state
+
+**Status:** OPEN (filed 2026-11-16); Minor, documentation-integrity. Source: the
+remote gate worker report of 2026-11-16
+(`sonnet-v1001-gateworker-REPORT.md`, "What already existed" and the RUNBOOK row)
+and the same day's pre-release gate report.
+
+**Problem.** Two separate staleness facts, both already observed:
+
+1. **The guide's own replay is not closed.** After the ordered bring-up the
+guide states that a complete fresh-host replay using only checked-in files has
+not been performed, and it carries five `to be confirmed` markers — the exact
+unit-file wording and installation transcript, the portable `MemoryMax`
+derivation, two standalone invocation results, and the Run-Gate wheel hash
+(`scripts/netcup/runner/README.md:405,437,494,624,765`). A guide whose
+replay was never completed is the shape a reader trusts and cannot execute.
+2. **The host-side runbook is not bound to the host state.** The host runbook
+(kept outside the repository) is updated in sections as facts change — on the
+observed host the 2026-11-08 reinstall had already invalidated its pin-file
+name, disk layout, swap size and cgprofile deployment, and the correction
+landed only as an appended section rather than a re-verified document. Because
+nothing in the repository binds the runbook to a measured host state, the same
+drift is undetectable from the repository side.
+
+**Minimal solution.** Close the guide's replay or state per step what is still
+unverified and why (a single verified-fresh-host date in the guide, with the
+steps that were actually run and the ones that were not); and add a short
+"host fact re-verification" checklist to the bring-up whose items are
+mechanical reads (release/pin identity, disk layout, swap size, installed
+daemon version/contracts, image ids) so a reinstall forces those lines to be
+re-measured rather than remembered. The checklist must not encode a host's own
+values, only what to READ, so no host-specific fact enters the repository.
+
+**Where.** `scripts/netcup/runner/README.md` (bring-up order, the `to be
+confirmed` markers, and a new re-verification checklist),
+`scripts/netcup/CONSUMERS.md` if it repeats the order, and
+`scripts/netcup/tests/test_runner_scripts.py` for a check that the guide's
+markers are either resolved or explicitly listed as unverified.
+
+**Acceptance test idea.** A docs test fails when a `to be confirmed` marker
+appears without an entry in the guide's unverified list, and when the guide
+claims a completed fresh-host replay without a recorded date and the steps it
+covered. The checklist items are read-only commands whose output a reader
+compares, and the test asserts none of them carries a host-specific value.
+
+**Priority.** Minor; it costs a reader's trust and one reinstall's diagnostics,
+not a lane. Raise it if a second host is ever brought up from this guide.
+
+**Close when.** The guide either records a completed fresh-host replay with its
+date and covered steps or lists what remains unverified, the five markers are
+resolved or listed, and the re-verification checklist exists with no
+host-specific value in it.
