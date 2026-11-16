@@ -25,23 +25,22 @@ def _job(need=0, floor=1024, wait=900, settle=20):
 
 
 def _admission_functions(need, floor):
-    """The job's own `mem_admit_ok`, verbatim, plus the four values it reads."""
+    """The job's own `mem_admit_ok`, verbatim (it takes the meminfo path as an ARGUMENT), plus the two values it reads."""
     job = _job(need, floor)
     start = job.index("mem_admit_ok() {")
     end = job.index("# PEP 440 ordering", start)
-    return f"MEM_NEED_MB={need}\nMEM_FLOOR_MB={floor}\nMEMINFO=$MEMINFO\n" + job[start:end]
+    return f"MEM_NEED_MB={need}\nMEM_FLOOR_MB={floor}\n" + job[start:end]
 
 
 def _ask(fn_text, meminfo_text, tmp_path):
-    """Run the job's function and print its three-way outcome (0 admitted, 1 wait, 2 unreadable) and its MEM_LAST line."""
+    """Run the job's function against a fixture and print its three-way outcome (0 admitted, 1 wait, 2 unreadable) and
+    its MEM_LAST line. The path is passed as the CALL's argument: the production call passes nothing, so the function
+    reads the kernel's own /proc/meminfo and no environment variable can displace it."""
     meminfo = tmp_path / "meminfo"
     meminfo.write_text(meminfo_text)
-    script = 'set -u\nlog() { printf "%s\\n" "$*" >&2; }\n' + fn_text + """
-mem_admit_ok; rc=$?
-printf 'RC=%s\\n' "$rc"
-printf 'LAST=%s\\n' "$MEM_LAST"
-"""
-    return subprocess.run(["bash", "-c", script], env={**os.environ, "MEMINFO": str(meminfo)}, capture_output=True, text=True)
+    script = ('set -u\nlog() { printf "%s\\n" "$*" >&2; }\n' + fn_text
+              + f'\nmem_admit_ok {str(meminfo)!r}; rc=$?\nprintf "RC=%s\\n" "$rc"\nprintf "LAST=%s\\n" "$MEM_LAST"\n')
+    return subprocess.run(["bash", "-c", script], capture_output=True, text=True)
 
 
 def _outcome(r):
@@ -116,15 +115,26 @@ def test_the_expected_peak_reaches_the_host_job(tmp_path):
     job = (tmp_path / "out" / "m2" / "job.sh").read_text()
     assert "MEM_NEED_MB=1500\n" in job and "MEM_FLOOR_MB=1280\n" in job and "MEM_WAIT=60\n" in job
     assert "@@" not in job
-    assert 'MEMINFO=${MEMINFO:-/proc/meminfo}' in job
+    # the memory fact is the kernel's own file, never an environment variable a caller could displace
+    assert "MEMINFO=" not in job
+    assert "local total avail need meminfo_file=${1:-/proc/meminfo}" in job
+    assert "mem_admit_ok; do" in job  # the production call passes no fixture path
 
 
-def test_the_default_admission_checks_the_floor_only_and_says_so(tmp_path):
+def test_an_undeclared_peak_starts_the_lane_immediately_as_before(tmp_path):
+    """The controller wrapper does not pass --mem-need-mb yet, so the default must keep the old behaviour EXACTLY: no
+    ticket, no floor check, no wait. A floor nobody declared a peak for would queue every lane for memory it never asked
+    for."""
     ctx, _ = ctx_for(tmp_path, git_handlers() + [psi(1, 1), LS])
     assert rg.cmd_run(ctx, run_args(tmp_path, "v1001", "/wt", "suite", "--detach", "--name", "m3")) == 0
     job = (tmp_path / "out" / "m3" / "job.sh").read_text()
     assert "MEM_NEED_MB=0\n" in job and "MEM_FLOOR_MB=1024\n" in job and "MEM_WAIT=900\n" in job
-    assert "--mem-need-mb" in rg.parser().format_help()
+    assert "if (( MEM_NEED_MB > 0 )); then\n" in job  # the ticket and the floor live INSIDE this guard
+    assert job.index("if (( MEM_NEED_MB > 0 )); then") < job.index('exec 9>>"$HOME/rg/.mem-admit.lock"') < job.index("args=(\"$LANE\"")
+    assert "no ticket, no floor, no wait" not in rg.parser().format_help()  # the top-level usage is unchanged
+    run_parser = next(a for a in rg.parser()._actions if getattr(a, "choices", None) and "run" in a.choices)
+    run_help = " ".join(run_parser.choices["run"].format_help().split())  # argparse wraps the text; normalise it
+    assert "no ticket, no floor, no wait" in run_help  # the run option says what 0 means
 
 
 def test_the_ticket_is_one_host_wide_file_not_one_per_run():
@@ -137,11 +147,14 @@ def test_the_ticket_is_one_host_wide_file_not_one_per_run():
     assert job.index('( sleep "$MEM_SETTLE" ) &') < job.index("exec 9>&-")
 
 
-def _ticket_block(need=0, floor=1024, wait=0, settle=0):
+def _ticket_block(need=1500, floor=1024, wait=0, settle=0):
+    """The job's admission guard, from its `if` to the `args=(` line that follows the guard's own `fi`."""
     job = _job(need, floor, wait, settle)
-    start = job.index("# memory admission: one host-wide ticket")
+    start = job.index("if (( MEM_NEED_MB > 0 )); then")
     end = job.index('args=("$LANE"', start)
-    return job[start:end]
+    block = job[start:end]
+    assert block.rstrip().endswith("fi")  # the guard is closed inside the slice, so it runs as the job runs it
+    return block
 
 
 def test_a_held_ticket_refuses_with_exit_75_and_starts_no_lane(tmp_path):
@@ -159,9 +172,9 @@ def test_a_held_ticket_refuses_with_exit_75_and_starts_no_lane(tmp_path):
         assert marker.exists(), "the holding process did not take the ticket"
         meminfo = tmp_path / "meminfo"
         meminfo.write_text(MEM_OK)
-        block = 'set -u\nlog() { printf "%s\\n" "$*"; }\nrc=70\n' + _admission_functions(1500, 1024) + f"MEM_WAIT=0\nMEM_SETTLE=0\n" + _ticket_block(wait=0)
-        r = subprocess.run(["bash", "-c", block], env={**os.environ, "HOME": str(home), "MEMINFO": str(meminfo)},
-                           capture_output=True, text=True)
+        block = ('set -u\nlog() { printf "%s\\n" "$*"; }\nrc=70\n' + _admission_functions(1500, 1024)
+                 + "MEM_WAIT=0\nMEM_SETTLE=0\n" + _ticket_block(need=1500, wait=0))
+        r = subprocess.run(["bash", "-c", block], env={**os.environ, "HOME": str(home)}, capture_output=True, text=True)
         assert r.returncode == 75
         assert "memory admission ticket not obtained within 0s" in r.stdout
         assert "memory admission ok" not in r.stdout  # the lane was never admitted
@@ -173,11 +186,10 @@ def test_a_held_ticket_refuses_with_exit_75_and_starts_no_lane(tmp_path):
 def test_the_ticket_is_released_with_the_job_so_the_next_lane_can_start(tmp_path):
     home = tmp_path / "home"
     (home / "rg").mkdir(parents=True)
-    meminfo = tmp_path / "meminfo"
-    meminfo.write_text(MEM_OK)
-    block = 'set -u\nlog() { :; }\nrc=70\n' + _admission_functions(1500, 1024) + f"MEM_WAIT=0\nMEM_SETTLE=0\n" + _ticket_block(wait=0, settle=0)
+    block = ('set -u\nlog() { :; }\nrc=70\n' + _admission_functions(1500, 1024)
+             + "MEM_WAIT=0\nMEM_SETTLE=0\n" + _ticket_block(need=1500, wait=0, settle=0))
     for run in (1, 2):
-        r = subprocess.run(["bash", "-c", block], env={**os.environ, "HOME": str(home), "MEMINFO": str(meminfo)},
+        r = subprocess.run(["bash", "-c", block], env={**os.environ, "HOME": str(home)},
                            capture_output=True, text=True)
         assert r.returncode == 0, (run, r.stdout, r.stderr)
 
@@ -196,6 +208,38 @@ def test_a_memory_refusal_is_not_reported_as_a_psi_refusal(tmp_path):
     assert rg.collect(ctx, host, meta, run_dir) == 75
     assert out[-1].startswith("lane suite verdict MEM_REFUSED; exit_code 75; reason memory admission")
     assert json.loads((run_dir / "result.json").read_text())["verdict"] == "MEM_REFUSED"
+
+
+def test_an_admitted_lane_that_later_exits_75_is_not_a_memory_refusal(tmp_path):
+    """The refusal is a LINE ending in "refusing to start", not the substring "memory admission": a lane that was admitted
+    and then exited 75 for its own reason must not be certified as a memory refusal (which would name a cause never seen)."""
+    ctx, out = ctx_for(tmp_path, git_handlers() + [psi(1, 1), LS])
+    rg.cmd_run(ctx, run_args(tmp_path, "v1001", "/wt", "suite", "--detach", "--name", "m6"))
+    job_log = ("2026-11-16T00:00:00Z PSI ok (waited 0s)\n"
+               "2026-11-16T00:00:01Z memory admission ok (waited 0s): MemAvailable 7128 MiB, lane peak 1500 MiB, floor 1024 MiB\n"
+               "2026-11-16T00:00:09Z lane exited rc=75\n2026-11-16T00:00:10Z done rc=75\n")
+    ctx.runner.handlers.insert(0, ("jobs/rg-m6/job.log", rg.Result(0, job_log)))
+    ctx.runner.handlers.insert(0, ("/EXIT", rg.Result(0, "75\n")))
+    ctx.runner.handlers.insert(0, ("/rc", rg.Result(0, "75\n")))
+    host, meta, run_dir = rg.load_meta(ctx, "m6")
+    assert rg.collect(ctx, host, meta, run_dir) == 75
+    assert not out[-1].startswith("lane suite verdict MEM_REFUSED"), out[-1]
+    assert json.loads((run_dir / "result.json").read_text())["verdict"] != "MEM_REFUSED"
+
+
+def test_a_memory_ticket_refusal_is_also_a_memory_refusal(tmp_path):
+    """The ticket refusal is a refusal line too: it shares exit 75 with PSI and must not be folded into it."""
+    ctx, out = ctx_for(tmp_path, git_handlers() + [psi(1, 1), LS])
+    rg.cmd_run(ctx, run_args(tmp_path, "v1001", "/wt", "suite", "--detach", "--name", "m7"))
+    job_log = ("2026-11-16T00:00:00Z PSI ok (waited 0s)\n"
+               "2026-11-16T00:00:01Z memory admission ticket not obtained within 900s: refusing to start\n"
+               "2026-11-16T00:00:02Z done rc=75\n")
+    ctx.runner.handlers.insert(0, ("jobs/rg-m7/job.log", rg.Result(0, job_log)))
+    ctx.runner.handlers.insert(0, ("/EXIT", rg.Result(0, "75\n")))
+    ctx.runner.handlers.insert(0, ("/rc", rg.Result(0, "75\n")))
+    host, meta, run_dir = rg.load_meta(ctx, "m7")
+    assert rg.collect(ctx, host, meta, run_dir) == 75
+    assert out[-1].startswith("lane suite verdict MEM_REFUSED; exit_code 75")
 
 
 def test_a_psi_refusal_keeps_its_own_verdict(tmp_path):
