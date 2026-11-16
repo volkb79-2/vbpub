@@ -8923,9 +8923,9 @@ stated to be operator-owned (NC-38 already asks for retention/disk policy).
 runner change — stays available and is B551's recommended first option; this
 entry is the generic capability, not a substitute for that decision.
 
-**Where.** `scripts/netcup/runner/remote-gate.py` (`render_job`, its `TEMplATE`
-`finish()`/`CKROOT` handling, `cmd_run`'s argument parsing and `collect`),
-`scripts/netcup/tests/test_remote_gate.py` and
+**Where.** `scripts/netcup/runner/remote-gate.py` (`render_job`, its
+`JOB_TEMPLATE` heredoc, `finish()`/`CKROOT` handling, `cmd_run`'s argument
+parsing and `collect`), `scripts/netcup/tests/test_remote_gate.py` and
 `scripts/netcup/runner/README.md` (the remote-gate section, plus the
 checkout-retention paragraph NC-38 owns), and `scripts/netcup/CONSUMERS.md`'s
 remote-gate section.
