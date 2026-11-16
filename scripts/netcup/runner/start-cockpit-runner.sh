@@ -11,8 +11,14 @@ require_host_docker_group_match
 cfg=$COCKPIT_CONFIG_DIR
 home=$COCKPIT_HOME_DIR
 tmpd=$COCKPIT_TMP_DIR
+# The cockpit drives the lanes, so the global OOM killer must not prefer it (the 2026-11-16 host policy keeps the host's own
+# control plane at -900; the cockpit takes the weaker -500, which still ranks below them and stays killable).
+oom_adj=${COCKPIT_OOM_SCORE_ADJ:--500}
+[[ $oom_adj =~ ^-?[0-9]{1,4}$ ]] || { echo "COCKPIT_OOM_SCORE_ADJ must be an integer between -1000 and 1000, got '$oom_adj'" >&2; exit 2; }
+(( oom_adj >= -1000 && oom_adj <= 1000 )) || { echo "COCKPIT_OOM_SCORE_ADJ must be an integer between -1000 and 1000, got '$oom_adj'" >&2; exit 2; }
 docker rm -f "$COCKPIT_NAME" >/dev/null 2>&1 || true
 docker run -d --init --restart unless-stopped --user 0:0 --name "$COCKPIT_NAME" --hostname "$COCKPIT_NAME" \
+  --oom-score-adj="$oom_adj" \
   --group-add "$MDT_HOST_DOCKER_GID" --group-add "$CGPROFILE_CONTROL_GID" \
   --group-add "$TOPOS_OBSERVE_GID" --group-add "$MDT_BUILDKIT_GID" \
   --cap-add SYS_ADMIN --device /dev/fuse \

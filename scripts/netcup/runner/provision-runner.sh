@@ -151,6 +151,27 @@ done
 install -o "$RUNNER_USER" -g "$RUNNER_USER" -m 0600 "$runner_env" "$RUNNER_HOME/runner-scripts/runner.env"
 
 identity_check
+# The gates tier's memory policy (operator decision 2026-11-16): drop-ins rendered from this host's own MemTotal/SwapTotal by
+# provision-gates-limits.sh. It is part of provisioning so a reinstalled host comes up with the decided policy instead of
+# whatever the installer left. A refusal that leaves the drop-ins staged but the live slice alone is reported and
+# provisioning CONTINUES: a busy slice (exit 4) only needs a re-run while idle, and a loaded-but-inactive slice has no
+# live limit to compare. A refusal that would LOSE the policy (a foreign file, an unreadable fact, a live mismatch after
+# a restart) aborts provisioning by name.
+# --adopt (GATES_MEMORY_ADOPT=1) is the explicit one-time migration for a host an operator configured by hand: see
+# provision-gates-limits.sh --help and CONSUMERS.md, "Gates-tier memory policy".
+ec_rc=0
+adopt_args=()
+test "${GATES_MEMORY_ADOPT:-0}" = 1 && adopt_args=(--adopt)
+"$here/provision-gates-limits.sh" "${adopt_args[@]}" || ec_rc=$?
+if test "$ec_rc" -eq 4; then
+  echo 'GATES_MEMORY_POLICY_PENDING=drop-ins installed; the live slice was not restarted because it has tasks (re-run provision-gates-limits.sh while the tier is idle)'
+elif test "$ec_rc" -ne 0; then
+  echo "provision-gates-limits.sh refused with exit $ec_rc; the gates memory policy is not converged" >&2
+  echo 'remedy: read its own message above; for a hand-configured host adopt the recognised drop-ins once with GATES_MEMORY_ADOPT=1 (CONSUMERS.md, "Gates-tier memory policy")' >&2
+  exit "$ec_rc"
+fi
+
+identity_check
 # uv searches the cwd's parents for uv.toml; /root is unreadable to the runner.
 cd "$RUNNER_HOME"
 if test ! -x "$RUNNER_HOME/venvs/tools/bin/python"; then

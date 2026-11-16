@@ -58,6 +58,15 @@ The runner cockpit launcher also binds the vbpub checkout directly at
 [design rationale](DESIGN-GUIDE.md#cockpit-mounts-vbpub-at-assays-declared-workspace)
 and [runner consumer steps](CONSUMERS.md#assay-self-qualification-workspace).
 
+Runner provisioning also renders the gates-tier memory policy of a pure test host
+from that host's own memory facts: no `MemoryHigh`, a `MemoryMax` that leaves the
+measured control plane its floor, swap big enough that oversized lanes page by
+design, `OOMPolicy=kill` on each Docker scope, and `OOMScoreAdjust=-900` on the
+control-plane units. Remote-gate then admits lanes against live `MemAvailable`.
+See the [design rationale](DESIGN-GUIDE.md#pure-test-host-memory-policy),
+[consumer steps](CONSUMERS.md#gates-tier-memory-policy), and the
+[runner guide](runner/README.md#gates-tier-memory-policy).
+
 Runner host-setup has an offline, hash-verified installer for its required
 Augeaswrap command. It installs the release wheels into a versioned root venv
 and publishes `/usr/local/bin/augeaswrap`; see the

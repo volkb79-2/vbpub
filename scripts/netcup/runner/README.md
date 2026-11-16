@@ -37,6 +37,127 @@ answer to the configured FQDN, static hostname and `/etc/vbpub/server-id` before
 provider-side identity (API id, name, hostname, address, state) from the controller before each remote write; the
 scripts can only check what the host itself reports.
 
+## Gates-tier memory policy
+
+A pure test host protects only its measured control plane: lanes may overcommit RAM and page (swap exists from the
+install plan), and a lane that needs more RAM than the host has finishes slowly instead of failing. That is the
+operator decision of 2026-11-16 (option 1), measured on a 4 vCPU / 8 GiB test host. `provision-gates-limits.sh` renders
+it into drop-ins only — no unit file is ever edited — and every number is derived from the host itself.
+
+```bash
+sudo ~/runner-scripts/provision-gates-limits.sh            # provisioning runs this; re-run it alone any time
+sudo ~/runner-scripts/provision-gates-limits.sh --dry-run    # print the plan, write nothing, restart nothing
+sudo ~/runner-scripts/provision-gates-limits.sh --adopt      # ONE TIME on a host an operator configured by hand
+```
+
+What it writes, and why:
+
+| Drop-in | Key | Why |
+| --- | --- | --- |
+| `<gates slice>.d/20-memory-policy.conf` (the slice name is `GATES_SLICE`, default `dev-gates.slice`) | `MemoryHigh=infinity`, `MemoryMax` = nominal `MemTotal` − 1536 MiB, `MemorySwapMax` = nominal `SwapTotal` − 8192 MiB | no throttling mark (a `MemoryHigh` throttles the tier before the control plane is ever at risk); the RAM cap keeps the control plane's measured floor (anon ≈ 0.1 GiB + hot file ≈ 0.5 + kernel ≈ 0.3 + cockpit/run-gate ≈ 0.3 = ≈ 1.2 GiB, rounded down to a 1024 MiB floor plus a 512 MiB slack); the swap cap leaves the host its own share so an oversized lane pages instead of ending the whole tier |
+| `docker-.scope.d/20-oom-group.conf` | `[Scope] OOMPolicy=kill` | gives **every** transient `docker-<id>.scope` `memory.oom.group=1`: an OOM inside one container kills that container's own process tree, not an arbitrary process of it. Deliberately NOT on the slice: a slice-level group would kill every lane when one runaway exhausts the tier |
+| `ssh.service.d`, `systemd-logind.service.d`, `systemd-journald.service.d`, `docker.service.d`, `cgprofiled.service.d` `30-oom-protect.conf` | `[Service] OOMScoreAdjust=-900` | the global OOM victim ranking scores processes by their own size and score, and a cgroup floor never enters it; on the measured kernel an adj-0 2 MiB service and an adj-0 lane process score about alike, so a lane made of many small processes would tie with, or win against, the host's own services |
+
+**The ceiling is derived from the NOMINAL size, not the raw kB.** A kernel reserves a little, so an 8 GiB host reports
+7935 MiB — and raw arithmetic then produced one MiB less than the figure the operator had measured and chosen for it.
+Each total is therefore rounded **up** to the install plan's step (`GATES_NOMINAL_STEP_MIB`, default 1024 = one GiB)
+before the reserve is subtracted: 7935 → 8192 → `MemoryMax=6656M`, and 64 GiB of swap → 64 GiB − 8 GiB = 57344M. The
+rule is exercised by tests on three host sizes (4/8/16 GiB), so a hard-coded number cannot pass.
+
+Overrides (they pin a value the operator measured for this host; they never replace a fact the host can state):
+`GATES_MEMORY_MAX_MIB`, `GATES_MEMORY_SWAP_MAX_MIB`, `GATES_CONTROL_FLOOR_MIB` (default 1024),
+`GATES_MEMORY_SLACK_MIB` (default 512), `GATES_NOMINAL_STEP_MIB` (default 1024), `GATES_SWAP_RESERVE_MIB` (default 8192).
+A pin that is not below the raw `MemTotal`/`SwapTotal`, a total that cannot be read, or a host whose swap is not above its
+reserve is refused by name — never papered over with a default. The measured 8 GiB policy is `MemoryMax=6656M`
+(6.5 GiB): at 7 GiB the host fell to 107 MiB `MemAvailable` with 5.5 s ssh latency, at 6656M it kept 465-591 MiB with
+unchanged latency.
+
+Consequences to know before changing it:
+
+- **`OOMScoreAdjust=-900` is inherited by ssh sessions.** sshd restores the unit's score for its children, so a heavy
+  process started directly in an ssh login is hard for the global OOM killer to pick. Lane processes are unaffected:
+  Docker gives a container its own (0) score. Do not put a *stronger* value on `ssh` than on the rest of the control
+  plane, and never on a unit an operator runs heavy work through.
+- **A slice restart is the only way to apply new limits to a running slice.** `daemon-reload` alone does not re-apply
+  cgroup limits to an active slice, and a restart resets the slice's `memory.events` counters — including `oom_kill`,
+  which remote-gate's `INCONCLUSIVE-OOM` check reads as a delta. The script therefore restarts the slice **only** when
+  it has no tasks anywhere (every `cgroup.procs` under it is empty) and only when the live values disagree; otherwise it
+  refuses with exit 4 and installs/keeps the drop-ins. Never restart the slice while a lane runs. Idle detection is a
+  read of `cgroup.procs` taken just before the restart: a task created between that read and the restart is not covered,
+  which is why this step is never part of lane startup and belongs to provisioning or to a quiet tier. An **unreadable**
+  process list is not an idle slice: the script exits 3 instead of guessing, because the only thing the answer gates is
+  the restart that resets those counters.
+- **A host with no swap refuses (exit 3) by design.** The policy pages an oversized lane instead of killing it; without
+  swap there is nothing to page onto, so rendering a `MemorySwapMax` would change the policy's meaning. Lower the reserve
+  only to a swap share the operator has measured; otherwise this host is not a candidate for this policy.
+- **A loaded but INACTIVE slice is a no-op (exit 0).** A freshly installed host (or a slice deactivated after a finished
+  run) has no live cgroup, so there is no limit to compare and no counter to reset: the drop-ins are staged and apply at
+  the first start. Only an active slice whose `ControlGroup` cannot be resolved is an error (exit 3).
+- **`OOMScoreAdjust` needs no restart, and the script does not restart services.** A drop-in applies at the unit's next
+  start; writing `/proc/<MainPID>/oom_score_adj` reproduces the measured state immediately, so ssh, logind, journald and
+  docker (which every cockpit depends on) keep running.
+- **A foreign drop-in is refused, not overridden — and refused before anything is written.** A file under the slice's `.d/`
+  from another owner (for example the hand `10-remote-gate-limits.conf` a 2026-11-08 cut-over left with `MemoryHigh=5G`)
+  that sets one of the memory keys is named and refused with exit 5, so a refused run leaves no half-written policy behind.
+  CPU-only drop-ins (`CPUQuota`, `TasksMax`) are tolerated: CPU quota stays a host-owned input this script does not invent.
+  The same check covers `OOMPolicy` under `docker-.scope.d/` and `OOMScoreAdjust` under each protected unit: a *disagreeing*
+  value is refused (a later fragment wins), an *equal* one is kept and reported (the same policy twice, for example the
+  dedicated-dev host protection mdt host-setup renders).
+- **The docker prefix drop-in covers every container**, the cockpit and any buildkitd scope included: an OOM in one of
+  them kills that whole container (backlog NC-63).
+
+The cockpit container itself is started with `--oom-score-adj` (`COCKPIT_OOM_SCORE_ADJ`, default `-500`): it drives
+run-gate, so the global OOM killer must not prefer it, and a weaker value than the host units' `-900` keeps it killable.
+Its own `memory.oom.group` comes from the same docker-scope drop-in. The cockpit launcher sets the flag at *creation*:
+re-create the cockpit when the running one was created before this flag existed (`docker inspect -f '{{.HostConfig.OomScoreAdj}}' "$COCKPIT_NAME"`,
+which reads `0` for "unprotected"). A `docker exec` into the cockpit inherits that score (still `0` on a cockpit created
+before the flag), never the `-900` of a host unit.
+
+### Adopting a hand-configured host (one time)
+
+A host an operator configured by hand — the 2026-11-16 measurement itself, and any other host that is given the same
+policy by hand — has drop-ins this tool did not render. Without a flag they are refused (exit 5), and the message names
+`--adopt`:
+
+```bash
+sudo ~/runner-scripts/provision-gates-limits.sh --adopt --dry-run   # see what would be adopted, change nothing
+sudo ~/runner-scripts/provision-gates-limits.sh --adopt             # adopt once
+sudo ~/runner-scripts/provision-gates-limits.sh                     # afterwards: a NO-OP that changes nothing
+```
+
+`--adopt` recognises a file **only** at one of this tool's own paths, and only when every non-comment line is a section
+header naming exactly the section this file owns (`[Slice]`, `[Scope]`, `[Service]`) or a directive whose key belongs to
+that policy. **The values are not compared**: a hand file legitimately writes `MemorySwapMax=56G` where the tool renders
+`57344M` (the same amount, a different spelling), so the adopted file becomes the tool's owned rendering and the original
+is kept aside. Anything else — `CPUQuota`, `MemoryLow`, a second section, a typo in the key, no directive at all — stays
+foreign and is refused even with the flag.
+The adopted content is **copied, never deleted**, to `<file>.retired-<UTC stamp>` — a name systemd does not load — so
+what was superseded stays readable and can be restored by hand. On a host that already matches, `--adopt` adopts nothing.
+Provisioning passes the flag only when the operator sets `GATES_MEMORY_ADOPT=1`, so a migration is an explicit act.
+
+Host-side verification (read-only):
+
+```bash
+systemctl show "$GATES_SLICE" -p MemoryHigh,MemoryMax,MemorySwapMax
+cat /sys/fs/cgroup/dev.slice/dev-gates.slice/memory.{high,max,swap.max}
+ps -eo pid,comm,oom_score_adj | grep -E 'sshd|dockerd|cgprofiled|journald|logind'
+# a started lane container must read 1: place the probe IN the tier and read the host's own cgroup files (never a
+# --cgroupns=host container, which would inspect a namespace instead of the host's own view)
+s=dev-gates.slice; cg=/sys/fs/cgroup/dev.slice/$s
+docker run -d --rm --cgroup-parent "$s" --name probe-oomgroup alpine sleep 30 >/dev/null
+cat "$cg"/docker-*/memory.oom.group          # 1 = an OOM inside one container kills that container's whole tree
+docker rm -f probe-oomgroup
+```
+
+The last probe starts a throwaway container in the gates tier: run it only while the tier is otherwise quiet, and remove
+it by its exact name (the command does). Running it with `--cgroup-parent` (rather than reading an arbitrary container's
+scope) is what makes the reading apply to the tier the policy is written for.
+
+A process started with `docker exec` runs INSIDE the cockpit container and inherits the cockpit's own OOM score
+(`-500`), not a `-900` unit score. An existing cockpit keeps the score it was created with (`0` before the launcher
+carried `--oom-score-adj`), so re-create it once; `docker inspect -f '{{.HostConfig.OomScoreAdj}}' "$COCKPIT_NAME"`
+reports `0` for "unprotected".
+
 ## Cockpit restart policy
 
 `start-cockpit-runner.sh` starts the cockpit with Docker restart policy `unless-stopped`. After a host reboot Docker
@@ -67,7 +188,8 @@ The full reboot acceptance still requires a test-host reboot and a queue launch 
 
 | Script | Runs as | What it does |
 | --- | --- | --- |
-| `provision-runner.sh` | root, detached | writes `/etc/vbpub/server-id`, creates the runner account (uid `RUNNER_UID`, default 1003), formats and mounts the Btrfs CoW partition, installs `run-job` and `sync-from-devcontainer` and the runner scripts with `runner.env` into `~/runner-scripts` (the path the `run-job ... -- bash ~/runner-scripts/<script>` invocations use), creates the tools venv and `uv` |
+| `provision-runner.sh` | root, detached | writes `/etc/vbpub/server-id`, creates the runner account (uid `RUNNER_UID`, default 1003), formats and mounts the Btrfs CoW partition, installs `run-job` and `sync-from-devcontainer` and the runner scripts with `runner.env` into `~/runner-scripts` (the path the `run-job ... -- bash ~/runner-scripts/<script>` invocations use), renders and applies the gates-tier memory policy through `provision-gates-limits.sh`, creates the tools venv and `uv` |
+| `provision-gates-limits.sh` | root on host (called by `provision-runner.sh`, re-runnable alone) | renders from this host's own `MemTotal`/`SwapTotal` the gates-tier drop-ins (`MemoryHigh=infinity`, `MemoryMax`, `MemorySwapMax`, `docker-.scope` `OOMPolicy=kill`, `OOMScoreAdjust=-900` on the control-plane units), sets the live OOM scores in place, and restarts the idle slice only when its live limits disagree; `--adopt` performs the one-time migration from a hand-configured drop-in; see [Gates-tier memory policy](#gates-tier-memory-policy) |
 | `install-augeaswrap.sh` | root on host | verifies the supplied Augeaswrap and cli-extended wheel hashes, installs them offline into `/opt/augeaswrap/<version>/venv`, and links `/usr/local/bin/augeaswrap` |
 | `install-fleetd.sh` | root on host | verifies the supplied fleetd and cli-extended wheel hashes, installs them offline into `/opt/fleetd/<version>/venv`, and links `/usr/local/bin/fleet`; `--check` reports whether that exact wheel hash is already installed without writing |
 | `sync-from-devcontainer` | runner | imports a controller-made Git bundle into `~/checkouts/<commit>`; default calls update `~/src/vbpub-current`, while `--no-current-link` preserves it for T3 imports |
@@ -279,7 +401,9 @@ either host has switched. No host hosts-file was changed for this note.
 2. **P2 — pin the new host key and check the installed layout.** Verify the provider identity and disk layout before
    making further host changes.
 3. **P3 — provision the runner.** Run `provision-runner.sh` as a detached root job. After provisioning alone, the host
-   can run the remote `selftest` lane; the cockpit, CoW smokes and cgprofile-observed lanes are not ready.
+   can run the remote `selftest` lane; the cockpit, CoW smokes and cgprofile-observed lanes are not ready. Provisioning
+   also stages the gates-tier memory policy ([Gates-tier memory policy](#gates-tier-memory-policy)); when the tier is
+   still busy it prints `GATES_MEMORY_POLICY_PENDING` and one idle re-run of `provision-gates-limits.sh` applies it.
 4. **P4 — sync the reviewed source.** Bundle the reviewed commit and required `assay-v*` and `ciu-v*` tags, upload it
    to `~/incoming`, then run `sync-from-devcontainer`. Host-setup and runner venv setup use this checkout.
 5. **P5 then P6 — install Augeaswrap, then run host-setup.** Use `install-augeaswrap.sh` with the verified local
@@ -433,9 +557,13 @@ The first file is a marker: it deliberately carries no resource controls. The se
 the controls assay checks. The source does not record an explanation of the observed host's I/O scheduler behavior.
 
 `MemoryMax=6G` is the value recorded on the cut-over host, not a portable default. Do **not** copy it blindly to a
-different host. Backlog NC-25 requires deriving the finite value from `MemTotal` with at least a 2-GiB reserve, but
-the repository does not yet provide an implementation. The portable derivation is `to be confirmed`; read `MemTotal`
-from the target host and size it for that host before installing the unit.
+different host, and do not write it into the unit fragment at all: the limits belong in the drop-ins of
+[Gates-tier memory policy](#gates-tier-memory-policy), which `provision-gates-limits.sh` derives from that host's own
+`MemTotal`/`SwapTotal` (`MemoryMax` = the host's NOMINAL `MemTotal` rounded up to the step, minus the control-plane
+reserve; `MemoryHigh=infinity`). The unit fragment
+then carries only what makes it a *loaded installed slice* for `cgroup-parent.sh` (`CPUWeight`, `IOWeight`, and the
+finite `MemoryMax` a host-setup render may include, which the drop-in overrides). Installing the two fragments is still
+the manual step tracked as NC-25; the memory values are no longer a hand decision.
 
 The following validation and installation sequence is proposed; the source does not preserve the exact observed
 argv or file mode. Run it as root:
@@ -844,6 +972,26 @@ bash "$queue" status
    rm -f "$CONTROLLER_HOME/host-sat-queue.disabled.$host"
    bash "$queue" status
    ```
+
+## Live memory admission on the host (remote-gate)
+
+With no static ceiling, `remote-gate.py` decides at admission time: the host job reads `/proc/meminfo` and starts the
+lane only when `MemAvailable - expected_peak >= floor`. `--mem-need-mb` is the lane's expected peak (the controller's
+admission weight) and `--mem-floor-mb` (default 1024) is what must remain for the control plane; `--wait-mem`
+(default 900 s) bounds the wait. **`--mem-need-mb 0` (the default) declares no peak, so the pre-existing behaviour is
+unchanged: no ticket, no floor check, no wait, the lane starts immediately.** That matters because the controller
+wrapper does not pass the flag yet; a floor nobody declared a peak for would queue every lane for memory it never
+asked for. The expected peak is capped at `MemTotal - 2 x floor`, so **one** lane larger than RAM always runs alone
+and pages instead of waiting forever, while a smaller lane still waits when the host is occupied. A host-wide ticket
+(`~/rg/.mem-admit.lock`, held for a 20 s settle after the lane starts, so the lane's memory is already visible in
+`MemAvailable`) keeps two callers from reading the same figure. Unreadable meminfo is *indeterminate*: the job refuses
+rather than admitting, and the memory fact is the kernel's own `/proc/meminfo` with no environment override.
+
+A refusal is exit 75 and verdict `MEM_REFUSED` (a memory admission refusal is never reported as `PSI_REFUSED`: that
+would name a cause nobody observed). The verdict is decided from the job log's **refusal line** (`…: refusing to start`),
+not from the phrase "memory admission" appearing anywhere: a lane that was admitted and then exited 75 for its own
+reason is not a memory refusal either. Neither refusal started the lane, so nothing was cleaned up and no container
+exists.
 
 ## Host-sat queue pause flags
 
