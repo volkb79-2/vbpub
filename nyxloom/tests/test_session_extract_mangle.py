@@ -96,7 +96,7 @@ def test_matching_paragraph_is_replaced_others_survive():
     assert redacted == 1
     assert "continue autonomous per-component repair" not in kept[0].text
     assert "KEEP per-package state:\n- P102: FULLY MERGED AND CLOSED." in kept[0].text
-    assert "[redacted paragraph -- matched --redact-pattern '/goal']" in kept[0].text
+    assert "[redacted paragraph -- matched --redact-pattern #1]" in kept[0].text
 
 
 def test_no_match_leaves_text_untouched():
@@ -121,3 +121,16 @@ def test_case_insensitive_match():
     events = [_at(0, "The GOAL directive is active.")]
     kept, redacted = redact_paragraphs(events, ["goal"])
     assert redacted == 1
+
+
+def test_the_placeholder_names_the_rule_by_ordinal_and_never_echoes_the_pattern():
+    """NL-72: the pattern text itself can be the sensitive string, so the
+    placeholder must not re-publish it."""
+    secret = "SECRETMARK-[0-9]+"
+    events = [_at(0, f"Synthetic row SECRETMARK-42 sits here.\n\nHarmless paragraph.")]
+    kept, redacted = redact_paragraphs(events, ["harmless-never-matches", secret])
+    assert redacted == 1
+    assert "SECRETMARK" not in kept[0].text
+    assert secret not in kept[0].text
+    assert "[redacted paragraph -- matched --redact-pattern #2]" in kept[0].text
+    assert "Harmless paragraph." in kept[0].text

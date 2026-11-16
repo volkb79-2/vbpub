@@ -146,12 +146,23 @@ class ExtractConfig:
     #                        adapter) as the goal anchor.
     #   goal_file         -- pin the goal text from this file instead of the
     #                        session's first prompt. Implied goal section.
+    #   state_file        -- embed the LIVING STATE FILE an agent keeps for
+    #                        forward work (done / decisions and why / next
+    #                        steps / open questions / exact commands) as a
+    #                        labelled, size-bounded section after the goal
+    #                        anchor and BEFORE the recent-prose tail. Opt-in
+    #                        for every harness (pi sessions are its first
+    #                        real consumer): a session kind that keeps no
+    #                        state file gets nothing rather than an invented
+    #                        one, and its section has budget priority over the
+    #                        delta (see layout.py's truncation order).
     #   tail_prose_tokens -- the NEWEST user/assistant prose of the session
     #                        (the end of the transcript, after the previous
     #                        marker), in estimated tokens; 0 = no tail
     #                        section. The delta excludes what the tail carries.
     goal_prompt: bool = False
     goal_file: str | None = None
+    state_file: str | None = None
     tail_prose_tokens: int = 0
 
     agent_comms: str = "off"
@@ -394,6 +405,8 @@ class ExtractConfig:
             raise ValueError("tail_prose_tokens must be non-negative")
         if self.goal_file is not None and not self.goal_file.strip():
             raise ValueError("goal_file must be a non-empty path or None")
+        if self.state_file is not None and not self.state_file.strip():
+            raise ValueError("state_file must be a non-empty path or None")
         if self.tool_errors not in {"show", "hide"}:
             raise ValueError("tool_errors must be show or hide")
         if self.edit_calls not in {"show", "collapse", "omit"}:

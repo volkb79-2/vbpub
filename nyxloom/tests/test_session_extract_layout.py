@@ -549,3 +549,193 @@ def test_the_goal_prompt_is_found_even_when_it_precedes_the_cut():
     assert "OPERATOR: Run the whole controller job to the end" in out
     tail, delta = _sections(out)
     assert "Run the whole controller job" not in tail + delta
+
+
+# --- the STATE section (operator decision 2026-11-16) -------------------------
+
+STATE_BODY = (
+    "## Done\n- Synthetic item one landed.\n\n"
+    "## Decisions\n- Synthetic decision because it is cheaper.\n\n"
+    "## Next\n- Synthetic next step.\n\n"
+    "## Open\n- Synthetic open question."
+)
+
+
+def _state_file(tmp_path, body=STATE_BODY, name="state.md"):
+    path = tmp_path / name
+    path.write_text(body, encoding="utf-8")
+    return path
+
+
+def test_the_state_section_sits_after_the_anchor_and_before_the_recent_prose(tmp_path):
+    state = _state_file(tmp_path)
+    out = _render(state_file=str(state))
+    assert layout.STATE_HEADER in out
+    assert f"[state file: {state}]" in out
+    assert STATE_BODY.strip() in out                      # VERBATIM, not summarized
+    assert out.index(layout.GOAL_HEADER) < out.index(layout.STATE_HEADER)
+    assert out.index(layout.STATE_HEADER) < out.index(TAIL)
+    assert "state=file" in out and "state_tokens=" in out
+
+
+def test_the_state_section_is_opt_in_and_absent_by_default(tmp_path):
+    assert layout.STATE_HEADER not in _render()
+    assert "state=none" in _render()
+    # It is its own reason for the layout to run, without any goal or tail.
+    out = _render(goal_prompt=False, tail_prose_tokens=0, state_file=str(_state_file(tmp_path)))
+    assert layout.STATE_HEADER in out and TAIL not in out
+
+
+def test_the_state_section_is_bounded_and_truncated_at_a_paragraph_boundary(tmp_path):
+    paragraphs = [f"## Step {index}\n" + "synthetic instruction " * 12 for index in range(40)]
+    body = "\n\n".join(paragraphs)
+    state = _state_file(tmp_path, body)
+    result = extract(LAYOUT, _layout_config(
+        goal_prompt=False, tail_prose_tokens=0, budget_tokens=900,
+        state_file=str(state),
+    ))
+    out = result.render()
+    assert result._readback_layout.state_truncated is True
+    assert select.estimate_tokens(out) <= 900
+    assert "[state truncated:" in out and str(state) in out.split("[state truncated:")[1]
+    kept_paragraphs = [line for line in out.splitlines() if line.startswith("## Step ")]
+    expected_paragraphs = [line for line in body.splitlines() if line.startswith("## Step ")]
+    assert kept_paragraphs and kept_paragraphs == expected_paragraphs[: len(kept_paragraphs)]
+    # The cut never splits a paragraph: the text before the marker ends with a
+    # complete paragraph, so a successor cannot act on half an instruction.
+    before_marker = out.split("[state truncated:")[0].rstrip()
+    assert before_marker.endswith("synthetic instruction")
+    # A budget too small for even one paragraph keeps the marker, not half of it.
+    tiny = extract(LAYOUT, _layout_config(
+        goal_prompt=False, tail_prose_tokens=0, budget_tokens=700,
+        state_file=str(state),
+    )).render()
+    assert "[state truncated:" in tiny
+    assert "synthetic instruction" not in tiny.split(layout.STATE_HEADER)[1].split(
+        "[state truncated:"
+    )[0]
+
+
+def test_the_state_section_takes_priority_over_the_delta_and_spares_the_tail(tmp_path):
+    state = _state_file(tmp_path, body="\n\n".join(
+        f"## Step {index}\n" + "synthetic instruction " * 12 for index in range(20)
+    ))
+    result = extract(LAYOUT, _layout_config(
+        goal_prompt=False, tail_prose_tokens=10_000, budget_tokens=1_500,
+        state_file=str(state),
+    ))
+    plan = result._readback_layout
+    out = result.render()
+    assert plan.tail.kept >= 1                        # the tail kept its minimum share
+    assert plan.state_tokens > 0
+    assert plan.content_limit_tokens <= max(0, 1_500 - 512 - plan.state_tokens)
+    assert "synthetic instruction" in out and NEWEST in out
+
+
+def test_the_state_section_is_redacted_like_every_kept_paragraph(tmp_path):
+    body = "## Done\n- Synthetic secret marker one.\n\n## Next\n- Synthetic next step."
+    state = _state_file(tmp_path, body)
+    result = extract(LAYOUT, _layout_config(
+        goal_prompt=False, tail_prose_tokens=0, state_file=str(state),
+        redact_patterns=("synthetic secret marker",),
+    ))
+    out = result.render()
+    assert "Synthetic secret marker one." not in out
+    assert "[redacted paragraph -- matched --redact-pattern" in out
+    assert "Synthetic next step." in out              # unrelated paragraph survives
+    assert result.redacted_paragraphs >= 1
+
+
+def test_an_empty_or_missing_state_file_is_refused(tmp_path):
+    empty = _state_file(tmp_path, "   \n", name="empty.md")
+    with pytest.raises(ValueError, match="--state-file"):
+        extract(LAYOUT, _layout_config(state_file=str(empty)))
+    with pytest.raises(ValueError, match="must be a non-empty path"):
+        ExtractConfig(state_file="   ")
+
+
+@pytest.mark.parametrize(("argv", "message"), [
+    (("--state-file", "state.md"), "require --preset readback"),
+    (("--preset", "readback", "--state-file", "missing.md"), "--state-file"),
+])
+def test_state_file_cli_contract(capsys, tmp_path, argv, message):
+    code, _, err = _run(capsys, LAYOUT, *argv)
+    assert code != 0
+    assert message in err
+
+
+def test_paragraph_cut_keeps_whole_paragraphs_and_refuses_a_partial_first_one():
+    from nyxloom.session_extract.layout import paragraph_cut
+
+    text = "first paragraph\n\nsecond paragraph\n\nthird"
+    # The whole text fits: the cut is its own length, not a paragraph prefix.
+    assert paragraph_cut(text, len(text)) == len(text)
+    assert paragraph_cut(text, len(text) - 1) == len("first paragraph\n\nsecond paragraph")
+    # Not even the first paragraph fits -> 0, so the caller discloses instead
+    # of emitting half an instruction.
+    assert paragraph_cut(text, 5) == 0
+
+
+def test_a_truncated_state_section_is_visible_in_the_ACCOUNTING_too(tmp_path):
+    """A body marker is easy to miss; the footer must say it as well."""
+    paragraphs = [f"## Step {index}\n" + "synthetic instruction " * 12 for index in range(40)]
+    state = _state_file(tmp_path, "\n\n".join(paragraphs))
+    result = extract(LAYOUT, _layout_config(
+        goal_prompt=False, tail_prose_tokens=0, budget_tokens=900,
+        state_file=str(state),
+    ))
+    out = result.render()
+    plan = result._readback_layout
+    assert "state_truncated=1" in out
+    assert f"state_chars={plan.state_kept_chars}/{plan.state_total_chars}" in out
+    assert plan.state_kept_chars < plan.state_total_chars
+    # An untruncated state file reports the same accounting honestly.
+    full = extract(LAYOUT, _layout_config(
+        goal_prompt=False, tail_prose_tokens=0, state_file=str(_state_file(tmp_path)),
+    ))
+    assert "state_truncated=0" in full.render()
+
+
+def test_a_state_file_with_no_blank_lines_is_cut_at_a_LINE_not_to_nothing(tmp_path):
+    """No blank lines / one long block used to collapse to the marker alone."""
+    body = "\n".join(f"- synthetic line {index} " + "filler " * 6 for index in range(60))
+    state = _state_file(tmp_path, body, name="no-blank-lines.md")
+    result = extract(LAYOUT, _layout_config(
+        goal_prompt=False, tail_prose_tokens=0, budget_tokens=900,
+        state_file=str(state),
+    ))
+    out = result.render()
+    plan = result._readback_layout
+    section = out.split(layout.STATE_HEADER)[1].split("[state truncated:")[0]
+    # Real content survived, ending on a WHOLE line, and the marker says the
+    # cut was not at a paragraph boundary (this file has none).
+    assert "- synthetic line 0" in section
+    assert section.strip().splitlines()[-1].startswith("- synthetic line ")
+    marker = out.split("[state truncated:")[1].split("]")[0]
+    assert "line/character boundary" in marker
+    assert plan.state_kept_chars > 0
+
+
+def test_a_state_file_whose_FIRST_block_exceeds_the_budget_still_shows_content(tmp_path):
+    """One long unbroken block: a hard character cut keeps what fits."""
+    state = _state_file(tmp_path, "synthetic " * 5000, name="one-block.md")
+    result = extract(LAYOUT, _layout_config(
+        goal_prompt=False, tail_prose_tokens=0, budget_tokens=800,
+        state_file=str(state),
+    ))
+    out = result.render()
+    section = out.split(layout.STATE_HEADER)[1].split("[state truncated:")[0]
+    assert "synthetic" in section
+    assert result._readback_layout.state_kept_chars > 0
+    assert result._readback_layout.state_truncated is True
+
+
+def test_a_non_utf8_state_file_names_the_flag_and_the_path(tmp_path):
+    state = tmp_path / "latin1.md"
+    state.write_bytes(b"# State\n- a \xff byte that is not UTF-8\n")
+    with pytest.raises(ValueError) as exc:
+        extract(LAYOUT, _layout_config(state_file=str(state)))
+    message = str(exc.value)
+    assert "--state-file" in message and str(state) in message
+    assert "not UTF-8" in message
+

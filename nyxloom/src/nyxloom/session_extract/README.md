@@ -344,7 +344,7 @@ first principles.
 
 ## Cross-CLI adapter findings
 
-Skimmed real session logs from Claude Code, Codex, Reasonix, and opencode before
+Skimmed real session logs from Claude Code, Codex, Reasonix, opencode and pi before
 finalizing the `SessionAdapter` protocol (`adapters/base.py`), to avoid
 designing an interface that only fits Claude Code's shape. All four
 adapters have since been run end-to-end against real local session data
@@ -436,6 +436,70 @@ constrained the interface or turned up a real bug:
   carry no timestamp, so the adapter preserves the normalized empty
   timestamp representation rather than manufacturing one. Markers are
   stable `line<N>` positions in the valid chat-record stream.
+- **pi** (`adapters/pi.py`, `@earendil-works/pi-coding-agent`) — one adapter
+  reads BOTH of pi's shapes, because they carry the same conversation model:
+  the durable **stored session** (`~/.pi/agent/sessions/<encoded-cwd>/
+  <ISO-time>_<uuid>.jsonl`, one file per session, `message` records nesting the
+  message object, a `compaction` record with a `summary`, and a `resume`
+  appending further agent cycles to the SAME file) and the **run stream** a
+  controller gets from `pi --mode json` (`agent_start`, `turn_start`,
+  `message_start`/`message_update`/`message_end`, `tool_execution_start`/
+  `..._update`/`..._end`, `turn_end`, `compaction_start`/`compaction_end`,
+  `agent_end`, `agent_settled`). `user` text is `OPERATOR_TEXT`; pi's
+  `system` message (preamble/tools/rules/docs sections) is harness framing and
+  is never an operator turn; assistant `text`/`thinking`/`toolCall` blocks emit
+  `ASSISTANT_TEXT`/`THINKING` (`--include-thinking`)/`TOOL_CALL`
+  (`--tool-calls`); a FAILED `toolResult` (`isError`) renders as
+  `[tool error: <tool>] <call> => <result>` under `--tool-errors show`; a
+  `compaction`/`compaction_end` is a `LIFECYCLE_MARKER` whose summary needs
+  `--show-compaction-content`; a `stopReason: "error"` message also yields the
+  `[API ERROR: ...]` channel `--show-api-errors` governs; and a Bash call
+  naming an `--agent-launch-pattern` launcher contributes `AGENT-OUT`/`AGENT-IN`
+  (pi has no Agent/Task/SendMessage tool, so a controller launcher run inside
+  pi is the only agent-communication shape). `message_start`/`message_update`
+  are deliberately NOT read: `message_end` carries the finished message and
+  the earlier records are cumulative partial snapshots (one real 292k-line run
+  stream was 99.2% `message_update` records). `tool_execution_*` is not read
+  either -- the call is in the assistant message and its outcome in the
+  `toolResult` message -- except by `stopstate.py`, where that pair IS the
+  in-flight evidence. pi's lowercase tool names are mapped onto the shared
+  capitalized vocabulary so `--edit-calls`/`--read-calls` compression and the
+  ledger typology keep working. Markers are absolute `line<N>` positions.
+  Verified against real stored sessions and real controller run streams on
+  this machine; the committed fixtures are synthetic (`tests/
+  test_session_extract_pi.py`) because real ones carry private prompts.
+
+  **Nothing the file contains is dropped silently.** Every record type and
+  message role pi's own declarations define (`dist/core/session-manager.d.ts`,
+  `dist/core/messages.d.ts`) has a deliberate disposition, and the adapter
+  reports both kinds of skip in a `[pi skipped ...]` footer block (and as
+  `adapter_notes` in `--json`): DELIBERATE (a lifecycle record that adds no
+  content, an `image` block a text extract cannot carry) and UNKNOWN (a record
+  type, role or block the declarations do not explain -- a shape this adapter
+  does not yet know, which must be VISIBLE rather than swallowed). The
+  content-bearing shapes are MAPPED, not skipped: `custom_message`/`custom`
+  become labelled extension-context events carrying a `pi_context_source`
+  marker, `branch_summary`/`branchSummary` and `compactionSummary` become
+  lifecycle boundaries carrying their summary, `bashExecution` (pi's `!` and
+  `!!` prefixes) becomes a tool-like line naming the command, its exit code and
+  whether pi excluded it from model context, and `context_edit` becomes a
+  marker naming the target it masks. Unparseable lines (a run killed
+  mid-write) are counted too.
+
+  Two flattenings are a deliberate simplification, and both are counted in the
+  footer rather than implied: pi sessions are TREES (`parentId`), and this
+  adapter follows FILE ORDER, so a file that really diverges from one line is
+  reported (a fork -- one parent with two children, counted once -- or a
+  `parentId` naming an entry the file does not contain); a file that merely
+  interleaves non-message entries (`compaction`, `context_edit`,
+  `model_change`) into a straight `parentId` chain is LINEAR and is not
+  reported, because it is one line, not a tree; and a `context_edit` with
+  `replacement: null` REMOVES its target from model context while the extract
+  still shows the original content, which the footer states.
+  `tests/fixtures/pi_stop_parity.json` pins the same
+  synthetic records through both this stop-state classifier and the documented
+  predicate of `scripts/controller/pi-impl.sh`, so the two consumers of "how
+  did this run end" cannot drift apart silently.
 - **opencode** (`adapters/opencode.py`) — the odd one out: a relational
   SQLite store (`session`/`message`/`part` tables), not flat JSONL. This
   is why `SessionAdapter.parse()` takes a path and a `config`, not a
@@ -502,8 +566,9 @@ sessions.py     list_agents()/render_tree(): `nyxloom-harness extract-sessions`'
                 nyxloom/docs/design-context-lifecycle-experiments.md for
                 why this was needed and how each adapter's answer was
                 verified against real local data.
-locate.py       resolve_session_ref(): a bare session id -> the file (or
-                SQLite store + session id) holding it, so no extract-* verb
+locate.py       resolve_session_ref(): a bare session id (Claude Code/Codex/pi
+                uuid, Claude Code sub-agent id, Reasonix stem, opencode
+                `ses_...`) -> the file or store holding it, so no extract-* verb
                 needs a hand-constructed path -- see "Pointing at a session
                 by id alone" below.
 render_markdown.py / highlight.py
@@ -526,7 +591,7 @@ somewhere unmemorable — under an escaped-cwd project directory, under a
 `YYYY/MM/DD` tree with a timestamp in the filename, or inside a single
 machine-wide SQLite store.
 
-Three id shapes are recognized, **each pinned to real local data rather than
+Four id shapes are recognized, **each pinned to real local data rather than
 to what the adapters' docstrings appear to show** — two of the three
 originally-designed patterns were wrong, and both were caught only by
 checking the real corpus:
@@ -535,6 +600,7 @@ checking the real corpus:
 | --- | --- | --- |
 | Claude Code / Codex session uuid | `8-4-4-4-12` hex, case-insensitive | `~/.claude/projects/*/` (as `<uuid>.jsonl`) and Codex homes' `sessions/**/rollout-*.jsonl` (as a filename **suffix**, which covers Codex sub-agent rollouts for free; the active home is `$CODEX_HOME`, default `~/.codex`, and local `~/.codex*` profiles are checked for duplicate IDs) |
 | Claude Code sub-agent `agentId` | **17 hex chars, not a uuid** | `~/.claude/projects/*/*/subagents/agent-<id>.jsonl` |
+| pi session uuid | `8-4-4-4-12` hex, case-insensitive | pi's session store as pi itself resolves it: `$PI_CODING_AGENT_SESSION_DIR`, else `$PI_CODING_AGENT_DIR/sessions`, else `~/.pi/agent/sessions`; a session file is `<ISO-time>_<uuid>.jsonl`, so the uuid is matched as a filename **suffix** under any project directory (recursively) |
 | opencode session id | `ses_` + **mixed-case alphanumerics** | `$XDG_DATA_HOME/opencode/opencode.db` (when set) and `~/.local/share/opencode/opencode.db` |
 
 - The sub-agent shape was designed as a uuid. All **1117** real
@@ -826,8 +892,24 @@ classes yield first, and an overrun is reported plainly when the protected
 class alone exceeds the requested budget. Records are complete and newest-first
 within each class; the footer reports kept/dropped counts and estimated dropped
 cost and timestamp span per class. It emits one fixed-span document, so it is
-incompatible with `--json` and `--follow`; it is Claude Code-only because the
-intent and communication surface is currently Claude-specific.
+incompatible with `--json` and `--follow`. It runs on Claude Code and pi
+(`presets.py`'s per-preset `formats` tuple is the capability fact) because
+both adapters provide tool-call rendering and agent-communication records; the
+`successor`/`review`/`ledger` presets stay Claude Code-only because their
+whole-session ledger is still Claude-specific.
+
+`readback`'s LAYOUT (`layout.py`) is goal anchor + STATE + recent prose +
+delta, and the last three parts are each opt-in:
+`--goal-prompt`/`--goal-file` (the original goal, for a spawned or targeted
+session), `--state-file PATH` (the agent's own LIVING state file, rendered
+verbatim as the `STATE (forward-oriented, written by the agent)` section
+between the anchor and the pros, bounded by the budget, truncated only at a
+paragraph boundary with a marker naming the omitted size and the file to read,
+and redacted by `--redact-pattern`), `--tail-prose-tokens` (the newest prose),
+and the delta after the previous marker. The STATE section has priority over
+the delta -- a successor acts on it -- while the tail keeps a reserve so the
+session's own last words cannot be pushed out entirely. The same option serves
+every harness: the file belongs to the agent, not to a CLI's format.
 
 Modules added: `shellcmd` (Bash segmenting, effect patterns), `compress` (collapsing repeated
 Edit/Read calls), `harness` (verified Claude Code versions), `presets`, `watch`. Residuals:

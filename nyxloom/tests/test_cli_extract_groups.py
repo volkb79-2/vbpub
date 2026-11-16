@@ -25,7 +25,7 @@ EXPECTED = {
     },
     CONTENT: {
         "--profile", "--answer-length", "--max-checkpoints", "--max-words", "--budget-tokens",
-        "--goal-prompt", "--goal-file", "--tail-prose-tokens",
+        "--goal-prompt", "--goal-file", "--state-file", "--tail-prose-tokens",
         "--agent-comms", "--agent-launch-pattern",
         "--include-thinking", "--show-api-errors", "--show-compaction-content",
         "--tool-calls", "--tool-errors", "--show-tool-calls", "--show-tool-call-intent",

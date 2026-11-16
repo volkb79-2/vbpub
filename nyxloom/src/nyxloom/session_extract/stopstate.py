@@ -263,6 +263,232 @@ def read_codex_facts(path: Path) -> CodexRunFacts:
     )
 
 
+@dataclass
+class PiRunFacts:
+    """Stop-relevant facts read uniformly from a pi stored session or run
+    stream (adapters/pi.py reads the same two shapes into prose events).
+
+    ``empty_completion`` is the one cause pi states about itself that a
+    message count cannot see: a real session ended with an ``assistant``
+    message whose ``stopReason`` was ``stop`` and whose content was empty.
+    """
+
+    message_count: int
+    tool_call_count: int
+    last_text: str
+    last_text_ts: str
+    in_flight: str | None
+    stop_reason: str
+    stop_detail: str
+    empty_completion: bool
+
+
+#: pi's own ``StopReason`` vocabulary (verified against the installed
+#: package's type declaration: pending | stop | length | toolUse | error |
+#: aborted | deferred). Only the terminal ones can end a session.
+PI_STOP_CAUSES: dict[str, str] = {
+    "length": "context-full: the model hit its output/context limit (stopReason=length)",
+    "error": "error: the model call failed (stopReason=error)",
+    "aborted": "aborted: the run was aborted (stopReason=aborted)",
+    "deferred": "deferred: the model deferred the turn (stopReason=deferred)",
+    "pending": "incomplete: the message never finished streaming (stopReason=pending)",
+}
+EMPTY_COMPLETION_CAUSE = (
+    "empty-completion: the session ends with an assistant message that reports "
+    "stopReason=stop but carries no text and no tool call (thinking-only counts "
+    "as empty) -- the model returned nothing that acts, so nothing was done"
+)
+TOOL_USE_CAUSE = (
+    "tool-use: the session ends on tool calls with no later assistant message "
+    "(the run was cut after the calls)"
+)
+
+
+def read_pi_facts(path: Path) -> PiRunFacts:
+    """Read a pi stored session or ``--mode json`` run stream.
+
+    The two shapes differ only in WHERE the message object sits (``message``
+    record vs ``message_end`` record) and in how tool results are recorded
+    (a ``toolResult`` message vs a ``tool_execution_end`` record), so one
+    scan reads both. In-flight tracking prefers the ``tool_execution_*``
+    pair when a stream has it and falls back to the assistant message's own
+    calls plus the ``toolResult`` messages, which is the only pair a stored
+    session records.
+    """
+    from .adapters import pi as pi_adapter
+
+    text_limit = _LAST_TEXT_LIMIT
+    message_count = 0
+    tool_call_count = 0
+    last_text = ""
+    last_text_ts = ""
+    stop_reason = ""
+    stop_detail = ""
+    empty_completion = False
+    open_calls: dict[str, str] = {}
+    calls_in_order: list[str] = []
+    open_executions: dict[str, str] = {}
+    executions_in_order: list[str] = []
+
+    def _close(call_id: Any) -> None:
+        if isinstance(call_id, str):
+            open_calls.pop(call_id, None)
+            open_executions.pop(call_id, None)
+
+    for rec in _pi_records(path):
+        rtype = rec.get("type")
+        if rtype in pi_adapter.MESSAGE_RECORD_TYPES:
+            message = rec.get("message")
+            if not isinstance(message, dict):
+                continue
+            role = message.get("role")
+            blocks = message.get("content")
+            blocks = blocks if isinstance(blocks, list) else []
+            if role == "assistant":
+                text_parts = [
+                    block.get("text") for block in blocks
+                    if isinstance(block, dict) and block.get("type") == "text"
+                    and isinstance(block.get("text"), str) and block["text"].strip()
+                ]
+                call_blocks = [
+                    block for block in blocks
+                    if isinstance(block, dict) and block.get("type") == "toolCall"
+                ]
+                text = "\n".join(text_parts)
+                if text.strip():
+                    message_count += 1
+                    last_text = " ".join(text.split())[:text_limit]
+                    last_text_ts = pi_adapter.record_timestamp(rec, message)
+                for block in call_blocks:
+                    call_id = block.get("id")
+                    if isinstance(call_id, str):
+                        name = str(block.get("name") or "tool")
+                        summary = toolresult.summarize_call(name, block.get("arguments"))
+                        open_calls[call_id] = f"{name}: {summary}" if summary else name
+                        calls_in_order.append(call_id)
+                if call_blocks:
+                    tool_call_count += len(call_blocks)
+                reason = message.get("stopReason")
+                if isinstance(reason, str):
+                    stop_reason = reason
+                    stop_detail = str(message.get("errorMessage") or "")
+                    empty_completion = not text.strip() and not call_blocks
+            elif role == "toolResult":
+                _close(message.get("toolCallId"))
+        elif rtype == "tool_execution_start":
+            call_id = rec.get("toolCallId")
+            if isinstance(call_id, str):
+                arguments = rec.get("args")
+                summary = toolresult.summarize_call(
+                    str(rec.get("toolName") or ""), arguments,
+                )
+                name = str(rec.get("toolName") or "tool")
+                open_executions[call_id] = f"{name}: {summary}" if summary else name
+                executions_in_order.append(call_id)
+        elif rtype == "tool_execution_end":
+            _close(rec.get("toolCallId"))
+
+    # The end of the FILE decides whether the last call is actually in flight:
+    # a call followed by its own result record is finished whatever the
+    # message-level bookkeeping still holds (a stored session's toolResult
+    # message closes it, but a session that ends on one more assistant message
+    # after the result must not look killed). An open execution wins over an
+    # open message-level call because the stream reports the pair explicitly.
+    last_kind = ""
+    for rec in _pi_records(path):
+        rtype = rec.get("type")
+        message = rec.get("message") if isinstance(rec.get("message"), dict) else {}
+        if rtype == "tool_execution_end" or (
+            rtype in pi_adapter.MESSAGE_RECORD_TYPES and message.get("role") == "toolResult"
+        ):
+            last_kind = "result"
+        elif rtype == "tool_execution_start" or (
+            rtype in pi_adapter.MESSAGE_RECORD_TYPES
+            and message.get("role") == "assistant"
+            and _pi_has_calls(message)
+        ):
+            last_kind = "call"
+    in_flight = None
+    if last_kind == "call":
+        for call_id in reversed(executions_in_order):
+            if call_id in open_executions:
+                in_flight = open_executions[call_id]
+                break
+        else:
+            for call_id in reversed(calls_in_order):
+                if call_id in open_calls:
+                    in_flight = open_calls[call_id]
+                    break
+    return PiRunFacts(
+        message_count=message_count,
+        tool_call_count=tool_call_count,
+        last_text=last_text,
+        last_text_ts=last_text_ts,
+        in_flight=in_flight,
+        stop_reason=stop_reason,
+        stop_detail=stop_detail,
+        empty_completion=empty_completion,
+    )
+
+
+def _pi_records(path: Path) -> list[dict[str, Any]]:
+    """Every parseable record; a truncated last line is skipped, not fatal."""
+    out: list[dict[str, Any]] = []
+    with Path(path).open("r", errors="replace") as handle:
+        for line in handle:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                rec = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(rec, dict):
+                out.append(rec)
+    return out
+
+
+def _pi_has_calls(message: dict[str, Any]) -> bool:
+    content = message.get("content")
+    return isinstance(content, list) and any(
+        isinstance(block, dict) and block.get("type") == "toolCall" for block in content
+    )
+
+
+def _pi_stop_state(facts: PiRunFacts) -> StopState:
+    """pi's own ``stopReason`` vocabulary translated into the cause, in the
+    order that matters: an empty completion is the one ending a reader
+    cannot otherwise see, then the terminal reasons, then the tool-use end."""
+    if facts.empty_completion and facts.stop_reason == "stop":
+        cause = EMPTY_COMPLETION_CAUSE
+    elif facts.stop_reason in PI_STOP_CAUSES:
+        cause = PI_STOP_CAUSES[facts.stop_reason]
+        if facts.stop_detail:
+            cause += f" -- {toolresult.one_line(facts.stop_detail, 240)}"
+    elif facts.in_flight:
+        cause = "killed mid-call: the last tool call has no recorded result"
+    elif facts.stop_reason == "toolUse":
+        cause = TOOL_USE_CAUSE
+    elif facts.message_count:
+        cause = "completed message: the session ends with the assistant's own text"
+    elif facts.tool_call_count:
+        cause = "ended after tool calls without an assistant message"
+    else:
+        cause = "empty: no assistant message or tool call was recorded"
+
+    in_flight_outcome = None
+    if facts.in_flight:
+        in_flight_outcome = "no completion recorded (the session ended before the call returned)"
+    return StopState(
+        cause,
+        None,
+        facts.last_text,
+        facts.last_text_ts,
+        facts.in_flight,
+        in_flight_outcome,
+    )
+
+
 def _codex_stop_state(facts: CodexRunFacts) -> StopState:
     if facts.terminal == "interrupted":
         cause = "interrupted: the run recorded a terminal error/abort"
@@ -291,9 +517,12 @@ def _codex_stop_state(facts: CodexRunFacts) -> StopState:
 
 
 def build_stop_state(path: Path, fmt: str = "claude-code") -> StopState:
-    """Build stop state for Claude Code, Codex rollouts, or Codex exec streams."""
+    """Build stop state for Claude Code, Codex rollouts, Codex exec streams or
+    pi sessions/run streams."""
     if fmt in {"codex", "codex-exec"}:
         return _codex_stop_state(read_codex_facts(Path(path)))
+    if fmt == "pi":
+        return _pi_stop_state(read_pi_facts(Path(path)))
     if fmt != "claude-code":
         raise ValueError(f"stop state does not support {fmt!r}")
 

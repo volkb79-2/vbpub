@@ -4,6 +4,76 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 ## [Unreleased]
 
+### Added
+- `nyxloom-harness extract --format pi` reads both pi session shapes with one
+  adapter (`session_extract/adapters/pi.py`): the durable stored session under
+  `~/.pi/agent/sessions/<encoded-cwd>/<time>_<uuid>.jsonl` (including a `resume`
+  that appends further agent cycles to the same file) and a `pi --mode json`
+  run stream (`agent_start`/`turn_start`/`message_start`/`message_update`/
+  `message_end`/`tool_execution_*`/`turn_end`/`compaction_*`/`agent_end`/
+  `agent_settled`). Operator text, assistant prose, opt-in thinking, tool calls
+  with their arguments, truncated failed tool results, compaction boundaries and
+  `stopReason: "error"` API errors all normalize to the shared event model;
+  `message_start`/`message_update` are skipped because `message_end` carries the
+  finished message (one real run stream was 99.2% cumulative partial snapshots).
+  Auto-detection recognizes pi by its `session` header record, and a bare pi
+  session uuid resolves through `locate.py` (`$PI_CODING_AGENT_SESSION_DIR`,
+  `$PI_CODING_AGENT_DIR/sessions`, `~/.pi/agent/sessions`, matched as a
+  `<time>_<uuid>.jsonl` filename suffix).
+- Every record and message shape pi DECLARES now has a defined disposition,
+  and nothing is dropped silently: `custom_message`/`custom` become labelled
+  operator-channel context events, `branch_summary`/`branchSummary` and
+  `compactionSummary` become lifecycle boundaries carrying their summary
+  (under `--show-compaction-content`), `bashExecution` becomes a tool-like
+  line carrying the command, its exit code and whether pi excluded it from
+  model context, and `context_edit` becomes a marker naming the target it
+  masks. A `[pi skipped ...]` footer block (and an `adapter_notes` key in
+  `--json`) counts the DELIBERATE skips separately from UNKNOWN ones, plus
+  unparseable lines and `parentId` tree breaks, so a reader of a saved
+  read-back can see what the adapter left out instead of discovering it by
+  accident. The record-type and message-role inventories are read from pi's
+  own declarations (`dist/core/session-manager.d.ts`, `dist/core/messages.d.ts`),
+  not guessed.
+- `--stop-state` supports pi: its own `stopReason` vocabulary becomes a cause
+  (`length` = CONTEXT-FULL, `error`/`aborted`/`deferred`/`pending`, an
+  assistant message with `stopReason: "stop"` carrying no text and no tool
+  call = EMPTY-COMPLETION (thinking-only counts as empty), an end on `toolUse`
+  with no later assistant message = TOOL-USE, and an unresolved
+  `tool_execution_*`/`toolResult` pair = killed mid-call).
+- `nyxloom-harness extract --preset readback --state-file PATH` embeds the
+  agent's own living state file VERBATIM as a `STATE (forward-oriented, written
+  by the agent)` section placed after the goal anchor and BEFORE the recent
+  prose. It is bounded by `--budget-tokens`, truncated only at a paragraph
+  boundary (then a line boundary, then a hard character cut -- never to the
+  marker alone) with a marker naming the omitted size and the file to read,
+  redacted by `--redact-pattern`, and takes priority over the delta while the
+  recent-prose tail keeps a reserve. The footer's `state_truncated=`/
+  `state_chars=` accounting repeats the fact, so a cut primer is visible to a
+  reader who only skims the trailers. Harness-independent: the file belongs to
+  the agent, not to a CLI's storage format.
+
+### Fixed
+- The pi adapter's `parentId` "tree break" count no longer compares a
+  record's parent with the PREVIOUS record's id. pi's own session files
+  interleave `compaction`/`context_edit`/`model_change` entries into that
+  chain, so a perfectly LINEAR session printed a "parentId breaks the linear
+  chain" line into a successor primer. It now counts only real divergence: a
+  fork (one parent with two or more children, counted once) or a `parentId`
+  naming an entry the file does not contain (NL-77).
+- A pi `custom` message with no renderable text is counted as a deliberate
+  skip (`custom (no text)`) instead of vanishing; extension context pi really
+  injected must not disappear from both the events and the skip disclosure
+  (NL-78).
+- `nyxloom/assay.toml`'s `session-extract` lane now runs
+  `tests/test_session_extract_pi.py`: the lane enumerates its test files, and
+  the pi adapter's tests were not in that list, so the lane judged the adapter
+  at ~0% coverage and re-judged its mutants with no test able to see them.
+- `--redact-pattern`'s placeholder names the matched rule by its ordinal
+  (`#1`, `#2`, ...) instead of echoing the regular expression, which could
+  itself be the sensitive string the pattern was written to remove (NL-72);
+  an INVALID `--redact-pattern` is reported by the same ordinal, so the error
+  message does not leak the pattern either.
+
 <!-- cmru: release history -->
 
 ## [0.13.0] - 2026-11-11

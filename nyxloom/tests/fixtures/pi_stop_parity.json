@@ -1,0 +1,133 @@
+{
+  "_about": [
+    "Two consumers classify how a pi run ENDED, and they must not drift:",
+    "nyxloom's stopstate.py (build_stop_state(..., fmt='pi')) and the",
+    "controller wrapper scripts/controller/pi-impl.sh (classify_run()).",
+    "pi-impl.sh cannot be sourced from a Python test, so its DOCUMENTED",
+    "predicate is pinned here as data and the test feeds the SAME synthetic",
+    "records through the Python classifier and checks the two agree. When",
+    "either side changes, this file and the test change together -- that",
+    "coupling is the point, not an inconvenience."
+  ],
+  "predicate_source": "scripts/controller/pi-impl.sh:classify_run()",
+  "cases": [
+    {
+      "name": "settled stop with assistant text",
+      "records": [
+        {
+          "role": "assistant",
+          "text": "synthetic prose",
+          "stopReason": "stop"
+        }
+      ],
+      "pi_impl": {
+        "settled": 1,
+        "aborted": 0,
+        "stop_reason": "stop",
+        "has_text": 1,
+        "has_tool_call": 0
+      },
+      "outcome": "SUCCESS",
+      "expected_cause": "completed message"
+    },
+    {
+      "name": "settled stop with no text and no tool call",
+      "records": [
+        {
+          "role": "assistant",
+          "text": "",
+          "stopReason": "stop"
+        }
+      ],
+      "pi_impl": {
+        "settled": 1,
+        "aborted": 0,
+        "stop_reason": "stop",
+        "has_text": 0,
+        "has_tool_call": 0
+      },
+      "outcome": "EMPTY-COMPLETION",
+      "expected_cause": "empty-completion"
+    },
+    {
+      "name": "settled stop with a tool call and no text",
+      "records": [
+        {
+          "role": "assistant",
+          "text": "",
+          "stopReason": "stop",
+          "tool_call": "bash",
+          "tool_result": true
+        }
+      ],
+      "pi_impl": {
+        "settled": 1,
+        "aborted": 0,
+        "stop_reason": "stop",
+        "has_text": 0,
+        "has_tool_call": 1
+      },
+      "outcome": "SUCCESS",
+      "expected_cause": "without an assistant message",
+      "_note": "the call's result is recorded too, so the file does NOT end mid-call: both consumers see a resolved call, no text, a stop"
+    },
+    {
+      "name": "output/context limit",
+      "records": [
+        {
+          "role": "assistant",
+          "text": "",
+          "stopReason": "length"
+        }
+      ],
+      "pi_impl": {
+        "settled": 1,
+        "aborted": 0,
+        "stop_reason": "length",
+        "has_text": 0,
+        "has_tool_call": 0
+      },
+      "outcome": "INCOMPLETE",
+      "expected_cause": "context-full"
+    },
+    {
+      "name": "provider error stop",
+      "records": [
+        {
+          "role": "assistant",
+          "text": "",
+          "stopReason": "error",
+          "error": "synthetic failure"
+        }
+      ],
+      "pi_impl": {
+        "settled": 1,
+        "aborted": 0,
+        "stop_reason": "error",
+        "has_text": 0,
+        "has_tool_call": 0
+      },
+      "outcome": "ERROR",
+      "expected_cause": "error"
+    },
+    {
+      "name": "aborted run",
+      "records": [
+        {
+          "role": "assistant",
+          "text": "synthetic prose",
+          "stopReason": "aborted"
+        }
+      ],
+      "pi_impl": {
+        "settled": 1,
+        "aborted": 1,
+        "stop_reason": "aborted",
+        "has_text": 1,
+        "has_tool_call": 0
+      },
+      "outcome": "INCOMPLETE",
+      "expected_cause": "aborted"
+    }
+  ]
+}

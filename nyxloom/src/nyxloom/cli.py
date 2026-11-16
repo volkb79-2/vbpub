@@ -581,6 +581,7 @@ def _extract_config_from_args(
         budget_tokens=get("budget_tokens"),
         goal_prompt=bool(get("goal_prompt", False)),
         goal_file=get("goal_file"),
+        state_file=get("state_file"),
         tail_prose_tokens=get("tail_prose_tokens") or 0,
         strip_cd_prefix=bool(get("strip_cd_prefix", False)),
         edit_calls=get("edit_calls") or "show",
@@ -794,6 +795,17 @@ def _run_follow(args, path: Path, fmt: str, config, session_id: str | None, anch
 
 # The five `--preset` bundles (watch, successor, review, ledger, readback) live in
 # session_extract/presets.py; `--successor-brief` implies `successor`.
+
+#: Adapters implementing one specific option family. Each refusal below names
+#: the real supported set so a new adapter is added in ONE place and the error
+#: message cannot drift from what the code actually accepts. The two tool-call
+#: families stay SEPARATE on purpose: the legacy `--show-tool-calls` label
+#: predates the `--tool-calls` mode vocabulary and the adapters that implement
+#: only the label (codex, codex-exec) must keep refusing the mode.
+SHOW_TOOL_CALLS_FORMATS = ("claude-code", "codex", "codex-exec", "pi")
+TOOL_CALL_FORMATS = ("claude-code", "pi")
+AGENT_COMMS_FORMATS = ("claude-code", "pi")
+STOP_STATE_FORMATS = ("claude-code", "codex", "codex-exec", "pi")
 
 
 def cmd_extract(args) -> int:
@@ -1034,11 +1046,17 @@ def cmd_extract(args) -> int:
 
     if args.redact_pattern:
         import re as re_mod
-        for pattern in args.redact_pattern:
+        for ordinal, pattern in enumerate(args.redact_pattern, start=1):
             try:
                 re_mod.compile(pattern)
             except re_mod.error as e:
-                print(f"error: --redact-pattern {pattern!r}: invalid regex: {e}", file=sys.stderr)
+                # The PATTERN is never echoed: it is exactly the sensitive
+                # string --redact-pattern exists to remove, so printing it in an
+                # error message would leak it into a log or a transcript. The
+                # ORDINAL identifies which one to fix (NL-72's rule, applied to
+                # this message too).
+                print(f"error: --redact-pattern #{ordinal}: invalid regex: {e}",
+                      file=sys.stderr)
                 return 1
 
     config = _extract_config_from_args(
@@ -1077,35 +1095,40 @@ def cmd_extract(args) -> int:
 
     result = extract(path, config, fmt=args.format, session_id=session_id)
     result._since_note = since_note
-    if config.show_tool_calls and result.format not in ("claude-code", "codex", "codex-exec"):
-        print(f"error: --show-tool-calls is not supported for {result.format!r}; supported formats: claude-code, codex, codex-exec",
-              file=sys.stderr)
+    if config.show_tool_calls and result.format not in SHOW_TOOL_CALLS_FORMATS:
+        print(f"error: --show-tool-calls is not supported for {result.format!r}; supported formats: "
+              f"{', '.join(SHOW_TOOL_CALLS_FORMATS)}", file=sys.stderr)
         return 1
 
-    for flag, wanted in ((f"--preset {preset}", preset is not None
-                          and presets_mod.PRESETS[preset].claude_only and not successor),
-                         ("--successor-brief", successor)):
-        if wanted and result.format != "claude-code":
-            print(f"error: {flag} does not support {result.format!r} yet -- Claude Code "
-                  f"transcripts only (see session_extract/stopstate.py)", file=sys.stderr)
-            return 1
-    if getattr(args, "stop_state", False) and result.format not in (
-        "claude-code", "codex", "codex-exec",
+    # A preset's own `formats` tuple is the capability fact (presets.py); an
+    # EMPTY tuple means every registered adapter can run it. `--successor-brief`
+    # stays Claude Code only: its first section IS a Claude Code `user` record,
+    # so it is checked under its own flag (`--preset` is skipped for it).
+    for flag, supported in (
+        (f"--preset {preset}",
+         presets_mod.PRESETS[preset].formats if preset is not None and not successor else ()),
+        ("--successor-brief", ("claude-code",) if successor else ()),
     ):
+        if supported and result.format not in supported:
+            print(f"error: {flag} does not support {result.format!r} yet -- supported "
+                  f"formats: {', '.join(supported)} "
+                  f"(see session_extract/stopstate.py)", file=sys.stderr)
+            return 1
+    if getattr(args, "stop_state", False) and result.format not in STOP_STATE_FORMATS:
         print(
             f"error: --stop-state does not support {result.format!r} yet; supported "
-            "formats: claude-code, codex, codex-exec",
+            f"formats: {', '.join(STOP_STATE_FORMATS)}",
             file=sys.stderr,
         )
         return 1
-    if config.tool_calls != "none" and result.format != "claude-code":
+    if config.tool_calls != "none" and result.format not in TOOL_CALL_FORMATS:
         print(f"error: --tool-calls is not supported for {result.format!r} yet; supported "
-              f"format: claude-code", file=sys.stderr)
+              f"formats: {', '.join(TOOL_CALL_FORMATS)}", file=sys.stderr)
         return 1
-    if config.agent_comms != "off" and result.format != "claude-code":
+    if config.agent_comms != "off" and result.format not in AGENT_COMMS_FORMATS:
         print(
             f"error: --agent-comms does not support {result.format!r} yet; "
-            "supported format: claude-code",
+            f"supported formats: {', '.join(AGENT_COMMS_FORMATS)}",
             file=sys.stderr,
         )
         return 1
