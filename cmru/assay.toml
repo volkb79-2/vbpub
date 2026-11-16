@@ -62,6 +62,7 @@ allow_excluded = false
 require_branch = true
 mode = "whole_target"
 targets = [
+  "src/cmru/build_images.py",
   "src/cmru/bundle.py",
   "src/cmru/changelog.py",
   "src/cmru/cli.py",
@@ -146,6 +147,7 @@ allow_excluded = false
 require_branch = true
 mode = "whole_target"
 targets = [
+  "src/cmru/build_images.py",
   "src/cmru/bundle.py",
   "src/cmru/changelog.py",
   "src/cmru/cli.py",
@@ -224,6 +226,7 @@ allow_excluded = false
 require_branch = true
 mode = "whole_target"
 targets = [
+  "src/cmru/build_images.py",
   "src/cmru/bundle.py",
   "src/cmru/changelog.py",
   "src/cmru/cli.py",
@@ -305,6 +308,7 @@ allow_excluded = false
 require_branch = true
 mode = "whole_target"
 targets = [
+  "src/cmru/build_images.py",
   "src/cmru/bundle.py",
   "src/cmru/changelog.py",
   "src/cmru/cli.py",
