@@ -20,7 +20,7 @@ from types import SimpleNamespace
 
 import pytest
 
-import vm_lab
+from vm_lab import core as vm_lab
 from vm_lab import GENERIC_PROFILE, PortForward, RunnerError
 
 QCOW2_BYTES = b"QFI\xfb" + b"\x00" * 60

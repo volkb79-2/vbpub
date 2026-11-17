@@ -5,7 +5,7 @@
 * **VMS-BL-02 semantic review catalog.** `docs/cli-surface.json` and the generated region of `docs/CLI-SPEC.md` are in sync, but
   `docs/cli-review.toml` is an empty header: the per-route review cases (`cli-extended surface template`, then the
   `cli-extended-review` skill) are not authored, so `surface check` reports every case as missing.
-* **VMS-BL-03 key table duplication (updated 2026-11-12).** `keys.py` and `scripts/vm-lab/vm_lab_console.py` (`console type`)
+* **VMS-BL-03 key table duplication (updated 2026-11-12).** `keys.py` and `vm-lab/src/vm_lab/console.py` (`console type`)
   both carry the US-layout key table. Decide which copy stays: the VM tool importing vmscreen's `keys` (stdlib-only today, so
   it needs a wheel dependency) or the copy remaining. The stale references to the removed `console_capture.py` and
   `launch-truenas-vm.sh` (vbpub@c46b0dfe8) in the README and the packaged skill are corrected.

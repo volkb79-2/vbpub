@@ -1,21 +1,70 @@
 # vm-lab consumer guide
 
+## Install, build the image, find the paths
+
+**Every snippet in this guide runs from the repository root** and calls the
+wrapper `vm-lab/vm-lab`; once the package is installed, the same verbs are the
+command `vm-lab` (same arguments).
+
+```
+# 1. Pick one install form.
+vm-lab/vm-lab --help                                    # bare checkout: nothing to install
+/opt/mdt/venv/bin/python -m pip install -e libraries/vmscreen -e vm-lab   # editable; vmscreen first (no release yet)
+python -m pip wheel --no-deps vm-lab -w /tmp/wheels     # a wheel; pip install it next to the vmscreen wheel
+export PATH="/opt/mdt/venv/bin:$PATH"                   # the venv's bin/ holds the `vm-lab` command
+
+# 2. Build the QEMU image once per Docker host (tag vm-lab-qemu:local; `start` finds it by that tag).
+vm-lab/vm-lab image build
+vm-lab/vm-lab image build --tag my-qemu:1 --context vm-lab/qemu-image   # another tag; needed as --context from a wheel
+```
+
+`vmscreen` (screen text) is a dependency of the package and a separate wheel;
+the wrapper does not add it, so it must be installed where `python3` runs.
+`console record` also needs Pillow, which is the optional extra `record`:
+`pip install 'vm-lab[record]'` (the mdt-cockpit image installs the extra
+explicitly). The image has no OVMF: pass your host's firmware files to `start`.
+
+**From an installed wheel** there is no repository next to the module, so
+`start` and `disk promote` need the directory of the admission lock: set it once
+for the host and every starter that should exclude the others uses the same one.
+
+```
+export VM_LAB_ADMISSION_LOCK_DIR="$(git -C /path/to/vbpub rev-parse --path-format=absolute --git-common-dir)"
+vm-lab start ...                      # takes the lock file there (the shared TrueNAS/vm-lab file name)
+vm-lab start ... --lock-dir "$DIR"    # or per call; the option wins over the variable
+```
+
+A checkout, the wrapper, an editable install and the TrueNAS front ignore both
+(they use the repository's common Git directory). With neither given and no
+repository, `start` refuses and names `--lock-dir` and the variable.
+
+The tool owns no paths. Pass `--state-dir` and `--base-disk` explicitly, taken
+from the repository's path resolver (`vm-lab.toml`) and never hardcoded:
+
+```
+VM=$(libraries/cowtree/repo-path vm-lab --project scripts/debian-rollback)/deb1
+BASE=$(libraries/cowtree/repo-path vm-images)/debian-13.raw
+```
+
+`<project>` below is the project that owns the VM (for example
+`scripts/debian-rollback`); the resolver gives its `vm-lab/` folder (a CoW
+subvolume on CoW hosts, else `<project>/vm-lab`). Base images shared between
+projects live in `vm-images` and ISOs in `iso` (AGENTS.md "Directory
+conventions and VM files").
+
 ## Start a Debian guest
 
-**Every snippet in this guide runs from the repository root.** `<project>` is
-the project that owns the VM (for example `debian-rollback`). Keep its VM files
-in `scripts/<project>/vm-lab/<vm>/`; base images shared between projects live in
-`downloads/vm-images/` and ISOs in `downloads/iso/` (AGENTS.md "Directory
-conventions and VM files"). `start` takes the base disk in one of two formats:
+`start` takes the base disk in one of two formats:
 a qcow2 base is mounted read-only under a qcow2 overlay (this section), a raw
 base is reflink-cloned into the state directory (see
 [Start from a raw base](#start-from-a-raw-base)). `--base-format auto` (the
 default) tells them apart by the first four bytes of the file.
 
 Prerequisites: a loaded host background slice (`CGROUP_PARENT_DEV_BACKGROUND`),
-a Docker network (`DOCKER_NETWORK_INTERNAL`), a QEMU image that has
-`qemu-system-x86_64` and `qemu-img` (`VM_LAB_QEMU_IMAGE`), the OVMF firmware
-files, and a Debian installer ISO.
+a Docker network (`DOCKER_NETWORK_INTERNAL`; the ciu stack environment or the
+devcontainer provides it, `ciu env print` shows it), a QEMU image (`--image`,
+else `VM_LAB_QEMU_IMAGE`, else the local `vm-lab-qemu:local` built by `vm-lab
+image build`), the OVMF firmware files, and a Debian installer ISO.
 
 ```
 VM=scripts/<project>/vm-lab/deb1
@@ -25,7 +74,7 @@ mkdir -p "$VM"
 # A blank base disk. The guest writes go to an overlay in "$VM", not here.
 qemu-img create -f qcow2 "$BASE" 20G
 
-python3 scripts/vm-lab/vm_lab.py start \
+vm-lab/vm-lab start \
   --name deb1 \
   --state-dir "$VM" \
   --base-disk "$BASE" \
@@ -51,14 +100,14 @@ Then drive the guest:
 ```
 S="--name deb1 --state-dir $VM"
 
-python3 scripts/vm-lab/vm_lab.py console screendump $S --filename boot.ppm
-python3 scripts/vm-lab/vm_lab.py console sendkey $S ret
-python3 scripts/vm-lab/vm_lab.py console sendkey $S ctrl-alt-delete
-python3 scripts/vm-lab/vm_lab.py console reset $S
-python3 scripts/vm-lab/vm_lab.py console serial $S     # Ctrl-] to leave
-python3 scripts/vm-lab/vm_lab.py console type $S --text "hello"
-python3 scripts/vm-lab/vm_lab.py status $S
-python3 scripts/vm-lab/vm_lab.py stop $S
+vm-lab/vm-lab console screendump $S --filename boot.ppm
+vm-lab/vm-lab console sendkey $S ret
+vm-lab/vm-lab console sendkey $S ctrl-alt-delete
+vm-lab/vm-lab console reset $S
+vm-lab/vm-lab console serial $S     # Ctrl-] to leave
+vm-lab/vm-lab console type $S --text "hello"
+vm-lab/vm-lab status $S
+vm-lab/vm-lab stop $S
 ```
 
 `console screendump` refuses to overwrite an existing file. The picture is a
@@ -98,7 +147,7 @@ chmod 0444 downloads/vm-images/debian-13.raw downloads/vm-images/debian-13.raw.s
 # 2. Start a VM from it. The state directory is empty on a first start.
 VM=scripts/<project>/vm-lab/deb1
 mkdir -p "$VM"
-python3 scripts/vm-lab/vm_lab.py start \
+vm-lab/vm-lab start \
   --name deb1 --state-dir "$VM" \
   --base-disk downloads/vm-images/debian-13.raw \
   --ovmf-code /usr/share/OVMF/OVMF_CODE_4M.fd \
@@ -108,10 +157,10 @@ python3 scripts/vm-lab/vm_lab.py start \
 # The guest disk is "$VM/disk.raw"; `status` shows disk_format and disk_file.
 
 # 3. Install or provision the guest, then stop it (a running guest cannot be promoted).
-python3 scripts/vm-lab/vm_lab.py stop --name deb1 --state-dir "$VM"
+vm-lab/vm-lab stop --name deb1 --state-dir "$VM"
 
 # 4. Promote the installed VM to a new shared base for other VMs.
-python3 scripts/vm-lab/vm_lab.py disk promote \
+vm-lab/vm-lab disk promote \
   --state-dir "$VM" --dest-dir downloads/vm-images --name debian-13-installed
 # prints: [promoted] .../debian-13-installed.raw sha256=<hex>
 ```
@@ -159,7 +208,7 @@ VM=scripts/<project>/vm-lab/deb1
 CAP=$VM/capture
 S="--name deb1 --state-dir $VM"
 
-python3 scripts/vm-lab/vm_lab.py console record $S --out "$CAP"
+vm-lab/vm-lab console record $S --out "$CAP"
 ```
 
 In another terminal, use `ctl` for commands that must be recorded with the
@@ -168,11 +217,11 @@ frames, or use the direct console verbs:
 ```sh
 CAP=scripts/<project>/vm-lab/deb1/capture
 
-python3 scripts/vm-lab/vm_lab.py console ctl --out "$CAP" --keys ret
-python3 scripts/vm-lab/vm_lab.py console ctl --out "$CAP" --type "root"
-python3 scripts/vm-lab/vm_lab.py console ctl --out "$CAP" --type-file /path/to/secret.txt
-python3 scripts/vm-lab/vm_lab.py console ctl --out "$CAP" --qmp-json '{"execute":"query-status"}'
-python3 scripts/vm-lab/vm_lab.py console ctl --out "$CAP" --quit
+vm-lab/vm-lab console ctl --out "$CAP" --keys ret
+vm-lab/vm-lab console ctl --out "$CAP" --type "root"
+vm-lab/vm-lab console ctl --out "$CAP" --type-file /path/to/secret.txt
+vm-lab/vm-lab console ctl --out "$CAP" --qmp-json '{"execute":"query-status"}'
+vm-lab/vm-lab console ctl --out "$CAP" --quit
 ```
 
 `ctl --type-file` reads the file when the recorder executes the command; its
@@ -357,7 +406,7 @@ Worked example: wait for login on a UEFI guest, then reset and wait for the next
 ```sh
 VM=$MDT_COW_ROOT/vbpub/scripts/<project>/vm-lab/deb1   # a CoW subvolume; empty at first start
 S="--name deb1 --state-dir $VM"
-VMLAB="python3 scripts/vm-lab/vm_lab.py"
+VMLAB="vm-lab/vm-lab"
 $VMLAB start --name deb1 --state-dir "$VM" --base-disk "$BASE.raw" \
   --ovmf-code /usr/share/OVMF/OVMF_CODE_4M.fd --ovmf-vars /usr/share/OVMF/OVMF_VARS_4M.fd \
   --memory-mib 1024 --cpus 2 --display-device std --serial-console
@@ -393,7 +442,7 @@ Worked example: wait for the boot menu, pick an entry, and notice a boot loop.
 ```sh
 VM=scripts/<project>/vm-lab/deb1
 S="--name deb1 --state-dir $VM"
-VMLAB="python3 scripts/vm-lab/vm_lab.py"
+VMLAB="vm-lab/vm-lab"
 
 # 1. Wait for the menu. Exit 3 = never appeared, exit 4 = it panicked first.
 $VMLAB console wait-for-text $S 'GNU GRUB' --timeout 180 --interval 3 \
@@ -442,15 +491,16 @@ Use a front when a project wants fixed sizing, its own names and labels, or its
 own default state directory. `scripts/truenas/tcg_vm.py` is the worked example.
 
 1. Put a small file in the project (for example `scripts/<project>/vm.py`).
-2. Make `scripts/vm-lab` importable by path from `__file__`, not by an
-   environment variable:
+2. Make `vm-lab/src` importable by path from `__file__`, not by an
+   environment variable (or install the package; then these two lines are
+   not needed). The functions that tests patch live in `vm_lab.core`:
 
    ```python
    import sys
    from pathlib import Path
-   sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "vm-lab"))
-   import vm_lab
+   sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "vm-lab" / "src"))  # scripts/<project>/vm.py
    from vm_lab import PortForward, VmProfile
+   from vm_lab import core as vm_lab
    ```
 
 3. Define the profile. Use a label key and a state label key of your own, and
@@ -482,7 +532,7 @@ own default state directory. `scripts/truenas/tcg_vm.py` is the worked example.
    `forwards` out and pass `sizing_from_cli=True`.
 
 4. Add your `(vm_label, label_value)` pair to `KNOWN_VM_LABELS` in
-   `scripts/vm-lab/vm_lab.py`. This registry is the one list of labels that
+   `vm-lab/src/vm_lab/core.py`. This registry is the one list of labels that
    start admission counts, each with its own value. Without the entry, start
    refuses your profile, because its guests would not count against the shared
    cap. This is a change to vm-lab and needs its own review.
@@ -505,9 +555,9 @@ own default state directory. `scripts/truenas/tcg_vm.py` is the worked example.
    with the vm-lab tests as a model. Do not start real VMs in unit tests.
 
 A profile front must not duplicate launcher logic. If something is missing,
-change `vm_lab.py` and its tests.
+change `vm_lab.core` and its tests.
 
 ## TrueNAS
 
 TrueNAS guests are started with `scripts/truenas/tcg_vm.py`. See the
-[TrueNAS guide](../../truenas/docs/CONSUMERS.md#run-a-local-truenas-tcg-guest).
+[TrueNAS guide](../../scripts/truenas/docs/CONSUMERS.md#run-a-local-truenas-tcg-guest).

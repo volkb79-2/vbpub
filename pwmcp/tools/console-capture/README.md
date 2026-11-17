@@ -10,7 +10,7 @@ This directory keeps the TrueNAS-specific console helpers:
 - `WEB-CONSOLES.md` records the browser-console measurements and constraints.
 
 Generic QEMU launching, console recording, key queuing and text typing belong
-to the VM tool in `scripts/vm-lab/`. It is the repository's one QEMU launcher
+to the VM tool in `vm-lab/`. It is the repository's one QEMU launcher
 and changed-frame recorder.
 
 ## Capturing a console with the VM tool
@@ -30,7 +30,7 @@ export VM_LAB_QEMU_IMAGE=<image-with-qemu-system-x86_64-and-qemu-img>
 # the state directory and mounts the base read-only.
 mkdir -p "$VM"
 
-python3 scripts/vm-lab/vm_lab.py start \
+vm-lab/vm-lab start \
   --name truenas-console \
   --state-dir "$VM" \
   --base-disk "$BASE" \
@@ -46,7 +46,7 @@ S="--name truenas-console --state-dir $VM"
 CAP="$VM/console-record"
 
 # Foreground recorder. Leave it running while using the commands below.
-python3 scripts/vm-lab/vm_lab.py console record $S --out "$CAP"
+vm-lab/vm-lab console record $S --out "$CAP"
 ```
 
 From a second terminal, drive the running recorder:
@@ -55,12 +55,12 @@ From a second terminal, drive the running recorder:
 S="--name truenas-console --state-dir $VM"
 CAP="$VM/console-record"
 
-python3 scripts/vm-lab/vm_lab.py console ctl --out "$CAP" --keys ret
-python3 scripts/vm-lab/vm_lab.py console ctl --out "$CAP" --type "root"
-python3 scripts/vm-lab/vm_lab.py console ctl --out "$CAP" --quit
+vm-lab/vm-lab console ctl --out "$CAP" --keys ret
+vm-lab/vm-lab console ctl --out "$CAP" --type "root"
+vm-lab/vm-lab console ctl --out "$CAP" --quit
 
 # Direct typing uses the same short-lived QMP path as the recorder.
-python3 scripts/vm-lab/vm_lab.py console type $S --text "root"
+vm-lab/vm-lab console type $S --text "root"
 ```
 
 The recorder writes `frames/NNNN_<elapsed>s.png`, `manifest.jsonl`,
@@ -72,7 +72,7 @@ running in every case. Stop the guest explicitly when
 finished:
 
 ```sh
-python3 scripts/vm-lab/vm_lab.py stop --name truenas-console --state-dir "$VM"
+vm-lab/vm-lab stop --name truenas-console --state-dir "$VM"
 ```
 
 Starting and stopping the recorder does not hold the QMP socket between

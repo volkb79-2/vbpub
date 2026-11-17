@@ -894,8 +894,8 @@ is a different table and stays open.
   `<project>/artifacts/vm-lab/` to `<project>/vm-lab/` with a committed placeholder each: `scripts/truenas` (`tcg_vm.py` default state dir, `golden-iso`, `docs/CONSUMERS.md`, README, backlog),
   `truenas/tnt` (TNT-59 placeholder and the `test_hardening.py` pin that no source relocates VM state), `pwmcp/tools/console-capture`,
   `scripts/debian-install-v2/testing/vm` and its `.gitignore` comment, `scripts/netcup/CONSUMERS.md`,
-  `zswap-writeback-governor/synthetic/run-synthetic.sh`, and `mdt-cockpit/docs/IO-GOVERNOR-CANDIDATES.md`. `scripts/vm-lab`
-  and `scripts/debian-rollback` already name the new location. The `scripts/vm-lab` tool still builds a qcow2 overlay on a base
+  `zswap-writeback-governor/synthetic/run-synthetic.sh`, and `mdt-cockpit/docs/IO-GOVERNOR-CANDIDATES.md`. `vm-lab`
+  and `scripts/debian-rollback` already name the new location. The `vm-lab` tool still builds a qcow2 overlay on a base
   disk; moving it to raw reflink copies of `downloads/vm-images/` is package VML-06 of `scripts/debian-rollback/docs/WORK-PACKAGES.md`.
 - Existing state (2026-11-17): the subvolumes `downloads/iso`, `downloads/vm-images` and `scripts/debian-rollback/vm-lab` exist under
   `$MDT_COW_ROOT/<repo-name>/` (BTRFS-COW.md section 10). Files already in the flat `downloads/` stay until

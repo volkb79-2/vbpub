@@ -10,7 +10,7 @@ cgroup_slice_env = "CGROUP_PARENT_DEV_GATES"
 [lanes.unit]
 kind = "command"
 environment = "tester-unified"
-argv = ["bash", "-c", "cd {worktree}/scripts/vm-lab && \"$TESTER_VENV/bin/python\" -m pytest tests/ -q"]
+argv = ["bash", "-c", "cd {worktree}/vm-lab && \"$TESTER_VENV/bin/python\" -m pytest tests/ -q"]
 budget = "3m"
 description = "General VM launcher unit tests (profiles, sizing, forwards, labels, shared admission, console reset)"
 

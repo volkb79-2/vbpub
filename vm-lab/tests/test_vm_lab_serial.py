@@ -12,8 +12,8 @@ from pathlib import Path
 
 import pytest
 
-import vm_lab
-import vm_lab_text
+from vm_lab import core as vm_lab
+from vm_lab import text as vm_lab_text
 from test_vm_lab_text import (  # noqa: F401  (fakes shared with the other text tests)
     SURFACE,
     FakeClock,
@@ -27,7 +27,7 @@ from test_vm_lab_text import (  # noqa: F401  (fakes shared with the other text 
     vm_ok,
 )
 from vm_lab import GENERIC_PROFILE
-from vm_lab_text import RunResult, ScreenText, TextEngineError, TextNotApplicable, TextUsageError
+from vm_lab.text import RunResult, ScreenText, TextEngineError, TextNotApplicable, TextUsageError
 
 MARK = "240.278.64.39434cc16c6da873.64.4c3d433ba88b74a6"
 MARK2 = "999.278.64.39434cc16c6da873.64.4c3d433ba88b74a6"

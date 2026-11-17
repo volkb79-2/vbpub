@@ -13,6 +13,51 @@ arguments and QEMU command line are the same as before the move. Its tests
 still run unchanged except for the module that names are imported from and
 patched on.
 
+## A top-level project, a package and an image (2026-11-17)
+
+The tool outgrew `scripts/`: it ships a CLI and a container image, depends on the
+`vmscreen` wheel, is consumed by several projects (TrueNAS, debian-rollback) and
+is installed into the mdt-cockpit image as a wheel. It is therefore a project of
+its own, `vm-lab/`, with the package `vm_lab` in `src/` and the console script
+`vm-lab`. Decisions:
+
+- **Three modules, one package.** `core` (profiles, admission, lifecycle, disks,
+  the parser), `console` (QMP recorder, typing), `text` (screen text). `__init__`
+  re-exports only what profile fronts import by name; tests that replace a
+  function patch `vm_lab.core`, because the functions call each other there.
+- **Bare checkouts keep working.** The wrapper `vm-lab/vm-lab` sets `PYTHONPATH`
+  relative to itself, like `libraries/cowtree/repo-path`; the TrueNAS front puts
+  `vm-lab/src` on `sys.path` from its own location. Neither needs an install.
+- **The image is built, not pulled.** `qemu-image/Dockerfile` carries the same
+  plain package set as the debian-install-v2 test-VM image (QEMU for TCG, no KVM,
+  no privileges) minus what only that harness uses. `vm-lab image build` runs
+  `docker build` on it (default tag `vm-lab-qemu:local`). OVMF is not in the image:
+  the caller's host files are bind-mounted, so firmware changes need no rebuild.
+  `start` resolves the image as flag, then `VM_LAB_QEMU_IMAGE`, then the local
+  tag if Docker has it, else it refuses and says to build; an unreachable Docker
+  is reported as unreachable, not as "not built". Only the generic profile has
+  the tag fallback; the TrueNAS front names its image through its own variable.
+- **The admission lock works from a wheel.** The lock file is found by asking Git
+  next to the module, which only a checkout answers. When that fails, the
+  directory comes from `--lock-dir` or `VM_LAB_ADMISSION_LOCK_DIR`, validated
+  (absolute, existing, writable), else the start is refused naming both: no
+  default path is invented, because a lock in a guessed directory would silently
+  stop excluding the other starters. The probe stays first so that checkout,
+  wrapper, editable and TrueNAS use cannot change; the file name stays the one
+  shared historical name. Two starters exclude each other only when they resolve
+  the same directory, so the cockpit image sets the variable to the repository's
+  common Git directory.
+- **No paths in the package.** Every verb takes `--state-dir` and `--base-disk`;
+  consumers derive them from the path resolver (`vm-lab.toml`, `repo-path`), and
+  the package does not import cowtree.
+- **Environment defaults stay** (`DOCKER_NETWORK_INTERNAL`,
+  `CGROUP_PARENT_DEV_BACKGROUND`), and a missing network says where it comes from
+  instead of only naming the variable, because the fix is to read the value
+  (`ciu env print`), not to invent one.
+- **Not part of this move:** release registration (cmru, assay lane), a vmscreen
+  version floor, a ciu service for the image. They are open items in
+  `KNOWN_ISSUES_TODO_BACKLOG.md`.
+
 ## A profile instead of globals
 
 Everything product-specific is a field of a frozen `VmProfile`, passed
@@ -23,7 +68,7 @@ wrong without any visible sign. An explicit argument cannot.
 
 The cost is a profile argument on the functions that use labels, names or
 sizing. The benefit is that the TrueNAS values live in one place, in
-`tcg_vm.py`. Two TrueNAS traces stay in `vm_lab.py` on purpose: the TrueNAS
+`tcg_vm.py`. Two TrueNAS traces stay in `vm_lab.core` on purpose: the TrueNAS
 entry in the label registry and the historical lock filename. Both exist
 because the host cap is shared (see below).
 
@@ -41,7 +86,7 @@ only their own guests could together exceed the safe number of TCG guests.
   takes, and renaming the file would split them into two locks. Every profile
   takes it, so two starts never pass the count and pressure checks together.
 - Admission counts running containers that carry any known VM label.
-  `KNOWN_VM_LABELS` in `vm_lab.py` is the one registry. Each entry is a
+  `KNOWN_VM_LABELS` in `vm_lab.core` is the one registry. Each entry is a
   `(label key, label value)` pair and is queried with its own value, so a
   profile whose value is not `true` is still counted. The registry lists the
   TrueNAS label because a TrueNAS guest that is already running must keep being
@@ -136,9 +181,9 @@ this invocation never recorded.
 ## Two key tables, one set of names
 
 The key table behind `console type` (US-layout ASCII to QEMU key names, in
-`vm_lab_console.py`) and the key table of `libraries/vmscreen` (its `send` verb)
-are deliberately two copies: the VM tool stays a script with no dependencies, and
-vmscreen keeps its own. Both tables must list the same key names. The tests
+`vm_lab.console`) and the key table of `libraries/vmscreen` (its `send` verb)
+are deliberately two copies: the VM tool does not import vmscreen (it runs it as a
+subprocess for screen text), and vmscreen keeps its own. Both tables must list the same key names. The tests
 cannot compare them mechanically: `libraries/vmscreen/docs/cli-surface.json`
 names the `--keys` option but not the key names, so the rule is stated here and
 checked by review when either table changes (VMS-BL-03).
@@ -252,7 +297,7 @@ cannot be mistaken for a good one.
 
 ## Screen text: three engines, one poll loop
 
-`console text` and `console wait-for-text` (module `vm_lab_text.py`) read the
+`console text` and `console wait-for-text` (module `vm_lab.text`) read the
 screen as text with three engines, because no single reader covers every screen:
 
 - **serial** reads `<state>/serial.log` with `vmscreen text --source serial`.

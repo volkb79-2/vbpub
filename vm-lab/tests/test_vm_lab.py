@@ -16,10 +16,10 @@ from types import SimpleNamespace
 
 import pytest
 
-import vm_lab
+from vm_lab import core as vm_lab
 from vm_lab import GENERIC_PROFILE, RunnerError, VmProfile
 
-TRUENAS_FRONT = Path(__file__).resolve().parents[2] / "truenas" / "tcg_vm.py"
+TRUENAS_FRONT = Path(__file__).resolve().parents[2] / "scripts" / "truenas" / "tcg_vm.py"
 
 
 def load_truenas_front():
@@ -371,11 +371,21 @@ def test_start_refuses_without_an_image_from_flag_or_environment(monkeypatch, tm
     monkeypatch.delenv("VM_LAB_QEMU_IMAGE", raising=False)
     monkeypatch.setenv("CGROUP_PARENT_DEV_BACKGROUND", "dev-background.slice")
     monkeypatch.setenv("DOCKER_NETWORK_INTERNAL", "internal")
+    docker_calls = []
+
+    def docker_without_the_image(argv, *, check=True, timeout=30):
+        # Hermetic: the local-tag lookup never reaches a real daemon; any other docker call is a test failure.
+        docker_calls.append(list(argv))
+        assert argv == ["docker", "image", "inspect", "vm-lab-qemu:local"], argv
+        return subprocess.CompletedProcess(argv, 1, "", "Error response from daemon: No such image: vm-lab-qemu:local")
+
+    monkeypatch.setattr(vm_lab, "docker_run", docker_without_the_image)
     arguments = START_ARGS + ["--state-dir", str(tmp_path), *SIZING]
     assert vm_lab.main(GENERIC_PROFILE, arguments) == 1
-    assert "vm_lab.py: pass --image or set VM_LAB_QEMU_IMAGE; no image fallback is selected" in (
-        capsys.readouterr().err
-    )
+    error = capsys.readouterr().err
+    assert "vm_lab.py: pass --image or set VM_LAB_QEMU_IMAGE; no image fallback is selected" in error
+    assert "`vm-lab image build`" in error
+    assert docker_calls == [["docker", "image", "inspect", "vm-lab-qemu:local"]]
 
 
 # --- labels and shared admission -------------------------------------------

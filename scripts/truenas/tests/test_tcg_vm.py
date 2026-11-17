@@ -14,7 +14,7 @@ import termios
 import pytest
 
 import tcg_vm
-import vm_lab
+from vm_lab import core as vm_lab
 
 
 def test_cpu_quota_parsing_handles_limited_and_unlimited_values():

@@ -14,10 +14,10 @@ from types import SimpleNamespace
 
 import pytest
 
-import vm_lab
-import vm_lab_text
+from vm_lab import core as vm_lab
+from vm_lab import text as vm_lab_text
 from vm_lab import GENERIC_PROFILE, RunnerError
-from vm_lab_text import (
+from vm_lab.text import (
     OCR_TEMP_FILENAME,
     RunResult,
     ScreenReader,
@@ -28,7 +28,7 @@ from vm_lab_text import (
     TextUsageError,
 )
 
-REPO = Path(__file__).resolve().parents[3]
+REPO = Path(__file__).resolve().parents[2]
 SURFACE = REPO / "libraries" / "vmscreen" / "docs" / "cli-surface.json"
 TRUENAS_FRONT = REPO / "scripts" / "truenas" / "tcg_vm.py"
 

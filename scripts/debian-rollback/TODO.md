@@ -21,7 +21,7 @@ OP3, then VML-04; DR-01 needs no guest and can start at once.
    Left for the VM (E1): Secure Boot through shim to systemd-boot, and whether
    Debian 14's `grub-install` sets up the btrfs-header environment block.
    Still a desk check: snapper 0.10.6 against the features needed.
-3. **General VM tool in `scripts/vm-lab/`**, lifted from
+3. **General VM tool in the top-level project `vm-lab/`**, lifted from
    `scripts/truenas/tcg_vm.py` with TrueNAS behaviour unchanged. Add selectable
    RAM, a serial boot menu, reset, boot-loop detection. Own change, own review.
    Unblocks experiment E1.
@@ -40,7 +40,7 @@ OP3, then VML-04; DR-01 needs no guest and can start at once.
 
    | Package | Content | Route | State |
    |---|---|---|---|
-   | VML-01 | Extract `scripts/vm-lab/vm_lab.py`; TrueNAS front unchanged; `console reset` | Sonnet; deepseek review, 2 rounds | merged 2026-11-12 |
+   | VML-01 | Extract the general VM launcher module (now `vm-lab/src/vm_lab/core.py`); TrueNAS front unchanged; `console reset` | Sonnet; deepseek review, 2 rounds | merged 2026-11-12 |
    | VML-02 | Y2 + Y1: console recorder and typing in the VM tool; pwmcp's `console_capture.py` and `launch-truenas-vm.sh` replaced by it | deepseek, finished by Sonnet; Sonnet reviews, 3 rounds | merged 2026-11-12 (vbpub@c46b0dfe8) |
    | VML-03a | vmscreen `--qemu-dump-dir`: works when QEMU sees the dump directory under another path (the VM tool's container) | Sonnet; Sonnet review, 2 rounds | merged 2026-11-12 (vbpub@77343737e) |
    | VML-03b | Y3: `console text` and `console wait-for-text` in the VM tool: vmscreen (exact text) first, `pwmcp ocr --image` for graphical screens; fail patterns and boot-loop detection | Sonnet; Sonnet review, 2 rounds | merged 2026-11-12 (vbpub@d55c3132e); not yet run against a real guest |
