@@ -112,8 +112,12 @@ it with Pillow as RGB, and saves a kept frame in `DIR/frames/`.
 
 The hidden name cannot be requested by `console screendump`, whose filename
 rules require an ordinary visible name. An already existing temporary file is
-refused rather than overwritten, and the file is removed after every read and
-in the recorder's final cleanup, including error exits. Pillow is imported
+refused rather than overwritten. Each poll creates the file itself with
+`O_EXCL` (mode 0600; QEMU runs as the same user and overwrites it in place) and
+remembers its device and inode. The file is removed after every read and in the
+recorder's final cleanup, including error exits, but only while the path still
+has that identity: a file another recorder or process put at the name is never
+deleted, and at a poll it makes that poll a skipped one. Pillow is imported
 only by `console record`; the other console verbs do not need it.
 
 Transient console failures are tolerated by skipping and counting. A QMP
@@ -134,7 +138,12 @@ could signal QEMU as a last resort. The VM tool starts QEMU in a managed
 container and has a graceful `stop` verb. `--stop-guest-on-exit` calls that
 same stop path for cap, max-runtime and error exits, but not for an explicit
 `console ctl --quit`, which only ends the recorder. Without the option the
-guest remains running. The recorder never kills a pid.
+guest remains running. The recorder never kills a pid. SIGTERM and SIGHUP end
+the recording cleanly; the first one claims the stop, and every further
+SIGTERM or SIGHUP is ignored until the guest stop and `DONE` are finished, so a
+repeated signal (a supervisor that retries) cannot abort the stop and leave the
+guest running. A failed stop is reported on stderr and never changes the
+`DONE` reason or the exit status.
 
 ## The display device is an explicit choice
 

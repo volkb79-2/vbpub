@@ -197,7 +197,13 @@ SIGTERM and SIGHUP end the loop cleanly (temporary screendump removed, guest
 stopped when `--stop-guest-on-exit` is set and the loop had started) and the
 recorder exits 0. A signal that was already ignored when the recorder started
 stays ignored, so a recorder under `nohup` survives the end of its shell. The
-handlers stay in place until the guest stop has finished and `DONE` is written.
+handlers stay in place until the guest stop has finished and `DONE` is written,
+and from the first signal on every further SIGTERM or SIGHUP is ignored: a
+second one cannot abort the guest stop. Only the recorder's own temporary
+screendump file is removed (a file that another process put at that name is
+never deleted). If the guest stop itself fails, stderr gets
+`vm-lab: stop-guest-on-exit failed: <message>`; `DONE` keeps the original reason
+and the exit status stays what it would have been (0, or 1 after an error).
 
 `--stop-guest-on-exit` takes effect only once the recording loop has started:
 a recorder refused at start (existing screendump file, Pillow missing, invalid

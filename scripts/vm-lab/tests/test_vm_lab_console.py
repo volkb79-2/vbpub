@@ -74,7 +74,8 @@ def run_record(
     def next_screen():
         item = next(screens)
         if isinstance(item, BaseException):
-            (state_dir / vm_lab_console.RECORDER_TEMP_FILENAME).write_bytes(b"partial")
+            # An injected screen source owns no screendump file. Removal of the
+            # recorder's own file is tested through the production screendump path.
             raise item
         return item
 
@@ -793,7 +794,7 @@ def test_signal_handler_writes_done_cleans_temporary_and_stops_armed_guest(tmp_p
     }
     installed_during = {}
 
-    def interrupted_screen():
+    def interrupted_screendump(_socket, _command, _arguments, _timeout):
         installed_during.update(
             {number: signal.getsignal(number) for number in handlers_before}
         )
@@ -803,11 +804,10 @@ def test_signal_handler_writes_done_cleans_temporary_and_stops_armed_guest(tmp_p
     rc = vm_lab_console.cmd_console_record(
         args,
         state_dir,
-        qmp_call=lambda *_args, **_kwargs: {},
+        qmp_call=interrupted_screendump,
         stop_guest=lambda: calls.append("stop"),
         clock=FakeClock(),
         sleep=lambda _seconds: None,
-        next_screen=interrupted_screen,
         image_module=Image,
         image_chops=ImageChops,
     )
@@ -1347,6 +1347,7 @@ def test_signal_handlers_stay_installed_until_the_guest_stop_and_done_are_finish
         seen["done_exists"] = (out / "DONE").exists()
         # A second signal during the stop must not lose DONE.
         vm_lab_console._recorder_signal_handler(signal.SIGTERM, None)
+        seen["stop_finished"] = True
 
     rc = vm_lab_console.cmd_console_record(
         record_args(out, cap=1, stop_guest_on_exit=True),
@@ -1360,7 +1361,11 @@ def test_signal_handlers_stay_installed_until_the_guest_stop_and_done_are_finish
         image_chops=ImageChops,
     )
     assert rc == 0
-    assert seen == {"term": vm_lab_console._recorder_signal_handler, "done_exists": False}
+    assert seen == {
+        "term": vm_lab_console._recorder_signal_handler,
+        "done_exists": False,
+        "stop_finished": True,
+    }
     assert done_reason(out) == "cap"
     assert signal.getsignal(signal.SIGTERM) is not vm_lab_console._recorder_signal_handler
 
@@ -1464,3 +1469,205 @@ def test_a_foreign_screendump_file_mid_run_is_a_skipped_poll_and_is_not_deleted(
     assert len(screendumps) == 3
     assert done_reason(out) == "cap"
     assert stops == [None]
+
+
+# --- VML-07: recorder signals during the guest stop, screendump ownership ---------
+
+
+@pytest.fixture
+def recorder_flag_restored(monkeypatch):
+    """Leave the module's 'ending' flag as the test found it."""
+    monkeypatch.setattr(vm_lab_console, "_recorder_ending", False)
+
+
+def test_the_handler_ignores_every_signal_after_the_first(recorder_flag_restored):
+    with pytest.raises(vm_lab_console.RecorderSignal, match="signal: SIGTERM"):
+        vm_lab_console._recorder_signal_handler(signal.SIGTERM, None)
+    # No exception, whatever the signal: the recorder is already ending.
+    assert vm_lab_console._recorder_signal_handler(signal.SIGHUP, None) is None
+    assert vm_lab_console._recorder_signal_handler(signal.SIGTERM, None) is None
+
+
+@pytest.mark.parametrize("second", [signal.SIGTERM, signal.SIGHUP])
+@pytest.mark.parametrize("first", ["signal", "cap"])
+def test_a_second_signal_during_the_final_guest_stop_does_not_abort_the_stop(tmp_path, first, second):
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    out = tmp_path / "capture"
+    steps = []
+
+    def screendump(_socket, _command, _arguments, _timeout):
+        if first == "signal":
+            signal.raise_signal(signal.SIGTERM)  # the real handler: ends the loop cleanly
+        Image.new("RGB", (20, 20), "black").save(state_dir / vm_lab_console.RECORDER_TEMP_FILENAME)
+
+    def stop_guest():
+        steps.append("stop started")
+        signal.raise_signal(second)  # a real second signal while the guest is stopping
+        steps.append("stop finished")
+
+    rc = vm_lab_console.cmd_console_record(
+        record_args(out, cap=1, stop_guest_on_exit=True, max_runtime=100),
+        state_dir,
+        qmp_call=screendump,
+        stop_guest=stop_guest,
+        clock=FakeClock(),
+        sleep=lambda _seconds: None,
+    )
+    assert rc == 0
+    assert steps == ["stop started", "stop finished"]
+    assert done_reason(out) == ("signal: SIGTERM" if first == "signal" else "cap")
+    assert not (state_dir / vm_lab_console.RECORDER_TEMP_FILENAME).exists()
+    assert signal.getsignal(signal.SIGTERM) is not vm_lab_console._recorder_signal_handler
+    assert vm_lab_console._recorder_ending is False
+
+
+def test_the_recorder_creates_its_own_screendump_file_exclusively_before_qemu_writes_it(tmp_path):
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    temporary = state_dir / vm_lab_console.RECORDER_TEMP_FILENAME
+    seen = {}
+
+    def screendump(_socket, _command, _arguments, _timeout):
+        seen["exists"] = temporary.exists()
+        seen["size"] = temporary.stat().st_size
+        seen["mode"] = temporary.stat().st_mode & 0o777
+        blank().save(temporary)
+
+    rc = vm_lab_console.cmd_console_record(
+        record_args(tmp_path / "capture", cap=1),
+        state_dir,
+        qmp_call=screendump,
+        stop_guest=None,
+        clock=FakeClock(),
+        sleep=lambda _seconds: None,
+    )
+    assert rc == 0
+    assert seen["exists"] is True and seen["size"] == 0
+    assert seen["mode"] & 0o077 == 0  # private: the screen may show typed secrets
+    assert not temporary.exists()
+
+
+@pytest.mark.parametrize("failure", ["signal", "error"])
+def test_cleanup_after_an_interrupted_screendump_removes_its_own_file_but_not_a_foreign_one(tmp_path, failure):
+    """Both outcomes of the ownership check, for a signal and for an ordinary error."""
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    temporary = state_dir / vm_lab_console.RECORDER_TEMP_FILENAME
+    stops = []
+    outcomes = {}
+    clock = FakeClock()
+
+    def interrupted(foreign: bool):
+        if foreign:
+            # Another process replaced our file by its own at the same name. Our file is
+            # moved aside, not deleted, so its inode number cannot be reused by the new one.
+            temporary.rename(state_dir / f"moved-away-{len(stops)}-{failure}")
+            temporary.write_bytes(b"foreign recorder")
+        else:
+            temporary.write_bytes(b"our partial dump")
+        if failure == "signal":
+            signal.raise_signal(signal.SIGTERM)
+        raise vm_lab.RunnerError("QMP screendump failed")
+
+    for foreign in (False, True):
+        out = tmp_path / f"capture-{foreign}"
+        temporary.unlink(missing_ok=True)
+        try:
+            vm_lab_console.cmd_console_record(
+                record_args(out, interval=1, max_runtime=1000, stop_guest_on_exit=True),
+                state_dir,
+                qmp_call=lambda *_a, foreign=foreign: interrupted(foreign),
+                stop_guest=lambda: stops.append("stop"),
+                clock=clock,
+                sleep=clock.sleep,
+            )
+        finally:
+            outcomes[foreign] = temporary.read_bytes() if temporary.exists() else None
+    assert outcomes == {False: None, True: b"foreign recorder"}
+    assert stops == ["stop", "stop"]
+
+
+def test_remove_if_owned_compares_the_file_identity_not_the_name(tmp_path):
+    path = tmp_path / "dump.png"
+    path.write_bytes(b"ours")
+    identity = vm_lab_console._file_identity(path)
+    assert identity is not None
+    # Same name, different file: left alone. The old file is moved aside, not deleted,
+    # so its inode number cannot be reused by the new one.
+    path.rename(tmp_path / "moved-away.png")
+    path.write_bytes(b"theirs")
+    assert vm_lab_console._file_identity(path) != identity
+    vm_lab_console._remove_if_owned(path, identity)
+    assert path.read_bytes() == b"theirs"
+    # Nothing was ever created: nothing is removed.
+    vm_lab_console._remove_if_owned(path, None)
+    assert path.read_bytes() == b"theirs"
+    # The file the recorder created: removed.
+    vm_lab_console._remove_if_owned(path, vm_lab_console._file_identity(path))
+    assert not path.exists()
+
+
+def test_a_qmp_end_of_file_is_a_skipped_poll_not_the_end_of_the_recording(tmp_path):
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    out = tmp_path / "capture"
+    calls = []
+
+    def screendump(_socket, _command, _arguments, _timeout):
+        calls.append("screendump")
+        if len(calls) == 1:
+            # What reading a closed QMP socket produces.
+            raise json.JSONDecodeError("Expecting value", "", 0)
+        blank().save(state_dir / vm_lab_console.RECORDER_TEMP_FILENAME)
+
+    rc = vm_lab_console.cmd_console_record(
+        record_args(out, cap=1, interval=1, max_runtime=100),
+        state_dir,
+        qmp_call=screendump,
+        stop_guest=None,
+        clock=FakeClock(),
+        sleep=lambda _seconds: None,
+    )
+    assert rc == 0
+    assert calls == ["screendump", "screendump"]
+    assert done_reason(out) == "cap"
+    assert issubclass(json.JSONDecodeError, vm_lab_console.TOLERATED_CALL_ERRORS)
+
+
+def test_plain_type_text_is_logged_with_the_text_in_a_type_label(tmp_path):
+    out = tmp_path / "capture"
+    (out / "inbox").mkdir(parents=True)
+    (out / "inbox" / "0001.json").write_text('{"type": "hi"}')
+    sent = []
+    rc, out, _state = run_record(
+        tmp_path,
+        iter([blank()]),
+        qmp_call=lambda _socket, command, arguments, _timeout: sent.append((command, arguments)) or {},
+        args=record_args(out, cap=1),
+    )
+    assert rc == 0
+    entries = [json.loads(line) for line in (out / "keys.jsonl").read_text().splitlines()]
+    assert [entry["sent"] for entry in entries] == ["TYPE:hi"]
+    assert [command for command, _ in sent] == ["send-key", "send-key"]
+
+
+@pytest.mark.parametrize(
+    ("screen_items", "cap", "reason_prefix", "rc_expected"),
+    [([blank()], 1, "cap", 0), ([RuntimeError("screen boom")], 10, "error: screen boom", 1)],
+)
+def test_a_failing_guest_stop_keeps_the_done_reason_and_the_exit_status(
+    tmp_path, capsys, screen_items, cap, reason_prefix, rc_expected
+):
+    def stop_guest():
+        raise RuntimeError("container did not stop")
+
+    rc, out, _state = run_record(
+        tmp_path,
+        iter(screen_items),
+        args=record_args(tmp_path / "capture", cap=cap, stop_guest_on_exit=True),
+        stop=stop_guest,
+    )
+    assert done_reason(out) == reason_prefix
+    assert rc == rc_expected
+    assert "vm-lab: stop-guest-on-exit failed: container did not stop" in capsys.readouterr().err
