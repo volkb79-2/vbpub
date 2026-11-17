@@ -287,3 +287,16 @@ reaches `r_seq` or a disclosed partial bench with an eligible write-lane window;
 the chosen disposition, its knob (and any changed clamp) is documented in the
 DESIGN-GUIDE and README; the real-abort cases are unchanged; and the r1002
 bench record after the fix shows at least one completed window per write lane.
+
+**Update 2026-11-17 (end of acceptance-1 on r1002, 55.9 h).** 10 benches ran:
+9 aborted `io_pressure_rose` at 5.25 to 8.56 (each started on an idle host, io
+PSI `some avg10` 0.0 to 0.05, and stopped after 2 to 4 s and 65 to 200 MB
+written), 1 aborted `no_nonzero_offset_found` (IGM-17); none completed. The 636
+ticks (to 22:31Z) were all fine (max gap 5.6 min, budgets respected), so only the bench
+lane is affected. Interim, config only: `bench_pressure_some_max = 3.0` on
+r1002 from 2026-11-17T22:59Z (pre-run gate 3.0, in-run limit 15.0; the clamp
+allows up to 5.0); acceptance-2 runs on it. The code-level fix is still the
+decision of this entry; one more option beside those above: on a host with no
+protected workload the strict guard measures the bench's own load, so make the
+`5 x` factor a named key and let the in-run guard read pressure that excludes
+the bench's own cgroup, or the protected cgroups' pressure only.
