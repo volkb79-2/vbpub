@@ -1,6 +1,6 @@
 {
   "generated_by": "cmru versions resolve",
-  "resolved_at": "2026-10-19T01:54:29Z",
+  "resolved_at": "2026-11-17T14:05:10Z",
   "schema_version": 1,
   "targets": {
     "oci.devcontainers-python.311.trixie": {

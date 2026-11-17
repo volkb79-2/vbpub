@@ -359,8 +359,9 @@ variable "INSTALL_OPENCLAW" {
   default = "true"
 }
 
+// Off until further notice (operator 2026-11-17); cmru.toml [env] INSTALL_COPILOT carries the same value for releases.
 variable "INSTALL_COPILOT" {
-  default = "true"
+  default = "false"
 }
 
 variable "INSTALL_CLAUDELINK" {
