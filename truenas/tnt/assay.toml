@@ -58,6 +58,7 @@ mode = "whole_target"
 # libraries/iobench and libraries/test-policy; tests/test_assay_lane_inventory.py keeps
 # this inventory honest. src/tnt/adapters/__init__.py has real code and stays.
 targets = [
+  "src/tnt/_paths.py",
   "src/tnt/actions.py",
   "src/tnt/adapters/__init__.py",
   "src/tnt/adapters/base.py",
