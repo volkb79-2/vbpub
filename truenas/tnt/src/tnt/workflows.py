@@ -1217,7 +1217,7 @@ class Workflows:
                        RpcCall("vm.device.query", ([["id", "=", device_id]], {})),
                        RpcCall("pool.dataset.query", ([["id", "=", zvol_name]], {"select": ["id", "type"]}))))
 
-    # -- uploads from downloads/ (TNT-61 stage 1) --------------------------------------------------------
+    # -- uploads from the iso, vm-images or downloads folder (TNT-61 stage 1) ---------------------------
     def files_put_action(self, download: Any, directory: str) -> Action:
         from .uploads import UPLOAD_MODE, validate_destination_dir
         folder = validate_destination_dir(directory)
@@ -1226,7 +1226,7 @@ class Workflows:
         destination = f"{folder}/{PurePosixPath(download.name).name}"
         self._refuse_boot_pool("filesystem.put", (destination,))
         return Action("TNT-61", Kind.MUTATE,
-                      f"Upload downloads/{download.name} ({download.size} bytes, sha256 {download.sha256[:12]}...) to {destination}",
+                      f"Upload {download.label}/{download.name} ({download.size} bytes, sha256 {download.sha256[:12]}...) to {destination}",
                       (RpcCall("filesystem.put", (destination, {"mode": UPLOAD_MODE})),),
                       (RpcCall("filesystem.stat", (folder,)),
                        RpcCall("filesystem.listdir", (folder, [["name", "=", PurePosixPath(destination).name]], {"limit": 1}))))

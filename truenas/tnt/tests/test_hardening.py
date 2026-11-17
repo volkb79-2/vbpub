@@ -109,15 +109,21 @@ def test_docs_do_not_name_private_hosts():
         assert not [b for b in banned if b in text], rel
 
 
-def test_vm_lab_placeholder_is_committed_and_no_script_relocates_vm_state():
-    lab = ROOT / "artifacts" / "vm-lab"
+def test_vm_lab_placeholder_is_committed_and_vm_state_only_comes_through_the_resolver_entry():
+    lab = ROOT / "vm-lab"
     assert (lab / "README.md").is_file()
     assert (lab / ".gitignore").read_text().split() == ["*", "!.gitignore", "!README.md"]
-    # tnt keeps VM state only inside artifacts/vm-lab/: no source or script names another VM location, and no
-    # environment variable relocates it.
+    assert not (ROOT / "artifacts" / "vm-lab").exists()
+    # VM state is the `vm-lab` entry of the repo-root vm-lab.toml, asked through tnt/_paths.py only: no other source or
+    # script names a literal VM folder, and no environment variable relocates it.
+    paths_module = ROOT / "src" / "tnt" / "_paths.py"
     sources = [*sorted((ROOT / "src").rglob("*.py")), *sorted((ROOT / "tests" / "live").glob("*.py"))]
     for path in sources:
         text = path.read_text()
+        if path == paths_module:
+            assert text.count('"vm-lab"') == 1 and "artifacts" not in text, path
+            continue
+        text = text.replace("vm-lab.toml", "")  # naming the config file is not naming a VM folder
         assert "vm-lab" not in text and "VM_LAB" not in text.upper().replace("-", "_"), path
         assert "TNT_VM" not in text, path
 

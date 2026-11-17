@@ -401,6 +401,7 @@ def test_vanilla_hosts_hide_import_with_a_clear_message_and_report_no_capability
 
 
 class _Download:
+    label = "vm-images"
     name = "debian.qcow2"
     size = 10
     sha256 = "ab" * 32
@@ -661,6 +662,11 @@ def test_convert_job_failure_surfaces_as_a_partial_plan_error():
 
 
 # -- TNT-61 verified upload from downloads/ --------------------------------------------------------------------------
+def in_(root, label="iso"):
+    """The search list of one folder, labelled like a resolver folder."""
+    return [uploads.SourceFolder(label, root)]
+
+
 def make_downloads(tmp_path, name="debian.qcow2", content=b"qcow2-bytes" * 100, sidecar="exact"):
     root = tmp_path / "downloads"
     root.mkdir(parents=True, exist_ok=True)
@@ -688,8 +694,8 @@ def test_download_names_are_confined_to_the_downloads_folder(name):
 def test_verify_download_accepts_nested_files_and_both_sidecar_forms(tmp_path):
     for sidecar in ("exact", "bare"):
         root, content, digest = make_downloads(tmp_path / sidecar, name="sub/dir/img.qcow2", sidecar=sidecar)
-        verified = uploads.verify_download("sub/dir/img.qcow2", root)
-        assert verified.sha256 == digest and verified.size == len(content)
+        verified = uploads.verify_download("sub/dir/img.qcow2", in_(root))
+        assert verified.sha256 == digest and verified.size == len(content) and verified.label == "iso"
         verified.reverify()
         with verified.open() as handle:
             assert handle.read() == content
@@ -698,20 +704,20 @@ def test_verify_download_accepts_nested_files_and_both_sidecar_forms(tmp_path):
 def test_verify_download_refuses_missing_wrong_or_changed_material(tmp_path):
     root, content, digest = make_downloads(tmp_path / "a", sidecar="none")
     with pytest.raises(Refused, match="upload-checksum.*required"):
-        uploads.verify_download("debian.qcow2", root)
+        uploads.verify_download("debian.qcow2", in_(root))
     root, _, _ = make_downloads(tmp_path / "b", sidecar="junk")
     with pytest.raises(Refused, match="64-digit"):
-        uploads.verify_download("debian.qcow2", root)
+        uploads.verify_download("debian.qcow2", in_(root))
     root, _, _ = make_downloads(tmp_path / "c", sidecar="wrong")
-    with pytest.raises(Refused, match="does not match"):
-        uploads.verify_download("debian.qcow2", root)
+    with pytest.raises(Refused, match="iso/debian.qcow2 does not match"):
+        uploads.verify_download("debian.qcow2", in_(root))
     root, _, _ = make_downloads(tmp_path / "d")
-    verified = uploads.verify_download("debian.qcow2", root)
+    verified = uploads.verify_download("debian.qcow2", in_(root))
     (root / "debian.qcow2").write_bytes(b"tampered")
-    with pytest.raises(Refused, match="changed since"):
+    with pytest.raises(Refused, match="iso/debian.qcow2 changed since"):
         verified.reverify()
-    with pytest.raises(Refused, match="does not exist"):
-        uploads.verify_download("absent.qcow2", root)
+    with pytest.raises(Refused, match="does not exist in any searched folder"):
+        uploads.verify_download("absent.qcow2", in_(root))
 
 
 def test_verify_download_refuses_links_empty_files_directories_and_a_missing_folder(tmp_path):
@@ -720,34 +726,72 @@ def test_verify_download_refuses_links_empty_files_directories_and_a_missing_fol
     outside.write_bytes(b"secret")
     (root / "link.bin").symlink_to(outside)
     (root / "link.bin.sha256").write_text(hashlib.sha256(b"secret").hexdigest() + "\n")
-    with pytest.raises(Refused, match="outside downloads"):
-        uploads.verify_download("link.bin", root)
+    with pytest.raises(Refused, match="outside iso/"):
+        uploads.verify_download("link.bin", in_(root))
     (root / "empty.bin").write_bytes(b"")
     (root / "empty.bin.sha256").write_text(hashlib.sha256(b"").hexdigest() + "\n")
     with pytest.raises(Refused, match="non-empty regular"):
-        uploads.verify_download("empty.bin", root)
+        uploads.verify_download("empty.bin", in_(root))
     (root / "sub").mkdir()
     (root / "sub.sha256").write_text(digest + "\n")
     with pytest.raises(Refused, match="non-empty regular"):
-        uploads.verify_download("sub", root)
-    with pytest.raises(Refused, match="downloads/ folder was not found"):
-        uploads.verify_download("x", tmp_path / "nope")
+        uploads.verify_download("sub", in_(root))
+    with pytest.raises(Refused, match=r"nope, missing\)"):
+        uploads.verify_download("x", in_(tmp_path / "nope"))
     afile = tmp_path / "afile"
     afile.write_text("x")
-    with pytest.raises(Refused, match="downloads/ folder was not found"):
-        uploads.verify_download("x", afile)
+    with pytest.raises(Refused, match=r"afile, missing\)"):
+        uploads.verify_download("x", in_(afile))
 
 
-def test_the_downloads_folder_is_derived_from_the_package_location_and_has_no_env_override(monkeypatch, tmp_path):
-    expected = Path(uploads.__file__).resolve().parents[4] / "downloads"
-    assert uploads.DOWNLOADS_DIR == expected
+def test_uploads_search_iso_then_vm_images_then_the_flat_downloads_top_level(tmp_path):
+    iso, _, iso_digest = make_downloads(tmp_path / "iso", name="both.bin", content=b"iso-bytes")
+    images, _, image_digest = make_downloads(tmp_path / "img", name="both.bin", content=b"image-bytes")
+    old, _, old_digest = make_downloads(tmp_path / "old", name="legacy.bin", content=b"legacy-bytes")
+    make_downloads(tmp_path / "old", name="sub/nested.bin", content=b"nested-bytes")
+    folders = [uploads.SourceFolder("iso", iso), uploads.SourceFolder("vm-images", images),
+               uploads.SourceFolder("downloads", old, flat_only=True)]
+    both = uploads.verify_download("both.bin", folders)
+    assert (both.label, both.sha256) == ("iso", iso_digest) and both.sha256 != image_digest
+    only_images, _, _ = make_downloads(tmp_path / "img", name="only-image.bin")
+    assert uploads.verify_download("only-image.bin", folders).label == "vm-images"
+    legacy = uploads.verify_download("legacy.bin", folders)
+    assert (legacy.label, legacy.sha256) == ("downloads", old_digest)
+    with pytest.raises(Refused) as err:  # the old downloads/ folder accepts flat names only
+        uploads.verify_download("sub/nested.bin", folders)
+    text = str(err.value)
+    assert "does not exist in any searched folder" in text
+    assert all(label in text for label in ("iso (", "vm-images (", "downloads ("))
+    assert "(file names only)" in text
+
+
+def test_source_folders_come_from_the_resolver_and_are_named_in_that_order(monkeypatch, tmp_path):
+    for name in ("iso_dir", "vm_images_dir", "downloads_dir"):
+        monkeypatch.setattr(uploads._paths, name, lambda name=name: tmp_path / name)
+    assert uploads.source_folders() == [
+        uploads.SourceFolder("iso", tmp_path / "iso_dir"),
+        uploads.SourceFolder("vm-images", tmp_path / "vm_images_dir"),
+        uploads.SourceFolder("downloads", tmp_path / "downloads_dir", flat_only=True),
+    ]
+    (tmp_path / "vm_images_dir").mkdir()
+    content = b"cloud-image"
+    (tmp_path / "vm_images_dir" / "c.img").write_bytes(content)
+    (tmp_path / "vm_images_dir" / "c.img.sha256").write_text(hashlib.sha256(content).hexdigest() + "\n")
+    assert uploads.verify_download("c.img").label == "vm-images"  # default search; iso folder is missing and skipped
+
+
+def test_a_missing_vm_lab_toml_refuses_the_upload_naming_the_file(monkeypatch, tmp_path):
+    monkeypatch.setattr(uploads._paths, "REPO_ROOT", tmp_path)
+    with pytest.raises(Refused, match=r"vm-lab\.toml not found"):
+        uploads.verify_download("a.bin")
+
+
+def test_no_environment_variable_moves_the_upload_folders(monkeypatch, tmp_path):
     monkeypatch.setenv("TNT_DOWNLOADS", str(tmp_path))
     monkeypatch.setenv("DOWNLOADS_DIR", str(tmp_path))
-    assert uploads.DOWNLOADS_DIR == expected
-    monkeypatch.setattr(uploads, "DOWNLOADS_DIR", tmp_path / "missing")
-    with pytest.raises(Refused, match="downloads/ folder was not found"):
-        uploads.verify_download("a.bin")
-    assert "os.environ" not in Path(uploads.__file__).read_text() and "getenv" not in Path(uploads.__file__).read_text()
+    for source in (uploads.__file__, uploads._paths.__file__):
+        text = Path(source).read_text()
+        assert "os.environ" not in text and "getenv" not in text, source
 
 
 @pytest.mark.parametrize("directory", ["tank/images", "/etc", "/mnt/tank", "/mnt/tank/", "/mnt/tank/../x", "/mnt/tank//x",
@@ -761,7 +805,7 @@ def test_upload_destinations_are_nas_dataset_directories(directory):
 @pytest.fixture
 def upload_env(server, tmp_path, monkeypatch):
     root, content, digest = make_downloads(tmp_path)
-    monkeypatch.setattr(uploads, "DOWNLOADS_DIR", root)
+    monkeypatch.setattr(uploads, "source_folders", lambda: in_(root))
     monkeypatch.setattr(uploads, "_origin", lambda profile: (False, "127.0.0.1", server.http_port))
     monkeypatch.setattr(uploads, "JOB_POLL_SECONDS", 0.01)
     return root, content, digest
