@@ -44,6 +44,7 @@ OP3, then VML-04; DR-01 needs no guest and can start at once.
    | VML-02 | Y2 + Y1: console recorder and typing in the VM tool; pwmcp's `console_capture.py` and `launch-truenas-vm.sh` replaced by it | deepseek, finished by Sonnet; Sonnet reviews, 3 rounds | merged 2026-11-12 (vbpub@c46b0dfe8) |
    | VML-03a | vmscreen `--qemu-dump-dir`: works when QEMU sees the dump directory under another path (the VM tool's container) | Sonnet; Sonnet review, 2 rounds | merged 2026-11-12 (vbpub@77343737e) |
    | VML-03b | Y3: `console text` and `console wait-for-text` in the VM tool: vmscreen (exact text) first, `pwmcp ocr --image` for graphical screens; fail patterns and boot-loop detection | Sonnet; Sonnet review, 2 rounds | merged 2026-11-12 (vbpub@d55c3132e); not yet run against a real guest |
+   | VML-06a | Raw base images cloned by reflink (`start --base-format`, `--allow-full-copy`), `disk promote` into a shared base folder; qcow2 path unchanged (D17, WORK-PACKAGES VML-06) | Sonnet; Sonnet review FIX-FIRST then MERGE | merged 2026-11-17 (vbpub@3038974b4); not yet run against a real guest or a real btrfs reflink through the tool |
    | VML-04 | Y5: capture console screens (Debian installer, Grml, GRUB, systemd-boot, ZFSBootMenu) into pwmcp's corpus, with `vmscreen ocr-pair` where exact text exists | open | after VML-03 |
    | VML-05 | Y4: one console interface, QMP backend and pwmcp browser backend | open | after VML-03 |
    | VML-06 | Y6: pwmcp test fixture serving a guest's VNC socket to its browser | open | after VML-05 |
@@ -71,6 +72,12 @@ OP3, then VML-04; DR-01 needs no guest and can start at once.
    `libraries/vmscreen` (exact console text, `wait-text`, `send`, `ocr-pair`)
    was found only after VML-02; see the correction in the design guide,
    section 9.1. Read its README before writing the VML-03 brief.
+
+   Open follow-ups from the VML-06a review (non-blocking): `PROMOTE_NAME_PATTERN =re.compile(` spacing (vm_lab.py near line 78);
+   the `clone_disk` docstring says SIGTERM becomes an exception (it does not: a SIGTERM leaves a hidden `.<name>.partial`, which is
+   refused on retry, remove it by hand); promote also holds the admission lock while hashing (undocumented); no test for an
+   interrupt during hashing. Not verified without a real guest and btrfs: real `cp --reflink` stderr text, a GNU `cp` in the
+   cockpit image (busybox lacks `--reflink`), QEMU booting the raw clone, `disk promote` on a real stopped guest.
 
    Open follow-ups from the VML-02 reviews (reports under
    `artifacts/debian-rollback/reviews/`):
