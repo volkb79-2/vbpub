@@ -731,6 +731,89 @@ class TestJudgeMountCollisions:
              "--mount", "type=bind,source=/cow,target=/cow"],
             "this lane's mount set")
 
+    def test_a_SIBLING_sharing_the_prefix_is_not_inside_the_judge_tree(
+            self, tmp_path, monkeypatch):
+        """Round-3 review (mutant: drop the trailing `/` from the child
+        check): `startswith(judge + "/")` is what makes this a CHILD test.
+        Without it, a directory whose NAME merely begins with the judge
+        tree's name (`assay-extra`, `assay2`) is refused as if it were inside
+        it -- a refusal whose condition also matches an ordinary, legitimate
+        mount (the superset-refusal hazard), which is exactly how a guard
+        teaches operators to switch it off."""
+        worktree = self._worktree(tmp_path, monkeypatch)
+        for sibling in ("assay2", "assay-extra", "libraries/cowtree2"):
+            run_gate.refuse_mounts_over_the_judge(
+                self._lane(), "rust-r1", worktree,
+                ["-v", f"/tmp/other:{worktree / sibling}"],
+                f"${run_gate.EXTRA_MOUNT_ENV_VAR}")
+            run_gate.refuse_mounts_over_the_judge(
+                self._lane(), "rust-r1", worktree,
+                ["-v", f"/tmp/other:/workspaces/estate/{sibling}"],
+                f"${run_gate.EXTRA_MOUNT_ENV_VAR}")
+
+    def test_the_exact_path_and_a_real_child_are_BOTH_refused(
+            self, tmp_path, monkeypatch):
+        """The other direction of the same comparison: the sibling case must
+        not be bought by weakening the child test into the exact test."""
+        worktree = self._worktree(tmp_path, monkeypatch)
+        exact = str(worktree / "assay")
+        child = str(worktree / "libraries" / "cowtree" / "src" / "cowtree")
+        with pytest.raises(run_gate.GateError, match=r"Duplicate mount point"):
+            run_gate.refuse_mounts_over_the_judge(
+                self._lane(), "rust-r1", worktree,
+                ["--mount", f"type=bind,source=/else,target={exact}"],
+                f"${run_gate.EXTRA_MOUNT_ENV_VAR}")
+        with pytest.raises(run_gate.GateError, match=r"INSIDE the judge tree"):
+            run_gate.refuse_mounts_over_the_judge(
+                self._lane(), "rust-r1", worktree,
+                ["--mount", f"type=bind,source=/else,target={child}"],
+                f"${run_gate.EXTRA_MOUNT_ENV_VAR}")
+
+    @pytest.mark.parametrize("key", run_gate.MOUNT_DESTINATION_KEYS)
+    def test_every_documented_destination_spelling_is_parsed(
+            self, tmp_path, monkeypatch, key):
+        """Round-3 review: Docker documents `target=`, `dst=` and
+        `destination=` for the SAME key. Only `target=` was read, so a mount
+        written with an alias would have landed on a judge tree unseen by the
+        refusal. The vocabulary is driven from `MOUNT_DESTINATION_KEYS`, the
+        same tuple the parser reads."""
+        worktree = self._worktree(tmp_path, monkeypatch)
+        destination = str(worktree / "assay")
+        with pytest.raises(run_gate.GateError, match=r"Duplicate mount point"):
+            run_gate.refuse_mounts_over_the_judge(
+                self._lane(), "rust-r1", worktree,
+                ["--mount",
+                 f"type=bind,source=/else,{key}={destination},readonly"],
+                f"${run_gate.EXTRA_MOUNT_ENV_VAR}")
+        # …and a deeper path through an alias is the child case, too.
+        with pytest.raises(run_gate.GateError, match=r"INSIDE the judge tree"):
+            run_gate.refuse_mounts_over_the_judge(
+                self._lane(), "rust-r1", worktree,
+                ["--mount",
+                 f"type=bind,source=/else,{key}={destination}/sub"],
+                f"${run_gate.EXTRA_MOUNT_ENV_VAR}")
+
+    def test_the_parser_reads_both_shapes_and_ignores_the_source(self):
+        """A direct oracle for the parser itself, so the collision tests above
+        are not the only reader of the destination vocabulary."""
+        flags = ["-v", "/else:/judge:ro",
+                 "--mount", "type=bind,source=/src,target=/one,readonly",
+                 "--mount", "type=bind,dst=/two,source=/src",
+                 "--mount", "type=bind,destination=/three,source=/src",
+                 "--mount", "type=tmpfs,target=/four"]
+        assert run_gate.mount_flag_destinations(flags) == [
+            "/judge", "/one", "/two", "/three", "/four"]
+        # An entry with no destination key contributes nothing rather than an
+        # empty string that would silently compare equal to `""`.
+        assert run_gate.mount_flag_destinations(
+            ["--mount", "type=bind,source=/src"]) == []
+        # …and neither does a destination key written with no value: an empty
+        # destination is not a place a mount can land, so reporting it would
+        # add a phantom entry to the collision set.
+        assert run_gate.mount_flag_destinations(
+            ["--mount", "type=bind,source=/src,target="]) == []
+        assert run_gate.mount_flag_destinations(["target=/orphan"]) == []
+
     def test_the_alias_view_of_a_judge_tree_is_also_refused(
             self, tmp_path, monkeypatch):
         """The judge is dual-mounted, so the namespace destination is a

@@ -557,6 +557,13 @@ EXTRA_MOUNT_ENV_VAR = "RUN_GATE_EXTRA_MOUNTS"
 HOST_DOCKER_GID_ENV_VAR = "RUN_GATE_HOST_DOCKER_GID"
 MDT_HOST_DOCKER_GID_ENV_VAR = "MDT_HOST_DOCKER_GID"
 MOUNT_ALIAS_ENV_VAR = "RUN_GATE_MOUNT_ALIAS"
+# Round-3 review: Docker documents THREE names for a `--mount` destination
+# (`target=`, `dst=`, `destination=`); all three mean the same key, so a mount
+# written with one of the aliases must be as visible to
+# `refuse_mounts_over_the_judge` as the spelling run-gate emits itself. Read
+# here as ONE tuple so the parser and the test cannot disagree about the
+# vocabulary.
+MOUNT_DESTINATION_KEYS = ("target", "dst", "destination")
 # RG-NARROW: a container lane sees only the judged worktree + the git metadata
 # it needs. The plain (main) checkout has no narrower view, so it is refused
 # unless the operator opts in explicitly. Applies to containers run-gate itself
@@ -15001,11 +15008,20 @@ def judge_mount_flags(lane: dict, worktree: Path) -> list[str]:
 def mount_flag_destinations(flags: list[str]) -> list[str]:
     """The CONTAINER destination of every `-v`/`--mount` entry, in argv order.
 
-    One parser for both flag shapes this file emits (`-v <source>:<dest>[:ro]`
-    and `--mount type=bind,source=...,target=...`), so a caller that needs to
-    reason about WHERE a mount lands cannot miss half the mount set. Paths are
-    validated elsewhere to contain no `,`/`:`, which is what makes the split
+    One parser for both flag shapes, so a caller that needs to reason about
+    WHERE a mount lands cannot miss half the mount set. Paths are validated
+    elsewhere to contain no `,`/`:`, which is what makes the split
     unambiguous.
+
+    `--mount` accepts THREE spellings of the destination (`target=`, `dst=`,
+    `destination=` -- all documented Docker aliases for the same key), and this
+    file emits `target=` itself. Round-3 review: reading only `target=` meant a
+    caller that wrote the documented `dst=` alias would have been invisible to
+    the collision refusal below, so a mount could land on a judge tree through
+    a spelling the guard did not parse. `src=`/`source=` are irrelevant here
+    (the SOURCE of a collision does not decide where it lands), so they are not
+    parsed at all rather than half-parsed into a name that means something
+    else.
     """
     out: list[str] = []
     for index, token in enumerate(flags):
@@ -15014,8 +15030,9 @@ def mount_flag_destinations(flags: list[str]) -> list[str]:
         spec = flags[index + 1]
         if token == "--mount":
             for part in spec.split(","):
-                if part.startswith("target="):
-                    out.append(part.split("=", 1)[1])
+                key, _, value = part.partition("=")
+                if key in MOUNT_DESTINATION_KEYS and value:
+                    out.append(value)
         elif token == "-v":
             parts = spec.split(":")
             if len(parts) >= 2 and parts[1]:
