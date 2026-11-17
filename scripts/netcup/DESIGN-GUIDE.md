@@ -406,6 +406,30 @@ default:
   The accepted cost is that ssh sessions inherit `-900`: a heavy process started
   by hand in a login is also hard to pick. Lanes are unaffected (Docker gives
   them their own score).
+- **A protection value is never traded down.** `oom_score_adj` is a ranking: a
+  LOWER number is MORE protective (`-1000` strongest). sshd sets its own
+  listener to `-1000` at runtime (it protects itself), and containerd ships
+  `-999`; both are stronger than this policy's `-900`. Two rejected alternatives were measured
+  as defects on the 2026-11-16 adoption: writing the MainPID score
+  unconditionally (`-1000 -> -900`, undone by hand on the host, and a re-run
+  would repeat it), and rendering `OOMScoreAdjust=-900` for every protected
+  unit regardless of what its own unit file says (a drop-in is merged AFTER the
+  unit file, so it REPLACES `-1000` with `-900` at the next start — invisibly,
+  because no cgroup read and no dry run shows the unit file it overrode). The
+  adopted rule is one comparison in both halves: write the live score only when
+  the current value is higher (less protective) than the target, and render the
+  drop-in only for a unit whose own file sets nothing or something weaker;
+  anything already stronger is reported and left alone. The own value is read
+  from the unit's fragment (`FragmentPath`), never from the effective property,
+  which would already include this tool's earlier drop-in and could make a
+  second run believe the unit protects itself; the EFFECTIVE value is read for
+  one decision only, when a render would otherwise happen, because a vendor
+  drop-in this tool cannot see (`/usr/lib/systemd/system/<unit>.d/`) may already
+  protect the unit more strongly than the policy. An unreadable value of either
+  kind is an error, not a `0`: the read is what gates the write. A drop-in this
+  tool rendered earlier is retired to `<file>.retired-<UTC stamp>`, never
+  deleted: the superseded content stays readable for the operator who has to
+  decide whether the unit really protects itself.
 
 Consequences the tooling encodes rather than hides: **a slice restart is required**
 to apply limits to an already-active slice (`daemon-reload` alone does not), and a
@@ -750,6 +774,41 @@ The Debian installer’s ordinary tests run in `tester-unified`. Real loop/swap
 commit tests remain in `debian-install-v2`'s explicit QEMU/TCG VM lane. The
 Netcup merge must not resurrect the historical privileged-container harness,
 because Docker shares the host kernel and cannot isolate host-global swap.
+
+## Why a cached tool copy is content-addressed (CTL-12)
+
+A controller helper that runs `runner/remote-gate.py` out of `origin/main` needs a local copy of the file, and
+`runner/remote-gate-cache.sh` is the repository-owned way to make one. The design choice is the interesting part, because
+the obvious implementation is the defective one.
+
+The old helper refreshed `<cache>.new` and `mv`-ed it into place. **The staging name was shared**, so two launches
+started in the same second wrote one file: one `mv` failed, and the failure was printed as "cannot read the tool from
+origin/main". That is the estate's "a check is only as strong as what it actually compares" defect on top of a race: a
+write failure and a genuinely missing file are two different facts, and the helper published the alarming one as the
+benign one. The workaround was a human timing rule nobody wrote down.
+
+Three properties follow from that, and each is a rejection of a plausible alternative:
+
+1. **Content-addressed publish, not a fixed cache path.** The published name is `remote-gate-<blob>.py`, the git blob id
+   of the file at the resolved commit. Two invocations racing on the same ref therefore publish identical bytes under
+   one name, so a rename onto an existing path is *idempotent* rather than destructive; and two different revisions stay
+   addressable side by side, which is what lets a run record's `identity=` still name the bytes that ran after a later
+   refresh overwrote nothing. A fixed `remote-gate-main.py` cannot do either: it makes concurrent publishers mutate one
+   reader's file, and it loses the identity the moment the ref moves.
+2. **Unique staging, plus verification of what is already there.** Every invocation stages into
+   `.remote-gate-<blob>.stage.<pid>.<rand>` and publishes with one `rename`. The serialised refresh already makes two
+   stagers mutually exclusive inside one cache directory, so the unique name is not the race fix — it is what makes a
+   crashed invocation's leftover invisible to every later one (nothing ever publishes another's staging file). And a
+   copy already present is not trusted *by name*: it is re-hashed with `git hash-object` and must equal the blob, so a
+   truncated file left by an interrupted write is replaced instead of being run.
+3. **Three refusals, never two.** `could not refresh the cache` (exit 3) is the write/rename/git-read failure, `the
+   tool is absent from ref <ref>` (exit 4) is decided only after the ref resolved and the path did not, and an
+   unresolvable ref gets its own (exit 5). Folding the first into the second — which the old message did — destroys the
+   only information a caller needs to decide between "retry" and "this ref has no tool".
+
+The serialised refresh (`flock` on `<cache-dir>/.refresh.lock`, released by the kernel on death, bounded by
+`REMOTE_GATE_CACHE_LOCK_WAIT`) is bounded for a reason: an unbounded wait turns one stuck holder into a stalled lane
+batch, and a holder that lost its lock without the kernel noticing does not exist.
 
 ## Controller-side host-satellite queue
 

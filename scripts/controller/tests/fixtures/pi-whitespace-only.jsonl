@@ -1,0 +1,7 @@
+{"type": "session", "id": "pi-session-whitespace"}
+{"type": "agent_start"}
+{"type": "turn_start"}
+{"type": "message_end", "message": {"role": "assistant", "content": [{"type": "text", "text": "   \n\t "}], "usage": {"input": 173000, "output": 9, "cacheRead": 0, "cacheWrite": 0, "totalTokens": 173512}, "stopReason": "stop"}}
+{"type": "turn_end"}
+{"type": "agent_end", "messages": [], "willRetry": false}
+{"type": "agent_settled", "aborted": false}

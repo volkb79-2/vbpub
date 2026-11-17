@@ -50,6 +50,33 @@ available account or exits 3 when neither can run. The controller starts
 closes pi's stdin to prevent the non-interactive process from waiting for
 input.
 
+### Why a run name is owned by one live wrapper
+
+Everything a run owns is keyed by its NAME: `<run>.done`, `.jsonl`, `.err`,
+`.events`, `.live`, `.last.txt`, `.wt`, `.route` and `.thread`. Two wrappers on
+one name would therefore interleave on those files with no error: the second
+truncates `.events`, both append to one stream, the pid in `.live` is whichever
+wrote last, and each writes its own `.done`. A reader then sees one job's
+completion as the other job's result — the strongest form of the false
+certification the rest of this kit exists to prevent.
+
+The guard is a kernel `flock` on `<runs-dir>/<name>.lock`, taken before any
+record is written and released on every exit path. A kernel lock, not a pid
+test, because the release must not depend on the dying process running: a
+wrapper that is TERMed, KILLed or OOM-killed leaves the name claimable, and a
+recycled pid cannot inherit a stale claim. The lock file also records who holds
+it (pid, start epoch, the pid's own kernel start ticks, boot id), so the refusal
+can name the live owner and `job-check.sh` can tell a dead owner from a live
+one. The agent and the liveness sidecar close their inherited copy of the
+descriptor, so a child that outlives its wrapper never holds the name hostage.
+
+Force is deliberately not a bypass: `CONTROLLER_RUN_FORCE=1` is refused while an
+owner is alive, and for a dead owner it RETIRES the whole record set into
+`retired/<run>/<utc-stamp>/` with the previous owner's identity written beside
+it, instead of deleting or overwriting evidence. `resume` of the same session
+takes the same lock rather than a second ownership dimension — it is another
+invocation of the same owned run.
+
 ### Why the terminal outcome is classified, not just the exit code
 
 An exit code cannot carry what went wrong with pi. Two measured store-crate
@@ -61,10 +88,32 @@ must read the stream to tell those apart from a finished job.
 
 The classification compares facts the run itself left behind, in this order: the final
 assistant `stopReason` and 402 code (`USAGE-LIMIT`, `ERROR`), the pi exit status
-(`ERROR`), the stream's settling and `stopReason` (`INCOMPLETE`), the final
-message's text and tool calls (`EMPTY-COMPLETION`), the worktree's own porcelain
-(`UNCOMMITTED`), and the expected report file (`NO-REPORT`). `SUCCESS` is what
-survives all of them. Every check is a fact with an authoritative source
+(`ERROR`), the stream's settling (`INCOMPLETE`), a `length` stop
+(`CONTEXT-FULL`), any other non-`stop` reason (`INCOMPLETE`), the final message's
+text and tool calls (`TOOL-CALL-NO-TEXT`, then `EMPTY-COMPLETION`), the
+worktree's own porcelain (`UNCOMMITTED`), and the expected report file
+(`NO-REPORT`). `SUCCESS` is what survives all of them.
+
+Three of those words exist because their neighbours have a different remedy,
+not because the states differ in detail. `CONTEXT-FULL` is the real end state of
+a long run: the harness stopped the model because the window filled. The work is
+intact, so the action is a FRESH successor seeded from the run's
+forward-oriented state file. The wrapper must not continue it, because
+continuing a full context is the one continuation that cannot succeed, and a
+fresh session pays about an hour of re-orientation that the controller, not the
+wrapper, must decide to spend. `INCOMPLETE` is reserved for a stream the
+classifier cannot attribute (unsettled, aborted, a `stop` reason it does not
+know) and for an unreadable worktree status, where blind continuation or restart
+would mask the real state. `TOOL-CALL-NO-TEXT` is a settled `stop` whose final
+message is a tool call with no text: the run ended mid-work. It is deliberately
+not `EMPTY-COMPLETION`, because that word is bound to the wrapper's one
+automatic continuation and a tool call is not the anomaly that continuation
+repairs. Text **plus** a trailing tool call is `SUCCESS`, by contrast: the class
+is defined on the ABSENCE of text, the text is what the run was supposed to
+produce, and the trailing call is bookkeeping pi emits in the same message (a
+test pins this so it is never re-argued as the opposite).
+
+Every check is a fact with an authoritative source
 (the stream, `git`, the report path the caller named), never an inference: a
 worktree that cannot answer `git rev-parse` is refused before pi starts rather
 than read as clean, and an unset report path means the report check is
@@ -96,18 +145,43 @@ is `null` rather than an invented zero.
 
 `job-status.sh` is the read side: one line per run, `STALLED` when the wrapper
 is alive and no pi event arrived within `JOB_STATUS_STALL_SECONDS` (600 s),
-`HUNG-TOOL` when a single tool call has been in flight past
-`JOB_STATUS_HUNG_TOOL_SECONDS` (1800 s), and `NO-LIVE`/`WRAPPER-DEAD` kept
-distinct from `ACTIVE` so a missing snapshot cannot read as health. It is
-read-only by construction: `kill -0` on the recorded pid and file reads, nothing
-else. A long tool call is therefore *reported* long before it is judged a
-failure, and no threshold on this path stops an agent: the controller decides.
+`LONG-TOOL` when a single tool call has been in flight past
+`JOB_STATUS_HUNG_TOOL_SECONDS` (1800 s) while the run still shows progress
+evidence, `HUNG-TOOL` for that age with no progress evidence, and
+`NO-LIVE`/`WRAPPER-DEAD` kept distinct from `ACTIVE` so a missing snapshot
+cannot read as health. It is read-only by construction: `kill -0` on the
+recorded pid and file reads, nothing else. A long tool call is therefore
+*reported* long before it is judged a failure, and no threshold on this path
+stops an agent: the controller decides.
+
+**Why `LONG-TOOL` exists as its own word.** The prototype decided `HUNG-TOOL`
+from one quantity: the tool's age. The first weeks of real use showed what that
+comparison actually collapses: a `grep -r` over a large tree, a `pytest` run and
+an agent's own blocking experiment all exceeded 1800 s while three of the four
+were working, and the controller killed runs that were making progress. Age is
+not progress, so the sidecar now publishes an observable progress fact
+(`progress_epoch`): the last tick at which bytes were appended to the run's
+stream, or the CPU-time/IO counters of the in-flight tool call's own subtree
+grew on the same set of processes. The summed set matters as much as the growth:
+an earlier version summed the wrapper's whole tree, which also holds the agent
+(always working) and the snapshotter (scanning `/proc` every tick), so a tool
+that had stopped was still certified as progressing and `HUNG-TOOL` became
+unreachable — the check was narrower than the word it printed. The set is
+located structurally (`os.getpid()` is the snapshotter, the wrapper's other
+direct child is the agent, the agent's descendants are the tool's processes),
+never by matching a command name. `HUNG-TOOL` requires the absence of that
+evidence within the same threshold, and an unreadable `/proc` leaves the fact
+`null`, which licenses the weaker word (`LONG-TOOL`) rather than the stronger one. The diagnostic columns exist for the
+same reason: `cmd=` and `steer=` are the tool's command and the exact child pid,
+because the earlier row named neither and the only actionable process it could
+describe was the wrapper — the one process that must not be killed.
 
 Continuation is bounded and class-specific on purpose. Only `EMPTY-COMPLETION`
 is continued, because only that class is a provider/model anomaly: the session
 is intact and the same conversation can finish the work. `UNCOMMITTED`,
-`NO-REPORT`, `ERROR` and `INCOMPLETE` describe real states of the worktree or
-the provider, and a blind resume would either loop or mask them. The limit is
+`NO-REPORT`, `ERROR`, `TOOL-CALL-NO-TEXT`, `CONTEXT-FULL` and `INCOMPLETE`
+describe real states of the worktree, the provider or the context window, and a
+blind resume would either loop or mask them. The limit is
 two attempts (measured: two store-crate stalls needed one continuation, a
 second was unused), it is set by `PI_EMPTY_RETRY_LIMIT`, and the prompt lives in
 one file (`continue-empty-completion.md`) so a wrapper revision cannot drift
@@ -155,11 +229,35 @@ the full current `run-gate.commit` label, and a supplied report must name the
 container. All three facts are required; a container name alone, a report alone,
 or a label for another commit never establishes gate evidence.
 
-An absent `.done` marker prints `RUNNING (no .done)` and exits 0, even when
-the event stream is missing. This preserves the prototype's active-status
-behavior; it is not evidence that the child completed, and the command does
-not check stream age or existence in this state. Read the wrapper's `.done`
-marker to learn the child exit status.
+An absent `.done` marker is not read as `RUNNING` by default any more. The
+prototype's line asserted a process it had never looked for, so a wrapper killed
+by `TERM`/`KILL`, an OOM kill or a container restart read as a live job forever
+and the controller never relaunched it. The reader now takes the same owner
+record the wrapper writes on a claim (`<run>.lock`: pid, start epoch, the pid's
+kernel start ticks, boot id) and separates three real states that used to
+collapse into one: a live owner is `RUNNING (no .done)`, an owner that is gone —
+or whose kernel start ticks no longer match a recycled pid, or that was recorded
+under a previous boot — is `DIED (wrapper pid <pid> gone, no .done)` and a red
+flag, and a name nobody ever owned keeps the prototype's `RUNNING (no .done)`
+with the explicit `owner record: none`. The comparison is now as strong as the
+message: `RUNNING` is only printed when a recorded owner is alive, and every
+other case either names why the owner is dead or says that no record exists.
+The recovery the reader owes a controller does not stop there: a killed wrapper
+usually dies before writing `<run>.thread`, and a controller without a thread id
+can only restart (about an hour of re-orientation). So the id is READ from the
+run's own stream — pi's first `session` event, Codex's `thread.started` — printed
+as `thread: <id> (recovered …)`, and the exact `resume:` command printed beside
+it. A stream with no id says `thread: none`; the file is never written by this
+read-only check and no id is invented.
+
+`job-status.sh` applies the same rule to a run that still has a `.live`: an
+`ACTIVE`/`WRAPPER-DEAD` verdict comes from the owner record, and the payload's
+own pid is only the fallback when no record exists (the row then says
+`owner-record=none`). A dead wrapper with a live agent is its own state — the
+row says `wrapper-dead-agent-alive` — named with the agent's pid and the pid of
+what that agent is running:
+the wrapper's death does not stop the work, and the only actionable process
+left is the agent's tool.
 
 ## Bounded auto-continue
 

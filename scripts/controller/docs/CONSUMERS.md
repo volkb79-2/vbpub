@@ -60,10 +60,34 @@ eight-character prefix, an earlier log has the full `run-gate.commit` label on
 the same line as that container name, and the report names the container. A
 missing report, missing label, wrong commit label, or container without the
 head prefix leaves the gate evidence red. A
-missing `.done` marker prints `RUNNING (no .done)` and exits 0 even if the event
-stream is absent; this does not mean the child completed. Read the wrapper's
-`.done` marker for its exit status. See the
+missing `.done` marker is read from the run name's owner record rather than
+assumed: a live owner prints `RUNNING (no .done)` with its pid, a dead one prints
+`DIED (wrapper pid <pid> gone, no .done)` and exits nonzero so the controller can
+relaunch, and a name no wrapper ever owned says `owner record: none`. `RUNNING`
+never means the child completed; read the wrapper's `.done` marker for its exit
+status.
+
+A `DIED` line also prints what a relaunch needs when the wrapper died early:
+
+```text
+DIED (wrapper pid 8451 gone, no .done)
+thread: 8f2c1d04 (recovered from my-run.jsonl; the wrapper died before writing .thread)
+resume: .../codex-impl.sh /path/to/worktree <prompt-file> my-run resume 8f2c1d04
+```
+
+`thread: none` means the stream carried no id — start a fresh run instead of
+inventing one. If a run still has a `.live`, `job-status.sh` says
+`wrapper-dead-agent-alive agent=<pid> tool=<pid>` when the wrapper died but the
+agent it started is still working: that agent (or its tool) is what to stop, not
+the dead wrapper's pid. See the
 [design guide](DESIGN-GUIDE.md#job-check-compatibility) for the checks.
+
+A Codex run states its own outcome in `.done` as
+`EXIT=<n> OUTCOME=CODE-EXIT AUTORESUME=<k>`; the Codex stream carries no pi stop
+reasons, so the child's exit status is the one fact the wrapper can state. A
+resume of an existing run name removes the previous invocation's marker before
+its child starts, so a reader never reports an older resume's exit while the new
+one works, and a wrapper refused before the child launches writes no marker.
 
 ## Run Pi on Open Design
 
@@ -86,8 +110,23 @@ nohup env CONTROLLER_HOME="$HOME/controller" PI_ROUTE=deepseek-pi \
 
 The `--report` path (or `PI_REPORT`) is the brief's report file. Naming it lets
 the wrapper tell `OUTCOME=NO-REPORT` from a real `OUTCOME=SUCCESS`; leaving it
-out skips that one check. Read the `.done` marker's outcome word before
-deciding what to do next:
+out skips that one check.
+
+A run name carries one run: the wrapper takes an exclusive lock on
+`<runs-dir>/<name>.lock` before writing anything and refuses a second
+invocation of the same name (or a `resume` of it) with exit 2, naming the live
+owner's pid:
+
+```text
+controller: run name 'pi-run' is already owned by pid 12345 (started 2026-11-16T10:00:00Z)
+  one run name carries one run: wait for that wrapper, use a different run name, or retire the owner's records explicitly (CONTROLLER_RUN_FORCE=1, refused while an owner is alive)
+```
+
+`CONTROLLER_RUN_FORCE=1` only works for a DEAD owner: it moves the whole record
+set to `retired/<run>/<utc-stamp>/` (with `PREVIOUS-OWNER.txt`) and starts
+fresh, so a deliberate restart never destroys the previous run's evidence.
+
+Read the `.done` marker's outcome word before deciding what to do next:
 
 | `.done` outcome | What to do |
 |---|---|
@@ -97,6 +136,8 @@ deciding what to do next:
 | `UNCOMMITTED` | The work is real but not committed. Inspect the worktree and commit, or resume for the finish. |
 | `NO-REPORT` | The work may be done but the report is missing. Resume and ask for the report, or write it from the review. |
 | `USAGE-LIMIT` | Wait for the reset recorded in the account state, then `resume-usage-limited.sh`. |
+| `TOOL-CALL-NO-TEXT` | The run ended on a tool call and said nothing: inspect the worktree and the last tool output, then resume with a concrete instruction or restart. A message with text **and** a trailing tool call is `SUCCESS` instead (see the row above), so this row is never the one to use for it. |
+| `CONTEXT-FULL` | The context window filled; the work is intact. Start a FRESH successor session seeded from the run's forward-oriented state file: continuing a full context cannot succeed, and a fresh session costs about an hour of re-orientation, so this is the controller's decision. |
 | `ERROR` / `INCOMPLETE` | Read `<run>.err` and the stream's last events before deciding. |
 
 Check the stream, exit code, and account outcome with the route that was
@@ -111,9 +152,30 @@ scripts/controller/ctl-status.sh
 `job-status.sh` is the liveness read for an ACTIVE run (the controller's
 Monitor polls it instead of watching for `.done`). One line per run, with
 `STALLED` when the wrapper is alive but no pi event arrived within
-`JOB_STATUS_STALL_SECONDS` (default 600) and `HUNG-TOOL` when one tool call has
-been in flight past `JOB_STATUS_HUNG_TOOL_SECONDS` (default 1800). Long tool
-calls are reported, never killed; the thresholds only choose the word.
+`JOB_STATUS_STALL_SECONDS` (default 600), `LONG-TOOL` when one tool call has been
+in flight past `JOB_STATUS_HUNG_TOOL_SECONDS` (default 1800) while the run still
+shows progress evidence, and `HUNG-TOOL` for the same age with no progress
+evidence. Long tool calls are reported, never killed; the thresholds only
+choose the word.
+
+A `HUNG-TOOL` row carries the tool's command and the exact child pid to steer:
+
+```
+pi-run: HUNG-TOOL pid=8123 last-event=1900s tool=bash/1900s cmd=git show :0
+        steer=8451(git show :0) turns=12 calls=9 tokens=204118 since-commit=...
+```
+
+Kill `8451`, not `8123`. Killing the wrapper throws away the run's
+classification, its `.done` marker and its continuation history, and the tool it
+was waiting on is what actually needs to stop. When the tool is waiting on
+something the agent itself created (a `git` command on a FIFO the agent opened),
+the row shows no progress either, so read the command and decide.
+
+The usage and commit columns are qualified facts, not bare numbers:
+`tokens=204118 tokens-last-report=0` means the last measured context was 204k
+and the most recent usage report said 0 (a streaming delta or an error turn,
+never an empty context), and `since-commit=no-commits-yet` means the age would
+have belonged to the base commit, not to this run.
 
 An `EMPTY-COMPLETION` run is continued by the wrapper without the controller
 doing anything: it resumes the same pi session with the canonical prompt in

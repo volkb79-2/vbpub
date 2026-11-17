@@ -1,5 +1,11 @@
 #!/usr/bin/env bash
 set -uo pipefail
+# The caller's ambient controller configuration is not this check's business:
+# every check here builds its own temporary controller root, so an exported
+# CONTROLLER_HOME / RUNS_DIR / LOGS_DIR / REPO / HOSTS_FILE must not decide where
+# a check reads or writes. Relying on the caller ("run it with env -u") moved the
+# same defect into the operator's shell, where it read as a product bug.
+unset CONTROLLER_HOME CONTROLLER_RUNS_DIR CONTROLLER_LOGS_DIR CONTROLLER_REPO CONTROLLER_HOSTS_FILE
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 SRC=${JOB_CHECK_SCRIPT:-$SCRIPT_DIR/../job-check.sh}
 # Sanitized event envelope from codex/runs/assay-wp3.jsonl; the original message is replaced.
@@ -8,6 +14,7 @@ cleanup() { [[ -n ${KEEP_TEST_ROOT:-} ]] || rm -rf -- "$ROOT"; }
 trap cleanup EXIT
 fail() { echo "FAIL: $*" >&2; exit 1; }
 contains() { grep -qF -- "$2" "$1" || fail "$3 (missing: $2)"; }
+not_contains() { ! grep -qF -- "$2" "$1" || fail "$3 (unexpected: $2)"; }
 
 HOME_ROOT=$ROOT/controller
 REPO=$ROOT/repo
@@ -130,6 +137,26 @@ CONTROLLER_HOME=$HOME_ROOT CONTROLLER_REPO=$REPO CONTROLLER_BASE_REF=origin/main
 contains "$ROOT/route-pi.out" 'trailers OK (all commits incl. merges: deepseek-pi-volker)' 'pi route is accepted by job-check'
 contains "$ROOT/route-pi.out" 'last: Completed the fixture task.' 'pi assistant message is included in the run summary'
 contains "$ROOT/route-pi.out" 'JOB-CHECK: green' 'completed pi run is recognized as complete'
+cp "$SCRIPT_DIR/fixtures/pi-length.jsonl" "$HOME_ROOT/runs/pi-length.jsonl"
+printf 'EXIT=0 OUTCOME=CONTEXT-FULL\n' > "$HOME_ROOT/runs/pi-length.done"
+if CONTROLLER_HOME=$HOME_ROOT CONTROLLER_REPO=$REPO CONTROLLER_BASE_REF=origin/main \
+  "$SRC" pi-length "$REPO" deepseek-pi-volker > "$ROOT/pi-length-check.out" 2>&1; then
+  fail 'a context-full pi run was accepted as a finished job'
+fi
+contains "$ROOT/pi-length-check.out" 'CONTEXT-FULL (assistant stopReason=length' \
+  'job-check names the context-full class'
+contains "$ROOT/pi-length-check.out" 'OUTCOME=CONTEXT-FULL' 'job-check echoes the recorded class'
+cp "$SCRIPT_DIR/fixtures/pi-stop-tool-call-no-text.jsonl" "$HOME_ROOT/runs/pi-tool-call.jsonl"
+printf 'EXIT=0 OUTCOME=TOOL-CALL-NO-TEXT\n' > "$HOME_ROOT/runs/pi-tool-call.done"
+if CONTROLLER_HOME=$HOME_ROOT CONTROLLER_REPO=$REPO CONTROLLER_BASE_REF=origin/main \
+  "$SRC" pi-tool-call "$REPO" deepseek-pi-volker > "$ROOT/pi-tool-call-check.out" 2>&1; then
+  fail 'a tool-call-with-no-text pi run was accepted as a finished job'
+fi
+contains "$ROOT/pi-tool-call-check.out" 'TOOL-CALL-NO-TEXT (final assistant message is a tool call' \
+  'job-check names the tool-call-no-text class'
+if grep -qF 'EMPTY-RUN' "$ROOT/pi-tool-call-check.out"; then
+  fail 'a tool-call-no-text run was reported as an empty run'
+fi
 cp "$SCRIPT_DIR/fixtures/pi-402.jsonl" "$HOME_ROOT/runs/pi-402.jsonl"
 printf 'EXIT=0 OUTCOME=USAGE-LIMIT\n' > "$HOME_ROOT/runs/pi-402.done"
 if CONTROLLER_HOME=$HOME_ROOT CONTROLLER_REPO=$REPO CONTROLLER_BASE_REF=origin/main \
@@ -501,6 +528,113 @@ if ! CONTROLLER_HOME=$HOME_ROOT CONTROLLER_REPO=$REPO CONTROLLER_BASE_REF=origin
   fail 'prototype missing-.done behavior should report RUNNING with exit 0'
 fi
 contains "$ROOT/missing-stream.out" 'RUNNING (no .done)' 'missing stream does not change prototype status'
+contains "$ROOT/missing-stream.out" 'owner record: none' \
+  'a run with no owner record says that a live and a dead wrapper cannot be told apart here'
+
+# A name with no .done is three different real states, and the reader must tell
+# them apart from the owner record every wrapper writes on a claim:
+#   live owner   -> RUNNING (exit 0)
+#   dead owner   -> DIED (red flag; the controller may relaunch)
+#   no record    -> RUNNING (no .done) + "owner record: none" (exit 0)
+pid_start_ticks() {
+  local rest index=0 field
+  rest=$(sed 's/^[^)]*) //' "/proc/$1/stat") || return 1
+  for field in $rest; do
+    index=$((index + 1))
+    if (( index == 20 )); then printf '%s' "$field"; return 0; fi
+  done
+  return 1
+}
+boot_id=$(cat /proc/sys/kernel/random/boot_id 2>/dev/null || printf '%s' '-')
+printf '{"type":"item.completed","item":{"type":"agent_message","text":"working"}}\n' \
+  > "$HOME_ROOT/runs/live-owner.jsonl"
+printf 'pid=%s started_epoch=%s started_utc=%s pid_start_ticks=%s boot_id=%s\n' \
+  "$$" "$(date -u +%s)" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$(pid_start_ticks $$)" "$boot_id" \
+  > "$HOME_ROOT/runs/live-owner.lock"
+CONTROLLER_HOME=$HOME_ROOT CONTROLLER_REPO=$REPO \
+  "$SRC" live-owner "$REPO" luna > "$ROOT/live-owner.out" 2>&1 \
+  || { cat "$ROOT/live-owner.out" >&2; fail 'a live owner was reported as dead'; }
+contains "$ROOT/live-owner.out" "owner record: pid $$ alive" 'a live owner is named as the run owner'
+
+printf '{"type":"item.completed","item":{"type":"agent_message","text":"working"}}\n' \
+  > "$HOME_ROOT/runs/dead-owner.jsonl"
+printf 'pid=%s started_epoch=%s started_utc=%s pid_start_ticks=%s boot_id=%s\n' \
+  2147483646 1700000000 2023-11-14T22:13:20Z 12345 "$boot_id" \
+  > "$HOME_ROOT/runs/dead-owner.lock"
+if CONTROLLER_HOME=$HOME_ROOT CONTROLLER_REPO=$REPO CONTROLLER_BASE_REF=origin/main \
+  "$SRC" dead-owner "$REPO" luna > "$ROOT/dead-owner.out" 2>&1; then
+  cat "$ROOT/dead-owner.out" >&2
+  fail 'a dead owner without .done was accepted as a running job'
+fi
+contains "$ROOT/dead-owner.out" 'DIED (wrapper pid 2147483646 gone, no .done)' \
+  'a dead owner without .done is DIED, not RUNNING'
+
+# A killed wrapper often leaves no `.thread`, and a controller with no thread id
+# can only start over. The id is already in the run's own stream, so it is
+# recovered from there, reported as a fact, and the EXACT resume command printed.
+printf '{"type":"session","id":"recovered-thread-abc"}\n' \
+  > "$HOME_ROOT/runs/dead-no-thread.jsonl"
+printf 'pid=%s started_epoch=%s started_utc=%s pid_start_ticks=12345 boot_id=%s\n' \
+  2147483646 1700000000 2023-11-14T22:13:20Z "$boot_id" \
+  > "$HOME_ROOT/runs/dead-no-thread.lock"
+if CONTROLLER_HOME=$HOME_ROOT CONTROLLER_REPO=$REPO CONTROLLER_BASE_REF=origin/main \
+  "$SRC" dead-no-thread "$REPO" deepseek-pi > "$ROOT/dead-no-thread.out" 2>&1; then
+  cat "$ROOT/dead-no-thread.out" >&2
+  fail 'a dead owner whose thread was missing was accepted as running'
+fi
+contains "$ROOT/dead-no-thread.out" 'thread: recovered-thread-abc' \
+  'a missing .thread is recovered from the run stream as a stated fact'
+contains "$ROOT/dead-no-thread.out" 'resume: ' \
+  'a dead owner with a recovered thread prints the exact resume command'
+contains "$ROOT/dead-no-thread.out" 'pi-impl.sh' \
+  'the resume command names the wrapper for this route'
+contains "$ROOT/dead-no-thread.out" 'resume recovered-thread-abc' \
+  'the resume command carries the recovered thread id'
+# The recovery is from the STREAM, not from a file the controller invented: no
+# `.thread` is written by this read-only check.
+[[ ! -e $HOME_ROOT/runs/dead-no-thread.thread ]] \
+  || fail 'job-check wrote a .thread file instead of reporting the recovered id'
+# A dead run whose stream carries no id says so instead of guessing one.
+printf '{"type":"agent_start"}\n' > "$HOME_ROOT/runs/dead-no-id.jsonl"
+printf 'pid=%s started_epoch=%s started_utc=%s pid_start_ticks=12345 boot_id=%s\n' \
+  2147483646 1700000000 2023-11-14T22:13:20Z "$boot_id" \
+  > "$HOME_ROOT/runs/dead-no-id.lock"
+if CONTROLLER_HOME=$HOME_ROOT CONTROLLER_REPO=$REPO CONTROLLER_BASE_REF=origin/main \
+  "$SRC" dead-no-id "$REPO" deepseek-pi > "$ROOT/dead-no-id.out" 2>&1; then
+  fail 'a dead owner with no recoverable id was accepted as running'
+fi
+contains "$ROOT/dead-no-id.out" 'thread: none' \
+  'a run with no recoverable thread id says none instead of inventing one'
+not_contains "$ROOT/dead-no-id.out" 'resume: ' \
+  'no resume command is printed without a thread id'
+
+# A recycled pid: the recorded pid exists NOW but its kernel start time differs,
+# so it is not the owner this record describes.
+printf '{"type":"item.completed","item":{"type":"agent_message","text":"working"}}\n' \
+  > "$HOME_ROOT/runs/recycled-owner.jsonl"
+printf 'pid=%s started_epoch=%s started_utc=%s pid_start_ticks=1 boot_id=%s\n' \
+  "$$" "$(date -u +%s)" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$boot_id" \
+  > "$HOME_ROOT/runs/recycled-owner.lock"
+if CONTROLLER_HOME=$HOME_ROOT CONTROLLER_REPO=$REPO CONTROLLER_BASE_REF=origin/main \
+  "$SRC" recycled-owner "$REPO" luna > "$ROOT/recycled-owner.out" 2>&1; then
+  cat "$ROOT/recycled-owner.out" >&2
+  fail 'a recycled pid was accepted as the run owner'
+fi
+contains "$ROOT/recycled-owner.out" 'DIED (wrapper pid' 'a recycled owner pid is DIED'
+contains "$ROOT/recycled-owner.out" 'recycled' 'the recycled pid is named as recycled'
+
+# A dead owner from a previous boot is dead even when its pid number is in use.
+printf '{"type":"item.completed","item":{"type":"agent_message","text":"working"}}\n' \
+  > "$HOME_ROOT/runs/old-boot-owner.jsonl"
+printf 'pid=%s started_epoch=%s started_utc=%s pid_start_ticks=%s boot_id=00000000-0000-0000-0000-000000000000\n' \
+  "$$" "$(date -u +%s)" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$(pid_start_ticks $$)" \
+  > "$HOME_ROOT/runs/old-boot-owner.lock"
+if CONTROLLER_HOME=$HOME_ROOT CONTROLLER_REPO=$REPO CONTROLLER_BASE_REF=origin/main \
+  "$SRC" old-boot-owner "$REPO" luna > "$ROOT/old-boot-owner.out" 2>&1; then
+  cat "$ROOT/old-boot-owner.out" >&2
+  fail 'an owner recorded under a previous boot was accepted as live'
+fi
+contains "$ROOT/old-boot-owner.out" 'previous boot' 'an owner from a previous boot is DIED'
 
 printf 'dirty\n' > "$REPO/dirty.txt"
 if CONTROLLER_HOME=$HOME_ROOT CONTROLLER_REPO=$REPO CONTROLLER_BASE_REF=origin/main \

@@ -1,9 +1,12 @@
 #!/usr/bin/env bash
 set -uo pipefail
+# The caller's ambient controller configuration is not this check's business:
+# every check here builds its own temporary controller root, so an exported
+# CONTROLLER_HOME / RUNS_DIR / LOGS_DIR / REPO / HOSTS_FILE must not decide where
+# a check reads or writes. Relying on the caller ("run it with env -u") moved the
+# same defect into the operator's shell, where it read as a product bug.
+unset CONTROLLER_HOME CONTROLLER_RUNS_DIR CONTROLLER_LOGS_DIR CONTROLLER_REPO CONTROLLER_HOSTS_FILE
 unset PI_ROUTE PI_MODEL PI_THINKING PI_SESSION_DIR OPENDESIGN_API_KEY_VOLKER OPENDESIGN_API_KEY_GITHUB2
-# A cockpit export of these would send the fake runs into the real run
-# directory; the checks read their own temporary controller root.
-unset CONTROLLER_RUNS_DIR CONTROLLER_LOGS_DIR
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 SRC=${PI_IMPL_SCRIPT:-$SCRIPT_DIR/../pi-impl.sh}
 JOB_STATUS=${JOB_STATUS_SCRIPT:-$SCRIPT_DIR/../job-status.sh}
@@ -95,6 +98,16 @@ for line in open(sys.argv[1], encoding="utf-8"):
         event["id"] = sys.argv[2]
     print(json.dumps(event, separators=(",", ":")))
 PY
+# A deterministic hold: the fake agent keeps working until the CHECK creates
+# this file. A `sleep N` would make every case that needs "the agent is still
+# running" a race against how loaded the host is.
+if [[ -n ${FAKE_PI_HOLD_UNTIL:-} ]]; then
+  waited=0
+  while [[ ! -e $FAKE_PI_HOLD_UNTIL ]]; do
+    sleep 0.05
+    waited=$(( waited + 1 ))
+  done
+fi
 [[ -z ${FAKE_PI_SLEEP_AFTER:-} ]] || sleep "$FAKE_PI_SLEEP_AFTER"
 exit "${FAKE_PI_RC:-0}"
 SH
@@ -214,10 +227,58 @@ PY
 }
 
 check_outcome_length() {
-  CONTROLLER_OD_STATE=$ROOT/outcome-length-state.json \
+  local before after
+  before=$(pi_invocations)
+  CONTROLLER_OD_STATE=$ROOT/outcome-length-state.json PI_LIVE=0 \
     wait_launch outcome-length deepseek-pi-volker pi-length /dev/null
-  [[ $(cat "$CONTROLLER_ROOT/runs/outcome-length.done") == 'EXIT=0 OUTCOME=INCOMPLETE' ]] \
-    || fail 'a settled pi run whose final stopReason is not stop is not a success'
+  after=$(pi_invocations)
+  [[ $(head -n 1 "$CONTROLLER_ROOT/runs/outcome-length.done") == 'EXIT=0 OUTCOME=CONTEXT-FULL' ]] \
+    || fail 'a settled stopReason=length run is not classified CONTEXT-FULL'
+  # CONTEXT-FULL is a real end state: the wrapper must NOT continue it (a full
+  # context is the one class a same-session continuation cannot finish).
+  [[ $(( after - before )) == 1 ]] || fail "a CONTEXT-FULL run was continued ($(( after - before )) pi invocations, expected 1)"
+  grep -qF 'empty-completion-retry' "$CONTROLLER_ROOT/runs/outcome-length.events" 2>/dev/null \
+    && fail 'a CONTEXT-FULL run recorded an empty-completion continuation'
+}
+
+# A settled stream whose stop reason is neither `stop` nor a named limit: the
+# unattributable class, and never a success.
+check_outcome_stop_other() {
+  CONTROLLER_OD_STATE=$ROOT/outcome-other-stop-state.json PI_LIVE=0 \
+    wait_launch outcome-other-stop deepseek-pi-volker pi-settled-other-stop /dev/null
+  [[ $(head -n 1 "$CONTROLLER_ROOT/runs/outcome-other-stop.done") == 'EXIT=0 OUTCOME=INCOMPLETE' ]] \
+    || fail 'a settled stream whose stop reason is not stop or length is not INCOMPLETE'
+}
+
+# A settled stop whose final message is a tool call and no text is not a
+# success, and is not the continued EMPTY-COMPLETION class either.
+check_outcome_tool_call_no_text() {
+  local before after
+  before=$(pi_invocations)
+  CONTROLLER_OD_STATE=$ROOT/outcome-tool-call-state.json PI_LIVE=0 \
+    wait_launch outcome-tool-call deepseek-pi-volker pi-stop-tool-call-no-text /dev/null
+  after=$(pi_invocations)
+  [[ $(head -n 1 "$CONTROLLER_ROOT/runs/outcome-tool-call.done") == 'EXIT=0 OUTCOME=TOOL-CALL-NO-TEXT' ]] \
+    || fail 'a settled stop with a tool call and no text is not TOOL-CALL-NO-TEXT'
+  [[ $(( after - before )) == 1 ]] || fail 'a tool-call-no-text run was continued'
+  grep -qF 'empty-completion-retry' "$CONTROLLER_ROOT/runs/outcome-tool-call.events" 2>/dev/null \
+    && fail 'a tool-call-no-text run recorded an empty-completion continuation'
+}
+
+# A settled `stop` whose final message carries TEXT AND a tool call is SUCCESS:
+# the text is the run's final message and the tool call is trailing bookkeeping
+# (pi emits it after the narrative in the same message). This is pinned by a
+# test, not left to be re-argued: the class exists for a message with a tool call
+# and NO text, which is a different fact.
+check_outcome_text_and_tool_call() {
+  local before after
+  before=$(pi_invocations)
+  CONTROLLER_OD_STATE=$ROOT/outcome-text-call-state.json PI_LIVE=0 \
+    wait_launch outcome-text-call deepseek-pi-volker pi-stop-text-and-tool-call /dev/null
+  after=$(pi_invocations)
+  [[ $(head -n 1 "$CONTROLLER_ROOT/runs/outcome-text-call.done") == 'EXIT=0 OUTCOME=SUCCESS' ]] \
+    || fail 'a settled stop with text and a trailing tool call is not SUCCESS'
+  [[ $(( after - before )) == 1 ]] || fail 'a successful text-and-tool-call run was continued'
 }
 
 check_outcome_rc() {
@@ -254,7 +315,10 @@ check_outcome_success_report() {
 }
 
 check_outcome_empty() {
-  wait_launch_sequence outcome-empty deepseek-pi-volker "pi-empty-completion pi-thinking-only"
+  # The third attempt's message carries text that is only WHITESPACE: "has text"
+  # must mean text after stripping, or a blank message reads as a completion.
+  wait_launch_sequence outcome-empty deepseek-pi-volker \
+    "pi-empty-completion pi-thinking-only pi-whitespace-only"
   [[ $(head -n 1 "$CONTROLLER_ROOT/runs/outcome-empty.done") == 'EXIT=0 OUTCOME=EMPTY-COMPLETION-RETRIES-EXHAUSTED' ]] \
     || fail 'an empty final message with an empty continuation is not reported as exhausted'
   contains "$CONTROLLER_ROOT/runs/outcome-empty.done" 'RETRIES=2' 'the exhausted class records its attempt count'
@@ -373,7 +437,7 @@ check_live_snapshot() {
     CONTROLLER_OD_STATE="$ROOT/live-state.json" \
     FAKE_FIXTURE_DIR="$SCRIPT_DIR/fixtures" \
     FAKE_PI_SEQUENCE='pi-tool-in-flight' FAKE_PI_COUNTER="$ROOT/live-run.counter" \
-    FAKE_PI_SLEEP_AFTER=4 FAKE_PI_SESSION_ID=live-run-session FAKE_PI_RC=0 \
+    FAKE_PI_SESSION_ID=live-run-session FAKE_PI_RC=0 \
     PI_LIVE_INTERVAL_SECONDS=1 PI_EMPTY_RETRY_LIMIT=0 \
     "$SRC" "$WORKTREE" "$PROMPT" live-run > "$ROOT/live-run.launch.log" 2>&1 < /dev/null &
   local wrapper=$!
@@ -400,6 +464,7 @@ assert isinstance(body["tool_in_flight_started_epoch"], int), body
 assert body["assistant_turns"] >= 1, body
 assert body["tool_calls"] >= 1, body
 assert body["latest_total_tokens"] == 12220, body
+assert body["tool_in_flight_command"] == "sleep 600", body
 assert body["commits_ahead"] == 1, body
 assert body["uncommitted_files"] == 0, body
 assert isinstance(body["last_commit_epoch"], int), body
@@ -471,17 +536,35 @@ import json, sys, time
 from pathlib import Path
 now = int(time.time())
 runs = Path(sys.argv[1])
-def write(name, tool=None, tool_started=None, last_event=None):
+def write(name, tool=None, tool_started=None, last_event=None, progress=None,
+          command=None, steer=None, tokens=10, tokens_report=None, ahead=0,
+          commit_epoch=None):
     body = {
         "run": name, "wrapper_pid": 1, "updated_epoch": now,
         "last_event_epoch": last_event, "tool_in_flight": tool,
         "tool_in_flight_started_epoch": tool_started,
-        "assistant_turns": 1, "tool_calls": 1, "latest_total_tokens": 10,
-        "commits_ahead": 0, "uncommitted_files": 0, "last_commit_epoch": now,
+        "assistant_turns": 1, "tool_calls": 1,
+        "latest_total_tokens": tokens,
+        "latest_total_tokens_last_report": tokens if tokens_report is None else tokens_report,
+        "tool_in_flight_command": command, "steering_children": steer,
+        "progress_epoch": progress,
+        "commits_ahead": ahead, "uncommitted_files": 0,
+        "last_commit_epoch": now if commit_epoch is None else commit_epoch,
     }
     (runs / f"{name}.live").write_text(json.dumps(body), encoding="utf-8")
 write("stale", last_event=now - 900)
-write("hung", tool="bash", tool_started=now - 2400, last_event=now - 10)
+write("hung", tool="bash", tool_started=now - 2400, last_event=now - 10,
+      progress=now - 2400, command="sleep 600")
+write("long-tool", tool="bash", tool_started=now - 2400, last_event=now - 10,
+      progress=now - 30, command="grep -r needle /workspace",
+      steer=[{"pid": 4242, "command": "grep -r needle /workspace"}])
+write("progress-unknown", tool="bash", tool_started=now - 2400,
+      last_event=now - 10, progress=None)
+write("tokens-zero-report", last_event=now - 10, tokens=258492,
+      tokens_report=0)
+write("no-commits", last_event=now - 10, ahead=0, commit_epoch=now - 86400)
+write("own-commit", last_event=now - 10, ahead=2, commit_epoch=now - 60)
+write("ahead-unknown", last_event=now - 10, ahead=None, commit_epoch=now - 86400)
 write("orphan", last_event=now - 10)
 body = json.loads((runs / "orphan.live").read_text(encoding="utf-8"))
 body["wrapper_pid"] = 2147483646
@@ -490,15 +573,60 @@ body["wrapper_pid"] = 2147483646
 PY
   CONTROLLER_HOME="$ROOT/status-home" CONTROLLER_RUNS_DIR="$runs" CONTROLLER_REPO="$WORKTREE" \
     JOB_STATUS_STALL_SECONDS=600 JOB_STATUS_HUNG_TOOL_SECONDS=1800 \
-    "$JOB_STATUS" stale hung orphan finished absent > "$ROOT/job-status-states.out" 2>&1 || {
+    "$JOB_STATUS" stale hung long-tool progress-unknown tokens-zero-report \
+      no-commits own-commit ahead-unknown orphan finished absent \
+      > "$ROOT/job-status-states.out" 2>&1 || {
       cat "$ROOT/job-status-states.out" >&2
       fail 'job-status failed on synthetic run states'
     }
   grep -qF 'stale: STALLED' "$ROOT/job-status-states.out" || { cat "$ROOT/job-status-states.out" >&2; fail 'a quiet run is not STALLED'; }
   grep -qF 'hung: HUNG-TOOL' "$ROOT/job-status-states.out" || { cat "$ROOT/job-status-states.out" >&2; fail 'a long tool call is not HUNG-TOOL'; }
+  grep -qF 'long-tool: LONG-TOOL' "$ROOT/job-status-states.out" || { cat "$ROOT/job-status-states.out" >&2; fail 'a heavy tool call that is still progressing is not LONG-TOOL'; }
+  if grep -qF 'long-tool: HUNG-TOOL' "$ROOT/job-status-states.out"; then
+    fail 'a progressing tool call was reported as HUNG-TOOL'
+  fi
+  grep -qF 'cmd=grep -r needle /workspace' "$ROOT/job-status-states.out" \
+    || { cat "$ROOT/job-status-states.out" >&2; fail 'the row does not name the tool command'; }
+  if ! grep -qF 'steer=4242' "$ROOT/job-status-states.out"; then
+    cat "$ROOT/job-status-states.out" >&2
+    fail 'the row does not name the exact child pid to steer'
+  fi
+  # A progress fact that cannot be read is `null`, and an unknown progress fact
+  # must not license the stronger word. The `progress-unknown` row here is the
+  # reader's own contract; the producer's side of it (that the sidecar really
+  # emits null for an in-flight tool with unreadable counters) is asserted in
+  # the live-progress check, which reads a payload the sidecar wrote.
+  grep -qF 'progress-unknown: LONG-TOOL' "$ROOT/job-status-states.out" \
+    || { cat "$ROOT/job-status-states.out" >&2; fail 'an unreadable progress fact was read as a hung tool'; }
+  grep -qE '^progress-unknown: .*progress=- ' "$ROOT/job-status-states.out" \
+    || { cat "$ROOT/job-status-states.out" >&2; fail 'an unreadable progress fact is not shown as unknown'; }
+  # A zero usage report never masquerades as the context size.
+  grep -qE '^tokens-zero-report: .*tokens=258492 .*tokens-last-report=0' \
+    "$ROOT/job-status-states.out" \
+    || { cat "$ROOT/job-status-states.out" >&2; fail 'a zero usage report replaced the measured token figure'; }
+  # since-commit names whose commit the age belongs to.
+  grep -qF 'no-commits: ACTIVE' "$ROOT/job-status-states.out" \
+    || { cat "$ROOT/job-status-states.out" >&2; fail 'the no-commit run is not reported'; }
+  if grep -E '^no-commits: .*since-commit=[0-9]+s' "$ROOT/job-status-states.out"; then
+    fail 'a run with no commit of its own printed an unqualified commit age'
+  fi
+  grep -qF 'since-commit=no-commits-yet' "$ROOT/job-status-states.out" \
+    || { cat "$ROOT/job-status-states.out" >&2; fail 'a run with no commit of its own does not say no-commits-yet'; }
+  # The age is derived from the reader's own clock, so the assertion binds the
+  # QUALIFIER and the magnitude, never a whole-second-exact figure (a suite
+  # that runs a second after the fixture is written must not go red).
+  grep -qE '^own-commit: .*since-commit=[0-9]+s\(ahead=2\)' "$ROOT/job-status-states.out" \
+    || { cat "$ROOT/job-status-states.out" >&2; fail 'a run with its own commit does not qualify the age with ahead='; }
+  grep -qF 'since-commit=null' "$ROOT/job-status-states.out" \
+    || { cat "$ROOT/job-status-states.out" >&2; fail 'an unreadable commits_ahead did not suppress the commit age'; }
   grep -qF 'finished: FINISHED EXIT=0 OUTCOME=SUCCESS' "$ROOT/job-status-states.out" || fail 'a finished run is not reported as finished'
   grep -qF 'absent: NO-LIVE (no absent.live sidecar)' "$ROOT/job-status-states.out" || fail 'a run without a snapshot is not NO-LIVE'
   grep -qF 'orphan: WRAPPER-DEAD' "$ROOT/job-status-states.out" || fail 'a run whose wrapper pid is gone is not WRAPPER-DEAD'
+  # Liveness comes from the OWNER RECORD (the same one job-check reads), and the
+  # payload pid is only a fallback - the row says which. A recycled pid is a
+  # stranger, so it must not read ACTIVE.
+  grep -qF 'owner-record=none' "$ROOT/job-status-states.out" \
+    || { cat "$ROOT/job-status-states.out" >&2; fail 'a run without an owner record does not say which fact its liveness rests on'; }
   grep -qE 'hung: (ACTIVE|STALLED)' "$ROOT/job-status-states.out" \
     && fail 'HUNG-TOOL did not take precedence over STALLED'
 }
@@ -514,11 +642,12 @@ import json, sys, time
 from pathlib import Path
 now = int(time.time())
 runs = Path(sys.argv[1])
-def write(name, tool=None, tool_started=None, last_event=None):
+def write(name, tool=None, tool_started=None, last_event=None, progress=None):
     body = {
         "run": name, "wrapper_pid": 1, "updated_epoch": now,
         "last_event_epoch": last_event, "tool_in_flight": tool,
         "tool_in_flight_started_epoch": tool_started,
+        "progress_epoch": progress,
         "assistant_turns": 1, "tool_calls": 1, "latest_total_tokens": 10,
         "commits_ahead": 0, "uncommitted_files": 0, "last_commit_epoch": now,
     }
@@ -526,15 +655,21 @@ def write(name, tool=None, tool_started=None, last_event=None):
 write("quiet500", last_event=now - 500)
 write("quiet700", last_event=now - 700)
 write("thinking", last_event=now - 100)
-write("tool1700", tool="bash", tool_started=now - 1700, last_event=now - 20)
-write("tool1900", tool="bash", tool_started=now - 1900, last_event=now - 20)
+write("tool1700", tool="bash", tool_started=now - 1700, last_event=now - 20,
+      progress=now - 20)
+write("tool1900fresh", tool="bash", tool_started=now - 1900, last_event=now - 20,
+      progress=now - 20)
+write("tool1900stuck", tool="bash", tool_started=now - 1900, last_event=now - 20,
+      progress=now - 1900)
 PY
   env -u JOB_STATUS_STALL_SECONDS -u JOB_STATUS_HUNG_TOOL_SECONDS \
     CONTROLLER_HOME="$ROOT/status-home" CONTROLLER_RUNS_DIR="$runs" CONTROLLER_REPO="$WORKTREE" \
-    "$JOB_STATUS" quiet500 quiet700 thinking tool1700 tool1900 > "$ROOT/job-status-defaults.out" 2>&1 \
+    "$JOB_STATUS" quiet500 quiet700 thinking tool1700 tool1900fresh tool1900stuck \
+      > "$ROOT/job-status-defaults.out" 2>&1 \
     || { cat "$ROOT/job-status-defaults.out" >&2; fail 'job-status failed on default-threshold states'; }
   local expectation
-  for expectation in 'quiet500: ACTIVE' 'quiet700: STALLED' 'thinking: ACTIVE' 'tool1700: ACTIVE' 'tool1900: HUNG-TOOL'; do
+  for expectation in 'quiet500: ACTIVE' 'quiet700: STALLED' 'thinking: ACTIVE' \
+                     'tool1700: ACTIVE' 'tool1900fresh: LONG-TOOL' 'tool1900stuck: HUNG-TOOL'; do
     grep -qF -- "$expectation" "$ROOT/job-status-defaults.out" \
       || { cat "$ROOT/job-status-defaults.out" >&2; fail "default thresholds: expected $expectation"; }
   done
@@ -571,10 +706,428 @@ check_live_usage_trend() {
 import json, sys
 body = json.load(open(sys.argv[1], encoding="utf-8"))
 assert body["latest_total_tokens"] == 129, body
+assert body["latest_total_tokens_last_report"] == 129, body
 assert body["assistant_turns"] == 1, body
 assert body["tool_calls"] == 1, body
 assert body["tool_in_flight"] is None, body
 PY
+  # A usage report of 0 is a fact, never the context size: the last measured
+  # figure stays published, and the zero report stays visible as its own fact.
+  rm -f "$CONTROLLER_ROOT/runs/zero-report.live"
+  python3 "$PILIVE" --stream "$SCRIPT_DIR/fixtures/pi-long-run-zero-reports.jsonl" \
+    --worktree "$WORKTREE" --out "$CONTROLLER_ROOT/runs/zero-report.live" --run zero-report \
+    --wrapper-pid $$ --interval 1 --once > /dev/null 2>&1 \
+    || fail 'pi-live could not snapshot a stream whose latest usage report is 0'
+  python3 - "$CONTROLLER_ROOT/runs/zero-report.live" <<'PY' || fail 'a zero usage report replaced the measured figure'
+import json, sys
+body = json.load(open(sys.argv[1], encoding="utf-8"))
+assert body["latest_total_tokens"] == 258492, body
+assert body["latest_total_tokens_last_report"] == 0, body
+assert body["tool_in_flight"] == "bash", body
+assert body["tool_in_flight_command"] == "grep -r needle /workspace", body
+PY
+  # A stream that never reported a usage figure publishes null, not 0.
+  rm -f "$CONTROLLER_ROOT/runs/no-usage.live"
+  printf '{"type":"session","id":"no-usage"}\n' > "$ROOT/no-usage.jsonl"
+  python3 "$PILIVE" --stream "$ROOT/no-usage.jsonl" \
+    --worktree "$WORKTREE" --out "$CONTROLLER_ROOT/runs/no-usage.live" --run no-usage \
+    --wrapper-pid $$ --interval 1 --once > /dev/null 2>&1 \
+    || fail 'pi-live could not snapshot a stream with no usage'
+  python3 - "$CONTROLLER_ROOT/runs/no-usage.live" <<'PY' || fail 'a stream with no usage invented a token figure'
+import json, sys
+body = json.load(open(sys.argv[1], encoding="utf-8"))
+assert body["latest_total_tokens"] is None, body
+assert body["latest_total_tokens_last_report"] is None, body
+PY
+}
+
+# --- progress evidence (CTL-18) -------------------------------------------
+#
+# These checks judge the RULE, not the host. pi-live.py is driven with
+# `--tick-stream` (one clock epoch per line, one tick per line) against a fake
+# `/proc` root the check owns (tests/progress-fixture.py), and the check changes
+# that root between ticks. Nothing below waits for a wall clock, sleeps for a
+# child, or counts how fast the host is: every assertion reads a fact this check
+# constructed, through the sidecar's real process-tree code.
+
+progress_start() {
+  # Start ONE sidecar for a whole check, driven by a FIFO of clock epochs.
+  # $1 = fake proc root, $2 = wrapper pid, rest = extra argv.
+  #
+  # One process per check matters: the sidecar reads the stream INCREMENTALLY,
+  # so a fresh process would re-read the tool call's start every time and
+  # classify it as a boundary (which it is). A check that needs N ticks needs
+  # one reader and N clock lines.
+  local root=$1 wrapper=$2
+  shift 2
+  PROGRESS_FIFO=$ROOT/progress-ticks.fifo
+  rm -f "$PROGRESS_FIFO" "$ROOT/progress-ticks.log"
+  mkfifo "$PROGRESS_FIFO"
+  mkdir -p "$CONTROLLER_ROOT/runs"
+  PI_LIVE_PROC_ROOT="$root" \
+    python3 "$PILIVE" --stream "${PROGRESS_STREAM:-$SCRIPT_DIR/fixtures/pi-tool-in-flight.jsonl}" \
+      --worktree "$WORKTREE" --out "$CONTROLLER_ROOT/runs/progress.live" --run progress \
+      --wrapper-pid "$wrapper" --interval 1 --tick-stream "$PROGRESS_FIFO" \
+      --tick-log "$ROOT/progress-ticks.log" "$@" > "$ROOT/progress.err" 2>&1 &
+  PROGRESS_PID=$!
+  # Opening the write end blocks until the reader opens its end; the reader is
+  # the sidecar above, so this is the sync point for "the sidecar is reading".
+  exec {PROGRESS_FD}>"$PROGRESS_FIFO"
+  PROGRESS_TICKS=0
+}
+
+progress_tick() {
+  # $1 = this tick's clock epoch. Returns only after the tick FINISHED, so the
+  # caller may change the fake tree the next tick reads.
+  local epoch=$1 wanted
+  printf '%s\n' "$epoch" >&"$PROGRESS_FD"
+  wanted=$(( PROGRESS_TICKS + 1 ))
+  for _ in {1..2000}; do
+    PROGRESS_TICKS=$(progress_tick_count)
+    (( PROGRESS_TICKS >= wanted )) && return 0
+    # A sidecar that died cannot deliver the tick: say so instead of spinning.
+    kill -0 "$PROGRESS_PID" 2>/dev/null || break
+    sleep 0.01
+  done
+  cat "$ROOT/progress.err" >&2 || true
+  fail "the sidecar did not complete tick $epoch"
+}
+
+progress_finish() {
+  # Close the FIFO: the sidecar finishes the ticks it was given and exits.
+  # `eval` because the close names the DESCRIPTOR NUMBER held in the variable
+  # (the `{name}` form opens a descriptor; it cannot close one, and `exec` with
+  # an invalid redirection kills the shell).
+  eval "exec ${PROGRESS_FD:-1}>&-" 2>/dev/null || true
+  if ! wait "$PROGRESS_PID"; then
+    cat "$ROOT/progress.err" >&2 || true
+    fail 'the sidecar failed on the ticks it was given'
+  fi
+  PROGRESS_PID=''
+  PROGRESS_FD=''
+}
+
+progress_tick_count() {
+  if [[ -s $ROOT/progress-ticks.log ]]; then wc -l < "$ROOT/progress-ticks.log"; else echo 0; fi
+}
+
+progress_reset_ticks() {
+  rm -f "$ROOT/progress-ticks.log" "$CONTROLLER_ROOT/runs/progress.live"
+}
+
+check_live_progress() {
+  local fixture=$SCRIPT_DIR/progress-fixture.py root=$ROOT/progress-proc wrapper=100
+  python3 "$fixture" tree "$root" "$wrapper" || fail 'could not build the fake process tree'
+
+  # (1) QUIESCENCE. One idle tool call (a `sleep 600` with nothing to do) under a
+  # wrapper and an agent that are both alive: exactly the state the reviewer
+  # measured, where `progress_epoch` stayed 0-1 s old while a tool was blocked.
+  # Ten ticks later nothing has been observed, so the fact is still null and the
+  # tool's AGE alone must produce HUNG-TOOL at the threshold.
+  progress_reset_ticks
+  progress_start "$root" "$wrapper"
+  progress_tick 1000
+  progress_tick 1010
+  progress_tick 1020
+  progress_tick 1030
+  progress_tick 1040
+  progress_tick 1050
+  progress_tick 1060
+  progress_tick 1070
+  progress_tick 1080
+  progress_tick 1090
+  progress_finish
+  [[ $(progress_tick_count) == 10 ]] \
+    || fail "a quiescent run wrote $(progress_tick_count) tick rows, expected 10"
+  python3 - "$ROOT/progress-ticks.log" <<'PY' || fail 'quiescence was read as progress'
+import json, sys
+rows = [json.loads(line) for line in open(sys.argv[1], encoding="utf-8") if line.strip()]
+assert len(rows) == 10, rows
+# The tool call's own processes were measured on every tick and none of them
+# moved: the counters were read (a baseline exists) and nothing is evidence.
+assert all(row["progress"] is None for row in rows), rows
+assert all(row["baseline"] is not None for row in rows), rows
+assert rows[-1]["nodes"] == 2, rows
+assert rows[-1]["truncated"] is False, rows
+PY
+  python3 - "$CONTROLLER_ROOT/runs/progress.live" <<'PY' || fail 'a quiescent run published a progress epoch'
+import json, sys
+body = json.load(open(sys.argv[1], encoding="utf-8"))
+assert body["progress_epoch"] is None, body
+assert body["progress_reason"] in ("none", "idle"), body
+assert body["progress_tree_nodes"] == 2, body
+assert body["progress_tree_truncated"] is False, body
+PY
+  # The row a controller reads: the payload the sidecar really wrote for the
+  # quiescent tool, with only the counter epochs rebased onto the reader's clock
+  # (the reader derives every age from its own clock; the probe ticks ran on a
+  # synthetic one).
+  mkdir -p "$ROOT/status-home"
+  python3 - "$CONTROLLER_ROOT/runs/progress.live" <<'PY'
+import json, sys, time
+from pathlib import Path
+now = int(time.time())
+body = json.load(open(sys.argv[1], encoding="utf-8"))
+body["wrapper_pid"] = 1
+body["updated_epoch"] = now
+body["last_event_epoch"] = now - 10
+body["tool_in_flight_started_epoch"] = now - 2400
+body["progress_epoch"] = None
+body["progress_baseline_epoch"] = now - 2400
+body["progress_reason"] = "none"
+body["tool_in_flight_command"] = "sleep 600"
+body["steering_children"] = [{"pid": 102, "command": "bash -lc sleep 600"}]
+Path(sys.argv[1]).with_name("progress-hung.live").write_text(json.dumps(body), encoding="utf-8")
+PY
+  CONTROLLER_HOME="$ROOT/status-home" CONTROLLER_RUNS_DIR="$CONTROLLER_ROOT/runs" \
+    CONTROLLER_REPO="$WORKTREE" JOB_STATUS_STALL_SECONDS=600 JOB_STATUS_HUNG_TOOL_SECONDS=1800 \
+    "$JOB_STATUS" progress-hung > "$ROOT/progress-hung.out" 2>&1 \
+    || { cat "$ROOT/progress-hung.out" >&2; fail 'job-status failed on a quiescent tool call'; }
+  grep -qF 'progress-hung: HUNG-TOOL' "$ROOT/progress-hung.out" \
+    || { cat "$ROOT/progress-hung.out" >&2; fail 'a tool with no progress evidence was not HUNG-TOOL'; }
+  grep -qF 'cmd=sleep 600' "$ROOT/progress-hung.out" \
+    || { cat "$ROOT/progress-hung.out" >&2; fail 'the row does not name the hung tool command'; }
+  grep -qE 'progress=[0-9]+s progress-why=none' "$ROOT/progress-hung.out" \
+    || { cat "$ROOT/progress-hung.out" >&2; fail 'the row does not show the measured absence of progress'; }
+
+  # (2) A WORKING TOOL advances the fact on exactly the tick after its counters
+  # grew. The tool's own child burns CPU and no other process moves.
+  python3 "$fixture" tree "$root" "$wrapper" || fail 'could not build the fake process tree'
+  progress_reset_ticks
+  progress_start "$root" "$wrapper"
+  python3 "$fixture" set "$root" 103 cpu=7 || fail 'could not grow the tool counter'
+  progress_tick 2000
+  progress_tick 2010
+  python3 "$fixture" set "$root" 103 cpu=19 || fail 'could not grow the tool counter'
+  progress_tick 2020
+  progress_tick 2030
+  progress_finish
+  python3 - "$ROOT/progress-ticks.log" <<'PY' || fail 'a working tool produced no progress evidence'
+import json, sys
+rows = [json.loads(line) for line in open(sys.argv[1], encoding="utf-8") if line.strip()]
+assert len(rows) == 4, rows
+# Tick 1 is a baseline (nothing to compare it with), tick 2 the same counters,
+# tick 3 strictly greater on the SAME set, tick 4 unchanged again.
+assert rows[0]["progress"] is None, rows
+assert rows[1]["progress"] is None, rows
+assert rows[2]["progress"] == 2020, rows
+assert rows[2]["reason"] == "counters", rows
+assert rows[3]["progress"] == 2020, rows
+assert rows[3]["reason"] == "none", rows
+PY
+
+  # (3) THE MEMBERS THAT GROW ON THEIR OWN. In a real run the wrapper writes its
+  # records and runs git, and the agent runs a model loop; both grow every tick
+  # and neither is the tool. Their fixtures grow here and the tool's does not,
+  # so the fact must not move - the case a "sum the wrapper's whole subtree"
+  # implementation cannot survive.
+  python3 "$fixture" tree "$root" "$wrapper" || fail 'could not build the fake process tree'
+  progress_reset_ticks
+  progress_start "$root" "$wrapper"
+  python3 "$fixture" set "$root" "$wrapper" cpu=40 io=1000 || fail 'could not grow the wrapper counter'
+  python3 "$fixture" set "$root" "$((wrapper + 1))" cpu=40 io=5000 || fail 'could not grow the agent counter'
+  progress_tick 3000
+  python3 "$fixture" set "$root" "$wrapper" cpu=90 io=4000 || fail 'could not grow the wrapper counter'
+  python3 "$fixture" set "$root" "$((wrapper + 1))" cpu=90 io=9000 || fail 'could not grow the agent counter'
+  progress_tick 3010
+  progress_tick 3020
+  progress_finish
+  python3 - "$ROOT/progress-ticks.log" <<'PY' || fail 'the wrapper or the agent was counted as the tool making progress'
+import json, sys
+rows = [json.loads(line) for line in open(sys.argv[1], encoding="utf-8") if line.strip()]
+assert len(rows) == 3, rows
+assert all(row["progress"] is None for row in rows), rows
+assert rows[-1]["nodes"] == 2, rows
+PY
+
+  # (3b) THE SIDECAR'S OWN COUNTERS. The sidecar is a direct child of the
+  # wrapper and its `/proc` scans and git calls grow every tick. It must be
+  # excluded by IDENTITY (the one pid known exactly), not by name, and it must
+  # not be published as a steering target.
+  python3 "$fixture" tree "$root" "$wrapper" || fail 'could not build the fake process tree'
+  progress_reset_ticks
+  progress_start "$root" "$wrapper" --sidecar-pid 999
+  python3 "$fixture" add "$root" 999 "$wrapper" 'python3 pi-live.py' \
+    || fail 'could not add the sidecar process'
+  progress_tick 4000
+  python3 "$fixture" set "$root" 999 cpu=10 io=10 || fail 'could not grow the sidecar counter'
+  progress_tick 4010
+  python3 "$fixture" set "$root" 999 cpu=80 io=8000 || fail 'could not grow the sidecar counter'
+  progress_tick 4020
+  progress_finish
+  python3 - "$ROOT/progress-ticks.log" <<'PY' || fail "the sidecar's own counters were counted as the tool's progress"
+import json, sys
+rows = [json.loads(line) for line in open(sys.argv[1], encoding="utf-8") if line.strip()]
+assert len(rows) == 3, rows
+assert all(row["progress"] is None for row in rows), rows
+# The sidecar is a direct child of the wrapper, so it is not in the summed set.
+assert rows[-1]["nodes"] == 2, rows
+PY
+  python3 - "$CONTROLLER_ROOT/runs/progress.live" <<'PY' || fail 'the sidecar was published as a steering target'
+import json, sys
+body = json.load(open(sys.argv[1], encoding="utf-8"))
+pids = sorted(row["pid"] for row in body["steering_children"])
+assert 999 not in pids, body["steering_children"]
+assert body["wrapper_pid"] not in pids, body["steering_children"]
+assert pids == [102, 103], body["steering_children"]
+PY
+
+  # (4) A DECREASE AND A SET CHANGE ARE BASELINES. The counter goes down, then
+  # the tool's child is replaced by another process: neither is progress, and
+  # neither is silently ignored either (the baseline moves).
+  python3 "$fixture" tree "$root" "$wrapper" || fail 'could not build the fake process tree'
+  progress_reset_ticks
+  progress_start "$root" "$wrapper"
+  python3 "$fixture" set "$root" 103 cpu=30 io=3000 || fail 'could not grow the tool counter'
+  progress_tick 5000
+  progress_tick 5010
+  python3 "$fixture" set "$root" 103 cpu=5 io=10 || fail 'could not shrink the tool counter'
+  progress_tick 5020
+  python3 "$fixture" rm "$root" 103 || fail 'could not remove the tool child'
+  python3 "$fixture" add "$root" 104 102 'bash -lc sleep 900' \
+    || fail 'could not start a second tool process'
+  progress_tick 5030
+  progress_finish
+  python3 - "$ROOT/progress-ticks.log" <<'PY' || fail 'a counter decrease or a process-set change was read as progress'
+import json, sys
+rows = [json.loads(line) for line in open(sys.argv[1], encoding="utf-8") if line.strip()]
+assert len(rows) == 4, rows
+assert all(row["progress"] is None for row in rows), rows
+assert [row["nodes"] for row in rows] == [2, 2, 2, 2], rows
+PY
+
+  # (5) AN UNREADABLE `/proc` LEAVES THE FACT UNKNOWN. An empty process table
+  # cannot locate the agent's subtree, so no set is summed: no baseline, no
+  # progress, and a reason that says which. The tool's start epoch is still a
+  # fact - it is what the reader may show, and never what it may call progress.
+  rm -rf "$ROOT/progress-empty"
+  mkdir -p "$ROOT/progress-empty"
+  progress_reset_ticks
+  progress_start "$ROOT/progress-empty" "$wrapper"
+  progress_tick 6000
+  progress_tick 6010
+  progress_finish
+  python3 - "$ROOT/progress-ticks.log" <<'PY' || fail 'an unreadable /proc was read as progress'
+import json, sys
+rows = [json.loads(line) for line in open(sys.argv[1], encoding="utf-8") if line.strip()]
+assert len(rows) == 2, rows
+assert all(row["progress"] is None for row in rows), rows
+assert all(row["nodes"] is None for row in rows), rows
+assert all(row["baseline"] is None for row in rows), rows
+assert rows[-1]["reason"] == "unread", rows
+PY
+  python3 - "$CONTROLLER_ROOT/runs/progress.live" <<'PY' || fail 'an unreadable /proc invented a progress fact'
+import json, sys
+body = json.load(open(sys.argv[1], encoding="utf-8"))
+assert body["progress_epoch"] is None, body
+assert body["progress_tree_nodes"] is None, body
+assert body["progress_reason"] == "unread", body
+assert body["tool_in_flight_started_epoch"] is not None, body
+PY
+  # The row built from THAT payload - what the sidecar really writes for an
+  # in-flight tool with unreadable counters, not a hand-written .live - must
+  # license the weaker word only: LONG-TOOL, with `progress=-`. Age is not
+  # progress when nothing could be measured.
+  mkdir -p "$ROOT/status-home"
+  python3 - "$CONTROLLER_ROOT/runs/progress.live" <<'PY'
+import json, sys, time
+from pathlib import Path
+now = int(time.time())
+body = json.load(open(sys.argv[1], encoding="utf-8"))
+body["wrapper_pid"] = 1
+body["updated_epoch"] = now
+body["last_event_epoch"] = now - 10
+body["tool_in_flight_started_epoch"] = now - 2400
+Path(sys.argv[1]).with_name("progress-unreadable.live").write_text(
+    json.dumps(body), encoding="utf-8"
+)
+PY
+  CONTROLLER_HOME="$ROOT/status-home" CONTROLLER_RUNS_DIR="$CONTROLLER_ROOT/runs" \
+    CONTROLLER_REPO="$WORKTREE" JOB_STATUS_STALL_SECONDS=600 JOB_STATUS_HUNG_TOOL_SECONDS=1800 \
+    "$JOB_STATUS" progress-unreadable > "$ROOT/progress-unreadable.out" 2>&1 \
+    || { cat "$ROOT/progress-unreadable.out" >&2; fail 'job-status failed on an unreadable progress fact'; }
+  grep -qF 'progress-unreadable: LONG-TOOL' "$ROOT/progress-unreadable.out" \
+    || { cat "$ROOT/progress-unreadable.out" >&2; fail 'an unreadable progress fact licensed HUNG-TOOL'; }
+  grep -qE 'progress=- progress-why=unread' "$ROOT/progress-unreadable.out" \
+    || { cat "$ROOT/progress-unreadable.out" >&2; fail 'the row did not show the progress fact as unknown'; }
+
+  # (6) A TOOL CALL'S OWN START IS A BOUNDARY, NOT EVIDENCE. The stream grows
+  # because the call was announced; publishing that as the tool's progress puts
+  # the fact at the tool's own start on every fresh call, which is the
+  # wall-clock-only rule in its other form (and it hid the defect: the reviewer
+  # measured `progress_epoch` 0-1 s old on a blocked tool).
+  rm -f "$ROOT/progress-start.jsonl"
+  printf '{"type":"session","id":"start-boundary"}\n' > "$ROOT/progress-start.jsonl"
+  python3 "$fixture" tree "$root" "$wrapper" || fail 'could not build the fake process tree'
+  progress_reset_ticks
+  PROGRESS_STREAM=$ROOT/progress-start.jsonl progress_start "$root" "$wrapper"
+  progress_tick 7000
+  progress_tick 7010
+  printf '{"type":"tool_execution_start","toolCallId":"c1","toolName":"bash","args":{"command":"sleep 600"}}\n' \
+    >> "$ROOT/progress-start.jsonl"
+  progress_tick 7020
+  progress_tick 7030
+  progress_finish
+  python3 - "$ROOT/progress-ticks.log" <<'PY' || fail 'a tool call start was published as progress'
+import json, sys
+rows = [json.loads(line) for line in open(sys.argv[1], encoding="utf-8") if line.strip()]
+assert len(rows) == 4, rows
+# The session line is real stream growth before any tool call exists.
+assert rows[0]["progress"] == 7000, rows
+# The announcement of the call is a boundary, and the tick after it must not
+# invent an epoch out of the newly-readable counters either.
+assert rows[1]["progress"] == 7000, rows
+assert rows[2]["reason"] == "tool-start", rows
+assert rows[2]["progress"] == 7000, rows
+assert rows[3]["progress"] == 7000, rows
+assert rows[3]["baseline"] == 7020, rows
+PY
+
+  # (7) THE CAP IS DOCUMENTED, NOT SILENT. A tree deeper than the cap is summed
+  # as a prefix, and the snapshot says how many processes it summed and that the
+  # walk stopped early, so a reader can see the bound instead of reading an
+  # idle tool out of a truncated set.
+  rm -rf "$ROOT/progress-deep"
+  python3 "$fixture" truncation "$ROOT/progress-deep" "$wrapper" 30 \
+    || fail 'could not build a tree deeper than the cap'
+  progress_reset_ticks
+  PI_LIVE_TREE_NODE_LIMIT=5 progress_start "$ROOT/progress-deep" "$wrapper"
+  progress_tick 8000
+  progress_finish
+  python3 - "$CONTROLLER_ROOT/runs/progress.live" <<'PY' \
+    || fail 'a capped tree walk was truncated silently'
+import json, sys
+body = json.load(open(sys.argv[1], encoding="utf-8"))
+assert body["progress_tree_nodes"] == 5, body
+assert body["progress_tree_truncated"] is True, body
+PY
+  # The default cap is a stated constant in the tool, not an implied one.
+  python3 - "$PILIVE" <<'PY' || fail 'the node cap is not a stated constant'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("pi_live", sys.argv[1])
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+assert module.TREE_NODE_LIMIT >= 256, module.TREE_NODE_LIMIT
+PY
+
+  # (8) The steering row is the tool call's own processes: never the wrapper,
+  # never the agent, each with its command.
+  python3 "$fixture" tree "$root" "$wrapper" || fail 'could not build the fake process tree'
+  progress_reset_ticks
+  progress_start "$root" "$wrapper"
+  progress_tick 9000
+  progress_finish
+  python3 - "$CONTROLLER_ROOT/runs/progress.live" <<'PY' || fail 'the steering row is not the tool processes'
+import json, sys
+body = json.load(open(sys.argv[1], encoding="utf-8"))
+pids = sorted(row["pid"] for row in body["steering_children"])
+assert pids == [102, 103], body["steering_children"]
+for pid in (100, 101):
+    assert pid not in pids, body["steering_children"]
+assert all(row["command"] for row in body["steering_children"]), body
+assert body["wrapper_pid"] == 100, body
+PY
+  rm -rf "$ROOT/progress-empty" "$ROOT/progress-deep" "$root" "$ROOT/progress-start.jsonl"
 }
 
 check_live_atomic_partial() {
@@ -664,6 +1217,258 @@ check_repo_not_a_worktree() {
     'a directory that cannot answer the clean-worktree question is refused'
 }
 
+# --- run-name ownership (CTL-14) -------------------------------------------
+
+# Start one wrapper in the background and wait until it has claimed the name.
+# The agent HOLDS until the check releases it (a marker file), so "the owner is
+# still alive" is a state the check chooses, never a duration it hopes for.
+start_owned_run() {
+  # $1 run name; the agent HOLDS until the check creates "$run.release" (the
+  # second argument is retained so a caller's shape is unchanged).
+  local run=$1
+  shift 2
+  PATH="$ROOT/bin:$PATH" HOME="$HOME_ROOT" PI_ROUTE=deepseek-pi-volker \
+    CONTROLLER_OD_STATE="$ROOT/ownership-$run-state.json" PI_LIVE=0 \
+    FAKE_FIXTURE_DIR="$SCRIPT_DIR/fixtures" \
+    FAKE_PI_STREAM="$SCRIPT_DIR/fixtures/pi-success.jsonl" \
+    FAKE_PI_SESSION_ID="$run-session" FAKE_PI_RC=0 FAKE_PI_HOLD_UNTIL="$ROOT/$run.release" \
+    "$SRC" "$WORKTREE" "$PROMPT" "$run" "$@" \
+    > "$ROOT/$run.launch.log" 2>&1 < /dev/null &
+  OWNED_PID=$!
+  # Readiness is the run's own event stream, not an ownership record: the check
+  # under test must not need the guard's file to exist to observe a running run.
+  wait_for_stream "$run" || { cat "$ROOT/$run.launch.log" >&2; fail "wrapper for $run exited before it started its agent"; }
+}
+
+# Release a held agent; without it the wrapper never finishes.
+release_owned_run() { : > "$ROOT/$1.release"; }
+
+# Wait until the fake agent has started: its first event is already in the run
+# stream, so a kill at this point happens while the agent works.
+wait_for_stream() {
+  local name=$1 waited=0
+  while (( waited < 200 )); do
+    [[ -s $CONTROLLER_ROOT/runs/$name.jsonl ]] && return 0
+    sleep 0.05
+    waited=$(( waited + 1 ))
+  done
+  return 1
+}
+
+stop_owned_run() {
+  local signal=${1:-TERM}
+  kill -"$signal" "$OWNED_PID" 2>/dev/null || true
+  wait "$OWNED_PID" 2>/dev/null || true
+}
+
+# The name lock is free right now: proven from outside the wrapper, so the check
+# does not depend on the wrapper being able to claim it.
+name_lock_is_free() {
+  local name=$1 fds
+  exec {fds}>>"$CONTROLLER_ROOT/runs/$name.lock" || return 2
+  if flock -n "$fds"; then exec {fds}>&-; return 0; fi
+  exec {fds}>&-
+  return 1
+}
+
+# A name-lock refusal must NOT overwrite the owner record of the owner it
+# refused on. Two steps: (a) an owner exists and works; (b) a DIFFERENT
+# invocation is refused for EVIDENCE (a `.done` from the first run, so its own
+# preflight - not the live lock - is what refuses it), and the owner record still
+# names the first owner. A later forced retire then archives the FIRST identity,
+# never the refuser's.
+check_refusal_keeps_owner_record() {
+  local runs=$CONTROLLER_ROOT/runs first_pid=''
+  mkdir -p "$runs"
+  rm -f "$runs"/refusal-owner.*
+  wait_launch refusal-owner deepseek-pi-volker pi-success /dev/null \
+    || fail 'the owning run for the refusal check did not complete'
+  first_pid=$(sed -n 's/^pid=\([0-9][0-9]*\).*/\1/p' "$runs/refusal-owner.lock" | head -n 1)
+  [[ -n $first_pid ]] || fail 'the first run wrote no owner record'
+  # The previous owner is dead now (its wrapper exited), so the name is claimable
+  # again; the refusal that follows is the EVIDENCE preflight.
+  PATH="$ROOT/bin:$PATH" HOME="$HOME_ROOT" PI_ROUTE=deepseek-pi-volker \
+    FAKE_FIXTURE_DIR="$SCRIPT_DIR/fixtures" FAKE_PI_STREAM="$SCRIPT_DIR/fixtures/pi-success.jsonl" \
+    FAKE_PI_SESSION_ID=refusal-second FAKE_PI_RC=0 PI_LIVE=0 \
+    "$SRC" "$WORKTREE" "$PROMPT" refusal-owner \
+    > "$ROOT/refusal-owner-second.log" 2>&1 < /dev/null \
+    && fail 'a name with evidence was run without CONTROLLER_RUN_FORCE'
+  contains "$ROOT/refusal-owner-second.log" 'controller run name already has evidence' \
+    'the evidence preflight is what refused the second invocation'
+  # The refuser's pid must NOT be in the record: the file still names the owner
+  # whose evidence refuses the name.
+  local recorded
+  recorded=$(sed -n 's/^pid=\([0-9][0-9]*\).*/\1/p' "$runs/refusal-owner.lock" | head -n 1)
+  [[ $recorded == "$first_pid" ]] \
+    || fail "a refused invocation overwrote the owner record (was $first_pid, now ${recorded:-<none>})"
+}
+
+check_run_name_ownership() {
+  local first='' second=0 retired=
+  rm -rf "$CONTROLLER_ROOT/runs"; mkdir -p "$CONTROLLER_ROOT/runs"
+  # (1) A live owner refuses a second wrapper BY NAME, before it writes anything.
+  start_owned_run owned-run 6
+  first=$OWNED_PID
+  if PATH="$ROOT/bin:$PATH" HOME="$HOME_ROOT" PI_ROUTE=deepseek-pi-volker \
+    CONTROLLER_OD_STATE="$ROOT/ownership-second-state.json" PI_LIVE=0 \
+    FAKE_FIXTURE_DIR="$SCRIPT_DIR/fixtures" \
+    FAKE_PI_STREAM="$SCRIPT_DIR/fixtures/pi-success.jsonl" \
+    FAKE_PI_SESSION_ID=owned-run-second FAKE_PI_RC=0 \
+    "$SRC" "$WORKTREE" "$PROMPT" owned-run > "$ROOT/owned-run-second.log" 2>&1 < /dev/null; then
+    stop_owned_run TERM
+    fail 'a second wrapper ran on a run name a live wrapper owns'
+  else
+    second=$?
+  fi
+  [[ $second == 2 ]] || { stop_owned_run TERM; fail "a name-collision refusal exited $second, expected 2"; }
+  contains "$ROOT/owned-run-second.log" "run name 'owned-run' is already owned by pid $first" \
+    'the refusal names the live owner'
+  contains "$ROOT/owned-run-second.log" 'CONTROLLER_RUN_FORCE=1' \
+    'the refusal names the supported way forward'
+  [[ ! -e $CONTROLLER_ROOT/runs/owned-run.done ]] \
+    || { stop_owned_run TERM; fail 'the refused invocation wrote a completion marker'; }
+  # (2) A resume of the same run is the same ownership, not a second dimension.
+  if PATH="$ROOT/bin:$PATH" HOME="$HOME_ROOT" PI_ROUTE=deepseek-pi-volker \
+    CONTROLLER_OD_STATE="$ROOT/ownership-resume-state.json" PI_LIVE=0 \
+    FAKE_FIXTURE_DIR="$SCRIPT_DIR/fixtures" \
+    FAKE_PI_STREAM="$SCRIPT_DIR/fixtures/pi-success.jsonl" \
+    FAKE_PI_SESSION_ID=owned-run-session FAKE_PI_RC=0 \
+    "$SRC" "$WORKTREE" "$PROMPT" owned-run resume owned-run-session \
+    > "$ROOT/owned-run-resume.log" 2>&1 < /dev/null; then
+    stop_owned_run TERM
+    fail 'a resume interleaved with a live wrapper on the same run name'
+  fi
+  contains "$ROOT/owned-run-resume.log" 'is already owned by pid' 'a resume of a live run is refused by name'
+  # (3) A different run name proceeds while the first is still working: the owner
+  # is HELD (its release file is not created), so this is not a race.
+  wait_launch other-run deepseek-pi-volker pi-success /dev/null
+  [[ -e $CONTROLLER_ROOT/runs/other-run.done ]] || { stop_owned_run TERM; fail 'a different run name was blocked by the first'; }
+  # The owner has been held through every case above; release it so its own
+  # wrapper exits normally and its `.done` exists for the retirement below.
+  release_owned_run owned-run
+  wait "$OWNED_PID" 2>/dev/null || true
+  # (4) SIGTERM releases the name; force retires (never overwrites) the records
+  #     and names the identity it retired.
+  stop_owned_run TERM
+  name_lock_is_free owned-run || fail 'a TERMed wrapper stranded its run-name lock'
+  CONTROLLER_RUN_FORCE=1 wait_launch owned-run deepseek-pi-volker pi-success /dev/null \
+    || fail 'a retired name could not be reused'
+  [[ -e $CONTROLLER_ROOT/runs/owned-run.done ]] || fail 'the forced reuse did not run'
+  retired=$(find "$CONTROLLER_ROOT/runs/retired/owned-run" -mindepth 1 -maxdepth 1 -type d -print -quit)
+  [[ -n $retired ]] || fail 'the forced reuse did not archive the previous records'
+  [[ -f $retired/owned-run.jsonl ]] || fail 'the forced reuse deleted the previous run stream'
+  contains "$retired/PREVIOUS-OWNER.txt" "pid=$first" 'the retired archive names the previous owner'
+  # (5) SIGKILL: the name is free immediately, even while the agent the wrapper
+  #     started still runs - a child never holds the wrapper's ownership. Wait
+  #     until the fake agent is running (its first event is in the stream) so the
+  #     case is "wrapper killed while the agent works", not "wrapper killed before
+  #     it reached the agent".
+  start_owned_run killed-run 0
+  wait_for_stream killed-run || { stop_owned_run KILL; fail 'the killed-run agent never started'; }
+  # The agent's own pid, so the claim below can be judged on EVIDENCE: the
+  # reclaim must not have waited for it, so it is still alive afterwards.
+  agent_pid=$(pgrep -P "$OWNED_PID" -f 'bash' 2>/dev/null | head -n 1 || true)
+  stop_owned_run KILL
+  name_lock_is_free killed-run || fail 'a SIGKILLed wrapper left its run-name lock held'
+  CONTROLLER_RUN_FORCE=1 wait_launch killed-run deepseek-pi-volker pi-success /dev/null \
+    || fail 'a SIGKILLed name could not be reclaimed'
+  # Still held (its release file was never created), so this is the fact that
+  # matters: the name was reclaimed WHILE the agent still ran. No clock involved.
+  [[ -n ${agent_pid:-} ]] || fail 'the killed run had no agent process to judge the reclaim against'
+  kill -0 "$agent_pid" 2>/dev/null \
+    || fail 'the reclaim waited for the killed wrapper agent child to exit'
+  contains "$ROOT/killed-run.launch.log" 'retired' 'the forced reclaim reports what it retired'
+  # Release the stranded agent so it cannot outlive the check.
+  release_owned_run killed-run
+}
+
+# The owner record decides liveness, and a DEAD wrapper with a LIVE agent is
+# its own state: the controller needs the agent's pid (and the pid of what that
+# agent is running), because nothing else can name what to stop.
+check_job_status_dead_wrapper() {
+  local runs=$ROOT/dead-wrapper-runs spawn_pid
+  rm -rf "$runs"; mkdir -p "$runs" "$ROOT/status-home"
+  # A long-lived "agent" whose cwd IS the run's worktree (that is how the reader
+  # recognises it, structurally) and which starts a "tool" child.
+  ( cd -- "$WORKTREE" && exec -a pi python3 -c 'import subprocess, time
+subprocess.Popen(["sleep", "120"])
+time.sleep(120)' ) &
+  spawn_pid=$!
+  printf '%s\n' "$WORKTREE" > "$runs/dead-wrapper.wt"
+  # The run stream the dead sidecar stopped refreshing: its mtime is the newest
+  # event fact, and it is NEWER than the sidecar's last tick.
+  printf '{"type":"session","id":"dead-wrapper-thread"}\n' > "$runs/dead-wrapper.jsonl"
+  python3 - "$runs/dead-wrapper.live" "$spawn_pid" <<'PY'
+import json, sys, time
+from pathlib import Path
+now = int(time.time())
+body = {
+    "run": "dead-wrapper", "wrapper_pid": 2147483646, "updated_epoch": now,
+    "last_event_epoch": now - 3600, "tool_in_flight": "bash",
+    "tool_in_flight_started_epoch": now - 300, "assistant_turns": 3,
+    "tool_calls": 9, "latest_total_tokens": 100, "latest_total_tokens_last_report": 100,
+    "tool_in_flight_command": "sleep 600", "steering_children": [],
+    "progress_epoch": None, "progress_baseline_epoch": None, "progress_reason": "unread",
+    "commits_ahead": 0, "uncommitted_files": 0, "last_commit_epoch": now - 600,
+}
+Path(sys.argv[1]).write_text(json.dumps(body), encoding="utf-8")
+PY
+  # The wrapper pid is gone, so the record says so - and the agent it started is
+  # alive in the run's worktree.
+  printf 'pid=%s started_epoch=%s started_utc=%s pid_start_ticks=12345 boot_id=%s\n' \
+    2147483646 1700000000 2023-11-14T22:13:20Z \
+    "$(cat /proc/sys/kernel/random/boot_id 2>/dev/null || printf '%s' '-')" \
+    > "$runs/dead-wrapper.lock"
+  CONTROLLER_HOME="$ROOT/status-home" CONTROLLER_RUNS_DIR="$runs" CONTROLLER_REPO="$WORKTREE" \
+    JOB_STATUS_STALL_SECONDS=600 JOB_STATUS_HUNG_TOOL_SECONDS=1800 \
+    "$JOB_STATUS" dead-wrapper > "$ROOT/dead-wrapper.out" 2>&1 \
+    || { kill -9 "$spawn_pid" 2>/dev/null; cat "$ROOT/dead-wrapper.out" >&2; fail 'job-status failed on a dead wrapper with a live agent'; }
+  grep -qF 'dead-wrapper: WRAPPER-DEAD' "$ROOT/dead-wrapper.out" \
+    || { kill -9 "$spawn_pid" 2>/dev/null; cat "$ROOT/dead-wrapper.out" >&2; fail 'a dead wrapper with a live agent is not WRAPPER-DEAD'; }
+  grep -qF 'wrapper-dead-agent-alive' "$ROOT/dead-wrapper.out" \
+    || { kill -9 "$spawn_pid" 2>/dev/null; cat "$ROOT/dead-wrapper.out" >&2; fail 'the row does not say the agent is alive although the wrapper died'; }
+  grep -qF "agent=$spawn_pid(" "$ROOT/dead-wrapper.out" \
+    || { kill -9 "$spawn_pid" 2>/dev/null; cat "$ROOT/dead-wrapper.out" >&2; fail "the row does not name the orphaned agent pid ($spawn_pid)"; }
+  grep -qE 'tool=[0-9]+' "$ROOT/dead-wrapper.out" \
+    || { kill -9 "$spawn_pid" 2>/dev/null; cat "$ROOT/dead-wrapper.out" >&2; fail 'the row does not name what the orphaned agent is running'; }
+  # The stale sidecar's own `last_event_epoch` is one hour old; the dead
+  # wrapper means it can never be refreshed, so the reader falls back to the run
+  # stream's mtime rather than reporting the dead sidecar's last tick forever.
+  python3 - "$ROOT/dead-wrapper.out" <<'PY' || { kill -9 "$spawn_pid" 2>/dev/null; fail 'the dead sidecar stale event age was reported as the newest event'; }
+import re, sys
+text = open(sys.argv[1], encoding="utf-8").read()
+match = re.search(r"last-event=([0-9]+)s\((stream)\)", text)
+assert match, text
+assert int(match.group(1)) != 3600, text
+PY
+  # A RECYCLED wrapper pid: the number exists (it is this test process) but its
+  # kernel start ticks differ from the record, so it is not this run's wrapper.
+  printf 'pid=%s started_epoch=%s started_utc=%s pid_start_ticks=1 boot_id=%s\n' \
+    "$$" "$(date -u +%s)" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    "$(cat /proc/sys/kernel/random/boot_id 2>/dev/null || printf '%s' '-')" \
+    > "$runs/dead-wrapper.lock"
+  python3 - "$runs/dead-wrapper.live" "$$" <<'PY'
+import json, sys
+from pathlib import Path
+body = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+body["wrapper_pid"] = int(sys.argv[2])
+Path(sys.argv[1]).write_text(json.dumps(body), encoding="utf-8")
+PY
+  CONTROLLER_HOME="$ROOT/status-home" CONTROLLER_RUNS_DIR="$runs" CONTROLLER_REPO="$WORKTREE" \
+    JOB_STATUS_STALL_SECONDS=600 JOB_STATUS_HUNG_TOOL_SECONDS=1800 \
+    "$JOB_STATUS" dead-wrapper > "$ROOT/recycled-wrapper.out" 2>&1 \
+    || { kill -9 "$spawn_pid" 2>/dev/null; cat "$ROOT/recycled-wrapper.out" >&2; fail 'job-status failed on a recycled wrapper pid'; }
+  if grep -qF 'recycled-wrapper: ACTIVE' "$ROOT/recycled-wrapper.out"; then
+    kill -9 "$spawn_pid" 2>/dev/null
+    fail 'a recycled wrapper pid read as ACTIVE'
+  fi
+  grep -qF 'recycled' "$ROOT/recycled-wrapper.out" \
+    || { kill -9 "$spawn_pid" 2>/dev/null; cat "$ROOT/recycled-wrapper.out" >&2; fail 'a recycled wrapper pid is not named as recycled'; }
+  kill -9 "$spawn_pid" 2>/dev/null || true
+  wait "$spawn_pid" 2>/dev/null || true
+  pkill -f 'sleep 120' 2>/dev/null || true
+}
+
 check_job_status_validation() {
   expect_rc 2 env CONTROLLER_HOME="$ROOT/status-home" CONTROLLER_RUNS_DIR="$ROOT/status-runs" \
     JOB_STATUS_STALL_SECONDS=soon "$JOB_STATUS"
@@ -678,7 +1483,10 @@ if [[ -n ${PI_TEST_FOCUS:-} ]]; then
   case $PI_TEST_FOCUS in
     xtrace-key) check_xtrace_key ;;
     outcome-error) check_outcome_error ;;
-    outcome-length) check_outcome_length ;;
+    outcome-length) clean_worktree; check_outcome_length ;;
+    outcome-tool-call) clean_worktree; check_outcome_tool_call_no_text ;;
+    outcome-text-and-call) clean_worktree; check_outcome_text_and_tool_call ;;
+    outcome-stop-other) clean_worktree; check_outcome_stop_other ;;
     outcome-rc) check_outcome_rc ;;
     git-unreadable) clean_worktree; check_outcome_git_unreadable ;;
     retry-stream) clean_worktree; check_retry_streams_into_run ;;
@@ -690,7 +1498,8 @@ if [[ -n ${PI_TEST_FOCUS:-} ]]; then
       case $PI_TEST_FOCUS in
         outcome-success) check_outcome_success_report ;;
         outcome-empty)
-          wait_launch_sequence focus-empty deepseek-pi-volker "pi-empty-completion pi-thinking-only"
+          wait_launch_sequence focus-empty deepseek-pi-volker \
+            "pi-empty-completion pi-whitespace-only"
           contains "$CONTROLLER_ROOT/runs/focus-empty.done" 'OUTCOME=EMPTY-COMPLETION-RETRIES-EXHAUSTED' \
             'a still-empty continuation run is reported as exhausted'
           contains "$CONTROLLER_ROOT/runs/focus-empty.events" '"ev":"empty-completion-retry"' \
@@ -754,7 +1563,7 @@ if [[ -n ${PI_TEST_FOCUS:-} ]]; then
         'a directory that cannot answer the clean-worktree question is refused'
       ;;
     live-usage-trend)
-      rm -f "$CONTROLLER_ROOT/runs/focus-trend.live"
+      rm -f "$CONTROLLER_ROOT/runs/focus-trend.live" "$CONTROLLER_ROOT/runs/focus-zero-report.live"
       python3 "$PILIVE" --stream "$SCRIPT_DIR/fixtures/pi-usage-only.jsonl" \
         --worktree "$WORKTREE" --out "$CONTROLLER_ROOT/runs/focus-trend.live" --run focus-trend \
         --wrapper-pid $$ --interval 1 --once > /dev/null 2>&1 \
@@ -763,8 +1572,19 @@ if [[ -n ${PI_TEST_FOCUS:-} ]]; then
 import json, sys
 body = json.load(open(sys.argv[1], encoding="utf-8"))
 assert body["latest_total_tokens"] == 101, body
+assert body["latest_total_tokens_last_report"] == 101, body
 assert body["assistant_turns"] == 0, body
 assert body["tool_in_flight"] is None, body
+PY
+      python3 "$PILIVE" --stream "$SCRIPT_DIR/fixtures/pi-long-run-zero-reports.jsonl" \
+        --worktree "$WORKTREE" --out "$CONTROLLER_ROOT/runs/focus-zero-report.live" \
+        --run focus-zero-report --wrapper-pid $$ --interval 1 --once > /dev/null 2>&1 \
+        || fail 'pi-live could not snapshot a zero-report stream'
+      python3 - "$CONTROLLER_ROOT/runs/focus-zero-report.live" <<'PY' || fail 'a zero report replaced the measured figure'
+import json, sys
+body = json.load(open(sys.argv[1], encoding="utf-8"))
+assert body["latest_total_tokens"] == 258492, body
+assert body["latest_total_tokens_last_report"] == 0, body
 PY
       ;;
     live-snapshot)
@@ -784,6 +1604,23 @@ assert isinstance(body["tool_in_flight_started_epoch"], int), body
 assert isinstance(body["last_event_epoch"], int), body
 assert body["tool_calls"] == 1, body
 PY
+      # A tool's own partial output is progress evidence: the event is appended
+      # to the stream while the tool runs, so the tool in flight carries the
+      # epoch of its last output even when the run is otherwise quiet.
+      out_live=$CONTROLLER_ROOT/runs/focus-live-output.live
+      rm -f "$out_live"
+      python3 "$PILIVE" --stream "$SCRIPT_DIR/fixtures/pi-tool-progress.jsonl" \
+        --worktree "$WORKTREE" --out "$out_live" --run focus-live-output \
+        --wrapper-pid $$ --interval 1 --once > /dev/null 2>&1 \
+        || fail 'pi-live could not snapshot a tool that is printing output'
+      python3 - "$out_live" <<'PY' || fail 'the tool output evidence is missing from the snapshot'
+import json, sys
+body = json.load(open(sys.argv[1], encoding="utf-8"))
+assert body["tool_in_flight"] == "bash", body
+assert body["tool_in_flight_command"] == "pytest -q", body
+assert isinstance(body["tool_in_flight_output_epoch"], int), body
+assert isinstance(body["progress_epoch"], int), body
+PY
       # A git fact that cannot be read stays null; it is never invented as 0.
       orphan_live=$CONTROLLER_ROOT/runs/focus-live-nogit.live
       rm -f "$orphan_live"
@@ -799,6 +1636,9 @@ assert body["commits_ahead"] is None, body
 assert body["uncommitted_files"] is None, body
 assert body["last_commit_epoch"] is None, body
 PY
+      ;;
+    live-progress)
+      check_live_progress
       ;;
     live-atomic)
       printf '{"type":"session","id":"atomic"}\n' > "$ROOT/focus-atomic.jsonl"
@@ -821,42 +1661,8 @@ PY
       [[ -z $(ls "$CONTROLLER_ROOT/runs"/.focus-atomic.live.* 2>/dev/null || true) ]] \
         || fail 'the snapshot left a temporary file behind'
       ;;
-    status-states)
-      runs=$ROOT/focus-status-runs
-      mkdir -p "$runs" "$ROOT/focus-status-home"
-      python3 - "$runs" <<'PY'
-import json, sys, time
-from pathlib import Path
-now = int(time.time())
-runs = Path(sys.argv[1])
-def write(name, tool=None, tool_started=None, last_event=None):
-    body = {
-        "run": name, "wrapper_pid": 1, "updated_epoch": now,
-        "last_event_epoch": last_event, "tool_in_flight": tool,
-        "tool_in_flight_started_epoch": tool_started,
-        "assistant_turns": 1, "tool_calls": 1, "latest_total_tokens": 10,
-        "commits_ahead": 0, "uncommitted_files": 0, "last_commit_epoch": now,
-    }
-    (runs / f"{name}.live").write_text(json.dumps(body), encoding="utf-8")
-write("stale", last_event=now - 900)
-write("hung", tool="bash", tool_started=now - 2400, last_event=now - 10)
-write("orphan", last_event=now - 10)
-body = json.loads((runs / "orphan.live").read_text(encoding="utf-8"))
-body["wrapper_pid"] = 2147483646
-(runs / "orphan.live").write_text(json.dumps(body), encoding="utf-8")
-(runs / "finished.done").write_text("EXIT=0 OUTCOME=SUCCESS\n", encoding="utf-8")
-PY
-      CONTROLLER_HOME="$ROOT/focus-status-home" CONTROLLER_RUNS_DIR="$runs" \
-        CONTROLLER_REPO="$WORKTREE" JOB_STATUS_STALL_SECONDS=600 JOB_STATUS_HUNG_TOOL_SECONDS=1800 \
-        "$JOB_STATUS" stale hung orphan finished absent > "$ROOT/focus-status.out" 2>&1 \
-        || fail 'job-status failed on synthetic run states'
-      contains "$ROOT/focus-status.out" 'stale: STALLED' 'a quiet run is STALLED'
-      contains "$ROOT/focus-status.out" 'hung: HUNG-TOOL' 'a long tool call is HUNG-TOOL'
-      contains "$ROOT/focus-status.out" 'finished: FINISHED EXIT=0 OUTCOME=SUCCESS' 'a finished run is FINISHED'
-      contains "$ROOT/focus-status.out" 'absent: NO-LIVE (no absent.live sidecar)' \
-        'a run without a snapshot is NO-LIVE for that reason'
-      contains "$ROOT/focus-status.out" 'orphan: WRAPPER-DEAD' 'a run whose wrapper pid is gone is not ACTIVE'
-      ;;
+    status-states) check_job_status_states ;;
+    status-dead-wrapper) check_job_status_dead_wrapper ;;
     prompt-absolute)
       expect_rc 2 env PATH="$ROOT/bin:$PATH" HOME="$HOME_ROOT" PI_ROUTE=deepseek-pi \
         "$SRC" "$WORKTREE" relative-prompt focused-relative
@@ -889,6 +1695,10 @@ PY
         "$SRC" "$WORKTREE" "$PROMPT" focused-collision
       contains "$ROOT/focused-command.out" 'controller run name already has evidence' 'existing run evidence is refused'
       ;;
+    two-wrappers-one-run) check_run_name_ownership ;;
+    refusal-own-record) check_refusal_keeps_owner_record ;;
+    ownership-force) check_run_name_ownership ;;
+    ownership-release) check_run_name_ownership ;;
     auth-file)
       local_home=$ROOT/focused-no-env
       mkdir -p "$local_home"
@@ -1103,6 +1913,21 @@ PY
       contains "$RULES_SOURCE" 'deepseek-pi-volker' 'rules list the pinned Pi routes'
       contains "$ENV_SOURCE" 'PI_THINKING="high"' 'environment example documents Pi thinking'
       contains "$README_SOURCE" 'OUTCOME=NO-REPORT' 'README documents the report outcome'
+      contains "$README_SOURCE" "\`CONTEXT-FULL\`" 'README documents the context-full class'
+      contains "$README_SOURCE" "\`TOOL-CALL-NO-TEXT\`" 'README documents the tool-call-no-text class'
+      # shellcheck disable=SC2016 # the backticks are the DOCUMENT's literal text
+      contains "$README_SOURCE" 'TEXT **and** a trailing tool call is `SUCCESS`' \
+        'README states that text plus a trailing tool call is a success'
+      # shellcheck disable=SC2016 # the backticks are the DOCUMENT's literal text
+      contains "$DESIGN_SOURCE" 'Text **plus** a trailing tool call is `SUCCESS`' \
+        'design guide states that text plus a trailing tool call is a success'
+      contains "$CONSUMER_SOURCE" 'trailing tool call' \
+        'consumer guide covers the text-plus-tool-call shape'
+      contains "$DESIGN_SOURCE" "\`CONTEXT-FULL\` is the real end state of" \
+        'design guide explains why context-full is its own class'
+      contains "$DESIGN_SOURCE" "\`TOOL-CALL-NO-TEXT\` is" 'design guide explains the tool-call-no-text class'
+      contains "$CONSUMER_SOURCE" "| \`CONTEXT-FULL\` |" 'consumer guide gives the context-full action'
+      contains "$CONSUMER_SOURCE" "| \`TOOL-CALL-NO-TEXT\` |" 'consumer guide gives the tool-call-no-text action'
       contains "$README_SOURCE" "\`EMPTY-COMPLETION\`" 'README documents the empty-completion outcome'
       contains "$DESIGN_SOURCE" 'Why the terminal outcome is classified' 'design guide explains the outcome classification'
       contains "$CONSUMER_SOURCE" "\`.done\` outcome" 'consumer guide gives the outcome vocabulary'
@@ -1113,6 +1938,38 @@ PY
       contains "$DESIGN_SOURCE" 'Why liveness is a file, not a poll of the process' 'design guide explains the liveness sidecar'
       contains "$README_SOURCE" 'job-status.sh' 'README documents the liveness read'
       contains "$CONSUMER_SOURCE" 'JOB_STATUS_STALL_SECONDS' 'consumer guide documents the stall threshold'
+      contains "$README_SOURCE" "**\`LONG-TOOL\` and \`HUNG-TOOL\` are different words on purpose**" \
+        'README states that the two words are separate'
+      contains "$README_SOURCE" "\`HUNG-TOOL\` (the same age" 'README separates long-tool from hung-tool'
+      contains "$README_SOURCE" 'progress evidence' 'README names the progress fact'
+      contains "$README_SOURCE" 'To steer a stuck tool, kill the exact child pid' \
+        'README states the steering action'
+      contains "$README_SOURCE" "\`steer=\` — never the wrapper" \
+        'README forbids killing the wrapper to steer a tool'
+      contains "$README_SOURCE" "\`since-commit=no-commits-yet\`" 'README qualifies the since-commit age'
+      contains "$README_SOURCE" "\`DIED (wrapper pid <pid> gone, no .done)\`" 'README documents the died state'
+      contains "$README_SOURCE" 'wrapper-dead-agent-alive' \
+        'README documents the dead-wrapper/live-agent state'
+      contains "$README_SOURCE" 'last-event=42s(stream)' \
+        'README documents which clock the dead-wrapper event age comes from'
+      contains "$README_SOURCE" 'thread: none' \
+        'README documents the no-recoverable-thread case'
+      contains "$DESIGN_SOURCE" 'wrapper-dead-agent-alive' \
+        'design guide explains the dead-wrapper/live-agent state'
+      # shellcheck disable=SC2016 # the backticks are the DOCUMENT's literal text
+      contains "$DESIGN_SOURCE" 'A stream with no id says `thread: none`' \
+        'design guide explains the thread recovery'
+      contains "$CONSUMER_SOURCE" 'wrapper-dead-agent-alive' \
+        'consumer guide shows the dead-wrapper/live-agent row'
+      contains "$CONSUMER_SOURCE" 'thread: none' \
+        'consumer guide shows the no-recoverable-thread case'
+      contains "$DESIGN_SOURCE" "Why \`LONG-TOOL\` exists as its own word" \
+        'design guide explains why long-tool is separate'
+      contains "$DESIGN_SOURCE" "\`DIED (wrapper pid" 'design guide documents the died classification'
+      contains "$CONSUMER_SOURCE" 'steer=' 'consumer guide shows the steering column'
+      contains "$CONSUMER_SOURCE" "Kill \`8451\`, not \`8123\`" 'consumer guide says which process to kill'
+      contains "$CONSUMER_SOURCE" 'OUTCOME=CODE-EXIT' 'consumer guide documents the Codex marker shape'
+      contains "$CONSUMER_SOURCE" 'OUTCOME=CODE-EXIT' 'consumer guide documents the Codex marker shape'
       ;;
     *) fail "unknown PI_TEST_FOCUS=$PI_TEST_FOCUS" ;;
   esac
@@ -1356,6 +2213,8 @@ contains "$ROOT/run-traversal.log" 'invalid run name' 'pi run name traversal gua
 check_xtrace_key
 check_outcome_error
 check_outcome_length
+check_outcome_tool_call_no_text
+check_outcome_stop_other
 check_outcome_rc
 
 check_outcome_success_report
@@ -1381,6 +2240,7 @@ check_input_validation
 check_retry_limit_validation
 check_repo_not_a_worktree
 check_job_status_validation
+check_run_name_ownership
 
 not_contains test-key 'run evidence contains no key material' "$CONTROLLER_ROOT/runs"
 not_contains test-key 'account state contains no key material' "$STATE"

@@ -1,0 +1,13 @@
+{"type":"session","id":"pi-session-zero-reports"}
+{"type":"agent_start"}
+{"type":"turn_start"}
+{"type":"message_start","message":{"role":"assistant","content":[],"provider":"opendesign_volker","model":"deepseek-v4.1-flash-eco","usage":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"totalTokens":0},"stopReason":"pending"}}
+{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"First completion."}],"usage":{"input":101,"output":6,"cacheRead":1664,"cacheWrite":0,"reasoning":0,"totalTokens":258492},"stopReason":"stop"}}
+{"type":"turn_end"}
+{"type":"turn_start"}
+{"type":"message_start","message":{"role":"assistant","content":[],"provider":"opendesign_volker","model":"deepseek-v4.1-flash-eco","usage":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"totalTokens":0},"stopReason":"pending"}}
+{"type":"message_update","usage":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"totalTokens":0},"assistantMessageEvent":{"type":"thinking_start","contentIndex":0}}
+{"type":"message_update","usage":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"totalTokens":0},"assistantMessageEvent":{"type":"thinking_delta","contentIndex":0,"delta":"thinking"}}
+{"type":"message_update","usage":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"totalTokens":0},"assistantMessageEvent":{"type":"text_start","contentIndex":1}}
+{"type":"message_update","usage":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"totalTokens":0},"assistantMessageEvent":{"type":"text_delta","contentIndex":1,"delta":"working"}}
+{"type":"tool_execution_start","toolCallId":"call_long","toolName":"bash","args":{"command":"grep -r needle /workspace"}}

@@ -32,6 +32,168 @@ controller_init() {
   export CONTROLLER_HOME CONTROLLER_LOGS_DIR CONTROLLER_RUNS_DIR CONTROLLER_REPO CONTROLLER_HOSTS_FILE
 }
 
+# ---- run-name ownership ----------------------------------------------------
+# One controller run name is owned by one live wrapper at a time. Everything a
+# run owns is keyed by its NAME (`<run>.done`, `.jsonl`, `.err`, `.events`,
+# `.live`, `.last.txt`, `.wt`, `.route`, `.thread`), so two wrappers on one name
+# interleave on the same files with no error and a reader sees one job's
+# completion as the other job's result.
+#
+# The lock is a kernel `flock` on `<runs-dir>/<name>.lock`, never a pid test: it
+# is released when the last process holding the descriptor dies, so a wrapper
+# that is TERMed, KILLed or OOM-killed cannot strand it, and a recycled pid
+# cannot inherit it - PROVIDED every child the wrapper starts closes its copy of
+# the descriptor. A child that forked from the wrapper inherits the open file
+# description, and an agent (or a daemon the agent leaves behind) can outlive
+# the wrapper by hours; `controller_close_ownership_fds` is therefore called
+# immediately before every exec of a child (pi-impl.sh, codex-impl.sh), so a
+# killed wrapper leaves the name claimable straight away and a child can never
+# hold a name hostage. The lock file itself records who claimed the name last (the
+# wrapper pid, its start epoch, the pid's own kernel start time and the boot id)
+# so a reader can still name the owner after it died.
+#
+# A claim NEVER bypasses a live owner, not even with CONTROLLER_RUN_FORCE=1:
+# force is offered only as the supported way to RETIRE the records of a dead
+# owner, and it archives them instead of deleting them.
+CONTROLLER_RUN_LOCK_FD=''
+CONTROLLER_RUN_PREVIOUS_OWNER=''
+CONTROLLER_RUN_LOCK_PATH=''
+
+controller_run_record_extensions() {
+  printf '%s\n' 'done' 'jsonl' 'err' 'events' 'live' 'last.txt' 'wt' 'route' 'thread' 'autoresume.log'
+}
+
+controller_pid_start_ticks() {
+  # Field 22 of /proc/<pid>/stat, the kernel's own pid-reuse discriminator.
+  local pid=${1:-} stat_line='' rest='' field='' index=0
+  [[ -n $pid && -r /proc/$pid/stat ]] || { printf '%s' '-'; return 1; }
+  IFS= read -r stat_line < "/proc/$pid/stat" || { printf '%s' '-'; return 1; }
+  rest=${stat_line##*\) }
+  for field in $rest; do
+    index=$((index + 1))
+    if (( index == 20 )); then printf '%s' "$field"; return 0; fi
+  done
+  printf '%s' '-'
+  return 1
+}
+
+controller_run_claim() {
+  # $1 run name. 0 = this invocation owns the name; 2 = refused (a live owner
+  # holds it, or the lock cannot be opened).
+  local name=${1:-} runs=${CONTROLLER_RUNS_DIR:-} lock owner_pid started started_utc ticks='' rc=0
+  [[ -n $name && -n $runs ]] || { echo 'controller: controller_run_claim needs a run name and CONTROLLER_RUNS_DIR' >&2; return 2; }
+  controller_run_release
+  CONTROLLER_RUN_PREVIOUS_OWNER=''
+  CONTROLLER_RUN_LOCK_PATH=''
+  lock=$runs/$name.lock
+  # Append, never truncate: a truncating open would erase the record of the very
+  # owner this claim is about to refuse on.
+  if ! exec {CONTROLLER_RUN_LOCK_FD}>>"$lock"; then
+    CONTROLLER_RUN_LOCK_FD=''
+    echo "controller: cannot open the run-name lock: $lock" >&2
+    return 2
+  fi
+  flock -n "$CONTROLLER_RUN_LOCK_FD"
+  rc=$?
+  if (( rc != 0 )); then
+    if (( rc == 1 )); then
+      read -r owner_pid started started_utc ticks < <(sed -n 's/^pid=\([0-9]*\) started_epoch=\([0-9]*\) started_utc=\([0-9T:-]*Z\) pid_start_ticks=\([0-9-]*\).*/\1 \2 \3 \4/p' "$lock" 2>/dev/null)
+      echo "controller: run name '$name' is already owned by pid ${owner_pid:-<unknown>}${started_utc:+ (started $started_utc)}" >&2
+      echo "  lock: $lock" >&2
+      echo "  one run name carries one run: wait for that wrapper, use a different run name, or retire the owner's records explicitly (CONTROLLER_RUN_FORCE=1, refused while an owner is alive)" >&2
+      exec {CONTROLLER_RUN_LOCK_FD}>&-
+      CONTROLLER_RUN_LOCK_FD=''
+      return 2
+    fi
+    exec {CONTROLLER_RUN_LOCK_FD}>&-
+    CONTROLLER_RUN_LOCK_FD=''
+    echo "controller: run-name lock failed ($lock, flock exit $rc)" >&2
+    return 2
+  fi
+  # Keep the record the previous owner left behind (it is dead: the kernel
+  # released its flock) so a forced retirement can archive that identity.
+  CONTROLLER_RUN_PREVIOUS_OWNER=$(head -n 1 "$lock" 2>/dev/null || true)
+  # The claim itself does NOT write the owner record: the name is held from here
+  # on, but an invocation that then refuses (a name that already has evidence,
+  # an unreadable prompt, a bad route) must not overwrite the identity of the
+  # owner it refused on - a later forced retire would archive the refuser and
+  # lose the real previous owner. The record is written by the caller once its
+  # own preflight passed (controller_run_record_owner).
+  CONTROLLER_RUN_LOCK_PATH=$lock
+  return 0
+}
+
+controller_run_record_owner() {
+  # Write THIS invocation's identity into the claimed name's lock file. Call it
+  # only after the claim succeeded AND the caller's own preflight passed; a
+  # refusal before this point leaves the previous owner's identity readable.
+  local lock=${CONTROLLER_RUN_LOCK_PATH:-} started started_utc ticks
+  [[ -n $lock ]] || return 1
+  started=$(date -u +%s)
+  started_utc=$(date -u -d "@$started" +%Y-%m-%dT%H:%M:%SZ)
+  ticks=$(controller_pid_start_ticks "$$") || ticks='-'
+  printf 'pid=%s started_epoch=%s started_utc=%s pid_start_ticks=%s boot_id=%s\n' \
+    "$$" "$started" "$started_utc" "$ticks" "$(cat /proc/sys/kernel/random/boot_id 2>/dev/null || printf '%s' '-')" > "$lock"
+  return 0
+}
+
+controller_run_release() {
+  local fd=${CONTROLLER_RUN_LOCK_FD:-}
+  [[ $fd =~ ^[0-9]+$ ]] || return 0
+  eval "exec $fd>&-" 2>/dev/null || :
+  CONTROLLER_RUN_LOCK_FD=''
+  CONTROLLER_RUN_LOCK_PATH=''
+  return 0
+}
+
+controller_close_ownership_fds() {
+  # Close the ownership descriptor in THIS process (the child an invocation is
+  # about to exec into): the lock belongs to the wrapper that claimed the name,
+  # never to the agent or the sidecar it starts. The kernel releases the flock
+  # when the wrapper dies, so a killed wrapper leaves the name claimable and a
+  # child that long outlives its wrapper cannot hold the name hostage.
+  local fd=${CONTROLLER_RUN_LOCK_FD:-}
+  [[ $fd =~ ^[0-9]+$ ]] || return 0
+  eval "exec $fd>&-" 2>/dev/null || :
+  return 0
+}
+
+controller_run_owner_pid() {
+  # Print the recorded owner pid of a run name, or nothing when the record is
+  # absent or unreadable. This is a RECORD, not a liveness test: the caller
+  # decides whether that pid is alive. The record lives in the name's own lock
+  # file, which every claim rewrites, so it names the most recent owner (the one
+  # whose .done may be missing).
+  local name=${1:-} runs=${CONTROLLER_RUNS_DIR:-} pid=''
+  [[ -n $name && -n $runs ]] || return 1
+  pid=$(sed -n 's/^pid=\([0-9][0-9]*\).*/\1/p' "$runs/$name.lock" 2>/dev/null | head -n 1)
+  [[ -n $pid ]] || return 1
+  printf '%s\n' "$pid"
+}
+
+controller_run_retire_records() {
+  # Move one run name's whole record set into retired/<name>/<utc-stamp>/ so the
+  # name can be reused deliberately. Nothing is deleted: a retired record stays
+  # readable, and the caller prints the identity it retired.
+  local name=${1:-} runs=${CONTROLLER_RUNS_DIR:-} stamp archive extension found=0
+  [[ -n $name && -n $runs ]] || return 2
+  stamp=$(date -u +%Y%m%dT%H%M%S)
+  archive=$runs/retired/$name/$stamp
+  while IFS= read -r extension; do
+    [[ -e $runs/$name.$extension ]] || continue
+    if (( found == 0 )); then mkdir -p -- "$archive" || return 2; fi
+    found=1
+    mv -- "$runs/$name.$extension" "$archive/" || return 2
+  done < <(controller_run_record_extensions)
+  (( found == 1 )) || return 1
+  # Name the identity that was retired; nothing about the old owner is lost.
+  if [[ -n ${CONTROLLER_RUN_PREVIOUS_OWNER:-} ]]; then
+    printf '%s\n' "$CONTROLLER_RUN_PREVIOUS_OWNER" > "$archive/PREVIOUS-OWNER.txt" || return 2
+  fi
+  printf '%s\n' "$archive"
+  return 0
+}
+
 usage_retry_text() {
   python3 - "$@" <<'PY'
 import json

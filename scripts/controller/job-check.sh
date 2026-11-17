@@ -1,5 +1,16 @@
 #!/usr/bin/env bash
 # Mechanical run/worktree evidence check. Read-only; exits nonzero on red flags.
+#
+# Completed pi runs carry their terminal class in `.done` and in the stream. Two
+# classes of that vocabulary are named here so the controller cannot miss them:
+#   CONTEXT-FULL       the assistant stopReason is `length` (the context window
+#                      filled). A real end state: start a FRESH successor from
+#                      the run's forward-oriented state file; never continue the
+#                      full context.
+#   TOOL-CALL-NO-TEXT  a settled `stop` whose final message is a tool call with
+#                      no text: the run ended mid-work. Inspect the worktree and
+#                      the last tool output, then resume or restart.
+# Both are red flags here; neither is `SUCCESS` and neither is `EMPTY-RUN`.
 # Usage: job-check.sh <run-name> <worktree-path> <luna|sol|deepseek|deepseek-volker|deepseek-github2|deepseek-pi|deepseek-pi-volker|deepseek-pi-github2|opencode|any|none> [absolute-report-path ...]
 set -uo pipefail
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
@@ -9,6 +20,36 @@ controller_init
 [[ $# -ge 3 ]] || { echo "usage: $0 <run-name> <worktree-path> <luna|sol|deepseek|deepseek-volker|deepseek-github2|deepseek-pi|deepseek-pi-volker|deepseek-pi-github2|opencode|any|none> [absolute-report-path ...]" >&2; exit 2; }
 run=$1 worktree=$2 route=$3; shift 3
 [[ $run =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ && $run != *..* ]] || { echo "invalid run name" >&2; exit 2; }
+recover_thread_from_stream() {
+  # The first session/thread id the run stream carries, or nothing: a fact read
+  # from the record the run already produced, never an invented id.
+  local stream=$1
+  [[ -r $stream ]] || return 1
+  python3 - "$stream" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8", errors="replace") as source:
+    for line in source:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            event = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(event, dict):
+            continue
+        if event.get("type") == "session" and isinstance(event.get("id"), str):
+            print(event["id"])
+            raise SystemExit(0)
+        if event.get("type") == "thread.started" and isinstance(event.get("thread_id"), str):
+            print(event["thread_id"])
+            raise SystemExit(0)
+raise SystemExit(1)
+PY
+}
+
 red=0
 case $route in
   luna)
@@ -41,7 +82,95 @@ if [[ -e $done_file ]]; then
   printf 'done: %s\n' "$done_status"
   if [[ ! $done_status =~ ^EXIT=0([[:space:]]|$) ]]; then echo "CHILD EXIT IS NOT ZERO: $done_status"; red=1; fi
 else
-  echo "RUNNING (no .done)"
+  # No completion marker. The word RUNNING asserts that a process exists, so it
+  # is read from the run name's own owner record (the same `<name>.lock` every
+  # wrapper writes on a claim, lib.sh controller_run_claim) instead of assumed.
+  # Three distinct real states collapse into "no .done" otherwise: a live
+  # wrapper, a wrapper that died (TERM/KILL/OOM/container restart), and a name
+  # that no wrapper ever owned.
+  owner_record=$CONTROLLER_RUNS_DIR/$run.lock
+  owner_pid='' owner_ticks='' owner_boot='' owner_started=''
+  if [[ -r $owner_record ]]; then
+    owner_line=$(head -n 1 "$owner_record" 2>/dev/null || true)
+    # shellcheck disable=SC2086 # the record is one line of space-separated key=value tokens
+    for token in $owner_line; do
+      case $token in
+        pid=*) owner_pid=${token#pid=} ;;
+        pid_start_ticks=*) owner_ticks=${token#pid_start_ticks=} ;;
+        boot_id=*) owner_boot=${token#boot_id=} ;;
+        started_utc=*) owner_started=${token#started_utc=} ;;
+      esac
+    done
+  fi
+  dead_reason=''
+  if [[ $owner_pid =~ ^[0-9]+$ ]]; then
+    current_boot=$(cat /proc/sys/kernel/random/boot_id 2>/dev/null || true)
+    if [[ -n $owner_boot && -n $current_boot && $owner_boot != "$current_boot" ]]; then
+      # A pid cannot survive a reboot, so the recorded owner is gone even if its
+      # number happens to be in use now.
+      dead_reason="wrapper pid $owner_pid is from a previous boot ($owner_boot)"
+    elif ! kill -0 "$owner_pid" 2>/dev/null; then
+      dead_reason="wrapper pid $owner_pid gone"
+    else
+      live_ticks=$(controller_pid_start_ticks "$owner_pid" 2>/dev/null || printf '%s' '-')
+      if [[ $owner_ticks =~ ^[0-9]+$ && $live_ticks =~ ^[0-9]+$ && $owner_ticks != "$live_ticks" ]]; then
+        # The pid exists but its kernel start time differs: a recycled pid, not
+        # this run's owner.
+        dead_reason="wrapper pid $owner_pid recycled (recorded start $owner_ticks, now $live_ticks)"
+      fi
+    fi
+  fi
+  if [[ -n $dead_reason ]]; then
+    # A dead owner is never RUNNING: the controller must be able to relaunch.
+    echo "DIED ($dead_reason, no .done)"
+    echo "RUN-NAME OWNER DIED: <run>.done is missing and the recorded owner is not alive; relaunch the run or retire its records deliberately"
+    # A killed wrapper often dies before writing `<run>.thread`, and a controller
+    # that then has no thread id cannot resume - it can only start over. The id
+    # is already in the run's own stream (pi: the first `session` event, Codex:
+    # `thread.started`), so it is READ from there and reported as the recovery it
+    # is, with the exact resume command it enables.
+    thread_id=''
+    if [[ -r $CONTROLLER_RUNS_DIR/$run.thread ]]; then
+      thread_id=$(head -n 1 "$CONTROLLER_RUNS_DIR/$run.thread" 2>/dev/null || true)
+    fi
+    if [[ -z $thread_id ]]; then
+      thread_id=$(recover_thread_from_stream "$CONTROLLER_RUNS_DIR/$run.jsonl") || thread_id=''
+      if [[ -n $thread_id ]]; then
+        printf 'thread: %s (recovered from %s.jsonl; the wrapper died before writing .thread)\n' \
+          "$thread_id" "$run"
+      else
+        printf 'thread: none (no .thread file and no session/thread id in %s.jsonl)\n' "$run"
+      fi
+    else
+      printf 'thread: %s\n' "$thread_id"
+    fi
+    if [[ -n $thread_id ]]; then
+      case $route in
+        deepseek-pi|deepseek-pi-volker|deepseek-pi-github2)
+          printf 'resume: %s %s <prompt-file> %s resume %s\n' \
+            "$SCRIPT_DIR/pi-impl.sh" "$worktree" "$run" "$thread_id"
+          ;;
+        luna|sol|deepseek|deepseek-volker|deepseek-github2)
+          printf 'resume: %s %s <prompt-file> %s resume %s\n' \
+            "$SCRIPT_DIR/codex-impl.sh" "$worktree" "$run" "$thread_id"
+          ;;
+        opencode)
+          printf 'resume: %s %s <prompt-file> %s\n' \
+            "$SCRIPT_DIR/opencode-impl.sh" "$worktree" "$run"
+          ;;
+      esac
+    fi
+    red=1
+  elif [[ $owner_pid =~ ^[0-9]+$ ]]; then
+    echo "RUNNING (no .done)"
+    printf 'owner record: pid %s alive%s (lock %s)\n' "$owner_pid" \
+      "${owner_started:+ since $owner_started}" "$owner_record"
+  else
+    echo "RUNNING (no .done)"
+    printf 'owner record: none (%s absent or unreadable; a live wrapper and a dead one cannot be told apart here)\n' \
+      "$owner_record"
+  fi
+  if (( red != 0 )); then exit 1; fi
   exit 0
 fi
 [[ -f $run_file ]] || { echo "RUN FILE MISSING: $run_file"; exit 1; }
@@ -60,6 +189,7 @@ last_error = ""
 pi_detected = False
 pi_stop_reason = None
 pi_usage_limited = False
+pi_has_tool_call = False
 
 def pi_text(message):
     content = message.get("content")
@@ -115,6 +245,10 @@ for line in open(sys.argv[1], encoding="utf-8", errors="replace"):
             last_message = pi_text(message)
             messages += 1
             pi_stop_reason = message.get("stopReason")
+            content = message.get("content")
+            pi_has_tool_call = isinstance(content, list) and any(
+                isinstance(part, dict) and part.get("type") == "toolCall" for part in content
+            )
             if pi_stop_reason == "error":
                 usage_reset = sys.argv[2] or None
                 pi_usage_limited = pi_402_error(message.get("errorMessage"))
@@ -158,7 +292,20 @@ usage_limited = (
 if not usage_limited:
     if pi_detected and pi_stop_reason == "error":
         flags.append("PI-ERROR (assistant stopReason=error)")
-    if not text:
+    if pi_detected and pi_stop_reason == "length":
+        # The context window filled: a real end state with its own remedy, not
+        # an unattributable stream and not a finished job.
+        flags.append(
+            "CONTEXT-FULL (assistant stopReason=length; start a fresh successor "
+            "from the run's state file)"
+        )
+    elif pi_detected and pi_stop_reason == "stop" and pi_has_tool_call and not text:
+        # A final message that is a tool call with no text ended mid-work.
+        flags.append(
+            "TOOL-CALL-NO-TEXT (final assistant message is a tool call with no "
+            "text; inspect the worktree, then resume or restart)"
+        )
+    elif not text:
         flags.append("EMPTY-RUN (no final agent message)")
     else:
         if re.search(r"\b(i.?ll|i will|next,? i|now i.?ll|i.?m (now )?(going to|moving|running|rerunning|checking|writing))\b", low[-400:]) and not re.search(r"(report|head|verdict|pass|fail|complete)", low[-250:]):
