@@ -1811,6 +1811,44 @@ class TestJudgeProviderWiring:
         assert latest["judge"]["dirty"] is None
         assert "answered 128" in latest["judge"]["dirty_source"]
 
+    @pytest.mark.parametrize("field, stale_value", [
+        ("commit", "0" * 40),
+        # Round-3 review: only the commit was ever varied, so a refresh that
+        # compared JUST the commit survived -- although `version` and `dirty`
+        # are recorded beside it for the same reason (a tag landing, or a file
+        # being edited, between the preflight and the container start would
+        # write an identity the mount does not hold). Each field now has its
+        # own stale-only case, and the mutant that keeps two of the three
+        # comparison terms dies.
+        ("version", "assay-v0.0.1-1-gdeadbeef"),
+        ("dirty", True),
+    ])
+    def test_every_COMPARED_field_alone_triggers_the_re_derivation(
+            self, tmp_path, capsys, field, stale_value):
+        """The refresh names the change and records what the mount holds, for
+        EACH of the three fields it compares."""
+        repo, _proj = _judge_repo(tmp_path)
+        fresh = run_gate.judge_identity(
+            {"kind": "command", "environment": "rust", "judge": "assay"},
+            repo)
+        # The stale value must DIFFER from the fresh one, or the case would
+        # pass for the opposite reason (a comparison that never had a change
+        # to see). The fixture is a clean repository with no release tag, so
+        # both of these hold; assert it rather than assume it.
+        assert fresh[field] != stale_value, (field, fresh[field])
+        stale = dict(fresh, **{field: stale_value})
+        lane = {"kind": "command", "environment": "rust",
+                "judge": "assay", "_judge_identity": stale}
+        record: dict = {}
+        returned = run_gate.refresh_judge_identity(lane, "rust-r1", repo,
+                                                  record)
+        assert record["judge"] == fresh
+        assert record["judge"][field] == fresh[field]
+        assert returned[field] == fresh[field]
+        assert lane["_judge_identity"][field] == fresh[field]
+        assert f"{field} {stale_value!r} -> {fresh[field]!r}" \
+            in capsys.readouterr().err
+
     def test_the_identity_is_RE_DERIVED_at_the_container_start(
             self, tmp_path, monkeypatch, capsys):
         """Round-1 review item 5, second half: the preflight derives the
