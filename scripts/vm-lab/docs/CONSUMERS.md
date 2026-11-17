@@ -116,9 +116,16 @@ python3 scripts/vm-lab/vm_lab.py disk promote \
 # prints: [promoted] .../debian-13-installed.raw sha256=<hex>
 ```
 
+`--base-format auto` treats every file that does not start with the qcow2 magic
+as raw. A vmdk, vhdx or compressed image is therefore taken for raw and would
+boot as garbage; convert it first (`qemu-img convert -O raw`), and pass
+`--base-format qcow2` when the base must be qcow2, so a wrong file is refused.
+
 `--resume` reuses `disk.raw` and never clones again; it refuses when the
 recorded format differs from the one the base file has (a raw guest cannot be
-resumed with a qcow2 base). A raw guest runs with `cache=unsafe`: a host crash
+resumed with a qcow2 base). The raw guest does not need its base any more: it
+resumes even if the base was renamed, replaced or deleted. A qcow2 guest does
+need the same base. A raw guest runs with `cache=unsafe`: a host crash
 may corrupt its disk, killing QEMU does not. Treat a run disk as disposable.
 `disk promote` needs a raw disk (a qcow2 overlay guest is refused), a stopped
 guest, an existing destination folder and a name made of letters, digits, `.`,

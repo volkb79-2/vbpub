@@ -185,11 +185,21 @@ any partial `disk.raw`, so the state directory is still empty for a retry.
 `--allow-full-copy` is the explicit opt-in: it retries once with
 `--reflink=auto` and prints `[disk] full copy of <base> (no reflink possible)`.
 The clone happens before firmware is staged or `runner.json` is written, and
-only on a first start; `--resume` reuses `disk.raw`.
+only on a first start; `--resume` reuses `disk.raw`. The copy is written to
+`.disk.raw.partial` (`.<name>.raw.partial` for a promote) under umask 0077 and
+renamed onto its final name only after `cp` succeeded and the size matches, and
+the temporary file is removed on any failure including Ctrl-C, so the final
+name is either complete or absent and never exists with the base's mode.
+A full copy of a large base holds the start admission lock for its whole
+duration (up to the one-hour copy timeout), so another `start` is refused as
+"in progress" meanwhile; a reflink is instant and does not.
 
 State: `runner.json` records `disk_format`. For raw it records the base path and
-its size but not the device, inode and mtime that a qcow2 guest records, because
-a raw guest no longer depends on the base file once it is cloned. A guest
+its size for information only: a raw guest no longer depends on the base file
+once it is cloned, so a resume ignores those two values and works even when the
+base was renamed, replaced or deleted (everything else, including the format,
+is still compared). A qcow2 guest records the base's device, inode, size and
+mtime, and a changed base blocks its resume. A guest
 recorded before this change has no `disk_format` and resumes as qcow2. A resume
 whose recorded and requested formats differ is refused, naming both. The
 fixed-size TrueNAS front keeps qcow2 as its default and does not open the base
@@ -199,7 +209,9 @@ Why `disk promote` needs a stopped guest: QEMU holds the raw file open and
 writes to it, so a reflink of a running guest's disk is a crash-consistent
 snapshot at best and a torn image at worst. The check looks for any running
 managed container, of any profile, whose state label matches the state
-directory; a Docker failure while asking is an error, not "stopped". Promotion
+directory; a Docker failure while asking is an error, not "stopped". The check
+and the copy run under the same admission lock a `start` takes, so a
+`start --resume` cannot boot the disk in between. Promotion
 reflinks `disk.raw` to `<dest>/<name>.raw`, hashes the final file (streamed in
 1 MiB chunks, so the digest is of the bytes that were written), writes
 `<name>.raw.sha256` in `sha256sum` format and sets both to 0444. It refuses to

@@ -146,8 +146,11 @@ needs `pwmcp` on PATH and pwmcp's OCR sidecar enabled. See
 - `--network`, `--cgroup-parent`: default to `DOCKER_NETWORK_INTERNAL` and
   `CGROUP_PARENT_DEV_BACKGROUND`. Start refuses when neither is set.
 - `--base-format {auto,qcow2,raw}`: format of `--base-disk`. `auto` (the
-  default) reads the first four bytes: `QFI\xfb` is qcow2, anything else raw.
-  An explicit `qcow2` must match the magic; an explicit `raw` is taken as stated.
+  default) reads the first four bytes: `QFI\xfb` is qcow2, and **any other file
+  is treated as raw**, including a vmdk, vhdx or compressed image, which would
+  boot as garbage. Pass `--base-format qcow2` to state that the base must be
+  qcow2 (it must match the magic, else `start` refuses). An explicit `raw` is
+  taken as stated.
   A qcow2 base is mounted read-only under a qcow2 overlay in the state directory
   (`disk-overlay.qcow2`). A raw base is never mounted: `start` clones it into
   `<state-dir>/disk.raw` with `cp --reflink=always`, and the guest boots that
@@ -158,14 +161,15 @@ needs `pwmcp` on PATH and pwmcp's OCR sidecar enabled. See
   with one error line. With it, `start` copies the whole file instead and says so.
 - `--readonly-media ISO`, `--data-disk-size SIZE` (repeat, up to 8),
   `--vnc-console`, `--serial-console`, `--resume` (reuses the existing
-  overlay or `disk.raw`; the recorded disk format must match).
+  overlay or `disk.raw`; the recorded disk format must match; a raw guest
+  resumes even when its base file was moved, replaced or deleted).
+- `--max-concurrent-guests N` (1 to 3, default 3) and
+  `--memory-psi-full-avg10-limit`: see the admission rules below.
 
 Why a raw clone and not a mounted base:
 [design guide](docs/DESIGN-GUIDE.md#raw-bases-and-reflink-clones). A worked
 example, including `disk promote`, is in
 [docs/CONSUMERS.md](docs/CONSUMERS.md#start-from-a-raw-base).
-- `--max-concurrent-guests N` (1 to 3, default 3) and
-  `--memory-psi-full-avg10-limit`: see the admission rules below.
 
 ## Host protection
 
