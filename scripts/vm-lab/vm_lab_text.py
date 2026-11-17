@@ -7,8 +7,10 @@ in this order:
 
 * ``serial``: exact text the guest printed to its serial console, read from ``<state>/serial.log``
   by ``vmscreen text --source serial``. This is the exact-text source of UEFI guests (their
-  display is a graphical framebuffer). It applies only while that log exists (the guest was started
-  with ``--serial-console``) and, for ``auto``, only while the log has text (after the mark, if any).
+  display is a graphical framebuffer). QEMU writes that log for EVERY guest, so its existence says
+  nothing: ``auto`` uses ``serial`` only when ``runner.json`` records that the guest was started with
+  ``--serial-console`` and the log has text (after the mark, if any). ``--engine serial`` is an
+  explicit choice that works for any guest whose log exists.
   ``console mark`` prints a mark of the log's current end; a read with a mark sees only what was
   written after it.
 * ``vmscreen``: exact text from the VGA text buffer, run as a subprocess: the ``vmscreen``
@@ -238,7 +240,7 @@ class ScreenReader:
                 raise TextEngineError(f"vmscreen is not available: {exc}") from None
         # auto: serial, then the VGA text buffer, then OCR.
         quiet_serial: ScreenText | None = None
-        if self.serial_log.is_file() and self._vmscreen_unavailable is None:
+        if self.serial_in_auto() and self._vmscreen_unavailable is None:
             try:
                 return self._serial(forced=False)
             except TextNotApplicable:
@@ -247,7 +249,10 @@ class ScreenReader:
             except _VmscreenUnavailable as exc:
                 self._vmscreen_unavailable = str(exc)
                 self.note(f"vm-lab: vmscreen is not available: {exc}; using OCR only")
-        self._note_mark_ignored()
+        if quiet_serial is None:
+            # The serial engine did not run: an explicit mark has nothing to apply to. A merely quiet
+            # serial log (quiet_serial set) is not that: the mark is in use.
+            self._note_mark_ignored()
         if self._vmscreen_unavailable is None:
             try:
                 return self._vmscreen()
@@ -267,6 +272,10 @@ class ScreenReader:
                 self._quiet_ocr_noted = True
                 self.note(f"vm-lab: the serial log has no text yet and OCR is unavailable: {exc}")
             return quiet_serial
+
+    def serial_in_auto(self) -> bool:
+        """``auto`` uses the serial log only for a guest that was started with --serial-console."""
+        return recorded_serial_console(self.state_dir) and self.serial_log.is_file()
 
     def _note_mark_ignored(self) -> None:
         """One stderr note when an explicit --since-mark meets an engine that cannot use it."""
@@ -399,7 +408,7 @@ class ScreenReader:
         """Print-ready mark token of the serial log's current end (``vmscreen mark``)."""
         log = self.serial_log
         if not log.is_file():
-            raise TextEngineError(f"no serial log at {log}; start the guest with --serial-console")
+            raise TextEngineError(f"no serial log at {log}; the guest has not been started in this state directory")
         command = self._serial_command(True) if command is None else command
         try:
             result = self.runner(
@@ -441,7 +450,7 @@ class ScreenReader:
         """Read the serial log. Forced: always a result (empty text is a quiet log). Auto: empty is "not yet"."""
         log = self.serial_log
         if not log.is_file():
-            raise TextEngineError(f"no serial log at {log}; start the guest with --serial-console")
+            raise TextEngineError(f"no serial log at {log}; the guest has not been started in this state directory")
         command = self._serial_command(forced)
         if self.since_mark is None and self._implicit_mark:
             # A wait sees only text written after it began: the mark is taken once, before the first read.
@@ -467,10 +476,13 @@ class ScreenReader:
             if not shot.text.strip() and not forced:
                 raise TextNotApplicable("the serial log has no text yet")
             return shot
+        detail = _short(_json_error(result.stdout) or result.stderr or result.stdout or "no output")
         if code == 4:
+            if self.since_mark is not None and _stale_mark(result.stdout, result.stderr):
+                # A mark that can never apply again: fail closed, never "does not apply".
+                raise TextEngineError(STALE_MARK_MESSAGE)
             self._worked.add("serial")
             raise TextNotApplicable("vmscreen: the serial source does not apply")
-        detail = _short(_json_error(result.stdout) or result.stderr or result.stdout or "no output")
         if code == 5:
             raise TextReadError(f"vmscreen QMP problem: {detail}")
         if code == 3:
@@ -533,6 +545,31 @@ class ScreenReader:
 
 class _VmscreenUnavailable(Exception):
     """vmscreen cannot be started at all (internal; becomes a note in auto, an error otherwise)."""
+
+
+STALE_MARK_MESSAGE = (
+    "the serial log was truncated or replaced since the mark was taken; the mark no longer applies "
+    "(take a new one with `console mark`)"
+)
+
+
+def recorded_serial_console(state_dir: Path) -> bool:
+    """Whether ``runner.json`` records that the guest was started with ``--serial-console``.
+
+    No file, unreadable JSON, a missing key or anything but ``true`` means no: ``auto`` then never
+    uses the serial log (QEMU writes it for every guest, so its existence proves nothing).
+    """
+    try:
+        data = json.loads((Path(state_dir) / "runner.json").read_text())
+    except (OSError, ValueError):
+        return False
+    return isinstance(data, dict) and data.get("serial_console") is True
+
+
+def _stale_mark(stdout: str, stderr: str) -> bool:
+    """Does vmscreen's exit-4 output say the log was truncated or replaced since the mark?"""
+    text = stdout + "\n" + stderr
+    return "truncated or replaced" in text or "truncated or rotated" in text
 
 
 def _json_error(stdout: str) -> str:

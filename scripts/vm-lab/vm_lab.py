@@ -76,6 +76,9 @@ QCOW2_OVERLAY_NAME = "disk-overlay.qcow2"
 COPY_TIMEOUT_SECONDS = 3600
 # Recorded for a raw guest as information; a resume does not compare them.
 RAW_BASE_INFORMATIONAL_KEYS = ("base_disk", "base_size")
+# runner.json records whether the last start used --serial-console (true/false). QEMU writes
+# serial.log for EVERY guest, so the log existing says nothing about it; vm_lab_text reads this key.
+SERIAL_CONSOLE_KEY = "serial_console"
 PROMOTE_NAME_PATTERN = re.compile(r"[A-Za-z0-9_-][A-Za-z0-9._-]*")
 PROMOTE_HASH_CHUNK_BYTES = 1024 * 1024
 
@@ -1457,7 +1460,10 @@ def check_runner_manifest(
         actual = json.loads(path.read_text())
     except (OSError, json.JSONDecodeError) as exc:
         raise RunnerError(f"cannot read runner identity file {path}: {exc}") from exc
+    # How the last start wired the serial port is a record, not an identity: it may differ on resume.
+    expected = {k: v for k, v in expected.items() if k != SERIAL_CONSOLE_KEY}
     if isinstance(actual, dict):
+        actual = {k: v for k, v in actual.items() if k != SERIAL_CONSOLE_KEY}
         # A guest recorded before raw bases existed has no disk_format: it is qcow2.
         recorded_format = actual.get("disk_format", "qcow2")
         requested_format = expected.get("disk_format", "qcow2")
@@ -1934,6 +1940,7 @@ def _cmd_start(profile: VmProfile, args: argparse.Namespace) -> int:
         extra_disk_sizes=disk_sizes_bytes,
         disk_format=disk_format,
     )
+    expected_manifest[SERIAL_CONSOLE_KEY] = bool(args.serial_console)
     manifest_path = state_dir / "runner.json"
     if args.resume:
         check_runner_manifest(
@@ -2008,10 +2015,15 @@ def _cmd_start(profile: VmProfile, args: argparse.Namespace) -> int:
         os.chmod(staged_firmware_code, 0o600)
         os.chmod(varstore, 0o600)
         write_runner_manifest(manifest_path, expected_manifest)
-    if args.resume and readonly_media is not None:
+    if args.resume:
         stored_manifest = json.loads(manifest_path.read_text())
-        if "readonly_media" not in stored_manifest:
-            write_runner_manifest(manifest_path, expected_manifest)
+        if readonly_media is not None and "readonly_media" not in stored_manifest:
+            write_runner_manifest(manifest_path, {**expected_manifest})
+        elif stored_manifest.get(SERIAL_CONSOLE_KEY) is not bool(args.serial_console):
+            # The record follows the start that actually wires the serial port; everything else stays.
+            write_runner_manifest(
+                manifest_path, {**stored_manifest, SERIAL_CONSOLE_KEY: bool(args.serial_console)}
+            )
     print(f"[source] base={base_disk} state={state_dir}", flush=True)
     if host_base is None:
         print(f"[container] host state mount={host_state}; the raw base is not mounted", flush=True)
@@ -2621,10 +2633,11 @@ def build_parser(
         "mark",
         help="print a mark token for the current end of the guest's serial log",
         description=(
-            "Print a mark of the guest's serial log (<state-dir>/serial.log, written when the guest was "
-            "started with --serial-console) as the only line on stdout. Give it to `console text` or "
-            "`console wait-for-text` as --since-mark to read only text written after this point. "
-            "The token is vmscreen's mark: it also rejects a log that was truncated or replaced since."
+            "Print a mark of the guest's serial log (<state-dir>/serial.log, which QEMU writes for every "
+            "guest) as the only line on stdout. Give it to `console text` or "
+            "`console wait-for-text` as --since-mark to read only text written after this point "
+            "(the `auto` engine reads the serial log only for a guest started with --serial-console). "
+            "The token is vmscreen's mark: a log truncated or replaced since is an error (exit 1)."
         ),
         epilog=vm_lab_text.MARK_EXIT_CODES_HELP,
     )

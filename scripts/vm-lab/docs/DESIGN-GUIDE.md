@@ -261,10 +261,18 @@ screen as text with three engines, because no single reader covers every screen:
   finds no text and OCR needs a sidecar; but a guest with its console on
   ttyS0 prints everything it says, exactly, into the serial log. vmscreen
   already renders the stream (escape sequences stripped, CR/BS applied), so the
-  VM tool adds no terminal handling of its own. It applies only while the log
-  exists (started with `--serial-console`); the file alone is not enough for
-  `auto`, which also needs text in it (after the mark): an empty result means
-  "not yet", never a wait failure by itself, so the next engines get their turn.
+  VM tool adds no terminal handling of its own. **When `auto` uses it:** QEMU is
+  given `-serial file:/state/serial.log` for EVERY guest, so the file existing
+  says nothing about `--serial-console`; a TrueNAS or BIOS guest that merely
+  prints to ttyS0 would otherwise shadow the VGA and OCR engines on every poll.
+  The launcher therefore records `"serial_console": true|false` in `runner.json`
+  at each start (it is a record, not part of the resume identity; a resume
+  rewrites it to the value of that start), and `auto` uses the serial engine
+  only when it says true and the log exists. A state directory without the
+  record means false. `--engine serial` is the explicit choice and works for any
+  guest whose log exists. `auto` also needs text in the log (after the mark): an
+  empty result means "not yet", never a wait failure by itself, so the next
+  engines get their turn.
   vmscreen connects to QMP for every `text` call, serial included, so the guest
   must be running.
 
@@ -294,8 +302,17 @@ vmscreen's mark of the log's current end (offset plus inode and head/tail
 fingerprints, so a truncated, replaced or rewritten log is refused rather than
 re-read from a wrong offset); `--since-mark` passes it to every serial read.
 A `wait-for-text` without a mark takes one at its start, before its first read
-(a failing implicit mark is an error, never a silent unmarked wait), so it sees
-only text written after the wait began. `--since-start` was deliberately not
+(a failing implicit mark is an error, never a silent unmarked wait), so with
+`--engine serial` it sees only text written after the wait began. In `auto` that
+promise is weaker: a quiet serial log falls through to VGA and OCR, which read
+the current screen and may still show text from before the wait; a strict wait
+uses `--engine serial`. A mark whose log was truncated or replaced makes vmscreen
+exit 4, the same code as "no source applies"; the VM tool tells them apart by
+vmscreen's reason and fails closed (exit 1, "the serial log was truncated or
+replaced since the mark was taken") for an explicit or implicit mark, in `auto`
+and forced alike, because such a mark can never apply again. While serial
+applies, each `auto` poll costs one extra vmscreen call (a QMP connection)
+before VGA and OCR. `--since-start` was deliberately not
 added: the implicit mark is that, and a second spelling would only invite a
 disagreement about "start". Only the serial engine can honour a mark; the others
 ignore an explicit one with one stderr note. A mark taken after the action it

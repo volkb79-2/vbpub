@@ -317,7 +317,7 @@ this table):
 
 | Reader | Reads | Needs |
 | --- | --- | --- |
-| `serial` (exact) | What the guest printed to its serial console (`<state-dir>/serial.log`), with escape sequences and CR already rendered. Works for every guest whose console is on ttyS0, UEFI included (`--display-device std` under UEFI is a graphical framebuffer with no VGA text). | The guest started with `--serial-console`, a guest console on `ttyS0` (Debian cloud images: yes), and vmscreen installed as for the next row. Run the launcher with a Python that has Pillow only if you also use `console record`. |
+| `serial` (exact) | What the guest printed to its serial console (`<state-dir>/serial.log`), with escape sequences and CR already rendered. Works for every guest whose console is on ttyS0, UEFI included (`--display-device std` under UEFI is a graphical framebuffer with no VGA text). | For `auto`: the guest started with `--serial-console` (recorded as `"serial_console": true` in `runner.json`; QEMU writes `serial.log` for every guest, so the file alone proves nothing, and `--engine serial` is the explicit choice for a guest without the record). A guest console on `ttyS0` (Debian cloud images: yes), and vmscreen installed as for the next row. Run the launcher with a Python that has Pillow only if you also use `console record`. |
 | `vmscreen` (exact) | The VGA text buffer of an 80+ column text mode: SeaBIOS and any boot loader that stays in text mode (a text-mode GRUB or syslinux menu). Not Linux's framebuffer console. | `--display-device std` (QEMU's standard VGA) and a guest that is in a text mode; vmscreen installed (`pip install` of `libraries/vmscreen`, an editable install is enough; it does not run from a bare source tree), as a `vmscreen` command on PATH or as a module of the Python that runs the VM tool. |
 | `ocr` (recognised) | Any screen: UEFI GOP, a graphical GRUB theme, a framebuffer console, ZFSBootMenu, graphical installers. | `pwmcp` on PATH and pwmcp's OCR sidecar enabled (`pwmcp.ocr.enabled = true`). |
 
@@ -326,24 +326,29 @@ Which reader for which guest:
 | Guest | Use | Why |
 | --- | --- | --- |
 | UEFI Linux with a serial console (Debian cloud image) | `serial` (what `auto` picks) | exact; the display is graphical, so VGA finds nothing |
-| BIOS guest in a text-mode boot menu | `vmscreen` | the VGA text buffer is exact; `auto` uses it when the serial log is absent or quiet |
+| BIOS guest in a text-mode boot menu | `vmscreen` | the VGA text buffer is exact; `auto` uses it for any guest not started with `--serial-console`, and while the serial log is quiet |
 | A graphical screen with no serial output (installer GUI, GOP menu) | `ocr` | only a screendump exists |
 
 The serial reader sees only what the guest wrote to the serial port: nothing
 about a menu drawn on the graphical display, and nothing from a guest whose
 console is not on `ttyS0`. `console sendkey`, `console type` and the recorder
 send keys to the virtual keyboard, which feeds the graphical console (tty0),
-not the serial login: a Return sent that way changes the screen, not the
-serial log. A log accumulates across boots and resets, so use marks.
+not the serial login: in the 2026-11-17 run a Return sent that way left the
+serial log unchanged (and the recorder kept no new frame). A log accumulates across boots and resets, so use marks.
 
 **Marks: only text written after a point.** `console mark` prints a token for
 the current end of the serial log (one line on stdout; it is vmscreen's mark, so
-a log that was truncated or replaced since is refused instead of silently
-re-read). `--since-mark TOKEN` on `console text` and `console wait-for-text`
-limits the serial reader to text after it. A `wait-for-text` without
-`--since-mark` takes an implicit mark at its start: it sees only text written
-after the wait began (there is no `--since-start`), so `login:` from the
-previous boot cannot satisfy it. Take the mark *before* the action whose output
+a log that was truncated or replaced since is refused: exit 1 with "the serial
+log was truncated or replaced since the mark was taken", in every engine mode,
+instead of silently re-read). `--since-mark TOKEN` on `console text` and
+`console wait-for-text` limits the serial reader to text after it. A
+`wait-for-text` without `--since-mark` takes an implicit mark at its start (there
+is no `--since-start`): with `--engine serial` it sees only text written after the
+wait began, so `login:` from the previous boot cannot satisfy it. In `auto`
+that holds only while the serial log has new text: a quiet log falls through to
+VGA and OCR, which read the current screen and may still show old text; use
+`--engine serial` for a strict wait. While serial applies, each `auto` poll
+costs one extra vmscreen call (a QMP connection). Take the mark *before* the action whose output
 you wait for, because text written between the action and a later mark is lost
 to the wait.
 

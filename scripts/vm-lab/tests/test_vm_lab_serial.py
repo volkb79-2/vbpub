@@ -41,8 +41,11 @@ def mark_ok(token: str = MARK) -> RunResult:
     return RunResult(0, json.dumps({"ok": True, "serial_log": "serial.log", "offset": 240, "mark": token}), "")
 
 
-def with_log(tmp_path: Path, **kwargs) -> Rig:
+def with_log(tmp_path: Path, *, started_with_serial_console: bool = True, **kwargs) -> Rig:
+    """The real state: QEMU always writes serial.log; runner.json says how the guest was started."""
     (tmp_path / "serial.log").write_text("boot\n")
+    if started_with_serial_console:
+        (tmp_path / "runner.json").write_text(json.dumps({"schema": 1, "serial_console": True}))
     return Rig(tmp_path, **kwargs)
 
 
@@ -82,6 +85,43 @@ def test_auto_without_a_serial_log_goes_straight_to_vga(tmp_path):
     assert "serial" not in serial_calls(rig)[0]
 
 
+@pytest.mark.parametrize(
+    "record",
+    [None, {"schema": 1}, {"schema": 1, "serial_console": False}, {"serial_console": "true"}, "not json"],
+    ids=["no-runner-json", "no-key", "false", "not-a-bool", "unreadable"],
+)
+def test_auto_ignores_a_serial_log_of_a_guest_not_started_with_serial_console(tmp_path, record):
+    # The real state: QEMU writes serial.log for EVERY guest (`-serial file:`), and a guest that
+    # prints to ttyS0 must not shadow the VGA text buffer or OCR.
+    (tmp_path / "serial.log").write_text("SeaBIOS\nkernel: lots of text\n")
+    if record is not None:
+        (tmp_path / "runner.json").write_text(record if isinstance(record, str) else json.dumps(record))
+    rig = Rig(tmp_path, vmscreen=[vm_ok("GNU GRUB menu")])
+    shot = rig.reader.read()
+    assert shot.engine == "vmscreen" and shot.text == "GNU GRUB menu"
+    assert all("serial" not in argv for argv in serial_calls(rig))
+    rig = Rig(tmp_path, vmscreen=[vm_none()], pwmcp=[ocr_ok("only OCR sees this")])
+    assert rig.reader.read().engine == "ocr"
+
+
+def test_forced_serial_is_an_explicit_choice_that_works_without_the_record(tmp_path):
+    rig = with_log(tmp_path, started_with_serial_console=False, engine="serial", vmscreen=[serial_ok("kernel text")])
+    assert rig.reader.read() == ScreenText("kernel text", "serial", "stream")
+
+
+def test_a_wait_in_auto_does_not_take_an_implicit_mark_without_the_record(tmp_path):
+    rig = with_log(tmp_path, started_with_serial_console=False, vmscreen=[vm_ok("MENU")])
+    rig.reader._implicit_mark = True
+    rig.reader.read()
+    assert all("mark" not in argv[:6] for argv in serial_calls(rig))
+
+
+def test_the_record_is_read_from_runner_json(tmp_path):
+    assert vm_lab_text.recorded_serial_console(tmp_path) is False
+    (tmp_path / "runner.json").write_text(json.dumps({"serial_console": True}))
+    assert vm_lab_text.recorded_serial_console(tmp_path) is True
+
+
 def test_an_empty_serial_result_does_not_apply_yet_and_auto_falls_through(tmp_path):
     rig = with_log(tmp_path, vmscreen=[serial_ok(""), vm_ok("GNU GRUB")])
     assert rig.reader.read().engine == "vmscreen"
@@ -107,11 +147,78 @@ def test_a_wait_on_a_quiet_serial_log_times_out_with_exit_3_not_an_error(tmp_pat
     assert out.result == "timeout" and out.exit_code == 3 and out.engine == "serial"
 
 
-def test_forced_serial_without_a_log_is_an_error_naming_serial_console(tmp_path):
+def test_forced_serial_without_a_log_is_an_error_naming_the_log(tmp_path):
     rig = Rig(tmp_path, engine="serial")
-    with pytest.raises(TextEngineError, match="no serial log at .*serial.log.*--serial-console"):
+    with pytest.raises(TextEngineError, match="no serial log at .*serial.log"):
         rig.reader.read()
     assert rig.kinds() == []
+
+
+# What `vmscreen text --source serial --json --mark <stale>` really printed (exit 4) when serial.log
+# was truncated after the mark was taken (live run, 2026-11-17).
+STALE_STDOUT = json.dumps({
+    "ok": False,
+    "error": "no exact-text source applies to this screen: serial: serial log was truncated or replaced since "
+             "the mark (inode, first bytes or the bytes before the offset changed): marks no longer apply; "
+             "none: graphical framebuffer or no applicable source: exact text is unavailable (use screen + OCR)",
+    "exit_code": 4,
+    "exact": False,
+    "tried": [
+        {"source": "serial", "ok": False, "reason": "serial log was truncated or replaced since the mark "
+         "(inode, first bytes or the bytes before the offset changed): marks no longer apply"},
+        {"source": "none", "ok": False,
+         "reason": "graphical framebuffer or no applicable source: exact text is unavailable (use screen + OCR)"},
+    ],
+})
+STALE = RunResult(4, STALE_STDOUT, "[ERROR] no exact-text source applies to this screen: serial: serial log was truncated or replaced")
+NO_SOURCE = RunResult(4, json.dumps({"ok": False, "error": "no exact-text source applies to this screen: none: graphical "
+                                     "framebuffer", "exit_code": 4}), "[ERROR] no exact-text source applies")
+
+
+@pytest.mark.parametrize("engine", ["auto", "serial"])
+def test_a_stale_mark_is_an_error_in_auto_and_forced_and_never_falls_through(tmp_path, engine):
+    rig = with_log(tmp_path, engine=engine, vmscreen=[STALE, vm_ok("would be a fall-through")], pwmcp=[ocr_ok("o")])
+    rig.reader.since_mark = MARK
+    with pytest.raises(TextEngineError, match="serial log was truncated or replaced since the mark was taken"):
+        rig.reader.read()
+    assert len(serial_calls(rig)) == 1 and "pwmcp" not in rig.kinds()
+
+
+def test_a_stale_mark_ends_a_wait_with_an_error_not_a_timeout(tmp_path):
+    rig = with_log(tmp_path, engine="serial", vmscreen=[STALE])
+    rig.reader.since_mark = MARK
+    clock = FakeClock()
+    with pytest.raises(TextEngineError, match="truncated or replaced"):
+        vm_lab_text.wait_loop(make_spec("NEVER", timeout=30.0), rig.reader.read, clock=clock, sleep=clock.sleep)
+
+
+def test_a_stale_implicit_mark_in_a_wait_is_an_error(tmp_path):
+    rig = with_log(tmp_path, vmscreen=[mark_ok(), serial_ok("a"), STALE])
+    rig.reader._implicit_mark = True
+    assert rig.reader.read().text == "a"
+    with pytest.raises(TextEngineError, match="truncated or replaced"):
+        rig.reader.read()
+
+
+def test_the_other_exit_4_cause_with_a_mark_is_still_not_applicable(tmp_path):
+    rig = with_log(tmp_path, engine="serial", vmscreen=[NO_SOURCE])
+    rig.reader.since_mark = MARK
+    with pytest.raises(TextNotApplicable):
+        rig.reader.read()
+
+
+def test_exit_4_without_a_mark_is_never_a_stale_mark_error(tmp_path):
+    rig = with_log(tmp_path, engine="serial", vmscreen=[STALE])
+    with pytest.raises(TextNotApplicable):
+        rig.reader.read()
+
+
+def test_a_quiet_serial_log_with_an_explicit_mark_gives_no_ignored_note(tmp_path):
+    rig = with_log(tmp_path, vmscreen=[serial_ok(""), vm_ok("a")])
+    rig.reader.since_mark = MARK
+    rig.reader._explicit_mark = True
+    rig.reader.read()
+    assert rig.notes == []
 
 
 def test_forced_serial_returns_empty_text_and_never_falls_through(tmp_path):
@@ -178,7 +285,7 @@ def test_take_mark_runs_vmscreen_mark_and_returns_the_token(tmp_path):
 
 
 def test_take_mark_without_a_log_is_an_error(tmp_path):
-    with pytest.raises(TextEngineError, match="no serial log.*--serial-console"):
+    with pytest.raises(TextEngineError, match="no serial log at"):
         Rig(tmp_path).reader.take_mark()
 
 
@@ -206,7 +313,7 @@ def test_console_mark_without_a_serial_log_exits_1_with_a_vm_lab_line(monkeypatc
     monkeypatch.setattr(vm_lab, "docker_inspect", lambda _name: labelled_guest(tmp_path))
     code = vm_lab.main(GENERIC_PROFILE, ["console", "mark", "--name", "deb1", "--state-dir", str(tmp_path)])
     captured = capsys.readouterr()
-    assert code == 1 and captured.out == "" and "--serial-console" in captured.err
+    assert code == 1 and captured.out == "" and "no serial log at" in captured.err
 
 
 def test_console_mark_builds_a_serial_reader(monkeypatch, tmp_path):
