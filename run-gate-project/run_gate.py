@@ -2776,10 +2776,13 @@ def _validate_effective_judge_lanes(project: dict, central: dict,
             continue
         judged_project = project_path.parent.resolve()
         for tree_name in JUDGE_SOURCE_TREES:
-            judge_tree = (toplevel / tree_name).resolve() \
-                if (toplevel / tree_name).is_dir() else None
-            if judge_tree is None:
-                continue
+            # Round 4: no "is there such a tree" guard and no `None` sentinel.
+            # A tree this checkout does not carry cannot be the judged
+            # project's own directory or one of its parents (the project
+            # exists), so the comparison alone answers the question; the
+            # earlier sentinel's swap to any other falsy value behaved
+            # identically, which made it an equivalent mutant.
+            judge_tree = (toplevel / tree_name).resolve()
             if judged_project == judge_tree \
                     or judge_tree in judged_project.parents:
                 fail(f"{project_path} [lanes.{name}]: this project lives "
@@ -8370,9 +8373,12 @@ def print_judge_provider(lane: dict) -> None:
     elif dirty is not False:
         # The THIRD state is not "clean" and must not borrow the dirty
         # warning's wording: Git either could not run or answered non-zero,
-        # and `dirty_source` says which.
+        # and `dirty_source` says which. Indexed, not `.get(..., default)`:
+        # `judge_identity` ALWAYS states why it answered `dirty` as it did, so
+        # an identity without the reason is a bug to surface, not a gap to fill
+        # with a made-up sentence (and a default is a literal nothing pinned).
         print(f"run-gate: WARNING: the judge source's cleanliness is UNKNOWN "
-              f"({identity.get('dirty_source', 'no reason recorded')}) -- "
+              f"({identity['dirty_source']}) -- "
               f"the verdict's judge version cannot be tied to its bytes",
               flush=True)
 
@@ -18001,14 +18007,6 @@ def run_container_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
         "progress": progress_path,
         "state_dir": state_dir,
         "assay_identity_mode": assay_identity_mode(lane),
-        # RG-285 (round-1 review): the judge THIS container was started with.
-        # The record is what a later re-attach or collect answers from, so the
-        # identity can never be silently re-derived from a worktree that has
-        # moved on since -- `adopt_inflight_start` reads exactly this key back
-        # into the history entry, and a record that carries none makes the
-        # adopting client record none either.
-        "judge": (copy.deepcopy(run_record.get("judge"))
-                  if run_record is not None else None),
         "r2_jobs": (run_record.get("r2_jobs")
                     if run_record is not None else None),
         "ksm": (copy.deepcopy(run_record.get("ksm"))
@@ -18027,6 +18025,17 @@ def run_container_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
     }
     if isinstance(selection, dict):
         inflight_payload["image_selection"] = selection
+    if run_record is not None and run_record.get("judge") is not None:
+        # RG-285 (round-1 review): the judge THIS container was started with.
+        # The record is what a later re-attach or collect answers from, so the
+        # identity can never be silently re-derived from a worktree that has
+        # moved on since -- `adopt_inflight_start` reads exactly this key back
+        # into the history entry, and a record that carries none makes the
+        # adopting client record none either. Round 4: the key is written ONLY
+        # for a lane that has a judge. A lane without the key keeps the exact
+        # record it always wrote (absent, not `null`), the same rule the run
+        # record follows.
+        inflight_payload["judge"] = copy.deepcopy(run_record["judge"])
     if run_record is not None:
         run_record["_inflight"] = inflight_payload
     write_inflight_record(project_dir, worktree, lane_name, inflight_payload)

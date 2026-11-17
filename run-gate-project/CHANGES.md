@@ -43,6 +43,15 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
   not a judge). The oracle is hermetic (`-S`, scrubbed environment, neutral
   cwd, two fixture trees) instead of reading the running interpreter's own
   assay (RG-285 round 3).
+- run-gate: a lane without `judge` keeps the exact records it always wrote.
+  The inflight record carried `"judge": null` for every ordinary lane; it now
+  carries the key only for a judge lane (absent, not `null`), as the run record
+  already did. The record write is pinned where it happens (a judge lane
+  refused before its container starts still records the judge; an ordinary
+  lane's record differs from a judge lane's by exactly that key), and the
+  refresh's `None` answer for a lane without the key is asserted as `None`,
+  not as any falsy value (RG-285 round 4, the two assay-r2 survivors on
+  20d6a7d60).
 - run-gate: `refuse_mounts_over_the_judge`'s child test now has both
   directions pinned — a SIBLING that merely shares the prefix (`assay2`,
   `assay-extra`, `libraries/cowtree2`) must be accepted, the exact path and a

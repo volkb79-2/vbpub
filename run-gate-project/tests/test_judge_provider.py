@@ -857,6 +857,13 @@ class TestJudgeMountCollisions:
         proc = run_tool(proj, "rust-r1")
         assert proc.returncode == 2, proc.stdout + proc.stderr
         assert "INSIDE the judge tree" in proc.stderr
+        # Round 4: the refusal says WHICH set carried the mount. The operator's
+        # knob is named when it contributed (so the remedy is findable), and a
+        # lane with no extra mounts says only "this lane's mount set" -- the
+        # label is derived from the same `extra_flags` the argv is, so it
+        # cannot name a source that was not there.
+        assert "this lane's mount set (including " \
+               f"${run_gate.EXTRA_MOUNT_ENV_VAR}) mounts" in proc.stderr
         assert [run for run in docker_runs(log) if "-d" in run] == []
 
 
@@ -1809,6 +1816,32 @@ class TestJudgeLoadValidationEdges:
         config = run_gate.load_config(proj)[0]
         assert config["lanes"]["rust-r1"]["judge"] == "assay"
 
+    def test_neither_config_having_a_lanes_table_is_not_an_error(
+            self, tmp_path):
+        """Round 4: `project.get("lanes", {})` -- a config with no `lanes`
+        table at all (a project that only declares environments) must read as
+        "no lanes", not crash the load-time validation. The call is direct
+        because no whole-config load reaches this function with a project that
+        has no lanes yet declares judge lanes elsewhere."""
+        assert run_gate._validate_effective_judge_lanes(
+            {}, {}, tmp_path / "run-gate.toml", None) is None
+
+    def test_a_central_judge_lane_is_validated_for_a_project_without_lanes(
+            self, tmp_path):
+        """…and the lanes a project INHERITS from the central config are
+        merged with the project's own (none here), so an inherited judge lane
+        in a non-ephemeral environment is still refused."""
+        central = {"lanes": {"rust-r1": {"kind": "command",
+                                         "environment": "runner",
+                                         "judge": "assay"}},
+                   "environments": {"runner": {"mode": "exec",
+                                                "image": "runner:local"}}}
+        with pytest.raises(run_gate.GateError,
+                           match=r"requires an ephemeral container"):
+            run_gate._validate_effective_judge_lanes(
+                {}, central, tmp_path / "run-gate.toml",
+                tmp_path / "run-gate.root.toml")
+
 
 # ---------------------------------------------------------------------------
 # 9. The in-process wiring: disclosure, record and `--help`
@@ -1901,6 +1934,12 @@ class TestJudgeProviderWiring:
         )["lanes"]["rust-r1"]["latest"]
         assert latest["judge"]["dirty"] is None
         assert "answered 128" in latest["judge"]["dirty_source"]
+        # Round 4: the warning must carry the REASON the record carries (it is
+        # the only thing that tells a reader why the answer is "unknown"), not
+        # a sentence of its own.
+        warning = next(line for line in streams.out.splitlines()
+                       if "cleanliness is UNKNOWN" in line)
+        assert f"({latest['judge']['dirty_source']})" in warning
 
     @pytest.mark.parametrize("field, stale_value", [
         ("commit", "0" * 40),
@@ -2103,6 +2142,156 @@ class TestJudgeProviderWiring:
             {"kind": "command", "environment": "rust", "judge": "assay"},
             repo)
         assert fresh["commit"] == _git(repo, "rev-parse", "HEAD").strip()
+
+
+# ---------------------------------------------------------------------------
+# 6a. The audit field is written where the record is ASSEMBLED, and ONLY then
+# ---------------------------------------------------------------------------
+
+PLAIN_LANE = """
+[lanes.rust-plain]
+kind = "command"
+environment = "rust"
+clean_tree = false
+budget = "5m"
+exit_map = { "0" = "PASS" }
+argv = ["bash", "-c", "true"]
+"""
+
+
+class TestJudgeRecordAssembly:
+    """Round 4 (assay-r2 on 20d6a7d60): two survivors lived at the two places
+    this feature's record is decided, and no oracle read the record AT either.
+
+    * `refresh_judge_identity`'s `return None` for a lane that asks for no
+      provided judge. The contract is EXACTLY `None`, so a falsy stand-in
+      (`[]`, `{}`, `False`) is a different answer a caller can tell apart.
+    * the run-record assembly's `if judge_identity_record is not None:` write.
+      The container runner's own `refresh_judge_identity` writes the same field
+      a moment later, so every oracle that ran a judge lane to completion saw
+      `judge` in the record whichever of the two wrote it; and no oracle read a
+      lane WITHOUT the key, which is where the flipped condition shows (it
+      writes `"judge": None` into every ordinary lane's record).
+
+    Two things make the assembly write observable, and each is pinned below by
+    the one run shape that separates it from the refresh:
+
+    * a judge lane REFUSED before its container starts (RG-27 puts refusals in
+      `latest`) never reaches the refresh, so `judge` is in that record only
+      because the assembly wrote it;
+    * a lane without the key must come out of the same code path with NO `judge`
+      key at all (absent, not `None`), which is also the byte-identity of every
+      pre-feature lane's record.
+    """
+
+    LANE = {"kind": "command", "environment": "rust", "argv": ["true"]}
+
+    def _project(self, tmp_path, *, judge_clean_tree=False):
+        repo = make_repo(tmp_path)
+        _minimal_judge(repo)
+        config = JUDGE_CONFIG.replace("{image}", "tester-unified-rust:local")
+        if judge_clean_tree:
+            assert "clean_tree = false" in config
+            config = config.replace("clean_tree = false", "clean_tree = true")
+        proj = make_project(repo, config + PLAIN_LANE)
+        (proj / "assay.toml").write_text(_lanes_toml(["/bin/sh", "-c", "true"]))
+        commit_all(repo, "judge provider fixture")
+        return repo, proj
+
+    @staticmethod
+    def _latest(proj, lane):
+        history = json.loads((proj / ".run-gate" / "history.json").read_text())
+        return history["lanes"][lane]["latest"]
+
+    # -- refresh_judge_identity: the answer for "no provided judge" --------
+
+    def test_a_lane_without_the_key_is_answered_None_and_left_untouched(
+            self, tmp_path, capsys):
+        """`is None`, not falsy: `[]` and `{}` are answers a caller could
+        iterate or `.get` on, and the contract is that there is no identity."""
+        repo, _proj = self._project(tmp_path)
+        lane = dict(self.LANE)
+        record: dict = {}
+        returned = run_gate.refresh_judge_identity(lane, "rust-plain", repo,
+                                                  record)
+        assert returned is None
+        # ...and it wrote nothing anywhere: no stash on the lane, no key (not
+        # a `None` value) in the record, no warning.
+        assert lane == self.LANE
+        assert "_judge_identity" not in lane
+        assert record == {}
+        assert capsys.readouterr().err == ""
+        assert run_gate.refresh_judge_identity(
+            dict(self.LANE), "rust-plain", repo, None) is None
+
+    def test_a_judge_lane_is_never_answered_None_or_empty(self, tmp_path):
+        repo, _proj = self._project(tmp_path)
+        lane = {**self.LANE, "judge": "assay"}
+        returned = run_gate.refresh_judge_identity(lane, "rust-r1", repo, {})
+        assert returned is not None
+        assert isinstance(returned, dict) and returned["name"] == "assay"
+
+    # -- the assembly write ------------------------------------------------
+
+    def test_a_judge_lane_refused_before_its_container_still_records_the_judge(
+            self, tmp_path, monkeypatch):
+        """No container is started, so `refresh_judge_identity` never runs and
+        the record's `judge` can only have been written at the assembly. The
+        refusal is a dirty judged tree on a `clean_tree = true` lane (dirt in a
+        file outside the judge trees, so the judge itself stays clean)."""
+        repo, proj = self._project(tmp_path, judge_clean_tree=True)
+        (repo / "stray.txt").write_text("uncommitted\n")
+        log = fake_docker(tmp_path, monkeypatch)
+        monkeypatch.setenv("RUN_GATE_ALLOW_MAIN_CHECKOUT", "1")
+        proc = run_tool(proj, "rust-r1", "--json")
+        assert proc.returncode != 0, proc.stdout + proc.stderr
+        assert "dirty tree" in proc.stdout + proc.stderr
+        assert lane_runs(log) == []        # the container never started
+        latest = self._latest(proj, "rust-r1")
+        head = _git(repo, "rev-parse", "HEAD").strip()
+        assert latest["judge"]["name"] == "assay"
+        assert latest["judge"]["commit"] == head
+        assert latest["judge"]["dirty"] is False   # the dirt is elsewhere
+
+    def test_a_lane_without_the_key_has_no_judge_key_in_its_record(
+            self, tmp_path, monkeypatch):
+        """The key is ABSENT (not `None`), and it is the ONLY difference
+        between a judge lane's record and an ordinary lane's out of the same
+        code path -- so every pre-feature lane's record keeps its exact shape.
+        (A recorded literal of the whole key set would pin fields that depend on
+        the host and the image; the difference against a judge lane's own record
+        cannot go stale and cannot drift with the environment.)"""
+        _repo, proj = self._project(tmp_path)
+        fake_docker(tmp_path, monkeypatch)
+        monkeypatch.setenv("RUN_GATE_ALLOW_MAIN_CHECKOUT", "1")
+        for lane in ("rust-r1", "rust-plain"):
+            proc = run_tool(proj, lane, "--json")
+            assert proc.returncode == 0, proc.stdout + proc.stderr
+        judged = self._latest(proj, "rust-r1")
+        plain = self._latest(proj, "rust-plain")
+        assert "judge" in judged
+        assert "judge" not in plain
+        assert set(judged) - {"judge"} == set(plain)
+
+    def test_the_inflight_record_of_a_lane_without_the_key_has_no_judge_key(
+            self, tmp_path, monkeypatch, capsys):
+        """The record a dying client leaves behind is a record too: it carries
+        the judge for a judge lane (a re-attach adopts it) and nothing at all
+        for any other lane."""
+        _repo, proj = self._project(tmp_path)
+        written = {}
+        real_write = run_gate.write_inflight_record
+
+        def spy(project_dir, worktree, lane_name, payload):
+            written[lane_name] = copy.deepcopy(payload)
+            return real_write(project_dir, worktree, lane_name, payload)
+        monkeypatch.setattr(run_gate, "write_inflight_record", spy)
+        fake_docker(tmp_path, monkeypatch)
+        monkeypatch.chdir(proj)
+        for lane in ("rust-r1", "rust-plain"):
+            assert run_gate.main([lane]) == 0, capsys.readouterr().err
+        assert isinstance(written["rust-r1"]["judge"], dict)
+        assert "judge" not in written["rust-plain"]
 
 
 # ---------------------------------------------------------------------------

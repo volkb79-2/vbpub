@@ -3132,7 +3132,8 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   and the difference is disclosed when the preflight's snapshot no longer
   matches what the mount will hold; the inflight record carries the identity,
   so a re-attached or collected run reports the judge it was STARTED with and
-  never today's worktree. Lanes without the key record no such field.
+  never today's worktree. Lanes without the key record no such field, in the
+  run record or in the inflight record (the key is absent, not `null`).
   `kind = "assay"` lanes keep their own `judge_provenance` unchanged; this
   rule adds no second parser of Assay's verdict. The exit code a provided
   judge's own in-lane refusal ends on is RESERVED: Run-Gate maps it to
