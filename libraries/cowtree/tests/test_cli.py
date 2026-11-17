@@ -288,10 +288,11 @@ def test_path_cli_maps_failures_to_the_typed_statuses(tmp_path, monkeypatch, cap
     empty.mkdir()
     monkeypatch.chdir(empty)
     # a config name no directory above the temporary one can hold: independent of where tmp_path sits
-    monkeypatch.setattr(repo_paths, "CONFIG_NAME", "vm-lab-never-present.toml")
+    original_config_name = repo_paths.CONFIG_NAME
+    monkeypatch.setattr(repo_paths, "CONFIG_NAME", "cowtree-never-present.toml")
     assert cli.main(["path", "iso"]) == 2
-    assert "no vm-lab-never-present.toml at or above" in capsys.readouterr().err
-    monkeypatch.setattr(repo_paths, "CONFIG_NAME", "vm-lab.toml")
+    assert "no cowtree-never-present.toml at or above" in capsys.readouterr().err
+    monkeypatch.setattr(repo_paths, "CONFIG_NAME", original_config_name)
 
     area = _cow_area(tmp_path, monkeypatch)
     (area / "myrepo" / "downloads" / "iso").mkdir(parents=True)

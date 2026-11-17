@@ -47,8 +47,9 @@ snapshots become writable by clearing the snapshot's read-only flag.
 
 ## Resolve the shared paths of a repository
 
-Never hardcode `downloads/` or `vm-lab/`. The repository declares its shared paths in a tracked `vm-lab.toml`
-in its root (this is the shape; the repository's own file is authoritative):
+Never hardcode `downloads/` or `vm-lab/`. The repository declares its shared paths in a tracked `cowtree.toml`
+in its root (this is the shape; the repository's own file is authoritative; ask the resolver by entry name and do not
+parse the file yourself):
 
 ```toml
 schema = 1

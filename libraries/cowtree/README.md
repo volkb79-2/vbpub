@@ -12,7 +12,7 @@ so the clone can be used as a candidate. A destination collision leaves the
 existing path intact. It does not know about Git, assay, lanes, VMs, or Docker.
 The embedded API advertises `API_VERSION = 1`.
 The CLI provides `detect`, `survey`, `gc`, `make-shared`, `probe`, `cache` and `path`
-([repo paths](#repo-paths-vm-labtoml)). A run can declare
+([repo paths](#repo-paths-cowtreetoml)). A run can declare
 an external owner with `external_ref`; cowtree never reaps external runs.
 Default `gc` scans only the configured CoW area's runs. It does not discover
 plain-mode runs; it logs an INFO line directing operators to `cowtree gc
@@ -58,10 +58,11 @@ subvolumes. GC reads
 refuses to write larger manifests. See the [ownership
 rules](DESIGN-GUIDE.md#ownership-and-identity).
 
-## Repo paths (`vm-lab.toml`)
+## Repo paths (`cowtree.toml`)
 
 A repository names its shared paths (ISOs, base images, per-project VM state, other
-downloads) once, in a tracked `vm-lab.toml` in its root. Each entry gives the
+downloads) once, in a tracked `cowtree.toml` in its root (the file was renamed from `vm-lab.toml`; a repository
+that still holds only the old name is refused with a one-line hint, there is no fallback). Each entry gives the
 plain location inside the checkout and, optionally, a location below
 `$MDT_COW_ROOT/<repo-name>/` (`<repo-name>` is the file's top-level `repo` key, the same for the main checkout and every worktree) where the same folder lives as a btrfs subvolume, with
 its compression. Scripts and tests ask the resolver instead of hardcoding a path:

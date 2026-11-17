@@ -1,4 +1,4 @@
-"""One repo-root config (``vm-lab.toml``) for the shared paths of a repository, and the resolver for it.
+"""One repo-root config (``cowtree.toml``) for the shared paths of a repository, and the resolver for it.
 
 Scripts and tests never hardcode where ISOs, base images or VM state live: they ask ``RepoPaths.resolve(name)``
 (or the ``cowtree path NAME`` command). The config names each path, gives its plain location inside the checkout
@@ -27,7 +27,9 @@ from .detect import ENV_MODE, ENV_ROOT, _read_mountinfo, detect
 from .errors import BackendFailed, PathRefused, RepoPathsInvalid, RootInvalid, UsageError
 from .paths import mount_fstype, normalized_absolute
 
-CONFIG_NAME = "vm-lab.toml"
+CONFIG_NAME = "cowtree.toml"
+#: The name before the rename. Never read: a repository that still holds only this file is refused with a migration hint.
+LEGACY_CONFIG_NAME = "vm-lab.toml"
 SCHEMA = 1
 PLACEHOLDER = "{project}"
 #: Name of the directory cowtree itself keeps in every area root; a repository must not claim it.
@@ -162,22 +164,34 @@ def parse_repo_paths(text: str, source: str = CONFIG_NAME) -> tuple[str, dict[st
 
 
 def find_repo_root(start: str | os.PathLike[str]) -> Path:
-    """The nearest directory at or above *start* that holds ``vm-lab.toml``. *start* is always explicit:
-    this never looks at the current directory by itself."""
+    """The nearest directory at or above *start* that holds ``cowtree.toml``. *start* is always explicit:
+    this never looks at the current directory by itself. A directory holding only the old name is refused (a
+    migration hint, no fallback to the old file)."""
     here = Path(os.path.abspath(start))
     if not here.is_dir():
         here = here.parent
     for candidate in (here, *here.parents):
         if (candidate / CONFIG_NAME).is_file():
             return candidate
+        _refuse_legacy_name(candidate)
     raise UsageError(f"no {CONFIG_NAME} at or above {str(here)!r}")
 
 
+def _refuse_legacy_name(directory: Path) -> None:
+    """Refuse a directory that still holds the pre-rename config and no ``cowtree.toml``."""
+    if (directory / LEGACY_CONFIG_NAME).is_file() and not (directory / CONFIG_NAME).exists():
+        raise UsageError(
+            f"{str(directory / LEGACY_CONFIG_NAME)!r} was renamed to {CONFIG_NAME}: "
+            f"git mv {LEGACY_CONFIG_NAME} {CONFIG_NAME}"
+        )
+
+
 def load_repo_paths(repo_root: str | os.PathLike[str]) -> RepoPaths:
-    """Load ``<repo_root>/vm-lab.toml``. The CoW mirror folder is the file's own ``repo`` key, never derived from
+    """Load ``<repo_root>/cowtree.toml``. The CoW mirror folder is the file's own ``repo`` key, never derived from
     the directory name, so a worktree resolves to the same CoW folders as the main checkout."""
     root = Path(os.path.abspath(repo_root))
     config = root / CONFIG_NAME
+    _refuse_legacy_name(root)
     try:
         text = config.read_text(encoding="utf-8", errors="replace")
     except OSError as exc:
