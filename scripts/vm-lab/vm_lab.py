@@ -76,6 +76,9 @@ QCOW2_OVERLAY_NAME = "disk-overlay.qcow2"
 COPY_TIMEOUT_SECONDS = 3600
 # Recorded for a raw guest as information; a resume does not compare them.
 RAW_BASE_INFORMATIONAL_KEYS = ("base_disk", "base_size")
+# runner.json records whether the last start used --serial-console (true/false). QEMU writes
+# serial.log for EVERY guest, so the log existing says nothing about it; vm_lab_text reads this key.
+SERIAL_CONSOLE_KEY = "serial_console"
 PROMOTE_NAME_PATTERN = re.compile(r"[A-Za-z0-9_-][A-Za-z0-9._-]*")
 PROMOTE_HASH_CHUNK_BYTES = 1024 * 1024
 
@@ -999,7 +1002,14 @@ def cmd_console_record(profile: VmProfile, args: argparse.Namespace) -> int:
 SCREEN_TEXT_ERRORS = (ConsoleError, vm_lab_console.ConsoleCallError, OSError, ValueError)
 
 
-def console_screen_reader(profile: VmProfile, state_dir: Path, engine: str) -> vm_lab_text.ScreenReader:
+def console_screen_reader(
+    profile: VmProfile,
+    state_dir: Path,
+    engine: str,
+    *,
+    since_mark: str | None = None,
+    implicit_mark: bool = False,
+) -> vm_lab_text.ScreenReader:
     """Build the screen-text reader for a validated guest; engines run one after the other."""
     return vm_lab_text.ScreenReader(
         state_dir=state_dir,
@@ -1007,28 +1017,59 @@ def console_screen_reader(profile: VmProfile, state_dir: Path, engine: str) -> v
         qmp_socket=state_dir / "qmp.sock",
         engine=engine,
         qmp_call=qmp_command,
+        since_mark=since_mark,
+        implicit_mark=implicit_mark,
     )
 
 
-def cmd_console_text(profile: VmProfile, args: argparse.Namespace) -> int:
-    """Print the guest's current screen text once (vmscreen exact text, else OCR)."""
+def validated_since_mark(args: argparse.Namespace) -> str | None:
+    """The --since-mark token, checked before anything connects (a usage error otherwise)."""
+    token = getattr(args, "since_mark", None)
+    return None if token is None else vm_lab_text.validate_mark(token)
+
+
+def cmd_console_mark(profile: VmProfile, args: argparse.Namespace) -> int:
+    """Print a mark token for the current end of the guest's serial log."""
     try:
         state_dir = validate_console_guest(profile, args.name, Path(args.state_dir))
-        return vm_lab_text.run_text(console_screen_reader(profile, state_dir, args.engine), as_json=args.json)
+        return vm_lab_text.run_mark(console_screen_reader(profile, state_dir, "serial"))
     except SCREEN_TEXT_ERRORS as exc:
-        return vm_lab_text.report_error(str(exc) or type(exc).__name__, as_json=args.json)
+        return vm_lab_text.report_error(str(exc) or type(exc).__name__, as_json=False)
 
 
-def cmd_console_wait_for_text(profile: VmProfile, args: argparse.Namespace) -> int:
-    """Poll the guest's screen until a pattern shows up, a fail pattern shows up, or a boot loop is seen."""
+def cmd_console_text(profile: VmProfile, args: argparse.Namespace) -> int:
+    """Print the guest's current screen text once (serial log, vmscreen exact text, else OCR)."""
     try:
-        spec = vm_lab_text.wait_spec(args)
+        since_mark = validated_since_mark(args)
     except vm_lab_text.TextUsageError as exc:
         print(f"vm-lab: {exc}", file=sys.stderr)
         return vm_lab_text.EXIT_USAGE
     try:
         state_dir = validate_console_guest(profile, args.name, Path(args.state_dir))
-        return vm_lab_text.run_wait(spec, console_screen_reader(profile, state_dir, args.engine))
+        reader = console_screen_reader(profile, state_dir, args.engine, since_mark=since_mark)
+        return vm_lab_text.run_text(reader, as_json=args.json)
+    except SCREEN_TEXT_ERRORS as exc:
+        return vm_lab_text.report_error(str(exc) or type(exc).__name__, as_json=args.json)
+
+
+def cmd_console_wait_for_text(profile: VmProfile, args: argparse.Namespace) -> int:
+    """Poll the guest's screen until a pattern shows up, a fail pattern shows up, or a boot loop is seen.
+
+    On the serial engine the wait sees only text written after it began: without --since-mark the
+    reader takes an implicit mark of the serial log before its first read.
+    """
+    try:
+        spec = vm_lab_text.wait_spec(args)
+        since_mark = validated_since_mark(args)
+    except vm_lab_text.TextUsageError as exc:
+        print(f"vm-lab: {exc}", file=sys.stderr)
+        return vm_lab_text.EXIT_USAGE
+    try:
+        state_dir = validate_console_guest(profile, args.name, Path(args.state_dir))
+        reader = console_screen_reader(
+            profile, state_dir, args.engine, since_mark=since_mark, implicit_mark=since_mark is None
+        )
+        return vm_lab_text.run_wait(spec, reader)
     except SCREEN_TEXT_ERRORS as exc:
         return vm_lab_text.report_error(str(exc) or type(exc).__name__, as_json=args.json)
 
@@ -1419,7 +1460,10 @@ def check_runner_manifest(
         actual = json.loads(path.read_text())
     except (OSError, json.JSONDecodeError) as exc:
         raise RunnerError(f"cannot read runner identity file {path}: {exc}") from exc
+    # How the last start wired the serial port is a record, not an identity: it may differ on resume.
+    expected = {k: v for k, v in expected.items() if k != SERIAL_CONSOLE_KEY}
     if isinstance(actual, dict):
+        actual = {k: v for k, v in actual.items() if k != SERIAL_CONSOLE_KEY}
         # A guest recorded before raw bases existed has no disk_format: it is qcow2.
         recorded_format = actual.get("disk_format", "qcow2")
         requested_format = expected.get("disk_format", "qcow2")
@@ -1896,6 +1940,7 @@ def _cmd_start(profile: VmProfile, args: argparse.Namespace) -> int:
         extra_disk_sizes=disk_sizes_bytes,
         disk_format=disk_format,
     )
+    expected_manifest[SERIAL_CONSOLE_KEY] = bool(args.serial_console)
     manifest_path = state_dir / "runner.json"
     if args.resume:
         check_runner_manifest(
@@ -1970,10 +2015,15 @@ def _cmd_start(profile: VmProfile, args: argparse.Namespace) -> int:
         os.chmod(staged_firmware_code, 0o600)
         os.chmod(varstore, 0o600)
         write_runner_manifest(manifest_path, expected_manifest)
-    if args.resume and readonly_media is not None:
+    if args.resume:
         stored_manifest = json.loads(manifest_path.read_text())
-        if "readonly_media" not in stored_manifest:
-            write_runner_manifest(manifest_path, expected_manifest)
+        if readonly_media is not None and "readonly_media" not in stored_manifest:
+            write_runner_manifest(manifest_path, {**expected_manifest})
+        elif stored_manifest.get(SERIAL_CONSOLE_KEY) is not bool(args.serial_console):
+            # The record follows the start that actually wires the serial port; everything else stays.
+            write_runner_manifest(
+                manifest_path, {**stored_manifest, SERIAL_CONSOLE_KEY: bool(args.serial_console)}
+            )
     print(f"[source] base={base_disk} state={state_dir}", flush=True)
     if host_base is None:
         print(f"[container] host state mount={host_state}; the raw base is not mounted", flush=True)
@@ -2579,19 +2629,37 @@ def build_parser(
         help="gracefully stop the guest through the stop verb on every exit except ctl --quit",
     )
     record.set_defaults(func=cmd_console_record)
+    mark_console = console_commands.add_parser(
+        "mark",
+        help="print a mark token for the current end of the guest's serial log",
+        description=(
+            "Print a mark of the guest's serial log (<state-dir>/serial.log, which QEMU writes for every "
+            "guest) as the only line on stdout. Give it to `console text` or "
+            "`console wait-for-text` as --since-mark to read only text written after this point "
+            "(the `auto` engine reads the serial log only for a guest started with --serial-console). "
+            "The token is vmscreen's mark: a log truncated or replaced since is an error (exit 1)."
+        ),
+        epilog=vm_lab_text.MARK_EXIT_CODES_HELP,
+    )
+    mark_console.add_argument("--name", required=True)
+    add_state_dir(mark_console)
+    mark_console.set_defaults(func=cmd_console_mark)
     text_console = console_commands.add_parser(
         "text",
-        help="print the guest's current screen text once (vmscreen exact text, else OCR)",
+        help="print the guest's current screen text once (serial log, vmscreen exact text, else OCR)",
         description=(
-            "Print the current screen text once. Engines: vmscreen reads the VGA text buffer exactly "
-            "(text modes only); ocr recognises a PNG screendump with `pwmcp ocr` (needs pwmcp's OCR "
-            "sidecar); auto tries vmscreen first, then ocr."
+            "Print the current screen text once. Engines: serial reads the guest's serial console log "
+            "exactly (needs a guest started with --serial-console; the exact-text source of UEFI "
+            "guests); vmscreen reads the VGA text buffer exactly (text modes only); ocr recognises a "
+            "PNG screendump with `pwmcp ocr` (needs pwmcp's OCR sidecar); auto tries serial first "
+            "(only while the log has text), then vmscreen, then ocr."
         ),
         epilog=vm_lab_text.TEXT_EXIT_CODES_HELP,
     )
     text_console.add_argument("--name", required=True)
     add_state_dir(text_console)
     text_console.add_argument("--engine", choices=vm_lab_text.ENGINES, default="auto")
+    text_console.add_argument("--since-mark", metavar="TOKEN", help=vm_lab_text.SINCE_MARK_HELP)
     text_console.add_argument(
         "--json", action="store_true", help='print one {"text", "engine", "exact"} object on stdout'
     )
@@ -2602,7 +2670,10 @@ def build_parser(
         description=(
             "Poll the screen text. Order per poll: read the screen, PATTERN (a match wins), "
             "--fail-pattern, the --loop-pattern counter, the timeout, then sleep --interval. "
-            "A read that fails is skipped; 10 failed reads in a row end the wait."
+            "A read that fails is skipped; 10 failed reads in a row end the wait. Engines as for "
+            "`console text` (auto: serial, vmscreen, ocr). On the serial engine the wait sees only text "
+            "written after it began (an implicit mark is taken at its start) unless --since-mark "
+            "gives an earlier point."
         ),
         epilog=vm_lab_text.EXIT_CODES_HELP,
     )
@@ -2619,6 +2690,7 @@ def build_parser(
         help=f"seconds between polls (default: {vm_lab_text.DEFAULT_INTERVAL_SECONDS:g})",
     )
     wait_text.add_argument("--engine", choices=vm_lab_text.ENGINES, default="auto")
+    wait_text.add_argument("--since-mark", metavar="TOKEN", help=vm_lab_text.SINCE_MARK_HELP)
     wait_text.add_argument(
         "--fail-pattern",
         action="append",

@@ -47,8 +47,9 @@ python3 scripts/vm-lab/vm_lab.py <verb> [options]
 | `console type` | Type US-layout ASCII text through QMP `send-key`; the whole text is validated before any key is sent. |
 | `console record` | Run the changed-frame recorder in the foreground; it also executes commands queued with `console ctl`. |
 | `console ctl` | Queue keys, text, a QMP command, or `--quit` for a running recorder. |
-| `console text` | Print the current screen as text once: exact VGA text through vmscreen, else OCR through `pwmcp ocr`. |
-| `console wait-for-text PATTERN` | Poll the screen text until `PATTERN` (a regular expression) shows up; also stops on a fail pattern or a detected boot loop. |
+| `console mark` | Print a mark token (the only stdout line) for the current end of the guest's serial log (`<state-dir>/serial.log`; QEMU writes it for every guest, so this works whenever the log exists). A stale mark (log truncated or replaced since) is an error, exit 1. |
+| `console text` | Print the current screen as text once: the serial log (exact; guests started with `--serial-console`), else exact VGA text through vmscreen, else OCR through `pwmcp ocr`. |
+| `console wait-for-text PATTERN` | Poll the screen text until `PATTERN` (a regular expression) shows up; also stops on a fail pattern or a detected boot loop. With `--engine serial` it sees only text written after the wait began; in `auto` only while the serial log has new text (see `--since-mark`). |
 
 `--state-dir` is required on every verb that takes it (all except `destroy`).
 
@@ -75,7 +76,8 @@ tool. The other console verbs do not.
 | `console ctl` | `--type-file FILE` | Queue a file to read at execution time; one trailing newline is stripped. |
 | `console ctl` | `--qmp-json JSON` | Queue one QMP command object. |
 | `console ctl` | `--quit` | End the recorder without stopping the guest. |
-| `console text`, `console wait-for-text` | `--engine {auto,vmscreen,ocr}` | Screen reader. `vmscreen` reads the VGA text buffer exactly (text modes only), `ocr` recognises a PNG screendump with `pwmcp ocr` (needs pwmcp's OCR sidecar), `auto` (default) tries `vmscreen` and uses `ocr` where it does not apply. |
+| `console text`, `console wait-for-text` | `--engine {auto,serial,vmscreen,ocr}` | Screen reader. `serial` reads the guest's serial console log exactly (the exact-text source of UEFI guests; an explicit choice that works for any guest whose `serial.log` exists, an error otherwise), `vmscreen` reads the VGA text buffer exactly (text modes only), `ocr` recognises a PNG screendump with `pwmcp ocr` (needs pwmcp's OCR sidecar). `auto` (default) tries `serial`, then `vmscreen`, then `ocr`. QEMU writes `serial.log` for every guest, so `auto` uses `serial` only for a guest whose `runner.json` records `"serial_console": true` (started with `--serial-console`; a state directory without the record, or `false`, never uses it in `auto`) and only while the log has text (after the mark, if any): a quiet log is "not yet", never a failure by itself, and the next engine runs. While serial applies, every `auto` poll costs one extra vmscreen call (a QMP connection) before VGA and OCR. |
+| `console text`, `console wait-for-text` | `--since-mark TOKEN` | Serial engine only: read only text written after the mark `console mark` printed. The other engines ignore it with one stderr note. Six dot-separated fields (vmscreen's mark); anything else is a usage error (exit 2). Without it, `wait-for-text` takes an implicit mark at its start on the serial engine (there is no `--since-start`). That promise (nothing printed before the wait began can match) holds for `--engine serial`; in `auto`, a quiet serial log falls through to VGA and OCR, which read the current screen and may still show old text, so use `--engine serial` for a strict wait. A mark whose log was truncated or replaced since is an error (exit 1, "the serial log was truncated or replaced since the mark was taken") for an explicit mark, the implicit one, `auto` and `--engine serial` alike. |
 | `console text`, `console wait-for-text` | `--json` | `text`: one `{"text", "engine", "exact"}` object. `wait-for-text`: one result object (see below). |
 | `console wait-for-text` | `PATTERN` | Python regular expression, searched in the screen text with `re.MULTILINE`. Not empty. |
 | `console wait-for-text` | `--literal` | Treat `PATTERN` as plain text. |
@@ -93,7 +95,10 @@ needs the equals form, for example `--type=-x` or `--text=-x`.
 `console text` prints the screen text once on stdout and one line
 `vm-lab: engine=<name> exact=<true|partial|n/a>` on stderr. `exact` is
 vmscreen's verdict (`true`: every cell agrees with the screendump, `partial`:
-all but a possible cursor cell); OCR text is never exact (`n/a`).
+all but a possible cursor cell, `stream` for the serial log: exactly what the
+guest printed to ttyS0, escape sequences and CR already rendered by vmscreen);
+OCR text is never exact (`n/a`). `console record` needs Pillow: run the launcher
+with a Python that has it (the vmscreen venv may not).
 
 `console wait-for-text` exit codes (module constants in `vm_lab_text.py`):
 

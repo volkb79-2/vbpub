@@ -355,6 +355,39 @@ def test_resume_reuses_the_disk_and_never_clones_again(rig, host, capsys):
     assert "VM_MODE=resume" in resume_run
 
 
+def test_start_records_whether_the_guest_was_started_with_serial_console(rig, host, capsys):
+    base = rig.base("base.raw", RAW_BYTES)
+    rig.start(base)
+    assert json.loads((rig.state / "runner.json").read_text())["serial_console"] is False
+
+
+def test_start_with_serial_console_records_true_and_resume_keeps_or_updates_it(rig, host, capsys):
+    base = rig.base("base.raw", RAW_BYTES)
+    rig.start(base, "--serial-console")
+    path = rig.state / "runner.json"
+    first = json.loads(path.read_text())
+    assert first["serial_console"] is True
+    rig.start(base, "--resume", "--serial-console")  # not an identity change
+    assert json.loads(path.read_text()) == first
+    rig.start(base, "--resume")  # this start no longer wires the serial socket: the record follows
+    later = json.loads(path.read_text())
+    assert later["serial_console"] is False
+    assert {k: v for k, v in later.items() if k != "serial_console"} == {
+        k: v for k, v in first.items() if k != "serial_console"
+    }
+
+
+def test_a_guest_without_the_record_resumes_and_gets_it_added(rig, host, capsys):
+    base = rig.base("base.raw", RAW_BYTES)
+    rig.start(base)
+    path = rig.state / "runner.json"
+    stored = json.loads(path.read_text())
+    del stored["serial_console"]
+    path.write_text(json.dumps(stored))
+    rig.start(base, "--resume", "--serial-console")
+    assert json.loads(path.read_text()) == {**stored, "serial_console": True}
+
+
 def test_resume_with_a_different_format_is_an_error_naming_both(rig, host, capsys):
     raw_base = rig.base("base.raw", RAW_BYTES)
     assert rig.start(raw_base) == 1
