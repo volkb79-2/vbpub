@@ -1345,8 +1345,42 @@ MaxFileSec=1month
             ]
         else:
             existing.pop("default-address-pools", None)
+        self._merge_builder_gc(existing)
         self.actions.write_file("/etc/docker/daemon.json", json.dumps(existing, indent=2) + "\n", 0o644)
         self._mark_step("docker_daemon_config", "success", self.config.docker_log_driver)
+
+    def _merge_builder_gc(self, existing: dict) -> None:
+        """Own builder.gc.{enabled,defaultMaxUsedSpace,defaultReservedSpace} only.
+
+        Caps the cache of Docker's embedded builder with the Docker 29 policy keys; the legacy
+        defaultKeepStorage and any hand-added GC key or policy list are left alone. A max of 0
+        removes the two size keys this method owns (and an emptied builder/gc block) so an
+        idempotent re-run reflects the current config. Takes effect after a dockerd restart.
+        """
+        builder = existing.get("builder", {})
+        gc = builder.get("gc", {}) if isinstance(builder, dict) else None
+        if not isinstance(builder, dict) or not isinstance(gc, dict):
+            raise InstallerError("refusing to merge builder.gc into /etc/docker/daemon.json: builder/gc is not a JSON object")
+        max_gb = self.config.docker_builder_gc_max_used_gb
+        if max_gb:
+            gc["enabled"] = True
+            gc["defaultMaxUsedSpace"] = f"{max_gb}GB"
+            gc["defaultReservedSpace"] = f"{self.config.docker_builder_gc_reserved_gb}GB"
+            builder["gc"] = gc
+            existing["builder"] = builder
+            return
+        gc.pop("defaultMaxUsedSpace", None)
+        gc.pop("defaultReservedSpace", None)
+        if gc == {"enabled": True}:
+            gc.clear()  # only the key this method wrote itself; drop the empty shell
+        if gc:
+            builder["gc"] = gc
+        else:
+            builder.pop("gc", None)
+        if builder:
+            existing["builder"] = builder
+        else:
+            existing.pop("builder", None)
 
     def _install_notify_helper(self) -> None:
         # Unconditional, like cgroup2-flags: harmless if Telegram isn't

@@ -125,6 +125,16 @@ WIZARD_SECTIONS = (
             WizardField("docker_log_max_size", "Per-file limit for drivers that support it"),
             WizardField("docker_log_max_file", "Number of retained files for drivers that support it"),
             WizardField(
+                "docker_builder_gc_max_used_gb",
+                "Build-cache ceiling of Docker's embedded builder in GB (0 = leave unmanaged)",
+                "integer",
+            ),
+            WizardField(
+                "docker_builder_gc_reserved_gb",
+                "Build-cache floor in GB that garbage collection never goes below (at most the ceiling)",
+                "integer",
+            ),
+            WizardField(
                 "docker_default_address_pools",
                 "Docker default address pools as a JSON list of {base, size} (empty list = Docker built-in default)",
                 "json",

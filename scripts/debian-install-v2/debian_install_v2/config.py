@@ -147,6 +147,17 @@ class Config:
     docker_default_address_pools: list = field(
         default_factory=lambda: [{"base": "10.240.0.0/16", "size": 24}]
     )
+    # daemon.json builder.gc: size cap for the build cache of Docker's EMBEDDED
+    # builder (the `default` buildx builder), written with the Docker 29 policy
+    # keys defaultMaxUsedSpace (ceiling) and defaultReservedSpace (floor that GC
+    # never goes below). GB are decimal gigabytes as Docker's size parser reads
+    # "50GB". 0 = leave the cache unmanaged (removes only these two keys).
+    # Applies after a dockerd restart. Caveat: the embedded builder's cache
+    # records share overlay2 layers with images, so GC frees little until the
+    # images using those layers are removed. Builds through a separate
+    # buildkitd (mdt-managed) have their own cache and GC (gckeepstorage).
+    docker_builder_gc_max_used_gb: int = 50
+    docker_builder_gc_reserved_gb: int = 10
     apt_auto_upgrade_mode: Literal["full", "security-only", "notify-only"] = "full"
     # LT-UPG: run unattended-upgrade once during stage1 (before the stage1
     # reboot, so a new kernel boots then) instead of waiting for the first
@@ -366,6 +377,7 @@ def validate_config(config: Config) -> None:
         "preserve_root_size_gb", "zswap_pool_percent", "zswap_accept_threshold_percent", "vm_swappiness",
         "ksm_advisor_max_cpu_percent", "ksm_target_scan_time_seconds", "ksm_sleep_millisecs",
         "docker_cleanup_max_age_hours",
+        "docker_builder_gc_max_used_gb", "docker_builder_gc_reserved_gb",
     ]
     for name in integer_names:
         value = getattr(config, name)
@@ -412,6 +424,15 @@ def validate_config(config: Config) -> None:
     if not isinstance(config.zswap_compressor, str) or config.zswap_compressor not in {"zstd", "lz4", "lzo-rle"}:
         raise ConfigError("zswap_compressor must be zstd, lz4, or lzo-rle")
     validate_address_pools(config.docker_default_address_pools)
+    if config.docker_builder_gc_max_used_gb < 0 or config.docker_builder_gc_reserved_gb < 0:
+        raise ConfigError("docker_builder_gc_max_used_gb and docker_builder_gc_reserved_gb must not be negative")
+    if config.docker_builder_gc_max_used_gb and (
+        config.docker_builder_gc_reserved_gb > config.docker_builder_gc_max_used_gb
+    ):
+        raise ConfigError(
+            "docker_builder_gc_reserved_gb must not exceed docker_builder_gc_max_used_gb "
+            "(set docker_builder_gc_max_used_gb to 0 to leave builder.gc unmanaged)"
+        )
     if not config.docker_log_driver:
         raise ConfigError("docker_log_driver must not be empty")
     if not _DOCKER_LOG_MAX_SIZE_RE.fullmatch(config.docker_log_max_size):

@@ -621,8 +621,20 @@ the configured backend, using the credential files under `/etc/vbpub/credentials
 Full Docker CE install from Docker's own official apt repo
 (`https://download.docker.com/linux/debian`, GPG-key-verified), `daemon.json`
 (`docker_log_driver`, `docker_log_max_size`, `docker_log_max_file`,
-`docker_live_restore`, `docker_default_address_pools`), plus a cleanup timer
+`docker_live_restore`, `docker_default_address_pools`,
+`docker_builder_gc_max_used_gb`, `docker_builder_gc_reserved_gb`), plus a cleanup timer
 (`docker_cleanup_max_age_hours`) that prunes stale images/containers.
+
+`docker_builder_gc_max_used_gb` (default 50) and `docker_builder_gc_reserved_gb` (default 10) are
+rendered as `builder.gc` `defaultMaxUsedSpace`/`defaultReservedSpace` (with `enabled: true`) in
+`daemon.json`: a size cap on the build cache of Docker's **embedded** builder (the `default` buildx
+builder), using the Docker 29 policy keys; the legacy `defaultKeepStorage` is not written. `0` for
+the maximum leaves it unmanaged and removes only these two keys. The reserved floor may not exceed
+the ceiling. It needs a `dockerd` restart to take effect (`live-restore` keeps containers running).
+Embedded-builder cache records share overlay2 layers with images, so GC frees little until unused
+images are pruned; a separate buildkitd (e.g. mdt `mdt-managed`) has its own cache and GC.
+`dockerd --validate` accepts unknown keys under `builder.gc`: after the restart confirm with
+`docker buildx inspect default` (GC Policy block).
 
 `docker_default_address_pools` (default `[{"base":"<host-address>/16","size":24}]`,
 from mdt MDT-002) is rendered as `default-address-pools` in the same

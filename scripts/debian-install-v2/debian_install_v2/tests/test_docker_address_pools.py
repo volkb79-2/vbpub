@@ -37,7 +37,14 @@ def test_daemon_json_golden(tmp_path):
         '      "base": "10.240.0.0/16",\n'
         '      "size": 24\n'
         "    }\n"
-        "  ]\n"
+        "  ],\n"
+        '  "builder": {\n'
+        '    "gc": {\n'
+        '      "enabled": true,\n'
+        '      "defaultMaxUsedSpace": "50GB",\n'
+        '      "defaultReservedSpace": "10GB"\n'
+        "    }\n"
+        "  }\n"
         "}\n"
     )
 

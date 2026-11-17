@@ -679,6 +679,7 @@ def test_configure_docker_daemon_dry_run_merges_against_empty_base(tmp_path):
         "log-driver": "local",
         "log-opts": {"max-size": "10m", "max-file": "7"},
         "default-address-pools": [{"base": "10.240.0.0/16", "size": 24}],
+        "builder": {"gc": {"enabled": True, "defaultMaxUsedSpace": "50GB", "defaultReservedSpace": "10GB"}},
     }
 
 

@@ -4,6 +4,15 @@ All notable changes to debian-install-v2 are recorded here.
 
 ## [Unreleased]
 
+### Added (div2-docker-builder-gc)
+- `docker_builder_gc_max_used_gb` (default 50) and `docker_builder_gc_reserved_gb` (default 10)
+  config keys, rendered as `builder.gc` (`enabled`, `defaultMaxUsedSpace`, `defaultReservedSpace`)
+  in `/etc/docker/daemon.json`: a disk cap on the build cache of Docker's embedded builder, using
+  the Docker 29 policy keys (not the legacy `defaultKeepStorage`). 0 leaves it unmanaged and removes
+  only the two size keys; hand-added GC keys are preserved; wizard field and validation included.
+  Applies after a dockerd restart. Owned here with the other base daemon keys, not by mdt
+  host-setup (which keeps only `cgroup-parent`).
+
 ### Changed (div2-memorymin-rambound)
 - Bound the control-plane `MemoryMin` floors against installed RAM (DIV2-BL-12).
   The floors were measured on 8 GiB hosts; on a much smaller host a 373 MiB
