@@ -12,7 +12,7 @@ so the clone can be used as a candidate. A destination collision leaves the
 existing path intact. It does not know about Git, assay, lanes, VMs, or Docker.
 The embedded API advertises `API_VERSION = 1`.
 The CLI provides `detect`, `survey`, `gc`, `make-shared`, `probe`, `cache` and `path`
-([repo paths](#repo-paths-vm-labtoml)). A run can declare
+([repo paths](#repo-paths-cowtreetoml)). A run can declare
 an external owner with `external_ref`; cowtree never reaps external runs.
 Default `gc` scans only the configured CoW area's runs. It does not discover
 plain-mode runs; it logs an INFO line directing operators to `cowtree gc
