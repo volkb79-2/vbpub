@@ -813,6 +813,25 @@ class TestJudgeMountCollisions:
         assert run_gate.mount_flag_destinations(
             ["--mount", "type=bind,source=/src,target="]) == []
         assert run_gate.mount_flag_destinations(["target=/orphan"]) == []
+        # The `-v` shape has its own degenerate cases: a spec with no
+        # destination (`/else` alone, or `-v` at the very end of the argv) is
+        # not a mount with an empty destination, and must not contribute a
+        # `""` that would compare equal to nothing meaningful.
+        assert run_gate.mount_flag_destinations(
+            ["-v", "/else", "-v"]) == []
+
+    def test_a_NAMED_volume_destination_is_not_judged_against_the_trees(
+            self, tmp_path, monkeypatch):
+        """A named volume (`-v myvol:name`) is not a host path, so it cannot
+        be "inside" a judge tree: it is skipped rather than normalised into a
+        relative path and refused (the superset refusal). The judge lane still
+        runs; the operator's own named volume is not the judge's business."""
+        worktree = self._worktree(tmp_path, monkeypatch)
+        run_gate.refuse_mounts_over_the_judge(
+            self._lane(), "rust-r1", worktree,
+            ["-v", "/tmp/other:data-volume",
+             "-v", f"/tmp/other:{worktree}"],
+            f"${run_gate.EXTRA_MOUNT_ENV_VAR}")
 
     def test_the_alias_view_of_a_judge_tree_is_also_refused(
             self, tmp_path, monkeypatch):
@@ -2009,6 +2028,42 @@ class TestJudgeProviderWiring:
         run_gate.refresh_judge_identity(lane, "rust-r1", repo, record)
         assert record["judge"]["commit"] == current["commit"]
         assert "changed between" not in capsys.readouterr().err
+
+    def test_a_lane_with_NO_stashed_snapshot_is_given_one(
+            self, tmp_path, capsys):
+        """The standalone-caller arm: a lane that never went through the
+        preflight has no `_judge_identity`, so the refresh ADOPTS the derivation
+        instead of comparing against nothing (a `None` snapshot compared field
+        by field would warn about a "change" that is only an absence). Both
+        record shapes are covered: with and without a run record to write."""
+        repo, _proj = _judge_repo(tmp_path)
+        lane = {"kind": "command", "environment": "rust", "judge": "assay"}
+        record: dict = {}
+        fresh = run_gate.refresh_judge_identity(lane, "rust-r1", repo, record)
+        assert record["judge"] == fresh
+        assert lane["_judge_identity"] == fresh
+        assert "changed between" not in capsys.readouterr().err
+        # …and the same with NO run record: the caller that only wants the
+        # lane stashed still gets the fresh identity back, and nothing raises
+        # on the missing dict.
+        bare = {"kind": "command", "environment": "rust", "judge": "assay"}
+        assert run_gate.refresh_judge_identity(
+            bare, "rust-r1", repo, None) == fresh
+
+    def test_a_changed_identity_is_recorded_even_with_NO_run_record(
+            self, tmp_path, capsys):
+        """The warning must not depend on a run record existing: the fact it
+        announces is the mount's contents, which the lane has either way."""
+        repo, _proj = _judge_repo(tmp_path)
+        stale = dict(run_gate.judge_identity(
+            {"kind": "command", "environment": "rust", "judge": "assay"},
+            repo), commit="0" * 40)
+        lane = {"kind": "command", "environment": "rust", "judge": "assay",
+                "_judge_identity": stale}
+        fresh = run_gate.refresh_judge_identity(lane, "rust-r1", repo, None)
+        assert fresh["commit"] != "0" * 40
+        assert lane["_judge_identity"] == fresh
+        assert "changed between" in capsys.readouterr().err
 
     def test_help_states_which_judge_run_gate_will_mount(
             self, tmp_path, monkeypatch, capsys):
