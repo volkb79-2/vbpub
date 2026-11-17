@@ -67,6 +67,14 @@ MAX_GUEST_MEMORY_MIB = 8192
 MIN_GUEST_CPUS = 1
 MAX_GUEST_CPUS = 4
 MAX_FORWARDS = 8
+QCOW2_MAGIC = b"QFI\xfb"
+BASE_FORMATS = ("auto", "qcow2", "raw")
+RAW_DISK_NAME = "disk.raw"
+QCOW2_OVERLAY_NAME = "disk-overlay.qcow2"
+# A full copy of a large base can take long; the default 30 s runner timeout is for Docker queries.
+COPY_TIMEOUT_SECONDS = 3600
+PROMOTE_NAME_PATTERN = re.compile(r"[A-Za-z0-9_-][A-Za-z0-9._-]*")
+PROMOTE_HASH_CHUNK_BYTES = 1024 * 1024
 
 
 class RunnerError(vm_lab_console.ConsoleCallError):
@@ -1193,6 +1201,84 @@ def state_identity(path: Path) -> str:
     return hashlib.sha256(str(path.resolve(strict=True)).encode()).hexdigest()
 
 
+def select_disk_format(profile: VmProfile, base_disk: Path, requested: str | None) -> str:
+    """Decide whether the base image is used as a qcow2 backing file or cloned as raw.
+
+    ``requested`` is the ``--base-format`` value; None means the option was not
+    given. A fixed-size profile (the TrueNAS front) predates raw bases: without
+    an explicit option it stays on the qcow2 path and does not even open the
+    file, exactly as before. Every other profile defaults to ``auto``: the first
+    four bytes decide (``QFI\\xfb`` is qcow2, anything else raw). An explicit
+    ``qcow2`` must match the magic; an explicit ``raw`` is taken as stated.
+    """
+    if requested is None:
+        if not profile.sizing_from_cli:
+            return "qcow2"
+        requested = "auto"
+    if requested == "raw":
+        return "raw"
+    with base_disk.open("rb") as source:
+        magic = source.read(len(QCOW2_MAGIC))
+    is_qcow2 = magic == QCOW2_MAGIC
+    if requested == "qcow2" and not is_qcow2:
+        raise RunnerError(
+            f"--base-format qcow2 given but {base_disk} does not start with the qcow2 magic "
+            f"(first bytes {magic!r}); use --base-format raw or auto"
+        )
+    return "qcow2" if is_qcow2 else "raw"
+
+
+def _one_line(text: str) -> str:
+    return " ".join(text.split())
+
+
+def clone_disk(source: Path, destination: Path, *, into: Path, allow_full_copy: bool) -> None:
+    """Copy ``source`` to the new file ``destination`` with ``cp --reflink``.
+
+    Tries ``--reflink=always`` first. A failure (typically a different
+    filesystem or one without reflinks) is an error that names the cause; only
+    with ``allow_full_copy`` does it retry with ``--reflink=auto`` and say that
+    the whole file was copied. A failed attempt never leaves a partial
+    ``destination``. The copy gets mode 0600 (a read-only base would otherwise
+    hand its mode to the writable run disk).
+    """
+    if destination.exists() or destination.is_symlink():
+        raise RunnerError(f"refusing to overwrite existing {destination}")
+    expected_size = source.stat().st_size
+
+    def attempt(reflink: str) -> str | None:
+        argv = ["cp", f"--reflink={reflink}", "--", str(source), str(destination)]
+        try:
+            result = docker_run(argv, check=False, timeout=COPY_TIMEOUT_SECONDS)
+            problem: str | None = None
+            if result.returncode:
+                problem = _one_line(result.stderr or result.stdout) or f"cp exited with status {result.returncode}"
+            elif not destination.is_file() or destination.stat().st_size != expected_size:
+                problem = f"cp reported success but {destination} is not a {expected_size}-byte copy"
+        except RunnerError as exc:
+            problem = _one_line(str(exc))
+        if problem is not None:
+            destination.unlink(missing_ok=True)
+            return problem
+        os.chmod(destination, 0o600)
+        return None
+
+    problem = attempt("always")
+    if problem is None:
+        print(f"[disk] reflink clone of {source}", flush=True)
+        return
+    if not allow_full_copy:
+        raise RunnerError(
+            f"cannot reflink {source} into {into}: {problem}; base image and state directory must be on "
+            'one btrfs filesystem (see AGENTS.md "Directory conventions and VM files"); '
+            "pass --allow-full-copy to copy the whole file instead"
+        )
+    problem = attempt("auto")
+    if problem is not None:
+        raise RunnerError(f"cannot copy {source} into {into}: {problem}")
+    print(f"[disk] full copy of {source} (no reflink possible)", flush=True)
+
+
 def runner_manifest(
     profile: VmProfile,
     *,
@@ -1206,26 +1292,29 @@ def runner_manifest(
     host_ports: Mapping[str, int],
     readonly_media: Path | None = None,
     extra_disk_sizes: list[int] | None = None,
+    disk_format: str = "qcow2",
 ) -> dict[str, Any]:
     """Identity record of a guest; resume refuses when any recorded value differs.
 
     ``host_ports`` maps each profile forward name to its host port and is
     recorded as ``<name>_port``. A profile whose forwards come from the command
     line also records each guest port, because those are not fixed by the profile.
+
+    ``disk_format`` is ``qcow2`` (the base is the overlay's backing file, so its
+    device, inode, size and mtime are recorded) or ``raw`` (the base was only a
+    copy source: its path and size are recorded, not an identity the guest still
+    depends on).
     """
     if set(host_ports) != {forward.name for forward in profile.forwards}:
         raise RunnerError("host ports must name exactly the profile's port forwards")
+    if disk_format not in ("qcow2", "raw"):
+        raise RunnerError(f"unknown disk format {disk_format!r}")
     stat = base_disk.stat()
-    manifest = {
+    manifest: dict[str, Any] = {
         "schema": 1,
         "name": name,
+        "disk_format": disk_format,
         "base_disk": str(base_disk),
-        "base_identity": {
-            "device": stat.st_dev,
-            "inode": stat.st_ino,
-            "size": stat.st_size,
-            "mtime_ns": stat.st_mtime_ns,
-        },
         "firmware_code": file_identity(firmware_code),
         "firmware_vars_template": file_identity(firmware_vars),
         "image_id": image_id,
@@ -1236,6 +1325,15 @@ def runner_manifest(
         "memory_swap_bytes": profile.container_memory_bytes,
         "guest_memory_mib": profile.guest_memory_mib,
     }
+    if disk_format == "raw":
+        manifest["base_size"] = stat.st_size
+    else:
+        manifest["base_identity"] = {
+            "device": stat.st_dev,
+            "inode": stat.st_ino,
+            "size": stat.st_size,
+            "mtime_ns": stat.st_mtime_ns,
+        }
     if profile.sizing_from_cli:
         manifest["display_device"] = profile.display_device
     for forward in profile.forwards:
@@ -1275,6 +1373,17 @@ def check_runner_manifest(
         actual = json.loads(path.read_text())
     except (OSError, json.JSONDecodeError) as exc:
         raise RunnerError(f"cannot read runner identity file {path}: {exc}") from exc
+    if isinstance(actual, dict):
+        # A guest recorded before raw bases existed has no disk_format: it is qcow2.
+        recorded_format = actual.get("disk_format", "qcow2")
+        requested_format = expected.get("disk_format", "qcow2")
+        if recorded_format != requested_format:
+            raise RunnerError(
+                f"resume disk format differs: the guest in {path} uses a {recorded_format} disk "
+                f"but this start asks for {requested_format}"
+            )
+        actual = {**actual, "disk_format": recorded_format}
+        expected = {**expected, "disk_format": requested_format}
     if actual == expected:
         return
 
@@ -1387,9 +1496,36 @@ def rebind_runner_readonly_media(
     return old_value, str(new_path)
 
 
-def host_command_script(profile: VmProfile) -> str:
-    """The shell script that runs inside the container and execs QEMU."""
+_QCOW2_DISK_SETUP = '''if [ "$VM_MODE" = "create" ]; then
+  test ! -e /state/disk-overlay.qcow2
+  qemu-img create -q -f qcow2 -F qcow2 -b /base/disk.qcow2 /state/disk-overlay.qcow2
+else
+  test -s /state/disk-overlay.qcow2
+  test -s /state/OVMF_VARS_4M.fd
+fi
+'''
+_QCOW2_BOOT_DRIVE = "  -drive file=/state/disk-overlay.qcow2,if=virtio,format=qcow2,cache=unsafe \\\n"
+# Raw guests: the host already cloned the base into the state directory, so the
+# script only checks that the disk is there. The base is not mounted at all.
+_RAW_DISK_SETUP = "test -s /state/disk.raw\n"
+_RAW_BOOT_DRIVE = "  -drive file=/state/disk.raw,if=virtio,format=raw,cache=unsafe \\\n"
+
+
+def _replace_once(script: str, old: str, new: str) -> str:
+    if script.count(old) != 1:
+        raise RunnerError("guest script template changed; the raw disk variant cannot be derived")
+    return script.replace(old, new)
+
+
+def host_command_script(profile: VmProfile, disk_format: str = "qcow2") -> str:
+    """The shell script that runs inside the container and execs QEMU.
+
+    The default (``qcow2``) is the historical script, unchanged. ``raw`` boots
+    ``/state/disk.raw`` as a raw run disk with relaxed fsync (``cache=unsafe``).
+    """
     assert profile.guest_memory_mib is not None and profile.cpus is not None
+    if disk_format not in ("qcow2", "raw"):
+        raise RunnerError(f"unknown disk format {disk_format!r}")
     hostfwd = ",".join(
         f"hostfwd=tcp:0.0.0.0:${{{forward.env_name}}}-:{forward.guest_port}" for forward in profile.forwards
     )
@@ -1401,6 +1537,9 @@ def host_command_script(profile: VmProfile) -> str:
         .replace("@@MEMORY_MIB@@", str(profile.guest_memory_mib))
         .replace("@@HOSTFWD@@", hostfwd)
     )
+    if disk_format == "raw":
+        script = _replace_once(script, _QCOW2_DISK_SETUP, _RAW_DISK_SETUP)
+        script = _replace_once(script, _QCOW2_BOOT_DRIVE, _RAW_BOOT_DRIVE)
     if profile.display_device == "virtio":
         script = script.replace(
             '  "$@" \\\n  -qmp unix:/state/qmp.sock',
@@ -1562,7 +1701,7 @@ def docker_create_argv(
     slice_name: str,
     network: str,
     state_hash: str,
-    host_base: str,
+    host_base: str | None,
     host_state: str,
     host_media: str | None,
     host_ports: Mapping[str, int],
@@ -1571,13 +1710,19 @@ def docker_create_argv(
     serial_console: bool,
     disk_sizes_bytes: list[int],
     image: str,
+    disk_format: str = "qcow2",
 ) -> list[str]:
     """The `docker run` argv for one guest.
 
     Forwarded ports are listened on inside the container by QEMU user-mode
     networking, so they are reachable at the container's address on its Docker
     network. No `--publish` is added: nothing is exposed on the host.
+
+    A qcow2 guest mounts its base read-only as the overlay's backing file. A raw
+    guest never sees the base: the host cloned it into the state directory.
     """
+    if disk_format == "qcow2" and host_base is None:
+        raise RunnerError("a qcow2 guest needs the host path of its base image")
     memory_bytes = profile.container_memory_bytes
     create_argv = [
         "docker", "run", "--detach", "--init", "--name", name,
@@ -1594,10 +1739,13 @@ def docker_create_argv(
         "--user", f"{os.getuid()}:{os.getgid()}",
         "--label", f"{profile.vm_label}={profile.label_value}",
         "--label", f"{profile.state_label}={state_hash}",
-        "--mount", f"type=bind,src={host_base},dst=/base/disk.qcow2,readonly",
+    ]
+    if disk_format == "qcow2":
+        create_argv.extend(["--mount", f"type=bind,src={host_base},dst=/base/disk.qcow2,readonly"])
+    create_argv.extend([
         "--mount", f"type=bind,src={host_state},dst=/state",
         "--env", f"VM_NAME={name}",
-    ]
+    ])
     for forward in profile.forwards:
         create_argv.extend(["--env", f"{forward.env_name}={host_ports[forward.name]}"])
     create_argv.extend([
@@ -1614,7 +1762,7 @@ def docker_create_argv(
     create_argv.extend([
         "--entrypoint", "/bin/sh",
         image,
-        "-eu", "-c", host_command_script(profile),
+        "-eu", "-c", host_command_script(profile, disk_format),
     ])
     return create_argv
 
@@ -1640,7 +1788,11 @@ def _cmd_start(profile: VmProfile, args: argparse.Namespace) -> int:
     base_disk = Path(args.base_disk).resolve(strict=True)
     if not base_disk.is_file():
         raise RunnerError(f"base disk is not a regular file: {base_disk}")
-    firmware_code = Path(args.ovmf_code).resolve(strict=True)
+    disk_format = select_disk_format(profile, base_disk, getattr(args, "base_format", None))
+    if disk_format == "raw" and os.path.islink(args.base_disk):
+        raise RunnerError(f"a raw base disk must not be a symlink: {args.base_disk}")
+    allow_full_copy = bool(getattr(args, "allow_full_copy", False))
+    firmware_code =Path(args.ovmf_code).resolve(strict=True)
     firmware_vars = Path(args.ovmf_vars).resolve(strict=True)
     if not firmware_code.is_file() or not firmware_vars.is_file():
         raise RunnerError("OVMF code and variable template must both be regular files")
@@ -1661,9 +1813,10 @@ def _cmd_start(profile: VmProfile, args: argparse.Namespace) -> int:
     selected_image_id = image_id(image)
     _, current = inspect_current_container()
     mounts = current.get("Mounts", [])
-    host_base = resolve_docker_path(base_disk, mounts, writable=False)
+    # A raw base is only a copy source on this host; the container never mounts it.
+    host_base = resolve_docker_path(base_disk, mounts, writable=False) if disk_format == "qcow2" else None
     host_state = resolve_docker_path(state_dir, mounts, writable=True)
-    if "," in host_base or "," in host_state:
+    if "," in host_state or (host_base is not None and "," in host_base):
         raise RunnerError("Docker bind paths containing commas are unsupported; choose a state/base path without commas")
     host_media = resolve_docker_path(readonly_media, mounts, writable=False) if readonly_media else None
     if host_media is not None and "," in host_media:
@@ -1682,6 +1835,7 @@ def _cmd_start(profile: VmProfile, args: argparse.Namespace) -> int:
         host_ports=host_ports,
         readonly_media=readonly_media,
         extra_disk_sizes=disk_sizes_bytes,
+        disk_format=disk_format,
     )
     manifest_path = state_dir / "runner.json"
     if args.resume:
@@ -1737,17 +1891,20 @@ def _cmd_start(profile: VmProfile, args: argparse.Namespace) -> int:
         prepare_serial_socket(state_dir / "serial.sock")
         serial_socket_path = serial_socket_client_path(profile, state_dir)
 
-    overlay = state_dir / "disk-overlay.qcow2"
+    overlay = state_dir / (RAW_DISK_NAME if disk_format == "raw" else QCOW2_OVERLAY_NAME)
     staged_firmware_code = state_dir / "OVMF_CODE_4M.fd"
     varstore = state_dir / "OVMF_VARS_4M.fd"
     if args.resume:
         if not overlay.is_file() or not staged_firmware_code.is_file() or not varstore.is_file():
             raise RunnerError(
-                "--resume requires disk-overlay.qcow2, OVMF_CODE_4M.fd, and OVMF_VARS_4M.fd in the state directory"
+                f"--resume requires {overlay.name}, OVMF_CODE_4M.fd, and OVMF_VARS_4M.fd in the state directory"
             )
         if file_identity(staged_firmware_code)["sha256"] != expected_manifest["firmware_code"]["sha256"]:
             raise RunnerError("staged OVMF code differs from the source firmware recorded for this guest")
     else:
+        if disk_format == "raw":
+            # Before anything else is written: a failed clone leaves the state directory empty.
+            clone_disk(base_disk, state_dir / RAW_DISK_NAME, into=state_dir, allow_full_copy=allow_full_copy)
         os.chmod(state_dir, 0o700)
         shutil.copyfile(firmware_code, staged_firmware_code)
         shutil.copyfile(firmware_vars, varstore)
@@ -1759,7 +1916,10 @@ def _cmd_start(profile: VmProfile, args: argparse.Namespace) -> int:
         if "readonly_media" not in stored_manifest:
             write_runner_manifest(manifest_path, expected_manifest)
     print(f"[source] base={base_disk} state={state_dir}", flush=True)
-    print(f"[container] host base mount={host_base} host state mount={host_state}", flush=True)
+    if host_base is None:
+        print(f"[container] host state mount={host_state}; the raw base is not mounted", flush=True)
+    else:
+        print(f"[container] host base mount={host_base} host state mount={host_state}", flush=True)
     print(
         f"[limits] cgroup-parent={slice_name} cpus={float(profile.cpus):g} "
         f"memory={profile.container_memory_bytes} "
@@ -1787,6 +1947,7 @@ def _cmd_start(profile: VmProfile, args: argparse.Namespace) -> int:
         serial_console=args.serial_console,
         disk_sizes_bytes=disk_sizes_bytes,
         image=image,
+        disk_format=disk_format,
     )
     try:
         docker_run(create_argv, timeout=DOCKER_START_TIMEOUT_SECONDS)
@@ -1814,7 +1975,11 @@ def _cmd_start(profile: VmProfile, args: argparse.Namespace) -> int:
     except (RunnerError, OSError, ValueError) as exc:
         cleanup = cleanup_failed_start(args.name, state_dir)
         raise RunnerError(f"{exc}; startup cleanup: {cleanup}") from exc
-    result = {**verified, "qmp_status": vm_status, "state_dir": str(state_dir), "overlay": str(overlay)}
+    result = {**verified, "qmp_status": vm_status, "state_dir": str(state_dir)}
+    if disk_format == "raw":
+        result.update({"disk_format": "raw", "disk": str(overlay)})
+    else:
+        result["overlay"] = str(overlay)
     if vnc_socket_path is not None:
         result["vnc_socket"] = str(vnc_socket_path)
         print(f"[console] VNC listens on Unix socket only: {vnc_socket_path}", flush=True)
@@ -1823,6 +1988,17 @@ def _cmd_start(profile: VmProfile, args: argparse.Namespace) -> int:
         print(f"[console] serial listens on Unix socket only: {serial_socket_path}", flush=True)
     print("[started] " + json.dumps(result, sort_keys=True), flush=True)
     return 0
+
+
+def describe_state_disk(state_dir: Path) -> tuple[str | None, Path | None]:
+    """The guest disk a state directory holds: ("raw", disk.raw), ("qcow2", overlay) or (None, None)."""
+    raw = state_dir / RAW_DISK_NAME
+    overlay = state_dir / QCOW2_OVERLAY_NAME
+    if raw.is_file():
+        return "raw", raw
+    if overlay.is_file():
+        return "qcow2", overlay
+    return None, None
 
 
 def cmd_status(profile: VmProfile, args: argparse.Namespace) -> int:
@@ -1842,6 +2018,12 @@ def cmd_status(profile: VmProfile, args: argparse.Namespace) -> int:
         "memory_bytes": item.get("HostConfig", {}).get("Memory"),
         "memory_swap_bytes": item.get("HostConfig", {}).get("MemorySwap"),
     }
+    state_path = getattr(args, "state_dir", None)
+    if state_path:
+        disk_format, disk_file = describe_state_disk(Path(state_path))
+        if disk_file is not None:
+            result["disk_format"] = disk_format
+            result["disk_file"] = str(disk_file)
     if state.get("Running"):
         state_dir = Path(args.state_dir).resolve(strict=True)
         if labels.get(profile.state_label) != state_identity(state_dir):
@@ -1950,6 +2132,77 @@ def cmd_rebind_media(profile: VmProfile, args: argparse.Namespace) -> int:
     return 0
 
 
+def guests_running_on_state_dir(state_dir: Path) -> list[str]:
+    """Names of running managed guests (any known profile) that use this state directory."""
+    identity = state_identity(state_dir)
+    seen: set[str] = set()
+    names: list[str] = []
+    for label, value in KNOWN_VM_LABELS:
+        ids = docker_run(["docker", "ps", "-q", "--filter", f"label={label}={value}"]).stdout.splitlines()
+        for container_id in ids:
+            if container_id in seen:
+                continue
+            seen.add(container_id)
+            item = docker_inspect(container_id)
+            labels = item.get("Config", {}).get("Labels") or {}
+            if identity in labels.values():
+                names.append(item.get("Name", "").lstrip("/") or container_id)
+    return names
+
+
+def sha256_of_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as source:
+        for chunk in iter(lambda: source.read(PROMOTE_HASH_CHUNK_BYTES), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def cmd_disk_promote(profile: VmProfile, args: argparse.Namespace) -> int:
+    """Publish a stopped guest's raw disk as a read-only base image with its SHA-256."""
+    if not PROMOTE_NAME_PATTERN.fullmatch(args.name):
+        raise RunnerError(
+            f"invalid image name {args.name!r}; use letters, digits, '.', '_' and '-', not starting with a dot"
+        )
+    state_dir = Path(args.state_dir).resolve(strict=True)
+    if not state_dir.is_dir():
+        raise RunnerError(f"state directory is not a directory: {state_dir}")
+    dest_dir = Path(args.dest_dir).resolve(strict=True)
+    if not dest_dir.is_dir():
+        raise RunnerError(f"destination is not a directory: {dest_dir}")
+    source = state_dir / RAW_DISK_NAME
+    if not source.is_file() or source.is_symlink():
+        if (state_dir / QCOW2_OVERLAY_NAME).is_file():
+            raise RunnerError(
+                f"disk promote needs a raw disk; {state_dir} holds a qcow2 overlay ({QCOW2_OVERLAY_NAME})"
+            )
+        raise RunnerError(f"no raw disk {RAW_DISK_NAME} in {state_dir}; nothing to promote")
+    running = guests_running_on_state_dir(state_dir)
+    if running:
+        raise RunnerError(
+            f"refusing to promote while guest {', '.join(running)} is running on {state_dir}; "
+            "stop it first (a running guest's disk is not a consistent image)"
+        )
+    image = dest_dir / f"{args.name}.raw"
+    digest_file = dest_dir / f"{args.name}.raw.sha256"
+    for target in (image, digest_file):
+        if target.exists() or target.is_symlink():
+            raise RunnerError(f"refusing to overwrite existing {target}")
+    clone_disk(source, image, into=dest_dir, allow_full_copy=bool(getattr(args, "allow_full_copy", False)))
+    try:
+        digest = sha256_of_file(image)
+        with digest_file.open("x") as handle:
+            handle.write(f"{digest}  {image.name}\n")
+        os.chmod(image, 0o444)
+        os.chmod(digest_file, 0o444)
+    except BaseException:
+        digest_file.unlink(missing_ok=True)
+        image.unlink(missing_ok=True)
+        raise
+    print(f"[promoted] {image} sha256={digest}", flush=True)
+    return 0
+
+
 def build_parser(
     profile: VmProfile,
     *,
@@ -1986,7 +2239,36 @@ def build_parser(
 
     start = commands.add_parser("start", help=profile.start_help)
     start.add_argument("--name", required=True)
-    start.add_argument("--base-disk", required=True, help="local qcow2/raw disk image mounted read-only")
+    start.add_argument(
+        "--base-disk",
+        required=True,
+        help=(
+            "local base disk image, never written: a qcow2 base is mounted read-only as the overlay's "
+            "backing file; a raw base is reflink-cloned into <state-dir>/disk.raw"
+        ),
+    )
+    start.add_argument(
+        "--base-format",
+        choices=BASE_FORMATS,
+        default=None,
+        help=(
+            "format of --base-disk: auto reads the first 4 bytes (qcow2 magic, else raw); qcow2 must match "
+            "the magic; raw is taken as stated "
+            + (
+                "(default: auto)"
+                if profile.sizing_from_cli
+                else "(default: qcow2, without reading the file)"
+            )
+        ),
+    )
+    start.add_argument(
+        "--allow-full-copy",
+        action="store_true",
+        help=(
+            "raw base only: when the reflink clone is impossible (base and state directory not on one "
+            "btrfs filesystem), copy the whole file instead of failing"
+        ),
+    )
     start.add_argument("--ovmf-code", required=True, help="local OVMF_CODE_4M.fd source file")
     start.add_argument("--ovmf-vars", required=True, help="local OVMF_VARS_4M.fd template file")
     add_state_dir(start, starting=True)
@@ -2072,7 +2354,7 @@ def build_parser(
         action="store_true",
         help="enable an interactive serial Unix socket at <state-dir>/serial.sock and log serial output",
     )
-    start.add_argument("--resume", action="store_true", help="reuse an exited runner's existing overlay and OVMF vars")
+    start.add_argument("--resume", action="store_true", help="reuse an exited runner's existing disk (overlay or raw clone) and OVMF vars")
     start.set_defaults(func=cmd_start)
     for verb in ("status", "stop"):
         sub = commands.add_parser(verb)
@@ -2097,6 +2379,30 @@ def build_parser(
     add_state_dir(rebind)
     rebind.add_argument("--readonly-media", required=True)
     rebind.set_defaults(func=cmd_rebind_media)
+    disk = commands.add_parser("disk", help="operations on a guest's disk image")
+    disk_commands = disk.add_subparsers(dest="disk_action", required=True)
+    promote = disk_commands.add_parser(
+        "promote",
+        help="publish a stopped guest's raw disk as a read-only base image with a .sha256",
+        description=(
+            "Reflink-copy <state-dir>/disk.raw of a STOPPED guest to <dest-dir>/<name>.raw, write "
+            "<name>.raw.sha256 next to it and make both read-only (0444). Needs a raw disk, a destination "
+            "on the same btrfs filesystem (or --allow-full-copy), and refuses to overwrite."
+        ),
+    )
+    promote.add_argument(
+        "--state-dir", required=True, help="state directory of the stopped guest (always explicit)"
+    )
+    promote.add_argument("--dest-dir", required=True, help="existing directory that receives the image")
+    promote.add_argument(
+        "--name", required=True, help="image name: <dest-dir>/<name>.raw (letters, digits, . _ -; no leading dot)"
+    )
+    promote.add_argument(
+        "--allow-full-copy",
+        action="store_true",
+        help="copy the whole file when a reflink clone is impossible instead of failing",
+    )
+    promote.set_defaults(func=cmd_disk_promote)
     console = commands.add_parser("console", help="interact with a running guest through its QMP socket")
     console_commands = console.add_subparsers(dest="console_action", required=True)
     screendump = console_commands.add_parser("screendump", help="save the current VGA frame as a PPM image")
