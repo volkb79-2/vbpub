@@ -3792,6 +3792,22 @@ Call: `SOURCE_DATE_EPOCH=1700000000 DEMO_VERSION=1.0.0 cmru handler bundle-build
 
 **Close when.** A change that adds a `cmru` call to a shell script is refused or auto-extended with the cmru lane, shown by a test of the selection rule, and the trigger list is derived from the scanner's own file selection.
 
+## KI-178 a step hangs forever when its child exits but a grandchild keeps the output pipe open (estate-wide pattern)
+
+**Status:** OPEN (filed 2026-11-17 during the mdt-cockpit release); severity: high (an unattended release or gate never finishes, never fails, and says nothing; found only because the operator looked).
+
+**Observed.** The shared buildkitd was restarted mid-build (host `apt upgrade`, 16:44:34Z). `docker buildx bake` failed, its `release-bake.sh` bash exited (`<defunct>`), but an orphaned VS Code dev-containers credential helper (`docker-credential-dev-containers-*`, parent 1) that docker had spawned kept the inherited stdout pipe open. `build-push.py` sat in `anon_pipe_read` and `cmru release` behind it for 11 minutes; killing only that helper made both exit at once.
+
+**Cause.** `cmru/src/cmru/runner.py` (`for line in process.stdout:` then `process.wait()`) and the same shape in `build-push.py` and `ciu/src/ciu/engine.py:1605` read to EOF, and EOF means "every holder of the write end closed it", not "the child exited". Nothing bounds the time between the two, and nothing watches for output silence.
+
+**Wanted.**
+1. Read loop ends on child exit plus a short bounded drain (poll `process.poll()`; after exit, read what is available for N seconds, then stop), and logs a WARN that names the pids still holding the pipe (`/proc/<pid>/fd` scan) while the result keeps the child's own exit code.
+2. Children start in their own session/process group so a timeout or Ctrl-C reaps the whole group, not just the direct child.
+3. An optional no-progress watchdog per step (no output and no growth of the step's log for a declared period) that fails the step with the last output line and the live process tree. The operator names the period in `cmru.toml`; the default is generous, never infinite.
+4. The shared helper lives in one place (cli-extended or cmru's runner) and the other tools reuse it: CIU-220, MDT-104 and NL-83 track the call sites.
+
+**Acceptance.** A test child spawns `sleep 600` with inherited stdout, then exits 3: the runner returns exit 3 within the drain period and logs the holder pid; a second test with a silent live child fails at the watchdog period with the process tree; a SIGINT test shows the whole group gone.
+
 ## KI-177 `cmru versions resolve` rewrites cmru.toml and silently drops its comments
 
 **Status:** OPEN (filed 2026-11-17 while releasing mdt-cockpit); severity: medium (a refresh deletes human-owned labels; here it removed the eight `ADVISORY ... MDT-013` comments that mdt-cockpit's `test_every_oci_target_is_labelled_advisory_and_points_at_mdt_009` requires, and the loss surfaced only as a release-gate failure).

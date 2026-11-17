@@ -7047,3 +7047,13 @@ nobody documented.
 **Close when.** Mutating a documented flag and deleting a documented verb each
 turn the test red, the refreshed 7.25.1 text passes unchanged, and
 `ciu skills check` still reports the installed copies current.
+
+## CIU-220 — subprocess output loops wait for pipe EOF and can hang after the child has exited
+
+**Status:** OPEN (filed 2026-11-17, from cmru KI-178); severity: high for unattended runs.
+
+**Observed.** `ciu/src/ciu/engine.py:1600-1605` starts a command with `stdout=PIPE, stderr=STDOUT` and iterates `proc.stdout` to EOF. EOF arrives only when every holder of the write end has closed it, so a grandchild that outlives the command (a credential helper, a daemonised helper, a restarted daemon's client) keeps `ciu` blocked after the command itself has exited. The shape was reproduced in cmru and `build-push.py` on 2026-11-17 (an 11-minute silent hang); it has not been reproduced in ciu, which is why this is filed as an audit item.
+
+**Wanted.** Reuse the bounded post-exit drain, process-group start and optional no-progress watchdog from cmru KI-178 for every `ciu` subprocess reader (`engine.py` and the other `Popen(stdout=PIPE)` and `subprocess.run(capture_output=True)` sites that have no timeout), with a WARN naming the pids still holding the pipe.
+
+**Close when.** A test whose command exits while a background `sleep` holds stdout returns the command's exit code within the drain period, and a grep-based guard test lists the remaining unbounded readers as explicit, justified exceptions only.

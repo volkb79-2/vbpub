@@ -1893,3 +1893,18 @@ fresh-home assertion in `tests/runtime/test_fresh_home.py` covering the extra
 skill directories and `skills check` (not an existence test) deciding
 staleness. Record which one, and why, in the design guide's "Agent skills of
 the first-party CLIs" section.
+
+## MDT-104 - `build-push.py` and `scripts/release-bake.sh` block forever when the bake exits but a grandchild holds the pipe (2026-11-17)
+
+**Status:** OPEN; severity: high. Same root cause as cmru KI-178, here on the mdt-cockpit side of the release.
+
+**Observed.** During the 2026-11-17 release the shared buildkitd restarted mid-build (host `apt upgrade`). `release-bake.sh` exited (zombie), but `build-push.py` (pid in `anon_pipe_read`) stayed until an orphaned VS Code credential helper that docker had spawned was killed; the release was silent for 11 minutes.
+
+**Wanted.**
+1. `build-push.py` runs `release-bake.sh` (and the resolver) with the bounded post-exit drain and a process group, using the shared helper from KI-178 when it exists; until then a local equivalent with the same tests.
+2. A builder restart during a bake fails the step quickly with a message naming the builder socket's changed inode or mtime ("buildkitd was restarted at <time>"), not a bare `rpc error ... EOF`.
+3. `release-bake.sh` states in its log which credential helper docker resolved, so a helper that depends on an editor IPC socket is visible.
+
+**Acceptance.** A fake bake that exits non-zero while a background child holds stdout open makes `build-push.py --build` return that exit code within the drain period and log the holder.
+
+**Audit (same finding).** Review the other pipe readers in this project for the same wait-for-EOF shape and bound each one or record why it cannot hang: `scripts/run_oci_push_lane.py` (two `Popen(stdout=PIPE)` tar/export pipelines), `host-setup/scripts/mdt-io-baseline.py`, `host-setup/estate_doctor.py`, `host-setup/mdt-host-setup-wizard.py`, `host-setup/scripts/mdt-buildkit-guard.py`, `scripts/install_ai_cli_tools.py`, `scripts/iomon_bpf.py`.
