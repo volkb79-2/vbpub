@@ -34,7 +34,8 @@ PLACEHOLDER = "{project}"
 RESERVED_REPO_NAMES = frozenset({"shared"})
 _TOP_KEYS = frozenset({"schema", "repo", "paths"})
 _ENTRY_KEYS = frozenset({"repo", "cow", "compression"})
-#: btrfs can set only an algorithm through the inode property, never a level.
+#: Only the two portable values: a level in the per-subvolume property is not guaranteed across btrfs versions and
+#: cannot be read back uniformly.
 COMPRESSIONS = ("none", "zstd")
 _BRACES = re.compile(r"[{}]")
 _BAD_SEGMENTS = ("", ".", "..")
@@ -210,11 +211,10 @@ def _fs_type(root: str, ops: Ops) -> str:
     return mount_fstype(os.path.realpath(root), _read_mountinfo(ops))
 
 
-def _readonly_area_root(cow: str | None, environ: Mapping[str, str] | None, ops: Ops | None) -> str | None:
-    """The CoW area root for a plain lookup, using no write. None (plain) only when the entry has no ``cow``, the mode
-    is off, ``MDT_COW_ROOT`` is unset or empty, or a PermissionError while ``stat``-ing the root hides it. Any other
-    set value must be an absolute existing directory on btrfs: a relative path, a missing directory or another
-    filesystem type raises ``RootInvalid`` (a silent plain answer would hide a mis-mount)."""
+def _configured_root(cow: str | None, environ: Mapping[str, str] | None) -> str | None:
+    """The set, non-empty ``MDT_COW_ROOT``, or None (plain) when the entry has no ``cow``, the mode is off, or the
+    variable is unset or empty. An invalid ``COWTREE_MODE`` raises ``RootInvalid`` for every entry that has a
+    ``cow``, the same in ``resolve`` and ``provision``."""
     if cow is None:
         return None
     env = os.environ if environ is None else environ
@@ -222,10 +222,31 @@ def _readonly_area_root(cow: str | None, environ: Mapping[str, str] | None, ops:
     if mode not in {"auto", "off"}:
         raise RootInvalid(f"COWTREE_MODE must be 'auto' or 'off', not {mode!r}")
     root = env.get(ENV_ROOT, "")
-    if mode == "off" or not root:
+    return None if mode == "off" or not root else root
+
+
+def _is_directory(path: str | os.PathLike[str]) -> bool:
+    """True for an existing directory; any OS error while looking (EACCES for another uid, ESTALE, EIO) is False."""
+    try:
+        return stat.S_ISDIR(os.stat(path).st_mode)
+    except OSError:
+        return False
+
+
+def _readonly_area_root(cow: str | None, environ: Mapping[str, str] | None, ops: Ops | None) -> str | None:
+    """The CoW area root for a plain lookup, using no write. None (plain) when the entry has no ``cow``, the mode
+    is off, ``MDT_COW_ROOT`` is unset or empty, or a PermissionError while ``stat``-ing the root itself hides it
+    (the caller then also treats any OS error on the folder below the root as plain, see ``_is_directory``). Any
+    other set value must be an absolute, symlink-free, existing directory on btrfs, exactly as ``detect()``
+    requires: a relative path, a symlink, a missing directory or another filesystem type raises ``RootInvalid``
+    (a silent plain answer would hide a mis-mount)."""
+    root = _configured_root(cow, environ)
+    if root is None:
         return None
     if not normalized_absolute(root):
         raise RootInvalid("MDT_COW_ROOT must be an absolute, normalized path without NUL")
+    if os.path.realpath(root) != root:
+        raise RootInvalid(f"MDT_COW_ROOT must not contain symlinks: {root!r}")
     operations = ops or LinuxOps()
     try:
         is_directory = stat.S_ISDIR(operations.stat(root).st_mode)
@@ -276,12 +297,10 @@ class RepoPaths:
         """The validated btrfs area root for provisioning (``detect()``, which may write ``.cowtree`` and probes),
         or None when this entry never uses one or ``MDT_COW_ROOT`` is unset or empty. A broken area, and a set root
         on a filesystem other than btrfs, raise ``RootInvalid``."""
-        env = os.environ if environ is None else environ
-        if cow is None or not env.get(ENV_ROOT, ""):
+        if _configured_root(cow, environ) is None:
             return None
         area = detect(environ=environ, ops=ops)
-        if area is None:
-            return None
+        assert area is not None  # a set root and a mode other than off always give an area or raise
         if area.caps.backend != "btrfs":
             raise RootInvalid(
                 f"MDT_COW_ROOT {area.root!r} is on filesystem {area.caps.fs_type!r}, not btrfs; unset it or fix the mount"
@@ -299,14 +318,14 @@ class RepoPaths:
         """``cow`` mode only when the entry has ``cow``, ``MDT_COW_ROOT`` names a valid btrfs CoW area and
         ``<area>/<repo>/<cow>`` (``repo`` from the config, the same for every worktree) is an existing directory;
         otherwise the plain path inside this checkout or worktree. Performs no write at all (no ``detect()``): it
-        checks that ``MDT_COW_ROOT`` is an absolute existing directory whose filesystem is btrfs. A set
-        ``MDT_COW_ROOT`` that is not an existing directory raises ``RootInvalid``; a permission error while looking
-        is not an error, the answer is plain."""
+        checks that ``MDT_COW_ROOT`` is an absolute, symlink-free, existing directory whose filesystem is btrfs. A
+        set ``MDT_COW_ROOT`` that fails that raises ``RootInvalid``; a PermissionError on the root, or any OS error
+        (such as EACCES for another uid) on the folder below it, is not an error, the answer is plain."""
         _entry, repo, cow = self._expand(name, project)
         area_root = _readonly_area_root(cow, environ, ops)
         if area_root is not None and cow is not None:
             target = Path(area_root) / self.repo / cow
-            if os.path.isdir(target):
+            if _is_directory(target):
                 return Resolved(target, "cow", name, project)
         return Resolved(self.root / repo, "plain", name, project)
 

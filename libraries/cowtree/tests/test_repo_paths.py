@@ -368,6 +368,52 @@ def test_a_set_root_that_is_relative_a_file_or_missing_is_loud_and_a_bad_mode_to
         loaded.resolve("iso", environ={"COWTREE_MODE": "bogus"}, ops=ops)
 
 
+def test_a_symlinked_root_is_refused_by_resolve_exactly_as_detect_refuses_it(tmp_path):
+    loaded = load_repo_paths(write_repo(tmp_path))
+    area, _environ, ops = btrfs_area(tmp_path)
+    (area / "myrepo" / "downloads" / "iso").mkdir(parents=True)
+    link = tmp_path / "link-to-area"
+    link.symlink_to(area)
+    environ = {"MDT_COW_ROOT": str(link)}
+    with pytest.raises(RootInvalid, match="must not contain symlinks"):
+        loaded.resolve("iso", environ=environ, ops=ops)
+    with pytest.raises(RootInvalid, match="must not contain symlinks"):
+        loaded.provision("iso", environ=environ, ops=ops, btrfs=FakeBtrfs().tools())
+
+
+def test_an_os_error_on_the_folder_below_the_root_gives_plain_as_another_uid_would_see(tmp_path, monkeypatch):
+    # Another uid can stat the area root but not enter it: the stat of <root>/<repo>/<cow> fails with EACCES.
+    loaded = load_repo_paths(write_repo(tmp_path))
+    area, environ, ops = btrfs_area(tmp_path)
+    target = area / "myrepo" / "downloads" / "iso"
+    target.mkdir(parents=True)
+    real_stat = os.stat
+
+    def stat_denied_below_the_root(path, *args, **kwargs):
+        if str(path) == str(target):
+            raise PermissionError(13, "denied")
+        return real_stat(path, *args, **kwargs)
+
+    assert loaded.resolve("iso", environ=environ, ops=ops).mode == "cow"
+    with monkeypatch.context() as patched:
+        patched.setattr(repo_paths.os, "stat", stat_denied_below_the_root)
+        got = loaded.resolve("iso", environ=environ, ops=ops)
+    assert got == Resolved(loaded.root / "downloads/iso", "plain", "iso", None)
+
+
+def test_an_invalid_mode_raises_in_resolve_and_provision_alike(tmp_path):
+    loaded = load_repo_paths(write_repo(tmp_path))
+    ops = FakeOps(filesystem="btrfs")
+    for environ in ({"COWTREE_MODE": "bogus"}, {"COWTREE_MODE": "bogus", "MDT_COW_ROOT": str(tmp_path)}):
+        with pytest.raises(RootInvalid, match="COWTREE_MODE"):
+            loaded.resolve("iso", environ=environ, ops=ops)
+        with pytest.raises(RootInvalid, match="COWTREE_MODE"):
+            loaded.provision("iso", environ=environ, ops=ops, btrfs=FakeBtrfs().tools())
+    # an entry without cow never looks at the mode in either verb
+    assert loaded.resolve("downloads", environ={"COWTREE_MODE": "bogus"}, ops=ops).mode == "plain"
+    assert loaded.provision("downloads", environ={"COWTREE_MODE": "bogus"}, ops=ops).mode == "plain"
+
+
 def test_resolving_creates_nothing_in_the_repo_or_below_the_cow_mirror(tmp_path):
     root = write_repo(tmp_path)
     loaded = load_repo_paths(root)

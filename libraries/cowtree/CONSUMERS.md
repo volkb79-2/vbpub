@@ -57,7 +57,7 @@ repo = "vbpub"               # the repository's folder below $MDT_COW_ROOT, shar
 [paths.iso]
 repo = "downloads/iso"       # plain location, relative to the repo root
 cow = "downloads/iso"        # below $MDT_COW_ROOT/<repo>/ ; omit = never CoW
-compression = "none"         # none | zstd (an algorithm only; btrfs sets no level through the property)
+compression = "none"         # none | zstd (the two portable values; a level is not guaranteed across btrfs versions)
 
 [paths.vm-lab]
 repo = "{project}/vm-lab"    # per project: the caller passes the project directory
