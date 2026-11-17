@@ -13,6 +13,7 @@ from .detect import detect
 from .errors import CowError
 from .gc import gc, gc_json, make_shared, survey
 from .provision import Settings, decide
+from .repo_paths import find_repo_root, load_repo_paths
 
 _ERROR_EXIT_CODES = {
     "cow": 1,
@@ -27,6 +28,7 @@ _ERROR_EXIT_CODES = {
     "unrepairable": 11,
     "level-unavailable": 12,
     "key-collision": 13,
+    "usage": 2,
 }
 
 
@@ -73,6 +75,17 @@ def _parser() -> argparse.ArgumentParser:
     probe_parser.add_argument("--clone-dir")
     probe_parser.add_argument("--copy-dir")
     probe_parser.add_argument("--json", action="store_true")
+    path_parser = commands.add_parser(
+        "path", help="print where a named shared path of the repository lives (vm-lab.toml)",
+    )
+    path_parser.add_argument("name", help="a path name defined in vm-lab.toml")
+    path_parser.add_argument("--project", metavar="DIR", help="project directory relative to the repo root, for per-project paths")
+    path_parser.add_argument(
+        "--repo-root", metavar="DIR",
+        help="the directory holding vm-lab.toml (default: searched upward from the current directory)",
+    )
+    path_parser.add_argument("--provision", action="store_true", help="create the CoW subvolume first (idempotent)")
+    path_parser.add_argument("--json", action="store_true")
     return parser
 
 
@@ -110,6 +123,18 @@ def _probe_command(args) -> int:
         print(f"level: {report['level']} (requested {report['requested']})")
         for level, result in report["checks"].items():
             print(f"  {level}: {result}")
+    return 0
+
+
+def _path_command(args) -> int:
+    root = find_repo_root(os.getcwd()) if args.repo_root is None else args.repo_root
+    repo_paths = load_repo_paths(root)
+    if args.provision:
+        resolved = repo_paths.provision(args.name, project=args.project)
+    else:
+        resolved = repo_paths.resolve(args.name, project=args.project)
+    document = {**resolved.as_dict(), "repo": repo_paths.repo} if args.json else str(resolved.path)
+    _output(document, args.json)
     return 0
 
 
@@ -170,6 +195,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             return _cache_command(args)
         if args.command == "probe":
             return _probe_command(args)
+        if args.command == "path":
+            return _path_command(args)
         if args.command == "make-shared":
             area = detect()
             if area is None:

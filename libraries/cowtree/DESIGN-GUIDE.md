@@ -138,6 +138,48 @@ are created under the selected temporary directory and require an explicit
 `gc --scan DIR`; the CLI logs that instruction instead of implying it scanned
 those runs.
 
+## One config for the shared paths
+
+Where ISOs, base images and VM state live used to be hardcoded in each script (`downloads/...`,
+`<project>/artifacts/vm-lab`), so moving one folder onto the CoW filesystem meant editing every consumer.
+One tracked `vm-lab.toml` in the repo root (named after the vm-lab project, which owns ISOs, base images and VM state;
+another project declares its own paths in its own tables of the same file only if it needs the resolver) now names each shared path and says which of them also have a CoW
+location; every consumer asks the resolver. The checkout stays on its ordinary filesystem (a repository on a
+copy-on-write or compressed filesystem was rejected), and only selected folders are subvolumes, mirrored at
+`$MDT_COW_ROOT/<repo-name>/<path>`: one set per user (each has their own `MDT_COW_ROOT`) and per repo (the
+`<repo-name>` level). `<repo-name>` is a required top-level `repo` key of the file, not the checkout's directory
+name: a worktree carries the same tracked file, so it resolves to the same CoW folders as the main checkout (it is
+one repository, and the shared ISOs, base images and VM state must not fork per worktree), while its plain fallback
+stays inside the worktree. `MDT_COW_ROOT` is the one environment input; the earlier rule that no environment variable
+relocates a declared path is superseded for this reason.
+
+The fallback is silent only for "there is no CoW area": an unset or empty `MDT_COW_ROOT`, `COWTREE_MODE=off`, an entry
+without `cow`, or a CoW folder that has not been provisioned yet; plus one kind of failure, an OS error such as EACCES while looking at the folder below the root, or a `PermissionError` on
+the root itself (the other-uid case), which gives the plain answer instead of an error. All of these are normal
+states (a plain host, a new repo, a second user), and the plain path is a correct answer. A configured but broken area is
+loud (BTRFS-COW.md sections 5 and 8: verify the filesystem type and refuse otherwise): a set `MDT_COW_ROOT` that is
+relative, not an existing directory, or on a filesystem other than btrfs raises `RootInvalid` naming what was found
+(and `provision` lets the `detect()` refusals through, and refuses a non-btrfs area the same way), because a silent fallback would send a VM disk
+to the checkout's filesystem while the operator believes it is on btrfs. `provision` refuses an existing plain
+directory at the CoW location rather than migrating it, since moving data is a separate, reviewable step.
+The module stays free of VM and Docker knowledge: names live only in the repository's file. A resolve performs no
+write at all, which is why it does not use `detect()` (that writes `.cowtree/` and probes with a throwaway
+subvolume and snapshot): it checks the environment, `stat` and the mountinfo filesystem type, so it is cheap
+enough for a hot loop and works for a uid other than the area's owner: such a uid can usually `stat` the area root but
+cannot enter it, so the `stat` of the folder below the root fails with EACCES and the answer is plain (any OS error on
+that folder is a plain answer, as is a `PermissionError` on the root itself; `resolve` also refuses a symlinked root, as
+`detect()` does). Only `provision` writes, and it does use `detect()`. Because the answer for a name flips from
+`plain` to `cow` once its folder is provisioned, anything a consumer wrote to the plain location earlier is no
+longer found: moving existing files is an explicit step of the consumer migration, never implied. Two rules about
+the `repo` key: it must be unique among the repositories of one user (two repositories with the same key would
+silently share their CoW folders), and `shared` is refused because cowtree keeps that directory in every area root.
+Compression is `none` or `zstd` only: a level in the per-subvolume property is not guaranteed across btrfs versions
+and cannot be read back uniformly (BTRFS-COW.md section 4 measured `zstd:3` accepted on btrfs-progs 7.1; older versions
+are untested), so the config takes only the two portable values; a level is a mount-option matter. An unset property is treated as `none`: that is exact on a filesystem
+mounted without `compress=`, but on one mounted with `compress=zstd` a folder declared `none` and never given an explicit
+property would still compress; set the property explicitly there. COW-BL-01 (gitignored paths snapshotted into worktrees)
+is a different table with a different consumer and is not folded into this one.
+
 ## Manifest fsync is not a correctness dependency
 
 `_write_manifest` fsyncs the file and directory, but under the relaxed-fsync

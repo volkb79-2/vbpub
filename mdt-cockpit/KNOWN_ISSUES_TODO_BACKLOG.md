@@ -867,49 +867,57 @@ while the parent's is unset. Until decided, an operator may still set them by ha
 - RG-144 consumes the guard events, but optionally.
 - Flip the guard to `enforce`, and adjust the tier fractions, after M6.
 
-## MDT-044 - host-setup: provision the CoW area and the checkout location, in a fresh-host order (2026-11-03)
+## MDT-044 - host-setup: provision the CoW area and the vm-lab.toml mirror, in a fresh-host order (2026-11-03)
 
-**Status:** OPEN. Depends on `libraries/cowtree` COW-BL-01/-02 for the per-project declarations; this entry is the host half.
+**Status:** OPEN. The repo-root `vm-lab.toml` and the cowtree resolver (package RP-01) are the per-repo half; this entry is
+the host half and the consumer migration. `libraries/cowtree` COW-BL-01/-02 (declared gitignored paths for worktree snapshots)
+is a different table and stays open.
 
-**Decision (operator, 2026-11-03, binding).**
+**Decision (operator, 2026-11-17, binding; replaces the 2026-11-03 "checkout moves onto the CoW filesystem" decision).**
 
-- The checkout, with `.worktrees/`, lives on the CoW filesystem. Worktrees still come from git. Only the paths a project
-  declares in the cowtree schema become writable snapshots of main's. There is no mount-over of a folder in the checkout and no
-  `MDT_*` path override.
+- The checkout, with `.worktrees/`, **stays on ext4**. Selected folders are btrfs subvolumes mirrored at
+  `$MDT_COW_ROOT/<repo-name>/<path>`, one set per user and per repo. There is no mount-over of a folder in the checkout.
+- One tracked config in the repo root, `vm-lab.toml`, names every shared path (`iso`, `vm-images`, `vm-lab` per project,
+  `downloads`), its plain location, and its CoW location and compression. Scripts and tests take every shared path from it
+  through the resolver (`libraries/cowtree/repo-path`, `cowtree.repo_paths`) and never hardcode `downloads/` or `vm-lab/`.
+  `MDT_COW_ROOT` is the one environment input; without it, or when the CoW folder does not exist, the resolver answers with the
+  plain repo path.
 - `mdt host-setup` creates and mounts the btrfs CoW area (default `/srv/mdt-cockpit-cow/<user>/`), with the
-  `user_subvol_rm_allowed` option and an fstab entry, and the per-user root inside it.
-- Both must exist **before the devcontainer starts**: Docker refuses a missing bind source, and a source it creates itself is
-  root-owned. The checkout is cloned inside the per-user root, and the devcontainer binds that path.
+  `user_subvol_rm_allowed` option and an fstab entry, and the per-user root inside it. It must exist **before the devcontainer
+  starts**: Docker refuses a missing bind source, and a source it creates itself is root-owned. The devcontainer binds the
+  per-user root as `MDT_COW_ROOT`; the checkout is not cloned into it.
 - VM layout (operator, 2026-11-17, binding; AGENTS.md "Directory conventions and VM files"): VM files in `<project>/vm-lab/`
   (a compressed CoW subvolume), ISOs in `<repo root>/downloads/iso/`, shared qemu base images in `<repo root>/downloads/vm-images/`,
-  raw preferred on btrfs, per-VM disks as reflink copies of a base. `docs/BTRFS-COW.md` was rewritten to this layout on 2026-11-17.
-- Follow-up (open): move the projects that still use `<project>/artifacts/vm-lab/` to `<project>/vm-lab/` with a committed
-  placeholder each: `scripts/truenas` (`tcg_vm.py` default state dir, `golden-iso`, `docs/CONSUMERS.md`, README, backlog),
+  raw preferred on btrfs, per-VM disks as reflink copies of a base. `docs/BTRFS-COW.md` describes the mirror layout.
+- Follow-up (open; packages RP-02..RP-06: the `vm-lab` project, truenas and tnt, debian-install-v2, the netcup, pwmcp, zswap and
+  io-governor docs, and moving the existing files): move the consumers onto the resolver, and the projects that still use
+  `<project>/artifacts/vm-lab/` to `<project>/vm-lab/` with a committed placeholder each: `scripts/truenas` (`tcg_vm.py` default state dir, `golden-iso`, `docs/CONSUMERS.md`, README, backlog),
   `truenas/tnt` (TNT-59 placeholder and the `test_hardening.py` pin that no source relocates VM state), `pwmcp/tools/console-capture`,
   `scripts/debian-install-v2/testing/vm` and its `.gitignore` comment, `scripts/netcup/CONSUMERS.md`,
   `zswap-writeback-governor/synthetic/run-synthetic.sh`, and `mdt-cockpit/docs/IO-GOVERNOR-CANDIDATES.md`. `scripts/vm-lab`
   and `scripts/debian-rollback` already name the new location. The `scripts/vm-lab` tool still builds a qcow2 overlay on a base
   disk; moving it to raw reflink copies of `downloads/vm-images/` is package VML-06 of `scripts/debian-rollback/docs/WORK-PACKAGES.md`.
-- Interim (2026-11-17): the subvolumes `downloads/iso`, `downloads/vm-images` and `scripts/debian-rollback/vm-lab` exist under
-  `$MDT_COW_ROOT/<repo>/` (mirror of the repo paths; BTRFS-COW.md section 10). Files already in the flat `downloads/` stay until
+- Existing state (2026-11-17): the subvolumes `downloads/iso`, `downloads/vm-images` and `scripts/debian-rollback/vm-lab` exist under
+  `$MDT_COW_ROOT/<repo-name>/` (BTRFS-COW.md section 10). Files already in the flat `downloads/` stay until
   `scripts/truenas/vanilla-iso-patcher/upstream.py` (`DOWNLOADS_DIR`) and the debian-install-v2 harness (`HOST_DOWNLOADS_DIR`, its
-  boundary tests) accept the subfolders; moving them earlier breaks those tools.
-- The checkout in the current devcontainer is on ext4 (`/workspaces/vbpub`), only `MDT_COW_ROOT` is btrfs, so reflinks from
-  `downloads/vm-images/` into `<project>/vm-lab/` do not work there until the checkout itself lives on the CoW filesystem (step 2 below).
+  boundary tests) take their paths from the resolver; moving them earlier breaks those tools.
+- Reflinks from the resolved `vm-images` path into the resolved `vm-lab` path work in cow mode (both are subvolumes of the one CoW
+  filesystem); on a plain host they are ordinary folders of the checkout and the tool must say so.
 
 **Fresh-host order (to document and to make `check.sh` verify).**
 
 1. Host-setup: CoW area (mkfs or an existing btrfs, mount, `user_subvol_rm_allowed`, fstab), then the per-user root owned by
    the checkout user.
-2. Clone the repository inside the per-user root.
-3. Provision the declared paths in main (cowtree provision; subvolume per declared path, placeholders moved aside and back).
-4. Start the devcontainer with the per-user root as the workspace bind.
-5. Worktrees: `ciu worktree create` snapshots the declared paths (CIU-159).
+2. Start the devcontainer with the per-user root bound as `MDT_COW_ROOT` (the checkout stays where it is).
+3. Provision the declared paths (`libraries/cowtree/repo-path NAME [--project DIR] --provision` per name; the subvolume is created
+   below `$MDT_COW_ROOT/<repo-name>/` with its declared compression).
+4. Worktrees: `ciu worktree create` snapshots the paths of the separate COW-BL-01/02 declaration (CIU-159); a worktree resolves
+   shared paths through its own `vm-lab.toml`.
 
 **Open points.** What `check.sh` reports on a host with no btrfs (one INFO line, not a failure); whether the wizard offers to
 create a loop-backed btrfs for a test host (no: a real device or an existing btrfs only, see the loop-device incident rule).
 
-**Acceptance.** The installer and `check.sh` cover steps 1-2 with fake-filesystem tests; the README gives the order; BTRFS-COW
+**Acceptance.** The installer and `check.sh` cover step 1 with fake-filesystem tests; the README gives the order; BTRFS-COW
 §6.3 matches the layout; no document names a user, host or fixed home path.
 
 ## MDT-045 - Python variants: only 3.14 builds today (2026-11-03)
@@ -966,8 +974,8 @@ the release flow): the two variables, that the environment wins over the `docker
 3. Before any restart, list the running containers by name and require confirmation (never an all-container inventory beyond
    the names), and print the restart-free alternative (`systemctl reload` or a reboot window) when the changed keys allow it.
 4. Document the chicken-and-egg rule: a folder inside the checkout is never mounted over by host-setup (the vm-lab mount-over
-   was dropped); CoW paths are subvolumes of the checkout filesystem declared per project (MDT-044), so no container needs a
-   restart to see them.
+   was dropped); CoW paths are subvolumes below `$MDT_COW_ROOT/<repo-name>/` found through `vm-lab.toml` (MDT-044), so no
+   container needs a restart to see them.
 
 **Acceptance.** A test on fake `systemctl` shows `install.sh` without `--restart-docker` issues no Docker restart on any path;
 the scratch-host reproduction is recorded with its cause (or "not reproducible with live-restore, restart was explicit").

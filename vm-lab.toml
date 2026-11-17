@@ -1,0 +1,32 @@
+# vm-lab.toml: the shared paths of this repository, named after the vm-lab project that owns ISOs, base images and
+# VM state. The one place scripts and tests learn where they live. Consumers never hardcode `downloads/` or
+# `vm-lab/`; they ask the resolver (`libraries/cowtree/repo-path NAME [--project DIR]`, or `cowtree.repo_paths`).
+#
+# repo (top)  the repository's folder below $MDT_COW_ROOT, the same for the main checkout and every worktree
+# repo        the plain location, relative to the repo root (the checkout stays on ext4)
+# cow         where the same folder lives as a btrfs subvolume, below $MDT_COW_ROOT/<repo>/ ; omit = never CoW
+# compression none | zstd (the two portable values), applied when the subvolume is provisioned ; omit = filesystem default
+# {project}   a per-project path: the caller passes the project directory (relative to the repo root)
+#
+# With MDT_COW_ROOT unset or empty, or when the cow folder does not exist, a name resolves to its plain `repo` location.
+# Schema and rules: libraries/cowtree/SPEC.md "Repo paths"; policy: AGENTS.md "Directory conventions and VM files".
+schema = 1
+repo = "vbpub"
+
+[paths.iso]
+repo = "downloads/iso"
+cow = "downloads/iso"
+compression = "none"
+
+[paths.vm-images]
+repo = "downloads/vm-images"
+cow = "downloads/vm-images"
+compression = "zstd"
+
+[paths.vm-lab]
+repo = "{project}/vm-lab"
+cow = "{project}/vm-lab"
+compression = "zstd"
+
+[paths.downloads]
+repo = "downloads"

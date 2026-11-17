@@ -11,7 +11,8 @@ copy or reflink tree sealed with `Run.seal()` restores owner write permission
 so the clone can be used as a candidate. A destination collision leaves the
 existing path intact. It does not know about Git, assay, lanes, VMs, or Docker.
 The embedded API advertises `API_VERSION = 1`.
-The CLI provides `detect`, `survey`, `gc`, and `make-shared`. A run can declare
+The CLI provides `detect`, `survey`, `gc`, `make-shared`, `probe`, `cache` and `path`
+([repo paths](#repo-paths-vm-labtoml)). A run can declare
 an external owner with `external_ref`; cowtree never reaps external runs.
 Default `gc` scans only the configured CoW area's runs. It does not discover
 plain-mode runs; it logs an INFO line directing operators to `cowtree gc
@@ -56,6 +57,48 @@ subvolumes. GC reads
 `owner.json` manifests up to 64 KiB and retains larger ones as invalid; cowtree
 refuses to write larger manifests. See the [ownership
 rules](DESIGN-GUIDE.md#ownership-and-identity).
+
+## Repo paths (`vm-lab.toml`)
+
+A repository names its shared paths (ISOs, base images, per-project VM state, other
+downloads) once, in a tracked `vm-lab.toml` in its root. Each entry gives the
+plain location inside the checkout and, optionally, a location below
+`$MDT_COW_ROOT/<repo-name>/` (`<repo-name>` is the file's top-level `repo` key, the same for the main checkout and every worktree) where the same folder lives as a btrfs subvolume, with
+its compression. Scripts and tests ask the resolver instead of hardcoding a path:
+
+```console
+libraries/cowtree/repo-path iso                          # shell, no install needed
+libraries/cowtree/repo-path vm-lab --project scripts/x   # a per-project path
+libraries/cowtree/repo-path vm-images --provision --json # create the subvolume first
+```
+
+```python
+from cowtree.repo_paths import find_repo_root, load_repo_paths
+
+paths = load_repo_paths(find_repo_root(__file__))        # the start path is always explicit
+iso_dir = paths.resolve("iso").path                      # Resolved(path, mode, name, project)
+```
+
+`resolve` answers with the CoW folder (mode `cow`) only when the entry has a `cow`
+location, `MDT_COW_ROOT` is an existing directory on btrfs and that folder exists; in every
+other case it answers with the plain repo path (mode `plain`). A missing
+or empty `MDT_COW_ROOT` is a normal plain host and falls back silently (so does a permission
+error while looking at the root or an OS error such as EACCES on the folder below it, which
+is what another uid sees); a set `MDT_COW_ROOT` that is relative, a symlink, not an existing
+directory or not on btrfs raises `RootInvalid` (status 3, naming the filesystem type found). `resolve` performs
+no write at all (no `detect()`, so no `.cowtree/` and no probe); `provision` (CLI
+`--provision`) uses `detect()`, which may create `.cowtree/`, then creates the missing
+parents, the subvolume and sets its compression property (`none` or `zstd`), is
+idempotent, and refuses an existing plain directory at the CoW location.
+The command is `cowtree path NAME [--project DIR] [--repo-root DIR] [--provision] [--json]`
+(`libraries/cowtree/repo-path` runs it from the source tree). An invalid file is a
+`RepoPathsInvalid` (status 5); an unknown name, a missing project or no file found is a
+`UsageError` (status 2).
+The module knows no VM or Docker concept: names such as `iso` exist only in the
+repository's own file. Why one config, why this fallback rule: [design
+guide](DESIGN-GUIDE.md#one-config-for-the-shared-paths); the schema and oracle ids:
+[SPEC](SPEC.md#repo-paths); adopting it: [CONSUMERS](CONSUMERS.md#resolve-the-shared-paths-of-a-repository).
+It is separate from the COW-BL-01 declaration of gitignored paths for worktree snapshots.
 
 ## Shared keyed trees and provisioning levels
 

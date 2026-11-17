@@ -63,7 +63,8 @@ def mount_fstype(path: str, text: str) -> str:
     ]
     if not matches:
         raise RootInvalid(f"cannot determine filesystem for {path!r} from mountinfo")
-    return max(matches, key=lambda item: len(item[0]))[1]
+    # the longest mountpoint wins; among equal ones the LAST row of mountinfo, the topmost (visible) mount
+    return max(reversed(matches), key=lambda item: len(item[0]))[1]
 
 
 def require_directory(path: str, *, label: str) -> os.stat_result:
