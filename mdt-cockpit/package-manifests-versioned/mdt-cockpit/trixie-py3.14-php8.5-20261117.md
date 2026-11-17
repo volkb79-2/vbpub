@@ -3,7 +3,7 @@
 ## Release
 
 - Build date: `20261117`
-- Built at (UTC): `2026-11-17T17:58:44Z`
+- Built at (UTC): `2026-11-17T22:27:35Z`
 - Debian: `trixie`
 - Python: `3.14`
 - Immutable image tag: `trixie-py3.14-php8.5-20261117`
@@ -201,11 +201,11 @@ mdt-cockpit + PHP 8.5 base image. Adds PHP 8.5 CLI/FPM, composer, Xdebug, and th
     backoff==2.2.1
     beautifulsoup4==4.14.3
     boolean.py==5.0
-    boto3==1.44.4
-    botocore==1.44.4
+    boto3==1.44.5
+    botocore==1.44.5
     build==1.6.1
     CacheControl==0.15.0
-    cachetools==8.0.0
+    cachetools==8.0.1
     certifi==2026.2.25
     cffi==2.0.0
     cfgv==3.5.0
@@ -303,7 +303,7 @@ mdt-cockpit + PHP 8.5 base image. Adds PHP 8.5 CLI/FPM, composer, Xdebug, and th
     pip_api==0.0.35
     pip_audit==2.10.1
     pip-requirements-parser==32.0.1
-    platformdirs==4.14.5
+    platformdirs==4.14.7
     pluggy==1.7.0
     posthog==7.9.12
     pre_commit==4.7.0
@@ -371,7 +371,7 @@ mdt-cockpit + PHP 8.5 base image. Adds PHP 8.5 CLI/FPM, composer, Xdebug, and th
     tomli==2.5.0
     tomli_w==1.2.0
     topos==0.8.0
-    tox==4.67.13
+    tox==4.67.14
     tqdm==4.67.3
     traitlets==5.16.1
     tree-sitter==0.25.2
@@ -403,6 +403,7 @@ mdt-cockpit + PHP 8.5 base image. Adds PHP 8.5 CLI/FPM, composer, Xdebug, and th
 - bash-completion: `1:2.16.0-7`
 - bind9-dnsutils: `1:9.20.30-1~deb13u1`
 - broot: `1.46.3-2`
+- btrfs-progs: `7.3-1~bpo13+1`
 - ca-certificates: `20250419+deb13u1`
 - cloud-image-utils: `0.33-1`
 - composer: `2.8.8-1+deb13u3`
@@ -410,6 +411,7 @@ mdt-cockpit + PHP 8.5 base image. Adds PHP 8.5 CLI/FPM, composer, Xdebug, and th
 - docker-buildx-plugin: `0.39.0-1~debian.13~trixie`
 - docker-ce-cli: `5:29.10.0-1~debian.13~trixie`
 - docker-compose-plugin: `5.8.0-1~debian.13~trixie`
+- eatmydata: `131-2`
 - fuse3: `3.17.2-3`
 - gdb: `18.1-3~bpo13+1`
 - git: `1:2.47.3-0+deb13u1`
@@ -422,12 +424,14 @@ mdt-cockpit + PHP 8.5 base image. Adds PHP 8.5 CLI/FPM, composer, Xdebug, and th
 - iputils-ping: `3:20240905-3`
 - jq: `1.7.1-6+deb13u4`
 - less: `668-1`
+- libeatmydata1: `131-2+b1`
 - locales: `2.41-12+deb13u4`
 - lsb-release: `12.1-1`
 - lsof: `4.99.4+dfsg-2`
 - man-db: `2.13.1-1`
 - mc: `3:4.8.33-1+deb13u1`
 - minisign: `0.12-1`
+- mtools: `4.0.48-1`
 - nano: `8.4-1+deb13u1`
 - ncdu: `1.22-1`
 - netcat-openbsd: `1.229-1`
@@ -467,6 +471,7 @@ mdt-cockpit + PHP 8.5 base image. Adds PHP 8.5 CLI/FPM, composer, Xdebug, and th
 - vim: `2:9.1.1230-2+deb13u2`
 - w3m: `0.5.3+git20230121-2.1`
 - wget: `1.25.0-2`
+- xorriso: `1.5.6-1.2+b1`
 - xz-utils: `5.8.1-1+deb13u2`
 - zsh: `5.9-8+b24`
 - zsh-autosuggestions: `0.7.1-1`

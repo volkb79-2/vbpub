@@ -223,6 +223,23 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 <!-- cmru: release history -->
 
+## [source-8747b3689fc9] - 2026-11-17
+<!-- cmru: generated -->
+<!-- cmru: source-end=8747b3689fc90aafd2798994fe2ad1bcad372eac -->
+
+### Changed
+- mdt-cockpit: variants test expects the CoW lines active; a host without the area comments both out (8747b3689)
+- mdt-cockpit: CoW area on in the templates and the live config; tests keep main()'s endpoint env file out of the repo (9d06724b0)
+- mdt-cockpit: endpoint-bridge test expects the optional observer GID the bridge also delivers; augeaswrap AW-BL-51 (no documented host install) (b2c1202e2)
+- mdt-cockpit: image also gains xorriso and mtools (527c6755f)
+- mdt-cockpit: image gains btrfs-progs, eatmydata, libeatmydata1; host cutover runbook (legacy cgprofile 1.1.0 to the endpoint record) (fb2030844)
+- mdt-cockpit: bootstrap bridges a host without an endpoint record from its live cgprofile sockets and docker group (b27986406)
+- mdt-cockpit: devcontainer templates and the live .devcontainer deliver the host endpoint facts (MDT-086) (845498f8b)
+
+### Documentation
+- docs: interim CoW subvolumes for downloads/iso, downloads/vm-images and the debian-rollback vm-lab; flat downloads files stay until their consumers accept subfolders (9d44fb22b)
+- docs: VM file layout (<project>/vm-lab, downloads/iso, downloads/vm-images), raw reflink disks, zstd VM disks; BTRFS-COW.md rewritten forward-only (8dceea1b7)
+
 ## [source-38e9092cf1c3] - 2026-11-17
 <!-- cmru: generated -->
 <!-- cmru: source-end=38e9092cf1c308cbfd36652e6c24b3e44e0d5a97 -->
