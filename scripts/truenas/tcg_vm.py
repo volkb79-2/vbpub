@@ -22,6 +22,11 @@ from typing import Any
 _VM_LAB_SOURCE = str(Path(__file__).resolve().parent.parent.parent / "vm-lab" / "src")
 if _VM_LAB_SOURCE not in sys.path:
     sys.path.insert(0, _VM_LAB_SOURCE)
+_HERE = str(Path(__file__).resolve().parent)
+if _HERE not in sys.path:
+    sys.path.insert(0, _HERE)
+
+import repo_paths_access  # noqa: E402  (the one place scripts/truenas asks vm-lab.toml for its folders)
 
 from vm_lab import core as vm_lab  # noqa: E402  (the functions tests patch live in vm_lab.core)
 from vm_lab import (  # noqa: E402,F401  (re-exported for importers of this module)
@@ -112,24 +117,32 @@ VM_LABEL_VALUE = PROFILE.label_value
 STATE_LABEL = PROFILE.state_label
 DEFAULT_SSH_PORT = PROFILE.forwards[0].host_port
 DEFAULT_HTTPS_PORT = PROFILE.forwards[1].host_port
-# Estate layout (AGENTS.md "Directory conventions"): VM state lives in
-# <project>/artifacts/vm-lab/<vm>/, derived from this file's location and never
-# from an environment variable. An explicit --state-dir still wins.
-VM_LAB_DIR = Path(__file__).resolve().parent / "artifacts" / "vm-lab"
+# Estate layout (AGENTS.md "Directory conventions"): VM state lives in the `vm-lab` folder of
+# this project, which `vm-lab.toml` declares and `repo_paths_access` resolves (a CoW subvolume
+# on CoW hosts, else <this directory>/vm-lab). The only environment input is MDT_COW_ROOT, read
+# by the resolver. An explicit --state-dir still wins.
 _STATE_DIR_DEFAULTS = (
-    "artifacts/vm-lab/<name> beside this script, created",
-    "artifacts/vm-lab/<name>",
+    "<name> in this project's vm-lab/ folder (vm-lab.toml), created",
+    "<name> in this project's vm-lab/ folder (vm-lab.toml)",
 )
+
+
+def vm_lab_dir() -> Path:
+    """The resolved vm-lab folder of this project; a missing vm-lab.toml is a refusal."""
+    try:
+        return repo_paths_access.vm_state_root()
+    except repo_paths_access.RepoPathsError as exc:
+        raise RunnerError(str(exc)) from None
 
 
 def default_state_dir(name: str) -> Path:
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", name):
         raise RunnerError(f"guest name cannot name a vm-lab directory: {name!r}")
-    return VM_LAB_DIR / name
+    return vm_lab_dir() / name
 
 
 def resolve_state_dir_argument(args: argparse.Namespace) -> None:
-    """Fill a missing --state-dir with artifacts/vm-lab/<name>; only `start` creates it."""
+    """Fill a missing --state-dir with <vm-lab folder>/<name>; only `start` creates it."""
     if getattr(args, "state_dir", "") is not None or not hasattr(args, "name"):
         return
     state_dir = default_state_dir(args.name)

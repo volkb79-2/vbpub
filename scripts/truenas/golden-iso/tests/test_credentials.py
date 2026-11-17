@@ -124,8 +124,10 @@ def test_step1_sidecar_location_is_gitignored() -> None:
     for candidate in (
         STEP1.DEFAULT_SECRETS,
         GOLDEN_ROOT / "artifacts" / "hosts" / "h1.example.secrets.toml",
-        STEP1.VM_DIR / "x.secrets.toml",
+        STEP1.vm_dir() / "x.secrets.toml",
     ):
+        if repo not in candidate.parents:
+            continue  # a CoW subvolume outside the checkout is not a git path at all
         result = subprocess.run(
             ["git", "check-ignore", "-v", str(candidate.relative_to(repo))],
             cwd=repo, text=True, capture_output=True, check=False,

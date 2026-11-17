@@ -14,6 +14,17 @@ import time
 import zlib
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+import repo_paths_access  # noqa: E402  (the one place scripts/truenas asks vm-lab.toml for its folders)
+
+
+def default_socket() -> Path:
+    """The golden source VM's QMP socket in the resolved vm-lab folder; computed, never a fixed relative string."""
+    try:
+        return repo_paths_access.golden_source_dir() / "qmp.sock"
+    except repo_paths_access.RepoPathsError as exc:
+        raise SystemExit(f"qmp.py: {exc}") from None
+
 
 def qmp_command(path: str, execute: str, arguments: dict | None = None) -> dict:
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
@@ -104,7 +115,8 @@ def ppm_to_png(source: bytes) -> bytes:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--socket", default="../artifacts/vm-lab/golden-source-27-20GiB/qmp.sock", help="QMP Unix socket")
+    parser.add_argument("--socket", default=None, help="QMP Unix socket (default: qmp.sock in the golden source VM's "
+                        "folder of this project's vm-lab/ folder, resolved from vm-lab.toml)")
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("status", help="query VM status")
     sub.add_parser("powerdown", help="request an ACPI guest shutdown")
@@ -118,7 +130,7 @@ def main() -> int:
     typing.add_argument("--password", action="store_true", help="read text without echo")
     typing.add_argument("--file", help="read text from a local file without echoing it")
     args = parser.parse_args()
-    path = args.socket
+    path = args.socket if args.socket is not None else str(default_socket())
     if args.command == "status":
         result = qmp_command(path, "query-status")
     elif args.command == "powerdown":
