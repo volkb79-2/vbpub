@@ -18,7 +18,7 @@ import install_ai_cli_tools as installer  # noqa: E402
 import stage_tool_artifacts as stage  # noqa: E402
 from test_oci_tool_staging import fake_version_records  # noqa: E402
 
-VETTED = {"npm.copilot": "1.0.106-6", "npm.openclaw": "2026.10.10", "npm.claudelink": "1.6.6"}
+VETTED = {"npm.copilot": "1.0.92-4", "npm.openclaw": "2026.9.8", "npm.claudelink": "1.6.1"}
 CUT = "2026-10-05T00:00:00Z"
 ENV_KEYS = {"COPILOT_VER": "npm.copilot", "OPENCLAW_VER": "npm.openclaw", "CLAUDELINK_VER": "npm.claudelink"}
 AIDER_PIN = {"AIDER_COMMIT": "5dc9490bb35f9729ef2c95d00a19ccd30c26339c", "AIDER_VER": "0.86.3.dev53+g5dc9490bb",

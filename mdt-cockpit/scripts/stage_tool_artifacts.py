@@ -2089,7 +2089,7 @@ def _aider_main_pin(path: Path | None = None, now: datetime | None = None, windo
     return {"AIDER_COMMIT": commit, "AIDER_VER": version, "AIDER_BEFORE": before}
 
 
-def _vetted_ai_cli_versions(load=_load_version_records, now: datetime | None = None) -> dict[str, str]:
+def _vetted_ai_cli_versions(load=None, now: datetime | None = None) -> dict[str, str]:
     """{COPILOT_VER: ..., ...} read from the committed `cmru versions` record; any other state fails staging.
 
     Staging reads the record OFFLINE (`cmru versions check` queries every target of the project, including
@@ -2107,7 +2107,9 @@ def _vetted_ai_cli_versions(load=_load_version_records, now: datetime | None = N
             "`cmru versions` (aider is pinned in aider-main-pin.toml). Set `version = \"<x>\"` and a "
             f"`reason = \"<why>\"` on the target in cmru.toml (cmru's reasoned override), then {RESOLVE_ADVICE}"
         )
-    records = load()
+    # Resolved at call time, not bound as a default argument: a default captured at import would ignore a
+    # replaced `_load_version_records` and read the committed cmru.toml instead.
+    records = (load or _load_version_records)()
     vetted: dict[str, str] = {}
     for env_key, (target, install_switch, _env_name) in AI_CLI_TARGETS.items():
         if not install_enabled(install_switch):
