@@ -198,8 +198,8 @@ mutant("scripts/controller/job-check.sh", "job-check-run-traversal.sh",
 # A name that no wrapper ever owned is a distinct state, and the line says so
 # instead of borrowing RUNNING's claim about a process.
 mutant("scripts/controller/job-check.sh", "job-check-missing-done-owner-record.sh",
-       "    printf 'owner record: none",
-       "    : printf 'owner record: none")
+       "      printf 'owner record: none (%s absent",
+       "      : printf 'owner record: none (%s absent")
 # CTL-19: the Codex wrapper owns its run name and states its outcome on every
 # exit path, including a resume whose child fails.
 mutant("scripts/controller/codex-impl.sh", "codex-run-name-claim.sh",
@@ -486,6 +486,43 @@ pi_wrapper_with_lib_mutant(
 mutant("scripts/controller/pi-impl.sh", "pi-run-name-refusal-overwrites.sh",
        'controller_run_claim "$name" || exit 2',
        'controller_run_claim "$name" || exit 2\ncontroller_run_record_owner')
+# CTL-23: the owner record belongs to a launch that is REAL. One mutant per
+# refusal the record must stay behind, so each clause is judged by its own case.
+mutant("scripts/controller/pi-impl.sh", "pi-record-owner-before-accounts.sh",
+       'if [[ -n $od_start_kind ]]; then\n  case $od_start_kind in',
+       'controller_run_record_owner\nif [[ -n $od_start_kind ]]; then\n  case $od_start_kind in')
+mutant("scripts/controller/pi-impl.sh", "pi-record-owner-before-credentials.sh",
+       'if [[ ! -r $HOME/.env.ai ]]; then',
+       'controller_run_record_owner\nif [[ ! -r $HOME/.env.ai ]]; then')
+mutant("scripts/controller/pi-impl.sh", "pi-done-removed-before-credentials.sh",
+       'if [[ ! -r $HOME/.env.ai ]]; then',
+       'if [[ $mode == resume ]]; then rm -f -- "$out/$name.done"; fi\nif [[ ! -r $HOME/.env.ai ]]; then')
+mutant("scripts/controller/pi-impl.sh", "pi-route-written-before-credentials.sh",
+       'if [[ ! -r $HOME/.env.ai ]]; then',
+       'printf \'%s\\n\' "$route_record" > "$out/$name.route"\nif [[ ! -r $HOME/.env.ai ]]; then')
+mutant("scripts/controller/codex-impl.sh", "codex-record-owner-early.sh",
+       'controller_run_claim "$name" || exit 2\nauto_count=0',
+       'controller_run_claim "$name" || exit 2\ncontroller_run_record_owner\nauto_count=0')
+mutant("scripts/controller/codex-impl.sh", "codex-record-owner-before-count.sh",
+       'auto_limit=${CODEX_AUTO_CONTINUE:-$auto_default}\n',
+       'controller_run_record_owner\nauto_limit=${CODEX_AUTO_CONTINUE:-$auto_default}\n')
+mutant("scripts/controller/codex-impl.sh", "codex-record-owner-before-accounts.sh",
+       'if [[ -n $od_start_kind ]]; then\n  volker_home=',
+       'controller_run_record_owner\nif [[ -n $od_start_kind ]]; then\n  volker_home=')
+# CTL-23: a claimed name that never started is its own state, told from a
+# preflighting wrapper by the kernel lock and from a started run by its stream.
+mutant("scripts/controller/job-check.sh", "job-check-not-started-off.sh",
+       'if [[ $lock_state == free ]]; then',
+       'if [[ $lock_state == never ]]; then')
+mutant("scripts/controller/job-check.sh", "job-check-not-started-held.sh",
+       'if flock -n "$probe_fd"; then lock_state=free; else lock_state=held; fi',
+       'if flock -n "$probe_fd"; then lock_state=free; else lock_state=free; fi')
+mutant("scripts/controller/job-check.sh", "job-check-not-started-stream.sh",
+       '[[ -e $owner_record && ! -s $owner_record && ! -e $run_file ]]',
+       '[[ -e $owner_record && ! -s $owner_record ]]')
+mutant("scripts/controller/job-check.sh", "job-check-not-started-content.sh",
+       '[[ -e $owner_record && ! -s $owner_record && ! -e $run_file ]]',
+       '[[ -e $owner_record && ! -e $run_file ]]')
 pi_wrapper_with_lib_mutant(
     "pi-run-name-retire-deletes",
     '    mv -- "$runs/$name.$extension" "$archive/" || return 2',

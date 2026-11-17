@@ -63,7 +63,9 @@ head prefix leaves the gate evidence red. A
 missing `.done` marker is read from the run name's owner record rather than
 assumed: a live owner prints `RUNNING (no .done)` with its pid, a dead one prints
 `DIED (wrapper pid <pid> gone, no .done)` and exits nonzero so the controller can
-relaunch, and a name no wrapper ever owned says `owner record: none`. `RUNNING`
+relaunch, a name that was claimed but never started (a launch refused after the
+claim) prints `NOT-STARTED` and exits nonzero, and a name no wrapper ever owned
+says `owner record: none`. `RUNNING`
 never means the child completed; read the wrapper's `.done` marker for its exit
 status.
 

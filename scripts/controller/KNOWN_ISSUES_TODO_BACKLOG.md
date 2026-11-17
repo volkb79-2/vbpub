@@ -34,6 +34,8 @@ together.
 | CTL-20 | An epoch the sidecar could not re-read is lifted to the tool's start, so `HUNG-TOOL` is again decided on wall-clock alone | Should-fix | FIXED 2026-11-17 |
 | CTL-21 | The progress rule compares an exactly-equal pid set, so any churn (`make -j`, per-test subprocesses) resets the baseline and a silent churning tool reads `LONG-TOOL` indefinitely | Should-fix | FIXED 2026-11-17 |
 | CTL-22 | The Codex ownership-descriptor close on the resume and auto-resume exec lines has no individual test or mutant, so deleting it there passes the suite | Should-fix | FIXED 2026-11-17 |
+| CTL-23 | The owner record is written before the route, account and credential refusals, so a refused launch overwrites the previous owner's identity and `job-check` reports `DIED` for a name that never started | Should-fix | FIXED 2026-11-17 |
+| CTL-24 | The tool-subtree scope for the progress rule is all of the agent's descendants, so a long-lived helper the agent keeps as a child reads as progress (errs toward `LONG-TOOL`) | Known limit | BY DESIGN 2026-11-17 |
 
 ---
 
@@ -1217,3 +1219,78 @@ default and the hold on call 2 so the continuation is the child that is killed.
 **Close when.** A killed wrapper at each of the three exec sites leaves its run
 name claimable while the agent and daemon it started still live, and a mutant
 that removes the close from that one line makes its own case fail.
+
+## CTL-23 — the owner record is written before the refusals that can still follow the claim
+
+**Status:** FIXED 2026-11-17 (code, tests, mutants and documents in one change);
+severity Should-fix. Found by the independent review of the CTL-14/CTL-19
+package and re-verified against the merged code.
+
+**Problem.** The claim takes the run name's lock and a launch then writes its
+identity into the lock file (`controller_run_record_owner`). `codex-impl.sh` and
+`pi-impl.sh` wrote it right after the evidence preflight, BEFORE the route
+validation, the continuation-count check, the Open Design account selection
+(blocked accounts exit 3) and, in `pi-impl.sh`, the local credential file and
+key checks. A launch refused at any of those points had already overwritten the
+previous owner's identity with its own pid, which then died: `job-check` read
+that record as `DIED (wrapper pid <refuser> gone, no .done)` for a name that
+never started, and the real previous owner's identity (what a forced retire
+archives, what a reader names) was lost. `pi-impl.sh` also rewrote `.wt`,
+`.route` and `.thread` and removed the previous `.done` before its credential
+checks, so a refused resume destroyed the previous completion marker, and a
+refused first launch left evidence that refused its own retry.
+
+**What landed.** The record is written only once the launch is real:
+`codex-impl.sh` writes it after the account selection, immediately before its
+first name-owned record; `pi-impl.sh` writes it after the credential and key
+checks and moves the `.wt`, `.route`, `.thread` and `.done` handling behind the
+same point, in the same relative order as before. A refused launch leaves the
+previous records byte-identical, and a refused launch of a fresh name leaves
+only the empty lock file the claim created. `job-check.sh` reads that file as
+its own state instead of the misleading `RUNNING`: an empty lock with no stream
+that nobody holds is `NOT-STARTED` (red, exit 1, tells the controller to read
+the launch's own refusal and relaunch); the same empty lock while a wrapper
+holds it is that wrapper still preflighting and stays `RUNNING`; an unparsable
+lock or an empty one beside a stream keeps the no-owner-record wording.
+
+**Tests and mutants.** `tests/test-wrappers.sh` refuses Codex launches at the
+route, the count and the blocked-accounts checks (and a resume, and a fresh
+name) and compares the lock byte for byte; `tests/test-pi-impl.sh`
+(`refusal-keeps-records`) does the same for the unknown route, blocked
+accounts, missing credential file and missing key and also checks the previous
+`.done`, `.wt`, `.route` and `.thread`; `tests/test-job-check.sh` covers the
+four lock states. Mutants write the record just before each refusal
+(`codex-record-owner-early`, `-before-count`, `-before-accounts`,
+`pi-run-name-refusal-overwrites`, `pi-record-owner-before-accounts`,
+`pi-record-owner-before-credentials`), restore the `.done` removal and the
+`.route` write ahead of the credential checks (`pi-done-removed-before-credentials`,
+`pi-route-written-before-credentials`) and weaken the `NOT-STARTED` reading
+(`job-check-not-started-off`, `-held`, `-stream`, `-content`); each dies on its
+own case.
+
+**Where.** `codex-impl.sh`, `pi-impl.sh`, `job-check.sh`, the three test files and
+`tests/mutate-sources.py` / `tests/test-mutations.sh`, `README.md`,
+`docs/CONSUMERS.md`, `docs/DESIGN-GUIDE.md`, `CHANGES.md`.
+
+**Close when.** A launch refused after the claim leaves the previous owner
+record, completion marker and worktree/route/thread records byte-identical, a
+refused fresh name reads `NOT-STARTED` and never `DIED`, and each mutant above
+fails its case.
+
+## CTL-24 — the tool-subtree scope is every descendant of the agent
+
+**Status:** BY DESIGN 2026-11-17 (documented, no code); severity: known limit.
+
+**Note.** The progress rule counts the CPU/IO deltas of the in-flight tool's
+subtree, and the sidecar locates that subtree structurally: the agent is the
+wrapper's other direct child and ALL the agent's descendants are in the set. It
+cannot tell which descendant belongs to which tool call, so a long-lived helper
+the agent keeps as a child (a language server, a watcher, a dev server) is in the
+set and, while it works, reads as progress. That errs toward `LONG-TOOL`, the
+weaker word: the controller waits longer on a tool that is really stuck and never
+kills one that is working, which is the safe direction. Narrowing the set needs
+the agent's own call-to-pid mapping, which the stream does not carry. The scope
+is stated in `docs/DESIGN-GUIDE.md` ("Scope of the tool's subtree").
+
+**Revisit when.** The agent stream carries the pid or process group of each tool
+call, or a stuck tool behind a busy helper is seen in practice.

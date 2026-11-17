@@ -100,6 +100,19 @@ expect_killed codex-resume-child-close \
 expect_killed codex-autoresume-child-close \
   env CODEX_IMPL_SCRIPT="$ROOT/mutants/scripts/controller/codex-autoresume-child-close.sh" \
     bash "$SCRIPT_DIR/test-wrappers.sh"
+# CTL-23: the owner record is written only by a launch that is real, so each
+# refusal after the claim has its own mutant that writes it just before that
+# refusal, judged by the case that refuses there.
+for codex_record_mutant in codex-record-owner-early codex-record-owner-before-count codex-record-owner-before-accounts; do
+  expect_killed "$codex_record_mutant" \
+    env CODEX_IMPL_SCRIPT="$ROOT/mutants/scripts/controller/$codex_record_mutant.sh" \
+      bash "$SCRIPT_DIR/test-wrappers.sh"
+done
+for job_check_mutant in job-check-not-started-off job-check-not-started-held job-check-not-started-stream \
+  job-check-not-started-content; do
+  expect_killed "$job_check_mutant" \
+    env JOB_CHECK_SCRIPT="$ROOT/mutants/scripts/controller/$job_check_mutant.sh" bash "$SCRIPT_DIR/test-job-check.sh"
+done
 expect_killed job-prototype-missing-done-owner-record \
   env JOB_CHECK_SCRIPT="$ROOT/mutants/scripts/controller/job-check-missing-done-owner-record.sh" bash "$SCRIPT_DIR/test-job-check.sh"
 expect_killed job-report-litter-detector \
@@ -177,7 +190,12 @@ for pi_case in \
   pi-continue-exhausted:outcome-empty pi-continue-prompt-file:prompt-file \
   pi-continue-bound-validation:retry-validation \
   pi-report-unset-skips:report-unset \
-  pi-run-name-refusal-overwrites:refusal-own-record; do
+  pi-run-name-refusal-overwrites:refusal-own-record \
+  pi-run-name-refusal-overwrites:refusal-keeps-records \
+  pi-record-owner-before-accounts:refusal-keeps-records \
+  pi-record-owner-before-credentials:refusal-keeps-records \
+  pi-done-removed-before-credentials:refusal-keeps-records \
+  pi-route-written-before-credentials:refusal-keeps-records; do
   pi_mutant=${pi_case%%:*}
   pi_focus=${pi_case#*:}
   expect_killed "$pi_mutant" \

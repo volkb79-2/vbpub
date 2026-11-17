@@ -100,8 +100,11 @@ Use this order for each implementation task.
    every wrapper when it claims the name, CTL-14): a live owner prints
    `RUNNING (no .done)` with its pid, a recorded owner that is gone (or whose
    kernel start time no longer matches, or that was recorded under a previous
-   boot) prints `DIED (wrapper pid <pid> gone, no .done)` as a red flag, and a
-   run that no wrapper ever owned prints `RUNNING (no .done)` plus
+   boot) prints `DIED (wrapper pid <pid> gone, no .done)` as a red flag, a name
+   that was claimed but never started (an empty lock file, no stream, the lock
+   free: a launch refused after the claim, CTL-23) prints `NOT-STARTED` as a red
+   flag (a held empty lock is a wrapper still preflighting and prints `RUNNING`),
+   and a run that no wrapper ever owned prints `RUNNING (no .done)` plus
    `owner record: none`, stating that a live and a dead wrapper cannot be told
    apart there. A `DIED` row is never evidence that the child completed — it is
    evidence that the wrapper is gone, so the controller can relaunch. A killed

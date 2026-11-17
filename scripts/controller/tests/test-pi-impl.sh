@@ -1504,6 +1504,75 @@ check_refusal_keeps_owner_record() {
     || fail "a refused invocation overwrote the owner record (was $first_pid, now ${recorded:-<none>})"
 }
 
+# CTL-23: a launch refused AFTER the claim (a bad route, blocked accounts, a
+# missing credential file or key) leaves every record of the previous run exactly
+# as it was - the owner record, the completion marker and the worktree, route and
+# thread records - and a refused launch of a fresh name leaves nothing but the
+# empty lock file the claim created. Otherwise job-check reads DIED for a name that
+# never started, and a refused first launch leaves evidence that refuses the retry.
+check_refusal_keeps_records() {
+  local runs=$CONTROLLER_ROOT/runs snap=$ROOT/keep-records-snapshot name=keep-records
+  local no_env_home=$ROOT/keep-no-env-home no_key_home=$ROOT/keep-no-key-home blocked_state=$ROOT/keep-records-blocked.json
+  local record base left
+  records_kept() {
+    # Every record of the previous run is byte-identical and none was added.
+    for record in "$snap"/*; do
+      base=${record##*/}
+      cmp -s -- "$record" "$runs/$base" || fail "a launch refused at $1 changed the previous run's $base"
+    done
+    left=$(find "$runs" -maxdepth 1 -name "$name.*" | wc -l)
+    [[ $left == "$(find "$snap" -maxdepth 1 -type f | wc -l)" ]] \
+      || fail "a launch refused at $1 left an extra record beside the previous run's ($left files)"
+  }
+  mkdir -p "$runs" "$no_env_home" "$no_key_home"
+  : > "$no_key_home/.env.ai"
+  rm -f -- "$runs/$name".*
+  printf 'EXIT=0 OUTCOME=SUCCESS AUTORESUME=0\n' > "$runs/$name.done"
+  printf '%s\n' "$WORKTREE" > "$runs/$name.wt"
+  printf 'deepseek-pi-volker\n' > "$runs/$name.route"
+  printf 'previous-session\n' > "$runs/$name.thread"
+  printf '{"type":"session","id":"previous-session"}\n' > "$runs/$name.jsonl"
+  printf 'pid=2147483646 started_epoch=1700000000 started_utc=2023-11-14T22:13:20Z pid_start_ticks=12345 boot_id=previous-owner\n' \
+    > "$runs/$name.lock"
+  rm -rf -- "$snap"
+  mkdir -p "$snap"
+  cp -a -- "$runs/$name".* "$snap/"
+  python3 - "$blocked_state" <<'PY'
+import json, sys
+json.dump({
+    "volker": {"last_used_epoch": 2, "blocked_until_epoch": 4_102_444_800},
+    "github2": {"last_used_epoch": 1, "blocked_until_epoch": 4_102_444_800},
+    "threads": {"previous-session": "volker"},
+}, open(sys.argv[1], "w", encoding="utf-8"))
+PY
+  # Each refusal is judged on its own, earliest first, so a record written just
+  # before one refusal is caught by that refusal's case and not by a later one.
+  expect_rc 2 env PATH="$ROOT/bin:$PATH" HOME="$HOME_ROOT" PI_ROUTE=unknown \
+    "$SRC" "$WORKTREE" "$PROMPT" "$name" resume previous-session
+  contains "$ROOT/focused-command.out" 'unknown PI_ROUTE=unknown' 'the unknown route is what refused the resume'
+  records_kept 'unknown-route'
+  expect_rc 3 env PATH="$ROOT/bin:$PATH" HOME="$HOME_ROOT" PI_ROUTE=deepseek-pi CONTROLLER_OD_STATE="$blocked_state" \
+    "$SRC" "$WORKTREE" "$PROMPT" "$name" resume previous-session
+  contains "$ROOT/focused-command.out" 'both Open Design accounts are blocked' 'the blocked accounts are what refused the resume'
+  records_kept 'blocked-accounts'
+  expect_rc 2 env PATH="$ROOT/bin:$PATH" HOME="$no_env_home" PI_ROUTE=deepseek-pi-volker \
+    "$SRC" "$WORKTREE" "$PROMPT" "$name" resume previous-session
+  contains "$ROOT/focused-command.out" 'requires the local' 'the missing credential file is what refused the resume'
+  records_kept 'missing-credential-file'
+  expect_rc 2 env PATH="$ROOT/bin:$PATH" HOME="$no_key_home" PI_ROUTE=deepseek-pi-github2 \
+    "$SRC" "$WORKTREE" "$PROMPT" "$name" resume previous-session
+  contains "$ROOT/focused-command.out" 'OPENDESIGN_API_KEY_GITHUB2 is not set' 'the missing key is what refused the resume'
+  records_kept 'missing-key'
+  # A refused launch of a name nobody ever ran: only the empty lock file remains.
+  rm -f -- "$runs/keep-fresh".*
+  expect_rc 2 env PATH="$ROOT/bin:$PATH" HOME="$no_env_home" PI_ROUTE=deepseek-pi-volker \
+    "$SRC" "$WORKTREE" "$PROMPT" keep-fresh
+  [[ -e $runs/keep-fresh.lock && ! -s $runs/keep-fresh.lock ]] \
+    || fail 'a refused launch of a fresh name wrote an owner record'
+  left=$(find "$runs" -maxdepth 1 -name 'keep-fresh.*' | wc -l)
+  [[ $left == 1 ]] || fail "a refused launch of a fresh name left evidence beside its lock ($left files)"
+}
+
 check_run_name_ownership() {
   local first='' second=0 retired=
   rm -rf "$CONTROLLER_ROOT/runs"; mkdir -p "$CONTROLLER_ROOT/runs"
@@ -1898,6 +1967,7 @@ PY
       ;;
     two-wrappers-one-run) check_run_name_ownership ;;
     refusal-own-record) check_refusal_keeps_owner_record ;;
+    refusal-keeps-records) check_refusal_keeps_records ;;
     ownership-force) check_run_name_ownership ;;
     ownership-release) check_run_name_ownership ;;
     auth-file)
@@ -2448,6 +2518,7 @@ check_retry_limit_validation
 check_repo_not_a_worktree
 check_job_status_validation
 check_run_name_ownership
+check_refusal_keeps_records
 
 not_contains test-key 'run evidence contains no key material' "$CONTROLLER_ROOT/runs"
 not_contains test-key 'account state contains no key material' "$STATE"

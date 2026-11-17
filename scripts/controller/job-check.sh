@@ -166,9 +166,30 @@ else
     printf 'owner record: pid %s alive%s (lock %s)\n' "$owner_pid" \
       "${owner_started:+ since $owner_started}" "$owner_record"
   else
-    echo "RUNNING (no .done)"
-    printf 'owner record: none (%s absent or unreadable; a live wrapper and a dead one cannot be told apart here)\n' \
-      "$owner_record"
+    # No owner identity was recorded. An EMPTY lock file with no stream is a name
+    # that was CLAIMED and never started: a launch records its identity only once
+    # it is real, so a launch refused after the claim (a bad route, blocked
+    # accounts, a missing credential) leaves exactly this. The kernel lock tells
+    # it from a wrapper that is still preflighting.
+    lock_state=unknown
+    if [[ -e $owner_record && ! -s $owner_record && ! -e $run_file ]]; then
+      if exec {probe_fd}< "$owner_record" 2>/dev/null; then
+        if flock -n "$probe_fd"; then lock_state=free; else lock_state=held; fi
+        exec {probe_fd}>&-
+      fi
+    fi
+    if [[ $lock_state == free ]]; then
+      echo "NOT-STARTED (no .done, no stream, no owner record: the run name was claimed but no wrapper started an agent on it)"
+      echo "RUN NEVER STARTED: the launch was refused or died before it recorded itself; read that launch's own message, fix the cause and relaunch the run"
+      red=1
+    elif [[ $lock_state == held ]]; then
+      echo "RUNNING (no .done)"
+      printf 'owner record: none yet (%s is held by a wrapper that is still preflighting)\n' "$owner_record"
+    else
+      echo "RUNNING (no .done)"
+      printf 'owner record: none (%s absent or unreadable; a live wrapper and a dead one cannot be told apart here)\n' \
+        "$owner_record"
+    fi
   fi
   if (( red != 0 )); then exit 1; fi
   exit 0

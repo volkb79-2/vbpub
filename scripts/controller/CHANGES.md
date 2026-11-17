@@ -73,6 +73,17 @@ no separate version number, so entries are grouped by the work that landed.
   invocation never overwrites the identity of the owner it refused on.
 
 ### Fixed
+- A refused launch no longer overwrites the previous owner record (CTL-23): both
+  wrappers write the owner record only after every refusal that can follow the
+  claim (route, continuation count, blocked accounts, and for `pi-impl.sh` the
+  credential file and key), and `pi-impl.sh` touches `.wt`, `.route`, `.thread`
+  and `.done` only after the same point, so a launch that never started leaves the
+  previous run's records byte-identical and a refused first launch leaves no
+  evidence that would refuse its retry. `job-check.sh` reads the empty lock a
+  refused launch leaves as `NOT-STARTED` (red) instead of `RUNNING` or `DIED`;
+  an empty lock that a wrapper still holds stays `RUNNING` (preflighting).
+- The scope of the tool's subtree (every descendant of the agent) is documented
+  as a known limit that errs toward `LONG-TOOL` (CTL-24, no code).
 - The Codex resume and auto-resume exec sites have their own killed-wrapper
   evidence (CTL-22): a SIGKILL check now kills the wrapper at each of the three
   sites (new launch, manual resume, automatic continuation) with the agent and

@@ -86,9 +86,6 @@ if [[ $mode == new ]]; then
   fi
 fi
 
-# Held and preflighted: only now may this invocation write its owner record.
-controller_run_record_owner
-
 route=${CODEX_ROUTE:-luna}
 route_record=$route
 od_account=''
@@ -189,6 +186,12 @@ fi
 if [[ -n $od_start_kind ]]; then
   export CODEX_HOME=$route_home
 fi
+
+# Held, preflighted AND past every refusal (a bad route, a bad continuation
+# count, blocked accounts): only now may this invocation write its owner record.
+# A launch that refuses earlier leaves the previous owner's identity readable,
+# so job-check never reports DIED for a name that never started.
+controller_run_record_owner
 
 printf '%s\n' "$worktree" > "$out/$name.wt"
 printf '%s\n' "$route_record" > "$out/$name.route"

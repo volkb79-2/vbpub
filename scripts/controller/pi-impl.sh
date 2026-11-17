@@ -163,10 +163,6 @@ if [[ $mode == new ]]; then
   fi
 fi
 
-# The name is held, and this invocation passed its own preflight: only now may
-# it write its identity into the name's owner record.
-controller_run_record_owner
-
 route=${PI_ROUTE:-deepseek-pi}
 route_record=$route
 od_account=''
@@ -232,13 +228,6 @@ else
   exit 2
 fi
 
-printf '%s\n' "$worktree" > "$out/$name.wt"
-printf '%s\n' "$route_record" > "$out/$name.route"
-if [[ $mode == resume ]]; then
-  rm -f -- "$out/$name.done"
-  printf '%s\n' "$session_id" > "$out/$name.thread"
-fi
-
 if [[ ! -r $HOME/.env.ai ]]; then
   echo "pi route requires the local \$HOME/.env.ai file" >&2
   exit 2
@@ -279,6 +268,21 @@ IFS= read -r -d '' continue_prompt < "$continue_prompt_file" || :
 base_pi_args=(-p --mode json --model "$provider/$model" --thinking "$thinking" --session-dir "$session_dir")
 resume_target=''
 [[ $mode != resume ]] || resume_target=$session_id
+
+# Every refusal is behind us (a bad route, blocked accounts, a missing local
+# credential file or key): the launch is real. Only now does this invocation write
+# its identity into the name's owner record and touch the name's own records. A
+# launch that refused earlier leaves the previous owner's identity, the previous
+# completion marker and the previous worktree/route/thread records exactly as they
+# were, so job-check never reports DIED for a name that never started and a
+# refused new launch leaves no evidence that would refuse the retry.
+controller_run_record_owner
+printf '%s\n' "$worktree" > "$out/$name.wt"
+printf '%s\n' "$route_record" > "$out/$name.route"
+if [[ $mode == resume ]]; then
+  rm -f -- "$out/$name.done"
+  printf '%s\n' "$session_id" > "$out/$name.thread"
+fi
 
 # One pi invocation. $3 is 1 for the first run (truncate stream and stderr) and
 # 0 for a continuation that APPENDS to the run's stream and stderr directly, so

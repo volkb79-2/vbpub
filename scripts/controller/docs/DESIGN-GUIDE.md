@@ -218,6 +218,19 @@ the weaker word. A payload without the flag is unknown for the same reason: a
 missing measurement is not a measurement, and the producer writes the fact now,
 so absence can only mean an older snapshot or a broken one.
 
+**Scope of the tool's subtree (by design, CTL-24).** The processes whose
+counters count as the tool's progress are ALL descendants of the agent, not only
+the ones the tool call started: the sidecar locates the set structurally (the
+agent is the wrapper's other direct child) and cannot tell which descendant
+belongs to which call. A long-lived helper the agent keeps as a child — a
+language server, a watcher, a dev server — therefore sits in the set and, as a
+survivor that does work, reads as progress. That errs toward `LONG-TOOL`, the
+weaker word, so the controller waits longer on a tool that is really stuck; it
+never kills a tool that is working, which is the safe direction for a word that
+decides whether an agent is stopped. Narrowing the set to the single call's
+processes would need the agent's own call-to-pid mapping, which the stream does
+not carry, so it is documented rather than built.
+
 Continuation is bounded and class-specific on purpose. Only `EMPTY-COMPLETION`
 is continued, because only that class is a provider/model anomaly: the session
 is intact and the same conversation can finish the work. `UNCOMMITTED`,
@@ -284,6 +297,21 @@ flag, and a name nobody ever owned keeps the prototype's `RUNNING (no .done)`
 with the explicit `owner record: none`. The comparison is now as strong as the
 message: `RUNNING` is only printed when a recorded owner is alive, and every
 other case either names why the owner is dead or says that no record exists.
+
+The owner record belongs to a launch that is REAL (CTL-23). The claim takes the
+name's lock and creates the lock file empty; the wrapper writes its identity
+into it only after every refusal that can still happen (a bad route, a bad
+continuation count, blocked accounts, a missing credential file or key), and
+`pi-impl.sh` touches the name's own `.wt`, `.route`, `.thread` and `.done`
+records only after the same point. A launch refused earlier therefore leaves the
+previous owner's identity and the previous run's records byte-identical, so a
+name that never started cannot read as `DIED`, and a refused first launch leaves
+no evidence that would refuse its retry. What it does leave is the empty lock
+file, which `job-check.sh` reads as its own state: an empty lock, no stream and
+a lock nobody holds is `NOT-STARTED` (red, exit 1); the same empty lock while a
+wrapper holds it is that wrapper still preflighting and stays `RUNNING`; a lock
+with unparsable content, or an empty one beside a stream, keeps the
+no-owner-record wording because nothing says the name was only claimed.
 The recovery the reader owes a controller does not stop there: a killed wrapper
 usually dies before writing `<run>.thread`, and a controller without a thread id
 can only restart (about an hour of re-orientation). So the id is READ from the

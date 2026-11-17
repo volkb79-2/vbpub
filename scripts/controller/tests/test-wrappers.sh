@@ -775,6 +775,66 @@ contains "$ROOT/killed-autoresume-reclaim.out" 'retired' \
 : > "$ROOT/killed-autoresume.release"
 kill -9 "$(cat "$ROOT/autoresume-daemon.pid")" 2>/dev/null
 
+# --- CTL-23: a REFUSED launch leaves the previous owner record untouched ------
+#
+# The claim holds the name, but the owner record is this invocation's identity
+# and belongs to a launch that really starts. A refusal that happens after the
+# claim (a bad route, a bad continuation count, both Open Design accounts
+# blocked) must not overwrite the identity of the previous owner: job-check
+# would then report DIED for a name that never started and the real previous
+# owner's evidence would be gone.
+OWNER_LINE='pid=2147483646 started_epoch=1700000000 started_utc=2023-11-14T22:13:20Z pid_start_ticks=12345 boot_id=previous-owner'
+refused_mode=()
+refused_launch() {
+  # $1 run name, $2 expected exit, $3 refusal text, remaining: `env NAME=value`
+  # words for this launch. `refused_mode` carries the optional resume arguments.
+  local name=$1 want_rc=$2 text=$3 rc=0
+  shift 3
+  PATH="$ROOT/bin:$PATH" HOME="$ROOT/home" CONTROLLER_HOME="$ROOT/controller" CONTROLLER_REPO="$ROOT/repo" \
+    CODEX_HOME_LUNA="$ROOT/codex-luna" CODEX_HOME_DEEPSEEK_VOLKER="$VOLKER_HOME" CODEX_HOME_DEEPSEEK_GITHUB2="$GITHUB2_HOME" \
+    CODEX_SQLITE_HOME="$ROOT/sqlite" CODEX_LOG="$ROOT/refused-$name.log" "$@" \
+    "$CODEX_IMPL_SCRIPT" "$ROOT/worktree" "$ROOT/brief.md" "$name" "${refused_mode[@]}" \
+    > "$ROOT/refused-$name.out" 2>&1 && rc=0 || rc=$?
+  [[ $rc == "$want_rc" ]] || { cat "$ROOT/refused-$name.out" >&2; fail "the $name launch exited $rc, expected $want_rc"; }
+  contains "$ROOT/refused-$name.out" "$text" "the $name refusal says why"
+}
+runs_dir=$ROOT/controller/runs
+for case_name in bad-route bad-count both-blocked; do
+  printf '%s\n' "$OWNER_LINE" > "$runs_dir/keep-$case_name.lock"
+  cp -- "$runs_dir/keep-$case_name.lock" "$ROOT/keep-$case_name.expected"
+done
+refused_launch keep-bad-route 2 'unknown CODEX_ROUTE=nonsense' env CODEX_ROUTE=nonsense
+refused_launch keep-bad-count 2 'CODEX_AUTO_CONTINUE must be a non-negative integer' \
+  env CODEX_ROUTE=luna CODEX_AUTO_CONTINUE=many
+refused_launch keep-both-blocked 3 'earliest reset' \
+  env CODEX_ROUTE=deepseek CONTROLLER_OD_STATE="$ROOT/od-both-blocked.json" CODEX_AUTO_CONTINUE=0
+for case_name in bad-route bad-count both-blocked; do
+  cmp -s -- "$runs_dir/keep-$case_name.lock" "$ROOT/keep-$case_name.expected" \
+    || fail "a refused $case_name launch overwrote the previous owner record"
+  for extension in 'done' jsonl err wt route thread; do
+    [[ ! -e $runs_dir/keep-$case_name.$extension ]] \
+      || fail "a refused $case_name launch left a .$extension behind"
+  done
+done
+# A refused RESUME of a finished run keeps the run's own completion marker and
+# its owner record: nothing of the previous run is lost to a launch that never
+# started.
+printf 'EXIT=0 OUTCOME=CODE-EXIT AUTORESUME=0\n' > "$runs_dir/keep-resume.done"
+printf '%s\n' "$OWNER_LINE" > "$runs_dir/keep-resume.lock"
+cp -- "$runs_dir/keep-resume.lock" "$ROOT/keep-resume.expected"
+refused_mode=(resume keep-resume-thread)
+refused_launch keep-resume 2 'unknown CODEX_ROUTE=nonsense' env CODEX_ROUTE=nonsense
+refused_mode=()
+cmp -s -- "$runs_dir/keep-resume.lock" "$ROOT/keep-resume.expected" \
+  || fail 'a refused resume overwrote the previous owner record'
+contains "$runs_dir/keep-resume.done" 'EXIT=0 OUTCOME=CODE-EXIT' 'a refused resume kept the previous completion marker'
+# A refused launch of a name nobody ever ran leaves only the empty lock file the
+# claim created: no owner identity at all, so no reader can mistake it for a
+# wrapper that lived and died.
+refused_launch keep-fresh 2 'unknown CODEX_ROUTE=nonsense' env CODEX_ROUTE=nonsense
+[[ -e $runs_dir/keep-fresh.lock && ! -s $runs_dir/keep-fresh.lock ]] \
+  || fail 'a refused launch of a fresh name wrote an owner record'
+
 if [[ ${CONTROLLER_TEST_PARALLEL_OD_STARTS:-1} == 1 ]]; then
   PARALLEL_DIR=$ROOT/parallel-codex-logs
   mkdir -p "$PARALLEL_DIR"
