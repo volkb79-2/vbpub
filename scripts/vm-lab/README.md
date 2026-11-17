@@ -115,16 +115,21 @@ object `{"result": "matched"|"timeout"|"failed"|"boot-loop", "engine", "exact",
 "elapsed_s", "pattern", "matched_text", "loop_count", "last_text"}`; the exit
 code is the same. Exit 1 (both verbs) prints one `vm-lab: <message>` line on
 stderr and, with `--json`, one `{"result": "error", "error": "<message>"}`
-object on stdout. Every external call of a poll is bounded by the time left to
-`--timeout` (at least 1 s), so a hung reader ends in exit 3 shortly after the deadline.
+object on stdout. Every external call of a poll (the vmscreen probe, `vmscreen`,
+the screendump, `pwmcp`) is bounded by the time left to `--timeout`, taken just
+before that call (at least 1 s), so a slow first call shrinks the allowance of
+the next and a hung reader ends in exit 3 shortly after the deadline.
 A `pwmcp` failure on the very first OCR call is an immediate error (a sidecar
 that was never enabled looks the same as a busy one).
 
 vmscreen must be installed (`pip install` of `libraries/vmscreen`; an editable
-install is enough). It does not run from a bare source tree. The VM tool uses
-the `vmscreen` executable on PATH, else `python -m vmscreen`, and probes it once
-per run (`text --help` must list `--qemu-dump-dir`); if it is missing or too
-old, `auto` says so once and uses OCR, and `--engine vmscreen` is an error. OCR
+install is enough). It does not run from a bare source tree. The VM tool probes
+the `vmscreen` executable on PATH first (`text --help` must exit 0 and list
+`--qemu-dump-dir`); if that probe fails, or there is no such executable, it
+probes `python -m vmscreen` the same way. The first form that passes is used for
+the whole run and probed only once. Only when both fail is vmscreen unavailable:
+`auto` says so once (naming both failures) and uses OCR, and `--engine vmscreen`
+is an error. `--engine ocr` never starts the probe. OCR
 needs `pwmcp` on PATH and pwmcp's OCR sidecar enabled. See
 [docs/CONSUMERS.md](docs/CONSUMERS.md) for a worked example and
 [docs/DESIGN-GUIDE.md](docs/DESIGN-GUIDE.md) for the reasons.

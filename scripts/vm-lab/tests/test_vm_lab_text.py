@@ -93,11 +93,15 @@ class Rig:
         vmscreen_on_path=False,
         probe=PROBE_OK,
         environ=None,
+        clock=None,
+        probe_by_command=None,
     ):
         self.state = tmp_path
         self.calls: list[tuple] = []
         self.probes: list[tuple] = []
         self.probe_result = probe
+        # argv[0] of a probed command -> its probe result (others use ``probe``).
+        self.probe_by_command = dict(probe_by_command or {})
         self.notes: list[str] = []
         self.vmscreen = list(vmscreen)
         self.pwmcp = list(pwmcp)
@@ -117,6 +121,9 @@ class Rig:
             }.get(name),
             environ={} if environ is None else environ,
             note=self.notes.append,
+            # Frozen unless a test shares its fake clock: the reader's per-call deadline
+            # arithmetic is then exact.
+            clock=(lambda: 0.0) if clock is None else clock,
         )
 
     def qmp(self, socket_path, command, arguments, timeout):
@@ -128,9 +135,12 @@ class Rig:
     def run(self, argv, env, timeout):
         if "--help" in argv:  # the once-per-run probe of the resolved vmscreen command
             self.probes.append((list(argv), dict(env), timeout))
-            if isinstance(self.probe_result, BaseException):
-                raise self.probe_result
-            return self.probe_result
+            result = self.probe_by_command.get(argv[0], self.probe_result)
+            if callable(result):  # a scripted effect that sees the timeout it was given
+                result = result(argv, timeout)
+            if isinstance(result, BaseException):
+                raise result
+            return result
         kind = "pwmcp" if argv[0] == "pwmcp" else "vmscreen"
         self.calls.append((kind, list(argv), dict(env), timeout))
         if kind == "pwmcp":
@@ -378,6 +388,61 @@ def test_forced_ocr_never_runs_vmscreen(tmp_path):
     rig = Rig(tmp_path, pwmcp=[ocr_ok("text")], engine="ocr")
     assert rig.reader.read().engine == "ocr"
     assert "vmscreen" not in rig.kinds()
+
+
+def test_forced_ocr_never_starts_the_vmscreen_probe(tmp_path):
+    # vmscreen is on PATH and would pass its probe: the probe must not even start.
+    rig = Rig(tmp_path, pwmcp=[ocr_ok("a"), ocr_ok("b")], engine="ocr", vmscreen_on_path=True)
+    assert rig.reader.read().text == "a"
+    assert rig.reader.read().text == "b"
+    assert rig.probes == []
+    assert "vmscreen" not in rig.kinds()
+    assert rig.notes == []
+
+
+MODULE_COMMAND = [sys.executable, "-m", "vmscreen"]
+
+
+def test_a_broken_vmscreen_on_path_falls_through_to_python_dash_m_vmscreen(tmp_path):
+    rig = Rig(
+        tmp_path,
+        vmscreen=[vm_ok("GNU GRUB"), vm_ok("again")],
+        vmscreen_on_path=True,
+        probe_by_command={"/opt/bin/vmscreen": PROBE_NOT_INSTALLED},
+    )
+    assert rig.reader.read() == ScreenText("GNU GRUB", "vmscreen", True)
+    assert [probe[0][:-2] for probe in rig.probes] == [["/opt/bin/vmscreen"], MODULE_COMMAND]
+    assert rig.calls[0][1][:3] == MODULE_COMMAND
+    assert rig.notes == []
+    assert rig.reader.read().text == "again"
+    assert len(rig.probes) == 2, "the working command is remembered: no second probe"
+
+
+def test_a_working_vmscreen_on_path_never_probes_the_module_form(tmp_path):
+    rig = Rig(
+        tmp_path,
+        vmscreen=[vm_ok("GNU GRUB")],
+        vmscreen_on_path=True,
+        probe_by_command={sys.executable: PROBE_NOT_INSTALLED},
+    )
+    assert rig.reader.read().text == "GNU GRUB"
+    assert [probe[0][:-2] for probe in rig.probes] == [["/opt/bin/vmscreen"]]
+    assert rig.calls[0][1][0] == "/opt/bin/vmscreen"
+
+
+def test_vmscreen_is_unavailable_only_when_both_resolution_forms_fail(tmp_path):
+    both = {"/opt/bin/vmscreen": PROBE_OLD, sys.executable: PROBE_NO_MODULE}
+    forced = Rig(tmp_path, engine="vmscreen", vmscreen_on_path=True, probe_by_command=both)
+    with pytest.raises(TextEngineError, match="vmscreen is not available: .*is too old.*; then .*No module named vmscreen"):
+        forced.reader.read()
+    with pytest.raises(TextEngineError, match="vmscreen is not available"):
+        forced.reader.read()
+    assert len(forced.probes) == 2 and forced.kinds() == []
+    auto = Rig(tmp_path, pwmcp=[ocr_ok("one"), ocr_ok("two")], vmscreen_on_path=True, probe_by_command=both)
+    assert auto.reader.read().engine == "ocr"
+    assert auto.reader.read().engine == "ocr"
+    assert len(auto.notes) == 1 and "is too old" in auto.notes[0] and "No module named vmscreen" in auto.notes[0]
+    assert len(auto.probes) == 2 and "vmscreen" not in auto.kinds()
 
 
 def test_vmscreen_exit_codes_are_classified(tmp_path):
@@ -754,6 +819,61 @@ def test_every_external_call_is_bounded_by_the_remaining_time_but_at_least_one_s
     assert [call[4] for call in rig.calls if call[0] == "qmp"] == expected
     assert [call[3] for call in rig.calls if call[0] == "pwmcp"] == expected
     assert [probe[2] for probe in rig.probes] == [10.0]
+
+
+def test_a_slow_call_shrinks_the_allowance_of_the_next_call_within_one_read(tmp_path):
+    clock = FakeClock()
+
+    def slow_probe(_argv, _timeout):
+        clock.now += 25.0
+        return PROBE_OK
+
+    def slow_vmscreen(_argv, _timeout):
+        clock.now += 40.0
+        return vm_none()
+
+    def slow_pwmcp(_argv, _timeout):
+        clock.now += 5.0
+        return ocr_ok("MENU")
+
+    rig = Rig(tmp_path, vmscreen=[slow_vmscreen], pwmcp=[slow_pwmcp], clock=clock, probe=slow_probe)
+    original_qmp = rig.reader.qmp_call
+
+    def slow_qmp(*args):
+        clock.now += 20.0
+        return original_qmp(*args)
+
+    rig.reader.qmp_call = slow_qmp
+    assert rig.reader.read(100.0).text == "MENU"
+    # Budget 100: probe min(30, 100); vmscreen min(90, 75 left); screendump min(30, 35 left);
+    # pwmcp min(120, 15 left).
+    assert [probe[2] for probe in rig.probes] == [30.0]
+    assert [call[3] for call in rig.calls if call[0] == "vmscreen"] == [75.0]
+    assert [call[4] for call in rig.calls if call[0] == "qmp"] == [30.0]
+    assert [call[3] for call in rig.calls if call[0] == "pwmcp"] == [15.0]
+
+
+def test_a_read_that_used_up_its_budget_still_gives_later_calls_the_one_second_floor(tmp_path):
+    clock = FakeClock()
+
+    def hog(_argv, timeout):
+        clock.now += 500.0
+        return vm_none()
+
+    rig = Rig(tmp_path, vmscreen=[hog], pwmcp=[ocr_ok("x")], clock=clock)
+    rig.reader.read(10.0)
+    assert [call[3] for call in rig.calls if call[0] == "vmscreen"] == [10.0]
+    assert [call[4] for call in rig.calls if call[0] == "qmp"] == [1.0]
+    assert [call[3] for call in rig.calls if call[0] == "pwmcp"] == [1.0]
+
+
+def test_each_read_starts_a_fresh_deadline_from_its_own_budget(tmp_path):
+    clock = FakeClock()
+    rig = Rig(tmp_path, vmscreen=[vm_ok("a"), vm_ok("b")], clock=clock)
+    rig.reader.read(10.0)
+    clock.now += 500.0  # time between polls is not charged to the next read
+    rig.reader.read(10.0)
+    assert [call[3] for call in rig.calls if call[0] == "vmscreen"] == [10.0, 10.0]
 
 
 def test_long_deadlines_and_console_text_keep_the_fixed_defaults(tmp_path):

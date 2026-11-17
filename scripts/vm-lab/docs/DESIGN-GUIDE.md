@@ -250,12 +250,16 @@ vmscreen must be **installed**: `pip install` of `libraries/vmscreen` (an
 editable install is enough). It does not run from a bare source tree, because
 its CLI takes its version from the installed `vmscreen` distribution
 ("distribution 'vmscreen' is not installed"); the VM tool does not paper over
-that by editing `PYTHONPATH`. Once per run the tool resolves the command (the
-`vmscreen` executable on PATH, else `python -m vmscreen` of the Python that runs
-the VM tool) and probes it with `text --help`: that must exit 0 and list
-`--qemu-dump-dir`, so a missing install and an older copy without the option
-(added by VML-03a) are both "not available", with the reason. `auto` then says so
-once and uses OCR; `--engine vmscreen` is an error. The probe is not repeated.
+that by editing `PYTHONPATH`. Once per run the tool probes the `vmscreen`
+executable on PATH with `text --help` (that must exit 0 and list
+`--qemu-dump-dir`, so a missing install and an older copy without the option,
+added by VML-03a, are both failures with a reason). If that probe fails, or
+there is no such executable, it probes `python -m vmscreen` of the Python that
+runs the VM tool the same way: a stale or broken script on PATH must not hide a
+working module install. The first form that passes is kept. Only when both fail
+is vmscreen "not available"; `auto` then says so once (naming both reasons) and
+uses OCR, and `--engine vmscreen` is an error. Nothing is probed again, and
+`--engine ocr` never starts the probe.
 
 **Order of checks per poll.** Read the screen; `PATTERN` first (a match wins
 over everything else on the same screen); the fail patterns; the boot-loop
@@ -271,9 +275,11 @@ the deadline and there is one last poll at the deadline. Every external call
 of a poll (the vmscreen probe and run, the QMP screendump, `pwmcp`) is bounded
 by the time left to the deadline, with a floor of one second; a subprocess that
 hits its limit is a skipped poll, so a hung reader ends in exit 3 shortly
-after the deadline. The bound is taken once at the start of a poll and is not
-reduced between the calls of that poll, so the overshoot can be up to the time
-that was left when the poll began, per call. Usage errors (exit 2) print no
+after the deadline. The bound is re-taken before each call of a poll (the
+reader turns the time left at the start of the poll into a deadline and
+subtracts what earlier calls of the same poll used), so a slow first call
+shrinks the next one; the one-second floor can still add up to one second per
+call after the deadline has passed. Usage errors (exit 2) print no
 JSON object even with `--json`. `console text` has no deadline and keeps the fixed
 defaults (30 s probe/QMP, 90 s vmscreen, 120 s pwmcp).
 
