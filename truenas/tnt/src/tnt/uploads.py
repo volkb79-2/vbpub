@@ -1,6 +1,6 @@
 """Verified uploads from the repository's shared folders through the TrueNAS HTTP upload endpoint (TNT-61).
 
-The accepted local source is a file inside the ``iso`` or ``vm-images`` folder of the repo-root ``vm-lab.toml`` (searched
+The accepted local source is a file inside the ``iso`` or ``vm-images`` folder of the repo path config (searched
 in that order, by relative file name), or, until the files have moved there, a flat file in the old ``downloads``
 folder. The folders come from ``tnt._paths`` (the cowtree resolver); there is no other way to move them. The file is
 opened read-only without following links and is checked against the ``<name>.sha256`` file beside it before any byte
@@ -37,7 +37,7 @@ _CHUNK = 1024 * 1024
 def validate_download_name(name: Any) -> str:
     """A relative POSIX path inside an upload folder: no absolute path, no ``..``, no empty or dot segments."""
     if not isinstance(name, str) or not name.strip():
-        raise Refused("upload-source", f"name a file inside the iso or vm-images folder of {_paths.CONFIG_NAME}")
+        raise Refused("upload-source", f"name a file inside the iso or vm-images folder of {_paths.config_name()}")
     if name.startswith("/") or "\\" in name or "\x00" in name:
         raise Refused("upload-source", "only a file name inside the upload folders is accepted; absolute paths are refused")
     if any(part in ("", ".", "..") for part in name.split("/")):

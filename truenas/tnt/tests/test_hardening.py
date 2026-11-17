@@ -9,7 +9,7 @@ from urllib.parse import quote
 
 import pytest
 
-from tnt import _paths, adapters, profile as prof
+from tnt import adapters, profile as prof
 from tnt.errors import ProfileError, UnsupportedVersion
 from tnt.menu import walk
 from tnt.profile import SecretEntry
@@ -114,7 +114,7 @@ def test_vm_lab_placeholder_is_committed_and_vm_state_only_comes_through_the_res
     assert (lab / "README.md").is_file()
     assert (lab / ".gitignore").read_text().split() == ["*", "!.gitignore", "!README.md"]
     assert not (ROOT / "artifacts" / "vm-lab").exists()
-    # VM state is the `vm-lab` entry of the repo-root vm-lab.toml, asked through tnt/_paths.py only: no other source or
+    # VM state is the `vm-lab` entry of the repo path config, asked through tnt/_paths.py only: no other source or
     # script names a literal VM folder, and no environment variable relocates it.
     paths_module = ROOT / "src" / "tnt" / "_paths.py"
     sources = [*sorted((ROOT / "src").rglob("*.py")), *sorted((ROOT / "tests" / "live").glob("*.py"))]
@@ -123,7 +123,6 @@ def test_vm_lab_placeholder_is_committed_and_vm_state_only_comes_through_the_res
         if path == paths_module:
             assert text.count('"vm-lab"') == 1 and "artifacts" not in text, path
             continue
-        text = text.replace(_paths.CONFIG_NAME, "")  # naming the config file is not naming a VM folder
         assert "vm-lab" not in text and "VM_LAB" not in text.upper().replace("-", "_"), path
         assert "TNT_VM" not in text, path
 
