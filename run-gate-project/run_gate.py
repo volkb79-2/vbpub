@@ -15279,6 +15279,19 @@ def judge_identity_line(identity: dict) -> str:
 # LOCATION, on the origin FILE (`__init__.py`) rather than by testing whether
 # some `assay/` directory is on the path (which a vendored directory shadows
 # without being importable at all).
+#
+# WHAT THE REFUSAL SAYS (round-3). The acceptance condition is unchanged and
+# must stay file-origin: `spec.origin == <root>/<rel>` is what a real
+# `assay/src/assay/__init__.py` produces, and it is what the guard REQUIRES,
+# because a namespace portion (a directory on `sys.path` with no `__init__.py`)
+# imports nothing and cannot be a judge. What was wrong was the MESSAGE: the
+# first cut printed `spec.origin` alone, so both a module that was never found
+# and a namespace-package shadow printed the literal string `None` -- and a
+# refusal whose text cannot say "nothing on sys.path" or "a shadow directory at
+# <path>" is a false statement where a diagnosis belongs (measured in
+# `tester-unified:run-gate-2560`, round 3). Every refusal now names the MODULE
+# and ONE of: its real origin file, the namespace locations that shadowed it,
+# or that nothing of that name is on `sys.path` at all.
 _JUDGE_IMPORT_GUARD_CODE = (
     "import importlib.util, pathlib, sys\n"
     "roots = [pathlib.Path(value) for value in sys.argv[1].split(':')]\n"
@@ -15289,7 +15302,16 @@ _JUDGE_IMPORT_GUARD_CODE = (
     "              if spec is not None and spec.origin else None)\n"
     "    if any(origin == (root / rel).resolve() for root in roots):\n"
     "        continue\n"
-    "    print(origin)\n"
+    "    if spec is None:\n"
+    "        found = 'nothing: no module of this name is on sys.path'\n"
+    "    elif origin is None:\n"
+    "        found = ('a namespace package with no __init__.py -- the portion '\n"
+    "                 'at ' + ':'.join(str(pathlib.Path(place).resolve())\n"
+    "                                  for place in\n"
+    "                                  spec.submodule_search_locations or []))\n"
+    "    else:\n"
+    "        found = 'the file ' + str(origin)\n"
+    "    print(name + ': ' + found)\n"
     "    raise SystemExit(2)\n"
 )
 

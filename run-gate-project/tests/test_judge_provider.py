@@ -1045,6 +1045,54 @@ class TestJudgeRefusals:
 # ---------------------------------------------------------------------------
 
 class TestJudgeCellEnvironment:
+    # Round 3: the guard's interpreter is chosen by the LANE (`command -v
+    # python3` in the image), so an oracle must not borrow the interpreter it
+    # is itself RUN under. The first cut did exactly that (`sys.executable`,
+    # inherited `os.environ`), and this suite's interpreter carries a REAL
+    # `assay` -- an installed/editable distribution in site-packages, or on an
+    # inherited `PYTHONPATH` -- which made the refusal arm resolve a file where
+    # `tester-unified:run-gate-2560` sees nothing but a namespace directory. The
+    # oracle passed here and failed in the lane (the same class as assay B226).
+    #
+    # `-S` is the flag that fits: it drops site-packages, `.pth` hooks and
+    # editable finders while KEEPING `PYTHONPATH` -- which is the mechanism
+    # under test (`-I` would discard `PYTHONPATH` and prove nothing). The
+    # environment is built from scratch, so no inherited `PYTHONPATH` reaches
+    # the probe, and the cwd is a directory that holds no `assay` at all, so
+    # `sys.path[0]` cannot inject a namespace portion by accident.
+    GUARD_ENV = {"PYTHONNOUSERSITE": "1", "PYTHONDONTWRITEBYTECODE": "1"}
+
+    @pytest.fixture
+    def guard_cwd(self, tmp_path):
+        """A cwd that holds no `assay` at all, so `sys.path[0]` cannot inject
+        a namespace portion the probe did not ask for.
+
+        A fixture rather than a `mkdir(exist_ok=True)` inside the probe: the
+        SAME oracle calls the probe several times (one accepted arm, several
+        refused arms) and must reuse ONE directory, so "it already exists" is
+        the fixture's own documented lifetime instead of a boolean standing in
+        for it.
+        """
+        cwd = tmp_path / "guard-cwd"
+        cwd.mkdir()
+        return cwd
+
+    def _guard(self, tmp_path, pythonpath, cwd):
+        roots = ":".join(str(tmp_path / entry)
+                         for entry in run_gate.JUDGE_IMPORT_ROOTS)
+        # `check` is left at its default (False) DELIBERATELY and the return
+        # codes are asserted instead: one arm MUST succeed and the others MUST
+        # fail, and `check=True` would turn those into a CalledProcessError the
+        # assertions never reach.
+        return subprocess.run(
+            [sys.executable, "-S", "-c", run_gate._JUDGE_IMPORT_GUARD_CODE,
+             roots, *(part for name, rel in run_gate.JUDGE_IMPORT_NAMES
+                      for part in (name, rel))],
+            capture_output=True, text=True,
+            env={"PATH": os.defpath, "PYTHONPATH": pythonpath,
+                 **self.GUARD_ENV},
+            cwd=str(cwd))
+
     def test_the_setup_names_the_interpreter_and_the_import_roots(self, tmp_path):
         lines = run_gate.judge_source_setup(
             {"kind": "command", "environment": "rust", "judge": "assay"},
@@ -1083,53 +1131,73 @@ class TestJudgeCellEnvironment:
             tmp_path) == []
 
     def test_the_guard_accepts_the_provided_tree_and_refuses_another(
-            self, tmp_path):
+            self, tmp_path, guard_cwd):
+        """Both arms against fixtures the TEST built: the provided tree on
+        `PYTHONPATH` is accepted, and a SECOND complete judge tree -- nowhere
+        near the provided one -- is refused by name.
+
+        The refusal arm used to lean on the interpreter's own `assay`, so the
+        oracle asked what the RUNNING interpreter already had rather than what
+        the guard decides (round 3: green here, `AssertionError: None` in the
+        lane image). A second fixture tree makes the answer a fact of the test.
+        """
         _minimal_judge(tmp_path)
-        roots = ":".join(str(tmp_path / root)
-                         for root in run_gate.JUDGE_IMPORT_ROOTS)
-        pairs = " ".join(
-            f"{name} {rel}" for name, rel in run_gate.JUDGE_IMPORT_NAMES)
-        command = [sys.executable, "-c", run_gate._JUDGE_IMPORT_GUARD_CODE,
-                   roots, *pairs.split()]
-        environment = {**os.environ, "PYTHONPATH": roots}
-        # `check` is left at its default (False) DELIBERATELY and the
-        # return codes below are asserted instead: the first probe MUST
-        # succeed and the second MUST fail, and `check=True` would turn the
-        # second into a CalledProcessError the assertions never reach.
-        accepted = subprocess.run(command, capture_output=True, text=True,
-                                  env=environment, cwd=str(tmp_path))
+        provided = ":".join(str(tmp_path / entry)
+                             for entry in run_gate.JUDGE_IMPORT_ROOTS)
+        accepted = self._guard(tmp_path, provided, guard_cwd)
         assert accepted.returncode == 0, accepted.stdout + accepted.stderr
-        # Hand it the SYSTEM's assay (the gate image's own copy) instead: the
-        # guard must refuse, naming where the module really resolved.
-        elsewhere = dict(environment)
-        elsewhere["PYTHONPATH"] = os.environ.get(
-            "RUN_GATE_TEST_OTHER_JUDGE", "/usr/local/lib/python3")
-        refused = subprocess.run(
-            [sys.executable, "-c", run_gate._JUDGE_IMPORT_GUARD_CODE,
-             roots, "assay", "assay/__init__.py",
-             "assay_analysis", "assay_analysis/__init__.py",
-             "cowtree", "cowtree/__init__.py"],
-            capture_output=True, text=True, env=elsewhere, cwd=str(tmp_path))
+        elsewhere = tmp_path / "elsewhere"
+        _minimal_judge(elsewhere)
+        refused = self._guard(tmp_path, ":".join(
+            str(elsewhere / entry) for entry in run_gate.JUDGE_IMPORT_ROOTS),
+            guard_cwd)
         # The GUARD's own status is 2 -- it is a probe run by the lane's
         # shell, which is what translates it into the RESERVED lane code
         # (JUDGE_REFUSAL_EXIT_CODE) so the lane's `exit_map` cannot remap a
         # refusal into a verdict.
         assert refused.returncode == 2, refused.stdout
-        # …and the refusal NAMES the origin it resolved instead. This also
-        # pins `text=True` on BOTH probes: dropped, `stdout` would be bytes
-        # and this `str` assertion could not even be written (a round-2
+        # …and the refusal NAMES the module and the origin it resolved instead.
+        # This also pins `text=True` on the probe: dropped, `stdout` would be
+        # bytes and this `str` assertion could not even be written (a round-2
         # bool-sweep finding -- the return-code assertion alone never noticed
         # the flag go away).
         assert isinstance(refused.stdout, str)
         assert isinstance(accepted.stdout, str)
         named = refused.stdout.strip()
-        # The guard PRINTS the origin that is not the provided one; asserting
-        # what that message must CONTAIN (rather than one particular host
-        # path) keeps the oracle true wherever the image's own assay lives,
-        # while still proving it names the real origin instead of saying "no".
-        assert named.endswith("assay/__init__.py"), refused.stdout
-        assert all(named != str(Path(root) / "assay/__init__.py")
-                   for root in roots.split(":")), refused.stdout
+        assert named.startswith("assay: "), refused.stdout
+        assert str(elsewhere / "assay/src/assay/__init__.py") in named, \
+            refused.stdout
+        assert all(str(tmp_path / entry / "assay/__init__.py") not in named
+                   for entry in run_gate.JUDGE_IMPORT_ROOTS), refused.stdout
+
+    def test_a_shadow_directory_is_NAMED_not_printed_as_None(self, tmp_path,
+                                                             guard_cwd):
+        """The exact real-lane shape (round 3): a directory called `assay`
+        with no `__init__.py` on the path is a NAMESPACE PORTION, `find_spec`
+        answers `origin is None`, and the first cut printed the literal string
+        `None` -- into a message whose whole job is to say where the module
+        came from. It must name the module and the portion that shadowed it."""
+        _minimal_judge(tmp_path)
+        shadow = tmp_path / "shadow" / "assay"
+        shadow.mkdir(parents=True)
+        refused = self._guard(tmp_path, str(shadow.parent), guard_cwd)
+        assert refused.returncode == 2, refused.stdout
+        assert "assay: a namespace package with no __init__.py" \
+            in refused.stdout, refused.stdout
+        assert str(shadow) in refused.stdout, refused.stdout
+
+    def test_an_absent_judge_is_refused_as_absent_not_as_a_bare_None(
+            self, tmp_path, guard_cwd):
+        """The third shape: nothing of that name on `sys.path` at all. A
+        refusal that cannot say so sends the operator looking for a file that
+        does not exist (`None` is printed as if it were a location)."""
+        _minimal_judge(tmp_path)
+        empty = tmp_path / "nothing-here"
+        empty.mkdir()
+        refused = self._guard(tmp_path, str(empty), guard_cwd)
+        assert refused.returncode == 2, refused.stdout
+        assert "assay: nothing: no module of this name is on sys.path" \
+            in refused.stdout, refused.stdout
 
     def test_the_command_inner_carries_the_setup_before_the_lane_argv(self):
         lane = {"kind": "command", "environment": "rust", "judge": "assay",
