@@ -88,7 +88,7 @@ LOCK_DIR_ENV = "VM_LAB_ADMISSION_LOCK_DIR"
 LOCK_DIR_HELP = (
     f"directory of the admission lock file, used only when no Git repository is found next to the installed "
     f"module (default: {LOCK_DIR_ENV}); give the repository's common Git directory to share the lock with "
-    "checkout and TrueNAS starts"
+    "the starts of every other profile and of a checkout"
 )
 QEMU_IMAGE_CONTEXT = Path(__file__).resolve().parents[2] / "qemu-image"
 
