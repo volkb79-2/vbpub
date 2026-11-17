@@ -154,6 +154,13 @@ fact that it is not the judge run-gate provided. Without this guard the export
 is only a *request*: an image that already carries an assay would silently
 judge with its own copy.
 
+The refusal names the module and one of the three answers `find_spec` can give:
+its origin file, the namespace-package locations that shadowed the tree (a
+directory with no `__init__.py` — measured in a real lane, where the first cut
+printed the literal word `None`), or that nothing of that name is on `sys.path`.
+Acceptance stays file-origin only: a namespace portion imports nothing and
+cannot be a judge.
+
 ## 5. How the judge's identity is determined, and where it is recorded
 
 Derived on the host, from the judged tree, before the lane starts:
@@ -162,7 +169,7 @@ Derived on the host, from the judged tree, before the lane starts:
 |---|---|---|
 | `commit` | `git rev-parse HEAD` of the judged worktree (the commit the verdict describes) | refused — a lane cannot run without a commit anyway |
 | `version` | `git describe --tags --long --match 'assay-v*'` (assay's own tag grammar) | `null`, plus `version_source: "no assay-v* tag is reachable from this commit"` — *stated*, never guessed at |
-| `dirty` | `git -c status.showUntrackedFiles=all status --porcelain --ignored=matching -- assay libraries/cowtree`, scoped to the judge trees, read as BYTES | `null` + `dirty_source` = could not determine (never folded into "clean") |
+| `dirty` | `git -c status.showUntrackedFiles=all status --porcelain --ignored=traditional -- assay libraries/cowtree ':(exclude,glob)**/__pycache__/**' ':(exclude,glob)**/*.pyc'`, scoped to the judge trees, read as BYTES | `null` + `dirty_source` = could not determine (never folded into "clean") |
 | `source`, `pythonpath` | the mounted roots, verbatim | — |
 | `provided_by` | `"run-gate"` | — |
 
