@@ -1516,9 +1516,12 @@ literal. Host check (2026-11-17, via `host-escape`): the controller host publish
 (`/etc/host-endpoints.d`, `/etc/host-endpoints.env` and the `/etc/environment` block are absent,
 topos is not installed) while cgprofile's old-layout sockets are live (`ctl.sock` group docker 994;
 `observer/resource-observer.sock` group `cgprofile-observer` 990, directory mode 751) and `pam_env`
-is active for sshd; so the bootstrap bridges from the live sockets until the installers publish. Open: confirm on the next rebuild that a session receives the variables and a registered
-Run-Gate lane starts without a manual export; the mount-from-record and `MDT_HOST_DOCKER_GID`
-replacement of the `DOCKER_GID` export (design 2.2/2.3b) stay deferred until every host publishes.
+is active for sshd; so the bootstrap bridges from the live sockets until the installers publish. Verified 2026-11-18 on the controller host after the cutover (docs/HOST-CUTOVER-2026-11.md): the
+rebuilt dstdns devcontainer received every `CGPROFILE_*`/`MDT_*` variable through the generated env
+file, the control group 989 through `--group-add`, `cgprofilectl doctor` was OK, and the observer lane
+`cowtree` was admitted and measured by cgprofile (peak 682 MiB) with no manual export. The mount-from-record
+and `MDT_HOST_DOCKER_GID` replacement of the `DOCKER_GID` export (design 2.2/2.3b) stay deferred until every
+host publishes; `finalize` still prints `docker_gid=?` because it reads the old variable name.
 
 **Close when.** The delivery decision is recorded in `docs/DESIGN-GUIDE.md`;
 the daemon fragments exist; a devcontainer built from a complete record receives
