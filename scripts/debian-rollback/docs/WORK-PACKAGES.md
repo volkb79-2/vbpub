@@ -243,7 +243,7 @@ the end (operator 2026-11-17).
 
 | Id | Content | State |
 |---|---|---|
-| RP-01 | `repo-paths.toml`, resolver and `cowtree path` verb in cowtree, standard docs (AGENTS.md, BTRFS-COW.md, MDT-044, downloads README) | brief `artifacts/debian-rollback/briefs/RP-01.md` |
+| RP-01 | `repo-paths.toml`, resolver and `cowtree path` verb in cowtree, standard docs (AGENTS.md, BTRFS-COW.md, MDT-044, downloads README) | implemented on branch `rp-01` (worktree `.worktrees/rp-01`, head `f8f2c2683`, 3 rounds); two Sonnet reviews MERGE; **no gate run yet**: the cowtree lane is an observer lane and needs the new cgprofile environment (host cut + container rebuild, announced by the cutover session). Open before merge: round 4 = refuse a symlinked `MDT_COW_ROOT` in the resolver like `detect()` does, reword the docs for the EACCES-on-isdir case and the wrong "no level through the property" reason, align `COWTREE_MODE` invalid handling between resolve and provision; then gate (`gate-run.sh cowtree`, 100% line+branch) and merge |
 | RP-02 | Create top-level `vm-lab/` from `scripts/vm-lab/` (git mv, pyproject and wheel, console script `vm-lab`, `vmscreen` as a dependency instead of PATH probing, QEMU image Dockerfile, `cmru.toml`/`assay.toml`/`run-gate.toml`, defaults for network and slice from the environment, state and base paths through the resolver); the TrueNAS front imports the package | open |
 | RP-03 | `scripts/truenas` (`vanilla-iso-patcher` DOWNLOADS_DIR, `golden-iso`, `tcg_vm.py` default state dir, docs) and `truenas/tnt` (TNT-59, the `test_hardening.py` pin) on the resolver | open |
 | RP-04 | debian-install-v2 harness (`HOST_DOWNLOADS_DIR`, `vmctl`, its boundary tests) on the resolver | open |
