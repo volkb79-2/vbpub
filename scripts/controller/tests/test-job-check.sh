@@ -633,6 +633,29 @@ exec {preflight_fd}>&-
 contains "$ROOT/preflighting.out" 'RUNNING (no .done)' 'a held empty lock is a wrapper that is still starting'
 contains "$ROOT/preflighting.out" 'still preflighting' 'the preflighting wrapper is named as such'
 not_contains "$ROOT/preflighting.out" 'NOT-STARTED' 'a held lock is not a name that never started'
+# A DIED name that is being RESUMED: the record still names the previous (dead)
+# owner because the resuming wrapper has not reached its own record yet, and the
+# kernel lock says a wrapper holds the name. That is preflighting, not DIED; the
+# same record with nobody holding the lock stays DIED (the dead-owner case above).
+printf '{"type":"session","id":"resumed-thread"}\n' > "$HOME_ROOT/runs/resumed-preflight.jsonl"
+printf 'pid=%s started_epoch=%s started_utc=%s pid_start_ticks=12345 boot_id=%s\n' \
+  2147483646 1700000000 2023-11-14T22:13:20Z "$boot_id" > "$HOME_ROOT/runs/resumed-preflight.lock"
+exec {resume_fd}>>"$HOME_ROOT/runs/resumed-preflight.lock"
+flock -n "$resume_fd" || fail 'the check could not take the lock it simulates a resuming wrapper with'
+CONTROLLER_HOME=$HOME_ROOT CONTROLLER_REPO=$REPO \
+  "$SRC" resumed-preflight "$REPO" deepseek-pi > "$ROOT/resumed-preflight.out" 2>&1 \
+  || { cat "$ROOT/resumed-preflight.out" >&2; exec {resume_fd}>&-; fail 'a held lock with a dead previous owner was reported as DIED'; }
+exec {resume_fd}>&-
+contains "$ROOT/resumed-preflight.out" 'RUNNING (preflighting, previous owner gone)' \
+  'a held lock with a dead previous owner is a resume that is still preflighting'
+not_contains "$ROOT/resumed-preflight.out" 'DIED' 'a resuming wrapper is not reported as a dead one'
+# The same record once the resuming wrapper is gone (the lock is free) is DIED.
+if CONTROLLER_HOME=$HOME_ROOT CONTROLLER_REPO=$REPO CONTROLLER_BASE_REF=origin/main \
+  "$SRC" resumed-preflight "$REPO" deepseek-pi > "$ROOT/resumed-gone.out" 2>&1; then
+  fail 'a dead previous owner with a free lock was accepted as running'
+fi
+contains "$ROOT/resumed-gone.out" 'DIED (wrapper pid 2147483646 gone, no .done)' \
+  'the same record with a free lock is DIED'
 # A lock that holds something unparsable is not the claim's empty file: no claim
 # is inferred from it, and the prototype wording is kept.
 printf 'not an owner record\n' > "$HOME_ROOT/runs/garbage-lock.lock"

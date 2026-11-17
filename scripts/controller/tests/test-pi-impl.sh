@@ -1563,6 +1563,18 @@ PY
     "$SRC" "$WORKTREE" "$PROMPT" "$name" resume previous-session
   contains "$ROOT/focused-command.out" 'OPENDESIGN_API_KEY_GITHUB2 is not set' 'the missing key is what refused the resume'
   records_kept 'missing-key'
+  # A FORCED new launch that is then refused keeps everything too: the retirement
+  # waits until the launch is real, so nothing moves into retired/ on a refusal.
+  expect_rc 2 env PATH="$ROOT/bin:$PATH" HOME="$HOME_ROOT" PI_ROUTE=unknown CONTROLLER_RUN_FORCE=1 \
+    "$SRC" "$WORKTREE" "$PROMPT" "$name"
+  contains "$ROOT/focused-command.out" 'unknown PI_ROUTE=unknown' 'the unknown route is what refused the forced launch'
+  records_kept 'forced-unknown-route'
+  [[ ! -e $runs/retired/$name ]] || fail 'a forced launch refused at the route retired the previous records'
+  expect_rc 2 env PATH="$ROOT/bin:$PATH" HOME="$no_env_home" PI_ROUTE=deepseek-pi-volker CONTROLLER_RUN_FORCE=1 \
+    "$SRC" "$WORKTREE" "$PROMPT" "$name"
+  contains "$ROOT/focused-command.out" 'requires the local' 'the missing credential file is what refused the forced launch'
+  records_kept 'forced-missing-credential-file'
+  [[ ! -e $runs/retired/$name ]] || fail 'a forced launch refused at the credentials retired the previous records'
   # A refused launch of a name nobody ever ran: only the empty lock file remains.
   rm -f -- "$runs/keep-fresh".*
   expect_rc 2 env PATH="$ROOT/bin:$PATH" HOME="$no_env_home" PI_ROUTE=deepseek-pi-volker \
@@ -1571,6 +1583,32 @@ PY
     || fail 'a refused launch of a fresh name wrote an owner record'
   left=$(find "$runs" -maxdepth 1 -name 'keep-fresh.*' | wc -l)
   [[ $left == 1 ]] || fail "a refused launch of a fresh name left evidence beside its lock ($left files)"
+}
+
+# An ACCEPTED resume is the other half of CTL-23: the records the refusals must
+# not touch are the ones a real launch DOES write. While the resumed agent works,
+# the lock names THIS wrapper (not the dead previous owner), the previous run's
+# `.done` is gone (so no reader reports the old exit as this run's) and `.thread`
+# is the session being resumed.
+check_accepted_resume_records() {
+  local runs=$CONTROLLER_ROOT/runs name=accepted-resume recorded=''
+  mkdir -p "$runs"
+  rm -f -- "$runs/$name".* "$ROOT/$name.release"
+  printf 'EXIT=0 OUTCOME=SUCCESS AUTORESUME=0\n' > "$runs/$name.done"
+  printf 'previous-session\n' > "$runs/$name.thread"
+  printf 'pid=2147483646 started_epoch=1700000000 started_utc=2023-11-14T22:13:20Z pid_start_ticks=12345 boot_id=previous-owner\n' \
+    > "$runs/$name.lock"
+  start_owned_run "$name" 6 resume "$name-session"
+  recorded=$(sed -n 's/^pid=\([0-9][0-9]*\).*/\1/p' "$runs/$name.lock" | head -n 1)
+  [[ $recorded == "$OWNED_PID" ]] \
+    || { stop_owned_run TERM; fail "an accepted resume did not record its own pid as the owner (lock names ${recorded:-<none>}, wrapper is $OWNED_PID)"; }
+  [[ ! -e $runs/$name.done ]] \
+    || { stop_owned_run TERM; fail 'an accepted resume left the previous run completion marker readable while its agent works'; }
+  [[ $(cat "$runs/$name.thread" 2>/dev/null) == "$name-session" ]] \
+    || { stop_owned_run TERM; fail 'an accepted resume did not record the resumed session as its thread'; }
+  release_owned_run "$name"
+  wait "$OWNED_PID" || fail 'the accepted resume failed'
+  contains "$runs/$name.done" 'OUTCOME=SUCCESS' 'the accepted resume wrote its own completion marker'
 }
 
 check_run_name_ownership() {
@@ -1968,6 +2006,7 @@ PY
     two-wrappers-one-run) check_run_name_ownership ;;
     refusal-own-record) check_refusal_keeps_owner_record ;;
     refusal-keeps-records) check_refusal_keeps_records ;;
+    accepted-resume-records) check_accepted_resume_records ;;
     ownership-force) check_run_name_ownership ;;
     ownership-release) check_run_name_ownership ;;
     auth-file)
@@ -2519,6 +2558,7 @@ check_repo_not_a_worktree
 check_job_status_validation
 check_run_name_ownership
 check_refusal_keeps_records
+check_accepted_resume_records
 
 not_contains test-key 'run evidence contains no key material' "$CONTROLLER_ROOT/runs"
 not_contains test-key 'account state contains no key material' "$STATE"

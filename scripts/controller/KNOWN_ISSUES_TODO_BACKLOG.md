@@ -36,6 +36,8 @@ together.
 | CTL-22 | The Codex ownership-descriptor close on the resume and auto-resume exec lines has no individual test or mutant, so deleting it there passes the suite | Should-fix | FIXED 2026-11-17 |
 | CTL-23 | The owner record is written before the route, account and credential refusals, so a refused launch overwrites the previous owner's identity and `job-check` reports `DIED` for a name that never started | Should-fix | FIXED 2026-11-17 |
 | CTL-24 | The tool-subtree scope for the progress rule is all of the agent's descendants, so a long-lived helper the agent keeps as a child reads as progress (errs toward `LONG-TOOL`) | Known limit | BY DESIGN 2026-11-17 |
+| CTL-25 | `job-check`'s read-only lock probe holds an exclusive `flock -n` for about a millisecond, so a claim that lands in that window fails with `already owned by pid <unknown>` (exit 2) | Should-fix | OPEN |
+| CTL-26 | `pi-live.py` makes the whole progress reading `None` when one member vanishes between the process scan and its `/proc/<pid>/stat` read, and a churn-only tool under an idle parent reads `HUNG-TOOL` while the row's `steer=` points at the parent | Should-fix | OPEN |
 
 ---
 
@@ -1268,6 +1270,29 @@ four lock states. Mutants write the record just before each refusal
 (`job-check-not-started-off`, `-held`, `-stream`, `-content`); each dies on its
 own case.
 
+**Review follow-up (same entry, landed 2026-11-17 after the independent review).**
+Four refinements, each with its own test and mutant:
+
+- A HELD lock whose record still names a dead previous owner (a `DIED` name being
+  resumed, now in the preflight window before its own record) was read as `DIED`.
+  `job-check.sh` probes the lock whenever the recorded owner is dead and prints
+  `RUNNING (preflighting, previous owner gone)` when a wrapper holds it; the same
+  record with a free lock is still `DIED`. Mutants `job-check-died-held-lock`,
+  `job-check-died-no-probe`.
+- An ACCEPTED pi resume is pinned from the other side: while its agent works the
+  lock names the wrapper's own pid, the previous `.done` is gone and `.thread` is
+  the resumed session (`accepted-resume-records`). Mutants
+  `pi-resume-block-inverted`, `pi-record-owner-new-only`.
+- `CONTROLLER_RUN_FORCE=1` no longer retires the previous records before the
+  refusals: the evidence preflight only decides that a retirement is wanted, and
+  the retirement runs with the owner record once the launch is real, in both
+  wrappers. A forced launch refused at the route, the accounts or the
+  credentials moves nothing into `retired/` and leaves the owner record. Mutants
+  `codex-force-retire-early`, `pi-force-retire-early`,
+  `pi-force-retire-before-credentials`.
+- The `lib.sh` header says the lock file records who STARTED the name last, not
+  who claimed it.
+
 **Where.** `codex-impl.sh`, `pi-impl.sh`, `job-check.sh`, the three test files and
 `tests/mutate-sources.py` / `tests/test-mutations.sh`, `README.md`,
 `docs/CONSUMERS.md`, `docs/DESIGN-GUIDE.md`, `CHANGES.md`.
@@ -1294,3 +1319,52 @@ is stated in `docs/DESIGN-GUIDE.md` ("Scope of the tool's subtree").
 
 **Revisit when.** The agent stream carries the pid or process group of each tool
 call, or a stuck tool behind a busy helper is seen in practice.
+
+## CTL-25 — the job-check lock probe can make a concurrent claim fail
+
+**Status:** OPEN (filed 2026-11-17 by the CTL-23 review, not fixed); severity
+Should-fix, low probability.
+
+**Problem.** `job-check.sh` decides `NOT-STARTED` versus a wrapper that is still
+preflighting (and, since the CTL-23 review follow-up, `DIED` versus a resume that
+is preflighting) by opening the run's lock file read-only and taking
+`flock -n`. A non-blocking exclusive lock held for the instant of the probe (about
+a millisecond) makes a wrapper's `controller_run_claim` that lands in that window
+fail its own `flock -n` and exit 2 with `run name '<name>' is already owned by pid
+<unknown>`: a read-only status check can refuse a real launch. The window is tiny
+and the launch can simply be repeated, but it is a reader changing what a writer
+sees.
+
+**Fix direction.** Read `/proc/locks` (a held lock appears there with the
+holder's pid and the file's inode) instead of taking the lock; a shared lock
+would not help, because a shared holder also makes an exclusive `flock -n` fail.
+If the `/proc/locks` read is not wanted, document the window as a known limit in
+the job-check section of the design guide.
+
+**Close when.** A status read cannot make a claim fail, with a test that holds the
+probe open across a claim, or the limit is documented as by design.
+
+## CTL-26 — one vanished member voids the progress reading; churn under an idle parent points steering at the parent
+
+**Status:** OPEN (filed 2026-11-17 by the CTL-23 review, not fixed); severity
+Should-fix for the first part, by-design note for the second.
+
+**Problem 1.** In `pi-live.py` (around the per-member `/proc/<pid>/stat` read
+of the progress sums) a member that exits between the process scan and its stat
+read makes the whole reading `None`. A churning tool (`make -j`, per-test
+subprocesses) makes that race common, so the reading is voided exactly when
+churn is the question, and the reader takes the weaker word for that tick. The
+fix is to skip the vanished member and keep the survivors' readings; a member
+that disappears is a set change, which the rule already says is not progress.
+
+**Problem 2 (by design, to document).** A tool that only churns children while
+its own parent is idle makes no survivor progress, so it reads `HUNG-TOOL` at the
+threshold while the row's `steer=` prints the idle parent: a working `make -j`
+can be pointed at for killing. The rule deliberately does not count churn as
+progress (CTL-21), and the sidecar cannot tell churn that works from churn that
+spins. The mitigation is the row text, which names the command and the pid so the
+controller can look before acting.
+
+**Close when.** A vanished member no longer voids the reading (test with a member
+that exits between scan and read, mutant that restores the whole-reading `None`),
+and the by-design note is in the design guide next to the CTL-24 scope note.

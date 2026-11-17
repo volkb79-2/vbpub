@@ -500,9 +500,33 @@ mutant("scripts/controller/pi-impl.sh", "pi-done-removed-before-credentials.sh",
 mutant("scripts/controller/pi-impl.sh", "pi-route-written-before-credentials.sh",
        'if [[ ! -r $HOME/.env.ai ]]; then',
        'printf \'%s\\n\' "$route_record" > "$out/$name.route"\nif [[ ! -r $HOME/.env.ai ]]; then')
+# The block a real launch DOES run, flipped: an accepted RESUME must remove the
+# previous marker and record its thread, and every accepted launch records its owner.
+mutant("scripts/controller/pi-impl.sh", "pi-resume-block-inverted.sh",
+       'if [[ $mode == resume ]]; then\n  rm -f -- "$out/$name.done"',
+       'if [[ $mode != resume ]]; then\n  rm -f -- "$out/$name.done"')
+mutant("scripts/controller/pi-impl.sh", "pi-record-owner-new-only.sh",
+       'controller_run_record_owner\nprintf \'%s\\n\' "$worktree" > "$out/$name.wt"',
+       '[[ $mode == new ]] && controller_run_record_owner\nprintf \'%s\\n\' "$worktree" > "$out/$name.wt"')
+# A forced launch retires the previous records only once it is real: restoring
+# the early retirement moves them aside on a refusal that follows.
+mutant("scripts/controller/pi-impl.sh", "pi-force-retire-early.sh",
+       'controller_run_claim "$name" || exit 2\nretire_existing=0',
+       'controller_run_claim "$name" || exit 2\n'
+       '[[ $mode != new || ${CONTROLLER_RUN_FORCE:-0} != 1 ]] || controller_run_retire_records "$name" >/dev/null\n'
+       'retire_existing=0')
+mutant("scripts/controller/pi-impl.sh", "pi-force-retire-before-credentials.sh",
+       'if [[ ! -r $HOME/.env.ai ]]; then',
+       'if [[ $retire_existing == 1 ]]; then controller_run_retire_records "$name" >/dev/null; fi\n'
+       'if [[ ! -r $HOME/.env.ai ]]; then')
+mutant("scripts/controller/codex-impl.sh", "codex-force-retire-early.sh",
+       'controller_run_claim "$name" || exit 2\nretire_existing=0',
+       'controller_run_claim "$name" || exit 2\n'
+       '[[ $mode != new || ${CONTROLLER_RUN_FORCE:-0} != 1 ]] || controller_run_retire_records "$name" >/dev/null\n'
+       'retire_existing=0')
 mutant("scripts/controller/codex-impl.sh", "codex-record-owner-early.sh",
-       'controller_run_claim "$name" || exit 2\nauto_count=0',
-       'controller_run_claim "$name" || exit 2\ncontroller_run_record_owner\nauto_count=0')
+       'controller_run_claim "$name" || exit 2\nretire_existing=0',
+       'controller_run_claim "$name" || exit 2\ncontroller_run_record_owner\nretire_existing=0')
 mutant("scripts/controller/codex-impl.sh", "codex-record-owner-before-count.sh",
        'auto_limit=${CODEX_AUTO_CONTINUE:-$auto_default}\n',
        'controller_run_record_owner\nauto_limit=${CODEX_AUTO_CONTINUE:-$auto_default}\n')
@@ -517,6 +541,13 @@ mutant("scripts/controller/job-check.sh", "job-check-not-started-off.sh",
 mutant("scripts/controller/job-check.sh", "job-check-not-started-held.sh",
        'if flock -n "$probe_fd"; then lock_state=free; else lock_state=held; fi',
        'if flock -n "$probe_fd"; then lock_state=free; else lock_state=free; fi')
+# A held lock with a dead previous owner's record is a resume still preflighting.
+mutant("scripts/controller/job-check.sh", "job-check-died-held-lock.sh",
+       'if [[ -n $dead_reason && $lock_state == held ]]; then',
+       'if [[ -n $dead_reason && $lock_state == never ]]; then')
+mutant("scripts/controller/job-check.sh", "job-check-died-no-probe.sh",
+       'if [[ -n $dead_reason ]]; then probe_run_lock "$owner_record"; fi',
+       ': # the lock of a dead owner is not probed')
 mutant("scripts/controller/job-check.sh", "job-check-not-started-stream.sh",
        '[[ -e $owner_record && ! -s $owner_record && ! -e $run_file ]]',
        '[[ -e $owner_record && ! -s $owner_record ]]')

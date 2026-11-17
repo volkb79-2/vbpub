@@ -311,7 +311,17 @@ file, which `job-check.sh` reads as its own state: an empty lock, no stream and
 a lock nobody holds is `NOT-STARTED` (red, exit 1); the same empty lock while a
 wrapper holds it is that wrapper still preflighting and stays `RUNNING`; a lock
 with unparsable content, or an empty one beside a stream, keeps the
-no-owner-record wording because nothing says the name was only claimed.
+no-owner-record wording because nothing says the name was only claimed. The same
+kernel-lock probe is applied whenever the recorded owner is dead: a resume of a
+`DIED` name holds the lock while its record still names the previous owner, and
+that reads `RUNNING (preflighting, previous owner gone)`, not `DIED`; the same
+record with a free lock is `DIED`. `CONTROLLER_RUN_FORCE=1` follows the same
+rule: the evidence preflight only decides that a retirement is wanted, and the
+retirement into `retired/<run>/<utc-stamp>/` runs together with the owner
+record, once the launch is real, so a forced launch that is refused moves
+nothing. Known limit (CTL-25): the lock probe itself takes `flock -n` for about a
+millisecond, so a claim landing in that window is refused as `already owned by
+pid <unknown>`.
 The recovery the reader owes a controller does not stop there: a killed wrapper
 usually dies before writing `<run>.thread`, and a controller without a thread id
 can only restart (about an hour of re-orientation). So the id is READ from the

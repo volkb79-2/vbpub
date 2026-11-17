@@ -103,13 +103,14 @@ expect_killed codex-autoresume-child-close \
 # CTL-23: the owner record is written only by a launch that is real, so each
 # refusal after the claim has its own mutant that writes it just before that
 # refusal, judged by the case that refuses there.
-for codex_record_mutant in codex-record-owner-early codex-record-owner-before-count codex-record-owner-before-accounts; do
+for codex_record_mutant in codex-record-owner-early codex-record-owner-before-count codex-record-owner-before-accounts \
+  codex-force-retire-early; do
   expect_killed "$codex_record_mutant" \
     env CODEX_IMPL_SCRIPT="$ROOT/mutants/scripts/controller/$codex_record_mutant.sh" \
       bash "$SCRIPT_DIR/test-wrappers.sh"
 done
 for job_check_mutant in job-check-not-started-off job-check-not-started-held job-check-not-started-stream \
-  job-check-not-started-content; do
+  job-check-not-started-content job-check-died-held-lock job-check-died-no-probe; do
   expect_killed "$job_check_mutant" \
     env JOB_CHECK_SCRIPT="$ROOT/mutants/scripts/controller/$job_check_mutant.sh" bash "$SCRIPT_DIR/test-job-check.sh"
 done
@@ -195,7 +196,11 @@ for pi_case in \
   pi-record-owner-before-accounts:refusal-keeps-records \
   pi-record-owner-before-credentials:refusal-keeps-records \
   pi-done-removed-before-credentials:refusal-keeps-records \
-  pi-route-written-before-credentials:refusal-keeps-records; do
+  pi-route-written-before-credentials:refusal-keeps-records \
+  pi-force-retire-early:refusal-keeps-records \
+  pi-force-retire-before-credentials:refusal-keeps-records \
+  pi-resume-block-inverted:accepted-resume-records \
+  pi-record-owner-new-only:accepted-resume-records; do
   pi_mutant=${pi_case%%:*}
   pi_focus=${pi_case#*:}
   expect_killed "$pi_mutant" \

@@ -135,6 +135,7 @@ out=$CONTROLLER_RUNS_DIR
 # Ownership first: nothing below may write a name-owned record until this
 # invocation holds the name. A refusal here names the live owner and exits 2.
 controller_run_claim "$name" || exit 2
+retire_existing=0
 
 if [[ $mode == new ]]; then
   existing=()
@@ -152,14 +153,10 @@ if [[ $mode == new ]]; then
       exit 2
     fi
     # Force means RETIRE: the previous identity moves aside instead of being
-    # overwritten, and the caller is told what was retired and why.
-    if retired=$(controller_run_retire_records "$name"); then
-      printf 'pi-impl: CONTROLLER_RUN_FORCE=1 retired %s records into %s\n' "$name" "$retired" >&2
-      printf '  retired: %s\n' "${existing[@]}" >&2
-    else
-      echo "controller: could not retire the records of $name; refusing to overwrite them" >&2
-      exit 2
-    fi
+    # overwritten. The retirement itself waits until the launch is real (below):
+    # a forced launch that is refused later (a bad route, blocked accounts, a
+    # missing credential) must leave the previous records where they are.
+    retire_existing=1
   fi
 fi
 
@@ -276,6 +273,17 @@ resume_target=''
 # completion marker and the previous worktree/route/thread records exactly as they
 # were, so job-check never reports DIED for a name that never started and a
 # refused new launch leaves no evidence that would refuse the retry.
+if (( retire_existing == 1 )); then
+  # Forced reuse of a name that has evidence: the previous identity moves aside
+  # instead of being overwritten, and the caller is told what was retired and why.
+  if retired=$(controller_run_retire_records "$name"); then
+    printf 'pi-impl: CONTROLLER_RUN_FORCE=1 retired %s records into %s\n' "$name" "$retired" >&2
+    printf '  retired: %s\n' "${existing[@]}" >&2
+  else
+    echo "controller: could not retire the records of $name; refusing to overwrite them" >&2
+    exit 2
+  fi
+fi
 controller_run_record_owner
 printf '%s\n' "$worktree" > "$out/$name.wt"
 printf '%s\n' "$route_record" > "$out/$name.route"

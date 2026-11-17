@@ -82,6 +82,17 @@ no separate version number, so entries are grouped by the work that landed.
   evidence that would refuse its retry. `job-check.sh` reads the empty lock a
   refused launch leaves as `NOT-STARTED` (red) instead of `RUNNING` or `DIED`;
   an empty lock that a wrapper still holds stays `RUNNING` (preflighting).
+- CTL-23 review follow-up: `job-check.sh` reads a HELD lock that still carries a
+  dead previous owner's record (a `DIED` name being resumed, before its own
+  record) as `RUNNING (preflighting, previous owner gone)` instead of `DIED`;
+  `CONTROLLER_RUN_FORCE=1` retires the previous records only once the launch is
+  real, so a forced launch refused at the route, accounts or credentials moves
+  nothing into `retired/`; an accepted pi resume is pinned from the other side
+  (lock names the wrapper, `.done` absent while the agent works, `.thread` is the
+  session); the `lib.sh` header says the lock records who STARTED the name. Filed
+  without fixing: CTL-25 (the lock probe can make a concurrent claim fail) and
+  CTL-26 (a vanished member voids the progress reading; churn under an idle
+  parent points `steer=` at the parent).
 - The scope of the tool's subtree (every descendant of the agent) is documented
   as a known limit that errs toward `LONG-TOOL` (CTL-24, no code).
 - The Codex resume and auto-resume exec sites have their own killed-wrapper

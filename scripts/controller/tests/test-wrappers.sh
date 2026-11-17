@@ -834,6 +834,22 @@ contains "$runs_dir/keep-resume.done" 'EXIT=0 OUTCOME=CODE-EXIT' 'a refused resu
 refused_launch keep-fresh 2 'unknown CODEX_ROUTE=nonsense' env CODEX_ROUTE=nonsense
 [[ -e $runs_dir/keep-fresh.lock && ! -s $runs_dir/keep-fresh.lock ]] \
   || fail 'a refused launch of a fresh name wrote an owner record'
+# A FORCED launch that is then refused keeps the previous records too: the
+# retirement waits until the launch is real, so a bad route under
+# CONTROLLER_RUN_FORCE=1 moves nothing into retired/ and leaves the owner record.
+printf 'EXIT=0 OUTCOME=CODE-EXIT AUTORESUME=0\n' > "$runs_dir/keep-forced.done"
+printf '{"type":"thread.started","thread_id":"forced-thread"}\n' > "$runs_dir/keep-forced.jsonl"
+printf '%s\n' "$OWNER_LINE" > "$runs_dir/keep-forced.lock"
+cp -- "$runs_dir/keep-forced.lock" "$ROOT/keep-forced.expected"
+refused_launch keep-forced 2 'unknown CODEX_ROUTE=nonsense' env CODEX_ROUTE=nonsense CONTROLLER_RUN_FORCE=1
+cmp -s -- "$runs_dir/keep-forced.lock" "$ROOT/keep-forced.expected" \
+  || fail 'a refused forced launch overwrote the previous owner record'
+contains "$runs_dir/keep-forced.done" 'EXIT=0 OUTCOME=CODE-EXIT' 'a refused forced launch kept the previous completion marker'
+[[ -e $runs_dir/keep-forced.jsonl && ! -e $runs_dir/retired/keep-forced ]] \
+  || fail 'a refused forced launch retired the previous records'
+# The same forced launch with a valid route DOES retire them and proceeds.
+refused_launch keep-forced 0 'retired' env CODEX_ROUTE=luna CONTROLLER_RUN_FORCE=1
+[[ -d $runs_dir/retired/keep-forced ]] || fail 'an accepted forced launch did not retire the previous records'
 
 if [[ ${CONTROLLER_TEST_PARALLEL_OD_STARTS:-1} == 1 ]]; then
   PARALLEL_DIR=$ROOT/parallel-codex-logs
