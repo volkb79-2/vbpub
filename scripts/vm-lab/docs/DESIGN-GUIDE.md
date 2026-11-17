@@ -146,6 +146,78 @@ the first consumer needed. Generic starts therefore require
 and its fixed profile does not expose the new option. `virtio` adds the same
 `-device virtio-vga` the removed private launcher used.
 
+## Raw bases and reflink clones
+
+Decided 2026-11-17 (AGENTS.md "Directory conventions and VM files"). `start`
+has two disk models, chosen by `--base-format` (default `auto`: the first four
+bytes, `QFI\xfb` is qcow2, anything else raw).
+
+- **qcow2 base (unchanged).** The base is bind-mounted read-only into the QEMU
+  container and the guest writes to a qcow2 overlay in the state directory. The
+  generated script and the `docker run` arguments are byte for byte what they
+  were, because TrueNAS depends on them.
+- **raw base.** The guest's disk is `<state-dir>/disk.raw`, a reflink copy of the
+  base made once on the host with `cp --reflink=always -- <base> <state>/disk.raw`.
+
+Why raw: on btrfs a raw file reflinked from a base costs no space and no time
+until the guest writes, needs no `qemu-img` chain to keep alive, and a clone is
+an ordinary file that can be copied, promoted or deleted on its own. A qcow2
+overlay ties the guest to its backing file for good.
+
+Why the base is not mounted: nothing in the container needs it. Mounting it
+would let a run (or a QEMU bug) open the shared base for writing, and would tie
+the run to a bind-mount path that has to be translated to a host path. The base
+is only ever a `cp` source, so the container gets one writable mount, the state
+directory. A symlink is refused as a raw base, so the file that is copied is the
+file that was named.
+
+Why `cache=unsafe` always: a raw run disk is disposable. Relaxed fsync is the
+estate default for such disks. A host crash may corrupt one; killing QEMU does
+not, because the host page cache survives it. Anything that judges storage
+durability must not use this model.
+
+Why the clone failure is loud: `cp --reflink=always` fails on a different
+filesystem or one without reflinks (`Invalid cross-device link`, `Operation not
+supported`). Silently falling back to a full copy would turn an instant clone
+into minutes of IO and a doubled disk footprint, and would hide a misplaced
+base. `start` exits 1 with one line naming both paths and the cause and removes
+any partial `disk.raw`, so the state directory is still empty for a retry.
+`--allow-full-copy` is the explicit opt-in: it retries once with
+`--reflink=auto` and prints `[disk] full copy of <base> (no reflink possible)`.
+The clone happens before firmware is staged or `runner.json` is written, and
+only on a first start; `--resume` reuses `disk.raw`. The copy is written to
+`.disk.raw.partial` (`.<name>.raw.partial` for a promote) under umask 0077 and
+renamed onto its final name only after `cp` succeeded and the size matches, and
+the temporary file is removed on any failure including Ctrl-C, so the final
+name is either complete or absent and never exists with the base's mode.
+A full copy of a large base holds the start admission lock for its whole
+duration (up to the one-hour copy timeout), so another `start` is refused as
+"in progress" meanwhile; a reflink is instant and does not.
+
+State: `runner.json` records `disk_format`. For raw it records the base path and
+its size for information only: a raw guest no longer depends on the base file
+once it is cloned, so a resume ignores those two values and works even when the
+base was renamed, replaced or deleted (everything else, including the format,
+is still compared). A qcow2 guest records the base's device, inode, size and
+mtime, and a changed base blocks its resume. A guest
+recorded before this change has no `disk_format` and resumes as qcow2. A resume
+whose recorded and requested formats differ is refused, naming both. The
+fixed-size TrueNAS front keeps qcow2 as its default and does not open the base
+file unless `--base-format` is given.
+
+Why `disk promote` needs a stopped guest: QEMU holds the raw file open and
+writes to it, so a reflink of a running guest's disk is a crash-consistent
+snapshot at best and a torn image at worst. The check looks for any running
+managed container, of any profile, whose state label matches the state
+directory; a Docker failure while asking is an error, not "stopped". The check
+and the copy run under the same admission lock a `start` takes, so a
+`start --resume` cannot boot the disk in between. Promotion
+reflinks `disk.raw` to `<dest>/<name>.raw`, hashes the final file (streamed in
+1 MiB chunks, so the digest is of the bytes that were written), writes
+`<name>.raw.sha256` in `sha256sum` format and sets both to 0444. It refuses to
+overwrite and removes both files if any step fails, so a half-promoted base
+cannot be mistaken for a good one.
+
 ## Screen text: two engines, one poll loop
 
 `console text` and `console wait-for-text` (module `vm_lab_text.py`) read the

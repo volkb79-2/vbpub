@@ -2,8 +2,8 @@
 
 A general launcher for QEMU guests without KVM. Each guest runs in its own
 Docker container under the host background slice, with UEFI firmware (OVMF), a
-per-guest firmware variable store, a copy-on-write overlay over a read-only base
-disk, optional extra disks and an ISO, and a QMP socket for keys, screenshots
+per-guest firmware variable store, a copy-on-write overlay over a read-only qcow2
+base disk or a reflink clone of a raw base disk, optional extra disks and an ISO, and a QMP socket for keys, screenshots
 and reset.
 
 A *profile* carries every product-specific value (labels, names, sizing,
@@ -34,7 +34,8 @@ python3 scripts/vm-lab/vm_lab.py <verb> [options]
 | Verb | What it does |
 | --- | --- |
 | `start` | Admit and start a guest. Needs `--name`, `--base-disk`, `--ovmf-code`, `--ovmf-vars`, `--state-dir`, `--memory-mib`, `--cpus` and at least one `--forward`. |
-| `status` | Print container and QMP state as JSON. |
+| `status` | Print container and QMP state as JSON, plus `disk_format` (`raw` or `qcow2`) and `disk_file` of the state directory. |
+| `disk promote` | Publish a stopped guest's raw disk as a read-only base image: `--state-dir`, `--dest-dir`, `--name` (and `--allow-full-copy`). Writes `<name>.raw` and `<name>.raw.sha256`, both mode 0444. |
 | `stop` | Ask the guest to power down (ACPI) and wait. Never force-kills. |
 | `terminate-paused` | Stop the QEMU process of a guest QEMU reports as paused. State is kept. |
 | `destroy` | Remove a stopped container. Disk and firmware state are kept. |
@@ -144,10 +145,31 @@ needs `pwmcp` on PATH and pwmcp's OCR sidecar enabled. See
   With neither, start refuses.
 - `--network`, `--cgroup-parent`: default to `DOCKER_NETWORK_INTERNAL` and
   `CGROUP_PARENT_DEV_BACKGROUND`. Start refuses when neither is set.
+- `--base-format {auto,qcow2,raw}`: format of `--base-disk`. `auto` (the
+  default) reads the first four bytes: `QFI\xfb` is qcow2, and **any other file
+  is treated as raw**, including a vmdk, vhdx or compressed image, which would
+  boot as garbage. Pass `--base-format qcow2` to state that the base must be
+  qcow2 (it must match the magic, else `start` refuses). An explicit `raw` is
+  taken as stated.
+  A qcow2 base is mounted read-only under a qcow2 overlay in the state directory
+  (`disk-overlay.qcow2`). A raw base is never mounted: `start` clones it into
+  `<state-dir>/disk.raw` with `cp --reflink=always`, and the guest boots that
+  file with `cache=unsafe`. A symlink is refused as a raw base. A profile with
+  fixed sizing (the TrueNAS front) defaults to qcow2 without reading the file.
+- `--allow-full-copy`: raw base only. Without it, a clone that cannot be a
+  reflink (base and state directory not on one btrfs filesystem) fails `start`
+  with one error line. With it, `start` copies the whole file instead and says so.
 - `--readonly-media ISO`, `--data-disk-size SIZE` (repeat, up to 8),
-  `--vnc-console`, `--serial-console`, `--resume`.
+  `--vnc-console`, `--serial-console`, `--resume` (reuses the existing
+  overlay or `disk.raw`; the recorded disk format must match; a raw guest
+  resumes even when its base file was moved, replaced or deleted).
 - `--max-concurrent-guests N` (1 to 3, default 3) and
   `--memory-psi-full-avg10-limit`: see the admission rules below.
+
+Why a raw clone and not a mounted base:
+[design guide](docs/DESIGN-GUIDE.md#raw-bases-and-reflink-clones). A worked
+example, including `disk promote`, is in
+[docs/CONSUMERS.md](docs/CONSUMERS.md#start-from-a-raw-base).
 
 ## Host protection
 
