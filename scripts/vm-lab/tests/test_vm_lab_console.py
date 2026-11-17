@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import signal
 import sys
@@ -1478,6 +1479,83 @@ def test_a_foreign_screendump_file_mid_run_is_a_skipped_poll_and_is_not_deleted(
 def recorder_flag_restored(monkeypatch):
     """Leave the module's 'ending' flag as the test found it."""
     monkeypatch.setattr(vm_lab_console, "_recorder_ending", False)
+
+
+def test_a_first_signal_while_the_resume_frame_is_loaded_is_not_swallowed(tmp_path):
+    """The `except Exception` around the resume-frame load must not eat the stop request."""
+    assert not issubclass(vm_lab_console.RecorderSignal, Exception)
+    out = tmp_path / "capture"
+    (out / "frames").mkdir(parents=True)
+    (out / "manifest.jsonl").write_text(
+        json.dumps({"sequence": 1, "elapsed_s": 0, "file": "0001_0s.png"}) + "\n"
+    )
+    (out / "state.json").write_text(json.dumps({"t0_epoch": 100.0}))
+
+    class SignalledOnOpen:
+        @staticmethod
+        def open(_path):
+            signal.raise_signal(signal.SIGTERM)
+
+    rc = vm_lab_console.cmd_console_record(
+        record_args(out, max_runtime=100),
+        tmp_path / "state",
+        qmp_call=lambda *_a, **_k: {},
+        stop_guest=None,
+        clock=FakeClock(),
+        sleep=lambda _seconds: None,
+        next_screen=blank,
+        image_module=SignalledOnOpen,
+        image_chops=ImageChops,
+    )
+    assert rc == 0
+    assert done_reason(out) == "signal: SIGTERM"
+    assert vm_lab_console._recorder_ending is False
+
+
+def test_a_screendump_file_that_qemu_replaced_by_rename_is_adopted_and_cleaned_up(tmp_path):
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    temporary = state_dir / vm_lab_console.RECORDER_TEMP_FILENAME
+
+    def replacing_screendump(_socket, _command, _arguments, _timeout):
+        replacement = state_dir / "qemu-wrote-this.png"
+        blank().save(replacement)
+        os.replace(replacement, temporary)  # a new inode at the name
+
+    rc = vm_lab_console.cmd_console_record(
+        record_args(tmp_path / "capture", cap=1),
+        state_dir,
+        qmp_call=replacing_screendump,
+        stop_guest=None,
+        clock=FakeClock(),
+        sleep=lambda _seconds: None,
+    )
+    assert rc == 0
+    assert done_reason(tmp_path / "capture") == "cap"
+    assert not temporary.exists()
+
+
+def test_a_replacement_file_of_another_owner_is_not_adopted_and_not_removed(tmp_path, monkeypatch):
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    temporary = state_dir / vm_lab_console.RECORDER_TEMP_FILENAME
+    monkeypatch.setattr(vm_lab_console, "_our_uid", lambda: os.getuid() + 1)  # the file is "not ours"
+
+    def replacing_screendump(_socket, _command, _arguments, _timeout):
+        replacement = state_dir / "someone-elses.png"
+        blank().save(replacement)
+        os.replace(replacement, temporary)
+
+    rc = vm_lab_console.cmd_console_record(
+        record_args(tmp_path / "capture", cap=1),
+        state_dir,
+        qmp_call=replacing_screendump,
+        stop_guest=None,
+        clock=FakeClock(),
+        sleep=lambda _seconds: None,
+    )
+    assert rc == 0
+    assert temporary.exists()  # foreign file: kept, as before
 
 
 def test_the_handler_ignores_every_signal_after_the_first(recorder_flag_restored):

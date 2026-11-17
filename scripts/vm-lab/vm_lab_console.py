@@ -15,6 +15,7 @@ import json
 import os
 import re
 import signal
+import stat
 import sys
 import time
 from pathlib import Path
@@ -71,8 +72,13 @@ class ConsoleCallError(RuntimeError):
     """
 
 
-class RecorderSignal(Exception):
-    """A SIGTERM/SIGHUP clean-stop request with its DONE reason."""
+class RecorderSignal(BaseException):
+    """A SIGTERM/SIGHUP clean-stop request with its DONE reason.
+
+    A BaseException (like KeyboardInterrupt), so no ``except Exception`` clause of the
+    recorder can swallow it: the handler ignores every later signal, and a swallowed
+    first one would leave the recorder unstoppable by SIGTERM.
+    """
 
 
 def strip_one_trailing_newline(text: str) -> str:
@@ -120,6 +126,27 @@ def _file_identity(path: Path) -> tuple[int, int] | None:
     except OSError:
         return None
     return (info.st_dev, info.st_ino)
+
+
+def _our_uid() -> int:
+    return os.getuid()
+
+
+def _adopt_replacement(path: Path, owned: tuple[int, int]) -> tuple[int, int]:
+    """After a successful screendump: follow QEMU if it replaced our file by a rename.
+
+    A regular file of our own uid at the name, with another identity than the one we created,
+    is what QEMU left (the name was ours exclusively): adopt it so cleanup still works. Anything
+    else (another owner, a symlink, a directory, nothing) keeps the current identity, so a
+    foreign file is never adopted and never removed.
+    """
+    try:
+        info = os.lstat(path)
+    except OSError:
+        return owned
+    if stat.S_ISREG(info.st_mode) and info.st_uid == _our_uid():
+        return (info.st_dev, info.st_ino)
+    return owned
 
 
 def _remove_if_owned(path: Path, owned: tuple[int, int] | None) -> None:
@@ -398,6 +425,8 @@ def record_loop(
         try:
             base = image_module.open(frames_dir / lines[-1]["file"]).convert("RGB")
             base.load()
+        except RecorderSignal:
+            raise  # never swallow the one stop request the handler will deliver
         except Exception:
             base = None
         if state_path.exists():
@@ -625,6 +654,7 @@ def cmd_console_record(
                         {"filename": f"/state/{RECORDER_TEMP_FILENAME}", "format": "png"},
                         args.qmp_timeout,
                     )
+                    owned_temporary = _adopt_replacement(temporary, owned_temporary)
                     image = image_module.open(temporary).convert("RGB")
                     image.load()
                     return image
