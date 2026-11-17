@@ -390,3 +390,14 @@ any of these IDs to verified-killed based only on source inspection.
   the same rule and preserve its short-write/descriptor-close oracle. Close
   when no non-delegating exact-symbol patch remains and the registered
   R0/R1 lane passes on a clean final commit.
+- **AW-BL-51 document and automate the host install of the `augeaswrap` command.**
+  Filed 2026-11-17 from the first real host cutover. `mdt host-setup/install.sh`
+  refuses to run without `augeaswrap` on the host PATH, and `cgprofiled install`
+  needs the wheel, but no document says how a host gets the command. The cutover
+  used a root-owned venv `/opt/augeaswrap/<version>/venv` (cli-extended and
+  augeaswrap wheels, `pip install --no-index --no-deps`, sha256-verified from
+  the GitHub release) plus the symlink `/usr/local/bin/augeaswrap`. Wanted: the
+  same pattern as `cgprofiled install` (a pinned, hash-checked, versioned install
+  with an uninstall verb), or a documented manual recipe in `docs/CONSUMERS.md`.
+  Close when a fresh host reaches `augeaswrap --version` from the documented
+  steps alone and `mdt host-setup` points to them in its refusal message.

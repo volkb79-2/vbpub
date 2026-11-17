@@ -998,7 +998,8 @@ def test_endpoint_delivery_without_a_record_bridges_with_the_facts_the_live_sock
         short.rmdir()
 
     written = _written(tmp_path)
-    assert set(keys) == set(written) == set(bootstrap.ENDPOINT_REQUIRED_KEYS)
+    assert set(keys) == set(written) == set(bootstrap.ENDPOINT_REQUIRED_KEYS) | {"CGPROFILE_OBSERVER_GID"}
+    assert written["CGPROFILE_CONTROL_GID"] == written["CGPROFILE_OBSERVER_GID"] == str(os.getgid())
     assert written["CGPROFILE_CONTROL_SOCKET"] == str(short / "ctl.sock")
     assert written["CGPROFILE_OBSERVER_SOCKET"] == str(short / "observer" / "resource-observer.sock")
     assert written["CGPROFILE_OBSERVER_SOCKET_DIR"] == str(short / "observer")
