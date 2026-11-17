@@ -47,7 +47,7 @@ present in more than one family:
 python3 scripts/truenas/vanilla-iso-patcher/truenas-vanilla-iso.py download \
   --upstream-version 27.0.0-RC.1 \
   --family TrueNAS-27-RC \
-  --output downloads/TrueNAS-27.0.0-RC.1.iso
+  --output downloads/iso/TrueNAS-27.0.0-RC.1.iso
 ```
 
 The download is written only after its SHA-256 matches the official sidecar.
@@ -69,8 +69,9 @@ sudo "$(command -v python3)" \
   --yes
 ```
 
-The command reuses the vanilla ISO from the repository `downloads/` folder, or
-fetches it there once, and verifies its published checksum (a file whose digest
+The command reuses the vanilla ISO from the repository's `iso` folder (`downloads/iso/` in plain
+mode, a CoW subvolume on CoW hosts; `libraries/cowtree/repo-path iso` prints it; the download lock
+files `.<name>.lock` live there too), or fetches it there once, and verifies its published checksum (a file whose digest
 differs is refused, never overwritten). It then rebuilds the SquashFS, and replaces its existing data
 extent in a byte-for-byte copy of the ISO. It creates the maximum-compression
 xdelta patch, applies it to a temporary copy, and checks that the reconstructed
@@ -171,7 +172,7 @@ the pinned v27.0.0-RC.1 ISO and creates an unattended-relaxed 16 GiB image:
 ```bash
 sudo "$(command -v python3)" \
   scripts/truenas/vanilla-iso-patcher/multisession_overlay_poc.py \
-  --input-iso downloads/TrueNAS-27.0.0-RC.1.iso \
+  --input-iso downloads/iso/TrueNAS-27.0.0-RC.1.iso \
   --expected-input-sha256 515a0252e72f1a6c86d603fa4d1661333029fe9a4804d0a7a28d24fe4f63498e \
   --output-iso scripts/truenas/vanilla-iso-patcher/artifacts/TrueNAS-27.0.0-RC.1-unattended-relaxed-overlay.iso \
   --delta-output scripts/truenas/vanilla-iso-patcher/artifacts/TrueNAS-27.0.0-RC.1-unattended-relaxed-overlay.vcdiff \
@@ -199,7 +200,7 @@ before use:
 ```bash
 sudo "$(command -v python3)" \
   scripts/truenas/vanilla-iso-patcher/truenas-vanilla-iso.py create \
-  --input-iso downloads/TrueNAS.iso \
+  --input-iso downloads/iso/TrueNAS.iso \
   --expected-input-sha256 REPLACE_WITH_64_HEX_DIGITS \
   --output-iso ./TrueNAS-boot-pool-24GiB.iso \
   --delta-output ./TrueNAS-boot-pool-24GiB.vcdiff \

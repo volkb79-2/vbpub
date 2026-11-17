@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+- TNT-59/TNT-61 (RP-03): ISO, base-image and VM-state folders come from the repository path config through the `cowtree` resolver (`tnt/_paths.py` is the one place that asks): `iso`, `vm-images`, `vm-lab` (project `truenas/tnt`) and `downloads`; a copy of tnt outside a checkout refuses with one line naming the missing config. The plain VM-state placeholder moved from `artifacts/vm-lab/` to `vm-lab/`.
+- `tnt files put NAME` takes a plain file name from the `iso` folder, else `vm-images`, else (until the old files are moved) the flat `downloads/` top level; the same traversal refusals as before, the refusal lists the folders searched and the plan names the folder (`Upload <folder>/<name>`). The `files put` help text and the generated `cli-surface.json` / `CLI-SPEC.md` still say "downloads/ folder" (regeneration follow-up, TNT-61).
+
 <!-- cmru: release history -->
 
 ## [0.4.2] - 2026-11-07

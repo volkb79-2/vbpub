@@ -170,20 +170,22 @@ host-side SSH commands.
 
 ```sh
 cd scripts/truenas/golden-iso   # from the repository root
-mkdir -p artifacts ../artifacts/vm-lab/golden-source-27-20GiB
-DOWNLOADS="$(git rev-parse --show-toplevel)/downloads"
+mkdir -p artifacts ../vm-lab/golden-source-27-20GiB
+ISO_DIR="$("$(git rev-parse --show-toplevel)/libraries/cowtree/repo-path" iso)"
 ```
 
 Fetched inputs (the TrueNAS installer ISO, the Debian live base) go to the
-repository's `downloads/` folder with their `.sha256`; VM state goes to
-`scripts/truenas/artifacts/vm-lab/<vm>/`; credentials and built golden outputs
-stay in this project's ignored `artifacts/`.
+repository's `iso` folder (`$ISO_DIR`, `downloads/iso/` in plain mode, a CoW subvolume on CoW
+hosts) with their `.sha256`; VM state goes to the `vm-lab` folder of `scripts/truenas`
+(`scripts/truenas/vm-lab/<vm>/` in plain mode; the `../vm-lab/...` paths below are that plain
+folder, print the one in use with `repo-path vm-lab --project scripts/truenas`); credentials and
+built golden outputs stay in this project's ignored `artifacts/`.
 
 ## Download and verify the installer
 
 ```sh
 ISO_URL=https://iso.sys.truenas.net/TrueNAS-27-RC/27.0.0-RC.1/TrueNAS-27.0.0-RC.1.iso
-ISO_FILE="$DOWNLOADS/TrueNAS-27.0.0-RC.1.iso"
+ISO_FILE="$ISO_DIR/TrueNAS-27.0.0-RC.1.iso"
 curl --fail --location --retry 5 --retry-all-errors --continue-at - \
   --output "$ISO_FILE" "$ISO_URL"
 curl --fail --location --silent --show-error \
@@ -192,7 +194,7 @@ printf '%s  %s\n' "$(cat "$ISO_FILE.sha256")" "$ISO_FILE" | sha256sum --check -
 ```
 
 Expected checksum output ends in `TrueNAS-27.0.0-RC.1.iso: OK`. Skip the
-download when `downloads/` already holds a checksum-verified copy.
+download when the `iso` folder already holds a checksum-verified copy.
 The checksum endpoint returns the digest by itself; the command above adds the
 filename for `sha256sum --check`.
 
@@ -208,12 +210,12 @@ with the acceptance scripts is required; generate a new key only for a separate
 test identity.
 
 ```sh
-qemu-img create -f qcow2 ../artifacts/vm-lab/golden-source-27-20GiB/source-base.qcow2 20G
-cp /usr/share/OVMF/OVMF_VARS_4M.fd ../artifacts/vm-lab/golden-source-27-20GiB/OVMF_VARS.fd
-test -f ../artifacts/vm-lab/golden-source-27-20GiB/root_ed25519 || ssh-keygen -q -t ed25519 -N '' -C <host> -f ../artifacts/vm-lab/golden-source-27-20GiB/root_ed25519
+qemu-img create -f qcow2 ../vm-lab/golden-source-27-20GiB/source-base.qcow2 20G
+cp /usr/share/OVMF/OVMF_VARS_4M.fd ../vm-lab/golden-source-27-20GiB/OVMF_VARS.fd
+test -f ../vm-lab/golden-source-27-20GiB/root_ed25519 || ssh-keygen -q -t ed25519 -N '' -C <host> -f ../vm-lab/golden-source-27-20GiB/root_ed25519
 umask 077
 openssl rand -hex 12 > artifacts/truenas-installer-password
-chmod 600 artifacts/truenas-installer-password ../artifacts/vm-lab/golden-source-27-20GiB/root_ed25519 ../artifacts/vm-lab/golden-source-27-20GiB/OVMF_VARS.fd
+chmod 600 artifacts/truenas-installer-password ../vm-lab/golden-source-27-20GiB/root_ed25519 ../vm-lab/golden-source-27-20GiB/OVMF_VARS.fd
 ```
 
 The `ssh-keygen -N ''` key has no passphrase and is for this local disposable
@@ -239,22 +241,22 @@ the existing Docker network, a loaded cgroup slice, and OVMF files; see the
 For the 20 GiB source recipe, run from `scripts/truenas`:
 
 The guest named `golden-install-27rc1-20g` keeps its run state in
-`artifacts/vm-lab/golden-install-27rc1-20g/` (the runner default; it must start
+`vm-lab/golden-install-27rc1-20g/` (the runner default; it must start
 empty). The blank base disk, UEFI variables, SSH key and the installed source
-disk live in the separate directory `artifacts/vm-lab/golden-source-27-20GiB/`.
+disk live in the separate directory `vm-lab/golden-source-27-20GiB/`.
 
 ```sh
 export TRUENAS_TCG_IMAGE='debian-install-vm:<installed-image-tag>'
 python3 tcg_vm.py start \
   --name golden-install-27rc1-20g \
-  --base-disk artifacts/vm-lab/golden-source-27-20GiB/source-base.qcow2 \
+  --base-disk vm-lab/golden-source-27-20GiB/source-base.qcow2 \
   --ovmf-code /usr/share/OVMF/OVMF_CODE_4M.fd \
-  --ovmf-vars artifacts/vm-lab/golden-source-27-20GiB/OVMF_VARS.fd \
+  --ovmf-vars vm-lab/golden-source-27-20GiB/OVMF_VARS.fd \
   --image "$TRUENAS_TCG_IMAGE" \
   --network "$DOCKER_NETWORK_INTERNAL" \
   --cgroup-parent "$CGROUP_PARENT_DEV_BACKGROUND" \
   --max-concurrent-guests 1 \
-  --readonly-media ../../downloads/TrueNAS-27.0.0-RC.1.iso \
+  --readonly-media ../../downloads/iso/TrueNAS-27.0.0-RC.1.iso \
   --vnc-console --serial-console
 python3 tcg_vm.py console sendkey --name golden-install-27rc1-20g down
 python3 tcg_vm.py console sendkey --name golden-install-27rc1-20g ret
@@ -273,10 +275,10 @@ variable store before running step 1:
 python3 tcg_vm.py stop --name golden-install-27rc1-20g
 python3 tcg_vm.py destroy --name golden-install-27rc1-20g
 qemu-img convert -f qcow2 -O qcow2 \
-  artifacts/vm-lab/golden-install-27rc1-20g/disk-overlay.qcow2 \
-  artifacts/vm-lab/golden-source-27-20GiB/source.qcow2
-cp artifacts/vm-lab/golden-install-27rc1-20g/OVMF_VARS_4M.fd \
-  artifacts/vm-lab/golden-source-27-20GiB/OVMF_VARS.fd
+  vm-lab/golden-install-27rc1-20g/disk-overlay.qcow2 \
+  vm-lab/golden-source-27-20GiB/source.qcow2
+cp vm-lab/golden-install-27rc1-20g/OVMF_VARS_4M.fd \
+  vm-lab/golden-source-27-20GiB/OVMF_VARS.fd
 ```
 
 The flattened `source.qcow2` is step 1's default `--vm-disk`; step 1 opens it
@@ -313,7 +315,7 @@ While the installer success dialog is still displayed, run this in the second
 terminal. QEMU identified the CD device as `ide2-cd0`.
 
 ```sh
-python3 -c 'import qmp; p="../artifacts/vm-lab/golden-source-27-20GiB/qmp-tty.sock"; qmp.qmp_command(p, "blockdev-open-tray", {"device":"ide2-cd0"}); qmp.qmp_command(p, "eject", {"device":"ide2-cd0", "force":True})'
+python3 -c 'import qmp; p="../vm-lab/golden-source-27-20GiB/qmp-tty.sock"; qmp.qmp_command(p, "blockdev-open-tray", {"device":"ide2-cd0"}); qmp.qmp_command(p, "eject", {"device":"ide2-cd0", "force":True})'
 ```
 
 Back in the VM serial console, press Enter to close the success dialog, then
@@ -325,7 +327,7 @@ Wait for the console setup menu and its DHCP-assigned Web UI address.
 
 At the TrueNAS console setup menu, choose `8` (Open Linux Shell). This opens a
 root shell on the VM console. Use the public key from the host at
-`../artifacts/vm-lab/golden-source-27-20GiB/root_ed25519.pub`; do not copy the private key into TrueNAS.
+`../vm-lab/golden-source-27-20GiB/root_ed25519.pub`; do not copy the private key into TrueNAS.
 
 First query the actual root and SSH service records:
 
@@ -336,7 +338,7 @@ midclt call service.query '[["service","=","ssh"]]'
 
 In this run, root had middleware id `1` and SSH service id `11`. Use the ids
 returned on the VM you are configuring. Replace the example public key below
-with the complete one-line contents of `../artifacts/vm-lab/golden-source-27-20GiB/root_ed25519.pub`:
+with the complete one-line contents of `../vm-lab/golden-source-27-20GiB/root_ed25519.pub`:
 
 ```sh
 midclt call user.update 1 '{"sshpubkey":"<ssh-public-key>","ssh_password_enabled":false}'
@@ -365,10 +367,10 @@ references.
 Test key login from the host in the second terminal:
 
 ```sh
-ssh -T -i ../artifacts/vm-lab/golden-source-27-20GiB/root_ed25519 \
+ssh -T -i ../vm-lab/golden-source-27-20GiB/root_ed25519 \
   -o IdentitiesOnly=yes \
   -o StrictHostKeyChecking=accept-new \
-  -o UserKnownHostsFile=../artifacts/vm-lab/golden-source-27-20GiB/known_hosts \
+  -o UserKnownHostsFile=../vm-lab/golden-source-27-20GiB/known_hosts \
   -o ConnectTimeout=10 \
   -p 2222 root@<host-address> \
   'id -u; uname -r; zpool status'
@@ -417,14 +419,14 @@ of at least 24 characters; the literal bootstrap password is refused). The image
 path supplies the expected image basename; it need not exist yet. The sidecar
 lives in `artifacts/` (gitignored), is written atomically with mode 0600 in a
 0700 directory, and is the only place the admin password and the dynamic API
-key exist; step 1 prints only its path. Retain the SSH private key in the protected `scripts/truenas/artifacts/vm-lab/golden-source-27-20GiB/` directory for
+key exist; step 1 prints only its path. Retain the SSH private key in the protected `scripts/truenas/vm-lab/golden-source-27-20GiB/` directory for
 step 1 and later host verification:
 
 ```sh
 ./step2-build-unattended-restore-iso.py init-secrets \
   --image artifacts/truenas-27-20GiB-golden.raw \
-  --root-private-key ../artifacts/vm-lab/golden-source-27-20GiB/root_ed25519 \
-  --root-public-key ../artifacts/vm-lab/golden-source-27-20GiB/root_ed25519.pub \
+  --root-private-key ../vm-lab/golden-source-27-20GiB/root_ed25519 \
+  --root-public-key ../vm-lab/golden-source-27-20GiB/root_ed25519.pub \
   --webhook-file <checkout>/mattermost-server/.ciu/secrets/installer_webhook_url \
   --output artifacts/truenas-27-20GiB-golden.secrets.toml
 stat -c '%a %n' artifacts/truenas-27-20GiB-golden.secrets.toml
@@ -474,7 +476,7 @@ Install `xorriso`, `squashfs-tools`, `zstd`, `gdisk`, `mtools`, `dosfstools`,
 `gpgv`, and `debian-keyring`. Download the Debian Live 13.7.0 standard ISO,
 `SHA512SUMS`, and `SHA512SUMS.sign` from
 `https://cdimage.debian.org/debian-cd/current-live/amd64/iso-hybrid/` into the
-repository's `downloads/` folder (`$DOWNLOADS`). Verify
+repository's `iso` folder (`$ISO_DIR`). Verify
 the detached signature with
 `gpgv --keyring /usr/share/keyrings/debian-role-keys.pgp SHA512SUMS.sign SHA512SUMS`
 and verify the ISO's SHA-512 against that file before building.
@@ -495,9 +497,9 @@ ISO is returned to the calling user with mode 0600:
 
 ```sh
 sudo python3 step2-build-unattended-restore-iso.py build \
-  --base-iso "$DOWNLOADS/debian-live-13.7.0-amd64-standard.iso" \
-  --base-checksums "$DOWNLOADS/SHA512SUMS" \
-  --base-signature "$DOWNLOADS/SHA512SUMS.sign" \
+  --base-iso "$ISO_DIR/debian-live-13.7.0-amd64-standard.iso" \
+  --base-checksums "$ISO_DIR/SHA512SUMS" \
+  --base-signature "$ISO_DIR/SHA512SUMS.sign" \
   --debian-cd-keyring /usr/share/keyrings/debian-role-keys.pgp \
   --image artifacts/truenas-27-20GiB-golden-$ID.raw \
   --output artifacts/truenas-27-20GiB-unattended-restore-$ID.iso
@@ -531,15 +533,15 @@ when `/dev/kvm` is absent or when replaying the unattended restore:
 
 ```bash
 cd scripts/truenas   # from the repository root
-mkdir -p artifacts/vm-lab/restore-target-20g
-qemu-img create -f qcow2 artifacts/vm-lab/restore-target-20g/disk.qcow2 20G
-cp /usr/share/OVMF/OVMF_VARS_4M.fd artifacts/vm-lab/restore-target-20g/OVMF_VARS.fd
+mkdir -p vm-lab/restore-target-20g
+qemu-img create -f qcow2 vm-lab/restore-target-20g/disk.qcow2 20G
+cp /usr/share/OVMF/OVMF_VARS_4M.fd vm-lab/restore-target-20g/OVMF_VARS.fd
 export TRUENAS_TCG_IMAGE='debian-install-vm:<installed-image-tag>'
 python3 tcg_vm.py start \
   --name truenas-20g-restore \
-  --base-disk artifacts/vm-lab/restore-target-20g/disk.qcow2 \
+  --base-disk vm-lab/restore-target-20g/disk.qcow2 \
   --ovmf-code /usr/share/OVMF/OVMF_CODE_4M.fd \
-  --ovmf-vars artifacts/vm-lab/restore-target-20g/OVMF_VARS.fd \
+  --ovmf-vars vm-lab/restore-target-20g/OVMF_VARS.fd \
   --image "$TRUENAS_TCG_IMAGE" \
   --network "$DOCKER_NETWORK_INTERNAL" \
   --cgroup-parent "$CGROUP_PARENT_DEV_BACKGROUND" \
@@ -552,27 +554,27 @@ python3 tcg_vm.py start \
 The runner's admission guard may defer a start while host memory pressure is
 high; wait for it to admit the guest rather than weakening the guard. Follow
 the guest with `python3 tcg_vm.py status --name truenas-20g-restore` and
-inspect `artifacts/vm-lab/truenas-20g-restore/serial.log` for
+inspect `vm-lab/truenas-20g-restore/serial.log` for
 restore progress. The direct QEMU command below records the historical manual
 replay recipe.
 
 ```sh
-mkdir -p ../artifacts/vm-lab/restore-manual
-qemu-img create -f raw ../artifacts/vm-lab/restore-manual/restore-target.raw 20G
-cp /usr/share/OVMF/OVMF_VARS_4M.fd ../artifacts/vm-lab/restore-manual/restore-vars.fd
+mkdir -p ../vm-lab/restore-manual
+qemu-img create -f raw ../vm-lab/restore-manual/restore-target.raw 20G
+cp /usr/share/OVMF/OVMF_VARS_4M.fd ../vm-lab/restore-manual/restore-vars.fd
 qemu-system-x86_64 \
   -name truenas-unattended-restore-test \
   -machine q35,accel=tcg -cpu max -smp 2 -m 8G \
   -rtc base=utc,clock=host \
   -drive if=pflash,format=raw,readonly=on,file=/usr/share/OVMF/OVMF_CODE_4M.fd \
-  -drive if=pflash,format=raw,file=../artifacts/vm-lab/restore-manual/restore-vars.fd \
-  -drive file=../artifacts/vm-lab/restore-manual/restore-target.raw,if=virtio,format=raw \
+  -drive if=pflash,format=raw,file=../vm-lab/restore-manual/restore-vars.fd \
+  -drive file=../vm-lab/restore-manual/restore-target.raw,if=virtio,format=raw \
   -cdrom artifacts/truenas-27-20GiB-unattended-restore.iso \
   -boot order=d,menu=on \
   -netdev user,id=net0,hostfwd=tcp:<host-address>:2223-:22,hostfwd=tcp:<host-address>:8444-:443 \
   -device virtio-net-pci,netdev=net0 \
-  -display none -monitor none -serial file:../artifacts/vm-lab/restore-manual/restore-serial.log \
-  -qmp unix:../artifacts/vm-lab/restore-manual/restore-qmp.sock,server=on,wait=off
+  -display none -monitor none -serial file:../vm-lab/restore-manual/restore-serial.log \
+  -qmp unix:../vm-lab/restore-manual/restore-qmp.sock,server=on,wait=off
 ```
 
 The ISO's GRUB menu selects Debian Live automatically after five seconds; do
@@ -580,8 +582,8 @@ not send a key to start the unattended path. Use QMP to inspect the console
 while the restore service runs:
 
 ```sh
-python3 qmp.py --socket ../artifacts/vm-lab/restore-manual/restore-qmp.sock screenshot ../artifacts/vm-lab/restore-manual/restore-screen.png
-python3 qmp.py --socket ../artifacts/vm-lab/restore-manual/restore-qmp.sock status
+python3 qmp.py --socket ../vm-lab/restore-manual/restore-qmp.sock screenshot ../vm-lab/restore-manual/restore-screen.png
+python3 qmp.py --socket ../vm-lab/restore-manual/restore-qmp.sock status
 ```
 
 On the tested QEMU command, `-boot order=d` makes the attached CD-ROM the only
@@ -590,25 +592,25 @@ screen, then relaunch the same target without `-cdrom` and with HDD boot order.
 This models detaching the provider ISO and restoring HDD-first boot:
 
 ```bash
-python3 qmp.py --socket ../artifacts/vm-lab/restore-manual/restore-qmp.sock quit
+python3 qmp.py --socket ../vm-lab/restore-manual/restore-qmp.sock quit
 qemu-system-x86_64 \
   -name truenas-restore-disk-boot-test \
   -machine q35,accel=tcg -cpu max -smp 2 -m 8G \
   -rtc base=utc,clock=host \
   -drive if=pflash,format=raw,readonly=on,file=/usr/share/OVMF/OVMF_CODE_4M.fd \
-  -drive if=pflash,format=raw,file=../artifacts/vm-lab/restore-manual/restore-vars.fd \
-  -drive file=../artifacts/vm-lab/restore-manual/restore-target.raw,if=virtio,format=raw \
+  -drive if=pflash,format=raw,file=../vm-lab/restore-manual/restore-vars.fd \
+  -drive file=../vm-lab/restore-manual/restore-target.raw,if=virtio,format=raw \
   -boot order=c,menu=on \
   -netdev user,id=net0,hostfwd=tcp:<host-address>:2223-:22,hostfwd=tcp:<host-address>:8444-:443 \
   -device virtio-net-pci,netdev=net0 \
-  -display none -monitor none -serial file:../artifacts/vm-lab/restore-manual/restore-serial-diskboot.log \
-  -qmp unix:../artifacts/vm-lab/restore-manual/restore-qmp-diskboot.sock,server=on,wait=off
+  -display none -monitor none -serial file:../vm-lab/restore-manual/restore-serial-diskboot.log \
+  -qmp unix:../vm-lab/restore-manual/restore-qmp-diskboot.sock,server=on,wait=off
 ```
 
 The restored ESP should take the VM to the TrueNAS GRUB menu without input.
 TrueNAS middleware and SSH can take several minutes to start under TCG. Test
 root SSH using the private key from the sibling TOML (write it to an ignored,
-mode-0600 file under `artifacts/vm-lab/golden-source-27-20GiB/`):
+mode-0600 file under `vm-lab/golden-source-27-20GiB/`):
 
 ```bash
 python3 - <<'PY'
@@ -616,14 +618,14 @@ import tomllib
 from pathlib import Path
 
 secrets = tomllib.loads(Path("artifacts/truenas-27-20GiB-golden.secrets.toml").read_text())
-key = Path("../artifacts/vm-lab/golden-source-27-20GiB/root_ed25519")
+key = Path("../vm-lab/golden-source-27-20GiB/root_ed25519")
 key.write_text(secrets["root_ssh"]["private_key"].rstrip() + "\n")
 key.chmod(0o600)
 PY
-ssh -T -i ../artifacts/vm-lab/golden-source-27-20GiB/root_ed25519 \
+ssh -T -i ../vm-lab/golden-source-27-20GiB/root_ed25519 \
   -o IdentitiesOnly=yes \
   -o StrictHostKeyChecking=accept-new \
-  -o UserKnownHostsFile=../artifacts/vm-lab/golden-source-27-20GiB/known_hosts \
+  -o UserKnownHostsFile=../vm-lab/golden-source-27-20GiB/known_hosts \
   -o ConnectTimeout=10 \
   -p 2223 root@<host-address> \
   'id -u; uname -r; zpool status'
@@ -839,8 +841,8 @@ ISO, restore the saved boot order, cold-cycle the server, and verify SSH and
   --restore-complete \
   --ssh-host <host> \
   --ssh-host-key-alias '[<host-address>]:2223' \
-  --ssh-identity-file ../truenas/artifacts/vm-lab/golden-source-27-20GiB/root_ed25519 \
-  --ssh-known-hosts ../truenas/artifacts/vm-lab/golden-source-27-20GiB/restore-known_hosts \
+  --ssh-identity-file ../truenas/vm-lab/golden-source-27-20GiB/root_ed25519 \
+  --ssh-known-hosts ../truenas/vm-lab/golden-source-27-20GiB/restore-known_hosts \
   --state-file .state/restore-804027-20g-20261031.json \
   --yes --progress plain
 ```

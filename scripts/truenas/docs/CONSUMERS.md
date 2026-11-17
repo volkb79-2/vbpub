@@ -12,10 +12,16 @@ template files. The caller selects these explicitly so an absent or stale
 image or firmware file cannot silently choose a different build.
 
 Storage layout (estate convention, see the repository `AGENTS.md`): each guest's
-state directory defaults to `artifacts/vm-lab/<name>/` beside the runner, which
-creates it on `start`; `--state-dir` overrides it explicitly. Installer ISOs and
-other fetched inputs live in the repository's `downloads/` folder with a
-`.sha256`, never in a project folder. Run overlays and sparse data disks use
+state directory defaults to `<vm-lab folder>/<name>/`, where the `vm-lab` folder of
+this project comes from the repository path config through the `cowtree` resolver
+(`vm-lab/` beside the runner in plain mode, a CoW subvolume on CoW hosts; print it with
+`libraries/cowtree/repo-path vm-lab --project scripts/truenas`). The runner creates the
+guest folder on `start`; `--state-dir` overrides it explicitly. The `vm-lab/...` paths in
+the examples below are the plain-mode folder; on a CoW host substitute the printed one.
+Installer ISOs live in the `iso` folder (`downloads/iso/` in plain mode), base images in
+`vm-images` (`downloads/vm-images/`), each with a `.sha256`, never in a project folder.
+The `../../downloads/iso/...` ISO paths below are the plain-mode `iso` folder (an ISO still
+in the old flat `downloads/` works as an explicit path until RP-06 moves it). Run overlays and sparse data disks use
 `cache=unsafe` because they are disposable; an installed golden source disk is a
 base that later runs clone from and uses `cache=writeback`. No environment value
 relocates these folders.
@@ -25,13 +31,13 @@ cd scripts/truenas
 export TRUENAS_TCG_IMAGE='debian-install-vm:<installed-image-tag>'
 python3 tcg_vm.py start \
   --name truenas-v27-path-b \
-  --base-disk artifacts/vm-lab/golden-source-27-20GiB/source.qcow2 \
+  --base-disk vm-lab/golden-source-27-20GiB/source.qcow2 \
   --ovmf-code /usr/share/OVMF/OVMF_CODE_4M.fd \
   --ovmf-vars /usr/share/OVMF/OVMF_VARS_4M.fd \
-  --state-dir artifacts/vm-lab/v27-path-b \
+  --state-dir vm-lab/v27-path-b \
   --image "$TRUENAS_TCG_IMAGE" \
   --max-concurrent-guests 3
-python3 tcg_vm.py status --name truenas-v27-path-b --state-dir artifacts/vm-lab/v27-path-b
+python3 tcg_vm.py status --name truenas-v27-path-b --state-dir vm-lab/v27-path-b
 ```
 
 Choose the `--image` value from an image already built for QEMU testing; list
@@ -58,10 +64,10 @@ to a fresh guest by repeating `--data-disk-size`:
 ```bash
 python3 tcg_vm.py start \
   --name truenas-storage-topology \
-  --base-disk artifacts/vm-lab/golden-source-27-20GiB/source.qcow2 \
+  --base-disk vm-lab/golden-source-27-20GiB/source.qcow2 \
   --ovmf-code /usr/share/OVMF/OVMF_CODE_4M.fd \
   --ovmf-vars /usr/share/OVMF/OVMF_VARS_4M.fd \
-  --state-dir artifacts/vm-lab/storage-topology \
+  --state-dir vm-lab/storage-topology \
   --image "$TRUENAS_TCG_IMAGE" \
   --data-disk-size 4G \
   --data-disk-size 1G \
@@ -116,11 +122,11 @@ the QMP-backed helpers while the managed guest is running:
 ```bash
 python3 tcg_vm.py console screendump \
   --name truenas-v28-installer \
-  --state-dir artifacts/vm-lab/v28-installer \
+  --state-dir vm-lab/v28-installer \
   --filename installer.ppm
 python3 tcg_vm.py console sendkey \
   --name truenas-v28-installer \
-  --state-dir artifacts/vm-lab/v28-installer \
+  --state-dir vm-lab/v28-installer \
   ret
 ```
 
@@ -141,7 +147,7 @@ terminal with:
 ```bash
 python3 tcg_vm.py console serial \
   --name truenas-v28-installer \
-  --state-dir artifacts/vm-lab/v28-installer
+  --state-dir vm-lab/v28-installer
 ```
 
 The command relays terminal input and guest serial output; press `Ctrl-]` to
@@ -151,7 +157,7 @@ boot entry such as 115200 baud when the guest provides one. A serial socket
 only helps when the guest's firmware or bootloader routes output to its UART.
 
 ```bash
-python3 tcg_vm.py stop --name truenas-v27-path-b --state-dir artifacts/vm-lab/v27-path-b
+python3 tcg_vm.py stop --name truenas-v27-path-b --state-dir vm-lab/v27-path-b
 python3 tcg_vm.py destroy --name truenas-v27-path-b  # removes container only
 ```
 
@@ -176,12 +182,12 @@ through ACPI, remove only its stopped Docker container, then ask the runner to
 verify and update the ISO path:
 
 ```bash
-python3 tcg_vm.py stop --name truenas-v27-path-b --state-dir artifacts/vm-lab/v27-path-b
+python3 tcg_vm.py stop --name truenas-v27-path-b --state-dir vm-lab/v27-path-b
 python3 tcg_vm.py destroy --name truenas-v27-path-b
 python3 tcg_vm.py rebind-media \
   --name truenas-v27-path-b \
-  --state-dir artifacts/vm-lab/v27-path-b \
-  --readonly-media ../../downloads/TrueNAS-28.0.0-MASTER-20261014-230204.iso
+  --state-dir vm-lab/v27-path-b \
+  --readonly-media ../../downloads/iso/TrueNAS-28.0.0-MASTER-20261014-230204.iso
 ```
 
 Then repeat the original `start` command with `--resume` and the canonical
@@ -206,7 +212,7 @@ the input ISO against its published checksum first. Install `xorriso` and
 ```bash
 sudo apt-get install python3 xorriso squashfs-tools
 sudo python3 vanilla-iso-patcher/patch_iso.py \
-  ../../downloads/TrueNAS.iso \
+  ../../downloads/iso/TrueNAS.iso \
   vanilla-iso-patcher/artifacts/TrueNAS-boot-pool-24GiB.iso \
   --boot-pool-size-gib 24
 ```

@@ -202,7 +202,7 @@ tnt vm device list guest --host lab --json
 tnt vm device update guest 7 --host lab --order 2 --allow-write
 tnt vm device delete guest 7 --host lab --allow-write --confirm guest#7                      # backing zvol is kept
 tnt vm device delete guest 7 --host lab --zvol --allow-write --confirm guest#7 --confirm-second tank/vms/guest
-tnt files put debian-13-genericcloud-amd64.qcow2 /mnt/tank/images --host lab --allow-write   # from the repo downloads/ folder
+tnt files put debian-13-genericcloud-amd64.qcow2 /mnt/tank/images --host lab --allow-write   # from the repo iso / vm-images folder
 tnt vm disk-image-size /mnt/tank/images/debian-13-genericcloud-amd64.qcow2 --host lab         # hosts that list the method
 tnt vm disk-import guest --host lab --source /mnt/tank/images/debian-13-genericcloud-amd64.qcow2 --zvol tank/vms/root --allow-write
 tnt user list --host lab --json
