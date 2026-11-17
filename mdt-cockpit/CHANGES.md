@@ -220,6 +220,87 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 <!-- cmru: release history -->
 
+## [source-38e9092cf1c3] - 2026-11-17
+<!-- cmru: generated -->
+<!-- cmru: source-end=38e9092cf1c308cbfd36652e6c24b3e44e0d5a97 -->
+
+### Added
+- feat(mdt-cockpit): ship OpenCode 2 via @opencode/cli platform packages (fa1d93e51)
+- feat(iogovmon): split daemon and control CLIs (640c72fa3)
+- feat(mdt-cockpit): host-setup publishes the run-gate gates admission cap from host capacity (MDT-076) (c657acdef)
+- feat(iogovmon): extract the IO governor recorder from mdt-cockpit/iogov into its own project (WP-IGM-a) (8f7e01e40)
+
+### Fixed
+- fix: verify published run-gate wheel identity (8311c94ba)
+- fix: address estate requirements review findings (d3c569a4f)
+- fix(docs): complete host and key scrub in persisted evidence (35a98f69a)
+- fix(docs): complete evidence scrub headers (d52fb6bf8)
+- fix(docs): note remaining evidence scrubs (e16c4acc4)
+- fix(docs): scrub evidence paths and reconcile persistence inventory (6cb74ce43)
+- fix(cgprofile): address REN-A review findings (e89209ddc)
+- fix(mdt-cockpit): apply admission review findings (07320f3e9)
+- fix(mdt-cockpit): exclude .assay, stop following symlinks in file searches; document the machine-settings gap (MDT-076) (ad833bd58)
+
+### Changed
+- mdt-cockpit: runtime tests honour every INSTALL_<TOOL> build switch via one shared harness helper; AGENTS.md: context-pressure note differs for controller and agent (38e9092cf)
+- backlog: subprocess readers that wait for pipe EOF can hang after the child exits (cmru KI-178, mdt-cockpit MDT-104, ciu CIU-220, nyxloom NL-83) (60709acce)
+- mdt-cockpit docs: embedded builder is ungoverned; btrfs+zstd measurements; remote builder guide (caa65c2de)
+- mdt-cockpit: image contract test honours INSTALL_<TOOL>=false (copilot is off until further notice): disabled tools must be absent, not present (55756b42c)
+- mdt-cockpit: resolve the version-record loader at call time so staging tests use their in-memory record (055b9d308)
+- mdt-cockpit: restore the ADVISORY labels cmru versions resolve dropped; test pins follow the refreshed record; pin 'now' in the cutoff test (d6ee98d5e)
+- mdt-cockpit: augeaswrap joins the first-party wheel set (cgprofile 3.0.0 depends on it; the install is --no-index) (54e2af4ed)
+- mdt-cockpit: re-resolve tool versions (record was 30 days old, limit 28); copilot kept out of the image until further notice (ad1f01e6b)
+- mdt-cockpit: rename release skip variable to MDT_COCKPIT_IGNORE_NEW_RELEASES; name the env form in the stop hint (cb11414f7)
+- Keep VS Code terminal sessions in tmux (111986043)
+- skills: refresh agent skills, drop fleetd-cli (fleetd ships its own), add skills-sync.sh with tests and mutants (squash of pi-skills-refresh-20261115 at b7354f626, rebuilt on current main because the branch carried an untrailered merge commit; content equals the reviewed three-dot diff) (6eeceb398)
+- Complete persistence fix round 2 (b217175db)
+- backlog: fix filing9 review and file follow-ups (cd933d7ba)
+- backlog: file KSM and R2 runner follow-ups (bbdb2f9ad)
+- mdt-cockpit: preserve bind-source behavior notes (ddb17291c)
+- mdt-cockpit: add estate requirements checker (ef7019090)
+- backlog: file R2 restart and cockpit follow-ups (6e972a588)
+- Merge branch 'persist-docs-20261110' (persist: 588 files of release-program evidence and docs persisted into the repo with SSH-identity, account-identity, host and address scrub, inventory with omission lists and redacted-copy hashes; gates PASS bound to c5ff8eb07; 3 deepseek-fix rounds, luna reviews 1-2 and Sonnet review 3 MERGE) (b21882b37)
+- backlog: file r1002 reinstall and CIU R2 follow-ups (24669fd94)
+- Merge fresh origin/main into persist-docs-20261110 (17307f0b5)
+- Correct IO backlog filing to design rev 4.1 (6557d4cbd)
+- Merge origin/main (11b4a7c34) into codex-image-20261108 (ed23b19b8)
+- mdt-cockpit: verify_codex_install runs the installed launcher and requires the pinned version (1588e925b)
+- mdt-cockpit tests: run the guarded claude/codex manifest probes against shims (dd7669c4d)
+- mdt-cockpit docs: Codex npm layout, code-mode tool_mode rule, MDT-P01 report superseded (1ff559f82)
+- mdt-cockpit host-setup tests: anchor the validator-order checks on the main-flow call (662e2d912)
+- mdt-cockpit: verify the Codex npm install in place; fail the manifest on a broken --version (e8e4cceca)
+- Split H1g': keep only the host-setup change; fix review B1 (check.sh probe), survivors and refusal text (70885e1c9)
+- Consume published endpoint facts in cockpit templates (58ac28389)
+- Update renderer checks for published Docker endpoint (1b85987e5)
+- Retire host-setup service provisioning and publish endpoint facts (064ca0916)
+- refactor: point the estate at cgprofile (cmru, tester-unified, run-gate, mdt-cockpit, rigor-record, assay, ciu, root files) (246b30136)
+- Merge branch 'iogovmon-20261105' (iogovmon: extraction from mdt-cockpit/iogov, iogovmond/iogovmonctl split, version stamping) (c88ed115b)
+- mdt-cockpit: fix round 2 admission review findings (710da6cdf)
+- Merge remote-tracking branch 'origin/main' into iogovmon-20261105 (88aabb884)
+- Merge remote-tracking branch 'origin/main' into mdt-admission-20261105 (40ef88505)
+- chore: retire modern-debian-tools-python-debug; mdt-cockpit is its successor (2015c4e00)
+- mdt-cockpit: renumber admission backlog item to MDT-077 (56e38fe9b)
+- Merge remote-tracking branch 'origin/main' into mdt-admission-20261105 (43edbe407)
+- Merge remote-tracking branch 'origin/main' into iogovmon-20261105 (70aac26bc)
+
+### Documentation
+- docs: sync KSM rollout status and file NC-53 (044529b2a)
+- docs: refresh KSM backlog status after Run-Gate release (333802857)
+- docs(backlog): file backlog-filing2 items (f59972d13)
+- docs: persist release designs and cited evidence (e1d5fb29c)
+- docs(mdt-cockpit): MDT-091 dated worktree audit figures (review nit) (d2a5cb841)
+- docs(mdt-cockpit): reconcile memory and worktree inventory facts (13da4f695)
+- docs(mdt-cockpit): file MDT-089..MDT-091 (devcontainer Pylance/watcher memory, cockpit cgprofilectl image, worktree pruning policy) (d4287a012)
+- docs(backlog): correct stale line cites, blank line, AW-BL-04 open items (review findings 1-7) (1bf488a12)
+- docs(mdt-cockpit): file OpenCode 2, codex-image and H1g' review follow-ups as MDT-079..MDT-088 (e7116ee08)
+- docs(mdt-cockpit): retirement backlog entry is MDT-078 (MDT-077 is reserved for the admission branch) (95061616f)
+- docs(mdt-cockpit): name the marker-file glob exactly; the rescan is up to a whole-workspace walk (review round 1) (629fc43aa)
+- docs(mdt-cockpit): terraform.languageServer.enable is window-scoped, not per folder (d9ff3753d)
+
+### Testing
+- test: require published run-gate wheel identity (f826fc817)
+- test: cover estate doctor review gaps (8f46fa11e)
+
 ## [source-b1659836e323] - 2026-11-05
 <!-- cmru: generated -->
 <!-- cmru: source-end=b1659836e323cd3995105d94455c897968fd5ff9 -->
