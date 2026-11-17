@@ -1,4 +1,4 @@
-"""One repo-root config (``repo-paths.toml``) for the shared paths of a repository, and the resolver for it.
+"""One repo-root config (``vm-lab.toml``) for the shared paths of a repository, and the resolver for it.
 
 Scripts and tests never hardcode where ISOs, base images or VM state live: they ask ``RepoPaths.resolve(name)``
 (or the ``cowtree path NAME`` command). The config names each path, gives its plain location inside the checkout
@@ -27,7 +27,7 @@ from .detect import ENV_MODE, ENV_ROOT, _read_mountinfo, detect
 from .errors import BackendFailed, PathRefused, RepoPathsInvalid, RootInvalid, UsageError
 from .paths import mount_fstype, normalized_absolute
 
-CONFIG_NAME = "repo-paths.toml"
+CONFIG_NAME = "vm-lab.toml"
 SCHEMA = 1
 PLACEHOLDER = "{project}"
 #: Name of the directory cowtree itself keeps in every area root; a repository must not claim it.
@@ -161,7 +161,7 @@ def parse_repo_paths(text: str, source: str = CONFIG_NAME) -> tuple[str, dict[st
 
 
 def find_repo_root(start: str | os.PathLike[str]) -> Path:
-    """The nearest directory at or above *start* that holds ``repo-paths.toml``. *start* is always explicit:
+    """The nearest directory at or above *start* that holds ``vm-lab.toml``. *start* is always explicit:
     this never looks at the current directory by itself."""
     here = Path(os.path.abspath(start))
     if not here.is_dir():
@@ -173,7 +173,7 @@ def find_repo_root(start: str | os.PathLike[str]) -> Path:
 
 
 def load_repo_paths(repo_root: str | os.PathLike[str]) -> RepoPaths:
-    """Load ``<repo_root>/repo-paths.toml``. The CoW mirror folder is the file's own ``repo`` key, never derived from
+    """Load ``<repo_root>/vm-lab.toml``. The CoW mirror folder is the file's own ``repo`` key, never derived from
     the directory name, so a worktree resolves to the same CoW folders as the main checkout."""
     root = Path(os.path.abspath(repo_root))
     config = root / CONFIG_NAME

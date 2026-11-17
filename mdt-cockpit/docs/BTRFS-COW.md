@@ -7,7 +7,7 @@ copy-on-write filesystem.
 
 *Status: in use. The reference host mounts the area and binds `<mount>/<user>` into the vbpub devcontainer as
 `MDT_COW_ROOT`. The checkout stays on the container's ordinary filesystem; selected folders of it are CoW
-subvolumes mirrored below `$MDT_COW_ROOT/<repo-name>/` and found through the repo-root `repo-paths.toml` (MDT-044).
+subvolumes mirrored below `$MDT_COW_ROOT/<repo-name>/` and found through the repo-root `vm-lab.toml` (MDT-044).
 Evidence tags:* **[M]** *measured on the reference host (gstammtisch, 2026-10-22),* **[R]** *verified on a
 scratch VM (Debian 13, kernel 7.2.9, btrfs-progs 7.1, 2026-10-22; results hold for those versions),* **[K]**
 *documented behaviour of btrfs, systemd or the kernel, not re-verified here,* **[T]** *assumption still untested.
@@ -32,7 +32,7 @@ host's is `scripts/gstammtisch-guide/BTRFS-ROLLOUT.md`.
 | Snapshot unit | A **subvolume** | Only subvolumes can be snapshotted, made read-only or deleted atomically. Directories are the namespace. |
 | Device | Its **own LV or disk**, not a file on the root filesystem | Own journal and transaction stream (section 2.5). A loop file on ext4 couples both filesystems through the ext4 journal. |
 | Where the checkout lives | **On its ordinary filesystem (ext4)**; only selected folders are CoW subvolumes, mirrored at `$MDT_COW_ROOT/<repo-name>/<path>` | The repository never sits on a copy-on-write or compressed filesystem. Reflinks between `downloads/vm-images/` and `<project>/vm-lab/` work because both subvolumes are on the one CoW filesystem. |
-| How tools find those folders | One tracked `repo-paths.toml` in the repo root, read through the cowtree resolver (`libraries/cowtree/repo-path`, `cowtree.repo_paths`) | No script hardcodes a path; with no `MDT_COW_ROOT`, or a folder that does not exist there, the resolver answers with the plain repo path. |
+| How tools find those folders | One tracked `vm-lab.toml` in the repo root, read through the cowtree resolver (`libraries/cowtree/repo-path`, `cowtree.repo_paths`) | No script hardcodes a path; with no `MDT_COW_ROOT`, or a folder that does not exist there, the resolver answers with the plain repo path. |
 | VM files | `<project>/vm-lab/` (compressed subvolume); ISOs in `downloads/iso/`; shared base images in `downloads/vm-images/`; **raw** preferred | Section 4. |
 
 Not covered: moving Docker's data root onto btrfs (overlay2 on ext4 stays; image pulls and builds are write
@@ -221,7 +221,7 @@ property.* Start with plain directories for the namespace levels.
 <mount>/                           top level, root:root 0755, chattr +i while unmounted
   <user>/                          per-user area = MDT_COW_ROOT, <user>:<user> 0750; the ONLY level a container mounts
     .cowtree/                      cowtree's run area: disposable clones, owner manifests, leases (cowtree manages it)
-    <repo-name>/                   one plain directory per repository and per user; mirrors the repo's paths from repo-paths.toml
+    <repo-name>/                   one plain directory per repository and per user; mirrors the repo's paths from vm-lab.toml
       downloads/iso/               subvolume: ISOs, `.sha256` beside each file; compression none
       downloads/vm-images/         subvolume: shared qemu base images, raw preferred; compression zstd; read-only after creation
       <project>/vm-lab/            subvolume per project: per-VM disks, runs, OVMF vars, serial logs; zstd
@@ -233,9 +233,9 @@ property.* Start with plain directories for the namespace levels.
 Why this shape:
 
 - **The checkout stays on ext4; the CoW area mirrors selected paths of it.** `$MDT_COW_ROOT/<repo-name>/<path>` holds the
-  folder that `<checkout>/<path>` would be, for exactly the paths the repo's `repo-paths.toml` gives a `cow` location.
+  folder that `<checkout>/<path>` would be, for exactly the paths the repo's `vm-lab.toml` gives a `cow` location.
   The set is per user (each user has their own `MDT_COW_ROOT`) and per repo (the `<repo-name>` level, the top-level `repo` key of
-  `repo-paths.toml`, not the checkout's directory name, so every worktree shares the main checkout's CoW folders). The repository's tracked placeholders stay in the checkout; nothing is mounted over it.
+  `vm-lab.toml`, not the checkout's directory name, so every worktree shares the main checkout's CoW folders). The repository's tracked placeholders stay in the checkout; nothing is mounted over it.
 - **Tools ask the resolver, never a hardcoded path.** `libraries/cowtree/repo-path NAME [--project DIR]` (shell) or
   `cowtree.repo_paths` (Python) answers `$MDT_COW_ROOT/<repo-name>/<cow>` when `MDT_COW_ROOT` names a valid btrfs area
   and that folder exists, and `<repo root>/<repo>` otherwise; `--provision` creates the subvolume with its declared
@@ -267,7 +267,7 @@ Why this shape:
 | `<repo>/assay/base` (snapshots carry it) | `compression zstd` | sources, venvs, caches; on a slow disk fewer bytes written wins |
 | `<repo>/worktrees/<instance-id>` | `compression zstd` | compressible per-worktree scratch |
 
-Declare these paths in the repo's `repo-paths.toml` (`compression` is one of its keys) and let `libraries/cowtree/repo-path
+Declare these paths in the repo's `vm-lab.toml` (`compression` is one of its keys) and let `libraries/cowtree/repo-path
 NAME --provision` create them. By hand:
 
 ```bash
@@ -391,7 +391,7 @@ absolute paths need the same check. [T for non-venv caches]
 A worktree-creating tool can make `$MDT_COW_ROOT/<repo>/worktrees/<instance-id>` a subvolume, link it into the
 worktree as an ignored `.store` symlink, export its path, and `btrfs subvolume delete` it together with the
 worktree (one fast call instead of `rm -rf`: 0.01 s for a small one [R]). The symlink dangles afterwards [R], so
-remove it too. A worktree resolves the shared paths through its tracked copy of `repo-paths.toml` and so shares
+remove it too. A worktree resolves the shared paths through its tracked copy of `vm-lab.toml` and so shares
 the main checkout's CoW folders; only its plain fallback stays inside the worktree. Snapshotting declared gitignored paths into a worktree is the separate COW-BL-01/02 declaration
 and does not use this table.
 
@@ -504,7 +504,7 @@ Checks only a real deployment can make:
 - **Layout on the reference host (created 2026-11-17, user `vb`):** the checkout is on ext4 and the subvolumes mirror its paths
   below `$MDT_COW_ROOT/<repo-name>/`: `downloads/iso` (no compression), `downloads/vm-images` and
   `scripts/debian-rollback/vm-lab` (both zstd). A reflink across these subvolumes shares extents (checked). Further projects and
-  repos add their own subvolumes the same way: one set per user, per repo, declared in that repo's `repo-paths.toml`.
+  repos add their own subvolumes the same way: one set per user, per repo, declared in that repo's `vm-lab.toml`.
 - Move the consumers onto the resolver (MDT-044 follow-up list: the `vm-lab` project, truenas and tnt, debian-install-v2, the
   netcup, pwmcp, zswap and io-governor docs) and move the files that predate the subfolders (the flat `downloads/` TrueNAS ISOs and
   Debian cloud image) into `downloads/iso` and `downloads/vm-images` with them. Projects that still use `<project>/artifacts/vm-lab`

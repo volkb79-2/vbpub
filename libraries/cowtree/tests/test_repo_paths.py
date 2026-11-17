@@ -158,7 +158,7 @@ def test_load_refuses_a_missing_file_and_an_invalid_one_naming_the_file(tmp_path
     broken = write_repo(tmp_path, text="schema = 7\n", name="broken")
     with pytest.raises(RepoPathsInvalid, match="schema must be 1") as caught:
         load_repo_paths(broken)
-    assert str(broken / "repo-paths.toml") in str(caught.value)
+    assert str(broken / "vm-lab.toml") in str(caught.value)
 
 
 def test_root_discovery_walks_up_from_a_nested_directory_and_from_a_file(tmp_path):
@@ -175,7 +175,7 @@ def test_root_discovery_takes_the_nearest_config_and_never_the_current_directory
     outer = write_repo(tmp_path, name="outer")
     inner = outer / "inner"
     inner.mkdir()
-    (inner / "repo-paths.toml").write_text(REPO_PATHS_TEXT, encoding="utf-8")
+    (inner / "vm-lab.toml").write_text(REPO_PATHS_TEXT, encoding="utf-8")
     other = write_repo(tmp_path, name="other")
     monkeypatch.chdir(other)
     assert find_repo_root(inner / "deep") == inner
@@ -185,10 +185,10 @@ def test_root_discovery_takes_the_nearest_config_and_never_the_current_directory
 def test_root_discovery_without_any_config_is_a_usage_error(tmp_path, monkeypatch):
     # A config name no real directory above the temporary one can hold, so the result never depends on where the
     # temporary directory sits.
-    monkeypatch.setattr(repo_paths, "CONFIG_NAME", "repo-paths-never-present.toml")
+    monkeypatch.setattr(repo_paths, "CONFIG_NAME", "vm-lab-never-present.toml")
     nowhere = tmp_path / "nowhere"
     nowhere.mkdir()
-    with pytest.raises(UsageError, match="no repo-paths-never-present.toml at or above"):
+    with pytest.raises(UsageError, match="no vm-lab-never-present.toml at or above"):
         find_repo_root(nowhere)
 
 

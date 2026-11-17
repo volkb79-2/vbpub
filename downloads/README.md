@@ -11,7 +11,7 @@ refetching.
 | (top level) | other fetched inputs | |
 
 **Ask the resolver, never hardcode these folders.** Where each one really lives is
-declared in `repo-paths.toml` in the repo root (names `iso`, `vm-images`, `downloads`):
+declared in `vm-lab.toml` in the repo root (names `iso`, `vm-images`, `downloads`):
 `libraries/cowtree/repo-path iso` (shell) or `cowtree.repo_paths` (Python) prints the
 path. It is the plain folder here, or, when `MDT_COW_ROOT` names a btrfs CoW area that
 holds the folder, the subvolume `$MDT_COW_ROOT/<repo-name>/downloads/iso` (and so on);

@@ -41,7 +41,7 @@ def test_public_vocabulary_is_documented():
         "volume-opt=o=",
         "repair_entry",
         "tree-invalid",
-        "repo-paths.toml",
+        "vm-lab.toml",
         "repo_paths",
         "repo-path",
         "cowtree path",

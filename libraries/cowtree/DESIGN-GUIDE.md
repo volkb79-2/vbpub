@@ -142,7 +142,8 @@ those runs.
 
 Where ISOs, base images and VM state live used to be hardcoded in each script (`downloads/...`,
 `<project>/artifacts/vm-lab`), so moving one folder onto the CoW filesystem meant editing every consumer.
-One tracked `repo-paths.toml` in the repo root now names each shared path and says which of them also have a CoW
+One tracked `vm-lab.toml` in the repo root (named after the vm-lab project, which owns ISOs, base images and VM state;
+another project declares its own paths in its own tables of the same file only if it needs the resolver) now names each shared path and says which of them also have a CoW
 location; every consumer asks the resolver. The checkout stays on its ordinary filesystem (a repository on a
 copy-on-write or compressed filesystem was rejected), and only selected folders are subvolumes, mirrored at
 `$MDT_COW_ROOT/<repo-name>/<path>`: one set per user (each has their own `MDT_COW_ROOT`) and per repo (the

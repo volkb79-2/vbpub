@@ -32,7 +32,7 @@ class DestinationExists(PathRefused):
 
 
 class RepoPathsInvalid(PathRefused):
-    """``repo-paths.toml`` is malformed or breaks one of its validation rules (status 5, like any refused path)."""
+    """``vm-lab.toml`` is malformed or breaks one of its validation rules (status 5, like any refused path)."""
 
 
 class UsageError(CowError):
