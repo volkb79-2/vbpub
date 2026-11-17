@@ -1461,9 +1461,33 @@ def restricted_path(*names: str) -> str:
 
 
 class TestJudgeEndToEnd:
-    """The lane really runs, in a `PATH` that carries no assay and no install
-    path — the interim hostobs route's own reproduction, as acceptance rather
-    than as an argv pin."""
+    """Mechanism, end to end: the assembled inner script really runs, in a
+    `PATH` that carries no assay, no `pip` and no console script.
+
+    WHAT THIS PROVES. The wiring this package adds is exercised, not described:
+    the read-only mount destinations and the `PYTHONPATH` entries, the
+    `find_spec` origin guard and its reserved refusal code, the served verdict's
+    own totals being read back from the artifact, and the negative probe turning
+    FAIL when the lane loses the test it runs. The lane image's `PATH` genuinely
+    contains no way to reach a judge, so an assay that runs here can only be the
+    mounted source.
+
+    WHAT THIS DOES **NOT** PROVE. The judge is `_minimal_judge` -- a STAND-IN,
+    not Assay (see its docstring): it reads a lane file, runs the lane command and
+    writes a verdict-shaped artifact, so no oracle here claims assay's judging
+    semantics (floors, R-levels, the real verdict schema). Nor is Docker
+    involved: `fake_docker_running_lane` executes the inner script on the HOST,
+    so a `:ro` in the argv is a string here, not a kernel mount -- Docker's own
+    read-only enforcement, and the real Assay source importing under a real
+    image, are unproven by construction and filed as RG-286 for a real-image
+    smoke before `hostobs` migrates. (The round-1 cut of this docstring said the
+    class was "the interim hostobs route's own reproduction, as acceptance",
+    which overclaimed exactly those two things.)
+
+    Round 3 also made the guard's own interpreter controllable: the guard runs
+    with `-S` and a scrubbed environment, so this class's judgement does not
+    depend on what the RUNNING interpreter has installed.
+    """
 
     # The lane's own `PATH`: exactly these tools exist in it. No `pip`, no
     # installed `assay` entry point -- an assay that runs here can only come
