@@ -830,6 +830,16 @@ def _host_docker_gid() -> str | None:
     return str(gid) if gid > 0 else None
 
 
+def _group_add_default(dc_dir: Path, key: str) -> str | None:
+    """The numeric default of `${localEnv:<key>:<gid>}` in ``<dc_dir>/devcontainer.json``, or None."""
+    try:
+        text = (dc_dir / "devcontainer.json").read_text(encoding="utf-8")
+    except OSError:
+        return None
+    match = re.search(r"\$\{localEnv:" + re.escape(key) + r":([0-9]+)\}", text)
+    return match.group(1) if match else None
+
+
 def derive_legacy_endpoints(cgprofile_dir: Path = LEGACY_CGPROFILE_DIR) -> dict[str, str]:
     """Facts of a host whose daemons run but publish no endpoint record, read from the live sockets.
 
@@ -938,8 +948,12 @@ def deliver_host_endpoints(
             file=sys.stderr,
         )
     for key in ENDPOINT_GROUP_ADD_KEYS:
-        # A GID the Docker group `--group-add ${localEnv:DOCKER_GID}` already adds needs no second entry.
-        covered = published.get(key) in (environ.get("DOCKER_GID"), environ.get("MDT_HOST_DOCKER_GID"))
+        # A GID the Docker group `--group-add ${localEnv:DOCKER_GID}` already adds needs no second entry, and
+        # neither does one the devcontainer.json itself names as the `${localEnv:KEY:<gid>}` default.
+        covered = (
+            published.get(key) in (environ.get("DOCKER_GID"), environ.get("MDT_HOST_DOCKER_GID"))
+            or _group_add_default(dc_dir, key) == published.get(key)
+        )
         if key in published and environ.get(key) != published[key] and not covered:
             print(
                 f"[mdt-bootstrap] WARN {key}={published[key]} is published, but this session has "

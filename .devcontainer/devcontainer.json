@@ -231,7 +231,9 @@
     // session (the pam_env /etc/environment block; restart the VS Code Remote-SSH server after it is written),
     // because a numeric group cannot travel in an env file. Unset means the inert group 65534 and a bootstrap
     // warning; the Docker group above already covers hosts whose sockets are group docker.
-    "--group-add", "${localEnv:CGPROFILE_CONTROL_GID:65534}",
+    // This host's cgprofile-control GID (published in /etc/host-endpoints.env) is the default, so a VS Code
+    // server that started before the record existed still adds the right group. The template keeps 65534.
+    "--group-add", "${localEnv:CGPROFILE_CONTROL_GID:989}",
     "--group-add", "${localEnv:TOPOS_OBSERVE_GID:65534}",
 
     // topos observe socket directory. The configured endpoint is normally

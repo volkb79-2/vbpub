@@ -1051,6 +1051,23 @@ def test_endpoint_delivery_warns_when_the_session_lacks_a_published_socket_group
     assert "CGPROFILE_CONTROL_GID=994 is published" not in capsys.readouterr().err
 
 
+def test_endpoint_delivery_does_not_warn_when_devcontainer_json_defaults_to_the_published_gid(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    record = tmp_path / "host-endpoints.env"
+    record.write_text(ENDPOINT_RECORD, encoding="utf-8")
+
+    (tmp_path / "devcontainer.json").write_text(
+        '{"runArgs": ["--group-add", "${localEnv:CGPROFILE_CONTROL_GID:994}"]}', encoding="utf-8")
+    bootstrap.deliver_host_endpoints(tmp_path, record, {})
+    assert "CGPROFILE_CONTROL_GID=994 is published" not in capsys.readouterr().err
+
+    (tmp_path / "devcontainer.json").write_text(
+        '{"runArgs": ["--group-add", "${localEnv:CGPROFILE_CONTROL_GID:65534}"]}', encoding="utf-8")
+    bootstrap.deliver_host_endpoints(tmp_path, record, {})
+    assert "CGPROFILE_CONTROL_GID=994 is published" in capsys.readouterr().err
+
+
 def test_endpoint_delivery_never_fails_the_bootstrap_when_the_directory_is_unwritable(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -1072,7 +1089,12 @@ def test_every_devcontainer_file_hands_the_generated_endpoint_file_and_socket_gr
         ), path
         groups = [run_args[i + 1] for i, a in enumerate(run_args) if a == "--group-add"]
         for key in bootstrap.ENDPOINT_GROUP_ADD_KEYS:
-            assert "${localEnv:" + key + ":65534}" in groups, (path, key)
+            if path == live and key == "CGPROFILE_CONTROL_GID":
+                # The controller host's own config may default to its real GID (a stale VS Code server
+                # environment then still adds the right group); the shipped templates keep the inert 65534.
+                assert any(re.fullmatch(r"\$\{localEnv:" + key + r":[0-9]+\}", g) for g in groups), (path, key)
+            else:
+                assert "${localEnv:" + key + ":65534}" in groups, (path, key)
 
 
 def test_the_live_bootstrap_script_is_the_template_script() -> None:
