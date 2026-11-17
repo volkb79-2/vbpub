@@ -39,6 +39,22 @@ def _declared_ai_tools() -> dict[str, str]:
     return tools
 
 
+def _disabled_ai_tools() -> set[str]:
+    """Declared tools the build leaves out: INSTALL_<TOOL> is false in the environment or in cmru.toml [env]."""
+    import os
+    import tomllib
+
+    configured = tomllib.loads((harness.ROOT / "cmru.toml").read_text(encoding="utf-8")).get("env", {})
+    off = {"0", "false", "no", "off"}
+    disabled = set()
+    for tool in _declared_ai_tools():
+        switch = f"INSTALL_{tool.upper()}"
+        value = os.environ.get(switch, configured.get(switch))
+        if value is not None and str(value).strip().lower() in off:
+            disabled.add(tool)
+    return disabled
+
+
 def _declared_first_party() -> list[str]:
     names = []
     for raw in (harness.ROOT / "pip" / "wheels.list").read_text(encoding="utf-8").splitlines():
@@ -170,11 +186,21 @@ class Contract:
 
     def test_ai_cli_tools_resolve_to_their_d4_location_and_run(self) -> None:
         commands: list[tuple[str, str, str]] = []
+        disabled = _disabled_ai_tools()
         for tool, mode in _declared_ai_tools().items():
             self.assertIn(mode, MODE_DIRECTORY, f"{tool}: no D4 location is defined for mode {mode!r}")
+            if tool in disabled:
+                continue
             for command in (tool, *EXTRA_COMMANDS.get(tool, ())):
                 commands.append((tool, command, MODE_DIRECTORY[mode]))
         self._check_commands(commands)
+        # A tool the build switches off (INSTALL_<TOOL>=false) must really be absent from the image.
+        for tool in sorted(disabled):
+            for command in (tool, *EXTRA_COMMANDS.get(tool, ())):
+                with self.subTest(tool=tool, command=command, expected="absent"):
+                    result = self.sh(f"command -v '{command}' || echo ABSENT")
+                    self.assertOk(result)
+                    self.assertEqual(result.stdout.strip(), "ABSENT", f"{command} is disabled but present in the image")
 
     def test_first_party_clis_resolve_to_the_primary_venv_and_run(self) -> None:
         commands = [
