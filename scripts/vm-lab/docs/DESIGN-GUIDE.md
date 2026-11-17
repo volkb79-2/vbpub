@@ -131,6 +131,16 @@ when the validated recorder loop is ready to run: refusing a conflicting
 temporary file or failing to import Pillow must not power down a guest that
 this invocation never recorded.
 
+## Two key tables, one set of names
+
+The key table behind `console type` (US-layout ASCII to QEMU key names, in
+`vm_lab_console.py`) and the key table of `libraries/vmscreen` (its `send` verb)
+are deliberately two copies: the VM tool stays a script with no dependencies, and
+vmscreen keeps its own. Both tables must list the same key names. The tests
+cannot compare them mechanically: `libraries/vmscreen/docs/cli-surface.json`
+names the `--keys` option but not the key names, so the rule is stated here and
+checked by review when either table changes (VMS-BL-03).
+
 ## No process killing
 
 The former standalone launcher owned its QEMU process and kept a pidfile so it
@@ -197,8 +207,12 @@ The clone happens before firmware is staged or `runner.json` is written, and
 only on a first start; `--resume` reuses `disk.raw`. The copy is written to
 `.disk.raw.partial` (`.<name>.raw.partial` for a promote) under umask 0077 and
 renamed onto its final name only after `cp` succeeded and the size matches, and
-the temporary file is removed on any failure including Ctrl-C, so the final
-name is either complete or absent and never exists with the base's mode.
+the temporary file is removed on any failure that raises an exception,
+including Ctrl-C, so the final name is either complete or absent and never
+exists with the base's mode. SIGTERM is not turned into an exception: a start or
+promote killed by it leaves the hidden `.<name>.partial` behind, a retry refuses
+it, and the operator removes it by hand (the refusal says so). Handling SIGTERM
+in the copy was rejected as machinery for a rare case.
 A full copy of a large base holds the start admission lock for its whole
 duration (up to the one-hour copy timeout), so another `start` is refused as
 "in progress" meanwhile; a reflink is instant and does not.
@@ -220,7 +234,10 @@ snapshot at best and a torn image at worst. The check looks for any running
 managed container, of any profile, whose state label matches the state
 directory; a Docker failure while asking is an error, not "stopped". The check
 and the copy run under the same admission lock a `start` takes, so a
-`start --resume` cannot boot the disk in between. Promotion
+`start --resume` cannot boot the disk in between. The lock is held until the
+promotion is finished, that is also while the copied file is hashed (a read of
+the whole image), so every `start` is refused as "in progress" for that time;
+the lock is simple and the wait is the cost of a stable check. Promotion
 reflinks `disk.raw` to `<dest>/<name>.raw`, hashes the final file (streamed in
 1 MiB chunks, so the digest is of the bytes that were written), writes
 `<name>.raw.sha256` in `sha256sum` format and sets both to 0444. It refuses to
