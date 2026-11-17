@@ -105,10 +105,12 @@ a btrfs data area.
 Per the repository rule, a run disturbed by something outside the test is
 inconclusive and repeated, not counted for or against a variant.
 
-**Decision rule, proposed.** ZFS stays a candidate if the adaptive variant V2
-keeps memory pressure during step 6 in the same range as btrfs and no step is
-slower by more than a margin the operator sets after seeing the baseline
-spread. To be confirmed before the run.
+**Decision rule (operator, 2026-11-17).** ZFS stays a candidate if no workload
+step is more than 20% slower than btrfs (median of three runs, beyond the
+baseline spread measured on V0). Memory pressure (PSI, ARC, swap, zswap) is
+recorded for every variant but is **not** part of the verdict: it is hard to
+measure comparably, so the data is kept for later. On a tie btrfs stays the
+default (in the kernel, no module to rebuild).
 
 ### Host lease
 

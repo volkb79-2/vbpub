@@ -94,12 +94,12 @@ should be delegated to an implementer inside a brief.
 
 | # | Item | Blocks | Default if no answer |
 |---|---|---|---|
-| OP1 | Install `vmscreen` in the devcontainer (editable from the repo, or through the release path, backlog VMS-BL-01) | VML-04 | none; the package cannot verify its serial reader without it |
+| OP1 | Install `vmscreen` in the devcontainer (editable from the repo, or through the release path, backlog VMS-BL-01) | VML-04 | **Done 2026-11-17** (editable in `~/.venvs/vm-lab`); later a wheel with the vm-lab package in the image (track P) |
 | OP2 | Enable pwmcp's OCR sidecar (`pwmcp.ocr.enabled`) | OCR fallback in VML-04, corpus in VML-06 | proceed with serial only, mark OCR untested |
-| OP3 | Start real guests on the shared host, and download Debian and Grml images (where to cache them) | all of track B onward | none |
-| OP4 | Project name and final location (Q8) | DR-30 naming, the `.deb` name | keep `debian-rollback` as working name |
-| OP5 | Confirm the E2 decision rule and its margin (F15) | DR-59 | run and report without a verdict |
-| OP6 | Lease timing for r1002; tell the other controller session | track E | wait for "lease start" |
+| OP3 | Start real guests on the shared host, and download Debian and Grml images (where to cache them) | all of track B onward | **Granted 2026-11-17 ("any time")**; ISOs go to the CoW `downloads/iso`; still missing: a QEMU image and the Docker network (see state notes) |
+| OP4 | Project name and final location (Q8) | DR-30 naming, the `.deb` name | **Location decided 2026-11-17: stay in `scripts/debian-rollback/` for now.** Product name proposed `snapboot`, not yet accepted |
+| OP5 | Confirm the E2 decision rule and its margin (F15) | DR-59 | **Decided 2026-11-17:** ZFS stays a candidate if no workload step is more than 20% slower than btrfs; memory pressure is recorded but not used for the verdict |
+| OP6 | Lease timing for r1002; tell the other controller session | track E | **Operator 2026-11-17: r1002 and v1001 may be used for tests at any time (controller offline).** Before using r1002 note that iogovmon's 48 h acceptance there (installed 2026-11-15 14:38Z, +12 h passed, +48 h check due 2026-11-17 14:38Z, not reported) is still open; a reinstall ends it. Identity check (Netcup API) comes before any writing SSH |
 | OP7 | Accept F11 (standard-library tool as a `.deb`) | DR-30 | follow the recommendation, flagged |
 | OP8 | Fix job for TN-15 and TN-16 (TrueNAS lanes red on `main`) | nothing here; it hides new TrueNAS failures behind three known ones | leave as is |
 
