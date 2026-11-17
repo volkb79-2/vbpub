@@ -250,10 +250,23 @@ reflinks `disk.raw` to `<dest>/<name>.raw`, hashes the final file (streamed in
 overwrite and removes both files if any step fails, so a half-promoted base
 cannot be mistaken for a good one.
 
-## Screen text: two engines, one poll loop
+## Screen text: three engines, one poll loop
 
 `console text` and `console wait-for-text` (module `vm_lab_text.py`) read the
-screen as text with two engines, because no single reader covers every screen:
+screen as text with three engines, because no single reader covers every screen:
+
+- **serial** reads `<state>/serial.log` with `vmscreen text --source serial`.
+  **Why it is the exact-text source of UEFI guests:** OVMF shows a graphical
+  framebuffer (GOP), never the VGA text buffer, so the vmscreen VGA engine
+  finds no text and OCR needs a sidecar; but a guest with its console on
+  ttyS0 prints everything it says, exactly, into the serial log. vmscreen
+  already renders the stream (escape sequences stripped, CR/BS applied), so the
+  VM tool adds no terminal handling of its own. It applies only while the log
+  exists (started with `--serial-console`); the file alone is not enough for
+  `auto`, which also needs text in it (after the mark): an empty result means
+  "not yet", never a wait failure by itself, so the next engines get their turn.
+  vmscreen connects to QMP for every `text` call, serial included, so the guest
+  must be running.
 
 - **vmscreen** reads the VGA text buffer through QMP and cross-checks it
   against a screendump, so the text is exact, not recognised. It applies only
@@ -265,10 +278,28 @@ screen as text with two engines, because no single reader covers every screen:
   (UEFI GOP, framebuffer console, themed GRUB) but is only as good as the OCR,
   so a pattern that triggers a keystroke should be a distinctive line.
 
-`auto` tries vmscreen first and uses OCR where vmscreen reports that no exact
-source applies or that its text is unverified. If vmscreen cannot be started
-at all, `auto` says so once on stderr and uses OCR only; with
-`--engine vmscreen` that is an error.
+**Engine order.** `auto` tries serial first (exact and cheap: a file read), then
+vmscreen, then OCR (the only one that needs a sidecar and a screendump). It uses
+OCR where vmscreen reports that no exact source applies or that its text is
+unverified. If vmscreen cannot be started at all, `auto` says so once on stderr
+and uses OCR only (the serial engine also runs through vmscreen, so it is off
+too); with `--engine vmscreen` or `--engine serial` that is an error. When the
+log exists but is still quiet and OCR cannot work, `auto` returns the empty
+serial text with one stderr note (vmscreen's own last-resort rule) so a wait
+keeps polling.
+
+**Mark semantics.** A serial log accumulates across boots and resets, so a wait
+for `login:` can be satisfied by the previous boot. `console mark` prints
+vmscreen's mark of the log's current end (offset plus inode and head/tail
+fingerprints, so a truncated, replaced or rewritten log is refused rather than
+re-read from a wrong offset); `--since-mark` passes it to every serial read.
+A `wait-for-text` without a mark takes one at its start, before its first read
+(a failing implicit mark is an error, never a silent unmarked wait), so it sees
+only text written after the wait began. `--since-start` was deliberately not
+added: the implicit mark is that, and a second spelling would only invite a
+disagreement about "start". Only the serial engine can honour a mark; the others
+ignore an explicit one with one stderr note. A mark taken after the action it
+should precede loses that action's early output: take it first.
 
 **Why vmscreen is a subprocess, and where it comes from.** The VM tool is a
 script with no dependencies; making it import vmscreen would give it

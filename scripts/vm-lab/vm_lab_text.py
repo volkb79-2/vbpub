@@ -59,8 +59,9 @@ SINCE_MARK_HELP = (
 
 ENGINES = ("auto", "serial", "vmscreen", "ocr")
 SERIAL_LOG_FILENAME = "serial.log"
-# A vmscreen mark: OFFSET.INODE.HEADLEN.HEADHASH.TAILLEN.TAILHASH, ASCII digits, hex and dots.
-MARK_TOKEN_PATTERN = re.compile(r"[0-9A-Fa-f]+(?:\.[0-9A-Fa-f]+)*")
+# A vmscreen mark: OFFSET.INODE.HEADLEN.HEADHASH.TAILLEN.TAILHASH (decimal numbers and hex hashes,
+# as `vmscreen mark` prints it; vmscreen rejects any other shape with exit 2).
+MARK_TOKEN_PATTERN = re.compile(r"[0-9]+\.[0-9]+\.[0-9]+\.[0-9a-f]+\.[0-9]+\.[0-9a-f]+")
 OCR_TEMP_FILENAME = ".vm-lab-console-text.png"
 QEMU_STATE_DIR = "/state"
 MAX_CONSECUTIVE_READ_FAILURES = 10
@@ -146,11 +147,11 @@ def _stderr_note(message: str) -> None:
 
 
 def validate_mark(token: str) -> str:
-    """A mark is what ``console mark`` printed: ASCII hex digits joined by dots; anything else is a usage error."""
+    """A mark is what ``console mark`` printed (six dot-separated fields); anything else is a usage error."""
     if not MARK_TOKEN_PATTERN.fullmatch(token):
         raise TextUsageError(
             f"--since-mark {token!r} is not a mark token; take one with `console mark` "
-            "(ASCII hex digits and dots, as vmscreen prints it)"
+            "(OFFSET.INODE.HEADLEN.HEADHASH.TAILLEN.TAILHASH)"
         )
     return token
 

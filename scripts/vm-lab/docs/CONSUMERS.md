@@ -312,15 +312,71 @@ consecutive failures.
 ## Wait for text on the screen
 
 `console text` prints what the screen shows; `console wait-for-text` polls it.
-Two readers exist and the verbs pick one per poll (`--engine auto`):
+Three readers exist and the verbs pick one per poll (`--engine auto`, in the order of
+this table):
 
 | Reader | Reads | Needs |
 | --- | --- | --- |
+| `serial` (exact) | What the guest printed to its serial console (`<state-dir>/serial.log`), with escape sequences and CR already rendered. Works for every guest whose console is on ttyS0, UEFI included (`--display-device std` under UEFI is a graphical framebuffer with no VGA text). | The guest started with `--serial-console`, a guest console on `ttyS0` (Debian cloud images: yes), and vmscreen installed as for the next row. Run the launcher with a Python that has Pillow only if you also use `console record`. |
 | `vmscreen` (exact) | The VGA text buffer of an 80+ column text mode: SeaBIOS and any boot loader that stays in text mode (a text-mode GRUB or syslinux menu). Not Linux's framebuffer console. | `--display-device std` (QEMU's standard VGA) and a guest that is in a text mode; vmscreen installed (`pip install` of `libraries/vmscreen`, an editable install is enough; it does not run from a bare source tree), as a `vmscreen` command on PATH or as a module of the Python that runs the VM tool. |
 | `ocr` (recognised) | Any screen: UEFI GOP, a graphical GRUB theme, a framebuffer console, ZFSBootMenu, graphical installers. | `pwmcp` on PATH and pwmcp's OCR sidecar enabled (`pwmcp.ocr.enabled = true`). |
 
+Which reader for which guest:
+
+| Guest | Use | Why |
+| --- | --- | --- |
+| UEFI Linux with a serial console (Debian cloud image) | `serial` (what `auto` picks) | exact; the display is graphical, so VGA finds nothing |
+| BIOS guest in a text-mode boot menu | `vmscreen` | the VGA text buffer is exact; `auto` uses it when the serial log is absent or quiet |
+| A graphical screen with no serial output (installer GUI, GOP menu) | `ocr` | only a screendump exists |
+
+The serial reader sees only what the guest wrote to the serial port: nothing
+about a menu drawn on the graphical display, and nothing from a guest whose
+console is not on `ttyS0`. `console sendkey`, `console type` and the recorder
+send keys to the virtual keyboard, which feeds the graphical console (tty0),
+not the serial login: a Return sent that way changes the screen, not the
+serial log. A log accumulates across boots and resets, so use marks.
+
+**Marks: only text written after a point.** `console mark` prints a token for
+the current end of the serial log (one line on stdout; it is vmscreen's mark, so
+a log that was truncated or replaced since is refused instead of silently
+re-read). `--since-mark TOKEN` on `console text` and `console wait-for-text`
+limits the serial reader to text after it. A `wait-for-text` without
+`--since-mark` takes an implicit mark at its start: it sees only text written
+after the wait began (there is no `--since-start`), so `login:` from the
+previous boot cannot satisfy it. Take the mark *before* the action whose output
+you wait for, because text written between the action and a later mark is lost
+to the wait.
+
+Worked example: wait for login on a UEFI guest, then reset and wait for the next boot.
+
+```sh
+VM=$MDT_COW_ROOT/vbpub/scripts/<project>/vm-lab/deb1   # a CoW subvolume; empty at first start
+S="--name deb1 --state-dir $VM"
+VMLAB="python3 scripts/vm-lab/vm_lab.py"
+$VMLAB start --name deb1 --state-dir "$VM" --base-disk "$BASE.raw" \
+  --ovmf-code /usr/share/OVMF/OVMF_CODE_4M.fd --ovmf-vars /usr/share/OVMF/OVMF_VARS_4M.fd \
+  --memory-mib 1024 --cpus 2 --display-device std --serial-console
+
+MARK=$($VMLAB console mark $S)                      # the log's end right now
+$VMLAB console wait-for-text $S 'login:' --since-mark "$MARK" --timeout 240
+# exit 0: "localhost login:" appeared after the mark (about 40 s under TCG)
+$VMLAB console text $S --engine serial              # the whole log, rendered
+
+MARK=$($VMLAB console mark $S)                      # before the action
+$VMLAB console reset $S
+$VMLAB console wait-for-text $S 'Linux version [0-9]' --since-mark "$MARK" --timeout 240
+$VMLAB console wait-for-text $S 'login:' --timeout 240   # implicit mark at its start
+case $? in 0) echo booted ;; 3) echo "no login" ;; *) echo error ;; esac
+```
+
+With `auto` and an empty or quiet log (nothing after the mark yet) the serial
+reader reports "not yet" and `auto` tries the VGA reader and OCR; if those
+cannot work either, the read returns the empty serial text with one stderr note
+and the wait keeps polling until `--timeout` (exit 3). Force `--engine serial`
+for a wait that must never be satisfied by anything but the serial log.
+
 Choose the display device for the reader you rely on: exact text needs a VGA
-text mode (BIOS boot with `--display-device std`); OCR works with either
+text mode (BIOS boot with `--display-device std`) or a serial console; OCR works with either
 device but a larger, plainer font reads better. OCR text is never exact, so
 match a distinctive line, and treat a missing match as "unknown", not "absent".
 `auto` uses vmscreen while it applies and OCR otherwise; it says once on
