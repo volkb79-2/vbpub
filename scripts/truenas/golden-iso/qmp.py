@@ -116,7 +116,7 @@ def ppm_to_png(source: bytes) -> bytes:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--socket", default=None, help="QMP Unix socket (default: qmp.sock in the golden source VM's "
-                        "folder of this project's vm-lab/ folder, resolved from vm-lab.toml)")
+                        f"folder of this project's vm-lab/ folder, resolved from {repo_paths_access.CONFIG_NAME})")
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("status", help="query VM status")
     sub.add_parser("powerdown", help="request an ACPI guest shutdown")

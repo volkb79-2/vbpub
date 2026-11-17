@@ -1,6 +1,7 @@
 """repo_paths_access: the one place scripts/truenas asks vm-lab.toml for its ISO, image and VM-state folders (RP-03)."""
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import pytest
@@ -29,10 +30,10 @@ repo = "downloads"
 
 @pytest.fixture
 def plain_repo(tmp_path, monkeypatch):
-    """A tmp repository root with its own vm-lab.toml and no CoW environment."""
+    """A tmp repository root with its own path config and no CoW environment."""
     monkeypatch.delenv("MDT_COW_ROOT", raising=False)
     monkeypatch.delenv("COWTREE_MODE", raising=False)
-    (tmp_path / "vm-lab.toml").write_text(CONFIG)
+    (tmp_path / access.CONFIG_NAME).write_text(CONFIG)
     monkeypatch.setattr(access, "REPO_ROOT", tmp_path)
     return tmp_path
 
@@ -48,7 +49,7 @@ def test_plain_mode_answers_the_repo_folders_of_the_config(plain_repo):
 def test_the_checked_in_config_declares_every_name_this_project_asks_for(monkeypatch):
     monkeypatch.delenv("MDT_COW_ROOT", raising=False)
     monkeypatch.delenv("COWTREE_MODE", raising=False)
-    assert access.REPO_ROOT == REAL_ROOT and (REAL_ROOT / "vm-lab.toml").is_file()
+    assert access.REPO_ROOT == REAL_ROOT and (REAL_ROOT / access.CONFIG_NAME).is_file()
     assert access.iso_dir() == REAL_ROOT / "downloads" / "iso"
     assert access.vm_state_root() == REAL_ROOT / "scripts" / "truenas" / "vm-lab"
 
@@ -57,7 +58,7 @@ def test_missing_config_refuses_in_one_line_naming_the_file(tmp_path, monkeypatc
     monkeypatch.setattr(access, "REPO_ROOT", tmp_path)
     with pytest.raises(access.RepoPathsError) as err:
         access.iso_dir()
-    assert str(tmp_path / "vm-lab.toml") in str(err.value) and "\n" not in str(err.value)
+    assert str(tmp_path / access.CONFIG_NAME) in str(err.value) and "\n" not in str(err.value)
 
 
 def test_missing_resolver_refuses_naming_the_module(plain_repo, monkeypatch):
@@ -73,8 +74,8 @@ def test_a_broken_cow_root_is_a_refusal_not_a_silent_plain_answer(plain_repo, mo
 
 
 def test_an_invalid_config_is_a_refusal_naming_the_file(plain_repo):
-    (plain_repo / "vm-lab.toml").write_text("schema = 7\n")
-    with pytest.raises(access.RepoPathsError, match=r"vm-lab\.toml: cannot resolve"):
+    (plain_repo / access.CONFIG_NAME).write_text("schema = 7\n")
+    with pytest.raises(access.RepoPathsError, match=re.escape(f"{access.CONFIG_NAME}: cannot resolve")):
         access.vm_state_root()
 
 

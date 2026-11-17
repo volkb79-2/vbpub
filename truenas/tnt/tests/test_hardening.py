@@ -9,7 +9,7 @@ from urllib.parse import quote
 
 import pytest
 
-from tnt import adapters, profile as prof
+from tnt import _paths, adapters, profile as prof
 from tnt.errors import ProfileError, UnsupportedVersion
 from tnt.menu import walk
 from tnt.profile import SecretEntry
@@ -123,7 +123,7 @@ def test_vm_lab_placeholder_is_committed_and_vm_state_only_comes_through_the_res
         if path == paths_module:
             assert text.count('"vm-lab"') == 1 and "artifacts" not in text, path
             continue
-        text = text.replace("vm-lab.toml", "")  # naming the config file is not naming a VM folder
+        text = text.replace(_paths.CONFIG_NAME, "")  # naming the config file is not naming a VM folder
         assert "vm-lab" not in text and "VM_LAB" not in text.upper().replace("-", "_"), path
         assert "TNT_VM" not in text, path
 

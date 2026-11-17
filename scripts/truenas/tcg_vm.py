@@ -122,8 +122,8 @@ DEFAULT_HTTPS_PORT = PROFILE.forwards[1].host_port
 # on CoW hosts, else <this directory>/vm-lab). The only environment input is MDT_COW_ROOT, read
 # by the resolver. An explicit --state-dir still wins.
 _STATE_DIR_DEFAULTS = (
-    "<name> in this project's vm-lab/ folder (vm-lab.toml), created",
-    "<name> in this project's vm-lab/ folder (vm-lab.toml)",
+    f"<name> in this project's vm-lab/ folder ({repo_paths_access.CONFIG_NAME}), created",
+    f"<name> in this project's vm-lab/ folder ({repo_paths_access.CONFIG_NAME})",
 )
 
 

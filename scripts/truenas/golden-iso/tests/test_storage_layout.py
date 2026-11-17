@@ -47,7 +47,7 @@ def test_missing_vm_lab_toml_is_a_step_refusal_naming_the_file(monkeypatch, tmp_
     monkeypatch.setattr(STEP1.repo_paths_access, "REPO_ROOT", tmp_path)
     assert STEP1.main(["--api-key-expiry-days", "30"]) == 2
     err = capsys.readouterr().err
-    assert str(tmp_path / "vm-lab.toml") in err and len(err.strip().splitlines()) == 1
+    assert str(tmp_path / STEP1.repo_paths_access.CONFIG_NAME) in err and len(err.strip().splitlines()) == 1
 
 
 def test_built_outputs_stay_in_the_project_artifacts_directory() -> None:

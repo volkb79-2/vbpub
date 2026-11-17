@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 import pty
+import re
 import select
 import socket
 import subprocess
@@ -1179,11 +1180,11 @@ def test_default_state_dir_in_plain_mode_is_the_project_vm_lab_placeholder(monke
 
 def test_default_state_dir_refuses_one_line_when_vm_lab_toml_is_missing(monkeypatch, tmp_path, capsys):
     monkeypatch.setattr(tcg_vm.repo_paths_access, "REPO_ROOT", tmp_path)
-    with pytest.raises(tcg_vm.RunnerError, match=r"vm-lab\.toml not found"):
+    with pytest.raises(tcg_vm.RunnerError, match=re.escape(f"{tcg_vm.repo_paths_access.CONFIG_NAME} not found")):
         tcg_vm.default_state_dir("guest")
     assert tcg_vm.main(["status", "--name", "guest"]) == 1
     err = capsys.readouterr().err
-    assert str(tmp_path / "vm-lab.toml") in err and len(err.strip().splitlines()) == 1
+    assert str(tmp_path / tcg_vm.repo_paths_access.CONFIG_NAME) in err and len(err.strip().splitlines()) == 1
 
 
 @pytest.mark.parametrize("verb", ["start", "status"])
@@ -1192,7 +1193,7 @@ def test_state_dir_help_names_the_vm_lab_folder_not_artifacts(verb, capsys):
         tcg_vm.build_parser().parse_args([verb, "--help"])
     text = " ".join(capsys.readouterr().out.split())
     assert "artifacts/vm-lab" not in text
-    assert "vm-lab/ folder (vm-lab.toml)" in text
+    assert f"vm-lab/ folder ({tcg_vm.repo_paths_access.CONFIG_NAME})" in text
 
 
 @pytest.mark.parametrize("name", ["", "../escape", "a/b", ".hidden", "x y"])

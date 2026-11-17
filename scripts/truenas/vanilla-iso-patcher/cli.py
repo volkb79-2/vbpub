@@ -333,7 +333,7 @@ def _create(args: Any, runtime: Any) -> None:
             staged_iso = work / output_iso.name
             if selected_asset is not None:
                 assert input_iso is None and upstream_checksum is not None
-                runtime.output.info(f"Upstream ISO: {selected_asset.iso_url} (cached in the iso folder of vm-lab.toml)")
+                runtime.output.info(f"Upstream ISO: {selected_asset.iso_url} (cached in the iso folder of {upstream.repo_paths_access.CONFIG_NAME})")
                 input_iso, source_sha256 = upstream.ensure_in_iso_dir(
                     selected_asset,
                     expected_sha256=upstream_checksum,

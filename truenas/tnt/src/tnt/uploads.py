@@ -37,7 +37,7 @@ _CHUNK = 1024 * 1024
 def validate_download_name(name: Any) -> str:
     """A relative POSIX path inside an upload folder: no absolute path, no ``..``, no empty or dot segments."""
     if not isinstance(name, str) or not name.strip():
-        raise Refused("upload-source", "name a file inside the iso or vm-images folder of vm-lab.toml")
+        raise Refused("upload-source", f"name a file inside the iso or vm-images folder of {_paths.CONFIG_NAME}")
     if name.startswith("/") or "\\" in name or "\x00" in name:
         raise Refused("upload-source", "only a file name inside the upload folders is accepted; absolute paths are refused")
     if any(part in ("", ".", "..") for part in name.split("/")):
