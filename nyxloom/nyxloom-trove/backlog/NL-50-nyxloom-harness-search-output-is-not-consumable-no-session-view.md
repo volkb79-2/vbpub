@@ -67,3 +67,7 @@ Common options:
 `src/nyxloom/harness_search.py` (view, sort, limit, metadata), the Claude and Codex metadata readers (title, project, branch, sizes). Update the `search` help text, `docs/CLI-REFERENCE.md`, and `docs/CONSUMERS.md` with an example of each view.
 
 ## Updates
+
+**2026-11-17** — 2026-11-17: also missing for finding a session to continue: (1) session title (custom-title / ai-title are in the JSONL: 'vm-lab-pwmcp', 'Debian rollback snapshots with ZFS or Btrfs'); (2) first operator prompt, cwd and mention count per session (368 vs 41 vs 2 told the topical session from incidental ones; five sessions tied on score 4.409); (3) a resume line ('claude --resume <id>', run from the project cwd; codex equivalent) and, for subagent rows, the parent session id; (4) --progress auto writes about 64 INFO lines to stderr when piped; auto should be quiet when stderr is not a tty; (5) extract-sessions does not fill the gap: label is '(interactive session)' for every row, with no title or cwd.
+
+**2026-11-17** — 2026-11-17: card column contract is specified here; drilldown (show verb), intent presets and the index are in the session-finder entry filed the same day; ranking in the cap-saturation entry. Required card columns, all available from the scan pass: title (custom-title/ai-title), project/cwd, date range, operator/assistant turn counts, first operator prompt, best matching snippet with its role, match breadth (operator turns matched/total), subagent count, resume command, current-session flag.

@@ -41,3 +41,5 @@ Tokenisation, record roles and synthetic-record detection belong to the transcri
 `src/nyxloom/harness_search.py` (query and role handling) and the session-extract adapters for synthetic-record markers. Update the search help text and `docs/CLI-REFERENCE.md`.
 
 ## Updates
+
+**2026-11-17** — 2026-11-17: phrase/hyphen handling and the exact-phrase bonus are folded into the ranking entry's contract (item 4); the golden set should include get-py.

@@ -41,3 +41,7 @@ The harness store is owned by Nyxloom's search and extract layer. Per-session da
 `src/nyxloom/harness_search.py`. The index location and format need a line in `docs/DESIGN-GUIDE.md`.
 
 ## Updates
+
+**2026-11-17** — 2026-11-17 measurement: unscoped search took 70-99 s (Codex 1,659 transcripts plus Claude 1,035 files); --client claude took 12 s; extract-sessions claude --json took 30 s for 1,266 sessions. A plain grep -rl over the same Claude store took 14 s. A cache keyed by path+size+mtime would make repeat queries near-instant. The default client set should skip stores that do not exist (see the store-isolation entry).
+
+**2026-11-17** — 2026-11-17: proposed fix is a persistent SQLite FTS5 index (per-record rows + session table, incremental by path/size/mtime/appended payload); it also supplies snippets and field-weighted bm25 for the ranking entry. Details in the session-finder entry.

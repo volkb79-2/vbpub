@@ -159,3 +159,7 @@ Related: [NL-46](NL-46-nyxloom-harness-search-cannot-restrict-hits-to-a-calendar
 [NL-63](NL-63-resolve-project-and-parent-session-side-files.md). Those items own
 date grammar, phrase matching, grouping/presentation, indexing, time bounds,
 extract communication modes, and source-family resolution respectively.
+
+## Updates
+
+**2026-11-17** — 2026-11-17: intent presets (resume/decision/incident/touched/usage) are the user-facing shape of record-level search; see the session-finder entry.

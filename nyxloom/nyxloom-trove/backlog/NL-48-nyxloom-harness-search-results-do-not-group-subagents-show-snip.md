@@ -45,3 +45,5 @@ Search results are the entry point to `extract`. The handoff from "found it" to 
 `src/nyxloom/harness_search.py` (result shape, grouping, snippet), `session_extract` (window selection for `extract`). Update `docs/CONSUMERS.md` and `docs/CLI-REFERENCE.md`.
 
 ## Updates
+
+**2026-11-17** — 2026-11-17 repro: 'debian rollback --word-match all --client claude' returned 555 rows; over 500 were subagent files of one controller session, and the target session ranked 5th under --sort-by best but about 96th under --sort-by date. Subagent rows print the agent id as SESSION ID, which is not resumable and carries no parent id.
