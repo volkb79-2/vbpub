@@ -880,9 +880,18 @@ while the parent's is unset. Until decided, an operator may still set them by ha
   `user_subvol_rm_allowed` option and an fstab entry, and the per-user root inside it.
 - Both must exist **before the devcontainer starts**: Docker refuses a missing bind source, and a source it creates itself is
   root-owned. The checkout is cloned inside the per-user root, and the devcontainer binds that path.
-- `docs/BTRFS-COW.md` §6.3 still prescribes ISOs in `<user>/shared/upstream-iso` and golden disks in `shared/vm-disks/base`.
-  Rewrite it to the project layout: VM files in `<project>/artifacts/vm-lab/`, ISOs in the repo-level `downloads/` (AGENTS.md
-  "Directory conventions and VM files"), CoW through the declared paths.
+- VM layout (operator, 2026-11-17, binding; AGENTS.md "Directory conventions and VM files"): VM files in `<project>/vm-lab/`
+  (a compressed CoW subvolume), ISOs in `<repo root>/downloads/iso/`, shared qemu base images in `<repo root>/downloads/vm-images/`,
+  raw preferred on btrfs, per-VM disks as reflink copies of a base. `docs/BTRFS-COW.md` was rewritten to this layout on 2026-11-17.
+- Follow-up (open): move the projects that still use `<project>/artifacts/vm-lab/` to `<project>/vm-lab/` with a committed
+  placeholder each: `scripts/truenas` (`tcg_vm.py` default state dir, `golden-iso`, `docs/CONSUMERS.md`, README, backlog),
+  `truenas/tnt` (TNT-59 placeholder and the `test_hardening.py` pin that no source relocates VM state), `pwmcp/tools/console-capture`,
+  `scripts/debian-install-v2/testing/vm` and its `.gitignore` comment, `scripts/netcup/CONSUMERS.md`,
+  `zswap-writeback-governor/synthetic/run-synthetic.sh`, and `mdt-cockpit/docs/IO-GOVERNOR-CANDIDATES.md`. `scripts/vm-lab`
+  and `scripts/debian-rollback` already name the new location. The `scripts/vm-lab` tool still builds a qcow2 overlay on a base
+  disk; moving it to raw reflink copies of `downloads/vm-images/` is package VML-06 of `scripts/debian-rollback/docs/WORK-PACKAGES.md`.
+- The checkout in the current devcontainer is on ext4 (`/workspaces/vbpub`), only `MDT_COW_ROOT` is btrfs, so reflinks from
+  `downloads/vm-images/` into `<project>/vm-lab/` do not work there until the checkout itself lives on the CoW filesystem (step 2 below).
 
 **Fresh-host order (to document and to make `check.sh` verify).**
 

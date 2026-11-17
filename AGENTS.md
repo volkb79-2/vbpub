@@ -29,19 +29,25 @@ gets the set injected — so check `ls nyxloom/nyxloom-trove/*.md` yourself.
 | Path | Holds | Notes |
 |---|---|---|
 | `<project>/artifacts/` | build and run outputs | gitignored (`**/artifacts/`); may be a CoW subvolume |
-| `<project>/artifacts/vm-lab/` | VM images, runs, ssh | per project, per checkout |
-| `<repo root>/downloads/` | large immutable inputs (ISOs and the like) | gitignored; `.sha256` next to each file |
+| `<project>/vm-lab/` | the project's VMs: per-VM disks, runs, OVMF vars, serial logs, ssh | per project, per checkout; a compressed CoW subvolume on CoW hosts; contents ignored by its committed placeholder `.gitignore` |
+| `<repo root>/downloads/iso/` | ISOs | gitignored; `.sha256` next to each file; not compressed |
+| `<repo root>/downloads/vm-images/` | shared qemu base images (cloud images, installed golden disks), raw preferred on btrfs | gitignored; `.sha256` next to each file; read-only after creation; shared by every project of the repo |
+| `<repo root>/downloads/` (other) | other large immutable inputs | gitignored; `.sha256` next to each file |
 | `.worktrees/` | git worktrees | inside the checkout; gitignored |
 | `logs/`, `evidence/` | run logs, gate and test evidence | gitignored (`**/logs/`, `**/evidence/`); unclassified, removed with the worktree |
 | `.assay/`, `vol-*` | assay resume state; docker bind-mount host dirs | gitignored; protected state: `ciu worktree rm` and branch pruning need an exact-branch consent flag to discard them |
 | `.run-gate/`, `.cmru/` | tool state (lane history, gate handoff) | gitignored; regenerable |
 
-- Placeholder rule: a conventional directory that holds only ignored content is a committed placeholder: a `README.md` (what it holds, owner, regenerable) plus a `.gitignore` (`*`, `!.gitignore`, `!README.md`), added with `git add -f` because `**/artifacts/` ignores it.
-- Repo conventions, no per-user settings: each project keeps its VM files (installed disks, per-run disks, OVMF vars, serial logs) in `<project dir>/artifacts/vm-lab/` (per-VM `<vm-name>/` directories and/or shared `images/`, `runs/<run>/`, `ssh/` beside them), and large shared downloads (ISOs with their `.sha256`) in `<repo root>/downloads/`. Both are gitignored contents inside committed placeholder directories (a `README.md` plus a `.gitignore`, force-added), so the folders exist after a fresh clone.
+- Placeholder rule: a conventional directory that holds only ignored content is a committed placeholder: a `README.md` (what it holds, owner, regenerable) plus a `.gitignore` (`*`, `!.gitignore`, `!README.md`), added with `git add -f` where a root rule such as `**/artifacts/` ignores it. `<project>/vm-lab/` has no root ignore rule (`scripts/vm-lab/` is the VM tool's source and must stay tracked), so its placeholder `.gitignore` is the only thing that keeps VM disks out of `git status`: commit the placeholder before the first VM is created there.
+- Repo conventions, no per-user settings: each project keeps its VM files in `<project dir>/vm-lab/` (per-VM `<vm-name>/` directories, with `runs/<run>/` and `ssh/` beside them), and large shared inputs in `<repo root>/downloads/`: ISOs (with their `.sha256`) in `downloads/iso/`, qemu base images in `downloads/vm-images/`. All are gitignored contents inside committed placeholder directories, so the folders exist after a fresh clone.
+- VM disks: prefer **raw** images on btrfs. A VM's disk is a reflink copy of a base image from `downloads/vm-images/` (`cp --reflink=always`, instant and space-shared when the checkout and `downloads/` sit on the same btrfs filesystem), so one base serves every project. A VM without a base image installs into its own raw disk in `<project>/vm-lab/<vm>/`; promote it to `downloads/vm-images/` only when other VMs should start from it. Without a shared btrfs `cp --reflink=always` fails; the tool must then say so and fall back to a full copy only when the caller asks. `qcow2` stays for images fetched as qcow2 and for portability.
 - Scripts use these paths relative to their own location only, and take no environment variable to relocate them. An explicit path argument is fine; a wrapper that forwards or bind-mounts these folders must honour or refuse it, never silently ignore it.
 - Worktrees: `ciu worktree` will clone the declared paths from main on CoW hosts (declared per project in the shared `libraries/cowtree` schema; planned, not yet built). On plain hosts a worktree gets empty folders and scripts print one INFO line. Anything a worktree should keep must be copied to main. For CoW to work, the checkout (including `.worktrees/`) belongs on the CoW filesystem.
 - Each VM has exactly one owning project. Another project may reference that VM by explicit path but must not keep a copy or its own state for it.
-- Warning: `git clean -x` (or `-xdf`) deletes every ignored `artifacts/` directory, including all VM disks, and `downloads/`. Never run it in a checkout that holds VM files.
+- Warning: `git clean -x` (or `-xdf`) deletes every ignored `artifacts/` directory and every `vm-lab/` directory, including all VM disks, and `downloads/`. Never run it in a checkout that holds VM files.
+- Relaxed fsync is the default for disposable VM run disks (`cache=unsafe`); durable only where a test judges storage durability, and for installed-base images while they are being built (cowtree COW-BL-05). A host crash may corrupt an unsafe run disk; killing QEMU does not, because the host page cache survives it.
+- Compression: `<project>/vm-lab/` is compressed (`zstd`) because storage is scarce; `downloads/iso/` is not. The concerns about random guest writes into compressed extents stay recorded in `mdt-cockpit/docs/BTRFS-COW-OPTIONS.md` 4.6 until a benchmark settles them.
+- Projects that still keep VM files in `<project>/artifacts/vm-lab/` (truenas, tnt, debian-install-v2 and others) move to `<project>/vm-lab/` under the follow-up of mdt-cockpit MDT-044; until then their own docs name the location they use.
 
 ## Writing a handoff / dispatch prompt — honor AUTHORING.md
 When you are asked to **start an agent for a task**, or to **write a prompt or a

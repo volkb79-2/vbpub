@@ -1,13 +1,21 @@
 # downloads
 
-Large, immutable inputs shared by all projects of this repository: ISOs, cloud
-images and similar downloads (for example the Debian genericcloud qcow2 used by
-the debian-install-v2 VM harness). Put a sha256 (or the upstream checksum file)
-next to each file so it can be verified without refetching.
+Large, immutable inputs shared by all projects of this repository. Put a sha256
+(or the upstream checksum file) next to each file so it can be verified without
+refetching.
 
-Only fetched third-party inputs belong here. Anything a project builds itself (patched or golden
-ISOs, restore images, VM disks, reports) is an artifact of that project and goes in its
-`<project>/artifacts/`.
+| Folder | Holds | Notes |
+|---|---|---|
+| `iso/` | ISOs | not compressed (already compressed data) |
+| `vm-images/` | qemu base images: cloud images, installed golden disks | **raw preferred on btrfs** (convert a fetched qcow2 once: `qemu-img convert -O raw -S 4k`); compressed (`zstd`); read-only after creation; a VM's disk is `cp --reflink=always` of one of these into `<project>/vm-lab/<vm>/` |
+| (top level) | other fetched inputs | |
+
+Fetched third-party inputs and base images that several projects start from
+belong here. A VM's own disks, runs and state are the project's, in
+`<project>/vm-lab/`; reports and other build output go in `<project>/artifacts/`.
+See AGENTS.md "Directory conventions and VM files". Files that predate the
+subfolders (the Debian genericcloud qcow2, the TrueNAS ISO) move into them when
+their consumers are updated.
 
 Everything in this folder except this README and `.gitignore` is ignored and
 regenerable by re-downloading; do not commit its contents. Scripts verify the

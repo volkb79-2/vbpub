@@ -71,10 +71,11 @@ front free of new options.
 ## State belongs to the consumer
 
 The tool takes `--state-dir` and keeps nothing of its own. Each VM has exactly
-one owning project, and its files live in that project's `artifacts/vm-lab/`.
+one owning project, and its files live in that project's `vm-lab/`.
 The generic command line therefore requires `--state-dir` on every verb that
 takes it. TrueNAS keeps its older default of `artifacts/vm-lab/<name>` beside
-`tcg_vm.py`, filled in by the TrueNAS front.
+`tcg_vm.py`, filled in by the TrueNAS front, until it moves to `vm-lab/`
+(mdt-cockpit MDT-044 follow-up).
 
 ## Forwards are not published
 

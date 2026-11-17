@@ -1,18 +1,21 @@
 # A btrfs copy-on-write area for devcontainers
 
-Optional host feature: one btrfs filesystem, mounted on the host, of which each user's own directory is
-bind-mounted into the cockpit devcontainer. It gives tools instant snapshots and rollback, reflinked copies
-of large files, and transparent zstd compression where a directory opts in, without placing any repository
-on a compressed or copy-on-write filesystem.
+One btrfs filesystem, mounted on the host, of which each user's own directory is bind-mounted into the cockpit
+devcontainer. It gives tools instant snapshots and rollback, reflinked copies of large files (VM disks), and
+transparent zstd compression where a subvolume opts in, without placing any repository on a compressed or
+copy-on-write filesystem.
 
-*Status: design, not applied on any production host yet. Evidence tags used below:* **[M]** *measured on the
-reference host (gstammtisch, 2026-10-22),* **[R]** *verified on the scratch VM r1002 on 2026-10-22 (Debian 13,
-kernel 7.2.9, btrfs-progs 7.1; results hold for those versions),* **[K]** *documented behaviour of btrfs,
-systemd or the kernel, not re-verified here,* **[T]** *assumption still untested. `host-setup/scripts/
-mdt-cow-selfcheck.sh` reproduces the [R] items on any scratch host (section 9).*
+*Status: in use. The reference host mounts the area and binds `<mount>/<user>` into the vbpub devcontainer as
+`MDT_COW_ROOT`. The checkout itself is still on the container's ordinary filesystem; moving it onto the area is
+MDT-044. Evidence tags:* **[M]** *measured on the reference host (gstammtisch, 2026-10-22),* **[R]** *verified on a
+scratch VM (Debian 13, kernel 7.2.9, btrfs-progs 7.1, 2026-10-22; results hold for those versions),* **[K]**
+*documented behaviour of btrfs, systemd or the kernel, not re-verified here,* **[T]** *assumption still untested.
+`host-setup/scripts/mdt-cow-selfcheck.sh` reproduces the [R] items on any scratch host (section 9).*
 
-What we could build on this area (ciu storage, per-run VM disks, assay warm bases), the options we weighed and the issues an adversarial review
-found are in [BTRFS-COW-OPTIONS.md](BTRFS-COW-OPTIONS.md); read its section 9 before building on the area.
+What we build on this area (per-VM disks as reflink copies, assay warm bases, worktree scratch), the options we
+weighed and the issues an adversarial review found are in [BTRFS-COW-OPTIONS.md](BTRFS-COW-OPTIONS.md); read its
+section 9 before building on the area. The estate-wide directory layout for VM files and downloads is
+**AGENTS.md "Directory conventions and VM files"**; this document explains how the filesystem serves it.
 
 Host-specific rollouts (sizing, LVM, existing services) are runbooks outside this document; the reference
 host's is `scripts/gstammtisch-guide/BTRFS-ROLLOUT.md`.
@@ -22,12 +25,13 @@ host's is `scripts/gstammtisch-guide/BTRFS-ROLLOUT.md`.
 | Question | Decision | Why |
 |---|---|---|
 | btrfs or ZFS | **btrfs** | In the kernel (no module rebuild per kernel upgrade); writes are charged to the cgroup that made them, so per-cgroup IO control keeps working; no second cache (ARC) on a memory-pressured host; a snapshot is one ioctl on a directory, no device, mount or delegation needed from inside a container. ZFS's strengths (send/receive, RAID, ARC) matter little for scratch data on one virtual disk. |
-| How many filesystems | **One for all devcontainers**, namespaced `<user>/<repo>/...` | One shared free-space pool; reflinks and snapshots work only inside one filesystem. |
+| How many filesystems | **One for all devcontainers**, namespaced `<user>/...` | One shared free-space pool; reflinks and snapshots work only inside one filesystem. |
 | What a container sees | **Only its own user level** (`<mount>/<user>`), at the same path as on the host | Least privilege; the bind source fails closed (section 7). |
-| Compression | Per directory or subvolume (`btrfs property`), **no `compress=` mount option** | Repos and ISOs stay uncompressed; compressible areas opt in. Needs no separate filesystem. |
+| Compression | Per subvolume (`btrfs property`), **no `compress=` mount option** | Repos and ISOs stay uncompressed; VM disks and scratch opt in. Needs no separate filesystem. |
 | Snapshot unit | A **subvolume** | Only subvolumes can be snapshotted, made read-only or deleted atomically. Directories are the namespace. |
 | Device | Its **own LV or disk**, not a file on the root filesystem | Own journal and transaction stream (section 2.5). A loop file on ext4 couples both filesystems through the ext4 journal. |
-| Where repos live | Unchanged, on the host's normal filesystem | Only scratch, snapshots, images and artifacts go on the CoW area. |
+| Where the checkout lives | On this filesystem (MDT-044): the checkout with `.worktrees/` inside the per-user root | Reflinks and snapshots between `downloads/`, `<project>/vm-lab/` and worktrees need one filesystem. |
+| VM files | `<project>/vm-lab/` (compressed subvolume); ISOs in `downloads/iso/`; shared base images in `downloads/vm-images/`; **raw** preferred | Section 4. |
 
 Not covered: moving Docker's data root onto btrfs (overlay2 on ext4 stays; image pulls and builds are write
 bursts you do not want sharing a transaction stream with latency-sensitive services).
@@ -126,7 +130,7 @@ snapshot-heavy work: a snapshot forces a btrfs commit that every subvolume of th
   hoster's storage remains shared).
 - Per-cgroup `io.max` or weights do not shorten a journal wait; they can even lengthen it (the throttled task
   holds the transaction open). [M on the reference host: `scripts/gstammtisch-guide/HOST-IO-INTERFERENCE.md`]
-- Measured on r1002 [R], 15 s runs of a 4 KiB write+fsync loop in subvolume A, p99 latency. On a RAM disk (no
+- Measured [R], 15 s runs of a 4 KiB write+fsync loop in subvolume A, p99 latency. On a RAM disk (no
   device cost, so only the filesystem's own coupling shows): alone 0.26 ms; with a snapshot create/delete storm
   in a sibling subvolume of the same filesystem 1.03 ms (about 4x, max 8.7 ms); with 200 MB write bursts in the
   sibling 0.35 ms (no effect); load on a *different* filesystem: no effect beyond noise. The coupling exists but
@@ -140,8 +144,7 @@ snapshot-heavy work: a snapshot forces a btrfs commit that every subvolume of th
 
 ## 3. Create the filesystem
 
-Prerequisite: `btrfs-progs` on the host (`apt install btrfs-progs`); the container image gets it later, on
-the fly. Names below are examples; use your own VG.
+Prerequisite: `btrfs-progs` on the host (`apt install btrfs-progs`). Names below are examples; use your own VG.
 
 ```bash
 lvcreate -L 200G -n mdt-cockpit-cow vg0                    # sized so the VG keeps headroom; LVs grow online
@@ -154,7 +157,7 @@ mkfs.btrfs -L mdt-cockpit-cow -m dup -d single /dev/vg0/mdt-cockpit-cow
 LABEL=mdt-cockpit-cow  /srv/mdt-cockpit-cow  btrfs  noatime,discard=async,user_subvol_rm_allowed,nofail,x-systemd.device-timeout=30s  0 0
 ```
 
-- **No `compress=`**: compression is applied only where a directory opts in (section 4).
+- **No `compress=`**: compression is applied only to subvolumes that opt in (section 4).
 - **`user_subvol_rm_allowed`** lets the container user delete subvolumes it created. It is a filesystem-wide
   option, so the container's bind mount inherits it. [K]
 - **`nofail`** keeps the host reachable if the device is missing; the guard below stops that from turning into
@@ -186,15 +189,11 @@ umount /srv/mdt-cockpit-cow; touch /srv/mdt-cockpit-cow/x            # expect: O
 mount /srv/mdt-cockpit-cow
 ```
 
-Do this for every mountpoint of a btrfs filesystem, including each further `subvol=` mountpoint. To remove
-such a directory later, `chattr -i` it first.
-
-**Renaming a mountpoint** (for example the 2026-11 move `/srv/devcontainers-cow` to `/srv/mdt-cockpit-cow`):
-`umount` it, `chattr -i /srv/devcontainers-cow` (an immutable directory cannot be renamed, `mv` fails with
-EPERM), `mv` it, `chattr +i` the new directory while nothing is mounted on it, fix the fstab mountpoint
-field, then `systemctl daemon-reload && mount`. Migrate the host **before** the next rebuild of any
-container whose CoW mount is active (the vbpub devcontainer is one): `--mount` refuses a missing source,
-so the rebuild would fail closed.
+Do this for every mountpoint of a btrfs filesystem, including each further `subvol=` mountpoint. To rename or
+remove such a directory, `umount` it and `chattr -i` it first (an immutable directory cannot be renamed), then
+`chattr +i` the new directory while nothing is mounted on it and fix the fstab mountpoint field
+(`systemctl daemon-reload && mount`). Do this **before** the next rebuild of any container whose CoW mount is
+active: `--mount` refuses a missing source, so the rebuild would fail closed.
 
 ### 3.2 Create the user areas
 
@@ -218,66 +217,94 @@ property.* Start with plain directories for the namespace levels.
 
 ```
 <mount>/                           top level, root:root 0755, chattr +i while unmounted
-  <user>/                          per-user area, <user>:<user> 0750; the ONLY level a container mounts
-    shared/                        cross-repo for this user: ISOs, golden VM images, mostly write-once
-      upstream-iso/                subvolume; files named by sha256; compression none
-      vm-disks/base/               subvolume; golden raw images, read-only after creation
-    <repo>/                        per-repo area, plain directory
+  <user>/                          per-user area = MDT_COW_ROOT, <user>:<user> 0750; the ONLY level a container mounts
+    .cowtree/                      cowtree's run area: disposable clones, owner manifests, leases (cowtree manages it)
+    <checkout>/                    the repository checkout, with .worktrees/ inside it (MDT-044)
+      downloads/iso/               subvolume: ISOs, `.sha256` beside each file; compression none
+      downloads/vm-images/         subvolume: shared qemu base images, raw preferred; compression zstd; read-only after creation
+      <project>/vm-lab/            subvolume per project, declared in the cowtree schema: per-VM disks, runs, OVMF vars, serial logs; zstd
+    <repo>/                        per-repo tool area, plain directory
       assay/base/                  subvolume: self-contained clone + warm environment (section 6.1)
       assay/snap-*/                subvolumes (snapshots of base), deleted after each run
       worktrees/<instance-id>/     subvolume per worktree: compressed scratch, linked as .store
-      vm-disks/run/                per-test disks: cp --reflink=always ../../shared/vm-disks/base/x.raw run-X.raw
 ```
 
 Why this shape:
 
-- **Addressed by target repo, not by the container you run in.** An assay run in one repo's devcontainer may
-  judge another repo; it uses `$MDT_COW_ROOT/<other-repo>/assay/...`. `MDT_COW_ROOT` is therefore per user
-  (`<mount>/<user>`), and the repo name is part of the path the tool builds.
-- **`<user>/shared/`** holds what several of that user's repos reuse, so each ISO or golden image exists once,
-  and it sits inside the one directory a container mounts, so reflinks and snapshots from it work. Sharing
-  *between users* is deliberately not provided; if needed, root reflink-copies.
+- **VM files follow the project, base images follow the repository.** A project's VMs are in its own
+  `<project>/vm-lab/`; a base image (a cloud image, an installed golden disk) that several projects start from is
+  stored once in the repo-level `downloads/vm-images/`, so reflinking from it needs no copy and no second place.
+  Both folders are in the checkout, which is why the checkout belongs on this filesystem (a reflink works only
+  inside one filesystem, but across subvolumes of it [K]). Until the checkout is moved (MDT-044), `cp
+  --reflink=always` from `downloads/` fails with a cross-device error and tools must say so.
+- **Tool areas are addressed by target repo, not by the container you run in.** An assay run in one repo's
+  devcontainer may judge another repo; it uses `$MDT_COW_ROOT/<other-repo>/assay/...`. `MDT_COW_ROOT` is therefore
+  per user (`<mount>/<user>`), and the repo name is part of the path the tool builds.
+- **Sharing *between users* is deliberately not provided**; if needed, root reflink-copies.
 - **Plain directories at user and repo level.** A subvolume at `<user>/<repo>` would allow a per-repo qgroup
   limit later, but nested subvolumes inside it are then excluded from a snapshot of the parent (section 2.4).
   A plain directory converts cheaply later: `btrfs subvolume create new && cp -a --reflink=always old/. new/`.
 - **"A different volume for compressible work" is not a separate filesystem.** Compression is a property on a
-  directory or subvolume (mount without `compress=`), inherited by new files. A separate filesystem would
-  only add isolation, which section 2.5 covers by LV.
+  subvolume (mount without `compress=`), inherited by new files. A separate filesystem would only add isolation,
+  which section 2.5 covers by LV.
 
 | Path | Property | Why |
 |---|---|---|
-| `<user>/shared/upstream-iso` | `compression none` | ISOs are already compressed [M: a 2.3 GB TrueNAS ISO compressed to 97% with zstd -3] |
-| `<user>/shared/vm-disks` | **undecided** (not `zstd` until benchmarked) | goldens are already sparse, so only the non-zero part would compress, and guest 4 KiB random writes into compressed 128 KiB extents may amplify reads and fragment on a slow disk [K, unverified]; `chattr +C` and compression exclude each other; see BTRFS-COW-OPTIONS.md 4.6 |
-| `<user>/<repo>/assay/base` (snapshots carry it) | `compression zstd` | sources, venvs, caches; on a slow disk fewer bytes written wins |
-| `<user>/<repo>/worktrees/<instance-id>` | `compression zstd` | compressible per-worktree scratch |
+| `downloads/iso` | `compression none` | ISOs are already compressed [M: a 2.3 GB TrueNAS ISO compressed to 97% with zstd -3] |
+| `downloads/vm-images` | `compression zstd` | storage is scarce (decision 2026-11-17); concerns below |
+| `<project>/vm-lab` | `compression zstd` | per-VM disks start as reflinks of a base and only their own writes use space |
+| `<repo>/assay/base` (snapshots carry it) | `compression zstd` | sources, venvs, caches; on a slow disk fewer bytes written wins |
+| `<repo>/worktrees/<instance-id>` | `compression zstd` | compressible per-worktree scratch |
+
+Declare these paths in the project's cowtree declaration (`compression` is one of its keys) and let `cowtree
+provision` create them. By hand:
 
 ```bash
-btrfs property set <user>/shared/upstream-iso compression none
-# A new subvolume's root does NOT inherit its parent directory's property [R]: set it on the subvolume
-# itself; snapshots of it carry the property along [R].
-btrfs property set <user>/<repo>/assay/base compression zstd
+btrfs subvolume create <checkout>/<project>/vm-lab            # needs a non-existing path: move the committed placeholder aside first
+btrfs property set <checkout>/<project>/vm-lab compression zstd
+btrfs property set <checkout>/downloads/iso compression none
 ```
 
-**Level.** `compress=zstd:N` (N 1 to 15, default 3) is a mount option and filesystem-wide. A per-directory
+A new subvolume's root does **not** inherit its parent directory's property [R]: set it on the subvolume itself;
+snapshots of it carry the property along [R].
+
+**Level.** `compress=zstd:N` (N 1 to 15, default 3) is a mount option and filesystem-wide. A per-subvolume
 level works on kernel 7.2.9 with btrfs-progs 7.1: `btrfs property set <dir> compression zstd:3` was accepted
 and read back as `zstd:3` [R]; older versions are untested [T]. Compressible data (48 MB of one repeated byte)
 took far less space under `compression zstd` than under `none` [R]. Existing files are recompressed with
-`btrfs filesystem defragment -czstd`, but **never run that on `shared/`, base images or anything snapshotted or reflinked**: it unshares
+`btrfs filesystem defragment -czstd`, but **never run that on `downloads/`, base images or anything snapshotted or reflinked**: it unshares
 the extents and can multiply the space used. Decompression speed
 barely depends on the level; only write CPU does.
 
-**CoW and VM images.** Copy-on-write fragments large randomly-written files such as VM disks, and `chattr +C`
-(no-CoW) also disables checksums and compression (a directory that already has a compression property
-**refuses** `+C` [R]), and snapshots re-enable CoW on first write. For short-lived
-test VMs plain CoW is acceptable; qcow2 backing files (`qemu-img create -b base.qcow2 -F qcow2 run.qcow2`) are
-an instant, filesystem-independent alternative to reflink copies.
+**VM disks: raw, reflinked, compressed.**
 
-## 5. Contract for tools (assay, ciu, ...)
+- **Raw is preferred on btrfs.** A VM's disk is a reflink copy of a base image
+  (`cp --reflink=always downloads/vm-images/<base>.raw <project>/vm-lab/<vm>/disk.raw`): instant, and it shares
+  extents with the base until the guest rewrites them. A qcow2 overlay on a backing file duplicates what the
+  reflink already does and adds a second layer; keep qcow2 for images fetched as qcow2 and where portability
+  matters, and convert a fetched one once (`qemu-img convert -O raw -S 4k`, sparse) into `downloads/vm-images/`.
+- **A VM without a base image** installs into its own raw disk in `<project>/vm-lab/<vm>/`. If other VMs should start
+  from it, promote it: stop the guest, `cp --reflink=always` it into `downloads/vm-images/`, record its `.sha256`,
+  and mark it read-only. A run never opens a base image writable.
+- **No fsync for disposable disks.** Run disks use `cache=unsafe` (no guest flush reaches the host); killing QEMU
+  does not lose data (the page cache survives), only a host crash can corrupt such a disk, and the tool then
+  recreates it from the base. Base images are built with `cache=writeback` or `none`, never `unsafe`
+  (cowtree COW-BL-05).
+- **Compression is a decision, the concern stays.** VM disks are compressed because storage is scarce. The
+  reviewer's objection is unverified but kept: 4 KiB random guest writes into 128 KiB compressed extents may
+  amplify reads and fragment on a slow disk [K, unverified]. `chattr +C` (no-CoW) also disables checksums and
+  compression, a directory that already has a compression property **refuses** it [R], and a snapshot makes the
+  next write copy-on-write again. If a benchmark shows the cost is real, hot disks move to a separate no-CoW,
+  uncompressed subvolume (BTRFS-COW-OPTIONS.md 4.6).
+
+## 5. Contract for tools (assay, ciu, vm-lab, ...)
 
 - **Root:** read `MDT_COW_ROOT` (per user, set by the devcontainer, section 7). If unset, the feature is off;
   say so, do not guess a path.
 - **Verify before use:** `stat -f -c %T "$MDT_COW_ROOT"` must print `btrfs`. Refuse otherwise. Never fall back
   silently to copying or to the root filesystem. If `$MDT_COW_ROOT` is missing, fail; do not create it.
+- **Reflink or say so:** a tool that clones a base image uses `cp --reflink=always`; when that fails (different
+  filesystem) it reports why and copies in full only when the caller asked for the fallback.
 - **Address by target repo:** build `$MDT_COW_ROOT/<repo>/...`; create repo directories lazily.
 - **Clean up:** snapshots and run disks are deleted after the run (`btrfs subvolume delete`). Judge success by
   the **exit code**: as a non-root user `btrfs` prints `WARNING: cannot read default subvolume id: Operation not
@@ -333,7 +360,7 @@ files such as VM disks. A directory that should become a subvolume converts inst
 create new && cp -a --reflink=always old/. new/` [R]. A snapshot of a subvolume that contains a nested
 subvolume shows the nested one as an **empty directory** [R].
 
-Container-level run on r1002 [R]: as an unprivileged uid in a plain Docker container with the user-level bind
+Container-level run [R]: as an unprivileged uid in a plain Docker container with the user-level bind
 (a synthetic 25-commit, 15 MB-`.git` repository, warm page cache): creating the warm base took 1.9 s; eight
 parallel snapshot-plus-checkout workers took **0.13 s**; eight full clones took 0.28 s on the container's own
 filesystem and 0.57 s on the btrfs. Space: each snapshot shared the base's extents (172 KiB exclusive of 33.5
@@ -353,12 +380,20 @@ absolute paths need the same check. [T for non-venv caches]
 A worktree-creating tool can make `$MDT_COW_ROOT/<repo>/worktrees/<instance-id>` a subvolume, link it into the
 worktree as an ignored `.store` symlink, export its path, and `btrfs subvolume delete` it together with the
 worktree (one fast call instead of `rm -rf`: 0.01 s for a small one [R]). The symlink dangles afterwards [R], so
-remove it too. Repository checkouts stay on the normal filesystem.
+remove it too. Once the checkout lives on this filesystem (MDT-044), `ciu worktree` snapshots the project's
+declared paths (`<project>/vm-lab/`, `downloads/...`) instead, and no symlink is needed.
 
-### 6.3 ISOs and VM disks
+### 6.3 ISOs, base images and VM disks
 
-ISOs: write once into `<user>/shared/upstream-iso`, named by sha256, then read-only; no compression. VM disks:
-a golden image in `shared/vm-disks/base`, per-test copies with `cp --reflink=always` into `<repo>/vm-disks/run`.
+- **ISOs:** write once into `downloads/iso/`, with the `.sha256` beside each file, then read-only; no compression.
+- **Base images:** a cloud image or golden disk goes into `downloads/vm-images/` as a raw file (converted once, sparse),
+  with its `.sha256`, then read-only. Built-in-place bases are promoted as described in section 4.
+- **Per-VM disks:** `cp --reflink=always downloads/vm-images/<base>.raw <project>/vm-lab/<vm>/disk.raw`, run with
+  `cache=unsafe`, delete the copy when the VM is destroyed. Disk checkpoints are reflink copies or, for a whole
+  VM directory, a snapshot of its subvolume; they require the guest to be stopped (a live snapshot of a running
+  guest is inconsistent).
+- **Golden disks embed credentials** (step-1 sidecars, SSH keys): treat a base image that carries a secret as
+  secret-bearing (mode 0600/0700) and keep it out of any location another user reads.
 
 ## 7. Devcontainer integration
 
@@ -373,8 +408,8 @@ breaks every rebuild, and that same behaviour is the fail-closed guarantee after
 "MDT_COW_ROOT": "/srv/mdt-cockpit-cow/${localEnv:USER}",
 ```
 
-The shipped templates carry exactly these two lines **commented out** (the host prerequisite does not exist on
-every host): uncomment both after section 3. Two ways to deploy the cockpit config, both ready in
+The shipped templates carry exactly these two lines commented out until the host side exists: uncomment both
+after section 3. Two ways to deploy the cockpit config, both ready in
 `templates/` (choose with `templates/README.md`):
 
 | | Per-repo | Host-side folder |
@@ -408,7 +443,8 @@ Details:
   `user_subvol_rm_allowed`), read-only snapshots, `property set`, `cp --reflink`, `chattr +C`, `btrfs filesystem
   df/du`, snapshots and deletes through a bind of the user directory. These need root [R]: `subvolume list`,
   `chattr +i`; and, by design, mkfs, balance, scrub and qgroups. (`chattr +i` on mountpoints is a host task.)
-- **`btrfs-progs`** is not in the image yet; install it in the running container when first needed.
+- **`btrfs-progs`** is not in the image yet; until it is, install it in the running container when first
+  needed (every tool above calls `btrfs`). Adding it to the image is open (section 10).
 - **More than one person on the host:** each gets their own `<user>` directory and sees only that. Binding the
   whole filesystem is for a deliberate admin container only.
 
@@ -421,19 +457,20 @@ Details:
 | User directory missing | `--mount` refuses; tools do not create it under the top level |
 | Wrong filesystem (somebody mounts ext4 there) | `stat -f -c %T` is not `btrfs`; tools refuse |
 | Container started with the legacy `-v` form while the filesystem is missing | refused with `mkdir ...: operation not permitted` thanks to `chattr +i` [R]; **without** the flag Docker would create a root-owned directory on the root disk |
-| Filesystem full | ENOSPC for every user of it, and unprivileged cleanup still works [R]: `rm` of files plus `sync` frees space at once; deleting a subvolume frees it only after the asynchronous cleanup (about 20 to 40 s for 900 MiB). Monitor `btrfs filesystem usage` and delete snapshots promptly |
+| Filesystem full | ENOSPC for every user of it, and unprivileged cleanup still works [R]: `rm` of files plus `sync` frees space at once; deleting a subvolume frees it only after the asynchronous cleanup (about 20 to 40 s for 900 MiB). Monitor `btrfs filesystem usage` and delete snapshots and run disks promptly |
+| `cp --reflink=always` fails with a cross-device error | source and destination are on different filesystems (checkout not yet on the area): report it; no silent full copy |
 
 ## 9. Verification
 
 `host-setup/scripts/mdt-cow-selfcheck.sh` builds a throwaway btrfs on a loop file under a scratch directory
-and exercises the **[R]** items (30 expectations passed on r1002, 2026-10-22; install `btrfs-progs` first): ID 5 and subvolume IDs, `subvol=` and bare mounts, a conflicting second
+and exercises the **[R]** items (30 expectations passed on the scratch VM, 2026-10-22; install `btrfs-progs` first): ID 5 and subvolume IDs, `subvol=` and bare mounts, a conflicting second
 mount, unprivileged snapshot/delete/reflink/property, property inheritance by a new subvolume and by a
 snapshot, a per-directory compression level, mounting over an immutable directory, `-x` and `mv` across
 subvolumes, reflink across a bind of a subdirectory, and propagation of a host unmount into a bind
 namespace. It touches nothing but its scratch directory (`--preflight-only` just reports whether btrfs
 and the tools are available). Run it on a scratch host first, never as the first thing on a production host.
 
-Beyond the script, the whole container path was exercised once on r1002 [R] with throwaway scripts (not
+Beyond the script, the whole container path was exercised once [R] with throwaway scripts (not
 shipped): the real mount path with `LABEL=` mounting and the `chattr +i` guard, `mdt-cow-init-user.sh` (success,
 idempotent re-run, refusals), a Docker container as an unprivileged uid with the user-level `rslave` bind, the
 privilege matrix, the assay, worktree and shared/ISO recipes, another uid being denied (`0750`), and the
@@ -446,11 +483,16 @@ Checks only a real deployment can make:
 2. A second user: a container for user A cannot reach user B's area or the top level.
 3. `iostat -x` and PSI during a snapshot loop while a latency-sensitive service runs: its `io.pressure` stays
    at its baseline.
+4. A reflinked VM disk: `cp --reflink=always` of a base image into `<project>/vm-lab/` takes no space beyond metadata
+   (`btrfs filesystem du` shows the data as shared), and the copy boots.
 
 ## 10. Open items
 
+- Move the checkout onto this filesystem, create `downloads/iso`, `downloads/vm-images` and each `<project>/vm-lab` as
+  declared subvolumes, and migrate the projects that still use `<project>/artifacts/vm-lab` (MDT-044 and its follow-up).
+- Add `btrfs-progs` (and `rsync`) to the image, so tools do not depend on installing them.
+- Compression of VM disks: the benchmark and the no-CoW fallback for hot disks (BTRFS-COW-OPTIONS.md 4.6).
 - Per-directory compression **level** on kernels older than 7.2 (section 4) [T].
 - Whether to stop containers automatically before device maintenance (section 7: the bind pins the device).
 - `chattr +C` on specific database files: only if CoW fragmentation shows up in measurements.
-- `btrfs-progs` and `rsync` in the image, if tools should not depend on installing them.
 - Whether to ship `mdt-cow-init-user.sh` through `host-setup/install.sh`: today it is a script you run.

@@ -37,6 +37,7 @@ not transfer (section 6).
 | D14 | The filesystem (btrfs or ZFS) is **not decided**. It is decided after the experiments in [EXPERIMENTS.md](EXPERIMENTS.md). |
 | D15 | The VM launcher in `scripts/truenas/tcg_vm.py` becomes a general tool in its own directory and stops being TrueNAS-specific (section 9). |
 | D16 | Keep planning until a host is free; no host work before the lease. |
+| D17 | VM files (decided 2026-11-17, estate rule in AGENTS.md "Directory conventions and VM files"): project VMs in `<project>/vm-lab/`, ISOs in `downloads/iso/`, shared qemu base images in `downloads/vm-images/`. Raw disks on btrfs, per-VM disks as reflink copies of a base, zstd compression (storage is scarce; the random-write concern is kept in mdt-cockpit `BTRFS-COW-OPTIONS.md` 4.6, no benchmark yet). Run disks use `cache=unsafe`, **including the rollback experiments**: the host page cache survives a killed QEMU, so a hard power cut of the guest stays testable; a host crash is out of scope. |
 
 ## 3. What "the operating system" means here
 
@@ -284,7 +285,7 @@ launcher and controller with no TrueNAS knowledge. `scripts/truenas` and this
 project become its consumers; the existing Debian harness
 (`scripts/debian-install-v2/testing/vm/vmctl`, BIOS only, no keyboard control)
 can follow. Per the repository rule each VM keeps exactly one owning project
-and its files stay in that project's `artifacts/vm-lab/`, so the tool takes the
+and its files stay in that project's `vm-lab/`, so the tool takes the
 state directory as an argument and owns no VM state itself. `tcg_vm.py` is a
 gated, tested tool; the extraction is a change of its own with its own review,
 and TrueNAS behaviour must not change.

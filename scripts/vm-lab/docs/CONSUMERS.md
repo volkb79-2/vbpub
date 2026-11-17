@@ -4,7 +4,11 @@
 
 **Every snippet in this guide runs from the repository root.** `<project>` is
 the project that owns the VM (for example `debian-rollback`). Keep its VM files
-in `scripts/<project>/artifacts/vm-lab/<vm>/`.
+in `scripts/<project>/vm-lab/<vm>/`; base images shared between projects live in
+`downloads/vm-images/` and ISOs in `downloads/iso/` (AGENTS.md "Directory
+conventions and VM files"). Today `start` boots a qcow2 overlay on a read-only
+qcow2 base disk; raw base images cloned by reflink are the planned replacement
+(work package VML-06).
 
 Prerequisites: a loaded host background slice (`CGROUP_PARENT_DEV_BACKGROUND`),
 a Docker network (`DOCKER_NETWORK_INTERNAL`), a QEMU image that has
@@ -12,8 +16,8 @@ a Docker network (`DOCKER_NETWORK_INTERNAL`), a QEMU image that has
 files, and a Debian installer ISO.
 
 ```
-VM=scripts/<project>/artifacts/vm-lab/deb1
-BASE=scripts/<project>/artifacts/vm-lab/deb1-base.qcow2
+VM=scripts/<project>/vm-lab/deb1
+BASE=downloads/vm-images/deb1-base.qcow2
 mkdir -p "$VM"
 
 # A blank base disk. The guest writes go to an overlay in "$VM", not here.
@@ -71,7 +75,7 @@ Reach the guest from another container on the same Docker network at
 Run the foreground recorder in one terminal:
 
 ```sh
-VM=scripts/<project>/artifacts/vm-lab/deb1
+VM=scripts/<project>/vm-lab/deb1
 CAP=$VM/capture
 S="--name deb1 --state-dir $VM"
 
@@ -82,7 +86,7 @@ In another terminal, use `ctl` for commands that must be recorded with the
 frames, or use the direct console verbs:
 
 ```sh
-CAP=scripts/<project>/artifacts/vm-lab/deb1/capture
+CAP=scripts/<project>/vm-lab/deb1/capture
 
 python3 scripts/vm-lab/vm_lab.py console ctl --out "$CAP" --keys ret
 python3 scripts/vm-lab/vm_lab.py console ctl --out "$CAP" --type "root"
@@ -236,7 +240,7 @@ force one reader (a forced vmscreen on a graphical screen simply sees no text).
 Worked example: wait for the boot menu, pick an entry, and notice a boot loop.
 
 ```sh
-VM=scripts/<project>/artifacts/vm-lab/deb1
+VM=scripts/<project>/vm-lab/deb1
 S="--name deb1 --state-dir $VM"
 VMLAB="python3 scripts/vm-lab/vm_lab.py"
 

@@ -18,7 +18,7 @@ lock. See the [design guide](docs/DESIGN-GUIDE.md#one-lock-and-one-cap-for-every
 
 The tool owns no VM state. Every verb that touches a guest takes `--state-dir`,
 and the project that owns the VM keeps that directory in its own
-`scripts/<project>/artifacts/vm-lab/<vm>/`.
+`scripts/<project>/vm-lab/<vm>/`.
 
 Start with the [consumer guide](docs/CONSUMERS.md). The reasons behind the
 design are in the [design guide](docs/DESIGN-GUIDE.md).

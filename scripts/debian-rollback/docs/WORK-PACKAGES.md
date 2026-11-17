@@ -180,10 +180,23 @@ TrueNAS consumer reaches its guest today).
 Goal: scenarios start from a saved disk state instead of reinstalling, and can
 break things on purpose.
 
-- `disk checkpoint NAME` on a stopped guest: freeze the current overlay as a
-  named backing image; `start --from-checkpoint NAME` creates a fresh overlay
-  on it. Firmware variable store saved and restored with the checkpoint, since
-  boot entries and one-shot settings live there.
+- Disk format (operator decisions 2026-11-17, design guide D17): **raw disks on
+  btrfs, as reflink copies.** A base image lives in `downloads/vm-images/`
+  (raw, read-only, `.sha256` beside it); `start` clones it with
+  `cp --reflink=always` into the VM's directory in `<project>/vm-lab/` (a zstd
+  compressed subvolume) and boots the copy with `cache=unsafe`. The tool
+  checks `stat -f -c %T` is btrfs for both paths and reports a cross-device
+  failure; it falls back to a full copy only on request. A VM without a base
+  installs into its own raw disk; `disk promote` reflink-copies a stopped
+  guest's disk into `downloads/vm-images/`. The qcow2 overlay on a read-only
+  qcow2 base that `start` builds today stays as the path for qcow2 bases and
+  hosts without btrfs.
+- `disk checkpoint NAME` on a stopped guest: a reflink copy of the disk (and
+  the firmware variable store) next to the VM, or a snapshot of its subvolume;
+  `start --from-checkpoint NAME` clones that. On the qcow2 path: freeze the
+  current overlay as a named backing image and start a fresh overlay on it.
+  Firmware variable store saved and restored with the checkpoint, since boot
+  entries and one-shot settings live there.
 - `disk list`, `disk drop`.
 - Failure injection stays inside the guest through `guest exec` (truncate an
   initramfs, fill a filesystem); the VM tool only needs `console reset` (done)

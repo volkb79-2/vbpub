@@ -34,7 +34,7 @@ Ranked by value for us. Items marked * were raised only by the reviewer.
 2. **Protect irreplaceable data from `rm` and branch pruning.** Ignored files never make a checkout dirty, so a worktree holding a
    20 GiB golden can be pruned or removed without warning.*
 3. **Per-run VM disks as instant copies** of a golden (reflink), instead of a 20 GiB copy at 10-20 MB/s. **Our main case.**
-4. **Compression of VM disks and extracted trees** on shared storage. **Our stated main case; see 4.6 for the open conflict.**
+4. **Compression of VM disks and extracted trees** on shared storage. **Our stated main case; decided 2026-11-17, concerns kept in 4.6.**
 5. **Share immutable inputs** (vanilla ISOs, golden bases, probe extractions) across worktrees without copying.
 6. **Warm start for assay**: warm checkout plus installed environment, snapshot per run.
 7. **Crash and reboot recovery**: find orphaned scratch by proof (pid, boot-id, container-id), not age; resume guests.*
@@ -97,15 +97,26 @@ btrfs-specific variants of M2 considered for the *ciu* layer:
 Reviewer's verdict: M0 is mandatory regardless and is most of the value; add M2 for immutable inputs, and only if the new device has
 physically separate backing (the guide admits the isolation benefit is unmeasured on the slow disk). Reflinks supersede M1.
 
-### 4.6 Open conflict: compression of VM disks
+### 4.6 Compression of VM disks: decided, concerns kept
 
-Our stated main case is VM disks on compressed storage. The reviewer says compression is wrong for random-write images (4 KiB guest
-writes into 128 KiB compressed extents cause read amplification, partially pinned extents and fragmentation on a slow disk) **[K, unv]**.
-Related measured facts: `chattr +C` (no-CoW) is refused on a directory that has a compression property **[R]**, so a folder is either
-compressed or no-CoW; golden raws are already sparse (`qemu-img convert -S 4k`), so zeros cost nothing and compression only helps the
-non-zero part (an installed OS of a few GB in a 16 GiB image). **Decision pending a benchmark on the scratch VM**: random-write fio on a
-raw image in a compressed subvolume versus a plain one versus no-CoW versus ext4. Until then the guide should not recommend
-`compression zstd` for `shared/vm-disks`.
+**Decision (operator, 2026-11-17): VM disks live on compressed storage (`zstd`) because storage is scarce.** `<project>/vm-lab/` is a
+compressed subvolume. `downloads/vm-images/` (shared base images, raw preferred) is compressed too; `downloads/iso/` is not (ISOs are
+already compressed). No benchmark has been run yet, and the concerns below stay open until one is:
+
+- The reviewer expects compression to hurt random-write images: 4 KiB guest writes into 128 KiB compressed extents cause read
+  amplification, partially pinned extents and fragmentation on a slow disk **[K, unv]**.
+- `chattr +C` (no-CoW) is refused on a directory that has a compression property **[R]**, so a folder is either compressed or no-CoW.
+  If the concern proves real, the answer is a no-CoW, uncompressed subvolume for hot disks only, not a mount option.
+- Golden raws are already sparse (`qemu-img convert -S 4k`), so zeros cost nothing and compression only helps the non-zero part (an
+  installed OS of a few GB in a 16 GiB image). The saving is therefore the installed content, not the image size.
+- Disposable run disks run with `cache=unsafe` (no guest fsync reaches the host), which removes the worst write pattern for compressed
+  extents; durable disks are the exception and are declared (cowtree COW-BL-05).
+- Reflinked copies share extents with their base whatever the destination's property says, so compressing the base saves space in every
+  copy until the copy rewrites those blocks.
+
+**Benchmark, when wanted:** fio random writes (4 KiB, mixed read/write) on a raw image in a compressed subvolume versus a plain one
+versus no-CoW versus ext4, on the slow disk, with and without `cache=unsafe` in a guest. The result may change the level (`zstd:1`)
+or move hot disks to a no-CoW subvolume.
 
 ## 5. Boundaries
 
@@ -128,7 +139,7 @@ What we proposed, in one place so it can be revived. Today `ciu worktree` create
 ```toml
 [ciu.storage.vm-disks]
 path = "scripts/truenas/.vm"     # relative to the ciu root; git-ignored; no '..', no symlink components
-compression = "none"             # see 4.6
+compression = "zstd"             # see 4.6
 retention = "volatile"           # volatile | cache | retained
 snapshot = true
 ```
@@ -223,7 +234,7 @@ result, OUT outage, ANN annoyance. All are [unv] unless tagged.
 | A8 | Reused logical name inherits old state; `--resume` runs new code on old overlays | SWR | FIX: bind to allocation nonce |
 | A9 | `st_dev`/inode pin in `runner.json` breaks `--resume` after remount/restore/reflink | OUT | FIX in tcg (hash identity, `rebind-base`); remount case not reproduced |
 | A10 | snapshot/restore under a running VM (`cache=writeback`) | DL/SWR | FIX: same guard as A4 |
-| A11 | A buggy tool user-deletes `shared/vm-disks/base`; `ro` is a flag the owner can flip | DL | BY-DESIGN: "filesystem permissions in the user area do not protect anything from that user's own tools"; protection = pin manifests + backup |
+| A11 | A buggy tool user-deletes `downloads/vm-images/<base>`; `ro` is a flag the owner can flip | DL | BY-DESIGN: "filesystem permissions in the user area do not protect anything from that user's own tools"; protection = pin manifests + backup |
 | A12 | "durable" promised on an unbacked single-device LV; backups copy only symlinks | DL | BY-DESIGN: rename to `retained`, document |
 | A13 | Several users in one checkout: links point into user A's 0750 area | OUT | BY-DESIGN: a checkout with stores belongs to one user; gate containers mount `MDT_COW_ROOT` explicitly |
 | A14 | Empty `${localEnv:USER}` makes the bind source the top level | DL/sec | FIX: `initializeCommand` refuses empty USER and checks owner uid |
@@ -235,7 +246,7 @@ result, OUT outage, ANN annoyance. All are [unv] unless tagged.
 | A20 | Golden disks embed credentials; step1's sidecar rule | DL(exposure) | BY-DESIGN: secret-bearing class (7.1) |
 | A21 | The 88 GB is in the host-backed `/tmp`; declared stores do not move it | ANN | FIX: `TMPDIR` policy + scratch reaper |
 | A22 | `required=false` reported fallback is unread; later enabling CoW means copying GBs and breaking identities | ANN/OUT | FIX: drop it (section 6) |
-| A23 | zstd on `shared/vm-disks`: read amplification, fragmentation on random writes | ANN | FIX pending benchmark (4.6) |
+| A23 | zstd on `vm-lab/` and `downloads/vm-images/`: read amplification, fragmentation on random writes | ANN | ACCEPTED 2026-11-17 (storage is scarce); concern kept, benchmark open (4.6) |
 | A24 | `defragment -czstd` unshares reflinked and snapshotted extents | OUT | FIX (guide): warn, never on shared/bases/snapshotted data |
 | A25 | Nested store subvolumes under a per-instance subvolume: snapshots show empty dirs; delete order | ANN | FIX: flat layout |
 | A26 | Cross-subvolume `mv`/hardlink: `EXDEV` or silent 16 GiB copy | ANN | FIX: `promote` helper; stage inside the destination subvolume |
@@ -271,7 +282,7 @@ security boundary while root or `SYS_ADMIN` exists.
 **Phase 0 (no btrfs needed):** survey verbs (per-worktree ignored bytes, per-store exclusive bytes, `/tmp` by producer); prune/`rm` guard that treats
 large ignored data as dirt; a tcg state-directory prune verb; a `TMPDIR` policy and a proof-based scratch reaper.
 **Phase 1 (host area + explicit consumers, no ciu, no symlinks):** apply the guide fixes (A14, A18, A19, A23, A24); tools consume `MDT_COW_ROOT`
-explicitly: `shared/upstream-iso` content-addressed and write-once, tcg/golden-iso make reflinked per-run disks in a flat per-run subvolume with an
+explicitly: `downloads/iso` (ISOs, `.sha256` beside each) and `downloads/vm-images` (shared base images), tcg/golden-iso make reflinked per-run disks in a flat per-run subvolume with an
 owner manifest after the A9 fix; assay warm base after the A5 fix.
 **Defer:** ciu-managed symlinked stores, the `cache` class and automatic eviction, `snapshot`/`restore` verbs, the `required` flag, the helper's home.
 **Refuse to build:** disk-pressure auto-eviction; restore/snapshot while any container mounts the store; logical-name store keys; a class called
@@ -279,6 +290,6 @@ owner manifest after the A9 fix; assay warm base after the A5 fix.
 Where M0 alone is the better answer: most of the 17 GB and the 88 GB, with no new failure domain. btrfs earns its place for reflinked VM disks and the
 assay warm base, and only after A5, A9 and A23.
 
-**Open decisions:** (1) order: Phase 0 first? (2) run the compression-versus-random-write benchmark before fixing the VM-disk property; (3) where the
+**Open decisions:** (1) order: Phase 0 first? (2) the compression-versus-random-write benchmark (decided 2026-11-17: compress now, benchmark later, 4.6); (3) where the
 shared helper lives (neutral library vs ciu vs mdt-cockpit); (4) file `CIU-NN` and tcg backlog items; (5) rootless patcher route (TODO entry); (6) which
 removal-set items the user confirms; (7) whether a checkout with stores is single-user (A13).

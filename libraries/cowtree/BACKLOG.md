@@ -2,7 +2,7 @@
 
 Open work. Each item names what it needs and what closes it. Consumers: `ciu worktree` (CIU-159) and run-gate R2 clones.
 
-* **COW-BL-01 declaration schema for CoW-managed gitignored paths.** Cowtree defines and validates the schema; the consumers read it and stay agnostic of what the paths hold (`artifacts/vm-lab`, `downloads` and the like are the project's business, never a ciu or run-gate constant).
+* **COW-BL-01 declaration schema for CoW-managed gitignored paths.** Cowtree defines and validates the schema; the consumers read it and stay agnostic of what the paths hold (`vm-lab`, `downloads` and the like are the project's business, never a ciu or run-gate constant).
   * **Where it lives.** The project declares it in a tracked file (one table per path). The consumer passes the parsed declaration to cowtree; cowtree refuses an unknown key, a duplicate path, an absolute path, a `..` segment and a path that is tracked content other than its committed placeholder.
   * **Keys per path.**
     * `path`: repo-relative, gitignored.
@@ -41,7 +41,7 @@ Open work. Each item names what it needs and what closes it. Consumers: `ciu wor
   * **Code and tests.** A read of the manifest that is empty, truncated or unparsable is treated as "no manifest" and reclaims the clone; a test truncates `owner.json` and checks the sweep. The DESIGN-GUIDE manifest-fsync paragraph (`_write_manifest`) gets a paragraph with the table above.
   * **Closes when.** SPEC states the table with oracle ids, the truncated-manifest test passes, and no cowtree path assumes a manifest fsync for correctness under the preload.
 
-* **COW-BL-05 VM disk cache modes in the vm-lab layout and the VM harnesses.** Same direction as COW-BL-04, for QEMU disks under `artifacts/vm-lab` (run-gate already forwards `[resources.vm] disk_cache` `unsafe|writeback` as `VM_DISK_CACHE` for host-mode VM lanes).
+* **COW-BL-05 VM disk cache modes in the vm-lab layout and the VM harnesses.** Same direction as COW-BL-04, for QEMU disks under `<project>/vm-lab` (base images in `downloads/vm-images`, raw preferred, per-VM disks as reflink copies; AGENTS.md "Directory conventions and VM files"; run-gate already forwards `[resources.vm] disk_cache` `unsafe|writeback` as `VM_DISK_CACHE` for host-mode VM lanes).
   * **Rule.** Two classes of disk, declared where the disk is created, never inferred:
     * **Disposable run disks** (overlays and clones used for one run or one test): `cache=unsafe`, no fsync from the guest reaching the host, compressed CoW subvolume (Q4).
     * **Installed-base and golden images** (the bases that runs clone from, must survive the host): `cache=writeback`, or `cache=none` where the harness needs direct IO; never `unsafe`. Built once, sealed, and checked (checksum recorded next to the image) before any run clones it.
