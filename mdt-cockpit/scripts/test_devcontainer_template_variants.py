@@ -1,8 +1,8 @@
 """The two shipped devcontainer.json variants must stay identical except for a documented set of keys.
 
 `templates/devcontainer.json` is the per-repo variant; `templates/host-folder/devcontainer.json` is the
-one-cockpit-for-several-repos variant, configured from a host folder. Both also carry the same opt-in,
-commented-out btrfs CoW lines that `docs/BTRFS-COW.md` quotes.
+one-cockpit-for-several-repos variant, configured from a host folder. Both also carry the same active
+btrfs CoW lines that `docs/BTRFS-COW.md` quotes (a host without the area comments both out).
 """
 from __future__ import annotations
 
@@ -37,12 +37,12 @@ def _doc(text: str) -> dict:
     return bootstrap._parse_jsonc_object(text)
 
 
-def _uncomment_cow(text: str) -> str:
-    """What an adopter does: remove the leading `// ` from the two opt-in lines."""
+def _comment_out_cow(text: str) -> str:
+    """What an adopter on a host without the btrfs area does: prefix the two CoW lines with `// `."""
     out = []
     for line in text.splitlines():
-        if re.match(r'^\s*// ("source=/srv/mdt-cockpit-cow/|"MDT_COW_ROOT")', line):
-            line = line.replace("// ", "", 1)
+        if re.match(r'^\s*("source=/srv/mdt-cockpit-cow/|"MDT_COW_ROOT")', line):
+            line = re.sub(r"^(\s*)", r"\1// ", line, count=1)
         out.append(line)
     return "\n".join(out)
 
@@ -105,23 +105,22 @@ def test_the_hook_dir_env_matches_the_config_mount_target() -> None:
     assert host["containerEnv"]["MDT_DEVCONTAINER_DIR"] == target
 
 
-def test_cow_lines_ship_commented_out_in_both_variants() -> None:
+def test_cow_lines_ship_active_in_both_variants_as_one_mount_and_one_matching_env_var() -> None:
     for text in (PER_REPO_TEXT, HOST_FOLDER_TEXT):
         doc = _doc(text)
-        assert not any("mdt-cockpit-cow" in m for m in doc["mounts"])
-        assert "MDT_COW_ROOT" not in doc["containerEnv"]
-        assert f"// {COW_MOUNT}," in text
-        assert f"// {COW_ENV}," in text
-
-
-def test_uncommenting_the_cow_lines_yields_one_mount_and_one_matching_env_var() -> None:
-    for text in (PER_REPO_TEXT, HOST_FOLDER_TEXT):
-        doc = _doc(_uncomment_cow(text))
         cow = [m for m in doc["mounts"] if "mdt-cockpit-cow" in m]
         assert cow == [COW_MOUNT.strip('"')]
         target = re.search(r"target=([^,]+)", cow[0])[1]
         assert doc["containerEnv"]["MDT_COW_ROOT"] == target
         assert target == "/srv/mdt-cockpit-cow/${localEnv:USER}"
+        assert f"// {COW_MOUNT}," not in text and f"// {COW_ENV}," not in text
+
+
+def test_a_host_without_the_area_comments_out_both_lines_together_and_gets_neither() -> None:
+    for text in (PER_REPO_TEXT, HOST_FOLDER_TEXT):
+        doc = _doc(_comment_out_cow(text))
+        assert not any("mdt-cockpit-cow" in m for m in doc["mounts"])
+        assert "MDT_COW_ROOT" not in doc["containerEnv"]
 
 
 def test_the_guide_quotes_exactly_the_template_lines() -> None:
