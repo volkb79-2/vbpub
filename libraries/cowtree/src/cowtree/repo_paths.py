@@ -2,7 +2,7 @@
 
 Scripts and tests never hardcode where ISOs, base images or VM state live: they ask ``RepoPaths.resolve(name)``
 (or the ``cowtree path NAME`` command). The config names each path, gives its plain location inside the checkout
-and, optionally, a location below ``$MDT_COW_ROOT/<repo-name>/`` where the same folder lives as a btrfs
+and, optionally, a location below ``$MDT_COW_ROOT/<repo>/`` (``repo`` is a top-level key of the config) where the same folder lives as a btrfs
 subvolume. The checkout itself stays where it is; only the selected folders are CoW subvolumes.
 
 This module knows no VM or Docker concept: names such as ``iso`` exist only in the repository's own config file.
@@ -27,7 +27,7 @@ from .errors import BackendFailed, PathRefused, RepoPathsInvalid, UsageError
 CONFIG_NAME = "repo-paths.toml"
 SCHEMA = 1
 PLACEHOLDER = "{project}"
-_TOP_KEYS = frozenset({"schema", "paths"})
+_TOP_KEYS = frozenset({"schema", "repo", "paths"})
 _ENTRY_KEYS = frozenset({"repo", "cow", "compression"})
 _COMPRESSION = re.compile(r"none|zstd|zstd:([1-9]|1[0-5])")
 _BRACES = re.compile(r"[{}]")
@@ -115,8 +115,23 @@ def _parse_entry(name: str, table: object) -> PathEntry:
     return PathEntry(name, table["repo"], cow, compression)
 
 
-def parse_repo_paths(text: str, source: str = CONFIG_NAME) -> dict[str, PathEntry]:
-    """Parse and validate the config text; every refusal is a ``RepoPathsInvalid`` naming *source*."""
+def _check_repo_name(value: object) -> str:
+    if (
+        not isinstance(value, str)
+        or not value
+        or "/" in value
+        or "\\" in value
+        or value.startswith(".")
+    ):
+        raise RepoPathsInvalid(
+            f"top-level repo must be one directory name (no '/', no leading dot), not {value!r}"
+        )
+    return value
+
+
+def parse_repo_paths(text: str, source: str = CONFIG_NAME) -> tuple[str, dict[str, PathEntry]]:
+    """Parse and validate the config text into ``(repo, entries)``; ``repo`` is the top-level key naming the
+    repository's folder below the CoW area. Every refusal is a ``RepoPathsInvalid`` naming *source*."""
     try:
         data = tomllib.loads(text)
     except tomllib.TOMLDecodeError as exc:
@@ -128,10 +143,11 @@ def parse_repo_paths(text: str, source: str = CONFIG_NAME) -> dict[str, PathEntr
         schema = data.get("schema")
         if type(schema) is not int or schema != SCHEMA:
             raise RepoPathsInvalid(f"schema must be {SCHEMA}, not {schema!r}")
+        repo = _check_repo_name(data.get("repo"))
         paths = data.get("paths")
         if not isinstance(paths, dict):
             raise RepoPathsInvalid("paths must be a table of named paths")
-        return {name: _parse_entry(name, table) for name, table in paths.items()}
+        return repo, {name: _parse_entry(name, table) for name, table in paths.items()}
     except RepoPathsInvalid as exc:
         raise RepoPathsInvalid(f"{source}: {exc}") from exc
 
@@ -149,14 +165,16 @@ def find_repo_root(start: str | os.PathLike[str]) -> Path:
 
 
 def load_repo_paths(repo_root: str | os.PathLike[str]) -> RepoPaths:
-    """Load ``<repo_root>/repo-paths.toml``. The repo name (the CoW mirror folder) is the basename of the root."""
+    """Load ``<repo_root>/repo-paths.toml``. The CoW mirror folder is the file's own ``repo`` key, never derived from
+    the directory name, so a worktree resolves to the same CoW folders as the main checkout."""
     root = Path(os.path.abspath(repo_root))
     config = root / CONFIG_NAME
     try:
         text = config.read_text(encoding="utf-8", errors="replace")
     except OSError as exc:
         raise UsageError(f"cannot read {str(config)!r}: {exc}") from exc
-    return RepoPaths(root, root.name, parse_repo_paths(text, str(config)))
+    repo, entries = parse_repo_paths(text, str(config))
+    return RepoPaths(root, repo, entries)
 
 
 def _check_project(project: object) -> None:
@@ -188,10 +206,11 @@ def _checked(tools: Btrfs, argv: Sequence[str], path: Path) -> str:
 
 @dataclass(frozen=True)
 class RepoPaths:
-    """The loaded config of one repository: ``root`` (the checkout), ``name`` (its basename), the entries."""
+    """The loaded config of one repository: ``root`` (this checkout or worktree, where the plain paths live),
+    ``repo`` (the config's CoW folder name, shared by every checkout of the repository), the entries."""
 
     root: Path
-    name: str
+    repo: str
     entries: Mapping[str, PathEntry]
 
     def _expand(self, name: str, project: str | None) -> tuple[PathEntry, str, str | None]:
@@ -226,11 +245,12 @@ class RepoPaths:
         ops: Ops | None = None,
     ) -> Resolved:
         """``cow`` mode only when the entry has ``cow``, ``MDT_COW_ROOT`` names a valid btrfs CoW area and
-        ``<area>/<repo-name>/<cow>`` is an existing directory; otherwise the plain repo path. Creates nothing."""
+        ``<area>/<repo>/<cow>`` (``repo`` from the config, the same for every worktree) is an existing directory;
+        otherwise the plain path inside this checkout or worktree. Creates nothing."""
         _entry, repo, cow = self._expand(name, project)
         area_root = self._area_root(cow, environ, ops)
         if area_root is not None and cow is not None:
-            target = Path(area_root) / self.name / cow
+            target = Path(area_root) / self.repo / cow
             if target.is_dir():
                 return Resolved(target, "cow", name, project)
         return Resolved(self.root / repo, "plain", name, project)
@@ -253,7 +273,7 @@ class RepoPaths:
         if area_root is None or cow is None:
             return Resolved(self.root / repo, "plain", name, project)
         tools = btrfs or Btrfs()
-        target = Path(area_root) / self.name / cow
+        target = Path(area_root) / self.repo / cow
         wanted = entry.compression
         if os.path.lexists(target):
             if not tools.is_subvolume(str(target)):

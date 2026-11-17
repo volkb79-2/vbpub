@@ -234,8 +234,8 @@ Why this shape:
 
 - **The checkout stays on ext4; the CoW area mirrors selected paths of it.** `$MDT_COW_ROOT/<repo-name>/<path>` holds the
   folder that `<checkout>/<path>` would be, for exactly the paths the repo's `repo-paths.toml` gives a `cow` location.
-  The set is per user (each user has their own `MDT_COW_ROOT`) and per repo (the `<repo-name>` level, the basename of the
-  checkout). The repository's tracked placeholders stay in the checkout; nothing is mounted over it.
+  The set is per user (each user has their own `MDT_COW_ROOT`) and per repo (the `<repo-name>` level, the top-level `repo` key of
+  `repo-paths.toml`, not the checkout's directory name, so every worktree shares the main checkout's CoW folders). The repository's tracked placeholders stay in the checkout; nothing is mounted over it.
 - **Tools ask the resolver, never a hardcoded path.** `libraries/cowtree/repo-path NAME [--project DIR]` (shell) or
   `cowtree.repo_paths` (Python) answers `$MDT_COW_ROOT/<repo-name>/<cow>` when `MDT_COW_ROOT` names a valid btrfs area
   and that folder exists, and `<repo root>/<repo>` otherwise; `--provision` creates the subvolume with its declared
@@ -390,8 +390,8 @@ absolute paths need the same check. [T for non-venv caches]
 A worktree-creating tool can make `$MDT_COW_ROOT/<repo>/worktrees/<instance-id>` a subvolume, link it into the
 worktree as an ignored `.store` symlink, export its path, and `btrfs subvolume delete` it together with the
 worktree (one fast call instead of `rm -rf`: 0.01 s for a small one [R]). The symlink dangles afterwards [R], so
-remove it too. A worktree resolves the shared paths through the same `repo-paths.toml` (its own checkout is a
-separate repo root); snapshotting declared gitignored paths into a worktree is the separate COW-BL-01/02 declaration
+remove it too. A worktree resolves the shared paths through its tracked copy of `repo-paths.toml` and so shares
+the main checkout's CoW folders; only its plain fallback stays inside the worktree. Snapshotting declared gitignored paths into a worktree is the separate COW-BL-01/02 declaration
 and does not use this table.
 
 ### 6.3 ISOs, base images and VM disks

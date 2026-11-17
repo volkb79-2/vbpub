@@ -10,6 +10,7 @@ from cowtree.repo_paths import Btrfs
 
 REPO_PATHS_TEXT = """\
 schema = 1
+repo = "myrepo"
 
 [paths.iso]
 repo = "downloads/iso"
@@ -39,7 +40,8 @@ repo = "{project}/local-lab"
 
 
 def write_repo(tmp_path, text=REPO_PATHS_TEXT, name="myrepo"):
-    """A repository directory holding a repo-paths.toml; returns its path."""
+    """A checkout or worktree directory (its directory name is irrelevant to the resolver) holding a
+    repo-paths.toml; returns its path."""
     root = tmp_path / name
     root.mkdir()
     (root / "repo-paths.toml").write_text(text, encoding="utf-8")

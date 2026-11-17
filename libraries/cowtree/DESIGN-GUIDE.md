@@ -146,7 +146,10 @@ One tracked `repo-paths.toml` in the repo root now names each shared path and sa
 location; every consumer asks the resolver. The checkout stays on its ordinary filesystem (a repository on a
 copy-on-write or compressed filesystem was rejected), and only selected folders are subvolumes, mirrored at
 `$MDT_COW_ROOT/<repo-name>/<path>`: one set per user (each has their own `MDT_COW_ROOT`) and per repo (the
-`<repo-name>` level). `MDT_COW_ROOT` is the one environment input; the earlier rule that no environment variable
+`<repo-name>` level). `<repo-name>` is a required top-level `repo` key of the file, not the checkout's directory
+name: a worktree carries the same tracked file, so it resolves to the same CoW folders as the main checkout (it is
+one repository, and the shared ISOs, base images and VM state must not fork per worktree), while its plain fallback
+stays inside the worktree. `MDT_COW_ROOT` is the one environment input; the earlier rule that no environment variable
 relocates a declared path is superseded for this reason.
 
 The fallback is silent only for "there is no CoW area": an unset `MDT_COW_ROOT`, `COWTREE_MODE=off`, a non-btrfs

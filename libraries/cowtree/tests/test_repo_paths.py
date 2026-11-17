@@ -23,7 +23,7 @@ WRAPPER = Path(__file__).parents[1] / "repo-path"
 
 
 def _cfg(body: str) -> str:
-    return "schema = 1\n" + body
+    return 'schema = 1\nrepo = "r"\n' + body
 
 
 # -- config validation -------------------------------------------------------------------------------------------
@@ -36,10 +36,18 @@ REFUSALS = [
     ('[paths.a]\nrepo = "x"\n', "schema must be 1, not None"),
     ('schema = true\n[paths.a]\nrepo = "x"\n', "schema must be 1, not True"),
     ('schema = "1"\n[paths.a]\nrepo = "x"\n', "schema must be 1"),
-    ("schema = 1\n", "paths must be a table"),
-    ("schema = 1\npaths = 1\n", "paths must be a table"),
-    ("schema = 1\n[paths]\na = 1\n", "paths.a must be a table"),
-    ('schema = 1\n[paths.""]\nrepo = "x"\n', "name must not be empty"),
+    ("schema = 1\n", "top-level repo must be one directory name"),
+    ('schema = 1\n[paths.a]\nrepo = "x"\n', "top-level repo must be one directory name"),
+    ('schema = 1\nrepo = ""\n', "top-level repo must be one directory name"),
+    ('schema = 1\nrepo = 3\n', "top-level repo must be one directory name"),
+    ('schema = 1\nrepo = "a/b"\n', "top-level repo must be one directory name"),
+    ('schema = 1\nrepo = "a\\\\b"\n', "top-level repo must be one directory name"),
+    ('schema = 1\nrepo = ".."\n', "top-level repo must be one directory name"),
+    ('schema = 1\nrepo = ".hidden"\n', "top-level repo must be one directory name"),
+    ('schema = 1\nrepo = "r"\n', "paths must be a table"),
+    ('schema = 1\nrepo = "r"\npaths = 1\n', "paths must be a table"),
+    ('schema = 1\nrepo = "r"\n[paths]\na = 1\n', "paths.a must be a table"),
+    ('schema = 1\nrepo = "r"\n[paths.""]\nrepo = "x"\n', "name must not be empty"),
     (_cfg('[paths.a]\nrepo = "x"\nfoo = 1\nbar = 2\n'), "paths.a has unknown keys: bar, foo"),
     (_cfg('[paths.a]\ncow = "x"\n'), "paths.a.repo must be a non-empty string"),
     (_cfg('[paths.a]\nrepo = ""\n'), "paths.a.repo must be a non-empty string"),
@@ -76,7 +84,7 @@ def test_every_validation_rule_refuses_with_a_typed_error_naming_the_source(text
 
 
 def test_valid_variants_are_accepted_and_typed():
-    entries = parse_repo_paths(
+    repo, entries = parse_repo_paths(
         _cfg(
             '[paths.a]\nrepo = "x"\ncompression = "zstd:15"\n'
             '[paths.b]\nrepo = "{project}/x"\n'
@@ -84,6 +92,7 @@ def test_valid_variants_are_accepted_and_typed():
             '[paths.d]\nrepo = "y"\ncow = "z"\ncompression = "none"\n'
         )
     )
+    assert repo == "r"
     assert entries == {
         "a": PathEntry("a", "x", None, "zstd:15"),
         "b": PathEntry("b", "{project}/x", None, None),
@@ -94,6 +103,7 @@ def test_valid_variants_are_accepted_and_typed():
 
 def test_the_real_repo_config_loads_and_resolves_each_of_its_four_names():
     repo_paths_ = load_repo_paths(REAL_REPO_ROOT)
+    assert repo_paths_.repo == "vbpub"
     assert set(repo_paths_.entries) == {"iso", "vm-images", "vm-lab", "downloads"}
     assert repo_paths_.entries["iso"] == PathEntry("iso", "downloads/iso", "downloads/iso", "none")
     assert repo_paths_.entries["vm-images"].compression == "zstd"
@@ -114,11 +124,26 @@ def test_the_real_repo_config_loads_and_resolves_each_of_its_four_names():
 # -- loading and root discovery ----------------------------------------------------------------------------------
 
 
-def test_load_reads_the_file_and_names_the_repo_after_the_root_directory(tmp_path):
-    root = write_repo(tmp_path, name="the-repo")
+def test_load_reads_the_file_and_takes_the_repo_name_from_the_config_not_the_directory(tmp_path):
+    root = write_repo(tmp_path, name="the-directory")
     loaded = load_repo_paths(root)
-    assert loaded.root == root and loaded.name == "the-repo"
+    assert loaded.root == root and loaded.repo == "myrepo"
     assert loaded.entries["iso"].cow == "downloads/iso"
+
+
+def test_a_worktree_resolves_to_the_same_cow_folders_but_keeps_its_own_plain_fallback(tmp_path):
+    main = load_repo_paths(write_repo(tmp_path, name="vbpub"))
+    worktree = load_repo_paths(write_repo(tmp_path, name="rp-01-worktree"))
+    area, environ, ops = btrfs_area(tmp_path)
+    plain_main = main.resolve("iso", environ={}, ops=ops)
+    plain_worktree = worktree.resolve("iso", environ={}, ops=ops)
+    assert plain_main.path == main.root / "downloads/iso"
+    assert plain_worktree.path == worktree.root / "downloads/iso"
+    (area / "myrepo" / "downloads" / "iso").mkdir(parents=True)
+    got_main = main.resolve("iso", environ=environ, ops=ops)
+    got_worktree = worktree.resolve("iso", environ=environ, ops=ops)
+    assert got_main.mode == got_worktree.mode == "cow"
+    assert got_main.path == got_worktree.path == area / "myrepo" / "downloads" / "iso"
 
 
 def test_load_refuses_a_missing_file_and_an_invalid_one_naming_the_file(tmp_path):

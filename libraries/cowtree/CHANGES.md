@@ -11,7 +11,8 @@ internal library, not a separately published release target.
 
 ### Added
 - Add `cowtree.repo_paths` and the repo-root `repo-paths.toml` config: one tracked file names a repository's shared
-  paths (plain location, optional CoW location below `$MDT_COW_ROOT/<repo-name>/`, compression), a resolver
+  paths (top-level `repo` key naming the CoW folder, shared by every worktree; plain location, optional CoW location
+  below `$MDT_COW_ROOT/<repo>/`, compression), a resolver
   (`load_repo_paths`, `find_repo_root`, `RepoPaths.resolve` and `.provision`) returns the CoW folder only when the
   area is a valid btrfs one and the folder exists, else the plain path. CLI `cowtree path NAME [--project DIR]
   [--repo-root DIR] [--provision] [--json]`, the `libraries/cowtree/repo-path` shell wrapper, new typed errors

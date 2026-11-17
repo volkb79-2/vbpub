@@ -133,7 +133,8 @@ def _path_command(args) -> int:
         resolved = repo_paths.provision(args.name, project=args.project)
     else:
         resolved = repo_paths.resolve(args.name, project=args.project)
-    _output(resolved.as_dict() if args.json else str(resolved.path), args.json)
+    document = {**resolved.as_dict(), "repo": repo_paths.repo} if args.json else str(resolved.path)
+    _output(document, args.json)
     return 0
 
 

@@ -227,6 +227,7 @@ def test_path_cli_prints_the_plain_path_or_json(tmp_path, monkeypatch, capsys):
     assert cli.main(argv) == 0
     assert json.loads(capsys.readouterr().out) == {
         "name": "vm-lab", "project": "scripts/x", "path": f"{root}/scripts/x/vm-lab", "mode": "plain",
+        "repo": "myrepo",
     }
 
 
@@ -246,7 +247,7 @@ def test_path_cli_reports_cow_mode_for_an_existing_cow_folder(tmp_path, monkeypa
     (area / "myrepo" / "downloads" / "iso").mkdir(parents=True)
     assert cli.main(["path", "iso", "--repo-root", str(root), "--json"]) == 0
     assert json.loads(capsys.readouterr().out) == {
-        "name": "iso", "project": None, "path": f"{area}/myrepo/downloads/iso", "mode": "cow",
+        "name": "iso", "project": None, "path": f"{area}/myrepo/downloads/iso", "mode": "cow", "repo": "myrepo",
     }
 
 

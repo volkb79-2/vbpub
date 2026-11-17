@@ -52,10 +52,11 @@ in its root (this is the shape; the repository's own file is authoritative):
 
 ```toml
 schema = 1
+repo = "vbpub"               # the repository's folder below $MDT_COW_ROOT, shared by every worktree
 
 [paths.iso]
 repo = "downloads/iso"       # plain location, relative to the repo root
-cow = "downloads/iso"        # below $MDT_COW_ROOT/<repo-name>/ ; omit = never CoW
+cow = "downloads/iso"        # below $MDT_COW_ROOT/<repo>/ ; omit = never CoW
 compression = "none"         # none | zstd | zstd:N (1..15)
 
 [paths.vm-lab]
