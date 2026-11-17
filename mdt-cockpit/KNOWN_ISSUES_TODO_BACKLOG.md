@@ -867,9 +867,9 @@ while the parent's is unset. Until decided, an operator may still set them by ha
 - RG-144 consumes the guard events, but optionally.
 - Flip the guard to `enforce`, and adjust the tier fractions, after M6.
 
-## MDT-044 - host-setup: provision the CoW area and the vm-lab.toml mirror, in a fresh-host order (2026-11-03)
+## MDT-044 - host-setup: provision the CoW area and the cowtree.toml mirror, in a fresh-host order (2026-11-03)
 
-**Status:** OPEN. The repo-root `vm-lab.toml` and the cowtree resolver (package RP-01) are the per-repo half; this entry is
+**Status:** OPEN. The repo-root `cowtree.toml` and the cowtree resolver (package RP-01) are the per-repo half; this entry is
 the host half and the consumer migration. `libraries/cowtree` COW-BL-01/-02 (declared gitignored paths for worktree snapshots)
 is a different table and stays open.
 
@@ -877,8 +877,10 @@ is a different table and stays open.
 
 - The checkout, with `.worktrees/`, **stays on ext4**. Selected folders are btrfs subvolumes mirrored at
   `$MDT_COW_ROOT/<repo-name>/<path>`, one set per user and per repo. There is no mount-over of a folder in the checkout.
-- One tracked config in the repo root, `vm-lab.toml`, names every shared path (`iso`, `vm-images`, `vm-lab` per project,
-  `downloads`), its plain location, and its CoW location and compression. Scripts and tests take every shared path from it
+- One tracked config in the repo root, `cowtree.toml`, names every shared path (`iso`, `vm-images`, `vm-lab` per project,
+  `downloads`), its plain location, and its CoW location and compression. Ownership: cowtree owns the schema and the
+  resolver, the repository owns the entries as data, the host owns `MDT_COW_ROOT` and the mode (`COWTREE_MODE`), never the
+  file. Scripts and tests take every shared path from it
   through the resolver (`libraries/cowtree/repo-path`, `cowtree.repo_paths`) and never hardcode `downloads/` or `vm-lab/`.
   `MDT_COW_ROOT` is the one environment input; without it, or when the CoW folder does not exist, the resolver answers with the
   plain repo path.
@@ -912,7 +914,7 @@ is a different table and stays open.
 3. Provision the declared paths (`libraries/cowtree/repo-path NAME [--project DIR] --provision` per name; the subvolume is created
    below `$MDT_COW_ROOT/<repo-name>/` with its declared compression).
 4. Worktrees: `ciu worktree create` snapshots the paths of the separate COW-BL-01/02 declaration (CIU-159); a worktree resolves
-   shared paths through its own `vm-lab.toml`.
+   shared paths through its own `cowtree.toml`.
 
 **Open points.** What `check.sh` reports on a host with no btrfs (one INFO line, not a failure); whether the wizard offers to
 create a loop-backed btrfs for a test host (no: a real device or an existing btrfs only, see the loop-device incident rule).
@@ -974,7 +976,7 @@ the release flow): the two variables, that the environment wins over the `docker
 3. Before any restart, list the running containers by name and require confirmation (never an all-container inventory beyond
    the names), and print the restart-free alternative (`systemctl reload` or a reboot window) when the changed keys allow it.
 4. Document the chicken-and-egg rule: a folder inside the checkout is never mounted over by host-setup (the vm-lab mount-over
-   was dropped); CoW paths are subvolumes below `$MDT_COW_ROOT/<repo-name>/` found through `vm-lab.toml` (MDT-044), so no
+   was dropped); CoW paths are subvolumes below `$MDT_COW_ROOT/<repo-name>/` found through `cowtree.toml` (MDT-044), so no
    container needs a restart to see them.
 
 **Acceptance.** A test on fake `systemctl` shows `install.sh` without `--restart-docker` issues no Docker restart on any path;
@@ -1516,9 +1518,12 @@ literal. Host check (2026-11-17, via `host-escape`): the controller host publish
 (`/etc/host-endpoints.d`, `/etc/host-endpoints.env` and the `/etc/environment` block are absent,
 topos is not installed) while cgprofile's old-layout sockets are live (`ctl.sock` group docker 994;
 `observer/resource-observer.sock` group `cgprofile-observer` 990, directory mode 751) and `pam_env`
-is active for sshd; so the bootstrap bridges from the live sockets until the installers publish. Open: confirm on the next rebuild that a session receives the variables and a registered
-Run-Gate lane starts without a manual export; the mount-from-record and `MDT_HOST_DOCKER_GID`
-replacement of the `DOCKER_GID` export (design 2.2/2.3b) stay deferred until every host publishes.
+is active for sshd; so the bootstrap bridges from the live sockets until the installers publish. Verified 2026-11-18 on the controller host after the cutover (docs/HOST-CUTOVER-2026-11.md): the
+rebuilt dstdns devcontainer received every `CGPROFILE_*`/`MDT_*` variable through the generated env
+file, the control group 989 through `--group-add`, `cgprofilectl doctor` was OK, and the observer lane
+`cowtree` was admitted and measured by cgprofile (peak 682 MiB) with no manual export. The mount-from-record
+and `MDT_HOST_DOCKER_GID` replacement of the `DOCKER_GID` export (design 2.2/2.3b) stay deferred until every
+host publishes; `finalize` still prints `docker_gid=?` because it reads the old variable name.
 
 **Close when.** The delivery decision is recorded in `docs/DESIGN-GUIDE.md`;
 the daemon fragments exist; a devcontainer built from a complete record receives

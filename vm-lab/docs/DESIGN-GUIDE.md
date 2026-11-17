@@ -48,7 +48,7 @@ its own, `vm-lab/`, with the package `vm_lab` in `src/` and the console script
   the same directory, so the cockpit image sets the variable to the repository's
   common Git directory.
 - **No paths in the package.** Every verb takes `--state-dir` and `--base-disk`;
-  consumers derive them from the path resolver (`vm-lab.toml`, `repo-path`), and
+  consumers derive them from the path resolver (`cowtree.toml`, `repo-path`), and
   the package does not import cowtree.
 - **Environment defaults stay** (`DOCKER_NETWORK_INTERNAL`,
   `CGROUP_PARENT_DEV_BACKGROUND`), and a missing network says where it comes from

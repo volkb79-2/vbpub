@@ -5,6 +5,13 @@ internal library, not a separately published release target.
 
 ## [Unreleased]
 
+### Changed
+- Rename the repo config `vm-lab.toml` to `cowtree.toml` (`CONFIG_NAME`): the file declares CoW folder mappings, which
+  is cowtree's mechanism; entries stay data owned by the declaring consumers, and the host owns `MDT_COW_ROOT` and
+  `COWTREE_MODE` (SPEC "Ownership"). Migration hint: a repository that holds only `vm-lab.toml` is refused by
+  `find_repo_root` and `load_repo_paths` with a `UsageError` that says the file was renamed and gives the `git mv`;
+  the old file is never read (no fallback). Entry names and the `repo` key are unchanged.
+
 ### Fixed
 - COW-BL-04: declare per-write persistence expectations under relaxed fsync
   (SPEC P1-P4) and test that a truncated `owner.json` is untrusted and retained.

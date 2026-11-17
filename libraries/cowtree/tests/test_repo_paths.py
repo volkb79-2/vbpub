@@ -105,6 +105,11 @@ def test_valid_variants_are_accepted_and_typed():
 
 
 def test_the_real_repo_config_loads_and_resolves_each_of_its_four_names():
+    # repo-self-check: the committed cowtree.toml exists under its current name only and declares the four entries
+    assert repo_paths.CONFIG_NAME == "cowtree.toml"
+    assert (REAL_REPO_ROOT / "cowtree.toml").is_file()
+    assert not (REAL_REPO_ROOT / repo_paths.LEGACY_CONFIG_NAME).exists()
+    assert find_repo_root(REAL_REPO_ROOT / "libraries" / "cowtree") == REAL_REPO_ROOT
     repo_paths_ = load_repo_paths(REAL_REPO_ROOT)
     assert repo_paths_.repo == "vbpub"
     assert set(repo_paths_.entries) == {"iso", "vm-images", "vm-lab", "downloads"}
@@ -158,7 +163,30 @@ def test_load_refuses_a_missing_file_and_an_invalid_one_naming_the_file(tmp_path
     broken = write_repo(tmp_path, text="schema = 7\n", name="broken")
     with pytest.raises(RepoPathsInvalid, match="schema must be 1") as caught:
         load_repo_paths(broken)
-    assert str(broken / "vm-lab.toml") in str(caught.value)
+    assert str(broken / repo_paths.CONFIG_NAME) in str(caught.value)
+
+
+def test_a_repo_holding_only_the_old_name_is_refused_with_a_rename_hint(tmp_path):
+    old = tmp_path / "old"
+    old.mkdir()
+    (old / repo_paths.LEGACY_CONFIG_NAME).write_text(REPO_PATHS_TEXT, encoding="utf-8")
+    assert repo_paths.LEGACY_CONFIG_NAME == "vm-lab.toml"
+    for call in (load_repo_paths, find_repo_root):
+        with pytest.raises(UsageError, match="was renamed to cowtree.toml") as caught:
+            call(old)
+        assert caught.value.code == "usage"
+        assert str(old / "vm-lab.toml") in str(caught.value)
+    nested = old / "a"
+    nested.mkdir()
+    with pytest.raises(UsageError, match="was renamed to cowtree.toml"):
+        find_repo_root(nested)
+
+
+def test_the_new_name_wins_when_both_exist_and_the_old_file_is_never_read(tmp_path):
+    root = write_repo(tmp_path)
+    (root / repo_paths.LEGACY_CONFIG_NAME).write_text("this is not toml = = =", encoding="utf-8")
+    assert find_repo_root(root) == root
+    assert load_repo_paths(root).repo == "myrepo"
 
 
 def test_root_discovery_walks_up_from_a_nested_directory_and_from_a_file(tmp_path):
@@ -175,7 +203,7 @@ def test_root_discovery_takes_the_nearest_config_and_never_the_current_directory
     outer = write_repo(tmp_path, name="outer")
     inner = outer / "inner"
     inner.mkdir()
-    (inner / "vm-lab.toml").write_text(REPO_PATHS_TEXT, encoding="utf-8")
+    (inner / repo_paths.CONFIG_NAME).write_text(REPO_PATHS_TEXT, encoding="utf-8")
     other = write_repo(tmp_path, name="other")
     monkeypatch.chdir(other)
     assert find_repo_root(inner / "deep") == inner
@@ -185,10 +213,10 @@ def test_root_discovery_takes_the_nearest_config_and_never_the_current_directory
 def test_root_discovery_without_any_config_is_a_usage_error(tmp_path, monkeypatch):
     # A config name no real directory above the temporary one can hold, so the result never depends on where the
     # temporary directory sits.
-    monkeypatch.setattr(repo_paths, "CONFIG_NAME", "vm-lab-never-present.toml")
+    monkeypatch.setattr(repo_paths, "CONFIG_NAME", "cowtree-never-present.toml")
     nowhere = tmp_path / "nowhere"
     nowhere.mkdir()
-    with pytest.raises(UsageError, match="no vm-lab-never-present.toml at or above"):
+    with pytest.raises(UsageError, match="no cowtree-never-present.toml at or above"):
         find_repo_root(nowhere)
 
 
