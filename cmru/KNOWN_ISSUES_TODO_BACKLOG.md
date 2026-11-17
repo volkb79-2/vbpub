@@ -3792,6 +3792,16 @@ Call: `SOURCE_DATE_EPOCH=1700000000 DEMO_VERSION=1.0.0 cmru handler bundle-build
 
 **Close when.** A change that adds a `cmru` call to a shell script is refused or auto-extended with the cmru lane, shown by a test of the selection rule, and the trigger list is derived from the scanner's own file selection.
 
+## KI-176 `cmru versions resolve` cannot refresh a project whose npm targets use `constraint = "*"`: it demands a hand-edited `package.json`
+
+**Status:** OPEN (filed 2026-11-17 while releasing mdt-cockpit); severity: medium (a release stalls once the record passes its 28-day limit, with a message that names `resolve` as the fix and then `resolve` itself refuses).
+
+**Problem.** mdt-cockpit declares `npm.copilot`, `npm.openclaw` and `npm.claudelink` with `constraint = "*"`, and the committed `package.json` pins exact versions. When the registry moves, `cmru versions resolve` stops at the first target with `target 'npm.X' resolves A, but <project> manifest requires 'B'`, one target per run, so three stale pins took three failed runs and hand edits of `package.json` (dependencies and overrides). The stale-record error ("run `cmru versions resolve` ... and commit the result") does not mention the manifest edit.
+
+**Wanted.** Either `resolve` rewrites the manifest pins for `*` targets (it already writes `package-lock.json`), or every mismatching target is reported in one run with the edit to make, and the stale-record message names the manifest.
+
+**Close when.** An acceptance test with two stale `*` npm targets shows one `resolve` run either refreshes both or lists both with the exact `package.json` change.
+
 ## KI-175 dist-dir escape can delete the project or its parent
 
 **Status:** OPEN (filed 2026-11-16 during review round 1); severity: high (configuration can recursively delete the project checkout or another writable directory before a build).
