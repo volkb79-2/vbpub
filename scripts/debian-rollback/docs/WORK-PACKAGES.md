@@ -229,6 +229,36 @@ brief after VML-04 to VML-06 have shown what scenarios really call.
 
 Lowest priority. Only pwmcp benefits; schedule when pwmcp work wants it.
 
+### Track P: one path standard and a vm-lab project (operator 2026-11-17)
+
+Decisions: every script and test takes ISO, base-image and VM-state paths from
+one config in the repo root (`repo-paths.toml`) through a resolver in cowtree;
+the checkout stays on ext4 and only selected folders are CoW subvolumes under
+`$MDT_COW_ROOT/<repo-name>/` (one set per user and repo); the VM tool becomes a
+top-level project `vm-lab/` (wheel, console script, its own QEMU image
+Dockerfile, release lane) that depends on the `vmscreen` wheel; both wheels go
+into the mdt-cockpit image later. Each package: Sonnet implements, an independent
+Sonnet reviews, serial merges, full gates; one Opus review of the whole series at
+the end (operator 2026-11-17).
+
+| Id | Content | State |
+|---|---|---|
+| RP-01 | `repo-paths.toml`, resolver and `cowtree path` verb in cowtree, standard docs (AGENTS.md, BTRFS-COW.md, MDT-044, downloads README) | brief `artifacts/debian-rollback/briefs/RP-01.md` |
+| RP-02 | Create top-level `vm-lab/` from `scripts/vm-lab/` (git mv, pyproject and wheel, console script `vm-lab`, `vmscreen` as a dependency instead of PATH probing, QEMU image Dockerfile, `cmru.toml`/`assay.toml`/`run-gate.toml`, defaults for network and slice from the environment, state and base paths through the resolver); the TrueNAS front imports the package | open |
+| RP-03 | `scripts/truenas` (`vanilla-iso-patcher` DOWNLOADS_DIR, `golden-iso`, `tcg_vm.py` default state dir, docs) and `truenas/tnt` (TNT-59, the `test_hardening.py` pin) on the resolver | open |
+| RP-04 | debian-install-v2 harness (`HOST_DOWNLOADS_DIR`, `vmctl`, its boundary tests) on the resolver | open |
+| RP-05 | netcup consumer docs, pwmcp console-capture, zswap synthetic runner, io-governor doc | open |
+| RP-06 | Move the existing flat `downloads/` files into `iso/` and `vm-images/` (CoW subvolumes, convert the cloud image to raw), `.sha256` beside each; remove the old locations | open, after RP-03 to RP-05 |
+| RP-07 | Design (frontier): VMs as `ciu up` services, one container per VM, ciu stack template for a vm-lab VM, graceful stop through QMP, how vm-lab's admission rules (memory pressure, guest cap, locks) apply when ciu starts the container | open, design only |
+
+### First real guest (after RP-02, or before with explicit env)
+
+Needs: a QEMU image (`VM_LAB_QEMU_IMAGE`; `debian-install-vm:cb76f8b5350b`
+looks usable, untested) and the Docker network (`DOCKER_NETWORK_INTERNAL`, this
+devcontainer is on `vbpub-cmqemn-network`). Both become defaults supplied by
+RP-02 (image from the project's own Dockerfile, network and slice from the ciu
+or devcontainer environment).
+
 ## 7. Track B: the installer
 
 ### DR-01 Layout specification and install config (S, frontier writes it)
