@@ -16,7 +16,8 @@ internal library, not a separately published release target.
   (`load_repo_paths`, `find_repo_root`, `RepoPaths.resolve` and `.provision`) returns the CoW folder only when the
   area is a valid btrfs one and the folder exists, else the plain path. CLI `cowtree path NAME [--project DIR]
   [--repo-root DIR] [--provision] [--json]`, the `libraries/cowtree/repo-path` shell wrapper, new typed errors
-  `RepoPathsInvalid` (status 5) and `UsageError` (status 2). SPEC "Repo paths" RP1-RP6.
+  `RepoPathsInvalid` (status 5) and `UsageError` (status 2). SPEC "Repo paths" RP1-RP6. `resolve` performs no write
+  (no `detect()`); compression is `none` or `zstd`; `repo = "shared"` is refused.
 - Add the shared keyed-tree mechanism (AD2-3): `cowtree.cache` (`Cache.ensure`
   atomic publish with a verification manifest and an optional `identity=` guard
   (`key-collision`, exit 13), flock leases on `<key>/.lease` in the layout of

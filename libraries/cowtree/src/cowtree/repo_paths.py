@@ -6,30 +6,36 @@ and, optionally, a location below ``$MDT_COW_ROOT/<repo>/`` (``repo`` is a top-l
 subvolume. The checkout itself stays where it is; only the selected folders are CoW subvolumes.
 
 This module knows no VM or Docker concept: names such as ``iso`` exist only in the repository's own config file.
-It is stdlib-only (Python >= 3.11 for ``tomllib``). Resolving never creates anything in the repository or in
-the CoW area (``cowtree.detect.detect`` maintains the area's own ``.cowtree`` metadata, as everywhere else);
-only ``provision`` creates directories and subvolumes.
+It is stdlib-only (Python >= 3.11 for ``tomllib``). ``resolve`` performs no write at all: it reads the environment,
+``stat`` and ``/proc/self/mountinfo`` only, so it is cheap and works for any uid. ``provision`` creates directories
+and the subvolume and sets its property, and it uses ``cowtree.detect.detect``, which may create the area's own
+``.cowtree`` metadata and runs a capability probe.
 """
 from __future__ import annotations
 
 import os
 import re
+import stat
 import subprocess
 import tomllib
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
-from .backends import Ops
-from .detect import detect
-from .errors import BackendFailed, PathRefused, RepoPathsInvalid, UsageError
+from .backends import LinuxOps, Ops
+from .detect import ENV_MODE, ENV_ROOT, _read_mountinfo, detect
+from .errors import BackendFailed, PathRefused, RepoPathsInvalid, RootInvalid, UsageError
+from .paths import mount_fstype, normalized_absolute
 
 CONFIG_NAME = "repo-paths.toml"
 SCHEMA = 1
 PLACEHOLDER = "{project}"
+#: Name of the directory cowtree itself keeps in every area root; a repository must not claim it.
+RESERVED_REPO_NAMES = frozenset({"shared"})
 _TOP_KEYS = frozenset({"schema", "repo", "paths"})
 _ENTRY_KEYS = frozenset({"repo", "cow", "compression"})
-_COMPRESSION = re.compile(r"none|zstd|zstd:([1-9]|1[0-5])")
+#: btrfs can set only an algorithm through the inode property, never a level.
+COMPRESSIONS = ("none", "zstd")
 _BRACES = re.compile(r"[{}]")
 _BAD_SEGMENTS = ("", ".", "..")
 _SUBVOLUME_INODE = 256
@@ -107,8 +113,8 @@ def _parse_entry(name: str, table: object) -> PathEntry:
     if "cow" in table:
         _check_relative(table["cow"], f"{label}.cow")
     compression = table.get("compression")
-    if "compression" in table and (not isinstance(compression, str) or not _COMPRESSION.fullmatch(compression)):
-        raise RepoPathsInvalid(f"{label}.compression must be none, zstd or zstd:N (1..15): {compression!r}")
+    if "compression" in table and compression not in COMPRESSIONS:
+        raise RepoPathsInvalid(f"{label}.compression must be none or zstd: {compression!r}")
     cow = table.get("cow")
     if cow is not None and (PLACEHOLDER in table["repo"]) != (PLACEHOLDER in cow):
         raise RepoPathsInvalid(f"{label}: {PLACEHOLDER} must appear in both repo and cow or in neither")
@@ -122,9 +128,11 @@ def _check_repo_name(value: object) -> str:
         or "/" in value
         or "\\" in value
         or value.startswith(".")
+        or value in RESERVED_REPO_NAMES
     ):
         raise RepoPathsInvalid(
-            f"top-level repo must be one directory name (no '/', no leading dot), not {value!r}"
+            "top-level repo must be one directory name (no '/', no leading dot, not "
+            f"{', '.join(sorted(RESERVED_REPO_NAMES))}), not {value!r}"
         )
     return value
 
@@ -197,6 +205,38 @@ def _same_compression(current: str, wanted: str) -> bool:
     return current.replace("none", "") == wanted.replace("none", "")
 
 
+def _fs_type(root: str, ops: Ops) -> str:
+    """The filesystem type of *root* from mountinfo (read-only; the injectable boundary of ``resolve``)."""
+    return mount_fstype(os.path.realpath(root), _read_mountinfo(ops))
+
+
+def _readonly_area_root(cow: str | None, environ: Mapping[str, str] | None, ops: Ops | None) -> str | None:
+    """The CoW area root for a plain lookup, using no write: None when the entry has no ``cow``, the mode is off,
+    ``MDT_COW_ROOT`` is unset, a permission error hides the root, or the root is on another filesystem than btrfs.
+    A set root that is relative or not an existing directory raises ``RootInvalid`` (a broken area is loud)."""
+    if cow is None:
+        return None
+    env = os.environ if environ is None else environ
+    mode = env.get(ENV_MODE, "auto")
+    if mode not in {"auto", "off"}:
+        raise RootInvalid(f"COWTREE_MODE must be 'auto' or 'off', not {mode!r}")
+    if mode == "off" or ENV_ROOT not in env:
+        return None
+    root = env[ENV_ROOT]
+    if not normalized_absolute(root):
+        raise RootInvalid("MDT_COW_ROOT must be an absolute, normalized path without NUL")
+    operations = ops or LinuxOps()
+    try:
+        is_directory = stat.S_ISDIR(operations.stat(root).st_mode)
+    except PermissionError:
+        return None
+    except OSError:
+        is_directory = False
+    if not is_directory:
+        raise RootInvalid(f"MDT_COW_ROOT is not an existing directory: {root!r}")
+    return root if _fs_type(root, operations) == "btrfs" else None
+
+
 def _checked(tools: Btrfs, argv: Sequence[str], path: Path) -> str:
     status, output = tools.run(argv)
     if status != 0:
@@ -226,9 +266,11 @@ class RepoPaths:
         cow = None if entry.cow is None else entry.cow.replace(PLACEHOLDER, project)
         return entry, entry.repo.replace(PLACEHOLDER, project), cow
 
-    def _area_root(self, cow: str | None, environ: Mapping[str, str] | None, ops: Ops | None) -> str | None:
-        """The validated CoW area root, or None when this entry never uses one or the host has no btrfs area.
-        A configured but broken area raises (``RootInvalid``) instead of falling back."""
+    def _provision_area_root(
+        self, cow: str | None, environ: Mapping[str, str] | None, ops: Ops | None
+    ) -> str | None:
+        """The validated btrfs area root for provisioning (``detect()``, which may write ``.cowtree`` and probes),
+        or None when this entry never uses one or the host has no btrfs area. A broken area raises."""
         if cow is None:
             return None
         area = detect(environ=environ, ops=ops)
@@ -246,12 +288,15 @@ class RepoPaths:
     ) -> Resolved:
         """``cow`` mode only when the entry has ``cow``, ``MDT_COW_ROOT`` names a valid btrfs CoW area and
         ``<area>/<repo>/<cow>`` (``repo`` from the config, the same for every worktree) is an existing directory;
-        otherwise the plain path inside this checkout or worktree. Creates nothing."""
+        otherwise the plain path inside this checkout or worktree. Performs no write at all (no ``detect()``): it
+        checks that ``MDT_COW_ROOT`` is an absolute existing directory whose filesystem is btrfs. A set
+        ``MDT_COW_ROOT`` that is not an existing directory raises ``RootInvalid``; a permission error while looking
+        is not an error, the answer is plain."""
         _entry, repo, cow = self._expand(name, project)
-        area_root = self._area_root(cow, environ, ops)
+        area_root = _readonly_area_root(cow, environ, ops)
         if area_root is not None and cow is not None:
             target = Path(area_root) / self.repo / cow
-            if target.is_dir():
+            if os.path.isdir(target):
                 return Resolved(target, "cow", name, project)
         return Resolved(self.root / repo, "plain", name, project)
 
@@ -267,9 +312,10 @@ class RepoPaths:
         """Create the CoW subvolume of *name* when a valid btrfs area exists and the entry has ``cow``
         (parents as plain directories, then ``btrfs subvolume create``, then the compression property); idempotent.
         An existing plain directory at the CoW location is refused. Without a usable area nothing is created
-        and the plain result is returned. The plain repo location is never touched."""
+        and the plain result is returned. The plain repo location is never touched. Unlike ``resolve`` this writes:
+        it creates directories and the subvolume, sets the property, and ``detect()`` may create ``.cowtree``."""
         entry, repo, cow = self._expand(name, project)
-        area_root = self._area_root(cow, environ, ops)
+        area_root = self._provision_area_root(cow, environ, ops)
         if area_root is None or cow is None:
             return Resolved(self.root / repo, "plain", name, project)
         tools = btrfs or Btrfs()
@@ -283,7 +329,10 @@ class RepoPaths:
                 )
             current = _property_value(_checked(tools, ["btrfs", "property", "get", str(target), "compression"], target))
         else:
-            os.makedirs(target.parent, exist_ok=True)
+            try:
+                os.makedirs(target.parent, exist_ok=True)
+            except (OSError, ValueError) as exc:
+                raise BackendFailed("makedirs", getattr(exc, "errno", None), str(target.parent), str(exc)) from exc
             _checked(tools, ["btrfs", "subvolume", "create", str(target)], target)
             current = None
         if wanted is not None and (current is None or not _same_compression(current, wanted)):

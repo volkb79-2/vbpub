@@ -80,12 +80,14 @@ iso_dir = paths.resolve("iso").path                      # Resolved(path, mode, 
 ```
 
 `resolve` answers with the CoW folder (mode `cow`) only when the entry has a `cow`
-location, `MDT_COW_ROOT` names a valid btrfs area and that folder exists; in every
+location, `MDT_COW_ROOT` is an existing directory on btrfs and that folder exists; in every
 other case it answers with the plain repo path (mode `plain`). A missing
-`MDT_COW_ROOT` is a normal plain host and falls back silently; a configured but broken
-area raises `RootInvalid` (status 3). Resolving creates nothing; `provision` (CLI
-`--provision`) creates the missing parents, the subvolume and its compression
-property, is idempotent, and refuses an existing plain directory at the CoW location.
+`MDT_COW_ROOT` is a normal plain host and falls back silently; a set `MDT_COW_ROOT` that is
+relative or not an existing directory raises `RootInvalid` (status 3). `resolve` performs
+no write at all (no `detect()`, so no `.cowtree/` and no probe); `provision` (CLI
+`--provision`) uses `detect()`, which may create `.cowtree/`, then creates the missing
+parents, the subvolume and sets its compression property (`none` or `zstd`), is
+idempotent, and refuses an existing plain directory at the CoW location.
 The command is `cowtree path NAME [--project DIR] [--repo-root DIR] [--provision] [--json]`
 (`libraries/cowtree/repo-path` runs it from the source tree). An invalid file is a
 `RepoPathsInvalid` (status 5); an unknown name, a missing project or no file found is a

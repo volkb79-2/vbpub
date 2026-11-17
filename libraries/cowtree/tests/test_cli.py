@@ -214,7 +214,11 @@ def _cow_area(tmp_path, monkeypatch):
 
     root, environ, ops = btrfs_area(tmp_path)
     area = real_detect(environ=environ, ops=ops)
+    # provision goes through detect(); a plain lookup reads the environment and the filesystem type only
     monkeypatch.setattr(repo_paths, "detect", lambda **_kwargs: area)
+    monkeypatch.setattr(repo_paths, "_fs_type", lambda _root, _ops: "btrfs")
+    monkeypatch.setenv("MDT_COW_ROOT", str(root))
+    monkeypatch.delenv("COWTREE_MODE", raising=False)
     return root
 
 
@@ -283,8 +287,11 @@ def test_path_cli_maps_failures_to_the_typed_statuses(tmp_path, monkeypatch, cap
     empty = tmp_path / "empty"
     empty.mkdir()
     monkeypatch.chdir(empty)
+    # a config name no directory above the temporary one can hold: independent of where tmp_path sits
+    monkeypatch.setattr(repo_paths, "CONFIG_NAME", "repo-paths-never-present.toml")
     assert cli.main(["path", "iso"]) == 2
-    assert "no repo-paths.toml at or above" in capsys.readouterr().err
+    assert "no repo-paths-never-present.toml at or above" in capsys.readouterr().err
+    monkeypatch.setattr(repo_paths, "CONFIG_NAME", "repo-paths.toml")
 
     area = _cow_area(tmp_path, monkeypatch)
     (area / "myrepo" / "downloads" / "iso").mkdir(parents=True)
@@ -296,7 +303,7 @@ def test_path_cli_maps_failures_to_the_typed_statuses(tmp_path, monkeypatch, cap
     monkeypatch.setattr(repo_paths, "Btrfs", fake_failing.tools)
     assert cli.main(["path", "vm-images", "--provision", *base]) == 6
     assert json.loads(capsys.readouterr().err)["error"] == "backend"
-    monkeypatch.setattr(repo_paths, "detect", lambda **_kwargs: (_ for _ in ()).throw(RootInvalid("broken")))
+    monkeypatch.setenv("MDT_COW_ROOT", str(tmp_path / "missing"))
     assert cli.main(["path", "iso", *base]) == 3
     assert json.loads(capsys.readouterr().err)["error"] == "root-invalid"
 

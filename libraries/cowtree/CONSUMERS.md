@@ -57,7 +57,7 @@ repo = "vbpub"               # the repository's folder below $MDT_COW_ROOT, shar
 [paths.iso]
 repo = "downloads/iso"       # plain location, relative to the repo root
 cow = "downloads/iso"        # below $MDT_COW_ROOT/<repo>/ ; omit = never CoW
-compression = "none"         # none | zstd | zstd:N (1..15)
+compression = "none"         # none | zstd (an algorithm only; btrfs sets no level through the property)
 
 [paths.vm-lab]
 repo = "{project}/vm-lab"    # per project: the caller passes the project directory
@@ -81,7 +81,8 @@ resolved = load_repo_paths(find_repo_root(__file__)).resolve("vm-lab", project="
 resolved.path   # a pathlib.Path; resolved.mode is "cow" or "plain"
 ```
 
-Without `--repo-root` the CLI searches upward from the current directory. A refusal exits with the typed status
+A resolve performs no write and is cheap, but each call is a process start: in a hot loop resolve once and cache the
+path. Without `--repo-root` the CLI searches upward from the current directory. A refusal exits with the typed status
 (unknown name or missing project: 2; invalid file: 5; broken `MDT_COW_ROOT`: 3).
 
 ## Area selection and commands

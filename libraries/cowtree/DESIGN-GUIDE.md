@@ -155,11 +155,23 @@ relocates a declared path is superseded for this reason.
 The fallback is silent only for "there is no CoW area": an unset `MDT_COW_ROOT`, `COWTREE_MODE=off`, a non-btrfs
 area, an entry without `cow`, or a CoW folder that has not been provisioned yet. All of these are normal states
 (a plain host, a new repo), and the plain path is a correct answer. A configured but broken area is loud:
-`detect()` raises `RootInvalid` and the resolver lets it through, because a silent fallback would send a VM disk
+a set `MDT_COW_ROOT` that is relative or not an existing directory raises `RootInvalid` (and `provision` lets the
+`detect()` refusals through), because a silent fallback would send a VM disk
 to the checkout's filesystem while the operator believes it is on btrfs. `provision` refuses an existing plain
 directory at the CoW location rather than migrating it, since moving data is a separate, reviewable step.
-The module stays free of VM and Docker knowledge: names live only in the repository's file. The resolver does
-not create anything, so asking never changes the host. COW-BL-01 (gitignored paths snapshotted into worktrees)
+The module stays free of VM and Docker knowledge: names live only in the repository's file. A resolve performs no
+write at all, which is why it does not use `detect()` (that writes `.cowtree/` and probes with a throwaway
+subvolume and snapshot): it checks the environment, `stat` and the mountinfo filesystem type, so it is cheap
+enough for a hot loop and works for a uid other than the area's owner (a permission error while looking gives the
+plain answer). Only `provision` writes, and it does use `detect()`. Because the answer for a name flips from
+`plain` to `cow` once its folder is provisioned, anything a consumer wrote to the plain location earlier is no
+longer found: moving existing files is an explicit step of the consumer migration, never implied. Two rules about
+the `repo` key: it must be unique among the repositories of one user (two repositories with the same key would
+silently share their CoW folders), and `shared` is refused because cowtree keeps that directory in every area root.
+Compression is `none` or `zstd` only, because btrfs can set an algorithm through the inode property but no level
+(a level needs the `compress=` mount option). An unset property is treated as `none`: that is exact on a filesystem
+mounted without `compress=`, but on one mounted with `compress=zstd` a folder declared `none` and never given an explicit
+property would still compress; set the property explicitly there. COW-BL-01 (gitignored paths snapshotted into worktrees)
 is a different table with a different consumer and is not folded into this one.
 
 ## Manifest fsync is not a correctness dependency

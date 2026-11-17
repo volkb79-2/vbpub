@@ -5,7 +5,7 @@
 # repo (top)  the repository's folder below $MDT_COW_ROOT, the same for the main checkout and every worktree
 # repo        the plain location, relative to the repo root (the checkout stays on ext4)
 # cow         where the same folder lives as a btrfs subvolume, below $MDT_COW_ROOT/<repo>/ ; omit = never CoW
-# compression none | zstd | zstd:N (1..15), applied when the subvolume is provisioned ; omit = filesystem default
+# compression none | zstd (an algorithm only), applied when the subvolume is provisioned ; omit = filesystem default
 # {project}   a per-project path: the caller passes the project directory (relative to the repo root)
 #
 # Without MDT_COW_ROOT, or when the cow folder does not exist, a name resolves to its plain `repo` location.
