@@ -37,6 +37,16 @@ its own, `vm-lab/`, with the package `vm_lab` in `src/` and the console script
   tag if Docker has it, else it refuses and says to build; an unreachable Docker
   is reported as unreachable, not as "not built". Only the generic profile has
   the tag fallback; the TrueNAS front names its image through its own variable.
+- **The admission lock works from a wheel.** The lock file is found by asking Git
+  next to the module, which only a checkout answers. When that fails, the
+  directory comes from `--lock-dir` or `VM_LAB_ADMISSION_LOCK_DIR`, validated
+  (absolute, existing, writable), else the start is refused naming both: no
+  default path is invented, because a lock in a guessed directory would silently
+  stop excluding the other starters. The probe stays first so that checkout,
+  wrapper, editable and TrueNAS use cannot change; the file name stays the one
+  shared historical name. Two starters exclude each other only when they resolve
+  the same directory, so the cockpit image sets the variable to the repository's
+  common Git directory.
 - **No paths in the package.** Every verb takes `--state-dir` and `--base-disk`;
   consumers derive them from the path resolver (`vm-lab.toml`, `repo-path`), and
   the package does not import cowtree.

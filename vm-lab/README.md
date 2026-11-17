@@ -185,6 +185,14 @@ needs `pwmcp` on PATH and pwmcp's OCR sidecar enabled. See
   `CGROUP_PARENT_DEV_BACKGROUND`. Start refuses when neither the option nor the
   variable is set; the network message says the value comes from the ciu stack
   environment or the devcontainer (`ciu env print` shows it).
+- `--lock-dir DIR` (also on `disk promote`): where the start admission lock file
+  lives, used only when no Git repository is found next to the installed module
+  (a wheel in site-packages); otherwise the variable `VM_LAB_ADMISSION_LOCK_DIR`
+  is used. A checkout, the wrapper, an editable install and the TrueNAS front
+  always use the repository's common Git directory and ignore both. With no
+  repository and no directory, `start` refuses and names both. The file name is
+  the shared historical one; give the repository's common Git directory
+  (`git rev-parse --git-common-dir`) to share one lock with checkout starts.
 - `--base-format {auto,qcow2,raw}`: format of `--base-disk`. `auto` (the
   default) reads the first four bytes: `QFI\xfb` is qcow2, and **any other file
   is treated as raw**, including a vmdk, vhdx or compressed image, which would
@@ -218,7 +226,8 @@ finite `memory.max`; memory pressure (PSI) at the slice and its ancestors is
 under policy; the slice CPU quota allows `--cpus`; the Docker network and image
 exist; and fewer than the allowed number of guests are running.
 
-All profiles share one start lock (in the repository's common Git directory)
+All profiles share one start lock (in the repository's common Git directory, or
+in `--lock-dir` / `VM_LAB_ADMISSION_LOCK_DIR` from an installed wheel)
 and one guest count. A running TrueNAS guest and a running vm-lab guest count
 against the same cap. Verbs that act on one guest refuse a container that does
 not carry the calling profile's labels.

@@ -186,6 +186,124 @@ def test_unset_docker_network_says_where_the_value_comes_from(monkeypatch, tmp_p
     assert "ciu stack environment or the devcontainer" in error
 
 
+# --- admission lock directory from an installed wheel ---------------------------------------------------------------------
+
+LOCK_NAME = "truenas-tcg-vm-admission.lock"
+
+
+def fake_git(monkeypatch, *, returncode=0, stdout="", stderr="", error=None):
+    calls = []
+
+    def run(argv, **kwargs):
+        calls.append(list(argv))
+        if error is not None:
+            raise error
+        return SimpleNamespace(returncode=returncode, stdout=stdout, stderr=stderr)
+
+    monkeypatch.setattr(vm_lab.subprocess, "run", run)
+    return calls
+
+
+def test_the_git_probe_next_to_the_module_wins_over_the_explicit_directory(monkeypatch, tmp_path):
+    git_dir, other = tmp_path / "git-common", tmp_path / "other"
+    git_dir.mkdir()
+    other.mkdir()
+    calls = fake_git(monkeypatch, stdout=f"{git_dir}\n")
+    monkeypatch.setenv(vm_lab.LOCK_DIR_ENV, str(other))
+    assert vm_lab.vm_start_lock_path(str(other)) == git_dir / LOCK_NAME
+    assert calls[0][:2] == ["git", "-C"] and calls[0][2] == str(Path(vm_lab.__file__).resolve().parent)
+
+
+def test_without_a_repository_the_environment_directory_is_used_with_the_shared_file_name(monkeypatch, tmp_path):
+    fake_git(monkeypatch, returncode=128, stderr="fatal: not a git repository")
+    monkeypatch.setenv(vm_lab.LOCK_DIR_ENV, str(tmp_path))
+    assert vm_lab.vm_start_lock_path() == tmp_path.resolve() / LOCK_NAME == tmp_path.resolve() / vm_lab.ADMISSION_LOCK_FILENAME
+
+
+def test_without_a_repository_the_option_wins_over_the_environment(monkeypatch, tmp_path):
+    chosen, other = tmp_path / "chosen", tmp_path / "other"
+    chosen.mkdir()
+    other.mkdir()
+    fake_git(monkeypatch, returncode=128, stderr="fatal: not a git repository")
+    monkeypatch.setenv(vm_lab.LOCK_DIR_ENV, str(other))
+    assert vm_lab.vm_start_lock_path(str(chosen)) == chosen.resolve() / LOCK_NAME
+
+
+def test_a_missing_git_executable_falls_back_like_a_missing_repository(monkeypatch, tmp_path):
+    fake_git(monkeypatch, error=FileNotFoundError("git"))
+    monkeypatch.setenv(vm_lab.LOCK_DIR_ENV, str(tmp_path))
+    assert vm_lab.vm_start_lock_path() == tmp_path.resolve() / LOCK_NAME
+
+
+def test_with_no_repository_and_no_directory_the_start_is_refused_naming_both(monkeypatch):
+    fake_git(monkeypatch, returncode=128, stderr="fatal: not a git repository")
+    monkeypatch.delenv(vm_lab.LOCK_DIR_ENV, raising=False)
+    with pytest.raises(RunnerError) as caught:
+        vm_lab.vm_start_lock_path()
+    message = str(caught.value)
+    assert "cannot resolve the shared Git directory for VM admission: fatal: not a git repository" in message
+    assert "--lock-dir" in message and "VM_LAB_ADMISSION_LOCK_DIR" in message
+
+
+@pytest.mark.parametrize("kind", ["relative", "missing", "file"])
+def test_an_unusable_explicit_directory_is_refused_not_repaired(monkeypatch, tmp_path, kind):
+    fake_git(monkeypatch, returncode=128, stderr="fatal: not a git repository")
+    (tmp_path / "plain-file").write_text("x")
+    value = {"relative": "locks", "missing": str(tmp_path / "absent"), "file": str(tmp_path / "plain-file")}[kind]
+    monkeypatch.setenv(vm_lab.LOCK_DIR_ENV, value)
+    with pytest.raises(RunnerError, match=r"VM_LAB_ADMISSION_LOCK_DIR .* not an absolute, existing, writable directory"):
+        vm_lab.vm_start_lock_path()
+    with pytest.raises(RunnerError, match=r"--lock-dir .* not an absolute, existing, writable directory"):
+        vm_lab.vm_start_lock_path(value)
+
+
+def test_the_admission_lock_is_taken_in_the_explicit_directory(monkeypatch, tmp_path):
+    fake_git(monkeypatch, returncode=128, stderr="fatal: not a git repository")
+    monkeypatch.delenv(vm_lab.LOCK_DIR_ENV, raising=False)
+    with vm_lab.vm_start_admission_lock("vm_lab.py", str(tmp_path)):
+        assert (tmp_path / LOCK_NAME).is_file()
+        with pytest.raises(RunnerError, match="another tcg_vm.py start is in progress"):
+            with vm_lab.vm_start_admission_lock("tcg_vm.py", str(tmp_path)):
+                pass
+
+
+def test_start_and_disk_promote_take_a_lock_dir_option_and_pass_it_to_the_lock(monkeypatch, tmp_path):
+    seen = []
+
+    @vm_lab.contextlib.contextmanager
+    def recording_lock(program, lock_dir=None):
+        seen.append((program, lock_dir))
+        yield
+
+    monkeypatch.setattr(vm_lab, "vm_start_admission_lock", recording_lock)
+    monkeypatch.setattr(vm_lab, "_cmd_start", lambda profile, args: 0)
+    parser = vm_lab.build_parser(GENERIC_PROFILE)
+    start = parser.parse_args([
+        "start", "--name", "deb1", "--base-disk", "b", "--ovmf-code", "c", "--ovmf-vars", "v", "--state-dir", "s",
+        "--memory-mib", "2048", "--cpus", "2", "--forward", "2222:22", "--display-device", "std",
+        "--lock-dir", "/locks",
+    ])
+    assert vm_lab.cmd_start(GENERIC_PROFILE, start) == 0
+
+    class Stop(Exception):
+        pass
+
+    def stop(_state_dir):
+        raise Stop
+
+    monkeypatch.setattr(vm_lab, "guests_running_on_state_dir", stop)
+    (tmp_path / "state").mkdir()
+    (tmp_path / "state" / "disk.raw").write_bytes(b"x")
+    (tmp_path / "dest").mkdir()
+    promote = parser.parse_args([
+        "disk", "promote", "--state-dir", str(tmp_path / "state"), "--dest-dir", str(tmp_path / "dest"),
+        "--name", "img", "--lock-dir", "/locks2",
+    ])
+    with pytest.raises(Stop):
+        vm_lab.cmd_disk_promote(GENERIC_PROFILE, promote)
+    assert seen == [("vm_lab.py", "/locks"), ("vm_lab.py", "/locks2")]
+
+
 # --- console script, wrapper, python -m --------------------------------------------------------------------------------
 
 
@@ -225,7 +343,18 @@ def test_the_wrapper_runs_help_from_a_bare_checkout():
         env={**os.environ, "PYTHONPATH": ""},
     )
     assert result.returncode == 0, result.stderr
-    assert "image" in result.stdout
+    # The usage line of the top-level help lists the verbs as {a,b,...}; the word "image" alone also occurs in
+    # the `disk` help text, so it proves nothing about the verb.
+    assert "image" in top_level_verbs(result.stdout)
+    assert {"start", "console", "disk"} <= set(top_level_verbs(result.stdout))
+
+
+def top_level_verbs(help_text: str) -> list[str]:
+    import re
+
+    groups = re.findall(r"\{([a-z][a-z,-]*)\}", help_text)
+    assert groups, help_text
+    return max((group.split(",") for group in groups), key=len)
 
 
 def test_python_dash_m_help_lists_the_verbs():
@@ -234,8 +363,9 @@ def test_python_dash_m_help_lists_the_verbs():
         env={**os.environ, "PYTHONPATH": str(PROJECT / "src")},
     )
     assert result.returncode == 0, result.stderr
+    verbs = top_level_verbs(result.stdout)
     for verb in ("start", "stop", "status", "destroy", "image", "disk", "console"):
-        assert verb in result.stdout, verb
+        assert verb in verbs, verb
 
 
 # --- documentation ---------------------------------------------------------------------------------------------------
@@ -255,4 +385,6 @@ def test_the_user_documents_carry_the_install_forms_and_the_path_recipes():
     ):
         assert phrase in consumers, phrase
     assert "qemu-image" in design
+    for document in (readme, consumers, design):
+        assert "VM_LAB_ADMISSION_LOCK_DIR" in document and "--lock-dir" in document
     assert "scripts/vm-lab" not in readme + consumers + design

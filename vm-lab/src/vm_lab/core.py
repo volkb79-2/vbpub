@@ -83,6 +83,13 @@ PROMOTE_HASH_CHUNK_BYTES = 1024 * 1024
 # The QEMU container image of the generic profile: `vm-lab image build` makes it from <project>/qemu-image/,
 # and `start` falls back to this tag when Docker has it (see resolve_qemu_image).
 DEFAULT_QEMU_IMAGE_TAG = "vm-lab-qemu:local"
+# Where the admission lock lives when git finds no repository next to the module (an installed wheel).
+LOCK_DIR_ENV = "VM_LAB_ADMISSION_LOCK_DIR"
+LOCK_DIR_HELP = (
+    f"directory of the admission lock file, used only when no Git repository is found next to the installed "
+    f"module (default: {LOCK_DIR_ENV}); give the repository's common Git directory to share the lock with "
+    "checkout and TrueNAS starts"
+)
 QEMU_IMAGE_CONTEXT = Path(__file__).resolve().parents[2] / "qemu-image"
 
 
@@ -495,16 +502,42 @@ def active_guest_names() -> list[str]:
     return names
 
 
-def vm_start_lock_path() -> Path:
+def explicit_lock_dir(lock_dir: str | None, probe_error: str) -> Path:
+    """The admission lock directory named by --lock-dir or VM_LAB_ADMISSION_LOCK_DIR (absolute, existing, writable).
+
+    Used only when the Git probe next to this module found no repository (an installed wheel). Nothing is
+    invented: with neither given, or a value that is not usable, the start is refused naming both.
+    """
+    source, value = ("--lock-dir", lock_dir) if lock_dir else (LOCK_DIR_ENV, os.environ.get(LOCK_DIR_ENV, ""))
+    both = f"pass --lock-dir DIR or set {LOCK_DIR_ENV} to an absolute existing directory"
+    if not value:
+        raise RunnerError(f"cannot resolve the shared Git directory for VM admission: {probe_error}; {both}")
+    path = Path(value)
+    if not path.is_absolute() or not path.is_dir() or not os.access(path, os.W_OK | os.X_OK):
+        raise RunnerError(f"{source} {value!r} is not an absolute, existing, writable directory; {both}")
+    return path.resolve(strict=True)
+
+
+def vm_start_lock_path(lock_dir: str | None = None) -> Path:
+    """The one admission lock file: in the repository's shared Git directory, found by running git next to this module.
+
+    When that probe fails (no repository around an installed wheel, no git), the directory comes from
+    ``lock_dir`` (--lock-dir) or VM_LAB_ADMISSION_LOCK_DIR; the file name stays the same historical one,
+    so TrueNAS starts and vm-lab starts take one lock when both name the same directory.
+    """
     project = Path(__file__).resolve().parent
-    result = subprocess.run(
-        ["git", "-C", str(project), "rev-parse", "--git-common-dir"],
-        text=True,
-        capture_output=True,
-        check=False,
-    )
-    if result.returncode:
-        raise RunnerError(f"cannot resolve the shared Git directory for VM admission: {result.stderr.strip()}")
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(project), "rev-parse", "--git-common-dir"],
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        probe_error = result.stderr.strip() or "git failed" if result.returncode else None
+    except OSError as exc:
+        probe_error = str(exc)
+    if probe_error is not None:
+        return explicit_lock_dir(lock_dir, probe_error) / ADMISSION_LOCK_FILENAME
     common_dir = Path(result.stdout.strip())
     if not common_dir.is_absolute():
         common_dir = project / common_dir
@@ -518,9 +551,9 @@ def vm_start_lock_path() -> Path:
 
 
 @contextlib.contextmanager
-def vm_start_admission_lock(program: str):
+def vm_start_admission_lock(program: str, lock_dir: str | None = None):
     """Serialize admission checks and container creation across this repository's worktrees."""
-    lock_path = vm_start_lock_path()
+    lock_path = vm_start_lock_path() if lock_dir is None else vm_start_lock_path(lock_dir)
     flags = os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0)
     try:
         descriptor = os.open(lock_path, flags, 0o600)
@@ -1830,7 +1863,7 @@ def print_preflight(
 
 def cmd_start(profile: VmProfile, args: argparse.Namespace) -> int:
     profile = resolve_profile(profile, args)
-    with vm_start_admission_lock(profile.program):
+    with vm_start_admission_lock(profile.program, getattr(args, "lock_dir", None)):
         return _cmd_start(profile, args)
 
 
@@ -2404,7 +2437,7 @@ def _promote_locked(
     """The promote steps under the start admission lock; returns the digest and the image path."""
     # The start admission lock keeps a `start --resume` from booting the disk
     # between the running-guest check and the end of the copy.
-    with vm_start_admission_lock(profile.program):
+    with vm_start_admission_lock(profile.program, getattr(args, "lock_dir", None)):
         running = guests_running_on_state_dir(state_dir)
         if running:
             raise RunnerError(
@@ -2558,6 +2591,7 @@ def build_parser(
     )
     start.add_argument("--network", help="Docker network; defaults to DOCKER_NETWORK_INTERNAL")
     start.add_argument("--cgroup-parent", help="systemd slice; defaults to CGROUP_PARENT_DEV_BACKGROUND")
+    start.add_argument("--lock-dir", metavar="DIR", help=LOCK_DIR_HELP)
     if not profile.sizing_from_cli:
         for forward in profile.forwards:
             start.add_argument(f"--{forward.name}-port", type=int, default=forward.host_port)
@@ -2666,6 +2700,7 @@ def build_parser(
         action="store_true",
         help="copy the whole file when a reflink clone is impossible instead of failing",
     )
+    promote.add_argument("--lock-dir", metavar="DIR", help=LOCK_DIR_HELP)
     promote.set_defaults(func=cmd_disk_promote)
     console = commands.add_parser("console", help="interact with a running guest through its QMP socket")
     console_commands = console.add_subparsers(dest="console_action", required=True)

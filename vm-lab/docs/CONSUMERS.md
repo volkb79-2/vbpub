@@ -24,6 +24,20 @@ the wrapper does not add it, so it must be installed where `python3` runs.
 `pip install 'vm-lab[record]'` (the mdt-cockpit image installs the extra
 explicitly). The image has no OVMF: pass your host's firmware files to `start`.
 
+**From an installed wheel** there is no repository next to the module, so
+`start` and `disk promote` need the directory of the admission lock: set it once
+for the host and every starter that should exclude the others uses the same one.
+
+```
+export VM_LAB_ADMISSION_LOCK_DIR="$(git -C /path/to/vbpub rev-parse --path-format=absolute --git-common-dir)"
+vm-lab start ...                      # takes the lock file there (the shared TrueNAS/vm-lab file name)
+vm-lab start ... --lock-dir "$DIR"    # or per call; the option wins over the variable
+```
+
+A checkout, the wrapper, an editable install and the TrueNAS front ignore both
+(they use the repository's common Git directory). With neither given and no
+repository, `start` refuses and names `--lock-dir` and the variable.
+
 The tool owns no paths. Pass `--state-dir` and `--base-disk` explicitly, taken
 from the repository's path resolver (`vm-lab.toml`) and never hardcoded:
 

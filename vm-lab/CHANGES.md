@@ -11,6 +11,7 @@ All notable changes to vm-lab are recorded here.
 - The `vm-lab` unit lane moved with the project (`vm-lab/run-gate.toml`, `cd {worktree}/vm-lab`; `pytest.ini` puts `src` and `tests` on the path).
 
 ### Added
+- Admission lock from an installed wheel: when the Git probe next to the module finds no repository (or no git), the lock directory is `--lock-dir` (on `start` and `disk promote`), else `VM_LAB_ADMISSION_LOCK_DIR` (absolute, existing, writable); neither: refusal naming both. The lock file name is unchanged; checkout, wrapper, editable and TrueNAS use are unchanged.
 - `vm-lab/qemu-image/Dockerfile`: the QEMU container image (`debian:trixie-slim`, `qemu-system-x86`, `qemu-utils`, `procps`; no OVMF, no USER, no privileges), and the verb `vm-lab image build [--tag TAG] [--context DIR]` (default tag `vm-lab-qemu:local`; runs `docker build`).
 - Image resolution for `start` with the generic profile: `--image`, else `VM_LAB_QEMU_IMAGE`, else the local tag `vm-lab-qemu:local` when `docker image inspect` finds it, else a refusal that says to run `vm-lab image build`. A Docker that cannot be asked is reported as such. The TrueNAS front has no tag fallback (`VmProfile.default_image` is unset there).
 - Documented path recipes in `docs/CONSUMERS.md` (`libraries/cowtree/repo-path vm-lab --project <project>` for state, `repo-path vm-images` for bases) and the install forms (wrapper, editable, wheel, image build, vmscreen dependency, PATH note).
