@@ -20,19 +20,42 @@ The tool owns no VM state. Every verb that touches a guest takes `--state-dir`,
 and the project that owns the VM keeps that directory in its own
 `scripts/<project>/vm-lab/<vm>/`.
 
+vm-lab is a top-level project of the repository (`vm-lab/`): the Python package
+`vm_lab` in `src/` (`core`, `console`, `text`, `cli`), the console script
+`vm-lab`, and the QEMU container image in `qemu-image/`.
+
 Start with the [consumer guide](docs/CONSUMERS.md). The reasons behind the
 design are in the [design guide](docs/DESIGN-GUIDE.md).
 
+## Install and run
+
+| Form | Command |
+| --- | --- |
+| Bare checkout, nothing installed | `vm-lab/vm-lab <verb> ...` (a shell wrapper: it puts `vm-lab/src` on `PYTHONPATH` relative to itself and runs `python3 -m vm_lab`) |
+| Editable, into the estate venv | `/opt/mdt/venv/bin/python -m pip install -e vm-lab` |
+| Wheel | `python -m pip wheel --no-deps vm-lab`, then `pip install` the wheel |
+| Module | `PYTHONPATH=vm-lab/src python3 -m vm_lab <verb> ...` |
+
+`pip install` puts the `vm-lab` command in the venv's `bin/`; that directory
+must be on `PATH` (the estate venv's `/opt/mdt/venv/bin` is). The dependency
+`vmscreen` (exact screen text) is a separate wheel of this repository: install
+`libraries/vmscreen` first (it has no release yet, so a plain `pip install
+vm-lab` cannot find it; use `--no-deps` for the wheel and install vmscreen from
+its checkout). The wrapper does not add vmscreen: it must be installed where
+`python3` runs, or on `PATH`.
+
+The QEMU image is built once per Docker host with `vm-lab image build` (see
+below); `start` finds it by its tag.
+
 ## Command line
 
-Run from the repository root:
-
 ```
-python3 scripts/vm-lab/vm_lab.py <verb> [options]
+vm-lab <verb> [options]
 ```
 
 | Verb | What it does |
 | --- | --- |
+| `image build` | Build the QEMU image with `docker build` on `qemu-image/` (Debian trixie-slim, `qemu-system-x86`, `qemu-utils`; no OVMF, no KVM, no privileges). `--tag TAG` (default `vm-lab-qemu:local`), `--context DIR` (default `<project>/qemu-image`; needed when the package is installed as a wheel, which does not carry the Dockerfile). |
 | `start` | Admit and start a guest. Needs `--name`, `--base-disk`, `--ovmf-code`, `--ovmf-vars`, `--state-dir`, `--memory-mib`, `--cpus` and at least one `--forward`. |
 | `status` | Print container and QMP state as JSON, plus `disk_format` (`raw` or `qcow2`) and `disk_file` of the state directory. |
 | `disk promote` | Publish a stopped guest's raw disk as a read-only base image: `--state-dir`, `--dest-dir`, `--name` (and `--allow-full-copy`). Writes `<name>.raw` and `<name>.raw.sha256`, both mode 0444. Holds the start admission lock while it copies and hashes. SIGTERM and SIGHUP during a promote remove its partial files and exit 1; after SIGKILL, or a killed `start` (SIGTERM), remove the hidden `.<name>.partial` file by hand (see [docs/CONSUMERS.md](docs/CONSUMERS.md)). |
@@ -100,7 +123,7 @@ guest printed to ttyS0, escape sequences and CR already rendered by vmscreen);
 OCR text is never exact (`n/a`). `console record` needs Pillow: run the launcher
 with a Python that has it (the vmscreen venv may not).
 
-`console wait-for-text` exit codes (module constants in `vm_lab_text.py`):
+`console wait-for-text` exit codes (module constants in `vm_lab/text.py`):
 
 | Exit | Meaning |
 | --- | --- |
@@ -151,10 +174,16 @@ needs `pwmcp` on PATH and pwmcp's OCR sidecar enabled. See
 - `--display-device {std,virtio}`: required. `std` uses QEMU's standard VGA;
   `virtio` adds `virtio-vga`, needed when the standard device produces garbage
   screendumps for the guest's kernel console.
-- `--image`: QEMU image. Without it, the variable `VM_LAB_QEMU_IMAGE` is used.
-  With neither, start refuses.
+- `--image`: QEMU image. Without it, the variable `VM_LAB_QEMU_IMAGE` is used;
+  without that, the local image `vm-lab-qemu:local` if Docker has it
+  (`docker image inspect`; built by `vm-lab image build`). With none of the three,
+  start refuses and says to run `vm-lab image build`. A Docker that cannot be
+  asked (no daemon, no client) is reported as such, never as "not built". The
+  TrueNAS front has no tag fallback: it uses only `--image` or `TRUENAS_TCG_IMAGE`.
 - `--network`, `--cgroup-parent`: default to `DOCKER_NETWORK_INTERNAL` and
-  `CGROUP_PARENT_DEV_BACKGROUND`. Start refuses when neither is set.
+  `CGROUP_PARENT_DEV_BACKGROUND`. Start refuses when neither the option nor the
+  variable is set; the network message says the value comes from the ciu stack
+  environment or the devcontainer (`ciu env print` shows it).
 - `--base-format {auto,qcow2,raw}`: format of `--base-disk`. `auto` (the
   default) reads the first four bytes: `QFI\xfb` is qcow2, and **any other file
   is treated as raw**, including a vmdk, vhdx or compressed image, which would
@@ -215,7 +244,7 @@ See [How a project defines its own profile](docs/CONSUMERS.md#define-a-profile-f
 ## Tests
 
 ```
-cd scripts/vm-lab && run-gate unit --worktree <worktree>
+cd vm-lab && run-gate unit --worktree <worktree>
 ```
 
 The tests use no Docker and no QEMU.
