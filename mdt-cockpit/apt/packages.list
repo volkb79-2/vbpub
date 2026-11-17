@@ -62,4 +62,7 @@ xz-utils           # xz (de)compression (e.g. the shellcheck tarball)
 skopeo             # inspect / copy OCI images without a Docker daemon (base install from trixie; upgraded from Debian testing in a separate RUN layer)
 tmux               # terminal multiplexer (VS Code template starts one session per integrated terminal)
 reptyr             # move a running process or terminal session to another PTY
+btrfs-progs        # btrfs/subvolume/snapshot tooling for the CoW work root (MDT_COW_ROOT, docs/BTRFS-COW.md) and VM disks on a btrfs subvolume
+eatmydata          # run a command with fsync/sync made no-ops (VM image builds and other throwaway I/O; VM disks also use cache=unsafe)
+libeatmydata1      # the LD_PRELOAD library eatmydata loads; named explicitly so a --no-install-recommends install always carries it
 broot              # interactive directory tree navigator (modern-unix: tree)

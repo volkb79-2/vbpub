@@ -911,6 +911,7 @@ production-quality. Support windows as of June 2026:
 | [docs/CONSUMERS.md](docs/CONSUMERS.md) | Pasteable host governance, terminal migration and reattachment, host escape, managed BuildKit, release adoption, the fresh-home template, and local-dev builds |
 | [docs/HOME-PERSISTENCE.md](docs/HOME-PERSISTENCE.md) | The fresh-home design, the home path inventory, and moving from the original project |
 | [docs/BTRFS-COW.md](docs/BTRFS-COW.md) | Optional btrfs copy-on-write area for the cockpit: concepts, filesystem setup, per-user layout, tool contract, devcontainer mount, self-check |
+| [docs/HOST-CUTOVER-2026-11.md](docs/HOST-CUTOVER-2026-11.md) | Runbook: move the controller host from the legacy cgprofile 1.1.0 container to the published host endpoint record, without touching production |
 | [docs/OCI-IMAGE-TOOLING.md](docs/OCI-IMAGE-TOOLING.md) | Human-manifest vs OCI-manifest, registry clients, layer trade-offs, CMRU reuse boundary |
 | [docs/IMAGE-DELIVERY-BENCHMARKS.md](docs/IMAGE-DELIVERY-BENCHMARKS.md) | Compression and time-to-connect measurements and policy |
 | [docs/DOCKER-IMAGE-STORE.md](docs/DOCKER-IMAGE-STORE.md) | Docker image store behavior |
