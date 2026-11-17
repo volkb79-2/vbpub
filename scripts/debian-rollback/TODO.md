@@ -45,6 +45,7 @@ OP3, then VML-04; DR-01 needs no guest and can start at once.
    | VML-03a | vmscreen `--qemu-dump-dir`: works when QEMU sees the dump directory under another path (the VM tool's container) | Sonnet; Sonnet review, 2 rounds | merged 2026-11-12 (vbpub@77343737e) |
    | VML-03b | Y3: `console text` and `console wait-for-text` in the VM tool: vmscreen (exact text) first, `pwmcp ocr --image` for graphical screens; fail patterns and boot-loop detection | Sonnet; Sonnet review, 2 rounds | merged 2026-11-12 (vbpub@d55c3132e); not yet run against a real guest |
    | VML-06a | Raw base images cloned by reflink (`start --base-format`, `--allow-full-copy`), `disk promote` into a shared base folder; qcow2 path unchanged (D17, WORK-PACKAGES VML-06) | Sonnet; Sonnet review FIX-FIRST then MERGE | merged 2026-11-17 (vbpub@3038974b4); not yet run against a real guest or a real btrfs reflink through the tool |
+   | VML-07 | Hardening follow-ups of VML-02, VML-03b, VML-06a: signals, screendump ownership, per-call time budget, broken PATH vmscreen, promote interrupt cleanup | Sonnet; Sonnet review MERGE, four follow-ups folded in | merged 2026-11-17 (vbpub@522c8d69a); not yet run against a real guest |
    | VML-04 | Y5: capture console screens (Debian installer, Grml, GRUB, systemd-boot, ZFSBootMenu) into pwmcp's corpus, with `vmscreen ocr-pair` where exact text exists | open | after VML-03 |
    | VML-05 | Y4: one console interface, QMP backend and pwmcp browser backend | open | after VML-03 |
    | VML-06 | Y6: pwmcp test fixture serving a guest's VNC socket to its browser | open | after VML-05 |
@@ -62,33 +63,19 @@ OP3, then VML-04; DR-01 needs no guest and can start at once.
    `console text` and `console wait-for-text` are unit-tested against fakes
    only. First real run: VML-04 or experiment E1.
 
-   Open follow-ups from the VML-03b reviews:
-   - The per-call time bound is taken once per poll, so a hung reader can
-     overshoot `--timeout` (documented); re-decrement between calls.
-   - A broken `vmscreen` on PATH makes the reader unavailable without trying
-     `python -m vmscreen`.
-   - No test that `--engine ocr` skips the vmscreen probe.
-
    `libraries/vmscreen` (exact console text, `wait-text`, `send`, `ocr-pair`)
    was found only after VML-02; see the correction in the design guide,
    section 9.1. Read its README before writing the VML-03 brief.
 
-   Open follow-ups from the VML-06a review (non-blocking): `PROMOTE_NAME_PATTERN =re.compile(` spacing (vm_lab.py near line 78);
-   the `clone_disk` docstring says SIGTERM becomes an exception (it does not: a SIGTERM leaves a hidden `.<name>.partial`, which is
-   refused on retry, remove it by hand); promote also holds the admission lock while hashing (undocumented); no test for an
-   interrupt during hashing. Not verified without a real guest and btrfs: real `cp --reflink` stderr text, a GNU `cp` in the
-   cockpit image (busybox lacks `--reflink`), QEMU booting the raw clone, `disk promote` on a real stopped guest.
-
-   Open follow-ups from the VML-02 reviews (reports under
-   `artifacts/debian-rollback/reviews/`):
-   - A second SIGTERM or SIGHUP during the guest stop aborts the stop and
-     leaves the guest running; make the handler inert once final cleanup
-     starts.
-   - The recorder's final cleanup can delete another recorder's screendump
-     file (cost: one frame of the other recorder).
-   - No test for a QMP end-of-file (`JSONDecodeError`) in the tolerated set,
-     for the plain `TYPE:text` log label, or for a failing guest stop.
-   - Key table duplicated with vmscreen (vmscreen backlog VMS-BL-03).
+   Review follow-ups of VML-02, VML-03b and VML-06a were all folded into VML-07
+   (merged 2026-11-17). Left open: the key table exists in the VM tool and in
+   vmscreen (VMS-BL-03, rule "same names" documented, no mechanical check); a
+   `start` killed by SIGTERM or SIGKILL leaves a hidden `.<name>.partial` to
+   remove by hand. Not verified without a real guest and btrfs: real
+   `cp --reflink` stderr text, a GNU `cp` in the cockpit image (busybox lacks
+   `--reflink`), QEMU booting the raw clone, `disk promote` on a real stopped
+   guest, QEMU 11's `screendump` writing into the pre-created file in place
+   (the recorder adopts a replaced file, untested live).
 
    The TrueNAS `unit` and `unit-boot-pool-patch` lanes are red on `main` for
    reasons outside this work (TN-15, TN-16 in the TrueNAS backlog).
