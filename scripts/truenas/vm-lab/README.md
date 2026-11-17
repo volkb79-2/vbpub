@@ -1,7 +1,7 @@
 # vm-lab
 
 VM state of the `scripts/truenas` tools: one directory per VM, `<vm>/`. This is the plain fallback location of the
-`vm-lab` entry of the repo-root `vm-lab.toml` (project `scripts/truenas`); on a CoW host the resolver
+`vm-lab` entry of the repo path config (cowtree; project `scripts/truenas`); on a CoW host the resolver
 (`libraries/cowtree/repo-path vm-lab --project scripts/truenas`) points at a compressed btrfs subvolume instead, and
 the scripts do not care which. Scripts take the folder from the resolver (`scripts/truenas/repo_paths_access.py`),
 never from a literal path.
@@ -11,7 +11,7 @@ never from a literal path.
   are mounted read-only.
 - Golden-image source VM (`golden-iso/step1-install-prepare-truenas.py`, `golden-iso/qmp.py`): its installed disk, UEFI
   variables, SSH key, `known_hosts`, QMP socket and console log live in `<vm-lab folder>/golden-source-27-20GiB/`.
-- Installer ISOs go to the `iso` folder of `vm-lab.toml` (`downloads/iso/`) and shared base images to `vm-images`
+- Installer ISOs go to the `iso` folder of the repo path config (`downloads/iso/`) and shared base images to `vm-images`
   (`downloads/vm-images/`), each with a `.sha256`; they are not kept here. Built outputs that are not VM state
   (patched ISOs, captured golden images with their secrets TOML, evidence logs) stay in the owning project's
   `artifacts/`.

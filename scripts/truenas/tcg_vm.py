@@ -26,7 +26,7 @@ _HERE = str(Path(__file__).resolve().parent)
 if _HERE not in sys.path:
     sys.path.insert(0, _HERE)
 
-import repo_paths_access  # noqa: E402  (the one place scripts/truenas asks vm-lab.toml for its folders)
+import repo_paths_access  # noqa: E402  (the one place scripts/truenas asks the repo path config for its folders)
 
 from vm_lab import core as vm_lab  # noqa: E402  (the functions tests patch live in vm_lab.core)
 from vm_lab import (  # noqa: E402,F401  (re-exported for importers of this module)
@@ -118,17 +118,17 @@ STATE_LABEL = PROFILE.state_label
 DEFAULT_SSH_PORT = PROFILE.forwards[0].host_port
 DEFAULT_HTTPS_PORT = PROFILE.forwards[1].host_port
 # Estate layout (AGENTS.md "Directory conventions"): VM state lives in the `vm-lab` folder of
-# this project, which `vm-lab.toml` declares and `repo_paths_access` resolves (a CoW subvolume
+# this project, which the repo path config declares and `repo_paths_access` resolves (a CoW subvolume
 # on CoW hosts, else <this directory>/vm-lab). The only environment input is MDT_COW_ROOT, read
 # by the resolver. An explicit --state-dir still wins.
 _STATE_DIR_DEFAULTS = (
-    f"<name> in this project's vm-lab/ folder ({repo_paths_access.CONFIG_NAME}), created",
-    f"<name> in this project's vm-lab/ folder ({repo_paths_access.CONFIG_NAME})",
+    f"<name> in this project's vm-lab/ folder ({repo_paths_access.config_name()}), created",
+    f"<name> in this project's vm-lab/ folder ({repo_paths_access.config_name()})",
 )
 
 
 def vm_lab_dir() -> Path:
-    """The resolved vm-lab folder of this project; a missing vm-lab.toml is a refusal."""
+    """The resolved vm-lab folder of this project; a missing repo path config is a refusal."""
     try:
         return repo_paths_access.vm_state_root()
     except repo_paths_access.RepoPathsError as exc:

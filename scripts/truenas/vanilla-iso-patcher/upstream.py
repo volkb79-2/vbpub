@@ -329,12 +329,12 @@ def download_verified_iso(
 
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-import repo_paths_access  # noqa: E402  (the one place scripts/truenas asks vm-lab.toml for its folders)
+import repo_paths_access  # noqa: E402  (the one place scripts/truenas asks the repo path config for its folders)
 
 
 def iso_dir() -> Path:
-    """The `iso` folder of vm-lab.toml (estate layout, AGENTS.md "Directory conventions"): fetched installer
-    ISOs and their lock files live there. A missing vm-lab.toml is a refusal naming the file."""
+    """The `iso` folder of the repo path config (estate layout, AGENTS.md "Directory conventions"): fetched installer
+    ISOs and their lock files live there. A missing repo path config is a refusal naming the file."""
     try:
         return repo_paths_access.iso_dir()
     except repo_paths_access.RepoPathsError as exc:

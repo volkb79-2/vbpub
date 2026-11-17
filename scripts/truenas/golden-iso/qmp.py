@@ -15,7 +15,7 @@ import zlib
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-import repo_paths_access  # noqa: E402  (the one place scripts/truenas asks vm-lab.toml for its folders)
+import repo_paths_access  # noqa: E402  (the one place scripts/truenas asks the repo path config for its folders)
 
 
 def default_socket() -> Path:
@@ -116,7 +116,7 @@ def ppm_to_png(source: bytes) -> bytes:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--socket", default=None, help="QMP Unix socket (default: qmp.sock in the golden source VM's "
-                        f"folder of this project's vm-lab/ folder, resolved from {repo_paths_access.CONFIG_NAME})")
+                        f"folder of this project's vm-lab/ folder, resolved from {repo_paths_access.config_name()})")
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("status", help="query VM status")
     sub.add_parser("powerdown", help="request an ACPI guest shutdown")

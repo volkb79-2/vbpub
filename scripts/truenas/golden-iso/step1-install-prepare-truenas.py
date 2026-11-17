@@ -42,7 +42,7 @@ from truenas_api_client import TrueNASAPIClient, TrueNASAPIError, TrueNASSetting
 
 
 # Estate layout (AGENTS.md "Directory conventions"): the source VM's state lives in
-# <vm-lab folder of scripts/truenas>/<vm>/, a path that vm-lab.toml declares and
+# <vm-lab folder of scripts/truenas>/<vm>/, a path that the repo path config declares and
 # repo_paths_access resolves (never hardcoded here); fetched inputs (installer ISO) are
 # in the `iso` folder, built outputs in this project's artifacts/.
 import repo_paths_access
@@ -70,7 +70,7 @@ class StepError(RuntimeError):
 
 
 def vm_dir() -> Path:
-    """The source VM's state directory in the resolved vm-lab folder; a missing vm-lab.toml is a refusal."""
+    """The source VM's state directory in the resolved vm-lab folder; a missing repo path config is a refusal."""
     try:
         return repo_paths_access.golden_source_dir()
     except repo_paths_access.RepoPathsError as exc:
