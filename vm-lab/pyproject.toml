@@ -1,0 +1,37 @@
+[build-system]
+requires = ["setuptools==82.0.1", "wheel==0.47.0", "setuptools_scm==10.0.5"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "vm-lab"
+description = "Bounded QEMU/TCG guests in Docker containers in the host background slice: start/stop/resume, console keys, typing, recording and screen text"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "MIT"
+authors = [{name = "Volker Badziong"}]
+# vmscreen reads the exact screen text of a guest (`console text`, `console wait-for-text`, `console record`); the tool runs it as
+# a subprocess (the `vmscreen` executable on PATH, else `python -m vmscreen`). No version floor yet: vmscreen has no release
+# (its tag `vmscreen-v*` is not minted, KNOWN_ISSUES_TODO_BACKLOG.md VML-BL-03). The functional floor is the `--qemu-dump-dir`
+# option, which `vm_lab.text` checks at run time (VMSCREEN_REQUIRED_OPTION, added by VML-03a); replace this line with a
+# `>=` floor naming that release when vmscreen ships one. The argparse CLI needs no cli-extended; the rest is standard library.
+dependencies = ["vmscreen"]
+dynamic = ["version"]
+
+# External requirements (not pip dependencies): Docker (the guests run in containers of the QEMU image built by
+# `vm-lab image build`), and, for the OCR engine, the pwmcp OCR sidecar. Pillow is imported by `console record` when present.
+[project.optional-dependencies]
+test = ["pytest>=8", "pytest-cov>=6"]
+
+[project.scripts]
+vm-lab = "vm_lab.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+# Version comes from the git tag `vm-lab-vX.Y.Z` (minted by cmru once the project is registered for release, see
+# KNOWN_ISSUES_TODO_BACKLOG.md VML-BL-01). No fallback_version: a build without git metadata must fail (AGENTS.md "Defaults
+# and fallbacks are hazards").
+[tool.setuptools_scm]
+root = ".."
+tag_regex = "^vm-lab-v(?P<version>[0-9].*)$"
+git_describe_command = ["git", "describe", "--dirty", "--tags", "--long", "--match", "vm-lab-v*"]

@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """QMP console recording and typing for the general vm-lab launcher.
 
 The recorder keeps only changed console frames. QMP connections are made by the
@@ -65,10 +64,10 @@ MAX_CONSECUTIVE_SCREEN_CAPTURE_FAILURES = 10
 class ConsoleCallError(RuntimeError):
     """Base class for a failed external call that the recorder may survive.
 
-    ``vm_lab.RunnerError`` derives from this class. The recorder cannot import
-    ``vm_lab`` to name that error: when the launcher runs as a script its
-    module is ``__main__``, and a second import would create a different
-    ``RunnerError`` class that would not match what ``qmp_command`` raises.
+    ``vm_lab.core.RunnerError`` derives from this class. The recorder does not
+    import ``vm_lab.core`` to name that error: ``core`` imports this module, and
+    a copy of ``core`` loaded under another module name (a script copy) would
+    raise a different ``RunnerError`` class than the importable one.
     """
 
 

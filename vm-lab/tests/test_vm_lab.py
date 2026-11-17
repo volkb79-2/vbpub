@@ -16,10 +16,10 @@ from types import SimpleNamespace
 
 import pytest
 
-import vm_lab
+from vm_lab import core as vm_lab
 from vm_lab import GENERIC_PROFILE, RunnerError, VmProfile
 
-TRUENAS_FRONT = Path(__file__).resolve().parents[2] / "truenas" / "tcg_vm.py"
+TRUENAS_FRONT = Path(__file__).resolve().parents[2] / "scripts" / "truenas" / "tcg_vm.py"
 
 
 def load_truenas_front():

@@ -16,14 +16,14 @@ import time  # noqa: F401  (tests patch tcg_vm.time)
 from pathlib import Path
 from typing import Any
 
-# The launcher logic lives in the sibling project scripts/vm-lab. This file is
-# the TrueNAS profile front: it defines the TrueNAS VmProfile and keeps the
-# names other files import from here.
-_VM_LAB_SOURCE = str(Path(__file__).resolve().parent.parent / "vm-lab")
+# The launcher logic lives in the top-level project vm-lab/ (package vm_lab in vm-lab/src). This
+# file is the TrueNAS profile front: it defines the TrueNAS VmProfile and keeps the names other
+# files import from here.
+_VM_LAB_SOURCE = str(Path(__file__).resolve().parent.parent.parent / "vm-lab" / "src")
 if _VM_LAB_SOURCE not in sys.path:
     sys.path.insert(0, _VM_LAB_SOURCE)
 
-import vm_lab  # noqa: E402
+from vm_lab import core as vm_lab  # noqa: E402  (the functions tests patch live in vm_lab.core)
 from vm_lab import (  # noqa: E402,F401  (re-exported for importers of this module)
     MAX_EXTRA_DISKS,
     MAX_MEMORY_PSI_FULL_AVG10,

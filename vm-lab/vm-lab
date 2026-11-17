@@ -1,0 +1,6 @@
+#!/bin/sh
+# Run vm-lab from a bare checkout without installing it: `vm-lab/vm-lab <verb> ...`. Puts the source next to this script
+# on PYTHONPATH and runs `python3 -m vm_lab`, so shell scripts and the TrueNAS front need no installation. The `vmscreen`
+# dependency (screen text) is not added here: it must be installed where python3 runs (the estate venv has it) or on PATH.
+here=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd) || exit 1
+PYTHONPATH="$here/src${PYTHONPATH:+:$PYTHONPATH}" exec python3 -m vm_lab "$@"

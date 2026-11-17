@@ -13,8 +13,8 @@ from types import SimpleNamespace
 import pytest
 from PIL import Image, ImageChops
 
-import vm_lab
-import vm_lab_console
+from vm_lab import console as vm_lab_console
+from vm_lab import core as vm_lab
 
 
 class FakeClock:
@@ -595,15 +595,16 @@ def test_unmappable_character_in_redacted_file_text_is_not_named_in_keys_jsonl(t
 
 
 def test_runner_errors_of_a_script_copy_of_vm_lab_are_tolerated(monkeypatch, tmp_path):
-    # `python3 vm_lab.py` runs the launcher as __main__, so its RunnerError is
-    # not the class of the importable `vm_lab` module. The recorder must still
-    # survive what that copy's qmp_command raises.
+    # A copy of vm_lab.core loaded under another module name (as the launcher once ran as
+    # __main__) has its own RunnerError class, not the one of the importable `vm_lab.core`.
+    # The recorder must still survive what that copy's qmp_command raises. The copy is
+    # named inside the package so its relative imports resolve to the real console module.
     import importlib.util
 
     path = Path(vm_lab.__file__).resolve()
-    spec = importlib.util.spec_from_file_location("vm_lab_script_copy", path)
+    spec = importlib.util.spec_from_file_location("vm_lab.core_script_copy", path)
     copy = importlib.util.module_from_spec(spec)
-    monkeypatch.setitem(sys.modules, "vm_lab_script_copy", copy)
+    monkeypatch.setitem(sys.modules, "vm_lab.core_script_copy", copy)
     spec.loader.exec_module(copy)
     assert copy.RunnerError is not vm_lab.RunnerError
 
@@ -1241,7 +1242,7 @@ def test_display_device_renders_virtio_and_std_with_std_matching_today():
 def test_truenas_profile_is_fixed_to_std_and_has_no_display_option():
     import importlib.util
 
-    path = Path(__file__).resolve().parents[2] / "truenas" / "tcg_vm.py"
+    path = Path(__file__).resolve().parents[2] / "scripts" / "truenas" / "tcg_vm.py"
     spec = importlib.util.spec_from_file_location("tcg_vm_console_test", path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)

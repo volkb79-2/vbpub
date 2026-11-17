@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Read the guest screen as text and wait for text on it (`console text`, `console wait-for-text`, `console mark`).
 
 Three engines read one screen, strictly one after the other (QMP serves one client at a
@@ -39,7 +38,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
-from vm_lab_console import TOLERATED_CALL_ERRORS, ConsoleCallError, ConsoleError
+from .console import TOLERATED_CALL_ERRORS, ConsoleCallError, ConsoleError
 
 EXIT_MATCHED = 0
 EXIT_ERROR = 1

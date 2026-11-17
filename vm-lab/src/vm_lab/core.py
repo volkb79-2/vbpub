@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Run bounded QEMU/TCG guests in a Docker container in the host background slice.
 
 This is the general launcher. A `VmProfile` carries every product-specific
@@ -6,7 +5,7 @@ value (labels, names, sizing, forwarded ports) and is passed explicitly. Two
 host-policy items are shared by all profiles and therefore name TrueNAS, the
 first consumer: the registry of known guest labels (`KNOWN_VM_LABELS`) and the
 historical admission lock filename. A consumer project either calls this
-module's CLI directly (`python3 scripts/vm-lab/vm_lab.py`, sizing on the command
+module's CLI (`vm-lab`, or `vm-lab/vm-lab` from a bare checkout; sizing on the command
 line) or defines its own profile front, the way `scripts/truenas/tcg_vm.py` does.
 
 The VM runs in its own Docker container so TCG CPU use and guest memory do not
@@ -44,9 +43,9 @@ import tty
 from pathlib import Path, PurePosixPath
 from typing import Any, Mapping
 
-import vm_lab_console
-import vm_lab_text
-from vm_lab_console import ConsoleError
+from . import console as vm_lab_console
+from . import text as vm_lab_text
+from .console import ConsoleError
 
 
 # Every VM label key any profile uses. Start admission counts running containers
@@ -81,6 +80,10 @@ RAW_BASE_INFORMATIONAL_KEYS = ("base_disk", "base_size")
 SERIAL_CONSOLE_KEY = "serial_console"
 PROMOTE_NAME_PATTERN = re.compile(r"[A-Za-z0-9_-][A-Za-z0-9._-]*")
 PROMOTE_HASH_CHUNK_BYTES = 1024 * 1024
+# The QEMU container image of the generic profile: `vm-lab image build` makes it from <project>/qemu-image/,
+# and `start` falls back to this tag when Docker has it (see resolve_qemu_image).
+DEFAULT_QEMU_IMAGE_TAG = "vm-lab-qemu:local"
+QEMU_IMAGE_CONTEXT = Path(__file__).resolve().parents[2] / "qemu-image"
 
 
 class RunnerError(vm_lab_console.ConsoleCallError):
@@ -129,6 +132,9 @@ class VmProfile:
     forwards: tuple[PortForward, ...] = ()
     sizing_from_cli: bool = False
     display_device: str | None = None
+    # The local image tag `start` falls back to when neither --image nor `image_env` is given and Docker has
+    # that tag. None: no tag fallback (the profile's image comes from its own environment variable only).
+    default_image: str | None = None
 
     def __post_init__(self) -> None:
         if not 1 <= self.default_max_concurrent_guests <= self.max_concurrent_guests:
@@ -183,6 +189,7 @@ GENERIC_PROFILE = VmProfile(
     max_concurrent_guests=3,
     default_max_concurrent_guests=3,
     sizing_from_cli=True,
+    default_image=DEFAULT_QEMU_IMAGE_TAG,
 )
 
 
@@ -1236,6 +1243,62 @@ def image_id(name: str) -> str:
     return docker_run(["docker", "image", "inspect", name, "--format", "{{.Id}}"]).stdout.strip()
 
 
+def local_image_state(name: str) -> str | None:
+    """Return None when Docker has the image, else the reason it does not.
+
+    "No such image" is the reason of an absent image; any other failure (no daemon, no docker client,
+    a timeout) is reported with its own detail, so an unreachable Docker is never read as "not built".
+    """
+    try:
+        result = docker_run(["docker", "image", "inspect", name], check=False)
+    except RunnerError as exc:
+        return f"could not be checked: {exc}"
+    if result.returncode == 0:
+        return None
+    detail = (result.stderr or result.stdout).strip()
+    if "no such image" in detail.lower():
+        return "does not exist"
+    return f"could not be checked: docker image inspect failed ({result.returncode}): {detail}"
+
+
+def resolve_qemu_image(profile: VmProfile, flag: str | None, environ: Mapping[str, str] | None = None) -> str:
+    """Pick the QEMU image: the flag, else the profile's environment variable, else its local tag if Docker has it."""
+    environ = os.environ if environ is None else environ
+    if flag:
+        return flag
+    from_environment = environ.get(profile.image_env, "")
+    if from_environment:
+        return from_environment
+    message = f"pass --image or set {profile.image_env}; no image fallback is selected"
+    if profile.default_image is None:
+        raise RunnerError(message)
+    state = local_image_state(profile.default_image)
+    if state is None:
+        return profile.default_image
+    raise RunnerError(
+        f"{message} (the local image {profile.default_image} {state}; run `vm-lab image build` to create it)"
+    )
+
+
+def image_build_argv(tag: str, context: Path) -> list[str]:
+    return ["docker", "build", "--tag", tag, str(context)]
+
+
+def cmd_image_build(profile: VmProfile, args: argparse.Namespace, *, runner=None) -> int:
+    """Build the QEMU container image from the project's qemu-image/ directory with `docker build`."""
+    context = Path(args.context) if args.context else QEMU_IMAGE_CONTEXT
+    if not (context / "Dockerfile").is_file():
+        raise RunnerError(
+            f"no Dockerfile in {context}; run from a checkout of the vm-lab project or pass --context DIR"
+        )
+    argv = image_build_argv(args.tag, context)
+    result = (runner or subprocess.run)(argv, check=False)
+    if result.returncode:
+        raise RunnerError(f"docker build failed ({result.returncode}): {shlex.join(argv)}")
+    print(f"[image] built {args.tag} from {context}", flush=True)
+    return 0
+
+
 def container_labels(name: str) -> dict[str, str]:
     item = docker_inspect(name)
     return item.get("Config", {}).get("Labels") or {}
@@ -1875,10 +1938,11 @@ def _cmd_start(profile: VmProfile, args: argparse.Namespace) -> int:
     validate_slice_name(slice_name)
     network = args.network or os.environ.get("DOCKER_NETWORK_INTERNAL", "")
     if not network:
-        raise RunnerError("DOCKER_NETWORK_INTERNAL is unset; pass --network explicitly")
-    image = args.image or os.environ.get(profile.image_env, "")
-    if not image:
-        raise RunnerError(f"pass --image or set {profile.image_env}; no image fallback is selected")
+        raise RunnerError(
+            "DOCKER_NETWORK_INTERNAL is unset; it comes from the ciu stack environment or the devcontainer "
+            "(`ciu env print` shows it); pass --network explicitly or set it"
+        )
+    image = resolve_qemu_image(profile, args.image)
 
     requested_base_format = getattr(args, "base_format", None)
     if args.resume and not os.path.lexists(args.base_disk) and resumable_raw_without_base(
@@ -2382,8 +2446,12 @@ def build_parser(
     profile: VmProfile,
     *,
     state_dir_defaults: tuple[str, str] | None = None,
+    image_commands: bool = False,
 ) -> argparse.ArgumentParser:
     """Build the command line for a profile.
+
+    ``image_commands`` adds the `image build` verb (the generic `vm-lab` command line; a profile front
+    such as TrueNAS names its own image through its environment variable and has no build verb).
 
     ``state_dir_defaults`` is None when ``--state-dir`` is required on every verb
     that takes it. A profile front that derives a default state directory passes
@@ -2483,7 +2551,11 @@ def build_parser(
                 "(required so the choice is explicit)"
             ),
         )
-    start.add_argument("--image", help=f"QEMU image; defaults to {profile.image_env}")
+    start.add_argument(
+        "--image",
+        help=f"QEMU image; defaults to {profile.image_env}"
+        + (f", else the local image {profile.default_image} when Docker has it (`image build`)" if profile.default_image else ""),
+    )
     start.add_argument("--network", help="Docker network; defaults to DOCKER_NETWORK_INTERNAL")
     start.add_argument("--cgroup-parent", help="systemd slice; defaults to CGROUP_PARENT_DEV_BACKGROUND")
     if not profile.sizing_from_cli:
@@ -2554,6 +2626,23 @@ def build_parser(
     add_state_dir(rebind)
     rebind.add_argument("--readonly-media", required=True)
     rebind.set_defaults(func=cmd_rebind_media)
+    if image_commands:
+        image = commands.add_parser("image", help="the QEMU container image the guests run in")
+        image_actions = image.add_subparsers(dest="image_action", required=True)
+        image_build = image_actions.add_parser(
+            "build",
+            help=f"build the QEMU image ({DEFAULT_QEMU_IMAGE_TAG} by default) with docker build",
+            description=(
+                "Run `docker build` on the project's qemu-image/ directory (Debian trixie-slim with "
+                "qemu-system-x86 and qemu-utils; UEFI firmware comes from the caller's host at `start`). "
+                "`start` uses the tag when neither --image nor the image environment variable is set."
+            ),
+        )
+        image_build.add_argument("--tag", default=DEFAULT_QEMU_IMAGE_TAG, help="image tag (default: %(default)s)")
+        image_build.add_argument(
+            "--context", help="build context directory with the Dockerfile (default: <project>/qemu-image)"
+        )
+        image_build.set_defaults(func=cmd_image_build)
     disk = commands.add_parser("disk", help="operations on a guest's disk image")
     disk_commands = disk.add_subparsers(dest="disk_action", required=True)
     promote = disk_commands.add_parser(
@@ -2750,7 +2839,3 @@ def main(
     except (OSError, ValueError, RunnerError, ConsoleError) as exc:
         print(f"{profile.program}: {exc}", file=sys.stderr)
         return 1
-
-
-if __name__ == "__main__":
-    raise SystemExit(main(GENERIC_PROFILE))
