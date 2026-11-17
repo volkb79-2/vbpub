@@ -5,6 +5,18 @@ published endpoint record, so a new mdt-cockpit devcontainer (started from the d
 `CGPROFILE_*`, `MDT_*` and BuildKit facts without bridges. Owner of the decisions: the operator
 (2026-11-17). Executor: the controller session, after one explicit "go".
 
+## Status
+
+Phases 0 to 3 were executed on the controller host on 2026-11-17 (about 15 minutes, 00:08 to 00:14 CET). Outcome:
+cgprofile 3.0.0 runs natively (`cgprofiled.service` plus the two socket units, groups `cgprofile-control` 989 and
+`cgprofile-observer` 990, `vb` a member of both), `/etc/host-endpoints.env` carries the cgprofile and mdt-host-setup
+fragments, `augeaswrap endpoints check` is clean, every `cgprofiled doctor` and `cgprofilectl doctor` check is OK
+(one WARN: the optional `report` extra lacks matplotlib), and all 14 production containers plus the docker,
+containerd, wings and soulmask units show unchanged start times and restart counts. Records: `/var/backups/mdt-cutover-20261117/`
+on the host (removed files, `containers-before.txt` / `containers-after.txt`, `units-before.txt`).
+Open: Phase 4 (the operator restarts the VS Code Remote-SSH server and logs in again, then starts the rebuilt dstdns
+devcontainer; verify a run-gate lane there with no manual export, which closes MDT-086) and, later, the topos install.
+
 ## Decisions (operator, 2026-11-17)
 
 | Topic | Decision |
@@ -72,8 +84,9 @@ a host reboot would leave no runtime directories, so nothing here may restart th
 1. Remove the legacy daemon by exact name: `docker stop cgprofile-host-daemon`, `docker rm cgprofile-host-daemon`.
    Do not remove its volume (archive of past sessions). No other container is named or touched.
 2. Remove the old socket nodes and the old runtime directory: `rm -f /run/cgprofile/ctl.sock
-   /run/cgprofile/observer/resource-observer.sock`, then `rmdir /run/cgprofile/observer /run/cgprofile` (the installer
-   refuses an old owner/mode and an old-layout node).
+   /run/cgprofile/observer/resource-observer.sock /run/cgprofile/damon.lock` (the legacy daemon leaves
+   `damon.lock` behind), then `rmdir /run/cgprofile/observer /run/cgprofile` (the installer refuses an old
+   owner/mode and an old-layout node).
 3. Service files (from the host-setup refusal text): remove the three tmpfiles/sysusers files above and the old
    `/etc/systemd/system/cgprofile.slice`; `systemctl daemon-reload`. Keep the `cgprofile-observer` group and its GID.
 4. Last, immediately before publishing (new login sessions lose the BuildKit variables until step 6): remove

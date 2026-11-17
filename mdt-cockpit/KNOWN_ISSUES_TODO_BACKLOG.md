@@ -1944,3 +1944,15 @@ the first-party CLIs" section.
 **Acceptance.** A fake bake that exits non-zero while a background child holds stdout open makes `build-push.py --build` return that exit code within the drain period and log the holder.
 
 **Audit (same finding).** Review the other pipe readers in this project for the same wait-for-EOF shape and bound each one or record why it cannot hang: `scripts/run_oci_push_lane.py` (two `Popen(stdout=PIPE)` tar/export pipelines), `host-setup/scripts/mdt-io-baseline.py`, `host-setup/estate_doctor.py`, `host-setup/mdt-host-setup-wizard.py`, `host-setup/scripts/mdt-buildkit-guard.py`, `scripts/install_ai_cli_tools.py`, `scripts/iomon_bpf.py`.
+
+## MDT-105 - the image build installs codex at the registry's `latest` with no retry, so a release right after a codex publish fails with ETARGET (2026-11-17)
+
+**Status:** OPEN; severity: medium.
+
+**Observed.** Release attempt 15 (2026-11-17 22:26Z) failed in the image build at `npm install -g @openai/codex@0.169.1`: `npm error code ETARGET ... No matching version found`. The registry's own metadata shows 0.169.1 was published at 22:26:21Z and the install ran at 22:26:32Z, so the version existed but had not reached the CDN node the build hit. The same command succeeded eleven minutes later. The build resolves codex (unlike copilot, openclaw and claudelink, which come from the vetted version record) to the registry's current `latest` at build time.
+
+**Wanted.**
+1. `scripts/install_ai_cli_tools.py` retries a failed `npm install -g` that ends in `ETARGET` with a bounded back-off (for example three tries over about two minutes) and names the retry in the log, instead of failing the layer.
+2. Decide whether codex, claude and opencode should follow the same vetted-record and age-buffer rule as the other three tools (the estate rule is a 14-day buffer); if they stay on `latest`, say so in `docs/BUILD-ARCHITECTURE.md`, because a version published minutes before the build is then shipped unvetted.
+
+**Acceptance.** A fake `npm` that answers ETARGET twice and then succeeds lets the install pass and logs both retries; a fake that always answers ETARGET fails after the bound with the original error text.
