@@ -131,7 +131,18 @@ may corrupt its disk, killing QEMU does not. Treat a run disk as disposable.
 guest, an existing destination folder and a name made of letters, digits, `.`,
 `_` and `-` that does not start with a dot. It refuses to overwrite either
 file, writes `<name>.raw.sha256` (`<hex>  <name>.raw`) and sets both to mode
-0444. It takes the same `--allow-full-copy` flag.
+0444. It takes the same `--allow-full-copy` flag. `disk promote` holds the start
+admission lock for the whole copy and for hashing the copied file (a read of the
+whole image), so a `start` on any guest is refused as "in progress" until it
+finishes.
+
+Troubleshooting: if a `start` or a `disk promote` was killed (for example by
+SIGTERM, which is not turned into an error that cleans up), it can leave the
+hidden copy `.disk.raw.partial` in the state directory, or `.<name>.raw.partial`
+in the destination folder. A retry refuses to reuse it
+(`refusing to reuse existing ...; remove the leftover of an earlier copy`):
+remove that hidden `.<name>.partial` file by hand and run the command again.
+Ctrl-C (KeyboardInterrupt) removes it itself.
 
 ## Record a console session
 

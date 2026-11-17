@@ -35,7 +35,7 @@ python3 scripts/vm-lab/vm_lab.py <verb> [options]
 | --- | --- |
 | `start` | Admit and start a guest. Needs `--name`, `--base-disk`, `--ovmf-code`, `--ovmf-vars`, `--state-dir`, `--memory-mib`, `--cpus` and at least one `--forward`. |
 | `status` | Print container and QMP state as JSON, plus `disk_format` (`raw` or `qcow2`) and `disk_file` of the state directory. |
-| `disk promote` | Publish a stopped guest's raw disk as a read-only base image: `--state-dir`, `--dest-dir`, `--name` (and `--allow-full-copy`). Writes `<name>.raw` and `<name>.raw.sha256`, both mode 0444. |
+| `disk promote` | Publish a stopped guest's raw disk as a read-only base image: `--state-dir`, `--dest-dir`, `--name` (and `--allow-full-copy`). Writes `<name>.raw` and `<name>.raw.sha256`, both mode 0444. Holds the start admission lock while it copies and hashes. If a start or promote was killed (SIGTERM), remove the hidden `.<name>.partial` file by hand (see [docs/CONSUMERS.md](docs/CONSUMERS.md)). |
 | `stop` | Ask the guest to power down (ACPI) and wait. Never force-kills. |
 | `terminate-paused` | Stop the QEMU process of a guest QEMU reports as paused. State is kept. |
 | `destroy` | Remove a stopped container. Disk and firmware state are kept. |

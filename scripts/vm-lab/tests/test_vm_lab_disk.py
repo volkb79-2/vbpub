@@ -660,6 +660,38 @@ def test_promote_allow_full_copy_retries_with_reflink_auto(promote_rig, host, ca
     assert "[disk] full copy of" in out and "[promoted]" in out
 
 
+def test_an_interrupt_while_promote_hashes_leaves_no_image_digest_or_partial(promote_rig, host, monkeypatch):
+    real_open = Path.open
+    reads: list[int] = []
+
+    def interrupting_open(self, *args, **kwargs):
+        handle = real_open(self, *args, **kwargs)
+        if self.name == "debian-13.raw" and args and args[0] == "rb":
+
+            class Interrupted:
+                def read(self_inner, size=-1):
+                    reads.append(size)
+                    raise KeyboardInterrupt
+
+                def __enter__(self_inner):
+                    return self_inner
+
+                def __exit__(self_inner, *exc):
+                    handle.close()
+
+            return Interrupted()
+        return handle
+
+    monkeypatch.setattr(Path, "open", interrupting_open)
+    with pytest.raises(KeyboardInterrupt):
+        promote(promote_rig)
+    assert reads == [1024 * 1024], "the interrupt must have hit the hashing read of the copied file"
+    assert len(host.cp_calls()) == 1
+    assert list(promote_rig.dest.iterdir()) == []  # no N.raw, no .sha256, no hidden partial
+    # The guest's own disk is untouched.
+    assert (promote_rig.state / "disk.raw").read_bytes() == RAW_BYTES * 50
+
+
 def test_promote_removes_both_files_when_the_digest_cannot_be_written(promote_rig, host, monkeypatch, capsys):
     def explode(_path):
         raise OSError("disk read failed")

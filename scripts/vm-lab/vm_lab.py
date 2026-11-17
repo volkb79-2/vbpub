@@ -75,7 +75,7 @@ QCOW2_OVERLAY_NAME = "disk-overlay.qcow2"
 COPY_TIMEOUT_SECONDS = 3600
 # Recorded for a raw guest as information; a resume does not compare them.
 RAW_BASE_INFORMATIONAL_KEYS = ("base_disk", "base_size")
-PROMOTE_NAME_PATTERN =re.compile(r"[A-Za-z0-9_-][A-Za-z0-9._-]*")
+PROMOTE_NAME_PATTERN = re.compile(r"[A-Za-z0-9_-][A-Za-z0-9._-]*")
 PROMOTE_HASH_CHUNK_BYTES = 1024 * 1024
 
 
@@ -1262,10 +1262,13 @@ def clone_disk(source: Path, destination: Path, *, into: Path, allow_full_copy: 
     the whole file was copied. The copy is written to ``.<name>.partial`` beside
     ``destination`` (refused if that exists), checked, set to mode 0600 (a
     read-only base would otherwise hand its mode to the writable run disk) and
-    only then renamed onto ``destination``. Any failure, including
-    KeyboardInterrupt or SIGTERM turned into an exception, removes the
-    temporary file, so ``destination`` is either complete or absent. ``cp`` runs
-    under umask 0077, so the copy is never readable with the base's mode.
+    only then renamed onto ``destination``. Any failure that raises an
+    exception, including KeyboardInterrupt, removes the temporary file, so
+    ``destination`` is either complete or absent. SIGTERM is not turned into an
+    exception here: a start or promote killed by it leaves the hidden
+    ``.<name>.partial`` behind, and a retry refuses it until it is removed by
+    hand. ``cp`` runs under umask 0077, so the copy is never readable with the
+    base's mode.
     """
     if destination.exists() or destination.is_symlink():
         raise RunnerError(f"refusing to overwrite existing {destination}")
