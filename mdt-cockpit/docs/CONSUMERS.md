@@ -184,7 +184,13 @@ the host has published (allow-listed: `CGPROFILE_*`, `TOPOS_OBSERVE_*`,
 passes that file with `--env-file`. An unpublished key stays **unset** in the container,
 never empty (Run-Gate rejects a set-but-empty `MDT_HOST_DOCKER_GID`), and the bootstrap
 prints one `WARN` naming each missing required key; it never refuses to start the
-container. The file is generated and git-ignored (add `/.devcontainer/mdt-endpoints.env`
+container. A host that has **no record at all** (its daemons predate endpoint
+publication; observed 2026-11-17 on this controller host: cgprofile's `ctl.sock` and
+`observer/resource-observer.sock` live, no `/etc/host-endpoints.*`) gets a bridge
+instead: the bootstrap derives the control and observer sockets, their directories and
+owning groups from the live sockets and the host `docker` group from `getent`, delivers
+those, and warns that the record is still unpublished. Publishing the record
+(`sudo cgprofiled install` and the other installers above) replaces the bridge. The file is generated and git-ignored (add `/.devcontainer/mdt-endpoints.env`
 to the consumer repo's `.gitignore`). Numeric groups cannot travel in an env file, so
 `--group-add ${localEnv:CGPROFILE_CONTROL_GID:65534}` and the topos equivalent read the
 HOST session's environment, which the `pam_env` block of `/etc/environment` supplies to an

@@ -1491,7 +1491,11 @@ the keys the host has published from `/etc/host-endpoints.env` into the generate
 unset (never empty) and the bootstrap warns by name instead of refusing, because the 2026-11-08
 review (h1g B2) showed that making mounts depend on unpublished `${localEnv:...}` values stops a
 rebuild from starting. The two socket groups use `--group-add ${localEnv:...:65534}`. Mounts stay
-literal. Open: confirm on the next rebuild that a session receives the variables and a registered
+literal. Host check (2026-11-17, via `host-escape`): the controller host publishes NO record
+(`/etc/host-endpoints.d`, `/etc/host-endpoints.env` and the `/etc/environment` block are absent,
+topos is not installed) while cgprofile's old-layout sockets are live (`ctl.sock` group docker 994;
+`observer/resource-observer.sock` group `cgprofile-observer` 990, directory mode 751) and `pam_env`
+is active for sshd; so the bootstrap bridges from the live sockets until the installers publish. Open: confirm on the next rebuild that a session receives the variables and a registered
 Run-Gate lane starts without a manual export; the mount-from-record and `MDT_HOST_DOCKER_GID`
 replacement of the `DOCKER_GID` export (design 2.2/2.3b) stay deferred until every host publishes.
 

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import subprocess
 import sys
@@ -957,14 +958,52 @@ def test_endpoint_record_drops_malformed_lines_and_root_or_non_numeric_gids(tmp_
     }
 
 
-def test_endpoint_delivery_without_a_record_writes_a_header_only_file_and_warns(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+def test_endpoint_delivery_without_a_record_or_sockets_writes_a_header_only_file_and_warns(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    keys = bootstrap.deliver_host_endpoints(tmp_path, tmp_path / "absent.env", {})
+    monkeypatch.setattr(bootstrap, "_host_docker_gid", lambda: None)
+
+    keys = bootstrap.deliver_host_endpoints(tmp_path, tmp_path / "absent.env", {}, tmp_path / "no-cgprofile")
 
     assert keys == [] and _written(tmp_path) == {}
     err = capsys.readouterr().err
-    assert "WARN" in err and "missing or unreadable" in err and "MDT-086" in err
+    assert "WARN" in err and "no cgprofile socket is live" in err and "MDT-086" in err
+
+
+def test_endpoint_delivery_without_a_record_bridges_with_the_facts_the_live_sockets_show(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A host whose cgprofile daemon runs without publishing: the control and observer sockets and the docker group."""
+    import socket
+    import tempfile
+
+    if os.getgid() == 0:
+        pytest.skip("a root-owned socket carries no usable group")
+    short = Path(tempfile.mkdtemp(prefix="cgp-", dir="/tmp"))
+    (short / "observer").mkdir()
+    sockets = []
+    for path in (short / "ctl.sock", short / "observer" / "resource-observer.sock"):
+        listener = socket.socket(socket.AF_UNIX)
+        listener.bind(str(path))
+        sockets.append(listener)
+    monkeypatch.setattr(bootstrap, "_host_docker_gid", lambda: "994")
+    try:
+        keys = bootstrap.deliver_host_endpoints(tmp_path, tmp_path / "absent.env", {}, short)
+    finally:
+        for listener in sockets:
+            listener.close()
+        for path in (short / "ctl.sock", short / "observer" / "resource-observer.sock"):
+            path.unlink(missing_ok=True)
+        (short / "observer").rmdir()
+        short.rmdir()
+
+    written = _written(tmp_path)
+    assert set(keys) == set(written) == set(bootstrap.ENDPOINT_REQUIRED_KEYS)
+    assert written["CGPROFILE_CONTROL_SOCKET"] == str(short / "ctl.sock")
+    assert written["CGPROFILE_OBSERVER_SOCKET"] == str(short / "observer" / "resource-observer.sock")
+    assert written["CGPROFILE_OBSERVER_SOCKET_DIR"] == str(short / "observer")
+    assert written["MDT_HOST_DOCKER_GID"] == "994"
+    assert "delivering the facts the live sockets show" in capsys.readouterr().err
 
 
 def test_endpoint_delivery_names_each_missing_required_key(
