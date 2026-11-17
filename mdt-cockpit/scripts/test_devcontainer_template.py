@@ -32,6 +32,23 @@ DOC_ANCHOR = (
 )
 
 
+@pytest.fixture(autouse=True)
+def _env_file_of_main_goes_to_a_temporary_directory(
+    monkeypatch: pytest.MonkeyPatch, tmp_path_factory: pytest.TempPathFactory
+) -> None:
+    """`bootstrap.main()` writes ``mdt-endpoints.env`` beside the devcontainer.json it belongs to, which for
+    this module is the templates directory: a run-gate lane judges a clean tree, so that file must never
+    appear in the repository. Calls that already pass their own directory are untouched."""
+    real = bootstrap.deliver_host_endpoints
+    templates = Path(bootstrap.__file__).resolve().parent
+    scratch = tmp_path_factory.mktemp("main-endpoints")
+
+    def redirected(dc_dir: Path, *args: object, **kwargs: object) -> list[str]:
+        return real(scratch if Path(dc_dir).resolve() == templates else dc_dir, *args, **kwargs)
+
+    monkeypatch.setattr(bootstrap, "deliver_host_endpoints", redirected)
+
+
 def _template_mounts() -> list[tuple[str, str, str]]:
     mounts = []
     for line in TEMPLATE_TEXT.splitlines():

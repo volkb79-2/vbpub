@@ -139,17 +139,17 @@
     // ── Persisted host-backed /tmp (mode 1777) ─────────────────────────────────
     "source=${localEnv:HOME}/mdt-cockpit-${localWorkspaceFolderBasename}-tmp/,target=/tmp,type=bind,consistency=cached",
 
-    // ── Optional btrfs copy-on-write area (OFF by default; docs/BTRFS-COW.md) ───
+    // ── btrfs copy-on-write area (docs/BTRFS-COW.md) ────────────────────────────
     // Snapshots/rollback, reflinked copies and per-directory compression for tools such
-    // as assay and ciu. Mounts ONLY this user's directory, at the same path as on the host.
+    // as assay, ciu and the VM tool. Mounts ONLY this user's directory, at the same path as on the host.
     // HOST PREREQUISITE: a btrfs filesystem mounted at /srv/mdt-cockpit-cow with the
-    // user's directory created (host-setup/scripts/mdt-cow-init-user.sh). Uncomment this
-    // mount AND MDT_COW_ROOT in containerEnv together, and only after the host side works:
-    // `mounts` entries are --mount, which refuses to start the container while the source
-    // is missing (that refusal is also the fail-closed guarantee afterwards).
+    // user's directory created (host-setup/scripts/mdt-cow-init-user.sh). `mounts` entries are
+    // --mount, which refuses to start the container while the source is missing; that refusal is
+    // also the fail-closed guarantee. A host without the area comments out this mount AND
+    // MDT_COW_ROOT in containerEnv together.
     // The path is a literal on purpose: mounts are evaluated on the host, where containerEnv
     // values do not exist, so neither may reference ${localEnv:MDT_COW_ROOT} or containerEnv.
-    // "source=/srv/mdt-cockpit-cow/${localEnv:USER},target=/srv/mdt-cockpit-cow/${localEnv:USER},type=bind,bind-propagation=rslave",
+    "source=/srv/mdt-cockpit-cow/${localEnv:USER},target=/srv/mdt-cockpit-cow/${localEnv:USER},type=bind,bind-propagation=rslave",
 
     // ── Sibling-repo workspace mounts (multi-root workspace) ───────────────────
     // ── This config folder's .devcontainer (read-only) ──────────────────────────
@@ -196,9 +196,9 @@
     // top-level `cgprofile.slice`, not one of mdt's dev-tier slices.
     "CGROUP_PARENT_DEV_GATES": "dev-gates.slice",
 
-    // Optional CoW area root (see the opt-in mount above): per user, tools append the target
-    // repo. Uncomment together with that mount.
-    // "MDT_COW_ROOT": "/srv/mdt-cockpit-cow/${localEnv:USER}",
+    // CoW area root (see the CoW mount above): per user, tools append the target
+    // repo. Active together with that mount.
+    "MDT_COW_ROOT": "/srv/mdt-cockpit-cow/${localEnv:USER}",
 
     // finalize hooks are discovered here instead of under the workspace (no .devcontainer there).
     "MDT_DEVCONTAINER_DIR": "/run/mdt/devcontainer",

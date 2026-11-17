@@ -118,9 +118,9 @@ session volume is kept). Production is not involved either way.
 
 - topos install (waits for hostobs); host reboot; any `install.sh` governance re-run (host policy dated Oct 23 to
   Nov 3 stays as is).
-- VM storage: the workspace (`/workspaces/vbpub`) is ext4 while `MDT_COW_ROOT=/srv/mdt-cockpit-cow/vb` is btrfs, so
-  `cp --reflink` from `downloads/vm-images` into `<project>/vm-lab` fails across devices until MDT-044 step 4 binds the
-  per-user CoW root as the workspace. Templates keep the cow lines commented until that host side exists
-  (docs/BTRFS-COW.md section 7). The host has no `/dev/kvm`, so VM guests run under TCG.
-- Image packages for the next build: `btrfs-progs`, `eatmydata`, `libeatmydata1` (added to `apt/packages.list`).
-  Requested optional extras from the VM session: `xorriso`, `mtools`; `swtpm` later.
+- VM storage: the workspace (`/workspaces/vbpub`, `/workspaces/dstdns`) stays on ext4; only selected folders get CoW
+  through the VM session's central path config (its design, tracked in MDT-044 and docs/BTRFS-COW.md). The CoW mount
+  and `MDT_COW_ROOT` are active in the templates, the live `.devcontainer` and dstdns (operator, 2026-11-17); the
+  host area `/srv/mdt-cockpit-cow/vb` exists. The host has no `/dev/kvm`, so VM guests run under TCG.
+- Image packages for the next build, all in `apt/packages.list`: `btrfs-progs`, `eatmydata`, `libeatmydata1`,
+  `xorriso`, `mtools`. `swtpm` later; vmscreen and a vm-lab wheel are requested for a later image.
