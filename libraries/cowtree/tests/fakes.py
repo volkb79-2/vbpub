@@ -6,6 +6,81 @@ import shutil
 from typing import ClassVar
 
 from cowtree.backends import LinuxOps
+from cowtree.repo_paths import Btrfs
+
+REPO_PATHS_TEXT = """\
+schema = 1
+
+[paths.iso]
+repo = "downloads/iso"
+cow = "downloads/iso"
+compression = "none"
+
+[paths.vm-images]
+repo = "downloads/vm-images"
+cow = "downloads/vm-images"
+compression = "zstd"
+
+[paths.vm-lab]
+repo = "{project}/vm-lab"
+cow = "{project}/vm-lab"
+compression = "zstd"
+
+[paths.downloads]
+repo = "downloads"
+
+[paths.bare]
+repo = "bare"
+cow = "bare"
+
+[paths.local-lab]
+repo = "{project}/local-lab"
+"""
+
+
+def write_repo(tmp_path, text=REPO_PATHS_TEXT, name="myrepo"):
+    """A repository directory holding a repo-paths.toml; returns its path."""
+    root = tmp_path / name
+    root.mkdir()
+    (root / "repo-paths.toml").write_text(text, encoding="utf-8")
+    return root
+
+
+def btrfs_area(tmp_path, name="area"):
+    """A valid btrfs CoW area built by the real detect() over fake ops: returns (root path, environ, ops)."""
+    root = tmp_path / name
+    root.mkdir()
+    return root, {"MDT_COW_ROOT": str(root)}, FakeOps(filesystem="btrfs")
+
+
+class FakeBtrfs:
+    """Records the btrfs commands and mimics their effect on the real temporary directories."""
+
+    def __init__(self, *, props=None, fail=None):
+        self.calls = []
+        self.props = dict(props or {})
+        self.subvolumes = set()
+        self.fail = fail
+
+    def run(self, argv):
+        self.calls.append(tuple(argv))
+        verb = tuple(argv[1:3])
+        if verb == self.fail:
+            return 1, "boom\n"
+        if verb == ("subvolume", "create"):
+            assert os.path.isdir(os.path.dirname(argv[3])), "parents must exist before the subvolume is created"
+            os.mkdir(argv[3])
+            self.subvolumes.add(argv[3])
+            return 0, ""
+        if verb == ("property", "get"):
+            value = self.props.get(argv[3], "")
+            return 0, (f"compression={value}\n" if value else "")
+        assert verb == ("property", "set") and argv[4] == "compression"
+        self.props[argv[3]] = argv[5]
+        return 0, ""
+
+    def tools(self):
+        return Btrfs(run=self.run, is_subvolume=lambda path: path in self.subvolumes)
 
 
 class StatResultProxy:

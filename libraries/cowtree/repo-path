@@ -1,0 +1,6 @@
+#!/bin/sh
+# Print where a named shared path of the repository lives: `repo-path NAME [--project DIR] [--repo-root DIR]
+# [--provision] [--json]`. Runs the cowtree source next to this script, so shell scripts and bare checkouts need
+# no installation. Without --repo-root, repo-paths.toml is searched upward from the current directory.
+here=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd) || exit 1
+PYTHONPATH="$here/src${PYTHONPATH:+:$PYTHONPATH}" exec python3 -m cowtree path "$@"

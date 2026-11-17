@@ -31,6 +31,16 @@ class DestinationExists(PathRefused):
     """A destination appeared before an exclusive backend create."""
 
 
+class RepoPathsInvalid(PathRefused):
+    """``repo-paths.toml`` is malformed or breaks one of its validation rules (status 5, like any refused path)."""
+
+
+class UsageError(CowError):
+    """The caller asked for something that cannot be answered: unknown name, missing project, no config found."""
+
+    code = "usage"
+
+
 class BackendFailed(CowError):
     code = "backend"
 

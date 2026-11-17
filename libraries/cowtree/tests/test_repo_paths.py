@@ -1,0 +1,441 @@
+from __future__ import annotations
+
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+import pytest
+from cowtree import repo_paths
+from cowtree.errors import BackendFailed, PathRefused, RepoPathsInvalid, RootInvalid, UsageError
+from cowtree.repo_paths import (
+    PathEntry,
+    Resolved,
+    find_repo_root,
+    load_repo_paths,
+    parse_repo_paths,
+)
+
+from .fakes import REPO_PATHS_TEXT, FakeBtrfs, FakeOps, btrfs_area, write_repo
+
+REAL_REPO_ROOT = Path(__file__).parents[3]
+WRAPPER = Path(__file__).parents[1] / "repo-path"
+
+
+def _cfg(body: str) -> str:
+    return "schema = 1\n" + body
+
+
+# -- config validation -------------------------------------------------------------------------------------------
+
+REFUSALS = [
+    ("schema = \n", "invalid TOML"),
+    ('[paths.a]\nrepo = "x"\n[paths.a]\nrepo = "y"\n', "invalid TOML"),
+    ('schema = 1\nextra = 1\n[paths.a]\nrepo = "x"\n', "unknown top-level keys: extra"),
+    ('schema = 2\n[paths.a]\nrepo = "x"\n', "schema must be 1, not 2"),
+    ('[paths.a]\nrepo = "x"\n', "schema must be 1, not None"),
+    ('schema = true\n[paths.a]\nrepo = "x"\n', "schema must be 1, not True"),
+    ('schema = "1"\n[paths.a]\nrepo = "x"\n', "schema must be 1"),
+    ("schema = 1\n", "paths must be a table"),
+    ("schema = 1\npaths = 1\n", "paths must be a table"),
+    ("schema = 1\n[paths]\na = 1\n", "paths.a must be a table"),
+    ('schema = 1\n[paths.""]\nrepo = "x"\n', "name must not be empty"),
+    (_cfg('[paths.a]\nrepo = "x"\nfoo = 1\nbar = 2\n'), "paths.a has unknown keys: bar, foo"),
+    (_cfg('[paths.a]\ncow = "x"\n'), "paths.a.repo must be a non-empty string"),
+    (_cfg('[paths.a]\nrepo = ""\n'), "paths.a.repo must be a non-empty string"),
+    (_cfg("[paths.a]\nrepo = 3\n"), "paths.a.repo must be a non-empty string"),
+    (_cfg('[paths.a]\nrepo = "x"\ncow = ""\n'), "paths.a.cow must be a non-empty string"),
+    (_cfg('[paths.a]\nrepo = "/abs/x"\n'), "paths.a.repo must be relative, not absolute"),
+    (_cfg('[paths.a]\nrepo = "x"\ncow = "/abs/x"\n'), "paths.a.cow must be relative, not absolute"),
+    (_cfg('[paths.a]\nrepo = "a/../b"\n'), "paths.a.repo must not contain"),
+    (_cfg('[paths.a]\nrepo = ".."\n'), "paths.a.repo must not contain"),
+    (_cfg('[paths.a]\nrepo = "a//b"\n'), "paths.a.repo must not contain"),
+    (_cfg('[paths.a]\nrepo = "./a"\n'), "paths.a.repo must not contain"),
+    (_cfg('[paths.a]\nrepo = "a/"\n'), "paths.a.repo must not contain"),
+    (_cfg('[paths.a]\nrepo = "x"\ncow = "../x"\n'), "paths.a.cow must not contain"),
+    (_cfg('[paths.a]\nrepo = "{other}/x"\n'), "paths.a.repo may only use the {project} placeholder"),
+    (_cfg('[paths.a]\nrepo = "{project/x"\n'), "paths.a.repo may only use the {project} placeholder"),
+    (_cfg('[paths.a]\nrepo = "x}"\n'), "paths.a.repo may only use the {project} placeholder"),
+    (_cfg('[paths.a]\nrepo = "{project}/x"\ncow = "{p}/x"\n'), "paths.a.cow may only use the {project} placeholder"),
+    (_cfg('[paths.a]\nrepo = "{project}/x"\ncow = "x"\n'), "{project} must appear in both repo and cow or in neither"),
+    (_cfg('[paths.a]\nrepo = "x"\ncow = "{project}/x"\n'), "{project} must appear in both repo and cow or in neither"),
+    (_cfg('[paths.a]\nrepo = "x"\ncompression = "gzip"\n'), "paths.a.compression must be none, zstd or zstd:N"),
+    (_cfg('[paths.a]\nrepo = "x"\ncompression = "zstd:0"\n'), "paths.a.compression must be"),
+    (_cfg('[paths.a]\nrepo = "x"\ncompression = "zstd:16"\n'), "paths.a.compression must be"),
+    (_cfg('[paths.a]\nrepo = "x"\ncompression = "ZSTD"\n'), "paths.a.compression must be"),
+    (_cfg('[paths.a]\nrepo = "x"\ncompression = 3\n'), "paths.a.compression must be"),
+]
+
+
+@pytest.mark.parametrize(("text", "message"), REFUSALS)
+def test_every_validation_rule_refuses_with_a_typed_error_naming_the_source(text, message):
+    with pytest.raises(RepoPathsInvalid, match=message) as caught:
+        parse_repo_paths(text, "SOURCE.toml")
+    assert "SOURCE.toml" in str(caught.value)
+    assert caught.value.code == "path"
+
+
+def test_valid_variants_are_accepted_and_typed():
+    entries = parse_repo_paths(
+        _cfg(
+            '[paths.a]\nrepo = "x"\ncompression = "zstd:15"\n'
+            '[paths.b]\nrepo = "{project}/x"\n'
+            '[paths.c]\nrepo = "y"\ncow = "z/w"\ncompression = "zstd:1"\n'
+            '[paths.d]\nrepo = "y"\ncow = "z"\ncompression = "none"\n'
+        )
+    )
+    assert entries == {
+        "a": PathEntry("a", "x", None, "zstd:15"),
+        "b": PathEntry("b", "{project}/x", None, None),
+        "c": PathEntry("c", "y", "z/w", "zstd:1"),
+        "d": PathEntry("d", "y", "z", "none"),
+    }
+
+
+def test_the_real_repo_config_loads_and_resolves_each_of_its_four_names():
+    repo_paths_ = load_repo_paths(REAL_REPO_ROOT)
+    assert set(repo_paths_.entries) == {"iso", "vm-images", "vm-lab", "downloads"}
+    assert repo_paths_.entries["iso"] == PathEntry("iso", "downloads/iso", "downloads/iso", "none")
+    assert repo_paths_.entries["vm-images"].compression == "zstd"
+    assert repo_paths_.entries["vm-lab"] == PathEntry("vm-lab", "{project}/vm-lab", "{project}/vm-lab", "zstd")
+    assert repo_paths_.entries["downloads"] == PathEntry("downloads", "downloads", None, None)
+    root = REAL_REPO_ROOT
+    expected = {
+        "iso": root / "downloads/iso",
+        "vm-images": root / "downloads/vm-images",
+        "vm-lab": root / "scripts/sample/vm-lab",
+        "downloads": root / "downloads",
+    }
+    for name, path in expected.items():
+        got = repo_paths_.resolve(name, project="scripts/sample", environ={}, ops=FakeOps())
+        assert got == Resolved(path, "plain", name, "scripts/sample")
+
+
+# -- loading and root discovery ----------------------------------------------------------------------------------
+
+
+def test_load_reads_the_file_and_names_the_repo_after_the_root_directory(tmp_path):
+    root = write_repo(tmp_path, name="the-repo")
+    loaded = load_repo_paths(root)
+    assert loaded.root == root and loaded.name == "the-repo"
+    assert loaded.entries["iso"].cow == "downloads/iso"
+
+
+def test_load_refuses_a_missing_file_and_an_invalid_one_naming_the_file(tmp_path):
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    with pytest.raises(UsageError, match="cannot read") as missing:
+        load_repo_paths(empty)
+    assert missing.value.code == "usage"
+    broken = write_repo(tmp_path, text="schema = 7\n", name="broken")
+    with pytest.raises(RepoPathsInvalid, match="schema must be 1") as caught:
+        load_repo_paths(broken)
+    assert str(broken / "repo-paths.toml") in str(caught.value)
+
+
+def test_root_discovery_walks_up_from_a_nested_directory_and_from_a_file(tmp_path):
+    root = write_repo(tmp_path)
+    nested = root / "a" / "b"
+    nested.mkdir(parents=True)
+    (nested / "file.txt").write_text("x", encoding="utf-8")
+    assert find_repo_root(nested) == root
+    assert find_repo_root(str(nested / "file.txt")) == root
+    assert find_repo_root(root) == root
+
+
+def test_root_discovery_takes_the_nearest_config_and_never_the_current_directory(tmp_path, monkeypatch):
+    outer = write_repo(tmp_path, name="outer")
+    inner = outer / "inner"
+    inner.mkdir()
+    (inner / "repo-paths.toml").write_text(REPO_PATHS_TEXT, encoding="utf-8")
+    other = write_repo(tmp_path, name="other")
+    monkeypatch.chdir(other)
+    assert find_repo_root(inner / "deep") == inner
+    assert find_repo_root(outer) == outer
+
+
+def test_root_discovery_without_any_config_is_a_usage_error(tmp_path):
+    nowhere = tmp_path / "nowhere"
+    nowhere.mkdir()
+    with pytest.raises(UsageError, match="no repo-paths.toml at or above"):
+        find_repo_root(nowhere)
+
+
+# -- resolve -----------------------------------------------------------------------------------------------------
+
+
+def test_unknown_name_lists_the_defined_ones(tmp_path):
+    loaded = load_repo_paths(write_repo(tmp_path))
+    with pytest.raises(UsageError, match="unknown path name 'nope'; defined: bare, downloads, iso") as caught:
+        loaded.resolve("nope", environ={})
+    assert caught.value.code == "usage"
+
+
+def test_per_project_entry_needs_a_project_and_a_plain_one_ignores_it(tmp_path):
+    loaded = load_repo_paths(write_repo(tmp_path))
+    with pytest.raises(UsageError, match="per project"):
+        loaded.resolve("vm-lab", environ={})
+    with pytest.raises(UsageError, match="per project"):
+        loaded.provision("local-lab", environ={})
+    got = loaded.resolve("iso", project="scripts/x", environ={}, ops=FakeOps())
+    assert got == Resolved(loaded.root / "downloads/iso", "plain", "iso", "scripts/x")
+    got = loaded.resolve("local-lab", project="scripts/x", environ={}, ops=FakeOps())
+    assert got == Resolved(loaded.root / "scripts/x/local-lab", "plain", "local-lab", "scripts/x")
+
+
+@pytest.mark.parametrize("project", ["/abs", "../x", "a/../b", "", ".", "a//b", "a/", "./a", 3])
+@pytest.mark.parametrize("name", ["vm-lab", "iso"])
+def test_a_bad_project_is_refused_even_when_the_entry_does_not_use_it(tmp_path, name, project):
+    loaded = load_repo_paths(write_repo(tmp_path))
+    with pytest.raises(UsageError, match="project must be a relative directory"):
+        loaded.resolve(name, project=project, environ={})
+
+
+def test_cow_mode_when_every_condition_holds(tmp_path):
+    loaded = load_repo_paths(write_repo(tmp_path))
+    area, environ, ops = btrfs_area(tmp_path)
+    (area / "myrepo" / "downloads" / "iso").mkdir(parents=True)
+    (area / "myrepo" / "p" / "q" / "vm-lab").mkdir(parents=True)
+    got = loaded.resolve("iso", environ=environ, ops=ops)
+    assert got == Resolved(area / "myrepo" / "downloads" / "iso", "cow", "iso", None)
+    got = loaded.resolve("vm-lab", project="p/q", environ=environ, ops=ops)
+    assert got == Resolved(area / "myrepo" / "p" / "q" / "vm-lab", "cow", "vm-lab", "p/q")
+    assert got.as_dict() == {
+        "name": "vm-lab", "project": "p/q", "path": str(area / "myrepo/p/q/vm-lab"), "mode": "cow",
+    }
+
+
+def test_plain_mode_when_there_is_no_cow_area_setting(tmp_path):
+    loaded = load_repo_paths(write_repo(tmp_path))
+    got = loaded.resolve("iso", environ={}, ops=FakeOps(filesystem="btrfs"))
+    assert got == Resolved(loaded.root / "downloads/iso", "plain", "iso", None)
+
+
+def test_plain_mode_when_cowtree_mode_is_off(tmp_path):
+    loaded = load_repo_paths(write_repo(tmp_path))
+    area, environ, ops = btrfs_area(tmp_path)
+    (area / "myrepo" / "downloads" / "iso").mkdir(parents=True)
+    got = loaded.resolve("iso", environ={**environ, "COWTREE_MODE": "off"}, ops=ops)
+    assert got.mode == "plain" and got.path == loaded.root / "downloads/iso"
+
+
+def test_plain_mode_when_the_area_is_valid_but_not_btrfs(tmp_path):
+    loaded = load_repo_paths(write_repo(tmp_path))
+    root = tmp_path / "xfs-area"
+    root.mkdir()
+    (root / "myrepo" / "downloads" / "iso").mkdir(parents=True)
+    got = loaded.resolve("iso", environ={"MDT_COW_ROOT": str(root)}, ops=FakeOps(filesystem="xfs"))
+    assert got.mode == "plain" and got.path == loaded.root / "downloads/iso"
+
+
+def test_a_broken_area_is_loud_not_a_silent_fallback(tmp_path):
+    loaded = load_repo_paths(write_repo(tmp_path))
+    environ = {"MDT_COW_ROOT": str(tmp_path / "does-not-exist")}
+    with pytest.raises(RootInvalid):
+        loaded.resolve("iso", environ=environ, ops=FakeOps(filesystem="btrfs"))
+    with pytest.raises(RootInvalid):
+        loaded.provision("iso", environ=environ, ops=FakeOps(filesystem="btrfs"))
+
+
+def test_plain_mode_when_the_cow_directory_is_missing_or_not_a_directory(tmp_path):
+    loaded = load_repo_paths(write_repo(tmp_path))
+    area, environ, ops = btrfs_area(tmp_path)
+    assert loaded.resolve("iso", environ=environ, ops=ops).mode == "plain"
+    (area / "myrepo" / "downloads").mkdir(parents=True)
+    (area / "myrepo" / "downloads" / "iso").write_text("a file", encoding="utf-8")
+    assert loaded.resolve("iso", environ=environ, ops=ops).mode == "plain"
+
+
+def test_plain_mode_for_an_entry_without_cow_never_consults_the_area(tmp_path, monkeypatch):
+    loaded = load_repo_paths(write_repo(tmp_path))
+    area, environ, ops = btrfs_area(tmp_path)
+    (area / "myrepo" / "downloads").mkdir(parents=True)
+    monkeypatch.setattr(repo_paths, "detect", lambda **_kwargs: pytest.fail("detect must not run"))
+    got = loaded.resolve("downloads", environ=environ, ops=ops)
+    assert got == Resolved(loaded.root / "downloads", "plain", "downloads", None)
+    got = loaded.provision("downloads", environ=environ, ops=ops, btrfs=FakeBtrfs().tools())
+    assert got.mode == "plain"
+
+
+def test_resolve_reads_the_process_environment_by_default(tmp_path, monkeypatch):
+    loaded = load_repo_paths(write_repo(tmp_path))
+    monkeypatch.delenv("MDT_COW_ROOT", raising=False)
+    monkeypatch.delenv("COWTREE_MODE", raising=False)
+    assert loaded.resolve("iso", ops=FakeOps()).mode == "plain"
+
+
+def test_resolving_creates_nothing_in_the_repo_or_below_the_cow_mirror(tmp_path):
+    root = write_repo(tmp_path)
+    loaded = load_repo_paths(root)
+    area, environ, ops = btrfs_area(tmp_path)
+    before = sorted(os.listdir(root))
+    loaded.resolve("iso", environ=environ, ops=ops)
+    loaded.resolve("vm-lab", project="p", environ=environ, ops=ops)
+    assert sorted(os.listdir(root)) == before
+    assert not (area / "myrepo").exists()
+
+
+# -- provision ---------------------------------------------------------------------------------------------------
+
+
+def test_provision_creates_parents_then_the_subvolume_then_the_property(tmp_path):
+    root = write_repo(tmp_path)
+    loaded = load_repo_paths(root)
+    area, environ, ops = btrfs_area(tmp_path)
+    fake = FakeBtrfs()
+    got = loaded.provision("vm-lab", project="p/q", environ=environ, ops=ops, btrfs=fake.tools())
+    target = area / "myrepo" / "p" / "q" / "vm-lab"
+    assert got == Resolved(target, "cow", "vm-lab", "p/q")
+    assert fake.calls == [
+        ("btrfs", "subvolume", "create", str(target)),
+        ("btrfs", "property", "set", str(target), "compression", "zstd"),
+    ]
+    assert target.parent.is_dir() and not os.path.islink(target.parent)
+    assert not (root / "p").exists()
+    assert loaded.resolve("vm-lab", project="p/q", environ=environ, ops=ops).mode == "cow"
+
+
+def test_provision_is_idempotent_and_skips_a_property_that_already_matches(tmp_path):
+    loaded = load_repo_paths(write_repo(tmp_path))
+    area, environ, ops = btrfs_area(tmp_path)
+    fake = FakeBtrfs()
+    target = area / "myrepo" / "downloads" / "vm-images"
+    loaded.provision("vm-images", environ=environ, ops=ops, btrfs=fake.tools())
+    fake.calls.clear()
+    got = loaded.provision("vm-images", environ=environ, ops=ops, btrfs=fake.tools())
+    assert got == Resolved(target, "cow", "vm-images", None)
+    assert fake.calls == [("btrfs", "property", "get", str(target), "compression")]
+
+
+def test_provision_corrects_a_different_property_and_treats_unset_as_none(tmp_path):
+    loaded = load_repo_paths(write_repo(tmp_path))
+    area, environ, ops = btrfs_area(tmp_path)
+    iso = area / "myrepo" / "downloads" / "iso"
+    images = area / "myrepo" / "downloads" / "vm-images"
+    for target in (iso, images):
+        target.mkdir(parents=True)
+    fake = FakeBtrfs(props={str(iso): "zstd", str(images): ""})
+    fake.subvolumes.update({str(iso), str(images)})
+    loaded.provision("iso", environ=environ, ops=ops, btrfs=fake.tools())
+    loaded.provision("vm-images", environ=environ, ops=ops, btrfs=fake.tools())
+    assert fake.calls == [
+        ("btrfs", "property", "get", str(iso), "compression"),
+        ("btrfs", "property", "set", str(iso), "compression", "none"),
+        ("btrfs", "property", "get", str(images), "compression"),
+        ("btrfs", "property", "set", str(images), "compression", "zstd"),
+    ]
+    fake.calls.clear()
+    fake.props[str(iso)] = ""
+    loaded.provision("iso", environ=environ, ops=ops, btrfs=fake.tools())
+    assert fake.calls == [("btrfs", "property", "get", str(iso), "compression")]
+
+
+def test_provision_without_a_declared_compression_sets_no_property(tmp_path):
+    loaded = load_repo_paths(write_repo(tmp_path))
+    area, environ, ops = btrfs_area(tmp_path)
+    fake = FakeBtrfs()
+    target = area / "myrepo" / "bare"
+    loaded.provision("bare", environ=environ, ops=ops, btrfs=fake.tools())
+    loaded.provision("bare", environ=environ, ops=ops, btrfs=fake.tools())
+    assert fake.calls == [
+        ("btrfs", "subvolume", "create", str(target)),
+        ("btrfs", "property", "get", str(target), "compression"),
+    ]
+
+
+def test_provision_refuses_an_existing_plain_directory_and_runs_no_command(tmp_path):
+    loaded = load_repo_paths(write_repo(tmp_path))
+    area, environ, ops = btrfs_area(tmp_path)
+    target = area / "myrepo" / "downloads" / "iso"
+    target.mkdir(parents=True)
+    fake = FakeBtrfs()
+    with pytest.raises(PathRefused, match="iso: .*existing plain directory, not a subvolume") as caught:
+        loaded.provision("iso", environ=environ, ops=ops, btrfs=fake.tools())
+    assert str(target) in str(caught.value) and fake.calls == []
+
+
+def test_provision_creates_nothing_without_a_usable_area(tmp_path):
+    root = write_repo(tmp_path)
+    loaded = load_repo_paths(root)
+    fake = FakeBtrfs()
+    got = loaded.provision("iso", environ={}, ops=FakeOps(filesystem="btrfs"), btrfs=fake.tools())
+    assert got == Resolved(root / "downloads/iso", "plain", "iso", None)
+    xfs = tmp_path / "xfs-area"
+    xfs.mkdir()
+    got = loaded.provision("iso", environ={"MDT_COW_ROOT": str(xfs)}, ops=FakeOps(filesystem="xfs"), btrfs=fake.tools())
+    assert got.mode == "plain"
+    assert fake.calls == [] and not (xfs / "myrepo").exists() and not (root / "downloads").exists()
+
+
+@pytest.mark.parametrize("failing", [("subvolume", "create"), ("property", "get"), ("property", "set")])
+def test_provision_turns_a_failed_command_into_a_backend_error(tmp_path, failing):
+    loaded = load_repo_paths(write_repo(tmp_path))
+    area, environ, ops = btrfs_area(tmp_path)
+    fake = FakeBtrfs(fail=failing)
+    if failing[0] == "property" and failing[1] == "get":
+        target = area / "myrepo" / "downloads" / "vm-images"
+        target.mkdir(parents=True)
+        fake.subvolumes.add(str(target))
+    with pytest.raises(BackendFailed, match="exited 1: boom") as caught:
+        loaded.provision("vm-images", environ=environ, ops=ops, btrfs=fake.tools())
+    assert caught.value.code == "backend"
+
+
+def test_provision_uses_the_default_command_boundary_when_none_is_passed(tmp_path, monkeypatch):
+    loaded = load_repo_paths(write_repo(tmp_path))
+    area, environ, ops = btrfs_area(tmp_path)
+    fake = FakeBtrfs()
+    monkeypatch.setattr(repo_paths, "Btrfs", fake.tools)
+    got = loaded.provision("iso", environ=environ, ops=ops)
+    assert got.mode == "cow" and fake.calls[0][:3] == ("btrfs", "subvolume", "create")
+
+
+# -- the default command boundary --------------------------------------------------------------------------------
+
+
+def test_default_runner_returns_the_status_and_combined_output():
+    assert repo_paths._capture([sys.executable, "-c", "print('hi')"]) == (0, "hi\n")
+    status, output = repo_paths._capture(
+        [sys.executable, "-c", "import sys; print('out'); print('err', file=sys.stderr); sys.exit(3)"]
+    )
+    assert status == 3 and "out" in output and "err" in output
+
+
+def test_default_runner_reports_a_missing_program_as_a_backend_error():
+    with pytest.raises(BackendFailed, match="cannot run"):
+        repo_paths._capture(["/nonexistent/cowtree-test-binary"])
+
+
+def test_default_subvolume_test_is_false_for_a_plain_directory(tmp_path):
+    assert repo_paths._is_subvolume(str(tmp_path)) is False
+    assert repo_paths.Btrfs().is_subvolume(str(tmp_path)) is False
+
+
+def test_property_output_parsing_and_compression_comparison():
+    assert repo_paths._property_value("") == ""
+    assert repo_paths._property_value("warning: x\ncompression=zstd:3\n") == "zstd:3"
+    assert repo_paths._same_compression("", "none") and repo_paths._same_compression("none", "none")
+    assert repo_paths._same_compression("zstd", "zstd")
+    assert not repo_paths._same_compression("zstd", "none") and not repo_paths._same_compression("", "zstd")
+
+
+# -- the shell wrapper -------------------------------------------------------------------------------------------
+
+
+def test_wrapper_is_executable_and_runs_the_source_next_to_it():
+    assert WRAPPER.is_file() and os.access(WRAPPER, os.X_OK)
+    text = WRAPPER.read_text(encoding="utf-8")
+    assert text.startswith("#!/bin/sh\n")
+    assert '"$here/src' in text and 'python3 -m cowtree path "$@"' in text
+    assert (WRAPPER.parent / "src" / "cowtree" / "repo_paths.py").is_file()
+
+
+def test_wrapper_resolves_a_path_without_an_installed_package(tmp_path):
+    root = write_repo(tmp_path)
+    environ = {k: v for k, v in os.environ.items() if k not in {"MDT_COW_ROOT", "COWTREE_MODE", "PYTHONPATH"}}
+    environ["PATH"] = f"{Path(sys.executable).parent}{os.pathsep}{environ.get('PATH', '')}"
+    done = subprocess.run(
+        [str(WRAPPER), "vm-lab", "--project", "scripts/x", "--repo-root", str(root)],
+        env=environ, capture_output=True, text=True, check=False,
+    )
+    assert (done.returncode, done.stdout.strip()) == (0, str(root / "scripts/x/vm-lab")), done.stderr

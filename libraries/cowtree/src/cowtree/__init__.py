@@ -17,8 +17,10 @@ from .errors import (
     CowError,
     LeaseHeld,
     PathRefused,
+    RepoPathsInvalid,
     RootInvalid,
     SpaceRefused,
+    UsageError,
 )
 from .overlay import (
     OverlayVolume,
@@ -34,6 +36,7 @@ from .overlay import (
     worker_volume,
 )
 from .provision import Decision, LevelUnavailable, Probes, Provisioner, Settings, WorkerSlot, decide
+from .repo_paths import Btrfs, PathEntry, RepoPaths, Resolved, find_repo_root, load_repo_paths, parse_repo_paths
 from .run import Run, open_run
 from .space import SpaceEstimate
 
@@ -83,4 +86,13 @@ __all__ = [
     "SpaceRefused",
     "detect",
     "open_run",
+    "Btrfs",
+    "PathEntry",
+    "RepoPaths",
+    "RepoPathsInvalid",
+    "Resolved",
+    "UsageError",
+    "find_repo_root",
+    "load_repo_paths",
+    "parse_repo_paths",
 ]

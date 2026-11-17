@@ -11,7 +11,7 @@ from cowtree.provision import LevelUnavailable
 from cowtree.errors import CacheBusy, KeyMissing, TreeInvalid, Unrepairable, BackendFailed, CowError, LeaseHeld, PathRefused, RootInvalid, SpaceRefused
 from cowtree.gc import GcItem
 
-from .fakes import FakeOps
+from .fakes import FakeBtrfs, FakeOps, btrfs_area, write_repo
 
 
 def _area(tmp_path):
@@ -201,3 +201,106 @@ def test_probe_cli_reports_level_and_failure(tmp_path, capsys):
     assert report["level"] in ("B", "C", "D") and report["checks"]["A"]
     assert cli.main(["probe", "--json"]) == 12
     assert json.loads(capsys.readouterr().err)["error"] == "level-unavailable"
+
+
+def _plain_environment(monkeypatch):
+    monkeypatch.delenv("MDT_COW_ROOT", raising=False)
+    monkeypatch.delenv("COWTREE_MODE", raising=False)
+
+
+def _cow_area(tmp_path, monkeypatch):
+    from cowtree import repo_paths
+    from cowtree.detect import detect as real_detect
+
+    root, environ, ops = btrfs_area(tmp_path)
+    area = real_detect(environ=environ, ops=ops)
+    monkeypatch.setattr(repo_paths, "detect", lambda **_kwargs: area)
+    return root
+
+
+def test_path_cli_prints_the_plain_path_or_json(tmp_path, monkeypatch, capsys):
+    _plain_environment(monkeypatch)
+    root = write_repo(tmp_path)
+    assert cli.main(["path", "iso", "--repo-root", str(root)]) == 0
+    assert capsys.readouterr().out == f"{root}/downloads/iso\n"
+    argv = ["path", "vm-lab", "--project", "scripts/x", "--repo-root", str(root), "--json"]
+    assert cli.main(argv) == 0
+    assert json.loads(capsys.readouterr().out) == {
+        "name": "vm-lab", "project": "scripts/x", "path": f"{root}/scripts/x/vm-lab", "mode": "plain",
+    }
+
+
+def test_path_cli_searches_upward_from_the_current_directory_without_repo_root(tmp_path, monkeypatch, capsys):
+    _plain_environment(monkeypatch)
+    root = write_repo(tmp_path)
+    nested = root / "a" / "b"
+    nested.mkdir(parents=True)
+    monkeypatch.chdir(nested)
+    assert cli.main(["path", "downloads"]) == 0
+    assert capsys.readouterr().out == f"{root}/downloads\n"
+
+
+def test_path_cli_reports_cow_mode_for_an_existing_cow_folder(tmp_path, monkeypatch, capsys):
+    root = write_repo(tmp_path)
+    area = _cow_area(tmp_path, monkeypatch)
+    (area / "myrepo" / "downloads" / "iso").mkdir(parents=True)
+    assert cli.main(["path", "iso", "--repo-root", str(root), "--json"]) == 0
+    assert json.loads(capsys.readouterr().out) == {
+        "name": "iso", "project": None, "path": f"{area}/myrepo/downloads/iso", "mode": "cow",
+    }
+
+
+def test_path_cli_provision_creates_the_subvolume_first(tmp_path, monkeypatch, capsys):
+    from cowtree import repo_paths
+
+    root = write_repo(tmp_path)
+    area = _cow_area(tmp_path, monkeypatch)
+    fake = FakeBtrfs()
+    monkeypatch.setattr(repo_paths, "Btrfs", fake.tools)
+    assert cli.main(["path", "iso", "--repo-root", str(root), "--provision"]) == 0
+    assert capsys.readouterr().out == f"{area}/myrepo/downloads/iso\n"
+    assert cli.main(["path", "iso", "--repo-root", str(root), "--provision", "--json"]) == 0
+    assert json.loads(capsys.readouterr().out)["mode"] == "cow"
+    assert [call[1:3] for call in fake.calls] == [("subvolume", "create"), ("property", "set"), ("property", "get")]
+
+
+def test_path_cli_maps_failures_to_the_typed_statuses(tmp_path, monkeypatch, capsys):
+    from cowtree import repo_paths
+
+    _plain_environment(monkeypatch)
+    root = write_repo(tmp_path)
+    base = ["--repo-root", str(root), "--json"]
+    cases = [
+        (["path", "nope", *base], 2, "usage"),
+        (["path", "vm-lab", *base], 2, "usage"),
+        (["path", "iso", "--project", "../x", *base], 2, "usage"),
+        (["path", "iso", "--repo-root", str(write_repo(tmp_path, "schema = 9\n", "bad")), "--json"], 5, "path"),
+    ]
+    for argv, status, code in cases:
+        assert cli.main(argv) == status
+        assert json.loads(capsys.readouterr().err)["error"] == code
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    monkeypatch.chdir(empty)
+    assert cli.main(["path", "iso"]) == 2
+    assert "no repo-paths.toml at or above" in capsys.readouterr().err
+
+    area = _cow_area(tmp_path, monkeypatch)
+    (area / "myrepo" / "downloads" / "iso").mkdir(parents=True)
+    fake = FakeBtrfs()
+    monkeypatch.setattr(repo_paths, "Btrfs", fake.tools)
+    assert cli.main(["path", "iso", "--provision", *base]) == 5
+    assert json.loads(capsys.readouterr().err)["error"] == "path"
+    fake_failing = FakeBtrfs(fail=("subvolume", "create"))
+    monkeypatch.setattr(repo_paths, "Btrfs", fake_failing.tools)
+    assert cli.main(["path", "vm-images", "--provision", *base]) == 6
+    assert json.loads(capsys.readouterr().err)["error"] == "backend"
+    monkeypatch.setattr(repo_paths, "detect", lambda **_kwargs: (_ for _ in ()).throw(RootInvalid("broken")))
+    assert cli.main(["path", "iso", *base]) == 3
+    assert json.loads(capsys.readouterr().err)["error"] == "root-invalid"
+
+
+def test_path_cli_requires_a_name(capsys):
+    with pytest.raises(SystemExit) as caught:
+        cli.main(["path"])
+    assert caught.value.code == 2
