@@ -6,9 +6,11 @@
 the project that owns the VM (for example `debian-rollback`). Keep its VM files
 in `scripts/<project>/vm-lab/<vm>/`; base images shared between projects live in
 `downloads/vm-images/` and ISOs in `downloads/iso/` (AGENTS.md "Directory
-conventions and VM files"). Today `start` boots a qcow2 overlay on a read-only
-qcow2 base disk; raw base images cloned by reflink are the planned replacement
-(work package VML-06).
+conventions and VM files"). `start` takes the base disk in one of two formats:
+a qcow2 base is mounted read-only under a qcow2 overlay (this section), a raw
+base is reflink-cloned into the state directory (see
+[Start from a raw base](#start-from-a-raw-base)). `--base-format auto` (the
+default) tells them apart by the first four bytes of the file.
 
 Prerequisites: a loaded host background slice (`CGROUP_PARENT_DEV_BACKGROUND`),
 a Docker network (`DOCKER_NETWORK_INTERNAL`), a QEMU image that has
@@ -69,6 +71,60 @@ start. A first start without an ISO may add one on resume. `destroy` removes the
 
 Reach the guest from another container on the same Docker network at
 `<container address>:2222`. Nothing is published on the host.
+
+## Start from a raw base
+
+A raw base is a plain disk image, preferably on btrfs. Each VM gets its own
+disk as a reflink copy of the base: instant, and the two share their blocks
+until the guest writes. The base is never mounted into the guest container and
+never written; it is only the source of one `cp --reflink=always`.
+
+**The base image and the state directory must be on one btrfs filesystem.**
+Otherwise the clone fails and `start` says so and exits 1 (it prints
+`cannot reflink <base> into <state dir>: <cp's message>` and removes anything
+partial). Add `--allow-full-copy` to copy the whole file instead; `start` then
+prints `[disk] full copy of <base> (no reflink possible)`. The checkout itself
+may be on ext4: give the base and the state directory as explicit paths on the
+CoW filesystem.
+
+```
+# 1. Convert a fetched qcow2 cloud image into a raw base, once. -S 4k keeps it sparse.
+#    The base folder is read-only after creation and has a .sha256 next to each file.
+mkdir -p downloads/vm-images
+qemu-img convert -O raw -S 4k debian-13-generic-amd64.qcow2 downloads/vm-images/debian-13.raw
+( cd downloads/vm-images && sha256sum debian-13.raw > debian-13.raw.sha256 )
+chmod 0444 downloads/vm-images/debian-13.raw downloads/vm-images/debian-13.raw.sha256
+
+# 2. Start a VM from it. The state directory is empty on a first start.
+VM=scripts/<project>/vm-lab/deb1
+mkdir -p "$VM"
+python3 scripts/vm-lab/vm_lab.py start \
+  --name deb1 --state-dir "$VM" \
+  --base-disk downloads/vm-images/debian-13.raw \
+  --ovmf-code /usr/share/OVMF/OVMF_CODE_4M.fd \
+  --ovmf-vars /usr/share/OVMF/OVMF_VARS_4M.fd \
+  --memory-mib 2048 --cpus 2 --display-device std --forward 2222:22
+# prints: [disk] reflink clone of .../debian-13.raw
+# The guest disk is "$VM/disk.raw"; `status` shows disk_format and disk_file.
+
+# 3. Install or provision the guest, then stop it (a running guest cannot be promoted).
+python3 scripts/vm-lab/vm_lab.py stop --name deb1 --state-dir "$VM"
+
+# 4. Promote the installed VM to a new shared base for other VMs.
+python3 scripts/vm-lab/vm_lab.py disk promote \
+  --state-dir "$VM" --dest-dir downloads/vm-images --name debian-13-installed
+# prints: [promoted] .../debian-13-installed.raw sha256=<hex>
+```
+
+`--resume` reuses `disk.raw` and never clones again; it refuses when the
+recorded format differs from the one the base file has (a raw guest cannot be
+resumed with a qcow2 base). A raw guest runs with `cache=unsafe`: a host crash
+may corrupt its disk, killing QEMU does not. Treat a run disk as disposable.
+`disk promote` needs a raw disk (a qcow2 overlay guest is refused), a stopped
+guest, an existing destination folder and a name made of letters, digits, `.`,
+`_` and `-` that does not start with a dot. It refuses to overwrite either
+file, writes `<name>.raw.sha256` (`<hex>  <name>.raw`) and sets both to mode
+0444. It takes the same `--allow-full-copy` flag.
 
 ## Record a console session
 
