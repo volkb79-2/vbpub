@@ -62,6 +62,19 @@ def test_mountinfo_rejects_nonabsolute_mountpoint_or_empty_filesystem(row):
         parse_mountinfo(row)
 
 
+def test_mount_lookup_takes_the_longest_mountpoint_and_the_last_row_among_equals():
+    text = (
+        "1 0 0:1 / / rw - ext4 /dev/a rw\n"
+        "2 1 0:2 / /srv/area rw - xfs /dev/b rw\n"
+        "3 1 0:3 / /srv/area rw - btrfs /dev/c rw\n"
+        "4 1 0:4 / /srv rw - tmpfs none rw\n"
+    )
+    assert mount_fstype("/srv/area/x", text) == "btrfs"
+    assert mount_fstype("/srv/area", text) == "btrfs"
+    assert mount_fstype("/srv/other", text) == "tmpfs"
+    assert mount_fstype("/srv/area/x", text.replace("btrfs", "ext2").replace("xfs", "btrfs")) == "ext2"
+
+
 def test_require_directory_rejects_file_and_symlink(tmp_path):
     regular = tmp_path / "file"
     regular.write_text("x")

@@ -112,6 +112,28 @@ recorded for every variant but is **not** part of the verdict: it is hard to
 measure comparably, so the data is kept for later. On a tie btrfs stays the
 default (in the kernel, no module to rebuild).
 
+### r1002 and iogovmon (state 2026-11-17, from the controller session)
+
+r1002 runs the iogovmon acceptance (second round started 2026-11-17 22:59Z;
+checkpoints +12 h, +24 h, +48 h on 2026-11-19 23:00Z, +5 days on 2026-11-22
+23:00Z). r1002 stays reserved until the controller session's user releases it,
+earliest 2026-11-23; the controller session tells this project when. Planning
+consequences for E2:
+
+- A reinstall per variant wipes the iogovmon install and its journal. E2
+  provisioning therefore installs iogovmon in each variant (its `install.sh`),
+  archives the journal before every reinstall, and keeps iogovmon to ticks only
+  (read-only, about 50 MB/day, queue depth 1) during timing-sensitive
+  measurement windows: the bench stops with the kill-switch file on the host.
+  Its tick and probe journal during E2 runs is additional data on what the disk
+  does under load.
+- The bench's abort limit reads system-wide io pressure and previously
+  self-aborted on idle disks; the controller session lowered its sensitivity
+  (`bench_pressure_some_max = 3.0`). Treat bench results during E2 as
+  out of scope.
+- The acceptance's continuity over 48 h or 5 days cannot survive the E2
+  reinstalls; the controller's user decides the order.
+
 ### Host lease
 
 Agreed on 2026-11-12 with the Claude session `vbpub-controller-joint-release`,
