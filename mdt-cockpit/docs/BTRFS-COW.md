@@ -488,6 +488,14 @@ Checks only a real deployment can make:
 
 ## 10. Open items
 
+- **Interim layout until the checkout moves (created 2026-11-17 on the reference host, user `vb`):** the checkout is on ext4, so
+  `downloads/iso`, `downloads/vm-images` and a project's `vm-lab` cannot be subvolumes in it. They exist instead as subvolumes
+  that mirror the repository's paths below `$MDT_COW_ROOT/<repo>/`: `downloads/iso` (no compression), `downloads/vm-images` and
+  `scripts/debian-rollback/vm-lab` (both zstd). The VM tool takes them as explicit `--base-disk` and `--state-dir` paths
+  (a reflink across these subvolumes shares extents, checked). When the checkout moves to `<user>/<repo>`, the mirror becomes the
+  real paths with no copying. Further projects and repos add their own subvolumes the same way: one set per user, per repo.
+  Files already in the checkout's flat `downloads/` (the TrueNAS ISOs, the Debian cloud image) stay there: `vanilla-iso-patcher` and
+  the debian-install-v2 harness hardcode that path, so they move to `downloads/iso` and `downloads/vm-images` with their consumers.
 - Move the checkout onto this filesystem, create `downloads/iso`, `downloads/vm-images` and each `<project>/vm-lab` as
   declared subvolumes, and migrate the projects that still use `<project>/artifacts/vm-lab` (MDT-044 and its follow-up).
 - Add `btrfs-progs` (and `rsync`) to the image, so tools do not depend on installing them.

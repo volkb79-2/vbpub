@@ -890,6 +890,10 @@ while the parent's is unset. Until decided, an operator may still set them by ha
   `zswap-writeback-governor/synthetic/run-synthetic.sh`, and `mdt-cockpit/docs/IO-GOVERNOR-CANDIDATES.md`. `scripts/vm-lab`
   and `scripts/debian-rollback` already name the new location. The `scripts/vm-lab` tool still builds a qcow2 overlay on a base
   disk; moving it to raw reflink copies of `downloads/vm-images/` is package VML-06 of `scripts/debian-rollback/docs/WORK-PACKAGES.md`.
+- Interim (2026-11-17): the subvolumes `downloads/iso`, `downloads/vm-images` and `scripts/debian-rollback/vm-lab` exist under
+  `$MDT_COW_ROOT/<repo>/` (mirror of the repo paths; BTRFS-COW.md section 10). Files already in the flat `downloads/` stay until
+  `scripts/truenas/vanilla-iso-patcher/upstream.py` (`DOWNLOADS_DIR`) and the debian-install-v2 harness (`HOST_DOWNLOADS_DIR`, its
+  boundary tests) accept the subfolders; moving them earlier breaks those tools.
 - The checkout in the current devcontainer is on ext4 (`/workspaces/vbpub`), only `MDT_COW_ROOT` is btrfs, so reflinks from
   `downloads/vm-images/` into `<project>/vm-lab/` do not work there until the checkout itself lives on the CoW filesystem (step 2 below).
 
