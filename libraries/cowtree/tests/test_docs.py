@@ -41,8 +41,32 @@ def test_public_vocabulary_is_documented():
         "volume-opt=o=",
         "repair_entry",
         "tree-invalid",
+        "repo-paths.toml",
+        "repo_paths",
+        "repo-path",
+        "cowtree path",
+        "--provision",
+        "--repo-root",
+        "{project}",
+        "repopathsinvalid",
+        "usageerror",
+        "usage",
     ):
         assert value in docs
+
+
+def test_repo_paths_examples_parse_with_the_shipped_loader():
+    from cowtree.repo_paths import parse_repo_paths
+
+    root = Path(__file__).parents[1]
+    parsed = 0
+    for document in DOCS:
+        text = (root / document).read_text(encoding="utf-8")
+        for block in re.findall(r"```toml\n(.*?)```", text, flags=re.DOTALL):
+            if "[paths." in block:
+                assert parse_repo_paths(block, document)
+                parsed += 1
+    assert parsed >= 1
 
 
 def test_cross_document_links_resolve():

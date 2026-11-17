@@ -138,6 +138,27 @@ are created under the selected temporary directory and require an explicit
 `gc --scan DIR`; the CLI logs that instruction instead of implying it scanned
 those runs.
 
+## One config for the shared paths
+
+Where ISOs, base images and VM state live used to be hardcoded in each script (`downloads/...`,
+`<project>/artifacts/vm-lab`), so moving one folder onto the CoW filesystem meant editing every consumer.
+One tracked `repo-paths.toml` in the repo root now names each shared path and says which of them also have a CoW
+location; every consumer asks the resolver. The checkout stays on its ordinary filesystem (a repository on a
+copy-on-write or compressed filesystem was rejected), and only selected folders are subvolumes, mirrored at
+`$MDT_COW_ROOT/<repo-name>/<path>`: one set per user (each has their own `MDT_COW_ROOT`) and per repo (the
+`<repo-name>` level). `MDT_COW_ROOT` is the one environment input; the earlier rule that no environment variable
+relocates a declared path is superseded for this reason.
+
+The fallback is silent only for "there is no CoW area": an unset `MDT_COW_ROOT`, `COWTREE_MODE=off`, a non-btrfs
+area, an entry without `cow`, or a CoW folder that has not been provisioned yet. All of these are normal states
+(a plain host, a new repo), and the plain path is a correct answer. A configured but broken area is loud:
+`detect()` raises `RootInvalid` and the resolver lets it through, because a silent fallback would send a VM disk
+to the checkout's filesystem while the operator believes it is on btrfs. `provision` refuses an existing plain
+directory at the CoW location rather than migrating it, since moving data is a separate, reviewable step.
+The module stays free of VM and Docker knowledge: names live only in the repository's file. The resolver does
+not create anything, so asking never changes the host. COW-BL-01 (gitignored paths snapshotted into worktrees)
+is a different table with a different consumer and is not folded into this one.
+
 ## Manifest fsync is not a correctness dependency
 
 `_write_manifest` fsyncs the file and directory, but under the relaxed-fsync

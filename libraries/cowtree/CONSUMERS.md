@@ -45,6 +45,44 @@ restores owner write permission recursively, so the candidate can be changed
 and discarded. Unsealed source modes remain unchanged; btrfs
 snapshots become writable by clearing the snapshot's read-only flag.
 
+## Resolve the shared paths of a repository
+
+Never hardcode `downloads/` or `vm-lab/`. The repository declares its shared paths in a tracked `repo-paths.toml`
+in its root (this is the shape; the repository's own file is authoritative):
+
+```toml
+schema = 1
+
+[paths.iso]
+repo = "downloads/iso"       # plain location, relative to the repo root
+cow = "downloads/iso"        # below $MDT_COW_ROOT/<repo-name>/ ; omit = never CoW
+compression = "none"         # none | zstd | zstd:N (1..15)
+
+[paths.vm-lab]
+repo = "{project}/vm-lab"    # per project: the caller passes the project directory
+cow = "{project}/vm-lab"
+compression = "zstd"
+```
+
+From a shell script (no install; `--project` is relative to the repo root):
+
+```console
+ISO_DIR=$(libraries/cowtree/repo-path iso --repo-root "$REPO_ROOT")
+VM_LAB=$(libraries/cowtree/repo-path vm-lab --project scripts/my-tool --provision --repo-root "$REPO_ROOT")
+```
+
+From Python, with `cowtree` installed or `libraries/cowtree/src` on `sys.path`:
+
+```python
+from cowtree.repo_paths import find_repo_root, load_repo_paths
+
+resolved = load_repo_paths(find_repo_root(__file__)).resolve("vm-lab", project="scripts/my-tool")
+resolved.path   # a pathlib.Path; resolved.mode is "cow" or "plain"
+```
+
+Without `--repo-root` the CLI searches upward from the current directory. A refusal exits with the typed status
+(unknown name or missing project: 2; invalid file: 5; broken `MDT_COW_ROOT`: 3).
+
 ## Area selection and commands
 
 With `MDT_COW_ROOT` unset, cowtree logs one INFO line and returns a `Run` using

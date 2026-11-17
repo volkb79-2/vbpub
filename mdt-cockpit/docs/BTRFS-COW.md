@@ -6,8 +6,9 @@ transparent zstd compression where a subvolume opts in, without placing any repo
 copy-on-write filesystem.
 
 *Status: in use. The reference host mounts the area and binds `<mount>/<user>` into the vbpub devcontainer as
-`MDT_COW_ROOT`. The checkout itself is still on the container's ordinary filesystem; moving it onto the area is
-MDT-044. Evidence tags:* **[M]** *measured on the reference host (gstammtisch, 2026-10-22),* **[R]** *verified on a
+`MDT_COW_ROOT`. The checkout stays on the container's ordinary filesystem; selected folders of it are CoW
+subvolumes mirrored below `$MDT_COW_ROOT/<repo-name>/` and found through the repo-root `repo-paths.toml` (MDT-044).
+Evidence tags:* **[M]** *measured on the reference host (gstammtisch, 2026-10-22),* **[R]** *verified on a
 scratch VM (Debian 13, kernel 7.2.9, btrfs-progs 7.1, 2026-10-22; results hold for those versions),* **[K]**
 *documented behaviour of btrfs, systemd or the kernel, not re-verified here,* **[T]** *assumption still untested.
 `host-setup/scripts/mdt-cow-selfcheck.sh` reproduces the [R] items on any scratch host (section 9).*
@@ -30,7 +31,8 @@ host's is `scripts/gstammtisch-guide/BTRFS-ROLLOUT.md`.
 | Compression | Per subvolume (`btrfs property`), **no `compress=` mount option** | Repos and ISOs stay uncompressed; VM disks and scratch opt in. Needs no separate filesystem. |
 | Snapshot unit | A **subvolume** | Only subvolumes can be snapshotted, made read-only or deleted atomically. Directories are the namespace. |
 | Device | Its **own LV or disk**, not a file on the root filesystem | Own journal and transaction stream (section 2.5). A loop file on ext4 couples both filesystems through the ext4 journal. |
-| Where the checkout lives | On this filesystem (MDT-044): the checkout with `.worktrees/` inside the per-user root | Reflinks and snapshots between `downloads/`, `<project>/vm-lab/` and worktrees need one filesystem. |
+| Where the checkout lives | **On its ordinary filesystem (ext4)**; only selected folders are CoW subvolumes, mirrored at `$MDT_COW_ROOT/<repo-name>/<path>` | The repository never sits on a copy-on-write or compressed filesystem. Reflinks between `downloads/vm-images/` and `<project>/vm-lab/` work because both subvolumes are on the one CoW filesystem. |
+| How tools find those folders | One tracked `repo-paths.toml` in the repo root, read through the cowtree resolver (`libraries/cowtree/repo-path`, `cowtree.repo_paths`) | No script hardcodes a path; with no `MDT_COW_ROOT`, or a folder that does not exist there, the resolver answers with the plain repo path. |
 | VM files | `<project>/vm-lab/` (compressed subvolume); ISOs in `downloads/iso/`; shared base images in `downloads/vm-images/`; **raw** preferred | Section 4. |
 
 Not covered: moving Docker's data root onto btrfs (overlay2 on ext4 stays; image pulls and builds are write
@@ -219,11 +221,10 @@ property.* Start with plain directories for the namespace levels.
 <mount>/                           top level, root:root 0755, chattr +i while unmounted
   <user>/                          per-user area = MDT_COW_ROOT, <user>:<user> 0750; the ONLY level a container mounts
     .cowtree/                      cowtree's run area: disposable clones, owner manifests, leases (cowtree manages it)
-    <checkout>/                    the repository checkout, with .worktrees/ inside it (MDT-044)
+    <repo-name>/                   one plain directory per repository and per user; mirrors the repo's paths from repo-paths.toml
       downloads/iso/               subvolume: ISOs, `.sha256` beside each file; compression none
       downloads/vm-images/         subvolume: shared qemu base images, raw preferred; compression zstd; read-only after creation
-      <project>/vm-lab/            subvolume per project, declared in the cowtree schema: per-VM disks, runs, OVMF vars, serial logs; zstd
-    <repo>/                        per-repo tool area, plain directory
+      <project>/vm-lab/            subvolume per project: per-VM disks, runs, OVMF vars, serial logs; zstd
       assay/base/                  subvolume: self-contained clone + warm environment (section 6.1)
       assay/snap-*/                subvolumes (snapshots of base), deleted after each run
       worktrees/<instance-id>/     subvolume per worktree: compressed scratch, linked as .store
@@ -231,12 +232,21 @@ property.* Start with plain directories for the namespace levels.
 
 Why this shape:
 
+- **The checkout stays on ext4; the CoW area mirrors selected paths of it.** `$MDT_COW_ROOT/<repo-name>/<path>` holds the
+  folder that `<checkout>/<path>` would be, for exactly the paths the repo's `repo-paths.toml` gives a `cow` location.
+  The set is per user (each user has their own `MDT_COW_ROOT`) and per repo (the `<repo-name>` level, the basename of the
+  checkout). The repository's tracked placeholders stay in the checkout; nothing is mounted over it.
+- **Tools ask the resolver, never a hardcoded path.** `libraries/cowtree/repo-path NAME [--project DIR]` (shell) or
+  `cowtree.repo_paths` (Python) answers `$MDT_COW_ROOT/<repo-name>/<cow>` when `MDT_COW_ROOT` names a valid btrfs area
+  and that folder exists, and `<repo root>/<repo>` otherwise; `--provision` creates the subvolume with its declared
+  compression. A missing `MDT_COW_ROOT` falls back silently (a plain host is a normal state); a configured but broken
+  area is an error.
 - **VM files follow the project, base images follow the repository.** A project's VMs are in its own
   `<project>/vm-lab/`; a base image (a cloud image, an installed golden disk) that several projects start from is
   stored once in the repo-level `downloads/vm-images/`, so reflinking from it needs no copy and no second place.
-  Both folders are in the checkout, which is why the checkout belongs on this filesystem (a reflink works only
-  inside one filesystem, but across subvolumes of it [K]). Until the checkout is moved (MDT-044), `cp
-  --reflink=always` from `downloads/` fails with a cross-device error and tools must say so.
+  Both are subvolumes of the one filesystem, and a reflink works across subvolumes of it [K]. On a plain host
+  both are ordinary folders in the checkout and `cp --reflink=always` fails with a cross-device error unless the
+  checkout is on a reflink-capable filesystem; tools must say so.
 - **Tool areas are addressed by target repo, not by the container you run in.** An assay run in one repo's
   devcontainer may judge another repo; it uses `$MDT_COW_ROOT/<other-repo>/assay/...`. `MDT_COW_ROOT` is therefore
   per user (`<mount>/<user>`), and the repo name is part of the path the tool builds.
@@ -256,13 +266,13 @@ Why this shape:
 | `<repo>/assay/base` (snapshots carry it) | `compression zstd` | sources, venvs, caches; on a slow disk fewer bytes written wins |
 | `<repo>/worktrees/<instance-id>` | `compression zstd` | compressible per-worktree scratch |
 
-Declare these paths in the project's cowtree declaration (`compression` is one of its keys) and let `cowtree
-provision` create them. By hand:
+Declare these paths in the repo's `repo-paths.toml` (`compression` is one of its keys) and let `libraries/cowtree/repo-path
+NAME --provision` create them. By hand:
 
 ```bash
-btrfs subvolume create <checkout>/<project>/vm-lab            # needs a non-existing path: move the committed placeholder aside first
-btrfs property set <checkout>/<project>/vm-lab compression zstd
-btrfs property set <checkout>/downloads/iso compression none
+btrfs subvolume create "$MDT_COW_ROOT/<repo-name>/<project>/vm-lab"      # parent directories first, as plain directories
+btrfs property set "$MDT_COW_ROOT/<repo-name>/<project>/vm-lab" compression zstd
+btrfs property set "$MDT_COW_ROOT/<repo-name>/downloads/iso" compression none
 ```
 
 A new subvolume's root does **not** inherit its parent directory's property [R]: set it on the subvolume itself;
@@ -380,8 +390,9 @@ absolute paths need the same check. [T for non-venv caches]
 A worktree-creating tool can make `$MDT_COW_ROOT/<repo>/worktrees/<instance-id>` a subvolume, link it into the
 worktree as an ignored `.store` symlink, export its path, and `btrfs subvolume delete` it together with the
 worktree (one fast call instead of `rm -rf`: 0.01 s for a small one [R]). The symlink dangles afterwards [R], so
-remove it too. Once the checkout lives on this filesystem (MDT-044), `ciu worktree` snapshots the project's
-declared paths (`<project>/vm-lab/`, `downloads/...`) instead, and no symlink is needed.
+remove it too. A worktree resolves the shared paths through the same `repo-paths.toml` (its own checkout is a
+separate repo root); snapshotting declared gitignored paths into a worktree is the separate COW-BL-01/02 declaration
+and does not use this table.
 
 ### 6.3 ISOs, base images and VM disks
 
@@ -458,7 +469,7 @@ Details:
 | Wrong filesystem (somebody mounts ext4 there) | `stat -f -c %T` is not `btrfs`; tools refuse |
 | Container started with the legacy `-v` form while the filesystem is missing | refused with `mkdir ...: operation not permitted` thanks to `chattr +i` [R]; **without** the flag Docker would create a root-owned directory on the root disk |
 | Filesystem full | ENOSPC for every user of it, and unprivileged cleanup still works [R]: `rm` of files plus `sync` frees space at once; deleting a subvolume frees it only after the asynchronous cleanup (about 20 to 40 s for 900 MiB). Monitor `btrfs filesystem usage` and delete snapshots and run disks promptly |
-| `cp --reflink=always` fails with a cross-device error | source and destination are on different filesystems (checkout not yet on the area): report it; no silent full copy |
+| `cp --reflink=always` fails with a cross-device error | source and destination are on different filesystems (a plain host, where the resolver returned repo paths on the checkout's filesystem): report it; no silent full copy |
 
 ## 9. Verification
 
@@ -483,21 +494,20 @@ Checks only a real deployment can make:
 2. A second user: a container for user A cannot reach user B's area or the top level.
 3. `iostat -x` and PSI during a snapshot loop while a latency-sensitive service runs: its `io.pressure` stays
    at its baseline.
-4. A reflinked VM disk: `cp --reflink=always` of a base image into `<project>/vm-lab/` takes no space beyond metadata
+4. A reflinked VM disk: `cp --reflink=always` of a base image from the resolved `vm-images` path into the resolved
+   `vm-lab` path (both subvolumes below `$MDT_COW_ROOT/<repo-name>/`) takes no space beyond metadata
    (`btrfs filesystem du` shows the data as shared), and the copy boots.
 
 ## 10. Open items
 
-- **Interim layout until the checkout moves (created 2026-11-17 on the reference host, user `vb`):** the checkout is on ext4, so
-  `downloads/iso`, `downloads/vm-images` and a project's `vm-lab` cannot be subvolumes in it. They exist instead as subvolumes
-  that mirror the repository's paths below `$MDT_COW_ROOT/<repo>/`: `downloads/iso` (no compression), `downloads/vm-images` and
-  `scripts/debian-rollback/vm-lab` (both zstd). The VM tool takes them as explicit `--base-disk` and `--state-dir` paths
-  (a reflink across these subvolumes shares extents, checked). When the checkout moves to `<user>/<repo>`, the mirror becomes the
-  real paths with no copying. Further projects and repos add their own subvolumes the same way: one set per user, per repo.
-  Files already in the checkout's flat `downloads/` (the TrueNAS ISOs, the Debian cloud image) stay there: `vanilla-iso-patcher` and
-  the debian-install-v2 harness hardcode that path, so they move to `downloads/iso` and `downloads/vm-images` with their consumers.
-- Move the checkout onto this filesystem, create `downloads/iso`, `downloads/vm-images` and each `<project>/vm-lab` as
-  declared subvolumes, and migrate the projects that still use `<project>/artifacts/vm-lab` (MDT-044 and its follow-up).
+- **Layout on the reference host (created 2026-11-17, user `vb`):** the checkout is on ext4 and the subvolumes mirror its paths
+  below `$MDT_COW_ROOT/<repo-name>/`: `downloads/iso` (no compression), `downloads/vm-images` and
+  `scripts/debian-rollback/vm-lab` (both zstd). A reflink across these subvolumes shares extents (checked). Further projects and
+  repos add their own subvolumes the same way: one set per user, per repo, declared in that repo's `repo-paths.toml`.
+- Move the consumers onto the resolver (MDT-044 follow-up list: the `vm-lab` project, truenas and tnt, debian-install-v2, the
+  netcup, pwmcp, zswap and io-governor docs) and move the files that predate the subfolders (the flat `downloads/` TrueNAS ISOs and
+  Debian cloud image) into `downloads/iso` and `downloads/vm-images` with them. Projects that still use `<project>/artifacts/vm-lab`
+  migrate to `<project>/vm-lab` in the same step.
 - Add `btrfs-progs` (and `rsync`) to the image, so tools do not depend on installing them.
 - Compression of VM disks: the benchmark and the no-CoW fallback for hot disks (BTRFS-COW-OPTIONS.md 4.6).
 - Per-directory compression **level** on kernels older than 7.2 (section 4) [T].

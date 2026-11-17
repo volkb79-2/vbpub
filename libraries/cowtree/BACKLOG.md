@@ -13,7 +13,9 @@ Open work. Each item names what it needs and what closes it. Consumers: `ciu wor
   * **No overrides.** No `MDT_*` or other environment variable relocates a declared path, and there is no mount-over: the declared path is a subvolume of the checkout itself.
   * **Closes when.** The schema has a SPEC section with oracle ids, a `validate_declaration()` API and a CLI verb with a stable exit code, and tests cover each refusal above; CIU-159 and the run-gate R2 clone code read the declaration only through it.
 
-* **COW-BL-02 provision operation (main) and snapshot operations (worktree).** Primary model: the checkout, with `.worktrees/` inside it, lives on the CoW filesystem. Worktrees still come from git. Only declared paths become CoW snapshots of main's.
+* **Relation of COW-BL-01 to `repo-paths.toml`.** `repo-paths.toml` (SPEC "Repo paths") names a repository's shared paths and their mirrored CoW locations for the resolver; COW-BL-01 above declares gitignored paths that a worktree receives as snapshots of main's. They are different tables with different consumers and COW-BL-01 stays open. Its "No overrides" bullet is superseded for the resolver: `MDT_COW_ROOT` is the one allowed input and the checkout stays on ext4.
+
+* **COW-BL-02 provision operation (main) and snapshot operations (worktree).** The checkout stays on ext4 (operator 2026-11-17); the paths of this item are the ones a worktree receives as CoW snapshots, to be reconciled with the `$MDT_COW_ROOT/<repo-name>/` mirror before it is built. Worktrees still come from git. Only declared paths become CoW snapshots of main's.
   * **Provision in main (`cowtree provision`).**
     1. Move the committed placeholder contents aside (a subvolume create needs a non-existing path).
     2. Create the subvolume at the declared path with the declared compression.

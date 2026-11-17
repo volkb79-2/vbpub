@@ -125,6 +125,24 @@ Argparse usage errors exit `2`. Typed `CowError` statuses are `cow` → `1`,
 `root-invalid` → `3`, `space` → `4`, `path` → `5`, `backend` → `6`, and
 `lease` → `7`; an unknown subclass code uses `1`.
 
+## Repo paths
+
+`cowtree.repo_paths` (stdlib, Python >= 3.11) reads `repo-paths.toml` from a repository root. Its schema is
+`schema = 1` plus `[paths.<name>]` tables with `repo` (required, plain location relative to the root), `cow`
+(optional, location below `<MDT_COW_ROOT>/<repo-name>/`) and `compression` (`none`, `zstd` or `zstd:N`, N 1..15).
+`{project}` is the only placeholder; the caller passes the project directory (relative to the root). The repo name is
+the basename of the root. This table is separate from the COW-BL-01 declaration of gitignored paths for worktree
+snapshots, which stays open.
+
+| Id | Contract |
+| --- | --- |
+| RP1 | Validation refuses with `RepoPathsInvalid` (code `path`, status 5, message names the file): invalid TOML or a name defined twice, an unknown top-level or entry key, `schema` other than the integer 1, a missing `paths` table, an empty name, a `repo` or `cow` that is empty, not a string, absolute, or has an empty, `.` or `..` segment, a placeholder other than `{project}`, `{project}` in only one of `repo` and `cow`, and a bad `compression`. |
+| RP2 | `find_repo_root(start)` returns the nearest directory at or above `start` that holds `repo-paths.toml`; it never consults the current directory by itself; none found is `UsageError` (code `usage`, status 2). `load_repo_paths(root)` takes the root explicitly. |
+| RP3 | `resolve(name, project=, environ=, ops=)` returns mode `cow` with `<area>/<repo-name>/<cow>` only when the entry has `cow`, `detect()` returns a btrfs area and that path is an existing directory; in every other case mode `plain` with `<root>/<repo>`. A `detect()` failure (`RootInvalid`) propagates; an entry without `cow` never consults the area. It creates nothing. |
+| RP4 | `project` must be a relative directory without `..`, `.` or empty segments, and is validated whenever given; an entry that uses `{project}` without one, and an unknown name, are `UsageError`. |
+| RP5 | `provision(...)` acts only with a btrfs area and an entry with `cow`: parents as plain directories, `btrfs subvolume create`, then `btrfs property set <path> compression <value>` when the entry declares one (skipped when an existing subvolume already reports that value; unset equals `none`). An existing plain directory at the CoW location is refused (`PathRefused`) and nothing is run; a failed command is `BackendFailed` (status 6). Otherwise it returns the plain result and creates nothing. The plain repo location is never touched. |
+| RP6 | `cowtree path NAME [--project DIR] [--repo-root DIR] [--provision] [--json]` prints the path (JSON: `name`, `project`, `path`, `mode`); without `--repo-root` the root is searched upward from the current directory; errors use the typed status table. `libraries/cowtree/repo-path` runs it from the source tree next to the script. |
+
 ## Persistence declarations (COW-BL-04)
 
 Relaxed fsync is the default for disposable CoW state. Page cache survives a
