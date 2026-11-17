@@ -328,7 +328,7 @@ Two environment variables steer a release without editing a file:
 | Variable | Effect |
 |---|---|
 | `LATEST_KNOWN_PYTHON=<major.minor>` | The Python version of the release. The environment wins over the `docker-bake.hcl` default (`docker buildx bake` resolves variables that way). `LATEST_KNOWN_PYTHON=3.15 cmru release mdt-cockpit` publishes `trixie-py3.15-php8.5-<date>` and its `-latest` next to the default variant. |
-| `DEVCONTAINERS_IGNORE_NEW_RELEASES=true` | Skips the stop that fires when upstream publishes a newer devcontainer base than `LATEST_KNOWN_*`; use it when a release intentionally stays on an older base. The CLI form is `--ignore-new-releases`. |
+| `MDT_COCKPIT_IGNORE_NEW_RELEASES=true` | Skips the stop that fires when upstream publishes a newer devcontainer base than `LATEST_KNOWN_*`; use it when a release intentionally stays on an older base. The CLI form is `--ignore-new-releases`. |
 
 A Python version other than the default builds only when it is on the supported list (README, "Python version support"
 and MDT-045): the pwmcp instance install and `aider-chat` have per-interpreter limits, and a variant that cannot build

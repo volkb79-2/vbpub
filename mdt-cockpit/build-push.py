@@ -229,6 +229,10 @@ def run_resolver() -> dict[str, str]:
             "to adopt the new baseline, or continue intentionally with:\n"
         )
         sys.stderr.write("[HINT]   ./build-push.py --build --ignore-new-releases\n")
+        sys.stderr.write(
+            "[HINT] Under cmru (which has no such flag) set the environment form instead:\n"
+            "[HINT]   MDT_COCKPIT_IGNORE_NEW_RELEASES=true cmru release mdt-cockpit\n"
+        )
         raise SystemExit(3)
 
     if result.returncode != 0:
@@ -493,7 +497,7 @@ def do_local_dev_build(
     )
     os.environ["BUILD_TIMESTAMP"] = build_timestamp
     if ignore_new_releases:
-        os.environ["DEVCONTAINERS_IGNORE_NEW_RELEASES"] = "true"
+        os.environ["MDT_COCKPIT_IGNORE_NEW_RELEASES"] = "true"
 
     # The resolver re-verifies the manifest and skips the release lookup for the
     # wheels it lists; it needs the pinned PWMCP version for that check.
@@ -582,7 +586,7 @@ def do_build(ignore_new_releases: bool) -> None:
     )
 
     if ignore_new_releases:
-        os.environ["DEVCONTAINERS_IGNORE_NEW_RELEASES"] = "true"
+        os.environ["MDT_COCKPIT_IGNORE_NEW_RELEASES"] = "true"
 
     # Run the resolver
     env_vars = run_resolver()

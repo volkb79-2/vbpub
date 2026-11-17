@@ -1921,18 +1921,19 @@ def main() -> int:
     # Dynamic pre-check: fail by default if newer releases are detected.
     has_newer_release, latest_tag, latest_python, latest_debian = emit_newer_stable_advisory(stable_image)
 
-    ignore_new_releases = is_truthy_env(os.getenv("DEVCONTAINERS_IGNORE_NEW_RELEASES"))
+    ignore_new_releases = is_truthy_env(os.getenv("MDT_COCKPIT_IGNORE_NEW_RELEASES"))
     if has_newer_release and not ignore_new_releases:
         print(
             "[ERROR] Newer devcontainer release(s) detected. "
-            "Stopping build. Re-run with --ignore-new-releases to continue intentionally.",
+            "Stopping build. Re-run with --ignore-new-releases (or MDT_COCKPIT_IGNORE_NEW_RELEASES=true "
+            "under cmru) to continue intentionally.",
             file=sys.stderr,
         )
         return 3
 
     if has_newer_release and ignore_new_releases:
         print(
-            "[WARN] Newer releases detected but continuing due to DEVCONTAINERS_IGNORE_NEW_RELEASES=true.",
+            "[WARN] Newer releases detected but continuing due to MDT_COCKPIT_IGNORE_NEW_RELEASES=true.",
             file=sys.stderr,
         )
 

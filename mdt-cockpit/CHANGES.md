@@ -5,6 +5,7 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 ## [Unreleased]
 
 ### Changed
+- The release environment variable that skips the newer-devcontainer-base stop is renamed `DEVCONTAINERS_IGNORE_NEW_RELEASES` → `MDT_COCKPIT_IGNORE_NEW_RELEASES` (it is read only by mdt-cockpit's build, so it carries the project prefix). The stop message and the build-push hint now name the environment form for `cmru release`, which has no `--ignore-new-releases` flag. No alias for the old name.
 - The IO governor recorder `mdt-cockpit/iogov` moved out into its own independent project `iogovmon/` (host-tuning WP-IGM-a, pure move and rename: package/distribution `iogovmon`, console scripts `iogovmond` and `iogovmonctl`, units `iogovmond-*` and `iogovmond.service` in `iogovmon.slice`, own cmru release config). mdt-cockpit imports nothing from it; its tests left the `smoke` lane (they run in `iogovmon`'s own `r0-r1` lane), the design note `docs/IO-GOVERNOR-V1-DESIGN.md` is now `iogovmon/docs/DESIGN-GUIDE.md`, backlog items MDT-028..MDT-031 are IGM-04..IGM-07 in `iogovmon/BACKLOG.md`, and `iogov/README.md` is a pointer. Nothing in the repository installed it on a host; only hosts where an operator ran the old installer by hand need the migration steps in `iogovmon/README.md`.
 
 ### Removed

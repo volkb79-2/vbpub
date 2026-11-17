@@ -737,7 +737,7 @@ detection — it makes local intent explicit and removes scattered hardcoded val
 `LATEST_KNOWN_*` aligned with the adopted stable baseline; when upstream moves ahead, the
 gate fails until you either adopt the new baseline or pass `--ignore-new-releases`.
 Both have environment forms (`LATEST_KNOWN_PYTHON=3.15 cmru release mdt-cockpit`,
-`DEVCONTAINERS_IGNORE_NEW_RELEASES=true`); see
+`MDT_COCKPIT_IGNORE_NEW_RELEASES=true`); see
 [Release inputs](docs/BUILD-ARCHITECTURE.md#release-inputs).
 
 Override the checked/resolved base, e.g. to validate gate behavior:

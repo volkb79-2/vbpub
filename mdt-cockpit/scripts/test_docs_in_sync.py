@@ -301,7 +301,7 @@ def test_every_staged_tool_and_the_named_apt_utilities_appear_in_the_readme_inve
 def test_the_release_environment_inputs_are_documented_where_the_release_flow_lives() -> None:
     """MDT-046: both release environment variables are named in the build architecture guide and linked from the README."""
     architecture = _read("docs/BUILD-ARCHITECTURE.md")
-    for variable in ("LATEST_KNOWN_PYTHON", "DEVCONTAINERS_IGNORE_NEW_RELEASES"):
+    for variable in ("LATEST_KNOWN_PYTHON", "MDT_COCKPIT_IGNORE_NEW_RELEASES"):
         assert variable in architecture
     assert "docs/BUILD-ARCHITECTURE.md#release-inputs" in _read("README.md")
     assert "release-inputs" in _headings(ROOT / "docs" / "BUILD-ARCHITECTURE.md")
