@@ -176,6 +176,21 @@ same reason: `cmd=` and `steer=` are the tool's command and the exact child pid,
 because the earlier row named neither and the only actionable process it could
 describe was the wrapper — the one process that must not be killed.
 
+**Why progress is a SURVIVOR's delta, not a change of the set.** The first
+version compared rounded sums over an exactly-equal set, so ANY churn reset the
+comparison: a `make -j` that forked and reaped a worker between two ticks, or a
+`pytest` whose per-test subprocesses come and go, changed the set and the tool
+looked freshly measured — a silent churn could read `LONG-TOOL` for as long as
+it kept churning, and `HUNG-TOOL` was unreachable again. The rule is defined
+over members, not over the set: a SURVIVOR (same pid, same kernel start ticks
+in both readings) that shows a strictly positive CPU/IO delta is progress; a
+set change alone is neither progress NOR a reset of the quiet clock, whose
+baseline is the first reading of the current tool call. So churn with idle
+survivors reads quiet (and `HUNG-TOOL` at the threshold), churn with a survivor
+that burns CPU reads progress, and a pid RECYCLED between two ticks (same
+number, different start ticks) is not a survivor at all — its counters say
+nothing about the process measured before.
+
 **Why the sidecar publishes `progress_measured`, and not just an epoch.** The
 first version of the progress fact was one absolute epoch, and a reader could
 not tell three different situations apart: evidence measured on this tick,

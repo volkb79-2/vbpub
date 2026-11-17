@@ -156,10 +156,15 @@ Monitor polls it instead of watching for `.done`). One line per run, with
 in flight past `JOB_STATUS_HUNG_TOOL_SECONDS` (default 1800) while the run still
 shows progress evidence, and `HUNG-TOOL` for the same age with no progress
 evidence. Long tool calls are reported, never killed; the thresholds only
-choose the word. Evidence the sidecar could not read is not evidence: a tick
-that cannot see the tool's subtree carries the previous epoch forward as
-UNMEASURED, and an epoch from before the call started is published as null, so
-that row prints `progress=- progress-why=unread` and the weaker word (`LONG-TOOL`).
+choose the word. Progress is read from SURVIVING processes (the same pid and
+kernel start ticks in both readings), so a tool that only churns its process set
+(`make -j` workers, per-test subprocesses) is not progress and does not reset
+the quiet clock — it reads `HUNG-TOOL` at the threshold, while a survivor that
+burns CPU keeps the row at `LONG-TOOL`. Evidence the sidecar could not read is
+not evidence: a tick that cannot see the tool's subtree carries the previous
+epoch forward as UNMEASURED, and an epoch from before the call started is
+published as null, so that row prints `progress=- progress-why=unread` and the
+weaker word (`LONG-TOOL`).
 
 A `HUNG-TOOL` row carries the tool's command and the exact child pid to steer:
 

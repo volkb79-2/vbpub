@@ -626,8 +626,8 @@ mutant("scripts/controller/pi-live.py", "pi-live-tokens-zero-as-measurement.py",
 # CTL-18: progress evidence is stream growth OR kernel counter growth. Without
 # the counters a long tool that keeps working but prints nothing reads as hung.
 mutant("scripts/controller/pi-live.py", "pi-live-progress-stream-only.py",
-       '                and (sample.cpu > previous.cpu or sample.io > previous.io)',
-       '                and False')
+       '            if previous is not None and survivor_delta(previous, sample):',
+       '            if False:')
 # CTL-18 (blocker 1): the summed set is the in-flight TOOL's subtree. The agent
 # (a direct child of the wrapper) and the sidecar grow on their own every tick,
 # so counting them makes a blocked tool read as working forever.
@@ -640,8 +640,8 @@ mutant("scripts/controller/pi-live.py", "pi-live-progress-counts-sidecar.py",
 # Any difference is not progress: a decrease and a changed process set are
 # baselines. Deciding on "it differs" reintroduces exactly the wrong direction.
 mutant("scripts/controller/pi-live.py", "pi-live-progress-any-change.py",
-       '                and (sample.cpu > previous.cpu or sample.io > previous.io)',
-       '                and (sample.cpu != previous.cpu or sample.io != previous.io)')
+       '        if new_cpu > old_cpu or new_io > old_io:',
+       '        if new_cpu != old_cpu or new_io != old_io:')
 # CTL-20: an epoch the sidecar could not re-read is NOT a measurement. Lifting
 # an epoch older than the in-flight tool up to the tool's own start publishes the
 # tool's AGE as its progress age, and HUNG-TOOL is then decided on wall-clock
@@ -676,6 +676,21 @@ mutant("scripts/controller/pi-live.py", "pi-live-progress-null-clamped.py",
 mutant("scripts/controller/pi-live.py", "pi-live-progress-measured-kept.py",
        '            self.reason = "unread"\n            self.measured = False',
        '            self.reason = "unread"\n            self.measured = self.measured')
+# A survivor's growth is progress; the SUM over a changed set is not.
+mutant("scripts/controller/pi-live.py", "pi-live-progress-sum-delta.py",
+       '    for member in previous.identity & sample.identity:',
+       '    for member in sample.identity:')
+# A set change must not reset the quiet clock either: resetting the baseline on
+# every tick keeps a silently churning tool at LONG-TOOL forever.
+mutant("scripts/controller/pi-live.py", "pi-live-progress-churn-resets-baseline.py",
+       '            if self.baseline is None:\n'
+       '                self.baseline = now',
+       '            self.baseline = now')
+# A recycled pid number is a different process, so its counters say nothing
+# about the one measured before.
+mutant("scripts/controller/pi-live.py", "pi-live-progress-pid-recycle.py",
+       '        members[(pid, table.get(pid, (0, None))[1])] = (cpu, io)',
+       '        members[(pid, None)] = (cpu, io)')
 # A tool call's own announcement is a boundary, not evidence.
 mutant("scripts/controller/pi-live.py", "pi-live-progress-tool-start.py",
        '        if tool_started:\n            # A tool call',

@@ -376,7 +376,12 @@ wrapper's whole tree, which also holds the agent (a model loop) and the
 snapshotter (its own `/proc` scans and git calls) and would therefore keep any
 tool looking busy, so a slow `grep` or a long `pytest` reads as a working job
 instead of a hung one while a tool blocked on the agent's FIFO still reads as
-not progressing. The sidecar also publishes whether that fact was MEASURED
+not progressing. The growth is a SURVIVOR's: a process present in both readings
+with the same pid and the same kernel start ticks that grew. A tool that merely
+churns its process set (`make -j` starting and reaping workers, per-test
+subprocesses) is not progress, and the churn does not reset the quiet clock, so
+such a tool reads `HUNG-TOOL` at the threshold; a survivor that burns CPU is
+progress, and a recycled pid number is a different process. The sidecar also publishes whether that fact was MEASURED
 (`progress_measured`): a tick that could not read the tool's subtree carries a
 previous epoch forward as unmeasured, and an epoch from before the call started
 is published as `null`, so the row prints `progress=- progress-why=unread` with

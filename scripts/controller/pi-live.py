@@ -41,11 +41,16 @@ Two facts exist because a reader must not turn one into the other:
   that is not it is the agent, and the agent's own descendants are the tool's
   processes. The agent node itself is excluded with the wrapper and the sidecar.
 
-  A tick is progress only when the SAME set of processes (`pid` + the kernel's
-  own start ticks, so a recycled pid is a different process) shows a strictly
-  positive delta in CPU ticks or IO bytes. A decrease, a set change (a tool
-  exited, another started) and an unreadable `/proc` are baselines, never
-  progress; `unknown` stays null rather than being clamped to the tool's start.
+  A tick is progress only when a SURVIVING process (`pid` plus the kernel's own
+  start ticks, so a recycled pid is a different process) shows a strictly
+  positive delta in CPU ticks or IO bytes. A surviving member is one present in
+  BOTH readings with the same identity; a set that merely changed membership
+  (a `make -j` worker started, a per-test subprocess exited) has no survivor to
+  compare and is therefore neither progress NOR a reset of the quiet clock: the
+  baseline of the current tool call stays where it was first read, so a silent
+  churning tool still reads `HUNG-TOOL` after the threshold. A decrease and an
+  unreadable `/proc` are baselines too, never progress; `unknown` stays null
+  rather than being clamped to the tool's start.
 
   `progress_measured` says whether the progress fact on this snapshot rests on
   a MEASUREMENT of the current in-flight tool: the tool's subtree was read this
@@ -232,54 +237,80 @@ def short_command(pid: int) -> str | None:
 
 
 class Sample:
-    """One comparable counter reading: WHICH processes, and their totals."""
+    """One comparable counter reading: WHICH processes, and each one's totals.
 
-    __slots__ = ("identity", "cpu", "io")
+    Each member is kept separately (not only the summed set) because that is
+    what lets a reader tell a SURVIVOR's growth from a set change: a member
+    present in both readings with the same `(pid, kernel start ticks)` identity
+    has a before/after pair to compare, while a set that merely changed
+    membership has nothing to compare for its new member.
+    """
 
-    def __init__(
-        self, identity: frozenset[tuple[int, int | None]], cpu: int, io: int
-    ) -> None:
-        self.identity = identity
-        self.cpu = cpu
-        self.io = io
+    __slots__ = ("members",)
+
+    def __init__(self, members: dict[tuple[int, int | None], tuple[int, int]]) -> None:
+        # (pid, start ticks) -> (cpu ticks, io bytes)
+        self.members = members
+
+    @property
+    def identity(self) -> frozenset[tuple[int, int | None]]:
+        return frozenset(self.members)
+
+
+def survivor_delta(previous: "Sample", sample: "Sample") -> bool:
+    """Did a process present in BOTH readings grow?
+
+    A survivor is the SAME process in both readings: the same pid number AND the
+    same kernel start ticks, so a recycled pid never counts. A set that merely
+    changed membership (a `make -j` worker starting, a per-test subprocess
+    exiting) contributes nothing - its new member has no earlier reading - and
+    only a strictly positive per-member delta in CPU ticks or IO bytes is
+    progress. A decrease is never progress either.
+    """
+    for member in previous.identity & sample.identity:
+        old_cpu, old_io = previous.members[member]
+        new_cpu, new_io = sample.members[member]
+        if new_cpu > old_cpu or new_io > old_io:
+            return True
+    return False
 
 
 def read_counters(
     pids: list[int], table: dict[int, tuple[int, int | None]]
 ) -> Sample | None:
-    """(identity, cpu ticks, io bytes) summed over these pids.
+    """One counter reading per pid: {(pid, start ticks): (cpu ticks, io bytes)}.
 
-    An empty set is a defined fact - no tool process is running - and sums to
-    zero. A NON-empty set whose counters cannot be read is unknown (`None`),
-    never zero: "could not read it" and "nothing happened" are different facts.
+    An empty set is a defined fact - no tool process is running - and reads as an
+    empty mapping. A NON-empty set whose counters cannot be read is unknown
+    (`None`), never empty: "could not read it" and "nothing happened" are
+    different facts. A single unreadable member makes the whole reading unknown,
+    because a partial set would compare a partial sum against a full one.
     """
     if not pids:
-        return Sample(frozenset(), 0, 0)
-    cpu = 0
-    io = 0
-    readable = False
+        return Sample({})
+    members: dict[tuple[int, int | None], tuple[int, int]] = {}
     for pid in pids:
+        cpu: int | None = None
+        io = 0
         stat_line = read_text(f"{PROC_ROOT}/{pid}/stat")
         if stat_line is not None:
             _, _, rest = stat_line.partition(") ")
             fields = rest.split()
             if len(fields) >= 15:
                 try:
-                    cpu += int(fields[11]) + int(fields[12])
-                    readable = True
+                    cpu = int(fields[11]) + int(fields[12])
                 except ValueError:
-                    pass
+                    cpu = None
         io_text = read_text(f"{PROC_ROOT}/{pid}/io")
         if io_text is not None:
             for line in io_text.splitlines():
                 key, _, value = line.partition(":")
                 if key in ("read_bytes", "write_bytes") and value.strip().isdigit():
                     io += int(value.strip())
-                    readable = True
-    if not readable:
-        return None
-    identity = frozenset((pid, table.get(pid, (0, None))[1]) for pid in pids)
-    return Sample(identity, cpu, io)
+        if cpu is None:
+            return None
+        members[(pid, table.get(pid, (0, None))[1])] = (cpu, io)
+    return Sample(members)
 
 
 def alive(pid: int) -> bool:
@@ -426,22 +457,22 @@ class Progress:
     rather than tuned against a threshold:
 
     * stream growth (new bytes in the run's event stream) is progress;
-    * a counter reading is progress only when the SAME set of processes shows a
-      STRICTLY POSITIVE delta in CPU ticks or IO bytes. The same set means the
-      same pids with the same kernel start ticks, because a recycled pid number
-      is not the process that was measured before.
+    * a counter reading is progress only when a SURVIVOR shows a STRICTLY
+      POSITIVE delta in CPU ticks or IO bytes. A survivor is the same process in
+      both readings: the same pid with the same kernel start ticks, because a
+      recycled pid number is not the process that was measured before.
 
-    Three boundaries are NOT progress: a process set that changed (the tool
-    exited, another started, a pid was recycled), a tool call that STARTS (the
-    bytes that announce it are its boundary, not evidence it did anything yet,
-    and a start resets the counter baseline with it), and a `/proc` that cannot
-    be read.
+    A process SET that changed (a worker started or exited) is NOT progress and
+    does not reset the quiet clock: its new members have no earlier reading to
+    compare, so nothing about them was measured against anything. Only a
+    survivor's growth is evidence. Everything else is a baseline update and
+    leaves the epoch where it was - and it leaves the BASELINE where it was too,
+    so a tool that silently churns its process set for half an hour still has a
+    measured absence of progress once the threshold passes.
 
-    Everything else is a baseline update and leaves the epoch where it was: a
-    counter decrease (a shorter-lived counter, a process that was reaped), a
-    set change (the tool exited, another started, a pid was recycled) and an
-    unreadable `/proc` (`None`, which is unknown). An empty set is a defined
-    fact - no tool process is running - and sums to zero.
+    A tool call that STARTS is a boundary, not evidence (the bytes that
+    announce it are its boundary, and a start resets the counter baseline with
+    it), and a `/proc` that cannot be read is unknown.
 
     `measured` is the reader's licence (see the module docstring): the current
     tool's subtree was read this tick, or evidence was produced this tick. A
@@ -522,14 +553,13 @@ class Progress:
             reason = "idle" if not grew else reason
         elif sample is not None:
             previous = self.sample
-            if (
-                previous is not None
-                and previous.identity == sample.identity
-                and (sample.cpu > previous.cpu or sample.io > previous.io)
-            ):
+            if previous is not None and survivor_delta(previous, sample):
                 changed = True
                 reason = "counters"
             self.sample = sample
+            # The baseline is set ONCE per tool call, on the first reading: the
+            # quiet clock starts there and a changed process set neither
+            # advances nor resets it (see the class docstring).
             if self.baseline is None:
                 self.baseline = now
         else:

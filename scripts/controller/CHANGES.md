@@ -73,6 +73,15 @@ no separate version number, so entries are grouped by the work that landed.
   invocation never overwrites the identity of the owner it refused on.
 
 ### Fixed
+- Progress is a surviving process's delta, not a change of the set (CTL-21):
+  `pi-live.py` keeps each member of the in-flight tool's subtree separately and
+  counts a SURVIVOR's strictly positive CPU/IO delta (the same pid AND the same
+  kernel start ticks in both readings). A process-set change (`make -j` starting
+  or reaping a worker, per-test subprocesses) is neither progress nor a reset of
+  the quiet clock — its baseline is the first reading of the current tool call —
+  so a silently churning tool still reads `HUNG-TOOL` at the threshold while a
+  churning tool with a CPU-burning survivor reads `LONG-TOOL`. A recycled pid
+  number is a different process and never a survivor.
 - An unmeasurable progress epoch is no longer read as measured progress (CTL-20):
   `pi-live.py` publishes `progress_measured` beside `progress_epoch` — true only
   when the current tick read the in-flight tool's own subtree or evidence was

@@ -1034,6 +1034,103 @@ assert all(row["progress"] is None for row in rows), rows
 assert [row["nodes"] for row in rows] == [2, 2, 2, 2], rows
 PY
 
+  # (4b) CHURN. A tool that forks and reaps workers every tick (`make -j`, a
+  # per-test subprocess) changes its process set constantly. The rule is about
+  # SURVIVORS, so a set change is neither progress nor a reset of the quiet
+  # clock: with idle survivors a silent churning tool still reads quiet, a
+  # survivor that burns CPU is progress, and a pid RECYCLED between two ticks
+  # (same number, different kernel start ticks) is not a survivor at all.
+
+  # (4b-i) Churn with idle survivors is QUIET, and the baseline never moves:
+  # the quiet clock started at the first reading of THIS tool call.
+  python3 "$fixture" tree "$root" "$wrapper" || fail 'could not build the fake process tree'
+  progress_reset_ticks
+  progress_start "$root" "$wrapper"
+  progress_tick 4100
+  python3 "$fixture" add "$root" 200 102 'make worker' || fail 'could not start a churn worker'
+  progress_tick 4110
+  python3 "$fixture" rm "$root" 200 || fail 'could not reap a churn worker'
+  python3 "$fixture" add "$root" 201 102 'make worker' || fail 'could not start a churn worker'
+  progress_tick 4120
+  python3 "$fixture" rm "$root" 201 || fail 'could not reap a churn worker'
+  python3 "$fixture" add "$root" 202 102 'make worker' || fail 'could not start a churn worker'
+  progress_tick 4130
+  progress_finish
+  python3 - "$ROOT/progress-ticks.log" <<'PY' || fail 'a silent churning tool was read as progressing, or its baseline was reset by the churn'
+import json, sys
+rows = [json.loads(line) for line in open(sys.argv[1], encoding="utf-8") if line.strip()]
+assert len(rows) == 4, rows
+# No survivor grew, so nothing is progress - even though the set changed on
+# every tick after the first.
+assert all(row["progress"] is None for row in rows), rows
+assert all(row["measured"] is True for row in rows), rows
+# The quiet clock is NOT reset by the churn: the baseline is the tick the
+# current tool call's counters were first read, on every row.
+assert [row["baseline"] for row in rows] == [4100, 4100, 4100, 4100], rows
+PY
+  # The row that decides the word: a churning tool whose survivors never moved
+  # for 30 minutes is HUNG-TOOL, not LONG-TOOL. Without this, a `make -j` that
+  # went silent could sit at LONG-TOOL forever and the controller would never
+  # see it - the defect this clause removes.
+  mkdir -p "$ROOT/status-home"
+  python3 - "$CONTROLLER_ROOT/runs/progress.live" <<'PY'
+import json, sys, time
+from pathlib import Path
+now = int(time.time())
+body = json.load(open(sys.argv[1], encoding="utf-8"))
+body["wrapper_pid"] = 1
+body["updated_epoch"] = now
+body["last_event_epoch"] = now - 10
+body["tool_in_flight_started_epoch"] = now - 2400
+body["progress_baseline_epoch"] = now - 2400
+Path(sys.argv[1]).with_name("progress-churn.live").write_text(json.dumps(body), encoding="utf-8")
+PY
+  CONTROLLER_HOME="$ROOT/status-home" CONTROLLER_RUNS_DIR="$CONTROLLER_ROOT/runs" \
+    CONTROLLER_REPO="$WORKTREE" JOB_STATUS_STALL_SECONDS=600 JOB_STATUS_HUNG_TOOL_SECONDS=1800 \
+    "$JOB_STATUS" progress-churn > "$ROOT/progress-churn.out" 2>&1 \
+    || { cat "$ROOT/progress-churn.out" >&2; fail 'job-status failed on a churning tool'; }
+  grep -qF 'progress-churn: HUNG-TOOL' "$ROOT/progress-churn.out" \
+    || { cat "$ROOT/progress-churn.out" >&2; fail 'a churning tool with idle survivors was not HUNG-TOOL'; }
+
+  # (4b-ii) Churn WITH a survivor that burns CPU is progress: the survivor's own
+  # delta counts even while the set around it changes.
+  python3 "$fixture" tree "$root" "$wrapper" || fail 'could not build the fake process tree'
+  progress_reset_ticks
+  progress_start "$root" "$wrapper"
+  progress_tick 4200
+  progress_tick 4210
+  python3 "$fixture" set "$root" 103 cpu=25 || fail 'could not grow the tool counter'
+  python3 "$fixture" add "$root" 210 102 'make worker' || fail 'could not start a churn worker'
+  progress_tick 4220
+  progress_finish
+  python3 - "$ROOT/progress-ticks.log" <<'PY' || fail 'a surviving process that burned CPU was not progress'
+import json, sys
+rows = [json.loads(line) for line in open(sys.argv[1], encoding="utf-8") if line.strip()]
+assert len(rows) == 3, rows
+assert rows[0]["progress"] is None, rows
+assert rows[1]["progress"] is None, rows
+assert rows[2]["progress"] == 4220, rows
+assert rows[2]["reason"] == "counters", rows
+PY
+
+  # (4b-iii) A PID RECYCLE IS NOT A SURVIVOR: pid 103 stays, but its kernel
+  # start ticks change, so it is a different process and its larger counter
+  # says nothing about the one measured before.
+  python3 "$fixture" tree "$root" "$wrapper" || fail 'could not build the fake process tree'
+  progress_reset_ticks
+  progress_start "$root" "$wrapper"
+  progress_tick 4300
+  python3 "$fixture" set "$root" 103 cpu=90 start=9999 \
+    || fail 'could not recycle the tool pid'
+  progress_tick 4310
+  progress_finish
+  python3 - "$ROOT/progress-ticks.log" <<'PY' || fail 'a recycled pid was counted as a survivor'
+import json, sys
+rows = [json.loads(line) for line in open(sys.argv[1], encoding="utf-8") if line.strip()]
+assert len(rows) == 2, rows
+assert all(row["progress"] is None for row in rows), rows
+PY
+
   # (5) AN UNREADABLE `/proc` LEAVES THE FACT UNKNOWN. An empty process table
   # cannot locate the agent's subtree, so no set is summed: no baseline, no
   # progress, and a reason that says which. The tool's start epoch is still a
@@ -2046,6 +2143,12 @@ PY
         'README states that the two words are separate'
       contains "$README_SOURCE" "\`HUNG-TOOL\` (the same age" 'README separates long-tool from hung-tool'
       contains "$README_SOURCE" 'progress evidence' 'README names the progress fact'
+      contains "$README_SOURCE" 'SURVIVOR' \
+        'README states that progress is a surviving process delta, not a set change'
+      contains "$DESIGN_SOURCE" "Why progress is a SURVIVOR's delta" \
+        'design guide explains why a set change is neither progress nor a baseline reset'
+      contains "$CONSUMER_SOURCE" 'does not reset' \
+        'consumer guide explains that churn does not reset the quiet clock'
       contains "$README_SOURCE" 'To steer a stuck tool, kill the exact child pid' \
         'README states the steering action'
       contains "$README_SOURCE" "\`steer=\` — never the wrapper" \

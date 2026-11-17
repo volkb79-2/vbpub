@@ -180,6 +180,9 @@ for pi_live_case in \
   pi-live-progress-counts-agent:live-progress \
   pi-live-progress-counts-sidecar:live-progress \
   pi-live-progress-any-change:live-progress \
+  pi-live-progress-sum-delta:live-progress \
+  pi-live-progress-churn-resets-baseline:live-progress \
+  pi-live-progress-pid-recycle:live-progress \
   pi-live-progress-lift-unmeasured:live-progress \
   pi-live-progress-measured-kept:live-progress \
   pi-live-progress-null-clamped:live-progress \

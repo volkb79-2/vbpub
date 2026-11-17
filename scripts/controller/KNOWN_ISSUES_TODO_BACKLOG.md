@@ -32,6 +32,7 @@ together.
 | CTL-18 | `HUNG-TOOL` is decided on wall-clock alone: the sidecar carries no progress evidence, no tool command and no child identity, so a heavy-but-progressing tool (or one blocked by the agent's own FIFO) reads as hung | Should-fix | FIXED 2026-11-17 (2026-11-16 fix reopened in review round 1: it summed the wrapper's whole subtree) |
 | CTL-19 | A wrapper that dies without writing `.done` is indistinguishable from a running one in `job-check` (`RUNNING (no .done)`), and `codex-impl.sh ... resume` never writes a marker on a kill | Should-fix | FIXED 2026-11-16 |
 | CTL-20 | An epoch the sidecar could not re-read is lifted to the tool's start, so `HUNG-TOOL` is again decided on wall-clock alone | Should-fix | FIXED 2026-11-17 |
+| CTL-21 | The progress rule compares an exactly-equal pid set, so any churn (`make -j`, per-test subprocesses) resets the baseline and a silent churning tool reads `LONG-TOOL` indefinitely | Should-fix | FIXED 2026-11-17 |
 
 ---
 
@@ -1100,3 +1101,56 @@ threshold. Mutants `pi-live-progress-lift-unmeasured`,
 `HUNG-TOOL` decision as a progress age, the producer and the reader agree on
 the two facts, the focused case fails on the old behaviour (and on each
 mutant), and the three documents state the distinction.
+
+## CTL-21 — any churn of the process set resets the progress baseline, so a silent churning tool never reads `HUNG-TOOL`
+
+**Status:** FIXED 2026-11-17 (code, tests, mutants and the three documents in one
+change); severity Should-fix. Found by the independent review of the CTL-18
+package (`pi-controller-burn-REVIEW.md`) and re-verified against the merged code.
+
+**Problem.** `Progress.observe` accepted a counter reading as comparable only
+when `previous.identity == sample.identity` — an EXACTLY EQUAL pid set — and any
+other reading replaced the stored sample and left the baseline where it was. That
+is right for a tool whose set is stable, and wrong for the tools the fact exists
+for: `make -j` forks and reaps workers continuously, `pytest -n` and per-test
+subprocesses do the same, and a shell pipeline's children come and go. Every such
+tick was a set change, so a tool that was silent but churning could hold
+`LONG-TOOL` indefinitely: the absence-of-progress evidence the word `HUNG-TOOL`
+needs was never established, and the controller waited instead of acting. The
+rule was stated over the set ("the SAME set of processes"), which cannot express
+"these members are the same process and did not move while the set around them
+churned".
+
+**The rule, stated precisely.** Compare MEMBERS, not the set:
+
+* a member is a `(pid, kernel start ticks)` identity, so a recycled pid number is
+  a different process;
+* a SURVIVOR is a member present in BOTH readings with the same identity. Only a
+  survivor's strictly positive CPU/IO delta is progress;
+* a set change alone (members added or removed) is NOT progress and does NOT
+  reset the quiet clock: the baseline is the tick the CURRENT tool call's
+  counters were first read, and it stays there for that call;
+* the consequences follow directly: churn with idle survivors is quiet (so
+  `HUNG-TOOL` at the threshold), churn with a CPU-burning survivor is progress
+  (`LONG-TOOL`), and a pid recycled between two ticks is not a survivor at all.
+
+**Where.** `scripts/controller/pi-live.py` (`Sample` per-member counters,
+`survivor_delta`, `read_counters`, `Progress.observe`),
+`scripts/controller/tests/test-pi-impl.sh` (cases 4b-i, 4b-ii, 4b-iii and the
+`progress-churn` row), `scripts/controller/tests/mutate-sources.py` +
+`tests/test-mutations.sh` (mutants), `README.md`,
+`docs/DESIGN-GUIDE.md`, `docs/CONSUMERS.md`, `CHANGES.md`.
+
+**Acceptance test idea (as landed).** On a fake `/proc` and a tick clock: (i)
+three ticks of churn (a worker added and reaped each tick) around two idle
+survivors produce no progress, `measured` true on every tick, and the baseline
+identical on every row — and the row built from that payload is `HUNG-TOOL` at
+the threshold; (ii) the same churn with a survivor whose CPU grew is progress at
+that tick (`reason=counters`); (iii) a pid whose start ticks changed between two
+ticks is not a survivor and its larger counter is not progress. Mutants
+`pi-live-progress-sum-delta`, `pi-live-progress-churn-resets-baseline` and
+`pi-live-progress-pid-recycle` are each killed by these cases.
+
+**Close when.** A silently churning tool reaches `HUNG-TOOL` at the threshold, a
+churning tool with a working survivor stays `LONG-TOOL`, a recycled pid is never
+a survivor, and the documents state the rule as members rather than as a set.
