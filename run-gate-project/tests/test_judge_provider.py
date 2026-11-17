@@ -890,7 +890,11 @@ class TestJudgeIdentity:
         # Both answers came from the same real command, so the value is the
         # tree's state rather than a default.
         assert modified["dirty_source"].startswith(
-            "git status --porcelain --ignored=matching --")
+            "git status --porcelain --ignored=traditional --")
+        # …and the command the record states is the one that RAN, bytecode
+        # excludes included (round 3), so an operator can repeat it.
+        for exclude in run_gate.JUDGE_BYTECODE_EXCLUDES:
+            assert exclude in modified["dirty_source"]
 
     def test_a_non_utf8_path_in_the_judge_tree_is_still_answered(
             self, tmp_path):
@@ -948,8 +952,8 @@ class TestJudgeIdentity:
         judge tree whose only change was a build artifact read as clean -- a
         false certification about exactly the bytes the mount contains
         (round-1 review item 5). The flags below were verified against git's
-        own behaviour in a scratch repository (`--ignored=matching` shows it,
-        and it stays hidden without it)."""
+        own behaviour in a scratch repository (`--ignored=traditional` shows
+        it, and it stays hidden without any `--ignored` mode)."""
         repo, _proj = _judge_repo(tmp_path)
         (repo / "assay" / "src" / ".gitignore").write_text("artifact.txt\n")
         commit_all(repo, "ignore a build artifact")
@@ -958,9 +962,53 @@ class TestJudgeIdentity:
             {"kind": "command", "environment": "rust", "judge": "assay"},
             repo)
         assert identity["dirty"] is True
-        # The scoped command is the reason, and it names the flags that make
+        # The scoped command is the reason, and it names the mode that makes
         # this answer honest rather than merely conventional.
-        assert "--ignored=matching" in identity["dirty_source"]
+        assert "--ignored=traditional" in identity["dirty_source"]
+
+    def test_an_ignored_BYTECODE_CACHE_does_not_make_the_judge_dirty(
+            self, tmp_path):
+        """Round 3: `--ignored=matching` lists an ignored `__pycache__` as a
+        DIRECTORY (`!! <tree>/__pycache__/`), which no pathspec exclude can
+        remove (measured). A developer worktree where assay or pytest once ran
+        on the host therefore warned DIRTY on every judge lane. Bytecode is
+        regenerated, never the source a verdict describes, so it is excluded --
+        while every OTHER ignored file still makes the judge dirty (the next
+        oracle), which is what keeps the exclusion from being a blanket
+        "ignore ignored files" waiver."""
+        repo, _proj = _judge_repo(tmp_path)
+        (repo / "assay" / "src" / ".gitignore").write_text(
+            "__pycache__/\n*.pyc\n")
+        commit_all(repo, "ignore bytecode")
+        package = repo / "assay" / "src" / "assay"
+        (package / "__pycache__").mkdir()
+        (package / "__pycache__" / "cli.cpython-314.pyc").write_bytes(b"x")
+        (package / "stray.pyc").write_bytes(b"y")
+        identity = run_gate.judge_identity(
+            {"kind": "command", "environment": "rust", "judge": "assay"},
+            repo)
+        assert identity["dirty"] is False, identity["dirty_source"]
+        assert "__pycache__" in identity["dirty_source"]
+        # An UNTRACKED real source file beside the caches is still dirty: the
+        # exclusion is about bytecode, not about untracked files as a class.
+        (package / "new_module.py").write_text("x = 1\n")
+        assert run_gate.judge_identity(
+            {"kind": "command", "environment": "rust", "judge": "assay"},
+            repo)["dirty"] is True
+
+    def test_an_ignored_NON_bytecode_file_still_makes_the_judge_dirty(
+            self, tmp_path):
+        """The other half of the exclusion: every ignored file that is NOT a
+        bytecode cache keeps marking the judge dirty, so "clean" cannot be
+        bought by widening the pathspec."""
+        repo, _proj = _judge_repo(tmp_path)
+        (repo / "assay" / "src" / ".gitignore").write_text("build.log\n")
+        commit_all(repo, "ignore a build artifact")
+        (repo / "assay" / "src" / "build.log").write_text("log line\n")
+        identity = run_gate.judge_identity(
+            {"kind": "command", "environment": "rust", "judge": "assay"},
+            repo)
+        assert identity["dirty"] is True, identity["dirty_source"]
 
     def test_a_repository_that_HIDES_untracked_files_still_reports_them(
             self, tmp_path):
@@ -2160,6 +2208,23 @@ class TestJudgeSequencePreflight:
         # …and it was said before ANY member produced a line of its own.
         assert streams.out.index(line) < streams.out.index(
             "run-gate: lane 'first'"), streams.out
+        # Round-3 review (d): the sequence has BOTH kinds of member, so the
+        # `leaf.get("judge") is None -> continue` guard is what decides which
+        # ones are preflighted. Exactly ONE preflight line may appear, and it
+        # must name the judge member: a flipped guard (preflight nothing, or
+        # preflight only the NON-judge members) dies here, and so does one that
+        # drops the `continue` (a non-judge leaf has no identity to disclose).
+        preflights = [piece for piece in streams.out.split("\n")
+                      if "provides its judge" in piece]
+        assert len(preflights) == 1, preflights
+        assert "member 'judged'" in preflights[0], preflights
+        # …and the NON-judge member still RAN, unchanged: the preflight adds
+        # nothing to a lane that asks for no judge (it did not acquire an
+        # identity line, and its own output is exactly its own).
+        assert "judge" not in "".join(
+            piece for piece in streams.out.split("\n")
+            if "lane 'first'" in piece), streams.out
+        assert "run-gate: lane 'judged'" in streams.out, streams.out
 
 
 # ---------------------------------------------------------------------------
