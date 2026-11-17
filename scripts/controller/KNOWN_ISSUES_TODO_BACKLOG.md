@@ -33,6 +33,7 @@ together.
 | CTL-19 | A wrapper that dies without writing `.done` is indistinguishable from a running one in `job-check` (`RUNNING (no .done)`), and `codex-impl.sh ... resume` never writes a marker on a kill | Should-fix | FIXED 2026-11-16 |
 | CTL-20 | An epoch the sidecar could not re-read is lifted to the tool's start, so `HUNG-TOOL` is again decided on wall-clock alone | Should-fix | FIXED 2026-11-17 |
 | CTL-21 | The progress rule compares an exactly-equal pid set, so any churn (`make -j`, per-test subprocesses) resets the baseline and a silent churning tool reads `LONG-TOOL` indefinitely | Should-fix | FIXED 2026-11-17 |
+| CTL-22 | The Codex ownership-descriptor close on the resume and auto-resume exec lines has no individual test or mutant, so deleting it there passes the suite | Should-fix | FIXED 2026-11-17 |
 
 ---
 
@@ -1154,3 +1155,65 @@ ticks is not a survivor and its larger counter is not progress. Mutants
 **Close when.** A silently churning tool reaches `HUNG-TOOL` at the threshold, a
 churning tool with a working survivor stays `LONG-TOOL`, a recycled pid is never
 a survivor, and the documents state the rule as members rather than as a set.
+
+## CTL-22 — the Codex resume and auto-resume exec sites close the ownership descriptor without an individual test or mutant
+
+**Status:** FIXED 2026-11-17 (tests, mutants and the documents in one change);
+severity Should-fix. Found by the independent review of the CTL-14/CTL-19
+package (`pi-controller-burn-REVIEW.md`) and re-verified against the merged
+code.
+
+**Problem.** `controller_close_ownership_fds` is what keeps a run name claimable
+after a wrapper is killed: the flock belongs to the wrapper's open file
+description, a forked child inherits it, and a Codex agent can outlive its
+wrapper by hours. `codex-impl.sh` calls it at THREE exec sites — the new launch,
+the manual `resume`, and the automatic continuation loop — but the evidence was
+one shared-function mutant (a `lib.sh` variant where `controller_close_ownership_fds`
+is a no-op, judged by the SIGKILL case for the NEW-LAUNCH path only). Deleting
+the call from the `resume` line, or from the auto-resume line, passed the whole
+suite: the lib mutant is still present at the other sites, so a killed resume
+never happened in the check and its close was never exercised. The resume path
+is the ROUTINE one — every follow-up of a long job is a resume — so the single
+least-used site was the only one actually judged.
+
+A shared-function mutant cannot fix this: it makes ALL sites lose the close at
+once, which one case detects. The defect is a missing INDIVIDUAL assertion per
+call site, so the fix is a per-site case plus a per-site mutant.
+
+**What landed.** `tests/test-wrappers.sh` now kills a wrapper for real (SIGKILL)
+at each site and asserts the same facts at each: the agent's own process is
+still alive, the setsid daemon it left behind is still alive, the wrapper's wait
+status is 137 (a real SIGKILL), the run name is free to an OUTSIDE `flock -n`
+reader, and the relaunch is accepted (no "already owned by pid" refusal; the
+new-launch and auto-resume cases relaunch with `CONTROLLER_RUN_FORCE=1`, the
+resume case needs none). The fake agent gained deterministic hooks:
+a per-CALL hold (`FAKE_CODEX_HOLD_ON_CALL`, so the FIRST call finishes and the
+auto-resume loop is actually reached before the wrapper is killed) and a
+reasoning-ending stream (`FAKE_CODEX_REASONING`, the stream shape the
+continuation is defined on), and the held agent publishes its own pid
+(`FAKE_CODEX_HOLD_PID`) — no sleep decides any case (the hold loop is released
+by a file the check creates and is capped so a failed check leaves no process
+for more than five minutes).
+
+Mutants `codex-newlaunch-child-close`, `codex-resume-child-close` and
+`codex-autoresume-child-close` delete the call from ONE exec line each; the
+shared-function `codex-run-name-child-close` stays as the guard for the library
+function itself. All four are killed, each by the case of its own site.
+
+**Where.** `scripts/controller/tests/test-wrappers.sh` (the three SIGKILL cases
+and the fake agent's hooks), `scripts/controller/tests/mutate-sources.py` +
+`tests/test-mutations.sh` (the three per-site mutants), `docs/DESIGN-GUIDE.md`
+("Every exec site, not just the first one"), `CHANGES.md`.
+
+**Acceptance test idea (as landed).** For the resume site: start a resume,
+wait until the fake agent's own pid and its daemon pid are published (the hold
+file is written by the held call itself), SIGKILL the wrapper, `flock -n` the
+lock from outside, then relaunch with `CONTROLLER_RUN_FORCE=1` and assert the
+refusal never fires and the relaunched invocation writes its own `.done` (no
+force is needed for a resume: the evidence preflight is a new-run rule). The
+auto-resume site is the same, with `CODEX_AUTO_CONTINUE` left at its DeepSeek
+default and the hold on call 2 so the continuation is the child that is killed.
+
+**Close when.** A killed wrapper at each of the three exec sites leaves its run
+name claimable while the agent and daemon it started still live, and a mutant
+that removes the close from that one line makes its own case fail.

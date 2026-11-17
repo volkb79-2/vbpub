@@ -88,6 +88,18 @@ expect_killed codex-resume-stale-marker \
 expect_killed codex-run-name-child-close \
   env CODEX_IMPL_SCRIPT="$ROOT/mutants/scripts/controller/codex-run-name-child-close/codex-impl.sh" \
     bash "$SCRIPT_DIR/test-wrappers.sh"
+# CTL-22: one mutant per EXEC SITE, because the resume and the auto-resume
+# lines are the routine paths and the shared-function mutant above cannot
+# distinguish them from the new-launch line.
+expect_killed codex-newlaunch-child-close \
+  env CODEX_IMPL_SCRIPT="$ROOT/mutants/scripts/controller/codex-newlaunch-child-close.sh" \
+    bash "$SCRIPT_DIR/test-wrappers.sh"
+expect_killed codex-resume-child-close \
+  env CODEX_IMPL_SCRIPT="$ROOT/mutants/scripts/controller/codex-resume-child-close.sh" \
+    bash "$SCRIPT_DIR/test-wrappers.sh"
+expect_killed codex-autoresume-child-close \
+  env CODEX_IMPL_SCRIPT="$ROOT/mutants/scripts/controller/codex-autoresume-child-close.sh" \
+    bash "$SCRIPT_DIR/test-wrappers.sh"
 expect_killed job-prototype-missing-done-owner-record \
   env JOB_CHECK_SCRIPT="$ROOT/mutants/scripts/controller/job-check-missing-done-owner-record.sh" bash "$SCRIPT_DIR/test-job-check.sh"
 expect_killed job-report-litter-detector \

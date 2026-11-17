@@ -70,6 +70,17 @@ can name the live owner and `job-check.sh` can tell a dead owner from a live
 one. The agent and the liveness sidecar close their inherited copy of the
 descriptor, so a child that outlives its wrapper never holds the name hostage.
 
+**Every exec site, not just the first one.** A `codex-impl.sh` run has THREE
+places where it execs a child — the new launch, a manual `resume`, and the
+automatic continuation loop — and only the first was covered by a SIGKILL
+check for a while. The resume path is the ROUTINE one: every follow-up of a
+long job runs it, and a killed resume whose child inherited the descriptor
+strands the run name exactly as a killed new launch does. So the check kills a
+wrapper at EACH site, with the agent and the setsid daemon alive, and asserts
+the name is free at once and a forced relaunch is accepted — and a mutant
+deletes the close from ONE line at a time, so a fix that covered only the
+obvious site fails.
+
 Force is deliberately not a bypass: `CONTROLLER_RUN_FORCE=1` is refused while an
 owner is alive, and for a dead owner it RETIRES the whole record set into
 `retired/<run>/<utc-stamp>/` with the previous owner's identity written beside

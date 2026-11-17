@@ -231,6 +231,30 @@ codex_wrapper_with_lib_mutant(
     '  eval "exec $fd>&-" 2>/dev/null || :\n  return 0\n}\n\ncontroller_run_owner_pid',
     '  :\n  return 0\n}\n\ncontroller_run_owner_pid',
 )
+# CTL-22: EVERY Codex exec site closes the ownership descriptor, and the resume
+# and auto-resume sites are the ROUTINE ones. A shared-function mutant (the
+# `codex-run-name-child-close` lib mutant) cannot tell the three call sites
+# apart, so one mutant per site: deleting the call on that line alone must make
+# its own SIGKILL case fail.
+mutant("scripts/controller/codex-impl.sh", "codex-newlaunch-child-close.sh",
+       '  if (controller_close_ownership_fds && \\\n'
+       '    nice codex exec -C "$worktree"',
+       '  if (\\\n'
+       '    nice codex exec -C "$worktree"')
+mutant("scripts/controller/codex-impl.sh", "codex-resume-child-close.sh",
+       '  if (cd -- "$worktree" && controller_close_ownership_fds && \\\n'
+       '    nice codex exec resume -m "$model" -c "model_reasoning_effort=\\"$effort\\"" \\\n'
+       '    --skip-git-repo-check --json "$session_id"',
+       '  if (cd -- "$worktree" && \\\n'
+       '    nice codex exec resume -m "$model" -c "model_reasoning_effort=\\"$effort\\"" \\\n'
+       '    --skip-git-repo-check --json "$session_id"')
+mutant("scripts/controller/codex-impl.sh", "codex-autoresume-child-close.sh",
+       '  if (cd -- "$worktree" && controller_close_ownership_fds && \\\n'
+       '    nice codex exec resume -m "$model" -c "model_reasoning_effort=\\"$effort\\"" \\\n'
+       '    --skip-git-repo-check --json "$thread_id"',
+       '  if (cd -- "$worktree" && \\\n'
+       '    nice codex exec resume -m "$model" -c "model_reasoning_effort=\\"$effort\\"" \\\n'
+       '    --skip-git-repo-check --json "$thread_id"')
 mutant("scripts/controller/job-check.sh", "job-check-report-litter.sh",
        "stray=$(git -C \"$worktree\" status --short --ignored 2>/dev/null | grep -E '^\\?\\? (reports|scripts/.*/reports)/' | head -2 || true)",
        "stray='' ")

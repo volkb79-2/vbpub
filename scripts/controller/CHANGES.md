@@ -73,6 +73,13 @@ no separate version number, so entries are grouped by the work that landed.
   invocation never overwrites the identity of the owner it refused on.
 
 ### Fixed
+- The Codex resume and auto-resume exec sites have their own killed-wrapper
+  evidence (CTL-22): a SIGKILL check now kills the wrapper at each of the three
+  sites (new launch, manual resume, automatic continuation) with the agent and
+  the setsid daemon it left alive, asserts the run name is free at once and the
+  relaunch is accepted, and one mutant per site deletes the ownership-descriptor
+  close from that ONE line — so the routine resume path can no longer lose the
+  close unnoticed.
 - Progress is a surviving process's delta, not a change of the set (CTL-21):
   `pi-live.py` keeps each member of the in-flight tool's subtree separately and
   counts a SURVIVOR's strictly positive CPU/IO delta (the same pid AND the same
