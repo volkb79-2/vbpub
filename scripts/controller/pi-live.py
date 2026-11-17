@@ -47,6 +47,16 @@ Two facts exist because a reader must not turn one into the other:
   exited, another started) and an unreadable `/proc` are baselines, never
   progress; `unknown` stays null rather than being clamped to the tool's start.
 
+  `progress_measured` says whether the progress fact on this snapshot rests on
+  a MEASUREMENT of the current in-flight tool: the tool's subtree was read this
+  tick, or evidence was produced this tick. A tick that could not read the
+  subtree at all (the agent child or the wrapper is missing from the process
+  table, an empty `/proc`) carries the previous epoch forward as UNMEASURED, and
+  an epoch older than the in-flight call is published as `null` with the flag
+  false - never lifted up to the tool's start. Lifting it is the wall-clock rule
+  CTL-18 removed: the tool's own age would stand in for evidence nobody read,
+  and `HUNG-TOOL` would be decided on that age alone.
+
 The tool in flight also carries `tool_in_flight_command` (the tool's own
 `args.command`, bounded) and `steering_children` (the tool call's own live
 processes with their short command lines), so a reader can name the work and
@@ -433,6 +443,12 @@ class Progress:
     unreadable `/proc` (`None`, which is unknown). An empty set is a defined
     fact - no tool process is running - and sums to zero.
 
+    `measured` is the reader's licence (see the module docstring): the current
+    tool's subtree was read this tick, or evidence was produced this tick. A
+    tick that read nothing leaves the epoch where it was but marks it
+    unmeasured, so a reader never turns stale or absent evidence into a
+    tool-age-only verdict.
+
     The summed set is the in-flight tool call's own subtree, never the wrapper's
     whole tree: the agent and this sidecar grow every tick on their own, and
     counting them made a tool that was blocked on the agent's FIFO read as
@@ -450,6 +466,9 @@ class Progress:
         self.tree_nodes: int | None = None
         self.tree_truncated = False
         self.reason: str | None = None
+        # Whether the progress fact rests on a measurement of the CURRENT tool
+        # (see the module docstring). A carried, unread epoch is measured=False.
+        self.measured = False
         self.tool_in_flight = tool_in_flight
 
     def set_tool_in_flight(self, in_flight: bool) -> None:
@@ -467,6 +486,9 @@ class Progress:
         self.tool_in_flight = in_flight
         self.sample = None
         self.baseline = None
+        # The epoch measured while the PREVIOUS tool ran is no evidence about
+        # the next one.
+        self.measured = False
 
     def observe(
         self, now: int, grew: bool, sample: Sample | None, nodes: int | None = None,
@@ -478,8 +500,11 @@ class Progress:
         if sample is None and not grew:
             # This tick observed nothing (no tool subtree, no stream bytes). A
             # tick that observed nothing cannot be a baseline change either: the
-            # previous measurement stands until something is actually read.
+            # previous measurement stands until something is actually read - and
+            # it is carried as UNMEASURED, because nothing about the current
+            # state was read.
             self.reason = "unread"
+            self.measured = False
             return self.epoch
         changed = bool(grew)
         reason = "stream" if grew else "none"
@@ -511,6 +536,11 @@ class Progress:
             reason = "unknown" if not grew else reason
         if changed:
             self.epoch = now
+        # The reader's licence: a measurement of the current state is the tool's
+        # own subtree read this tick, or evidence produced this tick. A tool
+        # call's boundary without its own output measures nothing about the
+        # tool, so it only counts when its counters were read.
+        self.measured = bool(changed) or sample is not None
         self.reason = reason
         return self.epoch
 
@@ -525,6 +555,7 @@ def payload(
     located: tuple[list[int], bool] | None = None,
 ) -> dict[str, object]:
     progress_epoch = None if progress is None else progress.epoch
+    progress_measured = False if progress is None else progress.measured
     progress_baseline = None if progress is None else progress.baseline
     progress_reason = None if progress is None else progress.reason
     tree_nodes = None if progress is None else progress.tree_nodes
@@ -565,17 +596,20 @@ def payload(
     # started (a `bash -lc` shell, its `pytest` workers, a compiler's children).
     steering_pids = [] if located is None else located[0]
     tree_rows = [{"pid": pid, "command": short_command(pid)} for pid in steering_pids]
-    # A tool cannot have made progress before it started, so a MEASURED progress
-    # epoch earlier than the tool's own start is bounded by that start. This is
-    # a bound on a MEASURED fact, never a substitute for a missing one: an
-    # unknown progress fact (`None`, from an unreadable `/proc`) stays null, so
-    # a reader can tell "no evidence" from "evidence at the tool's start".
-    # Clamping null up to the start restored a wall-clock-only rule exactly in
-    # the case the fact exists for (counters unreadable), which is the CTL-18
-    # defect in its second form.
-    if tool_started is not None and progress_epoch is not None:
-        if progress_epoch < tool_started:
-            progress_epoch = tool_started
+    # A tool cannot have made progress before it started. An epoch EARLIER than
+    # the in-flight tool's own start is evidence about something else - the run,
+    # or the tool before this one - so the epoch is published as `null`, never
+    # lifted up to the tool's start: lifting it makes the tool's own age stand
+    # in for evidence nobody read, which is the wall-clock-only rule CTL-18
+    # removed. The `measured` flag is NOT cleared by this: it describes whether
+    # the current tool's counters were READ this tick, and a baseline from that
+    # reading is a real measurement of a tool that has not moved yet.
+    if (
+        tool_started is not None
+        and progress_epoch is not None
+        and progress_epoch < tool_started
+    ):
+        progress_epoch = None
     return {
         "run": run,
         "wrapper_pid": wrapper_pid,
@@ -590,6 +624,7 @@ def payload(
         "tool_in_flight_command": tool_command,
         "tool_in_flight_output_epoch": tool_output,
         "progress_epoch": progress_epoch,
+        "progress_measured": bool(progress_measured),
         "progress_reason": progress_reason,
         "progress_baseline_epoch": progress_baseline,
         "progress_tree_nodes": tree_nodes,
@@ -689,7 +724,7 @@ def main(argv: list[str]) -> int:
     ticks = tick_source(arguments.tick_stream)
 
     def note_tick(now: int, nodes: int | None, truncated: bool, epoch: int | None,
-                  reason: str | None, baseline: int | None) -> None:
+                  reason: str | None, baseline: int | None, measured: bool) -> None:
         """One JSON line per FINISHED tick.
 
         A test's sync point: it knows tick N ended before it changes the fake
@@ -703,7 +738,7 @@ def main(argv: list[str]) -> int:
                 log.write(json.dumps({
                     "tick": now, "nodes": nodes, "truncated": bool(truncated),
                     "reason": reason, "progress": epoch,
-                    "baseline": baseline,
+                    "baseline": baseline, "measured": bool(measured),
                 }, sort_keys=True) + "\n")
         except OSError:
             pass
@@ -725,7 +760,7 @@ def main(argv: list[str]) -> int:
             arguments.wrapper_pid, state, progress, located,
         )
         note_tick(now, nodes, truncated, progress.epoch, progress.reason,
-                  progress.baseline)
+                  progress.baseline, progress.measured)
         try:
             write_atomic(target, body)
         except OSError:

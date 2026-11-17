@@ -642,16 +642,40 @@ mutant("scripts/controller/pi-live.py", "pi-live-progress-counts-sidecar.py",
 mutant("scripts/controller/pi-live.py", "pi-live-progress-any-change.py",
        '                and (sample.cpu > previous.cpu or sample.io > previous.io)',
        '                and (sample.cpu != previous.cpu or sample.io != previous.io)')
-# An unreadable /proc must not license the stronger word: clamping a null
-# progress fact up to the tool's start restores a wall-clock-only rule exactly
-# where the counters cannot be read.
-mutant("scripts/controller/pi-live.py", "pi-live-progress-null-clamped.py",
+# CTL-20: an epoch the sidecar could not re-read is NOT a measurement. Lifting
+# an epoch older than the in-flight tool up to the tool's own start publishes the
+# tool's AGE as its progress age, and HUNG-TOOL is then decided on wall-clock
+# alone - the CTL-18 defect in its third form (the fixture's stream grew BEFORE
+# the tool started, and the tool's subtree could not be located).
+mutant("scripts/controller/pi-live.py", "pi-live-progress-lift-unmeasured.py",
+       '    if (\n'
+       '        tool_started is not None\n'
+       '        and progress_epoch is not None\n'
+       '        and progress_epoch < tool_started\n'
+       '    ):\n'
+       '        progress_epoch = None',
        '    if tool_started is not None and progress_epoch is not None:\n'
        '        if progress_epoch < tool_started:\n'
-       '            progress_epoch = tool_started',
+       '            progress_epoch = tool_started')
+# An unreadable /proc must not license the stronger word either: clamping a null
+# progress fact up to the tool's start is the same wall-clock rule where nothing
+# could be read at all.
+mutant("scripts/controller/pi-live.py", "pi-live-progress-null-clamped.py",
+       '    if (\n'
+       '        tool_started is not None\n'
+       '        and progress_epoch is not None\n'
+       '        and progress_epoch < tool_started\n'
+       '    ):\n'
+       '        progress_epoch = None',
        '    if tool_started is not None:\n'
        '        if progress_epoch is None or progress_epoch < tool_started:\n'
        '            progress_epoch = tool_started')
+# The MEASURED flag is the reader's licence: a tick that could not read the
+# tool's subtree carries the previous epoch forward, so it must say so or the
+# carried leftover is read as a measurement.
+mutant("scripts/controller/pi-live.py", "pi-live-progress-measured-kept.py",
+       '            self.reason = "unread"\n            self.measured = False',
+       '            self.reason = "unread"\n            self.measured = self.measured')
 # A tool call's own announcement is a boundary, not evidence.
 mutant("scripts/controller/pi-live.py", "pi-live-progress-tool-start.py",
        '        if tool_started:\n            # A tool call',
@@ -679,12 +703,23 @@ mutant("scripts/controller/job-status.sh", "job-status-hung-tool.sh",
 # CTL-18: HUNG-TOOL is age AND absence of progress evidence. Deciding it on the
 # tool age alone is exactly the defect (a heavy-but-working tool reads as hung).
 mutant("scripts/controller/job-status.sh", "job-status-hung-without-progress.sh",
-       '        if progress_measured is not None and progress_measured > hung_limit:',
+       '        if progress_age is not None and progress_age > hung_limit:',
        '        if True:')
 # An unknown progress fact must not license the stronger word either.
 mutant("scripts/controller/job-status.sh", "job-status-progress-unknown-as-hung.sh",
-       '        if progress_measured is not None and progress_measured > hung_limit:',
-       '        if progress_measured is None or progress_measured > hung_limit:')
+       '        if progress_age is not None and progress_age > hung_limit:',
+       '        if progress_age is None or progress_age > hung_limit:')
+# CTL-20: the reader must take the producer's MEASURED flag, not the epoch it
+# carried: an unmeasured leftover printed as a progress age licenses HUNG-TOOL
+# on the tool's age alone.
+mutant("scripts/controller/job-status.sh", "job-status-progress-unmeasured-as-measured.sh",
+       '    progress_unknown = progress_flag is not True',
+       '    progress_unknown = False')
+# Absence of the flag is not a measurement: a payload that predates it must not
+# be read as if it had certified the epoch.
+mutant("scripts/controller/job-status.sh", "job-status-progress-absent-flag-as-measured.sh",
+       '    progress_unknown = progress_flag is not True',
+       '    progress_unknown = progress_flag is False')
 # The row must name the tool's command and the exact child pid to steer.
 mutant("scripts/controller/job-status.sh", "job-status-hung-tool-command.sh",
        '        tool_text += f" cmd={tool_command[:80]}"',

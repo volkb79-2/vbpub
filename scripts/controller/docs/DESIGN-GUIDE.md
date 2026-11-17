@@ -176,6 +176,22 @@ same reason: `cmd=` and `steer=` are the tool's command and the exact child pid,
 because the earlier row named neither and the only actionable process it could
 describe was the wrapper — the one process that must not be killed.
 
+**Why the sidecar publishes `progress_measured`, and not just an epoch.** The
+first version of the progress fact was one absolute epoch, and a reader could
+not tell three different situations apart: evidence measured on this tick,
+evidence from an EARLIER tick carried forward because the tool's subtree could
+not be read this time, and evidence from BEFORE the tool call started (the run's
+own session bytes). The third was the damaging one: when the tool's subtree
+could not be located, the epoch was lifted up to the tool's start, and the tool's
+age then stood in for progress — `HUNG-TOOL` decided on wall-clock alone, which
+is exactly what the `LONG-TOOL` split exists to stop. So the epoch and its
+provenance are two facts: `progress_measured` is false when the tick did not
+read the CURRENT tool (no `/proc` subtree, or an epoch older than the call), and
+the reader takes an unmeasured epoch as unknown, prints `progress=-` and uses
+the weaker word. A payload without the flag is unknown for the same reason: a
+missing measurement is not a measurement, and the producer writes the fact now,
+so absence can only mean an older snapshot or a broken one.
+
 Continuation is bounded and class-specific on purpose. Only `EMPTY-COMPLETION`
 is continued, because only that class is a provider/model anomaly: the session
 is intact and the same conversation can finish the work. `UNCOMMITTED`,

@@ -538,7 +538,7 @@ now = int(time.time())
 runs = Path(sys.argv[1])
 def write(name, tool=None, tool_started=None, last_event=None, progress=None,
           command=None, steer=None, tokens=10, tokens_report=None, ahead=0,
-          commit_epoch=None):
+          commit_epoch=None, measured=None, baseline=None, reason=None):
     body = {
         "run": name, "wrapper_pid": 1, "updated_epoch": now,
         "last_event_epoch": last_event, "tool_in_flight": tool,
@@ -548,18 +548,36 @@ def write(name, tool=None, tool_started=None, last_event=None, progress=None,
         "latest_total_tokens_last_report": tokens if tokens_report is None else tokens_report,
         "tool_in_flight_command": command, "steering_children": steer,
         "progress_epoch": progress,
+        "progress_baseline_epoch": baseline,
+        "progress_reason": reason,
+        # The SIDE CAR's own licence, published by pi-live.py. A fixture that
+        # measured a progress fact says so; one that did not must never be read
+        # as having measured anything.
+        "progress_measured": measured,
         "commits_ahead": ahead, "uncommitted_files": 0,
         "last_commit_epoch": now if commit_epoch is None else commit_epoch,
     }
     (runs / f"{name}.live").write_text(json.dumps(body), encoding="utf-8")
 write("stale", last_event=now - 900)
 write("hung", tool="bash", tool_started=now - 2400, last_event=now - 10,
-      progress=now - 2400, command="sleep 600")
+      progress=now - 2400, measured=True, command="sleep 600")
 write("long-tool", tool="bash", tool_started=now - 2400, last_event=now - 10,
-      progress=now - 30, command="grep -r needle /workspace",
+      progress=now - 30, measured=True, reason="counters",
+      command="grep -r needle /workspace",
       steer=[{"pid": 4242, "command": "grep -r needle /workspace"}])
 write("progress-unknown", tool="bash", tool_started=now - 2400,
-      last_event=now - 10, progress=None)
+      last_event=now - 10, progress=None, measured=False, reason="unread")
+# What the sidecar publishes after a tick whose tool subtree it could NOT
+# locate: the counters were never re-read, so the previous epoch is carried
+# forward UNMEASURED. The tool is past its threshold and the carried epoch is
+# older than the tool, so age alone would say HUNG-TOOL - exactly the decision
+# this field exists to prevent.
+write("progress-carried-unmeasured", tool="bash", tool_started=now - 2400,
+      last_event=now - 10, progress=now - 3000, measured=False, reason="unread")
+# The same row without the flag at all: a payload written before the producer
+# published it. Absence is not a licence either.
+write("progress-flag-absent", tool="bash", tool_started=now - 2400,
+      last_event=now - 10, progress=now - 2400, reason="counters")
 write("tokens-zero-report", last_event=now - 10, tokens=258492,
       tokens_report=0)
 write("no-commits", last_event=now - 10, ahead=0, commit_epoch=now - 86400)
@@ -573,7 +591,8 @@ body["wrapper_pid"] = 2147483646
 PY
   CONTROLLER_HOME="$ROOT/status-home" CONTROLLER_RUNS_DIR="$runs" CONTROLLER_REPO="$WORKTREE" \
     JOB_STATUS_STALL_SECONDS=600 JOB_STATUS_HUNG_TOOL_SECONDS=1800 \
-    "$JOB_STATUS" stale hung long-tool progress-unknown tokens-zero-report \
+    "$JOB_STATUS" stale hung long-tool progress-unknown progress-carried-unmeasured \
+      progress-flag-absent tokens-zero-report \
       no-commits own-commit ahead-unknown orphan finished absent \
       > "$ROOT/job-status-states.out" 2>&1 || {
       cat "$ROOT/job-status-states.out" >&2
@@ -600,6 +619,21 @@ PY
     || { cat "$ROOT/job-status-states.out" >&2; fail 'an unreadable progress fact was read as a hung tool'; }
   grep -qE '^progress-unknown: .*progress=- ' "$ROOT/job-status-states.out" \
     || { cat "$ROOT/job-status-states.out" >&2; fail 'an unreadable progress fact is not shown as unknown'; }
+  # An epoch the sidecar CARRIED forward because it could not re-read the tool's
+  # subtree is not a measurement: the tool is past its threshold and the carried
+  # epoch is older still, so reading it as a progress age would say HUNG-TOOL on
+  # the tool's age alone - the exact defect this flag removes.
+  grep -qF 'progress-carried-unmeasured: LONG-TOOL' "$ROOT/job-status-states.out" \
+    || { cat "$ROOT/job-status-states.out" >&2; fail 'a carried, unmeasured progress epoch licensed HUNG-TOOL'; }
+  grep -qE '^progress-carried-unmeasured: .*progress=- progress-why=unread' \
+    "$ROOT/job-status-states.out" \
+    || { cat "$ROOT/job-status-states.out" >&2; fail 'a carried, unmeasured epoch was printed as a progress age'; }
+  # A payload written before the producer published the flag cannot license the
+  # stronger word either: absence of a measurement is not a measurement.
+  grep -qF 'progress-flag-absent: LONG-TOOL' "$ROOT/job-status-states.out" \
+    || { cat "$ROOT/job-status-states.out" >&2; fail 'a payload without the measured flag licensed HUNG-TOOL'; }
+  grep -qE '^progress-flag-absent: .*progress=- ' "$ROOT/job-status-states.out" \
+    || { cat "$ROOT/job-status-states.out" >&2; fail 'a payload without the measured flag printed a progress age'; }
   # A zero usage report never masquerades as the context size.
   grep -qE '^tokens-zero-report: .*tokens=258492 .*tokens-last-report=0' \
     "$ROOT/job-status-states.out" \
@@ -642,12 +676,15 @@ import json, sys, time
 from pathlib import Path
 now = int(time.time())
 runs = Path(sys.argv[1])
-def write(name, tool=None, tool_started=None, last_event=None, progress=None):
+def write(name, tool=None, tool_started=None, last_event=None, progress=None,
+          measured=None, baseline=None):
     body = {
         "run": name, "wrapper_pid": 1, "updated_epoch": now,
         "last_event_epoch": last_event, "tool_in_flight": tool,
         "tool_in_flight_started_epoch": tool_started,
         "progress_epoch": progress,
+        "progress_baseline_epoch": baseline,
+        "progress_measured": measured,
         "assistant_turns": 1, "tool_calls": 1, "latest_total_tokens": 10,
         "commits_ahead": 0, "uncommitted_files": 0, "last_commit_epoch": now,
     }
@@ -656,11 +693,11 @@ write("quiet500", last_event=now - 500)
 write("quiet700", last_event=now - 700)
 write("thinking", last_event=now - 100)
 write("tool1700", tool="bash", tool_started=now - 1700, last_event=now - 20,
-      progress=now - 20)
+      progress=now - 20, measured=True)
 write("tool1900fresh", tool="bash", tool_started=now - 1900, last_event=now - 20,
-      progress=now - 20)
+      progress=now - 20, measured=True)
 write("tool1900stuck", tool="bash", tool_started=now - 1900, last_event=now - 20,
-      progress=now - 1900)
+      progress=now - 1900, measured=True, baseline=now - 1900)
 PY
   env -u JOB_STATUS_STALL_SECONDS -u JOB_STATUS_HUNG_TOOL_SECONDS \
     CONTROLLER_HOME="$ROOT/status-home" CONTROLLER_RUNS_DIR="$runs" CONTROLLER_REPO="$WORKTREE" \
@@ -855,6 +892,7 @@ import json, sys
 body = json.load(open(sys.argv[1], encoding="utf-8"))
 assert body["progress_epoch"] is None, body
 assert body["progress_reason"] in ("none", "idle"), body
+assert body["progress_measured"] is True, body
 assert body["progress_tree_nodes"] == 2, body
 assert body["progress_tree_truncated"] is False, body
 PY
@@ -1050,6 +1088,72 @@ PY
     || { cat "$ROOT/progress-unreadable.out" >&2; fail 'an unreadable progress fact licensed HUNG-TOOL'; }
   grep -qE 'progress=- progress-why=unread' "$ROOT/progress-unreadable.out" \
     || { cat "$ROOT/progress-unreadable.out" >&2; fail 'the row did not show the progress fact as unknown'; }
+
+  # (5b) THE STREAM GREW BEFORE THE TOOL STARTED, AND THE TOOL'S SUBTREE CANNOT
+  # BE LOCATED. This is the shape the earlier `progress-unknown` check could not
+  # see: its fixture's stream bytes WERE the tool's start, so the progress epoch
+  # and the tool's start were the same instant and a lifted epoch was
+  # indistinguishable. Here the run's own session bytes are progress evidence at
+  # tick 1, the tool starts at tick 3, and no `/proc` entry exists for the
+  # agent: the carried epoch (tick 1) is OLDER than the tool, so lifting it to
+  # the tool's start would make the tool's own age the progress age and
+  # HUNG-TOOL would be decided on wall-clock alone - the CTL-18 defect.
+  rm -rf "$ROOT/progress-grew" "$ROOT/progress-grew.jsonl"
+  mkdir -p "$ROOT/progress-grew"
+  printf '{"type":"session","id":"grew-before-tool"}\n' > "$ROOT/progress-grew.jsonl"
+  progress_reset_ticks
+  PROGRESS_STREAM=$ROOT/progress-grew.jsonl progress_start "$ROOT/progress-grew" "$wrapper"
+  progress_tick 6000
+  progress_tick 6010
+  printf '{"type":"tool_execution_start","toolCallId":"g1","toolName":"bash","args":{"command":"sleep 600"}}\n' \
+    >> "$ROOT/progress-grew.jsonl"
+  progress_tick 6020
+  progress_tick 6030
+  progress_finish
+  python3 - "$ROOT/progress-ticks.log" <<'PY' || fail 'a carried epoch older than the in-flight tool was not marked unmeasured'
+import json, sys
+rows = [json.loads(line) for line in open(sys.argv[1], encoding="utf-8") if line.strip()]
+assert len(rows) == 4, rows
+# Tick 1: the stream grew, which IS a measurement of the run.
+assert rows[0]["progress"] == 6000, rows
+assert rows[0]["measured"] is True, rows
+# Ticks 2+: the stream's only growth is the tool's own ANNOUNCEMENT (a
+# boundary), and the tool's subtree cannot be read at all, so every one of
+# them carries the old epoch as a leftover and says so.
+assert [row["reason"] for row in rows[1:]] == ["unread", "tool-start", "unread"], rows
+assert all(row["measured"] is False for row in rows[1:]), rows
+PY
+  python3 - "$CONTROLLER_ROOT/runs/progress.live" <<'PY' || fail 'an epoch from before the tool started was published as the tool progress'
+import json, sys
+body = json.load(open(sys.argv[1], encoding="utf-8"))
+assert body["tool_in_flight"] == "bash", body
+assert body["tool_in_flight_started_epoch"] is not None, body
+assert body["progress_epoch"] is None, body
+assert body["progress_measured"] is False, body
+assert body["progress_reason"] == "unread", body
+PY
+  # The row a controller reads, from THAT payload: the tool is past the hung
+  # threshold and nothing about it was ever measured, so the weaker word.
+  mkdir -p "$ROOT/status-home"
+  python3 - "$CONTROLLER_ROOT/runs/progress.live" <<'PY'
+import json, sys, time
+from pathlib import Path
+now = int(time.time())
+body = json.load(open(sys.argv[1], encoding="utf-8"))
+body["wrapper_pid"] = 1
+body["updated_epoch"] = now
+body["last_event_epoch"] = now - 10
+body["tool_in_flight_started_epoch"] = now - 2400
+Path(sys.argv[1]).with_name("progress-grew.live").write_text(json.dumps(body), encoding="utf-8")
+PY
+  CONTROLLER_HOME="$ROOT/status-home" CONTROLLER_RUNS_DIR="$CONTROLLER_ROOT/runs" \
+    CONTROLLER_REPO="$WORKTREE" JOB_STATUS_STALL_SECONDS=600 JOB_STATUS_HUNG_TOOL_SECONDS=1800 \
+    "$JOB_STATUS" progress-grew > "$ROOT/progress-grew.out" 2>&1 \
+    || { cat "$ROOT/progress-grew.out" >&2; fail 'job-status failed on a carried, unmeasured epoch'; }
+  grep -qF 'progress-grew: LONG-TOOL' "$ROOT/progress-grew.out" \
+    || { cat "$ROOT/progress-grew.out" >&2; fail 'an epoch older than the tool licensed HUNG-TOOL'; }
+  grep -qE 'progress=- progress-why=unread' "$ROOT/progress-grew.out" \
+    || { cat "$ROOT/progress-grew.out" >&2; fail 'the carried epoch was printed as a progress age'; }
 
   # (6) A TOOL CALL'S OWN START IS A BOUNDARY, NOT EVIDENCE. The stream grows
   # because the call was announced; publishing that as the tool's progress puts

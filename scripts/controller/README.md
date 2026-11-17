@@ -376,7 +376,12 @@ wrapper's whole tree, which also holds the agent (a model loop) and the
 snapshotter (its own `/proc` scans and git calls) and would therefore keep any
 tool looking busy, so a slow `grep` or a long `pytest` reads as a working job
 instead of a hung one while a tool blocked on the agent's FIFO still reads as
-not progressing. To steer a stuck tool, kill the exact child pid the row
+not progressing. The sidecar also publishes whether that fact was MEASURED
+(`progress_measured`): a tick that could not read the tool's subtree carries a
+previous epoch forward as unmeasured, and an epoch from before the call started
+is published as `null`, so the row prints `progress=- progress-why=unread` with
+the weaker word — an unread fact never licenses `HUNG-TOOL`.
+To steer a stuck tool, kill the exact child pid the row
 prints as `steer=` — never the wrapper, which would discard the run's
 classification, its `.done` marker and its continuation history. A tool blocked
 by the agent's own experiment (a `git` command waiting on a FIFO the agent

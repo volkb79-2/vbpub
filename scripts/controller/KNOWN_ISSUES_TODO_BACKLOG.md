@@ -31,6 +31,7 @@ together.
 | CTL-17 | `stopReason=length` (the context window filled) is classified `INCOMPLETE`, so the controller cannot tell a truncated run from a broken stream | Should-fix | FIXED 2026-11-16 |
 | CTL-18 | `HUNG-TOOL` is decided on wall-clock alone: the sidecar carries no progress evidence, no tool command and no child identity, so a heavy-but-progressing tool (or one blocked by the agent's own FIFO) reads as hung | Should-fix | FIXED 2026-11-17 (2026-11-16 fix reopened in review round 1: it summed the wrapper's whole subtree) |
 | CTL-19 | A wrapper that dies without writing `.done` is indistinguishable from a running one in `job-check` (`RUNNING (no .done)`), and `codex-impl.sh ... resume` never writes a marker on a kill | Should-fix | FIXED 2026-11-16 |
+| CTL-20 | An epoch the sidecar could not re-read is lifted to the tool's start, so `HUNG-TOOL` is again decided on wall-clock alone | Should-fix | FIXED 2026-11-17 |
 
 ---
 
@@ -1024,3 +1025,78 @@ entries in this file describe.
 Codex resume), `job-check` reports a dead owner without a marker as `DIED` and
 keeps a live owner and an unrecorded run distinct, the focused cases pass, and
 the documents state the lock record and the `DIED` word.
+
+## CTL-20 — an epoch the sidecar could not re-read is read as measured progress, so `HUNG-TOOL` is decided on the tool's age again
+
+**Status:** FIXED 2026-11-17 (code, fixtures, tests, mutants and the three
+documents in one change); severity Should-fix. Found by the independent review
+of the CTL-18 package (`pi-controller-burn-REVIEW.md`) and re-verified against
+the merged code: `pi-live.py`'s `payload()` lifted an epoch older than the
+in-flight tool up to the tool's start, and `job-status.sh` read that lifted
+epoch as measured progress.
+
+**Problem.** `Progress.observe` correctly refuses to treat an unread tick as
+progress, and correctly leaves `progress_epoch` null when the tool's subtree
+cannot be located (`progress_reason=unread`). But `progress_epoch` is not the
+only fact the reader uses: `payload()` bounded it with
+
+```python
+if tool_started is not None and progress_epoch is not None:
+    if progress_epoch < tool_started:
+        progress_epoch = tool_started
+```
+
+which is a bound on a MEASURED fact only in appearance. The run's own stream
+bytes (a `session` event, a turn start, a tool's own end) are progress evidence
+for the RUN, and they are appended before the next tool call starts. So the
+sequence "the stream grew, then a tool started, then the tool's subtree became
+unreadable" publishes `progress_epoch == tool_started` while nothing about the
+tool was ever read. `job-status.sh` then computes `progress = age(tool_started)`
+— the tool's own age — and the only remaining test is
+`tool_seconds > hung_limit`, so `HUNG-TOOL` is decided on wall-clock alone: the
+exact defect CTL-18 exists to remove, in its third form (the first was a null
+clamped up to the start, which the earlier fix removed; the second was the
+wrapper's whole subtree being summed).
+
+The existing `progress-unknown` case could not see it. Its fixture's stream
+bytes ARE the tool's `tool_execution_start`, so the progress epoch and the tool
+start are the same instant and a lifted epoch is indistinguishable from a
+measured one.
+
+**What separates the two facts.** *Which tick the epoch came from* is one fact;
+*whether that tick measured the CURRENT tool* is another. A reader needs both,
+so `pi-live.py` now publishes `progress_measured` beside `progress_epoch`:
+
+- true only when the current tick read the in-flight tool's own subtree, or
+  evidence was produced this tick (stream growth, the tool's own output);
+- false when the tick could not read it (`progress_reason == "unread"`, the
+  previous epoch carried forward as a leftover) or when the epoch is older than
+  the in-flight call (the epoch is then published as `null`, never lifted).
+
+`job-status.sh` takes the flag as the licence and nothing else: an unmeasured
+epoch is unknown, the row prints `progress=-` with its reason, and the word is
+`LONG-TOOL`. A payload that predates the field is unknown for the same reason —
+absence of a measurement is not a measurement.
+
+**Where.** `scripts/controller/pi-live.py` (`Progress.measured`, `payload`),
+`scripts/controller/job-status.sh` (the row and the state decision),
+`scripts/controller/tests/test-pi-impl.sh` (cases (5), (5b) and the status
+fixture), `scripts/controller/tests/mutate-sources.py` +
+`tests/test-mutations.sh` (hand mutants), `README.md`,
+`docs/DESIGN-GUIDE.md`, `docs/CONSUMERS.md`.
+
+**Acceptance test idea (as landed).** A fake `/proc` with no agent subtree at
+all, driven on a tick clock, where the stream grew BEFORE the tool started:
+tick 1 is a real measurement of the run, every later tick carries the epoch
+unmeasured, the snapshot publishes `progress_epoch: null` with
+`progress_measured: false`, and the row built from that payload is `LONG-TOOL`
+with `progress=- progress-why=unread` although the tool is past the hung
+threshold. Mutants `pi-live-progress-lift-unmeasured`,
+`pi-live-progress-measured-kept`, `pi-live-progress-null-clamped`,
+`job-status-progress-unmeasured-as-measured` and
+`job-status-progress-absent-flag-as-measured` are each killed by that case.
+
+**Close when.** An epoch the sidecar could not re-read can never reach the
+`HUNG-TOOL` decision as a progress age, the producer and the reader agree on
+the two facts, the focused case fails on the old behaviour (and on each
+mutant), and the three documents state the distinction.

@@ -180,6 +180,8 @@ for pi_live_case in \
   pi-live-progress-counts-agent:live-progress \
   pi-live-progress-counts-sidecar:live-progress \
   pi-live-progress-any-change:live-progress \
+  pi-live-progress-lift-unmeasured:live-progress \
+  pi-live-progress-measured-kept:live-progress \
   pi-live-progress-null-clamped:live-progress \
   pi-live-progress-tool-start:live-progress \
   pi-live-progress-silent-cap:live-progress \
@@ -188,6 +190,8 @@ for pi_live_case in \
   job-status-stall-threshold:status-states job-status-hung-tool:status-states \
   job-status-hung-without-progress:status-states \
   job-status-progress-unknown-as-hung:status-states \
+  job-status-progress-unmeasured-as-measured:status-states \
+  job-status-progress-absent-flag-as-measured:status-states \
   job-status-hung-tool-command:status-states job-status-steer-target:status-states \
   job-status-since-commit-unqualified:status-states \
   job-status-tokens-last-report:status-states \

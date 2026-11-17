@@ -73,6 +73,16 @@ no separate version number, so entries are grouped by the work that landed.
   invocation never overwrites the identity of the owner it refused on.
 
 ### Fixed
+- An unmeasurable progress epoch is no longer read as measured progress (CTL-20):
+  `pi-live.py` publishes `progress_measured` beside `progress_epoch` — true only
+  when the current tick read the in-flight tool's own subtree or evidence was
+  produced on it, false when the tick could not re-read the subtree (the
+  previous epoch is carried forward as a leftover) or when the epoch is older
+  than the call (it is then published as `null`, never lifted to the tool's
+  start). `job-status.sh` takes that flag as its only licence, so an unmeasured
+  epoch prints `progress=- progress-why=unread` and the weaker word: the tool's
+  age alone can no longer decide `HUNG-TOOL`, which the lift made it do again
+  whenever the run's stream grew before a tool whose subtree could not be read.
 - `job-status` liveness and the dead-wrapper/orphan case: `ACTIVE`/`WRAPPER-DEAD`
   is decided from the run name's owner record (`<run>.lock`), the same rule
   `job-check.sh` applies, so a recycled wrapper pid no longer reads `ACTIVE` and
