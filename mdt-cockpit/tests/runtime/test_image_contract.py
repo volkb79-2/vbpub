@@ -40,19 +40,8 @@ def _declared_ai_tools() -> dict[str, str]:
 
 
 def _disabled_ai_tools() -> set[str]:
-    """Declared tools the build leaves out: INSTALL_<TOOL> is false in the environment or in cmru.toml [env]."""
-    import os
-    import tomllib
-
-    configured = tomllib.loads((harness.ROOT / "cmru.toml").read_text(encoding="utf-8")).get("env", {})
-    off = {"0", "false", "no", "off"}
-    disabled = set()
-    for tool in _declared_ai_tools():
-        switch = f"INSTALL_{tool.upper()}"
-        value = os.environ.get(switch, configured.get(switch))
-        if value is not None and str(value).strip().lower() in off:
-            disabled.add(tool)
-    return disabled
+    """Declared tools the build leaves out (the shared rule is `harness.tool_disabled`)."""
+    return {tool for tool in _declared_ai_tools() if harness.tool_disabled(tool)}
 
 
 def _declared_first_party() -> list[str]:
@@ -259,6 +248,7 @@ class Contract:
                 self.assertEqual(rc, "0", f"`{command} {PROBE_ARGS.get(command, '--version')}` failed: {first_line}")
                 self.assertTrue(first_line.strip(), f"`{command}` printed nothing")
 
+    @harness.requires_tool("claude")
     def test_claude_has_exactly_one_install_and_no_shadow_copy(self) -> None:
         """Claude updates itself (`claude update`, the background updater) by running
         `npm install -g` into NPM_CONFIG_PREFIX. A second `claude` anywhere on PATH - the old

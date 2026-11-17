@@ -682,11 +682,23 @@ and cadence.
 
 - **From 100k on**: a note every 50k tokens of context.
 - **Below 200k**: the wording prefers finishing the current unit of work.
-- **From 200k on**: the wording says stop at the next semantic boundary.
+- **From 200k on**: the wording names the next semantic boundary, and differs by role (below).
 
-"Stop" is the spawned session's instruction: it ends the session there (see above). The
-same note read by an interactive controller means persist state at that boundary and
-CONTINUE; it never means stand still or wait for a compaction.
+The hook sends one wording per role (`ctx.py`; an Agent-tool subagent has `agent_id` in the hook
+input, and `CTX_HOOK_ROLE=agent|controller` overrides the detection for a spawned top-level
+session):
+
+- **Controller / interactive session**: auto-compaction is the only limit. At the next semantic
+  boundary persist state to the plan and handoff files and CONTINUE; never stop, stand still or
+  wait for a compaction. The controller decides how its agents are guided.
+- **Agent session**: follow the dispatch brief's context rule if it has one. Otherwise decide at the
+  next semantic boundary: a small remainder is finished and reported; a large one ends the session
+  with a report that is the handoff (done and verified, half-known, the exact next step, facts that
+  exist only in the conversation). The controller decides who continues.
+
+Both roles are told to weigh the same three things, not to count tokens: the remaining effort, what
+already lives in tools and files versus only in conversation prose, and how well the work resumes
+from a prose-only readback.
 
 Measure the fill from the session's OWN transcript. Inside an Agent-tool subagent the
 hook input's `transcript_path` is the PARENT session's file (its own is

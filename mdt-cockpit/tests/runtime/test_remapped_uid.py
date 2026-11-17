@@ -126,6 +126,7 @@ class Contract:
         )
         self.assertOk(result)
 
+    @harness.requires_tool("claude")
     def test_claude_updates_in_place_through_group_mdt_and_stays_the_only_claude(self) -> None:
         """What `claude update` does for an npm-global install, offline: re-install the same
         version from the package's own files over the existing one, as the remapped uid."""
@@ -152,6 +153,7 @@ echo "home=$(ls -A ~ | tr '\n' ' ')"
         self.assertEqual(lines["group"], "mdt")
         self.assertNotIn(".local", lines["home"].split(), "the update must not write a native install into the home")
 
+    @harness.requires_tool("claude")
     def test_negative_control_a_uid_outside_mdt_cannot_touch_the_claude_install(self) -> None:
         result = harness.sh(
             self.image.ref,

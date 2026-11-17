@@ -52,6 +52,7 @@ class Contract:
         cls.derived.__exit__(None, None, None)
         super().tearDownClass()
 
+    @harness.requires_tool("opencode")
     def test_opencode_updates_in_place_through_its_platform_package(self) -> None:
         result = harness.sh(self.remapped, OFFLINE_REINSTALL)
         self.assertOk(result, "offline reinstall of the opencode platform package")

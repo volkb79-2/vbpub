@@ -54,6 +54,31 @@ LOCAL_ARTIFACTS_LABEL = "net.volkb79.mdt.local-artifacts"
 PATH_PREFIX = ("/opt/mdt/bin", "/opt/mdt/venv/bin", "/opt/mdt/npm/bin", "/srv/pwmcp-instance/bin")
 PATH_SUFFIX = ("/home/vscode/.local/bin",)
 
+# Build switches (`INSTALL_<TOOL>`) can leave a declared AI CLI tool out of the image on purpose. A test never
+# assumes such a tool exists: it asks here. The switch is read from the environment first, then from cmru.toml
+# [env] (the release build's own configuration); an unset switch means installed.
+TOOL_INSTALL_SWITCH = {"claude": "INSTALL_CLAUDE_CODE"}  # every other tool is INSTALL_<TOOL NAME UPPERCASED>
+_SWITCH_OFF = frozenset({"0", "false", "no", "off"})
+
+
+def tool_install_switch(tool: str) -> str:
+    return TOOL_INSTALL_SWITCH.get(tool, f"INSTALL_{tool.upper()}")
+
+
+def tool_disabled(tool: str) -> bool:
+    import tomllib
+
+    switch = tool_install_switch(tool)
+    configured = tomllib.loads((ROOT / "cmru.toml").read_text(encoding="utf-8")).get("env", {})
+    value = os.environ.get(switch, configured.get(switch))
+    return value is not None and str(value).strip().lower() in _SWITCH_OFF
+
+
+def requires_tool(tool: str):
+    """Skip a test (or class) that exercises a tool the build configuration leaves out of the image."""
+    return unittest.skipIf(tool_disabled(tool), f"{tool} is switched off in this build ({tool_install_switch(tool)}=false)")
+
+
 DOCKER = "docker"
 GENEROUS_TIMEOUT = 600  # seconds; a failsafe against a hung container, never a verdict
 _PID = os.getpid()
