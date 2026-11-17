@@ -280,7 +280,7 @@ What is TrueNAS-specific or missing:
   by screenshot;
 - no reset command, no boot-loop detection, no failure injection.
 
-Decision D15: lift the generic part into `scripts/vm-lab/`, a general VM
+Decision D15: lift the generic part into the top-level project `vm-lab/`, a general VM
 launcher and controller with no TrueNAS knowledge. `scripts/truenas` and this
 project become its consumers; the existing Debian harness
 (`scripts/debian-install-v2/testing/vm/vmctl`, BIOS only, no keyboard control)

@@ -31,7 +31,7 @@ path and be writable by QEMU's user; errors name the permissions. The default (t
 `pmemsave` file is unusable vmscreen falls back to HMP `xp` over the socket (slower, needs no shared path); the screendump
 still needs the shared path.
 
-When QEMU sees that directory under a **different path** (for example `scripts/vm-lab/vm_lab.py` runs QEMU in a container that
+When QEMU sees that directory under a **different path** (for example `vm-lab` (`vm-lab/src/vm_lab/core.py`) runs QEMU in a container that
 mounts the guest's state directory at `/state`, while you see it as `/srv/vm/state`), say so with `--qemu-dump-dir` (or
 `$VMSCREEN_QEMU_DUMP_DIR`; the option wins over the variable):
 
@@ -115,7 +115,7 @@ Verified from the repository (not by running them here), see the status column:
 | SeaBIOS banner / "Booting from..." / No bootable device (QEMU `-machine pc` default, `std` VGA) | yes (VGA 80x25, 720x400) | architecture: the BIOS sets mode 3; **live check is the opt-in smoke test** |
 | Linux/Debian installer on **serial** (`vmctl` runs `-display none -serial file:serial.log`) | via the **serial** source | `scripts/debian-install-v2/testing/vm/vmctl` |
 | Debian installer / grub graphical on `-vga std`, UEFI (OVMF) GOP screens | **no** | graphical framebuffer |
-| TrueNAS installer console (kernel fb console, started with `scripts/vm-lab/vm_lab.py start --display-device virtio`: OVMF + `virtio-vga`) | **no** | OVMF GOP then the kernel framebuffer console; the pwmcp corpus `truenas-27-vanilla` was captured as PNGs only, which is why it needs OCR |
+| TrueNAS installer console (kernel fb console, started with `vm-lab start --display-device virtio`: OVMF + `virtio-vga`) | **no** | OVMF GOP then the kernel framebuffer console; the pwmcp corpus `truenas-27-vanilla` was captured as PNGs only, which is why it needs OCR |
 | any Linux fbcon / KMS console | **no** | the text lives in kernel memory, not VGA text RAM (reachable only via `/dev/vcsa*`, source 3) |
 
 ## Worked example
@@ -167,12 +167,12 @@ never replaced (`OutputExists`); with `--force` the old files are moved to backu
 that window (should the restore itself fail, the error names the backups). A filesystem without hard links gives an error that
 names `--force` (replacement writing) and changes nothing.
 
-Relationship to the VM tool `scripts/vm-lab/vm_lab.py`: `console record` keeps changed frames on a timer, and `console ctl` /
+Relationship to the VM tool `vm-lab` (`vm-lab/`): `console record` keeps changed frames on a timer, and `console ctl` /
 `console type` queue and send keys, for **graphical** screens where no text exists. vmscreen is the sibling for **text**
 screens: instant exact truth. QMP serves one client, so two clients must not talk to the socket at the same instant; the
-recorder opens one short-lived connection per poll and per queued command (`scripts/vm-lab/docs/DESIGN-GUIDE.md`, "Console QMP
+recorder opens one short-lived connection per poll and per queued command (`vm-lab/docs/DESIGN-GUIDE.md`, "Console QMP
 connections are short-lived"). The US-layout key table exists in both tools
-(`vm_lab_console.py` and `keys.py`); see BACKLOG VMS-BL-03.
+(`vm_lab/console.py` and `keys.py`); see BACKLOG VMS-BL-03.
 
 ## Tests
 

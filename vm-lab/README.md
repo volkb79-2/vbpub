@@ -79,7 +79,8 @@ vm-lab <verb> [options]
 ### Console options
 
 `console record` requires Pillow in the Python environment that runs the VM
-tool. The other console verbs do not.
+tool (`pip install 'vm-lab[record]'`; the core package does not depend on it).
+The other console verbs do not need it.
 
 | Verb | Option | Meaning |
 | --- | --- | --- |

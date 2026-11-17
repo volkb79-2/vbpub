@@ -13,7 +13,7 @@ environments) delivers phase 1 on Debian 13 under UEFI, and find out how much
 has to be built for each.
 
 **Where.** Local QEMU guests without KVM, through the general VM tool planned
-in `scripts/vm-lab/` (design guide section 9). VM files live in
+in `vm-lab/` (design guide section 9). VM files live in
 `scripts/debian-rollback/vm-lab/`, shared base images in `downloads/vm-images/`,
 ISOs in `downloads/iso/`. Disks are raw, reflink copies of a base, on a
 compressed btrfs subvolume, run with `cache=unsafe` (operator decision

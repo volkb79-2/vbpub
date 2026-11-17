@@ -201,6 +201,14 @@ def test_the_project_depends_on_vmscreen_and_not_on_cli_extended():
     assert dependencies == ["vmscreen"]
 
 
+def test_pillow_is_an_optional_record_extra_only():
+    project = tomllib.loads((PROJECT / "pyproject.toml").read_text())["project"]
+    assert project["optional-dependencies"]["record"] == ["Pillow>=11.0"]
+    assert not any("pillow" in dependency.lower() for dependency in project["dependencies"])
+    assert "vm-lab[record]" in (PROJECT / "README.md").read_text()
+    assert "vm-lab[record]" in (PROJECT / "docs" / "CONSUMERS.md").read_text()
+
+
 def test_the_wrapper_is_executable_and_runs_the_source_next_to_it():
     wrapper = PROJECT / "vm-lab"
     assert wrapper.is_file() and os.access(wrapper, os.X_OK)

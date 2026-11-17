@@ -616,7 +616,8 @@ def cmd_console_record(
                 image_chops = importlib.import_module("PIL.ImageChops")
             except ImportError as exc:
                 raise ConsoleError(
-                    "Pillow is required by `console record`; install the Pillow package"
+                    "Pillow is required by `console record`; install the Pillow package "
+                    "(`pip install 'vm-lab[record]'`)"
                 ) from exc
 
         if next_screen is None:

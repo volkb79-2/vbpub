@@ -19,7 +19,7 @@ On `main`:
 | Item | Where | Note |
 |---|---|---|
 | Research, decisions, experiment plans | `scripts/debian-rollback/docs/` | Q4 answered, Q5 partly |
-| General VM tool | `scripts/vm-lab/` | start/stop/resume, UEFI, console keys, reset, recorder, typing, `console text`, `console wait-for-text` |
+| General VM tool | `vm-lab/` | start/stop/resume, UEFI, console keys, reset, recorder, typing, `console text`, `console wait-for-text` |
 | Exact console text library | `libraries/vmscreen/` | has `--qemu-dump-dir` for container guests; not installed anywhere |
 | TrueNAS front of the VM tool | `scripts/truenas/tcg_vm.py` | behaviour unchanged |
 
@@ -244,7 +244,7 @@ the end (operator 2026-11-17).
 | Id | Content | State |
 |---|---|---|
 | RP-01 | `vm-lab.toml` (named after the vm-lab project; was `repo-paths.toml`), write-free resolver and `cowtree path` verb in cowtree, standard docs (AGENTS.md, BTRFS-COW.md, MDT-044, downloads README) | **merged 2026-11-17** (vbpub@27094ecbd; 4 fix rounds, two Sonnet reviews MERGE). Gate: cowtree lane PASS with 100% coverage on the rp-01 head plus a throwaway commit that removed the lane's `resource_observer = "cgprofile"` line (observer lanes cannot run while the host cgprofile environment is being replaced; `RUN_GATE_PROFILE=off` does not waive that preflight); the throwaway commit was dropped before the merge. Re-run the lane normally after the cgprofile cut |
-| RP-02 | Create top-level `vm-lab/` from `scripts/vm-lab/` (git mv, pyproject and wheel, console script `vm-lab`, `vmscreen` as a dependency instead of PATH probing, QEMU image Dockerfile, `cmru.toml`/`assay.toml`/`run-gate.toml`, defaults for network and slice from the environment, state and base paths through the resolver); the TrueNAS front imports the package | open |
+| RP-02 | Create top-level `vm-lab/` from the VM tool's former place under `scripts/` (git mv, pyproject and wheel, console script `vm-lab`, `vmscreen` as a dependency instead of PATH probing, QEMU image Dockerfile, `cmru.toml`/`assay.toml`/`run-gate.toml`, defaults for network and slice from the environment, state and base paths through the resolver); the TrueNAS front imports the package | open |
 | RP-03 | `scripts/truenas` (`vanilla-iso-patcher` DOWNLOADS_DIR, `golden-iso`, `tcg_vm.py` default state dir, docs) and `truenas/tnt` (TNT-59, the `test_hardening.py` pin) on the resolver | open |
 | RP-04 | debian-install-v2 harness (`HOST_DOWNLOADS_DIR`, `vmctl`, its boundary tests) on the resolver | open |
 | RP-05 | netcup consumer docs, pwmcp console-capture, zswap synthetic runner, io-governor doc | open |
@@ -432,7 +432,7 @@ If the lease comes before E1 is finished: E2 needs only DR-03 and DR-04 at
 "installs and boots" level plus DR-50 to DR-52. Do not wait for the rollback
 machinery to measure the filesystems.
 
-Parallelism is limited by files, not by people: packages in `scripts/vm-lab`
+Parallelism is limited by files, not by people: packages in `vm-lab/`
 are serial; installer backends for btrfs and ZFS can run side by side once the
 shared core of DR-03 is merged; one guest of this project at a time.
 

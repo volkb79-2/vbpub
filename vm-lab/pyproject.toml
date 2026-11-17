@@ -18,8 +18,12 @@ dependencies = ["vmscreen"]
 dynamic = ["version"]
 
 # External requirements (not pip dependencies): Docker (the guests run in containers of the QEMU image built by
-# `vm-lab image build`), and, for the OCR engine, the pwmcp OCR sidecar. Pillow is imported by `console record` when present.
+# `vm-lab image build`), and, for the OCR engine, the pwmcp OCR sidecar.
 [project.optional-dependencies]
+# `record`: Pillow is imported lazily by `console record` only (the core wheel stays standard library plus vmscreen).
+# Floor 11.0: the recorder reads PNG size and pixels through Image.open, .size and .tobytes (and ImageChops), a stable
+# API; the mdt-cockpit image installs this extra explicitly instead of relying on a transitive Pillow.
+record = ["Pillow>=11.0"]
 test = ["pytest>=8", "pytest-cov>=6"]
 
 [project.scripts]

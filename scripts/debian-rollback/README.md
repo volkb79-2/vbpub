@@ -45,4 +45,4 @@ project closes the gap and packages the result as an installer and an image.
 (the existing installer) and `scripts/truenas` (whose VM launcher and
 unattended-ISO builder this project reuses). The name is not decided; renaming
 is one `git mv`. The planned general VM tool gets its own home,
-`scripts/vm-lab/`, see the design guide.
+the top-level project `vm-lab/`, see the design guide.

@@ -1169,6 +1169,7 @@ def test_pillow_missing_fails_record_clearly_and_does_not_stop_guest_while_type_
     )
     assert rc == 1
     assert "Pillow is required" in done_reason(tmp_path / "capture")
+    assert "pip install 'vm-lab[record]'" in done_reason(tmp_path / "capture")
     assert stop_calls == []
 
     calls = []

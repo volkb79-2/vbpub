@@ -19,8 +19,10 @@ vm-lab/vm-lab image build --tag my-qemu:1 --context vm-lab/qemu-image   # anothe
 ```
 
 `vmscreen` (screen text) is a dependency of the package and a separate wheel;
-the wrapper does not add it, so it must be installed where `python3` runs. The
-image has no OVMF: pass your host's firmware files to `start`.
+the wrapper does not add it, so it must be installed where `python3` runs.
+`console record` also needs Pillow, which is the optional extra `record`:
+`pip install 'vm-lab[record]'` (the mdt-cockpit image installs the extra
+explicitly). The image has no OVMF: pass your host's firmware files to `start`.
 
 The tool owns no paths. Pass `--state-dir` and `--base-disk` explicitly, taken
 from the repository's path resolver (`vm-lab.toml`) and never hardcoded:
