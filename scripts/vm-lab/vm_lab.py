@@ -73,7 +73,9 @@ RAW_DISK_NAME = "disk.raw"
 QCOW2_OVERLAY_NAME = "disk-overlay.qcow2"
 # A full copy of a large base can take long; the default 30 s runner timeout is for Docker queries.
 COPY_TIMEOUT_SECONDS = 3600
-PROMOTE_NAME_PATTERN = re.compile(r"[A-Za-z0-9_-][A-Za-z0-9._-]*")
+# Recorded for a raw guest as information; a resume does not compare them.
+RAW_BASE_INFORMATIONAL_KEYS = ("base_disk", "base_size")
+PROMOTE_NAME_PATTERN =re.compile(r"[A-Za-z0-9_-][A-Za-z0-9._-]*")
 PROMOTE_HASH_CHUNK_BYTES = 1024 * 1024
 
 
@@ -1228,6 +1230,25 @@ def select_disk_format(profile: VmProfile, base_disk: Path, requested: str | Non
     return "qcow2" if is_qcow2 else "raw"
 
 
+def resumable_raw_without_base(profile: VmProfile, state_dir: Path, requested: str | None) -> bool:
+    """True when a resume may go on although the base file is gone.
+
+    Only a guest whose ``runner.json`` records a raw disk qualifies, and only
+    when the start would itself pick raw (``auto`` or ``raw``; a fixed-size
+    profile without the option means qcow2). Anything else keeps the strict
+    base resolution and its error.
+    """
+    if requested is None:
+        requested = "qcow2" if not profile.sizing_from_cli else "auto"
+    if requested not in ("auto", "raw"):
+        return False
+    try:
+        recorded = json.loads((state_dir / "runner.json").read_text())
+    except (OSError, json.JSONDecodeError):
+        return False
+    return isinstance(recorded, dict) and recorded.get("disk_format") == "raw"
+
+
 def _one_line(text: str) -> str:
     return " ".join(text.split())
 
@@ -1238,45 +1259,63 @@ def clone_disk(source: Path, destination: Path, *, into: Path, allow_full_copy: 
     Tries ``--reflink=always`` first. A failure (typically a different
     filesystem or one without reflinks) is an error that names the cause; only
     with ``allow_full_copy`` does it retry with ``--reflink=auto`` and say that
-    the whole file was copied. A failed attempt never leaves a partial
-    ``destination``. The copy gets mode 0600 (a read-only base would otherwise
-    hand its mode to the writable run disk).
+    the whole file was copied. The copy is written to ``.<name>.partial`` beside
+    ``destination`` (refused if that exists), checked, set to mode 0600 (a
+    read-only base would otherwise hand its mode to the writable run disk) and
+    only then renamed onto ``destination``. Any failure, including
+    KeyboardInterrupt or SIGTERM turned into an exception, removes the
+    temporary file, so ``destination`` is either complete or absent. ``cp`` runs
+    under umask 0077, so the copy is never readable with the base's mode.
     """
     if destination.exists() or destination.is_symlink():
         raise RunnerError(f"refusing to overwrite existing {destination}")
+    temporary = destination.with_name(f".{destination.name}.partial")
+    if temporary.exists() or temporary.is_symlink():
+        raise RunnerError(f"refusing to reuse existing {temporary}; remove the leftover of an earlier copy")
     expected_size = source.stat().st_size
 
     def attempt(reflink: str) -> str | None:
-        argv = ["cp", f"--reflink={reflink}", "--", str(source), str(destination)]
+        argv = ["cp", f"--reflink={reflink}", "--", str(source), str(temporary)]
+        previous_umask = os.umask(0o077)
         try:
             result = docker_run(argv, check=False, timeout=COPY_TIMEOUT_SECONDS)
             problem: str | None = None
             if result.returncode:
                 problem = _one_line(result.stderr or result.stdout) or f"cp exited with status {result.returncode}"
-            elif not destination.is_file() or destination.stat().st_size != expected_size:
-                problem = f"cp reported success but {destination} is not a {expected_size}-byte copy"
+            elif not temporary.is_file() or temporary.stat().st_size != expected_size:
+                problem = f"cp reported success but {temporary} is not a {expected_size}-byte copy"
         except RunnerError as exc:
             problem = _one_line(str(exc))
+        finally:
+            os.umask(previous_umask)
         if problem is not None:
-            destination.unlink(missing_ok=True)
+            temporary.unlink(missing_ok=True)
             return problem
-        os.chmod(destination, 0o600)
+        os.chmod(temporary, 0o600)
         return None
 
-    problem = attempt("always")
-    if problem is None:
+    try:
+        problem = attempt("always")
+        copied_fully = False
+        if problem is not None:
+            if not allow_full_copy:
+                raise RunnerError(
+                    f"cannot reflink {source} into {into}: {problem}; base image and state directory must be on "
+                    'one btrfs filesystem (see AGENTS.md "Directory conventions and VM files"); '
+                    "pass --allow-full-copy to copy the whole file instead"
+                )
+            problem = attempt("auto")
+            if problem is not None:
+                raise RunnerError(f"cannot copy {source} into {into}: {problem}")
+            copied_fully = True
+        os.replace(temporary, destination)
+    except BaseException:
+        temporary.unlink(missing_ok=True)
+        raise
+    if copied_fully:
+        print(f"[disk] full copy of {source} (no reflink possible)", flush=True)
+    else:
         print(f"[disk] reflink clone of {source}", flush=True)
-        return
-    if not allow_full_copy:
-        raise RunnerError(
-            f"cannot reflink {source} into {into}: {problem}; base image and state directory must be on "
-            'one btrfs filesystem (see AGENTS.md "Directory conventions and VM files"); '
-            "pass --allow-full-copy to copy the whole file instead"
-        )
-    problem = attempt("auto")
-    if problem is not None:
-        raise RunnerError(f"cannot copy {source} into {into}: {problem}")
-    print(f"[disk] full copy of {source} (no reflink possible)", flush=True)
 
 
 def runner_manifest(
@@ -1309,7 +1348,8 @@ def runner_manifest(
         raise RunnerError("host ports must name exactly the profile's port forwards")
     if disk_format not in ("qcow2", "raw"):
         raise RunnerError(f"unknown disk format {disk_format!r}")
-    stat = base_disk.stat()
+    # A raw guest's base may be gone on resume (the clone does not need it).
+    stat = base_disk.stat() if disk_format == "qcow2" or base_disk.exists() else None
     manifest: dict[str, Any] = {
         "schema": 1,
         "name": name,
@@ -1326,7 +1366,8 @@ def runner_manifest(
         "guest_memory_mib": profile.guest_memory_mib,
     }
     if disk_format == "raw":
-        manifest["base_size"] = stat.st_size
+        if stat is not None:
+            manifest["base_size"] = stat.st_size
     else:
         manifest["base_identity"] = {
             "device": stat.st_dev,
@@ -1384,6 +1425,11 @@ def check_runner_manifest(
             )
         actual = {**actual, "disk_format": recorded_format}
         expected = {**expected, "disk_format": requested_format}
+        if requested_format == "raw":
+            # The clone is independent of its base: the base may have been moved,
+            # renamed, replaced or deleted since, and the guest does not care.
+            actual = {k: v for k, v in actual.items() if k not in RAW_BASE_INFORMATIONAL_KEYS}
+            expected = {k: v for k, v in expected.items() if k not in RAW_BASE_INFORMATIONAL_KEYS}
     if actual == expected:
         return
 
@@ -1785,14 +1831,22 @@ def _cmd_start(profile: VmProfile, args: argparse.Namespace) -> int:
     if not image:
         raise RunnerError(f"pass --image or set {profile.image_env}; no image fallback is selected")
 
-    base_disk = Path(args.base_disk).resolve(strict=True)
-    if not base_disk.is_file():
-        raise RunnerError(f"base disk is not a regular file: {base_disk}")
-    disk_format = select_disk_format(profile, base_disk, getattr(args, "base_format", None))
-    if disk_format == "raw" and os.path.islink(args.base_disk):
-        raise RunnerError(f"a raw base disk must not be a symlink: {args.base_disk}")
+    requested_base_format = getattr(args, "base_format", None)
+    if args.resume and not os.path.lexists(args.base_disk) and resumable_raw_without_base(
+        profile, Path(args.state_dir), requested_base_format
+    ):
+        # A raw guest's disk is its own clone: its base may be gone on resume.
+        base_disk = Path(os.path.abspath(args.base_disk))
+        disk_format = "raw"
+    else:
+        base_disk = Path(args.base_disk).resolve(strict=True)
+        if not base_disk.is_file():
+            raise RunnerError(f"base disk is not a regular file: {base_disk}")
+        disk_format = select_disk_format(profile, base_disk, requested_base_format)
+        if disk_format == "raw" and os.path.islink(args.base_disk):
+            raise RunnerError(f"a raw base disk must not be a symlink: {args.base_disk}")
     allow_full_copy = bool(getattr(args, "allow_full_copy", False))
-    firmware_code =Path(args.ovmf_code).resolve(strict=True)
+    firmware_code = Path(args.ovmf_code).resolve(strict=True)
     firmware_vars = Path(args.ovmf_vars).resolve(strict=True)
     if not firmware_code.is_file() or not firmware_vars.is_file():
         raise RunnerError("OVMF code and variable template must both be regular files")
@@ -2177,28 +2231,37 @@ def cmd_disk_promote(profile: VmProfile, args: argparse.Namespace) -> int:
                 f"disk promote needs a raw disk; {state_dir} holds a qcow2 overlay ({QCOW2_OVERLAY_NAME})"
             )
         raise RunnerError(f"no raw disk {RAW_DISK_NAME} in {state_dir}; nothing to promote")
-    running = guests_running_on_state_dir(state_dir)
-    if running:
-        raise RunnerError(
-            f"refusing to promote while guest {', '.join(running)} is running on {state_dir}; "
-            "stop it first (a running guest's disk is not a consistent image)"
-        )
-    image = dest_dir / f"{args.name}.raw"
-    digest_file = dest_dir / f"{args.name}.raw.sha256"
-    for target in (image, digest_file):
-        if target.exists() or target.is_symlink():
-            raise RunnerError(f"refusing to overwrite existing {target}")
-    clone_disk(source, image, into=dest_dir, allow_full_copy=bool(getattr(args, "allow_full_copy", False)))
-    try:
-        digest = sha256_of_file(image)
-        with digest_file.open("x") as handle:
-            handle.write(f"{digest}  {image.name}\n")
-        os.chmod(image, 0o444)
-        os.chmod(digest_file, 0o444)
-    except BaseException:
-        digest_file.unlink(missing_ok=True)
-        image.unlink(missing_ok=True)
-        raise
+    # The start admission lock keeps a `start --resume` from booting the disk
+    # between the running-guest check and the end of the copy.
+    with vm_start_admission_lock(profile.program):
+        running = guests_running_on_state_dir(state_dir)
+        if running:
+            raise RunnerError(
+                f"refusing to promote while guest {', '.join(running)} is running on {state_dir}; "
+                "stop it first (a running guest's disk is not a consistent image)"
+            )
+        image = dest_dir / f"{args.name}.raw"
+        digest_file = dest_dir / f"{args.name}.raw.sha256"
+        digest_temporary = dest_dir / f".{args.name}.raw.sha256.partial"
+        for target in (image, digest_file, digest_temporary):
+            if target.exists() or target.is_symlink():
+                raise RunnerError(f"refusing to overwrite existing {target}")
+        # Complete or absent: clone_disk renames its temporary copy onto `image` only when whole.
+        clone_disk(source, image, into=dest_dir, allow_full_copy=bool(getattr(args, "allow_full_copy", False)))
+        created_digest_temporary = False
+        try:
+            digest = sha256_of_file(image)
+            with digest_temporary.open("x") as handle:
+                created_digest_temporary = True
+                handle.write(f"{digest}  {image.name}\n")
+            os.chmod(image, 0o444)
+            os.chmod(digest_temporary, 0o444)
+            os.replace(digest_temporary, digest_file)
+        except BaseException:
+            if created_digest_temporary:
+                digest_temporary.unlink(missing_ok=True)
+            image.unlink(missing_ok=True)
+            raise
     print(f"[promoted] {image} sha256={digest}", flush=True)
     return 0
 

@@ -40,6 +40,7 @@ class FakeHost:
         # "short" is a cp that reports success but leaves a truncated file.
         self.cp_plan: list[tuple[str, bool] | str | None] = [None]
         self.running: dict[str, dict] = {}  # container id -> inspect item
+        self.cp_umasks: list[int] = []  # the process umask at each cp call
 
     def cp_calls(self) -> list[list[str]]:
         return [call for call in self.calls if call[0] == "cp"]
@@ -51,6 +52,9 @@ class FakeHost:
         argv = list(argv)
         self.calls.append(argv)
         if argv[0] == "cp":
+            during = os.umask(0o077)  # read the umask in force while cp runs, then put it back
+            os.umask(during)
+            self.cp_umasks.append(during)
             index = min(len(self.cp_calls()) - 1, len(self.cp_plan) - 1)
             plan = self.cp_plan[index]
             source, destination = Path(argv[-2]), Path(argv[-1])
@@ -61,6 +65,12 @@ class FakeHost:
             if plan == "short":
                 destination.write_bytes(b"short")
                 return SimpleNamespace(returncode=0, stdout="", stderr="")
+            if plan == "interrupt":
+                destination.write_bytes(b"half a copy")
+                raise KeyboardInterrupt
+            if plan == "interrupt-after-success":
+                shutil.copyfile(source, destination)
+                raise KeyboardInterrupt
             stderr, partial = plan
             if partial:
                 destination.write_bytes(b"partial")
@@ -189,7 +199,9 @@ def test_raw_start_clones_with_exact_cp_argv_and_boots_the_clone(rig, host, caps
     base = rig.base("base.raw", RAW_BYTES)
     assert rig.start(base) == 1
     capsys.readouterr()
-    assert host.cp_calls() == [["cp", "--reflink=always", "--", str(base), str(rig.state / "disk.raw")]]
+    # The copy goes to a temporary name and is renamed onto disk.raw only when whole.
+    assert host.cp_calls() == [["cp", "--reflink=always", "--", str(base), str(rig.state / ".disk.raw.partial")]]
+    assert ".disk.raw.partial" not in {path.name for path in rig.state.iterdir()}
     assert (rig.state / "disk.raw").read_bytes() == RAW_BYTES
     # The base is read-only (0444); the run disk must be writable by the guest's user.
     assert (rig.state / "disk.raw").stat().st_mode & 0o777 == 0o600
@@ -291,8 +303,8 @@ def test_allow_full_copy_retries_with_reflink_auto_and_says_so(rig, host, capsys
     assert rig.start(base, "--allow-full-copy") == 1
     out = capsys.readouterr().out
     assert host.cp_calls() == [
-        ["cp", "--reflink=always", "--", str(base), str(rig.state / "disk.raw")],
-        ["cp", "--reflink=auto", "--", str(base), str(rig.state / "disk.raw")],
+        ["cp", "--reflink=always", "--", str(base), str(rig.state / ".disk.raw.partial")],
+        ["cp", "--reflink=auto", "--", str(base), str(rig.state / ".disk.raw.partial")],
     ]
     assert f"[disk] full copy of {base} (no reflink possible)" in out
     assert "reflink clone of" not in out
@@ -486,8 +498,10 @@ def test_raw_script_refuses_to_start_without_its_disk(tmp_path):
 
 
 @pytest.fixture
-def promote_rig(host, tmp_path):
+def promote_rig(host, tmp_path, monkeypatch):
     root = tmp_path.resolve()
+    (root / "lock-dir").mkdir()
+    monkeypatch.setattr(vm_lab, "vm_start_lock_path", lambda: root / "lock-dir" / "admission.lock")
     state = root / "state"
     dest = root / "images"
     state.mkdir()
@@ -517,7 +531,11 @@ def test_promote_copies_hashes_and_makes_both_files_read_only(promote_rig, host,
     image = promote_rig.dest / "debian-13.raw"
     digest_file = promote_rig.dest / "debian-13.raw.sha256"
     expected = hashlib.sha256((promote_rig.state / "disk.raw").read_bytes()).hexdigest()
-    assert host.cp_calls() == [["cp", "--reflink=always", "--", str(promote_rig.state / "disk.raw"), str(image)]]
+    assert host.cp_calls() == [[
+        "cp", "--reflink=always", "--", str(promote_rig.state / "disk.raw"),
+        str(promote_rig.dest / ".debian-13.raw.partial"),
+    ]]
+    assert sorted(path.name for path in promote_rig.dest.iterdir()) == ["debian-13.raw", "debian-13.raw.sha256"]
     assert image.read_bytes() == RAW_BYTES * 50
     assert digest_file.read_text() == f"{expected}  debian-13.raw\n"
     assert image.stat().st_mode & 0o777 == 0o444 and digest_file.stat().st_mode & 0o777 == 0o444
@@ -675,3 +693,129 @@ def test_a_fixed_size_front_documents_its_qcow2_default(capsys):
     with pytest.raises(SystemExit):
         parser.parse_args(["start", "--help"])
     assert "(default: qcow2, without reading the file)" in " ".join(capsys.readouterr().out.split())
+
+
+# --- fix round 1 ---------------------------------------------------------------------------
+
+
+def test_raw_resume_does_not_depend_on_the_base_file(rig, host, capsys):
+    base = rig.base("base.raw", RAW_BYTES)
+    assert rig.start(base) == 1
+    capsys.readouterr()
+
+    def resume(path: Path) -> str:
+        assert rig.start(path, "--resume") == 1
+        return capsys.readouterr().err
+
+    moved = rig.root / "moved.raw"
+    base.rename(moved)
+    moved.chmod(0o644)
+    steps = [
+        ("renamed", lambda: None),
+        ("resized", lambda: moved.write_bytes(RAW_BYTES + b"a refreshed, larger build")),
+        ("deleted", lambda: moved.unlink()),
+    ]
+    for count, (what, change) in enumerate(steps, start=2):
+        change()
+        err = resume(moved)
+        assert "stop after capturing the run argv" in err, (what, err)
+        assert "identity differs" not in err and "No such file" not in err, (what, err)
+        assert len(host.docker_run_calls()) == count
+    assert len(host.cp_calls()) == 1
+    assert not moved.exists()
+
+
+def test_raw_resume_with_the_base_gone_still_refuses_another_disk_format(rig, host, capsys):
+    base = rig.base("base.raw", RAW_BYTES)
+    assert rig.start(base) == 1
+    capsys.readouterr()
+    base.chmod(0o644)
+    base.unlink()
+    # An explicit qcow2 start cannot be satisfied by a missing base: the strict error stays.
+    assert rig.start(base, "--resume", "--base-format", "qcow2") == 1
+    assert "No such file" in capsys.readouterr().err
+    assert len(host.docker_run_calls()) == 1
+
+
+def test_qcow2_resume_is_still_blocked_by_a_changed_base(rig, host, capsys):
+    base = rig.base("base.qcow2", QCOW2_BYTES)
+    assert rig.start(base) == 1
+    capsys.readouterr()
+    rig.base("base.qcow2", QCOW2_BYTES + b"\x00" * 16)  # same magic, different size and mtime
+    assert rig.start(base, "--resume") == 1
+    assert "resume identity differs" in capsys.readouterr().err
+    assert len(host.docker_run_calls()) == 1
+
+
+def test_raw_resume_still_compares_everything_else(rig, host, capsys):
+    base = rig.base("base.raw", RAW_BYTES)
+    assert rig.start(base) == 1
+    capsys.readouterr()
+    argv = rig.argv(base, "--resume")
+    argv[argv.index("--cpus") + 1] = "3"
+    assert vm_lab.main(GENERIC_PROFILE, argv) == 1
+    assert "resume identity differs" in capsys.readouterr().err
+    assert len(host.docker_run_calls()) == 1
+
+
+@pytest.fixture
+def known_umask():
+    previous = os.umask(0o022)
+    try:
+        yield 0o022
+    finally:
+        os.umask(previous)
+
+
+def test_cp_runs_under_umask_0077_and_the_umask_is_restored(rig, host, capsys, known_umask):
+    base = rig.base("base.raw", RAW_BYTES)
+    rig.start(base)
+    capsys.readouterr()
+    assert host.cp_umasks == [0o077]
+    assert os.umask(known_umask) == known_umask
+    assert (rig.state / "disk.raw").stat().st_mode & 0o777 == 0o600
+
+
+@pytest.mark.parametrize("plan", ["interrupt", "interrupt-after-success"])
+def test_an_interrupted_start_clone_leaves_nothing_and_restores_the_umask(rig, host, known_umask, plan):
+    base = rig.base("base.raw", RAW_BYTES)
+    host.cp_plan = [plan]
+    with pytest.raises(KeyboardInterrupt):
+        rig.start(base)
+    assert list(rig.state.iterdir()) == []
+    assert host.docker_run_calls() == []
+    assert os.umask(known_umask) == known_umask
+    # The directory is still a first-start directory: a retry clones again.
+    host.cp_plan = [None]
+    assert rig.start(base) == 1
+    assert (rig.state / "disk.raw").read_bytes() == RAW_BYTES
+
+
+@pytest.mark.parametrize("plan", ["interrupt", "interrupt-after-success"])
+def test_an_interrupted_promote_leaves_no_image_digest_or_temporary_file(promote_rig, host, known_umask, plan):
+    host.cp_plan = [plan]
+    with pytest.raises(KeyboardInterrupt):
+        promote(promote_rig)
+    assert list(promote_rig.dest.iterdir()) == []
+    assert os.umask(known_umask) == known_umask
+    # The admission lock was released: the retry works.
+    host.cp_plan = [None]
+    assert promote(promote_rig) == 0
+    assert sorted(p.name for p in promote_rig.dest.iterdir()) == ["debian-13.raw", "debian-13.raw.sha256"]
+
+
+def test_promote_takes_the_start_admission_lock(promote_rig, host, capsys):
+    with vm_lab.vm_start_admission_lock("vm_lab.py"):
+        assert promote(promote_rig) == 1
+    assert "another vm_lab.py start is in progress" in capsys.readouterr().err
+    assert host.cp_calls() == [] and list(promote_rig.dest.iterdir()) == []
+    assert promote(promote_rig) == 0
+
+
+def test_promote_publishes_the_digest_by_rename_and_keeps_a_foreign_leftover(promote_rig, host, capsys):
+    leftover = promote_rig.dest / ".debian-13.raw.partial"
+    leftover.write_bytes(b"someone else's copy")
+    assert promote(promote_rig) == 1
+    assert "refusing to overwrite existing" in capsys.readouterr().err
+    assert leftover.read_bytes() == b"someone else's copy"
+    assert host.cp_calls() == []
