@@ -1191,9 +1191,10 @@ def test_default_state_dir_refuses_one_line_when_vm_lab_toml_is_missing(monkeypa
 def test_state_dir_help_names_the_vm_lab_folder_not_artifacts(verb, capsys):
     with pytest.raises(SystemExit):
         tcg_vm.build_parser().parse_args([verb, "--help"])
-    text = " ".join(capsys.readouterr().out.split())
+    # argparse may wrap the help at a hyphen of the file name, so compare without any whitespace
+    text = "".join(capsys.readouterr().out.split())
     assert "artifacts/vm-lab" not in text
-    assert f"vm-lab/ folder ({tcg_vm.repo_paths_access.CONFIG_NAME})" in text
+    assert f"vm-lab/folder({tcg_vm.repo_paths_access.CONFIG_NAME})" in text
 
 
 @pytest.mark.parametrize("name", ["", "../escape", "a/b", ".hidden", "x y"])
