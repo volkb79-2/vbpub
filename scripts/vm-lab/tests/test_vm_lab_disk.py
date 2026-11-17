@@ -812,10 +812,10 @@ def test_promote_takes_the_start_admission_lock(promote_rig, host, capsys):
     assert promote(promote_rig) == 0
 
 
-def test_promote_publishes_the_digest_by_rename_and_keeps_a_foreign_leftover(promote_rig, host, capsys):
+def test_promote_refuses_and_keeps_a_leftover_temporary_file(promote_rig, host, capsys):
     leftover = promote_rig.dest / ".debian-13.raw.partial"
     leftover.write_bytes(b"someone else's copy")
     assert promote(promote_rig) == 1
-    assert "refusing to overwrite existing" in capsys.readouterr().err
+    assert "refusing to reuse existing" in capsys.readouterr().err
     assert leftover.read_bytes() == b"someone else's copy"
     assert host.cp_calls() == []
