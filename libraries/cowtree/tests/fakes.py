@@ -6,7 +6,7 @@ import shutil
 from typing import ClassVar
 
 from cowtree.backends import LinuxOps
-from cowtree.repo_paths import Btrfs
+from cowtree.repo_paths import CONFIG_NAME, Btrfs
 
 REPO_PATHS_TEXT = """\
 schema = 1
@@ -41,10 +41,10 @@ repo = "{project}/local-lab"
 
 def write_repo(tmp_path, text=REPO_PATHS_TEXT, name="myrepo"):
     """A checkout or worktree directory (its directory name is irrelevant to the resolver) holding a
-    vm-lab.toml; returns its path."""
+    cowtree.toml (CONFIG_NAME); returns its path."""
     root = tmp_path / name
     root.mkdir()
-    (root / "vm-lab.toml").write_text(text, encoding="utf-8")
+    (root / CONFIG_NAME).write_text(text, encoding="utf-8")
     return root
 
 

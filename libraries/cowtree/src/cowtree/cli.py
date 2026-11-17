@@ -76,13 +76,13 @@ def _parser() -> argparse.ArgumentParser:
     probe_parser.add_argument("--copy-dir")
     probe_parser.add_argument("--json", action="store_true")
     path_parser = commands.add_parser(
-        "path", help="print where a named shared path of the repository lives (vm-lab.toml)",
+        "path", help="print where a named shared path of the repository lives (cowtree.toml)",
     )
-    path_parser.add_argument("name", help="a path name defined in vm-lab.toml")
+    path_parser.add_argument("name", help="a path name defined in cowtree.toml")
     path_parser.add_argument("--project", metavar="DIR", help="project directory relative to the repo root, for per-project paths")
     path_parser.add_argument(
         "--repo-root", metavar="DIR",
-        help="the directory holding vm-lab.toml (default: searched upward from the current directory)",
+        help="the directory holding cowtree.toml (default: searched upward from the current directory)",
     )
     path_parser.add_argument("--provision", action="store_true", help="create the CoW subvolume first (idempotent)")
     path_parser.add_argument("--json", action="store_true")
