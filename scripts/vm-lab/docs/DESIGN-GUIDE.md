@@ -113,8 +113,10 @@ it with Pillow as RGB, and saves a kept frame in `DIR/frames/`.
 The hidden name cannot be requested by `console screendump`, whose filename
 rules require an ordinary visible name. An already existing temporary file is
 refused rather than overwritten. Each poll creates the file itself with
-`O_EXCL` (mode 0600; QEMU runs as the same user and overwrites it in place) and
-remembers its device and inode. The file is removed after every read and in the
+`O_EXCL` (mode 0600; QEMU runs as the same user, so the recorder must too, and
+overwrites it in place) and remembers its device and inode. If QEMU replaced the
+file by a rename, a regular file of the recorder's own uid at the name is adopted
+after the successful screendump; anything else stays foreign. The file is removed after every read and in the
 recorder's final cleanup, including error exits, but only while the path still
 has that identity: a file another recorder or process put at the name is never
 deleted, and at a poll it makes that poll a skipped one. Pillow is imported
@@ -209,10 +211,14 @@ only on a first start; `--resume` reuses `disk.raw`. The copy is written to
 renamed onto its final name only after `cp` succeeded and the size matches, and
 the temporary file is removed on any failure that raises an exception,
 including Ctrl-C, so the final name is either complete or absent and never
-exists with the base's mode. SIGTERM is not turned into an exception: a start or
-promote killed by it leaves the hidden `.<name>.partial` behind, a retry refuses
-it, and the operator removes it by hand (the refusal says so). Handling SIGTERM
-in the copy was rejected as machinery for a rare case.
+exists with the base's mode. `disk promote` turns SIGTERM and SIGHUP into an
+exception for the length of the command (first signal only; later ones are
+ignored during cleanup; handlers restored afterwards), so a killed promote
+removes `<name>.raw`, the digest and both partials like Ctrl-C does. `start` does
+not: a start killed by SIGTERM, and any command killed by SIGKILL, leaves the
+hidden `.<name>.partial` behind, a retry refuses it, and the operator removes it
+by hand (the refusal says so). Wrapping `start` was rejected as machinery for a
+rare case; it runs the same copy but its state directory is still empty for a retry.
 A full copy of a large base holds the start admission lock for its whole
 duration (up to the one-hour copy timeout), so another `start` is refused as
 "in progress" meanwhile; a reflink is instant and does not.

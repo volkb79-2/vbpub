@@ -136,13 +136,19 @@ admission lock for the whole copy and for hashing the copied file (a read of the
 whole image), so a `start` on any guest is refused as "in progress" until it
 finishes.
 
-Troubleshooting: if a `start` or a `disk promote` was killed (for example by
-SIGTERM, which is not turned into an error that cleans up), it can leave the
-hidden copy `.disk.raw.partial` in the state directory, or `.<name>.raw.partial`
-in the destination folder. A retry refuses to reuse it
-(`refusing to reuse existing ...; remove the leftover of an earlier copy`):
-remove that hidden `.<name>.partial` file by hand and run the command again.
-Ctrl-C (KeyboardInterrupt) removes it itself.
+A `disk promote` interrupted by Ctrl-C, SIGTERM or SIGHUP removes everything it
+made (`<name>.raw`, `<name>.raw.sha256`, the hidden partial copy and the partial
+digest) and exits 1 with `interrupted by SIGTERM; ...`; a second signal during
+that cleanup is ignored.
+
+Troubleshooting: a `start` killed by SIGTERM, or any command killed by SIGKILL
+(or a host crash), can leave the hidden copy `.disk.raw.partial` in the state
+directory. For a killed `disk promote` delete in the destination folder, by
+hand: `<name>.raw`, `<name>.raw.sha256`, `.<name>.raw.partial` and
+`.<name>.raw.sha256.partial` (whichever exist). A retry refuses to reuse a
+leftover (`refusing to reuse existing ...; remove the leftover of an earlier
+copy`): remove that hidden `.<name>.partial` file by hand and run the command
+again. Ctrl-C during a `start` removes its partial copy itself.
 
 ## Record a console session
 
@@ -210,7 +216,11 @@ recorder exits 0. A signal that was already ignored when the recorder started
 stays ignored, so a recorder under `nohup` survives the end of its shell. The
 handlers stay in place until the guest stop has finished and `DONE` is written,
 and from the first signal on every further SIGTERM or SIGHUP is ignored: a
-second one cannot abort the guest stop. Only the recorder's own temporary
+second one cannot abort the guest stop (so a hung guest stop cannot be
+interrupted by a second SIGTERM either: use SIGKILL). Run the recorder as the
+same user that started the guest: the screendump file is created mode 0600 and
+the QEMU container runs as that uid, so a different uid makes every screendump
+fail and ends the recording after 10 skipped polls. Only the recorder's own temporary
 screendump file is removed (a file that another process put at that name is
 never deleted). If the guest stop itself fails, stderr gets
 `vm-lab: stop-guest-on-exit failed: <message>`; `DONE` keeps the original reason
