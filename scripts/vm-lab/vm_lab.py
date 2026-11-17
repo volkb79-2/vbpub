@@ -32,6 +32,7 @@ import re
 import selectors
 import shlex
 import shutil
+import signal
 import socket
 import stat
 import subprocess
@@ -1265,9 +1266,10 @@ def clone_disk(source: Path, destination: Path, *, into: Path, allow_full_copy: 
     only then renamed onto ``destination``. Any failure that raises an
     exception, including KeyboardInterrupt, removes the temporary file, so
     ``destination`` is either complete or absent. SIGTERM is not turned into an
-    exception here: a start or promote killed by it leaves the hidden
-    ``.<name>.partial`` behind, and a retry refuses it until it is removed by
-    hand. ``cp`` runs under umask 0077, so the copy is never readable with the
+    exception here: ``disk promote`` converts it for its own run
+    (``signals_as_interrupt``), but a ``start`` killed by SIGTERM (or any
+    command killed by SIGKILL) leaves the hidden ``.<name>.partial`` behind,
+    and a retry refuses it until it is removed by hand. ``cp`` runs under umask 0077, so the copy is never readable with the
     base's mode.
     """
     if destination.exists() or destination.is_symlink():
@@ -2234,6 +2236,58 @@ def cmd_disk_promote(profile: VmProfile, args: argparse.Namespace) -> int:
                 f"disk promote needs a raw disk; {state_dir} holds a qcow2 overlay ({QCOW2_OVERLAY_NAME})"
             )
         raise RunnerError(f"no raw disk {RAW_DISK_NAME} in {state_dir}; nothing to promote")
+    try:
+        # SIGTERM and SIGHUP become an exception for the whole command, so the cleanup below
+        # (and clone_disk's) runs for a killed promote exactly as for Ctrl-C.
+        with signals_as_interrupt():
+            digest, image = _promote_locked(profile, args, state_dir, dest_dir, source)
+    except CommandSignal as exc:
+        raise RunnerError(
+            f"interrupted by {exc}; the partial copy and digest files were removed"
+        ) from None
+    print(f"[promoted] {image} sha256={digest}", flush=True)
+    return 0
+
+
+class CommandSignal(BaseException):
+    """SIGTERM or SIGHUP turned into an exception for the duration of one command."""
+
+
+@contextlib.contextmanager
+def signals_as_interrupt():
+    """Raise ``CommandSignal`` for the first SIGTERM/SIGHUP; ignore later ones; restore the handlers.
+
+    A signal that was already ignored stays ignored (``nohup``). Only works in the main thread.
+    """
+    delivered = False
+
+    def handler(signum: int, _frame) -> None:
+        nonlocal delivered
+        if delivered:
+            return  # cleanup is running: a second signal must not abort it
+        delivered = True
+        raise CommandSignal(signal.Signals(signum).name)
+
+    previous: dict[int, Any] = {}
+    for signum in (signal.SIGTERM, signal.SIGHUP):
+        old = signal.getsignal(signum)
+        if old is signal.SIG_IGN:
+            continue
+        previous[signum] = old
+        signal.signal(signum, handler)
+    try:
+        yield
+    finally:
+        # Ignore anything that arrives while the handlers are being put back.
+        delivered = True
+        for signum, old in previous.items():
+            signal.signal(signum, signal.SIG_DFL if old is None else old)
+
+
+def _promote_locked(
+    profile: VmProfile, args: argparse.Namespace, state_dir: Path, dest_dir: Path, source: Path
+) -> tuple[str, Path]:
+    """The promote steps under the start admission lock; returns the digest and the image path."""
     # The start admission lock keeps a `start --resume` from booting the disk
     # between the running-guest check and the end of the copy.
     with vm_start_admission_lock(profile.program):
@@ -2249,10 +2303,11 @@ def cmd_disk_promote(profile: VmProfile, args: argparse.Namespace) -> int:
         for target in (image, digest_file, digest_temporary):
             if target.exists() or target.is_symlink():
                 raise RunnerError(f"refusing to overwrite existing {target}")
-        # Complete or absent: clone_disk renames its temporary copy onto `image` only when whole.
-        clone_disk(source, image, into=dest_dir, allow_full_copy=bool(getattr(args, "allow_full_copy", False)))
         created_digest_temporary = False
+        digest_published = False
         try:
+            # Complete or absent: clone_disk renames its temporary copy onto `image` only when whole.
+            clone_disk(source, image, into=dest_dir, allow_full_copy=bool(getattr(args, "allow_full_copy", False)))
             digest = sha256_of_file(image)
             with digest_temporary.open("x") as handle:
                 created_digest_temporary = True
@@ -2260,13 +2315,15 @@ def cmd_disk_promote(profile: VmProfile, args: argparse.Namespace) -> int:
             os.chmod(image, 0o444)
             os.chmod(digest_temporary, 0o444)
             os.replace(digest_temporary, digest_file)
+            digest_published = True
         except BaseException:
             if created_digest_temporary:
                 digest_temporary.unlink(missing_ok=True)
+            if digest_published:
+                digest_file.unlink(missing_ok=True)
             image.unlink(missing_ok=True)
             raise
-    print(f"[promoted] {image} sha256={digest}", flush=True)
-    return 0
+    return digest, image
 
 
 def build_parser(

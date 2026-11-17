@@ -13,6 +13,7 @@ import hashlib
 import json
 import os
 import shutil
+import signal
 import subprocess
 from pathlib import Path
 from types import SimpleNamespace
@@ -690,6 +691,38 @@ def test_an_interrupt_while_promote_hashes_leaves_no_image_digest_or_partial(pro
     assert list(promote_rig.dest.iterdir()) == []  # no N.raw, no .sha256, no hidden partial
     # The guest's own disk is untouched.
     assert (promote_rig.state / "disk.raw").read_bytes() == RAW_BYTES * 50
+
+
+@pytest.mark.parametrize("signum", [signal.SIGTERM, signal.SIGHUP])
+@pytest.mark.parametrize("where", ["hashing", "digest-written"])
+def test_a_signal_during_promote_removes_the_copy_and_every_partial_file(
+    promote_rig, host, monkeypatch, capsys, signum, where
+):
+    before = {n: signal.getsignal(n) for n in (signal.SIGTERM, signal.SIGHUP)}
+    if before[signum] is signal.SIG_IGN:
+        pytest.skip("this signal is ignored by the test process (nohup); promote leaves it ignored")
+    real_hash = vm_lab.sha256_of_file
+    real_replace = os.replace
+
+    def killed_hash(path):
+        signal.raise_signal(signum)
+        return real_hash(path)  # not reached
+
+    def killed_after_publish(src, dst):
+        real_replace(src, dst)
+        if str(dst).endswith(".sha256"):  # the digest file now exists, the command is not finished
+            signal.raise_signal(signum)
+
+    if where == "hashing":
+        monkeypatch.setattr(vm_lab, "sha256_of_file", killed_hash)
+    else:
+        monkeypatch.setattr(vm_lab.os, "replace", killed_after_publish)
+    assert promote(promote_rig) == 1
+    assert f"interrupted by {signal.Signals(signum).name}" in capsys.readouterr().err
+    # No N.raw, no N.raw.sha256, no hidden .partial or digest partial.
+    assert list(promote_rig.dest.iterdir()) == []
+    assert (promote_rig.state / "disk.raw").read_bytes() == RAW_BYTES * 50
+    assert {n: signal.getsignal(n) for n in before} == before
 
 
 def test_promote_removes_both_files_when_the_digest_cannot_be_written(promote_rig, host, monkeypatch, capsys):
