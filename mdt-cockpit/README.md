@@ -181,7 +181,7 @@ and `isort`, so neither is installed.
 > repo's AI instruction files.
 
 Debian packages come from [`apt/packages.list`](apt/packages.list); first-party wheels
-(`cli-extended`, `ciu`, `cmru`, `topos`, `nyxloom`, `run-gate`, and `cgprofile`, the `cgprofile` and `cgprofilectl` clients without the `report` extra) are staged from their GitHub releases into
+(`cli-extended`, `ciu`, `cmru`, `topos`, `nyxloom`, `run-gate`, `cgprofile`, and `augeaswrap`, the `cgprofile` and `cgprofilectl` clients without the `report` extra; `augeaswrap` is `cgprofile`'s endpoint-record dependency) are staged from their GitHub releases into
 [`pip/`](pip/). Their runtime dependencies are deliberately installed in the primary
 toolkit before the wheel layer, because that layer uses `pip --no-index`; the
 `rich>=15.0.0` and `pygments>=2.21.0` floors in `requirements/toolkit.txt` are part of
@@ -259,7 +259,7 @@ third-party tools get a vetting buffer, first-party ones do not.
   held to the same window by the `cmru versions` record and `aider-main-pin.toml` (below); apt
   packages (`tmux`, `broot`, ...) follow Debian's own release process.
 - *First-party, no age window:* the wheels in [`pip/wheels.list`](pip/wheels.list) (`cli-extended`,
-  `ciu`, `cmru`, `topos`, `nyxloom`, `run-gate`, `cgprofile`) always install their newest published release (the highest-semver
+  `ciu`, `cmru`, `topos`, `nyxloom`, `run-gate`, `cgprofile`, `augeaswrap`) always install their newest published release (the highest-semver
   `<name>-v*` GitHub release, resolved by `scripts/resolve-devcontainers-release.py`), and the PWMCP
   bundle installs the release named by `pwmcp/pwmcp.contract.json` at the source commit. The split is
   pinned by `scripts/test_oci_tool_staging.py`.
@@ -486,7 +486,7 @@ Sections, and why one component can appear in two of them without duplication:
 | Section | View |
 |---|---|
 | `Base` | Debian + Python version, `OCI_VERSION`, computed tag pattern, devcontainers release (`v0.4.x`) and image version (`3.0.x`) |
-| `First-Party Wheels` | image-owned releases: `cli-extended`, `ciu`, `cmru`, `topos`, `nyxloom`, `run-gate`, `cgprofile` |
+| `First-Party Wheels` | image-owned releases: `cli-extended`, `ciu`, `cmru`, `topos`, `nyxloom`, `run-gate`, `cgprofile`, `augeaswrap` |
 | `AI CLI Tools` | agent CLI inventory: `aider`, `reasonix`, `openclaw`, `opencode`, `copilot`, `codex`, `claude`, `antigravity`, `claudelink`, `pi` |
 | `Custom Tooling` | operational view — release-managed executables and their runtime `--version` output |
 | `Python packages` | venv inventory |

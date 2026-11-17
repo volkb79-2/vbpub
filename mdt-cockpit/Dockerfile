@@ -856,8 +856,8 @@ RUN set -euo pipefail; \
     fi
 # ── First-party wheels (pip/wheels.list) ─────────────────────────────────────
 # Resolved and downloaded pre-build by scripts/resolve-devcontainers-release.py.
-# pip/wheels/ holds the .whl files (cli-extended, ciu, cmru, topos, nyxloom, run-gate and cgprofile
-# from their GitHub Releases; run-gate has no dependencies, cgprofile only cli-extended;
+# pip/wheels/ holds the .whl files (cli-extended, ciu, cmru, topos, nyxloom, run-gate, cgprofile and augeaswrap
+# from their GitHub Releases; run-gate has no dependencies, cgprofile needs cli-extended and augeaswrap;
 # its `report` extra is not installed).
 # Installed with --no-index --find-links (no build-time network): each wheel's
 # runtime deps must already be in the venv. requirements/toolkit.txt is the
@@ -1019,6 +1019,7 @@ RUN --mount=type=bind,from=mdt-build-inputs,source=/inputs,target=/tmp/mdt-input
     nyxloom_version_output="$(dist_version nyxloom)"; \
     run_gate_version_output="$(dist_version run-gate)"; \
     cgprofile_version_output="$(dist_version cgprofile)"; \
+    augeaswrap_version_output="$(dist_version augeaswrap)"; \
     cli_extended_version_output="$(dist_version cli-extended)"; \
     aider_version_output="$(dist_version aider-chat)"; \
     custom_tooling_file="$(mktemp /tmp/custom-tooling.XXXXXX)"; \
@@ -1041,6 +1042,7 @@ RUN --mount=type=bind,from=mdt-build-inputs,source=/inputs,target=/tmp/mdt-input
         echo "nyxloom=${nyxloom_version_output:-not-installed}"; \
         echo "run-gate=${run_gate_version_output:-not-installed}"; \
         echo "cgprofile=${cgprofile_version_output:-not-installed}"; \
+        echo "augeaswrap=${augeaswrap_version_output:-not-installed}"; \
         echo "cli-extended=${cli_extended_version_output:-not-installed}"; \
         if [ -n "${aider_version_output}" ]; then \
             echo "aider=${aider_version_output}"; \

@@ -5,6 +5,7 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 ## [Unreleased]
 
 ### Changed
+- GitHub Copilot CLI is kept out of the image until further notice (`INSTALL_COPILOT=false` in `cmru.toml [env]` and the bake default); its version record stays resolved.
 - The release environment variable that skips the newer-devcontainer-base stop is renamed `DEVCONTAINERS_IGNORE_NEW_RELEASES` → `MDT_COCKPIT_IGNORE_NEW_RELEASES` (it is read only by mdt-cockpit's build, so it carries the project prefix). The stop message and the build-push hint now name the environment form for `cmru release`, which has no `--ignore-new-releases` flag. No alias for the old name.
 - The IO governor recorder `mdt-cockpit/iogov` moved out into its own independent project `iogovmon/` (host-tuning WP-IGM-a, pure move and rename: package/distribution `iogovmon`, console scripts `iogovmond` and `iogovmonctl`, units `iogovmond-*` and `iogovmond.service` in `iogovmon.slice`, own cmru release config). mdt-cockpit imports nothing from it; its tests left the `smoke` lane (they run in `iogovmon`'s own `r0-r1` lane), the design note `docs/IO-GOVERNOR-V1-DESIGN.md` is now `iogovmon/docs/DESIGN-GUIDE.md`, backlog items MDT-028..MDT-031 are IGM-04..IGM-07 in `iogovmon/BACKLOG.md`, and `iogov/README.md` is a pointer. Nothing in the repository installed it on a host; only hosts where an operator ran the old installer by hand need the migration steps in `iogovmon/README.md`.
 
@@ -15,6 +16,7 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 - Upgrade note (cutover): after removing the retired files and running `install.sh`, log in again and restart long-lived sessions (the VS Code Remote-SSH server, systemd units and services, which never read `/etc/environment`): builds from processes that started earlier still carry the old `BUILDX_BUILDER`/`BUILDKIT_HOST` without `MDT_BUILDKIT_SOCKET` and exit 2 with "MDT_BUILDKIT_SOCKET is unset". The refusal message gives the safe removal order, `systemctl daemon-reload`, and the caveat that removing the tmpfiles rules stops `/run/cgprofile` and `/run/topos` being recreated at boot until `cgprofiled install` / `toposd install` run, so do not reboot in between.
 
 ### Fixed
+- The image build failed at the first-party wheel install (`No matching distribution found for augeaswrap>=0.1.0 (from cgprofile)`): cgprofile 3.0.0 depends on augeaswrap and the install is `--no-index`. `augeaswrap` is now a first-party wheel (`pip/wheels.list`, `FIRST_PARTY_WHEEL_NAMES`, `FIRST_PARTY_NO_AGE_WINDOW`, the Dockerfile manifest line, README, `docs/CONSUMERS.md`) and a declared build dependency of mdt-cockpit in `cmru.orchestration.toml`.
 - Codex installs are now verified in place instead of trusted to have worked. `scripts/install_ai_cli_tools.py`
   gains `verify_codex_install()`: after `npm install -g @openai/codex@<staged>`, it derives the platform package
   from the `os`/`cpu` values the packages themselves declare (`@openai/codex/node_modules/@openai/codex-<os>-<cpu>`),

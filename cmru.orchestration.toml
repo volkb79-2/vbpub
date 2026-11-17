@@ -226,7 +226,7 @@ depends_on = ["cli-extended"]
 [orchestration.project.mdt-cockpit]
 config = "mdt-cockpit/cmru.toml"
 # The fork uses the same first-party CIU and CLI tooling in its image.
-depends_on = ["cli-extended", "ciu", "cmru", "pwmcp", "topos", "nyxloom", "run-gate-project", "cgprofile"]
+depends_on = ["cli-extended", "ciu", "cmru", "pwmcp", "topos", "nyxloom", "run-gate-project", "cgprofile", "augeaswrap"]
 
 # Leaf image project (python:3.14-trixie digest + docker client + minisign + shellcheck): no
 # first-party dependency. cmru is its release tooling, an installed tool and not a build edge
