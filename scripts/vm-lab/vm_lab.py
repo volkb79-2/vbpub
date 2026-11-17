@@ -2314,8 +2314,10 @@ def _promote_locked(
                 handle.write(f"{digest}  {image.name}\n")
             os.chmod(image, 0o444)
             os.chmod(digest_temporary, 0o444)
-            os.replace(digest_temporary, digest_file)
+            # From here the digest file may exist (the checks above proved it did not), also
+            # when a signal arrives between the rename and the next statement.
             digest_published = True
+            os.replace(digest_temporary, digest_file)
         except BaseException:
             if created_digest_temporary:
                 digest_temporary.unlink(missing_ok=True)
