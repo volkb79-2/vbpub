@@ -71,11 +71,21 @@ OP3, then VML-04; DR-01 needs no guest and can start at once.
    (merged 2026-11-17). Left open: the key table exists in the VM tool and in
    vmscreen (VMS-BL-03, rule "same names" documented, no mechanical check); a
    `start` killed by SIGTERM or SIGKILL leaves a hidden `.<name>.partial` to
-   remove by hand. Not verified without a real guest and btrfs: real
-   `cp --reflink` stderr text, a GNU `cp` in the cockpit image (busybox lacks
-   `--reflink`), QEMU booting the raw clone, `disk promote` on a real stopped
-   guest, QEMU 11's `screendump` writing into the pre-created file in place
-   (the recorder adopts a replaced file, untested live).
+   remove by hand.
+
+   **First real guest, 2026-11-17** (Debian 13 genericcloud, raw base in the CoW
+   `downloads/vm-images`, state in the CoW `scripts/debian-rollback/vm-lab/`,
+   QEMU image `debian-install-vm:cb76f8b5350b`, network `vbpub-cmqemn-network`,
+   1 GiB, 2 CPUs, TCG): the raw reflink clone through `start` worked on real
+   btrfs (GNU `cp` in this container); the guest reached the login prompt on
+   ttyS0 in about 45 s; `disk promote` refused a running guest, then promoted the
+   stopped guest's disk with all extents shared with the source; graceful
+   `stop` worked. `console text` found no exact-text source (UEFI shows a
+   graphical framebuffer, not the VGA text buffer) and the OCR engine failed
+   (sidecar off): the serial-log reader (VML-04) is the way to read the screen,
+   as planned. Still not verified live: QEMU 11's `screendump` writing into the
+   recorder's pre-created file in place, the recorder itself, `console
+   wait-for-text`, `console sendkey`.
 
    The TrueNAS `unit` and `unit-boot-pool-patch` lanes are red on `main` for
    reasons outside this work (TN-15, TN-16 in the TrueNAS backlog).
