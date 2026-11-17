@@ -974,7 +974,7 @@ the test stacks.
 | `mdt_admission.py` | `/usr/local/sbin/mdt_admission.py` | derives the run-gate gates admission cap from host capacity and publishes it (`install.sh`, `install.sh --admission-only`); read by `mdt-host-check.sh` (MDT-077) |
 | `scripts/check.sh` | `/usr/local/sbin/mdt-host-check.sh` | health check, non-zero exit on failure |
 | `etc/modules-load.d/bfq.conf`, `etc/udev/rules.d/60-bfq-scheduler.rules` | `/etc/…` (`mdt-` prefixed) | the LEGACY BFQ path, kept only while `IO_ROOT_SCHEDULER` is not set; with it set, `60-mdt-io-scheduler.rules` replaces it and the module file is installed only for `bfq` |
-| (merged, not copied) | `/etc/docker/daemon.json` | `cgroup-parent` (D-G7 default) + `live-restore`/log rotation — this is the file's ONE owner now; every key is merged in, nothing else in the file is touched |
+| (merged, not copied) | `/etc/docker/daemon.json` | `cgroup-parent` (D-G7 default) only; every key is merged in, nothing else in the file is touched. `live-restore`, log options, address pools and the embedded builder's `builder.gc` cache cap belong to `debian-install-v2` (config keys `docker_builder_gc_max_used_gb`/`_reserved_gb`) |
 
 ## Persistence model — why units AND a service/timer
 
@@ -1084,6 +1084,19 @@ remains the backstop for their restart windows.
 ordinary `docker run`/`docker create` containers, but it did not reliably govern
 BuildKit's embedded or container-driver worker execution under this host's
 systemd cgroup driver. Those paths are not the normal MDT backend anymore.
+
+**Re-measured 2026-11-17 (Docker 29.9.2, `daemon.json` `cgroup-parent: dev-background.slice`).**
+A `RUN` step of a build on the embedded `default` builder ran in the literal cgroup directory
+`/system.slice/dev-background.slice:docker:<id>`, not in a scope under
+`/dev.slice/dev-background.slice`: `cpu.weight=100`, `io.weight=default 100`, `memory.max=max`
+(the slice itself has weight 20, IOWeight 10, MemoryMax 10G). Ordinary containers are placed
+correctly. This is a Docker behaviour (BuildKit's executor builds the cgroup path itself), not a
+host-setup defect: nothing in `dev-background.slice` limits embedded-builder builds, and
+`mdt-buildkit-guard` cannot see them because they live inside `dockerd`, not in a
+`buildx_buildkit_*` container. Enforcement is therefore by routing only: every MDT caller
+exports `BUILDX_BUILDER=mdt-managed`; an explicit `--builder default` bypasses governance. Do not
+use it for real builds. Its cache is capped by `builder.gc` in `daemon.json` (owned by `debian-install-v2`),
+which bounds disk but not CPU or IO.
 
 **Use `mdt-buildkitd` for MDT builds.** It is a rootless host-managed
 `buildkitd` service created with `--cgroup-parent=dev-buildkitd.slice`, and the

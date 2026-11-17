@@ -419,6 +419,37 @@ other generated scratch out of the context. Use an explicit no-cache build only
 when validating freshness semantics: it materially increases registry, package
 mirror, CPU, and disk load.
 
+### Docker's embedded builder (`default`) is a different, ungoverned store
+
+The embedded builder keeps no separate cache store: its cache records are overlay2 layer directories
+under `/var/lib/docker/overlay2` on the root ext4 and are the same layers the images use (`docker
+buildx du --builder default` reports them as `Shared`, with a near-zero `Private`). Consequences:
+
+- Pruning its cache frees almost nothing until the images that share those layers are removed; the
+  space lever is `docker image prune`, not `docker builder prune`.
+- Its `RUN` steps run in `/system.slice/dev-background.slice:docker:<id>` with default weights and no
+  memory limit, outside every dev-tier slice (measured 2026-11-17; see host-setup README "Re-measured").
+- Hence `mdt-managed` costs a second store (see [BUILDKITD-FLOWS.md](BUILDKITD-FLOWS.md) section 6) and
+  buys governance plus a compressed btrfs cache; `--load` is what writes the second copy to `/`.
+- `debian-install-v2` caps the embedded cache with `builder.gc` in `daemon.json` (config keys
+  `docker_builder_gc_max_used_gb`/`_reserved_gb`, default 50/10 GB) as a disk guard only; host-setup
+  owns only `cgroup-parent` in that file.
+
+Measured 2026-11-17 on this host (what btrfs+zstd would save on extracted layers):
+
+- Real: `compsize` on the `mdt-buildkitd` cache subvolume: 47 GB uncompressed data occupy 28 GB on disk
+  (59%, about 41% saved). The zstd extents shrink to 33%, but 18 GB of the data sits in uncompressed
+  extents (incompressible content, or written before compression was enabled).
+- Estimate: 19 random overlay2 layers (6.3 GB, 6.75 GB allocated on ext4) compressed with zstd level 3
+  and a 128 KiB window (a stand-in for btrfs extents) came to 2.3 GB, 34% of the ext4 size. This
+  sample skips layers under 30 MB and ignores btrfs's incompressibility heuristic, so treat the real
+  saving as 40-65%, not the sample's 66%.
+- Applied to the 195 GB image store that is roughly 80-130 GB, but only if the data-root moves to
+  btrfs (a dockerd stop and copy; `live-restore` does not cover it). Pruning the 147 GB of unused
+  images saves more with no migration.
+
+To move builds off this host entirely, see [REMOTE-BUILDER-GUIDE.md](REMOTE-BUILDER-GUIDE.md).
+
 ## Resource-governance boundaries
 
 There are three accounting domains: the BuildKit container leaf, release

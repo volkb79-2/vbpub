@@ -155,6 +155,8 @@ Registry tools, by job:
 | No-process-sandbox flag | a `RUN` step can signal other processes in the same worker | acceptable for a single-tenant dev builder |
 | Cache size grows without bound | the 194 GB pool is shared with the VM harness | set `gckeepstorage` (MDT-024 follow-up); keep an eye on `compsize` |
 | Host-managed | a change needs `install.sh` + `systemctl restart mdt-buildkitd` on the host | documented; the unit stamp reports a pending restart |
+| Builds and cache on the same host as production | build CPU/IO and the cache share this host even when governed | a remote buildkitd over SSH or mTLS, with `--push` delivery: [REMOTE-BUILDER-GUIDE.md](REMOTE-BUILDER-GUIDE.md) |
+| Docker's embedded `default` builder is ungoverned | its `RUN` steps run in `/system.slice/...` with default weights and no memory cap; its cache shares layers with images | never use `--builder default` for real builds; see BUILD-ARCHITECTURE.md "Docker's embedded builder" |
 
 ## 7. Optional: skipping fsync for cache operations (eatmydata)
 
