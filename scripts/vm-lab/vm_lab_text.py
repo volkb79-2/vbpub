@@ -1,9 +1,16 @@
 #!/usr/bin/env python3
-"""Read the guest screen as text and wait for text on it (`console text`, `console wait-for-text`).
+"""Read the guest screen as text and wait for text on it (`console text`, `console wait-for-text`, `console mark`).
 
-Two engines read one screen, strictly one after the other (QMP serves one client at a
-time, so no connection is held while a subprocess that also uses QMP runs):
+Three engines read one screen, strictly one after the other (QMP serves one client at a
+time, so no connection is held while a subprocess that also uses QMP runs). ``auto`` tries them
+in this order:
 
+* ``serial``: exact text the guest printed to its serial console, read from ``<state>/serial.log``
+  by ``vmscreen text --source serial``. This is the exact-text source of UEFI guests (their
+  display is a graphical framebuffer). It applies only while that log exists (the guest was started
+  with ``--serial-console``) and, for ``auto``, only while the log has text (after the mark, if any).
+  ``console mark`` prints a mark of the log's current end; a read with a mark sees only what was
+  written after it.
 * ``vmscreen``: exact text from the VGA text buffer, run as a subprocess: the ``vmscreen``
   executable on PATH, then ``python -m vmscreen`` if that probe fails. It must be installed (it
   does not run from a bare source tree) and is probed once per run. Applies only while the guest is
@@ -44,8 +51,16 @@ EXIT_CODES_HELP = (
     "4 a --fail-pattern matched, 5 boot loop detected"
 )
 TEXT_EXIT_CODES_HELP = "exit codes: 0 ok, 1 error (no engine could read the screen), 2 usage"
+MARK_EXIT_CODES_HELP = "exit codes: 0 ok (the token is the only line on stdout), 1 error (no serial log), 2 usage"
+SINCE_MARK_HELP = (
+    "serial engine only: read only the text written after this mark (from `console mark`); "
+    "the other engines ignore it with one stderr note"
+)
 
-ENGINES = ("auto", "vmscreen", "ocr")
+ENGINES = ("auto", "serial", "vmscreen", "ocr")
+SERIAL_LOG_FILENAME = "serial.log"
+# A vmscreen mark: OFFSET.INODE.HEADLEN.HEADHASH.TAILLEN.TAILHASH, ASCII digits, hex and dots.
+MARK_TOKEN_PATTERN = re.compile(r"[0-9A-Fa-f]+(?:\.[0-9A-Fa-f]+)*")
 OCR_TEMP_FILENAME = ".vm-lab-console-text.png"
 QEMU_STATE_DIR = "/state"
 MAX_CONSECUTIVE_READ_FAILURES = 10
@@ -130,6 +145,16 @@ def _stderr_note(message: str) -> None:
     print(message, file=sys.stderr, flush=True)
 
 
+def validate_mark(token: str) -> str:
+    """A mark is what ``console mark`` printed: ASCII hex digits joined by dots; anything else is a usage error."""
+    if not MARK_TOKEN_PATTERN.fullmatch(token):
+        raise TextUsageError(
+            f"--since-mark {token!r} is not a mark token; take one with `console mark` "
+            "(ASCII hex digits and dots, as vmscreen prints it)"
+        )
+    return token
+
+
 class ScreenReader:
     """Read the current screen text with the chosen engine; remembers what worked so far."""
 
@@ -149,9 +174,13 @@ class ScreenReader:
         note: Callable[[str], None] = _stderr_note,
         qmp_timeout: float = QMP_TIMEOUT_SECONDS,
         clock: Callable[[], float] = time.monotonic,
+        since_mark: str | None = None,
+        implicit_mark: bool = False,
     ) -> None:
         if engine not in ENGINES:
             raise TextUsageError(f"unknown engine {engine!r}")
+        if since_mark is not None:
+            validate_mark(since_mark)
         self.state_dir = Path(state_dir)
         self.vmscreen_qmp_path = vmscreen_qmp_path
         self.qmp_socket = Path(qmp_socket)
@@ -169,6 +198,16 @@ class ScreenReader:
         self._worked: set[str] = set()
         self._vmscreen_unavailable: str | None = None
         self._vmscreen_command: list[str] | None = None
+        # An explicit --since-mark applies to the serial engine only; the others say so once.
+        self.since_mark = since_mark
+        self._explicit_mark = since_mark is not None
+        self._implicit_mark = implicit_mark
+        self._mark_ignored_noted = False
+        self._quiet_ocr_noted = False
+
+    @property
+    def serial_log(self) -> Path:
+        return self.state_dir / SERIAL_LOG_FILENAME
 
     # -- engine dispatch -------------------------------------------------
 
@@ -182,9 +221,13 @@ class ScreenReader:
         ``None`` keeps the defaults.
         """
         self._deadline = None if budget is None else self.clock() + budget
+        if self.engine == "serial":
+            return self._serial(forced=True)
         if self.engine == "ocr":
+            self._note_mark_ignored()
             return self._ocr()
         if self.engine == "vmscreen":
+            self._note_mark_ignored()
             if self._vmscreen_unavailable is not None:
                 raise TextEngineError(f"vmscreen is not available: {self._vmscreen_unavailable}")
             try:
@@ -192,6 +235,18 @@ class ScreenReader:
             except _VmscreenUnavailable as exc:
                 self._vmscreen_unavailable = str(exc)
                 raise TextEngineError(f"vmscreen is not available: {exc}") from None
+        # auto: serial, then the VGA text buffer, then OCR.
+        quiet_serial: ScreenText | None = None
+        if self.serial_log.is_file() and self._vmscreen_unavailable is None:
+            try:
+                return self._serial(forced=False)
+            except TextNotApplicable:
+                # The log has no text (after the mark) yet: not a failure, the next engine tries.
+                quiet_serial = ScreenText("", "serial", "stream")
+            except _VmscreenUnavailable as exc:
+                self._vmscreen_unavailable = str(exc)
+                self.note(f"vm-lab: vmscreen is not available: {exc}; using OCR only")
+        self._note_mark_ignored()
         if self._vmscreen_unavailable is None:
             try:
                 return self._vmscreen()
@@ -200,7 +255,23 @@ class ScreenReader:
             except _VmscreenUnavailable as exc:
                 self._vmscreen_unavailable = str(exc)
                 self.note(f"vm-lab: vmscreen is not available: {exc}; using OCR only")
-        return self._ocr()
+        try:
+            return self._ocr()
+        except TextEngineError as exc:
+            if quiet_serial is None:
+                raise
+            # Serial is the source and has nothing new yet; OCR cannot work. Report the empty
+            # serial text (a wait keeps polling) instead of failing the read.
+            if not self._quiet_ocr_noted:
+                self._quiet_ocr_noted = True
+                self.note(f"vm-lab: the serial log has no text yet and OCR is unavailable: {exc}")
+            return quiet_serial
+
+    def _note_mark_ignored(self) -> None:
+        """One stderr note when an explicit --since-mark meets an engine that cannot use it."""
+        if self._explicit_mark and not self._mark_ignored_noted:
+            self._mark_ignored_noted = True
+            self.note("vm-lab: --since-mark applies to the serial engine only; this engine ignores it")
 
     def _remaining(self) -> float | None:
         """Seconds left to this read's deadline, or ``None`` when the read has no deadline."""
@@ -309,6 +380,106 @@ class ScreenReader:
             raise TextEngineError(f"vmscreen failed (exit {code}) before it ever worked: {detail}")
         raise TextReadError(f"vmscreen failed (exit {code}): {detail}")
 
+    # -- serial log --------------------------------------------------------
+
+    def _serial_command(self, forced: bool) -> list[str]:
+        """The probed vmscreen command for the serial engine (vmscreen runs the serial source too)."""
+        if forced and self._vmscreen_unavailable is not None:
+            raise TextEngineError(f"vmscreen is not available: {self._vmscreen_unavailable}")
+        try:
+            return self._resolved_vmscreen()
+        except _VmscreenUnavailable as exc:
+            if not forced:
+                raise
+            self._vmscreen_unavailable = str(exc)
+            raise TextEngineError(f"vmscreen is not available: {exc}") from None
+
+    def take_mark(self, command: list[str] | None = None) -> str:
+        """Print-ready mark token of the serial log's current end (``vmscreen mark``)."""
+        log = self.serial_log
+        if not log.is_file():
+            raise TextEngineError(f"no serial log at {log}; start the guest with --serial-console")
+        command = self._serial_command(True) if command is None else command
+        try:
+            result = self.runner(
+                [*command, "mark", "--serial-log", str(log), "--json"],
+                self.environ,
+                bounded_timeout(VMSCREEN_TIMEOUT_SECONDS, self._remaining()),
+            )
+        except (OSError, TextReadError) as exc:
+            raise TextEngineError(f"cannot run `vmscreen mark`: {exc}") from exc
+        if result.returncode != 0:
+            detail = _short(_json_error(result.stdout) or result.stderr or result.stdout or "no output")
+            raise TextEngineError(f"vmscreen mark failed (exit {result.returncode}): {detail}")
+        try:
+            data = json.loads(result.stdout)
+        except ValueError as exc:
+            raise TextEngineError(f"vmscreen mark printed output that is not JSON: {exc}") from exc
+        token = data.get("mark") if isinstance(data, dict) else None
+        if not isinstance(token, str) or not MARK_TOKEN_PATTERN.fullmatch(token):
+            raise TextEngineError("vmscreen mark JSON has no usable mark field")
+        return token
+
+    def serial_argv(self, command: list[str], mark: str | None) -> list[str]:
+        argv = [
+            *command,
+            "text",
+            "--source",
+            "serial",
+            "--serial-log",
+            str(self.serial_log),
+            "--json",
+            "--qmp",
+            str(self.vmscreen_qmp_path()),
+        ]
+        if mark is not None:
+            argv += ["--mark", mark]
+        return argv
+
+    def _serial(self, *, forced: bool) -> ScreenText:
+        """Read the serial log. Forced: always a result (empty text is a quiet log). Auto: empty is "not yet"."""
+        log = self.serial_log
+        if not log.is_file():
+            raise TextEngineError(f"no serial log at {log}; start the guest with --serial-console")
+        command = self._serial_command(forced)
+        if self.since_mark is None and self._implicit_mark:
+            # A wait sees only text written after it began: the mark is taken once, before the first read.
+            self.since_mark = self.take_mark(command)
+        try:
+            result = self.runner(
+                self.serial_argv(command, self.since_mark),
+                self.environ,
+                bounded_timeout(VMSCREEN_TIMEOUT_SECONDS, self._remaining()),
+            )
+        except OSError as exc:
+            raise TextReadError(f"cannot run {' '.join(command)}: {exc}") from exc
+        code = result.returncode
+        if code == 0:
+            try:
+                data = json.loads(result.stdout)
+            except ValueError as exc:
+                raise TextReadError(f"vmscreen printed output that is not JSON: {exc}") from exc
+            if not isinstance(data, dict) or not isinstance(data.get("text"), str):
+                raise TextReadError("vmscreen JSON has no text field")
+            self._worked.add("serial")
+            shot = ScreenText(data["text"], "serial", data.get("exact", "stream"))
+            if not shot.text.strip() and not forced:
+                raise TextNotApplicable("the serial log has no text yet")
+            return shot
+        if code == 4:
+            self._worked.add("serial")
+            raise TextNotApplicable("vmscreen: the serial source does not apply")
+        detail = _short(_json_error(result.stdout) or result.stderr or result.stdout or "no output")
+        if code == 5:
+            raise TextReadError(f"vmscreen QMP problem: {detail}")
+        if code == 3:
+            raise TextReadError(f"vmscreen timed out: {detail}")
+        if code == 2:
+            raise TextEngineError(f"vmscreen rejected the arguments of the VM tool (exit 2): {detail}")
+        if "serial" not in self._worked:
+            raise TextEngineError(f"vmscreen serial read failed (exit {code}) before it ever worked: {detail}")
+        raise TextReadError(f"vmscreen serial read failed (exit {code}): {detail}")
+
     # -- OCR ---------------------------------------------------------------
 
     def _ocr(self) -> ScreenText:
@@ -392,6 +563,15 @@ def report_error(message: str, *, as_json: bool) -> int:
     if as_json:
         print(json.dumps({"result": "error", "error": message}, ensure_ascii=False), flush=True)
     return EXIT_ERROR
+
+
+# -- console mark ----------------------------------------------------------
+
+
+def run_mark(reader: ScreenReader) -> int:
+    """Print the mark token of the serial log's current end (one line, nothing else on stdout)."""
+    print(reader.take_mark(), flush=True)
+    return EXIT_MATCHED
 
 
 # -- console text ----------------------------------------------------------

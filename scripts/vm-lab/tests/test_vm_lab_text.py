@@ -1048,7 +1048,7 @@ def test_the_new_verbs_refuse_what_the_other_console_verbs_refuse(monkeypatch, t
     other = tmp_path / "other"
     other.mkdir()
     started = []
-    monkeypatch.setattr(vm_lab, "console_screen_reader", lambda *_a: started.append(1))
+    monkeypatch.setattr(vm_lab, "console_screen_reader", lambda *_a, **_k: started.append(1))
     cases = [
         ({}, "is not a managed vm-lab TCG VM"),
         (labelled_guest(other), "does not belong to state directory"),
@@ -1085,7 +1085,7 @@ def test_the_verbs_run_the_reader_for_a_valid_guest_and_report_engine_errors_as_
     assert engines[-1][2] == "ocr" and capsys.readouterr().out == "Boot menu\n"
 
     monkeypatch.setattr(
-        vm_lab, "console_screen_reader", lambda *_a: StubReader(TextEngineError("vmscreen is not available: x"))
+        vm_lab, "console_screen_reader", lambda *_a, **_k: StubReader(TextEngineError("vmscreen is not available: x"))
     )
     capsys.readouterr()
     assert vm_lab.cmd_console_wait_for_text(GENERIC_PROFILE, wait_args) == 1
@@ -1100,7 +1100,7 @@ def test_the_verbs_run_the_reader_for_a_valid_guest_and_report_engine_errors_as_
 def run_main(front, monkeypatch, tmp_path, rig_kwargs, *verb_args, profile=GENERIC_PROFILE):
     rig = Rig(tmp_path, **rig_kwargs)
     monkeypatch.setattr(vm_lab, "docker_inspect", lambda _name: labelled_guest(tmp_path, profile=profile))
-    monkeypatch.setattr(vm_lab, "console_screen_reader", lambda *_a: rig.reader)
+    monkeypatch.setattr(vm_lab, "console_screen_reader", lambda *_a, **_k: rig.reader)
     argv = ["console", *verb_args, "--name", "deb1", "--state-dir", str(tmp_path)]
     return (front(argv) if callable(front) else vm_lab.main(GENERIC_PROFILE, argv)), rig
 
@@ -1174,7 +1174,7 @@ def test_a_qmp_error_in_a_main_run_is_one_line_too(monkeypatch, tmp_path, capsys
     rig = Rig(tmp_path, engine="ocr")
     rig.qmp_error = RunnerError("QMP screendump failed: {'class': 'GenericError'}")
     monkeypatch.setattr(vm_lab, "docker_inspect", lambda _name: labelled_guest(tmp_path))
-    monkeypatch.setattr(vm_lab, "console_screen_reader", lambda *_a: rig.reader)
+    monkeypatch.setattr(vm_lab, "console_screen_reader", lambda *_a, **_k: rig.reader)
     code = vm_lab.main(GENERIC_PROFILE, ["console", "text", "--name", "deb1", "--state-dir", str(tmp_path)])
     err = capsys.readouterr().err
     assert code == 1 and err.startswith("vm-lab: QMP screendump failed") and "Traceback" not in err
@@ -1302,7 +1302,7 @@ def test_help_text_of_both_verbs_names_the_exit_codes(capsys):
 
 def test_main_returns_the_wait_exit_code_unchanged(monkeypatch, tmp_path, capsys):
     monkeypatch.setattr(vm_lab, "docker_inspect", lambda _name: labelled_guest(tmp_path))
-    monkeypatch.setattr(vm_lab, "console_screen_reader", lambda *_a: StubReader("never matches"))
+    monkeypatch.setattr(vm_lab, "console_screen_reader", lambda *_a, **_k: StubReader("never matches"))
     ticks = iter(range(0, 1000, 2))
     monkeypatch.setattr(
         vm_lab_text,
