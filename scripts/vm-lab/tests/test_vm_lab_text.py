@@ -1071,7 +1071,7 @@ def test_the_verbs_run_the_reader_for_a_valid_guest_and_report_engine_errors_as_
     monkeypatch.setattr(vm_lab, "docker_inspect", lambda _name: labelled_guest(tmp_path))
     engines = []
 
-    def reader(profile, state_dir, engine):
+    def reader(profile, state_dir, engine, **_marks):
         engines.append((profile, state_dir, engine))
         return StubReader(ScreenText("Boot menu", "vmscreen", True))
 
