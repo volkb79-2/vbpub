@@ -77,13 +77,11 @@
     // cgprofile control and observer socket directories. cgprofiled owns these
     // endpoints and publishes their paths and numeric GIDs through its endpoint
     // fragment; host-setup no longer creates the service directories or groups.
-    // This bind mount only exposes the paths. This devcontainer does not pass
-    // CGPROFILE_CONTROL_SOCKET, CGPROFILE_OBSERVER_SOCKET, their GIDs, or
-    // MDT_HOST_DOCKER_GID into the container and does not add the cgprofile
-    // groups. Run-Gate 25.5.0 and Assay require those facts directly; there is
-    // no `transport=auto`/Docker-exec fallback. The incomplete consumer cutover
-    // is tracked by MDT-086. Do not treat this mount alone as a working
-    // Run-Gate or Assay setup.
+    // This bind mount only exposes the paths. The variables Run-Gate 25.6.0 and
+    // Assay require (CGPROFILE_*, MDT_HOST_DOCKER_GID, TOPOS_OBSERVE_*) arrive
+    // through the generated env file named in runArgs below (MDT-086). There is
+    // no `transport=auto`/Docker-exec fallback, so a host that has not published
+    // them leaves those tools refusing by variable name.
     // `mounts` uses Docker --mount, so it refuses a missing host source. Install
     // and verify cgprofile through its owner before recreating this template.
     "source=/run/cgprofile,target=/run/cgprofile,type=bind",
@@ -221,6 +219,20 @@
     //   export DOCKER_GID=$(getent group docker | cut -d: -f3)
     // (docs/CONSUMERS.md "Host cgroup preflight" and host-setup/README.md explain why).
     "--group-add", "${localEnv:DOCKER_GID}",
+
+    // Host endpoint facts (MDT-086): CGPROFILE_*, TOPOS_OBSERVE_*, MDT_HOST_DOCKER_GID and the BuildKit and
+    // Docker-API facts. initializeCommand copies the keys the host has PUBLISHED (/etc/host-endpoints.env,
+    // written by cgprofiled/toposd/host-setup installers) into this generated, git-ignored file. An unpublished
+    // key stays unset in the container, never empty (Run-Gate rejects a set-but-empty MDT_HOST_DOCKER_GID),
+    // and the bootstrap warns by name. The file does not depend on pam_env or on a restarted VS Code server.
+    "--env-file", "${localWorkspaceFolder}/.devcontainer/mdt-endpoints.env",
+
+    // Socket groups for the cgprofile control socket and the topos observe socket. These come from the HOST
+    // session (the pam_env /etc/environment block; restart the VS Code Remote-SSH server after it is written),
+    // because a numeric group cannot travel in an env file. Unset means the inert group 65534 and a bootstrap
+    // warning; the Docker group above already covers hosts whose sockets are group docker.
+    "--group-add", "${localEnv:CGPROFILE_CONTROL_GID:65534}",
+    "--group-add", "${localEnv:TOPOS_OBSERVE_GID:65534}",
 
     // topos observe socket directory. The configured endpoint is normally
     // `/run/topos/observe/topos.sock` and its dedicated observe GID is published

@@ -909,3 +909,115 @@ def test_the_d1_notice_url_is_absolute_and_names_this_repository() -> None:
     assert url.startswith(f"https://github.com/{identity['owner']}/{identity['repo']}/blob/main/mdt-cockpit/docs/")
     assert url.endswith("HOME-PERSISTENCE.md#moving-from-modern-debian-tools-python-debug")
     assert url == DOC_ANCHOR
+
+
+# ── Host endpoint facts (MDT-086) ────────────────────────────────────────────────────────────────────
+
+ENDPOINT_RECORD = """\
+# host-endpoints v1
+CGPROFILE_CONTROL_SOCKET=/run/cgprofile/ctl.sock
+CGPROFILE_CONTROL_SOCKET_DIR=/run/cgprofile
+CGPROFILE_CONTROL_GID=994
+CGPROFILE_OBSERVER_SOCKET=/run/cgprofile/observer/obs.sock
+CGPROFILE_OBSERVER_SOCKET_DIR=/run/cgprofile/observer
+MDT_HOST_DOCKER_GID=998
+UNRELATED_KEY=1
+"""
+
+
+def _written(dc_dir: Path) -> dict[str, str]:
+    lines = (dc_dir / bootstrap.ENDPOINT_ENV_FILE).read_text(encoding="utf-8").splitlines()
+    return dict(line.split("=", 1) for line in lines if line and not line.startswith("#"))
+
+
+def test_endpoint_delivery_copies_only_published_allow_listed_keys(tmp_path: Path) -> None:
+    record = tmp_path / "host-endpoints.env"
+    record.write_text(ENDPOINT_RECORD, encoding="utf-8")
+
+    keys = bootstrap.deliver_host_endpoints(tmp_path, record, {})
+
+    written = _written(tmp_path)
+    assert set(keys) == set(written)
+    assert written["CGPROFILE_CONTROL_SOCKET"] == "/run/cgprofile/ctl.sock"
+    assert "UNRELATED_KEY" not in written, "only allow-listed keys are delivered"
+    assert "TOPOS_OBSERVE_SOCKET" not in written, "an unpublished key stays unset, never empty"
+
+
+def test_endpoint_record_drops_malformed_lines_and_root_or_non_numeric_gids(tmp_path: Path) -> None:
+    record = tmp_path / "host-endpoints.env"
+    record.write_text(
+        "MDT_HOST_DOCKER_GID=0\nCGPROFILE_CONTROL_GID=abc\nTOPOS_OBSERVE_GID=997\n"
+        "bad key=1\nlower=1\nCGPROFILE_CONTROL_SOCKET=/has space/x\nMDT_BUILDKIT_SOCKET=/run/b.sock\n",
+        encoding="utf-8",
+    )
+
+    assert bootstrap.read_endpoint_record(record) == {
+        "TOPOS_OBSERVE_GID": "997",
+        "MDT_BUILDKIT_SOCKET": "/run/b.sock",
+    }
+
+
+def test_endpoint_delivery_without_a_record_writes_a_header_only_file_and_warns(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    keys = bootstrap.deliver_host_endpoints(tmp_path, tmp_path / "absent.env", {})
+
+    assert keys == [] and _written(tmp_path) == {}
+    err = capsys.readouterr().err
+    assert "WARN" in err and "missing or unreadable" in err and "MDT-086" in err
+
+
+def test_endpoint_delivery_names_each_missing_required_key(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    record = tmp_path / "host-endpoints.env"
+    record.write_text("CGPROFILE_CONTROL_SOCKET=/run/cgprofile/ctl.sock\n", encoding="utf-8")
+
+    bootstrap.deliver_host_endpoints(tmp_path, record, {})
+
+    err = capsys.readouterr().err
+    for key in ("CGPROFILE_CONTROL_SOCKET_DIR", "CGPROFILE_CONTROL_GID", "CGPROFILE_OBSERVER_SOCKET", "MDT_HOST_DOCKER_GID"):
+        assert key in err
+    assert "does not publish: CGPROFILE_CONTROL_SOCKET," not in err, "a published key is not reported missing"
+
+
+def test_endpoint_delivery_warns_when_the_session_lacks_a_published_socket_group(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    record = tmp_path / "host-endpoints.env"
+    record.write_text(ENDPOINT_RECORD, encoding="utf-8")
+
+    bootstrap.deliver_host_endpoints(tmp_path, record, {})
+    assert "CGPROFILE_CONTROL_GID=994 is published" in capsys.readouterr().err
+
+    bootstrap.deliver_host_endpoints(tmp_path, record, {"CGPROFILE_CONTROL_GID": "994"})
+    assert "CGPROFILE_CONTROL_GID=994 is published" not in capsys.readouterr().err
+
+
+def test_endpoint_delivery_never_fails_the_bootstrap_when_the_directory_is_unwritable(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    record = tmp_path / "host-endpoints.env"
+    record.write_text(ENDPOINT_RECORD, encoding="utf-8")
+
+    keys = bootstrap.deliver_host_endpoints(tmp_path / "no-such-dir", record, {})
+
+    assert keys == []
+    assert "cannot write" in capsys.readouterr().err
+
+
+def test_every_devcontainer_file_hands_the_generated_endpoint_file_and_socket_groups_to_docker() -> None:
+    live = ROOT.parent / ".devcontainer" / "devcontainer.json"
+    for path in (TEMPLATE, ROOT / "templates" / "host-folder" / "devcontainer.json", live):
+        run_args = bootstrap._parse_jsonc_object(path.read_text(encoding="utf-8"))["runArgs"]
+        assert run_args[run_args.index("--env-file") + 1] == (
+            "${localWorkspaceFolder}/.devcontainer/" + bootstrap.ENDPOINT_ENV_FILE
+        ), path
+        groups = [run_args[i + 1] for i, a in enumerate(run_args) if a == "--group-add"]
+        for key in bootstrap.ENDPOINT_GROUP_ADD_KEYS:
+            assert "${localEnv:" + key + ":65534}" in groups, (path, key)
+
+
+def test_the_live_bootstrap_script_is_the_template_script() -> None:
+    live = ROOT.parent / ".devcontainer" / "initialize_container_environment.py"
+    assert live.read_text(encoding="utf-8") == (ROOT / "templates" / "initialize_container_environment.py").read_text(encoding="utf-8")

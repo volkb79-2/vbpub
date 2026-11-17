@@ -1484,6 +1484,17 @@ into `containerEnv`; therefore a newly created template-based session still
 does not acquire these facts automatically. This confirms the delivery decision
 MDT-086 owns; it is not a request for Run-Gate to invent a fallback.
 
+**Update 2026-11-17 (implemented for the devcontainer templates and the controller's
+`.devcontainer/`; not yet verified in a rebuilt container).** `initializeCommand` now copies
+the keys the host has published from `/etc/host-endpoints.env` into the generated
+`.devcontainer/mdt-endpoints.env`, which `runArgs` passes with `--env-file`; unpublished keys stay
+unset (never empty) and the bootstrap warns by name instead of refusing, because the 2026-11-08
+review (h1g B2) showed that making mounts depend on unpublished `${localEnv:...}` values stops a
+rebuild from starting. The two socket groups use `--group-add ${localEnv:...:65534}`. Mounts stay
+literal. Open: confirm on the next rebuild that a session receives the variables and a registered
+Run-Gate lane starts without a manual export; the mount-from-record and `MDT_HOST_DOCKER_GID`
+replacement of the `DOCKER_GID` export (design 2.2/2.3b) stay deferred until every host publishes.
+
 **Close when.** The delivery decision is recorded in `docs/DESIGN-GUIDE.md`;
 the daemon fragments exist; a devcontainer built from a complete record receives
 the required `CGPROFILE_*` values and read-only socket mounts; and a registered

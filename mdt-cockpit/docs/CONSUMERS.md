@@ -175,6 +175,23 @@ sudo ./host-setup/install.sh --dry-run-endpoints
 sudo augeaswrap endpoints check --json
 ```
 
+**How the cockpit receives these facts (MDT-086).** The devcontainer templates and
+the controller's own `.devcontainer/` do not read the record at container start; the
+host-side `initializeCommand` (`initialize_container_environment.py`) copies the keys
+the host has published (allow-listed: `CGPROFILE_*`, `TOPOS_OBSERVE_*`,
+`MDT_HOST_DOCKER_GID`, `MDT_BUILDKIT_*`, `MDT_DOCKER_API_*`) from
+`/etc/host-endpoints.env` into `.devcontainer/mdt-endpoints.env`, and `runArgs`
+passes that file with `--env-file`. An unpublished key stays **unset** in the container,
+never empty (Run-Gate rejects a set-but-empty `MDT_HOST_DOCKER_GID`), and the bootstrap
+prints one `WARN` naming each missing required key; it never refuses to start the
+container. The file is generated and git-ignored (add `/.devcontainer/mdt-endpoints.env`
+to the consumer repo's `.gitignore`). Numeric groups cannot travel in an env file, so
+`--group-add ${localEnv:CGPROFILE_CONTROL_GID:65534}` and the topos equivalent read the
+HOST session's environment, which the `pam_env` block of `/etc/environment` supplies to an
+ssh or Remote-SSH session started after it was written; unset means the inert group
+65534 and a bootstrap warning. After a host upgrade: re-run the owning installers,
+restart the VS Code Remote-SSH server, and rebuild the container.
+
 Older host-setup files and the old marked BuildKit block are refused before an
 install changes host state. Follow the exact manual cleanup list in the
 [host endpoint upgrade guide](../host-setup/README.md#host-endpoint-facts-and-upgrade-refusal).

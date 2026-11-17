@@ -32,6 +32,12 @@ the MDT host setup before starting: the initializer checks the declared cgroup
 slices and creates missing bind sources. See the
 [host cgroup preflight](../docs/CONSUMERS.md#host-cgroup-preflight).
 
+The initializer also writes `.devcontainer/mdt-endpoints.env` from the host's endpoint
+record (`/etc/host-endpoints.env`), which `runArgs` hands to Docker with `--env-file`
+(MDT-086; details in [CONSUMERS.md](../docs/CONSUMERS.md)). Add
+`/.devcontainer/mdt-endpoints.env` to the consuming repo's `.gitignore`: the file is
+generated on every start.
+
 ## Integrated terminal
 
 The template starts each VS Code integrated terminal in its own named tmux session, with zsh inside,
