@@ -250,13 +250,35 @@ def test_plain_mode_when_cowtree_mode_is_off(tmp_path):
     assert got.mode == "plain" and got.path == loaded.root / "downloads/iso"
 
 
-def test_plain_mode_when_the_area_is_valid_but_not_btrfs(tmp_path):
+@pytest.mark.parametrize("filesystem", ["ext4", "xfs"])
+def test_a_set_root_on_another_filesystem_than_btrfs_is_loud_naming_the_type(tmp_path, filesystem):
     loaded = load_repo_paths(write_repo(tmp_path))
-    root = tmp_path / "xfs-area"
-    root.mkdir()
+    root = tmp_path / "other-area"
     (root / "myrepo" / "downloads" / "iso").mkdir(parents=True)
-    got = loaded.resolve("iso", environ={"MDT_COW_ROOT": str(root)}, ops=FakeOps(filesystem="xfs"))
-    assert got.mode == "plain" and got.path == loaded.root / "downloads/iso"
+    environ = {"MDT_COW_ROOT": str(root)}
+    with pytest.raises(RootInvalid, match=f"filesystem '{filesystem}', not btrfs") as caught:
+        loaded.resolve("iso", environ=environ, ops=FakeOps(filesystem=filesystem))
+    assert caught.value.code == "root-invalid"
+    with pytest.raises(RootInvalid, match=f"filesystem '{filesystem}', not btrfs"):
+        loaded.provision("iso", environ=environ, ops=FakeOps(filesystem=filesystem), btrfs=FakeBtrfs().tools())
+
+
+@pytest.mark.parametrize("environ", [{}, {"MDT_COW_ROOT": ""}])
+def test_an_unset_or_empty_root_means_plain_for_resolve_and_provision(tmp_path, environ):
+    loaded = load_repo_paths(write_repo(tmp_path))
+    fake = FakeBtrfs()
+    expected = Resolved(loaded.root / "downloads/iso", "plain", "iso", None)
+    assert loaded.resolve("iso", environ=environ, ops=FakeOps(filesystem="ext4")) == expected
+    assert loaded.provision("iso", environ=environ, ops=FakeOps(filesystem="ext4"), btrfs=fake.tools()) == expected
+    assert fake.calls == []
+
+
+def test_provision_with_the_mode_off_is_plain_even_with_a_set_root(tmp_path):
+    loaded = load_repo_paths(write_repo(tmp_path))
+    area, environ, ops = btrfs_area(tmp_path)
+    fake = FakeBtrfs()
+    got = loaded.provision("iso", environ={**environ, "COWTREE_MODE": "off"}, ops=ops, btrfs=fake.tools())
+    assert got.mode == "plain" and fake.calls == [] and not (area / "myrepo").exists()
 
 
 def test_a_broken_area_is_loud_not_a_silent_fallback(tmp_path):
@@ -442,11 +464,9 @@ def test_provision_creates_nothing_without_a_usable_area(tmp_path):
     fake = FakeBtrfs()
     got = loaded.provision("iso", environ={}, ops=FakeOps(filesystem="btrfs"), btrfs=fake.tools())
     assert got == Resolved(root / "downloads/iso", "plain", "iso", None)
-    xfs = tmp_path / "xfs-area"
-    xfs.mkdir()
-    got = loaded.provision("iso", environ={"MDT_COW_ROOT": str(xfs)}, ops=FakeOps(filesystem="xfs"), btrfs=fake.tools())
+    got = loaded.provision("downloads", environ={}, ops=FakeOps(filesystem="btrfs"), btrfs=fake.tools())
     assert got.mode == "plain"
-    assert fake.calls == [] and not (xfs / "myrepo").exists() and not (root / "downloads").exists()
+    assert fake.calls == [] and not (root / "downloads").exists()
 
 
 @pytest.mark.parametrize("failing", [("subvolume", "create"), ("property", "get"), ("property", "set")])

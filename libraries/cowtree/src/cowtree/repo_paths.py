@@ -211,18 +211,19 @@ def _fs_type(root: str, ops: Ops) -> str:
 
 
 def _readonly_area_root(cow: str | None, environ: Mapping[str, str] | None, ops: Ops | None) -> str | None:
-    """The CoW area root for a plain lookup, using no write: None when the entry has no ``cow``, the mode is off,
-    ``MDT_COW_ROOT`` is unset, a permission error hides the root, or the root is on another filesystem than btrfs.
-    A set root that is relative or not an existing directory raises ``RootInvalid`` (a broken area is loud)."""
+    """The CoW area root for a plain lookup, using no write. None (plain) only when the entry has no ``cow``, the mode
+    is off, ``MDT_COW_ROOT`` is unset or empty, or a PermissionError while ``stat``-ing the root hides it. Any other
+    set value must be an absolute existing directory on btrfs: a relative path, a missing directory or another
+    filesystem type raises ``RootInvalid`` (a silent plain answer would hide a mis-mount)."""
     if cow is None:
         return None
     env = os.environ if environ is None else environ
     mode = env.get(ENV_MODE, "auto")
     if mode not in {"auto", "off"}:
         raise RootInvalid(f"COWTREE_MODE must be 'auto' or 'off', not {mode!r}")
-    if mode == "off" or ENV_ROOT not in env:
+    root = env.get(ENV_ROOT, "")
+    if mode == "off" or not root:
         return None
-    root = env[ENV_ROOT]
     if not normalized_absolute(root):
         raise RootInvalid("MDT_COW_ROOT must be an absolute, normalized path without NUL")
     operations = ops or LinuxOps()
@@ -234,7 +235,10 @@ def _readonly_area_root(cow: str | None, environ: Mapping[str, str] | None, ops:
         is_directory = False
     if not is_directory:
         raise RootInvalid(f"MDT_COW_ROOT is not an existing directory: {root!r}")
-    return root if _fs_type(root, operations) == "btrfs" else None
+    fs_type = _fs_type(root, operations)
+    if fs_type != "btrfs":
+        raise RootInvalid(f"MDT_COW_ROOT {root!r} is on filesystem {fs_type!r}, not btrfs; unset it or fix the mount")
+    return root
 
 
 def _checked(tools: Btrfs, argv: Sequence[str], path: Path) -> str:
@@ -270,12 +274,18 @@ class RepoPaths:
         self, cow: str | None, environ: Mapping[str, str] | None, ops: Ops | None
     ) -> str | None:
         """The validated btrfs area root for provisioning (``detect()``, which may write ``.cowtree`` and probes),
-        or None when this entry never uses one or the host has no btrfs area. A broken area raises."""
-        if cow is None:
+        or None when this entry never uses one or ``MDT_COW_ROOT`` is unset or empty. A broken area, and a set root
+        on a filesystem other than btrfs, raise ``RootInvalid``."""
+        env = os.environ if environ is None else environ
+        if cow is None or not env.get(ENV_ROOT, ""):
             return None
         area = detect(environ=environ, ops=ops)
-        if area is None or area.caps.backend != "btrfs":
+        if area is None:
             return None
+        if area.caps.backend != "btrfs":
+            raise RootInvalid(
+                f"MDT_COW_ROOT {area.root!r} is on filesystem {area.caps.fs_type!r}, not btrfs; unset it or fix the mount"
+            )
         return area.root
 
     def resolve(

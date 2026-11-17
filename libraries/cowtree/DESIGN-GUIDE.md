@@ -152,11 +152,13 @@ one repository, and the shared ISOs, base images and VM state must not fork per 
 stays inside the worktree. `MDT_COW_ROOT` is the one environment input; the earlier rule that no environment variable
 relocates a declared path is superseded for this reason.
 
-The fallback is silent only for "there is no CoW area": an unset `MDT_COW_ROOT`, `COWTREE_MODE=off`, a non-btrfs
-area, an entry without `cow`, or a CoW folder that has not been provisioned yet. All of these are normal states
-(a plain host, a new repo), and the plain path is a correct answer. A configured but broken area is loud:
-a set `MDT_COW_ROOT` that is relative or not an existing directory raises `RootInvalid` (and `provision` lets the
-`detect()` refusals through), because a silent fallback would send a VM disk
+The fallback is silent only for "there is no CoW area": an unset or empty `MDT_COW_ROOT`, `COWTREE_MODE=off`, an entry
+without `cow`, or a CoW folder that has not been provisioned yet; plus one failure, a `PermissionError` while looking at
+the root (another uid than the area's owner), which gives the plain answer instead of an error. All of these are normal
+states (a plain host, a new repo, a second user), and the plain path is a correct answer. A configured but broken area is
+loud (BTRFS-COW.md sections 5 and 8: verify the filesystem type and refuse otherwise): a set `MDT_COW_ROOT` that is
+relative, not an existing directory, or on a filesystem other than btrfs raises `RootInvalid` naming what was found
+(and `provision` lets the `detect()` refusals through, and refuses a non-btrfs area the same way), because a silent fallback would send a VM disk
 to the checkout's filesystem while the operator believes it is on btrfs. `provision` refuses an existing plain
 directory at the CoW location rather than migrating it, since moving data is a separate, reviewable step.
 The module stays free of VM and Docker knowledge: names live only in the repository's file. A resolve performs no

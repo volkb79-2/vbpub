@@ -239,8 +239,9 @@ Why this shape:
 - **Tools ask the resolver, never a hardcoded path.** `libraries/cowtree/repo-path NAME [--project DIR]` (shell) or
   `cowtree.repo_paths` (Python) answers `$MDT_COW_ROOT/<repo-name>/<cow>` when `MDT_COW_ROOT` names a valid btrfs area
   and that folder exists, and `<repo root>/<repo>` otherwise; `--provision` creates the subvolume with its declared
-  compression. A missing `MDT_COW_ROOT` falls back silently (a plain host is a normal state); a configured but broken
-  area is an error.
+  compression. An unset or empty `MDT_COW_ROOT` falls back silently (a plain host is a normal state); a set one that is
+  not an existing directory or not on btrfs is an error naming what was found (section 5: refuse, never fall back), except that a
+  permission error while looking at the root gives the plain answer.
 - **VM files follow the project, base images follow the repository.** A project's VMs are in its own
   `<project>/vm-lab/`; a base image (a cloud image, an installed golden disk) that several projects start from is
   stored once in the repo-level `downloads/vm-images/`, so reflinking from it needs no copy and no second place.

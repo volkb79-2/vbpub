@@ -82,8 +82,9 @@ iso_dir = paths.resolve("iso").path                      # Resolved(path, mode, 
 `resolve` answers with the CoW folder (mode `cow`) only when the entry has a `cow`
 location, `MDT_COW_ROOT` is an existing directory on btrfs and that folder exists; in every
 other case it answers with the plain repo path (mode `plain`). A missing
-`MDT_COW_ROOT` is a normal plain host and falls back silently; a set `MDT_COW_ROOT` that is
-relative or not an existing directory raises `RootInvalid` (status 3). `resolve` performs
+or empty `MDT_COW_ROOT` is a normal plain host and falls back silently (so does a permission
+error while looking at the root); a set `MDT_COW_ROOT` that is relative, not an existing
+directory or not on btrfs raises `RootInvalid` (status 3, naming the filesystem type found). `resolve` performs
 no write at all (no `detect()`, so no `.cowtree/` and no probe); `provision` (CLI
 `--provision`) uses `detect()`, which may create `.cowtree/`, then creates the missing
 parents, the subvolume and sets its compression property (`none` or `zstd`), is
