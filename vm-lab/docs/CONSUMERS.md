@@ -39,7 +39,7 @@ A checkout, the wrapper, an editable install and the TrueNAS front ignore both
 repository, `start` refuses and names `--lock-dir` and the variable.
 
 The tool owns no paths. Pass `--state-dir` and `--base-disk` explicitly, taken
-from the repository's path resolver (`vm-lab.toml`) and never hardcoded:
+from the repository's path resolver (entries declared in `cowtree.toml`) and never hardcoded:
 
 ```
 VM=$(libraries/cowtree/repo-path vm-lab --project scripts/debian-rollback)/deb1
