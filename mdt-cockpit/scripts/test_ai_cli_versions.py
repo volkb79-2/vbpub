@@ -18,7 +18,7 @@ import install_ai_cli_tools as installer  # noqa: E402
 import stage_tool_artifacts as stage  # noqa: E402
 from test_oci_tool_staging import fake_version_records  # noqa: E402
 
-VETTED = {"npm.copilot": "1.0.92-4", "npm.openclaw": "2026.9.8", "npm.claudelink": "1.6.1"}
+VETTED = {"npm.copilot": "1.0.106-6", "npm.openclaw": "2026.10.10", "npm.claudelink": "1.6.6"}
 CUT = "2026-10-05T00:00:00Z"
 ENV_KEYS = {"COPILOT_VER": "npm.copilot", "OPENCLAW_VER": "npm.openclaw", "CLAUDELINK_VER": "npm.claudelink"}
 AIDER_PIN = {"AIDER_COMMIT": "5dc9490bb35f9729ef2c95d00a19ccd30c26339c", "AIDER_VER": "0.86.3.dev53+g5dc9490bb",
@@ -360,7 +360,11 @@ def test_a_consistent_override_is_carried_with_its_reason_and_a_cutoff_that_admi
 
 
 def test_the_cutoff_is_the_records_own_age_cutoff() -> None:
-    vetted = stage._vetted_ai_cli_versions(lambda: fake_version_records(VETTED, resolved_at="2026-10-19T01:00:00Z"))
+    # `now` is pinned: with the wall clock this record ages past the 28-day limit and the test starts failing.
+    vetted = stage._vetted_ai_cli_versions(
+        lambda: fake_version_records(VETTED, resolved_at="2026-10-19T01:00:00Z"),
+        now=datetime(2026, 10, 20, tzinfo=timezone.utc),
+    )
     assert vetted["COPILOT_BEFORE"] == "2026-10-05T01:00:00Z"
 
 

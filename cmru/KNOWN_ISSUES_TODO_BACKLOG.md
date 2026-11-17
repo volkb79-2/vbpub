@@ -3792,6 +3792,16 @@ Call: `SOURCE_DATE_EPOCH=1700000000 DEMO_VERSION=1.0.0 cmru handler bundle-build
 
 **Close when.** A change that adds a `cmru` call to a shell script is refused or auto-extended with the cmru lane, shown by a test of the selection rule, and the trigger list is derived from the scanner's own file selection.
 
+## KI-177 `cmru versions resolve` rewrites cmru.toml and silently drops its comments
+
+**Status:** OPEN (filed 2026-11-17 while releasing mdt-cockpit); severity: medium (a refresh deletes human-owned labels; here it removed the eight `ADVISORY ... MDT-013` comments that mdt-cockpit's `test_every_oci_target_is_labelled_advisory_and_points_at_mdt_009` requires, and the loss surfaced only as a release-gate failure).
+
+**Problem.** After `cmru versions resolve` in `mdt-cockpit/`, the committed `cmru.toml` had 6 comment lines instead of 15; only the `resolved` values should have changed.
+
+**Wanted.** `resolve` edits only the `resolved` tables it owns and preserves every other line and comment of `cmru.toml` (or refuses to write when it cannot).
+
+**Close when.** An acceptance test with comments above and between version targets shows a resolve run leaves them byte-identical.
+
 ## KI-176 `cmru versions resolve` cannot refresh a project whose npm targets use `constraint = "*"`: it demands a hand-edited `package.json`
 
 **Status:** OPEN (filed 2026-11-17 while releasing mdt-cockpit); severity: medium (a release stalls once the record passes its 28-day limit, with a message that names `resolve` as the fix and then `resolve` itself refuses).
