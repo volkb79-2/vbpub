@@ -15,6 +15,7 @@ import json
 import os
 import re
 import signal
+import stat
 import sys
 import time
 from pathlib import Path
@@ -71,8 +72,13 @@ class ConsoleCallError(RuntimeError):
     """
 
 
-class RecorderSignal(Exception):
-    """A SIGTERM/SIGHUP clean-stop request with its DONE reason."""
+class RecorderSignal(BaseException):
+    """A SIGTERM/SIGHUP clean-stop request with its DONE reason.
+
+    A BaseException (like KeyboardInterrupt), so no ``except Exception`` clause of the
+    recorder can swallow it: the handler ignores every later signal, and a swallowed
+    first one would leave the recorder unstoppable by SIGTERM.
+    """
 
 
 def strip_one_trailing_newline(text: str) -> str:
@@ -98,9 +104,58 @@ TOLERATED_CALL_ERRORS: tuple[type[BaseException], ...] = (
 )
 
 
+# True once the recorder is ending (a first stop signal arrived, or final cleanup
+# began): the handler then ignores further signals, so a second SIGTERM/SIGHUP
+# cannot abort the guest stop or the DONE write. Reset by each recorder run.
+_recorder_ending = False
+
+
 def _recorder_signal_handler(signum: int, _frame) -> None:
+    global _recorder_ending
+    if _recorder_ending:
+        return
+    _recorder_ending = True
     name = signal.Signals(signum).name
     raise RecorderSignal(f"signal: {name}")
+
+
+def _file_identity(path: Path) -> tuple[int, int] | None:
+    """``(st_dev, st_ino)`` of what is at ``path`` right now (a symlink is not followed), else None."""
+    try:
+        info = os.lstat(path)
+    except OSError:
+        return None
+    return (info.st_dev, info.st_ino)
+
+
+def _our_uid() -> int:
+    return os.getuid()
+
+
+def _adopt_replacement(path: Path, owned: tuple[int, int]) -> tuple[int, int]:
+    """After a successful screendump: follow QEMU if it replaced our file by a rename.
+
+    A regular file of our own uid at the name, with another identity than the one we created,
+    is what QEMU left (the name was ours exclusively): adopt it so cleanup still works. Anything
+    else (another owner, a symlink, a directory, nothing) keeps the current identity, so a
+    foreign file is never adopted and never removed.
+    """
+    try:
+        info = os.lstat(path)
+    except OSError:
+        return owned
+    if stat.S_ISREG(info.st_mode) and info.st_uid == _our_uid():
+        return (info.st_dev, info.st_ino)
+    return owned
+
+
+def _remove_if_owned(path: Path, owned: tuple[int, int] | None) -> None:
+    """Remove ``path`` only while it is still the very file this recorder created.
+
+    A different file at the name (another recorder's screendump, or anything else) is left alone.
+    """
+    if owned is not None and _file_identity(path) == owned:
+        path.unlink(missing_ok=True)
 
 
 def _send_sequences(
@@ -370,6 +425,8 @@ def record_loop(
         try:
             base = image_module.open(frames_dir / lines[-1]["file"]).convert("RGB")
             base.load()
+        except RecorderSignal:
+            raise  # never swallow the one stop request the handler will deliver
         except Exception:
             base = None
         if state_path.exists():
@@ -523,9 +580,12 @@ def cmd_console_record(
     out.mkdir(parents=True, exist_ok=True)
     (out / "inbox").mkdir(parents=True, exist_ok=True)
     (out / "frames").mkdir(parents=True, exist_ok=True)
+    global _recorder_ending
     temporary = state_dir / RECORDER_TEMP_FILENAME
     reason = "unknown"
-    claimed_temporary = False
+    # Identity of the screendump file this recorder created (O_EXCL) and has not
+    # removed yet; only a file with this identity is ever removed.
+    owned_temporary: tuple[int, int] | None = None
     stop_armed = False
     failed = False
     error_message: str | None = None
@@ -536,6 +596,7 @@ def cmd_console_record(
         stop_armed = True
         (out / "DONE").unlink(missing_ok=True)
 
+    _recorder_ending = False
     try:
         for signum in (signal.SIGTERM, signal.SIGHUP):
             previous = signal.getsignal(signum)
@@ -550,7 +611,6 @@ def cmd_console_record(
                 "another recorder may be running on this guest, and if none is running "
                 f"the file is stale and may be deleted: {temporary}"
             )
-        claimed_temporary = True
         if image_module is None or image_chops is None:
             try:
                 image_module = importlib.import_module("PIL.Image")
@@ -564,14 +624,29 @@ def cmd_console_record(
             socket_path = state_dir / "qmp.sock"
 
             def default_next_screen() -> Any:
-                if temporary.exists() or temporary.is_symlink():
-                    # Mid-run this is a skipped poll, not the end of the
-                    # recording: the start-time check above already refused a
-                    # second recorder, and ending here would stop the guest.
+                nonlocal owned_temporary
+                # The recorder creates the screendump file itself, exclusively, and
+                # remembers which file that is: QEMU then overwrites it in place (it
+                # runs as the same user). A file already at the name is another
+                # recorder's. Mid-run this is a skipped poll, not the end of the
+                # recording: the start-time check above already refused a second
+                # recorder, and ending here would stop the guest.
+                try:
+                    descriptor = os.open(
+                        temporary,
+                        os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
+                        0o600,
+                    )
+                except FileExistsError:
                     raise FileExistsError(
                         f"recorder screendump {temporary} exists; another recorder may be "
                         "running on this guest"
-                    )
+                    ) from None
+                try:
+                    info = os.fstat(descriptor)
+                finally:
+                    os.close(descriptor)
+                owned_temporary = (info.st_dev, info.st_ino)
                 try:
                     qmp_call(
                         socket_path,
@@ -579,11 +654,13 @@ def cmd_console_record(
                         {"filename": f"/state/{RECORDER_TEMP_FILENAME}", "format": "png"},
                         args.qmp_timeout,
                     )
+                    owned_temporary = _adopt_replacement(temporary, owned_temporary)
                     image = image_module.open(temporary).convert("RGB")
                     image.load()
                     return image
                 finally:
-                    temporary.unlink(missing_ok=True)
+                    _remove_if_owned(temporary, owned_temporary)
+                    owned_temporary = None
 
             next_screen = default_next_screen
 
@@ -612,9 +689,13 @@ def cmd_console_record(
         reason = f"error: {error_message}"
         failed = True
     finally:
-        if claimed_temporary:
+        # From here on a further SIGTERM/SIGHUP is ignored: it must not abort the
+        # guest stop below and leave the guest running.
+        _recorder_ending = True
+        if owned_temporary is not None:
             try:
-                temporary.unlink(missing_ok=True)
+                # Only the file this recorder created; a foreign file at the name stays.
+                _remove_if_owned(temporary, owned_temporary)
             except OSError as exc:
                 print(
                     f"vm-lab: could not remove temporary screendump {temporary}: {exc}",
@@ -631,10 +712,11 @@ def cmd_console_record(
                     flush=True,
                 )
         (out / "DONE").write_text(reason + "\n")
-        # Restored only now: a second signal during the guest stop is caught
-        # above instead of ending the process before DONE exists.
+        # Restored only now: until then the handler stays installed and ignores
+        # a second signal, so the guest stop and DONE always finish.
         for signum, previous in previous_handlers.items():
             signal.signal(signum, signal.SIG_DFL if previous is None else previous)
+        _recorder_ending = False
         if error_message is not None:
             print(f"vm-lab: {error_message}", file=sys.stderr, flush=True)
         elif reason.startswith("error:"):

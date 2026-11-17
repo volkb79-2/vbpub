@@ -131,7 +131,24 @@ may corrupt its disk, killing QEMU does not. Treat a run disk as disposable.
 guest, an existing destination folder and a name made of letters, digits, `.`,
 `_` and `-` that does not start with a dot. It refuses to overwrite either
 file, writes `<name>.raw.sha256` (`<hex>  <name>.raw`) and sets both to mode
-0444. It takes the same `--allow-full-copy` flag.
+0444. It takes the same `--allow-full-copy` flag. `disk promote` holds the start
+admission lock for the whole copy and for hashing the copied file (a read of the
+whole image), so a `start` on any guest is refused as "in progress" until it
+finishes.
+
+A `disk promote` interrupted by Ctrl-C, SIGTERM or SIGHUP removes everything it
+made (`<name>.raw`, `<name>.raw.sha256`, the hidden partial copy and the partial
+digest) and exits 1 with `interrupted by SIGTERM; ...`; a second signal during
+that cleanup is ignored.
+
+Troubleshooting: a `start` killed by SIGTERM, or any command killed by SIGKILL
+(or a host crash), can leave the hidden copy `.disk.raw.partial` in the state
+directory. For a killed `disk promote` delete in the destination folder, by
+hand: `<name>.raw`, `<name>.raw.sha256`, `.<name>.raw.partial` and
+`.<name>.raw.sha256.partial` (whichever exist). A retry refuses to reuse a
+leftover (`refusing to reuse existing ...; remove the leftover of an earlier
+copy`): remove that hidden `.<name>.partial` file by hand and run the command
+again. Ctrl-C during a `start` removes its partial copy itself.
 
 ## Record a console session
 
@@ -197,7 +214,17 @@ SIGTERM and SIGHUP end the loop cleanly (temporary screendump removed, guest
 stopped when `--stop-guest-on-exit` is set and the loop had started) and the
 recorder exits 0. A signal that was already ignored when the recorder started
 stays ignored, so a recorder under `nohup` survives the end of its shell. The
-handlers stay in place until the guest stop has finished and `DONE` is written.
+handlers stay in place until the guest stop has finished and `DONE` is written,
+and from the first signal on every further SIGTERM or SIGHUP is ignored: a
+second one cannot abort the guest stop (so a hung guest stop cannot be
+interrupted by a second SIGTERM either: use SIGKILL). Run the recorder as the
+same user that started the guest: the screendump file is created mode 0600 and
+the QEMU container runs as that uid, so a different uid makes every screendump
+fail and ends the recording after 10 skipped polls. Only the recorder's own temporary
+screendump file is removed (a file that another process put at that name is
+never deleted). If the guest stop itself fails, stderr gets
+`vm-lab: stop-guest-on-exit failed: <message>`; `DONE` keeps the original reason
+and the exit status stays what it would have been (0, or 1 after an error).
 
 `--stop-guest-on-exit` takes effect only once the recording loop has started:
 a recorder refused at start (existing screendump file, Pillow missing, invalid
@@ -339,7 +366,7 @@ pattern can look like the menu going away and coming back; force one engine
 matches plain text, so a menu line with regex characters needs no escaping.
 Exit 2 (invalid regular expression, `--loop-count` without `--loop-pattern`) is
 reported before the VM tool talks to the guest. Every external call of a poll is
-bounded by the time left to `--timeout`, so a hung `pwmcp` still ends in exit 3
+bounded by the time left to `--timeout` (taken just before each call), so a hung `pwmcp` still ends in exit 3
 shortly after the deadline. A `pwmcp` failure on the very first OCR call (sidecar not
 enabled, or just busy) is an immediate exit 1 by design. With `--json` an exit 1
 also prints `{"result": "error", "error": "..."}` on stdout.

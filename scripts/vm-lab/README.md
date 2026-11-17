@@ -35,7 +35,7 @@ python3 scripts/vm-lab/vm_lab.py <verb> [options]
 | --- | --- |
 | `start` | Admit and start a guest. Needs `--name`, `--base-disk`, `--ovmf-code`, `--ovmf-vars`, `--state-dir`, `--memory-mib`, `--cpus` and at least one `--forward`. |
 | `status` | Print container and QMP state as JSON, plus `disk_format` (`raw` or `qcow2`) and `disk_file` of the state directory. |
-| `disk promote` | Publish a stopped guest's raw disk as a read-only base image: `--state-dir`, `--dest-dir`, `--name` (and `--allow-full-copy`). Writes `<name>.raw` and `<name>.raw.sha256`, both mode 0444. |
+| `disk promote` | Publish a stopped guest's raw disk as a read-only base image: `--state-dir`, `--dest-dir`, `--name` (and `--allow-full-copy`). Writes `<name>.raw` and `<name>.raw.sha256`, both mode 0444. Holds the start admission lock while it copies and hashes. SIGTERM and SIGHUP during a promote remove its partial files and exit 1; after SIGKILL, or a killed `start` (SIGTERM), remove the hidden `.<name>.partial` file by hand (see [docs/CONSUMERS.md](docs/CONSUMERS.md)). |
 | `stop` | Ask the guest to power down (ACPI) and wait. Never force-kills. |
 | `terminate-paused` | Stop the QEMU process of a guest QEMU reports as paused. State is kept. |
 | `destroy` | Remove a stopped container. Disk and firmware state are kept. |
@@ -69,7 +69,7 @@ tool. The other console verbs do not.
 | `console record` | `--cap N` | Maximum kept frames; default 2000, at least 1. |
 | `console record` | `--max-runtime S` | Runtime measured from the original start; default 14400, positive. |
 | `console record` | `--qmp-timeout S` | Timeout for every QMP connection; default 30, positive. |
-| `console record` | `--stop-guest-on-exit` | Gracefully stop the guest on every exit after the recording loop started, except `ctl --quit`. A recorder refused at start never stops the guest. |
+| `console record` | `--stop-guest-on-exit` | Gracefully stop the guest on every exit after the recording loop started, except `ctl --quit`. A recorder refused at start never stops the guest. Run the recorder as the same user that started the guest: it creates the screendump file mode 0600 and the QEMU container runs as that uid, so another uid makes every screendump fail and ends the recording after 10 skipped polls. After the first SIGTERM or SIGHUP further ones are ignored until the stop is done, so a hung guest stop cannot be interrupted by a second SIGTERM (use SIGKILL). |
 | `console ctl` | `--keys K` | Queue comma-separated sends; `+` joins one chord. |
 | `console ctl` | `--type TEXT [--secret]` | Queue text, optionally redacting it in `keys.jsonl` only. |
 | `console ctl` | `--type-file FILE` | Queue a file to read at execution time; one trailing newline is stripped. |
@@ -115,16 +115,21 @@ object `{"result": "matched"|"timeout"|"failed"|"boot-loop", "engine", "exact",
 "elapsed_s", "pattern", "matched_text", "loop_count", "last_text"}`; the exit
 code is the same. Exit 1 (both verbs) prints one `vm-lab: <message>` line on
 stderr and, with `--json`, one `{"result": "error", "error": "<message>"}`
-object on stdout. Every external call of a poll is bounded by the time left to
-`--timeout` (at least 1 s), so a hung reader ends in exit 3 shortly after the deadline.
+object on stdout. Every external call of a poll (the vmscreen probe, `vmscreen`,
+the screendump, `pwmcp`) is bounded by the time left to `--timeout`, taken just
+before that call (at least 1 s), so a slow first call shrinks the allowance of
+the next and a hung reader ends in exit 3 shortly after the deadline.
 A `pwmcp` failure on the very first OCR call is an immediate error (a sidecar
 that was never enabled looks the same as a busy one).
 
 vmscreen must be installed (`pip install` of `libraries/vmscreen`; an editable
-install is enough). It does not run from a bare source tree. The VM tool uses
-the `vmscreen` executable on PATH, else `python -m vmscreen`, and probes it once
-per run (`text --help` must list `--qemu-dump-dir`); if it is missing or too
-old, `auto` says so once and uses OCR, and `--engine vmscreen` is an error. OCR
+install is enough). It does not run from a bare source tree. The VM tool probes
+the `vmscreen` executable on PATH first (`text --help` must exit 0 and list
+`--qemu-dump-dir`); if that probe fails, or there is no such executable, it
+probes `python -m vmscreen` the same way. The first form that passes is used for
+the whole run and probed only once. Only when both fail is vmscreen unavailable:
+`auto` says so once (naming both failures) and uses OCR, and `--engine vmscreen`
+is an error. `--engine ocr` never starts the probe. OCR
 needs `pwmcp` on PATH and pwmcp's OCR sidecar enabled. See
 [docs/CONSUMERS.md](docs/CONSUMERS.md) for a worked example and
 [docs/DESIGN-GUIDE.md](docs/DESIGN-GUIDE.md) for the reasons.

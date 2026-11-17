@@ -112,8 +112,14 @@ it with Pillow as RGB, and saves a kept frame in `DIR/frames/`.
 
 The hidden name cannot be requested by `console screendump`, whose filename
 rules require an ordinary visible name. An already existing temporary file is
-refused rather than overwritten, and the file is removed after every read and
-in the recorder's final cleanup, including error exits. Pillow is imported
+refused rather than overwritten. Each poll creates the file itself with
+`O_EXCL` (mode 0600; QEMU runs as the same user, so the recorder must too, and
+overwrites it in place) and remembers its device and inode. If QEMU replaced the
+file by a rename, a regular file of the recorder's own uid at the name is adopted
+after the successful screendump; anything else stays foreign. The file is removed after every read and in the
+recorder's final cleanup, including error exits, but only while the path still
+has that identity: a file another recorder or process put at the name is never
+deleted, and at a poll it makes that poll a skipped one. Pillow is imported
 only by `console record`; the other console verbs do not need it.
 
 Transient console failures are tolerated by skipping and counting. A QMP
@@ -127,6 +133,16 @@ when the validated recorder loop is ready to run: refusing a conflicting
 temporary file or failing to import Pillow must not power down a guest that
 this invocation never recorded.
 
+## Two key tables, one set of names
+
+The key table behind `console type` (US-layout ASCII to QEMU key names, in
+`vm_lab_console.py`) and the key table of `libraries/vmscreen` (its `send` verb)
+are deliberately two copies: the VM tool stays a script with no dependencies, and
+vmscreen keeps its own. Both tables must list the same key names. The tests
+cannot compare them mechanically: `libraries/vmscreen/docs/cli-surface.json`
+names the `--keys` option but not the key names, so the rule is stated here and
+checked by review when either table changes (VMS-BL-03).
+
 ## No process killing
 
 The former standalone launcher owned its QEMU process and kept a pidfile so it
@@ -134,7 +150,12 @@ could signal QEMU as a last resort. The VM tool starts QEMU in a managed
 container and has a graceful `stop` verb. `--stop-guest-on-exit` calls that
 same stop path for cap, max-runtime and error exits, but not for an explicit
 `console ctl --quit`, which only ends the recorder. Without the option the
-guest remains running. The recorder never kills a pid.
+guest remains running. The recorder never kills a pid. SIGTERM and SIGHUP end
+the recording cleanly; the first one claims the stop, and every further
+SIGTERM or SIGHUP is ignored until the guest stop and `DONE` are finished, so a
+repeated signal (a supervisor that retries) cannot abort the stop and leave the
+guest running. A failed stop is reported on stderr and never changes the
+`DONE` reason or the exit status.
 
 ## The display device is an explicit choice
 
@@ -188,8 +209,16 @@ The clone happens before firmware is staged or `runner.json` is written, and
 only on a first start; `--resume` reuses `disk.raw`. The copy is written to
 `.disk.raw.partial` (`.<name>.raw.partial` for a promote) under umask 0077 and
 renamed onto its final name only after `cp` succeeded and the size matches, and
-the temporary file is removed on any failure including Ctrl-C, so the final
-name is either complete or absent and never exists with the base's mode.
+the temporary file is removed on any failure that raises an exception,
+including Ctrl-C, so the final name is either complete or absent and never
+exists with the base's mode. `disk promote` turns SIGTERM and SIGHUP into an
+exception for the length of the command (first signal only; later ones are
+ignored during cleanup; handlers restored afterwards), so a killed promote
+removes `<name>.raw`, the digest and both partials like Ctrl-C does. `start` does
+not: a start killed by SIGTERM, and any command killed by SIGKILL, leaves the
+hidden `.<name>.partial` behind, a retry refuses it, and the operator removes it
+by hand (the refusal says so). Wrapping `start` was rejected as machinery for a
+rare case; it runs the same copy but its state directory is still empty for a retry.
 A full copy of a large base holds the start admission lock for its whole
 duration (up to the one-hour copy timeout), so another `start` is refused as
 "in progress" meanwhile; a reflink is instant and does not.
@@ -211,7 +240,10 @@ snapshot at best and a torn image at worst. The check looks for any running
 managed container, of any profile, whose state label matches the state
 directory; a Docker failure while asking is an error, not "stopped". The check
 and the copy run under the same admission lock a `start` takes, so a
-`start --resume` cannot boot the disk in between. Promotion
+`start --resume` cannot boot the disk in between. The lock is held until the
+promotion is finished, that is also while the copied file is hashed (a read of
+the whole image), so every `start` is refused as "in progress" for that time;
+the lock is simple and the wait is the cost of a stable check. Promotion
 reflinks `disk.raw` to `<dest>/<name>.raw`, hashes the final file (streamed in
 1 MiB chunks, so the digest is of the bytes that were written), writes
 `<name>.raw.sha256` in `sha256sum` format and sets both to 0444. It refuses to
@@ -250,12 +282,16 @@ vmscreen must be **installed**: `pip install` of `libraries/vmscreen` (an
 editable install is enough). It does not run from a bare source tree, because
 its CLI takes its version from the installed `vmscreen` distribution
 ("distribution 'vmscreen' is not installed"); the VM tool does not paper over
-that by editing `PYTHONPATH`. Once per run the tool resolves the command (the
-`vmscreen` executable on PATH, else `python -m vmscreen` of the Python that runs
-the VM tool) and probes it with `text --help`: that must exit 0 and list
-`--qemu-dump-dir`, so a missing install and an older copy without the option
-(added by VML-03a) are both "not available", with the reason. `auto` then says so
-once and uses OCR; `--engine vmscreen` is an error. The probe is not repeated.
+that by editing `PYTHONPATH`. Once per run the tool probes the `vmscreen`
+executable on PATH with `text --help` (that must exit 0 and list
+`--qemu-dump-dir`, so a missing install and an older copy without the option,
+added by VML-03a, are both failures with a reason). If that probe fails, or
+there is no such executable, it probes `python -m vmscreen` of the Python that
+runs the VM tool the same way: a stale or broken script on PATH must not hide a
+working module install. The first form that passes is kept. Only when both fail
+is vmscreen "not available"; `auto` then says so once (naming both reasons) and
+uses OCR, and `--engine vmscreen` is an error. Nothing is probed again, and
+`--engine ocr` never starts the probe.
 
 **Order of checks per poll.** Read the screen; `PATTERN` first (a match wins
 over everything else on the same screen); the fail patterns; the boot-loop
@@ -271,9 +307,11 @@ the deadline and there is one last poll at the deadline. Every external call
 of a poll (the vmscreen probe and run, the QMP screendump, `pwmcp`) is bounded
 by the time left to the deadline, with a floor of one second; a subprocess that
 hits its limit is a skipped poll, so a hung reader ends in exit 3 shortly
-after the deadline. The bound is taken once at the start of a poll and is not
-reduced between the calls of that poll, so the overshoot can be up to the time
-that was left when the poll began, per call. Usage errors (exit 2) print no
+after the deadline. The bound is re-taken before each call of a poll (the
+reader turns the time left at the start of the poll into a deadline and
+subtracts what earlier calls of the same poll used), so a slow first call
+shrinks the next one; the one-second floor can still add up to one second per
+call after the deadline has passed. Usage errors (exit 2) print no
 JSON object even with `--json`. `console text` has no deadline and keeps the fixed
 defaults (30 s probe/QMP, 90 s vmscreen, 120 s pwmcp).
 

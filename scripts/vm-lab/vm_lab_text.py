@@ -5,8 +5,9 @@ Two engines read one screen, strictly one after the other (QMP serves one client
 time, so no connection is held while a subprocess that also uses QMP runs):
 
 * ``vmscreen``: exact text from the VGA text buffer, run as a subprocess: the ``vmscreen``
-  executable on PATH, else ``python -m vmscreen``. It must be installed (it does not run from a
-  bare source tree) and is probed once per run. Applies only while the guest is in a VGA text mode.
+  executable on PATH, then ``python -m vmscreen`` if that probe fails. It must be installed (it
+  does not run from a bare source tree) and is probed once per run. Applies only while the guest is
+  in a VGA text mode.
 * ``ocr``: a PNG screendump taken through the launcher's own QMP path, recognised by
   ``pwmcp ocr`` (needs pwmcp's OCR sidecar). Works for graphical screens.
 
@@ -147,6 +148,7 @@ class ScreenReader:
         environ: Mapping[str, str] | None = None,
         note: Callable[[str], None] = _stderr_note,
         qmp_timeout: float = QMP_TIMEOUT_SECONDS,
+        clock: Callable[[], float] = time.monotonic,
     ) -> None:
         if engine not in ENGINES:
             raise TextUsageError(f"unknown engine {engine!r}")
@@ -157,11 +159,13 @@ class ScreenReader:
         self.qmp_call = qmp_call
         self.runner = runner
         self.which = which
-        self.resolve_vmscreen = resolve_vmscreen or self._default_resolve_vmscreen
+        self.resolve_vmscreen = resolve_vmscreen
         self.probe_vmscreen = probe_vmscreen or self._default_probe_vmscreen
         self.environ = os.environ if environ is None else environ
         self.note = note
         self.qmp_timeout = qmp_timeout
+        self.clock = clock
+        self._deadline: float | None = None
         self._worked: set[str] = set()
         self._vmscreen_unavailable: str | None = None
         self._vmscreen_command: list[str] | None = None
@@ -171,35 +175,46 @@ class ScreenReader:
     def read(self, budget: float | None = None) -> ScreenText:
         """Return the screen text; raise TextNotApplicable only for a forced engine that does not apply.
 
-        ``budget`` is the time left to a caller's deadline: every external call gets
-        ``min(its default, budget)``, at least one second. ``None`` keeps the defaults.
+        ``budget`` is the time left to a caller's deadline. It becomes a deadline for this one
+        read, and every external call (probe, vmscreen, screendump, pwmcp) gets
+        ``min(its default, time left to that deadline)`` computed just before the call, at
+        least one second, so a slow first call shrinks the allowance of the next.
+        ``None`` keeps the defaults.
         """
+        self._deadline = None if budget is None else self.clock() + budget
         if self.engine == "ocr":
-            return self._ocr(budget)
+            return self._ocr()
         if self.engine == "vmscreen":
             if self._vmscreen_unavailable is not None:
                 raise TextEngineError(f"vmscreen is not available: {self._vmscreen_unavailable}")
             try:
-                return self._vmscreen(budget)
+                return self._vmscreen()
             except _VmscreenUnavailable as exc:
                 self._vmscreen_unavailable = str(exc)
                 raise TextEngineError(f"vmscreen is not available: {exc}") from None
         if self._vmscreen_unavailable is None:
             try:
-                return self._vmscreen(budget)
+                return self._vmscreen()
             except TextNotApplicable:
                 pass
             except _VmscreenUnavailable as exc:
                 self._vmscreen_unavailable = str(exc)
                 self.note(f"vm-lab: vmscreen is not available: {exc}; using OCR only")
-        return self._ocr(budget)
+        return self._ocr()
+
+    def _remaining(self) -> float | None:
+        """Seconds left to this read's deadline, or ``None`` when the read has no deadline."""
+        return None if self._deadline is None else self._deadline - self.clock()
 
     # -- vmscreen --------------------------------------------------------
 
-    def _default_resolve_vmscreen(self) -> list[str]:
-        """The ``vmscreen`` executable on PATH, else ``python -m vmscreen``."""
+    def _vmscreen_candidates(self) -> list[list[str]]:
+        """The commands that may run vmscreen, in order: the executable on PATH, then ``python -m vmscreen``."""
+        if self.resolve_vmscreen is not None:
+            return [list(self.resolve_vmscreen())]
+        module = [sys.executable, "-m", "vmscreen"]
         found = self.which("vmscreen")
-        return [found] if found else [sys.executable, "-m", "vmscreen"]
+        return [[found], module] if found else [module]
 
     def _default_probe_vmscreen(self, command: list[str], timeout: float) -> None:
         """``<command> text --help`` must exit 0 and list --qemu-dump-dir; else raise _VmscreenUnavailable."""
@@ -220,12 +235,25 @@ class ScreenReader:
                 f"{label} is too old: `text --help` lacks {VMSCREEN_REQUIRED_OPTION}; install libraries/vmscreen"
             )
 
-    def _resolved_vmscreen(self, budget: float | None) -> list[str]:
-        """Resolve and probe vmscreen once per run; a failure is remembered by the caller."""
+    def _resolved_vmscreen(self) -> list[str]:
+        """Resolve and probe vmscreen once per run; a failure is remembered by the caller.
+
+        Each candidate command is probed in order and the first that passes is kept, so a
+        broken ``vmscreen`` on PATH falls through to ``python -m vmscreen``. Only when every
+        candidate fails is vmscreen unavailable, with every failure named.
+        """
         if self._vmscreen_command is None:
-            command = list(self.resolve_vmscreen())
-            self.probe_vmscreen(command, bounded_timeout(VMSCREEN_PROBE_TIMEOUT_SECONDS, budget))
-            self._vmscreen_command = command
+            failures: list[str] = []
+            for command in self._vmscreen_candidates():
+                try:
+                    self.probe_vmscreen(command, bounded_timeout(VMSCREEN_PROBE_TIMEOUT_SECONDS, self._remaining()))
+                except _VmscreenUnavailable as exc:
+                    failures.append(str(exc))
+                    continue
+                self._vmscreen_command = command
+                break
+            else:
+                raise _VmscreenUnavailable("; then ".join(failures))
         return self._vmscreen_command
 
     def vmscreen_argv(self, command: list[str]) -> list[str]:
@@ -243,13 +271,13 @@ class ScreenReader:
             QEMU_STATE_DIR,
         ]
 
-    def _vmscreen(self, budget: float | None) -> ScreenText:
-        command = self._resolved_vmscreen(budget)
+    def _vmscreen(self) -> ScreenText:
+        command = self._resolved_vmscreen()
         try:
             result = self.runner(
                 self.vmscreen_argv(command),
                 self.environ,
-                bounded_timeout(VMSCREEN_TIMEOUT_SECONDS, budget),
+                bounded_timeout(VMSCREEN_TIMEOUT_SECONDS, self._remaining()),
             )
         except OSError as exc:
             raise TextReadError(f"cannot run {' '.join(command)}: {exc}") from exc
@@ -283,7 +311,7 @@ class ScreenReader:
 
     # -- OCR ---------------------------------------------------------------
 
-    def _ocr(self, budget: float | None) -> ScreenText:
+    def _ocr(self) -> ScreenText:
         if self.which("pwmcp") is None:
             raise TextEngineError(f"OCR needs the pwmcp command, which is not on PATH; {OCR_HINT}")
         png = self.state_dir / OCR_TEMP_FILENAME
@@ -297,7 +325,7 @@ class ScreenReader:
                 self.qmp_socket,
                 "screendump",
                 {"filename": f"{QEMU_STATE_DIR}/{OCR_TEMP_FILENAME}", "format": "png"},
-                bounded_timeout(self.qmp_timeout, budget),
+                bounded_timeout(self.qmp_timeout, self._remaining()),
             )
             try:
                 size = png.stat().st_size
@@ -309,7 +337,7 @@ class ScreenReader:
                 result = self.runner(
                     ["pwmcp", "ocr", "--image", str(png), "--json"],
                     self.environ,
-                    bounded_timeout(PWMCP_TIMEOUT_SECONDS, budget),
+                    bounded_timeout(PWMCP_TIMEOUT_SECONDS, self._remaining()),
                 )
             except OSError as exc:
                 raise TextEngineError(f"cannot run pwmcp: {exc}; {OCR_HINT}") from exc
