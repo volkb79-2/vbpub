@@ -456,7 +456,9 @@ def _status_of(outcome: dict[str, Any], where: str) -> str:
             )
         if _exit_code(statuses[0]) is None:
             raise _unreadable(
-                f"outcomes.json {where} Unviable mutant needs a Build Failure"
+                f"outcomes.json {where} Unviable mutant needs a Build Failure: "
+                f"unmeasured cargo-mutants phase shape (a Build status of "
+                f"Signalled, Other, Timeout or Success)"
             )
         return "Unviable"
     if summary == "Timeout":
@@ -464,7 +466,8 @@ def _status_of(outcome: dict[str, Any], where: str) -> str:
         if statuses != ["Success", "Timeout"]:
             raise _unreadable(
                 f"outcomes.json {where} Timeout needs a Success Build and a "
-                f"timed-out Test phase"
+                f"timed-out Test phase: unmeasured cargo-mutants phase shape "
+                f"(a Build-phase timeout under --build-timeout is not measured)"
             )
         return "Timeout"
     if len(phases) != 2:
@@ -543,6 +546,9 @@ _HUNK_RE = re.compile(r"@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
 #: Same bound and reason as the Stryker parser: a diagnostic preview, never a
 #: whole replacement.
 _DESCRIPTION_REPLACEMENT_BYTES = 60
+#: The comment cargo-mutants appends to every replacement in the diff
+#: (measured on the 27.1.0 fixtures; ``cargo_mutants_version`` is pinned 27.x).
+_CHANGED_MARKER = " /* ~ changed by cargo-mutants ~ */"
 #: Genres whose ``name`` carries the original token, and the words that
 #: precede it. Measured on 27.1.0: ``replace + with - in add`` and ``replace
 #: match guard v > 10 with true in pick``. UnaryOperator and the other genres
@@ -689,10 +695,24 @@ def _bind_genre(
 
 
 def _check_diff(mutant: NormalisedMutant, raw: bytes, blob: _Blob) -> None:
-    """The per-mutant diff tier: ``---`` is the mutant file, and every ``-``
-    and context line equals the committed blob line it claims (old numbering).
-    Every line of the mutation span must be a ``-`` line, which ties the span
-    to the diff (cargo-mutants removes the whole span's lines)."""
+    """The per-mutant diff tier: it ties the span, the replacement and the name
+    to the diff EXACTLY, and nothing else may change.
+
+    * ``---`` is the mutant file; every ``-`` and context row equals the
+      committed blob line it claims (old numbering).
+    * The removed lines are exactly the span's lines, each once, in order
+      (cargo-mutants removes the whole span's lines).
+    * There is exactly one ``+`` row, directly after the last removed row,
+      and it is the first removed line up to the start column, the
+      replacement, the changed-marker comment, then the last removed line from
+      the end column (character columns; a multi-line span is ONE row).
+    * The ``+++`` text is the name after its ``<file>:<line>:<col>: `` prefix.
+
+    Measured equal on every mutant of the 27.1.0 fixtures (93 real mutants plus
+    the synthetic copies, including the multi-line FnValue spans and unicode
+    columns). A replacement that itself contains a newline is unmeasured and
+    is refused rather than guessed at.
+    """
     where = f"mutant {mutant.name!r} diff"
     try:
         rows = raw.decode("utf-8").split("\n")
@@ -706,13 +726,22 @@ def _check_diff(mutant: NormalisedMutant, raw: bytes, blob: _Blob) -> None:
         raise _unreadable(
             f"{where} does not start with '--- {mutant.file}' and a '+++' line"
         )
-    removed: set[int] = set()
+    name_prefix = f"{mutant.file}:{mutant.span[0]}:{mutant.span[1]}: "
+    if mutant.name != name_prefix + rows[1][4:]:
+        raise _unreadable(
+            f"{where}: the '+++' text is not the mutant name after "
+            f"{name_prefix!r}"
+        )
+    removed: list[int] = []
+    added: list[str] = []
+    previous = ""
     index = 2
     while index < len(rows):
         header = _HUNK_RE.fullmatch(rows[index])
         if header is None:
             raise _unreadable(f"{where} has a malformed hunk header {rows[index]!r}")
         index += 1
+        previous = ""
         old_line = int(header[1])
         old_left = 1 if header[2] is None else int(header[2])
         new_left = 1 if header[4] is None else int(header[4])
@@ -722,10 +751,17 @@ def _check_diff(mutant: NormalisedMutant, raw: bytes, blob: _Blob) -> None:
             tag, body = rows[index][:1], rows[index][1:]
             index += 1
             if tag == "+":
+                if previous != "-":
+                    raise _unreadable(
+                        f"{where} adds a line that does not directly follow a "
+                        f"removed line"
+                    )
                 new_left -= 1
+                added.append(body)
                 continue
             if tag not in (" ", "-") or not old_left:
                 raise _unreadable(f"{where} has a malformed hunk line")
+            previous = tag
             if tag == " ":
                 new_left -= 1
             old_left -= 1
@@ -734,10 +770,31 @@ def _check_diff(mutant: NormalisedMutant, raw: bytes, blob: _Blob) -> None:
                     f"{where} line {old_line} is not the committed source line"
                 )
             if tag == "-":
-                removed.add(old_line)
+                removed.append(old_line)
             old_line += 1
-    if not set(range(mutant.span[0], mutant.span[2] + 1)) <= removed:
-        raise _unreadable(f"{where} does not remove the lines of the mutation span")
+    # Bounded comparison: no range over the (untrusted) span is ever built.
+    first, last = mutant.span[0], mutant.span[2]
+    if (
+        last < first
+        or len(removed) != last - first + 1
+        or removed[0] != first
+        or any(after != before + 1 for before, after in zip(removed, removed[1:]))
+    ):
+        raise _unreadable(
+            f"{where} does not remove exactly the lines of the mutation span"
+        )
+    # The span lies inside the blob here: every removed line was checked.
+    expected = (
+        blob.lines[first - 1][: mutant.span[1] - 1]
+        + mutant.replacement
+        + _CHANGED_MARKER
+        + blob.lines[last - 1][mutant.span[3] - 1 :]
+    )
+    if added != [expected]:
+        raise _unreadable(
+            f"{where}: its added line is not the replacement spliced into the "
+            f"committed span"
+        )
 
 
 def _description(mutant: NormalisedMutant) -> str:
@@ -755,6 +812,10 @@ def _bind_mutants(
     ctx: ParseContext,
 ) -> tuple[tuple[IngestedMutant, ...], Mapping[str, str]]:
     """U3b: bind every mutant to the committed blob bytes.
+
+    Blobs are read at ``ctx.run_cwd`` relative to ``ctx.repo_top`` because the
+    tool's ``file`` values are relative to the cargo WORKSPACE ROOT: ``run_cwd``
+    MUST be the workspace root, not the lane cwd (design section 8 item 2).
 
     Spans become UTF-8 byte offsets (D1), the genre is bound to the text at
     the span, and the per-mutant diff member must agree with the blob. The

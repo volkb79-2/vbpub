@@ -319,6 +319,8 @@ def test_d5_status_consistency_refusals():
     refuses(first, "CaughtMutant", 1, "Build and Test")
     refuses(first, "MissedMutant", None, "failing phase")
     refuses(_unviable_index, "CaughtMutant", None, "Build and Test")
+    refuses(first, "Unviable", 1, "unmeasured cargo-mutants phase shape")
+    refuses(first, "Timeout", None, "unmeasured cargo-mutants phase shape")
     for status in ("Success", "Timeout"):
         doc = _doc()
         doc["outcomes"][1]["phase_results"][1]["process_status"] = status
@@ -662,3 +664,22 @@ def test_the_exported_status_tables_are_immutable_views_of_both_parsers():
             module.STATUS_BUCKETS["x"] = "y"  # type: ignore[index]
         with pytest.raises(TypeError):
             module.DISCARDED_STATUSES["x"] = "y"  # type: ignore[index]
+
+
+def test_unmeasured_build_phase_shapes_are_refused_by_name():
+    # A Build-phase timeout (--build-timeout) is a `Timeout` with phases
+    # ["Timeout"]; an Unviable mutant whose Build status is Signalled/Other.
+    # Neither is measured, so both are refused, never guessed.
+    doc = _doc()
+    index = next(i for i, o in enumerate(doc["outcomes"]) if o["summary"] == "Timeout")
+    doc["outcomes"][index]["phase_results"] = [
+        {**doc["outcomes"][index]["phase_results"][0], "process_status": "Timeout"}
+    ]
+    with pytest.raises(AssayError, match="unmeasured cargo-mutants phase shape"):
+        cmo.normalise_outcomes(cmo.load_document(_dump(doc)))
+    for status in ({"Signalled": 9}, "Other"):
+        doc = _doc()
+        index = _unviable_index(doc)
+        doc["outcomes"][index]["phase_results"][0]["process_status"] = status
+        with pytest.raises(AssayError, match="unmeasured cargo-mutants phase shape"):
+            cmo.normalise_outcomes(cmo.load_document(_dump(doc)))

@@ -198,6 +198,58 @@ def test_the_run_directory_must_be_inside_the_repository():
 LINES = ["fn add(a: i32, b: i32) -> i32 {", "    a + b", "}"]
 SOURCE = ("\n".join(LINES) + "\n").encode()
 DIFF_PATH = "diff/src__lib.rs_line_2_col_7.diff"
+#: What cargo-mutants 27.x appends to every replacement in the diff (measured
+#: on the real fixtures); spelled out here so the tests do not borrow it from
+#: the code under test.
+MARK = " /* ~ changed by cargo-mutants ~ */"
+#: The one `+` row of the baseline mutant: `    a ` + `-` + marker + ` b`.
+GOOD = "    a -" + MARK + " b"
+
+
+def _plus_row(mutant: cmo.NormalisedMutant, source: bytes = SOURCE) -> str:
+    """The `+` row cargo-mutants writes: the first span line up to the start
+    column, the replacement, the marker, the last span line from the end column
+    (character columns, one row even for a multi-line span)."""
+    lines = source.decode().split("\n")
+    span = mutant.span
+    return (
+        lines[span[0] - 1][: span[1] - 1]
+        + mutant.replacement
+        + MARK
+        + lines[span[2] - 1][span[3] - 1 :]
+    )
+
+
+def _diff_for(
+    mutant: cmo.NormalisedMutant, source: bytes = SOURCE, *, plus: str | None = None
+) -> bytes:
+    """The exact diff cargo-mutants writes for ``mutant`` over ``source``: a
+    hunk of the span lines plus one context line on each side."""
+    span = mutant.span
+    try:
+        real = source.decode().split("\n")[:-1]
+        added = _plus_row(mutant, source)
+    except (IndexError, UnicodeDecodeError):
+        return b""  # a test that refuses before the diff is ever read
+    first, last = max(1, span[0] - 1), min(len(real), span[2] + 1)
+    old = last - first + 1
+    new = old - (span[2] - span[0] + 1) + 1
+    rows = [f"@@ -{first},{old} +{first},{new} @@"]
+    for number in range(first, last + 1):
+        removed = span[0] <= number <= span[2]
+        rows.append(("-" if removed else " ") + real[number - 1])
+        if number == span[2]:
+            rows.append("+" + added)
+    title = mutant.name[len(f"{mutant.file}:{span[0]}:{span[1]}: ") :]
+    return "\n".join(
+        [f"--- {mutant.file}", plus if plus is not None else f"+++ {title}", *rows, ""]
+    ).encode()
+
+
+def _blob(source: bytes = SOURCE) -> cmo._Blob:
+    repo = _Repo({"src/lib.rs": source})
+    ctx = ParseContext(run_cwd=TOP, repo_top=TOP, repository=repo, read_timeout=1.0)  # type: ignore[arg-type]
+    return cmo._load_blob("src/lib.rs", ctx, PurePosixPath(), [0])
 
 
 def _diff(
@@ -210,7 +262,7 @@ def _diff(
         "@@ -1,3 +1,3 @@",
         " " + LINES[0],
         "-" + LINES[1],
-        "+    a - b",
+        "+" + GOOD,
         " " + LINES[2],
     ]
     return ("\n".join([f"--- {file}", plus, *rows]) + "\n").encode()
@@ -242,7 +294,7 @@ def _bind(
     ctx: ParseContext | None = None,
 ):
     if members is None:
-        members = {m.diff_path: _diff() for m in mutants}
+        members = {m.diff_path: _diff_for(m, source) for m in mutants}
     repo = _Repo(files if files is not None else {"src/lib.rs": source})
     context = ctx or ParseContext(
         run_cwd=TOP, repo_top=TOP, repository=repo, read_timeout=1.0  # type: ignore[arg-type]
@@ -278,7 +330,7 @@ def test_a_span_outside_the_source_or_empty_or_reversed_refuses(span, match):
 
 def test_the_last_column_of_a_line_is_one_past_its_text():
     # `    a + b` is 9 characters: column 10 is the exclusive end.
-    _bind([_mutant(span=(2, 5, 2, 10), genre="UnaryOperator", name="x")])
+    _bind([_mutant(span=(2, 5, 2, 10), genre="UnaryOperator", name="src/lib.rs:2:5: x")])
 
 
 @pytest.mark.parametrize(
@@ -353,17 +405,9 @@ def test_fn_value_without_that_fn_in_its_span_refuses(function):
 def test_fn_value_needs_a_word_boundary_before_fn():
     source = b"xfn add() {\n    a + b\n}\n"
     _refused(
-        lambda: _bind([_fn_value()], {DIFF_PATH: _diff(rows=_rows_for(source))}, source=source),
+        lambda: _bind([_fn_value()], source=source),
         "is not in its function",
     )
-
-
-def _rows_for(source: bytes) -> list[str]:
-    lines = source.decode().split("\n")[:-1]
-    return [f"@@ -1,{len(lines)} +1,{len(lines)} @@"] + [
-        f"-{line}" if number == 2 else f" {line}"
-        for number, line in enumerate(lines, 1)
-    ] + ["+    a - b"]
 
 
 def test_fn_value_with_the_mutation_span_outside_the_function_span_refuses():
@@ -392,7 +436,7 @@ def test_fn_value_without_a_function_refuses(changes):
 
 def test_unary_operator_and_unmeasured_genres_are_bound_by_diff_and_span_only():
     # The name shape of these genres is unmeasured, so no token check applies.
-    mutant = _mutant(genre="UnaryOperator", name="anything at all", replacement="")
+    mutant = _mutant(genre="UnaryOperator", name="src/lib.rs:2:7: anything at all", replacement="")
     bound, _ = _bind([mutant])
     assert bound[0].operator == "cargo-mutants:UnaryOperator"
     assert bound[0].description == "UnaryOperator"
@@ -403,7 +447,7 @@ def test_unary_operator_and_unmeasured_genres_are_bound_by_diff_and_span_only():
 
 
 def test_an_unknown_genre_that_is_not_an_operator_name_refuses():
-    _refused(lambda: _bind([_mutant(genre="Bad Genre", name="x")]), "is not an operator name")
+    _refused(lambda: _bind([_mutant(genre="Bad Genre", name="src/lib.rs:2:7: x")]), "is not an operator name")
 
 
 # --- the per-mutant diff ---------------------------------------------------
@@ -414,18 +458,16 @@ def _with_rows(rows: list[str], **kwargs):
 
 
 def test_the_diff_baseline_forms_bind():
-    _with_rows(["@@ -1,3 +1,3 @@", " " + LINES[0], "-" + LINES[1], "+    a - b", " " + LINES[2]])
+    _with_rows(["@@ -1,3 +1,3 @@", " " + LINES[0], "-" + LINES[1], "+" + GOOD, " " + LINES[2]])
     # Counts default to 1, and several hunks are walked in turn.
-    _with_rows(["@@ -2 +2 @@", "-" + LINES[1], "+    a - b"])
+    _with_rows(["@@ -2 +2 @@", "-" + LINES[1], "+" + GOOD])
     _with_rows(
-        ["@@ -1 +1 @@", " " + LINES[0], "@@ -2 +2 @@", "-" + LINES[1], "+    a - b"]
+        ["@@ -1 +1 @@", " " + LINES[0], "@@ -2 +2 @@", "-" + LINES[1], "+" + GOOD]
     )
-    # An insertion-only hunk (no old lines) is legal alongside the removal.
-    _with_rows(["@@ -2 +2 @@", "-" + LINES[1], "+    a - b", "@@ -3,0 +4 @@", "+// end"])
 
 
 def test_a_no_newline_marker_and_a_missing_final_newline_are_accepted():
-    rows = ["@@ -2 +2 @@", "-" + LINES[1], "\\ No newline at end of file", "+    a - b"]
+    rows = ["@@ -2 +2 @@", "-" + LINES[1], "\\ No newline at end of file", "+" + GOOD]
     _with_rows(rows)
     raw = _diff(rows=rows).rstrip(b"\n")
     assert len(_bind([_mutant()], {DIFF_PATH: raw})[0]) == 1
@@ -433,7 +475,7 @@ def test_a_no_newline_marker_and_a_missing_final_newline_are_accepted():
 
 def test_a_removed_line_that_is_not_the_committed_line_refuses():
     _refused(
-        lambda: _with_rows(["@@ -2 +2 @@", "-    a * b", "+    a - b"]),
+        lambda: _with_rows(["@@ -2 +2 @@", "-    a * b", "+" + GOOD]),
         "is not the committed source line",
     )
 
@@ -476,14 +518,14 @@ def test_a_diff_shorter_than_its_two_header_lines_refuses():
 
 def test_a_diff_that_does_not_remove_the_span_lines_refuses():
     _refused(
-        lambda: _with_rows(["@@ -1,3 +1,4 @@", " " + LINES[0], " " + LINES[1], "+    a - b", " " + LINES[2]]),
-        "does not remove the lines of the mutation span",
+        lambda: _with_rows(["@@ -1 +1 @@", " " + LINES[0]]),
+        "does not remove exactly the lines of the mutation span",
     )
     # A multi-line span needs EVERY one of its lines removed.
-    two = _mutant(span=(2, 7, 3, 2), genre="UnaryOperator", name="x")
+    two = _mutant(span=(2, 7, 3, 2), genre="UnaryOperator", name="src/lib.rs:2:7: x")
     _refused(
-        lambda: _bind([two], {DIFF_PATH: _diff(rows=["@@ -2 +2 @@", "-" + LINES[1], "+y"])}),
-        "does not remove the lines of the mutation span",
+        lambda: _bind([two], {DIFF_PATH: _diff(plus="+++ x", rows=["@@ -2 +2 @@", "-" + LINES[1], "+y"])}),
+        "does not remove exactly the lines of the mutation span",
     )
 
 
@@ -493,8 +535,8 @@ def test_a_diff_that_does_not_remove_the_span_lines_refuses():
         ["not a hunk header"],
         ["@@ -x +1 @@", "-a"],
         ["@@ -1,3 +1,3 @@ trailing", " a"],
-        ["@@ -2 +2 @@", "-" + LINES[1], "+    a - b", "@@ malformed"],
-        ["@@ -2 +2 @@", "-" + LINES[1], "+    a - b", ""],
+        ["@@ -2 +2 @@", "-" + LINES[1], "+" + GOOD, "@@ malformed"],
+        ["@@ -2 +2 @@", "-" + LINES[1], "+" + GOOD, ""],
     ],
 )
 def test_a_malformed_hunk_header_refuses(rows):
@@ -507,7 +549,8 @@ def test_a_truncated_hunk_refuses():
 
 def test_a_hunk_with_more_added_lines_than_it_declares_refuses():
     _refused(
-        lambda: _with_rows(["@@ -2 +2 @@", "+x", "+y", "-" + LINES[1]]), "ends inside a hunk"
+        lambda: _with_rows(["@@ -2 +2 @@", "+x", "+y", "-" + LINES[1]]),
+        "does not directly follow a removed line",
     )
 
 
@@ -519,9 +562,9 @@ def test_a_hunk_with_more_added_lines_than_it_declares_refuses():
         # an empty row where a body line is due
         ["@@ -2 +2 @@", ""],
         # old lines are used up while the new side still expects context
-        ["@@ -2,1 +2,2 @@", "-" + LINES[1], "+    a - b", " " + LINES[2]],
+        ["@@ -2,1 +2,2 @@", "-" + LINES[1], "+" + GOOD, " " + LINES[2]],
         # a removal after the old side is used up
-        ["@@ -2,1 +2,2 @@", "-" + LINES[1], "+    a - b", "-" + LINES[2]],
+        ["@@ -2,1 +2,2 @@", "-" + LINES[1], "+" + GOOD, "-" + LINES[2]],
     ],
 )
 def test_a_malformed_hunk_line_refuses(rows):
@@ -543,7 +586,7 @@ def test_lines_are_split_on_newline_only():
         "@@ -1,3 +1,3 @@",
         " fn add(a: i32, b: i32) -> i32 {\x0b\u2028",
         "-    a + b",
-        "+    a - b",
+        "+" + GOOD,
         " }",
     ]
     bound, _ = _bind([_mutant()], {DIFF_PATH: _diff(rows=rows)}, source=source)
@@ -552,7 +595,9 @@ def test_lines_are_split_on_newline_only():
 
 def test_a_crlf_line_keeps_its_carriage_return_on_both_sides():
     source = b"fn add(a: i32, b: i32) -> i32 {\r\n    a + b\r\n}\r\n"
-    rows = ["@@ -2 +2 @@", "-    a + b\r", "+    a - b\r"]
+    # The `\r` is part of the line text (cargo-mutants splits on `\n`; the CRLF
+    # shape is NOT measured against the real tool), so the added row keeps it.
+    rows = ["@@ -2 +2 @@", "-    a + b\r", "+" + GOOD + "\r"]
     bound, _ = _bind([_mutant()], {DIFF_PATH: _diff(rows=rows)}, source=source)
     assert source[bound[0].start_byte : bound[0].end_byte] == b"+"
 
@@ -619,7 +664,7 @@ def test_a_file_the_report_names_twice_is_read_once_and_counted_once(monkeypatch
     monkeypatch.setattr(cmo, "MAX_MUTATION_REPORT_BYTES", len(SOURCE))
     ctx_repo = _Repo({"src/lib.rs": SOURCE})
     ctx = ParseContext(run_cwd=TOP, repo_top=TOP, repository=ctx_repo, read_timeout=1.0)  # type: ignore[arg-type]
-    members = {DIFF_PATH: _diff(), "diff/two.diff": _diff(plus="+++ replace + with * in add")}
+    members = {DIFF_PATH: _diff(), "diff/two.diff": _diff_for(other)}
     bound, _ = cmo._bind_mutants([_mutant(), other], _Dir(b"", members), ctx)
     assert len(bound) == 2 and ctx_repo.reads == [PurePosixPath("src/lib.rs")]
 
@@ -629,17 +674,181 @@ def test_the_aggregate_source_size_is_bounded(monkeypatch):
     second = b"fn b() {}\n" * 3
     files = {"src/lib.rs": SOURCE, "src/b.rs": second}
     mutants = [_mutant(), _mutant(file="src/b.rs", name="n", diff_path="diff/b.diff")]
+    # (the second mutant is refused while loading its file, before any diff)
     members = {DIFF_PATH: _diff(), "diff/b.diff": b""}
     _refused(lambda: _bind(mutants, members, files=files), "exceed")
 
 
 def test_a_replacement_hash_and_description_preview():
     # UnaryOperator: its name is unmeasured, so the replacement is free here.
-    long = _mutant(genre="UnaryOperator", name="n", replacement="x" * 100)
+    long = _mutant(genre="UnaryOperator", name="src/lib.rs:2:7: n", replacement="x" * 100)
     (only,), _ = _bind([long])
     assert only.description == "UnaryOperator -> " + "x" * 60 + "..."
     # The cut never splits a UTF-8 sequence: 1 + 29 two-byte characters fit.
-    multibyte = _mutant(genre="UnaryOperator", name="n", replacement="a" + "\u00e9" * 40)
+    multibyte = _mutant(genre="UnaryOperator", name="src/lib.rs:2:7: n", replacement="a" + "\u00e9" * 40)
     (only,), _ = _bind([multibyte])
     assert only.description == "UnaryOperator -> a" + "\u00e9" * 29 + "..."
     assert only.replacement_sha256 == hashlib.sha256(multibyte.replacement.encode()).hexdigest()
+
+
+# --- the diff is tied to the replacement, the name and the removed lines ----
+
+
+def _unary(**changes) -> cmo.NormalisedMutant:
+    """A mutant whose name carries no token, so only the diff tier binds it."""
+    return _mutant(genre="UnaryOperator", name="src/lib.rs:2:7: neg", **changes)
+
+
+def test_the_exact_diff_binds_for_a_single_and_a_multi_line_span():
+    assert len(_bind([_unary()])[0]) == 1
+    # Two lines: the prefix of the first, the replacement, the marker and the
+    # suffix of the last, as ONE added row.
+    two = _mutant(
+        genre="UnaryOperator",
+        name="src/lib.rs:2:5: neg",
+        span=(2, 5, 3, 2),
+        replacement="0",
+    )
+    assert _plus_row(two) == "    0" + MARK
+    assert len(_bind([two])[0]) == 1
+    # ... and a one-row diff that keeps the last line's suffix.
+    wide = dataclasses.replace(two, span=(1, 4, 2, 6), name="src/lib.rs:1:4: neg")
+    assert _plus_row(wide) == "fn 0" + MARK + " + b"
+    assert len(_bind([wide])[0]) == 1
+
+
+def test_every_real_multi_line_span_is_bound():
+    for case in ("full", "methods"):
+        artifact, ctx, _ = _case(case, "")
+        multi = [
+            m
+            for m in cmo.normalise_outcomes(cmo.load_document(artifact.report))
+            if m.span[0] != m.span[2]
+        ]
+        assert multi and all(m.genre == "FnValue" for m in multi)
+        assert len(cmo.parse_directory(artifact, ctx).mutants) == REAL_CASES[case][1]
+
+
+@pytest.mark.parametrize("replacement", ["*", "/", "%", "fake1", "fake2"])
+def test_one_site_cannot_be_bound_as_several_mutants_with_one_copied_diff(replacement):
+    # The genuine mutant replaces `+` with `-`; the copy claims another
+    # replacement but ships the very same diff.
+    fake = _mutant(
+        replacement=replacement,
+        name=f"src/lib.rs:2:7: replace + with {replacement} in add",
+        diff_path="diff/fake.diff",
+    )
+    _refused(lambda: _bind([fake], {"diff/fake.diff": _diff()}), "'\\+\\+\\+' text")
+    # Also with the '+++' text rewritten to the fake's name: the added row
+    # still shows `-`.
+    renamed = _diff(plus=f"+++ replace + with {replacement} in add")
+    _refused(
+        lambda: _bind([fake], {"diff/fake.diff": renamed}),
+        "added line is not the replacement",
+    )
+    genuine = _mutant()
+    members = {DIFF_PATH: _diff(), "diff/fake.diff": _diff()}
+    _refused(lambda: _bind([genuine, fake], members), "'\\+\\+\\+' text")
+
+
+def test_a_swapped_replacement_with_an_unchanged_diff_refuses():
+    swapped = _unary(replacement="*")
+    _refused(
+        lambda: _bind([swapped], {DIFF_PATH: _diff(plus="+++ neg")}),
+        "added line is not the replacement",
+    )
+
+
+@pytest.mark.parametrize(
+    "added",
+    [
+        "    unrelated();",
+        GOOD + " ",  # one trailing byte more
+        "    a -" + MARK,  # the suffix of the last line is missing
+        "    a - b",  # the marker is missing
+        " a -" + MARK + " b",  # the prefix is changed
+        "",
+    ],
+)
+def test_an_added_row_that_is_not_the_spliced_replacement_refuses(added):
+    _refused(
+        lambda: _with_rows(["@@ -2 +2 @@", "-" + LINES[1], "+" + added]),
+        "added line is not the replacement",
+    )
+
+
+@pytest.mark.parametrize("plus", ["+++ whatever", "+++ ", "+++ replace + with - in add "])
+def test_an_arbitrary_plus_plus_plus_text_refuses(plus):
+    _refused(
+        lambda: _bind([_mutant()], {DIFF_PATH: _diff(plus=plus)}),
+        "'\\+\\+\\+' text is not the mutant name",
+    )
+
+
+@pytest.mark.parametrize(
+    "rows",
+    [
+        # another line is rewritten in the same hunk (the closing brace)
+        ["@@ -2,2 +2,2 @@", "-" + LINES[1], "+" + GOOD, "-" + LINES[2], "+} // x"],
+        ["@@ -1,2 +1,2 @@", "-" + LINES[0], "+fn x() {", "-" + LINES[1], "+" + GOOD],
+        # ... or in a hunk of its own
+        ["@@ -2 +2 @@", "-" + LINES[1], "+" + GOOD, "@@ -3 +3 @@", "-}", "+}}"],
+    ],
+)
+def test_a_diff_that_rewrites_other_lines_too_refuses(rows):
+    _refused(lambda: _with_rows(rows), "does not remove exactly the lines of the mutation span")
+
+
+def test_a_second_added_row_or_a_row_not_after_a_removal_refuses():
+    # Two removed lines, two added rows: the span's lines are all removed but
+    # the replacement is not ONE spliced row.
+    two = _mutant(
+        genre="UnaryOperator", name="src/lib.rs:2:5: neg", span=(2, 5, 3, 2), replacement="0"
+    )
+    rows = ["@@ -2,2 +2,2 @@", "-" + LINES[1], "+    0", "-" + LINES[2], "+" + MARK.lstrip()]
+    _refused(
+        lambda: _bind([two], {DIFF_PATH: _diff(plus="+++ neg", rows=rows)}),
+        "added line is not the replacement",
+    )
+    # An insertion beside the real change (an added row after context only).
+    _refused(
+        lambda: _with_rows(["@@ -2 +2 @@", "-" + LINES[1], "+" + GOOD, "@@ -3,0 +4 @@", "+// end"]),
+        "does not directly follow a removed line",
+    )
+    _refused(
+        lambda: _with_rows(["@@ -1,3 +1,4 @@", " " + LINES[0], "+x", "-" + LINES[1], " " + LINES[2]]),
+        "does not directly follow a removed line",
+    )
+
+
+@pytest.mark.parametrize("span", [(1, 1, 10**7, 1), (3, 1, 2, 1), (2, 1, 1, 1)])
+def test_a_hostile_or_reversed_span_is_refused_without_building_a_range(span):
+    mutant = _mutant(
+        span=span, genre="UnaryOperator", name=f"src/lib.rs:{span[0]}:{span[1]}: x"
+    )
+    _refused(
+        lambda: cmo._check_diff(mutant, _diff(plus="+++ x"), _blob()),
+        "does not remove exactly the lines of the mutation span",
+    )
+
+
+# --- the last legal column ---------------------------------------------------
+
+
+def test_the_end_exclusive_column_is_allowed_and_one_more_is_not():
+    blob = _blob()  # line 2 is `    a + b`, nine characters
+    assert cmo._byte_offset(blob, 2, 10, "x") == blob.line_starts[1] + 9
+    _refused(lambda: cmo._byte_offset(blob, 2, 11, "x"), "past the end of that line")
+    # The empty last line (after the final newline) has only column 1.
+    assert cmo._byte_offset(blob, 4, 1, "x") == len(SOURCE)
+    _refused(lambda: cmo._byte_offset(blob, 4, 2, "x"), "past the end of that line")
+
+
+def test_the_end_exclusive_column_of_a_crlf_line_counts_its_carriage_return():
+    # `\r` stays part of the line text (cargo-mutants splits on `\n`; the CRLF
+    # shape is not measured against the real tool), so the line is ten
+    # characters and column 11 is its exclusive end.
+    blob = _blob(b"fn add(a: i32, b: i32) -> i32 {\r\n    a + b\r\n}\r\n")
+    assert blob.lines[1] == "    a + b\r"
+    assert cmo._byte_offset(blob, 2, 11, "x") == blob.line_starts[1] + 10
+    _refused(lambda: cmo._byte_offset(blob, 2, 12, "x"), "past the end of that line")

@@ -159,7 +159,10 @@ class ParseContext:
     """What a directory-kind parser may know about the run.
 
     :attr:`run_cwd` is the anchor of the tool's own ``file`` values (the
-    cargo workspace root, design section 8 item 2). The time-window check is
+    cargo workspace root, design section 8 item 2), and the binder reads every
+    blob at ``run_cwd`` relative to ``repo_top``: ``run_cwd`` MUST be the
+    workspace root, NOT the lane cwd (a member directory would read the wrong
+    blobs). The time-window check is
     NOT a parser concern here (design 1.3): it stays with the runner reader.
     """
 
