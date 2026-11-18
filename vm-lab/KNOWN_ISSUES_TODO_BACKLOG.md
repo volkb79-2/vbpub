@@ -18,7 +18,7 @@ The mdt-cockpit image recipe can rely on the wheel carrying the build context (s
 
 **Open question (review RP-02 finding 6):** what floor, and from which release? Until then the bare name has a dependency-confusion risk: an installer pointed at a public index could resolve a foreign `vmscreen`, and `pip install vm-lab` cannot resolve it from the estate's own wheels. Install vmscreen from `libraries/vmscreen` (or the estate wheel list) first, and use `--no-deps` for the vm-lab wheel, until the floor exists. It must be resolved before any vm-lab release.
 
-**TODO (controller, after the vmscreen release):** set `vmscreen>=<first tag>` in `pyproject.toml` `dependencies`, with its reason (the `--qemu-dump-dir` option), and replace the comment above it. vmscreen is registered for release as of 2026-11-18 (VMS-BL-01 closed); the tag `vmscreen-v0.1.0` is not minted yet, so the floor cannot be written.
+**Floor set (controller, 2026-11-18):** `pyproject.toml` now declares `vmscreen>=0.1.0` with its reason (the `--qemu-dump-dir` option); `vmscreen-v0.1.0` is released as a GitHub Release wheel. The dependency-confusion risk of the bare name remains in one respect: no public index carries the estate's vmscreen, so install the vmscreen wheel first (or use `--no-deps` for the vm-lab wheel) until the estate has a resolver for first-party wheels. Close this entry when vm-lab's first release notes state that install order.
 
 **Close-when:** vmscreen is released and this line carries a `>=` floor with its reason.
 

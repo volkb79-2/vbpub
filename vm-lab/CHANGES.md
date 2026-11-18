@@ -5,6 +5,7 @@ All notable changes to vm-lab are recorded here.
 ## [Unreleased]
 
 ### Changed
+- **vmscreen floor (VML-BL-03):** `dependencies = ["vmscreen>=0.1.0"]`, the first vmscreen release (`vmscreen-v0.1.0`, 2026-11-18), which has the `--qemu-dump-dir` option that `vm_lab.text` requires.
 - **vm-lab is a top-level project (RP-02, mdt-cockpit MDT-044).** The tool moved from `scripts/vm-lab/` (`vm_lab.py`, `vm_lab_console.py`, `vm_lab_text.py`) to `vm-lab/` with the package `vm_lab` in `src/` (`vm_lab.core`, `vm_lab.console`, `vm_lab.text`, `vm_lab.cli`), a `pyproject.toml` (name `vm-lab`, Python >= 3.11, dependency `vmscreen`, console script `vm-lab = vm_lab.cli:main`) and `python -m vm_lab`. History follows (`git mv`). Importers: `from vm_lab import core as vm_lab` for the functions tests patch; `from vm_lab import <name>` still works for the names `scripts/truenas/tcg_vm.py` re-exports. The TrueNAS front only changed its `sys.path` entry (`<repo>/vm-lab/src`) and its import lines.
 - `python3 scripts/vm-lab/vm_lab.py <verb>` is gone; use `vm-lab/vm-lab <verb>` (a wrapper that sets `PYTHONPATH` to `vm-lab/src` relative to itself, so a bare checkout needs no install) or the installed `vm-lab` command.
 - The start refusal for an unset `DOCKER_NETWORK_INTERNAL` now says the value comes from the ciu stack environment or the devcontainer (`ciu env print`).
