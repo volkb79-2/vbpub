@@ -1765,6 +1765,28 @@ current-judge replay may have `judge_sha256 = into`. The fixed machine reason
 `carry-forward` is valid for schema 2, so `--carry-forward` does not require an
 operator-authored reason.
 
+### Carry forward same-judge records (B561/WP3a)
+
+`assay run <lane> --resume --carry-forward DIR` searches existing state records
+inside the checkout, accepting only records whose `judge_sha256` equals the
+current run's judge. It tries exact candidate id first, then the unique
+function locus A', then the line-window B for kills only. A same-judge exact-id
+kill follows the existing carry-over path and is reused. A matched survivor is
+stored as `survived` with schema-2 `carry_over` provenance and `locus_match`;
+this keeps R2 failing until it is rejudged. A locus/window kill is left pending
+and runs the full candidate under the current judge. Ambiguous A' keys are
+ignored. The `carry_forward` progress event is emitted once before dispatch.
+
+The source judge restriction is deliberately exact: this phase does not
+compare a context digest or trust a record whose `judge_sha256` differs. Since
+the judge hash includes the full tree, cross-edit reuse is limited until a
+later phase defines and validates prior-judge context. `--carry-forward` is
+incompatible with `--carry-over`, `--carry-over-reason`, `--shard`,
+`--merge-shard-store`, `--reuse-from` and `--candidates-file`; it requires
+`--resume`. A carried
+survivor can be carried again on a later run; use `--rejudge-outcome survived`
+to run it fully. WP3b owns an operator-visible survivor-loop notice.
+
 ### Serial tail retries for native R2 (B179)
 
 After the first sweep, Assay retries once, serially, each candidate executed in

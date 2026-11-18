@@ -738,4 +738,4 @@ def test_campaign_analysis_counts_imported_records_separately(
     assert document["state"]["counted"] == 1
     text = io.StringIO()
     main([*common, "--format", "text"], stdout=text, stderr=io.StringIO())
-    assert "carry-over: 1 counted result(s) were IMPORTED" in text.getvalue()
+    assert "carry-over: 1 counted result(s) were imported" in text.getvalue()

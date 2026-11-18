@@ -257,7 +257,8 @@ __all__ = [
     # store from `default_state_root`, and `mutation_state_record_name` is
     # the identity-to-filename rule `--state-dir` addresses records by.
     "default_state_root",
-    # (B527/B530/B531) flexible campaigns: generations, carry-over, targeted sets.
+    # (B527/B530/B531/B561) flexible campaigns: generations, carry-over,
+    # carry-forward, and targeted sets.
     "FlexOptions",
     "JUDGE_GENERATIONS_DIR",
     "SHARD_MANIFEST_NAME",
@@ -1326,6 +1327,7 @@ PROGRESS_EVENTS = frozenset(
         "resume_merged",
         # --- flexible campaigns (B530/B531) -------------------------------
         "carry_over",  # records reused across a judge change, with provenance
+        "carry_forward",  # same-judge lookup by id, locus or kill window
         "selection",  # --only/--exclude-candidates: what runs, what is left out
         "shard_merge",  # --merge-shard-store: the strict per-shard proof (RG-265 review B1)
         # --- mutation sweep, judged by progress not by time (B091/D-23) ---
@@ -1914,6 +1916,9 @@ class FlexOptions:
     * *carry_over_sources* / *carry_over_reason* -- state directories whose
       finished records are reused across a judge change, with provenance
       (B530). Both or neither;
+    * *carry_forward_sources* -- same-judge record stores searched by exact
+      id, function locus, and kill-only window; survivors are carried and
+      locus/window kills remain pending for a full run (B561/WP3a);
     * *merge_sources* -- other state stores (a shard's) whose records of
       THIS judge identity are copied into this run's store and resumed; no
       provenance is needed because the same judge produced them (B530);
@@ -1934,6 +1939,7 @@ class FlexOptions:
     shard_stores: tuple[Path, ...] = ()
     only_candidates: frozenset[str] | None = None
     exclude_candidates: frozenset[str] | None = None
+    carry_forward_sources: tuple[Path, ...] = ()
 
     def __post_init__(self) -> None:
         if self.lane_file_name is not None and (
@@ -1946,6 +1952,10 @@ class FlexOptions:
             raise ValueError(
                 "carry-over sources and a carry-over reason are required together"
             )
+        if not isinstance(self.carry_forward_sources, tuple) or any(
+            not isinstance(path, Path) for path in self.carry_forward_sources
+        ):
+            raise ValueError("FlexOptions.carry_forward_sources must be a tuple of paths")
         if self.carry_over_reason is not None:
             reason = self.carry_over_reason
             if not isinstance(reason, str) or not reason.strip():
@@ -1970,6 +1980,16 @@ class FlexOptions:
 
     @property
     def reads_other_stores(self) -> bool:
+        return bool(
+            self.carry_over_sources
+            or self.carry_forward_sources
+            or self.merge_sources
+            or self.shard_stores
+        )
+
+    @property
+    def reads_carry_over_stores(self) -> bool:
+        """Whether the legacy exact-id carry-over/merge path has a source."""
         return bool(self.carry_over_sources or self.merge_sources or self.shard_stores)
 
     @property
@@ -3969,6 +3989,368 @@ class _CarryOverResult:
     from_judge_counts: Mapping[str, int]
 
 
+@record
+class _CarryForwardRecord:
+    payload: Mapping[str, Any]
+    raw: bytes
+
+
+@record
+class _CarryForwardSourceIndex:
+    source: Path
+    exact: Mapping[str, _CarryForwardRecord]
+    loci: LocusIndex
+
+
+@record
+class _CarryForwardMatch:
+    kind: Literal["exact-id", "locus", "window"]
+    source: Path
+    payload: Mapping[str, Any]
+    raw: bytes | None = None
+
+
+@record
+class _CarryForwardResult:
+    records: tuple[Mapping[str, Any], ...]
+    exact_id: int
+    locus: int
+    window: int
+    survivors_carried: int
+    kills_requeued: int
+    ambiguous_loci_ignored: int
+    unmatched: int
+
+
+def _carry_forward_record_paths(source: Path) -> tuple[str, ...]:
+    """List canonical flat and generation record spellings in one source."""
+    flat: list[str] = []
+    try:
+        with os.scandir(source) as children:
+            for child in children:
+                if (
+                    child.name.endswith(".json")
+                    and _CANDIDATE_ID_RE.fullmatch(child.name[:-5]) is not None
+                    and child.is_file(follow_symlinks=False)
+                ):
+                    flat.append(child.name)
+    except OSError:
+        return ()
+    relatives = sorted(flat)
+    generations: list[str] = []
+    try:
+        with os.scandir(source / JUDGE_GENERATIONS_DIR) as children:
+            generations = sorted(
+                child.name
+                for child in children
+                if _CANDIDATE_ID_RE.fullmatch(child.name)
+                and child.is_dir(follow_symlinks=False)
+            )
+    except OSError:
+        pass
+    for generation in generations:
+        prefix = f"{JUDGE_GENERATIONS_DIR}/{generation}"
+        try:
+            with os.scandir(source / prefix) as children:
+                relatives.extend(
+                    f"{prefix}/{child.name}"
+                    for child in children
+                    if child.name.endswith(".json")
+                    and _CANDIDATE_ID_RE.fullmatch(child.name[:-5]) is not None
+                    and child.is_file(follow_symlinks=False)
+                )
+        except OSError:
+            continue
+    return tuple(relatives)
+
+
+def _carry_forward_source_index(
+    source: Path,
+    *,
+    judge: str,
+    rejudge_outcomes: frozenset[str],
+    deadline_check: Callable[[], float] | None = None,
+) -> _CarryForwardSourceIndex:
+    """Read one bounded source and index eligible records by id/locus/window."""
+    exact: dict[str, _CarryForwardRecord] = {}
+    records: list[Mapping[str, Any]] = []
+    for relative in _carry_forward_record_paths(source):
+        if deadline_check is not None:
+            deadline_check()
+        try:
+            raw = safeio.read_bounded_input(
+                source, relative, limit=MUTATION_STATE_RECORD_LIMIT
+            )
+        except AssayError:
+            continue
+        if raw is None:
+            continue
+        try:
+            payload = json.loads(raw.decode("utf-8"))
+        except (UnicodeDecodeError, ValueError, RecursionError):
+            continue
+        if not isinstance(payload, dict):
+            continue
+        candidate = payload.get("candidate_id")
+        if (
+            not isinstance(candidate, str)
+            or _CANDIDATE_ID_RE.fullmatch(candidate) is None
+            or Path(relative).name[:-5] != candidate
+            or payload.get("judge_sha256") != judge
+            or record_effective_judge(payload) != judge
+            or not _carry_over_importable(
+                payload.get("outcome_bucket"), rejudge_outcomes
+            )
+        ):
+            continue
+        exact.setdefault(candidate, _CarryForwardRecord(payload=payload, raw=raw))
+        records.append(payload)
+    return _CarryForwardSourceIndex(
+        source=source,
+        exact=exact,
+        loci=locus_index_for_records(records),
+    )
+
+
+def _carry_forward_lookup(
+    jobs: Sequence[MutantJob],
+    sources: tuple[Path, ...],
+    *,
+    judge: str,
+    rejudge_outcomes: frozenset[str] = frozenset(),
+    deadline_check: Callable[[], float] | None = None,
+) -> tuple[dict[str, _CarryForwardMatch], int]:
+    """Resolve exact-id, A' and then kill-only B matches in source order."""
+    indexes = tuple(
+        _carry_forward_source_index(
+            source,
+            judge=judge,
+            rejudge_outcomes=rejudge_outcomes,
+            deadline_check=deadline_check,
+        )
+        for source in sources
+    )
+    matches: dict[str, _CarryForwardMatch] = {}
+    ambiguous = 0
+    for job in jobs:
+        if deadline_check is not None:
+            deadline_check()
+        identity = candidate_id(job)
+        exact_match = next(
+            (
+                _CarryForwardMatch(
+                    kind="exact-id",
+                    source=index.source,
+                    payload=index.exact[identity].payload,
+                    raw=index.exact[identity].raw,
+                )
+                for index in indexes
+                if identity in index.exact
+            ),
+            None,
+        )
+        if exact_match is not None:
+            matches[identity] = exact_match
+            continue
+
+        fields = _locus_fields_for_job(job)
+        locus = _locus_from_record(fields.get("locus"))
+        if locus is not None:
+            for index in indexes:
+                if locus.key in index.loci.ambiguous_loci():
+                    ambiguous += 1
+                    continue
+                payload = index.loci.by_locus(locus.key)
+                if isinstance(payload, Mapping):
+                    matches[identity] = _CarryForwardMatch(
+                        kind="locus", source=index.source, payload=payload
+                    )
+                    break
+        if identity in matches:
+            continue
+
+        window_key = fields.get("window_key")
+        if isinstance(window_key, str):
+            for index in indexes:
+                kills = tuple(
+                    payload
+                    for payload in index.loci.by_window(window_key)
+                    if isinstance(payload, Mapping)
+                    and payload.get("outcome_bucket") == "killed"
+                )
+                if kills:
+                    matches[identity] = _CarryForwardMatch(
+                        kind="window", source=index.source, payload=kills[0]
+                    )
+                    break
+    return matches, ambiguous
+
+
+def carry_forward_match_kinds(
+    jobs: Sequence[MutantJob],
+    sources: tuple[Path, ...],
+    *,
+    judge: str,
+    deadline_check: Callable[[], float] | None = None,
+) -> tuple[dict[str, str], int]:
+    """Return the advisory match kind for each candidate and collision count."""
+    matches, ambiguous = _carry_forward_lookup(
+        jobs, sources, judge=judge, deadline_check=deadline_check
+    )
+    return {identity: match.kind for identity, match in matches.items()}, ambiguous
+
+
+def _carry_forward_records(
+    flex: FlexOptions,
+    *,
+    jobs: Sequence[MutantJob],
+    judge: str,
+    state_root: Path,
+    state_root_fd: int | None,
+    state_root_guard: Callable[[], None] | None,
+    campaign_deadline_sha256: str | None,
+    cold_witness: bool,
+    equivalence_artifact: str | None,
+    baseline_equivalence: bytes | None,
+    kill_signal_artifact: str | None,
+    rejudge_outcomes: frozenset[str],
+    clock: Clock,
+    deadline_check: Callable[[], float] | None = None,
+) -> _CarryForwardResult:
+    """Carry same-judge survivors and leave locus/window kills for full runs."""
+    baseline_equivalence_sha256 = (
+        hashlib.sha256(baseline_equivalence).hexdigest()
+        if baseline_equivalence is not None
+        else None
+    )
+    common = {
+        "cold_witness": cold_witness,
+        "equivalence_artifact": equivalence_artifact,
+        "baseline_equivalence_sha256": baseline_equivalence_sha256,
+        "kill_signal_artifact": kill_signal_artifact,
+    }
+    guard: Callable[[], None] = state_root_guard or (lambda: None)
+    matches, ambiguous = _carry_forward_lookup(
+        jobs,
+        flex.carry_forward_sources,
+        judge=judge,
+        rejudge_outcomes=rejudge_outcomes,
+        deadline_check=deadline_check,
+    )
+    imported_at = iso_utc(clock())
+    records: list[Mapping[str, Any]] = []
+    counts: collections.Counter[str] = collections.Counter()
+    survivors_carried = 0
+    kills_requeued = 0
+    unmatched = 0
+    for job in jobs:
+        guard()
+        identity = candidate_id(job)
+        match = matches.get(identity)
+        if match is None:
+            unmatched += 1
+            continue
+        chosen: Mapping[str, Any] = match.payload
+        if match.kind == "exact-id":
+            try:
+                validated = _load_validated_state_record(
+                    state_root,
+                    job,
+                    judge=judge,
+                    raw_override=match.raw,
+                    accept_any_judge=True,
+                    **common,
+                )
+            except MutationStateError:
+                validated = None
+            if not isinstance(validated, Mapping):
+                unmatched += 1
+                continue
+            chosen = validated
+
+        bucket = chosen.get("outcome_bucket")
+        if bucket == "killed" and match.kind in {"locus", "window"}:
+            counts[match.kind] += 1
+            kills_requeued += 1
+            continue
+        if bucket not in CARRY_OVER_IMPORTABLE_BUCKETS:
+            unmatched += 1
+            continue
+        if bucket == "survived" and match.kind == "window":
+            unmatched += 1
+            continue
+
+        payload = dict(chosen)
+        needs_provenance = bucket == "survived" or (
+            match.kind != "exact-id"
+        ) or (
+            campaign_deadline_sha256 is not None
+            and chosen.get("campaign_deadline_sha256") != campaign_deadline_sha256
+        )
+        if needs_provenance:
+            identity_fields = candidate_identity_fields(job)
+            payload.update(identity_fields)
+            payload.update(
+                {
+                    "candidate_id": identity,
+                    "replacement_sha256": job.site.replacement_sha256,
+                    "lineno": job.site.lineno,
+                    "description": job.site.description,
+                    **_locus_fields_for_job(job),
+                }
+            )
+            payload.pop("locus", None)
+            payload.pop("window_key", None)
+            payload.update(_locus_fields_for_job(job))
+            payload["carry_over"] = {
+                "schema_version": CARRY_OVER_SCHEMA_VERSION_V2,
+                "from_judge_sha256": chosen["judge_sha256"],
+                "into_judge_sha256": judge,
+                "source": str(match.source),
+                "reason": CARRY_FORWARD_REASON,
+                "imported_at": imported_at,
+                "importer_version": _tool_version() or "unknown",
+                "locus_match": match.kind,
+            }
+            payload.pop("campaign_deadline_sha256", None)
+            if campaign_deadline_sha256 is not None:
+                payload["campaign_deadline_sha256"] = campaign_deadline_sha256
+        encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode(
+            "utf-8"
+        )
+        try:
+            checked = _load_validated_state_record(
+                state_root,
+                job,
+                judge=judge,
+                campaign_deadline_sha256=campaign_deadline_sha256,
+                raw_override=encoded,
+                **common,
+            )
+        except MutationStateError:
+            checked = None
+        if not isinstance(checked, Mapping):
+            unmatched += 1
+            continue
+        guard()
+        _write_mutation_state_record(state_root, payload, state_root_fd=state_root_fd)
+        records.append(payload)
+        counts[match.kind] += 1
+        if bucket == "survived":
+            survivors_carried += 1
+
+    return _CarryForwardResult(
+        records=tuple(records),
+        exact_id=counts["exact-id"],
+        locus=counts["locus"],
+        window=counts["window"],
+        survivors_carried=survivors_carried,
+        kills_requeued=kills_requeued,
+        ambiguous_loci_ignored=ambiguous,
+        unmatched=unmatched,
+    )
+
+
 def _write_shard_manifest(
     state_root: Path,
     *,
@@ -5123,8 +5505,8 @@ def run_mutation(
     #: (WP1) ``judge.mutation.candidate_fail_fast``: candidate commands (never
     #: the baseline) stop at the first failing test and skip coverage.
     candidate_fail_fast: bool = False,
-    #: (B529-B531) Resource projection, carry-over and targeted candidate
-    #: sets; ``None`` keeps every pre-B529 behaviour byte-identical.
+    #: (B529-B531/B561) Resource projection, carry-over/forward and targeted
+    #: candidate sets; ``None`` keeps every pre-B529 behaviour byte-identical.
     flex: FlexOptions | None = None,
 ) -> Mutation | Literal["UNSUPPORTED"] | None:
     """The R2 execution entry point (P23 exact reexecution): every mutant is
@@ -5328,11 +5710,13 @@ def run_mutation(
         if not isinstance(flex, FlexOptions):
             raise ValueError("run_mutation flex must be FlexOptions or None")
         if flex.reads_other_stores and not resume:
-            raise ValueError("run_mutation carry-over/merge requires resume=True")
+            raise ValueError(
+                "run_mutation carry-over/carry-forward/merge requires resume=True"
+            )
         if (flex.reads_other_stores or flex.selection_active) and state_root is None:
             raise ValueError(
                 "run_mutation carry-over and candidate selection require the "
-                "caller's authoritative state_root"
+                "caller's authoritative state_root (carry-forward also requires it)"
             )
         if flex.selection_active and selection_specified:
             raise ValueError(
@@ -5882,7 +6266,7 @@ def run_mutation(
                         rejudged_candidate_ids.add(candidate_id(job))
                         continue
                     resumed_records.append(record)
-            if flex is not None and flex.reads_other_stores:
+            if flex is not None and flex.reads_carry_over_stores:
                 carry = _carry_over_records(
                     flex,
                     jobs=[
@@ -5930,6 +6314,56 @@ def run_mutation(
                         }
                     )
                 imported_total = carry.imported_total
+            if flex is not None and flex.carry_forward_sources:
+                carry_forward = _carry_forward_records(
+                    flex,
+                    jobs=[
+                        job
+                        for job in selected_jobs
+                        if candidate_id(job)
+                        not in {record["candidate_id"] for record in resumed_records}
+                        and candidate_id(job) not in rejudge_ids
+                    ],
+                    judge=judge,
+                    state_root=Path(state_root),
+                    state_root_fd=state_root_fd,
+                    state_root_guard=state_root_guard,
+                    campaign_deadline_sha256=campaign_deadline_sha256,
+                    cold_witness=cold_witness,
+                    equivalence_artifact=equivalence_artifact,
+                    baseline_equivalence=baseline_equivalence,
+                    kill_signal_artifact=kill_signal_artifact,
+                    rejudge_outcomes=rejudge_outcomes,
+                    clock=clock,
+                    deadline_check=deadline.remaining,
+                )
+                resumed_records.extend(carry_forward.records)
+                imported_total += carry_forward.survivors_carried
+                if write_progress is not None:
+                    write_progress(
+                        {
+                            "event": "carry_forward",
+                            "candidate_total": total,
+                            "considered_total": (
+                                len(carry_forward.records)
+                                + carry_forward.kills_requeued
+                                + carry_forward.unmatched
+                            ),
+                            "exact_id": carry_forward.exact_id,
+                            "locus": carry_forward.locus,
+                            "window": carry_forward.window,
+                            "survivors_carried": carry_forward.survivors_carried,
+                            "kills_requeued": carry_forward.kills_requeued,
+                            "ambiguous_loci_ignored": (
+                                carry_forward.ambiguous_loci_ignored
+                            ),
+                            "unmatched": carry_forward.unmatched,
+                            "sources": [
+                                str(path) for path in flex.carry_forward_sources
+                            ],
+                            "reason": CARRY_FORWARD_REASON,
+                        }
+                    )
             resumed_ids = {record["candidate_id"] for record in resumed_records}
             pending_jobs = tuple(
                 job for job in selected_jobs if candidate_id(job) not in resumed_ids
