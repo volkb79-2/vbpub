@@ -775,8 +775,9 @@ the exact test and copied-fixture fingerprints. An added test can change
 pytest collection or install an autouse fixture, so even an additive suite
 cannot reuse older kills.
 
-An operator may explicitly postpone the long R2 campaign for a provisional
-release. The `gate-provisional` lane calls the same aggregate driver with a
+Under the standing release rule (operator decision 2026-11-18) the long R2
+campaign is owed asynchronously on the latest release rather than run per
+release. The `release-gate` lane calls the same aggregate driver with a
 tracking id; the driver still runs the protected-ref probe, installed-wheel
 acceptance, Assay R0/R1/R3, total coverage, and canary. It records the skipped
 mutation lane with the candidate commit, time, reason, and tracking id under
@@ -1106,20 +1107,20 @@ in KI-74; their original incidents remain in the backlog for history.
 ## Release dry-run checks gate preconditions
 
 Several release failures were knowable before the release candidate worktree
-was created: the planned version could be outside KI-79's R2 postponement
-window, a tester image could carry a different Run-Gate wheel than the gate
+was created: a tester image could carry a different Run-Gate wheel than the gate
 requires, the zero-release guide could name an older Run-Gate release than its
 changelog, or the Docker host could lack the wheel-builder or digest-pinned
 cgroup-probe image. Letting a preview or release report only tags and versions
 sent these cases through worktree setup and, for a missing probe image, the
 start of a long gate before it refused.
 
-The launcher checks those facts before dispatch or worktree allocation. The
-KI-79 check makes a temporary prepared changelog and
-calls the gate's `_validate_postponement`, so the bounds and authorization
-remain defined in one place. It runs only when the source revision's
-`cmru.toml` run-tests step runs `gate-provisional`, the one lane that uses the
-postponement; otherwise the row is `SKIPPED`. The image check uses the gate's installed-wheel,
+The launcher checks those facts before dispatch or worktree allocation. There
+is no version check: the standing release rule (KI-79/KI-159) has no per-minor
+window, so the former `KI-79 waiver window` row, which made a temporary prepared
+changelog and called the gate's `_validate_postponement`, no longer exists and
+the gate path is identical for every planned version. The gate itself still
+requires a dated prepared changelog heading and a recognised tracking id. The
+image check uses the gate's installed-wheel,
 published-wheel, and image-label identity preflight; it inspects the selected
 image without starting a tester container, and downloads the published
 Run-Gate wheel from GitHub to compare digests, so it needs network access. If Docker is unavailable, it says
@@ -1151,20 +1152,19 @@ Any failed check prints the observed fact and an actionable remedy, then exits
 4 before a candidate worktree, tag, or gate is created. The launcher compares the checked
 source revision again before allocation, so the plan cannot drift between the
 check and the candidate. When every check passes, one summary line preserves
-the existing dry-run output. KI-79 remains a bounded allowlist so mutation
-deferral is authorized only for release lines covered by an explicit operator
-decision; the dry-run and release gate call the same validator to prevent
-policy drift. A release outside the current windows must run the full `gate`
-lane or follow a recorded operator decision to change the window. KI-159 tracks
-whether to replace per-minor edits with a rolling window or a declared policy
-field. The focused `release-preconditions` lane covers
-the three checks and their refusal paths, plus the changelog release-start
+the existing dry-run output. The operator decision of 2026-11-18 (KI-79,
+KI-159) removed the bounded per-minor allowlist: a release needs R1, R3 and an
+independent review, and R2 runs asynchronously, so moving a window once per
+minor was pure ceremony (it blocked cmru 7.4.0). The owed R2 stays recorded in
+the retained marker, the snapshot's `deferred_lanes` and KI-141. The focused
+`release-preconditions` lane covers
+the remaining checks and their refusal paths, plus the changelog release-start
 guards moved out of Assay. It runs first in the aggregate gate so those guards
 run before the full suite.
 
 ## The bare-host gate controller runs in the installed CMRU environment (KI-81)
 
-`gate` and `gate-provisional` are `bare-host` lanes: the controller must reach the
+`gate` and `release-gate` are `bare-host` lanes: the controller must reach the
 Docker daemon to start each `tester-unified` lane container itself, so it cannot itself
 run in one. Its command is `python3 -I -B .../run_release_gate.py`, and on a real host
 `python3` is simply whatever `PATH` names, for example the system interpreter, which has
@@ -1189,7 +1189,7 @@ The choices, and what was rejected:
   together with the protected `CMRU_RELEASE_GATE_COMMIT` that the same workflow sets for the
   same step: an operator's stale shell variable must not choose the interpreter of a manual
   run (the rule `CMRU_INTERNAL_BIN` already follows), and an unusable protected value is a
-  refusal, not a cue to search `PATH`. For a manual `run-gate gate-provisional` there is no
+  refusal, not a cue to search `PATH`. For a manual `run-gate release-gate` there is no
   CMRU process to ask, so the installed `cmru` console script's shebang, which names the
   environment the wheel was installed into, is read instead (with the parser already used to
   identify Run-Gate); a `cmru` on `PATH` that is not a Python console script is refused with

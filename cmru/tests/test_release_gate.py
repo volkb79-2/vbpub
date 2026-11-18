@@ -928,32 +928,56 @@ def test_postponed_mutation_skips_only_the_mutation_lane_and_records_the_marker(
     assert "PROVISIONAL PASS" in warn_lines[0] and "NOT an R2 pass" in warn_lines[0]
 
 
-def test_postponement_is_refused_for_a_later_release_before_any_lane_runs(
-    tmp_path, monkeypatch,
+def _commit_changelog(repo, text, message):
+    (repo / "cmru" / "CHANGES.md").write_text(text, encoding="utf-8")
+    # The gate judges an exact commit and refuses a dirty tracked tree before it
+    # reaches the postponement check, so the prepared changelog is committed.
+    _git(repo, "add", "cmru/CHANGES.md")
+    _git(repo, "commit", "--quiet", "-m", message)
+
+
+@pytest.mark.parametrize("version", ["5.9.9", "6.1.9", "6.3.0", "7.4.0", "7.5.0", "8.0.0"])
+def test_standing_rule_accepts_any_prepared_release_version_and_records_it(
+    tmp_path, monkeypatch, capsys, version,
 ):
     repo, private_root, calls = _recording_gate(tmp_path, monkeypatch)
-    (repo / "cmru" / "CHANGES.md").write_text(
-        "# Changelog\n\n## [6.3.0] - 2026-10-15\n\n- later release\n",
-        encoding="utf-8",
+    _commit_changelog(
+        repo, f"# Changelog\n\n## [{version}] - 2026-11-18\n\n- release\n", f"prepare {version}",
     )
-    # The gate judges an exact commit and refuses a dirty tracked tree before it
-    # reaches the postponement check, so the later release is committed.
-    _git(repo, "add", "cmru/CHANGES.md")
-    _git(repo, "commit", "--quiet", "-m", "prepare a later release")
 
-    with pytest.raises(
-        RuntimeError,
-        match=(
-            r"authorized only for CMRU >= 6\.2\.0 and < 6\.3\.0 .*"
-            r" or >= 7\.0\.0 and < 7\.1\.0 .* or >= 7\.1\.0 and < 7\.2\.0 .*"
-            r" or >= 7\.2\.0 and < 7\.3\.0 .* or >= 7\.3\.0 and < 7\.4\.0 .*"
-            r"identifies 6\.3\.0"
-        ),
-    ):
+    status = run_release_gate.run_release_gate(
+        repo, temp_parent=private_root, postpone_mutation="KI-79",
+    )
+
+    assert status == 0
+    assert calls == ["release-preconditions", "ref-probe", "installed-wheel-live", "assay"]
+    record = json.loads(
+        (repo / "cmru" / ".assay" / "mutation-postponed-cmru.json").read_text(encoding="utf-8")
+    )
+    assert record["target_version"] == version
+    assert "window" not in capsys.readouterr().err.lower()
+
+
+@pytest.mark.parametrize(
+    "changelog",
+    [
+        "# Changelog\n\n## [Unreleased]\n\n- nothing prepared\n",
+        "# Changelog\n\n## [7.5.0]\n\n- heading without a date\n",
+    ],
+    ids=["no-prepared-heading", "undated-heading"],
+)
+def test_postponement_still_requires_a_dated_prepared_heading_before_any_lane_runs(
+    tmp_path, monkeypatch, changelog,
+):
+    repo, private_root, calls = _recording_gate(tmp_path, monkeypatch)
+    _commit_changelog(repo, changelog, "prepare nothing usable")
+
+    with pytest.raises(RuntimeError, match="requires a dated, prepared CMRU release heading") as caught:
         run_release_gate.run_release_gate(
             repo, temp_parent=private_root, postpone_mutation="KI-79",
         )
 
+    assert "window" not in str(caught.value).lower()
     assert calls == []
     assert not (repo / "cmru" / ".assay" / "mutation-postponed-cmru.json").exists()
 

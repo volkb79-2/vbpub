@@ -1,0 +1,180 @@
+{
+  "case": "hub-repair-over-budget",
+  "doc": "the dictionary form itself does not fit: dropped and counted, needs_dict stays set, the later tick repairs",
+  "limits": {
+    "client_queue_bytes": 500,
+    "uid_live_bytes": 2000,
+    "global_live_bytes": 8000,
+    "query_queue_bytes": 1000,
+    "uid_query_bytes": 1000,
+    "global_query_bytes": 4000,
+    "control_queue_bytes": 500,
+    "stall_ms": 5000,
+    "frame_completion_ms": 5000
+  },
+  "conns": [
+    1
+  ],
+  "steps": [
+    {
+      "t_ms": 0,
+      "op": "push_live",
+      "c": 0,
+      "s": 2,
+      "gen": 1,
+      "bare": 300,
+      "dict": 400
+    },
+    {
+      "t_ms": 0,
+      "op": "head",
+      "c": 0,
+      "block": true
+    },
+    {
+      "t_ms": 0,
+      "op": "wrote",
+      "c": 0,
+      "n": 400
+    },
+    {
+      "t_ms": 0,
+      "op": "push_live",
+      "c": 0,
+      "s": 1,
+      "gen": 1,
+      "bare": 300,
+      "dict": 400
+    },
+    {
+      "t_ms": 0,
+      "op": "head",
+      "c": 0,
+      "block": true
+    },
+    {
+      "t_ms": 0,
+      "op": "push_live",
+      "c": 0,
+      "s": 2,
+      "gen": 1,
+      "bare": null,
+      "dict": 400,
+      "watch": [
+        "c0"
+      ]
+    },
+    {
+      "t_ms": 0,
+      "op": "push_live",
+      "c": 0,
+      "s": 2,
+      "gen": 1,
+      "bare": 300,
+      "dict": 400,
+      "watch": [
+        "c0"
+      ]
+    },
+    {
+      "t_ms": 0,
+      "op": "wrote",
+      "c": 0,
+      "n": 400
+    },
+    {
+      "t_ms": 60000,
+      "op": "push_live",
+      "c": 0,
+      "s": 2,
+      "gen": 1,
+      "bare": 300,
+      "dict": 400,
+      "watch": [
+        "c0"
+      ]
+    },
+    {
+      "t_ms": 60000,
+      "op": "head",
+      "c": 0,
+      "block": true
+    }
+  ],
+  "expect": [
+    [
+      "queued"
+    ],
+    [
+      {
+        "head": {
+          "len": 400,
+          "corr": 2,
+          "dropped": 0,
+          "tail_tag": 160
+        }
+      }
+    ],
+    [],
+    [
+      "queued"
+    ],
+    [
+      {
+        "head": {
+          "len": 400,
+          "corr": 1,
+          "dropped": 0,
+          "tail_tag": 160
+        }
+      }
+    ],
+    [
+      "dropped-incoming",
+      {
+        "pools": {
+          "c0": [
+            400,
+            0,
+            0
+          ]
+        }
+      }
+    ],
+    [
+      "dropped-incoming",
+      {
+        "pools": {
+          "c0": [
+            400,
+            0,
+            0
+          ]
+        }
+      }
+    ],
+    [],
+    [
+      "queued",
+      {
+        "pools": {
+          "c0": [
+            400,
+            0,
+            0
+          ]
+        }
+      }
+    ],
+    [
+      {
+        "head": {
+          "len": 400,
+          "corr": 2,
+          "dropped": 2,
+          "tail_tag": 160
+        }
+      }
+    ]
+  ]
+}

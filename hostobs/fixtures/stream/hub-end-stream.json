@@ -1,0 +1,190 @@
+{
+  "case": "hub-end-stream",
+  "doc": "end_stream removes the unpinned tick and counts it; queued Query blocks stay and are counted",
+  "limits": {
+    "client_queue_bytes": 1000,
+    "uid_live_bytes": 2000,
+    "global_live_bytes": 8000,
+    "query_queue_bytes": 1000,
+    "uid_query_bytes": 1000,
+    "global_query_bytes": 4000,
+    "control_queue_bytes": 500,
+    "stall_ms": 5000,
+    "frame_completion_ms": 5000
+  },
+  "conns": [
+    1
+  ],
+  "steps": [
+    {
+      "t_ms": 0,
+      "op": "push_live",
+      "c": 0,
+      "s": 1,
+      "gen": 1,
+      "bare": 200,
+      "dict": 240
+    },
+    {
+      "t_ms": 0,
+      "op": "head",
+      "c": 0,
+      "block": true
+    },
+    {
+      "t_ms": 0,
+      "op": "push_live",
+      "c": 0,
+      "s": 1,
+      "gen": 1,
+      "bare": 200,
+      "dict": 240
+    },
+    {
+      "t_ms": 0,
+      "op": "end_stream",
+      "c": 0,
+      "s": 1,
+      "watch": [
+        "c0"
+      ]
+    },
+    {
+      "t_ms": 0,
+      "op": "wrote",
+      "c": 0,
+      "n": 240
+    },
+    {
+      "t_ms": 0,
+      "op": "push_query",
+      "c": 0,
+      "s": 2,
+      "len": 200
+    },
+    {
+      "t_ms": 0,
+      "op": "head",
+      "c": 0,
+      "block": true
+    },
+    {
+      "t_ms": 0,
+      "op": "push_query",
+      "c": 0,
+      "s": 2,
+      "len": 200
+    },
+    {
+      "t_ms": 0,
+      "op": "push_query",
+      "c": 0,
+      "s": 2,
+      "len": 200
+    },
+    {
+      "t_ms": 0,
+      "op": "end_stream",
+      "c": 0,
+      "s": 2,
+      "watch": [
+        "c0"
+      ]
+    },
+    {
+      "t_ms": 0,
+      "op": "wrote",
+      "c": 0,
+      "n": 200
+    },
+    {
+      "t_ms": 0,
+      "op": "head",
+      "c": 0,
+      "block": true
+    }
+  ],
+  "expect": [
+    [
+      "queued"
+    ],
+    [
+      {
+        "head": {
+          "len": 240,
+          "corr": 1,
+          "dropped": 0,
+          "tail_tag": 160
+        }
+      }
+    ],
+    [
+      "queued"
+    ],
+    [
+      {
+        "counts": {
+          "blocks": 1,
+          "dropped": 1
+        }
+      },
+      {
+        "pools": {
+          "c0": [
+            240,
+            0,
+            0
+          ]
+        }
+      }
+    ],
+    [],
+    [
+      "queued"
+    ],
+    [
+      {
+        "head": {
+          "len": 200,
+          "corr": 2,
+          "dropped": 0,
+          "tail_tag": 160
+        }
+      }
+    ],
+    [
+      "queued"
+    ],
+    [
+      "queued"
+    ],
+    [
+      {
+        "counts": {
+          "blocks": 3,
+          "dropped": 0
+        }
+      },
+      {
+        "pools": {
+          "c0": [
+            0,
+            600,
+            0
+          ]
+        }
+      }
+    ],
+    [],
+    [
+      {
+        "head": {
+          "len": 200,
+          "corr": 2,
+          "dropped": 0,
+          "tail_tag": 160
+        }
+      }
+    ]
+  ]
+}

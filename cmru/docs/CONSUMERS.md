@@ -1019,9 +1019,16 @@ The native-R2 `mutation` lane requests contract-2 event evidence from
 `assay` lanes declare 2 GiB memory and an
 8192-process ceiling but do not collect event evidence; KI-77 tracks adding
 working observation to those command lanes. The CMRU release step currently
-runs `run-gate gate-provisional`, which skips the long mutation
-lane and records that deferral in `.assay/mutation-postponed-cmru.json` under
-KI-79. The deferral is authorized only for CMRU >= 6.2.0 and < 6.3.0 (the 6.2 patch line), >= 7.0.0 and < 7.1.0 (the 7.0 patch line), >= 7.1.0 and < 7.2.0 (the 7.1 patch line), >= 7.2.0 and < 7.3.0 (the 7.2 patch line), or >= 7.3.0 and < 7.4.0 (the 7.3 patch line; operator decision 2026-11-12; earlier windows were approved 2026-10-14, 2026-10-21, 2026-10-23, 2026-10-27, and 2026-11-04). Versions 6.3.x through 6.9.x, 7.4.0, and everything else refuse, so a 6.2.x or 7.0.x through 7.3.x release uses the deferral; a bump that computes a version outside those windows is refused by the gate. Every release deferred this way is without an R2 pass. The full-source R2 campaign is owed asynchronously at T3 after the latest provisional release and before the current window ends at 7.4.0 (KI-79); use the T3 command shown below, `run-gate --base cmru-v6.1.0 r2` when that remains the selected base. That release
+runs `run-gate release-gate`, which runs R0/R1 (full line and branch coverage), R3
+(canary) and every other non-mutation lane, skips the long mutation
+lane and records that R2 is owed in `.assay/mutation-postponed-cmru.json` under
+KI-79. This is the standing release rule (operator decision 2026-11-18; KI-79, KI-159): a
+release needs R1, R3 and an independent review for hollow tests and defects (the review is a
+hand-off requirement of the release controller, not enforced by CMRU), and R2 runs
+asynchronously. No release version is refused for its number, so there is no version window to
+move per minor. Every release through this lane is without an R2 pass. The full-source R2
+campaign is owed asynchronously at T3 on the latest release (ledger KI-141); use the T3 command
+shown below, `run-gate --base cmru-v6.1.0 r2` when that remains the selected base. That release
 therefore has no mutation event evidence. Read its result from
 `cmru/.assay/release-gate-snapshot.json`: `"state": "provisional"` with a `deferred_lanes`
 entry for `mutation` (never `"passed"`), for example
@@ -1057,9 +1064,8 @@ release:
 cmru release cmru --minor --dry-run
 ```
 
-With gates enabled, preflight compares the planned version with the gate's KI-79 window (only when
-`cmru/cmru.toml`'s run-tests step runs `gate-provisional`; with the full `gate`
-configured that row is `SKIPPED`), inspects the selected tester image's
+With gates enabled, preflight compares no planned version with a waiver window (the standing
+release rule has none), inspects the selected tester image's
 Run-Gate version, downloads the published Run-Gate wheel from GitHub to compare
 its digest (so preflight needs network access), and requires
 `docs/BOOTSTRAP-FROM-ZERO.md` to name the latest stable Run-Gate version in
@@ -1068,16 +1074,14 @@ an actual release refuses a failure before dispatch. When all checks pass, the
 existing preview gains one `Release gate preconditions: PASS` line. If Docker
 is unavailable, an image row says `SKIPPED` and the dry-run continues; that row
 does not certify the image. A failure prints its remedy and exits 4 before a
-worktree is created. For a version outside the KI-79 window, change the run-tests command to the
-full `gate` lane (the row then reads `SKIPPED`) or obtain an explicit operator decision to widen the window. For
-an image mismatch, rebuild the selected image with the exact published
+worktree is created. For an image mismatch, rebuild the selected image with the exact published
 Run-Gate wheel named in the remedy. For a stale bootstrap guide, update every
 Run-Gate version in the guide to the version recorded by the Run-Gate changelog.
 The [design guide](DESIGN-GUIDE.md#release-dry-run-checks-gate-preconditions)
 explains how these checks share the gate's own rules.
 
 For a CMRU repository with no published stable `cmru-vX.Y.Z` tag, the
-protected `gate-provisional` release workflow first verifies that origin was
+protected `release-gate` release workflow first verifies that origin was
 successfully queried and found empty. It then substitutes the whole-source
 `cmru-first-release` lane for the ordinary whole-target `assay` lane. The
 first-release marker identifies `run-gate assay-first-release-r2` as the
@@ -1289,7 +1293,7 @@ common Git directory writable.
 
 ### Running the release gate from a host whose `python3` is not the estate environment
 
-`run-gate gate` and `run-gate gate-provisional` start a host-side controller
+`run-gate gate` and `run-gate release-gate` start a host-side controller
 (`python3 -I -B cmru/tools/run_release_gate.py`) that needs CMRU's declared dependencies
 (`cli-extended`). What you do:
 
@@ -1302,7 +1306,7 @@ common Git directory writable.
 
    ```sh
    cd cmru
-   run-gate gate-provisional
+   run-gate release-gate
    ```
 
 3. If the host's `python3` is not that environment, the controller says so and continues. It

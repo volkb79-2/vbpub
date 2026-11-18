@@ -1,0 +1,225 @@
+{
+  "case": "hub-victim-skips-pinned",
+  "doc": "global cap: a connection holding only a pinned head and Query bytes is not a victim; with no victim the push is dropped",
+  "limits": {
+    "client_queue_bytes": 1000,
+    "uid_live_bytes": 2000,
+    "global_live_bytes": 1200,
+    "query_queue_bytes": 1000,
+    "uid_query_bytes": 1000,
+    "global_query_bytes": 4000,
+    "control_queue_bytes": 500,
+    "stall_ms": 5000,
+    "frame_completion_ms": 5000
+  },
+  "conns": [
+    1,
+    2,
+    3,
+    4
+  ],
+  "steps": [
+    {
+      "t_ms": 0,
+      "op": "push_live",
+      "c": 0,
+      "s": 1,
+      "gen": 1,
+      "bare": null,
+      "dict": 500
+    },
+    {
+      "t_ms": 0,
+      "op": "push_query",
+      "c": 0,
+      "s": 9,
+      "len": 200
+    },
+    {
+      "t_ms": 0,
+      "op": "head",
+      "c": 0,
+      "block": true
+    },
+    {
+      "t_ms": 0,
+      "op": "push_live",
+      "c": 1,
+      "s": 1,
+      "gen": 1,
+      "bare": null,
+      "dict": 200
+    },
+    {
+      "t_ms": 0,
+      "op": "push_live",
+      "c": 1,
+      "s": 2,
+      "gen": 1,
+      "bare": null,
+      "dict": 200
+    },
+    {
+      "t_ms": 0,
+      "op": "push_live",
+      "c": 2,
+      "s": 1,
+      "gen": 1,
+      "bare": null,
+      "dict": 400,
+      "watch": [
+        "c0",
+        "c1",
+        "c2",
+        "g"
+      ]
+    },
+    {
+      "t_ms": 0,
+      "op": "drain_unpinned",
+      "c": 1
+    },
+    {
+      "t_ms": 0,
+      "op": "drain_unpinned",
+      "c": 2,
+      "watch": [
+        "g"
+      ]
+    },
+    {
+      "t_ms": 0,
+      "op": "push_live",
+      "c": 2,
+      "s": 1,
+      "gen": 1,
+      "bare": null,
+      "dict": 800,
+      "watch": [
+        "g"
+      ]
+    },
+    {
+      "t_ms": 0,
+      "op": "wrote",
+      "c": 0,
+      "n": 500
+    },
+    {
+      "t_ms": 0,
+      "op": "push_live",
+      "c": 2,
+      "s": 1,
+      "gen": 1,
+      "bare": 120,
+      "dict": 800,
+      "watch": [
+        "g"
+      ]
+    },
+    {
+      "t_ms": 0,
+      "op": "head",
+      "c": 2,
+      "block": true
+    }
+  ],
+  "expect": [
+    [
+      "queued"
+    ],
+    [
+      "queued"
+    ],
+    [
+      {
+        "head": {
+          "len": 500,
+          "corr": 1,
+          "dropped": 0,
+          "tail_tag": 160
+        }
+      }
+    ],
+    [
+      "queued"
+    ],
+    [
+      "queued"
+    ],
+    [
+      "queued",
+      {
+        "pools": {
+          "c0": [
+            500,
+            200,
+            0
+          ],
+          "c1": [
+            200,
+            0,
+            0
+          ],
+          "c2": [
+            400,
+            0,
+            0
+          ],
+          "g": [
+            1100,
+            200,
+            0
+          ]
+        }
+      }
+    ],
+    [],
+    [
+      {
+        "pools": {
+          "g": [
+            500,
+            200,
+            0
+          ]
+        }
+      }
+    ],
+    [
+      "dropped-incoming",
+      {
+        "pools": {
+          "g": [
+            500,
+            200,
+            0
+          ]
+        }
+      }
+    ],
+    [],
+    [
+      "queued",
+      {
+        "pools": {
+          "g": [
+            800,
+            200,
+            0
+          ]
+        }
+      }
+    ],
+    [
+      {
+        "head": {
+          "len": 800,
+          "corr": 1,
+          "dropped": 1,
+          "tail_tag": 160
+        }
+      }
+    ]
+  ]
+}
