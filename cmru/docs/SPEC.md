@@ -2344,7 +2344,9 @@ then stops reading and closes the pipe, keeps the child's own exit code, and log
 `/proc/<pid>/fd`; when that scan fails the WARN omits the pids. The holders are named, never
 killed. Each command starts in its own session and process group (`start_new_session`). While a
 command runs, `run_command` turns SIGTERM and SIGHUP delivered to cmru into `SystemExit` (main
-thread only; other threads install nothing; the previous handlers are restored afterwards), and
+thread only; other threads install nothing; the previous handlers are restored afterwards; a
+signal that was ignored when cmru started, such as a SIGHUP ignored by `nohup`, stays ignored for
+cmru and, because the disposition survives exec, for the step), and
 Ctrl-C raises `KeyboardInterrupt`; each of them sends SIGTERM to the whole group, SIGKILL after
 `GROUP_TERM_GRACE_SECONDS` (5 s) if any member survives, and reaps it. SIGKILL of cmru itself
 cannot be caught and still leaves the step running as an orphan in its own session. The output
