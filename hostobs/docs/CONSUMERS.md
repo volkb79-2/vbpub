@@ -44,9 +44,9 @@ archive closure for this exact `Cargo.lock`. Do not run Cargo from the cockpit o
 network fallback. The lane image (`tester-unified-rust:rs-20261118`) has a Cargo wrapper that refuses before
 invoking Cargo if the mounted lock's registry-set digest, crate set, lock checksums, or cached
 archive bytes disagree with the image (the registry set is the downloaded packages plus the
-lock version; workspace members' own entries are not part of it). `tester-unified-rust:local`
-is the older whole-lock image: it checks the sha256 of the whole `Cargo.lock` file and no lane
-uses it.
+lock version; workspace members' own entries are not part of it). An image built before this
+identity checks the sha256 of the whole `Cargo.lock` file instead; no lane runs on one (see
+`tester-unified-rust/docs/CONSUMERS.md` for the tag state per host).
 
 ## What `assay-r1` judges, and what it says
 
@@ -377,6 +377,6 @@ to hand-edit the lock.
 
 Which image runs what: the Rust lanes run on `tester-unified-rust:rs-20261118`, which carries
 the registry-set identity, so a workspace-only lock edit (a path dependency between members)
-needs no image rebuild. `tester-unified-rust:local` carries the older whole-lock identity and
-rejects ANY lock byte change; it is re-pointed to the new tag only after every Rust lane has
-passed on it.
+needs no image rebuild. An image with the older whole-lock identity rejects ANY lock byte
+change; `tester-unified-rust:local` on the gate host v1001 is the registry-set image (tag state
+per host: `tester-unified-rust/docs/CONSUMERS.md`).
