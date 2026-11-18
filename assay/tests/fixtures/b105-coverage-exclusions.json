@@ -2,7 +2,7 @@
   "format": 1,
   "files": {
     "src/assay/config.py": {
-      "lines": [100, 101],
+      "lines": [101, 102],
       "reason": "TYPE_CHECKING imports SnapshotLimits only for annotations; importing isolation here would create a runtime cycle."
     },
     "src/assay/liveness.py": {
@@ -18,7 +18,7 @@
       "reason": "TYPE_CHECKING imports CommandPlan only for annotations; importing runner here would create a runtime cycle."
     },
     "src/assay/git.py": {
-      "lines": [405, 406, 1407, 1408],
+      "lines": [406, 407, 1413, 1414],
       "reason": "These defensive cleanup branches handle selector teardown and best-effort closure of pending writer descriptors."
     }
   }

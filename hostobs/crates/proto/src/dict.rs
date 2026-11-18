@@ -888,7 +888,12 @@ impl Dictionary {
             // table), so a body that repeats an identity would come back with fewer
             // entries and every later index shifted. That is a corrupt frame, not a table
             // to normalise: refuse it instead of renumbering the sender's data.
-            let interned = dictionary.intern(entry)?;
+            let interned = match dictionary.intern(entry) {
+                Err(ProtoError::ConflictingColumn { .. }) => {
+                    return Err(ProtoError::DuplicateDictionaryEntry { index });
+                }
+                other => other?,
+            };
             let position =
                 u32::try_from(index).map_err(|_| ProtoError::RowCountOverflow(index as u64))?;
             if interned != position {
@@ -1530,6 +1535,34 @@ mod tests {
         assert_eq!(
             Dictionary::decode(&body, DEFAULT_ACTIVE_MAX).map(|_| ()),
             Err(ProtoError::DuplicateDictionaryEntry { index: 2 })
+        );
+    }
+
+    #[test]
+    fn a_metric_name_repeated_with_other_facts_is_a_duplicate_entry_on_the_wire() {
+        // `intern` calls the same name with other facts a conflicting column, a caller defect
+        // of a live table. A wire body that does it repeats an identity, and a repeated
+        // identity is `duplicate-dictionary-entry` whatever the other fields hold.
+        let other = Entry::Metric {
+            facts: MetricFacts {
+                kind: MetricKind::Gauge,
+                ..facts()
+            },
+            name: "cpu.usage_usec".into(),
+        };
+        let body = Dictionary::new(1)
+            .encode_with(&[metric("cpu.usage_usec"), other.clone()])
+            .expect("encode");
+        assert_eq!(
+            Dictionary::decode(&body, DEFAULT_ACTIVE_MAX).map(|_| ()),
+            Err(ProtoError::DuplicateDictionaryEntry { index: 1 })
+        );
+        // The live table still reports the same shape as a conflict.
+        let mut live = Dictionary::new(1);
+        live.intern(metric("cpu.usage_usec")).expect("intern");
+        assert_eq!(
+            live.intern(other),
+            Err(ProtoError::ConflictingColumn { metric: 0 })
         );
     }
 

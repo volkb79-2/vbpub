@@ -1,0 +1,38 @@
+{
+  "case": "reader-feed-after-eof",
+  "doc": "End of stream at Header{0} is a clean close; bytes fed afterwards are trailing-bytes, and stay so.",
+  "side": "server",
+  "max_frame": 1024,
+  "completion_ms": 5000,
+  "steps": [
+    {
+      "t_ms": 0,
+      "eof": true
+    },
+    {
+      "t_ms": 1,
+      "feed_hex": "010203"
+    },
+    {
+      "t_ms": 2,
+      "feed_hex": "2600000001000000010000007b2276657262223a2268656c6c6f222c2261726773223a7b7d7d"
+    }
+  ],
+  "expect": [
+    [
+      {
+        "closed": "clean"
+      }
+    ],
+    [
+      {
+        "error": "trailing-bytes"
+      }
+    ],
+    [
+      {
+        "error": "trailing-bytes"
+      }
+    ]
+  ]
+}

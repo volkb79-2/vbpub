@@ -448,13 +448,19 @@ def _decode_footer(bytes_: bytes, header: dict, measured_count: int, end_offset:
 
 QUARANTINE_SUFFIX = ".corrupt"
 
+# The largest segment sequence the store mints or recognises in a name (u32::MAX, 136 years at
+# one segment a second). A name above it is a look-alike in every spelling (HOB-55), exactly as
+# the Rust ``SEQ_NAME_MAX``.
+SEQ_NAME_MAX = (1 << 32) - 1
+
 
 def parse_segment_name(name: str) -> dict:
     """Parse ``<tier>-<start_s>-<seq>.seg`` or ``.seg.open`` (docs/SEGMENT-FORMAT.md, "File naming").
 
     The two numbers are parsed from the right and must be plain decimal digits; the tier is
-    the rest of the name and must be non-empty without a leading or trailing ``-``. Anything
-    else is ``segment-name``, which is also what the Rust ``SegmentFileName::parse`` refuses.
+    the rest of the name and must be non-empty without a leading or trailing ``-``. The
+    sequence must not exceed ``SEQ_NAME_MAX``. Anything else is ``segment-name``, which is
+    also what the Rust ``SegmentFileName::parse`` refuses.
     """
     if name.endswith(".seg.open"):
         body, is_open = name[: -len(".seg.open")], True
@@ -471,13 +477,16 @@ def parse_segment_name(name: str) -> dict:
     for number in (start_s, seq):
         if not (number.isascii() and number.isdigit()):
             raise SegmentError("segment-name", name=name)
-    if int(start_s) >= 1 << 64 or int(seq) >= 1 << 64:
+    if int(start_s) >= 1 << 64 or int(seq) > SEQ_NAME_MAX:
         raise SegmentError("segment-name", name=name)
     return {"tier": tier, "start_s": int(start_s), "seq": int(seq), "open": is_open}
 
 
 def parse_quarantine_name(name: str) -> dict:
-    """Parse ``<segment name>.corrupt`` back to the segment name it was (HOB-43)."""
+    """Parse ``<segment name>.corrupt`` back to the segment name it was (HOB-43).
+
+    The bound on the sequence (``SEQ_NAME_MAX``) applies to the segment name inside it.
+    """
     if not name.endswith(QUARANTINE_SUFFIX):
         raise SegmentError("segment-name", name=name)
     try:

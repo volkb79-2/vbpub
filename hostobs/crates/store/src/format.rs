@@ -907,6 +907,15 @@ pub fn pad_for(payload_len: usize) -> Result<usize, StoreError> {
 /// never scans a quarantined file; the tier's own bound still counts and evicts it (HOB-43).
 pub const QUARANTINE_SUFFIX: &str = ".corrupt";
 
+/// The largest segment sequence this store mints or recognises in a name (`u32::MAX`).
+///
+/// One segment per `segment_s >= 1` second makes this 136 years, so a real tier never
+/// reaches it. A name whose sequence is above it is not a segment name of this store: the
+/// parsers refuse it, so a look-alike such as `hot-0-18446744073709551615.seg` can never
+/// raise a tier's water mark (HOB-55). A name at exactly this value is still ours, and the
+/// tier's next sequence past it is the typed [`StoreError::LengthOverflow`].
+pub const SEQ_NAME_MAX: u64 = 4_294_967_295;
+
 /// A parsed segment file name.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SegmentFileName {
@@ -980,6 +989,8 @@ impl SegmentFileName {
     /// The tier name is the *rest* of the name, because a tier name may legitimately contain
     /// `-` (plan v4 §A.4 names the focus tiers after their subject). The number fields are
     /// parsed strictly from the right, so a digit-only name cannot be misread as a segment.
+    /// A sequence above [`SEQ_NAME_MAX`] is refused like any other name this store does not
+    /// write (HOB-55).
     ///
     /// # Errors
     ///
@@ -1018,6 +1029,12 @@ impl SegmentFileName {
         let start_s = parse_decimal(start_s).ok_or_else(|| StoreError::SegmentName {
             name: name.to_string(),
         })?;
+        if seq > SEQ_NAME_MAX {
+            // Not a sequence this store ever mints (HOB-55): a look-alike, never ours.
+            return Err(StoreError::SegmentName {
+                name: name.to_string(),
+            });
+        }
         Ok(SegmentFileName {
             tier: tier.to_string(),
             start_s,
@@ -1225,8 +1242,8 @@ mod tests {
     use super::{
         check_payload, check_tier_name, pad_for, read_u32, record_crc, Footer, FrameFacts,
         RecordHeader, SegmentFileName, SegmentHeader, TierKind, BLOCK_FRAME_TYPE, FOOTER_LEN,
-        FRAME_HEADER_LEN, HEADER_LEN, MAX_RECORD_PAD, PAYLOAD_BLOCK, RECORD_BLOCK, RECORD_EVT,
-        RECORD_HEADER_LEN, SEGMENT_MAGIC, SEGMENT_VERSION,
+        FRAME_HEADER_LEN, HEADER_LEN, MAX_RECORD_PAD, PAYLOAD_BLOCK, QUARANTINE_SUFFIX,
+        RECORD_BLOCK, RECORD_EVT, RECORD_HEADER_LEN, SEGMENT_MAGIC, SEGMENT_VERSION, SEQ_NAME_MAX,
     };
     use crate::crc::crc32;
     use crate::error::StoreError;
@@ -1828,6 +1845,39 @@ mod tests {
             SegmentFileName::open_name("hot", 1, 2),
             "hot-1-2.seg.open".to_string()
         );
+    }
+
+    #[test]
+    fn a_sequence_above_the_name_bound_is_not_a_segment_name() {
+        // HOB-55: the store never mints a sequence above `SEQ_NAME_MAX`, so such a name is a
+        // look-alike in every spelling and every parser agrees; the bound itself is ours.
+        assert_eq!(SEQ_NAME_MAX, u64::from(u32::MAX));
+        for ours in [
+            format!("hot-0-{SEQ_NAME_MAX}.seg"),
+            format!("hot-0-{SEQ_NAME_MAX}.seg.open"),
+        ] {
+            let parsed = SegmentFileName::parse(&ours).expect("the bound is ours");
+            assert_eq!(parsed.seq, SEQ_NAME_MAX);
+            assert_eq!(parsed.file_name(), ours);
+        }
+        let quarantined = format!("hot-0-{SEQ_NAME_MAX}.seg.corrupt");
+        assert_eq!(
+            SegmentFileName::parse_quarantined(&quarantined).map(|parsed| parsed.seq),
+            Ok(SEQ_NAME_MAX)
+        );
+        let above = SEQ_NAME_MAX + 1;
+        for name in [
+            format!("hot-0-{above}.seg"),
+            format!("hot-0-{above}.seg.open"),
+            format!("hot-0-{}.seg", u64::MAX),
+            format!("hot-0-{}.seg.open", u64::MAX),
+        ] {
+            let refused = SegmentFileName::parse(&name).is_err();
+            assert!(refused, "{name} is a look-alike");
+            let corrupt = format!("{name}{QUARANTINE_SUFFIX}");
+            let refused = SegmentFileName::parse_quarantined(&corrupt).is_err();
+            assert!(refused, "{corrupt} is a look-alike");
+        }
     }
 
     #[test]

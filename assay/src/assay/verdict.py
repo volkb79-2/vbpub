@@ -3350,8 +3350,8 @@ class ChangedDiff:
 
     base_rev: str
     head_rev: str
-    #: the lane working directory relative to the repository top: ``"."`` at
-    #: the top, otherwise a normalized forward-slash path.
+    #: the cargo workspace root relative to the repository top (not the lane
+    #: cwd): ``"."`` at the top, otherwise a normalized forward-slash path.
     relative_to: str
     sha256: str
     bytes: int

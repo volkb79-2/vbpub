@@ -26,6 +26,12 @@
 //! - **A reference is checked for kind, not only for range.** A row names an incarnation and
 //!   a column names a metric; a column's declared kind must agree with the dictionary's
 //!   metric facts, because a consumer aggregates by whichever one it trusts.
+//! - **A bare block is judged against the held dictionary.** `decode_block_with(bytes, held)`
+//!   applies the generation, reference, column-kind and aggregation-mask checks to a block
+//!   that carries no dictionary of its own; `decode_block` is the `held = None` case, which
+//!   makes no reference check.
+//! - **A history bucket's aggregation must be in every column's mask** (counters raw, last,
+//!   delta; gauges last, mean, min, max; states last): `aggregation-not-permitted`.
 //! - **Rows and buckets are exclusive by presence**, and a non-zero row count needs one of
 //!   them: values without an entity or a bucket cannot be addressed, so they are refused
 //!   rather than carried as a "rowless block" nobody defined.
@@ -35,6 +41,16 @@
 //! - **Unknown future versions are refused**, never guessed: an unknown *required*
 //!   section fails the block, a known section with a newer version fails even when
 //!   optional, and an unknown quality code or column type is an error.
+//! - **A stream is read by one state machine** ([`stream`]: `FrameReader`, `ModeDetect`,
+//!   `ConnTimers`; WIRE.md §5.2-§5.4). Time is injected, a frame's age runs from its first
+//!   byte, a frame completed before an error is returned with it, and a declared length is
+//!   never an allocation size.
+//! - **A client holds one dictionary per stream** ([`stream_dicts`]: `StreamDicts`; WIRE.md §6):
+//!   a dictionary-bearing block must exceed the held generation, a bare block must carry exactly
+//!   it, any error forgets the stream and a hello drops every dictionary.
+//! - **A JSON envelope is checked byte-wise** ([`envelope`]: `check_req`, `check_rep`,
+//!   `check_end`, `check_evt`; WIRE.md §2.2, §4.2): UTF-8, one object, depth 8 and the envelope's
+//!   own keys and types, returning ranges into the payload; parsing the values is the caller's.
 //! - **No panic on untrusted bytes** (this crate forbids `unsafe`; every length is
 //!   checked before it is used, every arithmetic operation is checked). A decode returns
 //!   either a complete validated value or one typed error — never a partial success and
@@ -61,7 +77,8 @@
 //!   it, and carrying it inside the block is what makes an exported segment self-contained
 //!   (§C.5) and the fixture a single file per case. The `DICT` frame type stays defined and
 //!   unconsumed; a later package may split it out without a wire change.
-//! - **`kind` codes**: 1 header, 2 rows, 3 column, 4 time, 5 dictionary.
+//! - **`kind` codes**: 1 header, 2 rows, 3 column, 4 time, 5 dictionary, 6 subject (protocol
+//!   minor 1: the incarnation a history block describes; a minor-0 reader refuses it).
 //! - **History blocks carry `n_rows` buckets** in the header, so every section keeps one
 //!   authoritative row count and a disagreement is a typed refusal rather than a guess.
 
@@ -73,8 +90,11 @@
 )]
 
 pub mod dict;
+pub mod envelope;
 pub mod error;
 pub mod frame;
 pub mod quality;
 pub mod read;
+pub mod stream;
+pub mod stream_dicts;
 pub mod write;

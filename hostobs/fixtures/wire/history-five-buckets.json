@@ -59,31 +59,31 @@
         "real_ns": 1700000000000000000,
         "covered_ms": 1000,
         "samples": 5,
-        "agg": "mean"
+        "agg": "last"
       },
       {
         "real_ns": 1700000001000000000,
         "covered_ms": 1000,
         "samples": 4,
-        "agg": "min"
+        "agg": "last"
       },
       {
         "real_ns": 1700000002000000000,
         "covered_ms": 999,
         "samples": 65535,
-        "agg": "max"
+        "agg": "last"
       },
       {
         "real_ns": -1,
         "covered_ms": 0,
         "samples": 0,
-        "agg": "raw"
+        "agg": "last"
       },
       {
         "real_ns": 1700000004000000000,
         "covered_ms": 4294967295,
         "samples": 1,
-        "agg": "mean"
+        "agg": "last"
       }
     ],
     "columns": [

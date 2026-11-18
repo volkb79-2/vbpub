@@ -12,7 +12,7 @@ cd {worktree}/tester-unified-rust
 export PYTHONDONTWRITEBYTECODE=1
 export HOSTOBS_ROOT={worktree}/hostobs
 /usr/local/bin/verify-crate-cache "$HOSTOBS_ROOT/Cargo.lock"
-for script in build-image.sh "$HOSTOBS_ROOT/tools/check-lints.sh" "$HOSTOBS_ROOT/tools/cargo-offline.sh"; do bash -n "$script"; done
+for script in build-image.sh build-dev-image.sh "$HOSTOBS_ROOT/tools/check-lints.sh" "$HOSTOBS_ROOT/tools/cargo-offline.sh" "$HOSTOBS_ROOT/tools/dev"; do bash -n "$script"; done
 python3 -m unittest discover -s tests -v''',
 ]
 clean_tree = true

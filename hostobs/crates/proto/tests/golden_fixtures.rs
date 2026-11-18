@@ -8,6 +8,10 @@
 //! asserts. The Python reference codec (`python/reference/`) asserts the same files; that
 //! run is a manual check until the registered `conformance` lane exists (`HOB-4`).
 //!
+//! A case with a top-level `"held": {"generation", "entries"}` key (the same entry form as
+//! `frame.dictionary`) is decoded with `decode_block_with` against that held dictionary; every
+//! other case is decoded with no held dictionary.
+//!
 //! A fixture that the Rust encoder reproduces is a second check: for every valid case the
 //! Rust *encoder* must emit the identical bytes, so neither direction can drift alone.
 
@@ -25,8 +29,8 @@ use hostobs_proto::dict::{
 };
 use hostobs_proto::error::ProtoError;
 use hostobs_proto::frame::{
-    decode_block, encode_block, Block, BlockHeaderFacts, Column, FrameType, Row, TimeBucket,
-    TypedValue,
+    decode_block, decode_block_with, encode_block, Block, BlockHeaderFacts, Column, FrameType, Row,
+    SectionKind, TimeBucket, TypedValue,
 };
 use hostobs_proto::quality::{Quality, ALL as ALL_QUALITIES};
 use json::Json;
@@ -287,6 +291,9 @@ fn block(spec: &Json) -> Block {
         time,
         columns,
         dictionary,
+        subject: frame
+            .get("subject")
+            .map(|value| u32::try_from(value.as_usize().expect("subject")).expect("u32")),
         skipped_sections: Vec::new(),
     }
 }
@@ -382,6 +389,58 @@ fn refusal_of(error: &ProtoError) -> BTreeMap<&'static str, String> {
             map.insert("index", index.to_string());
             map.insert("kind_code", kind.to_string());
         }
+        ProtoError::SectionLength {
+            kind,
+            declared,
+            expected,
+        } => {
+            map.insert("section", kind.to_string());
+            map.insert("declared", declared.to_string());
+            map.insert("expected", expected.to_string());
+        }
+        ProtoError::UnknownFrameFlags(flags) => {
+            map.insert("flags", flags.to_string());
+        }
+        ProtoError::AggregationNotPermitted { metric, agg } => {
+            map.insert("metric", metric.to_string());
+            map.insert("agg", agg.to_string());
+        }
+        ProtoError::SubjectWithoutTime { subject } => {
+            map.insert("subject", subject.to_string());
+        }
+        ProtoError::DuplicateSection { kind } => {
+            map.insert("kind_code", kind.to_string());
+        }
+        ProtoError::ConflictingColumn { metric } => {
+            map.insert("metric", metric.to_string());
+        }
+        ProtoError::MissingSection { kind } => {
+            // The Python reference names the missing section; only the header can be missing.
+            if *kind == SectionKind::Header.code() {
+                map.insert("section", "header".to_string());
+            }
+        }
+        ProtoError::SectionReserved(value) => {
+            map.insert("value", value.to_string());
+        }
+        ProtoError::UnknownSectionFlags { kind, flags } => {
+            map.insert("kind_code", kind.to_string());
+            map.insert("flags", flags.to_string());
+        }
+        ProtoError::UnknownFrameType(code) | ProtoError::UnknownAggregation(code) => {
+            map.insert("code", code.to_string());
+        }
+        ProtoError::DictionaryTooLarge { count, max } => {
+            map.insert("count", count.to_string());
+            map.insert("max", max.to_string());
+        }
+        ProtoError::DictionaryEntryControl { index, offset } => {
+            map.insert("index", index.to_string());
+            map.insert("offset", offset.to_string());
+        }
+        ProtoError::DictionaryEntryNotUtf8 { index } => {
+            map.insert("index", index.to_string());
+        }
         _ => {}
     }
     map
@@ -417,9 +476,11 @@ fn every_fixture_is_decoded_by_the_rust_codec() {
     for name in names {
         let (spec, bytes) = load(&name);
         let expected = declared_refusal(&spec);
+        // A case with a top-level `held` key is decoded against that held dictionary generation.
+        let held = spec.get("held").map(dictionary);
         if expected.is_empty() {
-            let decoded =
-                decode_block(&bytes).unwrap_or_else(|error| panic!("{name}: decode: {error}"));
+            let decoded = decode_block_with(&bytes, held.as_ref())
+                .unwrap_or_else(|error| panic!("{name}: decode: {error}"));
             let expected_block = block(&spec);
             assert_eq!(decoded.header, expected_block.header, "{name}: header");
             assert_eq!(decoded.rows, expected_block.rows, "{name}: rows");
@@ -430,6 +491,7 @@ fn every_fixture_is_decoded_by_the_rust_codec() {
                 "{name}: dictionary"
             );
             assert_eq!(decoded.corr, expected_block.corr, "{name}: correlation id");
+            assert_eq!(decoded.subject, expected_block.subject, "{name}: subject");
             assert_eq!(
                 decoded.frame_type, expected_block.frame_type,
                 "{name}: frame type"
@@ -466,8 +528,8 @@ fn every_fixture_is_decoded_by_the_rust_codec() {
             }
             valid += 1;
         } else {
-            let error =
-                decode_block(&bytes).expect_err(&format!("{name}: this fixture must be refused"));
+            let error = decode_block_with(&bytes, held.as_ref())
+                .expect_err(&format!("{name}: this fixture must be refused"));
             let actual = refusal_of(&error);
             for (key, value) in &expected {
                 assert_eq!(
@@ -479,9 +541,12 @@ fn every_fixture_is_decoded_by_the_rust_codec() {
             refused += 1;
         }
     }
-    assert_eq!(valid, 8, "the valid fixture count is part of the case list");
     assert_eq!(
-        refused, 21,
+        valid, 11,
+        "the valid fixture count is part of the case list"
+    );
+    assert_eq!(
+        refused, 59,
         "the refusal fixture count is part of the case list"
     );
 }

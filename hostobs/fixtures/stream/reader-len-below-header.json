@@ -1,0 +1,29 @@
+{
+  "case": "reader-len-below-header",
+  "doc": "A header with len = 11 (shorter than the header itself): truncated, poisoned.",
+  "side": "server",
+  "max_frame": 1024,
+  "completion_ms": 5000,
+  "steps": [
+    {
+      "t_ms": 0,
+      "feed_hex": "0b0000000100000001000000"
+    },
+    {
+      "t_ms": 1,
+      "poll": true
+    }
+  ],
+  "expect": [
+    [
+      {
+        "error": "truncated"
+      }
+    ],
+    [
+      {
+        "error": "truncated"
+      }
+    ]
+  ]
+}

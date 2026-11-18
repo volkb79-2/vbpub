@@ -1,0 +1,94 @@
+{
+  "case": "aggregation-not-permitted-held",
+  "doc": "A bare history block with a `raw` bucket over a gauge column, decoded against a held dictionary: the mask is judged on the held path too.",
+  "frame": {
+    "type": "block",
+    "corr": 68,
+    "sections": [
+      "header",
+      "time",
+      "columns"
+    ],
+    "header": {
+      "boot_id": "00112233-4455-6677-8899-aabbccddeeff",
+      "epoch": 8,
+      "seq": 0,
+      "mono_start_ns": 1000000000,
+      "mono_end_ns": 2000000000,
+      "boot_ns": 500,
+      "real_ns": 1700000000000000000,
+      "dict_gen": 2,
+      "n_rows": 1,
+      "dropped": 1,
+      "flags": 0
+    },
+    "rows": [],
+    "time": [
+      {
+        "real_ns": 1700000000000000000,
+        "covered_ms": 1000,
+        "samples": 5,
+        "agg": "raw"
+      }
+    ],
+    "columns": [
+      {
+        "metric": 1,
+        "type": "u64",
+        "kind": "gauge",
+        "values": [
+          "100"
+        ],
+        "quality": [
+          "ok"
+        ]
+      }
+    ],
+    "skipped": []
+  },
+  "held": {
+    "generation": 2,
+    "entries": [
+      {
+        "kind": "entity",
+        "inc": 11,
+        "text": "/system.slice"
+      },
+      {
+        "kind": "metric",
+        "text": "mem.current",
+        "facts": {
+          "unit": "bytes",
+          "kind": "gauge",
+          "scope": "cgroup",
+          "source": "cgroupfs"
+        }
+      },
+      {
+        "kind": "metric",
+        "text": "signed.value",
+        "facts": {
+          "unit": "none",
+          "kind": "gauge",
+          "scope": "daemon",
+          "source": "probe"
+        }
+      },
+      {
+        "kind": "metric",
+        "text": "psi.io.some.total",
+        "facts": {
+          "unit": "usec",
+          "kind": "counter",
+          "scope": "host",
+          "source": "procfs"
+        }
+      }
+    ]
+  },
+  "expect_error": {
+    "kind": "aggregation-not-permitted",
+    "metric": 1,
+    "agg": 0
+  }
+}
