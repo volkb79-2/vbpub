@@ -908,6 +908,9 @@ mod tests {
         ProtocolKind, Session, StreamDicts, Transport, VecDeque, COMPLETION_NS, MAX_TIMEOUT,
         PRE_HELLO_MAX_FRAME,
     };
+    use hostobs_proto::error::ProtoError;
+    use std::cell::Cell;
+    use std::rc::Rc;
 
     struct Mute;
 
@@ -928,6 +931,14 @@ mod tests {
     impl Clock for Zero {
         fn now_ns(&self) -> u64 {
             0
+        }
+    }
+
+    struct ManualClock(Rc<Cell<u64>>);
+
+    impl Clock for ManualClock {
+        fn now_ns(&self) -> u64 {
+            self.0.get()
         }
     }
 
@@ -980,5 +991,25 @@ mod tests {
         );
         let longest_name = "n".repeat(64);
         assert!(ClientInfo::new(longest_name).validate().is_ok());
+    }
+
+    #[test]
+    fn after_idle_enforces_operation_and_completion_deadlines() {
+        let clock = Rc::new(Cell::new(1));
+        let mut empty = bare(1);
+        empty.clock = Box::new(ManualClock(Rc::clone(&clock)));
+        assert_eq!(empty.after_idle(0), Err(ClientError::Timeout));
+        assert!(empty.is_closed());
+
+        clock.set(0);
+        let mut partial = bare(1);
+        partial.clock = Box::new(ManualClock(Rc::clone(&clock)));
+        partial.reader.feed(&[12, 0, 0, 0, 2], 0);
+        clock.set(COMPLETION_NS + 1);
+        assert_eq!(
+            partial.after_idle(u64::MAX),
+            Err(ClientError::Wire(ProtoError::Deadline))
+        );
+        assert!(partial.is_closed());
     }
 }
