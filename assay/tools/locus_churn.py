@@ -9,6 +9,11 @@ and reports how many candidates in the newer tag are re-keyed under:
 * ``A'`` -- the outermost enclosing function segment, with exact-id fallback;
 * ``B(k)`` -- a ``site.lineno +/- k`` line window clipped to the function.
 
+Function segments run from the first decorator ``@`` through the function's
+final statement.  For the literal segment rule, comments after the last
+statement of a def are outside the segment and never re-key it, even when they
+change the whole-file identity.
+
 The tool never checks out either tag and never writes into the inspected
 repository.  It is offline and intended for small measurement runs; all
 output is deterministic for the same arguments and Git objects.
@@ -18,13 +23,16 @@ from __future__ import annotations
 
 import argparse
 import ast
+import bisect
 import fnmatch
 import hashlib
+import io
 import json
 import os
 import subprocess
 import sys
 import tempfile
+import tokenize
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any, Sequence
@@ -70,6 +78,7 @@ class _FileLocus:
     text: bytes
     line_starts: tuple[int, ...]
     segments: tuple[_Segment, ...]
+    segment_starts: tuple[int, ...]
 
 
 @dataclass(frozen=True)
@@ -84,6 +93,7 @@ class _Candidate:
     a_key: str | None
     b_keys: tuple[tuple[str, str, str, str, int], ...]
     qualname: str | None
+    segment: _Segment | None
 
 
 @dataclass(frozen=True)
@@ -96,6 +106,7 @@ class _Inventory:
     a_keys: frozenset[str]
     b_keys: dict[int, frozenset[tuple[str, str, str, str, int]]]
     qualnames_by_path: dict[str, frozenset[str]]
+    segments_by_qualname: dict[str, dict[str, tuple[_Segment, ...]]]
 
 
 @dataclass(frozen=True)
@@ -214,24 +225,46 @@ def _byte_offset(starts: tuple[int, ...], lineno: int, col_offset: int) -> int:
     return starts[lineno - 1] + col_offset
 
 
-def _decorator_start(node: ast.FunctionDef | ast.AsyncFunctionDef, data: bytes) -> int:
+def _decorator_offsets(data: bytes, starts: tuple[int, ...]) -> tuple[int, ...]:
+    """Return byte offsets of ``@`` tokens that begin a logical source line."""
+    try:
+        text = data.decode("utf-8")
+        tokens = tokenize.generate_tokens(io.StringIO(text).readline)
+        offsets: list[int] = []
+        for token in tokens:
+            if token.type != tokenize.OP or token.string != "@":
+                continue
+            prefix = token.line[: token.start[1]]
+            if prefix.strip():
+                continue
+            offsets.append(starts[token.start[0] - 1] + len(prefix.encode("utf-8")))
+    except (SyntaxError, tokenize.TokenError, UnicodeDecodeError) as exc:
+        raise ChurnError(
+            f"cannot tokenize Python source while locating decorators: {exc}"
+        ) from exc
+    return tuple(offsets)
+
+
+def _decorator_start(
+    node: ast.FunctionDef | ast.AsyncFunctionDef,
+    starts: tuple[int, ...],
+    decorator_offsets: tuple[int, ...],
+) -> int:
     if not node.decorator_list:
-        return _byte_offset(_line_starts(data), node.lineno, node.col_offset)
+        return _byte_offset(starts, node.lineno, node.col_offset)
     first = min(node.decorator_list, key=lambda item: (item.lineno, item.col_offset))
-    starts = _line_starts(data)
-    line_start = starts[first.lineno - 1]
-    offset = line_start
-    while offset < len(data) and data[offset : offset + 1] in {b" ", b"\t", b"\f"}:
-        offset += 1
-    if data[offset : offset + 1] != b"@":
+    first_position = _byte_offset(starts, first.lineno, first.col_offset)
+    index = bisect.bisect_right(decorator_offsets, first_position) - 1
+    if index < 0:
         raise ChurnError(
             f"cannot locate the '@' beginning decorator at line {first.lineno}"
         )
-    return offset
+    return decorator_offsets[index]
 
 
 def _collect_segments(tree: ast.Module, data: bytes) -> tuple[_Segment, ...]:
     starts = _line_starts(data)
+    decorator_offsets = _decorator_offsets(data, starts)
     provisional: list[tuple[str, int, int, str, str]] = []
 
     def visit(node: ast.AST, classes: tuple[str, ...], in_function: bool) -> None:
@@ -239,7 +272,7 @@ def _collect_segments(tree: ast.Module, data: bytes) -> tuple[_Segment, ...]:
             if in_function:
                 return
             qualname = ".".join((*classes, node.name))
-            start = _decorator_start(node, data)
+            start = _decorator_start(node, starts, decorator_offsets)
             if node.end_lineno is None or node.end_col_offset is None:
                 raise ChurnError(f"function {qualname!r} has no complete AST span")
             end = _byte_offset(starts, node.end_lineno, node.end_col_offset)
@@ -289,10 +322,13 @@ def _build_locus(path: str, text: str) -> _FileLocus:
         tree = ast.parse(text)
     except (SyntaxError, ValueError) as exc:
         raise ChurnError(f"cannot parse Python source {path!r}: {exc}") from exc
+    starts = _line_starts(data)
+    segments = _collect_segments(tree, data)
     return _FileLocus(
         text=data,
-        line_starts=_line_starts(data),
-        segments=_collect_segments(tree, data),
+        line_starts=starts,
+        segments=segments,
+        segment_starts=tuple(segment.start_byte for segment in segments),
     )
 
 
@@ -422,17 +458,19 @@ def _candidate_context(
     path: str,
     locus: _FileLocus,
     k_values: tuple[int, ...],
-) -> tuple[str | None, tuple[tuple[str, str, str, str, int], ...], str | None]:
-    containing = tuple(
-        segment
-        for segment in locus.segments
-        if candidate.site.start_byte >= segment.start_byte
-        and candidate.site.end_byte <= segment.end_byte
-    )
-    segment = containing[0] if len(containing) == 1 else None
-    qualname = containing[0].qualname if containing else None
-    if len(containing) == 1 and not containing[0].ambiguous:
-        chosen = containing[0]
+) -> tuple[
+    str | None,
+    tuple[tuple[str, str, str, str, int], ...],
+    str | None,
+    _Segment | None,
+]:
+    index = bisect.bisect_right(locus.segment_starts, candidate.site.start_byte) - 1
+    segment = locus.segments[index] if index >= 0 else None
+    if segment is not None and candidate.site.end_byte > segment.end_byte:
+        segment = None
+    qualname = segment.qualname if segment is not None else None
+    if segment is not None and not segment.ambiguous:
+        chosen = segment
         a_key = _locus_key(
             path,
             chosen.qualname,
@@ -454,7 +492,7 @@ def _candidate_context(
         )
         for k in k_values
     )
-    return a_key, b_keys, qualname
+    return a_key, b_keys, qualname, segment
 
 
 def _inventory(
@@ -500,12 +538,13 @@ def _inventory(
         k: set() for k in k_values
     }
     qualnames_by_path: dict[str, frozenset[str]] = {}
+    segments_by_qualname: dict[str, dict[str, tuple[_Segment, ...]]] = {}
     for path in files:
-        qualnames_by_path[path] = frozenset(
-            segment.qualname for segment in loci[path].segments
-        )
+        grouped_segments = _segments_by_qualname(loci[path])
+        segments_by_qualname[path] = grouped_segments
+        qualnames_by_path[path] = frozenset(grouped_segments)
     for job in jobs:
-        a_key, b_keys, qualname = _candidate_context(
+        a_key, b_keys, qualname, segment = _candidate_context(
             job,
             path=job.path,
             locus=loci[job.path],
@@ -524,6 +563,7 @@ def _inventory(
                 a_key=a_key,
                 b_keys=b_keys,
                 qualname=qualname,
+                segment=segment,
             )
         )
         for key, value in zip(k_values, b_keys):
@@ -539,6 +579,7 @@ def _inventory(
         ),
         b_keys={key: frozenset(value) for key, value in b_sets.items()},
         qualnames_by_path=qualnames_by_path,
+        segments_by_qualname=segments_by_qualname,
     )
 
 
@@ -624,25 +665,16 @@ def _measure_pair(
         elif candidate.a_key not in previous.a_keys:
             a_rekeyed += 1
             if candidate.qualname is not None:
-                previous_locus = previous.loci.get(candidate.path)
-                if previous_locus is not None:
-                    previous_segments = _segments_by_qualname(previous_locus).get(
-                        candidate.qualname, ()
-                    )
-                    current_segment = next(
-                        segment
-                        for segment in following.loci[candidate.path].segments
-                        if segment.qualname == candidate.qualname
-                        and segment.start_byte <= candidate.start_byte
-                        and candidate.end_byte <= segment.end_byte
-                        and not segment.ambiguous
-                    )
-                    if (
-                        len(previous_segments) == 1
-                        and previous_segments[0].ast_dump
-                        == current_segment.ast_dump
-                    ):
-                        whitespace_only_rekeys += 1
+                previous_segments = previous.segments_by_qualname.get(
+                    candidate.path, {}
+                ).get(candidate.qualname, ())
+                if (
+                    candidate.segment is not None
+                    and len(previous_segments) == 1
+                    and previous_segments[0].ast_dump
+                    == candidate.segment.ast_dump
+                ):
+                    whitespace_only_rekeys += 1
         for index, k in enumerate(k_values):
             if candidate.b_keys[index] not in previous.b_keys[k]:
                 b_rekeyed[k] += 1
@@ -722,6 +754,12 @@ def _measure_release_pairs(
             operators=operators,
             k_values=k_values,
         )
+        if not previous.files and not following.files:
+            raise ChurnError(
+                f"--source-root {source_root!r} under --project-dir {project_dir!r} "
+                f"has no tracked Python files at either tag {tags[index - 1]!r} "
+                f"or {tags[index]!r}"
+            )
         result.append(
             _measure_pair(
                 repo,
@@ -831,6 +869,16 @@ def _write_json(path: Path, document: dict[str, Any]) -> None:
 
 
 def _self_test() -> None:
+    help_text = " ".join(_parser().format_help().split())
+    rule = (
+        "comments after the last statement of a def are outside the segment "
+        "and never re-key it."
+    )
+    if rule not in help_text:
+        raise ChurnError(
+            "self-test --help does not state the trailing-comment segment rule"
+        )
+
     fixtures_t1 = {
         "edited_function.py": (
             "def edited(value):\n"
@@ -846,6 +894,17 @@ def _self_test() -> None:
         "whitespace_only.py": (
             "def whitespace_only(value):\n"
             "    return value != 0\n"
+        ),
+        "parenthesized_decorator.py": (
+            "@(\n"
+            "    identity\n"
+            ")\n"
+            "def decorated(value):\n"
+            "    return value < 4\n"
+        ),
+        "trailing_comment.py": (
+            "def trailing_comment(value):\n"
+            "    return value != 9\n"
         ),
     }
     fixtures_t2 = {
@@ -866,7 +925,61 @@ def _self_test() -> None:
             "\n"
             "    return value != 0\n"
         ),
+        "parenthesized_decorator.py": (
+            "@(\n"
+            "    identity\n"
+            ")\n"
+            "def decorated(value):\n"
+            "    return value < 4\n"
+        ),
+        "trailing_comment.py": (
+            "def trailing_comment(value):\n"
+            "    return value != 9\n"
+            "# trailing comment after the final statement\n"
+        ),
+        "one_sided/source.py": "value = 1\n",
     }
+
+    decorated_locus = _build_locus(
+        "parenthesized_decorator.py",
+        fixtures_t1["parenthesized_decorator.py"],
+    )
+    if (
+        len(decorated_locus.segments) != 1
+        or decorated_locus.segments[0].start_byte != 0
+    ):
+        raise ChurnError(
+            "self-test parenthesized decorator did not begin the function segment "
+            "at the '@'"
+        )
+
+    trailing_before = _build_locus(
+        "trailing_comment.py",
+        fixtures_t1["trailing_comment.py"],
+    )
+    trailing_after = _build_locus(
+        "trailing_comment.py",
+        fixtures_t2["trailing_comment.py"],
+    )
+    if trailing_before.text == trailing_after.text:
+        raise ChurnError("self-test trailing-comment fixture did not change its source")
+    if len(trailing_before.segments) != 1 or len(trailing_after.segments) != 1:
+        raise ChurnError(
+            "self-test trailing-comment fixture has an unexpected segment count"
+        )
+    before_segment = trailing_before.segments[0]
+    after_segment = trailing_after.segments[0]
+    if before_segment.sha256 != after_segment.sha256:
+        raise ChurnError(
+            "self-test trailing comment re-keyed the function segment; "
+            "it must be outside"
+        )
+    if b"# trailing comment" in trailing_after.text[
+        after_segment.start_byte : after_segment.end_byte
+    ]:
+        raise ChurnError(
+            "self-test trailing comment was included in the function segment"
+        )
 
     with tempfile.TemporaryDirectory(prefix="assay-locus-churn-") as directory:
         repo = Path(directory)
@@ -876,7 +989,9 @@ def _self_test() -> None:
             (fixtures_t2, "t2", "t2"),
         ):
             for relative, text in files.items():
-                (repo / relative).write_text(text, encoding="utf-8")
+                destination = repo / relative
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                destination.write_text(text, encoding="utf-8")
             _git(repo, "add", "-A")
             _git(
                 repo,
@@ -898,8 +1013,46 @@ def _self_test() -> None:
             operators=_SELF_TEST_OPERATORS,
             k_values=(2, 3),
         )
+        one_sided_measurements = _measure_release_pairs(
+            repo,
+            project_dir=".",
+            source_root="one_sided",
+            tags=("t1", "t2"),
+            operators=_SELF_TEST_OPERATORS,
+            k_values=(2, 3),
+        )
+        if (
+            len(one_sided_measurements) != 1
+            or one_sided_measurements[0].previous_candidates != 0
+        ):
+            raise ChurnError(
+                "self-test source root present at only the newer tag was not measured"
+            )
+        try:
+            _measure_release_pairs(
+                repo,
+                project_dir=".",
+                source_root="missing-root",
+                tags=("t1", "t2"),
+                operators=_SELF_TEST_OPERATORS,
+                k_values=(2, 3),
+            )
+        except ChurnError as exc:
+            message = str(exc)
+            if (
+                "'missing-root'" not in message
+                or "'t1'" not in message
+                or "'t2'" not in message
+            ):
+                raise ChurnError(
+                    f"self-test empty source-root error omitted root or tags: {message}"
+                ) from exc
+        else:
+            raise ChurnError(
+                "self-test source root empty at both tags did not fail loudly"
+            )
 
-    expected_c = 4
+    expected_c = 5
     expected_a = 3
     expected_b2 = 3
     measurement = measurements[0]
@@ -909,18 +1062,20 @@ def _self_test() -> None:
         measurement.a_rekeyed,
         measurement.b_rekeyed[2],
     )
-    # t2 has four compare-swap candidates: one in edited_function.py, two in
-    # edited_elsewhere.py, and one in whitespace_only.py. Every file's whole-
-    # file SHA changes, so C re-keys all four. A' and B(2) match the untouched
-    # function exactly (its segment/window and relative position are unchanged)
-    # and re-key the other three.
+    # t2 has six compare-swap candidates: one each in edited_function.py,
+    # whitespace_only.py, parenthesized_decorator.py, and trailing_comment.py,
+    # plus two in edited_elsewhere.py. Five files change their whole-file SHA;
+    # parenthesized_decorator.py is unchanged. C therefore re-keys five.
+    # The trailing comment changes only bytes beyond the def's final statement:
+    # C re-keys that function, while A' does not. A' and B(2) match the
+    # untouched/unchanged functions exactly and re-key the other three.
     if not (
-        measurement.candidates == 4
+        measurement.candidates == 6
         and measurement.c_rekeyed == expected_c
         and measurement.a_rekeyed == expected_a
         and measurement.b_rekeyed[2] == expected_b2
     ):
-        raise ChurnError(f"self-test metric mismatch: expected (4,4,3,3), got {actual}")
+        raise ChurnError(f"self-test metric mismatch: expected (6,5,3,3), got {actual}")
     if (
         measurement.fallback_candidates != 0
         or measurement.whitespace_only_rekeys != 1
@@ -938,7 +1093,13 @@ def _self_test() -> None:
 
 
 def _parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(
+        description=__doc__,
+        epilog=(
+            "Segment rule: comments after the last statement of a def are outside "
+            "the segment and never re-key it."
+        ),
+    )
     parser.add_argument("--repo", type=Path, help="Git repository root")
     parser.add_argument("--project-dir", help="project directory relative to repo")
     parser.add_argument("--source-root", help="source root relative to project dir")
