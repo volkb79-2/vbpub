@@ -43,9 +43,10 @@ host table; `flock`, `git`, `python3`, `jq` (failures) and `docker`, `shellcheck
 (`docker image inspect`; an unreachable daemon only warns); any file under
 `$CONTROLLER_HOME` (and each `--scan` directory) that still names the removed
 `run-gate-2560` image tag; the effective `RUN_GATE_PROFILE`; writable runs and logs
-directories; that `CONTROLLER_GATE_LOCK` and `CONTROLLER_GATE2_LOCK` (required by
-`gate-run.sh`) are set, absolute, distinct and in a writable directory (a failure
-otherwise); and where `$CONTROLLER_HOME` and `CONTROLLER_RUNS_DIR` really live (a
+directories; the effective number of local gate slots (`CONTROLLER_GATE_SLOTS`, default 2)
+and that every slot lock (`CONTROLLER_GATE_LOCK`, `CONTROLLER_GATE2_LOCK` from two
+slots on, and the derived `gate<N>.lock` files from three slots on) is set, absolute,
+distinct and in a writable directory (a failure otherwise); and where `$CONTROLLER_HOME` and `CONTROLLER_RUNS_DIR` really live (a
 symlink target inside a git work tree is a warning: `git clean -fdx` would delete it,
 see [`docs/STATE-VS-WORK.md`](docs/STATE-VS-WORK.md)). It prints names and paths only,
 never a value from the env file, the host table or a key. Limit: the env file is
@@ -473,15 +474,38 @@ CONTROLLER_HOME=${CONTROLLER_HOME:-"$HOME/controller"}
 
 The lane runs the deterministic fake-root shell suite in `tests/` and the
 queue tests in `scripts/netcup/runner/tests/`. It runs `bash -n` on the kit and
-uses ShellCheck when the tester image provides it. The two slot lock paths
+uses ShellCheck when the tester image provides it. The slot lock paths
 come from `CONTROLLER_GATE_LOCK` and `CONTROLLER_GATE2_LOCK`; see
 [`docs/CONFIGURATION.md`](docs/CONFIGURATION.md). Copy those exact names from
 `controller.local.env.example` and export both before invoking the wrapper.
 
-`gate-run.sh` first tries both slots without waiting. If both are busy, it polls
-both locks with non-blocking attempts every 5 seconds, takes whichever slot is
-freed first, and prints which slot it took. It prints a progress line every
-300 seconds while both remain busy. The gate command's exit code is propagated
+The number of local slots is `CONTROLLER_GATE_SLOTS` (an integer from 1 to 8; unset
+or empty means 2, so nothing changes for a controller that sets nothing). The default
+stays 2 on purpose: the local slots guard the controller's own devcontainer, which has
+an 8 GiB memory cap and was OOM-killed once when too much ran at the same time. A
+controller on a host with more headroom can raise it; the remote gate worker
+(`remote-gate.sh`) has its own weight-based slots, and a later RAM-first admission
+will replace static counts. The lock file of each slot, exactly:
+
+- slot 1 is `CONTROLLER_GATE_LOCK` and slot 2 is `CONTROLLER_GATE2_LOCK` (the names
+  are unchanged, so existing env files keep working);
+- slot N from 3 to 8 is `gate<N>.lock` (for example `gate3.lock`) in the directory
+  `CONTROLLER_GATE_LOCK_DIR` when that is set (an absolute path, checked from three
+  slots on), otherwise in the directory that holds `CONTROLLER_GATE_LOCK`;
+- with `CONTROLLER_GATE_SLOTS=1` only `CONTROLLER_GATE_LOCK` is required and
+  `CONTROLLER_GATE2_LOCK` is not read; from two slots on both are required.
+
+Every slot lock path must differ (compared as written; a collision between a named
+and a derived slot is refused with the two slot numbers). A value that is not an
+integer from 1 to 8 (0, 9, `x`, `2.5`) is refused with exit 2 before any lock is
+opened.
+
+`gate-run.sh` first tries the slots in order (slot 1, then slot 2, ...) without
+waiting. If all are busy, it polls all locks with non-blocking attempts every 5
+seconds, takes whichever slot is freed first, and prints which slot it took. It
+prints a progress line every 300 seconds while all remain busy (with two slots
+the wording is `both slots busy` / `are both busy`; with one `the only slot`, with
+three or more `all N slots busy`). The gate command's exit code is propagated
 unchanged, and the configured-path and distinct-path refusals still run before
 the gate command can start. Gates run with `RUN_GATE_PROFILE=off` unless the
 caller sets it: the resource observer needs the rebuilt container, and a lane
@@ -559,12 +583,13 @@ still running or was killed.
   chain exports no image tag and no profiler socket; profiling is `gate-run.sh`'s
   default (off unless the caller sets `RUN_GATE_PROFILE`), and the repository's
   default tester image is used.
-- `gate-run.sh` REQUIRES `CONTROLLER_GATE_LOCK` and `CONTROLLER_GATE2_LOCK` (two
-  distinct absolute paths, normally set in `controller.local.env`): when one is
-  unset it exits 2 for every local lane, and because the chain never reads a
-  verdict it still ends with `CHAIN-DONE`, by design. Read the lane logs, and run
-  `ctl-doctor.sh`, which FAILs when either lock is unset, relative, equal to the
-  other or in an unwritable directory.
+- `gate-run.sh` REQUIRES `CONTROLLER_GATE_LOCK` and (from two slots on, the default)
+  `CONTROLLER_GATE2_LOCK` (distinct absolute paths, normally set in
+  `controller.local.env`; `CONTROLLER_GATE_SLOTS` sets the slot count, see above):
+  when one is unset it exits 2 for every local lane, and because the chain never
+  reads a verdict it still ends with `CHAIN-DONE`, by design. Read the lane logs,
+  and run `ctl-doctor.sh`, which FAILs when a slot lock is unset, relative, equal to
+  another one or in an unwritable directory.
 - Tests inject stub launchers through `CONTROLLER_GATE_RUN_SCRIPT` and
   `CONTROLLER_REMOTE_GATE_SCRIPT` (default: the siblings of `chain-run.sh`).
 

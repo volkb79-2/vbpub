@@ -6,6 +6,16 @@ no separate version number, so entries are grouped by the work that landed.
 
 ## [Unreleased]
 
+### Added
+- `gate-run.sh`: `CONTROLLER_GATE_SLOTS` (integer 1 to 8, default 2) sets the number
+  of local gate slots (CTL-33). Slot 1 is `CONTROLLER_GATE_LOCK`, slot 2 is
+  `CONTROLLER_GATE2_LOCK`, slots 3.. are `gate<N>.lock` in `CONTROLLER_GATE_LOCK_DIR`
+  or beside `CONTROLLER_GATE_LOCK`; with one slot `CONTROLLER_GATE2_LOCK` is not
+  required. Unset behaves and prints exactly as before (the existing two-slot test is
+  unchanged); the default stays 2 because the controller devcontainer has an 8 GiB cap
+  and was OOM-killed once. Invalid counts exit 2. `ctl-doctor.sh` prints the effective
+  count and checks every slot lock. New `tests/test-gate-slots.sh`; 39 new hand mutants.
+
 ### Fixed (review round of the controller import)
 - `ctl-state-backup.sh`: the member relabel no longer rewrites symlink targets
   (`--transform flags=rh`; an absolute link stays absolute, a relative one stays

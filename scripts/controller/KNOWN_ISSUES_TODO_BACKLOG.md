@@ -44,7 +44,7 @@ together.
 | CTL-30 | `scripts/netcup/runner/remote-gate-hosts.example.json` carries a controller-local home path (`run_gate_bins`) in a committed example, against the no-local-paths rule | Nice-to-have | FIXED 2026-11-18 |
 | CTL-31 | `ctl-doctor.sh` reads `controller.local.env` line by line (a multi-line assignment reads as a stray line) and does not run the identity check | Nice-to-have | OPEN |
 | CTL-32 | `ctl-state-backup.sh` has no restore helper, and keys/pins are outside the archive by design | Nice-to-have | OPEN |
-| CTL-33 | The local gate slots are hardcoded to two (`CONTROLLER_GATE_LOCK`/`CONTROLLER_GATE2_LOCK`); the count should be configurable | Should-fix | OPEN |
+| CTL-33 | The local gate slots are hardcoded to two (`CONTROLLER_GATE_LOCK`/`CONTROLLER_GATE2_LOCK`); the count should be configurable | Should-fix | DONE 2026-11-18 |
 
 ---
 
@@ -1460,20 +1460,25 @@ by-design note stays in `docs/STATE-VS-WORK.md`.
 
 ## CTL-33 — the local gate slot count is hardcoded to two
 
-**Status:** OPEN (filed 2026-11-18 in the controller-import review round; deliberately not implemented there).
+**Status:** DONE 2026-11-18 (package pi-ctl33; filed the same day in the controller-import review round).
 
-`gate-run.sh` knows exactly two local slots, `CONTROLLER_GATE_LOCK` and
-`CONTROLLER_GATE2_LOCK`. Make the count configurable through
-`CONTROLLER_GATE_SLOTS` (default 2) with the lock files `gate.lock`, `gate2.lock`,
-`gate3.lock`, ... and make `chain-run.sh` and `ctl-doctor.sh` aware of the count
-(the doctor's lock check and the chain's documentation both name the two variables).
+`gate-run.sh` knew exactly two local slots, `CONTROLLER_GATE_LOCK` and
+`CONTROLLER_GATE2_LOCK`. `CONTROLLER_GATE_SLOTS` (an integer from 1 to 8, default 2)
+now sets the count: slot 1 and 2 keep their variable names, slots 3.. are
+`gate<N>.lock` in `CONTROLLER_GATE_LOCK_DIR` or beside `CONTROLLER_GATE_LOCK`
+(`lib.sh` `controller_gate_derived_lock`; the exact rule is in the README). Unset
+behaves and prints exactly as before. `ctl-doctor.sh` prints the effective count and
+checks every slot lock; `chain-run.sh` needed no code change (it only calls
+`gate-run.sh`), its documentation names the count. Tests: `tests/test-gate-slots.sh`
+(N = 1, 2, 3, 4 and 8) and the doctor test; hand mutants for both.
 
-Reasoning: the remote hosts already run four weight-based slots
-(`CONTROLLER_REMOTE_SLOTS`), so a fixed two is an arbitrary local limit on a
-controller whose capacity is host-owned; and the fleet daemon's RAM-first
-admission is meant to replace static slot counts altogether, so this entry covers
-the interim only and may close as superseded when that admission exists.
+Reasoning kept: the DEFAULT stays 2 because the local slots guard the controller's
+own devcontainer, which has an 8 GiB memory cap and was OOM-killed once when too
+much ran at the same time. The remote hosts already run four weight-based slots
+(`CONTROLLER_REMOTE_SLOTS`, a different mechanism), and the fleet daemon's RAM-first
+admission is meant to replace static slot counts altogether; this change covers the
+interim only.
 
-**Close when.** `CONTROLLER_GATE_SLOTS` is honoured by `gate-run.sh`, `chain-run.sh`
-and `ctl-doctor.sh` with tests and mutants, or the fleet daemon's admission replaces
-the static count and this entry is closed as superseded.
+**Close when.** Done: `git grep -n CONTROLLER_GATE_SLOTS -- scripts/controller` shows
+`gate-run.sh`, `ctl-doctor.sh`, the docs and the tests. Open question for the fleet
+daemon: retire the static count when its admission exists.

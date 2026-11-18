@@ -25,8 +25,10 @@ Useful settings:
 | `CONTROLLER_LOGS_DIR` | Gate-log search directory for `job-check.sh`; defaults to `$CONTROLLER_HOME/logs`. |
 | `CONTROLLER_RUNS_DIR` | Optional run-record directory for Codex, `job-check.sh`, and `resume-usage-limited.sh`; defaults to `$CONTROLLER_HOME/runs`. Relative configured paths resolve under `CONTROLLER_HOME`; an environment override takes precedence over the local file. |
 | `CONTROLLER_QUEUE` | Installed controller-side queue path; defaults to `$CONTROLLER_HOME/bin/host-sat-queue.sh`. |
-| `CONTROLLER_GATE_LOCK` | Absolute path for the first gate slot; read it from host policy before running `gate-run.sh`. |
-| `CONTROLLER_GATE2_LOCK` | Distinct absolute path for the second gate slot; both slot paths are required by `gate-run.sh`. |
+| `CONTROLLER_GATE_SLOTS` | Number of local gate slots, an integer from 1 to 8; unset or empty means 2. The default stays 2 because the local slots guard the controller devcontainer, which has an 8 GiB memory cap and was OOM-killed once when too much ran at once. Anything else is refused with exit 2. |
+| `CONTROLLER_GATE_LOCK` | Absolute path for the first gate slot (always required); read it from host policy before running `gate-run.sh`. |
+| `CONTROLLER_GATE2_LOCK` | Distinct absolute path for the second gate slot; required by `gate-run.sh` from two slots on, not read with `CONTROLLER_GATE_SLOTS=1`. |
+| `CONTROLLER_GATE_LOCK_DIR` | Optional absolute directory for the lock files of slots 3 to 8, which are `gate3.lock` ... `gate8.lock` there; without it they sit beside `CONTROLLER_GATE_LOCK`. Only read from three slots on. Every slot lock path must differ. |
 | `CONTROLLER_REPO` | Checkout used for status and queue work; repo-local scripts derive it. Set it when the queue is installed under `CONTROLLER_HOME/bin`. |
 | `CODEX_HOME_LUNA`, `CODEX_HOME_DEEPSEEK_VOLKER`, `CODEX_HOME_DEEPSEEK_GITHUB2`, `CODEX_HOME_REVIEW` | Explicit Codex config homes for Luna, the two pinned Open Design accounts, and review. |
 | `CODEX_HOME_OVERRIDE` | Optional home override honoured only on the Luna route. |
