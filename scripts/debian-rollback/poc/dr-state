@@ -102,6 +102,19 @@ EOF
   if [ -n "$default" ]; then grub-editenv "$ESP_DIR/grubenv" set saved_entry="$default"; fi
 }
 
+subvol_uuid() { btrfs subvolume show "$TOP/$1" 2>/dev/null | awk '$1=="UUID:" {print $2; exit}'; }
+subvol_parent_uuid() { btrfs subvolume show "$TOP/$1" 2>/dev/null | awk '$1=="Parent" && $2=="UUID:" {print $3; exit}'; }
+
+# window_blocks NAME INTERVAL NOW: exit 0 when the snapshot NAME (@os-pre-<YYYYmmddHHMMSS>-...) is younger than
+# INTERVAL seconds at NOW (epoch). A malformed name or a name from the future (clock jump) never blocks.
+window_blocks() {
+  local name=$1 interval=$2 now=$3 ts made
+  ts=${name#@os-pre-}; ts=${ts%%-*}
+  [[ "$ts" =~ ^[0-9]{14}$ ]] || return 1
+  made=$(date -u -d "${ts:0:8} ${ts:8:2}:${ts:10:2}:${ts:12:2}" +%s 2>/dev/null) || return 1
+  [ $((now - made)) -ge 0 ] && [ $((now - made)) -lt "$interval" ]
+}
+
 cmd_snapshot() {
   local reason=manual
   while [ $# -gt 0 ]; do
@@ -109,26 +122,25 @@ cmd_snapshot() {
   done
   if [ "${DR_STATE:-}" = none ]; then echo "dr-state: DR_STATE=none, snapshot skipped" >&2; return 0; fi
   ensure_top
+  local cur name; cur=$(current_state)
   # Dedupe window for the apt hook (found by S7: one unattended-upgrade run called dpkg 18 times and took 18
-  # snapshots). While a snapshot younger than DR_SNAPSHOT_MIN_INTERVAL seconds exists (default 900), another apt run
-  # takes none: the rollback target stays the state from before the whole upgrade. 0 disables the window; manual
-  # snapshots (--reason other than apt) ignore it.
+  # snapshots). While an APT snapshot of THIS running state younger than DR_SNAPSHOT_MIN_INTERVAL seconds exists
+  # (default 900), another apt run takes none: the rollback target stays the state from before the whole upgrade.
+  # Only apt snapshots whose btrfs parent is the running state count; manual snapshots (--reason other than apt) and
+  # snapshots of another state (after a rollback) neither start nor satisfy the window. 0 disables it.
   local interval=${DR_SNAPSHOT_MIN_INTERVAL:-900}
   [[ "$interval" =~ ^[0-9]+$ ]] || die "DR_SNAPSHOT_MIN_INTERVAL must be a number of seconds"
   if [ "$reason" = apt ] && [ "$interval" -gt 0 ]; then
-    local newest ts made now
-    newest=$(states | grep '^@os-pre-' | sort | tail -n1 || true)
-    if [ -n "$newest" ]; then
-      ts=${newest#@os-pre-}; ts=${ts%%-*}
-      made=$(date -u -d "${ts:0:8} ${ts:8:2}:${ts:10:2}:${ts:12:2}" +%s 2>/dev/null) || made=0
-      now=$(date -u +%s)
-      if [ $((now - made)) -ge 0 ] && [ $((now - made)) -lt "$interval" ]; then
-        echo "dr-state: $newest is $((now - made)) s old (window $interval s), no new snapshot" >&2
-        return 0
-      fi
+    local cur_uuid newest="" s
+    cur_uuid=$(subvol_uuid "$cur")
+    for s in $(states | grep -- '^@os-pre-.*-apt$' | sort || true); do
+      [ -z "$cur_uuid" ] || [ "$(subvol_parent_uuid "$s")" != "$cur_uuid" ] || newest=$s
+    done
+    if [ -n "$newest" ] && window_blocks "$newest" "$interval" "$(date -u +%s)"; then
+      echo "dr-state: $newest (a snapshot of $cur) is inside the window of $interval s, no new snapshot" >&2
+      return 0
     fi
   fi
-  local cur name; cur=$(current_state)
   name="@os-pre-$(date -u +%Y%m%d%H%M%S)-$$-$reason"   # pid keeps two runs in one second apart
   btrfs subvolume snapshot "$TOP/$cur" "$TOP/$name" >/dev/null
   cmd_gen_menu
@@ -155,6 +167,10 @@ cmd_boot_once() {
   [ -d "$TOP/${1:?state}" ] || die "no such state: $1"
   grub-editenv "$ESP_DIR/grubenv" set next_entry="$1"
 }
+
+if [ "${1:-}" = _window-blocks ]; then   # test hook: dr-state _window-blocks NAME INTERVAL NOW; exit 0 = blocks
+  window_blocks "${2:?name}" "${3:?interval}" "${4:?now}"; exit $?
+fi
 
 sub=${1:-}; [ $# -gt 0 ] && shift
 case "$sub" in

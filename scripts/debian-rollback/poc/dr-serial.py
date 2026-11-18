@@ -5,7 +5,9 @@
 
 SCENARIO is one of: boot-check, s2-s3, kernel-upgrade, s5. Scenarios are NOT idempotent: s2-s3 ends with the earlier
 state as the default and both s2-s3 and kernel-upgrade require "running state == default" at the start, so run each
-of them in its own fresh guest (new overlay on the installed base); boot-check may share a guest with either. The guest must be running (dr-qemu.sh start) with a
+of them in its own fresh guest (new overlay on the installed base); boot-check may share a guest with either. The
+apt hook's dedupe window (dr-state, default 900 s) is another reason: a second apt run of the same state within the
+window takes no snapshot, so scenarios that count new snapshots need a guest without a recent one. The guest must be running (dr-qemu.sh start) with a
 login prompt on ttyS0 and root password "root" (the PoC installer default). The log is a plain transcript
 and is the evidence; the PASS/FAIL lines are a convenience. Exit status is non-zero when any check fails.
 
@@ -486,7 +488,8 @@ def scenario_s7(g, log):
                    ">/var/log/dr-s7-install.log 2>&1; echo INSRC:$?", 900)
     check(log, "unattended-upgrades installed", tag(out, "INSRC") == "0", str(tag(out, "INSRC")))
     before = state_list(g)
-    _, out = g.run("unattended-upgrade -v >/var/log/dr-s7.log 2>&1; echo UURC:$?; "
+    # a long window: under TCG an unattended run can outlast the default 900 s, which would split it in two snapshots
+    _, out = g.run("DR_SNAPSHOT_MIN_INTERVAL=7200 unattended-upgrade -v >/var/log/dr-s7.log 2>&1; echo UURC:$?; "
                    "echo UPGRADED:$(grep -c 'Packages that will be upgraded' /var/log/unattended-upgrades/unattended-upgrades.log); "
                    "echo NOTHING:$(grep -c 'No packages found that can be upgraded unattended' /var/log/unattended-upgrades/unattended-upgrades.log)", 5400)
     after = state_list(g)
@@ -515,7 +518,7 @@ def scenario_s9(g, log):
                    "echo LASTLINES:$(tail -n 3 /var/log/dr-s9.log | tr -d '()$`' | tr '\\n' '|' | tr ' ' _)")
     rc = tag(out, "APTRC")
     hello = tag(out, "HELLO") or ""
-    installed = hello.endswith("installed") and "not-installed" not in hello
+    installed = hello == "install_ok_installed"   # not half-installed, not config-files, not unpacked
     check(log, "no half state: dpkg has nothing to repair", tag(out, "DPKGAUDIT") == "0", str(tag(out, "DPKGAUDIT")))
     check(log, "outcome is all-or-nothing (apt rc 0 and installed, or apt rc != 0 and not installed)",
           (rc == "0" and installed) or (rc not in (None, "0") and not installed), f"rc={rc} hello={hello} last={tag(out, 'LASTLINES')}")
@@ -525,8 +528,8 @@ def scenario_s9(g, log):
     _, out = g.run("DEBIAN_FRONTEND=noninteractive apt-get install -y -qq hello >/var/log/dr-s9b.log 2>&1; echo APTRC:$?; echo HELLO:$(command -v hello || echo none)", 600)
     check(log, "apt works again after the space is back", tag(out, "APTRC") == "0" and tag(out, "HELLO") == "/usr/bin/hello", f"{tag(out, 'APTRC')} {tag(out, 'HELLO')}")
     after = state_list(g)
-    check(log, "every state has a bootable kernel in the menu (no leftover partial snapshot)",
-          all(s in after for s in before), str(after))
+    check(log, "no state disappeared and at most one new snapshot exists (no partial leftovers from the failed run)",
+          all(s in after for s in before) and len([s for s in after if s not in before]) <= 1, str(after))
     _, out = g.run("echo MENU:$(grep -c '^menuentry' /boot/efi/EFI/dr/grub.cfg); echo SUBVOLS:$(ls -1d /.top/@os-* | wc -l)")
     check(log, "menu entries match the state subvolumes", tag(out, "MENU") == tag(out, "SUBVOLS"), f"menu={tag(out, 'MENU')} subvols={tag(out, 'SUBVOLS')}")
     try:
