@@ -6971,13 +6971,13 @@ test.
 
 ## CIU-216 — `ciu worktree create` renders no `ciu.global.toml` when `DOCKER_HOST` is unset and the Docker socket is at a non-default path
 
-**Status:** OPEN (filed 2026-11-13; 2026-11-18 analysis: `ciu worktree create` without `--up` is prepare-only by design and never renders `ciu.global.toml` (`test_no_rendered_artifact_is_written`); only `create --up` / `worktree up` render it, through `ciu up`. The "never exit 0 without the rendered file" contract therefore needs a decision on which create form must render it before it can be implemented); severity: minor, silent failure. Found in netcup-api-filter on CIU 7.25.0 (a clean environment with `env -i`, socket at a non-default path). Not re-reproduced on 7.25.1.
+**Status:** OPEN (filed 2026-11-13; 2026-11-18 analysis: `ciu worktree create` without `--up` is prepare-only by design and never renders `ciu.global.toml` (CIU-161, `worktree.py` `_docker_network_exists`: "preparing a checkout does not need Docker"; with no Docker socket creation deliberately continues with an INFO instead of failing); only `ciu up` / `render` (`create --up`, `worktree up`) write it. The defect is therefore late and unnamed: the consumer that needs the rendered file (a run-gate exec-mode lane) fails on infrastructure without naming the missing file or the command that produces it; reshaped 2026-11-18 from "create must render it"); severity: minor, unclear late failure. Found in netcup-api-filter on CIU 7.25.0 (a clean environment with `env -i`, socket at a non-default path). Not re-reproduced on 7.25.1.
 
 **Observed.** `ciu worktree create` finished and created the checkout and its identity file, but the worktree had no `ciu.global.toml`, so run-gate lanes for it failed on infrastructure instead of on the code. Setting `DOCKER_HOST` to the socket, or copying a sibling's rendered file, restored it. The command printed no error.
 
-**Wanted.** Fail with a clear message naming the missing Docker endpoint instead of returning success without the rendered file.
+**Wanted.** The consumer that needs the rendered `ciu.global.toml` (a run-gate exec-mode lane reading it) refuses early, naming the missing file, the command that produces it (`ciu render`, or `ciu up`) and, when `DOCKER_HOST` is unset with no default socket, the missing Docker endpoint and `DOCKER_HOST=unix:///path/to/docker.sock`. `ciu worktree create` stays prepare-only; its existing INFO may additionally say that `ciu.global.toml` is rendered later by `ciu render`/`ciu up`.
 
-**Close when.** `ciu worktree create` under a clean environment either produces `ciu.global.toml` or exits non-zero naming the missing Docker endpoint.
+**Close when.** A lane run in a freshly created worktree that has no `ciu.global.toml` ends with a refusal naming the file and the producing command (not a late infrastructure failure), and a test pins that message under a clean environment (`DOCKER_HOST` unset, socket at a non-default path). Which project (run-gate or ciu) owns the refusal is to be decided when this is carved.
 
 ## CIU-217 — KSM ELF verifier accepts a zero-sized program-header entry declaration
 

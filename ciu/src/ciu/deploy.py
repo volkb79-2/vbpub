@@ -481,7 +481,7 @@ def resolve_identities(
         )
         profiles_pkg.reject_groups(global_config)
         profile = resolve_profiles(global_config, profiles, environ=render_environ)
-    selection = build_selection(profile, phases)
+    selection = build_selection(profile) if phases is None else build_selection(profile, phases)
     selected = _resolve_identity_stack_paths(repo_root, selection, stack)
     ciu_context = profiles_pkg.render_ciu_context(profile, selection)
 
