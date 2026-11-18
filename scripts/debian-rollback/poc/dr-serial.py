@@ -3,7 +3,7 @@
 
   dr-serial.py SOCKET SCENARIO [--log FILE]
 
-SCENARIO is one of: boot-check, s2-s3, kernel-upgrade. Scenarios are NOT idempotent: s2-s3 ends with the earlier
+SCENARIO is one of: boot-check, s2-s3, kernel-upgrade, s5. Scenarios are NOT idempotent: s2-s3 ends with the earlier
 state as the default and both s2-s3 and kernel-upgrade require "running state == default" at the start, so run each
 of them in its own fresh guest (new overlay on the installed base); boot-check may share a guest with either. The guest must be running (dr-qemu.sh start) with a
 login prompt on ttyS0 and root password "root" (the PoC installer default). The log is a plain transcript
@@ -19,6 +19,7 @@ against it):
   `login:` prompt instead of probing the old shell.
 Standard library only. Host-side: it touches nothing but the socket.
 """
+import os
 import re
 import select
 import socket
@@ -32,6 +33,7 @@ FAILS = []
 class Guest:
     def __init__(self, path, log):
         self.path, self.log = path, log
+        self.qmp_path = None  # the state dir's qmp.sock, set by main()
         self.sock = None
         self.buf = b""
 
@@ -142,6 +144,28 @@ class Guest:
         if not old or not new or old == new:
             raise RuntimeError(f"reboot not proven: boot_id before={old!r} after={new!r}")
         return new
+
+
+def qmp_command(path, command, timeout=15):
+    """One QMP command on the guest's unix socket (the state dir's qmp.sock); returns the parsed reply."""
+    import json
+    s = socket.socket(socket.AF_UNIX)
+    s.settimeout(timeout)
+    s.connect(path)
+    f = s.makefile("rw")
+    try:
+        json.loads(f.readline())  # greeting
+        f.write(json.dumps({"execute": "qmp_capabilities"}) + "\n")
+        f.flush()
+        json.loads(f.readline())
+        f.write(json.dumps({"execute": command}) + "\n")
+        f.flush()
+        while True:  # events may precede the reply
+            msg = json.loads(f.readline())
+            if "return" in msg or "error" in msg:
+                return msg
+    finally:
+        s.close()
 
 
 def tags(out, name):
@@ -369,18 +393,80 @@ def scenario_kernel_upgrade(g, log):
           tag(out, "KERNEL") == new and running_state(tag(out, "CMDLINE")) == state0, f"{tag(out, 'KERNEL')} {running_state(tag(out, 'CMDLINE'))}")
 
 
+def scenario_s5(g, log):
+    """S5: the running state's initramfs is broken. The default entry cannot boot; the earlier state, chosen in the
+    GRUB menu with keys over the serial line, can. Then the earlier state is made the default (recovery)."""
+    g.login()
+    _, out = g.run("echo CMDLINE:$(cat /proc/cmdline); echo KERNEL:$(uname -r)")
+    state0 = running_state(tag(out, "CMDLINE"))
+    kver = tag(out, "KERNEL")
+    if not (state0 and kver) or not check(log, "the running state is the default (precondition)", default_state(g) == state0, f"{state0}"):
+        return
+    before = state_list(g)
+    _, out = g.run("dr-state snapshot --reason s5; echo SNAPRC:$?")
+    check(log, "manual snapshot taken", tag(out, "SNAPRC") == "0", str(tag(out, "SNAPRC")))
+    after = state_list(g)
+    good = [s for s in after if s not in before and s.startswith("@os-pre-")]
+    if not check(log, "exactly one new state", len(good) == 1, str(good)):
+        return
+    good = good[0]
+    # corrupt (not remove) the initramfs of the RUNNING state, so its menu entry stays but cannot boot
+    _, out = g.run(f"echo broken > /boot/initrd.img-{kver}; echo BRK:$(wc -c < /boot/initrd.img-{kver})")
+    check(log, "initramfs of the running state is broken", tag(out, "BRK") == "7", str(tag(out, "BRK")))
+    g.send("reboot\n")
+    g.buf = b""
+    try:
+        g.expect(rb"Kernel panic|not syncing|Unable to mount root|Gave up waiting for root", 900)
+        check(log, "the default entry fails to boot (panic seen, no login prompt)", True)
+    except TimeoutError as exc:
+        check(log, "the default entry fails to boot (panic seen, no login prompt)", False, str(exc)[-160:])
+        return
+    # the guest hangs in the panic; reset it from outside (QMP) and pick the earlier entry in the menu
+    reply = qmp_command(g.qmp_path, "system_reset")
+    check(log, "guest reset through QMP", "return" in reply, str(reply))
+    g.buf = b""
+    try:
+        g.expect(rb"GNU GRUB", 600)
+    except TimeoutError as exc:
+        check(log, "the GRUB menu appears again", False, str(exc)[-160:])
+        return
+    check(log, "the GRUB menu appears again", True)
+    time.sleep(1.5)
+    g.send("\x1b[B")  # Down: the second entry (states are listed in name order, @os-0001 before @os-pre-...)
+    time.sleep(1)
+    g.send("\r")
+    g.buf = b""
+    g.expect(rb"login: ?", 900)
+    g._do_login()
+    _, out = g.run("echo CMDLINE:$(cat /proc/cmdline); echo KERNEL:$(uname -r); echo DEF:$(dr-state list | awk '/\\(default\\)/{print $1}')")
+    check(log, "the earlier state booted from the menu", running_state(tag(out, "CMDLINE")) == good, str(running_state(tag(out, "CMDLINE"))))
+    check(log, "the saved default still names the broken state (a menu choice is not a repair)", tag(out, "DEF") == state0, str(tag(out, "DEF")))
+    # recovery: make the good state the default and prove it with a reboot with no key press
+    _, out = g.run(f"dr-state set-default {good}; echo SDRC:$?")
+    check(log, "set-default accepted", tag(out, "SDRC") == "0")
+    try:
+        g.reboot()
+    except Exception as exc:  # noqa: BLE001
+        check(log, "reboot after recovery", False, repr(exc))
+        return
+    _, out = g.run("echo CMDLINE:$(cat /proc/cmdline)")
+    check(log, "plain reboot now boots the good state", running_state(tag(out, "CMDLINE")) == good, str(running_state(tag(out, "CMDLINE"))))
+
+
 def main():
     if len(sys.argv) < 3:
         print(__doc__)
         return 2
     sock, name = sys.argv[1], sys.argv[2]
     logpath = sys.argv[sys.argv.index("--log") + 1] if "--log" in sys.argv else f"/tmp/dr-serial-{name}.log"
-    scenarios = {"boot-check": scenario_boot_check, "s2-s3": scenario_s2_s3, "kernel-upgrade": scenario_kernel_upgrade}
+    scenarios = {"boot-check": scenario_boot_check, "s2-s3": scenario_s2_s3, "kernel-upgrade": scenario_kernel_upgrade,
+                 "s5": scenario_s5}
     if name not in scenarios:
         print(f"unknown scenario {name}; one of {sorted(scenarios)}")
         return 2
     with open(logpath, "a") as log:
         g = Guest(sock, log)
+        g.qmp_path = os.path.join(os.path.dirname(os.path.abspath(sock)), "qmp.sock")
         g.connect()
         scenarios[name](g, log)
     if FAILS:

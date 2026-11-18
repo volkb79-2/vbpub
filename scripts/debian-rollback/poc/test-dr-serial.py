@@ -149,6 +149,38 @@ def main() -> int:
     except RuntimeError:
         pass
 
+    # QMP: greeting, capabilities, an event before the reply, then the reply
+    import json
+    import os
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as tmp:
+        qpath = os.path.join(tmp, "qmp.sock")
+        srv = socket.socket(socket.AF_UNIX)
+        srv.bind(qpath)
+        srv.listen(1)
+        seen = []
+
+        def qmp_server():
+            conn, _ = srv.accept()
+            f = conn.makefile("rw")
+            f.write(json.dumps({"QMP": {"version": {}, "capabilities": []}}) + "\n")
+            f.flush()
+            for _ in range(2):
+                req = json.loads(f.readline())
+                seen.append(req["execute"])
+                if req["execute"] == "system_reset":
+                    f.write(json.dumps({"event": "RESET", "data": {}}) + "\n")
+                f.write(json.dumps({"return": {}}) + "\n")
+                f.flush()
+            conn.close()
+
+        threading.Thread(target=qmp_server, daemon=True).start()
+        reply = drs.qmp_command(qpath, "system_reset", timeout=10)
+        if reply != {"return": {}} or seen != ["qmp_capabilities", "system_reset"]:
+            failures.append(f"qmp_command: reply={reply!r} seen={seen!r}")
+        srv.close()
+
     # silence times out instead of hanging
     a, b = socket.socketpair()
     a.setblocking(False)
