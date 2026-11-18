@@ -125,6 +125,45 @@ impl SegmentScan {
         self.records.last().map(|record| record.real_ns)
     }
 
+    /// Check this scan against the name the file carries (HOB-42).
+    ///
+    /// Two rules, in this order:
+    ///
+    /// * the header's `seq` and `start_real_ns` must be the numbers the name carries (a file
+    ///   renamed by hand would otherwise keep serving the identity of its header);
+    /// * a name that is not `.seg.open` claims to be sealed, so it needs a footer that
+    ///   verified: a `.seg` that lost its footer, or a truncated sealed file, is not sealed.
+    ///
+    /// A footer that is present but does not verify is already [`TailState::Corrupt`] in the
+    /// scan, which the caller quarantines through [`SegmentScan::quarantine`]; this check is
+    /// for the shapes the tail alone does not reveal.
+    ///
+    /// # Errors
+    ///
+    /// [`StoreError::SegmentIdentity`] and [`StoreError::SealedWithoutFooter`].
+    pub fn check_name(&self, parsed: &SegmentFileName) -> Result<(), StoreError> {
+        if self.header.seq != parsed.seq {
+            return Err(StoreError::SegmentIdentity {
+                field: "seq",
+                name: i128::from(parsed.seq),
+                header: i128::from(self.header.seq),
+            });
+        }
+        if self.header.start_real_ns != parsed.start_real_ns() {
+            return Err(StoreError::SegmentIdentity {
+                field: "start_real_ns",
+                name: i128::from(parsed.start_real_ns()),
+                header: i128::from(self.header.start_real_ns),
+            });
+        }
+        if !parsed.open && self.footer.is_none() {
+            return Err(StoreError::SealedWithoutFooter {
+                name: self.name.clone(),
+            });
+        }
+        Ok(())
+    }
+
     /// Truncate an incomplete tail back to `good_end`, leaving every complete record in place.
     ///
     /// # Errors
@@ -715,7 +754,7 @@ pub fn scan_bytes(
 /// [`StoreError::SegmentName`] for a name that is not a segment name.
 pub fn quarantine_name(name: &str) -> Result<String, StoreError> {
     let parsed = SegmentFileName::parse(name)?;
-    Ok(format!("{}.corrupt", parsed.file_name()))
+    Ok(parsed.quarantine_file_name())
 }
 
 /// A record's payload crc, for a caller that wants to verify a record it read itself.

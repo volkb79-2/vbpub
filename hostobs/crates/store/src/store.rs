@@ -325,7 +325,10 @@ pub struct StoreStats {
     pub bytes: u64,
     /// Whole segments evicted by a bound, all tiers.
     pub evicted_segments: u64,
-    /// Bytes those evicted segments held.
+    /// Quarantined files (`*.corrupt`) evicted by a bound, all tiers; counted apart from
+    /// `evicted_segments` so a damage storm is visible as such (HOB-43).
+    pub evicted_quarantined: u64,
+    /// Bytes those evicted segments and quarantined files held.
     pub evicted_bytes: u64,
     /// Torn tails repaired at open, all tiers.
     pub torn_repaired: u64,
@@ -340,6 +343,18 @@ pub struct StoreStats {
 }
 
 impl StoreStats {
+    /// Count what one eviction pass removed: live segments and quarantined files apart, the
+    /// bytes together.
+    fn note_eviction(&mut self, done: &Evicted) {
+        self.evicted_segments = self
+            .evicted_segments
+            .saturating_add(u64::try_from(done.len()).unwrap_or(u64::MAX));
+        self.evicted_quarantined = self
+            .evicted_quarantined
+            .saturating_add(u64::try_from(done.quarantined.len()).unwrap_or(u64::MAX));
+        self.evicted_bytes = self.evicted_bytes.saturating_add(done.bytes);
+    }
+
     /// True when the store lost nothing: no dropped job, no quarantine, no write failure.
     ///
     /// A torn tail is a *repair*, not a loss: the record it cut back to was never completed, so
@@ -694,14 +709,7 @@ impl Store {
         self.stats.written = self.stats.written.saturating_add(1);
         self.stats.records = self.stats.records.saturating_add(1);
         self.stats.bytes = self.stats.bytes.saturating_add(outcome.bytes_written);
-        self.stats.evicted_segments = self
-            .stats
-            .evicted_segments
-            .saturating_add(u64::try_from(outcome.evicted.len()).unwrap_or(u64::MAX));
-        self.stats.evicted_bytes = self
-            .stats
-            .evicted_bytes
-            .saturating_add(outcome.evicted.bytes);
+        self.stats.note_eviction(&outcome.evicted);
         Ok(WriteOutcome {
             tier: name,
             outcome,
@@ -728,14 +736,7 @@ impl Store {
         )?;
         self.stats.records = self.stats.records.saturating_add(1);
         self.stats.bytes = self.stats.bytes.saturating_add(outcome.bytes_written);
-        self.stats.evicted_segments = self
-            .stats
-            .evicted_segments
-            .saturating_add(u64::try_from(outcome.evicted.len()).unwrap_or(u64::MAX));
-        self.stats.evicted_bytes = self
-            .stats
-            .evicted_bytes
-            .saturating_add(outcome.evicted.bytes);
+        self.stats.note_eviction(&outcome.evicted);
         let _ = now_ns;
         Ok(outcome)
     }
@@ -769,22 +770,14 @@ impl Store {
         for (name, state) in &mut self.tiers {
             let done = state.tier.evict(now_ns)?;
             if !done.is_empty() {
-                self.stats.evicted_segments = self
-                    .stats
-                    .evicted_segments
-                    .saturating_add(u64::try_from(done.len()).unwrap_or(u64::MAX));
-                self.stats.evicted_bytes = self.stats.evicted_bytes.saturating_add(done.bytes);
+                self.stats.note_eviction(&done);
                 self.stats.bytes = self.stats.bytes.saturating_sub(done.bytes);
                 evicted.insert(name.clone(), done);
             }
         }
         let done = self.events.evict(now_ns)?;
         if !done.is_empty() {
-            self.stats.evicted_segments = self
-                .stats
-                .evicted_segments
-                .saturating_add(u64::try_from(done.len()).unwrap_or(u64::MAX));
-            self.stats.evicted_bytes = self.stats.evicted_bytes.saturating_add(done.bytes);
+            self.stats.note_eviction(&done);
             self.stats.bytes = self.stats.bytes.saturating_sub(done.bytes);
             evicted.insert(EVENTS.to_string(), done);
         }

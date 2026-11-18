@@ -246,6 +246,22 @@ pub enum StoreError {
         /// The footer's generation.
         footer: u32,
     },
+    /// A file named as a sealed segment (`.seg`) has no footer that verifies: it is not a
+    /// sealed segment, whatever its name says. HOB-42.
+    SealedWithoutFooter {
+        /// The name that claims to be sealed.
+        name: String,
+    },
+    /// A segment header's `seq` or `start_real_ns` disagrees with the numbers in the file's
+    /// name (a hand-renamed or swapped file). HOB-42.
+    SegmentIdentity {
+        /// Which fact disagrees: `seq` or `start_real_ns`.
+        field: &'static str,
+        /// The value the name carries (`start_s` is reported as nanoseconds).
+        name: i128,
+        /// The value the header carries.
+        header: i128,
+    },
     /// A directory entry's name is not one this store writes.
     SegmentName {
         /// The name refused.
@@ -512,6 +528,8 @@ impl StoreError {
             StoreError::FooterOffset { .. } => "footer-offset",
             StoreError::FooterIdentity { .. } => "footer-identity",
             StoreError::FooterGeneration { .. } => "footer-generation",
+            StoreError::SealedWithoutFooter { .. } => "sealed-without-footer",
+            StoreError::SegmentIdentity { .. } => "segment-identity",
             StoreError::SegmentName { .. } => "segment-name",
             StoreError::BadName { .. } => "bad-name",
             StoreError::Symlink { .. } => "symlink",
@@ -588,6 +606,8 @@ impl StoreError {
                 | StoreError::FooterOffset { .. }
                 | StoreError::FooterIdentity { .. }
                 | StoreError::FooterGeneration { .. }
+                | StoreError::SealedWithoutFooter { .. }
+                | StoreError::SegmentIdentity { .. }
         )
     }
 
@@ -767,6 +787,18 @@ impl fmt::Display for StoreError {
                 f,
                 "segment footer names generation {footer}, the header names {header}"
             ),
+            StoreError::SealedWithoutFooter { name } => write!(
+                f,
+                "{name} is named as a sealed segment but has no footer that verifies"
+            ),
+            StoreError::SegmentIdentity {
+                field,
+                name,
+                header,
+            } => write!(
+                f,
+                "segment name carries {field} {name}, its header carries {header}"
+            ),
             StoreError::SegmentName { name } => {
                 write!(f, "{name} is not a segment name this store writes")
             }
@@ -906,6 +938,12 @@ mod tests {
         let names = [
             StoreError::LengthOverflow,
             StoreError::NotSealed,
+            StoreError::SealedWithoutFooter { name: "n".into() },
+            StoreError::SegmentIdentity {
+                field: "seq",
+                name: 1,
+                header: 2,
+            },
             StoreError::Truncated {
                 context: "x",
                 need: 1,
@@ -1008,6 +1046,14 @@ mod tests {
                 computed: 2,
             },
             StoreError::NotSealed,
+            StoreError::SealedWithoutFooter {
+                name: "hot-0-0.seg".into(),
+            },
+            StoreError::SegmentIdentity {
+                field: "seq",
+                name: 1,
+                header: 2,
+            },
             StoreError::FooterCount {
                 declared: 3,
                 measured: 1,
@@ -1116,6 +1162,16 @@ mod tests {
             }
             .to_string(),
             StoreError::SegmentName { name: "x".into() }.to_string(),
+            StoreError::SealedWithoutFooter {
+                name: "hot-0-0.seg".into(),
+            }
+            .to_string(),
+            StoreError::SegmentIdentity {
+                field: "start_real_ns",
+                name: 60,
+                header: 0,
+            }
+            .to_string(),
             StoreError::BadName {
                 name: "../x".into(),
             }
