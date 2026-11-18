@@ -118,8 +118,8 @@ MUTANTS: tuple[Mutant, ...] = (
         "M1d-3",
         "the cap evicts live segments before quarantined files",
         "crates/store/src/tier.rs",
-        "                if !self.scan.quarantined_files.is_empty() {\n                    self.remove_quarantined(&mut evicted)?;\n                    continue;\n                }",
-        "                if !self.scan.quarantined_files.is_empty() && self.scan.segments.is_empty() {\n                    self.remove_quarantined(&mut evicted)?;\n                    continue;\n                }",
+        "                if !self.scan.quarantined_files.is_empty() {\n                    self.remove_quarantined(&mut evicted);\n                    continue;\n                }",
+        "                if !self.scan.quarantined_files.is_empty() && self.scan.segments.is_empty() {\n                    self.remove_quarantined(&mut evicted);\n                    continue;\n                }",
         "store",
     ),
     Mutant(
@@ -158,8 +158,8 @@ MUTANTS: tuple[Mutant, ...] = (
         "M1d-10",
         "`keep_s` is not applied to quarantined files",
         "crates/store/src/tier.rs",
-        "            if span_end_ns.saturating_add(keep_ns) > now_ns {\n                break;\n            }\n            self.remove_quarantined(&mut evicted)?;",
-        "            if true || span_end_ns.saturating_add(keep_ns) > now_ns {\n                break;\n            }\n            self.remove_quarantined(&mut evicted)?;",
+        "            if span_end_ns.saturating_add(keep_ns) > now_ns {\n                break;\n            }\n            self.remove_quarantined(&mut evicted);",
+        "            if true || span_end_ns.saturating_add(keep_ns) > now_ns {\n                break;\n            }\n            self.remove_quarantined(&mut evicted);",
         "store",
     ),
     # ------------------------------------------ HOB-42: a name is a claim to back
