@@ -1,0 +1,10 @@
+src/lib.rs:7:9: replace S::bump -> i32 with 0
+src/lib.rs:7:9: replace S::bump -> i32 with 1
+src/lib.rs:7:9: replace S::bump -> i32 with -1
+src/lib.rs:7:16: replace + with - in S::bump
+src/lib.rs:7:16: replace + with * in S::bump
+src/lib.rs:17:9: replace <impl T for S>::triple -> i32 with 0
+src/lib.rs:17:9: replace <impl T for S>::triple -> i32 with 1
+src/lib.rs:17:9: replace <impl T for S>::triple -> i32 with -1
+src/lib.rs:17:16: replace * with + in <impl T for S>::triple
+src/lib.rs:17:16: replace * with / in <impl T for S>::triple

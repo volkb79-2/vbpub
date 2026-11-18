@@ -588,7 +588,10 @@ same tree at `{root}` (paths are passed project-root-relative) and the stage com
 otherwise from the staged bundle directory; `[wheel].find_links` makes the vendor step `--no-index`.
 `bundle_dir` and `client_dir` must resolve to distinct, non-overlapping subdirectories of `dist_dir`.
 CMRU rejects a path that resolves to `dist_dir`, its parent, or outside it before any output cleanup,
-and rechecks containment before removing either staging tree.
+and rechecks containment before removing either staging tree. `dist_dir` itself must resolve to a
+strict descendant of `project_root` (a value such as `"."`, `".."`, an outside absolute path or a
+symlink that leaves the project is refused at parse time) and is rechecked before every removal,
+because a legacy no-variant build removes it whole.
 If `MYPROJ_VERSION` is set, it names the archive version. When it is unset,
 `bundle-build` derives the planned release version (or the latest tag when the
 project is unchanged) from CMRU and adds `.devN+g<short-hash>` from Git, so the
@@ -854,6 +857,11 @@ more than one window. A registry HTTP 429 with a `Retry-After` of at most 60 s i
 Hub sends `ratelimit-limit`/`ratelimit-remaining` and no `Retry-After`) stops the run with **exit 5** and a message naming
 the limit headers. The retry bound is per request (3 retries of at most 60 s each, so at most 180 s for one request), not
 per run: there is no cumulative sleep budget, and Docker Hub sends no `Retry-After`, so against Hub a 429 fails at once.
+`cmru versions resolve` and `init` edit `cmru.toml` as text: only the `resolved` values and the target tables they
+create change, and every comment, blank line, multi-line value and key order stays byte-identical. When a target is
+written in a shape they cannot edit as text they refuse before writing and name the edit to make by hand. cmru does not
+rewrite `package.json` to get past the manifest refusal: if several `constraint = "*"` npm targets resolve past what the
+committed manifest pins, one run lists all of them with the exact `package.json` change; apply it, then rerun.
 `cmru versions resolve` saves every target it finished to
 `$XDG_CACHE_HOME/cmru/versions-resume-<hash>.json` (default `~/.cache`; outside the repository), and the same command
 rerun after the window reuses those targets (unchanged declaration, same age window, saved within 24 h) and resolves only

@@ -1,0 +1,322 @@
+[
+  {
+    "diff": "--- src/with space.rs\n+++ replace inc -> i32 with 0\n@@ -1,3 +1,3 @@\n pub fn inc(x: i32) -> i32 {\n-    x + 1\n+    0 /* ~ changed by cargo-mutants ~ */\n }\n",
+    "file": "src/with space.rs",
+    "function": {
+      "function_name": "inc",
+      "return_type": "-> i32",
+      "span": {
+        "end": {
+          "column": 2,
+          "line": 3
+        },
+        "start": {
+          "column": 1,
+          "line": 1
+        }
+      }
+    },
+    "genre": "FnValue",
+    "name": "src/with space.rs:2:5: replace inc -> i32 with 0",
+    "package": "paths",
+    "replacement": "0",
+    "span": {
+      "end": {
+        "column": 10,
+        "line": 2
+      },
+      "start": {
+        "column": 5,
+        "line": 2
+      }
+    }
+  },
+  {
+    "diff": "--- src/with space.rs\n+++ replace inc -> i32 with 1\n@@ -1,3 +1,3 @@\n pub fn inc(x: i32) -> i32 {\n-    x + 1\n+    1 /* ~ changed by cargo-mutants ~ */\n }\n",
+    "file": "src/with space.rs",
+    "function": {
+      "function_name": "inc",
+      "return_type": "-> i32",
+      "span": {
+        "end": {
+          "column": 2,
+          "line": 3
+        },
+        "start": {
+          "column": 1,
+          "line": 1
+        }
+      }
+    },
+    "genre": "FnValue",
+    "name": "src/with space.rs:2:5: replace inc -> i32 with 1",
+    "package": "paths",
+    "replacement": "1",
+    "span": {
+      "end": {
+        "column": 10,
+        "line": 2
+      },
+      "start": {
+        "column": 5,
+        "line": 2
+      }
+    }
+  },
+  {
+    "diff": "--- src/with space.rs\n+++ replace inc -> i32 with -1\n@@ -1,3 +1,3 @@\n pub fn inc(x: i32) -> i32 {\n-    x + 1\n+    -1 /* ~ changed by cargo-mutants ~ */\n }\n",
+    "file": "src/with space.rs",
+    "function": {
+      "function_name": "inc",
+      "return_type": "-> i32",
+      "span": {
+        "end": {
+          "column": 2,
+          "line": 3
+        },
+        "start": {
+          "column": 1,
+          "line": 1
+        }
+      }
+    },
+    "genre": "FnValue",
+    "name": "src/with space.rs:2:5: replace inc -> i32 with -1",
+    "package": "paths",
+    "replacement": "-1",
+    "span": {
+      "end": {
+        "column": 10,
+        "line": 2
+      },
+      "start": {
+        "column": 5,
+        "line": 2
+      }
+    }
+  },
+  {
+    "diff": "--- src/with space.rs\n+++ replace + with - in inc\n@@ -1,3 +1,3 @@\n pub fn inc(x: i32) -> i32 {\n-    x + 1\n+    x - /* ~ changed by cargo-mutants ~ */ 1\n }\n",
+    "file": "src/with space.rs",
+    "function": {
+      "function_name": "inc",
+      "return_type": "-> i32",
+      "span": {
+        "end": {
+          "column": 2,
+          "line": 3
+        },
+        "start": {
+          "column": 1,
+          "line": 1
+        }
+      }
+    },
+    "genre": "BinaryOperator",
+    "name": "src/with space.rs:2:7: replace + with - in inc",
+    "package": "paths",
+    "replacement": "-",
+    "span": {
+      "end": {
+        "column": 8,
+        "line": 2
+      },
+      "start": {
+        "column": 7,
+        "line": 2
+      }
+    }
+  },
+  {
+    "diff": "--- src/with space.rs\n+++ replace + with * in inc\n@@ -1,3 +1,3 @@\n pub fn inc(x: i32) -> i32 {\n-    x + 1\n+    x * /* ~ changed by cargo-mutants ~ */ 1\n }\n",
+    "file": "src/with space.rs",
+    "function": {
+      "function_name": "inc",
+      "return_type": "-> i32",
+      "span": {
+        "end": {
+          "column": 2,
+          "line": 3
+        },
+        "start": {
+          "column": 1,
+          "line": 1
+        }
+      }
+    },
+    "genre": "BinaryOperator",
+    "name": "src/with space.rs:2:7: replace + with * in inc",
+    "package": "paths",
+    "replacement": "*",
+    "span": {
+      "end": {
+        "column": 8,
+        "line": 2
+      },
+      "start": {
+        "column": 7,
+        "line": 2
+      }
+    }
+  },
+  {
+    "diff": "--- src/módulo.rs\n+++ replace dbl -> i32 with 0\n@@ -1,3 +1,3 @@\n pub fn dbl(x: i32) -> i32 {\n-    x * 2\n+    0 /* ~ changed by cargo-mutants ~ */\n }\n",
+    "file": "src/módulo.rs",
+    "function": {
+      "function_name": "dbl",
+      "return_type": "-> i32",
+      "span": {
+        "end": {
+          "column": 2,
+          "line": 3
+        },
+        "start": {
+          "column": 1,
+          "line": 1
+        }
+      }
+    },
+    "genre": "FnValue",
+    "name": "src/módulo.rs:2:5: replace dbl -> i32 with 0",
+    "package": "paths",
+    "replacement": "0",
+    "span": {
+      "end": {
+        "column": 10,
+        "line": 2
+      },
+      "start": {
+        "column": 5,
+        "line": 2
+      }
+    }
+  },
+  {
+    "diff": "--- src/módulo.rs\n+++ replace dbl -> i32 with 1\n@@ -1,3 +1,3 @@\n pub fn dbl(x: i32) -> i32 {\n-    x * 2\n+    1 /* ~ changed by cargo-mutants ~ */\n }\n",
+    "file": "src/módulo.rs",
+    "function": {
+      "function_name": "dbl",
+      "return_type": "-> i32",
+      "span": {
+        "end": {
+          "column": 2,
+          "line": 3
+        },
+        "start": {
+          "column": 1,
+          "line": 1
+        }
+      }
+    },
+    "genre": "FnValue",
+    "name": "src/módulo.rs:2:5: replace dbl -> i32 with 1",
+    "package": "paths",
+    "replacement": "1",
+    "span": {
+      "end": {
+        "column": 10,
+        "line": 2
+      },
+      "start": {
+        "column": 5,
+        "line": 2
+      }
+    }
+  },
+  {
+    "diff": "--- src/módulo.rs\n+++ replace dbl -> i32 with -1\n@@ -1,3 +1,3 @@\n pub fn dbl(x: i32) -> i32 {\n-    x * 2\n+    -1 /* ~ changed by cargo-mutants ~ */\n }\n",
+    "file": "src/módulo.rs",
+    "function": {
+      "function_name": "dbl",
+      "return_type": "-> i32",
+      "span": {
+        "end": {
+          "column": 2,
+          "line": 3
+        },
+        "start": {
+          "column": 1,
+          "line": 1
+        }
+      }
+    },
+    "genre": "FnValue",
+    "name": "src/módulo.rs:2:5: replace dbl -> i32 with -1",
+    "package": "paths",
+    "replacement": "-1",
+    "span": {
+      "end": {
+        "column": 10,
+        "line": 2
+      },
+      "start": {
+        "column": 5,
+        "line": 2
+      }
+    }
+  },
+  {
+    "diff": "--- src/módulo.rs\n+++ replace * with + in dbl\n@@ -1,3 +1,3 @@\n pub fn dbl(x: i32) -> i32 {\n-    x * 2\n+    x + /* ~ changed by cargo-mutants ~ */ 2\n }\n",
+    "file": "src/módulo.rs",
+    "function": {
+      "function_name": "dbl",
+      "return_type": "-> i32",
+      "span": {
+        "end": {
+          "column": 2,
+          "line": 3
+        },
+        "start": {
+          "column": 1,
+          "line": 1
+        }
+      }
+    },
+    "genre": "BinaryOperator",
+    "name": "src/módulo.rs:2:7: replace * with + in dbl",
+    "package": "paths",
+    "replacement": "+",
+    "span": {
+      "end": {
+        "column": 8,
+        "line": 2
+      },
+      "start": {
+        "column": 7,
+        "line": 2
+      }
+    }
+  },
+  {
+    "diff": "--- src/módulo.rs\n+++ replace * with / in dbl\n@@ -1,3 +1,3 @@\n pub fn dbl(x: i32) -> i32 {\n-    x * 2\n+    x / /* ~ changed by cargo-mutants ~ */ 2\n }\n",
+    "file": "src/módulo.rs",
+    "function": {
+      "function_name": "dbl",
+      "return_type": "-> i32",
+      "span": {
+        "end": {
+          "column": 2,
+          "line": 3
+        },
+        "start": {
+          "column": 1,
+          "line": 1
+        }
+      }
+    },
+    "genre": "BinaryOperator",
+    "name": "src/módulo.rs:2:7: replace * with / in dbl",
+    "package": "paths",
+    "replacement": "/",
+    "span": {
+      "end": {
+        "column": 8,
+        "line": 2
+      },
+      "start": {
+        "column": 7,
+        "line": 2
+      }
+    }
+  }
+]

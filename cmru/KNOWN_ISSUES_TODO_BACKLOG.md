@@ -14,7 +14,11 @@
 
 | ID | Status | Fix commit |
 | --- | --- | --- |
-| KI-175 | OPEN (dist_dir containment gap can delete project or parent paths) | `126b2170b0fbcad444c6c7c0f8c9906b68f55f69` |
+| KI-181 | OPEN (`dist_dir` containment still accepts project-owned directories such as `src`, `.git` or a symlink to another project directory) | — |
+| KI-180 | OPEN (runner residuals: a signal between fork and `Popen` return can leave the child unreaped; a failing group reap skips the explicit pipe close) | — |
+| KI-179 | OPEN (`cmru abandon` withholds a superseded release candidate whose content is on main and offers no operator path) | — |
+| KI-178 | OPEN (items 1 and 2 fixed 2026-11-18: bounded drain after child exit and whole-process-group reaping; item 3 no-progress watchdog and item 4 shared helper remain) | `4d9ecf912` (code; earlier changes `4b59e8740`, `d21e1921b`) |
+| KI-175 | FIXED 2026-11-18 (`dist_dir` must be a strict descendant of `project_root` at parse time and is rechecked before every recursive removal) | `f582481c4` |
 | KI-173 | FIXED 2026-11-16 (estate argv failures explain shell-expanded values for typed options and their environment fallback) | `f20d3ae566e60f591638f9bc5e66e9bfd7e38a39` |
 | KI-171 | OPEN (the packaged cmru-cli SKILL is grammar-checked but not coverage-checked: a verb or flag a release adds can be missing from it with every existing test green) | — |
 | KI-170 | OPEN (bundle validator outcomes pinned; SPEC wording and R2 lane-cost policy remain) | — |
@@ -26,7 +30,9 @@
 | KI-164 | FIXED (`bundle-build` removes bundle and wheel staging trees after a successful archive by default) | `d6cd7fb54aff97dfb47fb7a537e0d31b0d7af3e0` |
 | KI-163 | FIXED (`bundle-build` derives a non-release version when its configured variable is absent) | `f2b56b12743f6a764bbadefa8b937c1bd642b32f` |
 | KI-162 | FIXED (released in cmru 7.3.1; the naf equivalence build on 2026-11-14 was EQUIVALENT, which also closes KI-126) | `f2b56b12743f6a764bbadefa8b937c1bd642b32f` |
-| KI-161 | OPEN (`cmru versions resolve` and `init` rewrite `cmru.toml` and drop comments; a document-wide blank-line collapse can change multi-line string values) | — |
+| KI-161 | FIXED 2026-11-18 (`cmru versions resolve` and `init` edit only the values and tables they own; comments, blank-line runs and multi-line values stay byte-identical; unsupported shapes are refused with the hand edit named) | `7b3364a7b` (merged into main by `5f862034b`) |
+| KI-176 | FIXED 2026-11-18 (every manifest-contradicting target is reported in one run with the exact `package.json` edit; nothing is written) | `7b3364a7b` (merged into main by `5f862034b`) |
+| KI-177 | FIXED 2026-11-18 (same mechanism as KI-161; the mdt-cockpit ADVISORY comment shape is a regression test) | `7b3364a7b` (merged into main by `5f862034b`) |
 | KI-160 | OPEN (post-promotion evidence retention can exit 1 after a successful release) | — |
 | KI-158 | OPEN (retained release outputs can disappear with an outer release worktree) | — |
 | KI-157 | FIXED 2026-11-16 (checked-out main worktree is derived and given its owner-scoped remedy) | `4d36980b8d6f3ed7533da2f900b955c06075cb1f` |
@@ -3535,7 +3541,7 @@ Only 10 of the 40 slowest tests use repositories (`test_release_end_to_end_real_
 
 ## KI-161 - `cmru versions resolve` and `cmru versions init` rewrite `cmru.toml` and drop comments (and can change multi-line string values)
 
-**Status:** OPEN (filed 2026-11-13); severity: minor (silent loss of hand-written documentation; no functional effect). Found in netcup-api-filter with cmru 7.3.0. CHANGES checked: nothing in `[Unreleased]` covers it.
+**Status:** FIXED 2026-11-18 in `7b3364a7b` (merged into main by `5f862034b`; option a, surgical text edits: `versions.py` `_edit_versions_text`; tests `tests/test_versions_surgical_edit.py` and `tests/test_versions_surgical_refusals.py` cover the Close-when fixture for `resolve` and `init`, SPEC section on the versions commands); formerly OPEN (filed 2026-11-13); severity: minor (silent loss of hand-written documentation; no functional effect). Found in netcup-api-filter with cmru 7.3.0. CHANGES `[Unreleased]` documents the fix (`fix(cmru): make cmru versions resolve and cmru versions init edit cmru.toml as text ...`).
 
 **Evidence.** In netcup-api-filter, branch `pdns51`, the commit that ran one `cmru versions resolve` (`netcup-api-filter@9847b7b`, "chore(versions): record the PowerDNS 5.1.5 resolution") removed two hand-written comments from `cmru.toml`: a comment on the python314 target and a multi-line "partial migration" marker the previous commit had put directly above the `[versions.targets."oci.powerdns-auth"]` table. The resolved values were rewritten correctly; only the comments disappeared, so the marker that made a half-migrated state detectable was erased by the very command meant to complete it.
 
@@ -3792,9 +3798,43 @@ Call: `SOURCE_DATE_EPOCH=1700000000 DEMO_VERSION=1.0.0 cmru handler bundle-build
 
 **Close when.** A change that adds a `cmru` call to a shell script is refused or auto-extended with the cmru lane, shown by a test of the selection rule, and the trigger list is derived from the scanner's own file selection.
 
+## KI-181 `dist_dir` containment accepts project-owned directories (`src`, `.git`, a symlink to another project directory)
+
+**Status:** OPEN (filed 2026-11-18, residual of KI-175); severity: medium.
+
+**Observed.** KI-175 requires only that the resolved `dist_dir` is a strict descendant of `project_root`. `dist_dir = "src"`, `".git"` or a symlink inside the project that points at another project's directory passes that rule, and the bundle build then removes it recursively before staging.
+
+**Wanted.** A deny-list of directories the build must never remove (for example `.git`, the source directories declared by the bundle, and any path that is another project's root), or an explicit-ownership marker that a removable output directory must carry (created by the build on first use, required before any recursive removal).
+
+**Close when.** Tests show `dist_dir` set to `src`, `.git` and a symlink to a sibling project directory is refused before any file is touched, while an ordinary `dist` (new or previously built by cmru) still works.
+
+## KI-180 residuals of the KI-178 runner fix: signal between fork and `Popen` return, and a skipped pipe close when the group reap raises
+
+**Status:** OPEN (filed 2026-11-18, residuals of KI-178 items 1 and 2); severity: low.
+
+**Observed.** (1) A SIGTERM or SIGHUP that arrives in the microseconds between the fork and the return of `Popen` can leave the child unreaped, because the handler that turns the signal into `SystemExit` runs before the child handle exists. (2) If the whole-group reap itself raises, the explicit close of the output pipe is skipped; garbage collection closes it later.
+
+**Code (checked against main at `5f862034b`).** `cmru/src/cmru/runner.py`: `_terminate_as_exit` installs a handler that raises `SystemExit(128 + signum)` and blocks nothing around the fork; `_run_command` sets `process = None` and assigns it only when `subprocess.Popen` returns, so a `SystemExit` raised before that assignment finds `process is None` and reaps nothing. The `except BaseException` branch calls `_reap_process_group(process)` and only then `process.stdout.close()`, so a raising reap skips the close.
+
+**Wanted.** Block SIGTERM and SIGHUP with `pthread_sigmask` around `Popen` and unblock once the child handle is recorded; close the pipe in a `finally` that cannot be skipped by a failing reap.
+
+**Close when.** A test delivers the signal inside the fork window (a patched `Popen` that signals the process before returning) and shows the child is reaped; a test makes the group reap raise and shows the pipe is closed.
+
+## KI-179 `cmru abandon` withholds a superseded release candidate and offers no operator path
+
+**Status:** OPEN (filed 2026-11-18); severity: medium (a stale candidate branch and its worktree stay behind with no supported way to retire them).
+
+**Observed.** The branch `cmru-release-20261106_123441-ciu-yh40ow` carries one commit (`cf063357a`, `chore(ciu): prepare release inputs`, 32 added lines in `ciu/CHANGES.md`) whose CHANGES content equals main's `62d8b67c6` (the same subject, 33 added lines) except for two differences: the `source-end` marker (`ae894f93b0083af9c13a47e8962785ca02cd2e2d` on the candidate, `13cff77c1c7f5a3de59a74af8791a01a8723cd6b` on main) and one extra bullet on main under `### Testing`, `test(ciu): close the 100% coverage gap on the CIU-141/138/202 refusal paths ... (4bbf8d49a)`. So the content is a strict subset of main's, not identical. `cmru abandon` withholds it with "origin contains selected-scope release tag refs that changed during this transaction" (the ciu-v7.24.0, ciu-v7.24.1, ciu-v7.25.0 and ciu-v7.25.1 tags), and the message offers no operator path; the only way out is raw git.
+
+**Wanted.** An explicit, evidence-checked way to retire a candidate whose content is already on main (patch or content equivalence of every changed path) or whose version has since been released, without raw git: the command prints the evidence it checked (equivalent commit on main, or the released tag that carries the version) and refuses when it cannot show either.
+
+**Close when.** Tests cover a candidate whose content equals a commit on main, a candidate whose version has a released tag, and a candidate with neither (still withheld, with the reason named), each without the operator running git.
+
 ## KI-178 a step hangs forever when its child exits but a grandchild keeps the output pipe open (estate-wide pattern)
 
-**Status:** OPEN (filed 2026-11-17 during the mdt-cockpit release); severity: high (an unattended release or gate never finishes, never fails, and says nothing; found only because the operator looked).
+**Status:** OPEN, items 1 and 2 (cmru side) FIXED 2026-11-18, items 3 and 4 remain (filed 2026-11-17 during the mdt-cockpit release); severity: high (an unattended release or gate never finishes, never fails, and says nothing; found only because the operator looked).
+
+**Resolution/evidence, items 1 and 2 (2026-11-18).** `cmru/src/cmru/runner.py` `run_command` reads the child's pipe by descriptor with the same decoding as a text pipe, stops `OUTPUT_DRAIN_SECONDS` (2 s) after the child has exited, closes the reader, keeps the child's exit code and logs one WARN naming the holder pids from `/proc/<pid>/fd` (without pids when the scan fails). Children start with `start_new_session=True`; Ctrl-C, SIGTERM and SIGHUP (the last two turned into `SystemExit` for the duration of `run_command`, main thread only, previous handlers restored; a signal ignored at start, such as `nohup`'s SIGHUP, stays ignored and is inherited by the step) send SIGTERM to the group, SIGKILL after `GROUP_TERM_GRACE_SECONDS`, and reap it (cmru has no per-step timeout, so these are the only reaping triggers; SIGKILL of cmru itself still orphans the step). The output wait uses `selectors.DefaultSelector`, so pipe descriptors >= 1024 work. A child in its own session has no controlling terminal: reads on inherited fd 0 work, `/dev/tty` opens (sudo, ssh, git prompts) fail with ENXIO. Review fixes (2026-11-18): the fd-limit, signal-orphaning and terminal-wording corrections. Tests: `tests/test_runner_pipe_holders.py` (a `sleep 600` holder with exit 3 and exit 0, scan failure, unchanged ordinary output and exit code, split multibyte output, own session and group, whole-group interrupt by pid, SIGTERM-ignoring child, descriptor above 1024, SIGTERM and SIGHUP delivered to a driver process, handler install and restore, off-main-thread). SPEC S3.4a records the rule. **Still open:** item 3 (the no-progress watchdog, with its `cmru.toml` period) and item 4 (the shared helper; the same read-to-EOF shape remains in `build-push.py` and `ciu/src/ciu/engine.py`, tracked as CIU-220, MDT-104 and NL-83). Do not close KI-178 until both land.
 
 **Observed.** The shared buildkitd was restarted mid-build (host `apt upgrade`, 16:44:34Z). `docker buildx bake` failed, its `release-bake.sh` bash exited (`<defunct>`), but an orphaned VS Code dev-containers credential helper (`docker-credential-dev-containers-*`, parent 1) that docker had spawned kept the inherited stdout pipe open. `build-push.py` sat in `anon_pipe_read` and `cmru release` behind it for 11 minutes; killing only that helper made both exit at once.
 
@@ -3810,7 +3850,7 @@ Call: `SOURCE_DATE_EPOCH=1700000000 DEMO_VERSION=1.0.0 cmru handler bundle-build
 
 ## KI-177 `cmru versions resolve` rewrites cmru.toml and silently drops its comments
 
-**Status:** OPEN (filed 2026-11-17 while releasing mdt-cockpit); severity: medium (a refresh deletes human-owned labels; here it removed the eight `ADVISORY ... MDT-013` comments that mdt-cockpit's `test_every_oci_target_is_labelled_advisory_and_points_at_mdt_009` requires, and the loss surfaced only as a release-gate failure).
+**Status:** FIXED 2026-11-18 in `7b3364a7b` (merged into main by `5f862034b`; see KI-161); filed 2026-11-17 while releasing mdt-cockpit; severity: medium (a refresh deletes human-owned labels; here it removed the eight `ADVISORY ... MDT-013` comments that mdt-cockpit's `test_every_oci_target_is_labelled_advisory_and_points_at_mdt_009` requires, and the loss surfaced only as a release-gate failure).
 
 **Problem.** After `cmru versions resolve` in `mdt-cockpit/`, the committed `cmru.toml` had 6 comment lines instead of 15; only the `resolved` values should have changed.
 
@@ -3820,7 +3860,7 @@ Call: `SOURCE_DATE_EPOCH=1700000000 DEMO_VERSION=1.0.0 cmru handler bundle-build
 
 ## KI-176 `cmru versions resolve` cannot refresh a project whose npm targets use `constraint = "*"`: it demands a hand-edited `package.json`
 
-**Status:** OPEN (filed 2026-11-17 while releasing mdt-cockpit); severity: medium (a release stalls once the record passes its 28-day limit, with a message that names `resolve` as the fix and then `resolve` itself refuses).
+**Status:** FIXED 2026-11-18 in `7b3364a7b` (merged into main by `5f862034b`) for the cmru side: `resolve`, `resolve --dry-run` and `check` report every target whose resolved version the committed manifest does not allow in one run (target, resolved version, manifest requirement, exact `package.json` edit) and exit non-zero without writing; cmru does not rewrite `package.json` to get past this refusal (once the compatibility check passes, `_run_npm` does update `overrides` and the dependency fields of `package.json` for the resolved packages). **Still open outside cmru:** the stale-record message that tells a consumer to run `cmru versions resolve` is written by the consumer (mdt-cockpit `scripts/stage_tool_artifacts.py`, around the 28-day check) and should also name the manifest edit. Filed 2026-11-17 while releasing mdt-cockpit; severity: medium (a release stalls once the record passes its 28-day limit, with a message that names `resolve` as the fix and then `resolve` itself refuses).
 
 **Problem.** mdt-cockpit declares `npm.copilot`, `npm.openclaw` and `npm.claudelink` with `constraint = "*"`, and the committed `package.json` pins exact versions. When the registry moves, `cmru versions resolve` stops at the first target with `target 'npm.X' resolves A, but <project> manifest requires 'B'`, one target per run, so three stale pins took three failed runs and hand edits of `package.json` (dependencies and overrides). The stale-record error ("run `cmru versions resolve` ... and commit the result") does not mention the manifest edit.
 
@@ -3830,7 +3870,9 @@ Call: `SOURCE_DATE_EPOCH=1700000000 DEMO_VERSION=1.0.0 cmru handler bundle-build
 
 ## KI-175 dist-dir escape can delete the project or its parent
 
-**Status:** OPEN (filed 2026-11-16 during review round 1); severity: high (configuration can recursively delete the project checkout or another writable directory before a build).
+**Status:** FIXED 2026-11-18 (filed 2026-11-16 during review round 1); severity: high (configuration can recursively delete the project checkout or another writable directory before a build).
+
+**Resolution/evidence (2026-11-18).** `parse_config` now refuses a resolved `dist_dir` that is not a strict descendant of the resolved `project_root` (equal, parent, outside absolute path, or symlink that leaves the project), with an error naming `dist_dir`, the resolved path and `project_root`. Every recursive removal in `run_bundle` (legacy `dist_dir`, variant and success-cleanup staging trees) goes through `_remove_staging_tree`, which re-runs the containment and canonical-path check on freshly resolved paths immediately before `shutil.rmtree`. The rule is in SPEC S9.4 and the bundle table. `tests/test_bundle_dist_dir_containment.py` covers `"."`, `".."`, `"../.."`, an outside relative path, absolute outside/project/parent paths, a `dist` symlink to an outside directory, a variant build, a path component swapped to an outside symlink between parse and removal, and an ordinary `dist` build that still cleans only its own output; sentinels in the project, its parent and a sibling survive every refusal.
 
 **Problem.** `parse_config` resolves `project_root` and `dist_dir` but does not require the resolved `dist_dir` to be a strict descendant of `project_root` (`cmru/src/cmru/bundle.py`, `parse_config`). In the legacy non-variant `run_bundle` path, `shutil.rmtree(config.dist_dir)` runs before staging begins (`bundle.py`, legacy cleanup near line 1122). `dist_dir = "."` can therefore remove the whole project root; `dist_dir = ".."` can remove its parent; an absolute `dist_dir` can target any directory writable by the process.
 
@@ -3841,3 +3883,5 @@ Call: `SOURCE_DATE_EPOCH=1700000000 DEMO_VERSION=1.0.0 cmru handler bundle-build
 **Proposed acceptance test.** Use a scratch project with sentinels in `project_root`, its parent, and an absolute sibling directory. For the legacy non-variant build, try `dist_dir = "."`, `".."`, and an absolute path outside `project_root`; each must fail before cleanup and preserve every sentinel. A normal `dist_dir = "dist"` must still build and clean only its own output. Add a symlink or path-swap case if the cleanup recheck is implemented separately from parse-time validation.
 
 **Close when.** The path constraints and cleanup recheck are documented in SPEC; the acceptance cases prove every escaping path fails before any file is touched and the ordinary in-project path remains supported.
+
+**Remaining note (2026-11-18).** The rule is containment only: a `dist_dir` such as `src`, `.git`, or a symlink to another project's directory inside the project is a strict descendant and is accepted. The rule was deliberately not widened.

@@ -1,0 +1,56 @@
+# vmscreen release contract -- parsed ONLY by cmru (VMS-BL-01). Tags `vmscreen-v*`; a wheel and its sha256 go to
+# GitHub Releases only, never PyPI. External tool floor: qemu-system-x86_64 >= 7.1 (`screendump -f png`, reason in pyproject.toml).
+schema_version = 1
+
+[runtime]
+kind = "none"
+
+[env]
+VMSCREEN_RELEASE_NOTES = """## vmscreen wheel
+
+Exact console text of local QEMU guests (VGA text buffer, serial log) without OCR, plus screenshot+text ground-truth pairs. See `libraries/vmscreen/CHANGES.md` for the full entry.
+
+**Read before running**
+- The real-QEMU smoke test (`tests/test_smoke_qemu.py`, VMS-BL-04) has not been run live: reading `0xb8000` through `pmemsave` on a real guest, `screendump` while the guest is stopped and odd/even VGA text addressing are unverified. The gate runs the suite with `VMSCREEN_SKIP_QEMU_SMOKE=1`.
+- Needs `qemu-system-x86_64` >= 7.1 on the host that owns the QMP socket; the wheel itself is Python only (standard library plus `cli-extended`).
+
+**Install (wheel)**
+```bash
+python -m pip install --no-index --find-links . vmscreen-*.whl cli_extended-*.whl
+```"""
+
+[project]
+id = "vmscreen"
+description = "vmscreen -- exact console text of local QEMU guests"
+template_revision = 4
+prefix = "vmscreen-v"
+artifacts = ["wheel"]
+scm_dist = "vmscreen"
+
+[project.version]
+strategy = "scm"
+bump = "conventional"
+
+[project.release]
+git_tag = true
+build_step = "build"
+artifact_dirs = ["dist"]
+evidence_paths = ["coverage.json"]
+
+[steps.run-tests]
+quiet = true
+commands = [
+  { label = "vmscreen: r0-r1 (unit + coverage floor)", argv = ["run-gate", "r0-r1"], cwd = "." },
+]
+
+[steps.build]
+quiet = true
+commands = [
+  { label = "vmscreen: build wheel", argv = ["cmru", "handler", "wheel-build", "--cwd", "."], cwd = "." },
+]
+
+[steps.push]
+quiet = true
+commands = [
+  { label = "vmscreen: publish wheel", argv = ["cmru", "handler", "wheel-publish", "--prefix", "vmscreen", "--cwd", ".", "--notes-env", "VMSCREEN_RELEASE_NOTES"], cwd = "." },
+]

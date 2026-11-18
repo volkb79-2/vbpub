@@ -1,0 +1,21 @@
+--- src/lib.rs
++++ replace < with > in spin
+@@ -17,17 +17,17 @@
+ /// Unviable: `Token` has no `Default`, so the FnValue mutant does not compile.
+ pub fn make(id: u32) -> Token {
+     Token { id }
+ }
+ 
+ /// Timeout: `i += 1` -> `i *= 1` never terminates.
+ pub fn spin(n: u32) -> u32 {
+     let mut i = 0;
+-    while i < n {
++    while i > /* ~ changed by cargo-mutants ~ */ n {
+         i += 1;
+     }
+     i
+ }
+ 
+ /// Match arms and a guard.
+ pub fn pick(a: Option<u32>) -> u32 {
+     match a {

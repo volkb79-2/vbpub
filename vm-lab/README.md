@@ -22,7 +22,7 @@ and the project that owns the VM keeps that directory in its own
 
 vm-lab is a top-level project of the repository (`vm-lab/`): the Python package
 `vm_lab` in `src/` (`core`, `console`, `text`, `cli`), the console script
-`vm-lab`, and the QEMU container image in `qemu-image/`.
+`vm-lab`, and the QEMU container image context in `src/vm_lab/qemu-image/` (package data: the wheel carries it).
 
 Start with the [consumer guide](docs/CONSUMERS.md). The reasons behind the
 design are in the [design guide](docs/DESIGN-GUIDE.md).
@@ -39,9 +39,10 @@ design are in the [design guide](docs/DESIGN-GUIDE.md).
 `pip install` puts the `vm-lab` command in the venv's `bin/`; that directory
 must be on `PATH` (the estate venv's `/opt/mdt/venv/bin` is). The dependency
 `vmscreen` (exact screen text) is a separate wheel of this repository: install
-`libraries/vmscreen` first (it has no release yet, so a plain `pip install
-vm-lab` cannot find it; use `--no-deps` for the wheel and install vmscreen from
-its checkout). The wrapper does not add vmscreen: it must be installed where
+`libraries/vmscreen` first (released as `vmscreen-v0.1.0` on GitHub Releases, not
+on a public index, so a plain `pip install vm-lab` cannot find it; install the
+vmscreen wheel first, or use `--no-deps` for the vm-lab wheel and install
+vmscreen from its checkout). The wrapper does not add vmscreen: it must be installed where
 `python3` runs, or on `PATH`.
 
 The QEMU image is built once per Docker host with `vm-lab image build` (see
@@ -55,7 +56,7 @@ vm-lab <verb> [options]
 
 | Verb | What it does |
 | --- | --- |
-| `image build` | Build the QEMU image with `docker build` on `qemu-image/` (Debian trixie-slim, `qemu-system-x86`, `qemu-utils`; no OVMF, no KVM, no privileges). `--tag TAG` (default `vm-lab-qemu:local`), `--context DIR` (default `<project>/qemu-image`; needed when the package is installed as a wheel, which does not carry the Dockerfile). |
+| `image build` | Build the QEMU image with `docker build` on the packaged `qemu-image/` (Debian trixie-slim, `qemu-system-x86`, `qemu-utils`; no OVMF, no KVM, no privileges). `--tag TAG` (default `vm-lab-qemu:local`), `--context DIR` (override; default is the `vm_lab/qemu-image` directory next to the module, which a checkout and an installed wheel both carry). |
 | `start` | Admit and start a guest. Needs `--name`, `--base-disk`, `--ovmf-code`, `--ovmf-vars`, `--state-dir`, `--memory-mib`, `--cpus` and at least one `--forward`. |
 | `status` | Print container and QMP state as JSON, plus `disk_format` (`raw` or `qcow2`) and `disk_file` of the state directory. |
 | `disk promote` | Publish a stopped guest's raw disk as a read-only base image: `--state-dir`, `--dest-dir`, `--name` (and `--allow-full-copy`). Writes `<name>.raw` and `<name>.raw.sha256`, both mode 0444. Holds the start admission lock while it copies and hashes. SIGTERM and SIGHUP during a promote remove its partial files and exit 1; after SIGKILL, or a killed `start` (SIGTERM), remove the hidden `.<name>.partial` file by hand (see [docs/CONSUMERS.md](docs/CONSUMERS.md)). |
