@@ -165,7 +165,7 @@ SPEC §9.
 | RG-268 | the save-container-logs foreign-owner test's fake `fstat` result lacks fields required by Python 3.14, so a rebuilt tester image makes selftest fail | Minor | FIXED 2026-11-16; delegates complete `stat_result` shape |
 | RG-269 | tests replace shared `os.*` syscalls process-wide and depend on Pytest's private filesystem usage | Medium | FIXED 2026-11-16; scoped fakes plus unrelated-fd delegation oracle |
 | RG-271 | Decide whether tester-base should pin or float pytest | Medium | OPEN 2026-11-12; estate-level runner-policy question from the pytest 9.2 audit |
-| RG-272 | a valid request base on a non-tag checkout produces zero mutation candidates despite changed source | Should-fix | OPEN 2026-11-12 |
+| RG-272 | a valid request base on a non-tag checkout produces zero mutation candidates despite changed source | Should-fix | OPEN 2026-11-12; DIAGNOSED 2026-11-18: merge-commit HEAD resolves to its first parent in assay `resolve_base`, fix lies in assay |
 | RG-273 | ephemeral Run-Gate lanes opt in to the image-advertised KSM shim by default | Enhancement | IMPLEMENTED and released in Run-Gate 25.6.0; tester images rebuilt/deployed 2026-11-12; host lane smoke open |
 | RG-275 | lane campaigns cannot be placed across compute hosts: no lane demand model (expected charge vs cap, efficient upper bound), no central scheduler over host capabilities and RAM, supervision lives in a host-local netcup script | Enhancement | OPEN 2026-11-12 (design rev 5) |
 | RG-276 | Run-Gate has no campaign-plan client to assemble candidate and host inputs for fleetd | Enhancement | OPEN 2026-11-13; fleetd MVP-A exposes a standalone fleet plan CLI |
@@ -8608,10 +8608,39 @@ branch head.
 
 ## RG-272 — a valid request base on a non-tag checkout produces zero mutation candidates despite changed source
 
-**Status:** OPEN (filed 2026-11-12); priority should-fix for an R2 lane that
+**Status:** OPEN (filed 2026-11-12; cause diagnosed 2026-11-18, see Diagnosis
+below: the cause is a MERGE-commit `HEAD`, not a non-tag one, and lies in
+assay's `resolve_base`); priority should-fix for an R2 lane that
 delegates its comparison base. Source: [KSM evidence report](../mdt-cockpit/docs/evidence/hosts-ksm-instances-REPORT-2026-11-12.md)
 sections 0.8 and 10.1. Related: RG-26 and RG-263; this is distinct from RG-263's
 empty source-diff case.
+
+**Diagnosis (2026-11-18, cause found; fix NOT in Run-Gate).** The reported
+non-tag `main` HEAD (`b6a6274df`, `ciu-v7.25.0-9`) is a MERGE commit, and the
+tag-plus-empty-commit control is not. Assay's `resolve_base`
+(`assay/src/assay/git.py:826-846`) answers a merge `HEAD` with its FIRST
+PARENT and ignores the supplied base entirely (B008's "what did the merge
+itself change" rule, meant for a feature branch that merged its base in); only a
+non-merge HEAD resolves to `merge-base(base, HEAD)`. Measured on the real
+history: first parent of `b6a6274df` is the `ciu-v7.25.0` tag commit, and
+`git diff first-parent..HEAD -- ciu/src` is EMPTY, while
+`git diff ciu-v7.22.0..HEAD -- ciu/src` is 14 files, 4292 insertions, the exact
+figure in the report. So the plan is correctly empty for the wrong comparison:
+the request base `ciu-v7.22.0` was never the diff base. Assay records the mode
+(`base_resolution_mode`, `assay/src/assay/runner.py:6654`) but nothing refuses
+or discloses before the baseline when the mode is `first-parent` and the base
+was explicitly delegated. Hermetic fixture (3 shapes: plain commit past the
+tag, tag + empty commit, merge commit with a non-`src` payload) reproduces it:
+only the merge shape resolves to the first parent and sees no `src` change.
+The exact seam is `assay.git.resolve_base` (and its caller for a delegated
+request base in `runner.py` near `:4343`/`:6644`); the design choice (for an
+explicit `--request-base`, use `merge-base(base, HEAD)` for a merge HEAD, or
+keep first-parent and refuse/disclose it before baseline) belongs to the assay
+owner, so no Run-Gate code was changed. Run-Gate-only mitigation, if wanted
+before assay changes: a preflight that names "HEAD is a merge commit; assay will
+judge only its payload, not `--base`" when `--base` is given. Workaround today:
+run the campaign from a non-merge HEAD (a detached commit on the tag, or a
+checkout whose HEAD is not a merge).
 
 **Problem.** The same CIU lane and `--base ciu-v7.22.0` produced
 `INCONCLUSIVE/NO_MUTANTS` with `planned=0` on a non-tag main checkout, in
