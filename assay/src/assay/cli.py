@@ -4196,10 +4196,13 @@ def _discover_plan_jobs(
                 )
                 diff_text = git.run(
                     prepared.spec.repo_top,
-                    "diff",
-                    "--unified=0",
-                    checked.base_rev,
-                    checked.head_rev,
+                    *runner._request_base_diff_args(
+                        lane,
+                        repo_top=prepared.spec.repo_top,
+                        project_root=lane_file.project_root,
+                        base_rev=checked.base_rev,
+                        head_rev=checked.head_rev,
+                    ),
                     remaining=deadline.remaining,
                 )
                 added = diff.parse_added_lines(diff_text)

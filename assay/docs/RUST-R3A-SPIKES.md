@@ -12,14 +12,15 @@ marked OPEN below are B245's carve inputs, not settled.
 
 The operator named R-3 (cargo-mutants, R2 at T3) as the next Rust track on
 2026-11-18, which is a direction, not a K15 closure: design K15 ("Rust R2 is
-not adopted yet") stays true until the hostobs lane is registered (B245 U8).
+not adopted yet") stayed true until the hostobs lane was registered and run (B245 U8; closed
+by the real run of 2026-11-18, see `RUST-B245-U0-MEASUREMENTS.md`).
 
 Status 2026-11-18: the decisions below are implemented by B245 units U0-U5c (the
 v19 to v20 verdict schema hard cut, the `cargo-mutants-outcomes` ingestion, the
 directory-artifact reservation, the `{assay.changed_diff}` placeholder and the
 zero-mutant verdict); the lane template is `CONSUMERS.md` "Rust R2 lanes
 (cargo-mutants)" (U6). Real-toolchain qualification (U7) and the hostobs T3
-lane (U8) are still open, so K15 is open. The measurements below describe the
+lane (U8) were done afterwards, and K15 is closed by the real hostobs run. The measurements below describe the
 v19 base the spikes ran against; the section "Measured facts" is not rewritten,
 and where `DESIGN-B245-CARGO-MUTANTS-INGESTION.md` section 8 corrects a decision
 (workspace-root diff anchor, member-name grammar, FnValue binding) that section
