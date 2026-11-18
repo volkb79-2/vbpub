@@ -91,6 +91,12 @@ def test_every_chunking_of_a_small_multiline_message_is_equivalent():
             assert _render(chunks) == expected, chunks
 
 
+def test_plain_line_does_not_hide_a_following_severity_prefix():
+    assert _render(("ordinary\n[WARN] next",)) == (
+        "ordinary\n\033[33m[WARN]\033[0m next"
+    )
+
+
 def test_write_returns_input_length_when_a_candidate_precedes_multiline_text():
     target = io.StringIO()
     stream = SeverityStream(target, time_short=False, colour=True)
