@@ -1150,3 +1150,70 @@ mutant("scripts/controller/chain-run.sh", "chain-run-export-socket.sh",
        chain_gate_run, 'export CGPROFILE_CONTROL_SOCKET=/run/profiler.sock\n' + chain_gate_run)
 mutant("scripts/controller/chain-run.sh", "chain-run-profile-default.sh",
        chain_gate_run, 'export RUN_GATE_PROFILE=off\n' + chain_gate_run)
+
+
+# ctl-doctor.sh: one hand mutant per check; the lib.sh read-only/configured-path mutants ship beside their own doctor copy.
+def doctor_with_lib_mutant(name: str, before: str, after: str) -> Path:
+    variant = controller / name
+    variant.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(repo / "scripts/controller/ctl-doctor.sh", variant / "ctl-doctor.sh")
+    mutant("scripts/controller/lib.sh", "lib.sh", before, after, variant)
+    return variant / "ctl-doctor.sh"
+
+
+for _name, _before, _after in (
+    ("tool-flock-severity", "tool_check flock FAIL util-linux", "tool_check flock WARN util-linux"),
+    ("tool-docker-severity", "tool_check docker WARN 'a docker CLI'", "tool_check docker FAIL 'a docker CLI'"),
+    ("home-missing", "if [[ ! -d $home_in ]]; then", "if false; then"),
+    ("env-missing", "if [[ ! -f $env_file ]]; then", "if false; then"),
+    ("env-syntax", 'if ! bash -n "$env_file" 2>/dev/null; then', "if false; then"),
+    ("env-stray", "if [[ -n $stray ]]; then", "if false; then"),
+    ("hosts-missing", "if [[ ! -f $file ]]; then", "if false; then"),
+    ("hosts-ssh-shape", "if not strings(row.get(key)):", "if False:"),
+    ("hosts-guard", 'if not isinstance(row.get("guard"), str) or not row["guard"].strip():', "if False:"),
+    ("hosts-lanes-shape", 'or not all(isinstance(x, str) and x.count("|") == 1 and', "or not all(isinstance(x, str) and"),
+    ("hosts-lanes-warn", "if lanes is None:", "if False:"),
+    ("hosts-api-exec", "if not full or not os.path.isfile(full) or not os.access(full, os.X_OK):", "if False:"),
+    ("hosts-key-missing", 'if not os.path.isfile(full):\n                out("FAIL", f"{where}:key"', 'if False:\n                out("FAIL", f"{where}:key"'),
+    ("hosts-key-mode", "elif os.stat(full).st_mode & 0o077:", "elif False:"),
+    ("hosts-pin", 'if pin != "/dev/null" and not os.path.isfile(full):', "if False:"),
+    ("hosts-strict", "if not strict:", "if False:"),
+    ("hosts-nopin", "if not pins:", "if False:"),
+    ("hosts-leak", '"ssh does not set StrictHostKeyChecking=yes"', 'f"ssh does not set StrictHostKeyChecking=yes {argv}"'),
+    ("allow-unknown", "if name not in hosts:", "if False:"),
+    ("allow-unset", "if not names:", "if False:"),
+    ("remote-file-split", 'if [[ $remote_file == "$hosts_file" ]]; then', "if true; then"),
+    ("image-absent", "elif [[ $inspect_err == *'No such image'* ]]; then", "elif false; then"),
+    ("image-exact-name", """docker image inspect --format '{{.Id}}' "$image" 2>&1""", """docker image inspect --format '{{.Id}}' "${image%%:*}" 2>&1"""),
+    ("image-unreachable", 'record WARN image "docker is unreachable', 'record FAIL image "docker is unreachable'),
+    ("image-no-docker", "elif ! command -v docker >/dev/null 2>&1; then", "elif false; then"),
+    ("image-toml", "if [[ -z $image ]]; then", "if false; then"),
+    ("pinned-warn", "if [[ -n $pinned_files ]]; then", "if false; then"),
+    ("pinned-logs", "--exclude-dir=logs ", ""),
+    ("pinned-scan", '[[ ${#scan_dirs[@]} -eq 0 ]] || scan_roots+=("${scan_dirs[@]}")', ":"),
+    ("pinned-home", 'scan_roots=("$CONTROLLER_HOME")', "scan_roots=()"),
+    ("profile-default", "${RUN_GATE_PROFILE:-off} (gate-run.sh", "${RUN_GATE_PROFILE:-on} (gate-run.sh"),
+    ("dir-missing", "if [[ ! -d $2 ]]; then", "if false; then"),
+    ("dir-writable", "elif [[ ! -w $2 ]]; then", "elif false; then"),
+    ("symlink-detect", "[[ -L $p ]] && return 0", "false && return 0"),
+    ("residency-ignore", 'git -C "$top" check-ignore -q -- "$real" 2>/dev/null && ignored=1', "ignored=1"),
+    ("residency-outside", "if [[ -z $top ]]; then", "if true; then"),
+    ("residency-runs", 'if [[ $CONTROLLER_RUNS_DIR != "$CONTROLLER_HOME"/* ]]; then', "if false; then"),
+    ("json", "if (( json )); then", "if false; then"),
+    ("exit-code", "(( fails == 0 )) || exit 1", ":"),
+    ("usage-exit", """unknown argument '$1'" >&2; echo 'usage: ctl-doctor.sh [--json] [--scan <dir>]...' >&2; exit 2 ;;""",
+     """unknown argument '$1'" >&2; echo 'usage: ctl-doctor.sh [--json] [--scan <dir>]...' >&2; exit 0 ;;"""),
+):
+    mutant("scripts/controller/ctl-doctor.sh", f"ctl-doctor-{_name}.sh", _before, _after)
+doctor_with_lib_mutant("doctor-lib-readonly-mkdir",
+                       '  [[ -n ${CONTROLLER_INIT_READONLY:-} ]] || mkdir -p -- "$CONTROLLER_LOGS_DIR"',
+                       '  mkdir -p -- "$CONTROLLER_LOGS_DIR"')
+doctor_with_lib_mutant("doctor-lib-readonly-resolve",
+                       "if [[ -n ${CONTROLLER_INIT_READONLY:-} && ! -d $target ]]; then return 0; fi",
+                       "if false; then return 0; fi")
+doctor_with_lib_mutant("doctor-lib-configured-home",
+                       "  CONTROLLER_HOME_CONFIGURED=$CONTROLLER_HOME\n  controller_init_resolve CONTROLLER_HOME\n",
+                       "  controller_init_resolve CONTROLLER_HOME\n  CONTROLLER_HOME_CONFIGURED=$CONTROLLER_HOME\n")
+doctor_with_lib_mutant("doctor-lib-configured-runs",
+                       "  CONTROLLER_RUNS_DIR_CONFIGURED=$CONTROLLER_RUNS_DIR\n",
+                       "  CONTROLLER_RUNS_DIR_CONFIGURED=\n")

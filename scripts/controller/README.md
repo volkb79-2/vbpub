@@ -26,6 +26,27 @@ For the host-table schema and the additional `queue_lanes` field, see
 [`docs/CONFIGURATION.md`](docs/CONFIGURATION.md) and the
 [queue validation design](docs/DESIGN-GUIDE.md#queue-lane-validation).
 
+## Preflight (`ctl-doctor.sh`)
+
+`scripts/controller/ctl-doctor.sh [--json] [--scan <dir>]...` checks a controller
+machine without changing it and exits non-zero on any failure. Each finding is one
+`OK|WARN|FAIL|INFO <check>: <message>` line, with an indented `fix:` line under
+every WARN and FAIL. It checks: `$CONTROLLER_HOME` and `controller.local.env`
+(assignment lines only; a command line there is refused, never executed); every
+host-table alias (`ssh`, `api_check`, `guard`, `queue_lanes`, the SSH key file with
+mode 600, the pinned `known_hosts` file, `StrictHostKeyChecking=yes`, the identity
+command is executable); that `CONTROLLER_REMOTE_GATE_HOSTS` names only aliases of the
+host table; `flock`, `git`, `python3`, `jq` (failures) and `docker`, `shellcheck`
+(warnings) on `PATH`; the default tester image of `run-gate.root.toml` by exact name
+(`docker image inspect`; an unreachable daemon only warns); any file under
+`$CONTROLLER_HOME` (and each `--scan` directory) that still names the removed
+`run-gate-2560` image tag; the effective `RUN_GATE_PROFILE`; writable runs and logs
+directories; and where `$CONTROLLER_HOME` and `CONTROLLER_RUNS_DIR` really live (a
+symlink target inside a git work tree is a warning: `git clean -fdx` would delete it,
+see [`docs/STATE-VS-WORK.md`](docs/STATE-VS-WORK.md)). It prints names and paths only,
+never a value from the env file, the host table or a key. Limit: the env file is
+scanned line by line, so a multi-line assignment reads as a stray line.
+
 ## Controller loop
 
 Use this order for each implementation task.

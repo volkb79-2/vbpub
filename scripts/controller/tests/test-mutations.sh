@@ -453,4 +453,16 @@ for chain_run_mutant in log-name remote-log-name marker-text stale-marker head-p
   expect_killed "chain-run-$chain_run_mutant" \
     env CHAIN_RUN_SCRIPT="$ROOT/mutants/scripts/controller/chain-run-$chain_run_mutant.sh" bash "$SCRIPT_DIR/test-chain-run.sh"
 done
+for doctor_mutant in tool-flock-severity tool-docker-severity home-missing env-missing env-syntax env-stray hosts-missing hosts-ssh-shape \
+                     hosts-guard hosts-lanes-shape hosts-lanes-warn hosts-api-exec hosts-key-missing hosts-key-mode hosts-pin hosts-strict \
+                     hosts-nopin hosts-leak allow-unknown allow-unset remote-file-split image-absent image-exact-name image-unreachable \
+                     image-no-docker image-toml pinned-warn pinned-logs pinned-scan pinned-home profile-default dir-missing dir-writable \
+                     symlink-detect residency-ignore residency-outside residency-runs json exit-code usage-exit; do
+  expect_killed "ctl-doctor-$doctor_mutant" \
+    env CTL_DOCTOR_SCRIPT="$ROOT/mutants/scripts/controller/ctl-doctor-$doctor_mutant.sh" bash "$SCRIPT_DIR/test-ctl-doctor.sh"
+done
+for doctor_lib_mutant in readonly-mkdir readonly-resolve configured-home configured-runs; do
+  expect_killed "ctl-doctor-lib-$doctor_lib_mutant" \
+    env CTL_DOCTOR_SCRIPT="$ROOT/mutants/scripts/controller/doctor-lib-$doctor_lib_mutant/ctl-doctor.sh" bash "$SCRIPT_DIR/test-ctl-doctor.sh"
+done
 echo "PASS hand mutations: $killed_count killed"

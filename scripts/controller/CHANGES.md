@@ -28,6 +28,15 @@ no separate version number, so entries are grouped by the work that landed.
   and incremental-report wording.
 
 ### Added
+- `ctl-doctor.sh`: read-only preflight of a controller machine (home and env file,
+  host table schema, key mode 600 and pin files, remote-gate allow-list, required
+  tools, default tester image by exact name, the removed `run-gate-2560` tag,
+  effective `RUN_GATE_PROFILE`, runs/logs directories, and the symlink-into-a-
+  work-tree `git clean` hazard). Exits non-zero on any failure, prints the fix per
+  failure, never prints a secret value; `--json` and `--scan <dir>`. `lib.sh`
+  gains `CONTROLLER_INIT_READONLY=1` (no directory is created) and the exported
+  `CONTROLLER_{HOME,LOGS_DIR,RUNS_DIR}_CONFIGURED` spellings (before symlinks are
+  resolved). Test `tests/test-ctl-doctor.sh`, 44 hand mutants.
 - `sonnet-continuation-preamble.md` and `backlog-burn-generic.md`: the two
   reusable prompt blocks that only existed in the program directory, sanitised
   (no absolute paths, addresses, pinned image tag).
