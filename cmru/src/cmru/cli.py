@@ -7168,6 +7168,7 @@ def _release_gate_preconditions_before_dispatch(
         check_release_build_images_precondition,
         evaluate_release_gate_preconditions,
         format_gate_precondition_report,
+        release_config_enables_docker,
     )
     from cmru.version import status_records
 
@@ -7212,10 +7213,14 @@ def _release_gate_preconditions_before_dispatch(
         )
         configured_image_env.update(dict(getattr(cmru_project, "env", {}) or {}))
         process_image_env = getattr(vargs, "_cmru_process_build_image_env", None)
+        _config_rel, config_text = _cmru_snapshot_config_text(
+            source_git_root, revision, config_path, configs,
+        )
         build_image_rows = check_release_build_images_precondition(
             configured_image_env,
             process_env=process_image_env,
             require_docker=not dry_run,
+            dind_image_required=release_config_enables_docker(config_text),
         )
         image_failures = [row for row in build_image_rows if row.status == "FAIL"]
         if image_failures:

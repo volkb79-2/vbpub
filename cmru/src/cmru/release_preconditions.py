@@ -15,6 +15,7 @@ from typing import Mapping
 
 from cmru.build_images import (
     CGROUP_PROBE_IMAGE_ENV,
+    DIND_IMAGE_ENV,
     EnvironmentResolutionContext,
     WHEEL_BUILDER_IMAGE_ENV,
     resolve_environment_value,
@@ -46,6 +47,14 @@ _DOCKER_UNAVAILABLE = (
     "context not found",
 )
 _BUILDER_IMAGE_PULL_TIMEOUT_SECONDS = 600
+_ENABLE_DOCKER_FLAG = "--enable-docker"
+# Images started with `--pull=never`: an absent reference cannot be fetched at gate time.
+_PULL_NEVER_NOTES = {
+    CGROUP_PROBE_IMAGE_ENV:
+        " The cgroup probe uses `--pull=never`, so this reference must already be local.",
+    DIND_IMAGE_ENV:
+        " The DinD sidecar is started with --pull=never, so this reference must already be local.",
+}
 
 
 @dataclass(frozen=True)
@@ -248,9 +257,13 @@ def check_run_gate_image_precondition(
 
 def check_release_build_images_precondition(
     configured_env: Mapping[str, object], *, process_env: Mapping[str, object] | None = None,
-    require_docker: bool = False,
+    require_docker: bool = False, dind_image_required: bool = False,
 ) -> list[GatePrecondition]:
-    """Check the image refs the selected release config will pass to build handlers."""
+    """Check the image refs the selected release config will pass to build handlers.
+
+    The DinD sidecar row exists only when *dind_image_required* (a step uses
+    ``--enable-docker``); it has the cgroup probe's ``--pull=never`` contract.
+    """
     builder = resolve_environment_value(
         WHEEL_BUILDER_IMAGE_ENV,
         context=EnvironmentResolutionContext.RELEASE,
@@ -263,7 +276,7 @@ def check_release_build_images_precondition(
         configured_env=configured_env,
         process_env=process_env,
     )
-    return [
+    rows = [
         _check_local_image_precondition(
             WHEEL_BUILDER_IMAGE_ENV, builder, "Wheel-builder image",
             require_docker=require_docker, pull_if_missing=True,
@@ -273,6 +286,28 @@ def check_release_build_images_precondition(
             require_docker=require_docker, pull_if_missing=False,
         ),
     ]
+    if dind_image_required:
+        dind = resolve_environment_value(
+            DIND_IMAGE_ENV,
+            context=EnvironmentResolutionContext.RELEASE,
+            configured_env=configured_env,
+            process_env=process_env,
+        )
+        rows.append(_check_local_image_precondition(
+            DIND_IMAGE_ENV, dind, "DinD sidecar image",
+            require_docker=require_docker, pull_if_missing=False,
+        ))
+    return rows
+
+
+def release_config_enables_docker(config_text: str) -> bool:
+    """Whether any ``[steps.*]`` command argv carries the ``--enable-docker`` flag."""
+    steps = tomllib.loads(config_text).get("steps", {})
+    return any(
+        _ENABLE_DOCKER_FLAG in command.get("argv", ())
+        for step in steps.values()
+        for command in step.get("commands", ())
+    )
 
 
 def _check_local_image_precondition(
@@ -362,10 +397,7 @@ def _check_local_image_precondition(
             f"Run `docker pull {image}` on this host, then retry the release.",
         )
     if image_missing:
-        pull_note = (
-            " The cgroup probe uses `--pull=never`, so this reference must already be local."
-            if variable == CGROUP_PROBE_IMAGE_ENV else ""
-        )
+        pull_note = _PULL_NEVER_NOTES.get(variable, "")
         return GatePrecondition(
             "cmru", label, "FAIL",
             f"{variable} image {image!r} is not present on this Docker host.{pull_note}",

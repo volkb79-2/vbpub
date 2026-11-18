@@ -691,7 +691,18 @@ _CMRU_TOML_RELEASE_GATE = (
 _CMRU_TOML_FULL = _CMRU_TOML_RELEASE_GATE.replace("release-gate", "gate")
 
 
-def _mock_cli_release_preconditions(monkeypatch, tmp_path, *, changed=True):
+_CMRU_TOML_ENABLE_DOCKER = (
+    '[steps.run-tests]\n'
+    'commands = [\n'
+    '  { label = "unit", argv = ["cmru", "tester-gate", "--", "pytest"], cwd = "." },\n'
+    '  { label = "enroll", argv = ["cmru", "tester-gate", "--enable-docker", "--", "bash"], cwd = "." },\n'
+    ']\n'
+)
+
+
+def _mock_cli_release_preconditions(
+    monkeypatch, tmp_path, *, changed=True, config_text=_CMRU_TOML_FULL,
+):
     project = SimpleNamespace(
         name="cmru", project_root=tmp_path / "cmru", prefix="cmru-v",
         paths=["cmru"], cwd="cmru",
@@ -729,8 +740,12 @@ def _mock_cli_release_preconditions(monkeypatch, tmp_path, *, changed=True):
         cli.transaction, "fetch_origin_main", lambda *_args, **_kwargs: "b" * 40,
     )
     monkeypatch.setattr(
+        cli, "_cmru_snapshot_config_text",
+        lambda *_args: (Path("cmru/cmru.toml"), config_text),
+    )
+    monkeypatch.setattr(
         release_preconditions, "check_release_build_images_precondition",
-        lambda _env, *, process_env=None, require_docker: [
+        lambda _env, *, process_env=None, require_docker, dind_image_required=False: [
             release_preconditions.GatePrecondition("cmru", "Wheel-builder image", "PASS", "present"),
             release_preconditions.GatePrecondition("cmru", "Cgroup probe image", "PASS", "present"),
         ],
@@ -793,10 +808,12 @@ def test_project_config_snapshot_has_no_orchestration_image_defaults(tmp_path, m
 def test_release_process_image_overrides_are_captured_before_config_application(monkeypatch):
     monkeypatch.setenv("CMRU_WHEEL_BUILDER_IMAGE", "wheel-builder:invocation")
     monkeypatch.delenv("CMRU_TESTER_CGROUP_PROBE_IMAGE", raising=False)
+    monkeypatch.setenv("CMRU_TESTER_DIND_IMAGE", "docker@sha256:" + "e" * 64)
     monkeypatch.setenv("UNRELATED_SETTING", "ignored")
 
     assert cli._release_process_build_image_env() == {
         "CMRU_WHEEL_BUILDER_IMAGE": "wheel-builder:invocation",
+        "CMRU_TESTER_DIND_IMAGE": "docker@sha256:" + "e" * 64,
     }
 
 
@@ -1265,6 +1282,265 @@ def test_release_build_image_precondition_fails_on_generic_inspect_results(monke
     assert "Restore Docker daemon access" in rows[0].remedy
 
 
+_DIND_IMAGE = "docker@sha256:" + "d" * 64
+_DIND_ENV = {
+    "CMRU_WHEEL_BUILDER_IMAGE": "wheel-builder:test",
+    "CMRU_TESTER_CGROUP_PROBE_IMAGE": "probe@sha256:" + "a" * 64,
+    "CMRU_TESTER_DIND_IMAGE": _DIND_IMAGE,
+}
+
+
+def _dind_row(rows):
+    return next((row for row in rows if row.check == "DinD sidecar image"), None)
+
+
+def _fake_docker_missing(monkeypatch, missing, calls):
+    monkeypatch.setattr(release_preconditions.shutil, "which", lambda _command: "/usr/bin/docker")
+
+    def fake_run(argv, **_kwargs):
+        calls.append(argv)
+        if argv[-1] == missing:
+            return SimpleNamespace(returncode=1, stdout="", stderr=f"Error: No such image: {missing}")
+        return SimpleNamespace(returncode=0, stdout="[]", stderr="")
+
+    monkeypatch.setattr(release_preconditions.subprocess, "run", fake_run)
+
+
+@pytest.mark.parametrize(
+    ("config_text", "expected"),
+    [
+        (_CMRU_TOML_ENABLE_DOCKER, True),
+        (_CMRU_TOML_FULL, False),
+        # Only an exact argv element counts; the flag inside a shell string does not.
+        (
+            '[steps.run-tests]\n'
+            'commands = [{ label = "x", argv = ["bash", "-c", "echo --enable-docker"], cwd = "." }]\n',
+            False,
+        ),
+        # Any step counts, not just run-tests.
+        (
+            '[steps.run-tests]\n'
+            'commands = [{ label = "x", argv = ["true"], cwd = "." }]\n'
+            '[steps.build]\n'
+            'commands = [{ label = "y", argv = ["cmru", "tester-gate", "--enable-docker"], cwd = "." }]\n',
+            True,
+        ),
+        ('[project]\nid = "x"\n', False),
+    ],
+    ids=["enable-docker", "no-flag", "flag-in-shell-string", "other-step", "no-steps"],
+)
+def test_release_config_enable_docker_detection_reads_the_toml_argv(config_text, expected):
+    assert release_preconditions.release_config_enables_docker(config_text) is expected
+
+
+def test_dind_image_row_fails_naming_variable_image_and_remedy_when_absent(monkeypatch):
+    calls = []
+    _fake_docker_missing(monkeypatch, _DIND_IMAGE, calls)
+
+    rows = release_preconditions.check_release_build_images_precondition(
+        _DIND_ENV, process_env={}, require_docker=True, dind_image_required=True,
+    )
+
+    assert [row.check for row in rows] == [
+        "Wheel-builder image", "Cgroup probe image", "DinD sidecar image",
+    ]
+    assert calls[-1] == ["docker", "image", "inspect", _DIND_IMAGE]
+    assert [row.status for row in rows] == ["PASS", "PASS", "FAIL"]
+    row = _dind_row(rows)
+    assert row.detail == (
+        f"CMRU_TESTER_DIND_IMAGE image {_DIND_IMAGE!r} is not present on this Docker host. "
+        "The DinD sidecar is started with --pull=never, so this reference must already be local."
+    )
+    assert row.remedy == f"Run `docker pull {_DIND_IMAGE}` on this host, then retry the release."
+    assert all(call[1] != "pull" for call in calls)  # the sidecar is --pull=never: never pulled here
+
+
+def test_dind_image_row_passes_when_the_image_is_present(monkeypatch):
+    calls = []
+    _fake_docker_missing(monkeypatch, "not-any-image", calls)
+
+    rows = release_preconditions.check_release_build_images_precondition(
+        _DIND_ENV, process_env={}, require_docker=True, dind_image_required=True,
+    )
+
+    row = _dind_row(rows)
+    assert row.status == "PASS"
+    assert f"CMRU_TESTER_DIND_IMAGE image {_DIND_IMAGE!r} is present locally." == row.detail
+    assert calls[-1] == ["docker", "image", "inspect", _DIND_IMAGE]
+
+
+def test_dind_image_row_is_absent_without_enable_docker_even_when_image_is_missing(monkeypatch):
+    calls = []
+    _fake_docker_missing(monkeypatch, _DIND_IMAGE, calls)
+
+    rows = release_preconditions.check_release_build_images_precondition(
+        _DIND_ENV, process_env={}, require_docker=True,
+    )
+
+    assert _dind_row(rows) is None
+    assert [row.check for row in rows] == ["Wheel-builder image", "Cgroup probe image"]
+    assert ["docker", "image", "inspect", _DIND_IMAGE] not in calls
+
+
+@pytest.mark.parametrize("configured", [{}, {"CMRU_TESTER_DIND_IMAGE": ""}, {"CMRU_TESTER_DIND_IMAGE": "  "}])
+def test_dind_image_row_refuses_an_unset_or_empty_value(configured):
+    env = {key: value for key, value in _DIND_ENV.items() if key != "CMRU_TESTER_DIND_IMAGE"}
+    env.update(configured)
+
+    rows = _REAL_CHECK_RELEASE_BUILD_IMAGES(
+        env, process_env={}, dind_image_required=True,
+    )
+
+    row = _dind_row(rows)
+    assert row.status == "FAIL"
+    assert "CMRU_TESTER_DIND_IMAGE has no non-empty value" in row.detail
+    assert "Set a non-empty CMRU_TESTER_DIND_IMAGE" in row.remedy
+
+
+def test_dind_image_value_resolves_like_the_probe_image_from_config_before_process(monkeypatch):
+    calls = []
+    _fake_docker_missing(monkeypatch, "never", calls)
+    configured_wins = "docker@sha256:" + "1" * 64
+
+    rows = release_preconditions.check_release_build_images_precondition(
+        {**_DIND_ENV, "CMRU_TESTER_DIND_IMAGE": configured_wins},
+        process_env={"CMRU_TESTER_DIND_IMAGE": "docker@sha256:" + "2" * 64},
+        require_docker=True, dind_image_required=True,
+    )
+
+    assert calls[-1] == ["docker", "image", "inspect", configured_wins]
+    assert _dind_row(rows).status == "PASS"
+
+    process_only = release_preconditions.check_release_build_images_precondition(
+        {k: v for k, v in _DIND_ENV.items() if k != "CMRU_TESTER_DIND_IMAGE"},
+        process_env={"CMRU_TESTER_DIND_IMAGE": _DIND_IMAGE},
+        require_docker=True, dind_image_required=True,
+    )
+    assert calls[-1] == ["docker", "image", "inspect", _DIND_IMAGE]
+    assert _dind_row(process_only).status == "PASS"
+
+
+@pytest.mark.parametrize(
+    "require_docker, expected",
+    [(False, "SKIPPED"), (True, "FAIL")],
+)
+def test_dind_image_row_handles_unavailable_docker(monkeypatch, require_docker, expected):
+    monkeypatch.setattr(release_preconditions.shutil, "which", lambda _command: None)
+
+    rows = release_preconditions.check_release_build_images_precondition(
+        _DIND_ENV, process_env={}, require_docker=require_docker, dind_image_required=True,
+    )
+
+    assert [row.status for row in rows] == [expected, expected, expected]
+    assert "CMRU_TESTER_DIND_IMAGE" in _dind_row(rows).detail
+
+
+def test_dind_image_row_appears_in_the_dry_run_report_and_fail_row_carries_the_remedy():
+    rows = [
+        release_preconditions.GatePrecondition(
+            "cmru", "DinD sidecar image", "FAIL",
+            f"CMRU_TESTER_DIND_IMAGE image {_DIND_IMAGE!r} is not present on this Docker host.",
+            f"Run `docker pull {_DIND_IMAGE}` on this host, then retry the release.",
+        ),
+    ]
+
+    report = release_preconditions.format_gate_precondition_report(rows)
+
+    assert "DinD sidecar image" in report
+    assert f"Remedy: Run `docker pull {_DIND_IMAGE}`" in report
+
+
+@pytest.mark.parametrize(
+    ("config_text", "required"),
+    [(_CMRU_TOML_ENABLE_DOCKER, True), (_CMRU_TOML_FULL, False)],
+    ids=["enable-docker", "no-enable-docker"],
+)
+def test_release_precondition_helper_passes_the_enable_docker_fact_to_the_image_check(
+    tmp_path, monkeypatch, config_text, required,
+):
+    configs = _mock_cli_release_preconditions(monkeypatch, tmp_path, config_text=config_text)
+    observed = {}
+
+    def check(_env, *, process_env=None, require_docker, dind_image_required=False):
+        observed["dind_image_required"] = dind_image_required
+        return []
+
+    monkeypatch.setattr(release_preconditions, "check_release_build_images_precondition", check)
+    monkeypatch.setattr(
+        release_preconditions, "evaluate_release_gate_preconditions",
+        lambda *_args, **_kwargs: [release_preconditions.GatePrecondition("cmru", "g", "PASS", "ok")],
+    )
+
+    cli._release_gate_preconditions_before_dispatch(
+        tmp_path, tmp_path / "cmru.orchestration.toml", configs, ["cmru"],
+        _release_precondition_args(), git_auth=None, report=False,
+    )
+
+    assert observed == {"dind_image_required": required}
+
+
+@pytest.mark.parametrize("dry_run", [True, False])
+def test_release_precondition_helper_refuses_a_missing_dind_image_in_dry_run_and_release(
+    tmp_path, monkeypatch, capsys, dry_run,
+):
+    configs = _mock_cli_release_preconditions(
+        monkeypatch, tmp_path, config_text=_CMRU_TOML_ENABLE_DOCKER,
+    )
+    monkeypatch.setattr(
+        cli, "_orchestration_env_for_release_snapshot",
+        lambda *_args: {"CMRU_TESTER_DIND_IMAGE": _DIND_IMAGE},
+    )
+    monkeypatch.setattr(
+        release_preconditions, "check_release_build_images_precondition",
+        _REAL_CHECK_RELEASE_BUILD_IMAGES,
+    )
+    calls = []
+    _fake_docker_missing(monkeypatch, _DIND_IMAGE, calls)
+    monkeypatch.setattr(
+        release_preconditions, "evaluate_release_gate_preconditions",
+        lambda *_args, **_kwargs: pytest.fail("image refusal precedes the gate preconditions"),
+    )
+
+    with pytest.raises(SystemExit) as caught:
+        cli._release_gate_preconditions_before_dispatch(
+            tmp_path, tmp_path / "cmru.orchestration.toml", configs, ["cmru"],
+            _release_precondition_args(dry_run=dry_run), git_auth=None, report=True,
+        )
+
+    assert caught.value.code == 4
+    error = capsys.readouterr().err
+    assert "DinD sidecar image" in error
+    assert "CMRU_TESTER_DIND_IMAGE" in error
+    assert f"docker pull {_DIND_IMAGE}" in error
+    assert calls[-1] == ["docker", "image", "inspect", _DIND_IMAGE]
+
+
+def test_release_precondition_helper_ignores_a_missing_dind_image_without_enable_docker(
+    tmp_path, monkeypatch, capsys,
+):
+    configs = _mock_cli_release_preconditions(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        cli, "_orchestration_env_for_release_snapshot",
+        lambda *_args: {"CMRU_TESTER_DIND_IMAGE": _DIND_IMAGE},
+    )
+    monkeypatch.setattr(
+        release_preconditions, "check_release_build_images_precondition",
+        _REAL_CHECK_RELEASE_BUILD_IMAGES,
+    )
+    _fake_docker_missing(monkeypatch, _DIND_IMAGE, [])
+    monkeypatch.setattr(
+        release_preconditions, "evaluate_release_gate_preconditions",
+        lambda *_args, **_kwargs: [release_preconditions.GatePrecondition("cmru", "g", "PASS", "ok")],
+    )
+
+    cli._release_gate_preconditions_before_dispatch(
+        tmp_path, tmp_path / "cmru.orchestration.toml", configs, ["cmru"],
+        _release_precondition_args(), git_auth=None, report=True,
+    )
+
+    assert "DinD" not in capsys.readouterr().err
+
+
 @pytest.mark.parametrize(
     "args, project_names",
     [
@@ -1490,6 +1766,10 @@ def test_actual_release_stops_before_dispatch_when_probe_image_is_missing(
     monkeypatch.setattr(cli.transaction, "fetch_origin_main", lambda *_args, **_kwargs: "b" * 40)
     monkeypatch.setattr(cli, "_project_config_for_release_snapshot", lambda *_args: project)
     monkeypatch.setattr(
+        cli, "_cmru_snapshot_config_text",
+        lambda *_args: (Path("cmru/cmru.toml"), _CMRU_TOML_FULL),
+    )
+    monkeypatch.setattr(
         cli, "_orchestration_env_for_release_snapshot", lambda *_args: {},
     )
     monkeypatch.setattr(cli, "_configs_for_git_family", lambda *_args: configs)
@@ -1708,12 +1988,7 @@ def test_dry_run_accepts_a_run_tests_step_with_either_release_lane(
     tmp_path, monkeypatch, capsys, config_text,
 ):
     """The dry-run needs no window check, whichever lane the run-tests step names."""
-    configs = _mock_cli_release_preconditions(monkeypatch, tmp_path)
-    read_configs = []
-    monkeypatch.setattr(
-        cli, "_cmru_snapshot_config_text",
-        lambda *_args: read_configs.append(True) or (Path("cmru/cmru.toml"), config_text),
-    )
+    configs = _mock_cli_release_preconditions(monkeypatch, tmp_path, config_text=config_text)
     _gate_preconditions(tmp_path, monkeypatch)
 
     revision = cli._release_gate_preconditions_before_dispatch(
@@ -1722,7 +1997,6 @@ def test_dry_run_accepts_a_run_tests_step_with_either_release_lane(
     )
 
     assert revision == "b" * 40
-    assert read_configs == []  # nothing about the run-tests step is consulted any more
     output = capsys.readouterr()
     assert "Release gate preconditions: PASS (cmru 7.1.4)." in output.out
     assert "window" not in (output.out + output.err).lower()
