@@ -1591,11 +1591,7 @@ mod tests {
             ("scan_ms", "31"),
         ]);
         assert_eq!(pairs(&member(&result, "tick")), expected);
-        let expected = want(&[
-            ("observe", "2"),
-            ("operator", "0"),
-            ("observer", "1"),
-        ]);
+        let expected = want(&[("observe", "2"), ("operator", "0"), ("observer", "1")]);
         assert_eq!(pairs(&member(&result, "clients")), expected);
         let expected = want(&[("queued_bytes", "1300"), ("dropped_blocks", "5")]);
         assert_eq!(pairs(&member(&result, "queues")), expected);
