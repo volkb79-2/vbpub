@@ -93,7 +93,11 @@ The controller gives the go; a controller-run implementer or the controller does
 
    Options: `--tag IMAGE` (default `tester-unified-rust-dev:local`), `--base IMAGE` (default
    `tester-unified-rust:local`), `--builder NAME` (default `default`; precedence option, then
-   `TESTER_UNIFIED_RUST_BUILDER`, then the default), `--record FILE`. The default builder is the
+   `TESTER_UNIFIED_RUST_BUILDER`, then the default), `--record FILE`. Use as `--base` the image the
+   lanes name in `run-gate.root.toml` (`tester-unified-rust:rs-20261118`); the default `:local`
+   is that image only while `:local` has not been moved back to an older whole-lock image (a
+   rollback of the tag would silently put the dev layer on the old image: the label
+   `org.vbpub.tester-unified-rust-dev.base-image-id` shows which id it was built on). The default builder is the
    docker driver, the kind that can see a base image that exists only in the local daemon; a
    docker-container builder cannot. The build needs the network for apt and rustup only. It
    requires `CGROUP_PARENT_DEV_GATES` or `--cgroup-parent` like `build-image.sh` (the estate rule), builds `FROM` a **content-named tag of the exact
