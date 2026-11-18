@@ -18,13 +18,19 @@ from .contracts import ContractError, is_candidate_id
 from .measurement import measurement_document
 from .plan import replan_pending
 from .runner import JobSpec, RunnerJobs, parse_progress, validate_job_spec
-from .transport import HostUnavailable, Transport, TransportError
+from .transport import HostSlow, HostUnavailable, Transport, TransportError
 
 
 STATE_SCHEMA = "fleet-campaign-state/2"
 RESULT_SCHEMA = "fleet-campaign-result/1"
 STALL_FLOOR_SECONDS = 15 * 60
 LOST_AFTER_SECONDS = 30 * 60
+ERROR_WARN_AFTER_SECONDS = 30 * 60
+# FD-025: without a comparable Geekbench reference the unscaled reference seconds
+# are only a guess at this host's speed, so while the host has observed no
+# finished candidate its predicted candidate time is this many times the
+# reference (the stall threshold is then 3 x that, plus the baseline).
+NONCOMPARABLE_FIRST_WINDOW_FACTOR = 3
 _CAMPAIGN_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,119}\Z")
 _EXEC_COMMIT = re.compile(r"[0-9a-f]{40,64}\Z")
 _EXEC_IMAGE = re.compile(r"sha256:[0-9a-f]{64}\Z")
@@ -179,6 +185,7 @@ class CampaignManager:
             self._handle_lost_hosts(state)
             self._retry_deferred(state)
             self._start_available(state)
+            self._settle_error_clocks(state)
             self._write_state(state)
             return self.status_document(state)
 
@@ -186,7 +193,7 @@ class CampaignManager:
         campaign = _safe_campaign(campaign)
         with self._locked(campaign):
             state = self._load_state(campaign)
-            self._refresh(state)
+            self._refresh_settled(state)
             self._write_state(state)
             return self.status_document(state)
 
@@ -201,6 +208,7 @@ class CampaignManager:
             self._requeue_exited(state)
             self._stop_superseded(state)
             self._start_available(state)
+            self._settle_error_clocks(state)
             self._write_state(state)
             return self.status_document(state)
 
@@ -208,7 +216,7 @@ class CampaignManager:
         campaign = _safe_campaign(campaign)
         with self._locked(campaign):
             state = self._load_state(campaign)
-            self._refresh(state)
+            self._refresh_settled(state)
             result = self._collect_result(state)
             json_path = self.state_dir / f"{campaign}.result.json"
             report_path = self.state_dir / f"{campaign}.report.md"
@@ -229,7 +237,7 @@ class CampaignManager:
         campaign = _safe_campaign(campaign)
         with self._locked(campaign):
             state = self._load_state(campaign)
-            self._refresh(state)
+            self._refresh_settled(state)
             result = self._collect_result(state)
             document = measurement_document(
                 campaign=campaign,
@@ -543,18 +551,21 @@ class CampaignManager:
                 continue
             try:
                 self._refresh_host(state, host_id, host_state, job_rows, now)
-            except HostUnavailable:
-                if host_state["unreachable_since_mono"] is None:
-                    host_state["unreachable_since_mono"] = host_state["last_contact_mono"]
-                    if host_state["unreachable_since_mono"] is None:
-                        host_state["unreachable_since_mono"] = now
-                host_state["status"] = "UNREACHABLE"
-                host_state["pressure"] = None
+            except HostUnavailable as exc:
+                self._note_unavailable(host_state, exc, now)
                 if now - host_state["unreachable_since_mono"] > LOST_AFTER_SECONDS:
                     host_state["status"] = "LOST"
                 continue
             except (ContractError, TransportError) as exc:
+                # The host answered (badly): an open unreachable episode is over,
+                # otherwise its old clock would make the next failed probe LOST.
+                self._end_unreachable_episode(host_state, job_rows, now)
                 self._record_host_error(host_state, str(exc))
+
+    def _refresh_settled(self, state: dict[str, Any]) -> None:
+        """Refresh for the commands that never start work (status, collect, measurement)."""
+        self._refresh(state)
+        self._settle_error_clocks(state)
 
     def _refresh_host(
         self,
@@ -569,18 +580,14 @@ class CampaignManager:
         job_rows = {name: job for name, job in job_rows.items() if not _probe_settled(job)}
         wanted = {name: _job_spec(job) for name, job in job_rows.items()}
         rows = self.runner.probe(host_id, wanted)
-        prior_status = host_state["status"]
+        # A host that was lost (clock past the threshold, status LOST, or its work
+        # already re-queued before an ERROR tick ended the episode) may still run
+        # the same batches: they are stopped once the other hosts finished them.
         returned_lost = (
             host_state["unreachable_since_mono"] is not None
             and now - host_state["unreachable_since_mono"] > LOST_AFTER_SECONDS
-        ) or prior_status == "LOST"
-        if host_state["unreachable_since_mono"] is not None:
-            pause = max(0.0, now - host_state["unreachable_since_mono"])
-            host_state["paused_seconds"] += pause
-            for job in job_rows.values():
-                if job["status"] in {"RUNNING", "STARTING", "UNKNOWN", "LOST"}:
-                    job["paused_seconds"] += pause
-            host_state["unreachable_since_mono"] = None
+        ) or host_state["status"] == "LOST" or bool(host_state["loss_requeued"])
+        self._end_unreachable_episode(host_state, job_rows, now)
         host_state["last_contact_mono"] = now
         host_state["status"] = "ONLINE"
         host_state.pop("error", None)
@@ -731,15 +738,96 @@ class CampaignManager:
                     job["stop_pending"] = False
                 else:
                     job["status"] = "SUPERSEDED_PENDING"
-        if prior_status == "LOST":
+        if returned_lost:
             self._stop_returned_duplicates(state, host_id)
         self._stop_superseded_host(state, host_id)
 
     @staticmethod
-    def _record_host_error(host_state: dict[str, Any], message: str) -> None:
+    def _end_unreachable_episode(
+        host_state: dict[str, Any], job_rows: Mapping[str, dict[str, Any]], now: float
+    ) -> None:
+        """End an open unreachable episode: the host answered, in whatever way.
+
+        The silent time is added to the host and to its live jobs so their stall
+        clocks do not count it, and the loss clock is cleared: the next failed
+        contact starts a fresh one (FD-020). An ERROR answer ends the episode too,
+        or its stale clock would declare the host lost at the first later failure.
+        """
+        since = host_state["unreachable_since_mono"]
+        if since is None:
+            return
+        pause = max(0.0, now - since)
+        host_state["paused_seconds"] += pause
+        for job in job_rows.values():
+            if job["status"] in {"RUNNING", "STARTING", "UNKNOWN", "LOST"}:
+                job["paused_seconds"] += pause
+        host_state["unreachable_since_mono"] = None
+
+    @staticmethod
+    def _note_unavailable(host_state: dict[str, Any], exc: HostUnavailable, now: float) -> None:
+        """Record a failed contact (FD-020).
+
+        The loss clock starts at the first failed contact THIS controller
+        observed, never at ``last_contact``: with sparse ticks the last contact
+        may be hours old and one transient failure would otherwise be loss. A
+        timeout (``HostSlow``) is reported as ``SLOW``; it feeds the same clock
+        and counts toward ``LOST`` only after the same ``LOST_AFTER_SECONDS``.
+        """
+        if host_state["unreachable_since_mono"] is None:
+            host_state["unreachable_since_mono"] = now
+        host_state["status"] = "SLOW" if isinstance(exc, HostSlow) else "UNREACHABLE"
+        host_state["pressure"] = None
+        CampaignManager._clear_error_clock(host_state)
+
+    def _record_host_error(self, host_state: dict[str, Any], message: str) -> None:
+        """Record a refusal or contract fault (FD-021): status and message only.
+
+        The age clock (FD-026) is decided once per tick by ``_settle_error_clocks``
+        from the host's FINAL status, so an error raised after a successful probe
+        cannot restart it. An ERROR host may have live batches: nothing here
+        declares it lost or re-queues its work.
+        """
         host_state["status"] = "ERROR"
         host_state["pressure"] = None
         host_state["error"] = message
+
+    @staticmethod
+    def _clear_error_clock(host_state: dict[str, Any]) -> None:
+        for key in ("error_since_mono", "error_since_utc", "error_warned"):
+            host_state.pop(key, None)
+
+    def _settle_error_clocks(self, state: dict[str, Any]) -> None:
+        """Decide each host's error episode once, from its status at the end of the tick.
+
+        ERROR with no clock starts one now; ERROR with a clock keeps its first
+        instant; any other status clears it. Then the aged ones warn once.
+        """
+        now = self.clock()
+        for host_state in state["hosts"].values():
+            if host_state["status"] != "ERROR":
+                self._clear_error_clock(host_state)
+            elif host_state.get("error_since_mono") is None:
+                host_state["error_since_mono"] = now
+                host_state.pop("error_warned", None)
+        self._warn_aged_errors(state, now)
+
+    @staticmethod
+    def _warn_aged_errors(state: dict[str, Any], now: float) -> None:
+        for host_id in sorted(state["hosts"]):
+            host_state = state["hosts"][host_id]
+            since = host_state.get("error_since_mono")
+            if host_state["status"] != "ERROR" or since is None or host_state.get("error_warned"):
+                continue
+            if now - since >= ERROR_WARN_AFTER_SECONDS:
+                host_state["error_warned"] = True
+                state["warnings"].append(CampaignManager._error_warning(host_id, now - since, host_state.get("error")))
+
+    @staticmethod
+    def _error_warning(host_id: str, seconds: float, error: object) -> str:
+        return (
+            f"host {host_id} has been in ERROR for {seconds:.0f} s ({error}); its batches keep running "
+            "and nothing is re-queued automatically: the operator decides"
+        )
 
     def _stop_superseded_host(self, state: dict[str, Any], host_id: str) -> None:
         for job in state["jobs"].values():
@@ -750,11 +838,8 @@ class CampaignManager:
                 continue
             try:
                 self.runner.stop(host_id, job["name"])
-            except HostUnavailable:
-                state["hosts"][host_id]["status"] = "UNREACHABLE"
-                state["hosts"][host_id]["pressure"] = None
-                if state["hosts"][host_id]["unreachable_since_mono"] is None:
-                    state["hosts"][host_id]["unreachable_since_mono"] = state["hosts"][host_id]["last_contact_mono"]
+            except HostUnavailable as exc:
+                self._note_unavailable(state["hosts"][host_id], exc, self.clock())
                 continue
             except (TransportError, ContractError) as exc:
                 self._record_host_error(state["hosts"][host_id], str(exc))
@@ -774,9 +859,8 @@ class CampaignManager:
             if set(job["candidate_ids"]) <= done_elsewhere:
                 try:
                     self.runner.stop(host_id, job["name"])
-                except HostUnavailable:
-                    state["hosts"][host_id]["status"] = "UNREACHABLE"
-                    state["hosts"][host_id]["pressure"] = None
+                except HostUnavailable as exc:
+                    self._note_unavailable(state["hosts"][host_id], exc, self.clock())
                     continue
                 except (TransportError, ContractError) as exc:
                     self._record_host_error(state["hosts"][host_id], str(exc))
@@ -852,21 +936,22 @@ class CampaignManager:
         return max(candidates, key=lambda row: (row[0], row[1]))[1]
 
     def _retry_deferred(self, state: dict[str, Any]) -> None:
-        still_deferred = []
-        for item in state["deferred_requeues"]:
+        waiting, state["deferred_requeues"] = state["deferred_requeues"], []
+        for item in waiting:
             source_job = state["jobs"].get(item["source_job"])
             if source_job is None:
                 continue
             target = self._largest_available_host(state, excluding={source_job["host"]})
             if target is None:
-                still_deferred.append(item)
+                state["deferred_requeues"].append(item)
                 continue
             done = self._done_ids(state)
             inflight = self._inflight_ids(state, exclude_host=source_job["host"])
             pending = [candidate_id for candidate_id in item["candidate_ids"] if candidate_id not in done and candidate_id not in inflight]
             if pending:
+                # Candidates that still do not fit the target are re-deferred by
+                # _enqueue_replanned with the planner's reason.
                 self._enqueue_replanned(state, source_job, pending, target, "host-lost")
-        state["deferred_requeues"] = still_deferred
 
     def _detect_stalls(self, state: dict[str, Any]) -> None:
         now = self.clock()
@@ -884,10 +969,8 @@ class CampaignManager:
                 continue
             try:
                 self.runner.stop(job["host"], job["name"])
-            except HostUnavailable:
-                host_state["status"] = "UNREACHABLE"
-                host_state["pressure"] = None
-                host_state["unreachable_since_mono"] = host_state["last_contact_mono"] or now
+            except HostUnavailable as exc:
+                self._note_unavailable(host_state, exc, now)
                 continue
             except (TransportError, ContractError) as exc:
                 self._record_host_error(host_state, str(exc))
@@ -915,7 +998,15 @@ class CampaignManager:
         return ordered[index]
 
     @staticmethod
-    def _predicted_candidate_seconds(state: Mapping[str, Any], job: Mapping[str, Any]) -> list[float]:
+    def _reference_comparison(
+        state: Mapping[str, Any], job: Mapping[str, Any]
+    ) -> tuple[bool, Any, Any, Mapping[str, Any]]:
+        """``(comparable, reference_baseline, speed, host_plan)`` for the job's host.
+
+        A host is comparable only when its Geekbench major, version and baseline
+        score match the plan's ``time_reference`` and it has a positive
+        single-core score.
+        """
         plan = state["plan"]
         time_reference = plan.get("time_reference", {})
         reference_baseline = time_reference.get("baseline_score") if isinstance(time_reference, dict) else None
@@ -934,6 +1025,11 @@ class CampaignManager:
             and not isinstance(speed.get("single_core"), bool)
             and speed["single_core"] > 0
         )
+        return comparable, reference_baseline, speed, host_plan
+
+    @staticmethod
+    def _predicted_candidate_seconds(state: Mapping[str, Any], job: Mapping[str, Any]) -> list[float]:
+        comparable, reference_baseline, speed, host_plan = CampaignManager._reference_comparison(state, job)
         factor = host_plan.get("f_h", 1.0)
         result = []
         for candidate_id in job["candidate_ids"]:
@@ -969,6 +1065,14 @@ class CampaignManager:
         )
         predicted_p95 = cls._p95(cls._predicted_candidate_seconds(state, job))
         observed_p95 = cls._p95(durations)
+        if (
+            predicted_p95 is not None
+            and observed_p95 is None
+            and not cls._reference_comparison(state, job)[0]
+        ):
+            # FD-025: no comparable speed reference and nothing observed on this
+            # host yet, so the unscaled reference is a guess: widen the window.
+            predicted_p95 *= NONCOMPARABLE_FIRST_WINDOW_FACTOR
         threshold = max(
             float(STALL_FLOOR_SECONDS),
             3.0 * predicted_p95 if predicted_p95 is not None else 0.0,
@@ -1017,12 +1121,16 @@ class CampaignManager:
             pending = [candidate_id for candidate_id in pending if candidate_id not in inflight]
             if not pending:
                 continue
-            if state["hosts"][job["host"]]["status"] == "ONLINE":
+            host_status = state["hosts"][job["host"]]["status"]
+            if host_status == "ONLINE":
                 self._enqueue_replanned(state, job, pending, job["host"], "job-exit")
             else:
                 state["deferred_requeues"].append({
                     "source_job": job["name"], "candidate_ids": pending,
-                    "reason": "job exited while its host is unreachable",
+                    "reason": (
+                        "job exited while its host is in ERROR" if host_status == "ERROR"
+                        else "job exited while its host is unreachable"
+                    ),
                 })
 
     def _enqueue_replanned(
@@ -1034,10 +1142,23 @@ class CampaignManager:
         reason: str,
     ) -> None:
         try:
-            batches = replan_pending(state["plan"], list(candidate_ids), target_host)
+            batches, unplaceable = replan_pending(state["plan"], list(candidate_ids), target_host)
         except ContractError as exc:
             state["warnings"].append(f"could not re-plan unfinished candidates from {old_job['name']}: {exc}")
             return
+        # FD-017: the candidates that do not fit the target wait in
+        # deferred_requeues with the planner's reason until a host with enough
+        # capacity is online; the placeable ones are queued below regardless.
+        reasons: dict[str, list[str]] = {}
+        for row in unplaceable:
+            reasons.setdefault(row["reason"], []).append(row["id"])
+        for reason_text, ids in sorted(reasons.items()):
+            message = f"cannot re-plan {len(ids)} candidate(s) of {old_job['name']} on {target_host}: {reason_text}"
+            state["deferred_requeues"].append({
+                "source_job": old_job["name"], "candidate_ids": sorted(ids), "reason": message,
+            })
+            if message not in state["warnings"]:
+                state["warnings"].append(message)
         next_batch = max(
             (job["batch"] for job in state["jobs"].values() if job["host"] == target_host),
             default=-1,
@@ -1115,9 +1236,7 @@ class CampaignManager:
                 except HostUnavailable as exc:
                     job["status"] = "QUEUED"
                     job["started_mono"], job["last_progress_mono"] = previous_clocks
-                    host_state["status"] = "UNREACHABLE"
-                    host_state["pressure"] = None
-                    host_state["unreachable_since_mono"] = host_state["last_contact_mono"] or now
+                    self._note_unavailable(host_state, exc, now)
                     job["start_error"] = str(exc)
                     break
                 except (TransportError, ContractError) as exc:
@@ -1176,10 +1295,19 @@ class CampaignManager:
                 and any(job["status"] == "QUEUED" for job in host_jobs)
                 else None
             )
+            error_since = host_state.get("error_since_mono") if host_state["status"] == "ERROR" else None
+            error_seconds = None if error_since is None else max(0.0, now - error_since)
             result_hosts.append({
                 "host": host_id,
                 "state": host_state["status"],
                 "error": host_state.get("error"),
+                "error_since": host_state.get("error_since_utc") if error_since is not None else None,
+                "error_seconds": self._round(error_seconds),
+                "warning": (
+                    self._error_warning(host_id, error_seconds, host_state.get("error"))
+                    if error_seconds is not None and error_seconds >= ERROR_WARN_AFTER_SECONDS
+                    else None
+                ),
                 "start_deferred": deferral,
                 "reserve_bytes": host_plan.get("reserve_bytes"),
                 "reserve_source": host_plan.get("reserve_source"),
@@ -1336,6 +1464,11 @@ class CampaignManager:
             for failed in failed_jobs
             for candidate_id in failed["candidate_ids"]
         }
+        deferred_reasons = {
+            candidate_id: item["reason"]
+            for item in state["deferred_requeues"]
+            for candidate_id in item["candidate_ids"]
+        }
         by_candidate: dict[str, list[dict[str, Any]]] = {}
         for event in events:
             candidate_id = event.get("candidate_id")
@@ -1362,6 +1495,7 @@ class CampaignManager:
                         failed_candidate_reasons.get(candidate_id)
                         or not_started_reasons.get(candidate_id)
                         or state["unplaced_reasons"].get(candidate_id)
+                        or deferred_reasons.get(candidate_id)
                     ),
                 })
                 continue

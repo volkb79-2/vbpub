@@ -1144,10 +1144,11 @@ def test_replan_pending_reuses_placement_rules_and_refuses_bad_inputs():
     host = next(row for row in plan["hosts"] if row["status"] == "available" and row["assigned"])
     low_id = _cid("replan-low")
     retry_id = _cid("replan-retry")
-    batches = replan_pending(plan, [low_id], host["id"])
+    batches, unplaceable = replan_pending(plan, [low_id], host["id"])
     assert [candidate_id for batch in batches for candidate_id in batch["candidate_ids"]] == [low_id]
-    assert replan_pending(plan, [], host["id"]) == []
-    retry_batches = replan_pending(plan, [retry_id], host["id"])
+    assert unplaceable == []
+    assert replan_pending(plan, [], host["id"]) == ([], [])
+    retry_batches, _ = replan_pending(plan, [retry_id], host["id"])
     assert retry_batches[0]["kind"] == "retry"
     assert retry_batches[0]["waves"][0]["retry_reason"] == "memory-crash retry must run alone with --jobs 1"
 
@@ -1168,12 +1169,32 @@ def test_replan_pending_reuses_placement_rules_and_refuses_bad_inputs():
     impossible_host = next(row for row in impossible["hosts"] if row["id"] == host["id"])
     candidate = next(row for row in impossible_host["assigned"] if row["id"] == low_id)
     candidate["memory_bytes"] = impossible_host["cap_alone_bytes"] + 1
-    with pytest.raises(ContractError, match="could not place re-queued"):
-        replan_pending(impossible, [low_id], host["id"])
+    only_batches, only_unplaceable = replan_pending(impossible, [low_id], host["id"])
+    assert only_batches == []
+    assert [row["id"] for row in only_unplaceable] == [low_id]
+    assert "requires" in only_unplaceable[0]["reason"]
 
     without_multiplier = copy.deepcopy(plan)
     without_multiplier.pop("batch_multiplier", None)
-    assert replan_pending(without_multiplier, [low_id], host["id"])
+    assert replan_pending(without_multiplier, [low_id], host["id"])[0]
+
+
+def test_replan_pending_places_what_fits_and_returns_the_unplaceable_ids_with_reasons():
+    rows = [_candidate(f"replan-part-{index}", 120 * 1024**2) for index in range(7)]
+    rows.append(_candidate("replan-part-huge", 120 * 1024**2))
+    plan = plan_campaign("r2", _candidate_table(rows), _hosts(), DEMAND)
+    host = next(row for row in plan["hosts"] if row["id"] == "host-small")
+    ids = [_cid(f"replan-part-{index}") for index in range(7)]
+    huge_id = _cid("replan-part-huge")
+    for row in plan["hosts"]:
+        for candidate in row["assigned"]:
+            if candidate["id"] == huge_id:
+                candidate["memory_bytes"] = 9 * 1024**3
+    batches, unplaceable = replan_pending(plan, [*ids, huge_id], host["id"])
+    placed = sorted(candidate_id for batch in batches for candidate_id in batch["candidate_ids"])
+    assert placed == sorted(ids)
+    assert [row["id"] for row in unplaceable] == [huge_id]
+    assert "requires" in unplaceable[0]["reason"] or "needs" in unplaceable[0]["reason"]
 
 
 def test_overcommit_changes_sum_budget_but_never_physical_alone_cap():
